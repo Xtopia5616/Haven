@@ -2,6 +2,35 @@ use crate::db::Database;
 use chrono::Utc;
 use rusqlite::OptionalExtension;
 
+fn encode_fact_extraction_marker(event_sequence: i64, bypass_throttle: bool) -> String {
+    if event_sequence == 0 {
+        return if bypass_throttle { "1" } else { "0" }.to_owned();
+    }
+    format!("{event_sequence}:{}", u8::from(bypass_throttle))
+}
+
+fn decode_fact_extraction_marker(value: &str) -> anyhow::Result<(i64, bool)> {
+    match value {
+        "0" => return Ok((0, false)),
+        "1" => return Ok((0, true)),
+        _ => {}
+    }
+    let (event_sequence, bypass) = value
+        .split_once(':')
+        .ok_or_else(|| anyhow::anyhow!("invalid fact extraction marker"))?;
+    let event_sequence = event_sequence.parse::<i64>()?;
+    anyhow::ensure!(
+        event_sequence > 0,
+        "invalid fact extraction marker sequence"
+    );
+    let bypass = match bypass {
+        "0" => false,
+        "1" => true,
+        _ => anyhow::bail!("invalid fact extraction marker bypass flag"),
+    };
+    Ok((event_sequence, bypass))
+}
+
 /// Internal key-value store for agent bookkeeping that is not user memory.
 ///
 /// User-facing preferences live in the `facts` table (tag `preference`);
@@ -142,37 +171,64 @@ impl Database {
         Ok(())
     }
 
-    /// Coalesce a fact-extraction job in durable internal state. `1` means the
-    /// caller bypassed the normal throttle; once set it is never downgraded by
-    /// a later normal enqueue for the same session.
+    /// Coalesce one committed memory trigger into durable internal state.
+    /// The event sequence identifies the generation: while a marker is pending,
+    /// replaying the same event preserves its generation and a newer event
+    /// cannot be cleared by an older job. If a replay follows an ack but comes
+    /// before the event cursor checkpoint, it may recreate that generation;
+    /// the message cursor makes the resulting empty extraction safe to ack.
+    /// `bypass_throttle` may only be upgraded while the marker is pending.
     pub fn enqueue_fact_extraction(
         &self,
         session_id: &str,
         bypass_throttle: bool,
+        event_sequence: i64,
     ) -> anyhow::Result<()> {
         anyhow::ensure!(!session_id.trim().is_empty(), "session id is required");
+        anyhow::ensure!(event_sequence > 0, "event sequence must be positive");
         let key = format!("fact_extraction_pending.{session_id}");
-        let value = if bypass_throttle { "1" } else { "0" };
-        let now = Utc::now().to_rfc3339();
         let conn = self.conn();
-        conn.execute(
-            "INSERT INTO kv_store (key, value, updated_at)
-             VALUES (?1, ?2, ?3)
-             ON CONFLICT(key) DO UPDATE SET
-                 value = CASE
-                     WHEN kv_store.value = '1' OR excluded.value = '1' THEN '1'
-                     ELSE '0'
-                 END,
-                 updated_at = excluded.updated_at",
-            rusqlite::params![key, value, now],
-        )?;
+        conn.execute_batch("BEGIN IMMEDIATE")?;
+        let result = (|| -> anyhow::Result<()> {
+            let previous_value: Option<String> = conn
+                .query_row(
+                    "SELECT value FROM kv_store WHERE key = ?1",
+                    rusqlite::params![&key],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            let (previous_sequence, previous_bypass) = previous_value
+                .as_deref()
+                .map(decode_fact_extraction_marker)
+                .transpose()?
+                .unwrap_or((0, false));
+            let value = encode_fact_extraction_marker(
+                previous_sequence.max(event_sequence),
+                previous_bypass || bypass_throttle,
+            );
+            let now = Utc::now().to_rfc3339();
+            conn.execute(
+                "INSERT INTO kv_store (key, value, updated_at)
+                 VALUES (?1, ?2, ?3)
+                 ON CONFLICT(key) DO UPDATE SET
+                     value = excluded.value,
+                     updated_at = excluded.updated_at",
+                rusqlite::params![key, value, now],
+            )?;
+            Ok(())
+        })();
+        if let Err(error) = result {
+            let _ = conn.execute_batch("ROLLBACK");
+            return Err(error);
+        }
+        conn.execute_batch("COMMIT")?;
         Ok(())
     }
 
     /// Load durable extraction jobs that still belong to a live session.
     /// Orphaned markers are left for the shared cleanup pass, so this read
     /// never turns a deleted session into a new unit of work.
-    pub fn pending_fact_extractions(&self) -> anyhow::Result<Vec<(String, bool)>> {
+    pub fn pending_fact_extractions(&self) -> anyhow::Result<Vec<(String, bool, i64)>> {
         let conn = self.conn();
         let mut stmt = conn.prepare(
             "SELECT substr(k.key, 25), k.value
@@ -183,43 +239,38 @@ impl Database {
         )?;
         let rows = stmt.query_map([], |row| {
             let session_id: String = row.get(0)?;
-            let bypass: String = row.get(1)?;
-            Ok((session_id, bypass == "1"))
+            let marker: String = row.get(1)?;
+            Ok((session_id, marker))
         })?;
-        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+        rows.map(|row| {
+            let (session_id, marker) = row?;
+            let (event_sequence, bypass) = decode_fact_extraction_marker(&marker)?;
+            Ok((session_id, bypass, event_sequence))
+        })
+        .collect()
     }
 
-    /// Remove a durable extraction marker after the corresponding job has
-    /// completed successfully. Keeping this separate from enqueue makes the
-    /// crash window safe: a process dying before this call replays the job on
-    /// the next startup, while the extraction cursor makes replay idempotent.
-    pub fn clear_pending_fact_extraction(&self, session_id: &str) -> anyhow::Result<()> {
-        let conn = self.conn();
-        conn.execute(
-            "DELETE FROM kv_store WHERE key = ?1",
-            rusqlite::params![format!("fact_extraction_pending.{session_id}")],
-        )?;
-        Ok(())
-    }
-
-    /// Acknowledge a completed extraction without allowing an older ordinary
-    /// job to erase a concurrent bypass upgrade. A bypass job can clear either
-    /// marker; an ordinary job only clears an ordinary marker.
-    pub fn clear_pending_fact_extraction_if_not_upgraded(
+    /// Acknowledge only the durable marker generation captured by this job.
+    /// A newer committed trigger remains pending even when its bypass flag is
+    /// identical to the in-flight job's flag.
+    pub fn clear_pending_fact_extraction_if_current(
         &self,
         session_id: &str,
-        processed_bypass: bool,
-    ) -> anyhow::Result<()> {
+        event_sequence: i64,
+        bypass_throttle: bool,
+    ) -> anyhow::Result<bool> {
         anyhow::ensure!(!session_id.trim().is_empty(), "session id is required");
-        self.conn().execute(
+        anyhow::ensure!(event_sequence >= 0, "event sequence must not be negative");
+        let expected_value = encode_fact_extraction_marker(event_sequence, bypass_throttle);
+        let changed = self.conn().execute(
             "DELETE FROM kv_store
-             WHERE key = ?1 AND (?2 = 1 OR value <> '1')",
+             WHERE key = ?1 AND value = ?2",
             rusqlite::params![
                 format!("fact_extraction_pending.{session_id}"),
-                processed_bypass
+                expected_value
             ],
         )?;
-        Ok(())
+        Ok(changed > 0)
     }
 
     /// Load durable compaction-summary extraction jobs. The episode id is
@@ -594,36 +645,77 @@ mod tests {
     }
 
     #[test]
-    fn pending_extraction_jobs_coalesce_and_restore_live_sessions() {
+    fn pending_extraction_markers_keep_event_generation_and_bypass() {
         let db = test_db();
         let session = db.create_session("t-pending").unwrap();
-        db.enqueue_fact_extraction(&session.id, false).unwrap();
-        db.enqueue_fact_extraction(&session.id, true).unwrap();
+        db.enqueue_fact_extraction(&session.id, false, 1).unwrap();
+        db.enqueue_fact_extraction(&session.id, true, 2).unwrap();
         assert_eq!(
             db.pending_fact_extractions().unwrap(),
-            vec![(session.id.clone(), true)]
+            vec![(session.id.clone(), true, 2)]
         );
 
-        db.clear_pending_fact_extraction(&session.id).unwrap();
+        assert!(
+            !db.clear_pending_fact_extraction_if_current(&session.id, 1, false)
+                .unwrap()
+        );
+        assert_eq!(
+            db.pending_fact_extractions().unwrap(),
+            vec![(session.id.clone(), true, 2)]
+        );
+        assert!(
+            db.clear_pending_fact_extraction_if_current(&session.id, 2, true)
+                .unwrap()
+        );
         assert!(db.pending_fact_extractions().unwrap().is_empty());
     }
 
     #[test]
-    fn ordinary_ack_preserves_a_concurrent_bypass_upgrade() {
+    fn same_value_retrigger_survives_an_older_job_ack() {
         let db = test_db();
-        let session = db.create_session("t-pending-upgrade").unwrap();
-        db.enqueue_fact_extraction(&session.id, false).unwrap();
-        db.enqueue_fact_extraction(&session.id, true).unwrap();
+        let session = db.create_session("t-pending-retrigger").unwrap();
+        db.enqueue_fact_extraction(&session.id, true, 4).unwrap();
+        db.enqueue_fact_extraction(&session.id, true, 5).unwrap();
 
-        db.clear_pending_fact_extraction_if_not_upgraded(&session.id, false)
-            .unwrap();
+        assert!(
+            !db.clear_pending_fact_extraction_if_current(&session.id, 4, true)
+                .unwrap()
+        );
         assert_eq!(
             db.pending_fact_extractions().unwrap(),
-            vec![(session.id.clone(), true)]
+            vec![(session.id.clone(), true, 5)]
         );
 
-        db.clear_pending_fact_extraction_if_not_upgraded(&session.id, true)
-            .unwrap();
+        assert!(
+            db.clear_pending_fact_extraction_if_current(&session.id, 5, true)
+                .unwrap()
+        );
         assert!(db.pending_fact_extractions().unwrap().is_empty());
+    }
+
+    #[test]
+    fn legacy_boolean_fact_marker_is_readable_and_upgraded_on_enqueue() {
+        let db = test_db();
+        let session = db.create_session("t-legacy-pending").unwrap();
+        db.set_kv(&format!("fact_extraction_pending.{}", session.id), "1")
+            .unwrap();
+
+        assert_eq!(
+            db.pending_fact_extractions().unwrap(),
+            vec![(session.id.clone(), true, 0)]
+        );
+        db.enqueue_fact_extraction(&session.id, false, 8).unwrap();
+        assert_eq!(
+            db.pending_fact_extractions().unwrap(),
+            vec![(session.id.clone(), true, 8)]
+        );
+        assert!(
+            !db.clear_pending_fact_extraction_if_current(&session.id, 0, true)
+                .unwrap()
+        );
+        assert!(
+            db.clear_pending_fact_extraction_if_current(&session.id, 8, true)
+                .unwrap()
+        );
     }
 }

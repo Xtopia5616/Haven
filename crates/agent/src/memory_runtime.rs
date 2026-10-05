@@ -482,7 +482,12 @@ impl MemoryRuntime {
             // intentionally are not used to reconstruct transcript content.
             let _metadata = (payload.run_id, payload.step_number, payload.pause_reason);
             self.memory_worker
-                .enqueue_infer_durable(target_session_id, payload.bypass_throttle, cancellation)
+                .enqueue_infer_durable(
+                    target_session_id,
+                    payload.bypass_throttle,
+                    event.sequence,
+                    cancellation,
+                )
                 .await
                 .context("durably enqueue memory inference")?;
             after_enqueue();
@@ -695,6 +700,16 @@ mod tests {
             .run_blocking(|db| db.pending_fact_extractions())
             .await
             .unwrap()
+            .into_iter()
+            .map(|(session_id, bypass, _)| (session_id, bypass))
+            .collect()
+    }
+
+    async fn pending_generations(db: &Arc<Database>) -> Vec<(String, bool, i64)> {
+        db.clone()
+            .run_blocking(|db| db.pending_fact_extractions())
+            .await
+            .unwrap()
     }
 
     fn cancellation() -> CancellationToken {
@@ -812,14 +827,14 @@ mod tests {
             runtime
                 .memory_worker
                 .pending_outbox_value_for_test(&session_id),
-            Some(false)
+            Some((2, false))
         );
     }
 
     #[tokio::test]
     async fn prepare_start_calls_durable_pending_outbox_restore() {
         let (db, session_id, runtime) = fixture();
-        db.enqueue_fact_extraction(&session_id, true).unwrap();
+        db.enqueue_fact_extraction(&session_id, true, 1).unwrap();
 
         let _live = runtime.prepare_start(&cancellation()).await.unwrap();
 
@@ -827,7 +842,7 @@ mod tests {
             runtime
                 .memory_worker
                 .pending_outbox_value_for_test(&session_id),
-            Some(true)
+            Some((1, true))
         );
         assert_eq!(pending(&db).await, vec![(session_id, true)]);
     }
@@ -942,7 +957,7 @@ mod tests {
             runtime
                 .memory_worker
                 .pending_outbox_value_for_test(&session_id),
-            Some(false)
+            Some((1, false))
         );
     }
 
@@ -985,7 +1000,7 @@ mod tests {
             runtime
                 .memory_worker
                 .pending_outbox_value_for_test(&session_id),
-            Some(false)
+            Some((1, false))
         );
     }
 
@@ -1010,9 +1025,48 @@ mod tests {
             runtime
                 .memory_worker
                 .pending_outbox_value_for_test(&session_id),
-            Some(true)
+            Some((2, true))
         );
         assert_eq!(cursor(&db, &session_id).await, 2);
+    }
+
+    #[tokio::test]
+    async fn stale_ack_cannot_clear_a_new_same_value_trigger() {
+        let (db, session_id, runtime) = fixture();
+        for sequence in [1, 2] {
+            let event = event(
+                &session_id,
+                sequence,
+                MEMORY_TRIGGER_EVENT_TYPE,
+                trigger("pause", true),
+            );
+            runtime
+                .process_event(&session_id, &event, &cancellation())
+                .await
+                .unwrap();
+        }
+
+        assert_eq!(cursor(&db, &session_id).await, 2);
+        assert_eq!(
+            pending_generations(&db).await,
+            vec![(session_id.clone(), true, 2)]
+        );
+        let database = db.clone();
+        let stale_ack = database.run_blocking({
+            let session_id = session_id.clone();
+            move |db| db.clear_pending_fact_extraction_if_current(&session_id, 1, true)
+        });
+        assert!(!stale_ack.await.unwrap());
+        assert_eq!(
+            pending_generations(&db).await,
+            vec![(session_id.clone(), true, 2)]
+        );
+        assert_eq!(
+            runtime
+                .memory_worker
+                .pending_outbox_value_for_test(&session_id),
+            Some((2, true))
+        );
     }
 
     #[tokio::test]

@@ -14,11 +14,17 @@
 ## 决定
 
 1. `enqueue_infer` 在内存 coalescing 的同时写入
-   `fact_extraction_pending.{session_id}`。值 `1` 表示 bypass throttle，值 `0`
-   表示普通抽取；同一 session 的 bypass 标记只能升级不能降级。
+   `fact_extraction_pending.{session_id}`。新 marker 的值编码触发 event sequence
+   与 bypass 标志；较新 event sequence 取代较旧 generation，同一待处理 marker
+   的 bypass 标志只能从 false 升级到 true。旧值 `0`/`1` 仍分别读作 generation
+   zero 的普通/绕过节流任务。
 2. outbox worker 启动时恢复仍属于现存 session 的 pending markers。成功处理后
-   才删除 marker；处理失败、数据库异常或进程中途退出时保留 marker，下一次
-   enqueue 或进程启动可以继续处理。cursor 保证崩溃重放是幂等的。
+   只可删除本 job 读取的 generation 与 bypass 值；较新 generation 即使 bool
+   相同也必须保留。处理失败、数据库异常或进程中途退出时保留 marker，下一次
+   enqueue 或进程启动可以继续处理。message cursor 保证已经提交的 transcript 窗口
+   不会重复应用；若 marker 已确认而 event cursor 尚未 checkpoint，event replay
+   可以重新创建同一 generation 的 marker，worker 会因 message cursor 没有新窗口而
+   安全完成并再次确认。
 3. marker、用户消息 cursor、节流时间戳和 summary cursor 都属于 session-scoped
    internal state；单个会话删除、批量历史清理和 orphan maintenance 必须一起清理。
 4. 不新增 schema 表。队列使用已有的内部 `kv_store`，并通过 typed database
@@ -28,6 +34,8 @@
 
 - 进程崩溃不再直接丢弃已入队的事实抽取任务；最坏情况是安全重放，而不是漏记忆。
 - enqueue 增加一次短同步 SQLite 写入；内存队列仍负责 worker 的快速 coalescing。
+- memory event cursor 和 pending marker 共同保护两个不同进度：前者确认 trigger
+  已调度，marker generation 确认对应抽取是否完成，旧抽取不能越过新 trigger。
 - 当前 worker 对失败任务保留 marker，后续通过新的 enqueue 或重启恢复；未来如需
   独立重试计数、退避和 dead-letter，应升级为专用 job 表并定义容量上限。
 - `kv_store` 中的 session-scoped key 不再是零散约定，新增状态必须同步加入删除和
@@ -35,13 +43,15 @@
 
 ## 验证
 
-- `haven-memory` 测试覆盖 marker 的 bypass coalescing、live-session restore、
-  orphan cleanup 和三种会话删除路径。
+- `haven-memory` 测试覆盖 generation 条件确认、同 bypass 重入、旧 bool marker
+  读取、live-session restore、orphan cleanup 和三种会话删除路径。
 - `haven-agent` 测试覆盖抽取成功/失败/节流时 cursor 行为；构造 Agent 不再注入
   伪造的默认姓名事实。
 
 ## 回滚 / 重置
 
-无需数据库 schema reset。若回滚到不识别 pending marker 的旧二进制，旧版本会
-把该 key 当作无关内部状态；重新运行当前版本或执行 memory maintenance 会清理
-不存在 session 的 marker。
+无需数据库 schema reset。读路径兼容旧 `0`/`1` marker；新版本第一次 enqueue 会将
+其升级为 event-sequence generation。若回滚到不识别带 generation 的 pending marker
+值的旧二进制，旧版本会把任何非 `1` 值误作普通任务，不能正确恢复 bypass；应在
+回滚前关闭 app 并按当前数据重置流程处理开发数据库。重新运行当前版本或执行
+memory maintenance 会清理不存在 session 的 marker。

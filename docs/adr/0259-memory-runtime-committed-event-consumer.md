@@ -26,7 +26,7 @@
 3. `memory_trigger` 是调度事实，不代表新 transcript 内容。正常 turn 的最终 transcript/event boundary 必须先提交，再提交对应 trigger；可在 pause boundary 的 SessionStore 写批次中一并追加 trigger，保证 marker 自身 durable。Consumer 不根据普通 `transcript` 行、session UI 状态或 `usage_recorded` 推测 turn 已结束。终止 `Completed`/`Error`/`Cancelled` 路径不额外合成 bypass；保持当前 `on_pause` 触发边界。`compact_summary` 的 episode 写入/抽取保持现有独立流程，直到后续阶段引入 durable episode job。
 4. 新增独立进度 key `memory_event_cursor.{session_id}`，值为最后成功处理的 session event sequence。它只用于事件回放/去重，不能复用 `fact_extraction.{session_id}`（用户 message ID）、`SessionCursor.event_cursor`、`event_sequence` 或 `last_msg_at`。Rust/DB key 仍采用 `domain.key`，清理 session、清空历史和 orphan cleanup 必须同步清理该 key。
 5. 对每个 session 严格按递增 sequence 处理。回放与 live 重叠、重复广播或重启重放时，`sequence <= memory_event_cursor` 直接跳过；收到大于 `cursor + 1` 的事件时，先从 durable store 补读缺口。仅 `memory_trigger` 入队：先将现有 `fact_extraction_pending.{session_id}` 写入 durable outbox，再推进 `memory_event_cursor`。无关事件仅推进 event cursor。`memory_trigger` 事件 cursor 与 message cursor 是两个独立时钟。
-6. 处理 `memory_trigger` 时只写既有 pending outbox，再唤醒 worker。outbox 仍是一 session 一个 job，`false` 可被同 session 的 `true` 升级且不可降级；成功完成后才确认。确认必须避免较早的普通 job 清掉并发到达的 bypass 升级（可按已处理值/代次条件清除）。event cursor 写失败会导致安全重放，重复 enqueue 由 outbox coalescing 和事实抽取 message cursor 幂等吸收。MemoryRuntime 的 event cursor 不是 job 成功凭据，pending outbox 才是未完成事实。
+6. 处理 `memory_trigger` 时只写既有 pending outbox，再唤醒 worker。outbox 仍是一 session 一个 job，marker generation 使用触发 event sequence；较新的 trigger 替换较旧 generation，`false` 可被同 session 的 `true` 升级且不可降级；成功完成后只确认 worker 实际读取的 generation 和 bypass 值。这样同值新 trigger 也不能被旧 job 清除。若 marker 仍在，重复 enqueue 同一 sequence 合并为同一 generation；若 marker 已确认但 event cursor 尚未 checkpoint，event replay 会重新创建该 generation 的 marker，抽取 message cursor 会让 worker 安全完成空窗口并再次确认。MemoryRuntime 的 event cursor 不是 job 成功凭据，pending outbox 才是未完成事实。
 7. `SessionStore` live broadcast 只负责低延迟唤醒，不是 durable 队列。启动先订阅，再恢复 durable pending outbox 和 session event checkpoints；随后按 `memory_event_cursor` 重放，完成恢复后才开放 dispatcher 的 pending-session recovery/接受新 turn。live 和 replay 通过 sequence 合并；`Lagged`、连接关闭或读取失败时不得快进 cursor，应重放后再继续。回放需分页并限制一次在内存中的事件/任务数量；现有 `subscribe_from` 返回全量 replay，Phase 7.1 应提供 bounded replay API 或等效的有界读取，不把长时间离线 session 的全量历史一次载入内存。
 8. 新部署对尚无 `memory_event_cursor` 的既存 session 采用一次性 cutover baseline：以当前 `latest_sequence` 初始化，不全量重放旧 transcript；已存在的 `fact_extraction_pending` 仍按 ADR 0107 恢复。新 session 的初始 cursor 必须为 0 并在首个 durable event 前或同一事务内落库。此选择避免升级时对所有历史会话意外触发 LLM 回填；它无法修复旧版在 cutover 前“transcript 已提交但 outbox 尚未写入”的历史 crash window，该限制须保留为迁移风险，不能声称已补偿。
 9. rollback marker、`branch_point`、`usage_recorded`、`usage_discarded`、`recovery_persistence`、interaction 事件及其他控制事件不触发事实抽取，但仍参与 sequence 前进和缺口重放。重放输入以当前物化的 messages/steps 为准，不从 event payload 重建事实窗口；因此 rollback 后不会把已截断投影重新喂给 worker。已经持久化的事实不由本 ADR 撤销，事实来源回滚/撤销属于单独数据语义决策。
@@ -59,7 +59,7 @@ Phase 7.1 的代码写集限于：`crates/memory/src/repositories/session_events
 - 不改数据库 schema/version，不批量迁移或删除用户数据；不改变现有 `fact_extraction_pending` 编码/合并契约、事实准入策略、消息 cursor 语义、节流间隔或失败后的重试节奏。
 - 不把 event sequence、message ID cursor、projection `event_cursor`、`last_msg_at` 合并；不按 transcript 文本做去重。
 - 不在 `SessionStore`/`haven-memory` 放入 LLM、事实抽取规则、prompt、Agent/ReAct 类型；不让 MemoryRuntime 读取 event payload 来重建 canonical transcript。
-- Phase 7.1 不迁移 summary episode job，不改 summary cursor/最多 8 次重试，不改 MemoryService/MemoryReader recall、MemoryRecallPort、embedding/index identity、PromptBuilder MEMORY fence 或工具输出。
+- fact marker 的 event-sequence generation 是本 ADR 的补充实现决策；保留旧 `0`/`1` 值读取，不改 schema/version。除此之外 Phase 7.1 不改抽取准入、message cursor、节流间隔或失败重试节奏；summary episode job、summary cursor/最多 8 次重试、MemoryService/MemoryReader recall、MemoryRecallPort、embedding/index identity、PromptBuilder MEMORY fence 与工具输出均不在本切片内。
 - 不动 ActionService、Job/action schema 与 UI projection；不将 messaging 合并进 Job；不改 IPC、前端或 unrelated Database 端口。
 
 ## 待实现决策 / 风险
@@ -91,4 +91,8 @@ cargo test --workspace --locked
 cargo clippy --workspace --locked -- -D warnings
 ```
 
-本 ADR 本身不实现任何行为、不改 schema，也不要求数据重置。若后续实现需要改写历史数据、扩大到 summary outbox 或改变 recall/rollback 语义，先更新决策文档再动代码。
+### 2026-10-05 实现复核补充：fact marker generation
+
+原始 bool-only marker 有一个可复现的确认竞态：worker 读入某代任务并在模型请求中等待时，Runtime 可为同一 session 的新 `memory_trigger` 写入相同 bool 值并推进 `memory_event_cursor`；旧 worker 只按 bool 删除 marker 后，若进程退出，新 trigger 已无法由 event replay 恢复。实现将 marker 值扩展为 `<event_sequence>:<bypass>`，ack 使用读取到的这两个字段做条件删除。旧 `0`/`1` 值按 generation 0 读取；新 enqueue 保留 bypass 单调升级并取 event sequence 的较大值。只要 marker 仍在，对同一事件的 replay 会合并到同一 generation；marker 已 ack 但 event cursor 尚未 checkpoint 时，replay 可以重新创建该 marker，message cursor 会让重放任务安全完成空窗口并再次 ack。该变化只影响内部 `kv_store` 值，不改变 schema/version；回滚到只识别 `0`/`1` 的旧二进制前需按开发数据库重置流程处理，见 ADR 0107。
+
+本补充不代替 §10 既有的容量要求。当前 `MemoryWorker` 内存队列与 pending marker restore 仍需后续独立切片实现有界队列和分页恢复；完成 generation/CAS 切片后重新经过 roadmap 步骤 0 准入。

@@ -173,7 +173,7 @@ async fn memory_fact_outbox_latency_depth_and_throughput_profile() {
         .expect("warmup session")
         .id;
     store
-        .enqueue_fact_extraction_cancellable(&warmup_id, false, &cancellation)
+        .enqueue_fact_extraction_cancellable(&warmup_id, false, 1, &cancellation)
         .await
         .unwrap();
     store
@@ -181,7 +181,7 @@ async fn memory_fact_outbox_latency_depth_and_throughput_profile() {
         .await
         .unwrap();
     store
-        .clear_pending_fact_extraction_if_not_upgraded_cancellable(&warmup_id, false, &cancellation)
+        .clear_pending_fact_extraction_if_current_cancellable(&warmup_id, 1, false, &cancellation)
         .await
         .unwrap();
 
@@ -198,7 +198,7 @@ async fn memory_fact_outbox_latency_depth_and_throughput_profile() {
     for session_id in &session_ids {
         let started = Instant::now();
         store
-            .enqueue_fact_extraction_cancellable(session_id, false, &cancellation)
+            .enqueue_fact_extraction_cancellable(session_id, false, 1, &cancellation)
             .await
             .unwrap();
         oldest_enqueued.get_or_insert_with(Instant::now);
@@ -229,8 +229,9 @@ async fn memory_fact_outbox_latency_depth_and_throughput_profile() {
     for session_id in &session_ids {
         let started = Instant::now();
         store
-            .clear_pending_fact_extraction_if_not_upgraded_cancellable(
+            .clear_pending_fact_extraction_if_current_cancellable(
                 session_id,
+                1,
                 false,
                 &cancellation,
             )

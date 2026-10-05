@@ -46,6 +46,19 @@ use haven_memory::repositories::facts::Fact;
 const OUTBOX_RETRY_MAX_SECS: u64 = 30;
 const PERSIST_CONFIDENCE_FLOOR: f64 = 0.55;
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct FactExtractionJob {
+    event_sequence: i64,
+    bypass_throttle: bool,
+}
+
+impl FactExtractionJob {
+    fn merge(&mut self, newer: Self) {
+        self.event_sequence = self.event_sequence.max(newer.event_sequence);
+        self.bypass_throttle |= newer.bypass_throttle;
+    }
+}
+
 /// Background memory worker: fact extraction, maintenance, outbox draining,
 /// and embedding catch-up. Prompt assembly does not depend on this type.
 pub struct MemoryWorker {
@@ -70,11 +83,10 @@ pub struct MemoryWorker {
     /// the SmallModel endpoint when multiple sessions complete in rapid
     /// succession.
     inference_semaphore: Arc<Semaphore>,
-    /// Pending extraction jobs keyed by session_id. Value is
-    /// `bypass_throttle`; coalesce with OR so pause-path never loses to an
-    /// earlier interval enqueue (L3 / P1-7). The same marker is mirrored in
-    /// `kv_store` so a process crash cannot silently discard the queue.
-    outbox: Mutex<HashMap<String, bool>>,
+    /// Pending extraction jobs keyed by session_id. Coalesce the latest event
+    /// generation and OR the bypass flag so an older in-flight job cannot
+    /// acknowledge a newer committed trigger.
+    outbox: Mutex<HashMap<String, FactExtractionJob>>,
     /// Pending compaction-summary extraction jobs keyed by episode id. Each
     /// marker is durable in `kv_store`; this map is only the live wake-up
     /// projection.
@@ -286,17 +298,29 @@ impl MemoryWorker {
         self: &Arc<Self>,
         session_id: &str,
         bypass_throttle: bool,
+        event_sequence: i64,
         cancellation: &CancellationToken,
     ) -> anyhow::Result<()> {
         anyhow::ensure!(!session_id.trim().is_empty(), "session id is required");
         self.memory_store
-            .enqueue_fact_extraction_cancellable(session_id, bypass_throttle, cancellation)
+            .enqueue_fact_extraction_cancellable(
+                session_id,
+                bypass_throttle,
+                event_sequence,
+                cancellation,
+            )
             .await?;
         anyhow::ensure!(
             !cancellation.is_cancelled(),
             "fact extraction enqueue cancelled after durable write"
         );
-        self.enqueue_memory(session_id.to_owned(), bypass_throttle);
+        self.enqueue_memory(
+            session_id.to_owned(),
+            FactExtractionJob {
+                event_sequence,
+                bypass_throttle,
+            },
+        );
         Ok(())
     }
 
@@ -324,12 +348,18 @@ impl MemoryWorker {
             "fact extraction outbox restore cancelled"
         );
         let restored_count = pending.len() + pending_summaries.len();
-        for (session_id, bypass_throttle) in pending {
+        for (session_id, bypass_throttle, event_sequence) in pending {
             anyhow::ensure!(
                 !cancellation.is_cancelled() && !self.shutdown_token.is_cancelled(),
                 "fact extraction outbox restore cancelled"
             );
-            self.enqueue_memory(session_id, bypass_throttle);
+            self.enqueue_memory(
+                session_id,
+                FactExtractionJob {
+                    event_sequence,
+                    bypass_throttle,
+                },
+            );
         }
         for (session_id, episode_id) in pending_summaries {
             anyhow::ensure!(
@@ -377,8 +407,12 @@ impl MemoryWorker {
     }
 
     #[cfg(test)]
-    pub(crate) fn pending_outbox_value_for_test(&self, session_id: &str) -> Option<bool> {
-        self.outbox.lock().ok()?.get(session_id).copied()
+    pub(crate) fn pending_outbox_value_for_test(&self, session_id: &str) -> Option<(i64, bool)> {
+        self.outbox
+            .lock()
+            .ok()?
+            .get(session_id)
+            .map(|job| (job.event_sequence, job.bypass_throttle))
     }
 
     #[cfg(test)]
@@ -386,10 +420,12 @@ impl MemoryWorker {
         self.summary_outbox.lock().ok()?.get(episode_id).cloned()
     }
 
-    fn enqueue_memory(self: &Arc<Self>, session_id: String, bypass_throttle: bool) {
+    fn enqueue_memory(self: &Arc<Self>, session_id: String, job: FactExtractionJob) {
         if let Ok(mut pending) = self.outbox.lock() {
-            let entry = pending.entry(session_id).or_insert(false);
-            *entry = *entry || bypass_throttle;
+            pending
+                .entry(session_id)
+                .and_modify(|existing| existing.merge(job))
+                .or_insert(job);
         }
         self.ensure_outbox_worker();
         self.outbox_notify.notify_one();
@@ -435,9 +471,19 @@ impl MemoryWorker {
             {
                 Ok(restored) => {
                     if let Ok(mut pending) = engine.outbox.lock() {
-                        for (session_id, bypass) in restored {
-                            let entry = pending.entry(session_id).or_insert(false);
-                            *entry = *entry || bypass;
+                        for (session_id, bypass_throttle, event_sequence) in restored {
+                            pending
+                                .entry(session_id)
+                                .and_modify(|existing| {
+                                    existing.merge(FactExtractionJob {
+                                        event_sequence,
+                                        bypass_throttle,
+                                    })
+                                })
+                                .or_insert(FactExtractionJob {
+                                    event_sequence,
+                                    bypass_throttle,
+                                });
                         }
                     }
                 }
@@ -476,7 +522,7 @@ impl MemoryWorker {
                 if cancellation.is_cancelled() {
                     return;
                 }
-                let batch: Vec<(String, bool)> = {
+                let batch: Vec<(String, FactExtractionJob)> = {
                     let mut pending = engine.outbox.lock().unwrap_or_else(|e| e.into_inner());
                     if pending.is_empty() {
                         Vec::new()
@@ -502,7 +548,7 @@ impl MemoryWorker {
                     }
                     continue;
                 }
-                for (session_id, bypass) in batch {
+                for (session_id, job) in batch {
                     if cancellation.is_cancelled() {
                         return;
                     }
@@ -510,7 +556,7 @@ impl MemoryWorker {
                         biased;
                         _ = cancellation.cancelled() => return,
                         completed = async {
-                            if bypass {
+                            if job.bypass_throttle {
                                 engine.infer_session_on_pause(&session_id).await
                             } else {
                                 engine.infer_session(&session_id).await
@@ -523,14 +569,15 @@ impl MemoryWorker {
                     if completed {
                         match engine
                             .memory_store
-                            .clear_pending_fact_extraction_if_not_upgraded_cancellable(
+                            .clear_pending_fact_extraction_if_current_cancellable(
                                 &session_id,
-                                bypass,
+                                job.event_sequence,
+                                job.bypass_throttle,
                                 &cancellation,
                             )
                             .await
                         {
-                            Ok(()) => {
+                            Ok(_) => {
                                 fact_retry_attempts.remove(&session_id);
                             }
                             Err(error) => {
@@ -547,7 +594,7 @@ impl MemoryWorker {
                                     error,
                                     wait_secs
                                 );
-                                engine.enqueue_memory(session_id, bypass);
+                                engine.enqueue_memory(session_id, job);
                                 if !wait_for_outbox_retry(&cancellation, wait_secs).await {
                                     return;
                                 }
@@ -563,7 +610,7 @@ impl MemoryWorker {
                             wait_secs,
                             "fact extraction deferred; durable marker retained"
                         );
-                        engine.enqueue_memory(session_id, bypass);
+                        engine.enqueue_memory(session_id, job);
                         if !wait_for_outbox_retry(&cancellation, wait_secs).await {
                             return;
                         }
@@ -1351,8 +1398,10 @@ mod tests {
     };
     use haven_memory::repositories::messages::Message;
     use haven_memory::repositories::session_steps::SessionStep;
+    use std::collections::VecDeque;
     use std::pin::Pin;
     use std::sync::atomic::AtomicUsize;
+    use tokio::sync::{mpsc, oneshot};
 
     struct FixedMemoryInference {
         fast_chat_configured: bool,
@@ -1393,6 +1442,40 @@ mod tests {
         ) -> anyhow::Result<String> {
             self.started.notify_one();
             std::future::pending().await
+        }
+    }
+
+    struct GatedMemoryInference {
+        started: mpsc::UnboundedSender<usize>,
+        releases: Mutex<VecDeque<oneshot::Receiver<()>>>,
+        calls: AtomicUsize,
+    }
+
+    #[async_trait]
+    impl MemoryInferencePort for GatedMemoryInference {
+        async fn is_fast_chat_configured(&self) -> bool {
+            true
+        }
+
+        async fn fast_chat(
+            &self,
+            _system_prompt: &str,
+            _user_prompt: &str,
+        ) -> anyhow::Result<String> {
+            let call = self.calls.fetch_add(1, Ordering::Relaxed) + 1;
+            self.started.send(call).map_err(|error| {
+                anyhow::anyhow!("test inference start receiver closed: {error}")
+            })?;
+            let release = self
+                .releases
+                .lock()
+                .unwrap()
+                .pop_front()
+                .expect("each gated inference call has a release receiver");
+            release.await.map_err(|error| {
+                anyhow::anyhow!("test inference release sender closed: {error}")
+            })?;
+            Ok("[]".to_owned())
         }
     }
 
@@ -2498,7 +2581,7 @@ mod tests {
     async fn restored_fact_and_summary_jobs_acknowledge_successful_durable_markers() {
         let db = temp_db();
         let session = db.create_session("outbox acknowledgements").unwrap();
-        db.enqueue_fact_extraction(&session.id, false).unwrap();
+        db.enqueue_fact_extraction(&session.id, false, 1).unwrap();
         db.add_episode_with_pending_extraction(
             &session.id,
             "A durable summary with enough text for the extraction path.",
@@ -2548,7 +2631,7 @@ mod tests {
     async fn failed_fact_marker_ack_keeps_marker_and_requeues_live_job() {
         let db = temp_db();
         let session = db.create_session("outbox fact retry").unwrap();
-        db.enqueue_fact_extraction(&session.id, false).unwrap();
+        db.enqueue_fact_extraction(&session.id, false, 1).unwrap();
         db.conn()
             .execute_batch(
                 "CREATE TABLE marker_ack_attempts (kind TEXT NOT NULL);
@@ -2577,7 +2660,8 @@ mod tests {
                         |row| row.get(0),
                     )
                     .unwrap();
-                if attempts > 0 && worker.pending_outbox_value_for_test(&session.id) == Some(false)
+                if attempts > 0
+                    && worker.pending_outbox_value_for_test(&session.id) == Some((1, false))
                 {
                     break;
                 }
@@ -2589,8 +2673,106 @@ mod tests {
 
         assert_eq!(
             db.pending_fact_extractions().unwrap(),
-            vec![(session.id.clone(), false)]
+            vec![(session.id.clone(), false, 1)]
         );
+        worker.shutdown();
+    }
+
+    #[tokio::test]
+    async fn newer_same_bypass_trigger_survives_an_in_flight_fact_ack() {
+        let db = temp_db();
+        let session = db.create_session("outbox generation race").unwrap();
+        let first_message = db
+            .add_message(&session.id, "user", "I prefer Rust.", Some("text"), None)
+            .unwrap();
+        let (started_tx, mut started_rx) = mpsc::unbounded_channel();
+        let (release_first_tx, release_first_rx) = oneshot::channel();
+        let (release_second_tx, release_second_rx) = oneshot::channel();
+        let inference = Arc::new(GatedMemoryInference {
+            started: started_tx,
+            releases: Mutex::new(VecDeque::from(vec![release_first_rx, release_second_rx])),
+            calls: AtomicUsize::new(0),
+        });
+        let memory = Arc::new(MemoryService::new(db.clone(), None, 64));
+        let worker = Arc::new(MemoryWorker::new_with_inference(
+            memory.clone(),
+            memory.memory_fact_store(),
+            inference.clone(),
+            4_000,
+            64,
+            256,
+            0,
+        ));
+
+        worker
+            .enqueue_infer_durable(&session.id, true, 1, &CancellationToken::new())
+            .await
+            .unwrap();
+        assert_eq!(
+            tokio::time::timeout(std::time::Duration::from_secs(2), started_rx.recv())
+                .await
+                .expect("first extraction should enter model inference"),
+            Some(1)
+        );
+
+        let second_message = db
+            .add_message(
+                &session.id,
+                "user",
+                "I also use Windows.",
+                Some("text"),
+                None,
+            )
+            .unwrap();
+        worker
+            .enqueue_infer_durable(&session.id, true, 2, &CancellationToken::new())
+            .await
+            .unwrap();
+
+        release_first_tx
+            .send(())
+            .expect("first extraction should still be waiting");
+        assert_eq!(
+            tokio::time::timeout(std::time::Duration::from_secs(2), started_rx.recv())
+                .await
+                .expect("second extraction should run after the first ack"),
+            Some(2)
+        );
+        assert_eq!(
+            db.pending_fact_extractions().unwrap(),
+            vec![(session.id.clone(), true, 2)],
+            "the old in-flight generation must not clear the newer same-bypass marker"
+        );
+        assert_eq!(
+            db.get_kv(&format!("fact_extraction.{}", session.id))
+                .unwrap()
+                .as_deref(),
+            Some(first_message.id.as_str()),
+            "the first inference commits only the transcript window it read before waiting"
+        );
+
+        release_second_tx
+            .send(())
+            .expect("second extraction should still be waiting");
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                if db.pending_fact_extractions().unwrap().is_empty()
+                    && worker.pending_outbox_value_for_test(&session.id).is_none()
+                {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the newer generation should be acknowledged after its own extraction");
+        assert_eq!(
+            db.get_kv(&format!("fact_extraction.{}", session.id))
+                .unwrap()
+                .as_deref(),
+            Some(second_message.id.as_str())
+        );
+        assert_eq!(inference.calls.load(Ordering::Relaxed), 2);
         worker.shutdown();
     }
 
@@ -2680,7 +2862,7 @@ mod tests {
         let session = db.create_session("outbox cancellation").unwrap();
         db.add_message(&session.id, "user", "I prefer Rust.", Some("text"), None)
             .unwrap();
-        db.enqueue_fact_extraction(&session.id, true).unwrap();
+        db.enqueue_fact_extraction(&session.id, true, 1).unwrap();
         let inference = Arc::new(BlockingMemoryInference {
             started: Notify::new(),
         });
@@ -2710,7 +2892,7 @@ mod tests {
 
         assert_eq!(
             db.pending_fact_extractions().unwrap(),
-            vec![(session.id.clone(), true)]
+            vec![(session.id.clone(), true, 1)]
         );
         assert_eq!(
             db.get_kv(&format!("fact_extraction.{}", session.id))
@@ -3264,24 +3446,36 @@ mod tests {
         engine.suspend_outbox_worker_for_test();
         let cancellation = CancellationToken::new();
         engine
-            .enqueue_infer_durable(&first.id, false, &cancellation)
+            .enqueue_infer_durable(&first.id, false, 1, &cancellation)
             .await
             .unwrap();
         engine
-            .enqueue_infer_durable(&first.id, true, &cancellation)
+            .enqueue_infer_durable(&first.id, true, 2, &cancellation)
             .await
             .unwrap();
         engine
-            .enqueue_infer_durable(&second.id, false, &cancellation)
+            .enqueue_infer_durable(&second.id, false, 1, &cancellation)
             .await
             .unwrap();
         let pending = engine.outbox.lock().unwrap();
-        assert_eq!(pending.get(&first.id), Some(&true));
-        assert_eq!(pending.get(&second.id), Some(&false));
+        assert_eq!(
+            pending.get(&first.id),
+            Some(&FactExtractionJob {
+                event_sequence: 2,
+                bypass_throttle: true,
+            })
+        );
+        assert_eq!(
+            pending.get(&second.id),
+            Some(&FactExtractionJob {
+                event_sequence: 1,
+                bypass_throttle: false,
+            })
+        );
         assert_eq!(pending.len(), 2);
         let durable = db.pending_fact_extractions().unwrap();
-        assert!(durable.contains(&(first.id, true)));
-        assert!(durable.contains(&(second.id, false)));
+        assert!(durable.contains(&(first.id, true, 2)));
+        assert!(durable.contains(&(second.id, false, 1)));
     }
 
     #[tokio::test]
@@ -3294,7 +3488,7 @@ mod tests {
         engine.suspend_outbox_worker_for_test();
 
         engine
-            .enqueue_infer_durable(&session.id, true, &CancellationToken::new())
+            .enqueue_infer_durable(&session.id, true, 1, &CancellationToken::new())
             .await
             .unwrap();
 
@@ -3302,8 +3496,13 @@ mod tests {
             .run_blocking(|db| db.pending_fact_extractions())
             .await
             .unwrap();
-        let in_memory = engine.outbox.lock().unwrap().get(&session.id).copied();
-        assert!(pending.contains(&(session.id.clone(), true)));
-        assert_eq!(in_memory, Some(true));
+        let in_memory = engine
+            .outbox
+            .lock()
+            .unwrap()
+            .get(&session.id)
+            .map(|job| (job.event_sequence, job.bypass_throttle));
+        assert!(pending.contains(&(session.id.clone(), true, 1)));
+        assert_eq!(in_memory, Some((1, true)));
     }
 }

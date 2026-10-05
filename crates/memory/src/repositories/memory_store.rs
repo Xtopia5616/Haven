@@ -51,12 +51,13 @@ impl MemoryStore {
         &self,
         session_id: &str,
         bypass_throttle: bool,
+        event_sequence: i64,
         cancellation: &CancellationToken,
     ) -> anyhow::Result<()> {
         let session_id = session_id.to_owned();
         self.db
             .run_blocking_cancellable(cancellation.clone(), move |db| {
-                db.enqueue_fact_extraction(&session_id, bypass_throttle)
+                db.enqueue_fact_extraction(&session_id, bypass_throttle, event_sequence)
             })
             .await
     }
@@ -65,7 +66,7 @@ impl MemoryStore {
     pub async fn pending_fact_extractions_cancellable(
         &self,
         cancellation: &CancellationToken,
-    ) -> anyhow::Result<Vec<(String, bool)>> {
+    ) -> anyhow::Result<Vec<(String, bool, i64)>> {
         self.db
             .run_blocking_cancellable(cancellation.clone(), |db| db.pending_fact_extractions())
             .await
@@ -81,18 +82,23 @@ impl MemoryStore {
             .await
     }
 
-    /// Acknowledge a completed fact job without erasing a concurrent bypass
-    /// upgrade. Ordinary jobs clear only ordinary markers.
-    pub async fn clear_pending_fact_extraction_if_not_upgraded_cancellable(
+    /// Acknowledge only the fact marker generation captured by the job. A
+    /// newer committed event remains pending even if its bypass flag matches.
+    pub async fn clear_pending_fact_extraction_if_current_cancellable(
         &self,
         session_id: &str,
-        processed_bypass: bool,
+        event_sequence: i64,
+        bypass_throttle: bool,
         cancellation: &CancellationToken,
-    ) -> anyhow::Result<()> {
+    ) -> anyhow::Result<bool> {
         let session_id = session_id.to_owned();
         self.db
             .run_blocking_cancellable(cancellation.clone(), move |db| {
-                db.clear_pending_fact_extraction_if_not_upgraded(&session_id, processed_bypass)
+                db.clear_pending_fact_extraction_if_current(
+                    &session_id,
+                    event_sequence,
+                    bypass_throttle,
+                )
             })
             .await
     }
@@ -217,18 +223,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn fact_outbox_ports_preserve_enqueue_upgrade_and_conditional_ack() {
+    async fn fact_outbox_ports_preserve_generation_and_conditional_ack() {
         let db = Arc::new(Database::open_in_memory().unwrap());
         let session = db.create_session("memory store fact outbox").unwrap();
         let store = MemoryStore::new(db.clone());
         let cancellation = CancellationToken::new();
 
         store
-            .enqueue_fact_extraction_cancellable(&session.id, false, &cancellation)
+            .enqueue_fact_extraction_cancellable(&session.id, false, 1, &cancellation)
             .await
             .unwrap();
         store
-            .enqueue_fact_extraction_cancellable(&session.id, true, &cancellation)
+            .enqueue_fact_extraction_cancellable(&session.id, true, 2, &cancellation)
             .await
             .unwrap();
         assert_eq!(
@@ -236,12 +242,13 @@ mod tests {
                 .pending_fact_extractions_cancellable(&cancellation)
                 .await
                 .unwrap(),
-            vec![(session.id.clone(), true)]
+            vec![(session.id.clone(), true, 2)]
         );
 
         store
-            .clear_pending_fact_extraction_if_not_upgraded_cancellable(
+            .clear_pending_fact_extraction_if_current_cancellable(
                 &session.id,
+                1,
                 false,
                 &cancellation,
             )
@@ -252,11 +259,12 @@ mod tests {
                 .pending_fact_extractions_cancellable(&cancellation)
                 .await
                 .unwrap(),
-            vec![(session.id.clone(), true)]
+            vec![(session.id.clone(), true, 2)]
         );
         store
-            .clear_pending_fact_extraction_if_not_upgraded_cancellable(
+            .clear_pending_fact_extraction_if_current_cancellable(
                 &session.id,
+                2,
                 true,
                 &cancellation,
             )
@@ -271,13 +279,13 @@ mod tests {
         );
 
         let error = store
-            .clear_pending_fact_extraction_if_not_upgraded_cancellable("  ", false, &cancellation)
+            .clear_pending_fact_extraction_if_current_cancellable("  ", 0, false, &cancellation)
             .await
             .unwrap_err();
         assert_eq!(error.to_string(), "session id is required");
 
         let error = store
-            .enqueue_fact_extraction_cancellable("  ", false, &cancellation)
+            .enqueue_fact_extraction_cancellable("  ", false, 1, &cancellation)
             .await
             .unwrap_err();
         assert_eq!(error.to_string(), "session id is required");
@@ -290,7 +298,7 @@ mod tests {
         let store = MemoryStore::new(db.clone());
         let cancellation = CancellationToken::new();
         let episode_id = new_id("msg");
-        db.enqueue_fact_extraction(&session.id, true).unwrap();
+        db.enqueue_fact_extraction(&session.id, true, 3).unwrap();
         db.add_episode_with_pending_extraction(
             &session.id,
             "A durable compaction summary with a pending extraction marker.",
@@ -304,7 +312,7 @@ mod tests {
                 .pending_fact_extractions_cancellable(&cancellation)
                 .await
                 .unwrap(),
-            vec![(session.id.clone(), true)]
+            vec![(session.id.clone(), true, 3)]
         );
         assert_eq!(
             store
@@ -404,7 +412,7 @@ mod tests {
         ));
         let db = Arc::new(Database::open(&path).unwrap());
         let session = db.create_session("memory store cancellation").unwrap();
-        db.enqueue_fact_extraction(&session.id, false).unwrap();
+        db.enqueue_fact_extraction(&session.id, false, 1).unwrap();
         let store = MemoryStore::new(db.clone());
         let cancellation = CancellationToken::new();
 
@@ -416,8 +424,9 @@ mod tests {
             let cancellation = cancellation.clone();
             async move {
                 store
-                    .clear_pending_fact_extraction_if_not_upgraded_cancellable(
+                    .clear_pending_fact_extraction_if_current_cancellable(
                         &session_id,
+                        1,
                         false,
                         &cancellation,
                     )
@@ -436,7 +445,7 @@ mod tests {
 
         assert_eq!(
             db.pending_fact_extractions().unwrap(),
-            vec![(session.id, false)]
+            vec![(session.id, false, 1)]
         );
         drop(store);
         drop(db);
