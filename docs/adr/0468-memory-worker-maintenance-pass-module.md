@@ -2,7 +2,7 @@
 
 ## 状态
 
-已完成（2026-10-05；同日补正构造器依赖边界）。
+已完成（2026-10-05；同日补正构造器依赖边界）。Outbox 内部状态归属由后续 [ADR 0518](0518-memory-worker-outbox-owner.md) 修订；本 ADR 的 maintenance pass 边界不变。
 
 ## 背景
 
