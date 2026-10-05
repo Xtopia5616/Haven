@@ -1,6 +1,6 @@
 # Haven 架构降复杂度重构路线图
 
-> 状态：阶段 0–8 已完成；SessionUsage 累计上限契约、session-scoped KV 孤儿清理 owner、summary marker 单一原子生产路径、Tools 测试归属、Input→Tools 测试反向依赖、MCP/Skill 直调授权策略来源、MCP 管理操作网络策略来源、X12 例外消息写入口、ADR 编号索引完整性、actorless session action lifecycle 清理（ADR 0507）、Ask reducer state ownership 收口（ADR 0508）、终态 Ask 清理事件归属（ADR 0509）、ReAct phase 来源 session 身份（ADR 0510）与 Windows 子进程先入 Job 再恢复（ADR 0513）已完成；当前无 Active 结构切片；Windows 发布验收为独立开放签核门
+> 状态：阶段 0–8 已完成；SessionUsage 累计上限契约、session-scoped KV 孤儿清理 owner、summary marker 单一原子生产路径、Tools 测试归属、Input→Tools 测试反向依赖、MCP/Skill 直调授权策略来源、MCP 管理操作网络策略来源、X12 例外消息写入口、ADR 编号索引完整性、actorless session action lifecycle 清理（ADR 0507）、Ask reducer state ownership 收口（ADR 0508）、终态 Ask 清理事件归属（ADR 0509）、ReAct phase 来源 session 身份（ADR 0510）、Windows 子进程先入 Job 再恢复（ADR 0513）与显式 end 失败重试契约（ADR 0514）已完成；Skills venv 子进程 containment 是条件式 Next；Windows 发布验收为独立开放签核门
 > 更新日期：2026-10-05
 > 范围：Agent/Session、Memory、Tools、LLM、App IPC 与 UI
 
@@ -74,9 +74,8 @@
 
 | 状态 | 当前项 |
 |---|---|
-| **Next** | 暂无可安全直接实施的结构切片；先按 §5.5 复核新证据。显式 end 取消失败问题仍需确定可见契约，见 Deferred。 |
-| **Active** | 无。 |
-| **Deferred** | 显式 end 的 action 持久取消失败语义；当前不统一改为 checked 或 best-effort，等待完整失败契约与协调方案。 |
+| **Next（条件式）** | Skills 虚拟环境准备进程的 Windows containment：`haven-skills::VenvManager::ensure` 的 `python -m venv` 与 `python -m pip install -r` 仍直接启动，未走 ADR 0513 的 suspended-create/assign/resume；由 `ensure` 拥有窄切片，先确定 `haven-skills → haven-platform` 单向能力边界，再保留输出诊断、成功后 fingerprint、失败重试和取消清理。触发证据、退出条件与受限范围见 ADR 0513 源码审计；若需要平台接管 Tokio child 生命周期或无法维持重试语义，关闭候选并重选。 |
+| **Deferred** | 当前无其他结构候选。 |
 | **Gate** | Windows 发布验收 Open，见 §5.1。 |
 
 ### 5.1 Windows 发布验收（Gate / Open）
@@ -101,16 +100,15 @@
 
 本节只保留未解决项与已复核候选的重开条件；已完成切片的背景、决定和验证以对应 ADR 为准。私有模块整理与 crate 拆分都必须通过 §5.5 准入，不以文件或 crate 体量为目标。
 
-#### Deferred 与已知限制
+#### 已复核候选与已知限制
 
 | 状态 | 问题与当前证据 | 重开条件与边界 |
 |---|---|---|
-| **Deferred** | 显式 end 的 action 取消失败语义：actorless 路径使用 checked cleanup，驻留 Actor 路径使用 best-effort；ActionService 故障注入证明持久取消可能失败。[ADR 0507](adr/0507-session-owned-action-cleanup.md) 规定删除 fail-closed，但没有定义 end 的失败契约。 | 先确定命令/UI/action 的可见结果，再补 actorless、驻留/运行中 Actor、部分取消、持久化失败与 claim 竞争测试；不能只把 Actor 分支改为 checked。若安全协调方案会破坏即时结束或 [ADR 0424](adr/0424-interaction-lifecycle-ownership.md) 的 claim-wins，则继续 Deferred。 |
 | **高风险 Candidate，暂缓** | `session_events.rs` 同时协调 event append、transcript projection、rollback、cache invalidation 与 commit 后 broadcast。2026-10-05 复核为 6,078 行（3,075 production / 3,003 tests），近 45 天 66 次提交；主要是同一 owner 收口和 durable facts 演进，未发现稳定后事务不变量重复回归。 | 仅在事务核心与无关 façade 反复耦合修改、相同原子性/rollback 缺陷重复修复，或测试无法按真实职责隔离且能证明收益时重开。event append、projection、rollback、cache invalidation 和 post-commit broadcast 继续由单一 SessionStore 协调，不暴露事务内部或引入第二恢复来源（[ADR 0466](adr/0466-session-history-read-facade-module.md)、[ADR 0479](adr/0479-session-history-test-ownership.md)）。 |
 
-**显式 end 的失败观察（当前实现，不是已接受的目标契约）：** actorless 路径清理失败会返回错误且不推进 session 状态，但多条 action 可能已部分取消；idle/running Actor 路径先发取消信号，随后 best-effort 清理失败只记日志，仍写 `Completed`，Tauri 成功事件因此发出。run-exit 会移除 Actor，但不重试 action 清理；失败的 scheduled action 可能仍保持 Waiting 并保留 timer。claim 已获胜的 action 按 ADR 0424 保持运行，不属于取消错误。命令只在 executor 成功后发 `session:completed`；UI invoke 失败时保留 active pointer 并显示失败。
+**显式 end 的基线观察（实施前）：** actorless 路径清理失败会返回错误且不推进 session 状态，但多条 action 可能已部分取消；idle/running Actor 路径先永久取消 actor lifetime，随后 best-effort 清理失败只记日志，仍写 `Completed`，Tauri 成功事件因此发出。run-exit 会移除 Actor，但不重试 action 清理；失败的 scheduled action 可能仍保持 Waiting 并保留 timer。claim 已获胜的 action 按 ADR 0424 保持运行，不属于取消错误。上述契约与实现已由 [ADR 0514](adr/0514-explicit-session-end-failure-contract.md) 完成并通过联合门禁；background 仍保留 ADR 0507 定义的有限 best-effort 重试。
 
-实现前必须决定：持久取消失败是否令 end 失败并让会话可见、可重试，还是仍完成会话并为残留 action 提供明确的告警/重试路径；同时定义多 action 部分成功的处理。验收矩阵覆盖 actorless、idle/running Actor、单项失败、多项部分失败、重试、claim-wins/cancel-wins，并联合断言数据库状态、Actor/run、Tauri event 和 UI selection。简单地把 Actor 分支改成 checked 不满足该矩阵。
+契约、主要协调决定与验收结果见 ADR 0514；end 的数据库状态、Actor/run、Tauri event 和 UI selection 已联合验证，覆盖 actorless、resident/idle、running/stuck run、单项失败、多项部分失败、重试、claim-wins/cancel-wins、confirmation 与 direct-run admission。此处不再保留 Active 项。
 
 #### 已复核但不进入 Next
 
@@ -143,7 +141,7 @@
 
 每个候选的短 ADR/评估要记录：现有 owner 与不变量、生产代码和测试的职责分布、调用/依赖边界、预期收益及观察方式、破坏面和停止条件、适用门禁、回滚方式。实施顺序固定为：证据确认 → 接受目标与切片 → 迁一条垂直调用链 → 删除旧入口 → 跑影响面门禁 → 对比 owner/依赖/性能指标 → 独立提交并更新状态。若只移动代码、扩大公共 API、暴露事务内部、增加第二权威来源，或验证不能证明维护/运行收益，立即停止并把候选记为“不需拆分/暂缓”。
 
-长期执行按触发信号驱动而不按日历制造工作，优先级为数据/安全/生命周期不变量故障、重复跨 owner 回归或修改耦合、依赖/API 边界问题、最后才是有同负载证据的性能优化；行数和 crate 大小不计为准入分。仓库较大时可并行委派只读审计（例如依赖图、热点职责、事务/安全不变量），但审计结论须由主执行者回到源码与门禁核验，任何时刻只实现一个 Active 切片。审查没有合格候选时，保留“无 Active 切片”状态并等待新证据，再继续同一套复核流程。
+长期执行按触发信号驱动而不按日历制造工作，优先级为数据/安全/生命周期不变量故障、重复跨 owner 回归或修改耦合、依赖/API 边界问题、最后才是有同负载证据的性能优化；行数和 crate 大小不计为准入分。仓库较大时可并行委派只读审计（例如依赖图、热点职责、事务/安全不变量），可由 sub-agent 或用户授权的其他对话承担；委派范围优先只读、交付具体文件/函数与反例，主执行者必须回到源码和门禁独立核验，不把审计结论直接当成实现要求。任何时刻只实现一个 Active 切片；跨对话协作不改变路线图、契约 owner 或提交责任。审查没有合格候选时，保留“无 Active 切片”状态并等待新证据，再继续同一套复核流程。
 
 ### 5.6 长期滚动执行周期（跨迭代周期）
 
@@ -152,15 +150,15 @@
 | 步骤 | 长期工作流 | 进入条件与交付物 | 退出条件 |
 |---|---|---|---|
 | 0 | **证据复核与分流（每轮入口）** | 在切片完成、同类回归出现、依赖/API 变化或准备发布时复核。形成一项候选说明：问题、不变量、owner、源码/历史证据、影响面、停止条件和适用门禁；依 §5.5 选择 Next、Deferred、关闭或无候选。 | 只有一个 Next 或明确无候选；不把体量、单次审计或旧历史快照直接转成 Active。 |
-| 1 | **契约与生命周期收口（按证据推进）** | 先解决会话终态、所属 action、Actor 在场与否等状态不一致所暴露的契约缺口。当前显式 end 取消失败仍 Deferred：先定义命令/UI/event/action 的失败结果，再决定是否需要状态协调、重试或补偿；不得只把 Actor 分支改成 checked，或默认 best-effort 是产品契约。若出现更高优先级且可独立验收的 owner 冲突，可先处理该项并保留本 Deferred。 | Actorless、驻留 Actor、运行中 Actor、Action claim 先后竞争和持久化失败都有一致且可测试的可见结果；若无法在不破坏响应性及 first-wins 的前提下给出安全方案，则维持 Deferred。 |
+| 1 | **契约与生命周期收口（按证据推进）** | 显式 end 失败与重试已由 ADR 0514 完成。下一轮回到步骤 0 复核；条件式预备 Next 是 Skills venv 子进程 containment，需确认窄依赖边和生命周期语义后才能转 Active。 | actorless、驻留 Actor、运行中 Actor、Action claim 先后竞争和持久化失败都有一致且可测试的可见结果；direct run 从 Paused 入场先持久化 Running；rollback/continue 不得在 end closing marker 后改写 durable state；end 对 stuck run 仍响应，ADR 0424 first-wins 不变。 |
 | 2 | **权威来源与跨层不变量** | 检查持久状态、事件、运行态、投影和 UI 是否仍各有单一 owner；只有真实漂移、明确风险对应的失败注入缺口、重复回归或绕过权威入口时才切片。2026-10-05 的 ReAct Fatal 双终态 producer 已收口：dispatcher 专用入口过滤 AgentEvent 重复错误，SessionSupervisor 的 SessionEvent 经共同 TauriEmitter 投影，直接 run API 保留原行为（[ADR 0511](adr/0511-session-terminal-error-single-owner.md)）。后续交付仍是窄范围回归/故障测试、冲突入口删除和不变量文档更新。 | 回归固定不变量且不增加第二真源；跨 crate/跨端变更通过相应完整门禁。 |
 | 3 | **稳定 owner 的职责收口** | owner 稳定后，若同一边界重复回归、跨职责共同修改或测试放错位置持续增加维护成本，迁移一条完整垂直链。交付物优先是私有模块/API 收窄、测试归属调整和旧入口清理，不预先按大文件切片。 | 调用和测试落到真实职责 owner，重复规则或跨边界修改减少，外部契约、依赖方向及运行语义保持不变；收益不能说明则关闭候选。 |
 | 4 | **模块成熟后再评估 crate/API 边界** | 只有模块 owner 已稳定，且存在独立消费者、真实依赖方向问题或可复核构建/迭代成本时才评估 crate 拆分。交付物包括依赖图、API/消费者映射；若声称构建收益，须有同环境基准。 | 提取后依赖单向、API 稳定、消费者不用反向依赖或重复 adapter，并证明维护/构建收益；任一不满足就保留现边界。 |
 | 5 | **性能与容量** | 仅在同负载 profile 复现有用户意义的成本时优化；交付物为固定场景的前后指标，并遵守 SQLite 容量、失败恢复与资源上限契约。Windows 发布验收独立保留在 §5.1，不作为结构重构阶段的退出依赖。 | 优化结果超过噪声且达到目标，否则关闭候选；没有当前测量就不以“降复杂度”为名做性能改动。 |
 
-以上是循环复核的先后顺序，不是一次性瀑布项目：每轮从步骤 0 重新分流，完成一个切片、同类问题复现或准备发布时再审查证据。当前步骤 0 复核后，显式 end 只有 Deferred；ReAct Fatal 双终态 owner 已在步骤 2 收口（ADR 0511）；Admin 风险等级 parity 回归门禁已完成（ADR 0512）。当前没有 Active 实现切片；未解决的契约问题不阻止继续寻找独立且证据充分的工作，但任何时候只实现一个 Active slice。发布验收 Gate 与结构重构并行，按 §5.1 独立关闭。
+以上是循环复核的先后顺序，不是一次性瀑布项目：每轮从步骤 0 重新分流，完成一个切片、同类问题复现或准备发布时再审查证据。ADR 0514 已完成；当前预备 Next 为 Skills venv 环境准备进程 containment，须再确认依赖边界和停止条件后才准入；ReAct Fatal 双终态 owner 已在步骤 2 收口（ADR 0511）；Admin 风险等级 parity 回归门禁已完成（ADR 0512）。发布验收 Gate 与结构重构并行，按 §5.1 独立关闭。
 
-**当前执行位置：** 架构阶段 0–8 已完成；滚动执行周期位于 §5.6 步骤 0“证据复核与分流”。当前没有 Active 实现切片；显式 end 的 action 取消失败语义保持 Deferred，等命令/UI/action 的可见失败契约明确后再决定实现范围，不能用单分支改为 checked 代替设计。ReAct Fatal 双终态发布 owner 已由 ADR 0511 收口；Admin 20 个共用操作的风险等级 parity 回归门禁已由 ADR 0512 收口，两项 native-only 操作仍单独测试。近期审计未找到新的合格 crate 或内部拆分候选；crate 边界仍为 11 个内部 crate、29 条单向边。Windows 发布验收仍是独立 Open Gate。后续每个切片结束、同类回归出现或准备发布时按 §5.5 重审，不按行数、crate 数或日历生成工作。
+**当前执行位置：** 架构阶段 0–8 已完成；滚动执行周期已关闭 ADR 0514 的显式 end 失败与重试垂直链，现回到 §5.6 步骤 0。Skills `VenvManager::ensure` 的两个环境准备子进程是唯一条件式预备 Next；当前核实其依赖边界、输出/取消生命周期与失败重试后再决定是否转 Active。不按 crate 数、行数或日历制造工作。ReAct Fatal 双终态发布 owner 已由 ADR 0511 收口；Admin 20 个共用操作的风险等级 parity 回归门禁已由 ADR 0512 收口，两项 native-only 操作仍单独测试。近期 crate 复核仍是 11 个内部 crate、29 条单向边，无拆分依据。Windows 发布验收仍是独立 Open Gate.
 
 ## 6. 更新规则
 

@@ -265,7 +265,11 @@ async fn apply_projection_effect(
                 .await;
             engine
                 .executor
-                .update_session_status(&ctx.session_id, SessionStatus::Error)
+                .update_session_status_if(
+                    &ctx.session_id,
+                    SessionStatus::Running,
+                    SessionStatus::Error,
+                )
                 .await?;
             if hard {
                 return Err(anyhow::anyhow!(message));

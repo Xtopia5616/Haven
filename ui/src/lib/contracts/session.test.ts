@@ -30,6 +30,27 @@ describe('mapSessionEvent', () => {
 		expect(event?.payload).not.toHaveProperty('future_field');
 	});
 
+	it('preserves the explicit end retry reason from the backend', () => {
+		const event = mapSessionEvent({
+			event: 'session:updated',
+			id: 13,
+			payload: {
+				session_id: 'ses-1',
+				status: 'paused',
+				waiting_reason: 'end_incomplete',
+				title: null,
+			},
+		});
+
+		expect(event?.payload).toEqual({
+			sessionId: 'ses-1',
+			status: 'paused',
+			waitingReason: 'end_incomplete',
+			title: null,
+			reason: null,
+		});
+	});
+
 	it('normalizes omitted optional fields to null', () => {
 		const event = mapSessionEvent({
 			event: 'session:created',

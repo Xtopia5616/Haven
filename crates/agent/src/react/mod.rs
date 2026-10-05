@@ -709,7 +709,7 @@ impl ReActEngine {
     pub(super) async fn mark_session_error(&self, session_id: &str) {
         if let Err(e) = self
             .executor
-            .update_session_status(session_id, SessionStatus::Error)
+            .update_session_status_if(session_id, SessionStatus::Running, SessionStatus::Error)
             .await
         {
             tracing::warn!(

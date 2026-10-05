@@ -27,7 +27,7 @@ use crate::resume_support::{
     builtin_selection, infer_resume_step, load_mcp_tool_names, load_skill_names,
 };
 
-use crate::session::SessionStatus;
+use crate::session::{DirectRunLease, SessionStatus};
 use crate::types::{
     ReActRound, TranscriptRecord, project_transcript_with_strategy, seed_events_from_canonical,
 };
@@ -41,6 +41,19 @@ enum TerminalErrorEventOwner {
     SessionSupervisor,
 }
 
+struct DirectRunGuard {
+    lease: Option<DirectRunLease>,
+}
+
+impl DirectRunGuard {
+    async fn finish(&mut self) {
+        if let Some(lease) = self.lease.as_mut() {
+            lease.finish().await;
+        }
+        self.lease.take();
+    }
+}
+
 struct SuppressSessionErrorEmitter(Arc<dyn AgentEventEmitter>);
 
 #[async_trait::async_trait]
@@ -50,6 +63,48 @@ impl AgentEventEmitter for SuppressSessionErrorEmitter {
             AgentEvent::SessionError { .. } => {}
             event => self.0.emit(event).await,
         }
+    }
+}
+
+struct SuppressLifecycleCancelledSessionErrorEmitter {
+    inner: Arc<dyn AgentEventEmitter>,
+    executor: Arc<crate::session::SessionSupervisor>,
+}
+
+#[async_trait::async_trait]
+impl AgentEventEmitter for SuppressLifecycleCancelledSessionErrorEmitter {
+    async fn emit(&self, event: AgentEvent) {
+        if let AgentEvent::SessionError { session_id, .. } = &event {
+            let _lifecycle = self.executor.lifecycle_guard().await;
+            if self.executor.ensure_lifecycle_open().is_err()
+                || self.executor.is_session_closing(session_id)
+            {
+                tracing::debug!(
+                    session_id,
+                    "suppressing a direct-run error after lifecycle closing began"
+                );
+                return;
+            }
+            match self.executor.mark_run_failed_if_active(session_id).await {
+                Ok(true) => {}
+                Ok(false) => {
+                    tracing::debug!(
+                        session_id,
+                        "suppressing a direct-run error after lifecycle state changed"
+                    );
+                    return;
+                }
+                Err(error) => {
+                    tracing::error!(
+                        session_id,
+                        error = %error,
+                        "failed to commit direct-run error status; suppressing stale event"
+                    );
+                    return;
+                }
+            }
+        }
+        self.inner.emit(event).await;
     }
 }
 
@@ -194,6 +249,25 @@ impl AgentLayer {
                 anyhow::anyhow!("session '{}' not found by dispatcher", session_id)
             })?;
 
+        // Dispatcher calls already own the run slot. A public direct call must
+        // acquire its own lease before changing status or doing any work; a
+        // rejected lease means the session is closing or another run owns it.
+        let direct_lease = match terminal_error_owner {
+            TerminalErrorEventOwner::AgentEventBus => Some(
+                self.executor
+                    .begin_direct_run(session_id)
+                    .await
+                    .ok_or_else(|| {
+                        anyhow::anyhow!("session '{}' is closing or already running", session_id)
+                    })?,
+            ),
+            TerminalErrorEventOwner::SessionSupervisor => None,
+        };
+        let _direct_guard = DirectRunGuard {
+            lease: direct_lease,
+        };
+
+        let result = async {
         // Claim flips Pending→Running in memory/DB without emitting. Direct
         // callers (tests / continue) may still be Pending — promote, then always
         // emit `running` so the UI busy chip tracks a real transition instead of
@@ -216,36 +290,6 @@ impl AgentLayer {
                 .emit_session_updated(session_id, SessionStatus::Running)
                 .await;
         }
-
-        // R6: direct callers (tests / continue without claim) register the same
-        // run slot the dispatcher would, so rollback can cancel+join before
-        // restore. When the dispatcher already claimed, this is a no-op and
-        // `unmark_running` owns the slot. Released via `DirectRunGuard` on every
-        // exit path (including `?` / early return).
-        let direct_lease = self.executor.begin_direct_run(session_id).await;
-        struct DirectRunGuard {
-            executor: std::sync::Arc<crate::session::SessionSupervisor>,
-            lease: Option<crate::session::DirectRunLease>,
-            session_id: String,
-        }
-        impl Drop for DirectRunGuard {
-            fn drop(&mut self) {
-                let Some(lease) = self.lease.take() else {
-                    return;
-                };
-                lease.actor.release_run_now();
-                let exec = self.executor.clone();
-                let sid = self.session_id.clone();
-                tokio::spawn(async move {
-                    exec.end_direct_run(&sid).await;
-                });
-            }
-        }
-        let _direct_guard = DirectRunGuard {
-            executor: self.executor.clone(),
-            lease: direct_lease,
-            session_id: session_id.to_string(),
-        };
 
         let run_id = self.react_engine.next_run_id();
 
@@ -378,6 +422,11 @@ impl AgentLayer {
                 .await
             }
         }
+        }
+        .await;
+        let mut direct_guard = _direct_guard;
+        direct_guard.finish().await;
+        result
     }
 
     /// Reopen a terminal session for history viewing without dispatching it.
@@ -669,10 +718,346 @@ impl AgentLayer {
     ) -> Option<Arc<dyn AgentEventEmitter>> {
         let emitter = self.events.emitter_arc()?;
         match terminal_error_owner {
-            TerminalErrorEventOwner::AgentEventBus => Some(emitter),
+            TerminalErrorEventOwner::AgentEventBus => {
+                Some(Arc::new(SuppressLifecycleCancelledSessionErrorEmitter {
+                    inner: emitter,
+                    executor: self.executor.clone(),
+                }))
+            }
             TerminalErrorEventOwner::SessionSupervisor => {
                 Some(Arc::new(SuppressSessionErrorEmitter(emitter)))
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod direct_run_guard_tests {
+    use super::*;
+    use crate::session::SessionSupervisor;
+    use haven_common::config::ContextLimitsConfig;
+    use haven_common::types::CanonicalMessage;
+    use haven_llm::{LlmClient, LlmError, LlmResponse, StreamChunk, ToolDefinition};
+    use haven_memory::Database;
+    use haven_tools::ToolsManager;
+    use std::pin::Pin;
+    use std::time::Duration;
+
+    struct BlockingStreamClient {
+        started: Arc<tokio::sync::Notify>,
+    }
+
+    #[async_trait::async_trait]
+    impl LlmClient for BlockingStreamClient {
+        async fn chat(&self, _messages: Vec<CanonicalMessage>) -> Result<LlmResponse, LlmError> {
+            Err(LlmError::Unknown(
+                "blocking test client: unexpected chat".into(),
+            ))
+        }
+
+        async fn chat_stream(
+            &self,
+            _messages: Vec<CanonicalMessage>,
+        ) -> Result<
+            Pin<Box<dyn futures_util::Stream<Item = Result<StreamChunk, LlmError>> + Send>>,
+            LlmError,
+        > {
+            Err(LlmError::Unknown(
+                "blocking test client: unexpected non-tool stream".into(),
+            ))
+        }
+
+        async fn chat_stream_with_tools_output_cap_shared(
+            &self,
+            _messages: Arc<[CanonicalMessage]>,
+            _tools: Arc<[ToolDefinition]>,
+            _max_output_tokens: Option<u32>,
+        ) -> Result<
+            Pin<Box<dyn futures_util::Stream<Item = Result<StreamChunk, LlmError>> + Send>>,
+            LlmError,
+        > {
+            self.started.notify_one();
+            Ok(Box::pin(futures_util::stream::pending()))
+        }
+
+        async fn health_check(&self) -> Result<(), LlmError> {
+            Ok(())
+        }
+    }
+
+    struct NoopEmitter;
+
+    #[async_trait::async_trait]
+    impl AgentEventEmitter for NoopEmitter {
+        async fn emit(&self, _event: AgentEvent) {}
+    }
+
+    #[tokio::test]
+    async fn cancelled_direct_run_finish_retries_terminal_cleanup() {
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let executor = Arc::new(SessionSupervisor::new_for_test(
+            db,
+            Arc::new(ToolsManager::new()),
+            1,
+        ));
+        let session = executor
+            .create_session("cancelled direct run finish")
+            .await
+            .unwrap();
+        let waiting_session = executor.create_session("waiting direct run").await.unwrap();
+        let lease = executor
+            .begin_direct_run(&session.id)
+            .await
+            .expect("direct run should acquire a lease");
+        executor
+            .update_session_status(&session.id, SessionStatus::Completed)
+            .await
+            .unwrap();
+        let actor = lease.actor.clone();
+        let mut guard = DirectRunGuard { lease: Some(lease) };
+        let lifecycle = executor.lifecycle_guard().await;
+        let mut finish = tokio::spawn(async move { guard.finish().await });
+
+        assert!(
+            tokio::time::timeout(Duration::from_millis(25), &mut finish)
+                .await
+                .is_err(),
+            "direct-run finish should wait for the held lifecycle gate"
+        );
+        assert!(actor.is_running().await);
+
+        finish.abort();
+        assert!(finish.await.unwrap_err().is_cancelled());
+
+        let waiting_executor = executor.clone();
+        let waiting_id = waiting_session.id.clone();
+        let mut waiting_admission =
+            tokio::spawn(async move { waiting_executor.begin_direct_run(&waiting_id).await });
+        assert!(
+            tokio::time::timeout(Duration::from_millis(25), &mut waiting_admission)
+                .await
+                .is_err(),
+            "Drop must retain the direct-run permit through reconciliation"
+        );
+        assert!(actor.is_running().await);
+        drop(lifecycle);
+
+        let waiting_lease = tokio::time::timeout(Duration::from_secs(1), waiting_admission)
+            .await
+            .expect("the waiting session should be admitted after cleanup")
+            .unwrap()
+            .expect("the waiting session should acquire the released permit");
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while executor.actor_for(&session.id).await.is_some() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("Drop fallback must retry cleanup after finish is cancelled");
+
+        executor
+            .update_session_status(&waiting_session.id, SessionStatus::Completed)
+            .await
+            .unwrap();
+        let mut waiting_lease = waiting_lease;
+        waiting_lease.finish().await;
+    }
+
+    #[tokio::test]
+    async fn cancelled_direct_run_reconciliation_reserves_same_session_until_cleanup_finishes() {
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let executor = Arc::new(SessionSupervisor::new_for_test(
+            db,
+            Arc::new(ToolsManager::new()),
+            2,
+        ));
+        let session = executor
+            .create_session("direct run reconciliation reservation")
+            .await
+            .unwrap();
+        let mut lease = executor
+            .begin_direct_run(&session.id)
+            .await
+            .expect("direct run should acquire a lease");
+        let actor = lease.actor.clone();
+        executor
+            .update_session_status(&session.id, SessionStatus::Paused)
+            .await
+            .unwrap();
+
+        // Queue a second lifecycle waiter behind lease.finish's initial gate.
+        // Once it owns the gate, finish has cleared the Actor run bit but is
+        // still inside exit reconciliation.
+        let initial_gate = executor.lifecycle_guard().await;
+        let (finish_started_tx, finish_started_rx) = tokio::sync::oneshot::channel();
+        let finishing = tokio::spawn(async move {
+            let _ = finish_started_tx.send(());
+            lease.finish().await;
+        });
+        finish_started_rx.await.expect("finish task should start");
+
+        let (observer_started_tx, observer_started_rx) = tokio::sync::oneshot::channel();
+        let observer_executor = executor.clone();
+        let observer = tokio::spawn(async move {
+            let _ = observer_started_tx.send(());
+            observer_executor.lifecycle_guard().await
+        });
+        observer_started_rx
+            .await
+            .expect("observer should queue behind finish");
+        drop(initial_gate);
+        let observer_gate = observer.await.expect("observer should acquire the gate");
+        assert!(!actor.is_running().await);
+
+        let waiting_executor = executor.clone();
+        let waiting_id = session.id.clone();
+        let mut waiting_admission =
+            tokio::spawn(async move { waiting_executor.begin_direct_run(&waiting_id).await });
+        assert!(
+            tokio::time::timeout(Duration::from_millis(25), &mut waiting_admission)
+                .await
+                .is_err(),
+            "same-session admission should wait for the held reconciliation gate"
+        );
+
+        finishing.abort();
+        assert!(finishing.await.unwrap_err().is_cancelled());
+        drop(observer_gate);
+
+        let attempted_admission = tokio::time::timeout(Duration::from_secs(1), waiting_admission)
+            .await
+            .expect("same-session admission should leave the lifecycle gate")
+            .expect("admission task should complete");
+        let admission_rejected = match attempted_admission {
+            None => true,
+            Some(mut unexpected_lease) => {
+                unexpected_lease.finish().await;
+                false
+            }
+        };
+        assert!(
+            admission_rejected,
+            "a new run must not enter while the cancelled old lease reconciles"
+        );
+
+        let released_lease = tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if let Some(lease) = executor.begin_direct_run(&session.id).await {
+                    break lease;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("fallback cleanup should release same-session admission");
+        let mut released_lease = released_lease;
+        released_lease.finish().await;
+    }
+
+    #[tokio::test]
+    async fn dropping_direct_run_guard_cancels_actor_owned_react_loop_before_releasing_permit() {
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let executor = Arc::new(SessionSupervisor::new_for_test(
+            db.clone(),
+            Arc::new(ToolsManager::new()),
+            1,
+        ));
+        let session = executor
+            .create_session("cancel actor-owned ReAct loop")
+            .await
+            .unwrap();
+        let waiting_session = executor
+            .create_session("wait for cancelled ReAct loop")
+            .await
+            .unwrap();
+        let lease = executor
+            .begin_direct_run(&session.id)
+            .await
+            .expect("direct run should acquire a lease");
+        let actor = lease.actor.clone();
+        let loop_actor = actor.clone();
+
+        let started = Arc::new(tokio::sync::Notify::new());
+        let client = Arc::new(BlockingStreamClient {
+            started: started.clone(),
+        });
+        let router = Arc::new(haven_llm::LlmRouter::new_with_clients(
+            client.clone(),
+            client.clone(),
+            client.clone(),
+            client,
+        ));
+        let engine = Arc::new(crate::react::ReActEngine::new(
+            router,
+            crate::react::test_tool_catalog_port(&executor),
+            executor.clone(),
+            haven_memory::MemoryStore::new(db),
+            4,
+            ContextLimitsConfig::default(),
+        ));
+
+        let session_id = session.id.clone();
+        let react_task = tokio::spawn(async move {
+            let _guard = DirectRunGuard { lease: Some(lease) };
+            loop_actor
+                .run_react_loop(
+                    engine,
+                    RunReplay {
+                        events: Vec::new(),
+                        canonical: vec![CanonicalMessage::user_text("keep the model call open")],
+                        branch_points: Default::default(),
+                    },
+                    RunInput {
+                        session_id,
+                        start_step: 1,
+                        emitter: Arc::new(NoopEmitter),
+                        run_id: 1,
+                    },
+                )
+                .await
+        });
+
+        tokio::time::timeout(Duration::from_secs(2), started.notified())
+            .await
+            .expect("actor-owned loop should start the blocking provider stream");
+        let waiting_executor = executor.clone();
+        let waiting_id = waiting_session.id.clone();
+        let mut waiting_admission =
+            tokio::spawn(async move { waiting_executor.begin_direct_run(&waiting_id).await });
+        assert!(
+            tokio::time::timeout(Duration::from_millis(25), &mut waiting_admission)
+                .await
+                .is_err(),
+            "the active direct run must retain its permit while the actor polls ReAct"
+        );
+
+        react_task.abort();
+        let error = match react_task.await {
+            Ok(_) => panic!("cancelled ReAct caller unexpectedly completed"),
+            Err(error) => error,
+        };
+        assert!(error.is_cancelled());
+
+        let waiting_lease = tokio::time::timeout(Duration::from_secs(2), waiting_admission)
+            .await
+            .expect("cancelling the caller should stop the actor loop and release admission")
+            .unwrap()
+            .expect("the waiting direct run should acquire the released permit");
+        assert!(
+            !actor.is_running().await,
+            "cancelled actor loop cleanup must clear the actor run bit"
+        );
+        assert_eq!(
+            executor.get_active_session_status(&session.id).await,
+            Some(SessionStatus::Paused),
+            "cancelled direct runs should return to Paused"
+        );
+
+        executor
+            .update_session_status(&waiting_session.id, SessionStatus::Completed)
+            .await
+            .unwrap();
+        let mut waiting_lease = waiting_lease;
+        waiting_lease.finish().await;
     }
 }

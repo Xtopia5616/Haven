@@ -94,7 +94,7 @@ export interface ToolConfigInput { enabled?: boolean; timeout_secs?: number | nu
 export interface ToolConfig { enabled: boolean; timeout_secs?: number; max_output_chars?: number; max_retries?: number; retry_backoff_secs?: number; allowed_paths: string[]; allowed_domains: string[]; disabled_operations: string[]; risk_override: RiskLevel | null }
 export type ActionStatus = 'waiting' | 'running' | 'completed' | 'failed' | 'cancelled';
 export type SessionStatus = 'pending' | 'running' | 'paused' | 'completed' | 'error';
-export type SessionWaitingReason = 'user_input' | 'user_interrupt' | 'ask' | 'confirmation' | 'scheduled_confirmation' | 'background_task' | 'scheduled_task' | 'step_budget';
+export type SessionWaitingReason = 'user_input' | 'user_interrupt' | 'ask' | 'confirmation' | 'scheduled_confirmation' | 'background_task' | 'scheduled_task' | 'step_budget' | 'end_incomplete';
 export interface MediaAsset { asset_id: string; content_hash: string; media_type: string; size_bytes: number; filename?: string; source: MediaAssetSource; lifecycle: MediaAssetLifecycle; expires_at?: string }
 export type MediaAssetLifecycle = 'request' | 'session' | 'managed' | 'external';
 export type MediaAssetSource = 'user_attachment' | 'recording' | 'window_capture' | 'generated' | 'tool_output';

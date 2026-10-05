@@ -36,6 +36,7 @@ describe('session waiting reasons', () => {
 			'background_task',
 			'scheduled_task',
 			'step_budget',
+			'end_incomplete',
 		]);
 		expect(waitingReasonLabel('user_input')).toBe('等待操作');
 		expect(waitingReasonLabel('ask')).toBe('等待操作');
@@ -43,6 +44,7 @@ describe('session waiting reasons', () => {
 		expect(waitingReasonLabel('scheduled_confirmation')).toBe('等待操作');
 		expect(waitingReasonLabel('step_budget')).toBe('等待操作');
 		expect(waitingReasonLabel('background_task')).toBe('等待任务');
+		expect(waitingReasonLabel('end_incomplete')).toBe('结束未完成，可重试');
 		expect(waitingReasonLabel('unknown')).toBeNull();
 	});
 

@@ -32,6 +32,9 @@ pub enum SessionWaitingReason {
     BackgroundTask,
     ScheduledTask,
     StepBudget,
+    /// Explicit end could not confirm the durable cleanup of an owned
+    /// scheduled action. The session remains resumable and end can be retried.
+    EndIncomplete,
 }
 
 impl SessionWaitingReason {
@@ -45,6 +48,7 @@ impl SessionWaitingReason {
             Self::BackgroundTask => "background_task",
             Self::ScheduledTask => "scheduled_task",
             Self::StepBudget => "step_budget",
+            Self::EndIncomplete => "end_incomplete",
         }
     }
 }
@@ -66,6 +70,7 @@ impl<'de> Deserialize<'de> for SessionWaitingReason {
             "background_task" => Ok(Self::BackgroundTask),
             "scheduled_task" => Ok(Self::ScheduledTask),
             "step_budget" => Ok(Self::StepBudget),
+            "end_incomplete" => Ok(Self::EndIncomplete),
             value => Err(serde::de::Error::custom(format!(
                 "unknown session waiting reason '{value}'"
             ))),
@@ -132,8 +137,10 @@ impl SessionStatus {
             ) | (
                 Self::Running,
                 Self::Paused | Self::Pending | Self::Completed | Self::Error
-            ) | (Self::Paused, Self::Pending | Self::Completed | Self::Error)
-                | (Self::Completed, Self::Paused)
+            ) | (
+                Self::Paused,
+                Self::Pending | Self::Running | Self::Completed | Self::Error
+            ) | (Self::Completed, Self::Paused)
                 | (Self::Error, Self::Paused | Self::Pending)
         )
     }
@@ -247,12 +254,17 @@ mod tests {
             serde_json::from_str::<SessionWaitingReason>("\"background_task\"").unwrap(),
             SessionWaitingReason::BackgroundTask
         );
+        assert_eq!(
+            serde_json::to_string(&SessionWaitingReason::EndIncomplete).unwrap(),
+            "\"end_incomplete\""
+        );
         assert!(serde_json::from_str::<SessionWaitingReason>("\"bogus\"").is_err());
     }
 
     #[test]
     fn session_transition_table_is_the_single_policy() {
         assert!(SessionStatus::Pending.can_transition_to(SessionStatus::Running));
+        assert!(SessionStatus::Paused.can_transition_to(SessionStatus::Running));
         assert!(SessionStatus::Error.can_transition_to(SessionStatus::Pending));
         assert!(!SessionStatus::Completed.can_transition_to(SessionStatus::Pending));
     }

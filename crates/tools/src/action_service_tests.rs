@@ -720,6 +720,195 @@ async fn test_spawn_for_session_binds_owner_before_completion() {
     );
 }
 
+#[tokio::test]
+async fn cancelled_background_admission_waiting_on_cleanup_gate_is_not_published() {
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let db = Arc::new(Database::open(&dir.path().join("cancelled-admission.db")).unwrap());
+    let service = Arc::new(ActionService::new());
+    service
+        .set_action_store(Some(ActionStore::new(db.clone())))
+        .await;
+    let held_gate = service.spawn_gate.lock().await;
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let spawn_service = Arc::clone(&service);
+    let spawn_cancel = cancel.clone();
+    let spawn = tokio::spawn(async move {
+        spawn_service
+            .spawn_shell_for_session_with_source_and_cancel(
+                super::BackgroundShellRequest {
+                    command: "echo must-not-start",
+                    shell: "cmd",
+                    max_chars: 20_000,
+                    cwd: None,
+                    session_id: Some("ses-cancelled-admission"),
+                    source_step_id: None,
+                },
+                &spawn_cancel,
+            )
+            .await
+    });
+    tokio::task::yield_now().await;
+    cancel.cancel();
+
+    let error = tokio::time::timeout(Duration::from_secs(1), spawn)
+        .await
+        .expect("cancelled admission must not wait for cleanup gate")
+        .expect("spawn task should join")
+        .expect_err("a cancelled tool must not admit a background action");
+    assert!(error.to_string().contains("cancelled"));
+    assert!(db.list_actions(Some("background")).unwrap().is_empty());
+    assert!(service.actions.read().await.is_empty());
+    drop(held_gate);
+}
+
+#[tokio::test]
+async fn cancelled_scheduled_admission_waiting_on_cleanup_gate_is_not_published() {
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let db = Arc::new(Database::open(&dir.path().join("cancelled-schedule.db")).unwrap());
+    let service = Arc::new(ActionService::new());
+    service
+        .set_action_store(Some(ActionStore::new(db.clone())))
+        .await;
+    let held_gate = service.spawn_gate.lock().await;
+    let scheduled_service = Arc::clone(&service);
+    let scheduled = tokio::spawn(async move {
+        scheduled_service
+            .set(crate::action_types::ScheduledActionSpec {
+                due_at: None,
+                delay_secs: Some(3600),
+                watch_action_id: None,
+                title: "Cancelled admission".into(),
+                body: "must not be registered".into(),
+                mode: crate::action_types::ScheduleMode::Tool,
+                session_id: Some("ses-cancelled-schedule".into()),
+                tool_name: Some("notify".into()),
+                tool_args: None,
+                prompt: None,
+            })
+            .await
+    });
+    tokio::task::yield_now().await;
+    scheduled.abort();
+    assert!(scheduled.await.unwrap_err().is_cancelled());
+    drop(held_gate);
+
+    assert!(db.list_pending_scheduled_actions().unwrap().is_empty());
+    assert!(service.actions.read().await.is_empty());
+}
+
+#[tokio::test]
+async fn cleanup_cancels_durable_background_admission_without_board_entry() {
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let db = Arc::new(Database::open(&dir.path().join("orphan-background.db")).unwrap());
+    let service = Arc::new(ActionService::new());
+    service
+        .set_action_store(Some(ActionStore::new(db.clone())))
+        .await;
+    let session_id = "ses-orphan-background";
+    let action_id = haven_common::types::new_id("act");
+    db.save_action_with_source(
+        &action_id,
+        Some(session_id),
+        "echo admission worker completed after caller cancellation",
+        "2026-10-05T00:00:00Z",
+        Some("step-orphan-background"),
+    )
+    .unwrap();
+
+    service
+        .cancel_owned_by_session_checked(session_id)
+        .await
+        .unwrap();
+
+    let row = db.get_action(&action_id).unwrap().unwrap();
+    assert_eq!(row.status, haven_common::ActionStatus::Cancelled);
+    assert!(service.actions.read().await.is_empty());
+}
+
+#[cfg(windows)]
+#[tokio::test]
+async fn session_cleanup_serializes_with_background_and_scheduled_admission() {
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let db = Arc::new(Database::open(&dir.path().join("cleanup-admission.db")).unwrap());
+    let service = Arc::new(ActionService::new());
+    service
+        .set_action_store(Some(ActionStore::new(db.clone())))
+        .await;
+    let session_id = "ses-admission-race";
+    let scheduled_id = "act-admission-scheduled";
+    let due_at = (chrono::Utc::now() + chrono::Duration::hours(1)).to_rfc3339();
+    db.save_scheduled_action(
+        scheduled_id,
+        &due_at,
+        "Admission race",
+        "scheduled work must be cancelled",
+        "tool",
+        Some(session_id),
+        Some("notify"),
+        None,
+        None,
+        None,
+    )
+    .unwrap();
+
+    // Queue a background admission before explicit cleanup on the shared
+    // mutation gate. Cleanup must not snapshot its owner set until the spawn
+    // has durably registered and published the action.
+    let held_gate = service.spawn_gate.lock().await;
+    let spawn_service = Arc::clone(&service);
+    let spawn = tokio::spawn(async move {
+        spawn_service
+            .spawn_shell_for_session(
+                "ping -n 10 127.0.0.1 >nul",
+                "cmd",
+                20_000,
+                None,
+                Some(session_id),
+            )
+            .await
+    });
+    tokio::task::yield_now().await;
+    let cleanup_service = Arc::clone(&service);
+    let cleanup = tokio::spawn(async move {
+        cleanup_service
+            .cancel_owned_by_session_checked(session_id)
+            .await
+    });
+    tokio::task::yield_now().await;
+    drop(held_gate);
+
+    let background_id = tokio::time::timeout(Duration::from_secs(5), spawn)
+        .await
+        .expect("background admission should finish")
+        .expect("spawn task should join")
+        .expect("background action should start");
+    cleanup
+        .await
+        .expect("cleanup task should join")
+        .expect("scheduled cancellation should persist");
+
+    assert_eq!(
+        db.get_action(scheduled_id).unwrap().unwrap().status,
+        haven_common::ActionStatus::Cancelled
+    );
+    let status = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let status = db
+                .get_action(&background_id)
+                .expect("background action lookup should succeed")
+                .expect("background action row should remain durable")
+                .status;
+            if status != haven_common::ActionStatus::Running {
+                break status;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("background cancellation should finish promptly");
+    assert_eq!(status, haven_common::ActionStatus::Cancelled);
+}
+
 #[cfg(windows)]
 #[tokio::test]
 async fn test_action_result_persisted_to_db() {

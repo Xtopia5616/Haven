@@ -8,9 +8,9 @@ use tokio_util::sync::CancellationToken;
 
 use crate::live_output::LiveOutputHub;
 use crate::{
-    ActionService, append_windows_diagnostics, build_shell_command_silent, collect_byte_cap,
-    is_progress_clixml, read_stream_capped, sanitize_shell_output, summarize_error,
-    write_output_log,
+    ActionService, BackgroundShellRequest, append_windows_diagnostics, build_shell_command_silent,
+    collect_byte_cap, is_progress_clixml, read_stream_capped, sanitize_shell_output,
+    summarize_error, write_output_log,
 };
 use crate::{Tool, ToolExecutionOutcome, ToolResult};
 
@@ -123,13 +123,16 @@ impl ShellTool {
             let source_step_id = params.step_id.as_deref();
             let action_id = self
                 .actions
-                .spawn_shell_for_session_with_source(
-                    &cmd,
-                    &shell,
-                    max_chars,
-                    cwd,
-                    params.session_id.as_deref(),
-                    source_step_id,
+                .spawn_shell_for_session_with_source_and_cancel(
+                    BackgroundShellRequest {
+                        command: &cmd,
+                        shell: &shell,
+                        max_chars,
+                        cwd,
+                        session_id: params.session_id.as_deref(),
+                        source_step_id,
+                    },
+                    &cancel,
                 )
                 .await?;
             let mut body = haven_common::tools::background_wait_object(

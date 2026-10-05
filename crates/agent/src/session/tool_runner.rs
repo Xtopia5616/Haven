@@ -1112,14 +1112,32 @@ impl SessionSupervisor {
                 .is_some()
             {
                 tracing::warn!(
-                    action_id,
+                    action_id = %action_id,
                     request_id = %timeout_id,
                     "scheduled confirmation timed out after {:?}; treating as rejected",
                     expiry_delay
                 );
-                let _ = executor
-                    .expire_scheduled_confirmation(&action_id, &timeout_id)
-                    .await;
+                let mut retry_delay = std::time::Duration::from_secs(1);
+                loop {
+                    match executor
+                        .expire_scheduled_confirmation(&action_id, &timeout_id)
+                        .await
+                    {
+                        Ok(_) => break,
+                        Err(error) => {
+                            tracing::warn!(
+                                action_id = %action_id,
+                                request_id = %timeout_id,
+                                error = %error,
+                                "failed to expire scheduled confirmation; retrying"
+                            );
+                            tokio::time::sleep(retry_delay).await;
+                            retry_delay = retry_delay
+                                .saturating_mul(2)
+                                .min(std::time::Duration::from_secs(30));
+                        }
+                    }
+                }
             }
         });
         Some(step_id)
@@ -1236,6 +1254,9 @@ impl SessionSupervisor {
         let Some(request) = request else {
             return Ok(None);
         };
+        if self.request_session_is_closing(expected_owner, &request) {
+            return Ok(None);
+        }
         if !interaction_owner_matches_request(expected_owner, &request) {
             return Ok(None);
         }
@@ -1427,6 +1448,14 @@ impl SessionSupervisor {
         confirmed: bool,
         expire: bool,
     ) -> anyhow::Result<Option<crate::session::ConfirmResolution>> {
+        if self.owner_session_is_closing(owner, request_id).await {
+            if expire {
+                anyhow::bail!(
+                    "session is closing; retry confirmation expiry after lifecycle cleanup"
+                );
+            }
+            return Ok(None);
+        }
         match owner {
             crate::interaction::InteractionOwner::ScheduledAction { action_id } => {
                 self.resolve_scheduled_confirmation_locked(
@@ -1473,6 +1502,14 @@ impl SessionSupervisor {
         request_id: &haven_common::types::ConfirmId,
     ) -> anyhow::Result<Option<crate::session::ConfirmResolution>> {
         let _resolution = self.confirmation_resolution_gate.lock().await;
+        let owner = crate::interaction::InteractionOwner::ScheduledAction {
+            action_id: action_id.to_string(),
+        };
+        if self.owner_session_is_closing(&owner, request_id).await {
+            anyhow::bail!(
+                "session is closing; retry scheduled confirmation expiry after lifecycle cleanup"
+            );
+        }
         self.resolve_scheduled_confirmation_locked(
             action_id,
             request_id,
@@ -1480,6 +1517,42 @@ impl SessionSupervisor {
             ScheduledConfirmDeadlineDecision::Expire,
         )
         .await
+    }
+
+    async fn owner_session_is_closing(
+        &self,
+        owner: &crate::interaction::InteractionOwner,
+        request_id: &haven_common::types::ConfirmId,
+    ) -> bool {
+        match owner {
+            crate::interaction::InteractionOwner::Session { session_id } => {
+                self.is_session_closing(session_id)
+            }
+            crate::interaction::InteractionOwner::ScheduledAction { action_id } => self
+                .scheduled_confirmation_request(action_id, request_id)
+                .await
+                .is_some_and(|request| self.request_session_is_closing(owner, &request)),
+            crate::interaction::InteractionOwner::AppCommand => false,
+        }
+    }
+
+    fn request_session_is_closing(
+        &self,
+        owner: &crate::interaction::InteractionOwner,
+        request: &crate::interaction::InteractionRequest,
+    ) -> bool {
+        let Some(session_id) = request.session_id.as_deref() else {
+            return false;
+        };
+        match owner {
+            crate::interaction::InteractionOwner::Session {
+                session_id: owner_id,
+            } => owner_id == session_id && self.is_session_closing(owner_id),
+            crate::interaction::InteractionOwner::ScheduledAction { .. } => {
+                self.is_session_closing(session_id)
+            }
+            crate::interaction::InteractionOwner::AppCommand => false,
+        }
     }
 
     async fn resolve_confirmation_locked(

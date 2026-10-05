@@ -19,7 +19,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
-use tokio::sync::{Mutex, broadcast, watch};
+use tokio::sync::{Mutex, broadcast, mpsc, watch};
 use tokio_util::sync::CancellationToken;
 
 /// Last-resort ceiling for [`SessionSupervisor::await_run_finished`]. The
@@ -61,16 +61,158 @@ impl Drop for LifecycleBlockGuard {
 /// lifecycle operation must block new admissions while it quiesces a session,
 /// but a cancelled caller must not leave that session permanently closed.
 pub(crate) struct SessionClosingGuard {
-    sessions: Arc<StdMutex<HashSet<String>>>,
+    sessions: Arc<StdMutex<HashMap<String, SessionClosingMode>>>,
+    cascade_overrides: Arc<StdMutex<HashMap<String, bool>>>,
+    retry_queue: Arc<TerminalCleanupRetryQueue>,
     session_id: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SessionClosingMode {
+    EndPreparing { cascade: bool },
+    EndCommitted { cascade: bool },
+    Destructive,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct TerminalCleanupRetry {
+    pub cascade: Option<bool>,
+    pub remove_error_actor: bool,
+}
+
 impl Drop for SessionClosingGuard {
+    fn drop(&mut self) {
+        let retry = self
+            .sessions
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .remove(&self.session_id)
+            .and_then(|mode| match mode {
+                SessionClosingMode::EndCommitted { cascade } => Some(TerminalCleanupRetry {
+                    cascade: Some(cascade),
+                    remove_error_actor: true,
+                }),
+                SessionClosingMode::Destructive => Some(TerminalCleanupRetry {
+                    cascade: None,
+                    remove_error_actor: true,
+                }),
+                SessionClosingMode::EndPreparing { .. } => None,
+            });
+        if let Some(retry) = retry {
+            self.retry_queue.enqueue(&self.session_id, retry);
+        }
+    }
+}
+
+impl SessionClosingGuard {
+    /// Promote an End marker only after its Completed transition has committed.
+    /// Callers hold `lifecycle_guard()` so run-exit observes either phase.
+    pub(crate) fn mark_end_committed(&self) -> bool {
+        let mut sessions = self
+            .sessions
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        match sessions.get_mut(&self.session_id) {
+            Some(mode @ SessionClosingMode::EndPreparing { .. }) => {
+                let SessionClosingMode::EndPreparing { cascade } = *mode else {
+                    unreachable!();
+                };
+                *mode = SessionClosingMode::EndCommitted { cascade };
+                self.cascade_overrides
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .insert(self.session_id.clone(), cascade);
+                true
+            }
+            Some(SessionClosingMode::EndCommitted { .. }) => true,
+            _ => false,
+        }
+    }
+}
+
+/// Admission lease for the terminal run-exit cleanup window. It prevents a
+/// Continue/rollback from reopening an actor after cleanup has claimed the
+/// terminal state but before its owner has cleared projections and registry
+/// state.
+pub(crate) struct TerminalCleanupGuard {
+    sessions: Arc<StdMutex<HashSet<String>>>,
+    closing_sessions: Arc<StdMutex<HashMap<String, SessionClosingMode>>>,
+    retry_queue: Arc<TerminalCleanupRetryQueue>,
+    session_id: String,
+    completed: bool,
+    retry: TerminalCleanupRetry,
+}
+
+impl Drop for TerminalCleanupGuard {
     fn drop(&mut self) {
         self.sessions
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .remove(&self.session_id);
+        if !self.completed {
+            let cascade =
+                self.closing_sessions
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .get(&self.session_id)
+                    .and_then(|mode| match mode {
+                        SessionClosingMode::EndCommitted { cascade } => Some(*cascade),
+                        SessionClosingMode::EndPreparing { .. }
+                        | SessionClosingMode::Destructive => None,
+                    });
+            self.retry_queue.enqueue(
+                &self.session_id,
+                TerminalCleanupRetry {
+                    cascade: cascade.or(self.retry.cascade),
+                    remove_error_actor: self.retry.remove_error_actor,
+                },
+            );
+        }
+    }
+}
+
+impl TerminalCleanupGuard {
+    pub(crate) fn mark_complete(&mut self) {
+        self.completed = true;
+    }
+
+    pub(crate) fn set_retry_policy(&mut self, retry: TerminalCleanupRetry) {
+        self.retry = retry;
+    }
+}
+
+/// De-duplicated retry wakeups for interrupted terminal cleanup. The worker is
+/// tied to the session dispatcher lifetime; retries always re-read Actor state
+/// under the lifecycle gate before claiming cleanup again.
+pub(crate) struct TerminalCleanupRetryQueue {
+    queued: StdMutex<HashMap<String, TerminalCleanupRetry>>,
+    sender: mpsc::UnboundedSender<String>,
+}
+
+impl TerminalCleanupRetryQueue {
+    fn enqueue(&self, session_id: &str, retry: TerminalCleanupRetry) {
+        let mut queued = self
+            .queued
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(existing) = queued.get_mut(session_id) {
+            if existing.cascade.is_none() && retry.cascade.is_some() {
+                existing.cascade = retry.cascade;
+            }
+            existing.remove_error_actor |= retry.remove_error_actor;
+        } else {
+            queued.insert(session_id.to_string(), retry);
+            if self.sender.send(session_id.to_string()).is_err() {
+                queued.remove(session_id);
+            }
+        }
+    }
+
+    pub(crate) fn take(&self, session_id: &str) -> Option<TerminalCleanupRetry> {
+        self.queued
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .remove(session_id)
     }
 }
 
@@ -149,6 +291,16 @@ pub enum SessionEvent {
     SessionResumed {
         session_id: String,
     },
+    /// A direct run was cancelled with its caller and has been reconciled to
+    /// a retryable paused state.
+    SessionRunPaused {
+        session_id: String,
+    },
+    /// An explicit end attempt failed after durably pausing a retryable
+    /// session. The UI keeps the session visible and can retry the end.
+    SessionEndPaused {
+        session_id: String,
+    },
     ScheduledConfirmOutcome {
         action_id: String,
         session_id: Option<String>,
@@ -218,11 +370,25 @@ pub struct SessionSupervisor {
     /// Session-scoped closing markers close the gap between quiescing one
     /// session and taking the registry gate. Direct resumes and dispatch
     /// claims must not start after a delete has linearized its close request.
-    closing_sessions: Arc<StdMutex<HashSet<String>>>,
+    closing_sessions: Arc<StdMutex<HashMap<String, SessionClosingMode>>>,
+    /// Run-exit and status transitions share one terminal cleanup owner. The
+    /// marker also closes resume/rollback admission while that owner performs
+    /// cleanup outside the global lifecycle gate.
+    terminal_cleanup_sessions: Arc<StdMutex<HashSet<String>>>,
+    /// An accepted End's cascade decision must survive after the close marker
+    /// drops while a run is still unwinding, until run-exit cleanup consumes it.
+    terminal_cleanup_cascade_overrides: Arc<StdMutex<HashMap<String, bool>>>,
+    terminal_cleanup_retry_queue: Arc<TerminalCleanupRetryQueue>,
+    terminal_cleanup_retry_rx: StdMutex<Option<mpsc::UnboundedReceiver<String>>>,
     /// Direct resumes waiting for a run slot can be cancelled by delete/clear
     /// instead of waiting for an unrelated session to release capacity.
     direct_run_waiters: Arc<Mutex<DirectRunWaiters>>,
     direct_waiter_id: AtomicUsize,
+    /// A direct-run owner remains reserved until its exit reconciliation has
+    /// completed. Actor `running` may clear slightly earlier, so this marker
+    /// prevents same-session re-admission during that cleanup handoff.
+    direct_run_leases: StdMutex<HashMap<String, usize>>,
+    direct_run_lease_id: AtomicUsize,
     /// The supervisor owns exactly one dispatcher. Duplicate starts would
     /// create competing lifecycle consumers and make recovery nondeterministic.
     dispatcher_started: std::sync::atomic::AtomicBool,
@@ -289,6 +455,7 @@ impl SessionSupervisor {
             observations,
         } = ports;
         let (event_tx, _) = broadcast::channel(256);
+        let (retry_tx, retry_rx) = mpsc::unbounded_channel();
         Self {
             partials: Arc::new(crate::partial::PartialStore::new(store.clone())),
             store,
@@ -305,9 +472,18 @@ impl SessionSupervisor {
             admission: Arc::new(dispatcher::RunAdmission::new(max_concurrent.max(1))),
             lifecycle_gate: Arc::new(Mutex::new(())),
             lifecycle_blocked: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            closing_sessions: Arc::new(StdMutex::new(HashSet::new())),
+            closing_sessions: Arc::new(StdMutex::new(HashMap::new())),
+            terminal_cleanup_sessions: Arc::new(StdMutex::new(HashSet::new())),
+            terminal_cleanup_cascade_overrides: Arc::new(StdMutex::new(HashMap::new())),
+            terminal_cleanup_retry_queue: Arc::new(TerminalCleanupRetryQueue {
+                queued: StdMutex::new(HashMap::new()),
+                sender: retry_tx,
+            }),
+            terminal_cleanup_retry_rx: StdMutex::new(Some(retry_rx)),
             direct_run_waiters: Arc::new(Mutex::new(HashMap::new())),
             direct_waiter_id: AtomicUsize::new(0),
+            direct_run_leases: StdMutex::new(HashMap::new()),
+            direct_run_lease_id: AtomicUsize::new(0),
             dispatcher_started: std::sync::atomic::AtomicBool::new(false),
             pending_queue: Arc::new(Mutex::new(VecDeque::new())),
             dispatch_tx: watch::channel(0).0,
@@ -515,7 +691,71 @@ impl SessionSupervisor {
         self.closing_sessions
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .contains(session_id)
+            .contains_key(session_id)
+            || self
+                .terminal_cleanup_sessions
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .contains(session_id)
+    }
+
+    /// Start terminal cleanup while the caller holds `lifecycle_guard()`.
+    /// Returns `None` when another end/run-exit path already owns it.
+    pub(crate) fn begin_terminal_cleanup_locked(
+        &self,
+        session_id: &str,
+    ) -> Option<TerminalCleanupGuard> {
+        let closing_mode = self
+            .closing_sessions
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(session_id)
+            .copied();
+        if matches!(
+            closing_mode,
+            Some(SessionClosingMode::EndPreparing { .. } | SessionClosingMode::Destructive)
+        ) {
+            return None;
+        }
+        let inserted = self
+            .terminal_cleanup_sessions
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(session_id.to_string());
+        inserted.then(|| TerminalCleanupGuard {
+            sessions: self.terminal_cleanup_sessions.clone(),
+            closing_sessions: self.closing_sessions.clone(),
+            retry_queue: self.terminal_cleanup_retry_queue.clone(),
+            session_id: session_id.to_string(),
+            completed: false,
+            retry: TerminalCleanupRetry {
+                cascade: None,
+                remove_error_actor: false,
+            },
+        })
+    }
+
+    /// Return whether run-exit cleanup should cascade while holding the
+    /// lifecycle gate. A destructive close or an End still preparing its
+    /// durable terminal state is not eligible for run-exit handoff.
+    pub(crate) fn terminal_cleanup_cascade_locked(&self, session_id: &str) -> Option<bool> {
+        match self
+            .closing_sessions
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(session_id)
+        {
+            None => Some(
+                self.terminal_cleanup_cascade_overrides
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .get(session_id)
+                    .copied()
+                    .unwrap_or(true),
+            ),
+            Some(SessionClosingMode::EndCommitted { cascade }) => Some(*cascade),
+            Some(SessionClosingMode::EndPreparing { .. } | SessionClosingMode::Destructive) => None,
+        }
     }
 
     pub(crate) async fn register_direct_waiter(
@@ -593,6 +833,10 @@ impl SessionSupervisor {
         &self,
         session_id: &str,
     ) -> Option<actor::SessionActorHandle> {
+        self.terminal_cleanup_cascade_overrides
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .remove(session_id);
         self.actors.lock().await.remove(session_id)
     }
 
@@ -924,6 +1168,273 @@ mod tests {
         ));
     }
 
+    #[tokio::test]
+    async fn run_exit_rechecks_status_after_continue_wins_the_idle_window() {
+        let exec = make_executor(1);
+        let session = exec.create_session("continue wins run exit").await.unwrap();
+        let actor = exec.actor_for(&session.id).await.unwrap();
+        exec.update_session_status(&session.id, SessionStatus::Running)
+            .await
+            .unwrap();
+        assert!(actor.begin_direct_run().await);
+
+        // ReAct marks the failed run terminal before the dispatcher clears
+        // the actor's running bit. A Continue can commit after that bit clears
+        // but before the run-exit continuation is scheduled.
+        exec.update_session_status(&session.id, SessionStatus::Error)
+            .await
+            .unwrap();
+        assert!(actor.finish_run().await.is_some());
+        {
+            let _lifecycle = exec.lifecycle_guard().await;
+            assert!(!exec.is_session_closing(&session.id));
+            let transition = actor
+                .transition_if(SessionStatus::Error, SessionStatus::Pending, true)
+                .await
+                .unwrap();
+            assert!(transition.changed);
+            exec.enqueue_pending(&session.id).await;
+        }
+
+        exec.reconcile_run_exit(&session.id, &actor).await;
+
+        assert_eq!(
+            exec.get_active_session_status(&session.id).await,
+            Some(SessionStatus::Pending)
+        );
+        let current = exec.actor_for(&session.id).await.unwrap();
+        assert!(actor.same_instance(&current));
+        assert!(
+            exec.pending_queue
+                .lock()
+                .await
+                .iter()
+                .any(|id| id == &session.id)
+        );
+    }
+
+    #[tokio::test]
+    async fn terminal_cleanup_lease_blocks_reopen_and_new_closing_owner() {
+        let exec = make_executor(1);
+        let session = exec.create_session("cleanup lease").await.unwrap();
+        exec.update_session_status(&session.id, SessionStatus::Error)
+            .await
+            .unwrap();
+        let cleanup = {
+            let _lifecycle = exec.lifecycle_guard().await;
+            exec.begin_terminal_cleanup_locked(&session.id)
+                .expect("idle terminal cleanup should be claimable")
+        };
+
+        let reopen_error = exec
+            .ensure_session_loaded(&session.id)
+            .await
+            .expect_err("reopen must wait for the cleanup owner");
+        assert!(reopen_error.to_string().contains("closing"));
+        assert!(
+            exec.begin_session_closing(&session.id, SessionClosingMode::Destructive)
+                .await
+                .is_err()
+        );
+        drop(cleanup);
+        exec.ensure_session_loaded(&session.id).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn run_exit_only_takes_over_after_end_commit_and_not_during_delete() {
+        let exec = make_executor(1);
+        let ending = exec.create_session("end cleanup handoff").await.unwrap();
+        let ending_actor = exec.actor_for(&ending.id).await.unwrap();
+        ending_actor
+            .transition(SessionStatus::Error, true)
+            .await
+            .unwrap();
+        let ending_marker = exec
+            .begin_session_closing(
+                &ending.id,
+                SessionClosingMode::EndPreparing { cascade: false },
+            )
+            .await
+            .unwrap();
+
+        // A run-exit racing the initial End snapshot/Paused write must leave
+        // the Actor and durable state to the End owner.
+        exec.reconcile_run_exit(&ending.id, &ending_actor).await;
+        assert!(exec.actor_for(&ending.id).await.is_some());
+        assert!(
+            !exec
+                .terminal_cleanup_sessions
+                .lock()
+                .unwrap()
+                .contains(&ending.id)
+        );
+
+        {
+            let _lifecycle = exec.lifecycle_guard().await;
+            ending_actor
+                .transition(SessionStatus::Paused, true)
+                .await
+                .unwrap();
+            ending_actor
+                .transition(SessionStatus::Completed, true)
+                .await
+                .unwrap();
+            assert!(ending_marker.mark_end_committed());
+        }
+        exec.reconcile_run_exit(&ending.id, &ending_actor).await;
+        assert!(exec.actor_for(&ending.id).await.is_none());
+
+        let deleting = exec
+            .create_session("delete cleanup ownership")
+            .await
+            .unwrap();
+        let deleting_actor = exec.actor_for(&deleting.id).await.unwrap();
+        deleting_actor
+            .transition(SessionStatus::Error, true)
+            .await
+            .unwrap();
+        let delete_marker = exec
+            .begin_session_closing(&deleting.id, SessionClosingMode::Destructive)
+            .await
+            .unwrap();
+        exec.reconcile_run_exit(&deleting.id, &deleting_actor).await;
+        assert!(exec.actor_for(&deleting.id).await.is_some());
+        assert!(
+            !exec
+                .terminal_cleanup_sessions
+                .lock()
+                .unwrap()
+                .contains(&deleting.id)
+        );
+        drop(delete_marker);
+        exec.reconcile_run_exit(&deleting.id, &deleting_actor).await;
+        assert!(exec.actor_for(&deleting.id).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn interrupted_terminal_cleanup_is_retried_by_dispatcher_worker() {
+        let exec = make_executor(1);
+        let session = exec
+            .create_session("terminal cleanup retry worker")
+            .await
+            .unwrap();
+        let actor = exec.actor_for(&session.id).await.unwrap();
+        actor.transition(SessionStatus::Error, true).await.unwrap();
+        let mut cleanup = {
+            let _lifecycle = exec.lifecycle_guard().await;
+            exec.begin_terminal_cleanup_locked(&session.id)
+                .expect("terminal cleanup should be claimable")
+        };
+        cleanup.set_retry_policy(TerminalCleanupRetry {
+            cascade: Some(true),
+            remove_error_actor: true,
+        });
+
+        // Dropping an incomplete owner models task cancellation between the
+        // lease claim and cleanup completion.
+        drop(cleanup);
+        let cancellation = CancellationToken::new();
+        let handler: RunHandler = Arc::new(|_| Box::pin(async { Ok(()) }));
+        exec.clone()
+            .start_dispatcher_without_recovery_with_cancellation(handler, cancellation.clone());
+
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            while exec.actor_for(&session.id).await.is_some() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the dispatcher retry worker should reclaim idle terminal cleanup");
+        cancellation.cancel();
+    }
+
+    #[tokio::test]
+    async fn end_committed_close_drop_retries_terminal_cleanup_with_cascade_policy() {
+        let exec = make_executor(1);
+        let session = exec
+            .create_session("end marker retry worker")
+            .await
+            .unwrap();
+        let actor = exec.actor_for(&session.id).await.unwrap();
+        let closing = exec
+            .begin_session_closing(
+                &session.id,
+                SessionClosingMode::EndPreparing { cascade: false },
+            )
+            .await
+            .unwrap();
+        {
+            let _lifecycle = exec.lifecycle_guard().await;
+            actor.transition(SessionStatus::Paused, true).await.unwrap();
+            actor
+                .transition(SessionStatus::Completed, true)
+                .await
+                .unwrap();
+            assert!(closing.mark_end_committed());
+        }
+        drop(closing);
+        assert_eq!(
+            exec.terminal_cleanup_retry_queue
+                .queued
+                .lock()
+                .unwrap()
+                .get(&session.id),
+            Some(&TerminalCleanupRetry {
+                cascade: Some(false),
+                remove_error_actor: true,
+            }),
+            "retry must preserve the End cascade decision"
+        );
+
+        let cancellation = CancellationToken::new();
+        let handler: RunHandler = Arc::new(|_| Box::pin(async { Ok(()) }));
+        exec.clone()
+            .start_dispatcher_without_recovery_with_cancellation(handler, cancellation.clone());
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            while exec.actor_for(&session.id).await.is_some() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("an aborted End must retry its committed terminal cleanup");
+        cancellation.cancel();
+    }
+
+    #[tokio::test]
+    async fn memory_only_terminal_status_cannot_remove_uncommitted_session() {
+        let exec = make_executor(1);
+        let session = exec
+            .create_session("memory only terminal guard")
+            .await
+            .unwrap();
+        let actor = exec.actor_for(&session.id).await.unwrap();
+        let durable_before = exec
+            .store
+            .session_record(&session.id)
+            .unwrap()
+            .unwrap()
+            .status;
+
+        let error = exec
+            .update_session_status_memory_only(&session.id, SessionStatus::Completed)
+            .await
+            .expect_err("terminal status must have a durable commit before cleanup");
+        assert!(error.to_string().contains("memory-only"));
+        assert!(actor.same_instance(&exec.actor_for(&session.id).await.unwrap()));
+        assert_eq!(
+            exec.get_active_session_status(&session.id).await,
+            Some(SessionStatus::Pending)
+        );
+        assert_eq!(
+            exec.store
+                .session_record(&session.id)
+                .unwrap()
+                .unwrap()
+                .status,
+            durable_before
+        );
+    }
+
     /// A handler that panics must still release the running slot and mark the
     /// session Error —otherwise the session is stuck in Running forever.
     #[tokio::test]
@@ -1169,7 +1680,8 @@ mod tests {
         exec.update_session_status(&session.id, SessionStatus::Pending)
             .await
             .unwrap();
-        exec.end_direct_run(&session.id).await;
+        let actor = exec.actor_for(&session.id).await.unwrap();
+        exec.end_direct_run(&session.id, &actor).await;
         exec.enqueue_pending(&session.id).await;
         let claimed = exec.try_claim_pending().await;
         assert_eq!(claimed.as_deref(), Some(session.id.as_str()));
@@ -1498,6 +2010,151 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn direct_run_admission_promotes_paused_session_before_execution() {
+        let exec = make_executor(1);
+        let session = exec.create_session("direct run from paused").await.unwrap();
+        exec.update_session_status(&session.id, SessionStatus::Paused)
+            .await
+            .unwrap();
+        assert_eq!(
+            exec.get_active_session_status(&session.id).await,
+            Some(SessionStatus::Paused)
+        );
+        assert!(
+            !exec.is_session_closing(&session.id),
+            "a paused idle session should not retain a closing or cleanup lease"
+        );
+        assert!(!exec.is_run_in_flight(&session.id).await);
+
+        let mut lease = exec
+            .begin_direct_run(&session.id)
+            .await
+            .expect("paused direct run should acquire an explicit run lease");
+        assert_eq!(
+            exec.get_active_session_status(&session.id).await,
+            Some(SessionStatus::Running),
+            "the actor must persist Running before a direct run can emit errors"
+        );
+        lease.finish().await;
+    }
+
+    #[tokio::test]
+    async fn cancelled_direct_run_admission_unregisters_waiter() {
+        let exec = make_executor(1);
+        let occupying = exec.create_session("occupying direct run").await.unwrap();
+        let waiting = exec
+            .create_session("cancelled direct waiter")
+            .await
+            .unwrap();
+        let mut occupying_lease = exec
+            .begin_direct_run(&occupying.id)
+            .await
+            .expect("first direct run should acquire the only permit");
+
+        let waiting_exec = exec.clone();
+        let waiting_id = waiting.id.clone();
+        let admission =
+            tokio::spawn(async move { waiting_exec.begin_direct_run(&waiting_id).await });
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            loop {
+                if exec
+                    .direct_run_waiters
+                    .lock()
+                    .await
+                    .contains_key(&waiting.id)
+                {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("waiting admission should register its cancellation handle");
+
+        admission.abort();
+        let error = match admission.await {
+            Ok(_) => panic!("cancelled admission unexpectedly completed"),
+            Err(error) => error,
+        };
+        assert!(error.is_cancelled());
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            loop {
+                if !exec
+                    .direct_run_waiters
+                    .lock()
+                    .await
+                    .contains_key(&waiting.id)
+                {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("cancelled admission should unregister its waiter");
+
+        exec.update_session_status(&occupying.id, SessionStatus::Paused)
+            .await
+            .unwrap();
+        occupying_lease.finish().await;
+        drop(occupying_lease);
+    }
+
+    #[tokio::test]
+    async fn stale_direct_run_cleanup_does_not_finish_reloaded_actor() {
+        let exec = make_executor(1);
+        let session = exec.create_session("stale direct run owner").await.unwrap();
+        let old_lease = exec
+            .begin_direct_run(&session.id)
+            .await
+            .expect("first actor should admit a direct run");
+        let old_actor = old_lease.actor.clone();
+
+        // Remove and reload the session while the old caller still retains its
+        // lease handle. The old run exits before its delayed guard cleanup, as
+        // it would when deletion quiesces an in-flight direct caller.
+        exec.update_session_status(&session.id, SessionStatus::Paused)
+            .await
+            .unwrap();
+        old_actor.release_run_now();
+        exec.remove_session(&session.id).await.unwrap();
+        assert!(exec.actor_for(&session.id).await.is_none());
+        drop(old_lease);
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            loop {
+                let active = exec
+                    .direct_run_leases
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .contains_key(&session.id);
+                if !active {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("stale actor cleanup should release its same-session reservation");
+
+        exec.ensure_session_loaded(&session.id).await.unwrap();
+        let mut new_lease = exec
+            .begin_direct_run(&session.id)
+            .await
+            .expect("reloaded actor should admit a new direct run");
+        let new_actor = exec.actor_for(&session.id).await.unwrap();
+        assert!(!new_actor.same_instance(&old_actor));
+        assert!(new_actor.is_running().await);
+
+        exec.end_direct_run(&session.id, &old_actor).await;
+
+        assert!(
+            new_actor.is_running().await,
+            "stale cleanup must not clear the reloaded actor's run bit"
+        );
+        new_lease.finish().await;
+    }
+
+    #[tokio::test]
     async fn closing_marker_is_released_when_delete_task_is_cancelled() {
         let exec = make_executor(1);
         let session = exec.create_session("cancelled delete").await.unwrap();
@@ -1505,7 +2162,7 @@ mod tests {
         let session_id = session.id.clone();
         let delete = tokio::spawn(async move {
             let _closing = exec_for_delete
-                .begin_session_closing(&session_id)
+                .begin_session_closing(&session_id, SessionClosingMode::Destructive)
                 .await
                 .unwrap();
             std::future::pending::<()>().await;
@@ -1527,9 +2184,35 @@ mod tests {
     async fn duplicate_closing_admission_is_rejected() {
         let exec = make_executor(1);
         let session = exec.create_session("duplicate close").await.unwrap();
-        let first = exec.begin_session_closing(&session.id).await.unwrap();
-        let second = exec.begin_session_closing(&session.id).await;
+        let first = exec
+            .begin_session_closing(
+                &session.id,
+                SessionClosingMode::EndPreparing { cascade: false },
+            )
+            .await
+            .unwrap();
+        let second = exec
+            .begin_session_closing(&session.id, SessionClosingMode::Destructive)
+            .await;
         assert!(second.is_err());
+        {
+            let _lifecycle = exec.lifecycle_guard().await;
+            assert_eq!(
+                exec.terminal_cleanup_cascade_locked(&session.id),
+                None,
+                "a duplicate close attempt must not replace the current End owner"
+            );
+            assert!(
+                exec.closing_sessions
+                    .lock()
+                    .unwrap()
+                    .get(&session.id)
+                    .is_some_and(|mode| matches!(
+                        mode,
+                        SessionClosingMode::EndPreparing { cascade: false }
+                    ))
+            );
+        }
         drop(first);
         assert!(!exec.is_session_closing(&session.id));
     }
@@ -1790,6 +2473,27 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn repeated_end_reclaims_cleanup_for_an_idle_completed_actor() {
+        let exec = make_executor(1);
+        let session = exec.create_session("retry terminal cleanup").await.unwrap();
+        let actor = exec.actor_for(&session.id).await.unwrap();
+
+        // Simulate cancellation after Completed committed but before the
+        // original cleanup owner removed the actor.
+        actor
+            .transition(SessionStatus::Completed, true)
+            .await
+            .unwrap();
+        assert!(exec.actor_for(&session.id).await.is_some());
+
+        assert_eq!(
+            exec.end_session(&session.id).await.unwrap(),
+            SessionStatus::Completed
+        );
+        assert!(exec.actor_for(&session.id).await.is_none());
+    }
+
+    #[tokio::test]
     async fn end_session_returns_before_a_stuck_run_exits() {
         let exec = make_executor(1);
         let session = exec.create_session("active end").await.unwrap();
@@ -1875,6 +2579,138 @@ mod tests {
         .expect("terminal cleanup should finish after the run exits");
         assert_eq!(exited.load(Ordering::SeqCst), 1);
         assert_eq!(exec.get_active_session_status(&session.id).await, None);
+    }
+
+    #[tokio::test]
+    async fn failed_end_pauses_stuck_run_and_retry_wins_over_late_run_error() {
+        let (exec, db) = make_executor_with_db(1);
+        let session = exec
+            .create_session("failed end while run is stuck")
+            .await
+            .unwrap();
+        exec.action_service()
+            .set_action_store(Some(ActionStore::new(db.clone())))
+            .await;
+        let action_id = "act-stuck-end-retry";
+        let due_at = (chrono::Utc::now() + chrono::Duration::hours(1)).to_rfc3339();
+        db.save_scheduled_action(
+            action_id,
+            &due_at,
+            "Stuck end retry",
+            "must be cancelled on retry",
+            "tool",
+            Some(&session.id),
+            Some("notify"),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        db.conn()
+            .execute_batch(&format!(
+                "CREATE TRIGGER block_stuck_end_cancel
+                 BEFORE UPDATE OF status ON actions
+                 WHEN NEW.id = '{action_id}' AND NEW.status = 'cancelled'
+                 BEGIN SELECT RAISE(ABORT, 'injected stuck cancellation failure'); END;"
+            ))
+            .unwrap();
+
+        let started = Arc::new(AtomicU32::new(0));
+        let cancellation_seen = Arc::new(AtomicU32::new(0));
+        let allow_exit = Arc::new(AtomicU32::new(0));
+        let exited = Arc::new(AtomicU32::new(0));
+        let started_handler = started.clone();
+        let cancellation_seen_handler = cancellation_seen.clone();
+        let allow_exit_handler = allow_exit.clone();
+        let exited_handler = exited.clone();
+        let exec_handler = exec.clone();
+        let handler: RunHandler = Arc::new(move |session_id: String| {
+            let started = started_handler.clone();
+            let cancellation_seen = cancellation_seen_handler.clone();
+            let allow_exit = allow_exit_handler.clone();
+            let exited = exited_handler.clone();
+            let exec = exec_handler.clone();
+            Box::pin(async move {
+                started.store(1, Ordering::SeqCst);
+                exec.cancellation_token(&session_id).await.cancelled().await;
+                cancellation_seen.store(1, Ordering::SeqCst);
+                while allow_exit.load(Ordering::SeqCst) == 0 {
+                    tokio::task::yield_now().await;
+                }
+                exited.store(1, Ordering::SeqCst);
+                anyhow::bail!("provider failed after end cancellation")
+            })
+        });
+        let mut events = exec.subscribe_events();
+        exec.clone().start_dispatcher(handler);
+
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while started.load(Ordering::SeqCst) == 0 || !exec.is_run_in_flight(&session.id).await {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the run should start");
+
+        let end = {
+            let exec = exec.clone();
+            let session_id = session.id.clone();
+            tokio::spawn(async move { exec.end_session(&session_id).await })
+        };
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while cancellation_seen.load(Ordering::SeqCst) == 0 {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("end should cancel the active run");
+        let error = tokio::time::timeout(std::time::Duration::from_millis(500), end)
+            .await
+            .expect("failed end must not wait for a stuck provider")
+            .expect("end task should join")
+            .expect_err("durable cleanup failure must be reported");
+        assert!(format!("{error:#}").contains("injected stuck cancellation failure"));
+        assert_eq!(
+            exec.get_session_status(&session.id).await,
+            Some(SessionStatus::Paused)
+        );
+        assert!(exec.is_run_in_flight(&session.id).await);
+        assert_eq!(
+            db.get_action(action_id).unwrap().unwrap().status,
+            haven_common::ActionStatus::Waiting
+        );
+
+        allow_exit.store(1, Ordering::SeqCst);
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while exec.is_run_in_flight(&session.id).await {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("late run error should release its slot");
+        assert_eq!(exited.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            exec.get_session_status(&session.id).await,
+            Some(SessionStatus::Paused),
+            "a cancelled run error must not overwrite the accepted pause"
+        );
+        assert!(
+            !std::iter::from_fn(|| events.try_recv().ok())
+                .any(|event| matches!(event, SessionEvent::SessionError { .. })),
+            "a late cancelled-run error must not publish a second terminal event"
+        );
+
+        db.conn()
+            .execute_batch("DROP TRIGGER block_stuck_end_cancel")
+            .unwrap();
+        assert_eq!(
+            exec.end_session(&session.id).await.unwrap(),
+            SessionStatus::Completed
+        );
+        assert_eq!(
+            db.get_session(&session.id).unwrap().unwrap().status,
+            SessionStatus::Completed
+        );
     }
 
     #[tokio::test]
@@ -2417,6 +3253,199 @@ mod tests {
         assert_eq!(
             db.get_action(action_id).unwrap().unwrap().status,
             haven_common::ActionStatus::Cancelled
+        );
+    }
+
+    #[tokio::test]
+    async fn actorless_end_failure_pauses_and_retry_cancels_remaining_action() {
+        let db = temp_db();
+        let session = db.create_session("actorless end retry").unwrap();
+        let action_id = "act-actorless-end-retry";
+        let due_at = (chrono::Utc::now() + chrono::Duration::hours(1)).to_rfc3339();
+        db.save_scheduled_action(
+            action_id,
+            &due_at,
+            "Actorless end retry",
+            "must remain retryable",
+            "tool",
+            Some(&session.id),
+            Some("notify"),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        let exec = Arc::new(SessionSupervisor::new_for_test(
+            db.clone(),
+            Arc::new(ToolsManager::new()),
+            1,
+        ));
+        exec.action_service()
+            .set_action_store(Some(ActionStore::new(db.clone())))
+            .await;
+        let mut events = exec.subscribe_events();
+        db.conn()
+            .execute_batch(&format!(
+                "CREATE TRIGGER block_end_retry_cancel
+                 BEFORE UPDATE OF status ON actions
+                 WHEN NEW.id = '{action_id}' AND NEW.status = 'cancelled'
+                 BEGIN SELECT RAISE(ABORT, 'injected end cancellation failure'); END;"
+            ))
+            .unwrap();
+
+        let error = exec
+            .end_session(&session.id)
+            .await
+            .expect_err("durable action cleanup failure must reject end");
+        assert!(format!("{error:#}").contains("injected end cancellation failure"));
+        assert_eq!(
+            db.get_session(&session.id).unwrap().unwrap().status,
+            SessionStatus::Paused
+        );
+        assert_eq!(
+            db.get_action(action_id).unwrap().unwrap().status,
+            haven_common::ActionStatus::Waiting
+        );
+        assert!(matches!(
+            events.try_recv(),
+            Ok(SessionEvent::SessionEndPaused { session_id }) if session_id == session.id
+        ));
+
+        db.conn()
+            .execute_batch("DROP TRIGGER block_end_retry_cancel")
+            .unwrap();
+        assert_eq!(
+            exec.end_session(&session.id).await.unwrap(),
+            SessionStatus::Completed
+        );
+        assert_eq!(
+            db.get_action(action_id).unwrap().unwrap().status,
+            haven_common::ActionStatus::Cancelled
+        );
+    }
+
+    #[tokio::test]
+    async fn resident_end_partial_failure_keeps_paused_actor_and_retry_completes() {
+        let (exec, db) = make_executor_with_db(1);
+        let session = exec.create_session("resident end retry").await.unwrap();
+        exec.action_service()
+            .set_action_store(Some(ActionStore::new(db.clone())))
+            .await;
+        let blocked_id = "act-resident-blocked";
+        let cancelled_id = "act-resident-cancelled";
+        let due_at = (chrono::Utc::now() + chrono::Duration::hours(1)).to_rfc3339();
+        for action_id in [blocked_id, cancelled_id] {
+            db.save_scheduled_action(
+                action_id,
+                &due_at,
+                "Resident end retry",
+                "partial cleanup must converge",
+                "tool",
+                Some(&session.id),
+                Some("notify"),
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+        }
+        db.conn()
+            .execute_batch(&format!(
+                "CREATE TRIGGER block_resident_end_cancel
+                 BEFORE UPDATE OF status ON actions
+                 WHEN NEW.id = '{blocked_id}' AND NEW.status = 'cancelled'
+                 BEGIN SELECT RAISE(ABORT, 'injected resident cancellation failure'); END;"
+            ))
+            .unwrap();
+
+        let error = exec
+            .end_session(&session.id)
+            .await
+            .expect_err("partial durable cleanup must leave end retryable");
+        assert!(format!("{error:#}").contains("injected resident cancellation failure"));
+        assert_eq!(
+            exec.get_session_status(&session.id).await,
+            Some(SessionStatus::Paused)
+        );
+        assert_eq!(
+            exec.waiting_reason(&session.id).await,
+            Some(SessionWaitingReason::EndIncomplete)
+        );
+        assert_eq!(
+            db.get_action(blocked_id).unwrap().unwrap().status,
+            haven_common::ActionStatus::Waiting
+        );
+        assert_eq!(
+            db.get_action(cancelled_id).unwrap().unwrap().status,
+            haven_common::ActionStatus::Cancelled
+        );
+
+        db.conn()
+            .execute_batch("DROP TRIGGER block_resident_end_cancel")
+            .unwrap();
+        assert_eq!(
+            exec.end_session(&session.id).await.unwrap(),
+            SessionStatus::Completed
+        );
+        assert!(exec.actor_for(&session.id).await.is_none());
+        assert_eq!(
+            db.get_action(blocked_id).unwrap().unwrap().status,
+            haven_common::ActionStatus::Cancelled
+        );
+    }
+
+    #[tokio::test]
+    async fn end_status_write_failure_does_not_cancel_run_or_owned_actions() {
+        let (exec, db) = make_executor_with_db(1);
+        let session = exec.create_session("end status write retry").await.unwrap();
+        exec.action_service()
+            .set_action_store(Some(ActionStore::new(db.clone())))
+            .await;
+        let action_id = "act-end-status-write-retry";
+        let due_at = (chrono::Utc::now() + chrono::Duration::hours(1)).to_rfc3339();
+        db.save_scheduled_action(
+            action_id,
+            &due_at,
+            "End status write retry",
+            "must not be cancelled before pause commits",
+            "tool",
+            Some(&session.id),
+            Some("notify"),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        db.conn()
+            .execute_batch(
+                "CREATE TRIGGER reject_end_pause
+                 BEFORE UPDATE OF status ON sessions
+                 BEGIN SELECT RAISE(ABORT, 'injected pause persistence failure'); END;",
+            )
+            .unwrap();
+        let run_token = exec.cancellation_token(&session.id).await;
+
+        let error = exec
+            .end_session(&session.id)
+            .await
+            .expect_err("end must fail before cancelling when Paused is not durable");
+        assert!(format!("{error:#}").contains("injected pause persistence failure"));
+        assert_eq!(
+            exec.get_session_status(&session.id).await,
+            Some(SessionStatus::Pending)
+        );
+        assert!(!run_token.is_cancelled());
+        assert_eq!(
+            db.get_action(action_id).unwrap().unwrap().status,
+            haven_common::ActionStatus::Waiting
+        );
+
+        db.conn()
+            .execute_batch("DROP TRIGGER reject_end_pause")
+            .unwrap();
+        assert_eq!(
+            exec.end_session(&session.id).await.unwrap(),
+            SessionStatus::Completed
         );
     }
 
@@ -2964,6 +3993,13 @@ mod tests {
         exec.update_session_status(&session.id, SessionStatus::Paused)
             .await
             .unwrap();
+
+        let late_subscriber = exec.subscribe_status(&session.id).await;
+        assert_eq!(
+            *late_subscriber.borrow(),
+            SessionStatus::Paused,
+            "a late watch subscriber must see the current actor status"
+        );
 
         // Waiter subscribes AFTER the pause (the level-triggered value must
         // still be visible) and wakes on the resume transition.

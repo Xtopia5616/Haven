@@ -21,6 +21,7 @@ export const SESSION_WAITING_REASONS = [
 	'background_task',
 	'scheduled_task',
 	'step_budget',
+	'end_incomplete',
 ] as const;
 
 export type SessionWaitingReason = (typeof SESSION_WAITING_REASONS)[number];
@@ -34,6 +35,7 @@ const WAITING_REASON_LABELS: Record<SessionWaitingReason, string> = {
 	background_task: '等待任务',
 	scheduled_task: '等待定时任务',
 	step_budget: '等待操作',
+	end_incomplete: '结束未完成，可重试',
 };
 
 const COLOR_MAP: Record<string, string> = {

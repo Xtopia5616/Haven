@@ -37,6 +37,8 @@ mod background;
 mod scheduled;
 mod views;
 
+pub(crate) use background::BackgroundShellRequest;
+
 #[cfg(test)]
 use scheduled::action_finished_prompt;
 pub use views::{
@@ -1364,26 +1366,33 @@ impl ActionService {
         }
     }
 
-    /// Cancel session-owned actions and return persistence failures so a
-    /// destructive session lifecycle can leave the durable session in place
-    /// for retry. A scheduled execution claim that already won remains a
-    /// legitimate first-wins outcome and is not an error.
+    /// Cancel session-owned actions and return scheduled durable query/cancel
+    /// failures so a destructive session lifecycle can leave the durable
+    /// session in place for retry. Background cancellation remains best-effort
+    /// and uses its bounded terminal-write retry. A scheduled execution claim
+    /// that already won remains a legitimate first-wins outcome and is not an
+    /// error.
     pub async fn cancel_owned_by_session_checked(
         self: &Arc<Self>,
         session_id: &str,
     ) -> anyhow::Result<()> {
-        self.cancel_owned_background_by_session(session_id).await;
-        self.cancel_owned_scheduled_by_session_checked(session_id)
+        // Serialize both action families with admission. Background admission
+        // must finish publishing its durable row and board entry before this
+        // snapshot; scheduled admission already uses the same gate through its
+        // durable write. Keep the established background-then-scheduled order.
+        let _mutation = self.spawn_gate.lock().await;
+        self.cancel_owned_background_by_session_locked(session_id)
+            .await;
+        self.cancel_owned_scheduled_by_session_checked_locked(session_id)
             .await
     }
 }
 
 impl ActionService {
-    async fn cancel_owned_scheduled_by_session_checked(
+    async fn cancel_owned_scheduled_by_session_checked_locked(
         &self,
         session_id: &str,
     ) -> anyhow::Result<()> {
-        let _mutation = self.spawn_gate.lock().await;
         let live_ids = {
             let actions = self.actions.read().await;
             actions

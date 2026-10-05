@@ -36,6 +36,18 @@ impl AgentLayer {
         pause: bool,
         target_message_id: Option<&str>,
     ) -> anyhow::Result<()> {
+        // Reject an end that already owns this session before cancelling a
+        // run or touching action/interaction state. The commit path below
+        // rechecks under the same lifecycle gate to cover an end that begins
+        // while rollback is waiting for a running handler to exit.
+        {
+            let _lifecycle = self.executor.lifecycle_guard().await;
+            self.executor.ensure_lifecycle_open()?;
+            if self.executor.is_session_closing(session_id) {
+                anyhow::bail!("session '{}' is closing; retry rollback later", session_id);
+            }
+        }
+
         // Validate the exact requested row before lifecycle handling can
         // cancel actions, clear interactions, or otherwise change session
         // state. The store repeats this lookup in its rollback transaction.
@@ -82,14 +94,6 @@ impl AgentLayer {
             crate::lifecycle::LifecycleDecision::Allow
             | crate::lifecycle::LifecycleDecision::NotApplicable => {}
         }
-
-        // Background actions spawned before the rollback are stale relative to
-        // the restored snapshot: kill them so their children cannot leak.
-        self.executor.cancel_session_actions(session_id).await;
-
-        // R6: drop every interaction before restore so ingress cannot route
-        // input to a request that no longer exists.
-        self.executor.clear_interactions(session_id, None).await?;
 
         let durable_state = self
             .react_engine
@@ -198,12 +202,6 @@ impl AgentLayer {
                     .is_some_and(|max| m.created_at.as_str() > max)
         });
 
-        // Drop any checkpointed partial stream text: the restored timeline
-        // must not inherit a stale partial from the discarded run. Discard
-        // goes through the executor's PartialStore so an in-flight stream
-        // checkpoint cannot re-create the row afterwards.
-        self.executor.partials.discard(session_id).await;
-
         // For user-message rollback, also remove the user message from the
         // restored events so the LLM doesn't see it when the session resumes.
         // Skipped for orphan rollback: the orphaned message was never in the
@@ -270,6 +268,23 @@ impl AgentLayer {
             Vec::new()
         };
 
+        // Serialize the durable rollback commit and its paired interaction /
+        // status projection against explicit end. If end acquired the marker
+        // while this operation joined a run, no transcript mutation occurs.
+        let _lifecycle = self.executor.lifecycle_guard().await;
+        self.executor.ensure_lifecycle_open()?;
+        if self.executor.is_session_closing(session_id) {
+            anyhow::bail!("session '{}' is closing; retry rollback later", session_id);
+        }
+
+        // Background actions spawned before the rollback are stale relative
+        // to the restored snapshot: kill them so their children cannot leak.
+        self.executor.cancel_session_actions(session_id).await;
+
+        // Drop any checkpointed partial stream text only after lifecycle
+        // admission. The restored timeline must not inherit stale partials.
+        self.executor.partials.discard(session_id).await;
+
         // Keep the database event log append-only. The marker changes the
         // active replay cursor; discarded rows remain available for audit and
         // can never leak into the resumed timeline.
@@ -284,6 +299,11 @@ impl AgentLayer {
             .event_store
             .rollback_to_async(session_id, rollback_request, replacement_transcript, None)
             .await?;
+
+        // Clear after the atomic rollback so ingress cannot route to requests
+        // that no longer exist. Keep this paired with the durable marker under
+        // the lifecycle gate so a concurrent end cannot leave a half-rollback.
+        self.executor.clear_interactions(session_id, None).await?;
 
         // Clear after the atomic rollback so in-memory counters re-seed from
         // the rebuilt DB row and late detached persists are ignored.
@@ -300,7 +320,9 @@ impl AgentLayer {
 
         // Reload the session into executor memory (it may have been removed if we
         // marked a Running session as Error above, or was never loaded after restart).
-        self.executor.ensure_session_loaded(session_id).await?;
+        self.executor
+            .ensure_session_loaded_locked(session_id)
+            .await?;
 
         self.set_session_status(
             session_id,
@@ -334,68 +356,100 @@ impl AgentLayer {
     pub async fn continue_session(&self, session_id: &str) -> anyhow::Result<()> {
         // Ensure the session is loaded in executor memory.
         self.executor.ensure_session_loaded(session_id).await?;
-
-        let state = self.executor.get_session_status(session_id).await;
-        // R6: lifecycle matrix owns continue allow/deny (Error|Paused* only).
-        // If pause already flipped status but the handler is still unwinding,
-        // join before truncating messages / flipping to Pending.
-        let run_in_flight = self.executor.is_run_in_flight(session_id).await;
-        let window = LifecycleWindow::classify(state.as_ref(), run_in_flight);
-        match decide(window, LifecycleOp::ErroredContinue, state.as_ref()) {
-            crate::lifecycle::LifecycleDecision::AwaitThenAllow
-            | crate::lifecycle::LifecycleDecision::CancelThenAllow => {
-                self.executor.await_run_finished(session_id).await?;
+        loop {
+            let state = self.executor.get_session_status(session_id).await;
+            let run_in_flight = self.executor.is_run_in_flight(session_id).await;
+            let window = LifecycleWindow::classify(state.as_ref(), run_in_flight);
+            match decide(window, LifecycleOp::ErroredContinue, state.as_ref()) {
+                crate::lifecycle::LifecycleDecision::AwaitThenAllow
+                | crate::lifecycle::LifecycleDecision::CancelThenAllow => {
+                    self.executor.await_run_finished(session_id).await?;
+                    continue;
+                }
+                crate::lifecycle::LifecycleDecision::Deny => {
+                    return Err(anyhow::anyhow!(
+                        "session is not in a retryable state (current: {:?})",
+                        state
+                    ));
+                }
+                crate::lifecycle::LifecycleDecision::Allow
+                | crate::lifecycle::LifecycleDecision::NotApplicable => {}
             }
-            crate::lifecycle::LifecycleDecision::Deny => {
-                return Err(anyhow::anyhow!(
-                    "session is not in a retryable state (current: {:?})",
-                    state
-                ));
+
+            // Serialize the durable transcript rewrite and status transition
+            // with explicit end. A Continue selected after an end-cleanup
+            // failure is an explicit choice to resume the session; any
+            // remaining actions keep their ordinary owner lifecycle.
+            let _lifecycle = self.executor.lifecycle_guard().await;
+            self.executor.ensure_lifecycle_open()?;
+            if self.executor.is_session_closing(session_id) {
+                anyhow::bail!("session '{}' is closing; retry continue later", session_id);
             }
-            crate::lifecycle::LifecycleDecision::Allow
-            | crate::lifecycle::LifecycleDecision::NotApplicable => {}
-        }
-
-        // The store owns the recovery marker decision and applies an
-        // authorized projection cutoff in the same transaction.
-        self.react_engine
-            .event_store
-            .truncate_projection_after_latest_committed_recovery_async(session_id)
-            .await?;
-        // Clear after join + truncation so unwind persists cannot leave a
-        // stale-high cutoff in the mid-run branch-point cache. Invalidate
-        // usage so retry re-seeds from rebuilt totals.
-        self.react_engine
-            .invalidate_usage_after_truncate(session_id);
-
-        // Drop any checkpointed partial stream text: the retry re-streams
-        // from scratch, so a crash during the retry must not promote the
-        // pre-retry partial. Goes through the PartialStore so no in-flight
-        // checkpoint can resurrect the row.
-        self.executor.partials.discard(session_id).await;
-
-        // Continuing explicitly cancels every pending interaction; status
-        // alone flipping to Pending is not enough because the actor owns the
-        // request lifecycle.
-        if state.is_some_and(|status| status.is_paused()) {
             self.executor
-                .clear_interactions_persisted(session_id, None)
+                .ensure_session_loaded_locked(session_id)
                 .await?;
+
+            let state = self.executor.get_session_status(session_id).await;
+            let run_in_flight = self.executor.is_run_in_flight(session_id).await;
+            let window = LifecycleWindow::classify(state.as_ref(), run_in_flight);
+            match decide(window, LifecycleOp::ErroredContinue, state.as_ref()) {
+                crate::lifecycle::LifecycleDecision::AwaitThenAllow
+                | crate::lifecycle::LifecycleDecision::CancelThenAllow => {
+                    drop(_lifecycle);
+                    self.executor.await_run_finished(session_id).await?;
+                    continue;
+                }
+                crate::lifecycle::LifecycleDecision::Deny => {
+                    return Err(anyhow::anyhow!(
+                        "session is not in a retryable state (current: {:?})",
+                        state
+                    ));
+                }
+                crate::lifecycle::LifecycleDecision::Allow
+                | crate::lifecycle::LifecycleDecision::NotApplicable => {}
+            }
+
+            // The store owns the recovery marker decision and applies an
+            // authorized projection cutoff in the same transaction.
+            self.react_engine
+                .event_store
+                .truncate_projection_after_latest_committed_recovery_async(session_id)
+                .await?;
+            // Clear after join + truncation so unwind persists cannot leave a
+            // stale-high cutoff in the mid-run branch-point cache. Invalidate
+            // usage so retry re-seeds from rebuilt totals.
+            self.react_engine
+                .invalidate_usage_after_truncate(session_id);
+
+            // Drop any checkpointed partial stream text: the retry re-streams
+            // from scratch, so a crash during the retry must not promote the
+            // pre-retry partial. Goes through PartialStore to prevent stale
+            // checkpoint writes from resurrecting the row.
+            self.executor.partials.discard(session_id).await;
+
+            // Continuing explicitly cancels every pending interaction; status
+            // alone flipping to Pending is not enough because the actor owns
+            // the request lifecycle.
+            if state.is_some_and(|status| status.is_paused()) {
+                self.executor
+                    .clear_interactions_persisted(session_id, None)
+                    .await?;
+            }
+
+            // An explicit Continue is the user's decision to try the provider
+            // again. Clear only the chat route's consecutive-failure gate so
+            // the queued run can make one fresh attempt without cooldown.
+            self.react_engine.prepare_manual_retry().await;
+
+            // Set to Pending for the dispatcher to pick up.
+            self.set_session_status(session_id, SessionStatus::Pending)
+                .await?;
+
+            tracing::info!(
+                "continue_session: session {} set to Pending for retry",
+                session_id
+            );
+            return Ok(());
         }
-
-        // An explicit Continue is the user's decision to try the provider
-        // again. Clear only the chat route's consecutive-failure gate so the
-        // queued run can make one fresh attempt without waiting for cooldown.
-        self.react_engine.prepare_manual_retry().await;
-
-        // Set to Pending for the dispatcher to pick up.
-        self.set_session_status(session_id, SessionStatus::Pending)
-            .await?;
-
-        tracing::info!(
-            "continue_session: session {} set to Pending for retry",
-            session_id
-        );
-        Ok(())
     }
 }

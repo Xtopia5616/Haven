@@ -356,7 +356,7 @@ async fn interrupt_then_continue_on_same_actor_uses_a_fresh_run_token() {
 
     let history = tokio::time::timeout(
         std::time::Duration::from_secs(2),
-        agent.run_session_from_id(&session.id),
+        agent.run_session_from_dispatcher(&session.id),
     )
     .await
     .expect("continued run should not inherit the previous cancellation")
@@ -1417,6 +1417,10 @@ async fn retry_after_ask_answer_error_keeps_single_history() {
     // The failed run ended in Error; terminal cleanup removed the session
     // from the working set.
     assert_eq!(executor.get_active_session_status(&session.id).await, None);
+    assert!(
+        !executor.is_session_closing(&session.id),
+        "run-exit cleanup must release its lifecycle admission lease before Continue"
+    );
 
     // Turn 3: retry via continue_session ??Pending ??re-run.
     agent.continue_session(&session.id).await.unwrap();

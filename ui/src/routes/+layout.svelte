@@ -1021,6 +1021,7 @@
 			if (
 				data.waitingReason !== 'confirmation' &&
 				data.waitingReason !== 'scheduled_confirmation' &&
+				data.waitingReason !== 'end_incomplete' &&
 				notifyCfg?.session_paused?.in_app !== false
 			) {
 				addNotification(`会话已暂停: ${title || '未知'}`, 'warning', 3000);

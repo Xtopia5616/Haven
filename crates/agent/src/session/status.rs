@@ -68,8 +68,10 @@ impl SessionSupervisor {
     ) -> anyhow::Result<SessionStatus> {
         // Close concurrent loads/resumes while an actorless end persists its
         // terminal status and cleans up durable actions.
-        let _closing = self.begin_session_closing(session_id).await?;
-        self.end_session_inner(session_id, cascade).await
+        let closing = self
+            .begin_session_closing(session_id, SessionClosingMode::EndPreparing { cascade })
+            .await?;
+        self.end_session_inner(session_id, cascade, &closing).await
     }
 
     pub async fn interrupt_session(&self, session_id: &str) -> anyhow::Result<bool> {
@@ -110,24 +112,150 @@ impl SessionSupervisor {
         &self,
         session_id: &str,
         cascade: bool,
+        closing: &SessionClosingGuard,
     ) -> anyhow::Result<SessionStatus> {
+        // Confirmation resolution can claim a scheduled action before it
+        // consumes the owner-local request. Serialize that two-part decision
+        // with lifecycle cleanup; resolution entry points also reject owners
+        // whose session is marked closing while this guard is held.
+        let resolution = self.confirmation_resolution_gate.clone().lock_owned().await;
         let Some(actor) = self.actor_for(session_id).await else {
-            self.cancel_direct_waiters(session_id).await;
-            self.cancel_session_actions_checked(session_id).await?;
-            Self::persist_status(&self.store, session_id, SessionStatus::Completed).await?;
+            // Preserve the established idempotent no-op behavior for unknown
+            // sessions. Existing callers may end a stale selection while its
+            // durable row has already been removed.
+            let record = self.store.session_record(session_id)?;
+            if record.as_ref().is_some_and(|record| {
+                record.status != SessionStatus::Paused && record.status != SessionStatus::Completed
+            }) {
+                Self::persist_status(&self.store, session_id, SessionStatus::Paused).await?;
+            }
+            if let Err(error) = self.cancel_session_actions_checked(session_id).await {
+                if record
+                    .as_ref()
+                    .is_some_and(|record| record.status != SessionStatus::Completed)
+                {
+                    self.emit_event(SessionEvent::SessionEndPaused {
+                        session_id: session_id.to_string(),
+                    });
+                }
+                return Err(error);
+            }
+            drop(resolution);
+            if record
+                .as_ref()
+                .is_some_and(|record| record.status != SessionStatus::Completed)
+                && let Err(error) =
+                    Self::persist_status(&self.store, session_id, SessionStatus::Completed).await
+            {
+                self.emit_event(SessionEvent::SessionEndPaused {
+                    session_id: session_id.to_string(),
+                });
+                return Err(error);
+            }
             self.finish_ended_session(session_id, cascade).await;
             return Ok(SessionStatus::Completed);
         };
         self.cancel_direct_waiters(session_id).await;
-        actor.cancel_actor();
-        self.cancel_session_actions(session_id).await;
+        let status = actor
+            .snapshot()
+            .await
+            .map(|session| session.status)
+            .ok_or_else(|| anyhow::anyhow!("session actor '{}' has stopped", session_id))?;
+        if status != SessionStatus::Paused && status != SessionStatus::Completed {
+            // Persist the retryable state before signalling the run. If this
+            // write fails, the actor and its run remain untouched and the user
+            // can retry without inheriting a dead actor.
+            actor.transition(SessionStatus::Paused, true).await?;
+        }
+        // End one run without cancelling the actor lifetime. A failed action
+        // cleanup leaves this actor available for Continue or another end
+        // attempt, and the next accepted run receives a fresh child token.
+        actor.run_cancellation_token().cancel();
+        if let Err(error) = self.cancel_session_actions_checked(session_id).await {
+            if status != SessionStatus::Completed {
+                self.emit_end_paused_for_retry(session_id, Some(&actor))
+                    .await;
+            }
+            return Err(error);
+        }
+        // Keep the closing marker installed while the confirmation gate is
+        // released. A resolver that arrives before Completed is written will
+        // observe the marker and decline to change owner state. Releasing here
+        // also lets a cascading child end acquire the same gate.
+        drop(resolution);
         // Marking the session terminal is immediate. If the run is still
         // active, terminal cleanup and partial promotion are deferred to the
         // dispatcher run-exit edge, which keeps late tool output isolated from
         // the next session without blocking the user's control action.
-        self.update_session_status(session_id, SessionStatus::Completed)
-            .await?;
+        if let Err(error) = self
+            .complete_resident_session_end(session_id, &actor, closing, cascade)
+            .await
+        {
+            if self.get_session_status(session_id).await == Some(SessionStatus::Paused) {
+                self.emit_end_paused_for_retry(session_id, Some(&actor))
+                    .await;
+            }
+            return Err(error);
+        }
         Ok(SessionStatus::Completed)
+    }
+
+    async fn complete_resident_session_end(
+        &self,
+        session_id: &str,
+        expected_actor: &actor::SessionActorHandle,
+        closing: &SessionClosingGuard,
+        cascade: bool,
+    ) -> anyhow::Result<()> {
+        let actor = {
+            let _lifecycle = self.lifecycle_guard().await;
+            self.ensure_lifecycle_open()?;
+            let Some(actor) = self.actor_for(session_id).await else {
+                anyhow::bail!("session actor '{}' has stopped", session_id);
+            };
+            if !actor.same_instance(expected_actor) {
+                anyhow::bail!("session actor '{}' changed during end", session_id);
+            }
+            actor.transition(SessionStatus::Completed, true).await?;
+            anyhow::ensure!(
+                closing.mark_end_committed(),
+                "session '{}' lost its end closing marker",
+                session_id
+            );
+            self.cancel_direct_waiters(session_id).await;
+            self.dequeue_pending(session_id).await;
+            actor
+        };
+
+        // End has now committed Completed and published its handoff phase.
+        // If the run has already exited, this caller claims cleanup; otherwise
+        // the run-exit owner may take over while the marker remains installed.
+        if !actor.is_running().await {
+            self.finish_idle_terminal_state(session_id, &actor, false, Some(cascade))
+                .await;
+        }
+        Ok(())
+    }
+
+    async fn emit_end_paused_for_retry(
+        &self,
+        session_id: &str,
+        actor: Option<&actor::SessionActorHandle>,
+    ) {
+        if let Some(actor) = actor
+            && let Err(error) = actor
+                .set_waiting_reason(Some(haven_common::SessionWaitingReason::EndIncomplete))
+                .await
+        {
+            tracing::warn!(
+                session_id,
+                error = %error,
+                "failed to mark paused session as awaiting end retry"
+            );
+        }
+        self.emit_event(SessionEvent::SessionEndPaused {
+            session_id: session_id.to_string(),
+        });
     }
 
     pub(super) async fn finish_ended_session(&self, session_id: &str, cascade: bool) {
@@ -219,7 +347,9 @@ impl SessionSupervisor {
     }
 
     pub async fn remove_session(&self, session_id: &str) -> anyhow::Result<()> {
-        let _closing = self.begin_session_closing(session_id).await?;
+        let _closing = self
+            .begin_session_closing(session_id, SessionClosingMode::Destructive)
+            .await?;
         async {
             self.quiesce_session(session_id).await?;
             let _lifecycle = self.lifecycle_guard().await;
@@ -358,6 +488,10 @@ impl SessionSupervisor {
         }
         self.authorization.clear_all_trust().await;
         self.actors.lock().await.clear();
+        self.terminal_cleanup_cascade_overrides
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clear();
         self.pending_queue.lock().await.clear();
         self.scheduled_confirms.lock().await.clear();
         self.direct_run_waiters.lock().await.clear();
@@ -369,7 +503,9 @@ impl SessionSupervisor {
     /// app commands; it prevents ensure/load from reinstalling a stale actor
     /// between the in-memory quiesce and the SQL delete.
     pub async fn delete_session(&self, session_id: &str) -> anyhow::Result<()> {
-        let _closing = self.begin_session_closing(session_id).await?;
+        let _closing = self
+            .begin_session_closing(session_id, SessionClosingMode::Destructive)
+            .await?;
         async {
             self.quiesce_session(session_id).await?;
             let _lifecycle = self.lifecycle_guard().await;
@@ -483,19 +619,35 @@ impl SessionSupervisor {
     pub(crate) async fn begin_session_closing(
         &self,
         session_id: &str,
+        mode: SessionClosingMode,
     ) -> anyhow::Result<SessionClosingGuard> {
         let _lifecycle = self.lifecycle_guard().await;
         self.ensure_lifecycle_open()?;
-        let inserted = self
-            .closing_sessions
+        if self
+            .terminal_cleanup_sessions
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .insert(session_id.to_string());
-        if !inserted {
-            anyhow::bail!("session '{}' is already closing", session_id);
+            .contains(session_id)
+        {
+            anyhow::bail!(
+                "session '{}' terminal cleanup is already in progress",
+                session_id
+            );
+        }
+        {
+            let mut closing_sessions = self
+                .closing_sessions
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if closing_sessions.contains_key(session_id) {
+                anyhow::bail!("session '{}' is already closing", session_id);
+            }
+            closing_sessions.insert(session_id.to_string(), mode);
         }
         let closing = SessionClosingGuard {
             sessions: self.closing_sessions.clone(),
+            cascade_overrides: self.terminal_cleanup_cascade_overrides.clone(),
+            retry_queue: self.terminal_cleanup_retry_queue.clone(),
             session_id: session_id.to_string(),
         };
         self.cancel_direct_waiters(session_id).await;
@@ -535,11 +687,50 @@ impl SessionSupervisor {
             .await
     }
 
+    /// Commit a run failure from the dispatcher and publish its typed event
+    /// while lifecycle admission is serialized with end/Continue/rollback.
+    /// ReAct may already have conditionally set Error before returning; that
+    /// state is accepted only while no close operation has started.
+    pub(crate) async fn commit_dispatcher_run_error(
+        &self,
+        session_id: &str,
+        reason: String,
+    ) -> anyhow::Result<bool> {
+        let _lifecycle = self.lifecycle_guard().await;
+        if self.ensure_lifecycle_open().is_err() || self.is_session_closing(session_id) {
+            return Ok(false);
+        }
+
+        let changed = self
+            .update_session_status_if(session_id, SessionStatus::Running, SessionStatus::Error)
+            .await?;
+        let is_error =
+            changed || self.get_session_status(session_id).await == Some(SessionStatus::Error);
+        if is_error {
+            self.emit_event(SessionEvent::SessionError {
+                session_id: session_id.to_string(),
+                reason,
+            });
+        }
+        Ok(is_error)
+    }
+
+    /// Commit a direct-run error only while a run is still active. The caller
+    /// holds the lifecycle gate through event publication so end cannot
+    /// publish a later pause before the matching Agent event.
+    pub(crate) async fn mark_run_failed_if_active(&self, session_id: &str) -> anyhow::Result<bool> {
+        self.update_session_status_if(session_id, SessionStatus::Running, SessionStatus::Error)
+            .await
+    }
+
     pub async fn update_session_status_memory_only(
         &self,
         session_id: &str,
         status: SessionStatus,
     ) -> anyhow::Result<bool> {
+        if status.is_terminal() {
+            anyhow::bail!("memory-only session updates cannot commit a terminal status");
+        }
         self.update_session_status_inner(session_id, None, status, false)
             .await
     }
@@ -573,22 +764,198 @@ impl SessionSupervisor {
             // actual run exit; this is what makes end/stop responsive without
             // allowing the old run to race a newly opened session.
             if !actor.is_running().await {
-                if let Err(error) = self.partials.promote(session_id).await {
-                    tracing::warn!(session_id, error = %error, "failed to promote session partial");
-                }
-                self.partials.forget_session(session_id).await;
-                self.finish_ended_session(session_id, true).await;
-                // Completed sessions are explicitly ended and leave the
-                // working set. Error is retryable: keep an idle actor when the
-                // transition happens outside the dispatcher so
-                // `continue_session` can inspect and resume it.
-                if status == SessionStatus::Completed {
-                    let _lifecycle = self.lifecycle_guard().await;
-                    self.remove_actor_locked(session_id).await;
-                }
+                self.finish_idle_terminal_state(session_id, &actor, false, None)
+                    .await;
             }
         }
         Ok(true)
+    }
+
+    /// Finish terminal cleanup only after claiming the session under the
+    /// lifecycle gate. The claim remains active while cleanup runs outside
+    /// that gate because cascading child cleanup may acquire it recursively.
+    async fn finish_idle_terminal_state(
+        &self,
+        session_id: &str,
+        expected_actor: &actor::SessionActorHandle,
+        remove_error_actor: bool,
+        cascade: Option<bool>,
+    ) -> bool {
+        let cleanup = {
+            let _lifecycle = self.lifecycle_guard().await;
+            let Some(actor) = self.actor_for(session_id).await else {
+                return false;
+            };
+            if !actor.same_instance(expected_actor) || actor.is_running().await {
+                return false;
+            }
+            let Some(snapshot) = actor.snapshot().await else {
+                return false;
+            };
+            if !snapshot.status.is_terminal() {
+                return false;
+            }
+            self.begin_terminal_cleanup_locked(session_id)
+                .map(|cleanup| {
+                    let cascade = cascade.unwrap_or_else(|| {
+                        self.terminal_cleanup_cascade_locked(session_id)
+                            .unwrap_or(true)
+                    });
+                    (cleanup, cascade)
+                })
+        };
+        let Some((cleanup, cascade)) = cleanup else {
+            return false;
+        };
+        let mut cleanup = cleanup;
+        cleanup.set_retry_policy(TerminalCleanupRetry {
+            cascade: Some(cascade),
+            remove_error_actor,
+        });
+
+        self.finish_terminal_cleanup(
+            session_id,
+            expected_actor,
+            cleanup,
+            remove_error_actor,
+            cascade,
+        )
+        .await;
+        true
+    }
+
+    async fn finish_terminal_cleanup(
+        &self,
+        session_id: &str,
+        expected_actor: &actor::SessionActorHandle,
+        mut cleanup: TerminalCleanupGuard,
+        remove_error_actor: bool,
+        cascade: bool,
+    ) {
+        self.dequeue_pending(session_id).await;
+        if let Err(error) = self.partials.promote(session_id).await {
+            tracing::warn!(session_id, error = %error, "failed to promote session partial");
+        }
+        self.cleanup_session_maps(session_id).await;
+        self.finish_ended_session(session_id, cascade).await;
+
+        let _lifecycle = self.lifecycle_guard().await;
+        let Some(actor) = self.actor_for(session_id).await else {
+            cleanup.mark_complete();
+            drop(cleanup);
+            return;
+        };
+        let Some(snapshot) = actor.snapshot().await else {
+            cleanup.mark_complete();
+            drop(cleanup);
+            return;
+        };
+        let status = snapshot.status;
+        if actor.same_instance(expected_actor)
+            && !actor.is_running().await
+            && (status == SessionStatus::Completed
+                || (remove_error_actor && status == SessionStatus::Error))
+        {
+            self.remove_actor_locked(session_id).await;
+        }
+        cleanup.mark_complete();
+        drop(cleanup);
+    }
+
+    /// Reconcile the actor's live state after the run bit has been cleared.
+    /// `RunFinished` used to carry Pending/terminal booleans captured before a
+    /// concurrent Continue or rollback could commit; all decisions here use a
+    /// fresh snapshot under lifecycle admission.
+    pub(crate) async fn reconcile_run_exit(
+        &self,
+        session_id: &str,
+        expected_actor: &actor::SessionActorHandle,
+    ) {
+        self.reconcile_run_exit_with_retry(
+            session_id,
+            expected_actor,
+            TerminalCleanupRetry {
+                cascade: None,
+                remove_error_actor: true,
+            },
+        )
+        .await;
+    }
+
+    pub(crate) async fn retry_terminal_cleanup(
+        &self,
+        session_id: &str,
+        retry: TerminalCleanupRetry,
+    ) {
+        let Some(actor) = self.actor_for(session_id).await else {
+            return;
+        };
+        self.reconcile_run_exit_with_retry(session_id, &actor, retry)
+            .await;
+    }
+
+    async fn reconcile_run_exit_with_retry(
+        &self,
+        session_id: &str,
+        expected_actor: &actor::SessionActorHandle,
+        retry: TerminalCleanupRetry,
+    ) {
+        enum Decision {
+            Pending,
+            Cleanup(TerminalCleanupGuard, bool, bool),
+            None,
+        }
+
+        let decision = {
+            let _lifecycle = self.lifecycle_guard().await;
+            let Some(actor) = self.actor_for(session_id).await else {
+                return;
+            };
+            if !actor.same_instance(expected_actor) || actor.is_running().await {
+                return;
+            }
+            let Some(snapshot) = actor.snapshot().await else {
+                return;
+            };
+            let status = snapshot.status;
+            if status == SessionStatus::Pending && !self.is_session_closing(session_id) {
+                self.enqueue_pending(session_id).await;
+                Decision::Pending
+            } else if status.is_terminal() {
+                match (
+                    retry
+                        .cascade
+                        .or_else(|| self.terminal_cleanup_cascade_locked(session_id)),
+                    self.begin_terminal_cleanup_locked(session_id),
+                ) {
+                    (Some(cascade), Some(mut cleanup)) => {
+                        cleanup.set_retry_policy(TerminalCleanupRetry {
+                            cascade: Some(cascade),
+                            remove_error_actor: retry.remove_error_actor,
+                        });
+                        Decision::Cleanup(cleanup, cascade, retry.remove_error_actor)
+                    }
+                    _ => Decision::None,
+                }
+            } else {
+                Decision::None
+            }
+        };
+
+        match decision {
+            Decision::Pending => self.wake_dispatcher(),
+            Decision::Cleanup(cleanup, cascade, remove_error_actor) => {
+                self.finish_terminal_cleanup(
+                    session_id,
+                    expected_actor,
+                    cleanup,
+                    remove_error_actor,
+                    cascade,
+                )
+                .await;
+            }
+            Decision::None => {}
+        }
     }
 
     pub async fn cleanup_session_maps(&self, session_id: &str) {

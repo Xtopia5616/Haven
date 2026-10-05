@@ -2,6 +2,75 @@ use super::support::*;
 use super::*;
 
 #[tokio::test]
+async fn rollback_rejects_closing_session_before_cancelling_owned_actions() {
+    let (agent, executor) = make_test_agent();
+    let session = executor
+        .create_session("rollback/end admission")
+        .await
+        .unwrap();
+    seed_event_projection(
+        &agent,
+        &session.id,
+        &EventProjection {
+            events: seed_events_from_canonical(vec![CanonicalMessage {
+                role: CanonicalRole::System,
+                content: vec![ContentPart::text("system")],
+                tool_calls: None,
+                tool_call_id: None,
+                reasoning: None,
+                web_search_calls: Vec::new(),
+                thinking_blocks: Vec::new(),
+                source: None,
+                id: None,
+            }]),
+            step_number: 1,
+            branch_points: HashMap::new(),
+            interactions: Vec::new(),
+        },
+    )
+    .await;
+    let action_id = "act-rollback-closing";
+    let due_at = (chrono::Utc::now() + chrono::Duration::hours(1)).to_rfc3339();
+    agent
+        .db
+        .save_scheduled_action(
+            action_id,
+            &due_at,
+            "Rollback closing",
+            "must remain untouched",
+            "tool",
+            Some(&session.id),
+            Some("notify"),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+    executor
+        .action_service()
+        .set_action_store(Some(haven_memory::ActionStore::new(agent.db.clone())))
+        .await;
+    let before = load_event_projection(&agent, &session.id).await;
+    let _closing = executor
+        .begin_session_closing(&session.id, crate::session::SessionClosingMode::Destructive)
+        .await
+        .expect("close marker");
+
+    let error = agent
+        .rollback_session(&session.id, 1, false, None)
+        .await
+        .expect_err("rollback must reject an end-owned session");
+
+    assert!(format!("{error:#}").contains("closing"));
+    let after = load_event_projection(&agent, &session.id).await;
+    assert_eq!(before.events.len(), after.events.len());
+    assert_eq!(
+        agent.db.get_action(action_id).unwrap().unwrap().status,
+        haven_common::ActionStatus::Waiting
+    );
+}
+
+#[tokio::test]
 async fn rollback_with_snapshot_no_branch_point_uses_snapshot() {
     let (agent, executor) = make_test_agent();
     let session = executor.create_session("no bp").await.unwrap();

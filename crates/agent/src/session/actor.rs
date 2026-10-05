@@ -69,12 +69,6 @@ pub(crate) struct RunClaim {
     pub accepted: bool,
 }
 
-#[derive(Debug)]
-pub(crate) struct RunFinished {
-    pub pending: bool,
-    pub terminal: bool,
-}
-
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct ContextQueueStats {
     pub steering_items: usize,
@@ -188,9 +182,12 @@ pub(crate) enum ActorCommand {
         reply: oneshot::Sender<bool>,
     },
     FinishRun {
-        reply: oneshot::Sender<RunFinished>,
+        reply: oneshot::Sender<()>,
     },
     IsRunning {
+        reply: oneshot::Sender<bool>,
+    },
+    ReactLoopBarrier {
         reply: oneshot::Sender<bool>,
     },
     TickMessagingPoll {
@@ -286,16 +283,49 @@ pub(crate) struct SessionActorHandle {
     run_cancellation: watch::Receiver<CancellationToken>,
     status: watch::Sender<SessionStatus>,
     run_state: watch::Sender<bool>,
+    react_run_state: watch::Receiver<bool>,
     release_run: mpsc::Sender<()>,
 }
 
 impl SessionActorHandle {
+    pub(crate) fn same_instance(&self, other: &Self) -> bool {
+        self.tx.same_channel(&other.tx)
+    }
+
     pub(crate) fn status(&self) -> watch::Receiver<SessionStatus> {
         self.status.subscribe()
     }
 
     pub(crate) fn run_state(&self) -> watch::Receiver<bool> {
         self.run_state.subscribe()
+    }
+
+    pub(crate) async fn await_react_loop_finished(&self) {
+        // First place a barrier behind any ReAct command already submitted by
+        // the caller. Reading the watch channel alone can observe `false`
+        // while that command is still queued but not yet accepted by the
+        // actor.
+        let (reply, result) = oneshot::channel();
+        if self
+            .send(ActorCommand::ReactLoopBarrier { reply })
+            .await
+            .is_err()
+        {
+            return;
+        }
+        if !result.await.unwrap_or(false) {
+            return;
+        }
+
+        let mut state = self.react_run_state.clone();
+        loop {
+            if !*state.borrow() {
+                return;
+            }
+            if state.changed().await.is_err() {
+                return;
+            }
+        }
     }
 
     pub(crate) fn run_cancellation_token(&self) -> CancellationToken {
@@ -387,7 +417,7 @@ impl SessionActorHandle {
         rx.await.unwrap_or(false)
     }
 
-    pub(crate) async fn finish_run(&self) -> Option<RunFinished> {
+    pub(crate) async fn finish_run(&self) -> Option<()> {
         let (reply, rx) = oneshot::channel();
         self.send(ActorCommand::FinishRun { reply }).await.ok()?;
         rx.await.ok()
@@ -898,6 +928,7 @@ pub(crate) fn spawn(
     let (release_run, mut release_run_rx) = mpsc::channel(ACTOR_RELEASE_CAPACITY);
     let (status, _) = watch::channel(info.status);
     let (run_state, _) = watch::channel(false);
+    let (react_run_state, react_run_state_rx) = watch::channel(false);
     let actor_lifetime = CancellationToken::new();
     let initial_run_cancellation = actor_lifetime.child_token();
     let (run_cancellation, run_cancellation_rx) = watch::channel(initial_run_cancellation.clone());
@@ -908,6 +939,7 @@ pub(crate) fn spawn(
         run_cancellation: run_cancellation_rx,
         status: status.clone(),
         run_state: run_state.clone(),
+        react_run_state: react_run_state_rx,
         release_run,
     };
     tokio::spawn(async move {
@@ -980,6 +1012,7 @@ pub(crate) fn spawn(
                             reply.send(Err(anyhow::anyhow!("session actor stopped during run")));
                     }
                     if let Some(ActiveReactRun::Running { reply, .. }) = state.react_run.take() {
+                        react_run_state.send_replace(false);
                         let _ = reply.send(Err(anyhow::anyhow!(
                             "session actor stopped during ReAct loop"
                         )));
@@ -1004,6 +1037,7 @@ pub(crate) fn spawn(
                     else {
                         unreachable!("only a running ReAct loop can complete")
                     };
+                    react_run_state.send_replace(false);
                     if claimed {
                         state.react_run = Some(ActiveReactRun::Claimed);
                     }
@@ -1160,6 +1194,7 @@ pub(crate) fn spawn(
                         )));
                         continue;
                     }
+                    react_run_state.send_replace(true);
                     let mut react_state =
                         ReActState::new(replay.events, replay.canonical, replay.branch_points);
                     let future: ReactLoopFuture = Box::pin(async move {
@@ -1239,13 +1274,14 @@ pub(crate) fn spawn(
                         None => {}
                     }
                     let _ = run_state.send(false);
-                    let _ = reply.send(RunFinished {
-                        pending: state.info.status == SessionStatus::Pending,
-                        terminal: state.info.status.is_terminal(),
-                    });
+                    let _ = reply.send(());
                 }
                 ActorCommand::IsRunning { reply } => {
                     let _ = reply.send(state.running);
+                }
+                ActorCommand::ReactLoopBarrier { reply } => {
+                    let running = matches!(&state.react_run, Some(ActiveReactRun::Running { .. }));
+                    let _ = reply.send(running);
                 }
                 ActorCommand::DrainFollowUps { reply } => {
                     state.follow_up_chars = 0;
@@ -1381,7 +1417,7 @@ pub(crate) fn spawn(
                             .await?;
                         state.info.status = SessionStatus::Paused;
                         state.info.updated_at = chrono::Utc::now().to_rfc3339();
-                        let _ = status.send(SessionStatus::Paused);
+                        status.send_replace(SessionStatus::Paused);
                         state
                             .interactions
                             .retain(|existing| !ids.contains(&existing.id));
@@ -1676,7 +1712,7 @@ async fn transition(
         state.info.waiting_reason = None;
     }
     state.info.updated_at = chrono::Utc::now().to_rfc3339();
-    let _ = status.send(next);
+    status.send_replace(next);
     Ok(StatusTransition {
         changed: true,
         pending: next == SessionStatus::Pending,
@@ -1698,7 +1734,7 @@ async fn claim_run(
     state.info.waiting_reason = None;
     state.info.updated_at = chrono::Utc::now().to_rfc3339();
     state.running = true;
-    let _ = status.send(SessionStatus::Running);
+    status.send_replace(SessionStatus::Running);
     let _ = run_state.send(true);
     Ok(RunClaim { accepted: true })
 }

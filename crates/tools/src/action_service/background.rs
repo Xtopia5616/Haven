@@ -1,5 +1,15 @@
 use super::*;
 
+#[derive(Debug)]
+pub(crate) struct BackgroundShellRequest<'a> {
+    pub(crate) command: &'a str,
+    pub(crate) shell: &'a str,
+    pub(crate) max_chars: usize,
+    pub(crate) cwd: Option<std::path::PathBuf>,
+    pub(crate) session_id: Option<&'a str>,
+    pub(crate) source_step_id: Option<&'a str>,
+}
+
 impl ActionService {
     /// Spawn a shell command as a background action. Returns the action id; the
     /// command keeps running after this function returns. `cwd` overrides the
@@ -42,11 +52,45 @@ impl ActionService {
         session_id: Option<&str>,
         source_step_id: Option<&str>,
     ) -> anyhow::Result<String> {
+        let request = BackgroundShellRequest {
+            command,
+            shell,
+            max_chars,
+            cwd,
+            session_id,
+            source_step_id,
+        };
+        let cancel = CancellationToken::new();
+        self.spawn_shell_for_session_with_source_and_cancel(request, &cancel)
+            .await
+    }
+
+    /// Spawn from a live tool execution that can be cancelled by its session.
+    /// The token is checked while waiting for the shared admission gate and
+    /// again after acquisition. If admission won first, session cleanup waits
+    /// for the gate and cancels the published action; if end won first, the
+    /// abandoned run cannot start a new action after cleanup releases the gate.
+    pub(crate) async fn spawn_shell_for_session_with_source_and_cancel(
+        self: &Arc<Self>,
+        request: BackgroundShellRequest<'_>,
+        cancel: &CancellationToken,
+    ) -> anyhow::Result<String> {
+        let BackgroundShellRequest {
+            command,
+            shell,
+            max_chars,
+            cwd,
+            session_id,
+            source_step_id,
+        } = request;
         if self.shutting_down.load(Ordering::Acquire) {
             anyhow::bail!("action service is shutting down");
         }
         if command.trim().is_empty() {
             anyhow::bail!("command is required");
+        }
+        if cancel.is_cancelled() {
+            anyhow::bail!("background action admission was cancelled");
         }
         // Unpredictable action id: a sequential counter would let any
         // session's agent enumerate and read other sessions' background outputs
@@ -58,7 +102,16 @@ impl ActionService {
         let emit_interval = *self.job_output_emit_interval.read().await;
         let terminal_ttl = *self.terminal_job_ttl.read().await;
         let max_actions = *self.max_actions.read().await;
-        let _spawn_gate = self.spawn_gate.lock().await;
+        let mut spawn_gate = tokio::select! {
+            biased;
+            _ = cancel.cancelled() => {
+                anyhow::bail!("background action admission was cancelled");
+            }
+            guard = self.spawn_gate.clone().lock_owned() => guard,
+        };
+        if cancel.is_cancelled() {
+            anyhow::bail!("background action admission was cancelled");
+        }
         if self.shutting_down.load(Ordering::Acquire) {
             anyhow::bail!("action service is shutting down");
         }
@@ -87,19 +140,40 @@ impl ActionService {
         // Persist before publishing the action to the in-memory board or
         // starting a process. A failed database write therefore cannot leave a
         // process that restore_after_restart does not know how to clean up.
-        if let Some(store) = self.action_store.read().await.clone()
-            && let Err(error) = store
-                .save_background_action_with_source(
-                    id.clone(),
-                    session_id.map(str::to_owned),
-                    command.to_string(),
-                    started_at.clone(),
-                    source_step_id.map(str::to_owned),
-                )
-                .await
-        {
-            tracing::warn!(action_id = %id, "failed to persist action spawn: {error}");
-            return Err(error);
+        if let Some(store) = self.action_store.read().await.clone() {
+            // A caller can be dropped while SQLite's blocking worker is still
+            // writing. Let an owned admission worker retain the mutation gate
+            // until the write finishes; session cleanup then waits for it and
+            // reconciles any durable row that was committed before the caller
+            // was cancelled.
+            let persist_gate = spawn_gate;
+            let persist_id = id.clone();
+            let persist_session_id = session_id.map(str::to_owned);
+            let persist_command = command.to_string();
+            let persist_started_at = started_at.clone();
+            let persist_source_step_id = source_step_id.map(str::to_owned);
+            let persisted = tokio::spawn(async move {
+                let result = store
+                    .save_background_action_with_source(
+                        persist_id,
+                        persist_session_id,
+                        persist_command,
+                        persist_started_at,
+                        persist_source_step_id,
+                    )
+                    .await;
+                (persist_gate, result)
+            })
+            .await
+            .map_err(|error| {
+                anyhow::anyhow!("background action persistence worker failed: {error}")
+            })?;
+            let (gate, result) = persisted;
+            spawn_gate = gate;
+            if let Err(error) = result {
+                tracing::warn!(action_id = %id, "failed to persist action spawn: {error}");
+                return Err(error);
+            }
         }
 
         self.actions.write().await.insert(
@@ -295,6 +369,7 @@ impl ActionService {
             }
         });
 
+        drop(spawn_gate);
         Ok(id)
     }
 
@@ -386,6 +461,22 @@ impl ActionService {
     /// the UI via `action:finished` before leaving the board — otherwise the
     /// titlebar panel keeps a ghost "running" row that cannot be stopped.
     pub async fn cancel_owned_background_by_session(self: &Arc<Self>, session_id: &str) {
+        let _mutation = self.spawn_gate.lock().await;
+        self.cancel_owned_background_by_session_locked(session_id)
+            .await;
+    }
+
+    /// Cancel background actions while the caller holds `spawn_gate`.
+    ///
+    /// Explicit session cleanup owns the gate across both background and
+    /// scheduled actions so an admission cannot publish an action after its
+    /// owner cleanup has already taken its snapshot. Persistence remains
+    /// best-effort for background work; terminal write failures keep using the
+    /// existing bounded retry path.
+    pub(super) async fn cancel_owned_background_by_session_locked(
+        self: &Arc<Self>,
+        session_id: &str,
+    ) {
         let service = Arc::clone(self);
         let owner = session_id.to_string();
         let selection = self
@@ -399,6 +490,62 @@ impl ActionService {
             .await;
         self.drop_owned_terminal_background_actions(&selection.terminal_ids, session_id)
             .await;
+
+        // A tool can be cancelled after its durable INSERT began but before
+        // it publishes a board entry or launches the child. Admission keeps
+        // `spawn_gate` through that SQLite worker, so this durable read runs
+        // after any such write and can cancel rows that never reached memory.
+        let Some(store) = self.action_store.read().await.clone() else {
+            return;
+        };
+        match store
+            .list_actions_for_session(session_id.to_string(), Some("background".to_string()))
+            .await
+        {
+            Ok(rows) => {
+                for row in rows
+                    .into_iter()
+                    .filter(|row| row.kind == "background" && row.status == ActionStatus::Running)
+                {
+                    let missing = {
+                        let mut actions = self.actions.write().await;
+                        if actions.contains_key(&row.id) {
+                            false
+                        } else {
+                            actions.insert(
+                                row.id.clone(),
+                                ActionEntry {
+                                    kind: ActionKind::Background,
+                                    session_id: Some(session_id.to_string()),
+                                    source_step_id: row.source_step_id.clone(),
+                                    state: ActionState::Running {
+                                        started_at: row
+                                            .started_at
+                                            .clone()
+                                            .unwrap_or_else(|| row.created_at.clone()),
+                                    },
+                                    kill: None,
+                                    tail: None,
+                                    command: row.command.clone().unwrap_or_default(),
+                                    shell: String::new(),
+                                    scheduled: None,
+                                },
+                            );
+                            true
+                        }
+                    };
+                    if missing {
+                        self.cancel_owned_background_action(&row.id, session_id)
+                            .await;
+                    }
+                }
+            }
+            Err(error) => tracing::warn!(
+                session_id,
+                %error,
+                "failed to reconcile durable session-owned background actions"
+            ),
+        }
     }
 
     #[allow(clippy::too_many_arguments)]

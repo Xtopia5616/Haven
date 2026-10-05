@@ -344,14 +344,24 @@ impl RustTypeGraph {
                         )?,
                     }
                 }
-                Item::Type(item) => self.insert_alias(
-                    context,
-                    &item.ident.to_string(),
-                    (*item.ty).clone(),
-                    &item.attrs,
-                    has_derive(&item.attrs, "Serialize"),
-                    has_derive(&item.attrs, "Deserialize"),
-                )?,
+                Item::Type(item) => {
+                    let serializable = has_derive(&item.attrs, "Serialize");
+                    let deserializable = has_derive(&item.attrs, "Deserialize");
+                    // Platform implementation aliases and other internal type
+                    // aliases are not IPC DTOs. Ignoring them also avoids
+                    // treating mutually exclusive cfg declarations as
+                    // duplicate wire types.
+                    if serializable || deserializable {
+                        self.insert_alias(
+                            context,
+                            &item.ident.to_string(),
+                            (*item.ty).clone(),
+                            &item.attrs,
+                            serializable,
+                            deserializable,
+                        )?;
+                    }
+                }
                 Item::Macro(item)
                     if item
                         .mac
@@ -1681,6 +1691,26 @@ mod tests {
                 .unwrap_err()
                 .contains("does not derive Deserialize")
         );
+    }
+
+    #[test]
+    fn platform_cfg_aliases_without_serde_are_not_duplicate_ipc_dtos() {
+        let windows: syn::ItemType = syn::parse_quote! {
+            #[cfg(windows)]
+            type ChildProcessHandle = std::os::windows::io::RawHandle;
+        };
+        let other: syn::ItemType = syn::parse_quote! {
+            #[cfg(not(windows))]
+            type ChildProcessHandle = ();
+        };
+        let context = RustTypeGraph::test_context();
+        let mut graph = RustTypeGraph::default();
+
+        graph
+            .collect_items(&[Item::Type(windows), Item::Type(other)], &context)
+            .unwrap();
+
+        assert!(graph.definitions.is_empty());
     }
 
     #[test]

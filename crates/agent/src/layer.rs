@@ -418,6 +418,21 @@ impl AgentLayer {
                                 .emit_session_updated(&session_id, SessionStatus::Pending)
                                 .await;
                         }
+                        SessionEvent::SessionRunPaused { session_id } => {
+                            events
+                                .emit_session_updated(&session_id, SessionStatus::Paused)
+                                .await;
+                        }
+                        SessionEvent::SessionEndPaused { session_id } => {
+                            events
+                                .emit_session_updated_with_reason_and_waiting_reason(
+                                    &session_id,
+                                    SessionStatus::Paused,
+                                    Some(haven_common::SessionWaitingReason::EndIncomplete),
+                                    Some("结束未完成，会话已暂停，可重试"),
+                                )
+                                .await;
+                        }
                         SessionEvent::InteractionRequested { .. }
                         | SessionEvent::SessionError { .. } => {}
                     }
