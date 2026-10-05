@@ -13,8 +13,8 @@ use haven_common::hooks::OnceHandler;
 /// futures), while toggle/mute/tray are sync.
 #[async_trait]
 pub trait ShellHandler: Send + Sync {
-    async fn on_recording_start(&self) {}
-    async fn on_recording_stop(&self) {}
+    async fn on_recording_start(&self, _context: RecordingStartContext) {}
+    async fn on_recording_stop(&self, _context: RecordingStopContext) {}
     fn on_toggle_change(&self, _active: bool) {}
     fn on_mute_change(&self, _muted: bool) {}
     fn on_tray_status(&self, _status: TrayStatus) {}
@@ -51,6 +51,26 @@ pub struct ShellState {
     pub tray_status: TrayStatus,
     pub hotkey: HotkeyConfig,
     pub hold_mode: bool,
+    #[serde(skip)]
+    recording_revision: u64,
+    #[serde(skip)]
+    toggle_generation: u64,
+}
+
+/// Revision captured before an async app command starts touching the input
+/// pipeline. A later shell transition makes an old command-side state sync
+/// stale, so it must leave the newer shell state intact.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RecordingStartContext {
+    pub(crate) recording_revision: u64,
+}
+
+/// Stop identity captured by the input that initiated the stop. The toggle
+/// generation lets delayed auto-stop work avoid clearing a newer hotkey intent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RecordingStopContext {
+    pub(crate) recording_revision: u64,
+    pub(crate) toggle_generation: u64,
 }
 
 impl Default for ShellState {
@@ -62,6 +82,8 @@ impl Default for ShellState {
             tray_status: TrayStatus::Normal,
             hotkey: HotkeyConfig::default(),
             hold_mode: false,
+            recording_revision: 0,
+            toggle_generation: 0,
         }
     }
 }
@@ -129,28 +151,58 @@ impl DesktopShell {
 
     pub async fn stop_recording(&self) {
         let handler = self.handler_snap();
-        {
+        let context = {
             let mut state = self.state.lock().await;
             state.is_recording = false;
-        }
+            state.recording_revision = state.recording_revision.wrapping_add(1);
+            RecordingStopContext {
+                recording_revision: state.recording_revision,
+                toggle_generation: state.toggle_generation,
+            }
+        };
         if let Some(h) = &handler {
-            h.on_recording_stop().await;
+            h.on_recording_stop(context).await;
         }
-        self.derive_tray().await;
+        self.refresh_tray().await;
     }
 
-    /// Sync shell state with a recording started outside the shell (e.g. the
-    /// UI record button, which drives the pipeline directly). Updates the
-    /// flags and tray icon WITHOUT re-triggering the handler — calling
-    /// `toggle_recording`/`hold_press` here would double-start the pipeline.
-    /// Without this sync the tray icon stays idle, the mute hotkey would not
-    /// stop a UI-started recording, and the toggle hotkey would attempt a
-    /// duplicate start.
-    pub async fn sync_recording(&self, recording: bool) {
-        {
+    /// Sync shell state with an app command only while its captured revision
+    /// is still current. Updates the tray without re-triggering the handler —
+    /// calling `toggle_recording`/`hold_press` here would double-start the
+    /// pipeline. A stale async command still refreshes the tray from whatever
+    /// state is current, but cannot overwrite it.
+    pub(crate) async fn sync_recording_if_revision(
+        &self,
+        recording: bool,
+        expected_revision: u64,
+    ) -> bool {
+        let applied = {
             let mut state = self.state.lock().await;
-            state.is_recording = recording;
+            if state.recording_revision == expected_revision {
+                state.is_recording = recording;
+                state.recording_revision = state.recording_revision.wrapping_add(1);
+                true
+            } else {
+                false
+            }
+        };
+        self.refresh_tray().await;
+        applied
+    }
+
+    /// Return the current versions as one snapshot so command paths can use a
+    /// consistent recording revision and toggle generation across awaits.
+    pub(crate) async fn recording_stop_context(&self) -> RecordingStopContext {
+        let state = self.state.lock().await;
+        RecordingStopContext {
+            recording_revision: state.recording_revision,
+            toggle_generation: state.toggle_generation,
         }
+    }
+
+    /// Re-derive tray status from the latest ShellState without changing any
+    /// recording or toggle flags.
+    pub(crate) async fn refresh_tray(&self) {
         self.derive_tray().await;
     }
 
@@ -162,8 +214,12 @@ impl DesktopShell {
         }
         let was_recording = state.is_recording;
         state.is_recording_toggle = !state.is_recording_toggle;
+        state.toggle_generation = state.toggle_generation.wrapping_add(1);
         let new_val = state.is_recording_toggle;
         state.is_recording = new_val;
+        state.recording_revision = state.recording_revision.wrapping_add(1);
+        let recording_revision = state.recording_revision;
+        let toggle_generation = state.toggle_generation;
         drop(state);
         if let Some(h) = &handler {
             h.on_toggle_change(new_val);
@@ -172,12 +228,17 @@ impl DesktopShell {
             // Already recording via another source (UI button): keep the
             // toggle flag but do not double-start the pipeline.
             if !was_recording && let Some(h) = &handler {
-                h.on_recording_start().await;
+                h.on_recording_start(RecordingStartContext { recording_revision })
+                    .await;
             }
         } else if let Some(h) = &handler {
-            h.on_recording_stop().await;
+            h.on_recording_stop(RecordingStopContext {
+                recording_revision,
+                toggle_generation,
+            })
+            .await;
         }
-        self.derive_tray().await;
+        self.refresh_tray().await;
     }
 
     pub async fn hold_press(&self) {
@@ -190,11 +251,14 @@ impl DesktopShell {
             return;
         }
         state.is_recording = true;
+        state.recording_revision = state.recording_revision.wrapping_add(1);
+        let recording_revision = state.recording_revision;
         drop(state);
         if let Some(h) = &handler {
-            h.on_recording_start().await;
+            h.on_recording_start(RecordingStartContext { recording_revision })
+                .await;
         }
-        self.derive_tray().await;
+        self.refresh_tray().await;
     }
 
     pub async fn hold_release(&self) {
@@ -204,24 +268,38 @@ impl DesktopShell {
             return;
         }
         state.is_recording = false;
+        state.recording_revision = state.recording_revision.wrapping_add(1);
+        let context = RecordingStopContext {
+            recording_revision: state.recording_revision,
+            toggle_generation: state.toggle_generation,
+        };
         drop(state);
         if let Some(h) = &handler {
-            h.on_recording_stop().await;
+            h.on_recording_stop(context).await;
         }
-        self.derive_tray().await;
+        self.refresh_tray().await;
     }
 
     pub async fn set_muted(&self, muted: bool) {
         let handler = self.handler_snap();
-        let was_recording;
-        {
+        let (was_recording, stop_context) = {
             let mut state = self.state.lock().await;
             state.is_muted = muted;
-            was_recording = state.is_recording;
+            let was_recording = state.is_recording;
             if muted {
                 state.is_recording = false;
+                if was_recording {
+                    state.recording_revision = state.recording_revision.wrapping_add(1);
+                }
             }
-        }
+            (
+                was_recording,
+                RecordingStopContext {
+                    recording_revision: state.recording_revision,
+                    toggle_generation: state.toggle_generation,
+                },
+            )
+        };
         if let Some(h) = &handler {
             h.on_mute_change(muted);
         }
@@ -231,10 +309,10 @@ impl DesktopShell {
             // the user believes the mic is off. The handler finalizes the
             // recording (STT + transcript) as a normal stop.
             if let Some(h) = &handler {
-                h.on_recording_stop().await;
+                h.on_recording_stop(stop_context).await;
             }
         }
-        self.derive_tray().await;
+        self.refresh_tray().await;
     }
 
     pub async fn set_hold_mode(&self, hold: bool) {
@@ -245,9 +323,17 @@ impl DesktopShell {
         self.state.lock().await.clone()
     }
 
-    pub async fn reset_toggle_on_auto_stop(&self) {
+    pub(crate) async fn reset_toggle_on_auto_stop_if_generation(
+        &self,
+        expected_generation: u64,
+    ) -> bool {
         let mut state = self.state.lock().await;
+        if state.toggle_generation != expected_generation {
+            return false;
+        }
         state.is_recording_toggle = false;
+        state.toggle_generation = state.toggle_generation.wrapping_add(1);
+        true
     }
 }
 
@@ -260,6 +346,33 @@ impl Default for DesktopShell {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use tokio::sync::Notify;
+
+    struct DelayedAutoStopHandler {
+        shell: std::sync::Weak<DesktopShell>,
+        entered: Arc<Notify>,
+        release: Arc<Notify>,
+        first_stop: AtomicBool,
+        reset_applied: AtomicBool,
+    }
+
+    #[async_trait]
+    impl ShellHandler for DelayedAutoStopHandler {
+        async fn on_recording_stop(&self, context: RecordingStopContext) {
+            if self.first_stop.swap(true, Ordering::AcqRel) {
+                return;
+            }
+            self.entered.notify_one();
+            self.release.notified().await;
+            if let Some(shell) = self.shell.upgrade() {
+                let applied = shell
+                    .reset_toggle_on_auto_stop_if_generation(context.toggle_generation)
+                    .await;
+                self.reset_applied.store(applied, Ordering::Release);
+            }
+        }
+    }
 
     #[test]
     fn test_hotkey_config_default() {
@@ -305,18 +418,35 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_sync_recording_sets_state_and_tray() {
+    async fn test_revision_checked_sync_recording_sets_state_and_tray() {
         let shell = DesktopShell::new();
-        shell.sync_recording(true).await;
+        assert!(shell.sync_recording_if_revision(true, 0).await);
         let state = shell.get_state().await;
         assert!(state.is_recording);
         assert_eq!(state.tray_status, TrayStatus::Recording);
         // `is_recording_toggle` is shell-hotkey-only; sync must not set it.
         assert!(!state.is_recording_toggle);
-        shell.sync_recording(false).await;
+        assert!(shell.sync_recording_if_revision(false, 1).await);
         let state = shell.get_state().await;
         assert!(!state.is_recording);
         assert_eq!(state.tray_status, TrayStatus::Normal);
+    }
+
+    #[tokio::test]
+    async fn stale_revision_sync_preserves_new_recording_state() {
+        let shell = DesktopShell::new();
+        let stale_revision = shell.recording_stop_context().await.recording_revision;
+        shell.toggle_recording().await;
+
+        assert!(
+            !shell
+                .sync_recording_if_revision(false, stale_revision)
+                .await
+        );
+        let state = shell.get_state().await;
+        assert!(state.is_recording);
+        assert!(state.is_recording_toggle);
+        assert_eq!(state.tray_status, TrayStatus::Recording);
     }
 
     #[tokio::test]
@@ -412,9 +542,75 @@ mod tests {
     async fn test_reset_toggle() {
         let shell = DesktopShell::new();
         shell.toggle_recording().await;
-        shell.reset_toggle_on_auto_stop().await;
+        let generation = shell.recording_stop_context().await.toggle_generation;
+        assert!(
+            shell
+                .reset_toggle_on_auto_stop_if_generation(generation)
+                .await
+        );
         let state = shell.get_state().await;
         assert!(!state.is_recording_toggle);
+    }
+
+    #[tokio::test]
+    async fn stale_auto_stop_does_not_clear_new_toggle_generation() {
+        let shell = DesktopShell::new();
+        shell.toggle_recording().await;
+        let stale_generation = shell.recording_stop_context().await.toggle_generation;
+        shell.toggle_recording().await;
+        shell.toggle_recording().await;
+
+        assert!(
+            !shell
+                .reset_toggle_on_auto_stop_if_generation(stale_generation)
+                .await
+        );
+        let state = shell.get_state().await;
+        assert!(state.is_recording);
+        assert!(state.is_recording_toggle);
+    }
+
+    #[tokio::test]
+    async fn delayed_auto_stop_preserves_newer_toggle_state_and_tray() {
+        let shell = Arc::new(DesktopShell::new());
+        let handler = Arc::new(DelayedAutoStopHandler {
+            shell: Arc::downgrade(&shell),
+            entered: Arc::new(Notify::new()),
+            release: Arc::new(Notify::new()),
+            first_stop: AtomicBool::new(false),
+            reset_applied: AtomicBool::new(false),
+        });
+        shell.set_handler(handler.clone());
+        shell.toggle_recording().await;
+
+        let stop_shell = shell.clone();
+        let stop_task = tokio::spawn(async move { stop_shell.stop_recording().await });
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            handler.entered.notified(),
+        )
+        .await
+        .expect("the first stop callback must enter its gate");
+
+        // These state changes happen before their callbacks can acquire the
+        // recording lifecycle permit. The older auto-stop must not overwrite
+        // them when its callback resumes.
+        shell.toggle_recording().await;
+        shell.toggle_recording().await;
+        handler.release.notify_one();
+        tokio::time::timeout(std::time::Duration::from_secs(5), stop_task)
+            .await
+            .expect("the stopped shell operation must finish")
+            .expect("the stopped shell task must not panic");
+
+        let state = shell.get_state().await;
+        assert!(state.is_recording);
+        assert!(state.is_recording_toggle);
+        assert_eq!(state.tray_status, TrayStatus::Recording);
+        assert!(
+            !handler.reset_applied.load(Ordering::Acquire),
+            "stale auto-stop reset must not consume the newer toggle generation"
+        );
     }
 
     #[test]

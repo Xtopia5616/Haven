@@ -505,3 +505,4 @@
 - [0514：显式结束会话的失败与重试契约](0514-explicit-session-end-failure-contract.md)
 - [0515：Skill 虚拟环境准备进程使用 Windows containment](0515-contained-skill-venv-bootstrap.md)
 - [0516：用 typed projection 表达 MCP prompt index](0516-typed-mcp-prompt-index.md)
+- [0517：统一录音停止后的转写调度](0517-recording-stop-transcription-scheduling.md)

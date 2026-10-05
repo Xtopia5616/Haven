@@ -64,8 +64,9 @@ pub(crate) fn emit_event_logged<T: Serialize + Clone>(
 
 /// Recording helpers shared with the shell hotkey path in `lib.rs`.
 pub(crate) use recording::{
-    begin_recording_session, emit_recording_error, emit_recording_started, emit_recording_stopped,
-    finalize_transcription, recording_reason_str,
+    RecordingStopCompletion, RecordingStopShellUpdate, begin_recording_session,
+    emit_recording_error, emit_recording_started, emit_recording_stopped, finish_recording_stop,
+    schedule_recording_transcription, stop_error_event_session_id,
 };
 
 #[derive(Serialize)]

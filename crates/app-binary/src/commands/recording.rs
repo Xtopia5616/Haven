@@ -1,5 +1,6 @@
 use crate::app_state::{AppState, RecordingLifecyclePermit};
 use crate::commands::{emit_event_logged, log_err, log_storage_err};
+use crate::desktop::{DesktopShell, RecordingStopContext};
 use crate::events::{
     RECORDING_ERROR_EVENT, RECORDING_STARTED_EVENT, RECORDING_STOPPED_EVENT, RecordingErrorEvent,
     RecordingEvent, TRANSCRIPTION_ERROR_EVENT, TRANSCRIPTION_RESULT_EVENT,
@@ -282,11 +283,163 @@ pub(crate) async fn finalize_transcription(
     }
 }
 
+pub(crate) enum RecordingStopShellUpdate {
+    /// The initiating Shell control already wrote its stopped state. Refresh
+    /// only the tray from the latest state so an older handler cannot undo a
+    /// newer start/toggle while it was awaiting the pipeline.
+    RefreshCurrent,
+    /// A Tauri command started the stop. Apply its state only if no newer
+    /// Shell transition has changed the recording revision in the meantime.
+    StopIfRevision(u64),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum StopCaptureErrorClass {
+    /// Another stop path has finished capture or is finalizing its result.
+    AlreadyFinalizing,
+    /// Capture is still active, so this call did not stop it.
+    CaptureStillActive,
+}
+
+pub(crate) fn classify_stop_capture_error(
+    state: &haven_input::RecordingState,
+) -> StopCaptureErrorClass {
+    match state {
+        haven_input::RecordingState::Pending | haven_input::RecordingState::Processing => {
+            StopCaptureErrorClass::AlreadyFinalizing
+        }
+        haven_input::RecordingState::Recording => StopCaptureErrorClass::CaptureStillActive,
+    }
+}
+
+pub(crate) async fn settle_owned_stop_capture_error<SyncShell, SyncFuture, Detach, EmitError>(
+    state: &haven_input::RecordingState,
+    expected_session_id: &haven_common::types::SessionId,
+    error: String,
+    sync_shell: SyncShell,
+    detach: Detach,
+    emit_error: EmitError,
+) -> Result<(), String>
+where
+    SyncShell: FnOnce() -> SyncFuture,
+    SyncFuture: std::future::Future<Output = ()>,
+    Detach: FnOnce() -> Option<haven_common::types::SessionId>,
+    EmitError: FnOnce(haven_common::types::SessionId, String),
+{
+    if classify_stop_capture_error(state) == StopCaptureErrorClass::CaptureStillActive {
+        return Err(error);
+    }
+
+    sync_shell().await;
+    if let Some(session_id) = stop_error_event_session_id(detach(), expected_session_id) {
+        emit_error(session_id, error);
+    }
+    Ok(())
+}
+
+/// Return the detached capture ID only when it is the same recording whose
+/// stop failed. This prevents a delayed failure from emitting an error for a
+/// newer recording that acquired ownership in between.
+pub(crate) fn stop_error_event_session_id(
+    detached: Option<haven_common::types::SessionId>,
+    expected: &haven_common::types::SessionId,
+) -> Option<haven_common::types::SessionId> {
+    detached.filter(|detached_id| detached_id == expected)
+}
+
+pub(crate) struct RecordingStopCompletion<'a> {
+    pub(crate) lifecycle: RecordingLifecyclePermit<'a>,
+    pub(crate) stop_context: RecordingStopContext,
+    pub(crate) session_id: haven_common::types::SessionId,
+    pub(crate) result: RecordingResult,
+    pub(crate) shell_update: RecordingStopShellUpdate,
+}
+
+/// Complete the synchronous portion of a successful app-owned recording
+/// stop, release the lifecycle permit, then hand transcription to the single
+/// app-scoped scheduler. The closures keep event and scheduling adapters
+/// injectable so the ordering can be tested without a Tauri runtime.
+pub(crate) async fn finish_recording_stop<EmitStopped, Schedule, ScheduleFuture>(
+    shell: &DesktopShell,
+    completion: RecordingStopCompletion<'_>,
+    emit_stopped: EmitStopped,
+    schedule: Schedule,
+) where
+    EmitStopped: FnOnce(haven_common::types::SessionId, &'static str, u64) + Send,
+    Schedule: FnOnce(haven_common::types::SessionId, RecordingResult) -> ScheduleFuture + Send,
+    ScheduleFuture: std::future::Future<Output = bool> + Send,
+{
+    let RecordingStopCompletion {
+        lifecycle,
+        stop_context,
+        session_id,
+        result,
+        shell_update,
+    } = completion;
+
+    match shell_update {
+        RecordingStopShellUpdate::RefreshCurrent => shell.refresh_tray().await,
+        RecordingStopShellUpdate::StopIfRevision(revision) => {
+            shell.sync_recording_if_revision(false, revision).await;
+        }
+    }
+
+    emit_stopped(
+        session_id.clone(),
+        recording_reason_str(result.reason),
+        result.duration_ms,
+    );
+
+    if matches!(
+        result.reason,
+        RecordingReason::Silence | RecordingReason::MaxDuration
+    ) && !shell
+        .reset_toggle_on_auto_stop_if_generation(stop_context.toggle_generation)
+        .await
+    {
+        tracing::trace!(
+            recording_id = %session_id,
+            "skipping stale auto-stop toggle reset"
+        );
+    }
+
+    drop(lifecycle);
+    if result.reason == RecordingReason::Cancel {
+        return;
+    }
+    if !schedule(session_id.clone(), result).await {
+        tracing::warn!(
+            recording_id = %session_id,
+            "recording transcription task rejected during application shutdown"
+        );
+    }
+}
+
+/// Register transcription as an app-scoped task so application shutdown
+/// cancels/joins it under the same owner as other runtime work.
+pub(crate) fn schedule_recording_transcription(
+    state: Arc<AppState>,
+    app: tauri::AppHandle,
+    session_id: haven_common::types::SessionId,
+    result: RecordingResult,
+) -> bool {
+    let runtime = state.runtime.clone();
+    runtime.spawn("recording-transcription", async move {
+        let _ = finalize_transcription(&state, &app, session_id, result).await;
+    })
+}
+
 #[tauri::command]
 pub async fn start_recording(
     state: State<'_, Arc<AppState>>,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
+    let expected_recording_revision = state
+        .runtime
+        .shell
+        .recording_stop_context()
+        .await
+        .recording_revision;
     let lifecycle = state.recording_sessions.lock().await;
     if let Err(e) = state.runtime.pipeline.start_recording().await {
         // The hotkey may have started a recording a moment earlier, or a VAD
@@ -295,7 +448,11 @@ pub async fn start_recording(
         if matches!(pipeline_state, haven_input::RecordingState::Recording)
             && let Some(session_id) = state.recording_sessions.current(&lifecycle)
         {
-            state.runtime.shell.sync_recording(true).await;
+            state
+                .runtime
+                .shell
+                .sync_recording_if_revision(true, expected_recording_revision)
+                .await;
             // This command may be reconciling a toolbar click with a capture
             // that was started by the hotkey. Re-emit the stable identity so
             // the renderer can bind its optimistic state to that capture.
@@ -314,7 +471,11 @@ pub async fn start_recording(
     }
     // Keep the shell state in sync so the tray icon, the mute hotkey and the
     // recording toggle reflect a UI-button-started recording.
-    state.runtime.shell.sync_recording(true).await;
+    state
+        .runtime
+        .shell
+        .sync_recording_if_revision(true, expected_recording_revision)
+        .await;
     let session_id = begin_recording_session(&state, &lifecycle);
     emit_recording_started(&app, &session_id);
     Ok(())
@@ -325,13 +486,12 @@ pub async fn stop_recording(
     state: State<'_, Arc<AppState>>,
     app: tauri::AppHandle,
 ) -> Result<String, String> {
+    let stop_context = state.runtime.shell.recording_stop_context().await;
     let lifecycle = state.recording_sessions.lock().await;
     let Some(session_id) = state.recording_sessions.current(&lifecycle) else {
-        return match state.runtime.pipeline.get_state().await {
-            haven_input::RecordingState::Pending | haven_input::RecordingState::Processing => {
-                Ok(String::new())
-            }
-            haven_input::RecordingState::Recording => Err(log_err(
+        return match classify_stop_capture_error(&state.runtime.pipeline.get_state().await) {
+            StopCaptureErrorClass::AlreadyFinalizing => Ok(String::new()),
+            StopCaptureErrorClass::CaptureStillActive => Err(log_err(
                 "stop_recording",
                 "麦克风正由其他操作使用，无法停止此录音".to_string(),
             )),
@@ -354,43 +514,54 @@ pub async fn stop_recording(
             // (finalizing elsewhere). Not an error for the UI — emitting a
             // failure toast here would blame the user for a race they won.
             let pipeline_state = state.runtime.pipeline.get_state().await;
-            if matches!(
-                pipeline_state,
-                haven_input::RecordingState::Pending | haven_input::RecordingState::Processing
-            ) {
-                state.runtime.shell.sync_recording(false).await;
-                let detached = state.recording_sessions.finish(&lifecycle);
-                if detached.as_ref() == Some(&session_id) {
-                    emit_recording_error(&app, Some(session_id), e.to_string());
-                }
-                return Ok(String::new());
-            }
-            return Err(log_err("stop_recording", e));
+            return match settle_owned_stop_capture_error(
+                &pipeline_state,
+                &session_id,
+                e.to_string(),
+                || async {
+                    state
+                        .runtime
+                        .shell
+                        .sync_recording_if_revision(false, stop_context.recording_revision)
+                        .await;
+                },
+                || state.recording_sessions.finish(&lifecycle),
+                |session_id, error| emit_recording_error(&app, Some(session_id), error),
+            )
+            .await
+            {
+                Ok(()) => Ok(String::new()),
+                Err(error) => Err(log_err("stop_recording", error)),
+            };
         }
     };
     let detached_session_id = state.recording_sessions.finish(&lifecycle);
     debug_assert_eq!(detached_session_id.as_ref(), Some(&session_id));
-    // Keep the shell state in sync (tray icon, mute hotkey, toggle).
-    state.runtime.shell.sync_recording(false).await;
-    emit_recording_stopped(
-        &app,
-        session_id.clone(),
-        recording_reason_str(result.reason),
-        Some(result.duration_ms),
-    );
-
-    // STT runs inside `finalize_transcription`; the frontend submits the
-    // transcript via `process_transcript` (same path as typed input). It is
-    // spawned detached so the invoke returns immediately — the UI is driven
-    // by the `transcription:*` events, not by this command's result, and
-    // awaiting the STT network call here would hold the command action for its
-    // whole duration.
-    let state = state.inner().clone();
-    let runtime = state.runtime.clone();
-    drop(lifecycle);
-    runtime.spawn("recording-transcription", async move {
-        let _ = finalize_transcription(&state, &app, session_id, result).await;
-    });
+    let state_for_transcription = state.inner().clone();
+    let app_for_transcription = app.clone();
+    let shell = state.runtime.shell.clone();
+    finish_recording_stop(
+        &shell,
+        RecordingStopCompletion {
+            lifecycle,
+            stop_context,
+            session_id,
+            result,
+            shell_update: RecordingStopShellUpdate::StopIfRevision(stop_context.recording_revision),
+        },
+        move |session_id, reason, duration_ms| {
+            emit_recording_stopped(&app, session_id, reason, Some(duration_ms));
+        },
+        move |session_id, result| async move {
+            schedule_recording_transcription(
+                state_for_transcription,
+                app_for_transcription,
+                session_id,
+                result,
+            )
+        },
+    )
+    .await;
     Ok(String::new())
 }
 
@@ -399,6 +570,7 @@ pub async fn cancel_recording(
     state: State<'_, Arc<AppState>>,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
+    let stop_context = state.runtime.shell.recording_stop_context().await;
     let lifecycle = state.recording_sessions.lock().await;
     let Some(session_id) = state.recording_sessions.current(&lifecycle) else {
         // Timed media-tool captures share the pipeline but have no overlay
@@ -411,7 +583,11 @@ pub async fn cancel_recording(
         .cancel_recording()
         .await
         .map_err(|e| log_err("cancel_recording", e))?;
-    state.runtime.shell.sync_recording(false).await;
+    state
+        .runtime
+        .shell
+        .sync_recording_if_revision(false, stop_context.recording_revision)
+        .await;
     // No transcription follows a cancel: detach this identity before a new
     // capture can start and remove any usage awaiting renderer submission.
     let cancelled_recording_id = state.recording_sessions.finish(&lifecycle);
@@ -547,6 +723,377 @@ pub async fn process_transcript(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app_state::RecordingSessionOwner;
+    use crate::desktop::{ShellHandler, TrayStatus};
+    use std::sync::Mutex as StdMutex;
+    use std::sync::atomic::Ordering;
+    use tokio::sync::oneshot;
+
+    #[test]
+    fn stop_capture_failure_class_preserves_pending_processing_race_semantics() {
+        assert_eq!(
+            classify_stop_capture_error(&haven_input::RecordingState::Pending),
+            StopCaptureErrorClass::AlreadyFinalizing
+        );
+        assert_eq!(
+            classify_stop_capture_error(&haven_input::RecordingState::Processing),
+            StopCaptureErrorClass::AlreadyFinalizing
+        );
+        assert_eq!(
+            classify_stop_capture_error(&haven_input::RecordingState::Recording),
+            StopCaptureErrorClass::CaptureStillActive
+        );
+    }
+
+    #[tokio::test]
+    async fn pending_and_processing_stop_failures_return_success_and_correlate_one_error() {
+        for pipeline_state in [
+            haven_input::RecordingState::Pending,
+            haven_input::RecordingState::Processing,
+        ] {
+            let owner = RecordingSessionOwner::default();
+            let lifecycle = owner.lock().await;
+            let session_id = owner.begin(&lifecycle);
+            let sync_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let events = Arc::new(StdMutex::new(Vec::new()));
+            let sync_calls_in_closure = sync_calls.clone();
+            let events_in_closure = events.clone();
+
+            let outcome = settle_owned_stop_capture_error(
+                &pipeline_state,
+                &session_id,
+                "stop raced with another finalizer".to_string(),
+                move || async move {
+                    sync_calls_in_closure.fetch_add(1, Ordering::SeqCst);
+                },
+                || owner.finish(&lifecycle),
+                move |event_session_id, error| {
+                    events_in_closure
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner())
+                        .push((event_session_id, error));
+                },
+            )
+            .await;
+
+            assert_eq!(outcome, Ok(()));
+            assert_eq!(sync_calls.load(Ordering::SeqCst), 1);
+            assert_eq!(owner.current(&lifecycle), None);
+            assert_eq!(
+                *events
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner()),
+                vec![(session_id, "stop raced with another finalizer".to_string())]
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn active_capture_stop_failure_returns_error_without_side_effects() {
+        let owner = RecordingSessionOwner::default();
+        let lifecycle = owner.lock().await;
+        let session_id = owner.begin(&lifecycle);
+        let sync_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let detach_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let event_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let sync_in_closure = sync_calls.clone();
+        let detach_in_closure = detach_calls.clone();
+        let event_in_closure = event_calls.clone();
+        let owner_for_detach = &owner;
+        let lifecycle_for_detach = &lifecycle;
+
+        let outcome = settle_owned_stop_capture_error(
+            &haven_input::RecordingState::Recording,
+            &session_id,
+            "capture is still recording".to_string(),
+            move || async move {
+                sync_in_closure.fetch_add(1, Ordering::SeqCst);
+            },
+            move || {
+                detach_in_closure.fetch_add(1, Ordering::SeqCst);
+                owner_for_detach.finish(lifecycle_for_detach)
+            },
+            move |_session_id, _error| {
+                event_in_closure.fetch_add(1, Ordering::SeqCst);
+            },
+        )
+        .await;
+
+        assert_eq!(outcome, Err("capture is still recording".to_string()));
+        assert_eq!(sync_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(detach_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(event_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(owner.current(&lifecycle), Some(session_id));
+    }
+
+    #[tokio::test]
+    async fn stop_error_event_uses_only_the_detached_recording_identity() {
+        let owner = RecordingSessionOwner::default();
+        let lifecycle = owner.lock().await;
+        let session_id = owner.begin(&lifecycle);
+        let detached = owner.finish(&lifecycle);
+
+        assert_eq!(
+            stop_error_event_session_id(detached, &session_id),
+            Some(session_id.clone())
+        );
+        assert_eq!(
+            stop_error_event_session_id(
+                Some(haven_common::types::new_id("rec").into()),
+                &session_id
+            ),
+            None
+        );
+        assert_eq!(stop_error_event_session_id(None, &session_id), None);
+    }
+
+    struct TrayOrderRecorder(Arc<StdMutex<Vec<&'static str>>>);
+
+    #[async_trait::async_trait]
+    impl ShellHandler for TrayOrderRecorder {
+        fn on_tray_status(&self, status: TrayStatus) {
+            let label = match status {
+                TrayStatus::Normal => "tray:normal",
+                TrayStatus::Recording => "tray:recording",
+                TrayStatus::Muted => "tray:muted",
+                TrayStatus::Busy => "tray:busy",
+            };
+            self.0
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .push(label);
+        }
+    }
+
+    fn push_order(order: &StdMutex<Vec<&'static str>>, event: &'static str) {
+        order
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .push(event);
+    }
+
+    #[tokio::test]
+    async fn successful_stop_publishes_before_gated_transcription_and_allows_new_capture() {
+        let shell = Arc::new(DesktopShell::new());
+        shell.toggle_recording().await;
+        let order = Arc::new(StdMutex::new(Vec::new()));
+        shell.set_handler(Arc::new(TrayOrderRecorder(order.clone())));
+        let stop_context = shell.recording_stop_context().await;
+
+        let owner = Arc::new(RecordingSessionOwner::default());
+        let owner_for_schedule = owner.clone();
+        let lifecycle = owner.lock().await;
+        let old_session_id = owner.begin(&lifecycle);
+        assert_eq!(owner.finish(&lifecycle), Some(old_session_id.clone()));
+
+        let (started_tx, started_rx) = oneshot::channel();
+        let (release_tx, release_rx) = oneshot::channel();
+        let (finished_tx, mut finished_rx) = oneshot::channel();
+        let (next_session_tx, next_session_rx) = oneshot::channel();
+
+        let mut result = RecordingResult::default();
+        result.reason = RecordingReason::Silence;
+        result.duration_ms = 37;
+
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            finish_recording_stop(
+                &shell,
+                RecordingStopCompletion {
+                    lifecycle,
+                    stop_context,
+                    session_id: old_session_id.clone(),
+                    result,
+                    shell_update: RecordingStopShellUpdate::StopIfRevision(
+                        stop_context.recording_revision,
+                    ),
+                },
+                {
+                    let order = order.clone();
+                    let expected_session_id = old_session_id.clone();
+                    move |session_id, reason, duration_ms| {
+                        assert_eq!(session_id, expected_session_id);
+                        assert_eq!(reason, "silence");
+                        assert_eq!(duration_ms, 37);
+                        push_order(&order, "stopped");
+                    }
+                },
+                {
+                    let shell = shell.clone();
+                    let order = order.clone();
+                    let expected_session_id = old_session_id.clone();
+                    move |session_id, _result| async move {
+                        assert_eq!(session_id, expected_session_id);
+                        assert_eq!(
+                            *order
+                                .lock()
+                                .unwrap_or_else(|poisoned| poisoned.into_inner()),
+                            vec!["tray:normal", "stopped"]
+                        );
+                        assert!(!shell.get_state().await.is_recording_toggle);
+
+                        let lifecycle = owner_for_schedule.lock().await;
+                        assert!(owner_for_schedule.current(&lifecycle).is_none());
+                        let next_session_id = owner_for_schedule.begin(&lifecycle);
+                        drop(lifecycle);
+                        next_session_tx.send(next_session_id).unwrap();
+                        push_order(&order, "scheduled");
+
+                        tokio::spawn(async move {
+                            started_tx.send(session_id.clone()).unwrap();
+                            let _ = release_rx.await;
+                            finished_tx.send(session_id).unwrap();
+                        });
+                        true
+                    }
+                },
+            ),
+        )
+        .await
+        .expect("stop completion must not wait for transcription");
+
+        let next_session_id = next_session_rx.await.unwrap();
+        assert_ne!(next_session_id, old_session_id);
+        assert_eq!(started_rx.await.unwrap(), old_session_id);
+        assert_eq!(
+            finished_rx.try_recv(),
+            Err(oneshot::error::TryRecvError::Empty),
+            "the fake transcription must remain behind its gate"
+        );
+        release_tx.send(()).unwrap();
+        assert_eq!(finished_rx.await.unwrap(), old_session_id);
+        assert_eq!(
+            *order
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()),
+            vec!["tray:normal", "stopped", "scheduled"]
+        );
+    }
+
+    #[tokio::test]
+    async fn manual_stop_does_not_reset_hotkey_toggle() {
+        let shell = Arc::new(DesktopShell::new());
+        shell.toggle_recording().await;
+        let stop_context = shell.recording_stop_context().await;
+        let owner = RecordingSessionOwner::default();
+        let lifecycle = owner.lock().await;
+        let session_id = owner.begin(&lifecycle);
+        owner.finish(&lifecycle);
+
+        let mut result = RecordingResult::default();
+        result.reason = RecordingReason::Manual;
+        finish_recording_stop(
+            &shell,
+            RecordingStopCompletion {
+                lifecycle,
+                stop_context,
+                session_id,
+                result,
+                shell_update: RecordingStopShellUpdate::StopIfRevision(
+                    stop_context.recording_revision,
+                ),
+            },
+            |_session_id, _reason, _duration_ms| {},
+            {
+                let shell = shell.clone();
+                |_session_id, _result| async move {
+                    assert!(shell.get_state().await.is_recording_toggle);
+                    true
+                }
+            },
+        )
+        .await;
+        assert!(shell.get_state().await.is_recording_toggle);
+    }
+
+    #[tokio::test]
+    async fn cancel_reason_does_not_schedule_transcription() {
+        let shell = DesktopShell::new();
+        let owner = RecordingSessionOwner::default();
+        let lifecycle = owner.lock().await;
+        let session_id = owner.begin(&lifecycle);
+        owner.finish(&lifecycle);
+        let mut result = RecordingResult::default();
+        result.reason = RecordingReason::Cancel;
+        let schedule_called = Arc::new(std::sync::atomic::AtomicBool::new(false));
+
+        finish_recording_stop(
+            &shell,
+            RecordingStopCompletion {
+                lifecycle,
+                stop_context: shell.recording_stop_context().await,
+                session_id,
+                result,
+                shell_update: RecordingStopShellUpdate::RefreshCurrent,
+            },
+            |_session_id, reason, _duration_ms| assert_eq!(reason, "cancel"),
+            {
+                let schedule_called = schedule_called.clone();
+                move |_session_id, _result| async move {
+                    schedule_called.store(true, Ordering::SeqCst);
+                    true
+                }
+            },
+        )
+        .await;
+
+        assert!(!schedule_called.load(Ordering::SeqCst));
+        tokio::time::timeout(std::time::Duration::from_secs(1), owner.lock())
+            .await
+            .expect("cancel completion must release the lifecycle permit");
+    }
+
+    #[tokio::test]
+    async fn shell_stop_refresh_keeps_newer_toggle_before_transcription_schedule() {
+        let shell = Arc::new(DesktopShell::new());
+        shell.toggle_recording().await;
+        let stop_context = shell.recording_stop_context().await;
+
+        // Model state changes that arrive while the old stop callback waits
+        // on the pipeline lifecycle permit.
+        shell.stop_recording().await;
+        shell.toggle_recording().await;
+        shell.toggle_recording().await;
+
+        let owner = RecordingSessionOwner::default();
+        let lifecycle = owner.lock().await;
+        let session_id = owner.begin(&lifecycle);
+        owner.finish(&lifecycle);
+        let mut result = RecordingResult::default();
+        result.reason = RecordingReason::Silence;
+        let stopped_session_id = session_id.clone();
+
+        finish_recording_stop(
+            &shell,
+            RecordingStopCompletion {
+                lifecycle,
+                stop_context,
+                session_id,
+                result,
+                shell_update: RecordingStopShellUpdate::RefreshCurrent,
+            },
+            move |event_session_id, reason, _duration_ms| {
+                assert_eq!(event_session_id, stopped_session_id);
+                assert_eq!(reason, "silence");
+            },
+            {
+                let shell = shell.clone();
+                move |_session_id, _result| async move {
+                    let state = shell.get_state().await;
+                    assert!(state.is_recording);
+                    assert!(state.is_recording_toggle);
+                    assert_eq!(state.tray_status, TrayStatus::Recording);
+                    true
+                }
+            },
+        )
+        .await;
+
+        let state = shell.get_state().await;
+        assert!(state.is_recording);
+        assert!(state.is_recording_toggle);
+        assert_eq!(state.tray_status, TrayStatus::Recording);
+    }
 
     fn att(media_type: &str, data: &str) -> haven_common::types::MessageAttachment {
         haven_common::types::MessageAttachment::new(media_type, data)
