@@ -1,6 +1,6 @@
 # Haven 架构降复杂度重构路线图
 
-> 状态：阶段 0–8 已完成；SessionUsage 累计上限契约、session-scoped KV 孤儿清理 owner、summary marker 单一原子生产路径、Tools 测试归属、Input→Tools 测试反向依赖、MCP/Skill 直调授权策略来源、MCP 管理操作网络策略来源、X12 例外消息写入口、ADR 编号索引完整性、actorless session action lifecycle 清理（ADR 0507）、Ask reducer state ownership 收口（ADR 0508）、终态 Ask 清理事件归属（ADR 0509）、ReAct phase 来源 session 身份（ADR 0510）、Windows 子进程先入 Job 再恢复（ADR 0513）、显式 end 失败重试契约（ADR 0514）、Skill venv 子进程 containment（ADR 0515）、MCP prompt index 类型化（ADR 0516）、Memory fact marker generation-safe ack 与有界 durable outbox/session recovery（ADR 0107/0259）、App-owned Shell/hotkey/VAD stop 后处理调度收口（ADR 0517）、MemoryWorker durable outbox lifecycle 私有 owner（ADR 0518）已完成；当前无 Active/Next 结构切片；Windows 发布验收为独立开放签核门
+> 状态：阶段 0–8 已完成；SessionUsage 累计上限契约、session-scoped KV 孤儿清理 owner、summary marker 单一原子生产路径、Tools 测试归属、Input→Tools 测试反向依赖、MCP/Skill 直调授权策略来源、MCP 管理操作网络策略来源、X12 例外消息写入口、ADR 编号索引完整性、actorless session action lifecycle 清理（ADR 0507）、Ask reducer state ownership 收口（ADR 0508）、终态 Ask 清理事件归属（ADR 0509）、ReAct phase 来源 session 身份（ADR 0510）、Windows 子进程先入 Job 再恢复（ADR 0513）、显式 end 失败重试契约（ADR 0514）、Skill venv 子进程 containment（ADR 0515）、MCP prompt index 类型化（ADR 0516）、Memory fact marker generation-safe ack 与有界 durable outbox/session recovery（ADR 0107/0259）、App-owned Shell/hotkey/VAD stop 后处理调度收口（ADR 0517）、MemoryWorker durable outbox lifecycle 私有 owner（ADR 0518）、Session grant/resolve append failure retry 契约测试（ADR 0519）、SessionActor interaction replay fail-closed（ADR 0520）已完成；唯一 Next 为 Session confirmation 决议与恢复唤醒原子提交（ADR 0521）；Windows 发布验收为独立开放签核门
 > 更新日期：2026-10-06
 > 范围：Agent/Session、Memory、Tools、LLM、App IPC 与 UI
 
@@ -74,7 +74,8 @@
 
 | 状态 | 当前项 |
 |---|---|
-| **Active** | 暂无。ADR 0519 的验证切片已完成；按步骤 0 重新复核后，没有新的结构候选满足 §5.5 准入条件。下一次在同类回归、依赖/API 变化或准备发布时重新分流。 |
+| **Active** | 暂无。ADR 0520 已通过适用 workspace 门禁；正在按 §5.6 步骤 0 复核后续证据，符合准入条件前不预设下一个切片。 |
+| **Next** | **Session confirmation 决议与恢复唤醒原子提交（ADR 0521）**：最后一个 pending confirmation 的 resolved event 与 Paused→Pending 必须同事务；提交后才发布 SessionResumed、入队并唤醒 dispatcher。ADR 0424 已定义该不变量，现有代码存在分离写窗口；以 status 写失败注入与同请求重试验收。 |
 | **Gate** | Windows 发布验收 Open，见 §5.1。 |
 
 ### 5.1 Windows 发布验收（Gate / Open）
@@ -89,11 +90,15 @@
 
 可以提前准备隔离 profile、安装器和物理盘耗尽环境；最终验收必须使用交互生命周期等 IPC/UI 变更完成后的最新构建。此项是发布签核门，不阻塞不影响发布路径的独立模块整理。
 
-### 5.2 交互生命周期所有权（Complete）
+### 5.2 交互生命周期所有权（契约与恢复失败语义均已完成）
 
-[`ADR 0424`](adr/0424-interaction-lifecycle-ownership.md)（配套 [`ADR 0423`](adr/0423-confirmation-wait-expiry-and-acknowledgement.md)）已完成 Session、ScheduledAction 与 AppCommand 三类确认 owner 的收口：Session 按 `session_id` 定位 actor，ScheduledAction 按 `action_id`，AppCommand 按 request ID；resolve 不跨 owner 扫描。运行时 owner 显式传递，session durable event 形状不变；确认期限由 owner 按绝对 `expires_at` 仲裁，ScheduledAction 的批准/取消由持久执行 claim first-wins 仲裁。Session resolve append 成功后才推进 actor，批量确认与 Paused 状态在同一 SQLite 事务提交。Session grant 与 resolve event 仍是两次可重试 durable write；重启时 running action 不自动 replay。旧 sentinel、fallback 与 renderer `timed_out` 入口已删除，不增加 schema/reset。后续只在出现新回归、职责变化或 §5.5 准入的风险特定验证缺口时重开；实现、替代方案、退出条件和门禁记录见 ADR 0423/0424/0519。
+[`ADR 0424`](adr/0424-interaction-lifecycle-ownership.md)（配套 [`ADR 0423`](adr/0423-confirmation-wait-expiry-and-acknowledgement.md)）已完成 Session、ScheduledAction 与 AppCommand 三类确认 owner 的收口：Session 按 `session_id` 定位 actor，ScheduledAction 按 `action_id`，AppCommand 按 request ID；resolve 不跨 owner 扫描。运行时 owner 显式传递，session durable event 形状不变；确认期限由 owner 按绝对 `expires_at` 仲裁，ScheduledAction 的批准/取消由持久执行 claim first-wins 仲裁。Session resolve append 成功后才推进 actor，批量确认与 Paused 状态在同一 SQLite 事务提交。Session grant 与 resolve event 仍是两次可重试 durable write；重启时 running action 不自动 replay。旧 sentinel、fallback 与 renderer `timed_out` 入口已删除，不增加 schema/reset。交互 replay 错误不再伪装为空 actor，见已完成的 ADR 0520；实现、替代方案、退出条件和门禁记录见 ADR 0423/0424/0519/0520。
 
 **非原子窗口复核（2026-10-06；ADR 0519 已完成）：** Session-owned resolve 路径先持久化 session-scope grant 并更新当前授权引擎，再由 SessionActor 追加 `interaction_resolved`。本轮以 SQLite 故障注入固定现有契约：第二步失败返回可重试错误，已批准 grant 仍持久且在当前授权引擎可见，原 actor 的请求保持 pending/Paused，不产生 resolved event；恢复写入后同一请求可重试完成且不重复 grant。**不据此启动事务重构**，不改变 grant-before-resolve 顺序、SessionStore/SessionActor owner 或其他确认 owner 契约。actor 在两步间停止的 stale/retry 语义受 actor registry 与 mailbox 时序影响，契约尚未定义，暂时 Deferred。
+
+**交互 replay 故障收紧（ADR 0520，已完成）：** ADR 0294 曾规定 replay 失败时 warning 后用空交互注册 actor；这与 ADR 0502 确立的“交互 lifecycle 只从 durable events replay”恢复权威不一致。`install_actor` 现先 replay，成功后才恢复该安装路径上的 durable session grants 并注册 actor；replay 失败向调用者传播，actor 保持未注册，使显式加载可重试。`load_pending_sessions` 对单个会话的安装失败记录 `session_id` 并继续其余 pending sessions；pending 列举本身失败仍传播。故障回归验证坏 event 不会经失败的 actor 安装路径启用 grant，坏会话不会阻断健康会话恢复。全局 Security apply 的 grant 重应用继续遵循 ADR 0402；本切片不增加自动重试，不改 event payload、schema、IPC 或其他确认 owner。适用 workspace 门禁均已通过。
+
+**当前 Next 证据（ADR 0521）：** ADR 0424 决策 3 明确禁止 resolved event 与 session resume 分离；现有 SessionActor 在 event append 成功后先终结 actor request，SessionSupervisor 再独立持久化 Paused→Pending。第二步失败会产生 resolved/Paused 分离，调用重试变 stale，且没有 wake。SessionStore 已有 event+status 原子事务端口，confirmation requested batch 已采用；当前缺口是最后一个 confirm 的 resolve/expiry 路径及其 wake owner，故只收敛这条链，不拆通用 event store。另一个候选“pending-record 全表查询失败后自动重试”暂不列 Next：当前证据是单次启动读取失败会终止该轮，没有已观测故障或 ADR0424 同级的决议原子性违反；若出现可复现的持久恢复中断，再按步骤 0 重开。模块/crate 扫描仍将 `session_events.rs` 和 ActionService 留为 Deferred，11 个内部 crate、30 条依赖边无方向问题。
 
 ### 5.3 内部模块与 crate 边界（按证据复核）
 
@@ -158,9 +163,9 @@
 | 4 | **模块成熟后再评估 crate/API 边界** | 只有模块 owner 已稳定，且存在独立消费者、真实依赖方向问题或可复核构建/迭代成本时才评估 crate 拆分。交付物包括依赖图、API/消费者映射；若声称构建收益，须有同环境基准。 | 提取后依赖单向、API 稳定、消费者不用反向依赖或重复 adapter，并证明维护/构建收益；任一不满足就保留现边界。 |
 | 5 | **性能与容量** | 仅在同负载 profile 复现有用户意义的成本时优化；交付物为固定场景的前后指标，并遵守 SQLite 容量、失败恢复与资源上限契约。Windows 发布验收独立保留在 §5.1，不作为结构重构阶段的退出依赖。 | 优化结果超过噪声且达到目标，否则关闭候选；没有当前测量就不以“降复杂度”为名做性能改动。 |
 
-以上是循环复核的先后顺序，不是一次性瀑布项目：每轮从步骤 0 重新分流，完成一个切片、同类问题复现、依赖/API 边界变化或准备发布时再审查证据。ADR 0514–0519 与 Memory fact marker generation-safe ack/有界 outbox（ADR 0107/0259）已完成；ReAct Fatal 双终态 owner 已在步骤 2 收口（ADR 0511）；Admin 风险等级 parity 回归门禁已完成（ADR 0512）。ADR 0519 关闭 grant/resolve 组合失败的定向测试缺口后，重新复核确认 `session_events` 事务不变量无复发，MemoryWorker 剩余 prefetch/inference 无近期重复回归，App/UI、Common/ActionService、性能及依赖/API 边界均无新增准入证据，当前无 Active/Next；审计发现并校准了路线图中的依赖边计数。发布验收 Gate 与结构重构并行，按 §5.1 独立关闭。
+以上是循环复核的先后顺序，不是一次性瀑布项目：每轮从步骤 0 重新分流，完成一个切片、同类问题复现、依赖/API 边界变化或准备发布时再审查证据。ADR 0514–0520 与 Memory fact marker generation-safe ack/有界 outbox（ADR 0107/0259）已完成；ReAct Fatal 双终态 owner 已在步骤 2 收口（ADR 0511）；Admin 风险等级 parity 回归门禁已完成（ADR 0512）。ADR 0520 是在前轮复核后发现的具体恢复失败缺口并已收紧。本轮并行复核后，将 ADR 0424 已定义但当前 resolve 路径未满足的 event/status 原子性收敛选为唯一 Next（ADR 0521）；pending-record 批次读取的瞬时错误重试保持 Deferred，待可复现持久恢复中断再评估。`session_events.rs`、ActionService、crate/API 与性能候选均没有新增准入证据。发布验收 Gate 与结构重构并行，按 §5.1 独立关闭。
 
-**当前执行位置：** 架构阶段 0–8 已完成；ADR 0514–0519 与 Memory fact marker generation-safe ack、有界 outbox/session recovery（ADR 0107/0259）均已完成并通过适用 workspace 门禁。2026-10-06 步骤 0 在完成 ADR 0519 后复核，当前没有 Active/Next；`session_events` 大文件候选仍 Deferred，MemoryOutbox 是 `haven-agent` 内部 owner，没有 crate 拆分；依赖边界复核为 11 个内部 crate、30 条单向边，无需更改依赖方向或独立消费者收益。ReAct Fatal 双终态发布 owner 已由 ADR 0511 收口；Admin 20 个共用操作的风险等级 parity 回归门禁已由 ADR 0512 收口，两项 native-only 操作仍单独测试。Windows 发布验收仍是独立 Open Gate。
+**当前执行位置：** 架构阶段 0–8 已完成；ADR 0514–0520 与 Memory fact marker generation-safe ack、有界 outbox/session recovery（ADR 0107/0259）均已完成并通过适用 workspace 门禁。步骤 0 结束后的唯一 Next 为 ADR 0521；尚未进入 Active。`session_events` 大文件候选与 ActionService lifecycle 均因近期没有收口后同类回归/独立消费者收益而 Deferred；依赖边界为 11 个内部 crate、30 条单向边，无需更改方向。ReAct Fatal 双终态发布 owner 已由 ADR 0511 收口；Admin 20 个共用操作的风险等级 parity 回归门禁已由 ADR 0512 收口，两项 native-only 操作仍单独测试。Windows 发布验收仍是独立 Open Gate。
 
 ## 6. 更新规则
 

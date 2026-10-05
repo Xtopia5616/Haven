@@ -800,23 +800,16 @@ impl SessionSupervisor {
         self: &Arc<Self>,
         info: SessionInfo,
     ) -> anyhow::Result<actor::SessionActorHandle> {
+        // Interaction state is authoritative in the active durable event
+        // stream. Do not apply this session's grants or register an actor
+        // until that state has been reconstructed successfully.
+        let interactions = actor::load_interactions(&self.store, &info.id).await?;
         let grants = self.store.session_authorization_grants(&info.id).await?;
         for grant in grants {
             self.authorization
                 .grant(Some(&info.id), grant.capability, grant.effect, grant.scope)
                 .await;
         }
-        let interactions = match actor::load_interactions(&self.store, &info.id).await {
-            Ok(interactions) => interactions,
-            Err(error) => {
-                tracing::warn!(
-                    session_id = %info.id,
-                    %error,
-                    "failed to replay session interactions; starting actor empty"
-                );
-                Vec::new()
-            }
-        };
         let handle = actor::spawn(self.store.clone(), info, interactions.clone());
         self.actors
             .lock()
@@ -3073,6 +3066,61 @@ mod tests {
         assert_eq!(
             exec2.get_active_session_status(&session.id).await,
             Some(SessionStatus::Running)
+        );
+    }
+
+    #[tokio::test]
+    async fn pending_recovery_skips_interaction_replay_failure_without_installing_actor() {
+        use haven_memory::INTERACTION_REQUESTED_EVENT_TYPE;
+
+        let db = temp_db();
+        // Pending records are loaded newest first, so create the healthy
+        // session first to prove a later broken record does not stop the batch.
+        let healthy = db.create_session("healthy pending session").unwrap();
+        let broken = db.create_session("broken pending session").unwrap();
+        let grant = SessionAuthorizationGrant::session(
+            CapabilityScope::try_new("files.write").unwrap(),
+            PermissionTarget::Operation,
+            PermissionEffect::Allow,
+        );
+        db.save_session_authorization_grant(&healthy.id, &grant)
+            .unwrap();
+        db.save_session_authorization_grant(&broken.id, &grant)
+            .unwrap();
+        SessionStore::new(db.clone())
+            .append_domain_event(&broken.id, INTERACTION_REQUESTED_EVENT_TYPE, "{}")
+            .await
+            .unwrap();
+
+        let exec = Arc::new(SessionSupervisor::new_for_test(
+            db.clone(),
+            Arc::new(ToolsManager::new()),
+            1,
+        ));
+
+        assert_eq!(exec.load_pending_sessions().await.unwrap(), 1);
+        assert!(exec.actor_for(&healthy.id).await.is_some());
+        assert!(exec.actor_for(&broken.id).await.is_none());
+        assert!(matches!(
+            exec.authorization
+                .authorize(&high_risk_session_request(&healthy.id))
+                .await,
+            AuthorizationDecision::AutoApproved
+        ));
+        assert!(matches!(
+            exec.authorization
+                .authorize(&high_risk_session_request(&broken.id))
+                .await,
+            AuthorizationDecision::RequiresConfirmation { .. }
+        ));
+
+        // A failed install is not cached: a later explicit load attempts the
+        // durable replay again and still fails closed while the event is bad.
+        assert!(exec.ensure_session_loaded(&broken.id).await.is_err());
+        assert!(exec.actor_for(&broken.id).await.is_none());
+        assert_eq!(
+            db.session_authorization_grants(&broken.id).unwrap(),
+            vec![grant]
         );
     }
 

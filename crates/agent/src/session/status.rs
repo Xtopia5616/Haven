@@ -1091,8 +1091,17 @@ impl SessionSupervisor {
                 continue;
             }
             if self.actor_for(&record.id).await.is_none() {
-                self.install_actor(SessionInfo::from_db_record(&record))
-                    .await?;
+                if let Err(error) = self
+                    .install_actor(SessionInfo::from_db_record(&record))
+                    .await
+                {
+                    tracing::warn!(
+                        session_id = %record.id,
+                        %error,
+                        "failed to restore pending session; retry requires a later load attempt"
+                    );
+                    continue;
+                }
                 self.enqueue_pending(&record.id).await;
                 loaded += 1;
             }

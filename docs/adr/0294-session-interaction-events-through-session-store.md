@@ -1,5 +1,7 @@
 # ADR 0294：SessionActor 交互事件通过 SessionStore 异步端口
 
+> ADR 0520 仅取代下文决策 2 中“interaction replay 失败后以空列表安装 actor”的 fallback；SessionStore 异步端口与其他决策继续有效。
+
 - 状态：Accepted
 - 日期：2026-09-24
 - 范围：SessionSupervisor/SessionActor 的 interaction domain event 读写
