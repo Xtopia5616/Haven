@@ -1,6 +1,6 @@
 # Haven 架构降复杂度重构路线图
 
-> 状态：阶段 0–8 已完成；SessionUsage 累计上限契约与 session-scoped KV 孤儿清理 owner 已收口；当前无 Active 结构切片；Windows 发布验收为独立开放签核门
+> 状态：阶段 0–8 已完成；SessionUsage 累计上限契约与 session-scoped KV 孤儿清理 owner 已收口；Active：删除过时的 summary marker-only enqueue 入口，保留 episode + marker 同事务生产路径；Windows 发布验收为独立开放签核门
 > 更新日期：2026-10-05
 > 范围：Agent/Session、Memory、Tools、LLM、App IPC 与 UI
 
@@ -102,6 +102,14 @@
 
 当前边界决定：Common 拆分维持 [ADR 0359](adr/0359-common-boundary-and-profiling-baseline-audit.md) 的暂缓结论；Tools crate 拆分没有独立依赖边界或消费者收益；SessionStore 继续独占 event append、投影和 rollback 事务协调，`event_cursor` 与 `last_msg_at` 双时钟、提交后发布均不得分散；`LOCAL_TOOL_SECURITY_MATRIX` 仍是生产权限提示的 operation 白名单，保留在 `security.rs`。管理 surface、LLM router、授权沙箱和 inbox 崩溃恢复边界按现有 owner 保留，具体依据见相关 ADR。
 
+**2026-10-05 Tools 热点复核（均不准入拆分）：** `tool_contract.rs` 共 2,468 行，生产契约到第 1,940 行，后续为同模块测试。它把 `Tool` / typed adapter、operation policy、result metadata 与执行协议放在同一个共享执行契约 owner；registry/security 已在 `6b22da2` 拆出，`OperationSpec` 单源策略及 manifest 契约由 [ADR 0213](adr/0213-operation-spec-single-policy-source.md) 固化。近期跨 contract/view/builtin 的共同修改是在收敛该契约，尚无稳定后重复漂移或独立消费者收益；进一步搬入 sibling modules 只会改代码位置。若 policy/schema drift 再次导致回归，或出现独立消费者，再重新评估。
+
+`builtin/admin.rs` 共 3,665 行，生产 operation/schema/native request/output 边界到第 1,615 行，其余为测试。`AdminServices` 的副作用和固定输出生产者已位于 `admin_services.rs`；`admin.rs` 继续单独拥有 operation contract、request bridge 与工具输出序列化，符合 [ADR 0391](adr/0391-admin-services-typed-output-projections.md)。近期修改覆盖 MCP 授权、诊断日志上限、Skill 名称校验等不同纵向功能，没有显示稳定 owner 后的重复边界故障。若 MCP 管理授权/刷新反复回归，或出现独立复用方，再评估 `admin/mcp.rs`；当前不拆五类 surface。
+
+`builtin/messaging.rs` 共 2,518 行，主测试模块从第 1,326 行开始。生产部分是单一模型可见 `agent` 工具：共享参数和 15 个操作适配至 `haven_messaging::MessagingService`；领域消息生命周期已在 [ADR 0069](adr/0069-messaging-service.md) 收口，并由 [ADR 0396](adr/0396-messaging-domain-crate.md) 提取为独立 crate。近期没有再次出现跨层重复 owner 或稳定后边界回归。仅按 operation 拆 schema/handler 或另拆 crate 暂无收益；若 schema 与执行适配之后独立演进并导致契约漂移，再复核私有模块边界。
+
+`memory_worker.rs` 按非空行统计为 3,176 行（约 1,367 行生产代码、1,809 行测试）。近期已按 [ADR 0468](adr/0468-memory-worker-maintenance-pass-module.md) 隔离定期 maintenance pass，并在 `880ec96` 将 pass 构造器收窄为显式四项 capability；此后没有足够历史证明要继续拆。`MemoryRuntime` 持有恢复与调度，worker 持有 extraction/outbox，`MemoryMaintenanceStore` 与 `fact_inference` 分别持有持久化和提案 gate；现有测试 fixture 与 outbox 测试共享较多。prefetch 失败重试与事实/marker 原子提交的缺陷已各自修复一次，没有稳定后重复回归，因此不再拆 prompt-prefetch 或搬测试。另发现 `MemoryWorker::enqueue_summary_extract`、`MemoryStore::enqueue_summary_extraction_cancellable` 与 `Database::enqueue_summary_extraction` 均没有 workspace 生产调用；它们允许脱离 episode transaction 单写 marker，与 ADR 0266/0299 已定的 producer 契约不一致。当前 Active 切片删除这三个旧入口及其仅服务旧路径的测试，保留 episode 同事务写入、live wake、pending restore、ack 与失败恢复。
+
 **Crate 体量与边界复核（2026-10-05）：**按 workspace `.rs` 文件非空物理行粗略统计（含注释；测试按测试路径及 `#[cfg(test)]` 模块归类，非 AST 指标），Rust 源码约 222k 行。最大 crate 为 `haven-tools`，但体量同时来自多种内建能力与测试；依赖图本身仍是 11 个 crate、29 条单向内部边、无环，并与架构清单一致。
 
 | Crate | 生产行 | 测试行 | 合计 |
@@ -143,12 +151,27 @@
 
 ### 5.6 长期滚动顺序（无日历承诺）
 
-本路线按触发证据滚动，不按“把所有大 crate 拆小”设完工日期。完成一个切片后重新审查最高优先级证据；下列顺序表示审查优先级，不代表每项必然实施：
+本路线是跨多个迭代周期的决策路径，不按“把所有大 crate 拆小”设完工日期，也不为每个大文件预留一次拆分。完成一个切片、出现同类回归或准备发版时重新审查证据；阶段表示先后依赖，未满足进入条件就停在当前阶段。
 
 1. **已完成：SessionUsage 累计范围与重建一致性（[ADR 0478](adr/0478-session-usage-saturation-contract.md)）。** 结合 live `UsageTracker` 的 `u32::saturating_add` 和 `AgentUsage` 累计字段类型，确定 session summary 封顶于 `u32::MAX`；增量写入、legacy summary 读取和 detail 重建现已收敛到该契约。没有改变 schema 或 wire 类型。
 2. **已完成：只读历史 façade 测试归属（[ADR 0479](adr/0479-session-history-test-ownership.md)）。** 六项查询语义测试随 `session_history` 私有模块归组；事务、历史缓存写失效与聚合恢复测试仍在各自 owner。
 3. **已完成：session-scoped KV 孤儿清理单一 owner（[ADR 0480](adr/0480-session-kv-orphan-cleanup-owner.md)）。** retention purge 与 Memory maintenance 共用 `kv_store` 的 connection-level 清理 predicate。
-4. **长期条件项：SessionStore lifecycle、Tools / App / UI 模块与 crate 边界、性能。** SessionStore lifecycle façade 审计暂不准入实现；事务 append/projection/rollback/cache invalidation/post-commit broadcast 继续由同一 owner 协调。其它模块与 crate 边界继续用依赖清单、独立消费者、重复回归或同负载 profile 证明收益；当前没有获准的大 crate 拆分。Common、Tools crate 与通用 Job 抽象维持既有暂缓决定，除非出现新的反复故障或可量化收益证据。
+4. **已复核暂缓：Tools 执行契约、Admin surfaces 与 messaging builtin。** 三者均达到职责复核线，但当前各有稳定 owner，抽取子文件不会形成更清晰的依赖边界。重开条件见 §5.3；行数、局部 churn 和 operation 数都不足以准入。
+5. **Active：移除过时的 summary marker-only enqueue 入口（[ADR 0481](adr/0481-remove-summary-marker-only-enqueue.md)）。** 代码只允许 `MemoryStore::persist_compaction_summary` 原子写 episode 与 pending marker，然后由 Agent 唤醒 worker；删除未使用的 Worker / Store / Database marker-only API，并把必要测试 fixture 改为原子 producer。保留 startup restore、independent per-episode ack、session cleanup、worker retry/cancel 以及 ReAct producer 门槛和提交后 wake。该切片收口旧写路径，不拆 `memory_worker.rs` 或 crate。
+
+#### 长期执行台阶与决策门
+
+以下 A–E 是长期治理的执行台阶，不改变上文阶段 0–9 的架构阶段编号。
+
+| 台阶 | 目标与进入条件 | 完成或停止条件 |
+|---|---|---|
+| A. 证据队列 | 先处理数据、安全、生命周期不变量问题；再审计重复 owner、同一边界的重复回归与不稳定调用边。`memory_worker.rs`、Tools `builtin/messaging.rs`、`tool_contract.rs` 与 Admin surfaces 已完成只读复核；对 `memory_worker.rs` 的审计另找出旧公开 marker-only API，与 ADR 0266/0299 的原子生产者决定冲突。 | 每个候选记录唯一问题、owner、证据与停止条件。没有合格证据就保持无 Active，不把文件复核自动升级成拆分任务；发现与既有不变量冲突的未调用入口时，允许按窄范围删除旧契约。 |
+| B. Crate 内 owner 收口 | 仅当一个私有子域有独立稳定职责，且跨职责共改或回归能由该边界解释时，迁移一条完整垂直调用链。优先保持现有 crate API、事务、安全和恢复 owner 不变。当前 Active 是跨 crate 的旧写入口删除，依据既有 ADR 收敛持久化 owner，不是 crate 拆分。 | 旧入口与重复规则删除；测试靠近真实 owner；行为和依赖方向不变；适用 crate 门禁通过，且审查能指出维护或正确性收益。若只是搬文件、测试难以独立验证或要暴露内部状态，则关闭候选。 |
+| C. Crate 边界复核 | 只有内部模块 owner 稳定后，或依赖图出现真实问题，才重新评估 `haven-tools`、`haven-agent` 等较大 crate。先证明独立消费者、稳定 API、单向依赖和不重复业务策略；构建/开发成本收益要用同一环境的可复核对比。 | 提取后依赖图仍无环且更贴近业务消费者，消费者无需反向依赖或重复 adapter， workspace 门禁通过，并能说明收益。缺少独立消费者或收益不可测就不拆 crate；不设 crate 数或行数目标。 |
+| D. 性能与容量 | 只有可复现的延迟、内存、磁盘或并发问题进入 profile；保留现有 SQLite 容量与失败恢复不变量。 | 同数据、负载、构建和环境比较前后指标；没有超过噪声且对用户有意义的改进就关闭，不继续微调。不得把无 profile 的结构搬迁包装成性能优化。 |
+| E. Windows 发布签核 | 发布准备时独立执行 §5.1 的最新构建、安装生命周期、用户数据保留、真实 UI 流程和磁盘耗尽验收。该 Gate 可与不影响发布路径的单一结构切片并行准备。 | 把构建版本、schema、环境、实际结果与限制写入 ADR 0395；旧 profile 或历史验收不可代替当前安装包结果。未通过时保持 Gate Open，不据此发起无关架构拆分。 |
+
+**当前执行位置：** 阶段 0–8 已完成；台阶 A 完成了对 Tools 契约/Admin/messaging 与 Agent memory worker 的复核。`SessionStore` lifecycle wrapper 和上述大模块的纯拆分均暂缓。ADR 0266/0299 明确的 episode+marker 原子生产者已取代旧 callback，但旧公开 marker-only API 仍留在 Worker、Store 与 Database；现在按 ADR 0481 收掉这些过时写入口，保持其它恢复与 ack 契约。完成且门禁通过后回到无 Active，再继续证据驱动审查。Common 拆分、Tools crate 拆分与通用 Job 抽象继续暂缓，直到相应门槛被新证据满足。
 
 2026-10-05 对 `AppState`/`ApplicationRuntime`、UI shell/Composer 与 SessionStore 非事务 lifecycle façade 的只读复核均未发现 owner 稳定后的重复边界回归。SessionStore 生命周期 wrapper 大多是 typed `run_blocking` 转发，实际 actor/确认/delete policy 由 Agent `session/status.rs` 持有；搬移 wrapper 不会改变 owner 或调用链，故不新增 Active 项。重开条件见 §5.3 的启动编排、Composer、全局布局与 SessionStore 边界观察结论。
 

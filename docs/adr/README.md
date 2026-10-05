@@ -463,3 +463,4 @@
 - [0478：SessionUsage 累计计数饱和契约](0478-session-usage-saturation-contract.md)
 - [0479：SessionStore 历史查询测试归属](0479-session-history-test-ownership.md)
 - [0480：Session-scoped KV 孤儿清理单一 owner](0480-session-kv-orphan-cleanup-owner.md)
+- [0481：移除单独写入 summary marker 的旧入口](0481-remove-summary-marker-only-enqueue.md)
