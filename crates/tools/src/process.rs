@@ -118,3 +118,91 @@ where
     }
     (buf, overflowed, None)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{read_stream_capped, read_stream_capped_with};
+    use crate::action_output::ActionOutputPort;
+    use std::time::Duration;
+
+    #[tokio::test]
+    async fn test_read_stream_capped_under_cap() {
+        let (text, overflowed) = read_stream_capped(Some(&b"hello"[..]), 8192, None).await;
+        assert_eq!(text, "hello");
+        assert!(!overflowed);
+    }
+
+    #[tokio::test]
+    async fn test_read_stream_capped_none() {
+        let (text, overflowed) = read_stream_capped::<&[u8]>(None, 8192, None).await;
+        assert_eq!(text, "");
+        assert!(!overflowed);
+    }
+
+    #[tokio::test]
+    async fn test_read_stream_capped_over_cap() {
+        let data = vec![b'x'; 1000];
+        let (text, overflowed) = read_stream_capped(Some(&data[..]), 100, None).await;
+        assert_eq!(text.len(), 100);
+        assert!(overflowed);
+    }
+
+    #[tokio::test]
+    async fn capped_reader_discards_excess_bytes_and_keeps_draining() {
+        use tokio::io::AsyncWriteExt;
+
+        let (mut writer, reader) = tokio::io::duplex(32);
+        let writer_task = tokio::spawn(async move {
+            let chunk = [b'x'; 256];
+            for _ in 0..128 {
+                writer.write_all(&chunk).await.unwrap();
+            }
+        });
+
+        let (bytes, overflowed, read_error) = tokio::time::timeout(
+            Duration::from_secs(2),
+            read_stream_capped_with(Some(reader), 100, |_| {}),
+        )
+        .await
+        .expect("reader should drain the full stream");
+        tokio::time::timeout(Duration::from_secs(2), writer_task)
+            .await
+            .expect("writer should not block after the retained-output cap")
+            .unwrap();
+
+        assert_eq!(bytes, vec![b'x'; 100]);
+        assert!(overflowed);
+        assert!(read_error.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_read_stream_capped_appends_tail() {
+        let tail = ActionOutputPort::new().new_tail().await;
+        let (text, _) =
+            read_stream_capped(Some(&b"hello tail"[..]), 8192, Some(tail.clone())).await;
+        assert_eq!(text, "hello tail");
+        assert_eq!(tail.snapshot().as_str(), "hello tail");
+        // A second chunk appends (multi-chunk tee).
+        read_stream_capped(Some(&b" more"[..]), 8192, Some(tail.clone())).await;
+        assert_eq!(tail.snapshot().as_str(), "hello tail more");
+    }
+
+    #[tokio::test]
+    async fn test_read_stream_capped_tail_carries_split_multibyte() {
+        // 8191 ASCII + a 3-byte UTF-8 char: the first 8192-byte read splits the
+        // char (lead byte only), the second read finishes it. The live tail must
+        // still show the char intact, not GBK-fallback mojibake.
+        let tail = ActionOutputPort::new().new_tail().await;
+        let mut content = "a".repeat(8191);
+        content.push('中');
+        read_stream_capped(Some(content.as_bytes()), 10_000, Some(tail.clone())).await;
+        let snapshot = tail.snapshot();
+        let t = snapshot.as_str();
+        assert!(
+            t.ends_with('中'),
+            "tail must keep the split char intact, got: {:?}",
+            &t[t.len().saturating_sub(40)..]
+        );
+        assert!(!t.contains('\u{FFFD}'), "no replacement chars in tail");
+    }
+}
