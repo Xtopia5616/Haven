@@ -331,6 +331,17 @@ impl AgentLayer {
         self.executor.load_pending_sessions().await
     }
 
+    /// Continue a deferred recovery after its initial batch read failed. The
+    /// ApplicationRuntime owns the task and supplies its shutdown token.
+    pub async fn retry_pending_session_recovery_after_failure(
+        &self,
+        cancellation: CancellationToken,
+    ) -> Option<usize> {
+        self.executor
+            .recover_pending_sessions_with_retry(&cancellation, 1)
+            .await
+    }
+
     /// Open the SessionSupervisor dispatcher only after ApplicationRuntime has
     /// prepared memory recovery and registered the prepared live consumer.
     pub fn start_after_memory_ready(

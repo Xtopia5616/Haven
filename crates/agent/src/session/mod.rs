@@ -19,6 +19,8 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
+#[cfg(test)]
+use tokio::sync::Notify;
 use tokio::sync::{Mutex, broadcast, mpsc, watch};
 use tokio_util::sync::CancellationToken;
 
@@ -404,6 +406,13 @@ pub struct SessionSupervisor {
     /// becomes Pending right after a failed claim still wakes it (no missed
     /// notification, no polling fallback).
     dispatch_tx: watch::Sender<u64>,
+    /// Deterministic failure seam for the pending-recovery retry regression.
+    #[cfg(test)]
+    pending_session_recovery_failures: AtomicUsize,
+    #[cfg(test)]
+    pending_session_recovery_attempts: AtomicUsize,
+    #[cfg(test)]
+    pending_session_recovery_backoff_started: Notify,
     /// Scheduled confirmations are not session state (some are headless), so
     /// they live in an owner-local registry keyed by action ID. Resolve and
     /// expiry must also match the confirmation request ID stored in the entry.
@@ -487,6 +496,12 @@ impl SessionSupervisor {
             dispatcher_started: std::sync::atomic::AtomicBool::new(false),
             pending_queue: Arc::new(Mutex::new(VecDeque::new())),
             dispatch_tx: watch::channel(0).0,
+            #[cfg(test)]
+            pending_session_recovery_failures: AtomicUsize::new(0),
+            #[cfg(test)]
+            pending_session_recovery_attempts: AtomicUsize::new(0),
+            #[cfg(test)]
+            pending_session_recovery_backoff_started: Notify::new(),
             scheduled_confirms: Arc::new(Mutex::new(HashMap::new())),
             confirmation_resolution_gate: Arc::new(Mutex::new(())),
             event_tx,
@@ -3121,6 +3136,151 @@ mod tests {
         assert_eq!(
             db.session_authorization_grants(&broken.id).unwrap(),
             vec![grant]
+        );
+    }
+
+    #[tokio::test]
+    async fn pending_recovery_requeues_an_existing_pending_actor() {
+        let exec = make_executor(1);
+        let session = exec
+            .create_session("pending actor recovery retry")
+            .await
+            .unwrap();
+        exec.dequeue_pending(&session.id).await;
+        let mut wake = exec.subscribe_dispatch();
+
+        assert_eq!(exec.load_pending_sessions().await.unwrap(), 0);
+        tokio::time::timeout(std::time::Duration::from_millis(100), wake.changed())
+            .await
+            .expect("recovery should wake the dispatcher even when queue insertion is deduped")
+            .expect("dispatcher wake channel should remain open");
+        assert_eq!(
+            exec.try_claim_pending().await.as_deref(),
+            Some(session.id.as_str()),
+            "an already-installed Pending actor must be requeued by recovery"
+        );
+    }
+
+    #[tokio::test]
+    async fn pending_recovery_retries_batch_failure_and_dispatches_once() {
+        let db = temp_db();
+        let original = Arc::new(SessionSupervisor::new_for_test(
+            db.clone(),
+            Arc::new(ToolsManager::new()),
+            1,
+        ));
+        let session = original
+            .create_session("pending recovery transient failure")
+            .await
+            .unwrap();
+
+        let exec = Arc::new(SessionSupervisor::new_for_test(
+            db.clone(),
+            Arc::new(ToolsManager::new()),
+            1,
+        ));
+        exec.pending_session_recovery_failures
+            .store(1, Ordering::SeqCst);
+        let handled = Arc::new(AtomicU32::new(0));
+        let handled_by_runner = handled.clone();
+        let exec_for_runner = exec.clone();
+        let handler: RunHandler = Arc::new(move |session_id: String| {
+            let handled = handled_by_runner.clone();
+            let exec = exec_for_runner.clone();
+            Box::pin(async move {
+                handled.fetch_add(1, Ordering::SeqCst);
+                exec.update_session_status(&session_id, SessionStatus::Completed)
+                    .await?;
+                Ok(())
+            })
+        });
+        let cancellation = CancellationToken::new();
+
+        exec.clone()
+            .start_dispatcher_with_cancellation(handler, cancellation.clone());
+
+        tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            while handled.load(Ordering::SeqCst) == 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("dispatcher should dispatch the pending session after recovery");
+        tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            while db
+                .get_session(&session.id)
+                .unwrap()
+                .map(|record| record.status)
+                != Some(SessionStatus::Completed)
+            {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the recovered pending session should complete");
+        cancellation.cancel();
+
+        assert_eq!(handled.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            exec.pending_session_recovery_attempts
+                .load(Ordering::SeqCst),
+            2,
+            "one injected batch failure should be followed by one successful batch read"
+        );
+        assert_eq!(
+            db.get_session(&session.id)
+                .unwrap()
+                .map(|record| record.status),
+            Some(SessionStatus::Completed)
+        );
+    }
+
+    #[tokio::test]
+    async fn pending_recovery_retry_cancels_during_backoff() {
+        let exec = make_executor(1);
+        exec.pending_session_recovery_failures
+            .store(usize::MAX, Ordering::SeqCst);
+        let cancellation = CancellationToken::new();
+        let backoff_started = exec.pending_session_recovery_backoff_started.notified();
+        let recovery = {
+            let exec = exec.clone();
+            let cancellation = cancellation.clone();
+            tokio::spawn(async move {
+                exec.recover_pending_sessions_with_retry(&cancellation, 0)
+                    .await
+            })
+        };
+
+        tokio::time::timeout(std::time::Duration::from_secs(2), backoff_started)
+            .await
+            .expect("cancellation test should observe the retry backoff");
+        cancellation.cancel();
+
+        assert_eq!(recovery.await.unwrap(), None);
+        assert_eq!(
+            exec.pending_session_recovery_attempts
+                .load(Ordering::SeqCst),
+            1,
+            "cancellation during backoff must prevent another read"
+        );
+    }
+
+    #[tokio::test]
+    async fn pending_recovery_stops_after_an_empty_successful_batch() {
+        let exec = make_executor(1);
+        exec.pending_session_recovery_failures
+            .store(1, Ordering::SeqCst);
+
+        let loaded = exec
+            .recover_pending_sessions_with_retry(&CancellationToken::new(), 0)
+            .await;
+
+        assert_eq!(loaded, Some(0));
+        assert_eq!(
+            exec.pending_session_recovery_attempts
+                .load(Ordering::SeqCst),
+            2,
+            "an empty successful batch ends retry even when nothing was newly loaded"
         );
     }
 

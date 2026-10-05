@@ -308,13 +308,15 @@ impl SessionSupervisor {
         };
         tokio::spawn(async move {
             if recover_pending {
-                match self.load_pending_sessions().await {
-                    Ok(count) if count > 0 => tracing::info!(count, "reloaded pending sessions"),
-                    Ok(_) => {}
-                    Err(error) => {
-                        tracing::error!(%error, "pending session recovery failed");
-                        return;
+                match self
+                    .recover_pending_sessions_with_retry(&cancellation, 0)
+                    .await
+                {
+                    Some(count) if count > 0 => {
+                        tracing::info!(count, "reloaded pending sessions")
                     }
+                    Some(_) => {}
+                    None => return,
                 }
             }
             let mut wake_rx = self.subscribe_dispatch();

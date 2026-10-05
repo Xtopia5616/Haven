@@ -1,6 +1,6 @@
 # Haven 架构降复杂度重构路线图
 
-> 状态：阶段 0–8 已完成；SessionUsage 累计上限契约、session-scoped KV 孤儿清理 owner、summary marker 单一原子生产路径、Tools 测试归属、Input→Tools 测试反向依赖、MCP/Skill 直调授权策略来源、MCP 管理操作网络策略来源、X12 例外消息写入口、ADR 编号索引完整性、actorless session action lifecycle 清理（ADR 0507）、Ask reducer state ownership 收口（ADR 0508）、终态 Ask 清理事件归属（ADR 0509）、ReAct phase 来源 session 身份（ADR 0510）、Windows 子进程先入 Job 再恢复（ADR 0513）、显式 end 失败重试契约（ADR 0514）、Skill venv 子进程 containment（ADR 0515）、MCP prompt index 类型化（ADR 0516）、Memory fact marker generation-safe ack 与有界 durable outbox/session recovery（ADR 0107/0259）、App-owned Shell/hotkey/VAD stop 后处理调度收口（ADR 0517）、MemoryWorker durable outbox lifecycle 私有 owner（ADR 0518）、Session grant/resolve append failure retry 契约测试（ADR 0519）、SessionActor interaction replay fail-closed（ADR 0520）、Session confirmation 决议与恢复唤醒原子提交（ADR 0521）已完成；当前没有符合准入条件的 Active/Next；Windows 发布验收为独立开放签核门
+> 状态：阶段 0–8 已完成；SessionUsage 累计上限契约、session-scoped KV 孤儿清理 owner、summary marker 单一原子生产路径、Tools 测试归属、Input→Tools 测试反向依赖、MCP/Skill 直调授权策略来源、MCP 管理操作网络策略来源、X12 例外消息写入口、ADR 编号索引完整性、actorless session action lifecycle 清理（ADR 0507）、Ask reducer state ownership 收口（ADR 0508）、终态 Ask 清理事件归属（ADR 0509）、ReAct phase 来源 session 身份（ADR 0510）、Windows 子进程先入 Job 再恢复（ADR 0513）、显式 end 失败重试契约（ADR 0514）、Skill venv 子进程 containment（ADR 0515）、MCP prompt index 类型化（ADR 0516）、Memory fact marker generation-safe ack 与有界 durable outbox/session recovery（ADR 0107/0259）、App-owned Shell/hotkey/VAD stop 后处理调度收口（ADR 0517）、MemoryWorker durable outbox lifecycle 私有 owner（ADR 0518）、Session grant/resolve append failure retry 契约测试（ADR 0519）、SessionActor interaction replay fail-closed（ADR 0520）、Session confirmation 决议与恢复唤醒原子提交（ADR 0521）、Pending Session 恢复失败后的退避重试（ADR 0522）已完成；当前没有 Active/Next；Windows 发布验收为独立开放签核门
 > 更新日期：2026-10-06
 > 范围：Agent/Session、Memory、Tools、LLM、App IPC 与 UI
 
@@ -74,7 +74,7 @@
 
 | 状态 | 当前项 |
 |---|---|
-| **Active / Next** | 暂无。ADR 0521 已完成并通过适用门禁；步骤 0 复核没有发现证据足以进入下一切片，按 §5.5 等待触发条件。 |
+| **Active / Next** | 暂无。ADR 0522 已完成并通过适用 workspace 门禁；本轮步骤 0 复核没有证据足以将其他已 Deferred 候选推进为 Next，按 §5.5 等待新的触发信号。 |
 | **Gate** | Windows 发布验收 Open，见 §5.1。 |
 
 ### 5.1 Windows 发布验收（Gate / Open）
@@ -97,7 +97,9 @@
 
 **交互 replay 故障收紧（ADR 0520，已完成）：** ADR 0294 曾规定 replay 失败时 warning 后用空交互注册 actor；这与 ADR 0502 确立的“交互 lifecycle 只从 durable events replay”恢复权威不一致。`install_actor` 现先 replay，成功后才恢复该安装路径上的 durable session grants 并注册 actor；replay 失败向调用者传播，actor 保持未注册，使显式加载可重试。`load_pending_sessions` 对单个会话的安装失败记录 `session_id` 并继续其余 pending sessions；pending 列举本身失败仍传播。故障回归验证坏 event 不会经失败的 actor 安装路径启用 grant，坏会话不会阻断健康会话恢复。全局 Security apply 的 grant 重应用继续遵循 ADR 0402；本切片不增加自动重试，不改 event payload、schema、IPC 或其他确认 owner。适用 workspace 门禁均已通过。
 
-**最新切片结果（ADR 0521，已完成）：** 最后一个 pending confirmation 的 resolve/expiry event 与 Paused→Pending 现由 SessionActor 在同一事务提交；提交后才更新 actor 状态，SessionSupervisor 再发布一次 `SessionResumed`、入队并唤醒。SQLite status trigger 故障注入证明失败时 event/request/status/wake 均不前移，同 request 重试成功；多项确认与 expiry 路径也有回归覆盖。适用 workspace 门禁已通过。步骤 0 复核没有发现合格的下一切片：pending-session 批次读取失败重试没有可复现的持续中断证据；`session_events.rs`、ActionService、crate/API 与性能候选仍为 Deferred。内部依赖图为 11 个 crate、30 条单向边，无方向问题。
+**最新切片结果（ADR 0521，已完成）：** 最后一个 pending confirmation 的 resolve/expiry event 与 Paused→Pending 现由 SessionActor 在同一事务提交；提交后才更新 actor 状态，SessionSupervisor 再发布一次 `SessionResumed`、入队并唤醒。SQLite status trigger 故障注入证明失败时 event/request/status/wake 均不前移，同 request 重试成功；多项确认与 expiry 路径也有回归覆盖。适用 workspace 门禁已通过。
+
+**最新切片结果（ADR 0522，已完成）：** Immediate dispatcher 与 deferred App bootstrap 现在共用整批恢复重试 owner；退避由 250ms 指数增长至最多 30s，直到取消。首次 deferred 读取由 ApplicationRuntime 持有，bootstrap 等待其结果；发生错误后注册可取消 retry task，并仍能进入 Ready。Pending actor 的重试扫描会幂等补入队并唤醒，单 actor replay 错误不触发整批重试。Agent 回归覆盖瞬时批次错误后只 dispatch 一次、空批次成功、backoff 取消和队列 wake；AppState 注入 deferred 首次错误，验证 retry 注册、Ready 和 shutdown join。适用 workspace 门禁通过。步骤 0 重看后，`session_events.rs`、ActionService、crate/API 与性能候选仍没有准入证据，保留 Deferred；依赖图仍为 11 个 crate、30 条单向边。
 
 ### 5.3 内部模块与 crate 边界（按证据复核）
 
@@ -162,9 +164,9 @@
 | 4 | **模块成熟后再评估 crate/API 边界** | 只有模块 owner 已稳定，且存在独立消费者、真实依赖方向问题或可复核构建/迭代成本时才评估 crate 拆分。交付物包括依赖图、API/消费者映射；若声称构建收益，须有同环境基准。 | 提取后依赖单向、API 稳定、消费者不用反向依赖或重复 adapter，并证明维护/构建收益；任一不满足就保留现边界。 |
 | 5 | **性能与容量** | 仅在同负载 profile 复现有用户意义的成本时优化；交付物为固定场景的前后指标，并遵守 SQLite 容量、失败恢复与资源上限契约。Windows 发布验收独立保留在 §5.1，不作为结构重构阶段的退出依赖。 | 优化结果超过噪声且达到目标，否则关闭候选；没有当前测量就不以“降复杂度”为名做性能改动。 |
 
-以上是循环复核的先后顺序，不是一次性瀑布项目：每轮从步骤 0 重新分流，完成一个切片、同类回归出现、依赖/API 边界变化或准备发布时再审查证据。ADR 0514–0521 与 Memory fact marker generation-safe ack/有界 outbox（ADR 0107/0259）已完成；ReAct Fatal 双终态 owner 已在步骤 2 收口（ADR 0511）；Admin 风险等级 parity 回归门禁已完成（ADR 0512）。ADR 0520 与 0521 分别收紧 replay 失败 fail-closed 和 confirmation event/status 原子提交。本轮完成 ADR 0521 后重新执行步骤 0，未发现达到准入条件的 Active/Next；pending-record 批次读取失败重试保持 Deferred，待可复现的持久恢复中断再评估。`session_events.rs`、ActionService、crate/API 与性能候选均没有新增准入证据。发布验收 Gate 与结构重构并行，按 §5.1 独立关闭。
+以上是循环复核的先后顺序，不是一次性瀑布项目：每轮从步骤 0 重新分流，完成一个切片、同类回归出现、依赖/API 边界变化或准备发布时再审查证据。ADR 0514–0522 与 Memory fact marker generation-safe ack/有界 outbox（ADR 0107/0259）已完成；ReAct Fatal 双终态 owner 已在步骤 2 收口（ADR 0511）；Admin 风险等级 parity 回归门禁已完成（ADR 0512）。ADR 0520–0522 分别收紧 interaction replay fail-closed、confirmation event/status 原子提交和 pending-session recovery lifecycle。完成 ADR 0522 后，步骤 0 重新复核，`session_events.rs`、ActionService、crate/API 与性能候选仍未达到准入条件，当前无 Active/Next；准备发布时仍单独关闭 Windows Gate（§5.1）。
 
-**当前执行位置：** 架构阶段 0–8 已完成；ADR 0514–0521 与 Memory fact marker generation-safe ack、有界 outbox/session recovery（ADR 0107/0259）均已完成并通过适用 workspace 门禁。当前无 Active/Next；新的触发证据出现时从步骤 0 开始复核，不按 crate 体量制造拆分任务。`session_events` 大文件候选与 ActionService lifecycle 均因近期没有收口后同类回归/独立消费者收益而 Deferred；依赖边界为 11 个内部 crate、30 条单向边，无需更改方向。ReAct Fatal 双终态发布 owner 已由 ADR 0511 收口；Admin 20 个共用操作的风险等级 parity 回归门禁已由 ADR 0512 收口，两项 native-only 操作仍单独测试。Windows 发布验收仍是独立 Open Gate。
+**当前执行位置：** 架构阶段 0–8 已完成；ADR 0514–0522 与 Memory fact marker generation-safe ack、有界 outbox/session recovery（ADR 0107/0259）均已完成并通过适用 workspace 门禁；当前无 Active/Next，按 §5.5 的触发信号进入下一轮复核，不按 crate 体量制造拆分任务。`session_events` 大文件候选与 ActionService lifecycle 均因近期没有收口后同类回归/独立消费者收益而 Deferred；依赖边界为 11 个内部 crate、30 条单向边，无需更改方向。ReAct Fatal 双终态发布 owner 已由 ADR 0511 收口；Admin 20 个共用操作的风险等级 parity 回归门禁已由 ADR 0512 收口，两项 native-only 操作仍单独测试。Windows 发布验收仍是独立 Open Gate。
 
 ## 6. 更新规则
 

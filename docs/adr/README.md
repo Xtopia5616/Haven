@@ -510,3 +510,4 @@
 - [0519：验证 Session grant 与 resolve event 分离写入的失败语义](0519-session-grant-resolve-append-failure-contract-test.md)
 - [0520：SessionActor interaction replay 失败时 fail closed](0520-session-interaction-replay-fail-closed.md)
 - [0521：Session confirmation 决议与恢复唤醒原子提交](0521-session-confirmation-resolution-wake-atomicity.md)
+- [0522：Pending Session 恢复失败后有界退避重试](0522-retry-pending-session-recovery.md)

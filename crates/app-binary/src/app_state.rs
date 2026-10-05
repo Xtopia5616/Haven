@@ -253,6 +253,10 @@ pub struct AppState {
     /// prewarm) has finished. The UI polls / listens so the status chip can
     /// show 加载中 → 就绪 without blocking window creation.
     bootstrap_ready: Arc<AtomicBool>,
+    #[cfg(test)]
+    fail_initial_pending_recovery_once: AtomicBool,
+    #[cfg(test)]
+    pending_recovery_retry_scheduled: Arc<AtomicBool>,
     /// Suppresses the global recording shortcut while the renderer is
     /// capturing a replacement key binding.
     pub(crate) hotkey_capture_active: Arc<AtomicBool>,
@@ -596,6 +600,10 @@ impl AppState {
             recording_sessions: RecordingSessionOwner::default(),
             pending_recording_usage: Arc::new(std::sync::Mutex::new(HashMap::new())),
             bootstrap_ready: Arc::new(AtomicBool::new(false)),
+            #[cfg(test)]
+            fail_initial_pending_recovery_once: AtomicBool::new(false),
+            #[cfg(test)]
+            pending_recovery_retry_scheduled: Arc::new(AtomicBool::new(false)),
             hotkey_capture_active: Arc::new(AtomicBool::new(false)),
             ui_confirmations: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
             last_fully_applied_security_config_version: AtomicU64::new(
@@ -627,6 +635,12 @@ impl AppState {
         let agent = self.runtime.agent.clone();
         let runtime = self.runtime.clone();
         let bootstrap_ready = self.bootstrap_ready.clone();
+        #[cfg(test)]
+        let fail_initial_pending_recovery_once = self
+            .fail_initial_pending_recovery_once
+            .swap(false, Ordering::AcqRel);
+        #[cfg(test)]
+        let pending_recovery_retry_scheduled = self.pending_recovery_retry_scheduled.clone();
         let cfg = match self.runtime.config_service.snapshot() {
             Ok(snapshot) => snapshot.config,
             Err(error) => {
@@ -705,18 +719,64 @@ impl AppState {
                 return;
             }
 
-            match agent.recover_pending_sessions().await {
-                Ok(reloaded) if reloaded > 0 => {
-                    tracing::info!(
+            let (recovery_result_tx, recovery_result_rx) = tokio::sync::oneshot::channel();
+            let recovery_agent = agent.clone();
+            let recovery_scheduled = bootstrap_runtime.spawn_cancellable_with_child_token(
+                "pending-session-initial-recovery",
+                move |_recovery_cancel| async move {
+                    #[cfg(test)]
+                    let result = if fail_initial_pending_recovery_once {
+                        Err(anyhow::anyhow!("injected initial pending recovery failure"))
+                    } else {
+                        recovery_agent.recover_pending_sessions().await
+                    };
+                    #[cfg(not(test))]
+                    let result = recovery_agent.recover_pending_sessions().await;
+                    let _ = recovery_result_tx.send(result);
+                },
+            );
+            if recovery_scheduled {
+                match recovery_result_rx.await {
+                    Ok(Ok(reloaded)) if reloaded > 0 => tracing::info!(
                         "deferred dispatcher recovery reloaded {} pending session(s)",
                         reloaded
-                    );
+                    ),
+                    Ok(Ok(_)) => {}
+                    Ok(Err(error)) => {
+                        tracing::error!(
+                            error = %error,
+                            "deferred dispatcher recovery failed; scheduling a cancellable retry"
+                        );
+                        let scheduled = schedule_pending_session_recovery_retry(
+                            bootstrap_runtime.as_ref(),
+                            agent.clone(),
+                            &cancel,
+                        );
+                        #[cfg(test)]
+                        pending_recovery_retry_scheduled.store(scheduled, Ordering::Release);
+                        #[cfg(not(test))]
+                        let _ = scheduled;
+                    }
+                    Err(error) => {
+                        tracing::error!(
+                            %error,
+                            "initial pending session recovery task ended without a result; scheduling a retry"
+                        );
+                        let scheduled = schedule_pending_session_recovery_retry(
+                            bootstrap_runtime.as_ref(),
+                            agent.clone(),
+                            &cancel,
+                        );
+                        #[cfg(test)]
+                        pending_recovery_retry_scheduled.store(scheduled, Ordering::Release);
+                        #[cfg(not(test))]
+                        let _ = scheduled;
+                    }
                 }
-                Ok(_) => {}
-                Err(error) => tracing::error!(
-                    error = %error,
-                    "deferred dispatcher recovery failed: pending sessions could not be loaded"
-                ),
+            } else if !cancel.is_cancelled() {
+                tracing::error!(
+                    "application runtime rejected the initial pending session recovery task"
+                );
             }
 
             if cancel.is_cancelled() {
@@ -730,6 +790,34 @@ impl AppState {
             tracing::info!("app bootstrap ready (MCP/skills/audio prewarm finished)");
             });
     }
+}
+
+fn schedule_pending_session_recovery_retry(
+    runtime: &ApplicationRuntime,
+    agent: Arc<AgentLayer>,
+    bootstrap_cancellation: &tokio_util::sync::CancellationToken,
+) -> bool {
+    let scheduled = runtime.spawn_cancellable_with_child_token(
+        "pending-session-recovery",
+        move |recovery_cancel| async move {
+            match agent
+                .retry_pending_session_recovery_after_failure(recovery_cancel)
+                .await
+            {
+                Some(reloaded) => tracing::info!(
+                    reloaded,
+                    "deferred pending session recovery completed after retry"
+                ),
+                None => tracing::debug!(
+                    "deferred pending session recovery retry stopped by cancellation"
+                ),
+            }
+        },
+    );
+    if !scheduled && !bootstrap_cancellation.is_cancelled() {
+        tracing::error!("application runtime rejected the pending session recovery retry task");
+    }
+    scheduled
 }
 
 #[cfg(test)]
@@ -825,6 +913,40 @@ mod tests {
         assert!(cfg.session.max_steps > 0);
         assert_eq!(cfg.media.stt.provider, "llm");
         assert_eq!(state.bootstrap_status(), BootstrapStatus::Loading);
+    }
+
+    #[tokio::test]
+    async fn deferred_pending_recovery_failure_registers_retry_and_keeps_bootstrap_ready() {
+        let dir = tempdir().unwrap();
+        let loader = ConfigLoader::load_from(&dir.path().join("config.toml")).unwrap();
+        let state = AppState::new_for_test(&dir.path().join("test.db"), vec![], loader, dir.path())
+            .await
+            .unwrap();
+        state
+            .fail_initial_pending_recovery_once
+            .store(true, Ordering::Release);
+        let retry_scheduled = state.pending_recovery_retry_scheduled.clone();
+        let runtime = state.runtime.clone();
+
+        state.spawn_background_init(|_| {});
+
+        tokio::time::timeout(std::time::Duration::from_secs(8), async {
+            while state.bootstrap_status() != BootstrapStatus::Ready
+                || !retry_scheduled.load(Ordering::Acquire)
+            {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("bootstrap should become Ready after registering the runtime-owned recovery retry");
+
+        assert_eq!(state.bootstrap_status(), BootstrapStatus::Ready);
+        runtime.shutdown().await;
+        assert_eq!(
+            runtime.task_count_for_test(),
+            0,
+            "runtime shutdown must join bootstrap and recovery tasks"
+        );
     }
 
     #[tokio::test]

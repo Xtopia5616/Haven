@@ -4,6 +4,9 @@ use super::*;
 use haven_common::retry::{BackoffPolicy, RecoveryDecision, RecoveryPolicy, RecoverySignal};
 use std::time::{Duration, Instant};
 
+const PENDING_SESSION_RECOVERY_INITIAL_BACKOFF: Duration = Duration::from_millis(250);
+const PENDING_SESSION_RECOVERY_MAX_BACKOFF: Duration = Duration::from_secs(30);
+
 impl SessionSupervisor {
     pub async fn create_session(self: &Arc<Self>, input: &str) -> anyhow::Result<SessionInfo> {
         self.create_session_with_summary(input, input).await
@@ -1081,32 +1084,109 @@ impl SessionSupervisor {
         Ok(())
     }
 
+    /// Retry the complete durable pending-session read after a prior batch
+    /// failure. Per-session actor replay failures are intentionally contained
+    /// by `load_pending_sessions` and therefore never repeat the whole batch.
+    pub(crate) async fn recover_pending_sessions_with_retry(
+        self: &Arc<Self>,
+        cancellation: &CancellationToken,
+        mut completed_failures: u32,
+    ) -> Option<usize> {
+        let backoff = BackoffPolicy::new(
+            PENDING_SESSION_RECOVERY_INITIAL_BACKOFF,
+            2,
+            PENDING_SESSION_RECOVERY_MAX_BACKOFF,
+        );
+
+        loop {
+            if cancellation.is_cancelled() {
+                return None;
+            }
+            if completed_failures > 0 {
+                #[cfg(test)]
+                self.pending_session_recovery_backoff_started.notify_one();
+                let delay = backoff.delay_after(completed_failures, None, 0);
+                tokio::select! {
+                    _ = cancellation.cancelled() => return None,
+                    _ = tokio::time::sleep(delay) => {}
+                }
+            }
+            if cancellation.is_cancelled() {
+                return None;
+            }
+
+            match self.load_pending_sessions().await {
+                Ok(loaded) => return Some(loaded),
+                Err(error) => {
+                    completed_failures = completed_failures.saturating_add(1);
+                    let next_delay = backoff.delay_after(completed_failures, None, 0);
+                    tracing::warn!(
+                        %error,
+                        attempt = completed_failures,
+                        retry_delay = ?next_delay,
+                        "pending session batch recovery failed; retry scheduled"
+                    );
+                }
+            }
+        }
+    }
+
     pub async fn load_pending_sessions(self: &Arc<Self>) -> anyhow::Result<usize> {
         let _lifecycle = self.lifecycle_guard().await;
         self.ensure_lifecycle_open()?;
+
+        #[cfg(test)]
+        {
+            self.pending_session_recovery_attempts
+                .fetch_add(1, Ordering::SeqCst);
+            if self
+                .pending_session_recovery_failures
+                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |remaining| {
+                    remaining.checked_sub(1)
+                })
+                .is_ok()
+            {
+                anyhow::bail!("injected pending session batch read failure");
+            }
+        }
+
         let pending = self.store.pending_session_records()?;
         let mut loaded = 0;
+        let mut found_pending_actor = false;
         for record in pending {
             if self.is_session_closing(&record.id) {
                 continue;
             }
-            if self.actor_for(&record.id).await.is_none() {
-                if let Err(error) = self
+            let actor = match self.actor_for(&record.id).await {
+                Some(actor) => actor,
+                None => match self
                     .install_actor(SessionInfo::from_db_record(&record))
                     .await
                 {
-                    tracing::warn!(
-                        session_id = %record.id,
-                        %error,
-                        "failed to restore pending session; retry requires a later load attempt"
-                    );
-                    continue;
-                }
+                    Ok(actor) => {
+                        loaded += 1;
+                        actor
+                    }
+                    Err(error) => {
+                        tracing::warn!(
+                            session_id = %record.id,
+                            %error,
+                            "failed to restore pending session; retry requires a later load attempt"
+                        );
+                        continue;
+                    }
+                },
+            };
+            if actor
+                .snapshot()
+                .await
+                .is_some_and(|snapshot| snapshot.status == SessionStatus::Pending)
+            {
                 self.enqueue_pending(&record.id).await;
-                loaded += 1;
+                found_pending_actor = true;
             }
         }
-        if loaded > 0 {
+        if found_pending_actor {
             self.wake_dispatcher();
         }
         Ok(loaded)
