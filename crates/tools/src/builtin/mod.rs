@@ -1574,6 +1574,148 @@ mod tests {
         assert_eq!(native.network_access(), network_access);
     }
 
+    #[tokio::test]
+    async fn model_mcp_operations_that_can_connect_are_blocked_by_restricted_policy() {
+        use admin::{AdminRequest, McpOperationArgs};
+        use haven_common::types::{McpTransportType, NetworkPolicy, SandboxMode};
+
+        let cases = [
+            (
+                "haven.mcp.mcp_add",
+                json!({
+                    "operation": "mcp_add",
+                    "name": "server-a",
+                    "transport": "http",
+                    "url": "https://example.invalid/mcp",
+                    "enabled": true,
+                    "auto_connect": true,
+                }),
+                AdminRequest::Mcp(McpOperationArgs::McpAdd {
+                    name: "server-a".into(),
+                    transport: McpTransportType::Http,
+                    command: None,
+                    url: Some("https://example.invalid/mcp".into()),
+                    args: Vec::new(),
+                    env: Vec::new(),
+                    cwd: None,
+                    enabled: true,
+                    auto_connect: true,
+                }),
+            ),
+            (
+                "haven.mcp.mcp_update",
+                json!({
+                    "operation": "mcp_update",
+                    "name": "server-a",
+                    "transport": "http",
+                    "url": "https://example.invalid/mcp",
+                    "enabled": true,
+                }),
+                AdminRequest::Mcp(McpOperationArgs::McpUpdate {
+                    name: "server-a".into(),
+                    transport: Some(McpTransportType::Http),
+                    command: None,
+                    url: Some("https://example.invalid/mcp".into()),
+                    args: None,
+                    env: None,
+                    cwd: None,
+                    enabled: Some(true),
+                }),
+            ),
+            (
+                "haven.mcp.mcp_toggle",
+                json!({
+                    "operation": "mcp_toggle",
+                    "name": "server-a",
+                    "enabled": true,
+                }),
+                AdminRequest::Mcp(McpOperationArgs::McpToggle {
+                    name: "server-a".into(),
+                    enabled: true,
+                }),
+            ),
+            (
+                "haven.mcp.mcp_reload",
+                json!({"operation": "mcp_reload"}),
+                AdminRequest::Mcp(McpOperationArgs::McpReload),
+            ),
+        ];
+
+        let engine = crate::AuthorizationEngine::new();
+        engine
+            .set_boundaries(
+                SandboxMode::FullAccess,
+                Vec::new(),
+                NetworkPolicy::Restricted,
+            )
+            .await;
+
+        for (name, input, native) in cases {
+            let contract = operation_contract(name);
+            let concurrency = ToolConcurrency::Exclusive;
+            let (effect, data_sensitivity, network_access) =
+                operation_policy_attributes(&contract, concurrency.clone());
+            assert_eq!(network_access, crate::NetworkAccess::Opaque, "{name}");
+            assert_eq!(native.network_access(), network_access, "{name}");
+
+            let risk_level = contract.risk_override.unwrap_or(RiskLevel::High);
+            let request = crate::AuthorizationRequest::new(
+                None,
+                name,
+                input,
+                OperationPolicy {
+                    risk_level,
+                    capability: name.into(),
+                    confirmation: crate::tool_contract::confirmation_for(
+                        risk_level,
+                        matches!(effect, crate::OperationEffect::ReadOnly),
+                    ),
+                    idempotency: contract.idempotency,
+                    scope: ToolOperationScope::Global,
+                    concurrency,
+                    effect,
+                    data_sensitivity,
+                    network_access,
+                },
+            );
+
+            assert!(
+                matches!(
+                    engine.authorize(&request).await,
+                    crate::AuthorizationDecision::Blocked {
+                        reason_code: crate::AuthorizationReasonCode::NetworkPolicy,
+                        ..
+                    }
+                ),
+                "{name} must be blocked before its handler can connect"
+            );
+        }
+
+        for (name, native) in [
+            (
+                "haven.mcp.mcp_list",
+                AdminRequest::Mcp(McpOperationArgs::McpList),
+            ),
+            (
+                "haven.mcp.mcp_disconnect",
+                AdminRequest::Mcp(McpOperationArgs::McpDisconnect {
+                    name: "server-a".into(),
+                }),
+            ),
+            (
+                "haven.mcp.mcp_remove",
+                AdminRequest::Mcp(McpOperationArgs::McpRemove {
+                    name: "server-a".into(),
+                }),
+            ),
+        ] {
+            let (_, _, network_access) =
+                operation_policy_attributes(&operation_contract(name), ToolConcurrency::Exclusive);
+            assert_eq!(network_access, crate::NetworkAccess::None, "{name}");
+            assert_eq!(native.network_access(), network_access, "{name}");
+        }
+    }
+
     #[test]
     fn file_read_views_share_the_files_resource_with_writers() {
         let specs = operation_specs(64);

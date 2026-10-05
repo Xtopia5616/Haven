@@ -432,9 +432,9 @@ impl AdminRequest {
         }
     }
 
-    /// Network metadata comes from the typed request. Existing model-facing
-    /// MCP operations retain their established opaque classification; native
-    /// refresh is opaque only when the backend-derived diff will connect.
+    /// Network metadata for model-visible and native MCP management requests
+    /// comes from the shared operation contract. Native refresh is opaque only
+    /// when its backend-derived diff will connect.
     pub fn network_access(&self) -> crate::NetworkAccess {
         match self {
             Self::NativeMcp(NativeMcpOperationArgs::McpReconnect { .. }) => {

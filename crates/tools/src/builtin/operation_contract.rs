@@ -293,9 +293,20 @@ pub(crate) fn operation_contract(name: &'static str) -> OperationContract {
         network_access_override: match name {
             // `status` probes configured provider endpoints with GET /models.
             "haven.diagnostics.status" => Some(NetworkAccess::Public),
-            // Connect always attempts a connection. Keep the model-visible
-            // view and the native typed request on this same declaration.
-            "haven.mcp.mcp_connect" => Some(NetworkAccess::Opaque),
+            // These operations can establish or re-establish MCP connections.
+            // Keep model-visible views and native typed requests on the same
+            // conservative classification even when arguments may disable
+            // auto-connect for a particular call.
+            "haven.mcp.mcp_connect"
+            | "haven.mcp.mcp_add"
+            | "haven.mcp.mcp_update"
+            | "haven.mcp.mcp_toggle"
+            | "haven.mcp.mcp_reload" => Some(NetworkAccess::Opaque),
+            // These operations only inspect local state or tear down an
+            // existing client; they do not initiate a connection.
+            "haven.mcp.mcp_list" | "haven.mcp.mcp_disconnect" | "haven.mcp.mcp_remove" => {
+                Some(NetworkAccess::None)
+            }
             _ => None,
         },
         risk_override,
@@ -322,8 +333,32 @@ mod tests {
         );
         assert_eq!(
             operation_contract("haven.mcp.mcp_list").network_access_override,
-            None
+            Some(NetworkAccess::None)
         );
+
+        for name in [
+            "haven.mcp.mcp_add",
+            "haven.mcp.mcp_update",
+            "haven.mcp.mcp_toggle",
+            "haven.mcp.mcp_reload",
+        ] {
+            assert_eq!(
+                operation_contract(name).network_access_override,
+                Some(NetworkAccess::Opaque),
+                "{name} may connect an MCP server"
+            );
+        }
+        for name in [
+            "haven.mcp.mcp_list",
+            "haven.mcp.mcp_disconnect",
+            "haven.mcp.mcp_remove",
+        ] {
+            assert_eq!(
+                operation_contract(name).network_access_override,
+                Some(NetworkAccess::None),
+                "{name} does not initiate a connection"
+            );
+        }
 
         let status = operation_contract("haven.diagnostics.status");
         assert!(status.read_only);

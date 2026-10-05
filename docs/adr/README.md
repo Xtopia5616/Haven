@@ -494,3 +494,4 @@
 - [0503：主窗口缩放比例边界](0503-window-resize-aspect-ratio-bounds.md)
 - [0504：改用可用宽度选择自适应布局](0504-width-based-adaptive-layout-breakpoints.md)
 - [0505：固定 ADR 编号身份并校验目录完整性](0505-adr-index-identity-and-integrity-check.md)
+- [0506：MCP 管理操作共享建连网络策略](0506-mcp-admin-connection-network-policy.md)
