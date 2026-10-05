@@ -1,7 +1,7 @@
 import { get } from 'svelte/store';
 import { browser } from '$app/environment';
 import { DRAFT_SESSION_ID, type SessionReducer } from './sessionReducer.ts';
-import { reactExecutionPhaseStore } from './runtimeStateStore.ts';
+import { reactExecutionPhaseForSession, reactExecutionPhaseStore } from './runtimeStateStore.ts';
 import { newMessage } from './messageFactory.ts';
 import { newSessionIntentStore, NEW_ACTION_INTENT_KEY } from './sessionIntentStore.ts';
 import { isBusyStatus, isPausedStatus } from './sessionStatus.ts';
@@ -23,7 +23,7 @@ function isMidTurnSubmit(sessionId: string, reducer: SessionReducer): boolean {
 	if (isBusyStatus(st) || isPausedStatus(st)) return true;
 	// Global execution phase only applies to the active session.
 	if (reducer.getState().activeSessionId === sessionId) {
-		const state = get(reactExecutionPhaseStore);
+		const state = reactExecutionPhaseForSession(get(reactExecutionPhaseStore), sessionId);
 		if (
 			state === 'queued' ||
 			state === 'requesting' ||

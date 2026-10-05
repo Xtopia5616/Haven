@@ -405,8 +405,8 @@
 		}
 	}
 	const unsubscribeExecutionPhase = syncStore(reactExecutionPhaseStore, (v) => {
-		reactExecutionPhase = v;
-		if (v === 'idle') probeLlmConnection();
+		reactExecutionPhase = v.phase;
+		if (v.phase === 'idle') probeLlmConnection();
 	});
 	/** @param {unknown} value */
 	function applyLlmConnectionReport(value: unknown) {
@@ -961,6 +961,7 @@
 						lastSessionStatus.set(data.sessionId, data.status);
 						addBusySession(data.sessionId);
 						updateReactExecutionPhase(
+							data.sessionId,
 							data.status === 'running' ? 'requesting' : 'queued',
 						);
 					},
@@ -976,7 +977,7 @@
 								'success',
 							);
 						}
-						updateReactExecutionPhase('idle');
+						updateReactExecutionPhase(data.sessionId, 'idle');
 					},
 					'session:deleted': (event) => {
 						// delete_session / clear_history remove sessions without any terminal
@@ -988,12 +989,13 @@
 						if (data.sessionId) {
 							lastSessionStatus.delete(data.sessionId);
 							removeBusySession(data.sessionId);
+							if (get(reactExecutionPhaseStore).sessionId === data.sessionId) {
+								updateReactExecutionPhase(data.sessionId, 'idle');
+							}
 						} else {
 							lastSessionStatus.clear();
 							clearBusySessions();
-						}
-						if (busySessions.size === 0) {
-							updateReactExecutionPhase('idle');
+							updateReactExecutionPhase(null, 'idle');
 						}
 					},
 					'session:error': (event) => {
@@ -1002,7 +1004,7 @@
 						if (notifyCfg?.session_error?.in_app !== false) {
 							addNotification(`会话出错: ${errMsg}`, 'error', 5000);
 						}
-						updateReactExecutionPhase('idle');
+						updateReactExecutionPhase(data.sessionId, 'idle');
 					},
 					'session:updated': (event) => {
 						const data = event.payload;
@@ -1023,7 +1025,7 @@
 			) {
 				addNotification(`会话已暂停: ${title || '未知'}`, 'warning', 3000);
 			}
-							updateReactExecutionPhase('idle');
+							updateReactExecutionPhase(tid, 'idle');
 						}
 						if (data.status === 'pending') {
 							// Only paused/error → pending is a real resume; Running→Pending
@@ -1034,18 +1036,18 @@
 							) {
 								addNotification(`会话已恢复: ${title || '未知'}`, 'info', 3000);
 							}
-							updateReactExecutionPhase('queued');
+							updateReactExecutionPhase(tid, 'queued');
 						}
 						if (data.status === 'running' && prev !== 'running') {
-							updateReactExecutionPhase('requesting');
+							updateReactExecutionPhase(tid, 'requesting');
 						}
 						if (data.status === 'completed') {
 							removeBusySession(tid);
-							updateReactExecutionPhase('idle');
+							updateReactExecutionPhase(tid, 'idle');
 						}
 						if (data.status === 'error') {
 							removeBusySession(tid);
-							updateReactExecutionPhase('idle');
+							updateReactExecutionPhase(tid, 'idle');
 						}
 						if (tid && data.status) {
 							lastSessionStatus.set(tid, data.status);
@@ -1084,7 +1086,9 @@
 						const data = event.payload;
 						const activeId = appSessionReducer.getState().activeSessionId;
 						if (data.sessionId && activeId && data.sessionId !== activeId) return;
-						updateReactExecutionPhase('waiting_response');
+						if (data.sessionId) {
+							updateReactExecutionPhase(data.sessionId, 'waiting_response');
+						}
 					},
 				}),
 				// Router rebuilt (settings saved / model switched): re-probe LLM

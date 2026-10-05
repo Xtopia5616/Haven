@@ -79,7 +79,7 @@ export function createStreamEventAggregator({
 	getBlockIds,
 }: {
 	getActiveSessionId: () => string | null;
-	onActiveStream: () => void;
+	onActiveStream: (sessionId: string) => void;
 	dispatch: (action: SessionAction) => void;
 	getBlockIds: (sessionId: string, stepNumber: number, runId: number) => StepBlockIds;
 }): StreamEventAggregator {
@@ -177,7 +177,7 @@ export function createStreamEventAggregator({
 			const sessionId = data.sessionId;
 			const messageId = data.messageId;
 			const delta = data.delta || '';
-			if (getActiveSessionId() === sessionId) onActiveStream();
+			if (getActiveSessionId() === sessionId) onActiveStream(sessionId);
 			pendingChunks.push({
 				tid: sessionId,
 				sid: messageId,

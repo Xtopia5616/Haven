@@ -15,7 +15,11 @@ import {
 import { appSessionReducer } from './sessionReducer.ts';
 import { notificationStore, addNotification } from './notificationStore.ts';
 import { newMessage } from './messageFactory.ts';
-import { reactExecutionPhaseStore, updateReactExecutionPhase } from './runtimeStateStore.ts';
+import {
+	reactExecutionPhaseForSession,
+	reactExecutionPhaseStore,
+	updateReactExecutionPhase,
+} from './runtimeStateStore.ts';
 import {
 	actionStore,
 	sessionActionStore,
@@ -410,18 +414,32 @@ describe('newMessage', () => {
 
 describe('ReAct execution phase', () => {
 	beforeEach(() => {
-		reactExecutionPhaseStore.set('idle');
+		reactExecutionPhaseStore.set({ sessionId: null, phase: 'idle' });
 	});
 
 	it('keeps each phase until a lifecycle event advances or clears it', () => {
-		updateReactExecutionPhase('requesting');
-		expect(get(reactExecutionPhaseStore)).toBe('requesting');
+		updateReactExecutionPhase('ses-phase', 'requesting');
+		expect(get(reactExecutionPhaseStore)).toEqual({
+			sessionId: 'ses-phase',
+			phase: 'requesting',
+		});
 
-		updateReactExecutionPhase('waiting_response');
-		expect(get(reactExecutionPhaseStore)).toBe('waiting_response');
+		updateReactExecutionPhase('ses-phase', 'waiting_response');
+		expect(get(reactExecutionPhaseStore).phase).toBe('waiting_response');
 
-		updateReactExecutionPhase('idle');
-		expect(get(reactExecutionPhaseStore)).toBe('idle');
+		updateReactExecutionPhase('ses-phase', 'idle');
+		expect(get(reactExecutionPhaseStore)).toEqual({
+			sessionId: 'ses-phase',
+			phase: 'idle',
+		});
+	});
+
+	it('exposes a phase only to its source session', () => {
+		const snapshot = { sessionId: 'ses-background', phase: 'generating' } as const;
+
+		expect(reactExecutionPhaseForSession(snapshot, 'ses-background')).toBe('generating');
+		expect(reactExecutionPhaseForSession(snapshot, 'ses-active')).toBe('idle');
+		expect(reactExecutionPhaseForSession(snapshot, null)).toBe('idle');
 	});
 });
 

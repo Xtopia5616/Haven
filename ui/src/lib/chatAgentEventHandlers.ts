@@ -51,7 +51,7 @@ export function createChatAgentEventHandlers({
 		'agent:action': (event) => {
 			const data = event.payload;
 			flushChunksNow();
-			updateReactExecutionPhase('waiting_result');
+			if (data?.sessionId) updateReactExecutionPhase(data.sessionId, 'waiting_result');
 			dispatchSession({ type: 'agent/action', payload: data });
 		},
 		'agent:tool_output': (event) => {
@@ -66,7 +66,7 @@ export function createChatAgentEventHandlers({
 		'agent:observation': (event) => {
 			const data = event.payload;
 			flushChunksNow();
-			updateReactExecutionPhase('generating');
+			if (data?.sessionId) updateReactExecutionPhase(data.sessionId, 'generating');
 			if (data?.stepId) clearToolOutputPreview(data.stepId);
 			dispatchSession({ type: 'agent/observation', payload: data });
 		},

@@ -48,6 +48,7 @@
 	import {
 		activeConversationStatusStore,
 		reactExecutionPhaseStore,
+		reactExecutionPhaseForSession,
 		updateReactExecutionPhase,
 	} from '$lib/runtimeStateStore.ts';
 	import { addNotification } from '$lib/notificationStore.ts';
@@ -97,7 +98,7 @@
 	import type { AgentMediaPlanPayload } from '$lib/contracts/agent.ts';
 	import type { ChatFileAttachment, ChatImageAttachment } from '$lib/chatController.ts';
 	import type { ConversationContextMenuRequest } from '$lib/conversationTimeline.ts';
-	import type { ReactExecutionPhase } from '$lib/runtimeStateStore.ts';
+	import type { ReactExecutionPhaseSnapshot } from '$lib/runtimeStateStore.ts';
 
 	let chatPageEl = $state<HTMLElement | null>(null);
 	let inputRouterRef = $state<{ setDraft: (text: string) => void } | null>(null);
@@ -268,17 +269,23 @@
 	// Send/interrupt merged button: text takes priority (always send); with no
 	// text and the agent actively generating output the button interrupts the
 	// current output while keeping the session resumable.
-	let reactExecutionPhase = $state<ReactExecutionPhase>('idle');
+	let reactExecutionPhase = $state<ReactExecutionPhaseSnapshot>({
+		sessionId: null,
+		phase: 'idle',
+	});
 	let interruptPending = $state(false);
 	$effect(() =>
 		syncStore(reactExecutionPhaseStore, (v) => {
 			reactExecutionPhase = v;
 		}),
 	);
+	const activeSessionPhase = $derived(
+		reactExecutionPhaseForSession(reactExecutionPhase, activeSessionId),
+	);
 	const isGenerating = $derived(
-		reactExecutionPhase === 'generating' ||
-			reactExecutionPhase === 'waiting_result' ||
-			reactExecutionPhase === 'waiting_response',
+		activeSessionPhase === 'generating' ||
+			activeSessionPhase === 'waiting_result' ||
+			activeSessionPhase === 'waiting_response',
 	);
 	const sessionRunning = $derived(
 		!!activeSessionId &&
@@ -645,7 +652,7 @@
 
 	const streamEvents = createStreamEventAggregator({
 		getActiveSessionId: () => activeSessionId,
-		onActiveStream: () => updateReactExecutionPhase('generating'),
+		onActiveStream: (sessionId) => updateReactExecutionPhase(sessionId, 'generating'),
 		dispatch: dispatchSession,
 		getBlockIds: (sessionId, stepNumber, runId) =>
 			sessionReducer.getBlockIds(sessionId, stepNumber, runId),

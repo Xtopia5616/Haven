@@ -15,9 +15,12 @@ describe('chat agent live tool output', () => {
 			dispatchSession: vi.fn(),
 		});
 
-		reactExecutionPhaseStore.set('idle');
+		reactExecutionPhaseStore.set({ sessionId: null, phase: 'idle' });
 		handlers['agent:action']({ payload: { sessionId: 'ses-live' } } as never);
-		expect(get(reactExecutionPhaseStore)).toBe('waiting_result');
+		expect(get(reactExecutionPhaseStore)).toMatchObject({
+			sessionId: 'ses-live',
+			phase: 'waiting_result',
+		});
 
 		handlers['agent:observation']({
 			payload: {
@@ -30,7 +33,10 @@ describe('chat agent live tool output', () => {
 				observation: 'done',
 			},
 		} as never);
-		expect(get(reactExecutionPhaseStore)).toBe('generating');
+		expect(get(reactExecutionPhaseStore)).toMatchObject({
+			sessionId: 'ses-live',
+			phase: 'generating',
+		});
 	});
 
 	it('keeps preview ticks out of the session reducer hot path', () => {

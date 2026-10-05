@@ -29,7 +29,7 @@ describe('submitTranscript', () => {
 		invokeMock.mockReset();
 		reducer = new SessionReducer();
 		newSessionIntentStore.set(false);
-		reactExecutionPhaseStore.set('idle');
+		reactExecutionPhaseStore.set({ sessionId: null, phase: 'idle' });
 	});
 
 	it('appends an optimistic user message under the active session id', async () => {
@@ -217,7 +217,7 @@ describe('submitTranscript', () => {
 			{ id: 'msg-1', role: 'user', content: 'hi', received: true },
 			{ id: 'msg-2', role: 'assistant', content: '想', streaming: true },
 		]);
-		reactExecutionPhaseStore.set('generating');
+		reactExecutionPhaseStore.set({ sessionId: 'session-a', phase: 'generating' });
 		await submitTranscript('补充', { voice: false });
 		const list = messagesFor('session-a');
 		expect(list).toHaveLength(3);
@@ -235,7 +235,7 @@ describe('submitTranscript', () => {
 			{ id: 'msg-1', role: 'user', content: 'hi', received: true },
 			{ id: 'msg-2', role: 'assistant', content: '好的', streaming: false },
 		]);
-		reactExecutionPhaseStore.set('idle');
+		reactExecutionPhaseStore.set({ sessionId: null, phase: 'idle' });
 		await submitTranscript('下一题', { voice: false });
 		const list = messagesFor('session-a');
 		expect(list[2].content).toBe('下一题');
@@ -249,7 +249,7 @@ describe('submitTranscript', () => {
 		select('session-a');
 		// First message accepted, execution phase not flipped yet, no assistant bubble.
 		loadMessages('session-a', [{ id: 'msg-1', role: 'user', content: 'hi' }]);
-		reactExecutionPhaseStore.set('idle');
+		reactExecutionPhaseStore.set({ sessionId: null, phase: 'idle' });
 		await submitTranscript('再加一句', { voice: false });
 		const list = messagesFor('session-a');
 		expect(list[1]).toMatchObject({ id: 'msg-steer2', steering: true });
@@ -263,11 +263,24 @@ describe('submitTranscript', () => {
 			{ id: 'msg-b1', role: 'user', content: 'hi', received: true },
 			{ id: 'msg-b2', role: 'assistant', content: '好的', streaming: false },
 		]);
-		reactExecutionPhaseStore.set('generating');
+		reactExecutionPhaseStore.set({ sessionId: 'session-a', phase: 'generating' });
 		await submitTranscript('下一题', { voice: false });
 		const list = messagesFor('session-b');
 		expect(list[2].content).toBe('下一题');
 		expect(list[2].steering).toBeFalsy();
+	});
+
+	it('does not treat another session phase as steering for an empty active transcript', async () => {
+		invokeMock.mockResolvedValue({});
+		select('session-b');
+		// A background session may update the shell's latest phase while the
+		// selected session has not loaded or produced any transcript yet.
+		reactExecutionPhaseStore.set({ sessionId: 'session-a', phase: 'generating' });
+
+		await submitTranscript('first message', { voice: false });
+
+		expect(messagesFor('session-b')).toHaveLength(1);
+		expect(messagesFor('session-b')[0].steering).toBeFalsy();
 	});
 
 	it('removes the optimistic bubble and rethrows when invoke rejects', async () => {

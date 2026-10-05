@@ -1,6 +1,6 @@
 # Haven 架构降复杂度重构路线图
 
-> 状态：阶段 0–8 已完成；SessionUsage 累计上限契约、session-scoped KV 孤儿清理 owner、summary marker 单一原子生产路径、Tools 测试归属、Input→Tools 测试反向依赖、MCP/Skill 直调授权策略来源、MCP 管理操作网络策略来源、X12 例外消息写入口、ADR 编号索引完整性、actorless session action lifecycle 清理（ADR 0507）、Ask reducer state ownership 收口（ADR 0508）与终态 Ask 清理事件归属（ADR 0509）已完成；当前无 Active 结构切片；Windows 发布验收为独立开放签核门
+> 状态：阶段 0–8 已完成；SessionUsage 累计上限契约、session-scoped KV 孤儿清理 owner、summary marker 单一原子生产路径、Tools 测试归属、Input→Tools 测试反向依赖、MCP/Skill 直调授权策略来源、MCP 管理操作网络策略来源、X12 例外消息写入口、ADR 编号索引完整性、actorless session action lifecycle 清理（ADR 0507）、Ask reducer state ownership 收口（ADR 0508）、终态 Ask 清理事件归属（ADR 0509）与 ReAct phase 来源 session 身份（ADR 0510）已完成；当前无 Active 结构切片；Windows 发布验收为独立开放签核门
 > 更新日期：2026-10-05
 > 范围：Agent/Session、Memory、Tools、LLM、App IPC 与 UI
 
@@ -112,6 +112,10 @@
 
 **本轮完成 — [ADR 0509](adr/0509-terminal-ask-cleanup-event-owner.md)：**首个认领终态清理的事件通道同时清除活跃会话 Ask，覆盖独立抵达的 `session:updated` completed/error；配对主副事件保持 first-wins，不重复清理。Svelte 检查 0 error/0 warning，Vitest 122 files/981 tests 通过；不改 backend、IPC 或持久化契约。
 
+**本轮完成 — [ADR 0510](adr/0510-session-scoped-react-execution-phase.md)：**全局最近 phase 补充其 source session 身份；Composer 和 submit steering 只读取 active session 对应 phase。先以红测复现后台 phase 会把空 transcript 的首条输入标为 steering，再修复；Svelte 检查 0 error/0 warning，Vitest 122 files/983 tests 通过。不改 wire 或持久化契约。
+
+**Deferred — 显式 end 的 action 取消失败语义（2026-10-05）：**`end_session_inner` 的 actorless 路径使用 checked cleanup，已驻留 Actor 的路径使用 best-effort cleanup；ActionService 的故障注入测试确认单条 scheduled action 持久取消可以失败。ADR 0507 明确规定删除 fail-closed，但没有定义显式 end 的失败契约。改成统一 checked 会存在已部分取消 action、end 返回错误而 session 仍运行的情形；维持 best-effort 又允许 session Completed 时有 action 仍 Waiting。此问题有生命周期证据但需要先决定显式 end 的用户可见语义，因此暂不进入 Active；只有产品/命令契约确定 end 失败时 session 和所属 action 应保持何种状态后，再补 Actor/actorless 故障注入回归并评估事务/补偿边界。
+
 `builtin/messaging.rs` 共 2,518 行，主测试模块从第 1,326 行开始。生产部分是单一模型可见 `agent` 工具：共享参数和 15 个操作适配至 `haven_messaging::MessagingService`；领域消息生命周期已在 [ADR 0069](adr/0069-messaging-service.md) 收口，并由 [ADR 0396](adr/0396-messaging-domain-crate.md) 提取为独立 crate。近期没有再次出现跨层重复 owner 或稳定后边界回归。仅按 operation 拆 schema/handler 或另拆 crate 暂无收益；若 schema 与执行适配之后独立演进并导致契约漂移，再复核私有模块边界。
 
 `memory_worker.rs` 按非空行统计为 3,176 行（约 1,367 行生产代码、1,809 行测试）。近期已按 [ADR 0468](adr/0468-memory-worker-maintenance-pass-module.md) 隔离定期 maintenance pass，并在 `880ec96` 将 pass 构造器收窄为显式四项 capability；此后没有足够历史证明要继续拆。`MemoryRuntime` 持有恢复与调度，worker 持有 extraction/outbox，`MemoryMaintenanceStore` 与 `fact_inference` 分别持有持久化和提案 gate；现有测试 fixture 与 outbox 测试共享较多。prefetch 失败重试与事实/marker 原子提交的缺陷已各自修复一次，没有稳定后重复回归，因此不再拆 prompt-prefetch 或搬测试。另发现的三个无 workspace 生产调用 summary marker-only API 已由 [ADR 0481](adr/0481-remove-summary-marker-only-enqueue.md) 删除；测试 fixture 现通过 episode+marker 原子入口建数据，Worker/Store/Database 的读取、恢复、ack 与清理能力保留。该清理没有形成进一步拆分 `memory_worker.rs` 的理由。
@@ -186,6 +190,7 @@
 15. **已完成 — [ADR 0507](adr/0507-session-owned-action-cleanup.md)：会话终止/删除清理所属 action。** 显式 end、单 session delete/retention 与全量删除现都经 SessionSupervisor→ActionService owner 链清理；actorless 与未 hydrate 的 waiting action 不再漏过。ActionService 串行化 scheduled admission、restore/hydrate 与本实例 owner cleanup；cleanup 还枚举 durable waiting/running 行，以 SQLite CAS 覆盖另一实例已启动但尚未 claim 的任务。持久读写错误阻止删除 session，claim-wins 保持 ADR 0424 原语义，shutdown 继续保留 scheduled waiting。workspace tests、严格 Clippy、格式及 ADR 索引门禁通过，细节见 ADR 0507。
 16. **已完成 — [ADR 0508](adr/0508-ask-response-reducer-ownership.md)：Ask 响应与结算收归 reducer owner。** 删除 controller 的 `resolvedAskResponses` shadow，提交从 SessionReducer 已 resolved Ask interaction 读取答案；transcript settle 与同 session Ask interaction 清理合并为一次 reducer transition。保留选项选择与当前批次 `resolvedAskIds`，避免历史 resolved Ask 混入后续提交；route-level lifecycle 对该 session 其他 interaction 的既有清理行为不变。Svelte 检查 0 error/0 warning，Vitest 122 files/979 tests 通过；不改 backend、IPC 或持久化契约。实现、回归与回滚见 ADR 0508。
 17. **已完成 — [ADR 0509](adr/0509-terminal-ask-cleanup-event-owner.md)：终态 Ask 清理由首个事件通道拥有。** 独立 `session:updated` completed/error 若先到，现可清除活跃 session 的 Ask；paired primary/secondary 事件仍由 `claimTerminalCleanup` first-wins，inactive session 与 paused 状态不受影响。Svelte 检查 0 error/0 warning，Vitest 122 files/981 tests 通过；不改 backend、IPC 或持久化契约。
+18. **已完成 — [ADR 0510](adr/0510-session-scoped-react-execution-phase.md)：ReAct phase 保留来源 session 身份。** 同一个 runtime phase snapshot 带上来源 session；当前 Composer 和 submit steering 只采用匹配 active session 的 phase，Shell 最近活动展示语义保持。Svelte 检查 0 error/0 warning，Vitest 122 files/983 tests 通过。
 
 #### 长期执行台阶与决策门
 
@@ -199,7 +204,7 @@
 | D. 性能与容量 | 只有可复现的延迟、内存、磁盘或并发问题进入 profile；保留现有 SQLite 容量与失败恢复不变量。 | 同数据、负载、构建和环境比较前后指标；没有超过噪声且对用户有意义的改进就关闭，不继续微调。不得把无 profile 的结构搬迁包装成性能优化。 |
 | E. Windows 发布签核 | 发布准备时独立执行 §5.1 的最新构建、安装生命周期、用户数据保留、真实 UI 流程和磁盘耗尽验收。该 Gate 可与不影响发布路径的单一结构切片并行准备。 | 把构建版本、schema、环境、实际结果与限制写入 ADR 0395；旧 profile 或历史验收不可代替当前安装包结果。未通过时保持 Gate Open，不据此发起无关架构拆分。 |
 
-**当前执行位置：** 阶段 0–8 已完成；台阶 A 已复核 Tools 契约/Admin/messaging、Agent memory worker 和 MCP 管理策略分类。`SessionStore` lifecycle wrapper 和上述大模块的纯拆分均暂缓。ADR 0481 的旧 summary marker-only writer、ADR 0496 的通用 X12 消息写入口已删除；ADR 0505 已恢复目录编号与索引一一对应，CI 持续检查该契约。ADR 0507–0509 已完成，分别收口 session-owned action lifecycle、Ask reducer state ownership 与终态事件通道的 Ask 清理归属。当前无 Active；每个切片结束后按 §5.5 触发条件复核下一候选，没有经源码验证的证据时不制造拆分工作。Common 拆分、Tools crate 拆分与通用 Job 抽象继续暂缓，直到相应门槛被新证据满足。
+**当前执行位置：** 阶段 0–8 已完成；台阶 A 已复核 Tools 契约/Admin/messaging、Agent memory worker 和 MCP 管理策略分类。`SessionStore` lifecycle wrapper 和上述大模块的纯拆分均暂缓。ADR 0481 的旧 summary marker-only writer、ADR 0496 的通用 X12 消息写入口已删除；ADR 0505 已恢复目录编号与索引一一对应，CI 持续检查该契约。ADR 0507–0510 已完成，收口 session-owned action lifecycle、Ask reducer state ownership、终态事件通道 Ask 清理归属和 ReAct phase 来源身份。最新 crate 边界复核仍是 11 个内部 crate、29 条单向边且无合格拆分候选。当前无 Active；显式 end 的 action 取消错误语义留待契约明确后复核。每个切片结束后按 §5.5 触发条件复核下一候选，没有经源码验证的证据时不制造拆分工作。Common 拆分、Tools crate 拆分与通用 Job 抽象继续暂缓，直到相应门槛被新证据满足。
 
 2026-10-05 对 `AppState`/`ApplicationRuntime`、UI shell/Composer 与 SessionStore 非事务 lifecycle façade 的只读复核均未发现 owner 稳定后的重复边界回归。SessionStore 生命周期 wrapper 大多是 typed `run_blocking` 转发，实际 actor/确认/delete policy 由 Agent `session/status.rs` 持有；搬移 wrapper 不会改变 owner 或调用链，故不新增 Active 项。重开条件见 §5.3 的启动编排、Composer、全局布局与 SessionStore 边界观察结论。
 
