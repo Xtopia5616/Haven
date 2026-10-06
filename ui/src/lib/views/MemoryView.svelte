@@ -15,6 +15,7 @@
 	import { page } from '$app/stores';
 	import {
 		addFact as addFactCommand,
+		clearFacts as clearFactsCommand,
 		deleteFact as deleteFactCommand,
 		listFacts,
 		recallMemory,
@@ -28,7 +29,7 @@
 		updateSessionTitle as updateSessionTitleCommand,
 	} from '$lib/sessionHistoryCommands.ts';
 	import { registerSessionLifecycleListener } from '$lib/events.ts';
-	import { listToolRunHistory } from '$lib/toolRunCommands.ts';
+	import { clearToolRunHistory, listToolRunHistory } from '$lib/toolRunCommands.ts';
 	import MaterialDialog from '$lib/MaterialDialog.svelte';
 	import MaterialButton from '$lib/MaterialButton.svelte';
 	import MaterialTabs from '$lib/MaterialTabs.svelte';
@@ -80,8 +81,10 @@
 	let searchTimer: ReturnType<typeof setTimeout> | null = null;
 	let deleteTarget = $state<MemorySession | null>(null);
 	let showClearDialog = $state(false);
-	let selectMode = $state(false);
-	let selectedIds = $state(new Set<string>());
+	let showClearTasksDialog = $state(false);
+	let showClearMemoryDialog = $state(false);
+	let clearingTasks = $state(false);
+	let clearingMemory = $state(false);
 	let offset = $state(0);
 	let totalCount = $state(0);
 	let loading = $state(false);
@@ -382,25 +385,35 @@
 		}
 		showClearDialog = false;
 	}
-	function enterSelectMode() {
-		selectMode = true;
-		selectedIds = new Set();
+	async function clearTaskHistory() {
+		if (clearingTasks) return;
+		clearingTasks = true;
+		try {
+			const count = await clearToolRunHistory();
+			await loadTaskHistory();
+			addNotification(`已清空 ${count} 条任务历史`, 'success', 3000);
+		} catch (error) {
+			reportError(error, { context: 'MemoryView', message: '清空任务历史失败', log: false });
+		} finally {
+			clearingTasks = false;
+			showClearTasksDialog = false;
+		}
 	}
-	function cancelSelectMode() {
-		selectMode = false;
-		selectedIds = new Set();
-	}
-	function toggleSelect(sessionId: string) {
-		const next = new Set(selectedIds);
-		if (next.has(sessionId)) next.delete(sessionId);
-		else next.add(sessionId);
-		selectedIds = next;
-	}
-	function toggleSelectAll() {
-		selectedIds =
-			selectedIds.size === sessions.length
-				? new Set()
-				: new Set(sessions.map((session) => session.id));
+	async function clearMemoryFacts() {
+		if (clearingMemory) return;
+		clearingMemory = true;
+		try {
+			const count = await clearFactsCommand();
+			facts = [];
+			factsLoaded = true;
+			clearMemoryRecall();
+			addNotification(`已清空 ${count} 条长期记忆`, 'success', 3000);
+		} catch (error) {
+			reportError(error, { context: 'MemoryView', message: '清空长期记忆失败', log: false });
+		} finally {
+			clearingMemory = false;
+			showClearMemoryDialog = false;
+		}
 	}
 	function displayTitle(session: MemorySession) {
 		if (session.title) return session.title;
@@ -442,24 +455,6 @@
 	function handleRenameValueChange(value: string) {
 		renameValue = value;
 	}
-	function downloadSessions(sessionsToExport: MemorySession[]) {
-		const json = JSON.stringify(
-			{
-				exported_at: new Date().toISOString(),
-				count: sessionsToExport.length,
-				sessions: sessionsToExport,
-			},
-			null,
-			2,
-		);
-		const blob = new Blob([json], { type: 'application/json' });
-		const url = URL.createObjectURL(blob);
-		const anchor = document.createElement('a');
-		anchor.href = url;
-		anchor.download = `haven-sessions-${new Date().toISOString().slice(0, 10)}.json`;
-		anchor.click();
-		URL.revokeObjectURL(url);
-	}
 	function openCtxMenu(event: MouseEvent, session: MemorySession) {
 		openContextMenu(event, buildContextMenuItems(session));
 	}
@@ -467,12 +462,6 @@
 		return [
 			{ id: 'open', label: '打开', icon: 'open', action: () => resumeSession(session) },
 			{ id: 'rename', label: '重命名', icon: 'edit', action: () => startEdit(session) },
-			{
-				id: 'export',
-				label: '导出',
-				icon: 'export',
-				action: () => downloadSessions([session]),
-			},
 			{
 				id: 'delete',
 				label: '删除',
@@ -484,11 +473,6 @@
 			},
 		];
 	}
-	function exportSelected() {
-		downloadSessions(sessions.filter((session) => selectedIds.has(session.id)));
-		cancelSelectMode();
-	}
-
 	async function loadFacts() {
 		const sequence = ++loadFactsSeq;
 		try {
@@ -607,7 +591,17 @@
 						<WorkspaceSectionHeader
 							title="会话历史"
 							description="查看并继续过去的对话。"
-						/>
+						>
+							{#snippet children()}
+								{#if totalCount > 0}
+									<MaterialButton
+										variant="danger"
+										label="清空会话"
+										onclick={() => (showClearDialog = true)}
+									/>
+								{/if}
+							{/snippet}
+						</WorkspaceSectionHeader>
 						<SessionHistory
 							{sessions}
 							{searchQuery}
@@ -616,8 +610,6 @@
 							{statusOptions}
 							{startDate}
 							{endDate}
-							{selectMode}
-							{selectedIds}
 							{loading}
 							{hasMore}
 							{editingTitle}
@@ -629,12 +621,6 @@
 							onOpenDateFilter={() => {
 								showDateFilter = true;
 							}}
-							onToggleSelectAll={toggleSelectAll}
-							onToggleSelect={toggleSelect}
-							onEnterSelectMode={enterSelectMode}
-							onCancelSelectMode={cancelSelectMode}
-							onExportSelected={exportSelected}
-							onOpenClearDialog={() => (showClearDialog = true)}
 							onResume={resumeSession}
 							{onNewSession}
 							onStartEdit={startEdit}
@@ -652,7 +638,16 @@
 						<WorkspaceSectionHeader
 							title="任务历史"
 							description="查看后台任务和定时任务的当前状态及最近历史。"
-						/>
+						>
+							{#snippet children()}
+								<MaterialButton
+									variant="danger"
+									label="清空历史"
+									onclick={() => (showClearTasksDialog = true)}
+									disabled={toolRunHistoryLoading || toolRunHistory.length === 0}
+								/>
+							{/snippet}
+						</WorkspaceSectionHeader>
 						<ToolRunCenter
 							{runningBackgroundToolRuns}
 							{pendingScheduledToolRuns}
@@ -672,7 +667,17 @@
 							<WorkspaceSectionHeader
 								title="长期记忆"
 								description="管理已保存的长期事实，或检索过去的对话。"
-							/>
+							>
+								{#snippet children()}
+									<MaterialButton
+										variant="danger"
+										label="清空记忆"
+										onclick={() => (showClearMemoryDialog = true)}
+										disabled={!factsLoaded ||
+											(factSourceFilter === '' && facts.length === 0)}
+									/>
+								{/snippet}
+							</WorkspaceSectionHeader>
 							<MemoryCenter
 								{facts}
 								{factsLoaded}
@@ -766,6 +771,52 @@
 	{#snippet footer()}
 		<MaterialButton variant="text" label="取消" onclick={() => (showClearDialog = false)} />
 		<MaterialButton variant="danger" label="清空全部" onclick={clearSessions} />
+	{/snippet}
+</MaterialDialog>
+<MaterialDialog
+	open={showClearTasksDialog}
+	onClose={() => (showClearTasksDialog = false)}
+	title="清空任务历史"
+>
+	{#snippet children()}<p class="dialog-text">
+			将永久删除所有已结束的后台任务和定时任务记录。运行中、等待中以及尚未写入会话的任务结果会保留。此操作不可撤销。
+		</p>{/snippet}
+	{#snippet footer()}
+		<MaterialButton
+			variant="text"
+			label="取消"
+			onclick={() => (showClearTasksDialog = false)}
+			disabled={clearingTasks}
+		/>
+		<MaterialButton
+			variant="danger"
+			label={clearingTasks ? '清空中…' : '清空历史'}
+			onclick={clearTaskHistory}
+			disabled={clearingTasks}
+		/>
+	{/snippet}
+</MaterialDialog>
+<MaterialDialog
+	open={showClearMemoryDialog}
+	onClose={() => (showClearMemoryDialog = false)}
+	title="清空长期记忆"
+>
+	{#snippet children()}<p class="dialog-text">
+			将永久删除所有已保存的长期事实，包括手动添加和自动提取的事实；会话历史不会受影响。此操作不可撤销。
+		</p>{/snippet}
+	{#snippet footer()}
+		<MaterialButton
+			variant="text"
+			label="取消"
+			onclick={() => (showClearMemoryDialog = false)}
+			disabled={clearingMemory}
+		/>
+		<MaterialButton
+			variant="danger"
+			label={clearingMemory ? '清空中…' : '清空记忆'}
+			onclick={clearMemoryFacts}
+			disabled={clearingMemory}
+		/>
 	{/snippet}
 </MaterialDialog>
 

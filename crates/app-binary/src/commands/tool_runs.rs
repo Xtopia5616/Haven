@@ -283,3 +283,16 @@ pub async fn delete_tool_run(
         .await
         .map_err(|e| log_err("delete_tool_run", e))
 }
+
+/// Clear terminal task history while preserving waiting/running work and
+/// completion results that have not yet been committed to their sessions.
+#[tauri::command]
+pub async fn clear_tool_run_history(state: State<'_, Arc<AppState>>) -> Result<u64, String> {
+    state
+        .runtime
+        .services
+        .tool_runs
+        .clear_terminal_history()
+        .await
+        .map_err(|e| log_err("clear_tool_run_history", e))
+}

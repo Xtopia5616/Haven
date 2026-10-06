@@ -212,7 +212,9 @@ export interface TauriCommandMap {
 	cancel_tool_run: { request: { toolRunId: string; kind: ToolRunKindInput }; response: boolean };
 	check_llm_connection: { request: undefined; response: LlmConnectionReport };
 	check_shell_available: { request: { shell: string }; response: ShellAvailability };
+	clear_facts: { request: undefined; response: number };
 	clear_history: { request: undefined; response: number };
+	clear_tool_run_history: { request: undefined; response: number };
 	continue_session: { request: { sessionId: string }; response: void };
 	count_history: { request: undefined; response: number };
 	count_history_search: { request: { query: string }; response: number };

@@ -22,6 +22,11 @@ export function deleteFact(request: DeleteFactRequest): Promise<void> {
 	return invoke('delete_fact', request);
 }
 
+/** Delete every saved long-term fact. */
+export function clearFacts(): Promise<number> {
+	return invoke('clear_facts');
+}
+
 /** Recall facts or episodes through the named memory command boundary. */
 export function recallMemory(request: RecallMemoryRequest): Promise<MemoryRecallItem[]> {
 	return invoke('recall_memory', request);

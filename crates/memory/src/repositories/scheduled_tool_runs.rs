@@ -701,6 +701,55 @@ impl Database {
         Ok(changed > 0)
     }
 
+    /// Delete all terminal ToolRun history in one writer transaction. A
+    /// background completion stays until its outbox entry has been delivered
+    /// to the owning session; waiting and running work is never cleared.
+    pub fn clear_terminal_tool_runs(&self) -> anyhow::Result<Vec<String>> {
+        self.reconcile_tool_run_completion_outbox()?;
+        let conn = self.conn();
+        conn.execute_batch("BEGIN IMMEDIATE")?;
+        let result = (|| -> anyhow::Result<Vec<String>> {
+            let ids = {
+                let mut stmt = conn.prepare(
+                    "SELECT id FROM tool_runs
+                     WHERE status IN ('completed', 'failed', 'cancelled')
+                       AND NOT EXISTS (
+                           SELECT 1 FROM tool_run_completion_outbox
+                           WHERE tool_run_id = tool_runs.id AND delivered_at IS NULL
+                       )",
+                )?;
+                let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+                rows.collect::<Result<Vec<_>, _>>()?
+            };
+            let mut deleted = Vec::with_capacity(ids.len());
+            for id in ids {
+                let changed = conn.execute(
+                    "DELETE FROM tool_runs
+                     WHERE id = ?1 AND status IN ('completed', 'failed', 'cancelled')
+                       AND NOT EXISTS (
+                           SELECT 1 FROM tool_run_completion_outbox
+                           WHERE tool_run_id = ?1 AND delivered_at IS NULL
+                       )",
+                    rusqlite::params![id],
+                )?;
+                if changed > 0 {
+                    deleted.push(id);
+                }
+            }
+            Ok(deleted)
+        })();
+        match result {
+            Ok(ids) => {
+                conn.execute_batch("COMMIT")?;
+                Ok(ids)
+            }
+            Err(error) => {
+                let _ = conn.execute_batch("ROLLBACK");
+                Err(error)
+            }
+        }
+    }
+
     /// Mark background-ToolRun rows left `running` by a previous process as
     /// failed: child processes die with the app, so a `running` row after a
     /// restart is stale and must not surface as live work. Idempotent.
@@ -1589,5 +1638,81 @@ mod tests {
         assert!(db.delete_tool_run("toolrun-1").unwrap());
         assert!(!db.delete_tool_run("toolrun-1").unwrap());
         assert!(db.list_tool_runs(Some("background")).unwrap().is_empty());
+    }
+
+    #[test]
+    fn clear_terminal_tool_runs_keeps_live_rows_and_undelivered_completions() {
+        let db = test_db();
+        let waiting_id = new_id("toolrun");
+        let running_id = new_id("toolrun");
+        let cancelled_id = new_id("toolrun");
+        let completed_id = new_id("toolrun");
+        let pending_completion_id = new_id("toolrun");
+        let now = "2026-10-06T00:00:00Z";
+
+        for id in [&waiting_id, &running_id, &cancelled_id] {
+            db.save_scheduled_tool_run(
+                id,
+                now,
+                "Haven",
+                "body",
+                "tool",
+                None,
+                Some("notify"),
+                Some("{}"),
+                None,
+                None,
+            )
+            .unwrap();
+        }
+        assert!(db.start_scheduled_tool_run(&running_id, now).unwrap());
+        assert!(db.start_scheduled_tool_run(&cancelled_id, now).unwrap());
+        assert!(db.cancel_scheduled_tool_run(&cancelled_id, now).unwrap());
+
+        db.save_tool_run(&completed_id, None, "echo done", now)
+            .unwrap();
+        assert!(
+            db.finish_tool_run(
+                &completed_id,
+                ToolRunStatus::Completed,
+                Some("done"),
+                None,
+                None,
+                None,
+                Some(0),
+                now,
+            )
+            .unwrap()
+        );
+        db.reconcile_tool_run_completion_outbox().unwrap();
+        assert!(db.acknowledge_tool_run_completion(&completed_id).unwrap());
+        db.save_tool_run(&pending_completion_id, None, "echo pending", now)
+            .unwrap();
+        assert!(
+            db.finish_tool_run_with_completion(
+                &pending_completion_id,
+                ToolRunStatus::Completed,
+                Some("result"),
+                None,
+                None,
+                None,
+                Some(0),
+                now,
+                r#"{"tool_run_id":"toolrun-pending","status":"completed","output":"result"}"#,
+            )
+            .unwrap()
+        );
+
+        let mut deleted = db.clear_terminal_tool_runs().unwrap();
+        deleted.sort();
+        let mut expected = vec![cancelled_id.clone(), completed_id.clone()];
+        expected.sort();
+        assert_eq!(deleted, expected);
+
+        assert!(db.get_tool_run(&waiting_id).unwrap().is_some());
+        assert!(db.get_tool_run(&running_id).unwrap().is_some());
+        assert!(db.get_tool_run(&pending_completion_id).unwrap().is_some());
+        assert!(db.get_tool_run(&cancelled_id).unwrap().is_none());
+        assert!(db.get_tool_run(&completed_id).unwrap().is_none());
     }
 }

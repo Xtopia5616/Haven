@@ -1388,6 +1388,24 @@ impl ToolRunService {
         self.delete(tool_run_id, &row.kind).await
     }
 
+    /// Clear persisted terminal ToolRun history without touching waiting or
+    /// running work. The store performs the outbox-aware delete atomically;
+    /// the in-memory board is then pruned for the exact rows that were removed.
+    pub async fn clear_terminal_history(&self) -> anyhow::Result<u64> {
+        let _mutation = self.spawn_gate.lock().await;
+        let Some(store) = self.tool_run_store.read().await.clone() else {
+            return Ok(0);
+        };
+        let deleted_ids = store.clear_terminal_tool_runs().await?;
+        if !deleted_ids.is_empty() {
+            let mut tool_runs = self.tool_runs.write().await;
+            for id in &deleted_ids {
+                tool_runs.remove(id);
+            }
+        }
+        Ok(deleted_ids.len() as u64)
+    }
+
     /// Cancel all ToolRun kinds owned by `session_id`. This is used by explicit
     /// session end/deletion; application shutdown uses the background-only
     /// variant so durable scheduled work remains waiting.

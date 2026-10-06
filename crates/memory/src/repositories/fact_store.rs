@@ -181,6 +181,12 @@ impl MemoryFactStore {
             .await
     }
 
+    /// Delete every saved fact, keeping fact graph/cache invalidation in the
+    /// synchronous repository write boundary.
+    pub async fn clear_facts(&self) -> anyhow::Result<u64> {
+        self.db.run_blocking(|db| db.clear_facts()).await
+    }
+
     /// Search facts with an optional exact subject scope. The caller may
     /// normalize the query for its own validation contract; this port also
     /// normalizes defensively and applies the shared visibility policy while

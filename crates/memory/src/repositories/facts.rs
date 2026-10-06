@@ -331,6 +331,11 @@ impl Database {
         self.with_fact_write(|| FactGraph::new(self).delete_by_id(id))
     }
 
+    /// Delete every persisted long-term fact and invalidate its derived caches.
+    pub fn clear_facts(&self) -> anyhow::Result<u64> {
+        self.with_fact_write(|| FactGraph::new(self).clear_all())
+    }
+
     /// Distinct predicates with row counts, highest count first (M6).
     pub fn list_predicate_counts(&self) -> anyhow::Result<Vec<(String, u64)>> {
         FactMaintenance::new(self).list_predicate_counts()
@@ -645,6 +650,19 @@ mod tests {
         db.delete_fact(&fact.id).unwrap();
         let remaining = db.get_facts("user").unwrap();
         assert!(remaining.is_empty());
+    }
+
+    #[test]
+    fn test_clear_facts_removes_all_sources_and_invalidates_list_cache() {
+        let db = create_db();
+        db.insert_fact("user", "likes", "Rust", "user", 0.9, &[])
+            .unwrap();
+        db.insert_fact("user", "works_at", "Acme", "inferred", 0.8, &[])
+            .unwrap();
+        assert_eq!(db.list_facts().unwrap().len(), 2);
+
+        assert_eq!(db.clear_facts().unwrap(), 2);
+        assert!(db.list_facts().unwrap().is_empty());
     }
 
     #[test]

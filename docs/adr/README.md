@@ -519,3 +519,4 @@
 - [0528：Admin 风险等级使用单一契约来源](0528-admin-risk-single-source.md)
 - [0529：单一会话生命周期事件与 Memory response DTO](0529-single-session-lifecycle-event-and-memory-response-dto.md)
 - [0530：类型化 ToolRun lifecycle events](0530-typed-tool-run-lifecycle-events.md)
+- [0531：历史清理操作与任务历史边界](0531-history-clear-actions-and-terminal-scoped-task-retention.md)

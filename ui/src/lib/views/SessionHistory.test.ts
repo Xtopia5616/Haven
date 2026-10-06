@@ -84,9 +84,7 @@ describe('SessionHistory actions', () => {
 		expect(onResume).toHaveBeenCalledWith(session);
 	});
 
-	it('places bulk history actions below the filter bar', async () => {
-		const onEnterSelectMode = vi.fn();
-		const onOpenClearDialog = vi.fn();
+	it('does not show the unused bulk export controls', () => {
 		render(SessionHistory, {
 			...commonProps,
 			sessions: [
@@ -99,17 +97,11 @@ describe('SessionHistory actions', () => {
 					input_text: '',
 				},
 			],
-			onEnterSelectMode,
-			onOpenClearDialog,
 		});
 
-		const actions = document.querySelector('.history-actions');
-		expect(actions).toBeTruthy();
-		expect(actions?.previousElementSibling?.classList.contains('filter-bar')).toBe(true);
-		await fireEvent.click(screen.getByRole('button', { name: '导出' }));
-		await fireEvent.click(screen.getByRole('button', { name: '清空会话' }));
-		expect(onEnterSelectMode).toHaveBeenCalledTimes(1);
-		expect(onOpenClearDialog).toHaveBeenCalledTimes(1);
+		expect(screen.queryByRole('button', { name: '导出' })).toBeNull();
+		expect(screen.queryByRole('button', { name: /导出选中/ })).toBeNull();
+		expect(document.querySelector('.history-actions')).toBeNull();
 	});
 
 	it('keeps the native context menu available while renaming', () => {

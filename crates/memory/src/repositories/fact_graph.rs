@@ -716,6 +716,15 @@ impl<'db> FactGraph<'db> {
             .cache_invalidate_embeddings(crate::embeddings::entity_kind::FACT);
         Ok(())
     }
+
+    pub(crate) fn clear_all(&self) -> anyhow::Result<u64> {
+        let conn = self.db.conn();
+        let deleted = conn.execute("DELETE FROM facts", [])? as u64;
+        self.db.cache_invalidate_all_facts();
+        self.db
+            .cache_invalidate_embeddings(crate::embeddings::entity_kind::FACT);
+        Ok(deleted)
+    }
 }
 
 #[cfg(test)]

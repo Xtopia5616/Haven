@@ -138,6 +138,16 @@ pub async fn delete_fact(state: State<'_, Arc<AppState>>, fact_id: String) -> Re
         .map_err(|e| log_err("delete_fact", e))
 }
 
+#[tauri::command]
+pub async fn clear_facts(state: State<'_, Arc<AppState>>) -> Result<u64, String> {
+    state
+        .runtime
+        .memory_fact_store
+        .clear_facts()
+        .await
+        .map_err(|e| log_err("clear_facts", e))
+}
+
 #[cfg(test)]
 mod tests {
     use super::{AddFactInput, validate_add_fact_input};

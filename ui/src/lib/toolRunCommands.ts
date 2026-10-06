@@ -28,6 +28,11 @@ export async function listToolRunHistory(
 		: [];
 }
 
+/** Clear persisted terminal task history, preserving active work. */
+export function clearToolRunHistory(): Promise<number> {
+	return invoke('clear_tool_run_history');
+}
+
 /** Invoke the ToolRun cancellation command through its named request/result contract. */
 export function cancelToolRunCommand(request: CancelToolRunRequest): Promise<boolean> {
 	return invoke('cancel_tool_run', request);

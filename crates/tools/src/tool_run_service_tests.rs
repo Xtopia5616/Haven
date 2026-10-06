@@ -4116,6 +4116,28 @@ async fn test_tool_run_kind_and_terminal_delete_guards() {
 }
 
 #[tokio::test]
+async fn clear_terminal_history_removes_only_terminal_persisted_rows() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let db = Arc::new(Database::open(&dir.path().join("clear-history.db")).unwrap());
+    let service = Arc::new(ToolRunService::new());
+    service
+        .set_tool_run_store(Some(ToolRunStore::new(db.clone())))
+        .await;
+    let terminal_id = haven_common::types::new_id("toolrun");
+    let running_id = haven_common::types::new_id("toolrun");
+    let now = "2026-10-06T00:00:00Z";
+    db.save_tool_run(&terminal_id, None, "echo done", now)
+        .unwrap();
+    assert!(db.cancel_background_tool_run(&terminal_id, now).unwrap());
+    db.save_tool_run(&running_id, None, "echo running", now)
+        .unwrap();
+
+    assert_eq!(service.clear_terminal_history().await.unwrap(), 1);
+    assert!(db.get_tool_run(&terminal_id).unwrap().is_none());
+    assert!(db.get_tool_run(&running_id).unwrap().is_some());
+}
+
+#[tokio::test]
 async fn test_background_registration_rollback_removes_durable_row() {
     let dir = tempfile::TempDir::new().unwrap();
     let db = Arc::new(haven_memory::Database::open(&dir.path().join("test.db")).unwrap());

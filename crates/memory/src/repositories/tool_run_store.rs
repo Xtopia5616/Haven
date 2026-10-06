@@ -99,6 +99,14 @@ impl ToolRunStore {
             .await
     }
 
+    /// Atomically delete terminal history while retaining pending/running
+    /// work and undelivered completion results.
+    pub async fn clear_terminal_tool_runs(&self) -> anyhow::Result<Vec<String>> {
+        self.db
+            .run_blocking(|db| db.clear_terminal_tool_runs())
+            .await
+    }
+
     /// Move a malformed waiting scheduled row into terminal history.
     pub async fn quarantine_waiting_scheduled_tool_run(
         &self,

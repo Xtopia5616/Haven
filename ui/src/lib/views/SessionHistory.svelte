@@ -16,8 +16,6 @@
 		statusOptions?: Array<{ value: string; label: string }>;
 		startDate?: string;
 		endDate?: string;
-		selectMode?: boolean;
-		selectedIds?: Set<string>;
 		loading?: boolean;
 		hasMore?: boolean;
 		editingTitle?: string | null;
@@ -27,12 +25,6 @@
 		onClearFilters?: () => void;
 		onStatusFilterChange?: (value: string) => void;
 		onOpenDateFilter?: () => void;
-		onToggleSelectAll?: () => void;
-		onToggleSelect?: (sessionId: string) => void;
-		onEnterSelectMode?: () => void;
-		onCancelSelectMode?: () => void;
-		onExportSelected?: () => void;
-		onOpenClearDialog?: () => void;
 		onResume?: (session: SessionHistoryRow) => void;
 		onNewSession?: () => void;
 		onStartEdit?: (session: SessionHistoryRow) => void;
@@ -58,8 +50,6 @@
 		statusOptions = [],
 		startDate = '',
 		endDate = '',
-		selectMode = false,
-		selectedIds = new Set(),
 		loading = false,
 		hasMore = false,
 		editingTitle = null,
@@ -69,12 +59,6 @@
 		onClearFilters = () => {},
 		onStatusFilterChange = () => {},
 		onOpenDateFilter = () => {},
-		onToggleSelectAll = () => {},
-		onToggleSelect = () => {},
-		onEnterSelectMode = () => {},
-		onCancelSelectMode = () => {},
-		onExportSelected = () => {},
-		onOpenClearDialog = () => {},
 		onResume = () => {},
 		onNewSession = () => {},
 		onStartEdit = () => {},
@@ -109,10 +93,6 @@
 		}
 	}
 	function handleSessionOpen(session: SessionHistoryRow) {
-		if (selectMode) {
-			onToggleSelect(session.id);
-			return;
-		}
 		onResume(session);
 	}
 	function handleSessionContextMenu(event: MouseEvent, session: SessionHistoryRow) {
@@ -170,49 +150,6 @@
 		<CountChip count={totalCount} label="条历史" live />
 	</div>
 
-	{#if sessions.length > 0}
-		<div class="history-actions" aria-label="历史操作">
-			{#if selectMode}
-				<MaterialButton
-					variant="filled"
-					label={`导出选中（${selectedIds.size}）`}
-					onclick={() => onExportSelected()}
-					disabled={selectedIds.size === 0}
-				/>
-				<MaterialButton variant="text" label="取消" onclick={() => onCancelSelectMode()} />
-			{:else}
-				<MaterialButton
-					variant="outlined"
-					label="导出"
-					onclick={() => onEnterSelectMode()}
-				/>
-				<MaterialButton
-					variant="danger"
-					label="清空会话"
-					onclick={() => onOpenClearDialog()}
-				/>
-			{/if}
-		</div>
-	{/if}
-
-	{#if selectMode && sessions.length > 0}
-		<div class="select-bar md-toolbar">
-			<MaterialButton
-				variant="text"
-				className="select-all-row"
-				ariaPressed={selectedIds.size === sessions.length}
-				onclick={() => onToggleSelectAll()}
-			>
-				{#snippet children()}
-					<span
-						class="md-checkbox-static"
-						class:checked={selectedIds.size === sessions.length}
-					></span>
-					<span>全选（{sessions.length}）</span>
-				{/snippet}
-			</MaterialButton>
-		</div>
-	{/if}
 	{#if sessions.length === 0}
 		<AsyncState
 			state={loading ? 'loading' : 'empty'}
@@ -234,166 +171,104 @@
 					>
 						{#snippet children()}
 							{#each group.sessions as session (session.id)}
-								{#if selectMode}
-									<button
-										class="session-item session-item-btn workspace-item-card motion-list-item"
-										class:selected={selectedIds.has(session.id)}
-										aria-pressed={selectedIds.has(session.id)}
-										onclick={() => onToggleSelect(session.id)}
-									>
-										<div class="session-item-main workspace-item-card-main">
-											<div
-												class="session-title-row workspace-item-card-header"
+								<!-- svelte-ignore a11y_no_noninteractive_element_to_interactive_role -->
+								<article
+									class="session-item workspace-item-card motion-list-item"
+									aria-label={`打开并继续会话：${displayTitle(session)}`}
+									role="button"
+									tabindex="0"
+									onclick={() => handleSessionOpen(session)}
+									onkeydown={(event) => handleSessionKeydown(event, session)}
+									oncontextmenu={(event) =>
+										handleSessionContextMenu(event, session)}
+								>
+									<div class="session-item-main workspace-item-card-main">
+										<div class="workspace-item-card-header">
+											<span
+												class="workspace-item-card-kind"
+												data-tone={statusVariant(session.status)}
 											>
-												<div class="session-card-heading">
-													<div class="select-checkbox">
-														<div
-															class="md-checkbox-static"
-															class:checked={selectedIds.has(
-																session.id,
-															)}
-														></div>
-													</div>
-													<span
-														class="workspace-item-card-kind"
-														data-tone={statusVariant(session.status)}
-													>
-														<span
-															class="workspace-item-card-indicator"
-															data-tone={statusVariant(
-																session.status,
-															)}
-															aria-hidden="true"
-														></span>
-														会话
-													</span>
-												</div>
-												<MaterialBadge
-													variant={statusVariant(session.status)}
-													text={sessionStatusLabel(session.status)}
-												/>
-											</div>
-											<span class="workspace-item-card-title"
-												>{displayTitle(session)}</span
-											>
-											{#if session.input_text}<div
-													class="workspace-item-card-summary"
-												>
-													{session.input_text}
-												</div>{/if}
-											<div class="session-meta workspace-item-card-meta">
-												<span class="meta-date"
-													>{formatMessageTime(session.created_at)}</span
-												>
-											</div>
-											<div class="workspace-item-card-footer">
 												<span
-													class="workspace-item-card-open"
-													aria-hidden="true">选择</span
-												>
-											</div>
-										</div>
-									</button>
-								{:else}
-									<!-- svelte-ignore a11y_no_noninteractive_element_to_interactive_role -->
-									<article
-										class="session-item workspace-item-card motion-list-item"
-										aria-label={`打开并继续会话：${displayTitle(session)}`}
-										role="button"
-										tabindex="0"
-										onclick={() => handleSessionOpen(session)}
-										onkeydown={(event) => handleSessionKeydown(event, session)}
-										oncontextmenu={(event) =>
-											handleSessionContextMenu(event, session)}
-									>
-										<div class="session-item-main workspace-item-card-main">
-											<div class="workspace-item-card-header">
-												<span
-													class="workspace-item-card-kind"
+													class="workspace-item-card-indicator"
 													data-tone={statusVariant(session.status)}
-												>
-													<span
-														class="workspace-item-card-indicator"
-														data-tone={statusVariant(session.status)}
-														aria-hidden="true"
-													></span>
-													会话
-												</span>
-												<MaterialBadge
-													variant={statusVariant(session.status)}
-													text={sessionStatusLabel(session.status)}
-												/>
-											</div>
-											<div class="session-title-row">
-												{#if editingTitle === session.id}
-													<!-- svelte-ignore a11y_autofocus -->
-													<input
-														type="text"
-														class="md-input title-input"
-														value={renameValue}
-														oninput={(event) =>
-															onRenameValueChange(
-																event.currentTarget.value,
-															)}
-														onkeydown={(event) =>
-															onRenameKeydown(event, session.id)}
-														onclick={(event) => event.stopPropagation()}
-														onblur={() => onSaveTitle(session.id)}
-														autofocus
-														autocomplete="off"
-													/>
-												{:else}
-													<MaterialButton
-														variant="text"
-														className="session-title"
-														ariaLabel={`重命名${displayTitle(session)}`}
-														onclick={(event) => {
-															event.stopPropagation();
-															onStartEdit(session);
-														}}
-													>
-														{#snippet children()}
-															<span class="workspace-item-card-title"
-																>{displayTitle(session)}</span
-															><Icon
-																name="edit"
-																size={14}
-																className="title-edit-icon"
-															/>
-														{/snippet}
-													</MaterialButton>
-												{/if}
-											</div>
-											{#if session.input_text}<div
-													class="workspace-item-card-summary"
-												>
-													{session.input_text}
-												</div>{/if}
-											<div class="session-meta workspace-item-card-meta">
-												<span class="meta-date"
-													>{formatMessageTime(session.created_at)}</span
-												>
-											</div>
-											<div class="session-footer workspace-item-card-footer">
-												<span
-													class="session-open-hint workspace-item-card-open"
-													aria-hidden="true">打开</span
-												>
-											</div>
-										</div>
-										<div class="session-actions workspace-item-card-actions">
-											<MaterialButton
-												variant="text"
-												className="delete-btn-meta"
-												label="删除"
-												onclick={(event) => {
-													event.stopPropagation();
-													onDeleteRequest(session);
-												}}
+													aria-hidden="true"
+												></span>
+												会话
+											</span>
+											<MaterialBadge
+												variant={statusVariant(session.status)}
+												text={sessionStatusLabel(session.status)}
 											/>
 										</div>
-									</article>
-								{/if}
+										<div class="session-title-row">
+											{#if editingTitle === session.id}
+												<!-- svelte-ignore a11y_autofocus -->
+												<input
+													type="text"
+													class="md-input title-input"
+													value={renameValue}
+													oninput={(event) =>
+														onRenameValueChange(
+															event.currentTarget.value,
+														)}
+													onkeydown={(event) =>
+														onRenameKeydown(event, session.id)}
+													onclick={(event) => event.stopPropagation()}
+													onblur={() => onSaveTitle(session.id)}
+													autofocus
+													autocomplete="off"
+												/>
+											{:else}
+												<MaterialButton
+													variant="text"
+													className="session-title"
+													ariaLabel={`重命名${displayTitle(session)}`}
+													onclick={(event) => {
+														event.stopPropagation();
+														onStartEdit(session);
+													}}
+												>
+													{#snippet children()}
+														<span class="workspace-item-card-title"
+															>{displayTitle(session)}</span
+														><Icon
+															name="edit"
+															size={14}
+															className="title-edit-icon"
+														/>
+													{/snippet}
+												</MaterialButton>
+											{/if}
+										</div>
+										{#if session.input_text}<div
+												class="workspace-item-card-summary"
+											>
+												{session.input_text}
+											</div>{/if}
+										<div class="session-meta workspace-item-card-meta">
+											<span class="meta-date"
+												>{formatMessageTime(session.created_at)}</span
+											>
+										</div>
+										<div class="session-footer workspace-item-card-footer">
+											<span
+												class="session-open-hint workspace-item-card-open"
+												aria-hidden="true">打开</span
+											>
+										</div>
+									</div>
+									<div class="session-actions workspace-item-card-actions">
+										<MaterialButton
+											variant="text"
+											className="delete-btn-meta"
+											label="删除"
+											onclick={(event) => {
+												event.stopPropagation();
+												onDeleteRequest(session);
+											}}
+										/>
+									</div>
+								</article>
 							{/each}
 						{/snippet}
 					</HistoryListGroup>
@@ -423,13 +298,6 @@
 	.filter-bar {
 		margin-bottom: var(--md-sys-space-lg);
 	}
-	.history-actions {
-		display: flex;
-		justify-content: flex-end;
-		flex-wrap: wrap;
-		gap: var(--md-sys-space-sm);
-		margin-bottom: var(--md-sys-space-lg);
-	}
 	.filter-controls {
 		display: flex;
 		align-items: center;
@@ -449,29 +317,9 @@
 		display: inline-block;
 		flex-shrink: 0;
 	}
-	.select-bar {
-		margin-bottom: var(--md-sys-space-md);
-	}
-	:global(.md-btn.select-all-row) {
-		display: inline-flex;
-		align-items: center;
-		gap: var(--md-sys-space-sm);
-		height: auto;
-		min-width: 0;
-		padding: 0;
-		font-size: var(--md-sys-typescale-body-small-size);
-		line-height: var(--md-sys-typescale-body-small-line-height);
-		color: var(--md-sys-color-on-surface-variant);
-	}
 	.session-title-row {
 		display: flex;
 		align-items: stretch;
-		min-width: 0;
-	}
-	.session-card-heading {
-		display: flex;
-		align-items: center;
-		gap: var(--md-sys-space-sm);
 		min-width: 0;
 	}
 	:global(.md-btn.session-title) {
@@ -521,54 +369,12 @@
 		font-size: var(--md-sys-typescale-label-small-size);
 		line-height: var(--md-sys-typescale-label-small-line-height);
 	}
-	.session-item-btn {
-		width: 100%;
-		text-align: left;
-		font-family: inherit;
-		cursor: pointer;
-	}
-	.select-checkbox {
-		flex-shrink: 0;
-		display: flex;
-		align-items: center;
-	}
-	.md-checkbox-static {
-		width: 18px;
-		height: 18px;
-		border: 2px solid var(--md-sys-color-outline);
-		border-radius: var(--md-sys-shape-extra-small);
-		background: transparent;
-		position: relative;
-		flex-shrink: 0;
-	}
-	.md-checkbox-static.checked {
-		background: var(--md-sys-color-primary);
-		border-color: var(--md-sys-color-primary);
-	}
-	.md-checkbox-static.checked::after {
-		content: '';
-		position: absolute;
-		left: 50%;
-		top: 50%;
-		width: 5px;
-		height: 9px;
-		border: solid var(--md-sys-color-on-primary);
-		border-width: 0 2px 2px 0;
-		transform: translate(-50%, -60%) rotate(45deg);
-	}
 	.load-more-row {
 		display: flex;
 		justify-content: center;
 		padding: var(--md-sys-space-lg) 0;
 	}
 	@media (max-width: 700px) {
-		.history-actions {
-			justify-content: stretch;
-		}
-		.history-actions :global(.md-btn) {
-			flex: 1 1 0;
-			min-width: 0;
-		}
 	}
 	@container session-history (max-width: 700px) {
 		.filter-bar,

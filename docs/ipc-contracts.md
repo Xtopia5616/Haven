@@ -18,6 +18,7 @@
 | `cancel_tool_run` | mutate | kind 枚举校验 |
 | `list_tool_run_history` | read | 可选 `session_id` 过滤；limit ≤ 200 |
 | `delete_tool_run` | mutate | 按 id 删除单条任务 |
+| `clear_tool_run_history` | mutate | 清空已结束任务历史，保留运行中任务和未投递结果 |
 | `open_external` | execute | 仅 http(s) 或校验后的本地绝对路径 |
 | `get_history` | read | 只读会话投影 |
 | `count_history` | read | 只读聚合 |
@@ -43,6 +44,7 @@
 | `list_facts` | read | 只读事实投影 |
 | `add_fact` | mutate | 拒绝凭据样式内容 |
 | `delete_fact` | mutate | 按 fact id 删除 |
+| `clear_facts` | mutate | 清空长期事实并失效派生缓存 |
 | `get_api_key_status` | read | 只返回 presence，不返回凭据 |
 | `check_llm_connection` | read | 返回状态与非敏感原因分类，不返回 endpoint 或 provider 响应 |
 | `discover_models` | execute | 仅 HTTP(S) endpoint；显式输入 key 使用 provider preset 的鉴权方案；已保存 key 仅发送到名称与地址均匹配的 provider；keyless 预设可显式跳过鉴权；代理沿用对应 Provider 设置 |

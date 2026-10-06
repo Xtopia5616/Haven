@@ -84,7 +84,7 @@ Admin 操作最终由 `TypedToolAdapter` 或 `AdminSurfaces.execute` 序列化�
 | `mcp_reload` | `McpReloadOutput`；每行是 `McpReloadConnectionOutput` 的 untagged success/error 分支。 | 每台 server 独立失败，错误经 sanitizer；既有成功行无 error 字段，失败行才有。 | **typed DTO enum**，保留 partial failure 和字段省略。 |
 | `mcp_refresh` | `McpRefreshOutput` / `{added,removed,updated,failed}`，每项是 server name 字符串。 | tool JSON 后供 App command 构造 `McpRefreshResult`；确认完成时 `commands/mod.rs` 从 output 读取 failed 并与已授权 plan 交叉过滤。Tools/Admin 负责输出；App 负责 Tauri DTO 与 authorized-name filter。 | **typed service result → tool JSON boundary**；保留 App 当前 plan filter 回归。 |
 
-## Tauri 命令成功响应（79 个）
+## Tauri 命令成功响应（81 个）
 
 命令成功类型由 Tauri IPC 序列化；失败为 `Result<T,String>` 的 error 字符串并拒绝前端 invoke。下面按 Rust handler 返回的 `T` 分组，命令名来自 Rust 与 TS command registry。
 
@@ -99,7 +99,7 @@ Admin 操作最终由 `TypedToolAdapter` 或 `AdminSurfaces.execute` 序列化�
 | `String` | `export_history`, `stop_recording`, `get_bootstrap_status`, `open_skills_dir`, `stage_provider_credential`, `stage_ocr_credential` | 混合语义：导出/转写/路径是文本 payload；bootstrap 只有 Loading/Ready 两态但目前作为 String 暴露，列为轻量 typed enum 审查；凭据命令仅返回安全凭据存储引用。 |
 | `LogInfo`, `LogTail`, `MetricsSnapshot` | `get_log_info`, `read_log_tail`, `get_performance_metrics` | 命名响应类型；日志路径/文本是自由数据，Metrics 为受限 counters；App owns Tauri serialization。 |
 | `Vec<McpServerSnapshot>`, `McpRefreshResult`, `McpToolCallResponse` | `list_mcp_tools`, `refresh_mcp_servers`, `mcp_tool_call` | 外层 MCP snapshots/result DTO typed；`input_schema` 和 tool output 可保留远端动态 JSON；Mcp crate owns protocol fields，App owns renderer-safe projection。 |
-| `u64` | `run_memory_maintenance`, `clear_history` | 固定计数；Agent/Memory owns maintenance/deletion，App owns command mapping。 |
+| `u64` | `run_memory_maintenance`, `clear_history`, `clear_tool_run_history`, `clear_facts` | 固定计数；Agent/Memory/ToolRunService owns maintenance/deletion，App owns command mapping。 |
 | `usize` | `reset_session_permissions` | 已清除的会话 grant 数量；SessionStore owns durable delete，AuthorizationEngine live map 随后清空。 |
 | `Vec<MemoryRecallItem>`, `Vec<MemoryFactResponse>`, `MemoryFactResponse` | `recall_memory`, `list_facts`, `add_fact` | App-owned named response DTOs are generated from Rust Serde declarations. `list_facts` / `add_fact` map from repository `Fact`; App owns the renderer field allowlist and Memory owns repository/read/write semantics (ADR 0529). |
 | `ApiKeyStatus`, `LlmConnectionReport`, `Vec<ModelInfo>`, `BTreeMap<String, Vec<ModelInfo>>` | `get_api_key_status`, `check_llm_connection`, `discover_models`, `discover_all_models` | Outer DTOs typed; provider names form a dynamic map key set derived from configuration; LLM owns provider lookup, App owns command contract. |
@@ -109,7 +109,7 @@ Admin 操作最终由 `TypedToolAdapter` 或 `AdminSurfaces.execute` 序列化�
 | `Settings`, `Vec<StoredPermission>`, `Vec<SessionPermissionGrant>`, `ShellAvailability` | `get_settings`, `list_permissions`, `list_session_permissions`, `check_shell_available` | Named result types; Settings carries broad/open configuration shape but credentials are masked; session grants identify owner, target, and effect. App/Common own config projection and persistence. |
 | `Vec<SkillInfo>`, `SkillExecutionResponse`, `ToolListResponse` | `list_skills`, `execute_skill`, `get_tools` | `SkillInfo` 是 Skills 定义的 typed bridge/UI snapshot；执行 envelope 与 catalog 外层具名，skill/tool execution 和 schemas 仍可含动态扩展字段。Skills/Tools 拥有各自输出语义，App 注册并序列化 IPC。 |
 
-`commands/contracts.rs` and `ui/src/lib/contracts/commands.ts` inventory request/response names, while `check-ipc-contracts.ps1` checks registry/handler/docs names and count and selected field/type groups. It does not generically compare all 79 Rust handler return signatures against response labels. The generated `TauriCommandMap` types request/response values at the frontend invoke boundary. Events are a separate 35-channel output path: Rust DTO registration plus App `event_bridge` mapping and TS event mappers are the owners. Session lifecycle changes use one tagged event. The mapped event DTOs are the wire contract; `AgentEvent` alone is not. Shared enum vocabulary referenced by command and event DTOs is generated from the Rust enum, including runtime value tuples used by event validation.
+`commands/contracts.rs` and `ui/src/lib/contracts/commands.ts` inventory request/response names, while `check-ipc-contracts.ps1` checks registry/handler/docs names and count and selected field/type groups. It does not generically compare all 81 Rust handler return signatures against response labels. The generated `TauriCommandMap` types request/response values at the frontend invoke boundary. Events are a separate 35-channel output path: Rust DTO registration plus App `event_bridge` mapping and TS event mappers are the owners. Session lifecycle changes use one tagged event. The mapped event DTOs are the wire contract; `AgentEvent` alone is not. Shared enum vocabulary referenced by command and event DTOs is generated from the Rust enum, including runtime value tuples used by event validation.
 
 ## Tauri 事件输出（35 个 channel）
 
@@ -166,6 +166,6 @@ Admin 操作最终由 `TypedToolAdapter` 或 `AdminSurfaces.execute` 序列化�
 
 ## 审计边界
 
-本清单按 crate 根导出、实际生产调用点和已注册 IPC 输出审计；先核实生产消费者，再分类返回值、别名、tuple/map/string/scalar/`Value`，没有把 `rg` 命中当作生产调用证据。已确认的生产输出均有稳定性、消费者、Serde/JSON 位置及 owner。无 crate 外生产消费者的公开 helper、crate-private 实现、测试接口和本地缓存/watch tuple 不作为生产输出；不得据此声称逐字穷举 workspace 所有 Rust `pub fn`。Tauri 79 个命令按静态成功签名分类，contract checker 做全量命令名/计数和部分字段校验；未重放全部运行时分支。LLM provider 内部具体字段仍由 provider adapter 持有，opaque payload 已明确归为 dynamic JSON。
+本清单按 crate 根导出、实际生产调用点和已注册 IPC 输出审计；先核实生产消费者，再分类返回值、别名、tuple/map/string/scalar/`Value`，没有把 `rg` 命中当作生产调用证据。已确认的生产输出均有稳定性、消费者、Serde/JSON 位置及 owner。无 crate 外生产消费者的公开 helper、crate-private 实现、测试接口和本地缓存/watch tuple 不作为生产输出；不得据此声称逐字穷举 workspace 所有 Rust `pub fn`。Tauri 81 个命令按静态成功签名分类，contract checker 做全量命令名/计数和部分字段校验；未重放全部运行时分支。LLM provider 内部具体字段仍由 provider adapter 持有，opaque payload 已明确归为 dynamic JSON。
 
 验收目标是每个有生产消费者的输出都有上述记录，且动态 JSON 明确其生产者、消费方和序列化 owner；不是消灭 `Value`，也不要求把无生产消费的辅助方法收入输出清单。上列 **further review** 项已分类并具名 owner，可作为后续工作独立推进。

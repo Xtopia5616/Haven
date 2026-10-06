@@ -16,7 +16,6 @@ export type HistoryPageRequest = TauriCommandRequest<'get_history'>;
 export type HistorySearchRequest = TauriCommandRequest<'search_history'>;
 export type HistorySearchPageRequest = TauriCommandRequest<'search_history_paginated'>;
 export type HistoryFilterRequest = TauriCommandRequest<'search_history_filtered'>;
-export type HistoryExportRequest = TauriCommandRequest<'export_history'>;
 export type SwitchModelRequest = TauriCommandRequest<'switch_model'>;
 export type SetReasoningEffortRequest = TauriCommandRequest<'set_reasoning_effort'>;
 export type SetWebSearchRequest = TauriCommandRequest<'set_web_search'>;
@@ -44,6 +43,7 @@ export const TAURI_COMMAND_CONTRACTS = {
 	cancel_tool_run: { boundary: 'mutate', security: 'kind is enum; cancel only the selected task kind' },
 	list_tool_run_history: { boundary: 'read', security: 'optional session filter; limit capped at 200; internal tool args excluded' },
 	delete_tool_run: { boundary: 'mutate', security: 'delete one persisted task row by id' },
+	clear_tool_run_history: { boundary: 'mutate', security: 'delete terminal task history; preserve live work and undelivered results' },
 	open_external: { boundary: 'execute', security: 'http(s) or validated absolute local path only' },
 	get_history: { boundary: 'read', security: 'read-only session projection' },
 	count_history: { boundary: 'read', security: 'read-only aggregate' },
@@ -69,6 +69,7 @@ export const TAURI_COMMAND_CONTRACTS = {
 	list_facts: { boundary: 'read', security: 'read-only fact projection' },
 	add_fact: { boundary: 'mutate', security: 'credential-like predicates and values rejected' },
 	delete_fact: { boundary: 'mutate', security: 'delete one fact by id' },
+	clear_facts: { boundary: 'mutate', security: 'delete all saved long-term facts and invalidate derived caches' },
 	get_api_key_status: { boundary: 'read', security: 'boolean presence only; credentials excluded' },
 	check_llm_connection: { boundary: 'read', security: 'status and non-sensitive reason only; no endpoint or provider payload' },
 	discover_models: { boundary: 'execute', security: 'http(s) endpoint; typed auth scheme for an explicitly entered key; stored keys require a matching configured endpoint; uses configured provider proxy' },

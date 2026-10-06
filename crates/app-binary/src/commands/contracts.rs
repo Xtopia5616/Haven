@@ -7,7 +7,7 @@
 
 /// Version of the public Tauri command directory.
 pub const IPC_CONTRACT_VERSION: u16 = 1;
-pub const EXPECTED_COMMAND_COUNT: usize = 79;
+pub const EXPECTED_COMMAND_COUNT: usize = 81;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CommandBoundary {
@@ -53,6 +53,11 @@ pub const COMMAND_CONTRACTS: &[CommandContract] = &[
         name: "delete_tool_run",
         boundary: CommandBoundary::Mutate,
         security: "delete one persisted task row by id",
+    },
+    CommandContract {
+        name: "clear_tool_run_history",
+        boundary: CommandBoundary::Mutate,
+        security: "delete terminal task history; preserve live work and undelivered results",
     },
     // external
     CommandContract {
@@ -184,6 +189,11 @@ pub const COMMAND_CONTRACTS: &[CommandContract] = &[
         name: "delete_fact",
         boundary: CommandBoundary::Mutate,
         security: "delete one fact by id",
+    },
+    CommandContract {
+        name: "clear_facts",
+        boundary: CommandBoundary::Mutate,
+        security: "delete all saved long-term facts and invalidate derived caches",
     },
     // model
     CommandContract {
