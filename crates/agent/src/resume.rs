@@ -108,7 +108,7 @@ impl AgentEventEmitter for SuppressLifecycleCancelledSessionErrorEmitter {
     }
 }
 
-/// A recent conversation message (role, content) used by the fresh-session
+/// A recent conversation message (id, role, content) used by the fresh-session
 /// system-prompt path. **S1 authority:** canonical is the LLM truth; this
 /// window may feed Additional context only for turns not already represented
 /// as the first canonical user message. Resume does not use this type: the
@@ -116,6 +116,7 @@ impl AgentEventEmitter for SuppressLifecycleCancelledSessionErrorEmitter {
 /// durable message identity, not by content comparison.
 #[derive(Debug, Clone)]
 pub(crate) struct ConversationMessage {
+    id: String,
     role: String,
     content: String,
 }
@@ -205,6 +206,7 @@ impl AgentLayer {
                 messages
                     .into_iter()
                     .map(|message| ConversationMessage {
+                        id: message.id,
                         role: message.role,
                         content: message.content,
                     })
@@ -610,19 +612,16 @@ impl AgentLayer {
             context,
             initial.attachments.len()
         );
-        // S1: do not restate the *first* user turn (already canonical[1])
-        // inside system Additional context. Later turns that happen to equal
-        // `context` (user repeating the same text) must stay in the fresh-run
-        // context.
-        let mut skipped_first_user = false;
+        // S1: do not restate the initial user turn inside system Additional
+        // context. Use its durable identity; if it is unavailable, keep the
+        // history row rather than guessing from equal text.
         let history_lines: Vec<String> = conversation_history
             .iter()
             .filter(|m| {
-                if !skipped_first_user && m.role == "user" && m.content == context {
-                    skipped_first_user = true;
-                    return false;
-                }
-                true
+                !(m.role == "user"
+                    && initial
+                        .message_id
+                        .is_some_and(|message_id| m.id.as_str() == message_id))
             })
             .map(|m| format!("[{}] {}", m.role, m.content))
             .collect();

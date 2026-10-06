@@ -43,6 +43,7 @@ export interface ChatControllerDependencies {
 		images: ChatImageAttachment[] | null | undefined;
 		files: ChatFileAttachment[] | null | undefined;
 		reducer: SessionReducer;
+		submissionToken?: string;
 	}) => Promise<ProcessResult>;
 	reducer: SessionReducer;
 	dispatch: (action: SessionAction) => void;
@@ -223,8 +224,11 @@ export class ChatController {
 				void this.submitMessage(strategy.text, []);
 			} else {
 				const syncedMessages = this.dependencies.reducer.getMessages(sessionId);
-				if (shouldResubmitOriginalUser(syncedMessages, strategy.text)) {
-					void this.submitMessage(strategy.text, []);
+				if (shouldResubmitOriginalUser(syncedMessages, strategy.messageId)) {
+					const submissionToken = strategy.messageId
+						? `continue:${strategy.messageId}`
+						: undefined;
+					void this.submitMessage(strategy.text, [], undefined, submissionToken);
 				}
 			}
 			await this.dependencies.loadSessions();
@@ -242,12 +246,14 @@ export class ChatController {
 		text: string,
 		images?: ChatImageAttachment[] | null,
 		files?: ChatFileAttachment[] | null,
+		submissionToken?: string,
 	): Promise<void> {
 		try {
 			const result = await this.dependencies.submitTranscript(text, {
 				images,
 				files,
 				reducer: this.dependencies.reducer,
+				submissionToken,
 			});
 			const createdSessionId = processResultSessionId(result);
 			if (createdSessionId) {

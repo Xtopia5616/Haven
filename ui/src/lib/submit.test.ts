@@ -300,7 +300,7 @@ describe('submitTranscript', () => {
 		expect(/** @type {any[]} */ invokeMock.mock.calls[0][1].activeSessionId).toBe('session-a');
 	});
 
-	it('joins an in-flight submission instead of stacking duplicates', async () => {
+	it('joins an in-flight submission only when callers share its request token', async () => {
 		let resolveInvoke: (v: unknown) => void;
 		invokeMock.mockReturnValue(
 			new Promise((resolve) => {
@@ -309,8 +309,14 @@ describe('submitTranscript', () => {
 		);
 		select('session-a');
 
-		const first = submitTranscript('继续', { voice: false });
-		const second = submitTranscript('继续', { voice: false });
+		const first = submitTranscript('继续', {
+			voice: false,
+			submissionToken: 'continue:msg-1',
+		});
+		const second = submitTranscript('继续', {
+			voice: false,
+			submissionToken: 'continue:msg-1',
+		});
 		// Both callers share ONE in-flight promise: the invoke is called once.
 		expect(invokeMock).toHaveBeenCalledTimes(1);
 
@@ -394,7 +400,7 @@ describe('submitTranscript', () => {
 		newSessionIntentStore.set(false);
 	});
 
-	it('queues a DIFFERENT concurrent submission instead of dropping it', async () => {
+	it('queues a same-content submission without a shared request token', async () => {
 		let resolveFirst!: (v: unknown) => void;
 		invokeMock
 			.mockReturnValueOnce(
@@ -405,8 +411,8 @@ describe('submitTranscript', () => {
 			.mockResolvedValueOnce({});
 		select('session-a');
 
-		const first = submitTranscript('第一条', { voice: false });
-		const second = submitTranscript('第二条', { voice: false });
+		const first = submitTranscript('相同内容', { voice: false });
+		const second = submitTranscript('相同内容', { voice: false });
 		// Only the first dispatched so far; the second is queued, not dropped.
 		expect(invokeMock).toHaveBeenCalledTimes(1);
 
@@ -416,7 +422,7 @@ describe('submitTranscript', () => {
 		expect(invokeMock).toHaveBeenCalledTimes(2);
 		expect(results[1]).toEqual({});
 		const list = messagesFor('session-a');
-		expect(list.map((x) => x.content)).toEqual(['第一条', '第二条']);
+		expect(list.map((x) => x.content)).toEqual(['相同内容', '相同内容']);
 	});
 
 	it('does not let a newly created session overtake queued draft sends', async () => {

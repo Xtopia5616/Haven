@@ -38,11 +38,10 @@ function isMidTurnSubmit(sessionId: string, reducer: SessionReducer): boolean {
 }
 
 /**
- * Per-session submission coordinator. The backend no longer deduplicates
- * repeated user inputs by content (the canonical is an append-only
- * transcript), so rapid duplicate submissions — double-clicking "继续",
- * quick-reply spam — must be prevented here: an identical duplicate joins
- * the in-flight submission instead of stacking a second user message.
+ * Per-session submission coordinator. The backend treats each accepted user
+ * input as a transcript entry, so only invocations carrying the same explicit
+ * submission token join an in-flight request. Untagged inputs, including
+ * repeated text, queue independently and are delivered in order.
  *
  * A DIFFERENT submission for the same session that arrives while one is in
  * flight (a voice transcript racing a typed send, two distinct quick
@@ -53,12 +52,8 @@ function isMidTurnSubmit(sessionId: string, reducer: SessionReducer): boolean {
  * enqueue time so a mid-flight session switch cannot retarget it.
  */
 interface InflightSubmission {
-	text: string;
-	voice: boolean;
-	recordingSessionId?: string;
-	hasAttachments: boolean;
-	pinnedSessionId: string | null;
-	freshStartAtEnqueue: boolean;
+	/** Explicit identity for another invocation of this same logical request. */
+	submissionToken?: string;
 	promise: Promise<ProcessResult>;
 }
 
@@ -144,12 +139,7 @@ function startSubmission(lane: SubmissionLane, payload: SubmitPayload) {
 			maybeReleaseLane(lane);
 		});
 	lane.inflight = {
-		text: payload.text,
-		voice: !!payload.voice,
-		recordingSessionId: payload.recordingSessionId,
-		hasAttachments: hasAttachmentsOf(payload),
-		pinnedSessionId: payload.pinnedSessionId,
-		freshStartAtEnqueue: payload.freshStartAtEnqueue,
+		submissionToken: payload.submissionToken,
 		promise,
 	};
 	return promise;
@@ -218,13 +208,22 @@ interface SubmitOptions {
 	files?: Array<{ media_type: string; data: string; filename: string }> | null;
 	voice?: boolean;
 	recordingSessionId?: string;
+	/** Reuse only when multiple invocations represent the same user intent. */
+	submissionToken?: string;
 	/** The application-wide session reducer. */
 	reducer: SessionReducer;
 }
 
 export async function submitTranscript(
 	text: string,
-	{ images = null, files = null, voice = false, recordingSessionId, reducer }: SubmitOptions,
+	{
+		images = null,
+		files = null,
+		voice = false,
+		recordingSessionId,
+		submissionToken,
+		reducer,
+	}: SubmitOptions,
 ): Promise<ProcessResult> {
 	const payload: SubmitPayload = {
 		text,
@@ -234,22 +233,18 @@ export async function submitTranscript(
 		recordingSessionId,
 		pinnedSessionId: reducer.getState().activeSessionId,
 		freshStartAtEnqueue: get(newSessionIntentStore),
+		submissionToken:
+			submissionToken ??
+			(voice && recordingSessionId ? `recording:${recordingSessionId}` : undefined),
 		reducer,
 	};
 	const lane = laneFor(payload);
 	if (lane.inflight) {
-		// Identical duplicate (double-click 继续 / quick-reply spam): join the
-		// in-flight submission so a second user message never stacks. Session
-		// lane + fresh-start must match — the same text in another session is
-		// independent and may run concurrently.
+		// Content is not a request identity: only an explicit token can join an
+		// invocation to the same in-flight intent. Untagged submissions queue.
 		const duplicate =
-			lane.inflight.text === text &&
-			lane.inflight.voice === !!voice &&
-			lane.inflight.recordingSessionId === payload.recordingSessionId &&
-			!lane.inflight.hasAttachments &&
-			!hasAttachmentsOf(payload) &&
-			lane.inflight.pinnedSessionId === payload.pinnedSessionId &&
-			lane.inflight.freshStartAtEnqueue === payload.freshStartAtEnqueue;
+			payload.submissionToken != null &&
+			lane.inflight.submissionToken === payload.submissionToken;
 		if (duplicate) return lane.inflight.promise;
 		// A different submission for this session: queue it instead of dropping
 		// it — the

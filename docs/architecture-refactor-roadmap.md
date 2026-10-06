@@ -1,6 +1,6 @@
 # Haven 架构降复杂度重构路线图
 
-> 状态：阶段 0–8 已完成；SessionUsage 累计上限契约、session-scoped KV 孤儿清理 owner、summary marker 单一原子生产路径、Tools 测试归属、Input→Tools 测试反向依赖、MCP/Skill 直调授权策略来源、MCP 管理操作网络策略来源、X12 例外消息写入口、ADR 编号索引完整性、actorless session ToolRun lifecycle 清理（ADR 0507）、Ask reducer state ownership 收口（ADR 0508）、终态 Ask 清理事件归属（ADR 0509）、ReAct phase 来源 session 身份（ADR 0510）、Windows 子进程先入 Job 再恢复（ADR 0513）、显式 end 失败重试契约（ADR 0514）、Skill venv 子进程 containment（ADR 0515）、MCP prompt index 类型化（ADR 0516）、Memory fact marker generation-safe ack 与有界 durable outbox/session recovery（ADR 0107/0259）、App-owned Shell/hotkey/VAD stop 后处理调度收口（ADR 0517）、MemoryWorker durable outbox lifecycle 私有 owner（ADR 0518）、Session grant/resolve append failure retry 契约测试（ADR 0519）、SessionActor interaction replay fail-closed（ADR 0520）、Session confirmation 决议与恢复唤醒原子提交（ADR 0521）、Pending Session 恢复失败后的退避重试（ADR 0522）、Router/media 共享构造（ADR 0525）、Admin 共用风险等级单一来源（ADR 0528）、单一 `session:lifecycle` 契约与 Memory Fact response DTO（ADR 0529）、类型化 ToolRun lifecycle events（ADR 0530）已完成；当前没有 Active/Next；Windows 发布验收为独立开放签核门
+> 状态：阶段 0–8 已完成；SessionUsage 累计上限契约、session-scoped KV 孤儿清理 owner、summary marker 单一原子生产路径、Tools 测试归属、Input→Tools 测试反向依赖、MCP/Skill 直调授权策略来源、MCP 管理操作网络策略来源、X12 例外消息写入口、ADR 编号索引完整性、actorless session ToolRun lifecycle 清理（ADR 0507）、Ask reducer state ownership 收口（ADR 0508）、终态 Ask 清理事件归属（ADR 0509）、ReAct phase 来源 session 身份（ADR 0510）、Windows 子进程先入 Job 再恢复（ADR 0513）、显式 end 失败重试契约（ADR 0514）、Skill venv 子进程 containment（ADR 0515）、MCP prompt index 类型化（ADR 0516）、Memory fact marker generation-safe ack 与有界 durable outbox/session recovery（ADR 0107/0259）、App-owned Shell/hotkey/VAD stop 后处理调度收口（ADR 0517）、MemoryWorker durable outbox lifecycle 私有 owner（ADR 0518）、Session grant/resolve append failure retry 契约测试（ADR 0519）、SessionActor interaction replay fail-closed（ADR 0520）、Session confirmation 决议与恢复唤醒原子提交（ADR 0521）、Pending Session 恢复失败后的退避重试（ADR 0522）、Router/media 共享构造（ADR 0525）、Admin 共用风险等级单一来源（ADR 0528）、单一 `session:lifecycle` 契约与 Memory Fact response DTO（ADR 0529）、类型化 ToolRun lifecycle events（ADR 0530）已完成；当前 Active 为全项目领域术语与架构角色命名收敛（§5.7），暂无 Next；Windows 发布验收为独立开放签核门
 > 更新日期：2026-10-06
 > 范围：Agent/Session、Memory、Tools、LLM、App IPC 与 UI
 
@@ -74,7 +74,7 @@
 
 | 状态 | 当前项 |
 |---|---|
-| **Active / Next** | 暂无。ADR 0522、0525、0529、0530 已完成并通过适用门禁；本轮步骤 0 复核没有证据足以将其他已 Deferred 候选推进为 Next，按 §5.5 等待新的触发信号。 |
+| **Active / Next** | **Active：全项目领域术语与架构角色命名收敛**，见 §5.7。本轮已开始全仓盘点 Rust、Svelte/TypeScript、IPC 与架构文档；先建立统一词表，再基于 owner/生命周期/不变量证据逐域决定保留、改名或合并。暂无后续 Next。 |
 | **Gate** | Windows 发布验收 Open，见 §5.1。 |
 
 ### 5.1 Windows 发布验收（Gate / Open）
@@ -167,7 +167,17 @@
 
 以上是循环复核的先后顺序，不是一次性瀑布项目：每轮从步骤 0 重新分流，完成一个切片、同类回归出现、依赖/API 边界变化或准备发布时再审查证据。ADR 0514–0522、ADR 0524–0525、ADR 0528 与 Memory fact marker generation-safe ack/有界 outbox（ADR 0107/0259）已完成；ReAct Fatal 双终态 owner 已在步骤 2 收口（ADR 0511）；Admin 风险等级 parity 门禁由 ADR 0512 完成，单一风险来源由 ADR 0528 完成。ADR 0520–0522 分别收紧 interaction replay fail-closed、confirmation event/status 原子提交和 pending-session recovery lifecycle；ADR 0524 统一一次性 ToolCall 与持久 ToolRun 的跨层命名；ADR 0525 统一 Router/media client 构造实现并保留 caller 错误策略。完成 ADR 0522 后，步骤 0 重新复核，`session_events.rs`、ToolRunService、crate/API 与性能候选仍未达到准入条件，当前无 Active/Next；准备发布时仍单独关闭 Windows Gate（§5.1）。
 
-**当前执行位置：** 架构阶段 0–8 已完成；ADR 0514–0522、0524–0525、0528 与 Memory fact marker generation-safe ack、有界 outbox/session recovery（ADR 0107/0259）均已完成；当前无 Active/Next，按 §5.5 的触发信号进入下一轮复核，不按 crate 体量制造拆分任务。`session_events` 大文件候选与 ToolRunService lifecycle 均因近期没有收口后同类回归/独立消费者收益而 Deferred；三层 ToolRegistry scope 保留独立的准入、排序和版本语义，不做通用容器拆分；依赖边界为 11 个内部 crate、30 条单向边，无需更改方向。ReAct Fatal 双终态发布 owner 已由 ADR 0511 收口；Admin 20 个共用操作的 parity 门禁由 ADR 0512 收口，风险等级由 ADR 0528 统一到 `OperationContract`，两项 native-only 操作仍单独测试。Windows 发布验收仍是独立 Open Gate。
+**当前执行位置：** 架构阶段 0–8 已完成；ADR 0514–0522、0524–0525、0528 与 Memory fact marker generation-safe ack、有界 outbox/session recovery（ADR 0107/0259）均已完成。当前 Active 是 §5.7 的全项目术语/架构角色命名审计；其它结构候选仍按 §5.5 的触发信号分流，不按 crate 体量制造拆分任务。`session_events` 大文件候选与 ToolRunService lifecycle 均因近期没有收口后同类回归/独立消费者收益而 Deferred；三层 ToolRegistry scope 保留独立的准入、排序和版本语义，不做通用容器拆分；依赖边界为 11 个内部 crate、30 条单向边，无需更改方向。ReAct Fatal 双终态发布 owner 已由 ADR 0511 收口；Admin 20 个共用操作的 parity 门禁由 ADR 0512 收口，风险等级由 ADR 0528 统一到 `OperationContract`，两项 native-only 操作仍单独测试。Windows 发布验收仍是独立 Open Gate。
+
+### 5.7 全项目领域术语与架构角色命名收敛（Active）
+
+范围覆盖所有 Rust crate、Svelte/TypeScript、Tauri IPC/事件，以及对应架构/命名/ADR 文档；不是只整理 Tools 命名，也不以批量替换后缀为目标。
+
+当前第一切片是建立全仓词汇基线：为领域实体、跨层契约、架构角色后缀和常见函数动词定义单一含义，并盘点同义多名、同名异义、真实职责重叠和仅共享外观的类型。`docs/naming.md` 已新增首版架构角色词汇与动作动词约定；它们用于本轮审计和迁移，存量命名是否符合仍须逐域核对。
+
+每个候选必须记录源文件、真实消费者、状态 owner、生命周期/作用域、失败与恢复语义，以及是否触及 IPC/持久化/安全契约，并归类为：**保留并解释、改名、合并、拆分或暂缓**。只有职责、权威来源与生命周期确实重复的部分才合并；不同状态作用域即使共享数据类型或方法外形也可保留独立 owner。公共 Rust API、IPC、事件、数据库字段与用户可见术语分别遵守既有版本化/兼容与重置要求。
+
+实施按领域切片：先完成符号/术语清单与依赖/消费映射，再确认候选，逐条迁移并更新调用点、测试、命名规范和架构文档；跨 crate、跨端或改变契约时按开发标准补 ADR 并运行相应门禁。每个切片完成后更新本节状态；全仓通过条件是：主要生产概念均有唯一规范词和可定位 owner，确认的重复职责完成合并或有明确暂缓理由，所有保留的相邻边界均能从命名与文档解释其不同之处。
 
 ## 6. 更新规则
 

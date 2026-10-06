@@ -8,7 +8,8 @@
  */
 
 export type ContinueStrategy =
-	{ mode: 'resend_user'; text: string } | { mode: 'continue'; text: '继续' };
+	| { mode: 'resend_user'; text: string; messageId?: string }
+	| { mode: 'continue'; text: '继续' };
 
 /** Message shape used by continue heuristics (extra fields allowed). */
 export type ContinueMessage = {
@@ -61,9 +62,10 @@ export function pickContinueStrategy(messages: ContinueMessage[]): ContinueStrat
 	}
 
 	if (lastUserIdx >= 0) {
-		const text = (messages[lastUserIdx].content || '').trim();
+		const lastUser = messages[lastUserIdx];
+		const text = (lastUser.content || '').trim();
 		if (text) {
-			return { mode: 'resend_user', text };
+			return { mode: 'resend_user', text, messageId: lastUser.id };
 		}
 	}
 
@@ -71,34 +73,17 @@ export function pickContinueStrategy(messages: ContinueMessage[]): ContinueStrat
 }
 
 /**
- * After `continue_session` + DB resync: if the original user turn is still the
- * trailing content (persisted), Pending resume alone retries it — resubmitting
- * would duplicate. If it is gone (send never landed / ghost cleanup), resubmit.
+ * After `continue_session` + DB resync, use the original durable message id to
+ * tell whether Pending resume can retry the turn. Content is not identity.
  */
 export function shouldResubmitOriginalUser(
 	syncedMessages: ContinueMessage[],
-	originalText: string,
+	originalMessageId?: string,
 ): boolean {
-	const want = originalText.trim();
-	if (!want) return false;
-
-	let lastUserIdx = -1;
-	for (let i = syncedMessages.length - 1; i >= 0; i--) {
-		if (syncedMessages[i].role === 'user') {
-			lastUserIdx = i;
-			break;
-		}
-	}
-	if (lastUserIdx < 0) return true;
-
-	const lastUser = syncedMessages[lastUserIdx];
-	if ((lastUser.content || '').trim() !== want) return true;
-
-	const after = syncedMessages.slice(lastUserIdx + 1);
-	if (after.some(isGenerationMessage)) return true;
-
-	// Persisted rows use msg-*; optimistic-only bubbles keep a temp id and
-	// must be resent so the backend actually receives the turn.
-	const id = lastUser.id || '';
-	return !/^msg-/.test(id);
+	// Optimistic ids are local to the previous UI send and cannot prove durable
+	// acceptance. Resubmit when there is no durable id or the exact id vanished.
+	if (!originalMessageId?.startsWith('msg-')) return true;
+	return !syncedMessages.some(
+		(message) => message.role === 'user' && message.id === originalMessageId,
+	);
 }

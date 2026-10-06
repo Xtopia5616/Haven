@@ -30,7 +30,11 @@ describe('pickContinueStrategy', () => {
 		const strategy = pickContinueStrategy([
 			{ role: 'user', content: '帮我打开计算器', id: 'msg-1' },
 		]);
-		expect(strategy).toEqual({ mode: 'resend_user', text: '帮我打开计算器' });
+		expect(strategy).toEqual({
+			mode: 'resend_user',
+			text: '帮我打开计算器',
+			messageId: 'msg-1',
+		});
 	});
 
 	it('ignores trailing supplement badges when deciding resend', () => {
@@ -38,7 +42,11 @@ describe('pickContinueStrategy', () => {
 			{ role: 'user', content: '改一下标题', id: 'msg-1' },
 			{ role: 'assistant', type: 'supplement', content: '改一下标题' },
 		]);
-		expect(strategy).toEqual({ mode: 'resend_user', text: '改一下标题' });
+		expect(strategy).toEqual({
+			mode: 'resend_user',
+			text: '改一下标题',
+			messageId: 'msg-1',
+		});
 	});
 
 	it('sends 继续 when the LLM was interrupted mid-generation', () => {
@@ -72,17 +80,17 @@ describe('shouldResubmitOriginalUser', () => {
 		expect(
 			shouldResubmitOriginalUser(
 				[{ role: 'user', content: '帮我打开计算器', id: 'msg-abc' }],
-				'帮我打开计算器',
+				'msg-abc',
 			),
 		).toBe(false);
 	});
 
 	it('resubmits when the original turn is missing after resync', () => {
-		expect(shouldResubmitOriginalUser([], '帮我打开计算器')).toBe(true);
+		expect(shouldResubmitOriginalUser([], 'msg-original')).toBe(true);
 		expect(
 			shouldResubmitOriginalUser(
-				[{ role: 'user', content: '别的消息', id: 'msg-abc' }],
-				'帮我打开计算器',
+				[{ role: 'user', content: '帮我打开计算器', id: 'msg-other' }],
+				'msg-original',
 			),
 		).toBe(true);
 	});
@@ -91,7 +99,7 @@ describe('shouldResubmitOriginalUser', () => {
 		expect(
 			shouldResubmitOriginalUser(
 				[{ role: 'user', content: '帮我打开计算器', id: '171000-u-ab12' }],
-				'帮我打开计算器',
+				'local-optimistic-id',
 			),
 		).toBe(true);
 	});

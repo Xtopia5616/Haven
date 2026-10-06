@@ -22,10 +22,11 @@ pub struct SessionHistoryFilter {
     pub offset: i64,
 }
 
-/// The role and text needed to assemble a fresh-run conversation window.
+/// The identity, role, and text needed to assemble a fresh-run conversation window.
 /// Agent keeps ownership of its `ConversationMessage` prompt type.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionMessageText {
+    pub id: String,
     pub role: String,
     pub content: String,
 }
@@ -73,6 +74,7 @@ impl SessionStore {
                     .get_session_messages_limit(&session_id, limit)?
                     .into_iter()
                     .map(|message| SessionMessageText {
+                        id: message.id,
                         role: message.role,
                         content: message.content,
                     })

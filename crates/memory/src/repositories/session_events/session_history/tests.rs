@@ -106,11 +106,14 @@ async fn session_store_loads_title_generation_context_with_original_filter_and_l
 #[tokio::test]
 async fn session_store_conversation_window_keeps_latest_limit_in_chronological_order() {
     let (db, store, session_id) = store();
-    db.add_message(&session_id, "user", "old", Some("text"), None)
+    let _old = db
+        .add_message(&session_id, "user", "old", Some("text"), None)
         .unwrap();
-    db.add_message(&session_id, "assistant", "middle", Some("text"), None)
+    let middle = db
+        .add_message(&session_id, "assistant", "middle", Some("text"), None)
         .unwrap();
-    db.add_message(&session_id, "user", "latest", Some("text"), None)
+    let latest = db
+        .add_message(&session_id, "user", "latest", Some("text"), None)
         .unwrap();
 
     let window = store.conversation_window(&session_id, 2).await.unwrap();
@@ -119,10 +122,12 @@ async fn session_store_conversation_window_keeps_latest_limit_in_chronological_o
         window,
         vec![
             SessionMessageText {
+                id: middle.id,
                 role: "assistant".into(),
                 content: "middle".into(),
             },
             SessionMessageText {
+                id: latest.id,
                 role: "user".into(),
                 content: "latest".into(),
             },

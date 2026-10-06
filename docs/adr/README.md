@@ -520,3 +520,4 @@
 - [0529：单一会话生命周期事件与 Memory response DTO](0529-single-session-lifecycle-event-and-memory-response-dto.md)
 - [0530：类型化 ToolRun lifecycle events](0530-typed-tool-run-lifecycle-events.md)
 - [0531：历史清理操作与任务历史边界](0531-history-clear-actions-and-terminal-scoped-task-retention.md)
+- [0532：Transcript 重试按身份关联，不按内容去重](0532-transcript-retry-identity-without-content-dedup.md)
