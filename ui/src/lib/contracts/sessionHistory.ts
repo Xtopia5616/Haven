@@ -14,7 +14,7 @@ import type {
 } from './generatedCommands.ts';
 
 /** All command wire shapes are derived from Rust handlers and DTOs. */
-export type SessionHistoryRow = TauriCommandResponse<'get_history'>[number];
+export type SessionHistoryRow = TauriCommandResponse<'list_history'>[number];
 export type SessionInfoStep = GeneratedStepInfo;
 export type SessionInfo = GeneratedSessionInfo;
 export type SessionListResponse = GeneratedSessionListResponse;

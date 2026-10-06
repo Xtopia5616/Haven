@@ -20,7 +20,7 @@
 | `delete_tool_run` | mutate | 按 id 删除单条任务 |
 | `clear_tool_run_history` | mutate | 清空已结束任务历史，保留运行中任务和未投递结果 |
 | `open_external` | execute | 仅 http(s) 或校验后的本地绝对路径 |
-| `get_history` | read | 只读会话投影 |
+| `list_history` | read | 只读会话投影 |
 | `count_history` | read | 只读聚合 |
 | `search_history_paginated` | read | 参数化查询 |
 | `count_history_search` | read | 参数化查询 |

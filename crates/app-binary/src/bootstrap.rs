@@ -652,7 +652,7 @@ pub(crate) fn run() {
             commands::skills::reset_tool_circuits,
             commands::recording::get_recording_state,
             commands::recording::set_hotkey_capture_active,
-            commands::history::get_history,
+            commands::history::list_history,
             commands::history::count_history,
             commands::history::search_history,
             commands::history::search_history_filtered,

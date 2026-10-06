@@ -117,7 +117,7 @@ $uiFiles = Get-ChildItem (Join-Path $root 'ui/src') -Recurse -File | Where-Objec
 $ownedCommands = @{
     'toolRunCommands.ts' = @('list_tool_runs', 'cancel_tool_run')
     'memoryCommands.ts' = @('list_facts', 'add_fact', 'delete_fact', 'recall_memory')
-    'sessionHistoryCommands.ts' = @('get_sessions', 'search_history_filtered', 'get_last_conversation', 'reopen_session', 'delete_session', 'clear_history', 'update_session_title')
+    'sessionHistoryCommands.ts' = @('get_sessions', 'list_history', 'search_history_filtered', 'get_last_conversation', 'reopen_session', 'delete_session', 'clear_history', 'update_session_title')
     'modelDiscoveryCommands.ts' = @('discover_models', 'discover_all_models')
     'diagnosticsCommands.ts' = @('get_log_info', 'read_log_tail', 'check_shell_available', 'get_api_key_status', 'get_performance_metrics')
 }

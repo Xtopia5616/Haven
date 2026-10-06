@@ -6,6 +6,7 @@ import {
 	getSessionLineage,
 	getSessionForResume,
 	listSessions,
+	listHistory,
 	reopenSession,
 	searchHistoryFiltered,
 	updateSessionTitle,
@@ -39,6 +40,16 @@ describe('session history command boundary', () => {
 		await expect(getSessionLineage(request)).resolves.toBe(response);
 		expect(invokeMock).toHaveBeenCalledOnce();
 		expect(invokeMock).toHaveBeenCalledWith('get_session_lineage', request);
+	});
+
+	it('lists a persisted history page through the list command', async () => {
+		const request = { limit: 50, offset: 0 };
+		const response = [{ id: 'ses-2', input_text: 'hello' }];
+		invokeMock.mockResolvedValue(response as never);
+
+		await expect(listHistory(request)).resolves.toBe(response);
+		expect(invokeMock).toHaveBeenCalledOnce();
+		expect(invokeMock).toHaveBeenCalledWith('list_history', request);
 	});
 
 	it('passes the history filter flat and preserves response fields', async () => {

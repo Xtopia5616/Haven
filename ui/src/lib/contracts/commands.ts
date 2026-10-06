@@ -12,7 +12,7 @@ export type SessionIdRequest = TauriCommandRequest<'reopen_session'>;
 export type ResolveConfirmationRequest = TauriCommandRequest<'resolve_confirmation'>;
 export type RollbackSessionRequest = TauriCommandRequest<'rollback_session'>;
 export type UpdateSessionTitleRequest = TauriCommandRequest<'update_session_title'>;
-export type HistoryPageRequest = TauriCommandRequest<'get_history'>;
+export type HistoryPageRequest = TauriCommandRequest<'list_history'>;
 export type HistorySearchRequest = TauriCommandRequest<'search_history'>;
 export type HistorySearchPageRequest = TauriCommandRequest<'search_history_paginated'>;
 export type HistoryFilterRequest = TauriCommandRequest<'search_history_filtered'>;
@@ -45,7 +45,7 @@ export const TAURI_COMMAND_CONTRACTS = {
 	delete_tool_run: { boundary: 'mutate', security: 'delete one persisted task row by id' },
 	clear_tool_run_history: { boundary: 'mutate', security: 'delete terminal task history; preserve live work and undelivered results' },
 	open_external: { boundary: 'execute', security: 'http(s) or validated absolute local path only' },
-	get_history: { boundary: 'read', security: 'read-only session projection' },
+	list_history: { boundary: 'read', security: 'read-only session projection' },
 	count_history: { boundary: 'read', security: 'read-only aggregate' },
 	search_history_paginated: { boundary: 'read', security: 'parameterized read-only search' },
 	count_history_search: { boundary: 'read', security: 'parameterized read-only search' },

@@ -26,7 +26,7 @@
 	import { registerPerformanceMetricsProvider } from '$lib/performanceMetrics.ts';
 	import {
 		deleteSession,
-		getHistory,
+		listHistory,
 		getLastConversation,
 		getSessionLineage,
 		listSessions,
@@ -307,7 +307,7 @@ import type { SessionTokenStatsView } from '$lib/sessionUsagePresentation.ts';
 	async function loadRecentHistory() {
 		const sequence = ++historyRefreshSeq;
 		try {
-			const history = await getHistory({ limit: 50, offset: 0 });
+			const history = await listHistory({ limit: 50, offset: 0 });
 			if (!dead && sequence === historyRefreshSeq) recentHistorySessions = history || [];
 		} catch (error) {
 			if (!dead && sequence === historyRefreshSeq) {

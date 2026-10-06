@@ -231,7 +231,6 @@ export interface TauriCommandMap {
 	export_history: { request: { startDate?: string | null; endDate?: string | null; status?: string | null }; response: string };
 	get_api_key_status: { request: undefined; response: ApiKeyStatus };
 	get_bootstrap_status: { request: undefined; response: string };
-	get_history: { request: { limit: number; offset: number }; response: SessionRecordDto[] };
 	get_last_conversation: { request: undefined; response: SessionResumeResponse | null };
 	get_log_info: { request: undefined; response: LogInfo };
 	get_performance_metrics: { request: { ui?: UiMetricsSnapshotInput | null }; response: MetricsSnapshot };
@@ -244,6 +243,7 @@ export interface TauriCommandMap {
 	interrupt_session: { request: { sessionId: string }; response: void };
 	is_autostart_enabled: { request: undefined; response: boolean };
 	list_facts: { request: { source?: string | null }; response: MemoryFactResponse[] };
+	list_history: { request: { limit: number; offset: number }; response: SessionRecordDto[] };
 	list_mcp_tools: { request: undefined; response: McpServerSnapshot[] };
 	list_permissions: { request: undefined; response: StoredPermission[] };
 	list_session_permissions: { request: undefined; response: SessionPermissionGrant[] };

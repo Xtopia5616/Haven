@@ -67,7 +67,7 @@ pub const COMMAND_CONTRACTS: &[CommandContract] = &[
     },
     // history
     CommandContract {
-        name: "get_history",
+        name: "list_history",
         boundary: CommandBoundary::Read,
         security: "read-only session projection",
     },

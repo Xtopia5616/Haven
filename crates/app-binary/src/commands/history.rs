@@ -11,7 +11,7 @@ fn session_record_rows(sessions: Vec<StoredSession>) -> Vec<SessionRecordDto> {
 }
 
 #[tauri::command]
-pub async fn get_history(
+pub async fn list_history(
     state: State<'_, Arc<AppState>>,
     limit: i64,
     offset: i64,
@@ -21,7 +21,7 @@ pub async fn get_history(
         .session_store
         .list_history(limit, offset)
         .await
-        .map_err(|e| log_err("get_history", e))?;
+        .map_err(|e| log_err("list_history", e))?;
     Ok(session_record_rows(sessions))
 }
 

@@ -26,8 +26,8 @@ export function getSessionLineage(request: SessionIdRequest): Promise<SessionLin
 }
 
 /** Load a recent persisted history page for the compact chat session switcher. */
-export function getHistory(request: HistoryPageRequest): Promise<SessionHistoryRow[]> {
-	return invoke('get_history', request);
+export function listHistory(request: HistoryPageRequest): Promise<SessionHistoryRow[]> {
+	return invoke('list_history', request);
 }
 
 /** Load the persisted history page using the existing flat Tauri arguments. */
