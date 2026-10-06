@@ -41,7 +41,7 @@ use crate::operation_view::{
     split_scope_operation_schema,
 };
 use crate::prompts as tool_prompts;
-use crate::registry::{DeferredToolCatalog, SessionCatalog};
+use crate::registry::{DeferredToolCatalog, SessionToolOverlay};
 use crate::skill_runner::SkillRunner;
 use crate::{
     ConfirmationRequirement, OperationIdempotency, OperationPolicy, ToolBox, ToolConcurrency,
@@ -166,7 +166,7 @@ pub struct BuiltinContext {
     pub mcp_manager: Arc<McpManager>,
     pub server_configs: Arc<RwLock<HashMap<String, haven_common::McpServerConfig>>>,
     pub registry: ToolRegistry,
-    pub session_catalog: SessionCatalog,
+    pub session_tool_overlay: SessionToolOverlay,
     pub deferred_catalog: DeferredToolCatalog,
     pub settings: HashMap<String, haven_common::config::ToolConfig>,
     pub limits: haven_common::config::ContextLimitsConfig,
@@ -190,7 +190,7 @@ pub async fn register_builtin_tools(
         mcp_manager,
         server_configs,
         registry,
-        session_catalog,
+        session_tool_overlay,
         deferred_catalog,
         settings,
         limits,
@@ -228,7 +228,7 @@ pub async fn register_builtin_tools(
     tools.push(Arc::new(tool_catalog::ToolCatalogTool {
         deferred_catalog: deferred_catalog.clone(),
         registry: registry.clone(),
-        session_catalog: session_catalog.clone(),
+        session_tool_overlay: session_tool_overlay.clone(),
         max_tools_per_request: limits.max_tools_per_request.max(1),
         mcp_manager: mcp_manager.clone(),
         server_configs: server_configs.clone(),
@@ -380,14 +380,14 @@ pub async fn register_builtin_tools(
     tools.push(Arc::new(load_skill::LoadSkillTool {
         deferred_catalog: deferred_catalog.clone(),
         registry: registry.clone(),
-        session_catalog: session_catalog.clone(),
+        session_tool_overlay: session_tool_overlay.clone(),
         max_tools_per_request: max_tools,
     }));
     tools.push(Arc::new(load_mcp::LoadMcpTool {
         mcp_manager: mcp_manager.clone(),
         server_configs: server_configs.clone(),
         registry: registry.clone(),
-        session_catalog,
+        session_tool_overlay,
         max_tools_per_request: max_tools,
     }));
     if let Some(ctx) = admin_context {

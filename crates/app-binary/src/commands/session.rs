@@ -327,7 +327,7 @@ pub async fn resolve_confirmation(
     let authorization_request = state
         .runtime
         .tools
-        .get_authorization_request(
+        .resolve_authorization_request(
             resolution.session_id.as_deref(),
             &resolution.tool_name,
             &resolution.tool_input,
@@ -983,7 +983,7 @@ mod tests {
         let authorization_request = state
             .runtime
             .tools
-            .get_authorization_request(None, tool_name, &tool_input)
+            .resolve_authorization_request(None, tool_name, &tool_input)
             .await;
         let receipt = ConfirmationReceipt {
             confirmation_id: haven_common::types::new_id("conf").into(),
@@ -1284,7 +1284,7 @@ mod tests {
         let authorization_request = state
             .runtime
             .tools
-            .get_authorization_request(None, tool_name, &tool_input)
+            .resolve_authorization_request(None, tool_name, &tool_input)
             .await;
         let receipt = ConfirmationReceipt {
             confirmation_id: haven_common::types::new_id("conf").into(),

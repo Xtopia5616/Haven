@@ -2645,7 +2645,7 @@ mod tests {
         // Resolve them through the control-plane lookup so this test covers
         // both the eager and lazy portions of the builtin catalog.
         let registry_names: HashSet<_> = tools.iter().map(|tool| tool.name()).collect();
-        for def in manager.list_enabled_builtin_defs().await {
+        for def in manager.list_enabled_builtin_tool_definitions().await {
             if !registry_names.contains(&def.name) {
                 tools.push(
                     manager
@@ -2971,7 +2971,7 @@ mod tests {
 
         let mut tools = manager.registry().list().await;
         let registry_names: HashSet<_> = tools.iter().map(|tool| tool.name()).collect();
-        for def in manager.list_enabled_builtin_defs().await {
+        for def in manager.list_enabled_builtin_tool_definitions().await {
             if !registry_names.contains(&def.name) {
                 tools.push(
                     manager
@@ -3049,7 +3049,7 @@ mod tests {
 
         let mut tools = manager.registry().list().await;
         let registry_names: HashSet<_> = tools.iter().map(|tool| tool.name()).collect();
-        for def in manager.list_enabled_builtin_defs().await {
+        for def in manager.list_enabled_builtin_tool_definitions().await {
             if !registry_names.contains(&def.name) {
                 tools.push(
                     manager

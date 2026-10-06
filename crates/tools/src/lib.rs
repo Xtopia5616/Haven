@@ -152,7 +152,7 @@ pub use output::{
 };
 pub(crate) use process::read_stream_capped;
 pub use registry::{
-    DeferredToolCatalog, OperationRegistry, RegistryProbe, SessionCatalog, ToolCatalogSnapshot,
+    DeferredToolCatalog, OperationRegistry, RegistryProbe, SessionToolOverlay, ToolCatalogSnapshot,
     ToolRegistry,
 };
 pub use security::{
@@ -311,9 +311,9 @@ impl ToolBudgetCandidate {
 ///
 /// The returned omitted names are intentionally kept separate from the
 /// provider definitions. The current public API returns only `Vec<ToolDef>`,
-/// so `list_defs_for_session` logs this explanation without changing the
+/// so `list_tool_definitions_for_session` logs this explanation without changing the
 /// cross-crate contract.
-fn select_tool_defs_for_budget(
+fn select_tool_definitions_for_budget(
     global: Vec<ToolDef>,
     session: Vec<ToolDef>,
     max: usize,

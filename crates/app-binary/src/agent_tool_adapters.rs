@@ -56,14 +56,14 @@ impl PromptToolPort for ToolsManagerAgentAdapter {
     }
 
     async fn catalog_content(&self) -> PromptCatalogContent {
-        let mut builtin_defs = self.tools.list_enabled_builtin_defs().await;
+        let mut builtin_tool_definitions = self.tools.list_enabled_builtin_tool_definitions().await;
         // A small embedding may build a prompt before asynchronous builtin
         // catalog initialization has run. Preserve the eager-registry fallback.
-        if builtin_defs.is_empty() {
-            builtin_defs = self.tools.registry().list_defs().await;
+        if builtin_tool_definitions.is_empty() {
+            builtin_tool_definitions = self.tools.registry().list_tool_definitions().await;
         }
         PromptCatalogContent {
-            builtin_defs,
+            builtin_tool_definitions,
             mcp_index: self.tools.build_mcp_index().await,
             skills: self.tools.share_services().skills.list().await,
         }
@@ -98,7 +98,7 @@ impl ToolAuthorizationPort for ToolsManagerAgentAdapter {
         input: &Value,
     ) -> RiskLevel {
         self.tools
-            .get_risk_level(session_id, tool_name, input)
+            .resolve_risk_level(session_id, tool_name, input)
             .await
     }
 
@@ -109,7 +109,7 @@ impl ToolAuthorizationPort for ToolsManagerAgentAdapter {
         input: &Value,
     ) -> AuthorizationRequest {
         self.tools
-            .get_authorization_request(session_id, tool_name, input)
+            .resolve_authorization_request(session_id, tool_name, input)
             .await
     }
 
@@ -121,7 +121,7 @@ impl ToolAuthorizationPort for ToolsManagerAgentAdapter {
         input: &Value,
     ) -> AuthorizationRequest {
         self.tools
-            .get_authorization_request_from_snapshot(catalog, session_id, tool_name, input)
+            .resolve_authorization_request_from_snapshot(catalog, session_id, tool_name, input)
     }
 }
 
@@ -345,7 +345,7 @@ mod tests {
 
         assert!(
             content
-                .builtin_defs
+                .builtin_tool_definitions
                 .iter()
                 .any(|definition| definition.name == "execution.context_probe"),
             "prompt construction falls back to definitions already present in the eager registry"

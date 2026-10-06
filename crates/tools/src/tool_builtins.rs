@@ -63,7 +63,7 @@ impl ToolBuiltins {
             mcp_manager: Arc::new(self.mcp_manager.clone()),
             server_configs: self.mcp_server_configs.clone(),
             registry: core.operations.installed.clone(),
-            session_catalog: core.operations.sessions.clone(),
+            session_tool_overlay: core.operations.session_tool_overlay.clone(),
             deferred_catalog: core.operations.deferred.clone(),
             settings,
             limits,

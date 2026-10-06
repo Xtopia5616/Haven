@@ -129,7 +129,7 @@ impl ToolAuthorizationPort for ToolsManagerToolAuthorizationAdapter {
         input: &Value,
     ) -> RiskLevel {
         self.tools
-            .get_risk_level(session_id, tool_name, input)
+            .resolve_risk_level(session_id, tool_name, input)
             .await
     }
 
@@ -140,7 +140,7 @@ impl ToolAuthorizationPort for ToolsManagerToolAuthorizationAdapter {
         input: &Value,
     ) -> AuthorizationRequest {
         self.tools
-            .get_authorization_request(session_id, tool_name, input)
+            .resolve_authorization_request(session_id, tool_name, input)
             .await
     }
 
@@ -152,7 +152,7 @@ impl ToolAuthorizationPort for ToolsManagerToolAuthorizationAdapter {
         input: &Value,
     ) -> AuthorizationRequest {
         self.tools
-            .get_authorization_request_from_snapshot(catalog, session_id, tool_name, input)
+            .resolve_authorization_request_from_snapshot(catalog, session_id, tool_name, input)
     }
 }
 

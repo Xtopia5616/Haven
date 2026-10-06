@@ -28,7 +28,7 @@ pub struct PromptCatalogVersions {
 }
 
 pub struct PromptCatalogContent {
-    pub builtin_defs: Vec<ToolDef>,
+    pub builtin_tool_definitions: Vec<ToolDef>,
     pub mcp_index: Vec<McpServerIndexEntry>,
     pub skills: Vec<SkillInfo>,
 }
@@ -62,16 +62,16 @@ impl PromptToolPort for ToolsManager {
     }
 
     async fn catalog_content(&self) -> PromptCatalogContent {
-        let mut builtin_defs = self.list_enabled_builtin_defs().await;
+        let mut builtin_tool_definitions = self.list_enabled_builtin_tool_definitions().await;
         // A small embedding may build a prompt before asynchronous builtin
         // catalog initialization has run. Preserve the eager-registry fallback.
-        if builtin_defs.is_empty() {
-            builtin_defs = self.registry().list_defs().await;
+        if builtin_tool_definitions.is_empty() {
+            builtin_tool_definitions = self.registry().list_tool_definitions().await;
         }
         let mcp_index = self.build_mcp_index().await;
         let skills = self.share_services().skills.list().await;
         PromptCatalogContent {
-            builtin_defs,
+            builtin_tool_definitions,
             mcp_index,
             skills,
         }

@@ -5,7 +5,7 @@ use serde_json::Value;
 use std::collections::HashSet;
 use tokio_util::sync::CancellationToken;
 
-use crate::registry::{DeferredToolCatalog, SessionCatalog};
+use crate::registry::{DeferredToolCatalog, SessionToolOverlay};
 use crate::{Tool, ToolRegistry, ToolResult};
 
 /// Activates enabled Skill adapters for one session. Skill discovery remains
@@ -14,7 +14,7 @@ use crate::{Tool, ToolRegistry, ToolResult};
 pub struct LoadSkillTool {
     pub deferred_catalog: DeferredToolCatalog,
     pub registry: ToolRegistry,
-    pub session_catalog: SessionCatalog,
+    pub session_tool_overlay: SessionToolOverlay,
     pub max_tools_per_request: usize,
 }
 
@@ -76,7 +76,7 @@ impl LoadSkillTool {
         let global_count = self.registry.list().await.len();
         let max = self.max_tools_per_request.max(1);
         match self
-            .session_catalog
+            .session_tool_overlay
             .register_many_if_within_budget(&session_id, global_count, max, selected.clone())
             .await
         {
@@ -94,7 +94,11 @@ impl LoadSkillTool {
                 Ok(ToolResult::ok(output))
             }
             Err(net_new) => {
-                let session_count = self.session_catalog.list_defs(&session_id).await.len();
+                let session_count = self
+                    .session_tool_overlay
+                    .list_tool_definitions(&session_id)
+                    .await
+                    .len();
                 let remaining = max.saturating_sub(global_count.saturating_add(session_count));
                 Ok(ToolResult::ok(serde_json::json!({
                     "status": "needs_selection",
@@ -264,7 +268,7 @@ mod tests {
         let loader = LoadSkillTool {
             deferred_catalog,
             registry: ToolRegistry::new(),
-            session_catalog: SessionCatalog::new(),
+            session_tool_overlay: SessionToolOverlay::new(),
             max_tools_per_request: 4,
         };
 
@@ -283,7 +287,11 @@ mod tests {
         assert_eq!(result.output["status"], "loaded");
         assert_eq!(result.output["skills"], serde_json::json!(["demo"]));
         assert_eq!(
-            loader.session_catalog.list_defs("ses-skill").await[0].name,
+            loader
+                .session_tool_overlay
+                .list_tool_definitions("ses-skill")
+                .await[0]
+                .name,
             "skill__demo"
         );
     }

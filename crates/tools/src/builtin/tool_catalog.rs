@@ -1,4 +1,4 @@
-use crate::registry::{DeferredToolCatalog, SessionCatalog};
+use crate::registry::{DeferredToolCatalog, SessionToolOverlay};
 use crate::{McpToolAdapter, Tool, ToolBox, ToolRegistry, ToolResult};
 use haven_common::tools::{ToolCatalogGroup, ToolDef, ToolSource};
 use haven_common::types::RiskLevel;
@@ -19,7 +19,7 @@ const MAX_PAGE_SIZE: usize = 64;
 pub struct ToolCatalogTool {
     pub deferred_catalog: DeferredToolCatalog,
     pub registry: ToolRegistry,
-    pub session_catalog: SessionCatalog,
+    pub session_tool_overlay: SessionToolOverlay,
     pub max_tools_per_request: usize,
     pub mcp_manager: Arc<McpManager>,
     pub server_configs:
@@ -290,7 +290,7 @@ impl ToolCatalogTool {
         let global_count = self.registry.list().await.len();
         let max = self.max_tools_per_request.max(1);
         match self
-            .session_catalog
+            .session_tool_overlay
             .register_many_if_within_budget(session_id, global_count, max, requested.clone())
             .await
         {
@@ -308,7 +308,11 @@ impl ToolCatalogTool {
                 Ok(ToolResult::ok(output))
             }
             Err(net_new) => {
-                let session_count = self.session_catalog.list_defs(session_id).await.len();
+                let session_count = self
+                    .session_tool_overlay
+                    .list_tool_definitions(session_id)
+                    .await
+                    .len();
                 let remaining = max.saturating_sub(global_count.saturating_add(session_count));
                 Ok(ToolResult::ok(serde_json::json!({
                     "status": "needs_selection",
@@ -332,7 +336,7 @@ impl ToolCatalogTool {
         // it must not invalidate an outstanding pagination cursor.
         format!(
             "{}:{}",
-            self.session_catalog.global_version(),
+            self.session_tool_overlay.global_version(),
             self.mcp_manager.catalog_version()
         )
     }
@@ -407,8 +411,11 @@ impl ToolCatalogTool {
         source: CatalogSource,
         name: &str,
     ) -> anyhow::Result<ToolResult> {
-        let global_defs = self.registry.list_defs().await;
-        let session_defs = self.session_catalog.list_defs(session_id).await;
+        let global_defs = self.registry.list_tool_definitions().await;
+        let session_defs = self
+            .session_tool_overlay
+            .list_tool_definitions(session_id)
+            .await;
         let loaded_names: HashSet<String> = global_defs
             .iter()
             .chain(session_defs.iter())
@@ -426,7 +433,7 @@ impl ToolCatalogTool {
             }
         }
 
-        let deferred_defs = self.deferred_catalog.list_defs().await;
+        let deferred_defs = self.deferred_catalog.list_tool_definitions().await;
         for def in &deferred_defs {
             let def_source = source_for_def(def);
             if source.accepts(def_source) && names_match(def, name, def_source) {
@@ -443,7 +450,11 @@ impl ToolCatalogTool {
                 return Ok(ToolResult::ok(server));
             }
             if let Some((server_name, tool)) = self.describe_mcp_tool(name).await {
-                let loaded = self.session_catalog.get(session_id, name).await.is_some();
+                let loaded = self
+                    .session_tool_overlay
+                    .get(session_id, name)
+                    .await
+                    .is_some();
                 return Ok(ToolResult::ok(mcp_tool_detail(&server_name, &tool, loaded)));
             }
         }
@@ -467,14 +478,17 @@ impl ToolCatalogTool {
     }
 
     async fn catalog_items(&self, session_id: &str, source: CatalogSource) -> Vec<CatalogItem> {
-        let global_defs = self.registry.list_defs().await;
-        let session_defs = self.session_catalog.list_defs(session_id).await;
+        let global_defs = self.registry.list_tool_definitions().await;
+        let session_defs = self
+            .session_tool_overlay
+            .list_tool_definitions(session_id)
+            .await;
         let loaded_names: HashSet<String> = global_defs
             .iter()
             .chain(session_defs.iter())
             .map(|def| def.name.clone())
             .collect();
-        let deferred_defs = self.deferred_catalog.list_defs().await;
+        let deferred_defs = self.deferred_catalog.list_tool_definitions().await;
         let mut seen = HashSet::new();
         let mut items = Vec::new();
 
@@ -506,7 +520,7 @@ impl ToolCatalogTool {
                     let qualified = McpToolAdapter::qualified_name_of(&config.name, &info.name);
                     if seen.insert(qualified.clone()) {
                         let loaded = self
-                            .session_catalog
+                            .session_tool_overlay
                             .get(session_id, &qualified)
                             .await
                             .is_some();

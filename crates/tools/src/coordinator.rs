@@ -247,7 +247,10 @@ impl ToolRuntimeCoordinator {
         drop(configs);
 
         // Configuration changes alter discovery before clients connect.
-        self.core.operations.sessions.bump_global_version();
+        self.core
+            .operations
+            .session_tool_overlay
+            .bump_global_version();
         self.builtins.mcp_manager.load_from_config(servers).await;
     }
 
@@ -263,7 +266,10 @@ impl ToolRuntimeCoordinator {
                 configs.insert(server.name.clone(), server.clone());
             }
         }
-        self.core.operations.sessions.bump_global_version();
+        self.core
+            .operations
+            .session_tool_overlay
+            .bump_global_version();
         self.builtins
             .mcp_manager
             .discover_all(servers, config)
@@ -277,13 +283,19 @@ impl ToolRuntimeCoordinator {
             .await
             .insert(config.name.clone(), config);
         self.builtins.mcp_manager.invalidate_catalog();
-        self.core.operations.sessions.bump_global_version();
+        self.core
+            .operations
+            .session_tool_overlay
+            .bump_global_version();
     }
 
     pub(crate) async fn remove_mcp_server_config(&self, name: &str) {
         self.builtins.mcp_server_configs.write().await.remove(name);
         self.builtins.mcp_manager.invalidate_catalog();
-        self.core.operations.sessions.bump_global_version();
+        self.core
+            .operations
+            .session_tool_overlay
+            .bump_global_version();
     }
 
     pub(crate) async fn rebuild_catalog(
@@ -346,7 +358,10 @@ impl ToolRuntimeCoordinator {
                 admin_surfaces,
             })
             .await;
-        self.core.operations.sessions.bump_global_version();
+        self.core
+            .operations
+            .session_tool_overlay
+            .bump_global_version();
         Ok(CatalogRebuildOutcome::Published)
     }
 
@@ -561,7 +576,11 @@ mod tests {
             enabled: false,
             ..McpServerConfig::default()
         };
-        let initial_global = coordinator.core.operations.sessions.global_version();
+        let initial_global = coordinator
+            .core
+            .operations
+            .session_tool_overlay
+            .global_version();
         let initial_mcp = coordinator.builtins.mcp_manager.catalog_version();
 
         coordinator
@@ -571,11 +590,22 @@ mod tests {
         let stored = coordinator.builtins.mcp_server_configs.read().await;
         assert_eq!(stored.get(&disabled.name), Some(&disabled));
         drop(stored);
-        assert!(coordinator.core.operations.sessions.global_version() > initial_global);
+        assert!(
+            coordinator
+                .core
+                .operations
+                .session_tool_overlay
+                .global_version()
+                > initial_global
+        );
         assert!(coordinator.builtins.mcp_manager.catalog_version() > initial_mcp);
         assert!(coordinator.build_mcp_index().await.is_empty());
 
-        let after_mcp_refresh = coordinator.core.operations.sessions.global_version();
+        let after_mcp_refresh = coordinator
+            .core
+            .operations
+            .session_tool_overlay
+            .global_version();
         let mcp_version = coordinator.builtins.mcp_manager.catalog_version();
         coordinator
             .discover_all(
@@ -583,14 +613,32 @@ mod tests {
                 &haven_common::McpDiscoveryConfig::default(),
             )
             .await;
-        assert!(coordinator.core.operations.sessions.global_version() > after_mcp_refresh);
+        assert!(
+            coordinator
+                .core
+                .operations
+                .session_tool_overlay
+                .global_version()
+                > after_mcp_refresh
+        );
         assert!(coordinator.builtins.mcp_manager.catalog_version() > mcp_version);
         assert!(coordinator.build_mcp_index().await.is_empty());
 
-        let before_rebuild = coordinator.core.operations.sessions.global_version();
+        let before_rebuild = coordinator
+            .core
+            .operations
+            .session_tool_overlay
+            .global_version();
         let refreshed_mcp_version = coordinator.builtins.mcp_manager.catalog_version();
         coordinator.rebuild_catalog().await.unwrap();
-        assert!(coordinator.core.operations.sessions.global_version() > before_rebuild);
+        assert!(
+            coordinator
+                .core
+                .operations
+                .session_tool_overlay
+                .global_version()
+                > before_rebuild
+        );
         assert_eq!(
             coordinator.builtins.mcp_manager.catalog_version(),
             refreshed_mcp_version

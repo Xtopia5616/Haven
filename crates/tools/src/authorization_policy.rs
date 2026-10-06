@@ -13,11 +13,11 @@ use serde_json::Value;
 
 /// Resolves the operation contract and canonical input used by authorization.
 /// It does not authorize or execute the operation.
-pub(crate) struct ToolAuthorizationPolicy<'a> {
+pub(crate) struct ToolAuthorizationRequestResolver<'a> {
     tools: &'a ToolsManager,
 }
 
-impl<'a> ToolAuthorizationPolicy<'a> {
+impl<'a> ToolAuthorizationRequestResolver<'a> {
     fn new(tools: &'a ToolsManager) -> Self {
         Self { tools }
     }
@@ -115,52 +115,52 @@ fn unknown_operation_policy(tool_name: &str, input: &Value) -> OperationPolicy {
 }
 
 impl ToolsManager {
-    pub async fn get_risk_level(
+    pub async fn resolve_risk_level(
         &self,
         session_id: Option<&str>,
         tool_name: &str,
         input: &Value,
     ) -> RiskLevel {
-        ToolAuthorizationPolicy::new(self)
+        ToolAuthorizationRequestResolver::new(self)
             .risk_level(session_id, tool_name, input)
             .await
     }
 
     /// Return the canonical intrinsic operation policy. Security overrides
     /// are applied by `AuthorizationEngine` when it evaluates a request.
-    pub async fn get_operation_policy(
+    pub async fn resolve_operation_policy(
         &self,
         session_id: Option<&str>,
         tool_name: &str,
         input: &Value,
     ) -> OperationPolicy {
-        ToolAuthorizationPolicy::new(self)
+        ToolAuthorizationRequestResolver::new(self)
             .operation_policy(session_id, tool_name, input)
             .await
     }
 
     /// Build the typed request evaluated by the live authorization engine.
-    pub async fn get_authorization_request(
+    pub async fn resolve_authorization_request(
         &self,
         session_id: Option<&str>,
         tool_name: &str,
         input: &Value,
     ) -> AuthorizationRequest {
-        ToolAuthorizationPolicy::new(self)
+        ToolAuthorizationRequestResolver::new(self)
             .authorization_request(session_id, tool_name, input)
             .await
     }
 
     /// Build a request from the turn's immutable tool lookup view. The live
     /// authorization engine still evaluates current grants and policy.
-    pub fn get_authorization_request_from_snapshot(
+    pub fn resolve_authorization_request_from_snapshot(
         &self,
         catalog: &ToolCatalogSnapshot,
         session_id: Option<&str>,
         tool_name: &str,
         input: &Value,
     ) -> AuthorizationRequest {
-        ToolAuthorizationPolicy::authorization_request_from_snapshot(
+        ToolAuthorizationRequestResolver::authorization_request_from_snapshot(
             catalog, session_id, tool_name, input,
         )
     }

@@ -217,7 +217,11 @@ impl ToolsManager {
     /// derived views (e.g. per-step LLM tool definitions) keyed by this
     /// value and rebuild only when it changes.
     pub fn catalog_version(&self) -> u64 {
-        self.coordinator.core.operations.sessions.global_version()
+        self.coordinator
+            .core
+            .operations
+            .session_tool_overlay
+            .global_version()
     }
 
     /// MCP has its own tools/list change clock and therefore must participate
@@ -233,7 +237,7 @@ impl ToolsManager {
         self.coordinator
             .core
             .operations
-            .sessions
+            .session_tool_overlay
             .catalog_version_for_session(session_id)
             .await
     }

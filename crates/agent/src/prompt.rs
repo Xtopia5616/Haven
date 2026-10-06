@@ -959,11 +959,11 @@ impl SystemPromptBuilder {
         // Per-session mcp__ tools are never in the global registry, so they
         // won't appear here — intentional: prompt holds a short orientation
         // index; schemas come from the API tools[] list after load_mcp.
-        let mut built_in = render_tool_index(&content.builtin_defs);
+        let mut built_in = render_tool_index(&content.builtin_tool_definitions);
         // Cross-session messaging guidance rides along with the tool index so
         // the agent knows when to poll its inbox and how to treat messages
         // from peers (low-trust, not user instructions).
-        if content.builtin_defs.iter().any(|def| {
+        if content.builtin_tool_definitions.iter().any(|def| {
             def.manifest
                 .as_ref()
                 .map(|manifest| manifest.identity.catalog_group)

@@ -1,4 +1,4 @@
-use crate::authorization_policy::ToolAuthorizationPolicy;
+use crate::authorization_policy::ToolAuthorizationRequestResolver;
 use crate::tool_contract::{OperationPolicy, ToolBox, ToolDef};
 use haven_common::tools::ToolManifest;
 use serde_json::Value;
@@ -57,7 +57,7 @@ impl DeferredToolCatalog {
         tools
     }
 
-    pub async fn list_defs(&self) -> Vec<ToolDef> {
+    pub async fn list_tool_definitions(&self) -> Vec<ToolDef> {
         self.list()
             .await
             .into_iter()
@@ -116,13 +116,13 @@ impl ToolRegistry {
     /// session-aware provider surface is assembled by `ToolsManager`; deferred
     /// builtin and Skill definitions live in `DeferredToolCatalog` until a
     /// loader activates them.
-    pub async fn list_defs(&self) -> Vec<ToolDef> {
+    pub async fn list_tool_definitions(&self) -> Vec<ToolDef> {
         let tools = self.snapshot.read().await.tools.clone();
         tools.iter().map(|t| t.tool_def()).collect()
     }
 
     pub async fn list_schemas(&self) -> Vec<Value> {
-        self.list_defs()
+        self.list_tool_definitions()
             .await
             .into_iter()
             .map(|d| d.json())
@@ -158,24 +158,23 @@ impl ToolRegistry {
     }
 }
 
-/// Per-session overlay catalog layered on top of [`ToolRegistry`]. The
-/// overlay owns both its registrations and its version clock so progressive
-/// MCP loading cannot invalidate unrelated sessions or create a second
-/// catalog source in `ToolsManager`.
+/// Per-session executable tool overlay layered on top of [`ToolRegistry`].
+/// The overlay owns its registrations and version clock so progressive MCP
+/// loading cannot invalidate unrelated sessions or expand the global registry.
 #[derive(Clone)]
-pub struct SessionCatalog {
+pub struct SessionToolOverlay {
     registrations: Arc<RwLock<HashMap<String, HashMap<String, ToolBox>>>>,
     versions: Arc<RwLock<HashMap<String, u64>>>,
     global_version: Arc<AtomicU64>,
 }
 
-impl Default for SessionCatalog {
+impl Default for SessionToolOverlay {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl SessionCatalog {
+impl SessionToolOverlay {
     pub fn new() -> Self {
         Self {
             registrations: Arc::new(RwLock::new(HashMap::new())),
@@ -281,7 +280,7 @@ impl SessionCatalog {
             .unwrap_or_default()
     }
 
-    pub async fn list_defs(&self, session_id: &str) -> Vec<ToolDef> {
+    pub async fn list_tool_definitions(&self, session_id: &str) -> Vec<ToolDef> {
         let mut defs: Vec<_> = self
             .registrations
             .read()
@@ -395,7 +394,7 @@ impl ToolCatalogSnapshot {
     }
 
     pub fn operation_policy(&self, name: &str, input: &serde_json::Value) -> OperationPolicy {
-        ToolAuthorizationPolicy::operation_policy_for(self.get(name), name, input)
+        ToolAuthorizationRequestResolver::operation_policy_for(self.get(name), name, input)
     }
 
     pub fn manifest(&self, name: &str) -> Option<ToolManifest> {
@@ -433,7 +432,7 @@ impl RegistryProbe {
 pub struct OperationRegistry {
     pub(crate) installed: ToolRegistry,
     pub(crate) deferred: DeferredToolCatalog,
-    pub(crate) sessions: SessionCatalog,
+    pub(crate) session_tool_overlay: SessionToolOverlay,
 }
 
 impl OperationRegistry {
@@ -449,8 +448,8 @@ impl OperationRegistry {
         &self.deferred
     }
 
-    pub fn sessions(&self) -> &SessionCatalog {
-        &self.sessions
+    pub fn session_tool_overlay(&self) -> &SessionToolOverlay {
+        &self.session_tool_overlay
     }
 }
 
@@ -534,14 +533,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_registry_list_defs_structured() {
+    async fn test_registry_list_tool_definitions_structured() {
         let registry = ToolRegistry::new();
         registry
             .register(Arc::new(MockTool::new("mock")))
             .await
             .unwrap();
 
-        let defs = registry.list_defs().await;
+        let defs = registry.list_tool_definitions().await;
         assert_eq!(defs.len(), 1);
         assert_eq!(defs[0].name, "mock");
         assert_eq!(defs[0].description, "mock");

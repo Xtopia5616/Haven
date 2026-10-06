@@ -118,7 +118,7 @@
 #### 已复核但不进入 Next
 
 - **Tools 与安全边界：** `tool_contract.rs` 继续作为共享执行契约 owner；`builtin/admin.rs` 由 AdminServices 承接副作用，Admin 保留 operation/request/output contract；messaging adapter 继续复用 `haven_messaging`。只有稳定后再次出现 policy/schema drift、同边界回归或独立消费者，才重新评估私有模块（[ADR 0213](adr/0213-operation-spec-single-policy-source.md)、[0391](adr/0391-admin-services-typed-output-projections.md)、[0396](adr/0396-messaging-domain-crate.md)、[0506](adr/0506-mcp-admin-connection-network-policy.md)）。
-- **三层工具目录索引复用（已复核，暂不合并）：** `ToolRegistry` 保留注册顺序、拒绝重复名并维护 global version；`DeferredToolCatalog` 用 name map 替换完整目录并按名列举；`SessionCatalog` 按 session 隔离，loader batch 负责幂等、预算准入与 session version。虽然 lookup/list/definition projection 外观相近，但共用容器需要显式携带各 scope 的 admission、排序和版本策略，还会扩大现有 registrations handle 的类型面。Provider 定义、校验、manifest 与执行的共享 turn-level immutable view 已由 `ToolCatalogSnapshot` 承担；无需再把三类 mutable catalog 合并。当前没有证据表明这层重复导致回归或维护成本，故保留三层 scope；ADR 0145/0148 的 provider visibility 与 session 隔离不变。只有共同规则真实重复并导致漂移时，再评估窄 helper，不引入统一的可调用目录。
+- **工具运行时三个集合各自保留（已复核，暂不合并）：** `ToolRegistry` 是已安装工具的权威注册表，保留注册顺序、拒绝重复名并维护 global version；`DeferredToolCatalog` 保存尚未激活、供发现和按需加载使用的定义；`SessionToolOverlay` 是某个 session 当前可执行的附加工具集合，loader batch 负责幂等、预算准入与 session version。三者分别表达注册、延迟发现和 session 执行作用域，不能因 lookup/list/definition projection 外观相近而统一成一个通用 Catalog。Provider 定义、校验、manifest 与执行的共享 turn-level immutable view 已由 `ToolCatalogSnapshot` 承担；共同规则若真实重复并导致漂移，再评估窄 helper。ADR 0145/0148 的 provider visibility 与 session 隔离不变（本轮名称对齐见 [ADR 0533](adr/0533-tool-runtime-nomenclature-alignment.md)）。
 - **MCP prompt index 类型化（已完成，ADR 0516）：** 固定的 `name/tool_names` 摘要由 `McpServerIndexEntry` 沿 Tools→App adapter→Agent prompt port 传递；工具数从 names 派生，capability resolver 不再解析拼接描述。该类型不序列化到 IPC/provider/MCP wire；工具 schema 和结果保留 dynamic JSON。只有该投影新增稳定字段或出现新的独立消费者时再复核。
 - **Admin 风险等级 parity 与单一来源（ADR 0512、0528 已完成）：** ADR 0512 为 20 个 model/native 共用操作补齐完整操作集合和风险等级 parity 门禁，native-only `mcp_reconnect` 与 `mcp_refresh` 保留独立测试。随后 ADR 0528 将共享风险等级收敛到 `OperationContract.risk_override`：Admin typed metadata 按规范 operation 名读取同一风险值，缺少显式风险时 fail closed 为 High；parity 门禁继续覆盖共享操作集合和 contract 完整性。两个 native-only 操作仍独立为 Medium。没有修改现有风险值或确认语义。
 - **Windows 子进程 containment 启动顺序（已完成，ADR 0513）：** MCP stdio、Shell、Skill 与后台 ToolRun 过去都在进程已运行后才加入 kill-on-close Job，MCP 还在 spawn 后才创建 Job；因此子进程可能在加入前派生不受 Job 管理的后代。`haven-platform::ProcessContainment` 现在负责命令挂起标志、Job 分配、唯一初始线程核对与恢复，失败时终止进程；adapter 继续拥有命令策略、管道与取消/等待生命周期。Windows 测试覆盖挂起时不执行、运行后派生后代并由 Job 回收，以及线程发现失败时 fail closed。若新增受管进程入口绕过此 API或出现进程树残留回归，再重开审查。
@@ -175,9 +175,22 @@
 
 当前第一切片是建立全仓词汇基线：为领域实体、跨层契约、架构角色后缀和常见函数动词定义单一含义，并盘点同义多名、同名异义、真实职责重叠和仅共享外观的类型。`docs/naming.md` 已新增首版架构角色词汇与动作动词约定；它们用于本轮审计和迁移，存量命名是否符合仍须逐域核对。
 
+#### 首轮全仓符号扫描与候选分流
+
+| 范围 | 证据与调用边界 | 当前分类 / 下一步 |
+|---|---|---|
+| Tools runtime | `SessionCatalog` 实际保存 session 当前可执行的附加工具；授权请求类型只解析契约而不裁决权限；`list_*_defs` 是缩写 API。调用链覆盖 Tools、Agent、App adapter 与 prompt context。 | **已改名**为 `SessionToolOverlay`、`ToolAuthorizationRequestResolver` 和完整 tool-definition 名称；授权仍由 `AuthorizationEngine` 决定；三种集合 owner 保持分离（ADR 0533）。 |
+| Memory query cache | `crates/memory/src/cache.rs` 中的 `QueryCacheStore` 实际只持有有界进程内 TTL/LRU 与 generation state，不执行 SQL、不拥有 durable 写入；由 Database façade 使用。 | **确认改名候选**：`QueryResultCache`；按 cache 角色命名，不和持久 `*Store` 混用。下一个 Memory 切片。 |
+| LLM 的 STT 适配 | `crates/llm/src/stt.rs` 的 `LlmClientSttBridge` 把已有 `LlmClient` 转接为消费者所需的 `SttClient`，没有桥接状态或独立生命周期。 | **确认改名候选**：`LlmSttClientAdapter`；保留单一 provider-to-consumer adapter，不合并 `LlmClient` 与 `SttClient` 契约。 |
+| Tools 对外入口 | `ToolsManager` 文档已称其为执行 façade；它组合多个 owner、暴露 catalog/config/runtime/asset 操作，但不拥有 MCP、Skill 等资源的创建/重连生命周期。Agent 与 App 通过它进入 Tools。 | **确认改名候选**：`ToolsFacade`；影响跨 crate 类型名和大量 adapter 名，先完整列出消费者后单独迁移，不在 ADR 0533 混入。 |
+| UI metrics contract | `ui/src/lib/contracts/settings.ts` 用开放 `Record<string, unknown>` 表示 metrics response；生成的 `generatedCommands.ts` 同时定义 Rust-owned typed `MetricsSnapshot`。当前是同一命令响应的宽窄两种静态视图。 | **待核对后收敛**：看 `PerformanceMetricsSnapshot` 与 generated DTO 的交集是否可作为一个可扩展前端别名；需保留未知诊断字段，不改变 IPC。 |
+| 其他已扫角色 | `McpManager`、`VenvManager` 各自拥有连接/环境资源生命周期；`ConfigService` 拥有串行 config patch 与持久化；Memory repositories 中的 `*Store` 持有 SQLite 访问；UI `InteractionOwner` 会在 boundary 转成 snake_case wire owner。 | **保留并解释**：后缀/同名本身不足以证明重复；UI 与 wire owner 分开是明确的字段转换边界，MCP/venv 的 Manager 也符合生命周期语义。 |
+
+此表是候选分流清单，不是完整符号目录。尚未完成的 crate、IPC/event payload、UI controller/store 与函数动词审计仍在 §5.7 范围内；完成一域后更新本表并以 ADR 记录实际迁移。
+
 每个候选必须记录源文件、真实消费者、状态 owner、生命周期/作用域、失败与恢复语义，以及是否触及 IPC/持久化/安全契约，并归类为：**保留并解释、改名、合并、拆分或暂缓**。只有职责、权威来源与生命周期确实重复的部分才合并；不同状态作用域即使共享数据类型或方法外形也可保留独立 owner。公共 Rust API、IPC、事件、数据库字段与用户可见术语分别遵守既有版本化/兼容与重置要求。
 
-实施按领域切片：先完成符号/术语清单与依赖/消费映射，再确认候选，逐条迁移并更新调用点、测试、命名规范和架构文档；跨 crate、跨端或改变契约时按开发标准补 ADR 并运行相应门禁。每个切片完成后更新本节状态；全仓通过条件是：主要生产概念均有唯一规范词和可定位 owner，确认的重复职责完成合并或有明确暂缓理由，所有保留的相邻边界均能从命名与文档解释其不同之处。
+实施按领域切片：先完成符号/术语清单与依赖/消费映射，再确认候选，逐条迁移并更新调用点、测试、命名规范和架构文档；跨 crate、跨端或改变契约时按开发标准补 ADR 并运行相应门禁。首个 Tools 切片已将 per-session 执行集合命名为 `SessionToolOverlay`、将授权请求准备者命名为 `ToolAuthorizationRequestResolver`，并把取风险/策略/请求的 `get_*` 改为 `resolve_*`、将缩写 API `list_defs`、`list_enabled_builtin_defs` 与 `select_tool_defs_for_budget` 改为完整 tool-definition 名称（[ADR 0533](adr/0533-tool-runtime-nomenclature-alignment.md)）。这是局部迁移，不能视作 Tools 或全仓审计完成。每个切片完成后更新本节状态；全仓通过条件是：主要生产概念均有唯一规范词和可定位 owner，确认的重复职责完成合并或有明确暂缓理由，所有保留的相邻边界均能从命名与文档解释其不同之处。
 
 ## 6. 更新规则
 

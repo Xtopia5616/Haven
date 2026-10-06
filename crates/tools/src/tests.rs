@@ -69,7 +69,7 @@ fn budget_test_def(name: &str, source: ToolSource) -> ToolDef {
 
 #[test]
 fn tool_budget_selection_is_source_aware_and_deterministic() {
-    let selection = select_tool_defs_for_budget(
+    let selection = select_tool_definitions_for_budget(
         vec![
             budget_test_def("skill__z", ToolSource::Skill),
             budget_test_def("core.z", ToolSource::Builtin),
@@ -95,7 +95,7 @@ fn tool_budget_selection_is_source_aware_and_deterministic() {
 
 #[test]
 fn tool_budget_selection_reports_core_omissions_when_core_exceeds_limit() {
-    let selection = select_tool_defs_for_budget(
+    let selection = select_tool_definitions_for_budget(
         vec![
             budget_test_def("core.c", ToolSource::Builtin),
             budget_test_def("skill__a", ToolSource::Skill),
@@ -257,10 +257,14 @@ async fn authorization_policy_matches_live_and_snapshot_session_overlay() {
 
     let catalog = mgr.tool_catalog_snapshot(session_id).await;
     let live = mgr
-        .get_authorization_request(Some(session_id), tool_name, &input)
+        .resolve_authorization_request(Some(session_id), tool_name, &input)
         .await;
-    let snapshot =
-        mgr.get_authorization_request_from_snapshot(&catalog, Some(session_id), tool_name, &input);
+    let snapshot = mgr.resolve_authorization_request_from_snapshot(
+        &catalog,
+        Some(session_id),
+        tool_name,
+        &input,
+    );
 
     assert_eq!(live.session_id.as_deref(), Some(session_id));
     assert_eq!(live.tool_name, tool_name);
@@ -276,9 +280,9 @@ async fn authorization_policy_matches_live_and_snapshot_session_overlay() {
 
     let missing_name = "mcp__missing__invoke";
     let live_unknown = mgr
-        .get_authorization_request(Some(session_id), missing_name, &input)
+        .resolve_authorization_request(Some(session_id), missing_name, &input)
         .await;
-    let snapshot_unknown = mgr.get_authorization_request_from_snapshot(
+    let snapshot_unknown = mgr.resolve_authorization_request_from_snapshot(
         &catalog,
         Some(session_id),
         missing_name,
@@ -724,7 +728,7 @@ async fn test_tool_catalog_exposes_three_layers_without_loading_deferred_tools()
     assert!(window["operation_count"].as_u64().unwrap() >= 10);
     assert!(window.get("input_schema").is_none());
     assert!(
-        mgr.list_defs_for_session(session_id)
+        mgr.list_tool_definitions_for_session(session_id)
             .await
             .iter()
             .all(|def| def.name != "window.screenshot")
@@ -979,9 +983,11 @@ async fn operation_view_accepts_trusted_private_session_metadata() {
 }
 
 #[tokio::test]
-async fn test_tools_manager_get_risk_level_unknown() {
+async fn test_tools_manager_resolve_risk_level_unknown() {
     let mgr = ToolsManager::new();
-    let risk = mgr.get_risk_level(None, "nonexistent", &json!({})).await;
+    let risk = mgr
+        .resolve_risk_level(None, "nonexistent", &json!({}))
+        .await;
     assert_eq!(risk, RiskLevel::Safe);
 }
 
@@ -1393,7 +1399,7 @@ async fn test_list_schemas_for_session_includes_per_session_tools() {
 }
 
 #[tokio::test]
-async fn test_session_catalog_version_does_not_invalidate_other_sessions() {
+async fn test_session_tool_overlay_version_does_not_invalidate_other_sessions() {
     let mgr = ToolsManager::new();
     mgr.rebuild_catalog().await.unwrap();
     let before_a = mgr.catalog_version_for_session("ses-a").await;
@@ -1603,7 +1609,7 @@ async fn test_builtin_loader_keeps_deferred_tools_out_of_provider_surface() {
     assert!(mgr.registry().get("shell").await.is_none());
     assert!(mgr.get_tool("shell").await.is_some());
     assert!(
-        mgr.list_defs_for_session("ses-lazy-builtin")
+        mgr.list_tool_definitions_for_session("ses-lazy-builtin")
             .await
             .iter()
             .all(|def| def.name != "shell")
@@ -1626,17 +1632,19 @@ async fn test_builtin_loader_keeps_deferred_tools_out_of_provider_surface() {
     assert_eq!(result.output["status"], "loaded");
     assert!(result.output.get("input_schema").is_none());
 
-    let loaded = mgr.list_defs_for_session("ses-lazy-builtin").await;
+    let loaded = mgr
+        .list_tool_definitions_for_session("ses-lazy-builtin")
+        .await;
     assert!(loaded.iter().any(|def| def.name == "shell"));
 }
 
 #[tokio::test]
-async fn test_list_defs_for_session_caps_at_max_tools() {
+async fn test_list_tool_definitions_for_session_caps_at_max_tools() {
     use haven_common::config::ContextLimitsConfig;
 
     let mgr = ToolsManager::new();
     mgr.rebuild_catalog().await.unwrap();
-    let global = mgr.registry().list_defs().await.len();
+    let global = mgr.registry().list_tool_definitions().await.len();
     assert!(global > 0, "catalog should have builtins");
 
     // Leave room for only 2 session overlays. Write the limit directly so
@@ -1678,7 +1686,7 @@ async fn test_list_defs_for_session_caps_at_max_tools() {
             .await;
     }
 
-    let defs = mgr.list_defs_for_session("ses-cap").await;
+    let defs = mgr.list_tool_definitions_for_session("ses-cap").await;
     assert_eq!(defs.len(), global + 2, "must truncate session overlays");
     let session_kept: Vec<_> = defs
         .iter()

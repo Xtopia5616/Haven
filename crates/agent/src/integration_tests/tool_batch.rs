@@ -373,7 +373,9 @@ async fn run_session_contains_real_mcp_and_skill_adapter_panics() {
         (mcp_name, serde_json::json!({})),
         (skill_name, serde_json::json!({"params": {}})),
     ] {
-        let policy = tools.get_operation_policy(None, tool_name, &input).await;
+        let policy = tools
+            .resolve_operation_policy(None, tool_name, &input)
+            .await;
         tools
             .share_services()
             .authorization

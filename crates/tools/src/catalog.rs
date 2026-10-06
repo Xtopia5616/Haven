@@ -55,7 +55,7 @@ impl ToolsManager {
         self.coordinator
             .core
             .operations
-            .sessions
+            .session_tool_overlay
             .register(session_id, tool)
             .await;
     }
@@ -71,7 +71,12 @@ impl ToolsManager {
         let catalog = builtin::tool_catalog::ToolCatalogTool {
             deferred_catalog: self.coordinator.core.operations.deferred.clone(),
             registry: self.coordinator.core.operations.installed.clone(),
-            session_catalog: self.coordinator.core.operations.sessions.clone(),
+            session_tool_overlay: self
+                .coordinator
+                .core
+                .operations
+                .session_tool_overlay
+                .clone(),
             max_tools_per_request: self
                 .coordinator
                 .runtime
@@ -118,7 +123,12 @@ impl ToolsManager {
         let loader = builtin::load_skill::LoadSkillTool {
             deferred_catalog: self.coordinator.core.operations.deferred.clone(),
             registry: self.coordinator.core.operations.installed.clone(),
-            session_catalog: self.coordinator.core.operations.sessions.clone(),
+            session_tool_overlay: self
+                .coordinator
+                .core
+                .operations
+                .session_tool_overlay
+                .clone(),
             max_tools_per_request: self
                 .coordinator
                 .runtime
@@ -151,7 +161,7 @@ impl ToolsManager {
         self.coordinator
             .core
             .operations
-            .sessions
+            .session_tool_overlay
             .unregister(session_id)
             .await;
     }
@@ -218,7 +228,12 @@ impl ToolsManager {
             .list()
             .await
             .len();
-        let registrations = self.coordinator.core.operations.sessions.registrations();
+        let registrations = self
+            .coordinator
+            .core
+            .operations
+            .session_tool_overlay
+            .registrations();
         let mut reg = registrations.write().await;
         let entry = reg.entry(session_id.to_string()).or_default();
         let session_count = entry.len();
@@ -229,7 +244,7 @@ impl ToolsManager {
                 !entry.contains_key(&name)
             })
             .count();
-        if SessionCatalog::tool_budget_would_exceed(max, global_count, session_count, net_new) {
+        if SessionToolOverlay::tool_budget_would_exceed(max, global_count, session_count, net_new) {
             tracing::warn!(
                 session_id,
                 server_name,
@@ -249,7 +264,7 @@ impl ToolsManager {
         self.coordinator
             .core
             .operations
-            .sessions
+            .session_tool_overlay
             .bump_session_version(session_id)
             .await;
         true
@@ -266,7 +281,7 @@ impl ToolsManager {
                 .coordinator
                 .core
                 .operations
-                .sessions
+                .session_tool_overlay
                 .get(tid, name)
                 .await
         {
@@ -298,15 +313,15 @@ impl ToolsManager {
     /// successful MCP load still uses the all-or-nothing admission check in
     /// `register_mcp_for_session`; this method only handles defensive
     /// selection if the catalog later grows beyond the provider limit.
-    pub async fn list_defs_for_session(&self, session_id: &str) -> Vec<ToolDef> {
+    pub async fn list_tool_definitions_for_session(&self, session_id: &str) -> Vec<ToolDef> {
         self.operation_catalog()
-            .list_defs_for_session(session_id)
+            .list_tool_definitions_for_session(session_id)
             .await
     }
 
     /// Return tool schemas for a session: global registry schemas derived
     /// from [`ToolDef`]s merged with per-session registered skill/MCP
-    /// adapters. Convenience JSON view over [`Self::list_defs_for_session`].
+    /// adapters. Convenience JSON view over [`Self::list_tool_definitions_for_session`].
     pub async fn list_schemas_for_session(&self, session_id: &str) -> Vec<Value> {
         self.operation_catalog()
             .list_schemas_for_session(session_id)
@@ -412,9 +427,11 @@ impl ToolsManager {
     /// Prompt-facing catalog of every enabled builtin, including deferred
     /// operation views. This intentionally returns structured definitions only
     /// to the agent prompt builder; provider `tools[]` still uses the smaller
-    /// core + session-loaded surface from `list_defs_for_session`.
-    pub async fn list_enabled_builtin_defs(&self) -> Vec<ToolDef> {
-        self.operation_catalog().list_enabled_builtin_defs().await
+    /// core + session-loaded surface from `list_tool_definitions_for_session`.
+    pub async fn list_enabled_builtin_tool_definitions(&self) -> Vec<ToolDef> {
+        self.operation_catalog()
+            .list_enabled_builtin_tool_definitions()
+            .await
     }
 }
 
@@ -451,7 +468,7 @@ impl OperationCatalog<'_> {
                 .coordinator
                 .core
                 .operations
-                .sessions
+                .session_tool_overlay
                 .list(session_id)
                 .await;
             let after = self.manager.catalog_version_for_session(session_id).await;
@@ -475,7 +492,7 @@ impl OperationCatalog<'_> {
                 .max_tools_per_request
                 .max(1);
             let provider_definitions =
-                select_tool_defs_for_budget(global_defs, session_defs, max).selected;
+                select_tool_definitions_for_budget(global_defs, session_defs, max).selected;
             snapshot = Some((after, tools, provider_definitions));
             if before == after {
                 break;
@@ -486,7 +503,7 @@ impl OperationCatalog<'_> {
         ToolCatalogSnapshot::new_with_definitions(version, tools, provider_definitions)
     }
 
-    pub async fn list_defs_for_session(&self, session_id: &str) -> Vec<ToolDef> {
+    pub async fn list_tool_definitions_for_session(&self, session_id: &str) -> Vec<ToolDef> {
         let max = self
             .manager
             .coordinator
@@ -502,7 +519,7 @@ impl OperationCatalog<'_> {
             .core
             .operations
             .installed
-            .list_defs()
+            .list_tool_definitions()
             .await;
         let global_len = global_defs.len();
         let session_defs = self
@@ -510,11 +527,11 @@ impl OperationCatalog<'_> {
             .coordinator
             .core
             .operations
-            .sessions
-            .list_defs(session_id)
+            .session_tool_overlay
+            .list_tool_definitions(session_id)
             .await;
         let total = global_len + session_defs.len();
-        let selection = select_tool_defs_for_budget(global_defs, session_defs, max);
+        let selection = select_tool_definitions_for_budget(global_defs, session_defs, max);
         if !selection.omitted.is_empty() {
             let omitted_tools = selection.omitted.join(", ");
             tracing::warn!(
@@ -526,13 +543,13 @@ impl OperationCatalog<'_> {
                 omitted = selection.omitted.len(),
                 omitted_core = selection.omitted_core,
                 omitted_tools = %omitted_tools,
-                "list_defs_for_session: omitted tools from max_tools_per_request budget; core builtins are selected before optional sources"
+                "list_tool_definitions_for_session: omitted tools from max_tools_per_request budget; core builtins are selected before optional sources"
             );
         }
         selection.selected
     }
     pub async fn list_schemas_for_session(&self, session_id: &str) -> Vec<Value> {
-        self.list_defs_for_session(session_id)
+        self.list_tool_definitions_for_session(session_id)
             .await
             .into_iter()
             .map(|d| d.json())
@@ -593,7 +610,7 @@ impl OperationCatalog<'_> {
             })
             .collect()
     }
-    pub async fn list_enabled_builtin_defs(&self) -> Vec<ToolDef> {
+    pub async fn list_enabled_builtin_tool_definitions(&self) -> Vec<ToolDef> {
         let catalog = self.manager.coordinator.runtime.builtin_catalog().await;
         let platform = self.manager.coordinator.runtime.platform().await;
         let tools = &catalog.tools;
