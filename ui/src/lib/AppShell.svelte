@@ -233,6 +233,11 @@
 		padding-bottom: var(--workspace-surface-bottom-gap);
 		overscroll-behavior-y: none;
 	}
+	@media screen and (min-width: 840px) {
+		.content:not(.content--chat) {
+			--workspace-surface-bottom-gap: var(--md-sys-space-xl);
+		}
+	}
 	.content--chat {
 		overflow: hidden;
 		overflow-x: clip;
