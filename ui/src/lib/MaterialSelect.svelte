@@ -2,6 +2,7 @@
 	import { fly } from 'svelte/transition';
 	import { cubicOut } from 'svelte/easing';
 	import Icon from './Icon.svelte';
+	import type { ControlWidth } from './controlWidth.ts';
 
 	type SelectOption = { value: string; label: string; group?: string };
 	type MenuRow =
@@ -13,9 +14,17 @@
 		onChange?: (value: string) => void;
 		id?: string;
 		ariaLabel?: string;
+		width?: ControlWidth;
 	}
 
-	let { value = '', options = [], onChange, id = undefined, ariaLabel = '' }: Props = $props();
+	let {
+		value = '',
+		options = [],
+		onChange,
+		id = undefined,
+		ariaLabel = '',
+		width = 'fill',
+	}: Props = $props();
 
 	let open = $state(false);
 	let selectedLabel = $derived(options.find((o) => o.value === value)?.label || value);
@@ -68,7 +77,7 @@
 
 <svelte:window onkeydown={handleKeydown} onpointerdown={handleWindowPointerdown} />
 
-<div class="md-select-container" bind:this={dropdownRef}>
+<div class="md-select-container" data-width={width} bind:this={dropdownRef}>
 	<button
 		{id}
 		class="md-select-trigger"

@@ -1,12 +1,13 @@
 <script lang="ts">
 	import MaterialButton from '$lib/MaterialButton.svelte';
 	import MaterialIconButton from '$lib/MaterialIconButton.svelte';
+	import type { ControlWidth } from '$lib/controlWidth.ts';
 
 	interface Props {
 		label?: string;
 		loadingLabel?: string;
 		loading?: boolean;
-		compact?: boolean;
+		width?: ControlWidth;
 		iconOnly?: boolean;
 		size?: 'default' | 'toolbar' | 'dense';
 		onclick?: () => void;
@@ -22,7 +23,7 @@
 		label = '刷新',
 		loadingLabel = '刷新中…',
 		loading = false,
-		compact = false,
+		width = 'content',
 		iconOnly = false,
 		size = 'default',
 		onclick,
@@ -34,7 +35,6 @@
 	let buttonClass = $derived(
 		[
 			'refresh-button',
-			compact ? 'refresh-button--compact' : '',
 			loading ? 'refresh-button--loading' : '',
 			className,
 		]
@@ -58,6 +58,7 @@
 {:else}
 	<MaterialButton
 		variant="outlined"
+		{width}
 		className={buttonClass}
 		label={currentLabel}
 		ariaLabel={currentLabel}
@@ -69,11 +70,7 @@
 
 <style>
 	:global(.md-btn.refresh-button) {
-		min-width: var(--md-comp-refresh-button-width);
 		white-space: nowrap;
-	}
-	:global(.md-btn.refresh-button--compact) {
-		min-width: var(--md-comp-refresh-button-compact-width);
 	}
 	:global(.md-btn.refresh-button--loading) {
 		cursor: wait;

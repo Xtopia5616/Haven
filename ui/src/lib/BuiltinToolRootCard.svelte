@@ -2,6 +2,7 @@
 	import MaterialSwitch from '$lib/MaterialSwitch.svelte';
 	import StatusBadge from '$lib/StatusBadge.svelte';
 	import ExpandableContextCard from '$lib/ExpandableContextCard.svelte';
+	import MaterialCollapsible from '$lib/MaterialCollapsible.svelte';
 	import MaterialIconButton from '$lib/MaterialIconButton.svelte';
 	import Icon from '$lib/Icon.svelte';
 	import { copyText } from '$lib/clipboard.ts';
@@ -125,10 +126,12 @@
 						<p class="operation-desc">{operation.availabilityReason}</p>
 					{/if}
 					{#if operation.schema && Object.keys(operation.schema).length > 0}
-						<details class="operation-schema">
-							<summary>查看输入 Schema</summary>
-							<pre>{JSON.stringify(operation.schema, null, 2)}</pre>
-						</details>
+						<div class="operation-schema">
+							<MaterialCollapsible>
+								{#snippet header()}查看输入 Schema{/snippet}
+								<pre>{JSON.stringify(operation.schema, null, 2)}</pre>
+							</MaterialCollapsible>
+						</div>
 					{/if}
 				</article>
 			{/each}
@@ -224,16 +227,10 @@
 	.operation-schema {
 		margin-top: var(--md-sys-space-sm);
 	}
-	.operation-schema summary {
+	.operation-schema :global(.md-collapsible-header) {
 		color: var(--md-sys-color-primary);
-		cursor: pointer;
 		font-size: var(--md-sys-typescale-label-medium-size);
 		line-height: var(--md-sys-typescale-label-medium-line-height);
-	}
-	.operation-schema summary:focus-visible {
-		outline: none;
-		box-shadow: var(--md-sys-focus-ring);
-		border-radius: var(--md-sys-shape-extra-small);
 	}
 	:global(.expandable-context-card[data-card-kind='builtin-root'] .card-body pre) {
 		margin-top: var(--md-sys-space-xs);

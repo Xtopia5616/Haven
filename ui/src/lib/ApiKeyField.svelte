@@ -2,6 +2,7 @@
 	import MaterialButton from './MaterialButton.svelte';
 	import MaterialIconButton from './MaterialIconButton.svelte';
 	import Icon from './Icon.svelte';
+	import type { ControlWidth } from './controlWidth.ts';
 
 	interface Props {
 		mode?: 'stored' | 'edit' | 'badge';
@@ -13,6 +14,7 @@
 		keepHint?: string;
 		disabled?: boolean;
 		onEdit?: () => void;
+		width?: ControlWidth;
 	}
 
 	/**
@@ -34,6 +36,7 @@
 		keepHint = '已配置，留空保持不变',
 		disabled = false,
 		onEdit = undefined,
+		width = 'fill',
 	}: Props = $props();
 
 	const MASK = '••••••••••••••••';
@@ -66,7 +69,7 @@
 		<span class="api-key-badge-label">{configured ? '已配置' : '未配置'}</span>
 	</span>
 {:else if mode === 'edit'}
-	<div class="api-key-field" class:empty={!configured && !value} class:disabled>
+	<div class="api-key-field" data-width={width} class:empty={!configured && !value} class:disabled>
 		<input
 			{id}
 			type={showKey ? 'text' : 'password'}
@@ -89,7 +92,7 @@
 		/>
 	</div>
 {:else}
-	<div class="api-key-field" class:empty={!configured} class:disabled>
+	<div class="api-key-field" data-width={width} class:empty={!configured} class:disabled>
 		<MaterialButton
 			variant="text"
 			className="api-key-display"
@@ -196,7 +199,6 @@
 
 	:global(.md-btn.api-key-action) {
 		flex-shrink: 0;
-		min-width: 72px;
 		padding: 0 var(--md-sys-space-md);
 		border: none;
 		border-left: 1px solid var(--md-sys-color-outline-variant);

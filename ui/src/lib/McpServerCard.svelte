@@ -135,7 +135,6 @@
 			onChange={handleToggle}
 		/>
 		<RefreshButton
-			compact
 			iconOnly
 			label="刷新"
 			loadingLabel="刷新中…"

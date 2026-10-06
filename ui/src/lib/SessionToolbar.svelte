@@ -449,7 +449,6 @@
 		justify-content: flex-start;
 		gap: var(--md-sys-space-xs);
 		width: auto;
-		min-width: 112px;
 		padding-inline: var(--md-sys-space-sm);
 		border: 1px solid
 			color-mix(in srgb, var(--md-sys-color-primary) 28%, var(--md-sys-color-outline-variant));
@@ -623,7 +622,6 @@
 		display: inline-flex;
 		align-items: center;
 		gap: var(--md-sys-space-sm);
-		min-width: 84px;
 		height: var(--md-comp-toolbar-height);
 		padding: 0 var(--md-sys-space-sm);
 		border-radius: var(--md-comp-button-radius);

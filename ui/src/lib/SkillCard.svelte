@@ -227,7 +227,6 @@
 	}
 	:global(.md-btn.btn-preview) {
 		align-self: stretch;
-		min-width: 64px;
 	}
 	.preview-result {
 		margin-top: var(--md-sys-space-sm);

@@ -50,6 +50,7 @@
 					id="memory-recall-kind"
 					value={memoryRecall.kind}
 					ariaLabel="检索类型"
+					width="compact"
 					options={[
 						{ value: 'all', label: '全部记忆' },
 						{ value: 'fact', label: '事实' },
@@ -195,7 +196,6 @@
 		min-width: 0;
 	}
 	.recall-kind {
-		width: 120px;
 		flex: 0 0 auto;
 	}
 	.recall-heading,

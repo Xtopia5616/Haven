@@ -1,5 +1,6 @@
 <script lang="ts">
 	import Icon from './Icon.svelte';
+	import type { ControlWidth } from './controlWidth.ts';
 
 	interface Props {
 		value?: number;
@@ -8,6 +9,7 @@
 		step?: number;
 		onChange?: (value: number) => void;
 		id?: string;
+		width?: ControlWidth;
 	}
 
 	let {
@@ -17,6 +19,7 @@
 		step = 1,
 		onChange,
 		id = undefined,
+		width = 'fill',
 	}: Props = $props();
 
 	let stepDecimals = $derived(String(step).split('.')[1]?.length ?? 0);
@@ -47,7 +50,7 @@
 	}
 </script>
 
-<div class="md-number-field">
+<div class="md-number-field" data-width={width}>
 	<input {id} type="number" class="md-input" {min} {max} {step} {value} oninput={handleInput} />
 	<div class="stepper">
 		<button class="stepper-btn" type="button" onclick={increment} aria-label="增加">

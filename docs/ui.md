@@ -221,12 +221,17 @@
 | `MaterialChoiceChip` | 可选择的紧凑选项 | 选项集合；支持键盘回车提交等页面回调 |
 | `CountChip` | 工作区筛选栏和资源列表的数量提示 | 统一展示“共 X …”计数，不承载操作 |
 | `MaterialTabs` | 工作区和设置页 Tab 导航 | 统一 tablist、选中态和指示器 |
+| `MaterialCollapsible` | 分组、详情和辅助信息的统一展开/收起控件 | 所有区块级折叠内容；通过 `header` snippet 提供标题、状态或计数 |
 | `StatusBadge` | 成功、警告、错误、信息和中性状态 | 只表达状态，不承载动作 |
 | `MaterialCard` / `SettingsSection` / `SettingsField` | 设置页卡片、分组和字段布局 | 设置、偏好等表单型页面 |
 | `ToolCardList` / `ToolSearch` | 工具结果列表容器和搜索框 | 工具/技能/MCP 结果页 |
 | `MenuItem` / `MaterialSplitButton` | 弹出菜单项和主动作 + 更多菜单 | 上下文菜单、切换菜单和确认动作 |
 
+区块级展开/收起统一使用 `MaterialCollapsible`，不要直接使用原生 `<details>/<summary>` 或另造箭头、按钮和折叠动画。整张资源卡片的展开仍由 `ExpandableContextCard` 管理；JSON 树节点等领域专用结构继续使用对应组件（如 `JsonView`）。
+
 日期选择器的日历格、JSON 树节点、快捷键捕获、数字步进，以及任务/记忆整卡点击属于组件内部的专用交互，仍可使用原生 `button`，但必须沿用 token、焦点态和可访问性语义；它们不应被强行改造成文字按钮。
+
+按钮与表单控件统一使用 `data-width` 尺寸策略：`content`（随内容取宽）、`compact`（使用紧凑控件上限）、`standard`（使用标准设置控件上限）、`fill`（填满父级字段）和 `equal`（在 Flex 操作组中等分）。`MaterialButton`、`MaterialSelect`、`MaterialNumberField`、`MaterialNumberFieldWithUnit`、`MaterialAutocomplete` 与 `ApiKeyField` 通过 `width` prop 指定；普通输入可直接使用同名 `data-width`。`SettingsField` 默认采用 `standard`，可通过 `controlWidth` 选择其他非等分模式。设置字段统一左侧显示标签与说明，右侧对齐输入、开关和操作控件；设置页文字按钮至少采用 `compact` 宽度，成组切换按钮使用 `equal`。父布局负责响应式换行、列数和间距；避免在单个按钮或输入框上写固定像素宽度。
 
 ### 2.6 图标原语
 
@@ -600,7 +605,7 @@ Haven 工作区
 │   │   └── 记忆
 │   └── 设置
 ├── 对话工作区
-│   ├── 会话栏：新建、搜索、切换、重命名、结束
+│   ├── 会话栏：新建、切换、重命名、结束
 │   ├── 会话头部：标题、模型、当前会话状态、会话操作
 │   ├── 消息时间线：消息、思考、工具调用、确认和结果
 │   └── 统一输入区：文字、语音、图片/文件、发送、停止

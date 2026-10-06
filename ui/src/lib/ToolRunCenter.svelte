@@ -407,11 +407,11 @@
 		margin-bottom: var(--md-sys-space-lg);
 	}
 	.task-search {
-		flex: 1 1 280px;
+		flex: 1 1 var(--md-comp-settings-control-width);
 		min-width: 0;
 	}
 	.task-filter {
-		flex: 0 1 220px;
+		flex: 0 1 var(--md-comp-control-compact-width);
 		min-width: 0;
 	}
 	.task-list-panel {

@@ -18,7 +18,6 @@
 		onNew = () => {},
 		onSelect = () => {},
 	}: Props = $props();
-	let query = $state('');
 
 	// The reducer may retain the active completed session briefly so the
 	// conversation can show its termination message. It is no longer switchable
@@ -26,17 +25,6 @@
 	const switchableSessions = $derived(
 		sessions.filter((session) => session.status !== 'completed'),
 	);
-
-	const filteredSessions = $derived.by(() => {
-		const normalized = query.trim().toLocaleLowerCase();
-		if (!normalized) return switchableSessions;
-		return switchableSessions.filter((session) => {
-			const input = typeof session.input === 'string' ? session.input : '';
-			return `${sessionTitle(session)} ${input} ${session.id}`
-				.toLocaleLowerCase()
-				.includes(normalized);
-		});
-	});
 
 	function sessionTitle(session: SessionSummary): string {
 		const title = session.title || session.input;
@@ -66,29 +54,14 @@
 		{/snippet}
 	</MaterialButton>
 
-	<label class="session-rail__search">
-		<Icon name="search" size={17} />
-		<input bind:value={query} type="search" placeholder="搜索会话" aria-label="搜索会话" />
-		{#if query}
-			<button
-				type="button"
-				class="session-rail__clear"
-				aria-label="清除搜索"
-				onclick={() => (query = '')}
-			>
-				<Icon name="close" size={14} />
-			</button>
-		{/if}
-	</label>
-
 	<div class="session-rail__list-heading">
 		<span>可切换的会话</span>
-		<span>{filteredSessions.length}</span>
+		<span>{switchableSessions.length}</span>
 	</div>
 	<div class="session-rail__scroll">
-		{#if filteredSessions.length > 0}
+		{#if switchableSessions.length > 0}
 			<ul class="session-rail__list">
-				{#each filteredSessions as session (session.id)}
+				{#each switchableSessions as session (session.id)}
 					<li>
 						<button
 							type="button"
@@ -117,9 +90,9 @@
 			</ul>
 		{:else}
 			<div class="session-rail__empty">
-				<Icon name={query ? 'search' : 'chat'} size={20} />
-				<strong>{query ? '没有匹配的会话' : '从一次新对话开始'}</strong>
-				<span>{query ? '试试更短的关键词' : '你的对话会显示在这里'}</span>
+				<Icon name="chat" size={20} />
+				<strong>从一次新对话开始</strong>
+				<span>你的对话会显示在这里</span>
 			</div>
 		{/if}
 	</div>
@@ -163,52 +136,6 @@
 		justify-content: center;
 		width: 100%;
 		margin-bottom: var(--md-sys-space-md);
-	}
-	.session-rail__search {
-		display: flex;
-		align-items: center;
-		gap: var(--md-sys-space-sm);
-		min-height: 42px;
-		padding-inline: var(--md-sys-space-md);
-		border: 1px solid var(--md-sys-color-outline-variant);
-		border-radius: var(--md-sys-shape-medium);
-		background: var(--md-sys-color-surface);
-		color: var(--md-sys-color-on-surface-variant);
-		transition: border-color var(--md-sys-motion-duration-short)
-			var(--md-sys-motion-easing-standard);
-	}
-	.session-rail__search:focus-within {
-		border-color: var(--md-sys-color-primary);
-	}
-	.session-rail__search input {
-		width: 100%;
-		min-width: 0;
-		border: 0;
-		outline: 0;
-		background: transparent;
-		color: var(--md-sys-color-on-surface);
-		font: inherit;
-		font-size: var(--md-sys-typescale-body-small-size);
-	}
-	.session-rail__search input::placeholder {
-		color: var(--md-sys-color-on-surface-variant);
-		opacity: 0.8;
-	}
-	.session-rail__clear {
-		display: grid;
-		place-items: center;
-		width: 26px;
-		height: 26px;
-		flex: 0 0 26px;
-		padding: 0;
-		border: 0;
-		border-radius: var(--md-sys-shape-full);
-		background: transparent;
-		color: inherit;
-		cursor: pointer;
-	}
-	.session-rail__clear:hover {
-		background: var(--md-sys-color-surface-container-high);
 	}
 	.session-rail__list-heading {
 		display: flex;

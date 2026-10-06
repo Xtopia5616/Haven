@@ -3,12 +3,12 @@ import { describe, expect, it, vi } from 'vitest';
 import RefreshButton from './RefreshButton.svelte';
 
 describe('RefreshButton', () => {
-	it('shares loading semantics and keeps the compact geometry class', () => {
-		render(RefreshButton, { compact: true, loading: true, onclick: vi.fn() } as any);
+	it('shares loading semantics and exposes the compact sizing mode', () => {
+		render(RefreshButton, { width: 'compact', loading: true, onclick: vi.fn() } as any);
 
 		const button = screen.getByRole('button', { name: '刷新中…' });
 		expect(button.classList.contains('refresh-button')).toBe(true);
-		expect(button.classList.contains('refresh-button--compact')).toBe(true);
+		expect(button.getAttribute('data-width')).toBe('compact');
 		expect(button.classList.contains('refresh-button--loading')).toBe(true);
 		expect(button).toHaveProperty('disabled', true);
 		expect(button.getAttribute('aria-busy')).toBe('true');
@@ -22,9 +22,8 @@ describe('RefreshButton', () => {
 		expect(onclick).toHaveBeenCalledTimes(1);
 	});
 
-	it('renders compact refresh actions as a shared icon button', () => {
+	it('renders an icon-only refresh action with requested geometry', () => {
 		render(RefreshButton, {
-			compact: true,
 			iconOnly: true,
 			size: 'dense',
 			title: '刷新 MCP 连接',
@@ -32,7 +31,6 @@ describe('RefreshButton', () => {
 
 		const button = screen.getByRole('button', { name: '刷新' });
 		expect(button.classList.contains('md-icon-btn')).toBe(true);
-		expect(button.classList.contains('refresh-button--compact')).toBe(true);
 		expect(button.getAttribute('data-size')).toBe('dense');
 		expect(button.querySelector('svg')).toBeTruthy();
 		expect(button.getAttribute('title')).toBe('刷新 MCP 连接');

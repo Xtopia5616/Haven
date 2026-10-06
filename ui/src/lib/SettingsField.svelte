@@ -1,11 +1,13 @@
 <script lang="ts">
 	import type { Snippet } from 'svelte';
+	import type { ControlWidth } from './controlWidth.ts';
 
 	interface Props {
 		label?: string;
 		id?: string;
 		description?: string;
 		stacked?: boolean;
+		controlWidth?: Exclude<ControlWidth, 'equal'>;
 		className?: string;
 		children?: Snippet;
 	}
@@ -18,6 +20,7 @@
 		id = undefined,
 		description = '',
 		stacked = false,
+		controlWidth = 'standard',
 		className = '',
 		children,
 	}: Props = $props();
@@ -31,7 +34,7 @@
 		{#if id}<label for={id}>{label}</label>{:else}<span>{label}</span>{/if}
 		{#if description}<small>{description}</small>{/if}
 	</div>
-	<div class="settings-field__control">{@render children?.()}</div>
+	<div class="settings-field__control" data-width={controlWidth}>{@render children?.()}</div>
 </div>
 
 <style>
@@ -50,6 +53,7 @@
 		color: var(--md-sys-color-on-surface);
 		font-size: var(--md-sys-typescale-body-small-size);
 		line-height: var(--md-sys-typescale-body-small-line-height);
+		text-align: left;
 	}
 
 	.settings-field__label label,
@@ -66,15 +70,66 @@
 	}
 
 	.settings-field__control {
+		display: flex;
+		align-items: center;
+		justify-content: flex-end;
+		justify-self: end;
+		gap: var(--md-sys-space-sm);
+		flex-wrap: wrap;
+		width: min(100%, var(--md-comp-settings-control-width));
+		max-width: 100%;
 		min-width: 0;
 	}
+	.settings-field__control[data-width='content'] {
+		width: fit-content;
+	}
+	.settings-field__control[data-width='compact'] {
+		width: min(100%, var(--md-comp-control-compact-width));
+	}
+	.settings-field__control[data-width='fill'] {
+		width: 100%;
+	}
+	.settings-field__control > :global(.md-btn[data-width='content']) {
+		width: min(100%, var(--md-comp-control-compact-width));
+	}
 
-	.settings-field__control > :global(.md-input),
-	.settings-field__control > :global(.md-select-container),
-	.settings-field__control > :global(.md-number-field),
-	.settings-field__control > :global(.hotkey-input-wrap),
-	.settings-field__control > :global(.api-key-field) {
+	.settings-field__control[data-width='standard'] > :global(.md-input),
+	.settings-field__control[data-width='standard'] > :global(.md-select-container),
+	.settings-field__control[data-width='standard'] > :global(.md-number-field),
+	.settings-field__control[data-width='standard'] > :global(.md-number-field-with-unit),
+	.settings-field__control[data-width='standard'] > :global(.hotkey-input-wrap),
+	.settings-field__control[data-width='standard'] > :global(.api-key-field),
+	.settings-field__control[data-width='standard'] > :global(.ma-root) {
 		width: min(100%, var(--md-comp-settings-control-width));
+	}
+	.settings-field__control[data-width='content'] > :global(.md-input),
+	.settings-field__control[data-width='content'] > :global(.md-select-container),
+	.settings-field__control[data-width='content'] > :global(.md-number-field),
+	.settings-field__control[data-width='content'] > :global(.md-number-field-with-unit),
+	.settings-field__control[data-width='content'] > :global(.hotkey-input-wrap),
+	.settings-field__control[data-width='content'] > :global(.api-key-field),
+	.settings-field__control[data-width='content'] > :global(.ma-root) {
+		width: fit-content;
+		max-width: 100%;
+	}
+	.settings-field__control[data-width='compact'] > :global(.md-input),
+	.settings-field__control[data-width='compact'] > :global(.md-select-container),
+	.settings-field__control[data-width='compact'] > :global(.md-number-field),
+	.settings-field__control[data-width='compact'] > :global(.md-number-field-with-unit),
+	.settings-field__control[data-width='compact'] > :global(.hotkey-input-wrap),
+	.settings-field__control[data-width='compact'] > :global(.api-key-field),
+	.settings-field__control[data-width='compact'] > :global(.ma-root) {
+		width: min(100%, var(--md-comp-control-compact-width));
+		max-width: 100%;
+	}
+	.settings-field__control[data-width='fill'] > :global(.md-input),
+	.settings-field__control[data-width='fill'] > :global(.md-select-container),
+	.settings-field__control[data-width='fill'] > :global(.md-number-field),
+	.settings-field__control[data-width='fill'] > :global(.md-number-field-with-unit),
+	.settings-field__control[data-width='fill'] > :global(.hotkey-input-wrap),
+	.settings-field__control[data-width='fill'] > :global(.api-key-field),
+	.settings-field__control[data-width='fill'] > :global(.ma-root) {
+		width: 100%;
 	}
 
 	.settings-field--stacked {

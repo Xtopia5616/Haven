@@ -238,8 +238,6 @@
 	--md-comp-icon-button-dense-icon-size: 16px;
 	--md-comp-icon-button-touch: 48px;
 	--md-sys-icon-size: 20px;
-	--md-comp-refresh-button-width: 128px;
-	--md-comp-refresh-button-compact-width: 64px;
 	--md-comp-switch-width: 52px;
 	--md-comp-switch-height: 32px;
 	--md-comp-switch-thumb-size: 16px;
@@ -254,6 +252,7 @@
 	--md-comp-checkbox-border-width: 2px;
 	--md-comp-settings-label-width: 168px;
 	--md-comp-settings-control-width: 280px;
+	--md-comp-control-compact-width: 9rem;
 
 	/* ---------- State-layer opacity (M3 spec) ---------- */
 	--md-sys-state-hover-opacity: 0.08;
@@ -315,6 +314,15 @@
 		minmax(0, 1fr);
 	align-items: center;
 	gap: var(--md-sys-space-md);
+}
+.settings-field-layout > :first-child {
+	min-width: 0;
+	text-align: left;
+}
+.settings-field-layout > :last-child:not(.settings-field__control) {
+	width: min(100%, var(--md-comp-settings-control-width));
+	min-width: 0;
+	justify-self: end;
 }
 @container settings-content (max-width: 640px) {
 	.settings-field-layout {
@@ -859,6 +867,34 @@ samp {
 		box-shadow var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard),
 		border-radius var(--md-sys-motion-duration-fast) var(--md-sys-motion-easing-emphasized),
 		transform var(--md-sys-motion-duration-fast) var(--md-sys-motion-easing-standard);
+}
+
+/* Shared sizing modes. Groups choose the available space; controls avoid local fixed widths. */
+:is(.md-btn, .md-input, .md-textarea, .md-select-container, .md-number-field,
+	.md-number-field-with-unit, .api-key-field, .ma-root)[data-width='content'] {
+	width: fit-content;
+	max-width: 100%;
+	flex: 0 1 auto;
+}
+:is(.md-btn, .md-input, .md-textarea, .md-select-container, .md-number-field,
+	.md-number-field-with-unit, .api-key-field, .ma-root)[data-width='compact'] {
+	width: min(100%, var(--md-comp-control-compact-width));
+	max-width: 100%;
+}
+:is(.md-btn, .md-input, .md-textarea, .md-select-container, .md-number-field,
+	.md-number-field-with-unit, .api-key-field, .ma-root)[data-width='standard'] {
+	width: min(100%, var(--md-comp-settings-control-width));
+	max-width: 100%;
+}
+:is(.md-btn, .md-input, .md-textarea, .md-select-container, .md-number-field,
+	.md-number-field-with-unit, .api-key-field, .ma-root)[data-width='fill'] {
+	width: 100%;
+	max-width: 100%;
+}
+:is(.md-btn, .md-input, .md-textarea, .md-select-container, .md-number-field,
+	.md-number-field-with-unit, .api-key-field, .ma-root)[data-width='equal'] {
+	flex: 1 1 0;
+	min-width: 0;
 }
 
 /* Shared flex geometry for title, status, input, and route action bars. */

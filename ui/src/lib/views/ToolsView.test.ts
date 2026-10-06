@@ -107,7 +107,7 @@ describe('ToolsView toolbar actions', () => {
 		const mcpToolbarButtons = Array.from(document.querySelectorAll('.toolbar-actions .md-btn'));
 		const mcpToolbar = addButton.closest('.toolbar-actions');
 		await fireEvent.click(screen.getByRole('tab', { name: '技能' }));
-		const openFolderButton = screen.getByRole('button', { name: '打开文件夹' });
+		const openFolderButton = screen.getByRole('button', { name: '打开' });
 		const skillToolbarButtons = Array.from(
 			document.querySelectorAll('.toolbar-actions .md-btn'),
 		);

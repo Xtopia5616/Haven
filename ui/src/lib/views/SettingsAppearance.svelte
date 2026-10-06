@@ -52,6 +52,7 @@
 			<div class="theme-toggle-row" role="radiogroup" aria-label="主题">
 				<MaterialButton
 					variant={currentTheme === 'light' ? 'filled' : 'outlined'}
+					width="equal"
 					label="浅色"
 					role="radio"
 					ariaChecked={currentTheme === 'light'}
@@ -59,6 +60,7 @@
 				/>
 				<MaterialButton
 					variant={currentTheme === 'dark' ? 'filled' : 'outlined'}
+					width="equal"
 					label="深色"
 					role="radio"
 					ariaChecked={currentTheme === 'dark'}
@@ -155,8 +157,11 @@
 	.theme-toggle-row,
 	.accent-picker {
 		display: flex;
+		justify-content: flex-end;
 		gap: var(--md-sys-space-sm);
-		flex: 1;
+		flex: 0 1 auto;
+		width: 100%;
+		max-width: var(--md-comp-settings-control-width);
 		flex-wrap: wrap;
 	}
 	:global(.md-btn.accent-swatch-selected) {

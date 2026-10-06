@@ -1,8 +1,10 @@
 <script lang="ts">
 	import type { Snippet } from 'svelte';
+	import type { ControlWidth } from './controlWidth.ts';
 
 	interface Props {
 		variant?: 'filled' | 'tonal' | 'elevated' | 'outlined' | 'text' | 'danger';
+		width?: ControlWidth;
 		label?: string;
 		onclick?: (event: MouseEvent) => void;
 		disabled?: boolean;
@@ -25,6 +27,7 @@
 	 */
 	let {
 		variant = 'outlined',
+		width = 'content',
 		label = '',
 		onclick,
 		disabled = false,
@@ -46,6 +49,7 @@
 <button
 	{id}
 	class="md-btn md-btn--{variant} {className}"
+	data-width={width}
 	aria-label={ariaLabel || undefined}
 	aria-busy={ariaBusy === undefined ? undefined : ariaBusy}
 	aria-expanded={ariaExpanded === undefined ? undefined : ariaExpanded}

@@ -402,7 +402,6 @@
 	}
 
 	:global(.md-dialog.permission-confirmation-dialog) {
-		--confirmation-action-width: 100px;
 		width: min(560px, 100%);
 		max-height: min(720px, calc(100vh - 2 * var(--md-sys-space-xl)));
 		overflow: auto;
@@ -733,11 +732,6 @@
 	.allow-group :global(.md-btn) {
 		white-space: nowrap;
 		padding-inline: var(--md-sys-space-sm);
-	}
-
-	.allow-group :global(.md-btn.btn-once),
-	:global(.md-split-button.deny-split) {
-		width: var(--confirmation-action-width);
 	}
 
 	:global(.md-split-button.deny-split) {

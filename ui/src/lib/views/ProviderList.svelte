@@ -135,7 +135,6 @@
 					</div>
 					<div class="provider-actions" aria-label={`${provider.name} 操作`}>
 						<RefreshButton
-							compact
 							iconOnly
 							size="dense"
 							loading={refreshingAll || !!modelFetching[provider.name]}

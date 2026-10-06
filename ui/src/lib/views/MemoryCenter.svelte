@@ -81,6 +81,7 @@
 				id="memory-center-scope"
 				value={memoryRecall.kind}
 				ariaLabel="记忆范围"
+				width="compact"
 				options={memoryScopeOptions}
 				onChange={handleScopeChange}
 			/>
@@ -91,6 +92,7 @@
 					id="memory-center-source"
 					value={factSourceFilter}
 					ariaLabel="事实来源"
+					width="compact"
 					options={factSourceOptions}
 					onChange={onFactSourceFilterChange}
 				/>
@@ -190,15 +192,13 @@
 	}
 	.memory-center-search {
 		flex: 1 1 auto;
-		min-width: 180px;
+		min-width: 0;
 	}
 	.memory-center-scope {
-		width: 150px;
-		flex: 0 0 auto;
+		flex: 0 1 auto;
 	}
 	.memory-center-source {
-		width: 125px;
-		flex: 0 0 auto;
+		flex: 0 1 auto;
 	}
 	.memory-fact-form {
 		display: grid;
@@ -228,6 +228,10 @@
 		.memory-center-source {
 			flex: 1 1 0;
 			width: auto;
+		}
+		.memory-center-scope :global(.md-select-container),
+		.memory-center-source :global(.md-select-container) {
+			width: 100%;
 		}
 	}
 </style>

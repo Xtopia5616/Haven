@@ -1,5 +1,6 @@
 <script lang="ts">
 	import MaterialNumberField from './MaterialNumberField.svelte';
+	import type { ControlWidth } from './controlWidth.ts';
 
 	interface Props {
 		value?: number;
@@ -10,6 +11,7 @@
 		max?: number;
 		step?: number;
 		className?: string;
+		width?: ControlWidth;
 	}
 
 	/**
@@ -24,10 +26,11 @@
 		max = undefined,
 		step = 1,
 		className = '',
+		width = 'fill',
 	}: Props = $props();
 </script>
 
-<div class="md-number-field-with-unit {className}">
+<div class="md-number-field-with-unit {className}" data-width={width}>
 	<MaterialNumberField {value} {id} {min} {max} {step} {onChange} />
 	<span class="unit">{unit}</span>
 </div>
@@ -50,9 +53,5 @@
 		font-size: var(--md-sys-typescale-label-small-size);
 		line-height: var(--md-sys-typescale-label-small-line-height);
 		color: var(--md-sys-color-on-surface-variant);
-	}
-	:global(.md-number-field-with-unit--limit) {
-		width: min(100%, var(--md-comp-settings-control-width));
-		flex: 0 1 var(--md-comp-settings-control-width);
 	}
 </style>

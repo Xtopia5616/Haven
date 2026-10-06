@@ -753,10 +753,6 @@
 />
 
 <style>
-	.form-row :global(.md-number-field) {
-		width: min(100%, var(--md-comp-settings-control-width));
-		justify-self: start;
-	}
 	.card-list {
 		display: flex;
 		flex-direction: column;

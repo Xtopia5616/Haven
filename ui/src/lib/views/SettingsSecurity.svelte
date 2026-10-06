@@ -1,5 +1,7 @@
 <script lang="ts">
+	import { untrack } from 'svelte';
 	import MaterialButton from '$lib/MaterialButton.svelte';
+	import MaterialCollapsible from '$lib/MaterialCollapsible.svelte';
 	import MaterialDialog from '$lib/MaterialDialog.svelte';
 	import MaterialSelect from '$lib/MaterialSelect.svelte';
 	import SettingsField from '$lib/SettingsField.svelte';
@@ -155,6 +157,9 @@
 	let resetDialogOpen = $state(false);
 	let resetPending = $state(false);
 	let pendingRule = $state('');
+	let advancedBoundaryOpen = $state(
+		untrack(() => (security.writable_roots?.length ?? 0) > 0),
+	);
 	let resetScope = $state<'permanent' | 'session'>('permanent');
 	let permissions = $derived(Array.isArray(security?.permissions) ? security.permissions : []);
 	let storedSessionPermissions = $derived(Array.isArray(sessionPermissions) ? sessionPermissions : []);
@@ -341,27 +346,29 @@
 			</div>
 		</div>
 
-		<details class="advanced-boundary" open={(security.writable_roots?.length ?? 0) > 0}>
-			<summary>
-				<span>高级：自定义可写目录</span>
-				<small>{security.writable_roots?.length || 0} 个目录</small>
-			</summary>
-			<div class="advanced-boundary__body">
-				<p>留空则使用各工具自己的路径边界。每行填写一个绝对路径。</p>
-				<textarea
-					id="security-writable-roots"
-					class="security-roots"
-					rows="3"
-					value={(security.writable_roots || []).join('\n')}
-					placeholder="例如：C:\\Users\\me\\Projects\\haven"
-					oninput={(event) => {
-						security.writable_roots = inputElementValue(event)
-							.split(/\r?\n/)
-							.map((value) => value.trim())
-							.filter(Boolean);
-					}}></textarea>
-			</div>
-		</details>
+		<div class="advanced-boundary">
+			<MaterialCollapsible bind:open={advancedBoundaryOpen}>
+				{#snippet header()}
+					<span>高级：自定义可写目录</span>
+					<small>{security.writable_roots?.length || 0} 个目录</small>
+				{/snippet}
+				<div class="advanced-boundary__body">
+					<p>留空则使用各工具自己的路径边界。每行填写一个绝对路径。</p>
+					<textarea
+						id="security-writable-roots"
+						class="security-roots"
+						rows="3"
+						value={(security.writable_roots || []).join('\n')}
+						placeholder="例如：C:\\Users\\me\\Projects\\haven"
+						oninput={(event) => {
+							security.writable_roots = inputElementValue(event)
+								.split(/\r?\n/)
+								.map((value) => value.trim())
+								.filter(Boolean);
+						}}></textarea>
+				</div>
+			</MaterialCollapsible>
+		</div>
 	</div>
 
 	<div class="rules-section">
@@ -662,7 +669,7 @@
 		border-radius: var(--md-sys-shape-small);
 		background: var(--md-sys-color-surface-container-low);
 	}
-	.advanced-boundary summary {
+	.advanced-boundary :global(.md-collapsible-header) {
 		display: flex;
 		align-items: center;
 		justify-content: space-between;
@@ -671,10 +678,11 @@
 		color: var(--md-sys-color-on-surface);
 		font-size: var(--md-sys-typescale-body-small-size);
 		font-weight: 700;
-		cursor: pointer;
-		list-style-position: inside;
 	}
-	.advanced-boundary summary small {
+	.advanced-boundary :global(.md-collapsible-header-content) {
+		justify-content: space-between;
+	}
+	.advanced-boundary :global(.md-collapsible-header-content small) {
 		color: var(--md-sys-color-on-surface-variant);
 		font-weight: 400;
 	}

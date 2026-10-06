@@ -223,7 +223,7 @@
 		right: 0;
 		bottom: calc(100% + 8px);
 		z-index: 1000;
-		min-width: 280px;
+		min-width: var(--md-comp-settings-control-width);
 		max-height: 360px;
 		overflow-y: auto;
 		background: var(--md-sys-color-surface-container-high);
@@ -336,12 +336,38 @@
 	}
 	.effort-row {
 		display: flex;
-		flex-wrap: wrap;
 		gap: var(--md-sys-space-xs);
 		padding: 0 var(--md-sys-space-md) var(--md-sys-space-sm);
 	}
 	.effort-row :global(.md-choice-chip) {
 		flex: 1;
+		min-width: 0;
+		height: 32px;
+		padding: 0;
+		border-radius: var(--md-sys-shape-small);
+		background: transparent;
+		color: var(--md-sys-color-on-surface-variant);
+		font-size: var(--md-sys-typescale-label-medium-size);
+		font-weight: 600;
+		line-height: var(--md-sys-typescale-label-medium-line-height);
+		font-family: inherit;
+		transition:
+			background-color var(--md-sys-motion-duration-fast) var(--md-sys-motion-easing-standard),
+			border-color var(--md-sys-motion-duration-fast) var(--md-sys-motion-easing-standard),
+			color var(--md-sys-motion-duration-fast) var(--md-sys-motion-easing-standard);
+	}
+	.effort-row :global(.md-choice-chip:hover) {
+		border-color: var(--md-sys-color-primary);
+	}
+	.effort-row :global(.md-choice-chip.selected) {
+		border-color: var(--md-sys-color-primary);
+		background: var(--md-sys-color-primary);
+		color: var(--md-sys-color-on-primary);
+	}
+	.effort-row :global(.md-choice-chip:disabled) {
+		border-color: var(--md-sys-color-outline-variant);
+		background: var(--md-sys-color-surface-container-low);
+		color: var(--md-sys-color-on-surface-variant);
 	}
 	@media (max-width: 640px) {
 		:global(.md-btn.model-switch-btn) {

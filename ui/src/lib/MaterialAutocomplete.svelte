@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { fly } from 'svelte/transition';
 	import { cubicOut } from 'svelte/easing';
+	import type { ControlWidth } from './controlWidth.ts';
 
 	type AutocompleteOption = { value: string; label?: string };
 
@@ -12,6 +13,7 @@
 		loading?: boolean;
 		onChange?: (value: string) => void;
 		onFocus?: () => void;
+		width?: ControlWidth;
 	}
 
 	let {
@@ -22,6 +24,7 @@
 		loading = false,
 		onChange = undefined,
 		onFocus = undefined,
+		width = 'fill',
 	}: Props = $props();
 
 	let text = $state('');
@@ -72,7 +75,7 @@
 
 <svelte:window onkeydown={handleKeydown} />
 
-<div class="ma-root" bind:this={rootRef}>
+<div class="ma-root" data-width={width} bind:this={rootRef}>
 	<input
 		{id}
 		type="text"

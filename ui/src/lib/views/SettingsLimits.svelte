@@ -496,7 +496,7 @@
 								>{/if}{#if f.hint}<p class="limit-hint">{f.hint}</p>{/if}
 						</div>
 						<MaterialNumberFieldWithUnit
-							className="md-number-field-with-unit--limit"
+							width="standard"
 							id="limit-{f.key}"
 							value={limitDisplay(f.key, contextLimits[f.key])}
 							step={f.step ?? 1}
@@ -523,7 +523,7 @@
 											>{#if f.hint}<p class="limit-hint">{f.hint}</p>{/if}
 										</div>
 										<MaterialNumberFieldWithUnit
-											className="md-number-field-with-unit--limit"
+											width="standard"
 											id="limit-{f.key}"
 											value={limitDisplay(f.key, contextLimits[f.key])}
 											step={f.step ?? 1}

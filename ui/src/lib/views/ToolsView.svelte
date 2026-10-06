@@ -426,6 +426,7 @@
 							id="resource-enabled-filter"
 							value={enabledFilter}
 							ariaLabel="启用状态"
+							width="compact"
 							options={[
 								{ value: 'all', label: '全部状态' },
 								{ value: 'enabled', label: '仅启用' },
@@ -489,9 +490,14 @@
 					>
 						{#snippet children()}
 							<div class="toolbar-actions toolbar-actions--paired">
-								<RefreshButton loading={mcpRefreshing} onclick={refreshMcpList} />
+								<RefreshButton
+									width="equal"
+									loading={mcpRefreshing}
+									onclick={refreshMcpList}
+								/>
 								<MaterialButton
 									variant="outlined"
+									width="equal"
 									label="添加"
 									onclick={openAddDialog}
 								/>
@@ -534,10 +540,15 @@
 					>
 						{#snippet children()}
 							<div class="toolbar-actions toolbar-actions--paired">
-								<RefreshButton loading={skillsRefreshing} onclick={refreshSkills} />
+								<RefreshButton
+									width="equal"
+									loading={skillsRefreshing}
+									onclick={refreshSkills}
+								/>
 								<MaterialButton
 									variant="outlined"
-									label="打开文件夹"
+									width="equal"
+									label="打开"
 									onclick={openFolder}
 								/>
 							</div>
@@ -586,7 +597,7 @@
 		margin-bottom: var(--md-sys-space-lg);
 	}
 	.resource-search {
-		flex: 1 1 280px;
+		flex: 1 1 var(--md-comp-settings-control-width);
 		min-width: 0;
 	}
 	.resource-filter-controls {
@@ -596,8 +607,7 @@
 		min-width: 0;
 	}
 	.resource-filter-controls :global(.md-select-container) {
-		width: 140px;
-		flex-shrink: 0;
+		flex: 0 1 auto;
 	}
 	:global(.resource-count) {
 		flex: 0 0 auto;
@@ -622,14 +632,6 @@
 	}
 	.toolbar-actions--paired {
 		flex: 0 0 auto;
-	}
-	.toolbar-actions--paired :global(.md-btn) {
-		flex: 1 1 0;
-		min-width: 0;
-		white-space: nowrap;
-	}
-	.toolbar-actions--paired :global(.refresh-button) {
-		flex: 0 0 var(--md-comp-refresh-button-width);
 	}
 	.sr-only {
 		position: absolute;
@@ -667,9 +669,6 @@
 		}
 		.toolbar-actions--paired {
 			flex: 0 0 100%;
-		}
-		.toolbar-actions--paired :global(.refresh-button) {
-			flex: 1 1 0;
 		}
 		.toolbar-actions :global(.md-btn) {
 			flex: 1 1 0;
