@@ -6,6 +6,7 @@
 //! The outer run owns the step budget and lifecycle transitions.
 
 use super::effects::{EffectBatch, TurnEffect};
+use super::identity::StreamBlockIdentity;
 use super::response_cycle::{AcceptedResponse, ResponseCycleOutcome};
 use super::tool_batch_policy::ToolRetryBudget;
 use super::turn_end::TurnEndInput;
@@ -140,8 +141,12 @@ impl ReActEngine {
             web_search_calls: response.web_search_calls.clone(),
             thinking_blocks: response.thinking_blocks.clone(),
             tool_call_cards: Vec::new(),
-            persist_text_id: (synthesized_final && thought.is_none())
-                .then(|| state.block_msg_id(ctx.step_num, ctx.run_id, "thought")),
+            persist_text_id: (synthesized_final && thought.is_none()).then(|| {
+                state.stream_block_message_id_or_new(StreamBlockIdentity::thought(
+                    ctx.step_num,
+                    ctx.run_id,
+                ))
+            }),
         });
 
         if tool_calls.is_empty() {
@@ -398,7 +403,9 @@ impl ReActEngine {
         drop(request_context);
 
         if let Some(reasoning) = response.reasoning.clone() {
-            let reasoning_id = state.block_msg_id(step_num, ctx.run_id, "reasoning");
+            let reasoning_id = state.stream_block_message_id_or_new(
+                StreamBlockIdentity::reasoning(step_num, ctx.run_id),
+            );
             effects.transcript(TranscriptEvent::Reasoning {
                 text: reasoning.clone(),
                 message_id: reasoning_id.clone(),
@@ -436,7 +443,8 @@ impl ReActEngine {
         }
 
         if let Some(text) = thought.clone() {
-            let message_id = state.block_msg_id(step_num, ctx.run_id, "thought");
+            let message_id = state
+                .stream_block_message_id_or_new(StreamBlockIdentity::thought(step_num, ctx.run_id));
             effects.transcript(TranscriptEvent::Thought { text, message_id });
         }
 

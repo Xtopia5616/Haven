@@ -7,56 +7,93 @@
 use std::collections::HashMap;
 use std::sync::Mutex;
 
-/// Key for a streamed thought/reasoning block within a run.
-pub(crate) type StreamBlockKey = (u32, u64, &'static str);
+/// Identity of one streamed thought or reasoning block within a run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) struct StreamBlockIdentity {
+    step_number: u32,
+    run_id: u64,
+    block_kind: StreamBlockKind,
+}
+
+impl StreamBlockIdentity {
+    pub(crate) const fn thought(step_number: u32, run_id: u64) -> Self {
+        Self {
+            step_number,
+            run_id,
+            block_kind: StreamBlockKind::Thought,
+        }
+    }
+
+    pub(crate) const fn reasoning(step_number: u32, run_id: u64) -> Self {
+        Self {
+            step_number,
+            run_id,
+            block_kind: StreamBlockKind::Reasoning,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum StreamBlockKind {
+    Thought,
+    Reasoning,
+}
+
+impl StreamBlockKind {
+    const fn message_id_prefix(self) -> &'static str {
+        match self {
+            Self::Thought => "step",
+            Self::Reasoning => "msg",
+        }
+    }
+}
 
 /// Mint or reuse message ids for streamed blocks.
 #[derive(Debug, Default)]
 pub(crate) struct IdentityMap {
-    step_msg_ids: Mutex<HashMap<StreamBlockKey, String>>,
+    stream_block_message_ids: Mutex<HashMap<StreamBlockIdentity, String>>,
 }
 
 impl IdentityMap {
     #[cfg(test)]
     pub(crate) fn new() -> Self {
         Self {
-            step_msg_ids: Mutex::new(HashMap::new()),
+            stream_block_message_ids: Mutex::new(HashMap::new()),
         }
     }
 
     /// Mint (or reuse) the id a streamed thought/reasoning block of
-    /// `(step, run, kind)` accumulates into. The owning state already scopes
-    /// this key to one ReAct run.
+    /// this identity accumulates into. The owning state already scopes the
+    /// map to one ReAct run.
     ///
     /// A `thought` block is the content view of a ReAct step: its id is
     /// minted with the `step-` prefix so the message row and the thought
     /// step row share one entity. `reasoning` blocks keep `msg-` ids.
-    pub(crate) fn ensure_msg_id(&self, step: u32, run: u64, kind: &'static str) -> String {
-        let mut map = self.step_msg_ids.lock().unwrap();
-        map.entry((step, run, kind))
-            .or_insert_with(|| {
-                let prefix = if kind == "thought" { "step" } else { "msg" };
-                haven_common::types::new_id(prefix)
-            })
+    pub(crate) fn ensure_stream_block_message_id(&self, identity: StreamBlockIdentity) -> String {
+        let mut message_ids = self.stream_block_message_ids.lock().unwrap();
+        message_ids
+            .entry(identity)
+            .or_insert_with(|| haven_common::types::new_id(identity.block_kind.message_id_prefix()))
             .clone()
     }
 
     /// Read the minted id for a block without consuming it.
-    pub(crate) fn peek_msg_id(&self, step: u32, run: u64, kind: &'static str) -> Option<String> {
-        self.step_msg_ids
+    pub(crate) fn peek_stream_block_message_id(
+        &self,
+        identity: StreamBlockIdentity,
+    ) -> Option<String> {
+        self.stream_block_message_ids
             .lock()
             .unwrap()
-            .get(&(step, run, kind))
+            .get(&identity)
             .cloned()
     }
 
     /// Id a streamed block is persisted under: minted id when the block
     /// streamed, else a fresh id with the same per-kind prefix.
-    pub(crate) fn block_msg_id(&self, step: u32, run: u64, kind: &'static str) -> String {
-        self.peek_msg_id(step, run, kind).unwrap_or_else(|| {
-            let prefix = if kind == "thought" { "step" } else { "msg" };
-            haven_common::types::new_id(prefix)
-        })
+    pub(crate) fn stream_block_message_id_or_new(&self, identity: StreamBlockIdentity) -> String {
+        self.peek_stream_block_message_id(identity)
+            .unwrap_or_else(|| haven_common::types::new_id(identity.block_kind.message_id_prefix()))
     }
 }
 
@@ -67,8 +104,9 @@ mod tests {
     #[test]
     fn ensure_reuses_same_id_for_block() {
         let map = IdentityMap::new();
-        let a = map.ensure_msg_id(1, 7, "thought");
-        let b = map.ensure_msg_id(1, 7, "thought");
+        let identity = StreamBlockIdentity::thought(1, 7);
+        let a = map.ensure_stream_block_message_id(identity);
+        let b = map.ensure_stream_block_message_id(identity);
         assert_eq!(a, b);
         assert!(a.starts_with("step-"));
     }
@@ -76,25 +114,39 @@ mod tests {
     #[test]
     fn reasoning_uses_msg_prefix() {
         let map = IdentityMap::new();
-        let id = map.ensure_msg_id(1, 7, "reasoning");
+        let id = map.ensure_stream_block_message_id(StreamBlockIdentity::reasoning(1, 7));
         assert!(id.starts_with("msg-"));
     }
 
     #[test]
     fn ids_are_scoped_to_step_run_and_kind() {
         let map = IdentityMap::new();
-        let thought = map.ensure_msg_id(1, 1, "thought");
-        assert_ne!(thought, map.ensure_msg_id(1, 2, "thought"));
-        assert_ne!(thought, map.ensure_msg_id(2, 1, "thought"));
-        assert_ne!(thought, map.ensure_msg_id(1, 1, "reasoning"));
-        assert_eq!(map.peek_msg_id(1, 1, "thought"), Some(thought));
+        let thought_identity = StreamBlockIdentity::thought(1, 1);
+        let thought = map.ensure_stream_block_message_id(thought_identity);
+        assert_ne!(
+            thought,
+            map.ensure_stream_block_message_id(StreamBlockIdentity::thought(1, 2))
+        );
+        assert_ne!(
+            thought,
+            map.ensure_stream_block_message_id(StreamBlockIdentity::thought(2, 1))
+        );
+        assert_ne!(
+            thought,
+            map.ensure_stream_block_message_id(StreamBlockIdentity::reasoning(1, 1))
+        );
+        assert_eq!(
+            map.peek_stream_block_message_id(thought_identity),
+            Some(thought)
+        );
     }
 
     #[test]
-    fn block_msg_id_falls_back_to_fresh_prefix() {
+    fn stream_block_message_id_or_new_mints_without_storing() {
         let map = IdentityMap::new();
-        let id = map.block_msg_id(9, 1, "thought");
+        let identity = StreamBlockIdentity::thought(9, 1);
+        let id = map.stream_block_message_id_or_new(identity);
         assert!(id.starts_with("step-"));
-        assert!(map.peek_msg_id(9, 1, "thought").is_none());
+        assert!(map.peek_stream_block_message_id(identity).is_none());
     }
 }

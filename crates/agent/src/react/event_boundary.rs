@@ -7,6 +7,7 @@
 use tokio_util::sync::CancellationToken;
 use tracing::Instrument;
 
+use super::identity::StreamBlockIdentity;
 use super::{PauseReason, StepCtx, *};
 use crate::types::{BranchPoint, TranscriptRecord};
 use haven_memory::{RecoveryPersistenceStatus, SessionCursor, SessionEventInput};
@@ -711,7 +712,10 @@ impl ReActEngine {
         let mut partial_messages = true;
         let mut projection = true;
         if !reasoning_text.trim().is_empty() {
-            let message_id = state.block_msg_id(ctx.step_num, ctx.run_id, "reasoning");
+            let message_id = state.stream_block_message_id_or_new(StreamBlockIdentity::reasoning(
+                ctx.step_num,
+                ctx.run_id,
+            ));
             if let Err(error) = self
                 .persist_recovery_partial(
                     &ctx.session_id,
@@ -734,7 +738,10 @@ impl ReActEngine {
         }
         if !thought_text.trim().is_empty() {
             let text = thought_text.trim();
-            let message_id = state.block_msg_id(ctx.step_num, ctx.run_id, "thought");
+            let message_id = state.stream_block_message_id_or_new(StreamBlockIdentity::thought(
+                ctx.step_num,
+                ctx.run_id,
+            ));
             if let Err(error) = self
                 .persist_recovery_partial(
                     &ctx.session_id,

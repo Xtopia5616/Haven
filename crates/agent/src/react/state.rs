@@ -14,7 +14,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
-use super::identity::IdentityMap;
+use super::identity::{IdentityMap, StreamBlockIdentity};
 use super::{MediaRequirements, canonical_media_summary};
 use crate::compactor::estimate_message_tokens;
 use crate::types::{BranchPoint, TranscriptRecord};
@@ -119,8 +119,8 @@ impl ReActState {
         }
     }
 
-    pub(super) fn block_msg_id(&self, step: u32, run: u64, kind: &'static str) -> String {
-        self.identity_map.block_msg_id(step, run, kind)
+    pub(super) fn stream_block_message_id_or_new(&self, identity: StreamBlockIdentity) -> String {
+        self.identity_map.stream_block_message_id_or_new(identity)
     }
 
     /// Mark a non-append canonical edit (for example a MEMORY fence refresh).
@@ -277,10 +277,17 @@ mod tests {
         let first = ReActState::new(Vec::new(), Vec::new(), HashMap::new());
         let second = ReActState::new(Vec::new(), Vec::new(), HashMap::new());
 
-        let first_id = first.identity_map.ensure_msg_id(3, 8, "thought");
-        assert_eq!(first.identity_map.ensure_msg_id(3, 8, "thought"), first_id);
-        assert_eq!(first.block_msg_id(3, 8, "thought"), first_id);
-        assert_ne!(second.identity_map.ensure_msg_id(3, 8, "thought"), first_id);
+        let identity = StreamBlockIdentity::thought(3, 8);
+        let first_id = first.identity_map.ensure_stream_block_message_id(identity);
+        assert_eq!(
+            first.identity_map.ensure_stream_block_message_id(identity),
+            first_id
+        );
+        assert_eq!(first.stream_block_message_id_or_new(identity), first_id);
+        assert_ne!(
+            second.identity_map.ensure_stream_block_message_id(identity),
+            first_id
+        );
     }
 
     #[test]

@@ -5,7 +5,7 @@
 //! and never constructs [`StreamForwarder`].
 
 use super::event_boundary::RecoveryPersistenceResult;
-use super::identity::IdentityMap;
+use super::identity::{IdentityMap, StreamBlockIdentity};
 use super::*;
 use crate::types::media_inputs_from_events;
 use haven_common::config::RequestKind;
@@ -761,8 +761,11 @@ impl ReActEngine {
         }
         // Mint the block ids this call's chunks accumulate into. Reused by
         // the chunk events, the snap and the final persistence of this step.
-        let thought_msg_id = identity_map.ensure_msg_id(ctx.step_num, ctx.run_id, "thought");
-        let reasoning_msg_id = identity_map.ensure_msg_id(ctx.step_num, ctx.run_id, "reasoning");
+        let thought_msg_id = identity_map
+            .ensure_stream_block_message_id(StreamBlockIdentity::thought(ctx.step_num, ctx.run_id));
+        let reasoning_msg_id = identity_map.ensure_stream_block_message_id(
+            StreamBlockIdentity::reasoning(ctx.step_num, ctx.run_id),
+        );
         let limits = self.limits();
         let (forwarder, on_chunk, on_attempt_start) = StreamForwarder::new(
             self.metrics.clone(),
@@ -1469,11 +1472,11 @@ mod tests {
         assert!(matches!(outcome, StepCallOutcome::Response(_)));
         let thought_id = state
             .identity_map
-            .peek_msg_id(ctx.step_num, ctx.run_id, "thought")
+            .peek_stream_block_message_id(StreamBlockIdentity::thought(ctx.step_num, ctx.run_id))
             .expect("primary stream minted thought id");
         let reasoning_id = state
             .identity_map
-            .peek_msg_id(ctx.step_num, ctx.run_id, "reasoning")
+            .peek_stream_block_message_id(StreamBlockIdentity::reasoning(ctx.step_num, ctx.run_id))
             .expect("primary stream minted reasoning id");
 
         let retry_context = RequestContext::from_state(&state, None);
@@ -1482,14 +1485,20 @@ mod tests {
         assert_eq!(
             state
                 .identity_map
-                .peek_msg_id(ctx.step_num, ctx.run_id, "thought"),
+                .peek_stream_block_message_id(StreamBlockIdentity::thought(
+                    ctx.step_num,
+                    ctx.run_id,
+                )),
             Some(thought_id),
             "a response retry must keep appending to the original thought bubble"
         );
         assert_eq!(
             state
                 .identity_map
-                .peek_msg_id(ctx.step_num, ctx.run_id, "reasoning"),
+                .peek_stream_block_message_id(StreamBlockIdentity::reasoning(
+                    ctx.step_num,
+                    ctx.run_id,
+                )),
             Some(reasoning_id),
             "a response retry must keep appending to the original reasoning bubble"
         );

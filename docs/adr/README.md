@@ -572,3 +572,4 @@
 - [0581：明确 capture engine 角色与重采样动作](0581-name-capture-engine-and-resampling-api.md)
 - [0582：区分媒体粗分类与 MIME 类型](0582-distinguish-detected-media-kind-and-mime-type.md)
 - [0583：为 Tools 文件与受管媒体分类使用具名结果](0583-name-tools-file-classification-results.md)
+- [0584：为 ReAct 流式消息使用结构化身份](0584-name-react-stream-block-identity.md)

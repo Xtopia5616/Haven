@@ -9,6 +9,7 @@
 use serde_json::Value;
 
 use super::effects::{EffectBatch, TurnControl, TurnEffect};
+use super::identity::StreamBlockIdentity;
 use super::transcript::TranscriptEvent;
 use super::*;
 
@@ -63,7 +64,12 @@ impl ReActEngine {
         let persist_text_id = if thought_projected || already_pushed {
             None
         } else {
-            Some(state.block_msg_id(ctx.step_num, ctx.run_id, "thought"))
+            Some(
+                state.stream_block_message_id_or_new(StreamBlockIdentity::thought(
+                    ctx.step_num,
+                    ctx.run_id,
+                )),
+            )
         };
 
         let mut effects = EffectBatch::continue_batch();
