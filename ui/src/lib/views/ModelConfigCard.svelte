@@ -165,6 +165,7 @@
 									<input
 										id="{fieldId}-{capability.value}"
 										type="checkbox"
+										class="capability-checkbox-input"
 										checked={(model.capabilities || []).includes(
 											capability.value,
 										)}
@@ -175,6 +176,7 @@
 												event.currentTarget.checked,
 											)}
 									/>
+									<span class="capability-checkbox-box" aria-hidden="true"></span>
 									<span>{capability.label}</span>
 								</label>
 							{/each}
@@ -436,6 +438,7 @@
 		gap: var(--md-sys-space-sm) var(--md-sys-space-lg);
 	}
 	.capability-option {
+		position: relative;
 		display: inline-flex;
 		align-items: center;
 		gap: var(--md-sys-space-xs);
@@ -443,6 +446,82 @@
 		color: var(--md-sys-color-on-surface);
 		font-size: var(--md-sys-typescale-body-small-size);
 		cursor: pointer;
+		user-select: none;
+	}
+	.capability-checkbox-input {
+		position: absolute;
+		inset: 0;
+		z-index: 1;
+		width: 100%;
+		height: 100%;
+		margin: 0;
+		appearance: none;
+		opacity: 0;
+		cursor: inherit;
+	}
+	.capability-checkbox-box {
+		position: relative;
+		isolation: isolate;
+		box-sizing: border-box;
+		width: var(--md-comp-checkbox-size);
+		height: var(--md-comp-checkbox-size);
+		flex: 0 0 var(--md-comp-checkbox-size);
+		border: var(--md-comp-checkbox-border-width) solid var(--md-sys-color-outline);
+		border-radius: var(--md-sys-shape-extra-small);
+		background: transparent;
+		color: var(--md-sys-color-on-surface);
+		transition:
+			background-color var(--md-sys-motion-duration-short)
+				var(--md-sys-motion-easing-standard),
+			border-color var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard);
+	}
+	.capability-checkbox-box::before {
+		content: '';
+		position: absolute;
+		z-index: -1;
+		top: 50%;
+		left: 50%;
+		width: var(--md-comp-checkbox-state-layer-size);
+		height: var(--md-comp-checkbox-state-layer-size);
+		border-radius: var(--md-sys-shape-full);
+		background: currentColor;
+		opacity: 0;
+		transform: translate(-50%, -50%);
+		transition:
+			opacity var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard);
+		pointer-events: none;
+	}
+	.capability-checkbox-box::after {
+		content: '';
+		position: absolute;
+		top: 50%;
+		left: 50%;
+		width: 5px;
+		height: 9px;
+		border: solid var(--md-sys-color-on-primary);
+		border-width: 0 2px 2px 0;
+		opacity: 0;
+		transform: translate(-50%, -60%) rotate(45deg);
+		transition:
+			opacity var(--md-sys-motion-duration-fast) var(--md-sys-motion-easing-standard);
+		pointer-events: none;
+	}
+	.capability-checkbox-input:checked + .capability-checkbox-box {
+		border-color: var(--md-sys-color-primary);
+		background: var(--md-sys-color-primary);
+		color: var(--md-sys-color-primary);
+	}
+	.capability-checkbox-input:checked + .capability-checkbox-box::after {
+		opacity: 1;
+	}
+	.capability-checkbox-input:focus-visible + .capability-checkbox-box {
+		box-shadow: var(--md-sys-focus-ring);
+	}
+	.capability-option:hover .capability-checkbox-box::before {
+		opacity: var(--md-sys-state-hover-opacity);
+	}
+	.capability-option:active .capability-checkbox-box::before {
+		opacity: var(--md-sys-state-pressed-opacity);
 	}
 	.model-editor > :global(.md-collapsible) {
 		padding-top: var(--md-sys-space-sm);

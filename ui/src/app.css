@@ -249,6 +249,9 @@
 	--md-comp-switch-thumb-selected-offset: 24px;
 	--md-comp-switch-state-layer-size: 40px;
 	--md-comp-switch-icon-size: 16px;
+	--md-comp-checkbox-size: 18px;
+	--md-comp-checkbox-state-layer-size: 40px;
+	--md-comp-checkbox-border-width: 2px;
 	--md-comp-settings-label-width: 168px;
 	--md-comp-settings-control-width: 280px;
 
