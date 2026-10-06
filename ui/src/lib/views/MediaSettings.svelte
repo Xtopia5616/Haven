@@ -233,7 +233,7 @@
 				等派生表示；策略不会把本机路径发送给模型。
 			</p>
 		</div>
-		<div class="model-field strategy-field">
+		<div class="model-field settings-field-layout strategy-field">
 			<span class="field-label">附件进入模型的方式</span><MaterialSelect
 				id="media-input-strategy"
 				value={mediaInputStrategy}
@@ -336,7 +336,7 @@
 							选「音频模型」。也可选已配置 Provider 或 MCP。
 						</p>
 						<div class="stt-grid">
-							<div class="model-field">
+							<div class="model-field settings-field-layout">
 								<span class="field-label">转写服务</span><MaterialSelect
 									id="voice-stt-provider"
 									value={stt.provider}
@@ -345,7 +345,7 @@
 								/>
 							</div>
 							{#if stt.provider === 'mcp'}
-								<div class="model-field">
+								<div class="model-field settings-field-layout">
 									<span class="field-label">MCP 服务器</span><MaterialAutocomplete
 										id="voice-stt-mcp"
 										value={stt.mcp_server ?? ''}
@@ -362,7 +362,7 @@
 								</div>
 							{:else if isNamedSttProvider(stt.provider)}
 								{#if sttBackendKind(stt.provider)}
-									<div class="model-field">
+									<div class="model-field settings-field-layout">
 										<span class="field-label">模型 ID</span
 										><MaterialAutocomplete
 											id="voice-stt-model"
@@ -384,7 +384,7 @@
 									</p>{/if}
 							{/if}
 							{#if stt.provider !== 'none'}
-								<div class="model-field">
+								<div class="model-field settings-field-layout">
 									<span class="field-label">超时时间（秒）</span
 									><MaterialNumberField
 										id="voice-stt-timeout"
@@ -396,20 +396,24 @@
 										})}
 									/>
 								</div>
-								<div class="model-field">
-									<span class="field-label">最低置信度</span><input
-										id="voice-stt-min-confidence"
-										type="range"
-										class="md-slider"
-										value={stt.min_confidence}
-										min="0"
-										max="1"
-										step="0.05"
-										style="--vad-fill: {stt.min_confidence * 100}%"
-										oninput={withEventValue((e) => {
-											stt.min_confidence = Number(inputElementValue(e));
-										})}
-									/><span class="range-value">{stt.min_confidence}</span>
+								<div class="model-field settings-field-layout">
+									<span class="field-label">最低置信度</span>
+									<div class="range-control">
+										<input
+											id="voice-stt-min-confidence"
+											type="range"
+											class="md-slider"
+											value={stt.min_confidence}
+											min="0"
+											max="1"
+											step="0.05"
+											style="--vad-fill: {stt.min_confidence * 100}%"
+											oninput={withEventValue((e) => {
+												stt.min_confidence = Number(inputElementValue(e));
+											})}
+										/>
+										<span class="range-value">{stt.min_confidence}</span>
+									</div>
 								</div>
 							{/if}
 						</div>
@@ -425,7 +429,7 @@
 							Provider。TTS 只产生扬声器输出，不会自动触发通知。
 						</p>
 						<div class="stt-grid">
-							<div class="model-field">
+							<div class="model-field settings-field-layout">
 								<span class="field-label">语音合成服务</span><MaterialSelect
 									id="tts-provider"
 									value={tts.provider}
@@ -437,7 +441,7 @@
 							</div>
 							{#if tts.provider !== 'none'}
 								{#if mediaProviderKind(tts.provider, 'tts') === 'elevenlabs'}<div
-										class="model-field"
+										class="model-field settings-field-layout"
 									>
 										<span class="field-label">音色 ID</span><input
 											id="tts-voice"
@@ -449,7 +453,7 @@
 										/>
 									</div>
 								{:else if mediaProviderKind(tts.provider, 'tts') === 'openai'}<div
-										class="model-field"
+										class="model-field settings-field-layout"
 									>
 										<span class="field-label">模型 ID</span><input
 											id="tts-model"
@@ -460,7 +464,7 @@
 											autocomplete="off"
 										/>
 									</div>
-									<div class="model-field">
+									<div class="model-field settings-field-layout">
 										<span class="field-label">音色</span><input
 											id="tts-voice"
 											type="text"
@@ -473,7 +477,7 @@
 								{:else}<p class="model-hint">
 										该 Provider 不支持 TTS（需 OpenAI 兼容）。
 									</p>{/if}
-								<div class="model-field">
+								<div class="model-field settings-field-layout">
 									<span class="field-label">超时时间（秒）</span
 									><MaterialNumberField
 										id="tts-timeout"
@@ -567,7 +571,7 @@
 							失败或低置信度时回落到 Image Model。
 						</p>
 						<div class="stt-grid">
-							<div class="model-field">
+							<div class="model-field settings-field-layout">
 								<span class="field-label">OCR 服务</span><MaterialSelect
 									id="img-ocr-provider"
 									value={ocr.provider}
@@ -578,7 +582,7 @@
 								/>
 							</div>
 							{#if ocr.provider === 'baidu' || ocr.provider === 'tencent' || ocr.provider === 'azure'}<div
-									class="model-field"
+									class="model-field settings-field-layout"
 								>
 									<span class="field-label">API 密钥</span><ApiKeyField
 										id="img-ocr-api-key"
@@ -587,7 +591,7 @@
 									/>
 								</div>{/if}
 							{#if ocr.provider === 'baidu' || ocr.provider === 'tencent'}<div
-									class="model-field"
+									class="model-field settings-field-layout"
 								>
 									<span class="field-label">Secret 密钥</span><ApiKeyField
 										id="img-ocr-secret"
@@ -595,7 +599,7 @@
 										onEdit={() => openKeyDialog('ocr_secret', 'OCR Secret Key')}
 									/>
 								</div>{/if}
-							{#if ocr.provider === 'azure'}<div class="model-field">
+							{#if ocr.provider === 'azure'}<div class="model-field settings-field-layout">
 									<span class="field-label">服务地址</span><input
 										id="img-ocr-base-url"
 										type="text"
@@ -605,7 +609,7 @@
 										autocomplete="off"
 									/>
 								</div>{/if}
-							{#if ocr.provider !== 'none'}<div class="model-field">
+							{#if ocr.provider !== 'none'}<div class="model-field settings-field-layout">
 									<span class="field-label">超时时间（秒）</span
 									><MaterialNumberField
 										id="img-ocr-timeout"
@@ -617,20 +621,24 @@
 										})}
 									/>
 								</div>
-								<div class="model-field">
-									<span class="field-label">最低置信度</span><input
-										id="img-ocr-min-confidence"
-										type="range"
-										class="md-slider"
-										value={ocr.min_confidence}
-										min="0"
-										max="1"
-										step="0.05"
-										style="--vad-fill: {ocr.min_confidence * 100}%"
-										oninput={withEventValue((e) => {
-											ocr.min_confidence = Number(inputElementValue(e));
-										})}
-									/><span class="range-value">{ocr.min_confidence}</span>
+								<div class="model-field settings-field-layout">
+									<span class="field-label">最低置信度</span>
+									<div class="range-control">
+										<input
+											id="img-ocr-min-confidence"
+											type="range"
+											class="md-slider"
+											value={ocr.min_confidence}
+											min="0"
+											max="1"
+											step="0.05"
+											style="--vad-fill: {ocr.min_confidence * 100}%"
+											oninput={withEventValue((e) => {
+												ocr.min_confidence = Number(inputElementValue(e));
+											})}
+										/>
+										<span class="range-value">{ocr.min_confidence}</span>
+									</div>
 								</div>{/if}
 						</div>
 					</div>
@@ -641,7 +649,7 @@
 							Gemini Provider。
 						</p>
 						<div class="stt-grid">
-							<div class="model-field">
+							<div class="model-field settings-field-layout">
 								<span class="field-label">图像生成服务</span><MaterialSelect
 									id="ig-provider"
 									value={imageGen.provider}
@@ -652,7 +660,7 @@
 								/>
 							</div>
 							{#if imageGen.provider !== 'none'}{#if mediaProviderKind(imageGen.provider, 'image_gen')}<div
-										class="model-field"
+										class="model-field settings-field-layout"
 									>
 										<span class="field-label">模型 ID</span><input
 											id="ig-model"
@@ -668,7 +676,7 @@
 											autocomplete="off"
 										/>
 									</div>
-									<div class="model-field">
+									<div class="model-field settings-field-layout">
 										<span class="field-label">超时时间（秒）</span
 										><MaterialNumberField
 											id="ig-timeout"
@@ -823,32 +831,27 @@
 	}
 	.stt-grid {
 		display: grid;
-		grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+		grid-template-columns: minmax(0, 1fr);
 		gap: var(--md-sys-space-md);
-		align-items: end;
+		align-items: stretch;
 	}
 	.model-field {
 		min-width: 0;
-		display: flex;
-		flex-direction: column;
-		gap: var(--md-sys-space-xs);
-	}
-	.model-field .md-input {
-		width: 100%;
 	}
 	.strategy-field {
-		align-items: stretch;
+		align-items: center;
+	}
+	.strategy-field > .strategy-hint {
+		grid-column: 2;
+		justify-self: start;
+		width: 100%;
+		text-align: left;
 	}
 	.strategy-hint {
 		margin: var(--md-sys-space-xs) 0 0;
 		color: var(--md-sys-color-on-surface-variant);
 		font-size: var(--md-sys-typescale-label-small-size);
 		line-height: var(--md-sys-typescale-label-small-line-height);
-	}
-	.model-field :global(.md-number-field),
-	.model-field :global(.md-select-container),
-	.model-field :global(.ma-root) {
-		width: 100%;
 	}
 	.field-label {
 		font-size: var(--md-sys-typescale-label-small-size);
@@ -857,7 +860,6 @@
 		letter-spacing: var(--md-sys-typescale-overline-letter-spacing);
 		line-height: var(--md-sys-typescale-label-small-line-height);
 		color: var(--md-sys-color-on-surface-variant);
-		white-space: nowrap;
 	}
 	.md-slider {
 		-webkit-appearance: none;
@@ -916,5 +918,11 @@
 		color: var(--md-sys-color-on-surface-variant);
 		font-size: var(--md-sys-typescale-body-medium-size);
 		line-height: var(--md-sys-typescale-body-medium-line-height);
+	}
+	@container settings-content (max-width: 640px) {
+		.strategy-field > .strategy-hint {
+			grid-column: 1;
+			justify-self: stretch;
+		}
 	}
 </style>

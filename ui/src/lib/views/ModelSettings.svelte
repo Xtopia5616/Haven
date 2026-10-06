@@ -499,7 +499,7 @@
 			<div class="card-list policy-list">
 				{#each llmConfig.request_policies || [] as policy (policy.request)}
 					<MaterialCard variant="outlined" className="settings-card policy-card">
-						<div class="model-field">
+						<div class="model-field settings-field-layout">
 							<span class="field-label">请求类型</span>
 							<MaterialSelect
 								id="policy-{policy.request}"
@@ -511,7 +511,7 @@
 								)}
 							/>
 						</div>
-						<div class="model-field">
+						<div class="model-field settings-field-layout">
 							<span class="field-label">首选模型</span>
 							<MaterialSelect
 								id="policy-{policy.request}-primary"
@@ -594,9 +594,12 @@
 	}
 	:global(.policy-card) {
 		display: grid;
-		grid-template-columns: minmax(180px, 0.8fr) minmax(260px, 1.4fr) auto;
-		align-items: end;
+		grid-template-columns: minmax(0, 1fr);
+		align-items: stretch;
 		gap: var(--md-sys-space-md);
+	}
+	:global(.policy-card > .md-btn) {
+		justify-self: end;
 	}
 	.section-actions {
 		display: flex;
@@ -606,15 +609,6 @@
 	}
 	.model-field {
 		min-width: 0;
-		display: flex;
-		flex-direction: column;
-		gap: var(--md-sys-space-xs);
-	}
-	.model-field :global(.md-number-field),
-	.model-field :global(.md-number-field-with-unit),
-	.model-field :global(.md-select-container),
-	.model-field :global(.ma-root) {
-		width: 100%;
 	}
 	.field-label {
 		font-size: var(--md-sys-typescale-label-small-size);
@@ -623,7 +617,6 @@
 		letter-spacing: var(--md-sys-typescale-overline-letter-spacing);
 		line-height: var(--md-sys-typescale-label-small-line-height);
 		color: var(--md-sys-color-on-surface-variant);
-		white-space: nowrap;
 	}
 	.policy-empty {
 		display: flex;

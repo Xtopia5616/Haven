@@ -106,7 +106,7 @@
 			{#snippet children()}
 				<div class="model-editor">
 					<div class="model-fields">
-						<div class="model-field model-id-field">
+						<div class="model-field settings-field-layout model-id-field">
 							<label class="field-label" for="{fieldId}-id">模型配置 ID</label>
 							<input
 								id="{fieldId}-id"
@@ -117,7 +117,7 @@
 									onRenameModel(model, event.currentTarget.value)}
 							/>
 						</div>
-						<div class="model-field">
+						<div class="model-field settings-field-layout">
 							<label class="field-label" for="{fieldId}-provider">Provider</label>
 							<MaterialSelect
 								id="{fieldId}-provider"
@@ -129,7 +129,7 @@
 								)}
 							/>
 						</div>
-						<div class="model-field model-service-field">
+						<div class="model-field settings-field-layout model-service-field">
 							<label class="field-label" for="{fieldId}-name">服务模型 ID</label>
 							<div class="service-model-control">
 								<MaterialAutocomplete
@@ -190,7 +190,7 @@
 						{/snippet}
 						{#snippet children()}
 							<div class="advanced-fields">
-								<div class="model-field">
+								<div class="model-field settings-field-layout">
 									<label class="field-label" for="{fieldId}-temperature"
 										>温度（默认 0.7）</label
 									>
@@ -205,7 +205,7 @@
 										)}
 									/>
 								</div>
-								<div class="model-field">
+								<div class="model-field settings-field-layout">
 									<label class="field-label" for="{fieldId}-context-window"
 										>上下文窗口</label
 									>
@@ -227,7 +227,7 @@
 										)}
 									/>
 								</div>
-								<div class="model-field">
+								<div class="model-field settings-field-layout">
 									<label class="field-label" for="{fieldId}-cost-in"
 										>输入成本（美元 / 1K tokens）</label
 									>
@@ -245,7 +245,7 @@
 										)}
 									/>
 								</div>
-								<div class="model-field">
+								<div class="model-field settings-field-layout">
 									<label class="field-label" for="{fieldId}-cost-out"
 										>输出成本（美元 / 1K tokens）</label
 									>
@@ -263,7 +263,7 @@
 										)}
 									/>
 								</div>
-								<div class="model-field">
+								<div class="model-field settings-field-layout">
 									<label class="field-label" for="{fieldId}-cache-read"
 										>缓存读取成本（美元 / 1K）</label
 									>
@@ -281,7 +281,7 @@
 										)}
 									/>
 								</div>
-								<div class="model-field">
+								<div class="model-field settings-field-layout">
 									<label class="field-label" for="{fieldId}-cache-write"
 										>缓存写入成本（美元 / 1K）</label
 									>
@@ -388,14 +388,11 @@
 	.model-fields,
 	.advanced-fields {
 		display: grid;
-		grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr));
+		grid-template-columns: minmax(0, 1fr);
 		gap: var(--md-sys-space-md);
-		align-items: end;
+		align-items: stretch;
 	}
 	.model-field {
-		display: flex;
-		flex-direction: column;
-		gap: var(--md-sys-space-xs);
 		min-width: 0;
 	}
 	.field-label {
@@ -404,15 +401,8 @@
 		line-height: var(--md-sys-typescale-label-small-line-height);
 		color: var(--md-sys-color-on-surface-variant);
 	}
-	.model-field :global(.md-number-field),
-	.model-field :global(.md-number-field-with-unit),
-	.model-field :global(.md-select-container),
-	.model-field :global(.ma-root) {
-		width: 100%;
-	}
 	.model-id-input {
 		box-sizing: border-box;
-		width: 100%;
 	}
 	.service-model-control {
 		display: flex;

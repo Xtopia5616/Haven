@@ -310,7 +310,7 @@
 .settings-field-layout {
 	display: grid;
 	grid-template-columns:
-		minmax(0, var(--md-comp-settings-label-width))
+		minmax(0, min(var(--md-comp-settings-label-width), 36%))
 		minmax(0, 1fr);
 	align-items: center;
 	gap: var(--md-sys-space-md);
