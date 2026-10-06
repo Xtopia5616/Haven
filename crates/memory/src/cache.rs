@@ -196,11 +196,11 @@ impl CacheState {
 }
 
 /// Thread-safe cache mechanics used by the database facade.
-pub(crate) struct QueryCacheStore {
+pub(crate) struct QueryResultCache {
     state: Mutex<CacheState>,
 }
 
-impl QueryCacheStore {
+impl QueryResultCache {
     pub(crate) fn new() -> Self {
         Self {
             state: Mutex::new(CacheState::new()),
@@ -459,7 +459,7 @@ impl QueryCacheStore {
     }
 }
 
-impl Default for QueryCacheStore {
+impl Default for QueryResultCache {
     fn default() -> Self {
         Self::new()
     }

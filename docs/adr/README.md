@@ -522,3 +522,4 @@
 - [0531：历史清理操作与任务历史边界](0531-history-clear-actions-and-terminal-scoped-task-retention.md)
 - [0532：Transcript 重试按身份关联，不按内容去重](0532-transcript-retry-identity-without-content-dedup.md)
 - [0533：工具运行时命名对齐职责](0533-tool-runtime-nomenclature-alignment.md)
+- [0534：Memory 查询缓存使用 Cache 角色命名](0534-memory-query-cache-role-name.md)

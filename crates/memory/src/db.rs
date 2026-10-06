@@ -1,4 +1,4 @@
-use crate::cache::{CacheGeneration, QueryCacheStore};
+use crate::cache::{CacheGeneration, QueryResultCache};
 use rusqlite::{Connection, InterruptHandle};
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -210,9 +210,9 @@ impl Drop for PooledConnection<'_> {
 pub struct Database {
     pool: ConnectionPool,
     /// Bounded process-local query cache. The cache mechanics are isolated in
-    /// [`crate::cache::QueryCacheStore`]; the database facade only exposes
+    /// [`crate::cache::QueryResultCache`]; the database facade only exposes
     /// repository-facing helpers and owns invalidation timing.
-    cache: QueryCacheStore,
+    cache: QueryResultCache,
     /// Monotonic in-process revision for all memory reads, including facts,
     /// episodes, and their embedding index. It is intentionally not persisted
     /// or part of the database schema; consumers use it only for cache keys.
@@ -262,7 +262,7 @@ impl Database {
         );
         Ok(Self {
             pool,
-            cache: QueryCacheStore::new(),
+            cache: QueryResultCache::new(),
             memory_revision: AtomicU64::new(0),
             pending_embedding_models: Mutex::new(HashMap::new()),
             fact_write_gate: Mutex::new(()),
@@ -307,7 +307,7 @@ impl Database {
         );
         Ok(Self {
             pool,
-            cache: QueryCacheStore::new(),
+            cache: QueryResultCache::new(),
             memory_revision: AtomicU64::new(0),
             pending_embedding_models: Mutex::new(HashMap::new()),
             fact_write_gate: Mutex::new(()),
