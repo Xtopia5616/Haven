@@ -534,3 +534,4 @@
 - [0543：UI ToolRun 分类跟随生成契约](0543-align-ui-tool-run-labels-with-runtime-kind.md)
 - [0544：移除 SessionEventStore 过渡别名](0544-remove-session-event-store-alias.md)
 - [0545：将 ToolBox 重命名为 ToolHandle](0545-rename-toolbox-to-tool-handle.md)
+- [0546：区分开放的 ToolManifestSource 与 UI ToolSource 分类](0546-distinguish-tool-manifest-source.md)

@@ -1,10 +1,11 @@
 /** Canonical frontend view of the backend-owned tool catalog manifest. */
 
-export type ToolSource = 'builtin' | 'skill' | 'mcp' | string;
+/** Open backend source token retained for forward-compatible manifest parsing. */
+export type ToolManifestSource = 'builtin' | 'skill' | 'mcp' | (string & {});
 
 export type ToolManifest = {
 	identity: {
-		source: ToolSource;
+		source: ToolManifestSource;
 		catalogGroup: string;
 		root: string;
 		operation: string | null;
@@ -26,7 +27,7 @@ export type ToolManifest = {
 		label: string;
 		renderer: string;
 		icon: string;
-		representedSource: ToolSource;
+		representedSource: ToolManifestSource;
 	};
 	rootPresentation: { label: string; description: string; icon: string };
 	prompt: { whenToUse: string; whenNotToUse: string; keyOperations: string[] };
@@ -237,6 +238,6 @@ export function toolLabel(toolName: string): string | null {
 	return getToolManifest(toolName)?.presentation.label ?? null;
 }
 
-export function toolRepresentedSource(toolName: string): ToolSource | null {
+export function toolRepresentedSource(toolName: string): ToolManifestSource | null {
 	return getToolManifest(toolName)?.presentation.representedSource ?? null;
 }
