@@ -39,7 +39,9 @@ export function getApiKeyStatus(): Promise<ApiKeyStatus> {
 }
 
 /** Read content-free metrics with typed known fields and open diagnostics extensions. */
-export function getPerformanceMetrics(ui?: UiMetricsSnapshot): Promise<PerformanceMetricsSnapshot> {
+export function readPerformanceMetricsSnapshot(
+	ui?: UiMetricsSnapshot,
+): Promise<PerformanceMetricsSnapshot> {
 	return invoke('get_performance_metrics', ui ? { ui } : undefined).then(
 		(value: unknown) => value as PerformanceMetricsSnapshot,
 	);

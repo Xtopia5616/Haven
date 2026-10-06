@@ -550,3 +550,4 @@
 - [0559：UI 会话时间线复用 SessionMessage 并统一 Session 命名](0559-use-session-message-in-session-timeline.md)
 - [0560：明确 Memory prompt history 查询与 Agent 输入的命名边界](0560-name-session-prompt-history-boundary.md)
 - [0561：区分 Tools ToolRunKind 与 App ToolRunKindDto](0561-distinguish-tool-run-kind-wire-dto.md)
+- [0562：区分诊断命令读取与性能指标聚合入口](0562-name-performance-metrics-read-boundary.md)

@@ -3,7 +3,7 @@ import {
 	checkShellAvailable,
 	getApiKeyStatus,
 	getLogInfo,
-	getPerformanceMetrics,
+	readPerformanceMetricsSnapshot,
 	readLogTail,
 } from './diagnosticsCommands.ts';
 import { invoke } from './tauri.ts';
@@ -70,8 +70,8 @@ describe('diagnostics command boundary', () => {
 			.mockResolvedValueOnce(snapshot as never)
 			.mockResolvedValueOnce(snapshot as never);
 
-		await expect(getPerformanceMetrics(ui)).resolves.toBe(snapshot);
-		await expect(getPerformanceMetrics()).resolves.toBe(snapshot);
+		await expect(readPerformanceMetricsSnapshot(ui)).resolves.toBe(snapshot);
+		await expect(readPerformanceMetricsSnapshot()).resolves.toBe(snapshot);
 		expect(invoke).toHaveBeenNthCalledWith(1, 'get_performance_metrics', { ui });
 		expect(invoke).toHaveBeenNthCalledWith(2, 'get_performance_metrics', undefined);
 	});
