@@ -1362,7 +1362,7 @@
 				{/if}
 			</div>
 			{#if settingsDirty || saveState === 'error'}
-				<div class="save-bar md-toolbar motion-surface-enter">
+				<div class="save-bar save-bar--bottom-edge md-toolbar motion-surface-enter">
 					{#if saveState === 'error'}
 						<p class="save-error" role="alert">{saveError}</p>
 					{/if}
@@ -1378,6 +1378,7 @@
 						<div class="save-actions">
 							<MaterialButton
 								variant="outlined"
+								className="save-action-btn"
 								label="放弃"
 								onclick={discardAndReset}
 								disabled={saveState === 'saving'}
@@ -1389,7 +1390,7 @@
 							>
 								<MaterialButton
 									variant="filled"
-									className="save-btn save-btn--dirty"
+									className="save-action-btn save-btn--dirty"
 									label={saveState === 'saving' ? '保存中…' : '保存'}
 									onclick={handleSaveClick}
 									disabled={saveState === 'saving'}
@@ -1465,7 +1466,7 @@
 		width: 100%;
 		min-width: 0;
 		max-width: var(--md-sys-content-max-width);
-		padding-bottom: var(--md-sys-space-xl);
+		padding-bottom: 0;
 	}
 	:global(.content:not(.content--chat) .page-shell:has(.settings-page)) {
 		min-height: 100%;
@@ -1565,6 +1566,9 @@
 			0 -8px 20px color-mix(in srgb, var(--md-sys-color-shadow) 8%, transparent);
 		z-index: 1;
 	}
+	.save-bar--bottom-edge {
+		margin-bottom: calc(-1 * var(--md-sys-space-lg));
+	}
 	.save-error {
 		margin: 0 auto 0 0;
 		color: var(--md-sys-color-error);
@@ -1588,7 +1592,7 @@
 		font-size: var(--md-sys-typescale-label-small-size);
 		line-height: var(--md-sys-typescale-label-small-line-height);
 	}
-	:global(.save-btn) {
+	:global(.save-action-btn) {
 		width: 96px;
 		min-width: 96px;
 	}
@@ -1607,6 +1611,9 @@
 	@media screen and (min-width: 840px) {
 		.settings-page {
 			max-width: none;
+		}
+		.save-bar--bottom-edge {
+			margin-bottom: calc(-1 * var(--md-sys-space-2xl));
 		}
 		.settings-layout {
 			grid-template-rows: minmax(0, 1fr);
@@ -1633,7 +1640,7 @@
 		.save-actions :global(.md-btn) {
 			min-width: 0;
 		}
-		:global(.save-btn) {
+		:global(.save-action-btn) {
 			width: 100%;
 		}
 		.save-actions {

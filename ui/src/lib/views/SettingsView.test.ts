@@ -228,7 +228,7 @@ describe('SettingsView diagnostics export', () => {
 	});
 
 	it('persists action completion channels independently and applies the toast switch', async () => {
-		render(SettingsView);
+		const { container } = render(SettingsView);
 		await waitFor(() => expect(invoke).toHaveBeenCalledWith('get_api_key_status'));
 		await waitFor(() => expect(invoke).toHaveBeenCalledWith('is_autostart_enabled'));
 		await new Promise((resolve) => setTimeout(resolve, 0));
@@ -243,6 +243,8 @@ describe('SettingsView diagnostics export', () => {
 		await waitFor(() =>
 			expect(screen.getByRole('button', { name: '保存' })).toBeTruthy(),
 		);
+		expect(container.querySelector('.save-bar--bottom-edge')).toBeTruthy();
+		expect(container.querySelectorAll('.save-actions .save-action-btn')).toHaveLength(2);
 		expect((windows as HTMLInputElement).checked).toBe(true);
 		await fireEvent.click(windows);
 		expect((windows as HTMLInputElement).checked).toBe(false);
