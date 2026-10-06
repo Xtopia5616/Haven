@@ -343,7 +343,7 @@ async fn tool_catalog_snapshot_keeps_provider_surface_stable_after_drift() {
             .all(|definition| definition.name != "drift_only"),
         "the prepared Turn snapshot must not change when the registry mutates"
     );
-    assert_ne!(before.version(), after.version());
+    assert_ne!(before.catalog_version(), after.catalog_version());
 }
 
 #[tokio::test]
@@ -1429,16 +1429,28 @@ async fn test_session_tool_overlay_version_does_not_invalidate_other_sessions() 
         .await;
     let after_a = mgr.catalog_version_for_session("ses-a").await;
     let after_b = mgr.catalog_version_for_session("ses-b").await;
-    assert_eq!(after_a.0, before_a.0);
-    assert_eq!(after_a.1, before_a.1 + 1);
+    assert_eq!(
+        after_a.global_catalog_version,
+        before_a.global_catalog_version
+    );
+    assert_eq!(
+        after_a.session_overlay_version,
+        before_a.session_overlay_version + 1
+    );
     assert_eq!(after_b, before_b);
 
     mgr.rebuild_catalog().await.unwrap();
     let after_global_a = mgr.catalog_version_for_session("ses-a").await;
     let after_global_b = mgr.catalog_version_for_session("ses-b").await;
-    assert!(after_global_a.0 > after_a.0);
-    assert_eq!(after_global_a.1, after_a.1);
-    assert_eq!(after_global_b.1, after_b.1);
+    assert!(after_global_a.global_catalog_version > after_a.global_catalog_version);
+    assert_eq!(
+        after_global_a.session_overlay_version,
+        after_a.session_overlay_version
+    );
+    assert_eq!(
+        after_global_b.session_overlay_version,
+        after_b.session_overlay_version
+    );
 }
 
 #[tokio::test]

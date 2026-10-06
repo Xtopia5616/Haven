@@ -567,8 +567,11 @@ impl ReActEngine {
         session_id: &str,
         catalog: &haven_tools::ToolCatalogSnapshot,
     ) -> PreparedToolDefinitions {
-        let version = catalog.version();
-        if let Some(prepared) = self.tool_definitions.get_if_version(session_id, version) {
+        let catalog_version = catalog.catalog_version();
+        if let Some(prepared) = self
+            .tool_definitions
+            .get_if_catalog_version(session_id, catalog_version)
+        {
             return prepared;
         }
         let definitions = Arc::new(
@@ -586,14 +589,14 @@ impl ReActEngine {
         };
         tracing::info!(
             session_id,
-            catalog_global_version = version.0,
-            catalog_session_version = version.1,
+            catalog_global_version = catalog_version.global_catalog_version,
+            catalog_session_version = catalog_version.session_overlay_version,
             provider_tool_count = prepared.definitions.len(),
             tool_schema_token_estimate = prepared.token_estimate,
             "ReAct::prepare_tool_definitions: rebuilt provider tool surface"
         );
         self.tool_definitions
-            .insert(session_id, version, prepared.clone());
+            .insert(session_id, catalog_version, prepared.clone());
         prepared
     }
 

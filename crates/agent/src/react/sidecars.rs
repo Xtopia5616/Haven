@@ -14,6 +14,7 @@ use std::sync::Mutex;
 use haven_common::config::RequestKind;
 use haven_llm::ToolDefinition;
 use haven_messaging::MessagingService;
+use haven_tools::ToolCatalogVersion;
 
 /// Process-wide inbox transport for cross-session polling.
 ///
@@ -82,7 +83,11 @@ pub(crate) struct PreparedToolDefinitions {
 /// session-local registration overlay version. Values share one schema vec
 /// across steps, and the schema token estimate is computed only on a miss.
 /// It is bounded so short-lived sessions cannot grow this sidecar indefinitely.
-type ToolDefCacheEntry = ((u64, u64), PreparedToolDefinitions);
+struct ToolDefCacheEntry {
+    catalog_version: ToolCatalogVersion,
+    prepared: PreparedToolDefinitions,
+}
+
 type ToolDefCacheMap = HashMap<String, ToolDefCacheEntry>;
 
 struct ToolDefCacheState {
@@ -106,17 +111,17 @@ impl ToolDefCache {
         }
     }
 
-    pub(super) fn get_if_version(
+    pub(super) fn get_if_catalog_version(
         &self,
         session_id: &str,
-        version: (u64, u64),
+        catalog_version: ToolCatalogVersion,
     ) -> Option<PreparedToolDefinitions> {
         let mut state = self.cache.lock().unwrap();
         let result = state
             .entries
             .get(session_id)
-            .filter(|(v, _)| *v == version)
-            .map(|(_, prepared)| prepared.clone());
+            .filter(|entry| entry.catalog_version == catalog_version)
+            .map(|entry| entry.prepared.clone());
         if result.is_some() {
             state.order.retain(|cached| cached != session_id);
             state.order.push_back(session_id.to_string());
@@ -127,7 +132,7 @@ impl ToolDefCache {
     pub(super) fn insert(
         &self,
         session_id: &str,
-        version: (u64, u64),
+        catalog_version: ToolCatalogVersion,
         prepared: PreparedToolDefinitions,
     ) {
         let mut state = self.cache.lock().unwrap();
@@ -138,9 +143,13 @@ impl ToolDefCache {
             };
             state.entries.remove(&oldest);
         }
-        state
-            .entries
-            .insert(session_id.to_string(), (version, prepared));
+        state.entries.insert(
+            session_id.to_string(),
+            ToolDefCacheEntry {
+                catalog_version,
+                prepared,
+            },
+        );
         state.order.push_back(session_id.to_string());
     }
 }
@@ -211,42 +220,82 @@ mod tests {
     #[test]
     fn tool_definition_cache_is_bounded_and_evicts_least_recently_used() {
         let cache = ToolDefCache::new();
+        let initial_version = ToolCatalogVersion {
+            global_catalog_version: 0,
+            session_overlay_version: 0,
+        };
         let prepared = || PreparedToolDefinitions {
             definitions: Arc::new(Vec::new()),
             token_estimate: 7,
         };
         for index in 0..ToolDefCache::CAPACITY {
-            cache.insert(&format!("ses-{index}"), (0, 0), prepared());
+            cache.insert(&format!("ses-{index}"), initial_version, prepared());
         }
         assert_eq!(
             cache
-                .get_if_version("ses-0", (0, 0))
+                .get_if_catalog_version("ses-0", initial_version)
                 .unwrap()
                 .token_estimate,
             7
         );
 
-        cache.insert("ses-overflow", (0, 0), prepared());
+        cache.insert("ses-overflow", initial_version, prepared());
 
-        assert!(cache.get_if_version("ses-0", (0, 0)).is_some());
-        assert!(cache.get_if_version("ses-overflow", (0, 0)).is_some());
-        assert!(cache.get_if_version("ses-1", (0, 0)).is_none());
+        assert!(
+            cache
+                .get_if_catalog_version("ses-0", initial_version)
+                .is_some()
+        );
+        assert!(
+            cache
+                .get_if_catalog_version("ses-overflow", initial_version)
+                .is_some()
+        );
+        assert!(
+            cache
+                .get_if_catalog_version("ses-1", initial_version)
+                .is_none()
+        );
     }
 
     #[test]
     fn tool_definition_cache_misses_after_catalog_version_changes() {
         let cache = ToolDefCache::new();
+        let version = ToolCatalogVersion {
+            global_catalog_version: 4,
+            session_overlay_version: 9,
+        };
         cache.insert(
             "ses-a",
-            (4, 9),
+            version,
             PreparedToolDefinitions {
                 definitions: Arc::new(Vec::new()),
                 token_estimate: 17,
             },
         );
 
-        assert!(cache.get_if_version("ses-a", (4, 9)).is_some());
-        assert!(cache.get_if_version("ses-a", (5, 9)).is_none());
-        assert!(cache.get_if_version("ses-a", (4, 10)).is_none());
+        assert!(cache.get_if_catalog_version("ses-a", version).is_some());
+        assert!(
+            cache
+                .get_if_catalog_version(
+                    "ses-a",
+                    ToolCatalogVersion {
+                        global_catalog_version: 5,
+                        session_overlay_version: 9,
+                    },
+                )
+                .is_none()
+        );
+        assert!(
+            cache
+                .get_if_catalog_version(
+                    "ses-a",
+                    ToolCatalogVersion {
+                        global_catalog_version: 4,
+                        session_overlay_version: 10,
+                    },
+                )
+                .is_none()
+        );
     }
 }

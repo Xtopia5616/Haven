@@ -574,3 +574,4 @@
 - [0583：为 Tools 文件与受管媒体分类使用具名结果](0583-name-tools-file-classification-results.md)
 - [0584：为 ReAct 流式消息使用结构化身份](0584-name-react-stream-block-identity.md)
 - [0585：为 LLM Router 运行态使用具名初始化结果](0585-name-llm-router-runtime-state.md)
+- [0586：统一 Tools 目录版本时钟类型](0586-name-tool-catalog-version.md)

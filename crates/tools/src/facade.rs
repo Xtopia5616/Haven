@@ -230,10 +230,8 @@ impl ToolsFacade {
         self.coordinator.builtins.mcp_manager.catalog_version()
     }
 
-    /// Version pair for a session's complete tool-definition view. The first
-    /// component covers global registry changes; the second covers only that
-    /// session's progressive MCP overlay.
-    pub async fn catalog_version_for_session(&self, session_id: &str) -> (u64, u64) {
+    /// Version identity for a session's complete tool-definition view.
+    pub async fn catalog_version_for_session(&self, session_id: &str) -> crate::ToolCatalogVersion {
         self.coordinator
             .core
             .operations

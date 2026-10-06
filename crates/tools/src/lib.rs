@@ -155,7 +155,7 @@ pub use output::{
 pub(crate) use process::read_stream_capped;
 pub use registry::{
     DeferredToolCatalog, OperationRegistry, RegistryProbe, SessionToolOverlay, ToolCatalogSnapshot,
-    ToolRegistry,
+    ToolCatalogVersion, ToolRegistry,
 };
 pub use security::{
     AuthorizationDecision, AuthorizationEngine, AuthorizationReasonCode, AuthorizationRequest,

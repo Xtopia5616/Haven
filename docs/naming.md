@@ -1,6 +1,6 @@
 # Haven 命名规范
 
-> 版本: v1.17 | 日期: 2026-10-07
+> 版本: v1.18 | 日期: 2026-10-07
 
 本文档统一 Haven 项目各层的命名规则（变量名、函数名、文件名、crate 名、缩写大小写、跨层边界）。规范以现有代码中的事实模式为基础，新代码必须遵循；存量代码若与规范冲突，逐步迁移对齐。
 
@@ -143,7 +143,7 @@ Common 新增的媒体探测 helper 和本地变量用 `mime_type` 表示 MIME �
 - 函数 / 方法 / 变量 / 字段 / 模块 → **snake_case**：`fn detect_intent`、`stt_default_base_url`。
 - 常量 / 静态 → **UPPER_SNAKE_CASE**：`MAX_SPEAK_CHARS`、`IMAGE_GEN_KEYWORDS`。
 - 构造 `pub const fn as_str` / `new` 保持惯例命名。
-- 跨模块返回多个具有稳定领域含义的值时使用具名结果结构体，字段名直接表达各自角色；不要让调用方通过 `.0` / `.1` 解读分类和 MIME 等语义。短生命周期局部组合、迭代器键值等仍可使用 tuple。不同分类空间即使都包含 `kind` 字段，也按 owner 命名具体结果（如 `FileClassification` 与 `ManagedMediaClassification`），不为形似而合并 enum。
+- 跨模块返回多个具有稳定领域含义的值时使用具名结果结构体，字段名直接表达各自角色；不要让调用方通过 `.0` / `.1` 解读分类、版本时钟和 MIME 等语义。短生命周期局部组合、迭代器键值等仍可使用 tuple。不同分类空间即使都包含 `kind` 字段，也按 owner 命名具体结果（如 `FileClassification` 与 `ManagedMediaClassification`），不为形似而合并 enum。
 - 可复用的领域复合 key 使用具名结构体和闭合枚举表达各部分含义；不要用 tuple alias 加字符串标签编码固定身份。临时局部键值组合仍可用 tuple。
 
 ### 缩写大小写规则

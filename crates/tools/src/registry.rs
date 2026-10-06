@@ -168,6 +168,17 @@ pub struct SessionToolOverlay {
     global_version: Arc<AtomicU64>,
 }
 
+/// Version identity of one session's complete tool catalog view.
+///
+/// The global catalog clock changes when installed tools change; the session
+/// overlay clock changes only when that session's progressively loaded tools
+/// change.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ToolCatalogVersion {
+    pub global_catalog_version: u64,
+    pub session_overlay_version: u64,
+}
+
 impl Default for SessionToolOverlay {
     fn default() -> Self {
         Self::new()
@@ -194,7 +205,7 @@ impl SessionToolOverlay {
     }
 
     /// Monotonic version of the global catalog plus a session's overlay.
-    pub async fn catalog_version_for_session(&self, session_id: &str) -> (u64, u64) {
+    pub async fn catalog_version_for_session(&self, session_id: &str) -> ToolCatalogVersion {
         let session = self
             .versions
             .read()
@@ -202,7 +213,10 @@ impl SessionToolOverlay {
             .get(session_id)
             .copied()
             .unwrap_or(0);
-        (self.global_version(), session)
+        ToolCatalogVersion {
+            global_catalog_version: self.global_version(),
+            session_overlay_version: session,
+        }
     }
 
     pub fn global_version(&self) -> u64 {
@@ -331,7 +345,7 @@ impl SessionToolOverlay {
 /// the same catalog generation.
 #[derive(Clone)]
 pub struct ToolCatalogSnapshot {
-    version: (u64, u64),
+    catalog_version: ToolCatalogVersion,
     tools: Arc<HashMap<String, SnapshotTool>>,
     provider_definitions: Arc<Vec<ToolDef>>,
 }
@@ -343,7 +357,7 @@ struct SnapshotTool {
 
 impl ToolCatalogSnapshot {
     pub(crate) fn new_with_definitions(
-        version: (u64, u64),
+        catalog_version: ToolCatalogVersion,
         tools: HashMap<String, ToolHandle>,
         provider_definitions: Vec<ToolDef>,
     ) -> Self {
@@ -355,14 +369,14 @@ impl ToolCatalogSnapshot {
             })
             .collect();
         Self {
-            version,
+            catalog_version,
             tools: Arc::new(tools),
             provider_definitions: Arc::new(provider_definitions),
         }
     }
 
-    pub fn version(&self) -> (u64, u64) {
-        self.version
+    pub fn catalog_version(&self) -> ToolCatalogVersion {
+        self.catalog_version
     }
 
     pub fn len(&self) -> usize {
