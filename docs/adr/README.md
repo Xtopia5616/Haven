@@ -592,3 +592,4 @@
 - [0601：命名 Agent session creation 结果](0601-name-agent-session-creation-result.md)
 - [0602：命名 Agent transcript projection 结果](0602-name-agent-transcript-projection.md)
 - [0603：命名 Tools file search 结果](0603-name-tools-file-search-result.md)
+- [0604：命名 Memory summary marker 解码结果](0604-name-memory-summary-marker-decode-result.md)

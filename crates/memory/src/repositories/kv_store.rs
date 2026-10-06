@@ -28,6 +28,13 @@ pub struct SummaryExtractionMarkerState {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+struct DecodedSummaryExtractionMarker {
+    session_id: String,
+    attempt: u32,
+    next_attempt_at_ms: i64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SummaryExtractionMarker {
     pub key: String,
     pub value: String,
@@ -107,7 +114,7 @@ fn encode_summary_extraction_marker(
     format!("{session_id}:{attempt}:{next_attempt_at_ms}")
 }
 
-fn decode_summary_extraction_marker(value: &str) -> anyhow::Result<(String, u32, i64)> {
+fn decode_summary_extraction_marker(value: &str) -> anyhow::Result<DecodedSummaryExtractionMarker> {
     if let Some((session_id, retry)) = value.rsplit_once(':')
         && let Some((session_id, attempt)) = session_id.rsplit_once(':')
     {
@@ -117,13 +124,21 @@ fn decode_summary_extraction_marker(value: &str) -> anyhow::Result<(String, u32,
             !session_id.trim().is_empty() && next_attempt_at_ms >= 0,
             "invalid summary extraction marker"
         );
-        return Ok((session_id.to_owned(), attempt, next_attempt_at_ms));
+        return Ok(DecodedSummaryExtractionMarker {
+            session_id: session_id.to_owned(),
+            attempt,
+            next_attempt_at_ms,
+        });
     }
     anyhow::ensure!(
         !value.trim().is_empty(),
         "invalid summary extraction marker"
     );
-    Ok((value.to_owned(), 0, 0))
+    Ok(DecodedSummaryExtractionMarker {
+        session_id: value.to_owned(),
+        attempt: 0,
+        next_attempt_at_ms: 0,
+    })
 }
 
 fn move_marker_to_quarantine_on(
@@ -599,19 +614,17 @@ impl Database {
                 .map(|(session_id, episode_id)| (session_id.to_owned(), episode_id.to_owned()))
                 .unwrap_or_default();
             let state = decode_summary_extraction_marker(&value)
-                .and_then(|(session_id, attempt, next_attempt_at_ms)| {
+                .and_then(|marker| {
                     anyhow::ensure!(
-                        session_id == key_session_id && !episode_id.is_empty(),
+                        marker.session_id == key_session_id && !episode_id.is_empty(),
                         "summary marker key/value identity mismatch"
                     );
-                    Ok((session_id, attempt, next_attempt_at_ms))
+                    Ok(marker)
                 })
-                .map(
-                    |(_, attempt, next_attempt_at_ms)| SummaryExtractionMarkerState {
-                        attempt,
-                        next_attempt_at_ms,
-                    },
-                )
+                .map(|marker| SummaryExtractionMarkerState {
+                    attempt: marker.attempt,
+                    next_attempt_at_ms: marker.next_attempt_at_ms,
+                })
                 .map_err(|error| error.to_string());
             Ok(SummaryExtractionMarker {
                 key,
@@ -660,14 +673,14 @@ impl Database {
         next_attempt_at_ms: i64,
     ) -> anyhow::Result<bool> {
         anyhow::ensure!(next_attempt_at_ms >= 0, "retry deadline cannot be negative");
-        let (session_id, _, _) = decode_summary_extraction_marker(expected_value)?;
+        let marker = decode_summary_extraction_marker(expected_value)?;
         let changed = self.conn().execute(
             "UPDATE kv_store SET value = ?3, updated_at = ?4
              WHERE key = ?1 AND value = ?2",
             rusqlite::params![
                 key,
                 expected_value,
-                encode_summary_extraction_marker(&session_id, attempt, next_attempt_at_ms),
+                encode_summary_extraction_marker(&marker.session_id, attempt, next_attempt_at_ms,),
                 Utc::now().to_rfc3339()
             ],
         )?;
