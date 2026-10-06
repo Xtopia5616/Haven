@@ -38,6 +38,22 @@ foreach ($file in $contractFiles) {
 
 Assert-SetEqual 'Rust event directory vs frontend event directory' $rustEvents $frontendEvents
 
+# Runtime event validators must consume the enum vocabularies emitted by the
+# Rust IPC generator. check-ipc-contracts.ps1 verifies those generated values
+# against Rust; these checks prevent validators from growing a second list.
+$sessionStatus = Get-Content (Join-Path $root 'ui/src/lib/sessionStatus.ts') -Raw
+$toolRunContract = Get-Content (Join-Path $root 'ui/src/lib/contracts/toolRun.ts') -Raw
+if (-not [regex]::IsMatch($sessionStatus, "(?s)import\s*\{[^}]*SESSION_STATUS_VALUES[^}]*SESSION_WAITING_REASON_VALUES[^}]*\}\s*from\s*'\./contracts/generatedCommands\.ts'") -or
+    -not [regex]::IsMatch($sessionStatus, 'SESSION_STATUSES\s*=\s*SESSION_STATUS_VALUES') -or
+    -not [regex]::IsMatch($sessionStatus, 'SESSION_WAITING_REASONS\s*=\s*SESSION_WAITING_REASON_VALUES')) {
+    throw 'session event validators must use the generated Rust session enum vocabularies'
+}
+if (-not [regex]::IsMatch($toolRunContract, "(?s)import\s*\{[^}]*TOOL_RUN_KIND_VALUES[^}]*TOOL_RUN_STATUS_VALUES[^}]*\}\s*from\s*'\./generatedCommands\.ts'") -or
+    -not [regex]::IsMatch($toolRunContract, 'TOOL_RUN_KIND_VALUES\s+as\s+readonly\s+unknown\[\]\)\.includes\(value\)') -or
+    -not [regex]::IsMatch($toolRunContract, 'TOOL_RUN_STATUS_VALUES\s+as\s+readonly\s+unknown\[\]\)\.includes\(value\)')) {
+    throw 'ToolRun event validators must use the generated Rust enum vocabularies'
+}
+
 $agentEventsPath = Join-Path $root 'crates/app-binary/src/events.rs'
 $agentEventBridgePath = Join-Path $root 'crates/app-binary/src/event_bridge.rs'
 $agentContractPath = Join-Path $root 'ui/src/lib/contracts/agent.ts'
@@ -80,4 +96,4 @@ if ($rustEvents.Count -ne 40) {
     throw "expected 40 public IPC events, found $($rustEvents.Count)"
 }
 
-Write-Host "IPC event directory verified: $($rustEvents.Count) channels, Rust/frontend contracts agree."
+Write-Host "IPC event directory verified: $($rustEvents.Count) channels agree, and runtime enum validators use generated Rust vocabularies."

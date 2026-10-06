@@ -7,24 +7,21 @@
 // cause by combining status, interactions, and ToolRun state.
 // isBusyStatus() covers dispatcher queue (pending) and claimed run (running).
 
+import {
+	SESSION_STATUS_VALUES,
+	SESSION_WAITING_REASON_VALUES,
+	type SessionStatus as GeneratedSessionStatus,
+	type SessionWaitingReason as GeneratedSessionWaitingReason,
+} from './contracts/generatedCommands.ts';
+
 /** Session statuses only. */
-export const SESSION_STATUSES = ['pending', 'running', 'paused', 'completed', 'error'] as const;
+export const SESSION_STATUSES = SESSION_STATUS_VALUES;
 
-export type SessionStatus = (typeof SESSION_STATUSES)[number];
+export type SessionStatus = GeneratedSessionStatus;
 
-export const SESSION_WAITING_REASONS = [
-	'user_input',
-	'user_interrupt',
-	'ask',
-	'confirmation',
-	'scheduled_confirmation',
-	'background_task',
-	'scheduled_task',
-	'step_budget',
-	'end_incomplete',
-] as const;
+export const SESSION_WAITING_REASONS = SESSION_WAITING_REASON_VALUES;
 
-export type SessionWaitingReason = (typeof SESSION_WAITING_REASONS)[number];
+export type SessionWaitingReason = GeneratedSessionWaitingReason;
 
 const WAITING_REASON_LABELS: Record<SessionWaitingReason, string> = {
 	user_input: '等待操作',

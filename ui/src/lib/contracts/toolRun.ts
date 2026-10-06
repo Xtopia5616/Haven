@@ -2,6 +2,7 @@ import type {
 	ToolRunKind as GeneratedToolRunKind,
 	ToolRunStatus as GeneratedToolRunStatus,
 } from './generatedCommands.ts';
+import { TOOL_RUN_KIND_VALUES, TOOL_RUN_STATUS_VALUES } from './generatedCommands.ts';
 
 /**
  * ToolRun IPC contract at the frontend boundary.
@@ -21,19 +22,6 @@ export const TOOL_RUN_EVENT_NAMES = [
 export type ToolRunEventName = (typeof TOOL_RUN_EVENT_NAMES)[number];
 export type ToolRunKind = GeneratedToolRunKind;
 export type ToolRunStatus = GeneratedToolRunStatus;
-
-const TOOL_RUN_KINDS = {
-	background: 'background',
-	scheduled: 'scheduled',
-} satisfies Record<ToolRunKind, ToolRunKind>;
-
-const TOOL_RUN_STATUSES = {
-	waiting: 'waiting',
-	running: 'running',
-	completed: 'completed',
-	failed: 'failed',
-	cancelled: 'cancelled',
-} satisfies Record<ToolRunStatus, ToolRunStatus>;
 
 export interface ToolRunPayload {
 	id: string;
@@ -84,11 +72,11 @@ function isRecord(value: unknown): value is WireRecord {
 }
 
 function isToolRunKind(value: unknown): value is ToolRunKind {
-	return Object.values(TOOL_RUN_KINDS).includes(value as ToolRunKind);
+	return (TOOL_RUN_KIND_VALUES as readonly unknown[]).includes(value);
 }
 
 function isToolRunStatus(value: unknown): value is ToolRunStatus {
-	return Object.values(TOOL_RUN_STATUSES).includes(value as ToolRunStatus);
+	return (TOOL_RUN_STATUS_VALUES as readonly unknown[]).includes(value);
 }
 
 function hasValidOptionalFields(payload: WireRecord): boolean {
