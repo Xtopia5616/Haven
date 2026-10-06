@@ -1,16 +1,10 @@
 <script lang="ts">
 	import { onMount, tick } from 'svelte';
 	import Icon from './Icon.svelte';
-
-	interface WorkspaceTab {
-		id: string;
-		label: string;
-		hint?: string;
-		icon?: string;
-	}
+	import type { NavigationTab } from './navigationTypes.ts';
 
 	interface Props {
-		tabs?: WorkspaceTab[];
+		tabs?: NavigationTab[];
 		activeTab?: string;
 		onNavigate?: (tabId: string) => void;
 	}

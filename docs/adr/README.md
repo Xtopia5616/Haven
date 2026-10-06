@@ -564,3 +564,4 @@
 - [0573：工具来源分类复用生成枚举](0573-use-generated-tool-source.md)
 - [0574：区分工具 manifest wire 与 UI 视图](0574-name-tool-manifest-view.md)
 - [0575：统一 Model Settings 组件共享编辑类型](0575-unify-model-settings-editor-types.md)
+- [0576：统一共享导航页签类型](0576-unify-navigation-tab-type.md)

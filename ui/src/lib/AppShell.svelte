@@ -11,17 +11,11 @@
 	import LandscapeWorkspaceNav from './LandscapeWorkspaceNav.svelte';
 	import { dragScroll } from '$lib/dragScroll.ts';
 	import type { RecordingOverlayState } from '$lib/recordingOverlayController.ts';
-
-	interface WorkspaceTab {
-		id: string;
-		label: string;
-		hint?: string;
-		icon?: string;
-	}
+	import type { NavigationTab } from '$lib/navigationTypes.ts';
 
 	interface Props {
 		activeTab?: string;
-		tabs?: WorkspaceTab[];
+		tabs?: NavigationTab[];
 		theme?: string;
 		onToggleTheme?: () => void;
 		onNavigate?: (tabId: string) => void;

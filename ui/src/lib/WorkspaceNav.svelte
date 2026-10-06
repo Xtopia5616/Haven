@@ -1,15 +1,9 @@
 <script lang="ts">
 	import MaterialTabs from './MaterialTabs.svelte';
-
-	interface TabItem {
-		id: string;
-		label: string;
-		hint?: string;
-		icon?: string;
-	}
+	import type { NavigationTab } from './navigationTypes.ts';
 
 	interface Props {
-		tabs?: TabItem[];
+		tabs?: NavigationTab[];
 		activeTab?: string;
 		onNavigate?: (tabId: string) => void;
 	}
