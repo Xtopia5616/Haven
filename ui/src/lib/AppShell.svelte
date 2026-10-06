@@ -211,6 +211,7 @@
 		height: 18px;
 	}
 	.content {
+		--workspace-surface-bottom-gap: var(--md-sys-content-gutter);
 		position: relative;
 		flex: 1;
 		min-width: 0;
@@ -227,6 +228,10 @@
 			color-mix(in srgb, var(--md-sys-color-primary) 3%, transparent),
 			transparent 240px
 		);
+	}
+	.content:not(.content--chat) {
+		padding-bottom: var(--workspace-surface-bottom-gap);
+		overscroll-behavior-y: none;
 	}
 	.content--chat {
 		overflow: hidden;

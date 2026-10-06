@@ -38,7 +38,7 @@ describe('TaskCenter', () => {
 			onCancel,
 		});
 
-		expect(screen.getByRole('heading', { name: '进行中与待执行' })).toBeTruthy();
+		expect(screen.getByRole('heading', { name: '进行中' })).toBeTruthy();
 		expect(screen.getAllByText('整理下载目录').length).toBeGreaterThan(0);
 		expect(screen.getAllByText('研究会话').length).toBeGreaterThan(0);
 		await fireEvent.click(screen.getByRole('button', { name: '打开调用工具对应会话' }));
@@ -53,7 +53,7 @@ describe('TaskCenter', () => {
 			pendingScheduledActions: [{ id: 'act-pending', kind: 'scheduled', body: '稍后继续' }],
 		});
 
-		expect(screen.getByRole('heading', { name: '进行中与待执行' })).toBeTruthy();
+		expect(screen.getByRole('heading', { name: '进行中' })).toBeTruthy();
 		expect(screen.queryByRole('heading', { name: '执行记录' })).toBeNull();
 		expect(screen.getAllByText('待执行').length).toBeGreaterThan(0);
 	});
@@ -137,6 +137,7 @@ describe('TaskCenter', () => {
 			],
 		});
 
-		expect(screen.getAllByText('共 1 项任务')).toHaveLength(2);
+		expect(screen.getByText('共 1 项任务')).toBeTruthy();
+		expect(screen.getByText('共 1 条记录')).toBeTruthy();
 	});
 });

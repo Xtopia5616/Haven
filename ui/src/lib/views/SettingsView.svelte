@@ -1461,7 +1461,10 @@
 
 <style>
 	.settings-view-shell {
-		--settings-surface-bottom-gap: var(--md-sys-content-gutter);
+		--settings-surface-bottom-gap: var(
+			--workspace-surface-bottom-gap,
+			var(--md-sys-content-gutter)
+		);
 		display: grid;
 		flex: 1 1 auto;
 		grid-template-columns: minmax(0, 1fr);
@@ -1584,9 +1587,6 @@
 	@media screen and (min-width: 840px) {
 		.settings-page {
 			max-width: none;
-		}
-		.settings-view-shell {
-			--settings-surface-bottom-gap: var(--md-sys-space-xl);
 		}
 		.settings-layout {
 			grid-template-rows: minmax(0, 1fr);

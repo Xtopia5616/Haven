@@ -5,6 +5,7 @@
 	import MaterialSelect from '$lib/MaterialSelect.svelte';
 	import AsyncState from '$lib/AsyncState.svelte';
 	import CountChip from '$lib/CountChip.svelte';
+	import HistoryListGroup from '$lib/HistoryListGroup.svelte';
 	import type { SessionHistoryRow } from '$lib/contracts/sessionHistory.ts';
 
 	interface Props {
@@ -122,6 +123,16 @@
 	const hasFilters = $derived(
 		Boolean(searchQuery.trim() || statusFilter || startDate || endDate),
 	);
+	const sessionGroups = $derived.by(() => {
+		const ongoing = sessions.filter(
+			(session) => !['completed', 'error'].includes(session.status),
+		);
+		const ended = sessions.filter((session) => ['completed', 'error'].includes(session.status));
+		return [
+			{ id: 'in-progress', title: '进行中', sessions: ongoing },
+			{ id: 'ended', title: '已结束', sessions: ended },
+		].filter((group) => group.sessions.length > 0);
+	});
 </script>
 
 <div class="history-view">
@@ -215,123 +226,178 @@
 	{:else}
 		<div class="history-results">
 			<div class="history-list-column">
-				<div class="session-list">
-					{#each sessions as session (session.id)}
-						{#if selectMode}
-							<button
-								class="session-item session-item-btn workspace-item-card motion-list-item"
-								class:selected={selectedIds.has(session.id)}
-								aria-pressed={selectedIds.has(session.id)}
-								onclick={() => onToggleSelect(session.id)}
-							>
-								<div class="session-item-main workspace-item-card-main">
-									<div class="session-top-row">
-										<div class="select-checkbox">
+				{#each sessionGroups as group (group.id)}
+					<HistoryListGroup
+						id={group.id}
+						title={group.title}
+						count={group.sessions.length}
+					>
+						{#snippet children()}
+							{#each group.sessions as session (session.id)}
+								{#if selectMode}
+									<button
+										class="session-item session-item-btn workspace-item-card motion-list-item"
+										class:selected={selectedIds.has(session.id)}
+										aria-pressed={selectedIds.has(session.id)}
+										onclick={() => onToggleSelect(session.id)}
+									>
+										<div class="session-item-main workspace-item-card-main">
 											<div
-												class="md-checkbox-static"
-												class:checked={selectedIds.has(session.id)}
-											></div>
-										</div>
-										<div class="session-title-row">
-											<span class="session-title"
+												class="session-title-row workspace-item-card-header"
+											>
+												<div class="session-card-heading">
+													<div class="select-checkbox">
+														<div
+															class="md-checkbox-static"
+															class:checked={selectedIds.has(
+																session.id,
+															)}
+														></div>
+													</div>
+													<span
+														class="workspace-item-card-kind"
+														data-tone={statusVariant(session.status)}
+													>
+														<span
+															class="workspace-item-card-indicator"
+															data-tone={statusVariant(
+																session.status,
+															)}
+															aria-hidden="true"
+														></span>
+														会话
+													</span>
+												</div>
+												<MaterialBadge
+													variant={statusVariant(session.status)}
+													text={sessionStatusLabel(session.status)}
+												/>
+											</div>
+											<span class="workspace-item-card-title"
 												>{displayTitle(session)}</span
-											><MaterialBadge
-												variant={statusVariant(session.status)}
-												text={sessionStatusLabel(session.status)}
-											/>
+											>
+											{#if session.input_text}<div
+													class="workspace-item-card-summary"
+												>
+													{session.input_text}
+												</div>{/if}
+											<div class="session-meta workspace-item-card-meta">
+												<span class="meta-date"
+													>{formatMessageTime(session.created_at)}</span
+												>
+											</div>
+											<div class="workspace-item-card-footer">
+												<span
+													class="workspace-item-card-open"
+													aria-hidden="true">选择</span
+												>
+											</div>
 										</div>
-									</div>
-									{#if session.input_text}<div class="session-message">
-											"{session.input_text}"
-										</div>{/if}
-									<div class="session-meta workspace-item-card-meta">
-										<span class="meta-date"
-											>{formatMessageTime(session.created_at)}</span
-										>
-									</div>
-								</div>
-							</button>
-						{:else}
-							<!-- svelte-ignore a11y_no_noninteractive_element_to_interactive_role -->
-							<article
-								class="session-item workspace-item-card motion-list-item"
-								aria-label={`打开并继续会话：${displayTitle(session)}`}
-								role="button"
-								tabindex="0"
-								onclick={() => handleSessionOpen(session)}
-								onkeydown={(event) => handleSessionKeydown(event, session)}
-								oncontextmenu={(event) => handleSessionContextMenu(event, session)}
-							>
-								<div class="session-item-main workspace-item-card-main">
-									<div class="session-title-row workspace-item-card-header">
-										{#if editingTitle === session.id}
-											<!-- svelte-ignore a11y_autofocus -->
-											<input
-												type="text"
-												class="md-input title-input"
-												value={renameValue}
-												oninput={(event) =>
-													onRenameValueChange(event.currentTarget.value)}
-												onkeydown={(event) =>
-													onRenameKeydown(event, session.id)}
-												onclick={(event) => event.stopPropagation()}
-												onblur={() => onSaveTitle(session.id)}
-												autofocus
-												autocomplete="off"
-											/>
-										{:else}
+									</button>
+								{:else}
+									<!-- svelte-ignore a11y_no_noninteractive_element_to_interactive_role -->
+									<article
+										class="session-item workspace-item-card motion-list-item"
+										aria-label={`打开并继续会话：${displayTitle(session)}`}
+										role="button"
+										tabindex="0"
+										onclick={() => handleSessionOpen(session)}
+										onkeydown={(event) => handleSessionKeydown(event, session)}
+										oncontextmenu={(event) =>
+											handleSessionContextMenu(event, session)}
+									>
+										<div class="session-item-main workspace-item-card-main">
+											<div class="workspace-item-card-header">
+												<span
+													class="workspace-item-card-kind"
+													data-tone={statusVariant(session.status)}
+												>
+													<span
+														class="workspace-item-card-indicator"
+														data-tone={statusVariant(session.status)}
+														aria-hidden="true"
+													></span>
+													会话
+												</span>
+												<MaterialBadge
+													variant={statusVariant(session.status)}
+													text={sessionStatusLabel(session.status)}
+												/>
+											</div>
+											<div class="session-title-row">
+												{#if editingTitle === session.id}
+													<!-- svelte-ignore a11y_autofocus -->
+													<input
+														type="text"
+														class="md-input title-input"
+														value={renameValue}
+														oninput={(event) =>
+															onRenameValueChange(
+																event.currentTarget.value,
+															)}
+														onkeydown={(event) =>
+															onRenameKeydown(event, session.id)}
+														onclick={(event) => event.stopPropagation()}
+														onblur={() => onSaveTitle(session.id)}
+														autofocus
+														autocomplete="off"
+													/>
+												{:else}
+													<MaterialButton
+														variant="text"
+														className="session-title"
+														ariaLabel={`重命名${displayTitle(session)}`}
+														onclick={(event) => {
+															event.stopPropagation();
+															onStartEdit(session);
+														}}
+													>
+														{#snippet children()}
+															<span class="workspace-item-card-title"
+																>{displayTitle(session)}</span
+															><Icon
+																name="edit"
+																size={14}
+																className="title-edit-icon"
+															/>
+														{/snippet}
+													</MaterialButton>
+												{/if}
+											</div>
+											{#if session.input_text}<div
+													class="workspace-item-card-summary"
+												>
+													{session.input_text}
+												</div>{/if}
+											<div class="session-meta workspace-item-card-meta">
+												<span class="meta-date"
+													>{formatMessageTime(session.created_at)}</span
+												>
+											</div>
+											<div class="session-footer workspace-item-card-footer">
+												<span
+													class="session-open-hint workspace-item-card-open"
+													aria-hidden="true">打开</span
+												>
+											</div>
+										</div>
+										<div class="session-actions workspace-item-card-actions">
 											<MaterialButton
 												variant="text"
-												className="session-title"
-												ariaLabel={`重命名${displayTitle(session)}`}
+												className="delete-btn-meta"
+												label="删除"
 												onclick={(event) => {
 													event.stopPropagation();
-													onStartEdit(session);
+													onDeleteRequest(session);
 												}}
-											>
-												{#snippet children()}
-													{displayTitle(session)}<Icon
-														name="edit"
-														size={14}
-														className="title-edit-icon"
-													/>
-												{/snippet}
-											</MaterialButton>
-										{/if}
-										<MaterialBadge
-											variant={statusVariant(session.status)}
-											text={sessionStatusLabel(session.status)}
-										/>
-									</div>
-									{#if session.input_text}<div class="session-message">
-											"{session.input_text}"
-										</div>{/if}
-									<div class="session-footer workspace-item-card-footer">
-										<span class="meta-date"
-											>{formatMessageTime(session.created_at)}</span
-										>
-										<span
-											class="session-open-hint workspace-item-card-open"
-											aria-hidden="true"
-											>打开</span
-										>
-									</div>
-								</div>
-								<div class="session-actions workspace-item-card-actions">
-									<MaterialButton
-										variant="text"
-										className="delete-btn-meta"
-										label="删除"
-										onclick={(event) => {
-											event.stopPropagation();
-											onDeleteRequest(session);
-										}}
-									/>
-								</div>
-							</article>
-						{/if}
-					{/each}
-				</div>
+											/>
+										</div>
+									</article>
+								{/if}
+							{/each}
+						{/snippet}
+					</HistoryListGroup>
+				{/each}
 				{#if hasMore}<div class="load-more-row">
 						<MaterialButton
 							variant="outlined"
@@ -339,7 +405,7 @@
 							onclick={() => onLoadMore()}
 							disabled={loading}
 						/>
-				</div>{/if}
+					</div>{/if}
 			</div>
 		</div>
 	{/if}
@@ -397,48 +463,34 @@
 		line-height: var(--md-sys-typescale-body-small-line-height);
 		color: var(--md-sys-color-on-surface-variant);
 	}
-	.session-list {
-		display: grid;
-		grid-template-columns: repeat(auto-fit, minmax(min(100%, 360px), 1fr));
-		gap: var(--md-sys-space-sm);
-		min-width: 0;
-		padding: var(--md-sys-space-xs);
-	}
-	.session-item-main {
-		display: flex;
-		flex-direction: column;
-		gap: var(--md-sys-space-sm);
-	}
-	.session-top-row,
 	.session-title-row {
+		display: flex;
+		align-items: stretch;
+		min-width: 0;
+	}
+	.session-card-heading {
 		display: flex;
 		align-items: center;
-		gap: var(--md-sys-space-md);
-	}
-	.session-title-row {
 		gap: var(--md-sys-space-sm);
-		flex: 1;
 		min-width: 0;
 	}
 	:global(.md-btn.session-title) {
 		position: relative;
 		height: auto;
+		width: 100%;
 		min-width: 0;
 		padding: 0;
 		text-align: left;
 		justify-content: flex-start;
-		font-size: var(--md-sys-typescale-body-medium-size);
-		font-weight: 600;
-		line-height: var(--md-sys-typescale-body-medium-line-height);
 		color: var(--md-sys-color-on-surface);
 		cursor: pointer;
 		display: inline-flex;
 		align-items: center;
 		gap: 4px;
-		min-width: 0;
 		overflow: hidden;
-		text-overflow: ellipsis;
-		white-space: nowrap;
+		flex: 1;
+	}
+	:global(.md-btn.session-title .workspace-item-card-title) {
 		flex: 1;
 	}
 	:global(.md-btn.session-title:focus-visible) {
@@ -456,38 +508,13 @@
 		transition: opacity var(--md-sys-motion-duration-fast) var(--md-sys-motion-easing-standard);
 	}
 	.title-input {
-		font-size: var(--md-sys-typescale-body-medium-size);
-		font-weight: 600;
-		line-height: var(--md-sys-typescale-body-medium-line-height);
+		font-size: var(--md-sys-typescale-title-medium-size);
+		font-weight: 650;
+		line-height: var(--md-sys-typescale-title-medium-line-height);
 		padding: var(--md-sys-space-xs) var(--md-sys-space-sm);
-		width: 280px;
-	}
-	.session-message {
-		display: -webkit-box;
-		-webkit-box-orient: vertical;
-		-webkit-line-clamp: 2;
-		line-clamp: 2;
-		min-width: 0;
-		overflow: hidden;
-		font-size: var(--md-sys-typescale-body-small-size);
-		color: var(--md-sys-color-on-surface-variant);
-		line-height: var(--md-sys-typescale-body-small-line-height);
-		overflow-wrap: anywhere;
-	}
-	.session-meta {
-		display: flex;
-		align-items: center;
-		gap: var(--md-sys-space-md);
-		font-size: var(--md-sys-typescale-label-small-size);
-		color: var(--md-sys-color-on-surface-variant);
-		line-height: var(--md-sys-typescale-label-small-line-height);
-		opacity: 0.75;
-	}
-	.session-footer {
-		min-height: 28px;
-	}
-	.session-footer .session-open-hint {
-		margin-left: auto;
+		width: 100%;
+		max-width: 100%;
+		box-sizing: border-box;
 	}
 	.meta-date {
 		font-family: var(--md-sys-typescale-mono);
@@ -534,13 +561,6 @@
 		justify-content: center;
 		padding: var(--md-sys-space-lg) 0;
 	}
-	@media (min-width: 840px) {
-		.session-list {
-			grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr));
-			align-items: start;
-			gap: var(--md-sys-space-md);
-		}
-	}
 	@media (max-width: 700px) {
 		.history-actions {
 			justify-content: stretch;
@@ -548,12 +568,6 @@
 		.history-actions :global(.md-btn) {
 			flex: 1 1 0;
 			min-width: 0;
-		}
-		.session-item-main {
-			padding: var(--md-sys-space-md);
-		}
-		.session-meta {
-			flex-wrap: wrap;
 		}
 	}
 	@container session-history (max-width: 700px) {

@@ -8,6 +8,7 @@
 	import MaterialDialog from '$lib/MaterialDialog.svelte';
 	import MaterialSelect from '$lib/MaterialSelect.svelte';
 	import CountChip from '$lib/CountChip.svelte';
+	import HistoryListGroup from '$lib/HistoryListGroup.svelte';
 	import { projectActionCard } from '$lib/actionCardProjection.ts';
 	import { taskKindLabel } from '$lib/taskTerminology.ts';
 	import type { ActionKind, ActionPayload } from '$lib/contracts/action.ts';
@@ -89,16 +90,14 @@
 		return [
 			{
 				id: 'actions',
-				label: '进行中与待执行',
-				description: '可取消的后台执行，以及等待中或已触发的定时任务。',
+				label: '进行中',
 				rows: filteredRows.filter(
 					(row) => !['completed', 'failed', 'cancelled'].includes(row.status || ''),
 				),
 			},
 			{
 				id: 'history',
-				label: '已结束的任务',
-				description: '最近完成、失败或取消的后台任务和定时任务。',
+				label: '已结束',
 				rows: filteredRows.filter((row) =>
 					['completed', 'failed', 'cancelled'].includes(row.status || ''),
 				),
@@ -197,19 +196,12 @@
 		<div class="task-list-panel">
 			<div class="task-groups" aria-label="按生命周期分组的任务列表">
 				{#each taskGroups as group (group.id)}
-					<section class="task-group" aria-labelledby={`task-group-${group.id}`}>
-						<div class="task-group-heading">
-							<div>
-								<h3 id={`task-group-${group.id}`}>{group.label}</h3>
-								<CountChip
-									count={group.rows.length}
-									label="项任务"
-									className="task-group-count"
-								/>
-							</div>
-							<p>{group.description}</p>
-						</div>
-						<div class="task-list">
+					<HistoryListGroup
+						id={`tasks-${group.id}`}
+						title={group.label}
+						count={group.rows.length}
+					>
+						{#snippet children()}
 							{#each group.rows as row (row.id)}
 								<article
 									class="task-card workspace-item-card motion-list-item"
@@ -224,9 +216,12 @@
 										onclick={() => openRow(row)}
 									>
 										<span class="task-card-header workspace-item-card-header">
-											<span class="task-card-type" data-tone={row.tone}>
+											<span
+												class="task-card-type workspace-item-card-kind"
+												data-tone={row.tone}
+											>
 												<span
-													class="task-card-indicator"
+													class="workspace-item-card-indicator"
 													data-tone={row.tone}
 													aria-hidden="true"
 												></span>
@@ -236,8 +231,12 @@
 												>{row.statusLabel}</span
 											>
 										</span>
-										<strong class="task-card-title">{row.title}</strong>
-										<span class="task-card-summary">{row.summary}</span>
+										<strong class="workspace-item-card-title"
+											>{row.title}</strong
+										>
+										<span class="workspace-item-card-summary"
+											>{row.summary}</span
+										>
 										<span class="task-card-meta workspace-item-card-meta">
 											<span>{row.context}</span>
 											<span
@@ -247,30 +246,34 @@
 											<span>{row.timing}</span>
 										</span>
 										<span class="task-card-footer workspace-item-card-footer">
-											<span class="task-card-id workspace-item-card-id"
-												>{row.id}</span
+											<span class="workspace-item-card-id">{row.id}</span>
+											<span
+												class="workspace-item-card-open"
+												aria-hidden="true">打开</span
 											>
 										</span>
 									</button>
-									<div class="task-card-actions workspace-item-card-actions">
-										{#if row.kind === 'background' && row.status === 'running'}
-											<MaterialButton
-												variant="danger"
-												label="停止后台任务"
-												onclick={() => onCancel?.(row.id, 'background')}
-											/>
-										{:else if row.kind === 'scheduled' && (row.status === 'waiting' || row.status === 'running')}
-											<MaterialButton
-												variant="outlined"
-												label="取消此定时任务"
-												onclick={() => onCancel?.(row.id, 'scheduled')}
-											/>
-										{/if}
-									</div>
+									{#if (row.kind === 'background' && row.status === 'running') || (row.kind === 'scheduled' && (row.status === 'waiting' || row.status === 'running'))}
+										<div class="task-card-actions workspace-item-card-actions">
+											{#if row.kind === 'background' && row.status === 'running'}
+												<MaterialButton
+													variant="danger"
+													label="停止后台任务"
+													onclick={() => onCancel?.(row.id, 'background')}
+												/>
+											{:else if row.kind === 'scheduled' && (row.status === 'waiting' || row.status === 'running')}
+												<MaterialButton
+													variant="outlined"
+													label="取消此定时任务"
+													onclick={() => onCancel?.(row.id, 'scheduled')}
+												/>
+											{/if}
+										</div>
+									{/if}
 								</article>
 							{/each}
-						</div>
-					</section>
+						{/snippet}
+					</HistoryListGroup>
 				{/each}
 			</div>
 		</div>
@@ -288,9 +291,12 @@
 			<div class="task-dialog-content">
 				<div class="task-dialog-overview">
 					<div class="task-dialog-type-row">
-						<span class="task-card-type" data-tone={selectedRow.tone}>
+						<span
+							class="task-card-type workspace-item-card-kind"
+							data-tone={selectedRow.tone}
+						>
 							<span
-								class="task-card-indicator"
+								class="workspace-item-card-indicator"
 								data-tone={selectedRow.tone}
 								aria-hidden="true"
 							></span>
@@ -414,55 +420,10 @@
 		 * region as content rhythm so task and history views share one outer
 		 * surface instead of stacking two competing cards. */
 	}
-	.task-group-heading > div {
-		display: flex;
-		align-items: center;
-		gap: var(--md-sys-space-sm);
-		min-width: 0;
-	}
-	.task-group-heading h3 {
-		margin: 0;
-		font-size: var(--md-sys-typescale-title-medium-size);
-		line-height: var(--md-sys-typescale-title-medium-line-height);
-	}
-	:global(.task-count),
-	:global(.task-group-count) {
+	:global(.task-count) {
 		flex: 0 0 auto;
 		font-variant-numeric: tabular-nums;
 		white-space: nowrap;
-	}
-	.task-groups {
-		display: flex;
-		flex-direction: column;
-		gap: var(--md-sys-space-lg);
-	}
-	.task-group {
-		min-width: 0;
-	}
-	.task-group + .task-group {
-		padding-top: var(--md-sys-space-lg);
-		border-top: 1px solid var(--md-sys-color-outline-variant);
-	}
-	.task-group-heading {
-		display: flex;
-		align-items: baseline;
-		justify-content: space-between;
-		gap: var(--md-sys-space-md);
-		margin: 0 var(--md-sys-space-xs) var(--md-sys-space-sm);
-	}
-	.task-group-heading p {
-		margin: 0;
-		color: var(--md-sys-color-on-surface-variant);
-		font-size: var(--md-sys-typescale-label-small-size);
-		line-height: var(--md-sys-typescale-label-small-line-height);
-		text-align: right;
-	}
-	.task-list {
-		display: grid;
-		grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr));
-		gap: var(--md-sys-space-sm);
-		min-width: 0;
-		padding: var(--md-sys-space-xs);
 	}
 	.task-card-main:focus-visible,
 	.task-card-actions :global(.md-btn:focus-visible) {
@@ -477,72 +438,9 @@
 		justify-content: space-between;
 		gap: var(--md-sys-space-sm);
 	}
-	.task-card-type {
-		display: inline-flex;
-		align-items: center;
-		gap: var(--md-sys-space-xs);
-		min-width: 0;
-		color: var(--md-sys-color-on-surface-variant);
-		font-size: var(--md-sys-typescale-label-medium-size);
-		font-weight: 650;
-		line-height: var(--md-sys-typescale-label-medium-line-height);
-	}
-	.task-card-type[data-tone='running'] {
-		color: var(--md-sys-color-success);
-	}
-	.task-card-type[data-tone='error'] {
-		color: var(--md-sys-color-error);
-	}
-	.task-card-type[data-tone='scheduled'] {
-		color: var(--md-sys-color-tertiary);
-	}
-	.task-card-type[data-tone='success'] {
-		color: var(--md-sys-color-success);
-	}
-	.task-card-indicator {
-		width: 8px;
-		height: 8px;
-		flex: 0 0 auto;
-		border-radius: var(--md-sys-shape-full);
-		background: var(--md-sys-color-outline);
-	}
-	.task-card-indicator[data-tone='running'] {
-		background: var(--md-sys-color-success);
-	}
-	.task-card-indicator[data-tone='error'] {
-		background: var(--md-sys-color-error);
-	}
-	.task-card-indicator[data-tone='scheduled'] {
-		background: var(--md-sys-color-tertiary);
-	}
-	.task-card-indicator[data-tone='success'] {
-		background: var(--md-sys-color-success);
-	}
 	.task-card-header :global(.md-badge),
 	:global(.task-dialog-type-row .md-badge) {
 		flex: 0 0 auto;
-	}
-	.task-card-title {
-		display: -webkit-box;
-		-webkit-box-orient: vertical;
-		-webkit-line-clamp: 2;
-		line-clamp: 2;
-		overflow: hidden;
-		overflow-wrap: anywhere;
-		font-size: var(--md-sys-typescale-title-medium-size);
-		line-height: var(--md-sys-typescale-title-medium-line-height);
-	}
-	.task-card-summary {
-		display: -webkit-box;
-		-webkit-box-orient: vertical;
-		-webkit-line-clamp: 2;
-		line-clamp: 2;
-		min-width: 0;
-		overflow: hidden;
-		color: var(--md-sys-color-on-surface-variant);
-		font-size: var(--md-sys-typescale-body-small-size);
-		line-height: var(--md-sys-typescale-body-small-line-height);
-		overflow-wrap: anywhere;
 	}
 	.task-card-meta-separator {
 		flex: 0 0 auto;
@@ -640,12 +538,6 @@
 		white-space: nowrap;
 		border: 0;
 	}
-	@container (max-width: 800px) {
-		.task-list {
-			grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr));
-			padding-right: 0;
-		}
-	}
 	@container (max-width: 520px) {
 		.task-toolbar {
 			align-items: stretch;
@@ -656,31 +548,12 @@
 			width: 100%;
 			flex: 0 1 auto;
 		}
-		.task-group-heading {
-			align-items: flex-start;
-			flex-direction: column;
-		}
-		.task-group-heading p {
-			text-align: left;
-		}
-		.task-card {
-			min-height: 0;
-		}
-		.task-card-main {
-			padding: var(--md-sys-space-md);
-		}
-		.task-card-actions {
-			padding-inline: var(--md-sys-space-md);
-		}
 		.task-actions {
 			flex-direction: column;
 			align-items: stretch;
 		}
 		.task-actions :global(.md-btn) {
 			width: 100%;
-		}
-		.task-card-actions {
-			justify-content: stretch;
 		}
 		.task-card-actions :global(.md-btn) {
 			flex: 1;

@@ -1138,6 +1138,82 @@ select.md-select {
 	justify-content: space-between;
 	gap: var(--md-sys-space-sm);
 }
+.workspace-item-card-kind {
+	display: inline-flex;
+	align-items: center;
+	gap: var(--md-sys-space-xs);
+	min-width: 0;
+	color: var(--md-sys-color-on-surface-variant);
+	font-size: var(--md-sys-typescale-label-medium-size);
+	font-weight: 650;
+	line-height: var(--md-sys-typescale-label-medium-line-height);
+}
+.workspace-item-card-kind[data-tone='running'],
+.workspace-item-card-kind[data-tone='success'] {
+	color: var(--md-sys-color-success);
+}
+.workspace-item-card-kind[data-tone='primary'] {
+	color: var(--md-sys-color-primary);
+}
+.workspace-item-card-kind[data-tone='warning'] {
+	color: var(--md-sys-color-warning);
+}
+.workspace-item-card-kind[data-tone='error'] {
+	color: var(--md-sys-color-error);
+}
+.workspace-item-card-kind[data-tone='scheduled'] {
+	color: var(--md-sys-color-tertiary);
+}
+.workspace-item-card-indicator {
+	width: 8px;
+	height: 8px;
+	flex: 0 0 auto;
+	border-radius: var(--md-sys-shape-full);
+	background: var(--md-sys-color-outline);
+}
+.workspace-item-card-indicator[data-tone='running'],
+.workspace-item-card-indicator[data-tone='success'] {
+	background: var(--md-sys-color-success);
+}
+.workspace-item-card-indicator[data-tone='primary'] {
+	background: var(--md-sys-color-primary);
+}
+.workspace-item-card-indicator[data-tone='warning'] {
+	background: var(--md-sys-color-warning);
+}
+.workspace-item-card-indicator[data-tone='error'] {
+	background: var(--md-sys-color-error);
+}
+.workspace-item-card-indicator[data-tone='scheduled'] {
+	background: var(--md-sys-color-tertiary);
+}
+.workspace-item-card-title {
+	display: -webkit-box;
+	-webkit-box-orient: vertical;
+	-webkit-line-clamp: 2;
+	line-clamp: 2;
+	min-width: 0;
+	overflow: hidden;
+	overflow-wrap: anywhere;
+	font-size: var(--md-sys-typescale-title-medium-size);
+	font-weight: 650;
+	line-height: var(--md-sys-typescale-title-medium-line-height);
+}
+.workspace-item-card-main .workspace-item-card-title {
+	color: var(--md-sys-color-on-surface);
+}
+.workspace-item-card-summary {
+	display: -webkit-box;
+	-webkit-box-orient: vertical;
+	-webkit-line-clamp: 2;
+	line-clamp: 2;
+	min-width: 0;
+	overflow: hidden;
+	color: var(--md-sys-color-on-surface-variant);
+	font-size: var(--md-sys-typescale-body-small-size);
+	line-height: var(--md-sys-typescale-body-small-line-height);
+	overflow-wrap: anywhere;
+}
 .workspace-item-card-meta {
 	gap: var(--md-sys-space-xs);
 	margin-top: auto;
