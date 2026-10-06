@@ -473,6 +473,7 @@
 		);
 	}
 	const settingsDirty = $derived.by(() => isDirty());
+	const saveBarVisible = $derived(settingsDirty || saveState === 'error');
 
 	function discardAndReset() {
 		discardChanges();
@@ -1361,45 +1362,46 @@
 					</div>
 				{/if}
 			</div>
-			{#if settingsDirty || saveState === 'error'}
-				<div class="save-bar save-bar--bottom-edge md-toolbar motion-surface-enter">
-					{#if saveState === 'error'}
-						<p class="save-error" role="alert">{saveError}</p>
-					{/if}
-					{#if settingsDirty}
-						<div class="save-summary" aria-live="polite">
-							<strong>有未保存更改</strong>
-							<span>
-								{dirtySettingsSectionLabels.length
-									? dirtySettingsSectionLabels.join('、')
-									: '设置'}
-							</span>
-						</div>
-						<div class="save-actions">
-							<MaterialButton
-								variant="outlined"
-								className="save-action-btn"
-								label="放弃"
-								onclick={discardAndReset}
-								disabled={saveState === 'saving'}
-							/>
-							<div
-								class="save-button-status"
-								aria-live="polite"
-								aria-busy={saveState === 'saving'}
-							>
-								<MaterialButton
-									variant="filled"
-									className="save-action-btn save-btn--dirty"
-									label={saveState === 'saving' ? '保存中…' : '保存'}
-									onclick={handleSaveClick}
-									disabled={saveState === 'saving'}
-								/>
-							</div>
-						</div>
-					{/if}
+			<div
+				class="save-bar save-bar--bottom-edge md-toolbar"
+				class:save-bar--hidden={!saveBarVisible}
+				aria-hidden={!saveBarVisible}
+				inert={!saveBarVisible}
+			>
+				{#if saveState === 'error'}
+					<p class="save-error" role="alert">{saveError}</p>
+				{/if}
+				<div class="save-summary" aria-live="polite">
+					<strong>有未保存更改</strong>
+					<span>
+						{dirtySettingsSectionLabels.length
+							? dirtySettingsSectionLabels.join('、')
+							: '设置'}
+					</span>
 				</div>
-			{/if}
+				<div class="save-actions">
+					<MaterialButton
+						variant="outlined"
+						className="save-action-btn"
+						label="放弃"
+						onclick={discardAndReset}
+						disabled={saveState === 'saving'}
+					/>
+					<div
+						class="save-button-status"
+						aria-live="polite"
+						aria-busy={saveState === 'saving'}
+					>
+						<MaterialButton
+							variant="filled"
+							className="save-action-btn save-btn--dirty"
+							label={saveState === 'saving' ? '保存中…' : '保存'}
+							onclick={handleSaveClick}
+							disabled={saveState === 'saving'}
+						/>
+					</div>
+				</div>
+			</div>
 		</div>
 	</div>
 </div>
@@ -1466,6 +1468,9 @@
 		width: 100%;
 		min-width: 0;
 		max-width: var(--md-sys-content-max-width);
+		padding-bottom: 0;
+	}
+	:global(.content:not(.content--chat):has(.tab-panel:not([hidden]) .settings-page)) {
 		padding-bottom: 0;
 	}
 	:global(.content:not(.content--chat) .page-shell:has(.settings-page)) {
@@ -1552,7 +1557,7 @@
 		justify-content: flex-end;
 		gap: var(--md-comp-toolbar-gap);
 		margin-top: auto;
-		padding: var(--md-sys-space-md) 0 var(--md-sys-space-sm);
+		padding: var(--md-sys-space-lg) 0 var(--md-sys-space-lg);
 		border-top: 1px solid
 			color-mix(in srgb, var(--md-sys-color-outline-variant) 72%, transparent);
 		background: linear-gradient(
@@ -1565,6 +1570,9 @@
 		box-shadow:
 			0 -8px 20px color-mix(in srgb, var(--md-sys-color-shadow) 8%, transparent);
 		z-index: 1;
+	}
+	.save-bar--hidden {
+		visibility: hidden;
 	}
 	.save-bar--bottom-edge {
 		margin-bottom: calc(-1 * var(--md-sys-space-lg));
