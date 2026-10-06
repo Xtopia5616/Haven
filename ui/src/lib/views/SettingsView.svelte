@@ -60,7 +60,7 @@
 		SttConfigInput,
 		TtsConfigInput,
 	} from '$lib/contracts/generatedCommands.ts';
-	import type { SessionTokenStats } from '$lib/sessionUsagePresentation.ts';
+	import type { SessionTokenStatsView } from '$lib/sessionUsagePresentation.ts';
 	import type { SessionLlmUsage } from '$lib/contracts/sessionHistory.ts';
 	import type {
 		SessionPermissionGrant,

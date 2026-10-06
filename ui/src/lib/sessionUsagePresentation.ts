@@ -6,7 +6,8 @@ import {
 	type LlmUsage,
 } from './sessionUsage';
 
-export interface SessionTokenStats {
+/** Optional display-facing statistics; reducer state keeps its stricter model type. */
+export interface SessionTokenStatsView {
 	promptTokens?: number;
 	completionTokens?: number;
 	totalTokens?: number;
@@ -195,7 +196,7 @@ export function cacheOutcomeLabel(outcome: string | null | undefined): string {
  * the live event stream is no longer present after reopening a conversation.
  */
 export function buildTokenUsageDetails(
-	stats: SessionTokenStats,
+	stats: SessionTokenStatsView,
 	llmUsage: LlmUsage[],
 ): TokenUsageDetails {
 	const agentCalls = llmUsage.filter((call) => call.call_kind === 'agent');
@@ -334,7 +335,7 @@ export function buildTokenUsageDetails(
 }
 
 /** Build the tooltip for the chat token usage widget. */
-export function buildTokenUsageTooltip(stats: SessionTokenStats, llmUsage: LlmUsage[]): string {
+export function buildTokenUsageTooltip(stats: SessionTokenStatsView, llmUsage: LlmUsage[]): string {
 	const details = buildTokenUsageDetails(stats, llmUsage);
 	const parts: string[] = [];
 	const cumulativePrompt = details.cumulativePromptTokens;

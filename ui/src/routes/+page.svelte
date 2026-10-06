@@ -90,7 +90,7 @@
 		SessionTermination,
 		SessionTokenStats,
 	} from '$lib/sessionReducer.ts';
-	import type { SessionTokenStats as PresentationSessionTokenStats } from '$lib/sessionUsagePresentation.ts';
+import type { SessionTokenStatsView } from '$lib/sessionUsagePresentation.ts';
 	import type { LlmUsage } from '$lib/sessionUsage.ts';
 	import type { ChatModelOption } from '$lib/chatModelOperations.ts';
 	import type { SessionHistoryRow, SessionLineageResponse } from '$lib/contracts/sessionHistory.ts';
@@ -262,7 +262,7 @@
 	);
 	$effect(() => syncStore(activeSessionLlmUsageStore, (next) => (llmUsage = next)));
 
-	function buildTokenTooltip(stats: PresentationSessionTokenStats) {
+	function buildTokenTooltip(stats: SessionTokenStatsView) {
 		return buildTokenUsageTooltip(stats, llmUsage);
 	}
 

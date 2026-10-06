@@ -6,7 +6,7 @@
 	import {
 		cacheModeLabel,
 		cacheOutcomeLabel,
-		type SessionTokenStats,
+		type SessionTokenStatsView,
 		type TokenUsageDetails,
 	} from '$lib/sessionUsagePresentation.ts';
 
@@ -24,10 +24,10 @@
 		sessionLineageError?: boolean;
 		onToggleSessionMenu?: () => void;
 		onSwitchSession?: (sessionId: string) => void;
-		tokenStats?: SessionTokenStats | null;
+		tokenStats?: SessionTokenStatsView | null;
 		tokenUsageDetails?: TokenUsageDetails | null;
 		tokenStatsHint?: string;
-		buildTokenTooltip?: (stats: SessionTokenStats) => string;
+		buildTokenTooltip?: (stats: SessionTokenStatsView) => string;
 		formatTokenCount?: (value: number) => string;
 	}
 
