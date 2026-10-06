@@ -190,8 +190,8 @@ pub use tool_run_service::{
     ToolRunCompletionReceiver,
 };
 pub use tool_run_service::{
-    ScheduledToolRunView, ToolRunKind, ToolRunListView, ToolRunService, ToolRunStateView,
-    ToolRunStatusView, ToolRunView,
+    ScheduledToolRunView, ToolRunKind, ToolRunListView, ToolRunRestoreSummary, ToolRunService,
+    ToolRunStateView, ToolRunStatusView, ToolRunView,
 };
 pub use tool_run_types::{ScheduleMode, ScheduledToolRunFired, ScheduledToolRunSpec};
 pub use tool_runtime::{

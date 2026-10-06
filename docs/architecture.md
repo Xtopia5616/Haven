@@ -1,6 +1,6 @@
 # Haven 架构与 crate 职责
 
-> 版本: v1.13 | 日期: 2026-10-05
+> 版本: v1.14 | 日期: 2026-10-07
 > 范围: `crates/` (Rust 后端, Tauri 2)
 > 原则: **依赖单向、叶子优先**。上层 crate 只依赖下层，绝不反向依赖；共享数据与类型放叶子（`haven-common`），
 > 组件职责按「谁拥有实现、谁只消费接口」划分。
@@ -475,6 +475,7 @@ ToolRunService 仍是唯一状态 owner；实现按职责放在 `tool_run_servic
 admission cleanup 曾移除 Running row，导致 Agent terminal callback 找不到内存 entry；ADR 0353 已将清理条件限定为
 terminal scheduled entry，并通过 completion、cancel、no-consumer recovery 和 restart 回归固定边界。Waiting/Running
 entry 保持原路径；durable Waiting schedule 仍在启动时恢复，遗留 durable Running row 仍标为 failed 且不重放。
+`ToolRunService::restore` 通过 `ToolRunRestoreSummary` 显式报告逾期 scheduled run 数与重启后标记失败的 running row 数。
 ToolRun 输出 tail 的长度策略由 `ToolRunService` 持有的 crate-private `ToolRunOutputPort` 唯一配置；
 foreground shell card 与 background ToolRun 共用该 policy 生成有字符上限的 `ToolRunOutputTail`，
 consumer 仅拿不可 `Debug`/`Serialize` 的 `ToolRunTailSnapshot`。`agent:tool_output` 仍用

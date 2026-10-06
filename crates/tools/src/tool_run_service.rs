@@ -62,6 +62,15 @@ pub enum ToolRunKind {
     Scheduled,
 }
 
+/// Counts produced by restoring process-local ToolRun state after startup.
+/// The first field counts overdue scheduled rows passed to the fire path;
+/// the second counts previous-process running rows marked failed.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ToolRunRestoreSummary {
+    pub overdue_scheduled_runs: usize,
+    pub interrupted_runs_marked_failed: usize,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum DependencyStatus {
     Waiting,
@@ -1566,10 +1575,13 @@ impl ToolRunService {
     }
 
     /// Restore every persisted ToolRun kind through one entry point.
-    pub async fn restore(self: &Arc<Self>) -> (usize, usize) {
-        let interrupted = self.restore_after_restart().await;
-        let scheduled = Arc::clone(self).restore_pending().await;
-        (scheduled, interrupted)
+    pub async fn restore(self: &Arc<Self>) -> ToolRunRestoreSummary {
+        let interrupted_runs_marked_failed = self.restore_after_restart().await;
+        let overdue_scheduled_runs = Arc::clone(self).restore_pending().await;
+        ToolRunRestoreSummary {
+            overdue_scheduled_runs,
+            interrupted_runs_marked_failed,
+        }
     }
 
     /// Re-arm persisted timers and dependency watchers. Running rows are first

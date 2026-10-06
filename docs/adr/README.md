@@ -588,3 +588,4 @@
 - [0597：命名 canonical media summary](0597-name-canonical-media-summary.md)
 - [0598：SessionActor 复用 ReactContextBatch](0598-reuse-react-context-batch.md)
 - [0599：命名 pending interaction gates](0599-name-pending-interaction-gates.md)
+- [0600：命名 ToolRun restore summary](0600-name-tool-run-restore-summary.md)

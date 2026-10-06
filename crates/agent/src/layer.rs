@@ -814,20 +814,20 @@ impl AgentLayer {
         let tool_runs = self.executor.tool_run_service();
         let cancellation = cancellation.clone();
         tokio::spawn(async move {
-            let (overdue, interrupted) = tokio::select! {
+            let restore_summary = tokio::select! {
                 _ = cancellation.cancelled() => return,
                 result = tool_runs.restore() => result,
             };
-            if overdue > 0 {
+            if restore_summary.overdue_scheduled_runs > 0 {
                 tracing::info!(
-                    "restored {} overdue scheduled ToolRun(s) from previous run",
-                    overdue
+                    "found {} overdue scheduled ToolRun(s) during restore",
+                    restore_summary.overdue_scheduled_runs
                 );
             }
-            if interrupted > 0 {
+            if restore_summary.interrupted_runs_marked_failed > 0 {
                 tracing::info!(
-                    "marked {} interrupted background ToolRun(s) as failed",
-                    interrupted
+                    "marked {} interrupted ToolRun(s) as failed",
+                    restore_summary.interrupted_runs_marked_failed
                 );
             }
         });

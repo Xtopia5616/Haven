@@ -2644,8 +2644,8 @@ async fn restored_dependency_uses_durable_producer_result_and_claims_once() {
         .await;
     let mut first_rx = first.take_tool_run_receiver().expect("first receiver");
     let mut second_rx = second.take_tool_run_receiver().expect("second receiver");
-    assert_eq!(first.restore().await, (0, 0));
-    assert_eq!(second.restore().await, (0, 0));
+    assert_eq!(first.restore().await, ToolRunRestoreSummary::default());
+    assert_eq!(second.restore().await, ToolRunRestoreSummary::default());
 
     let (winner, event) = tokio::time::timeout(Duration::from_secs(4), async {
         tokio::select! {
@@ -2742,7 +2742,13 @@ async fn restart_fails_running_producer_before_recovering_dependency() {
     let mut rx = restored
         .take_tool_run_receiver()
         .expect("receiver available");
-    assert_eq!(restored.restore().await, (0, 1));
+    assert_eq!(
+        restored.restore().await,
+        ToolRunRestoreSummary {
+            overdue_scheduled_runs: 0,
+            interrupted_runs_marked_failed: 1,
+        }
+    );
     let producer = db.get_tool_run(&producer_id).unwrap().unwrap();
     assert_eq!(producer.status, haven_common::ToolRunStatus::Failed);
     assert_eq!(
@@ -2805,7 +2811,7 @@ async fn missing_dependency_producer_fires_once_with_not_found_status() {
     let mut rx = restored
         .take_tool_run_receiver()
         .expect("receiver available");
-    assert_eq!(restored.restore().await, (0, 0));
+    assert_eq!(restored.restore().await, ToolRunRestoreSummary::default());
     let event = tokio::time::timeout(Duration::from_secs(3), rx.recv())
         .await
         .expect("missing producer dependency did not fire")
@@ -3386,7 +3392,13 @@ async fn restore_marks_running_scheduled_tool_run_failed_without_replaying_it() 
     restored
         .set_tool_run_store(Some(ToolRunStore::new(db.clone())))
         .await;
-    assert_eq!(restored.restore().await, (0, 1));
+    assert_eq!(
+        restored.restore().await,
+        ToolRunRestoreSummary {
+            overdue_scheduled_runs: 0,
+            interrupted_runs_marked_failed: 1,
+        }
+    );
     assert_eq!(
         restored.status_view(&id).await.to_json(true)["status"],
         "not_found"
