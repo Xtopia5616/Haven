@@ -606,4 +606,25 @@
 			justify-content: center;
 		}
 	}
+
+	@media screen and (min-width: 600px) and (orientation: landscape) {
+		.app-shell {
+			grid-template-rows: minmax(0, 1fr);
+		}
+		.titlebar {
+			display: none;
+		}
+		.workspace-rail {
+			grid-row: 1;
+		}
+		.content {
+			grid-row: 1;
+		}
+	}
+
+	@media screen and (orientation: portrait) {
+		.titlebar {
+			background: var(--md-sys-color-surface);
+		}
+	}
 </style>
