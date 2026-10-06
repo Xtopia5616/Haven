@@ -85,6 +85,14 @@ pub(crate) struct ToolRunResult {
     pub(crate) text: String,
 }
 
+/// Bounded context selected for the next model request.
+#[derive(Debug, Default)]
+pub(crate) struct ReactContextBatch {
+    pub(crate) steering: Vec<FollowUp>,
+    pub(crate) follow_ups: Vec<FollowUp>,
+    pub(crate) tool_run_results: Vec<ToolRunResult>,
+}
+
 impl ContextQueueStats {
     pub(crate) fn total_items(self) -> usize {
         self.steering_items
@@ -209,7 +217,7 @@ pub(crate) enum ActorCommand {
         reply: oneshot::Sender<Vec<FollowUp>>,
     },
     DrainContext {
-        reply: oneshot::Sender<(Vec<FollowUp>, Vec<FollowUp>, Vec<ToolRunResult>)>,
+        reply: oneshot::Sender<ReactContextBatch>,
     },
     HasPendingContext {
         reply: oneshot::Sender<bool>,
@@ -531,14 +539,14 @@ impl SessionActorHandle {
         rx.await.unwrap_or_default()
     }
 
-    pub(crate) async fn drain_context(&self) -> (Vec<FollowUp>, Vec<FollowUp>, Vec<ToolRunResult>) {
+    pub(crate) async fn drain_context(&self) -> ReactContextBatch {
         let (reply, rx) = oneshot::channel();
         if self
             .send(ActorCommand::DrainContext { reply })
             .await
             .is_err()
         {
-            return (Vec::new(), Vec::new(), Vec::new());
+            return ReactContextBatch::default();
         }
         rx.await.unwrap_or_default()
     }
@@ -1346,7 +1354,11 @@ pub(crate) fn spawn(
                         &mut state.tool_run_completion_chars,
                         &mut budget,
                     );
-                    let _ = reply.send((steering, follow_ups, tool_run_results));
+                    let _ = reply.send(ReactContextBatch {
+                        steering,
+                        follow_ups,
+                        tool_run_results,
+                    });
                 }
                 ActorCommand::HasPendingContext { reply } => {
                     let _ = reply.send(

@@ -586,3 +586,4 @@
 - [0595：明确 ChatSessionController 的会话动作职责](0595-name-chat-session-controller.md)
 - [0596：命名 managed-media cleanup 计数](0596-name-managed-media-cleanup-counts.md)
 - [0597：命名 canonical media summary](0597-name-canonical-media-summary.md)
+- [0598：SessionActor 复用 ReactContextBatch](0598-reuse-react-context-batch.md)

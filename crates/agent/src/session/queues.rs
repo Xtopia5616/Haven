@@ -1,15 +1,7 @@
 //! Session context queues and the single interaction registry.
 
-use super::actor::{ContextQueueStats, ToolRunResult};
+use super::actor::{ContextQueueStats, ReactContextBatch};
 use super::*;
-
-/// Context selected for the next model request.
-#[derive(Debug, Default)]
-pub(crate) struct ReactContextBatch {
-    pub(crate) steering: Vec<FollowUp>,
-    pub(crate) follow_ups: Vec<FollowUp>,
-    pub(crate) tool_run_results: Vec<ToolRunResult>,
-}
 
 impl SessionSupervisor {
     pub async fn add_follow_up(&self, session_id: &str, text: &str) -> anyhow::Result<()> {
@@ -125,14 +117,7 @@ impl SessionSupervisor {
 
     pub(crate) async fn drain_react_context(&self, session_id: &str) -> ReactContextBatch {
         match self.actor_for(session_id).await {
-            Some(actor) => {
-                let (steering, follow_ups, tool_run_results) = actor.drain_context().await;
-                ReactContextBatch {
-                    steering,
-                    follow_ups,
-                    tool_run_results,
-                }
-            }
+            Some(actor) => actor.drain_context().await,
             None => ReactContextBatch::default(),
         }
     }

@@ -447,8 +447,9 @@ pub use tool_ports::{
 };
 pub(crate) use tool_runner::{ToolStepMetadata, ToolStepPersistenceError};
 
-pub(crate) use actor::{CONTEXT_BATCH_MAX_CHARS, CONTEXT_BATCH_MAX_ITEMS, MessagingTitle};
-pub(crate) use queues::ReactContextBatch;
+pub(crate) use actor::{
+    CONTEXT_BATCH_MAX_CHARS, CONTEXT_BATCH_MAX_ITEMS, MessagingTitle, ReactContextBatch,
+};
 pub use run_engine::RunEngine;
 
 impl SessionSupervisor {
