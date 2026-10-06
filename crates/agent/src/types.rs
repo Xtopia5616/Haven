@@ -138,7 +138,16 @@ pub struct RunBudget {
     pub session_max_steps: Option<u32>,
 }
 
-pub fn project_transcript(events: &[TranscriptRecord]) -> (Vec<CanonicalMessage>, Vec<ReActRound>) {
+/// Read-only views derived together from the durable transcript event log.
+#[derive(Debug, Clone)]
+pub struct TranscriptProjection {
+    /// Provider-neutral conversation passed to the model.
+    pub canonical_messages: Vec<CanonicalMessage>,
+    /// Agent step history used by resume and per-session tool restoration.
+    pub react_rounds: Vec<ReActRound>,
+}
+
+pub fn project_transcript(events: &[TranscriptRecord]) -> TranscriptProjection {
     project_transcript_with_strategy(events, MediaInputStrategy::Auto)
 }
 
@@ -148,7 +157,7 @@ pub fn project_transcript(events: &[TranscriptRecord]) -> (Vec<CanonicalMessage>
 pub fn project_transcript_with_strategy(
     events: &[TranscriptRecord],
     strategy: MediaInputStrategy,
-) -> (Vec<CanonicalMessage>, Vec<ReActRound>) {
+) -> TranscriptProjection {
     let mut canonical: Vec<CanonicalMessage> = Vec::new();
     let mut rounds: Vec<ReActRound> = Vec::new();
     let mut pending_tool_results = Vec::new();
@@ -220,7 +229,10 @@ pub fn project_transcript_with_strategy(
         round.tools.sort_by_key(|tool| tool.tool_index);
     }
 
-    (canonical, rounds)
+    TranscriptProjection {
+        canonical_messages: canonical,
+        react_rounds: rounds,
+    }
 }
 
 fn project_pending_tool_results(
@@ -643,7 +655,9 @@ mod tests {
                 },
             },
         ];
-        let (canonical, rounds) = project_transcript(&events);
+        let projection = project_transcript(&events);
+        let canonical = projection.canonical_messages;
+        let rounds = projection.react_rounds;
         assert_eq!(rounds.len(), 1, "parallel tools must share one round");
         assert_eq!(rounds[0].tools.len(), 2);
         assert_eq!(rounds[0].tools[0].tool_index, 0);
@@ -800,9 +814,9 @@ mod tests {
                 message_id: None,
             },
         ];
-        let (full, _) = project_transcript(&events);
+        let full = project_transcript(&events).canonical_messages;
         assert_eq!(full.len(), 2);
-        let (prefix, _) = project_transcript(&events[..1]);
+        let prefix = project_transcript(&events[..1]).canonical_messages;
         assert_eq!(prefix.len(), 1);
     }
 

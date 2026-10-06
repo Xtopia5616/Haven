@@ -869,7 +869,7 @@ async fn run_session_empty_tool_call_id_stays_consistent_in_canonical() {
     // and the tool result must share the same (non-empty) id.
     let saved = load_event_projection(&agent, &session.id).await;
     let mut declared: Option<String> = None;
-    let (canonical, _) = saved.project();
+    let canonical = saved.project().canonical_messages;
     for m in &canonical {
         if let Some(calls) = &m.tool_calls {
             for tc in calls {
@@ -1672,7 +1672,7 @@ async fn pause_snapshot_and_resume_keep_own_final_answer_in_canonical() {
     );
 
     let snapshot = load_event_projection(&agent, &session.id).await;
-    let (canonical, _) = snapshot.project();
+    let canonical = snapshot.project().canonical_messages;
     let last = canonical.last().expect("canonical not empty");
     assert_eq!(
         last.role,

@@ -348,11 +348,12 @@ impl AgentLayer {
                 );
                 // Re-register per-session tools (skills/MCP) from projected
                 // rounds, since in-memory registrations are lost on restart.
-                let (_, rounds) = project_transcript_with_strategy(
+                let projection = project_transcript_with_strategy(
                     &replay.events,
                     self.react_engine.media_strategy(),
                 );
-                self.restore_per_session_tools(session_id, &rounds).await;
+                self.restore_per_session_tools(session_id, &projection.react_rounds)
+                    .await;
                 let interactions = self.executor.interaction_requests(session_id).await;
                 let has_pending_ask = interactions.iter().any(|request| {
                     request.kind == crate::interaction::InteractionKind::Ask
@@ -468,8 +469,9 @@ impl AgentLayer {
         terminal_error_owner: TerminalErrorEventOwner,
     ) -> anyhow::Result<Vec<ReActRound>> {
         let events = replay.events;
-        let (mut canonical, _) =
-            project_transcript_with_strategy(&events, self.react_engine.media_strategy());
+        let mut canonical =
+            project_transcript_with_strategy(&events, self.react_engine.media_strategy())
+                .canonical_messages;
         let start_step = infer_resume_step(&events);
         let branch_points = replay.branch_points;
 
@@ -513,7 +515,7 @@ impl AgentLayer {
                     &events,
                     self.react_engine.media_strategy(),
                 )
-                .1);
+                .react_rounds);
             }
         };
         let actor = self.executor.actor_for(session_id).await.ok_or_else(|| {
@@ -546,7 +548,7 @@ impl AgentLayer {
                 &result.events,
                 self.react_engine.media_strategy(),
             )
-            .1),
+            .react_rounds),
         }
     }
 
@@ -688,7 +690,9 @@ impl AgentLayer {
         let branch_points = std::collections::HashMap::new();
         let emitter_arc = match self.run_emitter(terminal_error_owner) {
             Some(e) => e,
-            None => return Ok(project_transcript_with_strategy(&events, media_strategy).1),
+            None => {
+                return Ok(project_transcript_with_strategy(&events, media_strategy).react_rounds);
+            }
         };
         let run_id = self.react_engine.next_run_id();
         let actor = self.executor.actor_for(session_id).await.ok_or_else(|| {
@@ -715,7 +719,7 @@ impl AgentLayer {
             crate::react::LoopExit::Paused { .. }
             | crate::react::LoopExit::Cancelled
             | crate::react::LoopExit::Completed => {
-                Ok(project_transcript_with_strategy(&result.events, media_strategy).1)
+                Ok(project_transcript_with_strategy(&result.events, media_strategy).react_rounds)
             }
         }
     }

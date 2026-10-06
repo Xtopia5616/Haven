@@ -586,7 +586,7 @@ async fn run_session_cancelled_mid_batch_surfaces_interrupted_tools() {
     let snapshot = load_event_projection(&agent, &session.id).await;
     let mut pending: Vec<String> = Vec::new();
     let mut interrupted_with_fields = 0;
-    let (canonical, _) = snapshot.project();
+    let canonical = snapshot.project().canonical_messages;
     for m in &canonical {
         match m.role {
             CanonicalRole::Tool => {

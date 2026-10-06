@@ -409,7 +409,7 @@ async fn rollback_orphan_after_processed_turn_preserves_earlier_history() {
     // The canonical must NOT be truncated: "hello" is a legitimately
     // processed message and stays in the restored context.
     let restored = load_event_projection(&agent, &session.id).await;
-    let (restored_canonical, _) = restored.project();
+    let restored_canonical = restored.project().canonical_messages;
     assert!(
         restored_canonical
             .iter()
@@ -450,7 +450,7 @@ async fn rollback_processed_user_message_with_later_orphan_wipes_target_timeline
         msgs.iter().map(|m| &m.content).collect::<Vec<_>>()
     );
     let restored = load_event_projection(&agent, &session.id).await;
-    let (restored_canonical, _) = restored.project();
+    let restored_canonical = restored.project().canonical_messages;
     assert!(
         !restored_canonical
             .iter()
@@ -558,7 +558,7 @@ async fn rollback_pause_uses_target_message_ts_not_latest_user() {
         msgs.iter().map(|m| &m.content).collect::<Vec<_>>()
     );
     let restored = load_event_projection(&agent, &session.id).await;
-    let (restored_canonical, _) = restored.project();
+    let restored_canonical = restored.project().canonical_messages;
     assert!(
         !restored_canonical
             .iter()
@@ -677,7 +677,7 @@ async fn rollback_pause_matches_compacted_message_id() {
     );
     assert_eq!(msgs[0].content, "do it");
     let restored = load_event_projection(&agent, &session.id).await;
-    let (restored_canonical, _) = restored.project();
+    let restored_canonical = restored.project().canonical_messages;
     assert!(
         !restored_canonical
             .iter()
@@ -870,7 +870,7 @@ async fn rollback_mid_tool_batch_joins_and_restores() {
         "run slot must be released after rollback join"
     );
     let restored = load_event_projection(&agent, &session.id).await;
-    let (canonical, _) = restored.project();
+    let canonical = restored.project().canonical_messages;
     let dangling = canonical.iter().any(|m| {
         m.role == CanonicalRole::Assistant
             && m.tool_calls.as_ref().is_some_and(|calls| !calls.is_empty())

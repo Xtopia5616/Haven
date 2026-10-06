@@ -1571,7 +1571,7 @@ mod tests {
         let mut attachment = MessageAttachment::new("image/png", "aGVsbG8=");
         attachment.asset_id = Some("asset-0123456789abcdef0123456789abcdef".into());
         attachment.path = Some(r"C:\Users\olive\uploads\photo.png".into());
-        let (canonical, _) = crate::types::project_transcript_with_strategy(
+        let canonical = crate::types::project_transcript_with_strategy(
             &[TranscriptRecord::UserInject {
                 step_number: 1,
                 source: haven_common::types::InjectSource::FollowUp,
@@ -1583,7 +1583,8 @@ mod tests {
                 message_id: None,
             }],
             MediaInputStrategy::Auto,
-        );
+        )
+        .canonical_messages;
         let text = canonical[0]
             .content
             .iter()

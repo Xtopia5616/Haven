@@ -901,7 +901,7 @@ pub(super) struct EventProjection {
 }
 
 impl EventProjection {
-    pub(super) fn project(&self) -> (Vec<CanonicalMessage>, Vec<ReActRound>) {
+    pub(super) fn project(&self) -> crate::types::TranscriptProjection {
         project_transcript(&self.events)
     }
 }

@@ -838,8 +838,9 @@ mod tests {
                 message_id: Some("msg-22222222222222222222222222222222".into()),
             },
         ];
-        let (messages, _) =
-            crate::types::project_transcript_with_strategy(&events, MediaInputStrategy::Auto);
+        let messages =
+            crate::types::project_transcript_with_strategy(&events, MediaInputStrategy::Auto)
+                .canonical_messages;
         assert!(matches!(messages[0].content[1], ContentPart::Text(_)));
         assert!(matches!(messages[1].content[1], ContentPart::Audio { .. }));
 

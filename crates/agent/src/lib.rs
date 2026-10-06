@@ -66,8 +66,9 @@ pub use session::{
 pub use storage_error::sqlite_storage_failure_message;
 
 pub use types::{
-    BranchPoint, ProcessResult, ReActRound, RunBudget, ToolCall, ToolRecord, TranscriptRecord,
-    project_transcript, project_transcript_with_strategy, seed_events_from_canonical,
+    BranchPoint, ProcessResult, ReActRound, RunBudget, ToolCall, ToolRecord, TranscriptProjection,
+    TranscriptRecord, project_transcript, project_transcript_with_strategy,
+    seed_events_from_canonical,
 };
 // The store owns SQLite ordering/persistence in `haven-memory`; these
 // re-exports keep the Agent's durable session boundary discoverable to callers.

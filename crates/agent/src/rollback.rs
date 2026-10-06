@@ -314,9 +314,10 @@ impl AgentLayer {
         // that tools loaded after the rollback point are dropped, and tools
         // loaded before it remain available.
         // Cursor-aware project (equivalent to project() after truncate).
-        let (_, rounds) =
+        let projection =
             project_transcript_with_strategy(&replay.events, self.react_engine.media_strategy());
-        self.restore_per_session_tools(session_id, &rounds).await;
+        self.restore_per_session_tools(session_id, &projection.react_rounds)
+            .await;
 
         // Reload the session into executor memory (it may have been removed if we
         // marked a Running session as Error above, or was never loaded after restart).

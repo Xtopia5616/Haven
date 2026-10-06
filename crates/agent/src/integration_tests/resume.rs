@@ -552,7 +552,7 @@ async fn resume_dedups_supplement_inputs_against_prefixed_canonical() {
     agent.run_session_from_id(&session.id).await.unwrap();
 
     let saved = load_event_projection(&agent, &session.id).await;
-    let (canonical, _) = saved.project();
+    let canonical = saved.project().canonical_messages;
     let user_texts: Vec<String> = canonical
         .iter()
         .filter(|m| m.role == CanonicalRole::User)
@@ -641,7 +641,7 @@ async fn resume_keeps_repeated_same_text_turns() {
     );
 
     let saved = load_event_projection(&agent, &session.id).await;
-    let (canonical, _) = saved.project();
+    let canonical = saved.project().canonical_messages;
     let user_texts: Vec<String> = canonical
         .iter()
         .filter(|m| m.role == CanonicalRole::User)
@@ -722,7 +722,7 @@ async fn resume_does_not_recover_unmarked_historical_user_messages() {
     agent.run_session_from_id(&session.id).await.unwrap();
 
     let saved = load_event_projection(&agent, &session.id).await;
-    let (canonical, _) = saved.project();
+    let canonical = saved.project().canonical_messages;
     let user_texts: Vec<String> = canonical
         .iter()
         .filter(|m| m.role == CanonicalRole::User)
@@ -795,7 +795,7 @@ async fn resume_skips_conversation_reseed_when_canonical_is_compacted() {
     agent.run_session_from_id(&session.id).await.unwrap();
 
     let saved = load_event_projection(&agent, &session.id).await;
-    let (canonical, _) = saved.project();
+    let canonical = saved.project().canonical_messages;
     let user_texts: Vec<String> = canonical
         .iter()
         .filter(|m| m.role == CanonicalRole::User)
@@ -828,7 +828,7 @@ async fn run_session_from_id_keeps_first_user_media_out_of_snapshot_bytes() {
         .unwrap();
     agent.run_session_from_id(&session.id).await.unwrap();
     let snapshot = load_event_projection(&agent, &session.id).await;
-    let (canonical, _) = snapshot.project();
+    let canonical = snapshot.project().canonical_messages;
     let user_msg = canonical
         .iter()
         .find(|m| m.role == CanonicalRole::User)
@@ -882,7 +882,7 @@ async fn run_session_from_id_recovers_pending_input_without_event_log() {
             .is_empty()
     );
     let saved = load_event_projection(&agent, &session.id).await;
-    let (canonical, _) = saved.project();
+    let canonical = saved.project().canonical_messages;
     assert!(canonical.iter().any(|message| {
         message.role == CanonicalRole::User
             && message.source == Some(InjectSource::FollowUp)
@@ -920,7 +920,7 @@ async fn run_session_from_id_keeps_later_media_as_managed_reference() {
         .unwrap();
     agent.run_session_from_id(&session.id).await.unwrap();
     let snapshot = load_event_projection(&agent, &session.id).await;
-    let (canonical, _) = snapshot.project();
+    let canonical = snapshot.project().canonical_messages;
     let first_user = canonical
         .iter()
         .find(|m| m.role == CanonicalRole::User)

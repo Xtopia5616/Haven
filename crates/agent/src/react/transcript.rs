@@ -1106,7 +1106,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(state.events.len(), 1);
-        let (_, rounds) = project_transcript(&state.events);
+        let rounds = project_transcript(&state.events).react_rounds;
         assert_eq!(rounds.len(), 1);
         assert_eq!(rounds[0].thought.as_deref(), Some("thinking"));
         assert!(state.canonical.is_empty());
@@ -1155,7 +1155,9 @@ mod tests {
             TranscriptRecord::Reasoning { message_id, .. } if message_id == &mid
         ));
         assert!(state.canonical.is_empty());
-        let (canon, rounds) = project_transcript(&state.events);
+        let projection = project_transcript(&state.events);
+        let canon = projection.canonical_messages;
+        let rounds = projection.react_rounds;
         assert!(canon.is_empty());
         assert!(rounds.is_empty());
         let msgs = db.list_session_messages(&session.id).unwrap();
@@ -1243,7 +1245,7 @@ mod tests {
             TranscriptRecord::CompactSummary { .. }
         ));
         assert!(state.branch_points.is_empty());
-        let (_, rounds) = project_transcript(&state.events);
+        let rounds = project_transcript(&state.events).react_rounds;
         assert!(rounds.is_empty());
         let durable_events = engine
             .event_store
@@ -1414,7 +1416,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(state.canonical.len(), 1);
-        let (_, rounds) = project_transcript(&state.events);
+        let rounds = project_transcript(&state.events).react_rounds;
         assert_eq!(rounds.len(), 1);
         assert_eq!(rounds[0].tools[0].observation.as_deref(), Some("ok"));
         assert_eq!(rounds[0].tools[0].tool_index, 0);
@@ -1493,7 +1495,7 @@ mod tests {
             3,
             "thought plus two tool results must share one ordered batch"
         );
-        let (_, rounds) = project_transcript(&state.events);
+        let rounds = project_transcript(&state.events).react_rounds;
         assert_eq!(rounds.len(), 1);
         assert_eq!(rounds[0].tools.len(), 2);
         assert_eq!(state.canonical.len(), 2);
