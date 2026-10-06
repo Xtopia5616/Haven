@@ -1470,9 +1470,6 @@
 		max-width: var(--md-sys-content-max-width);
 		padding-bottom: 0;
 	}
-	:global(.content:not(.content--chat):has(.tab-panel:not([hidden]) .settings-page)) {
-		padding-bottom: 0;
-	}
 	:global(.content:not(.content--chat) .page-shell:has(.settings-page)) {
 		min-height: 100%;
 	}
