@@ -4,6 +4,7 @@ import type {
 	ReadLogTailRequest,
 	UiMetricsSnapshot,
 } from './contracts/commands.ts';
+import type { PerformanceMetricsSnapshot } from './contracts/diagnostics.ts';
 import {
 	parseApiKeyStatus,
 	parseLogInfo,
@@ -12,7 +13,6 @@ import {
 	type ApiKeyStatus,
 	type LogInfo,
 	type LogTail,
-	type MetricsSnapshot,
 	type ShellAvailability,
 } from './contracts/settings.ts';
 
@@ -27,7 +27,9 @@ export function readLogTail(request: ReadLogTailRequest): Promise<LogTail> {
 }
 
 /** Check availability for one configured shell through the settings validator. */
-export function checkShellAvailable(request: CheckShellAvailableRequest): Promise<ShellAvailability> {
+export function checkShellAvailable(
+	request: CheckShellAvailableRequest,
+): Promise<ShellAvailability> {
 	return invoke('check_shell_available', request).then(parseShellAvailability);
 }
 
@@ -36,9 +38,9 @@ export function getApiKeyStatus(): Promise<ApiKeyStatus> {
 	return invoke('get_api_key_status').then(parseApiKeyStatus);
 }
 
-/** Read content-free performance metrics without filtering dynamic diagnostic fields. */
-export function getPerformanceMetrics(ui?: UiMetricsSnapshot): Promise<MetricsSnapshot> {
+/** Read content-free metrics with typed known fields and open diagnostics extensions. */
+export function getPerformanceMetrics(ui?: UiMetricsSnapshot): Promise<PerformanceMetricsSnapshot> {
 	return invoke('get_performance_metrics', ui ? { ui } : undefined).then(
-		(value: unknown) => value as MetricsSnapshot,
+		(value: unknown) => value as PerformanceMetricsSnapshot,
 	);
 }

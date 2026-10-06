@@ -97,7 +97,7 @@ Admin 操作最终由 `TypedToolAdapter` 或 `AdminSurfaces.execute` 序列化�
 | `Vec<SessionRecordDto>` | `get_history`, `search_history_paginated`, `search_history`, `search_history_filtered` | `SessionStore` 的 `Session` rows 经 App `session_record_rows` 投影；历史 wire owner 为 App，领域 row 到 IPC DTO 的边界已建立。 |
 | `i64` | `count_history`, `count_history_search` | 固定标量计数；SessionStore producer，App handler/Tauri edge。 |
 | `String` | `export_history`, `stop_recording`, `get_bootstrap_status`, `open_skills_dir`, `stage_provider_credential`, `stage_ocr_credential` | 混合语义：导出/转写/路径是文本 payload；bootstrap 只有 Loading/Ready 两态但目前作为 String 暴露，列为轻量 typed enum 审查；凭据命令仅返回安全凭据存储引用。 |
-| `LogInfo`, `LogTail`, `MetricsSnapshot` | `get_log_info`, `read_log_tail`, `get_performance_metrics` | 命名响应类型；日志路径/文本是自由数据，Metrics 为受限 counters；App owns Tauri serialization。 |
+| `LogInfo`, `LogTail`, `MetricsSnapshot` | `get_log_info`, `read_log_tail`, `get_performance_metrics` | 命名响应类型；日志路径/文本是自由数据，Metrics 为受限 counters；App owns Tauri serialization。 UI 的 `PerformanceMetricsSnapshot` 派生 generated DTO，并显式保留开放扩展索引（ADR 0537）。 |
 | `Vec<McpServerSnapshot>`, `McpRefreshResult`, `McpToolCallResponse` | `list_mcp_tools`, `refresh_mcp_servers`, `mcp_tool_call` | 外层 MCP snapshots/result DTO typed；`input_schema` 和 tool output 可保留远端动态 JSON；Mcp crate owns protocol fields，App owns renderer-safe projection。 |
 | `u64` | `run_memory_maintenance`, `clear_history`, `clear_tool_run_history`, `clear_facts` | 固定计数；Agent/Memory/ToolRunService owns maintenance/deletion，App owns command mapping。 |
 | `usize` | `reset_session_permissions` | 已清除的会话 grant 数量；SessionStore owns durable delete，AuthorizationEngine live map 随后清空。 |

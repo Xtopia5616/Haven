@@ -525,3 +525,4 @@
 - [0534：Memory 查询缓存使用 Cache 角色命名](0534-memory-query-cache-role-name.md)
 - [0535：LLM STT 客户端转换使用 Adapter 命名](0535-llm-stt-client-adapter-name.md)
 - [0536：Tools 对外执行入口使用 Facade 命名](0536-tools-facade-name.md)
+- [0537：前端性能指标响应对齐生成契约](0537-typed-performance-metrics-contract.md)

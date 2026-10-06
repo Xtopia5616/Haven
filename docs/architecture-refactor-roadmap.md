@@ -183,7 +183,7 @@
 | Memory query cache | `QueryResultCache` 是 Database 持有的有界进程内 TTL/LRU 与 generation cache；不执行 SQL、不拥有 durable 写入。 | **已对齐名称**，与持久 `*Store` 分开，保持原失效语义（ADR 0534）。 |
 | LLM 的 STT 适配 | `LlmSttClientAdapter` 把 provider `LlmClient` 转接为消费者所需的 `SttClient`，没有额外桥接状态或独立生命周期。 | **已对齐名称**，保留两种客户端契约及现有 provider dispatch（ADR 0535）。 |
 | Tools 对外入口 | `ToolsFacade` 组合多个 Tools owner，并由 Agent/App adapter 提供窄 ports；它暴露 execution/catalog/config/runtime/asset 调用，但不拥有 MCP、Skill 等资源的创建/重连生命周期。 | **已对齐名称**：Rust crate API、`facade.rs` 模块、Agent/App adapter 与构造入口统一使用 facade 角色；无 Tauri/IPC 变化（ADR 0536）。 |
-| UI metrics contract | `ui/src/lib/contracts/settings.ts` 用开放 `Record<string, unknown>` 表示 metrics response；生成的 `generatedCommands.ts` 同时定义 Rust-owned typed `MetricsSnapshot`。当前是同一命令响应的宽窄两种静态视图。 | **待核对后收敛**：看 `PerformanceMetricsSnapshot` 与 generated DTO 的交集是否可作为一个可扩展前端别名；需保留未知诊断字段，不改变 IPC。 |
+| UI metrics contract | `generatedCommands.ts` 从 Rust `MetricsSnapshot` 生成固定响应字段；原 settings alias 却将相同响应退化为开放 `Record<string, unknown>`，丢掉已知字段类型。 | **已对齐名称与类型**：`PerformanceMetricsSnapshot` 以 generated DTO 为已知契约并与开放索引签名交叉，既能类型化访问已有字段，也保留未来扩展字段；移入 diagnostics contract，不改变 IPC（ADR 0537）。 |
 | 其他已扫角色 | `McpManager`、`VenvManager` 各自拥有连接/环境资源生命周期；`ConfigService` 拥有串行 config patch 与持久化；Memory repositories 中的 `*Store` 持有 SQLite 访问；UI `InteractionOwner` 会在 boundary 转成 snake_case wire owner。 | **保留并解释**：后缀/同名本身不足以证明重复；UI 与 wire owner 分开是明确的字段转换边界，MCP/venv 的 Manager 也符合生命周期语义。 |
 
 此表是候选分流清单，不是完整符号目录。尚未完成的 crate、IPC/event payload、UI controller/store 与函数动词审计仍在 §5.7 范围内；完成一域后更新本表并以 ADR 记录实际迁移。

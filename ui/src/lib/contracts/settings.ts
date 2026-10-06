@@ -1,21 +1,18 @@
 /** Stable command responses used by the settings diagnostics UI. */
 
 import type {
-  ApiKeyStatus as GeneratedApiKeyStatus,
-  LogInfo as GeneratedLogInfo,
-  LogTail as GeneratedLogTail,
-  ShellAvailability as GeneratedShellAvailability,
-  Settings as GeneratedSettings,
-  TauriCommandRequest,
+	ApiKeyStatus as GeneratedApiKeyStatus,
+	LogInfo as GeneratedLogInfo,
+	LogTail as GeneratedLogTail,
+	ShellAvailability as GeneratedShellAvailability,
+	Settings as GeneratedSettings,
+	TauriCommandRequest,
 } from './generatedCommands.ts';
 
 export type LogInfo = GeneratedLogInfo;
 export type LogTail = GeneratedLogTail;
 export type ShellAvailability = GeneratedShellAvailability;
 export type ApiKeyStatus = GeneratedApiKeyStatus;
-
-/** Open response shape for diagnostics so added metric fields remain available. */
-export type MetricsSnapshot = Record<string, unknown>;
 
 /** Exact Rust-owned config shape from the generated IPC contract. */
 export type SettingsPayload = GeneratedSettings;
@@ -63,11 +60,7 @@ export function parseShellAvailability(value: unknown): ShellAvailability {
 }
 
 export function parseApiKeyStatus(value: unknown): ApiKeyStatus {
-	const requiredFlags = [
-		'stt',
-		'ocr',
-		'ocr_secret',
-	] as const;
+	const requiredFlags = ['stt', 'ocr', 'ocr_secret'] as const;
 	if (
 		!isRecord(value) ||
 		!requiredFlags.every((key) => typeof value[key] === 'boolean') ||
