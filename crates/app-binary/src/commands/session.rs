@@ -867,7 +867,7 @@ pub struct SessionResumeResponse {
 }
 
 /// Load the session's messages and steps into a resume response.
-/// Shared by `get_session_for_resume` and `get_last_conversation`.
+/// Shared by `get_session_for_resume` and `get_latest_session_for_resume`.
 async fn resume_response_for_session(
     session_store: haven_memory::SessionStore,
     session: Session,
@@ -916,13 +916,13 @@ async fn resume_session_from_store(
     resume_response_for_session(session_store, session).await
 }
 
-async fn last_conversation_from_store(
+async fn latest_session_for_resume_from_store(
     session_store: haven_memory::SessionStore,
 ) -> Result<Option<SessionResumeResponse>, String> {
     match session_store
         .latest_session_record()
         .await
-        .map_err(|e| log_err("get_last_conversation", e))?
+        .map_err(|e| log_err("get_latest_session_for_resume", e))?
     {
         Some(session) => resume_response_for_session(session_store, session)
             .await
@@ -939,14 +939,13 @@ pub async fn get_session_for_resume(
     resume_session_from_store(state.runtime.session_store.clone(), &session_id).await
 }
 
-/// Return the most recent persisted session with its session messages and
-/// steps, for the chat page to auto-restore the last conversation on app
-/// start. Returns `None` when no session exists yet.
+/// Return the most recent persisted session with its messages and steps for
+/// the chat page to resume on app start. Returns `None` when no session exists.
 #[tauri::command]
-pub async fn get_last_conversation(
+pub async fn get_latest_session_for_resume(
     state: State<'_, Arc<AppState>>,
 ) -> Result<Option<SessionResumeResponse>, String> {
-    last_conversation_from_store(state.runtime.session_store.clone()).await
+    latest_session_for_resume_from_store(state.runtime.session_store.clone()).await
 }
 
 #[cfg(test)]
@@ -954,8 +953,8 @@ mod tests {
     use super::{
         AppConfirmationResolution, ConfirmationResolutionResult, ExecutorSessionDisplay,
         InteractionStatus, SessionOrigin, accept_ui_confirmation, arbitrate_app_confirmation,
-        end_session_display_title, last_conversation_from_store, resume_response_for_session,
-        resume_session_from_store, session_lineage_from_store,
+        end_session_display_title, latest_session_for_resume_from_store,
+        resume_response_for_session, resume_session_from_store, session_lineage_from_store,
     };
     use crate::app_state::{AppState, UiConfirmationAction, UiConfirmationPending};
     use crate::commands::SessionListResponse;
@@ -1178,11 +1177,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn last_conversation_returns_none_when_no_session_exists() {
+    async fn latest_session_for_resume_returns_none_when_no_session_exists() {
         let db = std::sync::Arc::new(haven_memory::Database::open_in_memory().unwrap());
 
         assert!(
-            last_conversation_from_store(haven_memory::SessionStore::new(db))
+            latest_session_for_resume_from_store(haven_memory::SessionStore::new(db))
                 .await
                 .unwrap()
                 .is_none()
@@ -1190,11 +1189,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn last_conversation_returns_the_selected_session() {
+    async fn latest_session_for_resume_returns_the_selected_session() {
         let db = std::sync::Arc::new(haven_memory::Database::open_in_memory().unwrap());
-        let session = db.create_session("latest conversation").unwrap();
+        let session = db.create_session("latest session").unwrap();
 
-        let response = last_conversation_from_store(haven_memory::SessionStore::new(db))
+        let response = latest_session_for_resume_from_store(haven_memory::SessionStore::new(db))
             .await
             .unwrap()
             .expect("a persisted session must be returned");

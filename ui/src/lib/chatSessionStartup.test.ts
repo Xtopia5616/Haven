@@ -53,7 +53,7 @@ function resume(status: SessionResumeResponse['session']['status'] = 'paused'): 
 
 function createHarness(options: {
 	listSessions?: () => Promise<SessionListResponse>;
-	getLastConversation?: () => Promise<SessionResumeResponse | null>;
+	getLatestSessionForResume?: () => Promise<SessionResumeResponse | null>;
 	reopenSession?: (request: { sessionId: string }) => Promise<void>;
 } = {}) {
 	const reducer = new SessionReducer();
@@ -80,7 +80,7 @@ function createHarness(options: {
 			sessionListCalls++;
 			return options.listSessions ? options.listSessions() : list();
 		},
-		getLastConversation: options.getLastConversation ?? (async () => resume()),
+		getLatestSessionForResume: options.getLatestSessionForResume ?? (async () => resume()),
 		reopenSession: async (request) => {
 			reopened.push(request.sessionId);
 			await options.reopenSession?.(request);
@@ -136,13 +136,13 @@ describe('createChatSessionStartup', () => {
 		const errorResume = resume('error');
 		const sessionsResponse = deferred<SessionListResponse>();
 		let sessionsResolved = false;
-		const getLastConversation = vi.fn(async () => {
+		const getLatestSessionForResume = vi.fn(async () => {
 			expect(sessionsResolved).toBe(true);
 			return errorResume;
 		});
 		const harness = createHarness({
 			listSessions: () => sessionsResponse.promise,
-			getLastConversation,
+			getLatestSessionForResume,
 		});
 		const pendingIds = ['conf-live'];
 		// A reducer-owned pending request must survive a possibly stale resume snapshot.
@@ -160,7 +160,7 @@ describe('createChatSessionStartup', () => {
 		});
 		const load = harness.startup.loadInitialSessions(null);
 		await vi.waitFor(() => expect(harness.sessionListCalls).toBe(1));
-		expect(getLastConversation).not.toHaveBeenCalled();
+		expect(getLatestSessionForResume).not.toHaveBeenCalled();
 		sessionsResolved = true;
 		sessionsResponse.resolve(list());
 		await load;
@@ -186,10 +186,10 @@ describe('createChatSessionStartup', () => {
 
 	it('ignores a session-list response and loading callback after disposal', async () => {
 		const sessionsResponse = deferred<SessionListResponse>();
-		const getLastConversation = vi.fn(async () => null);
+		const getLatestSessionForResume = vi.fn(async () => null);
 		const harness = createHarness({
 			listSessions: () => sessionsResponse.promise,
-			getLastConversation,
+			getLatestSessionForResume,
 		});
 		const loading = harness.startup.loadInitialSessions(null);
 		await vi.waitFor(() => expect(harness.sessionListCalls).toBe(1));
@@ -200,19 +200,19 @@ describe('createChatSessionStartup', () => {
 
 		expect(harness.actions).toEqual([]);
 		expect(harness.refreshToolRuns).not.toHaveBeenCalled();
-		expect(getLastConversation).not.toHaveBeenCalled();
+		expect(getLatestSessionForResume).not.toHaveBeenCalled();
 		expect(harness.initialLoadingChanges).toEqual([]);
 	});
 
 	it('ignores an auto-restore response and loading callback after disposal', async () => {
 		const restoreResponse = deferred<SessionResumeResponse | null>();
-		const getLastConversation = vi.fn(() => restoreResponse.promise);
+		const getLatestSessionForResume = vi.fn(() => restoreResponse.promise);
 		const harness = createHarness({
 			listSessions: async () => list(),
-			getLastConversation,
+			getLatestSessionForResume,
 		});
 		const loading = harness.startup.loadInitialSessions(null);
-		await vi.waitFor(() => expect(getLastConversation).toHaveBeenCalledOnce());
+		await vi.waitFor(() => expect(getLatestSessionForResume).toHaveBeenCalledOnce());
 		expect(harness.actions.map((action) => action.type)).toEqual(['sessions/loaded']);
 
 		harness.startup.dispose();
@@ -255,10 +255,10 @@ describe('createChatSessionStartup', () => {
 		const restorePromise = new Promise<SessionResumeResponse | null>((resolve) => {
 			finishRestore = resolve;
 		});
-		const getLastConversation = vi.fn(() => restorePromise);
-		const harness = createHarness({ getLastConversation });
+		const getLatestSessionForResume = vi.fn(() => restorePromise);
+		const harness = createHarness({ getLatestSessionForResume });
 		const initialLoad = harness.startup.loadInitialSessions(null);
-		await vi.waitFor(() => expect(getLastConversation).toHaveBeenCalledOnce());
+		await vi.waitFor(() => expect(getLatestSessionForResume).toHaveBeenCalledOnce());
 		harness.reducer.dispatch({ type: 'session/selected', sessionId: OTHER_SESSION_ID });
 		finishRestore?.(resume());
 		await initialLoad;

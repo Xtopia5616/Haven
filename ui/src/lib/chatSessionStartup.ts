@@ -10,7 +10,7 @@ export interface ChatSessionStartupDependencies {
 	reducer: SessionReducer;
 	dispatch: (action: SessionAction) => void;
 	listSessions: () => Promise<SessionListResponse>;
-	getLastConversation: () => Promise<SessionResumeResponse | null>;
+	getLatestSessionForResume: () => Promise<SessionResumeResponse | null>;
 	reopenSession: (request: { sessionId: string }) => Promise<void>;
 	refreshToolRuns: () => void;
 	getFreshSessionIntent: () => boolean;
@@ -161,7 +161,7 @@ export function createChatSessionStartup(dependencies: ChatSessionStartupDepende
 		loadSessionsRefresh.schedule();
 	}
 
-	async function restoreLastConversation(resumeTarget: SessionResumeTarget | null): Promise<void> {
+	async function resumeLatestSession(resumeTarget: SessionResumeTarget | null): Promise<void> {
 		const requestGeneration = generation;
 		if (!isCurrentGeneration(requestGeneration)) return;
 		if (
@@ -182,52 +182,54 @@ export function createChatSessionStartup(dependencies: ChatSessionStartupDepende
 		}
 		if (dependencies.reducer.getState().activeSessionId) return;
 
-		let last: SessionResumeResponse | null;
+		let latestSession: SessionResumeResponse | null;
 		try {
-			last = await dependencies.getLastConversation();
+			latestSession = await dependencies.getLatestSessionForResume();
 		} catch (error) {
 			if (!isCurrentGeneration(requestGeneration)) return;
-			dependencies.warn('auto-restore conversation error', error);
+			dependencies.warn('auto-resume session error', error);
 			return;
 		}
 		if (!isCurrentGeneration(requestGeneration)) return;
 		if (
-			!last?.session ||
+			!latestSession?.session ||
 			dependencies.reducer.getState().activeSessionId ||
 			dependencies.getFreshSessionIntent()
 		) {
 			return;
 		}
-		// A completed conversation is history and should not be resurrected.
-		if (last.session.status === 'completed') return;
+		// A completed session is history and should not be resumed.
+		if (latestSession.session.status === 'completed') return;
 
-		const wasError = isErrorStatus(last.session.status);
+		const wasError = isErrorStatus(latestSession.session.status);
 		dependencies.dispatch({
 			type: 'session/messages/resume-loaded',
-			sessionId: last.session.id,
-			messages: buildResumeMessages(last),
-			interactions: resumeInteractions(last),
-			preserveInteractionIds: dependencies.getPendingInteractionIds(last.session.id),
-			usage: last.usage,
-			llmUsage: last.llm_usage,
+			sessionId: latestSession.session.id,
+			messages: buildResumeMessages(latestSession),
+			interactions: resumeInteractions(latestSession),
+			preserveInteractionIds: dependencies.getPendingInteractionIds(latestSession.session.id),
+			usage: latestSession.usage,
+			llmUsage: latestSession.llm_usage,
 		});
-		dependencies.dispatch({ type: 'session/selected', sessionId: last.session.id });
+		dependencies.dispatch({ type: 'session/selected', sessionId: latestSession.session.id });
 		if (wasError) {
 			dependencies.dispatch({
 				type: 'session/error-shown',
-				sessionId: last.session.id,
+				sessionId: latestSession.session.id,
 				reason:
-					dependencies.reducer.getSessionErrorReason(last.session.id) ||
+					dependencies.reducer.getSessionErrorReason(latestSession.session.id) ||
 					'本次会话因错误停止，暂未收到更具体的原因。',
 			});
 			retainErroredSession({
-				sessionId: last.session.id,
-				summary: last.session.input_text,
-				title: last.session.title,
+				sessionId: latestSession.session.id,
+				summary: latestSession.session.input_text,
+				title: latestSession.session.title,
 			});
 		}
 		try {
-			if (!wasError) await dependencies.reopenSession({ sessionId: last.session.id });
+			if (!wasError) {
+				await dependencies.reopenSession({ sessionId: latestSession.session.id });
+			}
 		} catch (error) {
 			if (!isCurrentGeneration(requestGeneration)) return;
 			dependencies.warn('reopen_session error', error);
@@ -240,7 +242,7 @@ export function createChatSessionStartup(dependencies: ChatSessionStartupDepende
 		if (disposed) return;
 		const requestGeneration = generation;
 		const sessionsPromise = loadSessions();
-		const restorePromise = restoreLastConversation(resumeTarget);
+		const restorePromise = resumeLatestSession(resumeTarget);
 		try {
 			await Promise.all([sessionsPromise, restorePromise]);
 		} finally {

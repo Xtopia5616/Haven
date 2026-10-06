@@ -43,9 +43,9 @@ export function getSessionForResume(
 	return invokeCommand('get_session_for_resume', request);
 }
 
-/** Load the most recent persisted conversation for startup restore. */
-export function getLastConversation(): Promise<SessionResumeResponse | null> {
-	return invoke('get_last_conversation');
+/** Load the most recent persisted session projection for startup resume. */
+export function getLatestSessionForResume(): Promise<SessionResumeResponse | null> {
+	return invoke('get_latest_session_for_resume');
 }
 
 /** Reopen one persisted session for follow-up input. */

@@ -98,7 +98,7 @@ export const TAURI_COMMAND_CONTRACTS = {
 	rollback_session: { boundary: 'mutate', security: 'event cursor and projection clock rollback' },
 	continue_session: { boundary: 'mutate', security: 'resume from saved error snapshot' },
 	get_session_for_resume: { boundary: 'read', security: 'session-scoped persisted projection' },
-	get_last_conversation: { boundary: 'read', security: 'most recent persisted session only' },
+	get_latest_session_for_resume: { boundary: 'read', security: 'most recent persisted session only' },
 	get_settings: { boundary: 'read', security: 'config response redacts credentials and MCP environment values' },
 	stage_provider_credential: { boundary: 'mutate', security: 'writes provider secret to secure storage and returns only an opaque reference' },
 	stage_ocr_credential: { boundary: 'mutate', security: 'writes OCR secret to secure storage and returns only an opaque reference' },

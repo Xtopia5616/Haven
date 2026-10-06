@@ -37,7 +37,7 @@ export type SessionLlmUsage = Omit<
 /** Renderer-safe interaction projection included in a resume response. */
 export type SessionResumeInteraction = GeneratedInteractionRequestedEvent;
 
-/** Complete successful response from get_session_for_resume/get_last_conversation. */
+/** Complete successful response from get_session_for_resume/get_latest_session_for_resume. */
 export type SessionResumeResponse = GeneratedSessionResumeResponse;
 
 type ResumeMessageInput = Pick<SessionResumeMessage, 'id' | 'role' | 'content' | 'created_at'> &

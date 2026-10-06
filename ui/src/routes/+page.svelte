@@ -27,7 +27,7 @@
 	import {
 		deleteSession,
 		listHistory,
-		getLastConversation,
+		getLatestSessionForResume,
 		getSessionLineage,
 		listSessions,
 		reopenSession,
@@ -869,7 +869,7 @@ import type { SessionTokenStatsView } from '$lib/sessionUsagePresentation.ts';
 		reducer: sessionReducer,
 		dispatch: dispatchSession,
 		listSessions,
-		getLastConversation,
+		getLatestSessionForResume,
 		reopenSession,
 		refreshToolRuns,
 		getFreshSessionIntent: () => get(newSessionIntentStore),

@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
 	clearHistory,
 	deleteSession,
-	getLastConversation,
+	getLatestSessionForResume,
 	getSessionLineage,
 	getSessionForResume,
 	listSessions,
@@ -75,10 +75,10 @@ describe('session history command boundary', () => {
 		invokeMock.mockResolvedValueOnce(resume as never).mockResolvedValueOnce(null);
 
 		await expect(getSessionForResume(request)).resolves.toBe(resume);
-		await expect(getLastConversation()).resolves.toBeNull();
+		await expect(getLatestSessionForResume()).resolves.toBeNull();
 		expect(invokeMock.mock.calls).toEqual([
 			['get_session_for_resume', request],
-			['get_last_conversation'],
+			['get_latest_session_for_resume'],
 		]);
 	});
 

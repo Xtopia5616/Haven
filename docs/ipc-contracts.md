@@ -74,7 +74,7 @@
 | `rollback_session` | mutate | event cursor 与 projection clock 一起回退 |
 | `continue_session` | mutate | 从错误 snapshot 恢复 |
 | `get_session_for_resume` | read | 会话范围投影 |
-| `get_last_conversation` | read | 只取最近持久化会话 |
+| `get_latest_session_for_resume` | read | 只取最近持久化会话 |
 | `get_settings` | read | 响应遮蔽凭据和 MCP 环境变量 |
 | `stage_provider_credential` | mutate | provider 密钥只写入安全凭据存储，返回不透明引用 |
 | `stage_ocr_credential` | mutate | OCR 密钥只写入安全凭据存储，返回不透明引用 |
@@ -107,7 +107,7 @@
 | `get_sessions` | read | 活跃会话列表 |
 | `get_session_lineage` | read | 当前会话的父会话和直接 Agent 子会话 |
 | `get_session_for_resume` | read | 恢复指定会话所需的持久化投影 |
-| `get_last_conversation` | read | 最近持久化会话 |
+| `get_latest_session_for_resume` | read | 最近持久化会话 |
 | `reopen_session` / `continue_session` / `end_session` / `interrupt_session` | mutate | 会话生命周期控制；中断保留会话 |
 | `rollback_session` | mutate | 回滚分支并同步截断事件和投影 |
 | `update_session_title` | mutate | 更新非空标题 |

@@ -324,7 +324,7 @@ pub const COMMAND_CONTRACTS: &[CommandContract] = &[
         security: "session-scoped persisted projection",
     },
     CommandContract {
-        name: "get_last_conversation",
+        name: "get_latest_session_for_resume",
         boundary: CommandBoundary::Read,
         security: "most recent persisted session only",
     },
