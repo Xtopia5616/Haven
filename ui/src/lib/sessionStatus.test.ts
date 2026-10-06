@@ -1,7 +1,9 @@
 import { describe, it, expect } from 'vitest';
 import {
-	SESSION_STATUSES,
-	SESSION_WAITING_REASONS,
+	SESSION_STATUS_VALUES,
+	SESSION_WAITING_REASON_VALUES,
+} from './contracts/generatedCommands.ts';
+import {
 	isBusyStatus,
 	isPausedStatus,
 	sessionWaitingReason,
@@ -11,9 +13,9 @@ import {
 	waitingReasonLabel,
 } from './sessionStatus.ts';
 
-describe('SESSION_STATUSES', () => {
+describe('SESSION_STATUS_VALUES', () => {
 	it('covers the canonical backend session statuses', () => {
-		expect(SESSION_STATUSES).toEqual(['pending', 'running', 'paused', 'completed', 'error']);
+		expect(SESSION_STATUS_VALUES).toEqual(['pending', 'running', 'paused', 'completed', 'error']);
 	});
 });
 
@@ -27,7 +29,7 @@ describe('isPausedStatus', () => {
 
 describe('session waiting reasons', () => {
 	it('keeps the backend vocabulary and labels stable', () => {
-		expect(SESSION_WAITING_REASONS).toEqual([
+		expect(SESSION_WAITING_REASON_VALUES).toEqual([
 			'user_input',
 			'user_interrupt',
 			'ask',

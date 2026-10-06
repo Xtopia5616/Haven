@@ -560,3 +560,4 @@
 - [0569：直接引用生成的交互分类类型](0569-use-generated-interaction-enums.md)
 - [0570：将 WAV 编码归属到录音结果](0570-encode-wav-from-recording-result.md)
 - [0571：统一 Rust 当前状态 accessor 命名](0571-name-runtime-state-accessors.md)
+- [0572：让 session 状态工具直接使用生成契约](0572-use-generated-session-status-in-utility.md)

@@ -8,20 +8,9 @@
 // isBusyStatus() covers dispatcher queue (pending) and claimed run (running).
 
 import {
-	SESSION_STATUS_VALUES,
 	SESSION_WAITING_REASON_VALUES,
-	type SessionStatus as GeneratedSessionStatus,
-	type SessionWaitingReason as GeneratedSessionWaitingReason,
+	type SessionWaitingReason,
 } from './contracts/generatedCommands.ts';
-
-/** Session statuses only. */
-export const SESSION_STATUSES = SESSION_STATUS_VALUES;
-
-export type SessionStatus = GeneratedSessionStatus;
-
-export const SESSION_WAITING_REASONS = SESSION_WAITING_REASON_VALUES;
-
-export type SessionWaitingReason = GeneratedSessionWaitingReason;
 
 const WAITING_REASON_LABELS: Record<SessionWaitingReason, string> = {
 	user_input: '等待操作',
@@ -58,8 +47,8 @@ export function isPausedStatus(status: string | undefined | null): boolean {
 	return status === 'paused';
 }
 
-export function isSessionWaitingReason(value: unknown): value is SessionWaitingReason {
-	return (SESSION_WAITING_REASONS as readonly unknown[]).includes(value);
+function isSessionWaitingReason(value: unknown): value is SessionWaitingReason {
+	return (SESSION_WAITING_REASON_VALUES as readonly unknown[]).includes(value);
 }
 
 export function waitingReasonLabel(reason: unknown): string | null {

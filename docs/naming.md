@@ -1,6 +1,6 @@
 # Haven 命名规范
 
-> 版本: v1.4 | 日期: 2026-10-07
+> 版本: v1.5 | 日期: 2026-10-07
 
 本文档统一 Haven 项目各层的命名规则（变量名、函数名、文件名、crate 名、缩写大小写、跨层边界）。规范以现有代码中的事实模式为基础，新代码必须遵循；存量代码若与规范冲突，逐步迁移对齐。
 
@@ -158,7 +158,7 @@ Tauri command 名与 request/response 类型由 `generatedCommands.ts` 从 Rust 
 - UI 源码不新增 `.js` / `.mjs` 独立实现模块；迁移完成后，Svelte 组件也不再保留普通 `<script>`。
 - 主要导出 Svelte store 的模块 → `xxxStore.ts`：`themeStore.ts`、`syncStore.ts`（`syncStore.ts` 导出同名的 `syncStore` 辅助函数，名随主导出）。
 - 聚合 store 桶文件保留 `stores.ts` 命名（导出 `sessionStore`/`toolRunStore` 等命名导出）。
-- IPC DTO 的前端 alias 放在对应领域的 `contracts/` 模块，已知字段从 generated command type 派生；确需开放扩展时显式叠加索引签名，不把稳定响应整体退化为 `Record<string, unknown>`。
+- IPC DTO 的前端 alias 放在对应领域的 `contracts/` 模块，已知字段从 generated command type 派生；确需开放扩展时显式叠加索引签名，不把稳定响应整体退化为 `Record<string, unknown>`。仅做状态判断/标签映射的 UI utility 直接导入 generated enum/value，不再导出同名的无变更 alias；有独立 renderer shape 或领域角色时才定义前端类型。
 - 常量 → **UPPER_SNAKE_CASE**：`SESSION_STATUSES`、`COLOR_MAP`、`ROLE_KEYS`。
 - 局部变量 / 函数参数 → **camelCase**：`newKeyValue`、`reasoningOpen`、`ctxMenuItems`。
 
