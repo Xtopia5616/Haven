@@ -202,7 +202,8 @@ export function firstWaitingBackgroundActionId(
  * Place scheduled Action cards after their source work item. Background
  * actions with a visible source are projected into that tool call's result
  * card; only rows without a visible source get a standalone timeline item.
- * Ownership comes from the validated ActionEvent session_id.
+ * Keep live work at the end of the timeline, then let it return to its source
+ * position once it finishes. Ownership comes from validated ActionEvent data.
  */
 export function groupConversationTimeline(
 	messages: ConversationMessage[],
@@ -218,6 +219,7 @@ export function groupConversationTimeline(
 		firstWaitingBackgroundActionId(orderedActions, awaitingBackground) ?? undefined;
 	const insertions = new Map<number, ActionPayload[]>();
 	const trailing: ActionPayload[] = [];
+	const runningSourceIndexes = new Set<number>();
 
 	for (const action of orderedActions) {
 		const stepIndex = action.sourceStepId
@@ -234,6 +236,7 @@ export function groupConversationTimeline(
 			trailing.push(action);
 			continue;
 		}
+		if (action.status === 'running') runningSourceIndexes.add(sourceIndex);
 		const timelineIndex = transcriptItems.findIndex((item) =>
 			item.kind === 'message'
 				? item.index === sourceIndex
@@ -253,7 +256,21 @@ export function groupConversationTimeline(
 	}
 
 	const result: ConversationTimelineItem[] = [];
-	const addAction = (action: ActionPayload) => {
+	const activeItems: ConversationTimelineItem[] = [];
+	// A live item stays visible after transcript rows that arrived after its source.
+	const isLiveTimelineItem = (item: ConversationTimelineItem) =>
+			(item.kind === 'activity' &&
+				(item.streaming ||
+					item.entries.some(({ index }) => runningSourceIndexes.has(index)))) ||
+			(item.kind === 'message' && runningSourceIndexes.has(item.index)) ||
+			(item.kind === 'action' && item.action.status === 'running');
+	const appendTimelineItem = (
+		item: ConversationTimelineItem,
+		keepWithLiveSource = false,
+	) => {
+		((keepWithLiveSource || isLiveTimelineItem(item)) ? activeItems : result).push(item);
+	};
+	const actionItem = (action: ActionPayload): TimelineActionItem => {
 		const awaitingResult = action.id === firstWaitingActionId;
 		const terminalOutputAlreadyInTranscript =
 			action.kind === 'background' &&
@@ -265,21 +282,25 @@ export function groupConversationTimeline(
 					message.actionId !== action.id &&
 					!message.streaming,
 			);
-		result.push({
+		return {
 			kind: 'action',
 			id: `action-${action.id}`,
 			action,
 			awaitingBackgroundResult: awaitingResult,
 			awaitingBackgroundCount: awaitingResult ? awaitingBackgroundCount : 0,
 			showTerminalOutput: !terminalOutputAlreadyInTranscript,
-		});
+		};
 	};
 
 	transcriptItems.forEach((item, index) => {
-		result.push(item);
-		for (const action of insertions.get(index) || []) addAction(action);
+		const hasLiveSource = isLiveTimelineItem(item);
+		appendTimelineItem(item);
+		for (const action of insertions.get(index) || []) {
+			appendTimelineItem(actionItem(action), hasLiveSource);
+		}
 	});
-	for (const action of trailing) addAction(action);
+	for (const action of trailing) appendTimelineItem(actionItem(action));
+	result.push(...activeItems);
 
 	if (awaitingBackground && !firstWaitingActionId) {
 		result.push({
