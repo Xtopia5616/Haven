@@ -563,3 +563,4 @@
 - [0572：让 session 状态工具直接使用生成契约](0572-use-generated-session-status-in-utility.md)
 - [0573：工具来源分类复用生成枚举](0573-use-generated-tool-source.md)
 - [0574：区分工具 manifest wire 与 UI 视图](0574-name-tool-manifest-view.md)
+- [0575：统一 Model Settings 组件共享编辑类型](0575-unify-model-settings-editor-types.md)

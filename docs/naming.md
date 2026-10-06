@@ -1,6 +1,6 @@
 # Haven 命名规范
 
-> 版本: v1.8 | 日期: 2026-10-07
+> 版本: v1.9 | 日期: 2026-10-07
 
 本文档统一 Haven 项目各层的命名规则（变量名、函数名、文件名、crate 名、缩写大小写、跨层边界）。规范以现有代码中的事实模式为基础，新代码必须遵循；存量代码若与规范冲突，逐步迁移对齐。
 
@@ -161,6 +161,7 @@ Tools manifest 的 generated `ToolManifest` 是 Rust snake_case wire DTO；rende
 - 主要导出 Svelte store 的模块 → `xxxStore.ts`：`themeStore.ts`、`syncStore.ts`（`syncStore.ts` 导出同名的 `syncStore` 辅助函数，名随主导出）。
 - 聚合 store 桶文件保留 `stores.ts` 命名（导出 `sessionStore`/`toolRunStore` 等命名导出）。
 - IPC DTO 的前端 alias 放在对应领域的 `contracts/` 模块，已知字段从 generated command type 派生；确需开放扩展时显式叠加索引签名，不把稳定响应整体退化为 `Record<string, unknown>`。`contracts/` 中被生产消费者使用的重导出是领域导入 façade，不拥有第二份 wire shape；未使用的同名 alias 应删除。仅做状态判断/标签映射的 UI utility 直接导入 generated enum/value，不再导出同名的无变更 alias；有独立 renderer shape 或领域角色时才定义前端类型。
+- 多个组件共享的表单字段、回调输入或字段联合类型由领域类型模块单一定义；持久配置草稿用 `Draft`，仅供编辑器使用的临时表单用 `Form`，供回调判定的输入用 `Input`，避免不同生命周期共用含糊名称。
 - 常量 → **UPPER_SNAKE_CASE**：`SESSION_STATUS_VALUES`、`COLOR_MAP`、`ROLE_KEYS`。
 - 局部变量 / 函数参数 → **camelCase**：`newKeyValue`、`reasoningOpen`、`ctxMenuItems`。
 

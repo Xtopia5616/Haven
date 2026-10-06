@@ -7,16 +7,8 @@
 	import StatusBadge from '$lib/StatusBadge.svelte';
 	import type { CapabilityInput } from '$lib/contracts/generatedCommands.ts';
 	import type { DiscoveredModelMap } from '$lib/contracts/model.ts';
-	import type { ModelDraft, ProviderDraft } from '$lib/settingsModelTypes.ts';
+	import type { ModelDraft, ModelOverrideField, ProviderDraft } from '$lib/settingsModelTypes.ts';
 	import ModelConfigCard from './ModelConfigCard.svelte';
-
-	type OverrideField =
-		| 'temperature'
-		| 'context_window'
-		| 'cost_per_1k_input_tokens'
-		| 'cost_per_1k_output_tokens'
-		| 'cost_per_1k_cache_read_tokens'
-		| 'cost_per_1k_cache_write_tokens';
 
 	interface Props {
 		providers?: ProviderDraft[];
@@ -34,7 +26,7 @@
 		onSetModel: (model: ModelDraft, modelId: string) => void;
 		onSetModelProvider: (model: ModelDraft, provider: string) => void;
 		onSetCapability: (model: ModelDraft, capability: CapabilityInput, checked: boolean) => void;
-		onUpdateOverride: (model: ModelDraft, field: OverrideField, value: number | null) => void;
+		onUpdateOverride: (model: ModelDraft, field: ModelOverrideField, value: number | null) => void;
 		onRemoveModel: (model: ModelDraft) => void;
 		onEditProvider: (index?: number) => void;
 		onDeleteProvider: (index: number) => void;

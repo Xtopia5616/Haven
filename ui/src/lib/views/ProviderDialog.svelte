@@ -10,26 +10,12 @@
 		isSttOnlyStyle,
 		isTtsOnlyStyle,
 	} from '$lib/apiStyle.ts';
-
-	type ProviderDraft = {
-		name: string;
-		api_style: string;
-		base_url: string;
-		api_key: string;
-		proxy_mode: 'system' | 'direct' | 'custom';
-		proxy_url: string;
-		no_proxy: string;
-	};
-	type ProviderKeyStatus = {
-		name: string;
-		api_key?: string;
-		api_key_ref?: string | null;
-	};
+	import type { ProviderDialogForm, ProviderKeyCheckInput } from '$lib/settingsModelTypes.ts';
 
 	interface Props {
-		dialog: { idx: number | null; form: ProviderDraft | null };
-		providers?: ProviderKeyStatus[];
-		isProviderKeyConfigured: (provider: ProviderKeyStatus | undefined) => boolean;
+		dialog: { idx: number | null; form: ProviderDialogForm | null };
+		providers?: ProviderKeyCheckInput[];
+		isProviderKeyConfigured: (provider: ProviderKeyCheckInput | undefined) => boolean;
 		onClose: () => void;
 		onSave: () => void | Promise<void>;
 		onApplyApiStylePreset: (style: string) => void;
@@ -138,7 +124,7 @@
 							{ value: 'custom', label: '指定代理' },
 						]}
 						onChange={withStringValue(
-							(value) => (form.proxy_mode = value as ProviderDraft['proxy_mode']),
+							(value) => (form.proxy_mode = value as ProviderDialogForm['proxy_mode']),
 						)}
 					/>
 				</div>

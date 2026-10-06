@@ -9,15 +9,7 @@
 	import { capabilityOptions } from '$lib/modelRoles.ts';
 	import { withNumberValue, withStringValue } from '$lib/typedCallbacks.ts';
 	import type { CapabilityInput } from '$lib/contracts/generatedCommands.ts';
-	import type { ModelDraft } from '$lib/settingsModelTypes.ts';
-
-	type OverrideField =
-		| 'temperature'
-		| 'context_window'
-		| 'cost_per_1k_input_tokens'
-		| 'cost_per_1k_output_tokens'
-		| 'cost_per_1k_cache_read_tokens'
-		| 'cost_per_1k_cache_write_tokens';
+	import type { ModelDraft, ModelOverrideField } from '$lib/settingsModelTypes.ts';
 
 	interface Props {
 		model: ModelDraft;
@@ -30,7 +22,7 @@
 		onSetModel: (model: ModelDraft, modelId: string) => void;
 		onSetModelProvider: (model: ModelDraft, provider: string) => void;
 		onSetCapability: (model: ModelDraft, capability: CapabilityInput, checked: boolean) => void;
-		onUpdateOverride: (model: ModelDraft, field: OverrideField, value: number | null) => void;
+		onUpdateOverride: (model: ModelDraft, field: ModelOverrideField, value: number | null) => void;
 		onRemoveModel: (model: ModelDraft) => void;
 	}
 

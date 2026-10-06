@@ -28,26 +28,13 @@
 	import type { DiscoveredModelMap } from '$lib/contracts/model.ts';
 	import type {
 		ModelDraft,
+		ModelOverrideField,
+		ProviderDialogForm,
 		ProviderDraft,
+		ProviderKeyCheckInput,
 		RequestPolicyDraft,
 		SettingsLlmState,
 	} from '$lib/settingsModelTypes.ts';
-	type ProviderDialogForm = {
-		name: string;
-		api_style: string;
-		base_url: string;
-		api_key: string;
-		proxy_mode: 'system' | 'direct' | 'custom';
-		proxy_url: string;
-		no_proxy: string;
-	};
-	type OverrideField =
-		| 'temperature'
-		| 'context_window'
-		| 'cost_per_1k_input_tokens'
-		| 'cost_per_1k_output_tokens'
-		| 'cost_per_1k_cache_read_tokens'
-		| 'cost_per_1k_cache_write_tokens';
 
 	interface Props {
 		section?: 'models' | 'media';
@@ -202,17 +189,10 @@
 			if (policy.primary === previousId) policy.primary = id;
 		}
 	}
-	function updateModelOverride(model: ModelDraft, field: OverrideField, value: number | null) {
+	function updateModelOverride(model: ModelDraft, field: ModelOverrideField, value: number | null) {
 		model[field] = value;
 	}
-	type ProviderKeyStatus = {
-		name: string;
-		api_key?: string;
-		api_key_ref?: string | null;
-		api_style?: string | null;
-		provider?: string | null;
-	};
-	function isProviderKeyConfigured(provider: ProviderKeyStatus | undefined) {
+	function isProviderKeyConfigured(provider: ProviderKeyCheckInput | undefined) {
 		return (
 			!!provider &&
 			(!!provider.api_key ||
