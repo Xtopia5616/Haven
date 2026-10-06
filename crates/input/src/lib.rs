@@ -28,8 +28,6 @@ pub mod hotkey;
 pub mod vad;
 mod wav;
 
-pub use wav::encode_wav_to_vec;
-
 const VAD_THROTTLE_INTERVAL: Duration = Duration::from_millis(100);
 const RECORDING_LOOP_INTERVAL: Duration = Duration::from_millis(30);
 const DIGITAL_SILENCE_FLOOR: f32 = 1e-4;
@@ -107,6 +105,13 @@ pub struct RecordingResult {
     /// recording. Provider and transcription failures are owned by the media
     /// runtime and never cross back into this acquisition result.
     pub capture_error: Option<String>,
+}
+
+impl RecordingResult {
+    /// Encode this captured 16 kHz mono PCM as a 16-bit WAV.
+    pub fn encode_wav(&self) -> Vec<u8> {
+        wav::encode_wav_to_vec(&self.pcm, TARGET_SAMPLE_RATE, 1)
+    }
 }
 
 impl Default for RecordingResult {
@@ -645,11 +650,6 @@ impl InputPipeline {
         Ok(result)
     }
 
-    /// Encode pipeline PCM as WAV (16 kHz mono 16-bit).
-    pub async fn encode_wav(&self, pcm_data: &[f32]) -> Result<Vec<u8>> {
-        Ok(encode_wav_to_vec(pcm_data, TARGET_SAMPLE_RATE, 1))
-    }
-
     pub async fn get_state(&self) -> RecordingState {
         self.state.lock().await.clone()
     }
@@ -843,7 +843,11 @@ mod tests {
         assert_eq!(vad_threshold, 0.3);
         assert_eq!(silence_frames, 2000_u32.div_ceil(30));
         let pcm = vec![0.0f32];
-        let wav = pipeline.encode_wav(&pcm).await.unwrap();
+        let wav = RecordingResult {
+            pcm,
+            ..RecordingResult::default()
+        }
+        .encode_wav();
         let channels = u16::from_le_bytes([wav[22], wav[23]]);
         assert_eq!(channels, 1);
         let sr = u32::from_le_bytes([wav[24], wav[25], wav[26], wav[27]]);

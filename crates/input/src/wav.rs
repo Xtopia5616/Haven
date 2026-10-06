@@ -1,5 +1,5 @@
 /// Encode pipeline PCM as a 16-bit mono WAV.
-pub fn encode_wav_to_vec(pcm_data: &[f32], sample_rate: u32, channels: u16) -> Vec<u8> {
+pub(super) fn encode_wav_to_vec(pcm_data: &[f32], sample_rate: u32, channels: u16) -> Vec<u8> {
     let data_size = pcm_data.len() * 2;
     let mut wav = Vec::with_capacity(44 + data_size);
 

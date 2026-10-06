@@ -180,7 +180,7 @@
 | 范围 | 已核对 | 尚待核对 |
 |---|---|---|
 | Rust crate 类型名 | 对 `crates/` 下直接声明的 `pub struct/enum/type/trait` 做了初步重复名扫描；跨 crate 没有发现其它同名声明。唯一重复是 `platform::ChildProcessHandle` 的 Windows / 非 Windows 条件别名，表示同一平台抽象，应保留。 | `pub(crate)`、宏生成类型、字段、模块、trait 方法与普通函数尚未形成全仓完整清单；各 crate 的角色后缀与动词语义仍按域复核。 |
-| Rust crate 调用与函数动词 | Tools、Memory、Agent 的部分查询/队列调用链已按实际返回值和副作用收敛，见下方候选记录。 | 所有 crate 的公开及内部函数、同义动词、参数/返回类型用途尚未逐域审计。 |
+| Rust crate 调用与函数动词 | Tools、Memory、Agent 的部分查询/队列调用链已按实际返回值和副作用收敛；Input 的录音结果 WAV 编码链也已核对到 App 与 Tools 两个消费者，并合并唯一入口（ADR 0570）。 | 所有 crate 的公开及内部函数、同义动词、参数/返回类型用途尚未逐域审计；Input 的 capture/VAD/hotkey 子 API 也仍待逐域复核。 |
 | Svelte / TypeScript | Session 时间线、runtime stores、session intent、ToolRun 分类及部分 IPC wrapper 已核对，见下方候选记录。 | 组件、stores、controllers、contracts、props 与事件 handler 的全量 owner/名称映射尚未完成。 |
 | Tauri IPC / 事件 | 结构门禁确认 81 个 handler 与 generated contract 对齐、35 个 event channels 对齐；ToolRun kind 的 runtime/wire 名称边界已区分。 | 所有命令参数、响应 DTO、事件 payload、UI wrapper 和生成名称仍需做语义命名审计；结构一致不等于术语一致。 |
 | 架构文档 / 配置 / 持久名 | `docs/naming.md` 已记录首版跨层产品术语；已完成的契约迁移同步了 ADR、路线图和相应架构说明。 | 配置键、持久字段、剩余文档与代码符号的交叉引用尚未完整核对；既有持久名按兼容和重置规则审慎处理。 |
@@ -201,6 +201,7 @@
 | IPC command 名在安全目录与 generated contract 重复推导 | `generatedCommands.ts` 由 Rust handler 生成 `TauriCommandName`；`commands.ts` 原先再从安全 metadata 对象键推导同名 union，且 `satisfies Record<string, ...>` 不保证目录覆盖所有生成 handler。 | **generated contract 唯一拥有 command 集合**：安全目录改为满足 `Record<TauriCommandName, CommandContract>`，删掉本地 key union；新增/删除 handler 若未同步 reviewed metadata 即编译失败（ADR 0566）。 |
 | App contract 手写 `RiskLevel` | App event contract 定义的五值 union 与 Rust 生成 `RiskLevel` 完全相同；`ConfirmationDialog` 也从 App event contract 导入它。 | **复用 generated risk enum**：删除本地 union，event contract 与对话框直接依赖 Rust 生成类型；risk 值、校验和展示不变（ADR 0568）。 |
 | App contract re-export generated `InteractionKind` / `InteractionStatus` | 两个类型在 `app.ts` 中只是 Rust generated union 的无变更 alias；reducer、interaction helper 和菜单因此从 App event module 导入类型值。 | **引用生成类型本身**：删除本地 alias，相关消费者直接依赖 generated contract；App-owned request shape、payload validator 和 interaction routing 不动（ADR 0569）。 |
+| Input pipeline WAV 编码入口 | `InputPipeline::encode_wav(&self, pcm)` 不读取 pipeline 状态，只把固定 16 kHz 单声道参数传给同 crate helper；Tauri 录音 handler 同时直接调用该 helper，Tool 又经 pipeline wrapper 编码。 | **合并唯一入口**：固定格式编码改为 `RecordingResult::encode_wav()`，App 与 Tool 从其持有的录音结果编码；删除 pipeline wrapper 与 crate-root helper 导出，编码格式不变（ADR 0570）。 |
 | Common / LLM `RequestPolicy` 同名 | Common config 的 `RequestPolicy` 把 logical request 映射到 primary model；LLM 内部 `request_pipeline::RequestPolicy` 捕获一次调用的 retry 与 timeout runtime snapshot。 | **已改名**：LLM 私有执行快照叫 `RequestExecutionPolicy`；配置字段/JSON 名和路由选择不变，两个 owner 保持分离（ADR 0539）。 |
 | Common / App `HotkeyConfig` 同名 | Common 的 `HotkeyConfig` 是实际生效并持久化的用户快捷键配置；App `desktop::HotkeyConfig` 只在 `ShellState::default` 中写入、无生产读取者，字段还保留 recording/toggle 双绑定旧形状。 | **已清理**：删除未使用的 ShellState 副本与孤立默认值测试；Common 配置和快捷键注册路径不变（ADR 0540）。 |
 | LLM / Memory `LlmCallUsage` 同名 | LLM 的类型是单次 provider 调用的运行时元数据；Memory 同名类型则是包含实体 ID、session、step、成本和时间戳的持久明细，并作为 resume IPC DTO 生成 TS 类型。 | **已改名**：Memory 持久明细为 `LlmUsageRecord`，追加输入为 `LlmUsageRecordInput`；生成类型名随之清晰，JSON 字段、数据库与事件 payload shape 不变（ADR 0541）。 |

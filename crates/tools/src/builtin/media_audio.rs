@@ -154,7 +154,7 @@ impl AudioRuntime {
         // Recording is a producer. Persist the captured WAV before the shared
         // media runtime attempts STT so a failed or unconfigured transcription
         // still leaves a reusable asset for a later `media.transcribe` call.
-        let wav = pipeline.encode_wav(&result.pcm).await?;
+        let wav = result.encode_wav();
         tokio::fs::create_dir_all(&self.capture_root).await?;
         let path = self
             .capture_root

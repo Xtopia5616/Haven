@@ -8,9 +8,7 @@ use crate::events::{
     TranscriptionStartedEvent,
 };
 use haven_common::error::sanitize_error_text;
-use haven_input::{
-    RecordingReason, RecordingResult, capture::TARGET_SAMPLE_RATE, encode_wav_to_vec,
-};
+use haven_input::{RecordingReason, RecordingResult};
 use haven_tools::MediaTranscriptionStatus;
 use serde::Serialize;
 use std::sync::Arc;
@@ -187,7 +185,7 @@ pub(crate) async fn finalize_transcription(
         return None;
     }
 
-    let wav = encode_wav_to_vec(&result.pcm, TARGET_SAMPLE_RATE, 1);
+    let wav = result.encode_wav();
     let transcription = state
         .runtime
         .tools
