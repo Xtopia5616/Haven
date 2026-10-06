@@ -49,7 +49,7 @@ impl AgentLayer {
         }
 
         // Validate the exact requested row before lifecycle handling can
-        // cancel actions, clear interactions, or otherwise change session
+        // cancel tool_runs, clear interactions, or otherwise change session
         // state. The store repeats this lookup in its rollback transaction.
         let target_msg = match target_message_id {
             Some(message_id) => Some(
@@ -277,9 +277,9 @@ impl AgentLayer {
             anyhow::bail!("session '{}' is closing; retry rollback later", session_id);
         }
 
-        // Background actions spawned before the rollback are stale relative
+        // Background tool_runs spawned before the rollback are stale relative
         // to the restored snapshot: kill them so their children cannot leak.
-        self.executor.cancel_session_actions(session_id).await;
+        self.executor.cancel_session_tool_runs(session_id).await;
 
         // Drop any checkpointed partial stream text only after lifecycle
         // admission. The restored timeline must not inherit stale partials.
@@ -379,7 +379,7 @@ impl AgentLayer {
             // Serialize the durable transcript rewrite and status transition
             // with explicit end. A Continue selected after an end-cleanup
             // failure is an explicit choice to resume the session; any
-            // remaining actions keep their ordinary owner lifecycle.
+            // remaining tool_runs keep their ordinary owner lifecycle.
             let _lifecycle = self.executor.lifecycle_guard().await;
             self.executor.ensure_lifecycle_open()?;
             if self.executor.is_session_closing(session_id) {

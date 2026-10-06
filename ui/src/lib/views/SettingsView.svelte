@@ -20,7 +20,7 @@
 	import MaterialButton from '$lib/MaterialButton.svelte';
 	import MaterialTabs from '$lib/MaterialTabs.svelte';
 	import { addNotification } from '$lib/notificationStore.ts';
-	import { setActionCompletionNotificationChannels } from '$lib/actionCompletionNotificationSettings.ts';
+	import { setToolRunCompletionNotificationChannels } from '$lib/toolRunCompletionNotificationSettings.ts';
 	import { formatError } from '$lib/formatError.ts';
 	import {
 		isPartialConfigApplyError,
@@ -175,14 +175,14 @@
 		max_known_facts: 40,
 		sanitize_field_max_chars: 256,
 		file_summary_timeout_secs: 120,
-		action_result_context_chars: 4000,
+		tool_run_result_context_chars: 4000,
 		turn_deadline_secs: 300,
 		incomplete_tool_args_retries: 2,
 		stream_stall_warn_delay_ms: 10000,
 		reasoning_echo_max_chars: 1200,
-		background_job_tail_max_chars: 2000,
-		background_job_output_emit_interval_ms: 1500,
-		terminal_job_ttl_secs: 600,
+		background_tool_run_tail_max_chars: 2000,
+		background_tool_run_output_emit_interval_ms: 1500,
+		tool_run_terminal_ttl_secs: 600,
 		mcp_max_binary_payload_bytes: 2 * 1024 * 1024,
 		mcp_max_sse_buffer_bytes: 2 * 1024 * 1024,
 		skills_max_md_bytes: 256 * 1024,
@@ -196,8 +196,8 @@
 		clipboard_history_entries: 10,
 		clipboard_history_max_entries: 100,
 		clipboard_entry_max_chars: 2000,
-		scheduled_actions_max: 32,
-		background_max_actions: 64,
+		scheduled_tool_runs_max: 32,
+		background_max_tool_runs: 64,
 		event_chunk_batch_max_bytes: 8 * 1024,
 		input_ring_buffer_secs: 20,
 		embedding_chunk_size: 10,
@@ -257,7 +257,7 @@
 		session_resumed: { in_app: true, windows: false },
 		session_error: { in_app: true, windows: true },
 		permission_requested: { in_app: true, windows: true },
-		action_completed: { in_app: true, windows: true },
+		tool_run_completed: { in_app: true, windows: true },
 	});
 	let log = $state<Required<LogConfigInput>>({
 		level: 'info',
@@ -460,7 +460,7 @@
 				session_resumed: { ...notification.session_resumed },
 				session_error: { ...notification.session_error },
 				permission_requested: { ...notification.permission_requested },
-				action_completed: { ...notification.action_completed },
+				tool_run_completed: { ...notification.tool_run_completed },
 			},
 			log: {
 				level: log.level,
@@ -893,7 +893,7 @@
 					.map((/** @type {any} */ server) => server.name || '')
 					.filter(Boolean);
 				notification = { ...notification, ...(settings.notification || {}) };
-				setActionCompletionNotificationChannels(notification.action_completed);
+				setToolRunCompletionNotificationChannels(notification.tool_run_completed);
 				log = { ...log, ...(settings.log || {}) };
 				defaultShell = settings.default_shell || 'powershell';
 				checkShells();
@@ -1174,9 +1174,9 @@
 								in_app: notification.permission_requested.in_app,
 								windows: notification.permission_requested.windows,
 							},
-							action_completed: {
-								in_app: notification.action_completed.in_app,
-								windows: notification.action_completed.windows,
+							tool_run_completed: {
+								in_app: notification.tool_run_completed.in_app,
+								windows: notification.tool_run_completed.windows,
 							},
 						},
 						log: {
@@ -1190,7 +1190,7 @@
 				securityRuntimeStatus = 'current';
 				securityRuntimeNotice = '安全策略已按当前配置完成运行时应用。';
 			}
-			setActionCompletionNotificationChannels(notification.action_completed);
+			setToolRunCompletionNotificationChannels(notification.tool_run_completed);
 			addNotification('设置已写入配置', 'success');
 			try {
 				await refreshApiKeyStatus();

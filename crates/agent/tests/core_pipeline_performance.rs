@@ -1,9 +1,9 @@
 use std::sync::Arc;
 use std::time::Instant;
 
-use haven_common::ActionStatus;
+use haven_common::ToolRunStatus;
 use haven_common::types::new_id;
-use haven_memory::{ActionStore, Database, MAX_MEMORY_OUTBOX_PAGE_SIZE, MemoryStore};
+use haven_memory::{Database, MAX_MEMORY_OUTBOX_PAGE_SIZE, MemoryStore, ToolRunStore};
 use serde_json::json;
 use tokio_util::sync::CancellationToken;
 
@@ -23,14 +23,14 @@ fn distribution(samples_ns: &[u128]) -> (f64, f64) {
     )
 }
 
-fn pending_action_count(db: &Database) -> i64 {
+fn pending_tool_run_count(db: &Database) -> i64 {
     db.conn()
         .query_row(
-            "SELECT COUNT(*) FROM action_completion_outbox WHERE delivered_at IS NULL",
+            "SELECT COUNT(*) FROM tool_run_completion_outbox WHERE delivered_at IS NULL",
             [],
             |row| row.get(0),
         )
-        .expect("query action outbox depth")
+        .expect("query ToolRun outbox depth")
 }
 
 async fn pending_fact_count(store: &MemoryStore, cancellation: &CancellationToken) -> usize {
@@ -80,18 +80,18 @@ async fn first_fact_page(
 
 #[tokio::test]
 #[ignore = "manual performance profile; run with --ignored --nocapture"]
-async fn action_completion_outbox_latency_depth_and_throughput_profile() {
+async fn tool_run_completion_outbox_latency_depth_and_throughput_profile() {
     let directory = tempfile::tempdir().expect("temporary profile directory");
     let db = Arc::new(
-        Database::open(&directory.path().join("action-outbox-profile.db"))
+        Database::open(&directory.path().join("tool-run-outbox-profile.db"))
             .expect("temporary disk database"),
     );
-    let store = ActionStore::new(db.clone());
+    let store = ToolRunStore::new(db.clone());
     let session_id = new_id("ses");
 
-    let warmup_id = new_id("act");
+    let warmup_id = new_id("toolrun");
     store
-        .save_background_action(
+        .save_background_tool_run(
             warmup_id.clone(),
             Some(session_id.clone()),
             "profile warmup".into(),
@@ -100,16 +100,16 @@ async fn action_completion_outbox_latency_depth_and_throughput_profile() {
         .await
         .unwrap();
     store
-        .finish_background_action_with_completion(
+        .finish_background_tool_run_with_completion(
             warmup_id.clone(),
-            ActionStatus::Completed,
+            ToolRunStatus::Completed,
             Some("ok".into()),
             None,
             None,
             None,
             Some(0),
             "finished".into(),
-            json!({"action_id": warmup_id, "status": "completed", "output": "ok"}),
+            json!({"tool_run_id": warmup_id, "status": "completed", "output": "ok"}),
         )
         .await
         .unwrap();
@@ -119,58 +119,58 @@ async fn action_completion_outbox_latency_depth_and_throughput_profile() {
         .unwrap()
         .expect("warmup completion");
     store
-        .acknowledge_completion(warmup.action_result_id)
+        .acknowledge_completion(warmup.tool_run_result_id)
         .await
         .unwrap();
 
-    let mut action_ids = Vec::with_capacity(SAMPLE_COUNT);
+    let mut tool_run_ids = Vec::with_capacity(SAMPLE_COUNT);
     for _ in 0..SAMPLE_COUNT {
-        let action_id = new_id("act");
+        let tool_run_id = new_id("toolrun");
         store
-            .save_background_action(
-                action_id.clone(),
+            .save_background_tool_run(
+                tool_run_id.clone(),
                 Some(session_id.clone()),
-                "profile action".into(),
+                "profile ToolRun".into(),
                 "started".into(),
             )
             .await
             .unwrap();
-        action_ids.push(action_id);
+        tool_run_ids.push(tool_run_id);
     }
 
     let mut enqueue_samples_ns = Vec::with_capacity(SAMPLE_COUNT);
     let enqueue_wall_started = Instant::now();
     let mut oldest_enqueued = None;
-    for action_id in &action_ids {
+    for tool_run_id in &tool_run_ids {
         let started = Instant::now();
         let result = store
-            .finish_background_action_with_completion(
-                action_id.clone(),
-                ActionStatus::Completed,
+            .finish_background_tool_run_with_completion(
+                tool_run_id.clone(),
+                ToolRunStatus::Completed,
                 Some("profile result".into()),
                 None,
                 None,
                 None,
                 Some(0),
                 "finished".into(),
-                json!({"action_id": action_id, "status": "completed", "output": "profile result"}),
+                json!({"tool_run_id": tool_run_id, "status": "completed", "output": "profile result"}),
             )
             .await
             .unwrap();
-        assert!(result, "each terminal action must enqueue exactly once");
+        assert!(result, "each terminal ToolRun must enqueue exactly once");
         oldest_enqueued.get_or_insert_with(Instant::now);
         enqueue_samples_ns.push(started.elapsed().as_nanos());
     }
     let enqueue_wall = enqueue_wall_started.elapsed();
-    let high_water = pending_action_count(&db) as usize;
+    let high_water = pending_tool_run_count(&db) as usize;
     assert_eq!(high_water, SAMPLE_COUNT);
     let oldest_pending_age_us = oldest_enqueued.unwrap().elapsed().as_micros();
 
     let mut claim_samples_ns = Vec::with_capacity(SAMPLE_COUNT);
     let mut ack_samples_ns = Vec::with_capacity(SAMPLE_COUNT);
     let drain_wall_started = Instant::now();
-    for (index, _) in action_ids.iter().enumerate() {
-        let depth_before_claim = pending_action_count(&db) as usize;
+    for (index, _) in tool_run_ids.iter().enumerate() {
+        let depth_before_claim = pending_tool_run_count(&db) as usize;
         assert_eq!(depth_before_claim, SAMPLE_COUNT - index);
         let claim_started = Instant::now();
         let completion = store
@@ -183,20 +183,20 @@ async fn action_completion_outbox_latency_depth_and_throughput_profile() {
         let ack_started = Instant::now();
         assert!(
             store
-                .acknowledge_completion(completion.action_result_id)
+                .acknowledge_completion(completion.tool_run_result_id)
                 .await
                 .unwrap()
         );
         ack_samples_ns.push(ack_started.elapsed().as_nanos());
     }
     let drain_wall = drain_wall_started.elapsed();
-    assert_eq!(pending_action_count(&db), 0);
+    assert_eq!(pending_tool_run_count(&db), 0);
 
     let (enqueue_p50, enqueue_p95) = distribution(&enqueue_samples_ns);
     let (claim_p50, claim_p95) = distribution(&claim_samples_ns);
     let (ack_p50, ack_p95) = distribution(&ack_samples_ns);
     println!(
-        "profile action_outbox backend=temp_disk_sqlite samples={SAMPLE_COUNT} warmup={WARMUP_COUNT} pending_high_water={high_water} oldest_pending_age_us={oldest_pending_age_us} finish_commit_enqueue_p50_us={enqueue_p50:.2} finish_commit_enqueue_p95_us={enqueue_p95:.2} enqueue_per_s={:.1} claim_reconcile_p50_us={claim_p50:.2} claim_reconcile_p95_us={claim_p95:.2} ack_p50_us={ack_p50:.2} ack_p95_us={ack_p95:.2} drain_per_s={:.1}",
+        "profile tool_run_outbox backend=temp_disk_sqlite samples={SAMPLE_COUNT} warmup={WARMUP_COUNT} pending_high_water={high_water} oldest_pending_age_us={oldest_pending_age_us} finish_commit_enqueue_p50_us={enqueue_p50:.2} finish_commit_enqueue_p95_us={enqueue_p95:.2} enqueue_per_s={:.1} claim_reconcile_p50_us={claim_p50:.2} claim_reconcile_p95_us={claim_p95:.2} ack_p50_us={ack_p50:.2} ack_p95_us={ack_p95:.2} drain_per_s={:.1}",
         SAMPLE_COUNT as f64 / enqueue_wall.as_secs_f64(),
         SAMPLE_COUNT as f64 / drain_wall.as_secs_f64(),
     );

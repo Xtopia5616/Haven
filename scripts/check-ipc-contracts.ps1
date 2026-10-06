@@ -88,12 +88,12 @@ Assert-NotContains $tauri 'Promise<any>|args\?:\s*any' 'invoke boundary must not
 
 # Runtime parsers remain the trust boundary for structured responses even
 # though compile-time request/response shapes are generated from Rust.
-$actionCommands = Get-Source 'ui/src/lib/actionCommands.ts'
-Assert-Contains $actionCommands 'const rows:\s*unknown\s*=\s*await invoke\(''list_actions''\)' 'action rows enter as unknown'
-Assert-Contains $actionCommands 'rows\.map\(mapActionPayload\)' 'action rows pass through the runtime mapper'
+$toolRunCommands = Get-Source 'ui/src/lib/toolRunCommands.ts'
+Assert-Contains $toolRunCommands 'const rows:\s*unknown\s*=\s*await invoke\(''list_tool_runs''\)' 'tool run rows enter as unknown'
+Assert-Contains $toolRunCommands 'rows\.map\(mapToolRunPayload\)' 'tool run rows pass through the runtime mapper'
 
-$actionContract = Get-Source 'ui/src/lib/contracts/action.ts'
-Assert-Contains $actionContract 'function mapActionPayload\(payload:\s*unknown\):\s*ActionPayload\s*\|\s*null' 'action mapper accepts unknown'
+$toolRunContract = Get-Source 'ui/src/lib/contracts/toolRun.ts'
+Assert-Contains $toolRunContract 'function mapToolRunPayload\(payload:\s*unknown\):\s*ToolRunPayload\s*\|\s*null' 'tool run mapper accepts unknown'
 
 $settingsCommand = Get-Source 'ui/src/lib/settingsCommand.ts'
 Assert-Contains $settingsCommand 'invoke\(''get_settings''\)\.then\(parseSettingsPayload\)' 'settings response uses its runtime parser'
@@ -115,7 +115,7 @@ Assert-Contains $layout '(?s)const report = await invoke\(''check_llm_connection
 # direct invoke owners for these audited command families.
 $uiFiles = Get-ChildItem (Join-Path $root 'ui/src') -Recurse -File | Where-Object { $_.Extension -in @('.ts', '.svelte') }
 $ownedCommands = @{
-    'actionCommands.ts' = @('list_actions', 'cancel_action')
+    'toolRunCommands.ts' = @('list_tool_runs', 'cancel_tool_run')
     'memoryCommands.ts' = @('list_facts', 'add_fact', 'delete_fact', 'recall_memory')
     'sessionHistoryCommands.ts' = @('get_sessions', 'search_history_filtered', 'get_last_conversation', 'reopen_session', 'delete_session', 'clear_history', 'update_session_title')
     'modelDiscoveryCommands.ts' = @('discover_models', 'discover_all_models')

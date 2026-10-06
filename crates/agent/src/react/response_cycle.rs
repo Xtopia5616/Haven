@@ -6,7 +6,7 @@
 
 use super::retries::{AfterLlmAction, ResponsePolicyState};
 use super::stream_step::StreamSession;
-use super::{Action, ReActEngine, ReActState, RequestContext, StepCtx};
+use super::{ReActEngine, ReActState, RequestContext, StepCtx, ToolCall};
 use haven_llm::LlmResponse;
 use tokio_util::sync::CancellationToken;
 
@@ -15,7 +15,7 @@ use tokio_util::sync::CancellationToken;
 pub(super) struct AcceptedResponse {
     pub(super) response: LlmResponse,
     pub(super) thought: Option<String>,
-    pub(super) actions: Vec<Action>,
+    pub(super) tool_calls: Vec<ToolCall>,
 }
 
 pub(super) enum ResponseCycleOutcome {
@@ -43,7 +43,7 @@ impl ReActEngine {
         request_context: &RequestContext,
         mut response: LlmResponse,
         mut thought: Option<String>,
-        mut actions: Vec<Action>,
+        mut tool_calls: Vec<ToolCall>,
         cancel: &CancellationToken,
         incomplete_tool_args_retries: &mut u32,
         pending_ask: bool,
@@ -58,7 +58,7 @@ impl ReActEngine {
                     ctx,
                     super::hooks::AfterLlmInput {
                         thought: &thought,
-                        actions: &actions,
+                        tool_calls: &tool_calls,
                         response: &response,
                         state: ResponsePolicyState {
                             incomplete_tool_args_retries_used: *incomplete_tool_args_retries,
@@ -74,7 +74,7 @@ impl ReActEngine {
                     return ResponseCycleOutcome::Accepted(Box::new(AcceptedResponse {
                         response,
                         thought,
-                        actions,
+                        tool_calls,
                     }));
                 }
                 AfterLlmAction::Fail { reason } => {
@@ -87,7 +87,7 @@ impl ReActEngine {
                     let retry_context = request_context.with_user_instruction(nudge);
                     match stream.retry(&retry_context).await {
                         Ok((retry_response, duration_ms)) => {
-                            let (retry_thought, retry_actions) =
+                            let (retry_thought, retry_tool_calls) =
                                 ReActEngine::parse_default_model_response(
                                     &retry_response,
                                     ctx.step_num,
@@ -102,7 +102,7 @@ impl ReActEngine {
                             .await;
                             response = retry_response;
                             thought = retry_thought;
-                            actions = retry_actions;
+                            tool_calls = retry_tool_calls;
                         }
                         Err(haven_llm::LlmError::Cancelled) => {
                             return ResponseCycleOutcome::Cancelled;

@@ -11,9 +11,9 @@ import {
 	dropStreamedThought,
 	insertAgentMessage,
 	newToolMessage,
-	actionIdFromObservation,
-	sourceActionIdFromObservation,
-	parseActionResultInject,
+	toolRunIdFromObservation,
+	sourceToolRunIdFromObservation,
+	parseToolRunResultInject,
 	resetStreamBlocks,
 } from './streaming.ts';
 
@@ -549,7 +549,7 @@ describe('accumulateStreamChunk after websearch boundary', () => {
 			}),
 		];
 
-		// The first chunk can be flushed before agent:action while later
+		// The first chunk can be flushed before agent:tool_call while later
 		// completion chunks are delivered just after the tool event.
 		m = chunk(m, '先读取');
 		m = chunk(m, '文件');
@@ -870,18 +870,18 @@ describe('newToolMessage', () => {
 		expect('time' in msg).toBe(false);
 	});
 
-	it('carries actionId for background shell observations', () => {
+	it('carries toolRunId for background shell observations', () => {
 		const msg = newToolMessage({
 			id: 'step-1',
 			stepNumber: 1,
 			toolName: 'shell',
-			content: '{"background":true}',
-			actionId: 'act-abc',
+			content: '{"execution_mode":"background"}',
+			toolRunId: 'toolrun-abc',
 		});
-		expect(msg.actionId).toBe('act-abc');
+		expect(msg.toolRunId).toBe('toolrun-abc');
 	});
 
-	it('carries toolArgs from the Action placeholder and omits them when undefined', () => {
+	it('carries toolArgs from the ToolCall placeholder and omits them when undefined', () => {
 		const withArgs = newToolMessage({
 			id: 'step-1',
 			stepNumber: 1,
@@ -899,7 +899,7 @@ describe('newToolMessage', () => {
 		expect('toolArgs' in fill).toBe(false);
 	});
 
-	it('keeps the complete input on a streaming action', () => {
+	it('keeps the complete input on a streaming ToolCall', () => {
 		const msg = newToolMessage({
 			id: 'step-1',
 			stepNumber: 1,
@@ -916,66 +916,66 @@ describe('newToolMessage', () => {
 	});
 });
 
-describe('actionIdFromObservation', () => {
-	it('extracts action_id from background shell observations', () => {
+describe('toolRunIdFromObservation', () => {
+	it('extracts tool_run_id from background shell observations', () => {
 		expect(
-			actionIdFromObservation(
-				JSON.stringify({ background: true, action_id: 'act-1', status: 'running' }),
+			toolRunIdFromObservation(
+				JSON.stringify({ execution_mode: 'background', tool_run_id: 'toolrun-1', status: 'running' }),
 			),
-		).toBe('act-1');
+		).toBe('toolrun-1');
 	});
 	it('returns null for foreground / non-JSON observations', () => {
-		expect(actionIdFromObservation('{"output":"hi"}')).toBeNull();
-		expect(actionIdFromObservation('plain text')).toBeNull();
-		expect(actionIdFromObservation('')).toBeNull();
-		expect(actionIdFromObservation(null)).toBeNull();
+		expect(toolRunIdFromObservation('{"output":"hi"}')).toBeNull();
+		expect(toolRunIdFromObservation('plain text')).toBeNull();
+		expect(toolRunIdFromObservation('')).toBeNull();
+		expect(toolRunIdFromObservation(null)).toBeNull();
 	});
 });
 
-describe('sourceActionIdFromObservation', () => {
-	it('anchors a scheduled creation result by its persisted Action ID', () => {
+describe('sourceToolRunIdFromObservation', () => {
+	it('anchors a scheduled creation result by its persisted ToolRun ID', () => {
 		expect(
-			sourceActionIdFromObservation(
+			sourceToolRunIdFromObservation(
 				'schedule.set',
-				JSON.stringify({ operation: 'set', id: 'act-scheduled' }),
+				JSON.stringify({ operation: 'set', id: 'toolrun-scheduled' }),
 			),
-		).toBe('act-scheduled');
+		).toBe('toolrun-scheduled');
 	});
 
-	it('does not treat unrelated tool results as Action creation links', () => {
+	it('does not treat unrelated tool results as ToolRun creation links', () => {
 		expect(
-			sourceActionIdFromObservation(
+			sourceToolRunIdFromObservation(
 				'files.read',
-				JSON.stringify({ operation: 'set', id: 'act-not-an-action' }),
+				JSON.stringify({ operation: 'set', id: 'toolrun-not-a-tool-run' }),
 			),
 		).toBeNull();
 	});
 });
 
-describe('parseActionResultInject', () => {
-	it('parses producer-labelled background action result injects', () => {
+describe('parseToolRunResultInject', () => {
+	it('parses producer-labelled background ToolRun result injects', () => {
 		expect(
-			parseActionResultInject(
-				'[Background action result]\naction_id: act-9\nstatus: completed\n\nok',
+			parseToolRunResultInject(
+				'[Background tool run result]\ntool_run_id: toolrun-9\nstatus: completed\n\nok',
 			),
 		).toEqual({
 			operation: 'result_injected',
-			action_id: 'act-9',
+			tool_run_id: 'toolrun-9',
 			status: 'completed',
 			auto: true,
 		});
 	});
-	it('defaults status and tolerates missing action_id', () => {
-		expect(parseActionResultInject('[Background action result]\n\njust output')).toEqual({
+	it('defaults status and tolerates missing tool_run_id', () => {
+		expect(parseToolRunResultInject('[Background tool run result]\n\njust output')).toEqual({
 			operation: 'result_injected',
-			action_id: null,
+			tool_run_id: null,
 			status: 'completed',
 			auto: true,
 		});
 	});
 	it('returns null for unrelated text', () => {
-		expect(parseActionResultInject('hello')).toBeNull();
-		expect(parseActionResultInject('')).toBeNull();
-		expect(parseActionResultInject(null)).toBeNull();
+		expect(parseToolRunResultInject('hello')).toBeNull();
+		expect(parseToolRunResultInject('')).toBeNull();
+		expect(parseToolRunResultInject(null)).toBeNull();
 	});
 });

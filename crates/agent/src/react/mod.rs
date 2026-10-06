@@ -21,7 +21,7 @@ use crate::compactor::ContextCompactor;
 use crate::event::{AgentEvent, AgentEventEmitter, EventDispatcher, UsagePayload};
 #[cfg(test)]
 use crate::types::TranscriptRecord;
-use crate::types::{Action, media_inputs_from_events};
+use crate::types::{ToolCall, media_inputs_from_events};
 
 mod committed_ui;
 #[cfg(test)]
@@ -52,7 +52,7 @@ mod turn_end;
 mod usage;
 
 use context::ContextSource;
-pub(crate) use context::action_result_message_id;
+pub(crate) use context::tool_run_result_message_id;
 use hooks::{LoopHooksHandle, default_hooks};
 pub(crate) use hooks::{MemoryPatchHandle, default_hooks_with_patch};
 pub use r#loop::{LoopExit, PauseReason};
@@ -321,7 +321,7 @@ pub(super) async fn choose_agent_request(
 /// side-effecting discriminator.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ToolInputValidationFailure {
-    pub action_index: u32,
+    pub tool_index: u32,
     pub tool_name: String,
     pub details: Vec<String>,
 }
@@ -329,9 +329,9 @@ pub(crate) struct ToolInputValidationFailure {
 impl ToolInputValidationFailure {
     pub fn render(&self) -> String {
         format!(
-            "tool input validation failed for '{}' (action_index={}): {}",
+            "tool input validation failed for '{}' (tool_index={}): {}",
             self.tool_name,
-            self.action_index,
+            self.tool_index,
             self.details.join("; ")
         )
     }
@@ -468,8 +468,8 @@ impl ReActEngine {
         self.metrics.snapshot()
     }
 
-    pub(crate) fn note_action_result_retry(&self) {
-        self.metrics.increment(MetricsCounter::ActionResultRetries);
+    pub(crate) fn note_tool_run_result_retry(&self) {
+        self.metrics.increment(MetricsCounter::ToolRunResultRetries);
     }
 
     /// Replace loop hooks (production: `default_hooks_with_patch`; tests:
@@ -607,29 +607,30 @@ impl ReActEngine {
     pub(crate) async fn validate_tool_inputs(
         &self,
         session_id: &str,
-        actions: &[Action],
+        tool_calls: &[ToolCall],
     ) -> Vec<ToolInputValidationFailure> {
         let catalog = self.tool_catalog.catalog_snapshot(session_id).await;
-        self.validate_tool_inputs_from_catalog(&catalog, actions)
+        self.validate_tool_inputs_from_catalog(&catalog, tool_calls)
     }
 
     pub(crate) fn validate_tool_inputs_from_catalog(
         &self,
         catalog: &haven_tools::ToolCatalogSnapshot,
-        actions: &[Action],
+        tool_calls: &[ToolCall],
     ) -> Vec<ToolInputValidationFailure> {
         let mut failures = Vec::new();
-        for (action_index, action) in actions.iter().enumerate() {
-            if action.is_final {
+        for (tool_index, tool_call) in tool_calls.iter().enumerate() {
+            if tool_call.is_final {
                 continue;
             }
-            let Some(result) = catalog.validate_input(&action.tool_name, &action.tool_input) else {
+            let Some(result) = catalog.validate_input(&tool_call.tool_name, &tool_call.tool_input)
+            else {
                 continue;
             };
             if let Err(error) = result {
                 failures.push(ToolInputValidationFailure {
-                    action_index: action_index as u32,
-                    tool_name: action.tool_name.clone(),
+                    tool_index: tool_index as u32,
+                    tool_name: tool_call.tool_name.clone(),
                     details: vec![error.to_string()],
                 });
             }
@@ -637,11 +638,11 @@ impl ReActEngine {
         failures
     }
 
-    /// Parse LLM response into thought text and actions.
+    /// Parse LLM response into thought text and tool_calls.
     pub fn parse_default_model_response(
         response: &LlmResponse,
         step_number: u32,
-    ) -> (Option<String>, Vec<Action>) {
+    ) -> (Option<String>, Vec<ToolCall>) {
         let text = response.text.trim().to_string();
 
         // Some OpenAI-compatible gateways leak one natural-language token while
@@ -661,7 +662,7 @@ impl ReActEngine {
             Some(text.clone())
         };
 
-        let actions: Vec<Action> = if !response.tool_calls.is_empty() {
+        let tool_calls: Vec<ToolCall> = if !response.tool_calls.is_empty() {
             let mut seen_tool_call_ids = HashSet::new();
             response
                 .tool_calls
@@ -679,7 +680,7 @@ impl ReActEngine {
                     } else {
                         provider_id.to_string()
                     };
-                    Action {
+                    ToolCall {
                         tool_name: tc.name.clone(),
                         tool_input: args,
                         is_final,
@@ -691,7 +692,7 @@ impl ReActEngine {
             && response.finish_reason == Some(FinishReason::Stop)
             && step_number > 0
         {
-            vec![Action {
+            vec![ToolCall {
                 tool_name: "final_answer".into(),
                 tool_input: serde_json::Value::Null,
                 is_final: true,
@@ -701,7 +702,7 @@ impl ReActEngine {
             Vec::new()
         };
 
-        (thought, actions)
+        (thought, tool_calls)
     }
 
     /// Mark the session Error without propagating DB failures (the loop is
@@ -1804,48 +1805,48 @@ mod tests {
     }
 
     #[test]
-    fn parse_empty_response_no_actions() {
+    fn parse_empty_response_no_tool_calls() {
         let r = resp("", vec![], None);
-        let (thought, actions) = ReActEngine::parse_default_model_response(&r, 1);
+        let (thought, tool_calls) = ReActEngine::parse_default_model_response(&r, 1);
         assert_eq!(thought, None);
-        assert!(actions.is_empty());
+        assert!(tool_calls.is_empty());
     }
 
     #[test]
     fn parse_text_only_no_finish_reason_keeps_thought_no_action() {
         // step_number=1, Stop finish, but step>0 required for implicit final.
         let r = resp("hello", vec![], Some(FinishReason::Stop));
-        let (thought, actions) = ReActEngine::parse_default_model_response(&r, 0);
+        let (thought, tool_calls) = ReActEngine::parse_default_model_response(&r, 0);
         assert_eq!(thought.as_deref(), Some("hello"));
-        assert!(actions.is_empty(), "step 0 must not auto-finalize");
+        assert!(tool_calls.is_empty(), "step 0 must not auto-finalize");
     }
 
     #[test]
     fn parse_text_with_stop_finish_step_nonzero_auto_finalizes() {
         let r = resp("the answer is 42", vec![], Some(FinishReason::Stop));
-        let (thought, actions) = ReActEngine::parse_default_model_response(&r, 1);
+        let (thought, tool_calls) = ReActEngine::parse_default_model_response(&r, 1);
         assert_eq!(thought.as_deref(), Some("the answer is 42"));
-        assert_eq!(actions.len(), 1);
-        assert!(actions[0].is_final);
-        assert_eq!(actions[0].tool_name, "final_answer");
-        assert!(actions[0].tool_call_id.is_none());
+        assert_eq!(tool_calls.len(), 1);
+        assert!(tool_calls[0].is_final);
+        assert_eq!(tool_calls[0].tool_name, "final_answer");
+        assert!(tool_calls[0].tool_call_id.is_none());
     }
 
     #[test]
-    fn parse_tool_calls_produce_actions() {
+    fn parse_tool_calls_produce_tool_calls() {
         let tc = CanonicalToolCall {
             id: "call_1".into(),
             name: "read_file".into(),
             arguments: serde_json::json!({"path": "x.txt"}),
         };
         let r = resp("thinking", vec![tc], Some(FinishReason::ToolCalls));
-        let (thought, actions) = ReActEngine::parse_default_model_response(&r, 1);
+        let (thought, tool_calls) = ReActEngine::parse_default_model_response(&r, 1);
         assert_eq!(thought.as_deref(), Some("thinking"));
-        assert_eq!(actions.len(), 1);
-        assert!(!actions[0].is_final);
-        assert_eq!(actions[0].tool_name, "read_file");
-        assert_eq!(actions[0].tool_input["path"], "x.txt");
-        assert_eq!(actions[0].tool_call_id.as_deref(), Some("call_1"));
+        assert_eq!(tool_calls.len(), 1);
+        assert!(!tool_calls[0].is_final);
+        assert_eq!(tool_calls[0].tool_name, "read_file");
+        assert_eq!(tool_calls[0].tool_input["path"], "x.txt");
+        assert_eq!(tool_calls[0].tool_call_id.as_deref(), Some("call_1"));
     }
 
     #[test]
@@ -1857,9 +1858,9 @@ mod tests {
         };
         for text in ["我", "I", "我先", "Go"] {
             let r = resp(text, vec![tc.clone()], Some(FinishReason::ToolCalls));
-            let (thought, actions) = ReActEngine::parse_default_model_response(&r, 1);
+            let (thought, tool_calls) = ReActEngine::parse_default_model_response(&r, 1);
             assert_eq!(thought, None, "{text:?} must not become a thought bubble");
-            assert_eq!(actions.len(), 1);
+            assert_eq!(tool_calls.len(), 1);
         }
     }
 
@@ -1871,9 +1872,9 @@ mod tests {
             arguments: serde_json::json!({"path": "x.txt"}),
         };
         let r = resp("正在读取文件。", vec![tc], Some(FinishReason::ToolCalls));
-        let (thought, actions) = ReActEngine::parse_default_model_response(&r, 1);
+        let (thought, tool_calls) = ReActEngine::parse_default_model_response(&r, 1);
         assert_eq!(thought.as_deref(), Some("正在读取文件。"));
-        assert_eq!(actions.len(), 1);
+        assert_eq!(tool_calls.len(), 1);
     }
 
     #[test]
@@ -1884,8 +1885,8 @@ mod tests {
             arguments: serde_json::json!({"answer": "done"}),
         };
         let r = resp("answering", vec![tc], Some(FinishReason::ToolCalls));
-        let (_, actions) = ReActEngine::parse_default_model_response(&r, 2);
-        assert!(actions[0].is_final);
+        let (_, tool_calls) = ReActEngine::parse_default_model_response(&r, 2);
+        assert!(tool_calls[0].is_final);
     }
 
     #[test]
@@ -1899,8 +1900,8 @@ mod tests {
                 arguments: serde_json::json!({}),
             };
             let r = resp("t", vec![tc], Some(FinishReason::ToolCalls));
-            let (_, actions) = ReActEngine::parse_default_model_response(&r, 1);
-            assert!(!actions[0].is_final, "{name} must not be final");
+            let (_, tool_calls) = ReActEngine::parse_default_model_response(&r, 1);
+            assert!(!tool_calls[0].is_final, "{name} must not be final");
         }
     }
 
@@ -1912,9 +1913,9 @@ mod tests {
             arguments: serde_json::json!({}),
         };
         let r = resp("", vec![tc], Some(FinishReason::ToolCalls));
-        let (_, actions) = ReActEngine::parse_default_model_response(&r, 1);
-        assert!(actions[0].tool_call_id.is_some());
-        assert!(!actions[0].tool_call_id.as_ref().unwrap().is_empty());
+        let (_, tool_calls) = ReActEngine::parse_default_model_response(&r, 1);
+        assert!(tool_calls[0].tool_call_id.is_some());
+        assert!(!tool_calls[0].tool_call_id.as_ref().unwrap().is_empty());
     }
 
     #[test]
@@ -1932,10 +1933,10 @@ mod tests {
             },
         ];
         let r = resp("multi", tcs, Some(FinishReason::ToolCalls));
-        let (_, actions) = ReActEngine::parse_default_model_response(&r, 1);
-        assert_eq!(actions.len(), 2);
-        assert_eq!(actions[0].tool_name, "search");
-        assert_eq!(actions[1].tool_name, "read_file");
+        let (_, tool_calls) = ReActEngine::parse_default_model_response(&r, 1);
+        assert_eq!(tool_calls.len(), 2);
+        assert_eq!(tool_calls[0].tool_name, "search");
+        assert_eq!(tool_calls[1].tool_name, "read_file");
     }
 
     #[test]
@@ -1953,12 +1954,12 @@ mod tests {
             },
         ];
         let r = resp("", tcs, Some(FinishReason::ToolCalls));
-        let (_, actions) = ReActEngine::parse_default_model_response(&r, 1);
-        assert_eq!(actions.len(), 2);
-        assert_eq!(actions[0].tool_call_id.as_deref(), Some("same"));
-        assert_ne!(actions[0].tool_call_id, actions[1].tool_call_id);
+        let (_, tool_calls) = ReActEngine::parse_default_model_response(&r, 1);
+        assert_eq!(tool_calls.len(), 2);
+        assert_eq!(tool_calls[0].tool_call_id.as_deref(), Some("same"));
+        assert_ne!(tool_calls[0].tool_call_id, tool_calls[1].tool_call_id);
         assert!(
-            actions[1]
+            tool_calls[1]
                 .tool_call_id
                 .as_deref()
                 .is_some_and(|id| id.starts_with("call-"))
@@ -1974,9 +1975,9 @@ mod tests {
             arguments: serde_json::json!({}),
         };
         let r = resp("text", vec![tc], Some(FinishReason::Stop));
-        let (_, actions) = ReActEngine::parse_default_model_response(&r, 1);
-        assert_eq!(actions.len(), 1);
-        assert!(!actions[0].is_final);
+        let (_, tool_calls) = ReActEngine::parse_default_model_response(&r, 1);
+        assert_eq!(tool_calls.len(), 1);
+        assert!(!tool_calls[0].is_final);
     }
 
     #[test]

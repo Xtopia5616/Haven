@@ -95,7 +95,7 @@ mod tests {
             )
             .unwrap();
         let step = db
-            .create_action_step(
+            .create_tool_step(
                 &session.id,
                 1,
                 "shell",
@@ -106,7 +106,7 @@ mod tests {
                 None,
             )
             .unwrap();
-        db.complete_action_step(&step.id, "C:/Workspace/Haven", true)
+        db.complete_tool_step(&step.id, "C:/Workspace/Haven", true)
             .unwrap();
 
         let transcript = MemoryFactExtractionStore::new(db)

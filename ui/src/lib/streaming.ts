@@ -118,7 +118,7 @@ export function isStreamSegment(id: string, blockId: string | null | undefined):
 /**
  * Finalize every streaming block belonging to a step: the reasoning block
  * and the thought block, including post-tool / post-websearch segments
- * (`id-N`). Shared by every `agent:action` branch.
+ * (`id-N`). Shared by every `agent:tool_call` branch.
  * Finalized blocks drop straggler chunks that flush out of the batcher
  * after the event.
  */
@@ -136,7 +136,7 @@ export function finalizeStreamBlocks(
 
 /**
  * Remove text that was streamed before a tool call but rejected by the backend
- * as a non-meaningful fragment. The action event carries this decision, so the
+ * as a non-meaningful fragment. The ToolCall event carries this decision, so the
  * UI does not need to guess based on text length.
  */
 export function dropStreamedThought(
@@ -162,7 +162,7 @@ export function resetStreamBlocks(
 }
 
 /**
- * Build a tool message. Shared by the `agent:action` placeholder (streaming
+ * Build a tool message. Shared by the `agent:tool_call` placeholder (streaming
  * true, no content) and the `agent:observation` fill (content + optional ask
  * options). The `ask` tool surfaces as a dedicated question card, not a raw
  * tool badge. `time` is omitted entirely when falsy so an observation fill
@@ -176,8 +176,8 @@ export function newToolMessage({
 	content = '',
 	streaming = false,
 	askOptions = null,
-	actionId = null,
-	sourceActionId = null,
+	toolRunId = null,
+	sourceToolRunId = null,
 	toolArgs = undefined,
 	showFallbackIntent = undefined,
 	outcome = undefined,
@@ -191,9 +191,9 @@ export function newToolMessage({
 	content?: string;
 	streaming?: boolean;
 	askOptions?: string[] | null;
-	actionId?: string | null;
-	sourceActionId?: string | null;
-	/** Live Action.input or resume action_input; omitted on observation fills
+	toolRunId?: string | null;
+	sourceToolRunId?: string | null;
+	/** Live ToolCall.input or resume tool_input; omitted on observation fills
 	 * so the placeholder's args are preserved via object spread. */
 	toolArgs?: unknown;
 	showFallbackIntent?: boolean | undefined;
@@ -216,25 +216,25 @@ export function newToolMessage({
 		...(outcome ? { outcome } : {}),
 		...(renderer ? { renderer } : {}),
 		...(result ? { result } : {}),
-		...(actionId ? { actionId } : {}),
-		...(sourceActionId ? { sourceActionId } : {}),
+		...(toolRunId ? { toolRunId } : {}),
+		...(sourceToolRunId ? { sourceToolRunId } : {}),
 		...(toolArgs !== undefined ? { toolArgs } : {}),
 		...(isAsk && askOptions ? { options: askOptions, awaiting: true } : {}),
 	};
 }
 
-/** Extract a background `action_id` from a shell/tool observation payload. */
-export function actionIdFromObservation(observation: string | undefined | null): string | null {
+/** Extract a background `tool_run_id` from a shell/tool observation payload. */
+export function toolRunIdFromObservation(observation: string | undefined | null): string | null {
 	if (!observation) return null;
 	try {
 		const j = JSON.parse(observation);
 		if (
 			j &&
 			typeof j === 'object' &&
-			j.background === true &&
-			typeof j.action_id === 'string'
+			j.execution_mode === 'background' &&
+			typeof j.tool_run_id === 'string'
 		) {
-			return j.action_id;
+			return j.tool_run_id;
 		}
 	} catch {
 		// not JSON
@@ -242,12 +242,12 @@ export function actionIdFromObservation(observation: string | undefined | null):
 	return null;
 }
 
-/** Extract the Action ID that links a background lifecycle to its source tool step. */
-export function sourceActionIdFromObservation(
+/** Extract the ToolRun ID that links a background lifecycle to its source tool step. */
+export function sourceToolRunIdFromObservation(
 	toolName: string | undefined | null,
 	observation: string | undefined | null,
 ): string | null {
-	const backgroundId = actionIdFromObservation(observation);
+	const backgroundId = toolRunIdFromObservation(observation);
 	if (backgroundId) return backgroundId;
 	if (!observation || !toolName?.startsWith('schedule')) return null;
 	try {
@@ -263,26 +263,26 @@ export function sourceActionIdFromObservation(
 }
 
 /**
- * Parse a producer-labelled `[Background action result]` inject body into a
+ * Parse a producer-labelled `[Background tool run result]` inject body into a
  * compact card payload for the chat UI (auto-wake bridge). Returns null when
- * the text is not an action-result inject.
+ * the text is not a ToolRun-result inject.
  */
-export function parseActionResultInject(text: string | undefined | null): {
-	action_id: string | null;
+export function parseToolRunResultInject(text: string | undefined | null): {
+	tool_run_id: string | null;
 	status: string;
 	operation: 'result_injected';
 	auto: true;
 } | null {
-	if (!text || !text.startsWith('[Background action result]')) return null;
-	let actionId: string | null = null;
+	if (!text || !text.startsWith('[Background tool run result]')) return null;
+	let toolRunId: string | null = null;
 	let status = 'completed';
 	for (const line of text.split('\n')) {
-		const mId = /^action_id:\s*(.+)\s*$/.exec(line);
-		if (mId) actionId = mId[1].trim();
+		const mId = /^tool_run_id:\s*(.+)\s*$/.exec(line);
+		if (mId) toolRunId = mId[1].trim();
 		const mSt = /^status:\s*(.+)\s*$/.exec(line);
 		if (mSt) status = mSt[1].trim();
 	}
-	return { operation: 'result_injected', action_id: actionId, status, auto: true };
+	return { operation: 'result_injected', tool_run_id: toolRunId, status, auto: true };
 }
 
 // Streaming blocks always live at the tail of the conversation (or just in
@@ -471,7 +471,7 @@ export function accumulateStreamChunk(
 			}
 			if (lastToolIdx >= 0) {
 				// A normal completion ends at the function call. If its final
-				// deltas arrive after agent:action, they are delayed pre-tool
+				// deltas arrive after agent:tool_call, they are delayed pre-tool
 				// text, not a new post-tool answer. Only built-in web_search
 				// deliberately resumes the same provider response below its card.
 				const boundary = messages[lastToolIdx];

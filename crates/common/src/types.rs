@@ -73,8 +73,8 @@ impl LlmCallKind {
 //     lowercase-hex simple UUID), e.g. `ses-3f9a...`.
 //   - Prefixes: `ses-` (sessions), `msg-` (messages and memory episodes —
 //     memory_items shares the message id space), `step-` (session_steps),
-//     `fact-` (facts), `act-` (actions — unified background actions and
-//     scheduled actions), `usage-` (llm_usage);
+//     `fact-` (facts), `toolrun-` (ToolRuns — background and scheduled),
+//     `usage-` (llm_usage);
 //     `conf-` (safety-gateway confirmations), `rec-` (voice recording
 //     sessions), `file-` (temporary files), `call-` (locally synthesized
 //     tool-call ids when the provider sends an empty one), `occ-` (shared
@@ -221,7 +221,7 @@ pub enum RiskLevel {
     Critical,
 }
 
-/// User-facing authorization policy for agent actions.
+/// User-facing authorization policy for agent tools.
 ///
 /// Prompting mode is deliberately separate from the technical sandbox and
 /// network boundary. These values mirror the four useful states exposed by
@@ -447,7 +447,7 @@ impl From<&String> for CapabilityScope {
 /// Other tools (MCP/skills/arbitrary args) use the bare tool name so a random
 /// `operation` field in args cannot fragment grants.
 const ROUTING_PARAM_TOOLS: &[&str] = &[
-    "actions",
+    "tool_runs",
     "files",
     "process",
     "window",
@@ -618,7 +618,7 @@ impl std::fmt::Display for CanonicalRole {
 pub const PEER_KICKOFF_PREFIX: &str = "[Delegated task from agent ";
 
 /// `"{prefix}: "` at the wire boundary via [`Self::render_prefix`] (Phase 8
-/// wire-only). `ActionResult` already carries a shared action-result envelope
+/// wire-only). `ToolRunResult` already carries a shared ToolRun-result envelope
 /// and must not get a second adapter prefix.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -626,7 +626,7 @@ pub enum InjectSource {
     Steering,
     FollowUp,
     Answer,
-    ActionResult,
+    ToolRunResult,
     CrossSession,
 }
 
@@ -637,13 +637,13 @@ impl InjectSource {
             Self::Steering => "Steering",
             Self::FollowUp => "Additional context from user",
             Self::Answer => "Answer to your previous question",
-            Self::ActionResult => "Action result",
+            Self::ToolRunResult => "Tool run result",
             Self::CrossSession => "Cross-session message",
         }
     }
 
     /// Inject sources that receive an adapter wire prefix.
-    /// ActionResult is excluded: its body carries the shared action-result
+    /// ToolRunResult is excluded: its body carries the shared ToolRun-result
     /// envelope without the colon prefix.
     pub fn prefixed() -> &'static [InjectSource] {
         &[
@@ -1076,7 +1076,7 @@ impl MessageAttachment {
 /// - **steering** — mid-run interjection, injected before the next LLM call
 /// - **follow-up** — post-pause / turn-end injection; an ask reply is a
 ///   follow-up with `is_answer` (typed `reply_to`) set
-/// - **action_results** — system inject, not this type
+/// - **tool_run_results** — system inject, not this type
 ///
 /// A typed follow-up/steering input. The queue API intentionally exposes only
 /// this name; old `Supplement` aliases are no longer accepted.
@@ -1617,8 +1617,8 @@ mod tests {
             "schedule.set"
         );
         assert_eq!(
-            permission_key("actions", &serde_json::json!({"operation": "cancel"})),
-            "actions.cancel"
+            permission_key("tool_runs", &serde_json::json!({"operation": "cancel"})),
+            "tool_runs.cancel"
         );
         assert_eq!(
             permission_key("agent", &serde_json::json!({"operation": "spawn"})),

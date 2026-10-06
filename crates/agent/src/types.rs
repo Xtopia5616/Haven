@@ -7,9 +7,9 @@ use serde_json::Value;
 /// One tool invocation within a [`ReActRound`] (parallel tools are siblings).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ToolRecord {
-    pub action: Action,
+    pub tool_call: ToolCall,
     pub observation: Option<String>,
-    pub action_index: u32,
+    pub tool_index: u32,
     pub step_id: String,
 }
 
@@ -52,13 +52,13 @@ pub enum TranscriptRecord {
     },
     ToolResult {
         step_number: u32,
-        action_index: u32,
+        tool_index: u32,
         step_id: String,
         canonical_observation: String,
         history_observation: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         tool_call_id: Option<String>,
-        action: Action,
+        tool_call: ToolCall,
     },
     UserInject {
         step_number: u32,
@@ -217,7 +217,7 @@ pub fn project_transcript_with_strategy(
 
     project_pending_tool_results(&mut pending_tool_results, &mut canonical, &mut rounds);
     for round in &mut rounds {
-        round.tools.sort_by_key(|tool| tool.action_index);
+        round.tools.sort_by_key(|tool| tool.tool_index);
     }
 
     (canonical, rounds)
@@ -231,27 +231,27 @@ fn project_pending_tool_results(
     pending.sort_by_key(|record| match record {
         TranscriptRecord::ToolResult {
             step_number,
-            action_index,
+            tool_index,
             ..
-        } => (*step_number, *action_index),
+        } => (*step_number, *tool_index),
         _ => unreachable!("pending tool results only contain ToolResult records"),
     });
     for record in pending.drain(..) {
         let TranscriptRecord::ToolResult {
             step_number,
-            action_index,
+            tool_index,
             step_id,
             canonical_observation,
             history_observation,
             tool_call_id,
-            action,
+            tool_call,
         } = record
         else {
             unreachable!("pending tool results only contain ToolResult records")
         };
         // final_answer is rounds-only (mirrors pre-B1 history mutation; the
         // assistant text is pushed separately via finish_turn_end).
-        if !action.is_final && action.tool_name != "final_answer" {
+        if !tool_call.is_final && tool_call.tool_name != "final_answer" {
             canonical.push(CanonicalMessage::tool(
                 vec![ContentPart::text(canonical_observation.clone())],
                 tool_call_id.clone(),
@@ -263,9 +263,9 @@ fn project_pending_tool_results(
             .find(|round| round.step_number == *step_number)
         {
             round.tools.push(ToolRecord {
-                action: action.clone(),
+                tool_call: tool_call.clone(),
                 observation: Some(history_observation.clone()),
-                action_index: *action_index,
+                tool_index: *tool_index,
                 step_id: step_id.clone(),
             });
         } else {
@@ -273,9 +273,9 @@ fn project_pending_tool_results(
                 step_number: *step_number,
                 thought: None,
                 tools: vec![ToolRecord {
-                    action: action.clone(),
+                    tool_call: tool_call.clone(),
                     observation: Some(history_observation.clone()),
-                    action_index: *action_index,
+                    tool_index: *tool_index,
                     step_id: step_id.clone(),
                 }],
             });
@@ -508,7 +508,7 @@ pub fn seed_events_from_canonical(canonical: Vec<CanonicalMessage>) -> Vec<Trans
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct Action {
+pub struct ToolCall {
     pub tool_name: String,
     pub tool_input: Value,
     pub is_final: bool,
@@ -564,15 +564,15 @@ mod tests {
     use haven_common::types::MessageAttachment;
 
     #[test]
-    fn action_serde_roundtrip() {
-        let action = Action {
+    fn tool_call_serde_roundtrip() {
+        let tool_call = ToolCall {
             tool_name: "files".into(),
             tool_input: serde_json::json!({"path": "C:/tmp/a.txt"}),
             is_final: false,
             tool_call_id: Some("call_1".into()),
         };
-        let json = serde_json::to_string(&action).unwrap();
-        let back: Action = serde_json::from_str(&json).unwrap();
+        let json = serde_json::to_string(&tool_call).unwrap();
+        let back: ToolCall = serde_json::from_str(&json).unwrap();
         assert_eq!(back.tool_name, "files");
         assert_eq!(back.tool_input, serde_json::json!({"path": "C:/tmp/a.txt"}));
         assert!(!back.is_final);
@@ -580,11 +580,11 @@ mod tests {
     }
 
     #[test]
-    fn action_missing_tool_call_id_defaults_to_none() {
+    fn tool_call_missing_tool_call_id_defaults_to_none() {
         let json = r#"{"tool_name":"shell","tool_input":{"cmd":"dir"},"is_final":true}"#;
-        let action: Action = serde_json::from_str(json).unwrap();
-        assert!(action.is_final);
-        assert_eq!(action.tool_call_id, None);
+        let tool_call: ToolCall = serde_json::from_str(json).unwrap();
+        assert!(tool_call.is_final);
+        assert_eq!(tool_call.tool_call_id, None);
     }
 
     #[test]
@@ -616,12 +616,12 @@ mod tests {
             },
             TranscriptRecord::ToolResult {
                 step_number: 1,
-                action_index: 1,
+                tool_index: 1,
                 step_id: "step-b".into(),
                 canonical_observation: "rb".into(),
                 history_observation: "rb".into(),
                 tool_call_id: Some("c2".into()),
-                action: Action {
+                tool_call: ToolCall {
                     tool_name: "b".into(),
                     tool_input: serde_json::json!({}),
                     is_final: false,
@@ -630,12 +630,12 @@ mod tests {
             },
             TranscriptRecord::ToolResult {
                 step_number: 1,
-                action_index: 0,
+                tool_index: 0,
                 step_id: "step-a".into(),
                 canonical_observation: "ra".into(),
                 history_observation: "ra".into(),
                 tool_call_id: Some("c1".into()),
-                action: Action {
+                tool_call: ToolCall {
                     tool_name: "a".into(),
                     tool_input: serde_json::json!({}),
                     is_final: false,
@@ -646,9 +646,9 @@ mod tests {
         let (canonical, rounds) = project_transcript(&events);
         assert_eq!(rounds.len(), 1, "parallel tools must share one round");
         assert_eq!(rounds[0].tools.len(), 2);
-        assert_eq!(rounds[0].tools[0].action_index, 0);
+        assert_eq!(rounds[0].tools[0].tool_index, 0);
         assert_eq!(rounds[0].tools[0].step_id, "step-a");
-        assert_eq!(rounds[0].tools[1].action_index, 1);
+        assert_eq!(rounds[0].tools[1].tool_index, 1);
         assert_eq!(rounds[0].tools[1].step_id, "step-b");
         assert_eq!(canonical.len(), 3); // assistant + 2 tool
         assert_eq!(canonical[1].tool_call_id.as_deref(), Some("c1"));

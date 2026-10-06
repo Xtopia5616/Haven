@@ -194,7 +194,7 @@ fn unavailable(style: &'static str, error: LlmError) -> Box<dyn LlmClient> {
 ///
 /// When `source.needs_wire_prefix()`, prepends `"{prefix}: "` to the first
 /// text part (or inserts a text part when content is image/audio-only).
-/// Skips when already prefixed (defensive) or when `ActionResult`.
+/// Skips when already prefixed (defensive) or for a ToolRun result.
 pub(crate) fn apply_wire_inject_prefix(
     source: Option<InjectSource>,
     mut content: Vec<ContentPart>,

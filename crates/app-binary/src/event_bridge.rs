@@ -17,64 +17,64 @@ pub(crate) struct TauriEmitter {
 /// Adapt one task lifecycle message from `haven-tools` to the public Tauri
 /// contract. Tool payloads are deliberately not emitted directly: they are
 /// internal status JSON and can grow fields without becoming UI API.
-pub(crate) fn emit_action_event(
+pub(crate) fn emit_tool_run_event(
     handle: &tauri::AppHandle,
-    kind: ActionKind,
+    kind: ToolRunKind,
     event: &str,
     payload: &serde_json::Value,
 ) {
-    let Some((channel, action)) = project_action_event(kind, event, payload) else {
+    let Some((channel, action)) = project_tool_run_event(kind, event, payload) else {
         return;
     };
 
     match action {
         Ok(action) => {
             if let Err(error) = handle.emit(channel, action) {
-                tracing::warn!(action_kind = ?kind, event, "failed to emit action lifecycle event: {error}");
+                tracing::warn!(tool_run_kind = ?kind, event, "failed to emit ToolRun lifecycle event: {error}");
             }
         }
         Err(error) => {
-            tracing::warn!(action_kind = ?kind, event, "dropping malformed action lifecycle payload: {error}");
+            tracing::warn!(tool_run_kind = ?kind, event, "dropping malformed ToolRun lifecycle payload: {error}");
         }
     }
 }
 
-pub(crate) fn project_action_event(
-    kind: ActionKind,
+pub(crate) fn project_tool_run_event(
+    kind: ToolRunKind,
     event: &str,
     payload: &serde_json::Value,
-) -> Option<(&'static str, Result<ActionEvent, String>)> {
+) -> Option<(&'static str, Result<ToolRunEvent, String>)> {
     let projected = match (kind, event) {
-        (ActionKind::Background, "action:created") => (
-            ACTION_CREATED_EVENT,
-            ActionEvent::background_from_value(payload),
+        (ToolRunKind::Background, "tool_run:created") => (
+            TOOL_RUN_CREATED_EVENT,
+            ToolRunEvent::background_from_value(payload),
         ),
-        (ActionKind::Background, "action:updated") => (
-            ACTION_UPDATED_EVENT,
-            ActionEvent::background_from_value(payload),
+        (ToolRunKind::Background, "tool_run:updated") => (
+            TOOL_RUN_UPDATED_EVENT,
+            ToolRunEvent::background_from_value(payload),
         ),
-        (ActionKind::Background, "action:output") => (
-            ACTION_OUTPUT_EVENT,
-            ActionEvent::background_output_from_value(payload),
+        (ToolRunKind::Background, "tool_run:output") => (
+            TOOL_RUN_OUTPUT_EVENT,
+            ToolRunEvent::background_output_from_value(payload),
         ),
-        (ActionKind::Background, "action:finished") => (
-            ACTION_FINISHED_EVENT,
-            ActionEvent::background_from_value(payload),
+        (ToolRunKind::Background, "tool_run:finished") => (
+            TOOL_RUN_FINISHED_EVENT,
+            ToolRunEvent::background_from_value(payload),
         ),
-        (ActionKind::Scheduled, "action:created") => (
-            ACTION_CREATED_EVENT,
-            ActionEvent::scheduled_from_value(payload, false),
+        (ToolRunKind::Scheduled, "tool_run:created") => (
+            TOOL_RUN_CREATED_EVENT,
+            ToolRunEvent::scheduled_from_value(payload, false),
         ),
-        (ActionKind::Scheduled, "action:updated") => (
-            ACTION_UPDATED_EVENT,
-            ActionEvent::scheduled_from_value(payload, false),
+        (ToolRunKind::Scheduled, "tool_run:updated") => (
+            TOOL_RUN_UPDATED_EVENT,
+            ToolRunEvent::scheduled_from_value(payload, false),
         ),
-        (ActionKind::Scheduled, "action:finished") => (
-            ACTION_FINISHED_EVENT,
-            ActionEvent::scheduled_from_value(payload, false),
+        (ToolRunKind::Scheduled, "tool_run:finished") => (
+            TOOL_RUN_FINISHED_EVENT,
+            ToolRunEvent::scheduled_from_value(payload, false),
         ),
         (_, unexpected) => {
-            tracing::warn!(action_kind = ?kind, event = unexpected, "dropping unknown action lifecycle event");
+            tracing::warn!(tool_run_kind = ?kind, event = unexpected, "dropping unknown ToolRun lifecycle event");
             return None;
         }
     };
@@ -84,30 +84,30 @@ pub(crate) fn project_action_event(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use haven_agent::{ActionCompletionStatus, ActionNotificationSource};
+    use haven_agent::{ToolRunCompletionStatus, ToolRunNotificationSource};
 
     #[test]
-    fn action_output_event_projects_only_the_bounded_preview_fields() {
+    fn tool_run_output_event_projects_only_the_bounded_preview_fields() {
         let payload = serde_json::json!({
-            "action_id": "act-output-preview",
+            "tool_run_id": "toolrun-output-preview",
             "status": "running",
             "source_step_id": "step-output-preview",
             "output": "bounded tail snapshot",
             "command": "echo token=private-command-value",
             "tool_args": { "token": "private-argument-value" },
-            "log_path": "C:/private/action.log",
+            "log_path": "C:/private/tool-run.log",
             "stderr": "unbounded stderr value",
         });
 
         let (channel, projected) =
-            project_action_event(ActionKind::Background, "action:output", &payload)
+            project_tool_run_event(ToolRunKind::Background, "tool_run:output", &payload)
                 .expect("background output event is registered");
-        assert_eq!(channel, ACTION_OUTPUT_EVENT);
+        assert_eq!(channel, TOOL_RUN_OUTPUT_EVENT);
         let wire = serde_json::to_value(projected.unwrap()).unwrap();
         assert_eq!(
             wire,
             serde_json::json!({
-                "id": "act-output-preview",
+                "id": "toolrun-output-preview",
                 "kind": "background",
                 "status": "running",
                 "source_step_id": "step-output-preview",
@@ -118,7 +118,7 @@ mod tests {
         for private_value in [
             "private-command-value",
             "private-argument-value",
-            "private/action.log",
+            "private/tool-run.log",
             "unbounded stderr value",
         ] {
             assert!(!serialized.contains(private_value));
@@ -126,7 +126,7 @@ mod tests {
     }
 
     #[test]
-    fn action_completion_notification_is_tagged_without_changing_generic_wire() {
+    fn tool_run_completion_notification_is_tagged_without_changing_generic_wire() {
         let generic = AgentEvent::Notification {
             session_id: Some("ses-generic".into()),
             title: "Notice".into(),
@@ -142,34 +142,34 @@ mod tests {
             })
         );
 
-        let action_completion = AgentEvent::ActionCompletionNotification {
-            action_kind: ActionNotificationSource::Scheduled,
-            action_id: "act-scheduled".into(),
+        let tool_run_completion = AgentEvent::ToolRunCompletionNotification {
+            tool_run_kind: ToolRunNotificationSource::Scheduled,
+            tool_run_id: "toolrun-scheduled".into(),
             session_id: None,
-            action_status: None,
+            tool_run_status: None,
             title: "任务完成".into(),
             body: "结果".into(),
         };
         assert_eq!(
-            TauriEmitter::channel(&action_completion),
+            TauriEmitter::channel(&tool_run_completion),
             NOTIFICATION_SHOW_EVENT
         );
         assert_eq!(
-            TauriEmitter::payload(&action_completion, None),
+            TauriEmitter::payload(&tool_run_completion, None),
             serde_json::json!({
                 "title": "任务完成",
                 "body": "结果",
-                "notification_kind": "action_completion",
-                "action_kind": "scheduled",
-                "action_id": "act-scheduled",
+                "notification_kind": "tool_run_completion",
+                "tool_run_kind": "scheduled",
+                "tool_run_id": "toolrun-scheduled",
             })
         );
 
-        let background_completion = AgentEvent::ActionCompletionNotification {
-            action_kind: ActionNotificationSource::Background,
-            action_id: "act-background".into(),
+        let background_completion = AgentEvent::ToolRunCompletionNotification {
+            tool_run_kind: ToolRunNotificationSource::Background,
+            tool_run_id: "toolrun-background".into(),
             session_id: Some("ses-owner".into()),
-            action_status: Some(ActionCompletionStatus::Failed),
+            tool_run_status: Some(ToolRunCompletionStatus::Failed),
             title: "后台任务失败".into(),
             body: "错误摘要".into(),
         };
@@ -179,10 +179,10 @@ mod tests {
                 "session_id": "ses-owner",
                 "title": "后台任务失败",
                 "body": "错误摘要",
-                "notification_kind": "action_completion",
-                "action_kind": "background",
-                "action_id": "act-background",
-                "action_status": "failed",
+                "notification_kind": "tool_run_completion",
+                "tool_run_kind": "background",
+                "tool_run_id": "toolrun-background",
+                "tool_run_status": "failed",
             })
         );
     }
@@ -282,7 +282,7 @@ impl TauriEmitter {
     pub(crate) fn channel(event: &AgentEvent) -> &'static str {
         match event {
             AgentEvent::Thought { .. } => AGENT_THOUGHT_EVENT,
-            AgentEvent::Action { .. } => AGENT_ACTION_EVENT,
+            AgentEvent::ToolCall { .. } => AGENT_TOOL_CALL_EVENT,
             AgentEvent::Observation { .. } => AGENT_OBSERVATION_EVENT,
             AgentEvent::SessionCreated(_) => SESSION_CREATED_EVENT,
             AgentEvent::SessionCompleted { .. } => SESSION_COMPLETED_EVENT,
@@ -290,7 +290,7 @@ impl TauriEmitter {
             AgentEvent::SessionError { .. } => SESSION_ERROR_EVENT,
             AgentEvent::SessionDeleted { .. } => SESSION_DELETED_EVENT,
             AgentEvent::Notification { .. } => NOTIFICATION_SHOW_EVENT,
-            AgentEvent::ActionCompletionNotification { .. } => NOTIFICATION_SHOW_EVENT,
+            AgentEvent::ToolRunCompletionNotification { .. } => NOTIFICATION_SHOW_EVENT,
             AgentEvent::TitleUpdated { .. } => SESSION_TITLE_UPDATED_EVENT,
             AgentEvent::ThoughtChunk { .. } => AGENT_THOUGHT_CHUNK_EVENT,
             AgentEvent::ReasoningChunk { .. } => AGENT_REASONING_CHUNK_EVENT,
@@ -346,28 +346,28 @@ impl TauriEmitter {
                 message_id: message_id.clone(),
                 event_seq: *event_seq,
             }),
-            AgentEvent::Action {
+            AgentEvent::ToolCall {
                 session_id,
                 tool_name,
                 input,
                 step_number,
                 run_id,
                 tool_call_id,
-                action_index,
+                tool_index,
                 step_id,
                 suppress_streamed_thought,
                 event_seq: durable_event_seq,
-            } => serialize(AgentActionEvent {
+            } => serialize(AgentToolCallEvent {
                 session_id: session_id.clone(),
                 tool_name: tool_name.clone(),
                 input: input.clone(),
                 step_number: *step_number,
                 run_id: *run_id,
                 tool_call_id: tool_call_id.clone(),
-                action_index: *action_index,
+                tool_index: *tool_index,
                 step_id: step_id.clone(),
                 suppress_streamed_thought: *suppress_streamed_thought,
-                silent: haven_tools::is_silent_action(tool_name, input),
+                silent: haven_tools::is_silent_tool_call(tool_name, input),
                 event_seq: *durable_event_seq,
             }),
             AgentEvent::Observation {
@@ -378,7 +378,7 @@ impl TauriEmitter {
                 run_id,
                 silent,
                 tool_call_id,
-                action_index,
+                tool_index,
                 ask_options,
                 step_id,
                 outcome,
@@ -395,7 +395,7 @@ impl TauriEmitter {
                 run_id: *run_id,
                 silent: *silent,
                 tool_call_id: tool_call_id.clone(),
-                action_index: *action_index,
+                tool_index: *tool_index,
                 ask_options: ask_options.clone(),
                 step_id: step_id.clone(),
                 outcome: outcome.clone(),
@@ -575,25 +575,25 @@ impl TauriEmitter {
                 title: title.clone(),
                 body: body.clone(),
                 notification_kind: None,
-                action_kind: None,
-                action_id: None,
-                action_status: None,
+                tool_run_kind: None,
+                tool_run_id: None,
+                tool_run_status: None,
             }),
-            AgentEvent::ActionCompletionNotification {
-                action_kind,
-                action_id,
+            AgentEvent::ToolRunCompletionNotification {
+                tool_run_kind,
+                tool_run_id,
                 session_id,
-                action_status,
+                tool_run_status,
                 title,
                 body,
             } => serialize(AgentNotificationEvent {
                 session_id: session_id.clone(),
                 title: title.clone(),
                 body: body.clone(),
-                notification_kind: Some(AgentNotificationKind::ActionCompletion),
-                action_kind: Some(action_kind.as_str().to_string()),
-                action_id: Some(action_id.clone()),
-                action_status: action_status.map(|status| status.as_str().to_string()),
+                notification_kind: Some(AgentNotificationKind::ToolRunCompletion),
+                tool_run_kind: Some(tool_run_kind.as_str().to_string()),
+                tool_run_id: Some(tool_run_id.clone()),
+                tool_run_status: tool_run_status.map(|status| status.as_str().to_string()),
             }),
             AgentEvent::Usage {
                 session_id,
@@ -671,7 +671,7 @@ impl TauriEmitter {
                     "TauriEmitter::on_thought"
                 );
             }
-            AgentEvent::Action {
+            AgentEvent::ToolCall {
                 session_id,
                 tool_name,
                 step_number,
@@ -748,7 +748,7 @@ impl TauriEmitter {
                 title,
                 body,
             }
-            | AgentEvent::ActionCompletionNotification {
+            | AgentEvent::ToolRunCompletionNotification {
                 session_id,
                 title,
                 body,

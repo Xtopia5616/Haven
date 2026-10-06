@@ -237,7 +237,7 @@ pub async fn mcp_tool_call(
     {
         AuthorizationDecision::AutoApproved => {}
         AuthorizationDecision::RequiresConfirmation { receipt, .. } => {
-            let action_args = args.clone();
+            let tool_run_args = args.clone();
             return Err(queue_ui_confirmation(
                 &state,
                 &app,
@@ -246,7 +246,7 @@ pub async fn mcp_tool_call(
                 UiConfirmationAction::Mcp {
                     client,
                     tool,
-                    args: action_args,
+                    args: tool_run_args,
                 },
             )
             .await?);

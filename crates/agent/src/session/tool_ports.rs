@@ -5,7 +5,7 @@ use haven_common::types::{MessageAttachment, RiskLevel};
 #[cfg(test)]
 use haven_tools::ToolsManager;
 use haven_tools::{
-    ActionService, AuthorizationEngine, AuthorizationRequest, ToolRegistration, ToolResult,
+    AuthorizationEngine, AuthorizationRequest, ToolRegistration, ToolResult, ToolRunService,
 };
 use serde_json::Value;
 use std::sync::Arc;
@@ -18,7 +18,7 @@ pub struct ToolExecutionContext {
     pub session_id: Option<String>,
     pub tool_name: String,
     pub input: Value,
-    /// Cancellation authority for the owning run or action.
+    /// Cancellation authority for the owning run or detached ToolRun.
     pub cancel: CancellationToken,
     /// Stable step identity, separate from the provider's input payload.
     pub step_id: Option<String>,
@@ -163,7 +163,7 @@ pub struct SessionToolPorts {
     pub(super) tool_authorization: Arc<dyn ToolAuthorizationPort>,
     pub(super) catalog: Arc<dyn crate::ToolCatalogPort>,
     pub(super) authorization: Arc<AuthorizationEngine>,
-    pub(super) actions: Arc<ActionService>,
+    pub(super) tool_runs: Arc<ToolRunService>,
     pub(super) session_tool_overlay: Arc<dyn SessionToolOverlayPort>,
     pub(super) managed_asset_leases: Arc<dyn ManagedAssetLeasePort>,
     pub(super) observations: Arc<dyn ToolObservationPort>,
@@ -177,7 +177,7 @@ impl SessionToolPorts {
         tool_authorization: Arc<dyn ToolAuthorizationPort>,
         catalog: Arc<dyn crate::ToolCatalogPort>,
         authorization: Arc<AuthorizationEngine>,
-        actions: Arc<ActionService>,
+        tool_runs: Arc<ToolRunService>,
         session_tool_overlay: Arc<dyn SessionToolOverlayPort>,
         managed_asset_leases: Arc<dyn ManagedAssetLeasePort>,
         observations: Arc<dyn ToolObservationPort>,
@@ -187,7 +187,7 @@ impl SessionToolPorts {
             tool_authorization,
             catalog,
             authorization,
-            actions,
+            tool_runs,
             session_tool_overlay,
             managed_asset_leases,
             observations,
@@ -207,7 +207,7 @@ impl SessionToolPorts {
             ))),
             catalog,
             services.authorization,
-            services.actions,
+            services.tool_runs,
             Arc::new(ToolsManagerSessionToolOverlayAdapter::new(Arc::clone(
                 &tools,
             ))),

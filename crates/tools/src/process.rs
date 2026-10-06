@@ -1,4 +1,4 @@
-use crate::action_output::ActionOutputTail;
+use crate::tool_run_output::ToolRunOutputTail;
 
 /// Terminate a child process together with its whole process tree. On
 /// Windows, dropping a tokio Child only terminates the direct process; the
@@ -24,12 +24,12 @@ pub(crate) async fn kill_process_tree(pid: u32) {
 /// remaining bytes are still read and discarded: closing the pipe read end
 /// early can make the child fail writes (broken pipe) and flip its exit code.
 /// When `tail` is given, every decoded chunk is also appended to the shared
-/// bounded live-output tail (for `action:output` preview events).
+/// bounded live-output tail (for `tool_run:output` preview events).
 /// Returns `(text, overflowed)`.
 pub(crate) async fn read_stream_capped<R>(
     stdout: Option<R>,
     max_bytes: usize,
-    tail: Option<ActionOutputTail>,
+    tail: Option<ToolRunOutputTail>,
 ) -> (String, bool)
 where
     R: tokio::io::AsyncRead + Unpin,
@@ -122,7 +122,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::{read_stream_capped, read_stream_capped_with};
-    use crate::action_output::ActionOutputPort;
+    use crate::tool_run_output::ToolRunOutputPort;
     use std::time::Duration;
 
     #[tokio::test]
@@ -177,7 +177,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_read_stream_capped_appends_tail() {
-        let tail = ActionOutputPort::new().new_tail().await;
+        let tail = ToolRunOutputPort::new().new_tail().await;
         let (text, _) =
             read_stream_capped(Some(&b"hello tail"[..]), 8192, Some(tail.clone())).await;
         assert_eq!(text, "hello tail");
@@ -192,7 +192,7 @@ mod tests {
         // 8191 ASCII + a 3-byte UTF-8 char: the first 8192-byte read splits the
         // char (lead byte only), the second read finishes it. The live tail must
         // still show the char intact, not GBK-fallback mojibake.
-        let tail = ActionOutputPort::new().new_tail().await;
+        let tail = ToolRunOutputPort::new().new_tail().await;
         let mut content = "a".repeat(8191);
         content.push('中');
         read_stream_capped(Some(content.as_bytes()), 10_000, Some(tail.clone())).await;

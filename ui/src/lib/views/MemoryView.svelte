@@ -28,7 +28,7 @@
 		updateSessionTitle as updateSessionTitleCommand,
 	} from '$lib/sessionHistoryCommands.ts';
 	import { registerSessionListener } from '$lib/events.ts';
-	import { listActionHistory } from '$lib/actionCommands.ts';
+	import { listToolRunHistory } from '$lib/toolRunCommands.ts';
 	import MaterialDialog from '$lib/MaterialDialog.svelte';
 	import MaterialButton from '$lib/MaterialButton.svelte';
 	import MaterialTabs from '$lib/MaterialTabs.svelte';
@@ -36,41 +36,41 @@
 	import { openContextMenu } from '$lib/contextMenu.ts';
 	import SessionHistory from './SessionHistory.svelte';
 	import MemoryCenter from './MemoryCenter.svelte';
-	import TaskCenter from '$lib/TaskCenter.svelte';
+	import ToolRunCenter from '$lib/ToolRunCenter.svelte';
 	import WorkspacePageHeader from '$lib/WorkspacePageHeader.svelte';
 	import WorkspaceSectionHeader from '$lib/WorkspaceSectionHeader.svelte';
 	import type { HistoryFilterRequest } from '$lib/contracts/commands.ts';
 	import type { Fact, MemoryRecallState } from '$lib/contracts/memory.ts';
-	import type { ActionKind, ActionPayload } from '$lib/contracts/action.ts';
+	import type { ToolRunKind, ToolRunPayload } from '$lib/contracts/toolRun.ts';
 	import type { SessionHistoryRow } from '$lib/contracts/sessionHistory.ts';
 	import type { ContextMenuItem } from '$lib/contextMenu.ts';
 
 	type MemorySession = SessionHistoryRow;
 	type MemoryTabId = 'sessions' | 'tasks' | 'memory';
-	type TaskAction = ActionPayload;
+	type TaskToolRun = ToolRunPayload;
 
 	interface Props {
 		isVisible?: boolean;
 		onNewSession?: () => void;
-		runningBackgroundActions?: ActionPayload[];
-		pendingScheduledActions?: ActionPayload[];
-		actionStatusLabel?: (status: string) => string;
-		sessionTitleFor?: (action: Pick<ActionPayload, 'sessionId'>) => string;
-		actionDuration?: (action: ActionPayload) => string;
-		scheduledActionCountdown?: (dueAt?: string) => string;
+		runningBackgroundToolRuns?: ToolRunPayload[];
+		pendingScheduledToolRuns?: ToolRunPayload[];
+		toolRunStatusLabel?: (status: string) => string;
+		sessionTitleFor?: (toolRun: Pick<ToolRunPayload, 'sessionId'>) => string;
+		toolRunDuration?: (toolRun: ToolRunPayload) => string;
+		scheduledToolRunCountdown?: (dueAt?: string) => string;
 		onOpenSession?: (sessionId: string) => void;
-		onCancel?: (actionId: string, kind?: ActionKind) => void;
+		onCancel?: (toolRunId: string, kind?: ToolRunKind) => void;
 	}
 
 	let {
 		isVisible = true,
 		onNewSession = () => {},
-		runningBackgroundActions = [],
-		pendingScheduledActions = [],
-		actionStatusLabel = (status) => status || '',
+		runningBackgroundToolRuns = [],
+		pendingScheduledToolRuns = [],
+		toolRunStatusLabel = (status) => status || '',
 		sessionTitleFor = () => '',
-		actionDuration = () => '',
-		scheduledActionCountdown = () => '',
+		toolRunDuration = () => '',
+		scheduledToolRunCountdown = () => '',
 		onOpenSession = () => {},
 		onCancel = () => {},
 	}: Props = $props();
@@ -110,9 +110,9 @@
 		{ id: 'tasks', label: '任务历史' },
 		{ id: 'memory', label: '长期记忆' },
 	];
-	let taskHistory = $state<TaskAction[]>([]);
-	let taskHistoryLoading = $state(false);
-	let taskHistoryFailed = $state(false);
+	let toolRunHistory = $state<TaskToolRun[]>([]);
+	let toolRunHistoryLoading = $state(false);
+	let toolRunHistoryFailed = $state(false);
 	let memoryRecall = $state<MemoryRecallState>({
 		query: '',
 		kind: 'all',
@@ -195,19 +195,19 @@
 
 	async function loadTaskHistory() {
 		const sequence = ++loadTaskHistorySeq;
-		taskHistoryLoading = true;
-		taskHistoryFailed = false;
+		toolRunHistoryLoading = true;
+		toolRunHistoryFailed = false;
 		try {
-			const rows = await listActionHistory(undefined, 100);
+			const rows = await listToolRunHistory(undefined, 100);
 			if (sequence !== loadTaskHistorySeq) return;
-			taskHistory = rows;
+			toolRunHistory = rows;
 		} catch (e) {
 			if (sequence !== loadTaskHistorySeq) return;
-			taskHistory = [];
-			taskHistoryFailed = true;
+			toolRunHistory = [];
+			toolRunHistoryFailed = true;
 			reportError(e, { context: 'MemoryView', message: '加载任务历史失败', log: false });
 		} finally {
-			if (sequence === loadTaskHistorySeq) taskHistoryLoading = false;
+			if (sequence === loadTaskHistorySeq) toolRunHistoryLoading = false;
 		}
 	}
 
@@ -654,17 +654,17 @@
 							title="任务历史"
 							description="查看后台任务和定时任务的当前状态及最近历史。"
 						/>
-						<TaskCenter
-							{runningBackgroundActions}
-							{pendingScheduledActions}
-							{taskHistory}
-							{taskHistoryLoading}
-							{taskHistoryFailed}
+						<ToolRunCenter
+							{runningBackgroundToolRuns}
+							{pendingScheduledToolRuns}
+							{toolRunHistory}
+							{toolRunHistoryLoading}
+							{toolRunHistoryFailed}
 							onRefreshTaskHistory={loadTaskHistory}
-							{actionStatusLabel}
+							{toolRunStatusLabel}
 							{sessionTitleFor}
-							{actionDuration}
-							{scheduledActionCountdown}
+							{toolRunDuration}
+							{scheduledToolRunCountdown}
 							{onOpenSession}
 							{onCancel}
 						/>

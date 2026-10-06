@@ -497,7 +497,7 @@ ui/src/
 │   ├── RecordingIndicator.svelte
 │   ├── SkillCard.svelte
 │   ├── SkillDetailDrawer.svelte
-│   ├── ActionCard.svelte
+│   ├── ToolRunTimelineCard.svelte
 │   ├── ConversationTimeline.svelte
 │   └── ToolResultCard.svelte
 └── routes/
@@ -690,7 +690,7 @@ ready + 用户修改 → dirty → saving → saved | error
 | `SessionHeader` | 标题、模型、会话状态、停止/结束等会话动作 | 任务列表和全局通知 |
 | `ConversationTimeline` | 消息、思考、工具调用、确认、结果的展示编排 | 直接 `invoke` |
 | `Composer` | 文字、语音、附件、发送/停止交互 | 决定后端任务状态 |
-| `TaskCenter` / `TaskDrawer` | 会话、后台任务、定时任务的统一展示和操作 | 修改消息时间线内部数据 |
+| `ToolRunCenter` / `ToolRunTimelineCard` | 会话、后台任务、定时任务的统一展示和操作 | 修改消息时间线内部数据 |
 | `AsyncState` / `EmptyState` / `ErrorState` | 统一加载、空、未配置、错误反馈 | 领域数据获取 |
 | `SettingsNav` / `SettingsSection` / `SettingsActionBar` | 设置分组、分组校验、保存/放弃动作 | 直接读取其它页面业务状态 |
 | `ResourceList` / `ResourceDetail` | 工具、技能、MCP 等资源的列表/详情模式 | 为每种资源复制一套视觉系统 |

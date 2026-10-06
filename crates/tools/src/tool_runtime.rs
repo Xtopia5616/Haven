@@ -4,14 +4,14 @@
 //! supplied by the composition root. It is intentionally separate from the
 //! catalog (`ToolCore`) and from concrete builtin construction.
 
-use crate::action_service::ActionService;
 use crate::asset_registry::ManagedAssetRegistry;
 use crate::builtin::AdminContext;
 use crate::live_output::LiveOutputHub;
+use crate::tool_run_service::ToolRunService;
 use haven_common::config::{ContextLimitsConfig, SecurityConfig, ToolConfig};
 use haven_common::types::ShellChoice;
 use haven_llm::LlmRouter;
-use haven_memory::ActionStore;
+use haven_memory::ToolRunStore;
 use haven_memory::recall::{MemoryQuery, MemoryRecall};
 use haven_messaging::{MessagingRuntime, MessagingService};
 use std::collections::HashMap;
@@ -93,13 +93,13 @@ impl BuiltinCatalog {
 
 /// Process services plus the swappable platform snapshot.
 ///
-/// Action, asset, messaging and memory ports are created with the process.
+/// ToolRun, asset, messaging and memory ports are created with the process.
 /// They are not optional bind slots. Platform clients change only by
 /// replacing [`PlatformRuntime`].
 pub(crate) struct ToolRuntime {
     pub(crate) managed_assets: ManagedAssetRegistry,
     platform: RwLock<Arc<PlatformRuntime>>,
-    pub(crate) action_service: Arc<ActionService>,
+    pub(crate) tool_run_service: Arc<ToolRunService>,
     pub(crate) live_outputs: Arc<LiveOutputHub>,
     /// Swapped only after a catalog rebuild is accepted.
     builtin_catalog: RwLock<Arc<BuiltinCatalog>>,
@@ -110,14 +110,14 @@ pub(crate) struct ToolRuntime {
 
 impl ToolRuntime {
     pub(crate) fn new() -> Self {
-        let action_service = Arc::new(ActionService::new());
+        let tool_run_service = Arc::new(ToolRunService::new());
         let live_outputs = Arc::new(LiveOutputHub::with_tail_factory(
-            action_service.output_tail_factory(),
+            tool_run_service.output_tail_factory(),
         ));
         Self {
             managed_assets: ManagedAssetRegistry::default(),
             platform: RwLock::new(Arc::new(PlatformRuntime::default())),
-            action_service,
+            tool_run_service,
             live_outputs,
             builtin_catalog: RwLock::new(Arc::new(BuiltinCatalog::empty())),
             clipboard_history: Arc::new(crate::builtin::clipboard::ClipboardHistory::new(50)),
@@ -185,8 +185,8 @@ impl ToolRuntime {
 /// All application-provided values needed for the first builtin catalog.
 /// This is a composition value, not a mutable service registry.
 pub struct StartupWiring {
-    /// Durable action persistence constructed by the application composition root.
-    pub action_store: Option<ActionStore>,
+    /// Durable ToolRun persistence constructed by the application composition root.
+    pub tool_run_store: Option<ToolRunStore>,
     pub tool_settings: std::collections::HashMap<String, ToolConfig>,
     pub default_shell: ShellChoice,
     pub context_limits: ContextLimitsConfig,

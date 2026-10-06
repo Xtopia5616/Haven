@@ -2,7 +2,7 @@ use super::support::*;
 use super::*;
 
 #[tokio::test]
-async fn rollback_rejects_closing_session_before_cancelling_owned_actions() {
+async fn rollback_rejects_closing_session_before_cancelling_owned_tool_runs() {
     let (agent, executor) = make_test_agent();
     let session = executor
         .create_session("rollback/end admission")
@@ -29,12 +29,12 @@ async fn rollback_rejects_closing_session_before_cancelling_owned_actions() {
         },
     )
     .await;
-    let action_id = "act-rollback-closing";
+    let tool_run_id = "toolrun-rollback-closing";
     let due_at = (chrono::Utc::now() + chrono::Duration::hours(1)).to_rfc3339();
     agent
         .db
-        .save_scheduled_action(
-            action_id,
+        .save_scheduled_tool_run(
+            tool_run_id,
             &due_at,
             "Rollback closing",
             "must remain untouched",
@@ -47,8 +47,8 @@ async fn rollback_rejects_closing_session_before_cancelling_owned_actions() {
         )
         .unwrap();
     executor
-        .action_service()
-        .set_action_store(Some(haven_memory::ActionStore::new(agent.db.clone())))
+        .tool_run_service()
+        .set_tool_run_store(Some(haven_memory::ToolRunStore::new(agent.db.clone())))
         .await;
     let before = load_event_projection(&agent, &session.id).await;
     let _closing = executor
@@ -65,8 +65,8 @@ async fn rollback_rejects_closing_session_before_cancelling_owned_actions() {
     let after = load_event_projection(&agent, &session.id).await;
     assert_eq!(before.events.len(), after.events.len());
     assert_eq!(
-        agent.db.get_action(action_id).unwrap().unwrap().status,
-        haven_common::ActionStatus::Waiting
+        agent.db.get_tool_run(tool_run_id).unwrap().unwrap().status,
+        haven_common::ToolRunStatus::Waiting
     );
 }
 
@@ -845,13 +845,13 @@ async fn rollback_mid_tool_batch_joins_and_restores() {
         async move { agent.run_session_from_id(&session_id).await }
     });
     for _ in 0..50 {
-        if collector.has_action("delay_a") && collector.has_action("delay_b") {
+        if collector.has_tool_call("delay_a") && collector.has_tool_call("delay_b") {
             break;
         }
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     }
     assert!(
-        collector.has_action("delay_a") && collector.has_action("delay_b"),
+        collector.has_tool_call("delay_a") && collector.has_tool_call("delay_b"),
         "batch must have started before rollback"
     );
 

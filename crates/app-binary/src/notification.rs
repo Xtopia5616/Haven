@@ -252,13 +252,13 @@ impl DesktopNotifications {
                 //（设置页注明「Agent 通知始终开启」）。
                 self.show_windows_toast(if title.is_empty() { "Haven" } else { title }, body);
             }
-            AgentEvent::ActionCompletionNotification {
+            AgentEvent::ToolRunCompletionNotification {
                 session_id: _,
                 title,
                 body,
                 ..
             } => {
-                if !self.windows_enabled(action_completion_windows_enabled, true) {
+                if !self.windows_enabled(tool_run_completion_windows_enabled, true) {
                     return;
                 }
                 self.show_windows_toast(if title.is_empty() { "Haven" } else { title }, body);
@@ -328,8 +328,8 @@ fn forget_session_cache(
     }
 }
 
-fn action_completion_windows_enabled(config: &NotificationConfig) -> bool {
-    config.action_completed.windows
+fn tool_run_completion_windows_enabled(config: &NotificationConfig) -> bool {
+    config.tool_run_completed.windows
 }
 
 fn resolve_session_display_title_from_store(
@@ -360,8 +360,8 @@ fn resolve_session_display_title_from_store(
 #[cfg(test)]
 mod tests {
     use super::{
-        action_completion_windows_enabled, forget_session_cache,
-        resolve_session_display_title_from_store,
+        forget_session_cache, resolve_session_display_title_from_store,
+        tool_run_completion_windows_enabled,
     };
     use haven_common::config::NotificationConfig;
     use haven_common::types::new_id;
@@ -409,15 +409,15 @@ mod tests {
     }
 
     #[test]
-    fn action_completion_windows_channel_uses_its_independent_setting() {
+    fn tool_run_completion_windows_channel_uses_its_independent_setting() {
         let mut config = NotificationConfig::default();
-        assert!(action_completion_windows_enabled(&config));
+        assert!(tool_run_completion_windows_enabled(&config));
 
-        config.action_completed.in_app = false;
-        assert!(action_completion_windows_enabled(&config));
+        config.tool_run_completed.in_app = false;
+        assert!(tool_run_completion_windows_enabled(&config));
 
-        config.action_completed.windows = false;
-        assert!(!action_completion_windows_enabled(&config));
+        config.tool_run_completed.windows = false;
+        assert!(!tool_run_completion_windows_enabled(&config));
     }
 
     #[test]

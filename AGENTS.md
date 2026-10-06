@@ -79,7 +79,7 @@ corepack pnpm run check
 | `step-` | 步骤 session_steps.id | `haven_memory` |
 | `fact-` | 事实 facts.id（SPO 图谱行） | `haven_memory` |
 | `node-` | 记忆节点 memory_nodes.id | `haven_memory` |
-| `act-` | 工作单元 actions.id（后台任务 kind=`background` + 定时任务 kind=`scheduled`） | `haven_tools` |
+| `toolrun-` | 工具运行 tool_runs.id（后台任务 kind=`background` + 定时任务 kind=`scheduled`） | `haven_tools` |
 | `asset-` | 受管媒体资产 MediaAsset.asset_id | `haven_common` |
 | `cred-` | Credential Manager 凭据引用（仅引用，不是密钥值） | `haven_common` / `haven_platform` |
 | `usage-` | 单次 LLM 调用用量明细 llm_usage.id | `haven_memory` |
@@ -96,12 +96,12 @@ corepack pnpm run check
 
 规则：
 - **生成一律用 `haven_common::types::new_id(prefix)`**，禁止手拼 UUID。
-- **X12 写路径**：`session_events`（经 `SessionEventStore` 追加）是 append-only 权威；`ReActState` 只是进程内投影 scratch，不落库；`sessions.react_state` 与 `ReActSnapshot` 已随 schema v28 删除，测试只投影 `session_events`；`messages` / `session_steps` 是物化投影。ReAct 循环内 assistant/thought/ask/reasoning 内容行只从 `apply_transcript`（先追加 durable event，再由 `SessionStore` 事务化物化到 messages/session_steps）写出；禁止平行 `persist_session_message`。提交成功后的 Thought、Action、Observation、Supplement、ingress MediaPlan、Compaction live UI 只由 `CommittedUiPublisher` 按 sequence 发布，禁止在可失败的物化投影之后另发；流式分片、WebSearch、Usage 和请求准备阶段的 MediaPlan 不占用该序号。例外（须文档化）：ingress 用户 seed（崩溃安全，`UserInject` 带 `message_id` 时不再写 messages）、error partials（有意不进 events，靠 `last_msg_at` 截断）、terminal action-result（无活 loop）、交互等待状态由 lifecycle event/status 表达，不写 UI-only transcript 气泡；Ask 正文只保留在 canonical transcript，并通过 request id 关联。
-- **内容行与执行行共用 id**（同一实体在 `messages` 与 `session_steps` 各存一面，内容只落 messages，另一面只存执行态）：assistant thought 的消息行与 thought 步骤行共用 `step-*` id（流式气泡 id 按 `step` 前缀 mint，`session_steps.thought` 列新数据不再写入）；补充输入/steering 的 thought 步骤行与用户消息行共用 `msg-*` id（消息行先落库，步骤行以 `message_id` 复用）；ask 问题消息行与 ask 步骤行共用 `step-*` id（问题文本在 `apply(ToolResult)` 投影到 messages，resume 的 snapshot-less 重建跳过 `action_tool='ask'` 步骤）。前端身份关联一律按 id；内容相等不能作为身份兜底。
+- **X12 写路径**：`session_events`（经 `SessionEventStore` 追加）是 append-only 权威；`ReActState` 只是进程内投影 scratch，不落库；`sessions.react_state` 与 `ReActSnapshot` 已随 schema v28 删除，测试只投影 `session_events`；`messages` / `session_steps` 是物化投影。ReAct 循环内 assistant/thought/ask/reasoning 内容行只从 `apply_transcript`（先追加 durable event，再由 `SessionStore` 事务化物化到 messages/session_steps）写出；禁止平行 `persist_session_message`。提交成功后的 Thought、ToolCall、Observation、Supplement、ingress MediaPlan、Compaction live UI 只由 `CommittedUiPublisher` 按 sequence 发布，禁止在可失败的物化投影之后另发；流式分片、WebSearch、Usage 和请求准备阶段的 MediaPlan 不占用该序号。例外（须文档化）：ingress 用户 seed（崩溃安全，`UserInject` 带 `message_id` 时不再写 messages）、error partials（有意不进 events，靠 `last_msg_at` 截断）、terminal ToolRun result（无活 loop）、交互等待状态由 lifecycle event/status 表达，不写 UI-only transcript 气泡；Ask 正文只保留在 canonical transcript，并通过 request id 关联。
+- **内容行与执行行共用 id**（同一实体在 `messages` 与 `session_steps` 各存一面，内容只落 messages，另一面只存执行态）：assistant thought 的消息行与 thought 步骤行共用 `step-*` id（流式气泡 id 按 `step` 前缀 mint，`session_steps.thought` 列新数据不再写入）；补充输入/steering 的 thought 步骤行与用户消息行共用 `msg-*` id（消息行先落库，步骤行以 `message_id` 复用）；ask 问题消息行与 ask 步骤行共用 `step-*` id（问题文本在 `apply(ToolResult)` 投影到 messages，resume 的 snapshot-less 重建跳过 `tool_name='ask'` 步骤）。前端身份关联一律按 id；内容相等不能作为身份兜底。
 - **resume 恢复补充输入按时间不按内容**：有 `session_events` 时按 sequence replay；没有事件流就没有可恢复 transcript，不得从 snapshot 导入。resume 时仅当 executor 队列为空（崩溃/重启）才把未进入事件流的 user 消息重新排队；禁止再引入内容比对去重。前端提交在 `submitTranscript` 有 in-flight 锁（并发提交共享同一 promise），后端不再对用户输入做内容去重。
 - **Rollback 双时钟**：`BranchPoint.event_cursor` 截断 events；`last_msg_at` 截断投影表。每次投影写必须 `note_last_msg_at`。
-- Rust/DB/事件字段统一 snake_case `xxx_id`（`session_id`、`action_id`、`message_id`…）；前端在边界转 camelCase `xxxId`。
-- 术语：**session** = 对话（ReAct 主实体）；**action** = 工作单元（后台任务/定时任务，`actions` 表 kind 区分）；任务/作业/提醒统一叫任务，UI 文案一律「会话」「任务」「后台任务」「定时任务」。
+- Rust/DB/事件字段统一 snake_case `xxx_id`（`session_id`、`tool_run_id`、`message_id`…）；前端在边界转 camelCase `xxxId`。
+- 术语：**session** = 对话（ReAct 主实体）；**tool call** = Agent/模型发起的一次工具调用；**tool run** = 可脱离当前 turn 持久运行的工具工作单元（后台运行/定时运行由 `tool_runs.kind` 区分）。执行方式使用 `ToolExecutionMode::{Foreground, Background}`；定时触发仍是 `schedule` 工具的职责。UI 文案使用「会话」「任务」「后台任务」「定时任务」。
 - 实体 ID newtype 集中在 `haven_common::types`（`id_newtype!` 宏生成，`struct X(pub String)`，serde 按普通字符串序列化）：目前只有 `ConfirmId`/`SessionId` 在运行时被使用，其余实体继续用 `String`；新增真正需要类型隔离的实体 ID 时再补 newtype，不要提前定义未使用的类型。
 - 序号类字段（u64 代次，非持久实体）：`run_id`（run 实例）、`gen_id`（流式代次）、MCP JSON-RPC `next_id`，保持现有命名并加文档说明。
 - 外部 ID（LLM `tool_call_id`、模型 ID、MCP `Mcp-Session-Id`）保持 provider 格式，不套用本规范。

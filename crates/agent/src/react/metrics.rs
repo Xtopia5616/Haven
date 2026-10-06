@@ -157,8 +157,8 @@ pub(crate) enum Counter {
     SnapshotFailures,
     ProjectionFailures,
     InboxAckFailures,
-    ActionResultRetries,
-    ActionResultDuplicates,
+    ToolRunResultRetries,
+    ToolRunResultDuplicates,
     WebSearchDrops,
 }
 
@@ -174,8 +174,8 @@ impl Counter {
             Self::SnapshotFailures => 6,
             Self::ProjectionFailures => 7,
             Self::InboxAckFailures => 8,
-            Self::ActionResultRetries => 9,
-            Self::ActionResultDuplicates => 10,
+            Self::ToolRunResultRetries => 9,
+            Self::ToolRunResultDuplicates => 10,
             Self::WebSearchDrops => 11,
         }
     }
@@ -193,8 +193,8 @@ pub struct CounterSnapshot {
     pub snapshot_failures: u64,
     pub projection_failures: u64,
     pub inbox_ack_failures: u64,
-    pub action_result_retries: u64,
-    pub action_result_duplicates: u64,
+    pub tool_run_result_retries: u64,
+    pub tool_run_result_duplicates: u64,
     pub web_search_drops: u64,
 }
 
@@ -285,9 +285,9 @@ impl ReActMetrics {
                     .load(Ordering::Relaxed),
                 inbox_ack_failures: self.counters[Counter::InboxAckFailures.index()]
                     .load(Ordering::Relaxed),
-                action_result_retries: self.counters[Counter::ActionResultRetries.index()]
+                tool_run_result_retries: self.counters[Counter::ToolRunResultRetries.index()]
                     .load(Ordering::Relaxed),
-                action_result_duplicates: self.counters[Counter::ActionResultDuplicates.index()]
+                tool_run_result_duplicates: self.counters[Counter::ToolRunResultDuplicates.index()]
                     .load(Ordering::Relaxed),
                 web_search_drops: self.counters[Counter::WebSearchDrops.index()]
                     .load(Ordering::Relaxed),

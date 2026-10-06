@@ -274,7 +274,7 @@ pub(super) struct ActionRequiredTool;
 #[async_trait]
 impl Tool for ActionRequiredTool {
     fn name(&self) -> String {
-        "action_required".into()
+        "tool_run_required".into()
     }
     fn description(&self) -> String {
         "requires an action".into()
@@ -575,12 +575,12 @@ impl EventCollector {
             events: std::sync::Mutex::new(Vec::new()),
         }
     }
-    pub(super) fn has_action(&self, tool_name: &str) -> bool {
+    pub(super) fn has_tool_call(&self, tool_name: &str) -> bool {
         self.events
             .lock()
             .unwrap()
             .iter()
-            .any(|e| matches!(e, AgentEvent::Action { tool_name: tn, .. } if tn == tool_name))
+            .any(|e| matches!(e, AgentEvent::ToolCall { tool_name: tn, .. } if tn == tool_name))
     }
     pub(super) fn has_observation(&self, tool_name: &str) -> bool {
         self.events

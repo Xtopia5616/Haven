@@ -1,14 +1,14 @@
 import type { AgentSupplementPayload } from '../contracts/agent.ts';
 import {
-	actionIdFromObservation,
-	sourceActionIdFromObservation,
+	toolRunIdFromObservation,
+	sourceToolRunIdFromObservation,
 	accumulateStreamChunk,
 	applyThoughtSnap,
 	dropStreamedThought,
 	finalizeStreamBlocks,
 	insertAgentMessage,
 	newToolMessage,
-	parseActionResultInject,
+	parseToolRunResultInject,
 	resetStreamBlocks,
 	webSearchCardContent,
 	webSearchId,
@@ -31,7 +31,7 @@ type Action = SessionActionOf<
 	| 'agent/stream-reset'
 	| 'agent/web-search'
 	| 'agent/supplement'
-	| 'agent/action'
+	| 'agent/tool_call'
 	| 'agent/observation'
 >;
 
@@ -149,13 +149,13 @@ function applySupplement(
 			);
 		});
 	}
-	if (payload.injectSource === 'action_result') {
-		const parsed = parseActionResultInject(context);
-		const actionId = parsed?.action_id || 'unknown';
-		const cardId = `action-result-${supplementId}-${actionId}`;
+	if (payload.injectSource === 'tool_run_result') {
+		const parsed = parseToolRunResultInject(context);
+		const toolRunId = parsed?.tool_run_id || 'unknown';
+		const cardId = `tool-run-result-${supplementId}-${toolRunId}`;
 		const content = JSON.stringify({
-			...(parsed || { action_id: actionId, status: 'completed', auto: true }),
-			operation: 'actions_result_injected',
+			...(parsed || { tool_run_id: toolRunId, status: 'completed', auto: true }),
+			operation: 'tool_runs_result_injected',
 		});
 		return withMessages(state, payload.sessionId, (messages) => {
 			if (messages.some((message) => message.id === cardId)) return messages;
@@ -164,7 +164,7 @@ function applySupplement(
 				newToolMessage({
 					id: cardId,
 					stepNumber: payload.stepNumber,
-					toolName: 'actions.inspect',
+					toolName: 'tool_runs.inspect',
 					content,
 					time: new Date().toLocaleTimeString(),
 				}),
@@ -293,7 +293,7 @@ export function reduceAgent(inputState: SessionReducerState, action: Action): Se
 			);
 			return accepted ? applySupplement(accepted, action.payload) : state;
 		}
-		case 'agent/action': {
+		case 'agent/tool_call': {
 			const payload = action.payload;
 			const accepted = acceptEventSequence(
 				state,
@@ -347,8 +347,8 @@ export function reduceAgent(inputState: SessionReducerState, action: Action): Se
 					outcome: payload.outcome,
 					renderer: payload.renderer,
 					result: payload.result,
-					actionId: actionIdFromObservation(payload.observation),
-					sourceActionId: sourceActionIdFromObservation(
+					toolRunId: toolRunIdFromObservation(payload.observation),
+					sourceToolRunId: sourceToolRunIdFromObservation(
 						payload.toolName,
 						payload.observation,
 					),

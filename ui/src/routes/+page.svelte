@@ -58,12 +58,12 @@
 		newSessionIntentStore,
 	} from '$lib/sessionIntentStore.ts';
 	import {
-		refreshActions,
-		refreshSessionActions,
-		actionStore,
-		sessionActionStore,
-		setActiveSessionAction,
-	} from '$lib/actionStore.ts';
+		refreshToolRuns,
+		refreshSessionToolRuns,
+		toolRunStore,
+		sessionToolRunStore,
+		setActiveSessionToolRun,
+	} from '$lib/toolRunStore.ts';
 	import { mediaPlanStore } from '$lib/mediaPlanStore.ts';
 	import { syncStore } from '$lib/syncStore.ts';
 	import { dragScroll } from '$lib/dragScroll.ts';
@@ -94,7 +94,7 @@
 	import type { LlmUsage } from '$lib/sessionUsage.ts';
 	import type { ChatModelOption } from '$lib/chatModelOperations.ts';
 	import type { SessionHistoryRow, SessionLineageResponse } from '$lib/contracts/sessionHistory.ts';
-	import type { ActionPayload, ActionStatus } from '$lib/contracts/action.ts';
+	import type { ToolRunPayload, ToolRunStatus } from '$lib/contracts/toolRun.ts';
 	import type { AgentMediaPlanPayload } from '$lib/contracts/agent.ts';
 	import type { ChatFileAttachment, ChatImageAttachment } from '$lib/chatController.ts';
 	import type { ConversationContextMenuRequest } from '$lib/conversationTimeline.ts';
@@ -353,35 +353,35 @@
 		}
 	}
 
-	// Live action registry (for "waiting on background" banner). Synced from
-	// the global actionStore kept by +layout.
-	let actionsById = $state<Record<string, ActionPayload>>({});
-	$effect(() => syncStore(actionStore, (v) => (actionsById = v || {})));
-	let sessionActionsById = $state<Record<string, Record<string, ActionPayload>>>({});
-	$effect(() => syncStore(sessionActionStore, (v) => (sessionActionsById = v || {})));
-	const sessionActions = $derived.by(() => {
+	// Live ToolRun registry (for "waiting on background" banner). Synced from
+	// the global toolRunStore kept by +layout.
+	let toolRunsById = $state<Record<string, ToolRunPayload>>({});
+	$effect(() => syncStore(toolRunStore, (v) => (toolRunsById = v || {})));
+	let sessionToolRunsById = $state<Record<string, Record<string, ToolRunPayload>>>({});
+	$effect(() => syncStore(sessionToolRunStore, (v) => (sessionToolRunsById = v || {})));
+	const sessionToolRuns = $derived.by(() => {
 		if (!activeSessionId) return [];
-		const actions = new Map<string, ActionPayload>();
-		for (const action of Object.values(sessionActionsById[activeSessionId] || {})) {
-			actions.set(action.id, action);
+		const toolRuns = new Map<string, ToolRunPayload>();
+		for (const toolRun of Object.values(sessionToolRunsById[activeSessionId] || {})) {
+			toolRuns.set(toolRun.id, toolRun);
 		}
-		for (const action of Object.values(actionsById)) {
-			if (action.sessionId === activeSessionId) actions.set(action.id, action);
+		for (const toolRun of Object.values(toolRunsById)) {
+			if (toolRun.sessionId === activeSessionId) toolRuns.set(toolRun.id, toolRun);
 		}
-		return [...actions.values()];
+		return [...toolRuns.values()];
 	});
 	$effect(() => {
 		const sessionId = activeSessionId;
 		const persistedSessionId = sessionId === DRAFT_SESSION_ID ? null : sessionId;
-		setActiveSessionAction(persistedSessionId);
-		if (persistedSessionId && isTauri()) void refreshSessionActions(persistedSessionId);
+		setActiveSessionToolRun(persistedSessionId);
+		if (persistedSessionId && isTauri()) void refreshSessionToolRuns(persistedSessionId);
 	});
 	let mediaPlansBySession = $state<Record<string, AgentMediaPlanPayload[]>>({});
 	$effect(() => syncStore(mediaPlanStore, (v) => (mediaPlansBySession = v || {})));
 	const activeSessionStatus = $derived(
 		activeSessionId ? sessions.find((t) => t.id === activeSessionId)?.status : undefined,
 	);
-	/** The backend's derived reason is authoritative; actions only provide the count. */
+	/** The backend's derived reason is authoritative; toolRuns only provide the count. */
 	const awaitingBackground = $derived.by(() => {
 		if (!activeSessionId || activeSessionStatus !== 'paused') return false;
 		const session = sessions.find((item) => item.id === activeSessionId);
@@ -389,7 +389,7 @@
 	});
 	const awaitingBackgroundCount = $derived.by(() => {
 		if (!awaitingBackground || !activeSessionId) return 0;
-		return Object.values(actionsById).filter(
+		return Object.values(toolRunsById).filter(
 			(a) =>
 				a &&
 				a.kind !== 'scheduled' &&
@@ -869,7 +869,7 @@
 		getSessions,
 		getLastConversation,
 		reopenSession,
-		refreshActions,
+		refreshToolRuns,
 		getFreshSessionIntent: () => get(newSessionIntentStore),
 		setFreshSessionIntent: (value) => newSessionIntentStore.set(value),
 		hasPersistedFreshSessionIntent: () =>
@@ -1202,7 +1202,7 @@
 			>
 				<ConversationTimeline
 					{messages}
-					{sessionActions}
+					{sessionToolRuns}
 					mediaPlans={activeSessionId ? mediaPlansBySession[activeSessionId] || [] : []}
 					loading={initialLoading}
 					{hotkeyBinding}

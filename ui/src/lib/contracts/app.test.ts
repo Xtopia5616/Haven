@@ -8,8 +8,8 @@ describe('app-shell IPC contract', () => {
 			{ kind: 'session', session_id: 'ses-1' },
 		],
 		[
-			{ kind: 'scheduled_action', actionId: 'act-1' } as const,
-			{ kind: 'scheduled_action', action_id: 'act-1' },
+			{ kind: 'scheduled_tool_run', toolRunId: 'toolrun-1' } as const,
+			{ kind: 'scheduled_tool_run', tool_run_id: 'toolrun-1' },
 		],
 		[{ kind: 'app_command' } as const, { kind: 'app_command' }],
 	])('serializes the selected interaction owner for resolve IPC', (owner, wire) => {
@@ -28,7 +28,7 @@ describe('app-shell IPC contract', () => {
 				status: 'pending',
 				options: [],
 				invocation_step_id: 'step-1',
-				action_index: 1,
+				tool_index: 1,
 				tool_call_id: 'call-1',
 				tool_name: 'run_command',
 				risk_level: 'high',
@@ -48,7 +48,7 @@ describe('app-shell IPC contract', () => {
 			status: 'pending',
 			options: [],
 			invocationStepId: 'step-1',
-			actionIndex: 1,
+			toolIndex: 1,
 			toolCallId: 'call-1',
 			toolName: 'run_command',
 			riskLevel: 'high',
@@ -85,13 +85,13 @@ describe('app-shell IPC contract', () => {
 			expectedOwner: { kind: 'app_command' },
 		},
 		{
-			owner: { kind: 'scheduled_action', action_id: 'act-1' },
-		expectedOwner: { kind: 'scheduled_action', actionId: 'act-1' },
+			owner: { kind: 'scheduled_tool_run', tool_run_id: 'toolrun-1' },
+		expectedOwner: { kind: 'scheduled_tool_run', toolRunId: 'toolrun-1' },
 		},
 		{
-			owner: { kind: 'scheduled_action', action_id: 'act-1' },
+			owner: { kind: 'scheduled_tool_run', tool_run_id: 'toolrun-1' },
 			session_id: 'ses-context',
-		expectedOwner: { kind: 'scheduled_action', actionId: 'act-1' },
+		expectedOwner: { kind: 'scheduled_tool_run', toolRunId: 'toolrun-1' },
 		},
 	])('maps explicit owner routes and optional session context', ({ owner, session_id, expectedOwner }) => {
 		const event = mapAppEvent({
@@ -137,9 +137,9 @@ describe('app-shell IPC contract', () => {
 		{ owner: undefined, session_id: 'ses-1' },
 		{ owner: { kind: 'session', session_id: 'ses-other' }, session_id: 'ses-1' },
 		{ owner: { kind: 'session' }, session_id: 'ses-1' },
-		{ owner: { kind: 'scheduled_action' }, session_id: undefined },
+		{ owner: { kind: 'scheduled_tool_run' }, session_id: undefined },
 		{ owner: { kind: 'app_command' }, session_id: 'ses-1' },
-		{ owner: { kind: 'future_owner', action_id: 'act-1' }, session_id: undefined },
+		{ owner: { kind: 'future_owner', tool_run_id: 'toolrun-1' }, session_id: undefined },
 	])('rejects an invalid owner/context pair', ({ owner, session_id }) => {
 		const event = mapAppEvent({
 			event: 'interaction:requested',
@@ -254,7 +254,7 @@ describe('app-shell IPC contract', () => {
 				kind: 'confirm',
 				status: 'pending',
 				created_at: 'now',
-				action_index: null,
+				tool_index: null,
 			},
 		},
 		{
@@ -266,7 +266,7 @@ describe('app-shell IPC contract', () => {
 				kind: 'confirm',
 				status: 'pending',
 				created_at: 'now',
-				action_index: -1,
+				tool_index: -1,
 			},
 		},
 		{ event: 'mcp:status_change', payload: { name: 'server', status: 42 } },

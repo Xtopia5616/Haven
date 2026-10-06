@@ -1,27 +1,27 @@
 //! Immutable plan for one assistant tool batch.
 //!
 //! The model's tool-call array is the protocol order. Execution may complete
-//! in any order, but identities, action indexes and transcript materialization
+//! in any order, but identities, tool_call indexes and transcript materialization
 //! must all derive from that one array. Building this plan before any safety
 //! gate or future is created gives the batch a stable identity map and keeps
 //! the executor from minting related ids in several branches.
 
-use super::transcript::ActionCard;
+use super::transcript::ToolCallCard;
 use crate::interaction::{InteractionDetails, InteractionRequest};
-use crate::types::Action;
+use crate::types::ToolCall;
 use haven_common::types::CanonicalToolCall;
-use haven_tools::{ToolCatalogSnapshot, is_silent_action};
+use haven_tools::{ToolCatalogSnapshot, is_silent_tool_call};
 
 /// One non-final call admitted by the turn coordinator.
 #[derive(Debug, Clone)]
 pub(super) struct PlannedTool {
-    pub(super) action: Action,
+    pub(super) tool_call: ToolCall,
     pub(super) step_id: String,
-    pub(super) action_index: u32,
+    pub(super) tool_index: u32,
 }
 
 /// Stable, ordered view of the non-final calls in one model response.
-/// `action_index` remains the zero-based position in the provider's original
+/// `tool_index` remains the zero-based position in the provider's original
 /// array, even when a final-answer entry is filtered from execution.
 #[derive(Debug, Clone)]
 pub(super) struct ToolBatchPlan {
@@ -29,15 +29,15 @@ pub(super) struct ToolBatchPlan {
 }
 
 impl ToolBatchPlan {
-    pub(super) fn from_actions(actions: &[Action]) -> Self {
-        let tools = actions
+    pub(super) fn from_tool_calls(tool_calls: &[ToolCall]) -> Self {
+        let tools = tool_calls
             .iter()
             .enumerate()
-            .filter(|(_, action)| !action.is_final)
-            .map(|(action_index, action)| PlannedTool {
-                action: action.clone(),
+            .filter(|(_, tool_call)| !tool_call.is_final)
+            .map(|(tool_index, tool_call)| PlannedTool {
+                tool_call: tool_call.clone(),
                 step_id: haven_common::types::new_id("step"),
-                action_index: action_index as u32,
+                tool_index: tool_index as u32,
             })
             .collect();
         Self { tools }
@@ -56,17 +56,17 @@ impl ToolBatchPlan {
                     tool_input,
                     tool_call_id,
                     step_id,
-                    action_index,
+                    tool_index,
                     ..
                 } => Some(PlannedTool {
-                    action: Action {
+                    tool_call: ToolCall {
                         tool_name: tool_name.clone(),
                         tool_input: tool_input.clone(),
                         is_final: false,
                         tool_call_id: (!tool_call_id.is_empty()).then(|| tool_call_id.clone()),
                     },
                     step_id: step_id.clone(),
-                    action_index: *action_index,
+                    tool_index: *tool_index,
                 }),
                 _ => None,
             })
@@ -94,46 +94,46 @@ impl ToolBatchPlan {
         self.tools
             .iter()
             .map(|tool| CanonicalToolCall {
-                id: tool.action.tool_call_id.clone().unwrap_or_default(),
-                name: tool.action.tool_name.clone(),
-                arguments: tool.action.tool_input.clone(),
+                id: tool.tool_call.tool_call_id.clone().unwrap_or_default(),
+                name: tool.tool_call.tool_name.clone(),
+                arguments: tool.tool_call.tool_input.clone(),
             })
             .collect()
     }
 
     #[cfg(test)]
-    pub(super) fn action_cards(&self, suppress_streamed_thought: bool) -> Vec<ActionCard> {
-        self.build_action_cards(suppress_streamed_thought, None)
+    pub(super) fn tool_call_cards(&self, suppress_streamed_thought: bool) -> Vec<ToolCallCard> {
+        self.build_tool_call_cards(suppress_streamed_thought, None)
     }
 
-    pub(super) fn action_cards_with_catalog(
+    pub(super) fn tool_call_cards_with_catalog(
         &self,
         suppress_streamed_thought: bool,
         catalog: &ToolCatalogSnapshot,
-    ) -> Vec<ActionCard> {
-        self.build_action_cards(suppress_streamed_thought, Some(catalog))
+    ) -> Vec<ToolCallCard> {
+        self.build_tool_call_cards(suppress_streamed_thought, Some(catalog))
     }
 
-    fn build_action_cards(
+    fn build_tool_call_cards(
         &self,
         suppress_streamed_thought: bool,
         catalog: Option<&ToolCatalogSnapshot>,
-    ) -> Vec<ActionCard> {
+    ) -> Vec<ToolCallCard> {
         self.tools
             .iter()
-            .map(|tool| ActionCard {
+            .map(|tool| ToolCallCard {
                 is_high_risk: catalog.is_some_and(|catalog| {
                     catalog
-                        .operation_policy(&tool.action.tool_name, &tool.action.tool_input)
+                        .operation_policy(&tool.tool_call.tool_name, &tool.tool_call.tool_input)
                         .risk_level
                         != haven_common::types::RiskLevel::Safe
                 }),
-                silent: is_silent_action(&tool.action.tool_name, &tool.action.tool_input),
-                tool_name: tool.action.tool_name.clone(),
-                tool_input: tool.action.tool_input.clone(),
-                tool_call_id: tool.action.tool_call_id.clone(),
+                silent: is_silent_tool_call(&tool.tool_call.tool_name, &tool.tool_call.tool_input),
+                tool_name: tool.tool_call.tool_name.clone(),
+                tool_input: tool.tool_call.tool_input.clone(),
+                tool_call_id: tool.tool_call.tool_call_id.clone(),
                 step_id: tool.step_id.clone(),
-                action_index: tool.action_index,
+                tool_index: tool.tool_index,
                 suppress_streamed_thought,
             })
             .collect()
@@ -144,8 +144,8 @@ impl ToolBatchPlan {
 mod tests {
     use super::*;
 
-    fn action(name: &str, is_final: bool) -> Action {
-        Action {
+    fn tool_call(name: &str, is_final: bool) -> ToolCall {
+        ToolCall {
             tool_name: name.into(),
             tool_input: serde_json::json!({"name": name}),
             is_final,
@@ -155,44 +155,44 @@ mod tests {
 
     #[test]
     fn plan_filters_final_answer_and_preserves_provider_array_position() {
-        let plan = ToolBatchPlan::from_actions(&[
-            action("read", false),
-            action("final_answer", true),
-            action("write", false),
+        let plan = ToolBatchPlan::from_tool_calls(&[
+            tool_call("read", false),
+            tool_call("final_answer", true),
+            tool_call("write", false),
         ]);
 
         assert_eq!(plan.len(), 2);
-        assert_eq!(plan.get(0).unwrap().action_index, 0);
-        assert_eq!(plan.get(1).unwrap().action_index, 2);
+        assert_eq!(plan.get(0).unwrap().tool_index, 0);
+        assert_eq!(plan.get(1).unwrap().tool_index, 2);
         assert_ne!(plan.get(0).unwrap().step_id, plan.get(1).unwrap().step_id);
         assert_eq!(plan.canonical_calls()[1].name, "write");
-        let cards = plan.action_cards(false);
-        assert_eq!(cards[1].action_index, 2);
+        let cards = plan.tool_call_cards(false);
+        assert_eq!(cards[1].tool_index, 2);
         assert_eq!(cards[1].tool_call_id.as_deref(), Some("call-write"));
     }
 
     #[test]
-    fn action_cards_reuse_plan_identity() {
-        let plan = ToolBatchPlan::from_actions(&[action("read", false)]);
-        let card = &plan.action_cards(true)[0];
+    fn tool_call_cards_reuse_plan_identity() {
+        let plan = ToolBatchPlan::from_tool_calls(&[tool_call("read", false)]);
+        let card = &plan.tool_call_cards(true)[0];
         let planned = plan.get(0).unwrap();
 
         assert_eq!(card.step_id, planned.step_id);
-        assert_eq!(card.action_index, planned.action_index);
+        assert_eq!(card.tool_index, planned.tool_index);
         assert!(card.suppress_streamed_thought);
     }
 
     #[test]
     fn single_tool_plan_is_the_complete_identity_source() {
-        let plan = ToolBatchPlan::from_actions(&[action("read", false)]);
+        let plan = ToolBatchPlan::from_tool_calls(&[tool_call("read", false)]);
         let planned = plan.get(0).unwrap();
         let call = &plan.canonical_calls()[0];
-        let card = &plan.action_cards(false)[0];
+        let card = &plan.tool_call_cards(false)[0];
 
         assert_eq!(plan.len(), 1);
-        assert_eq!(call.id, planned.action.tool_call_id.clone().unwrap());
+        assert_eq!(call.id, planned.tool_call.tool_call_id.clone().unwrap());
         assert_eq!(card.step_id, planned.step_id);
-        assert_eq!(card.action_index, planned.action_index);
+        assert_eq!(card.tool_index, planned.tool_index);
     }
 
     #[test]
@@ -213,26 +213,29 @@ mod tests {
         let planned = plan.get(0).unwrap();
 
         assert_eq!(planned.step_id, "step-existing");
-        assert_eq!(planned.action_index, 3);
-        assert_eq!(planned.action.tool_call_id.as_deref(), Some("call-write"));
+        assert_eq!(planned.tool_index, 3);
+        assert_eq!(
+            planned.tool_call.tool_call_id.as_deref(),
+            Some("call-write")
+        );
     }
 
     #[test]
-    fn large_provider_batch_preserves_all_64_action_positions() {
-        let actions = (0..64)
-            .map(|index| action(&format!("tool-{index}"), false))
+    fn large_provider_batch_preserves_all_64_tool_run_positions() {
+        let tool_calls = (0..64)
+            .map(|index| tool_call(&format!("tool-{index}"), false))
             .collect::<Vec<_>>();
-        let plan = ToolBatchPlan::from_actions(&actions);
+        let plan = ToolBatchPlan::from_tool_calls(&tool_calls);
 
         assert_eq!(plan.len(), 64);
         for (index, planned) in plan.iter().enumerate() {
-            assert_eq!(planned.action_index, index as u32);
+            assert_eq!(planned.tool_index, index as u32);
             let expected_call_id = format!("call-tool-{index}");
             assert_eq!(
-                planned.action.tool_call_id.as_deref(),
+                planned.tool_call.tool_call_id.as_deref(),
                 Some(expected_call_id.as_str())
             );
         }
-        assert_eq!(plan.action_cards(false).len(), 64);
+        assert_eq!(plan.tool_call_cards(false).len(), 64);
     }
 }

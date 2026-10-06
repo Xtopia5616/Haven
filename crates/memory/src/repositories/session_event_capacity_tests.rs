@@ -362,7 +362,7 @@ fn representative_transcript_payload(index: usize, step_number: u32) -> String {
         75..=94 => serde_json::json!({
             "type": "tool_result",
             "step_number": step_number,
-            "action_index": 0,
+            "tool_index": 0,
             "step_id": step_id,
             "canonical_observation": "x".repeat(1024),
             "history_observation": "x".repeat(2 * 1024),

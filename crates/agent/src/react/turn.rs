@@ -99,7 +99,7 @@ impl ReActEngine {
         state: &ReActState,
         response: &LlmResponse,
         thought: &Option<String>,
-        actions: &[Action],
+        tool_calls: &[ToolCall],
         effects: &mut EffectBatch,
     ) -> anyhow::Result<SearchContextOutcome> {
         if response.web_search_calls.is_empty() {
@@ -107,11 +107,11 @@ impl ReActEngine {
                 assistant_already_pushed: false,
             });
         }
-        let synthesized_final = !actions.is_empty()
-            && actions
+        let synthesized_final = !tool_calls.is_empty()
+            && tool_calls
                 .iter()
-                .all(|action| action.is_final && action.tool_call_id.is_none());
-        if !(actions.is_empty() || synthesized_final) {
+                .all(|tool_call| tool_call.is_final && tool_call.tool_call_id.is_none());
+        if !(tool_calls.is_empty() || synthesized_final) {
             // Mixed real tools + search: tool_batch pushes the search items.
             return Ok(SearchContextOutcome::Proceed {
                 assistant_already_pushed: false,
@@ -139,12 +139,12 @@ impl ReActEngine {
             reasoning,
             web_search_calls: response.web_search_calls.clone(),
             thinking_blocks: response.thinking_blocks.clone(),
-            action_cards: Vec::new(),
+            tool_call_cards: Vec::new(),
             persist_text_id: (synthesized_final && thought.is_none())
                 .then(|| state.block_msg_id(ctx.step_num, ctx.run_id, "thought")),
         });
 
-        if actions.is_empty() {
+        if tool_calls.is_empty() {
             // Search round: no answer yet — keep the turn open and re-request
             // with the search context in the next input.
             effects.push(TurnEffect::SaveBranchPoint {
@@ -349,7 +349,7 @@ impl ReActEngine {
         // failed/empty candidate is only visible as streamed scratch output;
         // the accepted response below is the first response that may become
         // durable assistant state.
-        let (thought, actions) = Self::parse_default_model_response(&response, step_num);
+        let (thought, tool_calls) = Self::parse_default_model_response(&response, step_num);
         deadline.ensure_remaining("response parsing")?;
         let pending_ask = !self
             .executor
@@ -359,7 +359,7 @@ impl ReActEngine {
         let AcceptedResponse {
             response,
             thought,
-            mut actions,
+            mut tool_calls,
         } = match self
             .resolve_response_cycle(
                 &ctx,
@@ -368,7 +368,7 @@ impl ReActEngine {
                 &request_context,
                 response,
                 thought,
-                actions,
+                tool_calls,
                 &cancel,
                 incomplete_tool_args_retries,
                 pending_ask,
@@ -418,12 +418,12 @@ impl ReActEngine {
         // An unresolved ask owns the turn. Do not let a synthetic final answer
         // accidentally close it after response retries.
         if pending_ask
-            && !actions.is_empty()
-            && actions
+            && !tool_calls.is_empty()
+            && tool_calls
                 .iter()
-                .all(|action| action.is_final && action.tool_call_id.is_none())
+                .all(|tool_call| tool_call.is_final && tool_call.tool_call_id.is_none())
         {
-            actions.clear();
+            tool_calls.clear();
         }
 
         for event in Self::web_search_return_effects(
@@ -445,7 +445,7 @@ impl ReActEngine {
             state,
             &response,
             &thought,
-            &actions,
+            &tool_calls,
             &mut effects,
         )? {
             SearchContextOutcome::ContinueWithoutTools => return Ok(effects),
@@ -463,7 +463,7 @@ impl ReActEngine {
                 )
             });
 
-        if actions.is_empty() {
+        if tool_calls.is_empty() {
             if pending_ask {
                 let has_pending_ask = self
                     .executor
@@ -506,8 +506,8 @@ impl ReActEngine {
             return end;
         }
 
-        let has_non_final = actions.iter().any(|action| !action.is_final);
-        if !has_non_final && actions.iter().any(|action| action.is_final) {
+        let has_non_final = tool_calls.iter().any(|tool_call| !tool_call.is_final);
+        if !has_non_final && tool_calls.iter().any(|tool_call| tool_call.is_final) {
             let text = thought.unwrap_or_else(|| "Session completed.".into());
             let mut end = self
                 .finish_turn_end(TurnEndInput {
@@ -527,7 +527,7 @@ impl ReActEngine {
         }
 
         effects.push(crate::react::effects::TurnEffect::ExecuteToolBatch {
-            actions,
+            tool_calls,
             thought,
             response,
             catalog,
@@ -565,7 +565,7 @@ mod search_context_tests {
             web_search_calls: vec![json!({"type": "web_search_call", "id": "search-1"})],
             ..Default::default()
         };
-        let final_action = Action {
+        let final_tool_call = ToolCall {
             tool_name: "final_answer".into(),
             tool_input: json!({}),
             is_final: true,
@@ -578,7 +578,7 @@ mod search_context_tests {
             &state,
             &response,
             &None,
-            &[final_action],
+            &[final_tool_call],
             &mut effects,
         )
         .unwrap();

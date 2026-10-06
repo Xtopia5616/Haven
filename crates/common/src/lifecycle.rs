@@ -33,7 +33,7 @@ pub enum SessionWaitingReason {
     ScheduledTask,
     StepBudget,
     /// Explicit end could not confirm the durable cleanup of an owned
-    /// scheduled action. The session remains resumable and end can be retried.
+    /// scheduled ToolRun. The session remains resumable and end can be retried.
     EndIncomplete,
 }
 
@@ -159,9 +159,9 @@ impl<'de> Deserialize<'de> for SessionStatus {
     }
 }
 
-/// Durable state of any background or scheduled action.
+/// Durable state of any background or scheduled ToolRun.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum ActionStatus {
+pub enum ToolRunStatus {
     Waiting,
     Running,
     Completed,
@@ -169,7 +169,7 @@ pub enum ActionStatus {
     Cancelled,
 }
 
-impl ActionStatus {
+impl ToolRunStatus {
     pub const ALL: [Self; 5] = [
         Self::Waiting,
         Self::Running,
@@ -188,8 +188,8 @@ impl ActionStatus {
         }
     }
 
-    /// Decode persisted action state fail-closed as a failed action.  A
-    /// malformed status must not make an action runnable or hide its history.
+    /// Decode persisted ToolRun state fail-closed as failed. A malformed status
+    /// must not make a ToolRun runnable or hide its history.
     pub fn from_status_str(value: &str) -> Self {
         match value {
             "waiting" => Self::Waiting,
@@ -198,7 +198,7 @@ impl ActionStatus {
             "failed" => Self::Failed,
             "cancelled" => Self::Cancelled,
             other => {
-                tracing::warn!(status = other, "unknown action status; mapping to failed");
+                tracing::warn!(status = other, "unknown ToolRun status; mapping to failed");
                 Self::Failed
             }
         }
@@ -227,13 +227,13 @@ impl ActionStatus {
     }
 }
 
-impl Serialize for ActionStatus {
+impl Serialize for ToolRunStatus {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         serializer.serialize_str(self.as_str())
     }
 }
 
-impl<'de> Deserialize<'de> for ActionStatus {
+impl<'de> Deserialize<'de> for ToolRunStatus {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let value = String::deserialize(deserializer)?;
         Ok(Self::from_status_str(&value))
@@ -242,7 +242,7 @@ impl<'de> Deserialize<'de> for ActionStatus {
 
 #[cfg(test)]
 mod tests {
-    use super::{ActionStatus, SessionStatus, SessionWaitingReason};
+    use super::{SessionStatus, SessionWaitingReason, ToolRunStatus};
 
     #[test]
     fn waiting_reason_serializes_as_stable_wire_vocabulary() {
@@ -270,13 +270,13 @@ mod tests {
     }
 
     #[test]
-    fn action_transition_table_has_no_terminal_resurrection() {
-        assert!(ActionStatus::Waiting.can_transition_to(ActionStatus::Running));
-        assert!(ActionStatus::Waiting.can_transition_to(ActionStatus::Cancelled));
-        assert!(!ActionStatus::Waiting.can_transition_to(ActionStatus::Completed));
-        assert!(!ActionStatus::Waiting.can_transition_to(ActionStatus::Failed));
-        assert!(ActionStatus::Running.can_transition_to(ActionStatus::Failed));
-        assert!(!ActionStatus::Completed.can_transition_to(ActionStatus::Waiting));
+    fn tool_run_transition_table_has_no_terminal_resurrection() {
+        assert!(ToolRunStatus::Waiting.can_transition_to(ToolRunStatus::Running));
+        assert!(ToolRunStatus::Waiting.can_transition_to(ToolRunStatus::Cancelled));
+        assert!(!ToolRunStatus::Waiting.can_transition_to(ToolRunStatus::Completed));
+        assert!(!ToolRunStatus::Waiting.can_transition_to(ToolRunStatus::Failed));
+        assert!(ToolRunStatus::Running.can_transition_to(ToolRunStatus::Failed));
+        assert!(!ToolRunStatus::Completed.can_transition_to(ToolRunStatus::Waiting));
     }
 
     #[test]
@@ -286,8 +286,8 @@ mod tests {
             SessionStatus::Error
         );
         assert_eq!(
-            ActionStatus::from_status_str("scheduled"),
-            ActionStatus::Failed
+            ToolRunStatus::from_status_str("scheduled"),
+            ToolRunStatus::Failed
         );
     }
 }

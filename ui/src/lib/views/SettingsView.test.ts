@@ -8,16 +8,16 @@ const { invoke, listen } = vi.hoisted(() => ({
 }));
 
 import {
-	DEFAULT_ACTION_COMPLETION_NOTIFICATION_CHANNELS,
-	setActionCompletionNotificationChannels,
-	shouldShowActionCompletionInApp,
-} from '$lib/actionCompletionNotificationSettings.ts';
+	DEFAULT_TOOL_RUN_COMPLETION_NOTIFICATION_CHANNELS,
+	setToolRunCompletionNotificationChannels,
+	shouldShowToolRunCompletionInApp,
+} from '$lib/toolRunCompletionNotificationSettings.ts';
 
 vi.mock('$lib/tauri.ts', () => ({ invoke, listen }));
 
 describe('SettingsView diagnostics export', () => {
 	beforeEach(() => {
-		setActionCompletionNotificationChannels(DEFAULT_ACTION_COMPLETION_NOTIFICATION_CHANNELS);
+		setToolRunCompletionNotificationChannels(DEFAULT_TOOL_RUN_COMPLETION_NOTIFICATION_CHANNELS);
 		invoke.mockImplementation(async (command: string) => {
 			switch (command) {
 				case 'get_settings':
@@ -227,7 +227,7 @@ describe('SettingsView diagnostics export', () => {
 		expect(screen.getByRole('heading', { name: '权限中心' })).toBeTruthy();
 	});
 
-	it('persists action completion channels independently and applies the toast switch', async () => {
+	it('persists ToolRun completion channels independently and applies the toast switch', async () => {
 		const { container } = render(SettingsView);
 		await waitFor(() => expect(invoke).toHaveBeenCalledWith('get_api_key_status'));
 		await waitFor(() => expect(invoke).toHaveBeenCalledWith('is_autostart_enabled'));
@@ -256,13 +256,13 @@ describe('SettingsView diagnostics export', () => {
 				expect.objectContaining({
 					settings: expect.objectContaining({
 						notification: expect.objectContaining({
-							action_completed: { in_app: false, windows: false },
+							tool_run_completed: { in_app: false, windows: false },
 						}),
 					}),
 				}),
 			);
 		});
-		expect(shouldShowActionCompletionInApp()).toBe(false);
+		expect(shouldShowToolRunCompletionInApp()).toBe(false);
 	});
 
 	it('preserves backend settings that are outside the visible category during a full save', async () => {
@@ -279,7 +279,7 @@ describe('SettingsView diagnostics export', () => {
 			},
 			context_limits: {
 				compaction_ratio: 0.65,
-				action_result_context_chars: 4321,
+				tool_run_result_context_chars: 4321,
 				fact_extraction_min_interval_secs: 77,
 				turn_deadline_secs: 901,
 				max_attachment_images: 4,
@@ -306,7 +306,7 @@ describe('SettingsView diagnostics export', () => {
 				session_resumed: { in_app: true, windows: false },
 				session_error: { in_app: true, windows: true },
 				permission_requested: { in_app: true, windows: true },
-				action_completed: { in_app: true, windows: true },
+				tool_run_completed: { in_app: true, windows: true },
 			},
 			log: { level: 'info', file_enabled: true, file_path: 'C:\\Haven\\logs\\custom.log' },
 			mcp_servers: [],
@@ -359,7 +359,7 @@ describe('SettingsView diagnostics export', () => {
 		expect(saved.hotkey.mute_hotkey).toBe('Ctrl+M');
 		expect(saved.log.file_path).toBe('C:\\Haven\\logs\\custom.log');
 		expect(saved.context_limits).toMatchObject({
-			action_result_context_chars: 4321,
+			tool_run_result_context_chars: 4321,
 			fact_extraction_min_interval_secs: 77,
 			turn_deadline_secs: 901,
 		});

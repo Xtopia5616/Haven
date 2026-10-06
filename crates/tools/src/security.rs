@@ -60,9 +60,9 @@ pub const LOCAL_TOOL_SECURITY_MATRIX: &[LocalToolSecurityCase] = &[
     security_case!("clipboard.write", "clipboard.write", Medium),
     security_case!("clipboard.history", "clipboard.history", Low),
     security_case!("shell", "execute", High),
-    security_case!("actions.list", "actions.list", Safe),
-    security_case!("actions.inspect", "actions.inspect", Safe),
-    security_case!("actions.cancel", "actions.cancel", Medium),
+    security_case!("tool_runs.list", "tool_runs.list", Safe),
+    security_case!("tool_runs.inspect", "tool_runs.inspect", Safe),
+    security_case!("tool_runs.cancel", "tool_runs.cancel", Medium),
     security_case!("input.type", "input.type", Medium),
     security_case!("input.type_element", "input.type_element", Medium),
     security_case!("input.key", "input.key", Medium),
@@ -429,7 +429,7 @@ struct SafetyConfig {
     tool_settings: HashMap<String, ToolConfig>,
 }
 
-/// Central authorization engine for every tool, adapter and scheduled action.
+/// Central authorization engine for every tool, adapter and scheduled ToolRun.
 ///
 /// The engine owns policy evaluation; callers never decide based on a
 /// frontend-provided `confirmed` flag. Hard safety boundaries run before
@@ -2588,7 +2588,7 @@ mod tests {
             .map(str::to_owned)
             .unwrap_or_else(|| match tool_name {
                 "ask" => "ask".into(),
-                "actions" => "list".into(),
+                "tool_runs" => "list".into(),
                 "shell" => "execute".into(),
                 "http" => "request".into(),
                 "notify" => "notify".into(),

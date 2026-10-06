@@ -1,6 +1,6 @@
 import type { AgentToolResultEnvelope } from './contracts/agent.ts';
-import type { ActionPayload } from './contracts/action.ts';
-import { sourceActionIdFromObservation } from './streaming.ts';
+import type { ToolRunPayload } from './contracts/toolRun.ts';
+import { sourceToolRunIdFromObservation } from './streaming.ts';
 
 /** Messages that describe agent work rather than user-facing conversation. */
 const MERGED_MESSAGE_TYPES = new Set(['thought', 'reasoning', 'tool']);
@@ -20,8 +20,8 @@ export interface ConversationMessage {
 	awaiting?: boolean;
 	received?: boolean;
 	resolved?: unknown;
-	actionId?: string | null;
-	sourceActionId?: string | null;
+	toolRunId?: string | null;
+	sourceToolRunId?: string | null;
 	outcome?: string | null;
 	renderer?: string | null;
 	result?: AgentToolResultEnvelope;
@@ -70,23 +70,23 @@ export interface TimelineActivityItem {
 	stepCount: number;
 }
 
-export interface TimelineActionItem {
-	kind: 'action';
+export interface TimelineToolRunItem {
+	kind: 'tool_run';
 	id: string;
-	action: ActionPayload;
+	toolRun: ToolRunPayload;
 	awaitingBackgroundResult: boolean;
 	awaitingBackgroundCount: number;
 	showTerminalOutput: boolean;
 }
 
-export interface TimelineActionWaitItem {
-	kind: 'action-wait';
+export interface TimelineToolRunWaitItem {
+	kind: 'tool_run_wait';
 	id: 'awaiting-background-result';
 	awaitingBackgroundCount: number;
 }
 
 export type ConversationTimelineItem =
-	TimelineMessageItem | TimelineActivityItem | TimelineActionItem | TimelineActionWaitItem;
+	TimelineMessageItem | TimelineActivityItem | TimelineToolRunItem | TimelineToolRunWaitItem;
 
 /** Return whether a message can be folded into the surrounding work process. */
 export function isMergedConversationMessage(message: ConversationMessage): boolean {
@@ -96,7 +96,7 @@ export function isMergedConversationMessage(message: ConversationMessage): boole
 /**
  * Group adjacent agent-work messages into compact, independently collapsible
  * timeline items. User-facing messages and actionable ask cards remain as
- * standalone entries so the conversation order and required actions stay
+ * standalone entries so the conversation order and required toolRuns stay
  * obvious.
  */
 export function groupConversationMessages(
@@ -160,83 +160,83 @@ export function groupConversationMessages(
 }
 
 /**
- * Resolve the Action identity already present in the tool observation. This
+ * Resolve the ToolRun identity already present in the tool observation. This
  * keeps timeline placement tied to the durable source result instead of an
  * event arrival timestamp or display text.
  */
-export function sourceActionId(message: ConversationMessage): string | null {
-	if (typeof message.sourceActionId === 'string' && message.sourceActionId) {
-		return message.sourceActionId;
+export function sourceToolRunId(message: ConversationMessage): string | null {
+	if (typeof message.sourceToolRunId === 'string' && message.sourceToolRunId) {
+		return message.sourceToolRunId;
 	}
-	if (typeof message.actionId === 'string' && message.actionId) return message.actionId;
+	if (typeof message.toolRunId === 'string' && message.toolRunId) return message.toolRunId;
 	if (message.type !== 'tool') return null;
-	return sourceActionIdFromObservation(message.toolName, message.content);
+	return sourceToolRunIdFromObservation(message.toolName, message.content);
 }
 
 export interface ConversationTimelineOptions {
-	actions?: ActionPayload[];
+	toolRuns?: ToolRunPayload[];
 	awaitingBackground?: boolean;
 	awaitingBackgroundCount?: number;
 }
 
-function compareTimelineActions(left: ActionPayload, right: ActionPayload): number {
+function compareToolRuns(left: ToolRunPayload, right: ToolRunPayload): number {
 	const leftTime = left.startedAt || left.dueAt || '';
 	const rightTime = right.startedAt || right.dueAt || '';
 	return leftTime.localeCompare(rightTime) || left.id.localeCompare(right.id);
 }
 
-/** Resolve the same running action used for the timeline wait indicator. */
-export function firstWaitingBackgroundActionId(
-	actions: ActionPayload[],
+/** Resolve the same running toolRun used for the timeline wait indicator. */
+export function firstWaitingBackgroundToolRunId(
+	toolRuns: ToolRunPayload[],
 	awaitingBackground: boolean,
 ): string | null {
 	if (!awaitingBackground) return null;
 	return (
-		[...actions].sort(compareTimelineActions).find(
-			(action) => action.kind === 'background' && action.status === 'running',
+		[...toolRuns].sort(compareToolRuns).find(
+			(toolRun) => toolRun.kind === 'background' && toolRun.status === 'running',
 		)?.id ?? null
 	);
 }
 
 /**
- * Place scheduled Action cards after their source work item. Background
- * actions with a visible source are projected into that tool call's result
+ * Place scheduled ToolRun cards after their source work item. Background
+ * ToolRuns with a visible source are projected into that tool call's result
  * card; only rows without a visible source get a standalone timeline item.
  * Keep live work at the end of the timeline, then let it return to its source
- * position once it finishes. Ownership comes from validated ActionEvent data.
+ * position once it finishes. Ownership comes from validated ToolRunEvent data.
  */
 export function groupConversationTimeline(
 	messages: ConversationMessage[],
 	{
-		actions = [],
+		toolRuns = [],
 		awaitingBackground = false,
 		awaitingBackgroundCount = 0,
 	}: ConversationTimelineOptions = {},
 ): ConversationTimelineItem[] {
 	const transcriptItems = groupConversationMessages(messages);
-	const orderedActions = [...actions].sort(compareTimelineActions);
-	const firstWaitingActionId =
-		firstWaitingBackgroundActionId(orderedActions, awaitingBackground) ?? undefined;
-	const insertions = new Map<number, ActionPayload[]>();
-	const trailing: ActionPayload[] = [];
+	const orderedToolRuns = [...toolRuns].sort(compareToolRuns);
+	const firstWaitingToolRunId =
+		firstWaitingBackgroundToolRunId(orderedToolRuns, awaitingBackground) ?? undefined;
+	const insertions = new Map<number, ToolRunPayload[]>();
+	const trailing: ToolRunPayload[] = [];
 	const runningSourceIndexes = new Set<number>();
 
-	for (const action of orderedActions) {
-		const stepIndex = action.sourceStepId
-			? messages.findIndex((message) => message.id === action.sourceStepId)
+	for (const toolRun of orderedToolRuns) {
+		const stepIndex = toolRun.sourceStepId
+			? messages.findIndex((message) => message.id === toolRun.sourceStepId)
 			: -1;
 		const sourceIndex =
 			stepIndex >= 0
 				? stepIndex
 				: messages.findIndex(
 						(message) =>
-							message.type === 'tool' && sourceActionId(message) === action.id,
+							message.type === 'tool' && sourceToolRunId(message) === toolRun.id,
 					);
 		if (sourceIndex < 0) {
-			trailing.push(action);
+			trailing.push(toolRun);
 			continue;
 		}
-		if (action.status === 'running') runningSourceIndexes.add(sourceIndex);
+		if (toolRun.status === 'running') runningSourceIndexes.add(sourceIndex);
 		const timelineIndex = transcriptItems.findIndex((item) =>
 			item.kind === 'message'
 				? item.index === sourceIndex
@@ -244,14 +244,14 @@ export function groupConversationTimeline(
 					item.entries.some((entry) => entry.index === sourceIndex),
 		);
 		if (timelineIndex < 0) {
-			trailing.push(action);
+			trailing.push(toolRun);
 			continue;
 		}
-		if (action.kind === 'background') {
+		if (toolRun.kind === 'background') {
 			continue;
 		}
 		const anchored = insertions.get(timelineIndex) || [];
-		anchored.push(action);
+		anchored.push(toolRun);
 		insertions.set(timelineIndex, anchored);
 	}
 
@@ -263,29 +263,29 @@ export function groupConversationTimeline(
 				(item.streaming ||
 					item.entries.some(({ index }) => runningSourceIndexes.has(index)))) ||
 			(item.kind === 'message' && runningSourceIndexes.has(item.index)) ||
-			(item.kind === 'action' && item.action.status === 'running');
+			(item.kind === 'tool_run' && item.toolRun.status === 'running');
 	const appendTimelineItem = (
 		item: ConversationTimelineItem,
 		keepWithLiveSource = false,
 	) => {
 		((keepWithLiveSource || isLiveTimelineItem(item)) ? activeItems : result).push(item);
 	};
-	const actionItem = (action: ActionPayload): TimelineActionItem => {
-		const awaitingResult = action.id === firstWaitingActionId;
+	const toolRunItem = (toolRun: ToolRunPayload): TimelineToolRunItem => {
+		const awaitingResult = toolRun.id === firstWaitingToolRunId;
 		const terminalOutputAlreadyInTranscript =
-			action.kind === 'background' &&
-			action.status !== 'running' &&
-			action.status !== 'waiting' &&
+			toolRun.kind === 'background' &&
+			toolRun.status !== 'running' &&
+			toolRun.status !== 'waiting' &&
 			messages.some(
 				(message) =>
-					message.sourceActionId === action.id &&
-					message.actionId !== action.id &&
+					message.sourceToolRunId === toolRun.id &&
+					message.toolRunId !== toolRun.id &&
 					!message.streaming,
 			);
 		return {
-			kind: 'action',
-			id: `action-${action.id}`,
-			action,
+			kind: 'tool_run',
+			id: `tool-run-${toolRun.id}`,
+			toolRun,
 			awaitingBackgroundResult: awaitingResult,
 			awaitingBackgroundCount: awaitingResult ? awaitingBackgroundCount : 0,
 			showTerminalOutput: !terminalOutputAlreadyInTranscript,
@@ -295,16 +295,16 @@ export function groupConversationTimeline(
 	transcriptItems.forEach((item, index) => {
 		const hasLiveSource = isLiveTimelineItem(item);
 		appendTimelineItem(item);
-		for (const action of insertions.get(index) || []) {
-			appendTimelineItem(actionItem(action), hasLiveSource);
+		for (const toolRun of insertions.get(index) || []) {
+			appendTimelineItem(toolRunItem(toolRun), hasLiveSource);
 		}
 	});
-	for (const action of trailing) appendTimelineItem(actionItem(action));
+	for (const toolRun of trailing) appendTimelineItem(toolRunItem(toolRun));
 	result.push(...activeItems);
 
-	if (awaitingBackground && !firstWaitingActionId) {
+	if (awaitingBackground && !firstWaitingToolRunId) {
 		result.push({
-			kind: 'action-wait',
+			kind: 'tool_run_wait',
 			id: 'awaiting-background-result',
 			awaitingBackgroundCount,
 		});

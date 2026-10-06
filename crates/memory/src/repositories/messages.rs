@@ -425,7 +425,7 @@ impl Database {
         }
     }
 
-    /// Read one message by its durable id.  Action-result delivery uses this
+    /// Read one message by its durable id. ToolRun result delivery uses this
     /// as the idempotency check when a completion is retried after the
     /// projection write succeeded but the acknowledgement was lost.
     pub fn get_message_by_id(
@@ -961,10 +961,10 @@ mod tests {
         let db = test_db();
         let tid = test_session(&db);
         let msg = db
-            .add_message(&tid, "tool", "result", Some("action"), Some("call-1"))
+            .add_message(&tid, "tool", "result", Some("tool_call"), Some("call-1"))
             .unwrap();
         assert_eq!(msg.tool_call_id.as_deref(), Some("call-1"));
-        assert_eq!(msg.message_type.as_deref(), Some("action"));
+        assert_eq!(msg.message_type.as_deref(), Some("tool_call"));
     }
 
     #[test]

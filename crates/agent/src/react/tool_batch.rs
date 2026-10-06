@@ -10,15 +10,15 @@ use super::tool_batch_policy::{
     ToolFailureSignal, empty_inbox_output, is_agent_inbox_call, is_retryable_failure_outcome,
 };
 use super::*;
-use crate::session::{ActionStepMetadata, ActionStepPersistenceError};
-use crate::types::Action;
+use crate::session::{ToolStepMetadata, ToolStepPersistenceError};
+use crate::types::ToolCall;
 use futures_util::FutureExt;
 #[cfg(test)]
 use haven_common::types::{CanonicalMessage, CanonicalRole, ContentPart};
 use haven_tools::{
     OperationIdempotency, StructuredToolError, ToolConcurrency, ToolErrorClass, ToolErrorMetadata,
     ToolExecutionOutcome, ToolLlmUsage, ToolOperationScope, ToolResultEnvelope, ToolRetryability,
-    is_silent_action,
+    is_silent_tool_call,
 };
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -30,18 +30,18 @@ use tokio::sync::{Mutex as AsyncMutex, OwnedRwLockReadGuard, OwnedRwLockWriteGua
 pub(crate) const MAX_RUNTIME_TOOL_CALLS_PER_BATCH: usize = 64;
 pub(super) const MAX_CONCURRENT_TOOL_CALLS: usize = 8;
 
-/// Resolve the bookkeeping-only action metadata from the immutable catalog
+/// Resolve the bookkeeping-only tool_call metadata from the immutable catalog
 /// captured for this tool batch. Authorization remains a live decision; this
 /// helper is deliberately limited to fields persisted on `session_steps`.
-pub(super) fn action_step_metadata(
+pub(super) fn tool_step_metadata(
     catalog: &haven_tools::ToolCatalogSnapshot,
     tool_name: &str,
     input: &serde_json::Value,
-) -> ActionStepMetadata {
+) -> ToolStepMetadata {
     let policy = catalog.operation_policy(tool_name, input);
-    ActionStepMetadata {
+    ToolStepMetadata {
         is_high_risk: policy.risk_level != haven_common::types::RiskLevel::Safe,
-        silent: is_silent_action(tool_name, input),
+        silent: is_silent_tool_call(tool_name, input),
     }
 }
 
@@ -85,8 +85,7 @@ impl ToolBatchState {
     }
 
     fn normalize_result_order(&mut self) {
-        self.failure_signals
-            .sort_by_key(|signal| signal.action_index);
+        self.failure_signals.sort_by_key(|signal| signal.tool_index);
         self.failure_signals.truncate(3);
         self.last_retryable_failed_tool_call_id = self
             .last_retryable_call
@@ -94,7 +93,7 @@ impl ToolBatchState {
             .and_then(|(_, tool_call_id)| tool_call_id.clone());
 
         self.pending_asks
-            .sort_by_key(|(action_index, _, _)| *action_index);
+            .sort_by_key(|(tool_index, _, _)| *tool_index);
         self.asked_questions = self
             .pending_asks
             .iter()
@@ -113,7 +112,7 @@ impl ToolBatchState {
         result: CompletedTool,
     ) -> anyhow::Result<TranscriptEvent> {
         let CompletedTool {
-            action,
+            tool_call,
             tool_name,
             mut step_result,
             is_error,
@@ -130,7 +129,7 @@ impl ToolBatchState {
             notify_title,
             notify_body,
             step_id,
-            action_index,
+            tool_index,
         } = result;
         self.tool_usages.extend(llm_usage);
 
@@ -155,17 +154,17 @@ impl ToolBatchState {
             if self
                 .last_retryable_call
                 .as_ref()
-                .is_none_or(|(last_index, _)| action_index > *last_index)
+                .is_none_or(|(last_index, _)| tool_index > *last_index)
             {
-                self.last_retryable_call = Some((action_index, action.tool_call_id.clone()));
+                self.last_retryable_call = Some((tool_index, tool_call.tool_call_id.clone()));
             }
             self.failure_signals.push(ToolFailureSignal {
-                action_index,
+                tool_index,
                 tool_name: tool_name.clone(),
-                tool_input: action.tool_input.clone(),
+                tool_input: tool_call.tool_input.clone(),
                 error_class,
                 retryability,
-                tool_call_id: action.tool_call_id.clone(),
+                tool_call_id: tool_call.tool_call_id.clone(),
             });
         }
         if let (Some(title), Some(body)) = (&notify_title, &notify_body) {
@@ -179,12 +178,12 @@ impl ToolBatchState {
         }
         if let Some(question) = &ask_question {
             self.pending_asks
-                .push((action_index, question.clone(), step_id.clone()));
+                .push((tool_index, question.clone(), step_id.clone()));
         }
 
-        let tool_call_id = action.tool_call_id.clone();
-        let silent = is_silent_action(&tool_name, &action.tool_input)
-            || (is_agent_inbox_call(&tool_name, &action.tool_input)
+        let tool_call_id = tool_call.tool_call_id.clone();
+        let silent = is_silent_tool_call(&tool_name, &tool_call.tool_input)
+            || (is_agent_inbox_call(&tool_name, &tool_call.tool_input)
                 && empty_inbox_output(&step_result));
         let display_observation = if let Some(question) = &ask_question {
             question.clone()
@@ -202,14 +201,14 @@ impl ToolBatchState {
             canonical_observation: step_result,
             history_observation: display_observation,
             tool_call_id: tool_call_id.clone(),
-            action,
-            action_index,
+            tool_call,
+            tool_index,
             step_id: step_id.clone(),
             observation_card: Some(Box::new(ObservationCard {
                 tool_name,
                 tool_call_id,
                 step_id,
-                action_index,
+                tool_index,
                 silent,
                 ask_options,
                 outcome,
@@ -336,7 +335,7 @@ pub(super) enum ToolBatchOutcome {
 
 /// Normalized output of one tool execution before its transcript commit.
 pub(super) struct CompletedTool {
-    action: Action,
+    tool_call: ToolCall,
     tool_name: String,
     step_result: String,
     is_error: bool,
@@ -353,26 +352,26 @@ pub(super) struct CompletedTool {
     notify_title: Option<String>,
     notify_body: Option<String>,
     pub(super) step_id: String,
-    action_index: u32,
+    tool_index: u32,
 }
 
 impl CompletedTool {
     pub(super) fn from_observation(
-        action: Action,
+        tool_call: ToolCall,
         step_id: String,
-        action_index: u32,
+        tool_index: u32,
         step_result: String,
         outcome: ToolExecutionOutcome,
     ) -> Self {
-        let renderer = action
+        let renderer = tool_call
             .tool_name
             .split('.')
             .next()
             .unwrap_or("generic")
             .to_string();
         Self {
-            tool_name: action.tool_name.clone(),
-            action,
+            tool_name: tool_call.tool_name.clone(),
+            tool_call,
             step_result,
             is_error: !matches!(outcome, ToolExecutionOutcome::Succeeded),
             outcome,
@@ -393,7 +392,7 @@ impl CompletedTool {
             notify_title: None,
             notify_body: None,
             step_id,
-            action_index,
+            tool_index,
         }
     }
 }
@@ -402,33 +401,33 @@ impl CompletedTool {
 /// batch representation. Both the normal batch and the post-confirm resume
 /// path use this helper so observation truncation and tool-owned signals
 /// cannot drift between the two paths.
-pub(super) struct ToolActionRequest {
+pub(super) struct ToolCallRequest {
     pub executor: Arc<SessionSupervisor>,
     pub catalog: Arc<haven_tools::ToolCatalogSnapshot>,
     pub session_id: String,
-    pub action: Action,
+    pub tool_call: ToolCall,
     pub step_num: u32,
-    pub action_index: u32,
+    pub tool_index: u32,
     pub step_id: String,
     pub receipt: Option<haven_tools::ConfirmationReceipt>,
     pub cancel: tokio_util::sync::CancellationToken,
 }
 
-pub(super) async fn execute_tool_action(request: ToolActionRequest) -> CompletedTool {
-    let ToolActionRequest {
+pub(super) async fn execute_tool_call(request: ToolCallRequest) -> CompletedTool {
+    let ToolCallRequest {
         executor,
         catalog,
         session_id,
-        action,
+        tool_call,
         step_num,
-        action_index,
+        tool_index,
         step_id,
         receipt,
         cancel,
     } = request;
-    let tool_name = action.tool_name.clone();
-    let tool_input = action.tool_input.clone();
-    let action_step_metadata = action_step_metadata(catalog.as_ref(), &tool_name, &tool_input);
+    let tool_name = tool_call.tool_name.clone();
+    let tool_input = tool_call.tool_input.clone();
+    let tool_step_metadata = tool_step_metadata(catalog.as_ref(), &tool_name, &tool_input);
     tracing::debug!(
         "executing tool '{}' at step {} (input keys: {:?})",
         tool_name,
@@ -460,11 +459,11 @@ pub(super) async fn execute_tool_action(request: ToolActionRequest) -> Completed
                     &tool_name,
                     tool_input,
                     step_num,
-                    action_index,
-                    action.tool_call_id.as_deref(),
+                    tool_index,
+                    tool_call.tool_call_id.as_deref(),
                     &step_id,
                     receipt,
-                    action_step_metadata,
+                    tool_step_metadata,
                     cancel,
                 )
                 .await
@@ -475,10 +474,10 @@ pub(super) async fn execute_tool_action(request: ToolActionRequest) -> Completed
                     &tool_name,
                     tool_input,
                     step_num,
-                    action_index,
-                    action.tool_call_id.as_deref(),
+                    tool_index,
+                    tool_call.tool_call_id.as_deref(),
                     &step_id,
-                    action_step_metadata,
+                    tool_step_metadata,
                     cancel,
                 )
                 .await
@@ -554,7 +553,7 @@ pub(super) async fn execute_tool_action(request: ToolActionRequest) -> Completed
                 .map(haven_tools::StructuredToolError::metadata);
             let (outcome, error_class, retryability) = if let Some(metadata) = metadata {
                 (metadata.outcome, metadata.class, metadata.retryability)
-            } else if error.downcast_ref::<ActionStepPersistenceError>().is_some() {
+            } else if error.downcast_ref::<ToolStepPersistenceError>().is_some() {
                 (
                     ToolExecutionOutcome::TimedOutUnknown,
                     ToolErrorClass::UnknownOutcome,
@@ -583,7 +582,7 @@ pub(super) async fn execute_tool_action(request: ToolActionRequest) -> Completed
         }
     };
 
-    let policy = catalog.operation_policy(&tool_name, &action.tool_input);
+    let policy = catalog.operation_policy(&tool_name, &tool_call.tool_input);
     let idempotency = policy.idempotency;
     let operation_scope = policy.scope;
     let renderer = catalog
@@ -598,7 +597,7 @@ pub(super) async fn execute_tool_action(request: ToolActionRequest) -> Completed
         .with_default_retry_safety(idempotency);
 
     CompletedTool {
-        action,
+        tool_call,
         tool_name,
         step_result,
         is_error,
@@ -615,7 +614,7 @@ pub(super) async fn execute_tool_action(request: ToolActionRequest) -> Completed
         notify_title,
         notify_body,
         step_id,
-        action_index,
+        tool_index,
     }
 }
 
@@ -908,7 +907,7 @@ mod tests {
         results.set(
             1,
             CompletedTool::from_observation(
-                Action {
+                ToolCall {
                     tool_name: "second".into(),
                     tool_input: serde_json::json!({}),
                     is_final: false,
@@ -923,7 +922,7 @@ mod tests {
         results.set(
             0,
             CompletedTool::from_observation(
-                Action {
+                ToolCall {
                     tool_name: "first".into(),
                     tool_input: serde_json::json!({}),
                     is_final: false,
@@ -936,9 +935,12 @@ mod tests {
             ),
         );
 
-        assert_eq!(results.take_completed(0).unwrap().action.tool_name, "first");
         assert_eq!(
-            results.take_completed(1).unwrap().action.tool_name,
+            results.take_completed(0).unwrap().tool_call.tool_name,
+            "first"
+        );
+        assert_eq!(
+            results.take_completed(1).unwrap().tool_call.tool_name,
             "second"
         );
     }
@@ -949,7 +951,7 @@ mod tests {
         results.set(
             0,
             CompletedTool::from_observation(
-                Action {
+                ToolCall {
                     tool_name: "first".into(),
                     tool_input: serde_json::json!({}),
                     is_final: false,
@@ -964,7 +966,7 @@ mod tests {
         results.set(
             2,
             CompletedTool::from_observation(
-                Action {
+                ToolCall {
                     tool_name: "third".into(),
                     tool_input: serde_json::json!({}),
                     is_final: false,
@@ -984,7 +986,7 @@ mod tests {
     #[test]
     fn completed_tool_preserves_unknown_execution_outcome() {
         let result = CompletedTool::from_observation(
-            Action {
+            ToolCall {
                 tool_name: "send".into(),
                 tool_input: serde_json::json!({}),
                 is_final: false,

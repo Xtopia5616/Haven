@@ -1,5 +1,5 @@
 import type {
-	AgentActionPayload,
+	AgentToolCallPayload,
 	AgentChunkPayload,
 	AgentObservationPayload,
 	AgentStreamResetPayload,
@@ -41,9 +41,9 @@ export type SessionMessage = StreamMessage & {
 	toolArgs?: unknown;
 	outcome?: string | null;
 	renderer?: string | null;
-	actionId?: string | null;
-	/** Stable Action identity used to anchor its timeline card to this tool step. */
-	sourceActionId?: string | null;
+	toolRunId?: string | null;
+	/** Stable ToolRun identity used to anchor its timeline card to this tool step. */
+	sourceToolRunId?: string | null;
 	resolved?: { answer?: string; ignored?: boolean } | null;
 	received?: boolean;
 };
@@ -178,7 +178,7 @@ export type SessionAction =
 	| { type: 'session/memory-cleared'; sessionId: string }
 	| { type: 'session/replay-reset'; sessionId: string }
 	| { type: 'session/stream-blocks-cleared'; sessionId: string }
-	| { type: 'session/background-result'; sessionId?: string; actionId: string; content: string }
+	| { type: 'session/background-result'; sessionId?: string; toolRunId: string; content: string }
 	| { type: 'session/interaction-upserted'; request: InteractionRequest }
 	| {
 			type: 'session/interactions-hydrated';
@@ -188,7 +188,7 @@ export type SessionAction =
 	  }
 	| { type: 'session/interactions-cleared'; sessionId: string; kind?: InteractionKind }
 	| { type: 'session/interaction-resolved'; id: string; response?: unknown }
-	| { type: 'session/scheduled-action-cancelled'; actionId: string }
+	| { type: 'session/scheduled-tool-run-cancelled'; toolRunId: string }
 	| {
 			type: 'session/interaction-resolution-result';
 			id: string;
@@ -200,7 +200,7 @@ export type SessionAction =
 	| { type: 'agent/stream-reset'; payload: AgentStreamResetPayload }
 	| { type: 'agent/web-search'; payload: AgentWebSearchPayload }
 	| { type: 'agent/supplement'; payload: AgentSupplementPayload }
-	| { type: 'agent/action'; payload: AgentActionPayload }
+	| { type: 'agent/tool_call'; payload: AgentToolCallPayload }
 	| { type: 'agent/observation'; payload: AgentObservationPayload }
 	| {
 			type: 'session/usage-restored';

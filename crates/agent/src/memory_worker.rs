@@ -1797,10 +1797,10 @@ mod tests {
             id: "step-obs1".into(),
             session_id: "t1".into(),
             step_number: 1,
-            action_index: 0,
+            tool_index: 0,
             thought: None,
-            action_tool: Some("shell".into()),
-            action_input: None,
+            tool_name: Some("shell".into()),
+            tool_input: None,
             tool_call_id: None,
             observation: Some("C:/Workspace/Haven".into()),
             status: "completed".into(),
@@ -1867,7 +1867,7 @@ mod tests {
 
         let step_id = haven_common::types::new_id("step");
         let step = db
-            .create_action_step(
+            .create_tool_step(
                 &session.id,
                 1,
                 "shell",
@@ -1878,7 +1878,7 @@ mod tests {
                 Some(&step_id),
             )
             .unwrap();
-        db.complete_action_step(&step.id, "C:/Workspace/Haven", true)
+        db.complete_tool_step(&step.id, "C:/Workspace/Haven", true)
             .unwrap();
         db.conn()
             .execute(

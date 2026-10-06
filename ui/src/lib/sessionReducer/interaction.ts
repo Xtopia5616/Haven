@@ -9,7 +9,7 @@ type Action = SessionActionOf<
 	| 'session/asks-settled'
 	| 'session/interaction-resolved'
 	| 'session/interaction-resolution-result'
-	| 'session/scheduled-action-cancelled'
+	| 'session/scheduled-tool-run-cancelled'
 >;
 
 export function reduceInteraction(
@@ -115,15 +115,15 @@ export function reduceInteraction(
 				},
 			};
 		}
-		case 'session/scheduled-action-cancelled':
+		case 'session/scheduled-tool-run-cancelled':
 			return {
 				...state,
 				interactions: Object.fromEntries(
 					Object.entries(state.interactions).filter(
 						([, request]) =>
 							request.status !== 'pending' ||
-							request.owner.kind !== 'scheduled_action' ||
-							request.owner.actionId !== action.actionId,
+							request.owner.kind !== 'scheduled_tool_run' ||
+							request.owner.toolRunId !== action.toolRunId,
 					),
 				),
 			};
@@ -139,8 +139,8 @@ function hasValidOwnerContext(request: InteractionRequest): boolean {
 	switch (request.owner.kind) {
 		case 'session':
 			return Boolean(request.sessionId) && request.sessionId === request.owner.sessionId;
-		case 'scheduled_action':
-			return Boolean(request.owner.actionId);
+		case 'scheduled_tool_run':
+			return Boolean(request.owner.toolRunId);
 		case 'app_command':
 			return request.sessionId === undefined;
 	}
@@ -184,7 +184,7 @@ function normalizeInteraction(raw: unknown): InteractionRequest | null {
 	const summary = value.summary;
 	const permissionKey = value.permission_key;
 	const invocationStepId = value.invocation_step_id;
-	const actionIndex = value.action_index;
+	const toolIndex = value.tool_index;
 	const toolCallId = value.tool_call_id;
 	const expiresAt = value.expires_at;
 	const normalized = {
@@ -200,7 +200,7 @@ function normalizeInteraction(raw: unknown): InteractionRequest | null {
 		...(typeof summary === 'string' ? { summary } : {}),
 		...(typeof permissionKey === 'string' ? { permissionKey } : {}),
 		...(typeof invocationStepId === 'string' ? { invocationStepId } : {}),
-		...(typeof actionIndex === 'number' && Number.isFinite(actionIndex) ? { actionIndex } : {}),
+		...(typeof toolIndex === 'number' && Number.isFinite(toolIndex) ? { toolIndex } : {}),
 		...(typeof toolCallId === 'string' ? { toolCallId } : {}),
 		createdAt,
 		...(typeof expiresAt === 'string' ? { expiresAt } : {}),

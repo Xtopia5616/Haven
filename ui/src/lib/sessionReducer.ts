@@ -31,7 +31,7 @@ export type {
 	StreamBlockIds,
 } from './sessionReducer/types.ts';
 export { resumeInteractions } from './sessionReducer/interaction.ts';
-export { backgroundActionResultContent } from './sessionReducer/transcript.ts';
+export { backgroundToolRunResultContent } from './sessionReducer/transcript.ts';
 
 function clearSessionMessages(state: SessionReducerState, sessionId: string): SessionReducerState {
 	const withoutMessages = reduceTranscript(state, {
@@ -135,7 +135,7 @@ export function reduceSession(
 		case 'session/interactions-cleared':
 		case 'session/interaction-resolved':
 		case 'session/interaction-resolution-result':
-		case 'session/scheduled-action-cancelled':
+		case 'session/scheduled-tool-run-cancelled':
 			return reduceInteraction(inputState, action);
 
 		case 'agent/chunks':
@@ -143,7 +143,7 @@ export function reduceSession(
 		case 'agent/stream-reset':
 		case 'agent/web-search':
 		case 'agent/supplement':
-		case 'agent/action':
+		case 'agent/tool_call':
 		case 'agent/observation':
 			return reduceAgent(inputState, action);
 

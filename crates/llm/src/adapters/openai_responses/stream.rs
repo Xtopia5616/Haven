@@ -204,7 +204,7 @@ impl OpenAiResponsesAdapter {
                                 }
                                 "web_search_call" => {
                                     let call_id = item.id.clone();
-                                    let action = web_search_action_of(&item);
+                                    let action = web_search_tool_run_of(&item);
                                     if let Some(id) = call_id.clone() {
                                         state.active_web_search_id = Some(id);
                                     }
@@ -272,7 +272,7 @@ impl OpenAiResponsesAdapter {
                             // record the item when no skeleton arrived.
                             if item_type == "web_search_call" {
                                 let call_id = item.id.clone();
-                                let action = web_search_action_of(&item);
+                                let action = web_search_tool_run_of(&item);
                                 let normalized = normalize_web_search_call_item(
                                     serde_json::to_value(&item).unwrap_or_default(),
                                 );
@@ -312,7 +312,8 @@ impl OpenAiResponsesAdapter {
                         // Skip unkeyed updates: a null call_id would create a
                         // placeholder card that later collides with the real id.
                         if let Some(call_id) = call_id {
-                            let action = web_search_action_by_id(&state.web_search_calls, &call_id);
+                            let action =
+                                web_search_tool_run_by_id(&state.web_search_calls, &call_id);
                             chunk.web_search = Some(
                                 WebSearchUpdate::new(WebSearchPhase::InProgress)
                                     .with_meta(Some(call_id), action),
@@ -325,7 +326,8 @@ impl OpenAiResponsesAdapter {
                         let mut chunk = empty_chunk();
                         chunk.model = state.last_model.clone();
                         if let Some(call_id) = call_id {
-                            let action = web_search_action_by_id(&state.web_search_calls, &call_id);
+                            let action =
+                                web_search_tool_run_by_id(&state.web_search_calls, &call_id);
                             chunk.web_search = Some(
                                 WebSearchUpdate::new(WebSearchPhase::Searching)
                                     .with_meta(Some(call_id), action),
@@ -343,7 +345,7 @@ impl OpenAiResponsesAdapter {
                             if call_id.is_none() {
                                 call_id = item.id.clone();
                             }
-                            action = web_search_action_of(&item);
+                            action = web_search_tool_run_of(&item);
                             let normalized = normalize_web_search_call_item(
                                 serde_json::to_value(&item).unwrap_or_default(),
                             );
@@ -354,7 +356,7 @@ impl OpenAiResponsesAdapter {
                         if action.is_none()
                             && let Some(id) = call_id.as_deref()
                         {
-                            action = web_search_action_by_id(&state.web_search_calls, id);
+                            action = web_search_tool_run_by_id(&state.web_search_calls, id);
                         }
                         let mut chunk = empty_chunk();
                         chunk.model = state.last_model.clone();

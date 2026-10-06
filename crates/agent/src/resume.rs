@@ -535,7 +535,7 @@ impl AgentLayer {
             )
             .await?;
         // C2: soft LoopExit::Error must hit the same host failure path as
-        // hard Err so dispatcher cleanup (cancel actions / fail steps /
+        // hard Err so dispatcher cleanup (cancel tool_runs / fail steps /
         // on_session_error) still runs.
         match result.exit {
             crate::react::LoopExit::Error(msg) => Err(anyhow::anyhow!(msg)),
@@ -560,18 +560,18 @@ impl AgentLayer {
             .await;
         for round in rounds {
             for tool in &round.tools {
-                if tool.action.tool_name.as_str() == "load_mcp"
-                    && let Some(name) = tool.action.tool_input["server_name"].as_str()
+                if tool.tool_call.tool_name.as_str() == "load_mcp"
+                    && let Some(name) = tool.tool_call.tool_input["server_name"].as_str()
                 {
-                    let tool_names = load_mcp_tool_names(&tool.action.tool_input);
+                    let tool_names = load_mcp_tool_names(&tool.tool_call.tool_input);
                     let _ = self
                         .executor
                         .register_mcp_tool_overlay(session_id, name, tool_names.as_deref())
                         .await;
-                } else if tool.action.tool_name.as_str() == "tool_catalog"
-                    && tool.action.tool_input["action"].as_str() == Some("load")
+                } else if tool.tool_call.tool_name.as_str() == "tool_catalog"
+                    && tool.tool_call.tool_input["action"].as_str() == Some("load")
                 {
-                    let (operations, roots) = builtin_selection(&tool.action.tool_input);
+                    let (operations, roots) = builtin_selection(&tool.tool_call.tool_input);
                     if operations.as_ref().is_some_and(|values| !values.is_empty())
                         || roots.as_ref().is_some_and(|values| !values.is_empty())
                     {
@@ -580,8 +580,8 @@ impl AgentLayer {
                             .load_builtin_operations_tool_overlay(session_id, operations, roots)
                             .await;
                     }
-                } else if tool.action.tool_name.as_str() == "load_skill" {
-                    let names = load_skill_names(&tool.action.tool_input);
+                } else if tool.tool_call.tool_name.as_str() == "load_skill" {
+                    let names = load_skill_names(&tool.tool_call.tool_input);
                     if !names.is_empty() {
                         let _ = self
                             .executor

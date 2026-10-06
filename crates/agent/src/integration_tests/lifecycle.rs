@@ -1,6 +1,6 @@
 use super::support::*;
 use super::*;
-use haven_memory::ActionStore;
+use haven_memory::ToolRunStore;
 
 #[derive(Default)]
 struct SessionUpdateCapture(std::sync::Mutex<Vec<(String, SessionStatus)>>);
@@ -382,10 +382,10 @@ async fn persist_message_adds_to_db() {
 }
 
 #[tokio::test]
-async fn terminal_action_result_projection_is_idempotent() {
+async fn terminal_tool_run_result_projection_is_idempotent() {
     let (agent, executor) = make_test_agent();
     let session = executor
-        .create_session("terminal action result")
+        .create_session("terminal ToolRun result")
         .await
         .unwrap();
     executor
@@ -393,20 +393,20 @@ async fn terminal_action_result_projection_is_idempotent() {
         .await
         .unwrap();
 
-    let action_result_id = "act-terminal-dedup";
-    let message_id = crate::react::action_result_message_id(action_result_id);
+    let tool_run_result_id = "toolrun-terminal-dedup";
+    let message_id = crate::react::tool_run_result_message_id(tool_run_result_id);
     let content =
-        "[Background action result]\naction_id: act-terminal\nstatus: completed\n\nresult";
+        "[Background tool run result]\ntool_run_id: toolrun-terminal\nstatus: completed\n\nresult";
     let first = agent
         .executor
         .session_store()
-        .persist_terminal_action_result(&session.id, content, &message_id)
+        .persist_terminal_tool_run_result(&session.id, content, &message_id)
         .await
         .unwrap();
     let second = agent
         .executor
         .session_store()
-        .persist_terminal_action_result(&session.id, content, &message_id)
+        .persist_terminal_tool_run_result(&session.id, content, &message_id)
         .await
         .unwrap();
 
@@ -426,14 +426,14 @@ async fn terminal_action_result_projection_is_idempotent() {
 }
 
 #[tokio::test]
-async fn queued_action_result_is_reconciled_after_session_becomes_terminal() {
+async fn queued_tool_run_result_is_reconciled_after_session_becomes_terminal() {
     let (agent, memory_startup, executor) = make_test_agent_with_startup();
-    let action_service = executor.action_service();
-    action_service
-        .set_action_store(Some(ActionStore::new(agent.db.clone())))
+    let tool_run_service = executor.tool_run_service();
+    tool_run_service
+        .set_tool_run_store(Some(ToolRunStore::new(agent.db.clone())))
         .await;
     let session = executor
-        .create_session("terminal action race")
+        .create_session("terminal ToolRun race")
         .await
         .unwrap();
     executor
@@ -441,16 +441,16 @@ async fn queued_action_result_is_reconciled_after_session_becomes_terminal() {
         .await
         .unwrap();
 
-    let action_id = "act-terminal-race";
+    let tool_run_id = "toolrun-terminal-race";
     agent
         .db
-        .save_action(action_id, Some(&session.id), "echo race", "started")
+        .save_tool_run(tool_run_id, Some(&session.id), "echo race", "started")
         .unwrap();
     agent
         .db
-        .finish_action(
-            action_id,
-            haven_common::ActionStatus::Completed,
+        .finish_tool_run(
+            tool_run_id,
+            haven_common::ToolRunStatus::Completed,
             Some("race output"),
             None,
             None,
@@ -464,10 +464,10 @@ async fn queued_action_result_is_reconciled_after_session_becomes_terminal() {
     // the session terminal cleanup that clears the actor queue before a turn
     // can project it. The durable outbox must remain the recovery authority.
     executor
-        .add_action_completion_with_id(
+        .add_tool_run_completion_with_id(
             &session.id,
-            action_id.to_string(),
-            "[Background action result]\naction_id: act-terminal-race\nstatus: completed\n\nrace output",
+            tool_run_id.to_string(),
+            "[Background tool run result]\ntool_run_id: toolrun-terminal-race\nstatus: completed\n\nrace output",
         )
         .await
         .unwrap();
@@ -492,7 +492,7 @@ async fn queued_action_result_is_reconciled_after_session_becomes_terminal() {
         PendingSessionRecovery::DeferUntilCatalogReady,
         cancellation.clone(),
     );
-    let message_id = crate::react::action_result_message_id(action_id);
+    let message_id = crate::react::tool_run_result_message_id(tool_run_id);
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
     loop {
         let has_message = agent
@@ -505,9 +505,9 @@ async fn queued_action_result_is_reconciled_after_session_becomes_terminal() {
             .db
             .conn()
             .query_row(
-                "SELECT COUNT(*) FROM action_completion_outbox
-                 WHERE action_id = ?1 AND delivered_at IS NULL",
-                [action_id],
+                "SELECT COUNT(*) FROM tool_run_completion_outbox
+                 WHERE tool_run_id = ?1 AND delivered_at IS NULL",
+                [tool_run_id],
                 |row| row.get(0),
             )
             .unwrap();
@@ -530,21 +530,21 @@ async fn queued_action_result_is_reconciled_after_session_becomes_terminal() {
 #[tokio::test]
 async fn unowned_terminal_completion_is_acknowledged_for_history_cleanup() {
     let (agent, memory_startup, executor) = make_test_agent_with_startup();
-    let action_service = executor.action_service();
-    action_service
-        .set_action_store(Some(ActionStore::new(agent.db.clone())))
+    let tool_run_service = executor.tool_run_service();
+    tool_run_service
+        .set_tool_run_store(Some(ToolRunStore::new(agent.db.clone())))
         .await;
 
-    let action_id = "act-unowned-terminal";
+    let tool_run_id = "toolrun-unowned-terminal";
     agent
         .db
-        .save_action(action_id, None, "echo unowned", "started")
+        .save_tool_run(tool_run_id, None, "echo unowned", "started")
         .unwrap();
     agent
         .db
-        .finish_action(
-            action_id,
-            haven_common::ActionStatus::Completed,
+        .finish_tool_run(
+            tool_run_id,
+            haven_common::ToolRunStatus::Completed,
             Some("unowned output"),
             None,
             None,
@@ -577,9 +577,9 @@ async fn unowned_terminal_completion_is_acknowledged_for_history_cleanup() {
             .db
             .conn()
             .query_row(
-                "SELECT COUNT(*) FROM action_completion_outbox
-                 WHERE action_id = ?1 AND delivered_at IS NOT NULL",
-                [action_id],
+                "SELECT COUNT(*) FROM tool_run_completion_outbox
+                 WHERE tool_run_id = ?1 AND delivered_at IS NOT NULL",
+                [tool_run_id],
                 |row| row.get(0),
             )
             .unwrap();
@@ -593,8 +593,8 @@ async fn unowned_terminal_completion_is_acknowledged_for_history_cleanup() {
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     }
 
-    assert!(action_service.delete_terminal(action_id).await.unwrap());
-    assert!(agent.db.get_action(action_id).unwrap().is_none());
+    assert!(tool_run_service.delete_terminal(tool_run_id).await.unwrap());
+    assert!(agent.db.get_tool_run(tool_run_id).unwrap().is_none());
 
     cancellation.cancel();
     tokio::time::timeout(std::time::Duration::from_secs(1), live_task)
@@ -652,11 +652,11 @@ fn parse_default_model_response_final_answer_from_text() {
         web_search_calls: Vec::new(),
         thinking_blocks: Vec::new(),
     };
-    let (thought, actions) = ReActEngine::parse_default_model_response(&resp, 1);
+    let (thought, tool_calls) = ReActEngine::parse_default_model_response(&resp, 1);
     assert_eq!(thought, Some("Session done.".into()));
-    assert_eq!(actions.len(), 1);
-    assert!(actions[0].is_final);
-    assert_eq!(actions[0].tool_name, "final_answer");
+    assert_eq!(tool_calls.len(), 1);
+    assert!(tool_calls[0].is_final);
+    assert_eq!(tool_calls[0].tool_name, "final_answer");
 }
 
 #[test]
@@ -675,13 +675,13 @@ fn parse_default_model_response_with_tool_calls() {
         web_search_calls: Vec::new(),
         thinking_blocks: Vec::new(),
     };
-    let (thought, actions) = ReActEngine::parse_default_model_response(&resp, 2);
+    let (thought, tool_calls) = ReActEngine::parse_default_model_response(&resp, 2);
     assert_eq!(thought, Some("Opening file.".into()));
-    assert_eq!(actions.len(), 1);
-    assert!(!actions[0].is_final);
-    assert_eq!(actions[0].tool_name, "open_file");
+    assert_eq!(tool_calls.len(), 1);
+    assert!(!tool_calls[0].is_final);
+    assert_eq!(tool_calls[0].tool_name, "open_file");
     assert_eq!(
-        actions[0].tool_input,
+        tool_calls[0].tool_input,
         serde_json::json!({"path": "/tmp/test"})
     );
 }
@@ -702,10 +702,10 @@ fn parse_default_model_response_final_answer_tool_call() {
         web_search_calls: Vec::new(),
         thinking_blocks: Vec::new(),
     };
-    let (thought, actions) = ReActEngine::parse_default_model_response(&resp, 1);
+    let (thought, tool_calls) = ReActEngine::parse_default_model_response(&resp, 1);
     assert_eq!(thought, Some("All done.".into()));
-    assert_eq!(actions.len(), 1);
-    assert!(actions[0].is_final);
+    assert_eq!(tool_calls.len(), 1);
+    assert!(tool_calls[0].is_final);
 }
 
 /// M3/H10: a follow-up message must NOT resurrect a session that was ended.

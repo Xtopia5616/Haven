@@ -66,7 +66,7 @@ export function registerBlock(
 	};
 }
 
-/** Return null for a duplicate durable card. Parallel actions share one sequence, so the key is eventSeq plus the card identity. A missing sequence is not durable and must not dedup. */
+/** Return null for a duplicate durable card. Parallel ToolCalls share one sequence, so the key is eventSeq plus the card identity. A missing sequence is not durable and must not dedup. */
 export function acceptEventSequence(
 	state: SessionReducerState,
 	sessionId: string,

@@ -105,9 +105,9 @@ pub(crate) fn operation_contract(name: &'static str) -> OperationContract {
         "agent.wait" => ("等待 Agent", ToolCatalogGroup::Agent, true, None),
         "agent.stop" => ("停止 Agent", ToolCatalogGroup::Agent, false, None),
         "agent.collect" => ("收集 Agent 结果", ToolCatalogGroup::Agent, true, None),
-        "actions.list" => ("后台任务列表", ToolCatalogGroup::Haven, true, None),
-        "actions.inspect" => ("查看后台任务", ToolCatalogGroup::Haven, true, None),
-        "actions.cancel" => ("取消后台任务", ToolCatalogGroup::Haven, false, None),
+        "tool_runs.list" => ("后台任务列表", ToolCatalogGroup::Haven, true, None),
+        "tool_runs.inspect" => ("查看后台任务", ToolCatalogGroup::Haven, true, None),
+        "tool_runs.cancel" => ("取消后台任务", ToolCatalogGroup::Haven, false, None),
         "schedule.set" => ("设置定时任务", ToolCatalogGroup::Haven, false, None),
         "schedule.list" => ("定时任务列表", ToolCatalogGroup::Haven, true, None),
         "schedule.cancel" => ("取消定时任务", ToolCatalogGroup::Haven, false, None),
@@ -261,7 +261,7 @@ pub(crate) fn operation_contract(name: &'static str) -> OperationContract {
     let idempotency = match name {
         // Configuration toggles and lifecycle controls converge on a stable
         // state, so repeating the same request is safe.
-        "actions.cancel"
+        "tool_runs.cancel"
         | "schedule.cancel"
         | "haven.config.config_get"
         | "haven.config.logs_level"

@@ -441,8 +441,8 @@ mod tests {
         );
         assert_eq!(cfg.media.audio.sample_rate, 16000);
         assert_eq!(cfg.hotkey.key_binding, "Ctrl+Shift+Space");
-        assert!(cfg.notification.action_completed.in_app);
-        assert!(cfg.notification.action_completed.windows);
+        assert!(cfg.notification.tool_run_completed.in_app);
+        assert!(cfg.notification.tool_run_completed.windows);
         assert_eq!(cfg.session.max_concurrent, 3);
         assert_eq!(cfg.session.max_steps, 500);
         assert_eq!(cfg.context_limits.compaction_ratio, 0.65);
@@ -479,8 +479,8 @@ mod tests {
         assert_eq!(cfg.context_limits.network_max_retries, 2);
         assert_eq!(cfg.context_limits.network_max_body_bytes, 1024 * 1024);
         assert_eq!(cfg.context_limits.clipboard_history_max_entries, 100);
-        assert_eq!(cfg.context_limits.scheduled_actions_max, 32);
-        assert_eq!(cfg.context_limits.background_max_actions, 64);
+        assert_eq!(cfg.context_limits.scheduled_tool_runs_max, 32);
+        assert_eq!(cfg.context_limits.background_max_tool_runs, 64);
         assert_eq!(cfg.context_limits.event_chunk_batch_max_bytes, 8 * 1024);
         assert_eq!(cfg.context_limits.input_ring_buffer_secs, 20);
         assert_eq!(cfg.context_limits.embedding_chunk_size, 10);
@@ -530,7 +530,7 @@ mod tests {
     #[test]
     fn config_roundtrip_through_toml() {
         let mut cfg = AppConfig::default();
-        cfg.notification.action_completed = NotifyChannels {
+        cfg.notification.tool_run_completed = NotifyChannels {
             in_app: false,
             windows: true,
         };

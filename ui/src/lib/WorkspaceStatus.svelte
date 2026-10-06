@@ -1,7 +1,7 @@
 <script lang="ts">
 	import MaterialIconButton from './MaterialIconButton.svelte';
 	import StatusDot from './StatusDot.svelte';
-	import { taskKindLabel } from '$lib/taskTerminology.ts';
+	import { toolRunKindLabel } from '$lib/toolRunTerminology.ts';
 
 	interface Props {
 		overlay?: { isRecording?: boolean; processing?: boolean };
@@ -13,8 +13,8 @@
 		llmConnected?: string | null;
 		llmConnectionDetail?: string | null;
 		awaitingBackgroundActive?: boolean;
-		runningActionCount?: number;
-		pendingScheduledActions?: unknown[];
+		runningBackgroundToolRunCount?: number;
+		pendingScheduledToolRuns?: unknown[];
 		onOpenTasks?: () => void;
 	}
 
@@ -28,8 +28,8 @@
 		llmConnected = null,
 		llmConnectionDetail = null,
 		awaitingBackgroundActive = false,
-		runningActionCount = 0,
-		pendingScheduledActions = [],
+		runningBackgroundToolRunCount = 0,
+		pendingScheduledToolRuns = [],
 		onOpenTasks = () => {},
 	}: Props = $props();
 
@@ -55,7 +55,7 @@
 		if (busySessions.size > 1) return `${busySessions.size} 个会话运行中`;
 		if (conversationStatus === '运行中' || busySessions.size > 0) return '运行中';
 		if (awaitingBackgroundActive) return '等待任务';
-		if (runningActionCount > 0) return taskKindLabel('background');
+		if (runningBackgroundToolRunCount > 0) return toolRunKindLabel('background');
 		if (!bootstrapReady) return '加载中';
 		return '空闲';
 	});
@@ -93,7 +93,7 @@
 		return executionStatusLabel;
 	});
 
-	const taskCount = $derived(runningActionCount + pendingScheduledActions.length);
+	const taskCount = $derived(runningBackgroundToolRunCount + pendingScheduledToolRuns.length);
 	const hasTaskActivity = $derived(taskCount > 0 || awaitingBackgroundActive);
 
 	const statusColor = $derived.by(() => {
@@ -140,22 +140,22 @@
 		} else if (modelStatusLabel === statusLabel) {
 			parts.push(modelStatusTitle);
 		}
-		if (runningActionCount > 0) {
-			parts.push(`${runningActionCount} 个${taskKindLabel('background')}运行中`);
+		if (runningBackgroundToolRunCount > 0) {
+			parts.push(`${runningBackgroundToolRunCount} 个${toolRunKindLabel('background')}运行中`);
 		}
-		if (pendingScheduledActions.length > 0) {
-			parts.push(`${pendingScheduledActions.length} 条${taskKindLabel('scheduled')}`);
+		if (pendingScheduledToolRuns.length > 0) {
+			parts.push(`${pendingScheduledToolRuns.length} 条${toolRunKindLabel('scheduled')}`);
 		}
 		return parts.length > 0
 			? `状态：${statusLabel}；${parts.join('；')}`
 			: `状态：${statusLabel}`;
 	});
 
-	const taskTitle = $derived.by(() => {
+	const toolRunTitle = $derived.by(() => {
 		const parts = [];
-		if (runningActionCount > 0) parts.push(`${runningActionCount} 个后台任务运行中`);
-		if (pendingScheduledActions.length > 0) {
-			parts.push(`${pendingScheduledActions.length} 条${taskKindLabel('scheduled')}`);
+		if (runningBackgroundToolRunCount > 0) parts.push(`${runningBackgroundToolRunCount} 个后台任务运行中`);
+		if (pendingScheduledToolRuns.length > 0) {
+			parts.push(`${pendingScheduledToolRuns.length} 条${toolRunKindLabel('scheduled')}`);
 		}
 		return parts.length > 0 ? `打开任务：${parts.join('，')}` : '打开任务查看详情';
 	});
@@ -172,7 +172,7 @@
 				size="toolbar"
 				variant="ghost"
 				label="打开任务"
-				title={taskTitle}
+				title={toolRunTitle}
 				icon="listTodo"
 				onclick={() => onOpenTasks?.()}
 			/>

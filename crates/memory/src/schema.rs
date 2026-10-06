@@ -8,7 +8,7 @@
 //! version stamp rejects both older and newer database contracts.
 
 /// Current database contract. Any schema change requires a fresh database.
-pub const SCHEMA_VERSION: i32 = 36;
+pub const SCHEMA_VERSION: i32 = 37;
 /// Current schema, created idempotently on every open.
 const SCHEMA_SQL: &[&str] = &[
     "CREATE TABLE IF NOT EXISTS sessions (
@@ -31,7 +31,7 @@ const SCHEMA_SQL: &[&str] = &[
         session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
         role TEXT NOT NULL CHECK(role IN ('user','assistant','system','tool')),
         content TEXT NOT NULL,
-        message_type TEXT CHECK(message_type IN ('text','thought','action','observation','reasoning','peer_kickoff')),
+        message_type TEXT CHECK(message_type IN ('text','thought','tool_call','observation','reasoning','peer_kickoff')),
         created_at TEXT NOT NULL DEFAULT (datetime('now')),
         tool_call_id TEXT,
         -- UI-only metadata (host path/filename/preview identity). The
@@ -78,7 +78,7 @@ const SCHEMA_SQL: &[&str] = &[
         id TEXT PRIMARY KEY,
         session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
         step_number INTEGER NOT NULL,
-        action_index INTEGER NOT NULL DEFAULT 0,
+        tool_index INTEGER NOT NULL DEFAULT 0,
         tool_name TEXT NOT NULL,
         input TEXT NOT NULL DEFAULT '{}',
         output TEXT NOT NULL DEFAULT '{}',
@@ -91,8 +91,8 @@ const SCHEMA_SQL: &[&str] = &[
         created_at TEXT NOT NULL DEFAULT (datetime('now')),
         silent INTEGER NOT NULL DEFAULT 0,
         thought TEXT,
-        action_tool TEXT,
-        action_input TEXT,
+        tool_call_name TEXT,
+        tool_call_input TEXT,
         tool_call_id TEXT,
         observation TEXT
     )",
@@ -153,7 +153,7 @@ const SCHEMA_SQL: &[&str] = &[
         provenance_record_id TEXT,
         provenance_snippet TEXT
     )",
-    "CREATE TABLE IF NOT EXISTS actions (
+    "CREATE TABLE IF NOT EXISTS tool_runs (
         id TEXT PRIMARY KEY,
         kind TEXT NOT NULL DEFAULT 'scheduled',
         due_at TEXT,
@@ -165,7 +165,7 @@ const SCHEMA_SQL: &[&str] = &[
         tool_name TEXT,
         tool_args TEXT,
         prompt TEXT,
-        watch_action_id TEXT,
+        watch_tool_run_id TEXT,
         result_summary TEXT,
         status TEXT NOT NULL DEFAULT 'waiting'
             CHECK(status IN ('waiting','running','completed','failed','cancelled')),
@@ -179,13 +179,13 @@ const SCHEMA_SQL: &[&str] = &[
         finished_at TEXT,
         created_at TEXT NOT NULL DEFAULT (datetime('now'))
     )",
-    // Durable delivery records for terminal background-action results. The
-    // action row is the result source; this table records whether the result
+    // Durable delivery records for terminal background ToolRun results. The
+    // ToolRun row is the result source; this table records whether the result
     // crossed the agent transcript boundary so a transient broadcast loss or
     // a session cleanup race can be reconciled after restart.
-    "CREATE TABLE IF NOT EXISTS action_completion_outbox (
-        action_id TEXT PRIMARY KEY REFERENCES actions(id) ON DELETE CASCADE,
-        action_result_id TEXT NOT NULL UNIQUE,
+    "CREATE TABLE IF NOT EXISTS tool_run_completion_outbox (
+        tool_run_id TEXT PRIMARY KEY REFERENCES tool_runs(id) ON DELETE CASCADE,
+        tool_run_result_id TEXT NOT NULL UNIQUE,
         session_id TEXT,
         status TEXT NOT NULL
             CHECK(status IN ('completed','failed')),
@@ -194,8 +194,8 @@ const SCHEMA_SQL: &[&str] = &[
         delivered_at TEXT,
         created_at TEXT NOT NULL DEFAULT (datetime('now'))
     )",
-    "CREATE INDEX IF NOT EXISTS idx_action_completion_outbox_pending
-        ON action_completion_outbox(delivered_at, claimed_until, created_at)",
+    "CREATE INDEX IF NOT EXISTS idx_tool_run_completion_outbox_pending
+        ON tool_run_completion_outbox(delivered_at, claimed_until, created_at)",
     "CREATE TABLE IF NOT EXISTS session_usage (
         session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
         prompt_tokens INTEGER NOT NULL DEFAULT 0,
@@ -498,9 +498,9 @@ const REQUIRED_COLUMNS: &[(&str, &str)] = &[
     ("memory_nodes", "kind"),
     ("memory_items", "content"),
     ("facts", "durability"),
-    ("actions", "kind"),
-    ("actions", "watch_action_id"),
-    ("actions", "result_summary"),
+    ("tool_runs", "kind"),
+    ("tool_runs", "watch_tool_run_id"),
+    ("tool_runs", "result_summary"),
     ("llm_usage", "call_kind"),
 ];
 
@@ -621,8 +621,8 @@ mod tests {
         init_schema(&conn).unwrap();
 
         for table in [
-            "actions",
-            "action_completion_outbox",
+            "tool_runs",
+            "tool_run_completion_outbox",
             "embedding_lsh",
             "kv_store",
             "llm_usage",
@@ -691,14 +691,14 @@ mod tests {
     }
 
     #[test]
-    fn init_schema_rejects_incomplete_current_action_contract() {
+    fn init_schema_rejects_incomplete_current_tool_run_contract() {
         let conn = create_test_conn();
         init_schema(&conn).unwrap();
-        conn.execute("ALTER TABLE actions DROP COLUMN result_summary", [])
+        conn.execute("ALTER TABLE tool_runs DROP COLUMN result_summary", [])
             .unwrap();
 
         let error = init_schema(&conn).unwrap_err().to_string();
-        assert!(error.contains("actions.result_summary"));
+        assert!(error.contains("tool_runs.result_summary"));
     }
 
     #[test]

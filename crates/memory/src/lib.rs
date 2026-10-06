@@ -12,8 +12,6 @@ pub use recall::{
     MemoryRecallEmptyReason, MemoryRecallMode, MemoryRecallSourceStatus, MemoryRecallSuggestion,
     MemoryRetriever,
 };
-pub use repositories::action_completion_outbox::ActionCompletionOutboxRow;
-pub use repositories::action_store::ActionStore;
 pub use repositories::embedding_store::{
     MemoryEmbeddingEntity, MemoryEmbeddingSaveFailure, MemoryEmbeddingSaveReport,
     MemoryEmbeddingStore, MemoryEmbeddingVector, PendingMemoryEmbedding,
@@ -27,7 +25,9 @@ pub use repositories::memory_maintenance_store::{MemoryMaintenanceStore, Predica
 pub use repositories::memory_recall_store::MemoryRecallStore;
 pub use repositories::memory_store::MemoryStore;
 pub use repositories::messages::{PendingInputDisposition, PendingSessionInput};
-pub use repositories::scheduled_actions::{ActionDependencyRow, ActionRow, ScheduledActionRow};
+pub use repositories::scheduled_tool_runs::{
+    ScheduledToolRunRow, ToolRunDependencyRow, ToolRunRow,
+};
 pub use repositories::session_authorization::{
     SessionAuthorizationGrant, StoredSessionAuthorizationGrant,
 };
@@ -45,4 +45,6 @@ pub use repositories::session_events::{
     TRANSCRIPT_EVENT_TYPE, USAGE_DISCARDED_EVENT_TYPE, USAGE_RECORDED_EVENT_TYPE,
 };
 pub use repositories::sessions::{Session, SessionOrigin};
+pub use repositories::tool_run_completion_outbox::ToolRunCompletionOutboxRow;
+pub use repositories::tool_run_store::ToolRunStore;
 pub use repositories::usage::LlmCallUsageInput;

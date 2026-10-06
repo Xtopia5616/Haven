@@ -1,11 +1,3 @@
-mod action_completion;
-mod action_lifecycle;
-mod action_output;
-mod action_retry_policy;
-mod action_service;
-mod action_terminal;
-mod action_trigger_policy;
-pub mod action_types;
 pub mod adapters;
 mod asset_registry;
 mod authorization_policy;
@@ -33,6 +25,14 @@ mod tests;
 mod tool_builtins;
 pub(crate) mod tool_contract;
 mod tool_core;
+mod tool_run_completion;
+mod tool_run_lifecycle;
+mod tool_run_output;
+mod tool_run_retry_policy;
+mod tool_run_service;
+mod tool_run_terminal;
+mod tool_run_trigger_policy;
+pub mod tool_run_types;
 mod tool_runtime;
 pub mod util;
 
@@ -127,17 +127,6 @@ impl CatalogRebuildScope {
     }
 }
 
-pub(crate) use action_lifecycle::{ActionLifecycle, EventSinkState};
-pub(crate) use action_service::BackgroundShellRequest;
-pub use action_service::{
-    ActionCompletion, ActionCompletionReceiver, BackgroundActionCompletion, EventSink,
-    ScheduledActionResultCompletion,
-};
-pub use action_service::{
-    ActionListView, ActionService, ActionStateView, ActionStatusView, ActionView, ActionViewKind,
-    ScheduledActionView,
-};
-pub use action_types::{ScheduleMode, ScheduledActionFired, ScheduledActionSpec};
 pub use adapters::{McpToolAdapter, SkillToolAdapter};
 pub use asset_registry::{GeneratedMediaCleanupGuard, ManagedAsset, ManagedAssetRegistry};
 pub use builtin::{
@@ -180,13 +169,24 @@ pub use skill_runner::SkillRunner;
 pub use tool_contract::{
     ConfirmationRequirement, DataSensitivity, NetworkAccess, OperationEffect, OperationIdempotency,
     OperationPolicy, StructuredToolError, Tool, ToolAvailability, ToolBox, ToolCancellationPolicy,
-    ToolConcurrency, ToolDef, ToolErrorClass, ToolErrorMetadata, ToolExecutionOutcome,
-    ToolIdentity, ToolLlmUsage, ToolManifest, ToolModel, ToolOperationMetadata, ToolOperationScope,
-    ToolPolicy, ToolPresentation, ToolRegistration, ToolResult, ToolResultEnvelope,
-    ToolRetryability, ToolRootPresentation, ToolSignals, ToolSource, TypedToolAdapter,
-    TypedToolOperation, extract_ask_signal, extract_notify_signal, is_silent_action,
-    parse_tool_input,
+    ToolConcurrency, ToolDef, ToolErrorClass, ToolErrorMetadata, ToolExecutionMode,
+    ToolExecutionOutcome, ToolIdentity, ToolLlmUsage, ToolManifest, ToolModel,
+    ToolOperationMetadata, ToolOperationScope, ToolPolicy, ToolPresentation, ToolRegistration,
+    ToolResult, ToolResultEnvelope, ToolRetryability, ToolRootPresentation, ToolSignals,
+    ToolSource, TypedToolAdapter, TypedToolOperation, extract_ask_signal, extract_notify_signal,
+    is_silent_tool_call, parse_tool_input,
 };
+pub(crate) use tool_run_lifecycle::{EventSinkState, ToolRunLifecycle};
+pub(crate) use tool_run_service::BackgroundShellRequest;
+pub use tool_run_service::{
+    BackgroundToolRunCompletion, EventSink, ScheduledToolRunResultCompletion, ToolRunCompletion,
+    ToolRunCompletionReceiver,
+};
+pub use tool_run_service::{
+    ScheduledToolRunView, ToolRunKind, ToolRunListView, ToolRunService, ToolRunStateView,
+    ToolRunStatusView, ToolRunView,
+};
+pub use tool_run_types::{ScheduleMode, ScheduledToolRunFired, ScheduledToolRunSpec};
 pub use tool_runtime::{
     LogLevelPort, MemoryRecallPort, MemoryRecallSlot, RuntimeCapabilities, StartupWiring,
     ToolControlPort, WebSearchAvailability,

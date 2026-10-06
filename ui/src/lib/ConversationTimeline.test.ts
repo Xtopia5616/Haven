@@ -38,17 +38,17 @@ describe('ConversationTimeline', () => {
 				{
 					id: 'step-background',
 					role: 'assistant',
-					content: '{"background":true,"action_id":"act-bg"}',
+					content: '{"execution_mode":"background","tool_run_id":"toolrun-bg"}',
 					type: 'tool',
 					toolName: 'shell',
-					sourceActionId: 'act-bg',
+					sourceToolRunId: 'toolrun-bg',
 					stepNumber: 2,
 					streaming: false,
 				},
 			],
-			sessionActions: [
+			sessionToolRuns: [
 				{
-					id: 'act-bg',
+					id: 'toolrun-bg',
 					kind: 'background',
 					status: 'running',
 					sessionId: 'ses-1',
@@ -64,22 +64,23 @@ describe('ConversationTimeline', () => {
 
 		const card = container.querySelector('.tool-card');
 		expect(card).toBeTruthy();
+		expect(card?.textContent).toContain('执行中');
 		expect(card?.textContent).toContain('后台任务运行中');
 		expect(card?.textContent).toContain('整理下载目录');
 		expect(card?.textContent).toContain('扫描中');
 		expect(card?.textContent).toContain('等待后台任务结果，完成后将自动继续');
-		expect(container.querySelectorAll('.action-wait-note')).toHaveLength(1);
-		expect(container.querySelector('.action-timeline-card')).toBeNull();
+		expect(container.querySelectorAll('.tool-run-wait-note')).toHaveLength(1);
+		expect(container.querySelector('.tool-run-timeline-card')).toBeNull();
 		expect(container.querySelector('.awaiting-bg-banner')).toBeNull();
 		expect(container.querySelector('.activity-group')?.textContent).toContain('等待后台任务结果');
 	});
 
-	it('uses the shared Action card for scheduled details when the transcript is empty', () => {
+	it('uses the shared ToolRun card for scheduled details when the transcript is empty', () => {
 		const { container } = render(ConversationTimeline, {
 			messages: [],
-			sessionActions: [
+			sessionToolRuns: [
 				{
-					id: 'act-scheduled',
+					id: 'toolrun-scheduled',
 					kind: 'scheduled',
 					status: 'waiting',
 					sessionId: 'ses-1',
@@ -91,7 +92,7 @@ describe('ConversationTimeline', () => {
 			],
 		});
 
-		const card = container.querySelector('.action-timeline-card');
+		const card = container.querySelector('.tool-run-timeline-card');
 		expect(card).toBeTruthy();
 		expect(card?.textContent).toContain('定时任务');
 		expect(card?.textContent).toContain('稍后提醒');
@@ -101,7 +102,7 @@ describe('ConversationTimeline', () => {
 		expect(container.querySelector('.welcome')).toBeNull();
 	});
 
-	it('passes through the continue action for a user-tail conversation', () => {
+	it('passes through the continue handler for a user-tail conversation', () => {
 		render(ConversationTimeline, {
 			messages: [{ id: 'msg-1', role: 'user', content: '继续处理', type: 'user' }],
 			showContinueButton: true,
@@ -115,7 +116,7 @@ describe('ConversationTimeline', () => {
 		expect(screen.getByRole('button', { name: '继续生成' }).querySelector('svg')).toBeNull();
 	});
 
-	it('removes the continue action while it is unavailable', () => {
+	it('removes the continue handler while it is unavailable', () => {
 		render(ConversationTimeline, {
 			messages: [{ id: 'msg-1', role: 'user', content: '继续处理', type: 'user' }],
 			showContinueButton: true,

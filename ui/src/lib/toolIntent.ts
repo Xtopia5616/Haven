@@ -1,5 +1,5 @@
 /**
- * Shared user-facing label policy for tool calls and detached actions.
+ * Shared user-facing label policy for tool calls and detached ToolRuns.
  *
  * Model-written preambles are preferred when they exist. This fallback is
  * deterministic and intentionally generic: the raw command remains available
@@ -25,9 +25,9 @@ export function hasToolPreambleInBlock(
 	);
 }
 
-/** Return the first non-empty user-provided action description. */
-export function actionIntentLabel(action: { title?: string; body?: string }): string {
-	for (const candidate of [action.title, action.body]) {
+/** Return the first non-empty user-provided ToolRun intent description. */
+export function toolRunIntentLabel(intent: { title?: string; body?: string }): string {
+	for (const candidate of [intent.title, intent.body]) {
 		if (typeof candidate === 'string' && candidate.trim()) return candidate.trim();
 	}
 	return TOOL_INTENT_FALLBACK;

@@ -21,7 +21,7 @@ export type SwitchModelRequest = TauriCommandRequest<'switch_model'>;
 export type SetReasoningEffortRequest = TauriCommandRequest<'set_reasoning_effort'>;
 export type SetWebSearchRequest = TauriCommandRequest<'set_web_search'>;
 export type DiscoverModelsRequest = TauriCommandRequest<'discover_models'>;
-export type CancelActionRequest = TauriCommandRequest<'cancel_action'>;
+export type CancelToolRunRequest = TauriCommandRequest<'cancel_tool_run'>;
 export type RecallMemoryRequest = TauriCommandRequest<'recall_memory'>;
 export type ListFactsRequest = TauriCommandRequest<'list_facts'>;
 export type AddFactRequest = TauriCommandRequest<'add_fact'>;
@@ -40,10 +40,10 @@ export interface CommandContract {
 }
 
 export const TAURI_COMMAND_CONTRACTS = {
-	list_actions: { boundary: 'read', security: 'projected task fields only' },
-	cancel_action: { boundary: 'mutate', security: 'kind is enum; cancel only the selected task kind' },
-	list_action_history: { boundary: 'read', security: 'optional session filter; limit capped at 200; internal tool args excluded' },
-	delete_action: { boundary: 'mutate', security: 'delete one persisted task row by id' },
+	list_tool_runs: { boundary: 'read', security: 'projected task fields only' },
+	cancel_tool_run: { boundary: 'mutate', security: 'kind is enum; cancel only the selected task kind' },
+	list_tool_run_history: { boundary: 'read', security: 'optional session filter; limit capped at 200; internal tool args excluded' },
+	delete_tool_run: { boundary: 'mutate', security: 'delete one persisted task row by id' },
 	open_external: { boundary: 'execute', security: 'http(s) or validated absolute local path only' },
 	get_history: { boundary: 'read', security: 'read-only session projection' },
 	count_history: { boundary: 'read', security: 'read-only aggregate' },

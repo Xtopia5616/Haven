@@ -5,7 +5,7 @@ import ToolJsonResult from './ToolJsonResult.svelte';
 import ToolNotifyResult from './ToolNotifyResult.svelte';
 import ToolShellResult from './ToolShellResult.svelte';
 import ToolProcessResult from './ToolProcessResult.svelte';
-import ToolActionResult from './ToolActionResult.svelte';
+import ToolRunsResult from './ToolRunsResult.svelte';
 import ToolClipboardResult from './ToolClipboardResult.svelte';
 import ToolHttpResult from './ToolHttpResult.svelte';
 import ToolInputResult from './ToolInputResult.svelte';
@@ -47,7 +47,7 @@ export function getToolResultRenderer(
 	if (kind === 'custom' && selectedRenderer === 'clipboard') return ToolClipboardResult;
 	if (kind === 'custom' && selectedRenderer === 'input') return ToolInputResult;
 	if (kind === 'custom' && selectedRenderer === 'window') return ToolWindowResult;
-	if (kind === 'custom' && selectedRenderer === 'actions') return ToolActionResult;
+	if (kind === 'custom' && selectedRenderer === 'tool_runs') return ToolRunsResult;
 	if (kind === 'custom' && selectedRenderer === 'schedule') return ToolScheduleResult;
 	if (
 		kind === 'custom' &&
@@ -95,8 +95,8 @@ export function getToolResultRenderer(
 			typeof _data === 'object' && _data !== null && 'operation' in _data
 				? (_data as { operation?: unknown }).operation
 				: null;
-		if (typeof operation === 'string' && operation.startsWith('actions_')) {
-			return ToolActionResult;
+		if (typeof operation === 'string' && operation.startsWith('tool_runs_')) {
+			return ToolRunsResult;
 		}
 		if (typeof operation === 'string' && operation.startsWith('schedule_')) {
 			return ToolScheduleResult;

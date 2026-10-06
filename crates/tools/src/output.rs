@@ -19,7 +19,7 @@ impl OutputBudget {
     }
 
     /// Render a result through the canonical observation formatter. Keeping
-    /// this call in one small value object gives shell/files/system/actions
+    /// this call in one small value object gives shell/files/system/tool_runs
     /// one entry point without duplicating cap and recovery-key policy.
     pub fn observe(self, result: &ToolResult) -> String {
         result.observation_text(self.max_chars)

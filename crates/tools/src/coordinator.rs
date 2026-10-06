@@ -49,7 +49,7 @@ impl ToolRuntimeCoordinator {
 
     pub(crate) async fn wire_startup(&self, wiring: StartupWiring) -> anyhow::Result<()> {
         let StartupWiring {
-            action_store,
+            tool_run_store,
             tool_settings,
             default_shell,
             context_limits,
@@ -73,7 +73,7 @@ impl ToolRuntimeCoordinator {
             .set_limits(&context_limits)
             .await;
         self.runtime
-            .action_service
+            .tool_run_service
             .set_limits(&context_limits)
             .await;
         self.runtime
@@ -90,8 +90,8 @@ impl ToolRuntimeCoordinator {
             .set_tool_settings(tool_settings.clone())
             .await;
         self.runtime
-            .action_service
-            .set_action_store(action_store)
+            .tool_run_service
+            .set_tool_run_store(tool_run_store)
             .await;
         self.runtime
             .replace_platform(crate::tool_runtime::PlatformRuntime {
@@ -211,7 +211,7 @@ impl ToolRuntimeCoordinator {
     ) -> Result<CatalogRebuildOutcome, CatalogRebuildError> {
         self.builtins.mcp_manager.set_limits(&limits).await;
         self.builtins.skills_engine.set_limits(&limits).await;
-        self.runtime.action_service.set_limits(&limits).await;
+        self.runtime.tool_run_service.set_limits(&limits).await;
         self.runtime.live_outputs.set_emit_interval(&limits).await;
         self.runtime
             .update_platform(|current| {
@@ -486,7 +486,7 @@ mod tests {
 
     fn startup_wiring() -> StartupWiring {
         StartupWiring {
-            action_store: None,
+            tool_run_store: None,
             tool_settings: HashMap::new(),
             default_shell: ShellChoice::default(),
             context_limits: ContextLimitsConfig::default(),

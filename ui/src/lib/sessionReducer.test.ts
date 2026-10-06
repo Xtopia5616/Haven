@@ -29,7 +29,7 @@ describe('resume interaction normalization', () => {
 					tool_name: 'run_command',
 					risk_level: 'high',
 					invocation_step_id: 'step-1',
-					action_index: 2,
+					tool_index: 2,
 					tool_call_id: 'call-1',
 					created_at: '2026-09-25T00:00:00Z',
 					expires_at: '2026-09-25T00:01:00Z',
@@ -77,7 +77,7 @@ describe('resume interaction normalization', () => {
 				toolName: 'run_command',
 				riskLevel: 'high',
 				invocationStepId: 'step-1',
-				actionIndex: 2,
+				toolIndex: 2,
 				toolCallId: 'call-1',
 				createdAt: '2026-09-25T00:00:00Z',
 				expiresAt: '2026-09-25T00:01:00Z',
@@ -118,11 +118,11 @@ describe('SessionReducer', () => {
 		expect(stale.interactions[pending.id]).toBeUndefined();
 	});
 
-	it('clears pending confirmations owned by a cancelled scheduled action only', () => {
+	it('clears pending confirmations owned by a cancelled scheduled ToolRun only', () => {
 		const scheduled = {
 			id: 'conf-scheduled',
 			sessionId: 'ses-a',
-			owner: { kind: 'scheduled_action' as const, actionId: 'act-cancelled' },
+			owner: { kind: 'scheduled_tool_run' as const, toolRunId: 'toolrun-cancelled' },
 			kind: 'scheduled_confirm' as const,
 			status: 'pending' as const,
 			options: [],
@@ -130,8 +130,8 @@ describe('SessionReducer', () => {
 		};
 		const otherScheduled = {
 			...scheduled,
-			id: 'conf-other-action',
-			owner: { kind: 'scheduled_action' as const, actionId: 'act-other' },
+			id: 'conf-other-tool-run',
+			owner: { kind: 'scheduled_tool_run' as const, toolRunId: 'toolrun-other' },
 		};
 		const sessionRequest = {
 			id: 'conf-session',
@@ -151,8 +151,8 @@ describe('SessionReducer', () => {
 		});
 
 		const next = reduceSession(initial, {
-			type: 'session/scheduled-action-cancelled',
-			actionId: 'act-cancelled',
+			type: 'session/scheduled-tool-run-cancelled',
+			toolRunId: 'toolrun-cancelled',
 		});
 
 		expect(next.interactions[scheduled.id]).toBeUndefined();
@@ -201,7 +201,7 @@ describe('SessionReducer', () => {
 		const scheduledRequest = {
 			id: 'conf-scheduled',
 			sessionId: 'ses-a',
-			owner: { kind: 'scheduled_action' as const, actionId: 'act-1' },
+			owner: { kind: 'scheduled_tool_run' as const, toolRunId: 'toolrun-1' },
 			kind: 'scheduled_confirm' as const,
 			status: 'pending' as const,
 			options: [],
@@ -672,7 +672,7 @@ describe('SessionReducer', () => {
 		]);
 	});
 
-	it('deduplicates replayed chunks and sequenced action events', () => {
+	it('deduplicates replayed chunks and sequenced ToolCall events', () => {
 		const chunk = {
 			sessionId: 'ses-replay',
 			delta: '思考',
@@ -692,26 +692,26 @@ describe('SessionReducer', () => {
 		expect(duplicate).toBe(first);
 		expect(duplicate.messages?.['ses-replay']).toHaveLength(1);
 
-		const action = {
+		const toolCall = {
 			sessionId: 'ses-replay',
 			toolName: 'shell.run',
 			input: { command: 'echo ok' },
 			stepNumber: 1,
 			runId: 2,
 			toolCallId: 'call-1',
-			actionIndex: 0,
+			toolIndex: 0,
 			stepId: 'step-tool',
 			suppressStreamedThought: false,
 			silent: false,
 			eventSeq: 18,
 		} as const;
-		const actionState = reduceSession(first, { type: 'agent/action', payload: action });
-		const replayedAction = reduceSession(actionState, {
-			type: 'agent/action',
-			payload: action,
+		const toolCallState = reduceSession(first, { type: 'agent/tool_call', payload: toolCall });
+		const replayedToolCall = reduceSession(toolCallState, {
+			type: 'agent/tool_call',
+			payload: toolCall,
 		});
-		expect(replayedAction).toBe(actionState);
-		expect(actionState.messages?.['ses-replay']).toHaveLength(2);
+		expect(replayedToolCall).toBe(toolCallState);
+		expect(toolCallState.messages?.['ses-replay']).toHaveLength(2);
 	});
 
 	it('applies one frame of chunks with one reducer notification and preserves order', () => {
@@ -859,30 +859,30 @@ describe('SessionReducer', () => {
 			stepNumber: 1,
 			runId: 1,
 			toolCallId: 'call-1',
-			actionIndex: 0,
+			toolIndex: 0,
 			suppressStreamedThought: false,
 			silent: false,
 			eventSeq: 4,
 		};
 		const first = reduceSession(initialSessionState, {
-			type: 'agent/action',
-			payload: { ...base, stepId: 'step-a', actionIndex: 0, toolCallId: 'call-a' },
+			type: 'agent/tool_call',
+			payload: { ...base, stepId: 'step-a', toolIndex: 0, toolCallId: 'call-a' },
 		});
 		const second = reduceSession(first, {
-			type: 'agent/action',
-			payload: { ...base, stepId: 'step-b', actionIndex: 1, toolCallId: 'call-b' },
+			type: 'agent/tool_call',
+			payload: { ...base, stepId: 'step-b', toolIndex: 1, toolCallId: 'call-b' },
 		});
 		expect(second.messages?.['ses-parallel']?.map((message) => message.id)).toEqual([
 			'step-a',
 			'step-b',
 		]);
 		const replayA = reduceSession(second, {
-			type: 'agent/action',
-			payload: { ...base, stepId: 'step-a', actionIndex: 0, toolCallId: 'call-a' },
+			type: 'agent/tool_call',
+			payload: { ...base, stepId: 'step-a', toolIndex: 0, toolCallId: 'call-a' },
 		});
 		const replayB = reduceSession(replayA, {
-			type: 'agent/action',
-			payload: { ...base, stepId: 'step-b', actionIndex: 1, toolCallId: 'call-b' },
+			type: 'agent/tool_call',
+			payload: { ...base, stepId: 'step-b', toolIndex: 1, toolCallId: 'call-b' },
 		});
 		expect(replayA).toBe(second);
 		expect(replayB).toBe(replayA);

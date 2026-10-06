@@ -6,7 +6,7 @@ import {
 	type SessionEventPayloadMap,
 	type TauriEvent,
 } from './contracts/session.ts';
-import { mapActionEvent, type ActionEventName, type ActionPayload } from './contracts/action.ts';
+import { mapToolRunEvent, type ToolRunEventName, type ToolRunPayload } from './contracts/toolRun.ts';
 import {
 	mapRecordingEvent,
 	type RecordingEventName,
@@ -23,8 +23,8 @@ type SessionListenerMap = Partial<{
 	[K in SessionEventName]: (event: TauriEvent<SessionEventPayloadMap[K]>) => void;
 }>;
 
-type ActionListenerMap = Partial<{
-	[K in ActionEventName]: (event: TauriEvent<ActionPayload>) => void;
+type ToolRunListenerMap = Partial<{
+	[K in ToolRunEventName]: (event: TauriEvent<ToolRunPayload>) => void;
 }>;
 
 type RecordingListenerMap = Partial<{
@@ -61,11 +61,11 @@ function adaptSessionEvent<K extends SessionEventName>(
 	return mapped;
 }
 
-function adaptActionEvent<K extends ActionEventName>(
+function adaptToolRunEvent<K extends ToolRunEventName>(
 	eventName: K,
 	event: TauriEvent<unknown>,
-): TauriEvent<ActionPayload> | null {
-	const mapped = mapActionEvent({ ...event, event: eventName });
+): TauriEvent<ToolRunPayload> | null {
+	const mapped = mapToolRunEvent({ ...event, event: eventName });
 	if (!mapped) {
 		logger.warn('events', `Dropping malformed payload for '${eventName}'`);
 	}
@@ -172,19 +172,19 @@ export function sessionEventListeners(
 }
 
 /**
- * Adapt action event payloads at the Tauri boundary. Routes and stores consume
- * the named camelCase action DTO, never the tool crate's internal JSON shape.
+ * Adapt ToolRun event payloads at the Tauri boundary. Routes and stores consume
+ * the named camelCase ToolRun DTO, never the tool crate's internal JSON shape.
  */
-export function actionEventListeners(
-	map: ActionListenerMap,
+export function toolRunEventListeners(
+	map: ToolRunListenerMap,
 ): Record<string, (event: TauriEvent<unknown>) => void> {
 	return Object.fromEntries(
 		Object.entries(map).map(([eventName, handler]) => [
 			eventName,
 			(event: TauriEvent<unknown>) => {
 				protectEventCallback(eventName, () => {
-					const name = eventName as ActionEventName;
-					const mapped = adaptActionEvent(name, event);
+					const name = eventName as ToolRunEventName;
+					const mapped = adaptToolRunEvent(name, event);
 					if (mapped) handler?.(mapped as never);
 				});
 			},

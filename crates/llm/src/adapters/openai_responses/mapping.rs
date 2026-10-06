@@ -323,7 +323,7 @@ impl OpenAiResponsesAdapter {
             .collect()
     }
 }
-pub(super) fn web_search_action_by_id(calls: &[Value], call_id: &str) -> Option<String> {
+pub(super) fn web_search_tool_run_by_id(calls: &[Value], call_id: &str) -> Option<String> {
     calls.iter().find_map(|c| {
         if c.get("id").and_then(Value::as_str) == Some(call_id) {
             c.get("action")
@@ -336,7 +336,7 @@ pub(super) fn web_search_action_by_id(calls: &[Value], call_id: &str) -> Option<
     })
 }
 
-pub(super) fn web_search_action_of(item: &ResponsesItem) -> Option<String> {
+pub(super) fn web_search_tool_run_of(item: &ResponsesItem) -> Option<String> {
     item.extra
         .get("action")
         .and_then(|a| a.get("type"))

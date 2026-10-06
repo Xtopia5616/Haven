@@ -8,22 +8,22 @@
 	import { recordingOverlayController } from '$lib/recordingOverlayController.ts';
 	import { addNotification } from '$lib/notificationStore.ts';
 	import {
-		setActionCompletionNotificationChannels,
-		shouldShowActionCompletionInApp,
-	} from '$lib/actionCompletionNotificationSettings.ts';
+		setToolRunCompletionNotificationChannels,
+		shouldShowToolRunCompletionInApp,
+	} from '$lib/toolRunCompletionNotificationSettings.ts';
 	import {
-		createActionCompletionNotificationGate,
-		projectActionCompletionToast,
-	} from '$lib/actionCompletionNotificationProjection.ts';
+		createToolRunCompletionNotificationGate,
+		projectToolRunCompletionToast,
+	} from '$lib/toolRunCompletionNotificationProjection.ts';
 	import {
-		upsertAction,
-		removeAction,
-		refreshActions,
-		actionStore,
-		upsertSessionAction,
-		cancelAction,
-		finalizeBackgroundActionMessages,
-	} from '$lib/actionStore.ts';
+		upsertToolRun,
+		removeToolRun,
+		refreshToolRuns,
+		toolRunStore,
+		upsertSessionToolRun,
+		cancelToolRun,
+		finalizeBackgroundToolRunMessages,
+	} from '$lib/toolRunStore.ts';
 	import { resumeTargetStore } from '$lib/sessionIntentStore.ts';
 	import { appSessionReducer, createSessionSelectorStore } from '$lib/sessionReducer.ts';
 	import { submitVoiceTranscript } from '$lib/voiceSubmit.ts';
@@ -32,7 +32,7 @@
 	import { formatError } from '$lib/formatError.ts';
 	import { installGlobalErrorHandlers, reportError } from '$lib/errorHandling.ts';
 	import {
-		actionEventListeners,
+		toolRunEventListeners,
 		agentEventListeners,
 		appEventListeners,
 		recordingEventListeners,
@@ -47,7 +47,7 @@
 	import { isBusyStatus, isPausedStatus, sessionWaitingReason } from '$lib/sessionStatus.ts';
 	import { confirmLeaveSettingsIfNeeded } from '$lib/settingsGuard.ts';
 	import { loadSettings } from '$lib/settingsCommand.ts';
-	import { actionStatusLabel } from '$lib/taskTerminology.ts';
+	import { toolRunStatusLabel } from '$lib/toolRunTerminology.ts';
 	import { setToolManifests } from '$lib/toolManifest.ts';
 	import { getTools } from '$lib/toolsCommands.ts';
 	import { createChatInteractionEventHandlers } from '$lib/chatInteractionEventHandlers.ts';
@@ -67,7 +67,7 @@
 		nextBootstrapProbeInterval,
 	} from '$lib/bootstrapStatus.ts';
 	import type { RecordingOverlayState, ReactExecutionPhase } from '$lib/runtimeStateStore.ts';
-	import type { ActionKind, ActionPayload } from '$lib/contracts/action.ts';
+	import type { ToolRunKind, ToolRunPayload } from '$lib/contracts/toolRun.ts';
 	import type { AgentNotificationPayload } from '$lib/contracts/agent.ts';
 	import type { NotificationConfigInput } from '$lib/contracts/generatedCommands.ts';
 	import { interactionOwnerToWire } from '$lib/contracts/app.ts';
@@ -85,7 +85,7 @@
 	// Secondary workspaces are intentionally loaded after the chat shell is
 	// interactive. Their views contain the largest forms, lists and tool cards;
 	// keeping them out of the initial module graph makes the first conversation
-	// paint independent of settings/tools/memory code. TaskCenter is nested in
+	// paint independent of settings/tools/memory code. ToolRunCenter is nested in
 	// the history workspace and is loaded with MemoryView.
 	type TabId = 'chat' | 'tools' | 'memory' | 'settings';
 	type LazyViewId = Exclude<TabId, 'chat'>;
@@ -495,9 +495,9 @@
 	});
 
 	function showAgentNotification(data: AgentNotificationPayload) {
-		if (data.notificationKind === 'action_completion') {
-			if (!shouldShowActionCompletionInApp()) return;
-			const toast = projectActionCompletionToast(
+		if (data.notificationKind === 'tool_run_completion') {
+			if (!shouldShowToolRunCompletionInApp()) return;
+			const toast = projectToolRunCompletionToast(
 				data,
 				appSessionReducer.getState().activeSessionId,
 			);
@@ -511,8 +511,8 @@
 		addNotification(title === 'Haven' ? body : `${title}: ${body}`, 'info', 5000);
 	}
 
-	const actionCompletionNotificationGate =
-		createActionCompletionNotificationGate(showAgentNotification);
+	const toolRunCompletionNotificationGate =
+		createToolRunCompletionNotificationGate(showAgentNotification);
 
 	$effect(() => syncStore(recordingOverlayController.state, (v) => (overlay = v)));
 	$effect(() => syncStore(recordingOverlayController.duration, (v) => (duration = v)));
@@ -560,27 +560,31 @@
 		theme = themeStore.currentTheme;
 	}
 
-	// Action registry (background actions + scheduled actions) mirrored from
-	// actionStore (kept live by the `action:*` listeners above). Background
-	// actions sort newest-first; scheduled actions sort soonest-first; both
-	// derive from one store keyed by the normalized action id.
-	let activities = $state<Record<string, ActionPayload>>({});
-	$effect(() => syncStore(actionStore, (v) => (activities = v)));
-	const actionEntries = $derived(Object.values(activities));
-	const backgroundActionEntries = $derived(
-		actionEntries
-			.filter((a) => a.kind === 'background')
-			.sort((a, b) => String(b.startedAt || '').localeCompare(String(a.startedAt || ''))),
+	// ToolRun registry (background and scheduled ToolRuns) mirrored from
+	// toolRunStore, kept live by the `tool_run:*` listeners above. Background
+	// ToolRuns sort newest-first; scheduled ToolRuns sort soonest-first; both
+	// share one store keyed by the normalized ToolRun id.
+	let toolRuns = $state<Record<string, ToolRunPayload>>({});
+	$effect(() => syncStore(toolRunStore, (value) => (toolRuns = value)));
+	const toolRunEntries = $derived(Object.values(toolRuns));
+	const backgroundToolRunEntries = $derived(
+		toolRunEntries
+			.filter((toolRun) => toolRun.kind === 'background')
+			.sort((left, right) =>
+				String(right.startedAt || '').localeCompare(String(left.startedAt || '')),
+			),
 	);
-	const pendingScheduledActions = $derived(
-		actionEntries
-			.filter((a) => a.kind === 'scheduled')
-			.sort((a, b) => String(a.dueAt || '').localeCompare(String(b.dueAt || ''))),
+	const pendingScheduledToolRuns = $derived(
+		toolRunEntries
+			.filter((toolRun) => toolRun.kind === 'scheduled')
+			.sort((left, right) =>
+				String(left.dueAt || '').localeCompare(String(right.dueAt || '')),
+			),
 	);
-	const runningBackgroundActions = $derived(
-		backgroundActionEntries.filter((action) => action.status === 'running'),
+	const runningBackgroundToolRuns = $derived(
+		backgroundToolRunEntries.filter((toolRun) => toolRun.status === 'running'),
 	);
-	const runningActionCount = $derived(runningBackgroundActions.length);
+	const runningBackgroundToolRunCount = $derived(runningBackgroundToolRuns.length);
 	const sessionsStore = createSessionSelectorStore((state) => state.sessions);
 	const activeSessionIdStore = createSessionSelectorStore((state) => state.activeSessionId);
 	const interactionsStore = createSessionSelectorStore((state) => state.interactions);
@@ -591,9 +595,9 @@
 	$effect(() => syncStore(activeSessionIdStore, (v) => (activeSessionId = v)));
 	$effect(() => syncStore(interactionsStore, (v) => (interactionDict = v)));
 	// Session lifecycle events expose the derived pause reason directly. The
-	// action registry remains available for the task panel and counts, but it
+	// ToolRun registry remains available for the task panel and counts, but it
 	// no longer determines why a paused conversation is waiting.
-	// Active chat is paused while its own background action(s) still run —
+	// Active chat is paused while its own background ToolRun(s) still run —
 	// the selected conversation supplies the titlebar's "等待任务" state.
 	const awaitingBackgroundActive = $derived.by(() => {
 		if (!activeSessionId) return false;
@@ -718,29 +722,29 @@
 	let countdownTick = $state(0);
 	$effect(() => {
 		if (!taskCenterVisible) return;
-		void refreshActions();
+		void refreshToolRuns();
 		const t = setInterval(() => (countdownTick += 1), 1000);
-		const reconciliation = setInterval(() => void refreshActions(), 5000);
+		const reconciliation = setInterval(() => void refreshToolRuns(), 5000);
 		return () => {
 			clearInterval(t);
 			clearInterval(reconciliation);
 		};
 	});
 
-	function sessionTitleFor(action: Pick<ActionPayload, 'sessionId'>) {
-		if (!action.sessionId) return '';
-		const t = sessions.find((x) => x.id === action.sessionId);
+	function sessionTitleFor(toolRun: Pick<ToolRunPayload, 'sessionId'>) {
+		if (!toolRun.sessionId) return '';
+		const t = sessions.find((x) => x.id === toolRun.sessionId);
 		const title = t?.title || t?.input;
-		return typeof title === 'string' ? title : action.sessionId;
+		return typeof title === 'string' ? title : toolRun.sessionId;
 	}
 
-	function actionDuration(action: ActionPayload) {
-		const start = new Date(action.startedAt ?? '').getTime();
+	function toolRunDuration(toolRun: ToolRunPayload) {
+		const start = new Date(toolRun.startedAt ?? '').getTime();
 		if (isNaN(start)) return '';
 		const end =
-			action.status === 'running'
+			toolRun.status === 'running'
 				? Date.now()
-				: new Date(action.finishedAt || action.startedAt || '').getTime();
+				: new Date(toolRun.finishedAt || toolRun.startedAt || '').getTime();
 		if (isNaN(end)) return '';
 		const secs = Math.floor((end - start) / 1000);
 		if (secs < 60) return `${secs}s`;
@@ -748,14 +752,14 @@
 		return `${mins}m ${secs % 60}s`;
 	}
 
-	async function handleCancelAction(actionId: string, kind: ActionKind = 'background') {
+	async function handleCancelToolRun(toolRunId: string, kind: ToolRunKind = 'background') {
 		try {
-			const ok = await cancelAction(actionId, kind);
+			const ok = await cancelToolRun(toolRunId, kind);
 			if (!ok) {
 				// False also covers a durable cancellation failure. Reconcile before
-				// changing the UI so a live waiting/running action is never presented
+				// changing the UI so a live waiting/running ToolRun is never presented
 				// as cancelled merely because the request returned false.
-				await refreshActions();
+				await refreshToolRuns();
 				addNotification(
 					kind === 'scheduled'
 						? '取消定时任务未生效，已重新同步状态'
@@ -773,7 +777,7 @@
 		}
 	}
 
-	function scheduledActionCountdown(dueAt?: string) {
+	function scheduledToolRunCountdown(dueAt?: string) {
 		const due = new Date(dueAt ?? '').getTime();
 		if (isNaN(due)) return '';
 		const diff = due - Date.now();
@@ -823,8 +827,8 @@
 				.then((settings) => {
 					if (settings?.notification) {
 						notifyCfg = { ...notifyCfg, ...settings.notification };
-						setActionCompletionNotificationChannels(
-							settings.notification.action_completed,
+						setToolRunCompletionNotificationChannels(
+							settings.notification.tool_run_completed,
 						);
 					}
 				})
@@ -835,9 +839,9 @@
 						notify: false,
 					});
 				})
-				.finally(() => actionCompletionNotificationGate.settingsLoaded());
+				.finally(() => toolRunCompletionNotificationGate.settingsLoaded());
 		} else {
-			actionCompletionNotificationGate.settingsLoaded();
+			toolRunCompletionNotificationGate.settingsLoaded();
 		}
 
 		const registrations = registerListeners(
@@ -1104,46 +1108,46 @@
 				...agentEventListeners({
 					'notification:show': (event) => {
 						const data = event.payload;
-						if (data.notificationKind === 'action_completion') {
-							actionCompletionNotificationGate.notify(data);
+						if (data.notificationKind === 'tool_run_completion') {
+							toolRunCompletionNotificationGate.notify(data);
 							return;
 						}
 						showAgentNotification(data);
 					},
 				}),
-				...actionEventListeners({
-					// Action lifecycle is registered globally so tasks stay tracked while
-					// the user visits other tabs. Both action kinds now share the named
+				...toolRunEventListeners({
+					// ToolRun lifecycle is registered globally so tasks stay tracked while
+					// the user visits other tabs. Both ToolRun kinds share the named
 					// task DTO and use camelCase after this boundary.
-					'action:created': (event) => {
-						upsertAction(event.payload);
-						upsertSessionAction(event.payload);
+					'tool_run:created': (event) => {
+						upsertToolRun(event.payload);
+						upsertSessionToolRun(event.payload);
 					},
-					'action:updated': (event) => {
-						upsertAction(event.payload);
-						upsertSessionAction(event.payload);
+					'tool_run:updated': (event) => {
+						upsertToolRun(event.payload);
+						upsertSessionToolRun(event.payload);
 					},
-					'action:output': (event) => {
-						upsertAction(event.payload);
-						upsertSessionAction(event.payload);
+					'tool_run:output': (event) => {
+						upsertToolRun(event.payload);
+						upsertSessionToolRun(event.payload);
 					},
-					'action:finished': (event) => {
+					'tool_run:finished': (event) => {
 						const p = event.payload;
 						if (p.kind === 'background') {
-							upsertAction(p);
-							upsertSessionAction(p);
-							finalizeBackgroundActionMessages(p);
+							upsertToolRun(p);
+							upsertSessionToolRun(p);
+							finalizeBackgroundToolRunMessages(p);
 						} else {
 							if (p.status === 'cancelled') {
 								appSessionReducer.dispatch({
-									type: 'session/scheduled-action-cancelled',
-									actionId: p.id,
+									type: 'session/scheduled-tool-run-cancelled',
+									toolRunId: p.id,
 								});
 							}
-							upsertSessionAction(p);
-							// Scheduled actions leave the pending list at terminal state;
+							upsertSessionToolRun(p);
+							// Scheduled ToolRuns leave the pending list at terminal state;
 							// execution notifications arrive through `notification:show`.
-							removeAction(p.id);
+							removeToolRun(p.id);
 						}
 					},
 				}),
@@ -1161,10 +1165,10 @@
 			bootstrapReady = true;
 		}
 
-		// Hydrate the action registry for actions started before this mount
-		// (events only cover actions spawned after the listeners above;
+		// Hydrate the ToolRun registry for runs started before this mount
+		// (events only cover ToolRuns spawned after the listeners above;
 		// fired/cancelled while the UI was away are already gone).
-		refreshActions();
+		refreshToolRuns();
 
 		// The execution-phase store subscribe above fires synchronously on mount
 		// (phase is 'idle') and triggers the first probe; here we just
@@ -1212,8 +1216,8 @@
 				? llmConnectionReasonText(llmConnectionReport.reason)
 				: null}
 			{awaitingBackgroundActive}
-			{runningActionCount}
-			{pendingScheduledActions}
+			{runningBackgroundToolRunCount}
+			{pendingScheduledToolRuns}
 			onOpenTasks={() => switchTab('memory', 'tasks')}
 		/>
 	{/snippet}
@@ -1288,14 +1292,14 @@
 									<MemoryViewComponent
 										isVisible={activeTab === 'memory'}
 										onNewSession={startNewSessionFromTasks}
-										{runningBackgroundActions}
-										{pendingScheduledActions}
-										{actionStatusLabel}
+										{runningBackgroundToolRuns}
+										{pendingScheduledToolRuns}
+										{toolRunStatusLabel}
 										{sessionTitleFor}
-										{actionDuration}
-										{scheduledActionCountdown}
+										{toolRunDuration}
+										{scheduledToolRunCountdown}
 										onOpenSession={openTaskSession}
-										onCancel={handleCancelAction}
+										onCancel={handleCancelToolRun}
 									/>
 								</WorkspaceSurface>
 							{:else if lazyViewStates.memory === 'error'}

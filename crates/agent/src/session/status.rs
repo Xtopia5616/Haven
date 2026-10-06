@@ -70,7 +70,7 @@ impl SessionSupervisor {
         cascade: bool,
     ) -> anyhow::Result<SessionStatus> {
         // Close concurrent loads/resumes while an actorless end persists its
-        // terminal status and cleans up durable actions.
+        // terminal status and cleans up durable tool_runs.
         let closing = self
             .begin_session_closing(session_id, SessionClosingMode::EndPreparing { cascade })
             .await?;
@@ -117,7 +117,7 @@ impl SessionSupervisor {
         cascade: bool,
         closing: &SessionClosingGuard,
     ) -> anyhow::Result<SessionStatus> {
-        // Confirmation resolution can claim a scheduled action before it
+        // Confirmation resolution can claim a scheduled ToolRun before it
         // consumes the owner-local request. Serialize that two-part decision
         // with lifecycle cleanup; resolution entry points also reject owners
         // whose session is marked closing while this guard is held.
@@ -132,7 +132,7 @@ impl SessionSupervisor {
             }) {
                 Self::persist_status(&self.store, session_id, SessionStatus::Paused).await?;
             }
-            if let Err(error) = self.cancel_session_actions_checked(session_id).await {
+            if let Err(error) = self.cancel_session_tool_runs_checked(session_id).await {
                 if record
                     .as_ref()
                     .is_some_and(|record| record.status != SessionStatus::Completed)
@@ -170,11 +170,11 @@ impl SessionSupervisor {
             // can retry without inheriting a dead actor.
             actor.transition(SessionStatus::Paused, true).await?;
         }
-        // End one run without cancelling the actor lifetime. A failed action
+        // End one run without cancelling the actor lifetime. A failed ToolRun
         // cleanup leaves this actor available for Continue or another end
         // attempt, and the next accepted run receives a fresh child token.
         actor.run_cancellation_token().cancel();
-        if let Err(error) = self.cancel_session_actions_checked(session_id).await {
+        if let Err(error) = self.cancel_session_tool_runs_checked(session_id).await {
             if status != SessionStatus::Completed {
                 self.emit_end_paused_for_retry(session_id, Some(&actor))
                     .await;
@@ -368,16 +368,16 @@ impl SessionSupervisor {
         if let Some(actor) = self.actor_for(session_id).await {
             actor.cancel_actor();
             self.dequeue_pending(session_id).await;
-            if let Err(error) = self.cancel_session_actions_checked(session_id).await {
-                tracing::warn!(session_id = %session_id, "initial session action cleanup failed while quiescing; retrying after run exit: {error}");
+            if let Err(error) = self.cancel_session_tool_runs_checked(session_id).await {
+                tracing::warn!(session_id = %session_id, "initial session ToolRun cleanup failed while quiescing; retrying after run exit: {error}");
             }
             self.await_run_finished(session_id).await?;
-            // Join closes action admission from the actor run, so this final
+            // Join closes ToolRun admission from the actor run, so this final
             // pass also catches a durable scheduled row whose caller was
             // cancelled between its SQLite commit and board publication.
-            self.cancel_session_actions_checked(session_id).await?;
+            self.cancel_session_tool_runs_checked(session_id).await?;
         } else {
-            self.cancel_session_actions_checked(session_id).await?;
+            self.cancel_session_tool_runs_checked(session_id).await?;
         }
         Ok(())
     }
@@ -440,10 +440,10 @@ impl SessionSupervisor {
 
     /// Clear the in-memory session actors during normal application shutdown.
     ///
-    /// A session-owned scheduled action is durable work, not a child process of
-    /// the actor.  It must remain `waiting` so ActionService can restore it on
+    /// A session-owned scheduled ToolRun is durable work, not a child process of
+    /// the actor.  It must remain `waiting` so ToolRunService can restore it on
     /// the next startup.  Explicit session deletion/end still uses the regular
-    /// quiesce path and cancels all owned actions.
+    /// quiesce path and cancels all owned tool_runs.
     pub async fn clear_all_sessions_for_shutdown(&self) -> anyhow::Result<()> {
         let _block = self.begin_lifecycle_block()?;
         async {
@@ -466,9 +466,9 @@ impl SessionSupervisor {
             self.cancel_direct_waiters(&actor.id).await;
             actor.cancel_actor();
             if preserve_scheduled {
-                self.cancel_session_background_actions(&actor.id).await;
+                self.cancel_session_background_tool_runs(&actor.id).await;
             } else {
-                self.cancel_session_actions(&actor.id).await;
+                self.cancel_session_tool_runs(&actor.id).await;
             }
             self.dequeue_pending(&actor.id).await;
         }
@@ -576,9 +576,9 @@ impl SessionSupervisor {
                 .await?;
             // The actor registry is only the resident working set. Include
             // durable sessions that were never loaded before clearing their
-            // rows, while ActionService remains the action-state owner.
+            // rows, while ToolRunService remains the ToolRun-state owner.
             for session_id in &session_ids {
-                self.cancel_session_actions_checked(session_id).await?;
+                self.cancel_session_tool_runs_checked(session_id).await?;
             }
             self.clear_all_sessions_locked().await?;
             self.partials.forget_all_sessions().await;
@@ -1020,15 +1020,13 @@ impl SessionSupervisor {
             return Some(SessionWaitingReason::ScheduledConfirmation);
         }
 
-        for action in self.actions.list_for_session_views(session_id).await {
-            if !action.status.is_live() {
+        for tool_run in self.tool_runs.list_for_session_views(session_id).await {
+            if !tool_run.status.is_live() {
                 continue;
             }
-            return match action.kind {
-                haven_tools::ActionViewKind::Scheduled => Some(SessionWaitingReason::ScheduledTask),
-                haven_tools::ActionViewKind::Background => {
-                    Some(SessionWaitingReason::BackgroundTask)
-                }
+            return match tool_run.kind {
+                haven_tools::ToolRunKind::Scheduled => Some(SessionWaitingReason::ScheduledTask),
+                haven_tools::ToolRunKind::Background => Some(SessionWaitingReason::BackgroundTask),
             };
         }
         Some(SessionWaitingReason::UserInput)
@@ -1216,10 +1214,10 @@ impl SessionSupervisor {
         self.store.clone()
     }
 
-    /// Return the live action capability needed by Agent background
+    /// Return the live ToolRun capability needed by Agent background
     /// consumers. This is intentionally narrower than exposing ToolServices.
-    pub(crate) fn action_service(&self) -> Arc<ActionService> {
-        self.actions.clone()
+    pub(crate) fn tool_run_service(&self) -> Arc<ToolRunService> {
+        self.tool_runs.clone()
     }
 
     #[cfg(test)]
@@ -1227,35 +1225,35 @@ impl SessionSupervisor {
         self.tool_catalog.clone()
     }
 
-    pub async fn cancel_session_actions(&self, session_id: &str) {
+    pub async fn cancel_session_tool_runs(&self, session_id: &str) {
         if let Err(error) = self
-            .actions
+            .tool_runs
             .cancel_owned_by_session_checked(session_id)
             .await
         {
-            tracing::warn!(session_id = %session_id, "failed to completely cancel session-owned actions: {error}");
+            tracing::warn!(session_id = %session_id, "failed to completely cancel session-owned tool_runs: {error}");
         }
     }
 
     /// Fail closed for destructive lifecycle paths when a durable scheduled
     /// cancellation cannot be confirmed. The caller must preserve the
     /// durable session so cleanup can be retried.
-    pub async fn cancel_session_actions_checked(&self, session_id: &str) -> anyhow::Result<()> {
-        self.actions
+    pub async fn cancel_session_tool_runs_checked(&self, session_id: &str) -> anyhow::Result<()> {
+        self.tool_runs
             .cancel_owned_by_session_checked(session_id)
             .await
     }
 
-    pub async fn cancel_session_background_actions(&self, session_id: &str) {
-        self.actions
+    pub async fn cancel_session_background_tool_runs(&self, session_id: &str) {
+        self.tool_runs
             .cancel_owned_background_by_session(session_id)
             .await;
     }
 
-    pub async fn fail_pending_action_steps(&self, session_id: &str, observation: &str) {
+    pub async fn fail_pending_tool_run_steps(&self, session_id: &str, observation: &str) {
         let _ = self
             .store
-            .fail_pending_action_steps(session_id, observation)
+            .fail_pending_tool_run_steps(session_id, observation)
             .await;
     }
 }

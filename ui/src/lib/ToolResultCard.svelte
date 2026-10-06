@@ -11,7 +11,7 @@
 	import { getToolResultRenderer } from '$lib/toolResultRenderers.ts';
 	import { parseToolResult } from '$lib/toolResultParsing.ts';
 	import { copyText } from '$lib/clipboard.ts';
-	import { actionStore } from '$lib/actionStore.ts';
+	import { toolRunStore } from '$lib/toolRunStore.ts';
 	import { getToolOutputPreviewStore } from '$lib/toolOutputPreviewStore.ts';
 	import { formatTokenCount } from '$lib/sessionUsage.ts';
 	import { estimateToolDataTokens } from '$lib/sessionUsagePresentation.ts';
@@ -24,7 +24,7 @@
 	import { TOOL_INTENT_FALLBACK } from '$lib/toolIntent.ts';
 	import { toolIconName, toolRendererName, toolRootName } from '$lib/toolManifest.ts';
 	import type { AgentToolResultEnvelope } from '$lib/contracts/agent.ts';
-	import type { ActionPayload } from '$lib/contracts/action.ts';
+	import type { ToolRunPayload } from '$lib/contracts/toolRun.ts';
 	import type { ContextMenuItem } from '$lib/contextMenu.ts';
 
 	interface Props {
@@ -45,11 +45,11 @@
 		onAskDismiss?: ((messageId: string) => void) | null;
 		resolved?: { answer?: string; ignored?: boolean } | null;
 		streaming?: boolean;
-		actionId?: string | null;
-		actionData?: ActionPayload | null;
+		toolRunId?: string | null;
+		toolRunData?: ToolRunPayload | null;
 		awaitingBackgroundResult?: boolean;
 		awaitingBackgroundCount?: number;
-		actionOutputHidden?: boolean;
+		toolRunOutputHidden?: boolean;
 		toolArgs?: unknown;
 		showFallbackIntent?: boolean;
 	}
@@ -72,11 +72,11 @@
 		onAskDismiss = null,
 		resolved = null,
 		streaming = false,
-		actionId = null,
-		actionData = null,
+		toolRunId = null,
+		toolRunData = null,
 		awaitingBackgroundResult = false,
 		awaitingBackgroundCount = 0,
-		actionOutputHidden = false,
+		toolRunOutputHidden = false,
 		toolArgs = null,
 		showFallbackIntent = false,
 	}: Props = $props();
@@ -115,7 +115,7 @@
 		selectedOptions = awaiting ? [...selectedAskOptions] : [];
 	});
 
-	const TERMINAL_ACTION = new Set<string>(['completed', 'failed', 'cancelled']);
+	const TERMINAL_TOOL_RUN = new Set<string>(['completed', 'failed', 'cancelled']);
 	const TOOL_STATE_ALIASES: Record<string, string> = {
 		succeeded: 'completed',
 	};
@@ -133,24 +133,24 @@
 	let livePreview = $derived(
 		messageId ? /** @type {string|undefined} */ $toolPreviewStore : undefined,
 	);
-	// Background actions extend the originating tool card after it returns
-	// `{ background: true, action_id }`. The session snapshot covers hydrated
-	// history; actionStore supplies live updates. The binding clears when the
+	// Background ToolRuns extend the originating tool card after it returns
+	// `{ execution_mode: 'background', tool_run_id }`. The session snapshot covers hydrated
+	// history; toolRunStore supplies live updates. The binding clears when the
 	// terminal result has been persisted onto the message.
-	let boundAction = $derived(
-		actionId
+	let boundToolRun = $derived(
+		toolRunId
 			? {
-					...($actionStore[actionId] || {}),
-					...(actionData?.id === actionId ? actionData : {}),
+					...($toolRunStore[toolRunId] || {}),
+					...(toolRunData?.id === toolRunId ? toolRunData : {}),
 				}
 			: null,
 	);
-	let actionRunning = $derived(!!boundAction && boundAction.status === 'running');
-	let liveStreaming = $derived(streaming || actionRunning || !!livePreview);
-	let actionOutcome = $derived(
-		boundAction && TERMINAL_ACTION.has(boundAction.status ?? '') ? boundAction.status : null,
+	let toolRunRunning = $derived(!!boundToolRun && boundToolRun.status === 'running');
+	let liveStreaming = $derived(streaming || toolRunRunning || !!livePreview);
+	let toolRunOutcome = $derived(
+		boundToolRun && TERMINAL_TOOL_RUN.has(boundToolRun.status ?? '') ? boundToolRun.status : null,
 	);
-	let effectiveOutcome = $derived(outcome || result?.outcome || actionOutcome || null);
+	let effectiveOutcome = $derived(outcome || result?.outcome || toolRunOutcome || null);
 	let toolState: string = $derived.by(() => {
 		const rawState = effectiveOutcome || (liveStreaming ? 'running' : 'completed');
 		return TOOL_STATE_ALIASES[rawState] || rawState;
@@ -160,37 +160,37 @@
 	// between output events, so they must not drive the disclosure lifecycle or
 	// a manual collapse can be reopened by the next chunk. The message/action
 	// lifecycle is the stable execution signal.
-	let executionActive = $derived(streaming || actionRunning || effectiveOutcome === 'running');
+	let executionActive = $derived(streaming || toolRunRunning || effectiveOutcome === 'running');
 	let displayContent = $derived.by(() => {
-		if (actionRunning && boundAction) {
+		if (toolRunRunning && boundToolRun) {
 			const out =
-				(typeof boundAction.preview === 'string' && boundAction.preview) ||
+				(typeof boundToolRun.preview === 'string' && boundToolRun.preview) ||
 				livePreview ||
-				(typeof boundAction.output === 'string' ? boundAction.output : '');
+				(typeof boundToolRun.output === 'string' ? boundToolRun.output : '');
 			return JSON.stringify({
 				output: out,
-				background: true,
-				action_id: actionId,
+				execution_mode: 'background',
+				tool_run_id: toolRunId,
 				status: 'running',
 			});
 		}
-		if (boundAction && TERMINAL_ACTION.has(boundAction.status ?? '')) {
+		if (boundToolRun && TERMINAL_TOOL_RUN.has(boundToolRun.status ?? '')) {
 			const rawOut =
-				typeof boundAction.output === 'string'
-					? boundAction.output
-					: typeof boundAction.error === 'string'
-						? boundAction.error
+				typeof boundToolRun.output === 'string'
+					? boundToolRun.output
+					: typeof boundToolRun.error === 'string'
+						? boundToolRun.error
 						: '';
 			if (typeof rawOut === 'string' && rawOut.trim().startsWith('{')) {
 				return rawOut;
 			}
 			return JSON.stringify({
 				output: rawOut,
-				background: true,
-				action_id: actionId,
-				status: boundAction.status,
-				...(boundAction.exitCode != null ? { exit_code: boundAction.exitCode } : {}),
-				...(boundAction.error && !boundAction.output ? { error: boundAction.error } : {}),
+				execution_mode: 'background',
+				tool_run_id: toolRunId,
+				status: boundToolRun.status,
+				...(boundToolRun.exitCode != null ? { exit_code: boundToolRun.exitCode } : {}),
+				...(boundToolRun.error && !boundToolRun.output ? { error: boundToolRun.error } : {}),
 			});
 		}
 		if (livePreview != null && livePreview !== '') {
@@ -254,7 +254,7 @@
 			return 'cpu';
 		}
 		if (rootToolName === 'haven') {
-			if (typeof data.operation === 'string' && data.operation.startsWith('actions_'))
+			if (typeof data.operation === 'string' && data.operation.startsWith('tool_runs_'))
 				return 'clock';
 			if (typeof data.operation === 'string' && data.operation.startsWith('schedule_'))
 				return 'bell';
@@ -529,7 +529,7 @@
 
 				<section class="tool-detail tool-detail--output" data-detail="output">
 					<div class="tool-detail-label">输出结果</div>
-					{#if actionOutputHidden}
+					{#if toolRunOutputHidden}
 						<p class="tool-card-empty">结果已在会话消息中显示</p>
 					{:else if failedWithoutOutput}
 						<p class="tool-card-empty tool-card-empty--error">{emptyOutputLabel}</p>
@@ -552,7 +552,7 @@
 					{/if}
 				</section>
 				{#if awaitingBackgroundResult}
-					<p class="action-wait-note" role="status">
+					<p class="tool-run-wait-note" role="status">
 						等待{awaitingBackgroundCount > 1
 							? ` ${awaitingBackgroundCount} 项`
 							: ''}后台任务结果，完成后将自动继续
@@ -608,7 +608,7 @@
 		border: none;
 		box-shadow: none;
 	}
-	.action-wait-note {
+	.tool-run-wait-note {
 		margin: 0;
 		padding-block-start: var(--md-sys-space-sm);
 		border-block-start: 1px solid var(--md-sys-color-outline-variant);

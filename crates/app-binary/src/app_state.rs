@@ -11,8 +11,8 @@ use haven_input::InputPipeline;
 use haven_llm::LlmRouter;
 use haven_llm::stt::build_stt_client;
 use haven_memory::{
-    ActionStore, Database, MemoryEmbeddingStore, MemoryFactExtractionStore, MemoryFactStore,
-    MemoryMaintenanceStore, MemoryRecallStore, MemoryStore, SessionStore,
+    Database, MemoryEmbeddingStore, MemoryFactExtractionStore, MemoryFactStore,
+    MemoryMaintenanceStore, MemoryRecallStore, MemoryStore, SessionStore, ToolRunStore,
 };
 use haven_platform::credentials::PlatformCredentialStore;
 use haven_tools::ToolsManager;
@@ -112,7 +112,7 @@ impl RecordingSessionOwner {
 }
 
 /// A renderer-triggered MCP/skill invocation waiting in the same confirmation
-/// queue as agent actions. Raw arguments stay backend-only until the request is
+/// queue as agent tool_runs. Raw arguments stay backend-only until the request is
 /// resolved and are never part of an IPC error payload.
 pub(crate) enum UiConfirmationAction {
     Mcp {
@@ -572,7 +572,7 @@ impl AppState {
         // setter rebuilt the catalog and delayed window creation.
         tools
             .wire_startup(haven_tools::StartupWiring {
-                action_store: Some(ActionStore::new(db.clone())),
+                tool_run_store: Some(ToolRunStore::new(db.clone())),
                 tool_settings: cfg.tool_settings.clone(),
                 default_shell: cfg.default_shell,
                 context_limits: context_limits_clone,
@@ -1072,7 +1072,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn runtime_shutdown_preserves_session_owned_scheduled_actions() {
+    async fn runtime_shutdown_preserves_session_owned_scheduled_tool_runs() {
         let dir = tempdir().unwrap();
         let loader = ConfigLoader::load_from(&dir.path().join("config.toml")).unwrap();
         let db_path = dir.path().join("test.db");
@@ -1085,14 +1085,14 @@ mod tests {
             .create_session("scheduled owner")
             .await
             .unwrap();
-        let action_id = state
+        let tool_run_id = state
             .runtime
             .services
-            .actions
-            .set(haven_tools::ScheduledActionSpec {
+            .tool_runs
+            .set(haven_tools::ScheduledToolRunSpec {
                 due_at: None,
                 delay_secs: Some(3600),
-                watch_action_id: None,
+                watch_tool_run_id: None,
                 title: "Keep after exit".into(),
                 body: "restore me".into(),
                 mode: haven_tools::ScheduleMode::Continue,
@@ -1107,12 +1107,12 @@ mod tests {
         state.runtime.shutdown().await;
 
         let db = Database::open(&db_path).unwrap();
-        let pending = db.list_pending_scheduled_actions().unwrap();
-        assert!(pending.iter().any(|row| row.id == action_id));
+        let pending = db.list_pending_scheduled_tool_runs().unwrap();
+        assert!(pending.iter().any(|row| row.id == tool_run_id));
         assert_eq!(
             pending
                 .iter()
-                .find(|row| row.id == action_id)
+                .find(|row| row.id == tool_run_id)
                 .map(|row| row.status.as_str()),
             Some("waiting")
         );

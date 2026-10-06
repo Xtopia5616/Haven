@@ -15,7 +15,7 @@ vi.mock('./logger.ts', () => ({
 }));
 
 import {
-	actionEventListeners,
+	toolRunEventListeners,
 	agentEventListeners,
 	appEventListeners,
 	recordingEventListeners,
@@ -350,20 +350,20 @@ describe('registerAppListener', () => {
 	});
 });
 
-describe('actionEventListeners', () => {
+describe('toolRunEventListeners', () => {
 	beforeEach(() => {
 		mocks.warn.mockReset();
 	});
 
 	it('maps the Rust wire payload before invoking the handler', () => {
 		const handler = vi.fn();
-		const listeners = actionEventListeners({ 'action:finished': handler });
+		const listeners = toolRunEventListeners({ 'tool_run:finished': handler });
 
-		listeners['action:finished']({
-			event: 'action:finished',
+		listeners['tool_run:finished']({
+			event: 'tool_run:finished',
 			id: 3,
 			payload: {
-				id: 'act-1',
+				id: 'toolrun-1',
 				kind: 'background',
 				session_id: 'ses-1',
 				exit_code: 0,
@@ -371,10 +371,10 @@ describe('actionEventListeners', () => {
 		} as never);
 
 		expect(handler).toHaveBeenCalledWith({
-			event: 'action:finished',
+			event: 'tool_run:finished',
 			id: 3,
 			payload: {
-				id: 'act-1',
+				id: 'toolrun-1',
 				kind: 'background',
 				sessionId: 'ses-1',
 				exitCode: 0,
@@ -382,13 +382,13 @@ describe('actionEventListeners', () => {
 		});
 	});
 
-	it('drops malformed action payloads with a warning that omits their contents', () => {
+	it('drops malformed ToolRun payloads with a warning that omits their contents', () => {
 		const handler = vi.fn();
-		const listeners = actionEventListeners({ 'action:finished': handler });
+		const listeners = toolRunEventListeners({ 'tool_run:finished': handler });
 		const privateValue = 'payload-secret-value';
 
-		listeners['action:finished']({
-			event: 'action:finished',
+		listeners['tool_run:finished']({
+			event: 'tool_run:finished',
 			id: 4,
 			payload: { kind: 'background', error: privateValue },
 		} as never);
@@ -396,7 +396,7 @@ describe('actionEventListeners', () => {
 		expect(handler).not.toHaveBeenCalled();
 		expect(mocks.warn).toHaveBeenCalledWith(
 			'events',
-			expect.stringContaining("Dropping malformed payload for 'action:finished'"),
+			expect.stringContaining("Dropping malformed payload for 'tool_run:finished'"),
 		);
 		expect(JSON.stringify(mocks.warn.mock.calls)).not.toContain(privateValue);
 	});

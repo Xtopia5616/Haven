@@ -53,7 +53,7 @@ haven-skills ──► haven-common, haven-platform
 
 `haven-platform` 只依赖 common 中稳定的 `CredentialStore` 端口与 credential reference validator，
 不依赖 Tools、MCP 或 Tauri。Windows adapter 用 Credential Manager 保存密钥；其他平台对带凭据配置
-明确失败，不退回明文或进程内持久化。该 crate 还拥有 MCP stdio、Shell、Skill script/venv bootstrap 和后台 Action
+明确失败，不退回明文或进程内持久化。该 crate 还拥有 MCP stdio、Shell、Skill script/venv bootstrap 和后台 ToolRun
 子进程共用的 `ProcessContainment`：Windows 使用 kill-on-close Job Object，并要求以 suspended
 状态创建进程、先分配 Job 再恢复唯一初始线程；其他平台保持原有 no-op 行为。平台 crate 拥有该
 操作系统顺序和 FFI，adapter 仍拥有命令配置、管道、取消、等待与工具生命周期（ADR 0513、0515）。
@@ -82,7 +82,7 @@ tool settings、context limits、shell 与 security，热更新整份替换。cr
 PlatformRuntime 发布、MCP discovery config/index 更新和 builtin catalog rebuild 的工具侧顺序。
 messaging 与 memory recall 是进程服务，在 `wire_startup` 里绑定一次，不放进这份快照；
 `admin_surfaces` 随成功的 catalog rebuild 写入 `BuiltinCatalog`。`tool_builtins.rs` 组合 MCP/Skills
-与具体 builtin provider。MCP、skills、授权、媒体资产、action 与 live output 由构造时交出的
+与具体 builtin provider。MCP、skills、授权、媒体资产、ToolRun 与 live output 由构造时交出的
 `ToolServices` 提供，调用方不再向 `ToolsManager` 逐个取服务。组合根仍是 `ApplicationRuntime`，
 不另建 `AppRuntime`。`ToolsManager` 是对外 façade，保留执行与授权入口、session overlay/asset
 lease 操作、目录投影、runtime capability 请求和录音转写入口；启动及 runtime/catalog 更新转发给 coordinator。
@@ -278,7 +278,7 @@ OS 句柄和进程生命周期适配不属于该共享契约面，统一归 `hav
   `embedding_store.rs` 以窄异步 `MemoryEmbeddingStore` 提供嵌入索引生命周期
   的持久化端口，`memory_recall_store.rs` 以 `MemoryRecallStore` 提供异步 typed
   keyword/vector recall、可见事实 hydration、revision 与完整 recall 端口；
-  `action_store.rs` 以异步 typed `ActionStore` 提供后台/定时 action 与 completion outbox
+  `tool_run_store.rs` 以异步 typed `ToolRunStore` 提供后台/定时 ToolRun 与 completion outbox
   的窄持久化端口，并在 Memory 内调度 SQLite blocking 操作；`facts.rs`
   负责事实类型、谓词归一化策略和稳定 `Database` 外观。消息的
   `media_inputs` 是多模态 canonical 持久化投影；消息返回对象中的 `attachments` 仅是
@@ -360,10 +360,10 @@ Compaction summary episode 与首个 pending marker 只由 `MemoryStore::persist
 - `react/`：ReAct 循环（`loop` / `turn` / `effects` / `response_cycle` / `stream_step` / `tool_batch` / `tool_batch_execute` / `tool_batch_policy` / `tool_batch_plan` / `context` / `inject` / `turn_end` / `event_boundary` / `retries` / `hooks` / `hook_policy` / `committed_ui` / `transcript` / `state` / `request_context`），按 Run → Turn → ToolBatch 分层；`ReActState` 统一表示当前 run 的 events、canonical、branch points、retry nudge 和 turn cancel，所有边界共享同一运行态。`SessionActor` 为每次 run 创建局部 `ReActState`，将其保存在 actor 持有并轮询的 active-run future 内；actor loop 同时处理该 future 与 mailbox 命令，因此没有 actor 外的 ReAct 循环。`ReActState` 是单次 run 的投影 scratch，不与其它 session 共享；当前它保存在 run future 内，不是 `SessionState` 字段。`SessionState` 持有会话元数据、队列、交互与 messaging 状态。[ADR 0214](adr/0214-react-run-inside-session-actor.md) 记录该单 actor-task 边界及其 mailbox 约束。`loop` 只负责 run 预算、生命周期和按序应用 `EffectBatch`，`turn` 负责模型阶段编排并产出 effect batch，`effects` 是 transcript、branch point 和 pause 的唯一按序应用边界；turn 终态与工具批次的 durable 提交都走这里，turn-start 注入和 stream chunk 仍留在各自边界，`response_cycle` 负责不完整工具参数 JSON 的有限重试；空响应与模型非正常结束会保留部分输出并转为可继续生成的错误，`tool_batch_plan` 固化 assistant 调用顺序和跨层身份，`tool_batch_execute` 负责批次准入、并发执行、取消与每项结果的即时 durable 提交，`tool_batch_policy` 负责失败分类与重试提示，`tool_batch` 在批次完成后按 assistant 调用顺序更新 canonical transcript，并负责工具执行原语、确认生命周期与结果状态。`RequestContext` 从 durable canonical 生成不可变的 provider 请求视图，统一承载 sanitize、retry nudge 和一次性重试指令，不反写 transcript；`context` 只收集有边界的上下文项，`inject` 只经 `apply_transcript` 投影，`turn_end` 只组装最终 effect batch，`event_boundary` 负责事件流完整性与生命周期边界，`hooks` 只定义扩展契约，`hook_policy` 装配生产副作用策略。
 - `react/`：ReAct 循环（`loop` / `turn` / `effects` / `response_cycle` / `stream_step` / `tool_batch` / `tool_batch_execute` / `tool_batch_policy` / `tool_batch_plan` / `context` / `inject` / `turn_end` / `event_boundary` / `retries` / `hooks` / `hook_policy` / `committed_ui` / `transcript` / `state` / `request_context`），按 Run → Turn → ToolBatch 分层；`ReActState` 统一表示当前 run 的 events、canonical、branch points、retry nudge 和 turn cancel，所有边界共享同一运行态。`SessionActor` 为每次 run 创建局部 `ReActState`，将其保存在 actor 持有并轮询的 active-run future 内；actor loop 同时处理该 future 与 mailbox 命令，因此没有 actor 外的 ReAct 循环。`ReActState` 是单次 run 的投影 scratch，不与其它 session 共享；当前它保存在 run future 内，不是 `SessionState` 字段。`SessionState` 持有会话元数据、队列、交互与 messaging 状态。[ADR 0214](adr/0214-react-run-inside-session-actor.md) 记录该单 actor-task 边界及其 mailbox 约束。`loop` 只负责 run 预算、生命周期和按序应用 `EffectBatch`，`turn` 负责模型阶段编排并产出 effect batch，`effects` 是 transcript、branch point 和 pause 的唯一按序应用边界；turn 终态与工具批次的 durable 提交都走这里，turn-start 注入和 stream chunk 仍留在各自边界，`response_cycle` 负责不完整工具参数 JSON 的有限重试；空响应与模型非正常结束会保留部分输出并转为可继续生成的错误，`tool_batch_plan` 固化 assistant 调用顺序和跨层身份，`tool_batch_execute` 负责批次准入、并发执行、取消与每项结果的即时 durable 提交，`tool_batch_policy` 负责失败分类、共享 `RecoveryPolicy` 的 Agent 重试预算与重试提示，`tool_batch` 在批次完成后按 assistant 调用顺序更新 canonical transcript，并负责工具执行原语、确认生命周期与结果状态。`RequestContext` 从 durable canonical 生成不可变的 provider 请求视图，统一承载 sanitize、retry nudge 和一次性重试指令，不反写 transcript；`context` 只收集有边界的上下文项，`inject` 只经 `apply_transcript` 投影，`turn_end` 只组装最终 effect batch，`event_boundary` 负责事件流完整性与生命周期边界，`hooks` 只定义扩展契约，`hook_policy` 装配生产副作用策略。
 - 流式输出由 `stream_step` 产生，`event.rs` 用一个有序 chunk 队列归并 thought/reasoning；provider retry 通过 `agent:stream_reset` 标记新的输出代次，UI 只清理 live stream block，不修改 durable transcript。`streamAggregator` 只合并相邻且同身份的 chunk，保留交错输出顺序；最终 thought/reasoning 投影仍是丢 chunk 时的权威修复路径。
-- **X12 持久化契约**：ReAct 将 live transcript 作为 `SessionCommitted` domain intent 提交给 `SessionStore`；Agent 负责 ReAct 事件 payload 与消息/步骤语义，Memory 将 intent 翻译为物化行。Store 在同一 SQLite 事务中先追加 `session_events`，再写入 intent 指定的 `messages` / `session_steps` 投影；投影失败时整笔回滚，事务提交后才使 cache 失效并广播事件。Agent 随后由 `CommittedUiPublisher` 按 `session_events.sequence` 发布 Thought、Action、Observation、Supplement、ingress MediaPlan 与 Compaction，再更新进程内 canonical。assistant Thought 消息行与 durable event 同事务提交；共享 `step-*` 的 Thought 执行步骤作为可修复的后置 Store 投影写入，失败不会撤销已提交事件或重复发布。流式分片只用 `chunk_seq`；WebSearch、Usage，以及请求准备阶段的 MediaPlan（`event_seq` 为空）不占用这条 durable 序号。同一 sequence 的并行工具卡按 `(eventSeq, stepId)` 去重。交互请求由 `SessionActor` 命令追加为 domain event，Agent 从活动 `session_events` replay 交互状态；若 Ask `tool_result` 已提交而独立 `interaction_requested` 尚未提交，replay 以稳定 `step_id` 恢复 pending Ask，后续 `UserInject(source=answer)` 或 clear event 关闭它（ADR 0440）。resume、rollback 和实时重放均从 event sequence 读取，事件流本身承载恢复游标。rollback 的 event cursor 用于 active transcript 投影，event sequence 用于 append-only timeline；`last_msg_at` 只用于截断物化消息投影，三者由 `SessionStore` 封装且不得互相推导或作为 transcript 真源。多模态输入在 ingress 接受 `MessageAttachment`，但事件/数据库 canonical 投影使用 `MediaAsset → MediaRepresentation → MediaPlan`，事件不保存 inline bytes；OCR/STT 成功追加派生表示且保留 raw asset。合法旁路限于语义受限的 ingress user seed、recovery partial 与终态 action-result 三个 `SessionStore` 写端口；seed 消息类型由持久化的 session origin 决定。interaction lifecycle event 只承载请求状态和引用 ID，Ask 正文只在 canonical transcript 出现一次。
-- **工具调用身份契约**：同一 assistant tool batch 内，`action_index` 是 provider 调用数组的零基稳定位置，`step_id` 是该调用的持久执行行/卡片身份，`tool_call_id` 是 provider 调用身份；`session_steps` 与 ReAct events 同步保存三者。确认恢复必须按完整身份关联，禁止按工具名、参数或 observation 文本猜测；缺失事件流不再从步骤投影重建 ReAct transcript，旧数据按 reset 边界处理。并行工具的每项结果在完成后单独提交并按 durable sequence 发布 UI；canonical history 与 event replay 按 `step_number + action_index` 排序（ADR 0433）。
-- **工具参数验证契约**：执行前只验证，不用 schema default、首个 enum 或类型占位符改写输入；无效参数以包含 `action_index`、工具名和验证明细的失败 observation 返回给模型，避免改变副作用语义。
-- `session/`：`SessionSupervisor` 只负责 registry、并发 admission 和生命周期；其生产构造接收组合根创建的 `SessionStore` 与 `SessionToolPorts`，不暴露 raw `Database` 或 `ToolsManager`。`AgentLayer::build` 接收 `AgentToolPorts`；`haven-app-binary` composition root 用唯一共享的 `ToolsManager` 创建 prompt/catalog/execution/authorization/observation/overlay/asset adapters，Agent runtime owners 只持有窄 ports 与既有 AuthorizationEngine/ActionService capability（ADR 0384、0388）。session runner 通过 `ToolExecutionContext` 传递 session、tool、input、cancel 与 step identity；live authorization 仍在执行前判断。`SessionActor` 独占会话级可变状态，并在自己的 loop 中 select 外部 mailbox 命令与 `SessionState::react_run` active future。`SessionState` 持有会话元数据、交互与 ingress/action/messaging 队列；active future 独占 run-local `ReActState`，不会跨 session 共享，也不借用整份 `SessionState`。usage 由 `ReActEngine::UsageRuntime` 聚合和写入，stream identity 与 token estimate 由 run-local `ReActState` 持有。inbox 通知游标、轮询节拍和标题缓存已在 `SessionState`；进程级 heartbeat 合并仍留在 `MessagingPoller`；`TurnEngine` 只推进一次 turn 并产出 `EffectBatch`，`RunEngine` 负责应用批次和 run 边界；`dispatcher` / `queues` / `status` / `tool_runner` 只提供各层协作能力。普通用户创建与 `agent.spawn` peer 继续共用同一 Session、SessionActor 与 ReAct 流程；`SessionStore` 持久化并按 parent 查询 typed `SessionOrigin`，Messaging registry 仍负责角色、能力、mailbox 与在线状态（ADR 0442）。
+- **X12 持久化契约**：ReAct 将 live transcript 作为 `SessionCommitted` domain intent 提交给 `SessionStore`；Agent 负责 ReAct 事件 payload 与消息/步骤语义，Memory 将 intent 翻译为物化行。Store 在同一 SQLite 事务中先追加 `session_events`，再写入 intent 指定的 `messages` / `session_steps` 投影；投影失败时整笔回滚，事务提交后才使 cache 失效并广播事件。Agent 随后由 `CommittedUiPublisher` 按 `session_events.sequence` 发布 Thought、ToolCall、Observation、Supplement、ingress MediaPlan 与 Compaction，再更新进程内 canonical。assistant Thought 消息行与 durable event 同事务提交；共享 `step-*` 的 Thought 执行步骤作为可修复的后置 Store 投影写入，失败不会撤销已提交事件或重复发布。流式分片只用 `chunk_seq`；WebSearch、Usage，以及请求准备阶段的 MediaPlan（`event_seq` 为空）不占用这条 durable 序号。同一 sequence 的并行工具卡按 `(eventSeq, stepId)` 去重。交互请求由 `SessionActor` 命令追加为 domain event，Agent 从活动 `session_events` replay 交互状态；若 Ask `tool_result` 已提交而独立 `interaction_requested` 尚未提交，replay 以稳定 `step_id` 恢复 pending Ask，后续 `UserInject(source=answer)` 或 clear event 关闭它（ADR 0440）。resume、rollback 和实时重放均从 event sequence 读取，事件流本身承载恢复游标。rollback 的 event cursor 用于 active transcript 投影，event sequence 用于 append-only timeline；`last_msg_at` 只用于截断物化消息投影，三者由 `SessionStore` 封装且不得互相推导或作为 transcript 真源。多模态输入在 ingress 接受 `MessageAttachment`，但事件/数据库 canonical 投影使用 `MediaAsset → MediaRepresentation → MediaPlan`，事件不保存 inline bytes；OCR/STT 成功追加派生表示且保留 raw asset。合法旁路限于语义受限的 ingress user seed、recovery partial 与终态 ToolRun-result 三个 `SessionStore` 写端口；seed 消息类型由持久化的 session origin 决定。interaction lifecycle event 只承载请求状态和引用 ID，Ask 正文只在 canonical transcript 出现一次。
+- **工具调用身份契约**：同一 assistant tool batch 内，`tool_index` 是 provider 调用数组的零基稳定位置，`step_id` 是该调用的持久执行行/卡片身份，`tool_call_id` 是 provider 调用身份；`session_steps` 与 ReAct events 同步保存三者。确认恢复必须按完整身份关联，禁止按工具名、参数或 observation 文本猜测；缺失事件流不再从步骤投影重建 ReAct transcript，旧数据按 reset 边界处理。并行工具的每项结果在完成后单独提交并按 durable sequence 发布 UI；canonical history 与 event replay 按 `step_number + tool_index` 排序（ADR 0433）。
+- **工具参数验证契约**：执行前只验证，不用 schema default、首个 enum 或类型占位符改写输入；无效参数以包含 `tool_index`、工具名和验证明细的失败 observation 返回给模型，避免改变副作用语义。
+- `session/`：`SessionSupervisor` 只负责 registry、并发 admission 和生命周期；其生产构造接收组合根创建的 `SessionStore` 与 `SessionToolPorts`，不暴露 raw `Database` 或 `ToolsManager`。`AgentLayer::build` 接收 `AgentToolPorts`；`haven-app-binary` composition root 用唯一共享的 `ToolsManager` 创建 prompt/catalog/execution/authorization/observation/overlay/asset adapters，Agent runtime owners 只持有窄 ports 与既有 AuthorizationEngine/ToolRunService capability（ADR 0384、0388）。session runner 通过 `ToolExecutionContext` 传递 session、tool、input、cancel 与 step identity；live authorization 仍在执行前判断。`SessionActor` 独占会话级可变状态，并在自己的 loop 中 select 外部 mailbox 命令与 `SessionState::react_run` active future。`SessionState` 持有会话元数据、交互与 ingress/tool-run/messaging 队列；active future 独占 run-local `ReActState`，不会跨 session 共享，也不借用整份 `SessionState`。usage 由 `ReActEngine::UsageRuntime` 聚合和写入，stream identity 与 token estimate 由 run-local `ReActState` 持有。inbox 通知游标、轮询节拍和标题缓存已在 `SessionState`；进程级 heartbeat 合并仍留在 `MessagingPoller`；`TurnEngine` 只推进一次 turn 并产出 `EffectBatch`，`RunEngine` 负责应用批次和 run 边界；`dispatcher` / `queues` / `status` / `tool_runner` 只提供各层协作能力。普通用户创建与 `agent.spawn` peer 继续共用同一 Session、SessionActor 与 ReAct 流程；`SessionStore` 持久化并按 parent 查询 typed `SessionOrigin`，Messaging registry 仍负责角色、能力、mailbox 与在线状态（ADR 0442）。
 - `layer.rs` + `ingress.rs` / `resume.rs` / `resume_support.rs`：对外入口与 resume 恢复；`resume_support` 只提供确定性的候选合并、悬空工具调用修复和运行时工具选择恢复。
 - `canonical.rs`：发送前 `sanitize_canonical` 闸门。
 - `memory_worker.rs` / `memory_service.rs` / `memory_index.rs` / `prompt_context.rs` / `prompt_renderer.rs` / `prompt.rs` / `compactor.rs` / `rollback.rs` / `rollback_support.rs` / `title.rs` / `event.rs` / `partial.rs`；`memory_service` 统一 typed memory/embedding/cache 边界，`prompt_context` 取得 bounded turn snapshot，`prompt_renderer` 纯渲染 bounded MEMORY fence；`rollback.rs` 编排生命周期与 DB 双时钟，`rollback_support` 只操作 events 和 branch cursor。
@@ -433,80 +433,80 @@ Temp（全局约束）。
 | `input` | 键鼠 type / key / click / move / scroll | move/scroll=Low；其它=Medium |
 | `window` | 窗口 list / foreground / focus / close / screenshot / OCR / UI tree / observe / invoke / set_value / toggle / select / wait | 读/观察=Low；语义操作/focus=Medium；close/OCR=High |
 
-`ActionService`（`haven-tools/src/action_service.rs`）是后台与定时任务的唯一运行时状态机；
-shell 进程、定时器和 action dependency 共享一个 action map、一个生命周期 sink 和一个
+`ToolRunService`（`haven-tools/src/tool_run_service.rs`）是后台与定时任务的唯一运行时状态机；
+shell 进程、定时器和 ToolRun dependency 共享一个 ToolRun map、一个生命周期 sink 和一个
 completion bus。统一状态为 `waiting → running → completed | failed | cancelled`；定时任务的
-`kind` 只表示任务类型，不再作为状态值。model-facing `actions.*` 和 app action board 都
+`kind` 只表示任务类型，不再作为状态值。model-facing `tool_runs.*` 和 app ToolRun board 都
 直接读取规范化 task row。background completion outbox 与 scheduled fire recovery 共用纯
-`haven_common::action_lease::ActionLease<T>` claim core：outbox 在 `BEGIN IMMEDIATE` 事务中以
-稳定 `action_result_id` 和 SQLite UTC deadline 判断 30 秒 claim，随后仍由原 SQL/CAS 写入；
-scheduled fire recovery 以 `action_id` 和单调时钟使用 15 分钟进程内 lease。现有契约没有独立
+`haven_common::tool_run_lease::ToolRunLease<T>` claim core：outbox 在 `BEGIN IMMEDIATE` 事务中以
+稳定 `tool_run_result_id` 和 SQLite UTC deadline 判断 30 秒 claim，随后仍由原 SQL/CAS 写入；
+scheduled fire recovery 以 `tool_run_id` 和单调时钟使用 15 分钟进程内 lease。现有契约没有独立
 的 claimant owner token，也没有 lease renewal 操作。scheduled 终态和无 consumer 回滚会清除
 其 pending fire 与 lease；background completion lease 过期后可再次 claim，直到 transcript
-durable 后按 `action_result_id` ack。ActionStore 仍各自拥有 outbox、scheduled trigger 的
+durable 后按 `tool_run_result_id` ack。ToolRunStore 仍各自拥有 outbox、scheduled trigger 的
 事务和 CAS；Tools 不持有 raw `Database` 或安排 SQLite blocking 工作。CAS 仲裁、内存 board、
-store 重试与终态持久化修复的 typed failure 分类由 crate-private Action retry policies 收口，
+store 重试与终态持久化修复的 typed failure 分类由 crate-private ToolRun retry policies 收口，
 attempt/deadline/backoff/stop 决策复用 `haven-common::retry::RecoveryPolicy`（ADR 0447）：background/scheduled
-worker 均无 retry deadline/预算，保留 1 秒起步、指数退避、30 秒封顶；Action store 的短 retry
+worker 均无 retry deadline/预算，保留 1 秒起步、指数退避、30 秒封顶；ToolRun store 的短 retry
 保留 3 次/50 ms，malformed-row repair 在短 retry 耗尽后继续按 1 秒起步、30 秒封顶恢复。
 策略不持有 clock、sleep、store 或 terminal arbitration。
-ActionService 继续按 kind 执行各自 CAS/outbox、内存状态、事件发布、重试等待与生命周期。当前 background
-shell 没有 action-level 执行 timeout；scheduled `due_at` 是触发时刻。AgentLayer 对 background completion
+ToolRunService 继续按 kind 执行各自 CAS/outbox、内存状态、事件发布、重试等待与生命周期。当前 background
+shell 没有 ToolRun-level 执行 timeout；scheduled `due_at` 是触发时刻。AgentLayer 对 background completion
 做 durable transcript 投影/入队的 100 ms 重试决策复用 common 模型，但投影、等待与 outbox ack 仍由 AgentLayer
 持有；provider/LLM retry 和 Agent
-ReAct tool-call retry 不属于 action persistence retry（ADR 0305、0332、0334）。
-调用边界并不是一个共享的执行 owner：后台 shell 的 child process 由 `ActionService` 启动并回收；
-scheduled fire 由 `ActionService` 按 `Waiting → Running` durable CAS 后交给 AgentLayer，AgentLayer/
+ReAct tool-call retry 不属于 ToolRun persistence retry（ADR 0305、0332、0334）。
+调用边界并不是一个共享的执行 owner：后台 shell 的 child process 由 `ToolRunService` 启动并回收；
+scheduled fire 由 `ToolRunService` 按 `Waiting → Running` durable CAS 后交给 AgentLayer，AgentLayer/
 tool runner 执行 scheduled tool 或继续会话，再调用 `complete_scheduled` / `fail_scheduled`。
 scheduled trigger 的输入分类和 due-time 计算由 crate-private 纯 typed policy
-`ScheduledTriggerRequest`/`ScheduledTriggerCandidate` 承担；ActionService 仍读取 horizon 配置并拥有
+`ScheduledTriggerRequest`/`ScheduledTriggerCandidate` 承担；ToolRunService 仍读取 horizon 配置并拥有
 durable admission、board insertion、timer/watch worker、fire、terminal commit/retry 与 lifecycle event。
 这只是 trigger admission 的窄边界，不是 `Immediate`/`At`/`After` 与 execution 的完整 Job 模型；
 schedule tool 对 LLM 输入的前置验证仍保留在工具边界，App command/event adapter 仍只做 UI DTO 投影（ADR 0343）。
-ActionService 仍是唯一状态 owner；实现按职责放在 `action_service/background.rs`（shell 启动、终态与 session 清理）、
-`action_service/scheduled.rs`（timer/dependency admission、fire、终态与恢复）和
-`action_service/views.rs`（task board/status typed projection 与 JSON 序列化）。这些模块只实现同一个
-`ActionService`，共享 action map、terminal arbitration、completion bus 和 restore coordinator，不增加执行器或状态副本。
+ToolRunService 仍是唯一状态 owner；实现按职责放在 `tool_run_service/background.rs`（shell 启动、终态与 session 清理）、
+`tool_run_service/scheduled.rs`（timer/dependency admission、fire、终态与恢复）和
+`tool_run_service/views.rs`（task board/status typed projection 与 JSON 序列化）。这些模块只实现同一个
+`ToolRunService`，共享 ToolRun map、terminal arbitration、completion bus 和 restore coordinator，不增加执行器或状态副本。
 完整 lifecycle 审计没有发现需要迁移到另一个纯 transition policy 的重复判断：status graph 与 terminal claim 已由
-`ActionStatus::can_transition_to` / `action_terminal::can_claim_terminal` 单点定义；background admission 直接进入
+`ToolRunStatus::can_transition_to` / `tool_run_terminal::can_claim_terminal` 单点定义；background admission 直接进入
 `running`，`waiting → running` 只属于 scheduled fire。提交前后的重复检查跨越 durable CAS 与内存投影/回滚边界，保留为竞态校验。
 执行副作用、outbox、retry 与 UI finished 投影继续按 kind 分流；trigger/execution、deadline/claim identity 和 restart recovery
-语义需先决策，当前不引入新的 Job 状态或自动 replay（ADR 0352）。产品已确认 background 与 scheduled 的完成记录、任务卡和 transcript 投影采用统一格式，但保留类型细节；TaskCenter 活动卡片由 `projectActionCard` 统一投影，scheduled tool 的 completed/failed outcome 则已按 ADR 0393 复用 action completion outbox 与 Agent 的 ActionResult/X12 投影路径。该审计还发现 `ActionService::set` 的 scheduled
+语义需先决策，当前不引入新的 Job 状态或自动 replay（ADR 0352）。产品已确认 background 与 scheduled 的完成记录、任务卡和 transcript 投影采用统一格式，但保留类型细节；ToolRunCenter 活动卡片由 `projectToolRunCard` 统一投影，scheduled tool 的 completed/failed outcome 则已按 ADR 0393 复用 ToolRun completion outbox 与 Agent 的 ToolRunResult/X12 投影路径。该审计还发现 `ToolRunService::set` 的 scheduled
 admission cleanup 曾移除 Running row，导致 Agent terminal callback 找不到内存 entry；ADR 0353 已将清理条件限定为
 terminal scheduled entry，并通过 completion、cancel、no-consumer recovery 和 restart 回归固定边界。Waiting/Running
 entry 保持原路径；durable Waiting schedule 仍在启动时恢复，遗留 durable Running row 仍标为 failed 且不重放。
-Action 输出 tail 的长度策略由 `ActionService` 持有的 crate-private `ActionOutputPort` 唯一配置；
-foreground shell card 与 background action 共用该 policy 生成有字符上限的 `ActionOutputTail`，
-consumer 仅拿不可 `Debug`/`Serialize` 的 `ActionTailSnapshot`。`agent:tool_output` 仍用
-`session_id/step_id`，`action:output` 仍用 `action_id`；App mapper 对后者只投影身份、状态和 bounded
-output。终态仍通过原 `action:finished` / background completion 路径承载最终已收集输出；完成提交、取消
+ToolRun 输出 tail 的长度策略由 `ToolRunService` 持有的 crate-private `ToolRunOutputPort` 唯一配置；
+foreground shell card 与 background ToolRun 共用该 policy 生成有字符上限的 `ToolRunOutputTail`，
+consumer 仅拿不可 `Debug`/`Serialize` 的 `ToolRunTailSnapshot`。`agent:tool_output` 仍用
+`session_id/step_id`，`tool_run:output` 仍用 `tool_run_id`；App mapper 对后者只投影身份、状态和 bounded
+output。终态仍通过原 `tool_run:finished` / background completion 路径承载最终已收集输出；完成提交、取消
 或 shutdown 清理 live tail。此边界没有统一 background/scheduled 的完整 UI projection 或 Job lifecycle（ADR 0338）。
-UI action board 以 `actionStore` 的 action id 索引作为权威前端 registry；layout 的 `activities` 只是 Svelte
-reactive mirror，不再维护第二份 action lifecycle reducer。`list_actions` 与四个 lifecycle channel 共用
-`mapActionPayload`。created/updated/output 统一 upsert；refresh 的请求序号与 `actionStateVersion`
+UI ToolRun board 以 `toolRunStore` 的 tool_run_id 索引作为权威前端 registry；layout 的 `activities` 只是 Svelte
+reactive mirror，不再维护第二份 ToolRun lifecycle reducer。`list_tool_runs` 与四个 lifecycle channel 共用
+`mapToolRunPayload`。created/updated/output 统一 upsert；refresh 的请求序号与 `toolRunStateVersion`
 只阻止旧 hydration 覆盖较新状态，不是事件去重。Background finished 先 upsert 终态，再由
-`finalizeBackgroundActionMessages` 投影到仍绑定该 action 的工具卡；scheduled finished 则从 board 删除，
+`finalizeBackgroundToolRunMessages` 投影到仍绑定该 ToolRun 的工具卡；scheduled ToolRun finished 则从 board 删除，
 通知由 Agent 的 `notification:show` 提供。列表刷新会移除 terminal background history，scheduled live row
-仍由 ActionService board 返回。`TaskCenter` 使用 `projectActionCard` 将两种 kind 映射到共同卡片结构，并在
+仍由 ToolRunService board 返回。`ToolRunCenter` 使用 `projectToolRunCard` 将两种 kind 映射到共同卡片结构，并在
 kind-specific details 中保留 background command/output/error/exit code/preview 与 scheduled due time/title/body/mode；
 现有用户文案、排序、搜索、打开会话和取消行为不变。该 mapper 只收口活动卡片，不承载终态工具结果：
 scheduled finished payload 仍不含 execution result；completed/failed tool 的有界 `result_summary` 由
-ActionService 与 terminal outbox 一起提交，在 owner session 存在时由 Agent 复用共享 ActionResult envelope
-与 X12 投影，投影成功后 ack。Continue 仍走既有 session input transcript；cancelled scheduled action 不创建
+ToolRunService 与 terminal outbox 一起提交，在 owner session 存在时由 Agent 复用共享 ToolRunResult envelope
+与 X12 投影，投影成功后 ack。Continue 仍走既有 session input transcript；cancelled scheduled ToolRun 不创建
 completion outbox 或 result transcript（ADR 0393）。
-Rust bridge 只为 background 提供 `action:output`，scheduled action 不持有 tail。没有 durable event identity，
+Rust bridge 只为 background 提供 `tool_run:output`，scheduled ToolRun 不持有 tail。没有 durable event identity，
 因此不新增 UI event dedup 或统一 Job reducer；background 的终态工具卡和 transcript 投影仍按 ADR 0344 原路径。
-Action completion 经 `notification:show` 发布带 `notification_kind=action_completion` 标记的专用事件，
-并携带 `action_kind`、`action_id`，background 还携带终态 `action_status` 与真实 owner `session_id`；scheduled 或 AppCommand 通知没有会话关联时省略 `session_id`。UI 只对该标记
-应用 `notification.action_completed.in_app` 开关；`DesktopNotifications` 只对同一类事件应用
-`notification.action_completed.windows` 开关。两项配置由 background 与 scheduled action 共用且默认开启，
+ToolRun completion 经 `notification:show` 发布带 `notification_kind=tool_run_completion` 标记的专用事件，
+并携带 `tool_run_kind`、`tool_run_id`，background 还携带终态 `tool_run_status` 与真实 owner `session_id`；scheduled 或 AppCommand 通知没有会话关联时省略 `session_id`。UI 只对该标记
+应用 `notification.tool_run_completed.in_app` 开关；`DesktopNotifications` 只对同一类事件应用
+`notification.tool_run_completed.windows` 开关。两项配置由 background 与 scheduled ToolRun 共用且默认开启，
 配置加载完成前 UI 暂存带标记的完成提示。通用 `AgentEvent::Notification` 不带该标记，仍保持原有通知语义与
 always-on 行为。通知设置自身不承载 scheduled transcript 或 execution result；scheduled tool outcome 的
-session transcript 契约已由 ADR 0393 定义为复用 action-result/outbox 路径。
-Action 管理写入口经 ADR 0373 审计：Tauri、`actions`/`schedule` 工具、timer worker 与 Agent completion 共用一个
-`ActionService`；`ActionStore` 仍是生产持久化写边界。`schedule.set` 只创建新 action，没有 update-existing 或手动
+session transcript 契约已由 ADR 0393 定义为复用 ToolRun-result/outbox 路径。
+ToolRun 管理写入口经 ADR 0373 审计：Tauri、`tool_runs`/`schedule` 工具、timer worker 与 Agent completion 共用一个
+`ToolRunService`；`ToolRunStore` 仍是生产持久化写边界。`schedule.set` 只创建新 ToolRun，没有 update-existing 或手动
 trigger command，`ToolConcurrency` 也不是跨 Tauri/worker 的互斥机制。terminal history delete 只接受终态，但其
-`spawn_gate` 不覆盖所有 terminal CAS/retry；现已由 ADR 0374 收口为 completion ack 前拒绝 history delete，并在同一 SQLite writer 边界协调 ack/delete。无 owner completion 的 ack 同时校验 action 与 outbox 均未绑定；迟到绑定会重开 outbox，带 session 的 live-output 工具则在无 step id 时也于 spawn 前绑定 owner。
+`spawn_gate` 不覆盖所有 terminal CAS/retry；现已由 ADR 0374 收口为 completion ack 前拒绝 history delete，并在同一 SQLite writer 边界协调 ack/delete。无 owner completion 的 ack 同时校验 ToolRun 与 outbox 均未绑定；迟到绑定会重开 outbox，带 session 的 live-output 工具则在无 step id 时也于 spawn 前绑定 owner。
 `InteractionRequest`（`haven-agent/src/interaction.rs`）
 是 ask、confirm 和 scheduled confirm 的共同生命周期投影，快照通过 `interactions` 保存当前
 请求；旧快照不做运行时兼容读取，新的交互状态以 `Pending → Resolved | Expired | Cancelled`
@@ -562,7 +562,7 @@ Windows 子进程通过 Job Object 回收进程树；受限网络只允许经过
 ### 2.5.4 Admin Surface
 
 模型看到 `haven.diagnostics.*`、`haven.config.*`、`haven.skills.*`、`haven.tools.*`、
-`haven.mcp.*` 等点号 operation view，以及独立的 `actions.*`、`schedule.*`、
+`haven.mcp.*` 等点号 operation view，以及独立的 `tool_runs.*`、`schedule.*`、
 `preferences.*`、`checklist.*`。聚合器只负责内部路由，
 每个 operation 继续复用子工具自己的严格 schema、风险等级、幂等性、并发资源和
 session 归属；因此 `mcp_add` 是 High，而 `mcp_list` 是 Low，二者不会因共用根名
@@ -586,7 +586,7 @@ limit、创建时间倒序和 errors 的 status 过滤顺序保持原样。组�
 
 - `runtime.rs`：`ApplicationRuntime` 是应用级生命周期 owner，集中持有服务句柄、
   app-scoped task handles 和根 `CancellationToken`；`shutdown`/`teardown` 统一输入、
-  session、action、MCP 与 bootstrap worker 的停止顺序。领域 worker 仍由所属 crate
+  session、ToolRun、MCP 与 bootstrap worker 的停止顺序。领域 worker 仍由所属 crate
   释放，但必须接收 runtime 子 token 或响应领域 shutdown。
 - `ApplicationRuntime` 长期持有 Agent 构造结果交接的 `MemoryStartup`，并注册/join prepare、
   live consumer 与周期 maintenance task；prepare/replay 完成且 live task 注册后才获得 typed
@@ -617,7 +617,7 @@ limit、创建时间倒序和 errors 的 status 过滤顺序保持原样。组�
   与 staging 生命周期，不暴露给 Tools；剪贴板批次按单文件持 permit（ADR 0470）。`app_state.rs`
   仍拥有启动/每日调度，session 命令仍在历史删除成功后触发清理；Tools registry 和媒体 producer
   不迁入此模块（ADR 0403、0469、0470）。
-- `event_bridge.rs`：`AgentEvent` → 前端 channel 和显式 wire DTO 映射，包含 action
+- `event_bridge.rs`：`AgentEvent` → 前端 channel 和显式 wire DTO 映射，包含 ToolRun
   生命周期投影与通知副通道。
 - `handlers.rs`：`ShellHandler` / `InputHandler` 的 Tauri、输入管线和托盘适配；user
   recording lifecycle 通过 `RecordingSessionOwner` 与命令共享身份交接，保留 VAD、自动停止
@@ -626,7 +626,7 @@ limit、创建时间倒序和 errors 的 status 过滤顺序保持原样。组�
   创建窗口后调用 `AppState::spawn_background_init`，并在该边界提供 Tauri 事件 emitter。后台
   初始化顺序由 `AppState` 编排，具体长期任务由 `ApplicationRuntime` 持有；此模块不承载领域逻辑。
 - `lib.rs`：模块声明、移动端 `run()` 入口和必要的 crate 内导出。
-- `commands/*`：全部 Tauri IPC 命令（recording / session / action / history·memory / model / mcp /
+- `commands/*`：全部 Tauri IPC 命令（recording / session / tool_runs / history·memory / model / mcp /
   skills / memory / settings / log）。
 - `desktop.rs` / `events.rs` / `autostart.rs`。
 
@@ -653,12 +653,12 @@ session refresh、hotkey 与 model refresh 回调，不持有 Svelte state 或 D
 handler/reducer 使用的 camelCase，忽略新增 wire 字段；缺失或类型错误的必需字段会 fail closed
 并由 listener 层记录。可选 `waiting_reason` / `reason` 缺省映射为 `null`；已提供但不属于当前值集的
 status 或等待原因会丢弃该事件（ADR 0380）。Rust DTO、channel、payload 与 reducer 语义不变（ADR 0330）。
-Action board 与 lifecycle event 共用 Rust `events.rs::ActionEvent` wire DTO：
-`ui/src/lib/contracts/action.ts::mapActionPayload` 是其唯一前端运行时 validator/mapper，
-`actionStore.refreshActions` 的 command rows 和 `events.ts` 的 action lifecycle listeners 都调用它。
+ToolRun board 与 lifecycle event 共用 Rust `events.rs::ToolRunEvent` wire DTO：
+`ui/src/lib/contracts/toolRun.ts::mapToolRunPayload` 是其唯一前端运行时 validator/mapper，
+`toolRunStore.refreshToolRuns` 的 command rows 和 `events.ts` 的 ToolRun lifecycle listeners 都调用它。
 必需 `id`/`kind` 或已声明字段类型无效时丢弃整行/事件；未知附加字段忽略，未知 status 与 kind
-fail closed（ADR 0380）。mapper 不接触 ActionService completion outbox；动态
-`tool_args` 仍是执行/完成边界上的 JSON 扩展字段，不进入 `ActionEvent` UI DTO（ADR 0335）。
+fail closed（ADR 0380）。mapper 不接触 ToolRunService completion outbox；动态
+`tool_args` 仍是执行/完成边界上的 JSON 扩展字段，不进入 `ToolRunEvent` UI DTO（ADR 0335）。
 录音与转写事件已完成镜像审计：Rust `events.rs` 的命名 DTO 是 wire shape 权威；
 `ui/src/lib/contracts/recording.ts` 只声明路由消费的 camelCase DTO，并由唯一的
 `mapRecordingEvent` 转换。没有第二份 snake_case wire interface，也没有布局内的字段映射；
@@ -695,9 +695,9 @@ payload 记录不含 payload 的 warning 并丢弃；聊天页与布局订阅互
 usage fallback 与 media plan 双副作用保持原 owner（ADR 0347）。SessionCompleted/SessionError
 仍经 primary channel 与 `session:updated` secondary fan-out；同一终态 occurrence 现携带共享 `occurrence_id`，
 聊天页只对精确配对的 secondary 跳过重复 cleanup，独立终态 `session:updated` 仍执行清理；相同 reducer
-状态投影不再广播新引用（ADR 0349、0386）。ReAct Fatal 经项目 dispatcher 运行时只由 SessionSupervisor 发布终态错误；dispatcher 专用入口过滤 ReAct 的重复 `AgentEvent::SessionError`，bootstrap 将 typed `SessionEvent::SessionError` 重新排入同一 `BufferedEmitter`，由 `TauriEmitter` 投影并保留与已排队 Agent events 的顺序、occurrence identity、标题缓存和桌面通知。直接 `run_session_from_id` 保留原 Agent event 语义（ADR 0511）。session、action、recording、settings read、app event 与 agent event contract 已完成对应 mapper/validator 或边界审计（ADR 0330、0335、0340、0341、0346、0347、0348、0350、0376）；live interaction event 与 resume snake_case DTO 保持各自 mapper。命令 request/response 的静态 TypeScript contract 由 Rust handler/Serde DTO 生成至 `generatedCommands.ts`，不在多份手写定义间同步字段（ADR 0394）；生成类型不替代运行时校验，event mappers 与动态扩展 payload 仍按各 domain 手工维护。Settings update payload 仍由 SettingsView 的单一 builder 构造。Action board 的活跃
-`list_actions`/`cancel_action` 经 `actionCommands.ts`；list response 复用 `mapActionPayload`，cancel
-request/result 使用命名 TS contract，`actionStore` 不直接 invoke（ADR 0348）。命令静态 request/response
+状态投影不再广播新引用（ADR 0349、0386）。ReAct Fatal 经项目 dispatcher 运行时只由 SessionSupervisor 发布终态错误；dispatcher 专用入口过滤 ReAct 的重复 `AgentEvent::SessionError`，bootstrap 将 typed `SessionEvent::SessionError` 重新排入同一 `BufferedEmitter`，由 `TauriEmitter` 投影并保留与已排队 Agent events 的顺序、occurrence identity、标题缓存和桌面通知。直接 `run_session_from_id` 保留原 Agent event 语义（ADR 0511）。session、ToolRun、recording、settings read、app event 与 agent event contract 已完成对应 mapper/validator 或边界审计（ADR 0330、0335、0340、0341、0346、0347、0348、0350、0376）；live interaction event 与 resume snake_case DTO 保持各自 mapper。命令 request/response 的静态 TypeScript contract 由 Rust handler/Serde DTO 生成至 `generatedCommands.ts`，不在多份手写定义间同步字段（ADR 0394）；生成类型不替代运行时校验，event mappers 与动态扩展 payload 仍按各 domain 手工维护。Settings update payload 仍由 SettingsView 的单一 builder 构造。ToolRun board 的活跃
+`list_tool_runs`/`cancel_tool_run` 经 `toolRunCommands.ts`；list response 复用 `mapToolRunPayload`，cancel
+request/result 使用命名 TS contract，`toolRunStore` 不直接 invoke（ADR 0348）。命令静态 request/response
 统一使用 Rust 生成 contract；每个领域仍负责运行时校验、直接调用编排和安全审计。事件尚无全局 codegen，
 各事件 mapper 继续按 ADR 逐域维护。
 `continue_session`、`interrupt_session`、`end_session` 与 `rollback_session` 由
@@ -708,8 +708,8 @@ mapper 或绕过 owner 的 UI caller，IPC script 对照 Rust handler 参数、T
 `+page.svelte` 保留 view/scroll 与 dialog/loading/menu 状态、model sync、resume target/auto-restore、
 新会话入口及非 chat-event teardown；ask/input 分流、会话启动恢复和滚动/observer 生命周期分别由
 `chatAskInteraction`、`chatSessionStartup`、`chatViewController` 拥有，在 mount 时按 listener-ready 顺序
-接线并在 destroy 时 dispose。旧 `sessionMessages.ts`、
-`sessionUsage.ts` 仅保留兼容投影，`streamAggregator.ts` 只负责排队后 dispatch chunk action
+接线并在 destroy 时 dispose。消息状态由 `sessionReducer` 拥有，`sessionUsage.ts` 是当前共享 usage
+投影模块；`streamAggregator.ts` 只负责排队后 dispatch chunk action
 （ADR 0160、0313、0315、0320、0322）。阶段 8 的命令 contract 生成与聊天编排范围已完成（ADR 0394）；尚未逐域审计的事件运行时校验、授权策略与页面局部状态仍由各自领域按变更和风险持续审查，不是待完成的跨域 codegen/总 controller 阶段，也不据此机械拆页。
 `ModelSettings.svelte` 仍拥有命名模型和 Provider CRUD 编排；活跃 discovery command 现统一经过
 `modelDiscoveryCommands.ts`（ADR 0368），页面仍负责缓存数据的 settings 投影与刷新交互。ToolsView 的

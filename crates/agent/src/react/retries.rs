@@ -26,15 +26,15 @@ pub(crate) struct ResponsePolicy;
 impl ResponsePolicy {
     pub(crate) fn classify(
         thought: &Option<String>,
-        actions: &[Action],
+        tool_calls: &[ToolCall],
         response: &LlmResponse,
         state: ResponsePolicyState,
     ) -> AfterLlmAction {
         // An incomplete arguments object is the one response shape that is
         // safe and useful to retry automatically. Never dispatch placeholders.
-        let incomplete_tool_args = actions
+        let incomplete_tool_args = tool_calls
             .iter()
-            .any(|action| !action.is_final && action.tool_input.is_null());
+            .any(|tool_call| !tool_call.is_final && tool_call.tool_input.is_null());
         if incomplete_tool_args {
             if !state.pending_ask
                 && response.web_search_calls.is_empty()
@@ -49,12 +49,13 @@ impl ResponsePolicy {
             };
         }
 
-        let empty = thought.is_none() && actions.is_empty() && response.web_search_calls.is_empty();
+        let empty =
+            thought.is_none() && tool_calls.is_empty() && response.web_search_calls.is_empty();
         if empty {
             if state.pending_ask && response.finish_reason == Some(FinishReason::Stop) {
                 return AfterLlmAction::Accept;
             }
-            let reason = if Self::has_normal_finish(response, actions) {
+            let reason = if Self::has_normal_finish(response, tool_calls) {
                 "模型返回了空响应；已保留当前输出，可点击“继续生成”重试。".into()
             } else {
                 Self::abnormal_finish_reason(response)
@@ -62,7 +63,7 @@ impl ResponsePolicy {
             return AfterLlmAction::Fail { reason };
         }
 
-        if !Self::has_normal_finish(response, actions) {
+        if !Self::has_normal_finish(response, tool_calls) {
             return AfterLlmAction::Fail {
                 reason: Self::abnormal_finish_reason(response),
             };
@@ -71,10 +72,10 @@ impl ResponsePolicy {
         AfterLlmAction::Accept
     }
 
-    fn has_normal_finish(response: &LlmResponse, actions: &[Action]) -> bool {
+    fn has_normal_finish(response: &LlmResponse, tool_calls: &[ToolCall]) -> bool {
         match response.finish_reason {
             Some(FinishReason::Stop) => true,
-            Some(FinishReason::ToolCalls | FinishReason::FunctionCall) => !actions.is_empty(),
+            Some(FinishReason::ToolCalls | FinishReason::FunctionCall) => !tool_calls.is_empty(),
             Some(FinishReason::Length | FinishReason::ContentFilter) | None => false,
         }
     }
@@ -156,7 +157,7 @@ mod tests {
 
     #[test]
     fn incomplete_tool_args_retry_only_within_budget() {
-        let actions = [Action {
+        let tool_calls = [ToolCall {
             tool_name: "files".into(),
             tool_input: serde_json::Value::Null,
             is_final: false,
@@ -165,12 +166,12 @@ mod tests {
         let response = resp("", Some(FinishReason::ToolCalls));
 
         assert!(matches!(
-            ResponsePolicy::classify(&None, &actions, &response, state(0, 2, false)),
+            ResponsePolicy::classify(&None, &tool_calls, &response, state(0, 2, false)),
             AfterLlmAction::RetryIncompleteToolArgs { .. }
         ));
         for retry_state in [state(2, 2, false), state(0, 2, true)] {
             assert!(matches!(
-                ResponsePolicy::classify(&None, &actions, &response, retry_state),
+                ResponsePolicy::classify(&None, &tool_calls, &response, retry_state),
                 AfterLlmAction::Fail { .. }
             ));
         }
@@ -178,7 +179,7 @@ mod tests {
 
     #[test]
     fn complete_tool_calls_accept_provider_tool_finish_reasons() {
-        let action = Action {
+        let tool_call = ToolCall {
             tool_name: "files".into(),
             tool_input: serde_json::json!({"path":"a.txt"}),
             is_final: false,
@@ -188,7 +189,7 @@ mod tests {
             assert_eq!(
                 ResponsePolicy::classify(
                     &None,
-                    std::slice::from_ref(&action),
+                    std::slice::from_ref(&tool_call),
                     &resp("", Some(finish)),
                     state(0, 2, false),
                 ),

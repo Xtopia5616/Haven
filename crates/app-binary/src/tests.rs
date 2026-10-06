@@ -2,7 +2,7 @@
 
 use crate::bootstrap::to_tauri_shortcut;
 use crate::desktop::TrayStatus;
-use crate::event_bridge::{TauriEmitter, project_action_event};
+use crate::event_bridge::{TauriEmitter, project_tool_run_event};
 use crate::events::*;
 use crate::handlers::{TRAY_ICON_SIZE, make_tray_icon};
 use haven_agent::{AgentEvent, SessionInfo, SessionStatus};
@@ -43,7 +43,7 @@ fn channel_maps_every_variant_to_expected_channel() {
             "agent:thought",
         ),
         (
-            AgentEvent::Action {
+            AgentEvent::ToolCall {
                 session_id: "t".into(),
                 tool_name: "read_file".into(),
                 input: json!({}),
@@ -51,11 +51,11 @@ fn channel_maps_every_variant_to_expected_channel() {
                 run_id: 1,
                 tool_call_id: None,
                 step_id: "step-1".into(),
-                action_index: 0,
+                tool_index: 0,
                 suppress_streamed_thought: false,
                 event_seq: None,
             },
-            "agent:action",
+            "agent:tool_call",
         ),
         (
             AgentEvent::Observation {
@@ -68,7 +68,7 @@ fn channel_maps_every_variant_to_expected_channel() {
                 tool_call_id: None,
                 ask_options: vec![],
                 step_id: "step-1".into(),
-                action_index: 0,
+                tool_index: 0,
                 outcome: "succeeded".into(),
                 idempotency: "idempotent".into(),
                 operation_scope: "session".into(),
@@ -310,8 +310,8 @@ fn thought_payload_uses_the_explicit_wire_dto() {
 }
 
 #[test]
-fn payload_adds_silent_to_action() {
-    let event = AgentEvent::Action {
+fn payload_adds_silent_to_tool_call() {
+    let event = AgentEvent::ToolCall {
         session_id: "t".into(),
         tool_name: "read_file".into(),
         input: json!({"silent": true, "path": "/tmp/x"}),
@@ -319,7 +319,7 @@ fn payload_adds_silent_to_action() {
         run_id: 1,
         tool_call_id: Some("call-1".into()),
         step_id: "step-1".into(),
-        action_index: 0,
+        tool_index: 0,
         suppress_streamed_thought: false,
         event_seq: Some(17),
     };
@@ -333,7 +333,7 @@ fn payload_adds_silent_to_action() {
 
 #[test]
 fn payload_never_silences_ask() {
-    let event = AgentEvent::Action {
+    let event = AgentEvent::ToolCall {
         session_id: "t".into(),
         tool_name: "ask".into(),
         input: json!({"silent": true}),
@@ -341,7 +341,7 @@ fn payload_never_silences_ask() {
         run_id: 1,
         tool_call_id: None,
         step_id: "step-1".into(),
-        action_index: 0,
+        tool_index: 0,
         suppress_streamed_thought: false,
         event_seq: None,
     };
@@ -466,12 +466,12 @@ fn payload_preserves_session_lifecycle_and_error_wire_shapes() {
 }
 
 #[test]
-fn action_projection_maps_scheduled_progress_to_the_public_contract() {
-    let (_, result) = project_action_event(
-        ActionKind::Scheduled,
-        "action:updated",
+fn tool_run_projection_maps_scheduled_progress_to_the_public_contract() {
+    let (_, result) = project_tool_run_event(
+        ToolRunKind::Scheduled,
+        "tool_run:updated",
         &json!({
-            "id": "act-1",
+            "id": "toolrun-1",
             "status": "running",
             "tool_name": "notify",
             "tool_args": {"secret": "hidden"},
@@ -480,25 +480,27 @@ fn action_projection_maps_scheduled_progress_to_the_public_contract() {
     .expect("scheduled progress event is supported");
     assert_eq!(
         result.unwrap().status,
-        Some(haven_common::ActionStatus::Running)
+        Some(haven_common::ToolRunStatus::Running)
     );
 
     let event =
-        ActionEvent::scheduled_from_value(&json!({"id": "act-1", "status": "waiting"}), true)
+        ToolRunEvent::scheduled_from_value(&json!({"id": "toolrun-1", "status": "waiting"}), true)
             .expect("valid cancellation payload");
-    assert_eq!(event.status, Some(haven_common::ActionStatus::Cancelled));
+    assert_eq!(event.status, Some(haven_common::ToolRunStatus::Cancelled));
 }
 
 #[test]
-fn action_projection_drops_unknown_events_and_malformed_payloads() {
-    assert!(project_action_event(ActionKind::Background, "action:unknown", &json!({})).is_none());
+fn tool_run_projection_drops_unknown_events_and_malformed_payloads() {
+    assert!(
+        project_tool_run_event(ToolRunKind::Background, "action:unknown", &json!({})).is_none()
+    );
 
-    let (_, result) = project_action_event(
-        ActionKind::Background,
-        "action:finished",
+    let (_, result) = project_tool_run_event(
+        ToolRunKind::Background,
+        "tool_run:finished",
         &json!({"status": "completed"}),
     )
-    .expect("known action event");
+    .expect("known ToolRun event");
     assert!(result.is_err());
 }
 

@@ -802,7 +802,7 @@ mod tests {
     }
 
     #[test]
-    fn test_list_actions_returns_most_recent_first() {
+    fn test_list_tool_runs_returns_most_recent_first() {
         let db = create_db();
         let first = db.create_session("first").unwrap();
         let second = db.create_session("second").unwrap();
@@ -843,7 +843,7 @@ mod tests {
     }
 
     #[test]
-    fn test_list_actions_default() {
+    fn test_list_tool_runs_default() {
         let db = create_db();
         db.create_session("a").unwrap();
         db.create_session("b").unwrap();
@@ -854,7 +854,7 @@ mod tests {
     }
 
     #[test]
-    fn test_list_actions_limit_offset() {
+    fn test_list_tool_runs_limit_offset() {
         let db = create_db();
         for i in 0..5 {
             db.create_session(&format!("ses-{}", i)).unwrap();
@@ -870,7 +870,7 @@ mod tests {
     }
 
     #[test]
-    fn test_list_actions_caching() {
+    fn test_list_tool_runs_caching() {
         let db = create_db();
         db.create_session("a").unwrap();
         let first = db.list_sessions(50, 0).unwrap();
@@ -1018,7 +1018,7 @@ mod tests {
     }
 
     #[test]
-    fn test_clear_actions_empty() {
+    fn test_clear_tool_runs_empty() {
         let db = create_db();
         let count = db.clear_sessions().unwrap();
         assert_eq!(count, 0);
@@ -1108,7 +1108,7 @@ mod tests {
     }
 
     #[test]
-    fn test_delete_old_actions_keeps_recent() {
+    fn test_delete_old_tool_runs_keeps_recent() {
         let db = create_db();
         db.create_session("a").unwrap();
 

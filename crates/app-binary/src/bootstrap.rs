@@ -4,7 +4,7 @@ use crate::app_state::AppState;
 use crate::autostart;
 use crate::commands;
 use crate::desktop::TrayStatus;
-use crate::event_bridge::{TauriEmitter, emit_action_event};
+use crate::event_bridge::{TauriEmitter, emit_tool_run_event};
 use crate::events::*;
 use crate::handlers::{HavenInputHandler, HavenShellHandler, make_tray_icon};
 use crate::logging::init_tracing;
@@ -61,7 +61,7 @@ pub(crate) fn project_interaction(
         summary: None,
         permission_key: None,
         invocation_step_id: None,
-        action_index: None,
+        tool_index: None,
         tool_call_id: None,
         created_at: request.created_at.clone(),
         expires_at: request.expires_at.clone(),
@@ -72,7 +72,7 @@ pub(crate) fn project_interaction(
         }
         haven_agent::InteractionDetails::Confirm {
             step_id,
-            action_index,
+            tool_index,
             tool_call_id,
             tool_name,
             tool_input,
@@ -89,7 +89,7 @@ pub(crate) fn project_interaction(
                 .as_ref()
                 .map(|receipt| receipt.capability.to_string());
             event.invocation_step_id = (!step_id.is_empty()).then(|| step_id.clone());
-            event.action_index = Some(*action_index);
+            event.tool_index = Some(*tool_index);
             event.tool_call_id = (!tool_call_id.is_empty()).then(|| tool_call_id.clone());
         }
         haven_agent::InteractionDetails::ScheduledConfirm {
@@ -334,19 +334,19 @@ pub(crate) fn run() {
                 });
             }
 
-            // Project the single ActionService lifecycle stream into the
-            // explicit action IPC DTO before it reaches the frontend.
-            // Background and scheduled actions use one stable `id` field and
+            // Project the single ToolRunService lifecycle stream into the
+            // explicit ToolRun IPC DTO before it reaches the frontend.
+            // Background and scheduled tool_runs use one stable `id` field and
             // never expose dynamic tool args, continuation prompts, or
             // output-log paths.
-            let action_sink_handle = handle.clone();
-                    state.runtime.services.actions.set_event_sink(Arc::new(
+            let tool_run_sink_handle = handle.clone();
+                    state.runtime.services.tool_runs.set_event_sink(Arc::new(
                 move |event: String, payload: serde_json::Value| {
                     let kind = match payload.get("kind").and_then(|value| value.as_str()) {
-                        Some("scheduled") => ActionKind::Scheduled,
-                        _ => ActionKind::Background,
+                        Some("scheduled") => ToolRunKind::Scheduled,
+                        _ => ToolRunKind::Background,
                     };
-                    emit_action_event(&action_sink_handle, kind, &event, &payload);
+                    emit_tool_run_event(&tool_run_sink_handle, kind, &event, &payload);
                 },
             ));
 
@@ -657,10 +657,10 @@ pub(crate) fn run() {
             commands::session::get_last_conversation,
             commands::session::get_sessions,
             commands::session::get_session_lineage,
-            commands::action::list_actions,
-            commands::action::cancel_action,
-            commands::action::list_action_history,
-            commands::action::delete_action,
+            commands::tool_runs::list_tool_runs,
+            commands::tool_runs::cancel_tool_run,
+            commands::tool_runs::list_tool_run_history,
+            commands::tool_runs::delete_tool_run,
             commands::session::end_session,
             commands::session::interrupt_session,
             commands::session::resolve_confirmation,

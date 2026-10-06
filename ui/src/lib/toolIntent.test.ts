@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
-	actionIntentLabel,
+	toolRunIntentLabel,
 	hasToolPreambleBefore,
 	hasToolPreambleInBlock,
 	TOOL_INTENT_FALLBACK,
@@ -8,9 +8,9 @@ import {
 
 describe('tool intent policy', () => {
 	it('uses the first non-empty action description and falls back when absent', () => {
-		expect(actionIntentLabel({ title: '整理下载目录' })).toBe('整理下载目录');
-		expect(actionIntentLabel({ title: '  ', body: '安装依赖' })).toBe('安装依赖');
-		expect(actionIntentLabel({})).toBe(TOOL_INTENT_FALLBACK);
+		expect(toolRunIntentLabel({ title: '整理下载目录' })).toBe('整理下载目录');
+		expect(toolRunIntentLabel({ title: '  ', body: '安装依赖' })).toBe('安装依赖');
+		expect(toolRunIntentLabel({})).toBe(TOOL_INTENT_FALLBACK);
 	});
 
 	it('does not treat reasoning as a visible tool preamble', () => {

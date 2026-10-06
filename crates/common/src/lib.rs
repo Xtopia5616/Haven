@@ -1,5 +1,3 @@
-#[doc(hidden)]
-pub mod action_lease;
 pub mod config;
 pub mod encoding;
 pub mod error;
@@ -11,6 +9,8 @@ pub mod media_detection;
 pub mod prompts;
 pub mod retry;
 pub mod text;
+#[doc(hidden)]
+pub mod tool_run_lease;
 pub mod tools;
 pub mod types;
 pub mod workspace;
@@ -41,7 +41,7 @@ pub use tools::{
     ToolPresentation, ToolPrompt, ToolRetrySafety, ToolSource,
 };
 
-pub use lifecycle::{ActionStatus, SessionStatus, SessionWaitingReason};
+pub use lifecycle::{SessionStatus, SessionWaitingReason, ToolRunStatus};
 pub use types::{
     CacheAccounting, CanonicalMessage, CanonicalRole, CanonicalToolCall, ContentPart, FollowUp,
     InjectSource, LlmCallKind, MessageAttachment, PEER_KICKOFF_PREFIX,

@@ -1,12 +1,12 @@
 //! Live tool-output preview for foreground tools (esp. shell).
 //!
-//! Mirrors the background `action:output` channel: while a tool runs, a
+//! Mirrors the background `tool_run:output` channel: while a tool runs, a
 //! bounded stdout/stderr tail is pushed periodically as `agent:tool_output`
 //! so the chat tool card can expand and show progress. Final observation
 //! remains the LLM/canonical authority; these events are UI-only.
 
-use crate::action_output::{
-    ActionOutputPort, ActionOutputTail, ActionTailFactory, ActionTailSnapshot,
+use crate::tool_run_output::{
+    ToolRunOutputPort, ToolRunOutputTail, ToolRunTailFactory, ToolRunTailSnapshot,
 };
 use crate::{EventSink, EventSinkState};
 use serde_json::json;
@@ -19,11 +19,11 @@ use tokio::sync::RwLock;
 /// [`LiveOutputHub::set_event_sink`].
 pub struct LiveOutputHub {
     event_sink: EventSinkState,
-    /// Shared policy owned by ActionService; this hub only emits the
+    /// Shared policy owned by ToolRunService; this hub only emits the
     /// foreground tool-card projection.
-    tail_factory: ActionTailFactory,
+    tail_factory: ToolRunTailFactory,
     /// Cadence of `agent:tool_output` events while a tool produces output.
-    /// Slightly snappier than background actions because the user is watching
+    /// Slightly snappier than background ToolRuns because the user is watching
     /// the active tool card.
     emit_interval: RwLock<Duration>,
 }
@@ -36,10 +36,10 @@ impl Default for LiveOutputHub {
 
 impl LiveOutputHub {
     pub fn new() -> Self {
-        Self::with_tail_factory(ActionOutputPort::new().tail_factory())
+        Self::with_tail_factory(ToolRunOutputPort::new().tail_factory())
     }
 
-    pub(crate) fn with_tail_factory(tail_factory: ActionTailFactory) -> Self {
+    pub(crate) fn with_tail_factory(tail_factory: ToolRunTailFactory) -> Self {
         Self {
             event_sink: EventSinkState::default(),
             tail_factory,
@@ -56,13 +56,13 @@ impl LiveOutputHub {
         limits: &haven_common::config::ContextLimitsConfig,
     ) {
         // Foreground cards use a bounded, faster cadence than background
-        // actions. The setting remains the source of truth, but a large
+        // ToolRuns. The setting remains the source of truth, but a large
         // background interval must not make an active card look frozen.
-        let bg_ms = limits.background_job_output_emit_interval_ms.max(100);
+        let bg_ms = limits.background_tool_run_output_emit_interval_ms.max(100);
         *self.emit_interval.write().await = Duration::from_millis((bg_ms / 4).clamp(100, 250));
     }
 
-    pub(crate) async fn new_tail(&self) -> ActionOutputTail {
+    pub(crate) async fn new_tail(&self) -> ToolRunOutputTail {
         self.tail_factory.new_tail().await
     }
 
@@ -92,7 +92,7 @@ impl LiveOutputHub {
         self: &Arc<Self>,
         session_id: String,
         step_id: String,
-        tail: ActionOutputTail,
+        tail: ToolRunOutputTail,
         running: Arc<std::sync::atomic::AtomicBool>,
         emit_interval: Duration,
     ) {
@@ -102,8 +102,8 @@ impl LiveOutputHub {
         let hub = Arc::clone(self);
         tokio::spawn(async move {
             // Compare by value: a capped sliding window can change content
-            // without changing length (same freeze as background actions).
-            let mut last_output = ActionTailSnapshot::default();
+            // without changing length (same freeze as background ToolRuns).
+            let mut last_output = ToolRunTailSnapshot::default();
             loop {
                 if !running.load(std::sync::atomic::Ordering::Relaxed) {
                     return;
@@ -222,14 +222,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn foreground_and_background_tails_share_action_service_policy() {
-        let actions = crate::ActionService::new();
+    async fn foreground_and_background_tails_share_tool_run_service_policy() {
+        let tool_runs = crate::ToolRunService::new();
         let limits = haven_common::config::ContextLimitsConfig {
-            background_job_tail_max_chars: 3,
+            background_tool_run_tail_max_chars: 3,
             ..Default::default()
         };
-        actions.set_limits(&limits).await;
-        let tail_factory = actions.output_tail_factory();
+        tool_runs.set_limits(&limits).await;
+        let tail_factory = tool_runs.output_tail_factory();
         let hub = LiveOutputHub::with_tail_factory(tail_factory.clone());
 
         let foreground_tail = hub.new_tail().await;
@@ -243,14 +243,14 @@ mod tests {
 
     #[tokio::test]
     async fn spawn_tail_emitter_pushes_when_content_slides_at_same_len() {
-        let actions = crate::ActionService::new();
+        let tool_runs = crate::ToolRunService::new();
         let limits = haven_common::config::ContextLimitsConfig {
-            background_job_tail_max_chars: 64,
+            background_tool_run_tail_max_chars: 64,
             ..Default::default()
         };
-        actions.set_limits(&limits).await;
+        tool_runs.set_limits(&limits).await;
         let hub = Arc::new(LiveOutputHub::with_tail_factory(
-            actions.output_tail_factory(),
+            tool_runs.output_tail_factory(),
         ));
         let hits = Arc::new(AtomicUsize::new(0));
         let last = Arc::new(Mutex::new(String::new()));

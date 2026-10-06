@@ -15,7 +15,7 @@ function mapAgentEvent<K extends AgentEventName>(event: TauriEvent<unknown> & { 
 describe('agent IPC contract', () => {
 	it('maps execution identity fields to camelCase', () => {
 		const event = mapAgentEvent({
-			event: 'agent:action',
+			event: 'agent:tool_call',
 			id: 1,
 			payload: {
 				session_id: 'ses-1',
@@ -24,7 +24,7 @@ describe('agent IPC contract', () => {
 				step_number: 3,
 				run_id: 2,
 				tool_call_id: 'call-1',
-				action_index: 0,
+				tool_index: 0,
 				step_id: 'step-1',
 				suppress_streamed_thought: false,
 				silent: true,
@@ -38,7 +38,7 @@ describe('agent IPC contract', () => {
 			stepNumber: 3,
 			runId: 2,
 			toolCallId: 'call-1',
-			actionIndex: 0,
+			toolIndex: 0,
 			stepId: 'step-1',
 			suppressStreamedThought: false,
 			silent: true,
@@ -202,7 +202,7 @@ describe('agent IPC contract', () => {
 				run_id: 2,
 				silent: false,
 				tool_call_id: 'call-1',
-				action_index: 0,
+				tool_index: 0,
 				ask_options: [],
 				step_id: 'step-1',
 				outcome: 'unknown',
@@ -246,7 +246,7 @@ describe('agent IPC contract', () => {
 			run_id: 1,
 			silent: false,
 			tool_call_id: null,
-			action_index: 0,
+			tool_index: 0,
 			ask_options: [],
 			step_id: 'step-1',
 			outcome: 'succeeded',
@@ -276,23 +276,23 @@ describe('agent IPC contract', () => {
 			mapAgentEventContract({ event: 'agent:observation', id: 1, payload: missingResult }),
 		).toBeNull();
 
-		const actionPayload: Record<string, unknown> = {
+		const toolRunPayload: Record<string, unknown> = {
 			session_id: 'ses-1',
 			tool_name: 'files.read',
 			input: {},
 			step_number: 1,
 			run_id: 1,
-			action_index: 0,
+			tool_index: 0,
 			step_id: 'step-1',
 			suppress_streamed_thought: false,
 			silent: false,
 		};
 		expect(
-			mapAgentEventContract({ event: 'agent:action', id: 1, payload: actionPayload }),
+			mapAgentEventContract({ event: 'agent:tool_call', id: 1, payload: toolRunPayload }),
 		).toBeNull();
-		actionPayload.tool_call_id = null;
+		toolRunPayload.tool_call_id = null;
 		expect(
-			mapAgentEventContract({ event: 'agent:action', id: 1, payload: actionPayload }),
+			mapAgentEventContract({ event: 'agent:tool_call', id: 1, payload: toolRunPayload }),
 		).not.toBeNull();
 	});
 
@@ -304,7 +304,7 @@ describe('agent IPC contract', () => {
 			step_number: 1,
 			run_id: 1,
 			silent: false,
-			action_index: 0,
+			tool_index: 0,
 			ask_options: [],
 			step_id: 'step-1',
 			outcome: 'future_outcome',
@@ -419,24 +419,24 @@ describe('agent IPC contract', () => {
 		expect(event.payload).toEqual({ title: '操作已完成', body: '结果' });
 	});
 
-	it('maps marked action completions without relaxing generic session validation', () => {
+	it('maps marked ToolRun completions without relaxing generic session validation', () => {
 		const scheduled = mapAgentEvent({
 			event: 'notification:show',
 			id: 12,
 			payload: {
 				title: '任务完成',
 				body: '结果',
-				notification_kind: 'action_completion',
-				action_kind: 'scheduled',
-				action_id: 'act-scheduled',
+				notification_kind: 'tool_run_completion',
+				tool_run_kind: 'scheduled',
+				tool_run_id: 'toolrun-scheduled',
 			},
 		});
 		expect(scheduled.payload).toEqual({
 			title: '任务完成',
 			body: '结果',
-			notificationKind: 'action_completion',
-			actionKind: 'scheduled',
-			actionId: 'act-scheduled',
+			notificationKind: 'tool_run_completion',
+			toolRunKind: 'scheduled',
+			toolRunId: 'toolrun-scheduled',
 		});
 
 		const background = mapAgentEvent({
@@ -446,17 +446,17 @@ describe('agent IPC contract', () => {
 				session_id: 'ses-background',
 				title: '后台任务失败',
 				body: '执行失败',
-				notification_kind: 'action_completion',
-				action_kind: 'background',
-				action_id: 'act-background',
-				action_status: 'failed',
+				notification_kind: 'tool_run_completion',
+				tool_run_kind: 'background',
+				tool_run_id: 'toolrun-background',
+				tool_run_status: 'failed',
 			},
 		});
 		expect(background.payload).toMatchObject({
 			sessionId: 'ses-background',
-			actionKind: 'background',
-			actionId: 'act-background',
-			actionStatus: 'failed',
+			toolRunKind: 'background',
+			toolRunId: 'toolrun-background',
+			toolRunStatus: 'failed',
 		});
 
 		for (const payload of [
@@ -471,28 +471,28 @@ describe('agent IPC contract', () => {
 				session_id: '',
 				title: 'x',
 				body: 'y',
-				notification_kind: 'action_completion',
-				action_kind: 'background',
-				action_id: 'act-1',
-				action_status: 'failed',
+				notification_kind: 'tool_run_completion',
+				tool_run_kind: 'background',
+				tool_run_id: 'toolrun-1',
+				tool_run_status: 'failed',
 			},
 			{
 				session_id: 'ses-1',
 				title: 'x',
 				body: 'y',
-				notification_kind: 'action_completion',
-				action_kind: 'scheduled',
-				action_id: 'act-1',
-				action_status: 'failed',
+				notification_kind: 'tool_run_completion',
+				tool_run_kind: 'scheduled',
+				tool_run_id: 'toolrun-1',
+				tool_run_status: 'failed',
 			},
 			{
 				session_id: 'ses-1',
 				title: 'x',
 				body: 'y',
-				notification_kind: 'action_completion',
-				action_kind: 'background',
-				action_id: 'act-1',
-				action_status: 'cancelled',
+				notification_kind: 'tool_run_completion',
+				tool_run_kind: 'background',
+				tool_run_id: 'toolrun-1',
+				tool_run_status: 'cancelled',
 			},
 		]) {
 			expect(

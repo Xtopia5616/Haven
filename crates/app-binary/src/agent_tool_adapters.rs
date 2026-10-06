@@ -31,7 +31,7 @@ pub(crate) fn agent_tool_ports_from_manager(tools: Arc<ToolsManager>) -> AgentTo
         adapter.clone(),
         Arc::clone(&catalog),
         services.authorization,
-        services.actions,
+        services.tool_runs,
         adapter.clone(),
         adapter.clone(),
         adapter,

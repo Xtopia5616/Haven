@@ -74,7 +74,7 @@ impl ReActEngine {
                 reasoning,
                 web_search_calls: Vec::new(),
                 thinking_blocks,
-                action_cards: Vec::new(),
+                tool_call_cards: Vec::new(),
                 persist_text_id,
             });
         }

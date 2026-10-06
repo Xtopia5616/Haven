@@ -29,7 +29,7 @@ describe('buildResumeMessages', () => {
 			steps: [
 				{
 					id: 'step-unknown',
-					action_tool: 'write_file',
+					tool_name: 'write_file',
 					status: 'unknown',
 					observation: 'may have run',
 					created_at: '2026-09-07T00:00:00.000Z',
@@ -105,7 +105,7 @@ describe('buildResumeMessages', () => {
 		expect(items[1]).toMatchObject({ id: 'mt', voice: false });
 	});
 
-	it('adds tool badges from steps with action_tool', () => {
+	it('adds tool badges from steps with tool_name', () => {
 		const items = buildResumeMessages({
 			session: sampleSession,
 			messages: [
@@ -121,7 +121,7 @@ describe('buildResumeMessages', () => {
 			steps: [
 				{
 					id: 'step-s1',
-					action_tool: 'files',
+					tool_name: 'files',
 					observation: '{"ok":true}',
 					thought: null,
 					step_number: 1,
@@ -162,8 +162,8 @@ describe('buildResumeMessages', () => {
 			steps: [
 				{
 					id: 'step-view',
-					action_tool: 'files.read',
-					action_input: '{"path":"notes.md"}',
+					tool_name: 'files.read',
+					tool_input: '{"path":"notes.md"}',
 					observation: '{"operation":"read","path":"notes.md","content":"ok"}',
 					thought: null,
 					step_number: 1,
@@ -187,7 +187,7 @@ describe('buildResumeMessages', () => {
 			steps: [
 				{
 					id: 'step-file',
-					action_tool: 'file',
+					tool_name: 'file',
 					observation: '{"content":"old"}',
 					thought: null,
 					step_number: 1,
@@ -195,7 +195,7 @@ describe('buildResumeMessages', () => {
 				},
 				{
 					id: 'step-search',
-					action_tool: 'file_search',
+					tool_name: 'file_search',
 					observation: '{"results":[]}',
 					thought: null,
 					step_number: 2,
@@ -203,8 +203,8 @@ describe('buildResumeMessages', () => {
 				},
 				{
 					id: 'step-schedule',
-					action_tool: 'scheduled_action',
-					observation: '{"scheduled_actions":[]}',
+					tool_name: 'scheduled_tool_run',
+					observation: '{"scheduled_tool_runs":[]}',
 					thought: null,
 					step_number: 3,
 					created_at: '2026-08-01T10:03:00Z',
@@ -214,7 +214,7 @@ describe('buildResumeMessages', () => {
 		expect(items.map((item) => item.toolName)).toEqual([
 			'file',
 			'file_search',
-			'scheduled_action',
+			'scheduled_tool_run',
 		]);
 	});
 
@@ -242,8 +242,8 @@ describe('buildResumeMessages', () => {
 			steps: [
 				{
 					id: 'step-s1',
-					action_tool: 'shell',
-					action_input: '{"cmd":"dir"}',
+					tool_name: 'shell',
+					tool_input: '{"cmd":"dir"}',
 					observation: '{"output":"ok"}',
 					thought: null,
 					step_number: 1,
@@ -260,7 +260,7 @@ describe('buildResumeMessages', () => {
 		});
 	});
 
-	it('carries action_input onto tool cards as toolArgs', () => {
+	it('carries tool_input onto tool cards as toolArgs', () => {
 		const items = buildResumeMessages({
 			session: sampleSession,
 			messages: [
@@ -276,8 +276,8 @@ describe('buildResumeMessages', () => {
 			steps: [
 				{
 					id: 'step-s1',
-					action_tool: 'mcp__filesystem__read',
-					action_input: '{"path":"a.rs"}',
+					tool_name: 'mcp__filesystem__read',
+					tool_input: '{"path":"a.rs"}',
 					observation: '{"ok":true}',
 					thought: null,
 					step_number: 1,
@@ -320,8 +320,8 @@ describe('buildResumeMessages', () => {
 			steps: [
 				{
 					id: 's1',
-					action_tool: 'shell',
-					action_input: '{"command":"echo hi","silent":true}',
+					tool_name: 'shell',
+					tool_input: '{"command":"echo hi","silent":true}',
 					observation: '{"silent":true,"ok":true}',
 					thought: null,
 					silent: true,
@@ -339,8 +339,8 @@ describe('buildResumeMessages', () => {
 		});
 	});
 
-	it('assigns a stepNumber to the thought before a visible action step', () => {
-		// The action card is visible too, while the preceding thought still
+	it('assigns a stepNumber to the thought before a visible ToolCall step', () => {
+		// The ToolCall card is visible too, while the preceding thought still
 		// resolves to its step for rollback targeting.
 		const items = buildResumeMessages({
 			session: sampleSession,
@@ -373,7 +373,7 @@ describe('buildResumeMessages', () => {
 			steps: [
 				{
 					id: 't1',
-					action_tool: null,
+					tool_name: null,
 					thought: '稍等，我检查一下',
 					silent: false,
 					step_number: 1,
@@ -381,7 +381,7 @@ describe('buildResumeMessages', () => {
 				},
 				{
 					id: 's1',
-					action_tool: 'shell',
+					tool_name: 'shell',
 					observation: 'ok',
 					thought: null,
 					silent: true,
@@ -464,7 +464,7 @@ describe('buildResumeMessages', () => {
 			steps: [
 				{
 					id: 'step-s1',
-					action_tool: 'shell',
+					tool_name: 'shell',
 					observation: 'ok',
 					thought: null,
 					step_number: 1,
@@ -512,7 +512,7 @@ describe('buildResumeMessages', () => {
 			steps: [
 				{
 					id: 'step-s1',
-					action_tool: 'shell',
+					tool_name: 'shell',
 					observation: 'ok',
 					thought: null,
 					step_number: 1,
@@ -550,7 +550,7 @@ describe('buildResumeMessages', () => {
 			steps: [
 				{
 					id: 'step-s1',
-					action_tool: 'shell',
+					tool_name: 'shell',
 					observation: 'ok',
 					thought: null,
 					step_number: 1,
@@ -590,7 +590,7 @@ describe('buildResumeMessages', () => {
 			steps: [
 				{
 					id: 'step-s1',
-					action_tool: 'ask',
+					tool_name: 'ask',
 					observation: JSON.stringify({ ask: true }),
 					thought: null,
 					step_number: 1,
@@ -638,7 +638,7 @@ describe('buildResumeMessages', () => {
 			steps: [
 				{
 					id: 'step-s1',
-					action_tool: 'ask',
+					tool_name: 'ask',
 					observation: JSON.stringify({
 						ask: true,
 						question: '继续吗？',
@@ -695,7 +695,7 @@ describe('buildResumeMessages', () => {
 			steps: [
 				{
 					id: 'step-s1',
-					action_tool: 'ask',
+					tool_name: 'ask',
 					observation: 'Q1？',
 					thought: null,
 					step_number: 1,
@@ -703,7 +703,7 @@ describe('buildResumeMessages', () => {
 				},
 				{
 					id: 'step-s2',
-					action_tool: 'ask',
+					tool_name: 'ask',
 					observation: 'Q2？',
 					thought: null,
 					step_number: 2,
@@ -745,7 +745,7 @@ describe('buildResumeMessages', () => {
 			steps: [
 				{
 					id: 'step-t1',
-					action_tool: null,
+					tool_name: null,
 					thought: null,
 					silent: false,
 					step_number: 1,
@@ -784,7 +784,7 @@ describe('buildResumeMessages', () => {
 			steps: [
 				{
 					id: 'm3',
-					action_tool: null,
+					tool_name: null,
 					thought: null,
 					step_number: 2,
 					created_at: '2026-08-01T10:02:00Z',
@@ -823,7 +823,7 @@ describe('buildResumeMessages', () => {
 			steps: [
 				{
 					id: 'm3',
-					action_tool: null,
+					tool_name: null,
 					thought: null,
 					step_number: 2,
 					created_at: '2026-08-01T10:02:00Z',
@@ -859,7 +859,7 @@ describe('buildResumeMessages', () => {
 			steps: [
 				{
 					id: 'step-s1',
-					action_tool: 'ask',
+					tool_name: 'ask',
 					observation: JSON.stringify({
 						ask: true,
 						question: '继续吗？',
@@ -904,7 +904,7 @@ describe('buildResumeMessages', () => {
 			steps: [
 				{
 					id: 'step-s1',
-					action_tool: 'ask',
+					tool_name: 'ask',
 					observation: JSON.stringify({
 						ask: true,
 						question: '继续吗？',
@@ -1106,7 +1106,7 @@ describe('mergeLiveStreaming', () => {
 	});
 
 	it('keeps finalized step-* tool cards and drops transient web_search', () => {
-		// Continue resync can race the retry's Action/Observation and miss the
+		// Continue resync can race the retry's ToolCall/Observation and miss the
 		// pending step row for one frame; dropping step-* cards made post-resume
 		// tool calls vanish. web_search indicators are never persisted — drop.
 		const db = [{ id: 'm1', role: 'user', content: 'hi' }];

@@ -15,24 +15,24 @@ async fn invalid_tool_inputs_are_reported_without_repairing_arguments() {
 
     // Missing required fields is reported; validation never invents
     // side-effecting values.
-    let mut actions = vec![Action {
-        tool_name: "action_required".into(),
+    let mut tool_calls = vec![ToolCall {
+        tool_name: "tool_run_required".into(),
         tool_input: serde_json::json!({}),
         is_final: false,
         tool_call_id: Some("call_1".into()),
     }];
     let repaired = agent
         .react_engine
-        .validate_tool_inputs(&session.id, &mut actions)
+        .validate_tool_inputs(&session.id, &mut tool_calls)
         .await;
     assert_eq!(repaired.len(), 1);
-    let input = &actions[0].tool_input;
+    let input = &tool_calls[0].tool_input;
     assert_eq!(input, &serde_json::json!({}));
     assert!(repaired[0].render().contains("MISSING REQUIRED FIELD"));
 }
 
 #[tokio::test]
-async fn valid_tool_inputs_and_final_actions_have_no_validation_failures() {
+async fn valid_tool_inputs_and_final_tool_calls_have_no_validation_failures() {
     let tools = Arc::new(ToolsManager::new());
     tools
         .registry()
@@ -44,28 +44,28 @@ async fn valid_tool_inputs_and_final_actions_have_no_validation_failures() {
     let session = executor.create_session("do it").await.unwrap();
 
     // Complete call: no validation failure.
-    let mut actions = vec![Action {
-        tool_name: "action_required".into(),
+    let mut tool_calls = vec![ToolCall {
+        tool_name: "tool_run_required".into(),
         tool_input: serde_json::json!({"action": "stop", "query": "hi"}),
         is_final: false,
         tool_call_id: Some("call_1".into()),
     }];
     let repaired = agent
         .react_engine
-        .validate_tool_inputs(&session.id, &mut actions)
+        .validate_tool_inputs(&session.id, &mut tool_calls)
         .await;
     assert_eq!(repaired.len(), 0);
 
-    // Final actions are not validated in the tool batch.
-    let mut actions = vec![Action {
-        tool_name: "action_required".into(),
+    // Final tool_calls are not validated in the tool batch.
+    let mut tool_calls = vec![ToolCall {
+        tool_name: "tool_run_required".into(),
         tool_input: serde_json::json!({}),
         is_final: true,
         tool_call_id: None,
     }];
     let repaired = agent
         .react_engine
-        .validate_tool_inputs(&session.id, &mut actions)
+        .validate_tool_inputs(&session.id, &mut tool_calls)
         .await;
     assert_eq!(repaired.len(), 0);
 }
@@ -85,18 +85,18 @@ async fn null_tool_input_is_reported_without_repairing_arguments() {
     let (agent, executor) = make_test_agent_with(client, tools);
     let session = executor.create_session("do it").await.unwrap();
 
-    let mut actions = vec![Action {
-        tool_name: "action_required".into(),
+    let mut tool_calls = vec![ToolCall {
+        tool_name: "tool_run_required".into(),
         tool_input: serde_json::Value::Null,
         is_final: false,
         tool_call_id: Some("call_1".into()),
     }];
     let repaired = agent
         .react_engine
-        .validate_tool_inputs(&session.id, &mut actions)
+        .validate_tool_inputs(&session.id, &mut tool_calls)
         .await;
     assert_eq!(repaired.len(), 1);
-    assert_eq!(actions[0].tool_input, serde_json::Value::Null);
+    assert_eq!(tool_calls[0].tool_input, serde_json::Value::Null);
     assert!(repaired[0].render().contains("validation failed"));
 }
 
@@ -114,19 +114,19 @@ async fn null_valued_tool_fields_are_reported_without_repairing_arguments() {
     let (agent, executor) = make_test_agent_with(client, tools);
     let session = executor.create_session("do it").await.unwrap();
 
-    let mut actions = vec![Action {
-        tool_name: "action_required".into(),
+    let mut tool_calls = vec![ToolCall {
+        tool_name: "tool_run_required".into(),
         tool_input: serde_json::json!({"action": null, "query": null}),
         is_final: false,
         tool_call_id: Some("call_1".into()),
     }];
     let repaired = agent
         .react_engine
-        .validate_tool_inputs(&session.id, &mut actions)
+        .validate_tool_inputs(&session.id, &mut tool_calls)
         .await;
     assert_eq!(repaired.len(), 1);
     assert_eq!(
-        actions[0].tool_input,
+        tool_calls[0].tool_input,
         serde_json::json!({"action": null, "query": null})
     );
 }
@@ -143,7 +143,7 @@ async fn missing_enum_field_is_reported_without_guessing_a_value() {
     let (agent, executor) = make_test_agent_with(client, tools);
     let session = executor.create_session("do it").await.unwrap();
 
-    let mut actions = vec![Action {
+    let mut tool_calls = vec![ToolCall {
         tool_name: "enum_required".into(),
         tool_input: serde_json::json!({}),
         is_final: false,
@@ -151,10 +151,10 @@ async fn missing_enum_field_is_reported_without_guessing_a_value() {
     }];
     let repaired = agent
         .react_engine
-        .validate_tool_inputs(&session.id, &mut actions)
+        .validate_tool_inputs(&session.id, &mut tool_calls)
         .await;
     assert_eq!(repaired.len(), 1);
-    assert_eq!(actions[0].tool_input, serde_json::json!({}));
+    assert_eq!(tool_calls[0].tool_input, serde_json::json!({}));
     assert!(repaired[0].render().contains("operation"));
 }
 
@@ -176,19 +176,19 @@ async fn invalid_enum_value_is_reported_without_repairing_arguments() {
     let (agent, executor) = make_test_agent_with(client, tools);
     let session = executor.create_session("do it").await.unwrap();
 
-    let mut actions = vec![Action {
-        tool_name: "action_required".into(),
+    let mut tool_calls = vec![ToolCall {
+        tool_name: "tool_run_required".into(),
         tool_input: serde_json::json!({"action": "bogus", "query": "hi"}),
         is_final: false,
         tool_call_id: Some("call_1".into()),
     }];
     let repaired = agent
         .react_engine
-        .validate_tool_inputs(&session.id, &mut actions)
+        .validate_tool_inputs(&session.id, &mut tool_calls)
         .await;
     assert_eq!(repaired.len(), 1);
     assert_eq!(
-        actions[0].tool_input,
+        tool_calls[0].tool_input,
         serde_json::json!({"action": "bogus", "query": "hi"})
     );
 }
@@ -207,19 +207,19 @@ async fn wrong_type_tool_value_is_reported_without_repairing_arguments() {
     let (agent, executor) = make_test_agent_with(client, tools);
     let session = executor.create_session("do it").await.unwrap();
 
-    let mut actions = vec![Action {
-        tool_name: "action_required".into(),
+    let mut tool_calls = vec![ToolCall {
+        tool_name: "tool_run_required".into(),
         tool_input: serde_json::json!({"action": 42, "query": "hi"}),
         is_final: false,
         tool_call_id: Some("call_1".into()),
     }];
     let repaired = agent
         .react_engine
-        .validate_tool_inputs(&session.id, &mut actions)
+        .validate_tool_inputs(&session.id, &mut tool_calls)
         .await;
     assert_eq!(repaired.len(), 1);
     assert_eq!(
-        actions[0].tool_input,
+        tool_calls[0].tool_input,
         serde_json::json!({"action": 42, "query": "hi"})
     );
 }
@@ -238,18 +238,18 @@ async fn valid_enum_values_have_no_validation_failures() {
     let (agent, executor) = make_test_agent_with(client, tools);
     let session = executor.create_session("do it").await.unwrap();
 
-    let mut actions = vec![Action {
-        tool_name: "action_required".into(),
+    let mut tool_calls = vec![ToolCall {
+        tool_name: "tool_run_required".into(),
         tool_input: serde_json::json!({"action": "stop", "query": "hi"}),
         is_final: false,
         tool_call_id: Some("call_1".into()),
     }];
     let repaired = agent
         .react_engine
-        .validate_tool_inputs(&session.id, &mut actions)
+        .validate_tool_inputs(&session.id, &mut tool_calls)
         .await;
     assert_eq!(repaired.len(), 0);
-    assert_eq!(actions[0].tool_input["action"], "stop");
+    assert_eq!(tool_calls[0].tool_input["action"], "stop");
 }
 
 #[tokio::test]
@@ -267,7 +267,7 @@ async fn invalid_optional_field_is_reported_without_repairing_arguments() {
     let (agent, executor) = make_test_agent_with(client, tools);
     let session = executor.create_session("do it").await.unwrap();
 
-    let mut actions = vec![Action {
+    let mut tool_calls = vec![ToolCall {
         tool_name: "enum_with_optional".into(),
         tool_input: serde_json::json!({"operation": "type", "optional": "nope"}),
         is_final: false,
@@ -275,11 +275,11 @@ async fn invalid_optional_field_is_reported_without_repairing_arguments() {
     }];
     let repaired = agent
         .react_engine
-        .validate_tool_inputs(&session.id, &mut actions)
+        .validate_tool_inputs(&session.id, &mut tool_calls)
         .await;
     assert_eq!(repaired.len(), 1);
-    assert_eq!(actions[0].tool_input["operation"], "type");
-    assert_eq!(actions[0].tool_input["optional"], "nope");
+    assert_eq!(tool_calls[0].tool_input["operation"], "type");
+    assert_eq!(tool_calls[0].tool_input["optional"], "nope");
 }
 
 #[tokio::test]
@@ -288,7 +288,7 @@ async fn confirmation_recovery_matches_the_full_invocation_identity() {
     let client = Arc::new(FinalAnswerMock) as Arc<dyn LlmClient>;
     let (_agent, executor) = make_test_agent_with(client, tools);
     let session = executor.create_session("confirm").await.unwrap();
-    for (call_id, action_index, decision) in [("call-a", 0, true), ("call-b", 1, false)] {
+    for (call_id, tool_index, decision) in [("call-a", 0, true), ("call-b", 1, false)] {
         let mut request = crate::interaction::InteractionRequest::confirm(
             &session.id,
             3,
@@ -296,7 +296,7 @@ async fn confirmation_recovery_matches_the_full_invocation_identity() {
             serde_json::json!({"command":"same"}),
             call_id.into(),
             "step-3".into(),
-            action_index,
+            tool_index,
             RiskLevel::High,
             None,
         );

@@ -4,7 +4,7 @@ import { tick } from 'svelte';
 import ToolResultCard from './ToolResultCard.svelte';
 import GlobalContextMenu from './GlobalContextMenu.svelte';
 import { canRenderToolResult, parseToolResult } from './toolResultParsing.ts';
-import { actionStore, upsertAction } from './actionStore.ts';
+import { toolRunStore, upsertToolRun } from './toolRunStore.ts';
 import {
 	clearToolOutputPreview,
 	clearToolOutputPreviewsForSession,
@@ -64,13 +64,13 @@ describe('canRenderToolResult', () => {
 		expect(
 			canRenderToolResult(
 				'haven',
-				JSON.stringify({ operation: 'actions_list', status: 'running' }),
+				JSON.stringify({ operation: 'tool_runs_list', status: 'running' }),
 			),
 		).toBe(true);
 		expect(
 			canRenderToolResult(
 				'haven',
-				JSON.stringify({ operation: 'schedule_list', scheduled_actions: [] }),
+				JSON.stringify({ operation: 'schedule_list', scheduled_tool_runs: [] }),
 			),
 		).toBe(true);
 		expect(
@@ -82,7 +82,7 @@ describe('canRenderToolResult', () => {
 		expect(
 			canRenderToolResult(
 				'haven',
-				JSON.stringify({ operation: 'schedule_cancel', cancelled: 'act-1' }),
+				JSON.stringify({ operation: 'schedule_cancel', cancelled: 'toolrun-1' }),
 			),
 		).toBe(true);
 		expect(
@@ -113,8 +113,8 @@ describe('canRenderToolResult', () => {
 			canRenderToolResult(
 				'haven',
 				JSON.stringify({
-					operation: 'actions_cancel',
-					action_id: 'act-1',
+					operation: 'tool_runs_cancel',
+					tool_run_id: 'toolrun-1',
 					cancelled: true,
 				}),
 			),
@@ -469,9 +469,9 @@ describe('ToolResultCard shell / notify / generic', () => {
 		expect(screen.getByText('输出过长已截断')).toBeTruthy();
 	});
 
-	it('renders the exit code for a completed background shell action', async () => {
-		upsertAction({
-			id: 'act-shell-1',
+	it('renders the exit code for a completed background shell ToolRun', async () => {
+		upsertToolRun({
+			id: 'toolrun-shell-1',
 			kind: 'background',
 			status: 'completed',
 			output: 'command output',
@@ -479,13 +479,12 @@ describe('ToolResultCard shell / notify / generic', () => {
 		});
 		const { container } = render(ToolResultCard, {
 			toolName: 'shell',
-			actionId: 'act-shell-1',
+			toolRunId: 'toolrun-shell-1',
 			content: '',
 		});
 		await expandToolCard(container);
-		expect(container.querySelector('.tool-card-count')?.textContent).toContain(
-			'后台任务已完成',
-		);
+		expect(container.querySelector('.tool-header-state')?.textContent).toContain('执行成功');
+		expect(container.querySelector('.tool-card-count')?.textContent).toContain('后台任务已完成');
 		expect(screen.getByText('退出码 0')).toBeTruthy();
 		expect(screen.getByText('command output')).toBeTruthy();
 	});
@@ -515,7 +514,7 @@ describe('ToolResultCard shell / notify / generic', () => {
 });
 
 afterEach(() => {
-	actionStore.set({});
+	toolRunStore.set({});
 	clearToolOutputPreviewsForSession(null);
 });
 
@@ -606,7 +605,7 @@ describe('ToolResultCard source + args', () => {
 		expect(screen.getByText('"a.rs"')).toBeTruthy();
 	});
 
-	it('labels Skill tools and accepts resume action_input JSON strings', async () => {
+	it('labels Skill tools and accepts resume tool_input JSON strings', async () => {
 		const { container } = render(ToolResultCard, {
 			toolName: 'skill__weather',
 			content: JSON.stringify({ temp: 20 }),
@@ -920,18 +919,18 @@ describe('ToolResultCard system', () => {
 });
 
 describe('ToolResultCard haven aggregate', () => {
-	it('routes prefixed action operations to the action renderer', async () => {
+	it('routes ToolRun operations to their dedicated result renderer', async () => {
 		const { container } = render(ToolResultCard, {
 			toolName: 'haven',
 			content: JSON.stringify({
-				operation: 'actions_cancel',
-				action_id: 'act-2',
+				operation: 'tool_runs_cancel',
+				tool_run_id: 'toolrun-2',
 				cancelled: true,
 			}),
 		});
 		await expandToolCard(container);
 		expect(screen.getByText('已取消')).toBeTruthy();
-		expect(screen.getByText('act-2')).toBeTruthy();
+		expect(screen.getByText('toolrun-2')).toBeTruthy();
 	});
 });
 
@@ -1018,35 +1017,35 @@ describe('ToolResultCard process', () => {
 	});
 });
 
-describe('ToolResultCard actions', () => {
-	it('renders the action id with a completed badge', async () => {
+describe('ToolResultCard tool_runs', () => {
+	it('renders the ToolRun id with a completed badge', async () => {
 		const { container } = render(ToolResultCard, {
 			toolName: 'haven',
 			content: JSON.stringify({
-				operation: 'actions_list',
-				action_id: 'act-1',
+				operation: 'tool_runs_list',
+				tool_run_id: 'toolrun-1',
 				status: 'completed',
 				exit_code: 0,
 			}),
 		});
 		await expandToolCard(container);
-		expect(screen.getByText('act-1')).toBeTruthy();
+		expect(screen.getByText('toolrun-1')).toBeTruthy();
 		expect(screen.getByText('已完成')).toBeTruthy();
 		expect(screen.getByText('退出码 0')).toBeTruthy();
 	});
 
-	it('renders cancel results with an explicit action status', async () => {
+	it('renders cancel results with an explicit status', async () => {
 		const { container } = render(ToolResultCard, {
 			toolName: 'haven',
 			content: JSON.stringify({
-				operation: 'actions_cancel',
-				action_id: 'act-2',
+				operation: 'tool_runs_cancel',
+				tool_run_id: 'toolrun-2',
 				cancelled: true,
 			}),
 		});
 		await expandToolCard(container);
 		expect(screen.getByText('已取消')).toBeTruthy();
-		expect(screen.getByText('act-2')).toBeTruthy();
+		expect(screen.getByText('toolrun-2')).toBeTruthy();
 	});
 });
 
@@ -1207,7 +1206,7 @@ describe('ToolResultCard http', () => {
 		await expandToolCard(container);
 		expect(container.querySelector('.status-failed')).toBeTruthy();
 	});
-	it('renders a single scheduled action result with id, mode and fires_at', async () => {
+	it('renders a single scheduled tool result with id, mode and fires_at', async () => {
 		const { container } = render(ToolResultCard, {
 			toolName: 'haven',
 			content: JSON.stringify({
@@ -1227,11 +1226,11 @@ describe('ToolResultCard http', () => {
 	it('renders a schedule cancellation as a dedicated result', async () => {
 		const { container } = render(ToolResultCard, {
 			toolName: 'haven',
-			content: JSON.stringify({ operation: 'schedule_cancel', cancelled: 'act-42' }),
+			content: JSON.stringify({ operation: 'schedule_cancel', cancelled: 'toolrun-42' }),
 		});
 		await expandToolCard(container);
 		expect(screen.getByText('已取消')).toBeTruthy();
-		expect(screen.getByText('#act-42')).toBeTruthy();
+		expect(screen.getByText('#toolrun-42')).toBeTruthy();
 	});
 });
 

@@ -23,16 +23,16 @@
 //! - **Error partials**: `persist_partial_on_error` writes recovery-only rows
 //!   intentionally *outside* the event log so continue/rollback can truncate
 //!   them via `last_msg_at` without replaying a failed step.
-//! - **Terminal action-result**: no live loop left — history-only persist.
+//! - **Terminal ToolRun-result**: no live loop left — history-only persist.
 //! - Interaction lifecycle and waiting state are not transcript content. Ask
 //!   text exists once in the transcript; confirmation details live in the
 //!   renderer-safe interaction projection.
 
 use super::committed_ui::{
-    CommittedUi, StoredActionUi, StoredObservationUi, encode_transcript_payload,
+    CommittedUi, StoredObservationUi, StoredToolCallUi, encode_transcript_payload,
 };
 use super::*;
-use crate::types::{Action, TranscriptRecord, canonical_for_snapshot_with_media_inputs};
+use crate::types::{ToolCall, TranscriptRecord, canonical_for_snapshot_with_media_inputs};
 use haven_common::types::InjectSource;
 use haven_common::types::{CanonicalToolCall, MessageAttachment};
 use haven_memory::{CURRENT_EVENT_VERSION, SessionCommitted, SessionEvent, TRANSCRIPT_EVENT_TYPE};
@@ -47,14 +47,14 @@ struct TranscriptProjection {
     persisted_media_record: Option<TranscriptRecord>,
 }
 
-/// Pending Action card (+ step row) emitted from [`TranscriptEvent::ToolCall`].
+/// Pending ToolCall card (+ step row) emitted from [`TranscriptEvent::ToolCall`].
 #[derive(Debug, Clone)]
-pub(super) struct ActionCard {
+pub(super) struct ToolCallCard {
     pub tool_name: String,
     pub tool_input: Value,
     pub tool_call_id: Option<String>,
     pub step_id: String,
-    pub action_index: u32,
+    pub tool_index: u32,
     pub suppress_streamed_thought: bool,
     /// Resolved from the turn's immutable tool catalog snapshot. Keeping the
     /// result on the card prevents the transcript projection from reopening
@@ -70,7 +70,7 @@ pub(super) struct ObservationCard {
     pub tool_name: String,
     pub tool_call_id: Option<String>,
     pub step_id: String,
-    pub action_index: u32,
+    pub tool_index: u32,
     pub silent: bool,
     pub ask_options: Vec<String>,
     pub outcome: ToolExecutionOutcome,
@@ -99,7 +99,7 @@ pub(super) enum TranscriptEvent {
         reasoning: Option<String>,
         web_search_calls: Vec<serde_json::Value>,
         thinking_blocks: Vec<serde_json::Value>,
-        action_cards: Vec<ActionCard>,
+        tool_call_cards: Vec<ToolCallCard>,
         /// When `Some`, project `text` into `messages` under this id (final
         /// answer / synthetic text when Thought did not already project).
         persist_text_id: Option<String>,
@@ -108,8 +108,8 @@ pub(super) enum TranscriptEvent {
         canonical_observation: String,
         history_observation: String,
         tool_call_id: Option<String>,
-        action: Action,
-        action_index: u32,
+        tool_call: ToolCall,
+        tool_index: u32,
         step_id: String,
         observation_card: Option<Box<ObservationCard>>,
     },
@@ -162,18 +162,18 @@ impl TranscriptEvent {
                 canonical_observation,
                 history_observation,
                 tool_call_id,
-                action,
-                action_index,
+                tool_call,
+                tool_index,
                 step_id,
                 ..
             } => TranscriptRecord::ToolResult {
                 step_number,
-                action_index: *action_index,
+                tool_index: *tool_index,
                 step_id: step_id.clone(),
                 canonical_observation: canonical_observation.clone(),
                 history_observation: history_observation.clone(),
                 tool_call_id: tool_call_id.clone(),
-                action: action.clone(),
+                tool_call: tool_call.clone(),
             },
             Self::UserInject {
                 source,
@@ -219,11 +219,11 @@ impl TranscriptEvent {
 fn normalize_transcript_event(event: TranscriptEvent) -> anyhow::Result<TranscriptEvent> {
     match event {
         TranscriptEvent::UserInject {
-            source: InjectSource::ActionResult,
+            source: InjectSource::ToolRunResult,
             text: _,
             attachments: _,
             message_id: None,
-        } => anyhow::bail!("ActionResult transcript injection requires a stable message_id"),
+        } => anyhow::bail!("ToolRunResult transcript injection requires a stable message_id"),
         event => Ok(event),
     }
 }
@@ -255,21 +255,21 @@ fn media_record_for_inject(
 
 fn committed_ui_for(event: &TranscriptEvent) -> Option<CommittedUi> {
     match event {
-        TranscriptEvent::ToolCall { action_cards, .. } if !action_cards.is_empty() => {
-            Some(CommittedUi::Actions {
-                cards: action_cards
-                    .iter()
-                    .map(|card| StoredActionUi {
-                        tool_name: card.tool_name.clone(),
-                        tool_input: card.tool_input.clone(),
-                        tool_call_id: card.tool_call_id.clone(),
-                        step_id: card.step_id.clone(),
-                        action_index: card.action_index,
-                        suppress_streamed_thought: card.suppress_streamed_thought,
-                    })
-                    .collect(),
-            })
-        }
+        TranscriptEvent::ToolCall {
+            tool_call_cards, ..
+        } if !tool_call_cards.is_empty() => Some(CommittedUi::ToolCalls {
+            cards: tool_call_cards
+                .iter()
+                .map(|card| StoredToolCallUi {
+                    tool_name: card.tool_name.clone(),
+                    tool_input: card.tool_input.clone(),
+                    tool_call_id: card.tool_call_id.clone(),
+                    step_id: card.step_id.clone(),
+                    tool_index: card.tool_index,
+                    suppress_streamed_thought: card.suppress_streamed_thought,
+                })
+                .collect(),
+        }),
         TranscriptEvent::ToolResult {
             observation_card: Some(card),
             ..
@@ -278,7 +278,7 @@ fn committed_ui_for(event: &TranscriptEvent) -> Option<CommittedUi> {
                 tool_name: card.tool_name.clone(),
                 tool_call_id: card.tool_call_id.clone(),
                 step_id: card.step_id.clone(),
-                action_index: card.action_index,
+                tool_index: card.tool_index,
                 silent: card.silent,
                 ask_options: card.ask_options.clone(),
                 outcome: card.outcome.as_str().to_owned(),
@@ -362,7 +362,7 @@ impl ReActEngine {
             }
             TranscriptEvent::ToolCall {
                 text,
-                action_cards,
+                tool_call_cards,
                 persist_text_id,
                 ..
             } => {
@@ -375,11 +375,11 @@ impl ReActEngine {
                         Some("text".into()),
                     );
                 }
-                for card in action_cards {
-                    committed.project_action_step(
+                for card in tool_call_cards {
+                    committed.project_tool_call_step(
                         card.step_id.clone(),
                         ctx.step_num,
-                        card.action_index,
+                        card.tool_index,
                         card.tool_name.clone(),
                         card.tool_input.to_string(),
                         card.tool_call_id.clone(),
@@ -407,7 +407,7 @@ impl ReActEngine {
             TranscriptEvent::UserInject {
                 source, message_id, ..
             } => {
-                if *source != InjectSource::ActionResult {
+                if *source != InjectSource::ToolRunResult {
                     if let Some(message_id) = message_id {
                         committed.acknowledge_pending_user_input(message_id.clone());
                     }
@@ -428,7 +428,7 @@ impl ReActEngine {
     ///
     /// All durable assistant/thought/ask/reasoning chat rows for the ReAct
     /// loop are written here (X12). See module docs for the few documented
-    /// exceptions (ingress seed, error partials, terminal action-result).
+    /// exceptions (ingress seed, error partials, terminal ToolRun-result).
     pub(super) async fn apply_transcript(
         &self,
         ctx: &StepCtx,
@@ -614,7 +614,7 @@ impl ReActEngine {
                 reasoning,
                 web_search_calls,
                 thinking_blocks,
-                action_cards: _,
+                tool_call_cards: _,
                 persist_text_id: _,
             } => {
                 state.push_event(record);
@@ -635,13 +635,13 @@ impl ReActEngine {
                 canonical_observation,
                 history_observation: _,
                 tool_call_id,
-                action,
-                action_index: _,
+                tool_call,
+                tool_index: _,
                 step_id: _,
                 observation_card: _,
             } => {
                 state.push_event(record);
-                let is_final = action.is_final || action.tool_name == "final_answer";
+                let is_final = tool_call.is_final || tool_call.tool_name == "final_answer";
                 if !is_final {
                     Arc::make_mut(&mut state.canonical).push(CanonicalMessage::tool(
                         vec![ContentPart::text(canonical_observation)],
@@ -734,11 +734,11 @@ pub(super) fn project_tool_result_canonical(state: &mut ReActState, event: &Tran
     if let TranscriptEvent::ToolResult {
         canonical_observation,
         tool_call_id,
-        action,
+        tool_call,
         ..
     } = event
-        && !action.is_final
-        && action.tool_name != "final_answer"
+        && !tool_call.is_final
+        && tool_call.tool_name != "final_answer"
     {
         Arc::make_mut(&mut state.canonical).push(CanonicalMessage::tool(
             vec![ContentPart::text(canonical_observation.clone())],
@@ -1002,9 +1002,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn apply_action_result_keeps_self_labelled_body() {
+    async fn apply_tool_run_result_keeps_self_labelled_body() {
         let dir = std::env::temp_dir().join(format!(
-            "haven_transcript_action_{}.db",
+            "haven_transcript_tool_run_{}.db",
             uuid::Uuid::new_v4()
         ));
         let db = Arc::new(Database::open(&dir).unwrap());
@@ -1012,33 +1012,33 @@ mod tests {
         let engine = test_engine(db);
         let ctx = step_ctx(&session.id);
         let mut state = ReActState::new(Vec::new(), Vec::new(), std::collections::HashMap::new());
-        let body = "[Background action result]\naction_id=act-1\nok";
+        let body = "[Background tool run result]\ntool_run_id=toolrun-1\nok";
         engine
             .apply_transcript(
                 &ctx,
                 TranscriptEvent::UserInject {
-                    source: InjectSource::ActionResult,
+                    source: InjectSource::ToolRunResult,
                     text: body.into(),
                     attachments: vec![],
-                    message_id: Some(crate::react::action_result_message_id("act-1")),
+                    message_id: Some(crate::react::tool_run_result_message_id("toolrun-1")),
                 },
                 &mut state,
             )
             .await
             .unwrap();
-        assert_eq!(state.canonical[0].source, Some(InjectSource::ActionResult));
+        assert_eq!(state.canonical[0].source, Some(InjectSource::ToolRunResult));
         let text = match &state.canonical[0].content[0] {
             ContentPart::Text(t) => t.as_str(),
             _ => panic!("expected text"),
         };
         assert_eq!(text, body);
-        assert!(!text.starts_with("Background action result: "));
+        assert!(!text.starts_with("Background tool run result: "));
     }
 
     #[tokio::test]
-    async fn apply_action_result_emits_supplement_without_thought_step() {
+    async fn apply_tool_run_result_emits_supplement_without_thought_step() {
         let dir = std::env::temp_dir().join(format!(
-            "haven_transcript_action_supp_{}.db",
+            "haven_transcript_tool_run_supp_{}.db",
             uuid::Uuid::new_v4()
         ));
         let db = Arc::new(Database::open(&dir).unwrap());
@@ -1050,15 +1050,15 @@ mod tests {
             events: recorded.clone(),
         });
         let mut state = ReActState::new(Vec::new(), Vec::new(), std::collections::HashMap::new());
-        let body = "[Background action result]\naction_id: act-9\nstatus: completed\n\nok";
+        let body = "[Background tool run result]\ntool_run_id: toolrun-9\nstatus: completed\n\nok";
         engine
             .apply_transcript(
                 &ctx,
                 TranscriptEvent::UserInject {
-                    source: InjectSource::ActionResult,
+                    source: InjectSource::ToolRunResult,
                     text: body.into(),
                     attachments: vec![],
-                    message_id: Some(crate::react::action_result_message_id("act-9")),
+                    message_id: Some(crate::react::tool_run_result_message_id("toolrun-9")),
                 },
                 &mut state,
             )
@@ -1069,16 +1069,16 @@ mod tests {
             emitted.iter().any(|e| matches!(
                 e,
                 crate::event::AgentEvent::Supplement {
-                    inject_source: Some(InjectSource::ActionResult),
+                    inject_source: Some(InjectSource::ToolRunResult),
                     ..
                 }
             )),
-            "ActionResult must emit Supplement for in-chat wake visibility"
+            "ToolRunResult must emit Supplement for in-chat wake visibility"
         );
         let steps = db.get_session_steps(&session.id).unwrap_or_default();
         assert!(
             steps.is_empty(),
-            "ActionResult must not create a thought step"
+            "ToolRunResult must not create a thought step"
         );
     }
 
@@ -1121,7 +1121,7 @@ mod tests {
             db.get_session_steps(&session.id)
                 .unwrap()
                 .iter()
-                .any(|step| step.id == mid && step.action_tool.is_none()),
+                .any(|step| step.id == mid && step.tool_name.is_none()),
             "the thought message and execution step must share the committed id"
         );
     }
@@ -1274,7 +1274,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn apply_tool_call_defers_action_cards_until_requested() {
+    async fn apply_tool_call_defers_tool_call_cards_until_requested() {
         let dir = std::env::temp_dir().join(format!(
             "haven_transcript_toolcall_{}.db",
             uuid::Uuid::new_v4()
@@ -1306,12 +1306,12 @@ mod tests {
                     reasoning: None,
                     web_search_calls: vec![],
                     thinking_blocks: vec![],
-                    action_cards: vec![ActionCard {
+                    tool_call_cards: vec![ToolCallCard {
                         tool_name: "echo".into(),
                         tool_input: serde_json::json!({"x": 1}),
                         tool_call_id: Some("call-1".into()),
                         step_id: step_id.clone(),
-                        action_index: 0,
+                        tool_index: 0,
                         suppress_streamed_thought: false,
                         is_high_risk: false,
                         silent: false,
@@ -1333,24 +1333,24 @@ mod tests {
             .sequence as u64;
         assert!(
             ui_events.lock().unwrap().is_empty(),
-            "Action cards should wait until each tool is about to start"
+            "ToolCall cards should wait until each tool is about to start"
         );
         engine
             .committed_ui
-            .publish_action(&ctx.emitter, &session.id, &step_id)
+            .publish_tool_call(&ctx.emitter, &session.id, &step_id)
             .await;
         let ev = ui_events.lock().unwrap();
         assert!(
             ev.iter().any(|e| matches!(
                 e,
-                crate::event::AgentEvent::Action {
+                crate::event::AgentEvent::ToolCall {
                     tool_name,
                     step_id: sid,
                     event_seq: Some(sequence),
                     ..
                 } if tool_name == "echo" && sid == &step_id && *sequence == durable_sequence
             )),
-            "expected Action card, got {ev:?}"
+            "expected ToolCall card, got {ev:?}"
         );
     }
 
@@ -1374,7 +1374,7 @@ mod tests {
         };
         let step_id = haven_common::types::new_id("step");
         let mut state = ReActState::new(Vec::new(), Vec::new(), std::collections::HashMap::new());
-        let action = Action {
+        let tool_call = ToolCall {
             tool_name: "echo".into(),
             tool_input: serde_json::json!({}),
             is_final: false,
@@ -1387,14 +1387,14 @@ mod tests {
                     canonical_observation: r#"{"ok":true}"#.into(),
                     history_observation: "ok".into(),
                     tool_call_id: Some("call-2".into()),
-                    action,
-                    action_index: 0,
+                    tool_call,
+                    tool_index: 0,
                     step_id: step_id.clone(),
                     observation_card: Some(Box::new(ObservationCard {
                         tool_name: "echo".into(),
                         tool_call_id: Some("call-2".into()),
                         step_id: step_id.clone(),
-                        action_index: 0,
+                        tool_index: 0,
                         silent: false,
                         ask_options: vec![],
                         outcome: haven_tools::ToolExecutionOutcome::Succeeded,
@@ -1417,7 +1417,7 @@ mod tests {
         let (_, rounds) = project_transcript(&state.events);
         assert_eq!(rounds.len(), 1);
         assert_eq!(rounds[0].tools[0].observation.as_deref(), Some("ok"));
-        assert_eq!(rounds[0].tools[0].action_index, 0);
+        assert_eq!(rounds[0].tools[0].tool_index, 0);
         assert_eq!(rounds[0].tools[0].step_id, step_id);
         let durable_sequence = engine
             .event_store
@@ -1469,13 +1469,13 @@ mod tests {
                 canonical_observation: format!("r{name}"),
                 history_observation: format!("r{name}"),
                 tool_call_id: Some(id.into()),
-                action: Action {
+                tool_call: ToolCall {
                     tool_name: name.into(),
                     tool_input: serde_json::json!({}),
                     is_final: false,
                     tool_call_id: Some(id.into()),
                 },
-                action_index: if id == "c1" { 0 } else { 1 },
+                tool_index: if id == "c1" { 0 } else { 1 },
                 step_id: format!("step-{id}"),
                 observation_card: None,
             })
@@ -1518,19 +1518,19 @@ mod tests {
                     canonical_observation: r#"{"question":"Pick one?"}"#.into(),
                     history_observation: "Pick one?".into(),
                     tool_call_id: Some("call-ask".into()),
-                    action: Action {
+                    tool_call: ToolCall {
                         tool_name: "ask".into(),
                         tool_input: serde_json::json!({"question":"Pick one?"}),
                         is_final: false,
                         tool_call_id: Some("call-ask".into()),
                     },
-                    action_index: 0,
+                    tool_index: 0,
                     step_id: step_id.clone(),
                     observation_card: Some(Box::new(ObservationCard {
                         tool_name: "ask".into(),
                         tool_call_id: Some("call-ask".into()),
                         step_id: step_id.clone(),
-                        action_index: 0,
+                        tool_index: 0,
                         silent: false,
                         ask_options: vec!["A".into(), "B".into()],
                         outcome: haven_tools::ToolExecutionOutcome::Succeeded,
@@ -1608,7 +1608,7 @@ mod tests {
     #[tokio::test]
     async fn bridge_and_apply_publish_one_action() {
         let dir = std::env::temp_dir().join(format!(
-            "haven_transcript_bridge_action_{}.db",
+            "haven_transcript_bridge_tool_run_{}.db",
             uuid::Uuid::new_v4()
         ));
         let db = Arc::new(Database::open(&dir).unwrap());
@@ -1643,12 +1643,12 @@ mod tests {
                     reasoning: None,
                     web_search_calls: vec![],
                     thinking_blocks: vec![],
-                    action_cards: vec![ActionCard {
+                    tool_call_cards: vec![ToolCallCard {
                         tool_name: "echo".into(),
                         tool_input: serde_json::json!({}),
                         tool_call_id: Some("call-1".into()),
                         step_id: step_id.clone(),
-                        action_index: 0,
+                        tool_index: 0,
                         suppress_streamed_thought: false,
                         is_high_risk: false,
                         silent: false,
@@ -1662,17 +1662,17 @@ mod tests {
         tokio::time::sleep(std::time::Duration::from_millis(250)).await;
         engine
             .committed_ui
-            .publish_action(&ctx.emitter, &session.id, &step_id)
+            .publish_tool_call(&ctx.emitter, &session.id, &step_id)
             .await;
         let events = recorded.lock().unwrap().clone();
-        let actions: Vec<_> = events
+        let tool_calls: Vec<_> = events
             .iter()
-            .filter(|event| matches!(event, crate::event::AgentEvent::Action { .. }))
+            .filter(|event| matches!(event, crate::event::AgentEvent::ToolCall { .. }))
             .collect();
         assert_eq!(
-            actions.len(),
+            tool_calls.len(),
             1,
-            "the store bridge and apply_transcript must publish one Action, got {events:?}"
+            "the store bridge and apply_transcript must publish one ToolCall, got {events:?}"
         );
         let sequence = engine
             .event_store
@@ -1681,14 +1681,14 @@ mod tests {
             .sequence as u64;
         assert!(
             matches!(
-                actions[0],
-                crate::event::AgentEvent::Action {
+                tool_calls[0],
+                crate::event::AgentEvent::ToolCall {
                     step_id: id,
                     event_seq: Some(event_seq),
                     ..
                 } if id == &step_id && *event_seq == sequence
             ),
-            "expected the committed Action sequence, got {actions:?}"
+            "expected the committed ToolCall sequence, got {tool_calls:?}"
         );
     }
 }

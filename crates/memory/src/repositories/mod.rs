@@ -1,5 +1,3 @@
-pub mod action_completion_outbox;
-pub mod action_store;
 pub mod embedding_store;
 pub mod episodes;
 pub(crate) mod fact_graph;
@@ -16,11 +14,13 @@ pub mod memory_store;
 pub mod messages;
 pub mod nodes;
 pub mod partials;
-pub mod scheduled_actions;
+pub mod scheduled_tool_runs;
 pub mod session_authorization;
 #[cfg(test)]
 mod session_event_capacity_tests;
 pub mod session_events;
 pub mod session_steps;
 pub mod sessions;
+pub mod tool_run_completion_outbox;
+pub mod tool_run_store;
 pub mod usage;

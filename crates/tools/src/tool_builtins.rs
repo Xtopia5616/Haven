@@ -4,7 +4,7 @@
 //! their discovery/runtime dependencies so `ToolsManager` does not become a
 //! second service locator for MCP and Skills.
 
-use crate::builtin::{ActionDeps, BuiltinContext, MediaDeps};
+use crate::builtin::{BuiltinContext, MediaDeps, ToolRunDeps};
 use crate::runtime_capabilities::ToolCapabilitySnapshot;
 use crate::skill_runner::SkillRunner;
 use crate::tool_core::ToolCore;
@@ -83,9 +83,9 @@ impl ToolBuiltins {
                 config: media_config,
                 capabilities: capabilities.media,
             },
-            actions: ActionDeps {
+            tool_runs: ToolRunDeps {
                 live_outputs: runtime.live_outputs.clone(),
-                service: runtime.action_service.clone(),
+                service: runtime.tool_run_service.clone(),
             },
         }
     }

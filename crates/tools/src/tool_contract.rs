@@ -25,6 +25,16 @@ pub enum ToolExecutionOutcome {
     TimedOutUnknown,
 }
 
+/// Requested execution style for tools that can either finish inline or
+/// detach into a durable ToolRun.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolExecutionMode {
+    #[default]
+    Foreground,
+    Background,
+}
+
 /// Structured failure class consumed by retry and recovery policy. The human
 /// error string remains a diagnostic, never the policy source.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -683,16 +693,16 @@ pub trait TypedToolOperation: Send + Sync {
 
 /// Per-session side effects a tool declares through its result. The session
 /// executor applies them (registering MCP adapters, attaching
-/// background actions) without hard-coding tool names, so a new tool that needs
+/// background tool_runs) without hard-coding tool names, so a new tool that needs
 /// a side effect declares it here instead of adding a name check in the
 /// executor.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ToolRegistration {
     /// Load an MCP server (by name) for the current session.
     McpServer(String),
-    /// Attach a background action (an action of kind `action`) to the current
+    /// Attach a detached tool run to the current
     /// session (end/rollback cleanup).
-    Action(String),
+    ToolRun(String),
 }
 
 impl ToolResult {
@@ -988,7 +998,7 @@ impl ToolResult {
             "hint",
             "retry_safety",
             "truncated",
-            "action_id",
+            "tool_run_id",
             "operation",
             "status",
             "available",
@@ -1046,7 +1056,7 @@ const STRUCTURED_PRIORITY_KEYS: &[&str] = &[
     "hint",
     "retry_safety",
     "truncated",
-    "action_id",
+    "tool_run_id",
     "operation",
     "status",
     "available",
@@ -1218,7 +1228,7 @@ pub fn extract_notify_signal(output: &Value) -> (Option<String>, Option<String>)
 /// Whether an action should be hidden from the chat UI. `ask` must never be
 /// silent: hiding the question while the session pauses for an answer would
 /// leave the user waiting on a question they can't see.
-pub fn is_silent_action(tool_name: &str, input: &Value) -> bool {
+pub fn is_silent_tool_call(tool_name: &str, input: &Value) -> bool {
     tool_name != "ask"
         && input
             .get("silent")
@@ -1294,7 +1304,7 @@ pub(crate) fn default_tool_label(name: &str) -> String {
         "window" => "窗口与屏幕",
         "preferences" => "会话偏好",
         "checklist" => "检查清单",
-        "actions" => "后台任务",
+        "tool_runs" => "后台任务",
         "schedule" => "定时任务",
         "web_search" => "联网搜索",
         _ => name
@@ -1322,7 +1332,7 @@ pub(crate) fn default_root_presentation(
             "window" => ("窗口与屏幕", "monitor"),
             "memory" => ("记忆", "memory"),
             "agent" => ("Agent 协作", "users"),
-            "actions" => ("后台任务", "clock"),
+            "tool_runs" => ("后台任务", "clock"),
             "schedule" => ("定时任务", "bell"),
             "preferences" => ("会话偏好", "settings"),
             "checklist" => ("检查清单", "checklist"),
@@ -1564,7 +1574,7 @@ pub trait Tool: Send + Sync {
     }
 
     /// Whether this tool needs the private `_session_id` input field injected
-    /// before execution (e.g. `schedule`/`actions` scope to the current session).
+    /// before execution (e.g. `schedule`/`tool_runs` scope to the current session).
     /// The id is injected after the LLM-facing input was captured, so it
     /// never reaches the tool schema, the step history, or the LLM.
     fn requires_session_id(&self) -> bool {
@@ -2211,10 +2221,10 @@ pub(crate) mod tests {
     fn test_extract_notify_signal() {
         let (title, body) = extract_notify_signal(&json!({
             "notify": true,
-            "title": "ScheduledAction",
+            "title": "ScheduledToolRun",
             "body": "Take a break",
         }));
-        assert_eq!(title.as_deref(), Some("ScheduledAction"));
+        assert_eq!(title.as_deref(), Some("ScheduledToolRun"));
         assert_eq!(body.as_deref(), Some("Take a break"));
     }
 
@@ -2233,12 +2243,12 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn test_is_silent_action() {
-        assert!(is_silent_action("shell", &json!({"silent": true})));
-        assert!(!is_silent_action("shell", &json!({"silent": false})));
-        assert!(!is_silent_action("shell", &json!({})));
+    fn test_is_silent_tool_call() {
+        assert!(is_silent_tool_call("shell", &json!({"silent": true})));
+        assert!(!is_silent_tool_call("shell", &json!({"silent": false})));
+        assert!(!is_silent_tool_call("shell", &json!({})));
         // `ask` must never be silent, even when the input asks for it.
-        assert!(!is_silent_action("ask", &json!({"silent": true})));
+        assert!(!is_silent_tool_call("ask", &json!({"silent": true})));
     }
 
     pub(crate) struct MockTool {

@@ -6,9 +6,9 @@
 	import MediaPlanCard from '$lib/MediaPlanCard.svelte';
 	import { hasToolPreambleBefore } from '$lib/toolIntent.ts';
 	import { toolDisplayName } from '$lib/toolIdentity.ts';
-	import { sourceActionId } from '$lib/conversationTimeline.ts';
+	import { sourceToolRunId } from '$lib/conversationTimeline.ts';
 	import type { AgentMediaPlanPayload } from '$lib/contracts/agent.ts';
-	import type { ActionPayload } from '$lib/contracts/action.ts';
+	import type { ToolRunPayload } from '$lib/contracts/toolRun.ts';
 	import type {
 		AskMessageHandler,
 		AskSelectionGetter,
@@ -24,8 +24,8 @@
 		toolCount?: number;
 		stepCount?: number;
 		allMessages?: ConversationMessage[];
-		actions?: ActionPayload[];
-		awaitingBackgroundActionId?: string | null;
+		toolRuns?: ToolRunPayload[];
+		awaitingBackgroundToolRunId?: string | null;
 		awaitingBackgroundCount?: number;
 		onContextMenu?: (request: ConversationContextMenuRequest) => void;
 		onAskSelectionChange?: AskSelectionChangeHandler;
@@ -42,8 +42,8 @@
 		toolCount = 0,
 		stepCount = 0,
 		allMessages = [],
-		actions = [],
-		awaitingBackgroundActionId = null,
+		toolRuns = [],
+		awaitingBackgroundToolRunId = null,
 		awaitingBackgroundCount = 0,
 		onContextMenu = () => {},
 		onAskSelectionChange = () => {},
@@ -56,7 +56,7 @@
 
 	// A work process is visible while it is active, then becomes a compact
 	// summary. Manual expansion after completion is preserved across updates.
-	let active = $derived(streaming || awaitingBackgroundActionId != null);
+	let active = $derived(streaming || awaitingBackgroundToolRunId != null);
 	let open = $state(untrack(() => active));
 	let lastActive = untrack(() => active);
 	$effect.pre(() => {
@@ -73,7 +73,7 @@
 	});
 
 	let summary = $derived.by(() => {
-		if (awaitingBackgroundActionId) {
+		if (awaitingBackgroundToolRunId) {
 			return awaitingBackgroundCount > 1
 				? `等待 ${awaitingBackgroundCount} 个后台任务结果`
 				: '等待后台任务结果';
@@ -101,24 +101,24 @@
 		mediaPlans.filter((plan) => activityStepNumbers.has(plan.stepNumber)),
 	);
 
-	function backgroundActionFor(message: ConversationMessage): ActionPayload | null {
+	function backgroundToolRunFor(message: ConversationMessage): ToolRunPayload | null {
 		if (message.type !== 'tool') return null;
-		const sourceId = sourceActionId(message);
+		const sourceId = sourceToolRunId(message);
 		return (
-			actions.find(
-				(action) =>
-					action.kind === 'background' &&
-					(action.sourceStepId === message.id || sourceId === action.id),
+			toolRuns.find(
+				(toolRun) =>
+					toolRun.kind === 'background' &&
+					(toolRun.sourceStepId === message.id || sourceId === toolRun.id),
 			) ?? null
 		);
 	}
 
-	function terminalOutputAlreadyInTranscript(action: ActionPayload): boolean {
-		if (action.status === 'running' || action.status === 'waiting') return false;
+	function terminalOutputAlreadyInTranscript(toolRun: ToolRunPayload): boolean {
+		if (toolRun.status === 'running' || toolRun.status === 'waiting') return false;
 		return allMessages.some(
 			(message) =>
-				message.sourceActionId === action.id &&
-				message.actionId !== action.id &&
+				message.sourceToolRunId === toolRun.id &&
+				message.toolRunId !== toolRun.id &&
 				!message.streaming,
 		);
 	}
@@ -138,7 +138,7 @@
 			<span class="activity-status" aria-hidden="true">
 				{#if streaming}
 					<span class="activity-pulse"></span>
-				{:else if awaitingBackgroundActionId}
+				{:else if awaitingBackgroundToolRunId}
 					<Icon name="clock" size={13} strokeWidth={2.5} />
 				{:else}
 					<Icon name="check" size={13} strokeWidth={2.5} />
@@ -159,9 +159,9 @@
 		<div class="activity-items">
 			{#each entries as entry (entry.message.id)}
 				{@const msg = entry.message}
-				{@const backgroundAction = backgroundActionFor(msg)}
+				{@const backgroundToolRun = backgroundToolRunFor(msg)}
 				{@const resultInTranscript =
-					backgroundAction != null && terminalOutputAlreadyInTranscript(backgroundAction)}
+					backgroundToolRun != null && terminalOutputAlreadyInTranscript(backgroundToolRun)}
 				{@const showFallbackIntent =
 					msg.type === 'tool' &&
 					(msg.showFallbackIntent ?? !hasToolPreambleBefore(allMessages, entry.index))}
@@ -180,7 +180,7 @@
 					stepNumber={msg.stepNumber ?? null}
 					toolArgs={
 						msg.toolArgs ??
-						(backgroundAction?.command ? { command: backgroundAction.command } : null)
+						(backgroundToolRun?.command ? { command: backgroundToolRun.command } : null)
 					}
 					attachments={msg.attachments || []}
 					{showFallbackIntent}
@@ -188,13 +188,13 @@
 					awaiting={!!msg.awaiting}
 					received={!!msg.received}
 					resolved={msg.resolved || null}
-					actionId={resultInTranscript ? null : msg.actionId || backgroundAction?.id || null}
-					actionData={resultInTranscript ? null : backgroundAction}
+					toolRunId={resultInTranscript ? null : msg.toolRunId || backgroundToolRun?.id || null}
+					toolRunData={resultInTranscript ? null : backgroundToolRun}
 					awaitingBackgroundResult={
-						!resultInTranscript && backgroundAction?.id === awaitingBackgroundActionId
+						!resultInTranscript && backgroundToolRun?.id === awaitingBackgroundToolRunId
 					}
 					awaitingBackgroundCount={
-						backgroundAction?.id === awaitingBackgroundActionId ? awaitingBackgroundCount : 0
+						backgroundToolRun?.id === awaitingBackgroundToolRunId ? awaitingBackgroundCount : 0
 					}
 					compact
 					{onContextMenu}

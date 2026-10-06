@@ -48,11 +48,11 @@ export function createChatAgentEventHandlers({
 			const data = event.payload;
 			dispatchSession({ type: 'agent/supplement', payload: data });
 		},
-		'agent:action': (event) => {
+		'agent:tool_call': (event) => {
 			const data = event.payload;
 			flushChunksNow();
 			if (data?.sessionId) updateReactExecutionPhase(data.sessionId, 'waiting_result');
-			dispatchSession({ type: 'agent/action', payload: data });
+			dispatchSession({ type: 'agent/tool_call', payload: data });
 		},
 		'agent:tool_output': (event) => {
 			const data = event.payload;

@@ -32,13 +32,13 @@ pub enum InteractionDetails {
         tool_input: Value,
         tool_call_id: String,
         step_id: String,
-        action_index: u32,
+        tool_index: u32,
         risk_level: haven_common::types::RiskLevel,
         #[serde(skip_serializing_if = "Option::is_none")]
         receipt: Option<haven_tools::ConfirmationReceipt>,
     },
     ScheduledConfirm {
-        action_id: String,
+        tool_run_id: String,
         tool_name: String,
         tool_input: Value,
         receipt: haven_tools::ConfirmationReceipt,
@@ -72,7 +72,7 @@ pub enum InteractionStatus {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum InteractionOwner {
     Session { session_id: String },
-    ScheduledAction { action_id: String },
+    ScheduledToolRun { tool_run_id: String },
     AppCommand,
 }
 
@@ -178,7 +178,7 @@ impl InteractionRequest {
         tool_input: Value,
         tool_call_id: String,
         step_id: String,
-        action_index: u32,
+        tool_index: u32,
         risk_level: haven_common::types::RiskLevel,
         receipt: Option<haven_tools::ConfirmationReceipt>,
     ) -> Self {
@@ -198,7 +198,7 @@ impl InteractionRequest {
                 tool_input,
                 tool_call_id,
                 step_id: step_id.clone(),
-                action_index,
+                tool_index,
                 risk_level,
                 receipt,
             },
@@ -233,7 +233,7 @@ impl InteractionRequest {
                 tool_input,
                 tool_call_id: String::new(),
                 step_id: String::new(),
-                action_index: 0,
+                tool_index: 0,
                 risk_level: receipt.effective_risk,
                 receipt: Some(receipt),
             },
@@ -245,7 +245,7 @@ impl InteractionRequest {
     }
 
     pub fn scheduled_confirm(
-        action_id: String,
+        tool_run_id: String,
         session_id: Option<&str>,
         tool_name: String,
         tool_input: Value,
@@ -259,7 +259,7 @@ impl InteractionRequest {
             kind: InteractionKind::ScheduledConfirm,
             status: InteractionStatus::Pending,
             details: InteractionDetails::ScheduledConfirm {
-                action_id,
+                tool_run_id,
                 tool_name,
                 tool_input,
                 receipt,
@@ -478,7 +478,7 @@ mod tests {
             serde_json::json!({
                 "type": "tool_result",
                 "step_number": sequence,
-                "action_index": 0,
+                "tool_index": 0,
                 "step_id": step_id,
                 "action": {"tool_name": "ask", "tool_input": {"options": ["A", "B"]}}
             }),
@@ -518,14 +518,14 @@ mod tests {
 
     #[test]
     fn owner_wire_is_typed_and_non_session_context_is_omitted() {
-        let owner = InteractionOwner::ScheduledAction {
-            action_id: "act-0123456789abcdef0123456789abcdef".into(),
+        let owner = InteractionOwner::ScheduledToolRun {
+            tool_run_id: "toolrun-0123456789abcdef0123456789abcdef".into(),
         };
         assert_eq!(
             serde_json::to_value(owner).unwrap(),
             serde_json::json!({
-                "kind": "scheduled_action",
-                "action_id": "act-0123456789abcdef0123456789abcdef"
+                "kind": "scheduled_tool_run",
+                "tool_run_id": "toolrun-0123456789abcdef0123456789abcdef"
             })
         );
 
@@ -581,7 +581,7 @@ mod tests {
             request.details,
             InteractionDetails::Confirm {
                 step_number: 0,
-                action_index: 0,
+                tool_index: 0,
                 ..
             }
         ));

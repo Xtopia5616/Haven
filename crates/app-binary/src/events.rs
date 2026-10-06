@@ -1,5 +1,5 @@
-use haven_common::{ActionStatus, SessionStatus, SessionWaitingReason};
-use haven_tools::{ActionView, ActionViewKind};
+use haven_common::{SessionStatus, SessionWaitingReason, ToolRunStatus};
+use haven_tools::ToolRunView;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -27,16 +27,16 @@ pub(crate) const TRANSCRIPTION_STARTED_EVENT: &str = "transcription:started";
 pub(crate) const TRANSCRIPTION_RESULT_EVENT: &str = "transcription:result";
 pub(crate) const TRANSCRIPTION_ERROR_EVENT: &str = "transcription:error";
 
-/// Stable action event channels exposed by the Tauri boundary.
+/// Stable ToolRun event channels exposed by the Tauri boundary.
 ///
 /// The tool crate deliberately owns execution, but it does not own the IPC
 /// contract.  Keep the public channel names and their projected payload here,
 /// alongside the session contract, so internal tool status JSON cannot become
 /// an accidental frontend API.
-pub(crate) const ACTION_CREATED_EVENT: &str = "action:created";
-pub(crate) const ACTION_UPDATED_EVENT: &str = "action:updated";
-pub(crate) const ACTION_OUTPUT_EVENT: &str = "action:output";
-pub(crate) const ACTION_FINISHED_EVENT: &str = "action:finished";
+pub(crate) const TOOL_RUN_CREATED_EVENT: &str = "tool_run:created";
+pub(crate) const TOOL_RUN_UPDATED_EVENT: &str = "tool_run:updated";
+pub(crate) const TOOL_RUN_OUTPUT_EVENT: &str = "tool_run:output";
+pub(crate) const TOOL_RUN_FINISHED_EVENT: &str = "tool_run:finished";
 
 /// Stable channels for the remaining app-shell events. Their producers may
 /// live in different crates, but the Tauri wire names and DTOs belong here.
@@ -52,7 +52,7 @@ pub(crate) const LLM_CONFIG_CHANGED_EVENT: &str = "llm:config_changed";
 
 /// Agent event channels that are not session lifecycle events.
 pub(crate) const AGENT_THOUGHT_EVENT: &str = "agent:thought";
-pub(crate) const AGENT_ACTION_EVENT: &str = "agent:action";
+pub(crate) const AGENT_TOOL_CALL_EVENT: &str = "agent:tool_call";
 pub(crate) const AGENT_OBSERVATION_EVENT: &str = "agent:observation";
 pub(crate) const AGENT_THOUGHT_CHUNK_EVENT: &str = "agent:thought_chunk";
 pub(crate) const AGENT_REASONING_CHUNK_EVENT: &str = "agent:reasoning_chunk";
@@ -68,22 +68,22 @@ pub(crate) const NOTIFICATION_SHOW_EVENT: &str = "notification:show";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum ActionKind {
+pub enum ToolRunKind {
     Background,
     Scheduled,
 }
 
-/// The minimal action record displayed by the task panel and history.
+/// The minimal ToolRun record displayed by the task panel and history.
 ///
 /// This intentionally excludes internal dynamic tool parameters, continuation
 /// prompts, and local output-log paths.  Those are execution details rather
 /// than a stable UI contract and may contain sensitive values.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-pub struct ActionEvent {
+pub struct ToolRunEvent {
     pub id: String,
-    pub kind: ActionKind,
+    pub kind: ToolRunKind,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub status: Option<ActionStatus>,
+    pub status: Option<ToolRunStatus>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -114,12 +114,12 @@ pub struct ActionEvent {
     pub preview: Option<String>,
 }
 
-impl ActionEvent {
+impl ToolRunEvent {
     pub(crate) fn background_from_value(payload: &Value) -> Result<Self, String> {
         Ok(Self {
-            id: required_string(payload, "action_id")?,
-            kind: ActionKind::Background,
-            status: optional_action_status(payload, "status")?,
+            id: required_string(payload, "tool_run_id")?,
+            kind: ToolRunKind::Background,
+            status: optional_tool_run_status(payload, "status")?,
             session_id: optional_string(payload, "session_id")?,
             source_step_id: optional_string(payload, "source_step_id")?,
             started_at: optional_string(payload, "started_at")?,
@@ -137,14 +137,14 @@ impl ActionEvent {
         })
     }
 
-    /// Narrow projection for a live `action:output` preview. Command output is
+    /// Narrow projection for a live `tool_run:output` preview. Command output is
     /// the only content field on this channel; execution metadata and other
     /// dynamic values are intentionally ignored even if a producer adds them.
     pub(crate) fn background_output_from_value(payload: &Value) -> Result<Self, String> {
         Ok(Self {
-            id: required_string(payload, "action_id")?,
-            kind: ActionKind::Background,
-            status: optional_action_status(payload, "status")?,
+            id: required_string(payload, "tool_run_id")?,
+            kind: ToolRunKind::Background,
+            status: optional_tool_run_status(payload, "status")?,
             session_id: None,
             source_step_id: optional_string(payload, "source_step_id")?,
             started_at: None,
@@ -165,11 +165,11 @@ impl ActionEvent {
     pub(crate) fn scheduled_from_value(payload: &Value, cancelled: bool) -> Result<Self, String> {
         Ok(Self {
             id: required_string(payload, "id")?,
-            kind: ActionKind::Scheduled,
+            kind: ToolRunKind::Scheduled,
             status: if cancelled {
-                Some(ActionStatus::Cancelled)
+                Some(ToolRunStatus::Cancelled)
             } else {
-                optional_action_status(payload, "status")?
+                optional_tool_run_status(payload, "status")?
             },
             session_id: optional_string(payload, "session_id")?,
             source_step_id: None,
@@ -189,13 +189,13 @@ impl ActionEvent {
     }
 }
 
-impl From<ActionView> for ActionEvent {
-    fn from(view: ActionView) -> Self {
+impl From<ToolRunView> for ToolRunEvent {
+    fn from(view: ToolRunView) -> Self {
         Self {
             id: view.id,
             kind: match view.kind {
-                ActionViewKind::Background => ActionKind::Background,
-                ActionViewKind::Scheduled => ActionKind::Scheduled,
+                haven_tools::ToolRunKind::Background => ToolRunKind::Background,
+                haven_tools::ToolRunKind::Scheduled => ToolRunKind::Scheduled,
             },
             status: Some(view.status),
             session_id: view.session_id,
@@ -216,7 +216,7 @@ impl From<ActionView> for ActionEvent {
     }
 }
 
-impl ActionKind {
+impl ToolRunKind {
     pub(crate) fn as_str(self) -> &'static str {
         match self {
             Self::Background => "background",
@@ -227,9 +227,9 @@ impl ActionKind {
 
 fn required_string(payload: &Value, field: &str) -> Result<String, String> {
     let value = optional_string(payload, field)?
-        .ok_or_else(|| format!("action payload missing string '{field}'"))?;
+        .ok_or_else(|| format!("ToolRun payload missing string '{field}'"))?;
     if value.is_empty() {
-        return Err(format!("action payload string '{field}' cannot be empty"));
+        return Err(format!("ToolRun payload string '{field}' cannot be empty"));
     }
     Ok(value)
 }
@@ -239,18 +239,18 @@ fn optional_string(payload: &Value, field: &str) -> Result<Option<String>, Strin
         None | Some(Value::Null) => Ok(None),
         Some(Value::String(value)) => Ok(Some(value.clone())),
         Some(value) => Err(format!(
-            "action payload field '{field}' must be a string or null, got {}",
+            "ToolRun payload field '{field}' must be a string or null, got {}",
             value_type(value)
         )),
     }
 }
 
-fn optional_action_status(payload: &Value, field: &str) -> Result<Option<ActionStatus>, String> {
+fn optional_tool_run_status(payload: &Value, field: &str) -> Result<Option<ToolRunStatus>, String> {
     match payload.get(field) {
         None | Some(Value::Null) => Ok(None),
-        Some(Value::String(value)) => Ok(Some(ActionStatus::from_status_str(value))),
+        Some(Value::String(value)) => Ok(Some(ToolRunStatus::from_status_str(value))),
         Some(value) => Err(format!(
-            "action payload field '{field}' must be a string or null, got {}",
+            "ToolRun payload field '{field}' must be a string or null, got {}",
             value_type(value)
         )),
     }
@@ -263,9 +263,9 @@ fn optional_i32(payload: &Value, field: &str) -> Result<Option<i32>, String> {
             .as_i64()
             .and_then(|value| i32::try_from(value).ok())
             .map(Some)
-            .ok_or_else(|| format!("action payload field '{field}' must be a 32-bit integer")),
+            .ok_or_else(|| format!("ToolRun payload field '{field}' must be a 32-bit integer")),
         Some(value) => Err(format!(
-            "action payload field '{field}' must be an integer or null, got {}",
+            "ToolRun payload field '{field}' must be an integer or null, got {}",
             value_type(value)
         )),
     }
@@ -423,14 +423,14 @@ pub(crate) struct AgentThoughtEvent {
 }
 
 #[derive(Clone, Serialize)]
-pub(crate) struct AgentActionEvent {
+pub(crate) struct AgentToolCallEvent {
     pub session_id: String,
     pub tool_name: String,
     pub input: Value,
     pub step_number: u32,
     pub run_id: u64,
     pub tool_call_id: Option<String>,
-    pub action_index: u32,
+    pub tool_index: u32,
     pub step_id: String,
     pub suppress_streamed_thought: bool,
     pub silent: bool,
@@ -447,7 +447,7 @@ pub(crate) struct AgentObservationEvent {
     pub run_id: u64,
     pub silent: bool,
     pub tool_call_id: Option<String>,
-    pub action_index: u32,
+    pub tool_index: u32,
     pub ask_options: Vec<String>,
     pub step_id: String,
     pub outcome: String,
@@ -484,7 +484,7 @@ pub(crate) struct InteractionRequestedEvent {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub invocation_step_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub action_index: Option<u32>,
+    pub tool_index: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_call_id: Option<String>,
     pub created_at: String,
@@ -591,17 +591,17 @@ pub(crate) struct AgentNotificationEvent {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub notification_kind: Option<AgentNotificationKind>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub action_kind: Option<String>,
+    pub tool_run_kind: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub action_id: Option<String>,
+    pub tool_run_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub action_status: Option<String>,
+    pub tool_run_status: Option<String>,
 }
 
 #[derive(Clone, Copy, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum AgentNotificationKind {
-    ActionCompletion,
+    ToolRunCompletion,
 }
 
 #[derive(Clone, Serialize)]
@@ -693,22 +693,22 @@ mod tests {
     }
 
     #[test]
-    fn action_event_projects_background_status_to_the_stable_wire_shape() {
-        let event = ActionEvent::background_from_value(&serde_json::json!({
-            "action_id": "act-1",
+    fn tool_run_event_projects_background_status_to_the_stable_wire_shape() {
+        let event = ToolRunEvent::background_from_value(&serde_json::json!({
+            "tool_run_id": "toolrun-1",
             "status": "completed",
             "session_id": "ses-1",
             "source_step_id": "step-1",
             "output": "done",
             "exit_code": 0,
-            "log_path": "C:/private/action.log",
+            "log_path": "C:/private/tool-run.log",
         }))
         .unwrap();
 
         assert_eq!(
             serde_json::to_value(event).unwrap(),
             serde_json::json!({
-                "id": "act-1",
+                "id": "toolrun-1",
                 "kind": "background",
                 "status": "completed",
                 "session_id": "ses-1",
@@ -720,10 +720,10 @@ mod tests {
     }
 
     #[test]
-    fn action_event_hides_scheduled_execution_details() {
-        let event = ActionEvent::scheduled_from_value(
+    fn tool_run_event_hides_scheduled_execution_details() {
+        let event = ToolRunEvent::scheduled_from_value(
             &serde_json::json!({
-                "id": "act-2",
+                "id": "toolrun-2",
                 "status": "waiting",
                 "title": "Reminder",
                 "body": "Take a break",
@@ -737,7 +737,7 @@ mod tests {
         .unwrap();
         let wire = serde_json::to_value(event).unwrap();
 
-        assert_eq!(wire["id"], "act-2");
+        assert_eq!(wire["id"], "toolrun-2");
         assert_eq!(wire["kind"], "scheduled");
         assert_eq!(wire["status"], "waiting");
         assert!(wire.get("tool_name").is_none());
@@ -746,11 +746,11 @@ mod tests {
     }
 
     #[test]
-    fn background_action_view_preserves_the_action_event_wire_contract() {
-        let event = ActionEvent::from(ActionView {
-            id: "act-board-background".into(),
-            kind: ActionViewKind::Background,
-            status: ActionStatus::Completed,
+    fn background_tool_run_view_preserves_the_tool_run_event_wire_contract() {
+        let event = ToolRunEvent::from(ToolRunView {
+            id: "toolrun-board-background".into(),
+            kind: haven_tools::ToolRunKind::Background,
+            status: ToolRunStatus::Completed,
             session_id: Some("ses-1".into()),
             source_step_id: Some("step-source".into()),
             started_at: Some("2026-09-23T10:00:00Z".into()),
@@ -770,7 +770,7 @@ mod tests {
         assert_eq!(
             serde_json::to_value(event).unwrap(),
             serde_json::json!({
-                "id": "act-board-background",
+                "id": "toolrun-board-background",
                 "kind": "background",
                 "status": "completed",
                 "session_id": "ses-1",
@@ -785,11 +785,11 @@ mod tests {
     }
 
     #[test]
-    fn scheduled_action_view_preserves_wire_contract_without_internal_fields() {
-        let event = ActionEvent::from(ActionView {
-            id: "act-board-scheduled".into(),
-            kind: ActionViewKind::Scheduled,
-            status: ActionStatus::Waiting,
+    fn scheduled_tool_run_view_preserves_wire_contract_without_internal_fields() {
+        let event = ToolRunEvent::from(ToolRunView {
+            id: "toolrun-board-scheduled".into(),
+            kind: haven_tools::ToolRunKind::Scheduled,
+            status: ToolRunStatus::Waiting,
             session_id: Some("ses-2".into()),
             source_step_id: None,
             started_at: None,
@@ -810,7 +810,7 @@ mod tests {
         assert_eq!(
             wire,
             serde_json::json!({
-                "id": "act-board-scheduled",
+                "id": "toolrun-board-scheduled",
                 "kind": "scheduled",
                 "status": "waiting",
                 "session_id": "ses-2",
@@ -824,7 +824,7 @@ mod tests {
             "tool_args",
             "prompt",
             "tool_name",
-            "watch_action_id",
+            "watch_tool_run_id",
             "log_path",
         ] {
             assert!(
@@ -835,35 +835,35 @@ mod tests {
     }
 
     #[test]
-    fn action_projection_rejects_wrong_optional_field_types() {
-        let result = ActionEvent::background_from_value(&serde_json::json!({
-            "action_id": "act-1",
+    fn tool_run_projection_rejects_wrong_optional_field_types() {
+        let result = ToolRunEvent::background_from_value(&serde_json::json!({
+            "tool_run_id": "toolrun-1",
             "status": 42,
         }));
         assert_eq!(
             result.unwrap_err(),
-            "action payload field 'status' must be a string or null, got number"
+            "ToolRun payload field 'status' must be a string or null, got number"
         );
     }
 
     #[test]
-    fn action_projection_rejects_out_of_range_exit_codes() {
-        let result = ActionEvent::background_from_value(&serde_json::json!({
-            "action_id": "act-1",
+    fn tool_run_projection_rejects_out_of_range_exit_codes() {
+        let result = ToolRunEvent::background_from_value(&serde_json::json!({
+            "tool_run_id": "toolrun-1",
             "exit_code": 2_147_483_648_i64,
         }));
         assert_eq!(
             result.unwrap_err(),
-            "action payload field 'exit_code' must be a 32-bit integer"
+            "ToolRun payload field 'exit_code' must be a 32-bit integer"
         );
     }
 
     #[test]
-    fn action_projection_rejects_empty_ids() {
-        let result = ActionEvent::scheduled_from_value(&serde_json::json!({"id": ""}), false);
+    fn tool_run_projection_rejects_empty_ids() {
+        let result = ToolRunEvent::scheduled_from_value(&serde_json::json!({"id": ""}), false);
         assert_eq!(
             result.unwrap_err(),
-            "action payload string 'id' cannot be empty"
+            "ToolRun payload string 'id' cannot be empty"
         );
     }
 
@@ -954,9 +954,9 @@ mod tests {
             title: "操作已完成".into(),
             body: "结果".into(),
             notification_kind: None,
-            action_kind: None,
-            action_id: None,
-            action_status: None,
+            tool_run_kind: None,
+            tool_run_id: None,
+            tool_run_status: None,
         };
         assert_eq!(
             serde_json::to_value(app_notification).unwrap(),
@@ -968,9 +968,9 @@ mod tests {
             title: "会话通知".into(),
             body: "内容".into(),
             notification_kind: None,
-            action_kind: None,
-            action_id: None,
-            action_status: None,
+            tool_run_kind: None,
+            tool_run_id: None,
+            tool_run_status: None,
         };
         assert_eq!(
             serde_json::to_value(session_notification).unwrap(),

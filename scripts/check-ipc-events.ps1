@@ -24,7 +24,7 @@ $rustEvents = Get-Matches $events '(?m)^pub\(crate\) const [A-Z0-9_]+_EVENT: &st
 
 $contractFiles = @(
     'session.ts',
-    'action.ts',
+    'toolRun.ts',
     'recording.ts',
     'app.ts',
     'agent.ts'
@@ -46,18 +46,18 @@ $agentEvents = Get-Content $agentEventsPath -Raw
 $agentEventBridge = Get-Content $agentEventBridgePath -Raw
 $agentContract = Get-Content $agentContractPath -Raw
 $agentWire = Get-Content $agentWirePath -Raw
-if (-not [regex]::IsMatch($agentEvents, '(?s)struct\s+AgentNotificationEvent\s*\{[^}]*notification_kind[^}]*action_kind[^}]*action_id[^}]*action_status')) {
-    throw 'AgentNotificationEvent must keep the action completion notification discriminator and routing fields in its named wire DTO'
+if (-not [regex]::IsMatch($agentEvents, '(?s)struct\s+AgentNotificationEvent\s*\{[^}]*notification_kind[^}]*tool_run_kind[^}]*tool_run_id[^}]*tool_run_status')) {
+    throw 'AgentNotificationEvent must keep the ToolRun completion notification discriminator and routing fields in its named wire DTO'
 }
-if (-not [regex]::IsMatch($agentEventBridge, 'ActionCompletionNotification\s*\{') -or
-    -not [regex]::IsMatch($agentEventBridge, 'notification_kind:\s*Some\(AgentNotificationKind::ActionCompletion\)')) {
-    throw 'action completion AgentEvent must be projected as the explicit notification_kind marker'
+if (-not [regex]::IsMatch($agentEventBridge, 'ToolRunCompletionNotification\s*\{') -or
+    -not [regex]::IsMatch($agentEventBridge, 'notification_kind:\s*Some\(AgentNotificationKind::ToolRunCompletion\)')) {
+    throw 'ToolRun completion AgentEvent must be projected as the explicit notification_kind marker'
 }
-if (-not [regex]::IsMatch($agentContract, "(?s)export interface AgentNotificationPayload\s*\{[^}]*notificationKind\?:\s*'action_completion'[^}]*actionKind\?:\s*'background'\s*\|\s*'scheduled'[^}]*actionId\?:\s*string[^}]*actionStatus\?:\s*'completed'\s*\|\s*'failed'")) {
-    throw 'frontend notification contract must declare action completion source, identity, and terminal status fields'
+if (-not [regex]::IsMatch($agentContract, "(?s)export interface AgentNotificationPayload\s*\{[^}]*notificationKind\?:\s*'tool_run_completion'[^}]*toolRunKind\?:\s*'background'\s*\|\s*'scheduled'[^}]*toolRunId\?:\s*string[^}]*toolRunStatus\?:\s*'completed'\s*\|\s*'failed'")) {
+    throw 'frontend notification contract must declare ToolRun completion source, identity, and terminal status fields'
 }
-if (-not [regex]::IsMatch($agentContract, "(?s)notificationKind\s*===\s*'action_completion'.*?optionalSessionId\(payload\).*?if\s*\(notificationKind\s*!==\s*undefined\).*?const\s+sessionId\s*=\s*optionalSessionId\(payload\)")) {
-    throw 'generic and action completion notifications must accept an absent session association through the optional session mapper'
+if (-not [regex]::IsMatch($agentContract, "(?s)notificationKind\s*===\s*'tool_run_completion'.*?optionalSessionId\(payload\).*?if\s*\(notificationKind\s*!==\s*undefined\).*?const\s+sessionId\s*=\s*optionalSessionId\(payload\)")) {
+    throw 'generic and ToolRun completion notifications must accept an absent session association through the optional session mapper'
 }
 if (-not [regex]::IsMatch($agentContract, "(?s)function\s+optionalSessionId\([^)]*\)[^{]*\{[^}]*hasOwn\(record,\s*'session_id'\)[^}]*return\s+value\s*&&\s*value\.length\s*>\s*0\s*\?\s*value\s*:\s*null")) {
     throw 'optional notification session IDs must be omitted when absent and reject empty or malformed values'
@@ -70,10 +70,10 @@ if (-not [regex]::IsMatch($agentWire, 'renderer:\s*String') -or
     -not [regex]::IsMatch($agentContract, "requiredString\(payload,\s*'renderer'\)")) {
     throw 'agent observation renderer must be required by both Rust and the frontend event mapper'
 }
-if (-not [regex]::IsMatch($agentContract, '(?s)interface\s+AgentActionPayload\s*\{[^}]*toolCallId:\s*string\s*\|\s*null;') -or
+if (-not [regex]::IsMatch($agentContract, '(?s)interface\s+AgentToolCallPayload\s*\{[^}]*toolCallId:\s*string\s*\|\s*null;') -or
     -not [regex]::IsMatch($agentContract, '(?s)interface\s+AgentObservationPayload\s*\{[^}]*toolCallId:\s*string\s*\|\s*null;[^}]*result:\s*AgentToolResultEnvelope;') -or
     -not [regex]::IsMatch($agentContract, 'const\s+result\s*=\s*mapToolResult\(payload\.result\)')) {
-    throw 'agent action and observation tool_call_id/result fields must match the required Rust DTO shape'
+    throw 'Agent ToolCall and Observation tool_call_id/result fields must match the required Rust DTO shape'
 }
 
 if ($rustEvents.Count -ne 40) {

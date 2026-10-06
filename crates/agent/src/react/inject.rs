@@ -1,4 +1,4 @@
-//! Pending-context projection: steering / follow_up / answer / action_results
+//! Pending-context projection: steering / follow_up / answer / tool_run_results
 //! and cross-session inbox items.
 //!
 //! Split from `react.rs` (Phase 1 mechanical extract). Phase 6 / B3: inject
@@ -14,7 +14,7 @@ use haven_common::types::InjectSource;
 impl ReActEngine {
     /// Assemble and project every turn-start context source: steering
     /// (mid-run user interjections), follow-ups (paused-session replies / ask
-    /// answers), completed background-action results, and the cross-session
+    /// answers), completed background ToolRun results, and the cross-session
     /// inbox. Each item remains a separate `User` message so its source,
     /// message id, and attachments survive into the canonical transcript.
     ///
@@ -61,22 +61,22 @@ impl ReActEngine {
     ) -> anyhow::Result<bool> {
         let mut pending_events = Vec::with_capacity(items.len());
         let mut pending_message_ids = std::collections::HashSet::new();
-        let mut action_result_ids = Vec::new();
+        let mut tool_run_result_ids = Vec::new();
         for item in items {
-            let action_result_id = item.action_result_id.clone();
+            let tool_run_result_id = item.tool_run_result_id.clone();
             let already_applied = item.message_id.as_deref().is_some_and(|message_id| {
                 let duplicate = state.has_applied_inject(message_id)
                     || !pending_message_ids.insert(message_id.to_string());
-                if duplicate && item.source == InjectSource::ActionResult {
+                if duplicate && item.source == InjectSource::ToolRunResult {
                     self.metrics
-                        .increment(MetricsCounter::ActionResultDuplicates);
+                        .increment(MetricsCounter::ToolRunResultDuplicates);
                 }
                 duplicate
             });
-            if let Some(action_result_id) = action_result_id {
+            if let Some(tool_run_result_id) = tool_run_result_id {
                 // A duplicate is also safe to acknowledge: the stable message
                 // id proves the transcript already contains this result.
-                action_result_ids.push(action_result_id);
+                tool_run_result_ids.push(tool_run_result_id);
             }
             if !already_applied {
                 pending_events.push(TranscriptEvent::UserInject {
@@ -95,10 +95,10 @@ impl ReActEngine {
         // cleanup can clear the actor queue immediately afterwards. The
         // durable outbox is acknowledged only after the transcript event and
         // message projection commit.
-        let action_service = self.executor.action_service();
-        for action_result_id in action_result_ids {
-            action_service
-                .acknowledge_action_completion(&action_result_id)
+        let tool_run_service = self.executor.tool_run_service();
+        for tool_run_result_id in tool_run_result_ids {
+            tool_run_service
+                .acknowledge_tool_run_completion(&tool_run_result_id)
                 .await;
         }
 
@@ -273,14 +273,14 @@ mod pending_context_tests {
                     text: "replayed".to_string(),
                     attachments: Vec::new(),
                     message_id: Some(message_id.clone()),
-                    action_result_id: None,
+                    tool_run_result_id: None,
                 },
                 PendingContext {
                     source: InjectSource::CrossSession,
                     text: "replayed again".to_string(),
                     attachments: Vec::new(),
                     message_id: Some(message_id),
-                    action_result_id: None,
+                    tool_run_result_id: None,
                 },
             ],
             clears_ask: false,
@@ -297,9 +297,9 @@ mod pending_context_tests {
     }
 
     #[tokio::test]
-    async fn active_action_result_redelivery_is_projected_once() {
+    async fn active_tool_run_result_redelivery_is_projected_once() {
         let path = std::env::temp_dir().join(format!(
-            "haven_active_action_result_dedup_{}.db",
+            "haven_active_tool_run_result_dedup_{}.db",
             uuid::Uuid::new_v4()
         ));
         let db = std::sync::Arc::new(haven_memory::Database::open(&path).unwrap());
@@ -326,15 +326,15 @@ mod pending_context_tests {
             emitter: std::sync::Arc::new(NoopEmitter),
         };
         let mut state = ReActState::new(Vec::new(), Vec::new(), HashMap::new());
-        let message_id = super::context::action_result_message_id("act-active-dedup");
+        let message_id = super::context::tool_run_result_message_id("toolrun-active-dedup");
 
         let batch = || PendingContextBatch {
             items: vec![PendingContext {
-                source: InjectSource::ActionResult,
+                source: InjectSource::ToolRunResult,
                 text: "background result".into(),
                 attachments: Vec::new(),
                 message_id: Some(message_id.clone()),
-                action_result_id: Some("act-active-dedup".into()),
+                tool_run_result_id: Some("toolrun-active-dedup".into()),
             }],
             clears_ask: false,
             inbox_claim: None,
@@ -362,10 +362,13 @@ mod pending_context_tests {
                 .filter(|event| event.payload.contains(&message_id))
                 .count(),
             1,
-            "an active action-result redelivery must not duplicate its transcript event"
+            "an active ToolRun-result redelivery must not duplicate its transcript event"
         );
         assert_eq!(
-            engine.metrics_snapshot().counters.action_result_duplicates,
+            engine
+                .metrics_snapshot()
+                .counters
+                .tool_run_result_duplicates,
             1
         );
         drop(engine);

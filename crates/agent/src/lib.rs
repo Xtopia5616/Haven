@@ -35,8 +35,8 @@ pub(crate) use canonical::{is_dangling_boundary, sanitize_canonical};
 pub use agent_tool_ports::AgentToolPorts;
 pub use compactor::ContextCompactor;
 pub use event::{
-    ActionCompletionStatus, ActionNotificationSource, AgentEvent, AgentEventEmitter,
-    BufferedEmitter, EventBus, EventDispatcher,
+    AgentEvent, AgentEventEmitter, BufferedEmitter, EventBus, EventDispatcher,
+    ToolRunCompletionStatus, ToolRunNotificationSource,
 };
 pub use interaction::{
     InteractionDetails, InteractionEnvelope, InteractionKind, InteractionOwner, InteractionRequest,
@@ -66,7 +66,7 @@ pub use session::{
 pub use storage_error::sqlite_storage_failure_message;
 
 pub use types::{
-    Action, BranchPoint, ProcessResult, ReActRound, RunBudget, ToolRecord, TranscriptRecord,
+    BranchPoint, ProcessResult, ReActRound, RunBudget, ToolCall, ToolRecord, TranscriptRecord,
     project_transcript, project_transcript_with_strategy, seed_events_from_canonical,
 };
 // The store owns SQLite ordering/persistence in `haven-memory`, while this

@@ -35,22 +35,22 @@ pub struct CommandContract {
 pub const COMMAND_CONTRACTS: &[CommandContract] = &[
     // action
     CommandContract {
-        name: "list_actions",
+        name: "list_tool_runs",
         boundary: CommandBoundary::Read,
         security: "projected task fields only",
     },
     CommandContract {
-        name: "cancel_action",
+        name: "cancel_tool_run",
         boundary: CommandBoundary::Mutate,
         security: "kind is enum; cancel only the selected task kind",
     },
     CommandContract {
-        name: "list_action_history",
+        name: "list_tool_run_history",
         boundary: CommandBoundary::Read,
         security: "optional session filter; limit capped at 200; internal tool args excluded",
     },
     CommandContract {
-        name: "delete_action",
+        name: "delete_tool_run",
         boundary: CommandBoundary::Mutate,
         security: "delete one persisted task row by id",
     },

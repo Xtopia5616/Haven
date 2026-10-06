@@ -1,6 +1,6 @@
 //! Session context queues and the single interaction registry.
 
-use super::actor::{ActionResult, ContextQueueStats};
+use super::actor::{ContextQueueStats, ToolRunResult};
 use super::*;
 
 /// Context selected for the next model request.
@@ -8,7 +8,7 @@ use super::*;
 pub(crate) struct ReactContextBatch {
     pub(crate) steering: Vec<FollowUp>,
     pub(crate) follow_ups: Vec<FollowUp>,
-    pub(crate) action_results: Vec<ActionResult>,
+    pub(crate) tool_run_results: Vec<ToolRunResult>,
 }
 
 impl SessionSupervisor {
@@ -86,20 +86,20 @@ impl SessionSupervisor {
         }
     }
 
-    pub async fn add_action_completion(
+    pub async fn add_tool_run_completion(
         &self,
         session_id: &str,
-        action_result_id: &str,
+        tool_run_result_id: &str,
         text: &str,
     ) -> anyhow::Result<()> {
-        self.add_action_completion_with_id(session_id, action_result_id.to_string(), text)
+        self.add_tool_run_completion_with_id(session_id, tool_run_result_id.to_string(), text)
             .await
     }
 
-    pub async fn add_action_completion_with_id(
+    pub async fn add_tool_run_completion_with_id(
         &self,
         session_id: &str,
-        action_result_id: String,
+        tool_run_result_id: String,
         text: &str,
     ) -> anyhow::Result<()> {
         let actor = self
@@ -107,14 +107,14 @@ impl SessionSupervisor {
             .await
             .ok_or_else(|| anyhow::anyhow!("session '{}' not found", session_id))?;
         actor
-            .add_action_completion(action_result_id, text.to_string())
+            .add_tool_run_completion(tool_run_result_id, text.to_string())
             .await
     }
 
-    pub async fn drain_action_completions(&self, session_id: &str) -> Vec<String> {
+    pub async fn drain_tool_run_completions(&self, session_id: &str) -> Vec<String> {
         match self.actor_for(session_id).await {
             Some(actor) => actor
-                .drain_action_completions()
+                .drain_tool_run_completions()
                 .await
                 .into_iter()
                 .map(|item| item.text)
@@ -126,11 +126,11 @@ impl SessionSupervisor {
     pub(crate) async fn drain_react_context(&self, session_id: &str) -> ReactContextBatch {
         match self.actor_for(session_id).await {
             Some(actor) => {
-                let (steering, follow_ups, action_results) = actor.drain_context().await;
+                let (steering, follow_ups, tool_run_results) = actor.drain_context().await;
                 ReactContextBatch {
                     steering,
                     follow_ups,
-                    action_results,
+                    tool_run_results,
                 }
             }
             None => ReactContextBatch::default(),

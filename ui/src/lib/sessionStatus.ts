@@ -4,7 +4,7 @@
 // statusColor() returns a theme token for inline badges (SessionCard dot).
 // statusVariant() returns a MaterialBadge variant for the memory/sessions page.
 // Paused sessions carry a derived waitingReason so views do not infer the
-// cause by combining status, interactions, and action state.
+// cause by combining status, interactions, and ToolRun state.
 // isBusyStatus() covers dispatcher queue (pending) and claimed run (running).
 
 /** Session statuses only. */

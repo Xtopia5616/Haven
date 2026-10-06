@@ -41,7 +41,7 @@ export function parseToolResult(
 	// the current tool manifest; payload shape does not infer a legacy renderer.
 	const rootToolName = toolRootName(toolName);
 	// Empty content is still a shell card while streaming / waiting for the
-	// first live-output chunk (or a background action bind).
+	// first live-output chunk (or a background ToolRun bind).
 	if (!content) {
 		return toolName === 'shell' ? { kind: 'shell', data: null } : null;
 	}

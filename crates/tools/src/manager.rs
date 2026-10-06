@@ -3,7 +3,7 @@ use super::*;
 /// Process services shared outside the execution facade.
 ///
 /// MCP, skills and the asset registry clone as handles. Authorization,
-/// actions and live output are `Arc`s. Callers keep this bundle instead of
+/// tool_runs and live output are `Arc`s. Callers keep this bundle instead of
 /// asking `ToolsManager` for each service.
 #[derive(Clone)]
 pub struct ToolServices {
@@ -13,7 +13,7 @@ pub struct ToolServices {
     pub skill_runner: Arc<RwLock<SkillRunner>>,
     pub authorization: Arc<AuthorizationEngine>,
     pub assets: ManagedAssetRegistry,
-    pub actions: Arc<ActionService>,
+    pub tool_runs: Arc<ToolRunService>,
     pub live_outputs: Arc<LiveOutputHub>,
 }
 
@@ -26,7 +26,7 @@ impl ToolServices {
             skill_runner: coordinator.builtins.skill_runner.clone(),
             authorization: Arc::clone(&coordinator.core.authorization),
             assets: coordinator.runtime.managed_assets.clone(),
-            actions: Arc::clone(&coordinator.runtime.action_service),
+            tool_runs: Arc::clone(&coordinator.runtime.tool_run_service),
             live_outputs: Arc::clone(&coordinator.runtime.live_outputs),
         }
     }

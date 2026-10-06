@@ -111,13 +111,13 @@ command error: {safe_message}
 
 ### 1.4 ID 上下文（多会话 / 多任务并行可区分）
 
-并发实体日志必须能区分 `session_id` / `action_id`。两条机制配合：
+并发实体日志必须能区分 `session_id` / `tool_run_id`。两条机制配合：
 
 **a) 结构化字段**：
 
 ```rust
 tracing::info!(session_id = %session_id, "dispatcher spawning handler");
-tracing::warn!(action_id = %id, "failed to write output log {}: {e}", path.display());
+tracing::warn!(tool_run_id = %id, "failed to write output log {}: {e}", path.display());
 ```
 
 **b) Span 上下文**（推荐）：在并发边界建立 `info_span!`，span 内日志自动携带字段。当前已建立：
@@ -125,9 +125,9 @@ tracing::warn!(action_id = %id, "failed to write output log {}: {e}", path.displ
 | Span 名 | 字段 | 位置 | 覆盖范围 |
 |---|---|---|---|
 | `run_session` | `session_id` | `haven_agent::session`（handler `.instrument(span)`） | 整个 ReAct 循环嵌套日志 |
-| `bg_action` | `action_id` | `haven_tools::action_service`（runner `.instrument(span)`） | 后台任务运行 / 取消 / 输出写入 |
-| `action_completion` | `action_id`, `session_id` | `haven_agent::layer` 任务完成 consumer | 任务结果注入 / 会话唤醒 / 通知 |
-| `scheduled_action_fired` | `action_id`, `session_id` | `haven_agent::layer` 定时任务 consumer | 定时任务触发与会话恢复 |
+| `background_tool_run` | `tool_run_id` | `haven_tools::tool_run_service`（runner `.instrument(span)`） | 后台任务运行 / 取消 / 输出写入 |
+| `tool_run_completion` | `tool_run_id`, `session_id` | `haven_agent::layer` 任务完成 consumer | 任务结果注入 / 会话唤醒 / 通知 |
+| `scheduled_tool_run_fired` | `tool_run_id`, `session_id` | `haven_agent::layer` 定时任务 consumer | 定时任务触发与会话恢复 |
 
 规则：
 
@@ -166,9 +166,8 @@ AgentEvent / 其它后端事件
 | 会话生命周期（创建/完成/暂停/恢复/出错） | `+layout` 事件 handler | 是（`in_app`） |
 | permission 请求（confirm / scheduled confirm） | `interaction:requested` → `+layout` + DesktopNotifications | 是（`permission_requested` 双通道） |
 | Agent 通用通知（`notify`、预算提示等） | `notification:show`，无 `notification_kind` | 否（始终 toast；Windows 亦始终开启） |
-| 后台任务/定时任务完成通知 | `notification:show`，`notification_kind=action_completion` | 是（共享 `action_completed.in_app`）；后台任务保留非当前会话且 completed/failed 才 toast |
+| 后台任务/定时任务完成通知 | `notification:show`，`notification_kind=tool_run_completion` | 是（共享 `tool_run_completed.in_app`）；后台任务保留非当前会话且 completed/failed 才 toast |
 | 录音 / 转写 / 静音 / 热键冲突 / MCP 状态 | `+layout` 事件 handler | 否（操作反馈，无独立配置项） |
-| 后台任务完成（非当前会话） | `notification:show`（action completion projection） | 是；当前会话内完成不弹（对话里已有结果） |
 | 用户点击触发的命令结果 | 页面 / helper 直接 `addNotification` | 否 |
 
 `notification:show.session_id` 是可选的真实会话关联，不是通知 owner：AppCommand 和无会话的 scheduled 通知省略此字段，不能填入 `ui`、空字符串或其它伪 ID。存在真实会话时仍保留规范的 `ses-*` 值。
@@ -219,7 +218,7 @@ reportError(e, { context: 'SettingsView', message: '操作失败', log: false })
 ### 2.4 后端事件与桌面通知
 
 - **事件命名**：`domain:action`（`session:created`、`agent:thought`、`recording:error`、`notification:show` …）。`AgentEvent` → channel 的唯一事实来源是 `TauriEmitter::channel`；新增变体必须登记并补单测。
-- **工作单元（action）事件**：后台任务与定时任务共用 `action:created` / `action:updated` / `action:output` / `action:finished`。定时任务严格遵循 `Waiting → Running → Completed | Failed | Cancelled`：触发不是终态，实际工作由 Agent 确认后才收口；前端必须保留 `running` 的展示和取消入口。`haven_tools` 只产生内部状态，app shell 在唯一投影点转换为 `ActionEvent { id, kind, ... }` 后再 emit；前端 `actionStore` 只消费 contracts 层的 camelCase DTO，并在任务页通过 `list_actions` 做周期性 reconciliation，不能只依赖单次 `action:finished`。完整字段、顺序与敏感字段限制见 `docs/ipc-contracts.md`。用户文案按 `kind` 显示“后台任务”或“定时任务”，不直接显示 `action`。
+- **ToolRun 生命周期事件**：后台任务与定时任务共用 `tool_run:created` / `tool_run:updated` / `tool_run:output` / `tool_run:finished`。定时任务严格遵循 `Waiting → Running → Completed | Failed | Cancelled`：触发不是终态，实际工作由 Agent 确认后才收口；前端必须保留 `running` 的展示和取消入口。`haven_tools` 只产生内部状态，app shell 在唯一投影点转换为 `ToolRunEvent { id, kind, ... }` 后再 emit；前端 `toolRunStore` 只消费 contracts 层的 camelCase DTO，并在任务页通过 `list_tool_runs` 做周期性 reconciliation，不能只依赖单次 `tool_run:finished`。完整字段、顺序与敏感字段限制见 `docs/ipc-contracts.md`。用户文案按 `kind` 显示“后台任务”或“定时任务”，代码内部使用 ToolRun，用户文案按 kind 显示“后台任务”或“定时任务”。
 - **wire 载荷**：统一 snake_case JSON；前端边界转 camelCase。敏感/内部字段不外泄（见 `payload` 对 `SessionCreated` 的投影）。
 - **桌面通知**：统一走 `DesktopNotifications::maybe_show_toast`（`notification.rs`，由 `TauriEmitter` 委托）。文案与应用内 toast 对齐（中文）：
 
@@ -232,7 +231,7 @@ reportError(e, { context: 'SettingsView', message: '操作失败', log: false })
 | `SessionUpdated` status=`paused`（waiting reason 非 confirmation） | `session_paused.windows` | `false` | `会话已暂停: …` |
 | `SessionUpdated` status=`pending`（且上一状态为 paused/error） | `session_resumed.windows` | `false` | `会话已恢复: …` |
 | `AgentEvent::Notification` | **不读配置**，总是弹 | — | title/body 原样（设置页注明始终开启） |
-| `AgentEvent::ActionCompletionNotification` | `action_completed.windows` | `true` | title/body 原样；wire 仍走 `notification:show`，带 action kind/id/status 标记和可选真实 session 关联 |
+| `AgentEvent::ToolRunCompletionNotification` | `tool_run_completed.windows` | `true` | title/body 原样；wire 仍走 `notification:show`，带 `tool_run_kind` / `tool_run_id` / `tool_run_status` 标记和可选真实 session 关联 |
 
 标题统一产品名 `Haven`。
 
@@ -241,19 +240,19 @@ reportError(e, { context: 'SettingsView', message: '操作失败', log: false })
 定义于 `crates/common/src/config/misc.rs`：
 
 ```text
-session_created / session_completed / session_paused / session_resumed / session_error / permission_requested / action_completed
+session_created / session_completed / session_paused / session_resumed / session_error / permission_requested / tool_run_completed
   └─ NotifyChannels { in_app: bool, windows: bool }
 ```
 
-默认值：`in_app` 全部 `true`；`windows` 的 `session_completed`、`session_error`、`permission_requested`、`action_completed` 为 `true`，其余 `false`。旧配置缺少字段时按该字段默认值加载。
+默认值：`in_app` 全部 `true`；`windows` 的 `session_completed`、`session_error`、`permission_requested`、`tool_run_completed` 为 `true`，其余 `false`。旧配置缺少字段时按该字段默认值加载。
 
-- 设置页「通知」网格与此七键一一对应；background/scheduled 共用 `action_completed`。
+- 设置页「通知」网格与此七键一一对应；background/scheduled 共用 `tool_run_completed`。
 - 新增可配置通知事件时：**结构体 Default + 设置页 + `maybe_show_toast` + `+layout` in_app 判断** 四步同步。
 
 ### 2.6 新增通知事件流程模板
 
-1. 若属 `AgentEvent`：加变体 → `TauriEmitter::channel` / `payload` /（可选）`maybe_show_toast` / `trace_event` → 补 `event_bridge.rs` 或对应模块单测。Action completion 使用 `notification:show` 的显式标记，不改变通用通知语义。
-2. 若属任务事件：在 `haven_tools` emit，前端 `actionStore` 归一化。
+1. 若属 `AgentEvent`：加变体 → `TauriEmitter::channel` / `payload` /（可选）`maybe_show_toast` / `trace_event` → 补 `event_bridge.rs` 或对应模块单测。ToolRun completion 使用 `notification:show` 的显式标记，不改变通用通知语义。
+2. 若属任务事件：在 `haven_tools` emit，前端 `toolRunStore` 归一化。
 3. 前端在 `+layout.svelte` 的 `registerListeners` 增加 handler；需要用户开关则接 `notifyCfg`。
 4. 需要设置项时扩展 `NotificationConfig` + Settings 网格。
 5. 更新本文 §4 映射表。
@@ -313,8 +312,8 @@ try {
 | `interaction:requested`（confirm/scheduled confirm pending） | warning：`有一项操作等待权限确认`（5s） | `permission_requested.in_app` |
 | `session:updated` status=`paused`（waiting reason 非 confirmation） | warning：`会话已暂停: …`（3s） | `session_paused.in_app` |
 | `session:updated` status=`pending`（仅当上一状态为 paused/error） | info：`会话已恢复: …`（3s） | `session_resumed.in_app` |
-| `notification:show`（action completion，background） | completed/failed 且 owner session 非当前会话时显示原后台任务 toast | `action_completed.in_app` |
-| `notification:show`（action completion，scheduled） | info toast（原 title/body） | `action_completed.in_app` |
+| `notification:show`（ToolRun completion，background） | completed/failed 且 owner session 非当前会话时显示原后台任务 toast | `tool_run_completed.in_app` |
+| `notification:show`（ToolRun completion，scheduled） | info toast（原 title/body） | `tool_run_completed.in_app` |
 
 ### 4.2 不受配置控制（操作 / 系统反馈）
 
@@ -325,7 +324,7 @@ try {
 | `mcp:status_change` | Connected→success（冷启动跳过）/ Disconnected→warning / Offline→error |
 | `hotkey:conflict` | error toast：`热键冲突: …`（5s） |
 | `recording:error` / `transcription:*` / `mute:changed` | 对应中文提示 + overlay |
-| `action:finished`（后台任务） | 更新 action/transcript；toast 由带 action completion 标记的 `notification:show` 统一负责 |
+| `tool_run:finished`（后台任务） | 更新 ToolRun/transcript；toast 由带 ToolRun completion 标记的 `notification:show` 统一负责 |
 | 命令 invoke 失败 | `reportError` error toast（归一化文案，5s） |
 | 过期 / 已处理的确认请求 | `invoke` 记录 warning；`+layout` 显示 warning toast，不作为命令错误 |
 | `check_llm_connection` 返回 disconnected | error toast：包含非敏感原因分类，并提示检查 API 地址、API Key 和代理（5s；仅状态首次变化时） |
@@ -337,7 +336,7 @@ try {
 |---|---|
 | `session:updated` completed/error（副发） | 更新 busySessions / modelState；toast 由主通道负责 |
 | `session:deleted` | 清理 busySessions |
-| `action:created` / `action:updated` / `action:output` | 更新 `actionStore` |
+| `tool_run:created` / `tool_run:updated` / `tool_run:output` | 更新 `toolRunStore` |
 | `agent:stream_stalled` | `updateModelState('stalled')` |
 | `llm:config_changed` | 重新探测 LLM 连通性 |
 | `skills:status_change` | 由工具页刷新，不弹 toast |
@@ -346,7 +345,7 @@ try {
 
 ## 5. 新增代码检查清单
 
-- [ ] 日志：前端只用 `logger.*`；后端只用 `tracing`；命令错误走 `log_err`；并发路径带 `session_id`/`action_id` 或落在已有 span 内。
+- [ ] 日志：前端只用 `logger.*`；后端只用 `tracing`；命令错误走 `log_err`；并发路径带 `session_id`/`tool_run_id` 或落在已有 span 内。
 - [ ] 通知：系统事件进 `+layout`；用户操作可页面直调 `addNotification`；新可配置事件按 §2.6 走完四步。
 - [ ] 错误：后端 `Result<T, String>` + 日志 + 用户可读摘要；前端 try/catch + toast，不重复记日志。
 - [ ] 文案：应用内中文；产品名 `Haven`；专有模型角色名按命名约定。
@@ -362,7 +361,7 @@ try {
 | 域 | 大小写 | 示例 |
 |---|---|---|
 | 窗口标题 / 托盘 tooltip / 系统通知标题 | `Haven` | `tauri.conf.json` `productName`、`app-binary` 通知与托盘文案 |
-| 通知默认标题（`notify` / `schedule` 工具） | `Haven` | `tool_contract.rs` / `notify.rs` / `scheduled_action.rs` 默认 title |
+| 通知默认标题（`notify` / `schedule` 工具） | `Haven` | `tool_contract.rs` / `notify.rs` / `scheduled_tool_run.rs` 默认 title |
 | 前端 UI 文案（欢迎页、气泡标签、设置页） | `Haven` | `+page.svelte`、`ChatBubble.svelte`、`Logo.svelte` |
 | Windows 计划任务名（Action Scheduler 中展示） | `Haven` | `app-binary/src/autostart.rs` `ACTION_NAME` |
 | 数据目录 / 临时工作目录 / 日志文件名 | `haven` | `ConfigLoader::data_dir()`、`default_work_dir()`、`haven.log` |

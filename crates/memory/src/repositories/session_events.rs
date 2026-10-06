@@ -13,7 +13,7 @@ use crate::repositories::messages::{
 use crate::repositories::session_authorization::{
     SessionAuthorizationGrant, StoredSessionAuthorizationGrant,
 };
-use crate::repositories::session_steps::{ActionStepOutcome, ActionStepWrite, SessionStep};
+use crate::repositories::session_steps::{SessionStep, ToolStepOutcome, ToolStepWrite};
 use crate::repositories::sessions::{Session, SessionOrigin};
 use crate::repositories::usage::{LlmCallUsage, LlmCallUsageInput, SessionUsage};
 use chrono::{SecondsFormat, Utc};
@@ -220,10 +220,10 @@ pub enum SessionProjectionIntent {
         message_id: String,
         step_number: u32,
     },
-    ActionStep {
+    ToolStep {
         step_id: String,
         step_number: u32,
-        action_index: u32,
+        tool_index: u32,
         tool_name: String,
         tool_input: String,
         tool_call_id: Option<String>,
@@ -287,21 +287,21 @@ impl SessionCommitted {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub fn project_action_step(
+    pub fn project_tool_call_step(
         &mut self,
         step_id: impl Into<String>,
         step_number: u32,
-        action_index: u32,
+        tool_index: u32,
         tool_name: impl Into<String>,
         tool_input: impl Into<String>,
         tool_call_id: Option<String>,
         is_high_risk: bool,
         silent: bool,
     ) {
-        self.projections.push(SessionProjectionIntent::ActionStep {
+        self.projections.push(SessionProjectionIntent::ToolStep {
             step_id: step_id.into(),
             step_number,
-            action_index,
+            tool_index,
             tool_name: tool_name.into(),
             tool_input: tool_input.into(),
             tool_call_id,
@@ -519,17 +519,17 @@ impl SessionStore {
 
     /// Ensure a pending action-step row exists with the supplied durable
     /// invocation identity and confirmation decision.
-    pub async fn ensure_action_step(
+    pub async fn ensure_tool_step(
         &self,
-        write: ActionStepWrite,
+        write: ToolStepWrite,
         confirmed: Option<bool>,
     ) -> anyhow::Result<()> {
         self.db
             .run_blocking(move |db| {
-                db.ensure_action_step_with_identity(
+                db.ensure_tool_step_with_identity(
                     &write.session_id,
                     write.step_number,
-                    write.action_index,
+                    write.tool_index,
                     &write.tool_name,
                     &write.tool_input,
                     write.tool_call_id.as_deref(),
@@ -545,17 +545,17 @@ impl SessionStore {
     /// Ensure an action-step row and mark it running as one blocking-pool
     /// operation. Keeping both Database calls in this closure preserves the
     /// existing ordering and avoids an interleaving window between them.
-    pub async fn ensure_and_start_action_step(
+    pub async fn ensure_and_start_tool_step(
         &self,
-        write: ActionStepWrite,
+        write: ToolStepWrite,
         confirmed: Option<bool>,
     ) -> anyhow::Result<bool> {
         self.db
             .run_blocking(move |db| {
-                db.ensure_action_step_with_identity(
+                db.ensure_tool_step_with_identity(
                     &write.session_id,
                     write.step_number,
-                    write.action_index,
+                    write.tool_index,
                     &write.tool_name,
                     &write.tool_input,
                     write.tool_call_id.as_deref(),
@@ -564,26 +564,26 @@ impl SessionStore {
                     confirmed,
                     &write.step_id,
                 )?;
-                db.start_action_step(&write.step_id)
+                db.start_tool_step(&write.step_id)
             })
             .await
     }
 
     /// Ensure an action-step row and record its final observation/outcome as
     /// one blocking-pool operation, retaining the existing Database order.
-    pub async fn ensure_and_finish_action_step(
+    pub async fn ensure_and_finish_tool_step(
         &self,
-        write: ActionStepWrite,
+        write: ToolStepWrite,
         confirmed: Option<bool>,
         observation: String,
-        outcome: ActionStepOutcome,
+        outcome: ToolStepOutcome,
     ) -> anyhow::Result<bool> {
         self.db
             .run_blocking(move |db| {
-                db.ensure_action_step_with_identity(
+                db.ensure_tool_step_with_identity(
                     &write.session_id,
                     write.step_number,
-                    write.action_index,
+                    write.tool_index,
                     &write.tool_name,
                     &write.tool_input,
                     write.tool_call_id.as_deref(),
@@ -592,7 +592,7 @@ impl SessionStore {
                     confirmed,
                     &write.step_id,
                 )?;
-                db.finish_action_step(&write.step_id, &observation, outcome)
+                db.finish_tool_step(&write.step_id, &observation, outcome)
             })
             .await
     }
@@ -978,9 +978,9 @@ impl SessionStore {
         .await
     }
 
-    /// Persist a terminal action result when there is no live Agent loop to
+    /// Persist a terminal ToolRun result when there is no live Agent loop to
     /// commit it. The stable message id keeps delivery retries idempotent.
-    pub async fn persist_terminal_action_result(
+    pub async fn persist_terminal_tool_run_result(
         &self,
         session_id: &str,
         content: &str,
@@ -1111,7 +1111,7 @@ impl SessionStore {
     ///
     /// The existing session-steps repository owns the update semantics; this
     /// port only moves its SQLite work onto the blocking pool.
-    pub async fn fail_pending_action_steps(
+    pub async fn fail_pending_tool_run_steps(
         &self,
         session_id: &str,
         observation: &str,
@@ -1119,7 +1119,7 @@ impl SessionStore {
         let session_id = session_id.to_owned();
         let observation = observation.to_owned();
         self.db
-            .run_blocking(move |db| db.fail_pending_action_steps(&session_id, &observation))
+            .run_blocking(move |db| db.fail_pending_tool_run_steps(&session_id, &observation))
             .await
     }
 
@@ -3131,10 +3131,10 @@ impl Database {
         }
 
         for projection in &committed.projections {
-            let SessionProjectionIntent::ActionStep {
+            let SessionProjectionIntent::ToolStep {
                 step_id,
                 step_number,
-                action_index,
+                tool_index,
                 tool_name,
                 tool_input,
                 tool_call_id,
@@ -3147,15 +3147,15 @@ impl Database {
             let created_at = Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true);
             let changed = conn.execute(
                 "INSERT OR IGNORE INTO session_steps
-                    (id, session_id, step_number, action_index, tool_name, input,
-                     action_tool, action_input, tool_call_id, status, is_high_risk,
+                    (id, session_id, step_number, tool_index, tool_name, input,
+                     tool_call_name, tool_call_input, tool_call_id, status, is_high_risk,
                      created_at, silent, confirmed)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?5, ?6, ?7, 'pending', ?8, ?9, ?10, NULL)",
                 rusqlite::params![
                     step_id,
                     session_id,
                     *step_number as i32,
-                    *action_index as i32,
+                    *tool_index as i32,
                     tool_name,
                     tool_input,
                     tool_call_id,
@@ -3457,11 +3457,11 @@ mod tests {
         ));
     }
 
-    fn action_step_write(session_id: &str, step_id: &str) -> ActionStepWrite {
-        ActionStepWrite {
+    fn tool_step_write(session_id: &str, step_id: &str) -> ToolStepWrite {
+        ToolStepWrite {
             session_id: session_id.into(),
             step_number: 7,
-            action_index: 2,
+            tool_index: 2,
             tool_name: "files.read".into(),
             tool_input: r#"{"path":"notes.txt"}"#.into(),
             tool_call_id: Some("provider-call-7".into()),
@@ -3472,16 +3472,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn session_store_action_step_ports_preserve_identity_confirmation_and_start() {
+    async fn session_store_tool_step_ports_preserve_identity_confirmation_and_start() {
         let (db, store, session_id) = store();
-        let write = action_step_write(&session_id, "step-store-start");
+        let write = tool_step_write(&session_id, "step-store-start");
 
         store
-            .ensure_action_step(write.clone(), Some(false))
+            .ensure_tool_step(write.clone(), Some(false))
             .await
             .unwrap();
         store
-            .ensure_action_step(write.clone(), Some(true))
+            .ensure_tool_step(write.clone(), Some(true))
             .await
             .unwrap();
 
@@ -3490,10 +3490,10 @@ mod tests {
         assert_eq!(pending[0].id, write.step_id);
         assert_eq!(pending[0].session_id, session_id);
         assert_eq!(pending[0].step_number, 7);
-        assert_eq!(pending[0].action_index, 2);
-        assert_eq!(pending[0].action_tool.as_deref(), Some("files.read"));
+        assert_eq!(pending[0].tool_index, 2);
+        assert_eq!(pending[0].tool_name.as_deref(), Some("files.read"));
         assert_eq!(
-            pending[0].action_input.as_deref(),
+            pending[0].tool_input.as_deref(),
             Some(r#"{"path":"notes.txt"}"#)
         );
         assert_eq!(pending[0].tool_call_id.as_deref(), Some("provider-call-7"));
@@ -3503,16 +3503,11 @@ mod tests {
 
         assert!(
             store
-                .ensure_and_start_action_step(write.clone(), None)
+                .ensure_and_start_tool_step(write.clone(), None)
                 .await
                 .unwrap()
         );
-        assert!(
-            store
-                .ensure_and_start_action_step(write, None)
-                .await
-                .unwrap()
-        );
+        assert!(store.ensure_and_start_tool_step(write, None).await.unwrap());
 
         let running = db.get_session_steps(&session_id).unwrap();
         assert_eq!(running.len(), 1);
@@ -3522,28 +3517,28 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn session_store_action_step_finish_port_preserves_outcome_and_observation() {
+    async fn session_store_tool_step_finish_port_preserves_outcome_and_observation() {
         let (db, store, session_id) = store();
-        let write = action_step_write(&session_id, "step-store-finish");
+        let write = tool_step_write(&session_id, "step-store-finish");
 
         assert!(
             store
-                .ensure_and_finish_action_step(
+                .ensure_and_finish_tool_step(
                     write.clone(),
                     Some(false),
                     "tool may have crossed a side-effect boundary".into(),
-                    ActionStepOutcome::Unknown,
+                    ToolStepOutcome::Unknown,
                 )
                 .await
                 .unwrap()
         );
         assert!(
             !store
-                .ensure_and_finish_action_step(
+                .ensure_and_finish_tool_step(
                     write,
                     Some(true),
                     "late completion must not overwrite the terminal row".into(),
-                    ActionStepOutcome::Completed,
+                    ToolStepOutcome::Completed,
                 )
                 .await
                 .unwrap()
@@ -3959,23 +3954,23 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn session_store_fail_pending_action_steps_scopes_unfinished_steps() {
+    async fn session_store_fail_pending_tool_run_steps_scopes_unfinished_steps() {
         let (db, store, session_id) = store();
         let other_session = db.create_session("other").unwrap();
         let pending = db
-            .create_action_step(&session_id, 0, "shell", "{}", false, false, None, None)
+            .create_tool_step(&session_id, 0, "shell", "{}", false, false, None, None)
             .unwrap();
         let running = db
-            .create_action_step(&session_id, 1, "shell", "{}", false, false, None, None)
+            .create_tool_step(&session_id, 1, "shell", "{}", false, false, None, None)
             .unwrap();
-        assert!(db.start_action_step(&running.id).unwrap());
+        assert!(db.start_tool_step(&running.id).unwrap());
         let completed = db
-            .create_action_step(&session_id, 2, "shell", "{}", false, false, None, None)
+            .create_tool_step(&session_id, 2, "shell", "{}", false, false, None, None)
             .unwrap();
-        db.complete_action_step(&completed.id, "already finished", true)
+        db.complete_tool_step(&completed.id, "already finished", true)
             .unwrap();
         let other_pending = db
-            .create_action_step(
+            .create_tool_step(
                 &other_session.id,
                 0,
                 "shell",
@@ -4004,7 +3999,7 @@ mod tests {
             .observation;
 
         let changed = store
-            .fail_pending_action_steps(&session_id, "session failed")
+            .fail_pending_tool_run_steps(&session_id, "session failed")
             .await
             .unwrap();
 
@@ -5505,7 +5500,7 @@ mod tests {
         let (db, store, session_id) = store();
         let mut receiver = store.subscribe();
         let message_id = "step-batch-thought".to_string();
-        let action_id = "step-batch-action".to_string();
+        let tool_run_id = "step-batch-action".to_string();
         let mut committed = SessionCommitted::transcript(
             r#"{"type":"thought","message_id":"step-batch-thought"}"#,
             2,
@@ -5513,8 +5508,8 @@ mod tests {
         );
         committed.project_assistant_message(message_id.clone(), "thinking", Some("text".into()));
         committed.project_thought_step(message_id.clone(), 3);
-        committed.project_action_step(
-            action_id.clone(),
+        committed.project_tool_call_step(
+            tool_run_id.clone(),
             3,
             0,
             "echo",
@@ -5536,7 +5531,7 @@ mod tests {
             1
         );
         let steps = db.get_session_steps(&session_id).unwrap();
-        assert!(steps.iter().any(|step| step.id == action_id));
+        assert!(steps.iter().any(|step| step.id == tool_run_id));
     }
 
     #[tokio::test]
@@ -5763,7 +5758,7 @@ mod tests {
         assert!(store.read_all(&session_id).unwrap().is_empty());
 
         let mut oversized_projection = SessionCommitted::transcript(r#"{"type":"action"}"#, 1, 1);
-        oversized_projection.project_action_step(
+        oversized_projection.project_tool_call_step(
             "step-oversized",
             1,
             0,

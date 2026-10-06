@@ -5,18 +5,18 @@
 //! result commit. Result slots and observation projection live in
 //! `tool_batch.rs`; failure policy lives in `tool_batch_policy.rs`.
 
-use super::hooks::{BeforeToolAction, BeforeToolRequest, ToolCallIdentity};
+use super::hooks::{BeforeToolCallDecision, BeforeToolRequest, ToolCallIdentity};
 use super::tool_batch::{
-    CompletedTool, MAX_CONCURRENT_TOOL_CALLS, MAX_RUNTIME_TOOL_CALLS_PER_BATCH, ToolActionRequest,
-    ToolBatchGate, ToolBatchOutcome, ToolBatchResults, ToolBatchState, action_step_metadata,
-    execute_tool_action,
+    CompletedTool, MAX_CONCURRENT_TOOL_CALLS, MAX_RUNTIME_TOOL_CALLS_PER_BATCH, ToolBatchGate,
+    ToolBatchOutcome, ToolBatchResults, ToolBatchState, ToolCallRequest, execute_tool_call,
+    tool_step_metadata,
 };
 use super::tool_batch_plan::ToolBatchPlan;
 use super::tool_batch_policy::ToolRetryBudget;
 use super::*;
-use crate::types::Action;
+use crate::types::ToolCall;
 use futures_util::StreamExt;
-use haven_memory::repositories::session_steps::ActionStepOutcome;
+use haven_memory::repositories::session_steps::ToolStepOutcome;
 use haven_tools::{ToolConcurrency, ToolExecutionOutcome};
 use std::collections::HashMap;
 use std::future::Future;
@@ -30,8 +30,8 @@ fn cancellation_observation(
 ) -> String {
     if was_started {
         crate::canonical::interrupted_result_text(
-            &planned.action.tool_name,
-            &planned.action.tool_input,
+            &planned.tool_call.tool_name,
+            &planned.tool_call.tool_input,
         )
     } else {
         "tool call cancelled before execution".to_string()
@@ -45,12 +45,12 @@ fn rejection_observation(tool_name: &str) -> String {
     )
 }
 
-fn tool_execution_outcome(outcome: ActionStepOutcome) -> ToolExecutionOutcome {
+fn tool_execution_outcome(outcome: ToolStepOutcome) -> ToolExecutionOutcome {
     match outcome {
-        ActionStepOutcome::Completed => ToolExecutionOutcome::Succeeded,
-        ActionStepOutcome::Failed => ToolExecutionOutcome::Failed,
-        ActionStepOutcome::Cancelled => ToolExecutionOutcome::Cancelled,
-        ActionStepOutcome::Unknown => ToolExecutionOutcome::TimedOutUnknown,
+        ToolStepOutcome::Completed => ToolExecutionOutcome::Succeeded,
+        ToolStepOutcome::Failed => ToolExecutionOutcome::Failed,
+        ToolStepOutcome::Cancelled => ToolExecutionOutcome::Cancelled,
+        ToolStepOutcome::Unknown => ToolExecutionOutcome::TimedOutUnknown,
     }
 }
 
@@ -139,18 +139,18 @@ impl ReActEngine {
         // checks like execution, while `buffered` keeps their outputs in plan
         // order. Collect every decision before returning: the caller starts no
         // tool execution until this whole admission barrier has completed.
-        type AdmissionCheck = Result<(usize, BeforeToolAction), (usize, String)>;
+        type AdmissionCheck = Result<(usize, BeforeToolCallDecision), (usize, String)>;
         type AdmissionCheckFuture = futures_util::future::BoxFuture<'static, AdmissionCheck>;
         let checks: Vec<AdmissionCheckFuture> =
             plan.iter().enumerate().map(|(plan_index, planned)| {
             let step_id = planned.step_id.clone();
-            let action_index = planned.action_index;
-            let tool_call_id = planned.action.tool_call_id.clone();
-            let tool_name = planned.action.tool_name.clone();
-            let tool_input = planned.action.tool_input.clone();
+            let tool_index = planned.tool_index;
+            let tool_call_id = planned.tool_call.tool_call_id.clone();
+            let tool_name = planned.tool_call.tool_name.clone();
+            let tool_input = planned.tool_call.tool_input.clone();
             let validation_failure = validation_failures
                 .iter()
-                .find(|failure| failure.action_index == action_index)
+                .find(|failure| failure.tool_index == tool_index)
                 .map(|failure| failure.render());
             if plan_index >= MAX_RUNTIME_TOOL_CALLS_PER_BATCH {
                 return Box::pin(async move {
@@ -172,7 +172,7 @@ impl ReActEngine {
                 catalog: catalog.clone(),
                 identity: ToolCallIdentity {
                     step_id,
-                    action_index,
+                    tool_index,
                     tool_call_id,
                 },
                 tool_name,
@@ -196,9 +196,12 @@ impl ReActEngine {
                 .get(plan_index)
                 .expect("admission decision must reference a plan entry");
             match decision {
-                BeforeToolAction::Proceed { receipt } => {
+                BeforeToolCallDecision::Proceed { receipt } => {
                     let concurrency = catalog
-                        .operation_policy(&planned.action.tool_name, &planned.action.tool_input)
+                        .operation_policy(
+                            &planned.tool_call.tool_name,
+                            &planned.tool_call.tool_input,
+                        )
                         .concurrency;
                     admission.runnable.push(AdmittedTool {
                         plan_index,
@@ -206,22 +209,22 @@ impl ReActEngine {
                         concurrency,
                     });
                 }
-                BeforeToolAction::Block { error } => {
+                BeforeToolCallDecision::Block { error } => {
                     admission
                         .failures
                         .push(DeferredAdmissionFailure { plan_index, error });
                 }
-                BeforeToolAction::NeedConfirm { receipt } => {
+                BeforeToolCallDecision::NeedConfirm { receipt } => {
                     admission
                         .need_confirm
                         .push(crate::interaction::InteractionRequest::confirm(
                             session_id,
                             step_num,
-                            planned.action.tool_name.clone(),
-                            planned.action.tool_input.clone(),
-                            planned.action.tool_call_id.clone().unwrap_or_default(),
+                            planned.tool_call.tool_name.clone(),
+                            planned.tool_call.tool_input.clone(),
+                            planned.tool_call.tool_call_id.clone().unwrap_or_default(),
                             planned.step_id.clone(),
-                            planned.action_index,
+                            planned.tool_index,
                             receipt.effective_risk,
                             Some(receipt),
                         ));
@@ -263,11 +266,11 @@ impl ReActEngine {
                 .iter()
                 .filter_map(|tool| match &tool.details {
                     crate::interaction::InteractionDetails::Confirm {
-                        action_index,
+                        tool_index,
                         risk_level,
                         receipt: Some(receipt),
                         ..
-                    } => Some((*action_index, (*risk_level, receipt.clone()))),
+                    } => Some((*tool_index, (*risk_level, receipt.clone()))),
                     _ => None,
                 })
                 .collect();
@@ -275,25 +278,25 @@ impl ReActEngine {
                 .iter()
                 .map(|planned| {
                     let (risk_level, receipt) = gated_by_index
-                        .get(&planned.action_index)
+                        .get(&planned.tool_index)
                         .map(|(risk, receipt)| (*risk, Some(receipt.clone())))
                         .unwrap_or((haven_common::types::RiskLevel::Safe, None));
                     {
                         let mut request = crate::interaction::InteractionRequest::confirm(
                             session_id,
                             step_num,
-                            planned.action.tool_name.clone(),
-                            planned.action.tool_input.clone(),
-                            planned.action.tool_call_id.clone().unwrap_or_default(),
+                            planned.tool_call.tool_name.clone(),
+                            planned.tool_call.tool_input.clone(),
+                            planned.tool_call.tool_call_id.clone().unwrap_or_default(),
                             planned.step_id.clone(),
-                            planned.action_index,
+                            planned.tool_index,
                             risk_level,
                             receipt,
                         );
                         // Safe, blocked, invalid, and already trusted calls do
                         // not need a user decision, but remain in the same
                         // ordered barrier and are revalidated on resume.
-                        if !gated_by_index.contains_key(&planned.action_index) {
+                        if !gated_by_index.contains_key(&planned.tool_index) {
                             let _ = request.resolve(serde_json::Value::Bool(true));
                         }
                         request
@@ -318,24 +321,24 @@ impl ReActEngine {
         self.executor
             .finish_interrupted_step_with_identity_and_metadata(
                 session_id,
-                &planned.action.tool_name,
-                &planned.action.tool_input,
+                &planned.tool_call.tool_name,
+                &planned.tool_call.tool_input,
                 step_num,
-                planned.action_index,
-                planned.action.tool_call_id.as_deref(),
+                planned.tool_index,
+                planned.tool_call.tool_call_id.as_deref(),
                 &planned.step_id,
                 &error,
-                action_step_metadata(
+                tool_step_metadata(
                     catalog,
-                    &planned.action.tool_name,
-                    &planned.action.tool_input,
+                    &planned.tool_call.tool_name,
+                    &planned.tool_call.tool_input,
                 ),
             )
             .await;
         CompletedTool::from_observation(
-            planned.action.clone(),
+            planned.tool_call.clone(),
             planned.step_id.clone(),
-            planned.action_index,
+            planned.tool_index,
             error,
             ToolExecutionOutcome::Failed,
         )
@@ -379,8 +382,8 @@ impl ReActEngine {
                 let planned = plan
                     .get(admitted.plan_index)
                     .expect("admission must reference a plan entry");
-                let action = planned.action.clone();
-                let action_index = planned.action_index;
+                let tool_call = planned.tool_call.clone();
+                let tool_index = planned.tool_index;
                 let step_id = planned.step_id.clone();
                 let session_id = session_id.to_string();
                 let metric_session_id = session_id.clone();
@@ -396,7 +399,7 @@ impl ReActEngine {
                 async move {
                     let _permit = gate.acquire(&admitted.concurrency).await;
                     committed_ui
-                        .publish_action(&emitter, &session_id, &step_id)
+                        .publish_tool_call(&emitter, &session_id, &step_id)
                         .await;
                     started[admitted.plan_index].store(true, Ordering::Release);
                     let _timer = metrics.start(
@@ -405,13 +408,13 @@ impl ReActEngine {
                         run_id,
                         step_num,
                     );
-                    let result = execute_tool_action(ToolActionRequest {
+                    let result = execute_tool_call(ToolCallRequest {
                         executor,
                         catalog,
                         session_id,
-                        action,
+                        tool_call,
                         step_num,
-                        action_index,
+                        tool_index,
                         step_id,
                         receipt: admitted.receipt,
                         cancel,
@@ -491,7 +494,7 @@ impl ReActEngine {
                 continue;
             };
             self.committed_ui
-                .publish_action(&ctx.emitter, &ctx.session_id, &result.step_id)
+                .publish_tool_call(&ctx.emitter, &ctx.session_id, &result.step_id)
                 .await;
             let event = batch_state
                 .commit_tool_result(self, ctx, result, state)
@@ -517,34 +520,34 @@ impl ReActEngine {
             let was_started = started[plan_index].load(Ordering::Acquire);
             let interrupted_text = cancellation_observation(planned, was_started);
             let outcome = if was_started {
-                ActionStepOutcome::Unknown
+                ToolStepOutcome::Unknown
             } else {
-                ActionStepOutcome::Cancelled
+                ToolStepOutcome::Cancelled
             };
             self.executor
                 .finish_step_with_outcome_and_metadata(
                     session_id,
-                    &planned.action.tool_name,
-                    &planned.action.tool_input,
+                    &planned.tool_call.tool_name,
+                    &planned.tool_call.tool_input,
                     step_num,
-                    planned.action_index,
-                    planned.action.tool_call_id.as_deref(),
+                    planned.tool_index,
+                    planned.tool_call.tool_call_id.as_deref(),
                     &planned.step_id,
                     &interrupted_text,
                     outcome,
-                    action_step_metadata(
+                    tool_step_metadata(
                         catalog,
-                        &planned.action.tool_name,
-                        &planned.action.tool_input,
+                        &planned.tool_call.tool_name,
+                        &planned.tool_call.tool_input,
                     ),
                 )
                 .await;
             results.set(
                 plan_index,
                 CompletedTool::from_observation(
-                    planned.action.clone(),
+                    planned.tool_call.clone(),
                     planned.step_id.clone(),
-                    planned.action_index,
+                    planned.tool_index,
                     interrupted_text,
                     tool_execution_outcome(outcome),
                 ),
@@ -552,12 +555,12 @@ impl ReActEngine {
         }
     }
 
-    /// Execute the non-final actions for one step: emit Action cards, run the
+    /// Execute the non-final tool_calls for one step: emit ToolCall cards, run the
     /// batch (parallel), drain observations, failure nudge, and ask pause.
     /// Behavior-preserving extract from `run_react_loop` (Phase 1 / E2).
     ///
     /// Phase 7 / E5: tool-input validation runs at the tool-batch boundary
-    /// before Action cards are emitted — not in the thin loop. Invalid inputs
+    /// before ToolCall cards are emitted — not in the thin loop. Invalid inputs
     /// become failed observations and are never rewritten.
     #[allow(clippy::too_many_arguments)]
     pub(super) async fn execute_tool_batch(
@@ -567,7 +570,7 @@ impl ReActEngine {
         step_num: u32,
         emitter: &Arc<dyn AgentEventEmitter>,
         run_id: u64,
-        actions: &[Action],
+        tool_calls: &[ToolCall],
         thought: &Option<String>,
         response: &haven_llm::LlmResponse,
         catalog: Arc<haven_tools::ToolCatalogSnapshot>,
@@ -577,12 +580,12 @@ impl ReActEngine {
     ) -> anyhow::Result<ToolBatchOutcome> {
         // Build the plan first. Every later identity/index lookup is derived
         // from it; validation only reports tool-schema failures against the
-        // plan's action indexes and never mints a parallel identity map.
-        let plan = ToolBatchPlan::from_actions(actions);
+        // plan's tool_call indexes and never mints a parallel identity map.
+        let plan = ToolBatchPlan::from_tool_calls(tool_calls);
         let validation_failures = if plan.is_empty() {
             Vec::new()
         } else {
-            self.validate_tool_inputs_from_catalog(catalog.as_ref(), actions)
+            self.validate_tool_inputs_from_catalog(catalog.as_ref(), tool_calls)
         };
         if !validation_failures.is_empty() {
             tracing::warn!(
@@ -616,10 +619,10 @@ impl ReActEngine {
             // carries both: the `web_search_call` items round-trip in the
             // same assistant message so the next request restores the
             // search context alongside the function tool results.
-            // Phase 6.1 + X12: Action cards + pending rows + canonical via apply.
+            // Phase 6.1 + X12: ToolCall cards + pending rows + canonical via apply.
             // Thought already projected the messages row — no persist_text_id.
-            let action_cards =
-                plan.action_cards_with_catalog(suppress_streamed_thought, catalog.as_ref());
+            let tool_call_cards =
+                plan.tool_call_cards_with_catalog(suppress_streamed_thought, catalog.as_ref());
             commit.transcript(TranscriptEvent::ToolCall {
                 text: push_text.to_string(),
                 tool_calls,
@@ -630,7 +633,7 @@ impl ReActEngine {
                 },
                 web_search_calls: response.web_search_calls.clone(),
                 thinking_blocks: response.thinking_blocks.clone(),
-                action_cards,
+                tool_call_cards,
                 persist_text_id: None,
             });
         }
@@ -639,7 +642,7 @@ impl ReActEngine {
         });
         self.apply_committed_batch(&step_ctx, state, commit).await?;
 
-        // Phase 5 / E3: pre-check every planned action before spawning.
+        // Phase 5 / E3: pre-check every planned tool_call before spawning.
         // Proceed tools run in parallel; blocked calls become immediate
         // observations; NeedConfirm is collected and pauses after the drain.
         let admission = {
@@ -680,7 +683,7 @@ impl ReActEngine {
 
         // Futures finish nondeterministically, but canonical tool messages are
         // an ordered protocol: each observation follows the corresponding
-        // assistant call. Action cards publish when each call starts, and
+        // assistant call. ToolCall cards publish when each call starts, and
         // observations publish as calls finish; only canonical projection
         // waits for the ordered batch.
         if execution.cancelled || need_confirm.is_empty() {
@@ -763,7 +766,7 @@ impl ReActEngine {
         }
 
         // Phase 5 / E3: confirm before ask when both appear in one batch.
-        // Ask pause used to return first and drop NeedConfirm tools (Action
+        // Ask pause used to return first and drop NeedConfirm tools (ToolCall
         // cards + assistant tool_calls with no results → Interrupted repair).
         // Prefer confirm pause; stash ask pending so finish_confirm_batch's
         // next turn still surfaces the question.
@@ -783,7 +786,7 @@ impl ReActEngine {
                     &request.details
                 {
                     self.committed_ui
-                        .publish_action(emitter, session_id, step_id)
+                        .publish_tool_call(emitter, session_id, step_id)
                         .await;
                 }
             }
@@ -858,7 +861,7 @@ impl ReActEngine {
     }
 
     /// Resume a confirmation batch using the original plan identities. The
-    /// already advertised Action cards are not emitted again; approved calls
+    /// already advertised ToolCall cards are not emitted again; approved calls
     /// use the same admission/execution/result-slot pipeline as a live batch,
     /// while declined calls occupy their plan slot as cancelled observations.
     #[allow(clippy::too_many_arguments)]
@@ -900,9 +903,12 @@ impl ReActEngine {
         let mut runnable = Vec::new();
         let mut results = ToolBatchResults::new(plan.len());
         let mut batch_state = ToolBatchState::default();
-        let actions: Vec<Action> = plan.iter().map(|planned| planned.action.clone()).collect();
+        let tool_calls: Vec<ToolCall> = plan
+            .iter()
+            .map(|planned| planned.tool_call.clone())
+            .collect();
         let validation_failures =
-            self.validate_tool_inputs_from_catalog(catalog.as_ref(), &actions);
+            self.validate_tool_inputs_from_catalog(catalog.as_ref(), &tool_calls);
 
         for (plan_index, (planned, pending_request)) in plan.iter().zip(pending.iter()).enumerate()
         {
@@ -934,7 +940,7 @@ impl ReActEngine {
             }
             if let Some(failure) = validation_failures
                 .iter()
-                .find(|failure| failure.action_index == planned.action_index)
+                .find(|failure| failure.tool_index == planned.tool_index)
             {
                 results.set(
                     plan_index,
@@ -951,7 +957,7 @@ impl ReActEngine {
             };
             if decision {
                 let concurrency = catalog
-                    .operation_policy(&planned.action.tool_name, &planned.action.tool_input)
+                    .operation_policy(&planned.tool_call.tool_name, &planned.tool_call.tool_input)
                     .concurrency;
                 runnable.push(AdmittedTool {
                     plan_index,
@@ -972,35 +978,35 @@ impl ReActEngine {
                 {
                     format!(
                         "The operation '{}' was not executed because confirmation timed out. Do not retry it; ask the user to confirm again if it is still needed.",
-                        planned.action.tool_name
+                        planned.tool_call.tool_name
                     )
                 } else {
-                    rejection_observation(&planned.action.tool_name)
+                    rejection_observation(&planned.tool_call.tool_name)
                 };
                 self.executor
                     .finish_step_with_outcome_and_metadata(
                         session_id,
-                        &planned.action.tool_name,
-                        &planned.action.tool_input,
+                        &planned.tool_call.tool_name,
+                        &planned.tool_call.tool_input,
                         step_num,
-                        planned.action_index,
-                        planned.action.tool_call_id.as_deref(),
+                        planned.tool_index,
+                        planned.tool_call.tool_call_id.as_deref(),
                         &planned.step_id,
                         &error,
-                        ActionStepOutcome::Cancelled,
-                        action_step_metadata(
+                        ToolStepOutcome::Cancelled,
+                        tool_step_metadata(
                             catalog.as_ref(),
-                            &planned.action.tool_name,
-                            &planned.action.tool_input,
+                            &planned.tool_call.tool_name,
+                            &planned.tool_call.tool_input,
                         ),
                     )
                     .await;
                 results.set(
                     plan_index,
                     CompletedTool::from_observation(
-                        planned.action.clone(),
+                        planned.tool_call.clone(),
                         planned.step_id.clone(),
-                        planned.action_index,
+                        planned.tool_index,
                         error,
                         ToolExecutionOutcome::Cancelled,
                     ),
@@ -1088,14 +1094,14 @@ mod tests {
 
     fn planned_tool() -> super::super::tool_batch_plan::PlannedTool {
         super::super::tool_batch_plan::PlannedTool {
-            action: Action {
+            tool_call: ToolCall {
                 tool_name: "write".into(),
                 tool_input: serde_json::json!({"path": "a.txt"}),
                 is_final: false,
                 tool_call_id: Some("call-write".into()),
             },
             step_id: "step-write".into(),
-            action_index: 4,
+            tool_index: 4,
         }
     }
 

@@ -12,25 +12,24 @@
 
 ## 产品与领域术语
 
-以下是跨 Rust、Tauri 事件、Svelte 和用户文案的统一口径。现有 wire/config key（例如 `job_id`、`reminders_due_horizon_secs`）属于稳定契约，不因文案统一而改名；除此之外的新代码和用户文案不得再引入 `job`、`reminder`、`foreground task` 等平行叫法。
+以下是跨 Rust、Tauri 事件、Svelte 和用户文案的统一口径。代码、wire、数据库和配置统一使用 ToolCall/ToolRun 概念；历史 ADR 中的旧名称只用于说明当时的决策，不构成当前命名契约。
 
 | 术语 | 含义 | UI 文案 / 代码边界 |
 |---|---|---|
-| 工具调用（tool call） | Agent 在一次响应中请求执行一个工具；通常以聊天工具卡呈现 | UI 使用“工具调用”或“调用工具”；不称为任务 |
-| 会话（session） | 用户与 Agent 的对话及其前台 ReAct 运行上下文 | UI 直接称“会话”；任务的 `foreground` 行也显示为“会话” |
-| 工作单元（action） | 可脱离当前 turn 运行、取消、完成并产生生命周期事件的统一运行时实体 | 后端/IPC/数据库保留 `action`；UI 按 `kind` 显示为“后台任务”或“定时任务” |
-| 任务（task） | 面向用户的总称，任务可同时容纳会话、后台任务、定时任务和历史记录 | UI 使用“任务”“任务列表”等总称 |
-| 后台任务（background action） | 工具调用启动后在当前 turn 之外继续运行的工作单元 | UI 固定使用“后台任务” |
-| 定时任务（scheduled action） | 到达时间或触发条件后执行的工作单元 | UI 固定使用“定时任务”；不要用“提醒”或“作业”代称 |
+| 工具调用（ToolCall） | Agent/模型发起的一次工具调用；前台调用等待结果并进入当前 transcript | Agent/ReAct 使用 `ToolCall`；provider 的 `tool_call_id` 保持原格式 |
+| 会话（session） | 用户与 Agent 的对话及其前台 ReAct 运行上下文 | UI 直接称“会话”；前台工具调用在会话内呈现 |
+| 工具运行（ToolRun） | 脱离当前 turn 持久运行、可取消并产生生命周期事件的工具执行 | 后端/IPC/数据库使用 `tool_run`、`tool_runs`；ID 前缀为 `toolrun-` |
+| 后台工具运行（background ToolRun） | 工具调用选择后台执行后启动的持久运行 | 通过 `ToolExecutionMode::Background` 启动；UI 显示“后台任务” |
+| 定时工具运行（scheduled ToolRun） | 由时间或依赖触发的工具运行 | 仍由 `schedule` 工具负责设置触发条件；UI 显示“定时任务” |
 
-定时任务的 `mode` 只作为行为说明：`tool` 显示“调用工具”，`continue` 显示“继续会话”。运行状态统一显示“待执行 / 运行中 / 已完成 / 失败 / 已取消”；原始枚举值只留在 wire、日志或调试详情中。
+定时工具运行的 `mode` 只作为行为说明：`tool` 显示“调用工具”，`continue` 显示“继续会话”。运行状态统一显示“待执行 / 运行中 / 已完成 / 失败 / 已取消”；原始枚举值只留在 wire、日志或调试详情中。
 
 ---
 
 ## 1. 后端 Rust
 
 ### 文件名 / 模块名
-- **snake_case**，如 `stt.rs`、`openai_responses.rs`、`scheduled_action.rs`。
+- **snake_case**，如 `stt.rs`、`openai_responses.rs`、`scheduled_tool_run.rs`。
 - 目录即模块：`crates/tools/src/builtin/`、`crates/memory/src/repositories/`。
 - crate 统一 `haven-{name}`：`haven-agent`、`haven-common`、`haven-memory`、`haven-tools`、`haven-llm`、`haven-input`、`haven-mcp`、`haven-skills`。
 
@@ -63,7 +62,7 @@
 - Svelte 组件脚本的目标形式为 `<script lang="ts">`；存量组件按域分批迁移，迁移时补齐参数、状态和 DOM 引用类型。
 - UI 源码不新增 `.js` / `.mjs` 独立实现模块；迁移完成后，Svelte 组件也不再保留普通 `<script>`。
 - 主要导出 Svelte store 的模块 → `xxxStore.ts`：`themeStore.ts`、`syncStore.ts`（`syncStore.ts` 导出同名的 `syncStore` 辅助函数，名随主导出）。
-- 聚合 store 桶文件保留 `stores.ts` 命名（导出 `sessionStore`/`actionStore` 等命名导出）。
+- 聚合 store 桶文件保留 `stores.ts` 命名（导出 `sessionStore`/`toolRunStore` 等命名导出）。
 - 常量 → **UPPER_SNAKE_CASE**：`SESSION_STATUSES`、`COLOR_MAP`、`ROLE_KEYS`。
 - 局部变量 / 函数参数 → **camelCase**：`newKeyValue`、`reasoningOpen`、`ctxMenuItems`。
 
@@ -90,17 +89,17 @@
 
 ## 4. 名词单复数
 
-- **容器 / 集合 / 表 / 目录 / 仓库** → **复数名词**：`sessions`、`messages`、`actions`、`facts`、`session_steps`、`memory_embeddings`、`modelCards`、`messages`。
-- **单一实体 / 单行元素** → **单数**：`session`、`message`、`action`、`row`、`card`、`msg`。
+- **容器 / 集合 / 表 / 目录 / 仓库** → **复数名词**：`sessions`、`messages`、`tool_runs`、`facts`、`session_steps`、`memory_embeddings`、`modelCards`、`messages`。
+- **单一实体 / 单行元素** → **单数**：`session`、`message`、`tool_run`、`row`、`card`、`msg`。
 - **不可数 / 质量名词** 保持单数：`usage`、`audio`、`video`、`text`、`schema`、`kv_store`（复合词不数）。
-- **前端 store 变量** 按承载实体命名（`sessionStore`/`actionStore` 可承载数组/对象，名字取实体单数，属约定）。
+- **前端 store 变量** 按承载实体命名（`sessionStore`/`toolRunStore` 可承载数组/对象，名字取实体单数，属约定）。
 - **派生集合结果** 用「实体＋复数」或复数词，避免用裸形容词承载集合：写 `selectedSessions`、`filteredMessages`、`remainingMessages`、`keptExistingMessages`，不写 `selected`/`filtered`/`remaining`/`keptExisting` 指代数组。
 - store `update` / `filter` / `map` 的回调单元素参数用单数短名（`m`/`x`/`row`/`card`/`t`），保持单数语义。
-- **文件名 / 结构体名保持一致**：一个文件一个实体时文件名单数；实体本身为集合资源（`Files`/`Actions`）时文件名随结构体用复数：`files.rs` ↔ `FilesTool`、`actions.rs` ↔ `ActionsTool`（启动名 `"files"`/`"actions"`）。不可数域用单数：`memory.rs` ↔ `MemoryTool`（启动名 `"memory"`，覆盖 facts + items）。事实实体统一使用 `Fact` / `facts`，后台编排统一使用 `MemoryWorker`。
+- **文件名 / 结构体名保持一致**：一个文件一个实体时文件名单数；实体本身为集合资源时文件名随结构体用复数：`files.rs` ↔ `FilesTool`、`tool_runs.rs` ↔ `ToolRunsTool`（启动名 `"files"`/`"tool_runs"`）。不可数域用单数：`memory.rs` ↔ `MemoryTool`（启动名 `"memory"`，覆盖 facts + items）。事实实体统一使用 `Fact` / `facts`，后台编排统一使用 `MemoryWorker`。
 - 仓库 / 表名按所管理实体的复数命名，与其承载集合一致：`sessions.rs`、`messages.rs`、`facts.rs`、`session_steps`。
 - 不可数名词文件（`usage.rs`、`media_audio.rs`、`text.rs`、`schema.rs`、`memory.rs`）保持单数。
 
-> 该漂移已对齐：`scheduled_action.rs`↔`ScheduledActionTool`、`env.rs`↔`EnvTool`（原 `env_var.rs`）、`system.rs`↔`SystemTool`（原 `SystemInfoTool`）。新代码避免再制造 `Xxx` 与文件名不同词的情况。
+> 该漂移已对齐：`scheduled_tool_run.rs`↔`ScheduleTool`、`env.rs`↔`EnvTool`（原 `env_var.rs`）、`system.rs`↔`SystemTool`（原 `SystemInfoTool`）。新代码避免再制造 `Xxx` 与文件名不同词的情况。
 
 ---
 
@@ -113,6 +112,6 @@
 - [ ] TypeScript 局部变量 camelCase，常量 UPPER_SNAKE
 - [ ] 跨层只在边界转换 snake↔camel
 - [ ] 会话恢复用语统一 `resume`，不用 `review`
-- [ ] 工具调用、会话、工作单元、任务、后台任务、定时任务按本节口径使用
+- [ ] 工具调用、会话、ToolRun、后台工具运行、定时工具运行按本节口径使用
 - [ ] 集合用复数、单元素用单数、派生集合不用裸形容词（`selected`→`selectedSessions`）
 - [ ] 文件名与结构体/实体单复数一致（`file.rs`→`files.rs` 对应 `FilesTool`；仓库随表复数）

@@ -2,7 +2,7 @@
 //!
 //! `SessionStore` broadcasts each row only after `COMMIT`. This publisher is
 //! the only live projection for transcript rows that have a UI card: Thought,
-//! Action, Observation, Supplement, MediaPlan and Compaction. Callers may
+//! ToolCall, Observation, Supplement, MediaPlan and Compaction. Callers may
 //! invoke [`CommittedUiPublisher::publish`] after their own write returns, and
 //! the process bridge may invoke it from the store subscription. Both paths
 //! share one gate, so a commit produces each sequence once even if projection
@@ -23,13 +23,13 @@ use crate::types::TranscriptRecord;
 const PUBLISHED_SEQUENCE_LIMIT: usize = 8192;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub(super) struct StoredActionUi {
+pub(super) struct StoredToolCallUi {
     pub tool_name: String,
     pub tool_input: Value,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_call_id: Option<String>,
     pub step_id: String,
-    pub action_index: u32,
+    pub tool_index: u32,
     #[serde(default)]
     pub suppress_streamed_thought: bool,
 }
@@ -40,7 +40,7 @@ pub(super) struct StoredObservationUi {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_call_id: Option<String>,
     pub step_id: String,
-    pub action_index: u32,
+    pub tool_index: u32,
     #[serde(default)]
     pub silent: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -59,7 +59,7 @@ pub(super) struct StoredObservationUi {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub(super) enum CommittedUi {
-    Actions { cards: Vec<StoredActionUi> },
+    ToolCalls { cards: Vec<StoredToolCallUi> },
     Observation { card: Box<StoredObservationUi> },
     Supplement { supplement_id: String },
 }
@@ -81,10 +81,10 @@ pub(super) fn encode_transcript_payload(
 struct PublishState {
     done: HashSet<(String, i64)>,
     order: VecDeque<(String, i64)>,
-    deferred_actions: HashMap<(String, String), AgentEvent>,
-    deferred_action_order: VecDeque<(String, String)>,
-    published_actions: HashSet<(String, String)>,
-    published_action_order: VecDeque<(String, String)>,
+    deferred_tool_calls: HashMap<(String, String), AgentEvent>,
+    deferred_tool_call_order: VecDeque<(String, String)>,
+    published_tool_calls: HashSet<(String, String)>,
+    published_tool_call_order: VecDeque<(String, String)>,
 }
 
 pub(crate) struct CommittedUiPublisher {
@@ -99,10 +99,10 @@ impl CommittedUiPublisher {
             gate: tokio::sync::Mutex::new(PublishState {
                 done: HashSet::new(),
                 order: VecDeque::new(),
-                deferred_actions: HashMap::new(),
-                deferred_action_order: VecDeque::new(),
-                published_actions: HashSet::new(),
-                published_action_order: VecDeque::new(),
+                deferred_tool_calls: HashMap::new(),
+                deferred_tool_call_order: VecDeque::new(),
+                published_tool_calls: HashSet::new(),
+                published_tool_call_order: VecDeque::new(),
             }),
         }
     }
@@ -114,7 +114,7 @@ impl CommittedUiPublisher {
     }
 
     /// Emit the UI projections for these committed rows, in order. ToolCall
-    /// Action cards are retained until execution asks to publish each one.
+    /// ToolCall cards are retained until execution asks to publish each one.
     ///
     /// The gate is held across emit so a store subscriber and the committing
     /// task cannot reorder or duplicate a sequence. `AgentEventEmitter`
@@ -138,17 +138,17 @@ impl CommittedUiPublisher {
                 continue;
             }
             for ui_event in ui_events {
-                if let AgentEvent::Action {
+                if let AgentEvent::ToolCall {
                     session_id,
                     step_id,
                     ..
                 } = &ui_event
                 {
-                    let action_key = (session_id.clone(), step_id.clone());
-                    if !state.published_actions.contains(&action_key)
-                        && !state.deferred_actions.contains_key(&action_key)
+                    let tool_call_key = (session_id.clone(), step_id.clone());
+                    if !state.published_tool_calls.contains(&tool_call_key)
+                        && !state.deferred_tool_calls.contains_key(&tool_call_key)
                     {
-                        remember_deferred_action(&mut state, action_key, ui_event);
+                        remember_deferred_tool_call(&mut state, tool_call_key, ui_event);
                     }
                 } else {
                     emitter.emit(ui_event).await;
@@ -158,10 +158,10 @@ impl CommittedUiPublisher {
         }
     }
 
-    /// Publish one action card after its tool is admitted to execution (or
+    /// Publish one ToolCall card after its tool is admitted to execution (or
     /// immediately before an admission/cancellation result is committed).
     /// The card retains the sequence of the committed ToolCall row.
-    pub(crate) async fn publish_action(
+    pub(crate) async fn publish_tool_call(
         &self,
         emitter: &Arc<dyn AgentEventEmitter>,
         session_id: &str,
@@ -169,14 +169,14 @@ impl CommittedUiPublisher {
     ) {
         let mut state = self.gate.lock().await;
         let key = (session_id.to_string(), step_id.to_string());
-        if state.published_actions.contains(&key) {
+        if state.published_tool_calls.contains(&key) {
             return;
         }
-        let Some(event) = state.deferred_actions.remove(&key) else {
+        let Some(event) = state.deferred_tool_calls.remove(&key) else {
             return;
         };
         emitter.emit(event).await;
-        remember_published_action(&mut state, key);
+        remember_published_tool_call(&mut state, key);
     }
 
     pub(crate) async fn run(
@@ -209,22 +209,22 @@ impl CommittedUiPublisher {
     }
 }
 
-fn remember_deferred_action(state: &mut PublishState, key: (String, String), event: AgentEvent) {
-    state.deferred_action_order.push_back(key.clone());
-    state.deferred_actions.insert(key, event);
-    while state.deferred_action_order.len() > PUBLISHED_SEQUENCE_LIMIT {
-        if let Some(old) = state.deferred_action_order.pop_front() {
-            state.deferred_actions.remove(&old);
+fn remember_deferred_tool_call(state: &mut PublishState, key: (String, String), event: AgentEvent) {
+    state.deferred_tool_call_order.push_back(key.clone());
+    state.deferred_tool_calls.insert(key, event);
+    while state.deferred_tool_call_order.len() > PUBLISHED_SEQUENCE_LIMIT {
+        if let Some(old) = state.deferred_tool_call_order.pop_front() {
+            state.deferred_tool_calls.remove(&old);
         }
     }
 }
 
-fn remember_published_action(state: &mut PublishState, key: (String, String)) {
-    state.published_action_order.push_back(key.clone());
-    state.published_actions.insert(key);
-    while state.published_action_order.len() > PUBLISHED_SEQUENCE_LIMIT {
-        if let Some(old) = state.published_action_order.pop_front() {
-            state.published_actions.remove(&old);
+fn remember_published_tool_call(state: &mut PublishState, key: (String, String)) {
+    state.published_tool_call_order.push_back(key.clone());
+    state.published_tool_calls.insert(key);
+    while state.published_tool_call_order.len() > PUBLISHED_SEQUENCE_LIMIT {
+        if let Some(old) = state.published_tool_call_order.pop_front() {
+            state.published_tool_calls.remove(&old);
         }
     }
 }
@@ -301,16 +301,16 @@ pub(super) fn agent_events_from_committed(event: &SessionEvent) -> Vec<AgentEven
         }],
         TranscriptRecord::Reasoning { .. } => Vec::new(),
         TranscriptRecord::ToolCall { step_number, .. } => match ui {
-            Some(CommittedUi::Actions { cards }) => cards
+            Some(CommittedUi::ToolCalls { cards }) => cards
                 .into_iter()
-                .map(|card| AgentEvent::Action {
+                .map(|card| AgentEvent::ToolCall {
                     session_id: session_id.clone(),
                     tool_name: card.tool_name,
                     input: card.tool_input,
                     step_number,
                     run_id,
                     tool_call_id: card.tool_call_id,
-                    action_index: card.action_index,
+                    tool_index: card.tool_index,
                     step_id: card.step_id,
                     suppress_streamed_thought: card.suppress_streamed_thought,
                     event_seq,
@@ -331,7 +331,7 @@ pub(super) fn agent_events_from_committed(event: &SessionEvent) -> Vec<AgentEven
                 run_id,
                 silent: card.silent,
                 tool_call_id: card.tool_call_id,
-                action_index: card.action_index,
+                tool_index: card.tool_index,
                 ask_options: card.ask_options,
                 step_id: card.step_id,
                 outcome: card.outcome,
@@ -459,22 +459,22 @@ mod tests {
             web_search_calls: Vec::new(),
             thinking_blocks: Vec::new(),
         };
-        let ui = CommittedUi::Actions {
+        let ui = CommittedUi::ToolCalls {
             cards: vec![
-                StoredActionUi {
+                StoredToolCallUi {
                     tool_name: "tool_a".into(),
                     tool_input: serde_json::json!({}),
                     tool_call_id: Some("call-a".into()),
                     step_id: "step-a".into(),
-                    action_index: 0,
+                    tool_index: 0,
                     suppress_streamed_thought: false,
                 },
-                StoredActionUi {
+                StoredToolCallUi {
                     tool_name: "tool_b".into(),
                     tool_input: serde_json::json!({}),
                     tool_call_id: Some("call-b".into()),
                     step_id: "step-b".into(),
-                    action_index: 1,
+                    tool_index: 1,
                     suppress_streamed_thought: false,
                 },
             ],
@@ -532,13 +532,17 @@ mod tests {
             .await;
         assert!(seen.lock().unwrap().is_empty());
 
-        publisher.publish_action(&emitter, "ses-1", "step-a").await;
-        publisher.publish_action(&emitter, "ses-1", "step-a").await;
+        publisher
+            .publish_tool_call(&emitter, "ses-1", "step-a")
+            .await;
+        publisher
+            .publish_tool_call(&emitter, "ses-1", "step-a")
+            .await;
         let events = seen.lock().unwrap().clone();
         assert_eq!(events.len(), 1);
         assert!(matches!(
             &events[0],
-            AgentEvent::Action {
+            AgentEvent::ToolCall {
                 tool_name,
                 step_id,
                 event_seq: Some(10),
@@ -546,12 +550,14 @@ mod tests {
             } if tool_name == "tool_a" && step_id == "step-a"
         ));
 
-        publisher.publish_action(&emitter, "ses-1", "step-b").await;
+        publisher
+            .publish_tool_call(&emitter, "ses-1", "step-b")
+            .await;
         let events = seen.lock().unwrap().clone();
         assert_eq!(events.len(), 2);
         assert!(matches!(
             &events[1],
-            AgentEvent::Action {
+            AgentEvent::ToolCall {
                 tool_name,
                 step_id,
                 event_seq: Some(10),

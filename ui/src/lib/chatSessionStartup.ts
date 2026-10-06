@@ -12,7 +12,7 @@ export interface ChatSessionStartupDependencies {
 	getSessions: () => Promise<SessionListResponse>;
 	getLastConversation: () => Promise<SessionResumeResponse | null>;
 	reopenSession: (request: { sessionId: string }) => Promise<void>;
-	refreshActions: () => void;
+	refreshToolRuns: () => void;
 	getFreshSessionIntent: () => boolean;
 	setFreshSessionIntent: (value: boolean) => void;
 	hasPersistedFreshSessionIntent: () => boolean;
@@ -131,9 +131,9 @@ export function createChatSessionStartup(dependencies: ChatSessionStartupDepende
 				}
 			}
 			if (!isCurrentGeneration(requestGeneration)) return;
-			// Lifecycle changes can reap background or scheduled actions without a
+			// Lifecycle changes can reap background or scheduled ToolRuns without a
 			// matching action-board terminal event.
-			dependencies.refreshActions();
+			dependencies.refreshToolRuns();
 		})().catch((error: unknown) => {
 			if (!isCurrentGeneration(requestGeneration)) return;
 			dependencies.reportError(error, {
@@ -146,7 +146,7 @@ export function createChatSessionStartup(dependencies: ChatSessionStartupDepende
 		return run;
 	}
 
-	/** Immediate refresh for explicit actions; lifecycle bursts share the scheduler. */
+		/** Immediate refresh for explicit ToolRun requests; lifecycle bursts share the scheduler. */
 	function loadSessions(): Promise<void> {
 		if (disposed) return Promise.resolve();
 		const run = loadSessionsRefresh.refresh();

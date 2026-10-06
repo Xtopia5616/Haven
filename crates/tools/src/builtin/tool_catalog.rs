@@ -13,7 +13,7 @@ const DEFAULT_PAGE_SIZE: usize = 32;
 const MAX_PAGE_SIZE: usize = 64;
 
 /// Query the host-owned capability catalog and activate selected built-in
-/// operation views for the current session. Discovery actions remain read-only;
+/// operation views for the current session. Discovery tool_runs remain read-only;
 /// the explicit `load` action is the only path that changes the session
 /// provider surface.
 pub struct ToolCatalogTool {

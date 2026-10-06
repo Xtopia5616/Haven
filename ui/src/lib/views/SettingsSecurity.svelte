@@ -25,7 +25,7 @@
 	/**
 	 * Permission settings presentation. The route owns persistence and command
 	 * calls; this component owns the user-facing policy choices and confirmation
-	 * UI for immediate permission-rule actions.
+	 * UI for immediate permission-rule changes.
 	 */
 	let {
 		security,
@@ -118,7 +118,7 @@
 		input: '模拟输入',
 		memory: '长期记忆',
 		clipboard: '剪贴板',
-		actions: '任务管理',
+		tool_runs: '任务管理',
 		agent: '代理协作',
 		media: '媒体处理',
 		schedule: '定时任务',

@@ -14,10 +14,10 @@
 
 | 命令 | 边界 | 安全不变量 |
 |---|---|---|
-| `list_actions` | read | 仅任务投影字段 |
-| `cancel_action` | mutate | kind 枚举校验 |
-| `list_action_history` | read | 可选 `session_id` 过滤；limit ≤ 200 |
-| `delete_action` | mutate | 按 id 删除单条任务 |
+| `list_tool_runs` | read | 仅任务投影字段 |
+| `cancel_tool_run` | mutate | kind 枚举校验 |
+| `list_tool_run_history` | read | 可选 `session_id` 过滤；limit ≤ 200 |
+| `delete_tool_run` | mutate | 按 id 删除单条任务 |
 | `open_external` | execute | 仅 http(s) 或校验后的本地绝对路径 |
 | `get_history` | read | 只读会话投影 |
 | `count_history` | read | 只读聚合 |
@@ -131,12 +131,12 @@ Tauri 接收前端参数时采用其自动 camelCase → Rust snake_case 映射�
 
 | 命令 | 边界 | 说明 |
 |---|---|---|
-| `list_actions` | read | 当前任务投影 |
-| `cancel_action` | mutate | 取消指定任务 |
-| `list_action_history` | read | 有界终态历史，可按 session 过滤 |
-| `delete_action` | mutate | 删除指定历史任务 |
+| `list_tool_runs` | read | 当前任务投影 |
+| `cancel_tool_run` | mutate | 取消指定任务 |
+| `list_tool_run_history` | read | 有界终态历史，可按 session 过滤 |
+| `delete_tool_run` | mutate | 删除指定历史任务 |
 
-`ActionEvent` 是任务面板的唯一公开记录：`{ id, kind, status?, session_id?, source_step_id?, started_at?,
+`ToolRunEvent` 是任务面板的唯一公开记录：`{ id, kind, status?, session_id?, source_step_id?, started_at?,
 finished_at?, due_at?, title?, body?, mode?, command?, output?, error?, error_reason?,
 exit_code?, preview? }`。`source_step_id` 仅用于将由 Agent 工具调用启动的后台任务关联回来源步骤；定时任务、旧任务和无 session 的 shell 调用可以省略。`status` 只能是 `waiting`、`running`、`completed`、`failed`、
 `cancelled`；`kind` 才区分 `background` 与 `scheduled`。它不包含动态 `tool_args`、续接 `prompt`、`tool_name` 或本地
@@ -145,18 +145,18 @@ exit_code?, preview? }`。`source_step_id` 仅用于将由 Agent 工具调用启
 ## 任务事件（v1）
 
 后端常量与 DTO 位于 `crates/app-binary/src/events.rs`。`haven-tools` 可以维持内部状态 JSON，
-但 app shell 必须在 emit 前投影为 `ActionEvent`；前端唯一登记表是
-`ui/src/lib/contracts/action.ts`，`actionEventListeners` 负责 snake_case → camelCase。
+但 app shell 必须在 emit 前投影为 `ToolRunEvent`；前端唯一登记表是
+`ui/src/lib/contracts/toolRun.ts`，`toolRunEventListeners` 负责 snake_case → camelCase。
 
 | 事件 | Rust DTO（wire） | 生产者 | 消费者 | 顺序、幂等与敏感字段 |
 |---|---|---|---|---|
-| `action:created` | `ActionEvent` | 后台任务创建 / 定时任务建立 | 根布局 `actionStore` | 在任务对用户可见前发送；按 `id` 覆盖合并，重复安全。 |
-| `action:updated` | `ActionEvent` | 后台任务关联会话 / 定时任务触发或回退 | 根布局 `actionStore` | 按 `id` 合并；定时任务用它表达 `waiting ↔ running` 的 live 状态，重复安全。 |
-| `action:output` | `ActionEvent` | 后台任务输出尾部变化 | 根布局 `actionStore` | 仅后台任务；可丢失、可重复，按 `id` 最后写入。输出已受后端尾部上限约束。 |
-| `action:finished` | `ActionEvent` | 后台任务终态 / 定时任务完成、失败或取消 | 根布局与聊天页 | 终态后不再期待同一任务的 `output`；后台按 `id` 合并，定时任务从 live 列表移除。事件丢失时由 `list_actions` reconciliation 修复。 |
+| `tool_run:created` | `ToolRunEvent` | 后台任务创建 / 定时任务建立 | 根布局 `toolRunStore` | 在任务对用户可见前发送；按 `id` 覆盖合并，重复安全。 |
+| `tool_run:updated` | `ToolRunEvent` | 后台任务关联会话 / 定时任务触发或回退 | 根布局 `toolRunStore` | 按 `id` 合并；定时任务用它表达 `waiting ↔ running` 的 live 状态，重复安全。 |
+| `tool_run:output` | `ToolRunEvent` | 后台任务输出尾部变化 | 根布局 `toolRunStore` | 仅后台任务；可丢失、可重复，按 `id` 最后写入。输出已受后端尾部上限约束。 |
+| `tool_run:finished` | `ToolRunEvent` | 后台任务终态 / 定时任务完成、失败或取消 | 根布局与聊天页 | 终态后不再期待同一任务的 `output`；后台按 `id` 合并，定时任务从 live 列表移除。事件丢失时由 `list_tool_runs` reconciliation 修复。 |
 
 前端内部字段为 `sessionId`、`startedAt`、`errorReason` 等 camelCase；页面不得读取
-`action_id` 或其它工具内部 JSON 字段。
+`tool_run_id` 或其它工具内部 JSON 字段。
 
 ## 设置诊断命令（v1）
 
@@ -218,12 +218,12 @@ DTO 位于 `crates/app-binary/src/events.rs`；前端镜像分别位于
 | `mute:changed` | `MuteChangedEvent { muted }` | 根布局、设置页 | 最新值覆盖；只含布尔状态。 |
 | `mcp:status_change` | `McpStatusChangedEvent { name, status }` | 工具视图、根布局 | 按 server name 合并；`Offline.error` 为净化错误，不含 env。 |
 | `skills:status_change` | `SkillsStatusChangedEvent { op }` | 技能视图 | refresh 通知可丢失，消费者重新读取受管 skills root。 |
-| `interaction:requested` | `InteractionRequestedEvent { id, owner, session_id?, kind, status, options, tool_name, risk_level, summary, permission_key, invocation_step_id, action_index, tool_call_id, created_at, expires_at }` | 聊天页 | `owner` 是显式运行时路由元数据：`session { session_id }`、`scheduled_action { action_id }` 或 `app_command`；不包含 continuation。`session_id` 仅表示可选真实关联上下文；Session owner 必须与其相同，AppCommand 不带该上下文，ScheduledAction 可不关联会话。resume 投影明确为 Session owner。Ask 正文只存在 transcript，事件按 `id` 关联状态/选项，不重复携带正文或占位 prompt。confirm 原始参数、receipt 不跨边界，renderer 只收到安全摘要，决策仍由后端校验；前端按 `id` 幂等覆盖并交给统一 `interactionStore`。 |
+| `interaction:requested` | `InteractionRequestedEvent { id, owner, session_id?, kind, status, options, tool_name, risk_level, summary, permission_key, invocation_step_id, tool_index, tool_call_id, created_at, expires_at }` | 聊天页 | `owner` 是显式运行时路由元数据：`session { session_id }`、`scheduled_tool_run { tool_run_id }` 或 `app_command`；不包含 continuation。`session_id` 仅表示可选真实关联上下文；Session owner 必须与其相同，AppCommand 不带该上下文，ScheduledToolRun 可不关联会话。resume 投影明确为 Session owner。Ask 正文只存在 transcript，事件按 `id` 关联状态/选项，不重复携带正文或占位 prompt。confirm 原始参数、receipt 不跨边界，renderer 只收到安全摘要，决策仍由后端校验；前端按 `id` 幂等覆盖并交给统一 `interactionStore`。 |
 | `hotkey:conflict` / `hotkey:rebind` | `HotkeyConflictEvent` / `HotkeyRebindEvent` | 根布局、设置页 | 仅报告绑定状态；不执行 renderer 传入的快捷键。 |
 | `llm:config_changed` | `()` | 设置页、模型页 | 无 payload；通知页面重新读取脱敏配置。 |
 | `agent:thought` | `AgentThoughtEvent` | 聊天页 | 按 `message_id` 归并；可选 `event_seq` 是已提交的 `session_events.sequence`，缺失表示没有 durable 行的 snap。文本不得重复写入普通日志。 |
-| `agent:action` | `AgentActionEvent` | 聊天页 | `input` 是工具参数动态扩展点；其余执行身份固定，`silent` 由后端计算。同一 `event_seq` 可以对应多个 `step_id`，前端按 `(event_seq, step_id)` 去重。 |
-| `agent:observation` | `AgentObservationEvent` | 聊天页 | 与 action 的 `step_id` / `tool_call_id` 关联；工具输出按后端门禁净化。去重键是 `(event_seq, step_id)`。 |
+| `agent:tool_call` | `AgentToolCallEvent` | 聊天页 | `input` 是工具参数动态扩展点；其余执行身份固定，`silent` 由后端计算。同一 `event_seq` 可以对应多个 `step_id`，前端按 `(event_seq, step_id)` 去重。 |
+| `agent:observation` | `AgentObservationEvent` | 聊天页 | 与 ToolCall 的 `step_id` / `tool_call_id` 关联；工具输出按后端门禁净化。去重键是 `(event_seq, step_id)`。 |
 | `agent:stream_stalled` | `AgentStreamStalledEvent` | 根布局、聊天页 | 状态提示可重复；不得携带 provider 原始响应。 |
 | `agent:thought_chunk` / `agent:reasoning_chunk` | `Agent*ChunkEvent` | 聊天页 | 只使用 chunk `seq`，不分配 durable `event_seq`。丢失 chunk 时由完整消息投影兜底。 |
 | `agent:stream_reset` | `AgentStreamResetEvent` | 聊天页 | 与 chunk 共用后端有序队列；先清空对应 live thought/reasoning，再接受新尝试；不回滚 durable transcript。 |

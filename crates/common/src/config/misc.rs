@@ -132,10 +132,10 @@ pub struct ContextLimitsConfig {
     // —— agent text limits ——
     /// Max chars in notification summary text.
     pub notification_summary_chars: usize,
-    /// Max chars of a background-action result injected into the owning session's
+    /// Max chars of a background ToolRun result injected into the owning session's
     /// context when the action finishes (the full output stays in the log file,
     /// whose path is appended so the model can read more on demand).
-    pub action_result_context_chars: usize,
+    pub tool_run_result_context_chars: usize,
     /// Min chars of partial output before an interim checkpoint is persisted.
     pub partial_checkpoint_min_chars: usize,
     /// Min wall-clock seconds between partial-stream checkpoints.
@@ -172,16 +172,16 @@ pub struct ContextLimitsConfig {
     /// OpenAI-compatible providers; oversized reasoning keeps its tail. Was
     /// `MAX_REASONING_ECHO_CHARS = 3000` in the responses adapter.
     pub reasoning_echo_max_chars: usize,
-    // —— background action caps ——
-    /// Bounded live-output tail (chars) kept per running action for `action:output`
+    // —— background ToolRun caps ——
+    /// Bounded live-output tail (chars) kept per running ToolRun for `tool_run:output`
     /// preview events. Was `JOB_TAIL_MAX_CHARS = 2000`.
-    pub background_job_tail_max_chars: usize,
-    /// Cadence of `action:output` events while a action produces output (ms).
+    pub background_tool_run_tail_max_chars: usize,
+    /// Cadence of `tool_run:output` events while a action produces output (ms).
     /// Was `JOB_OUTPUT_EMIT_INTERVAL = 1500`.
-    pub background_job_output_emit_interval_ms: u64,
-    /// Terminal actions stay on the board this long (secs), then are reaped by
+    pub background_tool_run_output_emit_interval_ms: u64,
+    /// Terminal tool_runs stay on the board this long (secs), then are reaped by
     /// the next spawn. Was `TERMINAL_JOB_TTL = 600`.
-    pub terminal_job_ttl_secs: u64,
+    pub tool_run_terminal_ttl_secs: u64,
     // —— safety boundaries (raising these widens the attack surface) ——
     /// MCP binary content (image/audio/resource blob) kept in observations
     /// before being replaced by an `oversized` marker (base64 chars).
@@ -211,12 +211,12 @@ pub struct ContextLimitsConfig {
     pub clipboard_history_max_entries: usize,
     /// Per-entry content truncation for clipboard history dumps.
     pub clipboard_entry_max_chars: usize,
-    /// Max concurrent scheduled_actions.
-    pub scheduled_actions_max: usize,
-    /// Max scheduled-action due horizon (secs ahead).
-    pub scheduled_actions_due_horizon_secs: i64,
-    /// Max concurrent background shell actions.
-    pub background_max_actions: usize,
+    /// Max concurrent scheduled_tool_runs.
+    pub scheduled_tool_runs_max: usize,
+    /// Max scheduled ToolRun due horizon (secs ahead).
+    pub scheduled_tool_runs_due_horizon_secs: i64,
+    /// Max concurrent background shell tool_runs.
+    pub background_max_tool_runs: usize,
     /// Max bytes batched into one `agent:chunk` event.
     pub event_chunk_batch_max_bytes: usize,
     /// Audio ring buffer size in seconds (capture latency).
@@ -265,7 +265,7 @@ impl Default for ContextLimitsConfig {
             search_max_file_size_bytes: 100 * 1024 * 1024,
             search_window_bytes: 16 * 1024 * 1024,
             notification_summary_chars: 800,
-            action_result_context_chars: 4_000,
+            tool_run_result_context_chars: 4_000,
             partial_checkpoint_min_chars: 1_000,
             partial_checkpoint_interval_secs: 2,
             fact_infer_interval_steps: 25,
@@ -277,9 +277,9 @@ impl Default for ContextLimitsConfig {
             incomplete_tool_args_retries: 2,
             stream_stall_warn_delay_ms: 10_000,
             reasoning_echo_max_chars: 1200,
-            background_job_tail_max_chars: 2000,
-            background_job_output_emit_interval_ms: 1500,
-            terminal_job_ttl_secs: 600,
+            background_tool_run_tail_max_chars: 2000,
+            background_tool_run_output_emit_interval_ms: 1500,
+            tool_run_terminal_ttl_secs: 600,
             mcp_max_binary_payload_bytes: 2 * 1024 * 1024,
             mcp_max_sse_buffer_bytes: 2 * 1024 * 1024,
             skills_max_md_bytes: 256 * 1024,
@@ -293,9 +293,9 @@ impl Default for ContextLimitsConfig {
             clipboard_history_entries: 10,
             clipboard_history_max_entries: 100,
             clipboard_entry_max_chars: 2_000,
-            scheduled_actions_max: 32,
-            scheduled_actions_due_horizon_secs: 365 * 24 * 3600,
-            background_max_actions: 64,
+            scheduled_tool_runs_max: 32,
+            scheduled_tool_runs_due_horizon_secs: 365 * 24 * 3600,
+            background_max_tool_runs: 64,
             event_chunk_batch_max_bytes: 8 * 1024,
             input_ring_buffer_secs: 20,
             embedding_chunk_size: 10,
@@ -594,7 +594,7 @@ pub struct NotificationConfig {
     pub session_resumed: NotifyChannels,
     pub session_error: NotifyChannels,
     pub permission_requested: NotifyChannels,
-    pub action_completed: NotifyChannels,
+    pub tool_run_completed: NotifyChannels,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -640,7 +640,7 @@ impl Default for NotificationConfig {
                 in_app: true,
                 windows: true,
             },
-            action_completed: NotifyChannels {
+            tool_run_completed: NotifyChannels {
                 in_app: true,
                 windows: true,
             },

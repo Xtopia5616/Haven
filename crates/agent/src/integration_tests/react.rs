@@ -273,7 +273,7 @@ async fn incomplete_tool_args_retry_before_dispatching_the_rebuilt_call() {
     assert_eq!(
         steps
             .iter()
-            .filter(|step| step.action_tool.as_deref() == Some("echo"))
+            .filter(|step| step.tool_name.as_deref() == Some("echo"))
             .count(),
         1,
         "only the rebuilt, complete call should reach tool execution"
@@ -683,7 +683,7 @@ async fn run_session_executes_tool_then_final_answer() {
     let session = executor.create_session("echo hello").await.unwrap();
     let history = agent.run_session_from_id(&session.id).await.unwrap();
     assert!(history.len() >= 2, "should have at least 2 steps");
-    assert!(collector.has_action("echo"));
+    assert!(collector.has_tool_call("echo"));
     assert!(collector.has_observation("echo"));
     assert_eq!(
         executor.get_active_session_status(&session.id).await,
@@ -814,7 +814,7 @@ async fn media_tool_usage_flows_to_event_and_database() {
 
 #[tokio::test]
 async fn run_session_empty_tool_call_id_stays_consistent_in_canonical() {
-    // Some providers return an empty tool_call_id. The Action side
+    // Some providers return an empty tool_call_id. The ToolCall side
     // synthesizes a UUID; the canonical assistant declaration must echo
     // the SAME id (not the raw empty string), otherwise the tool result
     // references an id the assistant never declared and the next request
@@ -1158,7 +1158,7 @@ async fn run_session_ask_tool_pauses_and_surfaces_question() {
         Some(SessionStatus::Paused),
         "ask should pause the session"
     );
-    assert!(collector.has_action("ask"));
+    assert!(collector.has_tool_call("ask"));
     assert!(collector.has_observation("ask"));
 
     // The question must be persisted so the user can see and answer it.

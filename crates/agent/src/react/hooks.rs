@@ -22,7 +22,7 @@ use tokio_util::sync::CancellationToken;
 pub(crate) use super::hook_policy::DefaultHooks;
 pub(crate) use super::hook_policy::{default_hooks, default_hooks_with_patch};
 use super::retries::{AfterLlmAction, ResponsePolicyState};
-use super::{Action, PauseReason, ReActEngine, ReActState, StepCtx};
+use super::{PauseReason, ReActEngine, ReActState, StepCtx, ToolCall};
 
 /// Mid-run MEMORY fence refresh (M2): dirty flag lives on [`crate::MemoryWorker`];
 /// patch uses [`crate::SystemPromptBuilder::patch_canonical_memory_fence`] only
@@ -34,7 +34,7 @@ pub(crate) struct MemoryPatchHandle {
 
 /// Pre-tool gate decision (Phase 5 / E3).
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) enum BeforeToolAction {
+pub(crate) enum BeforeToolCallDecision {
     /// Run the tool now (auto-approved or already confirmed).
     Proceed {
         receipt: Option<haven_tools::ConfirmationReceipt>,
@@ -52,7 +52,7 @@ pub(crate) enum BeforeToolAction {
 #[derive(Debug, Clone)]
 pub(crate) struct ToolCallIdentity {
     pub step_id: String,
-    pub action_index: u32,
+    pub tool_index: u32,
     pub tool_call_id: Option<String>,
 }
 
@@ -71,7 +71,7 @@ pub(crate) struct BeforeToolRequest {
 /// immutable step values keeps the hook boundary explicit as it evolves.
 pub(crate) struct AfterLlmInput<'a> {
     pub thought: &'a Option<String>,
-    pub actions: &'a [Action],
+    pub tool_calls: &'a [ToolCall],
     pub response: &'a LlmResponse,
     pub state: ResponsePolicyState,
 }
@@ -117,8 +117,11 @@ pub(crate) trait LoopHooks: Send + Sync {
     }
 
     /// Pre-tool safety gate (Phase 5 / E3). Default always proceeds.
-    fn before_tool(&self, _request: BeforeToolRequest) -> BoxFuture<'static, BeforeToolAction> {
-        Box::pin(async { BeforeToolAction::Proceed { receipt: None } })
+    fn before_tool(
+        &self,
+        _request: BeforeToolRequest,
+    ) -> BoxFuture<'static, BeforeToolCallDecision> {
+        Box::pin(async { BeforeToolCallDecision::Proceed { receipt: None } })
     }
 
     /// Called after status is set to a pause flavor. The returned intent is
@@ -465,7 +468,7 @@ mod tests {
                     &ctx,
                     AfterLlmInput {
                         thought: &Some("让我先查一下，".into()),
-                        actions: &[],
+                        tool_calls: &[],
                         response: &response,
                         state,
                     },

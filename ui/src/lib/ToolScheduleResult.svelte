@@ -1,12 +1,12 @@
 <script lang="ts">
-	import { scheduleModeLabel, taskTitle } from '$lib/taskTerminology.ts';
+	import { scheduleModeLabel, toolRunTitle } from '$lib/toolRunTerminology.ts';
 	import ToolResultList from '$lib/ToolResultList.svelte';
 
 	interface Props {
 		data?: {
 			operation?: string;
 			cancelled?: string | number | boolean;
-			scheduled_actions?: Array<{
+			scheduled_tool_runs?: Array<{
 				id: string;
 				title?: string;
 				body?: string;
@@ -30,28 +30,28 @@
 </script>
 
 {#if operation === 'cancel'}
-	<div class="action-row">
+	<div class="tool-run-row">
 		<span class="scheduled-mode">已取消</span>
-		{#if data.cancelled}<span class="action-id">#{data.cancelled}</span>{/if}
+		{#if data.cancelled}<span class="tool-run-id">#{data.cancelled}</span>{/if}
 	</div>
-{:else if Array.isArray(data.scheduled_actions)}
-	<div class="tool-card-count">{data.scheduled_actions.length} 条定时任务</div>
-	{#if data.scheduled_actions.length > 0}
-		<ToolResultList items={data.scheduled_actions}>
-			{#snippet children(visibleActions = /** @type {any[]} */ ([]))}
+{:else if Array.isArray(data.scheduled_tool_runs)}
+	<div class="tool-card-count">{data.scheduled_tool_runs.length} 条定时任务</div>
+	{#if data.scheduled_tool_runs.length > 0}
+		<ToolResultList items={data.scheduled_tool_runs}>
+			{#snippet children(visibleToolRuns = /** @type {any[]} */ ([]))}
 				<div class="tool-card-list">
-					{#each visibleActions as action (action.id)}
+					{#each visibleToolRuns as toolRun (toolRun.id)}
 						<div class="scheduled-row">
 							<span class="scheduled-title"
-								>{taskTitle({
+								>{toolRunTitle({
 									kind: 'scheduled',
-									title: action.title,
-									body: action.body,
+									title: toolRun.title,
+									body: toolRun.body,
 								})}</span
 							>
-							<span class="scheduled-mode">{scheduleModeLabel(action.mode)}</span>
-							{#if action.fires_at}<span class="scheduled-time"
-									>{action.fires_at}</span
+							<span class="scheduled-mode">{scheduleModeLabel(toolRun.mode)}</span>
+							{#if toolRun.fires_at}<span class="scheduled-time"
+									>{toolRun.fires_at}</span
 								>{/if}
 						</div>
 					{/each}
@@ -62,8 +62,8 @@
 		<p class="tool-card-empty">没有待触发的定时任务</p>
 	{/if}
 {:else if operation === 'set' || (data.id && data.mode)}
-	<div class="action-row">
-		<span class="action-id">#{data.id}</span>
+	<div class="tool-run-row">
+		<span class="tool-run-id">#{data.id}</span>
 		<span class="scheduled-mode">{scheduleModeLabel(data.mode)}</span>
 	</div>
 	{#if data.fires_at}
@@ -133,14 +133,14 @@
 		line-height: var(--md-sys-typescale-label-small-line-height);
 		color: var(--md-sys-color-on-surface-variant);
 	}
-	.action-row {
+	.tool-run-row {
 		display: flex;
 		align-items: center;
 		gap: var(--md-sys-space-xs);
 		font-size: var(--md-sys-typescale-label-medium-size);
 		line-height: var(--md-sys-typescale-label-medium-line-height);
 	}
-	.action-id {
+	.tool-run-id {
 		font-family: var(--md-sys-typescale-mono);
 		font-size: var(--md-sys-typescale-code-size);
 		line-height: var(--md-sys-typescale-code-line-height);

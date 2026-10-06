@@ -406,7 +406,7 @@ impl SessionSupervisor {
                                 );
                             }
                             supervisor
-                                .fail_pending_action_steps(
+                                .fail_pending_tool_run_steps(
                                     &session_id,
                                     &format!("Session ended before tool finished: {reason}"),
                                 )
@@ -493,7 +493,7 @@ impl SessionSupervisor {
         self.admission.limit()
     }
 
-    pub async fn running_actions_list(&self) -> Vec<String> {
+    pub async fn running_tool_runs_list(&self) -> Vec<String> {
         let actors = self
             .actors
             .lock()

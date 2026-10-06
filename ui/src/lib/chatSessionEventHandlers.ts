@@ -22,7 +22,7 @@ export interface ChatSessionEventContext {
 	/** Flush the RAF-batched stream before lifecycle cleanup changes its state. */
 	flushChunksNow: () => void;
 	updateSessionTitle: (sessionId: string, title: string) => void;
-	/** Coalesced lifecycle refresh; explicit page actions use immediate refresh. */
+	/** Coalesced lifecycle refresh; explicit page requests use immediate refresh. */
 	scheduleLoadSessions: () => void;
 }
 

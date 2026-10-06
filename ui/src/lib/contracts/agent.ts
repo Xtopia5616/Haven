@@ -5,7 +5,7 @@ import type { TauriEvent } from './session.ts';
 
 export const AGENT_EVENT_NAMES = [
 	'agent:thought',
-	'agent:action',
+	'agent:tool_call',
 	'agent:observation',
 	'agent:thought_chunk',
 	'agent:reasoning_chunk',
@@ -44,14 +44,14 @@ export interface AgentThoughtPayload {
 	eventSeq?: number;
 }
 
-export interface AgentActionPayload {
+export interface AgentToolCallPayload {
 	sessionId: string;
 	toolName: string;
 	input: unknown;
 	stepNumber: number;
 	runId: number;
 	toolCallId: string | null;
-	actionIndex: number;
+	toolIndex: number;
 	stepId: string;
 	suppressStreamedThought: boolean;
 	silent: boolean;
@@ -66,7 +66,7 @@ export interface AgentObservationPayload {
 	runId: number;
 	silent: boolean;
 	toolCallId: string | null;
-	actionIndex: number;
+	toolIndex: number;
 	askOptions: string[];
 	stepId: string;
 	outcome: ToolObservationOutcome;
@@ -159,10 +159,10 @@ export interface AgentNotificationPayload {
 	sessionId?: string;
 	title: string;
 	body: string;
-	notificationKind?: 'action_completion';
-	actionKind?: 'background' | 'scheduled';
-	actionId?: string;
-	actionStatus?: 'completed' | 'failed';
+	notificationKind?: 'tool_run_completion';
+	toolRunKind?: 'background' | 'scheduled';
+	toolRunId?: string;
+	toolRunStatus?: 'completed' | 'failed';
 }
 
 export interface AgentUsagePayload {
@@ -202,7 +202,7 @@ export interface AgentToolOutputPayload {
 
 export interface AgentEventPayloadMap {
 	'agent:thought': AgentThoughtPayload;
-	'agent:action': AgentActionPayload;
+	'agent:tool_call': AgentToolCallPayload;
 	'agent:observation': AgentObservationPayload;
 	'agent:thought_chunk': AgentChunkPayload;
 	'agent:reasoning_chunk': AgentChunkPayload;
@@ -397,12 +397,12 @@ export function mapAgentEvent(
 				},
 			};
 		}
-		case 'agent:action': {
+		case 'agent:tool_call': {
 			const sessionId = requiredSessionId(payload);
 			const toolName = requiredString(payload, 'tool_name');
 			const stepNumber = requiredNumber(payload, 'step_number');
 			const runId = requiredNumber(payload, 'run_id');
-			const actionIndex = requiredNumber(payload, 'action_index');
+			const toolIndex = requiredNumber(payload, 'tool_index');
 			const stepId = requiredString(payload, 'step_id');
 			const suppressStreamedThought = requiredBoolean(payload, 'suppress_streamed_thought');
 			const silent = requiredBoolean(payload, 'silent');
@@ -412,7 +412,7 @@ export function mapAgentEvent(
 				toolName === null ||
 				stepNumber === null ||
 				runId === null ||
-				actionIndex === null ||
+				toolIndex === null ||
 				stepId === null ||
 				suppressStreamedThought === null ||
 				silent === null ||
@@ -430,7 +430,7 @@ export function mapAgentEvent(
 					stepNumber,
 					runId,
 					toolCallId,
-					actionIndex,
+					toolIndex,
 					stepId,
 					suppressStreamedThought,
 					silent,
@@ -447,7 +447,7 @@ export function mapAgentEvent(
 			const stepNumber = requiredNumber(payload, 'step_number');
 			const runId = requiredNumber(payload, 'run_id');
 			const silent = requiredBoolean(payload, 'silent');
-			const actionIndex = requiredNumber(payload, 'action_index');
+			const toolIndex = requiredNumber(payload, 'tool_index');
 			const askOptions = stringArray(payload.ask_options) ? payload.ask_options : null;
 			const stepId = requiredString(payload, 'step_id');
 			const outcome = payload.outcome;
@@ -463,7 +463,7 @@ export function mapAgentEvent(
 				stepNumber === null ||
 				runId === null ||
 				silent === null ||
-				actionIndex === null ||
+				toolIndex === null ||
 				askOptions === null ||
 				stepId === null ||
 				renderer === null ||
@@ -485,7 +485,7 @@ export function mapAgentEvent(
 					runId,
 					silent,
 					toolCallId,
-					actionIndex,
+					toolIndex,
 					askOptions,
 					stepId,
 					outcome,
@@ -784,29 +784,29 @@ export function mapAgentEvent(
 		}
 		case 'notification:show': {
 			const notificationKind = payload.notification_kind;
-			if (notificationKind === 'action_completion') {
+			if (notificationKind === 'tool_run_completion') {
 				const sessionId = optionalSessionId(payload);
 				const title = requiredString(payload, 'title');
 				const body = requiredString(payload, 'body');
-				const actionKind = payload.action_kind;
-				const actionId = requiredString(payload, 'action_id');
-				const actionStatus = payload.action_status;
+				const toolRunKind = payload.tool_run_kind;
+				const toolRunId = requiredString(payload, 'tool_run_id');
+				const toolRunStatus = payload.tool_run_status;
 				if (
-					actionStatus !== undefined &&
-					actionStatus !== 'completed' &&
-					actionStatus !== 'failed'
+					toolRunStatus !== undefined &&
+					toolRunStatus !== 'completed' &&
+					toolRunStatus !== 'failed'
 				)
 					return null;
 				if (
 					sessionId === null ||
 					title === null ||
 					body === null ||
-					(actionKind !== 'background' && actionKind !== 'scheduled') ||
-					actionId === null ||
-					actionId.length === 0 ||
-					(actionKind === 'background' &&
-						(sessionId === undefined || actionStatus === undefined)) ||
-					(actionKind === 'scheduled' && actionStatus !== undefined)
+					(toolRunKind !== 'background' && toolRunKind !== 'scheduled') ||
+					toolRunId === null ||
+					toolRunId.length === 0 ||
+					(toolRunKind === 'background' &&
+						(sessionId === undefined || toolRunStatus === undefined)) ||
+					(toolRunKind === 'scheduled' && toolRunStatus !== undefined)
 				)
 					return null;
 				return {
@@ -816,9 +816,9 @@ export function mapAgentEvent(
 						title,
 						body,
 						notificationKind,
-						actionKind,
-						actionId,
-						...(actionStatus !== undefined ? { actionStatus } : {}),
+						toolRunKind,
+						toolRunId,
+						...(toolRunStatus !== undefined ? { toolRunStatus } : {}),
 					},
 				};
 			}

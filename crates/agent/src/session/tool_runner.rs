@@ -1,11 +1,11 @@
-//! Tool execution, safety-gated confirms, and action-step persistence.
+//! Tool execution, safety-gated confirms, and ToolCall-step persistence.
 //!
 //! Split from `session.rs` (Phase 7 / A3 mechanical extract). R2: confirm never
 //! blocks inside a tool future — ReAct uses pause/continue; scheduled fires
 //! use [`SessionSupervisor::request_scheduled_confirm`].
 
 use super::*;
-use haven_memory::repositories::session_steps::{ActionStepOutcome, ActionStepWrite};
+use haven_memory::repositories::session_steps::{ToolStepOutcome, ToolStepWrite};
 use tracing::Instrument;
 
 pub(super) fn confirmation_expiry_delay(expires_at: Option<&str>) -> Option<std::time::Duration> {
@@ -26,19 +26,19 @@ fn interaction_owner_matches_request(
             crate::interaction::InteractionDetails::Confirm { .. },
         ) => request.session_id.as_deref() == Some(session_id.as_str()),
         (
-            crate::interaction::InteractionOwner::ScheduledAction { action_id },
+            crate::interaction::InteractionOwner::ScheduledToolRun { tool_run_id },
             crate::interaction::InteractionDetails::ScheduledConfirm {
-                action_id: request_action_id,
+                tool_run_id: request_tool_run_id,
                 ..
             },
-        ) => action_id == request_action_id,
+        ) => tool_run_id == request_tool_run_id,
         _ => false,
     }
 }
 
 fn scheduled_request_matches_route(
     request: &crate::interaction::InteractionRequest,
-    action_id: &str,
+    tool_run_id: &str,
     request_id: &haven_common::types::ConfirmId,
 ) -> bool {
     request.id == request_id.as_str()
@@ -46,9 +46,9 @@ fn scheduled_request_matches_route(
         && matches!(
             &request.details,
             crate::interaction::InteractionDetails::ScheduledConfirm {
-                action_id: request_action_id,
+                tool_run_id: request_tool_run_id,
                 ..
-            } if request_action_id == action_id
+            } if request_tool_run_id == tool_run_id
         )
 }
 
@@ -77,60 +77,60 @@ fn scheduled_confirmation_is_expired(
 }
 
 /// The tool may already have produced an external side effect when its final
-/// action-step projection fails. Callers must surface this as an unknown
+/// ToolCall-step projection fails. Callers must surface this as an unknown
 /// outcome, never as an ordinary retryable failure.
 #[derive(Debug)]
-pub(crate) struct ActionStepPersistenceError(anyhow::Error);
+pub(crate) struct ToolStepPersistenceError(anyhow::Error);
 
 /// Metadata resolved from the ReAct turn's immutable tool catalog.
 /// Authorization and risk checks remain live; this only avoids reopening the
-/// catalog for action-step bookkeeping on every tool call.
+/// catalog for ToolCall-step bookkeeping on every tool call.
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct ActionStepMetadata {
+pub(crate) struct ToolStepMetadata {
     pub(crate) is_high_risk: bool,
     pub(crate) silent: bool,
 }
 
-impl std::fmt::Display for ActionStepPersistenceError {
+impl std::fmt::Display for ToolStepPersistenceError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "tool executed but action-step persistence failed: {}",
+            "tool executed but ToolCall-step persistence failed: {}",
             self.0
         )
     }
 }
 
-impl std::error::Error for ActionStepPersistenceError {
+impl std::error::Error for ToolStepPersistenceError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         Some(self.0.as_ref())
     }
 }
 
-fn action_step_outcome(result: &ToolResult) -> ActionStepOutcome {
+fn tool_step_outcome(result: &ToolResult) -> ToolStepOutcome {
     match result.outcome {
-        haven_tools::ToolExecutionOutcome::Succeeded => ActionStepOutcome::Completed,
-        haven_tools::ToolExecutionOutcome::Cancelled => ActionStepOutcome::Cancelled,
-        haven_tools::ToolExecutionOutcome::TimedOutUnknown => ActionStepOutcome::Unknown,
+        haven_tools::ToolExecutionOutcome::Succeeded => ToolStepOutcome::Completed,
+        haven_tools::ToolExecutionOutcome::Cancelled => ToolStepOutcome::Cancelled,
+        haven_tools::ToolExecutionOutcome::TimedOutUnknown => ToolStepOutcome::Unknown,
         haven_tools::ToolExecutionOutcome::Failed
-        | haven_tools::ToolExecutionOutcome::TimedOutAndTerminated => ActionStepOutcome::Failed,
+        | haven_tools::ToolExecutionOutcome::TimedOutAndTerminated => ToolStepOutcome::Failed,
     }
 }
 
-struct ActionStepRequest<'a> {
+struct ToolStepRequest<'a> {
     session_id: &'a str,
     tool_name: &'a str,
     input: &'a Value,
     step_num: u32,
-    action_index: u32,
+    tool_index: u32,
     tool_call_id: Option<&'a str>,
     step_id: &'a str,
 }
 
-struct ActionStepContext {
+struct ToolStepContext {
     session_id: String,
     step_number: i32,
-    action_index: i32,
+    tool_index: i32,
     tool_name: String,
     tool_input: String,
     tool_call_id: Option<String>,
@@ -139,20 +139,20 @@ struct ActionStepContext {
     step_id: String,
 }
 
-impl ActionStepContext {
-    fn new(request: ActionStepRequest<'_>, risk_level: RiskLevel) -> Self {
-        let metadata = ActionStepMetadata {
+impl ToolStepContext {
+    fn new(request: ToolStepRequest<'_>, risk_level: RiskLevel) -> Self {
+        let metadata = ToolStepMetadata {
             is_high_risk: risk_level != RiskLevel::Safe,
-            silent: is_silent_action(request.tool_name, request.input),
+            silent: is_silent_tool_call(request.tool_name, request.input),
         };
         Self::new_with_metadata(request, metadata)
     }
 
-    fn new_with_metadata(request: ActionStepRequest<'_>, metadata: ActionStepMetadata) -> Self {
+    fn new_with_metadata(request: ToolStepRequest<'_>, metadata: ToolStepMetadata) -> Self {
         Self {
             session_id: request.session_id.into(),
             step_number: request.step_num as i32,
-            action_index: request.action_index as i32,
+            tool_index: request.tool_index as i32,
             tool_name: request.tool_name.into(),
             tool_input: request.input.to_string(),
             tool_call_id: request.tool_call_id.map(str::to_string),
@@ -162,11 +162,11 @@ impl ActionStepContext {
         }
     }
 
-    fn into_write(self) -> ActionStepWrite {
-        ActionStepWrite {
+    fn into_write(self) -> ToolStepWrite {
+        ToolStepWrite {
             session_id: self.session_id,
             step_number: self.step_number,
-            action_index: self.action_index,
+            tool_index: self.tool_index,
             tool_name: self.tool_name,
             tool_input: self.tool_input,
             tool_call_id: self.tool_call_id,
@@ -178,20 +178,20 @@ impl ActionStepContext {
 }
 
 impl SessionSupervisor {
-    async fn action_step_context(&self, request: ActionStepRequest<'_>) -> ActionStepContext {
+    async fn tool_step_context(&self, request: ToolStepRequest<'_>) -> ToolStepContext {
         let risk_level = self
             .tool_authorization
             .risk_level(Some(request.session_id), request.tool_name, request.input)
             .await;
-        ActionStepContext::new(request, risk_level)
+        ToolStepContext::new(request, risk_level)
     }
 
     /// Persist a pending `session_steps` row under the pre-minted `step-*` id
-    /// at Action-emit time — before the tool runs. Interrupted / cancelled
+    /// at ToolCall-emit time — before the tool runs. Interrupted / cancelled
     /// tools never reach `execute_step`'s post-completion write, so without
     /// this the live card is the only copy and drops on every DB rebuild
     /// (Continue resync, session switch, app restart).
-    pub async fn begin_action_step(
+    pub async fn begin_tool_step(
         &self,
         session_id: &str,
         tool_name: &str,
@@ -199,57 +199,51 @@ impl SessionSupervisor {
         step_num: u32,
         step_id: &str,
     ) -> anyhow::Result<()> {
-        self.begin_action_step_with_identity(
-            session_id, tool_name, input, step_num, 0, None, step_id,
-        )
-        .await
+        self.begin_tool_step_with_identity(session_id, tool_name, input, step_num, 0, None, step_id)
+            .await
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub async fn begin_action_step_with_identity(
+    pub async fn begin_tool_step_with_identity(
         &self,
         session_id: &str,
         tool_name: &str,
         input: &Value,
         step_num: u32,
-        action_index: u32,
+        tool_index: u32,
         tool_call_id: Option<&str>,
         step_id: &str,
     ) -> anyhow::Result<()> {
         let context = self
-            .action_step_context(ActionStepRequest {
+            .tool_step_context(ToolStepRequest {
                 session_id,
                 tool_name,
                 input,
                 step_num,
-                action_index,
+                tool_index,
                 tool_call_id,
                 step_id,
             })
             .await;
-        self.persist_pending_action_step_context(context).await
+        self.persist_pending_tool_step_context(context).await
     }
 
-    async fn persist_pending_action_step_context(
+    async fn persist_pending_tool_step_context(
         &self,
-        context: ActionStepContext,
+        context: ToolStepContext,
     ) -> anyhow::Result<()> {
         let step_id_for_log = context.step_id.clone();
         self.store
-            .ensure_action_step(context.into_write(), None)
+            .ensure_tool_step(context.into_write(), None)
             .await
             .map_err(|e| {
-                tracing::error!(
-                    "begin_action_step failed for step {}: {}",
-                    step_id_for_log,
-                    e
-                );
+                tracing::error!("begin_tool_step failed for step {}: {}", step_id_for_log, e);
                 anyhow::anyhow!("failed to persist pending tool intent {step_id_for_log}: {e}")
             })
     }
 
     /// Persist an Interrupted observation onto the pending step row (creating
-    /// it if Action-time begin failed). Keeps the resume badge aligned with
+    /// it if ToolCall-time begin failed). Keeps the resume badge aligned with
     /// the live Interrupted card across resume/resync.
     pub async fn finish_interrupted_step(
         &self,
@@ -269,7 +263,7 @@ impl SessionSupervisor {
             None,
             step_id,
             observation,
-            ActionStepOutcome::Failed,
+            ToolStepOutcome::Failed,
         )
         .await;
     }
@@ -284,28 +278,28 @@ impl SessionSupervisor {
         tool_name: &str,
         input: &Value,
         step_num: u32,
-        action_index: u32,
+        tool_index: u32,
         tool_call_id: Option<&str>,
         step_id: &str,
         observation: &str,
-        outcome: ActionStepOutcome,
+        outcome: ToolStepOutcome,
     ) {
         let context = self
-            .action_step_context(ActionStepRequest {
+            .tool_step_context(ToolStepRequest {
                 session_id,
                 tool_name,
                 input,
                 step_num,
-                action_index,
+                tool_index,
                 tool_call_id,
                 step_id,
             })
             .await;
-        self.finish_action_step_context(context, observation, outcome)
+        self.finish_tool_step_context(context, observation, outcome)
             .await;
     }
 
-    /// Finalize a batch action using metadata resolved from the batch's
+    /// Finalize a batch ToolCall using metadata resolved from the batch's
     /// immutable catalog snapshot. The execution safety decision is still
     /// performed live by `execute_gated`.
     #[allow(clippy::too_many_arguments)]
@@ -315,40 +309,40 @@ impl SessionSupervisor {
         tool_name: &str,
         input: &Value,
         step_num: u32,
-        action_index: u32,
+        tool_index: u32,
         tool_call_id: Option<&str>,
         step_id: &str,
         observation: &str,
-        outcome: ActionStepOutcome,
-        metadata: ActionStepMetadata,
+        outcome: ToolStepOutcome,
+        metadata: ToolStepMetadata,
     ) {
-        let context = ActionStepContext::new_with_metadata(
-            ActionStepRequest {
+        let context = ToolStepContext::new_with_metadata(
+            ToolStepRequest {
                 session_id,
                 tool_name,
                 input,
                 step_num,
-                action_index,
+                tool_index,
                 tool_call_id,
                 step_id,
             },
             metadata,
         );
-        self.finish_action_step_context(context, observation, outcome)
+        self.finish_tool_step_context(context, observation, outcome)
             .await;
     }
 
-    async fn finish_action_step_context(
+    async fn finish_tool_step_context(
         &self,
-        context: ActionStepContext,
+        context: ToolStepContext,
         observation: &str,
-        outcome: ActionStepOutcome,
+        outcome: ToolStepOutcome,
     ) {
         let step_id_for_log = context.step_id.clone();
         let observation = observation.to_string();
         if let Err(e) = self
             .store
-            .ensure_and_finish_action_step(context.into_write(), None, observation, outcome)
+            .ensure_and_finish_tool_step(context.into_write(), None, observation, outcome)
             .await
         {
             tracing::warn!(
@@ -366,7 +360,7 @@ impl SessionSupervisor {
         tool_name: &str,
         input: &Value,
         step_num: u32,
-        action_index: u32,
+        tool_index: u32,
         tool_call_id: Option<&str>,
         step_id: &str,
         observation: &str,
@@ -376,11 +370,11 @@ impl SessionSupervisor {
             tool_name,
             input,
             step_num,
-            action_index,
+            tool_index,
             tool_call_id,
             step_id,
             observation,
-            ActionStepOutcome::Failed,
+            ToolStepOutcome::Failed,
         )
         .await;
     }
@@ -392,31 +386,31 @@ impl SessionSupervisor {
         tool_name: &str,
         input: &Value,
         step_num: u32,
-        action_index: u32,
+        tool_index: u32,
         tool_call_id: Option<&str>,
         step_id: &str,
         observation: &str,
-        metadata: ActionStepMetadata,
+        metadata: ToolStepMetadata,
     ) {
         self.finish_step_with_outcome_and_metadata(
             session_id,
             tool_name,
             input,
             step_num,
-            action_index,
+            tool_index,
             tool_call_id,
             step_id,
             observation,
-            ActionStepOutcome::Failed,
+            ToolStepOutcome::Failed,
             metadata,
         )
         .await;
     }
 
-    /// Move the Action-emit pending row to running immediately before the
+    /// Move the ToolCall-emit pending row to running immediately before the
     /// tool is invoked. The ensure step keeps direct callers safe when no
-    /// Action event created the row first.
-    pub async fn start_action_step(
+    /// ToolCall event created the row first.
+    pub async fn start_tool_step(
         &self,
         session_id: &str,
         tool_name: &str,
@@ -424,52 +418,46 @@ impl SessionSupervisor {
         step_num: u32,
         step_id: &str,
     ) -> anyhow::Result<()> {
-        self.start_action_step_with_identity(
-            session_id, tool_name, input, step_num, 0, None, step_id,
-        )
-        .await
+        self.start_tool_step_with_identity(session_id, tool_name, input, step_num, 0, None, step_id)
+            .await
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub async fn start_action_step_with_identity(
+    pub async fn start_tool_step_with_identity(
         &self,
         session_id: &str,
         tool_name: &str,
         input: &Value,
         step_num: u32,
-        action_index: u32,
+        tool_index: u32,
         tool_call_id: Option<&str>,
         step_id: &str,
     ) -> anyhow::Result<()> {
         let context = self
-            .action_step_context(ActionStepRequest {
+            .tool_step_context(ToolStepRequest {
                 session_id,
                 tool_name,
                 input,
                 step_num,
-                action_index,
+                tool_index,
                 tool_call_id,
                 step_id,
             })
             .await;
-        self.start_running_action_step_context(context).await
+        self.start_running_tool_step_context(context).await
     }
 
-    async fn start_running_action_step_context(
+    async fn start_running_tool_step_context(
         &self,
-        context: ActionStepContext,
+        context: ToolStepContext,
     ) -> anyhow::Result<()> {
         let step_id_for_log = context.step_id.clone();
         self.store
-            .ensure_and_start_action_step(context.into_write(), None)
+            .ensure_and_start_tool_step(context.into_write(), None)
             .await
             .map(|_| ())
             .map_err(|e| {
-                tracing::error!(
-                    "start_action_step failed for step {}: {}",
-                    step_id_for_log,
-                    e
-                );
+                tracing::error!("start_tool_step failed for step {}: {}", step_id_for_log, e);
                 anyhow::anyhow!("failed to mark tool intent running {step_id_for_log}: {e}")
             })
     }
@@ -483,7 +471,7 @@ impl SessionSupervisor {
     /// Execute a tool step. `step_id` is the pre-minted `step-*` id the frontend's
     /// live tool card already uses; the persisted step row reuses it so the live
     /// card and the resume badge are one entity. The pending row is normally
-    /// created by [`Self::begin_action_step`] at Action emit; this method
+    /// created by [`Self::begin_tool_step`] at ToolCall emit; this method
     /// ensures + completes it after the tool finishes.
     #[allow(clippy::too_many_arguments)]
     pub async fn execute_step(
@@ -505,7 +493,7 @@ impl SessionSupervisor {
         tool_name: &str,
         input: Value,
         step_num: u32,
-        action_index: u32,
+        tool_index: u32,
         tool_call_id: Option<&str>,
         step_id: &str,
     ) -> anyhow::Result<ToolResult> {
@@ -514,7 +502,7 @@ impl SessionSupervisor {
             tool_name,
             input,
             step_num,
-            action_index,
+            tool_index,
             tool_call_id,
             step_id,
             None,
@@ -534,10 +522,10 @@ impl SessionSupervisor {
         tool_name: &str,
         input: Value,
         step_num: u32,
-        action_index: u32,
+        tool_index: u32,
         tool_call_id: Option<&str>,
         step_id: &str,
-        metadata: ActionStepMetadata,
+        metadata: ToolStepMetadata,
         cancel: tokio_util::sync::CancellationToken,
     ) -> anyhow::Result<ToolResult> {
         self.execute_step_inner(
@@ -545,7 +533,7 @@ impl SessionSupervisor {
             tool_name,
             input,
             step_num,
-            action_index,
+            tool_index,
             tool_call_id,
             step_id,
             None,
@@ -580,7 +568,7 @@ impl SessionSupervisor {
         tool_name: &str,
         input: Value,
         step_num: u32,
-        action_index: u32,
+        tool_index: u32,
         tool_call_id: Option<&str>,
         step_id: &str,
         receipt: haven_tools::ConfirmationReceipt,
@@ -590,7 +578,7 @@ impl SessionSupervisor {
             tool_name,
             input,
             step_num,
-            action_index,
+            tool_index,
             tool_call_id,
             step_id,
             Some(receipt),
@@ -607,11 +595,11 @@ impl SessionSupervisor {
         tool_name: &str,
         input: Value,
         step_num: u32,
-        action_index: u32,
+        tool_index: u32,
         tool_call_id: Option<&str>,
         step_id: &str,
         receipt: haven_tools::ConfirmationReceipt,
-        metadata: ActionStepMetadata,
+        metadata: ToolStepMetadata,
         cancel: tokio_util::sync::CancellationToken,
     ) -> anyhow::Result<ToolResult> {
         self.execute_step_inner(
@@ -619,7 +607,7 @@ impl SessionSupervisor {
             tool_name,
             input,
             step_num,
-            action_index,
+            tool_index,
             tool_call_id,
             step_id,
             Some(receipt),
@@ -636,11 +624,11 @@ impl SessionSupervisor {
         tool_name: &str,
         input: Value,
         step_num: u32,
-        action_index: u32,
+        tool_index: u32,
         tool_call_id: Option<&str>,
         step_id: &str,
         receipt: Option<haven_tools::ConfirmationReceipt>,
-        action_step_metadata: Option<ActionStepMetadata>,
+        tool_step_metadata: Option<ToolStepMetadata>,
         cancel_override: Option<tokio_util::sync::CancellationToken>,
     ) -> anyhow::Result<ToolResult> {
         let tool_call_id = tool_call_id.map(str::to_string);
@@ -685,13 +673,13 @@ impl SessionSupervisor {
                 }
             };
             if let Some(err) = refuse {
-                if let Some(metadata) = action_step_metadata {
+                if let Some(metadata) = tool_step_metadata {
                     self.finish_interrupted_step_with_identity_and_metadata(
                         session_id,
                         tool_name,
                         &input,
                         step_num,
-                        action_index,
+                        tool_index,
                         tool_call_id.as_deref(),
                         step_id,
                         &err,
@@ -704,7 +692,7 @@ impl SessionSupervisor {
                         tool_name,
                         &input,
                         step_num,
-                        action_index,
+                        tool_index,
                         tool_call_id.as_deref(),
                         step_id,
                         &err,
@@ -719,20 +707,20 @@ impl SessionSupervisor {
             Some(cancel) => cancel,
             None => self.cancellation_token(session_id).await,
         };
-        let action_step_request = ActionStepRequest {
+        let tool_step_request = ToolStepRequest {
             session_id,
             tool_name,
             input: &input,
             step_num,
-            action_index,
+            tool_index,
             tool_call_id: tool_call_id.as_deref(),
             step_id,
         };
-        let action_step_context = match action_step_metadata {
-            Some(metadata) => ActionStepContext::new_with_metadata(action_step_request, metadata),
-            None => self.action_step_context(action_step_request).await,
+        let tool_step_context = match tool_step_metadata {
+            Some(metadata) => ToolStepContext::new_with_metadata(tool_step_request, metadata),
+            None => self.tool_step_context(tool_step_request).await,
         };
-        self.start_running_action_step_context(action_step_context)
+        self.start_running_tool_step_context(tool_step_context)
             .await?;
         let gated = match self
             .execute_gated(
@@ -747,20 +735,20 @@ impl SessionSupervisor {
         {
             Ok(gated) => gated,
             Err(e) => {
-                // Pending row was created at Action emit; record the failure
+                // Pending row was created at ToolCall emit; record the failure
                 // so resume/resync does not rebuild an empty tool badge.
                 let outcome = if cancel.is_cancelled() {
-                    ActionStepOutcome::Unknown
+                    ToolStepOutcome::Unknown
                 } else {
-                    ActionStepOutcome::Failed
+                    ToolStepOutcome::Failed
                 };
-                if let Some(metadata) = action_step_metadata {
+                if let Some(metadata) = tool_step_metadata {
                     self.finish_step_with_outcome_and_metadata(
                         session_id,
                         tool_name,
                         &input,
                         step_num,
-                        action_index,
+                        tool_index,
                         tool_call_id.as_deref(),
                         step_id,
                         &e.to_string(),
@@ -774,7 +762,7 @@ impl SessionSupervisor {
                         tool_name,
                         &input,
                         step_num,
-                        action_index,
+                        tool_index,
                         tool_call_id.as_deref(),
                         step_id,
                         &e.to_string(),
@@ -801,8 +789,8 @@ impl SessionSupervisor {
         // Apply the tool's declared per-session side effects (MCP adapter
         // registration) instead of name-matching loader tools here —
         // a new tool with a side effect declares it via `Tool::registrations`
-        // and nothing in this executor needs to change. Background-action
-        // bindings are applied after the running-set guard below (a action
+        // and nothing in this executor needs to change. Background ToolRun
+        // bindings are applied after the running-set guard below (a ToolRun
         // spawned in a concurrently-rolled-back step must not attach past
         // the cleanup sweep). `registrations` is extracted ONCE: calling it
         // twice could yield divergent results for stateful tools, and the
@@ -837,23 +825,23 @@ impl SessionSupervisor {
                         .register_mcp_for_session(session_id, name, None)
                         .await;
                 }
-                haven_tools::ToolRegistration::Action(_) => {}
+                haven_tools::ToolRegistration::ToolRun(_) => {}
             }
         }
-        // Tie a background action to its session so end/rollback can clean it up.
+        // Tie a background ToolRun to its session so end/rollback can clean it up.
         // Applied only AFTER the running-set guard above passed (a rollback
         // racing this step may have removed the session); the registrations were
         // extracted once, before the guard.
         for reg in &registrations {
-            if let haven_tools::ToolRegistration::Action(action_id) = reg {
-                self.actions.attach_session(action_id, session_id).await;
+            if let haven_tools::ToolRegistration::ToolRun(tool_run_id) = reg {
+                self.tool_runs.attach_session(tool_run_id, session_id).await;
             }
         }
         let obs = self
             .observation_port
             .observation_text(tool_name, &result)
             .await;
-        let step_outcome = action_step_outcome(&result);
+        let step_outcome = tool_step_outcome(&result);
         let persist_step_id = step_id.to_string();
         let tool_name_owned = tool_name.to_string();
         // The in-memory StepInfo reuses the persisted step row's id so the
@@ -872,24 +860,24 @@ impl SessionSupervisor {
                 })
                 .await;
         }
-        // Row was normally created at Action emit; ensure + complete covers
+        // Row was normally created at ToolCall emit; ensure + complete covers
         // direct execute_step callers (tests) and races where begin failed.
-        let action_step = ActionStepContext::new(
-            ActionStepRequest {
+        let tool_step = ToolStepContext::new(
+            ToolStepRequest {
                 session_id,
                 tool_name,
                 input: &input,
                 step_num,
-                action_index,
+                tool_index,
                 tool_call_id: tool_call_id.as_deref(),
                 step_id,
             },
             risk_level,
         );
         self.store
-            .ensure_and_finish_action_step(action_step.into_write(), confirmed, obs, step_outcome)
+            .ensure_and_finish_tool_step(tool_step.into_write(), confirmed, obs, step_outcome)
             .await
-            .map_err(|error| anyhow::Error::new(ActionStepPersistenceError(error)))?;
+            .map_err(|error| anyhow::Error::new(ToolStepPersistenceError(error)))?;
         Ok(result)
     }
 
@@ -1039,7 +1027,7 @@ impl SessionSupervisor {
 
     /// Authorize a scheduled tool invocation through the supervisor's live
     /// authorization service. Confirmation queuing and execution remain with
-    /// their existing scheduled-action callers.
+    /// their existing scheduled ToolRun callers.
     pub(crate) async fn authorize_scheduled_tool(
         &self,
         session_id: Option<&str>,
@@ -1052,14 +1040,14 @@ impl SessionSupervisor {
         self.authorization.authorize(&request).await
     }
 
-    /// Queue a scheduled-tool confirmation without blocking the fired-action
+    /// Queue a scheduled ToolRun confirmation without blocking the fire
     /// consumer (R2). Stores the canonical interaction request and emits it
     /// through the supervisor event stream; a later owner-routed resolve or
-    /// expiry executes or skips the action. Returns `None` when the action
+    /// expiry executes or skips the ToolRun. Returns `None` when the ToolRun
     /// already owns a pending confirmation (fail closed).
     pub async fn request_scheduled_confirm(
         self: &Arc<Self>,
-        action_id: &str,
+        tool_run_id: &str,
         session_id: Option<&str>,
         tool_name: &str,
         tool_args: Value,
@@ -1068,7 +1056,7 @@ impl SessionSupervisor {
     ) -> Option<haven_common::types::ConfirmId> {
         let step_id = receipt.confirmation_id.clone();
         let request = crate::interaction::InteractionRequest::scheduled_confirm(
-            action_id.to_string(),
+            tool_run_id.to_string(),
             session_id,
             tool_name.to_string(),
             tool_args,
@@ -1076,26 +1064,26 @@ impl SessionSupervisor {
             title.to_string(),
         );
         if let Err(error) = request.validate_new_pending_permission() {
-            tracing::warn!(%action_id, request_id = %step_id, %error, "scheduled confirmation has no valid future deadline");
+            tracing::warn!(%tool_run_id, request_id = %step_id, %error, "scheduled confirmation has no valid future deadline");
             return None;
         }
         let Some(expiry_delay) = confirmation_expiry_delay(request.expires_at.as_deref()) else {
-            tracing::warn!(%action_id, request_id = %step_id, "scheduled confirmation deadline cannot be scheduled");
+            tracing::warn!(%tool_run_id, request_id = %step_id, "scheduled confirmation deadline cannot be scheduled");
             return None;
         };
-        let action_id = action_id.to_string();
+        let tool_run_id = tool_run_id.to_string();
         {
             let mut scheduled_confirms = self.scheduled_confirms.lock().await;
-            if scheduled_confirms.contains_key(&action_id) {
-                tracing::warn!(%action_id, "scheduled action already owns a pending confirmation");
+            if scheduled_confirms.contains_key(&tool_run_id) {
+                tracing::warn!(%tool_run_id, "scheduled ToolRun already owns a pending confirmation");
                 return None;
             }
-            scheduled_confirms.insert(action_id.clone(), request.clone());
+            scheduled_confirms.insert(tool_run_id.clone(), request.clone());
         }
         self.emit_event(SessionEvent::InteractionRequested {
             envelope: Box::new(crate::interaction::InteractionEnvelope {
-                owner: crate::interaction::InteractionOwner::ScheduledAction {
-                    action_id: action_id.clone(),
+                owner: crate::interaction::InteractionOwner::ScheduledToolRun {
+                    tool_run_id: tool_run_id.clone(),
                 },
                 request,
             }),
@@ -1107,12 +1095,12 @@ impl SessionSupervisor {
         tokio::spawn(async move {
             tokio::time::sleep(expiry_delay).await;
             if executor
-                .scheduled_confirmation_request(&action_id, &timeout_id)
+                .scheduled_confirmation_request(&tool_run_id, &timeout_id)
                 .await
                 .is_some()
             {
                 tracing::warn!(
-                    action_id = %action_id,
+                    tool_run_id = %tool_run_id,
                     request_id = %timeout_id,
                     "scheduled confirmation timed out after {:?}; treating as rejected",
                     expiry_delay
@@ -1120,13 +1108,13 @@ impl SessionSupervisor {
                 let mut retry_delay = std::time::Duration::from_secs(1);
                 loop {
                     match executor
-                        .expire_scheduled_confirmation(&action_id, &timeout_id)
+                        .expire_scheduled_confirmation(&tool_run_id, &timeout_id)
                         .await
                     {
                         Ok(_) => break,
                         Err(error) => {
                             tracing::warn!(
-                                action_id = %action_id,
+                                tool_run_id = %tool_run_id,
                                 request_id = %timeout_id,
                                 error = %error,
                                 "failed to expire scheduled confirmation; retrying"
@@ -1145,14 +1133,14 @@ impl SessionSupervisor {
 
     pub(super) async fn scheduled_confirmation_request(
         &self,
-        action_id: &str,
+        tool_run_id: &str,
         request_id: &haven_common::types::ConfirmId,
     ) -> Option<crate::interaction::InteractionRequest> {
         self.scheduled_confirms
             .lock()
             .await
-            .get(action_id)
-            .filter(|request| scheduled_request_matches_route(request, action_id, request_id))
+            .get(tool_run_id)
+            .filter(|request| scheduled_request_matches_route(request, tool_run_id, request_id))
             .cloned()
     }
 
@@ -1162,8 +1150,8 @@ impl SessionSupervisor {
         request_id: &haven_common::types::ConfirmId,
     ) -> Option<haven_common::types::CapabilityScope> {
         let request = match owner {
-            crate::interaction::InteractionOwner::ScheduledAction { action_id } => {
-                self.scheduled_confirmation_request(action_id, request_id)
+            crate::interaction::InteractionOwner::ScheduledToolRun { tool_run_id } => {
+                self.scheduled_confirmation_request(tool_run_id, request_id)
                     .await?
             }
             crate::interaction::InteractionOwner::AppCommand => return None,
@@ -1219,7 +1207,7 @@ impl SessionSupervisor {
     /// confirmation. Resolving the interaction can wake a paused ReAct actor
     /// (or spawn a scheduled operation), so the durable decision must exist
     /// before that wake edge. The owner route selects either the session actor
-    /// or the scheduled-action registry; UI-only confirmations are handled by
+    /// or the scheduled ToolRun registry; UI-only confirmations are handled by
     /// the app command because their typed action payload is app-owned.
     pub async fn resolve_confirmation_with_session_grant_for_owner(
         self: &Arc<Self>,
@@ -1241,8 +1229,8 @@ impl SessionSupervisor {
     ) -> anyhow::Result<Option<crate::session::ConfirmResolution>> {
         let _resolution = self.confirmation_resolution_gate.lock().await;
         let request = match expected_owner {
-            crate::interaction::InteractionOwner::ScheduledAction { action_id } => {
-                self.scheduled_confirmation_request(action_id, step_id)
+            crate::interaction::InteractionOwner::ScheduledToolRun { tool_run_id } => {
+                self.scheduled_confirmation_request(tool_run_id, step_id)
                     .await
             }
             crate::interaction::InteractionOwner::AppCommand => None,
@@ -1265,15 +1253,15 @@ impl SessionSupervisor {
             .map(|deadline| deadline <= chrono::Utc::now())
             .unwrap_or(true)
         {
-            if let Some(action_id) = match expected_owner {
-                crate::interaction::InteractionOwner::ScheduledAction { action_id } => {
-                    Some(action_id.as_str())
+            if let Some(tool_run_id) = match expected_owner {
+                crate::interaction::InteractionOwner::ScheduledToolRun { tool_run_id } => {
+                    Some(tool_run_id.as_str())
                 }
                 _ => None,
             } {
                 return self
                     .resolve_scheduled_confirmation_locked(
-                        action_id,
+                        tool_run_id,
                         step_id,
                         false,
                         ScheduledConfirmDeadlineDecision::Expire,
@@ -1288,9 +1276,9 @@ impl SessionSupervisor {
                 .resolve_confirmation_locked(session_id, step_id, false, true)
                 .await;
         }
-        let scheduled_action_id = match &request.details {
-            crate::interaction::InteractionDetails::ScheduledConfirm { action_id, .. } => {
-                Some(action_id.clone())
+        let scheduled_tool_run_id = match &request.details {
+            crate::interaction::InteractionDetails::ScheduledConfirm { tool_run_id, .. } => {
+                Some(tool_run_id.clone())
             }
             _ => None,
         };
@@ -1341,9 +1329,9 @@ impl SessionSupervisor {
                 // A stale approval must not leave its session paused forever.
                 // Consume the request as a denial (without installing a grant)
                 // before returning the validation error to the renderer.
-                if let Some(action_id) = &scheduled_action_id {
+                if let Some(tool_run_id) = &scheduled_tool_run_id {
                     self.resolve_scheduled_confirmation_locked(
-                        action_id,
+                        tool_run_id,
                         step_id,
                         false,
                         ScheduledConfirmDeadlineDecision::Expire,
@@ -1361,17 +1349,17 @@ impl SessionSupervisor {
                 anyhow::bail!("confirmation request can no longer be executed: {reason}");
             }
         }
-        if let Some(action_id) = scheduled_action_id.as_deref()
+        if let Some(tool_run_id) = scheduled_tool_run_id.as_deref()
             && !self
-                .actions
-                .claim_scheduled_execution(action_id, step_id.as_str())
+                .tool_runs
+                .claim_scheduled_execution(tool_run_id, step_id.as_str())
                 .await?
         {
             // Consume and dismiss the request as stale after cancellation won;
             // this path deliberately does not persist the requested session
             // grant.
             self.resolve_scheduled_confirmation_locked(
-                action_id,
+                tool_run_id,
                 step_id,
                 true,
                 ScheduledConfirmDeadlineDecision::CheckAtResolution,
@@ -1383,14 +1371,14 @@ impl SessionSupervisor {
             .grant_session_permission(session_id, key, target, effect)
             .await
         {
-            if let Some(action_id) = scheduled_action_id.as_deref()
+            if let Some(tool_run_id) = scheduled_tool_run_id.as_deref()
                 && let Err(release_error) = self
-                    .actions
-                    .release_scheduled_execution_claim(action_id, step_id.as_str())
+                    .tool_runs
+                    .release_scheduled_execution_claim(tool_run_id, step_id.as_str())
                     .await
             {
                 tracing::warn!(
-                    %action_id,
+                    %tool_run_id,
                     request_id = %step_id,
                     error = %release_error,
                     "failed to release scheduled confirmation claim after grant persistence failed"
@@ -1400,9 +1388,9 @@ impl SessionSupervisor {
         }
 
         let confirmed = matches!(effect, haven_common::types::PermissionEffect::Allow);
-        if let Some(action_id) = scheduled_action_id {
+        if let Some(tool_run_id) = scheduled_tool_run_id {
             self.resolve_scheduled_confirmation_locked(
-                &action_id,
+                &tool_run_id,
                 step_id,
                 confirmed,
                 ScheduledConfirmDeadlineDecision::AcceptedBeforeDeadline,
@@ -1457,9 +1445,9 @@ impl SessionSupervisor {
             return Ok(None);
         }
         match owner {
-            crate::interaction::InteractionOwner::ScheduledAction { action_id } => {
+            crate::interaction::InteractionOwner::ScheduledToolRun { tool_run_id } => {
                 self.resolve_scheduled_confirmation_locked(
-                    action_id,
+                    tool_run_id,
                     request_id,
                     confirmed,
                     if expire {
@@ -1498,12 +1486,12 @@ impl SessionSupervisor {
 
     pub async fn expire_scheduled_confirmation(
         self: &Arc<Self>,
-        action_id: &str,
+        tool_run_id: &str,
         request_id: &haven_common::types::ConfirmId,
     ) -> anyhow::Result<Option<crate::session::ConfirmResolution>> {
         let _resolution = self.confirmation_resolution_gate.lock().await;
-        let owner = crate::interaction::InteractionOwner::ScheduledAction {
-            action_id: action_id.to_string(),
+        let owner = crate::interaction::InteractionOwner::ScheduledToolRun {
+            tool_run_id: tool_run_id.to_string(),
         };
         if self.owner_session_is_closing(&owner, request_id).await {
             anyhow::bail!(
@@ -1511,7 +1499,7 @@ impl SessionSupervisor {
             );
         }
         self.resolve_scheduled_confirmation_locked(
-            action_id,
+            tool_run_id,
             request_id,
             false,
             ScheduledConfirmDeadlineDecision::Expire,
@@ -1528,8 +1516,8 @@ impl SessionSupervisor {
             crate::interaction::InteractionOwner::Session { session_id } => {
                 self.is_session_closing(session_id)
             }
-            crate::interaction::InteractionOwner::ScheduledAction { action_id } => self
-                .scheduled_confirmation_request(action_id, request_id)
+            crate::interaction::InteractionOwner::ScheduledToolRun { tool_run_id } => self
+                .scheduled_confirmation_request(tool_run_id, request_id)
                 .await
                 .is_some_and(|request| self.request_session_is_closing(owner, &request)),
             crate::interaction::InteractionOwner::AppCommand => false,
@@ -1548,7 +1536,7 @@ impl SessionSupervisor {
             crate::interaction::InteractionOwner::Session {
                 session_id: owner_id,
             } => owner_id == session_id && self.is_session_closing(owner_id),
-            crate::interaction::InteractionOwner::ScheduledAction { .. } => {
+            crate::interaction::InteractionOwner::ScheduledToolRun { .. } => {
                 self.is_session_closing(session_id)
             }
             crate::interaction::InteractionOwner::AppCommand => false,
@@ -1594,27 +1582,27 @@ impl SessionSupervisor {
 
     async fn resolve_scheduled_confirmation_locked(
         self: &Arc<Self>,
-        action_id: &str,
+        tool_run_id: &str,
         request_id: &haven_common::types::ConfirmId,
         confirmed: bool,
         deadline_decision: ScheduledConfirmDeadlineDecision,
     ) -> anyhow::Result<Option<crate::session::ConfirmResolution>> {
         let Some(pending_request) = self
-            .scheduled_confirmation_request(action_id, request_id)
+            .scheduled_confirmation_request(tool_run_id, request_id)
             .await
         else {
             return Ok(None);
         };
-        let (request_action_id, tool_name, tool_input) = match &pending_request.details {
+        let (request_tool_run_id, tool_name, tool_input) = match &pending_request.details {
             crate::interaction::InteractionDetails::ScheduledConfirm {
-                action_id,
+                tool_run_id,
                 tool_name,
                 tool_input,
                 ..
-            } => (action_id.clone(), tool_name.clone(), tool_input.clone()),
+            } => (tool_run_id.clone(), tool_name.clone(), tool_input.clone()),
             _ => return Ok(None),
         };
-        if request_action_id != action_id {
+        if request_tool_run_id != tool_run_id {
             return Ok(None);
         }
         let expired = scheduled_confirmation_is_expired(&pending_request, deadline_decision);
@@ -1626,26 +1614,26 @@ impl SessionSupervisor {
         if confirmed
             && !expired
             && !self
-                .actions
-                .claim_scheduled_execution(action_id, request_id.as_str())
+                .tool_runs
+                .claim_scheduled_execution(tool_run_id, request_id.as_str())
                 .await?
         {
             let cancelled = {
                 let mut scheduled_confirms = self.scheduled_confirms.lock().await;
-                let Some(request) = scheduled_confirms.get(action_id).filter(|request| {
-                    scheduled_request_matches_route(request, action_id, request_id)
+                let Some(request) = scheduled_confirms.get(tool_run_id).filter(|request| {
+                    scheduled_request_matches_route(request, tool_run_id, request_id)
                 }) else {
                     return Ok(None);
                 };
                 let mut request = request.clone();
-                scheduled_confirms.remove(action_id);
+                scheduled_confirms.remove(tool_run_id);
                 request.cancel();
                 request
             };
             self.emit_event(crate::session::SessionEvent::InteractionRequested {
                 envelope: Box::new(crate::interaction::InteractionEnvelope {
-                    owner: crate::interaction::InteractionOwner::ScheduledAction {
-                        action_id: action_id.to_string(),
+                    owner: crate::interaction::InteractionOwner::ScheduledToolRun {
+                        tool_run_id: tool_run_id.to_string(),
                     },
                     request: cancelled,
                 }),
@@ -1655,16 +1643,16 @@ impl SessionSupervisor {
 
         let Some(mut request) = ({
             let mut scheduled_confirms = self.scheduled_confirms.lock().await;
-            if !scheduled_confirms.get(action_id).is_some_and(|request| {
-                scheduled_request_matches_route(request, action_id, request_id)
+            if !scheduled_confirms.get(tool_run_id).is_some_and(|request| {
+                scheduled_request_matches_route(request, tool_run_id, request_id)
             }) {
                 return Ok(None);
             }
-            scheduled_confirms.remove(action_id)
+            scheduled_confirms.remove(tool_run_id)
         }) else {
             if confirmed {
-                self.actions
-                    .release_scheduled_execution_claim(action_id, request_id.as_str())
+                self.tool_runs
+                    .release_scheduled_execution_claim(tool_run_id, request_id.as_str())
                     .await?;
             }
             return Ok(None);
@@ -1677,8 +1665,8 @@ impl SessionSupervisor {
         }
         self.emit_event(crate::session::SessionEvent::InteractionRequested {
             envelope: Box::new(crate::interaction::InteractionEnvelope {
-                owner: crate::interaction::InteractionOwner::ScheduledAction {
-                    action_id: action_id.to_string(),
+                owner: crate::interaction::InteractionOwner::ScheduledToolRun {
+                    tool_run_id: tool_run_id.to_string(),
                 },
                 request: request.clone(),
             }),
@@ -1704,15 +1692,16 @@ impl SessionSupervisor {
         confirmed: bool,
         expired: bool,
     ) {
-        let (action_id, session_id, tool_name, tool_args, receipt, title) = match request.details {
+        let (tool_run_id, session_id, tool_name, tool_args, receipt, title) = match request.details
+        {
             crate::interaction::InteractionDetails::ScheduledConfirm {
-                action_id,
+                tool_run_id,
                 tool_name,
                 tool_input,
                 receipt,
                 title,
             } => (
-                action_id,
+                tool_run_id,
                 request.session_id.clone(),
                 tool_name,
                 tool_input,
@@ -1721,13 +1710,13 @@ impl SessionSupervisor {
             ),
             _ => return,
         };
-        let action_service = self.actions.clone();
+        let tool_run_service = self.tool_runs.clone();
         if confirmed
             && let Some(live_session_id) = session_id.as_deref()
             && !self.session_is_live(live_session_id).await
         {
             self.emit_event(SessionEvent::ScheduledConfirmOutcome {
-                action_id: action_id.clone(),
+                tool_run_id: tool_run_id.clone(),
                 session_id: session_id.clone(),
                 title,
                 body: format!(
@@ -1735,8 +1724,8 @@ impl SessionSupervisor {
                     tool_name
                 ),
             });
-            let _ = action_service
-                .fail_scheduled(&action_id, "关联会话已结束或不存在")
+            let _ = tool_run_service
+                .fail_scheduled(&tool_run_id, "关联会话已结束或不存在")
                 .await;
             return;
         }
@@ -1747,14 +1736,14 @@ impl SessionSupervisor {
                 "confirmation was declined"
             };
             self.emit_event(SessionEvent::ScheduledConfirmOutcome {
-                action_id: action_id.clone(),
+                tool_run_id: tool_run_id.clone(),
                 session_id: session_id.clone(),
                 title,
                 body: format!("Scheduled tool '{tool_name}' was NOT executed: {reason}."),
             });
-            let _ = action_service
+            let _ = tool_run_service
                 .fail_scheduled(
-                    &action_id,
+                    &tool_run_id,
                     if expired {
                         "确认超时"
                     } else {
@@ -1774,8 +1763,8 @@ impl SessionSupervisor {
                 None,
             )
             .instrument(tracing::info_span!(
-                "scheduled_action_confirmation_execution",
-                action_id = %action_id,
+                "scheduled_tool_run_confirmation_execution",
+                tool_run_id = %tool_run_id,
                 session_id = ?session_id
             ))
             .await;
@@ -1794,20 +1783,20 @@ impl SessionSupervisor {
         };
         if succeeded {
             if let Some(result) = result_summary.as_deref() {
-                let _ = action_service
-                    .complete_scheduled_with_result(&action_id, result)
+                let _ = tool_run_service
+                    .complete_scheduled_with_result(&tool_run_id, result)
                     .await;
             } else {
-                let _ = action_service.complete_scheduled(&action_id).await;
+                let _ = tool_run_service.complete_scheduled(&tool_run_id).await;
             }
         } else {
             let failure_summary = crate::truncate_notification(&body, summary_chars);
-            let _ = action_service
-                .fail_scheduled(&action_id, &failure_summary)
+            let _ = tool_run_service
+                .fail_scheduled(&tool_run_id, &failure_summary)
                 .await;
         }
         self.emit_event(SessionEvent::ScheduledConfirmOutcome {
-            action_id,
+            tool_run_id,
             session_id,
             title,
             body,
@@ -1841,7 +1830,7 @@ impl SessionSupervisor {
         &self,
         session_id: &str,
         step_id: &str,
-        action_index: u32,
+        tool_index: u32,
         tool_call_id: Option<&str>,
     ) -> Option<(bool, Option<haven_tools::ConfirmationReceipt>)> {
         self.interaction_requests(session_id)
@@ -1853,12 +1842,12 @@ impl SessionSupervisor {
                 match request.details {
                     crate::interaction::InteractionDetails::Confirm {
                         step_id: request_step_id,
-                        action_index: request_action_index,
+                        tool_index: request_tool_index,
                         tool_call_id: request_tool_call_id,
                         receipt,
                         ..
                     } if request_step_id == step_id
-                        && request_action_index == action_index
+                        && request_tool_index == tool_index
                         && request_tool_call_id == tool_call_id.unwrap_or_default() =>
                     {
                         decision.map(|decision| (decision, receipt))
@@ -1951,7 +1940,7 @@ mod scheduled_authorization_tests {
     #[test]
     fn accepted_scheduled_decision_keeps_its_deadline_verdict_after_persistence() {
         let mut request = crate::interaction::InteractionRequest::scheduled_confirm(
-            "act-1234567890abcdef1234567890abcdef".into(),
+            "toolrun-1234567890abcdef1234567890abcdef".into(),
             None,
             "files.write".into(),
             json!({}),
@@ -1974,21 +1963,21 @@ mod scheduled_authorization_tests {
         ));
     }
 
-    async fn running_scheduled_action(
+    async fn running_scheduled_tool_run(
         supervisor: &SessionSupervisor,
         session_id: Option<&str>,
         tool_name: &str,
     ) -> String {
         let _receiver = supervisor
-            .actions
-            .take_action_receiver()
+            .tool_runs
+            .take_tool_run_receiver()
             .expect("scheduled receiver");
-        let action_id = supervisor
-            .actions
-            .set(haven_tools::ScheduledActionSpec {
+        let tool_run_id = supervisor
+            .tool_runs
+            .set(haven_tools::ScheduledToolRunSpec {
                 due_at: Some((chrono::Utc::now() + chrono::Duration::seconds(3)).to_rfc3339()),
                 delay_secs: None,
-                watch_action_id: None,
+                watch_tool_run_id: None,
                 title: "confirmation arbitration".into(),
                 body: "test scheduled execution owner".into(),
                 mode: haven_tools::ScheduleMode::Tool,
@@ -2001,8 +1990,12 @@ mod scheduled_authorization_tests {
             .unwrap();
         tokio::time::timeout(std::time::Duration::from_secs(6), async {
             loop {
-                if supervisor.actions.status_view(&action_id).await.status()
-                    == Some(haven_common::ActionStatus::Running)
+                if supervisor
+                    .tool_runs
+                    .status_view(&tool_run_id)
+                    .await
+                    .status()
+                    == Some(haven_common::ToolRunStatus::Running)
                 {
                     break;
                 }
@@ -2010,8 +2003,8 @@ mod scheduled_authorization_tests {
             }
         })
         .await
-        .expect("scheduled action should enter Running before confirmation");
-        action_id
+        .expect("scheduled ToolRun should enter Running before confirmation");
+        tool_run_id
     }
 
     #[tokio::test]
@@ -2138,10 +2131,11 @@ mod scheduled_authorization_tests {
             AuthorizationDecision::RequiresConfirmation { receipt, .. } => receipt,
             decision => panic!("expected confirmation, got {decision:?}"),
         };
-        let action_id = running_scheduled_action(&supervisor, Some(&session_id), tool_name).await;
+        let tool_run_id =
+            running_scheduled_tool_run(&supervisor, Some(&session_id), tool_name).await;
         let confirmation_id = supervisor
             .request_scheduled_confirm(
-                &action_id,
+                &tool_run_id,
                 Some(&session_id),
                 tool_name,
                 input,
@@ -2150,11 +2144,11 @@ mod scheduled_authorization_tests {
             )
             .await
             .unwrap();
-        let owner = crate::interaction::InteractionOwner::ScheduledAction {
-            action_id: action_id.clone(),
+        let owner = crate::interaction::InteractionOwner::ScheduledToolRun {
+            tool_run_id: tool_run_id.clone(),
         };
-        let wrong_owner = crate::interaction::InteractionOwner::ScheduledAction {
-            action_id: haven_common::types::new_id("act"),
+        let wrong_owner = crate::interaction::InteractionOwner::ScheduledToolRun {
+            tool_run_id: haven_common::types::new_id("toolrun"),
         };
         assert!(
             supervisor
@@ -2165,7 +2159,7 @@ mod scheduled_authorization_tests {
         );
         assert!(
             supervisor
-                .scheduled_confirmation_request(&action_id, &confirmation_id,)
+                .scheduled_confirmation_request(&tool_run_id, &confirmation_id,)
                 .await
                 .is_some()
         );
@@ -2180,7 +2174,7 @@ mod scheduled_authorization_tests {
         );
         assert!(
             supervisor
-                .scheduled_confirmation_request(&action_id, &confirmation_id,)
+                .scheduled_confirmation_request(&tool_run_id, &confirmation_id,)
                 .await
                 .is_some()
         );
@@ -2473,12 +2467,12 @@ mod scheduled_authorization_tests {
     #[tokio::test]
     async fn scheduled_resolve_and_expiry_share_a_single_terminal_claim() {
         let (supervisor, _tools, _database, _directory) = test_supervisor();
-        let action_id = running_scheduled_action(&supervisor, None, "files.write").await;
+        let tool_run_id = running_scheduled_tool_run(&supervisor, None, "files.write").await;
         let confirmation_id: haven_common::types::ConfirmId =
             haven_common::types::new_id("conf").into();
         supervisor
             .request_scheduled_confirm(
-                &action_id,
+                &tool_run_id,
                 None,
                 "files.write",
                 json!({"path": "notes.txt"}),
@@ -2487,8 +2481,8 @@ mod scheduled_authorization_tests {
             )
             .await
             .unwrap();
-        let owner = crate::interaction::InteractionOwner::ScheduledAction {
-            action_id: action_id.clone(),
+        let owner = crate::interaction::InteractionOwner::ScheduledToolRun {
+            tool_run_id: tool_run_id.clone(),
         };
 
         let resolve_supervisor = supervisor.clone();
@@ -2502,10 +2496,10 @@ mod scheduled_authorization_tests {
         });
         let expiry_supervisor = supervisor.clone();
         let expiry_id = confirmation_id.clone();
-        let expiry_action_id = action_id.clone();
+        let expiry_tool_run_id = tool_run_id.clone();
         let expiry = tokio::spawn(async move {
             expiry_supervisor
-                .expire_scheduled_confirmation(&expiry_action_id, &expiry_id)
+                .expire_scheduled_confirmation(&expiry_tool_run_id, &expiry_id)
                 .await
                 .unwrap()
         });
@@ -2517,7 +2511,7 @@ mod scheduled_authorization_tests {
         );
         assert!(
             supervisor
-                .scheduled_confirmation_request(&action_id, &confirmation_id)
+                .scheduled_confirmation_request(&tool_run_id, &confirmation_id)
                 .await
                 .is_none()
         );
@@ -2564,10 +2558,11 @@ mod scheduled_authorization_tests {
             AuthorizationDecision::RequiresConfirmation { receipt, .. } => receipt,
             decision => panic!("expected confirmation, got {decision:?}"),
         };
-        let action_id = running_scheduled_action(&supervisor, Some(&session.id), tool_name).await;
+        let tool_run_id =
+            running_scheduled_tool_run(&supervisor, Some(&session.id), tool_name).await;
         let confirmation_id = supervisor
             .request_scheduled_confirm(
-                &action_id,
+                &tool_run_id,
                 Some(&session.id),
                 tool_name,
                 input,
@@ -2576,11 +2571,11 @@ mod scheduled_authorization_tests {
             )
             .await
             .unwrap();
-        let owner = crate::interaction::InteractionOwner::ScheduledAction {
-            action_id: action_id.clone(),
+        let owner = crate::interaction::InteractionOwner::ScheduledToolRun {
+            tool_run_id: tool_run_id.clone(),
         };
 
-        assert!(supervisor.actions.cancel(&action_id).await);
+        assert!(supervisor.tool_runs.cancel(&tool_run_id).await);
         assert!(
             supervisor
                 .resolve_confirmation_with_session_grant_for_owner(
@@ -2602,7 +2597,7 @@ mod scheduled_authorization_tests {
         assert!(!tool_executed.load(std::sync::atomic::Ordering::SeqCst));
         assert!(
             supervisor
-                .scheduled_confirmation_request(&action_id, &confirmation_id)
+                .scheduled_confirmation_request(&tool_run_id, &confirmation_id)
                 .await
                 .is_none()
         );
@@ -2619,7 +2614,7 @@ mod scheduled_authorization_tests {
             haven_common::types::new_id("conf").into();
         supervisor
             .request_scheduled_confirm(
-                "act-00000000000000000000000000000002",
+                "toolrun-00000000000000000000000000000002",
                 Some(&session.id),
                 "files.write",
                 json!({"path": "notes.txt"}),
@@ -2635,8 +2630,8 @@ mod scheduled_authorization_tests {
         // inspect or persist it.
         let gate = supervisor.confirmation_resolution_gate.clone();
         let held_gate = gate.lock().await;
-        let owner = crate::interaction::InteractionOwner::ScheduledAction {
-            action_id: "act-00000000000000000000000000000002".into(),
+        let owner = crate::interaction::InteractionOwner::ScheduledToolRun {
+            tool_run_id: "toolrun-00000000000000000000000000000002".into(),
         };
         let once_supervisor = supervisor.clone();
         let once_id = confirmation_id.clone();
@@ -2656,8 +2651,8 @@ mod scheduled_authorization_tests {
             let _ = session_started_tx.send(());
             session_supervisor
                 .resolve_confirmation_with_session_grant_for_owner(
-                    &crate::interaction::InteractionOwner::ScheduledAction {
-                        action_id: "act-00000000000000000000000000000002".into(),
+                    &crate::interaction::InteractionOwner::ScheduledToolRun {
+                        tool_run_id: "toolrun-00000000000000000000000000000002".into(),
                     },
                     &session_id_for_call,
                     haven_common::types::PermissionTarget::Operation,
@@ -2680,13 +2675,13 @@ mod scheduled_authorization_tests {
 }
 
 #[cfg(test)]
-mod action_step_persistence_tests {
+mod tool_step_persistence_tests {
     use super::*;
     use haven_memory::Database;
     use serde_json::json;
 
     #[tokio::test]
-    async fn action_step_lifecycle_persists_identity_through_session_store() {
+    async fn tool_step_lifecycle_persists_identity_through_session_store() {
         let db = Arc::new(Database::open_in_memory().unwrap());
         let supervisor = Arc::new(SessionSupervisor::new_for_test(
             db.clone(),
@@ -2701,7 +2696,7 @@ mod action_step_persistence_tests {
         let input = json!({"path": "notes.txt", "silent": true});
 
         supervisor
-            .begin_action_step_with_identity(
+            .begin_tool_step_with_identity(
                 &session.id,
                 "files.read",
                 &input,
@@ -2717,15 +2712,15 @@ mod action_step_persistence_tests {
         assert_eq!(pending.len(), 1);
         assert_eq!(pending[0].id, step_id);
         assert_eq!(pending[0].step_number, 5);
-        assert_eq!(pending[0].action_index, 3);
-        assert_eq!(pending[0].action_tool.as_deref(), Some("files.read"));
+        assert_eq!(pending[0].tool_index, 3);
+        assert_eq!(pending[0].tool_name.as_deref(), Some("files.read"));
         assert_eq!(pending[0].tool_call_id.as_deref(), Some("provider-call-5"));
         assert!(pending[0].silent);
         assert!(!pending[0].is_high_risk);
         assert_eq!(pending[0].status, "pending");
 
         supervisor
-            .start_action_step_with_identity(
+            .start_tool_step_with_identity(
                 &session.id,
                 "files.read",
                 &input,
@@ -2746,7 +2741,7 @@ mod action_step_persistence_tests {
                 Some("provider-call-5"),
                 step_id,
                 "cancelled during execution",
-                ActionStepOutcome::Cancelled,
+                ToolStepOutcome::Cancelled,
             )
             .await;
 
@@ -2810,10 +2805,10 @@ mod interaction_owner_route_tests {
             &session_request
         ));
 
-        let action_id = "act-1234567890abcdef1234567890abcdef";
+        let tool_run_id = "toolrun-1234567890abcdef1234567890abcdef";
         let receipt = future_receipt("files.write");
         let scheduled_request = crate::interaction::InteractionRequest::scheduled_confirm(
-            action_id.into(),
+            tool_run_id.into(),
             Some(session_id),
             "files.write".into(),
             json!({"path": "notes.txt"}),
@@ -2821,8 +2816,8 @@ mod interaction_owner_route_tests {
             "scheduled".into(),
         );
         assert!(interaction_owner_matches_request(
-            &crate::interaction::InteractionOwner::ScheduledAction {
-                action_id: action_id.into()
+            &crate::interaction::InteractionOwner::ScheduledToolRun {
+                tool_run_id: tool_run_id.into()
             },
             &scheduled_request
         ));

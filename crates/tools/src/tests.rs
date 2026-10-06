@@ -599,7 +599,7 @@ async fn test_tools_manager_rebuild_catalog_registers_builtins() {
         "input.click",
         "window.list",
         "media.inspect",
-        "actions.list",
+        "tool_runs.list",
         "schedule.list",
         "preferences.get",
         "checklist.list",

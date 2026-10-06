@@ -18,7 +18,7 @@
 	 */
 	let {
 		messages = [],
-		sessionActions = [],
+		sessionToolRuns = [],
 		awaitingBackground = false,
 		loading = false,
 		terminationStatus = null,
@@ -31,7 +31,7 @@
 	<LoadingState label="正在加载 Haven…" detail="正在准备你的工作区" />
 {:else if messages.length === 0 && terminationStatus}
 	<SessionTerminationBanner status={terminationStatus} reason={terminationReason} />
-{:else if messages.length === 0 && sessionActions.length === 0 && !awaitingBackground}
+{:else if messages.length === 0 && sessionToolRuns.length === 0 && !awaitingBackground}
 	<ConversationEmptyState hotkeyBinding={restProps.hotkeyBinding} />
 {:else}
 	<!-- Keep the message renderer available for the first streamed event. A
@@ -39,7 +39,7 @@
 	     gap and can leave the conversation blank after a chunk-load failure. -->
 	<ChatMessageTimeline
 		{messages}
-		{sessionActions}
+		{sessionToolRuns}
 		{awaitingBackground}
 		{terminationStatus}
 		{terminationReason}

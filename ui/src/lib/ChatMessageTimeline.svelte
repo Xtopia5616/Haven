@@ -5,22 +5,22 @@
 	import Logo from '$lib/Logo.svelte';
 	import MaterialButton from '$lib/MaterialButton.svelte';
 	import SessionTerminationBanner from '$lib/SessionTerminationBanner.svelte';
-	import ActionTimelineCard from '$lib/ActionTimelineCard.svelte';
+	import ToolRunTimelineCard from '$lib/ToolRunTimelineCard.svelte';
 	import { hasToolPreambleBefore } from '$lib/toolIntent.ts';
 	import ConversationActivityGroup from '$lib/ConversationActivityGroup.svelte';
 	import {
-		firstWaitingBackgroundActionId,
+		firstWaitingBackgroundToolRunId,
 		groupConversationTimeline,
 		type AskMessageHandler,
 		type AskSelectionChangeHandler,
 		type ConversationContextMenuRequest,
 		type ConversationMessage,
 	} from '$lib/conversationTimeline.ts';
-	import type { ActionPayload } from '$lib/contracts/action.ts';
+	import type { ToolRunPayload } from '$lib/contracts/toolRun.ts';
 
 	interface Props {
 		messages?: ConversationMessage[];
-		sessionActions?: ActionPayload[];
+		sessionToolRuns?: ToolRunPayload[];
 		hotkeyBinding?: string;
 		awaitingBackground?: boolean;
 		awaitingBackgroundCount?: number;
@@ -43,7 +43,7 @@
 
 	let {
 		messages = [],
-		sessionActions = [],
+		sessionToolRuns = [],
 		hotkeyBinding = 'Ctrl+Shift+Space',
 		awaitingBackground = false,
 		awaitingBackgroundCount = 0,
@@ -66,14 +66,14 @@
 
 	let timelineItems = $derived(
 		groupConversationTimeline(messages, {
-			actions: sessionActions,
+			toolRuns: sessionToolRuns,
 			awaitingBackground: awaitingBackground && !activeSessionError && !terminationStatus,
 			awaitingBackgroundCount,
 		}),
 	);
-	let awaitingBackgroundActionId = $derived(
-		firstWaitingBackgroundActionId(
-			sessionActions,
+	let awaitingBackgroundToolRunId = $derived(
+		firstWaitingBackgroundToolRunId(
+			sessionToolRuns,
 			awaitingBackground && !activeSessionError && !terminationStatus,
 		),
 	);
@@ -101,8 +101,8 @@
 					toolCount={item.toolCount}
 					stepCount={item.stepCount}
 					allMessages={messages}
-					actions={sessionActions}
-					{awaitingBackgroundActionId}
+					toolRuns={sessionToolRuns}
+					{awaitingBackgroundToolRunId}
 					{awaitingBackgroundCount}
 					{mediaPlans}
 					{onContextMenu}
@@ -112,15 +112,15 @@
 					{onAskSubmit}
 					{onAskDismiss}
 				/>
-			{:else if item.kind === 'action'}
-				<ActionTimelineCard
-					action={item.action}
+			{:else if item.kind === 'tool_run'}
+				<ToolRunTimelineCard
+					toolRun={item.toolRun}
 					awaitingBackgroundResult={item.awaitingBackgroundResult}
 					awaitingBackgroundCount={item.awaitingBackgroundCount}
 					showTerminalOutput={item.showTerminalOutput}
 				/>
-			{:else if item.kind === 'action-wait'}
-				<ActionTimelineCard
+			{:else if item.kind === 'tool_run_wait'}
+				<ToolRunTimelineCard
 					awaitingBackgroundResult
 					awaitingBackgroundCount={item.awaitingBackgroundCount}
 				/>
@@ -150,7 +150,7 @@
 					awaiting={msg.awaiting ?? false}
 					received={msg.received ?? false}
 					resolved={msg.resolved ?? null}
-					actionId={msg.actionId ?? null}
+					toolRunId={msg.toolRunId ?? null}
 					{onContextMenu}
 					{onAskSelectionChange}
 					{onIgnore}

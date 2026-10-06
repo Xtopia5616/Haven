@@ -10,7 +10,7 @@ use std::collections::HashSet;
 use serde_json::Value;
 
 #[cfg(test)]
-use crate::types::Action;
+use crate::types::ToolCall;
 use crate::types::TranscriptRecord;
 
 /// Infer the next step from the durable event tail. A completed tool result
@@ -46,7 +46,7 @@ pub(crate) fn infer_resume_step(events: &[TranscriptRecord]) -> u32 {
     }
 }
 
-/// Decode the optional tool subset recorded by a `load_mcp` action.
+/// Decode the optional tool subset recorded by a `load_mcp` ToolCall.
 ///
 /// Missing `tool_names` means load all tools (`None`). An explicitly empty
 /// array means load no tools (`Some(vec![])`), and malformed entries are
@@ -68,7 +68,7 @@ pub(crate) fn load_mcp_tool_names(input: &Value) -> Option<Vec<String>> {
 }
 
 /// Decode the saved built-in lazy-load request. Missing arrays remain `None`
-/// so a malformed historical action cannot widen a selection during resume.
+/// so a malformed historical ToolCall cannot widen a selection during resume.
 pub(crate) fn builtin_selection(input: &Value) -> (Option<Vec<String>>, Option<Vec<String>>) {
     fn names(input: &Value, key: &str) -> Option<Vec<String>> {
         let array = input.get(key)?.as_array()?;
@@ -127,12 +127,12 @@ mod tests {
             },
             TranscriptRecord::ToolResult {
                 step_number: 4,
-                action_index: 0,
+                tool_index: 0,
                 step_id: "step-tool".into(),
                 canonical_observation: "ok".into(),
                 history_observation: "ok".into(),
                 tool_call_id: Some("call-tool".into()),
-                action: Action {
+                tool_call: ToolCall {
                     tool_name: "read".into(),
                     tool_input: serde_json::json!({}),
                     is_final: false,

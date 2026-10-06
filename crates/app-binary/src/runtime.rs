@@ -292,7 +292,7 @@ impl ApplicationRuntime {
         if let Err(error) = self.executor.clear_all_sessions_for_shutdown().await {
             tracing::warn!(error = %error, "session shutdown did not quiesce every run");
         }
-        self.services().actions.shutdown().await;
+        self.services().tool_runs.shutdown().await;
         self.services().mcp.shutdown_all().await;
 
         let tasks = {

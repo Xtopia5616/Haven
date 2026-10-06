@@ -19,7 +19,7 @@ describe('createChatInteractionEventHandlers', () => {
 							...base,
 							kind,
 							sessionId: 'ses-1',
-							owner: { kind: 'scheduled_action', actionId: 'act-1' },
+							owner: { kind: 'scheduled_tool_run', toolRunId: 'toolrun-1' },
 						}
 					: {
 							...base,

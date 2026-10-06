@@ -16,7 +16,7 @@ describe('chat agent live tool output', () => {
 		});
 
 		reactExecutionPhaseStore.set({ sessionId: null, phase: 'idle' });
-		handlers['agent:action']({ payload: { sessionId: 'ses-live' } } as never);
+		handlers['agent:tool_call']({ payload: { sessionId: 'ses-live' } } as never);
 		expect(get(reactExecutionPhaseStore)).toMatchObject({
 			sessionId: 'ses-live',
 			phase: 'waiting_result',

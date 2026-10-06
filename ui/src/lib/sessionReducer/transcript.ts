@@ -1,4 +1,4 @@
-import type { ActionPayload } from '../contracts/action.ts';
+import type { ToolRunPayload } from '../contracts/toolRun.ts';
 import { mergeLiveStreaming } from '../resumeMessages.ts';
 import { clearReplayForSession, messagesOf, replayOf, withMessages } from './state.ts';
 import {
@@ -202,13 +202,13 @@ export function reduceTranscript(
 					withMessages(next, sessionId, (messages) => {
 						let changed = false;
 						const next = messages.map((message) => {
-							if (message.actionId !== action.actionId) return message;
+							if (message.toolRunId !== action.toolRunId) return message;
 							changed = true;
 							return {
 								...message,
 								content: action.content,
-								actionId: null,
-								sourceActionId: message.sourceActionId ?? message.actionId,
+								toolRunId: null,
+								sourceToolRunId: message.sourceToolRunId ?? message.toolRunId,
 								streaming: false,
 							};
 						});
@@ -221,8 +221,8 @@ export function reduceTranscript(
 	return inputState;
 }
 
-/** Normalize a terminal background action into the tool-card payload. */
-export function backgroundActionResultContent(payload: ActionPayload): string | null {
+/** Normalize a terminal background ToolRun into the tool-card payload. */
+export function backgroundToolRunResultContent(payload: ToolRunPayload): string | null {
 	if (payload.kind !== 'background' || !payload.id) return null;
 	const status = payload.status ?? 'completed';
 	const rawOutput = payload.output ?? payload.error ?? '';
@@ -230,7 +230,7 @@ export function backgroundActionResultContent(payload: ActionPayload): string | 
 	return JSON.stringify({
 		output: rawOutput,
 		background: true,
-		action_id: payload.id,
+		tool_run_id: payload.id,
 		status,
 		...(payload.exitCode != null ? { exit_code: payload.exitCode } : {}),
 		...(payload.error && !payload.output ? { error: payload.error } : {}),

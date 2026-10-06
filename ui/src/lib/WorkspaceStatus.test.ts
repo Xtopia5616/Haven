@@ -124,7 +124,7 @@ describe('WorkspaceStatus', () => {
 			runtime: 'tauri',
 			bootstrapReady: true,
 			llmConnected: 'ready',
-			runningActionCount: 2,
+			runningBackgroundToolRunCount: 2,
 		});
 
 		expect(screen.getByRole('status', { name: '状态：后台任务' })).toBeTruthy();

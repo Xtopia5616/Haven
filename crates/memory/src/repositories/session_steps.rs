@@ -6,13 +6,13 @@ pub struct SessionStep {
     pub id: String,
     pub session_id: String,
     pub step_number: i32,
-    pub action_index: i32,
+    pub tool_index: i32,
     /// Raw thought text from the Reasoner (replaces old `tool_name = "thought"` hack)
     pub thought: Option<String>,
-    /// Tool name when this step represents a tool call action
-    pub action_tool: Option<String>,
-    /// JSON-serialized tool input parameters
-    pub action_input: Option<String>,
+    /// Tool name when this step represents a tool call.
+    pub tool_name: Option<String>,
+    /// JSON-serialized tool input parameters.
+    pub tool_input: Option<String>,
     pub tool_call_id: Option<String>,
     /// Tool observation / result text
     pub observation: Option<String>,
@@ -32,7 +32,7 @@ pub struct SessionStep {
 /// crossed an external side-effect boundary before cancellation/abort, so a
 /// caller must not retry it automatically.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ActionStepOutcome {
+pub enum ToolStepOutcome {
     Completed,
     Failed,
     Cancelled,
@@ -43,10 +43,10 @@ pub enum ActionStepOutcome {
 /// Agent owns how this data is chosen; Memory only persists it using the
 /// existing session-step operations.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ActionStepWrite {
+pub struct ToolStepWrite {
     pub session_id: String,
     pub step_number: i32,
-    pub action_index: i32,
+    pub tool_index: i32,
     pub tool_name: String,
     pub tool_input: String,
     pub tool_call_id: Option<String>,
@@ -56,11 +56,11 @@ pub struct ActionStepWrite {
 }
 
 #[derive(Clone, Copy)]
-struct ActionStepFields<'a> {
+struct ToolStepFields<'a> {
     id: &'a str,
     session_id: &'a str,
     step_number: i32,
-    action_index: i32,
+    tool_index: i32,
     tool_name: &'a str,
     tool_input: &'a str,
     tool_call_id: Option<&'a str>,
@@ -69,7 +69,7 @@ struct ActionStepFields<'a> {
     confirmed: Option<bool>,
 }
 
-impl ActionStepOutcome {
+impl ToolStepOutcome {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Completed => "completed",
@@ -92,18 +92,18 @@ impl Database {
         Ok(())
     }
 
-    fn insert_action_step(
+    fn insert_tool_step(
         &self,
-        fields: ActionStepFields<'_>,
+        fields: ToolStepFields<'_>,
         ignore_existing: bool,
     ) -> anyhow::Result<String> {
         let now = now_rfc3339_millis();
         let conn = self.conn();
         let sql = if ignore_existing {
-            "INSERT OR IGNORE INTO session_steps (id, session_id, step_number, action_index, tool_name, input, action_tool, action_input, tool_call_id, status, is_high_risk, created_at, silent, confirmed)
+            "INSERT OR IGNORE INTO session_steps (id, session_id, step_number, tool_index, tool_name, input, tool_call_name, tool_call_input, tool_call_id, status, is_high_risk, created_at, silent, confirmed)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?5, ?6, ?7, 'pending', ?8, ?9, ?10, ?11)"
         } else {
-            "INSERT INTO session_steps (id, session_id, step_number, action_index, tool_name, input, action_tool, action_input, tool_call_id, status, is_high_risk, created_at, silent, confirmed)
+            "INSERT INTO session_steps (id, session_id, step_number, tool_index, tool_name, input, tool_call_name, tool_call_input, tool_call_id, status, is_high_risk, created_at, silent, confirmed)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?5, ?6, ?7, 'pending', ?8, ?9, ?10, ?11)"
         };
         conn.execute(
@@ -112,7 +112,7 @@ impl Database {
                 fields.id,
                 fields.session_id,
                 fields.step_number,
-                fields.action_index,
+                fields.tool_index,
                 fields.tool_name,
                 fields.tool_input,
                 fields.tool_call_id,
@@ -128,15 +128,15 @@ impl Database {
         Ok(now)
     }
 
-    fn action_step_from_fields(fields: ActionStepFields<'_>, created_at: String) -> SessionStep {
+    fn tool_step_from_fields(fields: ToolStepFields<'_>, created_at: String) -> SessionStep {
         SessionStep {
             id: fields.id.into(),
             session_id: fields.session_id.into(),
             step_number: fields.step_number,
-            action_index: fields.action_index,
+            tool_index: fields.tool_index,
             thought: None,
-            action_tool: Some(fields.tool_name.into()),
-            action_input: Some(fields.tool_input.into()),
+            tool_name: Some(fields.tool_name.into()),
+            tool_input: Some(fields.tool_input.into()),
             tool_call_id: fields.tool_call_id.map(String::from),
             observation: None,
             status: "pending".into(),
@@ -163,17 +163,17 @@ impl Database {
         Ok(())
     }
 
-    fn ensure_action_step_record(
+    fn ensure_tool_step_record(
         &self,
-        fields: ActionStepFields<'_>,
+        fields: ToolStepFields<'_>,
         refresh_identity: bool,
     ) -> anyhow::Result<()> {
-        self.insert_action_step(fields, true)?;
+        self.insert_tool_step(fields, true)?;
         let conn = self.conn();
         if refresh_identity {
             conn.execute(
-                "UPDATE session_steps SET action_index = COALESCE(action_index, ?1), tool_call_id = COALESCE(tool_call_id, ?2) WHERE id = ?3 AND status = 'pending'",
-                rusqlite::params![fields.action_index, fields.tool_call_id, fields.id],
+                "UPDATE session_steps SET tool_index = COALESCE(tool_index, ?1), tool_call_id = COALESCE(tool_call_id, ?2) WHERE id = ?3 AND status = 'pending'",
+                rusqlite::params![fields.tool_index, fields.tool_call_id, fields.id],
             )?;
         }
         Self::update_pending_confirmation(&conn, fields.id, fields.confirmed)
@@ -205,10 +205,10 @@ impl Database {
             id: id.into(),
             session_id: session_id.into(),
             step_number,
-            action_index: 0,
+            tool_index: 0,
             thought: None,
-            action_tool: None,
-            action_input: None,
+            tool_name: None,
+            tool_input: None,
             tool_call_id: None,
             observation: None,
             status: "completed".into(),
@@ -229,7 +229,7 @@ impl Database {
     /// (`None` mints a fresh one); passing the same id lets execute_step
     /// persist the row the frontend's streamed card references.
     #[allow(clippy::too_many_arguments)]
-    pub fn create_action_step(
+    pub fn create_tool_step(
         &self,
         session_id: &str,
         step_number: i32,
@@ -243,11 +243,11 @@ impl Database {
         let id = id
             .map(String::from)
             .unwrap_or_else(|| haven_common::types::new_id("step"));
-        let fields = ActionStepFields {
+        let fields = ToolStepFields {
             id: &id,
             session_id,
             step_number,
-            action_index: 0,
+            tool_index: 0,
             tool_name,
             tool_input,
             tool_call_id: None,
@@ -255,18 +255,18 @@ impl Database {
             silent,
             confirmed,
         };
-        let created_at = self.insert_action_step(fields, false)?;
-        Ok(Self::action_step_from_fields(fields, created_at))
+        let created_at = self.insert_tool_step(fields, false)?;
+        Ok(Self::tool_step_from_fields(fields, created_at))
     }
 
     /// Ensure an action step exists while retaining its stable invocation
     /// identity. Existing rows are never rewritten after completion.
     #[allow(clippy::too_many_arguments)]
-    pub fn ensure_action_step_with_identity(
+    pub fn ensure_tool_step_with_identity(
         &self,
         session_id: &str,
         step_number: i32,
-        action_index: i32,
+        tool_index: i32,
         tool_name: &str,
         tool_input: &str,
         tool_call_id: Option<&str>,
@@ -275,12 +275,12 @@ impl Database {
         confirmed: Option<bool>,
         id: &str,
     ) -> anyhow::Result<()> {
-        self.ensure_action_step_record(
-            ActionStepFields {
+        self.ensure_tool_step_record(
+            ToolStepFields {
                 id,
                 session_id,
                 step_number,
-                action_index,
+                tool_index,
                 tool_name,
                 tool_input,
                 tool_call_id,
@@ -293,19 +293,19 @@ impl Database {
     }
 
     /// Complete an action step by recording its observation.
-    pub fn complete_action_step(
+    pub fn complete_tool_step(
         &self,
         id: &str,
         observation: &str,
         success: bool,
     ) -> anyhow::Result<()> {
-        self.finish_action_step(
+        self.finish_tool_step(
             id,
             observation,
             if success {
-                ActionStepOutcome::Completed
+                ToolStepOutcome::Completed
             } else {
-                ActionStepOutcome::Failed
+                ToolStepOutcome::Failed
             },
         )?;
         Ok(())
@@ -313,7 +313,7 @@ impl Database {
 
     /// Mark a pending action as running. The update is idempotent for an
     /// already-running row and refuses to revive a terminal row.
-    pub fn start_action_step(&self, id: &str) -> anyhow::Result<bool> {
+    pub fn start_tool_step(&self, id: &str) -> anyhow::Result<bool> {
         let now = now_rfc3339_millis();
         let conn = self.conn();
         let changed = conn.execute(
@@ -324,14 +324,14 @@ impl Database {
         Ok(changed > 0)
     }
 
-    /// Finish an action with an explicit durable outcome. Only pending or
+    /// Finish an ToolRun with an explicit durable outcome. Only pending or
     /// running rows can transition, making late tool completions harmless
     /// after rollback/cancellation has already finalized the row.
-    pub fn finish_action_step(
+    pub fn finish_tool_step(
         &self,
         id: &str,
         observation: &str,
-        outcome: ActionStepOutcome,
+        outcome: ToolStepOutcome,
     ) -> anyhow::Result<bool> {
         let now = now_rfc3339_millis();
         let conn = self.conn();
@@ -346,7 +346,7 @@ impl Database {
     /// Finalize every still-pending/running action step as `unknown` after a
     /// handler panic/abort. The tool may have crossed an external side-effect
     /// boundary, so recovery must not present it as a deterministic failure.
-    pub fn fail_pending_action_steps(
+    pub fn fail_pending_tool_run_steps(
         &self,
         session_id: &str,
         observation: &str,
@@ -364,9 +364,9 @@ impl Database {
     pub fn get_session_steps(&self, session_id: &str) -> anyhow::Result<Vec<SessionStep>> {
         let conn = self.conn();
         let mut stmt = conn.prepare(
-            "SELECT id, session_id, step_number, action_index, tool_name, input, output, thought, action_tool, action_input, tool_call_id, observation,
+            "SELECT id, session_id, step_number, tool_index, tool_name, input, output, thought, tool_call_name, tool_call_input, tool_call_id, observation,
                     status, is_high_risk, confirmed, started_at, completed_at, created_at, silent
-             FROM session_steps WHERE session_id = ?1 ORDER BY step_number ASC, action_index ASC, created_at ASC, id ASC",
+             FROM session_steps WHERE session_id = ?1 ORDER BY step_number ASC, tool_index ASC, created_at ASC, id ASC",
         )?;
         let rows = stmt.query_map(rusqlite::params![session_id], |row| {
             let output: Option<String> = row.get(6)?;
@@ -376,9 +376,9 @@ impl Database {
                 session_id: row.get(1)?,
                 step_number: row.get(2)?,
                 thought: row.get(7)?,
-                action_index: row.get(3)?,
-                action_tool: row.get(8)?,
-                action_input: row.get(9)?,
+                tool_index: row.get(3)?,
+                tool_name: row.get(8)?,
+                tool_input: row.get(9)?,
                 tool_call_id: row.get(10)?,
                 observation: obs.or(output),
                 status: row.get(12)?,
@@ -417,7 +417,7 @@ impl Database {
 
 #[cfg(test)]
 mod tests {
-    use super::ActionStepOutcome;
+    use super::ToolStepOutcome;
     use crate::db::Database;
 
     fn test_db() -> Database {
@@ -445,19 +445,19 @@ mod tests {
         // thought column stays empty: the text lives in `messages`.
         assert_eq!(step.id, "step-thought-1");
         assert!(step.thought.is_none());
-        assert!(step.action_tool.is_none());
-        assert!(step.action_input.is_none());
+        assert!(step.tool_name.is_none());
+        assert!(step.tool_input.is_none());
         let steps = db.get_session_steps("ses-1").unwrap();
         assert_eq!(steps.len(), 1);
         assert_eq!(steps[0].id, "step-thought-1");
     }
 
     #[test]
-    fn create_and_get_action_step() {
+    fn create_and_get_tool_step() {
         let db = test_db();
         seed_session(&db, "ses-1");
         let step = db
-            .create_action_step(
+            .create_tool_step(
                 "ses-1",
                 0,
                 "read_file",
@@ -468,24 +468,21 @@ mod tests {
                 None,
             )
             .unwrap();
-        assert_eq!(step.action_tool.as_deref(), Some("read_file"));
-        assert_eq!(
-            step.action_input.as_deref(),
-            Some(r#"{"path": "test.txt"}"#)
-        );
+        assert_eq!(step.tool_name.as_deref(), Some("read_file"));
+        assert_eq!(step.tool_input.as_deref(), Some(r#"{"path": "test.txt"}"#));
         assert!(step.thought.is_none());
         let steps = db.get_session_steps("ses-1").unwrap();
         assert_eq!(steps.len(), 1);
     }
 
     #[test]
-    fn complete_action_step_sets_observation() {
+    fn complete_tool_step_sets_observation() {
         let db = test_db();
         seed_session(&db, "ses-1");
         let step = db
-            .create_action_step("ses-1", 0, "read_file", "{}", false, false, None, None)
+            .create_tool_step("ses-1", 0, "read_file", "{}", false, false, None, None)
             .unwrap();
-        db.complete_action_step(&step.id, "file content here", true)
+        db.complete_tool_step(&step.id, "file content here", true)
             .unwrap();
         let steps = db.get_session_steps("ses-1").unwrap();
         assert_eq!(steps[0].observation.as_deref(), Some("file content here"));
@@ -493,36 +490,36 @@ mod tests {
     }
 
     #[test]
-    fn action_step_lifecycle_records_running_and_unknown() {
+    fn tool_step_lifecycle_records_running_and_unknown() {
         let db = test_db();
         seed_session(&db, "ses-1");
         let step = db
-            .create_action_step("ses-1", 0, "shell", "{}", false, false, None, None)
+            .create_tool_step("ses-1", 0, "shell", "{}", false, false, None, None)
             .unwrap();
-        assert!(db.start_action_step(&step.id).unwrap());
+        assert!(db.start_tool_step(&step.id).unwrap());
         let running = db.get_session_steps("ses-1").unwrap();
         assert_eq!(running[0].status, "running");
         assert!(running[0].started_at.is_some());
         assert!(
-            db.finish_action_step(
+            db.finish_tool_step(
                 &step.id,
                 "cancelled while in flight",
-                ActionStepOutcome::Unknown
+                ToolStepOutcome::Unknown
             )
             .unwrap()
         );
         let finished = db.get_session_steps("ses-1").unwrap();
         assert_eq!(finished[0].status, "unknown");
         assert!(finished[0].completed_at.is_some());
-        assert!(!db.start_action_step(&step.id).unwrap());
+        assert!(!db.start_tool_step(&step.id).unwrap());
 
         let cancelled = db
-            .create_action_step("ses-1", 1, "shell", "{}", false, false, None, None)
+            .create_tool_step("ses-1", 1, "shell", "{}", false, false, None, None)
             .unwrap();
-        db.finish_action_step(
+        db.finish_tool_step(
             &cancelled.id,
             "cancelled before execution",
-            ActionStepOutcome::Cancelled,
+            ToolStepOutcome::Cancelled,
         )
         .unwrap();
         assert_eq!(
@@ -532,10 +529,10 @@ mod tests {
     }
 
     #[test]
-    fn ensure_action_step_is_idempotent_and_updates_confirmed() {
+    fn ensure_tool_step_is_idempotent_and_updates_confirmed() {
         let db = test_db();
         seed_session(&db, "ses-1");
-        db.ensure_action_step_with_identity(
+        db.ensure_tool_step_with_identity(
             "ses-1",
             0,
             0,
@@ -548,7 +545,7 @@ mod tests {
             "step-ensure-1",
         )
         .unwrap();
-        db.ensure_action_step_with_identity(
+        db.ensure_tool_step_with_identity(
             "ses-1",
             0,
             0,
@@ -569,19 +566,19 @@ mod tests {
     }
 
     #[test]
-    fn fail_pending_action_steps_finalizes_unfinished_only() {
+    fn fail_pending_tool_run_steps_finalizes_unfinished_only() {
         let db = test_db();
         seed_session(&db, "ses-1");
-        db.ensure_action_step_with_identity(
+        db.ensure_tool_step_with_identity(
             "ses-1", 0, 0, "shell", "{}", None, false, false, None, "step-p1",
         )
         .unwrap();
         let done = db
-            .create_action_step("ses-1", 1, "shell", "{}", false, false, None, None)
+            .create_tool_step("ses-1", 1, "shell", "{}", false, false, None, None)
             .unwrap();
-        db.complete_action_step(&done.id, "ok", true).unwrap();
+        db.complete_tool_step(&done.id, "ok", true).unwrap();
         let n = db
-            .fail_pending_action_steps("ses-1", "Session ended before tool finished")
+            .fail_pending_tool_run_steps("ses-1", "Session ended before tool finished")
             .unwrap();
         assert_eq!(n, 1);
         let steps = db.get_session_steps("ses-1").unwrap();
@@ -597,15 +594,15 @@ mod tests {
     }
 
     #[test]
-    fn create_action_step_persists_silent_flag() {
+    fn create_tool_step_persists_silent_flag() {
         let db = test_db();
         seed_session(&db, "ses-1");
         let visible = db
-            .create_action_step("ses-1", 0, "shell", "{}", false, false, None, None)
+            .create_tool_step("ses-1", 0, "shell", "{}", false, false, None, None)
             .unwrap();
         assert!(!visible.silent);
         let silent = db
-            .create_action_step(
+            .create_tool_step(
                 "ses-1",
                 1,
                 "shell",
@@ -634,18 +631,18 @@ mod tests {
     fn get_session_steps_preserves_order_by_index() {
         let db = test_db();
         seed_session(&db, "ses-1");
-        db.create_action_step("ses-1", 2, "c", "{}", false, false, None, None)
+        db.create_tool_step("ses-1", 2, "c", "{}", false, false, None, None)
             .unwrap();
-        db.create_action_step("ses-1", 0, "a", "{}", false, false, None, None)
+        db.create_tool_step("ses-1", 0, "a", "{}", false, false, None, None)
             .unwrap();
-        db.create_action_step("ses-1", 1, "b", "{}", false, false, None, None)
+        db.create_tool_step("ses-1", 1, "b", "{}", false, false, None, None)
             .unwrap();
         let steps = db.get_session_steps("ses-1").unwrap();
         assert_eq!(steps.len(), 3);
         assert_eq!(steps[0].step_number, 0);
         assert_eq!(steps[1].step_number, 1);
         assert_eq!(steps[2].step_number, 2);
-        assert_eq!(steps[0].action_tool.as_deref(), Some("a"));
+        assert_eq!(steps[0].tool_name.as_deref(), Some("a"));
     }
 
     #[test]

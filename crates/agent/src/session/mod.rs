@@ -6,12 +6,12 @@ use haven_common::types::{
 };
 use haven_memory::repositories::sessions::Session as DbSession;
 #[cfg(test)]
-use haven_memory::{ActionStore, Database};
+use haven_memory::{Database, ToolRunStore};
 use haven_memory::{SessionAuthorizationGrant, SessionStore};
 #[cfg(test)]
 use haven_tools::ToolsManager;
 use haven_tools::{
-    ActionService, AuthorizationDecision, AuthorizationEngine, ToolResult, is_silent_action,
+    AuthorizationDecision, AuthorizationEngine, ToolResult, ToolRunService, is_silent_tool_call,
 };
 use serde_json::Value;
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -231,7 +231,7 @@ pub struct SessionInfo {
     pub title: Option<String>,
     pub status: SessionStatus,
     /// Runtime/UI projection explaining why `status == Paused`. It is not
-    /// persisted and is recomputed from interactions and live actions.
+    /// persisted and is recomputed from interactions and live tool_runs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub waiting_reason: Option<SessionWaitingReason>,
     pub steps: Vec<StepInfo>,
@@ -304,7 +304,7 @@ pub enum SessionEvent {
         session_id: String,
     },
     ScheduledConfirmOutcome {
-        action_id: String,
+        tool_run_id: String,
         session_id: Option<String>,
         title: String,
         body: String,
@@ -343,9 +343,9 @@ pub struct SessionSupervisor {
     /// boundary. Session lifecycle code accesses this narrow capability
     /// directly instead of exposing a process-service bundle.
     authorization: Arc<AuthorizationEngine>,
-    /// Action lifecycle capability used for session-owned cancellation and
-    /// terminal action reconciliation.
-    actions: Arc<ActionService>,
+    /// ToolCall lifecycle capability used for session-owned cancellation and
+    /// terminal ToolRun reconciliation.
+    tool_runs: Arc<ToolRunService>,
     /// Agent-owned boundary for restoring and clearing per-session tool
     /// registrations. Live loading remains owned by the tool execution path.
     session_tool_overlay_port: Arc<dyn SessionToolOverlayPort>,
@@ -414,7 +414,7 @@ pub struct SessionSupervisor {
     #[cfg(test)]
     pending_session_recovery_backoff_started: Notify,
     /// Scheduled confirmations are not session state (some are headless), so
-    /// they live in an owner-local registry keyed by action ID. Resolve and
+    /// they live in an owner-local registry keyed by ToolRun ID. Resolve and
     /// expiry must also match the confirmation request ID stored in the entry.
     scheduled_confirms: Arc<Mutex<HashMap<String, InteractionRequest>>>,
     /// Serializes one-shot, permanent, and session-scoped resolution paths so
@@ -445,7 +445,7 @@ pub use tool_ports::{
     ManagedAssetLeasePort, SessionToolOverlayPort, ToolAuthorizationPort, ToolExecutionContext,
     ToolExecutionPort, ToolObservationPort,
 };
-pub(crate) use tool_runner::{ActionStepMetadata, ActionStepPersistenceError};
+pub(crate) use tool_runner::{ToolStepMetadata, ToolStepPersistenceError};
 
 pub(crate) use actor::{CONTEXT_BATCH_MAX_CHARS, CONTEXT_BATCH_MAX_ITEMS, MessagingTitle};
 pub(crate) use queues::ReactContextBatch;
@@ -458,7 +458,7 @@ impl SessionSupervisor {
             tool_authorization,
             catalog: _catalog,
             authorization,
-            actions,
+            tool_runs,
             session_tool_overlay,
             managed_asset_leases,
             observations,
@@ -473,7 +473,7 @@ impl SessionSupervisor {
             #[cfg(test)]
             tool_catalog: _catalog,
             authorization,
-            actions,
+            tool_runs,
             session_tool_overlay_port: session_tool_overlay,
             observation_port: observations,
             managed_asset_lease_port: managed_asset_leases,
@@ -1937,13 +1937,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn clear_sessions_and_delete_cancels_actions_for_unloaded_sessions() {
+    async fn clear_sessions_and_delete_cancels_tool_runs_for_unloaded_sessions() {
         let db = temp_db();
         let session = db.create_session("unloaded session to clear").unwrap();
-        let action_id = "act-unloaded-clear";
+        let tool_run_id = "toolrun-unloaded-clear";
         let due_at = (chrono::Utc::now() + chrono::Duration::hours(1)).to_rfc3339();
-        db.save_scheduled_action(
-            action_id,
+        db.save_scheduled_tool_run(
+            tool_run_id,
             &due_at,
             "Unloaded clear",
             "must be cancelled",
@@ -1960,8 +1960,8 @@ mod tests {
             Arc::new(ToolsManager::new()),
             1,
         ));
-        exec.action_service()
-            .set_action_store(Some(ActionStore::new(db.clone())))
+        exec.tool_run_service()
+            .set_tool_run_store(Some(ToolRunStore::new(db.clone())))
             .await;
 
         assert_eq!(
@@ -1971,8 +1971,8 @@ mod tests {
 
         assert!(db.get_session(&session.id).unwrap().is_none());
         assert_eq!(
-            db.get_action(action_id).unwrap().unwrap().status,
-            haven_common::ActionStatus::Cancelled
+            db.get_tool_run(tool_run_id).unwrap().unwrap().status,
+            haven_common::ToolRunStatus::Cancelled
         );
     }
 
@@ -2596,13 +2596,13 @@ mod tests {
             .create_session("failed end while run is stuck")
             .await
             .unwrap();
-        exec.action_service()
-            .set_action_store(Some(ActionStore::new(db.clone())))
+        exec.tool_run_service()
+            .set_tool_run_store(Some(ToolRunStore::new(db.clone())))
             .await;
-        let action_id = "act-stuck-end-retry";
+        let tool_run_id = "toolrun-stuck-end-retry";
         let due_at = (chrono::Utc::now() + chrono::Duration::hours(1)).to_rfc3339();
-        db.save_scheduled_action(
-            action_id,
+        db.save_scheduled_tool_run(
+            tool_run_id,
             &due_at,
             "Stuck end retry",
             "must be cancelled on retry",
@@ -2617,8 +2617,8 @@ mod tests {
         db.conn()
             .execute_batch(&format!(
                 "CREATE TRIGGER block_stuck_end_cancel
-                 BEFORE UPDATE OF status ON actions
-                 WHEN NEW.id = '{action_id}' AND NEW.status = 'cancelled'
+                 BEFORE UPDATE OF status ON tool_runs
+                 WHEN NEW.id = '{tool_run_id}' AND NEW.status = 'cancelled'
                  BEGIN SELECT RAISE(ABORT, 'injected stuck cancellation failure'); END;"
             ))
             .unwrap();
@@ -2684,8 +2684,8 @@ mod tests {
         );
         assert!(exec.is_run_in_flight(&session.id).await);
         assert_eq!(
-            db.get_action(action_id).unwrap().unwrap().status,
-            haven_common::ActionStatus::Waiting
+            db.get_tool_run(tool_run_id).unwrap().unwrap().status,
+            haven_common::ToolRunStatus::Waiting
         );
 
         allow_exit.store(1, Ordering::SeqCst);
@@ -3015,7 +3015,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn list_actions_all_present() {
+    async fn list_tool_runs_all_present() {
         let db = temp_db();
         let tools = Arc::new(ToolsManager::new());
         let exec = Arc::new(SessionSupervisor::new_for_test(db, tools, 3));
@@ -3059,7 +3059,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn load_pending_actions_reloads_after_restart() {
+    async fn load_pending_tool_runs_reloads_after_restart() {
         let db = temp_db();
         let tools = Arc::new(ToolsManager::new());
         let exec = Arc::new(SessionSupervisor::new_for_test(
@@ -3338,7 +3338,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn load_pending_actions_skips_non_pending() {
+    async fn load_pending_tool_runs_skips_non_pending() {
         let db = temp_db();
         let tools = Arc::new(ToolsManager::new());
         let exec = Arc::new(SessionSupervisor::new_for_test(
@@ -3426,10 +3426,10 @@ mod tests {
     async fn end_session_persists_completed_when_actor_is_not_loaded() {
         let db = temp_db();
         let session = db.create_session("unloaded session").unwrap();
-        let action_id = "act-actorless-end";
+        let tool_run_id = "toolrun-actorless-end";
         let due_at = (chrono::Utc::now() + chrono::Duration::hours(1)).to_rfc3339();
-        db.save_scheduled_action(
-            action_id,
+        db.save_scheduled_tool_run(
+            tool_run_id,
             &due_at,
             "Actorless end",
             "must be cancelled",
@@ -3446,8 +3446,8 @@ mod tests {
             Arc::new(ToolsManager::new()),
             3,
         ));
-        exec.action_service()
-            .set_action_store(Some(ActionStore::new(db.clone())))
+        exec.tool_run_service()
+            .set_tool_run_store(Some(ToolRunStore::new(db.clone())))
             .await;
 
         assert_eq!(
@@ -3459,19 +3459,19 @@ mod tests {
             SessionStatus::Completed
         );
         assert_eq!(
-            db.get_action(action_id).unwrap().unwrap().status,
-            haven_common::ActionStatus::Cancelled
+            db.get_tool_run(tool_run_id).unwrap().unwrap().status,
+            haven_common::ToolRunStatus::Cancelled
         );
     }
 
     #[tokio::test]
-    async fn actorless_end_failure_pauses_and_retry_cancels_remaining_action() {
+    async fn actorless_end_failure_pauses_and_retry_cancels_remaining_tool_run() {
         let db = temp_db();
         let session = db.create_session("actorless end retry").unwrap();
-        let action_id = "act-actorless-end-retry";
+        let tool_run_id = "toolrun-actorless-end-retry";
         let due_at = (chrono::Utc::now() + chrono::Duration::hours(1)).to_rfc3339();
-        db.save_scheduled_action(
-            action_id,
+        db.save_scheduled_tool_run(
+            tool_run_id,
             &due_at,
             "Actorless end retry",
             "must remain retryable",
@@ -3488,15 +3488,15 @@ mod tests {
             Arc::new(ToolsManager::new()),
             1,
         ));
-        exec.action_service()
-            .set_action_store(Some(ActionStore::new(db.clone())))
+        exec.tool_run_service()
+            .set_tool_run_store(Some(ToolRunStore::new(db.clone())))
             .await;
         let mut events = exec.subscribe_events();
         db.conn()
             .execute_batch(&format!(
                 "CREATE TRIGGER block_end_retry_cancel
-                 BEFORE UPDATE OF status ON actions
-                 WHEN NEW.id = '{action_id}' AND NEW.status = 'cancelled'
+                 BEFORE UPDATE OF status ON tool_runs
+                 WHEN NEW.id = '{tool_run_id}' AND NEW.status = 'cancelled'
                  BEGIN SELECT RAISE(ABORT, 'injected end cancellation failure'); END;"
             ))
             .unwrap();
@@ -3504,15 +3504,15 @@ mod tests {
         let error = exec
             .end_session(&session.id)
             .await
-            .expect_err("durable action cleanup failure must reject end");
+            .expect_err("durable ToolRun cleanup failure must reject end");
         assert!(format!("{error:#}").contains("injected end cancellation failure"));
         assert_eq!(
             db.get_session(&session.id).unwrap().unwrap().status,
             SessionStatus::Paused
         );
         assert_eq!(
-            db.get_action(action_id).unwrap().unwrap().status,
-            haven_common::ActionStatus::Waiting
+            db.get_tool_run(tool_run_id).unwrap().unwrap().status,
+            haven_common::ToolRunStatus::Waiting
         );
         assert!(matches!(
             events.try_recv(),
@@ -3527,8 +3527,8 @@ mod tests {
             SessionStatus::Completed
         );
         assert_eq!(
-            db.get_action(action_id).unwrap().unwrap().status,
-            haven_common::ActionStatus::Cancelled
+            db.get_tool_run(tool_run_id).unwrap().unwrap().status,
+            haven_common::ToolRunStatus::Cancelled
         );
     }
 
@@ -3536,15 +3536,15 @@ mod tests {
     async fn resident_end_partial_failure_keeps_paused_actor_and_retry_completes() {
         let (exec, db) = make_executor_with_db(1);
         let session = exec.create_session("resident end retry").await.unwrap();
-        exec.action_service()
-            .set_action_store(Some(ActionStore::new(db.clone())))
+        exec.tool_run_service()
+            .set_tool_run_store(Some(ToolRunStore::new(db.clone())))
             .await;
-        let blocked_id = "act-resident-blocked";
-        let cancelled_id = "act-resident-cancelled";
+        let blocked_id = "toolrun-resident-blocked";
+        let cancelled_id = "toolrun-resident-cancelled";
         let due_at = (chrono::Utc::now() + chrono::Duration::hours(1)).to_rfc3339();
-        for action_id in [blocked_id, cancelled_id] {
-            db.save_scheduled_action(
-                action_id,
+        for tool_run_id in [blocked_id, cancelled_id] {
+            db.save_scheduled_tool_run(
+                tool_run_id,
                 &due_at,
                 "Resident end retry",
                 "partial cleanup must converge",
@@ -3560,7 +3560,7 @@ mod tests {
         db.conn()
             .execute_batch(&format!(
                 "CREATE TRIGGER block_resident_end_cancel
-                 BEFORE UPDATE OF status ON actions
+                 BEFORE UPDATE OF status ON tool_runs
                  WHEN NEW.id = '{blocked_id}' AND NEW.status = 'cancelled'
                  BEGIN SELECT RAISE(ABORT, 'injected resident cancellation failure'); END;"
             ))
@@ -3580,12 +3580,12 @@ mod tests {
             Some(SessionWaitingReason::EndIncomplete)
         );
         assert_eq!(
-            db.get_action(blocked_id).unwrap().unwrap().status,
-            haven_common::ActionStatus::Waiting
+            db.get_tool_run(blocked_id).unwrap().unwrap().status,
+            haven_common::ToolRunStatus::Waiting
         );
         assert_eq!(
-            db.get_action(cancelled_id).unwrap().unwrap().status,
-            haven_common::ActionStatus::Cancelled
+            db.get_tool_run(cancelled_id).unwrap().unwrap().status,
+            haven_common::ToolRunStatus::Cancelled
         );
 
         db.conn()
@@ -3597,22 +3597,22 @@ mod tests {
         );
         assert!(exec.actor_for(&session.id).await.is_none());
         assert_eq!(
-            db.get_action(blocked_id).unwrap().unwrap().status,
-            haven_common::ActionStatus::Cancelled
+            db.get_tool_run(blocked_id).unwrap().unwrap().status,
+            haven_common::ToolRunStatus::Cancelled
         );
     }
 
     #[tokio::test]
-    async fn end_status_write_failure_does_not_cancel_run_or_owned_actions() {
+    async fn end_status_write_failure_does_not_cancel_run_or_owned_tool_runs() {
         let (exec, db) = make_executor_with_db(1);
         let session = exec.create_session("end status write retry").await.unwrap();
-        exec.action_service()
-            .set_action_store(Some(ActionStore::new(db.clone())))
+        exec.tool_run_service()
+            .set_tool_run_store(Some(ToolRunStore::new(db.clone())))
             .await;
-        let action_id = "act-end-status-write-retry";
+        let tool_run_id = "toolrun-end-status-write-retry";
         let due_at = (chrono::Utc::now() + chrono::Duration::hours(1)).to_rfc3339();
-        db.save_scheduled_action(
-            action_id,
+        db.save_scheduled_tool_run(
+            tool_run_id,
             &due_at,
             "End status write retry",
             "must not be cancelled before pause commits",
@@ -3644,8 +3644,8 @@ mod tests {
         );
         assert!(!run_token.is_cancelled());
         assert_eq!(
-            db.get_action(action_id).unwrap().unwrap().status,
-            haven_common::ActionStatus::Waiting
+            db.get_tool_run(tool_run_id).unwrap().unwrap().status,
+            haven_common::ToolRunStatus::Waiting
         );
 
         db.conn()
@@ -3658,13 +3658,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn actorless_delete_cancels_unrestored_scheduled_action_before_deleting_session() {
+    async fn actorless_delete_cancels_unrestored_scheduled_tool_run_before_deleting_session() {
         let db = temp_db();
         let session = db.create_session("unloaded delete session").unwrap();
-        let action_id = "act-actorless-delete";
+        let tool_run_id = "toolrun-actorless-delete";
         let due_at = (chrono::Utc::now() + chrono::Duration::hours(1)).to_rfc3339();
-        db.save_scheduled_action(
-            action_id,
+        db.save_scheduled_tool_run(
+            tool_run_id,
             &due_at,
             "Actorless delete",
             "must be cancelled before delete",
@@ -3681,27 +3681,27 @@ mod tests {
             Arc::new(ToolsManager::new()),
             3,
         ));
-        exec.action_service()
-            .set_action_store(Some(ActionStore::new(db.clone())))
+        exec.tool_run_service()
+            .set_tool_run_store(Some(ToolRunStore::new(db.clone())))
             .await;
 
         exec.delete_session(&session.id).await.unwrap();
 
         assert!(db.get_session(&session.id).unwrap().is_none());
         assert_eq!(
-            db.get_action(action_id).unwrap().unwrap().status,
-            haven_common::ActionStatus::Cancelled
+            db.get_tool_run(tool_run_id).unwrap().unwrap().status,
+            haven_common::ToolRunStatus::Cancelled
         );
     }
 
     #[tokio::test]
-    async fn session_delete_stays_open_when_durable_action_cancellation_fails() {
+    async fn session_delete_stays_open_when_durable_tool_run_cancellation_fails() {
         let db = temp_db();
         let session = db.create_session("delete fail closed").unwrap();
-        let action_id = "act-delete-fail-closed";
+        let tool_run_id = "toolrun-delete-fail-closed";
         let due_at = (chrono::Utc::now() + chrono::Duration::hours(1)).to_rfc3339();
-        db.save_scheduled_action(
-            action_id,
+        db.save_scheduled_tool_run(
+            tool_run_id,
             &due_at,
             "Delete failure",
             "remain attached until cleanup works",
@@ -3718,14 +3718,14 @@ mod tests {
             Arc::new(ToolsManager::new()),
             3,
         ));
-        exec.action_service()
-            .set_action_store(Some(ActionStore::new(db.clone())))
+        exec.tool_run_service()
+            .set_tool_run_store(Some(ToolRunStore::new(db.clone())))
             .await;
         db.conn()
             .execute_batch(&format!(
-                "CREATE TRIGGER block_session_action_cancel
-                 BEFORE UPDATE OF status ON actions
-                 WHEN NEW.id = '{action_id}' AND NEW.status = 'cancelled'
+                "CREATE TRIGGER block_session_tool_run_cancel
+                 BEFORE UPDATE OF status ON tool_runs
+                 WHEN NEW.id = '{tool_run_id}' AND NEW.status = 'cancelled'
                  BEGIN SELECT RAISE(ABORT, 'injected cancellation failure'); END;"
             ))
             .unwrap();
@@ -3733,22 +3733,22 @@ mod tests {
         let error = exec
             .delete_session(&session.id)
             .await
-            .expect_err("a session must remain if its durable action cannot be cancelled");
+            .expect_err("a session must remain if its durable ToolRun cannot be cancelled");
         assert!(format!("{error:#}").contains("injected cancellation failure"));
         assert!(db.get_session(&session.id).unwrap().is_some());
         assert_eq!(
-            db.get_action(action_id).unwrap().unwrap().status,
-            haven_common::ActionStatus::Waiting
+            db.get_tool_run(tool_run_id).unwrap().unwrap().status,
+            haven_common::ToolRunStatus::Waiting
         );
 
         db.conn()
-            .execute_batch("DROP TRIGGER block_session_action_cancel")
+            .execute_batch("DROP TRIGGER block_session_tool_run_cancel")
             .unwrap();
         exec.delete_session(&session.id).await.unwrap();
         assert!(db.get_session(&session.id).unwrap().is_none());
         assert_eq!(
-            db.get_action(action_id).unwrap().unwrap().status,
-            haven_common::ActionStatus::Cancelled
+            db.get_tool_run(tool_run_id).unwrap().unwrap().status,
+            haven_common::ToolRunStatus::Cancelled
         );
     }
 
@@ -4395,7 +4395,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn terminal_actions_need_explicit_reopen_to_reactivate() {
+    async fn terminal_tool_runs_need_explicit_reopen_to_reactivate() {
         let db = temp_db();
         let tools = Arc::new(ToolsManager::new());
         let exec = Arc::new(SessionSupervisor::new_for_test(db, tools, 3));
@@ -4484,7 +4484,7 @@ mod tests {
 
         // A stale pause observer must not turn an already claimed run back
         // into Pending. This is the transition that used to trip the
-        // run_react_loop entry assertion after resume/action wake-up.
+        // run_react_loop entry assertion after resume/ToolRun wake-up.
         let changed = exec
             .update_session_status_if(&session.id, SessionStatus::Paused, SessionStatus::Pending)
             .await
@@ -4556,24 +4556,32 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn action_completions_buffered_and_drained() {
+    async fn tool_run_completions_buffered_and_drained() {
         let db = temp_db();
         let tools = Arc::new(ToolsManager::new());
         let exec = Arc::new(SessionSupervisor::new_for_test(db, tools, 3));
-        let session = exec.create_session("bg action").await.unwrap();
+        let session = exec.create_session("background ToolRun").await.unwrap();
 
-        assert!(exec.drain_action_completions(&session.id).await.is_empty());
+        assert!(
+            exec.drain_tool_run_completions(&session.id)
+                .await
+                .is_empty()
+        );
 
         let _ = exec
-            .add_action_completion(&session.id, "act-1", "action-1 done")
+            .add_tool_run_completion(&session.id, "toolrun-1", "toolrun-1 done")
             .await;
         let _ = exec
-            .add_action_completion(&session.id, "act-2", "action-2 failed")
+            .add_tool_run_completion(&session.id, "toolrun-2", "toolrun-2 failed")
             .await;
 
-        let drained = exec.drain_action_completions(&session.id).await;
-        assert_eq!(drained, vec!["action-1 done", "action-2 failed"]);
-        assert!(exec.drain_action_completions(&session.id).await.is_empty());
+        let drained = exec.drain_tool_run_completions(&session.id).await;
+        assert_eq!(drained, vec!["toolrun-1 done", "toolrun-2 failed"]);
+        assert!(
+            exec.drain_tool_run_completions(&session.id)
+                .await
+                .is_empty()
+        );
     }
 
     #[tokio::test]
@@ -4617,7 +4625,7 @@ mod tests {
         exec.add_follow_up(&session.id, "follow-up").await.unwrap();
         exec.add_steering(&session.id, "steering").await.unwrap();
         let _ = exec
-            .add_action_completion(&session.id, "act-result", "action result")
+            .add_tool_run_completion(&session.id, "toolrun-result", "ToolRun result")
             .await;
 
         let batch = exec.drain_react_context(&session.id).await;
@@ -4632,11 +4640,11 @@ mod tests {
         );
         assert_eq!(
             batch
-                .action_results
+                .tool_run_results
                 .iter()
                 .map(|item| item.text.as_str())
                 .collect::<Vec<_>>(),
-            vec!["action result"]
+            vec!["ToolRun result"]
         );
 
         let batch = exec.drain_react_context(&session.id).await;
@@ -4649,7 +4657,7 @@ mod tests {
             vec!["follow-up"]
         );
         assert!(batch.steering.is_empty());
-        assert!(batch.action_results.is_empty());
+        assert!(batch.tool_run_results.is_empty());
     }
 
     /// Phase 7 / D2: re-queue by the same `message_id` must not double-inject.
@@ -4693,7 +4701,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn remove_session_clears_action_buffers_and_status_watcher() {
+    async fn remove_session_clears_tool_run_buffers_and_status_watcher() {
         let db = temp_db();
         let tools = Arc::new(ToolsManager::new());
         let exec = Arc::new(SessionSupervisor::new_for_test(db, tools, 3));
@@ -4702,13 +4710,17 @@ mod tests {
             .await
             .unwrap();
         let _ = exec
-            .add_action_completion(&session.id, "act-stranded", "stranded")
+            .add_tool_run_completion(&session.id, "toolrun-stranded", "stranded")
             .await;
         let rx = exec.subscribe_status(&session.id).await;
         let _ = rx; // a subscriber must not keep the session alive after removal
 
         exec.remove_session(&session.id).await.unwrap();
         assert_eq!(exec.get_active_session_status(&session.id).await, None);
-        assert!(exec.drain_action_completions(&session.id).await.is_empty());
+        assert!(
+            exec.drain_tool_run_completions(&session.id)
+                .await
+                .is_empty()
+        );
     }
 }

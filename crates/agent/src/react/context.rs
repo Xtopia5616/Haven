@@ -42,15 +42,15 @@ pub(super) struct PendingContext {
     pub(super) text: String,
     pub(super) attachments: Vec<MessageAttachment>,
     pub(super) message_id: Option<String>,
-    pub(super) action_result_id: Option<String>,
+    pub(super) tool_run_result_id: Option<String>,
 }
 
-/// Convert the stable action identity into a valid message identity without
+/// Convert the stable ToolRun IDentity into a valid message identity without
 /// minting a new id on every queue retry.  The mapping is deterministic for
-/// both normal `act-*` ids and test/provider ids that use another shape.
-pub(crate) fn action_result_message_id(action_result_id: &str) -> String {
+/// both normal `toolrun-*` ids and test/provider ids that use another shape.
+pub(crate) fn tool_run_result_message_id(tool_run_result_id: &str) -> String {
     let mut hasher = Sha256::new();
-    hasher.update(action_result_id.as_bytes());
+    hasher.update(tool_run_result_id.as_bytes());
     let digest = hasher.finalize();
     let suffix = digest[..16]
         .iter()
@@ -92,7 +92,7 @@ impl InboxClaim {
 /// Context collected at one turn boundary.
 ///
 /// Item order is part of the loop contract: steering and answers/follow-ups
-/// arrive before background action results, and cross-session messages arrive
+/// arrive before background ToolRun results, and cross-session messages arrive
 /// last. The order is assembled here, before projection, so every turn has a
 /// single deterministic source ordering.
 #[derive(Debug, Default)]
@@ -168,7 +168,7 @@ impl ContextSource {
         let ReactContextBatch {
             steering,
             follow_ups,
-            action_results,
+            tool_run_results,
         } = self.executor.drain_react_context(session_id).await;
         let mut batch = PendingContextBatch::default();
 
@@ -184,7 +184,7 @@ impl ContextSource {
                 text: steering_item.text,
                 attachments: steering_item.attachments,
                 message_id: steering_item.message_id,
-                action_result_id: None,
+                tool_run_result_id: None,
             });
         }
 
@@ -200,17 +200,19 @@ impl ContextSource {
                 text: follow_up.text,
                 attachments: follow_up.attachments,
                 message_id: follow_up.message_id,
-                action_result_id: None,
+                tool_run_result_id: None,
             });
         }
 
-        for action_result in action_results {
+        for tool_run_result in tool_run_results {
             batch.items.push(PendingContext {
-                source: InjectSource::ActionResult,
-                text: action_result.text,
+                source: InjectSource::ToolRunResult,
+                text: tool_run_result.text,
                 attachments: Vec::new(),
-                message_id: Some(action_result_message_id(&action_result.action_result_id)),
-                action_result_id: Some(action_result.action_result_id),
+                message_id: Some(tool_run_result_message_id(
+                    &tool_run_result.tool_run_result_id,
+                )),
+                tool_run_result_id: Some(tool_run_result.tool_run_result_id),
             });
         }
 
@@ -355,7 +357,7 @@ impl ContextSource {
                     text: text.clone(),
                     attachments: Vec::new(),
                     message_id: Some(envelope_id.clone()),
-                    action_result_id: None,
+                    tool_run_result_id: None,
                 })
                 .collect(),
             clears_ask: false,
@@ -444,7 +446,7 @@ pub(crate) fn format_cross_session_inject(env: &Envelope) -> String {
 
 #[cfg(test)]
 mod format_tests {
-    use super::{action_result_message_id, format_cross_session_inject};
+    use super::{format_cross_session_inject, tool_run_result_message_id};
     use haven_messaging::inbox::{Envelope, MessageType};
 
     #[test]
@@ -470,12 +472,12 @@ mod format_tests {
     }
 
     #[test]
-    fn action_result_message_id_is_stable_and_well_formed() {
-        let first = action_result_message_id("act-result-1");
-        assert_eq!(first, action_result_message_id("act-result-1"));
+    fn tool_run_result_message_id_is_stable_and_well_formed() {
+        let first = tool_run_result_message_id("toolrun-result-1");
+        assert_eq!(first, tool_run_result_message_id("toolrun-result-1"));
         assert!(first.starts_with("msg-"));
         assert_eq!(first.len(), "msg-".len() + 32);
-        assert_ne!(first, action_result_message_id("act-result-2"));
+        assert_ne!(first, tool_run_result_message_id("toolrun-result-2"));
     }
 }
 
@@ -624,7 +626,7 @@ mod assembly_tests {
             text: text.to_string(),
             attachments: Vec::new(),
             message_id: message_id.map(str::to_string),
-            action_result_id: None,
+            tool_run_result_id: None,
         }
     }
 
@@ -643,7 +645,7 @@ mod assembly_tests {
             inbox_claim: None,
         });
         batch.append(PendingContextBatch {
-            items: vec![item(InjectSource::ActionResult, None, "action")],
+            items: vec![item(InjectSource::ToolRunResult, None, "action")],
             clears_ask: false,
             inbox_claim: None,
         });
@@ -662,7 +664,7 @@ mod assembly_tests {
             vec![
                 InjectSource::Steering,
                 InjectSource::FollowUp,
-                InjectSource::ActionResult,
+                InjectSource::ToolRunResult,
                 InjectSource::CrossSession,
             ]
         );

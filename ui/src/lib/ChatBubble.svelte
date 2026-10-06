@@ -12,7 +12,7 @@
 	import MaterialCollapsible from '$lib/MaterialCollapsible.svelte';
 	import Icon from '$lib/Icon.svelte';
 	import type { AgentToolResultEnvelope } from '$lib/contracts/agent.ts';
-	import type { ActionPayload } from '$lib/contracts/action.ts';
+	import type { ToolRunPayload } from '$lib/contracts/toolRun.ts';
 	import type {
 		AskMessageHandler,
 		AskSelectionChangeHandler,
@@ -39,8 +39,8 @@
 		awaiting?: boolean;
 		received?: boolean;
 		resolved?: { answer?: string; ignored?: boolean } | null;
-		actionId?: string | null;
-		actionData?: ActionPayload | null;
+		toolRunId?: string | null;
+		toolRunData?: ToolRunPayload | null;
 		awaitingBackgroundResult?: boolean;
 		awaitingBackgroundCount?: number;
 		compact?: boolean;
@@ -72,8 +72,8 @@
 		awaiting = false,
 		received = false,
 		resolved = null,
-		actionId = null,
-		actionData = null,
+		toolRunId = null,
+		toolRunData = null,
 		awaitingBackgroundResult = false,
 		awaitingBackgroundCount = 0,
 		compact = false,
@@ -510,8 +510,8 @@
 				{result}
 				{content}
 				{streaming}
-				{actionId}
-				{actionData}
+				{toolRunId}
+				{toolRunData}
 				{awaitingBackgroundResult}
 				{awaitingBackgroundCount}
 				{toolArgs}

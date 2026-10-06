@@ -43,15 +43,15 @@ export type InteractionKind = 'ask' | 'confirm' | 'scheduled_confirm';
 export type InteractionStatus = 'pending' | 'resolved' | 'expired' | 'cancelled';
 export type InteractionOwner =
 	| { kind: 'session'; sessionId: string }
-	| { kind: 'scheduled_action'; actionId: string }
+	| { kind: 'scheduled_tool_run'; toolRunId: string }
 	| { kind: 'app_command' };
 
 export function interactionOwnerToWire(owner: InteractionOwner): InteractionOwnerWire {
 	switch (owner.kind) {
 		case 'session':
 			return { kind: 'session', session_id: owner.sessionId };
-		case 'scheduled_action':
-			return { kind: 'scheduled_action', action_id: owner.actionId };
+		case 'scheduled_tool_run':
+			return { kind: 'scheduled_tool_run', tool_run_id: owner.toolRunId };
 		case 'app_command':
 			return { kind: 'app_command' };
 	}
@@ -66,7 +66,7 @@ interface InteractionRequestBase {
 	summary?: string;
 	permissionKey?: string;
 	invocationStepId?: string;
-	actionIndex?: number;
+	toolIndex?: number;
 	toolCallId?: string;
 	createdAt: string;
 	expiresAt?: string;
@@ -78,7 +78,7 @@ export type InteractionRequest =
 			sessionId: string;
 	  })
 	| (InteractionRequestBase & {
-			owner: Extract<InteractionOwner, { kind: 'scheduled_action' }>;
+			owner: Extract<InteractionOwner, { kind: 'scheduled_tool_run' }>;
 			sessionId?: string;
 	  })
 	| (InteractionRequestBase & {
@@ -123,7 +123,7 @@ interface AppWirePayloadMap {
 		session_id?: string;
 		owner:
 			| { kind: 'session'; session_id: string }
-			| { kind: 'scheduled_action'; action_id: string }
+			| { kind: 'scheduled_tool_run'; tool_run_id: string }
 			| { kind: 'app_command' };
 		kind: InteractionKind;
 		status: InteractionStatus;
@@ -133,7 +133,7 @@ interface AppWirePayloadMap {
 		summary?: string;
 		permission_key?: string;
 		invocation_step_id?: string;
-		action_index?: number;
+		tool_index?: number;
 		tool_call_id?: string;
 		created_at: string;
 		expires_at?: string;
@@ -222,14 +222,14 @@ export function mapInteractionOwner(
 			)
 				return null;
 			return { kind: 'session', sessionId: value.session_id };
-		case 'scheduled_action':
+		case 'scheduled_tool_run':
 			if (
 				Object.keys(value).length !== 2 ||
-				typeof value.action_id !== 'string' ||
-				!value.action_id
+				typeof value.tool_run_id !== 'string' ||
+				!value.tool_run_id
 			)
 				return null;
-			return { kind: 'scheduled_action', actionId: value.action_id };
+			return { kind: 'scheduled_tool_run', toolRunId: value.tool_run_id };
 		case 'app_command':
 			if (Object.keys(value).length !== 1 || sessionId !== undefined) return null;
 			return { kind: 'app_command' };
@@ -284,7 +284,7 @@ export function mapAppEvent(event: unknown): TauriEvent<AppEventPayloadMap[AppEv
 			const status = p.status;
 			const createdAt = requiredString(p, 'created_at');
 			const options = p.options === undefined ? [] : p.options;
-			const actionIndex = p.action_index;
+			const toolIndex = p.tool_index;
 			if (
 				id === null ||
 				(sessionId !== undefined && (typeof sessionId !== 'string' || !sessionId)) ||
@@ -300,11 +300,11 @@ export function mapAppEvent(event: unknown): TauriEvent<AppEventPayloadMap[AppEv
 				!optionalStringIsValid(p, 'tool_call_id') ||
 				!optionalStringIsValid(p, 'expires_at') ||
 				!validPendingPermissionDeadline(kind, status, p.expires_at) ||
-				(actionIndex !== undefined &&
-					(!finiteNumber(actionIndex) ||
-						!Number.isInteger(actionIndex) ||
-						actionIndex < 0 ||
-						actionIndex > 4_294_967_295))
+				(toolIndex !== undefined &&
+					(!finiteNumber(toolIndex) ||
+						!Number.isInteger(toolIndex) ||
+						toolIndex < 0 ||
+						toolIndex > 4_294_967_295))
 			)
 				return null;
 			const owner = mapInteractionOwner(p.owner, sessionId as string | undefined);
@@ -325,7 +325,7 @@ export function mapAppEvent(event: unknown): TauriEvent<AppEventPayloadMap[AppEv
 					...(wire.invocation_step_id
 						? { invocationStepId: wire.invocation_step_id }
 						: {}),
-					...(wire.action_index != null ? { actionIndex: wire.action_index } : {}),
+					...(wire.tool_index != null ? { toolIndex: wire.tool_index } : {}),
 					...(wire.tool_call_id ? { toolCallId: wire.tool_call_id } : {}),
 					createdAt,
 					...(wire.expires_at ? { expiresAt: wire.expires_at } : {}),

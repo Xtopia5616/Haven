@@ -60,8 +60,8 @@ async fn run_session_parallel_tool_execution() {
     let session = executor.create_session("run parallel").await.unwrap();
     let history = agent.run_session_from_id(&session.id).await.unwrap();
     assert!(!history.is_empty());
-    assert!(collector.has_action("delay_a"));
-    assert!(collector.has_action("delay_b"));
+    assert!(collector.has_tool_call("delay_a"));
+    assert!(collector.has_tool_call("delay_b"));
     let step1 = history
         .iter()
         .find(|r| r.step_number == 1)
@@ -180,10 +180,10 @@ async fn parallel_tool_result_is_published_before_a_slow_sibling_finishes() {
                 )
             })
             .expect("the complete assistant preamble should publish before tool execution");
-        let first_action_index = events
+        let first_tool_index = events
             .iter()
-            .position(|event| matches!(event, AgentEvent::Action { .. }))
-            .expect("tool actions should be visible");
+            .position(|event| matches!(event, AgentEvent::ToolCall { .. }))
+            .expect("tool tool_runs should be visible");
         let fast_observation_index = events
             .iter()
             .position(|event| {
@@ -193,21 +193,21 @@ async fn parallel_tool_result_is_published_before_a_slow_sibling_finishes() {
                 )
             })
             .expect("the fast result should be visible while the slow tool is running");
-        let fast_action_index = events
+        let fast_tool_index = events
             .iter()
             .position(|event| {
                 matches!(
                     event,
-                    AgentEvent::Action { tool_name, .. } if tool_name == "delay_fast"
+                    AgentEvent::ToolCall { tool_name, .. } if tool_name == "delay_fast"
                 )
             })
             .expect("the fast tool call should be visible");
         assert!(
-            thought_index < first_action_index,
+            thought_index < first_tool_index,
             "the complete text should be published before any tool card"
         );
         assert!(
-            fast_action_index < fast_observation_index,
+            fast_tool_index < fast_observation_index,
             "the individual tool card should appear before its result"
         );
     }
@@ -288,7 +288,7 @@ async fn run_session_contains_custom_extension_panic() {
     .expect("extension panic session must not hang")
     .unwrap();
     assert!(!history.is_empty(), "the session must recover and continue");
-    assert!(collector.has_action("custom_panic"));
+    assert!(collector.has_tool_call("custom_panic"));
     assert!(collector.has_observation("custom_panic"));
     let events = collector.events.lock().unwrap();
     let panic_observations = events
@@ -440,8 +440,8 @@ async fn run_session_contains_real_mcp_and_skill_adapter_panics() {
     .expect("real adapter panic session must not hang")
     .unwrap();
     assert!(!history.is_empty(), "the session must recover and continue");
-    assert!(collector.has_action(mcp_name));
-    assert!(collector.has_action(skill_name));
+    assert!(collector.has_tool_call(mcp_name));
+    assert!(collector.has_tool_call(skill_name));
     let events = collector.events.lock().unwrap();
     let panic_observations = events
         .iter()
@@ -508,11 +508,11 @@ async fn run_session_cancelled_mid_batch_surfaces_interrupted_tools() {
         let session_id = session.id.clone();
         async move { agent.run_session_from_id(&session_id).await }
     });
-    // Wait until both action events and both tool executions are visible,
+    // Wait until both ToolCall events and both tool executions are visible,
     // then cancel while both tools (200ms sleeps) are still in flight.
     for _ in 0..50 {
-        if collector.has_action("delay_a")
-            && collector.has_action("delay_b")
+        if collector.has_tool_call("delay_a")
+            && collector.has_tool_call("delay_b")
             && timing.started.load(std::sync::atomic::Ordering::Acquire) == 2
         {
             break;
@@ -520,7 +520,7 @@ async fn run_session_cancelled_mid_batch_surfaces_interrupted_tools() {
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     }
     assert!(
-        collector.has_action("delay_a") && collector.has_action("delay_b"),
+        collector.has_tool_call("delay_a") && collector.has_tool_call("delay_b"),
         "batch must have started before the cancel"
     );
     assert_eq!(
@@ -631,14 +631,14 @@ async fn run_session_cancelled_mid_batch_surfaces_interrupted_tools() {
         "snapshot canonical must not end with unanswered tool_calls (got {:?})",
         pending
     );
-    // Pending step rows created at Action emit must be completed with the
+    // Pending step rows created at ToolCall emit must be completed with the
     // Interrupted observation so resume rebuilds the tool cards
     // from session_steps (not live-only UI state).
     let db_steps = agent.db.get_session_steps(&session.id).unwrap();
     let interrupted_db = db_steps
         .iter()
         .filter(|s| {
-            s.action_tool.is_some()
+            s.tool_name.is_some()
                 && s.observation
                     .as_deref()
                     .is_some_and(|o| o.contains("Interrupted"))
@@ -650,11 +650,7 @@ async fn run_session_cancelled_mid_batch_surfaces_interrupted_tools() {
         "interrupted tools must be persisted in session_steps for UI rebuild (got {:?})",
         db_steps
             .iter()
-            .map(|s| (
-                s.action_tool.clone(),
-                s.status.clone(),
-                s.observation.clone()
-            ))
+            .map(|s| (s.tool_name.clone(), s.status.clone(), s.observation.clone()))
             .collect::<Vec<_>>()
     );
 }

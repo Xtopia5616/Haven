@@ -10,7 +10,7 @@ use super::tool_batch::ToolBatchOutcome;
 use super::tool_batch_policy::ToolRetryBudget;
 use super::transcript::TranscriptEvent;
 use super::{AgentEvent, LoopExit, PauseReason, ReActEngine, ReActState, SessionStatus, StepCtx};
-use crate::types::Action;
+use crate::types::ToolCall;
 use haven_llm::LlmResponse;
 use haven_tools::ToolCatalogSnapshot;
 use std::sync::Arc;
@@ -27,7 +27,7 @@ pub(super) enum TurnEffect {
     /// Tool execution is still an external runtime activity, but the turn
     /// coordinator no longer owns its transcript/UI application boundary.
     ExecuteToolBatch {
-        actions: Vec<Action>,
+        tool_calls: Vec<ToolCall>,
         thought: Option<String>,
         response: LlmResponse,
         catalog: Arc<ToolCatalogSnapshot>,
@@ -161,7 +161,7 @@ impl EffectBatch {
         for effect in self.effects {
             control = match effect {
                 TurnEffect::ExecuteToolBatch {
-                    actions,
+                    tool_calls,
                     thought,
                     response,
                     catalog,
@@ -175,7 +175,7 @@ impl EffectBatch {
                             ctx.step_num,
                             &ctx.emitter,
                             ctx.run_id,
-                            &actions,
+                            &tool_calls,
                             &thought,
                             &response,
                             catalog,
@@ -361,7 +361,7 @@ mod tests {
             reasoning: None,
             web_search_calls: Vec::new(),
             thinking_blocks: Vec::new(),
-            action_cards: Vec::new(),
+            tool_call_cards: Vec::new(),
             persist_text_id: None,
         });
         end.push(TurnEffect::InjectTurnEnd { step_number: 1 });

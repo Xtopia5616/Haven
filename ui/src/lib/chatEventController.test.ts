@@ -80,7 +80,7 @@ describe('createChatEventController', () => {
 				'agent:stream_reset',
 				'agent:web_search',
 				'agent:supplement',
-				'agent:action',
+				'agent:tool_call',
 				'agent:tool_output',
 				'agent:observation',
 				'agent:usage',

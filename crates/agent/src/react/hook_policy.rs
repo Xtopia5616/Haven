@@ -14,7 +14,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::Instrument;
 
 use super::hooks::{
-    AfterLlmInput, BeforeStepOutput, BeforeToolAction, BeforeToolRequest, LoopHooks,
+    AfterLlmInput, BeforeStepOutput, BeforeToolCallDecision, BeforeToolRequest, LoopHooks,
     MemoryPatchHandle,
 };
 use super::retries::{AfterLlmAction, ResponsePolicy};
@@ -116,13 +116,13 @@ impl LoopHooks for DefaultHooks {
         _ctx: &StepCtx,
         input: AfterLlmInput<'_>,
     ) -> AfterLlmAction {
-        ResponsePolicy::classify(input.thought, input.actions, input.response, input.state)
+        ResponsePolicy::classify(input.thought, input.tool_calls, input.response, input.state)
     }
 
     fn before_tool(
         &self,
         request: BeforeToolRequest,
-    ) -> futures_util::future::BoxFuture<'static, BeforeToolAction> {
+    ) -> futures_util::future::BoxFuture<'static, BeforeToolCallDecision> {
         Box::pin(async move {
             // Resume path: a prior confirm pause already recorded a decision.
             if let Some((decision, receipt)) = request
@@ -130,15 +130,15 @@ impl LoopHooks for DefaultHooks {
                 .confirm_decision_for(
                     &request.session_id,
                     &request.identity.step_id,
-                    request.identity.action_index,
+                    request.identity.tool_index,
                     request.identity.tool_call_id.as_deref(),
                 )
                 .await
             {
                 return if decision {
-                    BeforeToolAction::Proceed { receipt }
+                    BeforeToolCallDecision::Proceed { receipt }
                 } else {
-                    BeforeToolAction::Block {
+                    BeforeToolCallDecision::Block {
                         error: format!(
                             "The user REJECTED the operation '{}' (confirmation declined). Do NOT retry it — ask the user what to do instead or choose a different approach.",
                             request.tool_name
@@ -157,15 +157,17 @@ impl LoopHooks for DefaultHooks {
                 )
                 .await
             {
-                AuthorizationDecision::AutoApproved => BeforeToolAction::Proceed { receipt: None },
-                AuthorizationDecision::Blocked { reason, .. } => BeforeToolAction::Block {
+                AuthorizationDecision::AutoApproved => {
+                    BeforeToolCallDecision::Proceed { receipt: None }
+                }
+                AuthorizationDecision::Blocked { reason, .. } => BeforeToolCallDecision::Block {
                     error: format!(
                         "operation '{}' is blocked by the security policy ({reason}). Do NOT retry it — ask the user what to do instead or choose a different approach.",
                         request.tool_name
                     ),
                 },
                 AuthorizationDecision::RequiresConfirmation { receipt, .. } => {
-                    BeforeToolAction::NeedConfirm { receipt }
+                    BeforeToolCallDecision::NeedConfirm { receipt }
                 }
             }
         })

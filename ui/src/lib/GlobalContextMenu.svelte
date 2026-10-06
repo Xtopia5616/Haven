@@ -11,7 +11,7 @@
 	import type { ContextMenuState } from '$lib/contextMenu.ts';
 
 	// This is the single rendered menu host. Components submit domain-specific
-	// actions through contextMenuStore; the document-level handler below only
+	// menu actions through contextMenuStore; the document-level handler below only
 	// supplies the default copy action for otherwise unclaimed text selections.
 	let contextMenu = $state<ContextMenuState>({
 		open: false,

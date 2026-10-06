@@ -85,7 +85,7 @@ fn is_extraction_assistant(m: &haven_memory::repositories::messages::Message) ->
     }
     !matches!(
         m.message_type.as_deref(),
-        Some("reasoning") | Some("thought") | Some("action") | Some("observation")
+        Some("reasoning") | Some("thought") | Some("tool_call") | Some("observation")
     )
 }
 
@@ -148,7 +148,7 @@ fn push_turn_context(
                 continue;
             }
             let name = step
-                .action_tool
+                .tool_name
                 .as_deref()
                 .filter(|s| !s.is_empty())
                 .unwrap_or("tool");

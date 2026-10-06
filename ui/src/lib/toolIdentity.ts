@@ -29,7 +29,7 @@ export const TOOL_LABELS: Record<string, string> = {
 	window: '窗口与屏幕',
 	preferences: '会话偏好',
 	checklist: '检查清单',
-	actions: '后台任务',
+	tool_runs: '后台任务',
 	schedule: '定时任务',
 	haven_diagnostics: 'Haven 诊断',
 	haven_config: 'Haven 配置',
@@ -101,7 +101,7 @@ export function toolDisplayName(
 }
 
 /**
- * Normalize live `input` (object) or resume `action_input` (JSON string) into
+ * Normalize live `input` (object) or resume `tool_input` (JSON string) into
  * a JSON-viewable value. Returns null when nothing useful is present.
  */
 export function parseToolArgs(toolArgs: unknown): unknown | null {

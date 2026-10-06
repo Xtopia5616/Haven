@@ -165,7 +165,7 @@ fn move_marker_to_quarantine_on(
 /// completion markers (`fact_extraction_episode_done.<session_id>.<episode_id>`),
 /// the committed-event cursor (`memory_event_cursor.<session_id>`), and the
 /// runtime's scheduled-confirmation execution claim
-/// (`scheduled_execution_claim.<action_id>`). Exposed as `kv_store` in the
+/// (`scheduled_execution_claim.<tool_run_id>`). Exposed as `kv_store` in the
 /// schema.
 impl Database {
     /// Baseline every currently persisted session that lacks a memory event

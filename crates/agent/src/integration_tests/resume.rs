@@ -66,14 +66,14 @@ impl SessionToolOverlayPort for RecordingSessionToolOverlay {
 
 fn overlay_restore_tool(tool_name: &str, tool_input: serde_json::Value) -> ToolRecord {
     ToolRecord {
-        action: Action {
+        tool_call: ToolCall {
             tool_name: tool_name.to_string(),
             tool_input,
             is_final: false,
             tool_call_id: None,
         },
         observation: None,
-        action_index: 0,
+        tool_index: 0,
         step_id: "step-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
     }
 }

@@ -1586,7 +1586,7 @@ fn openai_chat_projects_schedule_schema_for_xai_provider() {
                     "delay_secs": { "type": "integer", "minimum": 1 },
                     "due_at": { "type": "string", "minLength": 1 },
                     "body": { "type": "string", "minLength": 1 },
-                    "action_id": { "type": "string", "minLength": 1 }
+                    "tool_run_id": { "type": "string", "minLength": 1 }
                 },
                 "required": ["operation"],
                 "oneOf": [
@@ -1599,9 +1599,9 @@ fn openai_chat_projects_schedule_schema_for_xai_provider() {
                         "type": "object",
                         "properties": {
                             "operation": { "const": "cancel" },
-                            "action_id": { "type": "string", "minLength": 1 }
+                            "tool_run_id": { "type": "string", "minLength": 1 }
                         },
-                        "required": ["operation", "action_id"]
+                        "required": ["operation", "tool_run_id"]
                     },
                     {
                         "type": "object",
@@ -1630,7 +1630,7 @@ fn openai_chat_projects_schedule_schema_for_xai_provider() {
         parameters["properties"]["operation"]["enum"],
         serde_json::json!(["set", "list", "cancel"])
     );
-    assert_eq!(parameters["properties"]["action_id"]["type"], "string");
+    assert_eq!(parameters["properties"]["tool_run_id"]["type"], "string");
     assert!(parameters["dependentSchemas"]["operation"]["oneOf"].is_array());
     assert!(parameters["dependentSchemas"]["operation"]["oneOf"][2]["oneOf"].is_array());
 }

@@ -65,7 +65,7 @@ function createHarness(options: {
 	const freshIntentChanges: boolean[] = [];
 	const deferredTargetClears: number[] = [];
 	const initialLoadingChanges: boolean[] = [];
-	const refreshActions = vi.fn();
+	const refreshToolRuns = vi.fn();
 	let freshIntent = false;
 	let persistedIntent = false;
 	let sessionListCalls = 0;
@@ -85,7 +85,7 @@ function createHarness(options: {
 			reopened.push(request.sessionId);
 			await options.reopenSession?.(request);
 		},
-		refreshActions,
+		refreshToolRuns,
 		getFreshSessionIntent: () => freshIntent,
 		setFreshSessionIntent: (value) => {
 			freshIntent = value;
@@ -117,7 +117,7 @@ function createHarness(options: {
 		freshIntentChanges,
 		deferredTargetClears,
 		initialLoadingChanges,
-		refreshActions,
+		refreshToolRuns,
 		setPersistedIntent: (value: boolean) => {
 			persistedIntent = value;
 		},
@@ -199,7 +199,7 @@ describe('createChatSessionStartup', () => {
 		await loading;
 
 		expect(harness.actions).toEqual([]);
-		expect(harness.refreshActions).not.toHaveBeenCalled();
+		expect(harness.refreshToolRuns).not.toHaveBeenCalled();
 		expect(getLastConversation).not.toHaveBeenCalled();
 		expect(harness.initialLoadingChanges).toEqual([]);
 	});
@@ -275,7 +275,7 @@ describe('createChatSessionStartup', () => {
 		harness.startup.scheduleLoadSessions();
 		await vi.advanceTimersByTimeAsync(300);
 		expect(harness.sessionListCalls).toBe(1);
-		expect(harness.refreshActions).toHaveBeenCalledOnce();
+		expect(harness.refreshToolRuns).toHaveBeenCalledOnce();
 
 		harness.startup.scheduleLoadSessions();
 		harness.startup.dispose();

@@ -176,7 +176,7 @@ pub fn proxy_env_vars() -> Vec<(String, String)> {
     Vec::new()
 }
 
-/// Directory for per-command output logs (background actions and failed
+/// Directory for per-command output logs (background ToolRuns and failed
 /// foreground commands), under the shared Temp working directory.
 pub fn output_log_dir(kind: &str) -> std::path::PathBuf {
     haven_common::default_work_dir().join(kind)
@@ -190,7 +190,7 @@ pub fn write_output_log(kind: &str, id: &str, text: &str) -> std::path::PathBuf 
     let path = dir.join(format!("{id}.log"));
     if let Err(e) = std::fs::create_dir_all(&dir) {
         tracing::warn!(
-            action_id = %id,
+            tool_run_id = %id,
             error = %haven_common::error::sanitize_error_text(&e.to_string()),
             "failed to create output-log dir"
         );
@@ -198,7 +198,7 @@ pub fn write_output_log(kind: &str, id: &str, text: &str) -> std::path::PathBuf 
     }
     if let Err(e) = std::fs::write(&path, text) {
         tracing::warn!(
-            action_id = %id,
+            tool_run_id = %id,
             error = %haven_common::error::sanitize_error_text(&e.to_string()),
             "failed to write output log"
         );

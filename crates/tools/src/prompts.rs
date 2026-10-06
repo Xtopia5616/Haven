@@ -4,7 +4,7 @@
 //! to their validators, while this module owns the short explanation that
 //! helps the model choose between otherwise similar capabilities.
 
-pub(crate) const ACTIONS_DESCRIPTION: &str = "Inspect or cancel this session's background and scheduled tasks through one task view. Results arrive automatically; do not poll.";
+pub(crate) const TOOL_RUNS_DESCRIPTION: &str = "Inspect or cancel this session's background and scheduled tasks through one task view. Results arrive automatically; do not poll.";
 pub(crate) const ASK_DESCRIPTION: &str = "Ask the user one focused question when a required choice or value is missing. One question per call.";
 pub(crate) const CHECKLIST_DESCRIPTION: &str = "Add, update, remove, clear, or list non-blocking checklist items for this session. New items may start done or open.";
 pub(crate) const CLIPBOARD_DESCRIPTION: &str = "Read or write clipboard text, HTML, images, and file lists; image/file reads become managed asset_id values, and inspect recent text history. For writes, always specify format and its matching payload: text uses text, html uses html with optional text as its plain-text fallback, image uses asset_id, and files uses files.";
@@ -23,10 +23,10 @@ pub(crate) const PREFERENCES_DESCRIPTION: &str =
     "Read or change lightweight preferences for the current session.";
 pub(crate) const PROCESS_DESCRIPTION: &str =
     "List a bounded set of running processes with an optional name filter, or kill one by PID.";
-pub(crate) const SCHEDULE_DESCRIPTION: &str = "Create, list, or cancel future actions. A scheduled action has not run yet; completion wakes the session.";
+pub(crate) const SCHEDULE_DESCRIPTION: &str = "Create, list, or cancel scheduled ToolRuns. A scheduled ToolRun has not run yet; completion wakes the session.";
 pub(crate) const HAVEN_DESCRIPTION: &str =
     "Inspect or change Haven configuration, skills, builtins, MCP servers, logs, or sessions.";
-pub(crate) const SHELL_DESCRIPTION: &str = "Run a non-interactive shell command in the configured shell. Use an explicit cwd and flags; background work returns an action_id and must not be polled.";
+pub(crate) const SHELL_DESCRIPTION: &str = "Run a non-interactive shell command in the configured shell. Use an explicit cwd and flags; background work returns a tool_run_id and must not be polled.";
 pub(crate) const SYSTEM_DESCRIPTION: &str = "Read or change machine info, environment variables, Registry, power, or display settings. Prefer the narrow operation view; mutations require explicit user intent.";
 pub(crate) const WINDOW_DESCRIPTION: &str = "List, inspect, focus, close, screenshot, OCR, or query desktop windows. Re-observe before acting; screenshots return an asset_id.";
 pub(crate) const DIAGNOSTICS_DESCRIPTION: &str =
@@ -45,7 +45,7 @@ pub(crate) const FILES_OPERATION_SELECTOR_DESCRIPTION: &str = "Choose one operat
 /// every child schema into the system prompt.
 pub(crate) fn root_description(root: &str) -> &'static str {
     match root {
-        "actions" => ACTIONS_DESCRIPTION,
+        "tool_runs" => TOOL_RUNS_DESCRIPTION,
         "agent" => MESSAGING_DESCRIPTION,
         "checklist" => CHECKLIST_DESCRIPTION,
         "clipboard" => CLIPBOARD_DESCRIPTION,
@@ -220,7 +220,7 @@ pub(crate) fn operation_text(name: &str) -> OperationText {
         },
         "window.observe" => OperationText {
             description: "Return window identity, a bounded UI Automation tree, and a managed screenshot asset_id; OCR is optional.",
-            when_to_use: "Use once before a group of UI actions, then carry forward window_id and element_token.",
+            when_to_use: "Use once before a group of UI tool_runs, then carry forward window_id and element_token.",
         },
         "window.invoke" => OperationText {
             description: "Invoke a UI Automation control semantically.",
@@ -378,28 +378,28 @@ pub(crate) fn operation_text(name: &str) -> OperationText {
             description: "Collect the bounded message history and replies from a descendant agent session.",
             when_to_use: "Use after join or when the child's result was delivered through the messaging bus.",
         },
-        "actions.list" => OperationText {
+        "tool_runs.list" => OperationText {
             description: "List this session's background and scheduled tasks in one normalized view.",
             when_to_use: "Use for a one-shot status check; completion is pushed automatically.",
         },
-        "actions.inspect" => OperationText {
-            description: "Inspect one background or scheduled task by action_id.",
-            when_to_use: "Use when a specific action result is needed; do not poll.",
+        "tool_runs.inspect" => OperationText {
+            description: "Inspect one background or scheduled task by tool_run_id.",
+            when_to_use: "Use when a specific ToolRun result is needed; do not poll.",
         },
-        "actions.cancel" => OperationText {
+        "tool_runs.cancel" => OperationText {
             description: "Cancel a cancellable background or scheduled task owned by this session.",
-            when_to_use: "Use only when the user asks to stop that action.",
+            when_to_use: "Use only when the user asks to stop that ToolRun.",
         },
         "schedule.set" => OperationText {
-            description: "Create a future scheduled action.",
-            when_to_use: "Use with an explicit time or delay; scheduling does not execute the action now.",
+            description: "Create a future scheduled ToolRun.",
+            when_to_use: "Use with an explicit time or delay; scheduling does not execute the ToolRun now.",
         },
         "schedule.list" => OperationText {
-            description: "List scheduled actions for this session.",
+            description: "List scheduled ToolRuns for this session.",
             when_to_use: "Use to inspect future work once, not to poll it.",
         },
         "schedule.cancel" => OperationText {
-            description: "Cancel a scheduled action by action_id.",
+            description: "Cancel a scheduled ToolRun by tool_run_id.",
             when_to_use: "Use only when the user asks to cancel future work.",
         },
         "preferences.get" => OperationText {
@@ -592,7 +592,7 @@ mod tests {
     #[test]
     fn builtin_prompt_text_is_single_line_and_nonempty() {
         let roots = [
-            ACTIONS_DESCRIPTION,
+            TOOL_RUNS_DESCRIPTION,
             ASK_DESCRIPTION,
             CHECKLIST_DESCRIPTION,
             CLIPBOARD_DESCRIPTION,
@@ -700,9 +700,9 @@ mod tests {
             "agent.wait",
             "agent.stop",
             "agent.collect",
-            "actions.list",
-            "actions.inspect",
-            "actions.cancel",
+            "tool_runs.list",
+            "tool_runs.inspect",
+            "tool_runs.cancel",
             "schedule.set",
             "schedule.list",
             "schedule.cancel",

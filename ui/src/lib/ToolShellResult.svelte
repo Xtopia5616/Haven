@@ -2,9 +2,9 @@
 	interface Props {
 		data?: {
 			truncated?: boolean;
-			background?: boolean;
+			execution_mode?: 'foreground' | 'background';
 			status?: string;
-			action_id?: string;
+			tool_run_id?: string;
 			exit_code?: number | null;
 		};
 		shellText?: string;
@@ -17,20 +17,20 @@
 {#if data.truncated}
 	<div class="tool-card-count">输出过长已截断</div>
 {/if}
-{#if data.background && data.status === 'running'}
+{#if data.execution_mode === 'background' && data.status === 'running'}
 	<div class="tool-card-count">
-		后台任务运行中{#if data.action_id}
-			· {data.action_id}{/if}
+		后台任务运行中{#if data.tool_run_id}
+			· {data.tool_run_id}{/if}
 	</div>
-{:else if data.background && data.status === 'cancelled'}
+{:else if data.execution_mode === 'background' && data.status === 'cancelled'}
 	<div class="tool-card-count">
-		后台任务已取消{#if data.action_id}
-			· {data.action_id}{/if}
+		后台任务已取消{#if data.tool_run_id}
+			· {data.tool_run_id}{/if}
 	</div>
-{:else if data.background && (data.status === 'completed' || data.status === 'failed')}
+{:else if data.execution_mode === 'background' && (data.status === 'completed' || data.status === 'failed')}
 	<div class="tool-card-count">
-		后台任务{data.status === 'completed' ? '已完成' : '失败'}{#if data.action_id}
-			· {data.action_id}{/if}
+		后台任务{data.status === 'completed' ? '已完成' : '失败'}{#if data.tool_run_id}
+			· {data.tool_run_id}{/if}
 	</div>
 	{#if data.exit_code != null}
 		<div class="tool-card-meta">退出码 {data.exit_code}</div>

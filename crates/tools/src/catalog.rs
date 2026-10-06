@@ -354,7 +354,7 @@ impl ToolsManager {
     /// whenever `SKILL.md` files are added / modified / removed. The first
     /// pass always refreshes too, so a UI that loaded before the initial
     /// scan finished (startup race) still catches up. `on_change` fires on
-    /// the background action after a successful refresh so callers can
+    /// the background ToolRun after a successful refresh so callers can
     /// re-sync views / emit events (e.g. `skills:status_change`).
     pub async fn run_skills_watcher(
         self: Arc<Self>,

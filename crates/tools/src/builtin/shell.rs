@@ -8,15 +8,15 @@ use tokio_util::sync::CancellationToken;
 
 use crate::live_output::LiveOutputHub;
 use crate::{
-    ActionService, BackgroundShellRequest, append_windows_diagnostics, build_shell_command_silent,
+    BackgroundShellRequest, ToolRunService, append_windows_diagnostics, build_shell_command_silent,
     collect_byte_cap, is_progress_clixml, read_stream_capped, sanitize_shell_output,
     summarize_error, write_output_log,
 };
-use crate::{Tool, ToolExecutionOutcome, ToolResult};
+use crate::{Tool, ToolExecutionMode, ToolExecutionOutcome, ToolResult};
 
 pub struct ShellTool {
-    /// Registry of background actions for `background: true` invocations.
-    pub actions: Arc<ActionService>,
+    /// Registry of detached shell ToolRuns.
+    pub tool_runs: Arc<ToolRunService>,
     /// Live stdout/stderr previews for foreground shell tool cards.
     pub live_outputs: Arc<LiveOutputHub>,
     /// Output cap (chars) for command output.
@@ -28,12 +28,12 @@ pub struct ShellTool {
 
 impl Default for ShellTool {
     fn default() -> Self {
-        let actions = Arc::new(ActionService::new());
+        let tool_runs = Arc::new(ToolRunService::new());
         let live_outputs = Arc::new(LiveOutputHub::with_tail_factory(
-            actions.output_tail_factory(),
+            tool_runs.output_tail_factory(),
         ));
         Self {
-            actions,
+            tool_runs,
             live_outputs,
             max_output_chars: 20_000,
             #[cfg(windows)]
@@ -56,9 +56,9 @@ pub struct ShellParams {
     /// If true, hide output from the user (agent always sees it).
     #[serde(default)]
     pub silent: Option<bool>,
-    /// Run the command in the background and return an action_id immediately.
+    /// Run inline or detach into a background ToolRun.
     #[serde(default)]
-    pub background: Option<bool>,
+    pub execution_mode: ToolExecutionMode,
     /// Working directory to run the command in (default: detected workspace,
     /// otherwise the shared Temp dir).
     #[serde(default)]
@@ -116,13 +116,13 @@ impl ShellTool {
             anyhow::bail!("cancelled");
         }
 
-        // Background mode: hand the command to the action registry and return
+        // Background mode: hand the command to the ToolRunService and return
         // immediately. The result is pushed back to the session automatically on
-        // completion; the agent can list all actions with the `actions` tool.
-        if params.background.unwrap_or(false) {
+        // completion; the agent can list all tool_runs with the `tool_runs` tool.
+        if params.execution_mode == ToolExecutionMode::Background {
             let source_step_id = params.step_id.as_deref();
-            let action_id = self
-                .actions
+            let tool_run_id = self
+                .tool_runs
                 .spawn_shell_for_session_with_source_and_cancel(
                     BackgroundShellRequest {
                         command: &cmd,
@@ -136,11 +136,11 @@ impl ShellTool {
                 )
                 .await?;
             let mut body = haven_common::tools::background_wait_object(
-                std::iter::once(action_id.clone()),
-                "Background action started. If you have no independent foreground work left, END YOUR TURN now with a brief status for the user — do not poll with actions/status. You will be auto-woken with this action's output when it finishes.",
+                std::iter::once(tool_run_id.clone()),
+                "Background tool run started. If you have no independent foreground work left, END YOUR TURN now with a brief status for the user — do not poll with tool_runs/status. You will be auto-woken with this tool run's output when it finishes.",
             );
-            body.insert("background".into(), serde_json::json!(true));
-            body.insert("action_id".into(), serde_json::json!(action_id));
+            body.insert("execution_mode".into(), serde_json::json!("background"));
+            body.insert("tool_run_id".into(), serde_json::json!(tool_run_id));
             if let Some(source_step_id) = source_step_id {
                 body.insert("source_step_id".into(), serde_json::json!(source_step_id));
             }
@@ -365,12 +365,12 @@ impl Tool for ShellTool {
         serde_json::json!({
             "type": "object",
             "additionalProperties": false,
-            "description": format!("Shell syntax is selected per call. The configured default is `{default_shell}`. Preflight checks reject obvious mismatches: Windows PowerShell 5.1 rejects unquoted && and ||; cmd accepts && and || but not bash substitutions such as $() or POSIX assignments; bash/sh reject cmd expansions such as %VAR% and set VAR=value. Long commands may use background=true; do not poll actions/status."),
+            "description": format!("Shell syntax is selected per call. The configured default is `{default_shell}`. Preflight checks reject obvious mismatches: Windows PowerShell 5.1 rejects unquoted && and ||; cmd accepts && and || but not bash substitutions such as $() or POSIX assignments; bash/sh reject cmd expansions such as %VAR% and set VAR=value. Use execution_mode=background for long-running commands; do not poll tool_runs/status."),
             "properties": {
                 "command": { "type": "string", "minLength": 1, "description": "Shell command to execute" },
                 "shell": { "type": "string", "enum": shells, "description": format!("Which shell to run the command in (default: the shell configured in app settings — `{default_shell}`; pwsh requires PowerShell 7 installed). Match command syntax to this shell; PowerShell 5.1 uses `;` instead of `&&`/`||`." ) },
                 "silent": { "type": "boolean", "description": "Only use when the user explicitly requests a quiet tool card; never use it to conceal a side effect (the agent still receives the output)", "default": false },
-                "background": { "type": "boolean", "description": "Run the command in the background and return a action_id immediately. Prefer true for long-running work when later steps depend on the result. After launch, if nothing else useful can run in parallel, end your turn — the result is auto-pushed when the action finishes (do not poll).", "default": false },
+                "execution_mode": { "type": "string", "enum": ["foreground", "background"], "description": "Foreground waits for this command's result. Background returns a tool_run_id immediately for long-running work; after launch, end your turn if no independent work remains because the result is auto-pushed when the tool run finishes (do not poll).", "default": "foreground" },
                 "cwd": { "type": "string", "minLength": 1, "description": "Working directory to run the command in. Defaults to the detected workspace root when this process is inside a repository; otherwise the shared Temp sandbox." }
             },
             "required": ["command"]
@@ -388,20 +388,19 @@ impl Tool for ShellTool {
         self.run(params, cancel).await
     }
 
-    /// Declare the background-action binding for `background: true` invocations
-    /// so the executor attaches the
-    /// action to this session without name-matching "shell".
+    /// Declare the detached-run binding so the executor attaches the ToolRun
+    /// to this session without name-matching "shell".
     fn registrations(&self, output: &Value) -> Vec<crate::tool_contract::ToolRegistration> {
-        if output.get("background").and_then(|v| v.as_bool()) != Some(true) {
+        if output.get("execution_mode").and_then(|v| v.as_str()) != Some("background") {
             return Vec::new();
         }
         output
-            .get("action_id")
+            .get("tool_run_id")
             .and_then(|v| v.as_str())
             .filter(|s| !s.is_empty())
-            .map(|action_id| {
-                vec![crate::tool_contract::ToolRegistration::Action(
-                    action_id.to_string(),
+            .map(|tool_run_id| {
+                vec![crate::tool_contract::ToolRegistration::ToolRun(
+                    tool_run_id.to_string(),
                 )]
             })
             .unwrap_or_default()
@@ -1128,25 +1127,25 @@ mod tests {
 
     #[cfg(windows)]
     #[tokio::test]
-    async fn test_shell_background_returns_action_id_and_completes() {
+    async fn test_shell_background_returns_tool_run_id_and_completes() {
         let tool = ShellTool::default();
         let result = tool
             .execute(
-                json!({"command": "echo bg-result", "shell": "cmd", "background": true}),
+                json!({"command": "echo bg-result", "shell": "cmd", "execution_mode": "background"}),
                 CancellationToken::new(),
             )
             .await
             .unwrap();
         assert!(result.success);
-        assert_eq!(result.output["background"], true);
+        assert_eq!(result.output["execution_mode"], "background");
         assert_eq!(result.output["status"], "running");
-        let action_id = result.output["action_id"].as_str().unwrap().to_string();
-        assert!(!action_id.is_empty());
+        let tool_run_id = result.output["tool_run_id"].as_str().unwrap().to_string();
+        assert!(!tool_run_id.is_empty());
 
-        // Poll the action registry until the action completes.
+        // Poll the ToolRunService until the ToolRun completes.
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         let status = loop {
-            let v = tool.actions.status_view(&action_id).await.to_json(true);
+            let v = tool.tool_runs.status_view(&tool_run_id).await.to_json(true);
             if v["status"] != "running" || std::time::Instant::now() > deadline {
                 break v;
             }
@@ -1161,7 +1160,7 @@ mod tests {
     async fn test_shell_background_empty_command_rejected() {
         let result = ShellTool::default()
             .execute(
-                json!({"command": "", "background": true}),
+                json!({"command": "", "execution_mode": "background"}),
                 CancellationToken::new(),
             )
             .await;
@@ -1169,11 +1168,12 @@ mod tests {
     }
 
     #[test]
-    fn test_shell_background_schema_field() {
+    fn test_shell_execution_mode_schema_field() {
         let schema = ShellTool::default().input_schema();
+        assert_eq!(schema["properties"]["execution_mode"]["type"], "string");
         assert_eq!(
-            schema["properties"]["background"]["type"], "boolean",
-            "background field must be in the schema"
+            schema["properties"]["execution_mode"]["enum"],
+            serde_json::json!(["foreground", "background"])
         );
     }
 }

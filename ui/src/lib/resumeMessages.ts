@@ -30,7 +30,7 @@ interface ResumeMessage {
 	awaiting?: boolean;
 	stepNumber?: number | null;
 	toolName?: string;
-	/** JSON tool-call arguments from `session_steps.action_input`. */
+	/** JSON tool-call arguments from `session_steps.tool_input`. */
 	toolArgs?: unknown;
 	/** Durable tool outcome used to render failed/cancelled/unknown history. */
 	outcome?: string | null;
@@ -63,13 +63,13 @@ type ResumeMsg = SessionResumeMessageInput;
  *   snap-finalized but not yet written to the DB, and dropping them would
  *   make seen text vanish; the next merge converges once the row lands.
  *   Persisted tool/ask cards (`step-*` ids) are kept the same way: Continue
- *   resync can race the retry's Action/Observation and briefly miss the
+ *   resync can race the retry's ToolCall/Observation and briefly miss the
  *   pending row, and dropping them made post-resume tool calls vanish.
  *   Transient cards (e.g. `web_search`) and display-only placeholder user
  *   bubbles still drop. A real live user bubble stays until its DB row lands.
  *
  * @param {Array<object>} dbMessages   buildResumeMessages() result
- * @param {Array<object>} existing     current sessionMessages entry
+ * @param {Array<object>} existing     current session transcript entry
  */
 export function mergeLiveStreaming(
 	dbMessages: ResumeMessage[],
@@ -173,7 +173,7 @@ export function buildResumeMessages(data: ResumeData): ResumeMessage[] {
 	// view of that step. Stable ids are the only identity link.
 	const msgById = new Map(msgs.map((m) => [m.id, m]));
 	const askStepIds = new Set(
-		(data.steps || []).filter((s) => s.action_tool === 'ask').map((s) => s.id),
+		(data.steps || []).filter((s) => s.tool_name === 'ask').map((s) => s.id),
 	);
 
 	const msgIds = new Set();
@@ -184,7 +184,7 @@ export function buildResumeMessages(data: ResumeData): ResumeMessage[] {
 		if (askStepIds.has(msg.id)) continue;
 		const step = stepById.get(msg.id);
 		const isToolObservation = msg.role === 'tool' || msg.message_type === 'observation';
-		const persistedToolName = step?.action_tool;
+		const persistedToolName = step?.tool_name;
 		items.push({
 			id: msg.id,
 			// Tool observations are rendered as assistant-side cards in chat, even
@@ -199,8 +199,8 @@ export function buildResumeMessages(data: ResumeData): ResumeMessage[] {
 			...(isToolObservation
 				? {
 						toolName: persistedToolName || 'tool',
-						...(step?.action_input != null && step.action_input !== ''
-							? { toolArgs: step.action_input }
+						...(step?.tool_input != null && step.tool_input !== ''
+							? { toolArgs: step.tool_input }
 							: {}),
 						...(historicalToolOutcome(step?.status)
 							? { outcome: historicalToolOutcome(step?.status) }
@@ -226,9 +226,9 @@ export function buildResumeMessages(data: ResumeData): ResumeMessage[] {
 		// under this id — the card below renders that message, so it must
 		// not be deduped away.
 		const stepId = step.id;
-		if (!step.action_tool) continue;
-		if (msgIds.has(stepId) && step.action_tool !== 'ask') continue;
-		const toolName = step.action_tool;
+		if (!step.tool_name) continue;
+		if (msgIds.has(stepId) && step.tool_name !== 'ask') continue;
+		const toolName = step.tool_name;
 		const obs = step.observation && step.observation !== '{}' ? step.observation : null;
 		// The `ask` tool surfaces the question as a dedicated question card
 		// under the step row's id (matching the live card). The question text
@@ -242,7 +242,7 @@ export function buildResumeMessages(data: ResumeData): ResumeMessage[] {
 		// preceding thought and the next message. The displayed time keeps
 		// created_at so the card matches the live view (action start).
 		const cardTs = Date.parse(step.completed_at || step.created_at) || 0;
-		if (step.action_tool === 'ask') {
+		if (step.tool_name === 'ask') {
 			const askMsg = msgById.get(stepId);
 			if (!askMsg) continue;
 			const askText = askMsg.content;
@@ -287,8 +287,8 @@ export function buildResumeMessages(data: ResumeData): ResumeMessage[] {
 			content: obs || '',
 			type: 'tool',
 			toolName,
-			...(step.action_input != null && step.action_input !== ''
-				? { toolArgs: step.action_input }
+			...(step.tool_input != null && step.tool_input !== ''
+				? { toolArgs: step.tool_input }
 				: {}),
 			...(historicalToolOutcome(step.status)
 				? { outcome: historicalToolOutcome(step.status) }
@@ -308,7 +308,7 @@ export function buildResumeMessages(data: ResumeData): ResumeMessage[] {
 	// message row and its step row, so the stepNumber resolves by id alone.
 	// The step id is the only identity link needed for the message projection.
 	for (const step of data.steps || []) {
-		if (step.action_tool) continue;
+		if (step.tool_name) continue;
 		const byId = items.find((i) => i.id === step.id && i.stepNumber == null);
 		if (byId) {
 			byId.stepNumber = step.step_number;

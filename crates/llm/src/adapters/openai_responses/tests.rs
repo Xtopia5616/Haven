@@ -573,9 +573,9 @@ fn responses_tools_project_root_union_to_object_schema() {
                         "type": "object",
                         "properties": {
                             "operation": { "const": "cancel" },
-                            "action_id": { "type": "string" }
+                            "tool_run_id": { "type": "string" }
                         },
-                        "required": ["operation", "action_id"]
+                        "required": ["operation", "tool_run_id"]
                     },
                     {
                         "type": "object",
@@ -597,7 +597,7 @@ fn responses_tools_project_root_union_to_object_schema() {
         tools[0]["parameters"]["properties"]["operation"]["enum"],
         serde_json::json!(["set", "list", "cancel"])
     );
-    assert!(tools[0]["parameters"]["properties"]["action_id"].is_object());
+    assert!(tools[0]["parameters"]["properties"]["tool_run_id"].is_object());
     assert!(tools[0]["parameters"]["properties"]["body"].is_object());
 }
 

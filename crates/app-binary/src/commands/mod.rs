@@ -1,5 +1,5 @@
 //! Tauri command handlers, split by domain:
-//! `recording` / `session` / `action` / `history` / `model` / `mcp` /
+//! `recording` / `session` / `tool_runs` / `history` / `model` / `mcp` /
 //! `skills` / `memory` / `settings` / `log` / `diagnostics`.
 //!
 //! Shared helpers (error conversion, router hot-swap, MCP connect, attachment
@@ -8,7 +8,6 @@
 //! because `generate_handler!` resolves each command's `__cmd__` symbol next
 //! to its definition module.
 
-pub mod action;
 pub mod contracts;
 pub mod diagnostics;
 pub mod external;
@@ -22,6 +21,7 @@ pub mod recording;
 pub mod session;
 pub mod settings;
 pub mod skills;
+pub mod tool_runs;
 
 use crate::app_state::{AppState, UiConfirmationAction, UiConfirmationPending};
 use crate::events::{INTERACTION_REQUESTED_EVENT, LLM_CONFIG_CHANGED_EVENT};

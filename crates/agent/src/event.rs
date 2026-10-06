@@ -34,7 +34,7 @@ pub enum AgentEvent {
         /// callers that snap a thought without a durable transcript row.
         event_seq: Option<u64>,
     },
-    Action {
+    ToolCall {
         session_id: String,
         tool_name: String,
         input: Value,
@@ -42,9 +42,9 @@ pub enum AgentEvent {
         run_id: u64,
         tool_call_id: Option<String>,
         /// Stable zero-based position in the assistant tool-call list.
-        action_index: u32,
-        /// The `step-*` id of the step row this action is persisted under
-        /// (minted before the action starts). The frontend uses it as the
+        tool_index: u32,
+        /// The `step-*` id of the step row this ToolCall is persisted under
+        /// (minted before the ToolCall starts). The frontend uses it as the
         /// live tool-card id, matching the resume badge built from the DB.
         step_id: String,
         /// Remove provider text that was streamed before a tool call but was
@@ -63,11 +63,11 @@ pub enum AgentEvent {
         silent: bool,
         tool_call_id: Option<String>,
         /// Stable zero-based position in the assistant tool-call list.
-        action_index: u32,
+        tool_index: u32,
         /// Quick-reply options surfaced when the observation comes from the
         /// `ask` tool, so the UI can render clickable answer buttons.
         ask_options: Vec<String>,
-        /// Same `step-*` id the matching `Action` event carried, so the live
+        /// Same `step-*` id the matching `ToolCall` event carried, so the live
         /// tool card keeps one id through placeholder → fill → DB badge.
         step_id: String,
         /// Durable terminal execution outcome for the tool card.
@@ -181,11 +181,11 @@ pub enum AgentEvent {
         /// User message id when the supplement came from persisted ingress.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         message_id: Option<String>,
-        /// Stable identity for every live supplement, including action-result
+        /// Stable identity for every live supplement, including ToolRun-result
         /// and cross-session context that has no user message row.
         supplement_id: String,
         /// Structured inject origin so the UI can render peer mail as an
-        /// `agent` tool card, background-action auto-wake as an `actions`
+        /// `agent` tool card, background ToolRun auto-wake as a `tool_runs`
         /// card, and still mark human steering as received.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         inject_source: Option<haven_common::types::InjectSource>,
@@ -233,14 +233,14 @@ pub enum AgentEvent {
         title: String,
         body: String,
     },
-    /// Action completion notification. Kept distinct from generic user/Agent
-    /// notifications so action-specific channel settings do not change the
+    /// ToolRun completion notification. Kept distinct from generic user/Agent
+    /// notifications so ToolRun-specific channel settings do not change the
     /// `notify` tool's always-on behavior.
-    ActionCompletionNotification {
-        action_kind: ActionNotificationSource,
-        action_id: String,
+    ToolRunCompletionNotification {
+        tool_run_kind: ToolRunNotificationSource,
+        tool_run_id: String,
         session_id: Option<String>,
-        action_status: Option<ActionCompletionStatus>,
+        tool_run_status: Option<ToolRunCompletionStatus>,
         title: String,
         body: String,
     },
@@ -304,19 +304,19 @@ pub enum AgentEvent {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum ActionNotificationSource {
+pub enum ToolRunNotificationSource {
     Background,
     Scheduled,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum ActionCompletionStatus {
+pub enum ToolRunCompletionStatus {
     Completed,
     Failed,
 }
 
-impl ActionCompletionStatus {
+impl ToolRunCompletionStatus {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Completed => "completed",
@@ -325,7 +325,7 @@ impl ActionCompletionStatus {
     }
 }
 
-impl ActionNotificationSource {
+impl ToolRunNotificationSource {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Background => "background",
@@ -341,7 +341,7 @@ pub trait AgentEventEmitter: Send + Sync {
 
 /// Bounded-queue emitter wrapper: `emit` becomes an enqueue into an in-memory
 /// queue drained by a dedicated consumer session, so producers (the ReAct loop,
-/// chunk batchers, action/scheduled-action consumers) never await the subscriber chain
+/// chunk batchers, ToolRun consumers) never await the subscriber chain
 /// (Tauri IPC, toast logic, log writers). The queue is sized far above the
 /// per-step event volume and chunk deltas are already micro-batched upstream,
 /// so eviction is a logged last resort, not a normal path.
@@ -1103,26 +1103,26 @@ impl EventDispatcher {
         }
     }
 
-    /// Surface a background or scheduled action completion through the
-    /// action-specific notification policy while retaining the notification
+    /// Surface a background or scheduled ToolRun completion through the
+    /// ToolRun-specific notification policy while retaining the notification
     /// channel and visible title/body.
-    pub async fn emit_action_completion_notification(
+    pub async fn emit_tool_run_completion_notification(
         &self,
-        action_kind: ActionNotificationSource,
-        action_id: &str,
+        tool_run_kind: ToolRunNotificationSource,
+        tool_run_id: &str,
         session_id: Option<&str>,
-        action_status: Option<ActionCompletionStatus>,
+        tool_run_status: Option<ToolRunCompletionStatus>,
         title: &str,
         body: &str,
     ) {
         let emitter = lock_or_recover(&self.emitter, "event_emitter").clone();
         if let Some(emitter) = emitter {
             emitter
-                .emit(AgentEvent::ActionCompletionNotification {
-                    action_kind,
-                    action_id: action_id.into(),
+                .emit(AgentEvent::ToolRunCompletionNotification {
+                    tool_run_kind,
+                    tool_run_id: tool_run_id.into(),
                     session_id: session_id.map(str::to_owned),
-                    action_status,
+                    tool_run_status,
                     title: title.into(),
                     body: body.into(),
                 })

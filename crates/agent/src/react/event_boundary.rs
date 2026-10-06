@@ -74,7 +74,7 @@ pub(crate) async fn set_status_and_emit(
 
 /// Update a session and publish the derived paused reason in the same event.
 /// The explicit value is used for boundaries such as step-budget exhaustion;
-/// ordinary pauses derive from the interaction/action registry.
+/// ordinary pauses derive from the interaction/ToolRun registry.
 pub(crate) async fn set_status_and_emit_with_waiting_reason(
     executor: &SessionSupervisor,
     emitter: &Arc<dyn AgentEventEmitter>,
