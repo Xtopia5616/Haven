@@ -30,6 +30,11 @@ enum TruncationReason {
     MaxScannedEntries,
 }
 
+struct FileSearchResult {
+    results: Vec<Value>,
+    truncation_reason: Option<TruncationReason>,
+}
+
 fn truncation_reason(result_limit_hit: bool, scan_limit_hit: bool) -> Option<TruncationReason> {
     if result_limit_hit {
         Some(TruncationReason::MaxResults)
@@ -247,7 +252,7 @@ impl FileSearchEngine {
         let snippet_chars = self.snippet_chars;
         let max_window_bytes = self.max_window_bytes;
         let pattern_for_output = pattern_str.clone();
-        let (results, truncation) = tokio::task::spawn_blocking(move || {
+        let search_result = tokio::task::spawn_blocking(move || {
             search_files(SearchParams {
                 root: &root_path,
                 pattern: &pattern_str,
@@ -268,6 +273,10 @@ impl FileSearchEngine {
         if cancel.is_cancelled() {
             anyhow::bail!("cancelled");
         }
+        let FileSearchResult {
+            results,
+            truncation_reason: truncation,
+        } = search_result;
         let truncated = truncation.is_some();
         let mut output = serde_json::json!({
             "results": results,
@@ -327,7 +336,7 @@ struct ContentSearchParams<'a> {
     cancel: CancellationToken,
 }
 
-fn search_files(params: SearchParams<'_>) -> (Vec<Value>, Option<TruncationReason>) {
+fn search_files(params: SearchParams<'_>) -> FileSearchResult {
     match params.mode {
         "content" => search_content_parallel(&ContentSearchParams {
             root: params.root,
@@ -392,7 +401,7 @@ fn search_filenames_parallel(
     max_results: usize,
     ignore_hidden: bool,
     cancel: CancellationToken,
-) -> (Vec<Value>, Option<TruncationReason>) {
+) -> FileSearchResult {
     let found_flag = Arc::new(AtomicBool::new(false));
     let scanned_entries = Arc::new(AtomicUsize::new(0));
     let scan_limit_hit = Arc::new(AtomicBool::new(false));
@@ -441,13 +450,13 @@ fn search_filenames_parallel(
             ignore::WalkState::Continue
         })
     });
-    (
-        finalize(results, max_results),
-        truncation_reason(
+    FileSearchResult {
+        results: finalize(results, max_results),
+        truncation_reason: truncation_reason(
             result_count.load(Ordering::Relaxed) > max_results,
             scan_limit_hit.load(Ordering::Relaxed),
         ),
-    )
+    }
 }
 
 /// Full-text search using ripgrep's engine (`grep-searcher`): parallel
@@ -455,7 +464,7 @@ fn search_filenames_parallel(
 /// detection. With `start_line`/`end_line`, each file is searched only within
 /// that 1-based line range (windowed slice when the range is small, sink-side
 /// filtering otherwise). Returns results and whether the result cap was hit.
-fn search_content_parallel(p: &ContentSearchParams<'_>) -> (Vec<Value>, Option<TruncationReason>) {
+fn search_content_parallel(p: &ContentSearchParams<'_>) -> FileSearchResult {
     let root = p.root;
     let pattern = p.pattern;
     let max_depth = p.max_depth;
@@ -559,13 +568,13 @@ fn search_content_parallel(p: &ContentSearchParams<'_>) -> (Vec<Value>, Option<T
             ignore::WalkState::Continue
         })
     });
-    (
-        finalize(results, max_results),
-        truncation_reason(
+    FileSearchResult {
+        results: finalize(results, max_results),
+        truncation_reason: truncation_reason(
             result_count.load(Ordering::Relaxed) > max_results,
             scan_limit_hit.load(Ordering::Relaxed),
         ),
-    )
+    }
 }
 
 /// Search one file restricted to the 1-based line range `[start_line, end_line]`.
@@ -1391,7 +1400,7 @@ mod tests {
         }
 
         let started_at = std::time::Instant::now();
-        let (results, _) = search_content_parallel(&ContentSearchParams {
+        let results = search_content_parallel(&ContentSearchParams {
             root,
             pattern: "needle",
             max_depth: 0,
@@ -1403,7 +1412,8 @@ mod tests {
             snippet_chars: 200,
             max_window_bytes: 16 * 1024 * 1024,
             cancel: CancellationToken::new(),
-        });
+        })
+        .results;
         let elapsed = started_at.elapsed();
 
         assert_eq!(results.len(), 42_000);
