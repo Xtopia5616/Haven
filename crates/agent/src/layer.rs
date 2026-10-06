@@ -26,6 +26,13 @@ pub struct AgentLayer {
     pub(crate) title_in_flight: Arc<Mutex<HashSet<String>>>,
 }
 
+/// A session created together with its durable first user message.
+#[derive(Debug)]
+pub(crate) struct CreatedSession {
+    pub(crate) session: crate::session::SessionInfo,
+    pub(crate) first_user_message_id: String,
+}
+
 /// The one-time composition result from `AgentLayer::build`. The application
 /// keeps `memory_startup`; the Agent retains only its worker capability.
 pub struct AgentStartup {
@@ -955,13 +962,13 @@ impl AgentLayer {
     /// in that order — the message (and its attachments) must be on disk
     /// BEFORE the session is registered with the executor, otherwise the
     /// dispatcher could start the ReAct loop and miss the first user turn.
-    /// Returns `(session, first_user_message_id)`.
+    /// Returns the created session and its first durable user message identity.
     pub(crate) async fn create_session_with_first_message(
         &self,
         input: &str,
         attachments: &[haven_common::types::MessageAttachment],
         voice: bool,
-    ) -> anyhow::Result<(crate::session::SessionInfo, String)> {
+    ) -> anyhow::Result<CreatedSession> {
         self.create_session_with_first_message_and_origin(
             input,
             attachments,
@@ -976,7 +983,7 @@ impl AgentLayer {
     /// origin that determines the first user message type.
     /// When `dispatch` is false, the session is loaded but left non-Pending so
     /// the caller can register inbox parent links before waking the dispatcher.
-    /// Returns `(session, first_user_message_id)`.
+    /// Returns the created session and its first durable user message identity.
     pub(crate) async fn create_session_with_first_message_and_origin(
         &self,
         input: &str,
@@ -984,7 +991,7 @@ impl AgentLayer {
         voice: bool,
         dispatch: bool,
         origin: haven_memory::SessionOrigin,
-    ) -> anyhow::Result<(crate::session::SessionInfo, String)> {
+    ) -> anyhow::Result<CreatedSession> {
         // Keep creation, first-message persistence, and actor registration in
         // one lifecycle window. A concurrent history clear must observe either
         // the complete new session or none of it.
@@ -1035,7 +1042,10 @@ impl AgentLayer {
             .get_session(&record.id)
             .await
             .ok_or_else(|| anyhow::anyhow!("session '{}' not registered", record.id))?;
-        Ok((session, first_msg.id))
+        Ok(CreatedSession {
+            session,
+            first_user_message_id: first_msg.id,
+        })
     }
 
     /// Handle model-facing lifecycle requests for a peer session. The tools
@@ -1239,7 +1249,7 @@ impl AgentLayer {
         let queued = running >= max_concurrent;
         // Create without dispatch so parent/child inbox links exist before the
         // child can be claimed (cascade end must see `parent` immediately).
-        let (mut session, _first_msg_id) = self
+        let mut session = self
             .create_session_with_first_message_and_origin(
                 &brief,
                 &[],
@@ -1249,7 +1259,8 @@ impl AgentLayer {
                     parent_session_id: req.parent_session_id.clone(),
                 },
             )
-            .await?;
+            .await?
+            .session;
         if let Some(title) = req.title.as_deref().filter(|t| !t.is_empty()) {
             let session_id = session.id.clone();
             if let Err(e) = self

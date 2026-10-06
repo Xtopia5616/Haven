@@ -176,13 +176,15 @@ impl AgentLayer {
                         .is_err()
                     {
                         drop(lifecycle);
-                        let (session, first_msg_id) = self
+                        let created_session = self
                             .create_session_with_first_message(transcript, attachments, voice)
                             .await?;
-                        self.events.emit_session_created(&session).await;
+                        self.events
+                            .emit_session_created(&created_session.session)
+                            .await;
                         return Ok(ProcessResult::session_created(
-                            session.id,
-                            Some(first_msg_id),
+                            created_session.session.id,
+                            Some(created_session.first_user_message_id),
                         ));
                     }
                     // Re-read state after ensure_session_loaded may have reloaded
@@ -302,14 +304,19 @@ impl AgentLayer {
                 persisted_msg.as_ref().map(|m| m.id.clone()),
             ))
         } else {
-            let (session, first_msg_id) = self
+            let created_session = self
                 .create_session_with_first_message(transcript, attachments, voice)
                 .await?;
-            tracing::info!("process_input created session: id={:?}", session.id);
-            self.events.emit_session_created(&session).await;
+            tracing::info!(
+                "process_input created session: id={:?}",
+                created_session.session.id
+            );
+            self.events
+                .emit_session_created(&created_session.session)
+                .await;
             Ok(ProcessResult::session_created(
-                session.id,
-                Some(first_msg_id),
+                created_session.session.id,
+                Some(created_session.first_user_message_id),
             ))
         }
     }
