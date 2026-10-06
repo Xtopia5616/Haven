@@ -1,4 +1,4 @@
-import type { ToolManifest } from './toolManifest.ts';
+import type { ToolManifestView } from './toolManifest.ts';
 
 export type BuiltinToolEntry = {
 	name: string;
@@ -15,7 +15,7 @@ export type BuiltinToolEntry = {
 	enabled: boolean;
 	available: boolean;
 	availabilityReason: string | null;
-	manifest: ToolManifest;
+	manifest: ToolManifestView;
 };
 
 export type BuiltinToolRootCard = {
@@ -37,7 +37,7 @@ export type BuiltinToolCard = {
 export type BuiltinEnabledFilter = 'all' | 'enabled' | 'disabled';
 
 /** Project one canonical manifest into the view model used by the settings UI. */
-export function builtinToolEntryFromManifest(manifest: ToolManifest): BuiltinToolEntry {
+export function builtinToolEntryFromManifest(manifest: ToolManifestView): BuiltinToolEntry {
 	return {
 		name: manifest.identity.stableName,
 		label: manifest.presentation.label,

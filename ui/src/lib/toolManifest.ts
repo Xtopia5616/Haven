@@ -3,7 +3,7 @@
 /** Open backend source token retained for forward-compatible manifest parsing. */
 export type ToolManifestSource = 'builtin' | 'skill' | 'mcp' | (string & {});
 
-export type ToolManifest = {
+export type ToolManifestView = {
 	identity: {
 		source: ToolManifestSource;
 		catalogGroup: string;
@@ -40,10 +40,10 @@ export type ToolManifest = {
 	};
 };
 
-let manifests = new Map<string, ToolManifest>();
+let manifests = new Map<string, ToolManifestView>();
 
 /** Convert the snake_case Tauri payload into the camelCase UI contract. */
-export function parseToolManifest(value: unknown): ToolManifest | null {
+export function parseToolManifest(value: unknown): ToolManifestView | null {
 	const raw = record(value);
 	if (!raw || 'manifest' in raw) return null;
 	const identity = record(raw.identity);
@@ -201,9 +201,9 @@ function booleanValue(value: unknown): boolean | null {
 }
 
 /** Replace the live catalog snapshot received from the backend. */
-export function setToolManifests(entries: unknown): ToolManifest[] {
-	const next = new Map<string, ToolManifest>();
-	const parsedEntries: ToolManifest[] = [];
+export function setToolManifests(entries: unknown): ToolManifestView[] {
+	const next = new Map<string, ToolManifestView>();
+	const parsedEntries: ToolManifestView[] = [];
 	if (Array.isArray(entries)) {
 		for (const entry of entries) {
 			const manifest = parseToolManifest(entry);
@@ -217,7 +217,7 @@ export function setToolManifests(entries: unknown): ToolManifest[] {
 	return parsedEntries;
 }
 
-export function getToolManifest(toolName: string): ToolManifest | null {
+export function getToolManifest(toolName: string): ToolManifestView | null {
 	return manifests.get(String(toolName || '')) ?? null;
 }
 

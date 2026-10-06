@@ -1,6 +1,6 @@
 # Haven 命名规范
 
-> 版本: v1.6 | 日期: 2026-10-07
+> 版本: v1.7 | 日期: 2026-10-07
 
 本文档统一 Haven 项目各层的命名规则（变量名、函数名、文件名、crate 名、缩写大小写、跨层边界）。规范以现有代码中的事实模式为基础，新代码必须遵循；存量代码若与规范冲突，逐步迁移对齐。
 
@@ -42,6 +42,8 @@ Tauri command 名与 request/response 类型由 `generatedCommands.ts` 从 Rust 
 跨 crate 的同字段 DTO 先按 owner 和用途判断是否合并：Memory `SessionMessageText` 是存储查询返回的纯文本消息行；Agent 私有 `SessionPromptMessage` 是组装首次 session prompt 的输入。它们通过显式转换跨边界，不应让 Memory 依赖 Agent，也不应让 Agent 的 prompt 类型成为 Memory 的规范类型。
 
 同一领域类型跨 runtime 与 wire 边界时，只有序列化格式、字段策略或演进 owner 确实不同才保留两个类型，并在名称中标出边界角色。当前 Tools `ToolRunKind` 是执行运行时分类；App `ToolRunKindDto` 是 IPC/event DTO 枚举，二者值相同但 owner、Serde 与向前演进责任不同。
+
+Tools manifest 的 generated `ToolManifest` 是 Rust snake_case wire DTO；renderer parser 投影出的 camelCase 结构叫 `ToolManifestView`。其中开放来源字符串叫 `ToolManifestSource`，闭合的实现/代表来源枚举继续复用 generated `ToolSource`。
 
 严格生成的 IPC `LlmConnectionReport` 与容忍缺失可选显示信息的 `LlmConnectionReportView` 分属 wire 与 renderer 视图；共享的 status/reason 枚举直接引用生成契约，归一化函数负责将不可信返回值投影为 view。
 

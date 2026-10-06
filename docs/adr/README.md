@@ -562,3 +562,4 @@
 - [0571：统一 Rust 当前状态 accessor 命名](0571-name-runtime-state-accessors.md)
 - [0572：让 session 状态工具直接使用生成契约](0572-use-generated-session-status-in-utility.md)
 - [0573：工具来源分类复用生成枚举](0573-use-generated-tool-source.md)
+- [0574：区分工具 manifest wire 与 UI 视图](0574-name-tool-manifest-view.md)
