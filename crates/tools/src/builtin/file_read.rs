@@ -1,7 +1,7 @@
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncSeekExt, BufReader};
 use tokio_util::sync::CancellationToken;
 
-use super::file_classification::classify_by_extension;
+use super::file_classification::{FileClassificationKind, classify_file_by_extension};
 use super::file_paths::{binary_result, looks_like_binary};
 use crate::ToolResult;
 
@@ -18,10 +18,15 @@ pub(super) async fn read_full(
     if cancel.is_cancelled() {
         anyhow::bail!("cancelled");
     }
-    let (kind, _mime) = classify_by_extension(path);
+    let classification = classify_file_by_extension(path);
     let meta = tokio::fs::metadata(path).await?;
     let size = meta.len();
-    if matches!(kind, "image" | "audio" | "video") {
+    if matches!(
+        classification.file_kind,
+        FileClassificationKind::Image
+            | FileClassificationKind::Audio
+            | FileClassificationKind::Video
+    ) {
         return Ok(binary_result(path, size));
     }
     if size > max_read_chars {

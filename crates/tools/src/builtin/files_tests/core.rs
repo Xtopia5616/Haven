@@ -54,33 +54,46 @@ use super::*;
     }
 
     #[test]
-    fn test_classify_by_extension_image() {
-        let (kind, mime) = classify_by_extension("photo.PNG");
-        assert_eq!(kind, "image");
-        assert_eq!(mime, "image/png");
-        let (kind, _) = classify_by_extension("a.jpg");
-        assert_eq!(kind, "image");
-        let (kind, _) = classify_by_extension("a.jpeg");
-        assert_eq!(kind, "image");
+    fn classify_file_by_extension_image() {
+        let classification = classify_file_by_extension("photo.PNG");
+        assert_eq!(classification.file_kind.as_str(), "image");
+        assert_eq!(classification.mime_type, "image/png");
+        assert_eq!(classify_file_by_extension("a.jpg").file_kind.as_str(), "image");
+        assert_eq!(classify_file_by_extension("a.jpeg").file_kind.as_str(), "image");
     }
 
     #[test]
-    fn test_classify_by_extension_rich_types() {
-        assert_eq!(classify_by_extension("a.pdf").0, "pdf");
-        assert_eq!(classify_by_extension("a.zip").0, "archive");
-        assert_eq!(classify_by_extension("a.docx").0, "office");
-        assert_eq!(classify_by_extension("a.xlsx").0, "office");
-        assert_eq!(classify_by_extension("a.exe").0, "executable");
-        assert_eq!(classify_by_extension("no_ext").0, "unknown");
-        assert_eq!(classify_by_extension("a.txt").0, "unknown");
+    fn classify_file_by_extension_rich_types() {
+        assert_eq!(classify_file_by_extension("a.pdf").file_kind.as_str(), "pdf");
+        assert_eq!(classify_file_by_extension("a.zip").file_kind.as_str(), "archive");
+        assert_eq!(classify_file_by_extension("a.docx").file_kind.as_str(), "office");
+        assert_eq!(classify_file_by_extension("a.xlsx").file_kind.as_str(), "office");
+        assert_eq!(
+            classify_file_by_extension("a.exe").file_kind.as_str(),
+            "executable"
+        );
+        assert_eq!(classify_file_by_extension("no_ext").file_kind.as_str(), "unknown");
+        assert_eq!(classify_file_by_extension("a.txt").file_kind.as_str(), "unknown");
     }
 
     #[test]
-    fn test_classify_by_extension_uses_canonical_media_mimes() {
-        assert_eq!(classify_by_extension("voice.aac"), ("audio", "audio/aac"));
-        assert_eq!(classify_by_extension("voice.opus"), ("audio", "audio/opus"));
-        assert_eq!(classify_by_extension("clip.mts"), ("video", "video/mp2t"));
-        assert_eq!(classify_by_extension("photo.heic"), ("image", "image/heic"));
+    fn classify_file_by_extension_uses_canonical_mime_types() {
+        assert_eq!(
+            classify_file_by_extension("voice.aac").mime_type,
+            "audio/aac"
+        );
+        assert_eq!(
+            classify_file_by_extension("voice.opus").mime_type,
+            "audio/opus"
+        );
+        assert_eq!(
+            classify_file_by_extension("clip.mts").mime_type,
+            "video/mp2t"
+        );
+        assert_eq!(
+            classify_file_by_extension("photo.heic").mime_type,
+            "image/heic"
+        );
     }
 
     #[test]

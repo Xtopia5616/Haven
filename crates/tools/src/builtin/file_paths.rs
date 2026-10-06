@@ -3,7 +3,7 @@ use sha2::{Digest, Sha256};
 use std::path::{Component, Path};
 use tokio::io::AsyncWriteExt;
 
-use super::file_classification::classify_by_extension;
+use super::file_classification::{FileClassificationKind, classify_file_by_extension};
 use super::{FilesOperation, MAX_INSPECT_HASH_BYTES};
 use crate::{ManagedAsset, ToolResult};
 
@@ -247,19 +247,21 @@ pub(super) fn looks_like_binary(bytes: &[u8]) -> bool {
 }
 
 pub(super) fn binary_result(path: &str, size: u64) -> ToolResult {
-    let (kind, mime) = classify_by_extension(path);
-    let hint = match kind {
-        "pdf" => "PDF file. Its content cannot be read directly as text.",
-        "archive" => {
+    let classification = classify_file_by_extension(path);
+    let hint = match classification.file_kind {
+        FileClassificationKind::Pdf => "PDF file. Its content cannot be read directly as text.",
+        FileClassificationKind::Archive => {
             "Archive file (zip/tar/...). Extract it with the shell tool to inspect contents."
         }
-        "office" => "Office document. Its binary format cannot be read as text.",
-        "audio" => {
+        FileClassificationKind::Office => {
+            "Office document. Its binary format cannot be read as text."
+        }
+        FileClassificationKind::Audio => {
             "Audio file. Read it to request a bounded transcript, or use media.play to play it."
         }
-        "video" => "Video file. It cannot be read as text.",
-        "executable" => "Executable/binary file. It cannot be read as text.",
-        _ => {
+        FileClassificationKind::Video => "Video file. It cannot be read as text.",
+        FileClassificationKind::Executable => "Executable/binary file. It cannot be read as text.",
+        FileClassificationKind::Image | FileClassificationKind::Unknown => {
             "Binary file. Use search(mode=content) to locate text, or read specific parts with offset/limit."
         }
     };
@@ -267,8 +269,8 @@ pub(super) fn binary_result(path: &str, size: u64) -> ToolResult {
         "binary": true,
         "path": path,
         "size": size,
-        "file_type": kind,
-        "mime": mime,
+        "file_type": classification.file_kind.as_str(),
+        "mime": classification.mime_type,
         "hint": hint
     }))
 }

@@ -16,7 +16,7 @@ use crate::document::{
 use crate::{ManagedAsset, ToolLlmUsage, ToolResult};
 
 use super::media_reference::{
-    bound_text, classify_media, confidence_passes, media_result_envelope,
+    bound_text, classify_managed_media, confidence_passes, media_result_envelope,
     media_result_envelope_named, operation_name,
 };
 use super::{MAX_FOCUS_CHARS, MediaOperation, MediaTool};
@@ -524,7 +524,7 @@ impl MediaTool {
         system_prompt: &str,
         representation: MediaRepresentationKind,
     ) -> anyhow::Result<ToolResult> {
-        if classify_media(&asset).0 != DetectedMediaKind::Image {
+        if classify_managed_media(&asset).media_kind != DetectedMediaKind::Image {
             anyhow::bail!("{} requires an image asset", operation_name(operation));
         }
         let available = match operation {
@@ -620,7 +620,7 @@ impl MediaTool {
         asset: ManagedAsset,
         cancel: CancellationToken,
     ) -> anyhow::Result<ToolResult> {
-        if classify_media(&asset).0 != DetectedMediaKind::Audio {
+        if classify_managed_media(&asset).media_kind != DetectedMediaKind::Audio {
             anyhow::bail!("transcribe requires an audio asset");
         }
         if !self.capabilities.transcribe {
@@ -720,7 +720,7 @@ impl MediaTool {
         page_index: Option<u64>,
         cancel: CancellationToken,
     ) -> anyhow::Result<ToolResult> {
-        if classify_media(&asset).0 != DetectedMediaKind::Document
+        if classify_managed_media(&asset).media_kind != DetectedMediaKind::Document
             || !supports_document_path(&asset.path)
         {
             anyhow::bail!("extract requires a supported PDF, DOCX, XLSX, or PPTX asset");

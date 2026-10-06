@@ -64,7 +64,7 @@ pub(crate) use media_asset::register_path_asset;
 pub(crate) use media_content::MediaTranscriber;
 pub use media_content::{MediaTranscriptionResult, MediaTranscriptionStatus};
 pub(crate) use media_generation::register_generated_asset;
-pub(crate) use media_reference::classify_media;
+pub(crate) use media_reference::classify_managed_media;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -384,7 +384,7 @@ impl MediaTool {
             return Ok(self.cancelled_media_result(params.operation, &asset, "cancelled"));
         }
 
-        let (media_kind, file_kind) = classify_media(&asset);
+        let classification = classify_managed_media(&asset);
         match params.operation {
             MediaOperation::Inspect => {
                 let mut output = self.media_result_output(
@@ -394,8 +394,8 @@ impl MediaTool {
                     None,
                 );
                 if let Some(object) = output.as_object_mut() {
-                    object.insert("modality".into(), json!(media_kind));
-                    object.insert("file_kind".into(), json!(file_kind));
+                    object.insert("modality".into(), json!(classification.media_kind));
+                    object.insert("file_kind".into(), json!(classification.file_kind));
                 }
                 Ok(ToolResult::ok(output))
             }

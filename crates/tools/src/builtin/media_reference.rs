@@ -15,7 +15,13 @@ use super::MediaOperation;
 /// Coarse media classification shared by the media tool and window output
 /// projection. MIME is authoritative when it is specific; the filename is a
 /// controlled fallback for restored or loosely typed assets.
-pub(crate) fn classify_media(asset: &ManagedAsset) -> (DetectedMediaKind, &'static str) {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ManagedMediaClassification {
+    pub media_kind: DetectedMediaKind,
+    pub file_kind: &'static str,
+}
+
+pub(crate) fn classify_managed_media(asset: &ManagedAsset) -> ManagedMediaClassification {
     let detected = match media_kind_from_mime_type(&asset.media_type) {
         DetectedMediaKind::Unknown => None,
         media_kind => Some(media_kind),
@@ -29,13 +35,17 @@ pub(crate) fn classify_media(asset: &ManagedAsset) -> (DetectedMediaKind, &'stat
     })
     .unwrap_or(DetectedMediaKind::Unknown);
 
-    match detected {
-        DetectedMediaKind::Image => (DetectedMediaKind::Image, "image"),
-        DetectedMediaKind::Audio => (DetectedMediaKind::Audio, "audio"),
-        DetectedMediaKind::Video => (DetectedMediaKind::Video, "video"),
-        DetectedMediaKind::Document => (DetectedMediaKind::Document, "document"),
-        DetectedMediaKind::Text => (DetectedMediaKind::Text, "text"),
-        DetectedMediaKind::Unknown => (DetectedMediaKind::Unknown, "binary"),
+    let file_kind = match detected {
+        DetectedMediaKind::Image => "image",
+        DetectedMediaKind::Audio => "audio",
+        DetectedMediaKind::Video => "video",
+        DetectedMediaKind::Document => "document",
+        DetectedMediaKind::Text => "text",
+        DetectedMediaKind::Unknown => "binary",
+    };
+    ManagedMediaClassification {
+        media_kind: detected,
+        file_kind,
     }
 }
 
@@ -66,9 +76,9 @@ pub(crate) fn media_reference_with_capabilities(
     content: Option<&str>,
     capabilities: MediaCapabilities,
 ) -> MediaReference {
-    let (media_kind, file_kind) = classify_media(asset);
+    let classification = classify_managed_media(asset);
     let mut available_representations = vec![MediaRepresentationKind::ManagedFileRef];
-    match media_kind {
+    match classification.media_kind {
         DetectedMediaKind::Image => {
             if capabilities.describe {
                 available_representations.push(MediaRepresentationKind::ImageDescription);
@@ -88,7 +98,7 @@ pub(crate) fn media_reference_with_capabilities(
     if !available_representations.contains(&representation) {
         available_representations.push(representation);
     }
-    let recommended_next = match (representation, media_kind) {
+    let recommended_next = match (representation, classification.media_kind) {
         (MediaRepresentationKind::ManagedFileRef, DetectedMediaKind::Image)
             if capabilities.describe =>
         {
@@ -113,8 +123,8 @@ pub(crate) fn media_reference_with_capabilities(
     MediaReference {
         asset_id: asset.asset_id.clone(),
         media_type: asset.media_type.clone(),
-        modality: media_kind,
-        file_kind: file_kind.to_owned(),
+        modality: classification.media_kind,
+        file_kind: classification.file_kind.to_owned(),
         representation,
         available_representations,
         recommended_next: recommended_next.map(str::to_owned),

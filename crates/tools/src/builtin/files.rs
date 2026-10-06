@@ -509,7 +509,7 @@ use crate::{OperationIdempotency, Tool};
 #[cfg(test)]
 use async_trait::async_trait;
 #[cfg(test)]
-use file_classification::classify_by_extension;
+use file_classification::classify_file_by_extension;
 #[cfg(test)]
 use file_mutations::{apply_patch_edits, encode_patched_text};
 #[cfg(test)]
