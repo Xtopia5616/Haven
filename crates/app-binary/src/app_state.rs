@@ -1,6 +1,7 @@
 use crate::config_runtime::apply_log_level_to_handles;
 use crate::desktop::DesktopShell;
 use crate::events::AppBootstrapEvent;
+use crate::router_media_builder::build_router_media;
 use crate::runtime::{ApplicationRuntime, RuntimeServices};
 use haven_agent::SessionSupervisor;
 use haven_agent::{AgentLayer, MemoryService, MemoryServiceStores, PendingSessionRecovery};
@@ -8,8 +9,6 @@ use haven_agent::{AgentLayer, MemoryService, MemoryServiceStores, PendingSession
 use haven_common::config::InMemoryCredentialStore;
 use haven_common::config::{ConfigLoader, ConfigService, CredentialStore, LogLevel};
 use haven_input::InputPipeline;
-use haven_llm::LlmRouter;
-use haven_llm::stt::build_stt_client;
 use haven_memory::{
     Database, MemoryEmbeddingStore, MemoryFactExtractionStore, MemoryFactStore,
     MemoryMaintenanceStore, MemoryRecallStore, MemoryStore, SessionStore, ToolRunStore,
@@ -333,21 +332,16 @@ impl AppState {
         let cfg = initial_config.config;
         let context_limits = cfg.context_limits.clone();
         let context_limits_clone = context_limits.clone();
-        let llm_config = cfg.llm.materialize(
-            Some(context_limits.max_response_tokens),
-            Some(context_limits.reasoning_echo_max_chars),
-        );
-        let router = Arc::new(LlmRouter::with_default_context_window(
-            llm_config,
-            context_limits.default_context_window,
-        ));
-        let max_steps = cfg.session.max_steps;
-        let session_max_steps = cfg.session.session_max_steps;
-        let conversation_window_size = cfg.memory.session_window_size;
-
         let tools = Arc::new(ToolsManager::new());
         let agent_tool_ports =
             crate::agent_tool_adapters::agent_tool_ports_from_manager(Arc::clone(&tools));
+        let mcp_caller: Arc<dyn haven_llm::McpToolCaller> =
+            Arc::new(tools.share_services().mcp.clone());
+        let router_media_build = build_router_media(&cfg, Some(mcp_caller));
+        let router = Arc::clone(&router_media_build.router);
+        let max_steps = cfg.session.max_steps;
+        let session_max_steps = cfg.session.session_max_steps;
+        let conversation_window_size = cfg.memory.session_window_size;
 
         let executor = Arc::new(SessionSupervisor::new(
             supervisor_session_store,
@@ -410,16 +404,12 @@ impl AppState {
             });
         }
 
-        let stt_config = &cfg.media.stt;
-
         // Build the dedicated STT client for the media runtime. On error
         // (e.g. `mcp` provider with no server) or `none`, the optional
         // transcription capability degrades without affecting capture.
-        let mcp_caller: std::sync::Arc<dyn haven_llm::McpToolCaller> =
-            std::sync::Arc::new(tools.share_services().mcp.clone());
         let stt_client: Option<std::sync::Arc<dyn haven_llm::SttClient>> =
-            match build_stt_client(Some(mcp_caller), stt_config, &cfg.llm.providers) {
-                Ok(client) => client.map(std::sync::Arc::from),
+            match router_media_build.stt_client {
+                Ok(client) => client,
                 Err(e) => {
                     tracing::warn!("STT client build failed, transcription disabled: {e}");
                     None
@@ -430,8 +420,8 @@ impl AppState {
         // capability degrades only that capability and remains observable in
         // the log.
         let tts: Option<std::sync::Arc<dyn haven_llm::TtsClient>> =
-            match haven_llm::build_tts_client(&cfg.media.tts, &cfg.llm.providers) {
-                Ok(c) => c.map(std::sync::Arc::from),
+            match router_media_build.tts_client {
+                Ok(client) => client,
                 Err(e) => {
                     tracing::warn!("TTS client build failed, TTS disabled: {e}");
                     None
@@ -442,16 +432,16 @@ impl AppState {
         // model-facing `media` tool. Attachments remain raw managed assets;
         // no hidden ingress extraction or generation runs before ReAct.
         let ocr_client: Option<std::sync::Arc<dyn haven_llm::OcrClient>> =
-            match haven_llm::build_ocr_client(&cfg.media.ocr) {
-                Ok(c) => c.map(std::sync::Arc::from),
+            match router_media_build.ocr_client {
+                Ok(client) => client,
                 Err(e) => {
                     tracing::warn!("OCR client build failed, OCR disabled: {e}");
                     None
                 }
             };
         let image_gen_client: Option<std::sync::Arc<dyn haven_llm::ImageGenClient>> =
-            match haven_llm::build_image_gen_client(&cfg.media.image_gen, &cfg.llm.providers) {
-                Ok(c) => c.map(std::sync::Arc::from),
+            match router_media_build.image_gen_client {
+                Ok(client) => client,
                 Err(e) => {
                     tracing::warn!(
                         "image generation client build failed, image generation disabled: {e}"

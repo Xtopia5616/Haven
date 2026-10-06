@@ -14,6 +14,7 @@ mod events;
 mod handlers;
 mod logging;
 mod notification;
+mod router_media_builder;
 mod runtime;
 #[cfg(windows)]
 mod window_resize;

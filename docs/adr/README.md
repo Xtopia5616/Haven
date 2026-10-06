@@ -513,3 +513,4 @@
 - [0522：Pending Session 恢复失败后有界退避重试](0522-retry-pending-session-recovery.md)
 - [0523：后台 shell 任务沿用来源工具调用呈现](0523-background-tool-call-unified-presentation.md)
 - [0524：统一 ToolCall 与 ToolRun 领域命名](0524-tool-call-tool-run-domain-unification.md)
+- [0525：共享 Router 与媒体客户端构造](0525-shared-router-media-client-builder.md)

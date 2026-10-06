@@ -6,11 +6,11 @@
 
 use crate::app_state::AppState;
 use crate::logging::log_err;
+use crate::router_media_builder::build_router_media;
 use haven_common::config::{
     AppConfig, ConfigChanged, ConfigDomain, ConfigService, ConfigSnapshot, LogLevel,
 };
 use haven_llm::LlmRouter;
-use haven_llm::stt::build_stt_client;
 use std::future::Future;
 use std::sync::Arc;
 use tracing_subscriber::Registry;
@@ -174,41 +174,28 @@ impl RuntimeConfigCoordinator {
         mcp_caller: Option<Arc<dyn haven_llm::McpToolCaller>>,
         ctx: &str,
     ) -> Result<PreparedRouterRuntime, String> {
-        let config = &snapshot.config;
-        let router = Arc::new(LlmRouter::with_default_context_window(
-            config.llm.materialize(
-                Some(config.context_limits.max_response_tokens),
-                Some(config.context_limits.reasoning_echo_max_chars),
-            ),
-            config.context_limits.default_context_window,
-        ));
-        let media = config.media.clone();
-        let providers = &config.llm.providers;
-        let stt_client: Option<Arc<dyn haven_llm::SttClient>> =
-            build_stt_client(mcp_caller, &media.stt, providers)
-                .map_err(|error| log_err(&format!("{ctx} STT"), error))?
-                .map(Arc::from);
-        let ocr_client: Option<Arc<dyn haven_llm::OcrClient>> =
-            haven_llm::build_ocr_client(&media.ocr)
-                .map_err(|error| log_err(&format!("{ctx} OCR"), error))?
-                .map(Arc::from);
-        let tts_client: Option<Arc<dyn haven_llm::TtsClient>> =
-            haven_llm::build_tts_client(&media.tts, providers)
-                .map_err(|error| log_err(&format!("{ctx} TTS"), error))?
-                .map(Arc::from);
-        let image_gen_client: Option<Arc<dyn haven_llm::ImageGenClient>> =
-            haven_llm::build_image_gen_client(&media.image_gen, providers)
-                .map_err(|error| log_err(&format!("{ctx} image generation"), error))?
-                .map(Arc::from);
+        let built = build_router_media(&snapshot.config, mcp_caller);
+        let stt_client = built
+            .stt_client
+            .map_err(|error| log_err(&format!("{ctx} STT"), error))?;
+        let ocr_client = built
+            .ocr_client
+            .map_err(|error| log_err(&format!("{ctx} OCR"), error))?;
+        let tts_client = built
+            .tts_client
+            .map_err(|error| log_err(&format!("{ctx} TTS"), error))?;
+        let image_gen_client = built
+            .image_gen_client
+            .map_err(|error| log_err(&format!("{ctx} image generation"), error))?;
 
         Ok(PreparedRouterRuntime {
             config_version: snapshot.version,
-            router,
+            router: built.router,
             stt_client,
             ocr_client,
             image_gen_client,
             tts_client,
-            media,
+            media: built.media,
         })
     }
 }
