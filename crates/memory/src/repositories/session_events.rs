@@ -403,10 +403,6 @@ pub struct SessionResumeProjection {
     pub active_domain_events: Vec<SessionEvent>,
 }
 
-/// Transitional name for code that only consumes the append-only event API.
-/// New ownership code should use [`SessionStore`].
-pub type SessionEventStore = SessionStore;
-
 fn rollback_after_sqlite_failure(conn: &rusqlite::Connection, operation: &'static str) {
     if conn.is_autocommit() {
         return;
@@ -3220,10 +3216,10 @@ mod tests {
         }
     }
 
-    fn store() -> (Arc<Database>, SessionEventStore, String) {
+    fn store() -> (Arc<Database>, SessionStore, String) {
         let db = Arc::new(Database::open_in_memory().unwrap());
         let session = db.create_session("input").unwrap();
-        let store = SessionEventStore::new(db.clone());
+        let store = SessionStore::new(db.clone());
         (db, store, session.id)
     }
 
@@ -3850,7 +3846,7 @@ mod tests {
     #[tokio::test]
     async fn session_store_creates_session_without_appending_events() {
         let db = Arc::new(Database::open_in_memory().unwrap());
-        let store = SessionEventStore::new(db.clone());
+        let store = SessionStore::new(db.clone());
 
         let session = store.create_session("created through store").await.unwrap();
 
@@ -4216,7 +4212,7 @@ mod tests {
         assert_eq!(db.get_session_messages(&session_id).unwrap().len(), 1);
     }
 
-    fn append_recovery_marker(store: &SessionEventStore, session_id: &str, phase: &str) {
+    fn append_recovery_marker(store: &SessionStore, session_id: &str, phase: &str) {
         store
             .append_recovery_persistence(
                 session_id,

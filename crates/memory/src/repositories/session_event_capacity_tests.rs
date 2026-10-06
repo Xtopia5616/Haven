@@ -1,7 +1,7 @@
 //! File-backed capacity and SQLITE_FULL probes for the durable session log.
 
 use super::session_events::{
-    MAX_TRANSCRIPT_BATCH_EVENTS, SessionCommitted, SessionEventInput, SessionEventStore,
+    MAX_TRANSCRIPT_BATCH_EVENTS, SessionCommitted, SessionEventInput, SessionStore,
 };
 use crate::db::Database;
 use std::sync::Arc;
@@ -42,7 +42,7 @@ fn sqlite_full_transcript_commit_rolls_back_and_can_be_retried() {
     let db_path = test_root.join("haven.db");
     let db = Arc::new(Database::open_single_connection_for_test(&db_path).unwrap());
     let session = db.create_session("sqlite-full-test").unwrap();
-    let store = SessionEventStore::new(db.clone());
+    let store = SessionStore::new(db.clone());
     let mut live = store.subscribe();
 
     let page_count = pragma_i64(&db, "page_count");
@@ -69,7 +69,7 @@ fn sqlite_full_transcript_commit_rolls_back_and_can_be_retried() {
         .unwrap_err();
     assert!(commit_error.to_string().to_lowercase().contains("full"));
     assert_eq!(
-        SessionEventStore::sqlite_storage_write_failure(&commit_error),
+        SessionStore::sqlite_storage_write_failure(&commit_error),
         Some(crate::repositories::session_events::SqliteStorageWriteFailure::DiskFull)
     );
     assert!(store.read_all(&session.id).unwrap().is_empty());
@@ -123,7 +123,7 @@ fn failed_transcript_commit_rolls_back_and_can_be_retried() {
     let db_path = test_root.join("haven.db");
     let db = Arc::new(Database::open_single_connection_for_test(&db_path).unwrap());
     let session = db.create_session("commit-failure-test").unwrap();
-    let store = SessionEventStore::new(db.clone());
+    let store = SessionStore::new(db.clone());
     let mut live = store.subscribe();
 
     db.conn()
@@ -207,7 +207,7 @@ fn session_event_disk_capacity_profile() {
         let wal_path = sqlite_sidecar(&db_path, "-wal");
         let db = Arc::new(Database::open(&db_path).unwrap());
         let session = db.create_session("session-event-capacity-profile").unwrap();
-        let store = SessionEventStore::new(db.clone());
+        let store = SessionStore::new(db.clone());
         truncate_wal(&db);
         let baseline_db_bytes = file_len(&db_path);
 
@@ -269,7 +269,7 @@ fn sqlite_storage_failures_keep_full_and_io_errors_distinct() {
         Some("disk I/O error".into()),
     ));
     assert_eq!(
-        SessionEventStore::sqlite_storage_write_failure(&io_error),
+        SessionStore::sqlite_storage_write_failure(&io_error),
         Some(crate::repositories::session_events::SqliteStorageWriteFailure::IoFailure)
     );
 
@@ -278,7 +278,7 @@ fn sqlite_storage_failures_keep_full_and_io_errors_distinct() {
         Some("foreign key constraint failed".into()),
     ));
     assert_eq!(
-        SessionEventStore::sqlite_storage_write_failure(&constraint_error),
+        SessionStore::sqlite_storage_write_failure(&constraint_error),
         None
     );
 }
@@ -288,7 +288,7 @@ fn age_retention_deletes_whole_sessions_and_cascades_their_events() {
     let db = Arc::new(Database::open_in_memory().unwrap());
     let expired = db.create_session("expired-session").unwrap();
     let retained = db.create_session("retained-session").unwrap();
-    let store = SessionEventStore::new(db.clone());
+    let store = SessionStore::new(db.clone());
     store
         .append_transcript(&expired.id, r#"{"type":"thought","text":"old"}"#, 1, 1)
         .unwrap();
@@ -404,7 +404,7 @@ fn session_event_representative_mixture_capacity_profile() {
     let session = db
         .create_session("session-event-representative-profile")
         .unwrap();
-    let store = SessionEventStore::new(db.clone());
+    let store = SessionStore::new(db.clone());
     truncate_wal(&db);
     let baseline_db_bytes = file_len(&db_path);
 

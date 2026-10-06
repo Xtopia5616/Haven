@@ -737,14 +737,14 @@ impl SessionSupervisor {
 #[cfg(test)]
 mod storage_error_tests {
     use super::session_run_error_reason;
-    use haven_memory::{Database, SessionCommitted, SessionEventStore};
+    use haven_memory::{Database, SessionCommitted, SessionStore};
     use std::sync::Arc;
 
     #[test]
     fn full_database_error_gives_recovery_guidance_without_database_details() {
         let db = Arc::new(Database::open_in_memory().unwrap());
         let session = db.create_session("storage-full-feedback").unwrap();
-        let store = SessionEventStore::new(db.clone());
+        let store = SessionStore::new(db.clone());
         let page_count: i64 = db
             .conn()
             .query_row("PRAGMA page_count", [], |row| row.get(0))

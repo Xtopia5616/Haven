@@ -532,3 +532,4 @@
 - [0541：区分运行时 LLM 用量与持久用量记录](0541-distinguish-llm-usage-record.md)
 - [0542：区分 SessionSupervisor 通知与持久 SessionEvent](0542-distinguish-session-supervisor-and-durable-events.md)
 - [0543：UI ToolRun 分类跟随生成契约](0543-align-ui-tool-run-labels-with-runtime-kind.md)
+- [0544：移除 SessionEventStore 过渡别名](0544-remove-session-event-store-alias.md)

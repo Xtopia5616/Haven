@@ -71,9 +71,7 @@ pub use types::{
 };
 // The store owns SQLite ordering/persistence in `haven-memory`; these
 // re-exports keep the Agent's durable session boundary discoverable to callers.
-pub use haven_memory::{
-    SessionEvent, SessionEventInput, SessionEventStore, SessionEventSubscription, SessionStore,
-};
+pub use haven_memory::{SessionEvent, SessionEventInput, SessionEventSubscription, SessionStore};
 
 use haven_common::config::ContextLimitsConfig;
 use haven_common::types::MessageAttachment;
