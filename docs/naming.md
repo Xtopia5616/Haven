@@ -1,6 +1,6 @@
 # Haven 命名规范
 
-> 版本: v1.3 | 日期: 2026-10-07
+> 版本: v1.4 | 日期: 2026-10-07
 
 本文档统一 Haven 项目各层的命名规则（变量名、函数名、文件名、crate 名、缩写大小写、跨层边界）。规范以现有代码中的事实模式为基础，新代码必须遵循；存量代码若与规范冲突，逐步迁移对齐。
 
@@ -25,6 +25,7 @@
 | 工具运行（ToolRun） | 脱离当前 turn 持久运行、可取消并产生生命周期事件的工具执行 | 后端/IPC/数据库使用 `tool_run`、`tool_runs`；ID 前缀为 `toolrun-` |
 | 后台工具运行（background ToolRun） | 工具调用选择后台执行后启动的持久运行 | 通过 `ToolExecutionMode::Background` 启动；UI 显示“后台任务” |
 | 定时工具运行（scheduled ToolRun） | 由时间或依赖触发的工具运行 | 仍由 `schedule` 工具负责设置触发条件；UI 显示“定时任务” |
+| 录音结果（`RecordingResult`） | `haven-input` 拥有的固定格式采集结果：16 kHz 单声道 PCM、停止原因、时长和采集错误 | 通过 `RecordingResult::encode_wav()` 编码；它与 Tools 持有的 `RecordedAudio`（已登记 WAV 资产结果）不是同一层结果 |
 
 定时工具运行的 `mode` 只作为行为说明：`tool` 显示“调用工具”，`continue` 显示“继续会话”。运行状态统一显示“待执行 / 运行中 / 已完成 / 失败 / 已取消”；原始枚举值只留在 wire、日志或调试详情中。
 
@@ -113,6 +114,8 @@ Tauri command 名与 request/response 类型由 `generatedCommands.ts` 从 Rust 
 | `map` / `project` / `normalize` / `parse` | 结构转换 / 从权威源派生视图 / 将宽松输入规整为契约 / 解析文本或 wire 格式。 |
 
 数据库或领域查询即使按 session、subject、tag 等条件筛选，只要结果是零到多条实体，也使用 `list_*`（条件检索可使用 `find_*` / `search_*`）；`get_*` 留给单实体读取。缓存接口按稳定 cache key 读写一个缓存槽时仍可使用 `get_*`，即使槽内缓存的是集合。
+
+读取接收者自身当前状态时使用名词式 accessor：单一主状态用 `state()`，同一 owner 暴露多个状态视图时用带领域名的 accessor（如 `vad_state()`）；`get_*` 保留给按 key 读取值，避免 `get_state()` 这类无查询键的泛化动词。
 
 这些词汇用于审计和迁移，不授权把不同的状态 owner、错误语义、事务边界或安全策略合并。发现名称相似时，先比较不变量、生命周期、失败行为和真实消费者；只有职责与权威来源相同才合并，否则保留边界并改成能表达作用域/角色的名称。
 

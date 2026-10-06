@@ -48,7 +48,7 @@ impl desktop::ShellHandler for HavenShellHandler {
         // recording") if startup errors.
         if let Err(e) = self.pipeline.start_recording().await {
             if matches!(
-                self.pipeline.get_state().await,
+                self.pipeline.state().await,
                 haven_input::RecordingState::Recording
             ) && state.recording_sessions.current(&lifecycle).is_some()
             {

@@ -302,7 +302,8 @@ impl DesktopShell {
         self.state.lock().await.hold_mode = hold;
     }
 
-    pub async fn get_state(&self) -> ShellState {
+    /// Current shell state used by tray, hotkey, and recording orchestration.
+    pub async fn state(&self) -> ShellState {
         self.state.lock().await.clone()
     }
 
@@ -378,7 +379,7 @@ mod tests {
     #[tokio::test]
     async fn test_shell_new_state_is_idle() {
         let shell = DesktopShell::new();
-        let state = shell.get_state().await;
+        let state = shell.state().await;
         assert!(!state.is_recording);
         assert_eq!(state.tray_status, TrayStatus::Normal);
     }
@@ -388,7 +389,7 @@ mod tests {
         let shell = DesktopShell::new();
         shell.toggle_recording().await;
         shell.stop_recording().await;
-        let state = shell.get_state().await;
+        let state = shell.state().await;
         assert!(!state.is_recording);
         assert_eq!(state.tray_status, TrayStatus::Normal);
     }
@@ -397,13 +398,13 @@ mod tests {
     async fn test_revision_checked_sync_recording_sets_state_and_tray() {
         let shell = DesktopShell::new();
         assert!(shell.sync_recording_if_revision(true, 0).await);
-        let state = shell.get_state().await;
+        let state = shell.state().await;
         assert!(state.is_recording);
         assert_eq!(state.tray_status, TrayStatus::Recording);
         // `is_recording_toggle` is shell-hotkey-only; sync must not set it.
         assert!(!state.is_recording_toggle);
         assert!(shell.sync_recording_if_revision(false, 1).await);
-        let state = shell.get_state().await;
+        let state = shell.state().await;
         assert!(!state.is_recording);
         assert_eq!(state.tray_status, TrayStatus::Normal);
     }
@@ -419,7 +420,7 @@ mod tests {
                 .sync_recording_if_revision(false, stale_revision)
                 .await
         );
-        let state = shell.get_state().await;
+        let state = shell.state().await;
         assert!(state.is_recording);
         assert!(state.is_recording_toggle);
         assert_eq!(state.tray_status, TrayStatus::Recording);
@@ -430,7 +431,7 @@ mod tests {
         let shell = DesktopShell::new();
         shell.set_muted(true).await;
         shell.toggle_recording().await;
-        let state = shell.get_state().await;
+        let state = shell.state().await;
         assert!(!state.is_recording);
         assert_eq!(state.tray_status, TrayStatus::Muted);
     }
@@ -440,7 +441,7 @@ mod tests {
         let shell = DesktopShell::new();
         shell.toggle_recording().await;
         shell.set_muted(true).await;
-        let state = shell.get_state().await;
+        let state = shell.state().await;
         assert!(!state.is_recording);
         assert_eq!(state.tray_status, TrayStatus::Muted);
     }
@@ -450,7 +451,7 @@ mod tests {
         let shell = DesktopShell::new();
         shell.set_muted(true).await;
         shell.set_muted(false).await;
-        let state = shell.get_state().await;
+        let state = shell.state().await;
         assert!(!state.is_muted);
         assert_eq!(state.tray_status, TrayStatus::Normal);
     }
@@ -459,11 +460,11 @@ mod tests {
     async fn test_toggle_recording_starts_and_stops() {
         let shell = DesktopShell::new();
         shell.toggle_recording().await;
-        let state = shell.get_state().await;
+        let state = shell.state().await;
         assert!(state.is_recording);
         assert!(state.is_recording_toggle);
         shell.toggle_recording().await;
-        let state = shell.get_state().await;
+        let state = shell.state().await;
         assert!(!state.is_recording);
         assert!(!state.is_recording_toggle);
     }
@@ -472,10 +473,10 @@ mod tests {
     async fn test_hold_press_and_release() {
         let shell = DesktopShell::new();
         shell.hold_press().await;
-        let state = shell.get_state().await;
+        let state = shell.state().await;
         assert!(state.is_recording);
         shell.hold_release().await;
-        let state = shell.get_state().await;
+        let state = shell.state().await;
         assert!(!state.is_recording);
     }
 
@@ -484,7 +485,7 @@ mod tests {
         let shell = DesktopShell::new();
         shell.set_muted(true).await;
         shell.hold_press().await;
-        let state = shell.get_state().await;
+        let state = shell.state().await;
         assert!(!state.is_recording);
     }
 
@@ -493,7 +494,7 @@ mod tests {
         let shell = DesktopShell::new();
         shell.toggle_recording().await;
         shell.hold_press().await;
-        let state = shell.get_state().await;
+        let state = shell.state().await;
         assert!(state.is_recording);
     }
 
@@ -501,7 +502,7 @@ mod tests {
     async fn test_hold_release_noop_when_not_recording() {
         let shell = DesktopShell::new();
         shell.hold_release().await;
-        let state = shell.get_state().await;
+        let state = shell.state().await;
         assert!(!state.is_recording);
     }
 
@@ -524,7 +525,7 @@ mod tests {
                 .reset_toggle_on_auto_stop_if_generation(generation)
                 .await
         );
-        let state = shell.get_state().await;
+        let state = shell.state().await;
         assert!(!state.is_recording_toggle);
     }
 
@@ -541,7 +542,7 @@ mod tests {
                 .reset_toggle_on_auto_stop_if_generation(stale_generation)
                 .await
         );
-        let state = shell.get_state().await;
+        let state = shell.state().await;
         assert!(state.is_recording);
         assert!(state.is_recording_toggle);
     }
@@ -579,7 +580,7 @@ mod tests {
             .expect("the stopped shell operation must finish")
             .expect("the stopped shell task must not panic");
 
-        let state = shell.get_state().await;
+        let state = shell.state().await;
         assert!(state.is_recording);
         assert!(state.is_recording_toggle);
         assert_eq!(state.tray_status, TrayStatus::Recording);

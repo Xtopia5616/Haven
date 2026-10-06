@@ -28,7 +28,7 @@ pub struct RecordingStatus {
 pub async fn get_recording_state(
     state: State<'_, Arc<AppState>>,
 ) -> Result<RecordingStatus, String> {
-    let shell_state = state.runtime.shell.get_state().await;
+    let shell_state = state.runtime.shell.state().await;
     Ok(RecordingStatus {
         is_recording: shell_state.is_recording,
         is_toggle: shell_state.is_recording_toggle,
@@ -442,7 +442,7 @@ pub async fn start_recording(
     if let Err(e) = state.runtime.pipeline.start_recording().await {
         // The hotkey may have started a recording a moment earlier, or a VAD
         // auto-stop may be finalizing: the pipeline is busy, not broken.
-        let pipeline_state = state.runtime.pipeline.get_state().await;
+        let pipeline_state = state.runtime.pipeline.state().await;
         if matches!(pipeline_state, haven_input::RecordingState::Recording)
             && let Some(session_id) = state.recording_sessions.current(&lifecycle)
         {
@@ -487,7 +487,7 @@ pub async fn stop_recording(
     let stop_context = state.runtime.shell.recording_stop_context().await;
     let lifecycle = state.recording_sessions.lock().await;
     let Some(session_id) = state.recording_sessions.current(&lifecycle) else {
-        return match classify_stop_capture_error(&state.runtime.pipeline.get_state().await) {
+        return match classify_stop_capture_error(&state.runtime.pipeline.state().await) {
             StopCaptureErrorClass::AlreadyFinalizing => Ok(String::new()),
             StopCaptureErrorClass::CaptureStillActive => Err(log_err(
                 "stop_recording",
@@ -511,7 +511,7 @@ pub async fn stop_recording(
             // the stop: the pipeline is Pending (finished) or Processing
             // (finalizing elsewhere). Not an error for the UI — emitting a
             // failure toast here would blame the user for a race they won.
-            let pipeline_state = state.runtime.pipeline.get_state().await;
+            let pipeline_state = state.runtime.pipeline.state().await;
             return match settle_owned_stop_capture_error(
                 &pipeline_state,
                 &session_id,
@@ -928,7 +928,7 @@ mod tests {
                                 .unwrap_or_else(|poisoned| poisoned.into_inner()),
                             vec!["tray:normal", "stopped"]
                         );
-                        assert!(!shell.get_state().await.is_recording_toggle);
+                        assert!(!shell.state().await.is_recording_toggle);
 
                         let lifecycle = owner_for_schedule.lock().await;
                         assert!(owner_for_schedule.current(&lifecycle).is_none());
@@ -995,13 +995,13 @@ mod tests {
             {
                 let shell = shell.clone();
                 |_session_id, _result| async move {
-                    assert!(shell.get_state().await.is_recording_toggle);
+                    assert!(shell.state().await.is_recording_toggle);
                     true
                 }
             },
         )
         .await;
-        assert!(shell.get_state().await.is_recording_toggle);
+        assert!(shell.state().await.is_recording_toggle);
     }
 
     #[tokio::test]
@@ -1077,7 +1077,7 @@ mod tests {
             {
                 let shell = shell.clone();
                 move |_session_id, _result| async move {
-                    let state = shell.get_state().await;
+                    let state = shell.state().await;
                     assert!(state.is_recording);
                     assert!(state.is_recording_toggle);
                     assert_eq!(state.tray_status, TrayStatus::Recording);
@@ -1087,7 +1087,7 @@ mod tests {
         )
         .await;
 
-        let state = shell.get_state().await;
+        let state = shell.state().await;
         assert!(state.is_recording);
         assert!(state.is_recording_toggle);
         assert_eq!(state.tray_status, TrayStatus::Recording);

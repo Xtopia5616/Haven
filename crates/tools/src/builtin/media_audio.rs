@@ -126,7 +126,7 @@ impl AudioRuntime {
             .duration
             .unwrap_or(DEFAULT_RECORD_SECS)
             .clamp(1.0, MAX_RECORD_SECS);
-        match pipeline.get_state().await {
+        match pipeline.state().await {
             haven_input::RecordingState::Recording => {
                 return Err(anyhow::anyhow!(
                     "media record: a recording is already in progress, try again later"

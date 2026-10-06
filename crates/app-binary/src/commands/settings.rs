@@ -411,7 +411,7 @@ async fn execute_settings_apply_phase(
                             {
                                 return;
                             }
-                            let shell_state = shell.get_state().await;
+                            let shell_state = shell.state().await;
                             if shell_state.is_muted {
                                 return;
                             }

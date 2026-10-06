@@ -221,7 +221,8 @@ impl InputPipeline {
             .ok_or_else(|| anyhow!("VAD worker is unavailable"))
     }
 
-    pub async fn get_vad_state(&self) -> vad::VadState {
+    /// Current state of the speech-activity detector.
+    pub async fn vad_state(&self) -> vad::VadState {
         self.vad_detector.lock().await.state()
     }
 
@@ -650,7 +651,8 @@ impl InputPipeline {
         Ok(result)
     }
 
-    pub async fn get_state(&self) -> RecordingState {
+    /// Current user-recording lifecycle state.
+    pub async fn state(&self) -> RecordingState {
         self.state.lock().await.clone()
     }
 
@@ -822,7 +824,7 @@ mod tests {
     #[tokio::test]
     async fn test_input_pipeline_initial_state() {
         let pipeline = InputPipeline::new();
-        let state = pipeline.get_state().await;
+        let state = pipeline.state().await;
         assert_eq!(state, RecordingState::Pending);
     }
 
@@ -867,9 +869,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_get_vad_state_default() {
+    async fn test_vad_state_default() {
         let pipeline = InputPipeline::new();
-        let state = pipeline.get_vad_state().await;
+        let state = pipeline.vad_state().await;
         assert_eq!(state, vad::VadState::Silent);
     }
 

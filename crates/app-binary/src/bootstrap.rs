@@ -394,7 +394,7 @@ pub(crate) fn run() {
                         "mute" => {
                             let shell = state.runtime.shell.clone();
                             runtime.spawn("tray-mute", async move {
-                                    let shell_state = shell.get_state().await;
+                                    let shell_state = shell.state().await;
                                     shell.set_muted(!shell_state.is_muted).await;
                             });
                         }
@@ -581,7 +581,7 @@ pub(crate) fn run() {
                         if hotkey_capture_active.load(Ordering::Acquire) {
                             return;
                         }
-                        let shell_state = shell.get_state().await;
+                        let shell_state = shell.state().await;
                         if shell_state.is_muted {
                             return;
                         }
