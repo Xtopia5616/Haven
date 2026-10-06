@@ -1323,13 +1323,13 @@
 							class:page-shell--loading={!lazyViewComponents.settings}
 						>
 							{#if lazyViewComponents.settings}
-								<WorkspaceSurface
+								{@const SettingsViewComponent = lazyViewComponents.settings}
+								<SettingsViewComponent
+									isVisible={activeTab === 'settings'}
 									entering={enteringTab === tab.id}
 									onAnimationEnd={(/** @type {AnimationEvent} */ event) =>
 										finishTabEntry(tab.id, event)}
-								>
-									<TabComponent isVisible={activeTab === 'settings'} />
-								</WorkspaceSurface>
+								/>
 							{:else if lazyViewStates.settings === 'error'}
 								<WorkspaceSurface
 									entering={enteringTab === tab.id}

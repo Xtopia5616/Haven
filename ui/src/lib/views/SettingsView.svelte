@@ -4,7 +4,15 @@
 	 * The Rust update command accepts one full Settings snapshot, so persistence
 	 * and dirty comparison stay centralized while each intent group owns its UI.
 	 */
-	let { isVisible = true }: { isVisible?: boolean } = $props();
+	let {
+		isVisible = true,
+		entering = false,
+		onAnimationEnd = () => {},
+	}: {
+		isVisible?: boolean;
+		entering?: boolean;
+		onAnimationEnd?: (event: AnimationEvent) => void;
+	} = $props();
 	import { onMount, onDestroy, tick } from 'svelte';
 	import { invoke } from '$lib/tauri.ts';
 	import { registerListeners } from '$lib/events.ts';
@@ -29,7 +37,9 @@
 	import SettingsDiagnostics from './SettingsDiagnostics.svelte';
 	import SettingsSecurity from './SettingsSecurity.svelte';
 	import SettingsLimits from './SettingsLimits.svelte';
+	import SettingsSaveBar from './SettingsSaveBar.svelte';
 	import WorkspacePageHeader from '$lib/WorkspacePageHeader.svelte';
+	import WorkspaceSurface from '$lib/WorkspaceSurface.svelte';
 	import type {
 		ApiKeyStatus,
 		AudioConfigInput,
@@ -341,7 +351,7 @@
 	let leaveDialogOpen = $state(false);
 	let leaveDialogResolve: ((ok: boolean) => void) | null = null;
 	let leaveSaving = $state(false);
-	let saveState = $state('idle');
+	let saveState = $state<'idle' | 'saving' | 'saved' | 'error'>('idle');
 	let saveError = $state('');
 	let securityRuntimeStatus = $state<'current' | 'unchanged' | 'incomplete'>('current');
 	let securityRuntimeNotice = $state('安全策略已按当前配置完成运行时应用。');
@@ -1249,160 +1259,149 @@
 	}
 </script>
 
-<div class="settings-page">
-	<WorkspacePageHeader
-		title="设置"
-		description="按用途分组管理 Haven 配置；修改分类后可以继续浏览，离开页面时会提醒保存。"
-	/>
-	<div class="settings-layout workspace-secondary-layout responsive-layout-transition">
-		<aside class="settings-sidebar workspace-secondary-sidebar responsive-layout-panel">
-			<MaterialTabs
-				tabs={settingsTabs}
-				activeTab={settingsTab}
-				onNavigate={changeSettingsTab}
-				ariaLabel="设置分类"
-				idPrefix="settings-tab"
-				panelId="settings-panel"
-				className="workspace-secondary-tabs workspace-secondary-tabs--sidebar"
-				{isVisible}
-			/>
-		</aside>
-		<div class="settings-main workspace-secondary-main">
-			<div id="settings-panel" role="tabpanel" aria-label={activeSettingsSection.label}>
-				<div class="settings-panel-heading">
-					<div>
-						<h2>{activeSettingsSection.label}</h2>
-						<p>{activeSettingsSection.description}</p>
-					</div>
-					{#if dirtySettingsSectionIds.includes(settingsTab)}
-						<span class="settings-dirty-badge">有未保存修改</span>
-					{/if}
-				</div>
-				{#if visitedSettingsTabs.includes('behavior')}
-					<div hidden={settingsTab !== 'behavior'}>
-						<SettingsBehavior
-							{hotkeyMode}
-							{hotkeyBinding}
-							{session}
-							{defaultShell}
-							{shellAvailable}
-							{memory}
-							{memoryMaintenance}
-							onHotkeyModeChange={setHotkeyMode}
-							onHotkeyBindingChange={setHotkeyBinding}
-							onHotkeyCaptureChange={setHotkeyCaptureActive}
-							onDefaultShellChange={setDefaultShell}
-							onRunMaintenance={runMaintenance}
-						/>
-					</div>
-				{/if}
-				{#if visitedSettingsTabs.includes('appearance')}
-					<div hidden={settingsTab !== 'appearance'}>
-						<SettingsAppearance
-							{notification}
-							{autostartEnabled}
-							onAutostartChange={setAutostart}
-						/>
-					</div>
-				{/if}
-				{#if visitedSettingsTabs.includes('diagnostics')}
-					<div hidden={settingsTab !== 'diagnostics'}>
-						<SettingsDiagnostics {log} />
-					</div>
-				{/if}
-				{#if visitedSettingsTabs.includes('models') || visitedSettingsTabs.includes('media')}
-					<div hidden={settingsTab !== 'models' && settingsTab !== 'media'}>
-						{#if settingsLoaded}
-							<ModelSettings
-								section={modelSection}
-								active={settingsTab === 'models' || settingsTab === 'media'}
-								{llmConfig}
-								{audio}
-								{stt}
-								{ocr}
-								{tts}
-								{imageGen}
-								{mediaInputStrategy}
-								{contextLimits}
-								{keyConfigured}
-								{keyConfiguredProviders}
-								{mcpServerNames}
-								loaded={true}
-								onDiscoverySettled={reBaselineAfterDiscovery}
-								onProviderDiscoveryFailure={(
-									/** @type {string} */ providerName,
-									/** @type {boolean} */ staticCatalog,
-								) => {
-									providerDiscoveryAlert = { providerName, staticCatalog };
-								}}
-							/>
-						{:else}
-							<p class="model-hint">正在加载模型与 API Key 状态…</p>
-						{/if}
-					</div>
-				{/if}
-				{#if visitedSettingsTabs.includes('security')}
-					<div hidden={settingsTab !== 'security'}>
-						<SettingsSecurity
-							{security}
-							{sessionPermissions}
-							securityDirty={dirtySettingsSectionIds.includes('security')}
-							{securityRuntimeStatus}
-							{securityRuntimeNotice}
-			onRevokePermission={revokePermission}
-			onRevokeSessionPermission={revokeSessionPermission}
-			onResetPermissions={resetPermissions}
-			onResetSessionPermissions={resetSessionPermissions}
-		/>
-					</div>
-				{/if}
-				{#if visitedSettingsTabs.includes('limits')}
-					<div hidden={settingsTab !== 'limits'}>
-						<SettingsLimits {contextLimits} />
-					</div>
-				{/if}
-			</div>
-			<div
-				class="save-bar save-bar--bottom-edge md-toolbar"
-				class:save-bar--hidden={!saveBarVisible}
-				aria-hidden={!saveBarVisible}
-				inert={!saveBarVisible}
-			>
-				{#if saveState === 'error'}
-					<p class="save-error" role="alert">{saveError}</p>
-				{/if}
-				<div class="save-summary" aria-live="polite">
-					<strong>有未保存更改</strong>
-					<span>
-						{dirtySettingsSectionLabels.length
-							? dirtySettingsSectionLabels.join('、')
-							: '设置'}
-					</span>
-				</div>
-				<div class="save-actions">
-					<MaterialButton
-						variant="outlined"
-						className="save-action-btn"
-						label="放弃"
-						onclick={discardAndReset}
-						disabled={saveState === 'saving'}
-					/>
-					<div
-						class="save-button-status"
-						aria-live="polite"
-						aria-busy={saveState === 'saving'}
+<div class="settings-view-shell">
+	<div class="settings-surface-slot">
+		<WorkspaceSurface {entering} {onAnimationEnd}>
+			<div class="settings-page">
+				<WorkspacePageHeader
+					title="设置"
+					description="按用途分组管理 Haven 配置；修改分类后可以继续浏览，离开页面时会提醒保存。"
+				/>
+				<div
+					class="settings-layout workspace-secondary-layout responsive-layout-transition"
+				>
+					<aside
+						class="settings-sidebar workspace-secondary-sidebar responsive-layout-panel"
 					>
-						<MaterialButton
-							variant="filled"
-							className="save-action-btn save-btn--dirty"
-							label={saveState === 'saving' ? '保存中…' : '保存'}
-							onclick={handleSaveClick}
-							disabled={saveState === 'saving'}
+						<MaterialTabs
+							tabs={settingsTabs}
+							activeTab={settingsTab}
+							onNavigate={changeSettingsTab}
+							ariaLabel="设置分类"
+							idPrefix="settings-tab"
+							panelId="settings-panel"
+							className="workspace-secondary-tabs workspace-secondary-tabs--sidebar"
+							{isVisible}
 						/>
+					</aside>
+					<div class="settings-main workspace-secondary-main">
+						<div
+							id="settings-panel"
+							role="tabpanel"
+							aria-label={activeSettingsSection.label}
+						>
+							<div class="settings-panel-heading">
+								<div>
+									<h2>{activeSettingsSection.label}</h2>
+									<p>{activeSettingsSection.description}</p>
+								</div>
+								{#if dirtySettingsSectionIds.includes(settingsTab)}
+									<span class="settings-dirty-badge">有未保存修改</span>
+								{/if}
+							</div>
+							{#if visitedSettingsTabs.includes('behavior')}
+								<div hidden={settingsTab !== 'behavior'}>
+									<SettingsBehavior
+										{hotkeyMode}
+										{hotkeyBinding}
+										{session}
+										{defaultShell}
+										{shellAvailable}
+										{memory}
+										{memoryMaintenance}
+										onHotkeyModeChange={setHotkeyMode}
+										onHotkeyBindingChange={setHotkeyBinding}
+										onHotkeyCaptureChange={setHotkeyCaptureActive}
+										onDefaultShellChange={setDefaultShell}
+										onRunMaintenance={runMaintenance}
+									/>
+								</div>
+							{/if}
+							{#if visitedSettingsTabs.includes('appearance')}
+								<div hidden={settingsTab !== 'appearance'}>
+									<SettingsAppearance
+										{notification}
+										{autostartEnabled}
+										onAutostartChange={setAutostart}
+									/>
+								</div>
+							{/if}
+							{#if visitedSettingsTabs.includes('diagnostics')}
+								<div hidden={settingsTab !== 'diagnostics'}>
+									<SettingsDiagnostics {log} />
+								</div>
+							{/if}
+							{#if visitedSettingsTabs.includes('models') || visitedSettingsTabs.includes('media')}
+								<div hidden={settingsTab !== 'models' && settingsTab !== 'media'}>
+									{#if settingsLoaded}
+										<ModelSettings
+											section={modelSection}
+											active={settingsTab === 'models' ||
+												settingsTab === 'media'}
+											{llmConfig}
+											{audio}
+											{stt}
+											{ocr}
+											{tts}
+											{imageGen}
+											{mediaInputStrategy}
+											{contextLimits}
+											{keyConfigured}
+											{keyConfiguredProviders}
+											{mcpServerNames}
+											loaded={true}
+											onDiscoverySettled={reBaselineAfterDiscovery}
+											onProviderDiscoveryFailure={(
+												/** @type {string} */ providerName,
+												/** @type {boolean} */ staticCatalog,
+											) => {
+												providerDiscoveryAlert = {
+													providerName,
+													staticCatalog,
+												};
+											}}
+										/>
+									{:else}
+										<p class="model-hint">正在加载模型与 API Key 状态…</p>
+									{/if}
+								</div>
+							{/if}
+							{#if visitedSettingsTabs.includes('security')}
+								<div hidden={settingsTab !== 'security'}>
+									<SettingsSecurity
+										{security}
+										{sessionPermissions}
+										securityDirty={dirtySettingsSectionIds.includes('security')}
+										{securityRuntimeStatus}
+										{securityRuntimeNotice}
+										onRevokePermission={revokePermission}
+										onRevokeSessionPermission={revokeSessionPermission}
+										onResetPermissions={resetPermissions}
+										onResetSessionPermissions={resetSessionPermissions}
+									/>
+								</div>
+							{/if}
+							{#if visitedSettingsTabs.includes('limits')}
+								<div hidden={settingsTab !== 'limits'}>
+									<SettingsLimits {contextLimits} />
+								</div>
+							{/if}
+						</div>
 					</div>
 				</div>
 			</div>
-		</div>
+		</WorkspaceSurface>
+	</div>
+	<div class="settings-save-bar-slot">
+		<SettingsSaveBar
+			visible={saveBarVisible}
+			dirty={settingsDirty}
+			dirtySectionLabels={dirtySettingsSectionLabels}
+			{saveState}
+			{saveError}
+			onDiscard={discardAndReset}
+			onSave={handleSaveClick}
+		/>
 	</div>
 </div>
 
@@ -1461,6 +1460,45 @@
 </MaterialDialog>
 
 <style>
+	.settings-view-shell {
+		--settings-surface-bottom-gap: var(--md-sys-content-gutter);
+		display: grid;
+		flex: 1 1 auto;
+		grid-template-columns: minmax(0, 1fr);
+		grid-template-rows: minmax(0, 1fr) auto;
+		width: 100%;
+		min-width: 0;
+		min-height: 100%;
+	}
+	.settings-surface-slot {
+		grid-column: 1;
+		grid-row: 1;
+		display: flex;
+		min-width: 0;
+		min-height: 0;
+		margin-bottom: var(--settings-surface-bottom-gap);
+	}
+	.settings-surface-slot :global(.workspace-surface) {
+		flex: 1 1 auto;
+		min-height: 0;
+	}
+	.settings-save-bar-slot {
+		grid-column: 1;
+		grid-row: 2;
+		position: sticky;
+		bottom: 0;
+		z-index: 1;
+		min-width: 0;
+		width: 100%;
+	}
+	:global(.content:not(.content--chat) .page-shell:has(.settings-view-shell)) {
+		display: flex;
+		flex-direction: column;
+		min-height: 100%;
+	}
+	:global(.content:not(.content--chat):has(.tab-panel:not([hidden]) .settings-view-shell)) {
+		padding-bottom: 0;
+	}
 	.settings-page {
 		display: flex;
 		flex: 1;
@@ -1469,9 +1507,6 @@
 		min-width: 0;
 		max-width: var(--md-sys-content-max-width);
 		padding-bottom: 0;
-	}
-	:global(.content:not(.content--chat) .page-shell:has(.settings-page)) {
-		min-height: 100%;
 	}
 	.settings-layout {
 		flex: 1;
@@ -1546,79 +1581,12 @@
 		border-radius: var(--md-sys-shape-extra-small);
 		background: color-mix(in srgb, var(--md-sys-color-on-error-container) 8%, transparent);
 	}
-	.save-bar {
-		position: sticky;
-		bottom: 0;
-		display: flex;
-		align-items: center;
-		justify-content: flex-end;
-		gap: var(--md-comp-toolbar-gap);
-		margin-top: auto;
-		padding: var(--md-sys-space-lg) 0 var(--md-sys-space-lg);
-		border-top: 1px solid
-			color-mix(in srgb, var(--md-sys-color-outline-variant) 72%, transparent);
-		background: linear-gradient(
-			180deg,
-			color-mix(in srgb, var(--md-sys-color-surface-container-lowest) 68%, transparent),
-			color-mix(in srgb, var(--md-sys-color-surface-container-lowest) 94%, transparent)
-		);
-		backdrop-filter: blur(10px);
-		-webkit-backdrop-filter: blur(10px);
-		box-shadow:
-			0 -8px 20px color-mix(in srgb, var(--md-sys-color-shadow) 8%, transparent);
-		z-index: 1;
-	}
-	.save-bar--hidden {
-		visibility: hidden;
-	}
-	.save-bar--bottom-edge {
-		margin-bottom: calc(-1 * var(--md-sys-space-lg));
-	}
-	.save-error {
-		margin: 0 auto 0 0;
-		color: var(--md-sys-color-error);
-		font-size: var(--md-sys-typescale-body-small-size);
-		line-height: var(--md-sys-typescale-body-small-line-height);
-	}
-	.save-summary {
-		display: flex;
-		flex-direction: column;
-		gap: var(--md-sys-space-2xs);
-		margin-right: auto;
-		min-width: 0;
-	}
-	.save-summary strong {
-		color: var(--md-sys-color-on-surface);
-		font-size: var(--md-sys-typescale-body-small-size);
-		line-height: var(--md-sys-typescale-body-small-line-height);
-	}
-	.save-summary span {
-		color: var(--md-sys-color-on-surface-variant);
-		font-size: var(--md-sys-typescale-label-small-size);
-		line-height: var(--md-sys-typescale-label-small-line-height);
-	}
-	:global(.save-action-btn) {
-		width: 96px;
-		min-width: 96px;
-	}
-	:global(.save-btn--dirty) {
-		box-shadow: var(--md-sys-elevation-2);
-	}
-	.save-button-status {
-		display: inline-flex;
-	}
-	.save-actions {
-		display: flex;
-		align-items: center;
-		gap: var(--md-sys-space-sm);
-		flex: 0 0 auto;
-	}
 	@media screen and (min-width: 840px) {
 		.settings-page {
 			max-width: none;
 		}
-		.save-bar--bottom-edge {
-			margin-bottom: calc(-1 * var(--md-sys-space-2xl));
+		.settings-view-shell {
+			--settings-surface-bottom-gap: var(--md-sys-space-xl);
 		}
 		.settings-layout {
 			grid-template-rows: minmax(0, 1fr);
@@ -1627,29 +1595,6 @@
 	@container settings-content (max-width: 640px) {
 		.settings-panel-heading {
 			flex-direction: column;
-		}
-		.save-bar {
-			align-items: stretch;
-			flex-direction: column;
-		}
-		.save-actions,
-		.save-actions :global(.md-btn),
-		.save-button-status {
-			width: 100%;
-		}
-		.save-actions > :global(.md-btn),
-		.save-actions > .save-button-status {
-			flex: 1 1 0;
-			min-width: 0;
-		}
-		.save-actions :global(.md-btn) {
-			min-width: 0;
-		}
-		:global(.save-action-btn) {
-			width: 100%;
-		}
-		.save-actions {
-			align-items: stretch;
 		}
 	}
 </style>
