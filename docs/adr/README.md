@@ -584,3 +584,4 @@
 - [0593：为 MCP tool selection 使用具名结果](0593-name-mcp-tool-selection-result.md)
 - [0594：为 builtin tool resume selection 命名字段](0594-name-builtin-tool-resume-selection.md)
 - [0595：明确 ChatSessionController 的会话动作职责](0595-name-chat-session-controller.md)
+- [0596：命名 managed-media cleanup 计数](0596-name-managed-media-cleanup-counts.md)

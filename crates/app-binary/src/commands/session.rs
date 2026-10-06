@@ -35,11 +35,13 @@ async fn cleanup_unreferenced_session_media(state: &AppState, context: &str) {
     )
     .await;
     match cleanup {
-        Ok((uploads, generated)) if uploads > 0 || generated > 0 => {
+        Ok(counts)
+            if counts.removed_upload_batches > 0 || counts.removed_generated_media_files > 0 =>
+        {
             tracing::info!(
                 context,
-                uploads,
-                generated,
+                uploads = counts.removed_upload_batches,
+                generated = counts.removed_generated_media_files,
                 "removed unreferenced session media"
             );
         }

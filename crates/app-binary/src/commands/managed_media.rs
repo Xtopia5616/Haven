@@ -2,6 +2,12 @@
 
 use haven_memory::SessionStore;
 
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ManagedMediaCleanupCounts {
+    pub(crate) removed_upload_batches: usize,
+    pub(crate) removed_generated_media_files: usize,
+}
+
 /// Root folder for user-uploaded files. Lives under the agent's default Temp
 /// working directory so the file tool can read uploads with the same access
 /// the agent already has for its own scripts.
@@ -120,7 +126,7 @@ pub(crate) async fn cleanup_unreferenced_managed_media(
     generated_root: std::path::PathBuf,
     registry: haven_tools::ManagedAssetRegistry,
     session_store: &SessionStore,
-) -> Result<(usize, usize), String> {
+) -> Result<ManagedMediaCleanupCounts, String> {
     let referenced_paths = session_store
         .list_managed_attachment_paths()
         .await
@@ -139,7 +145,7 @@ async fn cleanup_unreferenced_managed_media_with_references(
     generated_root: std::path::PathBuf,
     registry: haven_tools::ManagedAssetRegistry,
     referenced_paths: Result<Vec<std::path::PathBuf>, String>,
-) -> Result<(usize, usize), String> {
+) -> Result<ManagedMediaCleanupCounts, String> {
     let referenced_paths =
         referenced_paths.map_err(|error| format!("读取会话附件引用失败: {error}"))?;
     let upload_guard = upload_write_lock().lock().await;
@@ -172,7 +178,7 @@ async fn cleanup_unreferenced_managed_media_with_references(
 fn cleanup_media_roots(
     cleanup_generated: impl FnOnce() -> Result<usize, String>,
     cleanup_uploads: impl FnOnce() -> Result<usize, String>,
-) -> Result<(usize, usize), String> {
+) -> Result<ManagedMediaCleanupCounts, String> {
     let generated = cleanup_generated();
     let uploads = cleanup_uploads();
     combine_media_cleanup_results(generated, uploads)
@@ -182,7 +188,7 @@ fn cleanup_media_roots_with_generated_guard(
     generated_media_guard: haven_tools::GeneratedMediaCleanupGuard,
     cleanup_generated: impl FnOnce() -> Result<usize, String>,
     cleanup_uploads: impl FnOnce() -> Result<usize, String>,
-) -> Result<(usize, usize), String> {
+) -> Result<ManagedMediaCleanupCounts, String> {
     let generated = cleanup_generated();
     drop(generated_media_guard);
     let uploads = cleanup_uploads();
@@ -192,9 +198,14 @@ fn cleanup_media_roots_with_generated_guard(
 fn combine_media_cleanup_results(
     generated: Result<usize, String>,
     uploads: Result<usize, String>,
-) -> Result<(usize, usize), String> {
+) -> Result<ManagedMediaCleanupCounts, String> {
     match (generated, uploads) {
-        (Ok(generated), Ok(uploads)) => Ok((uploads, generated)),
+        (Ok(removed_generated_media_files), Ok(removed_upload_batches)) => {
+            Ok(ManagedMediaCleanupCounts {
+                removed_upload_batches,
+                removed_generated_media_files,
+            })
+        }
         (Err(error), Ok(_)) => Err(format!("清理生成媒体目录失败: {error}")),
         (Ok(_), Err(error)) => Err(format!("清理上传目录失败: {error}")),
         (Err(generated_error), Err(uploads_error)) => Err(format!(
@@ -815,7 +826,10 @@ mod tests {
             )
             .await
             .unwrap(),
-            (0, 1)
+            ManagedMediaCleanupCounts {
+                removed_upload_batches: 0,
+                removed_generated_media_files: 1,
+            }
         );
         assert!(!clipboard_copy.exists());
     }
@@ -1081,7 +1095,7 @@ mod tests {
             )
             .await
             .unwrap(),
-            (0, 0)
+            ManagedMediaCleanupCounts::default()
         );
         assert!(file.exists());
 
@@ -1095,7 +1109,7 @@ mod tests {
             )
             .await
             .unwrap(),
-            (0, 0)
+            ManagedMediaCleanupCounts::default()
         );
         assert!(file.exists(), "durable shared reference outlives the lease");
 
@@ -1108,7 +1122,10 @@ mod tests {
             )
             .await
             .unwrap(),
-            (0, 1)
+            ManagedMediaCleanupCounts {
+                removed_upload_batches: 0,
+                removed_generated_media_files: 1,
+            }
         );
         assert!(!file.exists());
     }
@@ -1146,7 +1163,10 @@ mod tests {
             )
             .await
             .unwrap(),
-            (0, 1)
+            ManagedMediaCleanupCounts {
+                removed_upload_batches: 0,
+                removed_generated_media_files: 1,
+            }
         );
         assert!(transient.exists());
         assert!(!orphan.exists());

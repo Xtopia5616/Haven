@@ -202,12 +202,16 @@ async fn run_cleanup_pass(
     )
     .await
     {
-        Ok((uploads, generated)) if uploads + generated > 0 => tracing::info!(
-            cleanup = context,
-            uploads,
-            generated,
-            "removed unreferenced managed media"
-        ),
+        Ok(counts)
+            if counts.removed_upload_batches > 0 || counts.removed_generated_media_files > 0 =>
+        {
+            tracing::info!(
+                cleanup = context,
+                uploads = counts.removed_upload_batches,
+                generated = counts.removed_generated_media_files,
+                "removed unreferenced managed media"
+            );
+        }
         Ok(_) => {}
         Err(error) => tracing::warn!(
             cleanup = context,
