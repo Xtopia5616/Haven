@@ -3,8 +3,12 @@
 
 // DTO declarations below are generated from Rust Serialize types.
 
+export const INTERACTION_KIND_VALUES = ['ask', 'confirm', 'scheduled_confirm'] as const;
+export type InteractionKind = (typeof INTERACTION_KIND_VALUES)[number];
 export type InteractionOwnerInput = { kind: 'session'; session_id: string } | { kind: 'scheduled_tool_run'; tool_run_id: string } | { kind: 'app_command' };
 export type InteractionOwner = { kind: 'session'; session_id: string } | { kind: 'scheduled_tool_run'; tool_run_id: string } | { kind: 'app_command' };
+export const INTERACTION_STATUS_VALUES = ['pending', 'resolved', 'expired', 'cancelled'] as const;
+export type InteractionStatus = (typeof INTERACTION_STATUS_VALUES)[number];
 export interface CounterSnapshot { turn_starts: number; first_tokens: number; stream_chunks: number; chunk_drops: number; checkpoint_pending: number; branch_point_failures: number; snapshot_failures: number; projection_failures: number; inbox_ack_failures: number; tool_run_result_retries: number; tool_run_result_duplicates: number; web_search_drops: number }
 export interface GaugeSnapshot { context_queue_items: number }
 export interface MetricsSnapshot { phases: PhaseSnapshot[]; counters: CounterSnapshot; gauges: GaugeSnapshot; ui?: UiMetricsSnapshot }
@@ -24,26 +28,33 @@ export interface LogTail { path: string; content: string }
 export interface McpRefreshResult { added: string[]; removed: string[]; updated: string[]; failed: string[] }
 export interface ApiKeyStatus { models: Record<string, boolean>; providers: Record<string, boolean>; stt: boolean; ocr: boolean; ocr_secret: boolean }
 export interface RecordingState { is_recording: boolean; is_toggle: boolean }
-export type ConfirmationResolutionResult = 'resolved' | 'expired' | 'stale';
+export const CONFIRMATION_RESOLUTION_RESULT_VALUES = ['resolved', 'expired', 'stale'] as const;
+export type ConfirmationResolutionResult = (typeof CONFIRMATION_RESOLUTION_RESULT_VALUES)[number];
 export interface SessionLineageResponse { parent: SessionRecordDto | null; children: SessionRecordDto[] }
 export interface SessionRecordDto { id: string; input_text: string; title: string | null; status: SessionStatus; created_at: string; updated_at: string }
 export interface SessionResumeResponse { session: SessionRecordDto; messages: Message[]; steps: SessionStep[]; usage: SessionUsage | null; llm_usage: LlmCallUsage[]; interactions: InteractionRequestedEvent[] }
 export interface SessionPermissionGrant { session_id: string; session_title: string | null; capability: string; target: string; effect: string }
 export interface ShellAvailability { available: boolean }
-export interface InteractionRequestedEvent { id: string; session_id?: string; owner: InteractionOwner; kind: string; status: string; options?: string[]; tool_name?: string; risk_level?: RiskLevel; summary?: string; permission_key?: string; invocation_step_id?: string; tool_index?: number; tool_call_id?: string; created_at: string; expires_at?: string }
+export interface InteractionRequestedEvent { id: string; session_id?: string; owner: InteractionOwner; kind: InteractionKind; status: InteractionStatus; options?: string[]; tool_name?: string; risk_level?: RiskLevel; summary?: string; permission_key?: string; invocation_step_id?: string; tool_index?: number; tool_call_id?: string; created_at: string; expires_at?: string }
 export interface ToolRunEvent { id: string; kind: ToolRunKind; status?: ToolRunStatus; session_id?: string; source_step_id?: string; started_at?: string; finished_at?: string; due_at?: string; title?: string; body?: string; mode?: string; command?: string; output?: string; error?: string; error_reason?: string; exit_code?: number; preview?: string }
-export type ToolRunKindInput = 'background' | 'scheduled';
-export type ToolRunKind = 'background' | 'scheduled';
-export type CapabilityInput = 'chat' | 'fast_chat' | 'vision' | 'audio_input' | 'transcription' | 'embedding' | 'image_generation' | 'speech_synthesis';
-export type Capability = 'chat' | 'fast_chat' | 'vision' | 'audio_input' | 'transcription' | 'embedding' | 'image_generation' | 'speech_synthesis';
+export const TOOL_RUN_KIND_INPUT_VALUES = ['background', 'scheduled'] as const;
+export type ToolRunKindInput = (typeof TOOL_RUN_KIND_INPUT_VALUES)[number];
+export const TOOL_RUN_KIND_VALUES = ['background', 'scheduled'] as const;
+export type ToolRunKind = (typeof TOOL_RUN_KIND_VALUES)[number];
+export const CAPABILITY_INPUT_VALUES = ['chat', 'fast_chat', 'vision', 'audio_input', 'transcription', 'embedding', 'image_generation', 'speech_synthesis'] as const;
+export type CapabilityInput = (typeof CAPABILITY_INPUT_VALUES)[number];
+export const CAPABILITY_VALUES = ['chat', 'fast_chat', 'vision', 'audio_input', 'transcription', 'embedding', 'image_generation', 'speech_synthesis'] as const;
+export type Capability = (typeof CAPABILITY_VALUES)[number];
 export interface LlmConfigInput { providers?: ProviderConfigInput[]; models?: ModelConfigInput[]; request_policies?: RequestPolicyInput[]; max_total_duration_secs?: number; stream_idle_timeout_secs?: number; retry_max_retries?: number; retry_base_secs?: number; retry_factor?: number; retry_max_secs?: number; retry_jitter?: number; max_concurrent_requests?: number }
 export interface LlmConfig { providers: ProviderConfig[]; models: ModelConfig[]; request_policies: RequestPolicy[]; max_total_duration_secs: number; stream_idle_timeout_secs: number; retry_max_retries: number; retry_base_secs: number; retry_factor: number; retry_max_secs: number; retry_jitter: number; max_concurrent_requests: number }
 export interface ModelConfigInput { id?: string; provider?: string; model?: string; capabilities?: CapabilityInput[]; temperature?: number | null; context_window?: number | null; cost_per_1k_input_tokens?: number | null; cost_per_1k_output_tokens?: number | null; cost_per_1k_cache_read_tokens?: number | null; cost_per_1k_cache_write_tokens?: number | null; max_tokens?: number | null; reasoning_effort?: string | null; web_search?: string | null; reasoning_echo_max_chars?: number | null }
 export interface ModelConfig { id: string; provider: string; model: string; capabilities: Capability[]; temperature?: number; context_window?: number; cost_per_1k_input_tokens?: number; cost_per_1k_output_tokens?: number; cost_per_1k_cache_read_tokens?: number; cost_per_1k_cache_write_tokens?: number; max_tokens?: number; reasoning_effort?: string; web_search?: string; reasoning_echo_max_chars?: number }
 export interface ProviderConfigInput { name?: string; provider?: string; api_style?: string | null; base_url?: string; api_key?: string; api_key_ref?: string | null; auth_header_name?: string; auth_header_prefix?: string; proxy_url?: string | null; no_proxy?: string | null; default_max_tokens?: number | null; default_temperature?: number | null; default_timeout_secs?: number | null; default_timeout_streaming_secs?: number | null; default_web_search?: string | null }
 export interface ProviderConfig { name: string; provider: string; api_style: string | null; base_url: string; api_key_ref?: string; auth_header_name: string; auth_header_prefix: string; proxy_url: string | null; no_proxy: string | null; default_max_tokens?: number; default_temperature?: number; default_timeout_secs?: number; default_timeout_streaming_secs?: number; default_web_search?: string }
-export type RequestKindInput = 'chat' | 'fast_chat' | 'vision' | 'audio_chat' | 'transcription' | 'embedding' | 'image_generation' | 'speech_synthesis';
-export type RequestKind = 'chat' | 'fast_chat' | 'vision' | 'audio_chat' | 'transcription' | 'embedding' | 'image_generation' | 'speech_synthesis';
+export const REQUEST_KIND_INPUT_VALUES = ['chat', 'fast_chat', 'vision', 'audio_chat', 'transcription', 'embedding', 'image_generation', 'speech_synthesis'] as const;
+export type RequestKindInput = (typeof REQUEST_KIND_INPUT_VALUES)[number];
+export const REQUEST_KIND_VALUES = ['chat', 'fast_chat', 'vision', 'audio_chat', 'transcription', 'embedding', 'image_generation', 'speech_synthesis'] as const;
+export type RequestKind = (typeof REQUEST_KIND_VALUES)[number];
 export interface RequestPolicyInput { request?: RequestKindInput; primary?: string }
 export interface RequestPolicy { request: RequestKind; primary: string }
 export interface SettingsInput { default_shell?: ShellChoiceInput; llm?: LlmConfigInput; hotkey?: HotkeyConfigInput; session?: SessionConfigInput; context_limits?: ContextLimitsConfigInput; memory?: MemoryConfigInput; security?: SecurityConfigInput; media?: MediaConfigInput; skills?: SkillsConfigInput; skills_exec?: SkillsExecConfigInput; mcp_discovery?: McpDiscoveryConfigInput; mcp_servers?: McpServerConfigInput[]; notification?: NotificationConfigInput; log?: LogConfigInput; tool_settings?: Record<string, ToolConfigInput> }
@@ -66,8 +77,10 @@ export interface HotkeyConfigInput { mode?: HotkeyModeInput; key_binding?: strin
 export interface HotkeyConfig { mode: HotkeyMode; key_binding: string; mute_hotkey: string | null }
 export interface LogConfigInput { level?: LogLevelInput; file_enabled?: boolean; file_path?: string | null }
 export interface LogConfig { level: LogLevel; file_enabled: boolean; file_path: string | null }
-export type LogLevelInput = 'trace' | 'debug' | 'info' | 'warn' | 'error';
-export type LogLevel = 'trace' | 'debug' | 'info' | 'warn' | 'error';
+export const LOG_LEVEL_INPUT_VALUES = ['trace', 'debug', 'info', 'warn', 'error'] as const;
+export type LogLevelInput = (typeof LOG_LEVEL_INPUT_VALUES)[number];
+export const LOG_LEVEL_VALUES = ['trace', 'debug', 'info', 'warn', 'error'] as const;
+export type LogLevel = (typeof LOG_LEVEL_VALUES)[number];
 export interface McpDiscoveryConfigInput { health_interval_secs?: number; reconnect_initial_ms?: number; reconnect_max_ms?: number; reconnect_max_retries?: number }
 export interface McpDiscoveryConfig { health_interval_secs: number; reconnect_initial_ms: number; reconnect_max_ms: number; reconnect_max_retries: number }
 export interface McpEnvironmentCredentialRefInput { name: string; credential_ref?: string | null; has_value?: boolean }
@@ -92,17 +105,26 @@ export interface StoredPermissionInput { key: string; effect: PermissionEffectIn
 export interface StoredPermission { key: string; effect: PermissionEffect }
 export interface ToolConfigInput { enabled?: boolean; timeout_secs?: number | null; max_output_chars?: number | null; max_retries?: number | null; retry_backoff_secs?: number | null; allowed_paths?: string[]; allowed_domains?: string[]; disabled_operations?: string[]; risk_override?: RiskLevelInput | null }
 export interface ToolConfig { enabled: boolean; timeout_secs?: number; max_output_chars?: number; max_retries?: number; retry_backoff_secs?: number; allowed_paths: string[]; allowed_domains: string[]; disabled_operations: string[]; risk_override: RiskLevel | null }
-export type SessionStatus = 'pending' | 'running' | 'paused' | 'completed' | 'error';
-export type SessionWaitingReason = 'user_input' | 'user_interrupt' | 'ask' | 'confirmation' | 'scheduled_confirmation' | 'background_task' | 'scheduled_task' | 'step_budget' | 'end_incomplete';
-export type ToolRunStatus = 'waiting' | 'running' | 'completed' | 'failed' | 'cancelled';
+export const SESSION_STATUS_VALUES = ['pending', 'running', 'paused', 'completed', 'error'] as const;
+export type SessionStatus = (typeof SESSION_STATUS_VALUES)[number];
+export const SESSION_WAITING_REASON_VALUES = ['user_input', 'user_interrupt', 'ask', 'confirmation', 'scheduled_confirmation', 'background_task', 'scheduled_task', 'step_budget', 'end_incomplete'] as const;
+export type SessionWaitingReason = (typeof SESSION_WAITING_REASON_VALUES)[number];
+export const TOOL_RUN_STATUS_VALUES = ['waiting', 'running', 'completed', 'failed', 'cancelled'] as const;
+export type ToolRunStatus = (typeof TOOL_RUN_STATUS_VALUES)[number];
 export interface MediaAsset { asset_id: string; content_hash: string; media_type: string; size_bytes: number; filename?: string; source: MediaAssetSource; lifecycle: MediaAssetLifecycle; expires_at?: string }
-export type MediaAssetLifecycle = 'request' | 'session' | 'managed' | 'external';
-export type MediaAssetSource = 'user_attachment' | 'recording' | 'window_capture' | 'generated' | 'tool_output';
-export type MediaDerivationInput = 'ocr' | 'stt' | 'document_extract' | 'image_describe' | 'table_extract' | 'thumbnail' | 'tool';
-export type MediaDerivation = 'ocr' | 'stt' | 'document_extract' | 'image_describe' | 'table_extract' | 'thumbnail' | 'tool';
+export const MEDIA_ASSET_LIFECYCLE_VALUES = ['request', 'session', 'managed', 'external'] as const;
+export type MediaAssetLifecycle = (typeof MEDIA_ASSET_LIFECYCLE_VALUES)[number];
+export const MEDIA_ASSET_SOURCE_VALUES = ['user_attachment', 'recording', 'window_capture', 'generated', 'tool_output'] as const;
+export type MediaAssetSource = (typeof MEDIA_ASSET_SOURCE_VALUES)[number];
+export const MEDIA_DERIVATION_INPUT_VALUES = ['ocr', 'stt', 'document_extract', 'image_describe', 'table_extract', 'thumbnail', 'tool'] as const;
+export type MediaDerivationInput = (typeof MEDIA_DERIVATION_INPUT_VALUES)[number];
+export const MEDIA_DERIVATION_VALUES = ['ocr', 'stt', 'document_extract', 'image_describe', 'table_extract', 'thumbnail', 'tool'] as const;
+export type MediaDerivation = (typeof MEDIA_DERIVATION_VALUES)[number];
 export interface MediaInput { asset: MediaAsset; representations: MediaRepresentation[]; preferred_representation?: MediaRepresentationKind }
-export type MediaInputStrategyInput = 'auto' | 'raw_preferred' | 'extracted_preferred' | 'text_only_safe';
-export type MediaInputStrategy = 'auto' | 'raw_preferred' | 'extracted_preferred' | 'text_only_safe';
+export const MEDIA_INPUT_STRATEGY_INPUT_VALUES = ['auto', 'raw_preferred', 'extracted_preferred', 'text_only_safe'] as const;
+export type MediaInputStrategyInput = (typeof MEDIA_INPUT_STRATEGY_INPUT_VALUES)[number];
+export const MEDIA_INPUT_STRATEGY_VALUES = ['auto', 'raw_preferred', 'extracted_preferred', 'text_only_safe'] as const;
+export type MediaInputStrategy = (typeof MEDIA_INPUT_STRATEGY_VALUES)[number];
 export type MediaProvenanceInput = { kind: 'original' } | { kind: 'derived'; operation: MediaDerivationInput; provider?: string | null; source_kind?: MediaRepresentationKindInput | null };
 export type MediaProvenance = { kind: 'original' } | { kind: 'derived'; operation: MediaDerivation; provider?: string | null; source_kind?: MediaRepresentationKind | null };
 export interface MediaRepresentationInput { representation: MediaRepresentationKindInput; provenance: MediaProvenanceInput; confidence?: number | null; cost?: MediaRepresentationCostInput | null; availability: MediaRepresentationAvailabilityInput; payload: MediaRepresentationPayloadInput }
@@ -111,12 +133,15 @@ export type MediaRepresentationAvailabilityInput = { state: 'available' } | { st
 export type MediaRepresentationAvailability = { state: 'available' } | { state: 'pending' } | { state: 'unavailable'; reason: string };
 export interface MediaRepresentationCostInput { estimated_tokens?: number | null; estimated_usd?: number | null }
 export interface MediaRepresentationCost { estimated_tokens?: number; estimated_usd?: number }
-export type MediaRepresentationKindInput = 'raw_image' | 'raw_audio' | 'raw_video' | 'extracted_text' | 'transcript' | 'ocr_text' | 'image_description' | 'document_pages' | 'table_data' | 'thumbnail' | 'managed_file_ref';
-export type MediaRepresentationKind = 'raw_image' | 'raw_audio' | 'raw_video' | 'extracted_text' | 'transcript' | 'ocr_text' | 'image_description' | 'document_pages' | 'table_data' | 'thumbnail' | 'managed_file_ref';
+export const MEDIA_REPRESENTATION_KIND_INPUT_VALUES = ['raw_image', 'raw_audio', 'raw_video', 'extracted_text', 'transcript', 'ocr_text', 'image_description', 'document_pages', 'table_data', 'thumbnail', 'managed_file_ref'] as const;
+export type MediaRepresentationKindInput = (typeof MEDIA_REPRESENTATION_KIND_INPUT_VALUES)[number];
+export const MEDIA_REPRESENTATION_KIND_VALUES = ['raw_image', 'raw_audio', 'raw_video', 'extracted_text', 'transcript', 'ocr_text', 'image_description', 'document_pages', 'table_data', 'thumbnail', 'managed_file_ref'] as const;
+export type MediaRepresentationKind = (typeof MEDIA_REPRESENTATION_KIND_VALUES)[number];
 export type MediaRepresentationPayloadInput = { kind: 'inline_data'; value: { media_type: string; data: string } } | { kind: 'text'; value: string } | { kind: 'structured'; value: unknown } | { kind: 'managed_file_ref'; value: { asset_id: string; filename?: string | null } };
 export type MediaRepresentationPayload = { kind: 'inline_data'; value: { media_type: string; data: string } } | { kind: 'text'; value: string } | { kind: 'structured'; value: unknown } | { kind: 'managed_file_ref'; value: { asset_id: string; filename: string | null } };
 export interface ToolAvailability { enabled: boolean; available: boolean; availability_reason?: string; requires_connection: boolean; requires_permission: boolean }
-export type ToolCatalogGroup = 'haven' | 'system' | 'agent' | 'skills' | 'mcp' | 'other';
+export const TOOL_CATALOG_GROUP_VALUES = ['haven', 'system', 'agent', 'skills', 'mcp', 'other'] as const;
+export type ToolCatalogGroup = (typeof TOOL_CATALOG_GROUP_VALUES)[number];
 export interface ToolIdentity { source: ToolSource; catalog_group: ToolCatalogGroup; root: string; operation: string | null; stable_name: string }
 export interface ToolManifest { identity: ToolIdentity; model: ToolModel; policy: ToolPolicy; presentation: ToolPresentation; root_presentation: ToolRootPresentation; prompt: ToolPrompt; availability: ToolAvailability }
 export interface ToolModel { name: string; description: string; input_schema: unknown }
@@ -124,29 +149,48 @@ export interface ToolPolicy { risk_level: RiskLevel; permission_key: string; con
 export interface ToolPresentation { label: string; renderer: string; icon: string; represented_source: ToolSource }
 export interface ToolPrompt { when_to_use: string; when_not_to_use: string; key_operations: string[] }
 export interface ToolRootPresentation { label: string; description: string; icon: string }
-export type ToolSource = 'builtin' | 'skill' | 'mcp';
-export type HotkeyModeInput = 'toggle' | 'hold';
-export type HotkeyMode = 'toggle' | 'hold';
-export type McpTransportTypeInput = 'stdio' | 'http';
-export type McpTransportType = 'stdio' | 'http';
+export const TOOL_SOURCE_VALUES = ['builtin', 'skill', 'mcp'] as const;
+export type ToolSource = (typeof TOOL_SOURCE_VALUES)[number];
+export const HOTKEY_MODE_INPUT_VALUES = ['toggle', 'hold'] as const;
+export type HotkeyModeInput = (typeof HOTKEY_MODE_INPUT_VALUES)[number];
+export const HOTKEY_MODE_VALUES = ['toggle', 'hold'] as const;
+export type HotkeyMode = (typeof HOTKEY_MODE_VALUES)[number];
+export const MCP_TRANSPORT_TYPE_INPUT_VALUES = ['stdio', 'http'] as const;
+export type McpTransportTypeInput = (typeof MCP_TRANSPORT_TYPE_INPUT_VALUES)[number];
+export const MCP_TRANSPORT_TYPE_VALUES = ['stdio', 'http'] as const;
+export type McpTransportType = (typeof MCP_TRANSPORT_TYPE_VALUES)[number];
 export interface MessageAttachmentInput { asset_id?: string | null; media_type: string; data: string; filename?: string | null; path?: string | null; sha256?: string | null; size_bytes?: number | null; expires_at?: string | null; representations?: MediaRepresentationInput[]; preferred_representation?: MediaRepresentationKindInput | null }
 export interface MessageAttachment { asset_id?: string; media_type: string; data: string; filename?: string; path?: string; sha256?: string; size_bytes?: number; expires_at?: string; representations?: MediaRepresentation[]; preferred_representation?: MediaRepresentationKind }
-export type NetworkPolicyInput = 'deny' | 'ask' | 'restricted' | 'open';
-export type NetworkPolicy = 'deny' | 'ask' | 'restricted' | 'open';
-export type PermissionEffectInput = 'allow' | 'deny';
-export type PermissionEffect = 'allow' | 'deny';
-export type PermissionModeInput = 'default' | 'plan' | 'auto_edit' | 'autonomous';
-export type PermissionMode = 'default' | 'plan' | 'auto_edit' | 'autonomous';
-export type RiskLevelInput = 'safe' | 'low' | 'medium' | 'high' | 'critical';
-export type RiskLevel = 'safe' | 'low' | 'medium' | 'high' | 'critical';
-export type SandboxModeInput = 'read_only' | 'workspace_write' | 'full_access';
-export type SandboxMode = 'read_only' | 'workspace_write' | 'full_access';
-export type ShellChoiceInput = 'powershell' | 'cmd' | 'pwsh';
-export type ShellChoice = 'powershell' | 'cmd' | 'pwsh';
+export const NETWORK_POLICY_INPUT_VALUES = ['deny', 'ask', 'restricted', 'open'] as const;
+export type NetworkPolicyInput = (typeof NETWORK_POLICY_INPUT_VALUES)[number];
+export const NETWORK_POLICY_VALUES = ['deny', 'ask', 'restricted', 'open'] as const;
+export type NetworkPolicy = (typeof NETWORK_POLICY_VALUES)[number];
+export const PERMISSION_EFFECT_INPUT_VALUES = ['allow', 'deny'] as const;
+export type PermissionEffectInput = (typeof PERMISSION_EFFECT_INPUT_VALUES)[number];
+export const PERMISSION_EFFECT_VALUES = ['allow', 'deny'] as const;
+export type PermissionEffect = (typeof PERMISSION_EFFECT_VALUES)[number];
+export const PERMISSION_MODE_INPUT_VALUES = ['default', 'plan', 'auto_edit', 'autonomous'] as const;
+export type PermissionModeInput = (typeof PERMISSION_MODE_INPUT_VALUES)[number];
+export const PERMISSION_MODE_VALUES = ['default', 'plan', 'auto_edit', 'autonomous'] as const;
+export type PermissionMode = (typeof PERMISSION_MODE_VALUES)[number];
+export const RISK_LEVEL_INPUT_VALUES = ['safe', 'low', 'medium', 'high', 'critical'] as const;
+export type RiskLevelInput = (typeof RISK_LEVEL_INPUT_VALUES)[number];
+export const RISK_LEVEL_VALUES = ['safe', 'low', 'medium', 'high', 'critical'] as const;
+export type RiskLevel = (typeof RISK_LEVEL_VALUES)[number];
+export const SANDBOX_MODE_INPUT_VALUES = ['read_only', 'workspace_write', 'full_access'] as const;
+export type SandboxModeInput = (typeof SANDBOX_MODE_INPUT_VALUES)[number];
+export const SANDBOX_MODE_VALUES = ['read_only', 'workspace_write', 'full_access'] as const;
+export type SandboxMode = (typeof SANDBOX_MODE_VALUES)[number];
+export const SHELL_CHOICE_INPUT_VALUES = ['powershell', 'cmd', 'pwsh'] as const;
+export type ShellChoiceInput = (typeof SHELL_CHOICE_INPUT_VALUES)[number];
+export const SHELL_CHOICE_VALUES = ['powershell', 'cmd', 'pwsh'] as const;
+export type ShellChoice = (typeof SHELL_CHOICE_VALUES)[number];
 export interface ModelInfo { id: string; provider: string; name: string; context_window: number; supports_streaming: boolean; supports_tools: boolean; supports_vision: boolean; cost_per_1k_input_tokens?: number; cost_per_1k_output_tokens?: number }
-export type LlmConnectionFailureReason = 'network' | 'timeout' | 'authentication' | 'rate_limited' | 'circuit_open' | 'server' | 'request_rejected' | 'invalid_response' | 'configuration' | 'unknown';
+export const LLM_CONNECTION_FAILURE_REASON_VALUES = ['network', 'timeout', 'authentication', 'rate_limited', 'circuit_open', 'server', 'request_rejected', 'invalid_response', 'configuration', 'unknown'] as const;
+export type LlmConnectionFailureReason = (typeof LLM_CONNECTION_FAILURE_REASON_VALUES)[number];
 export interface LlmConnectionReport { status: LlmConnectionStatus; reason?: LlmConnectionFailureReason; provider: string; model: string }
-export type LlmConnectionStatus = 'ready' | 'disconnected' | 'unconfigured';
+export const LLM_CONNECTION_STATUS_VALUES = ['ready', 'disconnected', 'unconfigured'] as const;
+export type LlmConnectionStatus = (typeof LLM_CONNECTION_STATUS_VALUES)[number];
 export type McpClientStatus = 'Disconnected' | 'Connecting' | 'Connected' | { 'Offline': { error: string } };
 export interface McpServerSnapshot { name: string; transport: string; command: string; args: string[]; env: string[]; cwd: string | null; url: string; enabled: boolean; status: McpClientStatus; tools: McpToolInfo[]; last_error: string | null; diagnostic: string | null; last_seen_at: number | null }
 export interface McpToolInfo { name: string; description: string; input_schema: unknown }

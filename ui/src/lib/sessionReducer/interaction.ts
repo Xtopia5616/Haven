@@ -1,4 +1,8 @@
 import { mapInteractionOwner, type InteractionKind, type InteractionRequest } from '../contracts/app.ts';
+import {
+	INTERACTION_KIND_VALUES,
+	INTERACTION_STATUS_VALUES,
+} from '../contracts/generatedCommands.ts';
 import type { SessionActionOf, SessionReducerState } from './types.ts';
 
 type Action = SessionActionOf<
@@ -146,8 +150,6 @@ function hasValidOwnerContext(request: InteractionRequest): boolean {
 	}
 }
 
-const INTERACTION_KINDS = ['ask', 'confirm', 'scheduled_confirm'] as const;
-const INTERACTION_STATUSES = ['pending', 'resolved', 'expired', 'cancelled'] as const;
 const RISK_LEVELS = ['safe', 'low', 'medium', 'high', 'critical'] as const;
 
 function normalizeInteraction(raw: unknown): InteractionRequest | null {
@@ -165,9 +167,9 @@ function normalizeInteraction(raw: unknown): InteractionRequest | null {
 		(sessionId !== undefined && (typeof sessionId !== 'string' || !sessionId)) ||
 		!owner ||
 		typeof kind !== 'string' ||
-		!INTERACTION_KINDS.includes(kind as (typeof INTERACTION_KINDS)[number]) ||
+		!INTERACTION_KIND_VALUES.includes(kind as (typeof INTERACTION_KIND_VALUES)[number]) ||
 		typeof status !== 'string' ||
-		!INTERACTION_STATUSES.includes(status as (typeof INTERACTION_STATUSES)[number]) ||
+		!INTERACTION_STATUS_VALUES.includes(status as (typeof INTERACTION_STATUS_VALUES)[number]) ||
 		!Array.isArray(options) ||
 		!options.every((option) => typeof option === 'string') ||
 		typeof createdAt !== 'string'

@@ -1,7 +1,13 @@
 /** App-shell IPC event contract at the frontend boundary. */
 
 import type { TauriEvent } from './session.ts';
-import type { InteractionOwner as InteractionOwnerWire } from './generatedCommands.ts';
+import {
+	INTERACTION_KIND_VALUES,
+	INTERACTION_STATUS_VALUES,
+	type InteractionKind as GeneratedInteractionKind,
+	type InteractionOwner as InteractionOwnerWire,
+	type InteractionStatus as GeneratedInteractionStatus,
+} from './generatedCommands.ts';
 
 export const APP_EVENT_NAMES = [
 	'app:bootstrap',
@@ -39,8 +45,8 @@ export interface McpStatusPayload {
 export interface SkillsStatusPayload {
 	op: SkillsStatusOperation;
 }
-export type InteractionKind = 'ask' | 'confirm' | 'scheduled_confirm';
-export type InteractionStatus = 'pending' | 'resolved' | 'expired' | 'cancelled';
+export type InteractionKind = GeneratedInteractionKind;
+export type InteractionStatus = GeneratedInteractionStatus;
 export type InteractionOwner =
 	| { kind: 'session'; sessionId: string }
 	| { kind: 'scheduled_tool_run'; toolRunId: string }
@@ -150,8 +156,6 @@ const MCP_STATUS_NAMES = ['Disconnected', 'Connecting', 'Connected'] as const;
 const BOOTSTRAP_STATUSES = ['loading', 'ready'] as const;
 const TRAY_STATUSES = ['normal', 'recording', 'muted', 'busy'] as const;
 const SKILLS_STATUS_OPERATIONS = ['refresh', 'auto_refresh', 'toggle'] as const;
-const INTERACTION_KINDS = ['ask', 'confirm', 'scheduled_confirm'] as const;
-const INTERACTION_STATUSES = ['pending', 'resolved', 'expired', 'cancelled'] as const;
 const RISK_LEVELS = ['safe', 'low', 'medium', 'high', 'critical'] as const;
 
 function isRecord(value: unknown): value is WireRecord {
@@ -288,8 +292,8 @@ export function mapAppEvent(event: unknown): TauriEvent<AppEventPayloadMap[AppEv
 			if (
 				id === null ||
 				(sessionId !== undefined && (typeof sessionId !== 'string' || !sessionId)) ||
-				!isOneOf(kind, INTERACTION_KINDS) ||
-				!isOneOf(status, INTERACTION_STATUSES) ||
+				!isOneOf(kind, INTERACTION_KIND_VALUES) ||
+				!isOneOf(status, INTERACTION_STATUS_VALUES) ||
 				createdAt === null ||
 				!stringArray(options) ||
 				!optionalStringIsValid(p, 'tool_name') ||

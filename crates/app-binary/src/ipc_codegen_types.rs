@@ -649,7 +649,12 @@ impl RustTypeGraph {
         usage: TypeUse,
         emitted_type_name: &str,
     ) -> Result<String, String> {
-        if definition.manual_string_enum {
+        let is_plain_string_enum = definition.manual_string_enum
+            || (!definition.serde.untagged
+                && definition.serde.tag.is_none()
+                && definition.serde.content.is_none()
+                && variants.iter().all(|variant| variant.unit));
+        if is_plain_string_enum {
             let mut values = Vec::new();
             for variant in variants {
                 if matches!(usage, TypeUse::Response) && variant.skip_serializing {
@@ -658,21 +663,29 @@ impl RustTypeGraph {
                 if matches!(usage, TypeUse::Request) && variant.skip_deserializing {
                     continue;
                 }
-                let serialized = definition
-                    .manual_variant_names
-                    .get(&variant.source_name)
-                    .ok_or_else(|| {
-                        format!(
-                            "manual Serialize for {} has no as_str mapping for {}",
-                            definition.name, variant.source_name
-                        )
-                    })?;
-                values.push(quote_ts_string(serialized));
+                let serialized = if definition.manual_string_enum {
+                    definition
+                        .manual_variant_names
+                        .get(&variant.source_name)
+                        .ok_or_else(|| {
+                            format!(
+                                "manual Serialize for {} has no as_str mapping for {}",
+                                definition.name, variant.source_name
+                            )
+                        })?
+                        .clone()
+                } else {
+                    variant.name.clone()
+                };
+                values.push(quote_ts_string(&serialized));
             }
+            let values_name = apply_case(
+                &format!("{emitted_type_name}_values"),
+                Some("SCREAMING_SNAKE_CASE"),
+            )?;
             return Ok(format!(
-                "export type {} = {};",
-                emitted_type_name,
-                values.join(" | ")
+                "export const {values_name} = [{}] as const;\nexport type {emitted_type_name} = (typeof {values_name})[number];",
+                values.join(", ")
             ));
         }
         if definition.serde.untagged {
@@ -1519,6 +1532,35 @@ mod tests {
             "sessionCompleted"
         );
         assert_eq!(quote_ts_string("session_created"), "'session_created'");
+    }
+
+    #[test]
+    fn plain_string_enums_export_runtime_values_from_the_serde_vocabulary() {
+        let item: syn::ItemEnum = syn::parse_quote! {
+            #[derive(serde::Serialize, serde::Deserialize)]
+            #[serde(rename_all = "snake_case")]
+            enum InteractionKind {
+                Ask,
+                Confirm,
+                ScheduledConfirm,
+            }
+        };
+        let context = RustTypeGraph::test_context();
+        let mut graph = RustTypeGraph::default();
+        graph.collect_items(&[Item::Enum(item)], &context).unwrap();
+        graph
+            .emit_definition("test_crate::InteractionKind", TypeUse::Response)
+            .unwrap();
+
+        let declaration = graph.declarations();
+        assert!(declaration.contains(
+            "export const INTERACTION_KIND_VALUES = ['ask', 'confirm', 'scheduled_confirm'] as const;"
+        ));
+        assert!(
+            declaration.contains(
+                "export type InteractionKind = (typeof INTERACTION_KIND_VALUES)[number];"
+            )
+        );
     }
 
     #[test]

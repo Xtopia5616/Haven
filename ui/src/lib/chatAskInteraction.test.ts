@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import type { InteractionKind } from './contracts/app.ts';
 import { createAskInteractionController } from './chatAskInteraction.ts';
 import { SessionReducer } from './sessionReducer.ts';
 
@@ -217,7 +218,7 @@ describe('createAskInteractionController', () => {
 		const interaction = (
 			id: string,
 			sessionId: string,
-			kind: 'ask' | 'confirm' | 'scheduled_confirm',
+			kind: InteractionKind,
 		) => ({
 			id,
 			sessionId,

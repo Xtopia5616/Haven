@@ -1,4 +1,5 @@
 import type { SessionReducer } from './sessionReducer.ts';
+import type { InteractionKind } from './contracts/app.ts';
 
 interface AskMessage {
 	id: string;
@@ -44,7 +45,7 @@ export function createAskInteractionController({
 	const messagesFor = (sessionId: string): AskMessage[] =>
 		reducer.getMessages(sessionId) as AskMessage[];
 
-	const pendingFor = (sessionId: string, kind: 'ask' | 'confirm' | 'scheduled_confirm') =>
+	const pendingFor = (sessionId: string, kind: InteractionKind) =>
 		Object.values(reducer.getState().interactions || {}).filter(
 			(request) =>
 				request.owner.kind === 'session' &&

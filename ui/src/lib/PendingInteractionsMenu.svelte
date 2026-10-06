@@ -1,10 +1,11 @@
 <script lang="ts">
 	import Icon from './Icon.svelte';
 	import MaterialButton from './MaterialButton.svelte';
+	import type { InteractionKind } from './contracts/app.ts';
 
 	interface PendingInteractionItem {
 		id: string;
-		kind: 'ask' | 'confirm' | 'scheduled_confirm';
+		kind: InteractionKind;
 		title: string;
 		detail: string;
 	}

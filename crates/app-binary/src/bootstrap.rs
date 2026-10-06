@@ -42,19 +42,8 @@ pub(crate) fn project_interaction(
         id: request.id.clone(),
         session_id: request.session_id.clone(),
         owner,
-        kind: match request.kind {
-            haven_agent::InteractionKind::Ask => "ask",
-            haven_agent::InteractionKind::Confirm => "confirm",
-            haven_agent::InteractionKind::ScheduledConfirm => "scheduled_confirm",
-        }
-        .into(),
-        status: match request.status {
-            haven_agent::InteractionStatus::Pending => "pending",
-            haven_agent::InteractionStatus::Resolved => "resolved",
-            haven_agent::InteractionStatus::Expired => "expired",
-            haven_agent::InteractionStatus::Cancelled => "cancelled",
-        }
-        .into(),
+        kind: request.kind,
+        status: request.status,
         options: Vec::new(),
         tool_name: None,
         risk_level: None,
@@ -910,10 +899,36 @@ fn init_app_state(
 
 #[cfg(test)]
 mod tests {
-    use super::pause_running_sessions_on_exit;
+    use super::{pause_running_sessions_on_exit, project_interaction};
     use haven_common::SessionStatus;
     use haven_memory::{Database, SessionStore};
     use std::sync::Arc;
+
+    #[test]
+    fn interaction_projection_keeps_typed_lifecycle_values_on_the_existing_wire() {
+        let request = haven_agent::InteractionRequest::ask(
+            "ses-interaction-projection",
+            Vec::new(),
+            vec!["step-interaction-projection".into()],
+        );
+        let event = project_interaction(
+            &request,
+            haven_agent::InteractionOwner::Session {
+                session_id: "ses-interaction-projection".into(),
+            },
+        );
+
+        let wire = serde_json::to_value(event).unwrap();
+        assert_eq!(wire["kind"], "ask");
+        assert_eq!(wire["status"], "pending");
+        assert_eq!(
+            wire["owner"],
+            serde_json::json!({
+                "kind": "session",
+                "session_id": "ses-interaction-projection",
+            })
+        );
+    }
 
     #[test]
     fn exit_pause_helper_uses_session_store_to_pause_running_sessions() {

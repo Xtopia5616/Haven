@@ -469,8 +469,8 @@ pub(crate) struct InteractionRequestedEvent {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
     pub owner: haven_agent::InteractionOwner,
-    pub kind: String,
-    pub status: String,
+    pub kind: haven_agent::InteractionKind,
+    pub status: haven_agent::InteractionStatus,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub options: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
