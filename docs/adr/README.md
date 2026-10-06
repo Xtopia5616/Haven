@@ -583,3 +583,4 @@
 - [0592：为 Tools operation attributes 使用具名结果](0592-name-tool-operation-attributes.md)
 - [0593：为 MCP tool selection 使用具名结果](0593-name-mcp-tool-selection-result.md)
 - [0594：为 builtin tool resume selection 命名字段](0594-name-builtin-tool-resume-selection.md)
+- [0595：明确 ChatSessionController 的会话动作职责](0595-name-chat-session-controller.md)

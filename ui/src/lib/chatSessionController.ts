@@ -37,7 +37,7 @@ export interface RollbackRequest {
 	msgId: string;
 }
 
-export interface ChatControllerDependencies {
+export interface ChatSessionControllerDependencies {
 	invoke: ChatInvoke;
 	submitTranscript: (text: string, options: {
 		images: ChatImageAttachment[] | null | undefined;
@@ -65,13 +65,13 @@ export interface ChatControllerDependencies {
 }
 
 /** Owns chat session commands and the reducer transitions around them. */
-export class ChatController {
-	private readonly dependencies: ChatControllerDependencies;
+export class ChatSessionController {
+	private readonly dependencies: ChatSessionControllerDependencies;
 	private rollbackInFlight = false;
 	private continueInFlight = false;
 	private interruptInFlight = false;
 
-	constructor(dependencies: ChatControllerDependencies) {
+	constructor(dependencies: ChatSessionControllerDependencies) {
 		this.dependencies = dependencies;
 	}
 
@@ -293,6 +293,8 @@ export class ChatController {
 	}
 }
 
-export function createChatController(dependencies: ChatControllerDependencies): ChatController {
-	return new ChatController(dependencies);
+export function createChatSessionController(
+	dependencies: ChatSessionControllerDependencies,
+): ChatSessionController {
+	return new ChatSessionController(dependencies);
 }

@@ -638,7 +638,7 @@ interaction、usage、Agent stream，以及共享的 types 和 immutable replay/
 live event、resume、rollback 同步和 reconnect replay 都只通过 typed `SessionAction` 迁移。
 `createSessionSelectorStore` 只读订阅同一 writable，按选择值引用门控通知；它不复制 reducer
 状态，selector 的最后一个订阅者离开时释放 root subscription（ADR 0322）。
-`ui/src/lib/chatController.ts` 负责会话命令的异步编排：
+`ui/src/lib/chatSessionController.ts` 负责会话命令的异步编排：
 权威 resume reload、interaction 保留、切换与终态会话内存回收、rollback、continue、end/interrupt 和
 `submitTranscript` 提交适配；它通过 typed dependency 接收 invoke、reducer dispatch、
 session snapshot、通知/错误报告和页面回调，不持有 Svelte state 或 DOM。
@@ -715,7 +715,7 @@ request/result 使用命名 TS contract，`toolRunStore` 不直接 invoke（ADR 
 统一使用 Rust 生成 contract；每个领域仍负责运行时校验、直接调用编排和安全审计。事件尚无全局 codegen，
 各事件 mapper 继续按 ADR 逐域维护。
 `continue_session`、`interrupt_session`、`end_session` 与 `rollback_session` 由
-`ChatController` 单一编排并直接 invoke；请求在 `contracts/commands.ts` 使用命名 DTO，页面逻辑保留
+`ChatSessionController` 单一编排并直接 invoke；请求在 `contracts/commands.ts` 使用命名 DTO，页面逻辑保留
 原 in-flight 锁、错误处理与通知顺序。`resolve_confirmation` 留在 `+layout.svelte` 的 shell confirmation
 入口，因为弹窗必须跨工作区可见；它也使用命名 request DTO 与本地 in-flight guard。没有重复 request
 mapper 或绕过 owner 的 UI caller，IPC script 对照 Rust handler 参数、TS DTO 和直接调用边界（ADR 0371）。

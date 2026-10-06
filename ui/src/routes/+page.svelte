@@ -12,7 +12,7 @@
 		waitingReasonLabel,
 	} from '$lib/sessionStatus.ts';
 	import { submitTranscript } from '$lib/submit.ts';
-	import { createChatController } from '$lib/chatController.ts';
+	import { createChatSessionController } from '$lib/chatSessionController.ts';
 	import { createChatEventController } from '$lib/chatEventController.ts';
 	import { createAskInteractionController } from '$lib/chatAskInteraction.ts';
 	import { createChatSessionStartup } from '$lib/chatSessionStartup.ts';
@@ -99,7 +99,7 @@
 	} from '$lib/contracts/sessionHistory.ts';
 	import type { ToolRunPayload, ToolRunStatus } from '$lib/contracts/toolRun.ts';
 	import type { AgentMediaPlanPayload } from '$lib/contracts/agent.ts';
-	import type { ChatFileAttachment, ChatImageAttachment } from '$lib/chatController.ts';
+	import type { ChatFileAttachment, ChatImageAttachment } from '$lib/chatSessionController.ts';
 	import type { SessionMessageContextMenuRequest } from '$lib/sessionTimeline.ts';
 	import type { ReactExecutionPhaseSnapshot } from '$lib/sessionRuntimeStore.ts';
 
@@ -596,7 +596,7 @@
 	// Terminal sessions are not in get_sessions, so drop their cached messages
 	// when they are deactivated. A later switch reloads them from the database.
 	function evictTerminalSessionMemory(sessionId: string | null) {
-		chatController.evictTerminalSessionMemory(sessionId);
+		chatSessionController.evictTerminalSessionMemory(sessionId);
 	}
 
 	// Owns chat-page event composition and listener registration lifetime.
@@ -892,7 +892,7 @@
 	});
 	const { loadSessions, scheduleLoadSessions } = sessionStartup;
 
-	const chatController = createChatController({
+	const chatSessionController = createChatSessionController({
 		invoke,
 		submitTranscript: (text, options) => submitTranscript(text, options),
 		reducer: sessionReducer,
@@ -923,17 +923,17 @@
 		images?: ChatImageAttachment[] | null,
 		files?: ChatFileAttachment[] | null,
 	) {
-		return chatController.submitMessage(text, images, files);
+		return chatSessionController.submitMessage(text, images, files);
 	}
 
 	function confirmRollbackAction() {
 		const stepNumber = rollbackDialog.stepNumber;
 		if (stepNumber == null) return;
-		return chatController.confirmRollbackAction({ ...rollbackDialog, stepNumber });
+		return chatSessionController.confirmRollbackAction({ ...rollbackDialog, stepNumber });
 	}
 
 	function pendingInteractionIdsForSession(sessionId: string) {
-		return chatController.pendingInteractionIdsForSession(sessionId);
+		return chatSessionController.pendingInteractionIdsForSession(sessionId);
 	}
 
 	async function switchToSession(sessionId: string) {
@@ -963,7 +963,7 @@
 				}
 			}
 		}
-		await chatController.switchToSession(sessionId);
+		await chatSessionController.switchToSession(sessionId);
 		if (historical && isErrorStatus(historical.status)) {
 			dispatchSession({
 				type: 'session/error-shown',
@@ -1000,7 +1000,7 @@
 	}
 
 	function endSession() {
-		return chatController.endSession();
+		return chatSessionController.endSession();
 	}
 
 	function requestDeleteSession() {
@@ -1024,11 +1024,11 @@
 	}
 
 	function interruptOutput() {
-		return chatController.interruptOutput();
+		return chatSessionController.interruptOutput();
 	}
 
 	function handleContinue() {
-		return chatController.handleContinue();
+		return chatSessionController.handleContinue();
 	}
 
 	// True when every currently awaiting ask card has at least one selected

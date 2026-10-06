@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { createChatController, type ChatControllerDependencies } from './chatController.ts';
+import {
+	createChatSessionController,
+	type ChatSessionControllerDependencies,
+} from './chatSessionController.ts';
 import type { InteractionRequest } from './contracts/app.ts';
 import type { SessionResumeInput } from './contracts/sessionHistory.ts';
 import { SessionReducer, type SessionAction } from './sessionReducer.ts';
@@ -25,7 +28,7 @@ function makeHarness(options: {
 	invoke?: (command: string, args?: unknown) => unknown | Promise<unknown>;
 	submit?: (
 		text: string,
-		args: Parameters<ChatControllerDependencies['submitTranscript']>[1],
+		args: Parameters<ChatSessionControllerDependencies['submitTranscript']>[1],
 	) => ProcessResult | Promise<ProcessResult>;
 } = {}) {
 	const reducer = new SessionReducer();
@@ -41,7 +44,7 @@ function makeHarness(options: {
 	const invokeCalls: Array<{ command: string; args?: unknown }> = [];
 	const submitCalls: Array<{
 		text: string;
-		args: Parameters<ChatControllerDependencies['submitTranscript']>[1];
+		args: Parameters<ChatSessionControllerDependencies['submitTranscript']>[1];
 	}> = [];
 	const actions: SessionAction[] = [];
 	const notifications: Array<{ message: string; type: string; duration?: number }> = [];
@@ -58,7 +61,7 @@ function makeHarness(options: {
 	let sessionMenuClosed = 0;
 	let loadSessionsCalls = 0;
 
-	const dependencies: ChatControllerDependencies = {
+	const dependencies: ChatSessionControllerDependencies = {
 		invoke: async <T = unknown>(command: string, args?: unknown): Promise<T> => {
 			invokeCalls.push({ command, args });
 			const result = options.invoke
@@ -101,7 +104,7 @@ function makeHarness(options: {
 	};
 
 	return {
-		controller: createChatController(dependencies),
+		controller: createChatSessionController(dependencies),
 		reducer,
 		invokeCalls,
 		submitCalls,
@@ -152,7 +155,7 @@ function pendingInteraction(sessionId = SESSION_ID): InteractionRequest {
 	};
 }
 
-describe('ChatController rollback', () => {
+describe('ChatSessionController rollback', () => {
 	it('pauses and restores the draft when rolling back a persisted user message', async () => {
 		const harness = makeHarness();
 		await harness.controller.confirmRollbackAction({
@@ -204,7 +207,7 @@ describe('ChatController rollback', () => {
 	});
 });
 
-describe('ChatController continue', () => {
+describe('ChatSessionController continue', () => {
 	it('sends 继续 after generated assistant output and keeps the authoritative reload ordered', async () => {
 		const harness = makeHarness();
 		addMessages(
@@ -331,7 +334,7 @@ describe('ChatController continue', () => {
 	});
 });
 
-describe('ChatController session guards', () => {
+describe('ChatSessionController session guards', () => {
 	it('selects a newly created session after submitTranscript resolves', async () => {
 		const harness = makeHarness({
 			submit: () => ({ SessionCreated: { session_id: OTHER_SESSION_ID } }),
