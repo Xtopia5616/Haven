@@ -548,3 +548,4 @@
 - [0557：统一最近会话恢复 IPC 命令术语](0557-name-latest-session-resume-command.md)
 - [0558：会话授权作用域统一使用 Session 术语](0558-use-session-terminology-for-session-grants.md)
 - [0559：UI 会话时间线复用 SessionMessage 并统一 Session 命名](0559-use-session-message-in-session-timeline.md)
+- [0560：明确 Memory prompt history 查询与 Agent 输入的命名边界](0560-name-session-prompt-history-boundary.md)

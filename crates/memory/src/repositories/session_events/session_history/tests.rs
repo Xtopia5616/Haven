@@ -104,7 +104,7 @@ async fn session_store_loads_title_generation_context_with_original_filter_and_l
 }
 
 #[tokio::test]
-async fn session_store_conversation_window_keeps_latest_limit_in_chronological_order() {
+async fn session_store_lists_latest_prompt_messages_in_chronological_order() {
     let (db, store, session_id) = store();
     let _old = db
         .add_message(&session_id, "user", "old", Some("text"), None)
@@ -116,7 +116,10 @@ async fn session_store_conversation_window_keeps_latest_limit_in_chronological_o
         .add_message(&session_id, "user", "latest", Some("text"), None)
         .unwrap();
 
-    let window = store.conversation_window(&session_id, 2).await.unwrap();
+    let window = store
+        .list_session_prompt_messages(&session_id, 2)
+        .await
+        .unwrap();
 
     assert_eq!(
         window,
@@ -136,7 +139,7 @@ async fn session_store_conversation_window_keeps_latest_limit_in_chronological_o
     let missing_session_id = haven_common::types::new_id("ses");
     assert!(
         store
-            .conversation_window(&missing_session_id, 2)
+            .list_session_prompt_messages(&missing_session_id, 2)
             .await
             .unwrap()
             .is_empty()

@@ -22,8 +22,8 @@ pub struct SessionHistoryFilter {
     pub offset: i64,
 }
 
-/// The identity, role, and text needed to assemble a fresh-run conversation window.
-/// Agent keeps ownership of its `ConversationMessage` prompt type.
+/// The identity, role, and text returned by the bounded session prompt-history query.
+/// Agent keeps ownership of its `SessionPromptMessage` input type.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionMessageText {
     pub id: String,
@@ -56,13 +56,13 @@ pub struct SessionTitleGenerationContext {
 const TITLE_GENERATION_MESSAGE_LIMIT: usize = 10;
 
 impl SessionStore {
-    /// Load the latest textual messages for a fresh-run conversation window.
+    /// List the latest textual messages used as fresh-session prompt history.
     ///
     /// The underlying query preserves its existing message-type filter,
     /// chronological result order, and `limit` behavior. Dropping this future
     /// cannot interrupt a `run_blocking` query already running on Tokio's
     /// blocking pool.
-    pub async fn conversation_window(
+    pub async fn list_session_prompt_messages(
         &self,
         session_id: &str,
         limit: usize,

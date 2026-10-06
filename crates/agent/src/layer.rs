@@ -16,7 +16,7 @@ pub struct AgentLayer {
     #[cfg(test)]
     pub(crate) db: Arc<Database>,
     pub(crate) executor: Arc<SessionSupervisor>,
-    pub(crate) conversation_window_size: usize,
+    pub(crate) session_prompt_history_limit: usize,
     pub(crate) events: Arc<EventDispatcher>,
     pub(crate) prompt_builder: Arc<SystemPromptBuilder>,
     pub(crate) memory: Arc<MemoryService>,
@@ -48,7 +48,7 @@ impl AgentLayer {
         tools: AgentToolPorts,
         router: Arc<LlmRouter>,
         max_steps: u32,
-        conversation_window_size: usize,
+        session_prompt_history_limit: usize,
         context_limits: ContextLimitsConfig,
     ) -> AgentStartup {
         let events = Arc::new(EventDispatcher::new());
@@ -96,7 +96,7 @@ impl AgentLayer {
             #[cfg(test)]
             db: memory_service.database_handle_for_test(),
             executor,
-            conversation_window_size,
+            session_prompt_history_limit,
             events,
             prompt_builder,
             memory: memory_service,

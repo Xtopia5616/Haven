@@ -108,14 +108,14 @@ impl AgentEventEmitter for SuppressLifecycleCancelledSessionErrorEmitter {
     }
 }
 
-/// A recent conversation message (id, role, content) used by the fresh-session
+/// A recent session prompt message (id, role, content) used by the fresh-session
 /// system-prompt path. **S1 authority:** canonical is the LLM truth; this
 /// window may feed Additional context only for turns not already represented
 /// as the first canonical user message. Resume does not use this type: the
 /// durable event stream is the authority and pending inputs are recovered by
 /// durable message identity, not by content comparison.
 #[derive(Debug, Clone)]
-pub(crate) struct ConversationMessage {
+pub(crate) struct SessionPromptMessage {
     id: String,
     role: String,
     content: String,
@@ -189,30 +189,29 @@ impl AgentLayer {
         Ok(restored)
     }
 
-    /// Load the most recent conversation messages for a session as (role,
-    /// content) pairs, for the FRESH-run system-prompt path
+    /// Load the most recent session messages for the FRESH-run system-prompt path
     /// (`prompt_builder.build`). Resume does not consume this: the restored
     /// event stream is the authority, and explicitly pending inputs are
     /// recovered by message identity in `run_session_resumed`.
-    async fn load_conversation_history(
+    async fn load_session_prompt_history(
         &self,
         session_id: &str,
-    ) -> anyhow::Result<Vec<ConversationMessage>> {
+    ) -> anyhow::Result<Vec<SessionPromptMessage>> {
         self.executor
             .session_store()
-            .conversation_window(session_id, self.conversation_window_size)
+            .list_session_prompt_messages(session_id, self.session_prompt_history_limit)
             .await
             .map(|messages| {
                 messages
                     .into_iter()
-                    .map(|message| ConversationMessage {
+                    .map(|message| SessionPromptMessage {
                         id: message.id,
                         role: message.role,
                         content: message.content,
                     })
                     .collect()
             })
-            .map_err(|error| anyhow::anyhow!("failed to load conversation history: {error}"))
+            .map_err(|error| anyhow::anyhow!("failed to load session prompt history: {error}"))
     }
 
     /// Run a session directly by id. ReAct terminal errors are published on
@@ -302,9 +301,9 @@ impl AgentLayer {
         };
         let context = session.input.clone();
 
-        // Conversation history and message persistence are keyed by the session
-        // itself — there is no separate session indirection anymore.
-        let conv_history = self.load_conversation_history(session_id).await?;
+        // Prompt history and message persistence are keyed by session_id;
+        // there is no separate session indirection anymore.
+        let session_prompt_history = self.load_session_prompt_history(session_id).await?;
 
         // Multimodal: carry the first user message's image attachments into
         // the initial canonical user message so the model sees them from the
@@ -413,7 +412,7 @@ impl AgentLayer {
                     &session.id,
                     &description,
                     &context,
-                    &conv_history,
+                    &session_prompt_history,
                     InitialUserInput {
                         attachments: &initial_attachments,
                         media_inputs: &initial_media_inputs,
@@ -600,7 +599,7 @@ impl AgentLayer {
         session_id: &str,
         description: &str,
         context: &str,
-        conversation_history: &[ConversationMessage],
+        session_prompt_history: &[SessionPromptMessage],
         initial: InitialUserInput<'_>,
         terminal_error_owner: TerminalErrorEventOwner,
     ) -> anyhow::Result<Vec<ReActRound>> {
@@ -615,7 +614,7 @@ impl AgentLayer {
         // S1: do not restate the initial user turn inside system Additional
         // context. Use its durable identity; if it is unavailable, keep the
         // history row rather than guessing from equal text.
-        let history_lines: Vec<String> = conversation_history
+        let history_lines: Vec<String> = session_prompt_history
             .iter()
             .filter(|m| {
                 !(m.role == "user"
