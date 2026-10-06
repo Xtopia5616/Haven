@@ -26,6 +26,7 @@ mod tool_builtins;
 pub(crate) mod tool_contract;
 mod tool_core;
 mod tool_run_completion;
+mod tool_run_events;
 mod tool_run_lifecycle;
 mod tool_run_output;
 mod tool_run_retry_policy;
@@ -176,7 +177,8 @@ pub use tool_contract::{
     ToolSource, TypedToolAdapter, TypedToolOperation, extract_ask_signal, extract_notify_signal,
     is_silent_tool_call, parse_tool_input,
 };
-pub(crate) use tool_run_lifecycle::{EventSinkState, ToolRunLifecycle};
+pub use tool_run_events::{ToolRunLifecycleEvent, ToolRunLifecyclePayload, ToolRunOutputPayload};
+pub(crate) use tool_run_lifecycle::ToolRunLifecycle;
 pub(crate) use tool_run_service::BackgroundShellRequest;
 pub use tool_run_service::{
     BackgroundToolRunCompletion, EventSink, ScheduledToolRunResultCompletion, ToolRunCompletion,

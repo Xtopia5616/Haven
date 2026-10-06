@@ -1,10 +1,13 @@
+use crate::ToolRunLifecycleEvent;
 use serde_json::Value;
 use std::sync::{Arc, Mutex, MutexGuard};
 
-/// Shared sink used by both kinds of long-running work. Background processes
-/// and scheduled timers deliberately keep separate state machines and
-/// persistence semantics, while lifecycle event delivery has one owner.
-pub type EventSink = Arc<dyn Fn(String, Value) + Send + Sync>;
+/// Typed sink for ToolRun lifecycle events.
+pub type EventSink = Arc<dyn Fn(ToolRunLifecycleEvent) + Send + Sync>;
+
+/// The foreground tool-output channel is separate from ToolRun lifecycle
+/// events and retains its existing internal JSON envelope.
+pub(crate) type LiveOutputEventSink = Arc<dyn Fn(String, Value) + Send + Sync>;
 
 fn lock_or_recover<'a, T>(lock: &'a Mutex<T>, name: &'static str) -> MutexGuard<'a, T> {
     lock.lock().unwrap_or_else(|poisoned| {
@@ -25,21 +28,32 @@ pub(crate) struct ToolRunLifecycle {
 }
 
 impl ToolRunLifecycle {
-    pub(crate) fn set(&self, sink: EventSink) {
-        self.set_event_sink(sink);
-    }
-
     pub(crate) fn set_event_sink(&self, sink: EventSink) {
         *lock_or_recover(&self.sink, "tool_run_event_sink") = Some(sink);
     }
 
-    pub(crate) fn emit(&self, event: &str, payload: Value) {
+    pub(crate) fn emit(&self, event: ToolRunLifecycleEvent) {
         if let Some(sink) = lock_or_recover(&self.sink, "tool_run_event_sink").as_ref() {
-            sink(event.to_string(), payload);
+            sink(event);
         }
     }
 }
 
-/// Compatibility-free lower-level view used by the two ToolRun registries when
-/// they need to forward the same sink without sharing their business state.
-pub(crate) type EventSinkState = ToolRunLifecycle;
+/// Separate sink state for foreground tool output, which is not a ToolRun
+/// lifecycle event.
+#[derive(Default)]
+pub(crate) struct LiveOutputEventSinkState {
+    sink: Mutex<Option<LiveOutputEventSink>>,
+}
+
+impl LiveOutputEventSinkState {
+    pub(crate) fn set(&self, sink: LiveOutputEventSink) {
+        *lock_or_recover(&self.sink, "live_output_event_sink") = Some(sink);
+    }
+
+    pub(crate) fn emit(&self, event: &str, payload: Value) {
+        if let Some(sink) = lock_or_recover(&self.sink, "live_output_event_sink").as_ref() {
+            sink(event.to_string(), payload);
+        }
+    }
+}

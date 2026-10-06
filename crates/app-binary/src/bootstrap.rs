@@ -12,6 +12,7 @@ use crate::notification::DesktopNotifications;
 use haven_common::config::LogConfig;
 use haven_common::error::sanitize_error_text;
 use haven_memory::SessionStore;
+use haven_tools::ToolRunLifecycleEvent;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use tauri::Emitter;
@@ -323,19 +324,12 @@ pub(crate) fn run() {
                 });
             }
 
-            // Project the single ToolRunService lifecycle stream into the
-            // explicit ToolRun IPC DTO before it reaches the frontend.
-            // Background and scheduled tool_runs use one stable `id` field and
-            // never expose dynamic tool args, continuation prompts, or
-            // output-log paths.
+            // Project the typed ToolRun lifecycle stream into the App-owned
+            // IPC DTO before it reaches the frontend.
             let tool_run_sink_handle = handle.clone();
-                    state.runtime.services.tool_runs.set_event_sink(Arc::new(
-                move |event: String, payload: serde_json::Value| {
-                    let kind = match payload.get("kind").and_then(|value| value.as_str()) {
-                        Some("scheduled") => ToolRunKind::Scheduled,
-                        _ => ToolRunKind::Background,
-                    };
-                    emit_tool_run_event(&tool_run_sink_handle, kind, &event, &payload);
+            state.runtime.services.tool_runs.set_event_sink(Arc::new(
+                move |event: ToolRunLifecycleEvent| {
+                    emit_tool_run_event(&tool_run_sink_handle, event);
                 },
             ));
 

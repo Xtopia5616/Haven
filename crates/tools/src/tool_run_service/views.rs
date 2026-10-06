@@ -485,6 +485,7 @@ pub(super) fn project_board_tool_run(tool_run_id: &str, entry: &ToolRunEntry) ->
     view
 }
 
+#[cfg(test)]
 pub(super) fn scheduled_status_json(
     id: &str,
     session_id: Option<&str>,
@@ -512,24 +513,23 @@ pub(super) fn scheduled_status_json(
     value
 }
 
-pub(super) fn scheduled_finished_json(
+pub(super) fn scheduled_lifecycle_payload(
     id: &str,
     session_id: Option<&str>,
     entry: &ScheduledToolRunEntry,
     state: &ToolRunState,
-) -> Value {
-    let mut value = json!({
-        "id": id,
-        "tool_run_id": id,
-        "kind": "scheduled",
-        "status": state.status().as_str(),
-        "title": entry.title,
-        "body": entry.body,
-        "mode": entry.mode.as_str(),
-        "session_id": session_id,
-        "due_at": entry.due_at,
-    });
+) -> ToolRunLifecyclePayload {
+    let mut payload = ToolRunLifecyclePayload::new(ToolRunKind::Scheduled, id);
+    payload.status = Some(state.status());
+    payload.session_id = session_id.map(str::to_string);
+    payload.title = Some(entry.title.clone());
+    payload.body = Some(entry.body.clone());
+    payload.mode = Some(entry.mode.as_str().to_string());
+    payload.due_at = Some(entry.due_at.clone());
     match state {
+        ToolRunState::Running { started_at } => {
+            payload.started_at = Some(started_at.clone());
+        }
         ToolRunState::Completed {
             started_at,
             finished_at,
@@ -545,16 +545,16 @@ pub(super) fn scheduled_finished_json(
             ..
         } => {
             if !started_at.is_empty() {
-                value["started_at"] = json!(started_at);
+                payload.started_at = Some(started_at.clone());
             }
-            value["finished_at"] = json!(finished_at);
+            payload.finished_at = Some(finished_at.clone());
         }
         _ => {}
     }
     if let ToolRunState::Failed { error_reason, .. } = state {
-        value["error_reason"] = json!(error_reason);
+        payload.error_reason = Some(error_reason.clone());
     }
-    value
+    payload
 }
 
 /// Render the terminal status JSON for a ToolRun (mirrors `status()` output for

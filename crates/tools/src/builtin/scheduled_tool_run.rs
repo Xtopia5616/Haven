@@ -1360,8 +1360,8 @@ mod tests {
         let center = Arc::new(ToolRunService::new());
         let events = Arc::new(Mutex::new(Vec::new()));
         let sink_events = events.clone();
-        center.set_event_sink(Arc::new(move |name, payload| {
-            sink_events.lock().unwrap().push((name, payload));
+        center.set_event_sink(Arc::new(move |event| {
+            sink_events.lock().unwrap().push(event.into_test_parts());
         }));
         let mut rx = center.take_tool_run_receiver().expect("receiver available");
 
@@ -1385,6 +1385,12 @@ mod tests {
         assert_eq!(fired.tool_run_id, id);
         {
             let evs = events.lock().unwrap();
+            let running_evt = evs
+                .iter()
+                .find(|(name, payload)| name == "tool_run:updated" && payload["id"] == id)
+                .expect("tool_run:updated emitted when scheduled ToolRun starts");
+            assert_eq!(running_evt.1["status"], "running");
+            assert!(running_evt.1["started_at"].as_str().is_some());
             assert!(
                 !evs.iter()
                     .any(|(n, payload)| n == "tool_run:finished" && payload["id"] == id)

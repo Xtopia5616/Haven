@@ -1,3 +1,5 @@
+#[cfg(test)]
+use super::views::scheduled_status_json;
 use super::*;
 
 impl ToolRunService {
@@ -157,22 +159,14 @@ impl ToolRunService {
                 scheduled: Some(entry),
             },
         );
-        self.emit(
-            "tool_run:created",
-            json!({
-                "id": id,
-                "tool_run_id": id,
-                "kind": "scheduled",
-                "status": "waiting",
-                "title": title,
-                "body": body,
-                "mode": mode.as_str(),
-                "session_id": session_id,
-                "tool_name": tool_name,
-                "watch_tool_run_id": watch_tool_run_id,
-                "due_at": due_at,
-            }),
-        );
+        let mut created = ToolRunLifecyclePayload::new(ToolRunKind::Scheduled, id.clone());
+        created.status = Some(ToolRunStatus::Waiting);
+        created.session_id = session_id.clone();
+        created.title = Some(title.clone());
+        created.body = Some(body.clone());
+        created.mode = Some(mode.as_str().to_string());
+        created.due_at = Some(due_at.clone());
+        self.emit(ToolRunLifecycleEvent::Created(created));
 
         let service = self.clone();
         let fired_id = id.clone();
@@ -307,17 +301,15 @@ impl ToolRunService {
             }
             tool_run.state = ToolRunState::Running { started_at };
         }
-        self.emit(
-            "tool_run:updated",
-            scheduled_status_json(
-                id,
-                session_id.as_deref(),
-                &schedule,
-                &ToolRunState::Running {
-                    started_at: started_at_for_event,
-                },
-            ),
-        );
+        let running_state = ToolRunState::Running {
+            started_at: started_at_for_event,
+        };
+        self.emit(ToolRunLifecycleEvent::Updated(scheduled_lifecycle_payload(
+            id,
+            session_id.as_deref(),
+            &schedule,
+            &running_state,
+        )));
         self.completion_bus
             .retain_scheduled_fire(payload.clone())
             .await;
@@ -371,10 +363,12 @@ impl ToolRunService {
             {
                 tool_run.state = ToolRunState::Waiting;
             }
-            self.emit(
-                "tool_run:updated",
-                scheduled_status_json(id, session_id.as_deref(), &schedule, &ToolRunState::Waiting),
-            );
+            self.emit(ToolRunLifecycleEvent::Updated(scheduled_lifecycle_payload(
+                id,
+                session_id.as_deref(),
+                &schedule,
+                &ToolRunState::Waiting,
+            )));
             self.arm_scheduled_worker(id.to_string(), &schedule);
         }
     }
@@ -745,10 +739,9 @@ impl ToolRunService {
         entry: &ScheduledToolRunEntry,
         state: &ToolRunState,
     ) {
-        self.emit(
-            "tool_run:finished",
-            scheduled_finished_json(id, session_id, entry, state),
-        );
+        self.emit(ToolRunLifecycleEvent::Finished(
+            scheduled_lifecycle_payload(id, session_id, entry, state),
+        ));
     }
 
     pub(super) async fn cancel_scheduled(&self, id: &str, owner: Option<&str>) -> bool {

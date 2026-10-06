@@ -9,7 +9,6 @@ use tokio::sync::{RwLock, oneshot};
 use tokio_util::sync::CancellationToken;
 use tracing::Instrument;
 
-use crate::ToolRunLifecycle;
 use crate::tool_run_completion::ToolRunCompletionBus;
 pub use crate::tool_run_completion::{
     BackgroundToolRunCompletion, ScheduledToolRunResultCompletion, ToolRunCompletion,
@@ -27,6 +26,9 @@ use crate::tool_run_terminal::{
 };
 use crate::tool_run_trigger_policy::{ScheduledTrigger, ScheduledTriggerRequest};
 use crate::tool_run_types::{ScheduleMode, ScheduledToolRunFired, ScheduledToolRunSpec};
+use crate::{
+    ToolRunLifecycle, ToolRunLifecycleEvent, ToolRunLifecyclePayload, ToolRunOutputPayload,
+};
 use haven_memory::{ToolRunCompletionOutboxRow, ToolRunRow, ToolRunStore};
 
 use crate::output::{append_windows_diagnostics, sanitize_shell_output, summarize_error};
@@ -46,23 +48,10 @@ pub use views::{
 };
 use views::{
     list_view_started_at, project_board_tool_run, render_background_status_json,
-    render_status_json, scheduled_finished_json, scheduled_status_json, scheduled_tool_run_view,
+    render_status_json, scheduled_lifecycle_payload, scheduled_tool_run_view,
 };
 
-/// Optional sink for ToolRun lifecycle events surfaced to the UI. The
-/// sink is called with `(event, payload)` where event is one of:
-/// - `tool_run:created`  — a ToolRun was admitted
-///   `{ tool_run_id, status: "running"|"waiting", kind, started_at|due_at }`
-/// - `tool_run:updated`  — a background ToolRun was bound to a session
-///   `{ tool_run_id, session_id }`, or a scheduled ToolRun changed its live state
-///   (`Waiting ↔ Running`, including no-consumer rollback)
-/// - `tool_run:output`   — live output preview while a ToolRun runs
-///   `{ tool_run_id, status: "running", output }` (bounded tail, emitted periodically)
-/// - `tool_run:finished` — the ToolRun reached a terminal state (full status
-///   JSON, which already carries `tool_run_id`, `status`, and the output/error
-///   payload)
-///
-/// Scheduled ToolRuns use the same callback shape and sink.
+/// Optional typed sink for the closed ToolRun lifecycle event contract.
 pub use crate::tool_run_lifecycle::EventSink;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -418,8 +407,8 @@ impl ToolRunService {
     }
 
     /// Forward a lifecycle event to the installed sink (no-op without one).
-    fn emit(&self, event: &str, payload: Value) {
-        self.event_sink.emit(event, payload);
+    fn emit(&self, event: ToolRunLifecycleEvent) {
+        self.event_sink.emit(event);
     }
 
     /// Replace the unified context limits (background ToolRun concurrency cap,
@@ -1017,9 +1006,48 @@ impl ToolRunService {
         source_step_id: Option<String>,
     ) {
         debug_assert!(state.is_terminal());
-        let status_json =
-            render_background_status_json(tool_run_id, &state, source_step_id.as_deref());
-        self.emit("tool_run:finished", status_json.clone());
+        let mut event = ToolRunLifecyclePayload::new(ToolRunKind::Background, tool_run_id);
+        event.status = Some(state.status());
+        event.source_step_id = source_step_id.clone();
+        match &state {
+            ToolRunState::Completed {
+                output,
+                exit_code,
+                started_at,
+                finished_at,
+                ..
+            } => {
+                event.output = Some(output.clone());
+                event.exit_code = *exit_code;
+                event.started_at = Some(started_at.clone());
+                event.finished_at = Some(finished_at.clone());
+            }
+            ToolRunState::Failed {
+                error,
+                error_reason,
+                exit_code,
+                started_at,
+                finished_at,
+                ..
+            } => {
+                event.error = Some(error.clone());
+                event.error_reason = Some(error_reason.clone());
+                event.exit_code = *exit_code;
+                event.started_at = Some(started_at.clone());
+                event.finished_at = Some(finished_at.clone());
+            }
+            ToolRunState::Cancelled {
+                started_at,
+                finished_at,
+            } => {
+                event.started_at = Some(started_at.clone());
+                event.finished_at = Some(finished_at.clone());
+            }
+            ToolRunState::Waiting | ToolRunState::Running { .. } => {
+                unreachable!("terminal publication requires a terminal ToolRun state")
+            }
+        }
+        self.emit(ToolRunLifecycleEvent::Finished(event));
         self.publish_background_completion(tool_run_id, state, session_id, source_step_id);
     }
 

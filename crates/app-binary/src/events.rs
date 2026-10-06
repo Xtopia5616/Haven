@@ -1,5 +1,5 @@
 use haven_common::{SessionStatus, SessionWaitingReason, ToolRunStatus};
-use haven_tools::ToolRunView;
+use haven_tools::{ToolRunLifecyclePayload, ToolRunOutputPayload, ToolRunView};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -56,6 +56,9 @@ pub(crate) const AGENT_USAGE_EVENT: &str = "agent:usage";
 pub(crate) const AGENT_TOOL_OUTPUT_EVENT: &str = "agent:tool_output";
 pub(crate) const NOTIFICATION_SHOW_EVENT: &str = "notification:show";
 
+/// App-owned wire category. Keep this separate from `haven_tools::ToolRunKind`:
+/// the values currently match, but IPC serialization and field policy belong
+/// to App and must not change when Tools changes its runtime model.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ToolRunKind {
@@ -105,38 +108,40 @@ pub struct ToolRunEvent {
 }
 
 impl ToolRunEvent {
-    pub(crate) fn background_from_value(payload: &Value) -> Result<Self, String> {
-        Ok(Self {
-            id: required_string(payload, "tool_run_id")?,
-            kind: ToolRunKind::Background,
-            status: optional_tool_run_status(payload, "status")?,
-            session_id: optional_string(payload, "session_id")?,
-            source_step_id: optional_string(payload, "source_step_id")?,
-            started_at: optional_string(payload, "started_at")?,
-            finished_at: optional_string(payload, "finished_at")?,
-            due_at: None,
-            title: None,
-            body: None,
-            mode: None,
-            command: optional_string(payload, "command")?,
-            output: optional_string(payload, "output")?,
-            error: optional_string(payload, "error")?,
-            error_reason: optional_string(payload, "error_reason")?,
-            exit_code: optional_i32(payload, "exit_code")?,
-            preview: optional_string(payload, "preview")?,
-        })
+    pub(crate) fn from_lifecycle_payload(payload: ToolRunLifecyclePayload) -> Self {
+        Self {
+            id: payload.tool_run_id,
+            kind: match payload.kind {
+                haven_tools::ToolRunKind::Background => ToolRunKind::Background,
+                haven_tools::ToolRunKind::Scheduled => ToolRunKind::Scheduled,
+            },
+            status: payload.status,
+            session_id: payload.session_id,
+            source_step_id: payload.source_step_id,
+            started_at: payload.started_at,
+            finished_at: payload.finished_at,
+            due_at: payload.due_at,
+            title: payload.title,
+            body: payload.body,
+            mode: payload.mode,
+            command: None,
+            output: payload.output,
+            error: payload.error,
+            error_reason: payload.error_reason,
+            exit_code: payload.exit_code,
+            preview: None,
+        }
     }
 
-    /// Narrow projection for a live `tool_run:output` preview. Command output is
-    /// the only content field on this channel; execution metadata and other
-    /// dynamic values are intentionally ignored even if a producer adds them.
-    pub(crate) fn background_output_from_value(payload: &Value) -> Result<Self, String> {
-        Ok(Self {
-            id: required_string(payload, "tool_run_id")?,
+    /// Narrow projection for a live output preview. The typed Tools payload
+    /// cannot carry command metadata, dynamic arguments, or unbounded stderr.
+    pub(crate) fn from_output_payload(payload: ToolRunOutputPayload) -> Self {
+        Self {
+            id: payload.tool_run_id,
             kind: ToolRunKind::Background,
-            status: optional_tool_run_status(payload, "status")?,
+            status: Some(ToolRunStatus::Running),
             session_id: None,
-            source_step_id: optional_string(payload, "source_step_id")?,
+            source_step_id: payload.source_step_id,
             started_at: None,
             finished_at: None,
             due_at: None,
@@ -144,38 +149,12 @@ impl ToolRunEvent {
             body: None,
             mode: None,
             command: None,
-            output: optional_string(payload, "output")?,
+            output: Some(payload.output),
             error: None,
             error_reason: None,
             exit_code: None,
             preview: None,
-        })
-    }
-
-    pub(crate) fn scheduled_from_value(payload: &Value, cancelled: bool) -> Result<Self, String> {
-        Ok(Self {
-            id: required_string(payload, "id")?,
-            kind: ToolRunKind::Scheduled,
-            status: if cancelled {
-                Some(ToolRunStatus::Cancelled)
-            } else {
-                optional_tool_run_status(payload, "status")?
-            },
-            session_id: optional_string(payload, "session_id")?,
-            source_step_id: None,
-            started_at: optional_string(payload, "started_at")?,
-            finished_at: optional_string(payload, "finished_at")?,
-            due_at: optional_string(payload, "due_at")?,
-            title: optional_string(payload, "title")?,
-            body: optional_string(payload, "body")?,
-            mode: optional_string(payload, "mode")?,
-            command: None,
-            output: None,
-            error: None,
-            error_reason: None,
-            exit_code: None,
-            preview: None,
-        })
+        }
     }
 }
 
@@ -212,63 +191,6 @@ impl ToolRunKind {
             Self::Background => "background",
             Self::Scheduled => "scheduled",
         }
-    }
-}
-
-fn required_string(payload: &Value, field: &str) -> Result<String, String> {
-    let value = optional_string(payload, field)?
-        .ok_or_else(|| format!("ToolRun payload missing string '{field}'"))?;
-    if value.is_empty() {
-        return Err(format!("ToolRun payload string '{field}' cannot be empty"));
-    }
-    Ok(value)
-}
-
-fn optional_string(payload: &Value, field: &str) -> Result<Option<String>, String> {
-    match payload.get(field) {
-        None | Some(Value::Null) => Ok(None),
-        Some(Value::String(value)) => Ok(Some(value.clone())),
-        Some(value) => Err(format!(
-            "ToolRun payload field '{field}' must be a string or null, got {}",
-            value_type(value)
-        )),
-    }
-}
-
-fn optional_tool_run_status(payload: &Value, field: &str) -> Result<Option<ToolRunStatus>, String> {
-    match payload.get(field) {
-        None | Some(Value::Null) => Ok(None),
-        Some(Value::String(value)) => Ok(Some(ToolRunStatus::from_status_str(value))),
-        Some(value) => Err(format!(
-            "ToolRun payload field '{field}' must be a string or null, got {}",
-            value_type(value)
-        )),
-    }
-}
-
-fn optional_i32(payload: &Value, field: &str) -> Result<Option<i32>, String> {
-    match payload.get(field) {
-        None | Some(Value::Null) => Ok(None),
-        Some(Value::Number(value)) => value
-            .as_i64()
-            .and_then(|value| i32::try_from(value).ok())
-            .map(Some)
-            .ok_or_else(|| format!("ToolRun payload field '{field}' must be a 32-bit integer")),
-        Some(value) => Err(format!(
-            "ToolRun payload field '{field}' must be an integer or null, got {}",
-            value_type(value)
-        )),
-    }
-}
-
-fn value_type(value: &Value) -> &'static str {
-    match value {
-        Value::Null => "null",
-        Value::Bool(_) => "boolean",
-        Value::Number(_) => "number",
-        Value::String(_) => "string",
-        Value::Array(_) => "array",
-        Value::Object(_) => "object",
     }
 }
 
@@ -714,16 +636,14 @@ mod tests {
 
     #[test]
     fn tool_run_event_projects_background_status_to_the_stable_wire_shape() {
-        let event = ToolRunEvent::background_from_value(&serde_json::json!({
-            "tool_run_id": "toolrun-1",
-            "status": "completed",
-            "session_id": "ses-1",
-            "source_step_id": "step-1",
-            "output": "done",
-            "exit_code": 0,
-            "log_path": "C:/private/tool-run.log",
-        }))
-        .unwrap();
+        let mut payload =
+            ToolRunLifecyclePayload::new(haven_tools::ToolRunKind::Background, "toolrun-1");
+        payload.status = Some(ToolRunStatus::Completed);
+        payload.session_id = Some("ses-1".into());
+        payload.source_step_id = Some("step-1".into());
+        payload.output = Some("done".into());
+        payload.exit_code = Some(0);
+        let event = ToolRunEvent::from_lifecycle_payload(payload);
 
         assert_eq!(
             serde_json::to_value(event).unwrap(),
@@ -741,20 +661,13 @@ mod tests {
 
     #[test]
     fn tool_run_event_hides_scheduled_execution_details() {
-        let event = ToolRunEvent::scheduled_from_value(
-            &serde_json::json!({
-                "id": "toolrun-2",
-                "status": "waiting",
-                "title": "Reminder",
-                "body": "Take a break",
-                "mode": "tool",
-                "tool_name": "notify",
-                "tool_args": { "token": "secret" },
-                "prompt": "private continuation",
-            }),
-            false,
-        )
-        .unwrap();
+        let mut payload =
+            ToolRunLifecyclePayload::new(haven_tools::ToolRunKind::Scheduled, "toolrun-2");
+        payload.status = Some(ToolRunStatus::Waiting);
+        payload.title = Some("Reminder".into());
+        payload.body = Some("Take a break".into());
+        payload.mode = Some("tool".into());
+        let event = ToolRunEvent::from_lifecycle_payload(payload);
         let wire = serde_json::to_value(event).unwrap();
 
         assert_eq!(wire["id"], "toolrun-2");
@@ -852,39 +765,6 @@ mod tests {
                 "leaked {internal_field}"
             );
         }
-    }
-
-    #[test]
-    fn tool_run_projection_rejects_wrong_optional_field_types() {
-        let result = ToolRunEvent::background_from_value(&serde_json::json!({
-            "tool_run_id": "toolrun-1",
-            "status": 42,
-        }));
-        assert_eq!(
-            result.unwrap_err(),
-            "ToolRun payload field 'status' must be a string or null, got number"
-        );
-    }
-
-    #[test]
-    fn tool_run_projection_rejects_out_of_range_exit_codes() {
-        let result = ToolRunEvent::background_from_value(&serde_json::json!({
-            "tool_run_id": "toolrun-1",
-            "exit_code": 2_147_483_648_i64,
-        }));
-        assert_eq!(
-            result.unwrap_err(),
-            "ToolRun payload field 'exit_code' must be a 32-bit integer"
-        );
-    }
-
-    #[test]
-    fn tool_run_projection_rejects_empty_ids() {
-        let result = ToolRunEvent::scheduled_from_value(&serde_json::json!({"id": ""}), false);
-        assert_eq!(
-            result.unwrap_err(),
-            "ToolRun payload string 'id' cannot be empty"
-        );
     }
 
     #[test]

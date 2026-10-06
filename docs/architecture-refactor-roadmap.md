@@ -1,6 +1,6 @@
 # Haven 架构降复杂度重构路线图
 
-> 状态：阶段 0–8 已完成；SessionUsage 累计上限契约、session-scoped KV 孤儿清理 owner、summary marker 单一原子生产路径、Tools 测试归属、Input→Tools 测试反向依赖、MCP/Skill 直调授权策略来源、MCP 管理操作网络策略来源、X12 例外消息写入口、ADR 编号索引完整性、actorless session ToolRun lifecycle 清理（ADR 0507）、Ask reducer state ownership 收口（ADR 0508）、终态 Ask 清理事件归属（ADR 0509）、ReAct phase 来源 session 身份（ADR 0510）、Windows 子进程先入 Job 再恢复（ADR 0513）、显式 end 失败重试契约（ADR 0514）、Skill venv 子进程 containment（ADR 0515）、MCP prompt index 类型化（ADR 0516）、Memory fact marker generation-safe ack 与有界 durable outbox/session recovery（ADR 0107/0259）、App-owned Shell/hotkey/VAD stop 后处理调度收口（ADR 0517）、MemoryWorker durable outbox lifecycle 私有 owner（ADR 0518）、Session grant/resolve append failure retry 契约测试（ADR 0519）、SessionActor interaction replay fail-closed（ADR 0520）、Session confirmation 决议与恢复唤醒原子提交（ADR 0521）、Pending Session 恢复失败后的退避重试（ADR 0522）、Router/media 共享构造（ADR 0525）、Admin 共用风险等级单一来源（ADR 0528）、单一 `session:lifecycle` 契约与 Memory Fact response DTO（ADR 0529）已完成；当前没有 Active/Next；Windows 发布验收为独立开放签核门
+> 状态：阶段 0–8 已完成；SessionUsage 累计上限契约、session-scoped KV 孤儿清理 owner、summary marker 单一原子生产路径、Tools 测试归属、Input→Tools 测试反向依赖、MCP/Skill 直调授权策略来源、MCP 管理操作网络策略来源、X12 例外消息写入口、ADR 编号索引完整性、actorless session ToolRun lifecycle 清理（ADR 0507）、Ask reducer state ownership 收口（ADR 0508）、终态 Ask 清理事件归属（ADR 0509）、ReAct phase 来源 session 身份（ADR 0510）、Windows 子进程先入 Job 再恢复（ADR 0513）、显式 end 失败重试契约（ADR 0514）、Skill venv 子进程 containment（ADR 0515）、MCP prompt index 类型化（ADR 0516）、Memory fact marker generation-safe ack 与有界 durable outbox/session recovery（ADR 0107/0259）、App-owned Shell/hotkey/VAD stop 后处理调度收口（ADR 0517）、MemoryWorker durable outbox lifecycle 私有 owner（ADR 0518）、Session grant/resolve append failure retry 契约测试（ADR 0519）、SessionActor interaction replay fail-closed（ADR 0520）、Session confirmation 决议与恢复唤醒原子提交（ADR 0521）、Pending Session 恢复失败后的退避重试（ADR 0522）、Router/media 共享构造（ADR 0525）、Admin 共用风险等级单一来源（ADR 0528）、单一 `session:lifecycle` 契约与 Memory Fact response DTO（ADR 0529）、类型化 ToolRun lifecycle events（ADR 0530）已完成；当前没有 Active/Next；Windows 发布验收为独立开放签核门
 > 更新日期：2026-10-06
 > 范围：Agent/Session、Memory、Tools、LLM、App IPC 与 UI
 
@@ -74,7 +74,7 @@
 
 | 状态 | 当前项 |
 |---|---|
-| **Active / Next** | 暂无。ADR 0522、0525、0529 已完成并通过适用门禁；本轮步骤 0 复核没有证据足以将其他已 Deferred 候选推进为 Next，按 §5.5 等待新的触发信号。 |
+| **Active / Next** | 暂无。ADR 0522、0525、0529、0530 已完成并通过适用门禁；本轮步骤 0 复核没有证据足以将其他已 Deferred 候选推进为 Next，按 §5.5 等待新的触发信号。 |
 | **Gate** | Windows 发布验收 Open，见 §5.1。 |
 
 ### 5.1 Windows 发布验收（Gate / Open）

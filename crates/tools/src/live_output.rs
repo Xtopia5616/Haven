@@ -5,10 +5,10 @@
 //! so the chat tool card can expand and show progress. Final observation
 //! remains the LLM/canonical authority; these events are UI-only.
 
+use crate::tool_run_lifecycle::{LiveOutputEventSink, LiveOutputEventSinkState};
 use crate::tool_run_output::{
     ToolRunOutputPort, ToolRunOutputTail, ToolRunTailFactory, ToolRunTailSnapshot,
 };
-use crate::{EventSink, EventSinkState};
 use serde_json::json;
 use std::sync::Arc;
 use std::time::Duration;
@@ -18,7 +18,7 @@ use tokio::sync::RwLock;
 /// output previews to the UI. Wired once by the desktop shell via
 /// [`LiveOutputHub::set_event_sink`].
 pub struct LiveOutputHub {
-    event_sink: EventSinkState,
+    event_sink: LiveOutputEventSinkState,
     /// Shared policy owned by ToolRunService; this hub only emits the
     /// foreground tool-card projection.
     tail_factory: ToolRunTailFactory,
@@ -41,13 +41,13 @@ impl LiveOutputHub {
 
     pub(crate) fn with_tail_factory(tail_factory: ToolRunTailFactory) -> Self {
         Self {
-            event_sink: EventSinkState::default(),
+            event_sink: LiveOutputEventSinkState::default(),
             tail_factory,
             emit_interval: RwLock::new(Duration::from_millis(500)),
         }
     }
 
-    pub fn set_event_sink(&self, sink: EventSink) {
+    pub fn set_event_sink(&self, sink: LiveOutputEventSink) {
         self.event_sink.set(sink);
     }
 

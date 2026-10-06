@@ -474,41 +474,29 @@ fn payload_preserves_session_lifecycle_and_error_wire_shapes() {
 
 #[test]
 fn tool_run_projection_maps_scheduled_progress_to_the_public_contract() {
-    let (_, result) = project_tool_run_event(
-        ToolRunKind::Scheduled,
-        "tool_run:updated",
-        &json!({
-            "id": "toolrun-1",
-            "status": "running",
-            "tool_name": "notify",
-            "tool_args": {"secret": "hidden"},
-        }),
-    )
-    .expect("scheduled progress event is supported");
-    assert_eq!(
-        result.unwrap().status,
-        Some(haven_common::ToolRunStatus::Running)
-    );
-
-    let event =
-        ToolRunEvent::scheduled_from_value(&json!({"id": "toolrun-1", "status": "waiting"}), true)
-            .expect("valid cancellation payload");
-    assert_eq!(event.status, Some(haven_common::ToolRunStatus::Cancelled));
+    let mut payload =
+        haven_tools::ToolRunLifecyclePayload::new(haven_tools::ToolRunKind::Scheduled, "toolrun-1");
+    payload.status = Some(haven_common::ToolRunStatus::Running);
+    payload.title = Some("Reminder".into());
+    let (channel, event) =
+        project_tool_run_event(haven_tools::ToolRunLifecycleEvent::Updated(payload));
+    assert_eq!(channel, TOOL_RUN_UPDATED_EVENT);
+    assert_eq!(event.status, Some(haven_common::ToolRunStatus::Running));
+    assert_eq!(event.title.as_deref(), Some("Reminder"));
 }
 
 #[test]
-fn tool_run_projection_drops_unknown_events_and_malformed_payloads() {
-    assert!(
-        project_tool_run_event(ToolRunKind::Background, "action:unknown", &json!({})).is_none()
-    );
-
-    let (_, result) = project_tool_run_event(
-        ToolRunKind::Background,
-        "tool_run:finished",
-        &json!({"status": "completed"}),
-    )
-    .expect("known ToolRun event");
-    assert!(result.is_err());
+fn tool_run_output_projection_uses_only_typed_preview_fields() {
+    let event = haven_tools::ToolRunLifecycleEvent::Output(haven_tools::ToolRunOutputPayload {
+        tool_run_id: "toolrun-output".into(),
+        source_step_id: Some("step-output".into()),
+        output: "preview".into(),
+    });
+    let (channel, event) = project_tool_run_event(event);
+    assert_eq!(channel, TOOL_RUN_OUTPUT_EVENT);
+    assert_eq!(event.id, "toolrun-output");
+    assert_eq!(event.source_step_id.as_deref(), Some("step-output"));
+    assert_eq!(event.output.as_deref(), Some("preview"));
 }
 
 #[test]

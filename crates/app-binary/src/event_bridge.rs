@@ -4,6 +4,7 @@ use crate::events::*;
 use crate::logging::sanitize_error_text;
 use crate::notification::DesktopNotifications;
 use haven_agent::{AgentEvent, AgentEventEmitter};
+use haven_tools::ToolRunLifecycleEvent;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use tauri::Emitter;
@@ -14,71 +15,36 @@ pub(crate) struct TauriEmitter {
     pub(crate) notifications: Arc<DesktopNotifications>,
 }
 
-/// Adapt one task lifecycle message from `haven-tools` to the public Tauri
-/// contract. Tool payloads are deliberately not emitted directly: they are
-/// internal status JSON and can grow fields without becoming UI API.
-pub(crate) fn emit_tool_run_event(
-    handle: &tauri::AppHandle,
-    kind: ToolRunKind,
-    event: &str,
-    payload: &serde_json::Value,
-) {
-    let Some((channel, action)) = project_tool_run_event(kind, event, payload) else {
-        return;
-    };
-
-    match action {
-        Ok(action) => {
-            if let Err(error) = handle.emit(channel, action) {
-                tracing::warn!(tool_run_kind = ?kind, event, "failed to emit ToolRun lifecycle event: {error}");
-            }
-        }
-        Err(error) => {
-            tracing::warn!(tool_run_kind = ?kind, event, "dropping malformed ToolRun lifecycle payload: {error}");
-        }
+/// Adapt a typed Tools lifecycle event to the App-owned Tauri contract.
+pub(crate) fn emit_tool_run_event(handle: &tauri::AppHandle, event: ToolRunLifecycleEvent) {
+    let (channel, action) = project_tool_run_event(event);
+    if let Err(error) = handle.emit(channel, action) {
+        tracing::warn!(
+            event = channel,
+            "failed to emit ToolRun lifecycle event: {error}"
+        );
     }
 }
 
-pub(crate) fn project_tool_run_event(
-    kind: ToolRunKind,
-    event: &str,
-    payload: &serde_json::Value,
-) -> Option<(&'static str, Result<ToolRunEvent, String>)> {
-    let projected = match (kind, event) {
-        (ToolRunKind::Background, "tool_run:created") => (
+pub(crate) fn project_tool_run_event(event: ToolRunLifecycleEvent) -> (&'static str, ToolRunEvent) {
+    match event {
+        ToolRunLifecycleEvent::Created(payload) => (
             TOOL_RUN_CREATED_EVENT,
-            ToolRunEvent::background_from_value(payload),
+            ToolRunEvent::from_lifecycle_payload(payload),
         ),
-        (ToolRunKind::Background, "tool_run:updated") => (
+        ToolRunLifecycleEvent::Updated(payload) => (
             TOOL_RUN_UPDATED_EVENT,
-            ToolRunEvent::background_from_value(payload),
+            ToolRunEvent::from_lifecycle_payload(payload),
         ),
-        (ToolRunKind::Background, "tool_run:output") => (
+        ToolRunLifecycleEvent::Output(payload) => (
             TOOL_RUN_OUTPUT_EVENT,
-            ToolRunEvent::background_output_from_value(payload),
+            ToolRunEvent::from_output_payload(payload),
         ),
-        (ToolRunKind::Background, "tool_run:finished") => (
+        ToolRunLifecycleEvent::Finished(payload) => (
             TOOL_RUN_FINISHED_EVENT,
-            ToolRunEvent::background_from_value(payload),
+            ToolRunEvent::from_lifecycle_payload(payload),
         ),
-        (ToolRunKind::Scheduled, "tool_run:created") => (
-            TOOL_RUN_CREATED_EVENT,
-            ToolRunEvent::scheduled_from_value(payload, false),
-        ),
-        (ToolRunKind::Scheduled, "tool_run:updated") => (
-            TOOL_RUN_UPDATED_EVENT,
-            ToolRunEvent::scheduled_from_value(payload, false),
-        ),
-        (ToolRunKind::Scheduled, "tool_run:finished") => (
-            TOOL_RUN_FINISHED_EVENT,
-            ToolRunEvent::scheduled_from_value(payload, false),
-        ),
-        (_, unexpected) => {
-            tracing::warn!(tool_run_kind = ?kind, event = unexpected, "dropping unknown ToolRun lifecycle event");
-            return None;
-        }
-    };
-    Some(projected)
+    }
 }
 
 #[cfg(test)]
@@ -88,22 +54,14 @@ mod tests {
 
     #[test]
     fn tool_run_output_event_projects_only_the_bounded_preview_fields() {
-        let payload = serde_json::json!({
-            "tool_run_id": "toolrun-output-preview",
-            "status": "running",
-            "source_step_id": "step-output-preview",
-            "output": "bounded tail snapshot",
-            "command": "echo token=private-command-value",
-            "tool_args": { "token": "private-argument-value" },
-            "log_path": "C:/private/tool-run.log",
-            "stderr": "unbounded stderr value",
+        let event = ToolRunLifecycleEvent::Output(haven_tools::ToolRunOutputPayload {
+            tool_run_id: "toolrun-output-preview".into(),
+            source_step_id: Some("step-output-preview".into()),
+            output: "bounded tail snapshot".into(),
         });
-
-        let (channel, projected) =
-            project_tool_run_event(ToolRunKind::Background, "tool_run:output", &payload)
-                .expect("background output event is registered");
+        let (channel, projected) = project_tool_run_event(event);
         assert_eq!(channel, TOOL_RUN_OUTPUT_EVENT);
-        let wire = serde_json::to_value(projected.unwrap()).unwrap();
+        let wire = serde_json::to_value(projected).unwrap();
         assert_eq!(
             wire,
             serde_json::json!({
@@ -115,14 +73,8 @@ mod tests {
             })
         );
         let serialized = wire.to_string();
-        for private_value in [
-            "private-command-value",
-            "private-argument-value",
-            "private/tool-run.log",
-            "unbounded stderr value",
-        ] {
-            assert!(!serialized.contains(private_value));
-        }
+        assert!(!serialized.contains("tool_args"));
+        assert!(!serialized.contains("log_path"));
     }
 
     #[test]

@@ -246,19 +246,13 @@ impl ToolRunService {
         let tool_run_id = id.clone();
         let shell_owned = shell.to_string();
         let command_owned = command.to_string();
-        self.emit("tool_run:created", {
-            let mut payload = json!({
-            "tool_run_id": tool_run_id,
-            "kind": "background",
-            "status": "running",
-            "session_id": session_id,
-            "started_at": started_at,
-            });
-            if let Some(source_step_id) = source_step_id {
-                payload["source_step_id"] = json!(source_step_id);
-            }
-            payload
-        });
+        let mut created =
+            ToolRunLifecyclePayload::new(ToolRunKind::Background, tool_run_id.clone());
+        created.status = Some(ToolRunStatus::Running);
+        created.session_id = session_id.map(str::to_owned);
+        created.source_step_id = source_step_id.map(str::to_owned);
+        created.started_at = Some(started_at.clone());
+        self.emit(ToolRunLifecycleEvent::Created(created));
         // The direct child pid is captured before `run` moves `child`; on
         // Windows, cancelling must kill the whole process tree, not just the
         // cmd.exe/powershell.exe wrapper.
@@ -357,15 +351,11 @@ impl ToolRunService {
                     _ => return,
                 };
                 if emit_tail.snapshot_if_changed(&mut last_output) {
-                    let mut payload = json!({
-                        "tool_run_id": emit_tool_run_id,
-                        "status": "running",
-                        "output": last_output.as_str(),
-                    });
-                    if let Some(source_step_id) = source_step_id {
-                        payload["source_step_id"] = json!(source_step_id);
-                    }
-                    emit_me.emit("tool_run:output", payload);
+                    emit_me.emit(ToolRunLifecycleEvent::Output(ToolRunOutputPayload {
+                        tool_run_id: emit_tool_run_id.clone(),
+                        source_step_id,
+                        output: last_output.as_str().to_string(),
+                    }));
                 }
             }
         });
@@ -434,16 +424,10 @@ impl ToolRunService {
                 entry.source_step_id.clone(),
             )
         };
-        self.emit("tool_run:updated", {
-            let mut payload = json!({
-                "tool_run_id": tool_run_id,
-                "session_id": session_id,
-            });
-            if let Some(source_step_id) = source_step_id.as_deref() {
-                payload["source_step_id"] = json!(source_step_id);
-            }
-            payload
-        });
+        let mut updated = ToolRunLifecyclePayload::new(ToolRunKind::Background, tool_run_id);
+        updated.session_id = Some(session_id.to_string());
+        updated.source_step_id = source_step_id.clone();
+        self.emit(ToolRunLifecycleEvent::Updated(updated));
         // Headless mode has no durable outbox to recover a completion that was
         // first published without an owner. Re-notify only with the newly
         // bound owner; persistent mode relies on the updated outbox row.
