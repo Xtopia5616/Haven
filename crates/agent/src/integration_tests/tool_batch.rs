@@ -636,7 +636,7 @@ async fn run_session_cancelled_mid_batch_surfaces_interrupted_tools() {
     // Pending step rows created at ToolCall emit must be completed with the
     // Interrupted observation so resume rebuilds the tool cards
     // from session_steps (not live-only UI state).
-    let db_steps = agent.db.get_session_steps(&session.id).unwrap();
+    let db_steps = agent.db.list_session_steps(&session.id).unwrap();
     let interrupted_db = db_steps
         .iter()
         .filter(|s| {

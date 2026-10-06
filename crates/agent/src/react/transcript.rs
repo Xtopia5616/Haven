@@ -909,7 +909,7 @@ mod tests {
 
         assert!(error.to_string().contains("transcript batch exceeds"));
         assert!(engine.event_store.read_all(&session.id).unwrap().is_empty());
-        assert!(db.get_session_messages(&session.id).unwrap().is_empty());
+        assert!(db.list_session_messages(&session.id).unwrap().is_empty());
         assert!(matches!(
             live.try_recv(),
             Err(tokio::sync::broadcast::error::TryRecvError::Empty)
@@ -1075,7 +1075,7 @@ mod tests {
             )),
             "ToolRunResult must emit Supplement for in-chat wake visibility"
         );
-        let steps = db.get_session_steps(&session.id).unwrap_or_default();
+        let steps = db.list_session_steps(&session.id).unwrap_or_default();
         assert!(
             steps.is_empty(),
             "ToolRunResult must not create a thought step"
@@ -1111,14 +1111,14 @@ mod tests {
         assert_eq!(rounds[0].thought.as_deref(), Some("thinking"));
         assert!(state.canonical.is_empty());
         // X12: Thought projects the messages row under the shared id.
-        let msgs = db.get_session_messages(&session.id).unwrap();
+        let msgs = db.list_session_messages(&session.id).unwrap();
         assert!(
             msgs.iter()
                 .any(|m| m.id == mid && m.content == "thinking" && m.role == "assistant"),
             "expected projected thought message, got {msgs:?}"
         );
         assert!(
-            db.get_session_steps(&session.id)
+            db.list_session_steps(&session.id)
                 .unwrap()
                 .iter()
                 .any(|step| step.id == mid && step.tool_name.is_none()),
@@ -1158,7 +1158,7 @@ mod tests {
         let (canon, rounds) = project_transcript(&state.events);
         assert!(canon.is_empty());
         assert!(rounds.is_empty());
-        let msgs = db.get_session_messages(&session.id).unwrap();
+        let msgs = db.list_session_messages(&session.id).unwrap();
         assert!(
             msgs.iter().any(|m| {
                 m.id == mid && m.content == "why" && m.message_type.as_deref() == Some("reasoning")
@@ -1549,7 +1549,7 @@ mod tests {
             )
             .await
             .unwrap();
-        let msgs = db.get_session_messages(&session.id).unwrap();
+        let msgs = db.list_session_messages(&session.id).unwrap();
         assert!(
             msgs.iter()
                 .any(|m| m.id == step_id && m.content == "Pick one?" && m.role == "assistant"),
@@ -1595,8 +1595,8 @@ mod tests {
             .read_active_transcript(&session.id)
             .unwrap();
         assert!(durable.is_empty(), "the event must roll back with its step");
-        assert!(db.get_session_messages(&session.id).unwrap().is_empty());
-        assert_eq!(db.get_session_steps(&session.id).unwrap().len(), 1);
+        assert!(db.list_session_messages(&session.id).unwrap().is_empty());
+        assert_eq!(db.list_session_steps(&session.id).unwrap().len(), 1);
         assert!(recorded.lock().unwrap().is_empty());
         assert!(matches!(
             committed_events.try_recv(),

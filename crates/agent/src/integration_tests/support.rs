@@ -832,7 +832,7 @@ pub(super) async fn seed_hello_snapshot(
         .db
         .add_message(session_id, "user", "interrupt", Some("text"), None)
         .unwrap();
-    let msgs = agent.db.get_session_messages(session_id).unwrap();
+    let msgs = agent.db.list_session_messages(session_id).unwrap();
     let thinking_ts = msgs
         .iter()
         .find(|m| m.role == "assistant")

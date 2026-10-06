@@ -539,3 +539,4 @@
 - [0548：将 StoredBranchPoint 位置元组改为具名结果](0548-name-active-branch-point-fields.md)
 - [0549：为 UI 集合查询统一使用 list 动词](0549-use-list-for-ui-collection-queries.md)
 - [0550：区分 reducer 统计与 usage view 输入](0550-distinguish-session-token-stats-view.md)
+- [0551：Memory 多行持久查询使用 list 动词](0551-use-list-for-memory-collection-queries.md)

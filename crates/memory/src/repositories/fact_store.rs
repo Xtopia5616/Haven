@@ -212,7 +212,7 @@ impl MemoryFactStore {
     ) -> anyhow::Result<Vec<Fact>> {
         self.db
             .run_blocking(move |db| {
-                let facts = db.get_facts(&subject)?;
+                let facts = db.list_facts_by_subject(&subject)?;
                 Ok(MemoryRetriever::filter_visible_facts(facts))
             })
             .await
@@ -362,7 +362,7 @@ mod tests {
                 .unwrap()
         );
 
-        let facts = db.get_facts("user").unwrap();
+        let facts = db.list_facts_by_subject("user").unwrap();
         let rust = facts.iter().find(|fact| fact.object == "Rust").unwrap();
         assert_eq!(rust.mention_count, 1);
         assert!(rust.confidence >= 0.7);

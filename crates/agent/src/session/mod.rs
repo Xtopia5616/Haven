@@ -1796,7 +1796,7 @@ mod tests {
 
         assert!(exec.actor_for(&session.id).await.is_none());
         assert!(db.get_session(&session.id).unwrap().is_none());
-        assert!(db.get_session_messages(&session.id).unwrap().is_empty());
+        assert!(db.list_session_messages(&session.id).unwrap().is_empty());
         assert!(
             db.get_kv(&format!("fact_extraction_pending.{}", session.id))
                 .unwrap()
@@ -1930,8 +1930,8 @@ mod tests {
         assert_eq!(db.count_sessions().unwrap(), 0);
         assert!(db.get_session(&first.id).unwrap().is_none());
         assert!(db.get_session(&second.id).unwrap().is_none());
-        assert!(db.get_session_messages(&first.id).unwrap().is_empty());
-        assert!(db.get_session_messages(&second.id).unwrap().is_empty());
+        assert!(db.list_session_messages(&first.id).unwrap().is_empty());
+        assert!(db.list_session_messages(&second.id).unwrap().is_empty());
         assert!(db.get_kv(&kv_key).unwrap().is_none());
         assert!(exec.clear_sessions_and_delete().await.unwrap().is_empty());
     }

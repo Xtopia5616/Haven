@@ -1561,7 +1561,7 @@ mod tests {
             serde_json::from_str::<serde_json::Value>(&marker.payload).unwrap()["phase"],
             "failed"
         );
-        assert!(db.get_session_messages(&session.id).unwrap().is_empty());
+        assert!(db.list_session_messages(&session.id).unwrap().is_empty());
         let _ = std::fs::remove_file(db_path);
     }
 }

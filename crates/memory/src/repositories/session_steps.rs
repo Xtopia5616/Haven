@@ -361,7 +361,7 @@ impl Database {
         Ok(n)
     }
 
-    pub fn get_session_steps(&self, session_id: &str) -> anyhow::Result<Vec<SessionStep>> {
+    pub fn list_session_steps(&self, session_id: &str) -> anyhow::Result<Vec<SessionStep>> {
         let conn = self.conn();
         let mut stmt = conn.prepare(
             "SELECT id, session_id, step_number, tool_index, tool_name, input, output, thought, tool_call_name, tool_call_input, tool_call_id, observation,
@@ -447,7 +447,7 @@ mod tests {
         assert!(step.thought.is_none());
         assert!(step.tool_name.is_none());
         assert!(step.tool_input.is_none());
-        let steps = db.get_session_steps("ses-1").unwrap();
+        let steps = db.list_session_steps("ses-1").unwrap();
         assert_eq!(steps.len(), 1);
         assert_eq!(steps[0].id, "step-thought-1");
     }
@@ -471,7 +471,7 @@ mod tests {
         assert_eq!(step.tool_name.as_deref(), Some("read_file"));
         assert_eq!(step.tool_input.as_deref(), Some(r#"{"path": "test.txt"}"#));
         assert!(step.thought.is_none());
-        let steps = db.get_session_steps("ses-1").unwrap();
+        let steps = db.list_session_steps("ses-1").unwrap();
         assert_eq!(steps.len(), 1);
     }
 
@@ -484,7 +484,7 @@ mod tests {
             .unwrap();
         db.complete_tool_step(&step.id, "file content here", true)
             .unwrap();
-        let steps = db.get_session_steps("ses-1").unwrap();
+        let steps = db.list_session_steps("ses-1").unwrap();
         assert_eq!(steps[0].observation.as_deref(), Some("file content here"));
         assert_eq!(steps[0].status, "completed");
     }
@@ -497,7 +497,7 @@ mod tests {
             .create_tool_step("ses-1", 0, "shell", "{}", false, false, None, None)
             .unwrap();
         assert!(db.start_tool_step(&step.id).unwrap());
-        let running = db.get_session_steps("ses-1").unwrap();
+        let running = db.list_session_steps("ses-1").unwrap();
         assert_eq!(running[0].status, "running");
         assert!(running[0].started_at.is_some());
         assert!(
@@ -508,7 +508,7 @@ mod tests {
             )
             .unwrap()
         );
-        let finished = db.get_session_steps("ses-1").unwrap();
+        let finished = db.list_session_steps("ses-1").unwrap();
         assert_eq!(finished[0].status, "unknown");
         assert!(finished[0].completed_at.is_some());
         assert!(!db.start_tool_step(&step.id).unwrap());
@@ -523,7 +523,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            db.get_session_steps("ses-1").unwrap()[1].status,
+            db.list_session_steps("ses-1").unwrap()[1].status,
             "cancelled"
         );
     }
@@ -558,7 +558,7 @@ mod tests {
             "step-ensure-1",
         )
         .unwrap();
-        let steps = db.get_session_steps("ses-1").unwrap();
+        let steps = db.list_session_steps("ses-1").unwrap();
         assert_eq!(steps.len(), 1);
         assert_eq!(steps[0].id, "step-ensure-1");
         assert_eq!(steps[0].status, "pending");
@@ -581,7 +581,7 @@ mod tests {
             .fail_pending_tool_run_steps("ses-1", "Session ended before tool finished")
             .unwrap();
         assert_eq!(n, 1);
-        let steps = db.get_session_steps("ses-1").unwrap();
+        let steps = db.list_session_steps("ses-1").unwrap();
         let pending = steps.iter().find(|s| s.id == "step-p1").unwrap();
         assert_eq!(pending.status, "unknown");
         assert_eq!(
@@ -614,21 +614,21 @@ mod tests {
             )
             .unwrap();
         assert!(silent.silent);
-        let steps = db.get_session_steps("ses-1").unwrap();
+        let steps = db.list_session_steps("ses-1").unwrap();
         assert_eq!(steps.len(), 2);
         assert!(!steps[0].silent);
         assert!(steps[1].silent);
     }
 
     #[test]
-    fn get_session_steps_returns_empty_for_unknown_session() {
+    fn list_session_steps_returns_empty_for_unknown_session() {
         let db = test_db();
-        let steps = db.get_session_steps("missing-session").unwrap();
+        let steps = db.list_session_steps("missing-session").unwrap();
         assert!(steps.is_empty());
     }
 
     #[test]
-    fn get_session_steps_preserves_order_by_index() {
+    fn list_session_steps_preserves_order_by_index() {
         let db = test_db();
         seed_session(&db, "ses-1");
         db.create_tool_step("ses-1", 2, "c", "{}", false, false, None, None)
@@ -637,7 +637,7 @@ mod tests {
             .unwrap();
         db.create_tool_step("ses-1", 1, "b", "{}", false, false, None, None)
             .unwrap();
-        let steps = db.get_session_steps("ses-1").unwrap();
+        let steps = db.list_session_steps("ses-1").unwrap();
         assert_eq!(steps.len(), 3);
         assert_eq!(steps[0].step_number, 0);
         assert_eq!(steps[1].step_number, 1);
@@ -656,7 +656,7 @@ mod tests {
         let second = db.create_thought_step("ses-1", 2, "step-second").unwrap();
 
         db.delete_session_steps_after("ses-1", &cutoff).unwrap();
-        let steps = db.get_session_steps("ses-1").unwrap();
+        let steps = db.list_session_steps("ses-1").unwrap();
         assert_eq!(
             steps.len(),
             1,

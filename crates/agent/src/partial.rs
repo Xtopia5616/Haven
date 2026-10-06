@@ -369,7 +369,7 @@ mod tests {
             .unwrap();
         let tid = session_id.clone();
         let msgs = db
-            .run_blocking(move |db| db.get_session_messages(&tid))
+            .run_blocking(move |db| db.list_session_messages(&tid))
             .await
             .unwrap();
         assert_eq!(msgs.len(), 1, "promoted message must not be duplicated");

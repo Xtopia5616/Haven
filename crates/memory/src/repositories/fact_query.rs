@@ -144,8 +144,8 @@ impl Database {
     }
 
     /// Fetch multiple facts by id in one query. The result is in database row
-    /// order; callers that need ranking should use `get_facts`/search APIs.
-    pub fn get_facts_by_ids(&self, ids: &[String]) -> anyhow::Result<Vec<Fact>> {
+    /// order; callers that need ranking should use `list_facts_by_subject`/search APIs.
+    pub fn list_facts_by_ids(&self, ids: &[String]) -> anyhow::Result<Vec<Fact>> {
         if ids.is_empty() {
             return Ok(Vec::new());
         }
@@ -165,7 +165,7 @@ impl Database {
         Ok(out)
     }
 
-    pub fn get_facts(&self, subject: &str) -> anyhow::Result<Vec<Fact>> {
+    pub fn list_facts_by_subject(&self, subject: &str) -> anyhow::Result<Vec<Fact>> {
         if let Some(cached) = self.cache_get_facts(subject) {
             return Ok(cached);
         }
@@ -186,7 +186,11 @@ impl Database {
 
     /// Seed set for prompt recall: top-`limit` facts for a subject by raw
     /// confidence in SQL, then resorted by effective confidence in Rust.
-    pub fn get_facts_limited(&self, subject: &str, limit: usize) -> anyhow::Result<Vec<Fact>> {
+    pub fn list_facts_by_subject_limited(
+        &self,
+        subject: &str,
+        limit: usize,
+    ) -> anyhow::Result<Vec<Fact>> {
         if limit == 0 {
             return Ok(Vec::new());
         }
@@ -461,7 +465,7 @@ impl Database {
 
     /// Return all facts that carry the given tag using exact JSON-array
     /// membership rather than a substring scan.
-    pub fn get_facts_by_tag(&self, tag: &str) -> anyhow::Result<Vec<Fact>> {
+    pub fn list_facts_by_tag(&self, tag: &str) -> anyhow::Result<Vec<Fact>> {
         let conn = self.conn();
         let mut stmt = conn.prepare(&format!(
             "SELECT {FACT_COLS} FROM facts

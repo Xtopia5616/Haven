@@ -1535,7 +1535,7 @@ mod tests {
             .unwrap_err();
 
         assert!(error.to_string().contains("cancelled"));
-        assert_eq!(db.get_facts("user").unwrap().len(), 2);
+        assert_eq!(db.list_facts_by_subject("user").unwrap().len(), 2);
         assert!(db.get_fact_by_id(&first.id).unwrap().is_some());
     }
 
@@ -1577,7 +1577,7 @@ mod tests {
             "counts from separate rewrites are accumulated"
         );
         assert_eq!(inference.calls.load(Ordering::Relaxed), 1);
-        let facts = db.get_facts("user").unwrap();
+        let facts = db.list_facts_by_subject("user").unwrap();
         assert_eq!(
             facts
                 .iter()
@@ -2554,7 +2554,7 @@ mod tests {
         .expect("the summary job should retry acknowledgement after inference commit");
 
         assert_eq!(inference.calls.load(Ordering::Relaxed), 1);
-        let facts = db.get_facts("user").unwrap();
+        let facts = db.list_facts_by_subject("user").unwrap();
         assert_eq!(facts.len(), 1);
         assert_eq!(facts[0].mention_count, 1);
         worker.shutdown();
@@ -2688,7 +2688,7 @@ mod tests {
 
         assert!(worker.infer_facts(&session.id).await);
 
-        let facts = db.get_facts("user").unwrap();
+        let facts = db.list_facts_by_subject("user").unwrap();
         assert!(
             facts
                 .iter()
@@ -2725,7 +2725,10 @@ mod tests {
             .unwrap();
 
         assert!(!worker.infer_facts(&session.id).await);
-        assert_eq!(db.get_facts("user").unwrap()[0].mention_count, 0);
+        assert_eq!(
+            db.list_facts_by_subject("user").unwrap()[0].mention_count,
+            0
+        );
         assert_eq!(
             db.get_kv(&format!("fact_extraction.{}", session.id))
                 .unwrap(),
@@ -2742,7 +2745,7 @@ mod tests {
                 .as_deref(),
             Some(message.id.as_str())
         );
-        let facts = db.get_facts("user").unwrap();
+        let facts = db.list_facts_by_subject("user").unwrap();
         assert_eq!(facts.len(), 1);
         assert_eq!(facts[0].mention_count, 1);
         assert_eq!(inference.calls.load(Ordering::Relaxed), 2);
@@ -2810,7 +2813,7 @@ mod tests {
             .unwrap();
 
         assert!(wrote);
-        let facts = db.get_facts("user").unwrap();
+        let facts = db.list_facts_by_subject("user").unwrap();
         let rust = facts.iter().find(|fact| fact.object == "Rust").unwrap();
         assert_eq!(
             rust.mention_count, 1,
@@ -2913,7 +2916,10 @@ mod tests {
             None,
             "a failed fact transaction must leave the episode retryable"
         );
-        assert_eq!(db.get_facts("user").unwrap()[0].mention_count, 0);
+        assert_eq!(
+            db.list_facts_by_subject("user").unwrap()[0].mention_count,
+            0
+        );
 
         db.conn()
             .execute_batch("DROP TRIGGER fail_summary_completion_marker")
@@ -2934,7 +2940,7 @@ mod tests {
             Some(session.id.as_str())
         );
         assert!(
-            db.get_facts("user")
+            db.list_facts_by_subject("user")
                 .unwrap()
                 .iter()
                 .any(|fact| fact.predicate == "likes" && fact.object == "Rust")
@@ -2948,7 +2954,10 @@ mod tests {
             SummaryExtractOutcome::Done
         );
         assert_eq!(inference.calls.load(Ordering::Relaxed), 2);
-        assert_eq!(db.get_facts("user").unwrap()[0].mention_count, 1);
+        assert_eq!(
+            db.list_facts_by_subject("user").unwrap()[0].mention_count,
+            1
+        );
     }
 
     #[tokio::test]
@@ -2977,7 +2986,10 @@ mod tests {
                 .await,
             SummaryExtractOutcome::Done
         );
-        assert_eq!(db.get_facts("user").unwrap()[0].mention_count, 1);
+        assert_eq!(
+            db.list_facts_by_subject("user").unwrap()[0].mention_count,
+            1
+        );
 
         assert_eq!(
             worker
@@ -2985,7 +2997,10 @@ mod tests {
                 .await,
             SummaryExtractOutcome::Done
         );
-        assert_eq!(db.get_facts("user").unwrap()[0].mention_count, 1);
+        assert_eq!(
+            db.list_facts_by_subject("user").unwrap()[0].mention_count,
+            1
+        );
         assert_eq!(inference.calls.load(Ordering::Relaxed), 2);
     }
 
@@ -3113,7 +3128,7 @@ mod tests {
         assert_eq!(last_run2, last_run, "throttled run must not re-stamp");
         // The pending message is still unprocessed (not lost).
         let user_msgs: Vec<String> = db
-            .get_session_messages(&session.id)
+            .list_session_messages(&session.id)
             .unwrap()
             .into_iter()
             .filter(|m| m.role == "user")
@@ -3136,7 +3151,7 @@ mod tests {
         let router = mock_router("not a json array");
         let engine = MemoryWorker::new(db.clone(), router, 4_000, 64, 40, 256, 0);
         engine.infer_facts(&session.id).await;
-        let facts = db.get_facts("user").unwrap();
+        let facts = db.list_facts_by_subject("user").unwrap();
         assert!(
             facts.is_empty(),
             "a failed extraction must not persist anything"

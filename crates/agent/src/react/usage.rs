@@ -534,7 +534,7 @@ mod tests {
                 .prompt_tokens,
             32
         );
-        assert_eq!(db.get_session_llm_usage(&session.id).unwrap().len(), 32);
+        assert_eq!(db.list_session_llm_usage(&session.id).unwrap().len(), 32);
     }
 
     #[tokio::test]
@@ -547,7 +547,7 @@ mod tests {
         let mut update = update(1);
         update.call_kind = LlmCallKind::Media;
         assert!(runtime.record(&session.id, update).await.is_err());
-        assert!(db.get_session_llm_usage(&session.id).unwrap().is_empty());
+        assert!(db.list_session_llm_usage(&session.id).unwrap().is_empty());
         assert!(db.get_session_usage(&session.id).unwrap().is_none());
     }
 
@@ -664,7 +664,7 @@ mod tests {
         assert_eq!(usage_events[1]["model"].as_str(), Some("media-model"));
         assert_eq!(usage_events[1]["call_kind"], "media");
 
-        let projected = db.get_session_llm_usage(&session.id).unwrap();
+        let projected = db.list_session_llm_usage(&session.id).unwrap();
         assert_eq!(projected.len(), 2);
         assert!(projected.iter().any(|row| {
             row.model.as_deref() == Some("tool-model")
@@ -730,7 +730,7 @@ mod tests {
                 .iter()
                 .all(|event| event.event_type != "usage_recorded")
         );
-        assert!(db.get_session_llm_usage(&session.id).unwrap().is_empty());
+        assert!(db.list_session_llm_usage(&session.id).unwrap().is_empty());
     }
 
     #[test]

@@ -445,7 +445,7 @@ impl Database {
         .map_err(Into::into)
     }
 
-    pub fn get_session_messages(&self, session_id: &str) -> anyhow::Result<Vec<Message>> {
+    pub fn list_session_messages(&self, session_id: &str) -> anyhow::Result<Vec<Message>> {
         if let Some(cached) = self.cache_get_messages(session_id) {
             return Ok(cached);
         }
@@ -495,7 +495,7 @@ impl Database {
         Ok(paths.into_iter().collect())
     }
 
-    pub fn get_session_messages_limit(
+    pub fn list_recent_session_messages(
         &self,
         session_id: &str,
         limit: usize,
@@ -519,7 +519,7 @@ impl Database {
     /// Return all user inputs whose durable delivery marker has not been
     /// acknowledged by a committed `UserInject` event. Recovery state is
     /// explicit and has no age cutoff.
-    pub fn get_pending_session_inputs(
+    pub fn list_pending_session_inputs(
         &self,
         session_id: &str,
     ) -> anyhow::Result<Vec<PendingSessionInput>> {
@@ -766,7 +766,7 @@ mod tests {
         let tid = test_session(&db);
         let msg = db.add_message(&tid, "user", "hello", None, None).unwrap();
         assert_eq!(msg.content, "hello");
-        let msgs = db.get_session_messages(&tid).unwrap();
+        let msgs = db.list_session_messages(&tid).unwrap();
         assert_eq!(msgs.len(), 1);
         assert_eq!(msgs[0].content, "hello");
         assert_eq!(msgs[0].ingress_seq, 1);
@@ -796,20 +796,20 @@ mod tests {
             db.add_message(&tid, "user", &format!("msg {}", i), None, None)
                 .unwrap();
         }
-        let msgs = db.get_session_messages(&tid).unwrap();
+        let msgs = db.list_session_messages(&tid).unwrap();
         assert_eq!(msgs.len(), 5);
         assert_eq!(msgs[0].content, "msg 0");
         assert_eq!(msgs[4].content, "msg 4");
     }
 
     #[test]
-    fn get_session_messages_limit_filters() {
+    fn list_recent_session_messages_filters() {
         let db = test_db();
         let tid = test_session(&db);
         db.add_message(&tid, "user", "hello", Some("text"), None)
             .unwrap();
         db.add_message(&tid, "user", "world", None, None).unwrap();
-        let msgs = db.get_session_messages_limit(&tid, 1).unwrap();
+        let msgs = db.list_recent_session_messages(&tid, 1).unwrap();
         assert_eq!(msgs.len(), 1);
         assert_eq!(msgs[0].content, "world");
     }
@@ -833,7 +833,7 @@ mod tests {
             )
             .unwrap();
 
-        let pending_rows = db.get_pending_session_inputs(&tid).unwrap();
+        let pending_rows = db.list_pending_session_inputs(&tid).unwrap();
         assert_eq!(
             pending_rows.len(),
             1,
@@ -853,13 +853,13 @@ mod tests {
         let db = test_db();
         let tid = test_session(&db);
         // No messages at all: nothing to recover.
-        assert!(db.get_pending_session_inputs(&tid).unwrap().is_empty());
+        assert!(db.list_pending_session_inputs(&tid).unwrap().is_empty());
         // Ordinary historical user and assistant rows are never pending.
         db.add_message(&tid, "user", "history", Some("text"), None)
             .unwrap();
         db.add_message(&tid, "assistant", "hi", Some("text"), None)
             .unwrap();
-        assert!(db.get_pending_session_inputs(&tid).unwrap().is_empty());
+        assert!(db.list_pending_session_inputs(&tid).unwrap().is_empty());
     }
 
     #[test]
@@ -887,7 +887,7 @@ mod tests {
         .unwrap();
         drop(conn);
 
-        let recovered = db.get_pending_session_inputs(&tid).unwrap();
+        let recovered = db.list_pending_session_inputs(&tid).unwrap();
         assert_eq!(recovered.len(), 1);
         assert_eq!(recovered[0].message.id, pending.message.id);
         assert_eq!(recovered[0].disposition, PendingInputDisposition::FollowUp);
@@ -922,7 +922,7 @@ mod tests {
 
         assert_eq!(first.disposition, PendingInputDisposition::Answer);
         assert_eq!(second.disposition, PendingInputDisposition::FollowUp);
-        let pending = db.get_pending_session_inputs(&tid).unwrap();
+        let pending = db.list_pending_session_inputs(&tid).unwrap();
         assert_eq!(pending.len(), 2);
         assert_eq!(pending[0].disposition, PendingInputDisposition::Answer);
         assert_eq!(pending[1].disposition, PendingInputDisposition::FollowUp);
@@ -952,7 +952,7 @@ mod tests {
             )
             .is_err()
         );
-        assert!(db.get_session_messages(&tid).unwrap().is_empty());
+        assert!(db.list_session_messages(&tid).unwrap().is_empty());
         assert_eq!(db.get_last_message_ingress_seq(&tid), 0);
     }
 
@@ -983,7 +983,7 @@ mod tests {
             None,
         )
         .unwrap();
-        let msgs = db.get_session_messages(&tid).unwrap();
+        let msgs = db.list_session_messages(&tid).unwrap();
         assert_eq!(msgs.len(), 1);
         assert_eq!(msgs[0].attachments[0].media_type, att.media_type);
         assert!(msgs[0].attachments[0].data.is_empty());
@@ -1040,7 +1040,7 @@ mod tests {
         assert!(!ui_metadata.contains("preferred_representation"));
         assert!(!raw.1.unwrap_or_default().contains("aGVsbG8="));
 
-        let message = db.get_session_messages(&tid).unwrap().remove(0);
+        let message = db.list_session_messages(&tid).unwrap().remove(0);
         assert_eq!(message.attachments[0].data, "aGVsbG8=");
         assert_eq!(message.media_inputs.len(), 1);
         assert!(matches!(
@@ -1056,7 +1056,7 @@ mod tests {
         let db = test_db();
         let tid = test_session(&db);
         db.add_message(&tid, "user", "plain", None, None).unwrap();
-        let msgs = db.get_session_messages(&tid).unwrap();
+        let msgs = db.list_session_messages(&tid).unwrap();
         assert!(msgs[0].attachments.is_empty());
     }
 
@@ -1132,7 +1132,7 @@ mod tests {
         .unwrap();
         db.add_message(&tid, "user", "typed hello", Some("text"), None)
             .unwrap();
-        let msgs = db.get_session_messages(&tid).unwrap();
+        let msgs = db.list_session_messages(&tid).unwrap();
         assert_eq!(msgs.len(), 2);
         assert!(msgs[0].voice, "voice message must keep the flag");
         assert!(!msgs[1].voice, "typed message stays non-voice");
@@ -1169,7 +1169,7 @@ mod tests {
             .add_message(&tid, "assistant", "second", None, None)
             .unwrap();
         db.delete_messages_after(&tid, &m1.created_at).unwrap();
-        let msgs = db.get_session_messages(&tid).unwrap();
+        let msgs = db.list_session_messages(&tid).unwrap();
         assert_eq!(msgs.len(), 1);
         assert_eq!(msgs[0].content, "first");
         // m2 should be gone
@@ -1186,7 +1186,7 @@ mod tests {
             .unwrap();
         // delete_messages_from deletes inclusively — m1 and m2 both gone
         db.delete_messages_from(&tid, &m1.created_at).unwrap();
-        let msgs = db.get_session_messages(&tid).unwrap();
+        let msgs = db.list_session_messages(&tid).unwrap();
         assert!(msgs.is_empty());
     }
 
@@ -1205,7 +1205,7 @@ mod tests {
             .add_message(&tid, "assistant", "被打断的思考", None, None)
             .unwrap();
         let order_before: Vec<String> = db
-            .get_session_messages(&tid)
+            .list_session_messages(&tid)
             .unwrap()
             .iter()
             .map(|m| m.id.clone())
@@ -1216,7 +1216,7 @@ mod tests {
         db.update_message_created_at(&tid, &steering.id, &now)
             .unwrap();
         let order_after: Vec<String> = db
-            .get_session_messages(&tid)
+            .list_session_messages(&tid)
             .unwrap()
             .iter()
             .map(|m| m.id.clone())
@@ -1283,7 +1283,7 @@ mod tests {
         let before = db.get_session_usage(&tid).unwrap().unwrap();
         assert_eq!(before.total_tokens, 45);
         db.truncate_session_after(&tid, &cutoff, false).unwrap();
-        let usage = db.get_session_llm_usage(&tid).unwrap();
+        let usage = db.list_session_llm_usage(&tid).unwrap();
         assert_eq!(usage.len(), 1);
         assert_eq!(usage[0].step_number, Some(1));
         // Cumulative counters must shrink with the detail rows, not stay at 45.

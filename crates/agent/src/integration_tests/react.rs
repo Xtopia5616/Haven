@@ -271,7 +271,7 @@ async fn incomplete_tool_args_retry_before_dispatching_the_rebuilt_call() {
     let retry_request = serde_json::to_string(&requests[1]).unwrap();
     assert!(retry_request.contains("incomplete JSON arguments"));
     drop(requests);
-    let steps = agent.db.get_session_steps(&session.id).unwrap();
+    let steps = agent.db.list_session_steps(&session.id).unwrap();
     assert_eq!(
         steps
             .iter()
@@ -561,7 +561,7 @@ async fn budget_exhaustion_pauses_with_notification_and_no_chat_message() {
         "budget exhaustion must pause the session as a checkpoint"
     );
     // The notice must NOT be persisted as an assistant chat message.
-    let msgs = agent.db.get_session_messages(&session.id).unwrap();
+    let msgs = agent.db.list_session_messages(&session.id).unwrap();
     assert!(
         msgs.iter()
             .all(|m| !m.content.contains("任务步骤上限已用尽")),
@@ -631,7 +631,7 @@ async fn abnormal_text_finish_preserves_partial_and_waits_for_continue() {
         SessionStatus::Error,
         "a non-normal model finish must expose the continue action instead of auto-retrying"
     );
-    let msgs = agent.db.get_session_messages(&session.id).unwrap();
+    let msgs = agent.db.list_session_messages(&session.id).unwrap();
     assert_eq!(
         msgs.last().unwrap().content,
         "Here is the partial answer",
@@ -787,7 +787,7 @@ async fn media_tool_usage_flows_to_event_and_database() {
 
     agent.run_session_from_id(&session.id).await.unwrap();
 
-    let calls = agent.db.get_session_llm_usage(&session.id).unwrap();
+    let calls = agent.db.list_session_llm_usage(&session.id).unwrap();
     assert_eq!(calls.len(), 1, "only the media client reports usage");
     assert_eq!(calls[0].call_kind, "media");
     assert_eq!(calls[0].step_number, Some(1));
@@ -1164,7 +1164,7 @@ async fn run_session_ask_tool_pauses_and_surfaces_question() {
     assert!(collector.has_observation("ask"));
 
     // The question must be persisted so the user can see and answer it.
-    let msgs = agent.db.get_session_messages(&session.id).unwrap();
+    let msgs = agent.db.list_session_messages(&session.id).unwrap();
     let found = msgs
         .iter()
         .any(|m| m.role == "assistant" && m.content.contains("Which path should I take"));
@@ -1330,7 +1330,7 @@ async fn run_session_ask_resumes_after_user_answer() {
     );
     // The final answer text should be persisted, proving the loop resumed
     // past the `ask` step and reached final_answer.
-    let msgs = agent.db.get_session_messages(&session.id).unwrap();
+    let msgs = agent.db.list_session_messages(&session.id).unwrap();
     let answered = msgs
         .iter()
         .any(|m| m.role == "assistant" && m.content.contains("Going with A"));
@@ -1432,8 +1432,8 @@ async fn retry_after_ask_answer_error_keeps_single_history() {
     );
     agent.run_session_from_id(&session.id).await.unwrap();
 
-    let msgs = agent.db.get_session_messages(&session.id).unwrap();
-    let steps = agent.db.get_session_steps(&session.id).unwrap();
+    let msgs = agent.db.list_session_messages(&session.id).unwrap();
+    let steps = agent.db.list_session_steps(&session.id).unwrap();
 
     // The failed attempt's partial text must be gone (overwritten).
     let partials: Vec<&str> = msgs
@@ -1584,7 +1584,7 @@ async fn run_session_multiple_asks_surface_all_questions() {
         Some(SessionStatus::Paused),
         "ask should pause"
     );
-    let msgs = agent.db.get_session_messages(&session.id).unwrap();
+    let msgs = agent.db.list_session_messages(&session.id).unwrap();
     let persisted: String = msgs
         .iter()
         .filter(|m| m.role == "assistant")
@@ -1991,15 +1991,15 @@ async fn continue_session_resumes_errored_session() {
     );
     // The committed recovery marker authorizes removal strictly after the
     // branch-point cutoff, including execution and usage projections.
-    let msgs = agent.db.get_session_messages(&session.id).unwrap();
+    let msgs = agent.db.list_session_messages(&session.id).unwrap();
     assert_eq!(msgs.len(), 2);
     assert_eq!(msgs[0].content, "hello");
     assert_eq!(msgs[1].id, completed.id);
     assert!(!msgs.iter().any(|message| message.id == partial.id));
-    let steps = agent.db.get_session_steps(&session.id).unwrap();
+    let steps = agent.db.list_session_steps(&session.id).unwrap();
     assert_eq!(steps.len(), 1);
     assert_eq!(steps[0].id, kept_step.id);
-    let usage = agent.db.get_session_llm_usage(&session.id).unwrap();
+    let usage = agent.db.list_session_llm_usage(&session.id).unwrap();
     assert_eq!(usage.len(), 1);
     assert_eq!(usage[0].id, kept_usage.id);
     assert_eq!(
@@ -2092,7 +2092,7 @@ async fn continue_session_preserves_history_without_an_error_partial_marker() {
 
     let ids: Vec<String> = agent
         .db
-        .get_session_messages(&session.id)
+        .list_session_messages(&session.id)
         .unwrap()
         .into_iter()
         .map(|m| m.id)

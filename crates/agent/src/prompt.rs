@@ -2005,7 +2005,7 @@ mod tests {
         let db = Arc::new(Database::open(&dir).unwrap());
         // Fill the top-15 budget with high-confidence user decoys so the
         // target can only win via keyword / FTS scoring — not by merely
-        // sitting in get_facts("user") under the inclusion cap.
+        // sitting in list_facts_by_subject("user") under the inclusion cap.
         for i in 0..16 {
             db.insert_fact(
                 "user",

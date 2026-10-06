@@ -272,7 +272,7 @@ mod tests {
 
         let error = store.dedup_facts(Some(&cancellation)).await.unwrap_err();
         assert!(error.to_string().contains("cancelled"));
-        assert_eq!(db.get_facts("user").unwrap().len(), 2);
+        assert_eq!(db.list_facts_by_subject("user").unwrap().len(), 2);
     }
 
     #[tokio::test]

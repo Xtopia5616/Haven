@@ -2712,7 +2712,7 @@ mod tool_step_persistence_tests {
             .await
             .unwrap();
 
-        let pending = db.get_session_steps(&session.id).unwrap();
+        let pending = db.list_session_steps(&session.id).unwrap();
         assert_eq!(pending.len(), 1);
         assert_eq!(pending[0].id, step_id);
         assert_eq!(pending[0].step_number, 5);
@@ -2749,7 +2749,7 @@ mod tool_step_persistence_tests {
             )
             .await;
 
-        let finished = db.get_session_steps(&session.id).unwrap();
+        let finished = db.list_session_steps(&session.id).unwrap();
         assert_eq!(finished.len(), 1);
         assert_eq!(finished[0].status, "cancelled");
         assert_eq!(

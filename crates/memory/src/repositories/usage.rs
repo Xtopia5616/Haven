@@ -1054,7 +1054,7 @@ impl Database {
 
     /// All usage-detail rows for a session, oldest first. `session_usage` carries
     /// the running totals; this is the per-call history behind them.
-    pub fn get_session_llm_usage(&self, session_id: &str) -> anyhow::Result<Vec<LlmUsageRecord>> {
+    pub fn list_session_llm_usage(&self, session_id: &str) -> anyhow::Result<Vec<LlmUsageRecord>> {
         let conn = self.conn();
         let mut stmt = conn.prepare(
             "SELECT id, session_id, step_number, role, call_kind, model, prompt_tokens, completion_tokens,
@@ -1202,7 +1202,7 @@ mod tests {
         assert_eq!(records[1].role, RequestKind::Chat);
         assert_eq!(records[0].call_kind, "tool");
         assert_eq!(records[1].call_kind, "media");
-        assert_eq!(db.get_session_llm_usage(&session.id).unwrap().len(), 2);
+        assert_eq!(db.list_session_llm_usage(&session.id).unwrap().len(), 2);
         let totals = db.get_session_usage(&session.id).unwrap().unwrap();
         assert_eq!(totals.prompt_tokens, 0);
         assert_eq!(totals.total_tokens, 0);
@@ -1239,7 +1239,7 @@ mod tests {
         let summary = db.get_session_usage(&session.id).unwrap().unwrap();
         assert_eq!(summary.context_tokens, 900);
         assert_eq!(summary.context_window, Some(4096));
-        let calls = db.get_session_llm_usage(&session.id).unwrap();
+        let calls = db.list_session_llm_usage(&session.id).unwrap();
         assert_eq!(calls[0].context_tokens, 900);
         assert_eq!(calls[0].context_window, Some(4096));
     }
@@ -1291,7 +1291,7 @@ mod tests {
         assert_eq!(summary.cached_tokens, 50);
         assert_eq!(summary.cost_usd, 0.1);
 
-        let calls = db.get_session_llm_usage(&session.id).unwrap();
+        let calls = db.list_session_llm_usage(&session.id).unwrap();
         assert_eq!(calls.len(), 2);
         assert_eq!(calls[0].call_kind, "agent");
         assert_eq!(calls[1].call_kind, "media");
@@ -1344,7 +1344,7 @@ mod tests {
         assert!(rec.id.starts_with("usage-"));
         assert_eq!(rec.step_number, Some(1));
         assert_eq!(rec.model.as_deref(), Some("gpt-5"));
-        let usage = db.get_session_llm_usage(&session.id).unwrap();
+        let usage = db.list_session_llm_usage(&session.id).unwrap();
         assert_eq!(usage.len(), 1);
         assert_eq!(usage[0].prompt_tokens, 100);
         assert_eq!(usage[0].completion_tokens, 50);
@@ -1392,7 +1392,7 @@ mod tests {
         )
         .unwrap();
         // Unlike session_usage, rows accumulate (one per call) in created order.
-        let usage = db.get_session_llm_usage(&session.id).unwrap();
+        let usage = db.list_session_llm_usage(&session.id).unwrap();
         assert_eq!(usage.len(), 2);
         assert_eq!(usage[0].step_number, Some(1));
         assert_eq!(usage[1].step_number, Some(2));
@@ -1404,7 +1404,7 @@ mod tests {
     fn llm_call_usage_unknown_session_is_empty() {
         let db = test_db();
         assert!(
-            db.get_session_llm_usage("missing-session")
+            db.list_session_llm_usage("missing-session")
                 .unwrap()
                 .is_empty()
         );
@@ -1430,7 +1430,7 @@ mod tests {
         )
         .unwrap();
         db.delete_session(&session.id).unwrap();
-        assert!(db.get_session_llm_usage(&session.id).unwrap().is_empty());
+        assert!(db.list_session_llm_usage(&session.id).unwrap().is_empty());
     }
 
     #[test]
@@ -1699,7 +1699,7 @@ mod tests {
         )
         .unwrap();
 
-        let calls = db.get_session_llm_usage(&session.id).unwrap();
+        let calls = db.list_session_llm_usage(&session.id).unwrap();
         assert_eq!(calls.len(), 2);
         assert_eq!(calls[0].cache_accounting, "inclusive");
         assert_eq!(calls[1].cache_accounting, "exclusive");
@@ -1771,7 +1771,7 @@ mod tests {
         assert_eq!(u.prompt_tokens, 10);
         assert_eq!(u.completion_tokens, 5);
         assert_eq!(u.total_tokens, 15);
-        let calls = db.get_session_llm_usage(&session.id).unwrap();
+        let calls = db.list_session_llm_usage(&session.id).unwrap();
         assert_eq!(calls[0].total_tokens, 15);
     }
 
@@ -1799,7 +1799,7 @@ mod tests {
         .unwrap();
         let u = db.get_session_usage(&session.id).unwrap().unwrap();
         assert_eq!(u.total_tokens, 570);
-        let calls = db.get_session_llm_usage(&session.id).unwrap();
+        let calls = db.list_session_llm_usage(&session.id).unwrap();
         assert_eq!(calls[0].total_tokens, 570);
     }
 
@@ -1872,7 +1872,7 @@ mod tests {
             )
             .unwrap();
         db.delete_llm_usage_by_id(&a.id).unwrap();
-        let usage = db.get_session_llm_usage(&session.id).unwrap();
+        let usage = db.list_session_llm_usage(&session.id).unwrap();
         assert_eq!(usage.len(), 1);
         assert_eq!(usage[0].id, b.id);
     }

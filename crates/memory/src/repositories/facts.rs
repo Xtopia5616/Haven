@@ -466,7 +466,7 @@ mod tests {
     }
 
     #[test]
-    fn test_get_facts_by_subject() {
+    fn test_list_facts_by_subject() {
         let db = create_db();
         db.insert_fact("user", "likes", "Rust", "user", 0.9, &["preference"])
             .unwrap();
@@ -475,7 +475,7 @@ mod tests {
         db.insert_fact("other", "likes", "Go", "user", 0.5, &[])
             .unwrap();
 
-        let user_facts = db.get_facts("user").unwrap();
+        let user_facts = db.list_facts_by_subject("user").unwrap();
         assert_eq!(user_facts.len(), 2);
         assert_eq!(user_facts[0].object, "Rust");
         assert_eq!(user_facts[1].object, "Python");
@@ -483,7 +483,7 @@ mod tests {
     }
 
     #[test]
-    fn test_get_facts_ordering() {
+    fn test_list_facts_by_subject_ordering() {
         let db = create_db();
         db.insert_fact("user", "likes", "A", "user", 0.5, &[])
             .unwrap();
@@ -492,7 +492,7 @@ mod tests {
         db.insert_fact("user", "likes", "C", "user", 0.7, &[])
             .unwrap();
 
-        let facts = db.get_facts("user").unwrap();
+        let facts = db.list_facts_by_subject("user").unwrap();
         assert_eq!(facts.len(), 3);
         assert!(facts[0].confidence >= facts[1].confidence);
         assert!(facts[1].confidence >= facts[2].confidence);
@@ -608,7 +608,7 @@ mod tests {
     }
 
     #[test]
-    fn test_get_facts_by_tag() {
+    fn test_list_facts_by_tag() {
         let db = create_db();
         db.insert_fact("user", "name", "Alice", "user", 1.0, &["identity"])
             .unwrap();
@@ -617,18 +617,18 @@ mod tests {
         db.insert_fact("user", "likes", "Rust", "user", 0.9, &["preference"])
             .unwrap();
 
-        let results = db.get_facts_by_tag("identity").unwrap();
+        let results = db.list_facts_by_tag("identity").unwrap();
         assert_eq!(results.len(), 2);
 
-        let results = db.get_facts_by_tag("preference").unwrap();
+        let results = db.list_facts_by_tag("preference").unwrap();
         assert_eq!(results.len(), 1);
 
-        let results = db.get_facts_by_tag("nonexistent").unwrap();
+        let results = db.list_facts_by_tag("nonexistent").unwrap();
         assert!(results.is_empty());
     }
 
     #[test]
-    fn test_get_facts_by_tag_partial_match_excluded() {
+    fn test_list_facts_by_tag_partial_match_excluded() {
         let db = create_db();
         db.insert_fact("user", "likes", "Rust", "user", 0.9, &["preference"])
             .unwrap();
@@ -636,7 +636,7 @@ mod tests {
             .unwrap();
 
         // "preference" should NOT match "preferences" — tag matching is exact.
-        let results = db.get_facts_by_tag("preference").unwrap();
+        let results = db.list_facts_by_tag("preference").unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].object, "Rust");
     }
@@ -648,7 +648,7 @@ mod tests {
             .insert_fact("user", "likes", "Rust", "user", 0.9, &[])
             .unwrap();
         db.delete_fact(&fact.id).unwrap();
-        let remaining = db.get_facts("user").unwrap();
+        let remaining = db.list_facts_by_subject("user").unwrap();
         assert!(remaining.is_empty());
     }
 
@@ -705,7 +705,7 @@ mod tests {
 
         db.dedup_facts().unwrap();
 
-        let remaining = db.get_facts("user").unwrap();
+        let remaining = db.list_facts_by_subject("user").unwrap();
         assert_eq!(remaining.len(), 1);
         assert_eq!(
             remaining[0].confidence, 0.9,
@@ -743,7 +743,7 @@ mod tests {
             .unwrap();
         db.ensure_fact("user", "name", "Xtopia", "user", 1.0, &["identity"])
             .unwrap();
-        let facts = db.get_facts("user").unwrap();
+        let facts = db.list_facts_by_subject("user").unwrap();
         assert_eq!(facts.len(), 1, "ensure_fact must not accumulate duplicates");
     }
 
@@ -752,7 +752,7 @@ mod tests {
         let db = create_db();
         db.set_user_fact("user", "email", "alice@example.com", &["identity"])
             .unwrap();
-        let facts = db.get_facts("user").unwrap();
+        let facts = db.list_facts_by_subject("user").unwrap();
         assert_eq!(facts.len(), 1);
         assert_eq!(facts[0].predicate, "email");
         assert_eq!(facts[0].source, "user");
@@ -775,7 +775,7 @@ mod tests {
         db.set_user_fact("user", "language", "English", &["preference"])
             .unwrap();
         let languages: Vec<_> = db
-            .get_facts("user")
+            .list_facts_by_subject("user")
             .unwrap()
             .into_iter()
             .filter(|f| f.predicate == "language")
@@ -797,7 +797,7 @@ mod tests {
         db.set_user_fact("user", "uses", "VSCode", &["preference"])
             .unwrap();
         let uses: Vec<_> = db
-            .get_facts("user")
+            .list_facts_by_subject("user")
             .unwrap()
             .into_iter()
             .filter(|f| f.predicate == "uses")
@@ -818,7 +818,7 @@ mod tests {
         db.set_user_fact("user", "likes", "Go", &["preference"])
             .unwrap();
         let likes: Vec<_> = db
-            .get_facts("user")
+            .list_facts_by_subject("user")
             .unwrap()
             .into_iter()
             .filter(|f| f.predicate == "likes")
@@ -832,14 +832,14 @@ mod tests {
         // Alias spellings collapse onto the canonical predicate...
         db.set_user_fact("user", "Workspace", "D:/dev/app", &["workspace"])
             .unwrap();
-        let facts = db.get_facts("user").unwrap();
+        let facts = db.list_facts_by_subject("user").unwrap();
         assert_eq!(facts.len(), 1);
         assert_eq!(facts[0].predicate, "project_path");
         // ...so the single-valued constraint replaces, not duplicates, and a
         // differently-spelled delete still removes the row.
         db.set_user_fact("user", "workspace_path", "D:/dev/other", &["workspace"])
             .unwrap();
-        let facts = db.get_facts("user").unwrap();
+        let facts = db.list_facts_by_subject("user").unwrap();
         assert_eq!(facts.len(), 1);
         assert_eq!(facts[0].object, "D:/dev/other");
         let deleted = db
@@ -849,12 +849,12 @@ mod tests {
         // upsert path normalizes too.
         db.upsert_fact("user", "Employer", "Acme", "inferred", 0.9, &[], None)
             .unwrap();
-        let facts = db.get_facts("user").unwrap();
+        let facts = db.list_facts_by_subject("user").unwrap();
         assert_eq!(facts[0].predicate, "works_at");
         // P2-11: bare `company` collapses onto works_at (single-valued).
         db.set_user_fact("user", "company", "Globex", &["identity"])
             .unwrap();
-        let facts = db.get_facts("user").unwrap();
+        let facts = db.list_facts_by_subject("user").unwrap();
         assert_eq!(facts.len(), 1);
         assert_eq!(facts[0].predicate, "works_at");
         assert_eq!(facts[0].object, "Globex");
@@ -909,7 +909,7 @@ mod tests {
             .unwrap();
         assert_eq!(n, 1);
         let remaining: Vec<_> = db
-            .get_facts("user")
+            .list_facts_by_subject("user")
             .unwrap()
             .into_iter()
             .filter(|f| f.predicate == "uses")
@@ -921,7 +921,7 @@ mod tests {
         let n = db.delete_facts_by_triple("user", "uses", None).unwrap();
         assert_eq!(n, 1);
         let uses: Vec<_> = db
-            .get_facts("user")
+            .list_facts_by_subject("user")
             .unwrap()
             .into_iter()
             .filter(|f| f.predicate == "uses")
@@ -1118,12 +1118,12 @@ mod tests {
         let db = create_db();
         db.insert_fact("cache-test", "likes", "Rust", "user", 0.9, &[])
             .unwrap();
-        let cached = db.get_facts("cache-test").unwrap();
+        let cached = db.list_facts_by_subject("cache-test").unwrap();
         assert_eq!(cached.len(), 1);
 
         db.insert_fact("cache-test", "dislikes", "Java", "user", 0.5, &[])
             .unwrap();
-        let fresh = db.get_facts("cache-test").unwrap();
+        let fresh = db.list_facts_by_subject("cache-test").unwrap();
         assert_eq!(fresh.len(), 2);
     }
 
@@ -1142,7 +1142,7 @@ mod tests {
             )
             .unwrap();
         assert_eq!(outcome, UpsertOutcome::Inserted);
-        let facts = db.get_facts("user").unwrap();
+        let facts = db.list_facts_by_subject("user").unwrap();
         assert_eq!(facts.len(), 1);
         assert_eq!(facts[0].mention_count, 0);
         assert!(facts[0].last_seen_at.is_some());
@@ -1156,7 +1156,7 @@ mod tests {
         // New "dislikes Rust" observation halves the inferred likes fact.
         db.upsert_fact("user", "dislikes", "Rust", "inferred", 0.8, &[], None)
             .unwrap();
-        let facts = db.get_facts("user").unwrap();
+        let facts = db.list_facts_by_subject("user").unwrap();
         let likes = facts.iter().find(|f| f.predicate == "likes").unwrap();
         assert!(
             (likes.confidence - 0.45).abs() < 1e-9,
@@ -1176,7 +1176,7 @@ mod tests {
         db.upsert_fact("user", "dislikes", "Rust", "user", 1.0, &[], None)
             .unwrap();
         let likes = db
-            .get_facts("user")
+            .list_facts_by_subject("user")
             .unwrap()
             .into_iter()
             .find(|f| f.predicate == "likes")
@@ -1196,7 +1196,7 @@ mod tests {
         db.upsert_fact("user", "dislikes", "Rust", "inferred", 0.8, &[], None)
             .unwrap();
         let likes = db
-            .get_facts("user")
+            .list_facts_by_subject("user")
             .unwrap()
             .into_iter()
             .find(|f| f.predicate == "likes")
@@ -1243,7 +1243,7 @@ mod tests {
             )
             .unwrap();
         assert_eq!(outcome, UpsertOutcome::Reinforced);
-        let facts = db.get_facts("user").unwrap();
+        let facts = db.list_facts_by_subject("user").unwrap();
         assert_eq!(facts.len(), 1);
         assert_eq!(facts[0].mention_count, 2);
         assert!(
@@ -1288,7 +1288,7 @@ mod tests {
             )
             .unwrap();
         assert_eq!(outcome, UpsertOutcome::Corrected);
-        let facts = db.get_facts("user").unwrap();
+        let facts = db.list_facts_by_subject("user").unwrap();
         let old = facts.iter().find(|f| f.object == "/old/project").unwrap();
         assert!(
             old.confidence <= 0.4,
@@ -1322,7 +1322,7 @@ mod tests {
             None,
         )
         .unwrap();
-        let facts = db.get_facts("user").unwrap();
+        let facts = db.list_facts_by_subject("user").unwrap();
         assert_eq!(facts.len(), 2, "multi-valued predicates must coexist");
         assert!(facts.iter().all(|f| f.confidence >= 0.8));
     }
@@ -1355,7 +1355,7 @@ mod tests {
             )
             .unwrap();
         assert_eq!(outcome, UpsertOutcome::Skipped);
-        let facts = db.get_facts("user").unwrap();
+        let facts = db.list_facts_by_subject("user").unwrap();
         assert_eq!(facts.len(), 1, "inferred value must not be stored");
         assert_eq!(facts[0].object, "/authoritative/project");
     }
@@ -1377,7 +1377,7 @@ mod tests {
             Some(&first),
         )
         .unwrap();
-        let facts = db.get_facts("user").unwrap();
+        let facts = db.list_facts_by_subject("user").unwrap();
         let stored = facts[0].source_ref.as_ref().expect("source_ref stored");
         assert_eq!(stored.message_id, "m1");
         assert_eq!(stored.snippet, "I like Rust");
@@ -1398,7 +1398,7 @@ mod tests {
             Some(&second),
         )
         .unwrap();
-        let facts = db.get_facts("user").unwrap();
+        let facts = db.list_facts_by_subject("user").unwrap();
         assert_eq!(facts.len(), 1);
         let updated = facts[0].source_ref.as_ref().unwrap();
         assert_eq!(updated.message_id, "m2");
@@ -1424,7 +1424,7 @@ mod tests {
         )
         .unwrap();
 
-        let stored = db.get_facts("user").unwrap();
+        let stored = db.list_facts_by_subject("user").unwrap();
         assert_eq!(stored[0].source_ref.as_ref().unwrap().snippet, "[redacted]");
         let raw: String = db
             .conn()
@@ -1491,7 +1491,7 @@ mod tests {
         .unwrap();
         let cleared = db.cleanup_orphan_source_refs().unwrap();
         assert_eq!(cleared, 0);
-        let facts = db.get_facts("user").unwrap();
+        let facts = db.list_facts_by_subject("user").unwrap();
         let theme = facts.iter().find(|f| f.predicate == "theme").unwrap();
         assert_eq!(theme.source_ref.as_ref().unwrap().message_id, episode_id);
         let go = facts.iter().find(|f| f.object == "Go").unwrap();
@@ -1524,7 +1524,7 @@ mod tests {
             None,
         )
         .unwrap();
-        let facts = db.get_facts("user").unwrap();
+        let facts = db.list_facts_by_subject("user").unwrap();
         assert_eq!(facts.len(), 1);
         assert!(
             facts[0].tags.contains(&"preference".to_string()),
@@ -1663,7 +1663,7 @@ mod tests {
     }
 
     #[test]
-    fn test_get_facts_limited_orders_by_confidence() {
+    fn test_list_facts_by_subject_limited_orders_by_confidence() {
         let db = create_db();
         db.insert_fact("user", "likes", "Low", "inferred", 0.4, &["preference"])
             .unwrap();
@@ -1674,11 +1674,15 @@ mod tests {
         db.insert_fact("other", "likes", "Other", "inferred", 1.0, &["preference"])
             .unwrap();
 
-        let top = db.get_facts_limited("user", 2).unwrap();
+        let top = db.list_facts_by_subject_limited("user", 2).unwrap();
         assert_eq!(top.len(), 2);
         assert_eq!(top[0].object, "High");
         assert_eq!(top[1].object, "Mid");
-        assert!(db.get_facts_limited("user", 0).unwrap().is_empty());
+        assert!(
+            db.list_facts_by_subject_limited("user", 0)
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]
@@ -1772,7 +1776,7 @@ mod tests {
             .unwrap();
         assert_eq!(fact.durability, 1.0);
         // Round-trips through the DB.
-        let loaded = db.get_facts("user").unwrap();
+        let loaded = db.list_facts_by_subject("user").unwrap();
         assert_eq!(loaded[0].durability, 1.0);
     }
 
@@ -1791,7 +1795,7 @@ mod tests {
             0.3,
         )
         .unwrap();
-        let facts = db.get_facts("user").unwrap();
+        let facts = db.list_facts_by_subject("user").unwrap();
         assert_eq!(facts[0].durability, 0.3);
         // Re-confirmation with a higher durability merges upward.
         db.upsert_fact_with_durability(
@@ -1805,7 +1809,7 @@ mod tests {
             0.9,
         )
         .unwrap();
-        let facts = db.get_facts("user").unwrap();
+        let facts = db.list_facts_by_subject("user").unwrap();
         assert_eq!(facts[0].durability, 0.9);
         assert_eq!(facts[0].mention_count, 1);
         // A lower durability never drags an existing durable fact down.
@@ -1820,7 +1824,7 @@ mod tests {
             0.2,
         )
         .unwrap();
-        let facts = db.get_facts("user").unwrap();
+        let facts = db.list_facts_by_subject("user").unwrap();
         assert_eq!(facts[0].durability, 0.9);
     }
 
@@ -1908,7 +1912,7 @@ mod tests {
         .unwrap();
         let demoted = db.resolve_contradictions().unwrap();
         assert_eq!(demoted, 1);
-        let facts = db.get_facts("user").unwrap();
+        let facts = db.list_facts_by_subject("user").unwrap();
         let likes = facts.iter().find(|f| f.predicate == "likes").unwrap();
         let dislikes = facts.iter().find(|f| f.predicate == "dislikes").unwrap();
         assert!(
@@ -1948,7 +1952,7 @@ mod tests {
         .unwrap();
         let demoted = db.resolve_contradictions().unwrap();
         assert_eq!(demoted, 1);
-        let facts = db.get_facts("user").unwrap();
+        let facts = db.list_facts_by_subject("user").unwrap();
         let old = facts.iter().find(|f| f.object == "/old/path").unwrap();
         let new = facts.iter().find(|f| f.object == "/new/path").unwrap();
         assert!((old.confidence - 0.425).abs() < 1e-9);
@@ -2003,7 +2007,7 @@ mod tests {
         }
         assert_eq!(db.resolve_contradictions().unwrap(), 0);
         let likes = db
-            .get_facts("user")
+            .list_facts_by_subject("user")
             .unwrap()
             .into_iter()
             .find(|f| f.predicate == "likes")

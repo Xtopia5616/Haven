@@ -46,8 +46,8 @@ impl MemoryFactExtractionStore {
         let session_id = session_id.to_owned();
         self.db
             .run_blocking(move |db| {
-                let messages = db.get_session_messages(&session_id)?;
-                let steps = db.get_session_steps(&session_id)?;
+                let messages = db.list_session_messages(&session_id)?;
+                let steps = db.list_session_steps(&session_id)?;
                 Ok(FactExtractionTranscript { messages, steps })
             })
             .await

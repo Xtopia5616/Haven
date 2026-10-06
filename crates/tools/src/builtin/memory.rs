@@ -771,7 +771,7 @@ mod tests {
         )
         .await
         .unwrap();
-        let bob = db.get_facts("bob").unwrap();
+        let bob = db.list_facts_by_subject("bob").unwrap();
         assert_eq!(bob.len(), 1);
         assert_eq!(bob[0].object, "admin");
         // forget scoped to subject.
@@ -787,7 +787,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(deleted.output["deleted"], 1);
-        assert!(db.get_facts("bob").unwrap().is_empty());
+        assert!(db.list_facts_by_subject("bob").unwrap().is_empty());
     }
 
     #[tokio::test]
@@ -928,7 +928,7 @@ mod tests {
             .unwrap();
         assert_eq!(result.output["stored"]["source"], "user");
         assert_eq!(result.output["stored"]["object"], "alice@example.com");
-        let facts = db.get_facts("user").unwrap();
+        let facts = db.list_facts_by_subject("user").unwrap();
         assert_eq!(facts.len(), 1);
         assert_eq!(facts[0].predicate, "email");
         assert_eq!(facts[0].source, "user");
@@ -991,7 +991,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(result.output["deleted"], 2);
-        let remaining = db.get_facts("user").unwrap();
+        let remaining = db.list_facts_by_subject("user").unwrap();
         assert!(
             remaining.iter().all(|f| f.predicate != "likes"),
             "all likes must be gone"
@@ -1014,7 +1014,7 @@ mod tests {
             .unwrap();
         assert_eq!(result.output["deleted"], 1);
         let likes: Vec<_> = db
-            .get_facts("user")
+            .list_facts_by_subject("user")
             .unwrap()
             .into_iter()
             .filter(|f| f.predicate == "likes")

@@ -301,7 +301,7 @@ impl<'db> MemoryRetriever<'db> {
                     .collect();
                 let facts_by_id: HashMap<String, Fact> = self
                     .db
-                    .get_facts_by_ids(&ids)?
+                    .list_facts_by_ids(&ids)?
                     .into_iter()
                     .map(|fact| (fact.id.clone(), fact))
                     .collect();

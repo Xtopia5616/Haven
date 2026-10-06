@@ -350,7 +350,7 @@ impl<'db> FactMaintenance<'db> {
         }
         let by_id: HashMap<String, Fact> = self
             .db
-            .get_facts_by_ids(&unique_ids)?
+            .list_facts_by_ids(&unique_ids)?
             .into_iter()
             .map(|fact| (fact.id.clone(), fact))
             .collect();
@@ -490,7 +490,7 @@ mod tests {
         let deleted = FactMaintenance::new(&db).dedup_facts().unwrap();
 
         assert_eq!(deleted, 1);
-        let facts = db.get_facts("user").unwrap();
+        let facts = db.list_facts_by_subject("user").unwrap();
         assert_eq!(facts.len(), 1);
         assert_eq!(facts[0].confidence, 0.9);
         assert!(facts[0].tags.contains(&"preference".to_string()));

@@ -115,7 +115,7 @@ async fn rollback_with_snapshot_no_branch_point_uses_snapshot() {
         Some(SessionStatus::Pending)
     );
     // The partial assistant message should be deleted, user message kept.
-    let msgs = agent.db.get_session_messages(&session.id).unwrap();
+    let msgs = agent.db.list_session_messages(&session.id).unwrap();
     assert_eq!(msgs.len(), 1);
     assert_eq!(msgs[0].content, "hello");
 }
@@ -135,7 +135,7 @@ async fn rollback_pause_true_removes_user_message_from_session() {
     // Branch point at step 1: canonical ends at the user message, but
     // last_msg_at points at the thought that was persisted AFTER it (the
     // realistic shape saved by save_branch_point).
-    let msgs = agent.db.get_session_messages(&session.id).unwrap();
+    let msgs = agent.db.list_session_messages(&session.id).unwrap();
     let hello_id = msgs
         .iter()
         .find(|m| m.content == "hello")
@@ -200,7 +200,7 @@ async fn rollback_pause_true_removes_user_message_from_session() {
         executor.get_active_session_status(&session.id).await,
         Some(SessionStatus::Paused)
     );
-    let msgs = agent.db.get_session_messages(&session.id).unwrap();
+    let msgs = agent.db.list_session_messages(&session.id).unwrap();
     assert!(
         msgs.is_empty(),
         "user message should be deleted from the session, got {:?}",
@@ -237,7 +237,7 @@ async fn rollback_fallback_no_branch_point_pause_true_deletes_from_last_user_mes
         .db
         .add_message(&session.id, "assistant", "reply2", Some("text"), None)
         .unwrap();
-    let msgs = agent.db.get_session_messages(&session.id).unwrap();
+    let msgs = agent.db.list_session_messages(&session.id).unwrap();
     let reply1_ts = msgs
         .iter()
         .find(|m| m.role == "assistant" && m.content == "reply1")
@@ -290,7 +290,7 @@ async fn rollback_fallback_no_branch_point_pause_true_deletes_from_last_user_mes
         executor.get_active_session_status(&session.id).await,
         Some(SessionStatus::Paused)
     );
-    let msgs = agent.db.get_session_messages(&session.id).unwrap();
+    let msgs = agent.db.list_session_messages(&session.id).unwrap();
     let contents: Vec<&str> = msgs.iter().map(|m| m.content.as_str()).collect();
     assert_eq!(
         contents,
@@ -325,7 +325,7 @@ async fn rollback_errors_when_target_message_id_does_not_match() {
         .db
         .add_message(&session.id, "assistant", "reply B", Some("text"), None)
         .unwrap();
-    let msgs = agent.db.get_session_messages(&session.id).unwrap();
+    let msgs = agent.db.list_session_messages(&session.id).unwrap();
     let reply_a_ts = msgs
         .iter()
         .find(|m| m.role == "assistant" && m.content == "reply A")
@@ -372,7 +372,7 @@ async fn rollback_errors_when_target_message_id_does_not_match() {
         "unexpected error: {}",
         err
     );
-    let msgs = agent.db.get_session_messages(&session.id).unwrap();
+    let msgs = agent.db.list_session_messages(&session.id).unwrap();
     assert_eq!(msgs.len(), 4, "no message may be deleted on error");
 }
 
@@ -398,7 +398,7 @@ async fn rollback_orphan_after_processed_turn_preserves_earlier_history() {
         executor.get_active_session_status(&session.id).await,
         Some(SessionStatus::Paused)
     );
-    let msgs = agent.db.get_session_messages(&session.id).unwrap();
+    let msgs = agent.db.list_session_messages(&session.id).unwrap();
     let contents: Vec<&str> = msgs.iter().map(|m| m.content.as_str()).collect();
     assert_eq!(
         contents,
@@ -443,7 +443,7 @@ async fn rollback_processed_user_message_with_later_orphan_wipes_target_timeline
         executor.get_active_session_status(&session.id).await,
         Some(SessionStatus::Paused)
     );
-    let msgs = agent.db.get_session_messages(&session.id).unwrap();
+    let msgs = agent.db.list_session_messages(&session.id).unwrap();
     assert!(
         msgs.is_empty(),
         "rollback of the processed message must wipe the orphan too, got {:?}",
@@ -487,7 +487,7 @@ async fn rollback_pause_uses_target_message_ts_not_latest_user() {
             None,
         )
         .unwrap();
-    let msgs = agent.db.get_session_messages(&session.id).unwrap();
+    let msgs = agent.db.list_session_messages(&session.id).unwrap();
     let hello_id = msgs
         .iter()
         .find(|m| m.content == "hello")
@@ -551,7 +551,7 @@ async fn rollback_pause_uses_target_message_ts_not_latest_user() {
         executor.get_active_session_status(&session.id).await,
         Some(SessionStatus::Paused)
     );
-    let msgs = agent.db.get_session_messages(&session.id).unwrap();
+    let msgs = agent.db.list_session_messages(&session.id).unwrap();
     assert!(
         msgs.is_empty(),
         "rolling back 'hello' must delete it (and the interjection), got {:?}",
@@ -587,7 +587,7 @@ async fn rollback_pause_matches_compacted_message_id() {
         .db
         .add_message(&session.id, "assistant", "thinking", Some("text"), None)
         .unwrap();
-    let msgs = agent.db.get_session_messages(&session.id).unwrap();
+    let msgs = agent.db.list_session_messages(&session.id).unwrap();
     let steering_id = msgs
         .iter()
         .find(|m| m.content == "use French")
@@ -668,7 +668,7 @@ async fn rollback_pause_matches_compacted_message_id() {
         executor.get_active_session_status(&session.id).await,
         Some(SessionStatus::Paused)
     );
-    let msgs = agent.db.get_session_messages(&session.id).unwrap();
+    let msgs = agent.db.list_session_messages(&session.id).unwrap();
     assert_eq!(
         msgs.len(),
         1,
@@ -1016,7 +1016,7 @@ async fn rollback_transaction_failure_keeps_agent_status_and_projections_unchang
     )
     .await;
 
-    let before_messages = agent.db.get_session_messages(&session.id).unwrap();
+    let before_messages = agent.db.list_session_messages(&session.id).unwrap();
     let event_store = agent.react_engine.event_store.clone();
     let before_events = event_store.read_all(&session.id).unwrap();
     agent
@@ -1052,7 +1052,7 @@ async fn rollback_transaction_failure_keeps_agent_status_and_projections_unchang
         SessionStatus::Paused
     );
     assert_eq!(
-        agent.db.get_session_messages(&session.id).unwrap().len(),
+        agent.db.list_session_messages(&session.id).unwrap().len(),
         before_messages.len(),
         "the transaction must restore projection rows when marker append fails"
     );

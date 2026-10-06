@@ -185,7 +185,7 @@ async fn session_store_session_resume_media_uses_first_user_and_message_order() 
     .unwrap();
 
     let resume_media = store.session_resume_media(&session_id).await.unwrap();
-    let persisted_messages = db.get_session_messages(&session_id).unwrap();
+    let persisted_messages = db.list_session_messages(&session_id).unwrap();
 
     assert_eq!(
         resume_media.initial_message_id.as_deref(),

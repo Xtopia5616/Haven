@@ -210,7 +210,7 @@ fn agent_build_constructor_works() {
     )
     .agent;
     // Verify construction succeeded; no per-session indirection remains.
-    assert!(agent.db.get_facts("user").unwrap().is_empty());
+    assert!(agent.db.list_facts_by_subject("user").unwrap().is_empty());
     let session = agent.db.create_session("input").unwrap();
     assert!(!session.id.is_empty());
 }
@@ -372,7 +372,7 @@ async fn persist_message_adds_to_db() {
     // Read back via db
     let agent_ref = agent.clone();
     let db = agent_ref.db.clone();
-    let msgs = db.get_session_messages_limit(&session.id, 50).unwrap();
+    let msgs = db.list_recent_session_messages(&session.id, 50).unwrap();
     // Messages may or may not be immediately flushed depending on cache
     // ??verify at minimum the message is retrievable
     let found = msgs
@@ -415,7 +415,7 @@ async fn terminal_tool_run_result_projection_is_idempotent() {
     assert_eq!(
         agent
             .db
-            .get_session_messages(&session.id)
+            .list_session_messages(&session.id)
             .unwrap()
             .iter()
             .filter(|message| message.id == message_id)
@@ -497,7 +497,7 @@ async fn queued_tool_run_result_is_reconciled_after_session_becomes_terminal() {
     loop {
         let has_message = agent
             .db
-            .get_session_messages(&session.id)
+            .list_session_messages(&session.id)
             .unwrap()
             .iter()
             .any(|message| message.id == message_id);
@@ -621,7 +621,7 @@ async fn persist_message_with_attachments_roundtrips() {
         .unwrap();
     let agent_ref = agent.clone();
     let db = agent_ref.db.clone();
-    let msgs = db.get_session_messages_limit(&session.id, 50).unwrap();
+    let msgs = db.list_recent_session_messages(&session.id, 50).unwrap();
     let found = msgs
         .iter()
         .find(|m| m.role == "user" && m.content == "看图");
@@ -748,7 +748,7 @@ async fn process_input_deletes_terminal_ghost_message_through_session_store() {
         .unwrap();
 
     assert_eq!(result, ProcessResult::Supplemented { message_id: None });
-    assert!(db.get_session_messages(&session.id).unwrap().is_empty());
+    assert!(db.list_session_messages(&session.id).unwrap().is_empty());
     assert_eq!(
         db.get_session(&session.id).unwrap().unwrap().status,
         terminal_status
@@ -789,7 +789,7 @@ async fn process_input_continues_when_terminal_ghost_delete_fails() {
         .unwrap();
 
     assert_eq!(result, ProcessResult::Supplemented { message_id: None });
-    let messages = db.get_session_messages(&session.id).unwrap();
+    let messages = db.list_session_messages(&session.id).unwrap();
     assert_eq!(messages.len(), 1);
     assert_eq!(messages[0].role, "user");
     assert_eq!(messages[0].content, "more context");
@@ -966,7 +966,7 @@ async fn process_input_with_attachments_queues_and_persists_attachments() {
     assert_eq!(supps[0].attachments, vec![att]);
 
     // Persisted with attachments in the session's message stream.
-    let msgs = agent.db.get_session_messages(&session.id).unwrap();
+    let msgs = agent.db.list_session_messages(&session.id).unwrap();
     let user_msg = msgs
         .iter()
         .find(|m| m.role == "user" && m.content == "看图")

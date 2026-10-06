@@ -71,7 +71,7 @@ impl SessionStore {
         self.db
             .run_blocking(move |db| {
                 Ok(db
-                    .get_session_messages_limit(&session_id, limit)?
+                    .list_recent_session_messages(&session_id, limit)?
                     .into_iter()
                     .map(|message| SessionMessageText {
                         id: message.id,
@@ -86,7 +86,7 @@ impl SessionStore {
     /// Load the ordered message media needed to initialize a session run.
     ///
     /// Messages are read and aggregated in one blocking-pool closure using
-    /// the existing `get_session_messages` ordering. The first user message
+    /// the existing `list_session_messages` ordering. The first user message
     /// supplies the initial input media; all message attachments are flattened
     /// in message order for the caller's asset registration. This read model
     /// does not replay events or register/lease managed assets.
@@ -97,7 +97,7 @@ impl SessionStore {
         let session_id = session_id.to_owned();
         self.db
             .run_blocking(move |db| {
-                let messages = db.get_session_messages(&session_id)?;
+                let messages = db.list_session_messages(&session_id)?;
                 let all_attachments = messages
                     .iter()
                     .flat_map(|message| message.attachments.iter().cloned())
@@ -138,7 +138,7 @@ impl SessionStore {
                 }
 
                 let user_messages = db
-                    .get_session_messages_limit(&session_id, TITLE_GENERATION_MESSAGE_LIMIT)?
+                    .list_recent_session_messages(&session_id, TITLE_GENERATION_MESSAGE_LIMIT)?
                     .into_iter()
                     .filter(|message| message.role == "user")
                     .map(|message| message.content)

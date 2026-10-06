@@ -143,7 +143,7 @@ mod tests {
         db.upsert_partial_message(&session_id, "streamed reply")
             .unwrap();
         assert!(db.promote_partial_message(&session_id).unwrap());
-        let msgs = db.get_session_messages(&session_id).unwrap();
+        let msgs = db.list_session_messages(&session_id).unwrap();
         assert_eq!(msgs.len(), 1);
         assert_eq!(msgs[0].role, "assistant");
         assert_eq!(msgs[0].content, "streamed reply");
@@ -173,7 +173,7 @@ mod tests {
         )
         .unwrap();
         assert!(!db.promote_partial_message(&session_id).unwrap());
-        let msgs = db.get_session_messages(&session_id).unwrap();
+        let msgs = db.list_session_messages(&session_id).unwrap();
         assert_eq!(msgs.len(), 1);
         assert_eq!(msgs[0].content, "newer real message");
     }
@@ -204,7 +204,7 @@ mod tests {
             .await
             .unwrap();
         assert!(store.promote_partial_stream(&session_id).await.unwrap());
-        let messages = db.get_session_messages(&session_id).unwrap();
+        let messages = db.list_session_messages(&session_id).unwrap();
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0].content, "streamed reply");
         assert!(store.cursor(&session_id).unwrap().last_msg_at.is_some());

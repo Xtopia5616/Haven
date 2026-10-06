@@ -209,7 +209,7 @@ mod tests {
         assert_eq!(db.delete_sensitive_facts().unwrap(), expected_deleted);
 
         let remaining: Vec<_> = db
-            .get_facts("user")
+            .list_facts_by_subject("user")
             .unwrap()
             .into_iter()
             .map(|fact| fact.object)

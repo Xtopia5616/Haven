@@ -52,7 +52,7 @@ impl MemoryRecallStore {
     pub async fn visible_user_facts(&self, limit: usize) -> anyhow::Result<Vec<Fact>> {
         self.db
             .run_blocking(move |db| {
-                let facts = db.get_facts_limited("user", limit)?;
+                let facts = db.list_facts_by_subject_limited("user", limit)?;
                 Ok(MemoryRetriever::filter_visible_facts(facts))
             })
             .await
@@ -63,7 +63,7 @@ impl MemoryRecallStore {
     pub async fn visible_facts_by_ids(&self, ids: Vec<String>) -> anyhow::Result<Vec<Fact>> {
         self.db
             .run_blocking(move |db| {
-                let facts = db.get_facts_by_ids(&ids)?;
+                let facts = db.list_facts_by_ids(&ids)?;
                 Ok(MemoryRetriever::filter_visible_facts(facts))
             })
             .await
