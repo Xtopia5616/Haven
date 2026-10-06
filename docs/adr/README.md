@@ -515,3 +515,5 @@
 - [0524：统一 ToolCall 与 ToolRun 领域命名](0524-tool-call-tool-run-domain-unification.md)
 - [0525：共享 Router 与媒体客户端构造](0525-shared-router-media-client-builder.md)
 - [0526：统一 Memory 实体类型](0526-unify-memory-entity-kind.md)
+- [0527：从 Rust enum 生成 Interaction 事件契约](0527-generated-interaction-enum-contract.md)
+- [0528：Admin 风险等级使用单一契约来源](0528-admin-risk-single-source.md)

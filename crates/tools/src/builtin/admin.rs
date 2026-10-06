@@ -658,6 +658,35 @@ fn metadata(
     }
 }
 
+/// Shared model/native Admin operations take their risk from the model-facing
+/// operation contract. An Admin operation missing an explicit contract risk
+/// fails closed at High until its contract is completed.
+fn model_metadata(
+    contract_name: &'static str,
+    idempotency: OperationIdempotency,
+    concurrency: ToolConcurrency,
+) -> ToolOperationMetadata {
+    let name = contract_name
+        .strip_prefix("haven.")
+        .expect("Admin operation contract names start with `haven.`");
+    let (surface, operation) = name
+        .split_once('.')
+        .expect("Admin operation contract names include a surface and operation");
+    let capability = match surface {
+        "diagnostics" => "haven_diagnostics",
+        "config" => "haven_config",
+        "skills" => "haven_skills",
+        "tools" => "haven_tools",
+        "mcp" => "haven_mcp",
+        _ => panic!("unknown Admin operation surface `{surface}`"),
+    };
+    let risk_level = super::operation_contract::operation_contract(contract_name)
+        .risk_override
+        .unwrap_or(RiskLevel::High);
+
+    metadata(capability, operation, risk_level, idempotency, concurrency)
+}
+
 fn output_schema(branches: Vec<Value>) -> Value {
     serde_json::json!({"type": "object", "oneOf": branches})
 }
@@ -707,29 +736,23 @@ impl TypedToolOperation for DiagnosticsAdminOperation {
     fn metadata(&self, args: &Self::Args) -> ToolOperationMetadata {
         match args {
             DiagnosticsOperationArgs::Status | DiagnosticsOperationArgs::LogsTail { .. } => {
-                metadata(
-                    "haven_diagnostics",
+                model_metadata(
                     if matches!(args, DiagnosticsOperationArgs::Status) {
-                        "status"
+                        "haven.diagnostics.status"
                     } else {
-                        "logs_tail"
+                        "haven.diagnostics.logs_tail"
                     },
-                    RiskLevel::Low,
                     OperationIdempotency::Idempotent,
                     ToolConcurrency::SharedResource("haven:diagnostics".into()),
                 )
             }
-            DiagnosticsOperationArgs::Sessions { .. } => metadata(
-                "haven_diagnostics",
-                "sessions",
-                RiskLevel::Low,
+            DiagnosticsOperationArgs::Sessions { .. } => model_metadata(
+                "haven.diagnostics.sessions",
                 OperationIdempotency::Idempotent,
                 ToolConcurrency::SharedResource("haven:sessions".into()),
             ),
-            DiagnosticsOperationArgs::Errors { .. } => metadata(
-                "haven_diagnostics",
-                "errors",
-                RiskLevel::Low,
+            DiagnosticsOperationArgs::Errors { .. } => model_metadata(
+                "haven.diagnostics.errors",
                 OperationIdempotency::Idempotent,
                 ToolConcurrency::SharedResource("haven:sessions".into()),
             ),
@@ -821,31 +844,23 @@ impl TypedToolOperation for SkillsAdminOperation {
     type Error = AdminOperationError;
     fn metadata(&self, args: &Self::Args) -> ToolOperationMetadata {
         match args {
-            SkillsOperationArgs::SkillsList => metadata(
-                "haven_skills",
-                "skills_list",
-                RiskLevel::Low,
+            SkillsOperationArgs::SkillsList => model_metadata(
+                "haven.skills.skills_list",
                 OperationIdempotency::Idempotent,
                 ToolConcurrency::SharedResource("skills".into()),
             ),
-            SkillsOperationArgs::SkillEnable { .. } => metadata(
-                "haven_skills",
-                "skill_enable",
-                RiskLevel::Medium,
+            SkillsOperationArgs::SkillEnable { .. } => model_metadata(
+                "haven.skills.skill_enable",
                 OperationIdempotency::Idempotent,
                 ToolConcurrency::Resource("skills".into()),
             ),
-            SkillsOperationArgs::SkillDisable { .. } => metadata(
-                "haven_skills",
-                "skill_disable",
-                RiskLevel::Medium,
+            SkillsOperationArgs::SkillDisable { .. } => model_metadata(
+                "haven.skills.skill_disable",
                 OperationIdempotency::Idempotent,
                 ToolConcurrency::Resource("skills".into()),
             ),
-            SkillsOperationArgs::SkillCreate { .. } => metadata(
-                "haven_skills",
-                "skill_create",
-                RiskLevel::High,
+            SkillsOperationArgs::SkillCreate { .. } => model_metadata(
+                "haven.skills.skill_create",
                 OperationIdempotency::Unknown,
                 ToolConcurrency::Resource("skills".into()),
             ),
@@ -951,13 +966,11 @@ impl TypedToolOperation for ToolsAdminOperation {
     type Error = AdminOperationError;
     fn metadata(&self, args: &Self::Args) -> ToolOperationMetadata {
         let operation = match args {
-            ToolsOperationArgs::ToolEnable { .. } => "tool_enable",
-            ToolsOperationArgs::ToolDisable { .. } => "tool_disable",
+            ToolsOperationArgs::ToolEnable { .. } => "haven.tools.tool_enable",
+            ToolsOperationArgs::ToolDisable { .. } => "haven.tools.tool_disable",
         };
-        metadata(
-            "haven_tools",
+        model_metadata(
             operation,
-            RiskLevel::Medium,
             OperationIdempotency::Idempotent,
             ToolConcurrency::Resource("tool_settings".into()),
         )
@@ -1071,57 +1084,49 @@ impl TypedToolOperation for McpAdminOperation {
     type Output = AdminOperationOutput;
     type Error = AdminOperationError;
     fn metadata(&self, args: &Self::Args) -> ToolOperationMetadata {
-        let (operation, risk, idempotency, concurrency) = match args {
+        let (operation, idempotency, concurrency) = match args {
             McpOperationArgs::McpList => (
-                "mcp_list",
-                RiskLevel::Low,
+                "haven.mcp.mcp_list",
                 OperationIdempotency::Idempotent,
                 ToolConcurrency::SharedResource("mcp".into()),
             ),
             McpOperationArgs::McpConnect { .. } => (
-                "mcp_connect",
-                RiskLevel::Medium,
+                "haven.mcp.mcp_connect",
                 OperationIdempotency::Idempotent,
                 ToolConcurrency::Resource("mcp".into()),
             ),
             McpOperationArgs::McpDisconnect { .. } => (
-                "mcp_disconnect",
-                RiskLevel::Medium,
+                "haven.mcp.mcp_disconnect",
                 OperationIdempotency::Idempotent,
                 ToolConcurrency::Resource("mcp".into()),
             ),
             McpOperationArgs::McpAdd { .. } => (
-                "mcp_add",
-                RiskLevel::High,
+                "haven.mcp.mcp_add",
                 OperationIdempotency::Unknown,
                 ToolConcurrency::Resource("mcp".into()),
             ),
             McpOperationArgs::McpUpdate { .. } => (
-                "mcp_update",
-                RiskLevel::High,
+                "haven.mcp.mcp_update",
                 OperationIdempotency::Unknown,
                 ToolConcurrency::Resource("mcp".into()),
             ),
             McpOperationArgs::McpToggle { .. } => (
-                "mcp_toggle",
-                RiskLevel::High,
+                "haven.mcp.mcp_toggle",
                 OperationIdempotency::Idempotent,
                 ToolConcurrency::Resource("mcp".into()),
             ),
             McpOperationArgs::McpRemove { .. } => (
-                "mcp_remove",
-                RiskLevel::High,
+                "haven.mcp.mcp_remove",
                 OperationIdempotency::Unknown,
                 ToolConcurrency::Resource("mcp".into()),
             ),
             McpOperationArgs::McpReload => (
-                "mcp_reload",
-                RiskLevel::Medium,
+                "haven.mcp.mcp_reload",
                 OperationIdempotency::Idempotent,
                 ToolConcurrency::Resource("mcp".into()),
             ),
         };
-        metadata("haven_mcp", operation, risk, idempotency, concurrency)
+        model_metadata(operation, idempotency, concurrency)
     }
     fn default_metadata(&self) -> ToolOperationMetadata {
         metadata(
@@ -1376,17 +1381,13 @@ impl TypedToolOperation for ConfigAdminOperation {
     type Error = ConfigOperationError;
     fn metadata(&self, args: &Self::Args) -> ToolOperationMetadata {
         match args {
-            ConfigOperationArgs::ConfigGet { .. } => metadata(
-                "haven_config",
-                "config_get",
-                RiskLevel::Low,
+            ConfigOperationArgs::ConfigGet { .. } => model_metadata(
+                "haven.config.config_get",
                 OperationIdempotency::Idempotent,
                 ToolConcurrency::SharedResource("config".into()),
             ),
-            ConfigOperationArgs::LogsLevel { .. } => metadata(
-                "haven_config",
-                "logs_level",
-                RiskLevel::Medium,
+            ConfigOperationArgs::LogsLevel { .. } => model_metadata(
+                "haven.config.logs_level",
                 OperationIdempotency::Idempotent,
                 ToolConcurrency::Resource("config".into()),
             ),
