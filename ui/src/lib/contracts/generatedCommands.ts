@@ -29,7 +29,7 @@ export interface LogInfo { enabled: boolean; level: string; path: string | null 
 export interface LogTail { path: string; content: string }
 export interface McpRefreshResult { added: string[]; removed: string[]; updated: string[]; failed: string[] }
 export interface ApiKeyStatus { models: Record<string, boolean>; providers: Record<string, boolean>; stt: boolean; ocr: boolean; ocr_secret: boolean }
-export interface RecordingState { is_recording: boolean; is_toggle: boolean }
+export interface RecordingStatus { is_recording: boolean; is_toggle: boolean }
 export const CONFIRMATION_RESOLUTION_RESULT_VALUES = ['resolved', 'expired', 'stale'] as const;
 export type ConfirmationResolutionResult = (typeof CONFIRMATION_RESOLUTION_RESULT_VALUES)[number];
 export interface SessionLineageResponse { parent: SessionRecordDto | null; children: SessionRecordDto[] }
@@ -235,7 +235,7 @@ export interface TauriCommandMap {
 	get_last_conversation: { request: undefined; response: SessionResumeResponse | null };
 	get_log_info: { request: undefined; response: LogInfo };
 	get_performance_metrics: { request: { ui?: UiMetricsSnapshotInput | null }; response: MetricsSnapshot };
-	get_recording_state: { request: undefined; response: RecordingState };
+	get_recording_state: { request: undefined; response: RecordingStatus };
 	get_session_for_resume: { request: { sessionId: string }; response: SessionResumeResponse };
 	get_session_lineage: { request: { sessionId: string }; response: SessionLineageResponse };
 	get_sessions: { request: undefined; response: SessionListResponse };

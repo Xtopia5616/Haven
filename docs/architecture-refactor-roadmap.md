@@ -184,6 +184,9 @@
 | LLM 的 STT 适配 | `LlmSttClientAdapter` 把 provider `LlmClient` 转接为消费者所需的 `SttClient`，没有额外桥接状态或独立生命周期。 | **已对齐名称**，保留两种客户端契约及现有 provider dispatch（ADR 0535）。 |
 | Tools 对外入口 | `ToolsFacade` 组合多个 Tools owner，并由 Agent/App adapter 提供窄 ports；它暴露 execution/catalog/config/runtime/asset 调用，但不拥有 MCP、Skill 等资源的创建/重连生命周期。 | **已对齐名称**：Rust crate API、`facade.rs` 模块、Agent/App adapter 与构造入口统一使用 facade 角色；无 Tauri/IPC 变化（ADR 0536）。 |
 | UI metrics contract | `generatedCommands.ts` 从 Rust `MetricsSnapshot` 生成固定响应字段；原 settings alias 却将相同响应退化为开放 `Record<string, unknown>`，丢掉已知字段类型。 | **已对齐名称与类型**：`PerformanceMetricsSnapshot` 以 generated DTO 为已知契约并与开放索引签名交叉，既能类型化访问已有字段，也保留未来扩展字段；移入 diagnostics contract，不改变 IPC（ADR 0537）。 |
+| Input / App RecordingState 同名 | `haven_input::RecordingState` 是 Pending/Recording/Processing 采集生命周期枚举；App `get_recording_state` 响应是 shell/UI 的 `is_recording`、`is_toggle` 快照。两者是不同 owner、不同状态空间。 | **已改名**：App DTO 改为 `RecordingStatus`，保持 command 与 JSON 字段不变；区分 App wire view 和 Input lifecycle state（ADR 0538）。 |
+| 配置 apply 计划与协调 | `RuntimeConfigApplyPlan` 从变更域映射 live/restart target；`SettingsApplyPlan` 再展开设置命令的有序 phase；`SettingsRuntimeApplyCoordinator` 持有 phase、失败和 router 发布观测。 | **保留并解释**：共享 target 投影，但执行顺序/失败观测 owner 不同，后两者由前者派生而非复制 apply 状态；合并会混淆配置影响映射与 settings 顺序流程。 |
+| Chat UI 事件模块 | `createChatEventController` 管 listener 注册/释放；Session、Agent、Interaction、Usage handler 分别把不同事件映射到 reducer、局部 store 或通知。 | **保留并解释**：controller 管注册生命周期，handler 管分域事件投影；handler 之间职责、payload 和副作用不同，不因同一 chat route 合并。 |
 | 其他已扫角色 | `McpManager`、`VenvManager` 各自拥有连接/环境资源生命周期；`ConfigService` 拥有串行 config patch 与持久化；Memory repositories 中的 `*Store` 持有 SQLite 访问；UI `InteractionOwner` 会在 boundary 转成 snake_case wire owner。 | **保留并解释**：后缀/同名本身不足以证明重复；UI 与 wire owner 分开是明确的字段转换边界，MCP/venv 的 Manager 也符合生命周期语义。 |
 
 此表是候选分流清单，不是完整符号目录。尚未完成的 crate、IPC/event payload、UI controller/store 与函数动词审计仍在 §5.7 范围内；完成一域后更新本表并以 ADR 记录实际迁移。

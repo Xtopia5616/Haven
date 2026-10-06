@@ -21,7 +21,7 @@ mod attachment_ingress;
 use attachment_ingress::validate_attachments;
 
 #[derive(Serialize)]
-pub struct RecordingState {
+pub struct RecordingStatus {
     pub is_recording: bool,
     pub is_toggle: bool,
 }
@@ -29,9 +29,9 @@ pub struct RecordingState {
 #[tauri::command]
 pub async fn get_recording_state(
     state: State<'_, Arc<AppState>>,
-) -> Result<RecordingState, String> {
+) -> Result<RecordingStatus, String> {
     let shell_state = state.runtime.shell.get_state().await;
-    Ok(RecordingState {
+    Ok(RecordingStatus {
         is_recording: shell_state.is_recording,
         is_toggle: shell_state.is_recording_toggle,
     })
