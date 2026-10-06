@@ -32,17 +32,17 @@ pub use repositories::session_authorization::{
     SessionAuthorizationGrant, StoredSessionAuthorizationGrant,
 };
 pub use repositories::session_events::{
-    BRANCH_POINT_EVENT_TYPE, CURRENT_EVENT_VERSION, INTERACTION_CLEARED_EVENT_TYPE,
-    INTERACTION_REQUESTED_EVENT_TYPE, INTERACTION_RESOLVED_EVENT_TYPE,
-    MAX_SESSION_EVENT_REPLAY_PAGE_SIZE, MAX_TRANSCRIPT_BATCH_EVENTS,
-    MAX_TRANSCRIPT_BATCH_PROJECTION_ROWS, MEMORY_TRIGGER_EVENT_TYPE, ProjectionCutoff,
-    RECOVERY_PERSISTENCE_EVENT_TYPE, RecoveryPersistenceStatus, RollbackProjectionBoundary,
-    RollbackRequest, RollbackResult, SessionCommitResult, SessionCommitted, SessionCommittedEvent,
-    SessionCursor, SessionEvent, SessionEventInput, SessionEventPage, SessionEventSubscription,
-    SessionHistoryFilter, SessionMessageText, SessionProjectionIntent, SessionReplayState,
-    SessionResumeMedia, SessionResumeProjection, SessionStore, SessionTitleGenerationContext,
-    StoredBranchPoint, TIMELINE_ROLLBACK_EVENT_TYPE, TRANSCRIPT_EVENT_TYPE,
-    USAGE_DISCARDED_EVENT_TYPE, USAGE_RECORDED_EVENT_TYPE,
+    ActiveBranchPoint, BRANCH_POINT_EVENT_TYPE, CURRENT_EVENT_VERSION,
+    INTERACTION_CLEARED_EVENT_TYPE, INTERACTION_REQUESTED_EVENT_TYPE,
+    INTERACTION_RESOLVED_EVENT_TYPE, MAX_SESSION_EVENT_REPLAY_PAGE_SIZE,
+    MAX_TRANSCRIPT_BATCH_EVENTS, MAX_TRANSCRIPT_BATCH_PROJECTION_ROWS, MEMORY_TRIGGER_EVENT_TYPE,
+    ProjectionCutoff, RECOVERY_PERSISTENCE_EVENT_TYPE, RecoveryPersistenceStatus,
+    RollbackProjectionBoundary, RollbackRequest, RollbackResult, SessionCommitResult,
+    SessionCommitted, SessionCommittedEvent, SessionCursor, SessionEvent, SessionEventInput,
+    SessionEventPage, SessionEventSubscription, SessionHistoryFilter, SessionMessageText,
+    SessionProjectionIntent, SessionReplayState, SessionResumeMedia, SessionResumeProjection,
+    SessionStore, SessionTitleGenerationContext, TIMELINE_ROLLBACK_EVENT_TYPE,
+    TRANSCRIPT_EVENT_TYPE, USAGE_DISCARDED_EVENT_TYPE, USAGE_RECORDED_EVENT_TYPE,
 };
 pub use repositories::sessions::{Session, SessionOrigin};
 pub use repositories::tool_run_completion_outbox::ToolRunCompletionOutboxRow;

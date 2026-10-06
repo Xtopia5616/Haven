@@ -61,7 +61,18 @@ pub const MAX_TRANSCRIPT_BATCH_PROJECTION_ROWS: usize = 256;
 /// bounded row count cannot be bypassed with one oversized tool input.
 pub const MAX_TRANSCRIPT_BATCH_PAYLOAD_BYTES: usize = 4 * 1024 * 1024;
 
-pub type StoredBranchPoint = (SessionEvent, usize, u32, Option<String>);
+/// Latest active rollback metadata for one session step.
+///
+/// The durable branch-point event sequence, transcript cursor, step identity,
+/// and message projection timestamp are separate clocks/identities; keep them
+/// named instead of passing them positionally.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ActiveBranchPoint {
+    pub event_sequence: i64,
+    pub event_cursor: usize,
+    pub step_number: u32,
+    pub last_msg_at: Option<String>,
+}
 
 /// The assistant partial kinds that recovery may persist outside the
 /// canonical transcript event stream.
@@ -136,7 +147,7 @@ pub struct SessionCursor {
 #[derive(Debug, Clone)]
 pub struct SessionReplayState {
     pub transcript: Vec<SessionEvent>,
-    pub branch_points: Vec<StoredBranchPoint>,
+    pub branch_points: Vec<ActiveBranchPoint>,
     pub cursor: SessionCursor,
 }
 
@@ -1985,10 +1996,11 @@ impl SessionStore {
             )?;
             let to_sequence = branch_points
                 .iter()
-                .find(|(_, cursor, step, _)| {
-                    *step == request.target_step && *cursor == request.transcript_cursor
+                .find(|point| {
+                    point.step_number == request.target_step
+                        && point.event_cursor == request.transcript_cursor
                 })
-                .map_or(mapped_sequence, |(event, _, _, _)| event.sequence);
+                .map_or(mapped_sequence, |point| point.event_sequence);
             let projection_cutoff = match &request.projection_boundary {
                 RollbackProjectionBoundary::UserMessage { message_id } => {
                     let created_at = conn
@@ -2013,13 +2025,16 @@ impl SessionStore {
                 RollbackProjectionBoundary::BranchPoint => {
                     match branch_points
                         .iter()
-                        .find(|(_, _, step, _)| *step == request.target_step)
+                        .find(|point| point.step_number == request.target_step)
                     {
-                        Some((_, _, _, Some(created_at))) => Some(ProjectionCutoff {
+                        Some(ActiveBranchPoint {
+                            last_msg_at: Some(created_at),
+                            ..
+                        }) => Some(ProjectionCutoff {
                             created_at: created_at.clone(),
                             inclusive: false,
                         }),
-                        Some((_, _, _, None)) => None,
+                        Some(_) => None,
                         None => conn
                             .query_row(
                                 "SELECT created_at FROM messages
@@ -2215,8 +2230,8 @@ impl SessionStore {
     ) -> anyhow::Result<Option<Vec<SessionEvent>>> {
         let cutoff = Self::read_active_branch_points_in_connection(conn, session_id)?
             .into_iter()
-            .find(|(_, _, step, _)| *step == step_number)
-            .and_then(|(_, _, _, last_msg_at)| last_msg_at)
+            .find(|point| point.step_number == step_number)
+            .and_then(|point| point.last_msg_at)
             .map(|created_at| ProjectionCutoff {
                 created_at,
                 inclusive: false,
@@ -2885,7 +2900,7 @@ impl SessionStore {
     pub fn read_active_branch_points(
         &self,
         session_id: &str,
-    ) -> anyhow::Result<Vec<StoredBranchPoint>> {
+    ) -> anyhow::Result<Vec<ActiveBranchPoint>> {
         let conn = self.db.conn();
         Self::read_active_branch_points_in_connection(&conn, session_id)
     }
@@ -2893,7 +2908,7 @@ impl SessionStore {
     fn read_active_branch_points_in_connection(
         conn: &rusqlite::Connection,
         session_id: &str,
-    ) -> anyhow::Result<Vec<StoredBranchPoint>> {
+    ) -> anyhow::Result<Vec<ActiveBranchPoint>> {
         let mut points = Vec::new();
         for event in Self::read_active_in_connection(conn, session_id)? {
             if event.event_type != BRANCH_POINT_EVENT_TYPE {
@@ -2914,13 +2929,19 @@ impl SessionStore {
                 .get("last_msg_at")
                 .and_then(serde_json::Value::as_str)
                 .map(String::from);
+            let point = ActiveBranchPoint {
+                event_sequence: event.sequence,
+                event_cursor,
+                step_number,
+                last_msg_at,
+            };
             if let Some(index) = points
                 .iter()
-                .position(|(_, _, step, _): &StoredBranchPoint| *step == step_number)
+                .position(|point: &ActiveBranchPoint| point.step_number == step_number)
             {
-                points[index] = (event, event_cursor, step_number, last_msg_at);
+                points[index] = point;
             } else {
-                points.push((event, event_cursor, step_number, last_msg_at));
+                points.push(point);
             }
         }
         Ok(points)
@@ -5476,8 +5497,12 @@ mod tests {
             .unwrap();
         let points = store.read_active_branch_points(&session_id).unwrap();
         assert_eq!(points.len(), 1);
-        assert_eq!(points[0].1, 2);
-        assert_eq!(points[0].3.as_deref(), Some("2026-01-01T00:00:01Z"));
+        assert_eq!(points[0].event_cursor, 2);
+        assert_eq!(points[0].step_number, 3);
+        assert_eq!(
+            points[0].last_msg_at.as_deref(),
+            Some("2026-01-01T00:00:01Z")
+        );
     }
 
     #[test]

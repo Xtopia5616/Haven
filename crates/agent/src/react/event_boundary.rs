@@ -144,13 +144,13 @@ impl ReActEngine {
         let branch_points = replay
             .branch_points
             .into_iter()
-            .map(|(_, event_cursor, step_number, last_msg_at)| {
+            .map(|branch_point| {
                 (
-                    step_number,
+                    branch_point.step_number,
                     BranchPoint {
-                        event_cursor,
-                        step_number,
-                        last_msg_at,
+                        event_cursor: branch_point.event_cursor,
+                        step_number: branch_point.step_number,
+                        last_msg_at: branch_point.last_msg_at,
                     },
                 )
             })
