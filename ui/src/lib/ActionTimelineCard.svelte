@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { projectActionCard } from '$lib/actionCardProjection.ts';
 	import { actionStatusLabel, scheduleModeLabel, taskKindLabel } from '$lib/taskTerminology.ts';
+	import ToolResultCard from '$lib/ToolResultCard.svelte';
 	import type { ActionPayload } from '$lib/contracts/action.ts';
 
 	interface Props {
@@ -63,42 +64,55 @@
 		}
 		return action.startedAt ? `开始于 ${formatDate(action.startedAt)}` : '';
 	});
-	const output = $derived(
-		action?.kind === 'background' && showTerminalOutput
-			? action.output || action.error || ''
-			: '',
-	);
 	const summary = $derived(
-		action?.kind === 'background'
-			? action.command || action.errorReason || '后台任务正在执行'
-			: action?.kind === 'scheduled'
-				? action.body || ''
+		action?.kind === 'scheduled' ? action.body || '' : '',
+	);
+	const backgroundResult = $derived(
+		JSON.stringify({
+			background: true,
+			action_id: action?.id,
+			status: action?.status ?? 'running',
+			output: showTerminalOutput
+				? action?.output || action?.preview || action?.error || ''
 				: '',
+			...(action?.exitCode != null ? { exit_code: action.exitCode } : {}),
+		}),
 	);
 </script>
 
+{#if action?.kind !== 'scheduled'}
+	<ToolResultCard
+		type="tool"
+		toolName="shell"
+		outcome={action?.status ?? 'running'}
+		content={backgroundResult}
+		toolArgs={action?.command ? { command: action.command } : null}
+		messageId={action?.sourceStepId ?? action?.id ?? 'background-action-wait'}
+		actionId={showTerminalOutput ? action?.id ?? null : null}
+		actionData={showTerminalOutput ? action ?? null : null}
+		actionOutputHidden={!!action && !showTerminalOutput}
+		{awaitingBackgroundResult}
+		{awaitingBackgroundCount}
+	/>
+{:else}
 <article
 	class="action-timeline-card"
-	data-kind={action?.kind ?? 'background'}
+	data-kind="scheduled"
 	data-tone={projection?.tone ?? 'waiting'}
-	aria-label={projection
-		? `${taskKindLabel(projection.kind)}：${projection.title}，${projection.statusLabel}`
-		: '后台任务等待结果'}
+	aria-label={`${taskKindLabel('scheduled')}：${projection?.title ?? ''}，${projection?.statusLabel ?? ''}`}
 >
 	<div class="action-header">
-		<span class="action-kind">{taskKindLabel(action?.kind ?? 'background')}</span>
+		<span class="action-kind">{taskKindLabel('scheduled')}</span>
 		{#if projection?.statusLabel}
 			<span class="md-badge" data-variant={projection.tone}>{projection.statusLabel}</span>
-		{:else if !action}
-			<span class="md-badge" data-variant="waiting">等待结果</span>
 		{/if}
-		{#if projection?.timing && (action?.kind === 'background' || action?.status === 'running')}
+		{#if projection?.timing && action?.status === 'running'}
 			<span class="action-timing">{projection.timing}</span>
 		{/if}
 	</div>
 
 	<div class="action-title-row">
-		<strong>{projection?.title ?? '等待后台任务结果'}</strong>
+		<strong>{projection?.title ?? '定时任务'}</strong>
 		{#if triggerTime}<span class="action-trigger-time">{triggerTime}</span>{/if}
 	</div>
 
@@ -106,31 +120,11 @@
 		<p class="action-summary">{summary}</p>
 	{/if}
 
-	{#if action?.kind === 'scheduled'}
-		<div class="scheduled-details">
-			<span>{scheduleModeLabel(action.mode)}</span>
-		</div>
-	{/if}
-
-	{#if action?.kind === 'background' && action.status === 'running' && action.preview}
-		<pre class="action-preview">{action.preview}</pre>
-	{/if}
-
-	{#if action?.kind === 'background' && output}
-		<details class="action-output">
-			<summary>{action.status === 'failed' ? '查看失败输出' : '查看任务输出'}</summary>
-			<pre>{output}</pre>
-		</details>
-	{/if}
-
-	{#if awaitingBackgroundResult}
-		<p class="action-wait-note" role="status">
-			等待{awaitingBackgroundCount > 1
-				? ` ${awaitingBackgroundCount} 项`
-				: ''}后台任务结果，完成后将自动继续
-		</p>
-	{/if}
+	<div class="scheduled-details">
+		<span>{scheduleModeLabel(action.mode)}</span>
+	</div>
 </article>
+{/if}
 
 <style>
 	.action-timeline-card {
@@ -193,8 +187,7 @@
 		margin-inline-start: auto;
 	}
 	.action-summary,
-	.scheduled-details,
-	.action-wait-note {
+	.scheduled-details {
 		margin: 0;
 		font-size: var(--md-sys-typescale-body-small-size);
 		line-height: var(--md-sys-typescale-body-small-line-height);
@@ -205,34 +198,6 @@
 	.scheduled-details {
 		display: grid;
 		gap: var(--md-sys-space-2xs);
-	}
-	.action-preview,
-	.action-output pre {
-		margin: 0;
-		max-height: 220px;
-		overflow: auto;
-		padding: var(--md-sys-space-sm);
-		border-radius: var(--md-sys-shape-small);
-		background: var(--md-sys-color-surface-container);
-		color: var(--md-sys-color-on-surface);
-		font-family: var(--md-sys-typescale-mono);
-		font-size: var(--md-sys-typescale-label-small-size);
-		line-height: var(--md-sys-typescale-label-medium-line-height);
-		white-space: pre-wrap;
-		overflow-wrap: anywhere;
-	}
-	.action-output summary {
-		width: fit-content;
-		cursor: pointer;
-		color: var(--md-sys-color-primary);
-		font-size: var(--md-sys-typescale-label-medium-size);
-		line-height: var(--md-sys-typescale-label-medium-line-height);
-	}
-	.action-wait-note {
-		padding-block-start: var(--md-sys-space-xs);
-		border-block-start: 1px solid var(--md-sys-color-outline-variant);
-		color: var(--md-sys-color-on-surface);
-		font-weight: 600;
 	}
 	@media (max-width: 600px) {
 		.action-timeline-card {

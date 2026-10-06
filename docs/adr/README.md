@@ -511,3 +511,4 @@
 - [0520：SessionActor interaction replay 失败时 fail closed](0520-session-interaction-replay-fail-closed.md)
 - [0521：Session confirmation 决议与恢复唤醒原子提交](0521-session-confirmation-resolution-wake-atomicity.md)
 - [0522：Pending Session 恢复失败后有界退避重试](0522-retry-pending-session-recovery.md)
+- [0523：后台 shell 任务沿用来源工具调用呈现](0523-background-tool-call-unified-presentation.md)

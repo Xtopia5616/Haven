@@ -12,6 +12,7 @@
 	import MaterialCollapsible from '$lib/MaterialCollapsible.svelte';
 	import Icon from '$lib/Icon.svelte';
 	import type { AgentToolResultEnvelope } from '$lib/contracts/agent.ts';
+	import type { ActionPayload } from '$lib/contracts/action.ts';
 	import type {
 		AskMessageHandler,
 		AskSelectionChangeHandler,
@@ -39,6 +40,9 @@
 		received?: boolean;
 		resolved?: { answer?: string; ignored?: boolean } | null;
 		actionId?: string | null;
+		actionData?: ActionPayload | null;
+		awaitingBackgroundResult?: boolean;
+		awaitingBackgroundCount?: number;
 		compact?: boolean;
 		showFallbackIntent?: boolean;
 		onContextMenu?: ((request: ConversationContextMenuRequest) => void) | null;
@@ -69,6 +73,9 @@
 		received = false,
 		resolved = null,
 		actionId = null,
+		actionData = null,
+		awaitingBackgroundResult = false,
+		awaitingBackgroundCount = 0,
 		compact = false,
 		showFallbackIntent = false,
 		onContextMenu = null,
@@ -504,6 +511,9 @@
 				{content}
 				{streaming}
 				{actionId}
+				{actionData}
+				{awaitingBackgroundResult}
+				{awaitingBackgroundCount}
 				{toolArgs}
 				{showFallbackIntent}
 				{messageId}

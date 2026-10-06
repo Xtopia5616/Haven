@@ -146,7 +146,7 @@ impl ActionEvent {
             kind: ActionKind::Background,
             status: optional_action_status(payload, "status")?,
             session_id: None,
-            source_step_id: None,
+            source_step_id: optional_string(payload, "source_step_id")?,
             started_at: None,
             finished_at: None,
             due_at: None,

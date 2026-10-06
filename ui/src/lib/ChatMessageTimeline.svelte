@@ -9,6 +9,7 @@
 	import { hasToolPreambleBefore } from '$lib/toolIntent.ts';
 	import ConversationActivityGroup from '$lib/ConversationActivityGroup.svelte';
 	import {
+		firstWaitingBackgroundActionId,
 		groupConversationTimeline,
 		type AskMessageHandler,
 		type AskSelectionChangeHandler,
@@ -70,6 +71,12 @@
 			awaitingBackgroundCount,
 		}),
 	);
+	let awaitingBackgroundActionId = $derived(
+		firstWaitingBackgroundActionId(
+			sessionActions,
+			awaitingBackground && !activeSessionError && !terminationStatus,
+		),
+	);
 </script>
 
 {#if timelineItems.length === 0}
@@ -94,6 +101,9 @@
 					toolCount={item.toolCount}
 					stepCount={item.stepCount}
 					allMessages={messages}
+					actions={sessionActions}
+					{awaitingBackgroundActionId}
+					{awaitingBackgroundCount}
 					{mediaPlans}
 					{onContextMenu}
 					{onAskSelectionChange}

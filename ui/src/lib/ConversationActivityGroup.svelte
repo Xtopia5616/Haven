@@ -6,7 +6,9 @@
 	import MediaPlanCard from '$lib/MediaPlanCard.svelte';
 	import { hasToolPreambleBefore } from '$lib/toolIntent.ts';
 	import { toolDisplayName } from '$lib/toolIdentity.ts';
+	import { sourceActionId } from '$lib/conversationTimeline.ts';
 	import type { AgentMediaPlanPayload } from '$lib/contracts/agent.ts';
+	import type { ActionPayload } from '$lib/contracts/action.ts';
 	import type {
 		AskMessageHandler,
 		AskSelectionGetter,
@@ -22,6 +24,9 @@
 		toolCount?: number;
 		stepCount?: number;
 		allMessages?: ConversationMessage[];
+		actions?: ActionPayload[];
+		awaitingBackgroundActionId?: string | null;
+		awaitingBackgroundCount?: number;
 		onContextMenu?: (request: ConversationContextMenuRequest) => void;
 		onAskSelectionChange?: AskSelectionChangeHandler;
 		getAskSelection?: AskSelectionGetter;
@@ -37,6 +42,9 @@
 		toolCount = 0,
 		stepCount = 0,
 		allMessages = [],
+		actions = [],
+		awaitingBackgroundActionId = null,
+		awaitingBackgroundCount = 0,
 		onContextMenu = () => {},
 		onAskSelectionChange = () => {},
 		getAskSelection = () => [],
@@ -48,12 +56,13 @@
 
 	// A work process is visible while it is active, then becomes a compact
 	// summary. Manual expansion after completion is preserved across updates.
-	let open = $state(untrack(() => streaming));
-	let lastStreaming = untrack(() => streaming);
+	let active = $derived(streaming || awaitingBackgroundActionId != null);
+	let open = $state(untrack(() => active));
+	let lastActive = untrack(() => active);
 	$effect.pre(() => {
-		if (streaming === lastStreaming) return;
-		open = streaming;
-		lastStreaming = streaming;
+		if (active === lastActive) return;
+		open = active;
+		lastActive = active;
 	});
 
 	let currentEntry = $derived.by(() => {
@@ -64,6 +73,11 @@
 	});
 
 	let summary = $derived.by(() => {
+		if (awaitingBackgroundActionId) {
+			return awaitingBackgroundCount > 1
+				? `等待 ${awaitingBackgroundCount} 个后台任务结果`
+				: '等待后台任务结果';
+		}
 		if (!currentEntry) return '工作过程';
 		if (streaming) {
 			if (currentEntry.type === 'tool') {
@@ -86,6 +100,28 @@
 	let visibleMediaPlans = $derived(
 		mediaPlans.filter((plan) => activityStepNumbers.has(plan.stepNumber)),
 	);
+
+	function backgroundActionFor(message: ConversationMessage): ActionPayload | null {
+		if (message.type !== 'tool') return null;
+		const sourceId = sourceActionId(message);
+		return (
+			actions.find(
+				(action) =>
+					action.kind === 'background' &&
+					(action.sourceStepId === message.id || sourceId === action.id),
+			) ?? null
+		);
+	}
+
+	function terminalOutputAlreadyInTranscript(action: ActionPayload): boolean {
+		if (action.status === 'running' || action.status === 'waiting') return false;
+		return allMessages.some(
+			(message) =>
+				message.sourceActionId === action.id &&
+				message.actionId !== action.id &&
+				!message.streaming,
+		);
+	}
 </script>
 
 <section
@@ -102,6 +138,8 @@
 			<span class="activity-status" aria-hidden="true">
 				{#if streaming}
 					<span class="activity-pulse"></span>
+				{:else if awaitingBackgroundActionId}
+					<Icon name="clock" size={13} strokeWidth={2.5} />
 				{:else}
 					<Icon name="check" size={13} strokeWidth={2.5} />
 				{/if}
@@ -121,6 +159,9 @@
 		<div class="activity-items">
 			{#each entries as entry (entry.message.id)}
 				{@const msg = entry.message}
+				{@const backgroundAction = backgroundActionFor(msg)}
+				{@const resultInTranscript =
+					backgroundAction != null && terminalOutputAlreadyInTranscript(backgroundAction)}
 				{@const showFallbackIntent =
 					msg.type === 'tool' &&
 					(msg.showFallbackIntent ?? !hasToolPreambleBefore(allMessages, entry.index))}
@@ -137,14 +178,24 @@
 					result={msg.result}
 					messageId={msg.id}
 					stepNumber={msg.stepNumber ?? null}
-					toolArgs={msg.toolArgs ?? null}
+					toolArgs={
+						msg.toolArgs ??
+						(backgroundAction?.command ? { command: backgroundAction.command } : null)
+					}
 					attachments={msg.attachments || []}
 					{showFallbackIntent}
 					options={msg.options || []}
 					awaiting={!!msg.awaiting}
 					received={!!msg.received}
 					resolved={msg.resolved || null}
-					actionId={msg.actionId || null}
+					actionId={resultInTranscript ? null : msg.actionId || backgroundAction?.id || null}
+					actionData={resultInTranscript ? null : backgroundAction}
+					awaitingBackgroundResult={
+						!resultInTranscript && backgroundAction?.id === awaitingBackgroundActionId
+					}
+					awaitingBackgroundCount={
+						backgroundAction?.id === awaitingBackgroundActionId ? awaitingBackgroundCount : 0
+					}
 					compact
 					{onContextMenu}
 					{onAskSelectionChange}

@@ -344,27 +344,28 @@ impl ActionService {
                     _ = shutdown_token.cancelled() => return,
                     _ = tokio::time::sleep(emit_interval) => {}
                 }
-                if !matches!(
-                    emit_me.status_view(&emit_action_id).await,
+                let source_step_id = match emit_me.status_view(&emit_action_id).await {
                     ActionStatusView::Background {
                         state: ActionStateView::Running { .. },
+                        source_step_id,
                         ..
-                    } | ActionStatusView::Scheduled {
+                    } => source_step_id,
+                    ActionStatusView::Scheduled {
                         state: ActionStateView::Running { .. },
                         ..
-                    }
-                ) {
-                    return;
-                }
+                    } => None,
+                    _ => return,
+                };
                 if emit_tail.snapshot_if_changed(&mut last_output) {
-                    emit_me.emit(
-                        "action:output",
-                        json!({
-                            "action_id": emit_action_id,
-                            "status": "running",
-                            "output": last_output.as_str(),
-                        }),
-                    );
+                    let mut payload = json!({
+                        "action_id": emit_action_id,
+                        "status": "running",
+                        "output": last_output.as_str(),
+                    });
+                    if let Some(source_step_id) = source_step_id {
+                        payload["source_step_id"] = json!(source_step_id);
+                    }
+                    emit_me.emit("action:output", payload);
                 }
             }
         });

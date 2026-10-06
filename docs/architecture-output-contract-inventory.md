@@ -125,7 +125,7 @@ Admin 操作最终由 `TypedToolAdapter` 或 `AdminSurfaces.execute` 序列化�
 | `recording:vad_status` | `VadStatusEvent { signal, state }` | 固定字段，值域以 Input/VAD producer 的字符串语义为准。 |
 | `recording:error`, `transcription:error` | `RecordingErrorEvent` / `TranscriptionErrorEvent { session_id, error }` | typed envelope + 自由错误文本；App/recording owner 需继续保证错误不含凭据或完整私密内容。 |
 | `transcription:started`, `transcription:result` | `TranscriptionStartedEvent { session_id }` / `TranscriptionResultEvent { session_id, text, duration_ms, confidence? }` | 固定 typed DTO；转写文本是用户内容 string，由 UI 内容展示路径消费。 |
-| `action:created`, `action:updated`, `action:finished`, `action:output` | `ActionEvent` 投影：id/kind 必填；状态、session、时间、标题/正文、命令/输出/错误、退出码/preview 按 channel 可选 | 固定且安全裁剪的 projection；不带内部动态 tool args、continuation prompt、output-log path。`action:output` 只投影输出 preview。Action owner 提供来源，App mapper 控制字段。 |
+| `action:created`, `action:updated`, `action:finished`, `action:output` | `ActionEvent` 投影：id/kind 必填；状态、session、来源 `source_step_id`、时间、标题/正文、命令/输出/错误、退出码/preview 按 channel 可选 | 固定且安全裁剪的 projection；不带内部动态 tool args、continuation prompt、output-log path。`action:output` 只投影有界输出 preview，并保留后台工具调用的来源步骤锚点。Action owner 提供来源，App mapper 控制字段。 |
 | `app:bootstrap` | `AppBootstrapEvent { status: String }` | 字段固定，status 当前是 String（Loading/Ready 两态），建议后续改名类型；bootstrap/App owner。 |
 | `tray:status_changed`, `mute:changed` | `TrayStatusChangedEvent { status, tooltip }` / `MuteChangedEvent { muted }` | typed UI status；status/tooltip 自由文本但字段集固定，App owner。 |
 | `mcp:status_change`, `skills:status_change` | `McpStatusChangedEvent { name, status: McpClientStatus }` / `SkillsStatusChangedEvent { op }` | MCP status 是具名 enum；skills op 是受限但 String 表示的操作名。各 runtime owner producer，App 定義 payload。 |

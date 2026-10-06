@@ -91,6 +91,7 @@ mod tests {
         let payload = serde_json::json!({
             "action_id": "act-output-preview",
             "status": "running",
+            "source_step_id": "step-output-preview",
             "output": "bounded tail snapshot",
             "command": "echo token=private-command-value",
             "tool_args": { "token": "private-argument-value" },
@@ -109,6 +110,7 @@ mod tests {
                 "id": "act-output-preview",
                 "kind": "background",
                 "status": "running",
+                "source_step_id": "step-output-preview",
                 "output": "bounded tail snapshot",
             })
         );

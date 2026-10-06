@@ -32,7 +32,7 @@ describe('ConversationTimeline', () => {
 		expect(document.querySelector('.bubble.user')?.textContent).toContain('你好');
 	});
 
-	it('renders a waiting background Action beside its source step without a second banner', () => {
+	it('renders waiting background progress inside its source tool card', () => {
 		const { container } = render(ConversationTimeline, {
 			messages: [
 				{
@@ -62,18 +62,16 @@ describe('ConversationTimeline', () => {
 			awaitingBackgroundCount: 1,
 		});
 
-		const card = container.querySelector('.action-timeline-card');
+		const card = container.querySelector('.tool-card');
 		expect(card).toBeTruthy();
-		expect(card?.textContent).toContain('后台任务');
+		expect(card?.textContent).toContain('后台任务运行中');
 		expect(card?.textContent).toContain('整理下载目录');
-		expect(card?.querySelector('.action-preview')?.textContent).toContain('扫描中');
-		expect(card?.querySelector('.action-output pre')?.textContent).toContain('已移动 3 个文件');
+		expect(card?.textContent).toContain('扫描中');
 		expect(card?.textContent).toContain('等待后台任务结果，完成后将自动继续');
 		expect(container.querySelectorAll('.action-wait-note')).toHaveLength(1);
+		expect(container.querySelector('.action-timeline-card')).toBeNull();
 		expect(container.querySelector('.awaiting-bg-banner')).toBeNull();
-		expect(container.querySelector('.activity-group')!.compareDocumentPosition(card!)).toBe(
-			Node.DOCUMENT_POSITION_FOLLOWING,
-		);
+		expect(container.querySelector('.activity-group')?.textContent).toContain('等待后台任务结果');
 	});
 
 	it('uses the shared Action card for scheduled details when the transcript is empty', () => {

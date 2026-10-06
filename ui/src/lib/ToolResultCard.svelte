@@ -46,6 +46,10 @@
 		resolved?: { answer?: string; ignored?: boolean } | null;
 		streaming?: boolean;
 		actionId?: string | null;
+		actionData?: ActionPayload | null;
+		awaitingBackgroundResult?: boolean;
+		awaitingBackgroundCount?: number;
+		actionOutputHidden?: boolean;
 		toolArgs?: unknown;
 		showFallbackIntent?: boolean;
 	}
@@ -69,6 +73,10 @@
 		resolved = null,
 		streaming = false,
 		actionId = null,
+		actionData = null,
+		awaitingBackgroundResult = false,
+		awaitingBackgroundCount = 0,
+		actionOutputHidden = false,
 		toolArgs = null,
 		showFallbackIntent = false,
 	}: Props = $props();
@@ -125,10 +133,18 @@
 	let livePreview = $derived(
 		messageId ? /** @type {string|undefined} */ $toolPreviewStore : undefined,
 	);
-	// Background actions keep streaming via actionStore after the tool call
-	// itself returns `{ background: true, action_id }`. Parent clears actionId
-	// once finished output is persisted onto the message.
-	let boundAction = $derived(actionId ? $actionStore[actionId] || null : null);
+	// Background actions extend the originating tool card after it returns
+	// `{ background: true, action_id }`. The session snapshot covers hydrated
+	// history; actionStore supplies live updates. The binding clears when the
+	// terminal result has been persisted onto the message.
+	let boundAction = $derived(
+		actionId
+			? {
+					...($actionStore[actionId] || {}),
+					...(actionData?.id === actionId ? actionData : {}),
+				}
+			: null,
+	);
 	let actionRunning = $derived(!!boundAction && boundAction.status === 'running');
 	let liveStreaming = $derived(streaming || actionRunning || !!livePreview);
 	let actionOutcome = $derived(
@@ -144,11 +160,13 @@
 	// between output events, so they must not drive the disclosure lifecycle or
 	// a manual collapse can be reopened by the next chunk. The message/action
 	// lifecycle is the stable execution signal.
-	let executionActive = $derived(streaming || actionRunning);
+	let executionActive = $derived(streaming || actionRunning || effectiveOutcome === 'running');
 	let displayContent = $derived.by(() => {
 		if (actionRunning && boundAction) {
 			const out =
-				typeof boundAction.output === 'string' ? boundAction.output : livePreview || '';
+				(typeof boundAction.preview === 'string' && boundAction.preview) ||
+				livePreview ||
+				(typeof boundAction.output === 'string' ? boundAction.output : '');
 			return JSON.stringify({
 				output: out,
 				background: true,
@@ -511,7 +529,9 @@
 
 				<section class="tool-detail tool-detail--output" data-detail="output">
 					<div class="tool-detail-label">输出结果</div>
-					{#if failedWithoutOutput}
+					{#if actionOutputHidden}
+						<p class="tool-card-empty">结果已在会话消息中显示</p>
+					{:else if failedWithoutOutput}
 						<p class="tool-card-empty tool-card-empty--error">{emptyOutputLabel}</p>
 					{:else if BodyRenderer}
 						<BodyRenderer
@@ -531,6 +551,13 @@
 						<div class="tool-card-hint">{data.hint}</div>
 					{/if}
 				</section>
+				{#if awaitingBackgroundResult}
+					<p class="action-wait-note" role="status">
+						等待{awaitingBackgroundCount > 1
+							? ` ${awaitingBackgroundCount} 项`
+							: ''}后台任务结果，完成后将自动继续
+					</p>
+				{/if}
 			</div>
 		</MaterialCollapsible>
 	</div>
@@ -580,6 +607,14 @@
 		background: transparent;
 		border: none;
 		box-shadow: none;
+	}
+	.action-wait-note {
+		margin: 0;
+		padding-block-start: var(--md-sys-space-sm);
+		border-block-start: 1px solid var(--md-sys-color-outline-variant);
+		color: var(--md-sys-color-on-surface-variant);
+		font-size: var(--md-sys-typescale-body-small-size);
+		line-height: var(--md-sys-typescale-body-small-line-height);
 	}
 	.tool-card.embedded :global(.md-collapsible-header) {
 		/* The parent ChatBubble owns the surface padding. Removing the nested

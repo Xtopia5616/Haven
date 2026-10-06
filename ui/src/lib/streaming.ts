@@ -242,7 +242,7 @@ export function actionIdFromObservation(observation: string | undefined | null):
 	return null;
 }
 
-/** Extract an Action ID used only to anchor a timeline card to its tool step. */
+/** Extract the Action ID that links a background lifecycle to its source tool step. */
 export function sourceActionIdFromObservation(
 	toolName: string | undefined | null,
 	observation: string | undefined | null,

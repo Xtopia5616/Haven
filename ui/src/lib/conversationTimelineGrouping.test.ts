@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
 	groupConversationMessages,
 	groupConversationTimeline,
+	firstWaitingBackgroundActionId,
 	isMergedConversationMessage,
 	type ConversationMessage,
 } from './conversationTimeline.ts';
@@ -69,7 +70,7 @@ describe('conversationTimeline grouping', () => {
 		expect(isMergedConversationMessage(message('text', { type: null }))).toBe(false);
 	});
 
-	it('anchors background and scheduled Action cards to their source tool step', () => {
+	it('projects background status into its tool call and anchors scheduled cards', () => {
 		const messages = [
 			message('tool-background', {
 				type: 'tool',
@@ -103,14 +104,15 @@ describe('conversationTimeline grouping', () => {
 			awaitingBackgroundCount: 1,
 		});
 
-		expect(items.map((item) => item.kind)).toEqual(['activity', 'action', 'action']);
-		expect(items[1]).toMatchObject({
-			kind: 'action',
-			action: { id: 'act-background' },
-			awaitingBackgroundResult: true,
-			awaitingBackgroundCount: 1,
+		expect(items.map((item) => item.kind)).toEqual(['activity', 'action']);
+		expect(items[0]).toMatchObject({
+			kind: 'activity',
+			entries: [
+				{ message: { id: 'tool-background' } },
+				{ message: { id: 'tool-schedule' } },
+			],
 		});
-		expect(items[2]).toMatchObject({
+		expect(items[1]).toMatchObject({
 			kind: 'action',
 			action: { id: 'act-scheduled', kind: 'scheduled' },
 			awaitingBackgroundResult: false,
@@ -139,7 +141,7 @@ describe('conversationTimeline grouping', () => {
 			}],
 		});
 
-		expect(items.map((item) => item.kind)).toEqual(['activity', 'message', 'activity', 'action']);
+		expect(items.map((item) => item.kind)).toEqual(['activity', 'message', 'activity']);
 		expect(items[2]).toMatchObject({ kind: 'activity', entries: [{ message: { id: 'stable-source-step' } }] });
 	});
 
@@ -173,7 +175,21 @@ describe('conversationTimeline grouping', () => {
 		]);
 	});
 
-	it('hides a terminal background payload when its source tool card already shows it', () => {
+	it('chooses the same earliest running background action for the wait indicator', () => {
+		expect(
+			firstWaitingBackgroundActionId(
+				[
+					{ id: 'act-later', kind: 'background', status: 'running', startedAt: '2026-10-06T11:00:00Z' },
+					{ id: 'act-scheduled', kind: 'scheduled', status: 'waiting' },
+					{ id: 'act-earlier', kind: 'background', status: 'running', startedAt: '2026-10-06T10:00:00Z' },
+				],
+				true,
+			),
+		).toBe('act-earlier');
+		expect(firstWaitingBackgroundActionId([], false)).toBeNull();
+	});
+
+	it('folds a terminal background result into its source tool card without a duplicate Action card', () => {
 		const action = {
 			id: 'act-finished',
 			kind: 'background' as const,
@@ -194,15 +210,14 @@ describe('conversationTimeline grouping', () => {
 		});
 		const items = groupConversationTimeline([transcriptResult], { actions: [action] });
 
-		expect(items).toHaveLength(2);
-		expect(items[1]).toMatchObject({
-			kind: 'action',
-			action: { id: action.id },
-			showTerminalOutput: false,
+		expect(items).toHaveLength(1);
+		expect(items[0]).toMatchObject({
+			kind: 'activity',
+			entries: [{ message: { id: 'tool-finished', sourceActionId: action.id } }],
 		});
 	});
 
-	it('keeps terminal detail on the action card until the transcript receives it', () => {
+	it('keeps terminal detail on the source tool card until the transcript receives it', () => {
 		const action = {
 			id: 'act-unprojected',
 			kind: 'background' as const,
@@ -218,6 +233,10 @@ describe('conversationTimeline grouping', () => {
 		});
 		const items = groupConversationTimeline([source], { actions: [action] });
 
-		expect(items[1]).toMatchObject({ kind: 'action', showTerminalOutput: true });
+		expect(items).toHaveLength(1);
+		expect(items[0]).toMatchObject({
+			kind: 'activity',
+			entries: [{ message: { id: 'tool-unprojected', actionId: action.id } }],
+		});
 	});
 });

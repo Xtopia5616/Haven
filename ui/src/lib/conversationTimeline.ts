@@ -179,11 +179,30 @@ export interface ConversationTimelineOptions {
 	awaitingBackgroundCount?: number;
 }
 
+function compareTimelineActions(left: ActionPayload, right: ActionPayload): number {
+	const leftTime = left.startedAt || left.dueAt || '';
+	const rightTime = right.startedAt || right.dueAt || '';
+	return leftTime.localeCompare(rightTime) || left.id.localeCompare(right.id);
+}
+
+/** Resolve the same running action used for the timeline wait indicator. */
+export function firstWaitingBackgroundActionId(
+	actions: ActionPayload[],
+	awaitingBackground: boolean,
+): string | null {
+	if (!awaitingBackground) return null;
+	return (
+		[...actions].sort(compareTimelineActions).find(
+			(action) => action.kind === 'background' && action.status === 'running',
+		)?.id ?? null
+	);
+}
+
 /**
- * Place Action cards after the work item identified by source_step_id, falling
- * back to the Action ID in the tool observation for rows without that stable
- * step anchor. Rows without a visible source remain at the end of their owning
- * session timeline; ownership comes from the validated ActionEvent session_id.
+ * Place scheduled Action cards after their source work item. Background
+ * actions with a visible source are projected into that tool call's result
+ * card; only rows without a visible source get a standalone timeline item.
+ * Ownership comes from the validated ActionEvent session_id.
  */
 export function groupConversationTimeline(
 	messages: ConversationMessage[],
@@ -194,16 +213,9 @@ export function groupConversationTimeline(
 	}: ConversationTimelineOptions = {},
 ): ConversationTimelineItem[] {
 	const transcriptItems = groupConversationMessages(messages);
-	const orderedActions = [...actions].sort((left, right) => {
-		const leftTime = left.startedAt || left.dueAt || '';
-		const rightTime = right.startedAt || right.dueAt || '';
-		return leftTime.localeCompare(rightTime) || left.id.localeCompare(right.id);
-	});
-	const firstWaitingActionId = awaitingBackground
-		? orderedActions.find(
-				(action) => action.kind === 'background' && action.status === 'running',
-			)?.id
-		: undefined;
+	const orderedActions = [...actions].sort(compareTimelineActions);
+	const firstWaitingActionId =
+		firstWaitingBackgroundActionId(orderedActions, awaitingBackground) ?? undefined;
 	const insertions = new Map<number, ActionPayload[]>();
 	const trailing: ActionPayload[] = [];
 
@@ -214,7 +226,10 @@ export function groupConversationTimeline(
 		const sourceIndex =
 			stepIndex >= 0
 				? stepIndex
-				: messages.findIndex((message) => sourceActionId(message) === action.id);
+				: messages.findIndex(
+						(message) =>
+							message.type === 'tool' && sourceActionId(message) === action.id,
+					);
 		if (sourceIndex < 0) {
 			trailing.push(action);
 			continue;
@@ -227,6 +242,9 @@ export function groupConversationTimeline(
 		);
 		if (timelineIndex < 0) {
 			trailing.push(action);
+			continue;
+		}
+		if (action.kind === 'background') {
 			continue;
 		}
 		const anchored = insertions.get(timelineIndex) || [];
