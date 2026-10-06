@@ -248,9 +248,16 @@ pub(crate) struct MediaRequirements {
     pub(crate) video: bool,
 }
 
+/// Derived media metadata cached for one canonical request projection.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct CanonicalMediaSummary {
+    pub(crate) requirements: MediaRequirements,
+    pub(crate) media_part_count: usize,
+}
+
 /// Summarize canonical media in one pass. Run state updates this summary on
 /// append and replacement so turn preparation does not rescan long histories.
-pub(crate) fn canonical_media_summary(messages: &[CanonicalMessage]) -> (MediaRequirements, usize) {
+pub(crate) fn canonical_media_summary(messages: &[CanonicalMessage]) -> CanonicalMediaSummary {
     let mut requirements = MediaRequirements::default();
     let mut media_part_count = 0;
     for part in messages.iter().flat_map(|message| &message.content) {
@@ -270,7 +277,10 @@ pub(crate) fn canonical_media_summary(messages: &[CanonicalMessage]) -> (MediaRe
             ContentPart::Text(_) => {}
         }
     }
-    (requirements, media_part_count)
+    CanonicalMediaSummary {
+        requirements,
+        media_part_count,
+    }
 }
 
 /// Pick the request kind for an agent step. Image content routes through the

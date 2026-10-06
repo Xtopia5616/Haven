@@ -7,7 +7,10 @@
 //! projection in one type makes it impossible for Turn, retry, and compaction
 //! paths to each invent their own clone/append/sanitize sequence.
 
-use super::{MediaRequirements, ReActEngine, ReActState, RetryNudge, canonical_media_summary};
+use super::{
+    CanonicalMediaSummary, MediaRequirements, ReActEngine, ReActState, RetryNudge,
+    canonical_media_summary,
+};
 use crate::compactor::estimate_message_tokens;
 use crate::types::TranscriptRecord;
 use haven_common::media::{
@@ -32,12 +35,10 @@ pub(crate) struct RequestContext {
     message_tokens: u32,
     /// Cached once at the request boundary so request selection and media
     /// projection do not rescan the full canonical list.
-    media_requirements: MediaRequirements,
-    /// Number of raw media parts in the provider-visible request.  This is
-    /// distinct from the number of durable inputs: a malformed/missing
-    /// durable mapping must still take the validation path and never be
-    /// treated as a text-only request.
-    media_part_count: usize,
+    /// Cached modality requirements and raw media count for the provider view.
+    /// The count remains distinct from durable inputs so a malformed/missing
+    /// mapping still takes validation and is never treated as text-only.
+    media_summary: CanonicalMediaSummary,
     repairs: usize,
 }
 
@@ -68,8 +69,7 @@ impl RequestContext {
                 media_inputs: Arc::new(media_inputs),
                 message_tokens: cached_message_tokens
                     .unwrap_or_else(|| estimate_message_tokens(&state.canonical)),
-                media_requirements: state.media_requirements(),
-                media_part_count: state.media_part_count(),
+                media_summary: state.media_summary(),
                 repairs: 0,
             };
         }
@@ -109,8 +109,7 @@ impl RequestContext {
             messages: Arc::new(messages),
             media_inputs: Arc::new(media_inputs),
             message_tokens: self.message_tokens.saturating_add(instruction_tokens),
-            media_requirements: self.media_requirements,
-            media_part_count: self.media_part_count,
+            media_summary: self.media_summary,
             repairs: self.repairs,
         }
     }
@@ -126,7 +125,7 @@ impl RequestContext {
     ) -> (Self, MediaPlan) {
         let mut planned_inputs = Vec::new();
         let mut media_positions = Vec::new();
-        if self.media_part_count == 0 {
+        if self.media_summary.media_part_count == 0 {
             return (
                 self.clone(),
                 MediaPlan {
@@ -205,14 +204,13 @@ impl RequestContext {
             message.content = content;
         }
         let repairs = crate::sanitize_canonical(&mut messages);
-        let (media_requirements, media_part_count) = canonical_media_summary(&messages);
+        let media_summary = canonical_media_summary(&messages);
         (
             Self {
                 message_tokens: estimate_message_tokens(&messages),
                 messages: Arc::new(messages),
                 media_inputs: Arc::clone(&self.media_inputs),
-                media_requirements,
-                media_part_count,
+                media_summary,
                 repairs,
             },
             plan,
@@ -228,7 +226,7 @@ impl RequestContext {
     }
 
     pub(super) fn media_requirements(&self) -> MediaRequirements {
-        self.media_requirements
+        self.media_summary.requirements
     }
 
     /// Check whether every raw image/audio part can remain raw for a request.
@@ -238,7 +236,7 @@ impl RequestContext {
     /// becoming a placeholder on the specialized endpoint.
     pub(super) fn raw_media_fits_profile(&self, capabilities: &CapabilityProfile) -> bool {
         let mut inputs = Vec::new();
-        if self.media_part_count == 0 {
+        if self.media_summary.media_part_count == 0 {
             return true;
         }
         for (message_index, message) in self.messages.iter().enumerate() {
@@ -289,8 +287,8 @@ impl RequestContext {
         cached_message_tokens: Option<u32>,
     ) -> Self {
         let repairs = crate::sanitize_canonical(&mut messages);
-        let (media_requirements, media_part_count) = canonical_media_summary(&messages);
-        if media_part_count == 0 {
+        let media_summary = canonical_media_summary(&messages);
+        if media_summary.media_part_count == 0 {
             media_inputs.clear();
         } else {
             media_inputs.resize_with(messages.len(), Vec::new);
@@ -304,8 +302,7 @@ impl RequestContext {
             } else {
                 estimate_message_tokens(&messages)
             },
-            media_requirements,
-            media_part_count,
+            media_summary,
             messages: Arc::new(messages),
             media_inputs: Arc::new(media_inputs),
             repairs,
@@ -323,7 +320,7 @@ fn media_inputs_for_state(
 ) -> Vec<Vec<Option<MediaInput>>> {
     // Text/tool-only requests have no durable media association to rebuild.
     // Avoid replaying the entire event log on the dominant prompt path.
-    if state.media_part_count() == 0
+    if state.media_summary().media_part_count == 0
         || !messages.iter().any(|message| {
             message.content.iter().any(|part| {
                 matches!(
