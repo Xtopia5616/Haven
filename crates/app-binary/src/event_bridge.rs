@@ -32,9 +32,16 @@ pub(crate) fn project_tool_run_event(event: ToolRunLifecycleEvent) -> (&'static 
             TOOL_RUN_CREATED_EVENT,
             ToolRunEvent::from_lifecycle_payload(payload),
         ),
-        ToolRunLifecycleEvent::Updated(payload) => (
+        ToolRunLifecycleEvent::Updated(update) => (
             TOOL_RUN_UPDATED_EVENT,
-            ToolRunEvent::from_lifecycle_payload(payload),
+            match update {
+                haven_tools::ToolRunLifecycleUpdate::StateChanged(payload) => {
+                    ToolRunEvent::from_lifecycle_payload(*payload)
+                }
+                haven_tools::ToolRunLifecycleUpdate::SessionAttached(payload) => {
+                    ToolRunEvent::from_session_attached_payload(payload)
+                }
+            },
         ),
         ToolRunLifecycleEvent::Output(payload) => (
             TOOL_RUN_OUTPUT_EVENT,

@@ -27,7 +27,8 @@ use crate::tool_run_terminal::{
 use crate::tool_run_trigger_policy::{ScheduledTrigger, ScheduledTriggerRequest};
 use crate::tool_run_types::{ScheduleMode, ScheduledToolRunFired, ScheduledToolRunSpec};
 use crate::{
-    ToolRunLifecycle, ToolRunLifecycleEvent, ToolRunLifecyclePayload, ToolRunOutputPayload,
+    ToolRunLifecycle, ToolRunLifecycleEvent, ToolRunLifecyclePayload, ToolRunLifecycleState,
+    ToolRunLifecycleUpdate, ToolRunOutputPayload, ToolRunSessionAttachedPayload,
 };
 use haven_memory::{ToolRunCompletionOutboxRow, ToolRunRow, ToolRunStore};
 
@@ -49,6 +50,7 @@ pub use views::{
 use views::{
     list_view_started_at, project_board_tool_run, render_background_status_json,
     render_status_json, scheduled_lifecycle_payload, scheduled_tool_run_view,
+    tool_run_lifecycle_state,
 };
 
 /// Optional typed sink for the closed ToolRun lifecycle event contract.
@@ -1006,43 +1008,30 @@ impl ToolRunService {
         source_step_id: Option<String>,
     ) {
         debug_assert!(state.is_terminal());
-        let mut event = ToolRunLifecyclePayload::new(ToolRunKind::Background, tool_run_id);
-        event.status = Some(state.status());
+        let mut event = ToolRunLifecyclePayload::new(
+            ToolRunKind::Background,
+            tool_run_id,
+            tool_run_lifecycle_state(&state),
+        );
         event.source_step_id = source_step_id.clone();
         match &state {
             ToolRunState::Completed {
-                output,
-                exit_code,
-                started_at,
-                finished_at,
-                ..
+                output, exit_code, ..
             } => {
                 event.output = Some(output.clone());
                 event.exit_code = *exit_code;
-                event.started_at = Some(started_at.clone());
-                event.finished_at = Some(finished_at.clone());
             }
             ToolRunState::Failed {
                 error,
                 error_reason,
                 exit_code,
-                started_at,
-                finished_at,
                 ..
             } => {
                 event.error = Some(error.clone());
                 event.error_reason = Some(error_reason.clone());
                 event.exit_code = *exit_code;
-                event.started_at = Some(started_at.clone());
-                event.finished_at = Some(finished_at.clone());
             }
-            ToolRunState::Cancelled {
-                started_at,
-                finished_at,
-            } => {
-                event.started_at = Some(started_at.clone());
-                event.finished_at = Some(finished_at.clone());
-            }
+            ToolRunState::Cancelled { .. } => {}
             ToolRunState::Waiting | ToolRunState::Running { .. } => {
                 unreachable!("terminal publication requires a terminal ToolRun state")
             }

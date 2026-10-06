@@ -519,42 +519,52 @@ pub(super) fn scheduled_lifecycle_payload(
     entry: &ScheduledToolRunEntry,
     state: &ToolRunState,
 ) -> ToolRunLifecyclePayload {
-    let mut payload = ToolRunLifecyclePayload::new(ToolRunKind::Scheduled, id);
-    payload.status = Some(state.status());
+    let mut payload =
+        ToolRunLifecyclePayload::new(ToolRunKind::Scheduled, id, tool_run_lifecycle_state(state));
     payload.session_id = session_id.map(str::to_string);
     payload.title = Some(entry.title.clone());
     payload.body = Some(entry.body.clone());
     payload.mode = Some(entry.mode.as_str().to_string());
     payload.due_at = Some(entry.due_at.clone());
-    match state {
-        ToolRunState::Running { started_at } => {
-            payload.started_at = Some(started_at.clone());
-        }
-        ToolRunState::Completed {
-            started_at,
-            finished_at,
-            ..
-        }
-        | ToolRunState::Cancelled {
-            started_at,
-            finished_at,
-        }
-        | ToolRunState::Failed {
-            started_at,
-            finished_at,
-            ..
-        } => {
-            if !started_at.is_empty() {
-                payload.started_at = Some(started_at.clone());
-            }
-            payload.finished_at = Some(finished_at.clone());
-        }
-        _ => {}
-    }
     if let ToolRunState::Failed { error_reason, .. } = state {
         payload.error_reason = Some(error_reason.clone());
     }
     payload
+}
+
+/// Project runtime state into the smaller event state contract. A cancelled
+/// scheduled ToolRun can have an empty runtime start marker when cancelled
+/// before firing; the event represents that absence explicitly as `None`.
+pub(super) fn tool_run_lifecycle_state(state: &ToolRunState) -> ToolRunLifecycleState {
+    match state {
+        ToolRunState::Waiting => ToolRunLifecycleState::Waiting,
+        ToolRunState::Running { started_at } => ToolRunLifecycleState::Running {
+            started_at: started_at.clone(),
+        },
+        ToolRunState::Completed {
+            started_at,
+            finished_at,
+            ..
+        } => ToolRunLifecycleState::Completed {
+            started_at: started_at.clone(),
+            finished_at: finished_at.clone(),
+        },
+        ToolRunState::Failed {
+            started_at,
+            finished_at,
+            ..
+        } => ToolRunLifecycleState::Failed {
+            started_at: started_at.clone(),
+            finished_at: finished_at.clone(),
+        },
+        ToolRunState::Cancelled {
+            started_at,
+            finished_at,
+        } => ToolRunLifecycleState::Cancelled {
+            started_at: (!started_at.is_empty()).then(|| started_at.clone()),
+            finished_at: finished_at.clone(),
+        },
+    }
 }
 
 /// Render the terminal status JSON for a ToolRun (mirrors `status()` output for

@@ -142,6 +142,8 @@ exit_code?, preview? }`。`source_step_id` 仅用于将由 Agent 工具调用启
 `cancelled`；`kind` 才区分 `background` 与 `scheduled`。它不包含动态 `tool_args`、续接 `prompt`、`tool_name` 或本地
 `log_path`；这些是执行内部字段，不能作为跨端契约或泄漏到 UI。
 
+定时任务从 `waiting` 进入 `running` 的 `tool_run:updated` 必须带 `started_at`；内部生命周期状态与时间戳由同一个 typed state 表达，App projection 展平为上述 wire DTO。等待期间取消的定时任务可以没有 `started_at`。
+
 ## 任务事件（v1）
 
 后端常量与 DTO 位于 `crates/app-binary/src/events.rs`。`haven-tools` 可以维持内部状态 JSON，

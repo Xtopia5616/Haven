@@ -159,8 +159,11 @@ impl ToolRunService {
                 scheduled: Some(entry),
             },
         );
-        let mut created = ToolRunLifecyclePayload::new(ToolRunKind::Scheduled, id.clone());
-        created.status = Some(ToolRunStatus::Waiting);
+        let mut created = ToolRunLifecyclePayload::new(
+            ToolRunKind::Scheduled,
+            id.clone(),
+            ToolRunLifecycleState::Waiting,
+        );
         created.session_id = session_id.clone();
         created.title = Some(title.clone());
         created.body = Some(body.clone());
@@ -304,12 +307,14 @@ impl ToolRunService {
         let running_state = ToolRunState::Running {
             started_at: started_at_for_event,
         };
-        self.emit(ToolRunLifecycleEvent::Updated(scheduled_lifecycle_payload(
-            id,
-            session_id.as_deref(),
-            &schedule,
-            &running_state,
-        )));
+        self.emit(ToolRunLifecycleEvent::Updated(
+            ToolRunLifecycleUpdate::StateChanged(Box::new(scheduled_lifecycle_payload(
+                id,
+                session_id.as_deref(),
+                &schedule,
+                &running_state,
+            ))),
+        ));
         self.completion_bus
             .retain_scheduled_fire(payload.clone())
             .await;
@@ -363,12 +368,14 @@ impl ToolRunService {
             {
                 tool_run.state = ToolRunState::Waiting;
             }
-            self.emit(ToolRunLifecycleEvent::Updated(scheduled_lifecycle_payload(
-                id,
-                session_id.as_deref(),
-                &schedule,
-                &ToolRunState::Waiting,
-            )));
+            self.emit(ToolRunLifecycleEvent::Updated(
+                ToolRunLifecycleUpdate::StateChanged(Box::new(scheduled_lifecycle_payload(
+                    id,
+                    session_id.as_deref(),
+                    &schedule,
+                    &ToolRunState::Waiting,
+                ))),
+            ));
             self.arm_scheduled_worker(id.to_string(), &schedule);
         }
     }

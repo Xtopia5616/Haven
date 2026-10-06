@@ -109,17 +109,20 @@ pub struct ToolRunEvent {
 
 impl ToolRunEvent {
     pub(crate) fn from_lifecycle_payload(payload: ToolRunLifecyclePayload) -> Self {
+        let status = payload.state.status();
+        let started_at = payload.state.started_at().map(str::to_owned);
+        let finished_at = payload.state.finished_at().map(str::to_owned);
         Self {
             id: payload.tool_run_id,
             kind: match payload.kind {
                 haven_tools::ToolRunKind::Background => ToolRunKind::Background,
                 haven_tools::ToolRunKind::Scheduled => ToolRunKind::Scheduled,
             },
-            status: payload.status,
+            status: Some(status),
             session_id: payload.session_id,
             source_step_id: payload.source_step_id,
-            started_at: payload.started_at,
-            finished_at: payload.finished_at,
+            started_at,
+            finished_at,
             due_at: payload.due_at,
             title: payload.title,
             body: payload.body,
@@ -150,6 +153,30 @@ impl ToolRunEvent {
             mode: None,
             command: None,
             output: Some(payload.output),
+            error: None,
+            error_reason: None,
+            exit_code: None,
+            preview: None,
+        }
+    }
+
+    pub(crate) fn from_session_attached_payload(
+        payload: haven_tools::ToolRunSessionAttachedPayload,
+    ) -> Self {
+        Self {
+            id: payload.tool_run_id,
+            kind: ToolRunKind::Background,
+            status: None,
+            session_id: Some(payload.session_id),
+            source_step_id: payload.source_step_id,
+            started_at: None,
+            finished_at: None,
+            due_at: None,
+            title: None,
+            body: None,
+            mode: None,
+            command: None,
+            output: None,
             error: None,
             error_reason: None,
             exit_code: None,
@@ -636,9 +663,14 @@ mod tests {
 
     #[test]
     fn tool_run_event_projects_background_status_to_the_stable_wire_shape() {
-        let mut payload =
-            ToolRunLifecyclePayload::new(haven_tools::ToolRunKind::Background, "toolrun-1");
-        payload.status = Some(ToolRunStatus::Completed);
+        let mut payload = ToolRunLifecyclePayload::new(
+            haven_tools::ToolRunKind::Background,
+            "toolrun-1",
+            haven_tools::ToolRunLifecycleState::Completed {
+                started_at: "2026-09-23T10:00:00Z".into(),
+                finished_at: "2026-09-23T10:00:01Z".into(),
+            },
+        );
         payload.session_id = Some("ses-1".into());
         payload.source_step_id = Some("step-1".into());
         payload.output = Some("done".into());
@@ -651,6 +683,8 @@ mod tests {
                 "id": "toolrun-1",
                 "kind": "background",
                 "status": "completed",
+                "started_at": "2026-09-23T10:00:00Z",
+                "finished_at": "2026-09-23T10:00:01Z",
                 "session_id": "ses-1",
                 "source_step_id": "step-1",
                 "output": "done",
@@ -661,9 +695,11 @@ mod tests {
 
     #[test]
     fn tool_run_event_hides_scheduled_execution_details() {
-        let mut payload =
-            ToolRunLifecyclePayload::new(haven_tools::ToolRunKind::Scheduled, "toolrun-2");
-        payload.status = Some(ToolRunStatus::Waiting);
+        let mut payload = ToolRunLifecyclePayload::new(
+            haven_tools::ToolRunKind::Scheduled,
+            "toolrun-2",
+            haven_tools::ToolRunLifecycleState::Waiting,
+        );
         payload.title = Some("Reminder".into());
         payload.body = Some("Take a break".into());
         payload.mode = Some("tool".into());

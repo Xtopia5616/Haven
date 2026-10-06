@@ -474,15 +474,46 @@ fn payload_preserves_session_lifecycle_and_error_wire_shapes() {
 
 #[test]
 fn tool_run_projection_maps_scheduled_progress_to_the_public_contract() {
-    let mut payload =
-        haven_tools::ToolRunLifecyclePayload::new(haven_tools::ToolRunKind::Scheduled, "toolrun-1");
-    payload.status = Some(haven_common::ToolRunStatus::Running);
+    let mut payload = haven_tools::ToolRunLifecyclePayload::new(
+        haven_tools::ToolRunKind::Scheduled,
+        "toolrun-1",
+        haven_tools::ToolRunLifecycleState::Running {
+            started_at: "2026-10-06T12:00:00Z".into(),
+        },
+    );
     payload.title = Some("Reminder".into());
-    let (channel, event) =
-        project_tool_run_event(haven_tools::ToolRunLifecycleEvent::Updated(payload));
+    let (channel, event) = project_tool_run_event(haven_tools::ToolRunLifecycleEvent::Updated(
+        haven_tools::ToolRunLifecycleUpdate::StateChanged(Box::new(payload)),
+    ));
     assert_eq!(channel, TOOL_RUN_UPDATED_EVENT);
     assert_eq!(event.status, Some(haven_common::ToolRunStatus::Running));
+    assert_eq!(event.started_at.as_deref(), Some("2026-10-06T12:00:00Z"));
     assert_eq!(event.title.as_deref(), Some("Reminder"));
+}
+
+#[test]
+fn tool_run_projection_maps_session_attachment_as_a_metadata_update() {
+    let event = haven_tools::ToolRunLifecycleEvent::Updated(
+        haven_tools::ToolRunLifecycleUpdate::SessionAttached(
+            haven_tools::ToolRunSessionAttachedPayload {
+                tool_run_id: "toolrun-attached".into(),
+                session_id: "ses-owner".into(),
+                source_step_id: Some("step-origin".into()),
+            },
+        ),
+    );
+    let (channel, event) = project_tool_run_event(event);
+
+    assert_eq!(channel, TOOL_RUN_UPDATED_EVENT);
+    assert_eq!(
+        serde_json::to_value(event).unwrap(),
+        serde_json::json!({
+            "id": "toolrun-attached",
+            "kind": "background",
+            "session_id": "ses-owner",
+            "source_step_id": "step-origin",
+        })
+    );
 }
 
 #[test]

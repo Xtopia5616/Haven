@@ -246,12 +246,15 @@ impl ToolRunService {
         let tool_run_id = id.clone();
         let shell_owned = shell.to_string();
         let command_owned = command.to_string();
-        let mut created =
-            ToolRunLifecyclePayload::new(ToolRunKind::Background, tool_run_id.clone());
-        created.status = Some(ToolRunStatus::Running);
+        let mut created = ToolRunLifecyclePayload::new(
+            ToolRunKind::Background,
+            tool_run_id.clone(),
+            ToolRunLifecycleState::Running {
+                started_at: started_at.clone(),
+            },
+        );
         created.session_id = session_id.map(str::to_owned);
         created.source_step_id = source_step_id.map(str::to_owned);
-        created.started_at = Some(started_at.clone());
         self.emit(ToolRunLifecycleEvent::Created(created));
         // The direct child pid is captured before `run` moves `child`; on
         // Windows, cancelling must kill the whole process tree, not just the
@@ -424,10 +427,13 @@ impl ToolRunService {
                 entry.source_step_id.clone(),
             )
         };
-        let mut updated = ToolRunLifecyclePayload::new(ToolRunKind::Background, tool_run_id);
-        updated.session_id = Some(session_id.to_string());
-        updated.source_step_id = source_step_id.clone();
-        self.emit(ToolRunLifecycleEvent::Updated(updated));
+        self.emit(ToolRunLifecycleEvent::Updated(
+            ToolRunLifecycleUpdate::SessionAttached(ToolRunSessionAttachedPayload {
+                tool_run_id: tool_run_id.to_string(),
+                session_id: session_id.to_string(),
+                source_step_id: source_step_id.clone(),
+            }),
+        ));
         // Headless mode has no durable outbox to recover a completion that was
         // first published without an owner. Re-notify only with the newly
         // bound owner; persistent mode relies on the updated outbox row.

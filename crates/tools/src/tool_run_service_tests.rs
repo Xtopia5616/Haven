@@ -3935,7 +3935,7 @@ async fn test_corrupt_row_quarantine_retries_after_transient_db_failure() {
 }
 
 #[tokio::test]
-async fn test_scheduled_terminal_event_reuses_persisted_timestamps() {
+async fn test_scheduled_lifecycle_events_reuse_persisted_timestamps() {
     let dir = tempfile::TempDir::new().unwrap();
     let db = Arc::new(haven_memory::Database::open(&dir.path().join("test.db")).unwrap());
     let service = Arc::new(ToolRunService::new());
@@ -3970,6 +3970,28 @@ async fn test_scheduled_terminal_event_reuses_persisted_timestamps() {
         .unwrap()
         .unwrap();
     assert!(matches!(fired, ToolRunCompletion::Scheduled(_)));
+    let running_event = events
+        .lock()
+        .unwrap()
+        .iter()
+        .find(|(name, payload)| {
+            name == "tool_run:updated" && payload["id"] == id && payload["status"] == "running"
+        })
+        .map(|(_, payload)| payload.clone())
+        .expect("scheduled running event");
+    let running_row = db
+        .get_tool_run(&id)
+        .unwrap()
+        .expect("scheduled running history row");
+    let running_started_at = running_row
+        .started_at
+        .as_deref()
+        .expect("running scheduled ToolRun has a start time");
+    assert_eq!(
+        running_event["started_at"].as_str(),
+        Some(running_started_at)
+    );
+
     service.complete_scheduled(&id).await.unwrap();
 
     let event = events

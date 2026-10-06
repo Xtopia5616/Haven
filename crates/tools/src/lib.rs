@@ -177,7 +177,10 @@ pub use tool_contract::{
     ToolSource, TypedToolAdapter, TypedToolOperation, extract_ask_signal, extract_notify_signal,
     is_silent_tool_call, parse_tool_input,
 };
-pub use tool_run_events::{ToolRunLifecycleEvent, ToolRunLifecyclePayload, ToolRunOutputPayload};
+pub use tool_run_events::{
+    ToolRunLifecycleEvent, ToolRunLifecyclePayload, ToolRunLifecycleState, ToolRunLifecycleUpdate,
+    ToolRunOutputPayload, ToolRunSessionAttachedPayload,
+};
 pub(crate) use tool_run_lifecycle::ToolRunLifecycle;
 pub(crate) use tool_run_service::BackgroundShellRequest;
 pub use tool_run_service::{
