@@ -53,7 +53,7 @@ impl SessionSupervisor {
             .await
     }
 
-    pub async fn get_follow_ups(&self, session_id: &str) -> Vec<FollowUp> {
+    pub async fn drain_follow_ups(&self, session_id: &str) -> Vec<FollowUp> {
         match self.actor_for(session_id).await {
             Some(actor) => actor.drain_follow_ups().await,
             None => Vec::new(),
@@ -79,7 +79,7 @@ impl SessionSupervisor {
         actor.queue_steering(text, attachments, message_id).await
     }
 
-    pub async fn get_steering(&self, session_id: &str) -> Vec<FollowUp> {
+    pub async fn drain_steering(&self, session_id: &str) -> Vec<FollowUp> {
         match self.actor_for(session_id).await {
             Some(actor) => actor.drain_steering().await,
             None => Vec::new(),

@@ -317,7 +317,7 @@ async fn reopen_session_requeues_undelivered_inputs_stays_paused() {
         executor.get_active_session_status(&session.id).await,
         Some(SessionStatus::Paused)
     );
-    let supps = executor.get_follow_ups(&session.id).await;
+    let supps = executor.drain_follow_ups(&session.id).await;
     assert_eq!(supps.len(), 1, "only the never-injected input is re-queued");
     assert_eq!(supps[0].text, "steering lost");
 }
@@ -377,7 +377,7 @@ async fn reopen_session_marks_only_first_recovered_input_as_ask_answer() {
 
     agent.reopen_session(&session.id).await.unwrap();
 
-    let recovered = executor.get_follow_ups(&session.id).await;
+    let recovered = executor.drain_follow_ups(&session.id).await;
     assert_eq!(recovered.len(), 2);
     assert!(recovered[0].is_answer);
     assert!(!recovered[1].is_answer);
@@ -474,7 +474,7 @@ async fn reopen_preserves_follow_up_route_after_confirm_resolves_while_ask_stays
     );
     reopened_agent.reopen_session(&session.id).await.unwrap();
 
-    let restored = reopened_executor.get_follow_ups(&session.id).await;
+    let restored = reopened_executor.drain_follow_ups(&session.id).await;
     assert_eq!(restored.len(), 1);
     assert_eq!(restored[0].text, "accepted during confirmation");
     assert!(
@@ -511,7 +511,7 @@ async fn reopen_session_without_pending_inputs_stays_paused() {
         executor.get_active_session_status(&session.id).await,
         Some(SessionStatus::Paused)
     );
-    assert!(executor.get_follow_ups(&session.id).await.is_empty());
+    assert!(executor.drain_follow_ups(&session.id).await.is_empty());
 }
 
 #[tokio::test]

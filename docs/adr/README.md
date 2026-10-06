@@ -540,3 +540,4 @@
 - [0549：为 UI 集合查询统一使用 list 动词](0549-use-list-for-ui-collection-queries.md)
 - [0550：区分 reducer 统计与 usage view 输入](0550-distinguish-session-token-stats-view.md)
 - [0551：Memory 多行持久查询使用 list 动词](0551-use-list-for-memory-collection-queries.md)
+- [0552：Session 队列消费入口明确使用 drain 动词](0552-name-session-queue-drains.md)

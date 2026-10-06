@@ -2932,7 +2932,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn add_and_get_follow_ups() {
+    async fn add_and_drain_follow_ups() {
         let db = temp_db();
         let tools = Arc::new(ToolsFacade::new());
         let exec = Arc::new(SessionSupervisor::new_for_test(db, tools, 3));
@@ -2944,13 +2944,13 @@ mod tests {
             .await
             .unwrap();
         let drained: Vec<String> = exec
-            .get_follow_ups(&session.id)
+            .drain_follow_ups(&session.id)
             .await
             .into_iter()
             .map(|s| s.text)
             .collect();
         assert_eq!(drained, vec!["extra context 1", "extra context 2"]);
-        assert!(exec.get_follow_ups(&session.id).await.is_empty());
+        assert!(exec.drain_follow_ups(&session.id).await.is_empty());
     }
 
     #[tokio::test]
@@ -2965,7 +2965,7 @@ mod tests {
         exec.add_follow_up(&session.id, "plain context")
             .await
             .unwrap();
-        let drained = exec.get_follow_ups(&session.id).await;
+        let drained = exec.drain_follow_ups(&session.id).await;
         assert_eq!(drained.len(), 2);
         assert!(drained[0].is_answer, "first message is an ask reply");
         assert_eq!(drained[0].text, "the answer");
@@ -2973,7 +2973,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn add_and_get_follow_ups_with_attachments() {
+    async fn add_and_drain_follow_ups_with_attachments() {
         let db = temp_db();
         let tools = Arc::new(ToolsFacade::new());
         let exec = Arc::new(SessionSupervisor::new_for_test(db, tools, 3));
@@ -2982,11 +2982,11 @@ mod tests {
         exec.add_follow_up_with_attachments(&session.id, "看图", std::slice::from_ref(&att), None)
             .await
             .unwrap();
-        let drained = exec.get_follow_ups(&session.id).await;
+        let drained = exec.drain_follow_ups(&session.id).await;
         assert_eq!(drained.len(), 1);
         assert_eq!(drained[0].text, "看图");
         assert_eq!(drained[0].attachments, vec![att]);
-        assert!(exec.get_follow_ups(&session.id).await.is_empty());
+        assert!(exec.drain_follow_ups(&session.id).await.is_empty());
     }
 
     #[tokio::test]
@@ -2999,14 +2999,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn add_and_get_steering() {
+    async fn add_and_drain_steering() {
         let db = temp_db();
         let tools = Arc::new(ToolsFacade::new());
         let exec = Arc::new(SessionSupervisor::new_for_test(db, tools, 3));
         let session = exec.create_session("test").await.unwrap();
         exec.add_steering(&session.id, "steer 1").await.unwrap();
         let drained: Vec<String> = exec
-            .get_steering(&session.id)
+            .drain_steering(&session.id)
             .await
             .into_iter()
             .map(|s| s.text)
@@ -4612,7 +4612,7 @@ mod tests {
         }
         assert_eq!(accepted, crate::session::actor::CONTEXT_QUEUE_MAX_ITEMS);
         assert_eq!(rejected, 16);
-        assert_eq!(exec.get_steering(&session.id).await.len(), accepted);
+        assert_eq!(exec.drain_steering(&session.id).await.len(), accepted);
     }
 
     #[tokio::test]
@@ -4677,7 +4677,7 @@ mod tests {
             .await
             .unwrap();
 
-        let follow_ups = exec.get_follow_ups(&session.id).await;
+        let follow_ups = exec.drain_follow_ups(&session.id).await;
         assert_eq!(follow_ups.len(), 1, "duplicate message_id must be skipped");
         assert_eq!(follow_ups[0].text, "one");
     }
@@ -4695,7 +4695,7 @@ mod tests {
             .await
             .unwrap();
 
-        let steering = exec.get_steering(&session.id).await;
+        let steering = exec.drain_steering(&session.id).await;
         assert_eq!(steering.len(), 1);
         assert_eq!(steering[0].text, "first");
     }

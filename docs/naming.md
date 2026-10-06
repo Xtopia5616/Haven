@@ -90,6 +90,7 @@
 | `append` / `commit` / `persist` | 向追加式日志写入 / 原子提交一组变更 / 将状态写入持久存储。 |
 | `register` / `activate` / `enable` | 加入注册表 / 纳入当前执行作用域 / 允许既有能力使用；三者不能互代。 |
 | `update` / `replace` / `clear` / `delete` / `remove` | 局部修改 / 整体替换 / 清空集合 / 删除持久实体 / 从某个运行集合移除。 |
+| `drain` / `pop` / `take` | 取出并清空队列或集合 / 移除并返回一个队头元素 / 转移或清空某个可选 owner 的值。 |
 | `execute` / `run` / `handle` / `process` | 执行一次具名操作 / 推进一次流程或后台任务 / 接收并路由入口 / 消费或转换输入。 |
 | `resolve` / `authorize` | 按 owner 与输入解析目标/契约 / 由安全 owner 作出允许、拒绝或确认决策。 |
 | `emit` / `publish` / `send` | 发出事件 / 发布已提交状态 / 向外部端点或收件人发送消息。 |
