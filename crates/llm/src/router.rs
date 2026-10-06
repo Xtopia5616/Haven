@@ -38,14 +38,13 @@ use haven_common::media::CapabilityProfile;
 // §2.6: Circuit Breaker state
 // ---------------------------------------------------------------------------
 
-/// The mutable runtime state every `LlmRouter` constructor initializes the
-/// same way (health trackers, stream rules, semaphores, rate-limit cooldowns).
-type RuntimeStateParts = (
-    RwLock<EndpointHealthMap>,
-    RwLock<Vec<StreamRule>>,
-    StdMutex<HashMap<String, Arc<tokio::sync::Semaphore>>>,
-    RwLock<HashMap<String, Instant>>,
-);
+/// Mutable state shared by all `LlmRouter` constructors.
+struct LlmRouterRuntimeState {
+    health: RwLock<EndpointHealthMap>,
+    stream_rules: RwLock<Vec<StreamRule>>,
+    semaphores: StdMutex<HashMap<String, Arc<tokio::sync::Semaphore>>>,
+    rate_limited: RwLock<HashMap<String, Instant>>,
+}
 
 pub struct LlmRouter {
     config: Arc<RwLock<RouterConfig>>,
@@ -132,7 +131,12 @@ impl LlmRouter {
         ModelDirectory::clamp_max_tokens_to_context_windows(&mut config, fallback);
         let model_directory = ModelDirectory::from_config(&config);
         let request_limit = Self::request_limit(&config);
-        let (health, _, semaphores, rate_limited) = Self::runtime_state(
+        let LlmRouterRuntimeState {
+            health,
+            stream_rules,
+            semaphores,
+            rate_limited,
+        } = Self::runtime_state(
             request_limit,
             model_directory.model_ids().map(str::to_string),
         );
@@ -141,9 +145,9 @@ impl LlmRouter {
             default_context_window: fallback,
             model_directory,
             health,
-            // Stream rules are opt-in; code-block output remains ordinary
+            // Stream rules start empty; code-block output remains ordinary
             // assistant text unless a caller explicitly installs a rule.
-            stream_rules: RwLock::new(Vec::new()),
+            stream_rules,
             semaphores,
             rate_limited,
         }
@@ -161,14 +165,14 @@ impl LlmRouter {
     fn runtime_state(
         request_limit: usize,
         model_ids: impl IntoIterator<Item = String>,
-    ) -> RuntimeStateParts {
+    ) -> LlmRouterRuntimeState {
         let model_ids = model_ids.into_iter().collect::<Vec<_>>();
-        (
-            RwLock::new(new_endpoint_health_map(model_ids.iter().cloned())),
-            RwLock::new(Vec::new()),
-            StdMutex::new(Self::make_semaphores(request_limit, model_ids)),
-            RwLock::new(HashMap::new()),
-        )
+        LlmRouterRuntimeState {
+            health: RwLock::new(new_endpoint_health_map(model_ids.iter().cloned())),
+            stream_rules: RwLock::new(Vec::new()),
+            semaphores: StdMutex::new(Self::make_semaphores(request_limit, model_ids)),
+            rate_limited: RwLock::new(HashMap::new()),
+        }
     }
 
     /// Clone the concurrency permit for a model (the mutex is released before
@@ -337,8 +341,12 @@ impl LlmRouter {
             .into_iter()
             .map(|(id, client)| (id.to_string(), client)),
         );
-        let (health, stream_rules, semaphores, rate_limited) =
-            Self::runtime_state(64, model_directory.model_ids().map(str::to_string));
+        let LlmRouterRuntimeState {
+            health,
+            stream_rules,
+            semaphores,
+            rate_limited,
+        } = Self::runtime_state(64, model_directory.model_ids().map(str::to_string));
         Self {
             config: Arc::new(RwLock::new(config)),
             default_context_window: crate::registry::FALLBACK_CONTEXT_WINDOW,
