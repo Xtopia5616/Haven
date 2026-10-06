@@ -69,7 +69,13 @@ pub(crate) fn load_mcp_tool_names(input: &Value) -> Option<Vec<String>> {
 
 /// Decode the saved built-in lazy-load request. Missing arrays remain `None`
 /// so a malformed historical ToolCall cannot widen a selection during resume.
-pub(crate) fn builtin_selection(input: &Value) -> (Option<Vec<String>>, Option<Vec<String>>) {
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct BuiltinToolSelection {
+    pub(crate) operations: Option<Vec<String>>,
+    pub(crate) roots: Option<Vec<String>>,
+}
+
+pub(crate) fn decode_builtin_tool_selection(input: &Value) -> BuiltinToolSelection {
     fn names(input: &Value, key: &str) -> Option<Vec<String>> {
         let array = input.get(key)?.as_array()?;
         let mut values = Vec::new();
@@ -86,7 +92,10 @@ pub(crate) fn builtin_selection(input: &Value) -> (Option<Vec<String>>, Option<V
         Some(values)
     }
 
-    (names(input, "operations"), names(input, "roots"))
+    BuiltinToolSelection {
+        operations: names(input, "operations"),
+        roots: names(input, "roots"),
+    }
 }
 
 /// Decode the saved Skill names without allowing malformed input to turn into
@@ -180,15 +189,21 @@ mod tests {
     #[test]
     fn lazy_loader_selections_deduplicate_without_widening() {
         assert_eq!(
-            builtin_selection(&serde_json::json!({
+            decode_builtin_tool_selection(&serde_json::json!({
                 "operations": [" files.read ", "files.read", 7],
                 "roots": ["system", "system"]
             })),
-            (Some(vec!["files.read".into()]), Some(vec!["system".into()]))
+            BuiltinToolSelection {
+                operations: Some(vec!["files.read".into()]),
+                roots: Some(vec!["system".into()]),
+            }
         );
         assert_eq!(
-            builtin_selection(&serde_json::json!({"operations": "files.read"})),
-            (None, None)
+            decode_builtin_tool_selection(&serde_json::json!({"operations": "files.read"})),
+            BuiltinToolSelection {
+                operations: None,
+                roots: None,
+            }
         );
         assert_eq!(
             load_skill_names(&serde_json::json!({

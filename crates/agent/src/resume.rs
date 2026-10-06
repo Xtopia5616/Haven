@@ -24,7 +24,7 @@ use crate::event::{AgentEvent, AgentEventEmitter};
 use crate::react::DurableEventState;
 use crate::react::{RunInput, RunReplay};
 use crate::resume_support::{
-    builtin_selection, infer_resume_step, load_mcp_tool_names, load_skill_names,
+    decode_builtin_tool_selection, infer_resume_step, load_mcp_tool_names, load_skill_names,
 };
 
 use crate::session::{DirectRunLease, SessionStatus};
@@ -572,13 +572,23 @@ impl AgentLayer {
                 } else if tool.tool_call.tool_name.as_str() == "tool_catalog"
                     && tool.tool_call.tool_input["action"].as_str() == Some("load")
                 {
-                    let (operations, roots) = builtin_selection(&tool.tool_call.tool_input);
-                    if operations.as_ref().is_some_and(|values| !values.is_empty())
-                        || roots.as_ref().is_some_and(|values| !values.is_empty())
+                    let selection = decode_builtin_tool_selection(&tool.tool_call.tool_input);
+                    if selection
+                        .operations
+                        .as_ref()
+                        .is_some_and(|values| !values.is_empty())
+                        || selection
+                            .roots
+                            .as_ref()
+                            .is_some_and(|values| !values.is_empty())
                     {
                         let _ = self
                             .executor
-                            .load_builtin_operations_tool_overlay(session_id, operations, roots)
+                            .load_builtin_operations_tool_overlay(
+                                session_id,
+                                selection.operations,
+                                selection.roots,
+                            )
                             .await;
                     }
                 } else if tool.tool_call.tool_name.as_str() == "load_skill" {
