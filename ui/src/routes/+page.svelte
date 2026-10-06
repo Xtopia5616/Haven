@@ -79,7 +79,7 @@
 	import SessionHeader from '$lib/SessionHeader.svelte';
 	import MaterialDialog from '$lib/MaterialDialog.svelte';
 	import MaterialButton from '$lib/MaterialButton.svelte';
-	import ConversationTimeline from '$lib/ConversationTimeline.svelte';
+	import SessionTimeline from '$lib/SessionTimeline.svelte';
 	import Composer from '$lib/Composer.svelte';
 	import PendingInteractionsMenu from '$lib/PendingInteractionsMenu.svelte';
 	import { requestConfirmationOpen } from '$lib/interactionPresentationStore.ts';
@@ -97,7 +97,7 @@ import type { SessionTokenStatsView } from '$lib/sessionUsagePresentation.ts';
 	import type { ToolRunPayload, ToolRunStatus } from '$lib/contracts/toolRun.ts';
 	import type { AgentMediaPlanPayload } from '$lib/contracts/agent.ts';
 	import type { ChatFileAttachment, ChatImageAttachment } from '$lib/chatController.ts';
-	import type { ConversationContextMenuRequest } from '$lib/conversationTimeline.ts';
+	import type { SessionMessageContextMenuRequest } from '$lib/sessionTimeline.ts';
 	import type { ReactExecutionPhaseSnapshot } from '$lib/sessionRuntimeStore.ts';
 
 	let chatPageEl = $state<HTMLElement | null>(null);
@@ -435,7 +435,7 @@ import type { SessionTokenStatsView } from '$lib/sessionUsagePresentation.ts';
 		selectedContent: '',
 	});
 
-	function handleContextMenu(ev: ConversationContextMenuRequest) {
+	function handleContextMenu(ev: SessionMessageContextMenuRequest) {
 		const next = {
 			stepNumber: ev.stepNumber,
 			content: ev.content,
@@ -1202,7 +1202,7 @@ import type { SessionTokenStatsView } from '$lib/sessionUsagePresentation.ts';
 				onwheel={chatViewController.cancelJumpToBottom}
 				use:dragScroll={{ axis: 'y', preserveTextSelection: true }}
 			>
-				<ConversationTimeline
+				<SessionTimeline
 					{messages}
 					{sessionToolRuns}
 					mediaPlans={activeSessionId ? mediaPlansBySession[activeSessionId] || [] : []}

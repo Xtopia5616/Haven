@@ -1,7 +1,7 @@
 <script lang="ts">
 	import type { ComponentProps } from 'svelte';
 	import ChatMessageTimeline from '$lib/ChatMessageTimeline.svelte';
-	import ConversationEmptyState from './ConversationEmptyState.svelte';
+	import SessionEmptyState from './SessionEmptyState.svelte';
 	import LoadingState from './LoadingState.svelte';
 	import SessionTerminationBanner from './SessionTerminationBanner.svelte';
 
@@ -9,12 +9,12 @@
 	type Props = MessageTimelineProps & { loading?: boolean };
 
 	/**
-	 * ConversationTimeline is the semantic boundary for streamed
+	 * SessionTimeline is the semantic boundary for streamed
 	 * messages, tool results and ask/confirm interactions.
 	 *
 	 * The empty state is deliberately kept separate from the message renderer.
 	 * ChatMessageTimeline pulls in markdown, syntax highlighting and tool-card
-	 * components, none of which are needed for the first blank conversation.
+	 * components, none of which are needed for the first blank session.
 	 */
 	let {
 		messages = [],
@@ -32,7 +32,7 @@
 {:else if messages.length === 0 && terminationStatus}
 	<SessionTerminationBanner status={terminationStatus} reason={terminationReason} />
 {:else if messages.length === 0 && sessionToolRuns.length === 0 && !awaitingBackground}
-	<ConversationEmptyState hotkeyBinding={restProps.hotkeyBinding} />
+	<SessionEmptyState hotkeyBinding={restProps.hotkeyBinding} />
 {:else}
 	<!-- Keep the message renderer available for the first streamed event. A
 	     lazy component boundary here turns normal IPC latency into a loading

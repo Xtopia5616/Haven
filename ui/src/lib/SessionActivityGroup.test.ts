@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { fireEvent, render } from '@testing-library/svelte';
-import ConversationActivityGroup from './ConversationActivityGroup.svelte';
+import SessionActivityGroup from './SessionActivityGroup.svelte';
 
 const entry = (streaming: boolean) => ({
 	message: {
@@ -13,10 +13,10 @@ const entry = (streaming: boolean) => ({
 	index: 0,
 });
 
-describe('ConversationActivityGroup', () => {
+describe('SessionActivityGroup', () => {
 	it('stays open while active and auto-collapses when work completes', async () => {
 		const props = { entries: [entry(true)], streaming: true, stepCount: 1 };
-		const { container, rerender } = render(ConversationActivityGroup, props);
+		const { container, rerender } = render(SessionActivityGroup, props);
 		const header = container.querySelector('.md-collapsible-header') as HTMLButtonElement;
 
 		expect(header.getAttribute('aria-expanded')).toBe('true');
@@ -30,7 +30,7 @@ describe('ConversationActivityGroup', () => {
 
 	it('preserves a manual expansion after completion', async () => {
 		const props = { entries: [entry(false)], streaming: false, stepCount: 1 };
-		const { container, rerender } = render(ConversationActivityGroup, props);
+		const { container, rerender } = render(SessionActivityGroup, props);
 		const header = container.querySelector('.md-collapsible-header') as HTMLButtonElement;
 
 		expect(header.getAttribute('aria-expanded')).toBe('false');
@@ -66,7 +66,7 @@ describe('ConversationActivityGroup', () => {
 				index: 1,
 			},
 		];
-		const { container } = render(ConversationActivityGroup, {
+		const { container } = render(SessionActivityGroup, {
 			entries,
 			streaming: false,
 			toolCount: 1,
@@ -99,7 +99,7 @@ describe('ConversationActivityGroup', () => {
 			toolName: 'shell',
 			streaming: true,
 		});
-		const { container, rerender } = render(ConversationActivityGroup, {
+		const { container, rerender } = render(SessionActivityGroup, {
 			entries: [{ message: message('第一段输出'), index: 0 }],
 			streaming: true,
 			toolCount: 1,
@@ -150,7 +150,7 @@ describe('ConversationActivityGroup', () => {
 				index: 1,
 			},
 		];
-		const { container } = render(ConversationActivityGroup, {
+		const { container } = render(SessionActivityGroup, {
 			entries,
 			streaming: false,
 			toolCount: 2,
@@ -186,7 +186,7 @@ describe('ConversationActivityGroup', () => {
 			toolName: 'shell',
 			content: 'stdout output',
 		};
-		const { container } = render(ConversationActivityGroup, {
+		const { container } = render(SessionActivityGroup, {
 			entries: [{ message: toolMessage, index: 0 }],
 			streaming: false,
 			toolCount: 1,

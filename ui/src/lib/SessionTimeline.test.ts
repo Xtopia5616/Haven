@@ -1,22 +1,22 @@
 import { fireEvent, render, screen } from '@testing-library/svelte';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import ConversationTimeline from './ConversationTimeline.svelte';
-import emptyStateSource from './ConversationEmptyState.svelte?raw';
+import SessionTimeline from './SessionTimeline.svelte';
+import emptyStateSource from './SessionEmptyState.svelte?raw';
 
 const emptyStateStyles = emptyStateSource.match(/<style>([\s\S]*?)<\/style>/)?.[1];
 const testStyleElement = document.createElement('style');
 
 beforeAll(() => {
-	if (!emptyStateStyles) throw new Error('ConversationEmptyState component styles are missing');
+	if (!emptyStateStyles) throw new Error('SessionEmptyState component styles are missing');
 	testStyleElement.textContent = emptyStateStyles;
 	document.head.append(testStyleElement);
 });
 
 afterAll(() => testStyleElement.remove());
 
-describe('ConversationTimeline', () => {
+describe('SessionTimeline', () => {
 	it('keeps the empty-state welcome content centered in the full message viewport', () => {
-		render(ConversationTimeline, { messages: [] });
+		render(SessionTimeline, { messages: [] });
 
 		const welcome = document.querySelector('.welcome');
 		expect(welcome).toBeTruthy();
@@ -24,7 +24,7 @@ describe('ConversationTimeline', () => {
 	});
 
 	it('renders the message timeline immediately when the first message arrives', () => {
-		render(ConversationTimeline, {
+		render(SessionTimeline, {
 			messages: [{ id: 'msg-1', role: 'user', content: '你好', type: 'user' }],
 		});
 
@@ -33,7 +33,7 @@ describe('ConversationTimeline', () => {
 	});
 
 	it('renders waiting background progress inside its source tool card', () => {
-		const { container } = render(ConversationTimeline, {
+		const { container } = render(SessionTimeline, {
 			messages: [
 				{
 					id: 'step-background',
@@ -76,7 +76,7 @@ describe('ConversationTimeline', () => {
 	});
 
 	it('uses the shared ToolRun card for scheduled details when the transcript is empty', () => {
-		const { container } = render(ConversationTimeline, {
+		const { container } = render(SessionTimeline, {
 			messages: [],
 			sessionToolRuns: [
 				{
@@ -103,7 +103,7 @@ describe('ConversationTimeline', () => {
 	});
 
 	it('passes through the continue handler for a user-tail conversation', () => {
-		render(ConversationTimeline, {
+		render(SessionTimeline, {
 			messages: [{ id: 'msg-1', role: 'user', content: '继续处理', type: 'user' }],
 			showContinueButton: true,
 		});
@@ -117,7 +117,7 @@ describe('ConversationTimeline', () => {
 	});
 
 	it('removes the continue handler while it is unavailable', () => {
-		render(ConversationTimeline, {
+		render(SessionTimeline, {
 			messages: [{ id: 'msg-1', role: 'user', content: '继续处理', type: 'user' }],
 			showContinueButton: true,
 			continueDisabled: true,
@@ -148,7 +148,7 @@ describe('ConversationTimeline', () => {
 				streaming: false,
 			},
 		];
-		const { container, rerender } = render(ConversationTimeline, { messages: tools });
+		const { container, rerender } = render(SessionTimeline, { messages: tools });
 		const headers = () =>
 			Array.from(container.querySelectorAll('.md-collapsible-header')) as HTMLButtonElement[];
 

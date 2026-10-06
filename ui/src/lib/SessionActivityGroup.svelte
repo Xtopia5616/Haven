@@ -6,28 +6,28 @@
 	import MediaPlanCard from '$lib/MediaPlanCard.svelte';
 	import { hasToolPreambleBefore } from '$lib/toolIntent.ts';
 	import { toolDisplayName } from '$lib/toolIdentity.ts';
-	import { sourceToolRunId } from '$lib/conversationTimeline.ts';
+	import { sourceToolRunId } from '$lib/sessionTimeline.ts';
 	import type { AgentMediaPlanPayload } from '$lib/contracts/agent.ts';
 	import type { ToolRunPayload } from '$lib/contracts/toolRun.ts';
 	import type {
 		AskMessageHandler,
 		AskSelectionGetter,
 		AskSelectionChangeHandler,
-		ConversationContextMenuRequest,
-		ConversationMessage,
-		TimelineActivityItem,
-	} from '$lib/conversationTimeline.ts';
+		SessionMessageContextMenuRequest,
+		SessionTimelineActivityItem,
+	} from '$lib/sessionTimeline.ts';
+	import type { SessionMessage } from '$lib/sessionReducer.ts';
 
 	interface Props {
-		entries?: TimelineActivityItem['entries'];
+		entries?: SessionTimelineActivityItem['entries'];
 		streaming?: boolean;
 		toolCount?: number;
 		stepCount?: number;
-		allMessages?: ConversationMessage[];
+		allMessages?: SessionMessage[];
 		toolRuns?: ToolRunPayload[];
 		awaitingBackgroundToolRunId?: string | null;
 		awaitingBackgroundCount?: number;
-		onContextMenu?: (request: ConversationContextMenuRequest) => void;
+		onContextMenu?: (request: SessionMessageContextMenuRequest) => void;
 		onAskSelectionChange?: AskSelectionChangeHandler;
 		getAskSelection?: AskSelectionGetter;
 		onIgnore?: AskMessageHandler;
@@ -101,7 +101,7 @@
 		mediaPlans.filter((plan) => activityStepNumbers.has(plan.stepNumber)),
 	);
 
-	function backgroundToolRunFor(message: ConversationMessage): ToolRunPayload | null {
+	function backgroundToolRunFor(message: SessionMessage): ToolRunPayload | null {
 		if (message.type !== 'tool') return null;
 		const sourceId = sourceToolRunId(message);
 		return (

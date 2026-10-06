@@ -1,43 +1,11 @@
-import type { AgentToolResultEnvelope } from './contracts/agent.ts';
 import type { ToolRunPayload } from './contracts/toolRun.ts';
+import type { SessionMessage } from './sessionReducer.ts';
 import { sourceToolRunIdFromObservation } from './streaming.ts';
 
 /** Messages that describe agent work rather than user-facing conversation. */
 const MERGED_MESSAGE_TYPES = new Set(['thought', 'reasoning', 'tool']);
 
-export interface ConversationMessage {
-	id: string;
-	role?: string;
-	content?: string;
-	type?: string | null;
-	streaming?: boolean;
-	voice?: boolean;
-	time?: string | null;
-	toolName?: string | null;
-	toolArgs?: unknown;
-	attachments?: ConversationAttachment[];
-	options?: string[];
-	awaiting?: boolean;
-	received?: boolean;
-	resolved?: unknown;
-	toolRunId?: string | null;
-	sourceToolRunId?: string | null;
-	outcome?: string | null;
-	renderer?: string | null;
-	result?: AgentToolResultEnvelope;
-	showFallbackIntent?: boolean;
-	stepNumber?: number | null;
-	[key: string]: any;
-}
-
-export interface ConversationAttachment {
-	media_type?: string;
-	data?: string;
-	filename?: string;
-	path?: string;
-}
-
-export interface ConversationContextMenuRequest {
+export interface SessionMessageContextMenuRequest {
 	x: number;
 	y: number;
 	messageId: string;
@@ -55,22 +23,22 @@ export type AskSelectionChangeHandler = (
 export type AskMessageHandler = (messageId: string) => void;
 export type AskSelectionGetter = (messageId: string) => string[];
 
-export interface TimelineMessageItem {
+export interface SessionTimelineMessageItem {
 	kind: 'message';
-	message: ConversationMessage;
+	message: SessionMessage;
 	index: number;
 }
 
-export interface TimelineActivityItem {
+export interface SessionTimelineActivityItem {
 	kind: 'activity';
 	id: string;
-	entries: Array<{ message: ConversationMessage; index: number }>;
+	entries: Array<{ message: SessionMessage; index: number }>;
 	streaming: boolean;
 	toolCount: number;
 	stepCount: number;
 }
 
-export interface TimelineToolRunItem {
+export interface SessionTimelineToolRunItem {
 	kind: 'tool_run';
 	id: string;
 	toolRun: ToolRunPayload;
@@ -79,17 +47,21 @@ export interface TimelineToolRunItem {
 	showTerminalOutput: boolean;
 }
 
-export interface TimelineToolRunWaitItem {
+export interface SessionTimelineToolRunWaitItem {
 	kind: 'tool_run_wait';
 	id: 'awaiting-background-result';
 	awaitingBackgroundCount: number;
 }
 
-export type ConversationTimelineItem =
-	TimelineMessageItem | TimelineActivityItem | TimelineToolRunItem | TimelineToolRunWaitItem;
+export type SessionTimelineItem =
+	| SessionTimelineMessageItem
+	| SessionTimelineActivityItem
+	| SessionTimelineToolRunItem
+	| SessionTimelineToolRunWaitItem;
+export type SessionTranscriptItem = SessionTimelineMessageItem | SessionTimelineActivityItem;
 
 /** Return whether a message can be folded into the surrounding work process. */
-export function isMergedConversationMessage(message: ConversationMessage): boolean {
+export function isMergedSessionMessage(message: SessionMessage): boolean {
 	return MERGED_MESSAGE_TYPES.has(message.type || '');
 }
 
@@ -99,11 +71,9 @@ export function isMergedConversationMessage(message: ConversationMessage): boole
  * standalone entries so the conversation order and required toolRuns stay
  * obvious.
  */
-export function groupConversationMessages(
-	messages: ConversationMessage[],
-): ConversationTimelineItem[] {
-	const items: ConversationTimelineItem[] = [];
-	let activity: TimelineActivityItem | null = null;
+export function groupSessionMessages(messages: SessionMessage[]): SessionTranscriptItem[] {
+	const items: SessionTranscriptItem[] = [];
+	let activity: SessionTimelineActivityItem | null = null;
 	let precedingBoundaryId = 'root';
 
 	const flushActivity = () => {
@@ -113,7 +83,7 @@ export function groupConversationMessages(
 	};
 
 	messages.forEach((message, index) => {
-		if (!isMergedConversationMessage(message)) {
+		if (!isMergedSessionMessage(message)) {
 			flushActivity();
 			items.push({ kind: 'message', message, index });
 			precedingBoundaryId = message.id;
@@ -164,7 +134,7 @@ export function groupConversationMessages(
  * keeps timeline placement tied to the durable source result instead of an
  * event arrival timestamp or display text.
  */
-export function sourceToolRunId(message: ConversationMessage): string | null {
+export function sourceToolRunId(message: SessionMessage): string | null {
 	if (typeof message.sourceToolRunId === 'string' && message.sourceToolRunId) {
 		return message.sourceToolRunId;
 	}
@@ -173,7 +143,7 @@ export function sourceToolRunId(message: ConversationMessage): string | null {
 	return sourceToolRunIdFromObservation(message.toolName, message.content);
 }
 
-export interface ConversationTimelineOptions {
+export interface SessionTimelineOptions {
 	toolRuns?: ToolRunPayload[];
 	awaitingBackground?: boolean;
 	awaitingBackgroundCount?: number;
@@ -205,15 +175,15 @@ export function firstWaitingBackgroundToolRunId(
  * Keep live work at the end of the timeline, then let it return to its source
  * position once it finishes. Ownership comes from validated ToolRunEvent data.
  */
-export function groupConversationTimeline(
-	messages: ConversationMessage[],
+export function groupSessionTimeline(
+	messages: SessionMessage[],
 	{
 		toolRuns = [],
 		awaitingBackground = false,
 		awaitingBackgroundCount = 0,
-	}: ConversationTimelineOptions = {},
-): ConversationTimelineItem[] {
-	const transcriptItems = groupConversationMessages(messages);
+	}: SessionTimelineOptions = {},
+): SessionTimelineItem[] {
+	const transcriptItems = groupSessionMessages(messages);
 	const orderedToolRuns = [...toolRuns].sort(compareToolRuns);
 	const firstWaitingToolRunId =
 		firstWaitingBackgroundToolRunId(orderedToolRuns, awaitingBackground) ?? undefined;
@@ -255,22 +225,22 @@ export function groupConversationTimeline(
 		insertions.set(timelineIndex, anchored);
 	}
 
-	const result: ConversationTimelineItem[] = [];
-	const activeItems: ConversationTimelineItem[] = [];
+	const result: SessionTimelineItem[] = [];
+	const activeItems: SessionTimelineItem[] = [];
 	// A live item stays visible after transcript rows that arrived after its source.
-	const isLiveTimelineItem = (item: ConversationTimelineItem) =>
+	const isLiveTimelineItem = (item: SessionTimelineItem) =>
 			(item.kind === 'activity' &&
 				(item.streaming ||
 					item.entries.some(({ index }) => runningSourceIndexes.has(index)))) ||
 			(item.kind === 'message' && runningSourceIndexes.has(item.index)) ||
 			(item.kind === 'tool_run' && item.toolRun.status === 'running');
 	const appendTimelineItem = (
-		item: ConversationTimelineItem,
+		item: SessionTimelineItem,
 		keepWithLiveSource = false,
 	) => {
 		((keepWithLiveSource || isLiveTimelineItem(item)) ? activeItems : result).push(item);
 	};
-	const toolRunItem = (toolRun: ToolRunPayload): TimelineToolRunItem => {
+	const toolRunItem = (toolRun: ToolRunPayload): SessionTimelineToolRunItem => {
 		const awaitingResult = toolRun.id === firstWaitingToolRunId;
 		const terminalOutputAlreadyInTranscript =
 			toolRun.kind === 'background' &&

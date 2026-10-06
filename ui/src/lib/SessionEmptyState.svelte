@@ -5,7 +5,7 @@
 		hotkeyBinding?: string;
 	}
 
-	/** ConversationEmptyState is the lightweight first-paint welcome surface. */
+	/** SessionEmptyState is the lightweight first-paint welcome surface. */
 	let { hotkeyBinding = 'Ctrl+Shift+Space' }: Props = $props();
 </script>
 

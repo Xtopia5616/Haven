@@ -16,9 +16,15 @@
 	import type {
 		AskMessageHandler,
 		AskSelectionChangeHandler,
-		ConversationAttachment,
-		ConversationContextMenuRequest,
-	} from '$lib/conversationTimeline.ts';
+		SessionMessageContextMenuRequest,
+	} from '$lib/sessionTimeline.ts';
+
+	interface ChatBubbleAttachment {
+		media_type?: string;
+		data?: string;
+		filename?: string;
+		path?: string;
+	}
 
 	interface Props {
 		role: string;
@@ -34,7 +40,7 @@
 		messageId?: string;
 		stepNumber?: number | null;
 		toolArgs?: unknown;
-		attachments?: ConversationAttachment[];
+		attachments?: ChatBubbleAttachment[];
 		options?: string[];
 		awaiting?: boolean;
 		received?: boolean;
@@ -45,7 +51,7 @@
 		awaitingBackgroundCount?: number;
 		compact?: boolean;
 		showFallbackIntent?: boolean;
-		onContextMenu?: ((request: ConversationContextMenuRequest) => void) | null;
+		onContextMenu?: ((request: SessionMessageContextMenuRequest) => void) | null;
 		onAskSelectionChange?: AskSelectionChangeHandler | null;
 		onIgnore?: AskMessageHandler | null;
 		onAskSubmit?: AskMessageHandler | null;

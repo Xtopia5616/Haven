@@ -30,6 +30,8 @@
 
 `ToolExecutionMode::Foreground/Background` 表示调用执行方式；持久 `ToolRunKind` 只有 `Background/Scheduled`。会话是对话实体，不是 `ToolRunKind`，不得把“会话”塞进任务类型映射。
 
+代码中，**session** 用于指向持久会话实体及其运行状态；**conversation** 仅在描述自然语言交流内容、历史文本或模型上下文时使用，不用来命名会话实体的状态和 UI 组件。UI 的 `SessionMessage` 是当前会话 reducer 的消息形状；`sessionTimeline.ts` 接收该类型并投影为 `SessionTimelineItem`，不得再声明一份宽松的平行消息结构。组件专有的展示输入（如允许文件路径的 `ChatBubbleAttachment`）可保留在组件内，并用组件/视图角色命名。
+
 ## 架构角色词汇
 
 类型后缀不是装饰词：它必须说明对象的职责。新增和重命名类型按下表选用；存量不一致项在全项目术语审计中逐域处理，不做机械批量替换。一个类型若同时符合多个角色，应先明确它真正拥有的职责，再决定保留组合名还是拆分。

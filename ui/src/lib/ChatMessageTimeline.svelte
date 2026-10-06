@@ -7,19 +7,19 @@
 	import SessionTerminationBanner from '$lib/SessionTerminationBanner.svelte';
 	import ToolRunTimelineCard from '$lib/ToolRunTimelineCard.svelte';
 	import { hasToolPreambleBefore } from '$lib/toolIntent.ts';
-	import ConversationActivityGroup from '$lib/ConversationActivityGroup.svelte';
+	import SessionActivityGroup from '$lib/SessionActivityGroup.svelte';
 	import {
 		firstWaitingBackgroundToolRunId,
-		groupConversationTimeline,
+		groupSessionTimeline,
 		type AskMessageHandler,
 		type AskSelectionChangeHandler,
-		type ConversationContextMenuRequest,
-		type ConversationMessage,
-	} from '$lib/conversationTimeline.ts';
+		type SessionMessageContextMenuRequest,
+	} from '$lib/sessionTimeline.ts';
+	import type { SessionMessage } from '$lib/sessionReducer.ts';
 	import type { ToolRunPayload } from '$lib/contracts/toolRun.ts';
 
 	interface Props {
-		messages?: ConversationMessage[];
+		messages?: SessionMessage[];
 		sessionToolRuns?: ToolRunPayload[];
 		hotkeyBinding?: string;
 		awaitingBackground?: boolean;
@@ -31,7 +31,7 @@
 		showContinueButton?: boolean;
 		continueDisabled?: boolean;
 		continueBusy?: boolean;
-		onContextMenu?: (request: ConversationContextMenuRequest) => void;
+		onContextMenu?: (request: SessionMessageContextMenuRequest) => void;
 		onAskSelectionChange?: AskSelectionChangeHandler;
 		getAskSelection?: (messageId: string) => string[];
 		onIgnore?: AskMessageHandler;
@@ -65,7 +65,7 @@
 	}: Props = $props();
 
 	let timelineItems = $derived(
-		groupConversationTimeline(messages, {
+		groupSessionTimeline(messages, {
 			toolRuns: sessionToolRuns,
 			awaitingBackground: awaitingBackground && !activeSessionError && !terminationStatus,
 			awaitingBackgroundCount,
@@ -95,7 +95,7 @@
 	<div class="message-list" role="log" aria-label="会话消息">
 		{#each timelineItems as item (item.kind === 'message' ? item.message.id : item.id)}
 			{#if item.kind === 'activity'}
-				<ConversationActivityGroup
+				<SessionActivityGroup
 					entries={item.entries}
 					streaming={item.streaming}
 					toolCount={item.toolCount}

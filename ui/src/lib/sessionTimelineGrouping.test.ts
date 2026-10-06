@@ -1,20 +1,20 @@
 import { describe, expect, it } from 'vitest';
 import {
-	groupConversationMessages,
-	groupConversationTimeline,
+	groupSessionMessages,
+	groupSessionTimeline,
 	firstWaitingBackgroundToolRunId,
-	isMergedConversationMessage,
-	type ConversationMessage,
-} from './conversationTimeline.ts';
+	isMergedSessionMessage,
+} from './sessionTimeline.ts';
+import type { SessionMessage } from './sessionReducer.ts';
 
-const message = (id: string, extra: Partial<ConversationMessage> = {}): ConversationMessage => ({
+const message = (id: string, extra: Partial<SessionMessage> = {}): SessionMessage => ({
 	id,
 	...extra,
 });
 
-describe('conversationTimeline grouping', () => {
+describe('sessionTimeline grouping', () => {
 	it('merges adjacent agent work and keeps user-facing messages separate', () => {
-		const items = groupConversationMessages([
+		const items = groupSessionMessages([
 			message('user-1', { type: null }),
 			message('thought-1', { type: 'thought', stepNumber: 1 }),
 			message('tool-1', { type: 'tool', toolName: 'files', stepNumber: 1 }),
@@ -42,7 +42,7 @@ describe('conversationTimeline grouping', () => {
 	});
 
 	it('keeps a work group active while any entry is streaming', () => {
-		const items = groupConversationMessages([
+		const items = groupSessionMessages([
 			message('thought-1', { type: 'thought', streaming: false }),
 			message('tool-1', { type: 'tool', streaming: true }),
 		]);
@@ -52,7 +52,7 @@ describe('conversationTimeline grouping', () => {
 	});
 
 	it('does not hide ask cards inside a work group', () => {
-		const items = groupConversationMessages([
+		const items = groupSessionMessages([
 			message('tool-1', { type: 'tool' }),
 			message('ask-1', { type: 'ask' }),
 			message('tool-2', { type: 'tool' }),
@@ -63,11 +63,11 @@ describe('conversationTimeline grouping', () => {
 	});
 
 	it('only merges thought, reasoning and tool messages', () => {
-		expect(isMergedConversationMessage(message('thought', { type: 'thought' }))).toBe(true);
-		expect(isMergedConversationMessage(message('reasoning', { type: 'reasoning' }))).toBe(true);
-		expect(isMergedConversationMessage(message('tool', { type: 'tool' }))).toBe(true);
-		expect(isMergedConversationMessage(message('ask', { type: 'ask' }))).toBe(false);
-		expect(isMergedConversationMessage(message('text', { type: null }))).toBe(false);
+		expect(isMergedSessionMessage(message('thought', { type: 'thought' }))).toBe(true);
+		expect(isMergedSessionMessage(message('reasoning', { type: 'reasoning' }))).toBe(true);
+		expect(isMergedSessionMessage(message('tool', { type: 'tool' }))).toBe(true);
+		expect(isMergedSessionMessage(message('ask', { type: 'ask' }))).toBe(false);
+		expect(isMergedSessionMessage(message('text', { type: null }))).toBe(false);
 	});
 
 	it('projects background status into its tool call and anchors scheduled cards', () => {
@@ -98,7 +98,7 @@ describe('conversationTimeline grouping', () => {
 				sessionId: 'ses-1',
 			},
 		];
-		const items = groupConversationTimeline(messages, {
+		const items = groupSessionTimeline(messages, {
 			toolRuns,
 			awaitingBackground: true,
 			awaitingBackgroundCount: 1,
@@ -133,7 +133,7 @@ describe('conversationTimeline grouping', () => {
 				content: 'background task result unavailable',
 			}),
 		];
-		const items = groupConversationTimeline(messages, {
+		const items = groupSessionTimeline(messages, {
 			toolRuns: [{
 				id: 'toolrun-source',
 				kind: 'background',
@@ -152,7 +152,7 @@ describe('conversationTimeline grouping', () => {
 			status: 'running' as const,
 			sessionId: 'ses-1',
 		};
-		const items = groupConversationTimeline([message('user-1')], {
+		const items = groupSessionTimeline([message('user-1')], {
 			toolRuns: [toolRun],
 			awaitingBackground: true,
 			awaitingBackgroundCount: 0,
@@ -165,7 +165,7 @@ describe('conversationTimeline grouping', () => {
 			awaitingBackgroundResult: true,
 		});
 
-		const fallback = groupConversationTimeline([], { awaitingBackground: true });
+		const fallback = groupSessionTimeline([], { awaitingBackground: true });
 		expect(fallback).toEqual([
 			{
 				kind: 'tool_run_wait',
@@ -208,7 +208,7 @@ describe('conversationTimeline grouping', () => {
 				output: toolRun.output,
 			}),
 		});
-		const items = groupConversationTimeline([transcriptResult], { toolRuns: [toolRun] });
+		const items = groupSessionTimeline([transcriptResult], { toolRuns: [toolRun] });
 
 		expect(items).toHaveLength(1);
 		expect(items[0]).toMatchObject({
@@ -231,7 +231,7 @@ describe('conversationTimeline grouping', () => {
 			sourceToolRunId: toolRun.id,
 			content: '{"background":true,"status":"running"}',
 		});
-		const items = groupConversationTimeline([source], { toolRuns: [toolRun] });
+		const items = groupSessionTimeline([source], { toolRuns: [toolRun] });
 
 		expect(items).toHaveLength(1);
 		expect(items[0]).toMatchObject({
