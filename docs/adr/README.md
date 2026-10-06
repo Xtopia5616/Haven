@@ -581,3 +581,4 @@
 - [0590：删除未使用的 UI contract alias](0590-remove-unused-ui-contract-aliases.md)
 - [0591：为 Memory episode search 结果命名字段](0591-name-memory-episode-search-results.md)
 - [0592：为 Tools operation attributes 使用具名结果](0592-name-tool-operation-attributes.md)
+- [0593：为 MCP tool selection 使用具名结果](0593-name-mcp-tool-selection-result.md)

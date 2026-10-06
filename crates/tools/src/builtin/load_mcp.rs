@@ -98,7 +98,9 @@ impl LoadMcpTool {
         // Same wait as resume registration so budget and schemas see the
         // populated tools/list, not an empty in-flight cache.
         let all_tools = client.wait_for_tools(Duration::from_secs(3)).await;
-        let (selected, missing) = select_tools(&all_tools, tool_names.as_deref());
+        let selection = select_tools(&all_tools, tool_names.as_deref());
+        let selected_tools = selection.selected_tools;
+        let missing_tool_names = selection.missing_tool_names;
 
         if tool_names.is_none() {
             let max = self.max_tools_per_request.max(1);
@@ -108,7 +110,7 @@ impl LoadMcpTool {
                 let reg = registrations.read().await;
                 let entry = reg.get(&session_id);
                 let session_count = entry.map(|m| m.len()).unwrap_or(0);
-                let net_new = selected
+                let net_new = selected_tools
                     .iter()
                     .filter(|info| {
                         let name = McpToolAdapter::qualified_name_of(&server_name, &info.name);
@@ -143,7 +145,7 @@ impl LoadMcpTool {
                     "max_tools_per_request": max,
                 })));
             }
-        } else if selected.is_empty() {
+        } else if selected_tools.is_empty() {
             anyhow::bail!(
                 "None of the requested tool_names were found on MCP server '{}'. Available: {}",
                 server_name,
@@ -156,7 +158,7 @@ impl LoadMcpTool {
         }
 
         match self
-            .activate_server_tools(&session_id, &server_name, client.clone(), selected)
+            .activate_server_tools(&session_id, &server_name, client.clone(), selected_tools)
             .await?
         {
             ActivateOutcome::Loaded(tool_schemas) => {
@@ -171,8 +173,8 @@ impl LoadMcpTool {
                 if let Some(names) = tool_names {
                     result["requested_tool_names"] = serde_json::json!(names);
                 }
-                if !missing.is_empty() {
-                    result["missing_tool_names"] = serde_json::json!(missing);
+                if !missing_tool_names.is_empty() {
+                    result["missing_tool_names"] = serde_json::json!(missing_tool_names);
                 }
                 // Zero tools after a successful handshake is usually a client/server
                 // incompatibility, not an empty server: surface the handshake
@@ -197,7 +199,7 @@ impl LoadMcpTool {
                     "status": "budget_exceeded",
                     "server_name": server_name,
                     "requested_tool_names": tool_names,
-                    "missing_tool_names": missing,
+                    "missing_tool_names": missing_tool_names,
                     "reason": format!(
                         "Cannot load MCP server '{}': adding {} tools would exceed the per-request limit of {} (currently {} tools: {} builtin + {} session). Choose fewer tool_names (at most {}), unload unused session tools by starting a new session, or raise context_limits.max_tools_per_request. The conversation continues — do not stop.",
                         server_name,
@@ -314,13 +316,19 @@ fn normalize_tool_names(names: Option<Vec<String>>) -> Result<Option<Vec<String>
     }
 }
 
-/// Filter cached tools by requested names. Returns `(selected, missing)`.
-fn select_tools(
-    all: &[haven_mcp::McpToolInfo],
-    tool_names: Option<&[String]>,
-) -> (Vec<haven_mcp::McpToolInfo>, Vec<String>) {
+struct McpToolSelection {
+    selected_tools: Vec<haven_mcp::McpToolInfo>,
+    missing_tool_names: Vec<String>,
+}
+
+/// Filter cached tools by requested names. Selected tools retain server order;
+/// missing names retain request order.
+fn select_tools(all: &[haven_mcp::McpToolInfo], tool_names: Option<&[String]>) -> McpToolSelection {
     let Some(names) = tool_names else {
-        return (all.to_vec(), Vec::new());
+        return McpToolSelection {
+            selected_tools: all.to_vec(),
+            missing_tool_names: Vec::new(),
+        };
     };
     let want: HashSet<&str> = names.iter().map(|s| s.as_str()).collect();
     let mut selected = Vec::new();
@@ -331,12 +339,15 @@ fn select_tools(
             selected.push(info.clone());
         }
     }
-    let missing = names
+    let missing_tool_names = names
         .iter()
         .filter(|n| !found.contains(n.as_str()))
         .cloned()
         .collect();
-    (selected, missing)
+    McpToolSelection {
+        selected_tools: selected,
+        missing_tool_names,
+    }
 }
 
 fn catalog_entries(tools: &[haven_mcp::McpToolInfo]) -> Vec<Value> {
@@ -503,22 +514,25 @@ mod tests {
             fake_info("beta", "B"),
             fake_info("gamma", "C"),
         ];
-        let (selected, missing) =
-            select_tools(&all, Some(&["beta".into(), "nope".into(), "alpha".into()]));
+        let selection = select_tools(&all, Some(&["beta".into(), "nope".into(), "alpha".into()]));
         assert_eq!(
-            selected.iter().map(|t| t.name.as_str()).collect::<Vec<_>>(),
+            selection
+                .selected_tools
+                .iter()
+                .map(|t| t.name.as_str())
+                .collect::<Vec<_>>(),
             vec!["alpha", "beta"]
         );
         // Selection follows server order; missing keeps request order.
-        assert_eq!(missing, vec!["nope".to_string()]);
+        assert_eq!(selection.missing_tool_names, vec!["nope".to_string()]);
     }
 
     #[test]
     fn test_select_tools_all_when_unfiltered() {
         let all = vec![fake_info("a", ""), fake_info("b", "")];
-        let (selected, missing) = select_tools(&all, None);
-        assert_eq!(selected.len(), 2);
-        assert!(missing.is_empty());
+        let selection = select_tools(&all, None);
+        assert_eq!(selection.selected_tools.len(), 2);
+        assert!(selection.missing_tool_names.is_empty());
     }
 
     #[tokio::test]
