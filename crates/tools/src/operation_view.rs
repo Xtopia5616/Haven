@@ -178,21 +178,20 @@ pub(crate) fn root_policy(
     scope: ToolOperationScope,
     concurrency: ToolConcurrency,
 ) -> OperationPolicy {
-    let (effect, data_sensitivity, network_access) =
-        crate::tool_contract::operation_attributes(name, concurrency.clone());
+    let attributes = crate::tool_contract::operation_attributes(name, concurrency.clone());
     OperationPolicy {
         risk_level,
         capability: name.into(),
         confirmation: crate::tool_contract::confirmation_for(
             risk_level,
-            matches!(effect, crate::OperationEffect::ReadOnly),
+            matches!(attributes.effect, crate::OperationEffect::ReadOnly),
         ),
         idempotency,
         scope,
         concurrency,
-        effect,
-        data_sensitivity,
-        network_access,
+        effect: attributes.effect,
+        data_sensitivity: attributes.data_sensitivity,
+        network_access: attributes.network_access,
     }
 }
 

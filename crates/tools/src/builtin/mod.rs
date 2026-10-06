@@ -520,21 +520,20 @@ fn operation_spec(
         risk_level = override_risk;
     }
     let concurrency = inner.concurrency(&policy_input);
-    let (effect, data_sensitivity, network_access) =
-        operation_policy_attributes(&metadata, concurrency.clone());
+    let attributes = operation_policy_attributes(&metadata, concurrency.clone());
     let policy = OperationPolicy {
         risk_level,
         capability: name.into(),
         confirmation: crate::tool_contract::confirmation_for(
             risk_level,
-            matches!(effect, crate::OperationEffect::ReadOnly),
+            matches!(attributes.effect, crate::OperationEffect::ReadOnly),
         ),
         idempotency: metadata.idempotency,
         scope: inner.operation_scope(&policy_input),
         concurrency,
-        effect,
-        data_sensitivity,
-        network_access,
+        effect: attributes.effect,
+        data_sensitivity: attributes.data_sensitivity,
+        network_access: attributes.network_access,
     };
     OperationSpec {
         name: name.into(),
@@ -567,22 +566,17 @@ fn operation_spec(
 fn operation_policy_attributes(
     contract: &OperationContract,
     concurrency: ToolConcurrency,
-) -> (
-    crate::OperationEffect,
-    crate::DataSensitivity,
-    crate::NetworkAccess,
-) {
-    let (concurrency_effect, data_sensitivity, inferred_network_access) =
-        crate::tool_contract::operation_attributes(contract.name, concurrency);
-    let effect = if contract.read_only {
+) -> crate::tool_contract::OperationAttributes {
+    let mut attributes = crate::tool_contract::operation_attributes(contract.name, concurrency);
+    attributes.effect = if contract.read_only {
         crate::OperationEffect::ReadOnly
     } else {
-        concurrency_effect
+        attributes.effect
     };
-    let network_access = contract
+    attributes.network_access = contract
         .network_access_override
-        .unwrap_or(inferred_network_access);
-    (effect, data_sensitivity, network_access)
+        .unwrap_or(attributes.network_access);
+    attributes
 }
 
 /// The operation-view catalog is the backend source of truth for the model
@@ -1452,20 +1446,23 @@ mod tests {
     #[test]
     fn admin_diagnostics_effect_and_network_policy_are_distinct() {
         let status = operation_contract("haven.diagnostics.status");
-        let (status_effect, _, status_network) = operation_policy_attributes(
+        let status_attributes = operation_policy_attributes(
             &status,
             ToolConcurrency::SharedResource("haven:diagnostics".into()),
         );
-        assert_eq!(status_effect, crate::OperationEffect::ReadOnly);
-        assert_eq!(status_network, crate::NetworkAccess::Public);
+        assert_eq!(status_attributes.effect, crate::OperationEffect::ReadOnly);
+        assert_eq!(
+            status_attributes.network_access,
+            crate::NetworkAccess::Public
+        );
 
         let errors = operation_contract("haven.diagnostics.errors");
-        let (errors_effect, _, errors_network) = operation_policy_attributes(
+        let errors_attributes = operation_policy_attributes(
             &errors,
             ToolConcurrency::SharedResource("haven:sessions".into()),
         );
-        assert_eq!(errors_effect, crate::OperationEffect::ReadOnly);
-        assert_eq!(errors_network, crate::NetworkAccess::None);
+        assert_eq!(errors_attributes.effect, crate::OperationEffect::ReadOnly);
+        assert_eq!(errors_attributes.network_access, crate::NetworkAccess::None);
     }
 
     #[tokio::test]
@@ -1487,21 +1484,20 @@ mod tests {
                 }
                 .into(),
             );
-            let (effect, data_sensitivity, network_access) =
-                operation_policy_attributes(&contract, concurrency.clone());
+            let attributes = operation_policy_attributes(&contract, concurrency.clone());
             let policy = OperationPolicy {
                 risk_level: RiskLevel::Low,
                 capability: name.into(),
                 confirmation: crate::tool_contract::confirmation_for(
                     RiskLevel::Low,
-                    matches!(effect, crate::OperationEffect::ReadOnly),
+                    matches!(attributes.effect, crate::OperationEffect::ReadOnly),
                 ),
                 idempotency: contract.idempotency,
                 scope: crate::ToolOperationScope::Global,
                 concurrency,
-                effect,
-                data_sensitivity,
-                network_access,
+                effect: attributes.effect,
+                data_sensitivity: attributes.data_sensitivity,
+                network_access: attributes.network_access,
             };
             crate::AuthorizationRequest::new(None, name, json!({}), policy)
         };
@@ -1528,9 +1524,8 @@ mod tests {
         let name = "haven.mcp.mcp_connect";
         let contract = operation_contract(name);
         let concurrency = ToolConcurrency::Exclusive;
-        let (effect, data_sensitivity, network_access) =
-            operation_policy_attributes(&contract, concurrency.clone());
-        assert_eq!(network_access, crate::NetworkAccess::Opaque);
+        let attributes = operation_policy_attributes(&contract, concurrency.clone());
+        assert_eq!(attributes.network_access, crate::NetworkAccess::Opaque);
 
         let request = crate::AuthorizationRequest::new(
             None,
@@ -1541,14 +1536,14 @@ mod tests {
                 capability: name.into(),
                 confirmation: crate::tool_contract::confirmation_for(
                     contract.risk_override.unwrap_or(RiskLevel::Medium),
-                    matches!(effect, crate::OperationEffect::ReadOnly),
+                    matches!(attributes.effect, crate::OperationEffect::ReadOnly),
                 ),
                 idempotency: contract.idempotency,
                 scope: ToolOperationScope::Global,
                 concurrency,
-                effect,
-                data_sensitivity,
-                network_access,
+                effect: attributes.effect,
+                data_sensitivity: attributes.data_sensitivity,
+                network_access: attributes.network_access,
             },
         );
         let engine = crate::AuthorizationEngine::new();
@@ -1576,7 +1571,7 @@ mod tests {
         let native = admin::AdminRequest::Mcp(admin::McpOperationArgs::McpConnect {
             name: "server-a".into(),
         });
-        assert_eq!(native.network_access(), network_access);
+        assert_eq!(native.network_access(), attributes.network_access);
     }
 
     #[tokio::test]
@@ -1658,10 +1653,13 @@ mod tests {
         for (name, input, native) in cases {
             let contract = operation_contract(name);
             let concurrency = ToolConcurrency::Exclusive;
-            let (effect, data_sensitivity, network_access) =
-                operation_policy_attributes(&contract, concurrency.clone());
-            assert_eq!(network_access, crate::NetworkAccess::Opaque, "{name}");
-            assert_eq!(native.network_access(), network_access, "{name}");
+            let attributes = operation_policy_attributes(&contract, concurrency.clone());
+            assert_eq!(
+                attributes.network_access,
+                crate::NetworkAccess::Opaque,
+                "{name}"
+            );
+            assert_eq!(native.network_access(), attributes.network_access, "{name}");
 
             let risk_level = contract.risk_override.unwrap_or(RiskLevel::High);
             let request = crate::AuthorizationRequest::new(
@@ -1673,14 +1671,14 @@ mod tests {
                     capability: name.into(),
                     confirmation: crate::tool_contract::confirmation_for(
                         risk_level,
-                        matches!(effect, crate::OperationEffect::ReadOnly),
+                        matches!(attributes.effect, crate::OperationEffect::ReadOnly),
                     ),
                     idempotency: contract.idempotency,
                     scope: ToolOperationScope::Global,
                     concurrency,
-                    effect,
-                    data_sensitivity,
-                    network_access,
+                    effect: attributes.effect,
+                    data_sensitivity: attributes.data_sensitivity,
+                    network_access: attributes.network_access,
                 },
             );
 
@@ -1714,10 +1712,14 @@ mod tests {
                 }),
             ),
         ] {
-            let (_, _, network_access) =
+            let attributes =
                 operation_policy_attributes(&operation_contract(name), ToolConcurrency::Exclusive);
-            assert_eq!(network_access, crate::NetworkAccess::None, "{name}");
-            assert_eq!(native.network_access(), network_access, "{name}");
+            assert_eq!(
+                attributes.network_access,
+                crate::NetworkAccess::None,
+                "{name}"
+            );
+            assert_eq!(native.network_access(), attributes.network_access, "{name}");
         }
     }
 

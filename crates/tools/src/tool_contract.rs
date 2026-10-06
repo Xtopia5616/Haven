@@ -284,6 +284,15 @@ impl NetworkAccess {
     }
 }
 
+/// Static effect, disclosure, and network classification shared by tool
+/// contracts and the operation-view catalog.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct OperationAttributes {
+    pub effect: OperationEffect,
+    pub data_sensitivity: DataSensitivity,
+    pub network_access: NetworkAccess,
+}
+
 /// Single runtime policy returned by every tool implementation. The manifest
 /// is derived from this value, while the authorization gateway consumes the
 /// same risk and capability identity for the actual call.
@@ -348,8 +357,7 @@ impl OperationPolicy {
         risk_level: RiskLevel,
         network_access: NetworkAccess,
     ) -> Self {
-        let (effect, data_sensitivity, _) =
-            operation_attributes(tool_name, ToolConcurrency::Exclusive);
+        let attributes = operation_attributes(tool_name, ToolConcurrency::Exclusive);
         Self {
             risk_level,
             capability,
@@ -357,8 +365,8 @@ impl OperationPolicy {
             idempotency: OperationIdempotency::Unknown,
             scope: ToolOperationScope::Session,
             concurrency: ToolConcurrency::Exclusive,
-            effect,
-            data_sensitivity,
+            effect: attributes.effect,
+            data_sensitivity: attributes.data_sensitivity,
             network_access,
         }
     }
@@ -383,7 +391,7 @@ impl OperationPolicy {
 pub(crate) fn operation_attributes(
     name: &str,
     concurrency: ToolConcurrency,
-) -> (OperationEffect, DataSensitivity, NetworkAccess) {
+) -> OperationAttributes {
     let effect = if matches!(concurrency, ToolConcurrency::ReadOnly) {
         OperationEffect::ReadOnly
     } else {
@@ -423,14 +431,18 @@ pub(crate) fn operation_attributes(
         }
         _ => NetworkAccess::None,
     };
-    (effect, data, network)
+    OperationAttributes {
+        effect,
+        data_sensitivity: data,
+        network_access: network,
+    }
 }
 
 pub(crate) fn operation_attributes_for_input(
     name: &str,
     input: &Value,
     concurrency: ToolConcurrency,
-) -> (OperationEffect, DataSensitivity, NetworkAccess) {
+) -> OperationAttributes {
     let operation = input.get("operation").and_then(Value::as_str);
     let scope = input.get("scope").and_then(Value::as_str);
     let derived = match (scope, operation) {
@@ -460,8 +472,7 @@ pub(crate) fn synthesize_operation_policy(
     scope: ToolOperationScope,
     concurrency: ToolConcurrency,
 ) -> OperationPolicy {
-    let (effect, data_sensitivity, network_access) =
-        operation_attributes_for_input(name, input, concurrency.clone());
+    let attributes = operation_attributes_for_input(name, input, concurrency.clone());
     OperationPolicy {
         risk_level,
         capability,
@@ -469,9 +480,9 @@ pub(crate) fn synthesize_operation_policy(
         idempotency,
         scope,
         concurrency,
-        effect,
-        data_sensitivity,
-        network_access,
+        effect: attributes.effect,
+        data_sensitivity: attributes.data_sensitivity,
+        network_access: attributes.network_access,
     }
 }
 

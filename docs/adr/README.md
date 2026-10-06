@@ -580,3 +580,4 @@
 - [0589：删除无语义增量的 UI 内部类型别名](0589-remove-ui-internal-type-aliases.md)
 - [0590：删除未使用的 UI contract alias](0590-remove-unused-ui-contract-aliases.md)
 - [0591：为 Memory episode search 结果命名字段](0591-name-memory-episode-search-results.md)
+- [0592：为 Tools operation attributes 使用具名结果](0592-name-tool-operation-attributes.md)
