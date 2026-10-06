@@ -47,4 +47,4 @@ pub use repositories::session_events::{
 pub use repositories::sessions::{Session, SessionOrigin};
 pub use repositories::tool_run_completion_outbox::ToolRunCompletionOutboxRow;
 pub use repositories::tool_run_store::ToolRunStore;
-pub use repositories::usage::LlmCallUsageInput;
+pub use repositories::usage::LlmUsageRecordInput;

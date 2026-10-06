@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex as StdMutex};
 
 use haven_common::config::RequestKind;
 use haven_common::types::{CacheAccounting, LlmCallKind};
-use haven_memory::{LlmCallUsageInput, SessionStore};
+use haven_memory::{LlmUsageRecordInput, SessionStore};
 use tokio::sync::{Mutex, mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 
@@ -235,7 +235,7 @@ impl UsageRuntime {
     pub(crate) async fn append_tool_usage_batch(
         &self,
         session_id: &str,
-        inputs: Vec<LlmCallUsageInput>,
+        inputs: Vec<LlmUsageRecordInput>,
         cancel: Option<CancellationToken>,
     ) -> anyhow::Result<()> {
         if inputs.is_empty() {
@@ -409,7 +409,7 @@ async fn record_usage(
     let persist_epoch = tracker.epoch(session_id);
     let epochs = tracker.epochs_handle();
     let persist_session_id = session_id.to_string();
-    let usage_input = LlmCallUsageInput {
+    let usage_input = LlmUsageRecordInput {
         step_number: Some(step_number),
         request_kind: request,
         call_kind,
@@ -461,8 +461,8 @@ mod tests {
         call_kind: LlmCallKind,
         model: &str,
         prompt_tokens: u32,
-    ) -> LlmCallUsageInput {
-        LlmCallUsageInput {
+    ) -> LlmUsageRecordInput {
+        LlmUsageRecordInput {
             step_number: Some(3),
             request_kind: RequestKind::Chat,
             call_kind,
@@ -563,7 +563,7 @@ mod tests {
         store
             .append_usage(
                 &session.id,
-                &LlmCallUsageInput {
+                &LlmUsageRecordInput {
                     step_number: Some(2),
                     request_kind: RequestKind::Chat,
                     call_kind: LlmCallKind::Agent,

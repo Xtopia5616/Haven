@@ -861,7 +861,7 @@ pub struct SessionResumeResponse {
     pub usage: Option<haven_memory::repositories::usage::SessionUsage>,
     /// Per-LLM-call usage detail (one row per model response: step, role,
     /// model, tokens, cost, duration), oldest first.
-    pub llm_usage: Vec<haven_memory::repositories::usage::LlmCallUsage>,
+    pub llm_usage: Vec<haven_memory::repositories::usage::LlmUsageRecord>,
     /// Renderer-safe projections of the persisted interaction registry.
     pub interactions: Vec<InteractionRequestedEvent>,
 }

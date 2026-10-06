@@ -113,7 +113,7 @@ impl Database {
 /// append-only per call (unlike `session_usage`, which replaces cumulative
 /// totals), so a session keeps a granular history of every call.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct LlmCallUsage {
+pub struct LlmUsageRecord {
     pub id: String,
     pub session_id: String,
     /// ReAct step number the call served (NULL when not attributable).
@@ -158,7 +158,7 @@ pub struct LlmCallUsage {
 /// Values required to append one usage detail row.  The session id is passed
 /// separately so a batch cannot accidentally mix sessions in one transaction.
 #[derive(Debug, Clone)]
-pub struct LlmCallUsageInput {
+pub struct LlmUsageRecordInput {
     pub step_number: Option<i32>,
     /// Request kind stored in the established `llm_usage.role` column.
     pub request_kind: RequestKind,
@@ -179,11 +179,11 @@ pub struct LlmCallUsageInput {
     pub context_window: Option<u32>,
 }
 
-impl LlmCallUsage {
+impl LlmUsageRecord {
     pub(crate) fn from_input(
         id: String,
         session_id: &str,
-        input: &LlmCallUsageInput,
+        input: &LlmUsageRecordInput,
         created_at: String,
     ) -> Self {
         Self {
@@ -319,7 +319,7 @@ impl Database {
         cost_usd: f64,
         has_cost: bool,
         duration_ms: Option<u64>,
-    ) -> anyhow::Result<LlmCallUsage> {
+    ) -> anyhow::Result<LlmUsageRecord> {
         self.record_llm_call_usage_with_cache_accounting(
             session_id,
             step_number,
@@ -358,7 +358,7 @@ impl Database {
         cost_usd: f64,
         has_cost: bool,
         duration_ms: Option<u64>,
-    ) -> anyhow::Result<LlmCallUsage> {
+    ) -> anyhow::Result<LlmUsageRecord> {
         let id = haven_common::types::new_id("usage");
         let created_at = now_rfc3339_millis();
         let conn = self.conn();
@@ -385,7 +385,7 @@ impl Database {
             duration_ms,
             &created_at,
         )?;
-        Ok(LlmCallUsage {
+        Ok(LlmUsageRecord {
             id,
             session_id: session_id.into(),
             step_number,
@@ -432,7 +432,7 @@ impl Database {
         cost_usd: f64,
         has_cost: bool,
         duration_ms: Option<u64>,
-    ) -> anyhow::Result<LlmCallUsage> {
+    ) -> anyhow::Result<LlmUsageRecord> {
         self.persist_llm_call_and_refresh_session_usage_with_cache_accounting(
             session_id,
             step_number,
@@ -471,7 +471,7 @@ impl Database {
         cost_usd: f64,
         has_cost: bool,
         duration_ms: Option<u64>,
-    ) -> anyhow::Result<LlmCallUsage> {
+    ) -> anyhow::Result<LlmUsageRecord> {
         self.persist_llm_call_and_refresh_session_usage_with_cache_accounting_and_context(
             session_id,
             step_number,
@@ -514,7 +514,7 @@ impl Database {
         duration_ms: Option<u64>,
         context_tokens: u32,
         context_window: Option<u32>,
-    ) -> anyhow::Result<LlmCallUsage> {
+    ) -> anyhow::Result<LlmUsageRecord> {
         self.persist_llm_call_and_refresh_session_usage_with_kind_and_context(
             session_id,
             step_number,
@@ -559,12 +559,12 @@ impl Database {
         duration_ms: Option<u64>,
         context_tokens: u32,
         context_window: Option<u32>,
-    ) -> anyhow::Result<LlmCallUsage> {
+    ) -> anyhow::Result<LlmUsageRecord> {
         let id = haven_common::types::new_id("usage");
         let created_at = now_rfc3339_millis();
         let conn = self.conn();
         conn.execute_batch("BEGIN IMMEDIATE")?;
-        let result = (|| -> anyhow::Result<LlmCallUsage> {
+        let result = (|| -> anyhow::Result<LlmUsageRecord> {
             Self::insert_llm_call_usage_conn(
                 &conn,
                 &id,
@@ -605,7 +605,7 @@ impl Database {
                 &created_at,
             );
             Self::apply_session_usage_delta_conn(&conn, session_id, &delta)?;
-            Ok(LlmCallUsage {
+            Ok(LlmUsageRecord {
                 id: id.clone(),
                 session_id: session_id.into(),
                 step_number,
@@ -648,8 +648,8 @@ impl Database {
     pub fn persist_llm_call_batch_and_refresh_session_usage(
         &self,
         session_id: &str,
-        inputs: &[LlmCallUsageInput],
-    ) -> anyhow::Result<Vec<LlmCallUsage>> {
+        inputs: &[LlmUsageRecordInput],
+    ) -> anyhow::Result<Vec<LlmUsageRecord>> {
         if inputs.is_empty() {
             return Ok(Vec::new());
         }
@@ -659,7 +659,7 @@ impl Database {
             .collect::<Vec<_>>();
         let conn = self.conn();
         conn.execute_batch("BEGIN IMMEDIATE")?;
-        let result = (|| -> anyhow::Result<Vec<LlmCallUsage>> {
+        let result = (|| -> anyhow::Result<Vec<LlmUsageRecord>> {
             let mut delta = SessionUsageDelta::default();
             for (input, (id, created_at)) in inputs.iter().zip(&stamped) {
                 Self::insert_llm_call_usage_conn(
@@ -705,7 +705,7 @@ impl Database {
             Ok(inputs
                 .iter()
                 .zip(&stamped)
-                .map(|(input, (id, created_at))| LlmCallUsage {
+                .map(|(input, (id, created_at))| LlmUsageRecord {
                     id: id.clone(),
                     session_id: session_id.into(),
                     step_number: input.step_number,
@@ -775,7 +775,7 @@ impl Database {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn project_llm_call_usage_conn(
         conn: &rusqlite::Connection,
-        record: &LlmCallUsage,
+        record: &LlmUsageRecord,
     ) -> anyhow::Result<()> {
         let cache_diagnostics = record
             .cache_diagnostics
@@ -1054,7 +1054,7 @@ impl Database {
 
     /// All usage-detail rows for a session, oldest first. `session_usage` carries
     /// the running totals; this is the per-call history behind them.
-    pub fn get_session_llm_usage(&self, session_id: &str) -> anyhow::Result<Vec<LlmCallUsage>> {
+    pub fn get_session_llm_usage(&self, session_id: &str) -> anyhow::Result<Vec<LlmUsageRecord>> {
         let conn = self.conn();
         let mut stmt = conn.prepare(
             "SELECT id, session_id, step_number, role, call_kind, model, prompt_tokens, completion_tokens,
@@ -1071,7 +1071,7 @@ impl Database {
                     format!("invalid RequestKind in llm_usage.role: {role_text}").into(),
                 )
             })?;
-            Ok(LlmCallUsage {
+            Ok(LlmUsageRecord {
                 id: row.get(0)?,
                 session_id: row.get(1)?,
                 step_number: row.get(2)?,
@@ -1109,7 +1109,7 @@ impl Database {
 #[cfg(test)]
 mod tests {
     use super::SessionUsageDelta;
-    use crate::LlmCallUsageInput;
+    use crate::LlmUsageRecordInput;
     use crate::db::Database;
     use haven_common::config::RequestKind;
     use haven_common::types::{CacheAccounting, LlmCallKind};
@@ -1156,7 +1156,7 @@ mod tests {
             .persist_llm_call_batch_and_refresh_session_usage(
                 &session.id,
                 &[
-                    LlmCallUsageInput {
+                    LlmUsageRecordInput {
                         step_number: Some(3),
                         request_kind: RequestKind::Chat,
                         call_kind: LlmCallKind::Tool,
@@ -1175,7 +1175,7 @@ mod tests {
                         context_tokens: 10,
                         context_window: None,
                     },
-                    LlmCallUsageInput {
+                    LlmUsageRecordInput {
                         step_number: Some(3),
                         request_kind: RequestKind::Chat,
                         call_kind: LlmCallKind::Media,

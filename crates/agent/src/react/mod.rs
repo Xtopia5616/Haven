@@ -858,7 +858,7 @@ impl ReActEngine {
         cancel: Option<tokio_util::sync::CancellationToken>,
     ) {
         struct PendingToolUsage {
-            input: haven_memory::LlmCallUsageInput,
+            input: haven_memory::LlmUsageRecordInput,
             payload: UsagePayload,
         }
 
@@ -909,7 +909,7 @@ impl ReActEngine {
                 has_cost: step_cost.is_some(),
             };
             pending.push(PendingToolUsage {
-                input: haven_memory::LlmCallUsageInput {
+                input: haven_memory::LlmUsageRecordInput {
                     step_number: Some(step_number),
                     request_kind: request,
                     call_kind,
@@ -1016,7 +1016,7 @@ impl ReActEngine {
             let persist = tokio::task::spawn_blocking(move || {
                 store.append_usage(
                     &session_id_for_persist,
-                    &haven_memory::LlmCallUsageInput {
+                    &haven_memory::LlmUsageRecordInput {
                         step_number,
                         request_kind: request,
                         call_kind: call_kind_for_persist,

@@ -1,7 +1,7 @@
 /** Session history and resume command DTOs in their Rust/Tauri wire shape. */
 import type {
   InteractionRequestedEvent as GeneratedInteractionRequestedEvent,
-  LlmCallUsage as GeneratedLlmCallUsage,
+  LlmUsageRecord as GeneratedLlmUsageRecord,
   Message as GeneratedMessage,
   MessageAttachment as GeneratedMessageAttachment,
   SessionInfo as GeneratedSessionInfo,
@@ -26,7 +26,7 @@ export type SessionResumeUsage = GeneratedSessionUsage;
 
 /** Renderer usage projection derives its fields from the Rust usage DTO. */
 export type SessionLlmUsage = Omit<
-	Partial<GeneratedLlmCallUsage>,
+	Partial<GeneratedLlmUsageRecord>,
 	'cache_diagnostics' | 'cost_usd'
 > & {
 	call_kind: string;

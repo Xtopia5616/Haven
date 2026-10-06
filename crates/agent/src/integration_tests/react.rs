@@ -1887,7 +1887,7 @@ async fn continue_session_resumes_errored_session() {
     let kept_usage = store
         .append_usage(
             &session.id,
-            &haven_memory::LlmCallUsageInput {
+            &haven_memory::LlmUsageRecordInput {
                 step_number: Some(1),
                 request_kind: haven_common::config::RequestKind::Chat,
                 call_kind: haven_common::types::LlmCallKind::Agent,
@@ -1927,7 +1927,7 @@ async fn continue_session_resumes_errored_session() {
     let discarded_usage = store
         .append_usage(
             &session.id,
-            &haven_memory::LlmCallUsageInput {
+            &haven_memory::LlmUsageRecordInput {
                 step_number: Some(2),
                 request_kind: haven_common::config::RequestKind::Chat,
                 call_kind: haven_common::types::LlmCallKind::Agent,

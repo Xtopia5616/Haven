@@ -160,7 +160,7 @@ Admin 操作最终由 `TypedToolAdapter` 或 `AdminSurfaces.execute` 序列化�
 
 1. `StoredBranchPoint` 与 Memory extraction/replay positional tuples；Memory owns durable representation，Agent owns interpretation。
 2. `ToolRunCompletionOutboxRow.status_json` 的持久化形状；Memory owns row production，Tools/Agent own completion interpretation。
-3. `LlmCallUsage.cache_diagnostics: Option<Value>` persistence projection；LLM produces diagnostic，Memory persists it。
+3. `LlmUsageRecord.cache_diagnostics: Option<Value>` persistence projection；LLM produces diagnostic，Memory persists it。
 4. Bootstrap status string enum、provider-keyed model map 与少数 command-family contract；App 与对应领域 owner 维护响应一致性。Memory fact command 已使用 App-owned `MemoryFactResponse`，不再与 repository `Fact` 共用 wire 字段声明（ADR 0529）。History 已使用 `SessionRecordDto`，`SkillInfo` 已是 Skills 定义的 bridge/UI snapshot，不再列作未收口候选。`ProcessResult` 的 Rust enum 与 generated TypeScript union 已对齐。
 5. MCP renderer config snapshot field policy；`list_mcp_tools` returns command/args/cwd/url needed by the settings editor and redacts env values. Revisit only if those fields change, a new configuration field is added, or the renderer privacy contract changes. `McpReconcile` is not directly serialized; refresh uses the bounded `McpRefreshPlan` projection。
 

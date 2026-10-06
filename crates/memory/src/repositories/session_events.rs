@@ -15,7 +15,7 @@ use crate::repositories::session_authorization::{
 };
 use crate::repositories::session_steps::{SessionStep, ToolStepOutcome, ToolStepWrite};
 use crate::repositories::sessions::{Session, SessionOrigin};
-use crate::repositories::usage::{LlmCallUsage, LlmCallUsageInput, SessionUsage};
+use crate::repositories::usage::{LlmUsageRecord, LlmUsageRecordInput, SessionUsage};
 use chrono::{SecondsFormat, Utc};
 use haven_common::SessionStatus;
 use haven_common::types::MessageAttachment;
@@ -37,7 +37,7 @@ pub const MEMORY_TRIGGER_EVENT_TYPE: &str = "memory_trigger";
 pub const BRANCH_POINT_EVENT_TYPE: &str = "branch_point";
 pub const TIMELINE_ROLLBACK_EVENT_TYPE: &str = "timeline_rollback";
 /// Durable usage domain events. Their payload is the complete
-/// [`LlmCallUsage`] value; `llm_usage` and `session_usage` are projections.
+/// [`LlmUsageRecord`] value; `llm_usage` and `session_usage` are projections.
 pub const USAGE_RECORDED_EVENT_TYPE: &str = "usage_recorded";
 pub const USAGE_DISCARDED_EVENT_TYPE: &str = "usage_discarded";
 /// Session-local interaction lifecycle events. The payload is an Agent-owned
@@ -397,7 +397,7 @@ pub struct SessionResumeProjection {
     pub messages: Vec<Message>,
     pub steps: Vec<SessionStep>,
     pub usage: Option<SessionUsage>,
-    pub llm_usage: Vec<LlmCallUsage>,
+    pub llm_usage: Vec<LlmUsageRecord>,
     /// Active append-only event stream used by Agent-owned resume reducers.
     pub active_events: Vec<SessionEvent>,
     pub active_domain_events: Vec<SessionEvent>,
@@ -2316,8 +2316,8 @@ impl SessionStore {
     pub fn append_usage(
         &self,
         session_id: &str,
-        input: &LlmCallUsageInput,
-    ) -> anyhow::Result<LlmCallUsage> {
+        input: &LlmUsageRecordInput,
+    ) -> anyhow::Result<LlmUsageRecord> {
         let mut records = self.append_usage_batch(session_id, std::slice::from_ref(input))?;
         records
             .pop()
@@ -2327,8 +2327,8 @@ impl SessionStore {
     pub fn append_usage_batch(
         &self,
         session_id: &str,
-        inputs: &[LlmCallUsageInput],
-    ) -> anyhow::Result<Vec<LlmCallUsage>> {
+        inputs: &[LlmUsageRecordInput],
+    ) -> anyhow::Result<Vec<LlmUsageRecord>> {
         if inputs.is_empty() {
             return Ok(Vec::new());
         }
@@ -2343,7 +2343,7 @@ impl SessionStore {
                     })
                     .transpose();
                 step_number.map(|step_number| {
-                    let mut record = LlmCallUsage::from_input(
+                    let mut record = LlmUsageRecord::from_input(
                         haven_common::types::new_id("usage"),
                         session_id,
                         input,
@@ -2370,7 +2370,7 @@ impl SessionStore {
 
         let conn = self.db.conn();
         conn.execute_batch("BEGIN IMMEDIATE")?;
-        let result = (|| -> anyhow::Result<(Vec<LlmCallUsage>, Vec<SessionEvent>)> {
+        let result = (|| -> anyhow::Result<(Vec<LlmUsageRecord>, Vec<SessionEvent>)> {
             let stored_events = Self::append_batch_in_transaction(&conn, session_id, &events)?;
             for record in &records {
                 Database::project_llm_call_usage_conn(&conn, record)?;
@@ -2397,9 +2397,9 @@ impl SessionStore {
     pub async fn append_usage_batch_cancellable(
         &self,
         session_id: &str,
-        inputs: Vec<LlmCallUsageInput>,
+        inputs: Vec<LlmUsageRecordInput>,
         cancel: Option<CancellationToken>,
-    ) -> anyhow::Result<Vec<LlmCallUsage>> {
+    ) -> anyhow::Result<Vec<LlmUsageRecord>> {
         let session_id = session_id.to_owned();
         let store = self.clone();
         let persist = move |_db: &Database| store.append_usage_batch(&session_id, &inputs);
@@ -3198,8 +3198,8 @@ mod tests {
     use haven_common::config::RequestKind;
     use haven_common::types::{CacheAccounting, LlmCallKind};
 
-    fn usage_input(step_number: i32, total_tokens: u32) -> LlmCallUsageInput {
-        LlmCallUsageInput {
+    fn usage_input(step_number: i32, total_tokens: u32) -> LlmUsageRecordInput {
+        LlmUsageRecordInput {
             step_number: Some(step_number),
             request_kind: RequestKind::Chat,
             call_kind: LlmCallKind::Agent,
@@ -4674,7 +4674,7 @@ mod tests {
             .into_iter()
             .find(|event| event.event_type == USAGE_RECORDED_EVENT_TYPE)
             .unwrap();
-        let payload: LlmCallUsage = serde_json::from_str(&active_usage_event.payload).unwrap();
+        let payload: LlmUsageRecord = serde_json::from_str(&active_usage_event.payload).unwrap();
         assert_eq!(payload.id, first_usage.id);
 
         let expected_event_sequence = store

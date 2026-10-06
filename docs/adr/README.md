@@ -529,3 +529,4 @@
 - [0538：区分录音采集状态与 App 状态响应](0538-distinguish-recording-lifecycle-and-status-dto.md)
 - [0539：区分路由配置与请求执行策略](0539-distinguish-routing-and-execution-policy.md)
 - [0540：删除未使用的 Shell 快捷键配置副本](0540-remove-unused-shell-hotkey-config.md)
+- [0541：区分运行时 LLM 用量与持久用量记录](0541-distinguish-llm-usage-record.md)
