@@ -25,7 +25,7 @@ import {
 } from './state.ts';
 import type { AgentChunkBatchItem, SessionActionOf, SessionReducerState } from './types.ts';
 
-type Action = SessionActionOf<
+type AgentReducerAction = SessionActionOf<
 	| 'agent/chunks'
 	| 'agent/thought'
 	| 'agent/stream-reset'
@@ -180,7 +180,7 @@ function applySupplement(
 		return next;
 	});
 }
-export function reduceAgent(inputState: SessionReducerState, action: Action): SessionReducerState {
+export function reduceAgent(inputState: SessionReducerState, action: AgentReducerAction): SessionReducerState {
 	const state = inputState;
 	switch (action.type) {
 		case 'agent/chunks': {

@@ -8,7 +8,7 @@ import {
 	type SessionReducerState,
 } from './types.ts';
 
-type Action = SessionActionOf<
+type TranscriptReducerAction = SessionActionOf<
 	| 'sessions/cleared'
 	| 'session/messages/optimistic-added'
 	| 'session/messages/accepted'
@@ -49,7 +49,7 @@ function moveMessages(
 }
 export function reduceTranscript(
 	inputState: SessionReducerState,
-	action: Action,
+	action: TranscriptReducerAction,
 ): SessionReducerState {
 	const state = inputState;
 	switch (action.type) {

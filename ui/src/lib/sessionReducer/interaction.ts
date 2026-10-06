@@ -6,7 +6,7 @@ import {
 } from '../contracts/generatedCommands.ts';
 import type { SessionActionOf, SessionReducerState } from './types.ts';
 
-type Action = SessionActionOf<
+type InteractionReducerAction = SessionActionOf<
 	| 'sessions/cleared'
 	| 'session/interaction-upserted'
 	| 'session/interactions-hydrated'
@@ -19,7 +19,7 @@ type Action = SessionActionOf<
 
 export function reduceInteraction(
 	inputState: SessionReducerState,
-	action: Action,
+	action: InteractionReducerAction,
 ): SessionReducerState {
 	const state = inputState;
 	switch (action.type) {

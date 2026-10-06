@@ -2,7 +2,7 @@ import { isBusyStatus } from '../sessionStatus.ts';
 import { messagesOf } from './state.ts';
 import type { SessionActionOf, SessionReducerState, SessionSummary } from './types.ts';
 
-type Action = SessionActionOf<
+type LifecycleReducerAction = SessionActionOf<
 	| 'sessions/loaded'
 	| 'sessions/cleared'
 	| 'session/created'
@@ -24,7 +24,7 @@ function cloneSession(session: SessionSummary): SessionSummary {
 }
 export function reduceLifecycle(
 	inputState: SessionReducerState,
-	action: Action,
+	action: LifecycleReducerAction,
 ): SessionReducerState {
 	const state = inputState;
 	switch (action.type) {

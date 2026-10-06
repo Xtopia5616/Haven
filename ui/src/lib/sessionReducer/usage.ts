@@ -6,7 +6,7 @@ import type {
 	SessionTokenStats,
 } from './types.ts';
 
-type Action = SessionActionOf<
+type UsageReducerAction = SessionActionOf<
 	'sessions/cleared' | 'session/usage-restored' | 'session/usage-live' | 'session/usage-cleared'
 >;
 
@@ -44,7 +44,10 @@ function restoreTokenStats(usage: ResumeUsage): SessionTokenStats {
 		lastUpdated: Date.now(),
 	};
 }
-export function reduceUsage(inputState: SessionReducerState, action: Action): SessionReducerState {
+export function reduceUsage(
+	inputState: SessionReducerState,
+	action: UsageReducerAction,
+): SessionReducerState {
 	const state = inputState;
 	switch (action.type) {
 		case 'sessions/cleared':
