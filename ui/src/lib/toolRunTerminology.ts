@@ -1,15 +1,14 @@
+import type { ToolRunKind } from './contracts/toolRun.ts';
+
 /**
- * Single source of truth for user-facing session/task terminology.
+ * Single source of truth for user-facing ToolRun terminology.
  *
  * The wire/runtime entity is `ToolRun`; the UI calls its two kinds
- * "后台任务" and "定时任务". A foreground row is the conversation itself,
- * not a foreground task.
+ * "后台任务" and "定时任务". Foreground is an execution mode, while a session
+ * is a conversation; neither is a ToolRun kind.
  */
 
-export type TaskKind = 'foreground' | 'background' | 'scheduled';
-
-export const TASK_KIND_LABELS: Record<TaskKind, string> = {
-	foreground: '会话',
+export const TOOL_RUN_KIND_LABELS: Record<ToolRunKind, string> = {
 	background: '后台任务',
 	scheduled: '定时任务',
 };
@@ -29,9 +28,9 @@ const SCHEDULE_MODE_LABELS: Record<string, string> = {
 	continue: '继续会话',
 };
 
-/** Return the stable Chinese label for a task kind. */
-export function toolRunKindLabel(kind: string | undefined): string {
-	return (kind && TASK_KIND_LABELS[kind as TaskKind]) || '任务';
+/** Return the stable Chinese label for a ToolRun kind. */
+export function toolRunKindLabel(kind: ToolRunKind | undefined): string {
+	return (kind && TOOL_RUN_KIND_LABELS[kind]) || '任务';
 }
 
 /** Return the stable Chinese label for a ToolRun status. */
@@ -47,14 +46,14 @@ export function scheduleModeLabel(mode: unknown): string {
 }
 
 /**
- * Resolve the title shown in the task workspace.
+ * Resolve the title shown in the ToolRun workspace.
  *
  * User-provided title/body wins. A background ToolRun without that context
  * uses the same generic tool-call fallback as the chat card; a scheduled
  * ToolRun stays identifiable as a scheduled task.
  */
 export function toolRunTitle(toolRun: {
-	kind?: string;
+	kind?: ToolRunKind;
 	title?: unknown;
 	body?: unknown;
 	command?: unknown;
@@ -62,5 +61,5 @@ export function toolRunTitle(toolRun: {
 	for (const candidate of [toolRun.title, toolRun.body]) {
 		if (typeof candidate === 'string' && candidate.trim()) return candidate.trim();
 	}
-	return toolRun.kind === 'scheduled' ? TASK_KIND_LABELS.scheduled : '调用工具';
+	return toolRun.kind === 'scheduled' ? TOOL_RUN_KIND_LABELS.scheduled : '调用工具';
 }

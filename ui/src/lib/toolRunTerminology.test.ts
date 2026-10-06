@@ -6,12 +6,11 @@ import {
 	toolRunTitle,
 } from './toolRunTerminology.ts';
 
-describe('task terminology', () => {
-	it('keeps session and ToolRun kinds distinct in the UI', () => {
-		expect(toolRunKindLabel('foreground')).toBe('会话');
+describe('ToolRun terminology', () => {
+	it('labels only the ToolRun kinds in the shared contract', () => {
 		expect(toolRunKindLabel('background')).toBe('后台任务');
 		expect(toolRunKindLabel('scheduled')).toBe('定时任务');
-		expect(toolRunKindLabel('unknown')).toBe('任务');
+		expect(toolRunKindLabel(undefined)).toBe('任务');
 	});
 
 	it('maps runtime statuses and scheduled modes to Chinese labels', () => {
