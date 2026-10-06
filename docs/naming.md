@@ -34,6 +34,8 @@
 
 Tauri listener 的通用 `TauriEvent<T>` envelope 由 `contracts/tauriEvent.ts` 唯一声明；Session、ToolRun、Agent、App 和录音 contracts 只定义各自 payload 与转换，不重复定义同形 envelope。
 
+跨端枚举的允许值以 generated IPC contract 为单一来源；UI 可以为这些值维护展示标签，但选项数组应从生成值派生，并让边界/事件 contract 直接引用生成类型，不另手写相同 union。
+
 跨 crate 的同字段 DTO 先按 owner 和用途判断是否合并：Memory `SessionMessageText` 是存储查询返回的纯文本消息行；Agent 私有 `SessionPromptMessage` 是组装首次 session prompt 的输入。它们通过显式转换跨边界，不应让 Memory 依赖 Agent，也不应让 Agent 的 prompt 类型成为 Memory 的规范类型。
 
 同一领域类型跨 runtime 与 wire 边界时，只有序列化格式、字段策略或演进 owner 确实不同才保留两个类型，并在名称中标出边界角色。当前 Tools `ToolRunKind` 是执行运行时分类；App `ToolRunKindDto` 是 IPC/event DTO 枚举，二者值相同但 owner、Serde 与向前演进责任不同。
