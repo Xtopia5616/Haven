@@ -3,6 +3,7 @@ import type {
 	ToolRunStatus as GeneratedToolRunStatus,
 } from './generatedCommands.ts';
 import { TOOL_RUN_KIND_DTO_VALUES, TOOL_RUN_STATUS_VALUES } from './generatedCommands.ts';
+import type { TauriEvent } from './tauriEvent.ts';
 
 /**
  * ToolRun IPC contract at the frontend boundary.
@@ -41,12 +42,6 @@ export interface ToolRunPayload {
 	errorReason?: string;
 	exitCode?: number;
 	preview?: string;
-}
-
-export interface TauriEvent<T> {
-	event: string;
-	id: number;
-	payload: T;
 }
 
 type WireRecord = Record<string, unknown>;

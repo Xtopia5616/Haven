@@ -3,8 +3,8 @@ import logger from './logger.ts';
 import {
 	mapSessionEvent,
 	type SessionLifecyclePayload,
-	type TauriEvent,
 } from './contracts/session.ts';
+import type { TauriEvent } from './contracts/tauriEvent.ts';
 import {
 	mapToolRunEvent,
 	type ToolRunEventName,

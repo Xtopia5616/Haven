@@ -1,7 +1,7 @@
 /** Agent event IPC contract at the frontend boundary. */
 
 import type { RequestKind } from '../modelRoles.ts';
-import type { TauriEvent } from './session.ts';
+import type { TauriEvent } from './tauriEvent.ts';
 
 export const AGENT_EVENT_NAMES = [
 	'agent:thought',

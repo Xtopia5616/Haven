@@ -1,4 +1,5 @@
-import type { SessionLifecyclePayload, TauriEvent } from './contracts/session.ts';
+import type { SessionLifecyclePayload } from './contracts/session.ts';
+import type { TauriEvent } from './contracts/tauriEvent.ts';
 import { isBusyStatus, isPausedStatus } from './sessionStatus.ts';
 import type { SessionAction } from './sessionReducer.ts';
 import { clearMediaPlans } from './mediaPlanStore.ts';

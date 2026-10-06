@@ -1,5 +1,5 @@
 import type { InteractionRequest } from './contracts/app.ts';
-import type { TauriEvent } from './contracts/session.ts';
+import type { TauriEvent } from './contracts/tauriEvent.ts';
 import type { SessionAction } from './sessionReducer.ts';
 
 type InteractionEvent = TauriEvent<InteractionRequest>;

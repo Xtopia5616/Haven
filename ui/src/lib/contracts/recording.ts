@@ -1,6 +1,6 @@
 /** Recording and transcription IPC contract at the frontend boundary. */
 
-import type { TauriEvent } from './session.ts';
+import type { TauriEvent } from './tauriEvent.ts';
 
 export const RECORDING_EVENT_NAMES = [
 	'recording:started',

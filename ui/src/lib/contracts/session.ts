@@ -14,6 +14,7 @@ import {
 	type SessionUpdateStatus,
 	type SessionWaitingReason,
 } from './generatedCommands.ts';
+import type { TauriEvent } from './tauriEvent.ts';
 
 export const SESSION_EVENT_NAMES = ['session:lifecycle'] as const;
 export type SessionEventName = (typeof SESSION_EVENT_NAMES)[number];
@@ -50,12 +51,6 @@ export type SessionLifecyclePayload =
 	| { type: 'error'; sessionId: string; title: string; error: string }
 	| { type: 'title_updated'; sessionId: string; title: string }
 	| { type: 'deleted'; sessionId: string | null };
-
-export interface TauriEvent<T> {
-	event: string;
-	id: number;
-	payload: T;
-}
 
 type SessionWireRecord = Record<string, unknown>;
 

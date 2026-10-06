@@ -1,6 +1,6 @@
 /** App-shell IPC event contract at the frontend boundary. */
 
-import type { TauriEvent } from './session.ts';
+import type { TauriEvent } from './tauriEvent.ts';
 import {
 	INTERACTION_KIND_VALUES,
 	INTERACTION_STATUS_VALUES,

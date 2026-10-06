@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { InteractionRequest } from './contracts/app.ts';
-import type { TauriEvent } from './contracts/session.ts';
+import type { TauriEvent } from './contracts/tauriEvent.ts';
 import { createChatInteractionEventHandlers } from './chatInteractionEventHandlers.ts';
 
 describe('createChatInteractionEventHandlers', () => {

@@ -4,7 +4,7 @@ import {
 	type AgentEventName,
 	type AgentEventPayloadMap,
 } from './agent.ts';
-import type { TauriEvent } from './session.ts';
+import type { TauriEvent } from './tauriEvent.ts';
 
 function mapAgentEvent<K extends AgentEventName>(event: TauriEvent<unknown> & { event: K }) {
 	const mapped = mapAgentEventContract(event);

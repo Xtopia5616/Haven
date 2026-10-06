@@ -3,7 +3,7 @@ import type {
 	AgentMediaPlanPayload,
 	AgentUsagePayload,
 } from './contracts/agent.ts';
-import type { TauriEvent } from './contracts/session.ts';
+import type { TauriEvent } from './contracts/tauriEvent.ts';
 import { addNotification } from './notificationStore.ts';
 import { coalesceTokenTotal, formatTokenCount } from './sessionUsage.ts';
 import type { SessionAction, SessionTokenStats } from './sessionReducer.ts';
