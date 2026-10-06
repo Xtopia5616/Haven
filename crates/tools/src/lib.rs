@@ -170,14 +170,14 @@ pub use shell_runtime::{
 };
 pub use skill_runner::SkillRunner;
 pub use tool_contract::{
-    ConfirmationRequirement, DataSensitivity, NetworkAccess, OperationEffect, OperationIdempotency,
-    OperationPolicy, StructuredToolError, Tool, ToolAvailability, ToolCancellationPolicy,
-    ToolConcurrency, ToolDef, ToolErrorClass, ToolErrorMetadata, ToolExecutionMode,
-    ToolExecutionOutcome, ToolHandle, ToolIdentity, ToolLlmUsage, ToolManifest, ToolModel,
-    ToolOperationMetadata, ToolOperationScope, ToolPolicy, ToolPresentation, ToolRegistration,
-    ToolResult, ToolResultEnvelope, ToolRetryability, ToolRootPresentation, ToolSignals,
-    ToolSource, TypedToolAdapter, TypedToolOperation, extract_ask_signal, extract_notify_signal,
-    is_silent_tool_call, parse_tool_input,
+    AskSignal, ConfirmationRequirement, DataSensitivity, NetworkAccess, NotificationSignal,
+    OperationEffect, OperationIdempotency, OperationPolicy, StructuredToolError, Tool,
+    ToolAvailability, ToolCancellationPolicy, ToolConcurrency, ToolDef, ToolErrorClass,
+    ToolErrorMetadata, ToolExecutionMode, ToolExecutionOutcome, ToolHandle, ToolIdentity,
+    ToolLlmUsage, ToolManifest, ToolModel, ToolOperationMetadata, ToolOperationScope, ToolPolicy,
+    ToolPresentation, ToolRegistration, ToolResult, ToolResultEnvelope, ToolRetryability,
+    ToolRootPresentation, ToolSignals, ToolSource, TypedToolAdapter, TypedToolOperation,
+    extract_ask_signal, extract_notify_signal, is_silent_tool_call, parse_tool_input,
 };
 pub use tool_run_events::{
     ToolRunLifecycleEvent, ToolRunLifecyclePayload, ToolRunLifecycleState, ToolRunLifecycleUpdate,

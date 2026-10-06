@@ -1,6 +1,6 @@
 # Haven 命名规范
 
-> 版本: v1.19 | 日期: 2026-10-07
+> 版本: v1.20 | 日期: 2026-10-07
 
 本文档统一 Haven 项目各层的命名规则（变量名、函数名、文件名、crate 名、缩写大小写、跨层边界）。规范以现有代码中的事实模式为基础，新代码必须遵循；存量代码若与规范冲突，逐步迁移对齐。
 
@@ -36,6 +36,8 @@
 Tauri listener 的通用 `TauriEvent<T>` envelope 由 `contracts/tauriEvent.ts` 唯一声明；Session、ToolRun、Agent、App 和录音 contracts 只定义各自 payload 与转换，不重复定义同形 envelope。
 
 Memory `partial_messages` 中尚未提交到 canonical transcript 的流式文本称为 `PartialMessageCheckpoint`；读取结果以 `content` 与 `updated_at` 字段表达，不把草稿文本冒充为已持久化 `Message`。
+
+Tools 对结构化输出中 Ask 与通知 side-channel 的解析结果分别使用 `AskSignal` 和 `NotificationSignal`；前者保留可选 question 与选项列表，后者以 `Option<NotificationSignal>` 表示是否请求通知。汇总传递给 Agent 的 `ToolSignals` 形状继续由其独立的 side-channel 契约拥有。
 
 跨端枚举的允许值以 generated IPC contract 为单一来源；UI 可以为这些值维护展示标签，但选项数组应从生成值派生，并让边界/事件 contract 直接引用生成类型，不另手写相同 union。
 

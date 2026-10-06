@@ -576,3 +576,4 @@
 - [0585：为 LLM Router 运行态使用具名初始化结果](0585-name-llm-router-runtime-state.md)
 - [0586：统一 Tools 目录版本时钟类型](0586-name-tool-catalog-version.md)
 - [0587：为 Memory 流式草稿命名 checkpoint 结果](0587-name-partial-message-checkpoint.md)
+- [0588：为 Ask 与通知信号使用具名结果](0588-name-tool-signal-results.md)

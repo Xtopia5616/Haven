@@ -100,10 +100,10 @@ impl TypedToolOperation for NotifyTool {
     }
 
     fn signals(&self, output: &Value) -> crate::tool_contract::ToolSignals {
-        let (title, body) = crate::extract_notify_signal(output);
+        let signal = crate::extract_notify_signal(output);
         crate::tool_contract::ToolSignals {
-            notify_title: title,
-            notify_body: body,
+            notify_title: signal.as_ref().map(|signal| signal.title.clone()),
+            notify_body: signal.map(|signal| signal.body),
             ..Default::default()
         }
     }
@@ -203,10 +203,10 @@ impl Tool for NotifyTool {
     /// Declare the toast signal so the loop emits the Notification event
     /// without name-matching "notify" or re-parsing the output.
     fn signals(&self, output: &Value) -> crate::tool_contract::ToolSignals {
-        let (title, body) = crate::extract_notify_signal(output);
+        let signal = crate::extract_notify_signal(output);
         crate::tool_contract::ToolSignals {
-            notify_title: title,
-            notify_body: body,
+            notify_title: signal.as_ref().map(|signal| signal.title.clone()),
+            notify_body: signal.map(|signal| signal.body),
             ..Default::default()
         }
     }

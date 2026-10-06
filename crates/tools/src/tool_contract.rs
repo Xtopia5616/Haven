@@ -576,6 +576,20 @@ pub struct ToolLlmUsage {
     pub duration_ms: Option<u64>,
 }
 
+/// Parsed question and suggested answers declared by the `ask` tool.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AskSignal {
+    pub question: Option<String>,
+    pub options: Vec<String>,
+}
+
+/// Parsed user notification declared by the `notify` tool.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NotificationSignal {
+    pub title: String,
+    pub body: String,
+}
+
 /// Side-channel signals a tool declares through its result. Declared by the
 /// tool itself (via `Tool::signals`) so the ReAct loop does not need to know
 /// which tool names carry which signals.
@@ -1183,12 +1197,12 @@ fn default_attempts() -> u32 {
 }
 
 /// Extract the `ask` signal from a tool result's structured output: the
-/// question text and optional suggested answers. `(None, vec![])` when the
-/// output does not carry a question. The signal must be read BEFORE any
+/// question text and optional suggested answers. Both fields are empty when
+/// the output does not carry a question. The signal must be read BEFORE any
 /// truncation: parsing truncated text would yield invalid JSON when the
 /// output exceeds the observation budget, silently dropping the question
 /// and never pausing the session.
-pub fn extract_ask_signal(output: &Value) -> (Option<String>, Vec<String>) {
+pub fn extract_ask_signal(output: &Value) -> AskSignal {
     let question = output
         .get("question")
         .and_then(|v| v.as_str())
@@ -1202,15 +1216,15 @@ pub fn extract_ask_signal(output: &Value) -> (Option<String>, Vec<String>) {
                 .collect()
         })
         .unwrap_or_default();
-    (question, options)
+    AskSignal { question, options }
 }
 
 /// Extract the `notify` signal from a tool result's structured output: the
-/// notification title (default "Haven") and body. `(None, None)` when the
+/// notification title (default "Haven") and body. Returns `None` when the
 /// output does not request a notification.
-pub fn extract_notify_signal(output: &Value) -> (Option<String>, Option<String>) {
+pub fn extract_notify_signal(output: &Value) -> Option<NotificationSignal> {
     if output.get("notify").and_then(|v| v.as_bool()) != Some(true) {
-        return (None, None);
+        return None;
     }
     let title = output
         .get("title")
@@ -1222,7 +1236,7 @@ pub fn extract_notify_signal(output: &Value) -> (Option<String>, Option<String>)
         .and_then(|v| v.as_str())
         .unwrap_or_default()
         .to_string();
-    (Some(title), Some(body))
+    Some(NotificationSignal { title, body })
 }
 
 /// Whether an action should be hidden from the chat UI. `ask` must never be
@@ -2205,45 +2219,44 @@ pub(crate) mod tests {
 
     #[test]
     fn test_extract_ask_signal() {
-        let (q, opts) = extract_ask_signal(&json!({
+        let signal = extract_ask_signal(&json!({
             "ask": true,
             "question": "which?",
             "options": ["A", "B"],
         }));
-        assert_eq!(q.as_deref(), Some("which?"));
-        assert_eq!(opts, vec!["A".to_string(), "B".to_string()]);
+        assert_eq!(signal.question.as_deref(), Some("which?"));
+        assert_eq!(signal.options, vec!["A".to_string(), "B".to_string()]);
     }
 
     #[test]
     fn test_extract_ask_signal_missing() {
-        let (q, opts) = extract_ask_signal(&json!({"result": 42}));
-        assert!(q.is_none());
-        assert!(opts.is_empty());
+        let signal = extract_ask_signal(&json!({"result": 42}));
+        assert!(signal.question.is_none());
+        assert!(signal.options.is_empty());
     }
 
     #[test]
     fn test_extract_notify_signal() {
-        let (title, body) = extract_notify_signal(&json!({
+        let signal = extract_notify_signal(&json!({
             "notify": true,
             "title": "ScheduledToolRun",
             "body": "Take a break",
-        }));
-        assert_eq!(title.as_deref(), Some("ScheduledToolRun"));
-        assert_eq!(body.as_deref(), Some("Take a break"));
+        }))
+        .expect("notification signal");
+        assert_eq!(signal.title, "ScheduledToolRun");
+        assert_eq!(signal.body, "Take a break");
     }
 
     #[test]
     fn test_extract_notify_signal_defaults() {
-        let (title, body) = extract_notify_signal(&json!({"notify": true}));
-        assert_eq!(title.as_deref(), Some("Haven"));
-        assert_eq!(body.as_deref(), Some(""));
+        let signal = extract_notify_signal(&json!({"notify": true})).expect("notification signal");
+        assert_eq!(signal.title, "Haven");
+        assert_eq!(signal.body, "");
     }
 
     #[test]
     fn test_extract_notify_signal_not_requested() {
-        let (title, body) = extract_notify_signal(&json!({"notify": false}));
-        assert!(title.is_none());
-        assert!(body.is_none());
+        assert!(extract_notify_signal(&json!({"notify": false})).is_none());
     }
 
     #[test]

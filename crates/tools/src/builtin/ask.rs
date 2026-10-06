@@ -119,10 +119,10 @@ impl TypedToolOperation for AskTool {
     }
 
     fn signals(&self, output: &Value) -> crate::tool_contract::ToolSignals {
-        let (question, options) = crate::extract_ask_signal(output);
+        let signal = crate::extract_ask_signal(output);
         crate::tool_contract::ToolSignals {
-            ask_question: question,
-            ask_options: options,
+            ask_question: signal.question,
+            ask_options: signal.options,
             ..Default::default()
         }
     }
@@ -230,10 +230,10 @@ impl Tool for AskTool {
     /// Declare the question signal so the ReAct loop pauses the session without
     /// name-matching "ask" or re-parsing the output.
     fn signals(&self, output: &Value) -> crate::tool_contract::ToolSignals {
-        let (question, options) = crate::extract_ask_signal(output);
+        let signal = crate::extract_ask_signal(output);
         crate::tool_contract::ToolSignals {
-            ask_question: question,
-            ask_options: options,
+            ask_question: signal.question,
+            ask_options: signal.options,
             ..Default::default()
         }
     }
