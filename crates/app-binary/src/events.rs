@@ -3,18 +3,8 @@ use haven_tools::ToolRunView;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-/// Stable session event channels exposed by the Tauri boundary.
-///
-/// Keep the string literals here so command handlers and the Agent event
-/// adapter cannot silently drift apart. The frontend's matching contract and
-/// its snake_case-to-camelCase boundary conversion live in
-/// `ui/src/lib/contracts/session.ts`.
-pub(crate) const SESSION_CREATED_EVENT: &str = "session:created";
-pub(crate) const SESSION_UPDATED_EVENT: &str = "session:updated";
-pub(crate) const SESSION_COMPLETED_EVENT: &str = "session:completed";
-pub(crate) const SESSION_ERROR_EVENT: &str = "session:error";
-pub(crate) const SESSION_TITLE_UPDATED_EVENT: &str = "session:title-updated";
-pub(crate) const SESSION_DELETED_EVENT: &str = "session:deleted";
+/// The single authoritative session lifecycle channel.
+pub(crate) const SESSION_LIFECYCLE_EVENT: &str = "session:lifecycle";
 
 /// Stable recording and transcription event channels exposed by the Tauri
 /// boundary. Keep these names beside their DTOs so every producer shares one
@@ -282,47 +272,60 @@ fn value_type(value: &Value) -> &'static str {
     }
 }
 
-/// Shared wire payload for session lifecycle transitions.
+/// One typed wire contract for every session lifecycle transition.
 ///
-/// `status` intentionally remains a string: the Agent owns the state-machine
-/// vocabulary and can add a persisted state without coupling that enum to the
-/// Tauri adapter. This DTO fixes the public field set instead.
+/// A terminal variant carries its own reason/error so consumers handle status
+/// and terminal cleanup from the same event. The update status deliberately
+/// excludes completed/error; those states have dedicated variants.
 #[derive(Clone, Serialize)]
-pub(crate) struct SessionLifecycleEvent {
-    pub session_id: String,
-    pub status: SessionStatus,
-    /// Shared only by paired primary/secondary terminal event projections.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub occurrence_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub waiting_reason: Option<SessionWaitingReason>,
-    /// A newly-created session may not have a generated title yet.
-    pub title: Option<String>,
-    /// Present when a lifecycle transition has a user-visible explanation,
-    /// including an explicit interruption of a resumable session.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub reason: Option<String>,
+#[serde(
+    tag = "type",
+    rename_all = "snake_case",
+    rename_all_fields = "snake_case"
+)]
+pub(crate) enum SessionLifecycleEvent {
+    Created {
+        session_id: String,
+        status: SessionStatus,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        waiting_reason: Option<SessionWaitingReason>,
+        title: Option<String>,
+    },
+    Updated {
+        session_id: String,
+        status: SessionUpdateStatus,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        waiting_reason: Option<SessionWaitingReason>,
+        title: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
+    },
+    Completed {
+        session_id: String,
+        title: String,
+        reason: String,
+    },
+    Error {
+        session_id: String,
+        title: String,
+        error: String,
+    },
+    TitleUpdated {
+        session_id: String,
+        title: String,
+    },
+    Deleted {
+        /// `None` means every session was removed by `clear_history`.
+        session_id: Option<String>,
+    },
 }
 
-#[derive(Clone, Serialize)]
-pub(crate) struct SessionErrorEvent {
-    pub session_id: String,
-    pub error: String,
-    /// Shared with the matching terminal `session:updated` projection.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub occurrence_id: Option<String>,
-}
-
-#[derive(Clone, Serialize)]
-pub(crate) struct SessionTitleUpdatedEvent {
-    pub session_id: String,
-    pub title: String,
-}
-
-#[derive(Clone, Serialize)]
-pub(crate) struct SessionDeletedEvent {
-    /// `None` means every session was removed by `clear_history`.
-    pub session_id: Option<String>,
+#[derive(Clone, Copy, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum SessionUpdateStatus {
+    Pending,
+    Running,
+    Paused,
 }
 
 #[derive(Clone, Serialize)]
@@ -664,31 +667,48 @@ mod tests {
     }
 
     #[test]
-    fn session_lifecycle_event_has_the_stable_wire_shape() {
-        let event = SessionLifecycleEvent {
+    fn session_lifecycle_event_uses_a_discriminated_union() {
+        let event = SessionLifecycleEvent::Updated {
             session_id: "ses-1".into(),
-            status: SessionStatus::Paused,
-            occurrence_id: None,
-            waiting_reason: None,
-            title: Some("Plan migration".into()),
-            reason: None,
+            status: SessionUpdateStatus::Paused,
+            waiting_reason: Some(SessionWaitingReason::UserInterrupt),
+            title: "Plan migration".into(),
+            reason: Some("用户主动打断输出".into()),
         };
         assert_eq!(
             serde_json::to_value(event).unwrap(),
             serde_json::json!({
+                "type": "updated",
                 "session_id": "ses-1",
                 "status": "paused",
                 "title": "Plan migration",
+                "waiting_reason": "user_interrupt",
+                "reason": "用户主动打断输出",
+            })
+        );
+
+        let error = SessionLifecycleEvent::Error {
+            session_id: "ses-2".into(),
+            title: "Build".into(),
+            error: "provider unavailable".into(),
+        };
+        assert_eq!(
+            serde_json::to_value(error).unwrap(),
+            serde_json::json!({
+                "type": "error",
+                "session_id": "ses-2",
+                "title": "Build",
+                "error": "provider unavailable",
             })
         );
     }
 
     #[test]
     fn session_deleted_event_can_signal_global_clear() {
-        let event = SessionDeletedEvent { session_id: None };
+        let event = SessionLifecycleEvent::Deleted { session_id: None };
         assert_eq!(
             serde_json::to_value(event).unwrap(),
-            serde_json::json!({ "session_id": null })
+            serde_json::json!({ "type": "deleted", "session_id": null })
         );
     }
 

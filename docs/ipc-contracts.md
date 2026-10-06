@@ -63,6 +63,10 @@
 | `interrupt_session` | mutate | 停止当前输出但保留会话，可继续 |
 | `resolve_confirmation` | mutate | 显式 owner + `request_id` 选路；receipt/effect/scope/target 后端复核；返回 `resolved`/`expired`/`stale`，可重试失败保留 pending |
 | `update_session_title` | mutate | trim 后不得为空 |
+
+`list_facts` / `add_fact` 返回 App-owned `MemoryFactResponse`；其中 `source_ref` 使用
+`MemoryFactSourceRef`。它们由 Rust 声明并生成到 `generatedCommands.ts`。App 从 repository `Fact`
+显式投影字段，repository 新增字段不会自动进入 IPC payload。
 | `delete_session` | mutate | 删除并释放运行态 |
 | `clear_history` | mutate | 同时清除会话授权 |
 | `rollback_session` | mutate | event cursor 与 projection clock 一起回退 |
@@ -105,25 +109,21 @@
 | `reopen_session` / `continue_session` / `end_session` / `interrupt_session` | mutate | 会话生命周期控制；中断保留会话 |
 | `rollback_session` | mutate | 回滚分支并同步截断事件和投影 |
 | `update_session_title` | mutate | 更新非空标题 |
-| `delete_session` / `clear_history` | mutate | 删除会话或清空历史，并广播 `session:deleted` |
+| `delete_session` / `clear_history` | mutate | 删除会话或清空历史，并广播 `session:lifecycle(deleted)` |
 | `resolve_confirmation` | mutate | 输入 `{ owner, requestId, effect, scope, target }`；owner 只选择唯一 pending registry，AppCommand 不经过 Agent executor。期限由 owner 按登记的 `expires_at` 仲裁，不接受 renderer 的超时决定。结果为 `resolved`、`expired` 或 `stale`；命令错误表示可重试失败，pending UI 保留 |
 
 Tauri 接收前端参数时采用其自动 camelCase → Rust snake_case 映射；页面调用处使用 camelCase。
 
-## 会话事件（v1）
+## 会话生命周期事件（v2）
 
-后端唯一名称常量与 DTO 位于 `crates/app-binary/src/events.rs`。Agent 事件由
-`TauriEmitter` 映射，命令直接发送的事件也必须使用同一常量与 DTO。前端唯一登记表在
-`ui/src/lib/contracts/session.ts`；`sessionEventListeners` / `registerSessionListener` 负责字段转换。
+所有会话生命周期变化共用 `session:lifecycle` 和一个带 `type` 判别字段的 Rust enum。
+Agent 事件由 `TauriEmitter` 映射，命令直接发送的事件也必须使用同一常量与 DTO。聊天页、根布局
+和记忆视图各自订阅同一事件；唯一字段转换位于 `ui/src/lib/contracts/session.ts`，由
+`sessionEventListeners` / `registerSessionLifecycleListener` 承担。
 
 | 事件 | Rust DTO（wire） | 生产者 | 消费者 | 顺序、幂等与敏感字段 |
 |---|---|---|---|---|
-| `session:created` | `SessionLifecycleEvent { session_id, status, waiting_reason?, title, reason? }` | Agent 创建会话 | 聊天页、根布局、记忆视图 | 在该会话首个流式事件前；按 `session_id` 幂等合并。`title` 可为 `null`，非终态不发送 `reason`；不得发送原始输入或摘要。 |
-| `session:updated` | `SessionLifecycleEvent { session_id, status, waiting_reason?, title, reason?, occurrence_id? }` | Agent 状态变迁；完成/错误的副发 | 聊天页、根布局、记忆视图 | `status` 只能是 `pending`、`running`、`paused`、`completed`、`error`；`waiting_reason` 只在 `paused` 时有值，消费方不得再组合 interaction/action 状态推断等待原因；允许重复。终态副发携带同一 `reason`。仅与主终态 channel 配对的副发携带共同 `occurrence_id`；独立终态更新不带该字段。 |
-| `session:completed` | `SessionLifecycleEvent` | Agent 完成 / 用户结束 | 聊天页、根布局、记忆视图 | 终态，`waiting_reason` 缺省，`reason` 必填且为已净化的用户可见结束原因；随后无同 run 的流式事件；会同时副发 `session:updated`，两个 payload 携带相同的短期 `occurrence_id`。 |
-| `session:error` | `SessionErrorEvent { session_id, error, occurrence_id? }` | Agent 执行失败 | 聊天页、根布局、记忆视图 | 终态并副发 `session:updated(error)`；两者携带相同的短期 `occurrence_id`。`error` 是面向用户的已净化错误，不得带密钥、完整命令输出或原始 provider 响应。 |
-| `session:title-updated` | `SessionTitleUpdatedEvent { session_id, title }` | Agent 自动标题 / `update_session_title` | 聊天页、记忆视图 | 可在任意非删除状态后出现；按 `session_id` 覆盖标题，重复安全。 |
-| `session:deleted` | `SessionDeletedEvent { session_id: Option<String> }` | `delete_session` / `clear_history` | 根布局 | `session_id = null` 表示全量清空；删除后不期待该会话的终态事件。payload 不含会话内容。 |
+| `session:lifecycle` | `SessionLifecycleEvent`, `type`: `created`, `updated`, `completed`, `error`, `title_updated`, `deleted` | Agent 生命周期事件、`update_session_title`、删除命令 | 聊天页、根布局、记忆视图 | 只有一个事件事实和一个 payload。`updated.status` 限于 `pending`/`running`/`paused`；终态分别使用 `completed` 与 `error`，同 payload 必须携带已净化的 `reason` 或 `error`，不再发 secondary event，也不需要 `occurrence_id`。`waiting_reason` 仅用于 paused；完成后同 run 不再有流式事件。创建在首个流式事件前；标题按 `session_id` 覆盖；`deleted.session_id = null` 表示全量清空。不得发送原始输入、摘要、凭据或完整 provider 响应。 |
 
 前端内部对应为 `sessionId`、`targetMessageId` 等 camelCase 字段；只允许监听边界进行转换。
 
@@ -209,7 +209,7 @@ Rust DTO 定义在 `crates/app-binary/src/events.rs`，前端唯一转换边界�
 DTO 位于 `crates/app-binary/src/events.rs`；前端镜像分别位于
 `ui/src/lib/contracts/app.ts`、`ui/src/lib/contracts/agent.ts`，只能通过
 `appEventListeners` / `agentEventListeners` 进入路由。`scripts/check-ipc-events.ps1`
-会比较两侧的全部 40 个 channel，防止新增事件只改一侧。
+会比较两侧的全部 35 个 channel，防止新增事件只改一侧。
 
 | 事件 | Rust DTO（wire） | 消费者 | 顺序、幂等与敏感字段 |
 |---|---|---|---|

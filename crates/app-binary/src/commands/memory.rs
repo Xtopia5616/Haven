@@ -1,5 +1,5 @@
 use crate::app_state::AppState;
-use crate::commands::contracts::MemoryRecallItem;
+use crate::commands::contracts::{MemoryFactResponse, MemoryRecallItem};
 use crate::commands::log_err;
 use haven_memory::recall::{MemoryEntityKind, MemoryQuery};
 use std::sync::Arc;
@@ -56,12 +56,13 @@ pub async fn recall_memory(
 pub async fn list_facts(
     state: State<'_, Arc<AppState>>,
     source: Option<String>,
-) -> Result<Vec<haven_memory::repositories::facts::Fact>, String> {
+) -> Result<Vec<MemoryFactResponse>, String> {
     state
         .runtime
         .memory_fact_store
         .list_facts(source)
         .await
+        .map(|facts| facts.into_iter().map(MemoryFactResponse::from).collect())
         .map_err(|e| log_err("list_facts", e))
 }
 
@@ -115,7 +116,7 @@ pub async fn add_fact(
     predicate: String,
     object: String,
     tags: Option<Vec<String>>,
-) -> Result<haven_memory::repositories::facts::Fact, String> {
+) -> Result<MemoryFactResponse, String> {
     let input = validate_add_fact_input(subject, predicate, object, tags)
         .map_err(|error| log_err("add_fact", error))?;
     state
@@ -123,6 +124,7 @@ pub async fn add_fact(
         .memory_fact_store
         .set_user_fact(input.subject, input.predicate, input.object, input.tags)
         .await
+        .map(MemoryFactResponse::from)
         .map_err(|e| log_err("add_fact", e))
 }
 

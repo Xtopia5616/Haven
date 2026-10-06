@@ -77,9 +77,8 @@ impl LlmCallKind {
 //     `usage-` (llm_usage);
 //     `conf-` (safety-gateway confirmations), `rec-` (voice recording
 //     sessions), `file-` (temporary files), `call-` (locally synthesized
-//     tool-call ids when the provider sends an empty one), `occ-` (shared
-//     identity for one terminal event's cross-channel fan-out) are in-process
-//     only and never persisted.
+//     tool-call ids when the provider sends an empty one) are in-process only
+//     and never persisted.
 //   - External ids (LLM `tool_call_id`, provider model ids, MCP session ids)
 //     keep their provider formats; `run_id`/`gen_id` are in-process u64
 //     run/generation counters, not persisted entity ids.
@@ -89,8 +88,8 @@ impl LlmCallKind {
 
 /// Generate an ID in the canonical `{prefix}-{uuid32}` format.
 /// Persisted entity IDs must come from here (see the module docs above), then
-/// be converted into their newtype with `.into()`; ephemeral event occurrence
-/// identities use it too and are never persisted.
+/// be converted into their newtype with `.into()`; process-local entity ids
+/// also use it and are never persisted.
 pub fn new_id(prefix: &str) -> String {
     format!("{prefix}-{}", uuid::Uuid::new_v4().simple())
 }

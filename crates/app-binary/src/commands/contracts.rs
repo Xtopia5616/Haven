@@ -480,6 +480,60 @@ impl From<haven_memory::MemoryHit> for MemoryRecallItem {
     }
 }
 
+/// Public fact projection returned by Memory Tauri commands.
+///
+/// This keeps the IPC surface independent from the repository's `Fact` model;
+/// update the projection deliberately when fields should reach the renderer.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct MemoryFactResponse {
+    pub id: String,
+    pub subject: String,
+    pub predicate: String,
+    pub object: String,
+    pub source: String,
+    pub confidence: f64,
+    pub tags: Vec<String>,
+    pub created_at: String,
+    pub mention_count: i64,
+    pub last_seen_at: Option<String>,
+    pub source_ref: Option<MemoryFactSourceRef>,
+    pub durability: f64,
+}
+
+impl From<haven_memory::repositories::facts::Fact> for MemoryFactResponse {
+    fn from(fact: haven_memory::repositories::facts::Fact) -> Self {
+        Self {
+            id: fact.id,
+            subject: fact.subject,
+            predicate: fact.predicate,
+            object: fact.object,
+            source: fact.source,
+            confidence: fact.confidence,
+            tags: fact.tags,
+            created_at: fact.created_at,
+            mention_count: fact.mention_count,
+            last_seen_at: fact.last_seen_at,
+            source_ref: fact.source_ref.map(Into::into),
+            durability: fact.durability,
+        }
+    }
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct MemoryFactSourceRef {
+    pub message_id: String,
+    pub snippet: String,
+}
+
+impl From<haven_memory::repositories::facts::FactSourceRef> for MemoryFactSourceRef {
+    fn from(source: haven_memory::repositories::facts::FactSourceRef) -> Self {
+        Self {
+            message_id: source.message_id,
+            snippet: source.snippet,
+        }
+    }
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ToolListResponse {
     pub tools: Vec<haven_common::tools::ToolManifest>,
@@ -527,5 +581,47 @@ mod tests {
         })
         .unwrap();
         assert_eq!(skill["error"], "blocked");
+    }
+
+    #[test]
+    fn memory_fact_response_exposes_only_its_explicit_wire_projection() {
+        let response = MemoryFactResponse::from(haven_memory::repositories::facts::Fact {
+            id: "fact-0123456789abcdef0123456789abcdef".into(),
+            subject: "user".into(),
+            predicate: "likes".into(),
+            object: "Rust".into(),
+            source: "user".into(),
+            confidence: 1.0,
+            tags: vec!["language".into()],
+            created_at: "2026-10-06T00:00:00Z".into(),
+            mention_count: 2,
+            last_seen_at: Some("2026-10-06T00:00:00Z".into()),
+            source_ref: Some(haven_memory::repositories::facts::FactSourceRef {
+                message_id: "msg-0123456789abcdef0123456789abcdef".into(),
+                snippet: "I like Rust.".into(),
+            }),
+            durability: 0.9,
+        });
+
+        assert_eq!(
+            serde_json::to_value(response).unwrap(),
+            serde_json::json!({
+                "id": "fact-0123456789abcdef0123456789abcdef",
+                "subject": "user",
+                "predicate": "likes",
+                "object": "Rust",
+                "source": "user",
+                "confidence": 1.0,
+                "tags": ["language"],
+                "created_at": "2026-10-06T00:00:00Z",
+                "mention_count": 2,
+                "last_seen_at": "2026-10-06T00:00:00Z",
+                "source_ref": {
+                    "message_id": "msg-0123456789abcdef0123456789abcdef",
+                    "snippet": "I like Rust.",
+                },
+                "durability": 0.9,
+            })
+        );
     }
 }

@@ -517,3 +517,4 @@
 - [0526：统一 Memory 实体类型](0526-unify-memory-entity-kind.md)
 - [0527：从 Rust enum 生成 Interaction 事件契约](0527-generated-interaction-enum-contract.md)
 - [0528：Admin 风险等级使用单一契约来源](0528-admin-risk-single-source.md)
+- [0529：单一会话生命周期事件与 Memory response DTO](0529-single-session-lifecycle-event-and-memory-response-dto.md)

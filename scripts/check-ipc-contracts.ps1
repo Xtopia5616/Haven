@@ -135,6 +135,16 @@ foreach ($file in $uiFiles) {
 
 $memoryView = Get-Source 'ui/src/lib/views/MemoryView.svelte'
 Assert-NotContains $memoryView 'invoke\s*\(\s*''(?:list_facts|add_fact|delete_fact|recall_memory)''' 'MemoryView must use memoryCommands.ts'
+$memoryCommands = Get-Source 'crates/app-binary/src/commands/memory.rs'
+$memoryDtos = Get-Source 'crates/app-binary/src/commands/contracts.rs'
+$memoryUiContracts = Get-Source 'ui/src/lib/contracts/memory.ts'
+Assert-Contains $memoryCommands 'Result\s*<\s*Vec\s*<\s*MemoryFactResponse\s*>\s*,\s*String\s*>' 'list_facts returns the App-owned MemoryFactResponse DTO'
+Assert-Contains $memoryCommands 'Result\s*<\s*MemoryFactResponse\s*,\s*String\s*>' 'add_fact returns the App-owned MemoryFactResponse DTO'
+Assert-Contains $memoryDtos 'pub\s+struct\s+MemoryFactResponse' 'MemoryFactResponse is declared at the App IPC boundary'
+Assert-Contains $memoryDtos 'pub\s+struct\s+MemoryFactSourceRef' 'MemoryFactSourceRef is declared at the App IPC boundary'
+Assert-Contains $memoryUiContracts 'MemoryFactResponse\s+as\s+GeneratedMemoryFactResponse' 'UI Fact alias imports its generated Rust response type'
+Assert-Contains $memoryUiContracts 'MemoryFactSourceRef\s+as\s+GeneratedMemoryFactSourceRef' 'UI FactSourceRef alias imports its generated Rust response type'
+Assert-NotContains $memoryCommands 'Result\s*<\s*Vec\s*<\s*Fact\s*>' 'repository Fact must not be returned as the Tauri list_facts wire type'
 
 $toolsView = Get-Source 'ui/src/lib/views/ToolsView.svelte'
 Assert-NotContains $toolsView '\binvoke\s*\(' 'ToolsView must use toolsCommands.ts'

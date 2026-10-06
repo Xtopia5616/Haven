@@ -1,63 +1,55 @@
 /**
- * Session IPC event contract at the frontend boundary.
+ * Session lifecycle IPC contract at the renderer boundary.
  *
- * Tauri serializes Rust payloads with snake_case keys. This module is the one
- * allowed conversion point; Svelte routes receive camelCase fields only.
+ * Rust owns the discriminated wire union. This module validates its unknown
+ * runtime payload and maps snake_case fields to the camelCase UI contract.
  */
 
 import {
-	SESSION_STATUSES,
-	SESSION_WAITING_REASONS,
+	SESSION_STATUS_VALUES,
+	SESSION_UPDATE_STATUS_VALUES,
+	SESSION_WAITING_REASON_VALUES,
+	type SessionLifecycleEvent as GeneratedSessionLifecycleEvent,
 	type SessionStatus,
+	type SessionUpdateStatus,
 	type SessionWaitingReason,
-} from '../sessionStatus.ts';
+} from './generatedCommands.ts';
 
-export const SESSION_EVENT_NAMES = [
-	'session:created',
-	'session:updated',
-	'session:completed',
-	'session:error',
-	'session:title-updated',
-	'session:deleted',
-] as const;
-
+export const SESSION_EVENT_NAMES = ['session:lifecycle'] as const;
 export type SessionEventName = (typeof SESSION_EVENT_NAMES)[number];
 
-export interface SessionLifecyclePayload {
-	sessionId: string;
-	status: SessionStatus;
-	/** Present only when this lifecycle event is paired with a primary terminal channel. */
-	occurrenceId?: string;
-	waitingReason: SessionWaitingReason | null;
-	title: string | null;
-	reason: string | null;
-}
+/** Compile-time guard: Rust lifecycle variants and the renderer mapper stay aligned. */
+export const SESSION_LIFECYCLE_KINDS = {
+	created: true,
+	updated: true,
+	completed: true,
+	error: true,
+	title_updated: true,
+	deleted: true,
+} satisfies Record<GeneratedSessionLifecycleEvent['type'], true>;
 
-export interface SessionErrorPayload {
-	sessionId: string;
-	error: string;
-	/** Shared with the matching terminal `session:updated` projection. */
-	occurrenceId?: string;
-}
+type NonTerminalSessionStatus = Extract<SessionStatus, 'pending' | 'running' | 'paused'>;
 
-export interface SessionTitleUpdatedPayload {
-	sessionId: string;
-	title: string;
-}
-
-export interface SessionDeletedPayload {
-	/** `null` means `clear_history` removed every session. */
-	sessionId: string | null;
-}
-
-export interface SessionEventPayloadMap {
-	'session:created': SessionLifecyclePayload;
-	'session:updated': SessionLifecyclePayload;
-	'session:completed': SessionLifecyclePayload;
-	'session:error': SessionErrorPayload;
-	'session:title-updated': SessionTitleUpdatedPayload;
-	'session:deleted': SessionDeletedPayload;
-}
+export type SessionLifecyclePayload =
+	| {
+			type: 'created';
+			sessionId: string;
+			status: SessionStatus;
+			waitingReason: SessionWaitingReason | null;
+			title: string | null;
+	  }
+	| {
+			type: 'updated';
+			sessionId: string;
+			status: NonTerminalSessionStatus;
+			waitingReason: SessionWaitingReason | null;
+			title: string;
+			reason: string | null;
+	  }
+	| { type: 'completed'; sessionId: string; title: string; reason: string }
+	| { type: 'error'; sessionId: string; title: string; error: string }
+	| { type: 'title_updated'; sessionId: string; title: string }
+	| { type: 'deleted'; sessionId: string | null };
 
 export interface TauriEvent<T> {
 	event: string;
@@ -67,22 +59,12 @@ export interface TauriEvent<T> {
 
 type SessionWireRecord = Record<string, unknown>;
 
-/**
- * Convert a session event from the Rust/Tauri wire shape at the listener
- * boundary. Unknown additive fields are ignored; malformed required fields
- * return `null` so no consumer observes a partial DTO.
- */
-export function mapSessionEvent<K extends SessionEventName>(
-	event: TauriEvent<unknown> & { event: K },
-): TauriEvent<SessionEventPayloadMap[K]> | null;
+/** Reject malformed lifecycle payloads before any consumer sees them. */
 export function mapSessionEvent(
 	event: TauriEvent<unknown>,
-): TauriEvent<SessionEventPayloadMap[SessionEventName]> | null;
-export function mapSessionEvent<K extends SessionEventName>(
-	event: TauriEvent<unknown>,
-): TauriEvent<SessionEventPayloadMap[SessionEventName]> | null {
+): TauriEvent<SessionLifecyclePayload> | null {
 	if (
-		typeof event.event !== 'string' ||
+		event.event !== 'session:lifecycle' ||
 		typeof event.id !== 'number' ||
 		!Number.isFinite(event.id) ||
 		!isRecord(event.payload)
@@ -91,79 +73,72 @@ export function mapSessionEvent<K extends SessionEventName>(
 	}
 
 	const payload = event.payload;
-	switch (event.event) {
-		case 'session:created':
-		case 'session:updated':
-		case 'session:completed': {
+	const type = requiredString(payload, 'type') as GeneratedSessionLifecycleEvent['type'] | null;
+	if (type === null) return null;
+
+	switch (type) {
+		case 'created': {
 			const sessionId = requiredSessionId(payload);
 			const status = mapSessionStatus(payload.status);
 			const waitingReason = mapWaitingReason(payload.waiting_reason);
 			const title = nullableString(payload, 'title');
-			const reason = optionalString(payload, 'reason');
-			const occurrenceId = optionalString(payload, 'occurrence_id');
 			if (
 				sessionId === null ||
 				status === null ||
 				waitingReason === undefined ||
 				title === undefined ||
-				reason === undefined ||
-				occurrenceId === undefined ||
-				occurrenceId === ''
-			)
-				return null;
-			if (
-				occurrenceId !== null &&
-				!(
-					(event.event === 'session:completed' && status === 'completed') ||
-					(event.event === 'session:updated' &&
-						(status === 'completed' || status === 'error'))
-				)
+				(waitingReason !== null && status !== 'paused')
 			)
 				return null;
 			return {
 				...event,
-				payload: {
-					sessionId,
-					status,
-					waitingReason,
-					title,
-					reason,
-					...(occurrenceId !== null ? { occurrenceId } : {}),
-				},
+				payload: { type, sessionId, status, waitingReason, title },
 			};
 		}
-		case 'session:error': {
+		case 'updated': {
 			const sessionId = requiredSessionId(payload);
-			const error = requiredString(payload, 'error');
-			const occurrenceId = optionalString(payload, 'occurrence_id');
+			const status = mapUpdateStatus(payload.status);
+			const waitingReason = mapWaitingReason(payload.waiting_reason);
+			const title = requiredString(payload, 'title');
+			const reason = optionalString(payload, 'reason');
 			if (
 				sessionId === null ||
-				error === null ||
-				occurrenceId === undefined ||
-				occurrenceId === ''
+				status === null ||
+				waitingReason === undefined ||
+				title === null ||
+				reason === undefined ||
+				(waitingReason !== null && status !== 'paused')
 			)
 				return null;
 			return {
 				...event,
-				payload: { sessionId, error, ...(occurrenceId !== null ? { occurrenceId } : {}) },
+				payload: { type, sessionId, status, waitingReason, title, reason },
 			};
 		}
-		case 'session:title-updated': {
+		case 'completed': {
+			const sessionId = requiredSessionId(payload);
+			const title = requiredString(payload, 'title');
+			const reason = requiredString(payload, 'reason');
+			if (sessionId === null || title === null || reason === null) return null;
+			return { ...event, payload: { type, sessionId, title, reason } };
+		}
+		case 'error': {
+			const sessionId = requiredSessionId(payload);
+			const title = requiredString(payload, 'title');
+			const error = requiredString(payload, 'error');
+			if (sessionId === null || title === null || error === null) return null;
+			return { ...event, payload: { type, sessionId, title, error } };
+		}
+		case 'title_updated': {
 			const sessionId = requiredSessionId(payload);
 			const title = requiredString(payload, 'title');
 			if (sessionId === null || title === null) return null;
-			return {
-				...event,
-				payload: { sessionId, title },
-			};
+			return { ...event, payload: { type, sessionId, title } };
 		}
-		case 'session:deleted': {
+		case 'deleted': {
 			const sessionId = nullableString(payload, 'session_id');
 			if (sessionId === undefined || sessionId === '') return null;
-			return {
-				...event,
-				payload: { sessionId },
-			};
+			return { ...event, payload: { type, sessionId } };
 		}
 		default:
 			return null;
@@ -171,14 +146,20 @@ export function mapSessionEvent<K extends SessionEventName>(
 }
 
 function mapSessionStatus(value: unknown): SessionStatus | null {
-	return (SESSION_STATUSES as readonly string[]).includes(value as string)
+	return (SESSION_STATUS_VALUES as readonly unknown[]).includes(value)
 		? (value as SessionStatus)
+		: null;
+}
+
+function mapUpdateStatus(value: unknown): SessionUpdateStatus | null {
+	return (SESSION_UPDATE_STATUS_VALUES as readonly unknown[]).includes(value)
+		? (value as SessionUpdateStatus)
 		: null;
 }
 
 function mapWaitingReason(value: unknown): SessionWaitingReason | null | undefined {
 	if (value === undefined) return null;
-	return (SESSION_WAITING_REASONS as readonly string[]).includes(value as string)
+	return (SESSION_WAITING_REASON_VALUES as readonly unknown[]).includes(value)
 		? (value as SessionWaitingReason)
 		: undefined;
 }
@@ -205,5 +186,5 @@ function nullableString(payload: SessionWireRecord, field: string): string | nul
 
 function optionalString(payload: SessionWireRecord, field: string): string | null | undefined {
 	if (!Object.prototype.hasOwnProperty.call(payload, field)) return null;
-	return typeof payload[field] === 'string' ? (payload[field] as string) : undefined;
+	return typeof payload[field] === 'string' ? payload[field] : undefined;
 }

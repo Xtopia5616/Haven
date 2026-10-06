@@ -535,7 +535,7 @@ impl RustTypeGraph {
         Ok(())
     }
 
-    fn emit_definition(&mut self, key: &str, usage: TypeUse) -> Result<String, String> {
+    pub(crate) fn emit_definition(&mut self, key: &str, usage: TypeUse) -> Result<String, String> {
         if let Some(definition) = self.definitions.get(key) {
             let derives_required_trait = match usage {
                 TypeUse::Request => definition.deserializable,

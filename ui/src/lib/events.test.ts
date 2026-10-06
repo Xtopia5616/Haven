@@ -22,7 +22,7 @@ import {
 	registerListeners,
 	registerAppListener,
 	registerOne,
-	registerSessionListener,
+	registerSessionLifecycleListener,
 	sessionEventListeners,
 } from './events.ts';
 
@@ -36,7 +36,7 @@ describe('registerListeners', () => {
 	});
 
 	it('registers every event and disposes in registration order', async () => {
-		const unlisteners = [vi.fn(), vi.fn(), vi.fn()];
+		const unlisteners = [vi.fn(), vi.fn()];
 		mocks.listen
 			.mockResolvedValueOnce(unlisteners[0])
 			.mockResolvedValueOnce(unlisteners[1])
@@ -45,14 +45,14 @@ describe('registerListeners', () => {
 		const handlerA = vi.fn();
 		const handlerB = vi.fn();
 		const regs = registerListeners({
-			'session:created': handlerA,
-			'session:updated': handlerB,
+			'session:lifecycle': handlerA,
+			'agent:thought': handlerB,
 		});
 		await regs.ready;
 
 		expect(mocks.listen).toHaveBeenCalledTimes(2);
-		expect(mocks.listen).toHaveBeenNthCalledWith(1, 'session:created', handlerA);
-		expect(mocks.listen).toHaveBeenNthCalledWith(2, 'session:updated', handlerB);
+		expect(mocks.listen).toHaveBeenNthCalledWith(1, 'session:lifecycle', handlerA);
+		expect(mocks.listen).toHaveBeenNthCalledWith(2, 'agent:thought', handlerB);
 
 		regs.dispose();
 		expect(unlisteners[0]).toHaveBeenCalledTimes(1);
@@ -62,12 +62,12 @@ describe('registerListeners', () => {
 	it('logs registration failures and never throws', async () => {
 		mocks.listen.mockRejectedValueOnce(new Error('boom'));
 
-		const regs = registerListeners({ 'session:created': vi.fn() }, { tag: '+page' });
+		const regs = registerListeners({ 'session:lifecycle': vi.fn() }, { tag: '+page' });
 		await regs.ready; // must not reject
 
 		expect(mocks.error).toHaveBeenCalledWith(
 			'+page',
-			expect.stringContaining('session:created'),
+			expect.stringContaining('session:lifecycle'),
 			expect.any(Error),
 		);
 		// dispose after a failed registration is a no-op, not a throw.
@@ -97,100 +97,107 @@ describe('sessionEventListeners', () => {
 		mocks.warn.mockReset();
 	});
 
-	it('maps the lifecycle wire DTO before calling chat event handlers', () => {
+	it('maps the single lifecycle event into a typed camelCase payload', () => {
 		const handler = vi.fn();
-		const listeners = sessionEventListeners({ 'session:updated': handler });
+		const listeners = sessionEventListeners(handler);
 
-		listeners['session:updated']({
-			event: 'session:updated',
+		listeners['session:lifecycle']({
+			event: 'session:lifecycle',
 			id: 4,
 			payload: {
+				type: 'updated',
 				session_id: 'ses-1',
 				status: 'paused',
-				title: null,
+				title: 'A title',
 				waiting_reason: 'user_input',
+				reason: 'Waiting for input',
 			},
 		} as never);
 
 		expect(handler).toHaveBeenCalledWith({
-			event: 'session:updated',
+			event: 'session:lifecycle',
 			id: 4,
 			payload: {
+				type: 'updated',
 				sessionId: 'ses-1',
 				status: 'paused',
 				waitingReason: 'user_input',
-				title: null,
-				reason: null,
+				title: 'A title',
+				reason: 'Waiting for input',
 			},
 		});
 	});
 
-	it('preserves explicit terminal occurrence identity across session event mappers', () => {
-		const updatedHandler = vi.fn();
-		const errorHandler = vi.fn();
-		const listeners = sessionEventListeners({
-			'session:updated': updatedHandler,
-			'session:error': errorHandler,
-		});
+	it('keeps completion and error details in their discriminated terminal payloads', () => {
+		const handler = vi.fn();
+		const listeners = sessionEventListeners(handler);
 
-		listeners['session:updated']({
-			event: 'session:updated',
+		listeners['session:lifecycle']({
+			event: 'session:lifecycle',
 			id: 10,
 			payload: {
-				session_id: 'ses-paired',
-				status: 'error',
+				type: 'completed',
+				session_id: 'ses-done',
 				title: 'A title',
-				reason: 'Request failed',
-				occurrence_id: 'occ-shared',
+				reason: 'Finished',
 			},
 		} as never);
-		listeners['session:error']({
-			event: 'session:error',
+		listeners['session:lifecycle']({
+			event: 'session:lifecycle',
 			id: 11,
 			payload: {
-				session_id: 'ses-paired',
+				type: 'error',
+				session_id: 'ses-error',
+				title: 'Build',
 				error: 'Request failed',
-				occurrence_id: 'occ-shared',
 			},
 		} as never);
 
-		expect(updatedHandler.mock.calls[0][0].payload.occurrenceId).toBe('occ-shared');
-		expect(errorHandler.mock.calls[0][0].payload.occurrenceId).toBe('occ-shared');
+		expect(handler.mock.calls.map(([value]) => value.payload)).toEqual([
+			{ type: 'completed', sessionId: 'ses-done', title: 'A title', reason: 'Finished' },
+			{ type: 'error', sessionId: 'ses-error', title: 'Build', error: 'Request failed' },
+		]);
 	});
 
-	it('drops malformed lifecycle events before they reach handlers', () => {
+	it('rejects terminal states disguised as ordinary updates', () => {
 		const handler = vi.fn();
-		const listeners = sessionEventListeners({ 'session:updated': handler });
+		const listeners = sessionEventListeners(handler);
 
-		listeners['session:updated']({
-			event: 'session:updated',
+		listeners['session:lifecycle']({
+			event: 'session:lifecycle',
 			id: 5,
-			payload: { status: 'running', title: null },
+			payload: {
+				type: 'updated',
+				session_id: 'ses-1',
+				status: 'completed',
+				title: 'A title',
+			},
 		} as never);
 
 		expect(handler).not.toHaveBeenCalled();
 		expect(mocks.warn).toHaveBeenCalledWith(
 			'events',
-			expect.stringContaining("Dropping malformed payload for 'session:updated'"),
+			expect.stringContaining("Dropping malformed payload for 'session:lifecycle'"),
 		);
 	});
 
-	it('uses the same mapper for one-off typed session listeners', async () => {
+	it('uses the same mapper for the one-off lifecycle listener', async () => {
 		const handler = vi.fn();
 		mocks.listen.mockResolvedValueOnce(vi.fn());
 
-		await registerSessionListener('session:title-updated', handler);
+		await registerSessionLifecycleListener(handler);
+		expect(mocks.listen).toHaveBeenCalledWith('session:lifecycle', expect.any(Function));
 		const rawListener = mocks.listen.mock.calls[0][1];
 		rawListener({
-			event: 'session:title-updated',
+			event: 'session:lifecycle',
 			id: 6,
-			payload: { session_id: 'ses-1', title: 'A title' },
+			payload: { type: 'title_updated', session_id: 'ses-1', title: 'A title' },
 		});
 
 		expect(handler).toHaveBeenCalledWith({
-			event: 'session:title-updated',
+			event: 'session:lifecycle',
 			id: 6,
-			payload: { sessionId: 'ses-1', title: 'A title' },
+			payload: { type: 'title_updated', sessionId: 'ses-1', title: 'A title' },
 		});
 	});
 });
@@ -205,7 +212,7 @@ describe('registerOne', () => {
 		const unsub = vi.fn();
 		mocks.listen.mockResolvedValueOnce(unsub);
 
-		const reg = await registerOne('session:title-updated', vi.fn(), { tag: 'memory' });
+		const reg = await registerOne('session:lifecycle', vi.fn(), { tag: 'memory' });
 		expect(mocks.listen).toHaveBeenCalledTimes(1);
 		reg.dispose();
 		expect(unsub).toHaveBeenCalledTimes(1);
@@ -222,7 +229,7 @@ describe('registerOne', () => {
 	it('forwards events to the handler', async () => {
 		const handler = vi.fn();
 		mocks.listen.mockResolvedValueOnce(vi.fn());
-		await registerOne('session:updated', handler);
+		await registerOne('session:lifecycle', handler);
 		const captured = mocks.listen.mock.calls[0][1];
 		captured(event({ status: 'paused' }));
 		expect(handler).toHaveBeenCalledWith(

@@ -48,6 +48,21 @@ if (-not [regex]::IsMatch($sessionStatus, "(?s)import\s*\{[^}]*SESSION_STATUS_VA
     -not [regex]::IsMatch($sessionStatus, 'SESSION_WAITING_REASONS\s*=\s*SESSION_WAITING_REASON_VALUES')) {
     throw 'session event validators must use the generated Rust session enum vocabularies'
 }
+$sessionWire = Get-Content (Join-Path $root 'crates/app-binary/src/events.rs') -Raw
+$sessionContract = Get-Content (Join-Path $root 'ui/src/lib/contracts/session.ts') -Raw
+if (-not [regex]::IsMatch($sessionWire, 'SESSION_LIFECYCLE_EVENT:\s*&str\s*=\s*"session:lifecycle"') -or
+    -not [regex]::IsMatch($sessionWire, '(?s)#\[serde\(\s*tag\s*=\s*"type".*?enum\s+SessionLifecycleEvent')) {
+    throw 'session lifecycle must use one Rust channel and a tagged SessionLifecycleEvent enum'
+}
+if (-not [regex]::IsMatch($sessionContract, "(?s)SESSION_EVENT_NAMES\s*=\s*\['session:lifecycle'\]\s+as\s+const") -or
+    [regex]::IsMatch($sessionContract, 'occurrenceId|occurrence_id')) {
+    throw 'the frontend session contract must register one lifecycle channel and omit occurrence identity'
+}
+if (-not [regex]::IsMatch($sessionWire, '(?s)Completed\s*\{[^}]*reason:\s*String') -or
+    -not [regex]::IsMatch($sessionWire, '(?s)Error\s*\{[^}]*error:\s*String') -or
+    -not [regex]::IsMatch($sessionWire, '(?s)Updated\s*\{[^}]*status:\s*SessionUpdateStatus')) {
+    throw 'terminal detail fields must be required and ordinary lifecycle updates must use SessionUpdateStatus'
+}
 if (-not [regex]::IsMatch($toolRunContract, "(?s)import\s*\{[^}]*TOOL_RUN_KIND_VALUES[^}]*TOOL_RUN_STATUS_VALUES[^}]*\}\s*from\s*'\./generatedCommands\.ts'") -or
     -not [regex]::IsMatch($toolRunContract, 'TOOL_RUN_KIND_VALUES\s+as\s+readonly\s+unknown\[\]\)\.includes\(value\)') -or
     -not [regex]::IsMatch($toolRunContract, 'TOOL_RUN_STATUS_VALUES\s+as\s+readonly\s+unknown\[\]\)\.includes\(value\)')) {
@@ -92,8 +107,8 @@ if (-not [regex]::IsMatch($agentContract, '(?s)interface\s+AgentToolCallPayload\
     throw 'Agent ToolCall and Observation tool_call_id/result fields must match the required Rust DTO shape'
 }
 
-if ($rustEvents.Count -ne 40) {
-    throw "expected 40 public IPC events, found $($rustEvents.Count)"
+if ($rustEvents.Count -ne 35) {
+    throw "expected 35 public IPC events, found $($rustEvents.Count)"
 }
 
 Write-Host "IPC event directory verified: $($rustEvents.Count) channels agree, and runtime enum validators use generated Rust vocabularies."

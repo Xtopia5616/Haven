@@ -188,52 +188,51 @@ mod tests {
     }
 
     #[test]
-    fn terminal_primary_and_secondary_payloads_share_the_occurrence_id() {
-        let cases = [
-            (
-                AgentEvent::SessionCompleted {
-                    session_id: "ses-completed".into(),
-                    title: "研究".into(),
-                    reason: "用户主动结束会话".into(),
-                },
-                None,
-            ),
-            (
-                AgentEvent::SessionError {
-                    session_id: "ses-error".into(),
-                    error: "网络请求超时".into(),
-                },
-                Some("研究".to_owned()),
-            ),
-        ];
+    fn session_lifecycle_variants_share_one_channel_and_keep_terminal_details_typed() {
+        let completed = AgentEvent::SessionCompleted {
+            session_id: "ses-completed".into(),
+            title: "研究".into(),
+            reason: "用户主动结束会话".into(),
+        };
+        assert_eq!(TauriEmitter::channel(&completed), SESSION_LIFECYCLE_EVENT);
+        assert_eq!(
+            TauriEmitter::payload(&completed, None),
+            serde_json::json!({
+                "type": "completed",
+                "session_id": "ses-completed",
+                "title": "研究",
+                "reason": "用户主动结束会话",
+            })
+        );
 
-        for (event, secondary_title) in cases {
-            let occurrence_id = "occ-test";
-            let primary = TauriEmitter::payload_with_chunk_seq(&event, None, Some(occurrence_id));
-            let secondary =
-                TauriEmitter::secondary_payload(&event, Some(occurrence_id), secondary_title)
-                    .expect("terminal Agent events have a secondary lifecycle projection");
+        let failed = AgentEvent::SessionError {
+            session_id: "ses-error".into(),
+            error: "网络请求超时".into(),
+        };
+        assert_eq!(TauriEmitter::channel(&failed), SESSION_LIFECYCLE_EVENT);
+        assert_eq!(
+            TauriEmitter::payload(&failed, None),
+            serde_json::json!({
+                "type": "error",
+                "session_id": "ses-error",
+                "title": "ses-error",
+                "error": "网络请求超时",
+            })
+        );
 
-            assert_eq!(primary["occurrence_id"], occurrence_id);
-            assert_eq!(secondary["occurrence_id"], occurrence_id);
-        }
-    }
-
-    #[test]
-    fn session_deletion_uses_the_existing_wire_contract() {
         let single = AgentEvent::SessionDeleted {
             session_id: Some("ses-deleted".into()),
         };
-        assert_eq!(TauriEmitter::channel(&single), SESSION_DELETED_EVENT);
+        assert_eq!(TauriEmitter::channel(&single), SESSION_LIFECYCLE_EVENT);
         assert_eq!(
             TauriEmitter::payload(&single, None),
-            serde_json::json!({ "session_id": "ses-deleted" })
+            serde_json::json!({ "type": "deleted", "session_id": "ses-deleted" })
         );
 
         let all = AgentEvent::SessionDeleted { session_id: None };
         assert_eq!(
             TauriEmitter::payload(&all, None),
-            serde_json::json!({ "session_id": null })
+            serde_json::json!({ "type": "deleted", "session_id": null })
         );
     }
 }
@@ -249,22 +248,16 @@ impl AgentEventEmitter for TauriEmitter {
             }
             _ => None,
         };
-        let occurrence_id = match &event {
-            AgentEvent::SessionCompleted { .. } | AgentEvent::SessionError { .. } => {
-                Some(haven_common::types::new_id("occ"))
+        // Cache titles before resolving labels for status and error events.
+        self.notifications.remember_session_status(&event);
+        let display_title = match &event {
+            AgentEvent::SessionUpdated { session_id, .. }
+            | AgentEvent::SessionError { session_id, .. } => {
+                Some(self.notifications.session_display_title(session_id))
             }
             _ => None,
         };
-        // Cache titles from create/rename/complete before any path that may
-        // resolve a display title (SessionUpdated fill, toasts, secondary).
-        self.notifications.remember_session_status(&event);
-        let mut payload = Self::payload_with_chunk_seq(&event, chunk_seq, occurrence_id.as_deref());
-        // Add a safe display title so in-app toast matches Windows (never raw
-        // input).
-        if let AgentEvent::SessionUpdated { session_id, .. } = &event {
-            payload["title"] =
-                serde_json::json!(self.notifications.session_display_title(session_id));
-        }
+        let payload = Self::payload_with_chunk_seq(&event, chunk_seq, display_title);
         if let Err(error) = self.handle.emit(channel, payload) {
             tracing::warn!(
                 channel,
@@ -272,7 +265,6 @@ impl AgentEventEmitter for TauriEmitter {
                 "failed to emit agent event"
             );
         }
-        self.emit_secondary_with_occurrence_id(&event, occurrence_id.as_deref());
         self.notifications.maybe_show_toast(&event);
     }
 }
@@ -284,14 +276,14 @@ impl TauriEmitter {
             AgentEvent::Thought { .. } => AGENT_THOUGHT_EVENT,
             AgentEvent::ToolCall { .. } => AGENT_TOOL_CALL_EVENT,
             AgentEvent::Observation { .. } => AGENT_OBSERVATION_EVENT,
-            AgentEvent::SessionCreated(_) => SESSION_CREATED_EVENT,
-            AgentEvent::SessionCompleted { .. } => SESSION_COMPLETED_EVENT,
-            AgentEvent::SessionUpdated { .. } => SESSION_UPDATED_EVENT,
-            AgentEvent::SessionError { .. } => SESSION_ERROR_EVENT,
-            AgentEvent::SessionDeleted { .. } => SESSION_DELETED_EVENT,
+            AgentEvent::SessionCreated(_)
+            | AgentEvent::SessionCompleted { .. }
+            | AgentEvent::SessionUpdated { .. }
+            | AgentEvent::SessionError { .. }
+            | AgentEvent::SessionDeleted { .. }
+            | AgentEvent::TitleUpdated { .. } => SESSION_LIFECYCLE_EVENT,
             AgentEvent::Notification { .. } => NOTIFICATION_SHOW_EVENT,
             AgentEvent::ToolRunCompletionNotification { .. } => NOTIFICATION_SHOW_EVENT,
-            AgentEvent::TitleUpdated { .. } => SESSION_TITLE_UPDATED_EVENT,
             AgentEvent::ThoughtChunk { .. } => AGENT_THOUGHT_CHUNK_EVENT,
             AgentEvent::ReasoningChunk { .. } => AGENT_REASONING_CHUNK_EVENT,
             AgentEvent::StreamReset { .. } => AGENT_STREAM_RESET_EVENT,
@@ -315,7 +307,7 @@ impl TauriEmitter {
     fn payload_with_chunk_seq(
         event: &AgentEvent,
         chunk_seq: Option<u64>,
-        occurrence_id: Option<&str>,
+        display_title: Option<String>,
     ) -> serde_json::Value {
         fn serialize<T: serde::Serialize>(payload: T) -> serde_json::Value {
             match serde_json::to_value(payload) {
@@ -405,47 +397,88 @@ impl TauriEmitter {
                 result: result.clone(),
                 event_seq: *durable_event_seq,
             }),
-            AgentEvent::SessionCreated(session) => serialize(SessionLifecycleEvent {
+            AgentEvent::SessionCreated(session) => serialize(SessionLifecycleEvent::Created {
                 session_id: session.id.clone(),
                 status: session.status,
-                occurrence_id: None,
                 waiting_reason: session.waiting_reason,
                 title: session.title.clone(),
-                reason: None,
             }),
             AgentEvent::SessionCompleted {
                 session_id,
                 title,
                 reason,
-            } => serialize(SessionLifecycleEvent {
+            } => serialize(SessionLifecycleEvent::Completed {
                 session_id: session_id.clone(),
-                status: haven_common::SessionStatus::Completed,
-                occurrence_id: occurrence_id.map(str::to_owned),
-                waiting_reason: None,
-                title: Some(title.clone()),
-                reason: Some(sanitize_error_text(reason)),
+                title: title.clone(),
+                reason: sanitize_error_text(reason),
             }),
             AgentEvent::SessionUpdated {
                 session_id,
                 status,
                 waiting_reason,
                 reason,
-            } => serialize(SessionLifecycleEvent {
-                session_id: session_id.clone(),
-                status: *status,
-                occurrence_id: None,
-                waiting_reason: *waiting_reason,
-                title: Some(String::new()),
-                reason: reason.as_deref().map(sanitize_error_text),
-            }),
-            AgentEvent::SessionError { session_id, error } => serialize(SessionErrorEvent {
-                session_id: session_id.clone(),
-                error: sanitize_error_text(error),
-                occurrence_id: occurrence_id.map(str::to_owned),
-            }),
-            AgentEvent::SessionDeleted { session_id } => serialize(SessionDeletedEvent {
-                session_id: session_id.clone(),
-            }),
+            } => {
+                let title = display_title.clone().unwrap_or_else(|| session_id.clone());
+                match status {
+                    haven_common::SessionStatus::Completed => {
+                        serialize(SessionLifecycleEvent::Completed {
+                            session_id: session_id.clone(),
+                            title,
+                            reason: reason
+                                .as_deref()
+                                .map(sanitize_error_text)
+                                .unwrap_or_else(|| "会话已完成。".to_string()),
+                        })
+                    }
+                    haven_common::SessionStatus::Error => serialize(SessionLifecycleEvent::Error {
+                        session_id: session_id.clone(),
+                        title,
+                        error: reason
+                            .as_deref()
+                            .map(sanitize_error_text)
+                            .unwrap_or_else(|| "会话已停止，但未收到错误详情。".to_string()),
+                    }),
+                    haven_common::SessionStatus::Pending => {
+                        serialize(SessionLifecycleEvent::Updated {
+                            session_id: session_id.clone(),
+                            status: SessionUpdateStatus::Pending,
+                            waiting_reason: None,
+                            title,
+                            reason: reason.as_deref().map(sanitize_error_text),
+                        })
+                    }
+                    haven_common::SessionStatus::Running => {
+                        serialize(SessionLifecycleEvent::Updated {
+                            session_id: session_id.clone(),
+                            status: SessionUpdateStatus::Running,
+                            waiting_reason: None,
+                            title,
+                            reason: reason.as_deref().map(sanitize_error_text),
+                        })
+                    }
+                    haven_common::SessionStatus::Paused => {
+                        serialize(SessionLifecycleEvent::Updated {
+                            session_id: session_id.clone(),
+                            status: SessionUpdateStatus::Paused,
+                            waiting_reason: *waiting_reason,
+                            title,
+                            reason: reason.as_deref().map(sanitize_error_text),
+                        })
+                    }
+                }
+            }
+            AgentEvent::SessionError { session_id, error } => {
+                serialize(SessionLifecycleEvent::Error {
+                    session_id: session_id.clone(),
+                    title: display_title.clone().unwrap_or_else(|| session_id.clone()),
+                    error: sanitize_error_text(error),
+                })
+            }
+            AgentEvent::SessionDeleted { session_id } => {
+                serialize(SessionLifecycleEvent::Deleted {
+                    session_id: session_id.clone(),
+                })
+            }
             AgentEvent::ThoughtChunk {
                 session_id,
                 delta,
@@ -562,10 +595,12 @@ impl TauriEmitter {
                 episode_id: episode_id.clone(),
                 event_seq: *durable_event_seq,
             }),
-            AgentEvent::TitleUpdated { session_id, title } => serialize(SessionTitleUpdatedEvent {
-                session_id: session_id.clone(),
-                title: title.clone(),
-            }),
+            AgentEvent::TitleUpdated { session_id, title } => {
+                serialize(SessionLifecycleEvent::TitleUpdated {
+                    session_id: session_id.clone(),
+                    title: title.clone(),
+                })
+            }
             AgentEvent::Notification {
                 session_id,
                 title,
@@ -739,7 +774,7 @@ impl TauriEmitter {
                 if *status == haven_common::SessionStatus::Paused {
                     tracing::warn!(
                         session_id = %session_id,
-                        "TauriEmitter emitting session:updated with paused status"
+                        "TauriEmitter emitting session:lifecycle with paused status"
                     );
                 }
             }
@@ -775,74 +810,6 @@ impl TauriEmitter {
                 );
             }
             _ => {}
-        }
-    }
-
-    /// `SessionCompleted` / `SessionError` 在 `session:updated` 上的副发。生命周期形状统一为
-    /// `{session_id, status, title, reason, occurrence_id?}` —— `error` 只保留在主通道。
-    fn emit_secondary_with_occurrence_id(&self, event: &AgentEvent, occurrence_id: Option<&str>) {
-        let title = match event {
-            AgentEvent::SessionError { session_id, .. } => {
-                Some(self.notifications.session_display_title(session_id))
-            }
-            _ => None,
-        };
-        let Some(payload) = Self::secondary_payload(event, occurrence_id, title) else {
-            return;
-        };
-        if let Err(error) = self.handle.emit(SESSION_UPDATED_EVENT, payload) {
-            tracing::warn!(
-                error = %sanitize_error_text(&error.to_string()),
-                "failed to emit secondary session lifecycle event"
-            );
-        }
-    }
-
-    fn secondary_payload(
-        event: &AgentEvent,
-        occurrence_id: Option<&str>,
-        title: Option<String>,
-    ) -> Option<serde_json::Value> {
-        match event {
-            AgentEvent::SessionCompleted {
-                session_id,
-                title,
-                reason,
-            } => Some(
-                serde_json::to_value(SessionLifecycleEvent {
-                    session_id: session_id.clone(),
-                    status: haven_common::SessionStatus::Completed,
-                    occurrence_id: occurrence_id.map(str::to_owned),
-                    waiting_reason: None,
-                    title: Some(title.clone()),
-                    reason: Some(sanitize_error_text(reason)),
-                })
-                .unwrap_or_else(|error| {
-                    tracing::error!(
-                        error = %sanitize_error_text(&error.to_string()),
-                        "failed to serialize session lifecycle event"
-                    );
-                    serde_json::Value::Null
-                }),
-            ),
-            AgentEvent::SessionError { session_id, error } => Some(
-                serde_json::to_value(SessionLifecycleEvent {
-                    session_id: session_id.clone(),
-                    status: haven_common::SessionStatus::Error,
-                    occurrence_id: occurrence_id.map(str::to_owned),
-                    waiting_reason: None,
-                    title,
-                    reason: Some(sanitize_error_text(error)),
-                })
-                .unwrap_or_else(|error| {
-                    tracing::error!(
-                        error = %sanitize_error_text(&error.to_string()),
-                        "failed to serialize session lifecycle event"
-                    );
-                    serde_json::Value::Null
-                }),
-            ),
-            _ => None,
         }
     }
 }

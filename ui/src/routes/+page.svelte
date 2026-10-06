@@ -569,7 +569,7 @@
 		}
 		// 新对话 = explicit fresh start. While `newSessionIntentStore` is set, no
 		// event-driven path may auto-assign an existing session (loadSessions
-		// auto-assign, session:created, auto-restore), otherwise the next message
+		// auto-assign, session:lifecycle(created), auto-restore), otherwise the next message
 		// would append to the old conversation instead of starting a new session.
 		// The intent is cleared only when the user's own submission creates a
 		// session (submit.ts) or they explicitly switch to another session. Also

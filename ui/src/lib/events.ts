@@ -2,11 +2,14 @@ import { listen } from './tauri.ts';
 import logger from './logger.ts';
 import {
 	mapSessionEvent,
-	type SessionEventName,
-	type SessionEventPayloadMap,
+	type SessionLifecyclePayload,
 	type TauriEvent,
 } from './contracts/session.ts';
-import { mapToolRunEvent, type ToolRunEventName, type ToolRunPayload } from './contracts/toolRun.ts';
+import {
+	mapToolRunEvent,
+	type ToolRunEventName,
+	type ToolRunPayload,
+} from './contracts/toolRun.ts';
 import {
 	mapRecordingEvent,
 	type RecordingEventName,
@@ -19,9 +22,7 @@ import {
 } from './contracts/agent.ts';
 import { mapAppEvent, type AppEventName, type AppEventPayloadMap } from './contracts/app.ts';
 
-type SessionListenerMap = Partial<{
-	[K in SessionEventName]: (event: TauriEvent<SessionEventPayloadMap[K]>) => void;
-}>;
+type SessionLifecycleListener = (event: TauriEvent<SessionLifecyclePayload>) => void;
 
 type ToolRunListenerMap = Partial<{
 	[K in ToolRunEventName]: (event: TauriEvent<ToolRunPayload>) => void;
@@ -50,13 +51,10 @@ function protectEventCallback(eventName: string, callback: () => unknown): void 
 	}
 }
 
-function adaptSessionEvent<K extends SessionEventName>(
-	eventName: K,
-	event: TauriEvent<unknown>,
-): TauriEvent<SessionEventPayloadMap[K]> | null {
-	const mapped = mapSessionEvent({ ...event, event: eventName });
+function adaptSessionEvent(event: TauriEvent<unknown>): TauriEvent<SessionLifecyclePayload> | null {
+	const mapped = mapSessionEvent(event);
 	if (!mapped) {
-		logger.warn('events', `Dropping malformed payload for '${eventName}'`);
+		logger.warn('events', `Dropping malformed payload for '${event.event}'`);
 	}
 	return mapped;
 }
@@ -100,8 +98,7 @@ function adaptAgentEvent<K extends AgentEventName>(
  * swallowed so a failing registration never blocks the caller's mount.
  *
  *   const events = registerListeners({
- *     'session:created': (event) => { ... },
- *     'session:updated': (event) => { ... },
+ *     'session:lifecycle': (event) => { ... },
  *   }, { tag: '+layout' });
  *   onMount(async () => { await events.ready; ... });
  *   onDestroy(() => events.dispose());
@@ -155,20 +152,16 @@ export function registerListeners(
  * snake_case wire fields.
  */
 export function sessionEventListeners(
-	map: SessionListenerMap,
+	handler: SessionLifecycleListener,
 ): Record<string, (event: TauriEvent<unknown>) => void> {
-	return Object.fromEntries(
-		Object.entries(map).map(([eventName, handler]) => [
-			eventName,
-			(event: TauriEvent<unknown>) => {
-				protectEventCallback(eventName, () => {
-					const name = eventName as SessionEventName;
-					const mapped = adaptSessionEvent(name, event);
-					if (mapped) handler?.(mapped as never);
-				});
-			},
-		]),
-	);
+	return {
+		'session:lifecycle': (event) => {
+			protectEventCallback('session:lifecycle', () => {
+				const mapped = adaptSessionEvent(event);
+				if (mapped) handler(mapped);
+			});
+		},
+	};
 }
 
 /**
@@ -275,17 +268,16 @@ export async function registerOne(
 	}
 }
 
-/** Register one typed session listener with the same safe cleanup semantics. */
-export async function registerSessionListener<K extends SessionEventName>(
-	event: K,
-	handler: (event: TauriEvent<SessionEventPayloadMap[K]>) => void,
+/** Register the one typed session lifecycle listener with safe cleanup semantics. */
+export async function registerSessionLifecycleListener(
+	handler: SessionLifecycleListener,
 	{ tag = 'unknown' }: { tag?: string } = {},
 ): Promise<{ dispose: () => void }> {
 	return registerOne(
-		event,
+		'session:lifecycle',
 		(rawEvent) =>
-			protectEventCallback(event, () => {
-				const mapped = adaptSessionEvent(event, rawEvent);
+			protectEventCallback('session:lifecycle', () => {
+				const mapped = adaptSessionEvent(rawEvent);
 				if (mapped) handler(mapped);
 			}),
 		{ tag },

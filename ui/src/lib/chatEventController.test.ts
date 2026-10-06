@@ -66,12 +66,7 @@ describe('createChatEventController', () => {
 		expect(tags).toEqual(['+page']);
 		expect(Object.keys(maps[0]).sort()).toEqual(
 			[
-				'session:created',
-				'session:updated',
-				'session:completed',
-				'session:error',
-				'session:title-updated',
-				'session:deleted',
+				'session:lifecycle',
 				'hotkey:rebind',
 				'llm:config_changed',
 				'agent:thought',

@@ -27,7 +27,7 @@
 		searchHistoryFiltered,
 		updateSessionTitle as updateSessionTitleCommand,
 	} from '$lib/sessionHistoryCommands.ts';
-	import { registerSessionListener } from '$lib/events.ts';
+	import { registerSessionLifecycleListener } from '$lib/events.ts';
 	import { listToolRunHistory } from '$lib/toolRunCommands.ts';
 	import MaterialDialog from '$lib/MaterialDialog.svelte';
 	import MaterialButton from '$lib/MaterialButton.svelte';
@@ -145,38 +145,37 @@
 		const now = new Date();
 		return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
 	});
-	let unlistenTitleUpdate: { dispose: () => void } | null = null;
-	let unlistenLifecycle: Array<{ dispose: () => void }> = [];
+	let unlistenLifecycle: { dispose: () => void } | null = null;
+	let lifecycleViewDisposed = false;
 	const sessionsRefresh = createSessionRefreshScheduler(() => loadSessionsNow());
 
 	onMount(async () => {
-		await sessionsRefresh.refresh();
-		unlistenTitleUpdate = await registerSessionListener(
-			'session:title-updated',
-			(event) => {
-				const { sessionId, title } = event.payload;
-				sessions = sessions.map((session) =>
-					session.id === sessionId ? { ...session, title } : session,
-				);
+		const lifecycleListener = await registerSessionLifecycleListener(
+			({ payload }) => {
+				if (payload.type === 'title_updated') {
+					sessions = sessions.map((session) =>
+						session.id === payload.sessionId
+							? { ...session, title: payload.title }
+							: session,
+					);
+				}
+				sessionsRefresh.schedule();
 			},
 			{ tag: 'memory' },
 		);
-		const scheduleReload = () => {
-			sessionsRefresh.schedule();
-		};
-		unlistenLifecycle = await Promise.all([
-			registerSessionListener('session:created', scheduleReload, { tag: 'memory' }),
-			registerSessionListener('session:updated', scheduleReload, { tag: 'memory' }),
-			registerSessionListener('session:completed', scheduleReload, { tag: 'memory' }),
-			registerSessionListener('session:error', scheduleReload, { tag: 'memory' }),
-		]);
+		if (lifecycleViewDisposed) {
+			lifecycleListener.dispose();
+			return;
+		}
+		unlistenLifecycle = lifecycleListener;
+		await sessionsRefresh.refresh();
 	});
 	onDestroy(() => {
+		lifecycleViewDisposed = true;
 		if (searchTimer) clearTimeout(searchTimer);
 		sessionsRefresh.dispose();
-		unlistenTitleUpdate?.dispose();
-		unlistenLifecycle.forEach((registration) => registration.dispose());
-		unlistenLifecycle = [];
+		unlistenLifecycle?.dispose();
+		unlistenLifecycle = null;
 	});
 	$effect(() => {
 		const section = $page.url.searchParams.get('section');

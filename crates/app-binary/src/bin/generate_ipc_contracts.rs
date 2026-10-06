@@ -96,6 +96,14 @@ fn generate(root: &Path) -> Result<String, String> {
         return Err("no #[tauri::command] handlers found".into());
     }
 
+    // Session lifecycle events are public IPC contracts even though event
+    // payloads are not returned from Tauri commands. Keep their tagged union
+    // generated from the same Rust Serde authority as command responses.
+    type_graph.emit_definition(
+        "haven_app_binary_lib::events::SessionLifecycleEvent",
+        TypeUse::Response,
+    )?;
+
     let mut output = String::from(
         "// Generated from #[tauri::command] handler signatures by `scripts/generate-ipc-contracts.ps1`.\n\
          // Do not edit by hand; `scripts/check-ipc-contracts.ps1` rejects drift.\n\n\

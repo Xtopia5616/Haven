@@ -1,6 +1,6 @@
 # ADR 0349：Session terminal event cleanup audit
 
-- Status: accepted; implementation updated by [ADR 0386](0386-session-terminal-occurrence-identity.md)
+- Status: historical audit; interim implementation superseded by [ADR 0529](0529-single-session-lifecycle-event-and-memory-response-dto.md)
 - Scope: `TauriEmitter` terminal fan-out, chat session event handlers, shared session reducer selectors, and lifecycle refresh consumers
 - Related: [ADR 0330](0330-session-lifecycle-ui-contract-mapper.md), [ADR 0336](0336-react-session-committed-submission.md), [ADR 0347](0347-agent-event-contract-validation-boundary.md)
 

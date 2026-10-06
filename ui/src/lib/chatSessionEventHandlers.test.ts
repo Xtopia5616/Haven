@@ -1,13 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
 import { get } from 'svelte/store';
-import { createChatSessionEventHandlers } from './chatSessionEventHandlers.ts';
+import { createChatSessionEventHandler } from './chatSessionEventHandlers.ts';
 import { initialSessionState, SessionReducer } from './sessionReducer.ts';
-import {
-	getToolOutputPreviewStore,
-	setToolOutputPreview,
-} from './toolOutputPreviewStore.ts';
+import { getToolOutputPreviewStore, setToolOutputPreview } from './toolOutputPreviewStore.ts';
 
-function handlers(options: {
+function handler(options: {
 	fresh?: boolean;
 	adoptedDraft?: boolean;
 	activeSessionId?: string | null;
@@ -16,9 +13,10 @@ function handlers(options: {
 	clearAskAwaiting?: (sessionId: string | null) => void;
 	evictTerminalSessionMemory?: (sessionId: string) => void;
 	clearStepBlockIds?: (sessionId: string | null) => void;
+	updateSessionTitle?: (sessionId: string, title: string) => void;
 	scheduleLoadSessions?: () => void;
 }) {
-	return createChatSessionEventHandlers({
+	return createChatSessionEventHandler({
 		getActiveSessionId: () => options.activeSessionId ?? null,
 		isFreshSessionIntent: () => options.fresh ?? false,
 		adoptDraftMessages: () => options.adoptedDraft ?? false,
@@ -28,13 +26,13 @@ function handlers(options: {
 		evictTerminalSessionMemory: options.evictTerminalSessionMemory ?? vi.fn(),
 		clearStepBlockIds: options.clearStepBlockIds ?? vi.fn(),
 		flushChunksNow: options.flushChunksNow ?? vi.fn(),
-		updateSessionTitle: vi.fn(),
+		updateSessionTitle: options.updateSessionTitle ?? vi.fn(),
 		scheduleLoadSessions: options.scheduleLoadSessions ?? vi.fn(),
 	});
 }
 
-describe('chat session lifecycle handlers', () => {
-	it.each(['paused'] as const)('stops live bubbles when a session is %s', (status) => {
+describe('chat session lifecycle handler', () => {
+	it('stops live bubbles when a session is paused without clearing its pending ask', () => {
 		const flushChunksNow = vi.fn();
 		const clearAskAwaiting = vi.fn();
 		const reducer = new SessionReducer({
@@ -52,7 +50,7 @@ describe('chat session lifecycle handlers', () => {
 				],
 			},
 		});
-		const eventHandlers = handlers({
+		const onLifecycle = handler({
 			activeSessionId: 'ses-paused',
 			flushChunksNow,
 			clearAskAwaiting,
@@ -60,8 +58,15 @@ describe('chat session lifecycle handlers', () => {
 		});
 		setToolOutputPreview('step-shell', 'partial', 'ses-paused');
 
-		eventHandlers['session:updated']({
-			payload: { sessionId: 'ses-paused', status, title: null, reason: null },
+		onLifecycle({
+			payload: {
+				type: 'updated',
+				sessionId: 'ses-paused',
+				status: 'paused',
+				waitingReason: 'ask',
+				title: 'Question',
+				reason: null,
+			},
 		} as never);
 
 		expect(flushChunksNow).toHaveBeenCalledOnce();
@@ -81,14 +86,20 @@ describe('chat session lifecycle handlers', () => {
 
 	it('selects a fresh session when it adopts the pending draft', () => {
 		const dispatchSession = vi.fn();
-		const eventHandlers = handlers({
+		const onLifecycle = handler({
 			fresh: true,
 			adoptedDraft: true,
 			dispatchSession,
 		});
 
-		eventHandlers['session:created']({
-			payload: { sessionId: 'ses-fast', status: 'pending', title: null, reason: null },
+		onLifecycle({
+			payload: {
+				type: 'created',
+				sessionId: 'ses-fast',
+				status: 'pending',
+				waitingReason: null,
+				title: null,
+			},
 		} as never);
 
 		expect(dispatchSession).toHaveBeenCalledWith({
@@ -101,365 +112,194 @@ describe('chat session lifecycle handlers', () => {
 		});
 	});
 
-	it('does not select an unrelated session while a fresh draft is pending', () => {
-		const dispatchSession = vi.fn();
-		const eventHandlers = handlers({ fresh: true, adoptedDraft: false, dispatchSession });
-
-		eventHandlers['session:created']({
-			payload: { sessionId: 'ses-background', status: 'pending', title: null, reason: null },
-		} as never);
-
-		expect(dispatchSession).toHaveBeenCalledWith({
-			type: 'session/created',
-			sessionId: 'ses-background',
-			freshStart: true,
-			adoptedDraft: false,
-			status: 'pending',
-			title: null,
-		});
-	});
-
-	it('passes the failure reason to the active-session error handler', () => {
-		const reducer = new SessionReducer();
-		const dispatchSession = vi.fn((action: import('./sessionReducer.ts').SessionAction) =>
-			reducer.dispatch(action),
-		);
-		const eventHandlers = handlers({ activeSessionId: 'ses-error', dispatchSession });
-
-		eventHandlers['session:error']({
-			payload: { sessionId: 'ses-error', error: '网络请求超时' },
-		} as never);
-
-		expect(dispatchSession).toHaveBeenCalledWith({
-			type: 'session/error-shown',
-			sessionId: 'ses-error',
-			reason: '网络请求超时',
-		});
-		expect(reducer.getSessionErrorReason('ses-error')).toBe('网络请求超时');
-	});
-
-	it('shows the reason for a normally completed active session', () => {
+	it('projects a completion and performs terminal cleanup once from the same event', () => {
+		const sessionId = 'ses-done';
+		const flushChunksNow = vi.fn();
+		const clearAskAwaiting = vi.fn();
+		const evictTerminalSessionMemory = vi.fn();
+		const clearStepBlockIds = vi.fn();
+		const scheduleLoadSessions = vi.fn();
 		const reducer = new SessionReducer({
 			...initialSessionState,
-			sessions: [{ id: 'ses-done', status: 'running', title: '研究' }],
-			activeSessionId: 'ses-done',
+			sessions: [{ id: sessionId, status: 'running', title: '旧标题' }],
+			activeSessionId: sessionId,
+			messages: {
+				[sessionId]: [
+					{ id: 'step-live', role: 'assistant', content: '最后一段', streaming: true },
+				],
+			},
 		});
-		const eventHandlers = handlers({
-			activeSessionId: 'ses-done',
+		const onLifecycle = handler({
+			activeSessionId: sessionId,
+			flushChunksNow,
+			clearAskAwaiting,
+			evictTerminalSessionMemory,
+			clearStepBlockIds,
+			scheduleLoadSessions,
 			dispatchSession: (action) => reducer.dispatch(action),
 		});
+		setToolOutputPreview('step-live', 'partial', sessionId);
 
-		eventHandlers['session:completed']({
+		onLifecycle({
 			payload: {
-				sessionId: 'ses-done',
-				status: 'completed',
+				type: 'completed',
+				sessionId,
 				title: '研究',
 				reason: '用户主动结束会话',
 			},
 		} as never);
 
+		expect(reducer.getState().sessions[0]).toMatchObject({
+			id: sessionId,
+			status: 'completed',
+			title: '研究',
+		});
 		expect(reducer.getState().termination).toEqual({
-			sessionId: 'ses-done',
+			sessionId,
 			status: 'completed',
 			reason: '用户主动结束会话',
 		});
+		expect(reducer.getMessages(sessionId)[0].streaming).toBe(false);
+		expect(flushChunksNow).toHaveBeenCalledOnce();
+		expect(clearAskAwaiting).toHaveBeenCalledOnce();
+		expect(evictTerminalSessionMemory).toHaveBeenCalledOnce();
+		expect(clearStepBlockIds).toHaveBeenCalledOnce();
+		expect(scheduleLoadSessions).toHaveBeenCalledOnce();
+		expect(get(getToolOutputPreviewStore('step-live'))).toBeUndefined();
 	});
 
-	it('shows the reason for an explicitly interrupted active session', () => {
+	it('projects an error and updates terminal status, error details, and cleanup together', () => {
+		const sessionId = 'ses-error';
+		const clearAskAwaiting = vi.fn();
+		const evictTerminalSessionMemory = vi.fn();
+		const flushChunksNow = vi.fn();
 		const reducer = new SessionReducer({
 			...initialSessionState,
-			sessions: [{ id: 'ses-paused', status: 'running', title: '研究' }],
-			activeSessionId: 'ses-paused',
+			sessions: [{ id: sessionId, status: 'running', title: '旧标题' }],
+			activeSessionId: sessionId,
 		});
-		const eventHandlers = handlers({
-			activeSessionId: 'ses-paused',
+		const onLifecycle = handler({
+			activeSessionId: sessionId,
+			clearAskAwaiting,
+			flushChunksNow,
+			evictTerminalSessionMemory,
 			dispatchSession: (action) => reducer.dispatch(action),
 		});
 
-		eventHandlers['session:updated']({
+		onLifecycle({
 			payload: {
-				sessionId: 'ses-paused',
-				status: 'paused',
-				title: null,
-				reason: '用户主动打断输出',
+				type: 'error',
+				sessionId,
+				title: '构建',
+				error: '网络请求超时',
 			},
 		} as never);
 
-		expect(reducer.getState().termination).toEqual({
-			sessionId: 'ses-paused',
-			status: 'paused',
-			reason: '用户主动打断输出',
+		expect(reducer.getState().sessions[0]).toMatchObject({
+			status: 'error',
+			title: '构建',
 		});
+		expect(reducer.getSessionErrorReason(sessionId)).toBe('网络请求超时');
+		expect(clearAskAwaiting).toHaveBeenCalledOnce();
+		expect(flushChunksNow).toHaveBeenCalledOnce();
+		expect(evictTerminalSessionMemory).toHaveBeenCalledOnce();
 	});
 
-	it.each(['completed', 'error'] as const)(
-		'keeps the terminal UI projection when the primary %s event is followed by session:updated',
-		(status) => {
-			const sessionId = `ses-terminal-${status}`;
-			const stepId = `step-terminal-${status}`;
-			const reason = status === 'completed' ? '用户主动结束会话' : '网络请求超时';
-			const reducer = new SessionReducer({
-				...initialSessionState,
-				sessions: [{ id: sessionId, status: 'running', title: '研究' }],
-				activeSessionId: sessionId,
-				messages: {
-					[sessionId]: [
-						{ id: stepId, role: 'assistant', content: '最后一段', streaming: true },
-					],
-				},
-			});
-			const clearAskAwaiting = vi.fn();
-			const evictTerminalSessionMemory = vi.fn();
-			const clearStepBlockIds = vi.fn();
-			const scheduleLoadSessions = vi.fn();
-			const flushChunksNow = vi.fn();
-			const notifications = vi.fn();
-			const eventHandlers = handlers({
-				activeSessionId: sessionId,
-				flushChunksNow,
-				clearAskAwaiting,
-				evictTerminalSessionMemory,
-				clearStepBlockIds,
-				scheduleLoadSessions,
-				dispatchSession: (action) => reducer.dispatch(action),
-			});
-			reducer.subscribe(notifications);
-			setToolOutputPreview(stepId, '工具输出', sessionId);
+	it('refreshes inactive terminal sessions after clearing their queued output', () => {
+		const cleanupOrder: string[] = [];
+		const onLifecycle = handler({
+			activeSessionId: 'ses-active',
+			flushChunksNow: () => cleanupOrder.push('flush'),
+			evictTerminalSessionMemory: () => cleanupOrder.push('evict'),
+			dispatchSession: vi.fn(),
+		});
+		setToolOutputPreview('step-background', '后台命令输出', 'ses-background');
 
-			if (status === 'completed') {
-				eventHandlers['session:completed']({
-					payload: {
-						sessionId,
-						status,
-						title: '研究',
-						reason,
-						occurrenceId: 'occ-paired',
-					},
-				} as never);
-			} else {
-				eventHandlers['session:error']({
-					payload: { sessionId, error: reason, occurrenceId: 'occ-paired' },
-				} as never);
-			}
-			const notificationsAfterPrimary = notifications.mock.calls.length;
-			eventHandlers['session:updated']({
-				payload: { sessionId, status, title: '研究', reason, occurrenceId: 'occ-paired' },
-			} as never);
+		onLifecycle({
+			payload: {
+				type: 'error',
+				sessionId: 'ses-background',
+				title: '后台会话',
+				error: '请求失败',
+			},
+		} as never);
 
-			expect(flushChunksNow).toHaveBeenCalledOnce();
-			expect(clearAskAwaiting).toHaveBeenCalledOnce();
-			expect(evictTerminalSessionMemory).toHaveBeenCalledOnce();
-			expect(clearStepBlockIds).toHaveBeenCalledOnce();
-			expect(scheduleLoadSessions).toHaveBeenCalledOnce();
-			expect(notifications).toHaveBeenCalledTimes(notificationsAfterPrimary);
-			expect(reducer.getState().sessions[0].status).toBe(status);
-			expect(reducer.getState().termination).toEqual({ sessionId, status, reason });
-			expect(reducer.getMessages(sessionId)[0].streaming).toBe(false);
-			expect(get(getToolOutputPreviewStore(stepId))).toBeUndefined();
-			expect(reducer.getState().error).toEqual(
-				status === 'error' ? { sessionId, reason } : null,
-			);
-		},
-	);
+		expect(cleanupOrder).toEqual(['flush', 'evict']);
+		expect(get(getToolOutputPreviewStore('step-background'))).toBeUndefined();
+	});
 
-	it.each(['completed', 'error'] as const)(
-		'clears tool previews for an inactive session on the primary terminal event',
-		(status) => {
-			const sessionId = `ses-background-terminal-${status}`;
-			const stepId = `step-background-terminal-${status}`;
-			const reducer = new SessionReducer({
-				...initialSessionState,
-				sessions: [
-					{ id: sessionId, status: 'running', title: '后台会话' },
-					{ id: 'ses-active', status: 'running', title: '当前会话' },
-				],
-				activeSessionId: 'ses-active',
-			});
-			const cleanupOrder: string[] = [];
-			const eventHandlers = handlers({
-				activeSessionId: 'ses-active',
-				flushChunksNow: () => cleanupOrder.push('flush'),
-				evictTerminalSessionMemory: () => cleanupOrder.push('evict'),
-				dispatchSession: (action) => reducer.dispatch(action),
-			});
-			setToolOutputPreview(stepId, '后台命令输出', sessionId);
+	it('clears the resumed ask indicator on a pending update', () => {
+		const clearAskAwaiting = vi.fn();
+		const onLifecycle = handler({
+			activeSessionId: 'ses-active',
+			clearAskAwaiting,
+			dispatchSession: vi.fn(),
+		});
 
-			if (status === 'completed') {
-				eventHandlers['session:completed']({
-					payload: {
-						sessionId,
-						status,
-						title: '后台会话',
-						reason: '已完成',
-						occurrenceId: 'occ-background-terminal',
-					},
-				} as never);
-			} else {
-				eventHandlers['session:error']({
-					payload: {
-						sessionId,
-						error: '请求失败',
-						occurrenceId: 'occ-background-terminal',
-					},
-				} as never);
-			}
-			eventHandlers['session:updated']({
-				payload: {
-					sessionId,
-					status,
-					title: '后台会话',
-					reason: status === 'completed' ? '已完成' : '请求失败',
-					occurrenceId: 'occ-background-terminal',
-				},
-			} as never);
+		onLifecycle({
+			payload: {
+				type: 'updated',
+				sessionId: 'ses-active',
+				status: 'pending',
+				waitingReason: null,
+				title: '研究',
+				reason: null,
+			},
+		} as never);
 
-			expect(cleanupOrder).toEqual(['flush', 'evict']);
-			expect(get(getToolOutputPreviewStore(stepId))).toBeUndefined();
-		},
-	);
+		expect(clearAskAwaiting).toHaveBeenCalledOnce();
+		expect(clearAskAwaiting).toHaveBeenCalledWith('ses-active');
+	});
 
-	it.each(['completed', 'error'] as const)(
-		'lets a standalone session:updated %s event clean up live messages',
-		(status) => {
-			const sessionId = `ses-standalone-${status}`;
-			const reducer = new SessionReducer({
-				...initialSessionState,
-				sessions: [{ id: sessionId, status: 'running' }],
-				activeSessionId: sessionId,
-				messages: {
-					[sessionId]: [
-						{ id: 'step-live', role: 'assistant', content: '处理中', streaming: true },
-					],
-				},
-			});
-			const eventHandlers = handlers({
-				activeSessionId: sessionId,
-				dispatchSession: (action) => reducer.dispatch(action),
-			});
+	it('updates a session title and refreshes the history list', () => {
+		const updateSessionTitle = vi.fn();
+		const scheduleLoadSessions = vi.fn();
+		const onLifecycle = handler({
+			updateSessionTitle,
+			scheduleLoadSessions,
+			dispatchSession: vi.fn(),
+		});
 
-			eventHandlers['session:updated']({
-				payload: {
-					sessionId,
-					status,
-					title: null,
-					reason: '状态切换的解释',
-				},
-			} as never);
+		onLifecycle({
+			payload: { type: 'title_updated', sessionId: 'ses-title', title: '新标题' },
+		} as never);
 
-			expect(reducer.getState().sessions[0].status).toBe(status);
-			expect(reducer.getMessages(sessionId)[0].streaming).toBe(false);
-		},
-	);
+		expect(updateSessionTitle).toHaveBeenCalledOnce();
+		expect(updateSessionTitle).toHaveBeenCalledWith('ses-title', '新标题');
+		expect(scheduleLoadSessions).toHaveBeenCalledOnce();
+	});
 
-	it.each(['completed', 'error'] as const)(
-		'clears asks for the active session on a standalone terminal session:updated %s event',
-		(status) => {
-			const clearAskAwaiting = vi.fn();
-			const eventHandlers = handlers({
-				activeSessionId: 'ses-active-terminal',
-				clearAskAwaiting,
-				dispatchSession: vi.fn(),
-			});
+	it('clears the deleted session projection from the same lifecycle event', () => {
+		const sessionId = 'ses-deleted';
+		const flushChunksNow = vi.fn();
+		const clearAskAwaiting = vi.fn();
+		const clearStepBlockIds = vi.fn();
+		const scheduleLoadSessions = vi.fn();
+		const reducer = new SessionReducer({
+			...initialSessionState,
+			sessions: [{ id: sessionId, status: 'paused', title: '删除目标' }],
+			activeSessionId: sessionId,
+			messages: { [sessionId]: [{ id: 'msg-1', role: 'user', content: '问题' }] },
+		});
+		const onLifecycle = handler({
+			activeSessionId: sessionId,
+			flushChunksNow,
+			clearAskAwaiting,
+			clearStepBlockIds,
+			scheduleLoadSessions,
+			dispatchSession: (action) => reducer.dispatch(action),
+		});
+		setToolOutputPreview('step-deleted', 'partial', sessionId);
 
-			eventHandlers['session:updated']({
-				payload: {
-					sessionId: 'ses-background-terminal',
-					status,
-					title: null,
-					reason: '终态副事件',
-				},
-			} as never);
-			eventHandlers['session:updated']({
-				payload: {
-					sessionId: 'ses-active-terminal',
-					status,
-					title: null,
-					reason: '终态副事件',
-				},
-			} as never);
+		onLifecycle({ payload: { type: 'deleted', sessionId } } as never);
 
-			expect(clearAskAwaiting).toHaveBeenCalledOnce();
-			expect(clearAskAwaiting).toHaveBeenCalledWith('ses-active-terminal');
-		},
-	);
-
-	it.each(['completed', 'error'] as const)(
-		'runs paired %s cleanup once when session:updated arrives first',
-		(status) => {
-			const sessionId = `ses-reordered-${status}`;
-			const reason = status === 'completed' ? '已结束' : '请求失败';
-			const reducer = new SessionReducer({
-				...initialSessionState,
-				sessions: [{ id: sessionId, status: 'running' }],
-				activeSessionId: sessionId,
-				messages: {
-					[sessionId]: [
-						{
-							id: 'step-reordered',
-							role: 'assistant',
-							content: '处理中',
-							streaming: true,
-						},
-					],
-				},
-			});
-			const clearAskAwaiting = vi.fn();
-			const evictTerminalSessionMemory = vi.fn();
-			const clearStepBlockIds = vi.fn();
-			const scheduleLoadSessions = vi.fn();
-			const flushChunksNow = vi.fn();
-			const notifications = vi.fn();
-			const eventHandlers = handlers({
-				activeSessionId: sessionId,
-				clearAskAwaiting,
-				evictTerminalSessionMemory,
-				clearStepBlockIds,
-				scheduleLoadSessions,
-				flushChunksNow,
-				dispatchSession: (action) => reducer.dispatch(action),
-			});
-			reducer.subscribe(notifications);
-
-			eventHandlers['session:updated']({
-				payload: {
-					sessionId,
-					status,
-					title: null,
-					reason,
-					waitingReason: null,
-					occurrenceId: 'occ-reordered',
-				},
-			} as never);
-			const notificationsAfterSecondary = notifications.mock.calls.length;
-			if (status === 'completed') {
-				eventHandlers['session:completed']({
-					payload: {
-						sessionId,
-						status,
-						title: null,
-						reason,
-						occurrenceId: 'occ-reordered',
-					},
-				} as never);
-			} else {
-				eventHandlers['session:error']({
-					payload: { sessionId, error: reason, occurrenceId: 'occ-reordered' },
-				} as never);
-			}
-
-			expect(flushChunksNow).toHaveBeenCalledOnce();
-			expect(evictTerminalSessionMemory).toHaveBeenCalledOnce();
-			expect(clearStepBlockIds).toHaveBeenCalledOnce();
-			expect(scheduleLoadSessions).toHaveBeenCalledOnce();
-			expect(clearAskAwaiting).toHaveBeenCalledOnce();
-			if (status === 'completed') {
-				expect(notifications).toHaveBeenCalledTimes(notificationsAfterSecondary);
-			} else {
-				// The primary adds its distinct per-session error-reason projection.
-				expect(notifications).toHaveBeenCalledTimes(notificationsAfterSecondary + 1);
-			}
-			expect(reducer.getMessages(sessionId)[0].streaming).toBe(false);
-			expect(reducer.getState().termination).toEqual({ sessionId, status, reason });
-		},
-	);
+		expect(reducer.getState().sessions).toEqual([]);
+		expect(reducer.getState().activeSessionId).toBeNull();
+		expect(reducer.getMessages(sessionId)).toEqual([]);
+		expect(flushChunksNow).toHaveBeenCalledOnce();
+		expect(clearAskAwaiting).toHaveBeenCalledWith(sessionId);
+		expect(clearStepBlockIds).toHaveBeenCalledWith(sessionId);
+		expect(scheduleLoadSessions).toHaveBeenCalledOnce();
+		expect(get(getToolOutputPreviewStore('step-deleted'))).toBeUndefined();
+	});
 });

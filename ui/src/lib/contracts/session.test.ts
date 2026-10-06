@@ -2,174 +2,143 @@ import { describe, expect, it } from 'vitest';
 import { mapSessionEvent } from './session.ts';
 
 describe('mapSessionEvent', () => {
-	it('converts lifecycle fields at the frontend boundary', () => {
-		const event = mapSessionEvent({
-			event: 'session:updated',
-			id: 7,
-			payload: {
-				session_id: 'ses-1',
+	it('maps every lifecycle variant through the single event channel', () => {
+		const values = [
+			{
+				type: 'created',
+				session_id: 'ses-created',
+				status: 'pending',
+				title: null,
+			},
+			{
+				type: 'updated',
+				session_id: 'ses-updated',
 				status: 'paused',
 				waiting_reason: 'ask',
+				title: 'A title',
+				reason: 'Waiting for input',
+			},
+			{
+				type: 'completed',
+				session_id: 'ses-completed',
+				title: 'Finished',
+				reason: 'User ended the session',
+			},
+			{
+				type: 'error',
+				session_id: 'ses-error',
+				title: 'Failed',
+				error: 'Sanitized failure',
+			},
+			{ type: 'title_updated', session_id: 'ses-title', title: 'New title' },
+			{ type: 'deleted', session_id: null },
+		];
+
+		const mapped = values.map((payload, id) =>
+			mapSessionEvent({ event: 'session:lifecycle', id, payload }),
+		);
+
+		expect(mapped.map((event) => event?.payload)).toEqual([
+			{
+				type: 'created',
+				sessionId: 'ses-created',
+				status: 'pending',
+				waitingReason: null,
+				title: null,
+			},
+			{
+				type: 'updated',
+				sessionId: 'ses-updated',
+				status: 'paused',
+				waitingReason: 'ask',
+				title: 'A title',
+				reason: 'Waiting for input',
+			},
+			{
+				type: 'completed',
+				sessionId: 'ses-completed',
+				title: 'Finished',
+				reason: 'User ended the session',
+			},
+			{
+				type: 'error',
+				sessionId: 'ses-error',
+				title: 'Failed',
+				error: 'Sanitized failure',
+			},
+			{ type: 'title_updated', sessionId: 'ses-title', title: 'New title' },
+			{ type: 'deleted', sessionId: null },
+		]);
+	});
+
+	it('rejects an old channel even when the payload is otherwise valid', () => {
+		expect(
+			mapSessionEvent({
+				event: 'session:updated',
+				id: 1,
+				payload: { type: 'updated', session_id: 'ses-1', status: 'running', title: '' },
+			}),
+		).toBeNull();
+	});
+
+	it('rejects terminal states disguised as ordinary status updates', () => {
+		for (const status of ['completed', 'error']) {
+			expect(
+				mapSessionEvent({
+					event: 'session:lifecycle',
+					id: 2,
+					payload: { type: 'updated', session_id: 'ses-1', status, title: 'A title' },
+				}),
+			).toBeNull();
+		}
+	});
+
+	it.each([
+		{ type: 'completed', session_id: 'ses-1', title: 'Done' },
+		{ type: 'error', session_id: 'ses-1', title: 'Failed' },
+		{ type: 'updated', session_id: 'ses-1', status: 'running', title: 7 },
+		{ type: 'deleted', session_id: '' },
+	])('rejects malformed lifecycle payloads: %o', (payload) => {
+		expect(mapSessionEvent({ event: 'session:lifecycle', id: 3, payload })).toBeNull();
+	});
+
+	it('rejects unknown variants, statuses, and waiting reasons', () => {
+		for (const payload of [
+			{ type: 'future', session_id: 'ses-1' },
+			{ type: 'updated', session_id: 'ses-1', status: 'future', title: '' },
+			{
+				type: 'updated',
+				session_id: 'ses-1',
+				status: 'paused',
+				waiting_reason: 'future',
+				title: '',
+			},
+		]) {
+			expect(mapSessionEvent({ event: 'session:lifecycle', id: 4, payload })).toBeNull();
+		}
+	});
+
+	it('does not leak unknown wire fields into the UI payload', () => {
+		const event = mapSessionEvent({
+			event: 'session:lifecycle',
+			id: 5,
+			payload: {
+				type: 'updated',
+				session_id: 'ses-1',
+				status: 'paused',
 				title: '',
 				future_field: 'ignored',
 			},
 		});
 
-		expect(event).toEqual({
-			event: 'session:updated',
-			id: 7,
-			payload: {
-				sessionId: 'ses-1',
-				status: 'paused',
-				waitingReason: 'ask',
-				title: '',
-				reason: null,
-			},
-		});
-		expect(event?.payload).not.toHaveProperty('session_id');
-		expect(event?.payload).not.toHaveProperty('future_field');
-	});
-
-	it('preserves the explicit end retry reason from the backend', () => {
-		const event = mapSessionEvent({
-			event: 'session:updated',
-			id: 13,
-			payload: {
-				session_id: 'ses-1',
-				status: 'paused',
-				waiting_reason: 'end_incomplete',
-				title: null,
-			},
-		});
-
 		expect(event?.payload).toEqual({
+			type: 'updated',
 			sessionId: 'ses-1',
 			status: 'paused',
-			waitingReason: 'end_incomplete',
-			title: null,
-			reason: null,
-		});
-	});
-
-	it('normalizes omitted optional fields to null', () => {
-		const event = mapSessionEvent({
-			event: 'session:created',
-			id: 7,
-			payload: { session_id: 'ses-1', status: 'pending', title: null },
-		});
-
-		expect(event?.payload).toEqual({
-			sessionId: 'ses-1',
-			status: 'pending',
 			waitingReason: null,
-			title: null,
+			title: '',
 			reason: null,
 		});
-	});
-
-	it('preserves the global-clear sentinel on session deletion', () => {
-		const event = mapSessionEvent({
-			event: 'session:deleted',
-			id: 8,
-			payload: { session_id: null },
-		});
-
-		expect(event?.payload).toEqual({ sessionId: null });
-	});
-
-	it('maps error and title lifecycle payloads', () => {
-		const error = mapSessionEvent({
-			event: 'session:error',
-			id: 8,
-			payload: { session_id: 'ses-1', error: 'sanitized failure', future_field: true },
-		});
-		const title = mapSessionEvent({
-			event: 'session:title-updated',
-			id: 9,
-			payload: { session_id: 'ses-1', title: 'A title' },
-		});
-
-		expect(error?.payload).toEqual({ sessionId: 'ses-1', error: 'sanitized failure' });
-		expect(title?.payload).toEqual({ sessionId: 'ses-1', title: 'A title' });
-	});
-
-	it('drops unknown event names', () => {
-		const event = mapSessionEvent({
-			event: 'session:future-event',
-			id: 10,
-			payload: { session_id: 'ses-1' },
-		});
-
-		expect(event).toBeNull();
-	});
-
-	it.each([
-		{ status: 'running', title: null },
-		{ session_id: 7, status: 'running', title: null },
-		{ session_id: 'ses-1', status: 'running', title: 7 },
-		{ session_id: 'ses-1', status: 'running', title: null, reason: 7 },
-	])('drops malformed lifecycle payloads: %o', (payload) => {
-		const event = mapSessionEvent({ event: 'session:updated', id: 11, payload });
-
-		expect(event).toBeNull();
-	});
-
-	it('rejects unknown lifecycle statuses', () => {
-		const event = mapSessionEvent({
-			event: 'session:updated',
-			id: 9,
-			payload: { session_id: 'ses-1', status: 'unknown', title: '' },
-		});
-
-		expect(event).toBeNull();
-	});
-
-	it('rejects unknown waiting reasons and accepts omitted values', () => {
-		const event = mapSessionEvent({
-			event: 'session:updated',
-			id: 12,
-			payload: {
-				session_id: 'ses-1',
-				status: 'paused',
-				waiting_reason: 'future_reason',
-				title: null,
-			},
-		});
-
-		expect(event).toBeNull();
-		expect(
-			mapSessionEvent({
-				event: 'session:updated',
-				id: 13,
-				payload: { session_id: 'ses-1', status: 'paused', title: null },
-			})?.payload.waitingReason,
-		).toBeNull();
-		expect(
-			mapSessionEvent({
-				event: 'session:updated',
-				id: 14,
-				payload: {
-					session_id: 'ses-1',
-					status: 'paused',
-					waiting_reason: null,
-					title: null,
-				},
-			}),
-		).toBeNull();
-	});
-
-	it('rejects explicit null for an omitted optional reason field', () => {
-		expect(
-			mapSessionEvent({
-				event: 'session:updated',
-				id: 15,
-				payload: {
-					session_id: 'ses-1',
-					status: 'paused',
-					title: null,
-					reason: null,
-				},
-			}),
-		).toBeNull();
+		expect(event?.payload).not.toHaveProperty('future_field');
 	});
 });

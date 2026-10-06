@@ -3,7 +3,7 @@ use crate::commands::log_err;
 use crate::commands::{SessionListResponse, emit_event_logged};
 use crate::events::{
     INTERACTION_REQUESTED_EVENT, InteractionRequestedEvent, NOTIFICATION_SHOW_EVENT,
-    SESSION_TITLE_UPDATED_EVENT, SessionTitleUpdatedEvent,
+    SESSION_LIFECYCLE_EVENT, SessionLifecycleEvent,
 };
 use crate::logging::sanitize_error_text;
 use haven_agent::InteractionStatus;
@@ -770,9 +770,9 @@ pub async fn update_session_title(
         .await;
     emit_event_logged(
         &app,
-        SESSION_TITLE_UPDATED_EVENT,
-        SessionTitleUpdatedEvent { session_id, title },
-        "session_title_updated",
+        SESSION_LIFECYCLE_EVENT,
+        SessionLifecycleEvent::TitleUpdated { session_id, title },
+        "session_lifecycle_title_updated",
     );
     Ok(())
 }

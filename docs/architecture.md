@@ -646,13 +646,15 @@ session snapshot、通知/错误报告和页面回调，不持有 Svelte state �
 异步注册/释放生命周期；它通过显式 typed dependencies 连接页面 reducer、错误/ask/stream 清理、
 session refresh、hotkey 与 model refresh 回调，不持有 Svelte state 或 DOM。`ui/src/lib/events.ts`
 是共享 listener registration 和领域 mapper 的调用入口，`chat*EventHandlers.ts` 继续负责既有
-事件到页面状态/副作用的适配（ADR 0315）。session lifecycle 的 Rust wire DTO 由
-`crates/app-binary/src/events.rs` 中的 `SessionLifecycleEvent`、`SessionErrorEvent`、
-`SessionTitleUpdatedEvent` 和 `SessionDeletedEvent` 定义；唯一前端转换位于
-`ui/src/lib/contracts/session.ts` 的 `mapSessionEvent`。它把 Rust/Tauri 的 snake_case 字段映射为
-handler/reducer 使用的 camelCase，忽略新增 wire 字段；缺失或类型错误的必需字段会 fail closed
-并由 listener 层记录。可选 `waiting_reason` / `reason` 缺省映射为 `null`；已提供但不属于当前值集的
-status 或等待原因会丢弃该事件（ADR 0380）。Rust DTO、channel、payload 与 reducer 语义不变（ADR 0330）。
+事件到页面状态/副作用的适配（ADR 0315）。所有会话生命周期变化共用
+`session:lifecycle` 和 `crates/app-binary/src/events.rs::SessionLifecycleEvent` 的 tagged union；
+`type` 区分 `created`、非终态 `updated`、`completed`、`error`、`title_updated` 与 `deleted`。
+完成/错误原因与终态状态处于同一 payload，聊天页只在单个终态分支执行一次清理。聊天页、根布局
+和记忆视图分别消费这条事件流；唯一前端转换位于 `ui/src/lib/contracts/session.ts` 的
+`mapSessionEvent`。它把 Rust/Tauri 的 snake_case 字段映射为 handler/reducer 使用的 camelCase，
+忽略新增 wire 字段；缺失或类型错误的必需字段会 fail closed 并由 listener 层记录。普通状态更新
+只接受 pending/running/paused，waiting reason 只用于 paused；终态不再经第二 channel 副发，
+不需要 occurrence identity（ADR 0529）。Rust/App wire DTO 与 reducer 语义不变（ADR 0330）。
 ToolRun board 与 lifecycle event 共用 Rust `events.rs::ToolRunEvent` wire DTO：
 `ui/src/lib/contracts/toolRun.ts::mapToolRunPayload` 是其唯一前端运行时 validator/mapper，
 `toolRunStore.refreshToolRuns` 的 command rows 和 `events.ts` 的 ToolRun lifecycle listeners 都调用它。
@@ -691,11 +693,20 @@ serde 外部标记 enum，MCP status 只接受当前 Rust DTO variants（ADR 038
 中的 interactions 仍由原 session resume normalizer 处理。Agent wire DTO 仍由 Rust `events.rs` 定义；
 `contracts/agent.ts::mapAgentEvent` 是唯一 runtime validator/mapper，删除重复的 TS snake_case wire
 interfaces，忽略未知附加字段；工具 outcome、retry、idempotency 与 operation scope 必须匹配当前值集，动态扩展值仍只在显式字段保留（ADR 0380）。`agentEventListeners` 对 malformed
-payload 记录不含 payload 的 warning 并丢弃；聊天页与布局订阅互不重叠，共用同一 session reducer，通知、
-usage fallback 与 media plan 双副作用保持原 owner（ADR 0347）。SessionCompleted/SessionError
-仍经 primary channel 与 `session:updated` secondary fan-out；同一终态 occurrence 现携带共享 `occurrence_id`，
-聊天页只对精确配对的 secondary 跳过重复 cleanup，独立终态 `session:updated` 仍执行清理；相同 reducer
-状态投影不再广播新引用（ADR 0349、0386）。ReAct Fatal 经项目 dispatcher 运行时只由 SessionSupervisor 发布终态错误；dispatcher 专用入口过滤 ReAct 的重复 `AgentEvent::SessionError`，bootstrap 将 typed `SessionEvent::SessionError` 重新排入同一 `BufferedEmitter`，由 `TauriEmitter` 投影并保留与已排队 Agent events 的顺序、occurrence identity、标题缓存和桌面通知。直接 `run_session_from_id` 保留原 Agent event 语义（ADR 0511）。session、ToolRun、recording、settings read、app event 与 agent event contract 已完成对应 mapper/validator 或边界审计（ADR 0330、0335、0340、0341、0346、0347、0348、0350、0376）；live interaction event 与 resume snake_case DTO 保持各自 mapper。命令 request/response 的静态 TypeScript contract 由 Rust handler/Serde DTO 生成至 `generatedCommands.ts`，不在多份手写定义间同步字段（ADR 0394）；生成类型不替代运行时校验，event mappers 与动态扩展 payload 仍按各 domain 手工维护。Settings update payload 仍由 SettingsView 的单一 builder 构造。ToolRun board 的活跃
+payload 记录不含 payload 的 warning 并丢弃；聊天页与布局分别拥有各自的 UI 副作用订阅，共用同一
+session reducer，通知、usage fallback 与 media plan 双副作用保持原 owner（ADR 0347）。`SessionCompleted` /
+`SessionError` 经 `TauriEmitter` 各只投影为一个 `session:lifecycle` terminal variant；`occurrence_id` 和
+配对副发已删除。ReAct Fatal 经项目 dispatcher 运行时仍只由 SessionSupervisor 发布终态错误；dispatcher
+专用入口过滤 ReAct 的重复 `AgentEvent::SessionError`，bootstrap 将 typed `SessionEvent::SessionError`
+重新排入同一 `BufferedEmitter`，由 `TauriEmitter` 按队列顺序投影，并保留标题缓存和桌面通知（ADR 0511、0529）。
+Memory command 的 repository `Fact` 仅在 App command mapper 内映射到 `MemoryFactResponse`；该 DTO 与
+`MemoryFactSourceRef` 是 renderer 的 Rust wire authority，字段由生成的 `generatedCommands.ts` 导出，
+UI 使用生成类型别名（ADR 0357、0529）。session、ToolRun、recording、settings read、app event 与
+agent event contract 已完成对应 mapper/validator 或边界审计（ADR 0330、0335、0340、0341、0346、0347、
+0348、0350、0376）；live interaction event 与 resume snake_case DTO 保持各自 mapper。命令 request/response
+的静态 TypeScript contract 由 Rust handler/Serde DTO 生成至 `generatedCommands.ts`，不在多份手写定义间
+同步字段（ADR 0394）；生成类型不替代运行时校验，event mappers 与动态扩展 payload 仍按各 domain 手工维护。
+Settings update payload 仍由 SettingsView 的单一 builder 构造。ToolRun board 的活跃
 `list_tool_runs`/`cancel_tool_run` 经 `toolRunCommands.ts`；list response 复用 `mapToolRunPayload`，cancel
 request/result 使用命名 TS contract，`toolRunStore` 不直接 invoke（ADR 0348）。命令静态 request/response
 统一使用 Rust 生成 contract；每个领域仍负责运行时校验、直接调用编排和安全审计。事件尚无全局 codegen，

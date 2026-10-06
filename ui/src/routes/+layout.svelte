@@ -955,109 +955,99 @@
 						addNotification(`热键冲突: ${data.binding} - ${data.error}`, 'error', 5000);
 					},
 				}),
-				...sessionEventListeners({
-					'session:created': (event) => {
-						const data = event.payload;
-						const title = data.title || data.sessionId;
-						if (notifyCfg?.session_created?.in_app !== false) {
-							addNotification(`新会话: ${title}`, 'info', 4000);
-						}
-						lastSessionStatus.set(data.sessionId, data.status);
-						addBusySession(data.sessionId);
-						updateReactExecutionPhase(
-							data.sessionId,
-							data.status === 'running' ? 'requesting' : 'queued',
-						);
-					},
-					'session:completed': (event) => {
-						const data = event.payload;
-						const title = data.title || data.sessionId;
-						const reason = data.reason?.trim();
-						if (notifyCfg?.session_completed?.in_app !== false) {
-							addNotification(
-								reason
-									? `会话已完成: ${title}（${reason}）`
-									: `会话已完成: ${title}`,
-								'success',
+				...sessionEventListeners((event) => {
+					const data = event.payload;
+					switch (data.type) {
+						case 'created': {
+							const title = data.title || data.sessionId;
+							if (notifyCfg?.session_created?.in_app !== false) {
+								addNotification(`新会话: ${title}`, 'info', 4000);
+							}
+							lastSessionStatus.set(data.sessionId, data.status);
+							addBusySession(data.sessionId);
+							updateReactExecutionPhase(
+								data.sessionId,
+								data.status === 'running' ? 'requesting' : 'queued',
 							);
+							return;
 						}
-						updateReactExecutionPhase(data.sessionId, 'idle');
-					},
-					'session:deleted': (event) => {
-						// delete_session / clear_history remove sessions without any terminal
-						// `session:updated` (the session no longer exists), so release their
-						// ids from the busy set here — otherwise the chip would stay on
-						// "等待响应" for a session that is gone. `sessionId: null` means all
-						// sessions were removed (clear_history).
-						const data = event.payload;
-						if (data.sessionId) {
-							lastSessionStatus.delete(data.sessionId);
+						case 'updated': {
+							const { sessionId, status } = data;
+							const title = data.title || sessionId;
+							const previousStatus = lastSessionStatus.get(sessionId);
+							if (isBusyStatus(status)) addBusySession(sessionId);
+							if (isPausedStatus(status)) {
+								removeBusySession(sessionId);
+								if (
+									data.waitingReason !== 'confirmation' &&
+									data.waitingReason !== 'scheduled_confirmation' &&
+									data.waitingReason !== 'end_incomplete' &&
+									notifyCfg?.session_paused?.in_app !== false
+								) {
+									addNotification(`会话已暂停: ${title}`, 'warning', 3000);
+								}
+								updateReactExecutionPhase(sessionId, 'idle');
+							}
+							if (status === 'pending') {
+								// Only paused/error → pending is a real resume; Running→Pending
+								// (ask answered in-turn) must not toast.
+								if (
+									(isPausedStatus(previousStatus) ||
+										previousStatus === 'error') &&
+									notifyCfg?.session_resumed?.in_app !== false
+								) {
+									addNotification(`会话已恢复: ${title}`, 'info', 3000);
+								}
+								updateReactExecutionPhase(sessionId, 'queued');
+							}
+							if (status === 'running' && previousStatus !== 'running') {
+								updateReactExecutionPhase(sessionId, 'requesting');
+							}
+							lastSessionStatus.set(sessionId, status);
+							return;
+						}
+						case 'completed': {
+							const title = data.title || data.sessionId;
+							const reason = data.reason?.trim();
+							if (notifyCfg?.session_completed?.in_app !== false) {
+								addNotification(
+									reason
+										? `会话已完成: ${title}（${reason}）`
+										: `会话已完成: ${title}`,
+									'success',
+								);
+							}
+							lastSessionStatus.set(data.sessionId, 'completed');
 							removeBusySession(data.sessionId);
-							if (get(reactExecutionPhaseStore).sessionId === data.sessionId) {
-								updateReactExecutionPhase(data.sessionId, 'idle');
+							updateReactExecutionPhase(data.sessionId, 'idle');
+							return;
+						}
+						case 'error': {
+							const message = data.error || data.title || data.sessionId;
+							if (notifyCfg?.session_error?.in_app !== false) {
+								addNotification(`会话出错: ${message}`, 'error', 5000);
 							}
-						} else {
-							lastSessionStatus.clear();
-							clearBusySessions();
-							updateReactExecutionPhase(null, 'idle');
+							lastSessionStatus.set(data.sessionId, 'error');
+							removeBusySession(data.sessionId);
+							updateReactExecutionPhase(data.sessionId, 'idle');
+							return;
 						}
-					},
-					'session:error': (event) => {
-						const data = event.payload;
-						const errMsg = data.error || data.sessionId;
-						if (notifyCfg?.session_error?.in_app !== false) {
-							addNotification(`会话出错: ${errMsg}`, 'error', 5000);
-						}
-						updateReactExecutionPhase(data.sessionId, 'idle');
-					},
-					'session:updated': (event) => {
-						const data = event.payload;
-						const title = data.title || data.sessionId;
-						const tid = data.sessionId;
-						const prev = tid ? lastSessionStatus.get(tid) : undefined;
-						if (isBusyStatus(data.status)) {
-							// pending = queued; running = claimed (handler now emits
-							// running on claim). Both keep the session in the busy set.
-							addBusySession(tid);
-						}
-		if (isPausedStatus(data.status)) {
-			removeBusySession(tid);
-			if (
-				data.waitingReason !== 'confirmation' &&
-				data.waitingReason !== 'scheduled_confirmation' &&
-				data.waitingReason !== 'end_incomplete' &&
-				notifyCfg?.session_paused?.in_app !== false
-			) {
-				addNotification(`会话已暂停: ${title || '未知'}`, 'warning', 3000);
-			}
-							updateReactExecutionPhase(tid, 'idle');
-						}
-						if (data.status === 'pending') {
-							// Only paused/error → pending is a real resume; Running→Pending
-							// (ask answered in-turn) must not toast.
-							if (
-								(isPausedStatus(prev) || prev === 'error') &&
-								notifyCfg?.session_resumed?.in_app !== false
-							) {
-								addNotification(`会话已恢复: ${title || '未知'}`, 'info', 3000);
+						case 'deleted':
+							if (data.sessionId) {
+								lastSessionStatus.delete(data.sessionId);
+								removeBusySession(data.sessionId);
+								if (get(reactExecutionPhaseStore).sessionId === data.sessionId) {
+									updateReactExecutionPhase(data.sessionId, 'idle');
+								}
+							} else {
+								lastSessionStatus.clear();
+								clearBusySessions();
+								updateReactExecutionPhase(null, 'idle');
 							}
-							updateReactExecutionPhase(tid, 'queued');
-						}
-						if (data.status === 'running' && prev !== 'running') {
-							updateReactExecutionPhase(tid, 'requesting');
-						}
-						if (data.status === 'completed') {
-							removeBusySession(tid);
-							updateReactExecutionPhase(tid, 'idle');
-						}
-						if (data.status === 'error') {
-							removeBusySession(tid);
-							updateReactExecutionPhase(tid, 'idle');
-						}
-						if (tid && data.status) {
-							lastSessionStatus.set(tid, data.status);
-						}
-					},
+							return;
+						case 'title_updated':
+							return;
+					}
 				}),
 				...appEventListeners({
 					'mcp:status_change': (event) => {

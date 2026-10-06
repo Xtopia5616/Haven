@@ -1,5 +1,7 @@
 # ADR 0386: Shared occurrence identity for session terminal fan-out
 
+- Historical implementation superseded by [ADR 0529](0529-single-session-lifecycle-event-and-memory-response-dto.md), which removes terminal fan-out and `occurrence_id` entirely.
+
 - Status: accepted (2026-09-28)
 - Scope: `SessionCompleted` / `SessionError` Tauri payloads, paired `session:updated` projections, and chat terminal cleanup
 - Related: [ADR 0349](0349-session-terminal-cleanup-audit.md), [ADR 0347](0347-agent-event-contract-validation-boundary.md)

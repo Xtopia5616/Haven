@@ -20,6 +20,8 @@ export interface StepInfo { id: string; step_number: number; tool_name: string; 
 export type ProcessResult = { 'SessionCreated': { session_id: string; message_id?: string | null } } | { 'Supplemented': { message_id?: string | null } };
 export interface SessionListResponse { sessions: SessionInfo[] }
 export interface McpToolCallResponse { success: boolean; output: unknown; error: string | null }
+export interface MemoryFactResponse { id: string; subject: string; predicate: string; object: string; source: string; confidence: number; tags: string[]; created_at: string; mention_count: number; last_seen_at: string | null; source_ref: MemoryFactSourceRef | null; durability: number }
+export interface MemoryFactSourceRef { message_id: string; snippet: string }
 export interface MemoryRecallItem { entity_id: string; text: string; score: number; model: string }
 export interface SkillExecutionResponse { success: boolean; output: unknown; error: string | null }
 export interface ToolListResponse { tools: ToolManifest[] }
@@ -36,6 +38,9 @@ export interface SessionResumeResponse { session: SessionRecordDto; messages: Me
 export interface SessionPermissionGrant { session_id: string; session_title: string | null; capability: string; target: string; effect: string }
 export interface ShellAvailability { available: boolean }
 export interface InteractionRequestedEvent { id: string; session_id?: string; owner: InteractionOwner; kind: InteractionKind; status: InteractionStatus; options?: string[]; tool_name?: string; risk_level?: RiskLevel; summary?: string; permission_key?: string; invocation_step_id?: string; tool_index?: number; tool_call_id?: string; created_at: string; expires_at?: string }
+export type SessionLifecycleEvent = { type: 'created'; session_id: string; status: SessionStatus; waiting_reason?: SessionWaitingReason | null; title: string | null } | { type: 'updated'; session_id: string; status: SessionUpdateStatus; waiting_reason?: SessionWaitingReason | null; title: string; reason?: string | null } | { type: 'completed'; session_id: string; title: string; reason: string } | { type: 'error'; session_id: string; title: string; error: string } | { type: 'title_updated'; session_id: string; title: string } | { type: 'deleted'; session_id: string | null };
+export const SESSION_UPDATE_STATUS_VALUES = ['pending', 'running', 'paused'] as const;
+export type SessionUpdateStatus = (typeof SESSION_UPDATE_STATUS_VALUES)[number];
 export interface ToolRunEvent { id: string; kind: ToolRunKind; status?: ToolRunStatus; session_id?: string; source_step_id?: string; started_at?: string; finished_at?: string; due_at?: string; title?: string; body?: string; mode?: string; command?: string; output?: string; error?: string; error_reason?: string; exit_code?: number; preview?: string }
 export const TOOL_RUN_KIND_INPUT_VALUES = ['background', 'scheduled'] as const;
 export type ToolRunKindInput = (typeof TOOL_RUN_KIND_INPUT_VALUES)[number];
@@ -194,8 +199,6 @@ export type LlmConnectionStatus = (typeof LLM_CONNECTION_STATUS_VALUES)[number];
 export type McpClientStatus = 'Disconnected' | 'Connecting' | 'Connected' | { 'Offline': { error: string } };
 export interface McpServerSnapshot { name: string; transport: string; command: string; args: string[]; env: string[]; cwd: string | null; url: string; enabled: boolean; status: McpClientStatus; tools: McpToolInfo[]; last_error: string | null; diagnostic: string | null; last_seen_at: number | null }
 export interface McpToolInfo { name: string; description: string; input_schema: unknown }
-export interface Fact { id: string; subject: string; predicate: string; object: string; source: string; confidence: number; tags: string[]; created_at: string; mention_count: number; last_seen_at: string | null; source_ref: FactSourceRef | null; durability: number }
-export interface FactSourceRef { message_id: string; snippet: string }
 export interface Message { id: string; session_id: string; role: string; content: string; message_type: string | null; created_at: string; tool_call_id: string | null; attachments: MessageAttachment[]; media_inputs?: MediaInput[]; voice: boolean }
 export interface SessionStep { id: string; session_id: string; step_number: number; tool_index: number; thought: string | null; tool_name: string | null; tool_input: string | null; tool_call_id: string | null; observation: string | null; status: string; is_high_risk: boolean; confirmed: boolean | null; silent: boolean; started_at: string | null; completed_at: string | null; created_at: string }
 export interface LlmCallUsage { id: string; session_id: string; step_number: number | null; role: RequestKind; call_kind: string; model: string | null; prompt_tokens: number; completion_tokens: number; total_tokens: number; cached_tokens: number; cache_creation_tokens: number; cache_miss_tokens: number; cache_accounting: string; cache_diagnostics?: unknown; context_tokens: number; context_window: number | null; cost_usd: number; has_cost: boolean; duration_ms: number | null; created_at: string }
@@ -203,7 +206,7 @@ export interface SessionUsage { prompt_tokens: number; completion_tokens: number
 export interface SkillInfo { name: string; description: string; version: string | null; language: string; enabled: boolean; root: string; has_script: boolean }
 
 export interface TauriCommandMap {
-	add_fact: { request: { subject: string; predicate: string; object: string; tags?: string[] | null }; response: Fact };
+	add_fact: { request: { subject: string; predicate: string; object: string; tags?: string[] | null }; response: MemoryFactResponse };
 	add_mcp_server: { request: { config: McpServerConfigInput }; response: void };
 	cancel_recording: { request: undefined; response: void };
 	cancel_tool_run: { request: { toolRunId: string; kind: ToolRunKindInput }; response: boolean };
@@ -238,7 +241,7 @@ export interface TauriCommandMap {
 	get_tools: { request: undefined; response: ToolListResponse };
 	interrupt_session: { request: { sessionId: string }; response: void };
 	is_autostart_enabled: { request: undefined; response: boolean };
-	list_facts: { request: { source?: string | null }; response: Fact[] };
+	list_facts: { request: { source?: string | null }; response: MemoryFactResponse[] };
 	list_mcp_tools: { request: undefined; response: McpServerSnapshot[] };
 	list_permissions: { request: undefined; response: StoredPermission[] };
 	list_session_permissions: { request: undefined; response: SessionPermissionGrant[] };

@@ -1,20 +1,18 @@
 /**
  * Memory command response contracts at the renderer boundary.
  *
- * `haven_memory::repositories::facts::Fact` and
- * `app_binary::commands::contracts::MemoryRecallItem` own the Rust wire
- * shapes. These DTOs deliberately retain their existing snake_case fields;
- * the current memory views consume those names and command responses are
- * passed through without normalization.
+ * Rust `MemoryFactResponse`, `MemoryFactSourceRef`, and
+ * `MemoryRecallItem` own the generated wire shapes. The UI-facing aliases
+ * retain snake_case because memory views consume those names directly.
  */
 import type {
-	Fact as GeneratedFact,
-	FactSourceRef as GeneratedFactSourceRef,
+	MemoryFactResponse as GeneratedMemoryFactResponse,
+	MemoryFactSourceRef as GeneratedMemoryFactSourceRef,
 	MemoryRecallItem as GeneratedMemoryRecallItem,
 } from './generatedCommands.ts';
 
-export type FactSourceRef = GeneratedFactSourceRef;
-export type Fact = GeneratedFact;
+export type FactSourceRef = GeneratedMemoryFactSourceRef;
+export type Fact = GeneratedMemoryFactResponse;
 export type MemoryRecallItem = GeneratedMemoryRecallItem;
 
 /** Recall item with the requested kind attached by the existing UI projection. */

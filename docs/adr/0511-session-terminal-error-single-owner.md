@@ -4,6 +4,8 @@
 
 已采纳；实现与跨 crate / UI 门禁通过（2026-10-05）。
 
+当前 wire projection 由 [ADR 0529](0529-single-session-lifecycle-event-and-memory-response-dto.md) 更新为单一 `session:lifecycle` 事件；本 ADR 的 dispatcher 错误单一发布 owner 决定继续有效。
+
 ## 背景
 
 ReAct 遇到致命错误时会先发布 `AgentEvent::SessionError`，随后将同一失败作为 `Err` 返回。项目 dispatcher 的 `RunHandler` 把该错误交回 `SessionSupervisor`；dispatcher 做运行态清理后又发布 `SessionEvent::SessionError`。App 将两种事件分别转换为 `session:error` 和 `session:updated`，各自生成 `occ-*`。UI 的 occurrence 去重只识别同一次发布的主、副 channel，无法识别两份独立终态事实，因此对一次失败可能重复 flush、finalize 和清理预览/会话运行态。

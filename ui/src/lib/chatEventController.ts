@@ -1,5 +1,5 @@
 import { createChatAgentEventHandlers } from './chatAgentEventHandlers.ts';
-import { createChatSessionEventHandlers } from './chatSessionEventHandlers.ts';
+import { createChatSessionEventHandler } from './chatSessionEventHandlers.ts';
 import { createChatUsageEventHandlers } from './chatUsageEventHandlers.ts';
 import {
 	agentEventListeners,
@@ -55,7 +55,7 @@ export function createChatEventController(
 		if (ready) return ready;
 
 		const listenerMap: ChatEventListenerMap = {
-			...sessionEventListeners(createChatSessionEventHandlers(dependencies)),
+			...sessionEventListeners(createChatSessionEventHandler(dependencies)),
 			...appEventListeners({
 				'hotkey:rebind': (event) => {
 					const binding = event.payload.newBinding;

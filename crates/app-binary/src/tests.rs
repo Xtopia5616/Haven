@@ -80,7 +80,7 @@ fn channel_maps_every_variant_to_expected_channel() {
         ),
         (
             AgentEvent::SessionCreated(test_session_info()),
-            "session:created",
+            "session:lifecycle",
         ),
         (
             AgentEvent::SessionCompleted {
@@ -88,7 +88,7 @@ fn channel_maps_every_variant_to_expected_channel() {
                 title: "x".into(),
                 reason: "用户主动结束会话".into(),
             },
-            "session:completed",
+            "session:lifecycle",
         ),
         (
             AgentEvent::SessionUpdated {
@@ -97,14 +97,14 @@ fn channel_maps_every_variant_to_expected_channel() {
                 waiting_reason: None,
                 reason: None,
             },
-            "session:updated",
+            "session:lifecycle",
         ),
         (
             AgentEvent::SessionError {
                 session_id: "t".into(),
                 error: "e".into(),
             },
-            "session:error",
+            "session:lifecycle",
         ),
         (
             AgentEvent::Notification {
@@ -119,7 +119,7 @@ fn channel_maps_every_variant_to_expected_channel() {
                 session_id: "t".into(),
                 title: "x".into(),
             },
-            "session:title-updated",
+            "session:lifecycle",
         ),
         (
             AgentEvent::ThoughtChunk {
@@ -404,6 +404,7 @@ fn payload_projects_session_created_without_leaking_internal_fields() {
     assert_eq!(
         payload,
         json!({
+            "type": "created",
             "session_id": "ses-1",
             "status": "running",
             "title": "My Title",
@@ -431,8 +432,8 @@ fn payload_preserves_session_lifecycle_and_error_wire_shapes() {
     assert_eq!(
         payload,
         json!({
+            "type": "completed",
             "session_id": "t",
-            "status": "completed",
             "title": "X",
             "reason": "用户主动结束会话"
         })
@@ -448,9 +449,10 @@ fn payload_preserves_session_lifecycle_and_error_wire_shapes() {
     assert_eq!(
         payload,
         json!({
+            "type": "updated",
             "session_id": "t",
             "status": "paused",
-            "title": "",
+            "title": "t",
             "reason": "用户主动打断输出"
         })
     );
@@ -461,7 +463,12 @@ fn payload_preserves_session_lifecycle_and_error_wire_shapes() {
     };
     assert_eq!(
         TauriEmitter::payload(&errored, None),
-        json!({"session_id": "t", "error": "sanitized failure"})
+        json!({
+            "type": "error",
+            "session_id": "t",
+            "title": "t",
+            "error": "sanitized failure"
+        })
     );
 }
 
