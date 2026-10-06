@@ -6,8 +6,7 @@ import {
 	toolRepresentedSource,
 	toolRootName,
 } from './toolManifest.ts';
-
-export type ToolSource = 'builtin' | 'skill' | 'mcp';
+import type { ToolSource } from './contracts/generatedCommands.ts';
 
 /** @type {Record<string, string>} */
 export const TOOL_LABELS: Record<string, string> = {
