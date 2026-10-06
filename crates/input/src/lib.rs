@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
-use capture::{EngineHandle, TARGET_SAMPLE_RATE};
+use capture::{CaptureEngineHandle, TARGET_SAMPLE_RATE};
 use haven_common::hooks::OnceHandler;
 
 pub use haven_common::config::AudioConfig;
@@ -128,7 +128,7 @@ impl Default for RecordingResult {
 pub struct InputPipeline {
     config: Arc<Mutex<AudioConfig>>,
     state: Mutex<RecordingState>,
-    engine: Arc<StdMutex<Option<EngineHandle>>>,
+    engine: Arc<StdMutex<Option<CaptureEngineHandle>>>,
     /// VAD worker thread handle (spawned by `prewarm`, reused by every
     /// recording; owns the resident model).
     vad_worker: Arc<StdMutex<Option<Arc<VadWorker>>>>,
@@ -420,7 +420,7 @@ impl InputPipeline {
                 };
             }
 
-            let new_data = data.engine.drain_shared();
+            let new_data = data.engine.drain_buffered();
 
             if !new_data.is_empty() {
                 if accumulated_pcm.is_empty() && vad_partial.is_empty() {
@@ -782,7 +782,7 @@ fn vad_worker_loop(
 
 struct LoopData {
     config: Arc<Mutex<AudioConfig>>,
-    engine: EngineHandle,
+    engine: CaptureEngineHandle,
     vad_worker: Option<Arc<VadWorker>>,
     vad_detector: Arc<Mutex<vad::VadDetector>>,
     /// Handler snapshot taken at `start_recording`; the loop never locks the

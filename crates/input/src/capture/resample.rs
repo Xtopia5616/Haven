@@ -22,7 +22,7 @@ impl Resampler {
     /// caller-provided `out` buffer (cleared first) so the real-time audio
     /// callback never heap-allocates. State is carried across calls so chunk
     /// boundaries never lose samples.
-    pub fn process_into(&mut self, mono: &[f32], out: &mut Vec<f32>) {
+    pub fn resample_into(&mut self, mono: &[f32], out: &mut Vec<f32>) {
         self.leftover.extend(mono);
         out.clear();
         while (self.position + self.ratio * 0.5) < self.leftover.len() as f64 {
@@ -43,9 +43,9 @@ impl Resampler {
     }
 
     /// Convenience wrapper for one-shot conversions (tests, warm-ups).
-    pub fn process(&mut self, mono: &[f32]) -> Vec<f32> {
+    pub fn resample(&mut self, mono: &[f32]) -> Vec<f32> {
         let mut out = Vec::new();
-        self.process_into(mono, &mut out);
+        self.resample_into(mono, &mut out);
         out
     }
 
@@ -63,7 +63,7 @@ mod tests {
     fn identity() {
         let mut rs = Resampler::new(16000.0, 16000.0);
         let input = vec![0.0, 0.5, 1.0, 0.5, 0.0];
-        let out = rs.process(&input);
+        let out = rs.resample(&input);
         assert_eq!(out.len(), input.len());
         for (a, b) in out.iter().zip(input.iter()) {
             assert!((a - b).abs() < 1e-6);
@@ -76,7 +76,7 @@ mod tests {
         let input: Vec<f32> = (0..44100)
             .map(|i| (i as f32 / 44100.0 * std::f32::consts::PI * 2.0).sin())
             .collect();
-        let out = rs.process(&input);
+        let out = rs.resample(&input);
         assert!(out.len() < input.len());
         assert!((out.len() as i32 - 16000).abs() <= 1);
     }
@@ -87,12 +87,12 @@ mod tests {
         let input: Vec<f32> = (0..4800)
             .map(|i| ((i as f32 / 4800.0) * 3.0 * std::f32::consts::PI).sin())
             .collect();
-        let out_whole = whole.process(&input);
+        let out_whole = whole.resample(&input);
 
         let mut chunked = Resampler::new(48000.0, 16000.0);
         let mut out_chunked = Vec::new();
         for chunk in input.chunks(480) {
-            out_chunked.extend(chunked.process(chunk));
+            out_chunked.extend(chunked.resample(chunk));
         }
         assert_eq!(out_whole.len(), out_chunked.len());
         for (a, b) in out_whole.iter().zip(out_chunked.iter()) {

@@ -7,9 +7,10 @@
 //! into the ring, and flips `has_signal` as soon as real audio is seen.
 //!
 //! **Consumption** — the ring is mutex-protected and shared with the
-//! recording loop, which drains it directly (`EngineHandle::drain_shared`)
-//! with no engine round-trip. The engine thread handles start/stop commands
-//! and runs the silent-capture check on its poll cadence while recording.
+//! recording loop, which drains currently buffered samples directly
+//! (`CaptureEngineHandle::drain_buffered`)
+//! with no engine round-trip. The capture engine thread handles start/stop
+//! commands and runs the silent-capture check on its poll cadence while recording.
 //!
 //! **Silent-capture detection** — if the first [`SILENCE_CHECK_DELAY`] of a
 //! recording is pure digital silence (the device delivered no signal at
@@ -57,19 +58,19 @@ const MONITOR_INTERVAL: Duration = Duration::from_millis(20);
 /// speaking after pressing record.
 const SILENCE_CHECK_DELAY: Duration = Duration::from_millis(3000);
 /// Ring capacity is derived from `context_limits.input_ring_buffer_secs`
-/// (default 20 seconds of 16 kHz mono) at engine spawn time.
+/// (default 20 seconds of 16 kHz mono) at capture-engine spawn time.
 const DEFAULT_RING_CAPACITY: usize = TARGET_SAMPLE_RATE as usize * 20;
 
-enum EngineCommand {
+enum CaptureEngineCommand {
     Start(tokio::sync::oneshot::Sender<Result<()>>),
     StopAndDrain(tokio::sync::oneshot::Sender<Vec<f32>>),
     StopAndClear,
 }
 
-/// Client-side handle to the engine thread.
+/// Client-side handle to the capture engine thread.
 #[derive(Clone)]
-pub struct EngineHandle {
-    cmd_tx: mpsc::Sender<EngineCommand>,
+pub struct CaptureEngineHandle {
+    cmd_tx: mpsc::Sender<CaptureEngineCommand>,
     /// Shared ring; the recording loop drains it directly (mutex-protected),
     /// so audio consumption needs no command round-trip.
     ring: Arc<StdMutex<RingBuffer>>,
@@ -82,11 +83,11 @@ pub struct EngineHandle {
     pub silent_abort: Arc<AtomicBool>,
 }
 
-impl EngineHandle {
+impl CaptureEngineHandle {
     /// Open the capture stream and clear the ring.
     pub async fn start(&self) -> Result<()> {
         let (tx, rx) = tokio::sync::oneshot::channel();
-        if self.cmd_tx.send(EngineCommand::Start(tx)).is_err() {
+        if self.cmd_tx.send(CaptureEngineCommand::Start(tx)).is_err() {
             return Err(anyhow!("capture engine is gone"));
         }
         match tokio::time::timeout(CMD_TIMEOUT, rx).await {
@@ -100,7 +101,7 @@ impl EngineHandle {
     /// mutex-protected, so the recording loop consumes audio without waiting
     /// for the engine's command poll. Only the mutex is contended, and only
     /// for the duration of one copy.
-    pub fn drain_shared(&self) -> Vec<f32> {
+    pub fn drain_buffered(&self) -> Vec<f32> {
         self.ring
             .lock()
             .unwrap_or_else(|poisoned| {
@@ -114,7 +115,11 @@ impl EngineHandle {
     /// report the final tail.
     pub async fn stop_and_drain(&self) -> Result<Vec<f32>> {
         let (tx, rx) = tokio::sync::oneshot::channel();
-        if self.cmd_tx.send(EngineCommand::StopAndDrain(tx)).is_err() {
+        if self
+            .cmd_tx
+            .send(CaptureEngineCommand::StopAndDrain(tx))
+            .is_err()
+        {
             return Err(anyhow!("capture engine is gone while stopping"));
         }
         let data = match tokio::time::timeout(CMD_TIMEOUT, rx).await {
@@ -134,13 +139,13 @@ impl EngineHandle {
 
     /// Cancel path: stop the capture stream and drop the ring contents.
     pub fn stop_and_clear(&self) {
-        let _ = self.cmd_tx.send(EngineCommand::StopAndClear);
+        let _ = self.cmd_tx.send(CaptureEngineCommand::StopAndClear);
     }
 }
 
 /// Spawn the capture engine thread. `ring_capacity_secs` (from
 /// `context_limits.input_ring_buffer_secs`) sets the audio ring size.
-pub fn spawn_engine(ring_capacity_secs: usize) -> Result<EngineHandle> {
+pub fn spawn_engine(ring_capacity_secs: usize) -> Result<CaptureEngineHandle> {
     let capacity = if ring_capacity_secs == 0 {
         DEFAULT_RING_CAPACITY
     } else {
@@ -150,8 +155,8 @@ pub fn spawn_engine(ring_capacity_secs: usize) -> Result<EngineHandle> {
     let stream_failed = Arc::new(AtomicBool::new(false));
     let silent_abort = Arc::new(AtomicBool::new(false));
 
-    let (cmd_tx, cmd_rx) = mpsc::channel::<EngineCommand>();
-    let handle = EngineHandle {
+    let (cmd_tx, cmd_rx) = mpsc::channel::<CaptureEngineCommand>();
+    let handle = CaptureEngineHandle {
         cmd_tx: cmd_tx.clone(),
         ring: ring.clone(),
         stream_failed: stream_failed.clone(),
@@ -161,7 +166,7 @@ pub fn spawn_engine(ring_capacity_secs: usize) -> Result<EngineHandle> {
     std::thread::Builder::new()
         .name("haven-audio-engine".into())
         .spawn(move || {
-            let mut engine = Engine {
+            let mut engine = CaptureEngine {
                 ring,
                 backend: None,
                 signals: CaptureSignals::new(),
@@ -203,14 +208,14 @@ pub fn spawn_engine(ring_capacity_secs: usize) -> Result<EngineHandle> {
                     }
                 };
                 match cmd {
-                    Some(EngineCommand::Start(reply)) => {
+                    Some(CaptureEngineCommand::Start(reply)) => {
                         engine.cmd_start(reply);
                     }
-                    Some(EngineCommand::StopAndDrain(tx)) => {
+                    Some(CaptureEngineCommand::StopAndDrain(tx)) => {
                         let data = engine.cmd_stop_and_drain();
                         let _ = tx.send(data);
                     }
-                    Some(EngineCommand::StopAndClear) => {
+                    Some(CaptureEngineCommand::StopAndClear) => {
                         engine.cmd_stop_and_clear();
                     }
                     None => {
@@ -224,7 +229,7 @@ pub fn spawn_engine(ring_capacity_secs: usize) -> Result<EngineHandle> {
     Ok(handle)
 }
 
-struct Engine {
+struct CaptureEngine {
     ring: Arc<StdMutex<RingBuffer>>,
     backend: Option<CpalBackend>,
     signals: CaptureSignals,
@@ -237,7 +242,7 @@ struct Engine {
     silent_checked: bool,
 }
 
-impl Engine {
+impl CaptureEngine {
     fn cmd_start(&mut self, reply: tokio::sync::oneshot::Sender<Result<()>>) {
         // Release any leftover session before opening a new one.
         if let Some(mut backend) = self.backend.take() {

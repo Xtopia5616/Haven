@@ -300,7 +300,7 @@ fn process_chunk<T: Sample>(
         mono.push(sum / ch as f32);
     }
     diag.observe(peak);
-    resampler.process_into(mono, resampled);
+    resampler.resample_into(mono, resampled);
     // Checked on the source mixdown: if any source sample exceeds the floor,
     // the resampled stream carries signal too (interpolation of the peak's
     // neighbors stays far above the -80 dBFS floor), and scanning here saves
