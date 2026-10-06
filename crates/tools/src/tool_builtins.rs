@@ -11,7 +11,7 @@ use crate::tool_core::ToolCore;
 use crate::tool_runtime::{PlatformRuntime, ToolRuntime};
 use haven_common::config::{McpServerConfig, SkillsExecConfig};
 use haven_mcp::McpManager;
-use haven_skills::{SkillsEngine, VenvManager};
+use haven_skills::{SkillRegistry, VenvManager};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -19,7 +19,7 @@ use tokio::sync::RwLock;
 pub(crate) struct ToolBuiltins {
     pub(crate) mcp_manager: McpManager,
     pub(crate) mcp_server_configs: Arc<RwLock<HashMap<String, McpServerConfig>>>,
-    pub(crate) skills_engine: SkillsEngine,
+    pub(crate) skill_registry: SkillRegistry,
     pub(crate) skill_runner: Arc<RwLock<SkillRunner>>,
 }
 
@@ -28,7 +28,7 @@ impl ToolBuiltins {
         Self {
             mcp_manager: McpManager::new(),
             mcp_server_configs: Arc::new(RwLock::new(HashMap::new())),
-            skills_engine: SkillsEngine::new(),
+            skill_registry: SkillRegistry::new(),
             skill_runner: Arc::new(RwLock::new(SkillRunner::new(
                 VenvManager::new(exec_config.venv_root.clone()),
                 exec_config,
@@ -58,7 +58,7 @@ impl ToolBuiltins {
         let tts_client = platform.tts_client.clone();
 
         BuiltinContext {
-            skills_engine: self.skills_engine.clone(),
+            skill_registry: self.skill_registry.clone(),
             skill_runner: self.skill_runner.clone(),
             mcp_manager: Arc::new(self.mcp_manager.clone()),
             server_configs: self.mcp_server_configs.clone(),

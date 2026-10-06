@@ -65,7 +65,7 @@ impl PromptToolPort for ToolsFacadeAgentAdapter {
         PromptCatalogContent {
             builtin_tool_definitions,
             mcp_index: self.tools.build_mcp_index().await,
-            skills: self.tools.share_services().skills.list().await,
+            skills: self.tools.share_services().skills.list_skill_infos().await,
         }
     }
 

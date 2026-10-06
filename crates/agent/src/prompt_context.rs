@@ -69,7 +69,7 @@ impl PromptToolPort for ToolsFacade {
             builtin_tool_definitions = self.registry().list_tool_definitions().await;
         }
         let mcp_index = self.build_mcp_index().await;
-        let skills = self.share_services().skills.list().await;
+        let skills = self.share_services().skills.list_skill_infos().await;
         PromptCatalogContent {
             builtin_tool_definitions,
             mcp_index,

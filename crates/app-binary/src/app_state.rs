@@ -675,7 +675,7 @@ impl AppState {
                             .set_config(skills_cfg_root, skills_cfg_enabled)
                             .await
                         {
-                            tracing::warn!("skills engine initial scan failed: {e}");
+                            tracing::warn!("skill registry initial scan failed: {e}");
                         }
                         if let Err(error) = tools.rebuild_catalog().await {
                             tracing::warn!(error = %error, "initial tool catalog rebuild failed");

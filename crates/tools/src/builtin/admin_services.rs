@@ -23,7 +23,7 @@ use std::time::Duration;
 use tokio::sync::RwLock;
 
 use haven_mcp::McpManager;
-use haven_skills::SkillsEngine;
+use haven_skills::SkillRegistry;
 
 const DIAGNOSTIC_MODEL_HEALTH_CHECK_TIMEOUT: Duration = Duration::from_secs(7);
 
@@ -255,7 +255,7 @@ pub(crate) struct McpRefreshOutput {
 /// supplied by the builtin composition root.
 pub(crate) struct AdminServices {
     pub(crate) context: AdminContext,
-    pub(crate) skills_engine: SkillsEngine,
+    pub(crate) skill_registry: SkillRegistry,
     pub(crate) mcp_manager: Arc<McpManager>,
     pub(crate) server_configs: Arc<RwLock<HashMap<String, McpServerConfig>>>,
     pub(crate) registry: ToolRegistry,
@@ -266,7 +266,7 @@ pub(crate) struct AdminServices {
 impl AdminServices {
     pub(crate) fn new(
         context: AdminContext,
-        skills_engine: SkillsEngine,
+        skill_registry: SkillRegistry,
         mcp_manager: Arc<McpManager>,
         server_configs: Arc<RwLock<HashMap<String, McpServerConfig>>>,
         registry: ToolRegistry,
@@ -275,7 +275,7 @@ impl AdminServices {
     ) -> Self {
         Self {
             context,
-            skills_engine,
+            skill_registry,
             mcp_manager,
             server_configs,
             registry,
@@ -425,8 +425,8 @@ impl AdminServices {
         };
 
         let skills: Vec<DiagnosticSkillOutput> = self
-            .skills_engine
-            .list()
+            .skill_registry
+            .list_skill_infos()
             .await
             .into_iter()
             .map(|skill| DiagnosticSkillOutput {
@@ -589,8 +589,8 @@ impl AdminServices {
 
     pub(crate) async fn skills_list(&self) -> Result<SkillsListOutput> {
         let skills: Vec<SkillSummaryOutput> = self
-            .skills_engine
-            .list()
+            .skill_registry
+            .list_skill_infos()
             .await
             .into_iter()
             .map(|skill| SkillSummaryOutput {
@@ -611,19 +611,19 @@ impl AdminServices {
                 .as_ref()
                 .ok_or_else(|| anyhow::anyhow!("configuration administration is unavailable"))?,
         );
-        if self.skills_engine.get_skill(name).await.is_none() {
+        if self.skill_registry.get_skill(name).await.is_none() {
             anyhow::bail!("skill '{}' not found", name);
         }
-        self.skills_engine.set_enabled(name, enabled).await?;
-        let filter = self.skills_engine.enabled_filter().await;
+        self.skill_registry.set_enabled(name, enabled).await?;
+        let enabled_skill_allowlist = self.skill_registry.enabled_skill_allowlist().await;
         let snapshot = config_service.snapshot()?;
         let mut skills = snapshot.config.skills;
-        skills.enabled = filter;
+        skills.enabled = enabled_skill_allowlist;
         if let Err(error) = config_service.apply_patch(ConfigPatch::Skills {
             config: skills,
             exec: snapshot.config.skills_exec,
         }) {
-            if let Err(rollback) = self.skills_engine.set_enabled(name, !enabled).await {
+            if let Err(rollback) = self.skill_registry.set_enabled(name, !enabled).await {
                 tracing::error!(
                     skill = name,
                     error = %haven_common::error::sanitize_error_text(&rollback.to_string()),
@@ -696,7 +696,7 @@ impl AdminServices {
             anyhow::bail!("script must not be empty");
         }
 
-        let root = self.skills_engine.resolved_root().await;
+        let root = self.skill_registry.resolved_root().await;
         let skill_dir = root.join(name);
         if skill_dir.exists() {
             anyhow::bail!("skill '{}' already exists at {}", name, skill_dir.display());
@@ -718,12 +718,12 @@ impl AdminServices {
         tokio::fs::write(scripts.join("main.py"), script).await?;
         let has_script = true;
 
-        self.skills_engine.refresh_from_disk().await?;
-        self.skills_engine.set_enabled(name, true).await?;
-        let filter = self.skills_engine.enabled_filter().await;
+        self.skill_registry.refresh_from_disk().await?;
+        self.skill_registry.set_enabled(name, true).await?;
+        let enabled_skill_allowlist = self.skill_registry.enabled_skill_allowlist().await;
         let snapshot = config_service.snapshot()?;
         let mut skills = snapshot.config.skills;
-        skills.enabled = filter;
+        skills.enabled = enabled_skill_allowlist;
         if let Err(error) = config_service.apply_patch(ConfigPatch::Skills {
             config: skills,
             exec: snapshot.config.skills_exec,
@@ -734,7 +734,7 @@ impl AdminServices {
                     "skill creation rollback failed"
                 );
             }
-            if let Err(refresh_error) = self.skills_engine.refresh_from_disk().await {
+            if let Err(refresh_error) = self.skill_registry.refresh_from_disk().await {
                 tracing::warn!(error = %haven_common::error::sanitize_error_text(&refresh_error.to_string()), "skill catalog refresh failed while rolling back");
             }
             return Err(error);

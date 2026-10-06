@@ -189,7 +189,7 @@ fn managed_test_image() -> (haven_common::types::MessageAttachment, std::path::P
 
 #[tokio::test]
 async fn enabled_skills_are_global_and_resume_does_not_rebuild_skill_sessions() {
-    // Create a skill on disk so SkillsEngine can discover it.
+    // Create a skill on disk so SkillRegistry can discover it.
     let dir = std::env::temp_dir().join(format!("haven_restore_test_{}", uuid::Uuid::new_v4()));
     let skill_dir = dir.join("echo");
     std::fs::create_dir_all(skill_dir.join("scripts")).unwrap();

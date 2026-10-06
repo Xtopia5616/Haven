@@ -69,7 +69,7 @@ impl ToolRuntimeCoordinator {
         self.runtime.bind_memory_recall(memory_recall)?;
         self.builtins.mcp_manager.set_limits(&context_limits).await;
         self.builtins
-            .skills_engine
+            .skill_registry
             .set_limits(&context_limits)
             .await;
         self.runtime
@@ -210,7 +210,7 @@ impl ToolRuntimeCoordinator {
         limits: ContextLimitsConfig,
     ) -> Result<CatalogRebuildOutcome, CatalogRebuildError> {
         self.builtins.mcp_manager.set_limits(&limits).await;
-        self.builtins.skills_engine.set_limits(&limits).await;
+        self.builtins.skill_registry.set_limits(&limits).await;
         self.runtime.tool_run_service.set_limits(&limits).await;
         self.runtime.live_outputs.set_emit_interval(&limits).await;
         self.runtime

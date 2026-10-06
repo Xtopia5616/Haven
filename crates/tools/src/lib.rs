@@ -144,7 +144,9 @@ pub use haven_common::types::CapabilityScope;
 pub use haven_mcp::{
     McpClient, McpClientStatus, McpManager, McpServerSnapshot, McpStatusChangeEvent, McpToolInfo,
 };
-pub use haven_skills::{Language, Skill, SkillInfo, SkillManifest, SkillsEngine, VenvManager};
+pub use haven_skills::{
+    Language, Skill, SkillFileFingerprint, SkillInfo, SkillManifest, SkillRegistry, VenvManager,
+};
 pub use live_output::LiveOutputHub;
 pub use output::{
     OutputBudget, ToolOutput, append_windows_diagnostics, is_progress_clixml,

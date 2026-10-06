@@ -365,7 +365,7 @@ impl ToolsFacade {
     /// `enabled` state, so the UI can list every tool and re-enable disabled
     /// ones. The registry itself only holds enabled tools (see
     /// `rebuild_catalog`).
-    /// Poll the skills directory for changes and auto-refresh the engine
+    /// Poll the skills directory for changes and auto-refresh the registry
     /// whenever `SKILL.md` files are added / modified / removed. The first
     /// pass always refreshes too, so a UI that loaded before the initial
     /// scan finished (startup race) still catches up. `on_change` fires on
@@ -377,25 +377,26 @@ impl ToolsFacade {
         cancellation: CancellationToken,
         on_change: impl Fn() + Send + Sync + 'static,
     ) {
-        let engine = self.coordinator.builtins.skills_engine.clone();
-        let mut last_sig: Option<Vec<(std::path::PathBuf, std::time::SystemTime, u64)>> = None;
+        let skill_registry = self.coordinator.builtins.skill_registry.clone();
+        let mut last_fingerprints: Option<Vec<haven_skills::SkillFileFingerprint>> = None;
         loop {
-            let sig = tokio::select! {
+            let fingerprints = tokio::select! {
                 _ = cancellation.cancelled() => return,
-                sig = engine.folder_signature() => sig,
+                fingerprints = skill_registry.list_skill_file_fingerprints() => fingerprints,
             };
-            let changed = last_sig.is_none() || last_sig.as_ref() != Some(&sig);
+            let changed =
+                last_fingerprints.is_none() || last_fingerprints.as_ref() != Some(&fingerprints);
             if changed {
                 match tokio::select! {
                     _ = cancellation.cancelled() => return,
-                    result = engine.refresh_from_disk() => result,
+                    result = skill_registry.refresh_from_disk() => result,
                 } {
                     Ok(()) => {
-                        // Commit the signature only after a successful
-                        // refresh: on error the old signature is kept so
+                        // Commit the fingerprints only after a successful
+                        // refresh: on error the old fingerprints are kept so
                         // the next poll retries instead of treating the
                         // failed change as already seen.
-                        last_sig = Some(sig);
+                        last_fingerprints = Some(fingerprints);
                         if let Err(error) = self.rebuild_catalog().await {
                             tracing::warn!(error = %error, "skills changed but tool catalog rebuild failed");
                         }

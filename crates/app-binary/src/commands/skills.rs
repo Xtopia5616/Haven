@@ -15,7 +15,7 @@ use tauri::State;
 
 #[tauri::command]
 pub async fn list_skills(state: State<'_, Arc<AppState>>) -> Result<Vec<SkillInfo>, String> {
-    Ok(state.runtime.services.skills.list().await)
+    Ok(state.runtime.services.skills.list_skill_infos().await)
 }
 
 #[tauri::command]
@@ -60,7 +60,7 @@ pub async fn set_skill_enabled(
 ) -> Result<(), String> {
     // Route through the native admin surface: one implementation for
     // the UI toggle and the LLM's skill_enable / skill_disable ops. The op
-    // flips the engine filter and persists `skills.enabled` to config.toml
+    // updates the registry allowlist and persists `skills.enabled` to config.toml
     // via ConfigService.
     crate::commands::authorize_admin_request(
         &state,
@@ -187,7 +187,7 @@ pub async fn execute_skill(
         .runtime
         .services
         .skills
-        .get(&name)
+        .get_skill_info(&name)
         .await
         .ok_or_else(|| log_err("execute_skill", format!("skill '{}' not found", name)))?;
 

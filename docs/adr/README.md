@@ -542,3 +542,4 @@
 - [0551：Memory 多行持久查询使用 list 动词](0551-use-list-for-memory-collection-queries.md)
 - [0552：Session 队列消费入口明确使用 drain 动词](0552-name-session-queue-drains.md)
 - [0553：历史集合 IPC 命令使用 list_history](0553-name-history-collection-command.md)
+- [0554：Skills 发现状态命名为 SkillRegistry](0554-name-skill-registry.md)

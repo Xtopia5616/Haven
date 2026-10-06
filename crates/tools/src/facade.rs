@@ -9,7 +9,7 @@ use super::*;
 pub struct ToolServices {
     pub mcp: McpManager,
     pub mcp_configs: Arc<RwLock<HashMap<String, McpServerConfig>>>,
-    pub skills: SkillsEngine,
+    pub skills: SkillRegistry,
     pub skill_runner: Arc<RwLock<SkillRunner>>,
     pub authorization: Arc<AuthorizationEngine>,
     pub assets: ManagedAssetRegistry,
@@ -22,7 +22,7 @@ impl ToolServices {
         Self {
             mcp: coordinator.builtins.mcp_manager.clone(),
             mcp_configs: coordinator.builtins.mcp_server_configs.clone(),
-            skills: coordinator.builtins.skills_engine.clone(),
+            skills: coordinator.builtins.skill_registry.clone(),
             skill_runner: coordinator.builtins.skill_runner.clone(),
             authorization: Arc::clone(&coordinator.core.authorization),
             assets: coordinator.runtime.managed_assets.clone(),

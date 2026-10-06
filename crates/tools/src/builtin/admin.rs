@@ -24,7 +24,7 @@ use haven_common::types::{McpTransportType, RiskLevel};
 use haven_llm::LlmRouter;
 use haven_mcp::{McpManager, McpReconcile};
 use haven_memory::{MemoryFactStore, SessionStore};
-use haven_skills::SkillsEngine;
+use haven_skills::SkillRegistry;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::collections::HashMap;
@@ -1290,7 +1290,7 @@ impl ConfigAdminOperation {
         Self {
             services: Arc::new(AdminServices::new(
                 context.into(),
-                SkillsEngine::new(),
+                SkillRegistry::new(),
                 Arc::new(McpManager::new()),
                 Arc::new(RwLock::new(HashMap::new())),
                 ToolRegistry::new(),
@@ -1502,7 +1502,7 @@ pub struct AdminSurfaces {
 impl AdminSurfaces {
     pub(crate) fn new(
         context: AdminContext,
-        skills_engine: SkillsEngine,
+        skill_registry: SkillRegistry,
         mcp_manager: Arc<McpManager>,
         server_configs: Arc<RwLock<HashMap<String, McpServerConfig>>>,
         registry: ToolRegistry,
@@ -1511,7 +1511,7 @@ impl AdminSurfaces {
     ) -> Self {
         let services = Arc::new(AdminServices::new(
             context,
-            skills_engine,
+            skill_registry,
             mcp_manager,
             server_configs,
             registry,
@@ -1885,7 +1885,7 @@ mod tests {
         (
             AdminSurfaces::new(
                 context,
-                SkillsEngine::new(),
+                SkillRegistry::new(),
                 Arc::new(McpManager::new()),
                 Arc::new(RwLock::new(HashMap::new())),
                 ToolRegistry::new(),
@@ -2392,7 +2392,7 @@ mod tests {
         surfaces
             .skills
             .services
-            .skills_engine
+            .skill_registry
             .set_config(Some(skill_root), None)
             .await
             .unwrap();
@@ -2591,7 +2591,7 @@ mod tests {
         surfaces
             .skills
             .services
-            .skills_engine
+            .skill_registry
             .set_config(Some(skills_root.clone()), None)
             .await
             .unwrap();
@@ -2661,8 +2661,8 @@ mod tests {
             surfaces
                 .skills
                 .services
-                .skills_engine
-                .list()
+                .skill_registry
+                .list_skill_infos()
                 .await
                 .iter()
                 .all(|skill| skill.name != "CON")
@@ -3747,7 +3747,7 @@ mod tests {
         };
         let surfaces = AdminSurfaces::new(
             context,
-            SkillsEngine::new(),
+            SkillRegistry::new(),
             Arc::new(McpManager::new()),
             Arc::new(RwLock::new(HashMap::new())),
             ToolRegistry::new(),

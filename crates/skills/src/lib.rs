@@ -1,4 +1,4 @@
-//! Skills engine: discovery, parsing, and management of reusable agent
+//! Skills registry: discovery, parsing, and management of reusable agent
 //! skills (`SKILL.md` + scripts), plus the virtual-environment manager used
 //! to run Python skills sandboxed.
 //!
@@ -375,7 +375,7 @@ pub fn parse_skill_md(
 
 /// Scan `<root>/<skill-name>/SKILL.md` for all skills under `root`.
 ///
-/// `enabled_filter` semantics:
+/// `enabled_skill_allowlist` semantics:
 /// - `None` → all skills are enabled.
 /// - `Some(list)` → only skills whose names are in `list` are enabled (empty
 ///   `Some([])` disables everything).
@@ -390,7 +390,7 @@ pub fn parse_skill_md(
 /// skipped with a warning.
 pub fn scan_dir(
     root: &Path,
-    enabled_filter: Option<&[String]>,
+    enabled_skill_allowlist: Option<&[String]>,
     limits: &haven_common::config::ContextLimitsConfig,
 ) -> anyhow::Result<Vec<Skill>> {
     let mut out = Vec::new();
@@ -493,8 +493,8 @@ pub fn scan_dir(
         let max_line_len = limits.skills_max_line_len;
         match parse_skill_md(&content, max_parse_lines, max_line_len) {
             Ok(manifest) => {
-                let enabled = enabled_filter
-                    .map(|f| f.contains(&manifest.name))
+                let enabled = enabled_skill_allowlist
+                    .map(|allowlist| allowlist.contains(&manifest.name))
                     .unwrap_or(true);
                 candidates.push(Skill {
                     manifest,
@@ -514,39 +514,39 @@ pub fn scan_dir(
 }
 
 // ---------------------------------------------------------------------------
-// SkillsEngine
+// SkillRegistry
 // ---------------------------------------------------------------------------
 
 struct Inner {
     root: Option<PathBuf>,
     /// `None` = all enabled, `Some(list)` = exhaustive allowlist.
-    enabled: Option<Vec<String>>,
+    enabled_skill_allowlist: Option<Vec<String>>,
     skills: HashMap<String, Skill>,
     /// Unified context limits (SKILL.md size / parse caps).
     limits: haven_common::config::ContextLimitsConfig,
 }
 
 /// Registry of discovered Skills, backed by an in-memory map protected by a
-/// `tokio::sync::RwLock` so `refresh_from_disk` and the bridge queries can
-/// share state across `Arc<ToolsFacade>`.
+/// `tokio::sync::RwLock` so disk refreshes and bridge queries share one
+/// authoritative set of metadata and enablement state.
 #[derive(Clone)]
-pub struct SkillsEngine {
+pub struct SkillRegistry {
     inner: Arc<RwLock<Inner>>,
     catalog_version: Arc<AtomicU64>,
 }
 
-impl Default for SkillsEngine {
+impl Default for SkillRegistry {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl SkillsEngine {
+impl SkillRegistry {
     pub fn new() -> Self {
         Self {
             inner: Arc::new(RwLock::new(Inner {
                 root: None,
-                enabled: None,
+                enabled_skill_allowlist: None,
                 skills: HashMap::new(),
                 limits: haven_common::config::ContextLimitsConfig::default(),
             })),
@@ -569,16 +569,17 @@ impl SkillsEngine {
     /// Configure the skills root + optional exhaustive enabled allowlist, and
     /// trigger an immediate disk refresh.
     ///
-    /// `enabled` semantics: `None` → all enabled; `Some(list)` → allowlist.
+    /// `enabled_skill_allowlist` semantics: `None` → all enabled;
+    /// `Some(list)` → only skills whose names appear in that allowlist.
     pub async fn set_config(
         &self,
         root: Option<PathBuf>,
-        enabled: Option<Vec<String>>,
+        enabled_skill_allowlist: Option<Vec<String>>,
     ) -> anyhow::Result<()> {
         {
             let mut g = self.inner.write().await;
             g.root = root;
-            g.enabled = enabled;
+            g.enabled_skill_allowlist = enabled_skill_allowlist;
         }
         self.refresh_from_disk().await
     }
@@ -593,12 +594,16 @@ impl SkillsEngine {
 
     /// Re-scan the skills directory from disk, replacing the in-memory map.
     pub async fn refresh_from_disk(&self) -> anyhow::Result<()> {
-        let (root, enabled, limits) = {
+        let (root, enabled_skill_allowlist, limits) = {
             let g = self.inner.read().await;
-            (g.root.clone(), g.enabled.clone(), g.limits.clone())
+            (
+                g.root.clone(),
+                g.enabled_skill_allowlist.clone(),
+                g.limits.clone(),
+            )
         };
         let effective = Self::resolve_root(root.as_deref());
-        let scanned = scan_dir(&effective, enabled.as_deref(), &limits)?;
+        let scanned = scan_dir(&effective, enabled_skill_allowlist.as_deref(), &limits)?;
         let mut g = self.inner.write().await;
         g.skills.clear();
         for s in scanned {
@@ -608,7 +613,7 @@ impl SkillsEngine {
         Ok(())
     }
 
-    pub async fn list(&self) -> Vec<SkillInfo> {
+    pub async fn list_skill_infos(&self) -> Vec<SkillInfo> {
         let g = self.inner.read().await;
         let mut skills: Vec<_> = g.skills.values().map(SkillInfo::from).collect();
         // The short skill index is part of the cacheable system-prompt prefix.
@@ -618,7 +623,7 @@ impl SkillsEngine {
         skills
     }
 
-    pub async fn get(&self, name: &str) -> Option<SkillInfo> {
+    pub async fn get_skill_info(&self, name: &str) -> Option<SkillInfo> {
         let g = self.inner.read().await;
         g.skills.get(name).map(SkillInfo::from)
     }
@@ -635,12 +640,12 @@ impl SkillsEngine {
         g.skills.values().cloned().collect()
     }
 
-    /// Toggle the enabled flag on a discovered skill and keep the engine-level
-    /// allowlist (`Inner.enabled`) in sync so the change survives
-    /// `refresh_from_disk` and app restart (M4-01 review).
+    /// Toggle the enabled flag on a discovered skill and keep the registry's
+    /// configured allowlist (`Inner.enabled_skill_allowlist`) in sync so the
+    /// change survives `refresh_from_disk` and app restart (M4-01 review).
     ///
     /// When `enabled = false` and the allowlist was `None` (all enabled), the
-    /// engine converts to an exhaustive `Some(list)` excluding the toggled
+    /// registry converts to an exhaustive `Some(list)` excluding the toggled
     /// skill, so the lone-disable edge case persists correctly.
     pub async fn set_enabled(&self, name: &str, enabled: bool) -> anyhow::Result<()> {
         let mut g = self.inner.write().await;
@@ -658,7 +663,7 @@ impl SkillsEngine {
 
         match enabled {
             true => {
-                if let Some(list) = g.enabled.as_mut()
+                if let Some(list) = g.enabled_skill_allowlist.as_mut()
                     && !list.contains(&name.to_string())
                 {
                     list.push(name.to_string());
@@ -667,14 +672,15 @@ impl SkillsEngine {
             }
             false => {
                 let all_names: Vec<String> = g.skills.keys().cloned().collect();
-                match g.enabled.take() {
+                match g.enabled_skill_allowlist.take() {
                     None => {
                         // Was all enabled; produce exhaustive allowlist minus name.
-                        g.enabled = Some(all_names.into_iter().filter(|n| n != name).collect());
+                        g.enabled_skill_allowlist =
+                            Some(all_names.into_iter().filter(|n| n != name).collect());
                     }
                     Some(mut list) => {
                         list.retain(|n| n != name);
-                        g.enabled = Some(list);
+                        g.enabled_skill_allowlist = Some(list);
                     }
                 }
             }
@@ -685,10 +691,10 @@ impl SkillsEngine {
         Ok(())
     }
 
-    /// Return the current engine-level enabled allowlist for persistence
-    /// (used by the `set_skill_enabled` bridge to write back to `config.toml`).
-    pub async fn enabled_filter(&self) -> Option<Vec<String>> {
-        self.inner.read().await.enabled.clone()
+    /// Return the configured enabled-skill allowlist for persistence (used by
+    /// the `set_skill_enabled` bridge to write back to `config.toml`).
+    pub async fn enabled_skill_allowlist(&self) -> Option<Vec<String>> {
+        self.inner.read().await.enabled_skill_allowlist.clone()
     }
 
     /// The effective skills root path (resolved default if unset).
@@ -697,15 +703,14 @@ impl SkillsEngine {
         Self::resolve_root(g.root.as_deref())
     }
 
-    /// Cheap fingerprint of the skills directory: for every `<root>/<skill>/`
-    /// entry holding a `SKILL.md`, record `(path, mtime, length)`. Detects
-    /// added / removed / modified skills without reading file contents. Used
-    /// by the auto-refresh watcher to know when a rescan is worth doing.
-    pub async fn folder_signature(&self) -> Vec<(PathBuf, SystemTime, u64)> {
+    /// Cheap fingerprints for every `<root>/<skill>/SKILL.md`. Detects added,
+    /// removed, or modified skills without reading file contents. Used by the
+    /// auto-refresh watcher to know when a rescan is worth doing.
+    pub async fn list_skill_file_fingerprints(&self) -> Vec<SkillFileFingerprint> {
         let root = self.resolved_root().await;
-        let mut sig = Vec::new();
+        let mut fingerprints = Vec::new();
         let Ok(root_canon) = root.canonicalize() else {
-            return sig;
+            return fingerprints;
         };
         if let Ok(entries) = std::fs::read_dir(&root) {
             for entry in entries.flatten() {
@@ -726,13 +731,25 @@ impl SkillsEngine {
                 if let Ok(meta) = std::fs::metadata(&skill_md_canon)
                     && let Ok(mtime) = meta.modified()
                 {
-                    sig.push((skill_md, mtime, meta.len()));
+                    fingerprints.push(SkillFileFingerprint {
+                        path: skill_md,
+                        modified_at: mtime,
+                        byte_length: meta.len(),
+                    });
                 }
             }
         }
-        sig.sort();
-        sig
+        fingerprints.sort();
+        fingerprints
     }
+}
+
+/// Filesystem metadata used by the skill-directory watcher to detect changes.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct SkillFileFingerprint {
+    pub path: PathBuf,
+    pub modified_at: SystemTime,
+    pub byte_length: u64,
 }
 
 // ---------------------------------------------------------------------------
@@ -1007,7 +1024,7 @@ mod tests {
     }
 
     #[test]
-    fn scan_dir_enabled_filter() {
+    fn scan_dir_enabled_skill_allowlist() {
         let dir = tmp_dir();
         std::fs::create_dir_all(&dir).unwrap();
         write_skill(
@@ -1039,19 +1056,24 @@ mod tests {
             false,
         );
 
-        let engine = SkillsEngine::new();
-        engine.set_config(Some(dir.clone()), None).await.unwrap();
-        let listed = engine.list().await;
+        let registry = SkillRegistry::new();
+        registry.set_config(Some(dir.clone()), None).await.unwrap();
+        let listed = registry.list_skill_infos().await;
         assert_eq!(listed.len(), 1);
         assert!(!listed[0].has_script);
         assert!(!listed[0].enabled);
 
-        let error = engine
+        let error = registry
             .set_enabled("instruction-only", true)
             .await
             .expect_err("scriptless skill must not be enabled as an executable tool");
         assert!(error.to_string().contains("no entry script"));
-        assert!(engine.set_enabled("instruction-only", false).await.is_ok());
+        assert!(
+            registry
+                .set_enabled("instruction-only", false)
+                .await
+                .is_ok()
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1161,18 +1183,18 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // SkillsEngine
+    // SkillRegistry
     // -----------------------------------------------------------------------
 
     #[tokio::test]
-    async fn engine_folder_signature_tracks_changes() {
+    async fn registry_file_fingerprints_track_changes() {
         let dir = tmp_dir();
         std::fs::create_dir_all(&dir).unwrap();
-        let eng = SkillsEngine::new();
-        eng.set_config(Some(dir.clone()), None).await.unwrap();
+        let registry = SkillRegistry::new();
+        registry.set_config(Some(dir.clone()), None).await.unwrap();
 
-        // Empty folder → empty signature.
-        assert!(eng.folder_signature().await.is_empty());
+        // Empty folder → no file fingerprints.
+        assert!(registry.list_skill_file_fingerprints().await.is_empty());
 
         write_skill(
             &dir,
@@ -1180,39 +1202,42 @@ mod tests {
             "# Skill: a\n## Metadata\n- description: a\n## Instructions\ni\n",
             false,
         );
-        let sig1 = eng.folder_signature().await;
-        assert_eq!(sig1.len(), 1);
+        let fingerprints_before_edit = registry.list_skill_file_fingerprints().await;
+        assert_eq!(fingerprints_before_edit.len(), 1);
+        assert!(fingerprints_before_edit[0].path.ends_with("SKILL.md"));
+        let original_byte_length = fingerprints_before_edit[0].byte_length;
 
-        // Modified SKILL.md (different length) → signature changes.
+        // Modified SKILL.md (different length) → its fingerprint changes.
         write_skill(
             &dir,
             "a",
             "# Skill: a\n## Metadata\n- description: a much longer description\n## Instructions\ni\n",
             false,
         );
-        let sig2 = eng.folder_signature().await;
-        assert_ne!(sig1, sig2);
+        let fingerprints_after_edit = registry.list_skill_file_fingerprints().await;
+        assert_ne!(fingerprints_before_edit, fingerprints_after_edit);
+        assert!(fingerprints_after_edit[0].byte_length > original_byte_length);
 
-        // Added skill → signature gains an entry.
+        // Added skill → fingerprint list gains an entry.
         write_skill(
             &dir,
             "b",
             "# Skill: b\n## Metadata\n- description: b\n## Instructions\ni\n",
             false,
         );
-        let sig3 = eng.folder_signature().await;
-        assert_eq!(sig3.len(), 2);
+        let fingerprints_after_add = registry.list_skill_file_fingerprints().await;
+        assert_eq!(fingerprints_after_add.len(), 2);
 
-        // Removed skill → signature loses the entry.
+        // Removed skill → fingerprint list loses the entry.
         std::fs::remove_dir_all(dir.join("a")).unwrap();
-        let sig4 = eng.folder_signature().await;
-        assert_eq!(sig4.len(), 1);
+        let fingerprints_after_remove = registry.list_skill_file_fingerprints().await;
+        assert_eq!(fingerprints_after_remove.len(), 1);
 
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]
-    async fn engine_refresh_and_query() {
+    async fn registry_refresh_and_query() {
         let dir = tmp_dir();
         std::fs::create_dir_all(&dir).unwrap();
         write_skill(
@@ -1222,12 +1247,12 @@ mod tests {
             true,
         );
 
-        let eng = SkillsEngine::new();
-        eng.set_config(Some(dir.clone()), None).await.unwrap();
-        let after_initial_refresh = eng.catalog_version();
+        let registry = SkillRegistry::new();
+        registry.set_config(Some(dir.clone()), None).await.unwrap();
+        let after_initial_refresh = registry.catalog_version();
         assert!(after_initial_refresh > 0);
 
-        let list = eng.list().await;
+        let list = registry.list_skill_infos().await;
         assert_eq!(list.len(), 1);
         let s = &list[0];
         assert_eq!(s.name, "alpha");
@@ -1236,19 +1261,19 @@ mod tests {
         assert!(s.enabled);
 
         // Disable → persisted as Some exhaustive list minus alpha
-        eng.set_enabled("alpha", false).await.unwrap();
-        assert!(eng.catalog_version() > after_initial_refresh);
-        let updated = eng.get("alpha").await.unwrap();
+        registry.set_enabled("alpha", false).await.unwrap();
+        assert!(registry.catalog_version() > after_initial_refresh);
+        let updated = registry.get_skill_info("alpha").await.unwrap();
         assert!(!updated.enabled);
 
-        // The inner filter should now be Some([]) (lone skill disabled).
-        let inner_enabled = eng.enabled_filter().await;
+        // The inner allowlist should now be Some([]) (lone skill disabled).
+        let inner_enabled = registry.enabled_skill_allowlist().await;
         assert_eq!(inner_enabled, Some(vec![] as Vec<String>));
 
-        // refresh_from_disk should NOT re-enable alpha (the filter is now
+        // refresh_from_disk should NOT re-enable alpha (the allowlist is now
         // Some([]) which means "none enabled").
-        eng.refresh_from_disk().await.unwrap();
-        let after_refresh = eng.get("alpha").await.unwrap();
+        registry.refresh_from_disk().await.unwrap();
+        let after_refresh = registry.get_skill_info("alpha").await.unwrap();
         assert!(
             !after_refresh.enabled,
             "alpha must stay disabled after refresh"
@@ -1258,7 +1283,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn engine_refresh_clears_removed_skills() {
+    async fn registry_refresh_clears_removed_skills() {
         let dir = tmp_dir();
         std::fs::create_dir_all(&dir).unwrap();
         write_skill(
@@ -1267,17 +1292,17 @@ mod tests {
             "# Skill: a\n## Metadata\n- description: a\n## Instructions\ni\n",
             false,
         );
-        let eng = SkillsEngine::new();
-        eng.set_config(Some(dir.clone()), None).await.unwrap();
-        assert_eq!(eng.list().await.len(), 1);
+        let registry = SkillRegistry::new();
+        registry.set_config(Some(dir.clone()), None).await.unwrap();
+        assert_eq!(registry.list_skill_infos().await.len(), 1);
         std::fs::remove_dir_all(dir.join("a")).unwrap();
-        eng.refresh_from_disk().await.unwrap();
-        assert!(eng.list().await.is_empty());
+        registry.refresh_from_disk().await.unwrap();
+        assert!(registry.list_skill_infos().await.is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]
-    async fn engine_set_enabled_syncs_filter() {
+    async fn registry_set_enabled_syncs_allowlist() {
         let dir = tmp_dir();
         std::fs::create_dir_all(&dir).unwrap();
         write_skill(
@@ -1292,34 +1317,37 @@ mod tests {
             "# Skill: b\n## Metadata\n- description: b\n## Instructions\ni\n",
             true,
         );
-        let eng = SkillsEngine::new();
-        eng.set_config(Some(dir.clone()), None).await.unwrap();
+        let registry = SkillRegistry::new();
+        registry.set_config(Some(dir.clone()), None).await.unwrap();
 
         // Disable a, enable b explicitly
-        eng.set_enabled("a", false).await.unwrap();
+        registry.set_enabled("a", false).await.unwrap();
         // b should still be enabled (None → all, but we transitioned to Some(["b"]) after disabling a)
-        let list = eng.list().await;
+        let list = registry.list_skill_infos().await;
         let a = list.iter().find(|s| s.name == "a").unwrap();
         let b = list.iter().find(|s| s.name == "b").unwrap();
         assert!(!a.enabled);
         assert!(b.enabled);
 
-        // Inner filter should be Some(["b"])
-        let filter = eng.enabled_filter().await;
-        assert_eq!(filter, Some(vec!["b".to_string()]));
+        // Inner allowlist should be Some(["b"])
+        let enabled_skill_allowlist = registry.enabled_skill_allowlist().await;
+        assert_eq!(enabled_skill_allowlist, Some(vec!["b".to_string()]));
 
         // Re-enable a
-        eng.set_enabled("a", true).await.unwrap();
-        let list = eng.list().await;
+        registry.set_enabled("a", true).await.unwrap();
+        let list = registry.list_skill_infos().await;
         assert!(list.iter().all(|s| s.enabled));
-        let filter = eng.enabled_filter().await;
-        assert_eq!(filter, Some(vec!["b".to_string(), "a".to_string()]));
+        let enabled_skill_allowlist = registry.enabled_skill_allowlist().await;
+        assert_eq!(
+            enabled_skill_allowlist,
+            Some(vec!["b".to_string(), "a".to_string()])
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]
-    async fn engine_list_is_sorted_for_prompt_stability() {
+    async fn registry_list_is_sorted_for_prompt_stability() {
         let dir = tmp_dir();
         std::fs::create_dir_all(&dir).unwrap();
         for name in ["zeta", "alpha", "middle"] {
@@ -1333,10 +1361,10 @@ mod tests {
             );
         }
 
-        let eng = SkillsEngine::new();
-        eng.set_config(Some(dir.clone()), None).await.unwrap();
-        let names: Vec<String> = eng
-            .list()
+        let registry = SkillRegistry::new();
+        registry.set_config(Some(dir.clone()), None).await.unwrap();
+        let names: Vec<String> = registry
+            .list_skill_infos()
             .await
             .into_iter()
             .map(|skill| skill.name)

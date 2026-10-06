@@ -180,6 +180,7 @@
 | 范围 | 证据与调用边界 | 当前分类 / 下一步 |
 |---|---|---|
 | Tools runtime | `SessionToolOverlay` 保存 session 当前可执行的附加工具；`ToolAuthorizationRequestResolver` 解析操作契约但不裁决权限；工具定义查询使用完整 tool-definition 名称。调用链覆盖 Tools、Agent、App adapter 与 prompt context。 | **已对齐名称**；授权仍由 `AuthorizationEngine` 决定，三种集合 owner 保持分离（ADR 0533）。 |
+| Skills `SkillsEngine` 名称、通用快照查询与位置式 watcher fingerprint | 该类型本身声明为发现 Skill 的 registry，实际持有按名称索引的 Skill、enablement allowlist 与 catalog version；消费者覆盖 Tools、Agent prompt 和 App。`list/get` 分别返回 `SkillInfo` snapshot，`get_skill/list_skills` 返回 runtime Skill；文件 watcher 原返回 `(PathBuf, SystemTime, u64)`。 | **已收敛 Skills crate API**：类型改为 `SkillRegistry`，snapshot 查询改为 `list_skill_infos` / `get_skill_info`，enabled filter 改为 `enabled_skill_allowlist`；watcher 返回具名 `SkillFileFingerprint`。运行执行权仍在 Tools，App wire shape 与 config key 不变（ADR 0554）。 |
 | Memory query cache | `QueryResultCache` 是 Database 持有的有界进程内 TTL/LRU 与 generation cache；不执行 SQL、不拥有 durable 写入。 | **已对齐名称**，与持久 `*Store` 分开，保持原失效语义（ADR 0534）。 |
 | LLM 的 STT 适配 | `LlmSttClientAdapter` 把 provider `LlmClient` 转接为消费者所需的 `SttClient`，没有额外桥接状态或独立生命周期。 | **已对齐名称**，保留两种客户端契约及现有 provider dispatch（ADR 0535）。 |
 | Tools 对外入口 | `ToolsFacade` 组合多个 Tools owner，并由 Agent/App adapter 提供窄 ports；它暴露 execution/catalog/config/runtime/asset 调用，但不拥有 MCP、Skill 等资源的创建/重连生命周期。 | **已对齐名称**：Rust crate API、`facade.rs` 模块、Agent/App adapter 与构造入口统一使用 facade 角色；无 Tauri/IPC 变化（ADR 0536）。 |

@@ -51,7 +51,7 @@ use haven_common::config::RequestKind;
 use haven_common::tools::{ToolCatalogGroup, ToolPresentation, ToolPrompt};
 use haven_common::types::RiskLevel;
 use haven_mcp::McpManager;
-use haven_skills::SkillsEngine;
+use haven_skills::SkillRegistry;
 
 /// Resolve capability truth for the model-backed media operations. A
 /// configured role is not enough: routing may fall back to another role and
@@ -161,7 +161,7 @@ pub struct ToolRunDeps {
 /// this boundary as a value object makes additions explicit and prevents the
 /// constructor from growing another positional argument.
 pub struct BuiltinContext {
-    pub skills_engine: SkillsEngine,
+    pub skill_registry: SkillRegistry,
     pub skill_runner: Arc<RwLock<SkillRunner>>,
     pub mcp_manager: Arc<McpManager>,
     pub server_configs: Arc<RwLock<HashMap<String, haven_common::McpServerConfig>>>,
@@ -185,7 +185,7 @@ pub async fn register_builtin_tools(
     context: BuiltinContext,
 ) -> Option<Arc<admin::AdminSurfaces>> {
     let BuiltinContext {
-        skills_engine,
+        skill_registry,
         skill_runner,
         mcp_manager,
         server_configs,
@@ -362,7 +362,7 @@ pub async fn register_builtin_tools(
     // Skills are executable adapters in the deferred catalog. They become
     // provider-visible only after the model explicitly loads one or more.
     let skill_runner = skill_runner.read().await.clone();
-    for skill in skills_engine
+    for skill in skill_registry
         .list_skills()
         .await
         .into_iter()
@@ -399,7 +399,7 @@ pub async fn register_builtin_tools(
         add_operation_views(tools, memory_tool, settings, MEMORY_OPERATION_VIEWS);
         let surfaces = Arc::new(admin::AdminSurfaces::new(
             ctx,
-            skills_engine.clone(),
+            skill_registry.clone(),
             mcp_manager.clone(),
             server_configs.clone(),
             registry.clone(),
