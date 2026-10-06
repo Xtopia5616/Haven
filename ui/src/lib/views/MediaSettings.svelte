@@ -36,7 +36,6 @@
 		ProviderConfigInput,
 		'name' | 'provider' | 'api_style' | 'base_url' | 'api_key' | 'proxy_url' | 'no_proxy'
 	>;
-	type MediaInputStrategy = MediaInputStrategyInput;
 	type MediaKeyName = 'ocr' | 'ocr_secret' | '';
 	interface Props {
 		llmConfig: LlmConfigInput & { providers: ProviderConfigInput[] };
@@ -45,7 +44,7 @@
 		ocr: Required<OcrConfigInput>;
 		tts: Required<TtsConfigInput>;
 		imageGen: Required<ImageGenConfigInput>;
-		mediaInputStrategy: MediaInputStrategy;
+		mediaInputStrategy: MediaInputStrategyInput;
 		contextLimits: Partial<ContextLimitsConfigInput>;
 		keyConfigured: ApiKeyStatus;
 		keyConfiguredProviders?: Record<string, boolean>;
@@ -82,7 +81,7 @@
 		{ value: 'extracted_preferred', label: '优先 OCR / STT / 描述' },
 		{ value: 'text_only_safe', label: '仅安全文本' },
 	];
-	const MEDIA_INPUT_STRATEGY_HINTS: Record<MediaInputStrategy, string> = {
+	const MEDIA_INPUT_STRATEGY_HINTS: Record<MediaInputStrategyInput, string> = {
 		auto: '支持时发送原始图片/音频；模型能力不足时自动改用 OCR、转写或其他安全表示。',
 		raw_preferred: '尽量保留原始媒体，但不会绕过模型能力检查；发生降级时会显示原因。',
 		extracted_preferred: '优先使用 OCR、STT 和图片描述，适合希望减少原始媒体输入的场景。',
@@ -241,7 +240,7 @@
 				ariaLabel="附件输入策略"
 				onChange={withStringValue((v) => {
 					if (Object.hasOwn(MEDIA_INPUT_STRATEGY_HINTS, v)) {
-						mediaInputStrategy = v as MediaInputStrategy;
+						mediaInputStrategy = v as MediaInputStrategyInput;
 					}
 				})}
 			/>

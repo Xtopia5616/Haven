@@ -7,11 +7,9 @@
  */
 import type {
 	MemoryFactResponse as GeneratedMemoryFactResponse,
-	MemoryFactSourceRef as GeneratedMemoryFactSourceRef,
 	MemoryRecallItem as GeneratedMemoryRecallItem,
 } from './generatedCommands.ts';
 
-export type FactSourceRef = GeneratedMemoryFactSourceRef;
 export type Fact = GeneratedMemoryFactResponse;
 export type MemoryRecallItem = GeneratedMemoryRecallItem;
 

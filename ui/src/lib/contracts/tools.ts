@@ -8,7 +8,6 @@ import type {
 	McpServerConfig as GeneratedMcpServerConfig,
 	McpServerSnapshot as GeneratedMcpServerSnapshot,
 	McpToolInfo as GeneratedMcpToolInfo,
-	McpTransportType,
 	SkillInfo as GeneratedSkillInfo,
 	ToolAvailability as GeneratedToolAvailability,
 	ToolIdentity as GeneratedToolIdentity,
@@ -37,7 +36,6 @@ export type SkillInfo = GeneratedSkillInfo;
 export type McpClientStatus = GeneratedMcpClientStatus;
 export type McpToolInfo = GeneratedMcpToolInfo;
 export type McpServerSnapshot = GeneratedMcpServerSnapshot;
-export type McpTransport = McpTransportType;
 export type McpServerConfig = GeneratedMcpServerConfig;
 export type McpServerConfigInput = TauriCommandRequest<'add_mcp_server'>['config'];
 export type McpRefreshResult = GeneratedMcpRefreshResult;

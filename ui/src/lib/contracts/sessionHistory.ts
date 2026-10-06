@@ -1,25 +1,18 @@
 /** Session history and resume command DTOs in their Rust/Tauri wire shape. */
 import type {
-  InteractionRequestedEvent as GeneratedInteractionRequestedEvent,
   LlmUsageRecord as GeneratedLlmUsageRecord,
   Message as GeneratedMessage,
-  MessageAttachment as GeneratedMessageAttachment,
-  SessionInfo as GeneratedSessionInfo,
   SessionListResponse as GeneratedSessionListResponse,
   SessionResumeResponse as GeneratedSessionResumeResponse,
   SessionStep as GeneratedSessionStep,
   SessionUsage as GeneratedSessionUsage,
-  StepInfo as GeneratedStepInfo,
   TauriCommandResponse,
 } from './generatedCommands.ts';
 
 /** All command wire shapes are derived from Rust handlers and DTOs. */
 export type SessionHistoryRow = TauriCommandResponse<'list_history'>[number];
-export type SessionInfoStep = GeneratedStepInfo;
-export type SessionInfo = GeneratedSessionInfo;
 export type SessionListResponse = GeneratedSessionListResponse;
 export type SessionLineageResponse = TauriCommandResponse<'get_session_lineage'>;
-export type SessionMessageAttachment = GeneratedMessageAttachment;
 export type SessionResumeMessage = GeneratedMessage;
 export type SessionResumeStep = GeneratedSessionStep;
 export type SessionResumeUsage = GeneratedSessionUsage;
@@ -33,9 +26,6 @@ export type SessionLlmUsage = Omit<
 	cache_diagnostics?: unknown;
 	cost_usd?: number | null;
 };
-
-/** Renderer-safe interaction projection included in a resume response. */
-export type SessionResumeInteraction = GeneratedInteractionRequestedEvent;
 
 /** Complete successful response from get_session_for_resume/get_latest_session_for_resume. */
 export type SessionResumeResponse = GeneratedSessionResumeResponse;
@@ -54,6 +44,3 @@ export interface SessionResumeInput {
 	llm_usage?: SessionLlmUsage[];
 	interactions?: unknown[];
 }
-
-export type SessionResumeMessageInput = ResumeMessageInput;
-export type SessionResumeStepInput = ResumeStepInput;
