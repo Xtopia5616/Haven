@@ -44,6 +44,8 @@ Tauri command 名与 request/response 类型由 `generatedCommands.ts` 从 Rust 
 
 严格生成的 IPC `LlmConnectionReport` 与容忍缺失可选显示信息的 `LlmConnectionReportView` 分属 wire 与 renderer 视图；共享的 status/reason 枚举直接引用生成契约，归一化函数负责将不可信返回值投影为 view。
 
+交互的 generated `InteractionOwner` 保持 snake_case wire shape；App contract 映射出的 camelCase `InteractionOwnerView` 供 reducer 路由和用户操作使用，回发命令时再由 `interactionOwnerToWire` 转回 generated wire 类型。
+
 ## 架构角色词汇
 
 类型后缀不是装饰词：它必须说明对象的职责。新增和重命名类型按下表选用；存量不一致项在全项目术语审计中逐域处理，不做机械批量替换。一个类型若同时符合多个角色，应先明确它真正拥有的职责，再决定保留组合名还是拆分。

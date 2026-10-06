@@ -47,12 +47,12 @@ export interface SkillsStatusPayload {
 }
 export type InteractionKind = GeneratedInteractionKind;
 export type InteractionStatus = GeneratedInteractionStatus;
-export type InteractionOwner =
+export type InteractionOwnerView =
 	| { kind: 'session'; sessionId: string }
 	| { kind: 'scheduled_tool_run'; toolRunId: string }
 	| { kind: 'app_command' };
 
-export function interactionOwnerToWire(owner: InteractionOwner): InteractionOwnerWire {
+export function interactionOwnerToWire(owner: InteractionOwnerView): InteractionOwnerWire {
 	switch (owner.kind) {
 		case 'session':
 			return { kind: 'session', session_id: owner.sessionId };
@@ -80,15 +80,15 @@ interface InteractionRequestBase {
 }
 export type InteractionRequest =
 	| (InteractionRequestBase & {
-			owner: Extract<InteractionOwner, { kind: 'session' }>;
+			owner: Extract<InteractionOwnerView, { kind: 'session' }>;
 			sessionId: string;
 	  })
 	| (InteractionRequestBase & {
-			owner: Extract<InteractionOwner, { kind: 'scheduled_tool_run' }>;
+			owner: Extract<InteractionOwnerView, { kind: 'scheduled_tool_run' }>;
 			sessionId?: string;
 	  })
 	| (InteractionRequestBase & {
-			owner: Extract<InteractionOwner, { kind: 'app_command' }>;
+			owner: Extract<InteractionOwnerView, { kind: 'app_command' }>;
 		sessionId?: never;
 	  });
 
@@ -214,7 +214,7 @@ function optionalOneOfIsValid<const Values extends readonly string[]>(
 export function mapInteractionOwner(
 	value: unknown,
 	sessionId: string | undefined,
-): InteractionOwner | null {
+): InteractionOwnerView | null {
 	if (!isRecord(value) || typeof value.kind !== 'string') return null;
 	switch (value.kind) {
 		case 'session':
