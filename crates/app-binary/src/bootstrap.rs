@@ -805,16 +805,16 @@ pub(crate) fn to_tauri_shortcut(
     ];
 
     let mut modifiers = Modifiers::empty();
-    if combo.has(CTRL) {
+    if combo.has_modifier(CTRL) {
         modifiers |= Modifiers::CONTROL;
     }
-    if combo.has(SHIFT) {
+    if combo.has_modifier(SHIFT) {
         modifiers |= Modifiers::SHIFT;
     }
-    if combo.has(ALT) {
+    if combo.has_modifier(ALT) {
         modifiers |= Modifiers::ALT;
     }
-    if combo.has(SUPER) {
+    if combo.has_modifier(SUPER) {
         modifiers |= Modifiers::SUPER;
     }
     let code = match combo.key() {

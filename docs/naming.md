@@ -1,6 +1,6 @@
 # Haven 命名规范
 
-> 版本: v1.10 | 日期: 2026-10-07
+> 版本: v1.11 | 日期: 2026-10-07
 
 本文档统一 Haven 项目各层的命名规则（变量名、函数名、文件名、crate 名、缩写大小写、跨层边界）。规范以现有代码中的事实模式为基础，新代码必须遵循；存量代码若与规范冲突，逐步迁移对齐。
 
@@ -114,6 +114,8 @@ Tools manifest 的 generated `ToolManifest` 是 Rust snake_case wire DTO；rende
 | `resolve` / `authorize` | 按 owner 与输入解析目标/契约 / 由安全 owner 作出允许、拒绝或确认决策。 |
 | `emit` / `publish` / `send` | 发出事件 / 发布已提交状态 / 向外部端点或收件人发送消息。 |
 | `map` / `project` / `normalize` / `parse` | 结构转换 / 从权威源派生视图 / 将宽松输入规整为契约 / 解析文本或 wire 格式。 |
+
+Hotkey 领域中，`KeyCombo::has_modifier` 表示修饰键位掩码判断；`KeyCode::display_name` 表示面向用户的显示标签，区别于输入字符串 parser 与稳定键身份。
 
 数据库或领域查询即使按 session、subject、tag 等条件筛选，只要结果是零到多条实体，也使用 `list_*`（条件检索可使用 `find_*` / `search_*`）；`get_*` 留给单实体读取。缓存接口按稳定 cache key 读写一个缓存槽时仍可使用 `get_*`，即使槽内缓存的是集合。
 

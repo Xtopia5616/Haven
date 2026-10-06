@@ -78,7 +78,7 @@ impl KeyCode {
     }
 
     /// Display name, e.g. `Space`, `A`, `F5`, `ArrowLeft`.
-    pub fn name(&self) -> String {
+    pub fn display_name(&self) -> String {
         match self {
             Self::Space => "Space".into(),
             Self::Enter => "Enter".into(),
@@ -122,7 +122,7 @@ impl KeyCombo {
         self.key
     }
 
-    pub fn has(&self, modifier: u8) -> bool {
+    pub fn has_modifier(&self, modifier: u8) -> bool {
         self.modifiers & modifier != 0
     }
 
@@ -149,23 +149,23 @@ impl KeyCombo {
 impl fmt::Display for KeyCombo {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut parts: Vec<&str> = Vec::new();
-        if self.has(CTRL) {
+        if self.has_modifier(CTRL) {
             parts.push("Ctrl");
         }
-        if self.has(SHIFT) {
+        if self.has_modifier(SHIFT) {
             parts.push("Shift");
         }
-        if self.has(ALT) {
+        if self.has_modifier(ALT) {
             parts.push("Alt");
         }
-        if self.has(SUPER) {
+        if self.has_modifier(SUPER) {
             parts.push("Super");
         }
         write!(f, "{}", parts.join("+"))?;
         if !parts.is_empty() {
             write!(f, "+")?;
         }
-        write!(f, "{}", self.key.name())
+        write!(f, "{}", self.key.display_name())
     }
 }
 
@@ -176,10 +176,10 @@ mod tests {
     #[test]
     fn test_parse_modifiers_and_key() {
         let combo = KeyCombo::parse("Ctrl+Shift+Space").unwrap();
-        assert!(combo.has(CTRL));
-        assert!(combo.has(SHIFT));
-        assert!(!combo.has(ALT));
-        assert!(!combo.has(SUPER));
+        assert!(combo.has_modifier(CTRL));
+        assert!(combo.has_modifier(SHIFT));
+        assert!(!combo.has_modifier(ALT));
+        assert!(!combo.has_modifier(SUPER));
         assert_eq!(combo.key(), KeyCode::Space);
         assert_eq!(combo.to_string(), "Ctrl+Shift+Space");
     }
@@ -191,8 +191,8 @@ mod tests {
             KeyCode::Key(b't')
         );
         let combo = KeyCombo::parse("Control+Win+f5").unwrap();
-        assert!(combo.has(CTRL));
-        assert!(combo.has(SUPER));
+        assert!(combo.has_modifier(CTRL));
+        assert!(combo.has_modifier(SUPER));
         assert_eq!(combo.key(), KeyCode::F(5));
         assert_eq!(combo.to_string(), "Ctrl+Super+F5");
     }
@@ -213,10 +213,10 @@ mod tests {
     #[test]
     fn test_parse_tolerates_whitespace_around_plus() {
         let combo = KeyCombo::parse("Ctrl + Space").unwrap();
-        assert!(combo.has(CTRL));
+        assert!(combo.has_modifier(CTRL));
         assert_eq!(combo.key(), KeyCode::Space);
         let combo = KeyCombo::parse(" Ctrl+Shift+Space ").unwrap();
-        assert!(combo.has(CTRL) && combo.has(SHIFT));
+        assert!(combo.has_modifier(CTRL) && combo.has_modifier(SHIFT));
         assert_eq!(combo.key(), KeyCode::Space);
     }
 
@@ -253,10 +253,10 @@ mod tests {
 
     #[test]
     fn test_key_code_names() {
-        assert_eq!(KeyCode::Space.name(), "Space");
-        assert_eq!(KeyCode::Key(b'q').name(), "Q");
-        assert_eq!(KeyCode::Digit(b'7').name(), "7");
-        assert_eq!(KeyCode::F(12).name(), "F12");
-        assert_eq!(KeyCode::ArrowLeft.name(), "Left");
+        assert_eq!(KeyCode::Space.display_name(), "Space");
+        assert_eq!(KeyCode::Key(b'q').display_name(), "Q");
+        assert_eq!(KeyCode::Digit(b'7').display_name(), "7");
+        assert_eq!(KeyCode::F(12).display_name(), "F12");
+        assert_eq!(KeyCode::ArrowLeft.display_name(), "Left");
     }
 }

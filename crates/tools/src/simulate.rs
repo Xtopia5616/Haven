@@ -338,7 +338,7 @@ mod tests {
             KeyCode::ArrowDown,
         ];
         for k in variants {
-            let n = k.name().to_lowercase();
+            let n = k.display_name().to_lowercase();
             assert!(
                 imp::lookup_vk(&n).is_some(),
                 "simulate rejects KeyCode name '{n}'"
