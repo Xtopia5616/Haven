@@ -4,9 +4,9 @@ import type { TauriEvent } from './tauriEvent.ts';
 import {
 	INTERACTION_KIND_VALUES,
 	INTERACTION_STATUS_VALUES,
-	type InteractionKind as GeneratedInteractionKind,
+	type InteractionKind,
 	type InteractionOwner as InteractionOwnerWire,
-	type InteractionStatus as GeneratedInteractionStatus,
+	type InteractionStatus,
 	type RiskLevel,
 } from './generatedCommands.ts';
 
@@ -45,8 +45,6 @@ export interface McpStatusPayload {
 export interface SkillsStatusPayload {
 	op: SkillsStatusOperation;
 }
-export type InteractionKind = GeneratedInteractionKind;
-export type InteractionStatus = GeneratedInteractionStatus;
 export type InteractionOwnerView =
 	| { kind: 'session'; sessionId: string }
 	| { kind: 'scheduled_tool_run'; toolRunId: string }

@@ -1,7 +1,7 @@
 <script lang="ts">
 	import Icon from './Icon.svelte';
 	import MaterialButton from './MaterialButton.svelte';
-	import type { InteractionKind } from './contracts/app.ts';
+	import type { InteractionKind } from './contracts/generatedCommands.ts';
 
 	interface PendingInteractionItem {
 		id: string;

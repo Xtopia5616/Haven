@@ -7,7 +7,8 @@ import type {
 	AgentThoughtPayload,
 	AgentWebSearchPayload,
 } from '../contracts/agent.ts';
-import type { InteractionKind, InteractionRequest } from '../contracts/app.ts';
+import type { InteractionRequest } from '../contracts/app.ts';
+import type { InteractionKind } from '../contracts/generatedCommands.ts';
 import type { SessionResumeUsage } from '../contracts/sessionHistory.ts';
 import type { StreamMessage } from '../streaming.ts';
 import type { LlmUsage } from '../sessionUsage.ts';

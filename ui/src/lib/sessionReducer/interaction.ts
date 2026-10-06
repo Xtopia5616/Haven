@@ -1,4 +1,5 @@
-import { mapInteractionOwner, type InteractionKind, type InteractionRequest } from '../contracts/app.ts';
+import { mapInteractionOwner, type InteractionRequest } from '../contracts/app.ts';
+import type { InteractionKind } from '../contracts/generatedCommands.ts';
 import {
 	INTERACTION_KIND_VALUES,
 	INTERACTION_STATUS_VALUES,

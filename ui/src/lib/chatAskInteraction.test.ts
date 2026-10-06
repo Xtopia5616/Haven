@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { InteractionKind } from './contracts/app.ts';
+import type { InteractionKind } from './contracts/generatedCommands.ts';
 import { createAskInteractionController } from './chatAskInteraction.ts';
 import { SessionReducer } from './sessionReducer.ts';
 

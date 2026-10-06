@@ -1,5 +1,5 @@
 import type { SessionReducer } from './sessionReducer.ts';
-import type { InteractionKind } from './contracts/app.ts';
+import type { InteractionKind } from './contracts/generatedCommands.ts';
 
 interface AskMessage {
 	id: string;
