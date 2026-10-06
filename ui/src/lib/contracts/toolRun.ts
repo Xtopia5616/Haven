@@ -1,8 +1,8 @@
 import type {
-	ToolRunKind as GeneratedToolRunKind,
+	ToolRunKindDto as GeneratedToolRunKindDto,
 	ToolRunStatus as GeneratedToolRunStatus,
 } from './generatedCommands.ts';
-import { TOOL_RUN_KIND_VALUES, TOOL_RUN_STATUS_VALUES } from './generatedCommands.ts';
+import { TOOL_RUN_KIND_DTO_VALUES, TOOL_RUN_STATUS_VALUES } from './generatedCommands.ts';
 
 /**
  * ToolRun IPC contract at the frontend boundary.
@@ -20,7 +20,7 @@ export const TOOL_RUN_EVENT_NAMES = [
 ] as const;
 
 export type ToolRunEventName = (typeof TOOL_RUN_EVENT_NAMES)[number];
-export type ToolRunKind = GeneratedToolRunKind;
+export type ToolRunKind = GeneratedToolRunKindDto;
 export type ToolRunStatus = GeneratedToolRunStatus;
 
 export interface ToolRunPayload {
@@ -72,7 +72,7 @@ function isRecord(value: unknown): value is WireRecord {
 }
 
 function isToolRunKind(value: unknown): value is ToolRunKind {
-	return (TOOL_RUN_KIND_VALUES as readonly unknown[]).includes(value);
+	return (TOOL_RUN_KIND_DTO_VALUES as readonly unknown[]).includes(value);
 }
 
 function isToolRunStatus(value: unknown): value is ToolRunStatus {

@@ -1,6 +1,6 @@
 use crate::app_state::AppState;
 use crate::commands::log_err;
-use crate::events::{ToolRunEvent, ToolRunKind};
+use crate::events::{ToolRunEvent, ToolRunKindDto};
 use haven_common::ToolRunStatus;
 use haven_memory::ToolRunRow;
 use std::sync::Arc;
@@ -47,7 +47,7 @@ pub async fn list_tool_runs(state: State<'_, Arc<AppState>>) -> Result<Vec<ToolR
             .collect::<String>();
         rows.push(tool_run_event_from_row(
             tool_run,
-            ToolRunKind::Background,
+            ToolRunKindDto::Background,
             PersistedToolRunProjection::BoardHistory,
             Some(preview),
         ));
@@ -62,7 +62,7 @@ pub async fn list_tool_runs(state: State<'_, Arc<AppState>>) -> Result<Vec<ToolR
 pub async fn cancel_tool_run(
     state: State<'_, Arc<AppState>>,
     tool_run_id: String,
-    kind: ToolRunKind,
+    kind: ToolRunKindDto,
 ) -> Result<bool, String> {
     let cancelled = state
         .runtime
@@ -87,7 +87,7 @@ pub async fn cancel_tool_run(
 #[tauri::command]
 pub async fn list_tool_run_history(
     state: State<'_, Arc<AppState>>,
-    kind: Option<ToolRunKind>,
+    kind: Option<ToolRunKindDto>,
     limit: Option<usize>,
     session_id: Option<String>,
 ) -> Result<Vec<ToolRunEvent>, String> {
@@ -98,7 +98,7 @@ pub async fn list_tool_run_history(
                 .runtime
                 .services
                 .tool_runs
-                .list_persisted_tool_runs_for_session(session_id, kind.map(ToolRunKind::as_str))
+                .list_persisted_tool_runs_for_session(session_id, kind.map(ToolRunKindDto::as_str))
                 .await
         }
         None => {
@@ -106,7 +106,7 @@ pub async fn list_tool_run_history(
                 .runtime
                 .services
                 .tool_runs
-                .list_persisted_tool_runs(kind.map(ToolRunKind::as_str))
+                .list_persisted_tool_runs(kind.map(ToolRunKindDto::as_str))
                 .await
         }
     }
@@ -121,8 +121,8 @@ pub async fn list_tool_run_history(
         .take(limit)
     {
         let kind = match a.kind.as_str() {
-            "background" => ToolRunKind::Background,
-            "scheduled" => ToolRunKind::Scheduled,
+            "background" => ToolRunKindDto::Background,
+            "scheduled" => ToolRunKindDto::Scheduled,
             other => {
                 return Err(log_err(
                     "list_tool_run_history",
@@ -148,7 +148,7 @@ enum PersistedToolRunProjection {
 
 fn tool_run_event_from_row(
     row: ToolRunRow,
-    kind: ToolRunKind,
+    kind: ToolRunKindDto,
     projection: PersistedToolRunProjection,
     preview: Option<String>,
 ) -> ToolRunEvent {
@@ -225,13 +225,13 @@ mod tests {
         };
         let event = tool_run_event_from_row(
             row.clone(),
-            crate::events::ToolRunKind::Scheduled,
+            crate::events::ToolRunKindDto::Scheduled,
             super::PersistedToolRunProjection::BoardHistory,
             Some("result".into()),
         );
 
         assert_eq!(event.id, "toolrun-history");
-        assert_eq!(event.kind, crate::events::ToolRunKind::Scheduled);
+        assert_eq!(event.kind, crate::events::ToolRunKindDto::Scheduled);
         assert_eq!(event.status, Some(ToolRunStatus::Completed));
         assert_eq!(event.due_at, None);
         assert_eq!(event.title, None);
@@ -245,12 +245,12 @@ mod tests {
 
         let event = tool_run_event_from_row(
             row,
-            crate::events::ToolRunKind::Scheduled,
+            crate::events::ToolRunKindDto::Scheduled,
             super::PersistedToolRunProjection::History,
             None,
         );
         assert_eq!(event.id, "toolrun-history");
-        assert_eq!(event.kind, crate::events::ToolRunKind::Scheduled);
+        assert_eq!(event.kind, crate::events::ToolRunKindDto::Scheduled);
         assert_eq!(event.status, Some(ToolRunStatus::Completed));
         assert_eq!(event.due_at.as_deref(), Some("2026-09-27T10:00:00Z"));
         assert_eq!(event.title, None);

@@ -63,8 +63,8 @@ if (-not [regex]::IsMatch($sessionWire, '(?s)Completed\s*\{[^}]*reason:\s*String
     -not [regex]::IsMatch($sessionWire, '(?s)Updated\s*\{[^}]*status:\s*SessionUpdateStatus')) {
     throw 'terminal detail fields must be required and ordinary lifecycle updates must use SessionUpdateStatus'
 }
-if (-not [regex]::IsMatch($toolRunContract, "(?s)import\s*\{[^}]*TOOL_RUN_KIND_VALUES[^}]*TOOL_RUN_STATUS_VALUES[^}]*\}\s*from\s*'\./generatedCommands\.ts'") -or
-    -not [regex]::IsMatch($toolRunContract, 'TOOL_RUN_KIND_VALUES\s+as\s+readonly\s+unknown\[\]\)\.includes\(value\)') -or
+if (-not [regex]::IsMatch($toolRunContract, "(?s)import\s*\{[^}]*TOOL_RUN_KIND_DTO_VALUES[^}]*TOOL_RUN_STATUS_VALUES[^}]*\}\s*from\s*'\./generatedCommands\.ts'") -or
+    -not [regex]::IsMatch($toolRunContract, 'TOOL_RUN_KIND_DTO_VALUES\s+as\s+readonly\s+unknown\[\]\)\.includes\(value\)') -or
     -not [regex]::IsMatch($toolRunContract, 'TOOL_RUN_STATUS_VALUES\s+as\s+readonly\s+unknown\[\]\)\.includes\(value\)')) {
     throw 'ToolRun event validators must use the generated Rust enum vocabularies'
 }

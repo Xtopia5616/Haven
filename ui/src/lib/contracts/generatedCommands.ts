@@ -41,11 +41,11 @@ export interface InteractionRequestedEvent { id: string; session_id?: string; ow
 export type SessionLifecycleEvent = { type: 'created'; session_id: string; status: SessionStatus; waiting_reason?: SessionWaitingReason | null; title: string | null } | { type: 'updated'; session_id: string; status: SessionUpdateStatus; waiting_reason?: SessionWaitingReason | null; title: string; reason?: string | null } | { type: 'completed'; session_id: string; title: string; reason: string } | { type: 'error'; session_id: string; title: string; error: string } | { type: 'title_updated'; session_id: string; title: string } | { type: 'deleted'; session_id: string | null };
 export const SESSION_UPDATE_STATUS_VALUES = ['pending', 'running', 'paused'] as const;
 export type SessionUpdateStatus = (typeof SESSION_UPDATE_STATUS_VALUES)[number];
-export interface ToolRunEvent { id: string; kind: ToolRunKind; status?: ToolRunStatus; session_id?: string; source_step_id?: string; started_at?: string; finished_at?: string; due_at?: string; title?: string; body?: string; mode?: string; command?: string; output?: string; error?: string; error_reason?: string; exit_code?: number; preview?: string }
-export const TOOL_RUN_KIND_INPUT_VALUES = ['background', 'scheduled'] as const;
-export type ToolRunKindInput = (typeof TOOL_RUN_KIND_INPUT_VALUES)[number];
-export const TOOL_RUN_KIND_VALUES = ['background', 'scheduled'] as const;
-export type ToolRunKind = (typeof TOOL_RUN_KIND_VALUES)[number];
+export interface ToolRunEvent { id: string; kind: ToolRunKindDto; status?: ToolRunStatus; session_id?: string; source_step_id?: string; started_at?: string; finished_at?: string; due_at?: string; title?: string; body?: string; mode?: string; command?: string; output?: string; error?: string; error_reason?: string; exit_code?: number; preview?: string }
+export const TOOL_RUN_KIND_DTO_INPUT_VALUES = ['background', 'scheduled'] as const;
+export type ToolRunKindDtoInput = (typeof TOOL_RUN_KIND_DTO_INPUT_VALUES)[number];
+export const TOOL_RUN_KIND_DTO_VALUES = ['background', 'scheduled'] as const;
+export type ToolRunKindDto = (typeof TOOL_RUN_KIND_DTO_VALUES)[number];
 export const CAPABILITY_INPUT_VALUES = ['chat', 'fast_chat', 'vision', 'audio_input', 'transcription', 'embedding', 'image_generation', 'speech_synthesis'] as const;
 export type CapabilityInput = (typeof CAPABILITY_INPUT_VALUES)[number];
 export const CAPABILITY_VALUES = ['chat', 'fast_chat', 'vision', 'audio_input', 'transcription', 'embedding', 'image_generation', 'speech_synthesis'] as const;
@@ -209,7 +209,7 @@ export interface TauriCommandMap {
 	add_fact: { request: { subject: string; predicate: string; object: string; tags?: string[] | null }; response: MemoryFactResponse };
 	add_mcp_server: { request: { config: McpServerConfigInput }; response: void };
 	cancel_recording: { request: undefined; response: void };
-	cancel_tool_run: { request: { toolRunId: string; kind: ToolRunKindInput }; response: boolean };
+	cancel_tool_run: { request: { toolRunId: string; kind: ToolRunKindDtoInput }; response: boolean };
 	check_llm_connection: { request: undefined; response: LlmConnectionReport };
 	check_shell_available: { request: { shell: string }; response: ShellAvailability };
 	clear_facts: { request: undefined; response: number };
@@ -248,7 +248,7 @@ export interface TauriCommandMap {
 	list_permissions: { request: undefined; response: StoredPermission[] };
 	list_session_permissions: { request: undefined; response: SessionPermissionGrant[] };
 	list_skills: { request: undefined; response: SkillInfo[] };
-	list_tool_run_history: { request: { kind?: ToolRunKindInput | null; limit?: number | null; sessionId?: string | null }; response: ToolRunEvent[] };
+	list_tool_run_history: { request: { kind?: ToolRunKindDtoInput | null; limit?: number | null; sessionId?: string | null }; response: ToolRunEvent[] };
 	list_tool_runs: { request: undefined; response: ToolRunEvent[] };
 	log_frontend_error: { request: { message: string }; response: void };
 	mcp_tool_call: { request: { client: string; tool: string; args: unknown }; response: McpToolCallResponse };

@@ -56,12 +56,12 @@ pub(crate) const AGENT_USAGE_EVENT: &str = "agent:usage";
 pub(crate) const AGENT_TOOL_OUTPUT_EVENT: &str = "agent:tool_output";
 pub(crate) const NOTIFICATION_SHOW_EVENT: &str = "notification:show";
 
-/// App-owned wire category. Keep this separate from `haven_tools::ToolRunKind`:
+/// App-owned wire DTO category. Keep this separate from `haven_tools::ToolRunKind`:
 /// the values currently match, but IPC serialization and field policy belong
 /// to App and must not change when Tools changes its runtime model.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum ToolRunKind {
+pub enum ToolRunKindDto {
     Background,
     Scheduled,
 }
@@ -74,7 +74,7 @@ pub enum ToolRunKind {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct ToolRunEvent {
     pub id: String,
-    pub kind: ToolRunKind,
+    pub kind: ToolRunKindDto,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub status: Option<ToolRunStatus>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -115,8 +115,8 @@ impl ToolRunEvent {
         Self {
             id: payload.tool_run_id,
             kind: match payload.kind {
-                haven_tools::ToolRunKind::Background => ToolRunKind::Background,
-                haven_tools::ToolRunKind::Scheduled => ToolRunKind::Scheduled,
+                haven_tools::ToolRunKind::Background => ToolRunKindDto::Background,
+                haven_tools::ToolRunKind::Scheduled => ToolRunKindDto::Scheduled,
             },
             status: Some(status),
             session_id: payload.session_id,
@@ -141,7 +141,7 @@ impl ToolRunEvent {
     pub(crate) fn from_output_payload(payload: ToolRunOutputPayload) -> Self {
         Self {
             id: payload.tool_run_id,
-            kind: ToolRunKind::Background,
+            kind: ToolRunKindDto::Background,
             status: Some(ToolRunStatus::Running),
             session_id: None,
             source_step_id: payload.source_step_id,
@@ -165,7 +165,7 @@ impl ToolRunEvent {
     ) -> Self {
         Self {
             id: payload.tool_run_id,
-            kind: ToolRunKind::Background,
+            kind: ToolRunKindDto::Background,
             status: None,
             session_id: Some(payload.session_id),
             source_step_id: payload.source_step_id,
@@ -190,8 +190,8 @@ impl From<ToolRunView> for ToolRunEvent {
         Self {
             id: view.id,
             kind: match view.kind {
-                haven_tools::ToolRunKind::Background => ToolRunKind::Background,
-                haven_tools::ToolRunKind::Scheduled => ToolRunKind::Scheduled,
+                haven_tools::ToolRunKind::Background => ToolRunKindDto::Background,
+                haven_tools::ToolRunKind::Scheduled => ToolRunKindDto::Scheduled,
             },
             status: Some(view.status),
             session_id: view.session_id,
@@ -212,7 +212,7 @@ impl From<ToolRunView> for ToolRunEvent {
     }
 }
 
-impl ToolRunKind {
+impl ToolRunKindDto {
     pub(crate) fn as_str(self) -> &'static str {
         match self {
             Self::Background => "background",

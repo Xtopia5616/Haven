@@ -657,7 +657,7 @@ session refresh、hotkey 与 model refresh 回调，不持有 Svelte state 或 D
 不需要 occurrence identity（ADR 0529）。Rust/App wire DTO 与 reducer 语义不变（ADR 0330）。
 ToolRun board 与 lifecycle event 最终共用 App Rust `events.rs::ToolRunEvent` wire DTO。
 Tools 通过封闭的 `ToolRunLifecycleEvent` enum 和具名 payload 发出 lifecycle 更新；App
-`event_bridge` 映射到 IPC DTO。App 的 `ToolRunKind` 与 Tools runtime kind 当前值相同，但前者
+`event_bridge` 映射到 IPC DTO。App 的 `ToolRunKindDto` 与 Tools runtime `ToolRunKind` 当前值相同，但前者
 属于 App wire vocabulary，保留类型隔离可避免运行时模型变更隐式改动 Tauri contract（ADR 0530）。
 `ui/src/lib/contracts/toolRun.ts::mapToolRunPayload` 是其唯一前端运行时 validator/mapper，
 `toolRunStore.refreshToolRuns` 的 command rows 和 `events.ts` 的 ToolRun lifecycle listeners 都调用它。
