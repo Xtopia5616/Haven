@@ -7,7 +7,7 @@ use haven_common::types::{
 use haven_llm::{
     FinishReason, LlmClient, LlmError, LlmResponse, StreamChunk, ToolDefinition, Usage,
 };
-use haven_tools::{Tool, ToolBox, ToolConcurrency, ToolResult, ToolsManager};
+use haven_tools::{Tool, ToolBox, ToolConcurrency, ToolResult, ToolsFacade};
 use std::collections::{HashMap, VecDeque};
 use std::pin::Pin;
 use std::time::Instant;

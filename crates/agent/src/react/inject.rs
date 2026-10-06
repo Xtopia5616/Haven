@@ -231,7 +231,7 @@ mod pending_context_tests {
         let db = std::sync::Arc::new(haven_memory::Database::open(&path).unwrap());
         let executor = std::sync::Arc::new(crate::session::SessionSupervisor::new_for_test(
             db.clone(),
-            std::sync::Arc::new(haven_tools::ToolsManager::new()),
+            std::sync::Arc::new(haven_tools::ToolsFacade::new()),
             1,
         ));
         let engine = ReActEngine::new(
@@ -306,7 +306,7 @@ mod pending_context_tests {
         let session = db.create_session("input").unwrap();
         let executor = std::sync::Arc::new(crate::session::SessionSupervisor::new_for_test(
             db.clone(),
-            std::sync::Arc::new(haven_tools::ToolsManager::new()),
+            std::sync::Arc::new(haven_tools::ToolsFacade::new()),
             1,
         ));
         let engine = ReActEngine::new(

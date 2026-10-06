@@ -3,7 +3,7 @@
 use async_trait::async_trait;
 use haven_tools::ToolCatalogSnapshot;
 #[cfg(test)]
-use haven_tools::ToolsManager;
+use haven_tools::ToolsFacade;
 use std::sync::Arc;
 
 /// Reads the immutable tool catalog view for one session.
@@ -14,20 +14,20 @@ pub trait ToolCatalogPort: Send + Sync {
 
 /// Test adapter that delegates catalog snapshot creation to tools.
 #[cfg(test)]
-pub(crate) struct ToolsManagerToolCatalogAdapter {
-    tools: Arc<ToolsManager>,
+pub(crate) struct ToolsFacadeToolCatalogAdapter {
+    tools: Arc<ToolsFacade>,
 }
 
 #[cfg(test)]
-impl ToolsManagerToolCatalogAdapter {
-    pub(crate) fn new(tools: Arc<ToolsManager>) -> Self {
+impl ToolsFacadeToolCatalogAdapter {
+    pub(crate) fn new(tools: Arc<ToolsFacade>) -> Self {
         Self { tools }
     }
 }
 
 #[cfg(test)]
 #[async_trait]
-impl ToolCatalogPort for ToolsManagerToolCatalogAdapter {
+impl ToolCatalogPort for ToolsFacadeToolCatalogAdapter {
     async fn catalog_snapshot(&self, session_id: &str) -> Arc<ToolCatalogSnapshot> {
         Arc::new(self.tools.tool_catalog_snapshot(session_id).await)
     }
@@ -66,7 +66,7 @@ mod tests {
             Database::open(&directory.path().join("tool-catalog-port.db"))
                 .expect("temporary database"),
         );
-        let tools = Arc::new(ToolsManager::new());
+        let tools = Arc::new(ToolsFacade::new());
         let snapshot = Arc::new(tools.tool_catalog_snapshot("ses-seed").await);
         let executor = Arc::new(SessionSupervisor::new_for_test(db.clone(), tools, 1));
         let session_ids = Arc::new(Mutex::new(Vec::new()));

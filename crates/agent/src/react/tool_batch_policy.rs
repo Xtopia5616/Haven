@@ -47,7 +47,7 @@ const MAX_AGENT_RETRIES_PER_FAILURE: u8 = 2;
 impl ToolRetryBudget {
     /// Record one model-level retry. Returns false after the bounded retry
     /// allowance is exhausted; tool-internal retries remain a separate policy
-    /// owned by `ToolsManager`.
+    /// owned by `ToolsFacade`.
     pub(super) fn admit(&mut self, signal: &ToolFailureSignal) -> bool {
         let key = (
             signal.tool_name.clone(),

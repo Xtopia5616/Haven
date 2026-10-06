@@ -12,7 +12,7 @@ use haven_agent::{AgentLayer, MemoryStartup, PendingSessionRecovery, SessionSupe
 use haven_common::config::ConfigService;
 use haven_input::InputPipeline;
 use haven_memory::{MemoryFactStore, SessionStore};
-use haven_tools::{ToolServices, ToolsManager};
+use haven_tools::{ToolServices, ToolsFacade};
 use std::future::Future;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -32,9 +32,9 @@ use tracing_subscriber::reload;
 pub struct ApplicationRuntime {
     pub(crate) session_store: SessionStore,
     pub(crate) memory_fact_store: MemoryFactStore,
-    pub(crate) tools: Arc<ToolsManager>,
-    /// Process services captured with the manager. Command handlers use this
-    /// bundle instead of asking ToolsManager for each service.
+    pub(crate) tools: Arc<ToolsFacade>,
+    /// Process services captured with the Tools facade. Command handlers use this
+    /// bundle instead of asking ToolsFacade for each service.
     pub(crate) services: ToolServices,
     pub(crate) executor: Arc<SessionSupervisor>,
     pub(crate) agent: Arc<AgentLayer>,
@@ -58,7 +58,7 @@ const TASK_SHUTDOWN_GRACE: Duration = Duration::from_secs(5);
 pub(crate) struct RuntimeServices {
     pub(crate) session_store: SessionStore,
     pub(crate) memory_fact_store: MemoryFactStore,
-    pub(crate) tools: Arc<ToolsManager>,
+    pub(crate) tools: Arc<ToolsFacade>,
     pub(crate) executor: Arc<SessionSupervisor>,
     pub(crate) agent: Arc<AgentLayer>,
     pub(crate) memory_startup: MemoryStartup,

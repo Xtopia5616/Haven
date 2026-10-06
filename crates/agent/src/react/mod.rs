@@ -64,7 +64,7 @@ use sidecars::{ContextWindowCache, PreparedToolDefinitions, ToolDefCache};
 pub(crate) use state::{ReActState, RetryNudge};
 pub use tool_ports::ToolCatalogPort;
 #[cfg(test)]
-pub(crate) use tool_ports::ToolsManagerToolCatalogAdapter;
+pub(crate) use tool_ports::ToolsFacadeToolCatalogAdapter;
 use transcript::{ObservationCard, TranscriptEvent};
 use usage::{UsageRuntime, UsageUpdate};
 
@@ -1337,7 +1337,7 @@ mod tests {
         );
         let executor = Arc::new(SessionSupervisor::new_for_test(
             db.clone(),
-            Arc::new(haven_tools::ToolsManager::new()),
+            Arc::new(haven_tools::ToolsFacade::new()),
             1,
         ));
         let session_id = "ses-0123456789abcdef0123456789abcdef";

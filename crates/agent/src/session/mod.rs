@@ -9,7 +9,7 @@ use haven_memory::repositories::sessions::Session as DbSession;
 use haven_memory::{Database, ToolRunStore};
 use haven_memory::{SessionAuthorizationGrant, SessionStore};
 #[cfg(test)]
-use haven_tools::ToolsManager;
+use haven_tools::ToolsFacade;
 use haven_tools::{
     AuthorizationDecision, AuthorizationEngine, ToolResult, ToolRunService, is_silent_tool_call,
 };
@@ -339,7 +339,7 @@ pub struct SessionSupervisor {
     tool_authorization: Arc<dyn tool_ports::ToolAuthorizationPort>,
     #[cfg(test)]
     tool_catalog: Arc<dyn crate::react::ToolCatalogPort>,
-    /// Live authorization capability shared with the ToolsManager execution
+    /// Live authorization capability shared with the ToolsFacade execution
     /// boundary. Session lifecycle code accesses this narrow capability
     /// directly instead of exposing a process-service bundle.
     authorization: Arc<AuthorizationEngine>,
@@ -513,11 +513,11 @@ impl SessionSupervisor {
     #[cfg(test)]
     pub(crate) fn new_with_session_tool_overlay_port(
         store: SessionStore,
-        tools: Arc<ToolsManager>,
+        tools: Arc<ToolsFacade>,
         max_concurrent: usize,
         session_tool_overlay_port: Arc<dyn SessionToolOverlayPort>,
     ) -> Self {
-        let ports = tool_ports::SessionToolPorts::from_tools_manager(tools)
+        let ports = tool_ports::SessionToolPorts::from_tools_facade(tools)
             .with_session_tool_overlay(session_tool_overlay_port);
         Self::new(store, ports, max_concurrent)
     }
@@ -527,12 +527,12 @@ impl SessionSupervisor {
     #[cfg(test)]
     pub(crate) fn new_for_test(
         db: Arc<Database>,
-        tools: Arc<ToolsManager>,
+        tools: Arc<ToolsFacade>,
         max_concurrent: usize,
     ) -> Self {
         Self::new(
             SessionStore::new(db),
-            tool_ports::SessionToolPorts::from_tools_manager(tools),
+            tool_ports::SessionToolPorts::from_tools_facade(tools),
             max_concurrent,
         )
     }
@@ -994,7 +994,7 @@ mod tests {
     fn make_executor_with_db(max_concurrent: usize) -> (Arc<SessionSupervisor>, Arc<Database>) {
         let path = temp_db_path();
         let db = Arc::new(Database::open(&path).unwrap());
-        let tools = Arc::new(ToolsManager::new());
+        let tools = Arc::new(ToolsFacade::new());
         let exec = Arc::new(SessionSupervisor::new_for_test(
             db.clone(),
             tools,
@@ -1014,7 +1014,7 @@ mod tests {
     async fn constructor_uses_the_injected_session_store() {
         let db = Arc::new(Database::open(&temp_db_path()).unwrap());
         let store = SessionStore::new(db);
-        let ports = tool_ports::SessionToolPorts::from_tools_manager(Arc::new(ToolsManager::new()));
+        let ports = tool_ports::SessionToolPorts::from_tools_facade(Arc::new(ToolsFacade::new()));
         let exec = Arc::new(SessionSupervisor::new(store.clone(), ports, 1));
 
         let session = exec.create_session("typed constructor").await.unwrap();
@@ -1049,7 +1049,7 @@ mod tests {
         let record = db.create_session("durable session permission").unwrap();
         let first = Arc::new(SessionSupervisor::new_for_test(
             db.clone(),
-            Arc::new(ToolsManager::new()),
+            Arc::new(ToolsFacade::new()),
             1,
         ));
         first.ensure_session_loaded(&record.id).await.unwrap();
@@ -1099,7 +1099,7 @@ mod tests {
         first.clear_all_sessions_for_shutdown().await.unwrap();
         let restarted = Arc::new(SessionSupervisor::new_for_test(
             db,
-            Arc::new(ToolsManager::new()),
+            Arc::new(ToolsFacade::new()),
             1,
         ));
         restarted.ensure_session_loaded(&record.id).await.unwrap();
@@ -1142,7 +1142,7 @@ mod tests {
             .unwrap();
         let exec = Arc::new(SessionSupervisor::new_for_test(
             db,
-            Arc::new(ToolsManager::new()),
+            Arc::new(ToolsFacade::new()),
             1,
         ));
         exec.ensure_session_loaded(&record.id).await.unwrap();
@@ -1813,7 +1813,7 @@ mod tests {
     async fn explicit_history_deletion_releases_managed_asset_leases() {
         let path = temp_db_path();
         let db = Arc::new(Database::open(&path).unwrap());
-        let tools = Arc::new(ToolsManager::new());
+        let tools = Arc::new(ToolsFacade::new());
         let registry = tools.share_services().assets;
         let exec = Arc::new(SessionSupervisor::new_for_test(db, tools, 1));
         let assets_root = tempfile::TempDir::new().unwrap();
@@ -1860,7 +1860,7 @@ mod tests {
     #[tokio::test]
     async fn retention_deletion_releases_runtime_grants_and_asset_leases() {
         let db = Arc::new(Database::open_in_memory().unwrap());
-        let tools = Arc::new(ToolsManager::new());
+        let tools = Arc::new(ToolsFacade::new());
         let registry = tools.share_services().assets;
         let exec = Arc::new(SessionSupervisor::new_for_test(db.clone(), tools, 1));
         let session = exec
@@ -1957,7 +1957,7 @@ mod tests {
         .unwrap();
         let exec = Arc::new(SessionSupervisor::new_for_test(
             db.clone(),
-            Arc::new(ToolsManager::new()),
+            Arc::new(ToolsFacade::new()),
             1,
         ));
         exec.tool_run_service()
@@ -2298,7 +2298,7 @@ mod tests {
     #[tokio::test]
     async fn messaging_service_routes_full_lifecycle_through_actor_mailboxes() {
         let db = temp_db();
-        let tools = Arc::new(ToolsManager::new());
+        let tools = Arc::new(ToolsFacade::new());
         let exec = Arc::new(SessionSupervisor::new_for_test(db, tools, 2));
         let sender = exec.create_session("sender").await.unwrap();
         let receiver = exec.create_session("receiver").await.unwrap();
@@ -2426,7 +2426,7 @@ mod tests {
     #[tokio::test]
     async fn constructor_creates_executor() {
         let db = temp_db();
-        let tools = Arc::new(ToolsManager::new());
+        let tools = Arc::new(ToolsFacade::new());
         let exec = Arc::new(SessionSupervisor::new_for_test(
             db.clone(),
             tools.clone(),
@@ -2439,7 +2439,7 @@ mod tests {
     #[tokio::test]
     async fn create_session_returns_pending_session() {
         let db = temp_db();
-        let tools = Arc::new(ToolsManager::new());
+        let tools = Arc::new(ToolsFacade::new());
         let exec = Arc::new(SessionSupervisor::new_for_test(db, tools, 3));
         let session = exec.create_session("hello world").await.unwrap();
         assert_eq!(session.status, SessionStatus::Pending);
@@ -2451,7 +2451,7 @@ mod tests {
     #[tokio::test]
     async fn create_session_with_summary_preserves_fields() {
         let db = temp_db();
-        let tools = Arc::new(ToolsManager::new());
+        let tools = Arc::new(ToolsFacade::new());
         let exec = Arc::new(SessionSupervisor::new_for_test(db, tools, 3));
         let session = exec
             .create_session_with_summary("raw input", "summary text")
@@ -2464,7 +2464,7 @@ mod tests {
     #[tokio::test]
     async fn end_session_running_marks_completed_and_triggers_token() {
         let db = temp_db();
-        let tools = Arc::new(ToolsManager::new());
+        let tools = Arc::new(ToolsFacade::new());
         let exec = Arc::new(SessionSupervisor::new_for_test(db, tools, 3));
         let session = exec.create_session("test").await.unwrap();
         // Set to Running so end_session also cancels the loop token.
@@ -2802,7 +2802,7 @@ mod tests {
     #[tokio::test]
     async fn interrupt_session_pauses_and_cancels_without_removing() {
         let db = temp_db();
-        let tools = Arc::new(ToolsManager::new());
+        let tools = Arc::new(ToolsFacade::new());
         let exec = Arc::new(SessionSupervisor::new_for_test(db, tools, 3));
         let session = exec.create_session("test").await.unwrap();
         exec.update_session_status(&session.id, SessionStatus::Running)
@@ -2911,7 +2911,7 @@ mod tests {
     #[tokio::test]
     async fn end_session_nonexistent_succeeds() {
         let db = temp_db();
-        let tools = Arc::new(ToolsManager::new());
+        let tools = Arc::new(ToolsFacade::new());
         let exec = Arc::new(SessionSupervisor::new_for_test(db, tools, 3));
         // end_session on a nonexistent session updates DB directly.
         let result = exec.end_session("nonexistent").await;
@@ -2921,7 +2921,7 @@ mod tests {
     #[tokio::test]
     async fn end_session_paused_marks_completed() {
         let db = temp_db();
-        let tools = Arc::new(ToolsManager::new());
+        let tools = Arc::new(ToolsFacade::new());
         let exec = Arc::new(SessionSupervisor::new_for_test(db, tools, 3));
         let session = exec.create_session("test").await.unwrap();
         exec.update_session_status(&session.id, SessionStatus::Paused)
@@ -2934,7 +2934,7 @@ mod tests {
     #[tokio::test]
     async fn add_and_get_follow_ups() {
         let db = temp_db();
-        let tools = Arc::new(ToolsManager::new());
+        let tools = Arc::new(ToolsFacade::new());
         let exec = Arc::new(SessionSupervisor::new_for_test(db, tools, 3));
         let session = exec.create_session("test").await.unwrap();
         exec.add_follow_up(&session.id, "extra context 1")
@@ -2956,7 +2956,7 @@ mod tests {
     #[tokio::test]
     async fn answer_supplement_carries_is_answer_flag() {
         let db = temp_db();
-        let tools = Arc::new(ToolsManager::new());
+        let tools = Arc::new(ToolsFacade::new());
         let exec = Arc::new(SessionSupervisor::new_for_test(db, tools, 3));
         let session = exec.create_session("test").await.unwrap();
         exec.add_answer_with_attachments(&session.id, "the answer", &[], None)
@@ -2975,7 +2975,7 @@ mod tests {
     #[tokio::test]
     async fn add_and_get_follow_ups_with_attachments() {
         let db = temp_db();
-        let tools = Arc::new(ToolsManager::new());
+        let tools = Arc::new(ToolsFacade::new());
         let exec = Arc::new(SessionSupervisor::new_for_test(db, tools, 3));
         let session = exec.create_session("test").await.unwrap();
         let att = MessageAttachment::new("image/png", "aGVsbG8=");
@@ -2992,7 +2992,7 @@ mod tests {
     #[tokio::test]
     async fn add_follow_up_nonexistent_session_errors() {
         let db = temp_db();
-        let tools = Arc::new(ToolsManager::new());
+        let tools = Arc::new(ToolsFacade::new());
         let exec = Arc::new(SessionSupervisor::new_for_test(db, tools, 3));
         let result = exec.add_follow_up("nonexistent", "ctx").await;
         assert!(result.is_err());
@@ -3001,7 +3001,7 @@ mod tests {
     #[tokio::test]
     async fn add_and_get_steering() {
         let db = temp_db();
-        let tools = Arc::new(ToolsManager::new());
+        let tools = Arc::new(ToolsFacade::new());
         let exec = Arc::new(SessionSupervisor::new_for_test(db, tools, 3));
         let session = exec.create_session("test").await.unwrap();
         exec.add_steering(&session.id, "steer 1").await.unwrap();
@@ -3017,7 +3017,7 @@ mod tests {
     #[tokio::test]
     async fn list_tool_runs_all_present() {
         let db = temp_db();
-        let tools = Arc::new(ToolsManager::new());
+        let tools = Arc::new(ToolsFacade::new());
         let exec = Arc::new(SessionSupervisor::new_for_test(db, tools, 3));
 
         let _low = exec.create_session("low").await.unwrap();
@@ -3031,7 +3031,7 @@ mod tests {
     #[tokio::test]
     async fn get_active_session_status_returns_correct_status() {
         let db = temp_db();
-        let tools = Arc::new(ToolsManager::new());
+        let tools = Arc::new(ToolsFacade::new());
         let exec = Arc::new(SessionSupervisor::new_for_test(db, tools, 3));
         let session = exec.create_session("test").await.unwrap();
         assert_eq!(
@@ -3043,7 +3043,7 @@ mod tests {
     #[tokio::test]
     async fn get_active_session_status_nonexistent_returns_none() {
         let db = temp_db();
-        let tools = Arc::new(ToolsManager::new());
+        let tools = Arc::new(ToolsFacade::new());
         let exec = Arc::new(SessionSupervisor::new_for_test(db, tools, 3));
         // Absent means "not in the working set", NOT Error.
         assert_eq!(exec.get_active_session_status("nonexistent").await, None);
@@ -3052,7 +3052,7 @@ mod tests {
     #[tokio::test]
     async fn cancellation_token_returns_default_for_unknown_session() {
         let db = temp_db();
-        let tools = Arc::new(ToolsManager::new());
+        let tools = Arc::new(ToolsFacade::new());
         let exec = Arc::new(SessionSupervisor::new_for_test(db, tools, 3));
         let token = exec.cancellation_token("nonexistent").await;
         assert!(!token.is_cancelled());
@@ -3061,7 +3061,7 @@ mod tests {
     #[tokio::test]
     async fn load_pending_tool_runs_reloads_after_restart() {
         let db = temp_db();
-        let tools = Arc::new(ToolsManager::new());
+        let tools = Arc::new(ToolsFacade::new());
         let exec = Arc::new(SessionSupervisor::new_for_test(
             db.clone(),
             tools.clone(),
@@ -3109,7 +3109,7 @@ mod tests {
 
         let exec = Arc::new(SessionSupervisor::new_for_test(
             db.clone(),
-            Arc::new(ToolsManager::new()),
+            Arc::new(ToolsFacade::new()),
             1,
         ));
 
@@ -3166,7 +3166,7 @@ mod tests {
         let db = temp_db();
         let original = Arc::new(SessionSupervisor::new_for_test(
             db.clone(),
-            Arc::new(ToolsManager::new()),
+            Arc::new(ToolsFacade::new()),
             1,
         ));
         let session = original
@@ -3176,7 +3176,7 @@ mod tests {
 
         let exec = Arc::new(SessionSupervisor::new_for_test(
             db.clone(),
-            Arc::new(ToolsManager::new()),
+            Arc::new(ToolsFacade::new()),
             1,
         ));
         exec.pending_session_recovery_failures
@@ -3287,7 +3287,7 @@ mod tests {
     #[tokio::test]
     async fn dispatcher_can_defer_pending_recovery_until_catalog_ready() {
         let db = temp_db();
-        let tools = Arc::new(ToolsManager::new());
+        let tools = Arc::new(ToolsFacade::new());
         let exec = Arc::new(SessionSupervisor::new_for_test(
             db.clone(),
             tools.clone(),
@@ -3340,7 +3340,7 @@ mod tests {
     #[tokio::test]
     async fn load_pending_tool_runs_skips_non_pending() {
         let db = temp_db();
-        let tools = Arc::new(ToolsManager::new());
+        let tools = Arc::new(ToolsFacade::new());
         let exec = Arc::new(SessionSupervisor::new_for_test(
             db.clone(),
             tools.clone(),
@@ -3363,7 +3363,7 @@ mod tests {
     #[tokio::test]
     async fn update_session_status_changes_state() {
         let db = temp_db();
-        let tools = Arc::new(ToolsManager::new());
+        let tools = Arc::new(ToolsFacade::new());
         let exec = Arc::new(SessionSupervisor::new_for_test(db.clone(), tools, 3));
         let session = exec.create_session("test").await.unwrap();
         exec.update_session_status(&session.id, SessionStatus::Completed)
@@ -3380,7 +3380,7 @@ mod tests {
     #[tokio::test]
     async fn status_persistence_retries_and_failed_transition_keeps_actor_state() {
         let db = temp_db();
-        let tools = Arc::new(ToolsManager::new());
+        let tools = Arc::new(ToolsFacade::new());
         let exec = Arc::new(SessionSupervisor::new_for_test(db.clone(), tools, 3));
         let session = exec
             .create_session("retry status persistence")
@@ -3443,7 +3443,7 @@ mod tests {
         .unwrap();
         let exec = Arc::new(SessionSupervisor::new_for_test(
             db.clone(),
-            Arc::new(ToolsManager::new()),
+            Arc::new(ToolsFacade::new()),
             3,
         ));
         exec.tool_run_service()
@@ -3485,7 +3485,7 @@ mod tests {
         .unwrap();
         let exec = Arc::new(SessionSupervisor::new_for_test(
             db.clone(),
-            Arc::new(ToolsManager::new()),
+            Arc::new(ToolsFacade::new()),
             1,
         ));
         exec.tool_run_service()
@@ -3678,7 +3678,7 @@ mod tests {
         .unwrap();
         let exec = Arc::new(SessionSupervisor::new_for_test(
             db.clone(),
-            Arc::new(ToolsManager::new()),
+            Arc::new(ToolsFacade::new()),
             3,
         ));
         exec.tool_run_service()
@@ -3715,7 +3715,7 @@ mod tests {
         .unwrap();
         let exec = Arc::new(SessionSupervisor::new_for_test(
             db.clone(),
-            Arc::new(ToolsManager::new()),
+            Arc::new(ToolsFacade::new()),
             3,
         ));
         exec.tool_run_service()
@@ -3755,7 +3755,7 @@ mod tests {
     #[tokio::test]
     async fn update_session_status_completed_cleans_up() {
         let db = temp_db();
-        let tools = Arc::new(ToolsManager::new());
+        let tools = Arc::new(ToolsFacade::new());
         let exec = Arc::new(SessionSupervisor::new_for_test(db, tools, 3));
         let session = exec.create_session("test").await.unwrap();
         exec.update_session_status(&session.id, SessionStatus::Completed)
@@ -3768,7 +3768,7 @@ mod tests {
     #[tokio::test]
     async fn execute_step_unknown_tool_errors() {
         let db = temp_db();
-        let tools = Arc::new(ToolsManager::new());
+        let tools = Arc::new(ToolsFacade::new());
         let exec = Arc::new(SessionSupervisor::new_for_test(db, tools, 3));
         let session = exec.create_session("test").await.unwrap();
         let result = exec
@@ -3786,7 +3786,7 @@ mod tests {
     #[tokio::test]
     async fn execute_step_rejects_paused_without_forcing_running() {
         let db = temp_db();
-        let tools = Arc::new(ToolsManager::new());
+        let tools = Arc::new(ToolsFacade::new());
         let exec = Arc::new(SessionSupervisor::new_for_test(db, tools, 3));
         let session = exec.create_session("paused tool").await.unwrap();
         exec.update_session_status(&session.id, SessionStatus::Paused)
@@ -3812,7 +3812,7 @@ mod tests {
     #[tokio::test]
     async fn execute_step_rejects_pending_without_forcing_running() {
         let db = temp_db();
-        let tools = Arc::new(ToolsManager::new());
+        let tools = Arc::new(ToolsFacade::new());
         let exec = Arc::new(SessionSupervisor::new_for_test(db, tools, 3));
         let session = exec.create_session("pending tool").await.unwrap();
         assert_eq!(
@@ -3838,7 +3838,7 @@ mod tests {
     #[tokio::test]
     async fn execute_step_rejects_missing_session_fail_closed() {
         let db = temp_db();
-        let tools = Arc::new(ToolsManager::new());
+        let tools = Arc::new(ToolsFacade::new());
         let exec = Arc::new(SessionSupervisor::new_for_test(db, tools, 3));
         let result = exec
             .execute_step(
@@ -3860,7 +3860,7 @@ mod tests {
     #[tokio::test]
     async fn interaction_events_persist_and_replay_into_reloaded_actor() {
         let db = temp_db();
-        let tools = Arc::new(ToolsManager::new());
+        let tools = Arc::new(ToolsFacade::new());
         let exec = Arc::new(SessionSupervisor::new_for_test(
             db.clone(),
             tools.clone(),
@@ -4018,7 +4018,7 @@ mod tests {
         let db = temp_db();
         let exec = Arc::new(SessionSupervisor::new_for_test(
             db.clone(),
-            Arc::new(ToolsManager::new()),
+            Arc::new(ToolsFacade::new()),
             1,
         ));
         let session = exec
@@ -4182,7 +4182,7 @@ mod tests {
         let db = temp_db();
         let exec = Arc::new(SessionSupervisor::new_for_test(
             db.clone(),
-            Arc::new(ToolsManager::new()),
+            Arc::new(ToolsFacade::new()),
             1,
         ));
         let session = exec
@@ -4257,7 +4257,7 @@ mod tests {
     #[tokio::test]
     async fn invalid_confirmation_batch_does_not_pause_or_partially_register() {
         let db = temp_db();
-        let tools = Arc::new(ToolsManager::new());
+        let tools = Arc::new(ToolsFacade::new());
         let exec = Arc::new(SessionSupervisor::new_for_test(db.clone(), tools, 1));
         let session = exec
             .create_session("atomic confirmation batch")
@@ -4378,7 +4378,7 @@ mod tests {
     #[tokio::test]
     async fn plain_pause_has_no_interaction() {
         let db = temp_db();
-        let tools = Arc::new(ToolsManager::new());
+        let tools = Arc::new(ToolsFacade::new());
         let exec = Arc::new(SessionSupervisor::new_for_test(db, tools, 3));
         let session = exec.create_session("pause me").await.unwrap();
         exec.update_session_status(&session.id, SessionStatus::Paused)
@@ -4397,7 +4397,7 @@ mod tests {
     #[tokio::test]
     async fn terminal_tool_runs_need_explicit_reopen_to_reactivate() {
         let db = temp_db();
-        let tools = Arc::new(ToolsManager::new());
+        let tools = Arc::new(ToolsFacade::new());
         let exec = Arc::new(SessionSupervisor::new_for_test(db, tools, 3));
         let session = exec.create_session("t").await.unwrap();
         exec.update_session_status(&session.id, SessionStatus::Completed)
@@ -4433,7 +4433,7 @@ mod tests {
     #[tokio::test]
     async fn status_watch_wakes_waiter_on_transition() {
         let db = temp_db();
-        let tools = Arc::new(ToolsManager::new());
+        let tools = Arc::new(ToolsFacade::new());
         let exec = Arc::new(SessionSupervisor::new_for_test(db, tools, 3));
         let session = exec.create_session("wait").await.unwrap();
         exec.update_session_status(&session.id, SessionStatus::Running)
@@ -4500,7 +4500,7 @@ mod tests {
     #[tokio::test]
     async fn same_status_pending_still_wakes_dispatcher() {
         let db = temp_db();
-        let tools = Arc::new(ToolsManager::new());
+        let tools = Arc::new(ToolsFacade::new());
         let exec = Arc::new(SessionSupervisor::new_for_test(db, tools, 3));
         let session = exec.create_session("already pending").await.unwrap();
 
@@ -4558,7 +4558,7 @@ mod tests {
     #[tokio::test]
     async fn tool_run_completions_buffered_and_drained() {
         let db = temp_db();
-        let tools = Arc::new(ToolsManager::new());
+        let tools = Arc::new(ToolsFacade::new());
         let exec = Arc::new(SessionSupervisor::new_for_test(db, tools, 3));
         let session = exec.create_session("background ToolRun").await.unwrap();
 
@@ -4587,7 +4587,7 @@ mod tests {
     #[tokio::test]
     async fn concurrent_steering_ingress_is_bounded_and_never_truncated() {
         let db = temp_db();
-        let tools = Arc::new(ToolsManager::new());
+        let tools = Arc::new(ToolsFacade::new());
         let exec = Arc::new(SessionSupervisor::new_for_test(db, tools, 3));
         let session = exec.create_session("concurrent steering").await.unwrap();
         let mut tasks = tokio::task::JoinSet::new();
@@ -4618,7 +4618,7 @@ mod tests {
     #[tokio::test]
     async fn drain_react_context_prioritizes_steering_over_follow_ups() {
         let db = temp_db();
-        let tools = Arc::new(ToolsManager::new());
+        let tools = Arc::new(ToolsFacade::new());
         let exec = Arc::new(SessionSupervisor::new_for_test(db, tools, 3));
         let session = exec.create_session("context priority").await.unwrap();
 
@@ -4703,7 +4703,7 @@ mod tests {
     #[tokio::test]
     async fn remove_session_clears_tool_run_buffers_and_status_watcher() {
         let db = temp_db();
-        let tools = Arc::new(ToolsManager::new());
+        let tools = Arc::new(ToolsFacade::new());
         let exec = Arc::new(SessionSupervisor::new_for_test(db, tools, 3));
         let session = exec.create_session("cleanup").await.unwrap();
         exec.update_session_status(&session.id, SessionStatus::Paused)

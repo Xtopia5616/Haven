@@ -1,7 +1,7 @@
 //! Pure prompt rendering primitives.
 //!
 //! `PromptRenderer` only accepts already-prepared strings and memory sections.
-//! It deliberately has no database, router, tool manager, or cache fields so
+//! It deliberately has no database, router, Tools facade, or cache fields so
 //! rendering cannot accidentally acquire new runtime side effects.
 
 use haven_common::prompts::{MAIN_SYSTEM_PROMPT, render};

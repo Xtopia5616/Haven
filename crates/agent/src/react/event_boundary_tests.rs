@@ -11,7 +11,7 @@ fn test_engine(db: Arc<Database>) -> ReActEngine {
     ));
     let executor = Arc::new(SessionSupervisor::new_for_test(
         db.clone(),
-        Arc::new(haven_tools::ToolsManager::new()),
+        Arc::new(haven_tools::ToolsFacade::new()),
         2,
     ));
     ReActEngine::new(

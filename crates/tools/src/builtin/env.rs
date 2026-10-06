@@ -205,7 +205,7 @@ fn write_value(scope: EnvScope, name: &str, value: &str) -> anyhow::Result<()> {
     match scope {
         EnvScope::Process => {
             // Rust 2024 marks process-global environment mutation unsafe.
-            // The tool manager serializes this resource, so this is the one
+            // The tool execution path serializes this resource, so this is the one
             // deliberate process mutation boundary.
             unsafe { env::set_var(name, value) };
             Ok(())

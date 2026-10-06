@@ -1260,7 +1260,7 @@ mod tests {
     use haven_llm::client::LlmClient;
     use haven_llm::{FinishReason, LlmError, StreamChunk, Usage};
     use haven_memory::Database;
-    use haven_tools::ToolsManager;
+    use haven_tools::ToolsFacade;
     use std::collections::VecDeque;
     use std::pin::Pin;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -1408,7 +1408,7 @@ mod tests {
         let db = Arc::new(Database::open(&db_path).unwrap());
         let executor = Arc::new(SessionSupervisor::new_for_test(
             db.clone(),
-            Arc::new(ToolsManager::new()),
+            Arc::new(ToolsFacade::new()),
             1,
         ));
         let session = db.create_session("role probe").unwrap();
@@ -1518,7 +1518,7 @@ mod tests {
 
         let executor = Arc::new(SessionSupervisor::new_for_test(
             db.clone(),
-            Arc::new(ToolsManager::new()),
+            Arc::new(ToolsFacade::new()),
             1,
         ));
         let router = Arc::new(LlmRouter::new(RouterConfig::default()));

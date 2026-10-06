@@ -3,7 +3,7 @@ use super::*;
 
 #[tokio::test]
 async fn invalid_tool_inputs_are_reported_without_repairing_arguments() {
-    let tools = Arc::new(ToolsManager::new());
+    let tools = Arc::new(ToolsFacade::new());
     tools
         .registry()
         .register(Arc::new(ActionRequiredTool) as ToolBox)
@@ -33,7 +33,7 @@ async fn invalid_tool_inputs_are_reported_without_repairing_arguments() {
 
 #[tokio::test]
 async fn valid_tool_inputs_and_final_tool_calls_have_no_validation_failures() {
-    let tools = Arc::new(ToolsManager::new());
+    let tools = Arc::new(ToolsFacade::new());
     tools
         .registry()
         .register(Arc::new(ActionRequiredTool) as ToolBox)
@@ -75,7 +75,7 @@ async fn null_tool_input_is_reported_without_repairing_arguments() {
     // Interrupted/truncated generation yields unparseable arguments,
     // which parse_default_model_response converts to Null. Report the
     // malformed input instead of shipping a guessed object to the tool.
-    let tools = Arc::new(ToolsManager::new());
+    let tools = Arc::new(ToolsFacade::new());
     tools
         .registry()
         .register(Arc::new(ActionRequiredTool) as ToolBox)
@@ -104,7 +104,7 @@ async fn null_tool_input_is_reported_without_repairing_arguments() {
 async fn null_valued_tool_fields_are_reported_without_repairing_arguments() {
     // A required field explicitly set to null is as unusable as a
     // missing one: the validator rejects null for typed fields.
-    let tools = Arc::new(ToolsManager::new());
+    let tools = Arc::new(ToolsFacade::new());
     tools
         .registry()
         .register(Arc::new(ActionRequiredTool) as ToolBox)
@@ -133,7 +133,7 @@ async fn null_valued_tool_fields_are_reported_without_repairing_arguments() {
 
 #[tokio::test]
 async fn missing_enum_field_is_reported_without_guessing_a_value() {
-    let tools = Arc::new(ToolsManager::new());
+    let tools = Arc::new(ToolsFacade::new());
     tools
         .registry()
         .register(Arc::new(EnumRequiredTool) as ToolBox)
@@ -166,7 +166,7 @@ async fn invalid_enum_value_is_reported_without_repairing_arguments() {
     // the JSON body into the target type: input.action: ...") — the value
     // must be reported before execution, not replaced with a guessed
     // discriminator.
-    let tools = Arc::new(ToolsManager::new());
+    let tools = Arc::new(ToolsFacade::new());
     tools
         .registry()
         .register(Arc::new(ActionRequiredTool) as ToolBox)
@@ -197,7 +197,7 @@ async fn invalid_enum_value_is_reported_without_repairing_arguments() {
 async fn wrong_type_tool_value_is_reported_without_repairing_arguments() {
     // Same provider 400 when a field's value type contradicts the schema
     // (e.g. a number where the schema declares a string enum).
-    let tools = Arc::new(ToolsManager::new());
+    let tools = Arc::new(ToolsFacade::new());
     tools
         .registry()
         .register(Arc::new(ActionRequiredTool) as ToolBox)
@@ -228,7 +228,7 @@ async fn wrong_type_tool_value_is_reported_without_repairing_arguments() {
 async fn valid_enum_values_have_no_validation_failures() {
     // A value that conforms to the schema (in the enum, correct type)
     // must NOT be repaired.
-    let tools = Arc::new(ToolsManager::new());
+    let tools = Arc::new(ToolsFacade::new());
     tools
         .registry()
         .register(Arc::new(ActionRequiredTool) as ToolBox)
@@ -257,7 +257,7 @@ async fn invalid_optional_field_is_reported_without_repairing_arguments() {
     // Even a non-required property with an invalid value can trip the
     // provider's deserialization (the input object is validated as a
     // whole), so it is reported too.
-    let tools = Arc::new(ToolsManager::new());
+    let tools = Arc::new(ToolsFacade::new());
     tools
         .registry()
         .register(Arc::new(EnumWithOptionalTool) as ToolBox)
@@ -284,7 +284,7 @@ async fn invalid_optional_field_is_reported_without_repairing_arguments() {
 
 #[tokio::test]
 async fn confirmation_recovery_matches_the_full_invocation_identity() {
-    let tools = Arc::new(ToolsManager::new());
+    let tools = Arc::new(ToolsFacade::new());
     let client = Arc::new(FinalAnswerMock) as Arc<dyn LlmClient>;
     let (_agent, executor) = make_test_agent_with(client, tools);
     let session = executor.create_session("confirm").await.unwrap();

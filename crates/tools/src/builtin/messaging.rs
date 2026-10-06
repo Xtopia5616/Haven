@@ -394,7 +394,7 @@ pub enum AgentOperation {
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 pub struct AgentParams {
     pub operation: AgentOperation,
-    /// Private owning session id, injected by the tools manager.
+    /// Private owning session id, injected by the Tools facade.
     #[serde(default, rename = "_session_id")]
     pub session_id: Option<String>,
     /// Optional peer filter for list, or target session for lifecycle/history

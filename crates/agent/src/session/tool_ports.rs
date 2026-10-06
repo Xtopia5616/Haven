@@ -3,7 +3,7 @@
 use async_trait::async_trait;
 use haven_common::types::{MessageAttachment, RiskLevel};
 #[cfg(test)]
-use haven_tools::ToolsManager;
+use haven_tools::ToolsFacade;
 use haven_tools::{
     AuthorizationEngine, AuthorizationRequest, ToolRegistration, ToolResult, ToolRunService,
 };
@@ -66,20 +66,20 @@ pub trait ToolAuthorizationPort: Send + Sync {
 
 /// Test adapter mirrors the app composition adapter's execution calls.
 #[cfg(test)]
-pub(crate) struct ToolsManagerToolExecutionAdapter {
-    tools: Arc<ToolsManager>,
+pub(crate) struct ToolsFacadeToolExecutionAdapter {
+    tools: Arc<ToolsFacade>,
 }
 
 #[cfg(test)]
-impl ToolsManagerToolExecutionAdapter {
-    pub(crate) fn new(tools: Arc<ToolsManager>) -> Self {
+impl ToolsFacadeToolExecutionAdapter {
+    pub(crate) fn new(tools: Arc<ToolsFacade>) -> Self {
         Self { tools }
     }
 }
 
 #[cfg(test)]
 #[async_trait]
-impl ToolExecutionPort for ToolsManagerToolExecutionAdapter {
+impl ToolExecutionPort for ToolsFacadeToolExecutionAdapter {
     async fn execute(&self, context: ToolExecutionContext) -> anyhow::Result<ToolResult> {
         self.tools
             .execute_tool_with_step(
@@ -108,20 +108,20 @@ impl ToolExecutionPort for ToolsManagerToolExecutionAdapter {
 
 /// Test adapter for live authorization request preparation.
 #[cfg(test)]
-pub(crate) struct ToolsManagerToolAuthorizationAdapter {
-    tools: Arc<ToolsManager>,
+pub(crate) struct ToolsFacadeToolAuthorizationAdapter {
+    tools: Arc<ToolsFacade>,
 }
 
 #[cfg(test)]
-impl ToolsManagerToolAuthorizationAdapter {
-    pub(crate) fn new(tools: Arc<ToolsManager>) -> Self {
+impl ToolsFacadeToolAuthorizationAdapter {
+    pub(crate) fn new(tools: Arc<ToolsFacade>) -> Self {
         Self { tools }
     }
 }
 
 #[cfg(test)]
 #[async_trait]
-impl ToolAuthorizationPort for ToolsManagerToolAuthorizationAdapter {
+impl ToolAuthorizationPort for ToolsFacadeToolAuthorizationAdapter {
     async fn risk_level(
         &self,
         session_id: Option<&str>,
@@ -195,26 +195,22 @@ impl SessionToolPorts {
     }
 
     #[cfg(test)]
-    pub(crate) fn from_tools_manager(tools: Arc<ToolsManager>) -> Self {
+    pub(crate) fn from_tools_facade(tools: Arc<ToolsFacade>) -> Self {
         let services = tools.share_services();
         let catalog: Arc<dyn crate::ToolCatalogPort> = Arc::new(
-            crate::react::ToolsManagerToolCatalogAdapter::new(Arc::clone(&tools)),
+            crate::react::ToolsFacadeToolCatalogAdapter::new(Arc::clone(&tools)),
         );
         Self::new(
-            Arc::new(ToolsManagerToolExecutionAdapter::new(Arc::clone(&tools))),
-            Arc::new(ToolsManagerToolAuthorizationAdapter::new(Arc::clone(
-                &tools,
-            ))),
+            Arc::new(ToolsFacadeToolExecutionAdapter::new(Arc::clone(&tools))),
+            Arc::new(ToolsFacadeToolAuthorizationAdapter::new(Arc::clone(&tools))),
             catalog,
             services.authorization,
             services.tool_runs,
-            Arc::new(ToolsManagerSessionToolOverlayAdapter::new(Arc::clone(
+            Arc::new(ToolsFacadeSessionToolOverlayAdapter::new(Arc::clone(
                 &tools,
             ))),
-            Arc::new(ToolsManagerManagedAssetLeaseAdapter::new(Arc::clone(
-                &tools,
-            ))),
-            Arc::new(ToolsManagerToolObservationAdapter::new(tools)),
+            Arc::new(ToolsFacadeManagedAssetLeaseAdapter::new(Arc::clone(&tools))),
+            Arc::new(ToolsFacadeToolObservationAdapter::new(tools)),
         )
     }
 
@@ -234,22 +230,22 @@ pub trait ToolObservationPort: Send + Sync {
     async fn observation_text(&self, tool_name: &str, result: &ToolResult) -> String;
 }
 
-/// Test adapter delegating observation formatting to a shared manager.
+/// Test adapter delegating observation formatting to the shared Tools facade.
 #[cfg(test)]
-pub(super) struct ToolsManagerToolObservationAdapter {
-    tools: Arc<ToolsManager>,
+pub(super) struct ToolsFacadeToolObservationAdapter {
+    tools: Arc<ToolsFacade>,
 }
 
 #[cfg(test)]
-impl ToolsManagerToolObservationAdapter {
-    pub(super) fn new(tools: Arc<ToolsManager>) -> Self {
+impl ToolsFacadeToolObservationAdapter {
+    pub(super) fn new(tools: Arc<ToolsFacade>) -> Self {
         Self { tools }
     }
 }
 
 #[cfg(test)]
 #[async_trait]
-impl ToolObservationPort for ToolsManagerToolObservationAdapter {
+impl ToolObservationPort for ToolsFacadeToolObservationAdapter {
     async fn observation_text(&self, tool_name: &str, result: &ToolResult) -> String {
         self.tools.observation_text(tool_name, result).await
     }
@@ -263,19 +259,19 @@ pub trait ManagedAssetLeasePort: Send + Sync {
 
 /// Test adapter mirroring the managed-asset session lease boundary.
 #[cfg(test)]
-pub(super) struct ToolsManagerManagedAssetLeaseAdapter {
-    tools: Arc<ToolsManager>,
+pub(super) struct ToolsFacadeManagedAssetLeaseAdapter {
+    tools: Arc<ToolsFacade>,
 }
 
 #[cfg(test)]
-impl ToolsManagerManagedAssetLeaseAdapter {
-    pub(super) fn new(tools: Arc<ToolsManager>) -> Self {
+impl ToolsFacadeManagedAssetLeaseAdapter {
+    pub(super) fn new(tools: Arc<ToolsFacade>) -> Self {
         Self { tools }
     }
 }
 
 #[cfg(test)]
-impl ManagedAssetLeasePort for ToolsManagerManagedAssetLeaseAdapter {
+impl ManagedAssetLeasePort for ToolsFacadeManagedAssetLeaseAdapter {
     fn register_for_session(&self, session_id: &str, attachments: &[MessageAttachment]) {
         self.tools
             .register_managed_assets_for_session(session_id, attachments);
@@ -311,20 +307,20 @@ pub trait SessionToolOverlayPort: Send + Sync {
 
 /// Test adapter mirroring session overlay operations in the composition layer.
 #[cfg(test)]
-pub(crate) struct ToolsManagerSessionToolOverlayAdapter {
-    tools: Arc<ToolsManager>,
+pub(crate) struct ToolsFacadeSessionToolOverlayAdapter {
+    tools: Arc<ToolsFacade>,
 }
 
 #[cfg(test)]
-impl ToolsManagerSessionToolOverlayAdapter {
-    pub(crate) fn new(tools: Arc<ToolsManager>) -> Self {
+impl ToolsFacadeSessionToolOverlayAdapter {
+    pub(crate) fn new(tools: Arc<ToolsFacade>) -> Self {
         Self { tools }
     }
 }
 
 #[cfg(test)]
 #[async_trait]
-impl SessionToolOverlayPort for ToolsManagerSessionToolOverlayAdapter {
+impl SessionToolOverlayPort for ToolsFacadeSessionToolOverlayAdapter {
     async fn unregister_session(&self, session_id: &str) {
         self.tools.unregister_session(session_id).await;
     }
@@ -396,7 +392,7 @@ mod tests {
         }
     }
 
-    async fn register_overlay_tool(tools: &ToolsManager, session_id: &str) {
+    async fn register_overlay_tool(tools: &ToolsFacade, session_id: &str) {
         let tool: ToolBox = Arc::new(OverlayProbeTool("overlay.probe"));
         tools.register_for_session(session_id, tool).await;
     }
@@ -447,12 +443,12 @@ mod tests {
 
     #[tokio::test]
     async fn execution_adapter_forwards_cancel_and_trusted_step_identity() {
-        let tools = Arc::new(ToolsManager::new());
+        let tools = Arc::new(ToolsFacade::new());
         let session_id = "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
         tools
             .register_for_session(session_id, Arc::new(ExecutionContextProbe))
             .await;
-        let adapter = ToolsManagerToolExecutionAdapter::new(tools);
+        let adapter = ToolsFacadeToolExecutionAdapter::new(tools);
         let cancel = CancellationToken::new();
 
         let result = adapter
@@ -485,12 +481,12 @@ mod tests {
 
     #[tokio::test]
     async fn execution_adapter_forwards_cancellation() {
-        let tools = Arc::new(ToolsManager::new());
+        let tools = Arc::new(ToolsFacade::new());
         let session_id = "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
         tools
             .register_for_session(session_id, Arc::new(ExecutionContextProbe))
             .await;
-        let adapter = ToolsManagerToolExecutionAdapter::new(tools);
+        let adapter = ToolsFacadeToolExecutionAdapter::new(tools);
         let cancel = CancellationToken::new();
         cancel.cancel();
 
@@ -510,7 +506,7 @@ mod tests {
 
     #[tokio::test]
     async fn manager_adapter_forwards_tool_name_and_result_to_formatter() {
-        let tools = Arc::new(ToolsManager::new());
+        let tools = Arc::new(ToolsFacade::new());
         let mut settings = HashMap::new();
         settings.insert(
             "probe.operation".into(),
@@ -521,7 +517,7 @@ mod tests {
         );
         tools.set_tool_settings(settings).await.unwrap();
         let result = ToolResult::ok(json!("012345"));
-        let adapter = ToolsManagerToolObservationAdapter::new(Arc::clone(&tools));
+        let adapter = ToolsFacadeToolObservationAdapter::new(Arc::clone(&tools));
 
         assert_eq!(
             adapter.observation_text("probe.operation", &result).await,
@@ -531,7 +527,7 @@ mod tests {
 
     #[tokio::test]
     async fn manager_overlay_adapter_loads_and_unregisters_only_the_target_session() {
-        let tools = Arc::new(ToolsManager::new());
+        let tools = Arc::new(ToolsFacade::new());
         let skills_root = tempfile::tempdir().unwrap();
         let skill_dir = skills_root.path().join("echo");
         fs::create_dir_all(skill_dir.join("scripts")).unwrap();
@@ -548,7 +544,7 @@ mod tests {
             .await
             .unwrap();
         tools.rebuild_catalog().await.unwrap();
-        let adapter = ToolsManagerSessionToolOverlayAdapter::new(Arc::clone(&tools));
+        let adapter = ToolsFacadeSessionToolOverlayAdapter::new(Arc::clone(&tools));
         let session_id = "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
         let other_session_id = "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 
@@ -617,7 +613,7 @@ mod tests {
         let db_dir = tempfile::tempdir().unwrap();
         let db =
             Arc::new(haven_memory::Database::open(&db_dir.path().join("lifecycle.db")).unwrap());
-        let tools = Arc::new(ToolsManager::new());
+        let tools = Arc::new(ToolsFacade::new());
         let supervisor = Arc::new(crate::session::SessionSupervisor::new_for_test(
             db,
             tools.clone(),
@@ -679,7 +675,7 @@ mod tests {
 
     #[test]
     fn managed_asset_adapter_releases_only_the_requested_session_lease() {
-        let tools = Arc::new(ToolsManager::new());
+        let tools = Arc::new(ToolsFacade::new());
         let assets = tools.share_services().assets;
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("asset.png");
@@ -698,7 +694,7 @@ mod tests {
             "asset-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
         ));
 
-        let adapter = ToolsManagerManagedAssetLeaseAdapter::new(tools);
+        let adapter = ToolsFacadeManagedAssetLeaseAdapter::new(tools);
         adapter.release_for_session("ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
 
         assert_eq!(

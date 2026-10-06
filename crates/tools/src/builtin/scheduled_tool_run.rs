@@ -74,7 +74,7 @@ pub struct ScheduleParams {
     /// Scheduled ToolRun id returned by set (cancel only).
     #[serde(default)]
     pub tool_run_id: Option<String>,
-    /// Private owning session id, injected by the tools manager.
+    /// Private owning session id, injected by the Tools facade.
     #[serde(default, rename = "_session_id")]
     pub session_id: Option<String>,
 }
@@ -126,7 +126,7 @@ impl ScheduleTool {
                         "watch_tool_run_id requires mode 'continue' (the schedule fires by resuming the session with the ToolRun result)"
                     );
                 }
-                // `_session_id` is injected privately by ToolsManager::execute_tool
+                // `_session_id` is injected privately by ToolsFacade::execute_tool
                 // (never part of the LLM-visible schema or step history) so the
                 // scheduled_tool_run knows which session to resume in continue mode.
                 let session_id = params.session_id;

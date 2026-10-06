@@ -88,7 +88,7 @@ pub async fn set_tool_enabled(
     // the UI switch and the LLM's tool_enable / tool_disable ops. The op
     // persists `tool_settings.<name>.enabled` to config.toml AND applies the
     // runtime change (in-memory tool_settings + catalog rebuild) through the
-    // ToolsManager, so the toggle takes effect in the Reasoner immediately.
+    // ToolsFacade, so the toggle takes effect in the Reasoner immediately.
     crate::commands::authorize_admin_request(
         &state,
         &app,
@@ -261,7 +261,7 @@ pub async fn execute_skill(
 pub async fn get_tools(state: State<'_, Arc<AppState>>) -> Result<ToolListResponse, String> {
     // List ALL builtin tools (enabled and disabled) with their enabled state
     // so the UI can toggle them. Disabled tools are excluded from the
-    // registry the agent sees (see ToolsManager::rebuild_catalog).
+    // registry the agent sees (see ToolsFacade::rebuild_catalog).
     let tools = state.runtime.tools.list_builtin_manifests().await;
     Ok(ToolListResponse { tools })
 }

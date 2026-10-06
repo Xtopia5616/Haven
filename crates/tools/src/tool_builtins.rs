@@ -1,7 +1,7 @@
 //! Composition boundary for concrete builtin providers.
 //!
 //! Builtin implementations live under [`crate::builtin`]. This object owns
-//! their discovery/runtime dependencies so `ToolsManager` does not become a
+//! their discovery/runtime dependencies so `ToolsFacade` does not become a
 //! second service locator for MCP and Skills.
 
 use crate::builtin::{BuiltinContext, MediaDeps, ToolRunDeps};

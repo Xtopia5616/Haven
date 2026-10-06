@@ -7,7 +7,7 @@ use haven_common::tools::{ToolCatalogGroup, ToolDef, ToolPrompt};
 use haven_common::types::{CanonicalMessage, CanonicalRole, ContentPart};
 use haven_memory::recall::MemoryRetriever;
 #[cfg(test)]
-use haven_tools::ToolsManager;
+use haven_tools::ToolsFacade;
 use haven_tools::{McpServerIndexEntry, WebSearchAvailability};
 
 #[cfg(test)]
@@ -1155,7 +1155,7 @@ mod tests {
         let dir =
             std::env::temp_dir().join(format!("haven_prompt_msg_{}.db", uuid::Uuid::new_v4()));
         let db = Arc::new(Database::open(&dir).unwrap());
-        let tools = Arc::new(ToolsManager::new());
+        let tools = Arc::new(ToolsFacade::new());
         let builder = SystemPromptBuilder::with_memory_service(
             tools.clone(),
             Arc::new(MemoryService::new(db, None, 64)),
@@ -1213,7 +1213,7 @@ mod tests {
         )
         .unwrap();
 
-        let tools = Arc::new(ToolsManager::new());
+        let tools = Arc::new(ToolsFacade::new());
         let builder = SystemPromptBuilder::with_memory_service(
             tools,
             Arc::new(MemoryService::new(db, None, 64)),
@@ -1251,7 +1251,7 @@ mod tests {
         db.add_episode(&session.id, "I asked about the dark theme design last week")
             .unwrap();
 
-        let tools = Arc::new(ToolsManager::new());
+        let tools = Arc::new(ToolsFacade::new());
         let builder = SystemPromptBuilder::with_memory_service(
             tools,
             Arc::new(MemoryService::new(db, None, 64)),
@@ -1285,7 +1285,7 @@ mod tests {
         db.add_episode(&past.id, "dark theme preference from a PAST session")
             .unwrap();
 
-        let tools = Arc::new(ToolsManager::new());
+        let tools = Arc::new(ToolsFacade::new());
         let builder = SystemPromptBuilder::with_memory_service(
             tools,
             Arc::new(MemoryService::new(db, None, 64)),
@@ -1308,7 +1308,7 @@ mod tests {
             uuid::Uuid::new_v4()
         ));
         let db = Arc::new(Database::open(&dir).unwrap());
-        let tools = Arc::new(ToolsManager::new());
+        let tools = Arc::new(ToolsFacade::new());
         let builder = SystemPromptBuilder::with_memory_service(
             tools,
             Arc::new(MemoryService::new(db.clone(), None, 64)),
@@ -1331,7 +1331,7 @@ mod tests {
         let dir =
             std::env::temp_dir().join(format!("haven_prompt_addl_ctx_{}.db", uuid::Uuid::new_v4()));
         let db = Arc::new(Database::open(&dir).unwrap());
-        let tools = Arc::new(ToolsManager::new());
+        let tools = Arc::new(ToolsFacade::new());
         let builder = SystemPromptBuilder::with_memory_service(
             tools,
             Arc::new(MemoryService::new(db, None, 64)),
@@ -1480,7 +1480,7 @@ mod tests {
             uuid::Uuid::new_v4()
         ));
         let db = Arc::new(Database::open(&dir).unwrap());
-        let tools = Arc::new(ToolsManager::new());
+        let tools = Arc::new(ToolsFacade::new());
         let builder = SystemPromptBuilder::with_memory_service(
             tools,
             Arc::new(MemoryService::new(db, None, 64)),
@@ -1690,7 +1690,7 @@ mod tests {
         )
         .unwrap();
         let session = db.create_session("rebuild").unwrap();
-        let tools = Arc::new(ToolsManager::new());
+        let tools = Arc::new(ToolsFacade::new());
         let builder = SystemPromptBuilder::with_memory_service(
             tools,
             Arc::new(MemoryService::new(db, None, 64)),
@@ -1743,7 +1743,7 @@ mod tests {
         let past = db.create_session("past").unwrap();
         db.add_episode(&past.id, "discussed dark theme last week")
             .unwrap();
-        let tools = Arc::new(ToolsManager::new());
+        let tools = Arc::new(ToolsFacade::new());
         let builder = SystemPromptBuilder::with_memory_service(
             tools,
             Arc::new(MemoryService::new(db, None, 64)),
@@ -1763,7 +1763,7 @@ mod tests {
 
     #[tokio::test]
     async fn first_turn_prompt_skips_remote_memory_recall() {
-        let tools = Arc::new(ToolsManager::new());
+        let tools = Arc::new(ToolsFacade::new());
         let dir = tempfile::tempdir().unwrap();
         let db = Arc::new(Database::open(&dir.path().join("prompt.db")).unwrap());
         let builder = SystemPromptBuilder::with_memory_service(
@@ -1781,7 +1781,7 @@ mod tests {
 
     #[tokio::test]
     async fn prompt_schema_cache_refreshes_after_mcp_config_change_without_client() {
-        let tools = Arc::new(ToolsManager::new());
+        let tools = Arc::new(ToolsFacade::new());
         let db_dir = tempfile::tempdir().unwrap();
         let db = Arc::new(Database::open(&db_dir.path().join("prompt.db")).unwrap());
         let builder = SystemPromptBuilder::with_memory_service(
@@ -1810,7 +1810,7 @@ mod tests {
 
     #[tokio::test]
     async fn prompt_schema_cache_refreshes_after_skill_refresh() {
-        let tools = Arc::new(ToolsManager::new());
+        let tools = Arc::new(ToolsFacade::new());
         let skills_root = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(skills_root.path().join("first-skill").join("scripts")).unwrap();
         std::fs::write(
@@ -1889,7 +1889,7 @@ mod tests {
             )
             .unwrap();
         }
-        let tools = Arc::new(ToolsManager::new());
+        let tools = Arc::new(ToolsFacade::new());
         let builder = SystemPromptBuilder::with_memory_service(
             tools,
             Arc::new(MemoryService::new(db, None, 64)),
@@ -1944,7 +1944,7 @@ mod tests {
             &["preference"],
         )
         .unwrap();
-        let tools = Arc::new(ToolsManager::new());
+        let tools = Arc::new(ToolsFacade::new());
         let builder = SystemPromptBuilder::with_memory_service(
             tools,
             Arc::new(MemoryService::new(db, None, 64)),
@@ -1979,7 +1979,7 @@ mod tests {
             )
             .unwrap();
         }
-        let tools = Arc::new(ToolsManager::new());
+        let tools = Arc::new(ToolsFacade::new());
         let builder = SystemPromptBuilder::with_memory_service(
             tools,
             Arc::new(MemoryService::new(db, None, 64)),
@@ -2029,7 +2029,7 @@ mod tests {
         )
         .unwrap();
 
-        let tools = Arc::new(ToolsManager::new());
+        let tools = Arc::new(ToolsFacade::new());
         let builder = SystemPromptBuilder::with_memory_service(
             tools,
             Arc::new(MemoryService::new(db, None, 64)),

@@ -9,7 +9,7 @@ use crate::session::SessionToolPorts;
 /// Explicit tool capabilities injected into Agent and SessionSupervisor.
 ///
 /// Agent runtime owners keep only the capability each path needs. Concrete
-/// manager adapters are assembled by the application composition root.
+/// Tools facade adapters are assembled by the application composition root.
 #[derive(Clone)]
 pub struct AgentToolPorts {
     prompt: Arc<dyn PromptToolPort>,
@@ -45,12 +45,12 @@ impl AgentToolPorts {
 
 #[cfg(test)]
 impl AgentToolPorts {
-    pub(crate) fn from_tools_manager(tools: Arc<haven_tools::ToolsManager>) -> Self {
+    pub(crate) fn from_tools_facade(tools: Arc<haven_tools::ToolsFacade>) -> Self {
         let prompt: Arc<dyn PromptToolPort> = tools.clone();
         let catalog: Arc<dyn ToolCatalogPort> = Arc::new(
-            crate::react::ToolsManagerToolCatalogAdapter::new(Arc::clone(&tools)),
+            crate::react::ToolsFacadeToolCatalogAdapter::new(Arc::clone(&tools)),
         );
-        let session = SessionToolPorts::from_tools_manager(tools);
+        let session = SessionToolPorts::from_tools_facade(tools);
         Self::new(prompt, catalog, session)
     }
 }

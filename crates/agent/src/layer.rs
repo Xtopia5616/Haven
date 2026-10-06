@@ -1419,7 +1419,7 @@ mod tests {
     }
 
     fn make_agent(db: Arc<Database>) -> (AgentLayer, Arc<SessionSupervisor>) {
-        let tools = Arc::new(haven_tools::ToolsManager::new());
+        let tools = Arc::new(haven_tools::ToolsFacade::new());
         let executor = Arc::new(SessionSupervisor::new_for_test(
             db.clone(),
             tools.clone(),
@@ -1441,7 +1441,7 @@ mod tests {
         let agent = AgentLayer::build(
             memory_service,
             executor.clone(),
-            AgentToolPorts::from_tools_manager(tools),
+            AgentToolPorts::from_tools_facade(tools),
             router,
             10,
             20,
@@ -1627,7 +1627,7 @@ mod tests {
         let mut db_path = std::env::temp_dir();
         db_path.push(format!("haven_agent_limits_{}.db", uuid::Uuid::new_v4()));
         let db = Arc::new(Database::open(&db_path).unwrap());
-        let tools = Arc::new(haven_tools::ToolsManager::new());
+        let tools = Arc::new(haven_tools::ToolsFacade::new());
         let executor = Arc::new(SessionSupervisor::new_for_test(
             db.clone(),
             tools.clone(),
@@ -1649,7 +1649,7 @@ mod tests {
         let agent = AgentLayer::build(
             memory_service,
             executor,
-            AgentToolPorts::from_tools_manager(tools),
+            AgentToolPorts::from_tools_facade(tools),
             router,
             10,
             20,
@@ -1670,7 +1670,7 @@ mod tests {
     #[test]
     fn agent_memory_consumers_share_the_injected_memory_service() {
         let db = Arc::new(Database::open_in_memory().unwrap());
-        let tools = Arc::new(haven_tools::ToolsManager::new());
+        let tools = Arc::new(haven_tools::ToolsFacade::new());
         let executor = Arc::new(SessionSupervisor::new_for_test(
             db.clone(),
             tools.clone(),
@@ -1693,7 +1693,7 @@ mod tests {
         let startup = AgentLayer::build(
             memory_service.clone(),
             executor,
-            AgentToolPorts::from_tools_manager(tools),
+            AgentToolPorts::from_tools_facade(tools),
             router,
             10,
             20,
@@ -1722,7 +1722,7 @@ mod tests {
     #[tokio::test]
     async fn session_metadata_reads_fall_back_to_store_after_executor_miss() {
         let db = Arc::new(Database::open_in_memory().unwrap());
-        let tools = Arc::new(haven_tools::ToolsManager::new());
+        let tools = Arc::new(haven_tools::ToolsFacade::new());
         let executor = Arc::new(SessionSupervisor::new_for_test(
             db.clone(),
             tools.clone(),
@@ -1744,7 +1744,7 @@ mod tests {
         let agent = AgentLayer::build(
             memory_service,
             executor.clone(),
-            AgentToolPorts::from_tools_manager(tools),
+            AgentToolPorts::from_tools_facade(tools),
             router,
             10,
             20,

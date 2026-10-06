@@ -168,7 +168,7 @@ impl Tool for HttpTool {
 
     fn default_timeout_secs(&self) -> u64 {
         // `NetworkParams::timeout_secs` is the provider/request timeout. The
-        // manager's outer timer gets a small handoff margin below.
+        // outer tool execution timer gets a small handoff margin below.
         20
     }
 

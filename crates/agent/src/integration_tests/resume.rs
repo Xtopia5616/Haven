@@ -82,7 +82,7 @@ fn overlay_restore_tool(tool_name: &str, tool_input: serde_json::Value) -> ToolR
 async fn resume_restores_tool_overlay_cleanly_in_round_order_and_best_effort() {
     let db_dir = tempfile::tempdir().unwrap();
     let db = Arc::new(Database::open(&db_dir.path().join("resume.db")).unwrap());
-    let tools = Arc::new(ToolsManager::new());
+    let tools = Arc::new(ToolsFacade::new());
     let overlay = Arc::new(RecordingSessionToolOverlay::default());
     let executor = Arc::new(SessionSupervisor::new_with_session_tool_overlay_port(
         haven_memory::SessionStore::new(db.clone()),
@@ -102,7 +102,7 @@ async fn resume_restores_tool_overlay_cleanly_in_round_order_and_best_effort() {
     let agent = AgentLayer::build(
         memory_service,
         executor,
-        crate::AgentToolPorts::from_tools_manager(tools),
+        crate::AgentToolPorts::from_tools_facade(tools),
         router,
         30,
         50,
@@ -206,7 +206,7 @@ async fn enabled_skills_are_global_and_resume_does_not_rebuild_skill_sessions() 
         )
         .unwrap(),
     );
-    let tools = Arc::new(ToolsManager::new());
+    let tools = Arc::new(ToolsFacade::new());
     tools
         .share_services()
         .skills
@@ -232,7 +232,7 @@ async fn enabled_skills_are_global_and_resume_does_not_rebuild_skill_sessions() 
         AgentLayer::build(
             memory_service,
             executor,
-            crate::AgentToolPorts::from_tools_manager(tools.clone()),
+            crate::AgentToolPorts::from_tools_facade(tools.clone()),
             router,
             30,
             50,
@@ -389,7 +389,7 @@ async fn reopen_preserves_follow_up_route_after_confirm_resolves_while_ask_stays
     let (agent, executor) = make_test_agent_with_db(
         db.clone(),
         Arc::new(FinalAnswerMock),
-        Arc::new(ToolsManager::new()),
+        Arc::new(ToolsFacade::new()),
         ContextLimitsConfig::default(),
     );
     let session = executor.create_session("input text").await.unwrap();
@@ -469,7 +469,7 @@ async fn reopen_preserves_follow_up_route_after_confirm_resolves_while_ask_stays
     let (reopened_agent, reopened_executor) = make_test_agent_with_db(
         db,
         Arc::new(FinalAnswerMock),
-        Arc::new(ToolsManager::new()),
+        Arc::new(ToolsFacade::new()),
         ContextLimitsConfig::default(),
     );
     reopened_agent.reopen_session(&session.id).await.unwrap();
@@ -951,7 +951,7 @@ async fn run_session_from_id_trims_dangling_tool_call_before_resume() {
     // (e.g. the app was closed mid-tool-execution). Resuming must trim
     // the dangling assistant message instead of sending it to the LLM,
     // which would reject it with a 400 error.
-    let tools = Arc::new(ToolsManager::new());
+    let tools = Arc::new(ToolsFacade::new());
     tools
         .registry()
         .register(Arc::new(EchoTool) as ToolBox)

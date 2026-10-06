@@ -1,6 +1,6 @@
 //! Runtime capability resolution and projection for prompt-facing snapshots.
 //!
-//! The manager supplies one already-read platform snapshot and one built MCP
+//! The Tools facade supplies one already-read platform snapshot and one built MCP
 //! index. This module resolves the snapshot's typed capability inputs and
 //! keeps the resulting policy separate from facade composition.
 
@@ -21,11 +21,11 @@ pub(crate) async fn resolve_snapshot(
     assemble_tool_capability_snapshot(media, provider_search_available, mcp_index)
 }
 
-/// One freshly resolved view of capabilities owned by `ToolsManager`.
+/// One freshly resolved view of capabilities owned by `ToolsFacade`.
 ///
 /// This value is deliberately not cached: platform replacement, the router's
 /// own config publication, and MCP tools/list updates do not share one version
-/// clock. The manager rebuilds it from current inputs for each read.
+/// clock. The facade rebuilds it from current inputs for each read.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct ToolCapabilitySnapshot {
     pub(crate) media: MediaCapabilities,

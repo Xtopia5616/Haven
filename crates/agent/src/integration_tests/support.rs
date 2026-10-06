@@ -129,7 +129,7 @@ pub(super) fn make_test_agent() -> (Arc<AgentLayer>, Arc<SessionSupervisor>) {
     let mut p = std::env::temp_dir();
     p.push(format!("haven_agent_test_{}.db", uuid::Uuid::new_v4()));
     let db = Arc::new(Database::open(&p).unwrap());
-    let tools = Arc::new(ToolsManager::new());
+    let tools = Arc::new(ToolsFacade::new());
     let (agent, _memory_startup, executor) = make_test_agent_with_db_and_startup(
         db,
         Arc::new(FinalAnswerMock),
@@ -147,7 +147,7 @@ pub(super) fn make_test_agent_with_startup()
     make_test_agent_with_db_and_startup(
         db,
         Arc::new(FinalAnswerMock),
-        Arc::new(ToolsManager::new()),
+        Arc::new(ToolsFacade::new()),
         ContextLimitsConfig::default(),
     )
 }
@@ -155,7 +155,7 @@ pub(super) fn make_test_agent_with_startup()
 pub(super) fn make_test_agent_with_db_and_startup(
     db: Arc<Database>,
     client: Arc<dyn LlmClient>,
-    tools: Arc<ToolsManager>,
+    tools: Arc<ToolsFacade>,
     context_limits: ContextLimitsConfig,
 ) -> (Arc<AgentLayer>, MemoryStartup, Arc<SessionSupervisor>) {
     let executor = Arc::new(SessionSupervisor::new_for_test(
@@ -173,7 +173,7 @@ pub(super) fn make_test_agent_with_db_and_startup(
     let startup = AgentLayer::build(
         memory_service,
         executor.clone(),
-        crate::AgentToolPorts::from_tools_manager(tools),
+        crate::AgentToolPorts::from_tools_facade(tools),
         router,
         30,
         50,
@@ -227,14 +227,14 @@ pub(super) fn make_tool_result(call_id: &str, text: &str) -> CanonicalMessage {
 
 pub(super) fn make_test_agent_with(
     client: Arc<dyn LlmClient>,
-    tools: Arc<ToolsManager>,
+    tools: Arc<ToolsFacade>,
 ) -> (Arc<AgentLayer>, Arc<SessionSupervisor>) {
     make_test_agent_with_limits(client, tools, ContextLimitsConfig::default())
 }
 
 pub(super) fn make_test_agent_with_limits(
     client: Arc<dyn LlmClient>,
-    tools: Arc<ToolsManager>,
+    tools: Arc<ToolsFacade>,
     context_limits: ContextLimitsConfig,
 ) -> (Arc<AgentLayer>, Arc<SessionSupervisor>) {
     let mut p = std::env::temp_dir();
@@ -246,7 +246,7 @@ pub(super) fn make_test_agent_with_limits(
 pub(super) fn make_test_agent_with_db(
     db: Arc<Database>,
     client: Arc<dyn LlmClient>,
-    tools: Arc<ToolsManager>,
+    tools: Arc<ToolsFacade>,
     context_limits: ContextLimitsConfig,
 ) -> (Arc<AgentLayer>, Arc<SessionSupervisor>) {
     let (agent, _memory_startup, executor) =

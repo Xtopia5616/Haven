@@ -2615,7 +2615,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_builtin_registry_security_contract_covers_every_route() {
-        use crate::ToolsManager;
+        use crate::ToolsFacade;
         use crate::builtin::AdminContext;
         use haven_common::config::ConfigLoader;
         use std::sync::Arc;
@@ -2623,7 +2623,7 @@ mod tests {
 
         let dir = TempDir::new().unwrap();
         let loader = ConfigLoader::load_from(&dir.path().join("config.toml")).unwrap();
-        let manager = ToolsManager::new();
+        let manager = ToolsFacade::new();
         manager
             .set_admin_context(AdminContext {
                 config_service: Some(Arc::new(test_config_service(loader))),
@@ -2945,7 +2945,7 @@ mod tests {
 
     #[tokio::test]
     async fn every_registered_operation_view_rejects_missing_and_unknown_fields() {
-        use crate::ToolsManager;
+        use crate::ToolsFacade;
         use crate::builtin::AdminContext;
         use haven_common::config::ConfigLoader;
         use std::sync::Arc;
@@ -2953,7 +2953,7 @@ mod tests {
 
         let dir = TempDir::new().unwrap();
         let loader = ConfigLoader::load_from(&dir.path().join("config.toml")).unwrap();
-        let manager = ToolsManager::new();
+        let manager = ToolsFacade::new();
         manager
             .set_admin_context(AdminContext {
                 config_service: Some(Arc::new(test_config_service(loader))),
@@ -3023,7 +3023,7 @@ mod tests {
 
     #[tokio::test]
     async fn every_registered_operation_view_declares_replay_timeout_and_cancel_contract() {
-        use crate::ToolsManager;
+        use crate::ToolsFacade;
         use crate::builtin::AdminContext;
         use haven_common::config::ConfigLoader;
         use std::sync::Arc;
@@ -3031,7 +3031,7 @@ mod tests {
 
         let dir = TempDir::new().unwrap();
         let loader = ConfigLoader::load_from(&dir.path().join("config.toml")).unwrap();
-        let manager = ToolsManager::new();
+        let manager = ToolsFacade::new();
         manager
             .set_admin_context(AdminContext {
                 config_service: Some(Arc::new(test_config_service(loader))),

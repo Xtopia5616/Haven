@@ -3,7 +3,7 @@ use super::*;
 
 #[tokio::test]
 async fn run_session_parallel_tool_execution() {
-    let tools = Arc::new(ToolsManager::new());
+    let tools = Arc::new(ToolsFacade::new());
     let timing = Arc::new(TimingState::new());
     tools
         .registry()
@@ -84,7 +84,7 @@ async fn run_session_parallel_tool_execution() {
 
 #[tokio::test]
 async fn parallel_tool_result_is_published_before_a_slow_sibling_finishes() {
-    let tools = Arc::new(ToolsManager::new());
+    let tools = Arc::new(ToolsFacade::new());
     let timing = Arc::new(TimingState::new());
     tools
         .registry()
@@ -224,7 +224,7 @@ async fn parallel_tool_result_is_published_before_a_slow_sibling_finishes() {
 #[tokio::test]
 async fn run_session_contains_custom_extension_panic() {
     let names = ["custom_panic"];
-    let tools = Arc::new(ToolsManager::new());
+    let tools = Arc::new(ToolsFacade::new());
     for name in names {
         tools
             .registry()
@@ -306,7 +306,7 @@ async fn run_session_contains_custom_extension_panic() {
 
 #[tokio::test]
 async fn run_session_contains_real_mcp_and_skill_adapter_panics() {
-    let tools = Arc::new(ToolsManager::new());
+    let tools = Arc::new(ToolsFacade::new());
     tools
         .share_services()
         .authorization
@@ -464,7 +464,7 @@ async fn run_session_cancelled_mid_batch_surfaces_interrupted_tools() {
     // in-flight calls: each one is repaired with an "Interrupted"
     // observation (so the UI shows it and the model can retry) and the
     // snapshot canonical stays a valid assistant/tool chain.
-    let tools = Arc::new(ToolsManager::new());
+    let tools = Arc::new(ToolsFacade::new());
     let timing = Arc::new(TimingState::new());
     tools
         .registry()

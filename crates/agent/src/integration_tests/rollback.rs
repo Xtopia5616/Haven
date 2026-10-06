@@ -703,7 +703,7 @@ async fn rollback_pause_matches_compacted_message_id() {
 /// (memory + snapshot) so the next user input is not mis-routed as an answer.
 #[tokio::test]
 async fn rollback_while_ask_wait_clears_interaction_gate() {
-    let tools = Arc::new(ToolsManager::new());
+    let tools = Arc::new(ToolsFacade::new());
     tools
         .registry()
         .register(Arc::new(haven_tools::builtin::ask::AskTool) as ToolBox)
@@ -783,7 +783,7 @@ async fn rollback_while_ask_wait_clears_interaction_gate() {
 /// restores from the pre-batch branch point without dangling tool_calls.
 #[tokio::test]
 async fn rollback_mid_tool_batch_joins_and_restores() {
-    let tools = Arc::new(ToolsManager::new());
+    let tools = Arc::new(ToolsFacade::new());
     let timing = Arc::new(TimingState::new());
     tools
         .registry()
@@ -885,7 +885,7 @@ async fn rollback_mid_tool_batch_joins_and_restores() {
 /// next send is not mis-routed as an ask answer (status dual-track gate).
 #[tokio::test]
 async fn rollback_ask_wait_pause_true_leaves_plain_paused() {
-    let tools = Arc::new(ToolsManager::new());
+    let tools = Arc::new(ToolsFacade::new());
     tools
         .registry()
         .register(Arc::new(haven_tools::builtin::ask::AskTool) as ToolBox)

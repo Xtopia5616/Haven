@@ -27,7 +27,7 @@ pub struct ToolRunsTool {
 /// (`Tool::execute` with LLM JSON) both land in `ToolRunsTool::run`.
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 pub struct ToolRunsParams {
-    /// Private owning session id, injected by the tools manager.
+    /// Private owning session id, injected by the Tools facade.
     #[serde(default, rename = "_session_id")]
     pub session_id: Option<String>,
     /// When set, return this single task's status instead of the board.

@@ -1,6 +1,6 @@
 //! Composition and update ordering for the live tool runtime.
 //!
-//! `ToolsManager` remains the public facade. This crate-private owner creates
+//! `ToolsFacade` remains the public facade. This crate-private owner creates
 //! its runtime pieces and serializes the ordering rules that publish
 //! `PlatformRuntime`, update MCP discovery inputs, and rebuild provider
 //! catalogs.

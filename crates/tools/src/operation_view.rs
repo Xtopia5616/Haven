@@ -480,7 +480,7 @@ impl Tool for OperationViewTool {
     }
 
     async fn execute(&self, input: Value, cancel: CancellationToken) -> anyhow::Result<ToolResult> {
-        // ToolsManager validates the model-facing arguments, then injects
+        // ToolsFacade validates the model-facing arguments, then injects
         // trusted execution metadata such as `_session_id` before calling the
         // view. Validate the public shape again without those private fields;
         // the original input is retained for routing into the aggregate

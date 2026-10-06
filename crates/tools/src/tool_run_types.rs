@@ -51,7 +51,7 @@ pub struct ScheduledToolRunSpec {
     pub title: String,
     pub body: String,
     pub mode: ScheduleMode,
-    /// Owning session, injected by the tool manager rather than the LLM.
+    /// Owning session, injected by `ToolsFacade` rather than the LLM.
     pub session_id: Option<String>,
     /// Tool called when `mode` is `Tool`.
     pub tool_name: Option<String>,

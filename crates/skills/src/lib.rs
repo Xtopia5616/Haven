@@ -528,7 +528,7 @@ struct Inner {
 
 /// Registry of discovered Skills, backed by an in-memory map protected by a
 /// `tokio::sync::RwLock` so `refresh_from_disk` and the bridge queries can
-/// share state across `Arc<ToolsManager>`.
+/// share state across `Arc<ToolsFacade>`.
 #[derive(Clone)]
 pub struct SkillsEngine {
     inner: Arc<RwLock<Inner>>,

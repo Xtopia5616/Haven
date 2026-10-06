@@ -113,7 +113,7 @@ impl ToolRegistry {
     }
 
     /// Structured definitions of every eagerly registered model tool. The
-    /// session-aware provider surface is assembled by `ToolsManager`; deferred
+    /// session-aware provider surface is assembled by `ToolsFacade`; deferred
     /// builtin and Skill definitions live in `DeferredToolCatalog` until a
     /// loader activates them.
     pub async fn list_tool_definitions(&self) -> Vec<ToolDef> {

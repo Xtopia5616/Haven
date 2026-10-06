@@ -22,7 +22,7 @@ fn make_in_memory_agent() -> (Arc<AgentLayer>, Arc<SessionSupervisor>, Arc<Datab
     let (agent, executor) = make_test_agent_with_db(
         db.clone(),
         Arc::new(FinalAnswerMock),
-        Arc::new(ToolsManager::new()),
+        Arc::new(ToolsFacade::new()),
         ContextLimitsConfig::default(),
     );
     (agent, executor, db)
@@ -184,7 +184,7 @@ fn agent_build_constructor_works() {
     let mut p = std::env::temp_dir();
     p.push(format!("haven_agent_build_{}.db", uuid::Uuid::new_v4()));
     let db = Arc::new(Database::open(&p).unwrap());
-    let tools = Arc::new(ToolsManager::new());
+    let tools = Arc::new(ToolsFacade::new());
     let executor = Arc::new(SessionSupervisor::new_for_test(
         db.clone(),
         tools.clone(),
@@ -202,7 +202,7 @@ fn agent_build_constructor_works() {
     let agent = AgentLayer::build(
         memory_service,
         executor,
-        crate::AgentToolPorts::from_tools_manager(tools),
+        crate::AgentToolPorts::from_tools_facade(tools),
         router,
         10,
         20,
@@ -243,7 +243,7 @@ async fn replace_router_and_router_work() {
     let mut p = std::env::temp_dir();
     p.push(format!("haven_agent_router_{}.db", uuid::Uuid::new_v4()));
     let db = Arc::new(Database::open(&p).unwrap());
-    let tools = Arc::new(ToolsManager::new());
+    let tools = Arc::new(ToolsFacade::new());
     let executor = Arc::new(SessionSupervisor::new_for_test(
         db.clone(),
         tools.clone(),
@@ -262,7 +262,7 @@ async fn replace_router_and_router_work() {
         AgentLayer::build(
             memory_service,
             executor,
-            crate::AgentToolPorts::from_tools_manager(tools),
+            crate::AgentToolPorts::from_tools_facade(tools),
             router_a,
             10,
             20,
@@ -339,7 +339,7 @@ async fn build_system_prompt_excludes_sensitive_and_duplicate_facts() {
     )
     .unwrap();
 
-    let tools = Arc::new(ToolsManager::new());
+    let tools = Arc::new(ToolsFacade::new());
     let builder =
         SystemPromptBuilder::with_memory_service(tools, Arc::new(MemoryService::new(db, None, 64)));
     let prompt = builder.build("test session", &[]).await;

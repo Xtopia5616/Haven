@@ -94,7 +94,7 @@ pub struct WindowParams {
     /// Include OCR in `observe` when the dedicated OCR capability exists.
     #[serde(default)]
     pub ocr: Option<bool>,
-    /// Private runtime context injected by `ToolsManager`; never part of the
+    /// Private runtime context injected by `ToolsFacade`; never part of the
     /// LLM-facing schema.
     #[serde(rename = "_session_id", default, skip_serializing)]
     pub(crate) session_id: Option<String>,

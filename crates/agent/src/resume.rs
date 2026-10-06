@@ -738,7 +738,7 @@ mod direct_run_guard_tests {
     use haven_common::types::CanonicalMessage;
     use haven_llm::{LlmClient, LlmError, LlmResponse, StreamChunk, ToolDefinition};
     use haven_memory::Database;
-    use haven_tools::ToolsManager;
+    use haven_tools::ToolsFacade;
     use std::pin::Pin;
     use std::time::Duration;
 
@@ -796,7 +796,7 @@ mod direct_run_guard_tests {
         let db = Arc::new(Database::open_in_memory().unwrap());
         let executor = Arc::new(SessionSupervisor::new_for_test(
             db,
-            Arc::new(ToolsManager::new()),
+            Arc::new(ToolsFacade::new()),
             1,
         ));
         let session = executor
@@ -867,7 +867,7 @@ mod direct_run_guard_tests {
         let db = Arc::new(Database::open_in_memory().unwrap());
         let executor = Arc::new(SessionSupervisor::new_for_test(
             db,
-            Arc::new(ToolsManager::new()),
+            Arc::new(ToolsFacade::new()),
             2,
         ));
         let session = executor
@@ -958,7 +958,7 @@ mod direct_run_guard_tests {
         let db = Arc::new(Database::open_in_memory().unwrap());
         let executor = Arc::new(SessionSupervisor::new_for_test(
             db.clone(),
-            Arc::new(ToolsManager::new()),
+            Arc::new(ToolsFacade::new()),
             1,
         ));
         let session = executor

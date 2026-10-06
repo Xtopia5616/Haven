@@ -6,15 +6,15 @@ use haven_common::retry::{
 /// Pure execution entry: admit the call, validate it, run the handler, and
 /// classify the outcome.
 ///
-/// `ToolsManager` only forwards to this type. Interactive authorization is
+/// `ToolsFacade` only forwards to this type. Interactive authorization is
 /// assembled here and decided by the caller before `execute`, because a
 /// missing confirmation receipt must fail closed without blocking inside the
 /// tool future.
 pub(crate) struct AuthorizedExecutor<'a> {
-    tools: &'a ToolsManager,
+    tools: &'a ToolsFacade,
 }
 
-impl ToolsManager {
+impl ToolsFacade {
     pub(crate) fn executor(&self) -> AuthorizedExecutor<'_> {
         AuthorizedExecutor { tools: self }
     }

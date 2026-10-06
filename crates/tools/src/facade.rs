@@ -4,7 +4,7 @@ use super::*;
 ///
 /// MCP, skills and the asset registry clone as handles. Authorization,
 /// tool_runs and live output are `Arc`s. Callers keep this bundle instead of
-/// asking `ToolsManager` for each service.
+/// asking `ToolsFacade` for each service.
 #[derive(Clone)]
 pub struct ToolServices {
     pub mcp: McpManager,
@@ -35,16 +35,16 @@ impl ToolServices {
 /// Facade for tool execution.
 ///
 /// Callers enter through execution and catalog projection methods. Process
-/// services are handed out once via [`ToolServices`]; the manager does not
+/// services are handed out once via [`ToolServices`]; the facade does not
 /// bind individual model or media clients. Those inputs live on one
 /// `PlatformRuntime` snapshot owned by `ToolRuntime`. Installed, deferred and
 /// session operations live on [`OperationRegistry`].
-pub struct ToolsManager {
+pub struct ToolsFacade {
     pub(crate) coordinator: coordinator::ToolRuntimeCoordinator,
     services: ToolServices,
 }
 
-impl ToolsManager {
+impl ToolsFacade {
     pub fn new() -> Self {
         Self::new_with_exec_config(SkillsExecConfig::default())
     }
@@ -64,13 +64,13 @@ impl ToolsManager {
     }
 
     /// Create a non-owning, typed admin capability for live tool toggles.
-    /// `Weak` prevents the native admin surface from forming a manager cycle.
+    /// `Weak` prevents the native admin surface from forming a facade cycle.
     pub fn tool_control_port(self: &Arc<Self>) -> Arc<dyn ToolControlPort> {
         Arc::new(ToolControlHandle(Arc::downgrade(self)))
     }
 
     /// Core catalog view. These accessors expose domain boundaries without
-    /// exposing `ToolsManager`'s composition fields.
+    /// exposing `ToolsFacade`'s composition fields.
     pub fn operations(&self) -> &OperationRegistry {
         &self.coordinator.core.operations
     }
@@ -431,7 +431,7 @@ impl ToolsManager {
     }
 
     /// Return the same live capability decisions used while rebuilding the
-    /// builtin catalog. Keeping this at the manager boundary prevents the
+    /// builtin catalog. Keeping this at the facade boundary prevents the
     /// prompt snapshot from advertising a role that the tool schema removed.
     pub async fn runtime_capabilities(&self) -> RuntimeCapabilities {
         let platform = self.coordinator.runtime.platform().await;
@@ -440,7 +440,7 @@ impl ToolsManager {
             .runtime_capabilities()
     }
 
-    /// Construct the single capability view used by manager reads and builtin
+    /// Construct the single capability view used by facade reads and builtin
     /// catalog assembly. Each call resolves current platform, router and MCP
     /// inputs instead of returning a cached value whose invalidation would
     /// have to coordinate their independent update clocks.
@@ -452,7 +452,7 @@ impl ToolsManager {
     }
 }
 
-struct ToolControlHandle(std::sync::Weak<ToolsManager>);
+struct ToolControlHandle(std::sync::Weak<ToolsFacade>);
 
 #[async_trait::async_trait]
 impl ToolControlPort for ToolControlHandle {
@@ -475,7 +475,7 @@ impl ToolControlPort for ToolControlHandle {
     }
 }
 
-impl Default for ToolsManager {
+impl Default for ToolsFacade {
     fn default() -> Self {
         Self::new()
     }
@@ -529,7 +529,7 @@ mod capability_tests {
 
     #[tokio::test]
     async fn capability_snapshot_tracks_runtime_replacement_across_read_paths() {
-        let tools = ToolsManager::new();
+        let tools = ToolsFacade::new();
         let initial = tools.runtime_capabilities().await;
         assert_eq!(initial.web_search, WebSearchAvailability::Unavailable);
         assert!(!initial.transcription);
@@ -636,7 +636,7 @@ mod capability_tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn concurrent_capability_reads_and_platform_replacements_do_not_panic() {
-        let tools = Arc::new(ToolsManager::new());
+        let tools = Arc::new(ToolsFacade::new());
         let stt: Arc<dyn haven_llm::SttClient> = Arc::new(AvailableStt);
 
         let writer_tools = Arc::clone(&tools);

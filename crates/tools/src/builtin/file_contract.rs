@@ -43,7 +43,7 @@ impl Tool for FilesTool {
         }
     }
 
-    /// File operations are normally bounded by the manager's outer timeout.
+    /// File operations are normally bounded by the outer tool execution timeout.
     /// Summarization owns a separate provider timeout; leave a small amount
     /// of bookkeeping time around it so the two timers cannot race and report
     /// different terminal states for the same call.

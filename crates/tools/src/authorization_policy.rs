@@ -7,18 +7,18 @@ use crate::tool_contract::{
     ConfirmationRequirement, DataSensitivity, NetworkAccess, OperationEffect, OperationIdempotency,
     OperationPolicy, ToolBox, ToolConcurrency, ToolOperationScope,
 };
-use crate::{AuthorizationRequest, RiskLevel, ToolsManager};
+use crate::{AuthorizationRequest, RiskLevel, ToolsFacade};
 use haven_common::types::permission_key;
 use serde_json::Value;
 
 /// Resolves the operation contract and canonical input used by authorization.
 /// It does not authorize or execute the operation.
 pub(crate) struct ToolAuthorizationRequestResolver<'a> {
-    tools: &'a ToolsManager,
+    tools: &'a ToolsFacade,
 }
 
 impl<'a> ToolAuthorizationRequestResolver<'a> {
-    fn new(tools: &'a ToolsManager) -> Self {
+    fn new(tools: &'a ToolsFacade) -> Self {
         Self { tools }
     }
 
@@ -114,7 +114,7 @@ fn unknown_operation_policy(tool_name: &str, input: &Value) -> OperationPolicy {
     }
 }
 
-impl ToolsManager {
+impl ToolsFacade {
     pub async fn resolve_risk_level(
         &self,
         session_id: Option<&str>,

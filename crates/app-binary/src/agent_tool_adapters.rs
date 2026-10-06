@@ -1,4 +1,4 @@
-//! ToolsManager adapters owned by the application composition boundary.
+//! ToolsFacade adapters owned by the application composition boundary.
 
 use std::sync::Arc;
 
@@ -11,15 +11,15 @@ use haven_agent::{
 };
 use haven_common::types::{MessageAttachment, RiskLevel};
 use haven_tools::{
-    AuthorizationRequest, ToolCatalogSnapshot, ToolRegistration, ToolResult, ToolsManager,
+    AuthorizationRequest, ToolCatalogSnapshot, ToolRegistration, ToolResult, ToolsFacade,
 };
 use serde_json::Value;
 
-/// Assemble the one shared ToolsManager into the narrow capabilities consumed
+/// Assemble the one shared ToolsFacade into the narrow capabilities consumed
 /// by Agent runtime owners. The adapter stays in app-binary so haven-agent
-/// depends on ports and tool DTOs, never on the manager facade.
-pub(crate) fn agent_tool_ports_from_manager(tools: Arc<ToolsManager>) -> AgentToolPorts {
-    let adapter = Arc::new(ToolsManagerAgentAdapter {
+/// depends on ports and tool DTOs, never on the Tools facade.
+pub(crate) fn agent_tool_ports_from_facade(tools: Arc<ToolsFacade>) -> AgentToolPorts {
+    let adapter = Arc::new(ToolsFacadeAgentAdapter {
         tools: Arc::clone(&tools),
     });
     let services = tools.share_services();
@@ -40,12 +40,12 @@ pub(crate) fn agent_tool_ports_from_manager(tools: Arc<ToolsManager>) -> AgentTo
     AgentToolPorts::new(prompt, catalog, session)
 }
 
-struct ToolsManagerAgentAdapter {
-    tools: Arc<ToolsManager>,
+struct ToolsFacadeAgentAdapter {
+    tools: Arc<ToolsFacade>,
 }
 
 #[async_trait]
-impl PromptToolPort for ToolsManagerAgentAdapter {
+impl PromptToolPort for ToolsFacadeAgentAdapter {
     fn catalog_versions(&self) -> PromptCatalogVersions {
         let services = self.tools.share_services();
         PromptCatalogVersions {
@@ -83,14 +83,14 @@ impl PromptToolPort for ToolsManagerAgentAdapter {
 }
 
 #[async_trait]
-impl ToolCatalogPort for ToolsManagerAgentAdapter {
+impl ToolCatalogPort for ToolsFacadeAgentAdapter {
     async fn catalog_snapshot(&self, session_id: &str) -> Arc<ToolCatalogSnapshot> {
         Arc::new(self.tools.tool_catalog_snapshot(session_id).await)
     }
 }
 
 #[async_trait]
-impl ToolAuthorizationPort for ToolsManagerAgentAdapter {
+impl ToolAuthorizationPort for ToolsFacadeAgentAdapter {
     async fn risk_level(
         &self,
         session_id: Option<&str>,
@@ -126,7 +126,7 @@ impl ToolAuthorizationPort for ToolsManagerAgentAdapter {
 }
 
 #[async_trait]
-impl ToolExecutionPort for ToolsManagerAgentAdapter {
+impl ToolExecutionPort for ToolsFacadeAgentAdapter {
     async fn execute(&self, context: ToolExecutionContext) -> anyhow::Result<ToolResult> {
         self.tools
             .execute_tool_with_step(
@@ -154,13 +154,13 @@ impl ToolExecutionPort for ToolsManagerAgentAdapter {
 }
 
 #[async_trait]
-impl ToolObservationPort for ToolsManagerAgentAdapter {
+impl ToolObservationPort for ToolsFacadeAgentAdapter {
     async fn observation_text(&self, tool_name: &str, result: &ToolResult) -> String {
         self.tools.observation_text(tool_name, result).await
     }
 }
 
-impl ManagedAssetLeasePort for ToolsManagerAgentAdapter {
+impl ManagedAssetLeasePort for ToolsFacadeAgentAdapter {
     fn register_for_session(&self, session_id: &str, attachments: &[MessageAttachment]) {
         self.tools
             .register_managed_assets_for_session(session_id, attachments);
@@ -172,7 +172,7 @@ impl ManagedAssetLeasePort for ToolsManagerAgentAdapter {
 }
 
 #[async_trait]
-impl SessionToolOverlayPort for ToolsManagerAgentAdapter {
+impl SessionToolOverlayPort for ToolsFacadeAgentAdapter {
     async fn unregister_session(&self, session_id: &str) {
         self.tools.unregister_session(session_id).await;
     }
@@ -258,11 +258,11 @@ mod tests {
 
     #[tokio::test]
     async fn composition_adapter_forwards_trusted_execution_context() {
-        let tools = Arc::new(ToolsManager::new());
+        let tools = Arc::new(ToolsFacade::new());
         let session_id = "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
         let tool: ToolBox = Arc::new(ExecutionContextProbe);
         tools.register_for_session(session_id, tool).await;
-        let ports = agent_tool_ports_from_manager(Arc::clone(&tools));
+        let ports = agent_tool_ports_from_facade(Arc::clone(&tools));
         let supervisor = SessionSupervisor::new(
             SessionStore::new(Arc::new(Database::open_in_memory().unwrap())),
             ports.session_ports(),
@@ -301,11 +301,11 @@ mod tests {
 
     #[tokio::test]
     async fn composition_adapter_forwards_cancellation() {
-        let tools = Arc::new(ToolsManager::new());
+        let tools = Arc::new(ToolsFacade::new());
         let session_id = "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
         let tool: ToolBox = Arc::new(ExecutionContextProbe);
         tools.register_for_session(session_id, tool).await;
-        let ports = agent_tool_ports_from_manager(tools);
+        let ports = agent_tool_ports_from_facade(tools);
         let supervisor = SessionSupervisor::new(
             SessionStore::new(Arc::new(Database::open_in_memory().unwrap())),
             ports.session_ports(),
@@ -334,10 +334,10 @@ mod tests {
 
     #[tokio::test]
     async fn prompt_adapter_preserves_eager_builtin_catalog_fallback() {
-        let tools = Arc::new(ToolsManager::new());
+        let tools = Arc::new(ToolsFacade::new());
         let tool: ToolBox = Arc::new(ExecutionContextProbe);
         tools.registry().register(tool).await.unwrap();
-        let adapter = ToolsManagerAgentAdapter {
+        let adapter = ToolsFacadeAgentAdapter {
             tools: Arc::clone(&tools),
         };
 
@@ -358,8 +358,8 @@ mod tests {
 
     #[tokio::test]
     async fn catalog_and_observation_adapters_preserve_session_and_output_contracts() {
-        let tools = Arc::new(ToolsManager::new());
-        let adapter = ToolsManagerAgentAdapter {
+        let tools = Arc::new(ToolsFacade::new());
+        let adapter = ToolsFacadeAgentAdapter {
             tools: Arc::clone(&tools),
         };
         let session_id = "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";

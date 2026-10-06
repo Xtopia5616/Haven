@@ -7,8 +7,8 @@ pub mod circuit;
 mod coordinator;
 mod document;
 mod execution;
+mod facade;
 pub mod live_output;
-mod manager;
 #[doc(hidden)]
 pub mod operation_view;
 mod output;
@@ -406,4 +406,4 @@ fn retryable_result(result: &ToolResult) -> bool {
     result.retryability == crate::ToolRetryability::Retryable
 }
 
-pub use manager::{ToolServices, ToolsManager};
+pub use facade::{ToolServices, ToolsFacade};

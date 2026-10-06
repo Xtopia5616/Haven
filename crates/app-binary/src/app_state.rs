@@ -14,7 +14,7 @@ use haven_memory::{
     MemoryMaintenanceStore, MemoryRecallStore, MemoryStore, SessionStore, ToolRunStore,
 };
 use haven_platform::credentials::PlatformCredentialStore;
-use haven_tools::ToolsManager;
+use haven_tools::ToolsFacade;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -332,9 +332,9 @@ impl AppState {
         let cfg = initial_config.config;
         let context_limits = cfg.context_limits.clone();
         let context_limits_clone = context_limits.clone();
-        let tools = Arc::new(ToolsManager::new());
+        let tools = Arc::new(ToolsFacade::new());
         let agent_tool_ports =
-            crate::agent_tool_adapters::agent_tool_ports_from_manager(Arc::clone(&tools));
+            crate::agent_tool_adapters::agent_tool_ports_from_facade(Arc::clone(&tools));
         let mcp_caller: Arc<dyn haven_llm::McpToolCaller> =
             Arc::new(tools.share_services().mcp.clone());
         let router_media_build = build_router_media(&cfg, Some(mcp_caller));
@@ -553,7 +553,7 @@ impl AppState {
             file_logging_enabled,
             log_level,
             // The admin tool's tool_enable/tool_disable ops apply the runtime
-            // change through the running ToolsManager after persisting config.
+            // change through the running ToolsFacade after persisting config.
             tool_control: Some(tools.tool_control_port()),
         };
 

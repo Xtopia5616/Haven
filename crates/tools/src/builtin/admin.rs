@@ -1621,7 +1621,7 @@ impl AdminSurfaces {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{StructuredToolError, Tool, ToolsManager};
+    use crate::{StructuredToolError, Tool, ToolsFacade};
     use haven_common::SessionStatus;
     use haven_common::config::{ConfigLoader, ConfigPatch, ConfigService, InMemoryCredentialStore};
     use haven_memory::{Database, MemoryFactStore, SessionStore};
@@ -3242,7 +3242,7 @@ mod tests {
 
     #[tokio::test]
     async fn llm_capability_mutations_rebuild_catalog_and_advance_mcp_clock() {
-        let manager = Arc::new(ToolsManager::new());
+        let manager = Arc::new(ToolsFacade::new());
         let dir = TempDir::new().unwrap();
         let skill_dir = dir.path().join("demo");
         std::fs::create_dir_all(skill_dir.join("scripts")).unwrap();

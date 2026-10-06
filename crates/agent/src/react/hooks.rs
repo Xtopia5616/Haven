@@ -188,7 +188,7 @@ mod tests {
         use haven_llm::router::LlmRouter;
         use haven_llm::types::{LlmError, LlmResponse, StreamChunk, ToolDefinition};
         use haven_memory::Database;
-        use haven_tools::ToolsManager;
+        use haven_tools::ToolsFacade;
         use std::pin::Pin;
 
         struct SilentLlm;
@@ -248,7 +248,7 @@ mod tests {
         let mut p = std::env::temp_dir();
         p.push(format!("haven_noop_hooks_{}.db", uuid::Uuid::new_v4()));
         let db = Arc::new(Database::open(&p).unwrap());
-        let tools = Arc::new(ToolsManager::new());
+        let tools = Arc::new(ToolsFacade::new());
         let executor = Arc::new(SessionSupervisor::new_for_test(db.clone(), tools, 1));
         let client = Arc::new(SilentLlm) as Arc<dyn LlmClient>;
         let router = Arc::new(LlmRouter::new_with_clients(
@@ -378,7 +378,7 @@ mod tests {
             use haven_llm::router::LlmRouter;
             use haven_llm::types::{LlmError, StreamChunk, ToolDefinition};
             use haven_memory::Database;
-            use haven_tools::ToolsManager;
+            use haven_tools::ToolsFacade;
             use std::pin::Pin;
 
             struct SilentLlm;
@@ -437,7 +437,7 @@ mod tests {
             let mut p = std::env::temp_dir();
             p.push(format!("haven_after_llm_{}.db", uuid::Uuid::new_v4()));
             let db = Arc::new(Database::open(&p).unwrap());
-            let tools = Arc::new(ToolsManager::new());
+            let tools = Arc::new(ToolsFacade::new());
             let executor = Arc::new(SessionSupervisor::new_for_test(db.clone(), tools, 1));
             let client = Arc::new(SilentLlm) as Arc<dyn LlmClient>;
             let router = Arc::new(LlmRouter::new_with_clients(

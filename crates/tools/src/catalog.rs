@@ -23,7 +23,7 @@ impl McpServerIndexEntry {
     }
 }
 
-impl ToolsManager {
+impl ToolsFacade {
     pub async fn load_mcp_from_config(&self, servers: &[haven_common::McpServerConfig]) {
         self.coordinator.load_mcp_from_config(servers).await;
     }
@@ -437,15 +437,15 @@ impl ToolsManager {
 
 /// Model-visible projection of [`OperationRegistry`].
 ///
-/// Loading and session admission stay on `ToolsManager`. This type only
+/// Loading and session admission stay on `ToolsFacade`. This type only
 /// reads the registry and emits provider definitions or UI manifests.
 pub struct OperationCatalog<'a> {
-    manager: &'a ToolsManager,
+    facade: &'a ToolsFacade,
 }
 
-impl ToolsManager {
+impl ToolsFacade {
     pub(crate) fn operation_catalog(&self) -> OperationCatalog<'_> {
-        OperationCatalog { manager: self }
+        OperationCatalog { facade: self }
     }
 }
 
@@ -454,9 +454,9 @@ impl OperationCatalog<'_> {
     pub async fn tool_catalog_snapshot(&self, session_id: &str) -> ToolCatalogSnapshot {
         let mut snapshot = None;
         for _ in 0..2 {
-            let before = self.manager.catalog_version_for_session(session_id).await;
+            let before = self.facade.catalog_version_for_session(session_id).await;
             let global = self
-                .manager
+                .facade
                 .coordinator
                 .core
                 .operations
@@ -464,14 +464,14 @@ impl OperationCatalog<'_> {
                 .list()
                 .await;
             let session = self
-                .manager
+                .facade
                 .coordinator
                 .core
                 .operations
                 .session_tool_overlay
                 .list(session_id)
                 .await;
-            let after = self.manager.catalog_version_for_session(session_id).await;
+            let after = self.facade.catalog_version_for_session(session_id).await;
 
             let mut tools = HashMap::with_capacity(global.len() + session.len());
             let global_defs = global.iter().map(|tool| tool.tool_def()).collect();
@@ -483,7 +483,7 @@ impl OperationCatalog<'_> {
                 tools.insert(tool.name(), tool);
             }
             let max = self
-                .manager
+                .facade
                 .coordinator
                 .runtime
                 .platform()
@@ -505,7 +505,7 @@ impl OperationCatalog<'_> {
 
     pub async fn list_tool_definitions_for_session(&self, session_id: &str) -> Vec<ToolDef> {
         let max = self
-            .manager
+            .facade
             .coordinator
             .runtime
             .platform()
@@ -514,7 +514,7 @@ impl OperationCatalog<'_> {
             .max_tools_per_request
             .max(1);
         let global_defs = self
-            .manager
+            .facade
             .coordinator
             .core
             .operations
@@ -523,7 +523,7 @@ impl OperationCatalog<'_> {
             .await;
         let global_len = global_defs.len();
         let session_defs = self
-            .manager
+            .facade
             .coordinator
             .core
             .operations
@@ -556,8 +556,8 @@ impl OperationCatalog<'_> {
             .collect()
     }
     pub async fn list_builtin_tools(&self) -> Vec<Value> {
-        let catalog = self.manager.coordinator.runtime.builtin_catalog().await;
-        let platform = self.manager.coordinator.runtime.platform().await;
+        let catalog = self.facade.coordinator.runtime.builtin_catalog().await;
+        let platform = self.facade.coordinator.runtime.platform().await;
         let tools = &catalog.tools;
         let settings = &platform.tool_settings;
         tools
@@ -595,8 +595,8 @@ impl OperationCatalog<'_> {
             .collect()
     }
     pub async fn list_builtin_manifests(&self) -> Vec<ToolManifest> {
-        let catalog = self.manager.coordinator.runtime.builtin_catalog().await;
-        let platform = self.manager.coordinator.runtime.platform().await;
+        let catalog = self.facade.coordinator.runtime.builtin_catalog().await;
+        let platform = self.facade.coordinator.runtime.platform().await;
         let tools = &catalog.tools;
         let settings = &platform.tool_settings;
         tools
@@ -611,8 +611,8 @@ impl OperationCatalog<'_> {
             .collect()
     }
     pub async fn list_enabled_builtin_tool_definitions(&self) -> Vec<ToolDef> {
-        let catalog = self.manager.coordinator.runtime.builtin_catalog().await;
-        let platform = self.manager.coordinator.runtime.platform().await;
+        let catalog = self.facade.coordinator.runtime.builtin_catalog().await;
+        let platform = self.facade.coordinator.runtime.platform().await;
         let tools = &catalog.tools;
         let settings = &platform.tool_settings;
         let mut defs: Vec<_> = tools

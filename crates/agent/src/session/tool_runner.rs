@@ -1907,11 +1907,11 @@ mod scheduled_authorization_tests {
 
     fn test_supervisor() -> (
         Arc<SessionSupervisor>,
-        Arc<haven_tools::ToolsManager>,
+        Arc<haven_tools::ToolsFacade>,
         Arc<Database>,
         tempfile::TempDir,
     ) {
-        let tools = Arc::new(haven_tools::ToolsManager::new());
+        let tools = Arc::new(haven_tools::ToolsFacade::new());
         let directory = tempfile::tempdir().unwrap();
         let database =
             Arc::new(Database::open(&directory.path().join("authorization.db")).unwrap());
@@ -2685,7 +2685,7 @@ mod tool_step_persistence_tests {
         let db = Arc::new(Database::open_in_memory().unwrap());
         let supervisor = Arc::new(SessionSupervisor::new_for_test(
             db.clone(),
-            Arc::new(ToolsManager::new()),
+            Arc::new(ToolsFacade::new()),
             1,
         ));
         let session = supervisor

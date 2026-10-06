@@ -38,7 +38,7 @@ impl AgentEventEmitter for StreamResetCollector {
 
 #[tokio::test]
 async fn run_session_emits_supplement_when_additional_context_queued() {
-    let tools = Arc::new(ToolsManager::new());
+    let tools = Arc::new(ToolsFacade::new());
     let client = Arc::new(FinalAnswerMock) as Arc<dyn LlmClient>;
     let (agent, executor) = make_test_agent_with(client, tools);
 
@@ -106,7 +106,7 @@ async fn empty_response_stops_with_continue_instead_of_auto_retry() {
         ScriptedResponse::Chunk(empty),
         ScriptedResponse::Chunk(replacement),
     ]));
-    let (agent, executor) = make_test_agent_with(mock, Arc::new(ToolsManager::new()));
+    let (agent, executor) = make_test_agent_with(mock, Arc::new(ToolsFacade::new()));
     let emitter = Arc::new(StreamResetCollector {
         resets: std::sync::Mutex::new(Vec::new()),
         terminal_errors: std::sync::Mutex::new(Vec::new()),
@@ -137,7 +137,7 @@ async fn empty_response_stops_with_continue_instead_of_auto_retry() {
 #[tokio::test]
 async fn dispatcher_react_failure_has_one_terminal_event_owner() {
     let mock = Arc::new(ScriptedMock::new(Vec::new()));
-    let (agent, executor) = make_test_agent_with(mock, Arc::new(ToolsManager::new()));
+    let (agent, executor) = make_test_agent_with(mock, Arc::new(ToolsFacade::new()));
     let emitter = Arc::new(StreamResetCollector {
         resets: std::sync::Mutex::new(Vec::new()),
         terminal_errors: std::sync::Mutex::new(Vec::new()),
@@ -249,7 +249,7 @@ async fn incomplete_tool_args_retry_before_dispatching_the_rebuilt_call() {
         ScriptedResponse::Chunk(rebuilt),
         ScriptedResponse::Chunk(final_answer),
     ]));
-    let tools = Arc::new(ToolsManager::new());
+    let tools = Arc::new(ToolsFacade::new());
     tools
         .registry()
         .register(Arc::new(EchoTool) as ToolBox)
@@ -301,7 +301,7 @@ async fn interrupt_then_continue_on_same_actor_uses_a_fresh_run_token() {
         ScriptedResponse::ChunkDelayed(final_answer("interrupted", "Interrupted run."), 30_000),
         ScriptedResponse::Chunk(final_answer("continued", "Continued run.")),
     ]));
-    let (agent, executor) = make_test_agent_with(mock.clone(), Arc::new(ToolsManager::new()));
+    let (agent, executor) = make_test_agent_with(mock.clone(), Arc::new(ToolsFacade::new()));
     agent.set_emitter(make_recording_emitter());
     let session = executor
         .create_session("interrupt and continue")
@@ -381,7 +381,7 @@ async fn turn_deadline_cancels_provider_retry_before_second_attempt() {
     let mut limits = ContextLimitsConfig::default();
     limits.turn_deadline_secs = 1;
     let (agent, executor) =
-        make_test_agent_with_limits(mock.clone(), Arc::new(ToolsManager::new()), limits);
+        make_test_agent_with_limits(mock.clone(), Arc::new(ToolsFacade::new()), limits);
     agent.set_emitter(make_recording_emitter());
     let session = executor
         .create_session("retry within deadline")
@@ -409,7 +409,7 @@ async fn turn_deadline_cancels_provider_retry_before_second_attempt() {
 #[tokio::test]
 async fn turn_deadline_stops_after_non_cooperative_blocking_tool() {
     let completed = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let tools = Arc::new(ToolsManager::new());
+    let tools = Arc::new(ToolsFacade::new());
     tools
         .registry()
         .register(Arc::new(BlockingTool::new(completed.clone())) as ToolBox)
@@ -473,7 +473,7 @@ async fn loop_pauses_on_pending_ask_instead_of_heuristic_final() {
             thinking_blocks: Vec::new(),
         },
     )]));
-    let (agent, executor) = make_test_agent_with(client, Arc::new(ToolsManager::new()));
+    let (agent, executor) = make_test_agent_with(client, Arc::new(ToolsFacade::new()));
     agent.set_emitter(make_recording_emitter());
     let session = executor.create_session("session").await.unwrap();
     let canonical = vec![
@@ -546,7 +546,7 @@ async fn budget_exhaustion_pauses_with_notification_and_no_chat_message() {
             thinking_blocks: Vec::new(),
         },
     )]));
-    let (agent, executor) = make_test_agent_with(client, Arc::new(ToolsManager::new()));
+    let (agent, executor) = make_test_agent_with(client, Arc::new(ToolsFacade::new()));
     agent.set_max_steps(1).unwrap();
     let recorder = make_recording_emitter();
     agent.set_emitter(recorder.clone());
@@ -618,7 +618,7 @@ async fn abnormal_text_finish_preserves_partial_and_waits_for_continue() {
             thinking_blocks: Vec::new(),
         }),
     ]));
-    let (agent, executor) = make_test_agent_with(client, Arc::new(ToolsManager::new()));
+    let (agent, executor) = make_test_agent_with(client, Arc::new(ToolsFacade::new()));
     agent.set_emitter(make_recording_emitter());
     let session = executor.create_session("session").await.unwrap();
     let error = agent.run_session_from_id(&session.id).await.unwrap_err();
@@ -639,7 +639,7 @@ async fn abnormal_text_finish_preserves_partial_and_waits_for_continue() {
 
 #[tokio::test]
 async fn run_session_executes_tool_then_final_answer() {
-    let tools = Arc::new(ToolsManager::new());
+    let tools = Arc::new(ToolsFacade::new());
     tools
         .registry()
         .register(Arc::new(EchoTool) as ToolBox)
@@ -723,7 +723,7 @@ async fn media_tool_usage_flows_to_event_and_database() {
         2_000,
     )) as ToolBox;
 
-    let tools = Arc::new(ToolsManager::new());
+    let tools = Arc::new(ToolsFacade::new());
     tools
         .share_services()
         .authorization
@@ -819,7 +819,7 @@ async fn run_session_empty_tool_call_id_stays_consistent_in_canonical() {
     // the SAME id (not the raw empty string), otherwise the tool result
     // references an id the assistant never declared and the next request
     // is rejected with a 400.
-    let tools = Arc::new(ToolsManager::new());
+    let tools = Arc::new(ToolsFacade::new());
     tools
         .registry()
         .register(Arc::new(EchoTool) as ToolBox)
@@ -897,7 +897,7 @@ async fn run_session_injects_mid_turn_steering_before_final_content() {
     // completion. The final LLM response is delayed so the steering
     // arrives while that call is still in flight; the agent must then
     // re-run with the message in context.
-    let tools = Arc::new(ToolsManager::new());
+    let tools = Arc::new(ToolsFacade::new());
     tools
         .registry()
         .register(Arc::new(EchoTool) as ToolBox)
@@ -1019,7 +1019,7 @@ async fn run_session_injects_steering_between_tool_calls() {
     // A user message sent while the agent is executing tools is drained
     // at the next step boundary ??between tool calls ??so the final
     // answer is generated with the new context.
-    let tools = Arc::new(ToolsManager::new());
+    let tools = Arc::new(ToolsFacade::new());
     let timing = Arc::new(TimingState::new());
     tools
         .registry()
@@ -1105,7 +1105,7 @@ async fn run_session_ask_tool_pauses_and_surfaces_question() {
     // The `ask` tool signals the ReAct loop to pause and wait for the
     // user's reply (delivered as a supplement on resume). Verify the session
     // ends Paused and the question is persisted as an assistant message.
-    let tools = Arc::new(ToolsManager::new());
+    let tools = Arc::new(ToolsFacade::new());
     tools
         .registry()
         .register(Arc::new(haven_tools::builtin::ask::AskTool) as ToolBox)
@@ -1188,7 +1188,7 @@ async fn run_session_ask_tool_pauses_and_surfaces_question() {
 #[tokio::test]
 async fn ask_interaction_survives_executor_restart_from_durable_snapshot() {
     let db = temp_db();
-    let tools = Arc::new(ToolsManager::new());
+    let tools = Arc::new(ToolsFacade::new());
     tools
         .registry()
         .register(Arc::new(haven_tools::builtin::ask::AskTool) as ToolBox)
@@ -1223,7 +1223,7 @@ async fn ask_interaction_survives_executor_restart_from_durable_snapshot() {
 
     executor.clear_all_sessions_for_shutdown().await.unwrap();
 
-    let restarted_tools = Arc::new(ToolsManager::new());
+    let restarted_tools = Arc::new(ToolsFacade::new());
     restarted_tools
         .registry()
         .register(Arc::new(haven_tools::builtin::ask::AskTool) as ToolBox)
@@ -1260,7 +1260,7 @@ async fn ask_interaction_survives_executor_restart_from_durable_snapshot() {
 async fn run_session_ask_resumes_after_user_answer() {
     // After `ask` pauses the session, the user's reply arrives as a
     // supplement; the loop resumes and should reach final_answer.
-    let tools = Arc::new(ToolsManager::new());
+    let tools = Arc::new(ToolsFacade::new());
     tools
         .registry()
         .register(Arc::new(haven_tools::builtin::ask::AskTool) as ToolBox)
@@ -1341,7 +1341,7 @@ async fn retry_after_ask_answer_error_keeps_single_history() {
     // answers, the resumed step fails, and the user retries. Every retry
     // must OVERWRITE the previous attempt's persisted output — the resume
     // history should show exactly one question, one answer, one response.
-    let tools = Arc::new(ToolsManager::new());
+    let tools = Arc::new(ToolsFacade::new());
     tools
         .registry()
         .register(Arc::new(haven_tools::builtin::ask::AskTool) as ToolBox)
@@ -1474,7 +1474,7 @@ async fn run_session_notify_tool_emits_notification_without_pausing() {
     // The `notify` tool signals the ReAct loop to emit a Notification
     // event (in-app toast + Windows). Unlike `ask`, it must NOT pause the
     // session: the loop continues to the final answer.
-    let tools = Arc::new(ToolsManager::new());
+    let tools = Arc::new(ToolsFacade::new());
     tools
         .registry()
         .register(Arc::new(haven_tools::builtin::notify::NotifyTool) as ToolBox)
@@ -1542,7 +1542,7 @@ async fn run_session_notify_tool_emits_notification_without_pausing() {
 async fn run_session_multiple_asks_surface_all_questions() {
     // Two `ask` calls in one batch must both be surfaced (joined into one
     // assistant message), not just the first.
-    let tools = Arc::new(ToolsManager::new());
+    let tools = Arc::new(ToolsFacade::new());
     tools
         .registry()
         .register(Arc::new(haven_tools::builtin::ask::AskTool) as ToolBox)
@@ -1608,7 +1608,7 @@ async fn pause_snapshot_and_resume_keep_own_final_answer_in_canonical() {
     // answer BEFORE the follow-up instead of having the re-seed re-insert
     // it at the transcript head, out of order.
     let db = temp_db();
-    let tools = Arc::new(ToolsManager::new());
+    let tools = Arc::new(ToolsFacade::new());
     let executor = Arc::new(SessionSupervisor::new_for_test(
         db.clone(),
         tools.clone(),
@@ -1651,7 +1651,7 @@ async fn pause_snapshot_and_resume_keep_own_final_answer_in_canonical() {
         AgentLayer::build(
             memory_service,
             executor.clone(),
-            crate::AgentToolPorts::from_tools_manager(tools),
+            crate::AgentToolPorts::from_tools_facade(tools),
             router,
             30,
             50,
@@ -1739,7 +1739,7 @@ async fn pause_snapshot_and_resume_keep_own_final_answer_in_canonical() {
 
 #[tokio::test]
 async fn run_session_compaction_retry_on_context_exceeded() {
-    let tools = Arc::new(ToolsManager::new());
+    let tools = Arc::new(ToolsFacade::new());
     tools
         .registry()
         .register(Arc::new(EchoTool) as ToolBox)
@@ -1796,7 +1796,7 @@ async fn run_session_compaction_retry_on_context_exceeded() {
 
 #[tokio::test]
 async fn run_session_context_exceeded_compaction_fails() {
-    let tools = Arc::new(ToolsManager::new());
+    let tools = Arc::new(ToolsFacade::new());
     let mock = Arc::new(ScriptedMock::new(vec![ScriptedResponse::Err(
         LlmError::ContextLengthExceeded,
     )]));
@@ -1813,7 +1813,7 @@ async fn run_session_context_exceeded_compaction_fails() {
 #[tokio::test]
 async fn continue_session_resumes_errored_session() {
     let mock = Arc::new(ScriptedMock::new(Vec::new()));
-    let (agent, executor) = make_test_agent_with(mock, Arc::new(ToolsManager::new()));
+    let (agent, executor) = make_test_agent_with(mock, Arc::new(ToolsFacade::new()));
     let session = executor.create_session("test continue").await.unwrap();
     // Simulate an errored session with a saved snapshot.
     agent
@@ -2110,7 +2110,7 @@ async fn continue_session_non_error_fails() {
 /// R4: pause snapshots record the live per-run budget for observability.
 #[tokio::test]
 async fn pause_snapshot_includes_run_budget() {
-    let tools = Arc::new(ToolsManager::new());
+    let tools = Arc::new(ToolsFacade::new());
     tools
         .registry()
         .register(Arc::new(haven_tools::builtin::ask::AskTool) as ToolBox)

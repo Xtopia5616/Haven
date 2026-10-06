@@ -788,7 +788,7 @@ mod tests {
         ));
         let executor = Arc::new(crate::session::SessionSupervisor::new_for_test(
             db.clone(),
-            Arc::new(haven_tools::ToolsManager::new()),
+            Arc::new(haven_tools::ToolsFacade::new()),
             2,
         ));
         ReActEngine::new(

@@ -117,15 +117,15 @@ fn tool_budget_selection_reports_core_omissions_when_core_exceeds_limit() {
 }
 
 #[tokio::test]
-async fn test_tools_manager_new() {
-    let mgr = ToolsManager::new();
+async fn test_tools_facade_new() {
+    let mgr = ToolsFacade::new();
     let tools = mgr.registry().list().await;
     assert!(tools.is_empty());
 }
 
 #[tokio::test]
 async fn scoped_catalog_rebuild_reuses_unaffected_runtime_instances() {
-    let mgr = ToolsManager::new();
+    let mgr = ToolsFacade::new();
     mgr.rebuild_catalog().await.unwrap();
     let ask_before = mgr.registry().get("ask").await.unwrap();
     let shell_before = mgr.get_tool("shell").await.unwrap();
@@ -141,7 +141,7 @@ async fn scoped_catalog_rebuild_reuses_unaffected_runtime_instances() {
 
 #[tokio::test]
 async fn manager_control_plane_errors_preserve_structured_metadata() {
-    let mgr = ToolsManager::new();
+    let mgr = ToolsFacade::new();
     let missing = mgr
         .execute_tool(None, "missing", json!({}), CancellationToken::new())
         .await
@@ -179,7 +179,7 @@ async fn manager_control_plane_errors_preserve_structured_metadata() {
 
 #[tokio::test]
 async fn runtime_capabilities_report_unavailable_backends_explicitly() {
-    let mgr = ToolsManager::new();
+    let mgr = ToolsFacade::new();
     let capabilities = mgr.runtime_capabilities().await;
     assert!(!capabilities.vision);
     assert!(!capabilities.image_generation);
@@ -191,7 +191,7 @@ async fn runtime_capabilities_report_unavailable_backends_explicitly() {
 
 #[tokio::test]
 async fn tool_catalog_snapshot_captures_lookup_policy_and_manifest() {
-    let mgr = ToolsManager::new();
+    let mgr = ToolsFacade::new();
     mgr.rebuild_catalog().await.unwrap();
 
     let snapshot = mgr.tool_catalog_snapshot("ses-snapshot").await;
@@ -247,7 +247,7 @@ impl Tool for SessionAuthorizationTool {
 
 #[tokio::test]
 async fn authorization_policy_matches_live_and_snapshot_session_overlay() {
-    let mgr = ToolsManager::new();
+    let mgr = ToolsFacade::new();
     mgr.rebuild_catalog().await.unwrap();
     let session_id = "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     let tool_name = "mcp__policy__invoke";
@@ -297,7 +297,7 @@ async fn authorization_policy_matches_live_and_snapshot_session_overlay() {
 
 #[tokio::test]
 async fn tool_catalog_snapshot_keeps_provider_surface_stable_after_drift() {
-    let mgr = ToolsManager::new();
+    let mgr = ToolsFacade::new();
     mgr.rebuild_catalog().await.unwrap();
     let before = mgr.tool_catalog_snapshot("ses-drift").await;
     assert!(
@@ -369,7 +369,7 @@ async fn catalog_drift_reaches_the_live_execution_boundary() {
         }
     }
 
-    let mgr = ToolsManager::new();
+    let mgr = ToolsFacade::new();
     mgr.registry()
         .register(Arc::new(DriftTool("prepared")))
         .await
@@ -432,7 +432,7 @@ async fn execute_tool_does_not_inject_idempotency_key_into_strict_tool_args() {
         }
     }
 
-    let mgr = ToolsManager::new();
+    let mgr = ToolsFacade::new();
     mgr.registry().register(Arc::new(StrictTool)).await.unwrap();
     let result = mgr
         .execute_tool_with_step(
@@ -448,8 +448,8 @@ async fn execute_tool_does_not_inject_idempotency_key_into_strict_tool_args() {
 }
 
 #[tokio::test]
-async fn test_tools_manager_set_tool_settings() {
-    let mgr = ToolsManager::new();
+async fn test_tools_facade_set_tool_settings() {
+    let mgr = ToolsFacade::new();
     let mut settings = HashMap::new();
     settings.insert("test_tool".into(), ToolConfig::default());
     mgr.set_tool_settings(settings).await.unwrap();
@@ -457,7 +457,7 @@ async fn test_tools_manager_set_tool_settings() {
 
 #[tokio::test]
 async fn unchanged_tool_settings_report_that_catalog_rebuild_was_skipped() {
-    let mgr = ToolsManager::new();
+    let mgr = ToolsFacade::new();
     let version_before = mgr.registry().version();
 
     let outcome = mgr.set_tool_settings(HashMap::new()).await.unwrap();
@@ -467,8 +467,8 @@ async fn unchanged_tool_settings_report_that_catalog_rebuild_was_skipped() {
 }
 
 #[tokio::test]
-async fn test_tools_manager_set_context_limits_stores_global_cap() {
-    let mgr = ToolsManager::new();
+async fn test_tools_facade_set_context_limits_stores_global_cap() {
+    let mgr = ToolsFacade::new();
     assert_eq!(mgr.context_limits().await.max_observation_chars, 16_000);
     let limits = ContextLimitsConfig {
         max_observation_chars: 5_000,
@@ -480,7 +480,7 @@ async fn test_tools_manager_set_context_limits_stores_global_cap() {
 
 #[tokio::test]
 async fn observation_text_uses_same_global_cap_for_adapters() {
-    let mgr = ToolsManager::new();
+    let mgr = ToolsFacade::new();
     let limits = ContextLimitsConfig {
         max_observation_chars: 4,
         ..Default::default()
@@ -491,8 +491,8 @@ async fn observation_text_uses_same_global_cap_for_adapters() {
 }
 
 #[tokio::test]
-async fn test_tools_manager_get_tool_not_found() {
-    let mgr = ToolsManager::new();
+async fn test_tools_facade_get_tool_not_found() {
+    let mgr = ToolsFacade::new();
     let tool = mgr.get_tool("nonexistent").await;
     assert!(tool.is_none());
 }
@@ -505,7 +505,7 @@ async fn test_tools_manager_get_tool_not_found() {
 /// the ask/notify behavior.
 #[tokio::test]
 async fn test_signal_declaring_tools_populate_result_signals() {
-    let mgr = ToolsManager::new();
+    let mgr = ToolsFacade::new();
     mgr.rebuild_catalog().await.unwrap();
 
     let ask = mgr
@@ -536,8 +536,8 @@ async fn test_signal_declaring_tools_populate_result_signals() {
 }
 
 #[tokio::test]
-async fn test_tools_manager_execute_tool_not_found() {
-    let mgr = ToolsManager::new();
+async fn test_tools_facade_execute_tool_not_found() {
+    let mgr = ToolsFacade::new();
     let result = mgr
         .execute_tool(None, "nonexistent", json!({}), CancellationToken::new())
         .await;
@@ -545,8 +545,8 @@ async fn test_tools_manager_execute_tool_not_found() {
 }
 
 #[tokio::test]
-async fn test_tools_manager_rebuild_catalog_registers_builtins() {
-    let mgr = ToolsManager::new();
+async fn test_tools_facade_rebuild_catalog_registers_builtins() {
+    let mgr = ToolsFacade::new();
     mgr.rebuild_catalog().await.unwrap();
 
     let builtin_tools = mgr.list_builtin_tools().await;
@@ -663,7 +663,7 @@ async fn test_tools_manager_rebuild_catalog_registers_builtins() {
 
 #[tokio::test]
 async fn stable_core_tools_are_registered_without_optional_providers() {
-    let mgr = ToolsManager::new();
+    let mgr = ToolsFacade::new();
     mgr.rebuild_catalog().await.unwrap();
 
     for name in CORE_MODEL_TOOLS {
@@ -684,7 +684,7 @@ async fn stable_core_tools_are_registered_without_optional_providers() {
 
 #[tokio::test]
 async fn test_tool_catalog_exposes_three_layers_without_loading_deferred_tools() {
-    let mgr = ToolsManager::new();
+    let mgr = ToolsFacade::new();
     mgr.rebuild_catalog().await.unwrap();
     let session_id = "ses-0123456789abcdef0123456789abcdef";
 
@@ -855,7 +855,7 @@ async fn test_tool_catalog_exposes_three_layers_without_loading_deferred_tools()
 
 #[tokio::test]
 async fn tool_catalog_describe_does_not_connect_or_execute_mcp() {
-    let mgr = ToolsManager::new();
+    let mgr = ToolsFacade::new();
     mgr.rebuild_catalog().await.unwrap();
     mgr.upsert_mcp_server_config(McpServerConfig {
         name: "unconnected-catalog-server".into(),
@@ -883,8 +883,8 @@ async fn tool_catalog_describe_does_not_connect_or_execute_mcp() {
 }
 
 #[tokio::test]
-async fn test_tools_manager_disabled_tool_excluded_and_blocked() {
-    let mgr = ToolsManager::new();
+async fn test_tools_facade_disabled_tool_excluded_and_blocked() {
+    let mgr = ToolsFacade::new();
     mgr.rebuild_catalog().await.unwrap();
 
     // Disable the `files` tool.
@@ -927,8 +927,8 @@ async fn test_tools_manager_disabled_tool_excluded_and_blocked() {
 }
 
 #[tokio::test]
-async fn test_tools_manager_execute_builtin_tool() {
-    let mgr = ToolsManager::new();
+async fn test_tools_facade_execute_builtin_tool() {
+    let mgr = ToolsFacade::new();
     mgr.rebuild_catalog().await.unwrap();
 
     let tmp = TempDir::new().unwrap();
@@ -953,7 +953,7 @@ async fn test_tools_manager_execute_builtin_tool() {
 
 #[tokio::test]
 async fn operation_view_accepts_trusted_private_session_metadata() {
-    let mgr = ToolsManager::new();
+    let mgr = ToolsFacade::new();
     mgr.rebuild_catalog().await.unwrap();
 
     let tmp = TempDir::new().unwrap();
@@ -983,8 +983,8 @@ async fn operation_view_accepts_trusted_private_session_metadata() {
 }
 
 #[tokio::test]
-async fn test_tools_manager_resolve_risk_level_unknown() {
-    let mgr = ToolsManager::new();
+async fn test_tools_facade_resolve_risk_level_unknown() {
+    let mgr = ToolsFacade::new();
     let risk = mgr
         .resolve_risk_level(None, "nonexistent", &json!({}))
         .await;
@@ -1026,7 +1026,7 @@ async fn test_execute_tool_circuit_breaker_opens() {
         }
     }
 
-    let mgr = ToolsManager::new();
+    let mgr = ToolsFacade::new();
     let call_count = Arc::new(AtomicU32::new(0));
     mgr.registry()
         .register(Arc::new(FailingTool {
@@ -1100,7 +1100,7 @@ async fn execute_tool_retries_transient_failure_by_default() {
         }
     }
 
-    let mgr = ToolsManager::new();
+    let mgr = ToolsFacade::new();
     let attempts = Arc::new(AtomicU32::new(0));
     mgr.set_tool_settings(HashMap::from([(
         "flaky".into(),
@@ -1179,7 +1179,7 @@ async fn execute_tool_never_retries_when_side_effect_outcome_is_unknown() {
     }
 
     let calls = Arc::new(AtomicU32::new(0));
-    let manager = ToolsManager::new();
+    let manager = ToolsFacade::new();
     manager
         .set_tool_settings(HashMap::from([(
             "unknown_side_effect".into(),
@@ -1245,7 +1245,7 @@ async fn settings_without_timeout_preserve_intrinsic_timeout() {
         }
     }
 
-    let mgr = ToolsManager::new();
+    let mgr = ToolsFacade::new();
     mgr.set_tool_settings(HashMap::from([(
         "slow_intrinsic".into(),
         ToolConfig {
@@ -1310,7 +1310,7 @@ async fn settings_without_retry_fields_preserve_intrinsic_retry_policy() {
         }
     }
 
-    let mgr = ToolsManager::new();
+    let mgr = ToolsFacade::new();
     let attempts = Arc::new(AtomicU32::new(0));
     mgr.set_tool_settings(HashMap::from([(
         "intrinsic_retry".into(),
@@ -1363,7 +1363,7 @@ fn retryable_tool_results_require_known_transient_failure() {
 async fn test_list_schemas_for_session_includes_per_session_tools() {
     use haven_skills::SkillManifest;
 
-    let mgr = ToolsManager::new();
+    let mgr = ToolsFacade::new();
     mgr.rebuild_catalog().await.unwrap();
 
     // Before registering a per-session tool, schemas come only from the
@@ -1400,7 +1400,7 @@ async fn test_list_schemas_for_session_includes_per_session_tools() {
 
 #[tokio::test]
 async fn test_session_tool_overlay_version_does_not_invalidate_other_sessions() {
-    let mgr = ToolsManager::new();
+    let mgr = ToolsFacade::new();
     mgr.rebuild_catalog().await.unwrap();
     let before_a = mgr.catalog_version_for_session("ses-a").await;
     let before_b = mgr.catalog_version_for_session("ses-b").await;
@@ -1469,7 +1469,7 @@ async fn live_output_tools_receive_session_without_step_id() {
         }
     }
 
-    let mgr = ToolsManager::new();
+    let mgr = ToolsFacade::new();
     let captured = Arc::new(Mutex::new(None));
     mgr.registry()
         .register(Arc::new(CaptureInput(captured.clone())))
@@ -1495,7 +1495,7 @@ async fn live_output_tools_receive_session_without_step_id() {
 async fn test_build_mcp_index_filters_disabled() {
     use haven_common::config::McpServerConfig;
 
-    let mgr = ToolsManager::new();
+    let mgr = ToolsFacade::new();
     mgr.upsert_mcp_server_config(McpServerConfig {
         name: "on".into(),
         enabled: true,
@@ -1552,7 +1552,7 @@ fn mcp_search_detection_only_uses_cached_tool_names() {
 async fn test_build_mcp_index_does_not_expose_process_args() {
     use haven_common::config::McpServerConfig;
 
-    let mgr = ToolsManager::new();
+    let mgr = ToolsFacade::new();
     mgr.upsert_mcp_server_config(McpServerConfig {
         name: "safe-server".into(),
         command: "server.exe".into(),
@@ -1573,7 +1573,7 @@ async fn test_build_mcp_index_does_not_expose_process_args() {
 async fn test_upsert_and_remove_mcp_server_config() {
     use haven_common::config::McpServerConfig;
 
-    let mgr = ToolsManager::new();
+    let mgr = ToolsFacade::new();
     mgr.upsert_mcp_server_config(McpServerConfig {
         name: "srv".into(),
         enabled: true,
@@ -1590,7 +1590,7 @@ async fn test_upsert_and_remove_mcp_server_config() {
 async fn test_rebuild_catalog_does_not_register_mcp_tools() {
     // Progressive loading: MCP tools must NOT be in the global registry.
     // They should only appear per-session after `load_mcp`.
-    let mgr = ToolsManager::new();
+    let mgr = ToolsFacade::new();
     mgr.rebuild_catalog().await.unwrap();
     let schemas = mgr.registry().list_schemas().await;
     assert!(
@@ -1603,7 +1603,7 @@ async fn test_rebuild_catalog_does_not_register_mcp_tools() {
 
 #[tokio::test]
 async fn test_builtin_loader_keeps_deferred_tools_out_of_provider_surface() {
-    let mgr = ToolsManager::new();
+    let mgr = ToolsFacade::new();
     mgr.rebuild_catalog().await.unwrap();
 
     assert!(mgr.registry().get("shell").await.is_none());
@@ -1642,7 +1642,7 @@ async fn test_builtin_loader_keeps_deferred_tools_out_of_provider_surface() {
 async fn test_list_tool_definitions_for_session_caps_at_max_tools() {
     use haven_common::config::ContextLimitsConfig;
 
-    let mgr = ToolsManager::new();
+    let mgr = ToolsFacade::new();
     mgr.rebuild_catalog().await.unwrap();
     let global = mgr.registry().list_tool_definitions().await.len();
     assert!(global > 0, "catalog should have builtins");
@@ -1704,7 +1704,7 @@ async fn test_list_tool_definitions_for_session_caps_at_max_tools() {
 async fn private_live_output_ids_are_stripped_and_reinjected() {
     use std::sync::Mutex;
 
-    let mgr = ToolsManager::new();
+    let mgr = ToolsFacade::new();
     mgr.rebuild_catalog().await.unwrap();
     let hits: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
     let hits2 = hits.clone();
@@ -1766,7 +1766,7 @@ async fn private_live_output_ids_are_stripped_and_reinjected() {
 }
 #[tokio::test]
 async fn registered_operation_manifest_matches_runtime_policy() {
-    let mgr = ToolsManager::new();
+    let mgr = ToolsFacade::new();
     mgr.rebuild_catalog().await.unwrap();
     let mut tools = mgr.registry().list().await;
     tools.extend(mgr.operations().deferred().list().await);

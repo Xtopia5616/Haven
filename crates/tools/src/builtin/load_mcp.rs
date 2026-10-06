@@ -37,7 +37,7 @@ pub struct LoadMcpParams {
     /// with `tool_names` set to the tools you need.
     #[serde(default)]
     pub tool_names: Option<Vec<String>>,
-    /// Injected privately by ToolsManager when `requires_session_id` is set.
+    /// Injected privately by ToolsFacade when `requires_session_id` is set.
     #[serde(default, rename = "_session_id")]
     pub session_id: Option<String>,
 }

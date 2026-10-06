@@ -491,12 +491,12 @@ pub struct ToolResult {
     pub truncated: bool,
     #[serde(default)]
     pub outcome: ToolExecutionOutcome,
-    /// Number of attempts used by the manager. Direct tool calls use 1.
+    /// Number of attempts used by the execution coordinator. Direct tool calls use 1.
     #[serde(default = "default_attempts")]
     pub attempts: u32,
     /// Side-channel signals the tool attaches to its own result (an `ask`
     /// question to pause for, a `notify` toast to surface). Populated by
-    /// `ToolsManager::execute_tool` from the tool's `signals()` hook BEFORE
+    /// `ToolsFacade::execute_tool` from the tool's `signals()` hook BEFORE
     /// any observation truncation, so the ReAct loop reads structured data
     /// instead of name-matching and re-parsing output JSON.
     #[serde(default)]
@@ -1504,7 +1504,7 @@ pub trait Tool: Send + Sync {
     }
 
     /// Convert an implementation error into structured recovery metadata.
-    /// This hook is intentionally policy-bearing; the manager must never
+    /// This hook is intentionally policy-bearing; the execution path must never
     /// infer retry or outcome semantics by scanning the diagnostic string.
     fn error_metadata(&self, error: &anyhow::Error) -> ToolErrorMetadata {
         error
@@ -1536,7 +1536,7 @@ pub trait Tool: Send + Sync {
 
     /// Canonical structured definition of this tool (name / description /
     /// schema / default risk). `ToolDef` is the unified abstraction the
-    /// registry and manager surface; per-call risk is still refined via
+    /// registry and Tools facade expose; per-call risk is still refined via
     /// `risk_level(input)`. Tools may override to e.g. memoize the schema.
     fn tool_def(&self) -> ToolDef {
         let manifest = self.tool_manifest();
@@ -1933,7 +1933,7 @@ pub fn parse_tool_input<T: serde::de::DeserializeOwned>(
 
 /// Remove execution-only metadata before validating a provider-facing schema.
 ///
-/// The tools manager strips these fields before the first validation and then
+/// The Tools facade strips these fields before the first validation and then
 /// re-injects trusted values for the implementation boundary. Operation views
 /// validate once more inside `execute`, so they must apply the same boundary
 /// rule or strict `additionalProperties: false` schemas reject the trusted
