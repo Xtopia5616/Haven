@@ -7,10 +7,10 @@
 
 use serde::{Deserialize, Serialize};
 
-/// Coarse media type used at filesystem and ingress boundaries.
+/// Coarse media kind detected at filesystem and ingress boundaries.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum MediaType {
+pub enum DetectedMediaKind {
     Text,
     Image,
     Audio,
@@ -19,7 +19,7 @@ pub enum MediaType {
     Unknown,
 }
 
-impl MediaType {
+impl DetectedMediaKind {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Text => "text",
@@ -31,7 +31,7 @@ impl MediaType {
         }
     }
 
-    pub const fn is_rich(self) -> bool {
+    pub const fn is_rich_media(self) -> bool {
         matches!(
             self,
             Self::Image | Self::Audio | Self::Video | Self::Document
@@ -42,14 +42,15 @@ impl MediaType {
 /// Result of the canonical content/filename probe.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MediaProbe {
-    pub media_type: MediaType,
+    #[serde(rename = "media_type")]
+    pub media_kind: DetectedMediaKind,
     pub mime_type: String,
 }
 
 impl MediaProbe {
-    pub fn new(media_type: MediaType, mime_type: impl Into<String>) -> Self {
+    pub fn new(media_kind: DetectedMediaKind, mime_type: impl Into<String>) -> Self {
         Self {
-            media_type,
+            media_kind,
             mime_type: mime_type.into(),
         }
     }
@@ -57,31 +58,31 @@ impl MediaProbe {
 
 /// Detect the coarse type of raw bytes, using `filename` only when magic bytes
 /// are inconclusive.
-pub fn detect_modality(data: &[u8], filename: &str) -> MediaType {
-    if let Some(media_type) = detect_magic(data) {
-        return media_type;
+pub fn detect_media_kind(data: &[u8], filename: &str) -> DetectedMediaKind {
+    if let Some(media_kind) = detect_magic(data) {
+        return media_kind;
     }
-    if let Some(media_type) = detect_extension(filename) {
-        return media_type;
+    if let Some(media_kind) = detect_extension(filename) {
+        return media_kind;
     }
     if looks_like_text(data) {
-        return MediaType::Text;
+        return DetectedMediaKind::Text;
     }
-    MediaType::Unknown
+    DetectedMediaKind::Unknown
 }
 
 /// Probe both the coarse type and the most specific safe MIME type available.
 pub fn probe_media(data: &[u8], filename: &str) -> MediaProbe {
-    let modality = detect_modality(data, filename);
-    let detected_mime = detect_media_type_with_filename(data, filename);
+    let media_kind = detect_media_kind(data, filename);
+    let detected_mime = detect_mime_type_with_filename(data, filename);
     let mime_type = if detected_mime != "application/octet-stream" {
         detected_mime.to_owned()
-    } else if modality == MediaType::Text {
+    } else if media_kind == DetectedMediaKind::Text {
         "text/plain".to_owned()
     } else {
         detected_mime.to_owned()
     };
-    MediaProbe::new(modality, mime_type)
+    MediaProbe::new(media_kind, mime_type)
 }
 
 /// Probe with a browser/provider MIME value as a final fallback only.
@@ -92,7 +93,7 @@ pub fn probe_media_with_hint(
     hinted_mime_type: Option<&str>,
 ) -> MediaProbe {
     let detected = probe_media(data, filename);
-    if detected.media_type != MediaType::Unknown {
+    if detected.media_kind != DetectedMediaKind::Unknown {
         return detected;
     }
     let Some(hinted) = hinted_mime_type
@@ -110,15 +111,15 @@ pub fn probe_media_with_hint(
     if normalized.ends_with("/*") {
         return detected;
     }
-    let media_type = media_type_from_mime(&normalized);
-    if media_type == MediaType::Unknown {
+    let media_kind = media_kind_from_mime_type(&normalized);
+    if media_kind == DetectedMediaKind::Unknown {
         return detected;
     }
-    MediaProbe::new(media_type, normalized)
+    MediaProbe::new(media_kind, normalized)
 }
 
 /// Guess an exact MIME type from recognizable bytes.
-pub fn detect_media_type(data: &[u8]) -> &'static str {
+pub fn detect_mime_type(data: &[u8]) -> &'static str {
     if data.starts_with(&[0xFF, 0xD8, 0xFF]) {
         return "image/jpeg";
     }
@@ -175,16 +176,16 @@ pub fn detect_media_type(data: &[u8]) -> &'static str {
 
 /// Detect a MIME type from content, then use the filename as a controlled
 /// fallback for formats without a reliable short signature.
-pub fn detect_media_type_with_filename(data: &[u8], filename: &str) -> &'static str {
-    let detected = detect_media_type(data);
+pub fn detect_mime_type_with_filename(data: &[u8], filename: &str) -> &'static str {
+    let detected = detect_mime_type(data);
     if detected != "application/octet-stream" {
         return detected;
     }
-    media_type_from_extension(filename).unwrap_or(detected)
+    mime_type_from_extension(filename).unwrap_or(detected)
 }
 
 /// Derive the canonical MIME type from a filename extension.
-pub fn media_type_from_extension(filename: &str) -> Option<&'static str> {
+pub fn mime_type_from_extension(filename: &str) -> Option<&'static str> {
     let ext = filename.rsplit('.').next()?.to_ascii_lowercase();
     Some(match ext.as_str() {
         "jpg" | "jpeg" => "image/jpeg",
@@ -231,8 +232,8 @@ pub fn media_type_from_extension(filename: &str) -> Option<&'static str> {
 }
 
 /// Derive a file extension from a MIME type.
-pub fn extension_for_media_type(media_type: &str) -> &'static str {
-    match media_type.to_ascii_lowercase().as_str() {
+pub fn extension_for_mime_type(mime_type: &str) -> &'static str {
+    match mime_type.to_ascii_lowercase().as_str() {
         "image/png" => "png",
         "image/jpeg" | "image/jpg" => "jpg",
         "image/webp" => "webp",
@@ -256,7 +257,7 @@ pub fn extension_for_media_type(media_type: &str) -> &'static str {
 }
 
 /// Classify an already normalized MIME type without inspecting bytes.
-pub fn media_type_from_mime(mime_type: &str) -> MediaType {
+pub fn media_kind_from_mime_type(mime_type: &str) -> DetectedMediaKind {
     let mime_type = mime_type
         .split(';')
         .next()
@@ -264,11 +265,11 @@ pub fn media_type_from_mime(mime_type: &str) -> MediaType {
         .trim()
         .to_ascii_lowercase();
     if mime_type.starts_with("image/") {
-        MediaType::Image
+        DetectedMediaKind::Image
     } else if mime_type.starts_with("audio/") {
-        MediaType::Audio
+        DetectedMediaKind::Audio
     } else if mime_type.starts_with("video/") {
-        MediaType::Video
+        DetectedMediaKind::Video
     } else if mime_type == "application/pdf"
         || mime_type.contains("wordprocessingml")
         || mime_type.contains("spreadsheetml")
@@ -278,15 +279,15 @@ pub fn media_type_from_mime(mime_type: &str) -> MediaType {
             "application/msword" | "application/vnd.ms-excel" | "application/vnd.ms-powerpoint"
         )
     {
-        MediaType::Document
+        DetectedMediaKind::Document
     } else if mime_type.starts_with("text/") {
-        MediaType::Text
+        DetectedMediaKind::Text
     } else {
-        MediaType::Unknown
+        DetectedMediaKind::Unknown
     }
 }
 
-fn detect_magic(data: &[u8]) -> Option<MediaType> {
+fn detect_magic(data: &[u8]) -> Option<DetectedMediaKind> {
     if data.starts_with(&[0xFF, 0xD8, 0xFF])
         || data.starts_with(&[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A])
         || data.starts_with(b"GIF87a")
@@ -297,7 +298,7 @@ fn detect_magic(data: &[u8]) -> Option<MediaType> {
         || data.starts_with(&[0x00, 0x00, 0x01, 0x00])
         || (data.len() >= 12 && data.starts_with(b"RIFF") && &data[8..12] == b"WEBP")
     {
-        return Some(MediaType::Image);
+        return Some(DetectedMediaKind::Image);
     }
     if data.starts_with(b"ID3")
         || (data.len() >= 2
@@ -308,31 +309,31 @@ fn detect_magic(data: &[u8]) -> Option<MediaType> {
         || data.starts_with(b"fLaC")
         || data.starts_with(b"OggS")
     {
-        return Some(MediaType::Audio);
+        return Some(DetectedMediaKind::Audio);
     }
     if (data.len() >= 12 && data.starts_with(b"RIFF") && &data[8..12] == b"AVI ")
         || data.starts_with(&[0x1A, 0x45, 0xDF, 0xA3])
         || data.starts_with(&[0x30, 0x26, 0xB2, 0x75, 0x8E, 0x66, 0xCF, 0x11])
     {
-        return Some(MediaType::Video);
+        return Some(DetectedMediaKind::Video);
     }
     if data.len() >= 12 && &data[4..8] == b"ftyp" {
         let brand = &data[8..12];
         return Some(if matches!(brand, b"M4A " | b"f4a " | b"M4B " | b"M4P ") {
-            MediaType::Audio
+            DetectedMediaKind::Audio
         } else {
-            MediaType::Video
+            DetectedMediaKind::Video
         });
     }
     if data.starts_with(b"%PDF") {
-        return Some(MediaType::Document);
+        return Some(DetectedMediaKind::Document);
     }
     None
 }
 
-fn detect_extension(filename: &str) -> Option<MediaType> {
-    let mime = media_type_from_extension(filename)?;
-    Some(media_type_from_mime(mime))
+fn detect_extension(filename: &str) -> Option<DetectedMediaKind> {
+    let mime = mime_type_from_extension(filename)?;
+    Some(media_kind_from_mime_type(mime))
 }
 
 fn looks_like_text(data: &[u8]) -> bool {
@@ -370,29 +371,29 @@ mod tests {
     #[test]
     fn probes_image_audio_and_video() {
         assert_eq!(
-            probe_media(b"\x89PNG\r\n\x1a\n", "x.png").media_type,
-            MediaType::Image
+            probe_media(b"\x89PNG\r\n\x1a\n", "x.png").media_kind,
+            DetectedMediaKind::Image
         );
         assert_eq!(
-            probe_media(b"RIFF....WAVE", "x.wav").media_type,
-            MediaType::Audio
+            probe_media(b"RIFF....WAVE", "x.wav").media_kind,
+            DetectedMediaKind::Audio
         );
         assert_eq!(
-            probe_media(b"\x00\x00\x00\x18ftypisom", "x.mp4").media_type,
-            MediaType::Video
+            probe_media(b"\x00\x00\x00\x18ftypisom", "x.mp4").media_kind,
+            DetectedMediaKind::Video
         );
     }
 
     #[test]
     fn filename_fallback_covers_modern_media_formats() {
         for (filename, expected) in [
-            ("photo.heic", MediaType::Image),
-            ("voice.opus", MediaType::Audio),
-            ("clip.mts", MediaType::Video),
-            ("sheet.xlsx", MediaType::Document),
+            ("photo.heic", DetectedMediaKind::Image),
+            ("voice.opus", DetectedMediaKind::Audio),
+            ("clip.mts", DetectedMediaKind::Video),
+            ("sheet.xlsx", DetectedMediaKind::Document),
         ] {
             assert_eq!(
-                probe_media(b"not a signature", filename).media_type,
+                probe_media(b"not a signature", filename).media_kind,
                 expected
             );
         }
@@ -401,40 +402,43 @@ mod tests {
     #[test]
     fn content_wins_over_filename_and_hint() {
         let probe = probe_media_with_hint(b"%PDF-1.7", "wrong.png", Some("audio/mpeg"));
-        assert_eq!(probe.media_type, MediaType::Document);
+        assert_eq!(probe.media_kind, DetectedMediaKind::Document);
         assert_eq!(probe.mime_type, "application/pdf");
     }
 
     #[test]
     fn unknown_content_can_use_specific_hint() {
         let probe = probe_media_with_hint(&[0, 1, 2, 0xff], "no-extension", Some("video/mp4"));
-        assert_eq!(probe.media_type, MediaType::Video);
+        assert_eq!(probe.media_kind, DetectedMediaKind::Video);
         assert_eq!(probe.mime_type, "video/mp4");
     }
 
     #[test]
     fn wildcard_hint_does_not_become_a_canonical_mime() {
         let probe = probe_media_with_hint(&[0, 1, 2, 0xff], "no-extension", Some("audio/*"));
-        assert_eq!(probe.media_type, MediaType::Unknown);
+        assert_eq!(probe.media_kind, DetectedMediaKind::Unknown);
         assert_eq!(probe.mime_type, "application/octet-stream");
     }
 
     #[test]
     fn text_fallback_is_stable() {
         assert_eq!(
-            probe_media("你好".as_bytes(), "notes.txt").media_type,
-            MediaType::Text
+            probe_media("你好".as_bytes(), "notes.txt").media_kind,
+            DetectedMediaKind::Text
         );
         let (encoded, _, had_errors) = encoding_rs::GBK.encode("中文文本内容");
         assert!(!had_errors);
-        assert_eq!(probe_media(&encoded, "").media_type, MediaType::Text);
+        assert_eq!(
+            probe_media(&encoded, "").media_kind,
+            DetectedMediaKind::Text
+        );
     }
 
     #[test]
     fn unknown_binary_stays_unknown() {
         assert_eq!(
-            probe_media(&[0, 1, 2, 0xff], "").media_type,
-            MediaType::Unknown
+            probe_media(&[0, 1, 2, 0xff], "").media_kind,
+            DetectedMediaKind::Unknown
         );
     }
 }

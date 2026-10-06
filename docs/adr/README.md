@@ -570,3 +570,4 @@
 - [0579：明确 Hotkey 修饰键判断与显示名称](0579-name-hotkey-modifier-and-display-methods.md)
 - [0580：明确 VAD 概率观察入口](0580-name-vad-probability-observation.md)
 - [0581：明确 capture engine 角色与重采样动作](0581-name-capture-engine-and-resampling-api.md)
+- [0582：区分媒体粗分类与 MIME 类型](0582-distinguish-detected-media-kind-and-mime-type.md)

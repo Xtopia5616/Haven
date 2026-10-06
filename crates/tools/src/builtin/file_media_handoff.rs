@@ -9,10 +9,10 @@ use super::file_classification::classify_by_extension;
 
 pub(super) fn media_operation_for(asset: &ManagedAsset) -> Option<MediaOperation> {
     match classify_media(asset).0 {
-        haven_common::media_detection::MediaType::Image => Some(MediaOperation::Describe),
-        haven_common::media_detection::MediaType::Audio => Some(MediaOperation::Transcribe),
-        haven_common::media_detection::MediaType::Video => Some(MediaOperation::Inspect),
-        haven_common::media_detection::MediaType::Document => Some(MediaOperation::Extract),
+        haven_common::media_detection::DetectedMediaKind::Image => Some(MediaOperation::Describe),
+        haven_common::media_detection::DetectedMediaKind::Audio => Some(MediaOperation::Transcribe),
+        haven_common::media_detection::DetectedMediaKind::Video => Some(MediaOperation::Inspect),
+        haven_common::media_detection::DetectedMediaKind::Document => Some(MediaOperation::Extract),
         _ => None,
     }
 }

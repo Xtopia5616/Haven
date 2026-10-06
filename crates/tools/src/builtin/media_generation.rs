@@ -2,7 +2,7 @@
 
 use chrono::{Duration as ChronoDuration, Utc};
 use haven_common::config::{GENERATED_MEDIA_RETENTION_SECS, default_generated_media_dir};
-use haven_common::media_detection::extension_for_media_type;
+use haven_common::media_detection::extension_for_mime_type;
 use serde_json::json;
 use std::path::Path;
 use std::time::Duration;
@@ -72,7 +72,7 @@ impl MediaTool {
             anyhow::bail!("image generation returned a non-image media type");
         }
         let root = default_generated_media_dir();
-        let extension = extension_for_media_type(&image.media_type);
+        let extension = extension_for_mime_type(&image.media_type);
         let path = root.join(format!(
             "{}.{}",
             haven_common::types::new_id("file"),

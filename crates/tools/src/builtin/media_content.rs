@@ -1,7 +1,7 @@
 //! Provider-backed media interpretation and document extraction.
 
 use haven_common::media::MediaRepresentationKind;
-use haven_common::media_detection::MediaType;
+use haven_common::media_detection::DetectedMediaKind;
 use haven_common::prompts::IMAGE_ANALYSIS_SYSTEM_PROMPT;
 use haven_common::types::LlmCallKind;
 use haven_llm::{LlmRouter, SttClient};
@@ -524,7 +524,7 @@ impl MediaTool {
         system_prompt: &str,
         representation: MediaRepresentationKind,
     ) -> anyhow::Result<ToolResult> {
-        if classify_media(&asset).0 != MediaType::Image {
+        if classify_media(&asset).0 != DetectedMediaKind::Image {
             anyhow::bail!("{} requires an image asset", operation_name(operation));
         }
         let available = match operation {
@@ -620,7 +620,7 @@ impl MediaTool {
         asset: ManagedAsset,
         cancel: CancellationToken,
     ) -> anyhow::Result<ToolResult> {
-        if classify_media(&asset).0 != MediaType::Audio {
+        if classify_media(&asset).0 != DetectedMediaKind::Audio {
             anyhow::bail!("transcribe requires an audio asset");
         }
         if !self.capabilities.transcribe {
@@ -720,7 +720,9 @@ impl MediaTool {
         page_index: Option<u64>,
         cancel: CancellationToken,
     ) -> anyhow::Result<ToolResult> {
-        if classify_media(&asset).0 != MediaType::Document || !supports_document_path(&asset.path) {
+        if classify_media(&asset).0 != DetectedMediaKind::Document
+            || !supports_document_path(&asset.path)
+        {
             anyhow::bail!("extract requires a supported PDF, DOCX, XLSX, or PPTX asset");
         }
         let path = asset.path.clone();

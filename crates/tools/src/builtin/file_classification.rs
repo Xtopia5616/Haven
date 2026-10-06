@@ -1,25 +1,27 @@
 //! Canonical classification adapter for filesystem-facing tools.
 
-use haven_common::media_detection::{MediaType, media_type_from_extension, media_type_from_mime};
+use haven_common::media_detection::{
+    DetectedMediaKind, media_kind_from_mime_type, mime_type_from_extension,
+};
 use std::path::Path;
 
 /// Classify a file by its extension into the coarse file kinds used by
 /// `files.read`. Rich media MIME values come exclusively from the common
 /// detector; archive and executable kinds remain filesystem-only categories.
 pub(super) fn classify_by_extension(path: &str) -> (&'static str, &'static str) {
-    if let Some(mime) = media_type_from_extension(path) {
-        match media_type_from_mime(mime) {
-            MediaType::Image => return ("image", mime),
-            MediaType::Audio => return ("audio", mime),
-            MediaType::Video => return ("video", mime),
-            MediaType::Document => {
+    if let Some(mime) = mime_type_from_extension(path) {
+        match media_kind_from_mime_type(mime) {
+            DetectedMediaKind::Image => return ("image", mime),
+            DetectedMediaKind::Audio => return ("audio", mime),
+            DetectedMediaKind::Video => return ("video", mime),
+            DetectedMediaKind::Document => {
                 return if mime == "application/pdf" {
                     ("pdf", mime)
                 } else {
                     ("office", mime)
                 };
             }
-            MediaType::Text | MediaType::Unknown => {}
+            DetectedMediaKind::Text | DetectedMediaKind::Unknown => {}
         }
     }
     let ext = Path::new(path)

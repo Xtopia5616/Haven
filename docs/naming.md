@@ -1,6 +1,6 @@
 # Haven 命名规范
 
-> 版本: v1.13 | 日期: 2026-10-07
+> 版本: v1.14 | 日期: 2026-10-07
 
 本文档统一 Haven 项目各层的命名规则（变量名、函数名、文件名、crate 名、缩写大小写、跨层边界）。规范以现有代码中的事实模式为基础，新代码必须遵循；存量代码若与规范冲突，逐步迁移对齐。
 
@@ -120,6 +120,8 @@ Hotkey 领域中，`KeyCombo::has_modifier` 表示修饰键位掩码判断；`Ke
 VAD 模型输出语音概率的推理入口使用 `infer_speech_probability`；检测器接收该值时使用 `observe_probability`，明确它会根据概率推进检测状态并产出 `VadSignal`。避免在同一条职责链里用通用 `infer`、`process` 和 `prob` 隐去输入输出含义。
 
 Input capture 内部的 engine owner 和命令分别使用 `CaptureEngine`、`CaptureEngineCommand`、`CaptureEngineHandle`；活动 ring 的直接读取叫 `drain_buffered`，隐藏 mutex 共享实现。`Resampler` 的状态式转换入口使用 `resample` / `resample_into`，区分音频变换和泛化的 `process`。
+
+Common 新增的媒体探测 helper 和本地变量用 `mime_type` 表示 MIME 字符串，探测/扩展名映射函数使用 `*_mime_type`；既有持久及 wire 字段 `media_type` 是兼容名称，不随内部 helper 重命名而变化。`MediaProbe` 的 Rust 字段叫 `media_kind`，其 Serde key 继续为 `media_type`。`DetectedMediaKind` 是 bytes/extension/MIME 推出的粗分类（含 `Unknown`）。能力规划的 `MediaModality` 没有 `Unknown`，继续表示模型能力合同，不与检测失败分类合并。
 
 数据库或领域查询即使按 session、subject、tag 等条件筛选，只要结果是零到多条实体，也使用 `list_*`（条件检索可使用 `find_*` / `search_*`）；`get_*` 留给单实体读取。缓存接口按稳定 cache key 读写一个缓存槽时仍可使用 `get_*`，即使槽内缓存的是集合。
 

@@ -6,7 +6,7 @@
 //! safe to expose; a later boundary is responsible for serializing that
 //! representation into a provider wire format.
 
-pub use crate::media_detection::MediaType;
+pub use crate::media_detection::DetectedMediaKind;
 use crate::types::new_id;
 use serde::{Deserialize, Serialize};
 
@@ -618,7 +618,7 @@ pub struct MediaPlan {
 pub struct MediaReference {
     pub asset_id: String,
     pub media_type: String,
-    pub modality: MediaType,
+    pub modality: DetectedMediaKind,
     pub file_kind: String,
     pub representation: MediaRepresentationKind,
     pub available_representations: Vec<MediaRepresentationKind>,

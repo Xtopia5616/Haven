@@ -1,7 +1,9 @@
 //! Shared media classification, model references, and operation helpers.
 
 use haven_common::media::{MediaReference, MediaRepresentationKind, MediaResult};
-use haven_common::media_detection::{MediaType, media_type_from_extension, media_type_from_mime};
+use haven_common::media_detection::{
+    DetectedMediaKind, media_kind_from_mime_type, mime_type_from_extension,
+};
 use serde_json::Value;
 
 use crate::ManagedAsset;
@@ -13,27 +15,27 @@ use super::MediaOperation;
 /// Coarse media classification shared by the media tool and window output
 /// projection. MIME is authoritative when it is specific; the filename is a
 /// controlled fallback for restored or loosely typed assets.
-pub(crate) fn classify_media(asset: &ManagedAsset) -> (MediaType, &'static str) {
-    let detected = match media_type_from_mime(&asset.media_type) {
-        MediaType::Unknown => None,
-        media_type => Some(media_type),
+pub(crate) fn classify_media(asset: &ManagedAsset) -> (DetectedMediaKind, &'static str) {
+    let detected = match media_kind_from_mime_type(&asset.media_type) {
+        DetectedMediaKind::Unknown => None,
+        media_kind => Some(media_kind),
     }
     .or_else(|| {
         asset
             .filename
             .as_deref()
-            .and_then(media_type_from_extension)
-            .map(media_type_from_mime)
+            .and_then(mime_type_from_extension)
+            .map(media_kind_from_mime_type)
     })
-    .unwrap_or(MediaType::Unknown);
+    .unwrap_or(DetectedMediaKind::Unknown);
 
     match detected {
-        MediaType::Image => (MediaType::Image, "image"),
-        MediaType::Audio => (MediaType::Audio, "audio"),
-        MediaType::Video => (MediaType::Video, "video"),
-        MediaType::Document => (MediaType::Document, "document"),
-        MediaType::Text => (MediaType::Text, "text"),
-        MediaType::Unknown => (MediaType::Unknown, "binary"),
+        DetectedMediaKind::Image => (DetectedMediaKind::Image, "image"),
+        DetectedMediaKind::Audio => (DetectedMediaKind::Audio, "audio"),
+        DetectedMediaKind::Video => (DetectedMediaKind::Video, "video"),
+        DetectedMediaKind::Document => (DetectedMediaKind::Document, "document"),
+        DetectedMediaKind::Text => (DetectedMediaKind::Text, "text"),
+        DetectedMediaKind::Unknown => (DetectedMediaKind::Unknown, "binary"),
     }
 }
 
@@ -64,10 +66,10 @@ pub(crate) fn media_reference_with_capabilities(
     content: Option<&str>,
     capabilities: MediaCapabilities,
 ) -> MediaReference {
-    let (modality, file_kind) = classify_media(asset);
+    let (media_kind, file_kind) = classify_media(asset);
     let mut available_representations = vec![MediaRepresentationKind::ManagedFileRef];
-    match modality {
-        MediaType::Image => {
+    match media_kind {
+        DetectedMediaKind::Image => {
             if capabilities.describe {
                 available_representations.push(MediaRepresentationKind::ImageDescription);
             }
@@ -75,10 +77,10 @@ pub(crate) fn media_reference_with_capabilities(
                 available_representations.push(MediaRepresentationKind::OcrText);
             }
         }
-        MediaType::Audio if capabilities.transcribe => {
+        DetectedMediaKind::Audio if capabilities.transcribe => {
             available_representations.push(MediaRepresentationKind::Transcript);
         }
-        MediaType::Document if supports_document_path(&asset.path) => {
+        DetectedMediaKind::Document if supports_document_path(&asset.path) => {
             available_representations.push(MediaRepresentationKind::DocumentPages);
         }
         _ => {}
@@ -86,18 +88,22 @@ pub(crate) fn media_reference_with_capabilities(
     if !available_representations.contains(&representation) {
         available_representations.push(representation);
     }
-    let recommended_next = match (representation, modality) {
-        (MediaRepresentationKind::ManagedFileRef, MediaType::Image) if capabilities.describe => {
+    let recommended_next = match (representation, media_kind) {
+        (MediaRepresentationKind::ManagedFileRef, DetectedMediaKind::Image)
+            if capabilities.describe =>
+        {
             Some("media.describe")
         }
-        (MediaRepresentationKind::ManagedFileRef, MediaType::Image) if capabilities.ocr => {
+        (MediaRepresentationKind::ManagedFileRef, DetectedMediaKind::Image) if capabilities.ocr => {
             Some("media.ocr")
         }
-        (MediaRepresentationKind::ManagedFileRef, MediaType::Audio) if capabilities.transcribe => {
+        (MediaRepresentationKind::ManagedFileRef, DetectedMediaKind::Audio)
+            if capabilities.transcribe =>
+        {
             Some("media.transcribe")
         }
-        (MediaRepresentationKind::ManagedFileRef, MediaType::Video) => None,
-        (MediaRepresentationKind::ManagedFileRef, MediaType::Document)
+        (MediaRepresentationKind::ManagedFileRef, DetectedMediaKind::Video) => None,
+        (MediaRepresentationKind::ManagedFileRef, DetectedMediaKind::Document)
             if supports_document_path(&asset.path) =>
         {
             Some("media.extract")
@@ -107,7 +113,7 @@ pub(crate) fn media_reference_with_capabilities(
     MediaReference {
         asset_id: asset.asset_id.clone(),
         media_type: asset.media_type.clone(),
-        modality,
+        modality: media_kind,
         file_kind: file_kind.to_owned(),
         representation,
         available_representations,

@@ -31,9 +31,9 @@ pub use media::{
     message_attachment_to_media_input,
 };
 pub use media_detection::{
-    MediaProbe, MediaType, detect_media_type, detect_media_type_with_filename, detect_modality,
-    extension_for_media_type, media_type_from_extension, media_type_from_mime, probe_media,
-    probe_media_with_hint,
+    DetectedMediaKind, MediaProbe, detect_media_kind, detect_mime_type,
+    detect_mime_type_with_filename, extension_for_mime_type, media_kind_from_mime_type,
+    mime_type_from_extension, probe_media, probe_media_with_hint,
 };
 
 pub use tools::{

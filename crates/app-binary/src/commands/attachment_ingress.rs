@@ -31,7 +31,7 @@ pub(super) fn validate_attachments(
             filename,
             Some(attachment.media_type.as_str()),
         );
-        if detected.media_type != haven_common::MediaType::Unknown {
+        if detected.media_kind != haven_common::DetectedMediaKind::Unknown {
             attachment.media_type = detected.mime_type;
         }
     }

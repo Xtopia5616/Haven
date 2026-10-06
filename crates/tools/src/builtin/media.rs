@@ -384,7 +384,7 @@ impl MediaTool {
             return Ok(self.cancelled_media_result(params.operation, &asset, "cancelled"));
         }
 
-        let (modality, file_kind) = classify_media(&asset);
+        let (media_kind, file_kind) = classify_media(&asset);
         match params.operation {
             MediaOperation::Inspect => {
                 let mut output = self.media_result_output(
@@ -394,7 +394,7 @@ impl MediaTool {
                     None,
                 );
                 if let Some(object) = output.as_object_mut() {
-                    object.insert("modality".into(), json!(modality));
+                    object.insert("modality".into(), json!(media_kind));
                     object.insert("file_kind".into(), json!(file_kind));
                 }
                 Ok(ToolResult::ok(output))
