@@ -1,4 +1,4 @@
-//! Durable authorization decisions scoped to one persisted conversation.
+//! Durable authorization decisions scoped to one persisted session.
 
 use crate::Database;
 use haven_common::types::{CapabilityScope, PermissionEffect, PermissionScope, PermissionTarget};

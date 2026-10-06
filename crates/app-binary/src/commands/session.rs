@@ -532,7 +532,7 @@ async fn arbitrate_app_confirmation(
     if matches!(perm_scope, haven_common::types::PermissionScope::Session) {
         return Err(log_err(
             "resolve_confirmation",
-            "session-scoped authorization requires a persisted conversation; choose once or permanent",
+            "session-scoped authorization requires a persisted session; choose once or permanent",
         ));
     }
     if pending
@@ -564,7 +564,7 @@ async fn accept_ui_confirmation(
     if matches!(perm_scope, haven_common::types::PermissionScope::Session) {
         return Err(log_err(
             "resolve_ui_confirmation",
-            "session-scoped authorization requires a persisted conversation",
+            "session-scoped authorization requires a persisted session",
         ));
     }
     let grant_key = pending
@@ -610,7 +610,7 @@ async fn accept_ui_confirmation(
         haven_common::types::PermissionScope::Session => {
             return Err(log_err(
                 "resolve_ui_confirmation",
-                "session-scoped authorization requires a persisted conversation",
+                "session-scoped authorization requires a persisted session",
             ));
         }
         haven_common::types::PermissionScope::Always => {
@@ -1315,7 +1315,7 @@ mod tests {
         )
         .await
         .unwrap_err();
-        assert!(error.contains("persisted conversation"));
+        assert!(error.contains("persisted session"));
         assert_eq!(pending.request.status, InteractionStatus::Pending);
         assert!(
             state
@@ -1440,7 +1440,7 @@ mod tests {
             Ok(_) => panic!("session scope must stay retryable for an app-only request"),
             Err(error) => error,
         };
-        assert!(error.contains("persisted conversation"));
+        assert!(error.contains("persisted session"));
         let registry = state.ui_confirmations.lock().await;
         assert_eq!(
             registry.get(&request_id).unwrap().request.status,

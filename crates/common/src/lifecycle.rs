@@ -6,7 +6,7 @@
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-/// Durable state of a conversation session.
+/// Durable lifecycle state of a session.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SessionStatus {
     Pending,

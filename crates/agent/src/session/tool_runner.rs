@@ -1301,7 +1301,7 @@ impl SessionSupervisor {
         let session_id = request
             .session_id
             .as_deref()
-            .ok_or_else(|| anyhow::anyhow!("session scope requires an owning conversation"))?;
+            .ok_or_else(|| anyhow::anyhow!("session scope requires an owning session"))?;
 
         let authorization_request = self
             .tool_authorization

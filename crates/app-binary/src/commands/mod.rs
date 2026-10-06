@@ -163,7 +163,7 @@ pub(crate) async fn authorize_admin_request(
 }
 
 /// Build an authorization request for a direct app command. These operations
-/// have no owning conversation, so they must not read session-scoped grants.
+/// have no owning session, so they must not read session-scoped grants.
 pub(crate) fn app_command_authorization_request(
     tool_name: impl Into<String>,
     input: serde_json::Value,

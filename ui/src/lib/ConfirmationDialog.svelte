@@ -312,7 +312,7 @@
 						<MaterialButton
 							variant="tonal"
 							className="btn-session"
-							label="本对话允许此操作"
+							label="本会话允许此操作"
 							onclick={() => decide('allow', 'session', 'operation')}
 						/>
 					{/if}
@@ -328,10 +328,10 @@
 						{#if showAllowMenu}
 							<div class="allow-menu" role="menu">
 								{#if allowSessionScope}
-									<div class="menu-section-label">本对话</div>
+									<div class="menu-section-label">本会话</div>
 									{#each targetOptions.slice(1) as option (option.target)}
 										<MenuItem
-										label={`本对话允许${option.label}`}
+										label={`本会话允许${option.label}`}
 										onSelect={() => decide('allow', 'session', option.target)}
 									/>
 									{/each}
@@ -361,13 +361,13 @@
 							<div class="deny-menu" role="menu">
 								{#if allowSessionScope}
 									<MenuItem
-										label="本对话拒绝此操作"
+										label="本会话拒绝此操作"
 										danger
 										onSelect={() => decide('deny', 'session', 'operation')}
 									/>
 									{#each targetOptions.slice(1) as option (option.target)}
 										<MenuItem
-											label={`本对话拒绝${option.label}`}
+											label={`本会话拒绝${option.label}`}
 											danger
 											onSelect={() => decide('deny', 'session', option.target)}
 										/>

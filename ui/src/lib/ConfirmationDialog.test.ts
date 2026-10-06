@@ -34,7 +34,7 @@ describe('ConfirmationDialog', () => {
 		const allowButtonLabels = Array.from(container.querySelectorAll('.allow-group button')).map(
 			(button) => button.textContent?.trim() || button.getAttribute('aria-label'),
 		);
-		expect(allowButtonLabels).toEqual(['本次允许', '本对话允许此操作', '更多允许']);
+		expect(allowButtonLabels).toEqual(['本次允许', '本会话允许此操作', '更多允许']);
 		expect(
 			container
 				.querySelector('.actions')
@@ -135,12 +135,12 @@ describe('ConfirmationDialog', () => {
 			onConfirm: vi.fn(),
 		});
 
-		expect(screen.queryByRole('button', { name: '本对话允许此操作' })).toBeNull();
+		expect(screen.queryByRole('button', { name: '本会话允许此操作' })).toBeNull();
 		await fireEvent.click(screen.getByRole('button', { name: '更多允许' }));
-		expect(screen.queryByText('本对话')).toBeNull();
+		expect(screen.queryByText('本会话')).toBeNull();
 		expect(screen.getByRole('menuitem', { name: '永久允许此操作' })).toBeTruthy();
 		await fireEvent.click(screen.getByRole('button', { name: '更多拒绝选项' }));
-		expect(screen.queryByRole('menuitem', { name: '本对话拒绝此操作' })).toBeNull();
+		expect(screen.queryByRole('menuitem', { name: '本会话拒绝此操作' })).toBeNull();
 	});
 
 	it('keeps a rejected pre-execution confirmation submission retryable', async () => {

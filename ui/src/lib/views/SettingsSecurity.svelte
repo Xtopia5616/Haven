@@ -453,7 +453,7 @@
 							<code class="perm-key">{grant.session_id} · {grant.capability}</code>
 						</div>
 						<span class="perm-effect" class:deny={grant.effect === 'deny'}>
-							{grant.effect === 'deny' ? '本对话拒绝' : '本对话允许'}
+							{grant.effect === 'deny' ? '本会话拒绝' : '本会话允许'}
 						</span>
 						<MaterialButton
 							variant="text"
@@ -483,7 +483,7 @@
 		{:else}
 			<div class="empty-rules">
 				<strong>还没有会话授权</strong>
-				<p>在会话确认中选择“本对话允许”或“本对话拒绝”后，授权会显示在这里。</p>
+				<p>在会话确认中选择“本会话允许”或“本会话拒绝”后，授权会显示在这里。</p>
 			</div>
 		{/if}
 	</div>

@@ -244,7 +244,7 @@ pub struct AppState {
     /// do not produce voice-session events.
     pub(crate) recording_sessions: RecordingSessionOwner,
     /// LLM-backed ingress transcription usage waiting for the frontend to
-    /// submit the transcript to its concrete conversation session. The
+    /// submit the transcript to its concrete session. The
     /// `rec-*` key is deliberately kept separate from durable `ses-*` ids.
     pub(crate) pending_recording_usage:
         Arc<std::sync::Mutex<HashMap<String, Vec<haven_llm::LlmCallUsage>>>>,

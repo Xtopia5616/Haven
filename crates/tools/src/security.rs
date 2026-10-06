@@ -422,7 +422,7 @@ struct SafetyConfig {
     policy_revision: u64,
     /// Permanent (Always) grants from `SecurityConfig.permissions`.
     permanent: HashMap<CapabilityScope, PermissionEffect>,
-    /// Per-conversation grants keyed by session id.
+    /// Session-scoped grants keyed by session id.
     session_grants: HashMap<String, SessionGrants>,
     /// Live copy of `tool_settings` for disabled_operations / risk_override /
     /// allowed_paths enforcement.

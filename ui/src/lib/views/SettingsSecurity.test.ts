@@ -50,7 +50,7 @@ describe('SettingsSecurity', () => {
 		});
 
 		expect(screen.getByRole('list', { name: '已保存的会话授权' })).toBeTruthy();
-		expect(screen.getByText('本对话拒绝')).toBeTruthy();
+		expect(screen.getByText('本会话拒绝')).toBeTruthy();
 		expect(screen.getByText('测试对话')).toBeTruthy();
 		await fireEvent.click(screen.getAllByRole('button', { name: '撤销' })[1]);
 		expect(onRevokeSessionPermission).toHaveBeenCalledWith(grant);
