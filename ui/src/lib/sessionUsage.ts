@@ -1,8 +1,5 @@
 import type { SessionLlmUsage } from './contracts/sessionHistory.ts';
 
-/** Shared renderer shape for one LLM call usage row. */
-export type LlmUsage = SessionLlmUsage;
-
 /**
  * Reconstruct `total` when a provider omitted it. Matches
  * `Usage::normalize`: inclusive `prompt + completion`, plus an explicitly
@@ -33,7 +30,7 @@ export function coalesceTokenTotal(
  * exclusive providers report them beside prompt tokens. Unknown rows
  * return null rather than silently using an incorrect aggregate denominator.
  */
-export function cumulativeCacheHitRatePercent(calls: LlmUsage[]): number | null {
+export function cumulativeCacheHitRatePercent(calls: SessionLlmUsage[]): number | null {
 	const agentCalls = calls.filter((call) => call.call_kind === 'agent');
 	if (
 		!agentCalls.length ||

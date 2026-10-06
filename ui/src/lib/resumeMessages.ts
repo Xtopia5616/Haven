@@ -3,13 +3,7 @@
 // history resume flow.
 
 import { formatMessageTime } from './messageFormat.ts';
-import type {
-	SessionResumeInput,
-	SessionResumeMessageInput,
-	SessionResumeStepInput,
-} from './contracts/sessionHistory.ts';
-
-export type ResumeData = SessionResumeInput;
+import type { SessionResumeInput } from './contracts/sessionHistory.ts';
 
 /** A resume-only bubble shown when a session has no persisted message rows. */
 export function isDisplayOnlyMessageId(id: unknown): boolean {
@@ -39,13 +33,9 @@ interface ResumeMessage {
 	steering?: boolean;
 }
 
-type ResumeStep = SessionResumeStepInput;
-
 function historicalToolOutcome(status: string | null | undefined): string | null {
 	return status === 'failed' || status === 'cancelled' || status === 'unknown' ? status : null;
 }
-
-type ResumeMsg = SessionResumeMessageInput;
 
 /**
  * Merge DB-loaded messages with any in-memory streaming messages that
@@ -162,7 +152,7 @@ export function mergeLiveStreaming(
  * X12: these tables are materialized views of `TranscriptEvent` / execution
  * status — live UI still uses AgentEvent; this path is history/reload only.
  */
-export function buildResumeMessages(data: ResumeData): ResumeMessage[] {
+export function buildResumeMessages(data: SessionResumeInput): ResumeMessage[] {
 	const items: ResumeMessage[] = [];
 	const msgs = data.messages || [];
 	const session = data.session || {};

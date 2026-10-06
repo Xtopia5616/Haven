@@ -14,13 +14,11 @@ type Provider = {
 	no_proxy?: string | null;
 };
 
-type ModelMap = DiscoveredModelMap;
-
 export interface ModelDiscoveryContext {
 	getProviders: () => Provider[];
 	getModels: () => Array<Record<string, any>>;
-	getDiscoveredModels: () => ModelMap;
-	setModels: (models: ModelMap) => void;
+	getDiscoveredModels: () => DiscoveredModelMap;
+	setModels: (models: DiscoveredModelMap) => void;
 	isProviderFetching?: (providerName: string) => boolean;
 	isRefreshingAll?: () => boolean;
 	setProviderFetching: (providerName: string, fetching: boolean) => void;
@@ -35,7 +33,7 @@ export interface ModelDiscoveryContext {
  */
 export function applyDiscoveredModelMeta(
 	slot: Record<string, any>,
-	models: ModelMap,
+	models: DiscoveredModelMap,
 	providerName: string,
 	modelId: string,
 	{ overwrite = false }: { overwrite?: boolean } = {},

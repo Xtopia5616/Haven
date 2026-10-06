@@ -3,8 +3,8 @@ import {
 	cumulativeCacheHitRatePercent,
 	formatCostUsd,
 	formatTokenCount,
-	type LlmUsage,
 } from './sessionUsage';
+import type { SessionLlmUsage } from './contracts/sessionHistory.ts';
 
 /** Optional display-facing statistics; reducer state keeps its stricter model type. */
 export interface SessionTokenStatsView {
@@ -197,7 +197,7 @@ export function cacheOutcomeLabel(outcome: string | null | undefined): string {
  */
 export function buildTokenUsageDetails(
 	stats: SessionTokenStatsView,
-	llmUsage: LlmUsage[],
+	llmUsage: SessionLlmUsage[],
 ): TokenUsageDetails {
 	const agentCalls = llmUsage.filter((call) => call.call_kind === 'agent');
 	const mediaCalls = llmUsage.filter((call) => call.call_kind === 'media');
@@ -335,7 +335,10 @@ export function buildTokenUsageDetails(
 }
 
 /** Build the tooltip for the chat token usage widget. */
-export function buildTokenUsageTooltip(stats: SessionTokenStatsView, llmUsage: LlmUsage[]): string {
+export function buildTokenUsageTooltip(
+	stats: SessionTokenStatsView,
+	llmUsage: SessionLlmUsage[],
+): string {
 	const details = buildTokenUsageDetails(stats, llmUsage);
 	const parts: string[] = [];
 	const cumulativePrompt = details.cumulativePromptTokens;

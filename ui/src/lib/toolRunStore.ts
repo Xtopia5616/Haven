@@ -9,10 +9,9 @@ import { appSessionReducer, backgroundToolRunResultContent } from './sessionRedu
  * ToolRun registry (background ToolRuns + pending scheduled ToolRuns). Both
  * toolRun kinds share the same normalized id and lifecycle projection.
  */
-type ToolRunEntry = ToolRunPayload;
-export const toolRunStore = writable<Record<string, ToolRunEntry>>({});
+export const toolRunStore = writable<Record<string, ToolRunPayload>>({});
 /** Bounded per-session cache for timeline history and lifecycle events. */
-export const sessionToolRunStore = writable<Record<string, Record<string, ToolRunEntry>>>({});
+export const sessionToolRunStore = writable<Record<string, Record<string, ToolRunPayload>>>({});
 
 /** Cap terminal entries so a long session cannot grow the store unbounded. */
 const TOOL_RUN_STORE_MAX = 64;
@@ -31,11 +30,11 @@ const sessionToolRunVersions = new Map<string, number>();
 let activeTimelineSessionId: string | null = null;
 
 /** Live board rows that must never be evicted to make room for history. */
-function isLiveToolRunRow(entry: ToolRunEntry) {
+function isLiveToolRunRow(entry: ToolRunPayload) {
 	return entry.status === 'waiting' || entry.status === 'running';
 }
 
-function trimToolRunStore(entries: Record<string, ToolRunEntry>) {
+function trimToolRunStore(entries: Record<string, ToolRunPayload>) {
 	const ids = Object.keys(entries);
 	if (ids.length <= TOOL_RUN_STORE_MAX) return entries;
 	const excess = ids.length - TOOL_RUN_STORE_MAX;
@@ -49,11 +48,11 @@ function trimToolRunStore(entries: Record<string, ToolRunEntry>) {
 	return entries;
 }
 
-function toolRunRecency(toolRun: ToolRunEntry): string {
+function toolRunRecency(toolRun: ToolRunPayload): string {
 	return toolRun.finishedAt || toolRun.startedAt || toolRun.dueAt || '';
 }
 
-function trimSessionToolRuns(entries: Record<string, ToolRunEntry>) {
+function trimSessionToolRuns(entries: Record<string, ToolRunPayload>) {
 	const newest = Object.values(entries)
 		.sort(
 			(left, right) =>
@@ -64,9 +63,9 @@ function trimSessionToolRuns(entries: Record<string, ToolRunEntry>) {
 }
 
 function touchSessionToolRunCache(
-	current: Record<string, Record<string, ToolRunEntry>>,
+	current: Record<string, Record<string, ToolRunPayload>>,
 	sessionId: string,
-	toolRuns: Record<string, ToolRunEntry>,
+	toolRuns: Record<string, ToolRunPayload>,
 ) {
 	const next = { ...current };
 	delete next[sessionId];
@@ -120,7 +119,7 @@ export async function refreshSessionToolRuns(sessionId: string) {
 		const rows = await listToolRunHistory(undefined, SESSION_TOOL_RUN_MAX, sessionId);
 		if (sessionToolRunRefreshRequests.get(sessionId) !== requestId) return;
 		sessionToolRunStore.update((current) => {
-			const nextRows: Record<string, ToolRunEntry> = {};
+			const nextRows: Record<string, ToolRunPayload> = {};
 			for (const row of rows) {
 				if (row.sessionId === sessionId) nextRows[row.id] = row;
 			}
@@ -146,7 +145,7 @@ export function upsertToolRun(payload: ToolRunPayload) {
 	toolRunStateVersion++;
 	toolRunStore.update((current) => {
 		const prev = current[key];
-		const next: ToolRunEntry = {
+		const next: ToolRunPayload = {
 			...prev,
 			...payload,
 		};
@@ -177,14 +176,14 @@ export async function refreshToolRuns() {
 		// Missing rows were removed server-side, so replace the registry instead
 		// of leaving stale lifecycle entries in the UI.
 		toolRunStore.update((current) => {
-			const next: Record<string, ToolRunEntry> = {};
+			const next: Record<string, ToolRunPayload> = {};
 			for (const row of rows) {
 				if (!row) {
 					logger.warn('toolRunStore', 'Dropping malformed toolRun board row');
 					continue;
 				}
 				const key = row.id;
-				const merged: ToolRunEntry = {
+				const merged: ToolRunPayload = {
 					...(current[key] || {}),
 					...row,
 					id: key,

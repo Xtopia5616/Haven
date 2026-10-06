@@ -9,9 +9,8 @@ import type {
 } from '../contracts/agent.ts';
 import type { InteractionRequest } from '../contracts/app.ts';
 import type { InteractionKind } from '../contracts/generatedCommands.ts';
-import type { SessionResumeUsage } from '../contracts/sessionHistory.ts';
+import type { SessionLlmUsage, SessionResumeUsage } from '../contracts/sessionHistory.ts';
 import type { StreamMessage } from '../streaming.ts';
-import type { LlmUsage } from '../sessionUsage.ts';
 
 export const DRAFT_SESSION_ID = '_draft';
 
@@ -103,7 +102,7 @@ export interface SessionReducerState {
 	messages: Record<string, SessionMessage[]>;
 	interactions: Record<string, InteractionRequest>;
 	tokenStats: Record<string, SessionTokenStats>;
-	llmUsage: Record<string, LlmUsage[]>;
+	llmUsage: Record<string, SessionLlmUsage[]>;
 	replay: SessionReplayState;
 	optimistic: Record<string, SessionOptimisticMessage>;
 }
@@ -171,7 +170,7 @@ export type SessionAction =
 			/** Pending live requests that must survive a possibly stale resume snapshot. */
 			preserveInteractionIds?: string[];
 			usage?: ResumeUsage | null;
-			llmUsage?: LlmUsage[];
+			llmUsage?: SessionLlmUsage[];
 			preserveStreamingOnly?: boolean;
 			excludeMessageIds?: string[];
 	  }
@@ -207,9 +206,14 @@ export type SessionAction =
 			type: 'session/usage-restored';
 			sessionId: string;
 			usage: ResumeUsage | null | undefined;
-			llmUsage?: LlmUsage[];
+			llmUsage?: SessionLlmUsage[];
 	  }
-	| { type: 'session/usage-live'; sessionId: string; stats?: SessionTokenStats; call?: LlmUsage }
+	| {
+			type: 'session/usage-live';
+			sessionId: string;
+			stats?: SessionTokenStats;
+			call?: SessionLlmUsage;
+	  }
 	| { type: 'session/usage-cleared'; sessionId: string };
 
 export interface StreamBlockIds {

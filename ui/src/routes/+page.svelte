@@ -90,10 +90,13 @@
 		SessionTermination,
 		SessionTokenStats,
 	} from '$lib/sessionReducer.ts';
-import type { SessionTokenStatsView } from '$lib/sessionUsagePresentation.ts';
-	import type { LlmUsage } from '$lib/sessionUsage.ts';
+	import type { SessionTokenStatsView } from '$lib/sessionUsagePresentation.ts';
+	import type { SessionLlmUsage } from '$lib/contracts/sessionHistory.ts';
 	import type { ChatModelOption } from '$lib/chatModelOperations.ts';
-	import type { SessionHistoryRow, SessionLineageResponse } from '$lib/contracts/sessionHistory.ts';
+	import type {
+		SessionHistoryRow,
+		SessionLineageResponse,
+	} from '$lib/contracts/sessionHistory.ts';
 	import type { ToolRunPayload, ToolRunStatus } from '$lib/contracts/toolRun.ts';
 	import type { AgentMediaPlanPayload } from '$lib/contracts/agent.ts';
 	import type { ChatFileAttachment, ChatImageAttachment } from '$lib/chatController.ts';
@@ -129,7 +132,7 @@ import type { SessionTokenStatsView } from '$lib/sessionUsagePresentation.ts';
 	const sessionReducer = appSessionReducer;
 	const currentReducerState = sessionReducer.getState();
 	const emptySessionMessages: SessionMessage[] = [];
-	const emptyLlmUsage: LlmUsage[] = [];
+	const emptySessionLlmUsage: SessionLlmUsage[] = [];
 	const sessionsStore = createSessionSelectorStore((state) => state.sessions);
 	const activeSessionIdStore = createSessionSelectorStore((state) => state.activeSessionId);
 	const interactionsStore = createSessionSelectorStore((state) => state.interactions);
@@ -142,8 +145,8 @@ import type { SessionTokenStatsView } from '$lib/sessionUsagePresentation.ts';
 	);
 	const activeSessionLlmUsageStore = createSessionSelectorStore((state) =>
 		state.activeSessionId
-			? (state.llmUsage[state.activeSessionId] ?? emptyLlmUsage)
-			: emptyLlmUsage,
+			? (state.llmUsage[state.activeSessionId] ?? emptySessionLlmUsage)
+			: emptySessionLlmUsage,
 	);
 	const sessionErrorStore = createSessionSelectorStore((state) => state.error);
 	const sessionTerminationStore = createSessionSelectorStore((state) => state.termination);
@@ -255,10 +258,11 @@ import type { SessionTokenStatsView } from '$lib/sessionUsagePresentation.ts';
 	// Per-LLM-call usage detail for the active session (restored from the
 	// persisted `llm_usage` when a resume conversation opens). Used by the
 	// session-level token tooltip and call count.
-	let llmUsage = $state<LlmUsage[]>(
+	let llmUsage = $state<SessionLlmUsage[]>(
 		currentReducerState.activeSessionId
-			? (currentReducerState.llmUsage[currentReducerState.activeSessionId] ?? emptyLlmUsage)
-			: emptyLlmUsage,
+			? (currentReducerState.llmUsage[currentReducerState.activeSessionId] ??
+				emptySessionLlmUsage)
+			: emptySessionLlmUsage,
 	);
 	$effect(() => syncStore(activeSessionLlmUsageStore, (next) => (llmUsage = next)));
 

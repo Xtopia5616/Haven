@@ -1,15 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import { createChatController, type ChatControllerDependencies } from './chatController.ts';
 import type { InteractionRequest } from './contracts/app.ts';
+import type { SessionResumeInput } from './contracts/sessionHistory.ts';
 import { SessionReducer, type SessionAction } from './sessionReducer.ts';
-import type { ResumeData } from './resumeMessages.ts';
 import type { ProcessResult } from './contracts/generatedCommands.ts';
 
 const SESSION_ID = 'ses-00000000000000000000000000000001';
 const OTHER_SESSION_ID = 'ses-00000000000000000000000000000002';
 const USER_MESSAGE_ID = 'msg-00000000000000000000000000000001';
 
-function resumeData(overrides: Partial<ResumeData> = {}): ResumeData {
+function sessionResumeInput(overrides: Partial<SessionResumeInput> = {}): SessionResumeInput {
 	return {
 		session: { id: SESSION_ID, status: 'paused' },
 		messages: [],
@@ -64,7 +64,7 @@ function makeHarness(options: {
 			const result = options.invoke
 				? await options.invoke(command, args)
 				: command === 'get_session_for_resume'
-					? resumeData()
+					? sessionResumeInput()
 					: undefined;
 			return result as T;
 		},
@@ -232,7 +232,8 @@ describe('ChatController continue', () => {
 
 	it('resubmits the original user turn when it did not survive the resume reload', async () => {
 		const harness = makeHarness({
-			invoke: (command) => command === 'get_session_for_resume' ? resumeData() : undefined,
+			invoke: (command) =>
+				command === 'get_session_for_resume' ? sessionResumeInput() : undefined,
 		});
 		addMessages(harness.reducer, {
 			id: USER_MESSAGE_ID,
@@ -248,7 +249,7 @@ describe('ChatController continue', () => {
 	it('does not resubmit an original user turn still present in the authoritative snapshot', async () => {
 		const harness = makeHarness({
 			invoke: (command) => command === 'get_session_for_resume'
-				? resumeData({
+				? sessionResumeInput({
 						messages: [{
 							id: USER_MESSAGE_ID,
 							role: 'user',
@@ -288,7 +289,8 @@ describe('ChatController continue', () => {
 			finishContinue = resolve;
 		});
 		const harness = makeHarness({
-			invoke: (command) => command === 'continue_session' ? continueCommand : resumeData(),
+			invoke: (command) =>
+				command === 'continue_session' ? continueCommand : sessionResumeInput(),
 		});
 
 		const first = harness.controller.handleContinue();
@@ -304,7 +306,8 @@ describe('ChatController continue', () => {
 			finishRollback = resolve;
 		});
 		const harness = makeHarness({
-			invoke: (command) => command === 'rollback_session' ? rollbackCommand : resumeData(),
+			invoke: (command) =>
+				command === 'rollback_session' ? rollbackCommand : sessionResumeInput(),
 		});
 		const request = {
 			stepNumber: 7,

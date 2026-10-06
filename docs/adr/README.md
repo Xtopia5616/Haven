@@ -577,3 +577,4 @@
 - [0586：统一 Tools 目录版本时钟类型](0586-name-tool-catalog-version.md)
 - [0587：为 Memory 流式草稿命名 checkpoint 结果](0587-name-partial-message-checkpoint.md)
 - [0588：为 Ask 与通知信号使用具名结果](0588-name-tool-signal-results.md)
+- [0589：删除无语义增量的 UI 内部类型别名](0589-remove-ui-internal-type-aliases.md)

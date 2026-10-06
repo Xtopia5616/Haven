@@ -46,9 +46,7 @@
 	import type { SessionHistoryRow } from '$lib/contracts/sessionHistory.ts';
 	import type { ContextMenuItem } from '$lib/contextMenu.ts';
 
-	type MemorySession = SessionHistoryRow;
 	type MemoryTabId = 'sessions' | 'tasks' | 'memory';
-	type TaskToolRun = ToolRunPayload;
 
 	interface Props {
 		isVisible?: boolean;
@@ -76,10 +74,10 @@
 		onCancel = () => {},
 	}: Props = $props();
 
-	let sessions = $state<MemorySession[]>([]);
+	let sessions = $state<SessionHistoryRow[]>([]);
 	let searchQuery = $state('');
 	let searchTimer: ReturnType<typeof setTimeout> | null = null;
-	let deleteTarget = $state<MemorySession | null>(null);
+	let deleteTarget = $state<SessionHistoryRow | null>(null);
 	let showClearDialog = $state(false);
 	let showClearTasksDialog = $state(false);
 	let showClearMemoryDialog = $state(false);
@@ -113,7 +111,7 @@
 		{ id: 'tasks', label: '任务历史' },
 		{ id: 'memory', label: '长期记忆' },
 	];
-	let toolRunHistory = $state<TaskToolRun[]>([]);
+	let toolRunHistory = $state<ToolRunPayload[]>([]);
 	let toolRunHistoryLoading = $state(false);
 	let toolRunHistoryFailed = $state(false);
 	let memoryRecall = $state<MemoryRecallState>({
@@ -235,7 +233,7 @@
 	function setSearchQuery(value: string) {
 		searchQuery = value;
 	}
-	function requestDelete(session: MemorySession) {
+	function requestDelete(session: SessionHistoryRow) {
 		deleteTarget = session;
 	}
 	async function loadSessionsNow() {
@@ -322,7 +320,7 @@
 		endDate = value;
 		handleFilterChange();
 	}
-	async function resumeSession(session: MemorySession) {
+	async function resumeSession(session: SessionHistoryRow) {
 		try {
 			const wasError = isErrorStatus(session.status);
 			// Opening an errored conversation is read-only. Reopening it here used
@@ -415,13 +413,13 @@
 			showClearMemoryDialog = false;
 		}
 	}
-	function displayTitle(session: MemorySession) {
+	function displayTitle(session: SessionHistoryRow) {
 		if (session.title) return session.title;
 		const text = session.input_text || '';
 		const match = text.match(/^[^。！？\n.!?]+[。！？.!?]?/);
 		return (match ? match[0].trim() : text.trim()) || '未命名会话';
 	}
-	function startEdit(session: MemorySession) {
+	function startEdit(session: SessionHistoryRow) {
 		editingTitle = session.id;
 		const text = session.input_text || '';
 		const match = text.match(/^[^。！？\n.!?]+[。！？.!?]?/);
@@ -455,10 +453,10 @@
 	function handleRenameValueChange(value: string) {
 		renameValue = value;
 	}
-	function openCtxMenu(event: MouseEvent, session: MemorySession) {
+	function openCtxMenu(event: MouseEvent, session: SessionHistoryRow) {
 		openContextMenu(event, buildContextMenuItems(session));
 	}
-	function buildContextMenuItems(session: MemorySession): ContextMenuItem[] {
+	function buildContextMenuItems(session: SessionHistoryRow): ContextMenuItem[] {
 		return [
 			{ id: 'open', label: '打开', icon: 'open', action: () => resumeSession(session) },
 			{ id: 'rename', label: '重命名', icon: 'edit', action: () => startEdit(session) },
