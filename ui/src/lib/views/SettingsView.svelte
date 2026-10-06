@@ -582,11 +582,66 @@
 		if (snapshot) savedSnapshot = JSON.stringify(snapshot);
 	}
 
+	function replaceChatPolicy(
+		policies: SettingsLlmState['request_policies'],
+		remotePolicy: SettingsLlmState['request_policies'][number] | undefined,
+	) {
+		const chatIndex = policies.findIndex((policy) => policy.request === 'chat');
+		const next = policies.filter((policy) => policy.request !== 'chat');
+		if (!remotePolicy) return next;
+		const insertionIndex = chatIndex < 0 ? next.length : Math.min(chatIndex, next.length);
+		next.splice(insertionIndex, 0, { ...remotePolicy });
+		return next;
+	}
+
+	/**
+	 * Chat model switches also mutate request_policies.chat.primary. Keep that
+	 * external route change visible in the settings draft and its baseline, while
+	 * preserving an unsaved local edit to the same policy.
+	 */
+	function applyRemoteChatPolicy(remotePolicies: SettingsLlmState['request_policies']) {
+		const remotePolicy = remotePolicies.find((policy) => policy.request === 'chat');
+		let snapshot: SettingsSnapshot | null = null;
+		if (savedSnapshot) {
+			try {
+				snapshot = JSON.parse(savedSnapshot) as SettingsSnapshot;
+			} catch (error) {
+				reportError(error, {
+					context: 'SettingsView',
+					message: '读取对话路由设置快照失败',
+					notify: false,
+				});
+			}
+		}
+
+		const localPolicy = llmConfig.request_policies.find((policy) => policy.request === 'chat');
+		const baselinePolicy = snapshot?.llm?.request_policies?.find(
+			(policy) => policy.request === 'chat',
+		);
+		const hasLocalChatPolicyEdit =
+			(localPolicy?.primary ?? null) !== (baselinePolicy?.primary ?? null);
+		if (!hasLocalChatPolicyEdit) {
+			llmConfig.request_policies = replaceChatPolicy(
+				llmConfig.request_policies,
+				remotePolicy,
+			);
+		}
+
+		if (snapshot?.llm) {
+			snapshot.llm.request_policies = replaceChatPolicy(
+				snapshot.llm.request_policies || [],
+				remotePolicy,
+			);
+			savedSnapshot = JSON.stringify(snapshot);
+		}
+	}
+
 	async function syncChatModelFromBackend() {
 		const generation = ++chatModelSyncGen;
 		try {
 			const settings = await loadSettings();
 			if (!mounted || generation !== chatModelSyncGen || !settings?.llm) return;
+			applyRemoteChatPolicy(settings.llm.request_policies || []);
 			const chatPolicy = settings.llm.request_policies.find((policy) => policy.request === 'chat');
 			const chatModelId = chatPolicy?.primary || 'default_model';
 			const remote = settings.llm.models.find((model) => model.id === chatModelId);

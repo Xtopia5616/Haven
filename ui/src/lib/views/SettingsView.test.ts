@@ -111,6 +111,72 @@ describe('SettingsView diagnostics export', () => {
 		);
 	});
 
+	it('shows a chat route created by switching models when no route existed', async () => {
+		const settings = {
+			llm: {
+				providers: [
+					{
+						name: 'primary',
+						provider: 'openai',
+						api_style: 'openai-chat',
+						base_url: 'https://example.test/v1',
+						api_key_ref: null,
+						auth_header_name: 'Authorization',
+						auth_header_prefix: 'Bearer',
+						proxy_url: null,
+						no_proxy: null,
+					},
+				],
+				models: [
+					{
+						id: 'chat-slot',
+						provider: 'primary',
+						model: 'gpt-test',
+						capabilities: ['chat'],
+					},
+				],
+				request_policies: [] as Array<{ request: 'chat'; primary: string }>,
+				max_concurrent_requests: 2,
+			},
+		};
+		const handlers = new Map<string, (event: unknown) => void>();
+		listen.mockImplementation(async (event: string, handler: (event: unknown) => void) => {
+			handlers.set(event, handler);
+			return () => {};
+		});
+		invoke.mockImplementation(async (command: string) => {
+			switch (command) {
+				case 'get_settings':
+					return settings;
+				case 'get_api_key_status':
+					return { models: {}, providers: {}, stt: false, ocr: false, ocr_secret: false };
+				case 'is_autostart_enabled':
+					return false;
+				default:
+					return [];
+			}
+		});
+
+		const { container } = render(SettingsView);
+		await waitFor(() => expect(handlers.has('llm:config_changed')).toBe(true));
+		await fireEvent.click(screen.getByRole('tab', { name: /模型与连接/ }));
+		expect(container.querySelector('.policy-card')).toBeNull();
+
+		settings.llm.request_policies = [{ request: 'chat', primary: 'chat-slot' }];
+		handlers.get('llm:config_changed')?.({
+			event: 'llm:config_changed',
+			id: 1,
+			payload: null,
+		});
+
+		await waitFor(() =>
+			expect(container.querySelector('.policy-card')?.textContent).toContain('chat'),
+		);
+		expect(screen.getByRole('button', { name: 'chat 的首选模型' }).textContent).toContain(
+			'chat-slot · primary / gpt-test',
+		);
+	});
+
 	it('suppresses the recording shortcut while capturing a replacement hotkey', async () => {
 		render(SettingsView);
 		await waitFor(() => expect(invoke).toHaveBeenCalledWith('get_api_key_status'));
