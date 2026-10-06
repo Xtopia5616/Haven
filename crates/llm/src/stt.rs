@@ -168,7 +168,7 @@ pub fn build_stt_client(
         }
         "openai" | "groq" | "gemini" | "deepgram" | "assemblyai" => {
             let endpoint = endpoint_from_resolved_stt_config(&resolved);
-            Box::new(LlmClientSttBridge {
+            Box::new(LlmSttClientAdapter {
                 client: adapter_for(&endpoint),
             })
         }
@@ -234,14 +234,14 @@ pub fn endpoint_from_resolved_stt_config(cfg: &ResolvedSttConfig) -> ModelEndpoi
     }
 }
 
-/// Thin bridge: dedicated STT providers built via [`adapter_for`] still expose
-/// the consumer-facing [`SttClient`] trait used by input / the media tool.
-struct LlmClientSttBridge {
+/// Adapts provider-specific [`LlmClient`] implementations to the consumer
+/// [`SttClient`] contract used by input and the media tool.
+struct LlmSttClientAdapter {
     client: Box<dyn LlmClient>,
 }
 
 #[async_trait]
-impl SttClient for LlmClientSttBridge {
+impl SttClient for LlmSttClientAdapter {
     async fn transcribe(&self, wav_data: &[u8]) -> Result<SttResult> {
         Ok(self.client.transcribe(wav_data).await?)
     }

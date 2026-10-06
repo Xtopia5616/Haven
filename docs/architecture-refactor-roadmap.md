@@ -181,7 +181,7 @@
 |---|---|---|
 | Tools runtime | `SessionToolOverlay` 保存 session 当前可执行的附加工具；`ToolAuthorizationRequestResolver` 解析操作契约但不裁决权限；工具定义查询使用完整 tool-definition 名称。调用链覆盖 Tools、Agent、App adapter 与 prompt context。 | **已对齐名称**；授权仍由 `AuthorizationEngine` 决定，三种集合 owner 保持分离（ADR 0533）。 |
 | Memory query cache | `QueryResultCache` 是 Database 持有的有界进程内 TTL/LRU 与 generation cache；不执行 SQL、不拥有 durable 写入。 | **已对齐名称**，与持久 `*Store` 分开，保持原失效语义（ADR 0534）。 |
-| LLM 的 STT 适配 | `crates/llm/src/stt.rs` 的 `LlmClientSttBridge` 把已有 `LlmClient` 转接为消费者所需的 `SttClient`，没有桥接状态或独立生命周期。 | **确认改名候选**：`LlmSttClientAdapter`；保留单一 provider-to-consumer adapter，不合并 `LlmClient` 与 `SttClient` 契约。下一个切片。 |
+| LLM 的 STT 适配 | `LlmSttClientAdapter` 把 provider `LlmClient` 转接为消费者所需的 `SttClient`，没有额外桥接状态或独立生命周期。 | **已对齐名称**，保留两种客户端契约及现有 provider dispatch（ADR 0535）。 |
 | Tools 对外入口 | `ToolsManager` 文档已称其为执行 façade；它组合多个 owner、暴露 catalog/config/runtime/asset 操作，但不拥有 MCP、Skill 等资源的创建/重连生命周期。Agent 与 App 通过它进入 Tools。 | **确认改名候选**：`ToolsFacade`；影响跨 crate 类型名和大量 adapter 名，先完整列出消费者后单独迁移，不在 ADR 0533 混入。 |
 | UI metrics contract | `ui/src/lib/contracts/settings.ts` 用开放 `Record<string, unknown>` 表示 metrics response；生成的 `generatedCommands.ts` 同时定义 Rust-owned typed `MetricsSnapshot`。当前是同一命令响应的宽窄两种静态视图。 | **待核对后收敛**：看 `PerformanceMetricsSnapshot` 与 generated DTO 的交集是否可作为一个可扩展前端别名；需保留未知诊断字段，不改变 IPC。 |
 | 其他已扫角色 | `McpManager`、`VenvManager` 各自拥有连接/环境资源生命周期；`ConfigService` 拥有串行 config patch 与持久化；Memory repositories 中的 `*Store` 持有 SQLite 访问；UI `InteractionOwner` 会在 boundary 转成 snake_case wire owner。 | **保留并解释**：后缀/同名本身不足以证明重复；UI 与 wire owner 分开是明确的字段转换边界，MCP/venv 的 Manager 也符合生命周期语义。 |
