@@ -7,7 +7,7 @@
 		overlay?: { isRecording?: boolean; processing?: boolean };
 		executionPhase?: string;
 		busySessions?: ReadonlySet<unknown>;
-		conversationStatus?: string;
+		activeSessionStatusLabel?: string;
 		runtime?: string;
 		bootstrapReady?: boolean;
 		llmConnected?: string | null;
@@ -22,7 +22,7 @@
 		overlay = {},
 		executionPhase = 'idle',
 		busySessions = new Set(),
-		conversationStatus = '空闲',
+		activeSessionStatusLabel = '空闲',
 		runtime = 'tauri',
 		bootstrapReady = true,
 		llmConnected = null,
@@ -37,23 +37,23 @@
 		if (runtime === 'browser') return '浏览器预览';
 		if (overlay.isRecording) return '录音中';
 		if (overlay.processing) return '转写中';
-		// Waiting/terminal states belong to the selected conversation. A running
+		// Waiting/terminal states belong to the selected session. A running
 		// session is more useful when shown at its current ReAct phase below.
 		if (
-			conversationStatus !== '空闲' &&
-			conversationStatus !== '运行中' &&
-			conversationStatus !== '排队中' &&
+			activeSessionStatusLabel !== '空闲' &&
+			activeSessionStatusLabel !== '运行中' &&
+			activeSessionStatusLabel !== '排队中' &&
 			busySessions.size <= 1
 		)
-			return conversationStatus;
-		if (conversationStatus === '排队中' && busySessions.size <= 1) return '排队中';
+			return activeSessionStatusLabel;
+		if (activeSessionStatusLabel === '排队中' && busySessions.size <= 1) return '排队中';
 		if (executionPhase === 'requesting') return '请求中';
 		if (executionPhase === 'generating') return '生成中';
 		if (executionPhase === 'waiting_result') return '等待结果';
 		if (executionPhase === 'waiting_response') return '等待响应';
 		if (executionPhase === 'queued') return '排队中';
 		if (busySessions.size > 1) return `${busySessions.size} 个会话运行中`;
-		if (conversationStatus === '运行中' || busySessions.size > 0) return '运行中';
+		if (activeSessionStatusLabel === '运行中' || busySessions.size > 0) return '运行中';
 		if (awaitingBackgroundActive) return '等待任务';
 		if (runningBackgroundToolRunCount > 0) return toolRunKindLabel('background');
 		if (!bootstrapReady) return '加载中';

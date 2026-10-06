@@ -543,3 +543,4 @@
 - [0552：Session 队列消费入口明确使用 drain 动词](0552-name-session-queue-drains.md)
 - [0553：历史集合 IPC 命令使用 list_history](0553-name-history-collection-command.md)
 - [0554：Skills 发现状态命名为 SkillRegistry](0554-name-skill-registry.md)
+- [0555：明确 UI session runtime 与录音 overlay 状态 owner](0555-name-session-runtime-and-recording-overlay-state.md)

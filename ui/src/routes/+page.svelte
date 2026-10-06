@@ -46,11 +46,11 @@
 	import { get } from 'svelte/store';
 	import { invoke, isTauri } from '$lib/tauri.ts';
 	import {
-		activeConversationStatusStore,
+		activeSessionStatusLabelStore,
 		reactExecutionPhaseStore,
 		reactExecutionPhaseForSession,
 		updateReactExecutionPhase,
-	} from '$lib/runtimeStateStore.ts';
+	} from '$lib/sessionRuntimeStore.ts';
 	import { addNotification } from '$lib/notificationStore.ts';
 	import {
 		resumeTargetStore,
@@ -98,7 +98,7 @@ import type { SessionTokenStatsView } from '$lib/sessionUsagePresentation.ts';
 	import type { AgentMediaPlanPayload } from '$lib/contracts/agent.ts';
 	import type { ChatFileAttachment, ChatImageAttachment } from '$lib/chatController.ts';
 	import type { ConversationContextMenuRequest } from '$lib/conversationTimeline.ts';
-	import type { ReactExecutionPhaseSnapshot } from '$lib/runtimeStateStore.ts';
+	import type { ReactExecutionPhaseSnapshot } from '$lib/sessionRuntimeStore.ts';
 
 	let chatPageEl = $state<HTMLElement | null>(null);
 	let inputRouterRef = $state<{ setDraft: (text: string) => void } | null>(null);
@@ -1096,11 +1096,11 @@ import type { SessionTokenStatsView } from '$lib/sessionUsagePresentation.ts';
 	const sessionHeaderTitle = $derived(
 		String(activeSession?.title || activeSession?.input || '新会话'),
 	);
-	const activeConversationStatus = $derived(
+	const activeSessionStatusLabel = $derived(
 		activeSession ? sessionStatusLabel(activeSession) : '空闲',
 	);
 	$effect(() => {
-		activeConversationStatusStore.set(activeConversationStatus);
+		activeSessionStatusLabelStore.set(activeSessionStatusLabel);
 	});
 </script>
 

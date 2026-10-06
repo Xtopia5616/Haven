@@ -2,9 +2,9 @@
 	import '../app.css';
 	import {
 		reactExecutionPhaseStore,
-		activeConversationStatusStore,
+		activeSessionStatusLabelStore,
 		updateReactExecutionPhase,
-	} from '$lib/runtimeStateStore.ts';
+	} from '$lib/sessionRuntimeStore.ts';
 	import { recordingOverlayController } from '$lib/recordingOverlayController.ts';
 	import { addNotification } from '$lib/notificationStore.ts';
 	import {
@@ -66,7 +66,8 @@
 		isBootstrapReady,
 		nextBootstrapProbeInterval,
 	} from '$lib/bootstrapStatus.ts';
-	import type { RecordingOverlayState, ReactExecutionPhase } from '$lib/runtimeStateStore.ts';
+	import type { RecordingOverlayState } from '$lib/recordingOverlayController.ts';
+	import type { ReactExecutionPhase } from '$lib/sessionRuntimeStore.ts';
 	import type { ToolRunKind, ToolRunPayload } from '$lib/contracts/toolRun.ts';
 	import type { AgentNotificationPayload } from '$lib/contracts/agent.ts';
 	import type { NotificationConfigInput } from '$lib/contracts/generatedCommands.ts';
@@ -318,8 +319,10 @@
 	let overlay = $state<RecordingOverlayState>(recordingOverlayController.getState());
 	let duration = $state(recordingOverlayController.getDuration());
 	let reactExecutionPhase = $state<ReactExecutionPhase>('idle'); // synced from reactExecutionPhaseStore on mount
-	let conversationStatus = $state('空闲');
-	$effect(() => syncStore(activeConversationStatusStore, (v) => (conversationStatus = v)));
+	let activeSessionStatusLabel = $state('空闲');
+	$effect(() =>
+		syncStore(activeSessionStatusLabelStore, (value) => (activeSessionStatusLabel = value)),
+	);
 	// Runtime mode is intentionally separate from backend bootstrap state:
 	// browser Vite preview has no Tauri backend at all, while a Tauri webview
 	// can still be waiting for Rust startup.
@@ -1198,7 +1201,7 @@
 			{overlay}
 			executionPhase={reactExecutionPhase}
 			{busySessions}
-			{conversationStatus}
+			{activeSessionStatusLabel}
 			{runtime}
 			{bootstrapReady}
 			{llmConnected}

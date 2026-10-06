@@ -64,7 +64,7 @@ describe('WorkspaceStatus', () => {
 			bootstrapReady: true,
 			llmConnected: 'disconnected',
 			executionPhase: 'generating',
-			conversationStatus: '运行中',
+			activeSessionStatusLabel: '运行中',
 			busySessions: new Set(['ses-1']),
 		});
 
@@ -93,15 +93,15 @@ describe('WorkspaceStatus', () => {
 	});
 
 	it('uses unified waiting-operation and task labels from the active session', () => {
-		for (const conversationStatus of ['等待操作', '等待任务']) {
+		for (const activeSessionStatusLabel of ['等待操作', '等待任务']) {
 			const { unmount } = render(WorkspaceStatus, {
 				runtime: 'tauri',
 				bootstrapReady: true,
-				conversationStatus,
+				activeSessionStatusLabel,
 				busySessions: new Set(),
 			});
 			expect(
-				screen.getByRole('status', { name: `状态：${conversationStatus}` }),
+				screen.getByRole('status', { name: `状态：${activeSessionStatusLabel}` }),
 			).toBeTruthy();
 			unmount();
 		}
@@ -112,7 +112,7 @@ describe('WorkspaceStatus', () => {
 			runtime: 'tauri',
 			bootstrapReady: true,
 			llmConnected: 'ready',
-			conversationStatus: '已暂停',
+			activeSessionStatusLabel: '已暂停',
 		});
 
 		expect(screen.getByRole('status', { name: '状态：已暂停' })).toBeTruthy();

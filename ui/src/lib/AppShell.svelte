@@ -10,7 +10,7 @@
 	import GlobalContextMenu from './GlobalContextMenu.svelte';
 	import LandscapeWorkspaceNav from './LandscapeWorkspaceNav.svelte';
 	import { dragScroll } from '$lib/dragScroll.ts';
-	import type { RecordingOverlayState } from '$lib/runtimeStateStore.ts';
+	import type { RecordingOverlayState } from '$lib/recordingOverlayController.ts';
 
 	interface WorkspaceTab {
 		id: string;

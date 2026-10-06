@@ -19,7 +19,7 @@ import {
 	reactExecutionPhaseForSession,
 	reactExecutionPhaseStore,
 	updateReactExecutionPhase,
-} from './runtimeStateStore.ts';
+} from './sessionRuntimeStore.ts';
 import {
 	toolRunStore,
 	sessionToolRunStore,

@@ -5,7 +5,7 @@ import {
 	clearToolOutputPreviewsForSession,
 	getToolOutputPreviewStore,
 } from './toolOutputPreviewStore.ts';
-import { reactExecutionPhaseStore } from './runtimeStateStore.ts';
+import { reactExecutionPhaseStore } from './sessionRuntimeStore.ts';
 
 describe('chat agent live tool output', () => {
 	it('shows waiting for a tool result, then generation after the observation', () => {

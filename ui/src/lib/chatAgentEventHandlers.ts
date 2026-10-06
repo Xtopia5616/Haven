@@ -1,5 +1,5 @@
 import { clearToolOutputPreview, setToolOutputPreview } from './toolOutputPreviewStore.ts';
-import { updateReactExecutionPhase } from './runtimeStateStore.ts';
+import { updateReactExecutionPhase } from './sessionRuntimeStore.ts';
 import type { SessionAction } from './sessionReducer.ts';
 
 export interface ChatAgentEventContext {

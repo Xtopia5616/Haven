@@ -5,7 +5,16 @@ import type {
 	VadStatusPayload,
 } from './contracts/recording.ts';
 import { invoke } from './tauri.ts';
-import type { RecordingOverlayState } from './runtimeStateStore.ts';
+
+export type RecordingOverlayState = {
+	visible: boolean;
+	isRecording: boolean;
+	processing: boolean;
+	sessionId: string | null;
+	startedAt: string | number | null;
+	reason: string | null;
+	vadState: string;
+};
 
 type RecordingCommand = 'start_recording' | 'stop_recording' | 'cancel_recording';
 

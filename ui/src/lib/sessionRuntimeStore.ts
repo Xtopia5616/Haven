@@ -1,15 +1,5 @@
 import { writable } from 'svelte/store';
 
-export type RecordingOverlayState = {
-	visible: boolean;
-	isRecording: boolean;
-	processing: boolean;
-	sessionId: string | null;
-	startedAt: string | number | null;
-	reason: string | null;
-	vadState: string;
-};
-
 export type ReactExecutionPhase =
 	'idle' | 'queued' | 'requesting' | 'generating' | 'waiting_result' | 'waiting_response';
 
@@ -26,8 +16,8 @@ export const reactExecutionPhaseStore = writable<ReactExecutionPhaseSnapshot>({
 	phase: 'idle',
 });
 
-// Presentation status for the selected conversation, consumed by the shell.
-export const activeConversationStatusStore = writable('空闲');
+// Presentation status for the selected session, consumed by the shell.
+export const activeSessionStatusLabelStore = writable('空闲');
 
 export function updateReactExecutionPhase(sessionId: string | null, phase: ReactExecutionPhase) {
 	reactExecutionPhaseStore.set({ sessionId, phase });
