@@ -52,7 +52,7 @@ function resume(status: SessionResumeResponse['session']['status'] = 'paused'): 
 }
 
 function createHarness(options: {
-	getSessions?: () => Promise<SessionListResponse>;
+	listSessions?: () => Promise<SessionListResponse>;
 	getLastConversation?: () => Promise<SessionResumeResponse | null>;
 	reopenSession?: (request: { sessionId: string }) => Promise<void>;
 } = {}) {
@@ -76,9 +76,9 @@ function createHarness(options: {
 			actions.push(action);
 			reducer.dispatch(action);
 		},
-		getSessions: async () => {
+		listSessions: async () => {
 			sessionListCalls++;
-			return options.getSessions ? options.getSessions() : list();
+			return options.listSessions ? options.listSessions() : list();
 		},
 		getLastConversation: options.getLastConversation ?? (async () => resume()),
 		reopenSession: async (request) => {
@@ -141,7 +141,7 @@ describe('createChatSessionStartup', () => {
 			return errorResume;
 		});
 		const harness = createHarness({
-			getSessions: () => sessionsResponse.promise,
+			listSessions: () => sessionsResponse.promise,
 			getLastConversation,
 		});
 		const pendingIds = ['conf-live'];
@@ -188,7 +188,7 @@ describe('createChatSessionStartup', () => {
 		const sessionsResponse = deferred<SessionListResponse>();
 		const getLastConversation = vi.fn(async () => null);
 		const harness = createHarness({
-			getSessions: () => sessionsResponse.promise,
+			listSessions: () => sessionsResponse.promise,
 			getLastConversation,
 		});
 		const loading = harness.startup.loadInitialSessions(null);
@@ -208,7 +208,7 @@ describe('createChatSessionStartup', () => {
 		const restoreResponse = deferred<SessionResumeResponse | null>();
 		const getLastConversation = vi.fn(() => restoreResponse.promise);
 		const harness = createHarness({
-			getSessions: async () => list(),
+			listSessions: async () => list(),
 			getLastConversation,
 		});
 		const loading = harness.startup.loadInitialSessions(null);

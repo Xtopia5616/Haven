@@ -15,8 +15,8 @@ import type { TauriCommandInvoke } from './contracts/generatedCommands.ts';
 
 export type SessionHistoryInvoker = TauriCommandInvoke;
 
-/** Load the current in-memory session summaries for the chat shell. */
-export function getSessions(): Promise<SessionListResponse> {
+/** List the current in-memory session summaries for the chat shell. */
+export function listSessions(): Promise<SessionListResponse> {
 	return invoke('get_sessions');
 }
 

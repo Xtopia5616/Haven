@@ -5,7 +5,7 @@ import {
 	getLastConversation,
 	getSessionLineage,
 	getSessionForResume,
-	getSessions,
+	listSessions,
 	reopenSession,
 	searchHistoryFiltered,
 	updateSessionTitle,
@@ -26,7 +26,7 @@ describe('session history command boundary', () => {
 		};
 		invokeMock.mockResolvedValue(response as never);
 
-		await expect(getSessions()).resolves.toBe(response);
+		await expect(listSessions()).resolves.toBe(response);
 		expect(invokeMock).toHaveBeenCalledOnce();
 		expect(invokeMock).toHaveBeenCalledWith('get_sessions');
 	});

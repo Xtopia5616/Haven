@@ -35,8 +35,8 @@ function validateMcpServerSnapshots(value: unknown): McpServerSnapshot[] {
 	return value as McpServerSnapshot[];
 }
 
-/** Read builtin tool manifests using their existing Rust wire shape. */
-export function getTools(): Promise<ToolListResponse> {
+/** List builtin tool manifests using their existing Rust wire shape. */
+export function listTools(): Promise<ToolListResponse> {
 	return invoke('get_tools');
 }
 

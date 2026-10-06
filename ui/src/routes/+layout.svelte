@@ -49,7 +49,7 @@
 	import { loadSettings } from '$lib/settingsCommand.ts';
 	import { toolRunStatusLabel } from '$lib/toolRunTerminology.ts';
 	import { setToolManifests } from '$lib/toolManifest.ts';
-	import { getTools } from '$lib/toolsCommands.ts';
+	import { listTools } from '$lib/toolsCommands.ts';
 	import { createChatInteractionEventHandlers } from '$lib/chatInteractionEventHandlers.ts';
 	import {
 		clearRequestedConfirmation,
@@ -798,7 +798,7 @@
 		recordingOverlayController.resumeTimer();
 		runtime = isTauri() ? 'tauri' : 'browser';
 		if (isTauri()) {
-			getTools()
+			listTools()
 				.then((result) => setToolManifests(result?.tools))
 				.catch((error) =>
 					reportError(error, {

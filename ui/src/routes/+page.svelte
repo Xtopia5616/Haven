@@ -29,7 +29,7 @@
 		getHistory,
 		getLastConversation,
 		getSessionLineage,
-		getSessions,
+		listSessions,
 		reopenSession,
 	} from '$lib/sessionHistoryCommands.ts';
 	import {
@@ -866,7 +866,7 @@
 	const sessionStartup = createChatSessionStartup({
 		reducer: sessionReducer,
 		dispatch: dispatchSession,
-		getSessions,
+		listSessions,
 		getLastConversation,
 		reopenSession,
 		refreshToolRuns,

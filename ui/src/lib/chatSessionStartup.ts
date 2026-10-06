@@ -9,7 +9,7 @@ import type { ResumeTarget } from './sessionIntentStore.ts';
 export interface ChatSessionStartupDependencies {
 	reducer: SessionReducer;
 	dispatch: (action: SessionAction) => void;
-	getSessions: () => Promise<SessionListResponse>;
+	listSessions: () => Promise<SessionListResponse>;
 	getLastConversation: () => Promise<SessionResumeResponse | null>;
 	reopenSession: (request: { sessionId: string }) => Promise<void>;
 	refreshToolRuns: () => void;
@@ -108,7 +108,7 @@ export function createChatSessionStartup(dependencies: ChatSessionStartupDepende
 		const requestGeneration = generation;
 		const seq = ++loadSessionsSeq;
 		const run = (async () => {
-			const result = await dependencies.getSessions();
+			const result = await dependencies.listSessions();
 			if (!isCurrentGeneration(requestGeneration) || seq !== loadSessionsSeq) return;
 			if (result && result.sessions) {
 				const before = dependencies.reducer.getState();

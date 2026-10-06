@@ -21,7 +21,7 @@
 		setToolEnabled,
 		toggleMcpServer,
 		updateMcpServer,
-		getTools,
+		listTools,
 		listMcpTools,
 		listSkills,
 		resetToolCircuits as resetToolCircuitsCommand,
@@ -120,7 +120,7 @@
 
 	onMount(async () => {
 		try {
-			const result = await getTools();
+			const result = await listTools();
 			if (result && result.tools) {
 				const manifests = setToolManifests(result.tools);
 				builtinTools = manifests

@@ -537,3 +537,4 @@
 - [0546：区分开放的 ToolManifestSource 与 UI ToolSource 分类](0546-distinguish-tool-manifest-source.md)
 - [0547：移除 ConfigApplyGate 过渡别名并命名 coordinator 字段](0547-name-config-runtime-coordinator-field.md)
 - [0548：将 StoredBranchPoint 位置元组改为具名结果](0548-name-active-branch-point-fields.md)
+- [0549：为 UI 集合查询统一使用 list 动词](0549-use-list-for-ui-collection-queries.md)
