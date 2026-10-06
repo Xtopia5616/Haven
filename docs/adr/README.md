@@ -568,3 +568,4 @@
 - [0577：统一确认交互的用户决策类型](0577-unify-confirmation-decision-type.md)
 - [0578：为 Session 子 reducer 命名 action 子集](0578-name-session-reducer-action-subsets.md)
 - [0579：明确 Hotkey 修饰键判断与显示名称](0579-name-hotkey-modifier-and-display-methods.md)
+- [0580：明确 VAD 概率观察入口](0580-name-vad-probability-observation.md)

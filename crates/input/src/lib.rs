@@ -464,11 +464,11 @@ impl InputPipeline {
                         // of spawning a blocking session per frame (and locking the
                         // engine). Frames below the energy floor skip the
                         // round-trip entirely — they are silence by definition.
-                        let prob_result = match &data.vad_worker {
+                        let probability_result = match &data.vad_worker {
                             Some(w) if vad::frame_has_energy(frame) => {
                                 let frame_owned = frame.to_vec();
                                 tokio::select! {
-                                    p = w.infer(frame_owned) => p,
+                                    probability = w.infer_speech_probability(frame_owned) => probability,
                                     _ = cancel.cancelled() => {
                                         let elapsed = start.elapsed();
                                         let capture_error = capture_error_for(
@@ -487,8 +487,8 @@ impl InputPipeline {
                             }
                             _ => Ok(0.0),
                         };
-                        let prob = match prob_result {
-                            Ok(prob) => prob,
+                        let speech_probability = match probability_result {
+                            Ok(probability) => probability,
                             Err(error) => {
                                 tracing::error!(error = %error, "VAD worker failed; stopping recording");
                                 let elapsed = start.elapsed();
@@ -503,7 +503,7 @@ impl InputPipeline {
 
                         let (signal, state) = {
                             let mut det = data.vad_detector.lock().await;
-                            let signal = det.process(prob);
+                            let signal = det.observe_probability(speech_probability);
                             let state = det.state();
                             (signal, state)
                         };
@@ -685,7 +685,7 @@ struct VadWorker {
     cmd_tx: std::sync::mpsc::Sender<VadCmd>,
     /// Mutex-wrapped because only the recording loop consumes replies, and
     /// `recv` needs `&mut`; uncontended (single consumer), cheap.
-    prob_rx: Mutex<tokio::sync::mpsc::UnboundedReceiver<(u64, Result<f32, String>)>>,
+    speech_probability_rx: Mutex<tokio::sync::mpsc::UnboundedReceiver<(u64, Result<f32, String>)>>,
     /// Monotonic sequence counter shared with the worker: never reused, so a
     /// stale reply can never be mistaken for the current inference.
     seq: AtomicU64,
@@ -696,14 +696,14 @@ impl VadWorker {
     /// the first inference may be delayed but the caller never blocks.
     fn spawn() -> std::io::Result<Arc<Self>> {
         let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
-        let (prob_tx, prob_rx) =
+        let (speech_probability_tx, speech_probability_rx) =
             tokio::sync::mpsc::unbounded_channel::<(u64, Result<f32, String>)>();
         std::thread::Builder::new()
             .name("vad-worker".into())
-            .spawn(move || vad_worker_loop(cmd_rx, prob_tx))?;
+            .spawn(move || vad_worker_loop(cmd_rx, speech_probability_tx))?;
         Ok(Arc::new(Self {
             cmd_tx,
-            prob_rx: Mutex::new(prob_rx),
+            speech_probability_rx: Mutex::new(speech_probability_rx),
             seq: AtomicU64::new(0),
         }))
     }
@@ -716,12 +716,12 @@ impl VadWorker {
 
     /// Run one inference and preserve worker/model failures for the recording
     /// loop. A failed VAD inference must not become a fabricated silence value.
-    async fn infer(&self, frame: Vec<f32>) -> Result<f32> {
+    async fn infer_speech_probability(&self, frame: Vec<f32>) -> Result<f32> {
         let seq = self.seq.fetch_add(1, Ordering::Relaxed);
         self.cmd_tx
             .send(VadCmd::Infer { seq, frame })
             .map_err(|_| anyhow!("VAD worker command channel is closed"))?;
-        let mut rx = self.prob_rx.lock().await;
+        let mut rx = self.speech_probability_rx.lock().await;
         loop {
             match rx.recv().await {
                 Some((s, result)) if s == seq => return result.map_err(|error| anyhow!(error)),
@@ -735,7 +735,7 @@ impl VadWorker {
 
 fn vad_worker_loop(
     cmd_rx: std::sync::mpsc::Receiver<VadCmd>,
-    prob_tx: tokio::sync::mpsc::UnboundedSender<(u64, Result<f32, String>)>,
+    speech_probability_tx: tokio::sync::mpsc::UnboundedSender<(u64, Result<f32, String>)>,
 ) {
     let (mut engine, init_error) = match vad::VadEngine::new() {
         Ok(e) => (Some(e), None),
@@ -751,7 +751,7 @@ fn vad_worker_loop(
                 let result = match engine.as_mut() {
                     Some(engine) => {
                         match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                            engine.infer(&frame)
+                            engine.infer_speech_probability(&frame)
                         })) {
                             Ok(result) => result.map_err(|error| error.to_string()),
                             Err(_) => Err("VAD inference panicked".to_string()),
@@ -764,7 +764,7 @@ fn vad_worker_loop(
                 if let Err(error) = &result {
                     tracing::error!(error = %error, "VAD inference failed");
                 }
-                if prob_tx.send((seq, result)).is_err() {
+                if speech_probability_tx.send((seq, result)).is_err() {
                     break;
                 }
             }

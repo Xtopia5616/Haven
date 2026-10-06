@@ -72,12 +72,12 @@ impl VadEngine {
         })
     }
 
-    /// Run one inference for a speech frame. The caller (recording loop)
+    /// Infer speech probability for one frame. The caller (recording loop)
     /// pre-filters frames by `frame_has_energy`, so silent frames never pay
     /// the model round-trip; the energy check deliberately lives there —
     /// running it here again would recompute the same sum-of-squares per
     /// frame.
-    pub fn infer(&mut self, frame: &[f32]) -> Result<f32> {
+    pub fn infer_speech_probability(&mut self, frame: &[f32]) -> Result<f32> {
         if frame.len() < FRAME_SIZE {
             return Ok(0.0);
         }
@@ -88,7 +88,7 @@ impl VadEngine {
 
         let result = self.execution_state.run([input, sr, recurrent_state])?;
 
-        let prob = result
+        let speech_probability = result
             .first()
             .ok_or_else(|| anyhow::anyhow!("VAD model returned no probability output"))?
             .as_slice::<f32>()?
@@ -102,7 +102,7 @@ impl VadEngine {
             .ok_or_else(|| anyhow::anyhow!("VAD model returned no recurrent state output"))?
             .clone();
 
-        Ok(prob)
+        Ok(speech_probability)
     }
 
     pub fn reset(&mut self) -> Result<()> {
@@ -157,10 +157,10 @@ impl VadDetector {
         }
     }
 
-    pub fn process(&mut self, prob: f32) -> VadSignal {
+    pub fn observe_probability(&mut self, speech_probability: f32) -> VadSignal {
         match self.state {
             VadState::Silent => {
-                if prob >= self.threshold {
+                if speech_probability >= self.threshold {
                     self.state = VadState::Speech;
                     VadSignal::SpeechStart
                 } else {
@@ -168,14 +168,14 @@ impl VadDetector {
                 }
             }
             VadState::Speech => {
-                if prob < self.threshold {
+                if speech_probability < self.threshold {
                     self.advance_silence(1)
                 } else {
                     VadSignal::None
                 }
             }
             VadState::SilenceAfterSpeech { silent_frames } => {
-                if prob >= self.threshold {
+                if speech_probability >= self.threshold {
                     self.state = VadState::Speech;
                     VadSignal::SpeechStart
                 } else {
@@ -202,25 +202,25 @@ mod tests {
     fn vad_detector_silent_to_speech() {
         let mut det = VadDetector::new(0.5, 1500);
         assert_eq!(det.state, VadState::Silent);
-        assert_eq!(det.process(0.8), VadSignal::SpeechStart);
+        assert_eq!(det.observe_probability(0.8), VadSignal::SpeechStart);
         assert_eq!(det.state, VadState::Speech);
     }
 
     #[test]
     fn vad_detector_speech_to_silence() {
         let mut det = VadDetector::new(0.5, 1500);
-        det.process(0.8);
-        assert_eq!(det.process(0.3), VadSignal::None);
+        det.observe_probability(0.8);
+        assert_eq!(det.observe_probability(0.3), VadSignal::None);
         assert_eq!(det.state, VadState::SilenceAfterSpeech { silent_frames: 1 });
     }
 
     #[test]
     fn vad_detector_autostop() {
         let mut det = VadDetector::new(0.5, 90);
-        det.process(0.8);
-        assert_eq!(det.process(0.3), VadSignal::None);
-        assert_eq!(det.process(0.2), VadSignal::None);
-        assert_eq!(det.process(0.1), VadSignal::AutoStop);
+        det.observe_probability(0.8);
+        assert_eq!(det.observe_probability(0.3), VadSignal::None);
+        assert_eq!(det.observe_probability(0.2), VadSignal::None);
+        assert_eq!(det.observe_probability(0.1), VadSignal::AutoStop);
         assert_eq!(det.state, VadState::Silent);
     }
 
@@ -228,42 +228,42 @@ mod tests {
     fn vad_detector_rounds_non_aligned_timeout_up_to_a_full_frame() {
         let mut det = VadDetector::new(0.5, 91);
         assert_eq!(det.silence_max_frames, 4);
-        det.process(0.8);
-        assert_eq!(det.process(0.3), VadSignal::None);
-        assert_eq!(det.process(0.2), VadSignal::None);
-        assert_eq!(det.process(0.1), VadSignal::None);
-        assert_eq!(det.process(0.05), VadSignal::AutoStop);
+        det.observe_probability(0.8);
+        assert_eq!(det.observe_probability(0.3), VadSignal::None);
+        assert_eq!(det.observe_probability(0.2), VadSignal::None);
+        assert_eq!(det.observe_probability(0.1), VadSignal::None);
+        assert_eq!(det.observe_probability(0.05), VadSignal::AutoStop);
     }
 
     #[test]
     fn zero_silence_timeout_stops_on_the_first_silent_frame() {
         let mut det = VadDetector::new(0.5, 0);
-        det.process(0.8);
-        assert_eq!(det.process(0.3), VadSignal::AutoStop);
+        det.observe_probability(0.8);
+        assert_eq!(det.observe_probability(0.3), VadSignal::AutoStop);
         assert_eq!(det.state, VadState::Silent);
     }
 
     #[test]
     fn vad_detector_reentry() {
         let mut det = VadDetector::new(0.5, 1500);
-        det.process(0.8);
-        det.process(0.3);
-        assert_eq!(det.process(0.9), VadSignal::SpeechStart);
+        det.observe_probability(0.8);
+        det.observe_probability(0.3);
+        assert_eq!(det.observe_probability(0.9), VadSignal::SpeechStart);
         assert_eq!(det.state, VadState::Speech);
     }
 
     #[test]
     fn vad_detector_reset() {
         let mut det = VadDetector::new(0.5, 1500);
-        det.process(0.8);
+        det.observe_probability(0.8);
         det.reset();
         assert_eq!(det.state, VadState::Silent);
     }
 
     #[test]
-    fn vad_detector_low_prob_stays_silent() {
+    fn vad_detector_low_probability_stays_silent() {
         let mut det = VadDetector::new(0.5, 1500);
-        assert_eq!(det.process(0.1), VadSignal::None);
+        assert_eq!(det.observe_probability(0.1), VadSignal::None);
         assert_eq!(det.state, VadState::Silent);
     }
 
@@ -285,13 +285,19 @@ mod tests {
         let frame: Vec<f32> = (0..FRAME_SIZE)
             .map(|i| 0.3 * (i as f32 * 0.1).sin())
             .collect();
-        let prob = engine.infer(&frame).expect("VAD inference should succeed");
-        assert!((0.0..=1.0).contains(&prob), "prob out of range: {prob}");
+        let speech_probability = engine
+            .infer_speech_probability(&frame)
+            .expect("VAD inference should succeed");
+        assert!((0.0..=1.0).contains(&speech_probability));
         // A second inference reuses the updated state without panic.
-        let prob2 = engine.infer(&frame).expect("VAD inference should succeed");
-        assert!((0.0..=1.0).contains(&prob2));
+        let speech_probability_after_second_frame = engine
+            .infer_speech_probability(&frame)
+            .expect("VAD inference should succeed");
+        assert!((0.0..=1.0).contains(&speech_probability_after_second_frame));
         engine.reset().expect("VAD reset should succeed");
-        let prob3 = engine.infer(&frame).expect("VAD inference should succeed");
-        assert!((0.0..=1.0).contains(&prob3));
+        let speech_probability_after_reset = engine
+            .infer_speech_probability(&frame)
+            .expect("VAD inference should succeed");
+        assert!((0.0..=1.0).contains(&speech_probability_after_reset));
     }
 }
