@@ -593,13 +593,12 @@
 							description="查看并继续过去的对话。"
 						>
 							{#snippet children()}
-								{#if totalCount > 0}
-									<MaterialButton
-										variant="danger"
-										label="清空会话"
-										onclick={() => (showClearDialog = true)}
-									/>
-								{/if}
+								<MaterialButton
+									variant="danger"
+									label="清空会话"
+									onclick={() => (showClearDialog = true)}
+									disabled={loading || totalCount === 0}
+								/>
 							{/snippet}
 						</WorkspaceSectionHeader>
 						<SessionHistory
