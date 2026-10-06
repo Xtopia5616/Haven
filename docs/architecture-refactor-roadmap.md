@@ -1,7 +1,7 @@
 # Haven 架构降复杂度重构路线图
 
 > 状态：阶段 0–8 已完成；SessionUsage 累计上限契约、session-scoped KV 孤儿清理 owner、summary marker 单一原子生产路径、Tools 测试归属、Input→Tools 测试反向依赖、MCP/Skill 直调授权策略来源、MCP 管理操作网络策略来源、X12 例外消息写入口、ADR 编号索引完整性、actorless session ToolRun lifecycle 清理（ADR 0507）、Ask reducer state ownership 收口（ADR 0508）、终态 Ask 清理事件归属（ADR 0509）、ReAct phase 来源 session 身份（ADR 0510）、Windows 子进程先入 Job 再恢复（ADR 0513）、显式 end 失败重试契约（ADR 0514）、Skill venv 子进程 containment（ADR 0515）、MCP prompt index 类型化（ADR 0516）、Memory fact marker generation-safe ack 与有界 durable outbox/session recovery（ADR 0107/0259）、App-owned Shell/hotkey/VAD stop 后处理调度收口（ADR 0517）、MemoryWorker durable outbox lifecycle 私有 owner（ADR 0518）、Session grant/resolve append failure retry 契约测试（ADR 0519）、SessionActor interaction replay fail-closed（ADR 0520）、Session confirmation 决议与恢复唤醒原子提交（ADR 0521）、Pending Session 恢复失败后的退避重试（ADR 0522）、Router/media 共享构造（ADR 0525）、Admin 共用风险等级单一来源（ADR 0528）、单一 `session:lifecycle` 契约与 Memory Fact response DTO（ADR 0529）、类型化 ToolRun lifecycle events（ADR 0530）已完成；当前 Active 为全项目领域术语与架构角色命名收敛（§5.7），暂无 Next；Windows 发布验收为独立开放签核门
-> 更新日期：2026-10-06
+> 更新日期：2026-10-07
 > 范围：Agent/Session、Memory、Tools、LLM、App IPC 与 UI
 
 本文件只记录当前阶段、仍未完成的工作和验收条件。历史实现切片与决定见对应 ADR；提交历史用于追踪实现过程。
@@ -185,6 +185,7 @@
 | Tools 对外入口 | `ToolsFacade` 组合多个 Tools owner，并由 Agent/App adapter 提供窄 ports；它暴露 execution/catalog/config/runtime/asset 调用，但不拥有 MCP、Skill 等资源的创建/重连生命周期。 | **已对齐名称**：Rust crate API、`facade.rs` 模块、Agent/App adapter 与构造入口统一使用 facade 角色；无 Tauri/IPC 变化（ADR 0536）。 |
 | UI metrics contract | `generatedCommands.ts` 从 Rust `MetricsSnapshot` 生成固定响应字段；原 settings alias 却将相同响应退化为开放 `Record<string, unknown>`，丢掉已知字段类型。 | **已对齐名称与类型**：`PerformanceMetricsSnapshot` 以 generated DTO 为已知契约并与开放索引签名交叉，既能类型化访问已有字段，也保留未来扩展字段；移入 diagnostics contract，不改变 IPC（ADR 0537）。 |
 | Common / LLM `RequestPolicy` 同名 | Common config 的 `RequestPolicy` 把 logical request 映射到 primary model；LLM 内部 `request_pipeline::RequestPolicy` 捕获一次调用的 retry 与 timeout runtime snapshot。 | **已改名**：LLM 私有执行快照叫 `RequestExecutionPolicy`；配置字段/JSON 名和路由选择不变，两个 owner 保持分离（ADR 0539）。 |
+| Common / App `HotkeyConfig` 同名 | Common 的 `HotkeyConfig` 是实际生效并持久化的用户快捷键配置；App `desktop::HotkeyConfig` 只在 `ShellState::default` 中写入、无生产读取者，字段还保留 recording/toggle 双绑定旧形状。 | **已清理**：删除未使用的 ShellState 副本与孤立默认值测试；Common 配置和快捷键注册路径不变（ADR 0540）。 |
 | Input / App RecordingState 同名 | `haven_input::RecordingState` 是 Pending/Recording/Processing 采集生命周期枚举；App `get_recording_state` 响应是 shell/UI 的 `is_recording`、`is_toggle` 快照。两者是不同 owner、不同状态空间。 | **已改名**：App DTO 改为 `RecordingStatus`，保持 command 与 JSON 字段不变；区分 App wire view 和 Input lifecycle state（ADR 0538）。 |
 | 配置 apply 计划与协调 | `RuntimeConfigApplyPlan` 从变更域映射 live/restart target；`SettingsApplyPlan` 再展开设置命令的有序 phase；`SettingsRuntimeApplyCoordinator` 持有 phase、失败和 router 发布观测。 | **保留并解释**：共享 target 投影，但执行顺序/失败观测 owner 不同，后两者由前者派生而非复制 apply 状态；合并会混淆配置影响映射与 settings 顺序流程。 |
 | Chat UI 事件模块 | `createChatEventController` 管 listener 注册/释放；Session、Agent、Interaction、Usage handler 分别把不同事件映射到 reducer、局部 store 或通知。 | **保留并解释**：controller 管注册生命周期，handler 管分域事件投影；handler 之间职责、payload 和副作用不同，不因同一 chat route 合并。 |

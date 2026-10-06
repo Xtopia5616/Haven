@@ -20,21 +20,6 @@ pub trait ShellHandler: Send + Sync {
     fn on_tray_status(&self, _status: TrayStatus) {}
 }
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct HotkeyConfig {
-    pub recording: String,
-    pub toggle: String,
-}
-
-impl Default for HotkeyConfig {
-    fn default() -> Self {
-        Self {
-            recording: "Ctrl+Shift+Space".into(),
-            toggle: "Ctrl+Shift+T".into(),
-        }
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum TrayStatus {
     Normal,
@@ -49,7 +34,6 @@ pub struct ShellState {
     pub is_recording_toggle: bool,
     pub is_muted: bool,
     pub tray_status: TrayStatus,
-    pub hotkey: HotkeyConfig,
     pub hold_mode: bool,
     #[serde(skip)]
     recording_revision: u64,
@@ -80,7 +64,6 @@ impl Default for ShellState {
             is_recording_toggle: false,
             is_muted: false,
             tray_status: TrayStatus::Normal,
-            hotkey: HotkeyConfig::default(),
             hold_mode: false,
             recording_revision: 0,
             toggle_generation: 0,
@@ -372,13 +355,6 @@ mod tests {
                 self.reset_applied.store(applied, Ordering::Release);
             }
         }
-    }
-
-    #[test]
-    fn test_hotkey_config_default() {
-        let cfg = HotkeyConfig::default();
-        assert_eq!(cfg.recording, "Ctrl+Shift+Space");
-        assert_eq!(cfg.toggle, "Ctrl+Shift+T");
     }
 
     #[test]
