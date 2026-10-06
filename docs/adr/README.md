@@ -554,3 +554,4 @@
 - [0563：合并 Tauri 事件通用 envelope 类型](0563-consolidate-tauri-event-envelope.md)
 - [0564：区分 LLM 连接 wire report 与 renderer view](0564-distinguish-llm-connection-report-view.md)
 - [0565：以生成契约统一 RequestKind 枚举来源](0565-use-generated-request-kind-contract.md)
+- [0566：以生成契约统领 IPC command 集合](0566-use-generated-command-name-contract.md)

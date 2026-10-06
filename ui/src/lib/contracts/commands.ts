@@ -5,7 +5,7 @@
  * adds only renderer-reviewed boundary and security metadata.
  */
 
-import type { TauriCommandRequest } from './generatedCommands.ts';
+import type { TauriCommandName, TauriCommandRequest } from './generatedCommands.ts';
 
 /** Semantic command aliases derived from Rust handler signatures. */
 export type SessionIdRequest = TauriCommandRequest<'reopen_session'>;
@@ -123,7 +123,6 @@ export const TAURI_COMMAND_CONTRACTS = {
 	execute_skill: { boundary: 'execute', security: 'AuthorizationEngine; direct confirmations are queued and renderer errors are safe' },
 	get_tools: { boundary: 'read', security: 'tool definition projection; schemas are dynamic extension data' },
 	reset_tool_circuits: { boundary: 'mutate', security: 'clears local circuit state only' },
-} as const satisfies Record<string, CommandContract>;
+} as const satisfies Record<TauriCommandName, CommandContract>;
 
-export type TauriCommandName = keyof typeof TAURI_COMMAND_CONTRACTS;
 export const TAURI_COMMAND_NAMES = Object.keys(TAURI_COMMAND_CONTRACTS) as TauriCommandName[];
