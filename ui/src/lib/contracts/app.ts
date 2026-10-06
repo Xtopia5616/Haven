@@ -7,6 +7,7 @@ import {
 	type InteractionKind as GeneratedInteractionKind,
 	type InteractionOwner as InteractionOwnerWire,
 	type InteractionStatus as GeneratedInteractionStatus,
+	type RiskLevel,
 } from './generatedCommands.ts';
 
 export const APP_EVENT_NAMES = [
@@ -22,7 +23,6 @@ export const APP_EVENT_NAMES = [
 ] as const;
 
 export type AppEventName = (typeof APP_EVENT_NAMES)[number];
-export type RiskLevel = 'safe' | 'low' | 'medium' | 'high' | 'critical';
 export type TrayStatus = 'normal' | 'recording' | 'muted' | 'busy';
 export type SkillsStatusOperation = 'refresh' | 'auto_refresh' | 'toggle';
 export type McpStatus =

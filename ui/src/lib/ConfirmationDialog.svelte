@@ -6,7 +6,7 @@
 	import MaterialButton from './MaterialButton.svelte';
 	import MaterialSplitButton from './MaterialSplitButton.svelte';
 	import MaterialIconButton from './MaterialIconButton.svelte';
-	import type { RiskLevel } from '$lib/contracts/app.ts';
+	import type { RiskLevel } from '$lib/contracts/generatedCommands.ts';
 
 	interface ConfirmationDecision {
 		stepId: string;
