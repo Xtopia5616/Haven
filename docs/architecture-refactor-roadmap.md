@@ -173,7 +173,17 @@
 
 范围覆盖所有 Rust crate、Svelte/TypeScript、Tauri IPC/事件，以及对应架构/命名/ADR 文档；不是只整理 Tools 命名，也不以批量替换后缀为目标。
 
-当前第一切片是建立全仓词汇基线：为领域实体、跨层契约、架构角色后缀和常见函数动词定义单一含义，并盘点同义多名、同名异义、真实职责重叠和仅共享外观的类型。`docs/naming.md` 已新增首版架构角色词汇与动作动词约定；它们用于本轮审计和迁移，存量命名是否符合仍须逐域核对。
+当前第一切片已建立首版词汇基线：为领域实体、跨层契约、架构角色后缀和常见函数动词定义单一含义，并盘点同义多名、同名异义、真实职责重叠和仅共享外观的类型。`docs/naming.md` 已新增首版架构角色词汇与动作动词约定；存量命名是否符合仍须逐域核对。下表跟踪审计覆盖，不代表命名阶段已经完成。
+
+#### 审计覆盖状态
+
+| 范围 | 已核对 | 尚待核对 |
+|---|---|---|
+| Rust crate 类型名 | 对 `crates/` 下直接声明的 `pub struct/enum/type/trait` 做了初步重复名扫描；跨 crate 没有发现其它同名声明。唯一重复是 `platform::ChildProcessHandle` 的 Windows / 非 Windows 条件别名，表示同一平台抽象，应保留。 | `pub(crate)`、宏生成类型、字段、模块、trait 方法与普通函数尚未形成全仓完整清单；各 crate 的角色后缀与动词语义仍按域复核。 |
+| Rust crate 调用与函数动词 | Tools、Memory、Agent 的部分查询/队列调用链已按实际返回值和副作用收敛，见下方候选记录。 | 所有 crate 的公开及内部函数、同义动词、参数/返回类型用途尚未逐域审计。 |
+| Svelte / TypeScript | Session 时间线、runtime stores、session intent、ToolRun 分类及部分 IPC wrapper 已核对，见下方候选记录。 | 组件、stores、controllers、contracts、props 与事件 handler 的全量 owner/名称映射尚未完成。 |
+| Tauri IPC / 事件 | 结构门禁确认 81 个 handler 与 generated contract 对齐、35 个 event channels 对齐；ToolRun kind 的 runtime/wire 名称边界已区分。 | 所有命令参数、响应 DTO、事件 payload、UI wrapper 和生成名称仍需做语义命名审计；结构一致不等于术语一致。 |
+| 架构文档 / 配置 / 持久名 | `docs/naming.md` 已记录首版跨层产品术语；已完成的契约迁移同步了 ADR、路线图和相应架构说明。 | 配置键、持久字段、剩余文档与代码符号的交叉引用尚未完整核对；既有持久名按兼容和重置规则审慎处理。 |
 
 #### 首轮全仓符号扫描与候选分流
 
