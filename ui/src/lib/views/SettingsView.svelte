@@ -353,6 +353,9 @@
 	let leaveSaving = $state(false);
 	let saveState = $state<'idle' | 'saving' | 'saved' | 'error'>('idle');
 	let saveError = $state('');
+	let saveBarHeight = $state(0);
+	let settingsViewElement = $state<HTMLDivElement | null>(null);
+	let saveBarSlotPosition = $state({ left: 0, width: 0, bottom: 0 });
 	let securityRuntimeStatus = $state<'current' | 'unchanged' | 'incomplete'>('current');
 	let securityRuntimeNotice = $state('安全策略已按当前配置完成运行时应用。');
 	let mounted = true;
@@ -1257,9 +1260,51 @@
 		}
 		await saveSettings();
 	}
+
+	function handleSaveBarHeightChange(height: number) {
+		saveBarHeight = height;
+	}
+
+	$effect(() => {
+		const content = settingsViewElement?.closest<HTMLElement>('.content');
+		if (!content) return;
+
+		const updatePosition = () => {
+			const rect = content.getBoundingClientRect();
+			saveBarSlotPosition = {
+				left: rect.left,
+				width: rect.width,
+				bottom: Math.max(0, window.innerHeight - rect.bottom),
+			};
+		};
+		const observer =
+			typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(updatePosition);
+		observer?.observe(content);
+		window.addEventListener('resize', updatePosition);
+		updatePosition();
+		return () => {
+			observer?.disconnect();
+			window.removeEventListener('resize', updatePosition);
+		};
+	});
+
+	$effect(() => {
+		const content = settingsViewElement?.closest<HTMLElement>('.content');
+		if (!content) return;
+		if (saveBarVisible) {
+			content.style.setProperty('--settings-save-bar-clearance', `${saveBarHeight}px`);
+		} else {
+			content.style.removeProperty('--settings-save-bar-clearance');
+		}
+		return () => content.style.removeProperty('--settings-save-bar-clearance');
+	});
 </script>
 
-<div class="settings-view-shell">
+<div
+	class="settings-view-shell"
+	class:settings-view-shell--save-bar-visible={saveBarVisible}
+	bind:this={settingsViewElement}
+>
 	<div class="settings-surface-slot">
 		<WorkspaceSurface {entering} {onAnimationEnd}>
 			<div class="settings-page">
@@ -1392,13 +1437,19 @@
 			</div>
 		</WorkspaceSurface>
 	</div>
-	<div class="settings-save-bar-slot">
+	<div
+		class="settings-save-bar-slot"
+		style:left={`${saveBarSlotPosition.left}px`}
+		style:width={`${saveBarSlotPosition.width}px`}
+		style:bottom={`${saveBarSlotPosition.bottom}px`}
+	>
 		<SettingsSaveBar
 			visible={saveBarVisible}
 			dirty={settingsDirty}
 			dirtySectionLabels={dirtySettingsSectionLabels}
 			{saveState}
 			{saveError}
+			onHeightChange={handleSaveBarHeightChange}
 			onDiscard={discardAndReset}
 			onSave={handleSaveClick}
 		/>
@@ -1468,7 +1519,7 @@
 		display: grid;
 		flex: 1 1 auto;
 		grid-template-columns: minmax(0, 1fr);
-		grid-template-rows: minmax(0, 1fr) auto;
+		grid-template-rows: minmax(0, 1fr);
 		width: 100%;
 		min-width: 0;
 		min-height: 100%;
@@ -1486,13 +1537,14 @@
 		min-height: 0;
 	}
 	.settings-save-bar-slot {
-		grid-column: 1;
-		grid-row: 2;
-		position: sticky;
+		position: fixed;
 		bottom: 0;
-		z-index: 1;
+		z-index: var(--md-sys-z-drawer);
 		min-width: 0;
-		width: 100%;
+		display: flex;
+		justify-content: center;
+		padding-inline: var(--md-sys-content-gutter);
+		pointer-events: none;
 	}
 	:global(.content:not(.content--chat) .page-shell:has(.settings-view-shell)) {
 		display: flex;
@@ -1502,6 +1554,14 @@
 	:global(.content:not(.content--chat):has(.tab-panel:not([hidden]) .settings-view-shell)) {
 		padding-bottom: 0;
 	}
+	:global(
+			.content:not(.content--chat):has(
+				.tab-panel:not([hidden]) .settings-view-shell--save-bar-visible
+			)
+		) {
+		padding-bottom: var(--settings-save-bar-clearance, 0px);
+		transition: padding-bottom 0s;
+	}
 	.settings-page {
 		display: flex;
 		flex: 1;
@@ -1510,6 +1570,9 @@
 		min-width: 0;
 		max-width: var(--md-sys-content-max-width);
 		padding-bottom: 0;
+	}
+	:global(.settings-page .md-btn[data-width='content']:not(.accent-swatch)) {
+		min-width: min(100%, var(--md-comp-control-compact-width));
 	}
 	.settings-layout {
 		flex: 1;

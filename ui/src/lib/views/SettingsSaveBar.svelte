@@ -10,10 +10,39 @@
 		saveError: string;
 		onDiscard: () => void;
 		onSave: () => Promise<void>;
+		onHeightChange: (height: number) => void;
 	}
 
-	let { visible, dirty, dirtySectionLabels, saveState, saveError, onDiscard, onSave }: Props =
-		$props();
+	let {
+		visible,
+		dirty,
+		dirtySectionLabels,
+		saveState,
+		saveError,
+		onDiscard,
+		onSave,
+		onHeightChange,
+	}: Props = $props();
+	let saveBarElement = $state<HTMLDivElement | null>(null);
+	let reportedHeight = 0;
+
+	function reportHeight() {
+		const height = Math.ceil(saveBarElement?.getBoundingClientRect().height ?? 0);
+		if (height !== reportedHeight) {
+			reportedHeight = height;
+			onHeightChange(height);
+		}
+	}
+
+	$effect(() => {
+		const element = saveBarElement;
+		if (!element) return;
+		const observer =
+			typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(reportHeight);
+		observer?.observe(element);
+		reportHeight();
+		return () => observer?.disconnect();
+	});
 </script>
 
 <div
@@ -21,6 +50,7 @@
 	class:save-bar--hidden={!visible}
 	aria-hidden={!visible}
 	inert={!visible}
+	bind:this={saveBarElement}
 >
 	{#if saveState === 'error'}
 		<p class="save-error" role="alert">{saveError}</p>
@@ -32,6 +62,7 @@
 	<div class="save-actions" class:save-bar__dirty-content--hidden={!dirty} inert={!dirty}>
 		<MaterialButton
 			variant="outlined"
+			width="fill"
 			className="save-action-btn"
 			label="放弃"
 			onclick={onDiscard}
@@ -40,6 +71,7 @@
 		<div class="save-button-status" aria-live="polite" aria-busy={saveState === 'saving'}>
 			<MaterialButton
 				variant="filled"
+				width="fill"
 				className="save-action-btn save-btn--dirty"
 				label={saveState === 'saving' ? '保存中…' : '保存'}
 				onclick={onSave}
@@ -51,6 +83,11 @@
 
 <style>
 	.save-bar {
+		position: relative;
+		width: 100%;
+		max-width: var(--md-sys-content-max-width);
+		margin-inline: auto;
+		pointer-events: auto;
 		display: flex;
 		align-items: center;
 		justify-content: flex-end;
@@ -66,10 +103,20 @@
 		backdrop-filter: blur(10px);
 		-webkit-backdrop-filter: blur(10px);
 		box-shadow: 0 -8px 20px color-mix(in srgb, var(--md-sys-color-shadow) 8%, transparent);
+		transition:
+			opacity var(--md-sys-motion-duration-fast) var(--md-sys-motion-easing-standard),
+			transform var(--md-sys-motion-duration-fast) var(--md-sys-motion-easing-standard),
+			visibility 0s linear;
 	}
 	.save-bar--hidden,
 	.save-bar__dirty-content--hidden {
 		visibility: hidden;
+	}
+	.save-bar--hidden {
+		opacity: 0;
+		transform: translateY(var(--md-sys-space-sm));
+		pointer-events: none;
+		transition-delay: 0s, 0s, var(--md-sys-motion-duration-fast);
 	}
 	.save-error {
 		margin: 0 auto 0 0;
@@ -95,17 +142,19 @@
 		line-height: var(--md-sys-typescale-label-small-line-height);
 	}
 	:global(.save-action-btn) {
-		width: 96px;
-		min-width: 96px;
+		width: 100%;
 	}
 	:global(.save-btn--dirty) {
 		box-shadow: var(--md-sys-elevation-2);
 	}
 	.save-button-status {
-		display: inline-flex;
+		display: flex;
+		min-width: 0;
 	}
 	.save-actions {
-		display: flex;
+		display: grid;
+		grid-template-columns: repeat(2, minmax(0, 1fr));
+		width: max-content;
 		align-items: center;
 		gap: var(--md-sys-space-sm);
 		flex: 0 0 auto;
@@ -125,16 +174,11 @@
 		.save-button-status {
 			width: 100%;
 		}
-		.save-actions > :global(.md-btn),
-		.save-actions > .save-button-status {
-			flex: 1 1 0;
-			min-width: 0;
-		}
 		.save-actions :global(.md-btn) {
 			min-width: 0;
 		}
-		:global(.save-action-btn) {
-			width: 100%;
+		.save-actions {
+			grid-template-columns: 1fr;
 		}
 		.save-actions {
 			align-items: stretch;
