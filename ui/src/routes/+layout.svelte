@@ -72,7 +72,8 @@
 	import type { AgentNotificationPayload } from '$lib/contracts/agent.ts';
 	import type { NotificationConfigInput } from '$lib/contracts/generatedCommands.ts';
 	import { interactionOwnerToWire } from '$lib/contracts/app.ts';
-	import type { LlmConnectionReport, LlmConnectionStatus } from '$lib/llmConnection.ts';
+	import type { LlmConnectionReportView } from '$lib/llmConnection.ts';
+	import type { LlmConnectionStatus } from '$lib/contracts/generatedCommands.ts';
 
 	import AppShell from '$lib/AppShell.svelte';
 	import ConfirmationDialog from '$lib/ConfirmationDialog.svelte';
@@ -359,7 +360,7 @@
 	// `llmConnected` is independent from ReAct execution. `null` means the first
 	// probe has not completed or the configuration changed and is being checked.
 	let llmConnected = $state<LlmConnectionStatus | null>(null);
-	let llmConnectionReport = $state<LlmConnectionReport | null>(null);
+	let llmConnectionReport = $state<LlmConnectionReportView | null>(null);
 	let llmProbeTimer: ReturnType<typeof setTimeout> | undefined;
 	let llmProbeInFlight = false;
 	let llmProbeGeneration = 0;

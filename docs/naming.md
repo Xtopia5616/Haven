@@ -38,6 +38,8 @@ Tauri listener 的通用 `TauriEvent<T>` envelope 由 `contracts/tauriEvent.ts` 
 
 同一领域类型跨 runtime 与 wire 边界时，只有序列化格式、字段策略或演进 owner 确实不同才保留两个类型，并在名称中标出边界角色。当前 Tools `ToolRunKind` 是执行运行时分类；App `ToolRunKindDto` 是 IPC/event DTO 枚举，二者值相同但 owner、Serde 与向前演进责任不同。
 
+严格生成的 IPC `LlmConnectionReport` 与容忍缺失可选显示信息的 `LlmConnectionReportView` 分属 wire 与 renderer 视图；共享的 status/reason 枚举直接引用生成契约，归一化函数负责将不可信返回值投影为 view。
+
 ## 架构角色词汇
 
 类型后缀不是装饰词：它必须说明对象的职责。新增和重命名类型按下表选用；存量不一致项在全项目术语审计中逐域处理，不做机械批量替换。一个类型若同时符合多个角色，应先明确它真正拥有的职责，再决定保留组合名还是拆分。

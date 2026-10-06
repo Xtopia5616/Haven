@@ -552,3 +552,4 @@
 - [0561：区分 Tools ToolRunKind 与 App ToolRunKindDto](0561-distinguish-tool-run-kind-wire-dto.md)
 - [0562：区分诊断命令读取与性能指标聚合入口](0562-name-performance-metrics-read-boundary.md)
 - [0563：合并 Tauri 事件通用 envelope 类型](0563-consolidate-tauri-event-envelope.md)
+- [0564：区分 LLM 连接 wire report 与 renderer view](0564-distinguish-llm-connection-report-view.md)

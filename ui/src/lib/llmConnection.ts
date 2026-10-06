@@ -1,19 +1,11 @@
 /** Frontend boundary helpers for the typed LLM connectivity probe. */
 
-export type LlmConnectionStatus = 'ready' | 'disconnected' | 'unconfigured';
-export type LlmConnectionFailureReason =
-	| 'network'
-	| 'timeout'
-	| 'authentication'
-	| 'rate_limited'
-	| 'circuit_open'
-	| 'server'
-	| 'request_rejected'
-	| 'invalid_response'
-	| 'configuration'
-	| 'unknown';
+import type {
+	LlmConnectionFailureReason,
+	LlmConnectionStatus,
+} from './contracts/generatedCommands.ts';
 
-export interface LlmConnectionReport {
+export interface LlmConnectionReportView {
 	status: LlmConnectionStatus;
 	reason?: LlmConnectionFailureReason;
 	provider?: string;
@@ -40,7 +32,7 @@ export function llmConnectionReasonText(reason: unknown): string {
 }
 
 /** Convert the untyped Tauri result into the one shape consumed by the shell. */
-export function normalizeLlmConnectionReport(value: unknown): LlmConnectionReport {
+export function normalizeLlmConnectionReport(value: unknown): LlmConnectionReportView {
 	if (!value || typeof value !== 'object') {
 		return { status: 'disconnected', reason: 'unknown' };
 	}
@@ -60,7 +52,7 @@ export function normalizeLlmConnectionReport(value: unknown): LlmConnectionRepor
 	};
 }
 
-export function formatLlmConnectionFailure(report: LlmConnectionReport): string {
+export function formatLlmConnectionFailure(report: LlmConnectionReportView): string {
 	const identity = report.provider && report.model
 		? `（${report.provider} / ${report.model}）`
 		: '';
@@ -70,7 +62,7 @@ export function formatLlmConnectionFailure(report: LlmConnectionReport): string 
 	return `默认模型${identity}连接失败：${llmConnectionReasonText(report.reason)}。请到模型设置检查 API 地址、API Key 和代理`;
 }
 
-export function formatLlmConnectionRecovery(report: LlmConnectionReport): string {
+export function formatLlmConnectionRecovery(report: LlmConnectionReportView): string {
 	const identity = report.provider && report.model
 		? `（${report.provider} / ${report.model}）`
 		: '';
