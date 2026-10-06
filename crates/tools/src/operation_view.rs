@@ -7,8 +7,8 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
     ConfirmationRequirement, OperationIdempotency, OperationPolicy, StructuredToolError, Tool,
-    ToolBox, ToolConcurrency, ToolDef, ToolErrorMetadata, ToolExecutionOutcome, ToolOperationScope,
-    ToolRegistration, ToolResult, ToolSignals,
+    ToolConcurrency, ToolDef, ToolErrorMetadata, ToolExecutionOutcome, ToolHandle,
+    ToolOperationScope, ToolRegistration, ToolResult, ToolSignals,
 };
 use haven_common::tools::{
     ToolAvailability, ToolCatalogGroup, ToolIdentity, ToolManifest, ToolModel, ToolPresentation,
@@ -66,7 +66,7 @@ pub(crate) enum OperationPolicyRule {
 /// Execution stays on the aggregate. Policy, catalog group, and manifest come
 /// from the spec captured at registration, not from a second projection.
 pub(crate) struct OperationViewTool {
-    handler: ToolBox,
+    handler: ToolHandle,
     spec: OperationSpec,
     fixed: Map<String, Value>,
 }
@@ -262,7 +262,7 @@ pub(crate) fn root_tool_spec(
 }
 
 impl OperationViewTool {
-    pub(crate) fn new(handler: ToolBox, mut spec: OperationSpec) -> Arc<Self> {
+    pub(crate) fn new(handler: ToolHandle, mut spec: OperationSpec) -> Arc<Self> {
         annotate_schema(&mut spec);
         let fixed = Map::from_iter(spec.fixed.iter().cloned());
         Arc::new(Self {
@@ -593,7 +593,7 @@ mod tests {
         });
         let projected_schema =
             split_operation_schema(&aggregate_schema, "read").expect("read branch");
-        let inner: ToolBox = Arc::new(crate::tool_contract::tests::MockTool::with_schema(
+        let inner: ToolHandle = Arc::new(crate::tool_contract::tests::MockTool::with_schema(
             "files",
             aggregate_schema,
         ));

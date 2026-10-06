@@ -169,9 +169,9 @@ pub use shell_runtime::{
 pub use skill_runner::SkillRunner;
 pub use tool_contract::{
     ConfirmationRequirement, DataSensitivity, NetworkAccess, OperationEffect, OperationIdempotency,
-    OperationPolicy, StructuredToolError, Tool, ToolAvailability, ToolBox, ToolCancellationPolicy,
+    OperationPolicy, StructuredToolError, Tool, ToolAvailability, ToolCancellationPolicy,
     ToolConcurrency, ToolDef, ToolErrorClass, ToolErrorMetadata, ToolExecutionMode,
-    ToolExecutionOutcome, ToolIdentity, ToolLlmUsage, ToolManifest, ToolModel,
+    ToolExecutionOutcome, ToolHandle, ToolIdentity, ToolLlmUsage, ToolManifest, ToolModel,
     ToolOperationMetadata, ToolOperationScope, ToolPolicy, ToolPresentation, ToolRegistration,
     ToolResult, ToolResultEnvelope, ToolRetryability, ToolRootPresentation, ToolSignals,
     ToolSource, TypedToolAdapter, TypedToolOperation, extract_ask_signal, extract_notify_signal,

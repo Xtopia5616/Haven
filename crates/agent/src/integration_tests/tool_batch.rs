@@ -7,12 +7,12 @@ async fn run_session_parallel_tool_execution() {
     let timing = Arc::new(TimingState::new());
     tools
         .registry()
-        .register(Arc::new(TimingTool::new("delay_a", timing.clone())) as ToolBox)
+        .register(Arc::new(TimingTool::new("delay_a", timing.clone())) as ToolHandle)
         .await
         .unwrap();
     tools
         .registry()
-        .register(Arc::new(TimingTool::new("delay_b", timing.clone())) as ToolBox)
+        .register(Arc::new(TimingTool::new("delay_b", timing.clone())) as ToolHandle)
         .await
         .unwrap();
     let mock = Arc::new(ScriptedMock::new(vec![
@@ -92,7 +92,7 @@ async fn parallel_tool_result_is_published_before_a_slow_sibling_finishes() {
             "delay_fast",
             timing.clone(),
             std::time::Duration::from_millis(10),
-        )) as ToolBox)
+        )) as ToolHandle)
         .await
         .unwrap();
     tools
@@ -101,7 +101,7 @@ async fn parallel_tool_result_is_published_before_a_slow_sibling_finishes() {
             "delay_slow",
             timing,
             std::time::Duration::from_secs(3),
-        )) as ToolBox)
+        )) as ToolHandle)
         .await
         .unwrap();
     let mock = Arc::new(ScriptedMock::new(vec![
@@ -230,7 +230,7 @@ async fn run_session_contains_custom_extension_panic() {
             .registry()
             .register(Arc::new(PanicTool {
                 tool_name: name.into(),
-            }) as ToolBox)
+            }) as ToolHandle)
             .await
             .unwrap();
     }
@@ -340,7 +340,7 @@ async fn run_session_contains_real_mcp_and_skill_adapter_panics() {
     );
     tools
         .registry()
-        .register(Arc::new(mcp_adapter) as ToolBox)
+        .register(Arc::new(mcp_adapter) as ToolHandle)
         .await
         .unwrap();
 
@@ -363,7 +363,7 @@ async fn run_session_contains_real_mcp_and_skill_adapter_panics() {
     let skill_adapter = haven_tools::SkillToolAdapter::new_panicking_for_test(skill, skill_runner);
     tools
         .registry()
-        .register(Arc::new(skill_adapter) as ToolBox)
+        .register(Arc::new(skill_adapter) as ToolHandle)
         .await
         .unwrap();
 
@@ -468,12 +468,12 @@ async fn run_session_cancelled_mid_batch_surfaces_interrupted_tools() {
     let timing = Arc::new(TimingState::new());
     tools
         .registry()
-        .register(Arc::new(TimingTool::new("delay_a", timing.clone())) as ToolBox)
+        .register(Arc::new(TimingTool::new("delay_a", timing.clone())) as ToolHandle)
         .await
         .unwrap();
     tools
         .registry()
-        .register(Arc::new(TimingTool::new("delay_b", timing.clone())) as ToolBox)
+        .register(Arc::new(TimingTool::new("delay_b", timing.clone())) as ToolHandle)
         .await
         .unwrap();
     let mock = Arc::new(ScriptedMock::new(vec![ScriptedResponse::Chunk(

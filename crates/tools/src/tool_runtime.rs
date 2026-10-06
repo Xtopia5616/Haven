@@ -78,7 +78,7 @@ pub(crate) struct PlatformRuntime {
 /// The pair is published together so a rejected rebuild cannot expose new
 /// tools without the surfaces that own them, or the reverse.
 pub(crate) struct BuiltinCatalog {
-    pub(crate) tools: Vec<crate::tool_contract::ToolBox>,
+    pub(crate) tools: Vec<crate::tool_contract::ToolHandle>,
     pub(crate) admin_surfaces: Option<Arc<crate::builtin::AdminSurfaces>>,
 }
 

@@ -254,7 +254,7 @@ async fn incomplete_tool_args_retry_before_dispatching_the_rebuilt_call() {
     let tools = Arc::new(ToolsFacade::new());
     tools
         .registry()
-        .register(Arc::new(EchoTool) as ToolBox)
+        .register(Arc::new(EchoTool) as ToolHandle)
         .await
         .unwrap();
     let (agent, executor) = make_test_agent_with(mock.clone(), tools);
@@ -414,7 +414,7 @@ async fn turn_deadline_stops_after_non_cooperative_blocking_tool() {
     let tools = Arc::new(ToolsFacade::new());
     tools
         .registry()
-        .register(Arc::new(BlockingTool::new(completed.clone())) as ToolBox)
+        .register(Arc::new(BlockingTool::new(completed.clone())) as ToolHandle)
         .await
         .unwrap();
     let mock = Arc::new(ScriptedMock::new(vec![ScriptedResponse::Chunk(
@@ -644,7 +644,7 @@ async fn run_session_executes_tool_then_final_answer() {
     let tools = Arc::new(ToolsFacade::new());
     tools
         .registry()
-        .register(Arc::new(EchoTool) as ToolBox)
+        .register(Arc::new(EchoTool) as ToolHandle)
         .await
         .unwrap();
     let mock = Arc::new(ScriptedMock::new(vec![
@@ -723,7 +723,7 @@ async fn media_tool_usage_flows_to_event_and_database() {
         1024 * 1024,
         10,
         2_000,
-    )) as ToolBox;
+    )) as ToolHandle;
 
     let tools = Arc::new(ToolsFacade::new());
     tools
@@ -824,7 +824,7 @@ async fn run_session_empty_tool_call_id_stays_consistent_in_canonical() {
     let tools = Arc::new(ToolsFacade::new());
     tools
         .registry()
-        .register(Arc::new(EchoTool) as ToolBox)
+        .register(Arc::new(EchoTool) as ToolHandle)
         .await
         .unwrap();
     let mock = Arc::new(ScriptedMock::new(vec![
@@ -902,7 +902,7 @@ async fn run_session_injects_mid_turn_steering_before_final_content() {
     let tools = Arc::new(ToolsFacade::new());
     tools
         .registry()
-        .register(Arc::new(EchoTool) as ToolBox)
+        .register(Arc::new(EchoTool) as ToolHandle)
         .await
         .unwrap();
     let mock = Arc::new(ScriptedMock::new(vec![
@@ -1025,7 +1025,7 @@ async fn run_session_injects_steering_between_tool_calls() {
     let timing = Arc::new(TimingState::new());
     tools
         .registry()
-        .register(Arc::new(TimingTool::new("delay_a", timing.clone())) as ToolBox)
+        .register(Arc::new(TimingTool::new("delay_a", timing.clone())) as ToolHandle)
         .await
         .unwrap();
     let mock = Arc::new(ScriptedMock::new(vec![
@@ -1110,7 +1110,7 @@ async fn run_session_ask_tool_pauses_and_surfaces_question() {
     let tools = Arc::new(ToolsFacade::new());
     tools
         .registry()
-        .register(Arc::new(haven_tools::builtin::ask::AskTool) as ToolBox)
+        .register(Arc::new(haven_tools::builtin::ask::AskTool) as ToolHandle)
         .await
         .unwrap();
     let mock = Arc::new(ScriptedMock::new(vec![
@@ -1193,7 +1193,7 @@ async fn ask_interaction_survives_executor_restart_from_durable_snapshot() {
     let tools = Arc::new(ToolsFacade::new());
     tools
         .registry()
-        .register(Arc::new(haven_tools::builtin::ask::AskTool) as ToolBox)
+        .register(Arc::new(haven_tools::builtin::ask::AskTool) as ToolHandle)
         .await
         .unwrap();
     let mock = Arc::new(ScriptedMock::new(vec![ScriptedResponse::Chunk(
@@ -1228,7 +1228,7 @@ async fn ask_interaction_survives_executor_restart_from_durable_snapshot() {
     let restarted_tools = Arc::new(ToolsFacade::new());
     restarted_tools
         .registry()
-        .register(Arc::new(haven_tools::builtin::ask::AskTool) as ToolBox)
+        .register(Arc::new(haven_tools::builtin::ask::AskTool) as ToolHandle)
         .await
         .unwrap();
     let final_mock = Arc::new(FinalAnswerMock) as Arc<dyn LlmClient>;
@@ -1265,7 +1265,7 @@ async fn run_session_ask_resumes_after_user_answer() {
     let tools = Arc::new(ToolsFacade::new());
     tools
         .registry()
-        .register(Arc::new(haven_tools::builtin::ask::AskTool) as ToolBox)
+        .register(Arc::new(haven_tools::builtin::ask::AskTool) as ToolHandle)
         .await
         .unwrap();
     let mock = Arc::new(ScriptedMock::new(vec![
@@ -1346,7 +1346,7 @@ async fn retry_after_ask_answer_error_keeps_single_history() {
     let tools = Arc::new(ToolsFacade::new());
     tools
         .registry()
-        .register(Arc::new(haven_tools::builtin::ask::AskTool) as ToolBox)
+        .register(Arc::new(haven_tools::builtin::ask::AskTool) as ToolHandle)
         .await
         .unwrap();
     let mock = Arc::new(ScriptedMock::new(vec![
@@ -1479,7 +1479,7 @@ async fn run_session_notify_tool_emits_notification_without_pausing() {
     let tools = Arc::new(ToolsFacade::new());
     tools
         .registry()
-        .register(Arc::new(haven_tools::builtin::notify::NotifyTool) as ToolBox)
+        .register(Arc::new(haven_tools::builtin::notify::NotifyTool) as ToolHandle)
         .await
         .unwrap();
     let mock = Arc::new(ScriptedMock::new(vec![
@@ -1547,7 +1547,7 @@ async fn run_session_multiple_asks_surface_all_questions() {
     let tools = Arc::new(ToolsFacade::new());
     tools
         .registry()
-        .register(Arc::new(haven_tools::builtin::ask::AskTool) as ToolBox)
+        .register(Arc::new(haven_tools::builtin::ask::AskTool) as ToolHandle)
         .await
         .unwrap();
     let mock = Arc::new(ScriptedMock::new(vec![ScriptedResponse::Chunk(
@@ -1744,7 +1744,7 @@ async fn run_session_compaction_retry_on_context_exceeded() {
     let tools = Arc::new(ToolsFacade::new());
     tools
         .registry()
-        .register(Arc::new(EchoTool) as ToolBox)
+        .register(Arc::new(EchoTool) as ToolHandle)
         .await
         .unwrap();
     let mock = Arc::new(ScriptedMock::new(vec![
@@ -2115,7 +2115,7 @@ async fn pause_snapshot_includes_run_budget() {
     let tools = Arc::new(ToolsFacade::new());
     tools
         .registry()
-        .register(Arc::new(haven_tools::builtin::ask::AskTool) as ToolBox)
+        .register(Arc::new(haven_tools::builtin::ask::AskTool) as ToolHandle)
         .await
         .unwrap();
     let mock = Arc::new(ScriptedMock::new(vec![ScriptedResponse::Chunk(

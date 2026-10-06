@@ -308,9 +308,9 @@ impl ToolRuntimeCoordinator {
         &self,
         scope: CatalogRebuildScope,
     ) -> Result<CatalogRebuildOutcome, CatalogRebuildError> {
-        let mut all_tools: Vec<ToolBox> = Vec::new();
+        let mut all_tools: Vec<ToolHandle> = Vec::new();
         let previous_catalog = self.runtime.builtin_catalog().await;
-        let previous_by_name: HashMap<String, ToolBox> = previous_catalog
+        let previous_by_name: HashMap<String, ToolHandle> = previous_catalog
             .tools
             .iter()
             .cloned()
@@ -325,7 +325,7 @@ impl ToolRuntimeCoordinator {
         let settings = context.settings.clone();
         let admin_surfaces = builtin::register_builtin_tools(&mut all_tools, context).await;
 
-        let all_tools: Vec<ToolBox> = all_tools
+        let all_tools: Vec<ToolHandle> = all_tools
             .into_iter()
             .map(|tool| {
                 if scope.affects(&tool.name()) {
@@ -335,7 +335,7 @@ impl ToolRuntimeCoordinator {
                 }
             })
             .collect();
-        let enabled_tools: Vec<ToolBox> = all_tools
+        let enabled_tools: Vec<ToolHandle> = all_tools
             .iter()
             .filter(|tool| tool_config_enabled(&settings, &tool.name()))
             .cloned()

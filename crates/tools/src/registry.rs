@@ -1,5 +1,5 @@
 use crate::authorization_policy::ToolAuthorizationRequestResolver;
-use crate::tool_contract::{OperationPolicy, ToolBox, ToolDef};
+use crate::tool_contract::{OperationPolicy, ToolDef, ToolHandle};
 use haven_common::tools::ToolManifest;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -11,8 +11,8 @@ use tokio::sync::RwLock;
 /// both atomically — readers never see new `tools` with stale `name_index`.
 #[derive(Default, Clone)]
 struct RegistrySnapshot {
-    tools: Vec<ToolBox>,
-    name_index: HashMap<String, ToolBox>,
+    tools: Vec<ToolHandle>,
+    name_index: HashMap<String, ToolHandle>,
 }
 
 #[derive(Default)]
@@ -31,7 +31,7 @@ pub struct ToolRegistry {
 /// session catalog only after the model asks for them.
 #[derive(Clone, Default)]
 pub struct DeferredToolCatalog {
-    tools: Arc<RwLock<HashMap<String, ToolBox>>>,
+    tools: Arc<RwLock<HashMap<String, ToolHandle>>>,
 }
 
 impl DeferredToolCatalog {
@@ -39,7 +39,7 @@ impl DeferredToolCatalog {
         Self::default()
     }
 
-    pub async fn replace(&self, tools: Vec<ToolBox>) {
+    pub async fn replace(&self, tools: Vec<ToolHandle>) {
         let mut index = HashMap::with_capacity(tools.len());
         for tool in tools {
             index.insert(tool.name(), tool);
@@ -47,11 +47,11 @@ impl DeferredToolCatalog {
         *self.tools.write().await = index;
     }
 
-    pub async fn get(&self, name: &str) -> Option<ToolBox> {
+    pub async fn get(&self, name: &str) -> Option<ToolHandle> {
         self.tools.read().await.get(name).cloned()
     }
 
-    pub async fn list(&self) -> Vec<ToolBox> {
+    pub async fn list(&self) -> Vec<ToolHandle> {
         let mut tools: Vec<_> = self.tools.read().await.values().cloned().collect();
         tools.sort_by_key(|tool| tool.name());
         tools
@@ -92,7 +92,7 @@ impl ToolRegistry {
     /// callers that intentionally replace an implementation must use
     /// [`Self::replace`] so an accidental duplicate cannot leave a stale tool
     /// in the ordered list.
-    pub async fn register(&self, tool: ToolBox) -> anyhow::Result<()> {
+    pub async fn register(&self, tool: ToolHandle) -> anyhow::Result<()> {
         let name = tool.name();
         let mut snap = self.snapshot.write().await;
         if snap.name_index.contains_key(&name) {
@@ -104,11 +104,11 @@ impl ToolRegistry {
         Ok(())
     }
 
-    pub async fn get(&self, name: &str) -> Option<ToolBox> {
+    pub async fn get(&self, name: &str) -> Option<ToolHandle> {
         self.snapshot.read().await.name_index.get(name).cloned()
     }
 
-    pub async fn list(&self) -> Vec<ToolBox> {
+    pub async fn list(&self) -> Vec<ToolHandle> {
         self.snapshot.read().await.tools.clone()
     }
 
@@ -131,7 +131,7 @@ impl ToolRegistry {
 
     /// Atomically rebuild the entire registry from a list of tools.
     /// Uses a single write lock so readers see a consistent snapshot.
-    pub async fn rebuild(&self, new_tools: Vec<ToolBox>) -> anyhow::Result<()> {
+    pub async fn rebuild(&self, new_tools: Vec<ToolHandle>) -> anyhow::Result<()> {
         let mut index = HashMap::new();
         for t in &new_tools {
             let name = t.name();
@@ -163,7 +163,7 @@ impl ToolRegistry {
 /// loading cannot invalidate unrelated sessions or expand the global registry.
 #[derive(Clone)]
 pub struct SessionToolOverlay {
-    registrations: Arc<RwLock<HashMap<String, HashMap<String, ToolBox>>>>,
+    registrations: Arc<RwLock<HashMap<String, HashMap<String, ToolHandle>>>>,
     versions: Arc<RwLock<HashMap<String, u64>>>,
     global_version: Arc<AtomicU64>,
 }
@@ -184,7 +184,7 @@ impl SessionToolOverlay {
     }
 
     /// Shared registration handle used by progressive builtin adapters.
-    pub fn registrations(&self) -> Arc<RwLock<HashMap<String, HashMap<String, ToolBox>>>> {
+    pub fn registrations(&self) -> Arc<RwLock<HashMap<String, HashMap<String, ToolHandle>>>> {
         self.registrations.clone()
     }
 
@@ -213,7 +213,7 @@ impl SessionToolOverlay {
         self.global_version.fetch_add(1, Ordering::Relaxed);
     }
 
-    pub async fn register(&self, session_id: &str, tool: ToolBox) {
+    pub async fn register(&self, session_id: &str, tool: ToolHandle) {
         self.registrations
             .write()
             .await
@@ -231,7 +231,7 @@ impl SessionToolOverlay {
         session_id: &str,
         global_count: usize,
         max: usize,
-        tools: Vec<ToolBox>,
+        tools: Vec<ToolHandle>,
     ) -> Result<Vec<String>, usize> {
         let mut registrations = self.registrations.write().await;
         let entry = registrations.entry(session_id.to_string()).or_default();
@@ -262,7 +262,7 @@ impl SessionToolOverlay {
         self.bump_session_version(session_id).await;
     }
 
-    pub async fn get(&self, session_id: &str, name: &str) -> Option<ToolBox> {
+    pub async fn get(&self, session_id: &str, name: &str) -> Option<ToolHandle> {
         self.registrations
             .read()
             .await
@@ -271,7 +271,7 @@ impl SessionToolOverlay {
             .cloned()
     }
 
-    pub async fn list(&self, session_id: &str) -> Vec<ToolBox> {
+    pub async fn list(&self, session_id: &str) -> Vec<ToolHandle> {
         self.registrations
             .read()
             .await
@@ -326,7 +326,7 @@ impl SessionToolOverlay {
 ///
 /// The runtime still validates again at the execution boundary, but batch
 /// admission must not repeatedly walk the async registry for the same turn.
-/// Holding the `ToolBox` values keeps the implementation alive for the whole
+/// Holding the `ToolHandle` values keeps the implementation alive for the whole
 /// batch while all policy/manifest reads remain synchronous and derived from
 /// the same catalog generation.
 #[derive(Clone)]
@@ -337,14 +337,14 @@ pub struct ToolCatalogSnapshot {
 }
 
 struct SnapshotTool {
-    tool: ToolBox,
+    tool: ToolHandle,
     manifest: ToolManifest,
 }
 
 impl ToolCatalogSnapshot {
     pub(crate) fn new_with_definitions(
         version: (u64, u64),
-        tools: HashMap<String, ToolBox>,
+        tools: HashMap<String, ToolHandle>,
         provider_definitions: Vec<ToolDef>,
     ) -> Self {
         let tools = tools
@@ -381,7 +381,7 @@ impl ToolCatalogSnapshot {
         self.provider_definitions.as_slice()
     }
 
-    pub fn get(&self, name: &str) -> Option<&ToolBox> {
+    pub fn get(&self, name: &str) -> Option<&ToolHandle> {
         self.tools.get(name).map(|entry| &entry.tool)
     }
 
@@ -413,7 +413,7 @@ pub struct RegistryProbe {
 
 impl RegistryProbe {
     /// Look up a tool by name; `None` when unknown or the registry is gone.
-    pub async fn find(&self, name: &str) -> Option<ToolBox> {
+    pub async fn find(&self, name: &str) -> Option<ToolHandle> {
         self.snapshot
             .upgrade()?
             .read()

@@ -1946,7 +1946,11 @@ pub(crate) fn strip_private_tool_fields(input: &mut Value) {
     }
 }
 
-pub type ToolBox = Arc<dyn Tool>;
+/// Shared, type-erased reference to one runtime tool implementation.
+///
+/// Cloning the handle keeps the implementation alive; it does not represent a
+/// collection of tools.
+pub type ToolHandle = Arc<dyn Tool>;
 
 #[cfg(test)]
 pub(crate) mod tests {

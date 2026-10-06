@@ -48,7 +48,7 @@ impl ToolsFacade {
         &self.coordinator.core.tool_circuits
     }
 
-    pub async fn get_tool(&self, name: &str) -> Option<ToolBox> {
+    pub async fn get_tool(&self, name: &str) -> Option<ToolHandle> {
         self.executor().get_tool(name).await
     }
 
@@ -300,7 +300,7 @@ impl AuthorizedExecutor<'_> {
         ((jitter_millis * u64::from(u32::MAX)) / 250) as u32
     }
 
-    pub async fn get_tool(&self, name: &str) -> Option<ToolBox> {
+    pub async fn get_tool(&self, name: &str) -> Option<ToolHandle> {
         if let Some(tool) = self
             .tools
             .coordinator

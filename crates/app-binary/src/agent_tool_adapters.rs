@@ -211,7 +211,7 @@ mod tests {
     use haven_common::config::ToolConfig;
     use haven_common::types::RiskLevel;
     use haven_memory::Database;
-    use haven_tools::{Tool, ToolBox};
+    use haven_tools::{Tool, ToolHandle};
     use serde_json::json;
     use std::collections::HashMap;
     use tokio_util::sync::CancellationToken;
@@ -260,7 +260,7 @@ mod tests {
     async fn composition_adapter_forwards_trusted_execution_context() {
         let tools = Arc::new(ToolsFacade::new());
         let session_id = "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-        let tool: ToolBox = Arc::new(ExecutionContextProbe);
+        let tool: ToolHandle = Arc::new(ExecutionContextProbe);
         tools.register_for_session(session_id, tool).await;
         let ports = agent_tool_ports_from_facade(Arc::clone(&tools));
         let supervisor = SessionSupervisor::new(
@@ -303,7 +303,7 @@ mod tests {
     async fn composition_adapter_forwards_cancellation() {
         let tools = Arc::new(ToolsFacade::new());
         let session_id = "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-        let tool: ToolBox = Arc::new(ExecutionContextProbe);
+        let tool: ToolHandle = Arc::new(ExecutionContextProbe);
         tools.register_for_session(session_id, tool).await;
         let ports = agent_tool_ports_from_facade(tools);
         let supervisor = SessionSupervisor::new(
@@ -335,7 +335,7 @@ mod tests {
     #[tokio::test]
     async fn prompt_adapter_preserves_eager_builtin_catalog_fallback() {
         let tools = Arc::new(ToolsFacade::new());
-        let tool: ToolBox = Arc::new(ExecutionContextProbe);
+        let tool: ToolHandle = Arc::new(ExecutionContextProbe);
         tools.registry().register(tool).await.unwrap();
         let adapter = ToolsFacadeAgentAdapter {
             tools: Arc::clone(&tools),
@@ -363,7 +363,7 @@ mod tests {
             tools: Arc::clone(&tools),
         };
         let session_id = "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-        let tool: ToolBox = Arc::new(ExecutionContextProbe);
+        let tool: ToolHandle = Arc::new(ExecutionContextProbe);
         tools.register_for_session(session_id, tool).await;
 
         let snapshot = adapter.catalog_snapshot(session_id).await;

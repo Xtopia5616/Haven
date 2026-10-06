@@ -1,5 +1,5 @@
 use crate::registry::{DeferredToolCatalog, SessionToolOverlay};
-use crate::{McpToolAdapter, Tool, ToolBox, ToolRegistry, ToolResult};
+use crate::{McpToolAdapter, Tool, ToolHandle, ToolRegistry, ToolResult};
 use haven_common::tools::{ToolCatalogGroup, ToolDef, ToolSource};
 use haven_common::types::RiskLevel;
 use haven_mcp::{McpManager, McpToolInfo};
@@ -874,7 +874,7 @@ fn operation_root(name: &str) -> &str {
     name.split('.').next().unwrap_or(name)
 }
 
-fn compact_entries(tools: &[ToolBox]) -> Vec<Value> {
+fn compact_entries(tools: &[ToolHandle]) -> Vec<Value> {
     tools
         .iter()
         .map(|tool| {
@@ -1084,7 +1084,7 @@ fn compact_text(value: &str, max_chars: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ToolBox;
+    use crate::ToolHandle;
     use crate::builtin::notify::NotifyTool;
 
     #[test]
@@ -1102,7 +1102,7 @@ mod tests {
 
     #[test]
     fn detail_contains_schema_and_builtin_load_hint() {
-        let tool: ToolBox = Arc::new(NotifyTool);
+        let tool: ToolHandle = Arc::new(NotifyTool);
         let def = tool.tool_def();
         let detail = tool_detail(&def, CatalogSource::Builtin, false);
         assert_eq!(detail["name"], "notify");
@@ -1114,7 +1114,7 @@ mod tests {
 
     #[test]
     fn list_item_does_not_include_schema() {
-        let tool: ToolBox = Arc::new(NotifyTool);
+        let tool: ToolHandle = Arc::new(NotifyTool);
         let item = tool_item(&tool.tool_def(), CatalogSource::Builtin, true);
         assert!(item.list_json().get("input_schema").is_none());
     }

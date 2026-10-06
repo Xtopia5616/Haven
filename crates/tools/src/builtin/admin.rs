@@ -14,9 +14,9 @@
 mod admin_services;
 
 use crate::{
-    LogLevelPort, OperationIdempotency, ToolBox, ToolCancellationPolicy, ToolConcurrency,
-    ToolControlPort, ToolErrorMetadata, ToolExecutionOutcome, ToolOperationMetadata,
-    ToolOperationScope, ToolRegistry, ToolResult, TypedToolAdapter, TypedToolOperation,
+    LogLevelPort, OperationIdempotency, ToolCancellationPolicy, ToolConcurrency, ToolControlPort,
+    ToolErrorMetadata, ToolExecutionOutcome, ToolHandle, ToolOperationMetadata, ToolOperationScope,
+    ToolRegistry, ToolResult, TypedToolAdapter, TypedToolOperation,
 };
 use async_trait::async_trait;
 use haven_common::config::{ConfigService, LogLevel, McpServerConfig};
@@ -1527,7 +1527,7 @@ impl AdminSurfaces {
         }
     }
 
-    pub(crate) fn tools(&self) -> Vec<ToolBox> {
+    pub(crate) fn tools(&self) -> Vec<ToolHandle> {
         vec![
             Arc::new(TypedToolAdapter::new(
                 AdminCapability::Diagnostics.name(),
@@ -1818,7 +1818,7 @@ mod tests {
         ]
     }
 
-    fn tool_for<'a>(tools: &'a [ToolBox], name: &str) -> &'a dyn Tool {
+    fn tool_for<'a>(tools: &'a [ToolHandle], name: &str) -> &'a dyn Tool {
         tools
             .iter()
             .find(|tool| tool.name() == name)

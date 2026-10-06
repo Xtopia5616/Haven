@@ -357,7 +357,7 @@ mod tests {
     use super::*;
     use haven_common::config::ToolConfig;
     use haven_common::types::RiskLevel;
-    use haven_tools::{Tool, ToolBox};
+    use haven_tools::{Tool, ToolHandle};
     use serde_json::json;
     use std::collections::HashMap;
     use std::fs;
@@ -393,7 +393,7 @@ mod tests {
     }
 
     async fn register_overlay_tool(tools: &ToolsFacade, session_id: &str) {
-        let tool: ToolBox = Arc::new(OverlayProbeTool("overlay.probe"));
+        let tool: ToolHandle = Arc::new(OverlayProbeTool("overlay.probe"));
         tools.register_for_session(session_id, tool).await;
     }
 

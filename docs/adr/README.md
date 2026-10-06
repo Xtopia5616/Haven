@@ -533,3 +533,4 @@
 - [0542：区分 SessionSupervisor 通知与持久 SessionEvent](0542-distinguish-session-supervisor-and-durable-events.md)
 - [0543：UI ToolRun 分类跟随生成契约](0543-align-ui-tool-run-labels-with-runtime-kind.md)
 - [0544：移除 SessionEventStore 过渡别名](0544-remove-session-event-store-alias.md)
+- [0545：将 ToolBox 重命名为 ToolHandle](0545-rename-toolbox-to-tool-handle.md)

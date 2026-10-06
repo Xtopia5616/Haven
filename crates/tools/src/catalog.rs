@@ -51,7 +51,7 @@ impl ToolsFacade {
 
     /// Register a tool for a specific session (per-session skill overlay).
     /// Does NOT modify the global registry.
-    pub async fn register_for_session(&self, session_id: &str, tool: ToolBox) {
+    pub async fn register_for_session(&self, session_id: &str, tool: ToolHandle) {
         self.coordinator
             .core
             .operations
@@ -275,7 +275,7 @@ impl ToolsFacade {
         &self,
         session_id: Option<&str>,
         name: &str,
-    ) -> Option<ToolBox> {
+    ) -> Option<ToolHandle> {
         if let Some(tid) = session_id
             && let Some(tool) = self
                 .coordinator

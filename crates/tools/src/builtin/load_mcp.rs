@@ -425,7 +425,7 @@ impl Tool for LoadMcpTool {
 mod tests {
     use super::*;
     use crate::Tool;
-    use crate::ToolBox;
+    use crate::ToolHandle;
     use haven_common::config::McpServerConfig;
 
     fn tool_for_tests() -> LoadMcpTool {
@@ -589,7 +589,7 @@ mod tests {
             for i in 0..5 {
                 entry.insert(
                     format!("pad_{i}"),
-                    Arc::new(crate::builtin::notify::NotifyTool) as ToolBox,
+                    Arc::new(crate::builtin::notify::NotifyTool) as ToolHandle,
                 );
             }
         }
@@ -623,7 +623,7 @@ mod tests {
             let mut map = registrations.write().await;
             map.entry("ses-x".into()).or_default().insert(
                 name.clone(),
-                Arc::new(crate::builtin::notify::NotifyTool) as ToolBox,
+                Arc::new(crate::builtin::notify::NotifyTool) as ToolHandle,
             );
         }
         assert!(!crate::registry::SessionToolOverlay::tool_budget_would_exceed(1, 0, 1, 0));

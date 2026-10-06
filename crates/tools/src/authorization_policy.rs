@@ -5,7 +5,7 @@
 use crate::ToolCatalogSnapshot;
 use crate::tool_contract::{
     ConfirmationRequirement, DataSensitivity, NetworkAccess, OperationEffect, OperationIdempotency,
-    OperationPolicy, ToolBox, ToolConcurrency, ToolOperationScope,
+    OperationPolicy, ToolConcurrency, ToolHandle, ToolOperationScope,
 };
 use crate::{AuthorizationRequest, RiskLevel, ToolsFacade};
 use haven_common::types::permission_key;
@@ -23,7 +23,7 @@ impl<'a> ToolAuthorizationRequestResolver<'a> {
     }
 
     pub(crate) fn operation_policy_for(
-        tool: Option<&ToolBox>,
+        tool: Option<&ToolHandle>,
         tool_name: &str,
         input: &Value,
     ) -> OperationPolicy {
@@ -31,7 +31,7 @@ impl<'a> ToolAuthorizationRequestResolver<'a> {
             .unwrap_or_else(|| unknown_operation_policy(tool_name, input))
     }
 
-    fn authorization_input_for(tool: Option<&ToolBox>, input: &Value) -> Value {
+    fn authorization_input_for(tool: Option<&ToolHandle>, input: &Value) -> Value {
         tool.map(|tool| tool.authorization_input(input))
             .unwrap_or_else(|| input.clone())
     }

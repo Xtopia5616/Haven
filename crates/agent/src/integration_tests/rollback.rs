@@ -706,7 +706,7 @@ async fn rollback_while_ask_wait_clears_interaction_gate() {
     let tools = Arc::new(ToolsFacade::new());
     tools
         .registry()
-        .register(Arc::new(haven_tools::builtin::ask::AskTool) as ToolBox)
+        .register(Arc::new(haven_tools::builtin::ask::AskTool) as ToolHandle)
         .await
         .unwrap();
     let mock = Arc::new(ScriptedMock::new(vec![ScriptedResponse::Chunk(
@@ -787,12 +787,12 @@ async fn rollback_mid_tool_batch_joins_and_restores() {
     let timing = Arc::new(TimingState::new());
     tools
         .registry()
-        .register(Arc::new(TimingTool::new("delay_a", timing.clone())) as ToolBox)
+        .register(Arc::new(TimingTool::new("delay_a", timing.clone())) as ToolHandle)
         .await
         .unwrap();
     tools
         .registry()
-        .register(Arc::new(TimingTool::new("delay_b", timing.clone())) as ToolBox)
+        .register(Arc::new(TimingTool::new("delay_b", timing.clone())) as ToolHandle)
         .await
         .unwrap();
     let mock = Arc::new(ScriptedMock::new(vec![
@@ -888,7 +888,7 @@ async fn rollback_ask_wait_pause_true_leaves_plain_paused() {
     let tools = Arc::new(ToolsFacade::new());
     tools
         .registry()
-        .register(Arc::new(haven_tools::builtin::ask::AskTool) as ToolBox)
+        .register(Arc::new(haven_tools::builtin::ask::AskTool) as ToolHandle)
         .await
         .unwrap();
     let mock = Arc::new(ScriptedMock::new(vec![ScriptedResponse::Chunk(

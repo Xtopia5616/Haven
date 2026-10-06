@@ -44,7 +44,7 @@ use crate::prompts as tool_prompts;
 use crate::registry::{DeferredToolCatalog, SessionToolOverlay};
 use crate::skill_runner::SkillRunner;
 use crate::{
-    ConfirmationRequirement, OperationIdempotency, OperationPolicy, ToolBox, ToolConcurrency,
+    ConfirmationRequirement, OperationIdempotency, OperationPolicy, ToolConcurrency, ToolHandle,
     ToolOperationScope,
 };
 use haven_common::config::RequestKind;
@@ -181,7 +181,7 @@ pub struct BuiltinContext {
 }
 
 pub async fn register_builtin_tools(
-    tools: &mut Vec<ToolBox>,
+    tools: &mut Vec<ToolHandle>,
     context: BuiltinContext,
 ) -> Option<Arc<admin::AdminSurfaces>> {
     let BuiltinContext {
@@ -257,7 +257,7 @@ pub async fn register_builtin_tools(
         .with_audio_runtime(audio_runtime),
     );
     add_operation_views(tools, media_tool.clone(), settings, MEDIA_OPERATION_VIEWS);
-    let files_tool: ToolBox = Arc::new(
+    let files_tool: ToolHandle = Arc::new(
         files::FilesTool::new(
             router.clone(),
             tool_output_cap(settings, "files", limits.max_observation_chars),
@@ -286,10 +286,10 @@ pub async fn register_builtin_tools(
         tools.push(OperationViewTool::new(files_tool.clone(), contract));
     }
     add_operation_views(tools, files_tool.clone(), settings, FILE_OPERATION_VIEWS);
-    let process_tool: ToolBox = Arc::new(process::ProcessTool {
+    let process_tool: ToolHandle = Arc::new(process::ProcessTool {
         max_output_chars: tool_output_cap(settings, "process", limits.max_observation_chars),
     });
-    let clipboard_tool: ToolBox = Arc::new(
+    let clipboard_tool: ToolHandle = Arc::new(
         clipboard::ClipboardTool::new(
             clipboard_history,
             tool_output_cap(settings, "clipboard", limits.max_observation_chars),
@@ -305,25 +305,25 @@ pub async fn register_builtin_tools(
         max_output_chars: tool_output_cap(settings, "shell", limits.max_observation_chars),
         default_shell: default_shell.as_str().into(),
     }));
-    let tool_runs_tool: ToolBox = Arc::new(tool_runs::ToolRunsTool {
+    let tool_runs_tool: ToolHandle = Arc::new(tool_runs::ToolRunsTool {
         tool_runs: tool_run_service.clone(),
     });
-    let input_tool: ToolBox = Arc::new(input::InputTool);
-    let schedule_tool: ToolBox = Arc::new(scheduled_tool_run::ScheduleTool {
+    let input_tool: ToolHandle = Arc::new(input::InputTool);
+    let schedule_tool: ToolHandle = Arc::new(scheduled_tool_run::ScheduleTool {
         service: tool_run_service,
         // Weak registry probe so `set` can validate tool_name / risk at
         // schedule time; taken before the registry is shared with admin services.
         registry: Some(registry.probe()),
     });
-    let preferences_tool: ToolBox = Arc::new(preferences::PreferencesTool::default());
-    let checklist_tool: ToolBox = Arc::new(checklist::ChecklistTool::default());
-    let window_tool: ToolBox =
+    let preferences_tool: ToolHandle = Arc::new(preferences::PreferencesTool::default());
+    let checklist_tool: ToolHandle = Arc::new(checklist::ChecklistTool::default());
+    let window_tool: ToolHandle =
         Arc::new(window::WindowTool::new(managed_assets).with_media_tool(media_tool));
     add_operation_views(tools, process_tool, settings, PROCESS_OPERATION_VIEWS);
     add_operation_views(tools, clipboard_tool, settings, CLIPBOARD_OPERATION_VIEWS);
     add_operation_views(tools, input_tool, settings, INPUT_OPERATION_VIEWS);
     add_operation_views(tools, window_tool, settings, WINDOW_OPERATION_VIEWS);
-    let system_tool: ToolBox = Arc::new(system::SystemTool::default().with_max_output_chars(
+    let system_tool: ToolHandle = Arc::new(system::SystemTool::default().with_max_output_chars(
         tool_output_cap(settings, "system", limits.max_observation_chars),
     ));
     let contract = operation_specs(limits.search_max_results)
@@ -356,7 +356,7 @@ pub async fn register_builtin_tools(
     // Cross-session messaging / peer collab: one aggregate implementation over
     // the service-owned transport and session mailbox. Agents lazily register
     // on first call; the desktop runtime is an optional typed service port.
-    let agent_tool: ToolBox = Arc::new(messaging::AgentTool::new(messaging_service));
+    let agent_tool: ToolHandle = Arc::new(messaging::AgentTool::new(messaging_service));
     add_operation_views(tools, agent_tool, settings, AGENT_OPERATION_VIEWS);
     let max_tools = limits.max_tools_per_request.max(1);
     // Skills are executable adapters in the deferred catalog. They become
@@ -394,7 +394,8 @@ pub async fn register_builtin_tools(
         // The composition root provides this typed capability explicitly;
         // headless builds can omit it without exposing the database here.
         let memory_facts = ctx.memory_facts.clone();
-        let memory_tool: ToolBox = Arc::new(memory::MemoryTool::new(memory_facts, memory_recall));
+        let memory_tool: ToolHandle =
+            Arc::new(memory::MemoryTool::new(memory_facts, memory_recall));
         add_operation_views(tools, memory_tool, settings, MEMORY_OPERATION_VIEWS);
         let surfaces = Arc::new(admin::AdminSurfaces::new(
             ctx,
@@ -500,7 +501,7 @@ fn system_info_schema() -> serde_json::Value {
 
 #[allow(clippy::too_many_arguments)]
 fn operation_spec(
-    inner: &ToolBox,
+    inner: &ToolHandle,
     name: &'static str,
     description: &'static str,
     fixed: Vec<(String, Value)>,
@@ -1089,8 +1090,8 @@ const ADMIN_OPERATION_VIEWS: &[(&str, &str, &str, &str, &str)] = &[
 ];
 
 fn add_operation_views(
-    tools: &mut Vec<ToolBox>,
-    inner: ToolBox,
+    tools: &mut Vec<ToolHandle>,
+    inner: ToolHandle,
     _settings: &HashMap<String, haven_common::config::ToolConfig>,
     specs: &[SplitOperationSpec],
 ) {
@@ -1115,8 +1116,8 @@ fn add_operation_views(
 }
 
 fn add_system_scope_operation_views(
-    tools: &mut Vec<ToolBox>,
-    inner: ToolBox,
+    tools: &mut Vec<ToolHandle>,
+    inner: ToolHandle,
     _settings: &HashMap<String, haven_common::config::ToolConfig>,
 ) {
     let schema = inner.input_schema();
@@ -1168,8 +1169,8 @@ fn system_display_schema() -> Value {
 }
 
 fn add_admin_operation_views(
-    tools: &mut Vec<ToolBox>,
-    inner: ToolBox,
+    tools: &mut Vec<ToolHandle>,
+    inner: ToolHandle,
     _settings: &HashMap<String, haven_common::config::ToolConfig>,
     capability_root: &str,
 ) {
@@ -1198,8 +1199,8 @@ fn add_admin_operation_views(
 }
 
 fn add_tool_run_views(
-    tools: &mut Vec<ToolBox>,
-    inner: ToolBox,
+    tools: &mut Vec<ToolHandle>,
+    inner: ToolHandle,
     _settings: &HashMap<String, haven_common::config::ToolConfig>,
 ) {
     for (name, schema) in [

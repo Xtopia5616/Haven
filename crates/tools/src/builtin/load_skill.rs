@@ -218,7 +218,7 @@ fn truncate_description(description: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{ToolBox, ToolRegistry};
+    use crate::{ToolHandle, ToolRegistry};
     use async_trait::async_trait;
     use std::sync::Arc;
 
@@ -263,7 +263,7 @@ mod tests {
     #[tokio::test]
     async fn loader_registers_only_the_selected_skill() {
         let deferred_catalog = DeferredToolCatalog::new();
-        let tool: ToolBox = Arc::new(SkillStub);
+        let tool: ToolHandle = Arc::new(SkillStub);
         deferred_catalog.replace(vec![tool]).await;
         let loader = LoadSkillTool {
             deferred_catalog,
