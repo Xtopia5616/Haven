@@ -3,6 +3,12 @@
 use super::actor::{ContextQueueStats, ReactContextBatch};
 use super::*;
 
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PendingInteractionGates {
+    pub(crate) confirmation_pending: bool,
+    pub(crate) ask_pending: bool,
+}
+
 impl SessionSupervisor {
     pub async fn add_follow_up(&self, session_id: &str, text: &str) -> anyhow::Result<()> {
         self.add_follow_up_with_attachments(session_id, text, &[], None)
@@ -163,19 +169,22 @@ impl SessionSupervisor {
         }
     }
 
-    pub(crate) async fn pending_interaction_gates(&self, session_id: &str) -> (bool, bool) {
+    pub(crate) async fn pending_interaction_gates(
+        &self,
+        session_id: &str,
+    ) -> PendingInteractionGates {
         let Some(actor) = self.actor_for(session_id).await else {
-            return (false, false);
+            return PendingInteractionGates::default();
         };
         let interactions = actor.interactions(None, true).await;
-        (
-            interactions
+        PendingInteractionGates {
+            confirmation_pending: interactions
                 .iter()
                 .any(|request| request.kind == crate::interaction::InteractionKind::Confirm),
-            interactions
+            ask_pending: interactions
                 .iter()
                 .any(|request| request.kind == crate::interaction::InteractionKind::Ask),
-        )
+        }
     }
 
     pub async fn has_pending_interaction(

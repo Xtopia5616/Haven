@@ -65,17 +65,19 @@ impl AgentLayer {
         } else {
             None
         };
-        let (confirm_pending, ask_pending) = if let Some(session_id) = active_session_id.as_ref() {
+        let interaction_gates = if let Some(session_id) = active_session_id.as_ref() {
             self.executor.pending_interaction_gates(session_id).await
         } else {
-            (false, false)
+            crate::session::PendingInteractionGates::default()
         };
-        let requested_disposition =
-            if state != Some(SessionStatus::Running) && ask_pending && !confirm_pending {
-                haven_memory::PendingInputDisposition::Answer
-            } else {
-                haven_memory::PendingInputDisposition::FollowUp
-            };
+        let requested_disposition = if state != Some(SessionStatus::Running)
+            && interaction_gates.ask_pending
+            && !interaction_gates.confirmation_pending
+        {
+            haven_memory::PendingInputDisposition::Answer
+        } else {
+            haven_memory::PendingInputDisposition::FollowUp
+        };
 
         let mut persisted_input = if let Some(session_id) = active_session_id.as_ref() {
             let input = match crate::persist_pending_user_input(
