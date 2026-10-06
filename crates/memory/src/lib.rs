@@ -8,13 +8,13 @@ pub mod schema;
 pub use cache::CacheGeneration;
 pub use db::Database;
 pub use recall::{
-    MemoryHit, MemoryKind, MemoryQuery, MemoryRecall, MemoryRecallDiagnostics,
+    MemoryEntityKind, MemoryHit, MemoryQuery, MemoryRecall, MemoryRecallDiagnostics,
     MemoryRecallEmptyReason, MemoryRecallMode, MemoryRecallSourceStatus, MemoryRecallSuggestion,
     MemoryRetriever,
 };
 pub use repositories::embedding_store::{
-    MemoryEmbeddingEntity, MemoryEmbeddingSaveFailure, MemoryEmbeddingSaveReport,
-    MemoryEmbeddingStore, MemoryEmbeddingVector, PendingMemoryEmbedding,
+    MemoryEmbeddingSaveFailure, MemoryEmbeddingSaveReport, MemoryEmbeddingStore,
+    MemoryEmbeddingVector, PendingMemoryEmbedding,
 };
 pub use repositories::fact_store::{MemoryFactStore, MemoryFactWrite};
 pub use repositories::kv_store::{MAX_MEMORY_OUTBOX_PAGE_SIZE, MAX_MEMORY_SESSION_ID_PAGE_SIZE};

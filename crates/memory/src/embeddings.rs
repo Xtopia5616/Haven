@@ -38,6 +38,36 @@ pub mod entity_kind {
     pub const EPISODE: &str = "episode";
 }
 
+/// A memory entity domain shared by recall and embedding lifecycle contracts.
+///
+/// The values here are the domain vocabulary; SQLite still stores their
+/// `entity_type` strings through [`entity_kind`]. FTS has a separate storage
+/// vocabulary and keeps its explicit `ITEM` to `EPISODE` mapping below.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum MemoryEntityKind {
+    Fact,
+    Episode,
+}
+
+impl MemoryEntityKind {
+    /// Parse the public recall vocabulary (`fact` or `episode`).
+    pub fn parse(value: &str) -> anyhow::Result<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "fact" => Ok(Self::Fact),
+            "episode" => Ok(Self::Episode),
+            _ => anyhow::bail!("kind must be fact or episode"),
+        }
+    }
+
+    /// SQLite `memory_embeddings.entity_type` value for this memory domain.
+    pub const fn entity_type(self) -> &'static str {
+        match self {
+            Self::Fact => entity_kind::FACT,
+            Self::Episode => entity_kind::EPISODE,
+        }
+    }
+}
+
 /// `memory_fts.entity_type` vocabulary (X1 unified FTS). Maps to
 /// [`entity_kind`] as: `FACT` ↔ `FACT`, `ITEM` ↔ `EPISODE`.
 pub mod fts_kind {

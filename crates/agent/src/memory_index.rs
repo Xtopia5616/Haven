@@ -269,7 +269,7 @@ impl MemoryEmbeddingIndex {
                     for failure in report.failures.iter().take(3) {
                         tracing::warn!(
                             "save_embedding failed for {} {}: {}",
-                            failure.entity.as_str(),
+                            failure.entity.entity_type(),
                             failure.entity_id,
                             failure.error
                         );

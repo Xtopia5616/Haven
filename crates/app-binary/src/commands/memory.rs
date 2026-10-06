@@ -1,7 +1,7 @@
 use crate::app_state::AppState;
 use crate::commands::contracts::MemoryRecallItem;
 use crate::commands::log_err;
-use haven_memory::recall::{MemoryKind, MemoryQuery};
+use haven_memory::recall::{MemoryEntityKind, MemoryQuery};
 use std::sync::Arc;
 use tauri::State;
 
@@ -32,7 +32,7 @@ pub async fn recall_memory(
     let limit = limit.unwrap_or(5);
     let query = MemoryQuery::new(
         &query,
-        MemoryKind::parse(kind).map_err(|e| log_err("recall_memory", e))?,
+        MemoryEntityKind::parse(kind).map_err(|e| log_err("recall_memory", e))?,
         limit,
     )
     .map_err(|e| log_err("recall_memory", e))?;

@@ -635,7 +635,9 @@ mod tests {
             .unwrap();
 
         let recall = store
-            .recall_keyword(MemoryQuery::new("Rust", crate::recall::MemoryKind::Fact, 5).unwrap())
+            .recall_keyword(
+                MemoryQuery::new("Rust", crate::recall::MemoryEntityKind::Fact, 5).unwrap(),
+            )
             .await
             .unwrap();
         assert_eq!(recall.hits.len(), 1);
@@ -643,7 +645,7 @@ mod tests {
 
         let empty = store
             .recall_keyword(
-                MemoryQuery::new("not present", crate::recall::MemoryKind::Fact, 5).unwrap(),
+                MemoryQuery::new("not present", crate::recall::MemoryEntityKind::Fact, 5).unwrap(),
             )
             .await
             .unwrap();

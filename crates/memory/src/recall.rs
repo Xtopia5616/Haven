@@ -6,7 +6,7 @@
 //! vector fusion, deterministic ordering, and defense-in-depth filtering.
 
 use crate::Database;
-use crate::embeddings::{EmbeddedText, entity_kind};
+use crate::embeddings::EmbeddedText;
 use crate::repositories::facts::{
     Fact, fact_effective_confidence, is_sensitive_object, is_sensitive_predicate, is_sensitive_text,
 };
@@ -32,29 +32,7 @@ pub fn normalize_memory_query(text: &str) -> anyhow::Result<String> {
     Ok(text.split_whitespace().collect::<Vec<_>>().join(" "))
 }
 
-/// Memory entity domain used by the shared recall contract.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum MemoryKind {
-    Fact,
-    Episode,
-}
-
-impl MemoryKind {
-    pub fn parse(value: &str) -> anyhow::Result<Self> {
-        match value.trim().to_ascii_lowercase().as_str() {
-            "fact" => Ok(Self::Fact),
-            "episode" => Ok(Self::Episode),
-            _ => anyhow::bail!("kind must be fact or episode"),
-        }
-    }
-
-    pub const fn entity_type(self) -> &'static str {
-        match self {
-            Self::Fact => entity_kind::FACT,
-            Self::Episode => entity_kind::EPISODE,
-        }
-    }
-}
+pub use crate::embeddings::MemoryEntityKind;
 
 /// One typed memory retrieval request. The optional scopes are kept here so
 /// every caller applies current-session exclusion and fact subject narrowing
@@ -62,14 +40,14 @@ impl MemoryKind {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MemoryQuery {
     pub text: String,
-    pub kind: MemoryKind,
+    pub kind: MemoryEntityKind,
     pub limit: usize,
     pub exclude_session_id: Option<String>,
     pub fact_subject: Option<String>,
 }
 
 impl MemoryQuery {
-    pub fn new(text: &str, kind: MemoryKind, limit: usize) -> anyhow::Result<Self> {
+    pub fn new(text: &str, kind: MemoryEntityKind, limit: usize) -> anyhow::Result<Self> {
         let text = normalize_memory_query(text)?;
         anyhow::ensure!(limit > 0, "memory recall limit must be greater than zero");
         anyhow::ensure!(
@@ -244,7 +222,7 @@ impl<'db> MemoryRetriever<'db> {
     /// without repeating SQL or embedding work.
     pub fn keyword(&self, query: &MemoryQuery) -> anyhow::Result<Vec<MemoryHit>> {
         let hits = match query.kind {
-            MemoryKind::Fact => {
+            MemoryEntityKind::Fact => {
                 let terms = haven_common::text::memory_recall_terms(&query.text);
                 let term_refs = haven_common::text::memory_recall_term_sample(&terms, 6);
                 let facts = self.db.search_facts_any_scoped(
@@ -267,7 +245,7 @@ impl<'db> MemoryRetriever<'db> {
                     })
                     .collect()
             }
-            MemoryKind::Episode => self
+            MemoryEntityKind::Episode => self
                 .db
                 .search_episodes_by_keywords(
                     &haven_common::text::memory_recall_term_sample(
@@ -316,7 +294,7 @@ impl<'db> MemoryRetriever<'db> {
             query.exclude_session_id.as_deref(),
         )?;
         let mut hits: Vec<MemoryHit> = match query.kind {
-            MemoryKind::Fact => {
+            MemoryEntityKind::Fact => {
                 let ids: Vec<String> = raw
                     .iter()
                     .map(|(embedding, _)| embedding.entity_id.clone())
@@ -339,7 +317,7 @@ impl<'db> MemoryRetriever<'db> {
                     })
                     .collect()
             }
-            MemoryKind::Episode => raw
+            MemoryEntityKind::Episode => raw
                 .into_iter()
                 .filter(|(embedding, _)| Self::visible_text(&embedding.text))
                 .map(|(embedding, score)| MemoryHit::from_embedding(embedding, score))
@@ -472,6 +450,7 @@ impl<'db> MemoryRetriever<'db> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::embeddings::entity_kind;
 
     #[test]
     fn keyword_recall_is_typed_and_filters_sensitive_facts() {
@@ -482,7 +461,7 @@ mod tests {
         db.insert_fact("user", "api_key", "super-secret", "user", 1.0, &[])
             .unwrap();
 
-        let query = MemoryQuery::new("Rust", MemoryKind::Fact, 5).unwrap();
+        let query = MemoryQuery::new("Rust", MemoryEntityKind::Fact, 5).unwrap();
         let recall = MemoryRetriever::new(&db).retrieve(&query, None).unwrap();
 
         assert_eq!(recall.mode, MemoryRecallMode::Keyword);
@@ -517,7 +496,7 @@ mod tests {
         )
         .unwrap();
 
-        let query = MemoryQuery::new("programming", MemoryKind::Fact, 5).unwrap();
+        let query = MemoryQuery::new("programming", MemoryEntityKind::Fact, 5).unwrap();
         let vector_hits = MemoryRetriever::new(&db)
             .vector(&query, &[1.0, 0.0], "model-a")
             .unwrap();
@@ -537,7 +516,7 @@ mod tests {
         let fact = db
             .insert_fact("user", "uses", "SQLite", "user", 1.0, &[])
             .unwrap();
-        let query = MemoryQuery::new("SQLite", MemoryKind::Fact, 5).unwrap();
+        let query = MemoryQuery::new("SQLite", MemoryEntityKind::Fact, 5).unwrap();
         let recall = MemoryRetriever::new(&db)
             .retrieve(&query, Some(Vec::new()))
             .unwrap();
@@ -550,7 +529,7 @@ mod tests {
     #[test]
     fn empty_recall_reports_sources_and_actionable_suggestions() {
         let db = Database::open_in_memory().unwrap();
-        let query = MemoryQuery::new("missing", MemoryKind::Fact, 5)
+        let query = MemoryQuery::new("missing", MemoryEntityKind::Fact, 5)
             .unwrap()
             .with_fact_subject(Some("user"));
         let recall = MemoryRetriever::new(&db).retrieve(&query, None).unwrap();
@@ -578,7 +557,7 @@ mod tests {
     #[test]
     fn hybrid_recall_rewards_candidates_present_in_both_rankings() {
         let db = Database::open_in_memory().unwrap();
-        let query = MemoryQuery::new("anything", MemoryKind::Fact, 3).unwrap();
+        let query = MemoryQuery::new("anything", MemoryEntityKind::Fact, 3).unwrap();
         let retriever = MemoryRetriever::new(&db);
         let recall = retriever.merge(
             &query,
@@ -618,16 +597,30 @@ mod tests {
 
     #[test]
     fn query_boundary_rejects_unbounded_recall_input() {
-        let error = MemoryQuery::new(&"x".repeat(MAX_MEMORY_QUERY_CHARS + 1), MemoryKind::Fact, 1)
-            .unwrap_err();
+        let error = MemoryQuery::new(
+            &"x".repeat(MAX_MEMORY_QUERY_CHARS + 1),
+            MemoryEntityKind::Fact,
+            1,
+        )
+        .unwrap_err();
         assert!(error.to_string().contains("too long"));
     }
 
     #[test]
     fn query_boundary_rejects_invalid_kind_and_limit() {
-        assert!(MemoryKind::parse("facts").is_err());
-        assert!(MemoryQuery::new("query", MemoryKind::Fact, 0).is_err());
-        assert!(MemoryQuery::new("query", MemoryKind::Fact, MAX_RECALL_LIMIT + 1).is_err());
+        assert_eq!(
+            MemoryEntityKind::parse(" Fact ").unwrap(),
+            MemoryEntityKind::Fact
+        );
+        assert_eq!(
+            MemoryEntityKind::parse("EPISODE").unwrap(),
+            MemoryEntityKind::Episode
+        );
+        assert_eq!(MemoryEntityKind::Fact.entity_type(), "fact");
+        assert_eq!(MemoryEntityKind::Episode.entity_type(), "episode");
+        assert!(MemoryEntityKind::parse("facts").is_err());
+        assert!(MemoryQuery::new("query", MemoryEntityKind::Fact, 0).is_err());
+        assert!(MemoryQuery::new("query", MemoryEntityKind::Fact, MAX_RECALL_LIMIT + 1).is_err());
         assert_eq!(
             normalize_memory_query("  dark\n\t theme  ").unwrap(),
             "dark theme"
@@ -652,7 +645,7 @@ mod tests {
             .insert_fact("target", "likes", "needle", "user", 0.1, &[])
             .unwrap();
 
-        let query = MemoryQuery::new("needle", MemoryKind::Fact, 1)
+        let query = MemoryQuery::new("needle", MemoryEntityKind::Fact, 1)
             .unwrap()
             .with_fact_subject(Some("target"));
         let recall = MemoryRetriever::new(&db).retrieve(&query, None).unwrap();

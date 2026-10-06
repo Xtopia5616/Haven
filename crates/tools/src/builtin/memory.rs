@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use haven_common::types::RiskLevel;
 use haven_memory::MemoryFactStore;
 use haven_memory::recall::{
-    MAX_MEMORY_QUERY_CHARS, MAX_RECALL_LIMIT, MemoryKind, MemoryQuery, MemoryRecall,
+    MAX_MEMORY_QUERY_CHARS, MAX_RECALL_LIMIT, MemoryEntityKind, MemoryQuery, MemoryRecall,
     MemoryRecallEmptyReason, normalize_memory_query,
 };
 use haven_memory::repositories::facts::{
@@ -13,7 +13,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{MemoryRecallSlot, Tool, ToolConcurrency, ToolResult};
 
-fn recall_output(kind: MemoryKind, recall: MemoryRecall) -> Value {
+fn recall_output(kind: MemoryEntityKind, recall: MemoryRecall) -> Value {
     let is_empty = recall.hits.is_empty();
     let empty_reason = recall.empty_reason;
     let mut output = json!({
@@ -270,7 +270,7 @@ impl MemoryTool {
             .map(str::trim)
             .filter(|s| !s.is_empty())
             .unwrap_or("fact");
-        let kind = MemoryKind::parse(kind_raw)?;
+        let kind = MemoryEntityKind::parse(kind_raw)?;
         let limit = params
             .limit
             .map(|l| l.clamp(1, MAX_RECALL_LIMIT as i64) as usize)
@@ -826,7 +826,7 @@ mod tests {
         let (tool, _db, _dir) = test_tool();
         let slot = tool.recall.clone();
         bind_recall(&slot, |query| async move {
-            assert_eq!(query.kind, MemoryKind::Episode);
+            assert_eq!(query.kind, MemoryEntityKind::Episode);
             assert_eq!(query.text, "release notes");
             assert_eq!(query.limit, 3);
             assert_eq!(query.exclude_session_id.as_deref(), Some("ses-current"));
@@ -896,7 +896,7 @@ mod tests {
         let (tool, _db, _dir) = test_tool();
         let slot = tool.recall.clone();
         bind_recall(&slot, |query| async move {
-            assert_eq!(query.kind, MemoryKind::Fact);
+            assert_eq!(query.kind, MemoryEntityKind::Fact);
             assert_eq!(query.fact_subject.as_deref(), Some("workspace"));
             assert_eq!(query.exclude_session_id.as_deref(), Some("ses-current"));
             Ok(MemoryRecall::default())

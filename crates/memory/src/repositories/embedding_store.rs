@@ -1,29 +1,13 @@
 use std::sync::Arc;
 
 use crate::Database;
-use crate::embeddings::entity_kind;
+use crate::embeddings::MemoryEntityKind;
 use crate::recall::MemoryRetriever;
-
-/// Closed set of entities that can own persisted memory embeddings.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MemoryEmbeddingEntity {
-    Fact,
-    Episode,
-}
-
-impl MemoryEmbeddingEntity {
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Fact => entity_kind::FACT,
-            Self::Episode => entity_kind::EPISODE,
-        }
-    }
-}
 
 /// One visible row that is missing an embedding for the requested model.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PendingMemoryEmbedding {
-    pub entity: MemoryEmbeddingEntity,
+    pub entity: MemoryEntityKind,
     pub entity_id: String,
     pub text: String,
 }
@@ -31,7 +15,7 @@ pub struct PendingMemoryEmbedding {
 /// One provider vector ready for persistence.
 #[derive(Debug, Clone, PartialEq)]
 pub struct MemoryEmbeddingVector {
-    pub entity: MemoryEmbeddingEntity,
+    pub entity: MemoryEntityKind,
     pub entity_id: String,
     pub text: String,
     pub vector: Vec<f32>,
@@ -41,7 +25,7 @@ pub struct MemoryEmbeddingVector {
 /// attempted, matching the existing best-effort persistence behavior.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MemoryEmbeddingSaveFailure {
-    pub entity: MemoryEmbeddingEntity,
+    pub entity: MemoryEntityKind,
     pub entity_id: String,
     pub error: String,
 }
@@ -90,12 +74,12 @@ impl MemoryEmbeddingStore {
         self.db
             .run_blocking(move |db| {
                 let mut pending = Vec::new();
-                for entity in [MemoryEmbeddingEntity::Fact, MemoryEmbeddingEntity::Episode] {
-                    let entity_type = entity.as_str();
+                for entity in [MemoryEntityKind::Fact, MemoryEntityKind::Episode] {
+                    let entity_type = entity.entity_type();
                     for entity_id in db.missing_embedding_ids(entity_type, &model)? {
                         let text = match entity {
-                            MemoryEmbeddingEntity::Fact => db.fact_text_by_id(&entity_id)?,
-                            MemoryEmbeddingEntity::Episode => db.episode_text(&entity_id)?,
+                            MemoryEntityKind::Fact => db.fact_text_by_id(&entity_id)?,
+                            MemoryEntityKind::Episode => db.episode_text(&entity_id)?,
                         };
                         if let Some(text) = text {
                             if MemoryRetriever::visible_text(&text) {
@@ -140,7 +124,7 @@ impl MemoryEmbeddingStore {
                 let mut failures = Vec::new();
                 for item in vectors {
                     if let Err(error) = db.save_embedding(
-                        item.entity.as_str(),
+                        item.entity.entity_type(),
                         &item.entity_id,
                         &model,
                         &item.vector,
@@ -177,6 +161,7 @@ impl MemoryEmbeddingStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::embeddings::entity_kind;
 
     fn store() -> (Arc<Database>, MemoryEmbeddingStore) {
         let db = Arc::new(Database::open_in_memory().unwrap());
@@ -198,9 +183,9 @@ mod tests {
         let pending = store.pending_embeddings("model-a".into()).await.unwrap();
 
         assert_eq!(pending.len(), 2);
-        assert_eq!(pending[0].entity, MemoryEmbeddingEntity::Fact);
+        assert_eq!(pending[0].entity, MemoryEntityKind::Fact);
         assert_eq!(pending[0].text, "user likes Rust");
-        assert_eq!(pending[1].entity, MemoryEmbeddingEntity::Episode);
+        assert_eq!(pending[1].entity, MemoryEntityKind::Episode);
         assert_eq!(pending[1].text, "safe episode");
         assert!(pending.iter().all(|item| !item.text.contains("secret")));
         assert!(pending.iter().all(|item| !item.text.contains("hunter2")));
@@ -227,7 +212,7 @@ mod tests {
         assert!(
             pending
                 .iter()
-                .all(|item| item.entity == MemoryEmbeddingEntity::Fact)
+                .all(|item| item.entity == MemoryEntityKind::Fact)
         );
     }
 
@@ -291,13 +276,13 @@ mod tests {
                 "model-a".into(),
                 vec![
                     MemoryEmbeddingVector {
-                        entity: MemoryEmbeddingEntity::Fact,
+                        entity: MemoryEntityKind::Fact,
                         entity_id: first.id.clone(),
                         text: "user likes Rust".into(),
                         vector: vec![1.0, 0.0],
                     },
                     MemoryEmbeddingVector {
-                        entity: MemoryEmbeddingEntity::Fact,
+                        entity: MemoryEntityKind::Fact,
                         entity_id: second.id.clone(),
                         text: "user likes Go".into(),
                         vector: Vec::new(),

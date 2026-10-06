@@ -88,7 +88,7 @@ mod tests {
     use super::*;
     use crate::embeddings::entity_kind;
     use crate::recall::{
-        MemoryKind, MemoryRecallEmptyReason, MemoryRecallMode, MemoryRecallSourceStatus,
+        MemoryEntityKind, MemoryRecallEmptyReason, MemoryRecallMode, MemoryRecallSourceStatus,
     };
 
     fn store() -> (Arc<Database>, MemoryRecallStore) {
@@ -138,7 +138,7 @@ mod tests {
         .unwrap();
 
         let keyword = store
-            .keyword_recall(MemoryQuery::new("Rust", MemoryKind::Fact, 5).unwrap())
+            .keyword_recall(MemoryQuery::new("Rust", MemoryEntityKind::Fact, 5).unwrap())
             .await
             .unwrap();
         assert_eq!(keyword.len(), 1);
@@ -146,7 +146,7 @@ mod tests {
 
         let vector = store
             .vector_recall(
-                MemoryQuery::new("programming", MemoryKind::Fact, 5)
+                MemoryQuery::new("programming", MemoryEntityKind::Fact, 5)
                     .unwrap()
                     .with_fact_subject(Some("user")),
                 vec![1.0, 0.0],
@@ -182,7 +182,7 @@ mod tests {
             .unwrap();
         let result = store
             .retrieve(
-                MemoryQuery::new("SQLite", MemoryKind::Fact, 5).unwrap(),
+                MemoryQuery::new("SQLite", MemoryEntityKind::Fact, 5).unwrap(),
                 None,
             )
             .await
@@ -192,7 +192,7 @@ mod tests {
 
         let empty = store
             .retrieve(
-                MemoryQuery::new("missing", MemoryKind::Fact, 5).unwrap(),
+                MemoryQuery::new("missing", MemoryEntityKind::Fact, 5).unwrap(),
                 None,
             )
             .await

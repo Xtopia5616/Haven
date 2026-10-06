@@ -14,7 +14,7 @@ use haven_llm::LlmRouter;
 #[cfg(test)]
 use haven_memory::Database;
 use haven_memory::recall::{
-    MAX_MEMORY_QUERY_CHARS, MAX_RECALL_LIMIT, MemoryKind, MemoryQuery, MemoryRecall,
+    MAX_MEMORY_QUERY_CHARS, MAX_RECALL_LIMIT, MemoryEntityKind, MemoryQuery, MemoryRecall,
     MemoryRetriever,
 };
 use haven_memory::{
@@ -260,17 +260,21 @@ impl MemoryService {
             let keyword_fact_hits = if query_text.trim().is_empty() {
                 Vec::new()
             } else {
-                let query = MemoryQuery::new(&query_text, MemoryKind::Fact, MAX_RECALL_LIMIT)?;
+                let query =
+                    MemoryQuery::new(&query_text, MemoryEntityKind::Fact, MAX_RECALL_LIMIT)?;
                 self.recall_store.keyword_recall(query).await?
             };
 
             let (vector_fact_hits, vector_episode_hits) =
                 if let Some(vector) = vector.as_deref().filter(|_| !embedding_model.is_empty()) {
-                    let fact_query = MemoryQuery::new(&query_text, MemoryKind::Fact, 8)?
+                    let fact_query = MemoryQuery::new(&query_text, MemoryEntityKind::Fact, 8)?
                         .with_fact_subject(Some("user"));
-                    let episode_query =
-                        MemoryQuery::new(&query_text, MemoryKind::Episode, MAX_EPISODES_IN_PROMPT)?
-                            .with_excluded_session(key.exclude_session_id.as_deref());
+                    let episode_query = MemoryQuery::new(
+                        &query_text,
+                        MemoryEntityKind::Episode,
+                        MAX_EPISODES_IN_PROMPT,
+                    )?
+                    .with_excluded_session(key.exclude_session_id.as_deref());
                     let fact_hits = self
                         .recall_store
                         .vector_recall(fact_query, vector.to_vec(), embedding_model.clone())
@@ -308,9 +312,12 @@ impl MemoryService {
             let keyword_episode_hits = if query_text.trim().is_empty() {
                 Vec::new()
             } else {
-                let query =
-                    MemoryQuery::new(&query_text, MemoryKind::Episode, MAX_EPISODES_IN_PROMPT)?
-                        .with_excluded_session(key.exclude_session_id.as_deref());
+                let query = MemoryQuery::new(
+                    &query_text,
+                    MemoryEntityKind::Episode,
+                    MAX_EPISODES_IN_PROMPT,
+                )?
+                .with_excluded_session(key.exclude_session_id.as_deref());
                 self.recall_store.keyword_recall(query).await?
             };
 
@@ -544,7 +551,7 @@ mod tests {
         let service = MemoryService::new(db, None, 1);
 
         let recall = service
-            .recall(MemoryQuery::new("SQLite", MemoryKind::Fact, 5).unwrap())
+            .recall(MemoryQuery::new("SQLite", MemoryEntityKind::Fact, 5).unwrap())
             .await
             .unwrap();
 
