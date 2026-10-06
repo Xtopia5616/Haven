@@ -17,7 +17,7 @@ use crate::endpoint_health::{EndpointHealth, EndpointHealthMap, new_endpoint_hea
 use crate::model_directory::{ModelDirectory, RouteMode};
 use crate::request_descriptor::RequestDescriptor;
 use crate::request_pipeline::{
-    RequestOutcome, RequestPolicy, execute_with_retry, execute_with_timeout,
+    RequestExecutionPolicy, RequestOutcome, execute_with_retry, execute_with_timeout,
 };
 use crate::stream_executor::StreamExecutor;
 use haven_common::types::{CanonicalMessage, ContentPart};
@@ -558,7 +558,7 @@ impl LlmRouter {
                 RequestDescriptor::from(RequestKind::Transcription),
                 |model_id, client| async move {
                     let cfg = self.config.read().await;
-                    let policy = RequestPolicy::primary(&cfg);
+                    let policy = RequestExecutionPolicy::primary(&cfg);
                     drop(cfg);
 
                     execute_with_timeout(policy.total_timeout_secs, "transcription", || async {
@@ -680,7 +680,7 @@ impl LlmRouter {
         let descriptor = RequestDescriptor::from(request);
         self.with_request_permit(descriptor, |model_id, client| async move {
             let config = self.config.read().await;
-            let policy = RequestPolicy::primary(&config);
+            let policy = RequestExecutionPolicy::primary(&config);
             drop(config);
 
             CallExecutor::new(descriptor, model_id, client, policy)
@@ -765,7 +765,7 @@ impl LlmRouter {
         let descriptor = RequestDescriptor::from(RequestKind::Embedding);
         self.with_request_permit(descriptor, |model_id, client| async move {
             let cfg = self.config.read().await;
-            let policy = RequestPolicy::primary(&cfg);
+            let policy = RequestExecutionPolicy::primary(&cfg);
             drop(cfg);
 
             CallExecutor::new(descriptor, model_id, client, policy)
@@ -805,7 +805,7 @@ impl LlmRouter {
         self.wait_rate_limit_cooldown(&model_id).await;
         self.check_circuit(&model_id).await?;
         let cfg = self.config.read().await;
-        let primary_policy = RequestPolicy::primary(&cfg);
+        let primary_policy = RequestExecutionPolicy::primary(&cfg);
         drop(cfg);
         // Raw stream callers own consumption. Once a stream is returned, its
         // later transport error must be handled by the caller without
@@ -932,7 +932,7 @@ impl LlmRouter {
         let hooks = ActiveStreamHooks::new(on_chunk, on_attempt_start, replace_output_on_start);
 
         let cfg = self.config.read().await;
-        let primary_policy = RequestPolicy::primary(&cfg);
+        let primary_policy = RequestExecutionPolicy::primary(&cfg);
         // Clamp to >= 1s: a hand-edited 0 would make every stream.first() poll
         // time out instantly, disabling all model replies.
         let idle_dur = Duration::from_secs(cfg.stream_idle_timeout_secs.max(1));
@@ -980,7 +980,7 @@ impl LlmRouter {
             RequestDescriptor::from(request.request),
             |model_id, candidate| async move {
                 let cfg = self.config.read().await;
-                let policy = RequestPolicy::primary(&cfg);
+                let policy = RequestExecutionPolicy::primary(&cfg);
                 drop(cfg);
 
                 execute_with_timeout(policy.total_timeout_secs, "health check", || async {

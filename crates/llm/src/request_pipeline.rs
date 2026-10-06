@@ -53,12 +53,12 @@ pub(crate) struct RetryPolicy {
 
 /// Complete provider-neutral policy for one router request.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) struct RequestPolicy {
+pub(crate) struct RequestExecutionPolicy {
     pub(crate) retry: RetryPolicy,
     pub(crate) total_timeout_secs: u64,
 }
 
-impl RequestPolicy {
+impl RequestExecutionPolicy {
     /// Policy for the configured primary endpoint.
     pub(crate) fn primary(config: &RouterConfig) -> Self {
         Self {
@@ -134,8 +134,8 @@ mod tests {
         };
 
         assert_eq!(
-            RequestPolicy::primary(&config),
-            RequestPolicy {
+            RequestExecutionPolicy::primary(&config),
+            RequestExecutionPolicy {
                 retry: RetryPolicy {
                     max_retries: 2,
                     base_secs: 3,
@@ -155,7 +155,10 @@ mod tests {
             ..RouterConfig::default()
         };
 
-        assert_eq!(RequestPolicy::primary(&config).total_timeout_secs, 1);
+        assert_eq!(
+            RequestExecutionPolicy::primary(&config).total_timeout_secs,
+            1
+        );
     }
 
     #[tokio::test]

@@ -223,7 +223,7 @@ OS 句柄和进程生命周期适配不属于该共享契约面，统一归 `hav
   route 语义的 adapter。`LlmCallKind` usage owner 由 Agent/Tools 调用方显式设置；相同 route 可以
   有不同 owner，因此 Router 不推断也不接收该字段（ADR 0339、0354）。
 - `call_executor.rs` / `stream_executor.rs` / `aggregated_stream_executor.rs`：接收 Router
-  已解析的 descriptor、model/client 与单份 `RequestPolicy`，复用 request pipeline 执行 complete/embedding、
+  已解析的 descriptor、model/client 与单份 `RequestExecutionPolicy`，复用 request pipeline 执行 complete/embedding、
   raw stream 建流或聚合流执行，并经 Router 注入的窄 outcome closure 投影健康状态。raw
   `PermitStream` 持有 permit 到 stream
   drop；聚合执行器集中首次 `on_chunk` 交付前重试、规则触发后的 guidance 重试、取消、总 timeout、attempt
@@ -232,7 +232,7 @@ OS 句柄和进程生命周期适配不属于该共享契约面，统一归 `hav
 - `streaming.rs`：只执行单条 provider stream 的创建后消费与聚合，负责 idle timeout、取消、
   stream rule 检查、chunk 顺序与 `LlmResponse` usage/content 累积；逻辑请求的多 attempt 状态机归
   `AggregatedStreamExecutor`（ADR 0328）。
-- `request_pipeline.rs`：provider-neutral 的 `RequestPolicy`/`RetryPolicy`；
+- `request_pipeline.rs`：provider-neutral 的 `RequestExecutionPolicy`/`RetryPolicy`；
   为普通聊天、工具聊天、embedding、raw stream 建流和 aggregated streaming endpoint
   尝试提供同一份重试预算快照与总超时执行语义。Router/执行器共用这些 helper；adapter
   不实现第二套重试。

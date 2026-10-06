@@ -18,7 +18,7 @@ use tokio::sync::OwnedSemaphorePermit;
 use crate::client::LlmClient;
 use crate::request_descriptor::RequestDescriptor;
 use crate::request_pipeline::{
-    RequestOutcome, RequestPolicy, execute_with_retry, execute_with_timeout,
+    RequestExecutionPolicy, RequestOutcome, execute_with_retry, execute_with_timeout,
 };
 use crate::types::{LlmError, StreamChunk};
 
@@ -48,7 +48,7 @@ pub(crate) struct StreamExecutor {
     descriptor: RequestDescriptor,
     model_id: String,
     client: Arc<dyn LlmClient>,
-    policy: RequestPolicy,
+    policy: RequestExecutionPolicy,
 }
 
 impl StreamExecutor {
@@ -56,7 +56,7 @@ impl StreamExecutor {
         descriptor: RequestDescriptor,
         model_id: String,
         client: Arc<dyn LlmClient>,
-        policy: RequestPolicy,
+        policy: RequestExecutionPolicy,
     ) -> Self {
         Self {
             descriptor,
@@ -189,8 +189,8 @@ mod tests {
         }
     }
 
-    fn policy(max_retries: u32, total_timeout_secs: u64) -> RequestPolicy {
-        RequestPolicy {
+    fn policy(max_retries: u32, total_timeout_secs: u64) -> RequestExecutionPolicy {
+        RequestExecutionPolicy {
             retry: RetryPolicy {
                 max_retries,
                 base_secs: 0,

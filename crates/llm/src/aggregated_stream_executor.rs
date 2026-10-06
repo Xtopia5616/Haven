@@ -18,7 +18,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::client::{LlmClient, retry_backoff_policy, retry_jitter_sample};
 use crate::request_descriptor::RequestDescriptor;
-use crate::request_pipeline::{RequestPolicy, RetryPolicy, execute_with_timeout};
+use crate::request_pipeline::{RequestExecutionPolicy, RetryPolicy, execute_with_timeout};
 use crate::stream_rules::StreamRule;
 use crate::streaming;
 use crate::types::{LlmError, LlmResponse, StreamChunk, StreamRequest, ToolDefinition};
@@ -73,7 +73,7 @@ impl ActiveStreamHooks {
 pub(crate) struct AggregatedStreamExecutor<'a> {
     descriptor: RequestDescriptor,
     client: Arc<dyn LlmClient>,
-    policy: RequestPolicy,
+    policy: RequestExecutionPolicy,
     stream_rules: &'a RwLock<Vec<StreamRule>>,
     idle_timeout: Duration,
 }
@@ -82,7 +82,7 @@ impl<'a> AggregatedStreamExecutor<'a> {
     pub(crate) fn new(
         descriptor: RequestDescriptor,
         client: Arc<dyn LlmClient>,
-        policy: RequestPolicy,
+        policy: RequestExecutionPolicy,
         stream_rules: &'a RwLock<Vec<StreamRule>>,
         idle_timeout: Duration,
     ) -> Self {
@@ -449,8 +449,8 @@ mod tests {
         }
     }
 
-    fn policy(total_timeout_secs: u64, max_retries: u32) -> RequestPolicy {
-        RequestPolicy {
+    fn policy(total_timeout_secs: u64, max_retries: u32) -> RequestExecutionPolicy {
+        RequestExecutionPolicy {
             retry: RetryPolicy {
                 max_retries,
                 base_secs: 0,

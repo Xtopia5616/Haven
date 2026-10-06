@@ -14,7 +14,7 @@ use haven_common::types::CanonicalMessage;
 use crate::client::LlmClient;
 use crate::request_descriptor::RequestDescriptor;
 use crate::request_pipeline::{
-    RequestOutcome, RequestPolicy, execute_with_retry, execute_with_timeout,
+    RequestExecutionPolicy, RequestOutcome, execute_with_retry, execute_with_timeout,
 };
 use crate::types::{Embedding, LlmError, LlmResponse, ToolDefinition};
 
@@ -22,7 +22,7 @@ pub(crate) struct CallExecutor {
     descriptor: RequestDescriptor,
     model_id: String,
     client: Arc<dyn LlmClient>,
-    policy: RequestPolicy,
+    policy: RequestExecutionPolicy,
 }
 
 impl CallExecutor {
@@ -30,7 +30,7 @@ impl CallExecutor {
         descriptor: RequestDescriptor,
         model_id: String,
         client: Arc<dyn LlmClient>,
-        policy: RequestPolicy,
+        policy: RequestExecutionPolicy,
     ) -> Self {
         Self {
             descriptor,
@@ -254,8 +254,8 @@ mod tests {
         }
     }
 
-    fn policy(max_retries: u32, total_timeout_secs: u64) -> RequestPolicy {
-        RequestPolicy {
+    fn policy(max_retries: u32, total_timeout_secs: u64) -> RequestExecutionPolicy {
+        RequestExecutionPolicy {
             retry: RetryPolicy {
                 max_retries,
                 base_secs: 0,
@@ -269,7 +269,7 @@ mod tests {
 
     fn executor(
         client: Arc<ExecutorProbe>,
-        policy: RequestPolicy,
+        policy: RequestExecutionPolicy,
         request: haven_common::config::RequestKind,
     ) -> CallExecutor {
         CallExecutor::new(

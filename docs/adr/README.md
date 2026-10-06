@@ -527,3 +527,4 @@
 - [0536：Tools 对外执行入口使用 Facade 命名](0536-tools-facade-name.md)
 - [0537：前端性能指标响应对齐生成契约](0537-typed-performance-metrics-contract.md)
 - [0538：区分录音采集状态与 App 状态响应](0538-distinguish-recording-lifecycle-and-status-dto.md)
+- [0539：区分路由配置与请求执行策略](0539-distinguish-routing-and-execution-policy.md)
