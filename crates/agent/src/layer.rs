@@ -5,7 +5,7 @@
 
 use super::*;
 use crate::memory_inference::RouterMemoryInferencePort;
-use crate::session::SessionEvent;
+use crate::session::SessionSupervisorEvent;
 use haven_common::retry::{BackoffPolicy, RecoveryDecision, RecoveryPolicy, RecoverySignal};
 use serde_json::Value;
 use tokio_util::sync::CancellationToken;
@@ -399,7 +399,7 @@ impl AgentLayer {
                         }
                     };
                     match event {
-                        SessionEvent::ScheduledConfirmOutcome {
+                        SessionSupervisorEvent::ScheduledConfirmOutcome {
                             tool_run_id,
                             session_id,
                             title,
@@ -416,25 +416,25 @@ impl AgentLayer {
                                 )
                                 .await;
                         }
-                        SessionEvent::SessionCleanup { session_id } => {
+                        SessionSupervisorEvent::SessionCleanup { session_id } => {
                             memory_worker.clear_session(&session_id);
                         }
-                        SessionEvent::CascadeCompleted { session_id, title } => {
+                        SessionSupervisorEvent::CascadeCompleted { session_id, title } => {
                             events
                                 .emit_session_completed(&session_id, &title, "父会话已结束")
                                 .await;
                         }
-                        SessionEvent::SessionResumed { session_id } => {
+                        SessionSupervisorEvent::SessionResumed { session_id } => {
                             events
                                 .emit_session_updated(&session_id, SessionStatus::Pending)
                                 .await;
                         }
-                        SessionEvent::SessionRunPaused { session_id } => {
+                        SessionSupervisorEvent::SessionRunPaused { session_id } => {
                             events
                                 .emit_session_updated(&session_id, SessionStatus::Paused)
                                 .await;
                         }
-                        SessionEvent::SessionEndPaused { session_id } => {
+                        SessionSupervisorEvent::SessionEndPaused { session_id } => {
                             events
                                 .emit_session_updated_with_reason_and_waiting_reason(
                                     &session_id,
@@ -444,8 +444,8 @@ impl AgentLayer {
                                 )
                                 .await;
                         }
-                        SessionEvent::InteractionRequested { .. }
-                        | SessionEvent::SessionError { .. } => {}
+                        SessionSupervisorEvent::InteractionRequested { .. }
+                        | SessionSupervisorEvent::SessionError { .. } => {}
                     }
                 }
             });

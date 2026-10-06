@@ -700,7 +700,7 @@ payload 记录不含 payload 的 warning 并丢弃；聊天页与布局分别拥
 session reducer，通知、usage fallback 与 media plan 双副作用保持原 owner（ADR 0347）。`SessionCompleted` /
 `SessionError` 经 `TauriEmitter` 各只投影为一个 `session:lifecycle` terminal variant；`occurrence_id` 和
 配对副发已删除。ReAct Fatal 经项目 dispatcher 运行时仍只由 SessionSupervisor 发布终态错误；dispatcher
-专用入口过滤 ReAct 的重复 `AgentEvent::SessionError`，bootstrap 将 typed `SessionEvent::SessionError`
+专用入口过滤 ReAct 的重复 `AgentEvent::SessionError`，bootstrap 将 typed `SessionSupervisorEvent::SessionError`
 重新排入同一 `BufferedEmitter`，由 `TauriEmitter` 按队列顺序投影，并保留标题缓存和桌面通知（ADR 0511、0529）。
 Memory command 的 repository `Fact` 仅在 App command mapper 内映射到 `MemoryFactResponse`；该 DTO 与
 `MemoryFactSourceRef` 是 renderer 的 Rust wire authority，字段由生成的 `generatedCommands.ts` 导出，

@@ -673,7 +673,7 @@ impl SessionSupervisor {
                     )
                     .await
                 {
-                    Ok(true) => self.emit_event(SessionEvent::SessionRunPaused {
+                    Ok(true) => self.emit_event(SessionSupervisorEvent::SessionRunPaused {
                         session_id: session_id.to_string(),
                     }),
                     Ok(false) => {}

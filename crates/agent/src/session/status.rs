@@ -137,7 +137,7 @@ impl SessionSupervisor {
                     .as_ref()
                     .is_some_and(|record| record.status != SessionStatus::Completed)
                 {
-                    self.emit_event(SessionEvent::SessionEndPaused {
+                    self.emit_event(SessionSupervisorEvent::SessionEndPaused {
                         session_id: session_id.to_string(),
                     });
                 }
@@ -150,7 +150,7 @@ impl SessionSupervisor {
                 && let Err(error) =
                     Self::persist_status(&self.store, session_id, SessionStatus::Completed).await
             {
-                self.emit_event(SessionEvent::SessionEndPaused {
+                self.emit_event(SessionSupervisorEvent::SessionEndPaused {
                     session_id: session_id.to_string(),
                 });
                 return Err(error);
@@ -256,7 +256,7 @@ impl SessionSupervisor {
                 "failed to mark paused session as awaiting end retry"
             );
         }
-        self.emit_event(SessionEvent::SessionEndPaused {
+        self.emit_event(SessionSupervisorEvent::SessionEndPaused {
             session_id: session_id.to_string(),
         });
     }
@@ -341,7 +341,7 @@ impl SessionSupervisor {
                 .await
                 .is_ok()
             {
-                self.emit_event(SessionEvent::CascadeCompleted {
+                self.emit_event(SessionSupervisorEvent::CascadeCompleted {
                     session_id: child_id,
                     title,
                 });
@@ -710,7 +710,7 @@ impl SessionSupervisor {
         let is_error =
             changed || self.get_session_status(session_id).await == Some(SessionStatus::Error);
         if is_error {
-            self.emit_event(SessionEvent::SessionError {
+            self.emit_event(SessionSupervisorEvent::SessionError {
                 session_id: session_id.to_string(),
                 reason,
             });
@@ -963,7 +963,7 @@ impl SessionSupervisor {
 
     pub async fn cleanup_session_maps(&self, session_id: &str) {
         self.partials.forget_session(session_id).await;
-        self.emit_event(SessionEvent::SessionCleanup {
+        self.emit_event(SessionSupervisorEvent::SessionCleanup {
             session_id: session_id.to_string(),
         });
         if self

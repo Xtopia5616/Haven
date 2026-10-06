@@ -498,7 +498,7 @@ pub(crate) fn run() {
                                     }
                                 };
                                 match event {
-                                    haven_agent::SessionEvent::InteractionRequested { envelope } => {
+                                    haven_agent::SessionSupervisorEvent::InteractionRequested { envelope } => {
                                         let haven_agent::InteractionEnvelope { owner, request } = *envelope;
                                         tracing::info!(
                                             session_id = ?request.session_id,
@@ -517,7 +517,7 @@ pub(crate) fn run() {
                                             )
                                         );
                                     }
-                                    haven_agent::SessionEvent::SessionError {
+                                    haven_agent::SessionSupervisorEvent::SessionError {
                                         session_id,
                                         reason,
                                     } => {
@@ -533,14 +533,14 @@ pub(crate) fn run() {
                                         )
                                         .await;
                                     }
-                                    haven_agent::SessionEvent::ScheduledConfirmOutcome {
+                                    haven_agent::SessionSupervisorEvent::ScheduledConfirmOutcome {
                                         ..
                                     }
-                                    | haven_agent::SessionEvent::SessionResumed { .. }
-                                    | haven_agent::SessionEvent::SessionRunPaused { .. }
-                                    | haven_agent::SessionEvent::SessionEndPaused { .. }
-                                    | haven_agent::SessionEvent::SessionCleanup { .. }
-                                    | haven_agent::SessionEvent::CascadeCompleted { .. } => {}
+                                    | haven_agent::SessionSupervisorEvent::SessionResumed { .. }
+                                    | haven_agent::SessionSupervisorEvent::SessionRunPaused { .. }
+                                    | haven_agent::SessionSupervisorEvent::SessionEndPaused { .. }
+                                    | haven_agent::SessionSupervisorEvent::SessionCleanup { .. }
+                                    | haven_agent::SessionSupervisorEvent::CascadeCompleted { .. } => {}
                                 }
                             }
                         },

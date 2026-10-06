@@ -58,8 +58,8 @@ pub use react::{
     LoopExit, MetricsSnapshot, PauseReason, ReActEngine, ToolCatalogPort, UiMetricsSnapshot,
 };
 pub use session::{
-    ConfirmResolution, ManagedAssetLeasePort, RunEngine, RunHandler, SessionEvent, SessionInfo,
-    SessionStatus, SessionSupervisor, SessionToolOverlayPort, SessionToolPorts,
+    ConfirmResolution, ManagedAssetLeasePort, RunEngine, RunHandler, SessionInfo, SessionStatus,
+    SessionSupervisor, SessionSupervisorEvent, SessionToolOverlayPort, SessionToolPorts,
     SessionWaitingReason, StepInfo, ToolAuthorizationPort, ToolExecution, ToolExecutionContext,
     ToolExecutionPort, ToolObservationPort,
 };
@@ -69,11 +69,10 @@ pub use types::{
     BranchPoint, ProcessResult, ReActRound, RunBudget, ToolCall, ToolRecord, TranscriptRecord,
     project_transcript, project_transcript_with_strategy, seed_events_from_canonical,
 };
-// The store owns SQLite ordering/persistence in `haven-memory`, while this
-// re-export keeps the Agent's session boundary discoverable to callers.
+// The store owns SQLite ordering/persistence in `haven-memory`; these
+// re-exports keep the Agent's durable session boundary discoverable to callers.
 pub use haven_memory::{
-    SessionEvent as DurableSessionEvent, SessionEventInput, SessionEventStore,
-    SessionEventSubscription, SessionStore,
+    SessionEvent, SessionEventInput, SessionEventStore, SessionEventSubscription, SessionStore,
 };
 
 use haven_common::config::ContextLimitsConfig;

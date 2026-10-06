@@ -219,7 +219,7 @@ impl SessionSupervisor {
             .ok_or_else(|| anyhow::anyhow!("session '{}' not found", session_id))?;
         actor.request_interaction(request.clone()).await?;
         if request.status == crate::interaction::InteractionStatus::Pending {
-            self.emit_event(SessionEvent::InteractionRequested {
+            self.emit_event(SessionSupervisorEvent::InteractionRequested {
                 envelope: Box::new(crate::interaction::InteractionEnvelope {
                     owner: crate::interaction::InteractionOwner::Session {
                         session_id: actor.id.clone(),
@@ -329,7 +329,7 @@ impl SessionSupervisor {
         if decision.wake_session {
             self.publish_confirmation_resume(&actor.id).await;
         }
-        self.emit_event(SessionEvent::InteractionRequested {
+        self.emit_event(SessionSupervisorEvent::InteractionRequested {
             envelope: Box::new(crate::interaction::InteractionEnvelope {
                 owner: crate::interaction::InteractionOwner::Session {
                     session_id: actor.id,
@@ -358,7 +358,7 @@ impl SessionSupervisor {
         // Publish the lifecycle transition before waking the dispatcher. The
         // UI can clear the confirmation waiting reason as soon as the accepted
         // batch is eligible to continue.
-        self.emit_event(SessionEvent::SessionResumed {
+        self.emit_event(SessionSupervisorEvent::SessionResumed {
             session_id: session_id.to_string(),
         });
         self.enqueue_pending(session_id).await;
@@ -441,7 +441,7 @@ impl SessionSupervisor {
         actor.request_confirm_batch(requests.clone()).await?;
 
         for request in requests {
-            self.emit_event(SessionEvent::InteractionRequested {
+            self.emit_event(SessionSupervisorEvent::InteractionRequested {
                 envelope: Box::new(crate::interaction::InteractionEnvelope {
                     owner: crate::interaction::InteractionOwner::Session {
                         session_id: session_id.to_string(),

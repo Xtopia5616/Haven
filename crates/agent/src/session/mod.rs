@@ -284,7 +284,7 @@ pub struct ConfirmResolution {
 /// Typed side effects emitted by the supervisor. Consumers subscribe to this
 /// stream; no subsystem installs mutable one-shot callbacks on the runtime.
 #[derive(Debug, Clone)]
-pub enum SessionEvent {
+pub enum SessionSupervisorEvent {
     InteractionRequested {
         envelope: Box<InteractionEnvelope>,
     },
@@ -425,7 +425,7 @@ pub struct SessionSupervisor {
     /// promote / discard), shared with the agent loop and the end/rollback
     /// paths.
     pub partials: Arc<crate::partial::PartialStore>,
-    event_tx: broadcast::Sender<SessionEvent>,
+    event_tx: broadcast::Sender<SessionSupervisorEvent>,
     message_tx: watch::Sender<u64>,
     /// Notification body truncation for scheduled-tool outcomes (matches
     /// `ContextLimitsConfig::notification_summary_chars`).
@@ -680,7 +680,7 @@ impl SessionSupervisor {
             .await
     }
 
-    pub fn subscribe_events(&self) -> broadcast::Receiver<SessionEvent> {
+    pub fn subscribe_events(&self) -> broadcast::Receiver<SessionSupervisorEvent> {
         self.event_tx.subscribe()
     }
 
@@ -861,7 +861,7 @@ impl SessionSupervisor {
         ))
     }
 
-    pub(crate) fn emit_event(&self, event: SessionEvent) {
+    pub(crate) fn emit_event(&self, event: SessionSupervisorEvent) {
         let _ = self.event_tx.send(event);
     }
 
@@ -1500,7 +1500,7 @@ mod tests {
         // dispatcher's spawned session.
         let mut seen = None;
         for _ in 0..100 {
-            if let Ok(Ok(SessionEvent::SessionError { session_id, reason })) =
+            if let Ok(Ok(SessionSupervisorEvent::SessionError { session_id, reason })) =
                 tokio::time::timeout(std::time::Duration::from_millis(10), events.recv()).await
             {
                 seen = Some((session_id, reason));
@@ -2704,7 +2704,7 @@ mod tests {
         );
         assert!(
             !std::iter::from_fn(|| events.try_recv().ok())
-                .any(|event| matches!(event, SessionEvent::SessionError { .. })),
+                .any(|event| matches!(event, SessionSupervisorEvent::SessionError { .. })),
             "a late cancelled-run error must not publish a second terminal event"
         );
 
@@ -3516,7 +3516,7 @@ mod tests {
         );
         assert!(matches!(
             events.try_recv(),
-            Ok(SessionEvent::SessionEndPaused { session_id }) if session_id == session.id
+            Ok(SessionSupervisorEvent::SessionEndPaused { session_id }) if session_id == session.id
         ));
 
         db.conn()
@@ -3879,7 +3879,7 @@ mod tests {
         let mut runtime_events = exec.subscribe_events();
         exec.request_interaction(request.clone()).await.unwrap();
         let delivery = runtime_events.recv().await.unwrap();
-        let SessionEvent::InteractionRequested { envelope } = delivery else {
+        let SessionSupervisorEvent::InteractionRequested { envelope } = delivery else {
             panic!("expected interaction runtime envelope, got {delivery:?}");
         };
         assert_eq!(
@@ -4072,7 +4072,7 @@ mod tests {
         let first_event = runtime_events.recv().await.unwrap();
         assert!(matches!(
             first_event,
-            SessionEvent::InteractionRequested { ref envelope }
+            SessionSupervisorEvent::InteractionRequested { ref envelope }
                 if envelope.request.id == requests[0].id
         ));
         assert_eq!(
@@ -4145,12 +4145,12 @@ mod tests {
         );
         let resumed = runtime_events.recv().await.unwrap();
         assert!(
-            matches!(resumed, SessionEvent::SessionResumed { ref session_id } if session_id == &session.id)
+            matches!(resumed, SessionSupervisorEvent::SessionResumed { ref session_id } if session_id == &session.id)
         );
         let resolved_event = runtime_events.recv().await.unwrap();
         assert!(matches!(
             resolved_event,
-            SessionEvent::InteractionRequested { ref envelope }
+            SessionSupervisorEvent::InteractionRequested { ref envelope }
                 if envelope.request.id == requests[1].id
         ));
         tokio::time::timeout(std::time::Duration::from_secs(1), dispatch_wake.changed())
@@ -4234,11 +4234,11 @@ mod tests {
         );
         assert!(matches!(
             runtime_events.recv().await.unwrap(),
-            SessionEvent::SessionResumed { ref session_id } if session_id == &session.id
+            SessionSupervisorEvent::SessionResumed { ref session_id } if session_id == &session.id
         ));
         assert!(matches!(
             runtime_events.recv().await.unwrap(),
-            SessionEvent::InteractionRequested { ref envelope }
+            SessionSupervisorEvent::InteractionRequested { ref envelope }
                 if envelope.request.id == confirmation.id
                     && envelope.request.status == crate::interaction::InteractionStatus::Expired
         ));

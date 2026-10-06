@@ -1080,7 +1080,7 @@ impl SessionSupervisor {
             }
             scheduled_confirms.insert(tool_run_id.clone(), request.clone());
         }
-        self.emit_event(SessionEvent::InteractionRequested {
+        self.emit_event(SessionSupervisorEvent::InteractionRequested {
             envelope: Box::new(crate::interaction::InteractionEnvelope {
                 owner: crate::interaction::InteractionOwner::ScheduledToolRun {
                     tool_run_id: tool_run_id.clone(),
@@ -1630,14 +1630,16 @@ impl SessionSupervisor {
                 request.cancel();
                 request
             };
-            self.emit_event(crate::session::SessionEvent::InteractionRequested {
-                envelope: Box::new(crate::interaction::InteractionEnvelope {
-                    owner: crate::interaction::InteractionOwner::ScheduledToolRun {
-                        tool_run_id: tool_run_id.to_string(),
-                    },
-                    request: cancelled,
-                }),
-            });
+            self.emit_event(
+                crate::session::SessionSupervisorEvent::InteractionRequested {
+                    envelope: Box::new(crate::interaction::InteractionEnvelope {
+                        owner: crate::interaction::InteractionOwner::ScheduledToolRun {
+                            tool_run_id: tool_run_id.to_string(),
+                        },
+                        request: cancelled,
+                    }),
+                },
+            );
             return Ok(None);
         }
 
@@ -1663,14 +1665,16 @@ impl SessionSupervisor {
         } else {
             let _ = request.resolve(Value::Bool(confirmed));
         }
-        self.emit_event(crate::session::SessionEvent::InteractionRequested {
-            envelope: Box::new(crate::interaction::InteractionEnvelope {
-                owner: crate::interaction::InteractionOwner::ScheduledToolRun {
-                    tool_run_id: tool_run_id.to_string(),
-                },
-                request: request.clone(),
-            }),
-        });
+        self.emit_event(
+            crate::session::SessionSupervisorEvent::InteractionRequested {
+                envelope: Box::new(crate::interaction::InteractionEnvelope {
+                    owner: crate::interaction::InteractionOwner::ScheduledToolRun {
+                        tool_run_id: tool_run_id.to_string(),
+                    },
+                    request: request.clone(),
+                }),
+            },
+        );
         let resolution = crate::session::ConfirmResolution {
             session_id,
             tool_name,
@@ -1715,7 +1719,7 @@ impl SessionSupervisor {
             && let Some(live_session_id) = session_id.as_deref()
             && !self.session_is_live(live_session_id).await
         {
-            self.emit_event(SessionEvent::ScheduledConfirmOutcome {
+            self.emit_event(SessionSupervisorEvent::ScheduledConfirmOutcome {
                 tool_run_id: tool_run_id.clone(),
                 session_id: session_id.clone(),
                 title,
@@ -1735,7 +1739,7 @@ impl SessionSupervisor {
             } else {
                 "confirmation was declined"
             };
-            self.emit_event(SessionEvent::ScheduledConfirmOutcome {
+            self.emit_event(SessionSupervisorEvent::ScheduledConfirmOutcome {
                 tool_run_id: tool_run_id.clone(),
                 session_id: session_id.clone(),
                 title,
@@ -1795,7 +1799,7 @@ impl SessionSupervisor {
                 .fail_scheduled(&tool_run_id, &failure_summary)
                 .await;
         }
-        self.emit_event(SessionEvent::ScheduledConfirmOutcome {
+        self.emit_event(SessionSupervisorEvent::ScheduledConfirmOutcome {
             tool_run_id,
             session_id,
             title,

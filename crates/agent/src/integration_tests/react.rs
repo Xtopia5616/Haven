@@ -164,7 +164,7 @@ async fn dispatcher_react_failure_has_one_terminal_event_owner() {
     let error_session_id = tokio::time::timeout(std::time::Duration::from_secs(10), async {
         loop {
             match events.recv().await {
-                Ok(SessionEvent::SessionError { session_id, reason }) => {
+                Ok(SessionSupervisorEvent::SessionError { session_id, reason }) => {
                     assert!(!reason.is_empty());
                     break session_id;
                 }
@@ -184,7 +184,9 @@ async fn dispatcher_react_failure_has_one_terminal_event_owner() {
     );
     loop {
         match events.try_recv() {
-            Ok(SessionEvent::SessionError { session_id, .. }) if session_id == session.id => {
+            Ok(SessionSupervisorEvent::SessionError { session_id, .. })
+                if session_id == session.id =>
+            {
                 panic!("a ReAct fatal run must publish only one supervisor terminal event");
             }
             Ok(_) => {}
