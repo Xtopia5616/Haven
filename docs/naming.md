@@ -1,6 +1,6 @@
 # Haven 命名规范
 
-> 版本: v1.18 | 日期: 2026-10-07
+> 版本: v1.19 | 日期: 2026-10-07
 
 本文档统一 Haven 项目各层的命名规则（变量名、函数名、文件名、crate 名、缩写大小写、跨层边界）。规范以现有代码中的事实模式为基础，新代码必须遵循；存量代码若与规范冲突，逐步迁移对齐。
 
@@ -34,6 +34,8 @@
 代码中，**session** 用于指向持久会话实体及其运行状态；**conversation** 仅在描述自然语言交流内容、历史文本或模型上下文时使用，不用来命名会话实体的状态和 UI 组件。UI 的 `SessionMessage` 是当前会话 reducer 的消息形状；`sessionTimeline.ts` 接收该类型并投影为 `SessionTimelineItem`，不得再声明一份宽松的平行消息结构。组件专有的展示输入（如允许文件路径的 `ChatBubbleAttachment`）可保留在组件内，并用组件/视图角色命名。
 
 Tauri listener 的通用 `TauriEvent<T>` envelope 由 `contracts/tauriEvent.ts` 唯一声明；Session、ToolRun、Agent、App 和录音 contracts 只定义各自 payload 与转换，不重复定义同形 envelope。
+
+Memory `partial_messages` 中尚未提交到 canonical transcript 的流式文本称为 `PartialMessageCheckpoint`；读取结果以 `content` 与 `updated_at` 字段表达，不把草稿文本冒充为已持久化 `Message`。
 
 跨端枚举的允许值以 generated IPC contract 为单一来源；UI 可以为这些值维护展示标签，但选项数组应从生成值派生，并让边界/事件 contract 直接引用生成类型，不另手写相同 union。
 

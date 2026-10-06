@@ -25,6 +25,7 @@ pub use repositories::memory_maintenance_store::{MemoryMaintenanceStore, Predica
 pub use repositories::memory_recall_store::MemoryRecallStore;
 pub use repositories::memory_store::MemoryStore;
 pub use repositories::messages::{PendingInputDisposition, PendingSessionInput};
+pub use repositories::partials::PartialMessageCheckpoint;
 pub use repositories::scheduled_tool_runs::{
     ScheduledToolRunRow, ToolRunDependencyRow, ToolRunRow,
 };

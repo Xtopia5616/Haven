@@ -1,6 +1,13 @@
 use crate::db::Database;
 use chrono::Utc;
 
+/// In-flight text checkpoint persisted outside the canonical transcript.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PartialMessageCheckpoint {
+    pub content: String,
+    pub updated_at: String,
+}
+
 /// Scratch storage for in-flight streamed text. While an LLM response is
 /// streaming, `stream_llm_step` periodically checkpoints the accumulated
 /// text here so a crash or user stop does not lose everything the user
@@ -29,13 +36,18 @@ impl Database {
         Ok(())
     }
 
-    /// Return `(content, updated_at)` of the partial row for a session, if any.
-    pub fn get_partial_message(&self, session_id: &str) -> Option<(String, String)> {
+    /// Return the in-flight text checkpoint for a session, if any.
+    pub fn get_partial_message(&self, session_id: &str) -> Option<PartialMessageCheckpoint> {
         let conn = self.conn();
         conn.query_row(
             "SELECT content, updated_at FROM partial_messages WHERE session_id = ?1",
             rusqlite::params![session_id],
-            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+            |row| {
+                Ok(PartialMessageCheckpoint {
+                    content: row.get(0)?,
+                    updated_at: row.get(1)?,
+                })
+            },
         )
         .ok()
     }
@@ -43,12 +55,17 @@ impl Database {
     /// Read and remove the partial row for a session. Atomic (single
     /// `DELETE ... RETURNING` statement), so a concurrent writer can never
     /// observe a row that was already taken.
-    pub fn take_partial_message(&self, session_id: &str) -> Option<(String, String)> {
+    pub fn take_partial_message(&self, session_id: &str) -> Option<PartialMessageCheckpoint> {
         let conn = self.conn();
         conn.query_row(
             "DELETE FROM partial_messages WHERE session_id = ?1 RETURNING content, updated_at",
             rusqlite::params![session_id],
-            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+            |row| {
+                Ok(PartialMessageCheckpoint {
+                    content: row.get(0)?,
+                    updated_at: row.get(1)?,
+                })
+            },
         )
         .ok()
     }
@@ -74,9 +91,13 @@ impl Database {
     /// Returns `true` when a message was inserted. Single blocking round
     /// trip; used by ses-end promotion and the startup orphan finalizer.
     pub fn promote_partial_message(&self, session_id: &str) -> anyhow::Result<bool> {
-        let Some((content, updated_at)) = self.take_partial_message(session_id) else {
+        let Some(checkpoint) = self.take_partial_message(session_id) else {
             return Ok(false);
         };
+        let PartialMessageCheckpoint {
+            content,
+            updated_at,
+        } = checkpoint;
         if content.trim().is_empty() {
             return Ok(false);
         }
@@ -118,12 +139,12 @@ mod tests {
             .unwrap();
         db.upsert_partial_message(&session_id, "partial two")
             .unwrap();
-        let (content, _) = db
+        let checkpoint = db
             .get_partial_message(&session_id)
             .expect("partial exists after upsert");
-        assert_eq!(content, "partial two");
-        let (taken, _) = db.take_partial_message(&session_id).expect("taken");
-        assert_eq!(taken, "partial two");
+        assert_eq!(checkpoint.content, "partial two");
+        let taken = db.take_partial_message(&session_id).expect("taken");
+        assert_eq!(taken.content, "partial two");
         assert!(db.get_partial_message(&session_id).is_none());
     }
 

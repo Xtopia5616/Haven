@@ -575,3 +575,4 @@
 - [0584：为 ReAct 流式消息使用结构化身份](0584-name-react-stream-block-identity.md)
 - [0585：为 LLM Router 运行态使用具名初始化结果](0585-name-llm-router-runtime-state.md)
 - [0586：统一 Tools 目录版本时钟类型](0586-name-tool-catalog-version.md)
+- [0587：为 Memory 流式草稿命名 checkpoint 结果](0587-name-partial-message-checkpoint.md)

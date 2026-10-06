@@ -349,7 +349,7 @@ mod tests {
             .await
             .unwrap()
             .expect("new attempt should remain checkpointed");
-        assert_eq!(row.0, "new attempt");
+        assert_eq!(row.content, "new attempt");
     }
 
     #[tokio::test]

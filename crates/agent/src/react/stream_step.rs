@@ -1215,7 +1215,10 @@ mod tests {
             .run_blocking(move |db| Ok(db.get_partial_message(&session_id)))
             .await
             .unwrap();
-        assert_eq!(partial.map(|row| row.0).as_deref(), Some("latest"));
+        assert_eq!(
+            partial.map(|checkpoint| checkpoint.content).as_deref(),
+            Some("latest")
+        );
     }
 
     #[tokio::test]
