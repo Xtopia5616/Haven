@@ -69,6 +69,7 @@
 	import type { RecordingOverlayState } from '$lib/recordingOverlayController.ts';
 	import type { ReactExecutionPhase } from '$lib/sessionRuntimeStore.ts';
 	import type { ToolRunKind, ToolRunPayload } from '$lib/contracts/toolRun.ts';
+	import type { ConfirmationDecision } from '$lib/confirmationTypes.ts';
 	import type { AgentNotificationPayload } from '$lib/contracts/agent.ts';
 	import type { NotificationConfigInput } from '$lib/contracts/generatedCommands.ts';
 	import { interactionOwnerToWire } from '$lib/contracts/app.ts';
@@ -97,13 +98,6 @@
 		settings: (typeof import('$lib/views/SettingsView.svelte'))['default'];
 	};
 	type LazyViewState = 'loading' | 'ready' | 'error';
-	type ConfirmationDecision = {
-		stepId: string;
-		approved: boolean;
-		effect?: string;
-		scope?: string;
-		target?: string;
-	};
 
 	const LAZY_VIEW_LOADERS: {
 		[K in LazyViewId]: () => Promise<{ default: LazyViewComponents[K] }>;

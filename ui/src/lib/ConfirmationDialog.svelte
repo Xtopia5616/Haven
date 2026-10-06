@@ -7,14 +7,7 @@
 	import MaterialSplitButton from './MaterialSplitButton.svelte';
 	import MaterialIconButton from './MaterialIconButton.svelte';
 	import type { RiskLevel } from '$lib/contracts/generatedCommands.ts';
-
-	interface ConfirmationDecision {
-		stepId: string;
-		approved: boolean;
-		effect?: string;
-		scope?: string;
-		target?: string;
-	}
+	import type { ConfirmationDecision } from '$lib/confirmationTypes.ts';
 
 	interface Props {
 		open?: boolean;
