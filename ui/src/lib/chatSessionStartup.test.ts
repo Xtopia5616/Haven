@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createChatSessionStartup, type ChatSessionStartupDependencies } from './chatSessionStartup.ts';
 import type { SessionListResponse, SessionResumeResponse } from './contracts/sessionHistory.ts';
 import { SessionReducer, type SessionAction } from './sessionReducer.ts';
-import type { ResumeTarget } from './sessionIntentStore.ts';
+import type { SessionResumeTarget } from './sessionIntentStore.ts';
 
 const SESSION_ID = 'ses-00000000000000000000000000000001';
 const OTHER_SESSION_ID = 'ses-00000000000000000000000000000002';
@@ -238,7 +238,7 @@ describe('createChatSessionStartup', () => {
 			sessionId: OTHER_SESSION_ID,
 			wasError: true,
 			errorReason: '已停止',
-		} satisfies ResumeTarget);
+		} satisfies SessionResumeTarget);
 
 		expect(harness.freshIntentChanges).toEqual([true, false]);
 		expect(harness.evicted).toEqual([SESSION_ID]);

@@ -3,7 +3,10 @@ import { browser } from '$app/environment';
 import { DRAFT_SESSION_ID, type SessionReducer } from './sessionReducer.ts';
 import { reactExecutionPhaseForSession, reactExecutionPhaseStore } from './sessionRuntimeStore.ts';
 import { newMessage } from './messageFactory.ts';
-import { newSessionIntentStore, NEW_ACTION_INTENT_KEY } from './sessionIntentStore.ts';
+import {
+	newSessionIntentStore,
+	NEW_SESSION_INTENT_STORAGE_KEY,
+} from './sessionIntentStore.ts';
 import { isBusyStatus, isPausedStatus } from './sessionStatus.ts';
 import { invoke } from './tauri.ts';
 import type { ProcessResult } from './contracts/generatedCommands.ts';
@@ -324,7 +327,7 @@ async function doSubmit({
 			// new session when appropriate.
 			if (freshStartAtDispatch) {
 				newSessionIntentStore.set(false);
-				if (browser) localStorage.removeItem(NEW_ACTION_INTENT_KEY);
+				if (browser) localStorage.removeItem(NEW_SESSION_INTENT_STORAGE_KEY);
 			}
 			reducer.dispatch({
 				type: 'session/messages/accepted',

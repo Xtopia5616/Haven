@@ -24,7 +24,7 @@
 		cancelToolRun,
 		finalizeBackgroundToolRunMessages,
 	} from '$lib/toolRunStore.ts';
-	import { resumeTargetStore } from '$lib/sessionIntentStore.ts';
+	import { sessionResumeTargetStore } from '$lib/sessionIntentStore.ts';
 	import { appSessionReducer, createSessionSelectorStore } from '$lib/sessionReducer.ts';
 	import { submitVoiceTranscript } from '$lib/voiceSubmit.ts';
 	import { themeStore } from '$lib/themeStore.ts';
@@ -298,7 +298,7 @@
 
 	function openTaskSession(sessionId: string) {
 		if (!sessionId) return;
-		resumeTargetStore.set({ sessionId, wasError: false });
+		sessionResumeTargetStore.set({ sessionId, wasError: false });
 		appSessionReducer.dispatch({ type: 'session/selected', sessionId });
 		switchTab('chat');
 	}

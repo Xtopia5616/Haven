@@ -5,7 +5,7 @@
 	import { appSessionReducer, resumeInteractions } from '$lib/sessionReducer.ts';
 	import { formatMessageTime } from '$lib/messageFormat.ts';
 	import { addNotification } from '$lib/notificationStore.ts';
-	import { resumeTargetStore } from '$lib/sessionIntentStore.ts';
+	import { sessionResumeTargetStore } from '$lib/sessionIntentStore.ts';
 	import { clearMediaPlans } from '$lib/mediaPlanStore.ts';
 	import { clearToolOutputPreviewsForSession } from '$lib/toolOutputPreviewStore.ts';
 	import { isErrorStatus, statusVariant } from '$lib/sessionStatus.ts';
@@ -340,7 +340,7 @@
 				usage: result.usage,
 				llmUsage: result.llm_usage,
 			});
-			resumeTargetStore.set({
+			sessionResumeTargetStore.set({
 				sessionId: session.id,
 				summary: session.input_text,
 				title: session.title,

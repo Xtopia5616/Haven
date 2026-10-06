@@ -42,7 +42,7 @@
 <aside class="session-rail" aria-label="会话列表">
 	<div class="session-rail__heading">
 		<div>
-			<p class="session-rail__eyebrow">对话空间</p>
+			<p class="session-rail__eyebrow">会话空间</p>
 			<h2>会话</h2>
 		</div>
 	</div>
@@ -91,8 +91,8 @@
 		{:else}
 			<div class="session-rail__empty">
 				<Icon name="chat" size={20} />
-				<strong>从一次新对话开始</strong>
-				<span>你的对话会显示在这里</span>
+				<strong>从一个新会话开始</strong>
+				<span>你的会话会显示在这里</span>
 			</div>
 		{/if}
 	</div>

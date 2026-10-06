@@ -1,6 +1,6 @@
 import { writable } from 'svelte/store';
 
-export type ResumeTarget = {
+export type SessionResumeTarget = {
 	sessionId: string;
 	summary?: string;
 	title?: string | null;
@@ -9,10 +9,10 @@ export type ResumeTarget = {
 };
 
 // Set by history before navigating to chat and consumed by +page.svelte.
-export const resumeTargetStore = writable<ResumeTarget | null>(null);
+export const sessionResumeTargetStore = writable<SessionResumeTarget | null>(null);
 
-// Persists an explicit "start a fresh conversation" intent across restarts.
-export const NEW_ACTION_INTENT_KEY = 'haven.no_auto_restore';
+// Persists an explicit "start a new session" intent across restarts.
+export const NEW_SESSION_INTENT_STORAGE_KEY = 'haven.no_auto_restore';
 
 /**
  * While set, event-driven paths must not auto-assign an existing session to

@@ -53,8 +53,8 @@
 	} from '$lib/sessionRuntimeStore.ts';
 	import { addNotification } from '$lib/notificationStore.ts';
 	import {
-		resumeTargetStore,
-		NEW_ACTION_INTENT_KEY,
+		sessionResumeTargetStore,
+		NEW_SESSION_INTENT_STORAGE_KEY,
 		newSessionIntentStore,
 	} from '$lib/sessionIntentStore.ts';
 	import {
@@ -567,7 +567,7 @@ import type { SessionTokenStatsView } from '$lib/sessionUsagePresentation.ts';
 		if (activeSessionId) {
 			dispatchSession({ type: 'session/memory-cleared', sessionId: activeSessionId });
 		}
-		// 新对话 = explicit fresh start. While `newSessionIntentStore` is set, no
+		// 新会话 = explicit fresh start. While `newSessionIntentStore` is set, no
 		// event-driven path may auto-assign an existing session (loadSessions
 		// auto-assign, session:lifecycle(created), auto-restore), otherwise the next message
 		// would append to the old conversation instead of starting a new session.
@@ -576,7 +576,7 @@ import type { SessionTokenStatsView } from '$lib/sessionUsagePresentation.ts';
 		// persisted to localStorage so the next app launch skips restoring the
 		// previous conversation.
 		newSessionIntentStore.set(true);
-		if (browser) localStorage.setItem(NEW_ACTION_INTENT_KEY, '1');
+		if (browser) localStorage.setItem(NEW_SESSION_INTENT_STORAGE_KEY, '1');
 		dispatchSession({ type: 'session/cleared' });
 		sessionMenuOpen = false;
 	}
@@ -727,10 +727,12 @@ import type { SessionTokenStatsView } from '$lib/sessionUsagePresentation.ts';
 	// The resume target set by the history page's "open session" flow must be
 	// handled while the chat view is already mounted. `$effect` does NOT track
 	// `get(store)` (svelte/store wraps the read in `untrack`), so a plain
-	// `get(resumeTargetStore)` here would only see the initial value and never
+	// `get(sessionResumeTargetStore)` here would only see the initial value and never
 	// react to later history clicks. Subscribing via syncStore runs the callback
 	// on every store change (and synchronously once with the current value).
-	$effect(() => syncStore(resumeTargetStore, (v) => sessionStartup.processResumeTarget(v)));
+	$effect(() =>
+		syncStore(sessionResumeTargetStore, (value) => sessionStartup.processResumeTarget(value)),
+	);
 
 	// Measure the composer overlay and reserve the same clearance under messages.
 	$effect(() => chatViewController.observeComposerClearance(chatPageEl, browser));
@@ -739,7 +741,7 @@ import type { SessionTokenStatsView } from '$lib/sessionUsagePresentation.ts';
 		// Hydrate the fresh-start intent from localStorage BEFORE any data
 		// load: the store is in-memory only, but the intent survives app
 		// restarts via `haven.no_auto_restore`. Without this, `loadSessions`
-		// auto-assign would re-select the old conversation on restart and the
+		// auto-assign would re-select the old session on restart and the
 		// persisted intent would be silently defeated. The resumeTarget
 		// branch below (an explicit user choice) clears it again if needed.
 		sessionStartup.hydrateFreshSessionIntent();
@@ -747,8 +749,8 @@ import type { SessionTokenStatsView } from '$lib/sessionUsagePresentation.ts';
 
 		// Process resume target first so loadSessions won't overwrite
 		// activeSessionId with a stale paused session whose messages are gone.
-		const initialResumeTarget = get(resumeTargetStore);
-		sessionStartup.processResumeTarget(initialResumeTarget);
+		const initialSessionResumeTarget = get(sessionResumeTargetStore);
+		sessionStartup.processResumeTarget(initialSessionResumeTarget);
 
 		// Register listeners BEFORE any async data load so session/streaming
 		// events arriving while the page initializes are never missed.
@@ -831,7 +833,7 @@ import type { SessionTokenStatsView } from '$lib/sessionUsagePresentation.ts';
 		// parallel; the conversation renders as soon as its data arrives,
 		// without waiting for `reopen_session` (a second IPC round-trip that
 		// only makes the session resumable for follow-up messages).
-		await sessionStartup.loadInitialSessions(initialResumeTarget);
+		await sessionStartup.loadInitialSessions(initialSessionResumeTarget);
 		if (dead) return;
 
 		// Conversation just opened (history resume or auto-restore): scroll to
@@ -873,14 +875,14 @@ import type { SessionTokenStatsView } from '$lib/sessionUsagePresentation.ts';
 		getFreshSessionIntent: () => get(newSessionIntentStore),
 		setFreshSessionIntent: (value) => newSessionIntentStore.set(value),
 		hasPersistedFreshSessionIntent: () =>
-			browser && Boolean(localStorage.getItem(NEW_ACTION_INTENT_KEY)),
+			browser && Boolean(localStorage.getItem(NEW_SESSION_INTENT_STORAGE_KEY)),
 		clearPersistedFreshSessionIntent: () => {
-			if (browser) localStorage.removeItem(NEW_ACTION_INTENT_KEY);
+			if (browser) localStorage.removeItem(NEW_SESSION_INTENT_STORAGE_KEY);
 		},
 		getPendingInteractionIds: (sessionId) => pendingInteractionIdsForSession(sessionId),
 		evictTerminalSessionMemory,
 		setInitialLoading: (loading) => (initialLoading = loading),
-		deferResumeTargetClear: () => setTimeout(() => resumeTargetStore.set(null), 0),
+		deferResumeTargetClear: () => setTimeout(() => sessionResumeTargetStore.set(null), 0),
 		warn: (message, error) => logger.warn('+page', message, error),
 		reportError,
 	});
@@ -900,7 +902,7 @@ import type { SessionTokenStatsView } from '$lib/sessionUsagePresentation.ts';
 		clearStepBlockIds,
 		setFreshSessionIntent: (value) => newSessionIntentStore.set(value),
 		clearPersistedFreshSessionIntent: () => {
-			if (browser) localStorage.removeItem(NEW_ACTION_INTENT_KEY);
+			if (browser) localStorage.removeItem(NEW_SESSION_INTENT_STORAGE_KEY);
 		},
 		setRollbackLoading: (loading) => (rollbackLoading = loading),
 		closeRollbackDialog: () => {

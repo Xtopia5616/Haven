@@ -544,3 +544,4 @@
 - [0553：历史集合 IPC 命令使用 list_history](0553-name-history-collection-command.md)
 - [0554：Skills 发现状态命名为 SkillRegistry](0554-name-skill-registry.md)
 - [0555：明确 UI session runtime 与录音 overlay 状态 owner](0555-name-session-runtime-and-recording-overlay-state.md)
+- [0556：明确 UI 会话意图目标与存储键](0556-name-session-intent-target-and-storage-key.md)

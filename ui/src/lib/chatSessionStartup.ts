@@ -4,7 +4,7 @@ import { isErrorStatus } from './sessionStatus.ts';
 import { resumeInteractions } from './sessionReducer.ts';
 import type { SessionAction, SessionReducer } from './sessionReducer.ts';
 import type { SessionListResponse, SessionResumeResponse } from './contracts/sessionHistory.ts';
-import type { ResumeTarget } from './sessionIntentStore.ts';
+import type { SessionResumeTarget } from './sessionIntentStore.ts';
 
 export interface ChatSessionStartupDependencies {
 	reducer: SessionReducer;
@@ -41,7 +41,9 @@ export function createChatSessionStartup(dependencies: ChatSessionStartupDepende
 
 	const loadSessionsRefresh = createSessionRefreshScheduler(() => loadSessionsNow());
 
-	function retainErroredSession(resumeTarget: Pick<ResumeTarget, 'sessionId' | 'summary' | 'title'>) {
+	function retainErroredSession(
+		resumeTarget: Pick<SessionResumeTarget, 'sessionId' | 'summary' | 'title'>,
+	) {
 		dependencies.dispatch({
 			type: 'session/retained-error',
 			session: {
@@ -61,7 +63,7 @@ export function createChatSessionStartup(dependencies: ChatSessionStartupDepende
 		}
 	}
 
-	function processResumeTarget(resumeTarget: ResumeTarget | null) {
+	function processResumeTarget(resumeTarget: SessionResumeTarget | null) {
 		if (!disposed && resumeTarget?.sessionId) {
 			// An explicit history choice cancels a pending fresh-start intent.
 			dependencies.setFreshSessionIntent(false);
@@ -159,7 +161,7 @@ export function createChatSessionStartup(dependencies: ChatSessionStartupDepende
 		loadSessionsRefresh.schedule();
 	}
 
-	async function restoreLastConversation(resumeTarget: ResumeTarget | null): Promise<void> {
+	async function restoreLastConversation(resumeTarget: SessionResumeTarget | null): Promise<void> {
 		const requestGeneration = generation;
 		if (!isCurrentGeneration(requestGeneration)) return;
 		if (
@@ -234,7 +236,7 @@ export function createChatSessionStartup(dependencies: ChatSessionStartupDepende
 		await loadSessions();
 	}
 
-	async function loadInitialSessions(resumeTarget: ResumeTarget | null): Promise<void> {
+	async function loadInitialSessions(resumeTarget: SessionResumeTarget | null): Promise<void> {
 		if (disposed) return;
 		const requestGeneration = generation;
 		const sessionsPromise = loadSessions();
