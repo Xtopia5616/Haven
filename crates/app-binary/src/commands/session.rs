@@ -725,7 +725,7 @@ async fn persist_permanent_permission(
     effect: haven_common::types::PermissionEffect,
 ) -> Result<tokio::sync::OwnedMutexGuard<()>, String> {
     use haven_common::config::StoredPermission;
-    let guard = state.runtime.config_apply_gate.lock_owned().await;
+    let guard = state.runtime.config_runtime_coordinator.lock_owned().await;
     state
         .runtime
         .config_service

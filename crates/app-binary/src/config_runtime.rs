@@ -24,10 +24,6 @@ pub(crate) struct RuntimeConfigCoordinator {
     apply_gate: Arc<tokio::sync::Mutex<()>>,
 }
 
-// Keep the composition-root field name stable while its owner grows to include
-// the router prepare/publish boundary.
-pub(crate) type ConfigApplyGate = RuntimeConfigCoordinator;
-
 impl RuntimeConfigCoordinator {
     pub(crate) fn with_shared_gate(apply_gate: Arc<tokio::sync::Mutex<()>>) -> Self {
         Self { apply_gate }

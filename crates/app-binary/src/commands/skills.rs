@@ -23,7 +23,7 @@ pub async fn refresh_skills(
     state: State<'_, Arc<AppState>>,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
-    let _config_apply_guard = state.runtime.config_apply_gate.lock().await;
+    let _config_apply_guard = state.runtime.config_runtime_coordinator.lock().await;
     // Re-scan skills from the configured (or default) skills directory (M4-01).
     state
         .runtime

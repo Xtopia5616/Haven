@@ -537,7 +537,7 @@ async fn update_model_field(
 ) -> Result<(), String> {
     state
         .runtime
-        .config_apply_gate
+        .config_runtime_coordinator
         .edit_model_and_apply(state, ctx, |config| {
             validate(config, model_id_or_request_kind).map_err(anyhow::Error::msg)?;
             let slot = model_slot(&mut config.llm, model_id_or_request_kind).ok_or_else(|| {
@@ -563,7 +563,7 @@ pub async fn switch_model(
     let state = app.state::<Arc<AppState>>();
     state
         .runtime
-        .config_apply_gate
+        .config_runtime_coordinator
         .edit_model_and_apply(&state, "switch_model", |config| {
             set_request_route(&mut config.llm, &role, &model_id).map_err(anyhow::Error::msg)
         })

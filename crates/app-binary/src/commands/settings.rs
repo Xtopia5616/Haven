@@ -181,7 +181,7 @@ async fn execute_settings_apply_phase(
     match phase {
         SettingsApplyPhase::RouterPrepare => match state
             .runtime
-            .config_apply_gate
+            .config_runtime_coordinator
             .prepare_router_runtime(&state, &snapshot, "update_settings")
         {
             Ok(prepared) => {
@@ -271,7 +271,7 @@ async fn execute_settings_apply_phase(
                 .expect("router target always has a prepared runtime");
             let result = state
                 .runtime
-                .config_apply_gate
+                .config_runtime_coordinator
                 .publish_router_runtime(&state, prepared)
                 .await;
             timing.tick("publish_router_runtime");
@@ -487,7 +487,7 @@ pub async fn update_settings(
     let timing = Arc::new(SettingsApplyTiming::new());
     let state = app.state::<Arc<AppState>>();
     let state = Arc::clone(&*state);
-    let _apply_guard = state.runtime.config_apply_gate.lock().await;
+    let _apply_guard = state.runtime.config_runtime_coordinator.lock().await;
     let Some(update) = apply_settings_edit(&state.runtime.config_service, &settings)
         .map_err(|error| log_err("update_settings", error))?
     else {
@@ -627,7 +627,7 @@ pub async fn revoke_permission(state: State<'_, Arc<AppState>>, key: String) -> 
             "permission key cannot be empty",
         ));
     }
-    let _config_apply_guard = state.runtime.config_apply_gate.lock().await;
+    let _config_apply_guard = state.runtime.config_runtime_coordinator.lock().await;
     let previous = state
         .runtime
         .config_service
@@ -674,7 +674,7 @@ pub async fn revoke_permission(state: State<'_, Arc<AppState>>, key: String) -> 
 /// policy. Session-scoped decisions and the policy mode remain unchanged.
 #[tauri::command]
 pub async fn reset_permissions(state: State<'_, Arc<AppState>>) -> Result<(), String> {
-    let _config_apply_guard = state.runtime.config_apply_gate.lock().await;
+    let _config_apply_guard = state.runtime.config_runtime_coordinator.lock().await;
     let previous = state
         .runtime
         .config_service
@@ -712,7 +712,7 @@ pub async fn revoke_session_permission(
     session_id: String,
     capability: String,
 ) -> Result<(), String> {
-    let _config_apply_guard = state.runtime.config_apply_gate.lock().await;
+    let _config_apply_guard = state.runtime.config_runtime_coordinator.lock().await;
     let session_id = session_id.trim().to_string();
     let capability = capability.trim().to_string();
     if session_id.is_empty() {
@@ -770,7 +770,7 @@ pub async fn revoke_session_permission(
 
 #[tauri::command]
 pub async fn reset_session_permissions(state: State<'_, Arc<AppState>>) -> Result<usize, String> {
-    let _config_apply_guard = state.runtime.config_apply_gate.lock().await;
+    let _config_apply_guard = state.runtime.config_runtime_coordinator.lock().await;
     let previous = state
         .runtime
         .session_store

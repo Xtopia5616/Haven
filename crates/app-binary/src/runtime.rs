@@ -6,7 +6,7 @@
 //! application gives them one cancellation boundary and tears them down in a
 //! deterministic order.
 
-use crate::config_runtime::ConfigApplyGate;
+use crate::config_runtime::RuntimeConfigCoordinator;
 use crate::desktop::DesktopShell;
 use haven_agent::{AgentLayer, MemoryStartup, PendingSessionRecovery, SessionSupervisor};
 use haven_common::config::ConfigService;
@@ -45,7 +45,7 @@ pub struct ApplicationRuntime {
     pub(crate) config_service: Arc<ConfigService>,
     /// Serializes settings and model config commit-plus-apply operations so a
     /// later snapshot cannot publish before an earlier runtime update ends.
-    pub(crate) config_apply_gate: ConfigApplyGate,
+    pub(crate) config_runtime_coordinator: RuntimeConfigCoordinator,
     agent_startup_started: AtomicBool,
     shutdown_token: CancellationToken,
     shutting_down: AtomicBool,
@@ -85,7 +85,9 @@ impl ApplicationRuntime {
             shell: runtime_services.shell,
             log_filter_handles: runtime_services.log_filter_handles,
             config_service: runtime_services.config_service,
-            config_apply_gate: ConfigApplyGate::with_shared_gate(config_apply_gate),
+            config_runtime_coordinator: RuntimeConfigCoordinator::with_shared_gate(
+                config_apply_gate,
+            ),
             agent_startup_started: AtomicBool::new(false),
             shutdown_token: CancellationToken::new(),
             shutting_down: AtomicBool::new(false),
