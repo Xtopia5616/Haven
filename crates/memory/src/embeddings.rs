@@ -24,7 +24,19 @@ pub(crate) struct EpisodeKeywordHit {
     pub text: String,
 }
 
-type EpisodeSearchRow = (String, String, String, String);
+struct EpisodeSearchCandidate {
+    entity_id: String,
+    display_summary: String,
+    search_haystack: String,
+    created_at: String,
+}
+
+struct ScoredEpisodeKeywordCandidate {
+    matched_term_count: usize,
+    entity_id: String,
+    display_summary: String,
+    created_at: String,
+}
 
 /// Closed memory domains used as `memory_embeddings.entity_type`.
 ///
@@ -909,7 +921,7 @@ impl Database {
             return Ok(Vec::new());
         }
         let lower_terms: Vec<String> = terms.iter().map(|t| t.to_lowercase()).collect();
-        let mut scored: Vec<(usize, String, String, String)> = Vec::new();
+        let mut scored: Vec<ScoredEpisodeKeywordCandidate> = Vec::new();
         let mut seen = std::collections::HashSet::new();
 
         let indexed_terms: Vec<&str> = terms
@@ -924,16 +936,8 @@ impl Database {
                 exclude_session_id,
                 limit.saturating_mul(4),
             )?;
-            for (id, display, haystack, created) in fts_hits {
-                Self::score_episode_candidate_haystack(
-                    &id,
-                    &display,
-                    &haystack,
-                    &created,
-                    &lower_terms,
-                    &mut scored,
-                    &mut seen,
-                );
+            for candidate in fts_hits {
+                Self::score_episode_candidate(&candidate, &lower_terms, &mut scored, &mut seen);
             }
         }
 
@@ -948,63 +952,51 @@ impl Database {
             .collect();
         if !short.is_empty() {
             let short_lower: Vec<String> = short.iter().map(|t| t.to_lowercase()).collect();
-            for (id, display, haystack, created) in
-                self.list_recent_episode_rows(exclude_session_id, 1000)?
-            {
-                let hay = haystack.to_lowercase();
+            for candidate in self.list_recent_episode_rows(exclude_session_id, 1000)? {
+                let hay = candidate.search_haystack.to_lowercase();
                 if short_lower.iter().any(|p| hay.contains(p)) {
-                    Self::score_episode_candidate_haystack(
-                        &id,
-                        &display,
-                        &haystack,
-                        &created,
-                        &lower_terms,
-                        &mut scored,
-                        &mut seen,
-                    );
+                    Self::score_episode_candidate(&candidate, &lower_terms, &mut scored, &mut seen);
                 }
             }
         }
 
         scored.sort_by(|a, b| {
-            b.0.cmp(&a.0)
-                .then_with(|| b.3.cmp(&a.3)) // newer created_at first
-                .then_with(|| a.1.cmp(&b.1))
+            b.matched_term_count
+                .cmp(&a.matched_term_count)
+                .then_with(|| b.created_at.cmp(&a.created_at)) // newer created_at first
+                .then_with(|| a.entity_id.cmp(&b.entity_id))
         });
         scored.truncate(limit);
         Ok(scored
             .into_iter()
-            .map(|(_, id, text, _)| EpisodeKeywordHit {
-                entity_id: id,
-                text,
+            .map(|candidate| EpisodeKeywordHit {
+                entity_id: candidate.entity_id,
+                text: candidate.display_summary,
             })
             .collect())
     }
 
-    fn score_episode_candidate_haystack(
-        entity_id: &str,
-        display: &str,
-        haystack: &str,
-        created: &str,
+    fn score_episode_candidate(
+        candidate: &EpisodeSearchCandidate,
         lower_terms: &[String],
-        scored: &mut Vec<(usize, String, String, String)>,
+        scored: &mut Vec<ScoredEpisodeKeywordCandidate>,
         seen: &mut std::collections::HashSet<String>,
     ) {
-        if !seen.insert(entity_id.to_string()) {
+        if !seen.insert(candidate.entity_id.clone()) {
             return;
         }
-        let tl = haystack.to_lowercase();
+        let lower_haystack = candidate.search_haystack.to_lowercase();
         let hits = lower_terms
             .iter()
-            .filter(|term| tl.contains(term.as_str()))
+            .filter(|term| lower_haystack.contains(term.as_str()))
             .count();
         if hits > 0 {
-            scored.push((
-                hits,
-                entity_id.to_string(),
-                display.to_string(),
-                created.to_string(),
-            ));
+            scored.push(ScoredEpisodeKeywordCandidate {
+                matched_term_count: hits,
+                entity_id: candidate.entity_id.clone(),
+                display_summary: candidate.display_summary.clone(),
+                created_at: candidate.created_at.clone(),
+            });
         }
     }
 
@@ -1017,26 +1009,30 @@ impl Database {
             .join(" OR ")
     }
 
-    /// Run the current FTS5 episode query. Rows are `(entity_id,
-    /// display_summary, search_haystack, created_at)`.
+    /// Run the current FTS5 episode query and return named search candidates.
     fn search_episode_summaries_fts(
         &self,
         terms: &[&str],
         exclude_session_id: Option<&str>,
         limit: usize,
-    ) -> anyhow::Result<Vec<EpisodeSearchRow>> {
+    ) -> anyhow::Result<Vec<EpisodeSearchCandidate>> {
         if limit == 0 || terms.is_empty() {
             return Ok(Vec::new());
         }
         let match_expr = Self::build_episode_fts_query(terms);
-        let map_row = |r: &rusqlite::Row| -> rusqlite::Result<EpisodeSearchRow> {
+        let map_row = |r: &rusqlite::Row| -> rusqlite::Result<EpisodeSearchCandidate> {
             let id: String = r.get(0)?;
             let content: String = r.get(1)?;
             let topics: String = r.get(2)?;
             let entities: String = r.get(3)?;
             let created: String = r.get(4)?;
             let haystack = format!("{content} {topics} {entities}");
-            Ok((id, content, haystack, created))
+            Ok(EpisodeSearchCandidate {
+                entity_id: id,
+                display_summary: content,
+                search_haystack: haystack,
+                created_at: created,
+            })
         };
         let item = fts_kind::ITEM;
         let conn = self.conn();
@@ -1069,22 +1065,26 @@ impl Database {
         }
     }
 
-    /// `(entity_id, display_summary, search_haystack, created_at)` — haystack includes
-    /// topics/entities JSON so structured tags are keyword-visible (P2-10).
+    /// The haystack includes topics/entities JSON so structured tags are keyword-visible (P2-10).
     fn list_recent_episode_rows(
         &self,
         exclude_session_id: Option<&str>,
         limit: usize,
-    ) -> anyhow::Result<Vec<EpisodeSearchRow>> {
+    ) -> anyhow::Result<Vec<EpisodeSearchCandidate>> {
         let conn = self.conn();
-        let map_row = |r: &rusqlite::Row| -> rusqlite::Result<EpisodeSearchRow> {
+        let map_row = |r: &rusqlite::Row| -> rusqlite::Result<EpisodeSearchCandidate> {
             let id: String = r.get(0)?;
             let content: String = r.get(1)?;
             let topics: String = r.get(2)?;
             let entities: String = r.get(3)?;
             let created: String = r.get(4)?;
             let haystack = format!("{content} {topics} {entities}");
-            Ok((id, content, haystack, created))
+            Ok(EpisodeSearchCandidate {
+                entity_id: id,
+                display_summary: content,
+                search_haystack: haystack,
+                created_at: created,
+            })
         };
         if let Some(sid) = exclude_session_id {
             let mut stmt = conn.prepare(

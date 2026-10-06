@@ -579,3 +579,4 @@
 - [0588：为 Ask 与通知信号使用具名结果](0588-name-tool-signal-results.md)
 - [0589：删除无语义增量的 UI 内部类型别名](0589-remove-ui-internal-type-aliases.md)
 - [0590：删除未使用的 UI contract alias](0590-remove-unused-ui-contract-aliases.md)
+- [0591：为 Memory episode search 结果命名字段](0591-name-memory-episode-search-results.md)
