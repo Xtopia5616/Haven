@@ -632,3 +632,4 @@
 - [0641：收敛 sampling 字段清单 owner](0641-consolidate-sampling-field-list.md)
 - [0642：统一通知与状态色词汇来源](0642-derive-notification-types-from-status-tones.md)
 - [0643：统一 apiStyle 的 Provider 输入投影](0643-unify-api-style-provider-input.md)
+- [0644：统一 Ask 响应 view 类型](0644-unify-ask-response-view.md)

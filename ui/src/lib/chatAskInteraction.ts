@@ -1,12 +1,13 @@
 import type { SessionReducer } from './sessionReducer.ts';
 import type { InteractionKind } from './contracts/generatedCommands.ts';
+import type { AskResponseView } from './contracts/app.ts';
 
 interface AskMessage {
 	id: string;
 	type?: string;
 	content?: string;
 	awaiting?: boolean;
-	resolved?: { answer?: string; ignored?: boolean } | null;
+	resolved?: AskResponseView | null;
 }
 
 interface AskInteractionContext {
@@ -95,7 +96,7 @@ export function createAskInteractionController({
 					request.owner.sessionId === sessionId &&
 					request.kind === 'ask' &&
 					request.status === 'resolved'
-						? (request.response as { answer?: string; ignored?: boolean } | undefined)
+						? (request.response as AskResponseView | undefined)
 						: undefined;
 				return { id: message.id, resolved: response || null };
 			});
@@ -131,7 +132,7 @@ export function createAskInteractionController({
 			request.status !== 'resolved'
 		)
 			return undefined;
-		return request.response as { answer?: string; ignored?: boolean } | undefined;
+		return request.response as AskResponseView | undefined;
 	}
 
 	function submitActionAnswers(
@@ -165,7 +166,7 @@ export function createAskInteractionController({
 
 	function resolveAsk(
 		msgId: string,
-		resolved: { answer?: string; ignored?: boolean },
+		resolved: AskResponseView,
 		opts: ResolveAskOptions = {},
 	) {
 		const sessionId = getActiveSessionId();

@@ -90,6 +90,12 @@ export type InteractionRequest =
 		sessionId?: never;
 	  });
 
+/** Normalized renderer view for a resolved Ask interaction's dynamic response. */
+export interface AskResponseView {
+	answer?: string;
+	ignored?: boolean;
+}
+
 export function isSessionInteractionRequest(
 	request: InteractionRequest,
 ): request is Extract<InteractionRequest, { owner: { kind: 'session' } }> {

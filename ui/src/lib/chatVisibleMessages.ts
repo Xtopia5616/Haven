@@ -3,6 +3,7 @@ import {
 	type SessionMessage,
 	type SessionReducerState,
 } from './sessionReducer.ts';
+import type { AskResponseView } from './contracts/app.ts';
 
 /** Select the active conversation's messages with ask interaction state projected by id. */
 export function selectChatVisibleMessages(
@@ -26,7 +27,7 @@ export function projectChatVisibleMessages(
 		const request = interactions[message.id];
 		if (!request || request.kind !== 'ask') return message;
 
-		const response = request.response as { answer?: string; ignored?: boolean } | undefined;
+		const response = request.response as AskResponseView | undefined;
 		return {
 			...message,
 			// Live ask cards receive their quick choices from the committed tool

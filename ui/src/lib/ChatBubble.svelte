@@ -12,6 +12,7 @@
 	import MaterialCollapsible from '$lib/MaterialCollapsible.svelte';
 	import Icon from '$lib/Icon.svelte';
 	import type { AgentToolResultEnvelope } from '$lib/contracts/agent.ts';
+	import type { AskResponseView } from '$lib/contracts/app.ts';
 	import type { ToolRunPayload } from '$lib/contracts/toolRun.ts';
 	import type {
 		AskMessageHandler,
@@ -44,7 +45,7 @@
 		options?: string[];
 		awaiting?: boolean;
 		received?: boolean;
-		resolved?: { answer?: string; ignored?: boolean } | null;
+		resolved?: AskResponseView | null;
 		toolRunId?: string | null;
 		toolRunData?: ToolRunPayload | null;
 		awaitingBackgroundResult?: boolean;

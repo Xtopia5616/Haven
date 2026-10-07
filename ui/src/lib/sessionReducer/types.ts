@@ -7,7 +7,7 @@ import type {
 	AgentThoughtPayload,
 	AgentWebSearchPayload,
 } from '../contracts/agent.ts';
-import type { InteractionRequest } from '../contracts/app.ts';
+import type { AskResponseView, InteractionRequest } from '../contracts/app.ts';
 import type { InteractionKind, SessionStatus } from '../contracts/generatedCommands.ts';
 import type { SessionLlmUsage, SessionResumeUsage } from '../contracts/sessionHistory.ts';
 import type { StreamMessage } from '../streaming.ts';
@@ -39,7 +39,7 @@ export type SessionMessage = StreamMessage & {
 	toolRunId?: string | null;
 	/** Stable ToolRun identity used to anchor its timeline card to this tool step. */
 	sourceToolRunId?: string | null;
-	resolved?: { answer?: string; ignored?: boolean } | null;
+	resolved?: AskResponseView | null;
 	received?: boolean;
 };
 
@@ -154,7 +154,7 @@ export type SessionAction =
 			sessionId: string;
 			asks: Array<{
 				id: string;
-				resolved?: { answer?: string; ignored?: boolean } | null;
+				resolved?: AskResponseView | null;
 			}>;
 	  }
 	| {

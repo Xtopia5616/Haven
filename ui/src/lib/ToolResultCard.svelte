@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { untrack } from 'svelte';
 	import type { Snippet } from 'svelte';
+	import type { AskResponseView } from '$lib/contracts/app.ts';
 	import JsonView from '$lib/JsonView.svelte';
 	import { getSelectedTextWithin, openContextMenu } from '$lib/contextMenu.ts';
 	import MaterialCollapsible from '$lib/MaterialCollapsible.svelte';
@@ -43,7 +44,7 @@
 		onIgnore?: ((messageId: string) => void) | null;
 		onAskSubmit?: ((messageId: string) => void) | null;
 		onAskDismiss?: ((messageId: string) => void) | null;
-		resolved?: { answer?: string; ignored?: boolean } | null;
+		resolved?: AskResponseView | null;
 		streaming?: boolean;
 		toolRunId?: string | null;
 		toolRunData?: ToolRunPayload | null;

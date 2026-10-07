@@ -1,6 +1,6 @@
 # Haven 命名规范
 
-> 版本: v1.74 | 日期: 2026-10-07
+> 版本: v1.75 | 日期: 2026-10-07
 
 本文档统一 Haven 项目各层的命名规则（变量名、函数名、文件名、crate 名、缩写大小写、跨层边界）。规范以现有代码中的事实模式为基础，新代码必须遵循；存量代码若与规范冲突，逐步迁移对齐。
 
@@ -18,6 +18,7 @@
 - **配置投影视图引用生成字段**：UI helper 仅消费设置 DTO 的部分字段时，用 `Pick<GeneratedInput, ...>` 派生投影，不手写同形字段；确有草稿中间态允许 `null` 的字段在投影中显式拓宽，并与 required wire contract 区分。`apiStyle.ts` 的 `ProviderStyleInput` 基于 generated `ProviderConfigInput`，只为 `provider` 与 `base_url` 保留 UI 草稿 nullable 语义（ADR 0643）。
 - **预算化 JSON 结果具名**：同时供 tool JSON 与 `ToolResult` envelope 使用的截断状态，应与 JSON value 一起由 `JsonListBudgetResult { value, truncated }` 返回；执行预算操作使用 `cap_json_list`，调用方通过字段消费结果（ADR 0627）。
 - **TypeScript 运行时词汇唯一化**：当某组字符串值只用于本模块的运行时遍历时，以 `as const` 值清单作为唯一 owner；不要再并列手写同值 union。函数若有意接受清单外的未知字符串并返回拒绝/回退结果，参数应标为 `string`；无跨模块消费者的类型和值清单不额外导出。
+- **动态交互响应区分 wire 与 renderer view**：交互 envelope 的通用 `response` 保持 `unknown`；当某一交互类型在 UI 中具有稳定投影时，将 shape 命名为领域 view 并跨 reducer、controller、消息与组件复用。Ask 的答案/忽略结果统一为 `AskResponseView`，不在各层重复内联字段（ADR 0644）。
 - **运行上下文按角色命名**：一起解析出的执行程序与工作目录使用 `ResolvedShellContext { shell, working_directory }`，解析动作命名为 `resolve_shell_context`，避免把两个不同含义的值作为位置 tuple 传给前后台执行路径（ADR 0628）。
 - **跨组件提交输入共享类型 owner**：同一 chat submission attachment 在 Composer、页面、session controller 和 submit coordinator 之间复用 `chatAttachmentTypes.ts` 中的 `ChatImageAttachment` / `ChatFileAttachment`；仅用于预览的文件大小留在 `InputRouter` 的 `PendingChatFileAttachment`，历史消息 renderer 的宽松 `ChatBubbleAttachment` 继续独立（ADR 0629）。
 - **结果类型由领域 owner 定义**：同一业务结果从数据库仓储传到异步 service/store 时，复用领域类型并只在边界调度执行；不要让中间层把具名对象拆回 tuple 再重建。
