@@ -49,7 +49,7 @@
 	<div class="tool-card-count">{rows.length} 条记录</div>
 	{#if rows.length === 0}<p class="tool-card-empty">没有记录</p>{/if}
 	<ToolResultList items={rows}>
-		{#snippet children(visibleRows: Array<Record<string, any>> = [])}
+		{#snippet children(visibleRows: Array<Record<string, unknown>>)}
 			<div class="admin-list">
 				{#each visibleRows as row, index (row.id ?? index)}
 					<div class="admin-row">
