@@ -55,10 +55,10 @@
 			{/snippet}
 		</ToolResultList>
 	{:else}
-		<p class="tool-card-empty">没有可见窗口</p>
+		<p class="tool-result-message">没有可见窗口</p>
 	{/if}
 {:else if data.available === false}
-	<p class="tool-card-empty">{data.note || '此窗口能力当前不可用'}</p>
+	<p class="tool-result-message">{data.note || '此窗口能力当前不可用'}</p>
 {:else if data.operation === 'foreground'}
 	<div class="window-detail">
 		<span class="window-op">当前窗口</span>
@@ -91,7 +91,7 @@
 		>{#if mediaAssetId}<span class="window-asset">{mediaAssetId}</span>{/if}
 	</div>
 	{#if mediaText}<pre class="tool-result-preview">{mediaText}</pre>{:else if data.reason}<p
-			class="tool-card-empty"
+			class="tool-result-message"
 		>
 			{data.reason}
 		</p>{/if}
@@ -128,16 +128,10 @@
 	<div class="tool-card-meta">窗口操作：{data.operation}</div>
 	<JsonView value={data} defaultDepth={1} />
 {:else}
-	<p class="tool-card-empty">没有窗口结果</p>
+	<p class="tool-result-message">没有窗口结果</p>
 {/if}
 
 <style>
-	.tool-card-empty {
-		margin: 0;
-		font-size: var(--md-sys-typescale-label-medium-size);
-		line-height: var(--md-sys-typescale-label-medium-line-height);
-		color: var(--md-sys-color-on-surface-variant);
-	}
 	.window-detail {
 		display: flex;
 		align-items: baseline;

@@ -72,9 +72,9 @@
 		</div>{/if}
 	{#if recommendedNext}<div class="tool-card-meta">建议下一步：{recommendedNext}</div>{/if}
 	{#if data.available === false}
-		<p class="tool-card-empty">{data.reason || '录音能力当前不可用'}</p>
+		<p class="tool-result-message tool-result-message--media">{data.reason || '录音能力当前不可用'}</p>
 	{:else if data.error || data.capture_error}
-		<p class="tool-card-empty">{data.error || data.reason || '录音采集失败'}</p>
+		<p class="tool-result-message tool-result-message--media">{data.error || data.reason || '录音采集失败'}</p>
 	{:else if data.transcript}
 		<pre class="media-text">{data.transcript}</pre>
 	{/if}
@@ -108,7 +108,7 @@
 	{/if}
 	{#if recommendedNext}<div class="tool-card-meta">建议下一步：{recommendedNext}</div>{/if}
 	{#if data.available === false}
-		<p class="tool-card-empty">{data.reason || '此媒体能力当前不可用'}</p>
+		<p class="tool-result-message tool-result-message--media">{data.reason || '此媒体能力当前不可用'}</p>
 	{:else if text}
 		<pre class="media-text">{text}</pre>
 	{:else if data.operation === 'inspect'}
@@ -174,7 +174,6 @@
 		line-height: 1.45;
 		color: var(--md-sys-color-on-surface);
 	}
-	.tool-card-empty,
 	.tool-card-meta {
 		margin: var(--md-sys-space-xs) 0 0;
 		color: var(--md-sys-color-on-surface-variant);

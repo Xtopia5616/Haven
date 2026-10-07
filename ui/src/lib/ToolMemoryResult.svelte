@@ -71,7 +71,7 @@
 			{/snippet}
 		</ToolResultList>
 	{:else}
-		<p class="tool-card-empty">没有找到记忆事实</p>
+		<p class="tool-result-message tool-result-message--compact">没有找到记忆事实</p>
 	{/if}
 {:else if Array.isArray(data.hits)}
 	<div class="tool-result-label">{hits.length} 条召回结果{data.mode ? ` · ${data.mode}` : ''}</div>
@@ -93,7 +93,7 @@
 			{/snippet}
 		</ToolResultList>
 	{:else}
-		<p class="tool-card-empty">没有找到相关记忆</p>
+		<p class="tool-result-message tool-result-message--compact">没有找到相关记忆</p>
 	{/if}
 {:else if data.operation === 'remember' && data.stored}
 	<div class="memory-action">
@@ -111,17 +111,13 @@
 {/if}
 
 <style>
-	.tool-card-meta,
-	.tool-card-empty {
+	.tool-card-meta {
 		font-size: var(--md-sys-typescale-label-small-size);
 		line-height: var(--md-sys-typescale-label-small-line-height);
 		color: var(--md-sys-color-on-surface-variant);
 	}
 	.tool-card-meta {
 		margin-bottom: var(--md-sys-space-xs);
-	}
-	.tool-card-empty {
-		margin: 0;
 	}
 	.memory-list {
 		--tool-result-scroll-max-height: 240px;

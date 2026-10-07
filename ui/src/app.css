@@ -1438,6 +1438,33 @@ select.md-select {
 	line-height: var(--md-sys-typescale-label-medium-line-height);
 }
 
+.tool-result-message {
+	margin: 0;
+	font-size: var(--md-sys-typescale-label-medium-size);
+	line-height: var(--md-sys-typescale-label-medium-line-height);
+	color: var(--md-sys-color-on-surface-variant);
+}
+
+.tool-result-message--compact {
+	font-size: var(--md-sys-typescale-label-small-size);
+	line-height: var(--md-sys-typescale-label-small-line-height);
+}
+
+.tool-result-message--spaced {
+	margin: var(--md-sys-space-sm) 0;
+}
+
+.tool-result-message--media {
+	margin: var(--md-sys-space-xs) 0 0;
+	font-size: inherit;
+	line-height: inherit;
+}
+
+.tool-result-message--error {
+	color: var(--md-sys-color-error);
+	font-weight: 600;
+}
+
 .tool-result-window-row {
 	display: flex;
 	align-items: baseline;

@@ -39,13 +39,12 @@
 {#if shellText}
 	<pre class="tool-result-preview" class:streaming={liveStreaming}>{shellText}</pre>
 {:else if liveStreaming}
-	<p class="tool-card-empty">等待输出…</p>
+	<p class="tool-result-message">等待输出…</p>
 {:else}
-	<p class="tool-card-empty">（无输出）</p>
+	<p class="tool-result-message">（无输出）</p>
 {/if}
 
 <style>
-	.tool-card-empty,
 	.tool-card-meta {
 		margin: 0;
 		font-size: var(--md-sys-typescale-label-medium-size);

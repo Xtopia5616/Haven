@@ -191,7 +191,7 @@
 			{/snippet}
 		</ToolResultList>
 	{:else}
-		<p class="tool-card-empty">没有注册表值或子项</p>
+		<p class="tool-result-message">没有注册表值或子项</p>
 	{/if}
 {/if}
 {#if data.deleted}
@@ -201,7 +201,7 @@
 	</div>
 {/if}
 {#if data.available === false}
-	<p class="tool-card-empty">{data.note || data.reason || '此系统能力当前不可用'}</p>
+	<p class="tool-result-message">{data.note || data.reason || '此系统能力当前不可用'}</p>
 {/if}
 {#if data.ac_power || data.battery_present != null || data.battery_saver}
 	<div class="info-grid power-info">
@@ -339,7 +339,7 @@
 			{/snippet}
 		</ToolResultList>
 	{:else}
-		<p class="tool-card-empty">没有匹配的变量</p>
+		<p class="tool-result-message">没有匹配的变量</p>
 	{/if}
 {:else if data.name && ('value' in data || data.set || data.removed)}
 	<div class="env-row">
@@ -370,7 +370,7 @@
 		>
 	</div>
 {:else if data.locked || data.sleep || data.hibernate}
-	<p class="tool-card-empty">
+	<p class="tool-result-message">
 		{data.locked ? '已锁定' : data.sleep ? '已睡眠' : '已休眠'}
 	</p>
 {/if}
@@ -384,12 +384,6 @@
 		line-height: var(--md-sys-typescale-label-small-line-height);
 		color: var(--md-sys-color-on-surface-variant);
 		margin-top: var(--md-sys-space-2xs);
-	}
-	.tool-card-empty {
-		margin: 0;
-		font-size: var(--md-sys-typescale-label-medium-size);
-		line-height: var(--md-sys-typescale-label-medium-line-height);
-		color: var(--md-sys-color-on-surface-variant);
 	}
 	.sys-os {
 		display: flex;

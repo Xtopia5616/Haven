@@ -40,16 +40,10 @@
 		{/snippet}
 	</ToolResultList>
 {:else}
-	<p class="tool-card-empty">没有匹配的结果</p>
+	<p class="tool-result-message">没有匹配的结果</p>
 {/if}
 
 <style>
-	.tool-card-empty {
-		margin: 0;
-		font-size: var(--md-sys-typescale-label-medium-size);
-		line-height: var(--md-sys-typescale-label-medium-line-height);
-		color: var(--md-sys-color-on-surface-variant);
-	}
 	.search-line {
 		flex: none;
 		font-size: var(--md-sys-typescale-label-small-size);

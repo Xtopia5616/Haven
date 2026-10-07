@@ -59,7 +59,7 @@
 			{/snippet}
 		</ToolResultList>
 	{:else}
-		<p class="tool-card-empty">没有待触发的定时任务</p>
+		<p class="tool-result-message">没有待触发的定时任务</p>
 	{/if}
 {:else if operation === 'set' || (data.id && data.mode)}
 	<div class="tool-run-row">
@@ -74,14 +74,10 @@
 {/if}
 
 <style>
-	.tool-card-empty,
 	.tool-card-meta {
 		font-size: var(--md-sys-typescale-label-medium-size);
 		line-height: var(--md-sys-typescale-label-medium-line-height);
 		color: var(--md-sys-color-on-surface-variant);
-	}
-	.tool-card-empty {
-		margin: 0;
 	}
 	.tool-card-meta {
 		font-size: var(--md-sys-typescale-label-small-size);

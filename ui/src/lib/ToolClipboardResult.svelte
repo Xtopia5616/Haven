@@ -14,7 +14,7 @@
 </script>
 
 {#if data.written}
-	<p class="tool-card-empty">已写入剪贴板</p>
+	<p class="tool-result-message">已写入剪贴板</p>
 {:else if Array.isArray(data.entries)}
 	{#if data.entries.length > 0}
 		<ToolResultList items={data.entries}>
@@ -30,23 +30,19 @@
 		</ToolResultList>
 		<div class="tool-card-meta">共 {data.total} 条历史</div>
 	{:else}
-		<p class="tool-card-empty">剪贴板历史为空</p>
+		<p class="tool-result-message">剪贴板历史为空</p>
 	{/if}
 {:else if typeof data.content === 'string' && data.content}
 	<pre class="tool-result-preview">{data.content}</pre>
 {:else}
-	<p class="tool-card-empty">剪贴板为空</p>
+	<p class="tool-result-message">剪贴板为空</p>
 {/if}
 
 <style>
-	.tool-card-empty,
 	.tool-card-meta {
 		font-size: var(--md-sys-typescale-label-medium-size);
 		line-height: var(--md-sys-typescale-label-medium-line-height);
 		color: var(--md-sys-color-on-surface-variant);
-	}
-	.tool-card-empty {
-		margin: 0;
 	}
 	.tool-card-meta {
 		font-size: var(--md-sys-typescale-label-small-size);

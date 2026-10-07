@@ -520,19 +520,19 @@
 								<JsonView value={argsValue} defaultDepth={0} />
 							</div>
 						{:else}
-							<p class="tool-card-empty">（无参数）</p>
+							<p class="tool-result-message">（无参数）</p>
 						{/if}
 					{:else}
-						<p class="tool-card-empty">（无参数）</p>
+						<p class="tool-result-message">（无参数）</p>
 					{/if}
 				</section>
 
 				<section class="tool-detail tool-detail--output" data-detail="output">
 					<div class="tool-detail-label">输出结果</div>
 					{#if toolRunOutputHidden}
-						<p class="tool-card-empty">结果已在会话消息中显示</p>
+						<p class="tool-result-message">结果已在会话消息中显示</p>
 					{:else if failedWithoutOutput}
-						<p class="tool-card-empty tool-card-empty--error">{emptyOutputLabel}</p>
+						<p class="tool-result-message tool-result-message--error">{emptyOutputLabel}</p>
 					{:else if BodyRenderer}
 						<BodyRenderer
 							kind={kind ?? undefined}
@@ -543,9 +543,9 @@
 							parts={notifyParts}
 						/>
 					{:else if liveStreaming}
-						<p class="tool-card-empty">等待输出…</p>
+						<p class="tool-result-message">等待输出…</p>
 					{:else}
-						<p class="tool-card-empty">{emptyOutputLabel}</p>
+						<p class="tool-result-message">{emptyOutputLabel}</p>
 					{/if}
 					{#if data.hint}
 						<div class="tool-card-hint">{data.hint}</div>
@@ -1051,16 +1051,6 @@
 	}
 	.tool-args {
 		min-width: 0;
-	}
-	.tool-card-empty {
-		margin: 0;
-		font-size: var(--md-sys-typescale-label-medium-size);
-		line-height: var(--md-sys-typescale-label-medium-line-height);
-		color: var(--md-sys-color-on-surface-variant);
-	}
-	.tool-card-empty--error {
-		color: var(--md-sys-color-error);
-		font-weight: 600;
 	}
 	.usage-chip {
 		display: inline-block;

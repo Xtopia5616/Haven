@@ -73,7 +73,7 @@
 			{/snippet}
 		</ToolResultList>
 	{:else}
-		<p class="tool-card-empty">没有后台任务</p>
+		<p class="tool-result-message">没有后台任务</p>
 	{/if}
 {:else if data.tool_run_id || data.status}
 	<div class="tool-run-row">
@@ -89,14 +89,10 @@
 {/if}
 
 <style>
-	.tool-card-empty,
 	.tool-card-meta {
 		font-size: var(--md-sys-typescale-label-medium-size);
 		line-height: var(--md-sys-typescale-label-medium-line-height);
 		color: var(--md-sys-color-on-surface-variant);
-	}
-	.tool-card-empty {
-		margin: 0;
 	}
 	.tool-card-meta {
 		font-size: var(--md-sys-typescale-label-small-size);

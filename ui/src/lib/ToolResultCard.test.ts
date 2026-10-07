@@ -424,7 +424,7 @@ describe('ToolResultCard outcomes', () => {
 		});
 		await expandToolCard(successful.container);
 		expect(
-			successful.container.querySelector('[data-detail="output"] .tool-card-empty')
+			successful.container.querySelector('[data-detail="output"] .tool-result-message')
 				?.textContent,
 		).toBe('（无结果）');
 
@@ -436,9 +436,9 @@ describe('ToolResultCard outcomes', () => {
 		});
 		await expandToolCard(failed.container);
 		expect(
-			failed.container.querySelector('[data-detail="output"] .tool-card-empty')?.textContent,
+			failed.container.querySelector('[data-detail="output"] .tool-result-message')?.textContent,
 		).toBe('调用失败');
-		expect(failed.container.querySelector('.tool-card-empty--error')).toBeTruthy();
+		expect(failed.container.querySelector('.tool-result-message--error')).toBeTruthy();
 	});
 
 	it('uses the result envelope when the outcome prop is absent', async () => {
@@ -449,7 +449,7 @@ describe('ToolResultCard outcomes', () => {
 		});
 		await expandToolCard(container);
 		expect(
-			container.querySelector('[data-detail="output"] .tool-card-empty')?.textContent,
+			container.querySelector('[data-detail="output"] .tool-result-message')?.textContent,
 		).toBe('调用失败');
 	});
 });

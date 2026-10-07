@@ -67,7 +67,7 @@
 		{#if data.path}<ExternalRef class="file-path" target={data.path} />{/if}
 	</div>
 	{#if data.description}<pre class="tool-result-preview">{data.description}</pre>{/if}
-	{#if data.reason}<p class="tool-card-empty">{data.reason}</p>{/if}
+	{#if data.reason}<p class="tool-result-message">{data.reason}</p>{/if}
 {:else if data.binary}
 	<div class="file-row">
 		<span class="file-op">二进制文件</span>
@@ -86,7 +86,7 @@
 		{#if data.path}<ExternalRef class="file-path" target={data.path} />{/if}
 	</div>
 	{#if data.summary}<pre class="tool-result-preview">{data.summary}</pre>{/if}
-	{#if data.reason}<p class="tool-card-empty">{data.reason}</p>{/if}
+	{#if data.reason}<p class="tool-result-message">{data.reason}</p>{/if}
 {:else if data.too_large}
 	<div class="file-row">
 		<span class="file-op">文件过大</span><ExternalRef class="file-path" target={data.path} />
@@ -99,8 +99,8 @@
 		<span class="file-op file-op--error">{data.warning ? '需要精确匹配' : '读取失败'}</span>
 		{#if data.path}<ExternalRef class="file-path" target={data.path} />{/if}
 	</div>
-	{#if data.warning}<p class="tool-card-empty">{data.warning}</p>{/if}
-	{#if data.error}<p class="tool-card-empty">{data.error}</p>{/if}
+	{#if data.warning}<p class="tool-result-message">{data.warning}</p>{/if}
+	{#if data.error}<p class="tool-result-message">{data.error}</p>{/if}
 	{#if data.matches}<JsonView value={data.matches} defaultDepth={1} />{/if}
 {:else if Array.isArray(data.symbols)}
 	<div class="tool-card-meta">{operationLabel} · {data.count ?? data.symbols.length} 个符号</div>
@@ -135,7 +135,7 @@
 			{/snippet}
 		</ToolResultList>
 	{:else}
-		<p class="tool-card-empty">（空目录）</p>
+		<p class="tool-result-message">（空目录）</p>
 	{/if}
 {:else}
 	<div class="tool-card-meta">
@@ -152,12 +152,6 @@
 		line-height: var(--md-sys-typescale-label-small-line-height);
 		color: var(--md-sys-color-on-surface-variant);
 		margin-top: var(--md-sys-space-2xs);
-	}
-	.tool-card-empty {
-		margin: 0;
-		font-size: var(--md-sys-typescale-label-medium-size);
-		line-height: var(--md-sys-typescale-label-medium-line-height);
-		color: var(--md-sys-color-on-surface-variant);
 	}
 	.file-row,
 	.env-row {

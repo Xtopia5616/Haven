@@ -105,7 +105,7 @@
 						{/each}
 					</tbody>
 				</table>
-				{#if visibleProcesses.length === 0}<p class="tool-card-empty">
+				{#if visibleProcesses.length === 0}<p class="tool-result-message tool-result-message--spaced">
 						没有匹配的进程
 					</p>{/if}
 			</div>
@@ -120,7 +120,7 @@
 	<div class="tool-card-meta">进程操作：{data.operation}</div>
 	<JsonView value={data} defaultDepth={1} />
 {:else}
-	<p class="tool-card-empty">没有进程结果</p>
+	<p class="tool-result-message tool-result-message--spaced">没有进程结果</p>
 {/if}
 
 <style>
@@ -182,12 +182,6 @@
 	}
 	.proc-status {
 		padding-right: var(--md-sys-space-2xs) !important;
-	}
-	.tool-card-empty {
-		margin: var(--md-sys-space-sm) 0;
-		font-size: var(--md-sys-typescale-label-medium-size);
-		line-height: var(--md-sys-typescale-label-medium-line-height);
-		color: var(--md-sys-color-on-surface-variant);
 	}
 	.process-action-row {
 		display: flex;

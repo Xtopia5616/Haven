@@ -703,3 +703,4 @@
 - [0712：共用 Tool result 窗口与显示器行基础样式](0712-share-tool-result-window-row-style.md)
 - [0713：共用 ExpandableContextCard 元信息行排版](0713-share-expandable-card-metadata-row.md)
 - [0714：共用 ExpandableContextCard 正文说明样式](0714-share-expandable-card-description-style.md)
+- [0715：统一 Tool result message 样式与名称](0715-unify-tool-result-message-style.md)

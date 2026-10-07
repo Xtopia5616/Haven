@@ -37,7 +37,7 @@
 			{/snippet}
 		</ToolResultList>
 	{:else}
-		<p class="tool-card-empty">（未返回结果）</p>
+		<p class="tool-result-message">（未返回结果）</p>
 	{/if}
 {/if}
 
@@ -47,11 +47,5 @@
 		line-height: var(--md-sys-typescale-label-small-line-height);
 		color: var(--md-sys-color-on-surface-variant);
 		margin-top: var(--md-sys-space-2xs);
-	}
-	.tool-card-empty {
-		margin: 0;
-		font-size: var(--md-sys-typescale-label-medium-size);
-		line-height: var(--md-sys-typescale-label-medium-line-height);
-		color: var(--md-sys-color-on-surface-variant);
 	}
 </style>
