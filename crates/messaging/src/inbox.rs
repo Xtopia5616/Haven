@@ -177,9 +177,6 @@ pub struct Envelope {
     pub reply_address: Option<String>,
     /// When this envelope is a reply: the id of the original message.
     pub in_reply_to: Option<String>,
-    /// Optional conversation-thread id for grouping multi-turn exchanges
-    /// (reserved: not exposed by the current tools, kept for interop).
-    pub thread_id: Option<String>,
     pub subject: Option<String>,
     pub text: String,
     /// Optional structured payload (JSON only; files referenced by path).
@@ -204,7 +201,6 @@ impl Envelope {
             to: to.into(),
             reply_address: None,
             in_reply_to: None,
-            thread_id: None,
             subject: None,
             text: text.into(),
             payload: None,
@@ -2358,21 +2354,5 @@ mod tests {
         let capped = bus.history("ses-b", 1).unwrap();
         assert_eq!(capped.len(), 1);
         assert_eq!(capped[0].id, fresh.id);
-    }
-
-    #[test]
-    fn optional_thread_id_roundtrips_through_the_wire_format() {
-        let (_dir, _bus) = test_bus();
-        let mut env = env_from("ses-a", "ses-b", "线程消息");
-        env.thread_id = Some("thread-1".into());
-        let line = serde_json::to_string(&env).unwrap();
-        let decoded: Envelope = serde_json::from_str(&line).unwrap();
-        assert_eq!(decoded.thread_id.as_deref(), Some("thread-1"));
-        // A message without thread context keeps the field unset.
-        let mut without = env.clone();
-        without.thread_id = None;
-        let line = serde_json::to_string(&without).unwrap();
-        let decoded: Envelope = serde_json::from_str(&line).unwrap();
-        assert!(decoded.thread_id.is_none());
     }
 }
