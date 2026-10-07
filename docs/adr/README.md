@@ -659,3 +659,4 @@
 - [0668：删除无用 Tool operation helper 并收紧列表 snippet 类型](0668-remove-unused-tool-operation-helper-and-snippet-any.md)
 - [0669：统一 UI Tool manifest 枚举契约](0669-close-ui-tool-manifest-enum-contracts.md)
 - [0670：移除 Session 输入 metadata 的 transcript placeholder](0670-remove-session-input-transcript-placeholder.md)
+- [0671：区分 Agent transcript projection 的读取与提交阶段](0671-distinguish-committed-transcript-projection.md)

@@ -42,7 +42,7 @@ use haven_tools::{
 use serde_json::Value;
 use std::sync::Arc;
 
-struct TranscriptProjection {
+struct CommittedTranscriptProjection {
     record: TranscriptRecord,
     persisted_media_record: Option<TranscriptRecord>,
 }
@@ -464,11 +464,11 @@ impl ReActEngine {
             .publish(&ctx.emitter, &write_result.events)
             .await;
         let result = self
-            .apply_transcript_projection(
+            .apply_committed_transcript_projection(
                 ctx,
                 event,
                 state,
-                TranscriptProjection {
+                CommittedTranscriptProjection {
                     record,
                     persisted_media_record: media_record,
                 },
@@ -566,11 +566,11 @@ impl ReActEngine {
             .await;
         for (event, record, media_record) in projected {
             let result = self
-                .apply_transcript_projection(
+                .apply_committed_transcript_projection(
                     ctx,
                     event,
                     state,
-                    TranscriptProjection {
+                    CommittedTranscriptProjection {
                         record,
                         persisted_media_record: media_record,
                     },
@@ -584,17 +584,17 @@ impl ReActEngine {
         Ok(())
     }
 
-    async fn apply_transcript_projection(
+    async fn apply_committed_transcript_projection(
         &self,
         ctx: &StepCtx,
         event: TranscriptEvent,
         state: &mut ReActState,
-        projection: TranscriptProjection,
+        committed_projection: CommittedTranscriptProjection,
     ) -> anyhow::Result<()> {
-        let TranscriptProjection {
+        let CommittedTranscriptProjection {
             record,
             persisted_media_record,
-        } = projection;
+        } = committed_projection;
         let _timer = self.metrics.start(
             MetricsPhase::Projection,
             &ctx.session_id,
