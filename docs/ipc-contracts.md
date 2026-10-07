@@ -73,8 +73,8 @@
 | `delete_all_sessions` | mutate | 删除所有持久会话及其投影，并清理会话授权和运行态 |
 | `rollback_session` | mutate | event cursor 与 projection clock 一起回退 |
 | `continue_session` | mutate | 从错误 snapshot 恢复 |
-| `get_session_for_resume` | read | 会话范围投影 |
-| `get_latest_session_for_resume` | read | 只取最近持久化会话 |
+| `get_session_for_resume` | read | 会话范围投影；嵌套 usage 的 `call_kind` 是 generated `LlmCallKind` |
+| `get_latest_session_for_resume` | read | 只取最近持久化会话；与指定会话恢复共用同一 typed response |
 | `get_settings` | read | 响应遮蔽凭据和 MCP 环境变量 |
 | `stage_provider_credential` | mutate | provider 密钥只写入安全凭据存储，返回不透明引用 |
 | `stage_ocr_credential` | mutate | OCR 密钥只写入安全凭据存储，返回不透明引用 |

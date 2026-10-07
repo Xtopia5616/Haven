@@ -784,7 +784,7 @@ async fn media_tool_usage_flows_to_event_and_database() {
 
     let calls = agent.db.list_session_llm_usage(&session.id).unwrap();
     assert_eq!(calls.len(), 1, "only the media client reports usage");
-    assert_eq!(calls[0].call_kind, "media");
+    assert_eq!(calls[0].call_kind, haven_common::types::LlmCallKind::Media);
     assert_eq!(calls[0].step_number, Some(1));
     assert_eq!(calls[0].role, haven_common::config::RequestKind::Vision);
     assert_eq!(calls[0].model.as_deref(), Some("vision-test"));

@@ -668,12 +668,12 @@ mod tests {
         assert_eq!(projected.len(), 2);
         assert!(projected.iter().any(|row| {
             row.model.as_deref() == Some("tool-model")
-                && row.call_kind == "tool"
+                && row.call_kind == LlmCallKind::Tool
                 && row.prompt_tokens == 11
         }));
         assert!(projected.iter().any(|row| {
             row.model.as_deref() == Some("media-model")
-                && row.call_kind == "media"
+                && row.call_kind == LlmCallKind::Media
                 && row.prompt_tokens == 17
         }));
     }

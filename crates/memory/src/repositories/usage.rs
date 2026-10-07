@@ -124,7 +124,7 @@ pub struct LlmUsageRecord {
     /// Call surface that owns the usage. Agent turns feed session totals;
     /// tool-owned media and other tool inference are retained for diagnostics
     /// but excluded from those totals.
-    pub call_kind: String,
+    pub call_kind: LlmCallKind,
     pub model: Option<String>,
     pub prompt_tokens: u32,
     pub completion_tokens: u32,
@@ -191,7 +191,7 @@ impl LlmUsageRecord {
             session_id: session_id.into(),
             step_number: input.step_number,
             role: input.request_kind,
-            call_kind: input.call_kind.as_str().to_string(),
+            call_kind: input.call_kind,
             model: input.model.clone(),
             prompt_tokens: input.prompt_tokens,
             completion_tokens: input.completion_tokens,
@@ -390,7 +390,7 @@ impl Database {
             session_id: session_id.into(),
             step_number,
             role: request_kind,
-            call_kind: "agent".into(),
+            call_kind: LlmCallKind::Agent,
             model: model.map(String::from),
             prompt_tokens,
             completion_tokens,
@@ -610,7 +610,7 @@ impl Database {
                 session_id: session_id.into(),
                 step_number,
                 role: request_kind,
-                call_kind: call_kind.as_str().to_string(),
+                call_kind,
                 model: model.map(String::from),
                 prompt_tokens,
                 completion_tokens,
@@ -710,7 +710,7 @@ impl Database {
                     session_id: session_id.into(),
                     step_number: input.step_number,
                     role: input.request_kind,
-                    call_kind: input.call_kind.as_str().to_string(),
+                    call_kind: input.call_kind,
                     model: input.model.clone(),
                     prompt_tokens: input.prompt_tokens,
                     completion_tokens: input.completion_tokens,
@@ -788,7 +788,7 @@ impl Database {
             &record.session_id,
             record.step_number,
             record.role,
-            &record.call_kind,
+            record.call_kind.as_str(),
             record.model.as_deref(),
             record.prompt_tokens,
             record.completion_tokens,
@@ -806,23 +806,21 @@ impl Database {
             &record.created_at,
         )?;
         let mut delta = SessionUsageDelta::default();
-        if let Some(call_kind) = LlmCallKind::parse(&record.call_kind) {
-            delta.add_call(
-                call_kind,
-                record.prompt_tokens,
-                record.completion_tokens,
-                record.total_tokens,
-                record.cached_tokens,
-                record.cache_creation_tokens,
-                record.cache_miss_tokens,
-                &record.cache_accounting,
-                record.cost_usd,
-                record.has_cost,
-                record.context_tokens,
-                record.context_window,
-                &record.created_at,
-            );
-        }
+        delta.add_call(
+            record.call_kind,
+            record.prompt_tokens,
+            record.completion_tokens,
+            record.total_tokens,
+            record.cached_tokens,
+            record.cache_creation_tokens,
+            record.cache_miss_tokens,
+            &record.cache_accounting,
+            record.cost_usd,
+            record.has_cost,
+            record.context_tokens,
+            record.context_window,
+            &record.created_at,
+        );
         Self::apply_session_usage_delta_conn(conn, &record.session_id, &delta)
     }
 
@@ -1071,12 +1069,20 @@ impl Database {
                     format!("invalid RequestKind in llm_usage.role: {role_text}").into(),
                 )
             })?;
+            let call_kind_text: String = row.get(4)?;
+            let call_kind = LlmCallKind::parse(&call_kind_text).ok_or_else(|| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    4,
+                    Type::Text,
+                    format!("invalid LlmCallKind in llm_usage.call_kind: {call_kind_text}").into(),
+                )
+            })?;
             Ok(LlmUsageRecord {
                 id: row.get(0)?,
                 session_id: row.get(1)?,
                 step_number: row.get(2)?,
                 role,
-                call_kind: row.get(4)?,
+                call_kind,
                 model: row.get(5)?,
                 prompt_tokens: row.get(6)?,
                 completion_tokens: row.get(7)?,
@@ -1200,12 +1206,53 @@ mod tests {
         assert_eq!(records.len(), 2);
         assert_eq!(records[0].role, RequestKind::Chat);
         assert_eq!(records[1].role, RequestKind::Chat);
-        assert_eq!(records[0].call_kind, "tool");
-        assert_eq!(records[1].call_kind, "media");
+        assert_eq!(records[0].call_kind, LlmCallKind::Tool);
+        assert_eq!(records[1].call_kind, LlmCallKind::Media);
         assert_eq!(db.list_session_llm_usage(&session.id).unwrap().len(), 2);
         let totals = db.get_session_usage(&session.id).unwrap().unwrap();
         assert_eq!(totals.prompt_tokens, 0);
         assert_eq!(totals.total_tokens, 0);
+    }
+
+    #[test]
+    fn list_usage_rejects_unknown_call_kind_from_storage() {
+        let db = test_db();
+        let session = db.create_session("hello").unwrap();
+        db.persist_llm_call_and_refresh_session_usage(
+            &session.id,
+            Some(1),
+            RequestKind::Chat,
+            None,
+            1,
+            1,
+            2,
+            0,
+            0,
+            0.0,
+            false,
+            None,
+        )
+        .unwrap();
+
+        {
+            let conn = db.conn();
+            conn.execute_batch("PRAGMA ignore_check_constraints = ON")
+                .unwrap();
+            conn.execute(
+                "UPDATE llm_usage SET call_kind = 'future' WHERE session_id = ?1",
+                [&session.id],
+            )
+            .unwrap();
+            conn.execute_batch("PRAGMA ignore_check_constraints = OFF")
+                .unwrap();
+        }
+
+        let error = db.list_session_llm_usage(&session.id).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("invalid LlmCallKind in llm_usage.call_kind")
+        );
     }
 
     #[test]
@@ -1293,8 +1340,8 @@ mod tests {
 
         let calls = db.list_session_llm_usage(&session.id).unwrap();
         assert_eq!(calls.len(), 2);
-        assert_eq!(calls[0].call_kind, "agent");
-        assert_eq!(calls[1].call_kind, "media");
+        assert_eq!(calls[0].call_kind, LlmCallKind::Agent);
+        assert_eq!(calls[1].call_kind, LlmCallKind::Media);
     }
 
     #[test]

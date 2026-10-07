@@ -22,7 +22,6 @@ export type SessionLlmUsage = Omit<
 	Partial<GeneratedLlmUsageRecord>,
 	'cache_diagnostics' | 'cost_usd'
 > & {
-	call_kind: string;
 	cache_diagnostics?: unknown;
 	cost_usd?: number | null;
 };

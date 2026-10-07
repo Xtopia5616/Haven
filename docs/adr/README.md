@@ -712,3 +712,4 @@
 - [0721：移除 stop_recording 的空字符串成功响应](0721-remove-empty-stop-recording-response.md)
 - [0722：Bootstrap status 命令复用状态枚举](0722-share-bootstrap-status-command-enum.md)
 - [0723：Live usage event 复用 LlmCallKind](0723-type-live-usage-call-kind.md)
+- [0724：Resume usage record 复用 LlmCallKind](0724-type-resume-usage-call-kind.md)
