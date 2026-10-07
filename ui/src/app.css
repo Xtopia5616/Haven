@@ -1325,7 +1325,7 @@ select.md-select {
 }
 
 /* ---------- Structured tool results ---------- */
-.tool-card-list {
+.tool-result-scroll-area {
 	max-height: 200px;
 	overflow-y: auto;
 	border-radius: var(--md-sys-shape-extra-small);

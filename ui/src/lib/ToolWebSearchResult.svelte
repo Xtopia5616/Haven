@@ -21,7 +21,7 @@
 	{#if data.results.length > 0}
 		<ToolResultList items={data.results}>
 			{#snippet children(visibleResults)}
-				<div class="tool-card-list">
+				<div class="tool-result-scroll-area">
 					{#each visibleResults as result (result.url + result.title)}
 						<div class="search-row">
 							<ExternalRef class="search-path" target={result.url} />

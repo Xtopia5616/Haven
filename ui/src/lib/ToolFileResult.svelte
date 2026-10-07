@@ -106,7 +106,7 @@
 	<div class="tool-card-meta">{operationLabel} · {data.count ?? data.symbols.length} 个符号</div>
 	<ToolResultList items={data.symbols}>
 		{#snippet children(visibleSymbols)}
-			<div class="tool-card-list">
+			<div class="tool-result-scroll-area">
 				{#each visibleSymbols as symbol (symbol.line)}
 					<div class="env-row">
 						<span class="file-line">L{symbol.line}</span>
@@ -127,7 +127,7 @@
 	{#if data.entries.length > 0}
 		<ToolResultList items={data.entries}>
 			{#snippet children(visibleEntries)}
-				<div class="tool-card-list">
+				<div class="tool-result-scroll-area">
 					{#each visibleEntries as entry (entry)}
 						<div class="env-row"><span class="env-name">{entry}</span></div>
 					{/each}

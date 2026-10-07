@@ -19,7 +19,7 @@
 	{#if data.entries.length > 0}
 		<ToolResultList items={data.entries}>
 			{#snippet children(visibleEntries)}
-				<div class="tool-card-list">
+				<div class="tool-result-scroll-area">
 					{#each visibleEntries as entry, index (index)}
 						<div class="search-row">
 							<span class="search-snippet">{entry.content}</span>

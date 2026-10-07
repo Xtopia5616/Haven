@@ -2,7 +2,6 @@
 	import { toolRunStatusLabel } from '$lib/toolRunTerminology.ts';
 	import JsonView from '$lib/JsonView.svelte';
 	import StatusBadge from '$lib/StatusBadge.svelte';
-	import ToolCardList from '$lib/ToolCardList.svelte';
 	import ToolResultList from '$lib/ToolResultList.svelte';
 
 	type ToolRunSummary = { tool_run_id?: string; status?: string };
@@ -60,7 +59,7 @@
 	{#if data.tool_runs.length > 0}
 		<ToolResultList items={data.tool_runs}>
 			{#snippet children(visibleToolRuns)}
-				<ToolCardList>
+				<div class="tool-result-scroll-area">
 					{#each visibleToolRuns as toolRun (toolRun.tool_run_id)}
 						<div class="tool-run-row">
 							<span class="tool-run-id">{toolRun.tool_run_id}</span>
@@ -70,7 +69,7 @@
 							/>
 						</div>
 					{/each}
-				</ToolCardList>
+				</div>
 			{/snippet}
 		</ToolResultList>
 	{:else}

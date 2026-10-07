@@ -139,7 +139,7 @@
 	<div class="tool-card-count">{data.count ?? data.networks.length} 个网络接口</div>
 	<ToolResultList items={data.networks}>
 		{#snippet children(visibleNetworks)}
-			<div class="tool-card-list">
+			<div class="tool-result-scroll-area">
 				{#each visibleNetworks as network (network.name)}
 					<div class="network-row">
 						<div class="network-main">
@@ -173,7 +173,7 @@
 	{#if Array.isArray(data.values) && data.values.length > 0}
 		<ToolResultList items={data.values}>
 			{#snippet children(visibleValues)}
-				<div class="tool-card-list">
+				<div class="tool-result-scroll-area">
 					{#each visibleValues as value (value)}<div class="env-row">
 							<span class="env-name">{value}</span>
 						</div>{/each}
@@ -183,7 +183,7 @@
 	{:else if Array.isArray(data.subkeys) && data.subkeys.length > 0}
 		<ToolResultList items={data.subkeys}>
 			{#snippet children(visibleSubkeys)}
-				<div class="tool-card-list">
+				<div class="tool-result-scroll-area">
 					{#each visibleSubkeys as key (key)}<div class="env-row">
 							<span class="env-name">{key}</span>
 						</div>{/each}
@@ -287,7 +287,7 @@
 	<div class="tool-card-count">{data.displays.length} 个显示器</div>
 	<ToolResultList items={data.displays}>
 		{#snippet children(visibleDisplays)}
-			<div class="tool-card-list">
+			<div class="tool-result-scroll-area">
 				{#each visibleDisplays as display (display.name ?? display.left)}
 					<div class="window-row">
 						<span class="window-title"
@@ -313,7 +313,7 @@
 	{#if filteredEnv.length > 0}
 		<ToolResultList items={filteredEnv}>
 			{#snippet children(visibleEnv)}
-				<div class="tool-card-list">
+				<div class="tool-result-scroll-area">
 					{#each visibleEnv as variable (variable.name)}
 						<div class="env-row">
 							<span class="env-name" title={variable.name}>{variable.name}</span>

@@ -692,3 +692,4 @@
 - [0701：统一 ToolResult 截断状态同步 owner](0701-unify-toolresult-truncation-sync.md)
 - [0702：区分系统概览中的未采样 CPU 使用率](0702-distinguish-unsampled-system-cpu-usage.md)
 - [0703：分离 MCP server root 与 Tool renderer](0703-separate-mcp-root-from-tool-renderer.md)
+- [0704：删除重复的 Tool result 列表 wrapper](0704-remove-redundant-tool-card-list-wrapper.md)

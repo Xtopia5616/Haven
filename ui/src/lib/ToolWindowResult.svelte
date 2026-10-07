@@ -39,7 +39,7 @@
 	{#if data.windows.length > 0}
 		<ToolResultList items={data.windows}>
 			{#snippet children(visibleWindows)}
-				<div class="tool-card-list">
+				<div class="tool-result-scroll-area">
 					{#each visibleWindows as window (window.hwnd ?? window.title)}
 						<div class="window-row">
 							<span class="window-title" title={window.title}
@@ -100,7 +100,7 @@
 	<div class="tool-card-count">{data.count ?? data.elements.length} 个界面元素</div>
 	<ToolResultList items={data.elements}>
 		{#snippet children(visibleElements)}
-			<div class="tool-card-list">
+			<div class="tool-result-scroll-area">
 				{#each visibleElements as element, index (element.name ?? index)}
 					<div class="window-row">
 						<span class="window-title" title={element.name}

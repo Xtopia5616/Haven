@@ -1,6 +1,5 @@
 <script lang="ts">
 	import StatusBadge from '$lib/StatusBadge.svelte';
-	import ToolCardList from '$lib/ToolCardList.svelte';
 	import ToolResultList from '$lib/ToolResultList.svelte';
 
 	interface Props {
@@ -33,7 +32,7 @@
 	{#if data.agents.length > 0}
 		<ToolResultList items={data.agents}>
 			{#snippet children(visibleAgents)}
-				<ToolCardList>
+				<div class="tool-result-scroll-area">
 					{#each visibleAgents as agent (agent.name)}
 						<div class="action-row">
 							<span class="action-id">{agent.title || agent.name}</span>
@@ -44,7 +43,7 @@
 								/>{/if}
 						</div>
 					{/each}
-				</ToolCardList>
+				</div>
 			{/snippet}
 		</ToolResultList>
 	{:else}

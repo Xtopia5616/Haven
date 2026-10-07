@@ -39,7 +39,7 @@
 	{#if data.scheduled_tool_runs.length > 0}
 		<ToolResultList items={data.scheduled_tool_runs}>
 			{#snippet children(visibleToolRuns)}
-				<div class="tool-card-list">
+				<div class="tool-result-scroll-area">
 					{#each visibleToolRuns as toolRun (toolRun.id)}
 						<div class="scheduled-row">
 							<span class="scheduled-title"

@@ -1,7 +1,6 @@
 <script lang="ts">
 	import JsonView from '$lib/JsonView.svelte';
 	import StatusBadge from '$lib/StatusBadge.svelte';
-	import ToolCardList from '$lib/ToolCardList.svelte';
 	import ToolResultList from '$lib/ToolResultList.svelte';
 	import ToolSearch from '$lib/ToolSearch.svelte';
 	import { clampPercentage, formatByteSize } from '$lib/toolResultFormatting.ts';
@@ -70,7 +69,7 @@
 	/>
 	<ToolResultList items={filteredProcesses}>
 		{#snippet children(visibleProcesses)}
-			<ToolCardList>
+			<div class="tool-result-scroll-area">
 				<table class="proc-table">
 					<thead>
 						<tr><th>进程</th><th>PID</th><th>CPU</th><th>内存</th><th>状态</th></tr>
@@ -109,7 +108,7 @@
 				{#if visibleProcesses.length === 0}<p class="tool-card-empty">
 						没有匹配的进程
 					</p>{/if}
-			</ToolCardList>
+			</div>
 		{/snippet}
 	</ToolResultList>
 {:else if data.operation === 'kill' && data.killed != null}
