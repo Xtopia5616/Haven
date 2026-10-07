@@ -713,3 +713,4 @@
 - [0722：Bootstrap status 命令复用状态枚举](0722-share-bootstrap-status-command-enum.md)
 - [0723：Live usage event 复用 LlmCallKind](0723-type-live-usage-call-kind.md)
 - [0724：Resume usage record 复用 LlmCallKind](0724-type-resume-usage-call-kind.md)
+- [0725：Session step 状态复用闭合生命周期类型](0725-type-session-step-status.md)

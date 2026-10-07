@@ -4,6 +4,9 @@
 
 import { formatMessageTime } from './messageFormat.ts';
 import type { SessionResumeInput } from './contracts/sessionHistory.ts';
+import type { SessionStepStatus } from './contracts/generatedCommands.ts';
+
+type PersistedToolOutcome = Extract<SessionStepStatus, 'failed' | 'cancelled' | 'unknown'>;
 
 interface ResumeMessage {
 	id: string;
@@ -28,7 +31,10 @@ interface ResumeMessage {
 	steering?: boolean;
 }
 
-function persistedToolOutcome(status: string | null | undefined): string | null {
+
+function persistedToolOutcome(
+	status: SessionStepStatus | null | undefined,
+): PersistedToolOutcome | null {
 	return status === 'failed' || status === 'cancelled' || status === 'unknown' ? status : null;
 }
 

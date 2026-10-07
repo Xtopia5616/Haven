@@ -854,7 +854,7 @@ impl SessionSupervisor {
                     tool_name: tool_name_owned.clone(),
                     input: input.clone(),
                     output: Some(result.output.clone()),
-                    status: step_outcome.as_str().into(),
+                    status: step_outcome.status(),
                     risk_level,
                     confirmed,
                 })
@@ -2721,7 +2721,7 @@ mod tool_step_persistence_tests {
         assert_eq!(pending[0].tool_call_id.as_deref(), Some("provider-call-5"));
         assert!(pending[0].silent);
         assert!(!pending[0].is_high_risk);
-        assert_eq!(pending[0].status, "pending");
+        assert_eq!(pending[0].status, haven_common::SessionStepStatus::Pending);
 
         supervisor
             .start_tool_step_with_identity(
@@ -2751,7 +2751,10 @@ mod tool_step_persistence_tests {
 
         let finished = db.list_session_steps(&session.id).unwrap();
         assert_eq!(finished.len(), 1);
-        assert_eq!(finished[0].status, "cancelled");
+        assert_eq!(
+            finished[0].status,
+            haven_common::SessionStepStatus::Cancelled
+        );
         assert_eq!(
             finished[0].observation.as_deref(),
             Some("cancelled during execution")

@@ -16,6 +16,55 @@ pub enum SessionStatus {
     Error,
 }
 
+/// Durable lifecycle state of a transcript step, shared by the live session
+/// snapshot and the materialized resume projection.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionStepStatus {
+    Pending,
+    Running,
+    Completed,
+    Failed,
+    Cancelled,
+    /// Execution may have crossed an external side-effect boundary before
+    /// cancellation or abort, so callers must not retry it automatically.
+    Unknown,
+}
+
+impl SessionStepStatus {
+    pub const ALL: [Self; 6] = [
+        Self::Pending,
+        Self::Running,
+        Self::Completed,
+        Self::Failed,
+        Self::Cancelled,
+        Self::Unknown,
+    ];
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::Running => "running",
+            Self::Completed => "completed",
+            Self::Failed => "failed",
+            Self::Cancelled => "cancelled",
+            Self::Unknown => "unknown",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "pending" => Some(Self::Pending),
+            "running" => Some(Self::Running),
+            "completed" => Some(Self::Completed),
+            "failed" => Some(Self::Failed),
+            "cancelled" => Some(Self::Cancelled),
+            "unknown" => Some(Self::Unknown),
+            _ => None,
+        }
+    }
+}
+
 /// Derived explanation for a session that is durably `Paused`.
 ///
 /// `SessionStatus` remains intentionally coarse because it is persisted and
@@ -242,7 +291,20 @@ impl<'de> Deserialize<'de> for ToolRunStatus {
 
 #[cfg(test)]
 mod tests {
-    use super::{SessionStatus, SessionWaitingReason, ToolRunStatus};
+    use super::{SessionStatus, SessionStepStatus, SessionWaitingReason, ToolRunStatus};
+
+    #[test]
+    fn session_step_status_uses_closed_snake_case_vocabulary() {
+        for status in SessionStepStatus::ALL {
+            let encoded = serde_json::to_string(&status).unwrap();
+            assert_eq!(encoded, format!("\"{}\"", status.as_str()));
+            assert_eq!(
+                serde_json::from_str::<SessionStepStatus>(&encoded).unwrap(),
+                status
+            );
+        }
+        assert!(serde_json::from_str::<SessionStepStatus>("\"future\"").is_err());
+    }
 
     #[test]
     fn waiting_reason_serializes_as_stable_wire_vocabulary() {

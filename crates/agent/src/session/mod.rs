@@ -1,4 +1,5 @@
 use crate::interaction::{InteractionEnvelope, InteractionRequest};
+use haven_common::SessionStepStatus;
 pub use haven_common::lifecycle::SessionStatus;
 pub use haven_common::lifecycle::SessionWaitingReason;
 use haven_common::types::{
@@ -273,7 +274,7 @@ pub struct StepInfo {
     pub tool_name: String,
     pub input: Value,
     pub output: Option<Value>,
-    pub status: String,
+    pub status: SessionStepStatus,
     pub risk_level: RiskLevel,
     pub confirmed: Option<bool>,
 }

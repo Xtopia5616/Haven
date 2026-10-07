@@ -87,6 +87,7 @@ ToolRun completion lease 的 token 标识被 claim 的 ToolRun 或 completion re
 |---|---|---|
 | 工具调用（ToolCall） | Agent/模型发起的一次工具调用；前台调用等待结果并进入当前 transcript | Agent/ReAct 使用 `ToolCall`；provider 的 `tool_call_id` 保持原格式 |
 | 会话（session） | 用户与 Agent 的对话及其前台 ReAct 运行上下文 | UI 直接称“会话”；前台工具调用在会话内呈现 |
+| 会话步骤状态（`SessionStepStatus`） | 持久 `session_steps.status` 与 live `StepInfo.status` 共用的闭合生命周期值：pending、running、completed、failed、cancelled、unknown | Common 定义并生成给 UI；SQLite 列仍存 snake_case 字符串，Memory 读入时严格解析。`ToolStepOutcome` 是 finish 操作的终态输入，不替代完整状态（ADR 0725） |
 | 会话运行（SessionRun） | `SessionSupervisor` 调度或直接准入的一次会话执行；`SessionRunEngine` 运行完整 ReAct 循环 | handler、admission、permit、lease 和 actor claim 均显式标注 `SessionRun`；直接运行的准入等待项为 `DirectSessionRunAdmissionWaiter`，具名区分注销 ID 与取消令牌；ReAct loop 的输入、重放、输出以 `ReActRun*` 标名 |
 | 工具运行（ToolRun） | 脱离当前 turn 持久运行、可取消并产生生命周期事件的工具执行 | 后端/IPC/数据库使用 `tool_run`、`tool_runs`；ID 前缀为 `toolrun-`。工具查询与 completion notification 共用 `ToolRunStateView` 的状态基础 JSON；`background_wait`、kind/source 与 delivery envelope 仍由各调用者按自身职责添加（ADR 0700） |
 | 工具结果（ToolResult） | 一次工具调用的成功/失败输出及执行元数据 | `ToolResult.truncated` 属于结果级元数据；正文中的 `truncated` 属于具体工具输出 shape。正文标记为 true 时两层必须同步；正文没有该字段时允许只保留结果级标记（ADR 0701）。Agent observation 的执行 outcome 只由 `ToolResultEnvelope.outcome` 承载；UI 在展示边界映射成卡片状态。历史 `session_steps.status` 是恢复时的持久投影，不是第二个 event outcome 来源（ADR 0719） |

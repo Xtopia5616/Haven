@@ -66,7 +66,7 @@ export interface PhaseSnapshot { count: number; total_ms: number; p50_ms: number
 export interface UiMetricsSnapshotInput { frames: number; chunks: number; drops: number }
 export interface UiMetricsSnapshot { frames: number; chunks: number; drops: number }
 export interface SessionInfo { id: string; input: string; summary: string; title: string | null; status: SessionStatus; waiting_reason?: SessionWaitingReason; steps: StepInfo[]; created_at: string; updated_at: string }
-export interface StepInfo { id: string; step_number: number; tool_name: string; input: unknown; output: unknown | null; status: string; risk_level: RiskLevel; confirmed: boolean | null }
+export interface StepInfo { id: string; step_number: number; tool_name: string; input: unknown; output: unknown | null; status: SessionStepStatus; risk_level: RiskLevel; confirmed: boolean | null }
 export type ProcessResult = { 'SessionCreated': { session_id: string; message_id?: string | null } } | { 'Supplemented': { message_id?: string | null } };
 export const BOOTSTRAP_STATUS_VALUES = ['loading', 'ready'] as const;
 export type BootstrapStatus = (typeof BOOTSTRAP_STATUS_VALUES)[number];
@@ -176,6 +176,8 @@ export interface ToolConfigInput { enabled?: boolean; timeout_secs?: number | nu
 export interface ToolConfig { enabled: boolean; timeout_secs?: number; max_output_chars?: number; max_retries?: number; retry_backoff_secs?: number; allowed_paths: string[]; allowed_domains: string[]; disabled_operations: string[]; risk_override: RiskLevel | null }
 export const SESSION_STATUS_VALUES = ['pending', 'running', 'paused', 'completed', 'error'] as const;
 export type SessionStatus = (typeof SESSION_STATUS_VALUES)[number];
+export const SESSION_STEP_STATUS_VALUES = ['pending', 'running', 'completed', 'failed', 'cancelled', 'unknown'] as const;
+export type SessionStepStatus = (typeof SESSION_STEP_STATUS_VALUES)[number];
 export const SESSION_WAITING_REASON_VALUES = ['user_input', 'user_interrupt', 'ask', 'confirmation', 'scheduled_confirmation', 'background_task', 'scheduled_task', 'step_budget', 'end_incomplete'] as const;
 export type SessionWaitingReason = (typeof SESSION_WAITING_REASON_VALUES)[number];
 export const TOOL_RUN_STATUS_VALUES = ['waiting', 'running', 'completed', 'failed', 'cancelled'] as const;
@@ -266,7 +268,7 @@ export type McpClientStatus = 'Disconnected' | 'Connecting' | 'Connected' | { 'O
 export interface McpServerSnapshot { name: string; transport: string; command: string; args: string[]; env: string[]; cwd: string | null; url: string; enabled: boolean; status: McpClientStatus; tools: McpToolInfo[]; last_error: string | null; diagnostic: string | null; last_seen_at: number | null }
 export interface McpToolInfo { name: string; description: string; input_schema: unknown }
 export interface Message { id: string; session_id: string; role: string; content: string; message_type: string | null; created_at: string; tool_call_id: string | null; attachments: MessageAttachment[]; media_inputs?: MediaInput[]; voice: boolean }
-export interface SessionStep { id: string; session_id: string; step_number: number; tool_index: number; thought: string | null; tool_name: string | null; tool_input: string | null; tool_call_id: string | null; observation: string | null; status: string; is_high_risk: boolean; confirmed: boolean | null; silent: boolean; started_at: string | null; completed_at: string | null; created_at: string }
+export interface SessionStep { id: string; session_id: string; step_number: number; tool_index: number; thought: string | null; tool_name: string | null; tool_input: string | null; tool_call_id: string | null; observation: string | null; status: SessionStepStatus; is_high_risk: boolean; confirmed: boolean | null; silent: boolean; started_at: string | null; completed_at: string | null; created_at: string }
 export interface LlmUsageRecord { id: string; session_id: string; step_number: number | null; role: RequestKind; call_kind: LlmCallKind; model: string | null; prompt_tokens: number; completion_tokens: number; total_tokens: number; cached_tokens: number; cache_creation_tokens: number; cache_miss_tokens: number; cache_accounting: string; cache_diagnostics?: unknown; context_tokens: number; context_window: number | null; cost_usd: number; has_cost: boolean; duration_ms: number | null; created_at: string }
 export interface SessionUsage { prompt_tokens: number; completion_tokens: number; total_tokens: number; cached_tokens: number; cache_creation_tokens: number; cache_miss_tokens: number; context_tokens: number; context_window: number | null; cost_usd: number; has_cost: boolean }
 export interface SkillInfo { name: string; description: string; version: string | null; language: string; enabled: boolean; root: string; has_script: boolean }

@@ -1,5 +1,6 @@
 use crate::db::Database;
 use crate::repositories::messages::now_rfc3339_millis;
+use haven_common::SessionStepStatus;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct SessionStep {
@@ -16,7 +17,7 @@ pub struct SessionStep {
     pub tool_call_id: Option<String>,
     /// Tool observation / result text
     pub observation: Option<String>,
-    pub status: String,
+    pub status: SessionStepStatus,
     pub is_high_risk: bool,
     pub confirmed: Option<bool>,
     /// Whether the tool output was hidden from the user in the live chat
@@ -70,12 +71,12 @@ struct ToolStepFields<'a> {
 }
 
 impl ToolStepOutcome {
-    pub fn as_str(self) -> &'static str {
+    pub const fn status(self) -> SessionStepStatus {
         match self {
-            Self::Completed => "completed",
-            Self::Failed => "failed",
-            Self::Cancelled => "cancelled",
-            Self::Unknown => "unknown",
+            Self::Completed => SessionStepStatus::Completed,
+            Self::Failed => SessionStepStatus::Failed,
+            Self::Cancelled => SessionStepStatus::Cancelled,
+            Self::Unknown => SessionStepStatus::Unknown,
         }
     }
 }
@@ -101,10 +102,10 @@ impl Database {
         let conn = self.conn();
         let sql = if ignore_existing {
             "INSERT OR IGNORE INTO session_steps (id, session_id, step_number, tool_index, tool_name, input, tool_call_name, tool_call_input, tool_call_id, status, is_high_risk, created_at, silent, confirmed)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?5, ?6, ?7, 'pending', ?8, ?9, ?10, ?11)"
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?5, ?6, ?7, ?12, ?8, ?9, ?10, ?11)"
         } else {
             "INSERT INTO session_steps (id, session_id, step_number, tool_index, tool_name, input, tool_call_name, tool_call_input, tool_call_id, status, is_high_risk, created_at, silent, confirmed)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?5, ?6, ?7, 'pending', ?8, ?9, ?10, ?11)"
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?5, ?6, ?7, ?12, ?8, ?9, ?10, ?11)"
         };
         conn.execute(
             sql,
@@ -120,6 +121,7 @@ impl Database {
                 now,
                 fields.silent as i32,
                 fields.confirmed.map(|confirmed| confirmed as i32),
+                SessionStepStatus::Pending.as_str(),
             ],
         )?;
         if conn.changes() > 0 {
@@ -139,7 +141,7 @@ impl Database {
             tool_input: Some(fields.tool_input.into()),
             tool_call_id: fields.tool_call_id.map(String::from),
             observation: None,
-            status: "pending".into(),
+            status: SessionStepStatus::Pending,
             is_high_risk: fields.is_high_risk,
             confirmed: fields.confirmed,
             silent: fields.silent,
@@ -156,8 +158,8 @@ impl Database {
     ) -> anyhow::Result<()> {
         if let Some(confirmed) = confirmed {
             conn.execute(
-                "UPDATE session_steps SET confirmed = ?1 WHERE id = ?2 AND status = 'pending'",
-                rusqlite::params![confirmed as i32, id],
+                "UPDATE session_steps SET confirmed = ?1 WHERE id = ?2 AND status = ?3",
+                rusqlite::params![confirmed as i32, id, SessionStepStatus::Pending.as_str()],
             )?;
         }
         Ok(())
@@ -172,8 +174,13 @@ impl Database {
         let conn = self.conn();
         if refresh_identity {
             conn.execute(
-                "UPDATE session_steps SET tool_index = COALESCE(tool_index, ?1), tool_call_id = COALESCE(tool_call_id, ?2) WHERE id = ?3 AND status = 'pending'",
-                rusqlite::params![fields.tool_index, fields.tool_call_id, fields.id],
+                "UPDATE session_steps SET tool_index = COALESCE(tool_index, ?1), tool_call_id = COALESCE(tool_call_id, ?2) WHERE id = ?3 AND status = ?4",
+                rusqlite::params![
+                    fields.tool_index,
+                    fields.tool_call_id,
+                    fields.id,
+                    SessionStepStatus::Pending.as_str()
+                ],
             )?;
         }
         Self::update_pending_confirmation(&conn, fields.id, fields.confirmed)
@@ -197,8 +204,14 @@ impl Database {
         let conn = self.conn();
         conn.execute(
             "INSERT INTO session_steps (id, session_id, step_number, tool_name, input, thought, status, is_high_risk, created_at)
-             VALUES (?1, ?2, ?3, 'thought', ?1, NULL, 'completed', 0, ?4)",
-            rusqlite::params![id, session_id, step_number, now],
+             VALUES (?1, ?2, ?3, 'thought', ?1, NULL, ?4, 0, ?5)",
+            rusqlite::params![
+                id,
+                session_id,
+                step_number,
+                SessionStepStatus::Completed.as_str(),
+                now
+            ],
         )?;
         Self::bump_step_seq(&conn, session_id)?;
         Ok(SessionStep {
@@ -211,7 +224,7 @@ impl Database {
             tool_input: None,
             tool_call_id: None,
             observation: None,
-            status: "completed".into(),
+            status: SessionStepStatus::Completed,
             is_high_risk: false,
             confirmed: None,
             silent: false,
@@ -317,9 +330,14 @@ impl Database {
         let now = now_rfc3339_millis();
         let conn = self.conn();
         let changed = conn.execute(
-            "UPDATE session_steps SET status = 'running', started_at = COALESCE(started_at, ?1) \
-             WHERE id = ?2 AND status IN ('pending','running')",
-            rusqlite::params![now, id],
+            "UPDATE session_steps SET status = ?1, started_at = COALESCE(started_at, ?2) \
+             WHERE id = ?3 AND status IN (?4, ?1)",
+            rusqlite::params![
+                SessionStepStatus::Running.as_str(),
+                now,
+                id,
+                SessionStepStatus::Pending.as_str()
+            ],
         )?;
         Ok(changed > 0)
     }
@@ -335,10 +353,18 @@ impl Database {
     ) -> anyhow::Result<bool> {
         let now = now_rfc3339_millis();
         let conn = self.conn();
+        let status = outcome.status();
         let changed = conn.execute(
             "UPDATE session_steps SET status = ?1, observation = ?2, completed_at = ?3 \
-             WHERE id = ?4 AND status IN ('pending','running')",
-            rusqlite::params![outcome.as_str(), observation, now, id],
+             WHERE id = ?4 AND status IN (?5, ?6)",
+            rusqlite::params![
+                status.as_str(),
+                observation,
+                now,
+                id,
+                SessionStepStatus::Pending.as_str(),
+                SessionStepStatus::Running.as_str()
+            ],
         )?;
         Ok(changed > 0)
     }
@@ -354,9 +380,16 @@ impl Database {
         let now = now_rfc3339_millis();
         let conn = self.conn();
         let n = conn.execute(
-            "UPDATE session_steps SET status = 'unknown', observation = ?1, completed_at = ?2 \
-             WHERE session_id = ?3 AND status IN ('pending','running')",
-            rusqlite::params![observation, now, session_id],
+            "UPDATE session_steps SET status = ?1, observation = ?2, completed_at = ?3 \
+             WHERE session_id = ?4 AND status IN (?5, ?6)",
+            rusqlite::params![
+                SessionStepStatus::Unknown.as_str(),
+                observation,
+                now,
+                session_id,
+                SessionStepStatus::Pending.as_str(),
+                SessionStepStatus::Running.as_str()
+            ],
         )?;
         Ok(n)
     }
@@ -371,6 +404,15 @@ impl Database {
         let rows = stmt.query_map(rusqlite::params![session_id], |row| {
             let output: Option<String> = row.get(6)?;
             let obs: Option<String> = row.get(11)?;
+            let status_text: String = row.get(12)?;
+            let status = SessionStepStatus::parse(&status_text).ok_or_else(|| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    12,
+                    rusqlite::types::Type::Text,
+                    format!("invalid SessionStepStatus in session_steps.status: {status_text}")
+                        .into(),
+                )
+            })?;
             Ok(SessionStep {
                 id: row.get(0)?,
                 session_id: row.get(1)?,
@@ -381,7 +423,7 @@ impl Database {
                 tool_input: row.get(9)?,
                 tool_call_id: row.get(10)?,
                 observation: obs.or(output),
-                status: row.get(12)?,
+                status,
                 is_high_risk: row.get::<_, i32>(13)? != 0,
                 confirmed: row.get(14)?,
                 started_at: row.get(15)?,
@@ -417,7 +459,7 @@ impl Database {
 
 #[cfg(test)]
 mod tests {
-    use super::ToolStepOutcome;
+    use super::{SessionStepStatus, ToolStepOutcome};
     use crate::db::Database;
 
     fn test_db() -> Database {
@@ -486,7 +528,7 @@ mod tests {
             .unwrap();
         let steps = db.list_session_steps("ses-1").unwrap();
         assert_eq!(steps[0].observation.as_deref(), Some("file content here"));
-        assert_eq!(steps[0].status, "completed");
+        assert_eq!(steps[0].status, SessionStepStatus::Completed);
     }
 
     #[test]
@@ -498,7 +540,7 @@ mod tests {
             .unwrap();
         assert!(db.start_tool_step(&step.id).unwrap());
         let running = db.list_session_steps("ses-1").unwrap();
-        assert_eq!(running[0].status, "running");
+        assert_eq!(running[0].status, SessionStepStatus::Running);
         assert!(running[0].started_at.is_some());
         assert!(
             db.finish_tool_step(
@@ -509,7 +551,7 @@ mod tests {
             .unwrap()
         );
         let finished = db.list_session_steps("ses-1").unwrap();
-        assert_eq!(finished[0].status, "unknown");
+        assert_eq!(finished[0].status, SessionStepStatus::Unknown);
         assert!(finished[0].completed_at.is_some());
         assert!(!db.start_tool_step(&step.id).unwrap());
 
@@ -524,7 +566,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             db.list_session_steps("ses-1").unwrap()[1].status,
-            "cancelled"
+            SessionStepStatus::Cancelled
         );
     }
 
@@ -561,7 +603,7 @@ mod tests {
         let steps = db.list_session_steps("ses-1").unwrap();
         assert_eq!(steps.len(), 1);
         assert_eq!(steps[0].id, "step-ensure-1");
-        assert_eq!(steps[0].status, "pending");
+        assert_eq!(steps[0].status, SessionStepStatus::Pending);
         assert_eq!(steps[0].confirmed, Some(true));
     }
 
@@ -583,13 +625,13 @@ mod tests {
         assert_eq!(n, 1);
         let steps = db.list_session_steps("ses-1").unwrap();
         let pending = steps.iter().find(|s| s.id == "step-p1").unwrap();
-        assert_eq!(pending.status, "unknown");
+        assert_eq!(pending.status, SessionStepStatus::Unknown);
         assert_eq!(
             pending.observation.as_deref(),
             Some("Session ended before tool finished")
         );
         let completed = steps.iter().find(|s| s.id == done.id).unwrap();
-        assert_eq!(completed.status, "completed");
+        assert_eq!(completed.status, SessionStepStatus::Completed);
         assert_eq!(completed.observation.as_deref(), Some("ok"));
     }
 
@@ -625,6 +667,34 @@ mod tests {
         let db = test_db();
         let steps = db.list_session_steps("missing-session").unwrap();
         assert!(steps.is_empty());
+    }
+
+    #[test]
+    fn list_session_steps_rejects_unknown_status_from_storage() {
+        let db = test_db();
+        seed_session(&db, "ses-1");
+        db.create_tool_step("ses-1", 0, "shell", "{}", false, false, None, None)
+            .unwrap();
+
+        {
+            let conn = db.conn();
+            conn.execute_batch("PRAGMA ignore_check_constraints = ON")
+                .unwrap();
+            conn.execute(
+                "UPDATE session_steps SET status = 'future' WHERE session_id = ?1",
+                ["ses-1"],
+            )
+            .unwrap();
+            conn.execute_batch("PRAGMA ignore_check_constraints = OFF")
+                .unwrap();
+        }
+
+        let error = db.list_session_steps("ses-1").unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("invalid SessionStepStatus in session_steps.status")
+        );
     }
 
     #[test]
