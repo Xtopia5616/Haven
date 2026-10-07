@@ -73,8 +73,10 @@ describe('apiStyle', () => {
 	});
 
 	it('uses the neutral protocol when api_style is empty', () => {
-		expect(providerWireStyle({ provider: 'anthropic', api_style: '' })).toBe('openai-chat');
-		expect(providerWireStyle({ provider: 'gemini', api_style: null })).toBe('openai-chat');
+		const anthropic = { provider: 'anthropic', api_style: '' };
+		const gemini = { provider: 'gemini', api_style: null };
+		expect(providerWireStyle(anthropic)).toBe('openai-chat');
+		expect(providerWireStyle(gemini)).toBe('openai-chat');
 		expect(displayApiStyle({ provider: 'anthropic', api_style: '' })).toBe('openai-chat');
 		expect(displayApiStyle({ provider: 'gemini' })).toBe('openai-chat');
 		expect(displayApiStyle({ provider: 'llama.cpp', api_style: '' })).toBe('openai-chat');

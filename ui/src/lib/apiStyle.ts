@@ -5,6 +5,14 @@
  * unsupported styles should grey out / ignore the control.
  */
 
+import type { ProviderConfigInput } from './contracts/generatedCommands.ts';
+
+/** The provider settings fields used for wire-style and capability hints. */
+type ProviderStyleInput = Pick<ProviderConfigInput, 'api_style'> & {
+	provider?: string | null;
+	base_url?: string | null;
+};
+
 export interface ProviderPreset {
 	value: string;
 	label: string;
@@ -72,7 +80,7 @@ export function normalizeApiStyle(style: string | null | undefined): string {
  * selector.
  */
 export function providerWireStyle(
-	p: { api_style?: string | null; provider?: string | null } | null | undefined,
+	p: Pick<ProviderStyleInput, 'api_style'> | null | undefined,
 ): string {
 	const raw = String(p?.api_style || '').trim();
 	if (raw) return normalizeApiStyle(raw);
@@ -94,12 +102,7 @@ export function isTtsOnlyStyle(style: string | null | undefined): boolean {
  * Mirror backend `tts_backend_for` / `image_gen_backend_for`.
  */
 export function mediaCapabilityBackend(
-	p: {
-		api_style?: string | null;
-		provider?: string | null;
-		base_url?: string | null;
-		name?: string;
-	} | null | undefined,
+	p: ProviderStyleInput | null | undefined,
 	capability: 'tts' | 'image_gen',
 ): 'openai' | 'gemini' | 'elevenlabs' | '' {
 	if (!p) return '';
@@ -119,11 +122,7 @@ export function mediaCapabilityBackend(
  * Mirror backend `stt_backend_for`.
  */
 export function sttCapabilityBackend(
-	p: {
-		api_style?: string | null;
-		provider?: string | null;
-		base_url?: string | null;
-	} | null | undefined,
+	p: ProviderStyleInput | null | undefined,
 ): 'openai' | 'groq' | 'gemini' | 'deepgram' | 'assemblyai' | '' {
 	if (!p) return '';
 	const provider = String(p.provider || '').toLowerCase();
@@ -742,11 +741,7 @@ function hostMatches(host: string | null | undefined, needles: string[]): boolea
  * generic `provider=openai` configurations pointing at a known vendor URL.
  */
 export function displayApiStyle(
-	p: {
-		api_style?: string | null;
-		provider?: string | null;
-		base_url?: string | null;
-	} | null | undefined,
+	p: ProviderStyleInput | null | undefined,
 ): string {
 	if (!p) return 'openai-chat';
 	const style = providerWireStyle(p);
@@ -797,7 +792,7 @@ export function displayApiStyle(
  * True when the provider can be used without an API key (local servers).
  */
 export function isKeylessProvider(
-	p: { api_style?: string | null; provider?: string | null } | null | undefined,
+	p: Pick<ProviderStyleInput, 'api_style' | 'provider'> | null | undefined,
 ): boolean {
 	if (!p) return false;
 	const provider = String(p.provider || '').toLowerCase();

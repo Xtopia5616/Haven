@@ -302,6 +302,7 @@
 | RecordingOverlayController 重复录音命令子集 | controller dependency 与测试分别手写 `start_recording`、`stop_recording`、`cancel_recording`；值本身已有 `generatedCommands.ts::TauriCommandName` owner，controller 只应被允许调用这三个命令。 | **从唯一契约派生窄能力**：用 `Extract<TauriCommandName, ...>` 定义 `RecordingCommandName`；测试 mock 从 `RecordingOverlayControllerDependencies['invoke']` 取型，不再复制命令集合（ADR 0640）。 |
 | UI sampling field union 与展示清单重复 | `apiStyle.ts` 为九个可展示字段同时声明 `SamplingField` union 与 `SAMPLING_FIELDS` 数组；该 union 和数组均无模块外消费者。注释指向仓库内不存在的 `haven_common::config::supports_sampling_field`。 | **让运行时清单拥有词汇**：保留私有 `as const` 字段数组，删除重复且未消费的 union/export；提示过滤函数接受 `string` 并继续返回不支持结果，移除失效来源引用（ADR 0641）。 |
 | 状态色、通知类型与 ToolRun completion toast 子集重复 | `StatusTone` 已是状态色 palette；`NotificationType` 重复列出 info/success/warning/error，ToolRun completion toast 又重复列出 info/success/error。后者是通知类型的真实子集。 | **按 palette → notification → toast 分层提取**：`NotificationType` 从 `StatusTone` 派生，`ToolRunCompletionToast.type` 从通知类型提取可用子集；保持各层语义名，移除重复字面量（ADR 0642）。 |
+| `apiStyle.ts` 重复 Provider 输入 shape | `providerWireStyle`、media/STT capability 判定、preset 显示与 keyless 判断内联声明重叠的 `api_style`、`provider`、`base_url` 字段；一个 `name` 字段没有读取。三字段来源是 generated `ProviderConfigInput`，但 UI 草稿字段可为空。 | **共享派生的 UI 输入投影**：`ProviderStyleInput` 以 `Pick<ProviderConfigInput, 'api_style'>` 为基底，只对 UI 草稿的 `provider`/`base_url` 显式允许 null；helper 按自身实际读取字段使用该类型或 `Pick`，删除未使用 `name` 字段（ADR 0643）。 |
 
 此表是候选分流清单，不是完整符号目录。尚未完成的 crate、IPC/event payload、UI controller/store 与函数动词审计仍在 §5.7 范围内；完成一域后更新本表并以 ADR 记录实际迁移。
 
