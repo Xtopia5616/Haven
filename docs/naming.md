@@ -1,6 +1,6 @@
 # Haven 命名规范
 
-> 版本: v1.136 | 日期: 2026-10-08
+> 版本: v1.137 | 日期: 2026-10-08
 
 本文档统一 Haven 项目各层的命名规则（变量名、函数名、文件名、crate 名、缩写大小写、跨层边界）。规范以现有代码中的事实模式为基础，新代码必须遵循；存量代码若与规范冲突，逐步迁移对齐。
 
@@ -22,10 +22,11 @@
 - **Session IPC 包装模块按实体命名**：前端 `sessionCommands.ts` 集中封装 Session 的运行态列表、历史读取、恢复、生命周期与标题命令；单个函数仍按操作阶段使用 `listRuntimeSessions`、`listSessionHistory`、`getSessionForResume`、`deleteSession` 等领域动词，不因模块收纳在同一个文件而抹去状态范围（ADR 0679）。
 - **工具清单明确来源**：`list_builtin_tool_manifests` 只返回内置工具的 manifest，不包含 Skill 或 MCP manifest；命令与响应类型分别标出 `builtin_tool_manifests` 和 `BuiltinToolManifestListResponse`。Tools 与 Skills 的 App 命令按 domain 分模块（ADR 0680）。
 - **MCP 服务器集合命令标明实体**：`list_mcp_servers` / `listMcpServers` 返回 `McpServerSnapshot[]`，其中同时包含配置、连接状态和该服务器的工具清单；不要因快照中含工具而命名为 `list_mcp_tools` / `listMcpTools`（ADR 0720）。
+- **MCP 单服务器动作标明目标实体**：单服务器重连命名为 `reconnect_mcp_server` / `reconnectMcpServer`，与作用于服务器集合的 `refresh_mcp_servers` 区分；不要省略被操作的 server 实体（ADR 0731）。
 - **消息角色复用 canonical vocabulary**：持久消息、Agent history、resume/live UI 中的 `role` 使用 Common `CanonicalRole`；数据库文本在写入时由 enum 序列化，读取时严格解析，UI 消费 generated type。Provider wire role 继续由各 LLM adapter 映射；模型发现与模型配置命令用 `request_kind: RequestKind` 选择逻辑请求，UI 请求引用生成的 `RequestKindInput`。消息角色、请求路由与模型配置 ID 是不同身份，不复用 `role` 字段（ADR 0726、0728、0729）。
 - **模型操作路由参数明确命名**：`discover_models`、`switch_model`、`set_reasoning_effort` 与 `set_web_search` 均以 `request_kind: RequestKind` 标识逻辑请求路由；参数命令仅修改该路由当前分配的模型。选择指定模型配置时使用独立的 `model_id`（ADR 0728、0729）。
 - **持久消息类别与 UI 展示类型分开**：`messages.message_type` 使用 Common `TranscriptMessageKind` 表达 SQLite 闭合集合，写库序列化、读库严格解析并生成到 resume IPC；`StreamMessage.type` 是 renderer presentation discriminator，由 resume mapper 从 durable kind 投影，不复用或冒充持久类别（ADR 0727）。
-- **IPC 请求类型按命令 owner 命名**：前端 wrapper 的 request alias 必须从它实际调用的 generated command 派生；即使两个命令的字段形状相同，也分别命名，如 `SetSkillEnabledRequest` / `SetToolEnabledRequest`、`ReconnectMcpRequest` / `RemoveMcpServerRequest`，不要用某一个命令的类型 alias 覆盖另一个命令（ADR 0681）。
+- **IPC 请求类型按命令 owner 命名**：前端 wrapper 的 request alias 必须从它实际调用的 generated command 派生；即使两个命令的字段形状相同，也分别命名，如 `SetSkillEnabledRequest` / `SetToolEnabledRequest`、`ReconnectMcpServerRequest` / `RemoveMcpServerRequest`，不要用某一个命令的类型 alias 覆盖另一个命令（ADR 0681、0731）。
 - **Tool renderer 只按展示职责派发**：`ToolPresentation.renderer` 是开放扩展字符串；UI 仅为当前明确登记的 renderer key 选择专用组件，未知 key 使用通用 JSON renderer。MCP 固定使用 `mcp` renderer，server name 只放在 `ToolIdentity.root` / `root_presentation`，不能兼任组件分派键；builtin renderer 使用明确登记的 key，Skill 使用固定 `skills` root。不要把旧的 `haven`、`admin`、`settings` 别名隐式解释成管理面板（ADR 0682、0703）。
 - **Admin capability 唯一拥有管理工具名**：`AdminCapability::tool_name` 唯一映射 `haven_*` 工具名；model operation surface 先解析到同一 enum 再取工具名，不在 request helper 或 metadata 中另存重复字符串（ADR 0683）。
 - **Admin operation 统一从组合 owner 构造**：配置操作由 `AdminSurfaces` 通过共享 `AdminServices` 构造；不保留无生产调用方的 `ConfigAdminContext`、`ConfigAdminTool` 或单独 builder 作为第二条装配路径（ADR 0684）。

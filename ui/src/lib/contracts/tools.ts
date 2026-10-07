@@ -21,7 +21,7 @@ export type McpServerConfigInput = TauriCommandRequest<'add_mcp_server'>['config
 export type McpRefreshResult = GeneratedMcpRefreshResult;
 
 /** Flat command arguments are aliases of the generated Rust handler shapes. */
-export type ReconnectMcpRequest = TauriCommandRequest<'reconnect_mcp'>;
+export type ReconnectMcpServerRequest = TauriCommandRequest<'reconnect_mcp_server'>;
 export type RemoveMcpServerRequest = TauriCommandRequest<'remove_mcp_server'>;
 export type SetSkillEnabledRequest = TauriCommandRequest<'set_skill_enabled'>;
 export type SetToolEnabledRequest = TauriCommandRequest<'set_tool_enabled'>;

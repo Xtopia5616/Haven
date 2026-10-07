@@ -120,7 +120,7 @@ pub(crate) fn emit_mcp_status(
 }
 
 #[tauri::command]
-pub async fn reconnect_mcp(
+pub async fn reconnect_mcp_server(
     state: State<'_, Arc<AppState>>,
     app: AppHandle,
     name: String,
@@ -129,7 +129,7 @@ pub async fn reconnect_mcp(
         .runtime
         .config_service
         .snapshot()
-        .map_err(|error| log_err("reconnect_mcp", error))?;
+        .map_err(|error| log_err("reconnect_mcp_server", error))?;
     if !snapshot
         .config
         .mcp_servers
@@ -138,7 +138,7 @@ pub async fn reconnect_mcp(
         || state.runtime.services.mcp.get_client(&name).await.is_none()
     {
         return Err(log_err(
-            "reconnect_mcp",
+            "reconnect_mcp_server",
             format!("MCP server '{}' is not currently connected", name),
         ));
     }
@@ -147,7 +147,7 @@ pub async fn reconnect_mcp(
             name,
             config_version: snapshot.version,
         });
-    crate::commands::authorize_admin_request(&state, &app, "reconnect_mcp", request.clone())
+    crate::commands::authorize_admin_request(&state, &app, "reconnect_mcp_server", request.clone())
         .await?;
     Ok(())
 }
@@ -177,7 +177,7 @@ pub struct McpRefreshResult {
 /// down. Unchanged, already-connected servers keep their live session (a
 /// heavy stdio server such as Ghidra is never restarted by a refresh).
 /// Per-server reconnection is the card-level Refresh button's job
-/// (`reconnect_mcp`).
+/// (`reconnect_mcp_server`).
 #[tauri::command]
 pub async fn refresh_mcp_servers(
     state: State<'_, Arc<AppState>>,

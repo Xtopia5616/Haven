@@ -2,7 +2,7 @@ import { invoke } from '$lib/tauri.ts';
 import { isMcpClientStatus } from './contracts/mcpClientStatus.ts';
 import { isRecord } from './contracts/objectGuards.ts';
 import type {
-	ReconnectMcpRequest,
+	ReconnectMcpServerRequest,
 	RemoveMcpServerRequest,
 	McpRefreshResult,
 	McpServerConfig,
@@ -82,8 +82,8 @@ export function removeMcpServer(request: RemoveMcpServerRequest): Promise<void> 
 }
 
 /** Reconnect the selected MCP server. */
-export function reconnectMcp(request: ReconnectMcpRequest): Promise<void> {
-	return invoke('reconnect_mcp', request);
+export function reconnectMcpServer(request: ReconnectMcpServerRequest): Promise<void> {
+	return invoke('reconnect_mcp_server', request);
 }
 
 /** Enable or disable the selected MCP server. */

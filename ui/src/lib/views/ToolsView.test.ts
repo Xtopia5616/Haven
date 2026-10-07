@@ -263,7 +263,7 @@ describe('ToolsView toolbar actions', () => {
 				return [{ name: 'docs-server', enabled: true, status: 'Connected', tools: [] }];
 			}
 			if (command === 'list_skills') return [];
-			if (command === 'reconnect_mcp') {
+			if (command === 'reconnect_mcp_server') {
 				throw JSON.stringify({ requires_confirmation: true, confirmation_id: 'conf-test' });
 			}
 			return undefined;

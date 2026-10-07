@@ -32,7 +32,7 @@
 | 定时任务触发 | 设定时按 registry 风险检查，触发时再次经过 executor gate | 设定时的允许不能替代触发时的当前拒绝 |
 | MCP 适配器 | `mcp__server__tool` 使用 adapter 的 high 风险和同一授权 key | UI 预览与 Agent 调用共享 permanent grant；session grant 不泄漏到无 session 入口 |
 | skill 适配器 | `skill__name` 使用 adapter 的 high 风险和同一授权 key | skill 脚本不能由 `confirmed` 参数绕过 deny/path gate |
-| UI Skill/MCP 管理命令 | `execute_skill` 先检查 gateway；`reconnect_mcp` 对一个已启用 server 授权；`refresh_mcp_servers` 对配置 diff 的 affected set 授权一次 | Skill 未授权时不执行；MCP 未授权/待确认期间不创建、连接、重连或断开 client；`NetworkPolicy::Deny` 在连接前阻断，`Ask` 要求确认；确认后在共享配置 gate 内复核 config version 与完整 target set |
+| UI Skill/MCP 管理命令 | `execute_skill` 先检查 gateway；`reconnect_mcp_server` 对一个已启用 server 授权；`refresh_mcp_servers` 对配置 diff 的 affected set 授权一次 | Skill 未授权时不执行；MCP 未授权/待确认期间不创建、连接、重连或断开 client；`NetworkPolicy::Deny` 在连接前阻断，`Ask` 要求确认；确认后在共享配置 gate 内复核 config version 与完整 target set |
 | 自身设置入口 | Tauri 设置命令复用 native admin surface，并先经过 AuthorizationEngine | UI 与模型 capability 使用同一 typed 写路径；确认恢复仍绑定 receipt，native façade 为临时迁移边界 |
 
 ## 负向回归矩阵

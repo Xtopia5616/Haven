@@ -5,7 +5,7 @@ import {
 	listMcpServers,
 	listSkills,
 	openSkillsDir,
-	reconnectMcp,
+	reconnectMcpServer,
 	refreshMcpServers,
 	refreshSkills,
 	removeMcpServer,
@@ -99,7 +99,7 @@ describe('ToolsView command boundary', () => {
 		await addMcpServer(config);
 		await updateMcpServer(updateRequest);
 		await removeMcpServer(nameRequest);
-		await reconnectMcp(nameRequest);
+		await reconnectMcpServer(nameRequest);
 		await toggleMcpServer({ name: 'local-server', enabled: true });
 		await setToolEnabled(enabledRequest);
 
@@ -111,7 +111,7 @@ describe('ToolsView command boundary', () => {
 			['add_mcp_server', { config }],
 			['update_mcp_server', updateRequest],
 			['remove_mcp_server', nameRequest],
-			['reconnect_mcp', nameRequest],
+			['reconnect_mcp_server', nameRequest],
 			['toggle_mcp_server', { name: 'local-server', enabled: true }],
 			['set_tool_enabled', enabledRequest],
 		]);

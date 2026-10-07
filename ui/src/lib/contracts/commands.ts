@@ -61,7 +61,7 @@ export const TAURI_COMMAND_CONTRACTS = {
 	log_frontend_error: { boundary: 'mutate', security: 'sanitized user-visible error mirrored into the backend log' },
 	get_performance_metrics: { boundary: 'read', security: 'bounded content-free backend counters plus renderer stream counters' },
 	list_mcp_servers: { boundary: 'read', security: 'snapshot only; env values redacted; invocation remains gated' },
-	reconnect_mcp: { boundary: 'execute', security: 'AuthorizationEngine; typed native operation reconnects one existing configured server after final version check' },
+	reconnect_mcp_server: { boundary: 'execute', security: 'AuthorizationEngine; typed native operation reconnects one existing configured server after final version check' },
 	refresh_mcp_servers: { boundary: 'execute', security: 'AuthorizationEngine; one batch over persisted config diff and its affected targets; no renderer process arguments' },
 	add_mcp_server: { boundary: 'execute', security: 'AuthorizationEngine; shared native admin operation validates and persists config' },
 	update_mcp_server: { boundary: 'execute', security: 'AuthorizationEngine; shared native admin operation validates and reconnects safely' },

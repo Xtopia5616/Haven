@@ -674,7 +674,7 @@ pub(crate) fn run() {
             commands::memory::run_memory_maintenance,
             commands::memory::recall_memory,
             commands::mcp::list_mcp_servers,
-            commands::mcp::reconnect_mcp,
+            commands::mcp::reconnect_mcp_server,
             commands::mcp::refresh_mcp_servers,
             commands::mcp::add_mcp_server,
             commands::mcp::update_mcp_server,

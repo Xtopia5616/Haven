@@ -32,7 +32,7 @@
 | `log_frontend_error` | mutate | 脱敏后写入后端日志 |
 | `get_performance_metrics` | read | 仅返回有界、无内容的后端与渲染器计数 |
 | `list_mcp_servers` | read | 返回服务器配置/状态/工具清单快照，不执行工具，env 值统一遮蔽 |
-| `reconnect_mcp` | execute | 只能选择已配置客户端 |
+| `reconnect_mcp_server` | execute | 只重连一个已启用且当前连接的服务器；连接前经过 AuthorizationEngine |
 | `refresh_mcp_servers` | execute | renderer 触发的配置客户端 reconcile；不接收进程参数 |
 | `add_mcp_server` | execute | 共享 self 操作校验并持久化 |
 | `update_mcp_server` | execute | 共享 self 操作安全重连 |

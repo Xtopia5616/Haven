@@ -328,7 +328,7 @@ export interface TauriCommandMap {
 	process_transcript: { request: { transcript: string; activeSessionId?: string | null; attachments?: MessageAttachmentInput[] | null; voice?: boolean | null; recordingSessionId?: string | null }; response: ProcessResult };
 	read_log_tail: { request: { maxLines?: number | null }; response: LogTail };
 	recall_memory: { request: { query: string; kind?: string | null; limit?: number | null }; response: MemoryRecallItem[] };
-	reconnect_mcp: { request: { name: string }; response: void };
+	reconnect_mcp_server: { request: { name: string }; response: void };
 	refresh_mcp_servers: { request: undefined; response: McpRefreshResult };
 	refresh_skills: { request: undefined; response: void };
 	remove_mcp_server: { request: { name: string }; response: void };

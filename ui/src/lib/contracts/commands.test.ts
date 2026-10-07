@@ -29,7 +29,7 @@ describe('Tauri command boundary directory', () => {
 
 	it('keeps MCP administration tied to the native authorization boundary', () => {
 		for (const command of [
-			'reconnect_mcp',
+			'reconnect_mcp_server',
 			'refresh_mcp_servers',
 			'add_mcp_server',
 			'update_mcp_server',

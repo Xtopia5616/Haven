@@ -13,7 +13,7 @@
 	import {
 		addMcpServer,
 		openSkillsDir,
-		reconnectMcp,
+		reconnectMcpServer,
 		refreshMcpServers as refreshMcpServersCommand,
 		refreshSkills as refreshSkillsCommand,
 		removeMcpServer,
@@ -344,7 +344,7 @@
 
 	async function handleReconnect(name: string) {
 		try {
-			await reconnectMcp({ name });
+			await reconnectMcpServer({ name });
 			addNotification(`刷新成功：${name}`, 'success', 2000);
 			await refreshMcpServers();
 		} catch (e) {

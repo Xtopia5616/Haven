@@ -732,7 +732,7 @@ mapper 或绕过 owner 的 UI caller，IPC script 对照 Rust handler 参数、T
 catalog、MCP/Skills 管理、连接和 refresh 命令均通过 `toolsCommands.ts`；命名 request/response DTO 保持
 Rust wire snake_case，MCP config 对齐固定 `McpServerConfig`，动态 schema 仍只在 `ToolSchema = unknown` 边界。
 ToolsView 继续拥有 optimistic state、通知、失败显示和 snapshot/event refresh 编排；Rust handler 继续拥有
-native admin authorization、连接副作用和 status event。`refresh_mcp_servers` 与 `reconnect_mcp` 的 handler
+native admin authorization、连接副作用和 status event。`refresh_mcp_servers` 与 `reconnect_mcp_server` 的 handler
 会构造 renderer 专用 typed native request，并在连接副作用前调用 `authorize_admin_request`；确认后的 refresh 部分失败经
 现有 status channel 投影（[ADR 0369](adr/0369-tools-catalog-command-contract-boundary.md) 后续决定）。MCP/Skill list DTO 保留扩展字段，builtin `ToolManifest` 仍由
 `toolManifest.ts` 唯一投影，卡片列表复用同一批解析行（ADR 0369）。

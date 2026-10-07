@@ -130,7 +130,7 @@ pub const COMMAND_CONTRACTS: &[CommandContract] = &[
         security: "snapshot only; env values redacted; invocation remains gated",
     },
     CommandContract {
-        name: "reconnect_mcp",
+        name: "reconnect_mcp_server",
         boundary: CommandBoundary::Execute,
         security: "AuthorizationEngine; typed native operation reconnects one existing configured server after final version check",
     },
