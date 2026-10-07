@@ -8,7 +8,7 @@ import type {
 	SetEnabledRequest,
 	SkillInfo,
 	ToggleMcpServerRequest,
-	ToolListResponse,
+	BuiltinToolManifestListResponse,
 	UpdateMcpServerRequest,
 } from './contracts/tools.ts';
 
@@ -36,8 +36,8 @@ function validateMcpServerSnapshots(value: unknown): McpServerSnapshot[] {
 }
 
 /** List builtin tool manifests using their existing Rust wire shape. */
-export function listTools(): Promise<ToolListResponse> {
-	return invoke('get_tools');
+export function listBuiltinToolManifests(): Promise<BuiltinToolManifestListResponse> {
+	return invoke('list_builtin_tool_manifests');
 }
 
 /** Read MCP catalog snapshots using the current Rust status variants. */

@@ -1,6 +1,6 @@
 //! Tauri command handlers, split by domain:
-//! `recording` / `session` / `tool_runs` / `session_history` / `model` / `mcp` /
-//! `skills` / `memory` / `settings` / `log` / `diagnostics`.
+//! `recording` / `session` / `tool_runs` / `tools` / `session_history` /
+//! `model` / `mcp` / `skills` / `memory` / `settings` / `log` / `diagnostics`.
 //!
 //! Shared helpers (error conversion, router hot-swap, MCP connect, attachment
 //! validation) live here so every submodule stays thin. `lib.rs` references
@@ -22,6 +22,7 @@ pub mod session_history;
 pub mod settings;
 pub mod skills;
 pub mod tool_runs;
+pub mod tools;
 
 use crate::app_state::{AppState, UiConfirmationAction, UiConfirmationPending};
 use crate::events::{INTERACTION_REQUESTED_EVENT, LLM_CONFIG_CHANGED_EVENT};

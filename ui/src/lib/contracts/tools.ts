@@ -9,11 +9,11 @@ import type {
 	McpServerSnapshot as GeneratedMcpServerSnapshot,
 	McpToolInfo as GeneratedMcpToolInfo,
 	SkillInfo as GeneratedSkillInfo,
-	ToolListResponse as GeneratedToolListResponse,
+	BuiltinToolManifestListResponse as GeneratedBuiltinToolManifestListResponse,
 	TauriCommandRequest,
 } from './generatedCommands.ts';
 
-export type ToolListResponse = GeneratedToolListResponse;
+export type BuiltinToolManifestListResponse = GeneratedBuiltinToolManifestListResponse;
 export type SkillInfo = GeneratedSkillInfo;
 export type McpClientStatus = GeneratedMcpClientStatus;
 export type McpToolInfo = GeneratedMcpToolInfo;

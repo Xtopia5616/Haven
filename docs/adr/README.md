@@ -668,3 +668,4 @@
 - [0677：删除未使用的消息 thread_id 保留字段](0677-remove-unused-message-thread-id.md)
 - [0678：区分 Session 实体与 conversation 内容用词](0678-distinguish-session-and-conversation-wording.md)
 - [0679：统一 Session 运行态与持久历史术语](0679-unify-session-runtime-and-history-terms.md)
+- [0680：明确内置工具 manifest 列表命令](0680-name-builtin-tool-manifest-list-command.md)

@@ -2,7 +2,7 @@
 
 ## 状态
 
-已采纳并实施。Session wrapper 的 `listRuntimeSessions` 仍有效；保留 `get_sessions` IPC 名称的决定已由 [ADR 0679](0679-unify-session-runtime-and-history-terms.md) 替代。
+已采纳并实施。Session wrapper 的 `listRuntimeSessions` 与工具 wrapper 的集合动词仍有效；保留 `get_sessions` / `get_tools` IPC 名称的决定分别由 [ADR 0679](0679-unify-session-runtime-and-history-terms.md) 和 [ADR 0680](0680-name-builtin-tool-manifest-list-command.md) 替代。
 
 ## 背景
 

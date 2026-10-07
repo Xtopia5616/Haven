@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
 	addMcpServer,
-	listTools,
+	listBuiltinToolManifests,
 	listMcpTools,
 	listSkills,
 	openSkillsDir,
@@ -44,11 +44,11 @@ describe('ToolsView command boundary', () => {
 			.mockResolvedValueOnce(mcpResponse)
 			.mockResolvedValueOnce(emptySkills);
 
-		const manifests = await listTools();
+		const manifests = await listBuiltinToolManifests();
 		const servers = await listMcpTools();
 		const skills = await listSkills();
 
-		expect(invoke).toHaveBeenNthCalledWith(1, 'get_tools');
+		expect(invoke).toHaveBeenNthCalledWith(1, 'list_builtin_tool_manifests');
 		expect(invoke).toHaveBeenNthCalledWith(2, 'list_mcp_tools');
 		expect(invoke).toHaveBeenNthCalledWith(3, 'list_skills');
 		expect(manifests).toBe(manifestResponse);

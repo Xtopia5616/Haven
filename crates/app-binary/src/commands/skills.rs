@@ -1,5 +1,5 @@
 use crate::app_state::{AppState, UiConfirmationAction};
-use crate::commands::contracts::{SkillExecutionResponse, ToolListResponse};
+use crate::commands::contracts::SkillExecutionResponse;
 use crate::commands::log_err;
 use crate::commands::{
     app_command_authorization_request, emit_event_logged, queue_ui_confirmation,
@@ -70,33 +70,6 @@ pub async fn set_skill_enabled(
             haven_tools::SkillsOperationArgs::SkillEnable { name }
         } else {
             haven_tools::SkillsOperationArgs::SkillDisable { name }
-        }),
-    )
-    .await?;
-
-    Ok(())
-}
-
-#[tauri::command]
-pub async fn set_tool_enabled(
-    state: State<'_, Arc<AppState>>,
-    name: String,
-    enabled: bool,
-    app: AppHandle,
-) -> Result<(), String> {
-    // Route through the native admin surface: one implementation for
-    // the UI switch and the LLM's tool_enable / tool_disable ops. The op
-    // persists `tool_settings.<name>.enabled` to config.toml AND applies the
-    // runtime change (in-memory tool_settings + catalog rebuild) through the
-    // ToolsFacade, so the toggle takes effect in the Reasoner immediately.
-    crate::commands::authorize_admin_request(
-        &state,
-        &app,
-        "set_tool_enabled",
-        haven_tools::AdminRequest::Tools(if enabled {
-            haven_tools::ToolsOperationArgs::ToolEnable { name }
-        } else {
-            haven_tools::ToolsOperationArgs::ToolDisable { name }
         }),
     )
     .await?;
@@ -255,21 +228,4 @@ pub async fn execute_skill(
         output: result.output,
         error: result.error,
     })
-}
-
-#[tauri::command]
-pub async fn get_tools(state: State<'_, Arc<AppState>>) -> Result<ToolListResponse, String> {
-    // List ALL builtin tools (enabled and disabled) with their enabled state
-    // so the UI can toggle them. Disabled tools are excluded from the
-    // registry the agent sees (see ToolsFacade::rebuild_catalog).
-    let tools = state.runtime.tools.list_builtin_manifests().await;
-    Ok(ToolListResponse { tools })
-}
-
-/// Clear every per-tool circuit breaker so previously open tools become
-/// callable again without waiting for the cooldown window.
-#[tauri::command]
-pub async fn reset_tool_circuits(state: State<'_, Arc<AppState>>) -> Result<(), String> {
-    state.runtime.tools.tool_circuits().reset_all();
-    Ok(())
 }

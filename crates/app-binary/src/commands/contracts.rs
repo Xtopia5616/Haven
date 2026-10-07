@@ -409,7 +409,7 @@ pub const COMMAND_CONTRACTS: &[CommandContract] = &[
         boundary: CommandBoundary::Read,
         security: "state boolean only",
     },
-    // skills/tools
+    // skills
     CommandContract {
         name: "list_skills",
         boundary: CommandBoundary::Read,
@@ -426,11 +426,6 @@ pub const COMMAND_CONTRACTS: &[CommandContract] = &[
         security: "AuthorizationEngine; typed native admin operation persists the toggle",
     },
     CommandContract {
-        name: "set_tool_enabled",
-        boundary: CommandBoundary::Mutate,
-        security: "AuthorizationEngine; typed native admin operation persists the toggle",
-    },
-    CommandContract {
         name: "open_skills_dir",
         boundary: CommandBoundary::Execute,
         security: "configured skills root only",
@@ -440,10 +435,16 @@ pub const COMMAND_CONTRACTS: &[CommandContract] = &[
         boundary: CommandBoundary::Execute,
         security: "AuthorizationEngine; confirmation queues direct calls and errors are renderer-safe",
     },
+    // tools
     CommandContract {
-        name: "get_tools",
+        name: "list_builtin_tool_manifests",
         boundary: CommandBoundary::Read,
-        security: "tool definition projection; schemas are dynamic extension data",
+        security: "builtin manifest projection; schemas are dynamic extension data",
+    },
+    CommandContract {
+        name: "set_tool_enabled",
+        boundary: CommandBoundary::Mutate,
+        security: "AuthorizationEngine; typed native admin operation persists the toggle",
     },
     CommandContract {
         name: "reset_tool_circuits",
@@ -545,7 +546,7 @@ impl From<haven_memory::repositories::facts::FactSourceRef> for MemoryFactSource
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct ToolListResponse {
+pub struct BuiltinToolManifestListResponse {
     pub tools: Vec<haven_common::tools::ToolManifest>,
 }
 

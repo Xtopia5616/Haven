@@ -69,7 +69,7 @@ describe('ToolsView toolbar actions', () => {
 		addNotification.mockClear();
 		reportError.mockClear();
 		invoke.mockImplementation(async (command: string) => {
-			if (command === 'get_tools') return { tools: [] };
+			if (command === 'list_builtin_tool_manifests') return { tools: [] };
 			if (command === 'list_mcp_tools') return [];
 			if (command === 'list_skills') {
 				return [{ name: 'docs', enabled: false, language: 'markdown', has_script: false }];
@@ -126,7 +126,7 @@ describe('ToolsView toolbar actions', () => {
 
 	it('shows the active resource count in the shared filter bar', async () => {
 		invoke.mockImplementation(async (command: string) => {
-			if (command === 'get_tools') {
+			if (command === 'list_builtin_tool_manifests') {
 				return {
 					tools: [manifest('files', 'files', '文件'), manifest('shell', 'shell', '终端')],
 				};
@@ -159,7 +159,7 @@ describe('ToolsView toolbar actions', () => {
 
 	it('renders builtin tools as family, root, and operation levels', async () => {
 		invoke.mockImplementation(async (command: string) => {
-			if (command === 'get_tools') {
+			if (command === 'list_builtin_tool_manifests') {
 				return {
 					tools: [
 						manifest('files.read', 'files', '读取文件'),
@@ -204,7 +204,7 @@ describe('ToolsView toolbar actions', () => {
 	it('locks the MCP refresh action until reconciliation finishes', async () => {
 		let finishRefresh: ((value: unknown) => void) | undefined;
 		invoke.mockImplementation((command: string) => {
-			if (command === 'get_tools') return Promise.resolve({ tools: [] });
+			if (command === 'list_builtin_tool_manifests') return Promise.resolve({ tools: [] });
 			if (command === 'list_mcp_tools') return Promise.resolve([]);
 			if (command === 'list_skills') return Promise.resolve([]);
 			if (command === 'refresh_mcp_servers') {
@@ -236,7 +236,7 @@ describe('ToolsView toolbar actions', () => {
 
 	it('does not report a queued MCP refresh confirmation as success or failure', async () => {
 		invoke.mockImplementation(async (command: string) => {
-			if (command === 'get_tools') return { tools: [] };
+			if (command === 'list_builtin_tool_manifests') return { tools: [] };
 			if (command === 'list_mcp_tools') return [];
 			if (command === 'list_skills') return [];
 			if (command === 'refresh_mcp_servers') {
@@ -258,7 +258,7 @@ describe('ToolsView toolbar actions', () => {
 
 	it('does not report a queued MCP reconnect confirmation as success or failure', async () => {
 		invoke.mockImplementation(async (command: string) => {
-			if (command === 'get_tools') return { tools: [] };
+			if (command === 'list_builtin_tool_manifests') return { tools: [] };
 			if (command === 'list_mcp_tools') {
 				return [{ name: 'docs-server', enabled: true, status: 'Connected', tools: [] }];
 			}
@@ -288,7 +288,7 @@ describe('ToolsView toolbar actions', () => {
 	it('uses the same loading contract for skill refreshes', async () => {
 		let finishRefresh: (() => void) | undefined;
 		invoke.mockImplementation((command: string) => {
-			if (command === 'get_tools') return Promise.resolve({ tools: [] });
+			if (command === 'list_builtin_tool_manifests') return Promise.resolve({ tools: [] });
 			if (command === 'list_mcp_tools') return Promise.resolve([]);
 			if (command === 'list_skills') return Promise.resolve([]);
 			if (command === 'refresh_skills') {

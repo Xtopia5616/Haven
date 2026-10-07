@@ -119,7 +119,7 @@ export const TAURI_COMMAND_CONTRACTS = {
 	set_tool_enabled: { boundary: 'mutate', security: 'AuthorizationEngine; shared native admin operation persists the toggle' },
 	open_skills_dir: { boundary: 'execute', security: 'configured skills root only' },
 	execute_skill: { boundary: 'execute', security: 'AuthorizationEngine; direct confirmations are queued and renderer errors are safe' },
-	get_tools: { boundary: 'read', security: 'tool definition projection; schemas are dynamic extension data' },
+	list_builtin_tool_manifests: { boundary: 'read', security: 'tool definition projection; schemas are dynamic extension data' },
 	reset_tool_circuits: { boundary: 'mutate', security: 'clears local circuit state only' },
 } as const satisfies Record<TauriCommandName, CommandContract>;
 

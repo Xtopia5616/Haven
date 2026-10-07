@@ -19,12 +19,12 @@ export interface SessionInfo { id: string; input: string; summary: string; title
 export interface StepInfo { id: string; step_number: number; tool_name: string; input: unknown; output: unknown | null; status: string; risk_level: RiskLevel; confirmed: boolean | null }
 export type ProcessResult = { 'SessionCreated': { session_id: string; message_id?: string | null } } | { 'Supplemented': { message_id?: string | null } };
 export interface RuntimeSessionListResponse { sessions: SessionInfo[] }
+export interface BuiltinToolManifestListResponse { tools: ToolManifest[] }
 export interface McpToolCallResponse { success: boolean; output: unknown; error: string | null }
 export interface MemoryFactResponse { id: string; subject: string; predicate: string; object: string; source: string; confidence: number; tags: string[]; created_at: string; mention_count: number; last_seen_at: string | null; source_ref: MemoryFactSourceRef | null; durability: number }
 export interface MemoryFactSourceRef { message_id: string; snippet: string }
 export interface MemoryRecallItem { entity_id: string; text: string; score: number; model: string }
 export interface SkillExecutionResponse { success: boolean; output: unknown; error: string | null }
-export interface ToolListResponse { tools: ToolManifest[] }
 export interface LogInfo { enabled: boolean; level: string; path: string | null }
 export interface LogTail { path: string; content: string }
 export interface McpRefreshResult { added: string[]; removed: string[]; updated: string[]; failed: string[] }
@@ -238,9 +238,9 @@ export interface TauriCommandMap {
 	get_session_for_resume: { request: { sessionId: string }; response: SessionResumeResponse };
 	get_session_lineage: { request: { sessionId: string }; response: SessionLineageResponse };
 	get_settings: { request: undefined; response: Settings };
-	get_tools: { request: undefined; response: ToolListResponse };
 	interrupt_session: { request: { sessionId: string }; response: void };
 	is_autostart_enabled: { request: undefined; response: boolean };
+	list_builtin_tool_manifests: { request: undefined; response: BuiltinToolManifestListResponse };
 	list_facts: { request: { source?: string | null }; response: MemoryFactResponse[] };
 	list_mcp_tools: { request: undefined; response: McpServerSnapshot[] };
 	list_permissions: { request: undefined; response: StoredPermission[] };

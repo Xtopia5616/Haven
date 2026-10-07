@@ -97,7 +97,7 @@
 | `set_tool_enabled` | mutate | 共享 self 操作持久化切换 |
 | `open_skills_dir` | execute | 只能打开配置 skills root |
 | `execute_skill` | execute | 限定 skill 名并经过 AuthorizationEngine |
-| `get_tools` | read | 返回全量 `ToolManifest[]`；UI 只在边界把 manifest 转为 camelCase |
+| `list_builtin_tool_manifests` | read | 返回 built-in tools 的启用/禁用 manifest；不包含 Skill/MCP 清单 |
 | `reset_tool_circuits` | mutate | 只清本地 circuit 状态 |
 
 ## 会话命令（v1）
