@@ -167,8 +167,9 @@ impl EnvTool {
                 });
                 let count = vars.len();
                 let max_chars = self.max_output_chars;
-                let (mut result, truncated) =
-                    crate::util::json_list_within_budget("variables", vars, count, max_chars);
+                let capped = crate::util::cap_json_list("variables", vars, count, max_chars);
+                let truncated = capped.truncated;
+                let mut result = capped.value;
                 if let Some(p) = prefix {
                     result["prefix"] = serde_json::json!(p);
                 }

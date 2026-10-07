@@ -2,20 +2,29 @@ use serde::ser::SerializeMap;
 use serde::{Serialize, Serializer};
 use serde_json::{Map, Value};
 
-/// Serialize `{ "<list_key>": items, "count": total }` and drop trailing items
-/// until the JSON fits `max_chars`. Returns `(value, truncated)`; the value
-/// already carries the `truncated` flag when applicable.
+/// A JSON list snapshot and whether its returned entries are incomplete.
+#[derive(Debug, Clone, PartialEq)]
+pub struct JsonListBudgetResult {
+    pub value: Value,
+    pub truncated: bool,
+}
+
+/// Build `{ "<list_key>": items, "count": total }`, dropping trailing items
+/// until the serialized JSON fits `max_chars`. The result value carries the
+/// `truncated` flag for the tool response; the separate field feeds the
+/// `ToolResult` envelope. A non-empty list always retains at least one item,
+/// so one oversized item can still make the result exceed `max_chars`.
 ///
 /// Items are dropped from the tail, so callers should pre-sort with the least
 /// important entries last. The split point is found by binary search over the
 /// serialized prefix length (monotonic in the kept count) — O(n log n) total —
 /// and only the final kept slice is cloned into the returned value.
-pub fn json_list_within_budget(
+pub fn cap_json_list(
     list_key: &str,
     items: Vec<Value>,
     total: usize,
     max_chars: usize,
-) -> (Value, bool) {
+) -> JsonListBudgetResult {
     let best = best_split_size(list_key, &items, total, max_chars);
     let truncated = best < items.len() || best < total;
     let mut obj = Map::new();
@@ -25,7 +34,7 @@ pub fn json_list_within_budget(
     if truncated {
         value["truncated"] = Value::Bool(true);
     }
-    (value, truncated)
+    JsonListBudgetResult { value, truncated }
 }
 
 /// Borrowed view of `{ list_key: [items], count: total }` so split-size probing
@@ -86,17 +95,19 @@ mod tests {
     #[test]
     fn test_fits_without_truncation() {
         let items = vec![json!({"name": "a"})];
-        let (value, truncated) = json_list_within_budget("items", items, 1, 1000);
-        assert!(!truncated);
+        let result = cap_json_list("items", items, 1, 1000);
+        assert!(!result.truncated);
+        let value = result.value;
         assert_eq!(value["count"], 1);
         assert!(value["truncated"].is_null());
     }
 
     #[test]
     fn test_empty_list_does_not_panic() {
-        let (value, truncated) = json_list_within_budget("items", Vec::new(), 0, 1000);
+        let result = cap_json_list("items", Vec::new(), 0, 1000);
 
-        assert!(!truncated);
+        assert!(!result.truncated);
+        let value = result.value;
         assert_eq!(value["items"], json!([]));
         assert_eq!(value["count"], 0);
         assert!(value["truncated"].is_null());
@@ -107,8 +118,9 @@ mod tests {
         let items: Vec<Value> = (0..100)
             .map(|i| json!({"name": format!("var_{}", i), "value": "x".repeat(200)}))
             .collect();
-        let (value, truncated) = json_list_within_budget("items", items, 100, 1000);
-        assert!(truncated);
+        let result = cap_json_list("items", items, 100, 1000);
+        assert!(result.truncated);
+        let value = result.value;
         assert_eq!(value["count"], 100);
         let kept = value["items"].as_array().unwrap();
         assert!(kept.len() < 100, "list should shrink, kept {}", kept.len());
@@ -121,8 +133,9 @@ mod tests {
         // A single item cannot be shrunk; it is returned whole (not flagged,
         // since nothing was dropped) rather than silently dropped.
         let items = vec![json!({"value": "x".repeat(5000)})];
-        let (value, truncated) = json_list_within_budget("items", items, 1, 1000);
-        assert!(!truncated);
+        let result = cap_json_list("items", items, 1, 1000);
+        assert!(!result.truncated);
+        let value = result.value;
         assert_eq!(value["items"].as_array().unwrap().len(), 1);
         assert_eq!(value["items"][0]["value"].as_str().unwrap().len(), 5000);
     }

@@ -107,12 +107,10 @@ impl ProcessTool {
                 // The entries are sorted by memory desc, so the tail holds the
                 // least important entries and is dropped first when the JSON
                 // exceeds the output budget.
-                let (mut output, budget_truncated) = crate::util::json_list_within_budget(
-                    "processes",
-                    processes,
-                    matching_count,
-                    max_chars,
-                );
+                let capped =
+                    crate::util::cap_json_list("processes", processes, matching_count, max_chars);
+                let budget_truncated = capped.truncated;
+                let mut output = capped.value;
                 let returned = output["processes"].as_array().map_or(0, Vec::len);
                 let truncated = budget_truncated || returned < matching_count;
                 output["operation"] = serde_json::json!("list");

@@ -585,8 +585,9 @@ fn network_info_budgeted(max_chars: usize) -> Value {
         })
     });
     let count = items.len();
-    let (mut result, truncated) =
-        crate::util::json_list_within_budget("networks", items, count, max_chars);
+    let capped = crate::util::cap_json_list("networks", items, count, max_chars);
+    let truncated = capped.truncated;
+    let mut result = capped.value;
     if truncated {
         result["hint"] = serde_json::json!(
             "Network listing truncated to the max chars budget. Prefer category=network alone."
