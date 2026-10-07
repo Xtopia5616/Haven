@@ -1,11 +1,13 @@
 import { invoke } from '$lib/tauri.ts';
 import type {
-	McpNameRequest,
+	ReconnectMcpRequest,
+	RemoveMcpServerRequest,
 	McpRefreshResult,
 	McpServerConfig,
 	McpServerConfigInput,
 	McpServerSnapshot,
-	SetEnabledRequest,
+	SetSkillEnabledRequest,
+	SetToolEnabledRequest,
 	SkillInfo,
 	ToggleMcpServerRequest,
 	BuiltinToolManifestListResponse,
@@ -61,7 +63,7 @@ export function refreshMcpServers(): Promise<McpRefreshResult> {
 }
 
 /** Set the persisted and live Skill enabled state through the admin command. */
-export function setSkillEnabled(request: SetEnabledRequest): Promise<void> {
+export function setSkillEnabled(request: SetSkillEnabledRequest): Promise<void> {
 	return invoke('set_skill_enabled', request);
 }
 
@@ -86,12 +88,12 @@ export function updateMcpServer(request: UpdateMcpServerRequest): Promise<void> 
 }
 
 /** Remove a configured MCP server by its name. */
-export function removeMcpServer(request: McpNameRequest): Promise<void> {
+export function removeMcpServer(request: RemoveMcpServerRequest): Promise<void> {
 	return invoke('remove_mcp_server', request);
 }
 
 /** Reconnect the selected MCP server. */
-export function reconnectMcp(request: McpNameRequest): Promise<void> {
+export function reconnectMcp(request: ReconnectMcpRequest): Promise<void> {
 	return invoke('reconnect_mcp', request);
 }
 
@@ -101,6 +103,6 @@ export function toggleMcpServer(request: ToggleMcpServerRequest): Promise<void> 
 }
 
 /** Persist and apply an enabled-state change for a builtin tool. */
-export function setToolEnabled(request: SetEnabledRequest): Promise<void> {
+export function setToolEnabled(request: SetToolEnabledRequest): Promise<void> {
 	return invoke('set_tool_enabled', request);
 }

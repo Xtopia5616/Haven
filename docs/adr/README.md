@@ -669,3 +669,4 @@
 - [0678：区分 Session 实体与 conversation 内容用词](0678-distinguish-session-and-conversation-wording.md)
 - [0679：统一 Session 运行态与持久历史术语](0679-unify-session-runtime-and-history-terms.md)
 - [0680：明确内置工具 manifest 列表命令](0680-name-builtin-tool-manifest-list-command.md)
+- [0681：按命令 owner 命名前端 IPC 请求类型](0681-name-ipc-requests-by-command-owner.md)
