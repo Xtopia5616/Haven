@@ -13,7 +13,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use haven_common::config::RequestKind;
-use haven_common::tools::{OperationIdempotency, ToolOperationScope};
+use haven_common::tools::{OperationIdempotency, ToolOperationScope, ToolResultEnvelope};
 use haven_memory::{SessionEvent, TRANSCRIPT_EVENT_TYPE};
 use serde_json::Value;
 use tokio::sync::broadcast;
@@ -49,7 +49,7 @@ pub(super) struct StoredObservationUi {
     pub idempotency: OperationIdempotency,
     pub operation_scope: ToolOperationScope,
     pub renderer: String,
-    pub result: haven_tools::ToolResultEnvelope,
+    pub result: ToolResultEnvelope,
 }
 
 /// UI card data that is not part of the canonical transcript record.

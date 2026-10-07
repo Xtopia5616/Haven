@@ -37,8 +37,9 @@ pub use media_detection::{
 };
 
 pub use tools::{
-    ToolAvailability, ToolCatalogGroup, ToolDef, ToolIdentity, ToolManifest, ToolModel, ToolPolicy,
-    ToolPresentation, ToolPrompt, ToolRetrySafety, ToolSource,
+    ToolAvailability, ToolCatalogGroup, ToolDef, ToolErrorClass, ToolExecutionOutcome,
+    ToolIdentity, ToolManifest, ToolModel, ToolPolicy, ToolPresentation, ToolPrompt,
+    ToolResultEnvelope, ToolRetrySafety, ToolRetryability, ToolSource,
 };
 
 pub use lifecycle::{SessionStatus, SessionStepStatus, SessionWaitingReason, ToolRunStatus};

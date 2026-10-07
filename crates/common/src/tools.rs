@@ -118,6 +118,152 @@ impl OperationIdempotency {
     }
 }
 
+/// Terminal result of one tool invocation. These values are shared by Tools,
+/// Agent transcript events, and the Tauri observation payload.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolExecutionOutcome {
+    Succeeded,
+    #[default]
+    Failed,
+    Cancelled,
+    TimedOutAndTerminated,
+    TimedOutUnknown,
+}
+
+impl ToolExecutionOutcome {
+    /// Short spelling used in the model-facing result body. Serde uses the
+    /// full snake_case enum name for durable and IPC payloads.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Succeeded => "succeeded",
+            Self::Failed => "failed",
+            Self::Cancelled => "cancelled",
+            Self::TimedOutAndTerminated => "timed_out",
+            Self::TimedOutUnknown => "unknown",
+        }
+    }
+}
+
+/// Structured failure category used by recovery policy.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolErrorClass {
+    Transient,
+    UnknownOutcome,
+    Validation,
+    Permission,
+    SideEffectMayHaveHappened,
+    #[default]
+    Other,
+}
+
+impl ToolErrorClass {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Transient => "transient",
+            Self::UnknownOutcome => "unknown_outcome",
+            Self::Validation => "validation",
+            Self::Permission => "permission",
+            Self::SideEffectMayHaveHappened => "side_effect_may_have_happened",
+            Self::Other => "other",
+        }
+    }
+}
+
+/// Whether a concrete failed invocation may be retried.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolRetryability {
+    Retryable,
+    NotRetryable,
+    #[default]
+    Unknown,
+}
+
+impl ToolRetryability {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Retryable => "retryable",
+            Self::NotRetryable => "not_retryable",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
+/// Stable metadata envelope emitted with a terminal observation. The
+/// operation-specific payload remains in `ToolResult::output`; this envelope
+/// carries fields Agent, UI, and logs interpret consistently.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ToolResultEnvelope {
+    pub outcome: ToolExecutionOutcome,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error_class: Option<ToolErrorClass>,
+    /// Historical wire key whose vocabulary is operation idempotency.
+    /// Unrecognized strings in older durable UI annotations degrade to
+    /// `unknown`; new values always serialize from the closed enum.
+    #[serde(deserialize_with = "deserialize_legacy_operation_idempotency")]
+    pub retry_safety: OperationIdempotency,
+    pub retryability: ToolRetryability,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub verification_hint: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_action: Option<String>,
+    #[serde(default)]
+    pub assets: Vec<String>,
+}
+
+fn deserialize_legacy_operation_idempotency<'de, D>(
+    deserializer: D,
+) -> Result<OperationIdempotency, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = String::deserialize(deserializer)?;
+    Ok(match value.as_str() {
+        "idempotent" => OperationIdempotency::Idempotent,
+        "non_idempotent" => OperationIdempotency::NonIdempotent,
+        _ => OperationIdempotency::Unknown,
+    })
+}
+
+impl Default for ToolResultEnvelope {
+    fn default() -> Self {
+        Self::from_parts(
+            ToolExecutionOutcome::Failed,
+            None,
+            ToolRetryability::Unknown,
+            OperationIdempotency::Unknown,
+        )
+    }
+}
+
+impl ToolResultEnvelope {
+    pub fn from_parts(
+        outcome: ToolExecutionOutcome,
+        error_class: Option<ToolErrorClass>,
+        retryability: ToolRetryability,
+        idempotency: OperationIdempotency,
+    ) -> Self {
+        Self {
+            outcome,
+            error_class,
+            retry_safety: idempotency,
+            retryability,
+            verification_hint: None,
+            next_action: None,
+            assets: Vec::new(),
+        }
+    }
+
+    pub fn with_default_retry_safety(mut self, idempotency: OperationIdempotency) -> Self {
+        if self.retry_safety == OperationIdempotency::Unknown {
+            self.retry_safety = idempotency;
+        }
+        self
+    }
+}
+
 /// Confirmation behavior recorded in a tool operation policy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -456,6 +602,34 @@ mod tests {
         assert_closed_enum_wire(OperationEffect::WorkspaceWrite, "workspace_write");
         assert_closed_enum_wire(DataSensitivity::UserData, "user_data");
         assert_closed_enum_wire(NetworkAccess::Opaque, "opaque");
+    }
+
+    #[test]
+    fn result_envelope_types_retry_safety_and_reads_legacy_unknown_as_unknown() {
+        let current = ToolResultEnvelope::from_parts(
+            ToolExecutionOutcome::Failed,
+            Some(ToolErrorClass::Transient),
+            ToolRetryability::Retryable,
+            OperationIdempotency::NonIdempotent,
+        );
+        let current_json = serde_json::to_value(&current).unwrap();
+        assert_eq!(current_json["retry_safety"], "non_idempotent");
+        assert_eq!(
+            serde_json::from_value::<ToolResultEnvelope>(current_json).unwrap(),
+            current
+        );
+
+        let legacy = serde_json::json!({
+            "outcome": "succeeded",
+            "retry_safety": "untrusted_future_value",
+            "retryability": "unknown",
+        });
+        let decoded: ToolResultEnvelope = serde_json::from_value(legacy).unwrap();
+        assert_eq!(decoded.retry_safety, OperationIdempotency::Unknown);
+        assert_eq!(
+            serde_json::to_value(decoded).unwrap()["retry_safety"],
+            "unknown"
+        );
     }
 
     #[test]

@@ -1,6 +1,7 @@
 pub use haven_common::tools::{
     ConfirmationRequirement, DataSensitivity, NetworkAccess, OperationEffect, OperationIdempotency,
-    ToolConcurrencyMode, ToolOperationScope,
+    ToolConcurrencyMode, ToolErrorClass, ToolExecutionOutcome, ToolOperationScope,
+    ToolResultEnvelope, ToolRetryability,
 };
 use haven_common::types::{CapabilityScope, RiskLevel, permission_key};
 use serde_json::{Map, Value};
@@ -13,22 +14,6 @@ pub use haven_common::tools::{
     ToolPresentation, ToolPrompt, ToolRootPresentation, ToolSource,
 };
 
-/// The durable meaning of a tool invocation's terminal state.
-///
-/// `TimedOutUnknown` is deliberately distinct from a normal failure: the
-/// caller must assume that an external side effect may still be in flight and
-/// must not replay the operation automatically.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ToolExecutionOutcome {
-    Succeeded,
-    #[default]
-    Failed,
-    Cancelled,
-    TimedOutAndTerminated,
-    TimedOutUnknown,
-}
-
 /// Requested execution style for tools that can either finish inline or
 /// detach into a durable ToolRun.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -37,45 +22,6 @@ pub enum ToolExecutionMode {
     #[default]
     Foreground,
     Background,
-}
-
-/// Structured failure class consumed by retry and recovery policy. The human
-/// error string remains a diagnostic, never the policy source.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ToolErrorClass {
-    Transient,
-    UnknownOutcome,
-    Validation,
-    Permission,
-    SideEffectMayHaveHappened,
-    #[default]
-    Other,
-}
-
-/// Whether replaying a failed invocation is safe after the operation has
-/// returned. This is deliberately separate from [`OperationIdempotency`]:
-/// idempotency describes the operation, while this value describes the
-/// concrete failure that was observed.
-#[derive(
-    Debug, Clone, Copy, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
-)]
-#[serde(rename_all = "snake_case")]
-pub enum ToolRetryability {
-    Retryable,
-    NotRetryable,
-    #[default]
-    Unknown,
-}
-
-impl ToolRetryability {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Retryable => "retryable",
-            Self::NotRetryable => "not_retryable",
-            Self::Unknown => "unknown",
-        }
-    }
 }
 
 /// Complete machine-readable policy for a tool failure. The diagnostic text
@@ -159,31 +105,6 @@ impl std::fmt::Display for StructuredToolError {
 }
 
 impl std::error::Error for StructuredToolError {}
-
-impl ToolErrorClass {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Transient => "transient",
-            Self::UnknownOutcome => "unknown_outcome",
-            Self::Validation => "validation",
-            Self::Permission => "permission",
-            Self::SideEffectMayHaveHappened => "side_effect_may_have_happened",
-            Self::Other => "other",
-        }
-    }
-}
-
-impl ToolExecutionOutcome {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Succeeded => "succeeded",
-            Self::Failed => "failed",
-            Self::Cancelled => "cancelled",
-            Self::TimedOutAndTerminated => "timed_out",
-            Self::TimedOutUnknown => "unknown",
-        }
-    }
-}
 
 /// Static effect, disclosure, and network classification shared by tool
 /// contracts and the operation-view catalog.
@@ -421,61 +342,6 @@ pub struct ToolResult {
     pub llm_usage: Vec<ToolLlmUsage>,
 }
 
-/// Stable metadata envelope emitted with a terminal observation. The
-/// operation-specific payload remains in `ToolResult::output`; this envelope
-/// only carries fields that Agent, UI and logs must interpret consistently.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct ToolResultEnvelope {
-    pub outcome: ToolExecutionOutcome,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub error_class: Option<ToolErrorClass>,
-    pub retry_safety: String,
-    pub retryability: ToolRetryability,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub verification_hint: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub next_action: Option<String>,
-    #[serde(default)]
-    pub assets: Vec<String>,
-}
-
-impl Default for ToolResultEnvelope {
-    fn default() -> Self {
-        Self::from_parts(
-            ToolExecutionOutcome::Failed,
-            None,
-            ToolRetryability::Unknown,
-            OperationIdempotency::Unknown,
-        )
-    }
-}
-
-impl ToolResultEnvelope {
-    pub fn from_parts(
-        outcome: ToolExecutionOutcome,
-        error_class: Option<ToolErrorClass>,
-        retryability: ToolRetryability,
-        idempotency: OperationIdempotency,
-    ) -> Self {
-        Self {
-            outcome,
-            error_class,
-            retry_safety: idempotency.as_str().into(),
-            retryability,
-            verification_hint: None,
-            next_action: None,
-            assets: Vec::new(),
-        }
-    }
-
-    pub fn with_default_retry_safety(mut self, idempotency: OperationIdempotency) -> Self {
-        if self.retry_safety == OperationIdempotency::Unknown.as_str() {
-            self.retry_safety = idempotency.as_str().into();
-        }
-        self
-    }
-}
-
 /// One model call made inside a tool. The runtime-only `call_kind` keeps
 /// media inference distinct from other internal tool calls even when a
 /// composite tool (such as `files`) owns both kinds of work.
@@ -624,9 +490,6 @@ impl ToolResult {
             self.retryability,
             idempotency,
         );
-        if let Some(value) = self.output.get("retry_safety").and_then(Value::as_str) {
-            envelope.retry_safety = value.into();
-        }
         envelope.verification_hint = self
             .output
             .get("verification_hint")
@@ -1918,13 +1781,14 @@ pub(crate) mod tests {
     fn result_envelope_keeps_recovery_metadata_and_asset_handles() {
         let result = ToolResult::ok(json!({
             "asset_id": "asset-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "retry_safety": "non_idempotent",
             "verification_hint": "Check the generated file.",
             "next_action": "Use media.inspect with the asset_id.",
             "media": {"asset_id": "asset-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},
         }));
         let envelope = result.envelope(OperationIdempotency::Idempotent);
         assert_eq!(envelope.outcome, ToolExecutionOutcome::Succeeded);
-        assert_eq!(envelope.retry_safety, "idempotent");
+        assert_eq!(envelope.retry_safety, OperationIdempotency::Idempotent);
         assert_eq!(
             envelope.verification_hint.as_deref(),
             Some("Check the generated file.")

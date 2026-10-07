@@ -234,6 +234,10 @@ export const TOOL_CATALOG_GROUP_VALUES = ['haven', 'system', 'agent', 'skills', 
 export type ToolCatalogGroup = (typeof TOOL_CATALOG_GROUP_VALUES)[number];
 export const TOOL_CONCURRENCY_MODE_VALUES = ['read_only', 'shared_resource', 'resource', 'exclusive'] as const;
 export type ToolConcurrencyMode = (typeof TOOL_CONCURRENCY_MODE_VALUES)[number];
+export const TOOL_ERROR_CLASS_VALUES = ['transient', 'unknown_outcome', 'validation', 'permission', 'side_effect_may_have_happened', 'other'] as const;
+export type ToolErrorClass = (typeof TOOL_ERROR_CLASS_VALUES)[number];
+export const TOOL_EXECUTION_OUTCOME_VALUES = ['succeeded', 'failed', 'cancelled', 'timed_out_and_terminated', 'timed_out_unknown'] as const;
+export type ToolExecutionOutcome = (typeof TOOL_EXECUTION_OUTCOME_VALUES)[number];
 export interface ToolIdentity { source: ToolSource; catalog_group: ToolCatalogGroup; root: string; operation: string | null; stable_name: string }
 export interface ToolManifest { identity: ToolIdentity; model: ToolModel; policy: ToolPolicy; presentation: ToolPresentation; root_presentation: ToolRootPresentation; prompt: ToolPrompt; availability: ToolAvailability }
 export interface ToolModel { name: string; description: string; input_schema: unknown }
@@ -242,6 +246,8 @@ export type ToolOperationScope = (typeof TOOL_OPERATION_SCOPE_VALUES)[number];
 export interface ToolPolicy { risk_level: RiskLevel; permission_key: string; confirmation: ConfirmationRequirement; idempotency: OperationIdempotency; scope: ToolOperationScope; concurrency: ToolConcurrencyMode; effect: OperationEffect; data_sensitivity: DataSensitivity; network_access: NetworkAccess }
 export interface ToolPresentation { label: string; renderer: string; icon: string; represented_source: ToolSource }
 export interface ToolPrompt { when_to_use: string; when_not_to_use: string; key_operations: string[] }
+export const TOOL_RETRYABILITY_VALUES = ['retryable', 'not_retryable', 'unknown'] as const;
+export type ToolRetryability = (typeof TOOL_RETRYABILITY_VALUES)[number];
 export interface ToolRootPresentation { label: string; description: string; icon: string }
 export const TOOL_SOURCE_VALUES = ['builtin', 'skill', 'mcp'] as const;
 export type ToolSource = (typeof TOOL_SOURCE_VALUES)[number];

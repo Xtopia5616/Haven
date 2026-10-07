@@ -136,6 +136,17 @@ fn generate(root: &Path) -> Result<String, String> {
         )?;
     }
     type_graph.emit_definition("haven_common::types::LlmCallKind", TypeUse::Response)?;
+    for result_enum in [
+        "OperationIdempotency",
+        "ToolErrorClass",
+        "ToolExecutionOutcome",
+        "ToolRetryability",
+    ] {
+        type_graph.emit_definition(
+            &format!("haven_common::tools::{result_enum}"),
+            TypeUse::Response,
+        )?;
+    }
     type_graph.emit_definition("haven_mcp::protocol::McpClientStatus", TypeUse::Response)?;
     type_graph.emit_external_unit_variant_values(
         "haven_mcp::protocol::McpClientStatus",

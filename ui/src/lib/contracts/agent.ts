@@ -5,7 +5,10 @@ import type {
 	LlmCallKind,
 	OperationIdempotency,
 	RequestKind,
+	ToolErrorClass,
+	ToolExecutionOutcome,
 	ToolOperationScope,
+	ToolRetryability,
 	ToolRunCompletionStatusDto,
 	ToolRunKindDto,
 } from './generatedCommands.ts';
@@ -14,7 +17,10 @@ import {
 	AGENT_NOTIFICATION_KIND_VALUES,
 	LLM_CALL_KIND_VALUES,
 	OPERATION_IDEMPOTENCY_VALUES,
+	TOOL_ERROR_CLASS_VALUES,
+	TOOL_EXECUTION_OUTCOME_VALUES,
 	TOOL_OPERATION_SCOPE_VALUES,
+	TOOL_RETRYABILITY_VALUES,
 	TOOL_RUN_COMPLETION_STATUS_DTO_VALUES,
 	TOOL_RUN_KIND_DTO_VALUES,
 } from './generatedCommands.ts';
@@ -22,17 +28,6 @@ import type { TauriEvent } from './tauriEvent.ts';
 import { isRecord } from './objectGuards.ts';
 
 export type AgentEventName = (typeof AGENT_EVENT_NAMES)[number];
-export type ToolResultOutcome =
-	'succeeded' | 'failed' | 'cancelled' | 'timed_out_and_terminated' | 'timed_out_unknown';
-export type ToolErrorClass =
-	| 'transient'
-	| 'unknown_outcome'
-	| 'validation'
-	| 'permission'
-	| 'side_effect_may_have_happened'
-	| 'other';
-export type ToolRetrySafety = 'idempotent' | 'non_idempotent' | 'unknown';
-export type ToolRetryability = 'retryable' | 'not_retryable' | 'unknown';
 
 export interface AgentThoughtPayload {
 	sessionId: string;
@@ -76,9 +71,9 @@ export interface AgentObservationPayload {
 }
 
 export interface AgentToolResultEnvelope {
-	outcome: ToolResultOutcome;
+	outcome: ToolExecutionOutcome;
 	errorClass?: ToolErrorClass | null;
-	retrySafety: ToolRetrySafety;
+	retrySafety: OperationIdempotency;
 	retryability: ToolRetryability;
 	verificationHint?: string | null;
 	nextAction?: string | null;
@@ -281,24 +276,6 @@ function isOneOf<const Values extends readonly string[]>(
 	return typeof value === 'string' && values.includes(value);
 }
 
-const TOOL_RESULT_OUTCOMES = [
-	'succeeded',
-	'failed',
-	'cancelled',
-	'timed_out_and_terminated',
-	'timed_out_unknown',
-] as const;
-const TOOL_ERROR_CLASSES = [
-	'transient',
-	'unknown_outcome',
-	'validation',
-	'permission',
-	'side_effect_may_have_happened',
-	'other',
-] as const;
-const TOOL_RETRY_SAFETY = ['idempotent', 'non_idempotent', 'unknown'] as const;
-const TOOL_RETRYABILITY = ['retryable', 'not_retryable', 'unknown'] as const;
-
 function mapToolResult(value: unknown): AgentToolResultEnvelope | null {
 	if (!isRecord(value)) return null;
 	const outcome = requiredString(value, 'outcome');
@@ -306,12 +283,12 @@ function mapToolResult(value: unknown): AgentToolResultEnvelope | null {
 	const retryability = requiredString(value, 'retryability');
 	const errorClass = value.error_class;
 	if (
-		!isOneOf(outcome, TOOL_RESULT_OUTCOMES) ||
-		!isOneOf(retrySafety, TOOL_RETRY_SAFETY) ||
-		!isOneOf(retryability, TOOL_RETRYABILITY) ||
+		!isOneOf(outcome, TOOL_EXECUTION_OUTCOME_VALUES) ||
+		!isOneOf(retrySafety, OPERATION_IDEMPOTENCY_VALUES) ||
+		!isOneOf(retryability, TOOL_RETRYABILITY_VALUES) ||
 		(errorClass !== undefined &&
 			errorClass !== null &&
-			!isOneOf(errorClass, TOOL_ERROR_CLASSES)) ||
+			!isOneOf(errorClass, TOOL_ERROR_CLASS_VALUES)) ||
 		!stringArray(value.assets) ||
 		!['verification_hint', 'next_action'].every(
 			(field) => value[field] === undefined || nullableStringIsValid(value[field]),

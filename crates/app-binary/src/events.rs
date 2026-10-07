@@ -1,4 +1,4 @@
-use haven_common::tools::{OperationIdempotency, ToolOperationScope};
+use haven_common::tools::{OperationIdempotency, ToolOperationScope, ToolResultEnvelope};
 use haven_common::{SessionStatus, SessionWaitingReason, ToolRunStatus};
 use haven_tools::{ToolRunLifecyclePayload, ToolRunOutputPayload, ToolRunView};
 use serde::{Deserialize, Serialize};
@@ -441,7 +441,7 @@ pub(crate) struct AgentObservationEvent {
     pub idempotency: OperationIdempotency,
     pub operation_scope: ToolOperationScope,
     pub renderer: String,
-    pub result: haven_tools::ToolResultEnvelope,
+    pub result: ToolResultEnvelope,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub event_seq: Option<u64>,
 }

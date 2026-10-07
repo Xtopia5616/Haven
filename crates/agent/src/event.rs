@@ -6,10 +6,9 @@ use crate::session::SessionInfo;
 use async_trait::async_trait;
 use haven_common::SessionStatus;
 use haven_common::config::RequestKind;
-use haven_common::tools::{OperationIdempotency, ToolOperationScope};
+use haven_common::tools::{OperationIdempotency, ToolOperationScope, ToolResultEnvelope};
 use haven_common::types::LlmCallKind;
 use haven_memory::SessionStore;
-use haven_tools::ToolResultEnvelope;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
