@@ -3,9 +3,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
 	createRecordingOverlayController,
 	type RecordingOverlayController,
+	type RecordingOverlayControllerDependencies,
 } from './recordingOverlayController.ts';
-
-type RecordingCommand = 'start_recording' | 'stop_recording' | 'cancel_recording';
 
 function deferred<T>() {
 	let resolve!: (value: T) => void;
@@ -17,7 +16,7 @@ function deferred<T>() {
 	return { promise, resolve, reject };
 }
 
-function makeController(invoke = vi.fn<(command: RecordingCommand) => Promise<unknown>>()) {
+function makeController(invoke = vi.fn<RecordingOverlayControllerDependencies['invoke']>()) {
 	const controller = createRecordingOverlayController({
 		invoke,
 		now: () => 1_000,
@@ -41,7 +40,7 @@ describe('recording overlay controller', () => {
 	it('owns optimistic toolbar transitions and elapsed-time timer', async () => {
 		const start = deferred<void>();
 		const stop = deferred<void>();
-		const invoke = vi.fn((command: RecordingCommand) =>
+		const invoke = vi.fn<RecordingOverlayControllerDependencies['invoke']>((command) =>
 			command === 'start_recording' ? start.promise : stop.promise,
 		);
 		const { controller } = makeController(invoke);
@@ -74,7 +73,7 @@ describe('recording overlay controller', () => {
 	it('handles a quick start-stop click and an automatic stop transition', async () => {
 		const start = deferred<void>();
 		const stop = deferred<void>();
-		const invoke = vi.fn((command: RecordingCommand) =>
+		const invoke = vi.fn<RecordingOverlayControllerDependencies['invoke']>((command) =>
 			command === 'start_recording' ? start.promise : stop.promise,
 		);
 		const { controller } = makeController(invoke);

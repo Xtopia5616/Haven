@@ -4,6 +4,7 @@ import type {
 	RecordingPayload,
 	VadStatusPayload,
 } from './contracts/recording.ts';
+import type { TauriCommandName } from './contracts/generatedCommands.ts';
 import { invoke } from './tauri.ts';
 
 export type RecordingOverlayState = {
@@ -16,10 +17,13 @@ export type RecordingOverlayState = {
 	vadState: string;
 };
 
-type RecordingCommand = 'start_recording' | 'stop_recording' | 'cancel_recording';
+type RecordingCommandName = Extract<
+	TauriCommandName,
+	'start_recording' | 'stop_recording' | 'cancel_recording'
+>;
 
 export interface RecordingOverlayControllerDependencies {
-	invoke: (command: RecordingCommand) => Promise<unknown>;
+	invoke: (command: RecordingCommandName) => Promise<unknown>;
 	now?: () => number;
 	setInterval?: typeof globalThis.setInterval;
 	clearInterval?: typeof globalThis.clearInterval;
@@ -273,5 +277,5 @@ export function createRecordingOverlayController(
 }
 
 export const recordingOverlayController = createRecordingOverlayController({
-	invoke: (command: RecordingCommand) => invoke(command),
+	invoke: (command: RecordingCommandName) => invoke(command),
 });

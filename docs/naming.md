@@ -1,6 +1,6 @@
 # Haven 命名规范
 
-> 版本: v1.70 | 日期: 2026-10-07
+> 版本: v1.71 | 日期: 2026-10-07
 
 本文档统一 Haven 项目各层的命名规则（变量名、函数名、文件名、crate 名、缩写大小写、跨层边界）。规范以现有代码中的事实模式为基础，新代码必须遵循；存量代码若与规范冲突，逐步迁移对齐。
 
@@ -56,6 +56,8 @@ ReAct response hook 与分类器共享 `ResponsePolicyInput`；分类器返回 `
 SessionReducer 的当前 run 结束提示统一为 `SessionRunEndNotice { sessionId, status, reason }`，状态范围从 generated `SessionStatus` 派生为 paused/completed/error。活动错误不再另存一份 `SessionError`；生命周期 reducer 用单一 `session/run-ended` action 同步会话状态和提示，继续生成成功后用 `session/run-end-notice-cleared` 清理。历史错误原因映射仍按 session 单独保留（ADR 0638）。
 
 共享 UI 状态色使用 `StatusTone`；`StatusBadgeTone` 是从中显式提取的组件支持子集，排除没有 Badge 样式的 `tool`，不再手写第二份同义字面量（ADR 0639）。
+
+录音 overlay controller 的命令注入范围命名为 `RecordingCommandName`，由 generated `TauriCommandName` 显式提取 `start_recording`、`stop_recording` 与 `cancel_recording`；它是 controller 的窄能力边界，命令值仍由 generated IPC contract 持有（ADR 0640）。测试 mock 直接从 controller dependency 的 `invoke` 字段取得函数类型，不复制一份命令 union。
 
 Tools 文件名与全文搜索共用 `FileSearchResult`；匹配项由 `results` 表达，有限扫描或结果上限则由独立的 `truncation_reason` 表达。匹配数据与搜索完整性是不同结果维度，不能只根据 tuple 位置恢复。
 
