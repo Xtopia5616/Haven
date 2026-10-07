@@ -130,13 +130,13 @@ fn truncate_to_token_budget(text: &str, max_tokens: u32) -> String {
 }
 
 fn render_recent_context_with_budget(
-    history: &[String],
+    session_prompt_history: &[String],
     max_chars: usize,
     max_tokens: u32,
 ) -> String {
     const HEADER: &str = "Additional context:\n";
 
-    if history.is_empty()
+    if session_prompt_history.is_empty()
         || max_chars <= HEADER.chars().count()
         || estimate_tokens(HEADER) >= max_tokens
     {
@@ -146,7 +146,7 @@ fn render_recent_context_with_budget(
     let mut used = HEADER.chars().count();
     let mut used_tokens = estimate_tokens(HEADER);
     let mut selected = Vec::new();
-    for message in history.iter().rev() {
+    for message in session_prompt_history.iter().rev() {
         // History is user/model-produced data, not prompt instructions. Keep
         // each entry on one physical line so it cannot forge the surrounding
         // prompt structure or the resume parser's markers.
@@ -177,8 +177,10 @@ fn render_recent_context_with_budget(
         if available_chars == 0 || available_tokens == 0 {
             return String::new();
         }
-        let safe_message =
-            haven_common::text::sanitize_prompt_field(history.last().unwrap(), available_chars);
+        let safe_message = haven_common::text::sanitize_prompt_field(
+            session_prompt_history.last().unwrap(),
+            available_chars,
+        );
         let safe_message = truncate_to_token_budget(&safe_message, available_tokens);
         selected.push(truncate_chars(
             &format!("  {safe_message}\n"),
@@ -421,7 +423,7 @@ impl SystemPromptBuilder {
     ///   fence (`{facts}`); mid-run refreshes that fence via
     ///   [`Self::build_memory_sections`] + [`Self::patch_system_memory`];
     ///   resume rebuilds the whole system via [`Self::rebuild_canonical_system`].
-    /// - `conversation_history` is Additional context for the system prompt;
+    /// - `session_prompt_history` supplies Additional context for the system prompt;
     ///   callers must not re-inject the first user turn already placed in
     ///   canonical (see `layer::run_session`).
     /// - Do **not** inject `ReActRound` / "Steps so far" into the system
@@ -430,9 +432,9 @@ impl SystemPromptBuilder {
     pub async fn build(
         &self,
         session_description: &str,
-        conversation_history: &[String],
+        session_prompt_history: &[String],
     ) -> String {
-        self.build_for_session(session_description, conversation_history, None)
+        self.build_for_session(session_description, session_prompt_history, None)
             .await
     }
 
@@ -517,13 +519,13 @@ impl SystemPromptBuilder {
     pub async fn build_for_session(
         &self,
         session_description: &str,
-        conversation_history: &[String],
+        session_prompt_history: &[String],
         exclude_session_id: Option<&str>,
     ) -> String {
         let memory = self
             .build_memory_sections(session_description, exclude_session_id)
             .await;
-        self.build_for_session_with_memory(session_description, conversation_history, memory)
+        self.build_for_session_with_memory(session_description, session_prompt_history, memory)
             .await
     }
 
@@ -537,11 +539,11 @@ impl SystemPromptBuilder {
     pub(crate) async fn build_for_session_without_memory(
         &self,
         session_description: &str,
-        conversation_history: &[String],
+        session_prompt_history: &[String],
     ) -> String {
         self.build_for_session_with_memory(
             session_description,
-            conversation_history,
+            session_prompt_history,
             MemorySections::default(),
         )
         .await
@@ -550,7 +552,7 @@ impl SystemPromptBuilder {
     async fn build_for_session_with_memory(
         &self,
         session_description: &str,
-        conversation_history: &[String],
+        session_prompt_history: &[String],
         memory: MemorySections,
     ) -> String {
         let sections = self.get_or_build_sections().await;
@@ -590,7 +592,7 @@ impl SystemPromptBuilder {
             .saturating_sub(fixed_tokens)
             .max(1);
         let context_section = render_recent_context_with_budget(
-            conversation_history,
+            session_prompt_history,
             context_budget,
             context_token_budget,
         );
