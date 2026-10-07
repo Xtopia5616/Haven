@@ -295,7 +295,7 @@ export interface TauriCommandMap {
 	execute_skill: { request: { name: string; params: unknown }; response: SkillExecutionResponse };
 	export_session_history: { request: { startDate?: string | null; endDate?: string | null; status?: string | null }; response: string };
 	get_api_key_status: { request: undefined; response: ApiKeyStatus };
-	get_bootstrap_status: { request: undefined; response: string };
+	get_bootstrap_status: { request: undefined; response: BootstrapStatus };
 	get_latest_session_for_resume: { request: undefined; response: SessionResumeResponse | null };
 	get_log_info: { request: undefined; response: LogInfo };
 	get_performance_metrics: { request: { ui?: UiMetricsSnapshotInput | null }; response: MetricsSnapshot };

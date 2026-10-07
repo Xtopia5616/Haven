@@ -638,6 +638,13 @@ mod tests {
             .unwrap(),
             serde_json::json!({ "status": "loading" })
         );
+        assert_eq!(
+            serde_json::to_value(AppBootstrapEvent {
+                status: crate::app_state::BootstrapStatus::Ready,
+            })
+            .unwrap(),
+            serde_json::json!({ "status": "ready" })
+        );
 
         for (status, expected) in [
             (crate::desktop::TrayStatus::Normal, "normal"),

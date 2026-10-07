@@ -1,8 +1,10 @@
+import type { BootstrapStatus } from './contracts/generatedCommands.ts';
+
 export const BOOTSTRAP_PROBE_INTERVAL_MS = 1000;
 const BOOTSTRAP_PROBE_MAX_INTERVAL_MS = 10000;
 
 /** Return true only for the backend's terminal bootstrap state. */
-export function isBootstrapReady(status: unknown): status is 'ready' {
+export function isBootstrapReady(status: unknown): status is Extract<BootstrapStatus, 'ready'> {
 	return status === 'ready';
 }
 

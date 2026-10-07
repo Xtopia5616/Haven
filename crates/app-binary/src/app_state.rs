@@ -138,15 +138,6 @@ pub(crate) struct UiConfirmationPending {
     pub action: UiConfirmationAction,
 }
 
-impl BootstrapStatus {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Loading => "loading",
-            Self::Ready => "ready",
-        }
-    }
-}
-
 #[derive(Clone)]
 struct CleanupRoots {
     uploads: PathBuf,

@@ -1,4 +1,4 @@
-use crate::app_state::AppState;
+use crate::app_state::{AppState, BootstrapStatus};
 use crate::commands::log_err;
 use crate::config_runtime::{
     PreparedRouterRuntime, RouterRuntimePublishError, SettingsRuntimeApplyCoordinator,
@@ -160,9 +160,9 @@ fn validate_settings_payload(settings: &haven_common::config::Settings) -> anyho
 /// The frontend also listens for `app:bootstrap`; this command covers the
 /// race where the UI mounts after the ready event already fired.
 #[tauri::command]
-pub async fn get_bootstrap_status(app: tauri::AppHandle) -> Result<String, String> {
+pub async fn get_bootstrap_status(app: tauri::AppHandle) -> Result<BootstrapStatus, String> {
     let state = app.state::<Arc<AppState>>();
-    Ok(state.bootstrap_status().as_str().to_string())
+    Ok(state.bootstrap_status())
 }
 
 /// Executes one planned phase against its existing runtime owner. The typed
