@@ -9,6 +9,7 @@ import {
 } from './sessionIntentStore.ts';
 import { isBusyStatus, isPausedStatus } from './sessionStatus.ts';
 import { invoke } from './tauri.ts';
+import type { ChatFileAttachment, ChatImageAttachment } from './chatAttachmentTypes.ts';
 import type { ProcessResult } from './contracts/generatedCommands.ts';
 
 /** True when a send should be treated as mid-turn steering (keep agent UI above it). */
@@ -207,8 +208,8 @@ function drainQueue(lane: SubmissionLane) {
  * @returns the generated `ProcessResult` contract
  */
 interface SubmitOptions {
-	images?: Array<{ media_type: string; data: string }> | null;
-	files?: Array<{ media_type: string; data: string; filename: string }> | null;
+	images?: ChatImageAttachment[] | null;
+	files?: ChatFileAttachment[] | null;
 	voice?: boolean;
 	recordingSessionId?: string;
 	/** Reuse only when multiple invocations represent the same user intent. */

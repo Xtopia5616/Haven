@@ -13,22 +13,17 @@
 	import Icon from '$lib/Icon.svelte';
 	import { copyText } from '$lib/clipboard.ts';
 	import type { ContextMenuItem } from '$lib/contextMenu.ts';
+	import type { ChatFileAttachment, ChatImageAttachment } from '$lib/chatAttachmentTypes.ts';
 	import { DRAFT_SESSION_ID } from '$lib/sessionReducer.ts';
 
-	interface ImageAttachment {
-		media_type: string;
-		data: string;
-	}
-
-	interface FileAttachment extends ImageAttachment {
-		filename: string;
+	interface PendingChatFileAttachment extends ChatFileAttachment {
 		size: number;
 	}
 
 	interface InputPayload {
 		text: string;
-		images: ImageAttachment[];
-		files: FileAttachment[];
+		images: ChatImageAttachment[];
+		files: PendingChatFileAttachment[];
 	}
 
 	interface TextSelection {
@@ -87,12 +82,12 @@
 	// Pending image attachments (multimodal): [{ mediaType, data }] with data
 	// holding base64 bytes (no data: prefix). Filled by paste / file picker,
 	// sent along with the next message, cleared on submit.
-	let pendingImages = $state<ImageAttachment[]>([]);
+	let pendingImages = $state<ChatImageAttachment[]>([]);
 
 	// Pending non-image attachments: [{ media_type, data, filename, size }].
 	// Ordinary files are persisted by the backend and handed to the agent as a
 	// managed asset; audio/video keep their base64 payload for multimodal chat.
-	let pendingFiles = $state<FileAttachment[]>([]);
+	let pendingFiles = $state<PendingChatFileAttachment[]>([]);
 	// Reserve slots while asynchronous reads are in flight so overlapping
 	// picker/paste events cannot exceed the configured attachment limits.
 	let pendingImageReads = 0;
@@ -185,8 +180,8 @@
 	}
 
 	/** Read a File as a { media_type, data } attachment without re-encoding. */
-	function readAsAttachment(file: File): Promise<ImageAttachment> {
-		return new Promise<ImageAttachment>((resolve, reject) => {
+	function readAsAttachment(file: File): Promise<ChatImageAttachment> {
+		return new Promise<ChatImageAttachment>((resolve, reject) => {
 			const reader = new FileReader();
 			reader.onload = () => {
 				const dataUrl = String(reader.result || '');
@@ -203,7 +198,7 @@
 	 * Downscale and re-encode an image File to JPEG to reduce payload size.
 	 * Returns null if compression isn't possible (e.g. browser lacks the API).
 	 */
-	async function tryCompressImage(file: File): Promise<ImageAttachment | null> {
+	async function tryCompressImage(file: File): Promise<ChatImageAttachment | null> {
 		if (typeof createImageBitmap !== 'function' || typeof document === 'undefined') return null;
 		try {
 			const bitmap = await createImageBitmap(file);
@@ -238,7 +233,7 @@
 	 * Compresses to JPEG when the result is smaller than the original;
 	 * otherwise keeps the original encoding.
 	 */
-	async function fileToAttachment(file: File): Promise<ImageAttachment> {
+	async function fileToAttachment(file: File): Promise<ChatImageAttachment> {
 		if (file.size > maxImageBytes) {
 			throw new Error(`图片超过 ${Math.round(maxImageBytes / 1024 / 1024)}MB 上限`);
 		}

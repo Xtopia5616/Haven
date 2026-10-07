@@ -99,7 +99,7 @@
 	} from '$lib/contracts/sessionHistory.ts';
 	import type { ToolRunPayload, ToolRunStatus } from '$lib/contracts/toolRun.ts';
 	import type { AgentMediaPlanPayload } from '$lib/contracts/agent.ts';
-	import type { ChatFileAttachment, ChatImageAttachment } from '$lib/chatSessionController.ts';
+	import type { ChatFileAttachment, ChatImageAttachment } from '$lib/chatAttachmentTypes.ts';
 	import type { SessionMessageContextMenuRequest } from '$lib/sessionTimeline.ts';
 	import type { ReactExecutionPhaseSnapshot } from '$lib/sessionRuntimeStore.ts';
 

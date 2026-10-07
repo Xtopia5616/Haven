@@ -9,6 +9,7 @@ import {
 } from './continueSession.ts';
 import { isErrorStatus } from './sessionStatus.ts';
 import { processResultSessionId } from './submit.ts';
+import type { ChatFileAttachment, ChatImageAttachment } from './chatAttachmentTypes.ts';
 import type { ProcessResult } from './contracts/generatedCommands.ts';
 import type { RollbackSessionRequest, SessionIdRequest } from './contracts/commands.ts';
 import type { TauriCommandInvoke } from './contracts/generatedCommands.ts';
@@ -18,15 +19,6 @@ import type {
 	SessionReducer,
 	SessionSummary,
 } from './sessionReducer.ts';
-
-export interface ChatImageAttachment {
-	media_type: string;
-	data: string;
-}
-
-export interface ChatFileAttachment extends ChatImageAttachment {
-	filename: string;
-}
 
 export interface RollbackRequest {
 	stepNumber: number;

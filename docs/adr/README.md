@@ -617,3 +617,4 @@
 - [0626：命名 App model discovery 认证结果](0626-name-app-discovery-auth-types.md)
 - [0627：命名 Tools JSON 列表预算结果](0627-name-tools-json-list-budget-result.md)
 - [0628：命名 Tools shell 执行上下文](0628-name-tools-shell-context.md)
+- [0629：统一 UI chat 提交附件类型 owner](0629-unify-chat-submission-attachment-types.md)
