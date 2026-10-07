@@ -1168,7 +1168,7 @@
 		/>
 	</div>
 
-	<div class="conversation-column">
+	<div class="session-column">
 		<SessionHeader
 			title={sessionHeaderTitle}
 			hasSession={!!activeSessionId && !activeSessionRunEndNotice}
@@ -1322,7 +1322,7 @@
 			transform var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard),
 			visibility 0s linear var(--md-sys-motion-duration-short);
 	}
-	.conversation-column {
+	.session-column {
 		position: relative;
 		display: flex;
 		grid-column: 1 / -1;
@@ -1405,10 +1405,10 @@
 				var(--md-sys-motion-easing-standard) both;
 		}
 		:global(.tab-panel--leaving) .desktop-session-rail {
-			animation: conversation-rail-exit var(--md-sys-motion-duration-short)
+			animation: session-rail-exit var(--md-sys-motion-duration-short)
 				var(--md-sys-motion-easing-standard) both;
 		}
-		.conversation-column {
+		.session-column {
 			grid-column: 2;
 			grid-row: 1;
 		}
@@ -1425,7 +1425,7 @@
 		}
 	}
 
-	@keyframes conversation-rail-exit {
+	@keyframes session-rail-exit {
 		from {
 			opacity: 1;
 			transform: translateX(0);

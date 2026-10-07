@@ -638,3 +638,4 @@
 - [0647：为 Tauri listener 保留 unknown event payload 边界](0647-type-tauri-listener-envelope.md)
 - [0648：统一 Agent system prompt 历史上下文参数名](0648-name-agent-session-prompt-history-parameter.md)
 - [0649：按 Session compaction 用途命名共享 prompt 常量](0649-name-session-compaction-summary-prompt.md)
+- [0650：统一 Chat route 的 Session CSS 标识](0650-name-session-route-css-identifiers.md)
