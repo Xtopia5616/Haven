@@ -628,6 +628,24 @@ mod tests {
     }
 
     #[test]
+    fn memory_entity_kind_uses_closed_snake_case_serde_values() {
+        assert_eq!(
+            serde_json::to_string(&MemoryEntityKind::Fact).unwrap(),
+            "\"fact\""
+        );
+        assert_eq!(
+            serde_json::to_string(&MemoryEntityKind::Episode).unwrap(),
+            "\"episode\""
+        );
+        assert_eq!(
+            serde_json::from_str::<MemoryEntityKind>("\"fact\"").unwrap(),
+            MemoryEntityKind::Fact
+        );
+        assert!(serde_json::from_str::<MemoryEntityKind>("\"all\"").is_err());
+        assert!(serde_json::from_str::<MemoryEntityKind>("\"FACT\"").is_err());
+    }
+
+    #[test]
     fn fact_subject_scope_is_applied_before_candidate_limit() {
         let db = Database::open_in_memory().unwrap();
         for index in 0..8 {

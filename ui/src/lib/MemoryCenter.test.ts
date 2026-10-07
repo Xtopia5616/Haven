@@ -1,5 +1,6 @@
 import { render, screen, fireEvent } from '@testing-library/svelte';
 import { describe, expect, it, vi } from 'vitest';
+import type { MemoryRecallState } from '$lib/contracts/memory.ts';
 import MemoryCenter from './views/MemoryCenter.svelte';
 
 describe('MemoryCenter', () => {
@@ -26,7 +27,7 @@ describe('MemoryCenter', () => {
 	it('forwards the selected memory scope and search action', async () => {
 		const onRecallKindChange = vi.fn();
 		const onRunRecall = vi.fn();
-		const memoryRecall = {
+		const memoryRecall: MemoryRecallState = {
 			query: 'dark theme',
 			kind: 'all',
 			results: [],

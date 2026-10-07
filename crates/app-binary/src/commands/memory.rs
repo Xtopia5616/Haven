@@ -24,18 +24,13 @@ pub async fn run_memory_maintenance(state: State<'_, Arc<AppState>>) -> Result<u
 #[tauri::command]
 pub async fn recall_memory(
     query: String,
-    kind: Option<String>,
+    kind: Option<MemoryEntityKind>,
     limit: Option<usize>,
     state: State<'_, Arc<AppState>>,
 ) -> Result<Vec<MemoryRecallItem>, String> {
-    let kind = kind.as_deref().unwrap_or("fact");
+    let kind = kind.unwrap_or(MemoryEntityKind::Fact);
     let limit = limit.unwrap_or(5);
-    let query = MemoryQuery::new(
-        &query,
-        MemoryEntityKind::parse(kind).map_err(|e| log_err("recall_memory", e))?,
-        limit,
-    )
-    .map_err(|e| log_err("recall_memory", e))?;
+    let query = MemoryQuery::new(&query, kind, limit).map_err(|e| log_err("recall_memory", e))?;
     state
         .runtime
         .agent

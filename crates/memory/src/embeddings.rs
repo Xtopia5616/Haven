@@ -55,7 +55,8 @@ pub mod entity_kind {
 /// The values here are the domain vocabulary; SQLite still stores their
 /// `entity_type` strings through [`entity_kind`]. FTS has a separate storage
 /// vocabulary and keeps its explicit `ITEM` to `EPISODE` mapping below.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum MemoryEntityKind {
     Fact,
     Episode,

@@ -2,10 +2,15 @@
 	import MaterialButton from '$lib/MaterialButton.svelte';
 	import MaterialDialog from '$lib/MaterialDialog.svelte';
 	import MaterialSelect from '$lib/MaterialSelect.svelte';
+	import { isMemoryRecallFilter } from '$lib/contracts/memory.ts';
 	import LongTermFacts from './LongTermFacts.svelte';
 	import MemoryRecall from './MemoryRecall.svelte';
 	import CountChip from '$lib/CountChip.svelte';
-	import type { Fact, MemoryRecallState } from '$lib/contracts/memory.ts';
+	import type {
+		Fact,
+		MemoryRecallFilter,
+		MemoryRecallState,
+	} from '$lib/contracts/memory.ts';
 
 	interface Props {
 		facts?: Fact[];
@@ -15,7 +20,7 @@
 		newFact?: { predicate: string; object: string; tags: string };
 		addingFact?: boolean;
 		memoryRecall: MemoryRecallState;
-		onRecallKindChange?: (value: string) => void;
+		onRecallKindChange?: (value: MemoryRecallFilter) => void;
 		onRunRecall?: () => void;
 		onClearRecall?: () => void;
 		onFactSourceFilterChange?: (value: string) => void;
@@ -48,8 +53,10 @@
 	];
 
 	function handleScopeChange(value: string) {
-		onRecallKindChange(value);
-		onRunRecall();
+		if (isMemoryRecallFilter(value)) {
+			onRecallKindChange(value);
+			onRunRecall();
+		}
 	}
 
 	function handleKeydown(event: KeyboardEvent) {

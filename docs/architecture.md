@@ -301,7 +301,9 @@ provider 协议和 UI 展示逻辑不得进入本 crate。
 Agent 的 `memory_service.rs` 是 prompt/worker 共用的 typed memory 边界：它集中管理
 有界候选、recall、embedding/index 句柄和 prompt-memory cache；向量行的 scope、敏感
 过滤、规范化与 keyword 融合仍由 `haven_memory::recall::MemoryRetriever` 统一负责；
-`MemoryRecallStore` 调度 recall SQL 并返回 typed domain results。Agent 保留 prompt
+`MemoryRecallStore` 调度 recall SQL 并返回 typed domain results。`MemoryEntityKind`
+由 Memory 持有 `fact` / `episode` 的闭合词汇并生成到 `recall_memory` IPC；renderer 的
+`all` 是 UI 筛选项，只展开为两次独立查询，不进入后端 domain enum（ADR 0732）。Agent 保留 prompt
 查询归一化、embedding provider 调用、候选合并与预算；`MemoryEmbeddingStore` 负责
 embedding 生命周期读写和 LSH 维护，`memory_index.rs` 保留模型路由、provider 校验、
 批处理和维护门控（ADR 0021、0303、0304）。组合根 `AppState` 在已有 Database、Router

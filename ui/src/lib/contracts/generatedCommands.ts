@@ -270,6 +270,8 @@ export type LlmConnectionStatus = (typeof LLM_CONNECTION_STATUS_VALUES)[number];
 export type McpClientStatus = 'Disconnected' | 'Connecting' | 'Connected' | { 'Offline': { error: string } };
 export interface McpServerSnapshot { name: string; transport: string; command: string; args: string[]; env: string[]; cwd: string | null; url: string; enabled: boolean; status: McpClientStatus; tools: McpToolInfo[]; last_error: string | null; diagnostic: string | null; last_seen_at: number | null }
 export interface McpToolInfo { name: string; description: string; input_schema: unknown }
+export const MEMORY_ENTITY_KIND_INPUT_VALUES = ['fact', 'episode'] as const;
+export type MemoryEntityKindInput = (typeof MEMORY_ENTITY_KIND_INPUT_VALUES)[number];
 export interface Message { id: string; session_id: string; role: CanonicalRole; content: string; message_type: TranscriptMessageKind | null; created_at: string; tool_call_id: string | null; attachments: MessageAttachment[]; media_inputs?: MediaInput[]; voice: boolean }
 export interface SessionStep { id: string; session_id: string; step_number: number; tool_index: number; thought: string | null; tool_name: string | null; tool_input: string | null; tool_call_id: string | null; observation: string | null; status: SessionStepStatus; is_high_risk: boolean; confirmed: boolean | null; silent: boolean; started_at: string | null; completed_at: string | null; created_at: string }
 export interface LlmUsageRecord { id: string; session_id: string; step_number: number | null; role: RequestKind; call_kind: LlmCallKind; model: string | null; prompt_tokens: number; completion_tokens: number; total_tokens: number; cached_tokens: number; cache_creation_tokens: number; cache_miss_tokens: number; cache_accounting: string; cache_diagnostics?: unknown; context_tokens: number; context_window: number | null; cost_usd: number; has_cost: boolean; duration_ms: number | null; created_at: string }
@@ -327,7 +329,7 @@ export interface TauriCommandMap {
 	open_skills_dir: { request: undefined; response: string };
 	process_transcript: { request: { transcript: string; activeSessionId?: string | null; attachments?: MessageAttachmentInput[] | null; voice?: boolean | null; recordingSessionId?: string | null }; response: ProcessResult };
 	read_log_tail: { request: { maxLines?: number | null }; response: LogTail };
-	recall_memory: { request: { query: string; kind?: string | null; limit?: number | null }; response: MemoryRecallItem[] };
+	recall_memory: { request: { query: string; kind?: MemoryEntityKindInput | null; limit?: number | null }; response: MemoryRecallItem[] };
 	reconnect_mcp_server: { request: { name: string }; response: void };
 	refresh_mcp_servers: { request: undefined; response: McpRefreshResult };
 	refresh_skills: { request: undefined; response: void };

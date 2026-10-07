@@ -41,7 +41,12 @@
 	import WorkspacePageHeader from '$lib/WorkspacePageHeader.svelte';
 	import WorkspaceSectionHeader from '$lib/WorkspaceSectionHeader.svelte';
 	import type { SessionHistoryFilterRequest } from '$lib/contracts/commands.ts';
-	import type { Fact, MemoryRecallState } from '$lib/contracts/memory.ts';
+	import type {
+		Fact,
+		MemoryRecallFilter,
+		MemoryRecallKind,
+		MemoryRecallState,
+	} from '$lib/contracts/memory.ts';
 	import type { ToolRunKind, ToolRunPayload } from '$lib/contracts/toolRun.ts';
 	import type { SessionHistoryRow } from '$lib/contracts/sessionHistory.ts';
 	import type { ContextMenuItem } from '$lib/contextMenu.ts';
@@ -306,7 +311,7 @@
 		statusFilter = value;
 		handleFilterChange();
 	}
-	function handleRecallKindChange(value: string) {
+	function handleRecallKindChange(value: MemoryRecallFilter) {
 		memoryRecall.kind = value;
 		memoryRecall.results = [];
 		memoryRecall.searched = false;
@@ -531,10 +536,8 @@
 		if (!query) return;
 		memoryRecall.loading = true;
 		try {
-			const kinds: Array<'fact' | 'episode'> =
-				memoryRecall.kind === 'all'
-					? ['fact', 'episode']
-					: [memoryRecall.kind as 'fact' | 'episode'];
+			const kinds: MemoryRecallKind[] =
+				memoryRecall.kind === 'all' ? ['fact', 'episode'] : [memoryRecall.kind];
 			const limit = memoryRecall.kind === 'all' ? 5 : 10;
 			const resultGroups = await Promise.all(
 				kinds.map(async (kind) => {
