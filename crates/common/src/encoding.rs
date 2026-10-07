@@ -5,6 +5,14 @@ pub struct DecodedText {
     pub encoding: &'static str,
 }
 
+/// Output text from the character-bounded truncation helper.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TruncatedOutput {
+    /// The retained text, with an omitted-character marker when truncated.
+    pub text: String,
+    pub truncated: bool,
+}
+
 /// Decode bytes to a String, handling Windows console code pages.
 ///
 /// First tries UTF-8 (the common case for most tools/configs), stripping a
@@ -221,12 +229,15 @@ pub fn xml_unescape(text: &str) -> String {
 }
 
 /// Truncate `text` to at most `max_chars` Unicode scalar values, appending an
-/// "omitted" marker when truncation happened. Returns `(output, truncated)`.
+/// "omitted" marker when truncation happened.
 /// The marker counts omitted *chars* (not bytes) to match its wording.
-pub fn truncate_output(text: &str, max_chars: usize) -> (String, bool) {
+pub fn truncate_output(text: &str, max_chars: usize) -> TruncatedOutput {
     let char_count = text.chars().count();
     if char_count <= max_chars {
-        (text.to_string(), false)
+        TruncatedOutput {
+            text: text.to_string(),
+            truncated: false,
+        }
     } else {
         let cutoff = text
             .char_indices()
@@ -234,12 +245,14 @@ pub fn truncate_output(text: &str, max_chars: usize) -> (String, bool) {
             .map(|(index, _)| index)
             .unwrap_or(text.len());
         let omitted_chars = char_count.saturating_sub(max_chars);
-        let truncated = format!(
-            "{}[truncated ... {} chars omitted]",
-            &text[..cutoff],
-            omitted_chars
-        );
-        (truncated, true)
+        TruncatedOutput {
+            text: format!(
+                "{}[truncated ... {} chars omitted]",
+                &text[..cutoff],
+                omitted_chars
+            ),
+            truncated: true,
+        }
     }
 }
 
@@ -420,26 +433,26 @@ mod tests {
 
     #[test]
     fn truncate_output_short() {
-        let (out, truncated) = truncate_output("hello", 100);
-        assert_eq!(out, "hello");
-        assert!(!truncated);
+        let output = truncate_output("hello", 100);
+        assert_eq!(output.text, "hello");
+        assert!(!output.truncated);
     }
 
     #[test]
     fn truncate_output_long() {
         let text = "a".repeat(200);
-        let (out, truncated) = truncate_output(&text, 100);
-        assert!(truncated);
-        assert!(out.len() < text.len());
-        assert!(out.contains("[truncated ... 100 chars omitted]"));
+        let output = truncate_output(&text, 100);
+        assert!(output.truncated);
+        assert!(output.text.len() < text.len());
+        assert!(output.text.contains("[truncated ... 100 chars omitted]"));
     }
 
     #[test]
     fn truncate_output_multibyte_boundary() {
         let text = "中文内容".repeat(50);
-        let (out, truncated) = truncate_output(&text, 30);
-        assert!(truncated);
-        assert!(out.is_char_boundary(out.len()));
+        let output = truncate_output(&text, 30);
+        assert!(output.truncated);
+        assert!(output.text.is_char_boundary(output.text.len()));
     }
 
     #[test]
@@ -447,12 +460,12 @@ mod tests {
         // The cap is a character budget, not a byte budget. This keeps the
         // contract stable for CJK and other multi-byte text.
         let text = "中".repeat(200);
-        let (out, truncated) = truncate_output(&text, 100);
-        assert!(truncated);
+        let output = truncate_output(&text, 100);
+        assert!(output.truncated);
         assert!(
-            out.contains("[truncated ... 100 chars omitted]"),
+            output.text.contains("[truncated ... 100 chars omitted]"),
             "got: {}",
-            out
+            output.text
         );
     }
 }

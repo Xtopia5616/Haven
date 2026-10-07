@@ -150,18 +150,17 @@ fn extract_document_inner(
     let text = page_index
         .and_then(|index| pages.get(index).cloned())
         .unwrap_or_else(|| pages.join("\n"));
-    let (text, truncated) =
-        haven_common::encoding::truncate_output(&normalize_text(&text), max_chars);
-    if text.trim().is_empty() {
+    let output = haven_common::encoding::truncate_output(&normalize_text(&text), max_chars);
+    if output.text.trim().is_empty() {
         anyhow::bail!("document contains no extractable text");
     }
     Ok(DocumentExtraction {
         format,
         representation: format.representation(),
-        text,
+        text: output.text,
         sections: total_pages,
         size_bytes,
-        truncated,
+        truncated: output.truncated,
         page_index: selected_page,
         total_pages,
         next_page: page_index.and_then(|index| (index + 1 < total_pages).then_some(index + 1)),

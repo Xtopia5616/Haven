@@ -38,19 +38,19 @@ pub(super) async fn read_full(
         let n = file.read(&mut buf).await?;
         buf.truncate(n);
         let decoded = haven_common::encoding::decode_with_encoding(&buf);
-        let (output, truncated) = haven_common::encoding::truncate_output(&decoded.text, max_chars);
+        let output = haven_common::encoding::truncate_output(&decoded.text, max_chars);
         let mut result = serde_json::json!({
             "too_large": true,
             "path": path,
             "size": size,
-            "content": output,
+            "content": output.text,
             "encoding": decoded.encoding,
             "hint": format!(
                 "File is {} bytes, above the {} byte full-read limit. The head is included above; read specific ranges with offset/limit (bytes) or start_line/end_line (lines), or locate text with search(mode=content).",
                 size, max_read_chars
             ),
         });
-        if truncated {
+        if output.truncated {
             result["truncated"] = serde_json::Value::Bool(true);
         }
         result["next_offset"] = serde_json::json!(continuation_offset(&buf, &decoded, max_chars,));
@@ -67,10 +67,10 @@ pub(super) async fn read_full(
         return Ok(binary_result(path, size));
     }
     let decoded = haven_common::encoding::decode_with_encoding(&buf);
-    let (output, truncated) = haven_common::encoding::truncate_output(&decoded.text, max_chars);
-    let is_truncated = truncated || (n as u64) < size;
+    let output = haven_common::encoding::truncate_output(&decoded.text, max_chars);
+    let is_truncated = output.truncated || (n as u64) < size;
     let mut result = serde_json::json!({
-        "content": output,
+        "content": output.text,
         "size": size,
         "encoding": decoded.encoding,
     });
@@ -213,20 +213,20 @@ pub(super) async fn read_bytes(
     }
     let decoded = haven_common::encoding::decode_with_encoding(&buf);
     let content = decoded.text;
-    let (output, text_truncated) = haven_common::encoding::truncate_output(&content, max_chars);
+    let output = haven_common::encoding::truncate_output(&content, max_chars);
     let read_bytes = n as u64;
     let has_more = offset + read_bytes < total;
     let result = serde_json::json!({
-        "content": output,
+        "content": output.text,
         "offset": offset,
         "read_bytes": read_bytes,
         "total_bytes": total,
         "mode": "bytes",
         "encoding": decoded.encoding,
-        "truncated": has_more || text_truncated,
+        "truncated": has_more || output.truncated,
         "next_offset": offset + read_bytes,
     });
-    Ok(if has_more || text_truncated {
+    Ok(if has_more || output.truncated {
         ToolResult::truncated(result)
     } else {
         ToolResult::ok(result)

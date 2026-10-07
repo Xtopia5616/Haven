@@ -390,12 +390,16 @@ async fn execute_once_with(
     let is_html = html_by_header || looks_like_html(&response_body);
 
     let (body_truncated, body_truncated_by_text, format) = if is_html && !as_html {
-        let (t, tr) =
+        let output =
             haven_common::encoding::truncate_output(&html_to_text(&response_body), max_chars);
-        (t, tr, "text")
+        (output.text, output.truncated, "text")
     } else {
-        let (t, tr) = haven_common::encoding::truncate_output(&response_body, max_chars);
-        (t, tr, if is_html { "html" } else { "raw" })
+        let output = haven_common::encoding::truncate_output(&response_body, max_chars);
+        (
+            output.text,
+            output.truncated,
+            if is_html { "html" } else { "raw" },
+        )
     };
 
     let truncated = byte_cap_truncated || body_truncated_by_text;

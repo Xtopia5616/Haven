@@ -252,7 +252,7 @@ impl ShellTool {
         // the reported text carries the real output, not the wrapper.
         let combined = sanitize_shell_output(&raw_combined, &shell);
 
-        let (text, _) = haven_common::encoding::truncate_output(&combined, max_chars);
+        let text = haven_common::encoding::truncate_output(&combined, max_chars).text;
         let exit_code = status.code();
         let mut output = serde_json::json!({"output": text, "shell": shell});
         if let Some(code) = exit_code {

@@ -305,20 +305,20 @@ impl ClipboardTool {
                 match read {
                     ClipboardRead::Text(text) => {
                         self.history.record(text.clone());
-                        let (text, truncated) =
+                        let output =
                             haven_common::encoding::truncate_output(&text, self.max_output_chars);
-                        let mut result = serde_json::json!({"operation": "read", "format": "text", "content": text});
-                        if truncated {
+                        let mut result = serde_json::json!({"operation": "read", "format": "text", "content": output.text});
+                        if output.truncated {
                             result["truncated"] = serde_json::Value::Bool(true);
                         }
-                        Ok(ToolResult::from_output(result, truncated))
+                        Ok(ToolResult::from_output(result, output.truncated))
                     }
                     ClipboardRead::Html(html) => {
-                        let (html, truncated) =
+                        let output =
                             haven_common::encoding::truncate_output(&html, self.max_output_chars);
                         Ok(ToolResult::from_output(
-                            serde_json::json!({ "operation": "read", "format": "html", "html": html }),
-                            truncated,
+                            serde_json::json!({ "operation": "read", "format": "html", "html": output.text }),
+                            output.truncated,
                         ))
                     }
                     ClipboardRead::Image(image) => {
@@ -381,12 +381,12 @@ impl ClipboardTool {
                 let json_entries: Vec<Value> = entries
                     .iter()
                     .map(|e| {
-                        let (content, _) = haven_common::encoding::truncate_output(
+                        let output = haven_common::encoding::truncate_output(
                             &e.content,
                             self.entry_max_chars,
                         );
                         serde_json::json!({
-                            "content": content,
+                            "content": output.text,
                             "timestamp_ms": e.timestamp_ms,
                         })
                     })

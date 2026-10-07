@@ -613,3 +613,4 @@
 - [0622：命名 OpenAI Responses input conversion 结果](0622-name-openai-responses-input-conversion.md)
 - [0623：命名 Tools capped stream 结果](0623-name-tools-capped-stream-results.md)
 - [0624：命名 Agent capability-projected request](0624-name-agent-capability-projected-request.md)
+- [0625：命名 Common 截断文本结果](0625-name-common-truncated-output-result.md)
