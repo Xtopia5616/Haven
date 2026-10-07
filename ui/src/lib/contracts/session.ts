@@ -16,9 +16,6 @@ import {
 } from './generatedCommands.ts';
 import type { TauriEvent } from './tauriEvent.ts';
 
-export const SESSION_EVENT_NAMES = ['session:lifecycle'] as const;
-export type SessionEventName = (typeof SESSION_EVENT_NAMES)[number];
-
 /** Compile-time guard: Rust lifecycle variants and the renderer mapper stay aligned. */
 export const SESSION_LIFECYCLE_KINDS = {
 	created: true,

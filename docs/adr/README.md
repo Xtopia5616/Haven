@@ -653,3 +653,4 @@
 - [0662：删除 Gemini 响应中的重复 Serde alias](0662-remove-redundant-gemini-wire-alias.md)
 - [0663：删除未使用的 ToolSchema UI alias](0663-remove-unused-tool-schema-alias.md)
 - [0664：具名 SessionRun 准入等待项](0664-name-session-run-admission-waiter.md)
+- [0665：清理未消费的 UI contracts 类型](0665-remove-unused-ui-contract-aliases.md)

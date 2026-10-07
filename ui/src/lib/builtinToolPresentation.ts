@@ -34,8 +34,6 @@ export type BuiltinToolCard = {
 	roots: BuiltinToolRootCard[];
 };
 
-export type BuiltinEnabledFilter = 'all' | 'enabled' | 'disabled';
-
 /** Project one canonical manifest into the view model used by the settings UI. */
 export function builtinToolEntryFromManifest(manifest: ToolManifestView): BuiltinToolEntry {
 	return {

@@ -9,26 +9,10 @@ import type {
 	McpServerSnapshot as GeneratedMcpServerSnapshot,
 	McpToolInfo as GeneratedMcpToolInfo,
 	SkillInfo as GeneratedSkillInfo,
-	ToolAvailability as GeneratedToolAvailability,
-	ToolIdentity as GeneratedToolIdentity,
 	ToolListResponse as GeneratedToolListResponse,
-	ToolManifest as GeneratedToolManifest,
-	ToolModel as GeneratedToolModel,
-	ToolPolicy as GeneratedToolPolicy,
-	ToolPresentation as GeneratedToolPresentation,
-	ToolPrompt as GeneratedToolPrompt,
-	ToolRootPresentation as GeneratedToolRootPresentation,
 	TauriCommandRequest,
 } from './generatedCommands.ts';
 
-export type ToolManifestIdentityWire = GeneratedToolIdentity;
-export type ToolModelWire = GeneratedToolModel;
-export type ToolPolicyWire = GeneratedToolPolicy;
-export type ToolPresentationWire = GeneratedToolPresentation;
-export type ToolRootPresentationWire = GeneratedToolRootPresentation;
-export type ToolPromptWire = GeneratedToolPrompt;
-export type ToolAvailabilityWire = GeneratedToolAvailability;
-export type ToolManifestWire = GeneratedToolManifest;
 export type ToolListResponse = GeneratedToolListResponse;
 export type SkillInfo = GeneratedSkillInfo;
 export type McpClientStatus = GeneratedMcpClientStatus;
