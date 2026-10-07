@@ -1,12 +1,12 @@
 import { readPerformanceMetricsSnapshot } from './diagnosticsCommands.ts';
 import type { PerformanceMetricsSnapshot } from './contracts/diagnostics.ts';
-import type { StreamMetricsSnapshot } from './streamAggregator.ts';
+import type { UiMetricsSnapshot } from './contracts/commands.ts';
 
-let uiMetricsProvider: (() => StreamMetricsSnapshot) | null = null;
+let uiMetricsProvider: (() => UiMetricsSnapshot) | null = null;
 
 /** Register the page-owned renderer counters with the unified diagnostics API. */
 export function registerPerformanceMetricsProvider(
-	provider: () => StreamMetricsSnapshot,
+	provider: () => UiMetricsSnapshot,
 ): () => void {
 	uiMetricsProvider = provider;
 	return () => {

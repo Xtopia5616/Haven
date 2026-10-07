@@ -3,7 +3,7 @@ import {
 	getPerformanceMetrics,
 	registerPerformanceMetricsProvider,
 } from './performanceMetrics.ts';
-import type { StreamMetricsSnapshot } from './streamAggregator.ts';
+import type { UiMetricsSnapshot } from './contracts/commands.ts';
 import { invoke } from './tauri.ts';
 
 vi.mock('./tauri.ts', () => ({
@@ -16,7 +16,7 @@ describe('performance metrics export boundary', () => {
 	});
 
 	it('exports backend and renderer metrics through one invoke with the live UI snapshot', async () => {
-		const ui: StreamMetricsSnapshot = { frames: 3, chunks: 8, drops: 1 };
+		const ui: UiMetricsSnapshot = { frames: 3, chunks: 8, drops: 1 };
 		vi.mocked(invoke).mockResolvedValue({ counters: {}, ui } as never);
 		const unregister = registerPerformanceMetricsProvider(() => ui);
 

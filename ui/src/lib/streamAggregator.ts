@@ -59,10 +59,8 @@ export interface StreamEventAggregator {
 	blockIdsOf: (sessionId: string, stepNumber: number, runId: number) => StepBlockIds;
 	clearStepBlockIds: (sessionId: string | null) => void;
 	flushChunksNow: () => void;
-	metricsSnapshot: () => StreamMetricsSnapshot;
+	metricsSnapshot: () => UiMetricsSnapshot;
 }
-
-export type StreamMetricsSnapshot = UiMetricsSnapshot;
 
 /**
  * Own the UI-side lifecycle of streamed thought/reasoning chunks.
