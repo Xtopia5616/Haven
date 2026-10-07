@@ -2,35 +2,24 @@ use super::support::*;
 use super::*;
 use haven_memory::RecoveryPersistenceStatus;
 
-type StreamReset = (String, u32, u64, String, String);
-
 struct StreamResetCollector {
-    resets: std::sync::Mutex<Vec<StreamReset>>,
-    terminal_errors: std::sync::Mutex<Vec<(String, String)>>,
+    reset_count: std::sync::atomic::AtomicUsize,
+    terminal_error_session_ids: std::sync::Mutex<Vec<String>>,
 }
 
 #[async_trait]
 impl AgentEventEmitter for StreamResetCollector {
     async fn emit(&self, event: AgentEvent) {
         match event {
-            AgentEvent::StreamReset {
-                session_id,
-                step_number,
-                run_id,
-                thought_message_id,
-                reasoning_message_id,
-            } => self.resets.lock().unwrap().push((
-                session_id,
-                step_number,
-                run_id,
-                thought_message_id,
-                reasoning_message_id,
-            )),
-            AgentEvent::SessionError { session_id, error } => self
-                .terminal_errors
+            AgentEvent::StreamReset { .. } => {
+                self.reset_count
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            }
+            AgentEvent::SessionError { session_id, .. } => self
+                .terminal_error_session_ids
                 .lock()
                 .unwrap()
-                .push((session_id, error)),
+                .push(session_id),
             _ => {}
         }
     }
@@ -108,28 +97,30 @@ async fn empty_response_stops_with_continue_instead_of_auto_retry() {
     ]));
     let (agent, executor) = make_test_agent_with(mock, Arc::new(ToolsFacade::new()));
     let emitter = Arc::new(StreamResetCollector {
-        resets: std::sync::Mutex::new(Vec::new()),
-        terminal_errors: std::sync::Mutex::new(Vec::new()),
+        reset_count: std::sync::atomic::AtomicUsize::new(0),
+        terminal_error_session_ids: std::sync::Mutex::new(Vec::new()),
     });
     agent.set_emitter(emitter.clone());
     let session = executor.create_session("empty response").await.unwrap();
 
     let error = agent.run_session_from_id(&session.id).await.unwrap_err();
     assert!(error.to_string().contains("空响应"));
-    let terminal_errors = emitter.terminal_errors.lock().unwrap();
+    let terminal_error_session_ids = emitter.terminal_error_session_ids.lock().unwrap();
     assert_eq!(
-        terminal_errors.len(),
+        terminal_error_session_ids.len(),
         1,
         "direct session runs keep publishing one Agent terminal error"
     );
-    assert_eq!(terminal_errors[0].0, session.id);
+    assert_eq!(terminal_error_session_ids[0], session.id);
     assert_eq!(
         agent.db.get_session(&session.id).unwrap().unwrap().status,
         SessionStatus::Error
     );
-    let resets = emitter.resets.lock().unwrap();
-    assert!(
-        resets.is_empty(),
+    assert_eq!(
+        emitter
+            .reset_count
+            .load(std::sync::atomic::Ordering::Relaxed),
+        0,
         "empty output must not trigger auto-retry"
     );
 }
@@ -139,8 +130,8 @@ async fn dispatcher_react_failure_has_one_terminal_event_owner() {
     let mock = Arc::new(ScriptedMock::new(Vec::new()));
     let (agent, executor) = make_test_agent_with(mock, Arc::new(ToolsFacade::new()));
     let emitter = Arc::new(StreamResetCollector {
-        resets: std::sync::Mutex::new(Vec::new()),
-        terminal_errors: std::sync::Mutex::new(Vec::new()),
+        reset_count: std::sync::atomic::AtomicUsize::new(0),
+        terminal_error_session_ids: std::sync::Mutex::new(Vec::new()),
     });
     agent.set_emitter(emitter.clone());
     let session = executor
@@ -179,7 +170,11 @@ async fn dispatcher_react_failure_has_one_terminal_event_owner() {
     executor.await_run_finished(&session.id).await.unwrap();
 
     assert!(
-        emitter.terminal_errors.lock().unwrap().is_empty(),
+        emitter
+            .terminal_error_session_ids
+            .lock()
+            .unwrap()
+            .is_empty(),
         "the dispatcher owns the sole terminal error event for its run"
     );
     loop {
