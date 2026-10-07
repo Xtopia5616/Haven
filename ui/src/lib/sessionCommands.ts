@@ -1,8 +1,11 @@
 import { invoke } from './tauri.ts';
 import type {
-	SessionHistoryPageRequest,
+	DeleteSessionRequest,
+	GetSessionForResumeRequest,
+	GetSessionLineageRequest,
+	ReopenSessionRequest,
 	SessionHistoryFilterRequest,
-	SessionIdRequest,
+	SessionHistoryPageRequest,
 	UpdateSessionTitleRequest,
 } from './contracts/commands.ts';
 import type {
@@ -19,7 +22,9 @@ export function listRuntimeSessions(): Promise<RuntimeSessionListResponse> {
 }
 
 /** Load the parent and direct child sessions shown in the active session menu. */
-export function getSessionLineage(request: SessionIdRequest): Promise<SessionLineageResponse> {
+export function getSessionLineage(
+	request: GetSessionLineageRequest,
+): Promise<SessionLineageResponse> {
 	return invoke('get_session_lineage', request);
 }
 
@@ -35,7 +40,7 @@ export function searchSessionHistoryFiltered(request: SessionHistoryFilterReques
 
 /** Load the durable projection used by session resume and transcript reload. */
 export function getSessionForResume(
-	request: SessionIdRequest,
+	request: GetSessionForResumeRequest,
 	invokeCommand: TauriCommandInvoke = invoke,
 ): Promise<SessionResumeResponse> {
 	return invokeCommand('get_session_for_resume', request);
@@ -47,12 +52,12 @@ export function getLatestSessionForResume(): Promise<SessionResumeResponse | nul
 }
 
 /** Reopen one persisted session for follow-up input. */
-export function reopenSession(request: SessionIdRequest): Promise<void> {
+export function reopenSession(request: ReopenSessionRequest): Promise<void> {
 	return invoke('reopen_session', request);
 }
 
 /** Delete one persisted session and release its runtime state. */
-export function deleteSession(request: SessionIdRequest): Promise<void> {
+export function deleteSession(request: DeleteSessionRequest): Promise<void> {
 	return invoke('delete_session', request);
 }
 

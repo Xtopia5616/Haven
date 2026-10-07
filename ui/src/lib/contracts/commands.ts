@@ -8,8 +8,14 @@
 import type { TauriCommandName, TauriCommandRequest } from './generatedCommands.ts';
 
 /** Semantic command aliases derived from Rust handler signatures. */
-export type SessionIdRequest = TauriCommandRequest<'reopen_session'>;
 export type ResolveConfirmationRequest = TauriCommandRequest<'resolve_confirmation'>;
+export type ContinueSessionRequest = TauriCommandRequest<'continue_session'>;
+export type DeleteSessionRequest = TauriCommandRequest<'delete_session'>;
+export type EndSessionRequest = TauriCommandRequest<'end_session'>;
+export type GetSessionForResumeRequest = TauriCommandRequest<'get_session_for_resume'>;
+export type GetSessionLineageRequest = TauriCommandRequest<'get_session_lineage'>;
+export type InterruptSessionRequest = TauriCommandRequest<'interrupt_session'>;
+export type ReopenSessionRequest = TauriCommandRequest<'reopen_session'>;
 export type RollbackSessionRequest = TauriCommandRequest<'rollback_session'>;
 export type UpdateSessionTitleRequest = TauriCommandRequest<'update_session_title'>;
 export type SessionHistoryPageRequest = TauriCommandRequest<'list_session_history'>;
