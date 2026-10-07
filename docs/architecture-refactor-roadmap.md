@@ -318,6 +318,7 @@
 | LLM stream attempt callback 以裸布尔值表达输出策略 | `StreamAttemptHooks` 的 `FnMut(bool)` 与 Agent stream call 都以 true/false 表示保留或替换当前可见输出；类型本身无法说明 retry 边界上的状态含义。 | **统一具名输出处置状态**：跨 LLM router/executor 与 Agent 传 `StreamAttemptOutputDisposition::{PreserveExisting, ReplaceExisting}`，chunk/start callback 分别使用 `StreamChunkCallback` 与 `StreamAttemptStartCallback`；retry 与 reset 时序不变（ADR 0658）。 |
 | Agent chunk event consumer 使用泛名与恒真 optional task handle | `spawn_chunk_consumer_raw` 创建的是 ordered thought/reasoning chunk event consumer，`raw` 没有成对 API；唯一实现始终返回 `Some(JoinHandle)`，并多 spawn 一层 task 等待 batcher、丢弃其 join error。`StreamForwarder` 不存在“无 consumer”状态。 | **合并重复 task 并明确 owner**：改为 `spawn_chunk_event_consumer`，直接返回/持有 batcher 的 `JoinHandle<()>` 并命名为 `chunk_consumer_task`；flush 观察真实 consumer 的退出结果（ADR 0657）。 |
 | UI callback adapter 保留无消费者的 any 扩展入口 | `withStringValue`、`withNumberValue`、`withBooleanValue` 与 `withEventValue` 都有生产调用方；`withAnyValue` 只有定义，且将 callback 参数放宽到 `any`。 | **删除无消费者 helper**：移除 `withAnyValue`，其它带精确输入类型的 adapter 保留（ADR 0659）。 |
+| Anthropic response 声明重复的 serde alias | `AnthropicResponse.stop_reason` 的默认 Serde 主字段本来就是 `stop_reason`，alias 与字段 key 完全相同，没有兼容输入或独立语义。其它协议别名与各自 wire 主字段不同。 | **删除同名 alias**：移除冗余 attribute；保留确有上游协议差异的字段映射（ADR 0660）。 |
 
 此表是候选分流清单，不是完整符号目录。尚未完成的 crate、IPC/event payload、UI controller/store 与函数动词审计仍在 §5.7 范围内；完成一域后更新本表并以 ADR 记录实际迁移。
 

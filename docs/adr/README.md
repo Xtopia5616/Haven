@@ -648,3 +648,4 @@
 - [0657：明确 Agent chunk event consumer 任务句柄](0657-name-agent-chunk-event-consumer-task.md)
 - [0658：具名 LLM stream attempt 输出处置状态](0658-name-stream-attempt-output-disposition.md)
 - [0659：删除无消费者的 UI any callback helper](0659-remove-unused-any-callback-adapter.md)
+- [0660：删除 Anthropic 响应中重复的 serde alias](0660-remove-redundant-anthropic-response-alias.md)

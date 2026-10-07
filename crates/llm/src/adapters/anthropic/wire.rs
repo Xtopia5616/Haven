@@ -49,7 +49,6 @@ pub(super) struct AnthropicRequest {
 pub(super) struct AnthropicResponse {
     #[serde(default)]
     pub(super) content: Vec<AnthropicResponseBlock>,
-    #[serde(alias = "stop_reason")]
     pub(super) stop_reason: Option<String>,
     pub(super) usage: Option<AnthropicUsage>,
     pub(super) model: Option<String>,
