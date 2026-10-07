@@ -38,9 +38,7 @@ pub struct SystemPromptBuilder {
 
 #[derive(Clone)]
 pub(crate) struct SchemaCache {
-    pub(crate) registry_version: u64,
-    pub(crate) mcp_catalog_version: u64,
-    pub(crate) skills_catalog_version: u64,
+    pub(crate) catalog_versions: PromptCatalogVersions,
     pub(crate) built_in_section: String,
     pub(crate) skills_section: String,
     pub(crate) mcp_server_index_section: String,
@@ -935,15 +933,12 @@ impl SystemPromptBuilder {
     }
 
     async fn get_or_build_sections(&self) -> SchemaCache {
-        // The builtin registry and MCP tools/list clocks are both authorities
-        // for this frozen global index. Per-session registrations do not enter
-        // the index and therefore do not invalidate it.
+        // The global tool catalog, MCP tools/list, and Skills catalog clocks
+        // are the authorities for this frozen index. Per-session registrations
+        // do not enter it and therefore do not invalidate it.
         let tools = self.context_provider.tools();
         let versions = tools.catalog_versions();
-        if let Some(cache) =
-            self.context_provider
-                .cached_schema(versions.registry, versions.mcp, versions.skills)
-        {
+        if let Some(cache) = self.context_provider.cached_schema(versions) {
             return cache;
         }
 
@@ -958,7 +953,7 @@ impl SystemPromptBuilder {
         versions: PromptCatalogVersions,
         content: PromptCatalogContent,
     ) -> SchemaCache {
-        // Per-session mcp__ tools are never in the global registry, so they
+        // Per-session mcp__ tools are never in the global catalog, so they
         // won't appear here — intentional: prompt holds a short orientation
         // index; schemas come from the API tools[] list after load_mcp.
         let mut built_in = render_tool_index(&content.builtin_tool_definitions);
@@ -1000,9 +995,7 @@ impl SystemPromptBuilder {
         );
 
         SchemaCache {
-            registry_version: versions.registry,
-            mcp_catalog_version: versions.mcp,
-            skills_catalog_version: versions.skills,
+            catalog_versions: versions,
             built_in_section: built_in,
             skills_section,
             mcp_server_index_section: mcp_server_index,
@@ -1116,38 +1109,40 @@ mod tests {
         assert!(!rendered.contains("tool_8"));
     }
 
-    /// Dummy tool so tests can control which tools appear in the registry.
-    struct DummyTool {
-        name: String,
+    struct FixedPromptToolPort {
+        builtin_tool_definitions: Vec<ToolDef>,
     }
 
     #[async_trait::async_trait]
-    impl haven_tools::Tool for DummyTool {
-        fn name(&self) -> String {
-            self.name.clone()
-        }
-        fn description(&self) -> String {
-            "dummy".into()
-        }
-        fn risk_level(&self, _input: &serde_json::Value) -> haven_common::types::RiskLevel {
-            haven_common::types::RiskLevel::Safe
-        }
-        async fn execute(
-            &self,
-            _input: serde_json::Value,
-            _cancel: tokio_util::sync::CancellationToken,
-        ) -> anyhow::Result<haven_tools::ToolResult> {
-            Ok(haven_tools::ToolResult::ok(serde_json::json!({"ok": true})))
-        }
-        fn input_schema(&self) -> serde_json::Value {
-            serde_json::json!({"type": "object"})
+    impl PromptToolPort for FixedPromptToolPort {
+        fn catalog_versions(&self) -> PromptCatalogVersions {
+            PromptCatalogVersions {
+                global_catalog_version: 0,
+                mcp_catalog_version: 0,
+                skills_catalog_version: 0,
+            }
         }
 
-        fn catalog_group(&self) -> ToolCatalogGroup {
-            if self.name.starts_with("agent.") {
-                ToolCatalogGroup::Agent
-            } else {
-                ToolCatalogGroup::Other
+        async fn catalog_content(&self) -> PromptCatalogContent {
+            PromptCatalogContent {
+                builtin_tool_definitions: self.builtin_tool_definitions.clone(),
+                mcp_index: Vec::new(),
+                skills: Vec::new(),
+            }
+        }
+
+        async fn runtime_context(&self) -> PromptRuntimeContext {
+            PromptRuntimeContext {
+                default_shell: "powershell".into(),
+                capabilities: haven_tools::RuntimeCapabilities {
+                    vision: false,
+                    image_generation: false,
+                    transcription: false,
+                    recording: false,
+                    tts: false,
+                    web_search: WebSearchAvailability::Unavailable,
+                },
+                permission_summary: String::new(),
             }
         }
     }
@@ -1160,7 +1155,7 @@ mod tests {
         let tools = Arc::new(ToolsFacade::new());
         let builder = SystemPromptBuilder::with_memory_service(
             tools.clone(),
-            Arc::new(MemoryService::new(db, None, 64)),
+            Arc::new(MemoryService::new(db.clone(), None, 64)),
         );
 
         // Without the messaging tools: no cross-session guidance.
@@ -1170,15 +1165,21 @@ mod tests {
             "guidance must not appear when the tools are absent"
         );
 
-        // With a dotted agent operation registered: the guidance rides along.
-        tools
-            .registry()
-            .register(std::sync::Arc::new(DummyTool {
-                name: "agent.inbox".into(),
-            }))
-            .await
-            .unwrap();
-        let prompt = builder.build("t", &[]).await;
+        // An Agent catalog entry brings the guidance along.
+        let messaging_tool = ToolDef::new(
+            "agent.inbox",
+            "dummy",
+            json!({"type": "object"}),
+            RiskLevel::Safe,
+        )
+        .with_catalog_group(ToolCatalogGroup::Agent);
+        let messaging_builder = SystemPromptBuilder::with_memory_service(
+            Arc::new(FixedPromptToolPort {
+                builtin_tool_definitions: vec![messaging_tool],
+            }),
+            Arc::new(MemoryService::new(db, None, 64)),
+        );
+        let prompt = messaging_builder.build("t", &[]).await;
         assert!(prompt.contains("Cross-session collaboration"));
         assert!(prompt.contains("agent.list"));
         assert!(prompt.contains("agent.inbox"));

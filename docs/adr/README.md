@@ -673,3 +673,4 @@
 - [0682：删除未登记的 Tool renderer 别名](0682-remove-unregistered-tool-renderer-aliases.md)
 - [0683：统一 Admin capability 工具名 owner](0683-centralize-admin-capability-tool-names.md)
 - [0684：删除未使用的 Config Admin 构造兼容入口](0684-remove-config-admin-compat-constructor.md)
+- [0685：移除 Agent prompt 的 eager registry fallback](0685-remove-prompt-eager-registry-fallback.md)

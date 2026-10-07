@@ -225,7 +225,7 @@ impl ToolsFacade {
     }
 
     /// MCP has its own tools/list change clock and therefore must participate
-    /// in prompt-index cache keys independently of the builtin registry.
+    /// in prompt-index cache keys independently of the global tool catalog.
     pub fn mcp_catalog_version(&self) -> u64 {
         self.coordinator.builtins.mcp_manager.catalog_version()
     }

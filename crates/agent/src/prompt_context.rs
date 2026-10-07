@@ -22,9 +22,9 @@ pub struct PromptContextProvider {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PromptCatalogVersions {
-    pub registry: u64,
-    pub mcp: u64,
-    pub skills: u64,
+    pub global_catalog_version: u64,
+    pub mcp_catalog_version: u64,
+    pub skills_catalog_version: u64,
 }
 
 pub struct PromptCatalogContent {
@@ -55,19 +55,14 @@ impl PromptToolPort for ToolsFacade {
     fn catalog_versions(&self) -> PromptCatalogVersions {
         let services = self.share_services();
         PromptCatalogVersions {
-            registry: self.registry().version(),
-            mcp: self.mcp_catalog_version(),
-            skills: services.skills.catalog_version(),
+            global_catalog_version: self.catalog_version(),
+            mcp_catalog_version: self.mcp_catalog_version(),
+            skills_catalog_version: services.skills.catalog_version(),
         }
     }
 
     async fn catalog_content(&self) -> PromptCatalogContent {
-        let mut builtin_tool_definitions = self.list_enabled_builtin_tool_definitions().await;
-        // A small embedding may build a prompt before asynchronous builtin
-        // catalog initialization has run. Preserve the eager-registry fallback.
-        if builtin_tool_definitions.is_empty() {
-            builtin_tool_definitions = self.registry().list_tool_definitions().await;
-        }
+        let builtin_tool_definitions = self.list_enabled_builtin_tool_definitions().await;
         let mcp_index = self.build_mcp_index().await;
         let skills = self.share_services().skills.list_skill_infos().await;
         PromptCatalogContent {
@@ -109,16 +104,11 @@ impl PromptContextProvider {
 
     pub(crate) fn cached_schema(
         &self,
-        registry_version: u64,
-        mcp_catalog_version: u64,
-        skills_catalog_version: u64,
+        catalog_versions: PromptCatalogVersions,
     ) -> Option<crate::prompt::SchemaCache> {
         let cache = self.schema_cache.read().ok()?;
         let cache = cache.as_ref()?;
-        (cache.registry_version == registry_version
-            && cache.mcp_catalog_version == mcp_catalog_version
-            && cache.skills_catalog_version == skills_catalog_version)
-            .then(|| cache.clone())
+        (cache.catalog_versions == catalog_versions).then(|| cache.clone())
     }
 
     pub(crate) fn replace_schema(&self, cache: crate::prompt::SchemaCache) {

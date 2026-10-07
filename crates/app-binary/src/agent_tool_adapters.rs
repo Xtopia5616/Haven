@@ -49,19 +49,14 @@ impl PromptToolPort for ToolsFacadeAgentAdapter {
     fn catalog_versions(&self) -> PromptCatalogVersions {
         let services = self.tools.share_services();
         PromptCatalogVersions {
-            registry: self.tools.registry().version(),
-            mcp: self.tools.mcp_catalog_version(),
-            skills: services.skills.catalog_version(),
+            global_catalog_version: self.tools.catalog_version(),
+            mcp_catalog_version: self.tools.mcp_catalog_version(),
+            skills_catalog_version: services.skills.catalog_version(),
         }
     }
 
     async fn catalog_content(&self) -> PromptCatalogContent {
-        let mut builtin_tool_definitions = self.tools.list_enabled_builtin_tool_definitions().await;
-        // A small embedding may build a prompt before asynchronous builtin
-        // catalog initialization has run. Preserve the eager-registry fallback.
-        if builtin_tool_definitions.is_empty() {
-            builtin_tool_definitions = self.tools.registry().list_tool_definitions().await;
-        }
+        let builtin_tool_definitions = self.tools.list_enabled_builtin_tool_definitions().await;
         PromptCatalogContent {
             builtin_tool_definitions,
             mcp_index: self.tools.build_mcp_index().await,
@@ -333,10 +328,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn prompt_adapter_preserves_eager_builtin_catalog_fallback() {
+    async fn prompt_adapter_uses_only_the_published_builtin_catalog() {
         let tools = Arc::new(ToolsFacade::new());
         let tool: ToolHandle = Arc::new(ExecutionContextProbe);
         tools.registry().register(tool).await.unwrap();
+        assert!(
+            tools
+                .registry()
+                .get("execution.context_probe")
+                .await
+                .is_some()
+        );
         let adapter = ToolsFacadeAgentAdapter {
             tools: Arc::clone(&tools),
         };
@@ -347,11 +349,15 @@ mod tests {
             content
                 .builtin_tool_definitions
                 .iter()
-                .any(|definition| definition.name == "execution.context_probe"),
-            "prompt construction falls back to definitions already present in the eager registry"
+                .all(|definition| definition.name != "execution.context_probe"),
+            "registry entries do not enter the prompt until the builtin catalog publishes them"
         );
         assert_eq!(
-            adapter.catalog_versions().registry,
+            adapter.catalog_versions().global_catalog_version,
+            tools.catalog_version()
+        );
+        assert_ne!(
+            adapter.catalog_versions().global_catalog_version,
             tools.registry().version()
         );
     }
