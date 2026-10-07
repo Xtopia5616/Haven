@@ -289,11 +289,13 @@
 		{#snippet children(visibleDisplays)}
 			<div class="tool-result-scroll-area">
 				{#each visibleDisplays as display (display.name ?? display.left)}
-					<div class="window-row">
-						<span class="window-title"
+					<div class="tool-result-window-row">
+						<span class="tool-result-window-primary display-name"
 							>{display.name || 'Display'}{display.primary ? ' · 主屏' : ''}</span
 						>
-						<span class="window-pid">{display.width}×{display.height}</span>
+						<span class="tool-result-secondary-value display-resolution"
+							>{display.width}×{display.height}</span
+						>
 					</div>
 				{/each}
 			</div>
@@ -447,7 +449,6 @@
 		line-height: var(--md-sys-typescale-label-small-line-height);
 		color: var(--md-sys-color-on-surface-variant);
 	}
-	.window-row,
 	.env-row,
 	.network-row {
 		display: flex;
@@ -516,11 +517,9 @@
 		text-overflow: ellipsis;
 		white-space: nowrap;
 	}
-	.window-row:nth-child(odd),
 	.env-row:nth-child(odd) {
 		background: color-mix(in srgb, var(--md-sys-color-on-surface) 4%, transparent);
 	}
-	.window-title,
 	.env-name,
 	.env-value {
 		font-family: var(--md-sys-typescale-mono);
@@ -529,17 +528,6 @@
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
-	}
-	.window-title {
-		flex: 1;
-		min-width: 0;
-		color: var(--md-sys-color-on-surface);
-	}
-	.window-pid {
-		flex: none;
-		font-size: var(--md-sys-typescale-label-small-size);
-		line-height: var(--md-sys-typescale-label-small-line-height);
-		color: var(--md-sys-color-on-surface-variant);
 	}
 	.env-name {
 		flex: none;

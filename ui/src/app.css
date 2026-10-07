@@ -1424,6 +1424,39 @@ select.md-select {
 	line-height: var(--md-sys-typescale-label-medium-line-height);
 }
 
+.tool-result-window-row {
+	display: flex;
+	align-items: baseline;
+	gap: var(--md-sys-space-xs);
+	padding: 3px var(--md-sys-space-2xs);
+	border-radius: 4px;
+	font-size: var(--md-sys-typescale-label-medium-size);
+	line-height: var(--md-sys-typescale-label-medium-line-height);
+}
+
+.tool-result-window-row:nth-child(odd) {
+	background: color-mix(in srgb, var(--md-sys-color-on-surface) 4%, transparent);
+}
+
+.tool-result-window-primary {
+	flex: 1;
+	min-width: 0;
+	font-family: var(--md-sys-typescale-mono);
+	font-size: var(--md-sys-typescale-code-size);
+	line-height: var(--md-sys-typescale-code-line-height);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	color: var(--md-sys-color-on-surface);
+}
+
+.tool-result-secondary-value {
+	flex: none;
+	font-size: var(--md-sys-typescale-label-small-size);
+	line-height: var(--md-sys-typescale-label-small-line-height);
+	color: var(--md-sys-color-on-surface-variant);
+}
+
 .responsive-layout-transition {
 	transition:
 		grid-template-columns var(--md-sys-motion-duration-short)
