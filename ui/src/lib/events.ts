@@ -103,12 +103,12 @@ function adaptAgentEvent<K extends AgentEventName>(
  *   onMount(async () => { await events.ready; ... });
  *   onDestroy(() => events.dispose());
  *
- * @param {Record<string, (event: any) => void>} map
+ * @param {Record<string, (event: TauriEvent<unknown>) => void>} map
  * @param {{ tag?: string }} [opts]
  * @returns {{ ready: Promise<void>, dispose: () => void }}
  */
 export function registerListeners(
-	map: Record<string, (event: any) => void>,
+	map: Record<string, (event: TauriEvent<unknown>) => void>,
 	{ tag = 'unknown' }: { tag?: string } = {},
 ): { ready: Promise<void>; dispose: () => void } {
 	/** @type {Array<() => void>} */
@@ -242,13 +242,13 @@ export function appEventListeners(
  * registerListeners. Returns a handle whose `dispose()` unregisters it.
  *
  * @param {string} event
- * @param {(event: any) => void} handler
+ * @param {(event: TauriEvent<unknown>) => void} handler
  * @param {{ tag?: string }} [opts]
  * @returns {Promise<{ dispose: () => void }>}
  */
 export async function registerOne(
 	event: string,
-	handler: (event: any) => void,
+	handler: (event: TauriEvent<unknown>) => void,
 	{ tag = 'unknown' }: { tag?: string } = {},
 ): Promise<{ dispose: () => void }> {
 	try {

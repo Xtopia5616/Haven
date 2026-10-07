@@ -635,3 +635,4 @@
 - [0644：统一 Ask 响应 view 类型](0644-unify-ask-response-view.md)
 - [0645：命名 Model discovery 的配置投影与 metadata patch](0645-name-model-discovery-projections.md)
 - [0646：类型化 chat Agent event handler map](0646-type-chat-agent-event-handler-map.md)
+- [0647：为 Tauri listener 保留 unknown event payload 边界](0647-type-tauri-listener-envelope.md)

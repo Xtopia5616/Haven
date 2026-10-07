@@ -6,6 +6,7 @@ import type {
 	TauriCommandRequestArgs,
 	TauriCommandResponse,
 } from './contracts/generatedCommands.ts';
+import type { TauriEvent } from './contracts/tauriEvent.ts';
 
 type RawTauriInvoke = (cmd: string, args?: unknown) => Promise<unknown>;
 
@@ -80,12 +81,14 @@ async function invokeUnknown(cmd: string, args?: unknown): Promise<unknown> {
 
 export async function listen(
 	event: string,
-	handler: (event: unknown) => void,
+	handler: (event: TauriEvent<unknown>) => void,
 ): Promise<() => void> {
 	await init();
 	if (isTauri() && _tauriListen) {
 		try {
-			const unlisten = await _tauriListen(event, handler);
+			const unlisten = await _tauriListen(event, (rawEvent) => {
+				handler(rawEvent as TauriEvent<unknown>);
+			});
 			return () => {
 				if (typeof unlisten !== 'function') return;
 				try {
