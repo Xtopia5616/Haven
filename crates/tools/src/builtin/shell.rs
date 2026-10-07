@@ -71,15 +71,21 @@ pub struct ShellParams {
     pub session_id: Option<String>,
 }
 
+/// Shell executable and working directory selected for one command.
+struct ResolvedShellContext {
+    shell: String,
+    working_directory: Option<PathBuf>,
+}
+
 impl ShellTool {
     /// Resolve the `shell` and `cwd` arguments, applying the configured
     /// default shell when the caller omits `shell`. Shared by the foreground
     /// and background execution paths.
-    fn resolve_shell_and_cwd(
+    fn resolve_shell_context(
         &self,
         shell_arg: Option<&str>,
         cwd_arg: Option<&str>,
-    ) -> (String, Option<PathBuf>) {
+    ) -> ResolvedShellContext {
         let shell = shell_arg
             .filter(|s| !s.is_empty())
             .map(str::to_owned)
@@ -92,7 +98,10 @@ impl ShellTool {
                     .ok()
                     .and_then(|current| haven_common::discover_workspace_root(&current))
             });
-        (shell, cwd)
+        ResolvedShellContext {
+            shell,
+            working_directory: cwd,
+        }
     }
 
     /// Entry ①: structured native interface (internal code calls — zero
@@ -107,9 +116,9 @@ impl ShellTool {
             anyhow::bail!("command is required");
         }
         let silent = params.silent.unwrap_or(false);
-        let (shell, cwd) =
-            self.resolve_shell_and_cwd(params.shell.as_deref(), params.cwd.as_deref());
-        validate_shell_command(&shell, &cmd)?;
+        let shell_context =
+            self.resolve_shell_context(params.shell.as_deref(), params.cwd.as_deref());
+        validate_shell_command(&shell_context.shell, &cmd)?;
         let max_chars = self.max_output_chars;
 
         if cancel.is_cancelled() {
@@ -126,9 +135,9 @@ impl ShellTool {
                 .spawn_shell_for_session_with_source_and_cancel(
                     BackgroundShellRequest {
                         command: &cmd,
-                        shell: &shell,
+                        shell: &shell_context.shell,
                         max_chars,
-                        cwd,
+                        cwd: shell_context.working_directory,
                         session_id: params.session_id.as_deref(),
                         source_step_id,
                     },
@@ -144,14 +153,14 @@ impl ShellTool {
             if let Some(source_step_id) = source_step_id {
                 body.insert("source_step_id".into(), serde_json::json!(source_step_id));
             }
-            body.insert("shell".into(), serde_json::json!(shell));
+            body.insert("shell".into(), serde_json::json!(shell_context.shell));
             body.insert("status".into(), serde_json::json!("running"));
             return Ok(ToolResult::ok(serde_json::Value::Object(body)));
         }
 
-        let mut std_cmd = build_shell_command_silent(&shell, &cmd);
-        if let Some(cwd) = cwd {
-            std_cmd.current_dir(cwd);
+        let mut std_cmd = build_shell_command_silent(&shell_context.shell, &cmd);
+        if let Some(working_directory) = shell_context.working_directory {
+            std_cmd.current_dir(working_directory);
         }
 
         let containment = haven_platform::process_containment::ProcessContainment::new()?;
@@ -250,11 +259,11 @@ impl ShellTool {
         }
         // Strip PowerShell's NativeCommandError / CLIXML formatting noise so
         // the reported text carries the real output, not the wrapper.
-        let combined = sanitize_shell_output(&raw_combined, &shell);
+        let combined = sanitize_shell_output(&raw_combined, &shell_context.shell);
 
         let text = haven_common::encoding::truncate_output(&combined, max_chars).text;
         let exit_code = status.code();
-        let mut output = serde_json::json!({"output": text, "shell": shell});
+        let mut output = serde_json::json!({"output": text, "shell": shell_context.shell});
         if let Some(code) = exit_code {
             output["exit_code"] = serde_json::Value::from(code);
         }
@@ -271,7 +280,7 @@ impl ShellTool {
             // capture so the root cause stays recoverable. Error text is
             // condensed (progress bars dropped, tail kept) and a Windows-trap
             // hint is appended when it matches a common pitfall.
-            let sanitized_stderr = sanitize_shell_output(&stderr.text, &shell);
+            let sanitized_stderr = sanitize_shell_output(&stderr.text, &shell_context.shell);
             let err_source = if !sanitized_stderr.trim().is_empty() {
                 sanitized_stderr.as_str()
             } else if !text.trim().is_empty() {
@@ -299,7 +308,7 @@ impl ShellTool {
                 &raw_combined,
             );
             let log_path = log_path.to_string_lossy().into_owned();
-            err_text = append_windows_diagnostics(&shell, &cmd, &err_text);
+            err_text = append_windows_diagnostics(&shell_context.shell, &cmd, &err_text);
             err_text = format!("{}\n[full output: {}]", err_text.trim_end(), log_path);
             let mut result = crate::ToolOutput::new(output, truncated)
                 .with_log_path(log_path)

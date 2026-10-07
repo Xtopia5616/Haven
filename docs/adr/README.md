@@ -616,3 +616,4 @@
 - [0625：命名 Common 截断文本结果](0625-name-common-truncated-output-result.md)
 - [0626：命名 App model discovery 认证结果](0626-name-app-discovery-auth-types.md)
 - [0627：命名 Tools JSON 列表预算结果](0627-name-tools-json-list-budget-result.md)
+- [0628：命名 Tools shell 执行上下文](0628-name-tools-shell-context.md)
