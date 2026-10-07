@@ -6,6 +6,7 @@
  */
 
 import {
+	SESSION_EVENT_NAMES,
 	SESSION_STATUS_VALUES,
 	SESSION_UPDATE_STATUS_VALUES,
 	SESSION_WAITING_REASON_VALUES,
@@ -57,7 +58,7 @@ export function mapSessionEvent(
 	event: TauriEvent<unknown>,
 ): TauriEvent<SessionLifecyclePayload> | null {
 	if (
-		event.event !== 'session:lifecycle' ||
+		event.event !== SESSION_EVENT_NAMES[0] ||
 		typeof event.id !== 'number' ||
 		!Number.isFinite(event.id) ||
 		!isRecord(event.payload)

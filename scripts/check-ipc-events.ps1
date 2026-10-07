@@ -22,21 +22,33 @@ function Assert-SetEqual([string] $label, [string[]] $expected, [string[]] $actu
 $events = Get-Content (Join-Path $root 'crates/app-binary/src/events.rs') -Raw
 $rustEvents = Get-Matches $events '(?m)^pub\(crate\) const [A-Z0-9_]+_EVENT: &str = "([^"]+)";'
 
-$contractFiles = @(
-    'session.ts',
-    'toolRun.ts',
-    'recording.ts',
-    'app.ts',
-    'agent.ts'
-)
-$frontendEvents = @()
-foreach ($file in $contractFiles) {
-    $text = Get-Content (Join-Path $root "ui/src/lib/contracts/$file") -Raw
-    $frontendEvents += Get-Matches $text "(?s)(?:EVENT_NAMES\s*=\s*\[)(.*?)(?:\]\s*as const)" |
-        ForEach-Object { Get-Matches $_ "'([^']+:[^']+)'" }
+$generated = Get-Content (Join-Path $root 'ui/src/lib/contracts/generatedCommands.ts') -Raw
+$generatedEventArrays = Get-Matches $generated '(?ms)^export const [A-Z_]+_EVENT_NAMES = \[(.*?)^\] as const;'
+$generatedEvents = @()
+foreach ($array in $generatedEventArrays) {
+    $generatedEvents += Get-Matches $array "'([^']+:[^']+)'"
+}
+Assert-SetEqual 'Rust event directory vs generated frontend event channels' $rustEvents $generatedEvents
+$sessionEventArray = [regex]::Match($generated, "(?s)export const SESSION_EVENT_NAMES = \[(.*?)\]\s*as const")
+if (-not $sessionEventArray.Success -or
+    (Get-Matches $sessionEventArray.Groups[1].Value "'([^']+:[^']+)'" | Measure-Object).Count -ne 1 -or
+    -not [regex]::IsMatch($sessionEventArray.Groups[1].Value, "^\s*'session:lifecycle',?\s*$")) {
+    throw 'Session currently has exactly one lifecycle channel; update its single-channel registration deliberately if that contract changes'
 }
 
-Assert-SetEqual 'Rust event directory vs frontend event directory' $rustEvents $frontendEvents
+$eventContracts = @{
+    'app.ts' = 'APP_EVENT_NAMES'
+    'agent.ts' = 'AGENT_EVENT_NAMES'
+    'recording.ts' = 'RECORDING_EVENT_NAMES'
+    'session.ts' = 'SESSION_EVENT_NAMES'
+    'toolRun.ts' = 'TOOL_RUN_EVENT_NAMES'
+}
+foreach ($contract in $eventContracts.GetEnumerator()) {
+    $text = Get-Content (Join-Path $root "ui/src/lib/contracts/$($contract.Key)") -Raw
+    if (-not $text.Contains($contract.Value) -or [regex]::IsMatch($text, "export const $($contract.Value)\s*=\s*\[")) {
+        throw "$($contract.Key) must consume generated $($contract.Value) instead of declaring a second event directory"
+    }
+}
 
 # Runtime event validators must consume the enum vocabularies emitted by the
 # Rust IPC generator. check-ipc-contracts.ps1 verifies those generated values
@@ -54,9 +66,10 @@ if (-not [regex]::IsMatch($sessionWire, 'SESSION_LIFECYCLE_EVENT:\s*&str\s*=\s*"
     -not [regex]::IsMatch($sessionWire, '(?s)#\[serde\(\s*tag\s*=\s*"type".*?enum\s+SessionLifecycleEvent')) {
     throw 'session lifecycle must use one Rust channel and a tagged SessionLifecycleEvent enum'
 }
-if (-not [regex]::IsMatch($sessionContract, "(?s)SESSION_EVENT_NAMES\s*=\s*\['session:lifecycle'\]\s+as\s+const") -or
+if (-not [regex]::IsMatch($sessionContract, "(?s)SESSION_EVENT_NAMES[^;]*from\s+'\./generatedCommands\.ts'") -or
+    -not [regex]::IsMatch($sessionContract, 'SESSION_EVENT_NAMES\[0\]') -or
     [regex]::IsMatch($sessionContract, 'occurrenceId|occurrence_id')) {
-    throw 'the frontend session contract must register one lifecycle channel and omit occurrence identity'
+    throw 'the frontend session contract must consume the generated lifecycle channel and omit occurrence identity'
 }
 if (-not [regex]::IsMatch($sessionWire, '(?s)Completed\s*\{[^}]*reason:\s*String') -or
     -not [regex]::IsMatch($sessionWire, '(?s)Error\s*\{[^}]*error:\s*String') -or

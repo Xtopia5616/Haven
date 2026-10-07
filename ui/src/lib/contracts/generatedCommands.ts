@@ -1,7 +1,57 @@
-// Generated from #[tauri::command] handler signatures by `scripts/generate-ipc-contracts.ps1`.
+// Generated from Tauri commands and `crates/app-binary/src/events.rs` by `scripts/generate-ipc-contracts.ps1`.
 // Do not edit by hand; `scripts/check-ipc-contracts.ps1` rejects drift.
 
 // DTO declarations below are generated from Rust Serialize types.
+
+export const AGENT_EVENT_NAMES = [
+	'agent:thought',
+	'agent:tool_call',
+	'agent:observation',
+	'agent:thought_chunk',
+	'agent:reasoning_chunk',
+	'agent:stream_reset',
+	'agent:media_plan',
+	'agent:web_search',
+	'agent:stream_stalled',
+	'agent:supplement',
+	'agent:compaction',
+	'agent:usage',
+	'agent:tool_output',
+	'notification:show',
+] as const;
+
+export const APP_EVENT_NAMES = [
+	'app:bootstrap',
+	'tray:status_changed',
+	'mute:changed',
+	'mcp:status_change',
+	'skills:status_change',
+	'interaction:requested',
+	'hotkey:conflict',
+	'hotkey:rebind',
+	'llm:config_changed',
+] as const;
+
+export const RECORDING_EVENT_NAMES = [
+	'recording:started',
+	'recording:stopped',
+	'recording:vad_status',
+	'recording:error',
+	'transcription:started',
+	'transcription:result',
+	'transcription:error',
+] as const;
+
+export const SESSION_EVENT_NAMES = [
+	'session:lifecycle',
+] as const;
+
+export const TOOL_RUN_EVENT_NAMES = [
+	'tool_run:created',
+	'tool_run:updated',
+	'tool_run:output',
+	'tool_run:finished',
+] as const;
 
 export const INTERACTION_KIND_VALUES = ['ask', 'confirm', 'scheduled_confirm'] as const;
 export type InteractionKind = (typeof INTERACTION_KIND_VALUES)[number];

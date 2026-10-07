@@ -21,6 +21,7 @@ import {
 	type AgentEventPayloadMap,
 } from './contracts/agent.ts';
 import { mapAppEvent, type AppEventName, type AppEventPayloadMap } from './contracts/app.ts';
+import { SESSION_EVENT_NAMES } from './contracts/generatedCommands.ts';
 
 type SessionLifecycleListener = (event: TauriEvent<SessionLifecyclePayload>) => void;
 
@@ -155,8 +156,8 @@ export function sessionEventListeners(
 	handler: SessionLifecycleListener,
 ): Record<string, (event: TauriEvent<unknown>) => void> {
 	return {
-		'session:lifecycle': (event) => {
-			protectEventCallback('session:lifecycle', () => {
+		[SESSION_EVENT_NAMES[0]]: (event) => {
+			protectEventCallback(SESSION_EVENT_NAMES[0], () => {
 				const mapped = adaptSessionEvent(event);
 				if (mapped) handler(mapped);
 			});
@@ -274,9 +275,9 @@ export async function registerSessionLifecycleListener(
 	{ tag = 'unknown' }: { tag?: string } = {},
 ): Promise<{ dispose: () => void }> {
 	return registerOne(
-		'session:lifecycle',
+		SESSION_EVENT_NAMES[0],
 		(rawEvent) =>
-			protectEventCallback('session:lifecycle', () => {
+			protectEventCallback(SESSION_EVENT_NAMES[0], () => {
 				const mapped = adaptSessionEvent(rawEvent);
 				if (mapped) handler(mapped);
 			}),

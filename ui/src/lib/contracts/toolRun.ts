@@ -2,7 +2,11 @@ import type {
 	ToolRunKindDto as GeneratedToolRunKindDto,
 	ToolRunStatus as GeneratedToolRunStatus,
 } from './generatedCommands.ts';
-import { TOOL_RUN_KIND_DTO_VALUES, TOOL_RUN_STATUS_VALUES } from './generatedCommands.ts';
+import {
+	TOOL_RUN_EVENT_NAMES,
+	TOOL_RUN_KIND_DTO_VALUES,
+	TOOL_RUN_STATUS_VALUES,
+} from './generatedCommands.ts';
 import type { TauriEvent } from './tauriEvent.ts';
 import { isRecord } from './objectGuards.ts';
 
@@ -14,13 +18,6 @@ import { isRecord } from './objectGuards.ts';
  * snake_case-to-camelCase mapping point. Dynamic execution arguments are not
  * part of this UI DTO.
  */
-export const TOOL_RUN_EVENT_NAMES = [
-	'tool_run:created',
-	'tool_run:updated',
-	'tool_run:output',
-	'tool_run:finished',
-] as const;
-
 export type ToolRunEventName = (typeof TOOL_RUN_EVENT_NAMES)[number];
 export type ToolRunKind = GeneratedToolRunKindDto;
 export type ToolRunStatus = GeneratedToolRunStatus;

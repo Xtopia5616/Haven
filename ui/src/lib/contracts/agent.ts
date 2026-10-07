@@ -1,25 +1,9 @@
 /** Agent event IPC contract at the frontend boundary. */
 
 import type { RequestKind } from './generatedCommands.ts';
+import { AGENT_EVENT_NAMES } from './generatedCommands.ts';
 import type { TauriEvent } from './tauriEvent.ts';
 import { isRecord } from './objectGuards.ts';
-
-export const AGENT_EVENT_NAMES = [
-	'agent:thought',
-	'agent:tool_call',
-	'agent:observation',
-	'agent:thought_chunk',
-	'agent:reasoning_chunk',
-	'agent:stream_reset',
-	'agent:media_plan',
-	'agent:web_search',
-	'agent:stream_stalled',
-	'agent:supplement',
-	'agent:compaction',
-	'agent:usage',
-	'agent:tool_output',
-	'notification:show',
-] as const;
 
 export type AgentEventName = (typeof AGENT_EVENT_NAMES)[number];
 export type ToolObservationOutcome = 'succeeded' | 'failed' | 'cancelled' | 'timed_out' | 'unknown';

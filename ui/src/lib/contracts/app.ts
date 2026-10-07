@@ -4,6 +4,7 @@ import type { TauriEvent } from './tauriEvent.ts';
 import { isMcpClientStatus } from './mcpClientStatus.ts';
 import { isRecord } from './objectGuards.ts';
 import {
+	APP_EVENT_NAMES,
 	BOOTSTRAP_STATUS_VALUES,
 	INTERACTION_KIND_VALUES,
 	INTERACTION_STATUS_VALUES,
@@ -22,18 +23,6 @@ import {
 	type SkillsStatusChangedEvent as GeneratedSkillsStatusChangedEvent,
 	type TrayStatusChangedEvent as GeneratedTrayStatusChangedEvent,
 } from './generatedCommands.ts';
-
-export const APP_EVENT_NAMES = [
-	'app:bootstrap',
-	'tray:status_changed',
-	'mute:changed',
-	'mcp:status_change',
-	'skills:status_change',
-	'interaction:requested',
-	'hotkey:conflict',
-	'hotkey:rebind',
-	'llm:config_changed',
-] as const;
 
 export type AppEventName = (typeof APP_EVENT_NAMES)[number];
 export type InteractionOwnerView =

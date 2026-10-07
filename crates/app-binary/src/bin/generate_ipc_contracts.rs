@@ -1,5 +1,5 @@
 use quote::ToTokens;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use syn::{FnArg, Item, Pat, ReturnType, Type};
@@ -96,6 +96,8 @@ fn generate(root: &Path) -> Result<String, String> {
         return Err("no #[tauri::command] handlers found".into());
     }
 
+    let event_channels = event_channels(&root.join("crates/app-binary/src/events.rs"))?;
+
     // Session lifecycle events are public IPC contracts even though event
     // payloads are not returned from Tauri commands. Keep their tagged union
     // generated from the same Rust Serde authority as command responses.
@@ -129,10 +131,17 @@ fn generate(root: &Path) -> Result<String, String> {
     )?;
 
     let mut output = String::from(
-        "// Generated from #[tauri::command] handler signatures by `scripts/generate-ipc-contracts.ps1`.\n\
+        "// Generated from Tauri commands and `crates/app-binary/src/events.rs` by `scripts/generate-ipc-contracts.ps1`.\n\
          // Do not edit by hand; `scripts/check-ipc-contracts.ps1` rejects drift.\n\n\
          // DTO declarations below are generated from Rust Serialize types.\n\n",
     );
+    for (group, channels) in &event_channels {
+        output.push_str(&format!("export const {group}_EVENT_NAMES = [\n"));
+        for channel in channels {
+            output.push_str(&format!("\t'{channel}',\n"));
+        }
+        output.push_str("] as const;\n\n");
+    }
     output.push_str(&type_graph.declarations());
     output.push_str("\nexport interface TauriCommandMap {\n");
     for command in commands.values() {
@@ -159,6 +168,92 @@ fn generate(root: &Path) -> Result<String, String> {
          };\n",
     );
     Ok(output)
+}
+
+fn event_channels(path: &Path) -> Result<BTreeMap<String, Vec<String>>, String> {
+    let source =
+        fs::read_to_string(path).map_err(|error| format!("read {}: {error}", path.display()))?;
+    event_channels_from_source(&source)
+        .map_err(|error| format!("parse event channels from {}: {error}", path.display()))
+}
+
+fn event_channels_from_source(source: &str) -> Result<BTreeMap<String, Vec<String>>, String> {
+    let file = syn::parse_file(source).map_err(|error| format!("parse event source: {error}"))?;
+    let mut channels = BTreeMap::<String, Vec<String>>::new();
+    let mut seen_channels = HashSet::new();
+
+    for item in file.items {
+        let Item::Const(item) = item else { continue };
+        let constant_name = item.ident.to_string();
+        if !constant_name.ends_with("_EVENT") {
+            continue;
+        }
+        let Type::Reference(reference) = item.ty.as_ref() else {
+            return Err(format!(
+                "event channel {constant_name} must have type &'static str"
+            ));
+        };
+        if !matches!(reference.elem.as_ref(), Type::Path(path) if path.path.is_ident("str")) {
+            return Err(format!(
+                "event channel {constant_name} must have type &'static str"
+            ));
+        }
+        let syn::Expr::Lit(expression) = item.expr.as_ref() else {
+            return Err(format!(
+                "event channel {constant_name} must be a string literal"
+            ));
+        };
+        let syn::Lit::Str(value) = &expression.lit else {
+            return Err(format!(
+                "event channel {constant_name} must be a string literal"
+            ));
+        };
+        let channel = value.value();
+        if !seen_channels.insert(channel.clone()) {
+            return Err(format!(
+                "event channel {channel:?} is declared more than once"
+            ));
+        }
+        let group = event_group(&constant_name)?;
+        channels.entry(group.to_string()).or_default().push(channel);
+    }
+
+    if channels.is_empty() {
+        return Err("no event channel constants found".into());
+    }
+    Ok(channels)
+}
+
+fn event_group(constant_name: &str) -> Result<&'static str, String> {
+    let group = if constant_name.starts_with("SESSION_") {
+        "SESSION"
+    } else if constant_name.starts_with("RECORDING_") || constant_name.starts_with("TRANSCRIPTION_")
+    {
+        "RECORDING"
+    } else if constant_name.starts_with("TOOL_RUN_") {
+        "TOOL_RUN"
+    } else if constant_name.starts_with("AGENT_") || constant_name.starts_with("NOTIFICATION_") {
+        "AGENT"
+    } else if [
+        "APP_",
+        "TRAY_",
+        "MUTE_",
+        "MCP_",
+        "SKILLS_",
+        "INTERACTION_",
+        "HOTKEY_",
+        "LLM_",
+    ]
+    .iter()
+    .any(|prefix| constant_name.starts_with(prefix))
+    {
+        "APP"
+    } else {
+        return Err(format!(
+            "event channel constant {constant_name} has no frontend contract group"
+        ));
+    };
+    Ok(group)
 }
 
 fn is_tauri_command(attributes: &[syn::Attribute]) -> bool {
@@ -317,6 +412,36 @@ fn snake_to_camel(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn event_channel_constants_map_to_their_frontend_contract_owners() {
+        assert_eq!(event_group("SESSION_LIFECYCLE_EVENT").unwrap(), "SESSION");
+        assert_eq!(
+            event_group("TRANSCRIPTION_RESULT_EVENT").unwrap(),
+            "RECORDING"
+        );
+        assert_eq!(event_group("TOOL_RUN_UPDATED_EVENT").unwrap(), "TOOL_RUN");
+        assert_eq!(event_group("NOTIFICATION_SHOW_EVENT").unwrap(), "AGENT");
+        assert_eq!(event_group("HOTKEY_REBIND_EVENT").unwrap(), "APP");
+    }
+
+    #[test]
+    fn event_channel_grouping_rejects_unowned_constants() {
+        assert!(event_group("CUSTOM_EVENT").is_err());
+    }
+
+    #[test]
+    fn event_channel_directory_rejects_duplicate_wire_names() {
+        let source = r#"
+            const APP_FIRST_EVENT: &str = "app:changed";
+            const APP_SECOND_EVENT: &str = "app:changed";
+        "#;
+        assert!(
+            event_channels_from_source(source)
+                .unwrap_err()
+                .contains("declared more than once")
+        );
+    }
 
     #[test]
     fn request_contract_comes_from_flat_handler_arguments_and_omits_tauri_state() {

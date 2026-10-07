@@ -1,19 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { mapRecordingEvent, RECORDING_EVENT_NAMES } from './recording.ts';
+import { mapRecordingEvent } from './recording.ts';
 
 describe('recording IPC contract', () => {
-	it('keeps the Rust recording and transcription channel set', () => {
-		expect(RECORDING_EVENT_NAMES).toEqual([
-			'recording:started',
-			'recording:stopped',
-			'recording:vad_status',
-			'recording:error',
-			'transcription:started',
-			'transcription:result',
-			'transcription:error',
-		]);
-	});
-
 	it('converts a recording lifecycle payload to camelCase', () => {
 		const event = mapRecordingEvent({
 			event: 'recording:stopped',

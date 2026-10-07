@@ -1,17 +1,10 @@
 /** Recording and transcription IPC contract at the frontend boundary. */
 
 import type { TauriEvent } from './tauriEvent.ts';
-import type { VadStatusEvent as GeneratedVadStatusEvent } from './generatedCommands.ts';
-
-export const RECORDING_EVENT_NAMES = [
-	'recording:started',
-	'recording:stopped',
-	'recording:vad_status',
-	'recording:error',
-	'transcription:started',
-	'transcription:result',
-	'transcription:error',
-] as const;
+import {
+	RECORDING_EVENT_NAMES,
+	type VadStatusEvent as GeneratedVadStatusEvent,
+} from './generatedCommands.ts';
 
 export type RecordingEventName = (typeof RECORDING_EVENT_NAMES)[number];
 
