@@ -1,6 +1,6 @@
 # Haven 命名规范
 
-> 版本: v1.44 | 日期: 2026-10-07
+> 版本: v1.45 | 日期: 2026-10-07
 
 本文档统一 Haven 项目各层的命名规则（变量名、函数名、文件名、crate 名、缩写大小写、跨层边界）。规范以现有代码中的事实模式为基础，新代码必须遵循；存量代码若与规范冲突，逐步迁移对齐。
 
@@ -159,6 +159,22 @@ Common 新增的媒体探测 helper 和本地变量用 `mime_type` 表示 MIME �
 - 构造 `pub const fn as_str` / `new` 保持惯例命名。
 - 跨模块返回多个具有稳定领域含义的值时使用具名结果结构体，字段名直接表达各自角色；不要让调用方通过 `.0` / `.1` 解读分类、版本时钟和 MIME 等语义。短生命周期局部组合、迭代器键值等仍可使用 tuple。不同分类空间即使都包含 `kind` 字段，也按 owner 命名具体结果（如 `FileClassification` 与 `ManagedMediaClassification`），不为形似而合并 enum。
 - 可复用的领域复合 key 使用具名结构体和闭合枚举表达各部分含义；不要用 tuple alias 加字符串标签编码固定身份。临时局部键值组合仍可用 tuple。
+
+### 类型角色后缀
+
+后缀表示类型的主要责任 owner，不是所有可能行为的清单；不要只因同处一个 crate 或拥有相似字段就统一后缀。类型承担多个主要 owner 时，先记录具体消费者，再判断是否拆分或改名。
+
+| 后缀 | 主要职责 | Haven 示例 |
+|---|---|---|
+| `Engine` | 执行领域算法、反应循环或媒体处理过程 | `ReActEngine`、`VadEngine`、`FileSearchEngine`、`CaptureEngine` |
+| `Runtime` | 持有进程内活动状态、长生命周期资源或运行任务 | `ApplicationRuntime`、`MemoryRuntime`、`ToolRuntime` |
+| `Store` | 通过持久化边界读取或写入领域数据 | `SessionStore`、`MemoryFactStore`、`MemoryRecallStore` |
+| `Registry` | 按身份索引并提供目录、catalog 或可选规则集合 | `ToolRegistry`、`SkillRegistry`、`ModelRegistry`、`ManagedAssetRegistry` |
+| `Manager` | 创建、替换、重连或关闭外部/子系统资源 | `McpManager`、`VenvManager` |
+| `Service` | 组合多个 owner 完成应用或领域用例 | `ConfigService`、`MemoryService`、`MessagingService`、`ToolRunService` |
+| `Facade` | 组合窄接口提供统一调用入口，不取得被组合 owner 的生命周期 | `ToolsFacade` |
+
+同一子系统可以合理同时包含多个后缀角色：`McpManager` 管连接，`McpClient` 管单个连接的协议交互；`SkillRegistry` 提供发现结果，而 `VenvManager` 管执行环境。上述区别属于资源 owner 和生命周期差异，不需为了词形一致合并。
 
 ### 缩写大小写规则
 - **类型名**中缩写用 PascalCase：`SttProvider`、`OcrEngine`、`TtsProvider`。

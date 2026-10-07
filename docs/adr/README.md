@@ -603,3 +603,4 @@
 - [0612：命名 Agent streamed LLM call 结果](0612-name-agent-stream-call-result.md)
 - [0613：命名 ToolRun event projection](0613-name-tool-run-event-projection.md)
 - [0614：删除 StreamMetricsSnapshot 同义 alias](0614-remove-stream-metrics-snapshot-alias.md)
+- [0615：明确 Rust 组件角色后缀](0615-define-rust-component-role-suffixes.md)
