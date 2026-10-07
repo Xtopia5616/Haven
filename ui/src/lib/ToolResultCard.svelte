@@ -11,6 +11,7 @@
 	import Icon from '$lib/Icon.svelte';
 	import { getToolResultRenderer } from '$lib/toolResultRenderers.ts';
 	import { parseToolResult } from '$lib/toolResultParsing.ts';
+	import { isRecord } from '$lib/contracts/objectGuards.ts';
 	import { copyText } from '$lib/clipboard.ts';
 	import { toolRunStore } from '$lib/toolRunStore.ts';
 	import { getToolOutputPreviewStore } from '$lib/toolOutputPreviewStore.ts';
@@ -221,11 +222,7 @@
 		lastExecutionActive = executionActive;
 	});
 	let kind = $derived(parsed?.kind ?? null);
-	let data: Record<string, unknown> = $derived(
-		parsed?.data !== null && typeof parsed?.data === 'object' && !Array.isArray(parsed.data)
-			? (parsed.data as Record<string, unknown>)
-			: {},
-	);
+	let data: Record<string, unknown> = $derived(isRecord(parsed?.data) ? parsed.data : {});
 	let emptyOutputLabel = $derived.by(() => {
 		if (effectiveOutcome === 'failed') return '调用失败';
 		if (effectiveOutcome === 'cancelled') return '调用已取消';

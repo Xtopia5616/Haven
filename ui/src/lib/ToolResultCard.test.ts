@@ -11,6 +11,7 @@ import {
 	setToolOutputPreview,
 } from './toolOutputPreviewStore.ts';
 import { getToolResultRenderer } from './toolResultRenderers.ts';
+import ToolJsonResult from './ToolJsonResult.svelte';
 
 const searchJson = (results: any[], extra: any = {}) =>
 	JSON.stringify({ results, count: results.length, mode: 'filename', ...extra });
@@ -172,6 +173,12 @@ describe('operation view UI contract', () => {
 		expect(
 			getToolResultRenderer('custom', 'files.search', { results: [] }, 'files.search'),
 		).toBeTruthy();
+	});
+
+	it('does not treat an array as a files result record', () => {
+		expect(getToolResultRenderer('custom', 'files', [{ media: {} }], 'files')).toBe(
+			ToolJsonResult,
+		);
 	});
 });
 

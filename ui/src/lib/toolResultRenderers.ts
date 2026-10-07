@@ -17,6 +17,7 @@ import ToolSystemResult from './ToolSystemResult.svelte';
 import ToolWebSearchResult from './ToolWebSearchResult.svelte';
 import ToolWindowResult from './ToolWindowResult.svelte';
 import { toolRendererName } from './toolManifest.ts';
+import { isRecord } from './contracts/objectGuards.ts';
 
 const adminRendererNames: ReadonlySet<string> = new Set([
 	'haven_diagnostics',
@@ -49,6 +50,7 @@ export function getToolResultRenderer(
 	// only split current families that deliberately share a renderer.
 	const rendererName = resultRenderer || toolRendererName(toolName);
 	const selectedRenderer = rendererName || '';
+	const data = isRecord(_data) ? _data : null;
 	if (kind === 'custom' && selectedRenderer === 'files.search') return ToolFileSearchResult;
 	if (kind === 'custom' && selectedRenderer === 'agent') return ToolAgentResult;
 	if (kind === 'custom' && selectedRenderer === 'process') return ToolProcessResult;
@@ -60,33 +62,27 @@ export function getToolResultRenderer(
 	if (
 		kind === 'custom' &&
 		selectedRenderer === 'files' &&
-		typeof _data === 'object' &&
-		_data !== null &&
-		'media' in _data
+		data &&
+		'media' in data
 	)
 		return ToolMediaResult;
 	if (
 		kind === 'custom' &&
 		selectedRenderer === 'files' &&
-		typeof _data === 'object' &&
-		_data !== null &&
-		!('results' in _data)
+		data &&
+		!('results' in data)
 	)
 		return ToolFileResult;
 	if (
 		kind === 'custom' &&
 		selectedRenderer === 'files' &&
-		typeof _data === 'object' &&
-		_data !== null &&
-		'results' in _data &&
-		Array.isArray(_data.results)
+		data &&
+		'results' in data &&
+		Array.isArray(data.results)
 	)
 		return ToolFileSearchResult;
 	if (kind === 'custom' && selectedRenderer === 'system') {
-		const scope =
-			typeof _data === 'object' && _data !== null && 'scope' in _data
-				? (_data as { scope?: unknown }).scope
-				: null;
+		const scope = data?.scope;
 		if (scope === 'process') return ToolProcessResult;
 		if (scope === 'window') return ToolWindowResult;
 		if (scope === 'clipboard') return ToolClipboardResult;
