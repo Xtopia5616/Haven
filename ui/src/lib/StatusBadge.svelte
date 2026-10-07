@@ -1,5 +1,7 @@
 <script lang="ts">
-	type StatusBadgeTone = 'neutral' | 'info' | 'success' | 'warning' | 'error';
+	import type { StatusTone } from './statusColors.ts';
+
+	type StatusBadgeTone = Extract<StatusTone, 'neutral' | 'info' | 'success' | 'warning' | 'error'>;
 
 	interface Props {
 		label?: string;

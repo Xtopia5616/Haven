@@ -627,3 +627,4 @@
 - [0636：明确 Memory live consumer 的一次性 handoff](0636-name-memory-live-consumer-handoff.md)
 - [0637：统一 ReAct response policy 输入与判定术语](0637-unify-react-response-policy-types.md)
 - [0638：合并 SessionRun 结束提示状态](0638-merge-session-run-end-ui-state.md)
+- [0639：从共享状态色派生 StatusBadge 子集](0639-derive-status-badge-tone-subset.md)
