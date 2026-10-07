@@ -650,3 +650,4 @@
 - [0659：删除无消费者的 UI any callback helper](0659-remove-unused-any-callback-adapter.md)
 - [0660：删除 Anthropic 响应中重复的 serde alias](0660-remove-redundant-anthropic-response-alias.md)
 - [0661：统一 Session 步数预算字段命名](0661-name-session-step-budget-scopes.md)
+- [0662：删除 Gemini 响应中的重复 Serde alias](0662-remove-redundant-gemini-wire-alias.md)

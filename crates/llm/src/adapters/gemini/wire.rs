@@ -112,7 +112,6 @@ pub(super) struct GeminiCandidate {
     #[serde(default)]
     pub(super) content: Option<GeminiResponseContent>,
     #[serde(alias = "finishReason")]
-    #[serde(alias = "finish_reason")]
     pub(super) finish_reason: Option<String>,
     #[serde(default, alias = "groundingMetadata")]
     pub(super) grounding_metadata: Option<Value>,

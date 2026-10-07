@@ -320,6 +320,7 @@
 | UI callback adapter 保留无消费者的 any 扩展入口 | `withStringValue`、`withNumberValue`、`withBooleanValue` 与 `withEventValue` 都有生产调用方；`withAnyValue` 只有定义，且将 callback 参数放宽到 `any`。 | **删除无消费者 helper**：移除 `withAnyValue`，其它带精确输入类型的 adapter 保留（ADR 0659）。 |
 | Anthropic response 声明重复的 serde alias | `AnthropicResponse.stop_reason` 的默认 Serde 主字段本来就是 `stop_reason`，alias 与字段 key 完全相同，没有兼容输入或独立语义。其它协议别名与各自 wire 主字段不同。 | **删除同名 alias**：移除冗余 attribute；保留确有上游协议差异的字段映射（ADR 0660）。 |
 | Session run 步数预算与 session lifetime cap 前缀不成对 | `SessionConfig.max_steps` 是单次 ReAct run 的 budget，`session_max_steps` 是整个持久 Session 的累计绝对 step number cap；Agent runtime 与 UI 只给后者加 `session_`，无法直接读出统计作用域。 | **成对标出统计范围**：统一为 `max_steps_per_run` / `max_steps_per_session`，连同 Agent setter、Settings contract 与 UI 同步更名；旧 TOML key 不迁移（ADR 0661）。 |
+| Gemini response field 重复自身 Serde 名称 alias | `GeminiCandidate.finish_reason` 自身字段名已是 `finish_reason`，额外同名 alias 不增加可解析 wire shape；Gemini 上游使用的 camelCase `finishReason` 仍需保留。 | **删除冗余拼法**：移除 `finish_reason` 同名 alias，保留上游 `finishReason` 映射；不改变标准 Gemini response 解析（ADR 0662）。 |
 
 此表是候选分流清单，不是完整符号目录。尚未完成的 crate、IPC/event payload、UI controller/store 与函数动词审计仍在 §5.7 范围内；完成一域后更新本表并以 ADR 记录实际迁移。
 
