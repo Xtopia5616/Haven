@@ -18,7 +18,7 @@ pub(crate) struct EndpointCircuitBreaker {
     pub(crate) opened_at: Option<Instant>,
     /// Only one request may pass while the breaker is half-open. This is a
     /// state bit rather than an async mutex because callers already serialize
-    /// health transitions under the router's health write lock.
+    /// breaker transitions under the router's circuit-state write lock.
     pub(crate) half_open_probe_in_flight: bool,
 }
 
@@ -115,66 +115,15 @@ impl EndpointCircuitBreaker {
     }
 }
 
-#[derive(Debug, Clone)]
-pub(crate) struct EndpointHealth {
-    pub(crate) consecutive_failures: u32,
-    pub(crate) last_failure_time: Option<Instant>,
-    pub(crate) is_healthy: bool,
-    pub(crate) circuit_breaker: EndpointCircuitBreaker,
-}
+/// Circuit state is keyed by configured routed-model identity. A primary and
+/// its fallback may share a semaphore but must never share breaker state.
+pub(crate) type EndpointCircuitBreakerMap = HashMap<String, EndpointCircuitBreaker>;
 
-impl EndpointHealth {
-    pub(crate) fn new() -> Self {
-        Self {
-            consecutive_failures: 0,
-            last_failure_time: None,
-            is_healthy: true,
-            circuit_breaker: EndpointCircuitBreaker::new(),
-        }
-    }
-
-    pub(crate) fn record_success(&mut self) {
-        // Mirror the circuit breaker: a stale success from a pre-open request
-        // must not mark the endpoint healthy again (M8).
-        if self.circuit_breaker.state == EndpointCircuitState::Open {
-            return;
-        }
-        self.consecutive_failures = 0;
-        self.is_healthy = true;
-        self.circuit_breaker.record_success();
-    }
-
-    pub(crate) fn record_failure(&mut self) {
-        self.consecutive_failures += 1;
-        self.last_failure_time = Some(Instant::now());
-        self.circuit_breaker.record_failure();
-        // Mark unhealthy after 3 consecutive failures
-        if self.consecutive_failures >= 3 {
-            self.is_healthy = false;
-        }
-    }
-
-    pub(crate) fn reset_for_manual_retry(&mut self) {
-        self.consecutive_failures = 0;
-        self.last_failure_time = None;
-        self.is_healthy = true;
-        self.circuit_breaker.reset_for_manual_retry();
-    }
-
-    pub(crate) fn allow_request(&mut self) -> bool {
-        self.circuit_breaker.allow_request()
-    }
-}
-
-/// Health is keyed by configured routed-model identity. A primary and its
-/// fallback may share a semaphore but must never share circuit-breaker state.
-pub(crate) type EndpointHealthMap = HashMap<String, EndpointHealth>;
-
-pub(crate) fn new_endpoint_health_map(
+pub(crate) fn new_endpoint_circuit_breaker_map(
     model_ids: impl IntoIterator<Item = String>,
-) -> EndpointHealthMap {
+) -> EndpointCircuitBreakerMap {
     model_ids
         .into_iter()
-        .map(|id| (id, EndpointHealth::new()))
+        .map(|id| (id, EndpointCircuitBreaker::new()))
         .collect()
 }

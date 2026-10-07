@@ -12,8 +12,10 @@ use crate::aggregated_stream_executor::{
 use crate::call_executor::CallExecutor;
 use crate::client::{LlmClient, endpoint_host};
 #[cfg(test)]
-use crate::endpoint_health::{EndpointCircuitBreaker, EndpointCircuitState};
-use crate::endpoint_health::{EndpointHealth, EndpointHealthMap, new_endpoint_health_map};
+use crate::endpoint_circuit_breaker::EndpointCircuitState;
+use crate::endpoint_circuit_breaker::{
+    EndpointCircuitBreaker, EndpointCircuitBreakerMap, new_endpoint_circuit_breaker_map,
+};
 use crate::model_directory::{ModelDirectory, ResolvedModelClient, RouteMode};
 use crate::request_descriptor::RequestDescriptor;
 use crate::request_pipeline::{
@@ -35,12 +37,12 @@ use haven_common::config::{
 use haven_common::media::CapabilityProfile;
 
 // ---------------------------------------------------------------------------
-// §2.6: Circuit Breaker state
+// §2.6: Per-endpoint circuit breaker state
 // ---------------------------------------------------------------------------
 
 /// Mutable state shared by all `LlmRouter` constructors.
 struct LlmRouterRuntimeState {
-    health: RwLock<EndpointHealthMap>,
+    endpoint_circuits: RwLock<EndpointCircuitBreakerMap>,
     stream_rules: RwLock<Vec<StreamRule>>,
     semaphores: StdMutex<HashMap<String, Arc<tokio::sync::Semaphore>>>,
     rate_limited: RwLock<HashMap<String, Instant>>,
@@ -56,9 +58,9 @@ pub struct LlmRouter {
     /// Endpoint metadata is always read from `config`, the router's sole
     /// configuration snapshot.
     model_directory: ModelDirectory,
-    // §5.3: per configured model health. A model shared by several request
-    // policies has one circuit breaker, regardless of which policy selected it.
-    health: RwLock<EndpointHealthMap>,
+    // §5.3: per configured model circuit state. A model shared by several
+    // request policies has one breaker, regardless of which policy selected it.
+    endpoint_circuits: RwLock<EndpointCircuitBreakerMap>,
     /// Stream rules that are checked against accumulated output (§3.7)
     stream_rules: RwLock<Vec<StreamRule>>,
     /// Per-model concurrency limit: at most `llm.max_concurrent_requests`
@@ -141,7 +143,7 @@ impl LlmRouter {
         let model_directory = ModelDirectory::from_config(&config);
         let request_limit = Self::request_limit(&config);
         let LlmRouterRuntimeState {
-            health,
+            endpoint_circuits,
             stream_rules,
             semaphores,
             rate_limited,
@@ -153,7 +155,7 @@ impl LlmRouter {
             config: Arc::new(RwLock::new(config)),
             default_context_window: fallback,
             model_directory,
-            health,
+            endpoint_circuits,
             // Stream rules start empty; code-block output remains ordinary
             // assistant text unless a caller explicitly installs a rule.
             stream_rules,
@@ -169,15 +171,17 @@ impl LlmRouter {
         config.max_concurrent_requests.max(1)
     }
 
-    /// Default runtime state shared by every constructor: per-model health
-    /// trackers, stream rules, concurrency semaphores, and rate-limit flags.
+    /// Default runtime state shared by every constructor: per-model circuit
+    /// breakers, stream rules, concurrency semaphores, and rate-limit flags.
     fn runtime_state(
         request_limit: usize,
         model_ids: impl IntoIterator<Item = String>,
     ) -> LlmRouterRuntimeState {
         let model_ids = model_ids.into_iter().collect::<Vec<_>>();
         LlmRouterRuntimeState {
-            health: RwLock::new(new_endpoint_health_map(model_ids.iter().cloned())),
+            endpoint_circuits: RwLock::new(new_endpoint_circuit_breaker_map(
+                model_ids.iter().cloned(),
+            )),
             stream_rules: RwLock::new(Vec::new()),
             semaphores: StdMutex::new(Self::make_semaphores(request_limit, model_ids)),
             rate_limited: RwLock::new(HashMap::new()),
@@ -352,7 +356,7 @@ impl LlmRouter {
             .map(|(id, client)| (id.to_string(), client)),
         );
         let LlmRouterRuntimeState {
-            health,
+            endpoint_circuits,
             stream_rules,
             semaphores,
             rate_limited,
@@ -361,7 +365,7 @@ impl LlmRouter {
             config: Arc::new(RwLock::new(config)),
             default_context_window: crate::registry::FALLBACK_CONTEXT_WINDOW,
             model_directory,
-            health,
+            endpoint_circuits,
             stream_rules,
             // Test constructors bypass the config, so use a high per-model
             // limit: the semaphore is meant to pace real provider traffic,
@@ -586,10 +590,10 @@ impl LlmRouter {
 
     // §2.6: check the selected model's circuit breaker before dispatching.
     async fn check_circuit(&self, model_id: &str) -> Result<(), LlmError> {
-        let mut health = self.health.write().await;
-        let endpoint = health
+        let mut circuits = self.endpoint_circuits.write().await;
+        let endpoint = circuits
             .entry(model_id.to_string())
-            .or_insert_with(EndpointHealth::new);
+            .or_insert_with(EndpointCircuitBreaker::new);
         if !endpoint.allow_request() {
             return Err(LlmError::CircuitOpen {
                 model_id: model_id.to_string(),
@@ -600,7 +604,7 @@ impl LlmRouter {
 
     /// Clear the selected endpoint's consecutive-failure gate before an
     /// explicit user retry (for example, Continue on an errored session).
-    /// This is process-local health state; provider rate-limit cooldowns and
+    /// This is process-local circuit state; provider rate-limit cooldowns and
     /// lifetime call counters are intentionally preserved.
     pub async fn prepare_manual_retry(&self, request: RequestKind) {
         let Ok(resolved_client) = self
@@ -610,31 +614,31 @@ impl LlmRouter {
             return;
         };
         let model_id = resolved_client.model_id;
-        self.health
+        self.endpoint_circuits
             .write()
             .await
             .entry(model_id)
-            .or_insert_with(EndpointHealth::new)
+            .or_insert_with(EndpointCircuitBreaker::new)
             .reset_for_manual_retry();
     }
 
     async fn record_success(&self, model_id: &str) {
-        let mut health = self.health.write().await;
-        health
+        let mut circuits = self.endpoint_circuits.write().await;
+        circuits
             .entry(model_id.to_string())
-            .or_insert_with(EndpointHealth::new)
+            .or_insert_with(EndpointCircuitBreaker::new)
             .record_success();
     }
 
     async fn record_failure(&self, model_id: &str) {
-        let mut health = self.health.write().await;
-        health
+        let mut circuits = self.endpoint_circuits.write().await;
+        circuits
             .entry(model_id.to_string())
-            .or_insert_with(EndpointHealth::new)
+            .or_insert_with(EndpointCircuitBreaker::new)
             .record_failure();
     }
 
-    /// Project one completed router request onto model health and rate-limit
+    /// Project one completed router request onto endpoint circuit and rate-limit
     /// state. Callers invoke this at the same point they receive the logical
     /// request result, before returning it to their caller.
     async fn record_request_outcome<T>(&self, model_id: &str, result: &Result<T, LlmError>) {
@@ -1260,13 +1264,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn request_outcome_projection_preserves_health_and_cooldown_mapping() {
+    async fn request_outcome_projection_preserves_circuit_and_cooldown_mapping() {
         let router = LlmRouter::new(RouterConfig::default());
         let model_id = "outcome-projection-test";
 
         let failure: Result<(), LlmError> = Err(LlmError::Unknown("provider failed".into()));
         router.record_request_outcome(model_id, &failure).await;
-        assert_eq!(router.health.read().await[model_id].consecutive_failures, 1);
+        assert_eq!(
+            router.endpoint_circuits.read().await[model_id].consecutive_failures,
+            1
+        );
         assert!(
             router
                 .rate_limit_deadline_for_test(model_id)
@@ -1276,7 +1283,10 @@ mod tests {
 
         let success: Result<(), LlmError> = Ok(());
         router.record_request_outcome(model_id, &success).await;
-        assert_eq!(router.health.read().await[model_id].consecutive_failures, 0);
+        assert_eq!(
+            router.endpoint_circuits.read().await[model_id].consecutive_failures,
+            0
+        );
 
         let rate_limit: Result<(), LlmError> = Err(LlmError::RateLimit {
             retry_after: Some(Duration::from_secs(7)),
@@ -1288,7 +1298,10 @@ mod tests {
             .await
             .expect("rate-limited outcomes establish a model cooldown");
         assert!(deadline >= started_at + Duration::from_secs(6));
-        assert_eq!(router.health.read().await[model_id].consecutive_failures, 1);
+        assert_eq!(
+            router.endpoint_circuits.read().await[model_id].consecutive_failures,
+            1
+        );
     }
 
     struct PromptRequestProbe {
@@ -1506,7 +1519,7 @@ mod tests {
         }
         assert!(fast_seen.lock().unwrap().is_empty());
         assert_eq!(
-            router.health.read().await["default_model"].consecutive_failures,
+            router.endpoint_circuits.read().await["default_model"].consecutive_failures,
             1
         );
         assert!(
@@ -1926,11 +1939,8 @@ mod tests {
                 .await
                 .expect_err("the selected provider must remain the only target");
         }
-        let before = router.health.read().await;
-        assert_eq!(
-            before["default_model"].circuit_breaker.state,
-            EndpointCircuitState::Open
-        );
+        let before = router.endpoint_circuits.read().await;
+        assert_eq!(before["default_model"].state, EndpointCircuitState::Open);
         assert_eq!(before["small_model"].consecutive_failures, 0);
         drop(before);
 
@@ -1940,7 +1950,7 @@ mod tests {
             .await
             .expect_err("an open circuit must fail instead of changing namespace");
         assert!(matches!(error, LlmError::CircuitOpen { .. }));
-        let after = router.health.read().await;
+        let after = router.endpoint_circuits.read().await;
         assert_eq!(after["default_model"].consecutive_failures, 3);
         assert_eq!(after["small_model"].consecutive_failures, 0);
     }
@@ -2663,77 +2673,21 @@ mod tests {
     }
 
     #[test]
-    fn endpoint_health_tracks_consecutive_failures() {
-        let mut health = EndpointHealth::new();
-        assert!(health.is_healthy);
-        health.record_failure();
-        health.record_failure();
-        assert!(health.is_healthy);
-        health.record_failure();
-        assert!(!health.is_healthy);
-    }
+    fn endpoint_circuit_breaker_manual_retry_resets_streak_and_preserves_counts() {
+        let mut breaker = EndpointCircuitBreaker::new();
+        breaker.state = EndpointCircuitState::Open;
+        breaker.consecutive_failures = 3;
+        breaker.failure_count = 3;
+        breaker.total_calls = 7;
+        breaker.opened_at = Some(Instant::now());
 
-    #[test]
-    fn endpoint_health_success_resets_failure_count() {
-        let mut health = EndpointHealth::new();
-        health.record_failure();
-        health.record_failure();
-        assert!(health.is_healthy);
-        // A success while the breaker is still Closed (or HalfOpen) resets.
-        health.record_success();
-        assert!(health.is_healthy);
-        assert_eq!(health.consecutive_failures, 0);
-    }
+        breaker.reset_for_manual_retry();
 
-    #[test]
-    fn endpoint_health_success_does_not_recover_open_breaker() {
-        let mut health = EndpointHealth::new();
-        health.record_failure();
-        health.record_failure();
-        health.record_failure();
-        assert!(!health.is_healthy);
-        assert!(!health.allow_request(), "breaker is Open");
-        // A stale success from a pre-open request must NOT mark it healthy.
-        health.record_success();
-        assert!(!health.is_healthy);
-        assert_eq!(health.consecutive_failures, 3);
-        // Only a HalfOpen probe success (after cooldown) recovers it.
-        health.circuit_breaker.opened_at =
-            Some(std::time::Instant::now() - std::time::Duration::from_secs(31));
-        assert!(health.allow_request(), "Open → HalfOpen after cooldown");
-        health.record_success();
-        assert!(health.is_healthy);
-        assert_eq!(health.consecutive_failures, 0);
-    }
-
-    #[test]
-    fn endpoint_health_manual_retry_resets_streak_and_preserves_lifetime_counts() {
-        let mut health = EndpointHealth::new();
-        health.consecutive_failures = 3;
-        health.last_failure_time = Some(Instant::now());
-        health.is_healthy = false;
-        health.circuit_breaker.state = EndpointCircuitState::Open;
-        health.circuit_breaker.consecutive_failures = 3;
-        health.circuit_breaker.failure_count = 3;
-        health.circuit_breaker.total_calls = 7;
-        health.circuit_breaker.opened_at = Some(Instant::now());
-
-        health.reset_for_manual_retry();
-
-        assert!(health.is_healthy);
-        assert_eq!(health.consecutive_failures, 0);
-        assert!(health.last_failure_time.is_none());
-        assert_eq!(health.circuit_breaker.state, EndpointCircuitState::Closed);
-        assert_eq!(health.circuit_breaker.consecutive_failures, 0);
-        assert_eq!(health.circuit_breaker.failure_count, 3);
-        assert_eq!(health.circuit_breaker.total_calls, 7);
-        assert!(health.circuit_breaker.opened_at.is_none());
-    }
-
-    #[test]
-    fn endpoint_health_allow_request_delegates_to_circuit_breaker() {
-        let mut health = EndpointHealth::new();
-        assert!(health.allow_request());
+        assert_eq!(breaker.state, EndpointCircuitState::Closed);
+        assert_eq!(breaker.consecutive_failures, 0);
+        assert_eq!(breaker.failure_count, 3);
+        assert_eq!(breaker.total_calls, 7);
+        assert!(breaker.opened_at.is_none());
     }
 
     #[tokio::test]
@@ -2792,11 +2746,11 @@ mod tests {
             .force_request_configured(RequestKind::Chat, true)
             .await;
         {
-            let mut health = router.health.write().await;
-            let endpoint = health.get_mut("default_model").unwrap();
-            endpoint.circuit_breaker.state = EndpointCircuitState::Open;
-            endpoint.circuit_breaker.consecutive_failures = 3;
-            endpoint.circuit_breaker.opened_at = Some(Instant::now());
+            let mut circuits = router.endpoint_circuits.write().await;
+            let endpoint = circuits.get_mut("default_model").unwrap();
+            endpoint.state = EndpointCircuitState::Open;
+            endpoint.consecutive_failures = 3;
+            endpoint.opened_at = Some(Instant::now());
         }
 
         let blocked = router.connection_status(RequestKind::Chat).await;
@@ -2908,7 +2862,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn metadata_helpers_do_not_call_providers_or_project_health_or_usage() {
+    async fn metadata_helpers_do_not_call_providers_or_project_circuit_state_or_usage() {
         let probe = Arc::new(RouterRequestProbe::default());
         let client: Arc<dyn LlmClient> = probe.clone();
         let router = LlmRouter::new_with_clients_full(
@@ -2933,18 +2887,15 @@ mod tests {
             endpoint.cost_per_1k_output_tokens = 0.002;
         }
 
-        let health_before = router
-            .health
+        let circuit_state_before = router
+            .endpoint_circuits
             .read()
             .await
             .iter()
             .map(|(model_id, health)| {
                 (
                     model_id.clone(),
-                    (
-                        health.consecutive_failures,
-                        health.circuit_breaker.total_calls,
-                    ),
+                    (health.consecutive_failures, health.total_calls),
                 )
             })
             .collect::<std::collections::HashMap<_, _>>();
@@ -2986,22 +2937,19 @@ mod tests {
                 .load(std::sync::atomic::Ordering::SeqCst),
             0
         );
-        let health_after = router
-            .health
+        let circuit_state_after = router
+            .endpoint_circuits
             .read()
             .await
             .iter()
             .map(|(model_id, health)| {
                 (
                     model_id.clone(),
-                    (
-                        health.consecutive_failures,
-                        health.circuit_breaker.total_calls,
-                    ),
+                    (health.consecutive_failures, health.total_calls),
                 )
             })
             .collect::<std::collections::HashMap<_, _>>();
-        assert_eq!(health_after, health_before);
+        assert_eq!(circuit_state_after, circuit_state_before);
         assert!(router.rate_limited.read().await.is_empty());
     }
 
@@ -3390,9 +3338,9 @@ mod tests {
         };
         assert!(matches!(error, LlmError::RateLimit { .. }));
 
-        let health = router.health.read().await;
-        assert_eq!(health["default_model"].consecutive_failures, 1);
-        drop(health);
+        let circuits = router.endpoint_circuits.read().await;
+        assert_eq!(circuits["default_model"].consecutive_failures, 1);
+        drop(circuits);
         let deadline = router
             .rate_limit_deadline_for_test("default_model")
             .await
@@ -3414,7 +3362,7 @@ mod tests {
         assert!(matches!(error, LlmError::RateLimit { .. }));
 
         assert_eq!(
-            router.health.read().await["default_model"].consecutive_failures,
+            router.endpoint_circuits.read().await["default_model"].consecutive_failures,
             1,
             "one logical stream result is projected once"
         );
@@ -3778,7 +3726,7 @@ mod tests {
             Err(LlmError::Cancelled)
         ));
         assert_eq!(
-            router.health.read().await["default_model"].consecutive_failures,
+            router.endpoint_circuits.read().await["default_model"].consecutive_failures,
             0,
             "cancellation is not a provider health failure"
         );

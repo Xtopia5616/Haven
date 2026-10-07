@@ -678,3 +678,4 @@
 - [0687：缩短 Release 构建时间并保留内嵌 UI](0687-speed-release-build-with-thin-lto.md)
 - [0688：删除无界 Memory outbox 元组读取入口](0688-remove-unbounded-memory-outbox-readers.md)
 - [0689：收敛当前概念词表与架构文档](0689-consolidate-current-concept-vocabulary.md)
+- [0690：合并 LLM endpoint 熔断状态 owner](0690-merge-llm-endpoint-circuit-state-owner.md)
