@@ -1,6 +1,6 @@
 # Haven 命名规范
 
-> 版本: v1.104 | 日期: 2026-10-07
+> 版本: v1.105 | 日期: 2026-10-07
 
 本文档统一 Haven 项目各层的命名规则（变量名、函数名、文件名、crate 名、缩写大小写、跨层边界）。规范以现有代码中的事实模式为基础，新代码必须遵循；存量代码若与规范冲突，逐步迁移对齐。
 
@@ -87,7 +87,7 @@ ToolRun completion lease 的 token 标识被 claim 的 ToolRun 或 completion re
 
 `ToolExecutionMode::Foreground/Background` 表示调用执行方式；持久 `ToolRunKind` 只有 `Background/Scheduled`。会话是对话实体，不是 `ToolRunKind`，不得把“会话”塞进任务类型映射。
 
-代码中，**session** 用于指向持久会话实体及其运行状态；**conversation** 仅在描述自然语言交流内容、历史文本或模型上下文时使用，不用来命名会话实体的状态和 UI 组件。UI 的 `SessionMessage` 是当前会话 reducer 的消息形状；`sessionTimeline.ts` 接收该类型并投影为 `SessionTimelineItem`，不得再声明一份宽松的平行消息结构。组件专有的展示输入（如允许文件路径的 `ChatBubbleAttachment`）可保留在组件内，并用组件/视图角色命名。
+代码中，**session** 用于指向持久会话实体及其运行状态；**conversation** 仅在描述自然语言交流内容、历史文本或模型上下文时使用，不用来命名会话实体的状态和 UI 组件。UI 的 `SessionMessage` 是当前会话 reducer 的消息形状；controller 直接消费 `getMessages()` 返回的 `SessionMessage[]`，不再声明私有子集并强制 cast。`sessionTimeline.ts` 接收该类型并投影为 `SessionTimelineItem`，不得再声明一份宽松的平行消息结构。只有字段约束或展示职责确实不同的组件专有输入（如允许文件路径的 `ChatBubbleAttachment`）才在组件内保留，并用组件/视图角色命名。
 
 Tauri listener 的通用 `TauriEvent<T>` envelope 由 `contracts/tauriEvent.ts` 唯一声明；Session、ToolRun、Agent、App 和录音 contracts 只定义各自 payload 与转换，不重复定义同形 envelope。
 

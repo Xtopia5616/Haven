@@ -681,3 +681,4 @@
 - [0690：合并 LLM endpoint 熔断状态 owner](0690-merge-llm-endpoint-circuit-state-owner.md)
 - [0691：区分 Common 与 LLM 工具定义](0691-name-llm-tool-definition-boundary.md)
 - [0692：按 Session 命令标明 request alias owner](0692-session-command-request-alias-owners.md)
+- [0693：Ask controller 直接使用 SessionMessage](0693-use-session-message-in-ask-controller.md)

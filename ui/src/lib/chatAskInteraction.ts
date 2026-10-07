@@ -1,14 +1,6 @@
-import type { SessionReducer } from './sessionReducer.ts';
+import type { SessionMessage, SessionReducer } from './sessionReducer.ts';
 import type { InteractionKind } from './contracts/generatedCommands.ts';
 import type { AskResponseView } from './contracts/app.ts';
-
-interface AskMessage {
-	id: string;
-	type?: string;
-	content?: string;
-	awaiting?: boolean;
-	resolved?: AskResponseView | null;
-}
 
 interface AskInteractionContext {
 	getActiveSessionId: () => string | null;
@@ -43,8 +35,7 @@ export function createAskInteractionController({
 	const askSelections = new Map<string, Map<string, string[]>>();
 	const resolvedAskIds = new Map<string, Set<string>>();
 
-	const messagesFor = (sessionId: string): AskMessage[] =>
-		reducer.getMessages(sessionId) as AskMessage[];
+	const messagesFor = (sessionId: string): SessionMessage[] => reducer.getMessages(sessionId);
 
 	const pendingFor = (sessionId: string, kind: InteractionKind) =>
 		Object.values(reducer.snapshot().interactions || {}).filter(
