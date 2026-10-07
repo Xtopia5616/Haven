@@ -4,7 +4,7 @@ use grep_searcher::{
     SinkMatch,
 };
 use serde_json::Value;
-use std::io::{self, Read};
+use std::io::Read;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -12,6 +12,7 @@ use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
 
 use crate::ToolResult;
+use crate::cancellable_reader::CancellableReader;
 
 /// Keep a file search from consuming every logical CPU on the desktop.
 ///
@@ -562,7 +563,7 @@ fn search_content_parallel(p: &ContentSearchParams<'_>) -> FileSearchResult {
                 let Ok(file) = std::fs::File::open(entry.path()) else {
                     return ignore::WalkState::Continue;
                 };
-                let reader = CancellableReader::new(file, cancel.clone());
+                let reader = cancellable_search_reader(file, &cancel);
                 let _ = searcher.search_reader(matcher.clone(), reader, sink);
             }
             ignore::WalkState::Continue
@@ -612,7 +613,7 @@ fn search_content_line_range(
         let Ok(file) = std::fs::File::open(path) else {
             return;
         };
-        let reader = CancellableReader::new(file, cancel.clone());
+        let reader = cancellable_search_reader(file, cancel);
         let _ = searcher.search_reader(matcher.clone(), reader, sink);
         return;
     }
@@ -659,7 +660,7 @@ fn line_range_bytes(
 ) -> std::io::Result<Option<(u64, u64)>> {
     let file = std::fs::File::open(path)?;
     let total = file.metadata()?.len();
-    let mut reader = CancellableReader::new(file, cancel.clone());
+    let mut reader = cancellable_search_reader(file, cancel);
     let mut buf = [0u8; 65536];
     let mut pos: u64 = 0;
     let mut line: u64 = 1;
@@ -691,30 +692,11 @@ fn line_range_bytes(
     }
 }
 
-/// Reader used by content search so cancellation is observed even when a
-/// file has no matches. `grep-searcher` otherwise has no callback between
-/// match/context events and a large no-match file can occupy a blocking worker
-/// until EOF.
-struct CancellableReader<R> {
-    reader: R,
-    cancel: CancellationToken,
-}
-
-impl<R> CancellableReader<R> {
-    fn new(reader: R, cancel: CancellationToken) -> Self {
-        Self { reader, cancel }
-    }
-}
-
-impl<R: Read> Read for CancellableReader<R> {
-    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
-        if self.cancel.is_cancelled() {
-            return Err(io::Error::other("file search cancelled"));
-        }
-        const MAX_READ_BYTES: usize = 64 * 1024;
-        let len = buffer.len().min(MAX_READ_BYTES);
-        self.reader.read(&mut buffer[..len])
-    }
+/// Bound each search read so cancellation stays responsive on large files.
+fn cancellable_search_reader<R>(reader: R, cancel: &CancellationToken) -> CancellableReader<R> {
+    CancellableReader::new(reader, Some(cancel))
+        .with_max_read_bytes(64 * 1024)
+        .with_cancel_error(std::io::ErrorKind::Other, "file search cancelled")
 }
 
 /// Sink fed by the ripgrep engine: appends one result per matched line.
@@ -932,6 +914,7 @@ fn glob_to_regex(glob: &str) -> String {
 mod tests {
     use super::*;
     use serde_json::json;
+    use std::io::Read;
 
     #[test]
     fn test_glob_to_regex() {
@@ -1002,7 +985,7 @@ mod tests {
     #[test]
     fn cancellable_reader_stops_after_cancel() {
         let cancel = CancellationToken::new();
-        let mut reader = CancellableReader::new(std::io::Cursor::new(b"content"), cancel.clone());
+        let mut reader = cancellable_search_reader(std::io::Cursor::new(b"content"), &cancel);
         let mut buffer = [0_u8; 16];
         assert_eq!(reader.read(&mut buffer).unwrap(), 7);
 

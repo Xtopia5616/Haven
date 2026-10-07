@@ -16,6 +16,8 @@ use quick_xml::events::Event;
 use tokio_util::sync::CancellationToken;
 use zip::ZipArchive;
 
+use crate::cancellable_reader::CancellableReader;
+
 /// Hard upper bound for one document read, independent of the model context
 /// budget. This protects the local parser and ZIP decompression path from
 /// untrusted attachment sizes and compression ratios.
@@ -122,12 +124,9 @@ fn extract_document_inner(
 
     let file = File::open(path)?;
     let mut bytes = Vec::with_capacity(size_bytes.min(byte_limit) as usize);
-    CancellableReader {
-        inner: file,
-        cancel,
-    }
-    .take(byte_limit.saturating_add(1))
-    .read_to_end(&mut bytes)?;
+    cancellable_document_reader(file, cancel)
+        .take(byte_limit.saturating_add(1))
+        .read_to_end(&mut bytes)?;
     if bytes.len() as u64 > byte_limit {
         anyhow::bail!("document exceeds the local extraction size limit");
     }
@@ -174,21 +173,14 @@ fn check_cancel(cancel: Option<&CancellationToken>) -> anyhow::Result<()> {
     Ok(())
 }
 
-struct CancellableReader<'a, R> {
-    inner: R,
-    cancel: Option<&'a CancellationToken>,
-}
-
-impl<R: Read> Read for CancellableReader<'_, R> {
-    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
-        if self.cancel.is_some_and(CancellationToken::is_cancelled) {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::Interrupted,
-                "document extraction cancelled",
-            ));
-        }
-        self.inner.read(buffer)
-    }
+fn cancellable_document_reader<R>(
+    reader: R,
+    cancel: Option<&CancellationToken>,
+) -> CancellableReader<R> {
+    CancellableReader::new(reader, cancel).with_cancel_error(
+        std::io::ErrorKind::Interrupted,
+        "document extraction cancelled",
+    )
 }
 
 fn format_for_path(path: &Path) -> Option<DocumentFormat> {
@@ -259,10 +251,7 @@ fn extract_pdf(bytes: &[u8], cancel: Option<&CancellationToken>) -> anyhow::Resu
             .windows(b"/FlateDecode".len())
             .any(|window| window == b"/FlateDecode")
         {
-            let input = CancellableReader {
-                inner: &bytes[data_start..end_offset],
-                cancel,
-            };
+            let input = cancellable_document_reader(&bytes[data_start..end_offset], cancel);
             let mut decoder = ZlibDecoder::new(input);
             let mut decoded = Vec::new();
             decoder
@@ -617,12 +606,9 @@ fn read_zip_entry(
 ) -> anyhow::Result<Vec<u8>> {
     let mut entry = archive.by_name(name)?;
     let mut bytes = Vec::new();
-    CancellableReader {
-        inner: &mut entry,
-        cancel,
-    }
-    .take(max_bytes.saturating_add(1))
-    .read_to_end(&mut bytes)?;
+    cancellable_document_reader(&mut entry, cancel)
+        .take(max_bytes.saturating_add(1))
+        .read_to_end(&mut bytes)?;
     if bytes.len() as u64 > max_bytes {
         anyhow::bail!("Office XML part exceeds the extraction limit");
     }

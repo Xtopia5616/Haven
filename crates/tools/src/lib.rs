@@ -2,6 +2,7 @@ pub mod adapters;
 mod asset_registry;
 mod authorization_policy;
 pub mod builtin;
+mod cancellable_reader;
 mod catalog;
 pub mod circuit;
 mod coordinator;
