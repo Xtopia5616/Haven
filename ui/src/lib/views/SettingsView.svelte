@@ -68,14 +68,14 @@
 		StoredPermission,
 	} from '$lib/contracts/generatedCommands.ts';
 	import type { DiscoveredModelMap } from '$lib/contracts/model.ts';
-import {
-	settingsLlmInputFromState,
-	settingsLlmStateFromConfig,
-	modelDraftFromConfig,
-	type ModelDraft,
-	type ProviderDraft,
-	type SettingsLlmState,
-} from '$lib/settingsModelTypes.ts';
+	import {
+		settingsLlmInputFromState,
+		settingsLlmStateFromConfig,
+		modelDraftFromConfig,
+		type ModelDraft,
+		type ProviderDraft,
+		type SettingsLlmState,
+	} from '$lib/settingsModelTypes.ts';
 
 	type SettingsSnapshot = {
 		default_shell?: ShellChoiceInput;
@@ -85,13 +85,15 @@ import {
 			Required<
 				Pick<
 					SessionConfigInput,
-					'max_concurrent' | 'max_steps' | 'history_retention_days' | 'session_max_steps'
+					| 'max_concurrent'
+					| 'max_steps'
+					| 'history_retention_days'
+					| 'session_max_steps'
+					| 'prompt_history_limit'
 				>
 			>
 		>;
-		memory?: Partial<
-			Required<Pick<MemoryConfigInput, 'session_window_size' | 'fact_inference_enabled'>>
-		>;
+		memory?: Partial<Required<Pick<MemoryConfigInput, 'fact_inference_enabled'>>>;
 		security?: Omit<SecurityConfigInput, 'permissions'> & { permissions?: StoredPermission[] };
 		context_limits?: Partial<ContextLimitsConfigInput>;
 		media?: {
@@ -141,11 +143,16 @@ import {
 		Required<
 			Pick<
 				SessionConfigInput,
-				'max_concurrent' | 'max_steps' | 'history_retention_days' | 'session_max_steps'
+				| 'max_concurrent'
+				| 'max_steps'
+				| 'history_retention_days'
+				| 'session_max_steps'
+				| 'prompt_history_limit'
 			>
 		>
 	>({
 		max_concurrent: 3,
+		prompt_history_limit: 50,
 		max_steps: 500,
 		history_retention_days: 90,
 		session_max_steps: null,
@@ -211,10 +218,7 @@ import {
 		embedding_chunk_size: 10,
 		max_tools_per_request: 64,
 	});
-	let memory = $state<
-		Required<Pick<MemoryConfigInput, 'session_window_size' | 'fact_inference_enabled'>>
-	>({
-		session_window_size: 50,
+	let memory = $state<Required<Pick<MemoryConfigInput, 'fact_inference_enabled'>>>({
 		fact_inference_enabled: true,
 	});
 	let memoryMaintenance = $state<{ running: boolean; lastCount: number | null }>({
@@ -410,16 +414,16 @@ import {
 	function buildPersistableSettings() {
 		return {
 			default_shell: defaultShell,
-					llm: llmConfig,
+			llm: llmConfig,
 			hotkey: { key_binding: hotkeyBinding, mode: hotkeyMode, mute_hotkey: muteHotkey },
 			session: {
 				max_concurrent: asNumber(session.max_concurrent),
+				prompt_history_limit: asNumber(session.prompt_history_limit),
 				max_steps: asNumber(session.max_steps),
 				history_retention_days: asNumber(session.history_retention_days),
 				session_max_steps: session.session_max_steps ?? null,
 			},
 			memory: {
-				session_window_size: asNumber(memory.session_window_size),
 				fact_inference_enabled: memory.fact_inference_enabled,
 			},
 			security: {
@@ -510,13 +514,7 @@ import {
 	}
 
 	function reBaselineAfterDiscovery(fills: DiscoveredModelMetadataFill[]) {
-		if (
-			!mounted ||
-			!settingsLoaded ||
-			!savedSnapshot ||
-			fills.length === 0
-		)
-			return;
+		if (!mounted || !settingsLoaded || !savedSnapshot || fills.length === 0) return;
 		try {
 			const snapshot = JSON.parse(savedSnapshot) as SettingsSnapshot;
 			const llmSnapshot = snapshot.llm ?? llmConfig;
@@ -524,8 +522,7 @@ import {
 			for (const fill of fills) {
 				const model = models.find((item) => item.id === fill.id);
 				if (!model) continue;
-				if (fill.context_window !== undefined)
-					model.context_window = fill.context_window;
+				if (fill.context_window !== undefined) model.context_window = fill.context_window;
 				if (fill.cost_per_1k_input_tokens !== undefined)
 					model.cost_per_1k_input_tokens = fill.cost_per_1k_input_tokens;
 				if (fill.cost_per_1k_output_tokens !== undefined)
@@ -660,7 +657,9 @@ import {
 			const settings = await loadSettings();
 			if (!mounted || generation !== chatModelSyncGen || !settings?.llm) return;
 			applyRemoteChatPolicy(settings.llm.request_policies || []);
-			const chatPolicy = settings.llm.request_policies.find((policy) => policy.request === 'chat');
+			const chatPolicy = settings.llm.request_policies.find(
+				(policy) => policy.request === 'chat',
+			);
 			const chatModelId = chatPolicy?.primary || 'default_model';
 			const remote = settings.llm.models.find((model) => model.id === chatModelId);
 			if (remote) applyRemoteChatModelFields(modelDraftFromConfig(remote));
@@ -677,7 +676,9 @@ import {
 		try {
 			const settings = await loadSettings();
 			if (!mounted || !settings?.llm) return;
-			const chatPolicy = settings.llm.request_policies.find((policy) => policy.request === 'chat');
+			const chatPolicy = settings.llm.request_policies.find(
+				(policy) => policy.request === 'chat',
+			);
 			const chatModelId = chatPolicy?.primary || 'default_model';
 			const remote = settings.llm.models.find((model) => model.id === chatModelId);
 			if (remote) applyRemoteChatModelFields(modelDraftFromConfig(remote));
@@ -1103,12 +1104,12 @@ import {
 						},
 						session: {
 							max_concurrent: session.max_concurrent,
+							prompt_history_limit: session.prompt_history_limit,
 							max_steps: session.max_steps,
 							history_retention_days: session.history_retention_days,
 							session_max_steps: session.session_max_steps ?? null,
 						},
 						memory: {
-							session_window_size: memory.session_window_size,
 							fact_inference_enabled: memory.fact_inference_enabled,
 						},
 						security: {
@@ -1559,10 +1560,10 @@ import {
 		padding-bottom: 0;
 	}
 	:global(
-			.content:not(.content--chat):has(
+		.content:not(.content--chat):has(
 				.tab-panel:not([hidden]) .settings-view-shell--save-bar-visible
 			)
-		) {
+	) {
 		padding-bottom: var(--settings-save-bar-clearance, 0px);
 		transition: padding-bottom 0s;
 	}

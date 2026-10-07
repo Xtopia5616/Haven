@@ -17,12 +17,14 @@
 	type SessionDraft = Required<
 		Pick<
 			SessionConfigInput,
-			'max_concurrent' | 'max_steps' | 'history_retention_days' | 'session_max_steps'
+			| 'max_concurrent'
+			| 'max_steps'
+			| 'history_retention_days'
+			| 'session_max_steps'
+			| 'prompt_history_limit'
 		>
 	>;
-	type MemoryDraft = Required<
-		Pick<MemoryConfigInput, 'session_window_size' | 'fact_inference_enabled'>
-	>;
+	type MemoryDraft = Required<Pick<MemoryConfigInput, 'fact_inference_enabled'>>;
 	interface Props {
 		hotkeyMode: HotkeyModeInput;
 		hotkeyBinding: string;
@@ -93,7 +95,7 @@
 
 	<SettingsSection
 		title="会话与执行"
-		description="控制并发会话、单轮工具步骤，以及会话生命周期内的累计步数。"
+		description="控制会话提示上下文、并发运行、单轮工具步骤和会话生命周期。"
 	>
 		<SettingsField label="同时运行的会话" id="session-max-concurrent">
 			<MaterialNumberField
@@ -102,6 +104,19 @@
 				min={1}
 				max={10}
 				onChange={withNumberValue((value) => (session.max_concurrent = value))}
+			/>
+		</SettingsField>
+		<SettingsField
+			label="首次提示的历史消息数"
+			id="session-prompt-history-limit"
+			description="新会话首次构造 system prompt 时附带的近期消息条数。"
+		>
+			<MaterialNumberField
+				id="session-prompt-history-limit"
+				value={session.prompt_history_limit}
+				min={10}
+				max={500}
+				onChange={withNumberValue((value) => (session.prompt_history_limit = value))}
 			/>
 		</SettingsField>
 		<SettingsField
@@ -164,20 +179,7 @@
 		{/if}
 	</SettingsSection>
 
-	<SettingsSection title="记忆" description="设置对话中可检索的近期消息，并管理自动事实提取。">
-		<SettingsField
-			label="近期消息窗口"
-			id="memory-window-size"
-			description="每轮对话中优先保留的近期消息条数。"
-		>
-			<MaterialNumberField
-				id="memory-window-size"
-				value={memory.session_window_size}
-				min={10}
-				max={500}
-				onChange={withNumberValue((value) => (memory.session_window_size = value))}
-			/>
-		</SettingsField>
+	<SettingsSection title="记忆" description="管理自动事实提取与长期记忆。">
 		<SettingsField label="自动提取事实" description="从对话中整理可在后续会话中使用的事实。">
 			<MaterialSwitch
 				checked={memory.fact_inference_enabled}

@@ -444,6 +444,7 @@ mod tests {
         assert!(cfg.notification.tool_run_completed.in_app);
         assert!(cfg.notification.tool_run_completed.windows);
         assert_eq!(cfg.session.max_concurrent, 3);
+        assert_eq!(cfg.session.prompt_history_limit, 50);
         assert_eq!(cfg.session.max_steps, 500);
         assert_eq!(cfg.context_limits.compaction_ratio, 0.65);
         assert_eq!(cfg.context_limits.compaction_reserve_tokens, 8192);
@@ -525,6 +526,26 @@ mod tests {
                 "removed setting must not be accepted: {field}"
             );
         }
+    }
+
+    #[test]
+    fn session_prompt_history_limit_uses_the_session_config_key() {
+        let toml = "[session]\nprompt_history_limit = 73\n";
+        let parsed: AppConfig = toml::from_str(toml).unwrap();
+        assert_eq!(parsed.session.prompt_history_limit, 73);
+
+        let serialized = toml::to_string_pretty(&parsed).unwrap();
+        assert!(serialized.contains("prompt_history_limit = 73"));
+        assert!(!serialized.contains("session_window_size"));
+    }
+
+    #[test]
+    fn removed_memory_session_window_key_is_rejected() {
+        let parsed = toml::from_str::<AppConfig>("[memory]\nsession_window_size = 73\n");
+        assert!(
+            parsed.is_err(),
+            "the retired memory key must not be accepted as an alias"
+        );
     }
 
     #[test]

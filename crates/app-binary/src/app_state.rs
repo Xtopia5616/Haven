@@ -345,7 +345,7 @@ impl AppState {
         let router = Arc::clone(&router_media_build.router);
         let max_steps = cfg.session.max_steps;
         let session_max_steps = cfg.session.session_max_steps;
-        let session_prompt_history_limit = cfg.memory.session_window_size;
+        let session_prompt_history_limit = cfg.session.prompt_history_limit;
 
         let executor = Arc::new(SessionSupervisor::new(
             supervisor_session_store,

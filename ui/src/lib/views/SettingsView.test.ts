@@ -240,9 +240,7 @@ describe('SettingsView diagnostics export', () => {
 		expect((windows as HTMLInputElement).checked).toBe(true);
 
 		await fireEvent.click(inApp);
-		await waitFor(() =>
-			expect(screen.getByRole('button', { name: '保存' })).toBeTruthy(),
-		);
+		await waitFor(() => expect(screen.getByRole('button', { name: '保存' })).toBeTruthy());
 		expect(container.querySelector('.save-bar--bottom-edge')).toBeTruthy();
 		expect(container.querySelectorAll('.save-actions .save-action-btn')).toHaveLength(2);
 		expect((windows as HTMLInputElement).checked).toBe(true);
@@ -273,6 +271,7 @@ describe('SettingsView diagnostics export', () => {
 			hotkey: { mode: 'toggle', key_binding: 'Ctrl+Shift+Space', mute_hotkey: 'Ctrl+M' },
 			session: {
 				max_concurrent: 3,
+				prompt_history_limit: 73,
 				max_steps: 500,
 				history_retention_days: 90,
 				session_max_steps: 750,
@@ -290,7 +289,7 @@ describe('SettingsView diagnostics export', () => {
 				max_attachment_image_dim_px: 1568,
 				attachment_image_jpeg_quality: 0.85,
 			},
-			memory: { session_window_size: 50, fact_inference_enabled: false },
+			memory: { fact_inference_enabled: false },
 			security: {
 				permission_mode: 'default',
 				sandbox_mode: 'workspace_write',
@@ -333,6 +332,9 @@ describe('SettingsView diagnostics export', () => {
 		expect(((await screen.findByLabelText('会话累计步骤上限')) as HTMLInputElement).value).toBe(
 			'750',
 		);
+		expect(
+			((await screen.findByLabelText('首次提示的历史消息数')) as HTMLInputElement).value,
+		).toBe('73');
 		await fireEvent.click(screen.getByRole('tab', { name: /语音与媒体/ }));
 		expect(
 			((await screen.findByLabelText('托管上传总量上限（MiB）')) as HTMLInputElement).value,
@@ -355,6 +357,7 @@ describe('SettingsView diagnostics export', () => {
 		const update = invoke.mock.calls.find(([command]) => command === 'update_settings');
 		const saved = update?.[1]?.settings;
 		expect(saved.session.session_max_steps).toBe(750);
+		expect(saved.session.prompt_history_limit).toBe(73);
 		expect(saved.memory.fact_inference_enabled).toBe(false);
 		expect(saved.hotkey.mute_hotkey).toBe('Ctrl+M');
 		expect(saved.log.file_path).toBe('C:\\Haven\\logs\\custom.log');

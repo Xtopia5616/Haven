@@ -92,16 +92,16 @@ export interface McpEnvironmentCredentialRefInput { name: string; credential_ref
 export interface McpEnvironmentCredentialRef { name: string; credential_ref?: string; has_value: boolean }
 export interface McpServerConfigInput { name?: string; transport?: McpTransportTypeInput; command?: string; args?: string[]; env?: string[]; env_refs?: McpEnvironmentCredentialRefInput[]; cwd?: string | null; url?: string; enabled?: boolean }
 export interface McpServerConfig { name: string; transport: McpTransportType; command: string; args: string[]; env_refs?: McpEnvironmentCredentialRef[]; cwd: string | null; url: string; enabled: boolean }
-export interface MemoryConfigInput { session_window_size?: number; fact_inference_enabled?: boolean }
-export interface MemoryConfig { session_window_size: number; fact_inference_enabled: boolean }
+export interface MemoryConfigInput { fact_inference_enabled?: boolean }
+export interface MemoryConfig { fact_inference_enabled: boolean }
 export interface NotificationConfigInput { session_created?: NotifyChannelsInput; session_completed?: NotifyChannelsInput; session_paused?: NotifyChannelsInput; session_resumed?: NotifyChannelsInput; session_error?: NotifyChannelsInput; permission_requested?: NotifyChannelsInput; tool_run_completed?: NotifyChannelsInput }
 export interface NotificationConfig { session_created: NotifyChannels; session_completed: NotifyChannels; session_paused: NotifyChannels; session_resumed: NotifyChannels; session_error: NotifyChannels; permission_requested: NotifyChannels; tool_run_completed: NotifyChannels }
 export interface NotifyChannelsInput { in_app?: boolean; windows?: boolean }
 export interface NotifyChannels { in_app: boolean; windows: boolean }
 export interface SecurityConfigInput { permission_mode?: PermissionModeInput; sandbox_mode?: SandboxModeInput; writable_roots?: string[]; network_policy?: NetworkPolicyInput; encrypt_sensitive?: boolean; permissions?: StoredPermissionInput[] }
 export interface SecurityConfig { permission_mode: PermissionMode; sandbox_mode: SandboxMode; writable_roots?: string[]; network_policy: NetworkPolicy; encrypt_sensitive: boolean; permissions?: StoredPermission[] }
-export interface SessionConfigInput { max_concurrent?: number; history_retention_days?: number; max_steps?: number; session_max_steps?: number | null }
-export interface SessionConfig { max_concurrent: number; history_retention_days: number; max_steps: number; session_max_steps?: number }
+export interface SessionConfigInput { max_concurrent?: number; prompt_history_limit?: number; history_retention_days?: number; max_steps?: number; session_max_steps?: number | null }
+export interface SessionConfig { max_concurrent: number; prompt_history_limit: number; history_retention_days: number; max_steps: number; session_max_steps?: number }
 export interface SkillsConfigInput { root?: string | null; enabled?: string[] | null }
 export interface SkillsConfig { root: string | null; enabled?: string[] }
 export interface SkillsExecConfigInput { venv_root?: string; work_dir?: string; timeout_secs?: number; max_output_lines?: number; cpu_time_secs?: number | null; max_memory_mb?: number | null }

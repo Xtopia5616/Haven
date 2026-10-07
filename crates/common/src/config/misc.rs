@@ -26,6 +26,9 @@ impl Default for HotkeyConfig {
 #[serde(default, deny_unknown_fields)]
 pub struct SessionConfig {
     pub max_concurrent: usize,
+    /// Number of recent session messages included as extra context in the
+    /// first system prompt built for a fresh run.
+    pub prompt_history_limit: usize,
     /// Age in days before an entire session and its owned history are removed.
     /// Zero disables automatic session retention cleanup.
     pub history_retention_days: u32,
@@ -43,6 +46,7 @@ impl Default for SessionConfig {
     fn default() -> Self {
         Self {
             max_concurrent: 3,
+            prompt_history_limit: 50,
             history_retention_days: 90,
             // Per-run ReAct step budget (raised 30 → 200 so long multi-tool
             // sessions don't hit the cap mid-run; see refactor-dedup.md A9
@@ -307,14 +311,12 @@ impl Default for ContextLimitsConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default, deny_unknown_fields)]
 pub struct MemoryConfig {
-    pub session_window_size: usize,
     pub fact_inference_enabled: bool,
 }
 
 impl Default for MemoryConfig {
     fn default() -> Self {
         Self {
-            session_window_size: 50,
             fact_inference_enabled: true,
         }
     }

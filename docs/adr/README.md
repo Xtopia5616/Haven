@@ -640,3 +640,4 @@
 - [0649：按 Session compaction 用途命名共享 prompt 常量](0649-name-session-compaction-summary-prompt.md)
 - [0650：统一 Chat route 的 Session CSS 标识](0650-name-session-route-css-identifiers.md)
 - [0651：按 user-only 数据命名 Agent Session 标题输入](0651-name-session-title-user-message-input.md)
+- [0652：将 prompt-history 限制配置归入 Session](0652-move-prompt-history-limit-to-session-config.md)
