@@ -125,7 +125,7 @@ pub const COMMAND_CONTRACTS: &[CommandContract] = &[
     },
     // mcp
     CommandContract {
-        name: "list_mcp_tools",
+        name: "list_mcp_servers",
         boundary: CommandBoundary::Read,
         security: "snapshot only; env values redacted; invocation remains gated",
     },

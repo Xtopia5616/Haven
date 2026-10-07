@@ -100,7 +100,9 @@ Assert-Contains $settingsCommand 'invoke\(''get_settings''\)\.then\(parseSetting
 Assert-Contains (Get-Source 'ui/src/lib/contracts/settings.ts') 'function parseSettingsPayload\(value:\s*unknown\):\s*SettingsPayload\s*\|\s*null' 'settings parser accepts unknown'
 
 $toolsCommands = Get-Source 'ui/src/lib/toolsCommands.ts'
-Assert-Contains $toolsCommands 'invoke\(''list_mcp_tools''\)\.then\(\(value:\s*unknown\)\s*=>\s*validateMcpServerSnapshots\(value\)\)' 'MCP status response uses its runtime validator'
+Assert-Contains $toolsCommands 'invoke\(''list_mcp_servers''\)\.then\(\(value:\s*unknown\)\s*=>\s*validateMcpServerSnapshots\(value\)\)' 'MCP server list response uses its runtime validator'
+Assert-Contains $toolsCommands 'export function listMcpServers\(\):\s*Promise<McpServerSnapshot\[\]>' 'MCP snapshot wrapper names the returned entity'
+Assert-NotContains $toolsCommands '\blistMcpTools\b|\blist_mcp_tools\b' 'retired MCP tool-list command and wrapper are not retained as aliases'
 Assert-Contains (Get-Source 'ui/src/lib/toolManifest.ts') 'function parseToolManifest\(value:\s*unknown\):\s*ToolManifestView\s*\|\s*null' 'tool manifest parser accepts unknown and returns its renderer view'
 
 $diagnosticsCommands = Get-Source 'ui/src/lib/diagnosticsCommands.ts'
@@ -116,7 +118,7 @@ Assert-Contains $layout '(?s)const report = await invoke\(''check_llm_connection
 $uiFiles = Get-ChildItem (Join-Path $root 'ui/src') -Recurse -File | Where-Object { $_.Extension -in @('.ts', '.svelte') }
 $ownedCommands = @{
     'toolRunCommands.ts' = @('list_tool_runs', 'cancel_tool_run')
-    'toolsCommands.ts' = @('list_builtin_tool_manifests', 'list_mcp_tools', 'reset_tool_circuits', 'refresh_mcp_servers', 'set_skill_enabled', 'set_tool_enabled', 'refresh_skills', 'open_skills_dir', 'add_mcp_server', 'update_mcp_server', 'remove_mcp_server', 'reconnect_mcp', 'toggle_mcp_server')
+    'toolsCommands.ts' = @('list_builtin_tool_manifests', 'list_mcp_servers', 'reset_tool_circuits', 'refresh_mcp_servers', 'set_skill_enabled', 'set_tool_enabled', 'refresh_skills', 'open_skills_dir', 'add_mcp_server', 'update_mcp_server', 'remove_mcp_server', 'reconnect_mcp', 'toggle_mcp_server')
     'memoryCommands.ts' = @('list_facts', 'add_fact', 'delete_fact', 'recall_memory')
     'sessionCommands.ts' = @('list_runtime_sessions', 'list_session_history', 'count_session_history', 'search_session_history', 'search_session_history_paginated', 'count_session_history_search', 'search_session_history_filtered', 'export_session_history', 'get_latest_session_for_resume', 'reopen_session', 'delete_session', 'delete_all_sessions', 'update_session_title')
     'modelDiscoveryCommands.ts' = @('discover_models', 'discover_all_models')

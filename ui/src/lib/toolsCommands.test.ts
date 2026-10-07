@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
 	addMcpServer,
 	listBuiltinToolManifests,
-	listMcpTools,
+	listMcpServers,
 	listSkills,
 	openSkillsDir,
 	reconnectMcp,
@@ -45,11 +45,11 @@ describe('ToolsView command boundary', () => {
 			.mockResolvedValueOnce(emptySkills);
 
 		const manifests = await listBuiltinToolManifests();
-		const servers = await listMcpTools();
+		const servers = await listMcpServers();
 		const skills = await listSkills();
 
 		expect(invoke).toHaveBeenNthCalledWith(1, 'list_builtin_tool_manifests');
-		expect(invoke).toHaveBeenNthCalledWith(2, 'list_mcp_tools');
+		expect(invoke).toHaveBeenNthCalledWith(2, 'list_mcp_servers');
 		expect(invoke).toHaveBeenNthCalledWith(3, 'list_skills');
 		expect(manifests).toBe(manifestResponse);
 		expect(servers).toBe(mcpResponse);
@@ -64,8 +64,8 @@ describe('ToolsView command boundary', () => {
 			{ name: 'future-server', status: { FutureStatus: { note: 'unsupported' } } },
 		]);
 
-		await expect(listMcpTools()).rejects.toThrow('Invalid MCP server snapshot status');
-		expect(invoke).toHaveBeenCalledWith('list_mcp_tools');
+		await expect(listMcpServers()).rejects.toThrow('Invalid MCP server snapshot status');
+		expect(invoke).toHaveBeenCalledWith('list_mcp_servers');
 	});
 
 	it('keeps circuit reset as a void command and propagates its rejection', async () => {

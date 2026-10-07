@@ -22,7 +22,7 @@
 		toggleMcpServer,
 		updateMcpServer,
 		listBuiltinToolManifests,
-		listMcpTools,
+		listMcpServers,
 		listSkills,
 		resetToolCircuits as resetToolCircuitsCommand,
 	} from '$lib/toolsCommands.ts';
@@ -110,7 +110,7 @@
 
 	function scheduleMcpRefresh() {
 		// Cold start emits Connecting+Connected per server; coalesce into one
-		// list_mcp_tools round-trip instead of 2N full snapshots.
+		// list_mcp_servers round-trip instead of 2N full snapshots.
 		if (mcpRefreshTimer) clearTimeout(mcpRefreshTimer);
 		mcpRefreshTimer = setTimeout(() => {
 			mcpRefreshTimer = null;
@@ -157,7 +157,7 @@
 
 	async function refreshMcpServers(notifyOnError = true) {
 		try {
-			const result = await listMcpTools();
+			const result = await listMcpServers();
 			mcpServers = result || [];
 			return true;
 		} catch (error) {

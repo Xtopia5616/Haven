@@ -307,7 +307,7 @@ export interface TauriCommandMap {
 	is_autostart_enabled: { request: undefined; response: boolean };
 	list_builtin_tool_manifests: { request: undefined; response: BuiltinToolManifestListResponse };
 	list_facts: { request: { source?: string | null }; response: MemoryFactResponse[] };
-	list_mcp_tools: { request: undefined; response: McpServerSnapshot[] };
+	list_mcp_servers: { request: undefined; response: McpServerSnapshot[] };
 	list_permissions: { request: undefined; response: StoredPermission[] };
 	list_runtime_sessions: { request: undefined; response: RuntimeSessionListResponse };
 	list_session_history: { request: { limit: number; offset: number }; response: SessionRecordDto[] };

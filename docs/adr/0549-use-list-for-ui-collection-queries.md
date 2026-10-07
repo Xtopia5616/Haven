@@ -2,7 +2,7 @@
 
 ## 状态
 
-已采纳并实施。Session wrapper 的 `listRuntimeSessions` 与工具 wrapper 的集合动词仍有效；保留 `get_sessions` / `get_tools` IPC 名称的决定分别由 [ADR 0679](0679-unify-session-runtime-and-history-terms.md) 和 [ADR 0680](0680-name-builtin-tool-manifest-list-command.md) 替代。
+已采纳并实施。Session wrapper 的 `listRuntimeSessions`、MCP 服务器 wrapper 的 `listMcpServers` 与 Skill wrapper 的 `listSkills` 使用集合动词；保留 `get_sessions` / `get_tools` IPC 名称的决定分别由 [ADR 0679](0679-unify-session-runtime-and-history-terms.md) 和 [ADR 0680](0680-name-builtin-tool-manifest-list-command.md) 替代。MCP 快照命令与 wrapper 的实体命名由 [ADR 0720](0720-name-mcp-server-snapshot-list-command.md) 明确。
 
 ## 背景
 

@@ -673,7 +673,7 @@ pub(crate) fn run() {
             commands::model::set_web_search,
             commands::memory::run_memory_maintenance,
             commands::memory::recall_memory,
-            commands::mcp::list_mcp_tools,
+            commands::mcp::list_mcp_servers,
             commands::mcp::reconnect_mcp,
             commands::mcp::refresh_mcp_servers,
             commands::mcp::mcp_tool_call,

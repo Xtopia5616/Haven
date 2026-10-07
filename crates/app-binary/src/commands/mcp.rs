@@ -16,7 +16,7 @@ use tauri::State;
 use tokio_util::sync::CancellationToken;
 
 #[tauri::command]
-pub async fn list_mcp_tools(
+pub async fn list_mcp_servers(
     state: State<'_, Arc<AppState>>,
 ) -> Result<Vec<McpServerSnapshot>, String> {
     let mut snapshots: HashMap<String, McpServerSnapshot> = state

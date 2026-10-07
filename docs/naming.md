@@ -1,6 +1,6 @@
 # Haven 命名规范
 
-> 版本: v1.131 | 日期: 2026-10-07
+> 版本: v1.132 | 日期: 2026-10-07
 
 本文档统一 Haven 项目各层的命名规则（变量名、函数名、文件名、crate 名、缩写大小写、跨层边界）。规范以现有代码中的事实模式为基础，新代码必须遵循；存量代码若与规范冲突，逐步迁移对齐。
 
@@ -21,6 +21,7 @@
 - **Session 运行态与持久历史分名**：`list_runtime_sessions` / `RuntimeSessionListResponse` 只表示当前进程中驻留且未终结的会话；`list_session_history`、搜索、计数和导出命令表示持久会话历史。跨层的历史查询、结果缓存都带 `session_history` 作用域；全量持久删除叫 `delete_all_sessions`，supervisor 内部运行态清理用 `clear_session_runtime_state_locked`，关闭入口用 `clear_session_runtime_state_for_shutdown`（ADR 0679）。
 - **Session IPC 包装模块按实体命名**：前端 `sessionCommands.ts` 集中封装 Session 的运行态列表、历史读取、恢复、生命周期与标题命令；单个函数仍按操作阶段使用 `listRuntimeSessions`、`listSessionHistory`、`getSessionForResume`、`deleteSession` 等领域动词，不因模块收纳在同一个文件而抹去状态范围（ADR 0679）。
 - **工具清单明确来源**：`list_builtin_tool_manifests` 只返回内置工具的 manifest，不包含 Skill 或 MCP manifest；命令与响应类型分别标出 `builtin_tool_manifests` 和 `BuiltinToolManifestListResponse`。Tools 与 Skills 的 App 命令按 domain 分模块（ADR 0680）。
+- **MCP 服务器集合命令标明实体**：`list_mcp_servers` / `listMcpServers` 返回 `McpServerSnapshot[]`，其中同时包含配置、连接状态和该服务器的工具清单；不要因快照中含工具而命名为 `list_mcp_tools` / `listMcpTools`（ADR 0720）。
 - **IPC 请求类型按命令 owner 命名**：前端 wrapper 的 request alias 必须从它实际调用的 generated command 派生；即使两个命令的字段形状相同，也分别命名，如 `SetSkillEnabledRequest` / `SetToolEnabledRequest`、`ReconnectMcpRequest` / `RemoveMcpServerRequest`，不要用某一个命令的类型 alias 覆盖另一个命令（ADR 0681）。
 - **Tool renderer 只按展示职责派发**：`ToolPresentation.renderer` 是开放扩展字符串；UI 仅为当前明确登记的 renderer key 选择专用组件，未知 key 使用通用 JSON renderer。MCP 固定使用 `mcp` renderer，server name 只放在 `ToolIdentity.root` / `root_presentation`，不能兼任组件分派键；builtin renderer 使用明确登记的 key，Skill 使用固定 `skills` root。不要把旧的 `haven`、`admin`、`settings` 别名隐式解释成管理面板（ADR 0682、0703）。
 - **Admin capability 唯一拥有管理工具名**：`AdminCapability::tool_name` 唯一映射 `haven_*` 工具名；model operation surface 先解析到同一 enum 再取工具名，不在 request helper 或 metadata 中另存重复字符串（ADR 0683）。

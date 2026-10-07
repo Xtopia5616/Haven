@@ -32,8 +32,8 @@ export function listBuiltinToolManifests(): Promise<BuiltinToolManifestListRespo
 }
 
 /** Read MCP catalog snapshots using the current Rust status variants. */
-export function listMcpTools(): Promise<McpServerSnapshot[]> {
-	return invoke('list_mcp_tools').then((value: unknown) => validateMcpServerSnapshots(value));
+export function listMcpServers(): Promise<McpServerSnapshot[]> {
+	return invoke('list_mcp_servers').then((value: unknown) => validateMcpServerSnapshots(value));
 }
 
 /** Read the current Skill metadata projection. */

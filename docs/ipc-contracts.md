@@ -31,7 +31,7 @@
 | `read_log_tail` | read | 尾部长度受限 |
 | `log_frontend_error` | mutate | 脱敏后写入后端日志 |
 | `get_performance_metrics` | read | 仅返回有界、无内容的后端与渲染器计数 |
-| `list_mcp_tools` | read | 快照不执行工具，env 值统一遮蔽 |
+| `list_mcp_servers` | read | 返回服务器配置/状态/工具清单快照，不执行工具，env 值统一遮蔽 |
 | `reconnect_mcp` | execute | 只能选择已配置客户端 |
 | `refresh_mcp_servers` | execute | renderer 触发的配置客户端 reconcile；不接收进程参数 |
 | `mcp_tool_call` | execute | 适配器调用经过 AuthorizationEngine |

@@ -277,7 +277,7 @@ impl McpManager {
             let _notification_listener = self.start_catalog_listener(client.clone());
 
             // Set authoritative client status AND broadcast before the connect
-            // task so ToolsView's list_mcp_tools snapshot shows Connecting
+            // task so ToolsView's list_mcp_servers snapshot shows Connecting
             // (reconnect already does both; emit-only left status Disconnected).
             *client.status.lock().await = McpClientStatus::Connecting;
             let _ = self.status_tx.send(McpStatusChangeEvent {

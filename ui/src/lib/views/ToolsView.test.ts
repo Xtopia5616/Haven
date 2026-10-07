@@ -70,7 +70,7 @@ describe('ToolsView toolbar actions', () => {
 		reportError.mockClear();
 		invoke.mockImplementation(async (command: string) => {
 			if (command === 'list_builtin_tool_manifests') return { tools: [] };
-			if (command === 'list_mcp_tools') return [];
+			if (command === 'list_mcp_servers') return [];
 			if (command === 'list_skills') {
 				return [{ name: 'docs', enabled: false, language: 'markdown', has_script: false }];
 			}
@@ -131,7 +131,7 @@ describe('ToolsView toolbar actions', () => {
 					tools: [manifest('files', 'files', '文件'), manifest('shell', 'shell', '终端')],
 				};
 			}
-			if (command === 'list_mcp_tools') {
+			if (command === 'list_mcp_servers') {
 				return [{ name: 'docs-server', enabled: true, status: 'Disconnected', tools: [] }];
 			}
 			if (command === 'list_skills') {
@@ -168,7 +168,7 @@ describe('ToolsView toolbar actions', () => {
 					],
 				};
 			}
-			if (command === 'list_mcp_tools') return [];
+			if (command === 'list_mcp_servers') return [];
 			if (command === 'list_skills') return [];
 			return undefined;
 		});
@@ -205,7 +205,7 @@ describe('ToolsView toolbar actions', () => {
 		let finishRefresh: ((value: unknown) => void) | undefined;
 		invoke.mockImplementation((command: string) => {
 			if (command === 'list_builtin_tool_manifests') return Promise.resolve({ tools: [] });
-			if (command === 'list_mcp_tools') return Promise.resolve([]);
+			if (command === 'list_mcp_servers') return Promise.resolve([]);
 			if (command === 'list_skills') return Promise.resolve([]);
 			if (command === 'refresh_mcp_servers') {
 				return new Promise((resolve) => {
@@ -237,7 +237,7 @@ describe('ToolsView toolbar actions', () => {
 	it('does not report a queued MCP refresh confirmation as success or failure', async () => {
 		invoke.mockImplementation(async (command: string) => {
 			if (command === 'list_builtin_tool_manifests') return { tools: [] };
-			if (command === 'list_mcp_tools') return [];
+			if (command === 'list_mcp_servers') return [];
 			if (command === 'list_skills') return [];
 			if (command === 'refresh_mcp_servers') {
 				throw JSON.stringify({ requires_confirmation: true, confirmation_id: 'conf-test' });
@@ -259,7 +259,7 @@ describe('ToolsView toolbar actions', () => {
 	it('does not report a queued MCP reconnect confirmation as success or failure', async () => {
 		invoke.mockImplementation(async (command: string) => {
 			if (command === 'list_builtin_tool_manifests') return { tools: [] };
-			if (command === 'list_mcp_tools') {
+			if (command === 'list_mcp_servers') {
 				return [{ name: 'docs-server', enabled: true, status: 'Connected', tools: [] }];
 			}
 			if (command === 'list_skills') return [];
@@ -289,7 +289,7 @@ describe('ToolsView toolbar actions', () => {
 		let finishRefresh: (() => void) | undefined;
 		invoke.mockImplementation((command: string) => {
 			if (command === 'list_builtin_tool_manifests') return Promise.resolve({ tools: [] });
-			if (command === 'list_mcp_tools') return Promise.resolve([]);
+			if (command === 'list_mcp_servers') return Promise.resolve([]);
 			if (command === 'list_skills') return Promise.resolve([]);
 			if (command === 'refresh_skills') {
 				return new Promise<void>((resolve) => {

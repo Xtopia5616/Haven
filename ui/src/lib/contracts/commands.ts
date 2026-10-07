@@ -60,7 +60,7 @@ export const TAURI_COMMAND_CONTRACTS = {
 	read_log_tail: { boundary: 'read', security: 'bounded tail; file logging must be enabled' },
 	log_frontend_error: { boundary: 'mutate', security: 'sanitized user-visible error mirrored into the backend log' },
 	get_performance_metrics: { boundary: 'read', security: 'bounded content-free backend counters plus renderer stream counters' },
-	list_mcp_tools: { boundary: 'read', security: 'snapshot only; invocation remains gated' },
+	list_mcp_servers: { boundary: 'read', security: 'snapshot only; env values redacted; invocation remains gated' },
 	reconnect_mcp: { boundary: 'execute', security: 'AuthorizationEngine; typed native operation reconnects one existing configured server after final version check' },
 	refresh_mcp_servers: { boundary: 'execute', security: 'AuthorizationEngine; one batch over persisted config diff and its affected targets; no renderer process arguments' },
 	mcp_tool_call: { boundary: 'execute', security: 'AuthorizationEngine; direct confirmations are queued and renderer errors are safe' },
