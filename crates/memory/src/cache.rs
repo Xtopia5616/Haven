@@ -40,15 +40,15 @@ pub struct CacheGeneration {
 #[derive(Clone, Copy)]
 enum CacheDomain {
     Messages = 0,
-    Sessions = 1,
+    SessionHistory = 1,
     Facts = 2,
     Embeddings = 3,
 }
 
 impl CacheDomain {
     fn for_key(key: &str) -> Self {
-        if key == "_sessions" {
-            Self::Sessions
+        if key == "_session_history_page" {
+            Self::SessionHistory
         } else if key == "_facts_all" || key.starts_with("_facts_") {
             Self::Facts
         } else if key.starts_with("_embeddings_") {
@@ -62,7 +62,7 @@ impl CacheDomain {
 #[derive(Clone)]
 struct QueryCache {
     messages: Option<CacheEntry<Vec<Message>>>,
-    sessions: Option<CacheEntry<Vec<Session>>>,
+    session_history_page: Option<CacheEntry<Vec<Session>>>,
     facts: Option<CacheEntry<Vec<Fact>>>,
     embeddings: Option<CacheEntry<Vec<EmbeddedText>>>,
     last_used: u64,
@@ -72,7 +72,7 @@ impl QueryCache {
     fn empty(last_used: u64) -> Self {
         Self {
             messages: None,
-            sessions: None,
+            session_history_page: None,
             facts: None,
             embeddings: None,
             last_used,
@@ -81,7 +81,7 @@ impl QueryCache {
 
     fn is_empty(&self) -> bool {
         self.messages.is_none()
-            && self.sessions.is_none()
+            && self.session_history_page.is_none()
             && self.facts.is_none()
             && self.embeddings.is_none()
     }
@@ -95,11 +95,11 @@ impl QueryCache {
             self.messages = None;
         }
         if self
-            .sessions
+            .session_history_page
             .as_ref()
             .is_some_and(|entry| entry.expiry <= now)
         {
-            self.sessions = None;
+            self.session_history_page = None;
         }
         if self.facts.as_ref().is_some_and(|entry| entry.expiry <= now) {
             self.facts = None;
@@ -244,34 +244,38 @@ impl QueryResultCache {
         });
     }
 
-    pub(crate) fn get_sessions(&self) -> Option<Vec<Session>> {
+    pub(crate) fn get_session_history_page(&self) -> Option<Vec<Session>> {
         let mut state = self.state.lock().ok()?;
-        let key = "_sessions";
+        let key = "_session_history_page";
         let result = state
             .entries
             .get(key)
-            .and_then(|cache| cache.sessions.as_ref())
+            .and_then(|cache| cache.session_history_page.as_ref())
             .and_then(|entry| (entry.expiry > Instant::now()).then(|| entry.data.clone()));
         if result.is_some() {
             state.touch(key);
         } else {
             if let Some(cache) = state.entries.get_mut(key) {
-                cache.sessions = None;
+                cache.session_history_page = None;
             }
             state.remove_if_empty(key);
         }
         result
     }
 
-    pub(crate) fn put_sessions(
+    pub(crate) fn put_session_history_page(
         &self,
         data: Vec<Session>,
         ttl_secs: u64,
         generation: CacheGeneration,
     ) {
-        self.put("_sessions", data, ttl_secs, generation, |cache, entry| {
-            cache.sessions = Some(entry)
-        });
+        self.put(
+            "_session_history_page",
+            data,
+            ttl_secs,
+            generation,
+            |cache, entry| cache.session_history_page = Some(entry),
+        );
     }
 
     pub(crate) fn get_facts(&self, subject: &str) -> Option<Vec<Fact>> {
@@ -414,8 +418,10 @@ impl QueryResultCache {
         self.invalidate_domain(CacheDomain::Messages, |cache| cache.messages = None);
     }
 
-    pub(crate) fn invalidate_sessions(&self) {
-        self.invalidate_key("_sessions", |cache| cache.sessions = None);
+    pub(crate) fn invalidate_session_history_page(&self) {
+        self.invalidate_key("_session_history_page", |cache| {
+            cache.session_history_page = None
+        });
     }
 
     pub(crate) fn invalidate_facts(&self, subject: &str) {

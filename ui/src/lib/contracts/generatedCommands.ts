@@ -18,7 +18,7 @@ export interface UiMetricsSnapshot { frames: number; chunks: number; drops: numb
 export interface SessionInfo { id: string; input: string; summary: string; title: string | null; status: SessionStatus; waiting_reason?: SessionWaitingReason; steps: StepInfo[]; created_at: string; updated_at: string }
 export interface StepInfo { id: string; step_number: number; tool_name: string; input: unknown; output: unknown | null; status: string; risk_level: RiskLevel; confirmed: boolean | null }
 export type ProcessResult = { 'SessionCreated': { session_id: string; message_id?: string | null } } | { 'Supplemented': { message_id?: string | null } };
-export interface SessionListResponse { sessions: SessionInfo[] }
+export interface RuntimeSessionListResponse { sessions: SessionInfo[] }
 export interface McpToolCallResponse { success: boolean; output: unknown; error: string | null }
 export interface MemoryFactResponse { id: string; subject: string; predicate: string; object: string; source: string; confidence: number; tags: string[]; created_at: string; mention_count: number; last_seen_at: string | null; source_ref: MemoryFactSourceRef | null; durability: number }
 export interface MemoryFactSourceRef { message_id: string; snippet: string }
@@ -213,11 +213,11 @@ export interface TauriCommandMap {
 	check_llm_connection: { request: undefined; response: LlmConnectionReport };
 	check_shell_available: { request: { shell: string }; response: ShellAvailability };
 	clear_facts: { request: undefined; response: number };
-	clear_history: { request: undefined; response: number };
 	clear_tool_run_history: { request: undefined; response: number };
 	continue_session: { request: { sessionId: string }; response: void };
-	count_history: { request: undefined; response: number };
-	count_history_search: { request: { query: string }; response: number };
+	count_session_history: { request: undefined; response: number };
+	count_session_history_search: { request: { query: string }; response: number };
+	delete_all_sessions: { request: undefined; response: number };
 	delete_fact: { request: { factId: string }; response: void };
 	delete_session: { request: { sessionId: string }; response: void };
 	delete_tool_run: { request: { toolRunId: string }; response: boolean };
@@ -228,7 +228,7 @@ export interface TauriCommandMap {
 	enable_autostart: { request: undefined; response: void };
 	end_session: { request: { sessionId: string }; response: void };
 	execute_skill: { request: { name: string; params: unknown }; response: SkillExecutionResponse };
-	export_history: { request: { startDate?: string | null; endDate?: string | null; status?: string | null }; response: string };
+	export_session_history: { request: { startDate?: string | null; endDate?: string | null; status?: string | null }; response: string };
 	get_api_key_status: { request: undefined; response: ApiKeyStatus };
 	get_bootstrap_status: { request: undefined; response: string };
 	get_latest_session_for_resume: { request: undefined; response: SessionResumeResponse | null };
@@ -237,15 +237,15 @@ export interface TauriCommandMap {
 	get_recording_state: { request: undefined; response: RecordingStatus };
 	get_session_for_resume: { request: { sessionId: string }; response: SessionResumeResponse };
 	get_session_lineage: { request: { sessionId: string }; response: SessionLineageResponse };
-	get_sessions: { request: undefined; response: SessionListResponse };
 	get_settings: { request: undefined; response: Settings };
 	get_tools: { request: undefined; response: ToolListResponse };
 	interrupt_session: { request: { sessionId: string }; response: void };
 	is_autostart_enabled: { request: undefined; response: boolean };
 	list_facts: { request: { source?: string | null }; response: MemoryFactResponse[] };
-	list_history: { request: { limit: number; offset: number }; response: SessionRecordDto[] };
 	list_mcp_tools: { request: undefined; response: McpServerSnapshot[] };
 	list_permissions: { request: undefined; response: StoredPermission[] };
+	list_runtime_sessions: { request: undefined; response: RuntimeSessionListResponse };
+	list_session_history: { request: { limit: number; offset: number }; response: SessionRecordDto[] };
 	list_session_permissions: { request: undefined; response: SessionPermissionGrant[] };
 	list_skills: { request: undefined; response: SkillInfo[] };
 	list_tool_run_history: { request: { kind?: ToolRunKindDtoInput | null; limit?: number | null; sessionId?: string | null }; response: ToolRunEvent[] };
@@ -270,9 +270,9 @@ export interface TauriCommandMap {
 	revoke_session_permission: { request: { sessionId: string; capability: string }; response: void };
 	rollback_session: { request: { sessionId: string; targetStep: number; pause?: boolean | null; targetMessageId?: string | null }; response: void };
 	run_memory_maintenance: { request: undefined; response: number };
-	search_history: { request: { query: string }; response: SessionRecordDto[] };
-	search_history_filtered: { request: { query?: string | null; status?: string | null; startDate?: string | null; endDate?: string | null; limit?: number | null; offset?: number | null }; response: SessionRecordDto[] };
-	search_history_paginated: { request: { query: string; limit: number; offset: number }; response: SessionRecordDto[] };
+	search_session_history: { request: { query: string }; response: SessionRecordDto[] };
+	search_session_history_filtered: { request: { query?: string | null; status?: string | null; startDate?: string | null; endDate?: string | null; limit?: number | null; offset?: number | null }; response: SessionRecordDto[] };
+	search_session_history_paginated: { request: { query: string; limit: number; offset: number }; response: SessionRecordDto[] };
 	set_hotkey_capture_active: { request: { active: boolean }; response: void };
 	set_reasoning_effort: { request: { role: string; effort?: string | null }; response: void };
 	set_skill_enabled: { request: { name: string; enabled: boolean }; response: void };

@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createChatSessionStartup, type ChatSessionStartupDependencies } from './chatSessionStartup.ts';
-import type { SessionListResponse, SessionResumeResponse } from './contracts/sessionHistory.ts';
+import type { RuntimeSessionListResponse, SessionResumeResponse } from './contracts/sessionHistory.ts';
 import { SessionReducer, type SessionAction } from './sessionReducer.ts';
 import type { SessionResumeTarget } from './sessionIntentStore.ts';
 
@@ -17,7 +17,7 @@ function deferred<T>() {
 	return { promise, resolve, reject };
 }
 
-function list(...ids: string[]): SessionListResponse {
+function list(...ids: string[]): RuntimeSessionListResponse {
 	return {
 		sessions: ids.map((id) => ({
 			id,
@@ -52,7 +52,7 @@ function resume(status: SessionResumeResponse['session']['status'] = 'paused'): 
 }
 
 function createHarness(options: {
-	listSessions?: () => Promise<SessionListResponse>;
+	listRuntimeSessions?: () => Promise<RuntimeSessionListResponse>;
 	getLatestSessionForResume?: () => Promise<SessionResumeResponse | null>;
 	reopenSession?: (request: { sessionId: string }) => Promise<void>;
 } = {}) {
@@ -76,9 +76,9 @@ function createHarness(options: {
 			actions.push(action);
 			reducer.dispatch(action);
 		},
-		listSessions: async () => {
+		listRuntimeSessions: async () => {
 			sessionListCalls++;
-			return options.listSessions ? options.listSessions() : list();
+			return options.listRuntimeSessions ? options.listRuntimeSessions() : list();
 		},
 		getLatestSessionForResume: options.getLatestSessionForResume ?? (async () => resume()),
 		reopenSession: async (request) => {
@@ -134,14 +134,14 @@ afterEach(() => {
 describe('createChatSessionStartup', () => {
 	it('waits for session-list selection before auto-restore and preserves restore order', async () => {
 		const errorResume = resume('error');
-		const sessionsResponse = deferred<SessionListResponse>();
+		const sessionsResponse = deferred<RuntimeSessionListResponse>();
 		let sessionsResolved = false;
 		const getLatestSessionForResume = vi.fn(async () => {
 			expect(sessionsResolved).toBe(true);
 			return errorResume;
 		});
 		const harness = createHarness({
-			listSessions: () => sessionsResponse.promise,
+			listRuntimeSessions: () => sessionsResponse.promise,
 			getLatestSessionForResume,
 		});
 		const pendingIds = ['conf-live'];
@@ -186,10 +186,10 @@ describe('createChatSessionStartup', () => {
 	});
 
 	it('ignores a session-list response and loading callback after disposal', async () => {
-		const sessionsResponse = deferred<SessionListResponse>();
+		const sessionsResponse = deferred<RuntimeSessionListResponse>();
 		const getLatestSessionForResume = vi.fn(async () => null);
 		const harness = createHarness({
-			listSessions: () => sessionsResponse.promise,
+			listRuntimeSessions: () => sessionsResponse.promise,
 			getLatestSessionForResume,
 		});
 		const loading = harness.startup.loadInitialSessions(null);
@@ -209,7 +209,7 @@ describe('createChatSessionStartup', () => {
 		const restoreResponse = deferred<SessionResumeResponse | null>();
 		const getLatestSessionForResume = vi.fn(() => restoreResponse.promise);
 		const harness = createHarness({
-			listSessions: async () => list(),
+			listRuntimeSessions: async () => list(),
 			getLatestSessionForResume,
 		});
 		const loading = harness.startup.loadInitialSessions(null);

@@ -264,7 +264,7 @@ pub(crate) enum SessionLifecycleEvent {
         title: String,
     },
     Deleted {
-        /// `None` means every session was removed by `clear_history`.
+        /// `None` means every session was removed by `delete_all_sessions`.
         session_id: Option<String>,
     },
 }

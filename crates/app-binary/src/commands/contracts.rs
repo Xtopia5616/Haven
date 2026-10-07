@@ -33,7 +33,7 @@ pub struct CommandContract {
 /// entry here.  Keep this list in the same domain order as `commands/mod.rs`
 /// and `lib.rs` so review can compare registration and documentation easily.
 pub const COMMAND_CONTRACTS: &[CommandContract] = &[
-    // action
+    // tool_run
     CommandContract {
         name: "list_tool_runs",
         boundary: CommandBoundary::Read,
@@ -65,39 +65,39 @@ pub const COMMAND_CONTRACTS: &[CommandContract] = &[
         boundary: CommandBoundary::Execute,
         security: "http(s) or validated absolute local path only",
     },
-    // history
+    // session_history
     CommandContract {
-        name: "list_history",
+        name: "list_session_history",
         boundary: CommandBoundary::Read,
         security: "read-only session projection",
     },
     CommandContract {
-        name: "count_history",
+        name: "count_session_history",
         boundary: CommandBoundary::Read,
         security: "read-only aggregate",
     },
     CommandContract {
-        name: "search_history_paginated",
+        name: "search_session_history_paginated",
         boundary: CommandBoundary::Read,
         security: "parameterized read-only search",
     },
     CommandContract {
-        name: "count_history_search",
+        name: "count_session_history_search",
         boundary: CommandBoundary::Read,
         security: "parameterized read-only search",
     },
     CommandContract {
-        name: "search_history",
+        name: "search_session_history",
         boundary: CommandBoundary::Read,
         security: "parameterized read-only search",
     },
     CommandContract {
-        name: "search_history_filtered",
+        name: "search_session_history_filtered",
         boundary: CommandBoundary::Read,
         security: "bounded page and date-filtered projection",
     },
     CommandContract {
-        name: "export_history",
+        name: "export_session_history",
         boundary: CommandBoundary::Read,
         security: "export contains persisted history only",
     },
@@ -269,9 +269,9 @@ pub const COMMAND_CONTRACTS: &[CommandContract] = &[
         security: "session id selects persisted session",
     },
     CommandContract {
-        name: "get_sessions",
+        name: "list_runtime_sessions",
         boundary: CommandBoundary::Read,
-        security: "active session projection",
+        security: "resident nonterminal runtime sessions only",
     },
     CommandContract {
         name: "get_session_lineage",
@@ -304,7 +304,7 @@ pub const COMMAND_CONTRACTS: &[CommandContract] = &[
         security: "delete by session id and release runtime state",
     },
     CommandContract {
-        name: "clear_history",
+        name: "delete_all_sessions",
         boundary: CommandBoundary::Mutate,
         security: "clears persisted sessions and session trust",
     },

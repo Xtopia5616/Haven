@@ -2,7 +2,7 @@
 
 ## 状态
 
-已采纳并实施；UI 类型检查、测试与构建通过。
+已采纳并实施。Session wrapper 的 `listRuntimeSessions` 仍有效；保留 `get_sessions` IPC 名称的决定已由 [ADR 0679](0679-unify-session-runtime-and-history-terms.md) 替代。
 
 ## 背景
 

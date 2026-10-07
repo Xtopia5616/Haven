@@ -25,12 +25,12 @@
 	import { registerPerformanceMetricsProvider } from '$lib/performanceMetrics.ts';
 	import {
 		deleteSession,
-		listHistory,
+		listSessionHistory,
 		getLatestSessionForResume,
 		getSessionLineage,
-		listSessions,
+		listRuntimeSessions,
 		reopenSession,
-	} from '$lib/sessionHistoryCommands.ts';
+	} from '$lib/sessionCommands.ts';
 	import {
 		appSessionReducer,
 		createSessionSelectorStore,
@@ -307,7 +307,7 @@
 	async function loadRecentHistory() {
 		const sequence = ++historyRefreshSeq;
 		try {
-			const history = await listHistory({ limit: 50, offset: 0 });
+			const history = await listSessionHistory({ limit: 50, offset: 0 });
 			if (!dead && sequence === historyRefreshSeq) recentHistorySessions = history || [];
 		} catch (error) {
 			if (!dead && sequence === historyRefreshSeq) {
@@ -581,7 +581,7 @@
 		}
 	}
 
-	// Terminal sessions are not in get_sessions, so drop their cached messages
+	// Terminal sessions are not in list_runtime_sessions, so drop their cached messages
 	// when they are deactivated. A later switch reloads them from the database.
 	function evictTerminalSessionMemory(sessionId: string | null) {
 		chatSessionController.evictTerminalSessionMemory(sessionId);
@@ -863,7 +863,7 @@
 	const sessionStartup = createChatSessionStartup({
 		reducer: sessionReducer,
 		dispatch: dispatchSession,
-		listSessions,
+		listRuntimeSessions,
 		getLatestSessionForResume,
 		reopenSession,
 		refreshToolRuns,

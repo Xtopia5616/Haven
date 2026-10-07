@@ -667,3 +667,4 @@
 - [0676：澄清 ToolRun 持久化与 lease 术语](0676-clarify-toolrun-lease-terminology.md)
 - [0677：删除未使用的消息 thread_id 保留字段](0677-remove-unused-message-thread-id.md)
 - [0678：区分 Session 实体与 conversation 内容用词](0678-distinguish-session-and-conversation-wording.md)
+- [0679：统一 Session 运行态与持久历史术语](0679-unify-session-runtime-and-history-terms.md)

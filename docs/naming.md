@@ -1,6 +1,6 @@
 # Haven 命名规范
 
-> 版本: v1.95 | 日期: 2026-10-07
+> 版本: v1.96 | 日期: 2026-10-07
 
 本文档统一 Haven 项目各层的命名规则（变量名、函数名、文件名、crate 名、缩写大小写、跨层边界）。规范以现有代码中的事实模式为基础，新代码必须遵循；存量代码若与规范冲突，逐步迁移对齐。
 
@@ -17,6 +17,8 @@
 - **TranscriptProjection 按读取与提交阶段分名**：公开 `TranscriptProjection` 是从 durable event log 同次派生出的 canonical messages 与 ReAct rounds；Agent 内部 `CommittedTranscriptProjection` 是 durable commit 后应用到进程内 `ReActState` 的记录包。两者 shape 和生命周期不同，不合并，也不共用泛名（ADR 0602/0671）。
 - **全局网络策略与 HTTP 目标约束分名**：Common `NetworkPolicy` 表示应用安全设置的网络访问模式；HTTP 工具内部 `HttpDestinationPolicy` 只承载目标域 allowlist 与测试 loopback 条件。请求参数和方法分别叫 `HttpRequestParams` / `HttpRequestMethod`，URL 校验/解析动作标为 `validate_http_destination` / `resolve_http_destination`，不使用泛名 `Network*`（ADR 0672）。
 - **熔断状态标明 owner**：`ToolCircuitState` / `ToolCircuitBreaker` 属于按工具隔离、阈值和冷却可配置的工具执行保护；`EndpointCircuitState` / `EndpointCircuitBreaker` 属于模型 endpoint 健康统计，包含过期请求完成过滤和手动重试重置。两边虽都使用 Closed/Open/HalfOpen 状态，但配置、计数和转换责任不同，保持独立 owner（ADR 0673）。
+- **Session 运行态与持久历史分名**：`list_runtime_sessions` / `RuntimeSessionListResponse` 只表示当前进程中驻留且未终结的会话；`list_session_history`、搜索、计数和导出命令表示持久会话历史。跨层的历史查询、结果缓存都带 `session_history` 作用域；全量持久删除叫 `delete_all_sessions`，supervisor 内部运行态清理用 `clear_session_runtime_state_locked`，关闭入口用 `clear_session_runtime_state_for_shutdown`（ADR 0679）。
+- **Session IPC 包装模块按实体命名**：前端 `sessionCommands.ts` 集中封装 Session 的运行态列表、历史读取、恢复、生命周期与标题命令；单个函数仍按操作阶段使用 `listRuntimeSessions`、`listSessionHistory`、`getSessionForResume`、`deleteSession` 等领域动词，不因模块收纳在同一个文件而抹去状态范围（ADR 0679）。
 - **认证方案与凭据分阶段命名**：header policy 使用 `AuthHeaderScheme { header_name, prefix }`；将密钥应用到方案后得到 LLM registry 拥有的 `ModelDiscoveryAuthHeader { header_name, value }`，该类型直接跨 App→LLM API 传递；一次 model discovery 的输入由 `ResolvedDiscoveryAuth { api_key, auth_header }` 表达。含实际凭据的类型不自动派生 `Debug`，避免调试格式意外暴露密钥。
 - **模型配置引用与供应商身份分名**：`ModelConfig::provider_name` 指向 `ProviderConfig::name`（用户配置的连接名称）；`ProviderConfig::provider` 与 `ModelEndpoint::provider` 表示供应商身份。Serde/TOML/IPC 字段统一为 `provider_name`；设置编辑器内部使用 `providerName`，只在 generated IPC 边界转换命名风格。按连接名查找使用 `LlmConfig::provider_config_by_name`（ADR 0632）。
 - **配置投影视图引用生成字段**：UI helper 仅消费设置 DTO 的部分字段时，用 `Pick<GeneratedInput, ...>` 派生投影，不手写同形字段；确有草稿中间态允许 `null` 的字段在投影中显式拓宽，并与 required wire contract 区分。`apiStyle.ts` 的 `ProviderStyleInput` 基于 generated `ProviderConfigInput`，只为 `provider` 与 `base_url` 保留 UI 草稿 nullable 语义（ADR 0643）。
@@ -189,6 +191,8 @@ Common 媒体探测 helper 和变量以 `mime_type` 表示 MIME 字符串，探�
 
 数据库或领域查询即使按 session、subject、tag 等条件筛选，只要结果是零到多条实体，也使用 `list_*`（条件检索可使用 `find_*` / `search_*`）；`get_*` 留给单实体读取。缓存接口按稳定 cache key 读写一个缓存槽时仍可使用 `get_*`，即使槽内缓存的是集合。
 
+当前进程驻留集合与持久历史必须明确区分：运行态使用 `list_runtime_sessions`；从数据库读取的会话记录使用 `list_persisted_sessions` 或 `list_session_history`。缓存名跟随缓存的查询结果（`session_history_page`），不可复用运行态会话集合的名称。批量持久删除使用 `delete_all_sessions`；Supervisor 内部对驻留 actors、队列和授权状态的清理使用 `clear_session_runtime_state_locked`。
+
 读取接收者自身当前状态时使用名词式 accessor：单一主状态用 `state()`，同一 owner 暴露多个状态视图时用带领域名的 accessor（如 `vad_state()`）；需要读取一个时点值而非订阅后续变化时使用 `snapshot()`，计量值显式带单位（如 `durationSeconds()`）。`get_*` 保留给按 key 读取值，避免 `get_state()` 这类无查询键的泛化动词。
 
 这些词汇用于审计和迁移，不授权把不同的状态 owner、错误语义、事务边界或安全策略合并。发现名称相似时，先比较不变量、生命周期、失败行为和真实消费者；只有职责与权威来源相同才合并，否则保留边界并改成能表达作用域/角色的名称。
@@ -303,6 +307,7 @@ Common 媒体探测 helper 和变量以 `mime_type` 表示 MIME 字符串，探�
 - [ ] TypeScript 局部变量 camelCase，常量 UPPER_SNAKE
 - [ ] 跨层只在边界转换 snake↔camel
 - [ ] 会话恢复用语统一 `resume`，不用 `review`
+- [ ] 运行态会话集合与持久会话历史使用不同名称；全量删除与运行态清理动词明确
 - [ ] 工具调用、会话、ToolRun、后台工具运行、定时工具运行按本节口径使用
 - [ ] 集合用复数、单元素用单数、派生集合不用裸形容词（`selected`→`selectedSessions`）
 - [ ] 文件名与结构体/实体单复数一致（`file.rs`→`files.rs` 对应 `FilesTool`；仓库随表复数）

@@ -3,13 +3,13 @@ import { createSessionRefreshScheduler } from './sessionRefresh.ts';
 import { isErrorStatus } from './sessionStatus.ts';
 import { resumeInteractions } from './sessionReducer.ts';
 import type { SessionAction, SessionReducer } from './sessionReducer.ts';
-import type { SessionListResponse, SessionResumeResponse } from './contracts/sessionHistory.ts';
+import type { RuntimeSessionListResponse, SessionResumeResponse } from './contracts/sessionHistory.ts';
 import type { SessionResumeTarget } from './sessionIntentStore.ts';
 
 export interface ChatSessionStartupDependencies {
 	reducer: SessionReducer;
 	dispatch: (action: SessionAction) => void;
-	listSessions: () => Promise<SessionListResponse>;
+	listRuntimeSessions: () => Promise<RuntimeSessionListResponse>;
 	getLatestSessionForResume: () => Promise<SessionResumeResponse | null>;
 	reopenSession: (request: { sessionId: string }) => Promise<void>;
 	refreshToolRuns: () => void;
@@ -111,7 +111,7 @@ export function createChatSessionStartup(dependencies: ChatSessionStartupDepende
 		const requestGeneration = generation;
 		const seq = ++loadSessionsSeq;
 		const run = (async () => {
-			const result = await dependencies.listSessions();
+			const result = await dependencies.listRuntimeSessions();
 			if (!isCurrentGeneration(requestGeneration) || seq !== loadSessionsSeq) return;
 			if (result && result.sessions) {
 				const before = dependencies.reducer.snapshot();

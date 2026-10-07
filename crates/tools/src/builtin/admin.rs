@@ -2274,7 +2274,7 @@ mod tests {
                 [older_error.id.as_str()],
             )
             .unwrap();
-        db.cache_invalidate_sessions();
+        db.cache_invalidate_session_history_page();
 
         for index in 0..50 {
             let session = db.create_session(&format!("recent {index}")).unwrap();
@@ -2307,7 +2307,7 @@ mod tests {
                     [created_at, session_id],
                 )
                 .unwrap();
-            db.cache_invalidate_sessions();
+            db.cache_invalidate_session_history_page();
         }
 
         let db = Arc::new(Database::open_in_memory().unwrap());
@@ -2382,7 +2382,7 @@ mod tests {
                 [session.id.as_str()],
             )
             .unwrap();
-        db.cache_invalidate_sessions();
+        db.cache_invalidate_session_history_page();
 
         let (surfaces, dir) = test_surfaces_with_db(db);
         let skill_root = dir.path().join("skills");

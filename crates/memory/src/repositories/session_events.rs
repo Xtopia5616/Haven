@@ -695,8 +695,11 @@ impl SessionStore {
     /// The existing Database method remains responsible for the transaction,
     /// session-scoped cleanup, and cache invalidation. Dropping this future
     /// cannot interrupt a write already running on Tokio's blocking pool.
-    pub async fn clear_sessions(&self) -> anyhow::Result<usize> {
-        self.db.clone().run_blocking(|db| db.clear_sessions()).await
+    pub async fn delete_all_sessions(&self) -> anyhow::Result<usize> {
+        self.db
+            .clone()
+            .run_blocking(|db| db.delete_all_sessions())
+            .await
     }
 
     /// Load the existing read models used by App session resume on SQLite's
@@ -1579,7 +1582,7 @@ impl SessionStore {
 
         match result {
             Ok(stored) => {
-                self.db.cache_invalidate_sessions();
+                self.db.cache_invalidate_session_history_page();
                 for event in &stored {
                     let _ = self.live_tx.send(event.clone());
                 }
@@ -3705,7 +3708,7 @@ mod tests {
         let kv_key = format!("fact_extraction_pending.{first_session_id}");
         db.set_kv(&kv_key, "1").unwrap();
 
-        assert_eq!(store.clear_sessions().await.unwrap(), 2);
+        assert_eq!(store.delete_all_sessions().await.unwrap(), 2);
 
         assert_eq!(db.count_sessions().unwrap(), 0);
         assert!(
@@ -3715,7 +3718,7 @@ mod tests {
         );
         assert!(db.list_session_messages(&second.id).unwrap().is_empty());
         assert!(db.get_kv(&kv_key).unwrap().is_none());
-        assert_eq!(store.clear_sessions().await.unwrap(), 0);
+        assert_eq!(store.delete_all_sessions().await.unwrap(), 0);
     }
 
     #[tokio::test]
@@ -3793,7 +3796,7 @@ mod tests {
     #[tokio::test]
     async fn session_store_updates_session_title_and_invalidates_history_cache() {
         let (db, store, session_id) = store();
-        assert_eq!(db.list_sessions(50, 0).unwrap()[0].title, None);
+        assert_eq!(db.list_persisted_sessions(50, 0).unwrap()[0].title, None);
 
         store
             .update_session_title(&session_id, "Updated through SessionStore")
@@ -3801,7 +3804,9 @@ mod tests {
             .unwrap();
 
         assert_eq!(
-            store.list_history(50, 0).await.unwrap()[0].title.as_deref(),
+            store.list_session_history(50, 0).await.unwrap()[0]
+                .title
+                .as_deref(),
             Some("Updated through SessionStore")
         );
     }

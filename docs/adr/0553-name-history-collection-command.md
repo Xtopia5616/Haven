@@ -2,7 +2,7 @@
 
 ## 状态
 
-已采纳并实施；Rust、UI 与 IPC 契约检查通过。
+已采纳并实施；命令从 `list_history` 扩展为带 Session 作用域的完整 history family，详见 [ADR 0679](0679-unify-session-runtime-and-history-terms.md)。旧名称只保留在本记录中说明原决策。
 
 ## 背景
 

@@ -154,9 +154,13 @@ impl SessionStore {
     /// page cache behavior and `created_at DESC` ordering. Dropping the
     /// returned future cannot interrupt a `run_blocking` query already
     /// running on Tokio's blocking pool.
-    pub async fn list_history(&self, limit: i64, offset: i64) -> anyhow::Result<Vec<Session>> {
+    pub async fn list_session_history(
+        &self,
+        limit: i64,
+        offset: i64,
+    ) -> anyhow::Result<Vec<Session>> {
         self.db
-            .run_blocking(move |db| db.list_sessions(limit, offset))
+            .run_blocking(move |db| db.list_persisted_sessions(limit, offset))
             .await
     }
 
@@ -164,21 +168,21 @@ impl SessionStore {
     /// ordering and first-row behavior. Dropping this future cannot interrupt
     /// a query already running on Tokio's blocking pool.
     pub async fn latest_session_record(&self) -> anyhow::Result<Option<Session>> {
-        Ok(self.list_history(1, 0).await?.into_iter().next())
+        Ok(self.list_session_history(1, 0).await?.into_iter().next())
     }
 
     /// Count persisted sessions on SQLite's blocking pool.
     ///
     /// Dropping the returned future cannot interrupt a `run_blocking` query
     /// already running on Tokio's blocking pool.
-    pub async fn count_history(&self) -> anyhow::Result<i64> {
+    pub async fn count_session_history(&self) -> anyhow::Result<i64> {
         self.db.run_blocking(|db| db.count_sessions()).await
     }
 
     /// Search and page session history using the existing database predicate
     /// and ordering. Dropping the returned future cannot interrupt a
     /// `run_blocking` query already running on Tokio's blocking pool.
-    pub async fn search_history_paginated(
+    pub async fn search_session_history_paginated(
         &self,
         query: String,
         limit: i64,
@@ -192,7 +196,7 @@ impl SessionStore {
     /// Count matches using the existing database search predicate.
     /// Dropping the returned future cannot interrupt a `run_blocking` query
     /// already running on Tokio's blocking pool.
-    pub async fn count_history_search(&self, query: String) -> anyhow::Result<i64> {
+    pub async fn count_session_history_search(&self, query: String) -> anyhow::Result<i64> {
         self.db
             .run_blocking(move |db| db.count_sessions_search(&query))
             .await
@@ -201,7 +205,7 @@ impl SessionStore {
     /// Search the first 50 session history matches using the existing
     /// database predicate and ordering. Dropping this future cannot interrupt
     /// a `run_blocking` query already running on Tokio's blocking pool.
-    pub async fn search_history(&self, query: String) -> anyhow::Result<Vec<Session>> {
+    pub async fn search_session_history(&self, query: String) -> anyhow::Result<Vec<Session>> {
         self.db
             .run_blocking(move |db| db.search_sessions(&query))
             .await
@@ -211,7 +215,7 @@ impl SessionStore {
     /// its empty-filter handling, date conversion, cache behavior, predicate
     /// and ordering. Dropping this future cannot interrupt a
     /// `run_blocking` query already running on Tokio's blocking pool.
-    pub async fn search_history_filtered(
+    pub async fn search_session_history_filtered(
         &self,
         filter: SessionHistoryFilter,
     ) -> anyhow::Result<Vec<Session>> {

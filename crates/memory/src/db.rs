@@ -180,7 +180,7 @@ impl Drop for PooledConnection<'_> {
         if let Some(conn) = self.conn.take() {
             unregister_interrupt_handle();
             // Defensive rollback: a caller whose transaction failed midway
-            // (e.g. `clear_sessions` propagates errors without ROLLBACK) would
+            // (e.g. `delete_all_sessions` propagates errors without ROLLBACK) would
             // otherwise re-pool a connection with a write transaction still
             // open — subsequent statements would run inside the abandoned
             // transaction and the held write lock would block the other
@@ -420,17 +420,20 @@ impl Database {
             .put_messages(session_id, data, ttl_secs, expected_gen);
     }
 
-    pub fn cache_get_sessions(&self) -> Option<Vec<crate::repositories::sessions::Session>> {
-        self.cache.get_sessions()
+    pub fn cache_get_session_history_page(
+        &self,
+    ) -> Option<Vec<crate::repositories::sessions::Session>> {
+        self.cache.get_session_history_page()
     }
 
-    pub fn cache_put_sessions(
+    pub fn cache_put_session_history_page(
         &self,
         data: Vec<crate::repositories::sessions::Session>,
         ttl_secs: u64,
         expected_gen: CacheGeneration,
     ) {
-        self.cache.put_sessions(data, ttl_secs, expected_gen);
+        self.cache
+            .put_session_history_page(data, ttl_secs, expected_gen);
     }
 
     pub fn cache_get_facts(&self, subject: &str) -> Option<Vec<crate::repositories::facts::Fact>> {
@@ -459,8 +462,8 @@ impl Database {
         self.cache.invalidate_all_messages();
     }
 
-    pub fn cache_invalidate_sessions(&self) {
-        self.cache.invalidate_sessions();
+    pub fn cache_invalidate_session_history_page(&self) {
+        self.cache.invalidate_session_history_page();
     }
 
     /// Cached copy of the full facts table (`list_facts`), keyed separately
@@ -761,11 +764,11 @@ mod tests {
     #[test]
     fn test_cache_tool_runs_hit_and_miss() {
         let db = Database::open_in_memory().unwrap();
-        assert!(db.cache_get_sessions().is_none());
+        assert!(db.cache_get_session_history_page().is_none());
         let sessions = vec![make_session("1"), make_session("2")];
-        let generation = db.cache_generation("_sessions");
-        db.cache_put_sessions(sessions.clone(), 60, generation);
-        let cached = db.cache_get_sessions().unwrap();
+        let generation = db.cache_generation("_session_history_page");
+        db.cache_put_session_history_page(sessions.clone(), 60, generation);
+        let cached = db.cache_get_session_history_page().unwrap();
         assert_eq!(cached.len(), 2);
     }
 
@@ -773,22 +776,22 @@ mod tests {
     fn test_cache_tool_runs_ttl_expiry() {
         let db = Database::open_in_memory().unwrap();
         let sessions = vec![make_session("1")];
-        let generation = db.cache_generation("_sessions");
-        db.cache_put_sessions(sessions, 1, generation);
-        assert!(db.cache_get_sessions().is_some());
+        let generation = db.cache_generation("_session_history_page");
+        db.cache_put_session_history_page(sessions, 1, generation);
+        assert!(db.cache_get_session_history_page().is_some());
         thread::sleep(Duration::from_secs(2));
-        assert!(db.cache_get_sessions().is_none());
+        assert!(db.cache_get_session_history_page().is_none());
     }
 
     #[test]
-    fn test_cache_invalidate_sessions() {
+    fn test_cache_invalidate_session_history_page() {
         let db = Database::open_in_memory().unwrap();
         let sessions = vec![make_session("1")];
-        let generation = db.cache_generation("_sessions");
-        db.cache_put_sessions(sessions, 60, generation);
-        assert!(db.cache_get_sessions().is_some());
-        db.cache_invalidate_sessions();
-        assert!(db.cache_get_sessions().is_none());
+        let generation = db.cache_generation("_session_history_page");
+        db.cache_put_session_history_page(sessions, 60, generation);
+        assert!(db.cache_get_session_history_page().is_some());
+        db.cache_invalidate_session_history_page();
+        assert!(db.cache_get_session_history_page().is_none());
     }
 
     #[test]

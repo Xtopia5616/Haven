@@ -1116,7 +1116,10 @@ mod tests {
 
         // Simulate process shutdown: runtime actors and in-memory grants go
         // away while the persisted session and its grant remain available.
-        first.clear_all_sessions_for_shutdown().await.unwrap();
+        first
+            .clear_session_runtime_state_for_shutdown()
+            .await
+            .unwrap();
         let restarted = Arc::new(SessionSupervisor::new_for_test(
             db,
             Arc::new(ToolsFacade::new()),
@@ -1876,7 +1879,7 @@ mod tests {
         ));
         assert_eq!(registry.leased_paths().len(), 1);
 
-        exec.clear_sessions_and_delete().await.unwrap();
+        exec.delete_all_sessions().await.unwrap();
         assert!(registry.leased_paths().is_empty());
     }
 
@@ -1931,7 +1934,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn clear_sessions_and_delete_clears_actors_and_returns_deleted_count() {
+    async fn delete_all_sessions_clears_runtime_state_and_returns_deleted_count() {
         let (exec, db) = make_executor_with_db(1);
         let first = exec.create_session("first to clear").await.unwrap();
         let second = exec.create_session("second to clear").await.unwrap();
@@ -1942,7 +1945,7 @@ mod tests {
         let kv_key = format!("fact_extraction_pending.{}", first.id);
         db.set_kv(&kv_key, "1").unwrap();
 
-        let deleted = exec.clear_sessions_and_delete().await.unwrap();
+        let deleted = exec.delete_all_sessions().await.unwrap();
         assert_eq!(deleted.len(), 2);
         assert!(deleted.contains(&first.id));
         assert!(deleted.contains(&second.id));
@@ -1961,11 +1964,11 @@ mod tests {
         assert!(db.list_session_messages(&first.id).unwrap().is_empty());
         assert!(db.list_session_messages(&second.id).unwrap().is_empty());
         assert!(db.get_kv(&kv_key).unwrap().is_none());
-        assert!(exec.clear_sessions_and_delete().await.unwrap().is_empty());
+        assert!(exec.delete_all_sessions().await.unwrap().is_empty());
     }
 
     #[tokio::test]
-    async fn clear_sessions_and_delete_cancels_tool_runs_for_unloaded_sessions() {
+    async fn delete_all_sessions_cancels_tool_runs_for_unloaded_sessions() {
         let db = temp_db();
         let session = db.create_session("unloaded session to clear").unwrap();
         let tool_run_id = "toolrun-unloaded-clear";
@@ -1993,7 +1996,7 @@ mod tests {
             .await;
 
         assert_eq!(
-            exec.clear_sessions_and_delete().await.unwrap(),
+            exec.delete_all_sessions().await.unwrap(),
             vec![session.id.clone()]
         );
 
@@ -2463,7 +2466,7 @@ mod tests {
             3,
         ));
         assert_eq!(exec.running_count().await, 0);
-        assert!(exec.list_sessions().await.is_empty());
+        assert!(exec.list_runtime_sessions().await.is_empty());
     }
 
     #[tokio::test]
@@ -3054,7 +3057,7 @@ mod tests {
         let _normal = exec.create_session("normal").await.unwrap();
         let _high = exec.create_session("high").await.unwrap();
 
-        let sessions = exec.list_sessions().await;
+        let sessions = exec.list_runtime_sessions().await;
         assert_eq!(sessions.len(), 3);
     }
 
@@ -3102,7 +3105,7 @@ mod tests {
         // Simulate a restart: fresh executor over the same DB with an empty
         // working set. The pending session must be reloaded and dispatchable.
         let exec2 = Arc::new(SessionSupervisor::new_for_test(db.clone(), tools, 3));
-        assert!(exec2.list_sessions().await.is_empty());
+        assert!(exec2.list_runtime_sessions().await.is_empty());
         let loaded = exec2.load_pending_sessions().await.unwrap();
         assert_eq!(loaded, 1);
 
@@ -3342,7 +3345,7 @@ mod tests {
         exec2.clone().start_dispatcher_without_recovery(handler);
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         assert_eq!(handled.load(Ordering::SeqCst), 0);
-        assert!(exec2.list_sessions().await.is_empty());
+        assert!(exec2.list_runtime_sessions().await.is_empty());
         assert_eq!(
             db.get_session(&session.id)
                 .unwrap()
@@ -3387,7 +3390,7 @@ mod tests {
         let exec2 = Arc::new(SessionSupervisor::new_for_test(db, tools, 3));
         let loaded = exec2.load_pending_sessions().await.unwrap();
         assert_eq!(loaded, 0);
-        assert!(exec2.list_sessions().await.is_empty());
+        assert!(exec2.list_runtime_sessions().await.is_empty());
     }
 
     #[tokio::test]

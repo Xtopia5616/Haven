@@ -153,7 +153,7 @@ impl Database {
             return Err(error.into());
         }
         drop(conn);
-        self.cache_invalidate_sessions();
+        self.cache_invalidate_session_history_page();
         Ok(Session {
             id,
             input_text: input_text.into(),
@@ -229,7 +229,7 @@ impl Database {
             "UPDATE sessions SET status = ?1, updated_at = ?2 WHERE id = ?3",
             rusqlite::params![status.as_str(), now, id],
         )?;
-        self.cache_invalidate_sessions();
+        self.cache_invalidate_session_history_page();
         Ok(())
     }
 
@@ -240,18 +240,19 @@ impl Database {
             "UPDATE sessions SET title = ?1, updated_at = ?2 WHERE id = ?3",
             rusqlite::params![title, now, id],
         )?;
-        self.cache_invalidate_sessions();
+        self.cache_invalidate_session_history_page();
         Ok(())
     }
 
-    pub fn list_sessions(&self, limit: i64, offset: i64) -> anyhow::Result<Vec<Session>> {
+    pub fn list_persisted_sessions(&self, limit: i64, offset: i64) -> anyhow::Result<Vec<Session>> {
         if offset == 0
             && limit == 50
-            && let Some(cached) = self.cache_get_sessions()
+            && let Some(cached) = self.cache_get_session_history_page()
         {
             return Ok(cached);
         }
-        let cache_gen = (offset == 0 && limit == 50).then(|| self.cache_generation("_sessions"));
+        let cache_gen =
+            (offset == 0 && limit == 50).then(|| self.cache_generation("_session_history_page"));
         let conn = self.conn();
         let mut stmt = conn.prepare(
             "SELECT id, input_text, title, status, created_at, updated_at,
@@ -264,7 +265,7 @@ impl Database {
             sessions.push(row?);
         }
         if let Some(cache_gen) = cache_gen {
-            self.cache_put_sessions(sessions.clone(), 10, cache_gen);
+            self.cache_put_session_history_page(sessions.clone(), 10, cache_gen);
         }
         Ok(sessions)
     }
@@ -383,13 +384,13 @@ impl Database {
             crate::embeddings::entity_kind::EPISODE,
             &episode_ids,
         );
-        self.cache_invalidate_sessions();
+        self.cache_invalidate_session_history_page();
         self.cache_invalidate_messages(id);
         self.cache_invalidate_memory();
         Ok(())
     }
 
-    pub fn clear_sessions(&self) -> anyhow::Result<usize> {
+    pub fn delete_all_sessions(&self) -> anyhow::Result<usize> {
         let conn = self.conn();
         // Wrap both DELETEs in a transaction so readers don't see
         // orphaned messages between the two operations. A mid-transaction
@@ -423,7 +424,7 @@ impl Database {
                 conn.execute_batch("COMMIT")?;
                 drop(conn);
                 self.clear_pending_embedding_models();
-                self.cache_invalidate_sessions();
+                self.cache_invalidate_session_history_page();
                 self.cache_invalidate_all_messages();
                 if count > 0 {
                     self.cache_invalidate_memory();
@@ -502,7 +503,7 @@ impl Database {
             )?,
         };
         if count > 0 {
-            self.cache_invalidate_sessions();
+            self.cache_invalidate_session_history_page();
         }
         Ok(count)
     }
@@ -529,7 +530,7 @@ impl Database {
         super::kv_store::cleanup_orphan_session_scoped_state_on(&conn)?;
         drop(conn);
         if count > 0 {
-            self.cache_invalidate_sessions();
+            self.cache_invalidate_session_history_page();
             self.cache_invalidate_all_messages();
             self.clear_pending_embedding_models_for_ids(
                 crate::embeddings::entity_kind::EPISODE,
@@ -567,7 +568,7 @@ impl Database {
         let start_date = start_date.filter(|s| !s.is_empty());
         let end_date = end_date.filter(|s| !s.is_empty());
 
-        // Unfiltered first page reuses the same short-TTL cache as list_sessions
+        // Unfiltered first page reuses the same short-TTL cache as list_persisted_sessions
         // so repeated visits to the history page skip the DB round-trip.
         let cacheable = query.is_none()
             && status.is_none()
@@ -575,10 +576,10 @@ impl Database {
             && end_date.is_none()
             && offset == 0
             && limit == 50;
-        if cacheable && let Some(cached) = self.cache_get_sessions() {
+        if cacheable && let Some(cached) = self.cache_get_session_history_page() {
             return Ok(cached);
         }
-        let cache_gen = cacheable.then(|| self.cache_generation("_sessions"));
+        let cache_gen = cacheable.then(|| self.cache_generation("_session_history_page"));
 
         let mut wheres: Vec<String> = Vec::new();
         let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
@@ -652,7 +653,7 @@ impl Database {
             sessions.push(row?);
         }
         if let Some(cache_gen) = cache_gen {
-            self.cache_put_sessions(sessions.clone(), 10, cache_gen);
+            self.cache_put_session_history_page(sessions.clone(), 10, cache_gen);
         }
         Ok(sessions)
     }
@@ -806,7 +807,7 @@ mod tests {
         let db = create_db();
         let first = db.create_session("first").unwrap();
         let second = db.create_session("second").unwrap();
-        let sessions = db.list_sessions(1, 0).unwrap();
+        let sessions = db.list_persisted_sessions(1, 0).unwrap();
         assert_eq!(sessions.len(), 1);
         // The most recent session must come first —the app start
         // session restore relies on this ordering.
@@ -849,7 +850,7 @@ mod tests {
         db.create_session("b").unwrap();
         db.create_session("c").unwrap();
 
-        let sessions = db.list_sessions(50, 0).unwrap();
+        let sessions = db.list_persisted_sessions(50, 0).unwrap();
         assert_eq!(sessions.len(), 3);
     }
 
@@ -859,25 +860,25 @@ mod tests {
         for i in 0..5 {
             db.create_session(&format!("ses-{}", i)).unwrap();
         }
-        let sessions = db.list_sessions(2, 0).unwrap();
+        let sessions = db.list_persisted_sessions(2, 0).unwrap();
         assert_eq!(sessions.len(), 2);
 
-        let sessions = db.list_sessions(2, 2).unwrap();
+        let sessions = db.list_persisted_sessions(2, 2).unwrap();
         assert_eq!(sessions.len(), 2);
 
-        let sessions = db.list_sessions(10, 5).unwrap();
+        let sessions = db.list_persisted_sessions(10, 5).unwrap();
         assert!(sessions.is_empty());
     }
 
     #[test]
-    fn test_list_tool_runs_caching() {
+    fn test_list_persisted_sessions_caching() {
         let db = create_db();
         db.create_session("a").unwrap();
-        let first = db.list_sessions(50, 0).unwrap();
+        let first = db.list_persisted_sessions(50, 0).unwrap();
         assert_eq!(first.len(), 1);
 
         db.create_session("b").unwrap();
-        let second = db.list_sessions(50, 0).unwrap();
+        let second = db.list_persisted_sessions(50, 0).unwrap();
         assert_eq!(second.len(), 2);
     }
 
@@ -970,7 +971,7 @@ mod tests {
     }
 
     #[test]
-    fn test_clear_sessions() {
+    fn test_delete_all_sessions() {
         let db = create_db();
         let first = db.create_session("a").unwrap();
         db.create_session("b").unwrap();
@@ -991,7 +992,7 @@ mod tests {
             .unwrap();
         db.checkpoint_memory_event_cursor(&first.id, 12).unwrap();
 
-        let count = db.clear_sessions().unwrap();
+        let count = db.delete_all_sessions().unwrap();
         assert_eq!(count, 3);
         assert_eq!(db.count_sessions().unwrap(), 0);
         assert!(
@@ -1018,9 +1019,9 @@ mod tests {
     }
 
     #[test]
-    fn test_clear_tool_runs_empty() {
+    fn test_delete_all_sessions_empty() {
         let db = create_db();
-        let count = db.clear_sessions().unwrap();
+        let count = db.delete_all_sessions().unwrap();
         assert_eq!(count, 0);
     }
 

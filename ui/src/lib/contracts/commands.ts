@@ -12,8 +12,8 @@ export type SessionIdRequest = TauriCommandRequest<'reopen_session'>;
 export type ResolveConfirmationRequest = TauriCommandRequest<'resolve_confirmation'>;
 export type RollbackSessionRequest = TauriCommandRequest<'rollback_session'>;
 export type UpdateSessionTitleRequest = TauriCommandRequest<'update_session_title'>;
-export type HistoryPageRequest = TauriCommandRequest<'list_history'>;
-export type HistoryFilterRequest = TauriCommandRequest<'search_history_filtered'>;
+export type SessionHistoryPageRequest = TauriCommandRequest<'list_session_history'>;
+export type SessionHistoryFilterRequest = TauriCommandRequest<'search_session_history_filtered'>;
 export type SwitchModelRequest = TauriCommandRequest<'switch_model'>;
 export type SetReasoningEffortRequest = TauriCommandRequest<'set_reasoning_effort'>;
 export type SetWebSearchRequest = TauriCommandRequest<'set_web_search'>;
@@ -43,13 +43,13 @@ export const TAURI_COMMAND_CONTRACTS = {
 	delete_tool_run: { boundary: 'mutate', security: 'delete one persisted task row by id' },
 	clear_tool_run_history: { boundary: 'mutate', security: 'delete terminal task history; preserve live work and undelivered results' },
 	open_external: { boundary: 'execute', security: 'http(s) or validated absolute local path only' },
-	list_history: { boundary: 'read', security: 'read-only session projection' },
-	count_history: { boundary: 'read', security: 'read-only aggregate' },
-	search_history_paginated: { boundary: 'read', security: 'parameterized read-only search' },
-	count_history_search: { boundary: 'read', security: 'parameterized read-only search' },
-	search_history: { boundary: 'read', security: 'parameterized read-only search' },
-	search_history_filtered: { boundary: 'read', security: 'bounded page and date-filtered projection' },
-	export_history: { boundary: 'read', security: 'export contains persisted history only' },
+	list_session_history: { boundary: 'read', security: 'read-only session projection' },
+	count_session_history: { boundary: 'read', security: 'read-only aggregate' },
+	search_session_history_paginated: { boundary: 'read', security: 'parameterized read-only search' },
+	count_session_history_search: { boundary: 'read', security: 'parameterized read-only search' },
+	search_session_history: { boundary: 'read', security: 'parameterized read-only search' },
+	search_session_history_filtered: { boundary: 'read', security: 'bounded page and date-filtered projection' },
+	export_session_history: { boundary: 'read', security: 'export contains persisted history only' },
 	get_log_info: { boundary: 'read', security: 'path is optional; no environment details' },
 	read_log_tail: { boundary: 'read', security: 'bounded tail; file logging must be enabled' },
 	log_frontend_error: { boundary: 'mutate', security: 'sanitized user-visible error mirrored into the backend log' },
@@ -85,14 +85,14 @@ export const TAURI_COMMAND_CONTRACTS = {
 	cancel_recording: { boundary: 'execute', security: 'cancel clears the in-flight recording id' },
 	process_transcript: { boundary: 'execute', security: 'attachment limits and file persistence are enforced' },
 	reopen_session: { boundary: 'mutate', security: 'session id selects persisted session' },
-	get_sessions: { boundary: 'read', security: 'active session projection' },
+	list_runtime_sessions: { boundary: 'read', security: 'resident nonterminal runtime sessions only' },
 	get_session_lineage: { boundary: 'read', security: 'parent and direct children of the selected session only' },
 	end_session: { boundary: 'mutate', security: 'explicit user termination' },
 	interrupt_session: { boundary: 'mutate', security: 'pauses the selected active session without deleting it' },
 	resolve_confirmation: { boundary: 'mutate', security: 'owner and request id select one registry; receipt, effect, scope, target and expiry are revalidated' },
 	update_session_title: { boundary: 'mutate', security: 'trimmed non-empty title only' },
 	delete_session: { boundary: 'mutate', security: 'delete by session id and release runtime state' },
-	clear_history: { boundary: 'mutate', security: 'clears persisted sessions and session trust' },
+	delete_all_sessions: { boundary: 'mutate', security: 'clears persisted sessions and session trust' },
 	rollback_session: { boundary: 'mutate', security: 'event cursor and projection clock rollback' },
 	continue_session: { boundary: 'mutate', security: 'resume from saved error snapshot' },
 	get_session_for_resume: { boundary: 'read', security: 'session-scoped persisted projection' },

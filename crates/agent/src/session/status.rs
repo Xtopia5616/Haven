@@ -411,7 +411,7 @@ impl SessionSupervisor {
         }
     }
 
-    pub async fn list_sessions(&self) -> Vec<SessionInfo> {
+    pub async fn list_runtime_sessions(&self) -> Vec<SessionInfo> {
         let actors = self
             .actors
             .lock()
@@ -432,28 +432,18 @@ impl SessionSupervisor {
         sessions
     }
 
-    pub async fn clear_all_sessions(&self) -> anyhow::Result<()> {
-        let _block = self.begin_lifecycle_block()?;
-        async {
-            self.quiesce_all_sessions(false).await?;
-            let _lifecycle = self.lifecycle_guard().await;
-            self.clear_all_sessions_locked().await
-        }
-        .await
-    }
-
     /// Clear the in-memory session actors during normal application shutdown.
     ///
     /// A session-owned scheduled ToolRun is durable work, not a child process of
     /// the actor.  It must remain `waiting` so ToolRunService can restore it on
     /// the next startup.  Explicit session deletion/end still uses the regular
     /// quiesce path and cancels all owned tool_runs.
-    pub async fn clear_all_sessions_for_shutdown(&self) -> anyhow::Result<()> {
+    pub async fn clear_session_runtime_state_for_shutdown(&self) -> anyhow::Result<()> {
         let _block = self.begin_lifecycle_block()?;
         async {
             self.quiesce_all_sessions(true).await?;
             let _lifecycle = self.lifecycle_guard().await;
-            self.clear_all_sessions_locked().await
+            self.clear_session_runtime_state_locked().await
         }
         .await
     }
@@ -483,7 +473,7 @@ impl SessionSupervisor {
         Ok(())
     }
 
-    async fn clear_all_sessions_locked(&self) -> anyhow::Result<()> {
+    async fn clear_session_runtime_state_locked(&self) -> anyhow::Result<()> {
         let actors = self
             .actors
             .lock()
@@ -573,7 +563,7 @@ impl SessionSupervisor {
 
     /// Quiesce the working set and clear durable history while holding the
     /// same gate used by session creation/loading/deletion.
-    pub async fn clear_sessions_and_delete(&self) -> anyhow::Result<Vec<String>> {
+    pub async fn delete_all_sessions(&self) -> anyhow::Result<Vec<String>> {
         let _block = self.begin_lifecycle_block()?;
         async {
             self.quiesce_all_sessions(false).await?;
@@ -588,9 +578,9 @@ impl SessionSupervisor {
             for session_id in &session_ids {
                 self.cancel_session_tool_runs_checked(session_id).await?;
             }
-            self.clear_all_sessions_locked().await?;
+            self.clear_session_runtime_state_locked().await?;
             self.partials.forget_all_sessions().await;
-            self.store.clear_sessions().await?;
+            self.store.delete_all_sessions().await?;
             // Release only after the durable purge succeeds. Shared paths are
             // still protected by any remaining message reference and can be
             // reclaimed by the host cleanup pass.

@@ -1,21 +1,21 @@
 import { invoke } from './tauri.ts';
 import type {
-	HistoryPageRequest,
-	HistoryFilterRequest,
+	SessionHistoryPageRequest,
+	SessionHistoryFilterRequest,
 	SessionIdRequest,
 	UpdateSessionTitleRequest,
 } from './contracts/commands.ts';
 import type {
 	SessionHistoryRow,
 	SessionLineageResponse,
-	SessionListResponse,
+	RuntimeSessionListResponse,
 	SessionResumeResponse,
 } from './contracts/sessionHistory.ts';
 import type { TauriCommandInvoke } from './contracts/generatedCommands.ts';
 
 /** List the current in-memory session summaries for the chat shell. */
-export function listSessions(): Promise<SessionListResponse> {
-	return invoke('get_sessions');
+export function listRuntimeSessions(): Promise<RuntimeSessionListResponse> {
+	return invoke('list_runtime_sessions');
 }
 
 /** Load the parent and direct child sessions shown in the active session menu. */
@@ -24,13 +24,13 @@ export function getSessionLineage(request: SessionIdRequest): Promise<SessionLin
 }
 
 /** Load a recent persisted history page for the compact chat session switcher. */
-export function listHistory(request: HistoryPageRequest): Promise<SessionHistoryRow[]> {
-	return invoke('list_history', request);
+export function listSessionHistory(request: SessionHistoryPageRequest): Promise<SessionHistoryRow[]> {
+	return invoke('list_session_history', request);
 }
 
 /** Load the persisted history page using the existing flat Tauri arguments. */
-export function searchHistoryFiltered(request: HistoryFilterRequest): Promise<SessionHistoryRow[]> {
-	return invoke('search_history_filtered', request);
+export function searchSessionHistoryFiltered(request: SessionHistoryFilterRequest): Promise<SessionHistoryRow[]> {
+	return invoke('search_session_history_filtered', request);
 }
 
 /** Load the durable projection used by session resume and transcript reload. */
@@ -57,8 +57,8 @@ export function deleteSession(request: SessionIdRequest): Promise<void> {
 }
 
 /** Clear all persisted session history. */
-export function clearHistory(): Promise<number> {
-	return invoke('clear_history');
+export function deleteAllSessions(): Promise<number> {
+	return invoke('delete_all_sessions');
 }
 
 /** Rename one persisted session. */

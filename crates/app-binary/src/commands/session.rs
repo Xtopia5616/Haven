@@ -1,6 +1,6 @@
 use crate::app_state::{AppState, UiConfirmationAction, UiConfirmationPending};
 use crate::commands::log_err;
-use crate::commands::{SessionListResponse, emit_event_logged};
+use crate::commands::{RuntimeSessionListResponse, emit_event_logged};
 use crate::events::{
     INTERACTION_REQUESTED_EVENT, InteractionRequestedEvent, NOTIFICATION_SHOW_EVENT,
     SESSION_LIFECYCLE_EVENT, SessionLifecycleEvent,
@@ -71,9 +71,11 @@ pub async fn reopen_session(
 }
 
 #[tauri::command]
-pub async fn get_sessions(state: State<'_, Arc<AppState>>) -> Result<SessionListResponse, String> {
-    let sessions = state.runtime.executor.list_sessions().await;
-    Ok(SessionListResponse { sessions })
+pub async fn list_runtime_sessions(
+    state: State<'_, Arc<AppState>>,
+) -> Result<RuntimeSessionListResponse, String> {
+    let sessions = state.runtime.executor.list_runtime_sessions().await;
+    Ok(RuntimeSessionListResponse { sessions })
 }
 
 #[derive(Serialize)]
@@ -795,15 +797,15 @@ pub async fn delete_session(
 }
 
 #[tauri::command]
-pub async fn clear_history(state: State<'_, Arc<AppState>>) -> Result<u64, String> {
+pub async fn delete_all_sessions(state: State<'_, Arc<AppState>>) -> Result<u64, String> {
     let count = state
         .runtime
         .agent
-        .clear_history()
+        .delete_all_sessions()
         .await
         .map(|n| n as u64)
-        .map_err(|e| log_err("clear_history", e))?;
-    cleanup_unreferenced_session_media(state.inner().as_ref(), "clear_history").await;
+        .map_err(|e| log_err("delete_all_sessions", e))?;
+    cleanup_unreferenced_session_media(state.inner().as_ref(), "delete_all_sessions").await;
     Ok(count)
 }
 
@@ -959,7 +961,7 @@ mod tests {
         resume_response_for_session, resume_session_from_store, session_lineage_from_store,
     };
     use crate::app_state::{AppState, UiConfirmationAction, UiConfirmationPending};
-    use crate::commands::SessionListResponse;
+    use crate::commands::RuntimeSessionListResponse;
     use haven_agent::{InteractionOwner, InteractionRequest};
     use haven_common::types::{PermissionEffect, PermissionScope, PermissionTarget, RiskLevel};
     use haven_tools::ConfirmationReceipt;
@@ -1035,7 +1037,7 @@ mod tests {
 
     #[test]
     fn test_session_list_response_serde() {
-        let resp = SessionListResponse { sessions: vec![] };
+        let resp = RuntimeSessionListResponse { sessions: vec![] };
         let json = serde_json::to_string(&resp).unwrap();
         assert_eq!(json, r#"{"sessions":[]}"#);
     }

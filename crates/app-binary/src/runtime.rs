@@ -291,7 +291,11 @@ impl ApplicationRuntime {
         if let Err(error) = self.input_pipeline.shutdown().await {
             tracing::warn!(error = %error, "input pipeline shutdown failed");
         }
-        if let Err(error) = self.executor.clear_all_sessions_for_shutdown().await {
+        if let Err(error) = self
+            .executor
+            .clear_session_runtime_state_for_shutdown()
+            .await
+        {
             tracing::warn!(error = %error, "session shutdown did not quiesce every run");
         }
         self.services().tool_runs.shutdown().await;

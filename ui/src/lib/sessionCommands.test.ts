@@ -1,16 +1,16 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
-	clearHistory,
+	deleteAllSessions,
 	deleteSession,
 	getLatestSessionForResume,
 	getSessionLineage,
 	getSessionForResume,
-	listSessions,
-	listHistory,
+	listRuntimeSessions,
+	listSessionHistory,
 	reopenSession,
-	searchHistoryFiltered,
+	searchSessionHistoryFiltered,
 	updateSessionTitle,
-} from './sessionHistoryCommands.ts';
+} from './sessionCommands.ts';
 
 vi.mock('$lib/tauri.ts', () => ({ invoke: vi.fn() }));
 
@@ -27,9 +27,9 @@ describe('session history command boundary', () => {
 		};
 		invokeMock.mockResolvedValue(response as never);
 
-		await expect(listSessions()).resolves.toBe(response);
+		await expect(listRuntimeSessions()).resolves.toBe(response);
 		expect(invokeMock).toHaveBeenCalledOnce();
-		expect(invokeMock).toHaveBeenCalledWith('get_sessions');
+		expect(invokeMock).toHaveBeenCalledWith('list_runtime_sessions');
 	});
 
 	it('loads the lineage for the selected session with a flat request', async () => {
@@ -47,9 +47,9 @@ describe('session history command boundary', () => {
 		const response = [{ id: 'ses-2', input_text: 'hello' }];
 		invokeMock.mockResolvedValue(response as never);
 
-		await expect(listHistory(request)).resolves.toBe(response);
+		await expect(listSessionHistory(request)).resolves.toBe(response);
 		expect(invokeMock).toHaveBeenCalledOnce();
-		expect(invokeMock).toHaveBeenCalledWith('list_history', request);
+		expect(invokeMock).toHaveBeenCalledWith('list_session_history', request);
 	});
 
 	it('passes the history filter flat and preserves response fields', async () => {
@@ -64,9 +64,9 @@ describe('session history command boundary', () => {
 		const response = [{ id: 'ses-2', input_text: 'hello', future_field: 'kept' }];
 		invokeMock.mockResolvedValue(response as never);
 
-		await expect(searchHistoryFiltered(request)).resolves.toBe(response);
+		await expect(searchSessionHistoryFiltered(request)).resolves.toBe(response);
 		expect(invokeMock).toHaveBeenCalledOnce();
-		expect(invokeMock).toHaveBeenCalledWith('search_history_filtered', request);
+		expect(invokeMock).toHaveBeenCalledWith('search_session_history_filtered', request);
 	});
 
 	it('forwards resume reads and startup restore without response mapping', async () => {
@@ -99,12 +99,12 @@ describe('session history command boundary', () => {
 
 		await expect(reopenSession(request)).resolves.toBeUndefined();
 		await expect(deleteSession(request)).resolves.toBeUndefined();
-		await expect(clearHistory()).resolves.toBe(2);
+		await expect(deleteAllSessions()).resolves.toBe(2);
 		await expect(updateSessionTitle({ ...request, title: 'Updated' })).resolves.toBeUndefined();
 		expect(invokeMock.mock.calls).toEqual([
 			['reopen_session', request],
 			['delete_session', request],
-			['clear_history'],
+			['delete_all_sessions'],
 			['update_session_title', { ...request, title: 'Updated' }],
 		]);
 	});

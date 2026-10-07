@@ -20,13 +20,13 @@
 | `delete_tool_run` | mutate | 按 id 删除单条任务 |
 | `clear_tool_run_history` | mutate | 清空已结束任务历史，保留运行中任务和未投递结果 |
 | `open_external` | execute | 仅 http(s) 或校验后的本地绝对路径 |
-| `list_history` | read | 只读会话投影 |
-| `count_history` | read | 只读聚合 |
-| `search_history_paginated` | read | 参数化查询 |
-| `count_history_search` | read | 参数化查询 |
-| `search_history` | read | 参数化查询 |
-| `search_history_filtered` | read | 分页和日期边界 |
-| `export_history` | read | 仅导出持久化历史 |
+| `list_session_history` | read | 按 limit/offset 读取持久会话记录 |
+| `count_session_history` | read | 持久会话总数 |
+| `search_session_history_paginated` | read | 参数化搜索并分页 |
+| `count_session_history_search` | read | 参数化搜索匹配数 |
+| `search_session_history` | read | 返回前 50 条参数化搜索匹配 |
+| `search_session_history_filtered` | read | 按状态、日期和文本筛选并分页 |
+| `export_session_history` | read | 导出日期/状态筛选后的持久会话记录 |
 | `get_log_info` | read | 不返回环境详情 |
 | `read_log_tail` | read | 尾部长度受限 |
 | `log_frontend_error` | mutate | 脱敏后写入后端日志 |
@@ -59,7 +59,7 @@
 | `cancel_recording` | execute | 清除 in-flight recording id |
 | `process_transcript` | execute | 附件限制和文件持久化校验 |
 | `reopen_session` | mutate | session id 选择持久化会话 |
-| `get_sessions` | read | 活跃会话投影 |
+| `list_runtime_sessions` | read | 仅当前进程中驻留且未终结的会话 |
 | `get_session_lineage` | read | 当前会话的父会话和直接 Agent 子会话 |
 | `end_session` | mutate | 仅显式结束 |
 | `interrupt_session` | mutate | 停止当前输出但保留会话，可继续 |
@@ -70,7 +70,7 @@
 `MemoryFactSourceRef`。它们由 Rust 声明并生成到 `generatedCommands.ts`。App 从 repository `Fact`
 显式投影字段，repository 新增字段不会自动进入 IPC payload。
 | `delete_session` | mutate | 删除并释放运行态 |
-| `clear_history` | mutate | 同时清除会话授权 |
+| `delete_all_sessions` | mutate | 删除所有持久会话及其投影，并清理会话授权和运行态 |
 | `rollback_session` | mutate | event cursor 与 projection clock 一起回退 |
 | `continue_session` | mutate | 从错误 snapshot 恢复 |
 | `get_session_for_resume` | read | 会话范围投影 |
@@ -104,14 +104,14 @@
 
 | 命令 | 边界 | 说明 |
 |---|---|---|
-| `get_sessions` | read | 活跃会话列表 |
+| `list_runtime_sessions` | read | 当前进程中驻留且未终结的会话列表 |
 | `get_session_lineage` | read | 当前会话的父会话和直接 Agent 子会话 |
 | `get_session_for_resume` | read | 恢复指定会话所需的持久化投影 |
 | `get_latest_session_for_resume` | read | 最近持久化会话 |
 | `reopen_session` / `continue_session` / `end_session` / `interrupt_session` | mutate | 会话生命周期控制；中断保留会话 |
 | `rollback_session` | mutate | 回滚分支并同步截断事件和投影 |
 | `update_session_title` | mutate | 更新非空标题 |
-| `delete_session` / `clear_history` | mutate | 删除会话或清空历史，并广播 `session:lifecycle(deleted)` |
+| `delete_session` / `delete_all_sessions` | mutate | 删除一条或全部持久会话，并广播 `session:lifecycle(deleted)` |
 | `resolve_confirmation` | mutate | 输入 `{ owner, requestId, effect, scope, target }`；owner 只选择唯一 pending registry，AppCommand 不经过 Agent executor。期限由 owner 按登记的 `expires_at` 仲裁，不接受 renderer 的超时决定。结果为 `resolved`、`expired` 或 `stale`；命令错误表示可重试失败，pending UI 保留 |
 
 Tauri 接收前端参数时采用其自动 camelCase → Rust snake_case 映射；页面调用处使用 camelCase。

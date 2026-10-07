@@ -1,7 +1,7 @@
 import { reportError, type ErrorReportOptions } from './errorHandling.ts';
 import { addNotification, type NotificationType } from './notificationStore.ts';
 import { buildResumeMessages } from './resumeMessages.ts';
-import { getSessionForResume } from './sessionHistoryCommands.ts';
+import { getSessionForResume } from './sessionCommands.ts';
 import {
 	pickContinueStrategy,
 	shouldResubmitOriginalUser,

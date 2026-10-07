@@ -438,7 +438,7 @@ impl AdminServices {
 
         let sessions = if let Some(session_store) = &self.context.session_store {
             let mut counts: BTreeMap<String, usize> = BTreeMap::new();
-            match session_store.list_history(50, 0).await {
+            match session_store.list_session_history(50, 0).await {
                 Ok(sessions) => {
                     for session in &sessions {
                         *counts
@@ -447,10 +447,10 @@ impl AdminServices {
                     }
                 }
                 Err(error) => {
-                    tracing::warn!(error = %error, "admin diagnostics list_sessions failed")
+                    tracing::warn!(error = %error, "admin diagnostics list_session_history failed")
                 }
             }
-            let total = match session_store.count_history().await {
+            let total = match session_store.count_session_history().await {
                 Ok(total) => total,
                 Err(error) => {
                     tracing::warn!(error = %error, "admin diagnostics count_sessions failed");
@@ -551,7 +551,7 @@ impl AdminServices {
             return Ok(SessionsOutput::Unavailable { unavailable: true });
         };
         let sessions = session_store
-            .list_history(limit.unwrap_or(10).clamp(1, 50), 0)
+            .list_session_history(limit.unwrap_or(10).clamp(1, 50), 0)
             .await?;
         let rows: Vec<SessionSummaryOutput> = sessions
             .into_iter()
@@ -572,7 +572,7 @@ impl AdminServices {
             return Ok(ErrorsOutput::Unavailable { unavailable: true });
         };
         let sessions = session_store
-            .list_history(limit.unwrap_or(10).clamp(1, 50), 0)
+            .list_session_history(limit.unwrap_or(10).clamp(1, 50), 0)
             .await?;
         let rows: Vec<SessionErrorOutput> = sessions
             .into_iter()

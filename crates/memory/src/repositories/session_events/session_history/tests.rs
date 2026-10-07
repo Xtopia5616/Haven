@@ -42,7 +42,7 @@ async fn session_store_latest_record_preserves_recent_history_order_and_empty_re
     );
     assert_eq!(
         serde_json::to_value(latest).unwrap(),
-        serde_json::to_value(db.list_sessions(1, 0).unwrap().into_iter().next()).unwrap()
+        serde_json::to_value(db.list_persisted_sessions(1, 0).unwrap().into_iter().next()).unwrap()
     );
 
     let empty_db = Arc::new(Database::open_in_memory().unwrap());
@@ -271,28 +271,31 @@ async fn session_store_history_ports_preserve_database_query_semantics() {
     let as_json = |sessions: Vec<Session>| serde_json::to_value(sessions).unwrap();
 
     assert_eq!(
-        as_json(store.list_history(2, 1).await.unwrap()),
-        as_json(db.list_sessions(2, 1).unwrap())
+        as_json(store.list_session_history(2, 1).await.unwrap()),
+        as_json(db.list_persisted_sessions(2, 1).unwrap())
     );
     assert_eq!(
-        store.count_history().await.unwrap(),
+        store.count_session_history().await.unwrap(),
         db.count_sessions().unwrap()
     );
     assert_eq!(
         as_json(
             store
-                .search_history_paginated("needle".into(), 1, 1)
+                .search_session_history_paginated("needle".into(), 1, 1)
                 .await
                 .unwrap()
         ),
         as_json(db.search_sessions_paginated("needle", 1, 1).unwrap())
     );
     assert_eq!(
-        store.count_history_search("needle".into()).await.unwrap(),
+        store
+            .count_session_history_search("needle".into())
+            .await
+            .unwrap(),
         db.count_sessions_search("needle").unwrap()
     );
     assert_eq!(
-        as_json(store.search_history("needle".into()).await.unwrap()),
+        as_json(store.search_session_history("needle".into()).await.unwrap()),
         as_json(db.search_sessions("needle").unwrap())
     );
 
@@ -305,7 +308,12 @@ async fn session_store_history_ports_preserve_database_query_semantics() {
         offset: 0,
     };
     assert_eq!(
-        as_json(store.search_history_filtered(filter.clone()).await.unwrap()),
+        as_json(
+            store
+                .search_session_history_filtered(filter.clone())
+                .await
+                .unwrap()
+        ),
         as_json(
             db.search_sessions_filtered(
                 filter.query.as_deref(),

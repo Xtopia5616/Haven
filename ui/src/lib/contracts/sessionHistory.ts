@@ -2,7 +2,7 @@
 import type {
   LlmUsageRecord as GeneratedLlmUsageRecord,
   Message as GeneratedMessage,
-  SessionListResponse as GeneratedSessionListResponse,
+  RuntimeSessionListResponse as GeneratedSessionListResponse,
   SessionResumeResponse as GeneratedSessionResumeResponse,
   SessionStep as GeneratedSessionStep,
   SessionUsage as GeneratedSessionUsage,
@@ -10,8 +10,8 @@ import type {
 } from './generatedCommands.ts';
 
 /** All command wire shapes are derived from Rust handlers and DTOs. */
-export type SessionHistoryRow = TauriCommandResponse<'list_history'>[number];
-export type SessionListResponse = GeneratedSessionListResponse;
+export type SessionHistoryRow = TauriCommandResponse<'list_session_history'>[number];
+export type RuntimeSessionListResponse = GeneratedSessionListResponse;
 export type SessionLineageResponse = TauriCommandResponse<'get_session_lineage'>;
 export type SessionResumeMessage = GeneratedMessage;
 export type SessionResumeStep = GeneratedSessionStep;

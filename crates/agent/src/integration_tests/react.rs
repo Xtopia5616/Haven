@@ -1223,7 +1223,10 @@ async fn ask_interaction_survives_executor_restart_from_durable_snapshot() {
         .await;
     assert_eq!(recovered_pending.len(), 1);
 
-    executor.clear_all_sessions_for_shutdown().await.unwrap();
+    executor
+        .clear_session_runtime_state_for_shutdown()
+        .await
+        .unwrap();
 
     let restarted_tools = Arc::new(ToolsFacade::new());
     restarted_tools

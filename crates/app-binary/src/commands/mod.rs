@@ -1,5 +1,5 @@
 //! Tauri command handlers, split by domain:
-//! `recording` / `session` / `tool_runs` / `history` / `model` / `mcp` /
+//! `recording` / `session` / `tool_runs` / `session_history` / `model` / `mcp` /
 //! `skills` / `memory` / `settings` / `log` / `diagnostics`.
 //!
 //! Shared helpers (error conversion, router hot-swap, MCP connect, attachment
@@ -11,7 +11,6 @@
 pub mod contracts;
 pub mod diagnostics;
 pub mod external;
-pub mod history;
 pub mod log;
 pub(crate) mod managed_media;
 pub mod mcp;
@@ -19,6 +18,7 @@ pub mod memory;
 pub mod model;
 pub mod recording;
 pub mod session;
+pub mod session_history;
 pub mod settings;
 pub mod skills;
 pub mod tool_runs;
@@ -70,7 +70,7 @@ pub(crate) use recording::{
 };
 
 #[derive(Serialize)]
-pub struct SessionListResponse {
+pub struct RuntimeSessionListResponse {
     pub sessions: Vec<haven_agent::SessionInfo>,
 }
 

@@ -866,8 +866,8 @@ impl AgentLayer {
 
     /// Quiesce all actors and delete session history, then reclaim in-memory
     /// session state and publish one ordered tombstone for the cleared list.
-    pub async fn clear_history(&self) -> anyhow::Result<usize> {
-        let session_ids = self.executor.clear_sessions_and_delete().await?;
+    pub async fn delete_all_sessions(&self) -> anyhow::Result<usize> {
+        let session_ids = self.executor.delete_all_sessions().await?;
         for session_id in &session_ids {
             self.memory_worker.clear_session(session_id);
         }

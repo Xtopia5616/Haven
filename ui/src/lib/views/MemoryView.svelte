@@ -21,13 +21,13 @@
 		recallMemory,
 	} from '$lib/memoryCommands.ts';
 	import {
-		clearHistory as clearHistoryCommand,
+		deleteAllSessions as deleteAllSessionsCommand,
 		deleteSession as deleteSessionCommand,
 		getSessionForResume,
 		reopenSession as reopenSessionCommand,
-		searchHistoryFiltered,
+		searchSessionHistoryFiltered,
 		updateSessionTitle as updateSessionTitleCommand,
-	} from '$lib/sessionHistoryCommands.ts';
+	} from '$lib/sessionCommands.ts';
 	import { registerSessionLifecycleListener } from '$lib/events.ts';
 	import { clearToolRunHistory, listToolRunHistory } from '$lib/toolRunCommands.ts';
 	import MaterialDialog from '$lib/MaterialDialog.svelte';
@@ -40,7 +40,7 @@
 	import ToolRunCenter from '$lib/ToolRunCenter.svelte';
 	import WorkspacePageHeader from '$lib/WorkspacePageHeader.svelte';
 	import WorkspaceSectionHeader from '$lib/WorkspaceSectionHeader.svelte';
-	import type { HistoryFilterRequest } from '$lib/contracts/commands.ts';
+	import type { SessionHistoryFilterRequest } from '$lib/contracts/commands.ts';
 	import type { Fact, MemoryRecallState } from '$lib/contracts/memory.ts';
 	import type { ToolRunKind, ToolRunPayload } from '$lib/contracts/toolRun.ts';
 	import type { SessionHistoryRow } from '$lib/contracts/sessionHistory.ts';
@@ -221,7 +221,7 @@
 		void goto('/?' + params.toString(), { replaceState: true });
 	}
 
-	function filterParams(extra: Pick<HistoryFilterRequest, 'limit' | 'offset'>) {
+	function filterParams(extra: Pick<SessionHistoryFilterRequest, 'limit' | 'offset'>) {
 		return {
 			query: searchQuery || null,
 			status: statusFilter || null,
@@ -240,7 +240,7 @@
 		const sequence = ++loadSessionsSeq;
 		loading = true;
 		try {
-			const results = await searchHistoryFiltered(
+			const results = await searchSessionHistoryFiltered(
 				filterParams({ limit: PAGE_SIZE, offset: 0 }),
 			);
 			if (sequence !== loadSessionsSeq) return;
@@ -266,7 +266,7 @@
 		const sequence = loadSessionsSeq;
 		loading = true;
 		try {
-			const more = await searchHistoryFiltered(filterParams({ limit: PAGE_SIZE, offset }));
+			const more = await searchSessionHistoryFiltered(filterParams({ limit: PAGE_SIZE, offset }));
 			if (sequence !== loadSessionsSeq) return;
 			if (more && more.length > 0) {
 				sessions = [...sessions, ...more];
@@ -364,9 +364,9 @@
 		}
 		deleteTarget = null;
 	}
-	async function clearSessions() {
+	async function deleteAllSessions() {
 		try {
-			const count = await clearHistoryCommand();
+			const count = await deleteAllSessionsCommand();
 			sessions = [];
 			totalCount = 0;
 			hasMore = false;
@@ -377,7 +377,7 @@
 		} catch (error) {
 			reportError(error, {
 				context: 'MemoryView',
-				message: '清空会话失败',
+				message: '删除全部会话失败',
 				log: false,
 			});
 		}
@@ -593,7 +593,7 @@
 							{#snippet children()}
 								<MaterialButton
 									variant="danger"
-									label="清空会话"
+									label="删除全部会话"
 									onclick={() => (showClearDialog = true)}
 									disabled={loading || totalCount === 0}
 								/>
@@ -761,13 +761,13 @@
 		/>
 	{/snippet}
 </MaterialDialog>
-<MaterialDialog open={showClearDialog} onClose={() => (showClearDialog = false)} title="清空会话">
+<MaterialDialog open={showClearDialog} onClose={() => (showClearDialog = false)} title="删除全部会话">
 	{#snippet children()}<p class="dialog-text">
 			将永久删除全部会话记录（长期事实不受影响）。此操作不可撤销。
 		</p>{/snippet}
 	{#snippet footer()}
 		<MaterialButton variant="text" label="取消" onclick={() => (showClearDialog = false)} />
-		<MaterialButton variant="danger" label="清空全部" onclick={clearSessions} />
+		<MaterialButton variant="danger" label="删除全部会话" onclick={deleteAllSessions} />
 	{/snippet}
 </MaterialDialog>
 <MaterialDialog
