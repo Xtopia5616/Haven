@@ -77,7 +77,7 @@ describe('createChatModelOperations', () => {
 		});
 
 		expect(harness.calls).toEqual([
-			{ command: 'switch_model', payload: { role: 'chat', modelId: 'chat-profile' } },
+			{ command: 'switch_model', payload: { requestKind: 'chat', modelId: 'chat-profile' } },
 		]);
 		expect(harness.modelMenuClosed).toBe(1);
 		expect(harness.modelIds).toEqual(['chat-profile']);
@@ -107,8 +107,8 @@ describe('createChatModelOperations', () => {
 		});
 
 		expect(harness.calls).toEqual([
-			{ command: 'switch_model', payload: { role: 'chat', modelId: 'local-chat' } },
-			{ command: 'set_web_search', payload: { role: 'chat', mode: 'off' } },
+			{ command: 'switch_model', payload: { requestKind: 'chat', modelId: 'local-chat' } },
+			{ command: 'set_web_search', payload: { requestKind: 'chat', mode: 'off' } },
 		]);
 		expect(harness.webSearchModes).toEqual(['off']);
 	});
@@ -128,8 +128,8 @@ describe('createChatModelOperations', () => {
 		});
 
 		expect(harness.calls).toEqual([
-			{ command: 'switch_model', payload: { role: 'chat', modelId: 'gemini-chat' } },
-			{ command: 'set_web_search', payload: { role: 'chat', mode: 'auto' } },
+			{ command: 'switch_model', payload: { requestKind: 'chat', modelId: 'gemini-chat' } },
+			{ command: 'set_web_search', payload: { requestKind: 'chat', mode: 'auto' } },
 		]);
 		expect(harness.webSearchModes).toEqual(['auto']);
 	});
@@ -140,7 +140,7 @@ describe('createChatModelOperations', () => {
 		await harness.controller.selectEffort('');
 
 		expect(harness.calls).toEqual([
-			{ command: 'set_reasoning_effort', payload: { role: 'chat', effort: null } },
+			{ command: 'set_reasoning_effort', payload: { requestKind: 'chat', effort: null } },
 		]);
 		expect(harness.efforts).toEqual(['']);
 		expect(harness.notifications).toEqual([
@@ -155,7 +155,7 @@ describe('createChatModelOperations', () => {
 		await harness.controller.selectWebSearch('auto');
 
 		expect(harness.calls).toEqual([
-			{ command: 'set_web_search', payload: { role: 'chat', mode: 'auto' } },
+			{ command: 'set_web_search', payload: { requestKind: 'chat', mode: 'auto' } },
 		]);
 		expect(harness.webSearchModes).toEqual(['auto']);
 		expect(harness.notifications).toEqual([
@@ -224,7 +224,7 @@ describe('createChatModelOperations', () => {
 		await harness.controller.selectWebSearch('off');
 
 		expect(harness.calls).toEqual([
-			{ command: 'set_web_search', payload: { role: 'chat', mode: 'off' } },
+			{ command: 'set_web_search', payload: { requestKind: 'chat', mode: 'off' } },
 		]);
 		expect(harness.webSearchModes).toEqual(['off']);
 	});

@@ -219,17 +219,17 @@ pub const COMMAND_CONTRACTS: &[CommandContract] = &[
     CommandContract {
         name: "switch_model",
         boundary: CommandBoundary::Mutate,
-        security: "role is a RequestKind; modelId is an assigned, capability-compatible ModelConfig id",
+        security: "request kind selects the route; modelId is an assigned, capability-compatible ModelConfig id",
     },
     CommandContract {
         name: "set_reasoning_effort",
         boundary: CommandBoundary::Mutate,
-        security: "model id or RequestKind selector validated before config save",
+        security: "request kind selects the assigned model; validated before config save",
     },
     CommandContract {
         name: "set_web_search",
         boundary: CommandBoundary::Mutate,
-        security: "provider capability checked before config save",
+        security: "request kind selects the assigned model; provider capability checked before config save",
     },
     // recording
     CommandContract {

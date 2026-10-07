@@ -9,32 +9,19 @@ use std::sync::Arc;
 use tauri::Manager;
 use tauri::State;
 
-/// Resolve a model id or `RequestKind` string to a named model, or `None` for
-/// an unknown value. This is the single selector boundary for the model
-/// parameter commands (`set_reasoning_effort`, `set_web_search`).
-fn model_id_for_selector(cfg: &LlmConfig, model_id_or_request_kind: &str) -> Option<String> {
-    if cfg.model(model_id_or_request_kind).is_some() {
-        return Some(model_id_or_request_kind.to_string());
-    }
-    let request = RequestKind::from_str(model_id_or_request_kind)?;
-    cfg.policy(request).map(|policy| policy.primary.clone())
-}
-
-fn model_slot<'a>(
-    cfg: &'a mut LlmConfig,
-    model_id_or_request_kind: &str,
-) -> Option<&'a mut ModelConfig> {
-    let id = model_id_for_selector(cfg, model_id_or_request_kind)?;
+fn model_slot_for_request(
+    cfg: &mut LlmConfig,
+    request_kind: RequestKind,
+) -> Option<&mut ModelConfig> {
+    let id = cfg.policy(request_kind)?.primary.clone();
     cfg.model_mut(&id)
 }
 
 fn set_request_route(
     llm: &mut LlmConfig,
-    request_name: &str,
+    request_kind: RequestKind,
     model_config_id: &str,
 ) -> Result<(), String> {
-    let request = RequestKind::from_str(request_name)
-        .ok_or_else(|| format!("unknown request kind: {request_name}"))?;
     let model = llm
         .model(model_config_id)
         .ok_or_else(|| format!("unknown model configuration: {model_config_id}"))?;
@@ -43,24 +30,29 @@ fn set_request_route(
             "model configuration is incomplete: {model_config_id}"
         ));
     }
-    if !model.capabilities.contains(&request.required_capability()) {
+    if !model
+        .capabilities
+        .contains(&request_kind.required_capability())
+    {
         return Err(format!(
             "model configuration {model_config_id} does not support {}",
-            request.as_str()
+            request_kind.as_str()
         ));
     }
 
-    llm.set_policy(request, model_config_id);
+    llm.set_policy(request_kind, model_config_id);
     Ok(())
 }
 
-fn validate_builtin_search(config: &AppConfig, selector: &str) -> Result<(), String> {
+fn validate_builtin_search(config: &AppConfig, request_kind: RequestKind) -> Result<(), String> {
     let llm = &config.llm;
-    let model_id = model_id_for_selector(llm, selector)
-        .ok_or_else(|| format!("unknown or unconfigured model/request: {}", selector))?;
+    let model_id = llm
+        .policy(request_kind)
+        .map(|policy| policy.primary.as_str())
+        .ok_or_else(|| format!("request is not configured: {}", request_kind.as_str()))?;
     let slot = llm
-        .model(&model_id)
-        .ok_or_else(|| format!("unknown or unconfigured model/request: {}", selector))?;
+        .model(model_id)
+        .ok_or_else(|| format!("request is not configured: {}", request_kind.as_str()))?;
     let style = llm
         .providers
         .iter()
@@ -570,23 +562,20 @@ pub async fn discover_all_models(
 /// Apply a model mutation through the runtime config coordinator. Command
 /// validation and slot mutation remain here; the coordinator serializes the
 /// durable edit and its complete live apply.
-async fn update_model_field(
+async fn update_request_model_field(
     state: &AppState,
     ctx: &str,
-    model_id_or_request_kind: &str,
-    validate: impl FnOnce(&haven_common::config::AppConfig, &str) -> Result<(), String>,
+    request_kind: RequestKind,
+    validate: impl FnOnce(&AppConfig, RequestKind) -> Result<(), String>,
     mutate: impl FnOnce(&mut ModelConfig) -> Result<(), String>,
 ) -> Result<(), String> {
     state
         .runtime
         .config_runtime_coordinator
         .edit_model_and_apply(state, ctx, |config| {
-            validate(config, model_id_or_request_kind).map_err(anyhow::Error::msg)?;
-            let slot = model_slot(&mut config.llm, model_id_or_request_kind).ok_or_else(|| {
-                anyhow::anyhow!(
-                    "unknown or unconfigured model/request: {}",
-                    model_id_or_request_kind
-                )
+            validate(config, request_kind).map_err(anyhow::Error::msg)?;
+            let slot = model_slot_for_request(&mut config.llm, request_kind).ok_or_else(|| {
+                anyhow::anyhow!("request is not configured: {}", request_kind.as_str())
             })?;
             mutate(slot).map_err(anyhow::Error::msg)
         })
@@ -594,11 +583,11 @@ async fn update_model_field(
 }
 
 /// Select a configured model assignment as the primary for a request kind.
-/// `role` is a RequestKind and `model_id` is a named ModelConfig id.
+/// `request_kind` identifies the route and `model_id` is a named ModelConfig id.
 /// Updates config.toml and hot-swaps the LlmRouter at runtime.
 #[tauri::command]
 pub async fn switch_model(
-    role: String,
+    request_kind: RequestKind,
     model_id: String,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
@@ -607,18 +596,19 @@ pub async fn switch_model(
         .runtime
         .config_runtime_coordinator
         .edit_model_and_apply(&state, "switch_model", |config| {
-            set_request_route(&mut config.llm, &role, &model_id).map_err(anyhow::Error::msg)
+            set_request_route(&mut config.llm, request_kind, &model_id).map_err(anyhow::Error::msg)
         })
         .await?;
     crate::commands::emit_llm_config_changed(&app);
     Ok(())
 }
 
-/// Set the reasoning effort of a named model assignment (e.g. "low"/"medium"/"high").
+/// Set the reasoning effort of the model assigned to a request route
+/// (e.g. "low"/"medium"/"high").
 /// Updates config.toml and hot-swaps the LlmRouter at runtime.
 #[tauri::command]
 pub async fn set_reasoning_effort(
-    role: String,
+    request_kind: RequestKind,
     effort: Option<String>,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
@@ -630,10 +620,10 @@ pub async fn set_reasoning_effort(
         None => None,
     };
 
-    update_model_field(
+    update_request_model_field(
         &state,
         "set_reasoning_effort",
-        &role,
+        request_kind,
         |_, _| Ok(()),
         |slot| {
             slot.reasoning_effort = normalized;
@@ -654,7 +644,7 @@ pub async fn set_reasoning_effort(
 /// support a built-in search tool (see `supports_builtin_web_search`).
 #[tauri::command]
 pub async fn set_web_search(
-    role: String,
+    request_kind: RequestKind,
     mode: Option<String>,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
@@ -675,15 +665,15 @@ pub async fn set_web_search(
     }
     let requires_builtin_search = !matches!(normalized.as_deref(), Some("off") | None);
 
-    update_model_field(
+    update_request_model_field(
         &state,
         "set_web_search",
-        &role,
-        |config, selector| {
+        request_kind,
+        |config, request_kind| {
             if !requires_builtin_search {
                 return Ok(());
             }
-            validate_builtin_search(config, selector)
+            validate_builtin_search(config, request_kind)
         },
         |slot| {
             slot.web_search = normalized;
@@ -825,7 +815,7 @@ mod tests {
     }
 
     #[test]
-    fn model_selector_accepts_named_model_id_or_request_kind() {
+    fn model_slot_for_request_resolves_the_assigned_model() {
         let mut cfg = AppConfig::default();
         cfg.llm.models.push(ModelConfig {
             id: "chat-primary".into(),
@@ -837,14 +827,13 @@ mod tests {
         });
 
         assert_eq!(
-            model_id_for_selector(&cfg.llm, "chat-primary"),
-            Some("chat-primary".into())
+            model_slot_for_request(&mut cfg.llm, RequestKind::Chat).map(|model| model.id.as_str()),
+            Some("chat-primary")
         );
         assert_eq!(
-            model_id_for_selector(&cfg.llm, "chat"),
-            Some("chat-primary".into())
+            model_slot_for_request(&mut cfg.llm, RequestKind::Vision),
+            None
         );
-        assert_eq!(model_id_for_selector(&cfg.llm, "vision"), None);
     }
 
     #[test]
@@ -869,7 +858,7 @@ mod tests {
         ]);
         llm.set_policy(RequestKind::Chat, "chat-primary");
 
-        set_request_route(&mut llm, "chat", "chat-alternate").unwrap();
+        set_request_route(&mut llm, RequestKind::Chat, "chat-alternate").unwrap();
 
         assert_eq!(
             llm.policy(RequestKind::Chat).unwrap().primary,
@@ -898,10 +887,9 @@ mod tests {
             ..Default::default()
         });
 
-        assert!(set_request_route(&mut llm, "chat", "missing").is_err());
-        assert!(set_request_route(&mut llm, "chat", "embedding-only").is_err());
-        assert!(set_request_route(&mut llm, "chat", "incomplete-chat").is_err());
-        assert!(set_request_route(&mut llm, "invalid", "incomplete-chat").is_err());
+        assert!(set_request_route(&mut llm, RequestKind::Chat, "missing").is_err());
+        assert!(set_request_route(&mut llm, RequestKind::Chat, "embedding-only").is_err());
+        assert!(set_request_route(&mut llm, RequestKind::Chat, "incomplete-chat").is_err());
         assert!(llm.policy(RequestKind::Chat).is_none());
     }
 
@@ -923,15 +911,15 @@ mod tests {
         });
 
         assert_eq!(
-            validate_builtin_search(&cfg, "chat"),
+            validate_builtin_search(&cfg, RequestKind::Chat),
             Err("provider wire style `openai-chat` does not support built-in search".into())
         );
         assert_eq!(
-            validate_builtin_search(&cfg, "missing"),
-            Err("unknown or unconfigured model/request: missing".into())
+            validate_builtin_search(&cfg, RequestKind::Vision),
+            Err("request is not configured: vision".into())
         );
 
         cfg.llm.providers[0].api_style = Some("openai-responses".into());
-        assert_eq!(validate_builtin_search(&cfg, "chat-model"), Ok(()));
+        assert_eq!(validate_builtin_search(&cfg, RequestKind::Chat), Ok(()));
     }
 }

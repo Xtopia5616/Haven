@@ -64,7 +64,7 @@ export function createChatModelOperations(dependencies: ChatModelOperationsDepen
 
 	function selectModel(model: ChatModelOption): Promise<void> {
 		return runOperation(
-			() => dependencies.invoke('switch_model', { role: 'chat', modelId: model.id }),
+			() => dependencies.invoke('switch_model', { requestKind: 'chat', modelId: model.id }),
 			() => {
 				dependencies.closeModelMenu();
 				let webSearch = model.webSearch;
@@ -85,7 +85,7 @@ export function createChatModelOperations(dependencies: ChatModelOperationsDepen
 				dependencies.notify(`已切换对话模型：${model.name}`, 'success', 3000);
 				if (normalizedWebSearch) {
 					dependencies
-						.invoke('set_web_search', { role: 'chat', mode: normalizedWebSearch })
+						.invoke('set_web_search', { requestKind: 'chat', mode: normalizedWebSearch })
 						.catch((error) =>
 							dependencies.reportError(error, {
 								context: '+page',
@@ -105,7 +105,7 @@ export function createChatModelOperations(dependencies: ChatModelOperationsDepen
 		return runOperation(
 			() =>
 				dependencies.invoke('set_reasoning_effort', {
-					role: 'chat',
+					requestKind: 'chat',
 					effort: value || null,
 				}),
 			() => {
@@ -123,7 +123,7 @@ export function createChatModelOperations(dependencies: ChatModelOperationsDepen
 		}
 		const label = dependencies.getWebSearchLabel(value) || '关闭';
 		return runOperation(
-			() => dependencies.invoke('set_web_search', { role: 'chat', mode: value }),
+			() => dependencies.invoke('set_web_search', { requestKind: 'chat', mode: value }),
 			() => {
 				dependencies.setCurrentWebSearch(value);
 				dependencies.notify(`联网搜索: ${label}`, 'success', 2500);

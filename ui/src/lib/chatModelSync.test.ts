@@ -165,7 +165,7 @@ describe('chat model route sync', () => {
 
 		expect(state.webSearch).toEqual(['off']);
 		expect(state.webSearchSupported).toEqual([false]);
-		expect(invoke).toHaveBeenCalledWith('set_web_search', { role: 'chat', mode: 'off' });
+		expect(invoke).toHaveBeenCalledWith('set_web_search', { requestKind: 'chat', mode: 'off' });
 	});
 
 	it('normalizes Gemini always search mode to auto', () => {
@@ -190,6 +190,6 @@ describe('chat model route sync', () => {
 
 		expect(state.webSearch).toEqual(['auto']);
 		expect(state.webSearchSupported).toEqual([true]);
-		expect(invoke).toHaveBeenCalledWith('set_web_search', { role: 'chat', mode: 'auto' });
+		expect(invoke).toHaveBeenCalledWith('set_web_search', { requestKind: 'chat', mode: 'auto' });
 	});
 });

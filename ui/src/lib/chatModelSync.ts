@@ -103,7 +103,7 @@ export function createChatModelSync(options: ModelSyncOptions) {
 		// Normalize stale settings so they cannot become active if the profile or
 		// provider wire style changes later.
 		if (normalizedWebSearch) {
-			invoke('set_web_search', { role: 'chat', mode: normalizedWebSearch }).catch((error) => {
+			invoke('set_web_search', { requestKind: 'chat', mode: normalizedWebSearch }).catch((error) => {
 				reportError(error, {
 					context: '+page',
 					message: '同步对话模型联网搜索设置失败',

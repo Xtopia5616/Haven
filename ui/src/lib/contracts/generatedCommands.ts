@@ -347,15 +347,15 @@ export interface TauriCommandMap {
 	search_session_history_filtered: { request: { query?: string | null; status?: string | null; startDate?: string | null; endDate?: string | null; limit?: number | null; offset?: number | null }; response: SessionRecordDto[] };
 	search_session_history_paginated: { request: { query: string; limit: number; offset: number }; response: SessionRecordDto[] };
 	set_hotkey_capture_active: { request: { active: boolean }; response: void };
-	set_reasoning_effort: { request: { role: string; effort?: string | null }; response: void };
+	set_reasoning_effort: { request: { requestKind: RequestKindInput; effort?: string | null }; response: void };
 	set_skill_enabled: { request: { name: string; enabled: boolean }; response: void };
 	set_tool_enabled: { request: { name: string; enabled: boolean }; response: void };
-	set_web_search: { request: { role: string; mode?: string | null }; response: void };
+	set_web_search: { request: { requestKind: RequestKindInput; mode?: string | null }; response: void };
 	stage_ocr_credential: { request: { apiSecret: boolean; value: string }; response: string };
 	stage_provider_credential: { request: { providerName: string; apiKey: string }; response: string };
 	start_recording: { request: undefined; response: void };
 	stop_recording: { request: undefined; response: void };
-	switch_model: { request: { role: string; modelId: string }; response: void };
+	switch_model: { request: { requestKind: RequestKindInput; modelId: string }; response: void };
 	toggle_mcp_server: { request: { name: string; enabled: boolean }; response: void };
 	update_mcp_server: { request: { name: string; config: McpServerConfigInput }; response: void };
 	update_session_title: { request: { sessionId: string; title: string }; response: void };
