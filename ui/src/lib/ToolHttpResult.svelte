@@ -20,17 +20,8 @@
 			? 'status-completed'
 			: 'status-failed'}
 	/>
-	{#if data.truncated}<span class="tool-card-meta">（响应过长已截断）</span>{/if}
+	{#if data.truncated}<span class="tool-result-meta tool-result-meta--compact">（响应过长已截断）</span>{/if}
 </div>
 {#if typeof data.body === 'string' && data.body}
 	<pre class="tool-result-preview">{data.body}</pre>
 {/if}
-
-<style>
-	.tool-card-meta {
-		font-size: var(--md-sys-typescale-label-small-size);
-		line-height: var(--md-sys-typescale-label-small-line-height);
-		color: var(--md-sys-color-on-surface-variant);
-		margin-top: var(--md-sys-space-2xs);
-	}
-</style>

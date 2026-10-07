@@ -1465,6 +1465,37 @@ select.md-select {
 	font-weight: 600;
 }
 
+.tool-result-meta--compact {
+	font-size: var(--md-sys-typescale-label-small-size);
+	line-height: var(--md-sys-typescale-label-small-line-height);
+	color: var(--md-sys-color-on-surface-variant);
+	margin-top: var(--md-sys-space-2xs);
+}
+
+.tool-result-meta--input {
+	color: var(--md-sys-color-on-surface-variant);
+	font-size: var(--md-sys-typescale-label-small-size);
+}
+
+.tool-result-meta--media {
+	margin: var(--md-sys-space-xs) 0 0;
+	color: var(--md-sys-color-on-surface-variant);
+}
+
+.tool-result-meta--memory {
+	font-size: var(--md-sys-typescale-label-small-size);
+	line-height: var(--md-sys-typescale-label-small-line-height);
+	color: var(--md-sys-color-on-surface-variant);
+	margin-bottom: var(--md-sys-space-xs);
+}
+
+.tool-result-meta--shell {
+	margin: var(--md-sys-space-2xs) 0 0;
+	font-size: var(--md-sys-typescale-label-medium-size);
+	line-height: var(--md-sys-typescale-label-medium-line-height);
+	color: var(--md-sys-color-on-surface-variant);
+}
+
 .tool-result-window-row {
 	display: flex;
 	align-items: baseline;

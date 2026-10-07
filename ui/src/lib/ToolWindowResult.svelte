@@ -82,7 +82,7 @@
 		<span class="window-op">截图已生成</span>
 		{#if data.asset_id}<span class="window-asset">{data.asset_id}</span>{/if}
 	</div>
-	{#if data.width != null && data.height != null}<div class="tool-card-meta">
+	{#if data.width != null && data.height != null}<div class="tool-result-meta">
 			{data.width}×{data.height}{data.format ? ` · ${data.format.toUpperCase()}` : ''}
 		</div>{/if}
 {:else if data.operation === 'ocr'}
@@ -104,7 +104,7 @@
 				>{data.condition}</span
 			>{/if}
 	</div>
-	{#if data.text}<div class="tool-card-meta">{data.text}</div>{/if}
+	{#if data.text}<div class="tool-result-meta">{data.text}</div>{/if}
 {:else if Array.isArray(data.elements)}
 	<div class="tool-result-label">{data.count ?? data.elements.length} 个界面元素</div>
 	<ToolResultList items={data.elements}>
@@ -125,7 +125,7 @@
 		{/snippet}
 	</ToolResultList>
 {:else if data.operation}
-	<div class="tool-card-meta">窗口操作：{data.operation}</div>
+	<div class="tool-result-meta">窗口操作：{data.operation}</div>
 	<JsonView value={data} defaultDepth={1} />
 {:else}
 	<p class="tool-result-message">没有窗口结果</p>

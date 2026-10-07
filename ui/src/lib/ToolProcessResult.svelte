@@ -117,7 +117,7 @@
 		<span class="process-action-id">PID {data.killed}</span>
 	</div>
 {:else if data.operation}
-	<div class="tool-card-meta">进程操作：{data.operation}</div>
+	<div class="tool-result-meta">进程操作：{data.operation}</div>
 	<JsonView value={data} defaultDepth={1} />
 {:else}
 	<p class="tool-result-message tool-result-message--spaced">没有进程结果</p>

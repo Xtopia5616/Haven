@@ -15,7 +15,7 @@
 
 <div class="tool-result-label">{data.label}</div>
 {#if Array.isArray(data.queries) && data.queries.length > 0}
-	<div class="tool-card-meta">查询：{data.queries.join('；')}</div>
+	<div class="tool-result-meta tool-result-meta--compact">查询：{data.queries.join('；')}</div>
 {/if}
 {#if Array.isArray(data.results)}
 	{#if data.results.length > 0}
@@ -30,7 +30,7 @@
 							{/if}
 						</div>
 						{#if result.snippet}
-							<div class="tool-card-meta">{result.snippet}</div>
+							<div class="tool-result-meta tool-result-meta--compact">{result.snippet}</div>
 						{/if}
 					{/each}
 				</div>
@@ -40,12 +40,3 @@
 		<p class="tool-result-message">（未返回结果）</p>
 	{/if}
 {/if}
-
-<style>
-	.tool-card-meta {
-		font-size: var(--md-sys-typescale-label-small-size);
-		line-height: var(--md-sys-typescale-label-small-line-height);
-		color: var(--md-sys-color-on-surface-variant);
-		margin-top: var(--md-sys-space-2xs);
-	}
-</style>

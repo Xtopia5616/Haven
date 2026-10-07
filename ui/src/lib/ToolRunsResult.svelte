@@ -81,24 +81,14 @@
 		<StatusBadge label={toolRunStatusLabel(data.status)} tone={statusTone(data.status)} />
 	</div>
 	{#if data.exit_code != null}
-		<div class="tool-card-meta">退出码 {data.exit_code}</div>
+		<div class="tool-result-meta tool-result-meta--compact">退出码 {data.exit_code}</div>
 	{/if}
 {:else}
-	<div class="tool-card-meta">后台任务操作：{data.operation}</div>
+	<div class="tool-result-meta tool-result-meta--compact">后台任务操作：{data.operation}</div>
 	<JsonView value={data} defaultDepth={1} />
 {/if}
 
 <style>
-	.tool-card-meta {
-		font-size: var(--md-sys-typescale-label-medium-size);
-		line-height: var(--md-sys-typescale-label-medium-line-height);
-		color: var(--md-sys-color-on-surface-variant);
-	}
-	.tool-card-meta {
-		font-size: var(--md-sys-typescale-label-small-size);
-		line-height: var(--md-sys-typescale-label-small-line-height);
-		margin-top: var(--md-sys-space-2xs);
-	}
 	.tool-run-id {
 		overflow: hidden;
 		text-overflow: ellipsis;

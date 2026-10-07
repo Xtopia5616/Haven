@@ -33,7 +33,7 @@
 			· {data.tool_run_id}{/if}
 	</div>
 	{#if data.exit_code != null}
-		<div class="tool-card-meta">退出码 {data.exit_code}</div>
+		<div class="tool-result-meta tool-result-meta--shell">退出码 {data.exit_code}</div>
 	{/if}
 {/if}
 {#if shellText}
@@ -45,15 +45,6 @@
 {/if}
 
 <style>
-	.tool-card-meta {
-		margin: 0;
-		font-size: var(--md-sys-typescale-label-medium-size);
-		line-height: var(--md-sys-typescale-label-medium-line-height);
-		color: var(--md-sys-color-on-surface-variant);
-	}
-	.tool-card-meta {
-		margin-top: var(--md-sys-space-2xs);
-	}
 	.tool-result-preview.streaming {
 		max-height: 280px;
 	}

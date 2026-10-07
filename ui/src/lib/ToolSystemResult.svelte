@@ -281,7 +281,7 @@
 	</ToolResultList>
 {/if}
 {#if data.os?.uptime_secs != null}
-	<div class="tool-card-meta">运行时长 {fmtUptime(data.os.uptime_secs)}</div>
+	<div class="tool-result-meta tool-result-meta--compact">运行时长 {fmtUptime(data.os.uptime_secs)}</div>
 {/if}
 {#if Array.isArray(data.displays)}
 	<div class="tool-result-label">{data.displays.length} 个显示器</div>
@@ -379,12 +379,6 @@
 {/if}
 
 <style>
-	.tool-card-meta {
-		font-size: var(--md-sys-typescale-label-small-size);
-		line-height: var(--md-sys-typescale-label-small-line-height);
-		color: var(--md-sys-color-on-surface-variant);
-		margin-top: var(--md-sys-space-2xs);
-	}
 	.sys-os {
 		display: flex;
 		align-items: center;

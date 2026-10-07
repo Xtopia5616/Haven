@@ -38,7 +38,7 @@
 	<div class="input-action">
 		<span class="input-badge">{label}</span><span
 			>{Array.isArray(data.clicked) ? data.clicked.join(', ') : '—'}</span
-		><span class="input-meta">{data.button || 'left'}</span>
+		><span class="tool-result-meta tool-result-meta--input">{data.button || 'left'}</span>
 	</div>
 {:else if data.operation === 'move'}
 	<div class="input-action">
@@ -51,7 +51,7 @@
 		<span class="input-badge">{label}</span><span>{data.scrolled ?? 0}</span>
 	</div>
 {:else}
-	<div class="tool-card-meta">输入操作</div>
+	<div class="tool-result-meta tool-result-meta--input">输入操作</div>
 	<JsonView value={data} defaultDepth={1} />
 {/if}
 
@@ -70,11 +70,6 @@
 		color: var(--md-sys-color-on-secondary-container);
 		font-size: var(--md-sys-typescale-label-small-size);
 		font-weight: 700;
-	}
-	.input-meta,
-	.tool-card-meta {
-		color: var(--md-sys-color-on-surface-variant);
-		font-size: var(--md-sys-typescale-label-small-size);
 	}
 	.tool-result-preview {
 		--tool-result-preview-max-height: 120px;

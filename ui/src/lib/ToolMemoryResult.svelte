@@ -106,19 +106,11 @@
 		<span class="memory-badge">已删除</span><span>{data.deleted ?? 0} 条事实</span>
 	</div>
 {:else}
-	<div class="tool-card-meta">记忆操作：{data.operation || '结果'}</div>
+	<div class="tool-result-meta tool-result-meta--memory">记忆操作：{data.operation || '结果'}</div>
 	<JsonView value={data} defaultDepth={1} />
 {/if}
 
 <style>
-	.tool-card-meta {
-		font-size: var(--md-sys-typescale-label-small-size);
-		line-height: var(--md-sys-typescale-label-small-line-height);
-		color: var(--md-sys-color-on-surface-variant);
-	}
-	.tool-card-meta {
-		margin-bottom: var(--md-sys-space-xs);
-	}
 	.memory-list {
 		--tool-result-scroll-max-height: 240px;
 	}

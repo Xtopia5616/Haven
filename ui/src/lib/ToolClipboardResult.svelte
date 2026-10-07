@@ -28,7 +28,7 @@
 				</div>
 			{/snippet}
 		</ToolResultList>
-		<div class="tool-card-meta">共 {data.total} 条历史</div>
+		<div class="tool-result-meta tool-result-meta--compact">共 {data.total} 条历史</div>
 	{:else}
 		<p class="tool-result-message">剪贴板历史为空</p>
 	{/if}
@@ -37,16 +37,3 @@
 {:else}
 	<p class="tool-result-message">剪贴板为空</p>
 {/if}
-
-<style>
-	.tool-card-meta {
-		font-size: var(--md-sys-typescale-label-medium-size);
-		line-height: var(--md-sys-typescale-label-medium-line-height);
-		color: var(--md-sys-color-on-surface-variant);
-	}
-	.tool-card-meta {
-		font-size: var(--md-sys-typescale-label-small-size);
-		line-height: var(--md-sys-typescale-label-small-line-height);
-		margin-top: var(--md-sys-space-2xs);
-	}
-</style>

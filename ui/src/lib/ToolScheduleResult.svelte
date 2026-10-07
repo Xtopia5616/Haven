@@ -67,23 +67,13 @@
 		<span class="scheduled-mode">{scheduleModeLabel(data.mode)}</span>
 	</div>
 	{#if data.fires_at}
-		<div class="tool-card-meta">触发时间 {data.fires_at}</div>
+		<div class="tool-result-meta tool-result-meta--compact">触发时间 {data.fires_at}</div>
 	{/if}
 {:else}
-	<div class="tool-card-meta">定时任务结果</div>
+	<div class="tool-result-meta tool-result-meta--compact">定时任务结果</div>
 {/if}
 
 <style>
-	.tool-card-meta {
-		font-size: var(--md-sys-typescale-label-medium-size);
-		line-height: var(--md-sys-typescale-label-medium-line-height);
-		color: var(--md-sys-color-on-surface-variant);
-	}
-	.tool-card-meta {
-		font-size: var(--md-sys-typescale-label-small-size);
-		line-height: var(--md-sys-typescale-label-small-line-height);
-		margin-top: var(--md-sys-space-2xs);
-	}
 	.scheduled-row {
 		display: flex;
 		align-items: baseline;

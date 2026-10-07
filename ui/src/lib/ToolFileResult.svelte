@@ -73,7 +73,7 @@
 		<span class="file-op">二进制文件</span>
 		{#if data.path}<ExternalRef class="file-path" target={data.path} />{/if}
 	</div>
-	<div class="tool-card-meta">
+	<div class="tool-result-meta tool-result-meta--compact">
 		{data.file_type || data.mime || '无法作为文本读取'}{data.size != null
 			? ` · ${formatByteSize(data.size)}`
 			: ''}
@@ -103,7 +103,7 @@
 	{#if data.error}<p class="tool-result-message">{data.error}</p>{/if}
 	{#if data.matches}<JsonView value={data.matches} defaultDepth={1} />{/if}
 {:else if Array.isArray(data.symbols)}
-	<div class="tool-card-meta">{operationLabel} · {data.count ?? data.symbols.length} 个符号</div>
+	<div class="tool-result-meta tool-result-meta--compact">{operationLabel} · {data.count ?? data.symbols.length} 个符号</div>
 	<ToolResultList items={data.symbols}>
 		{#snippet children(visibleSymbols)}
 			<div class="tool-result-scroll-area">
@@ -118,7 +118,7 @@
 		{/snippet}
 	</ToolResultList>
 {:else if data.operation && data.operation !== 'read' && !Array.isArray(data.entries)}
-	<div class="tool-card-meta">{operationLabel}</div>
+	<div class="tool-result-meta tool-result-meta--compact">{operationLabel}</div>
 	<JsonView value={data} defaultDepth={1} />
 {:else if rawText}
 	<pre class="tool-result-preview">{rawText}</pre>
@@ -138,7 +138,7 @@
 		<p class="tool-result-message">（空目录）</p>
 	{/if}
 {:else}
-	<div class="tool-card-meta">
+	<div class="tool-result-meta tool-result-meta--compact">
 		{data.size != null ? `${formatByteSize(data.size)} · ` : ''}读取完成
 	</div>
 	{#if typeof data.content === 'string' && data.content}
@@ -147,12 +147,6 @@
 {/if}
 
 <style>
-	.tool-card-meta {
-		font-size: var(--md-sys-typescale-label-small-size);
-		line-height: var(--md-sys-typescale-label-small-line-height);
-		color: var(--md-sys-color-on-surface-variant);
-		margin-top: var(--md-sys-space-2xs);
-	}
 	.file-row,
 	.env-row {
 		display: flex;

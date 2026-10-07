@@ -65,12 +65,12 @@
 			>{data.duration_ms != null ? `${data.duration_ms} ms` : ''}</span
 		>
 	</div>
-	{#if assetId}<div class="tool-card-meta">资产：{assetId}</div>{/if}
-	{#if representation}<div class="tool-card-meta">表示：{representation}</div>{/if}
-	{#if availableRepresentations.length}<div class="tool-card-meta">
+	{#if assetId}<div class="tool-result-meta tool-result-meta--media">资产：{assetId}</div>{/if}
+	{#if representation}<div class="tool-result-meta tool-result-meta--media">表示：{representation}</div>{/if}
+	{#if availableRepresentations.length}<div class="tool-result-meta tool-result-meta--media">
 			可用表示：{availableRepresentations.join('、')}
 		</div>{/if}
-	{#if recommendedNext}<div class="tool-card-meta">建议下一步：{recommendedNext}</div>{/if}
+	{#if recommendedNext}<div class="tool-result-meta tool-result-meta--media">建议下一步：{recommendedNext}</div>{/if}
 	{#if data.available === false}
 		<p class="tool-result-message tool-result-message--media">{data.reason || '录音能力当前不可用'}</p>
 	{:else if data.error || data.capture_error}
@@ -102,17 +102,17 @@
 		>
 	</div>
 {:else}
-	{#if representation}<div class="tool-card-meta">表示：{representation}</div>{/if}
+	{#if representation}<div class="tool-result-meta tool-result-meta--media">表示：{representation}</div>{/if}
 	{#if availableRepresentations.length}
-		<div class="tool-card-meta">可用表示：{availableRepresentations.join('、')}</div>
+		<div class="tool-result-meta tool-result-meta--media">可用表示：{availableRepresentations.join('、')}</div>
 	{/if}
-	{#if recommendedNext}<div class="tool-card-meta">建议下一步：{recommendedNext}</div>{/if}
+	{#if recommendedNext}<div class="tool-result-meta tool-result-meta--media">建议下一步：{recommendedNext}</div>{/if}
 	{#if data.available === false}
 		<p class="tool-result-message tool-result-message--media">{data.reason || '此媒体能力当前不可用'}</p>
 	{:else if text}
 		<pre class="media-text">{text}</pre>
 	{:else if data.operation === 'inspect'}
-		<div class="tool-card-meta">
+		<div class="tool-result-meta tool-result-meta--media">
 			{data.modality || data.file_kind || '媒体资产'} · 可继续交给 media 工具处理
 		</div>
 	{:else}
@@ -173,9 +173,5 @@
 		font: inherit;
 		line-height: 1.45;
 		color: var(--md-sys-color-on-surface);
-	}
-	.tool-card-meta {
-		margin: var(--md-sys-space-xs) 0 0;
-		color: var(--md-sys-color-on-surface-variant);
 	}
 </style>
