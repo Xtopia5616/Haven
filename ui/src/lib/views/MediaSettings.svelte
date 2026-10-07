@@ -182,7 +182,7 @@
 					baseUrl: base,
 					apiKey: key,
 					providerName: name,
-					role: 'transcription',
+					requestKind: 'transcription',
 					proxyUrl: provider?.proxy_url ?? null,
 					noProxy: provider?.no_proxy ?? null,
 				})) || [];

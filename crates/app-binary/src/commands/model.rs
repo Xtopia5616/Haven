@@ -341,10 +341,8 @@ fn stt_auth_scheme(provider: &str) -> AuthHeaderScheme {
 /// When `api_key` is empty (masked) and `provider_name` names a configured provider
 /// whose base URL matches `base_url`, the stored key is used — never sent to
 /// an arbitrary renderer-supplied host. `skip_auth` is reserved for explicit
-/// keyless provider presets. `role = "transcription"` resolves
-/// through the `media.stt` config instead (STT model discovery). The IPC key
-/// remains `role` for the existing UI, but its value is a model id or a
-/// [`RequestKind`] string.
+/// keyless provider presets. When `request_kind` is `Transcription`, discovery
+/// resolves through the `media.stt` config instead (STT model discovery).
 // Tauri derives the typed flat camelCase IPC request from this signature; keep
 // the optional auth scheme fields explicit at that boundary.
 #[tauri::command]
@@ -353,7 +351,7 @@ pub async fn discover_models(
     base_url: String,
     api_key: String,
     provider_name: Option<String>,
-    role: Option<String>,
+    request_kind: Option<RequestKind>,
     auth_header_name: Option<String>,
     auth_header_prefix: Option<String>,
     skip_auth: Option<bool>,
@@ -394,7 +392,7 @@ pub async fn discover_models(
             api_key: String::new(),
             auth_header: None,
         })
-    } else if role.as_deref().and_then(RequestKind::from_str) == Some(RequestKind::Transcription) {
+    } else if request_kind == Some(RequestKind::Transcription) {
         // STT discovery: prefer an explicit key, otherwise use only the named
         // `llm.providers` entry selected by the request or media settings.
         let stt = &cfg.media.stt;
