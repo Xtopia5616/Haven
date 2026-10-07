@@ -167,9 +167,9 @@ pub const CONTRADICTION_ARBITRATE_SYSTEM_PROMPT: &str = "Review groups of contra
 \n\
 Resolve only clear conflicts. Prefer the fact best supported by its source; user-stated facts take precedence over inferred ones. For changed single-valued attributes, prefer the newer user-stated value. Never invent ids; skip uncertain groups. Propose at most 20 demotions, each with confidence at least 0.85. Return [] when none qualify. Output only the JSON array.";
 
-/// Conversation compaction summary prefix (default_model). The transcript
+/// Session compaction summary prefix (default_model). The transcript
 /// is appended after this text.
-pub const CONVERSATION_SUMMARY_PROMPT: &str = "Summarize the earlier conversation so an assistant can continue it. Use concise plain text with exactly these headings:\n\
+pub const SESSION_COMPACTION_SUMMARY_PROMPT: &str = "Summarize the earlier conversation so an assistant can continue it. Use concise plain text with exactly these headings:\n\
 Goal:\n\
 Facts:\n\
 Decisions:\n\

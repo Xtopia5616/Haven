@@ -308,6 +308,7 @@
 | Chat Agent event handlers 使用 `any` 和字符串索引对象 | `createChatAgentEventHandlers` 的 `chunkHandler` 使用 `any[]` 并返回 `Record<string, (event: any) => void>`；event contract 已有 `AgentEventPayloadMap`，adapter map 应使用同一 channel/payload 对应关系。 | **由 Agent event map 校验本地子集**：导出 `AgentEventListenerMap`，chat controller 的返回对象以 `satisfies` 校验实际处理 channels，chunk callback 复用 `StreamEventAggregator['chunkHandler']`（ADR 0646）。 |
 | Tauri listener registry 的 raw event `any` | `registerListeners` 与 `registerOne` 把原始事件 handler 声明成 `any`；Tauri wrapper 的 callback 实参实际是 event envelope，payload 仍在后续各 domain mapper 中校验。 | **显式 envelope 与不可信 payload**：listener handler 统一接收 `TauriEvent<unknown>`；Tauri adapter 只在 envelope 边界从 library value 投影此类型，domain payload validators 保持唯一校验点（ADR 0647）。 |
 | Agent `SystemPromptBuilder` 历史上下文参数遗漏 prompt-history 术语 | Session 消息 loader 与 run 参数使用 `session_prompt_history`，但 `build`、`build_for_session`、无 Memory builder 及预算渲染 helper 仍叫 `conversation_history` / `history`，导致同一用途在提示词构造边界改名。 | **统一输入用途名**：builder 与上下文预算 helper 均使用 `session_prompt_history`；提示正文中的自然语言 “conversation” 保留，消息筛选和预算行为不变（ADR 0648）。 |
+| Common Session compaction prompt 常量使用 conversation 旧域名 | `CONVERSATION_SUMMARY_PROMPT` 是 Agent compactor 消费的 session transcript 压缩指令前缀，当前 Session 在代码和运行时中已有唯一领域 owner。 | **常量名称标明生命周期用途**：Common/Agent 共享常量改为 `SESSION_COMPACTION_SUMMARY_PROMPT`；模型指令正文和生成摘要行为保持不变（ADR 0649）。 |
 
 此表是候选分流清单，不是完整符号目录。尚未完成的 crate、IPC/event payload、UI controller/store 与函数动词审计仍在 §5.7 范围内；完成一域后更新本表并以 ADR 记录实际迁移。
 

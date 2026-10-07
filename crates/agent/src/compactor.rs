@@ -1,6 +1,6 @@
 use crate::is_dangling_boundary;
 use haven_common::config::RequestKind;
-use haven_common::prompts::CONVERSATION_SUMMARY_PROMPT;
+use haven_common::prompts::SESSION_COMPACTION_SUMMARY_PROMPT;
 use haven_common::types::{CanonicalMessage, ContentPart};
 use haven_llm::{LlmError, LlmRouter, ToolDefinition};
 use std::sync::Arc;
@@ -397,8 +397,8 @@ impl ContextCompactor {
             lines.len().saturating_sub(2)
         );
         let suffix = "\n---\nSummary:";
-        let fixed_tokens =
-            estimate_tokens(CONVERSATION_SUMMARY_PROMPT).saturating_add(estimate_tokens(suffix));
+        let fixed_tokens = estimate_tokens(SESSION_COMPACTION_SUMMARY_PROMPT)
+            .saturating_add(estimate_tokens(suffix));
         let available = input_budget.saturating_sub(fixed_tokens).max(1);
         let full_body = lines.concat();
         let body = if estimate_tokens(&full_body) <= available {
@@ -414,9 +414,10 @@ impl ContextCompactor {
             truncate_to_token_budget(&format!("{head}{marker}{tail}"), available)
         };
 
-        let mut text =
-            String::with_capacity(CONVERSATION_SUMMARY_PROMPT.len() + body.len() + suffix.len());
-        text.push_str(CONVERSATION_SUMMARY_PROMPT);
+        let mut text = String::with_capacity(
+            SESSION_COMPACTION_SUMMARY_PROMPT.len() + body.len() + suffix.len(),
+        );
+        text.push_str(SESSION_COMPACTION_SUMMARY_PROMPT);
         text.push_str(&body);
         text.push_str(suffix);
         text
