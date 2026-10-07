@@ -87,7 +87,7 @@ pub(crate) struct ToolRunResult {
 
 /// Bounded context selected for the next model request.
 #[derive(Debug, Default)]
-pub(crate) struct ReactContextBatch {
+pub(crate) struct ReActContextBatch {
     pub(crate) steering: Vec<FollowUp>,
     pub(crate) follow_ups: Vec<FollowUp>,
     pub(crate) tool_run_results: Vec<ToolRunResult>,
@@ -198,7 +198,7 @@ pub(crate) enum ActorCommand {
     IsRunning {
         reply: oneshot::Sender<bool>,
     },
-    ReactLoopBarrier {
+    ReActLoopBarrier {
         reply: oneshot::Sender<bool>,
     },
     TickMessagingPoll {
@@ -217,7 +217,7 @@ pub(crate) enum ActorCommand {
         reply: oneshot::Sender<Vec<FollowUp>>,
     },
     DrainContext {
-        reply: oneshot::Sender<ReactContextBatch>,
+        reply: oneshot::Sender<ReActContextBatch>,
     },
     HasPendingContext {
         reply: oneshot::Sender<bool>,
@@ -318,7 +318,7 @@ impl SessionActorHandle {
         // actor.
         let (reply, result) = oneshot::channel();
         if self
-            .send(ActorCommand::ReactLoopBarrier { reply })
+            .send(ActorCommand::ReActLoopBarrier { reply })
             .await
             .is_err()
         {
@@ -539,14 +539,14 @@ impl SessionActorHandle {
         rx.await.unwrap_or_default()
     }
 
-    pub(crate) async fn drain_context(&self) -> ReactContextBatch {
+    pub(crate) async fn drain_context(&self) -> ReActContextBatch {
         let (reply, rx) = oneshot::channel();
         if self
             .send(ActorCommand::DrainContext { reply })
             .await
             .is_err()
         {
-            return ReactContextBatch::default();
+            return ReActContextBatch::default();
         }
         rx.await.unwrap_or_default()
     }
@@ -883,14 +883,14 @@ pub(crate) struct SessionState {
     react_run: Option<ActiveReActRun>,
 }
 
-type ReactLoopFuture = Pin<Box<dyn Future<Output = anyhow::Result<ReActRunOutput>> + Send>>;
+type ReActLoopFuture = Pin<Box<dyn Future<Output = anyhow::Result<ReActRunOutput>> + Send>>;
 
 /// The active-loop slot owns its future and reply together. Its presence also
 /// represents the per-run claim; after completion, `Claimed` keeps duplicate
 /// starts closed until the surrounding actor run releases that claim.
 enum ActiveReActRun {
     Running {
-        future: ReactLoopFuture,
+        future: ReActLoopFuture,
         reply: oneshot::Sender<anyhow::Result<ReActRunOutput>>,
         claimed: bool,
     },
@@ -985,7 +985,7 @@ pub(crate) fn spawn(
                 Command(Option<ActorCommand>),
                 ReleaseRun(Option<()>),
                 Run(anyhow::Result<()>),
-                ReactLoop(anyhow::Result<ReActRunOutput>),
+                ReActLoop(anyhow::Result<ReActRunOutput>),
             }
             let wake = tokio::select! {
                 command = rx.recv() => Wake::Command(command),
@@ -1002,7 +1002,7 @@ pub(crate) fn spawn(
                         None => std::future::pending().await,
                         Some(ActiveReActRun::Claimed) => std::future::pending().await,
                     }
-                } => Wake::ReactLoop(result),
+                } => Wake::ReActLoop(result),
             };
             // If both channels are ready, apply a queued release before a
             // later mailbox command such as FinishRun can make the slot
@@ -1042,7 +1042,7 @@ pub(crate) fn spawn(
                     }
                     continue;
                 }
-                Wake::ReactLoop(result) => {
+                Wake::ReActLoop(result) => {
                     let Some(ActiveReActRun::Running { reply, claimed, .. }) =
                         state.react_run.take()
                     else {
@@ -1230,7 +1230,7 @@ pub(crate) fn spawn(
                     react_run_state.send_replace(true);
                     let mut react_state =
                         ReActState::new(replay.events, replay.canonical, replay.branch_points);
-                    let future: ReactLoopFuture = Box::pin(async move {
+                    let future: ReActLoopFuture = Box::pin(async move {
                         let result =
                             AssertUnwindSafe(engine.run_react_loop(input, &mut react_state))
                                 .catch_unwind()
@@ -1312,7 +1312,7 @@ pub(crate) fn spawn(
                 ActorCommand::IsRunning { reply } => {
                     let _ = reply.send(state.running);
                 }
-                ActorCommand::ReactLoopBarrier { reply } => {
+                ActorCommand::ReActLoopBarrier { reply } => {
                     let running = matches!(&state.react_run, Some(ActiveReActRun::Running { .. }));
                     let _ = reply.send(running);
                 }
@@ -1354,7 +1354,7 @@ pub(crate) fn spawn(
                         &mut state.tool_run_completion_chars,
                         &mut budget,
                     );
-                    let _ = reply.send(ReactContextBatch {
+                    let _ = reply.send(ReActContextBatch {
                         steering,
                         follow_ups,
                         tool_run_results,

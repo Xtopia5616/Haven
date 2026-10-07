@@ -1,6 +1,6 @@
 # Haven 命名规范
 
-> 版本: v1.93 | 日期: 2026-10-07
+> 版本: v1.94 | 日期: 2026-10-07
 
 本文档统一 Haven 项目各层的命名规则（变量名、函数名、文件名、crate 名、缩写大小写、跨层边界）。规范以现有代码中的事实模式为基础，新代码必须遵循；存量代码若与规范冲突，逐步迁移对齐。
 
@@ -44,6 +44,8 @@
 ## 产品与领域术语
 
 以下是跨 Rust、Tauri 事件、Svelte 和用户文案的统一口径。代码、wire、数据库和配置统一使用 ToolCall/ToolRun 概念；历史 ADR 中的旧名称只用于说明当时的决策，不构成当前命名契约。
+
+ReAct 按领域品牌大小写书写：类型与 enum variant 用 `ReAct`（如 `ReActEngine`、`ReActExecutionPhase`、`ReActLoopBarrier`）；snake_case 名用小写 `react`，lowerCamel 按词位遵循常规大小写（如 `reactExecutionPhaseStore`、`updateReactExecutionPhase`）。
 
 应用能力可脱离当前 turn 持久运行时统一称为 `ToolRun`；当前源码、配置和 UI 不用退役的 `Job` 名称指代它。Windows `Job Object`、外部供应商异步 job 和 Memory outbox extraction job 各有独立语义，保留这些领域限定名称。
 

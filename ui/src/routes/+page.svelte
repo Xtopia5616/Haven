@@ -101,7 +101,7 @@
 	import type { AgentMediaPlanPayload } from '$lib/contracts/agent.ts';
 	import type { ChatFileAttachment, ChatImageAttachment } from '$lib/chatAttachmentTypes.ts';
 	import type { SessionMessageContextMenuRequest } from '$lib/sessionTimeline.ts';
-	import type { ReactExecutionPhaseSnapshot } from '$lib/sessionRuntimeStore.ts';
+	import type { ReActExecutionPhaseSnapshot } from '$lib/sessionRuntimeStore.ts';
 
 	let chatPageEl = $state<HTMLElement | null>(null);
 	let inputRouterRef = $state<{ setDraft: (text: string) => void } | null>(null);
@@ -270,7 +270,7 @@
 	// Send/interrupt merged button: text takes priority (always send); with no
 	// text and the agent actively generating output the button interrupts the
 	// current output while keeping the session resumable.
-	let reactExecutionPhase = $state<ReactExecutionPhaseSnapshot>({
+	let reactExecutionPhase = $state<ReActExecutionPhaseSnapshot>({
 		sessionId: null,
 		phase: 'idle',
 	});

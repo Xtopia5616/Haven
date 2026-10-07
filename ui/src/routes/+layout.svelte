@@ -67,7 +67,7 @@
 		nextBootstrapProbeInterval,
 	} from '$lib/bootstrapStatus.ts';
 	import type { RecordingOverlayState } from '$lib/recordingOverlayController.ts';
-	import type { ReactExecutionPhase } from '$lib/sessionRuntimeStore.ts';
+	import type { ReActExecutionPhase } from '$lib/sessionRuntimeStore.ts';
 	import type { ToolRunKind, ToolRunPayload } from '$lib/contracts/toolRun.ts';
 	import type { ConfirmationDecision } from '$lib/confirmationTypes.ts';
 	import type { AgentNotificationPayload } from '$lib/contracts/agent.ts';
@@ -313,7 +313,7 @@
 
 	let overlay = $state<RecordingOverlayState>(recordingOverlayController.snapshot());
 	let duration = $state(recordingOverlayController.durationSeconds());
-	let reactExecutionPhase = $state<ReactExecutionPhase>('idle'); // synced from reactExecutionPhaseStore on mount
+	let reactExecutionPhase = $state<ReActExecutionPhase>('idle'); // synced from reactExecutionPhaseStore on mount
 	let activeSessionStatusLabel = $state('空闲');
 	$effect(() =>
 		syncStore(activeSessionStatusLabelStore, (value) => (activeSessionStatusLabel = value)),

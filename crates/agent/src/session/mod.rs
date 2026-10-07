@@ -455,7 +455,7 @@ pub use tool_ports::{
 pub(crate) use tool_runner::{ToolStepMetadata, ToolStepPersistenceError};
 
 pub(crate) use actor::{
-    CONTEXT_BATCH_MAX_CHARS, CONTEXT_BATCH_MAX_ITEMS, MessagingTitle, ReactContextBatch,
+    CONTEXT_BATCH_MAX_CHARS, CONTEXT_BATCH_MAX_ITEMS, MessagingTitle, ReActContextBatch,
 };
 pub(crate) use queues::PendingInteractionGates;
 pub use run_engine::SessionRunEngine;

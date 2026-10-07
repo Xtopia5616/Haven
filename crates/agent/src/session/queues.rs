@@ -1,6 +1,6 @@
 //! Session context queues and the single interaction registry.
 
-use super::actor::{ContextQueueStats, ReactContextBatch};
+use super::actor::{ContextQueueStats, ReActContextBatch};
 use super::*;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -121,10 +121,10 @@ impl SessionSupervisor {
         }
     }
 
-    pub(crate) async fn drain_react_context(&self, session_id: &str) -> ReactContextBatch {
+    pub(crate) async fn drain_react_context(&self, session_id: &str) -> ReActContextBatch {
         match self.actor_for(session_id).await {
             Some(actor) => actor.drain_context().await,
-            None => ReactContextBatch::default(),
+            None => ReActContextBatch::default(),
         }
     }
 

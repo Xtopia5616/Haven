@@ -9,7 +9,7 @@ use std::sync::Arc;
 use crate::react::metrics::ReActMetrics;
 use crate::react::sidecars::MessagingPoller;
 use crate::session::{
-    CONTEXT_BATCH_MAX_CHARS, CONTEXT_BATCH_MAX_ITEMS, ReactContextBatch, SessionSupervisor,
+    CONTEXT_BATCH_MAX_CHARS, CONTEXT_BATCH_MAX_ITEMS, ReActContextBatch, SessionSupervisor,
 };
 use haven_common::types::{InjectSource, MessageAttachment};
 use haven_memory::SessionStore;
@@ -165,7 +165,7 @@ impl ContextSource {
         let queue_stats = self.executor.context_queue_stats(session_id).await;
         self.metrics
             .set_context_queue_items(queue_stats.total_items());
-        let ReactContextBatch {
+        let ReActContextBatch {
             steering,
             follow_ups,
             tool_run_results,
