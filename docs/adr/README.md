@@ -624,3 +624,4 @@
 - [0633：移除过时的 Haven 内部兼容入口](0633-remove-obsolete-internal-compatibility.md)
 - [0634：统一 InputPipeline owner 与采集 API 命名](0634-name-input-pipeline-ownership-and-capture-api.md)
 - [0635：统一 Agent SessionRun / ReActRun 术语并删除空壳预算类型](0635-unify-agent-session-run-terminology.md)
+- [0636：明确 Memory live consumer 的一次性 handoff](0636-name-memory-live-consumer-handoff.md)

@@ -516,15 +516,15 @@ pub struct PreparedMemoryRuntime {
 }
 
 /// Proof that a prepared memory consumer has been registered before the Agent
-/// dispatcher is opened. Only `MemoryStartup::start_prepared` can mint it.
+/// dispatcher is opened. Only `MemoryStartup::prepare_live_consumer` can mint it.
 pub struct MemoryReady {
     _private: (),
 }
 
-/// One-time task handoff for the prepared live consumer and its readiness
+/// One-time handoff for the prepared live-consumer future and its readiness
 /// proof. The application registers the future, then passes the proof to the
 /// Agent dispatcher entry point.
-pub struct MemoryLiveTask {
+pub struct MemoryLiveConsumerHandoff {
     readiness: MemoryReady,
     future: Pin<Box<dyn Future<Output = ()> + Send + 'static>>,
 }
@@ -546,18 +546,18 @@ impl MemoryStartup {
         Ok(PreparedMemoryRuntime { live })
     }
 
-    /// Consume the unique prepared receiver into a live task. The returned
-    /// proof is meaningful only together with this task registration.
-    pub fn start_prepared(
+    /// Consume the unique prepared receiver into a live-consumer handoff.
+    /// The returned proof is meaningful only together with registration.
+    pub fn prepare_live_consumer(
         &self,
         prepared: PreparedMemoryRuntime,
         cancellation: CancellationToken,
-    ) -> MemoryLiveTask {
+    ) -> MemoryLiveConsumerHandoff {
         let runtime = self.runtime.clone();
         let future = Box::pin(async move {
             runtime.run_prepared(prepared.live, &cancellation).await;
         });
-        MemoryLiveTask {
+        MemoryLiveConsumerHandoff {
             readiness: MemoryReady { _private: () },
             future,
         }
@@ -583,11 +583,11 @@ impl MemoryStartup {
     }
 }
 
-impl MemoryLiveTask {
+impl MemoryLiveConsumerHandoff {
     /// Give the live future to an application-owned task registry. Readiness
     /// is returned only when registration succeeds, preventing callers from
     /// opening the dispatcher after a rejected task handoff.
-    pub fn register_with(
+    pub fn register_consumer_with(
         self,
         register: impl FnOnce(Pin<Box<dyn Future<Output = ()> + Send + 'static>>) -> Option<()>,
     ) -> Option<MemoryReady> {

@@ -246,10 +246,10 @@ impl ApplicationRuntime {
                     return;
                 }
 
-                let live = runtime
+                let live_consumer_handoff = runtime
                     .memory_startup
-                    .start_prepared(prepared, runtime.cancellation_token().child_token());
-                let Some(readiness) = live.register_with(|live_future| {
+                    .prepare_live_consumer(prepared, runtime.cancellation_token().child_token());
+                let Some(readiness) = live_consumer_handoff.register_consumer_with(|live_future| {
                     runtime
                         .spawn_cancellable("memory-runtime-live-consumer", live_future)
                         .then_some(())

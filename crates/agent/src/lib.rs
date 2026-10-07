@@ -44,7 +44,8 @@ pub use interaction::{
 };
 pub use layer::{AgentStartup, PendingSessionRecovery};
 pub use memory_runtime::{
-    MemoryEventProcessOutcome, MemoryLiveTask, MemoryReady, MemoryStartup, PreparedMemoryRuntime,
+    MemoryEventProcessOutcome, MemoryLiveConsumerHandoff, MemoryReady, MemoryStartup,
+    PreparedMemoryRuntime,
 };
 pub use memory_service::{MemoryService, MemoryServiceStores};
 pub use memory_worker::MemoryWorker;

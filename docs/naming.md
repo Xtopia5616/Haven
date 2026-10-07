@@ -1,6 +1,6 @@
 # Haven 命名规范
 
-> 版本: v1.66 | 日期: 2026-10-07
+> 版本: v1.67 | 日期: 2026-10-07
 
 本文档统一 Haven 项目各层的命名规则（变量名、函数名、文件名、crate 名、缩写大小写、跨层边界）。规范以现有代码中的事实模式为基础，新代码必须遵循；存量代码若与规范冲突，逐步迁移对齐。
 
@@ -33,6 +33,7 @@
 | 工具运行（ToolRun） | 脱离当前 turn 持久运行、可取消并产生生命周期事件的工具执行 | 后端/IPC/数据库使用 `tool_run`、`tool_runs`；ID 前缀为 `toolrun-` |
 | 后台工具运行（background ToolRun） | 工具调用选择后台执行后启动的持久运行 | 通过 `ToolExecutionMode::Background` 启动；UI 显示“后台任务” |
 | 定时工具运行（scheduled ToolRun） | 由时间或依赖触发的工具运行 | 仍由 `schedule` 工具负责设置触发条件；UI 显示“定时任务” |
+| Memory live consumer handoff | 把已准备的 Memory event receiver future 一次性交给 ApplicationRuntime task registry 的阶段值；注册成功后才产出 `MemoryReady` | 类型为 `MemoryLiveConsumerHandoff`；由 `MemoryStartup::prepare_live_consumer` 创建，通过 `register_consumer_with` 注册，不代表 `ToolRun` 或已运行的 JoinHandle |
 | 音频输入管线（`InputPipeline`） | `haven-input` 对麦克风采集、VAD 与采集循环的唯一 owner；不拥有转写、provider fallback 或 App 的录音 UI 状态 | 常规采集用 `start_capture` / `stop_capture` / `cancel_capture`；固定时长采集用 `capture_for`；回调契约为 `InputEventHandler`。App 与 Tools 的字段统一叫 `input_pipeline` |
 | 录音结果（`RecordingResult`） | `haven-input` 拥有的固定格式采集结果：16 kHz 单声道 PCM、停止原因、时长和采集错误 | 通过 `RecordingResult::encode_wav()` 编码；它与 Tools 持有的 `RecordedAudio`（已登记 WAV 资产结果）不是同一层结果 |
 

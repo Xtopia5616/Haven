@@ -1,5 +1,7 @@
 # ADR 0367：MemoryRuntime 所有权与 readiness handoff 移至应用边界
 
+> 其中 `MemoryLiveTask` / `start_prepared` / `register_with` 的命名已由 [ADR 0636](0636-name-memory-live-consumer-handoff.md) 更新；所有权与 readiness 决策保持有效。
+
 - 状态：已采纳（2026-09-26）
 - 范围：`AgentLayer`、`MemoryStartup` 与 `ApplicationRuntime` 的内存运行时构造、启动、maintenance 和 shutdown wiring
 - 基线：HEAD `384e119`；开始时工作区干净

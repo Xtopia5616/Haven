@@ -90,10 +90,11 @@ async fn assert_dispatcher_waits_for_memory_runtime(recover_pending: bool) {
         "dispatcher opened before the app registered the prepared live consumer"
     );
 
-    let live = memory_startup.start_prepared(prepared, cancellation.clone());
+    let live_consumer_handoff =
+        memory_startup.prepare_live_consumer(prepared, cancellation.clone());
     let mut live_task = None;
-    let readiness = live
-        .register_with(|live_future| {
+    let readiness = live_consumer_handoff
+        .register_consumer_with(|live_future| {
             live_task = Some(tokio::spawn(live_future));
             Some(())
         })
@@ -478,10 +479,11 @@ async fn queued_tool_run_result_is_reconciled_after_session_becomes_terminal() {
 
     let cancellation = tokio_util::sync::CancellationToken::new();
     let prepared = memory_startup.prepare_start(&cancellation).await.unwrap();
-    let live = memory_startup.start_prepared(prepared, cancellation.clone());
+    let live_consumer_handoff =
+        memory_startup.prepare_live_consumer(prepared, cancellation.clone());
     let mut live_task = None;
-    let readiness = live
-        .register_with(|live_future| {
+    let readiness = live_consumer_handoff
+        .register_consumer_with(|live_future| {
             live_task = Some(tokio::spawn(live_future));
             Some(())
         })
@@ -556,10 +558,11 @@ async fn unowned_terminal_completion_is_acknowledged_for_history_cleanup() {
 
     let cancellation = tokio_util::sync::CancellationToken::new();
     let prepared = memory_startup.prepare_start(&cancellation).await.unwrap();
-    let live = memory_startup.start_prepared(prepared, cancellation.clone());
+    let live_consumer_handoff =
+        memory_startup.prepare_live_consumer(prepared, cancellation.clone());
     let mut live_task = None;
-    let readiness = live
-        .register_with(|live_future| {
+    let readiness = live_consumer_handoff
+        .register_consumer_with(|live_future| {
             live_task = Some(tokio::spawn(live_future));
             Some(())
         })
