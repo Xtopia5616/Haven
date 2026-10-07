@@ -1,9 +1,11 @@
 import { clearToolOutputPreview, setToolOutputPreview } from './toolOutputPreviewStore.ts';
 import { updateReactExecutionPhase } from './sessionRuntimeStore.ts';
+import type { AgentEventListenerMap } from './events.ts';
 import type { SessionAction } from './sessionReducer.ts';
+import type { StreamEventAggregator } from './streamAggregator.ts';
 
 export interface ChatAgentEventContext {
-	chunkHandler: (...args: any[]) => any;
+	chunkHandler: StreamEventAggregator['chunkHandler'];
 	flushChunksNow: () => void;
 	dispatchSession: (action: SessionAction) => void;
 }
@@ -17,7 +19,7 @@ export function createChatAgentEventHandlers({
 	chunkHandler,
 	flushChunksNow,
 	dispatchSession,
-}: ChatAgentEventContext): Record<string, (event: any) => void> {
+}: ChatAgentEventContext) {
 	return {
 		'agent:thought': (event) => {
 			const data = event.payload;
@@ -70,5 +72,5 @@ export function createChatAgentEventHandlers({
 			if (data?.stepId) clearToolOutputPreview(data.stepId);
 			dispatchSession({ type: 'agent/observation', payload: data });
 		},
-	};
+	} satisfies AgentEventListenerMap;
 }

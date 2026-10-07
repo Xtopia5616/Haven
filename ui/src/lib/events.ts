@@ -32,7 +32,7 @@ type RecordingListenerMap = Partial<{
 	[K in RecordingEventName]: (event: TauriEvent<RecordingEventPayloadMap[K]>) => void;
 }>;
 
-type AgentListenerMap = Partial<{
+export type AgentEventListenerMap = Partial<{
 	[K in AgentEventName]: (event: TauriEvent<AgentEventPayloadMap[K]>) => void;
 }>;
 
@@ -203,7 +203,7 @@ export function recordingEventListeners(
 
 /** Adapt agent events once, before routes consume their camelCase DTOs. */
 export function agentEventListeners(
-	map: AgentListenerMap,
+	map: AgentEventListenerMap,
 ): Record<string, (event: TauriEvent<unknown>) => void> {
 	return Object.fromEntries(
 		Object.entries(map).map(([eventName, handler]) => [
