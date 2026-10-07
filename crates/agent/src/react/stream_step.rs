@@ -396,7 +396,7 @@ fn now_millis() -> u64 {
 }
 
 /// One LLM call's live-chunk forwarding bundle: micro-batched
-/// one ordered thought/reasoning queue (see `spawn_chunk_consumer_raw`), the
+/// one ordered thought/reasoning queue (see `spawn_chunk_event_consumer`), the
 /// web-search event session, and a stall watchdog that emits `StreamStalled`
 /// when the provider goes silent mid-call — the router only aborts at its
 /// idle timeout, so without the watchdog the UI would sit frozen with
@@ -412,7 +412,7 @@ struct StreamForwarder {
     ws_pump: WebSearchPump,
     reset_pending: Arc<std::sync::atomic::AtomicBool>,
     reset_marker: crate::event::ChunkItem,
-    consumer: crate::event::ConsumerHandle,
+    chunk_consumer_task: tokio::task::JoinHandle<()>,
     checkpoint_writer: CheckpointWriter,
     ws_session: tokio::task::JoinHandle<()>,
     watchdog: tokio::task::JoinHandle<()>,
@@ -440,8 +440,8 @@ impl StreamForwarder {
         impl FnMut(&haven_llm::StreamChunk) + Send + 'static,
         impl FnMut(bool) + Send + 'static,
     ) {
-        let (chunk_tx, consumer_handle) =
-            EventDispatcher::spawn_chunk_consumer_raw(&ctx.emitter, max_batch_bytes);
+        let (chunk_tx, chunk_consumer_task) =
+            EventDispatcher::spawn_chunk_event_consumer(&ctx.emitter, max_batch_bytes);
         let chunk_tx_c = chunk_tx.clone();
         let session_id_c = Arc::<str>::from(ctx.session_id.as_str());
         let pt = partial_thought.clone();
@@ -667,7 +667,7 @@ impl StreamForwarder {
                     step_number: step_num,
                     run_id,
                 },
-                consumer: consumer_handle,
+                chunk_consumer_task,
                 checkpoint_writer,
                 ws_pump,
                 ws_session,
@@ -703,9 +703,7 @@ impl StreamForwarder {
         if let Err(error) = self.ws_pump.finish().await {
             join_error.get_or_insert(error);
         }
-        if let Some(handle) = self.consumer
-            && let Err(error) = handle.await
-        {
+        if let Err(error) = self.chunk_consumer_task.await {
             join_error = Some(anyhow::anyhow!(
                 "stream chunk consumer task failed: {error}"
             ));

@@ -667,8 +667,6 @@ impl ChunkSender {
         Ok(())
     }
 }
-pub(crate) type ConsumerHandle = Option<tokio::task::JoinHandle<()>>;
-
 /// Per-chunk micro-batching parameters. Incoming per-token chunks are aggregated
 /// for at most this duration before a single `ThoughtChunk`/`ReasoningChunk` with
 /// the concatenated `delta` is emitted, dramatically reducing Tauri IPC frequency.
@@ -978,27 +976,24 @@ impl EventDispatcher {
         lock_or_recover(&self.emitter, "event_emitter").clone()
     }
 
-    pub(crate) fn spawn_chunk_consumer_raw(
+    pub(crate) fn spawn_chunk_event_consumer(
         emitter: &Arc<dyn AgentEventEmitter>,
         max_batch_bytes: usize,
-    ) -> (ChunkSender, ConsumerHandle) {
+    ) -> (ChunkSender, tokio::task::JoinHandle<()>) {
         let (chunk_tx, chunk_rx) = tokio::sync::mpsc::channel(1024);
         let mailbox = ChunkMailbox::new();
         let sender = ChunkSender::new(chunk_tx, mailbox.clone());
         // The bounded channel remains the fast path; the mailbox only holds
         // combined values while the emitter is busy.
         let em_clone = emitter.clone();
-        let thought_session = tokio::spawn(run_chunk_batcher_inner(
+        let chunk_consumer_task = tokio::spawn(run_chunk_batcher_inner(
             chunk_rx,
             em_clone,
             max_batch_bytes,
             Some(mailbox),
         ));
-        let consumer_handle = Some(tokio::spawn(async move {
-            let _ = thought_session.await;
-        }));
 
-        (sender, consumer_handle)
+        (sender, chunk_consumer_task)
     }
 
     pub async fn emit_session_created(&self, session: &SessionInfo) {

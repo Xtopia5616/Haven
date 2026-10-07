@@ -645,3 +645,4 @@
 - [0654：统一 Memory fact candidate 持久化策略入口](0654-share-memory-fact-candidate-policy.md)
 - [0655：区分 ToolRun 生命周期与前台实时输出 sink](0655-name-tool-run-event-sinks.md)
 - [0656：统一配置快照代次命名](0656-unify-config-version-terminology.md)
+- [0657：明确 Agent chunk event consumer 任务句柄](0657-name-agent-chunk-event-consumer-task.md)
