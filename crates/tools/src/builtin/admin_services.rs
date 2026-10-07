@@ -8,8 +8,8 @@ use super::{AdminContext, McpAddFields, McpRefreshPlan, McpUpdateFields};
 use crate::ToolRegistry;
 use anyhow::{Error, Result};
 use haven_common::config::{
-    AppConfig, ConfigLoader, ConfigPatch, LogConfig, LogLevel, McpServerConfig, RequestKind,
-    Settings,
+    AppConfig, ConfigLoader, ConfigPatch, ConfigVersion, LogConfig, LogLevel, McpServerConfig,
+    RequestKind, Settings,
 };
 use haven_common::types::McpTransportType;
 use haven_mcp::{McpClientStatus, McpStatusChangeEvent};
@@ -37,7 +37,7 @@ pub(crate) enum NativeMcpServiceError {
 pub(crate) struct LogsLevelResult {
     pub(crate) level: LogLevel,
     pub(crate) saved: bool,
-    pub(crate) version: u64,
+    pub(crate) config_version: ConfigVersion,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -344,7 +344,7 @@ impl AdminServices {
         Ok(LogsLevelResult {
             level,
             saved: true,
-            version: update.snapshot.version,
+            config_version: update.snapshot.version,
         })
     }
 
@@ -1019,14 +1019,14 @@ impl AdminServices {
     pub(crate) async fn mcp_reconnect(
         &self,
         name: &str,
-        authorized_version: u64,
+        authorized_config_version: ConfigVersion,
     ) -> std::result::Result<McpConnectionOutput, NativeMcpServiceError> {
         let _config_apply_guard = self.lock_config_apply().await;
         let snapshot = self
             .config_service()
             .and_then(|service| service.snapshot())
             .map_err(NativeMcpServiceError::BeforeSideEffect)?;
-        if snapshot.version != authorized_version {
+        if snapshot.version != authorized_config_version {
             return Err(NativeMcpServiceError::Preflight(
                 "MCP reconnect authorization is stale; refresh and try again".into(),
             ));

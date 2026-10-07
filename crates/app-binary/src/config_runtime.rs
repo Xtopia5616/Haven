@@ -8,7 +8,7 @@ use crate::app_state::AppState;
 use crate::logging::log_err;
 use crate::router_media_builder::build_router_media;
 use haven_common::config::{
-    AppConfig, ConfigChanged, ConfigDomain, ConfigService, ConfigSnapshot, LogLevel,
+    AppConfig, ConfigChanged, ConfigDomain, ConfigService, ConfigSnapshot, ConfigVersion, LogLevel,
 };
 use haven_llm::LlmRouter;
 use std::future::Future;
@@ -206,10 +206,10 @@ pub(crate) enum RouterRuntimePublishError {
 
 pub(crate) fn partial_config_apply_error(
     error: impl std::fmt::Display,
-    config_version: u64,
+    config_version: ConfigVersion,
     phase: &str,
     security_runtime: &str,
-    security_base_version: u64,
+    security_base_version: ConfigVersion,
 ) -> String {
     format!(
         "部分 apply 失败：配置已写入（config_version={config_version}; phase={phase}; security_runtime={security_runtime}; security_base_version={security_base_version}）；重启应用后会从配置重新初始化。{error}"
@@ -223,7 +223,7 @@ fn partial_router_config_apply_error(error: impl std::fmt::Display) -> String {
 /// Complete router and media runtime derived from one immutable snapshot.
 /// Construction may fail; publication only accepts this prepared value.
 pub(crate) struct PreparedRouterRuntime {
-    config_version: u64,
+    config_version: ConfigVersion,
     router: Arc<LlmRouter>,
     stt_client: Option<Arc<dyn haven_llm::SttClient>>,
     ocr_client: Option<Arc<dyn haven_llm::OcrClient>>,
@@ -267,7 +267,7 @@ pub(crate) enum RuntimeConfigTarget {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct RuntimeConfigApplyPlan {
-    pub(crate) version: u64,
+    pub(crate) config_version: ConfigVersion,
     pub(crate) live: Vec<RuntimeConfigTarget>,
     pub(crate) restart_required: Vec<RuntimeConfigTarget>,
 }
@@ -275,7 +275,7 @@ pub(crate) struct RuntimeConfigApplyPlan {
 impl RuntimeConfigApplyPlan {
     pub(crate) fn from_change(change: &ConfigChanged) -> Self {
         let mut plan = Self {
-            version: change.version,
+            config_version: change.version,
             live: Vec::new(),
             restart_required: Vec::new(),
         };
@@ -439,7 +439,7 @@ const SETTINGS_APPLY_PHASE_ORDER: [SettingsApplyPhase; 16] = [
 /// target map. The snapshot version is authoritative for apply diagnostics.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct SettingsApplyPlan {
-    pub(crate) config_version: u64,
+    pub(crate) config_version: ConfigVersion,
     pub(crate) live_targets: Vec<RuntimeConfigTarget>,
     pub(crate) restart_required_targets: Vec<RuntimeConfigTarget>,
     phases: Vec<SettingsApplyPhase>,
@@ -452,7 +452,7 @@ impl SettingsApplyPlan {
         old_hotkey: &str,
     ) -> Self {
         let runtime_plan = RuntimeConfigApplyPlan::from_change(change);
-        debug_assert_eq!(runtime_plan.version, snapshot.version);
+        debug_assert_eq!(runtime_plan.config_version, snapshot.version);
         let hotkey_binding_changed = old_hotkey != snapshot.config.hotkey.key_binding;
         let phases = SETTINGS_APPLY_PHASE_ORDER
             .into_iter()
@@ -478,7 +478,7 @@ impl SettingsApplyPlan {
 /// Safe metadata captured for the active settings runtime-apply phase.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct SettingsApplyObservation {
-    pub(crate) config_version: u64,
+    pub(crate) config_version: ConfigVersion,
     pub(crate) phase: SettingsApplyPhase,
     pub(crate) failure_kind: Option<SettingsApplyFailureKind>,
     pub(crate) router_published: bool,
@@ -819,7 +819,7 @@ mod tests {
             ],
         });
 
-        assert_eq!(plan.version, 7);
+        assert_eq!(plan.config_version, 7);
         assert_eq!(
             plan.live,
             vec![
@@ -841,7 +841,7 @@ mod tests {
             domains: vec![ConfigDomain::ContextLimits],
         });
 
-        assert_eq!(plan.version, 8);
+        assert_eq!(plan.config_version, 8);
         assert_eq!(
             plan.live,
             vec![
@@ -925,7 +925,7 @@ mod tests {
         assert!(order[3].ends_with(":finish"));
     }
 
-    fn settings_change(version: u64) -> ConfigChanged {
+    fn settings_change(version: ConfigVersion) -> ConfigChanged {
         ConfigChanged {
             version,
             domains: vec![
@@ -947,13 +947,13 @@ mod tests {
         }
     }
 
-    fn settings_snapshot(version: u64, hotkey: &str) -> ConfigSnapshot {
+    fn settings_snapshot(version: ConfigVersion, hotkey: &str) -> ConfigSnapshot {
         let mut config = AppConfig::default();
         config.hotkey.key_binding = hotkey.into();
         ConfigSnapshot { version, config }
     }
 
-    fn settings_coordinator(version: u64) -> SettingsRuntimeApplyCoordinator {
+    fn settings_coordinator(version: ConfigVersion) -> SettingsRuntimeApplyCoordinator {
         let change = settings_change(version);
         let snapshot = settings_snapshot(version, "Ctrl+Alt+N");
         SettingsRuntimeApplyCoordinator::new(&change, &snapshot, "Ctrl+Alt+O")

@@ -19,7 +19,7 @@ use crate::{
     ToolRegistry, ToolResult, TypedToolAdapter, TypedToolOperation,
 };
 use async_trait::async_trait;
-use haven_common::config::{ConfigService, LogLevel, McpServerConfig};
+use haven_common::config::{ConfigService, ConfigVersion, LogLevel, McpServerConfig};
 use haven_common::types::{McpTransportType, RiskLevel};
 use haven_llm::LlmRouter;
 use haven_mcp::{McpManager, McpReconcile};
@@ -259,8 +259,13 @@ pub enum McpOperationArgs {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "operation", rename_all = "snake_case", deny_unknown_fields)]
 pub enum NativeMcpOperationArgs {
-    McpReconnect { name: String, config_version: u64 },
-    McpRefresh { plan: McpRefreshPlan },
+    McpReconnect {
+        name: String,
+        config_version: ConfigVersion,
+    },
+    McpRefresh {
+        plan: McpRefreshPlan,
+    },
 }
 
 /// The backend-derived set of connection changes shown to the user before a
@@ -268,7 +273,7 @@ pub enum NativeMcpOperationArgs {
 /// environment values, or other connection configuration.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct McpRefreshPlan {
-    pub config_version: u64,
+    pub config_version: ConfigVersion,
     pub targets: Vec<McpRefreshTarget>,
 }
 
@@ -287,7 +292,7 @@ pub enum McpRefreshAction {
 }
 
 impl McpRefreshPlan {
-    pub fn from_reconcile(config_version: u64, reconcile: &McpReconcile) -> Self {
+    pub fn from_reconcile(config_version: ConfigVersion, reconcile: &McpReconcile) -> Self {
         let mut targets = Vec::new();
         targets.extend(
             reconcile
@@ -1313,7 +1318,7 @@ pub struct ConfigViewOutput {
 pub struct LogLevelOutput {
     pub level: LogLevel,
     pub saved: bool,
-    pub version: u64,
+    pub config_version: ConfigVersion,
 }
 
 #[derive(Debug, Clone)]
@@ -1470,7 +1475,7 @@ impl TypedToolOperation for ConfigAdminOperation {
                 Ok(ConfigOperationOutput::LogsLevel(LogLevelOutput {
                     level: result.level,
                     saved: result.saved,
-                    version: result.version,
+                    config_version: result.config_version,
                 }))
             }
         }
@@ -2559,7 +2564,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             level.output,
-            json!({"level": "warn", "saved": true, "version": 1})
+            json!({"level": "warn", "saved": true, "config_version": 1})
         );
 
         let tool = surfaces
@@ -3357,7 +3362,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(changed.output["level"], json!("debug"));
-        assert_eq!(changed.output["version"], json!(1));
+        assert_eq!(changed.output["config_version"], json!(1));
         assert_eq!(
             service.snapshot().unwrap().config.log.level,
             LogLevel::Debug
@@ -3370,7 +3375,7 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(repeated.output["version"], json!(1));
+        assert_eq!(repeated.output["config_version"], json!(1));
         assert_eq!(service.snapshot().unwrap().version, 1);
     }
 
@@ -3652,8 +3657,8 @@ mod tests {
             .execute(level, CancellationToken::new())
             .await
             .unwrap();
-        assert_eq!(first.output["version"], json!(1));
-        assert_eq!(second.output["version"], json!(1));
+        assert_eq!(first.output["config_version"], json!(1));
+        assert_eq!(second.output["config_version"], json!(1));
         assert_eq!(service.snapshot().unwrap().version, 1);
 
         let add = json!({
