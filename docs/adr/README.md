@@ -647,3 +647,4 @@
 - [0656：统一配置快照代次命名](0656-unify-config-version-terminology.md)
 - [0657：明确 Agent chunk event consumer 任务句柄](0657-name-agent-chunk-event-consumer-task.md)
 - [0658：具名 LLM stream attempt 输出处置状态](0658-name-stream-attempt-output-disposition.md)
+- [0659：删除无消费者的 UI any callback helper](0659-remove-unused-any-callback-adapter.md)

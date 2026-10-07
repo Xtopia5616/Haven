@@ -11,10 +11,6 @@ export function withBooleanValue(callback: (value: boolean) => void): (value: bo
 	return callback;
 }
 
-export function withAnyValue(callback: (value: any) => void): (value: any) => void {
-	return callback;
-}
-
 export function withEventValue(callback: (value: Event) => void): (value: Event) => void {
 	return callback;
 }
