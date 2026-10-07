@@ -6,7 +6,12 @@
 	import MaterialButton from './MaterialButton.svelte';
 	import MaterialSplitButton from './MaterialSplitButton.svelte';
 	import MaterialIconButton from './MaterialIconButton.svelte';
-	import type { RiskLevel } from '$lib/contracts/generatedCommands.ts';
+	import type {
+		PermissionEffectInput,
+		PermissionScopeInput,
+		PermissionTargetInput,
+		RiskLevel,
+	} from '$lib/contracts/generatedCommands.ts';
 	import type { ConfirmationDecision } from '$lib/confirmationTypes.ts';
 
 	interface Props {
@@ -52,7 +57,7 @@
 	let countdownDurationMs = $state(1);
 	let showDenyMenu = $state(false);
 	let showAllowMenu = $state(false);
-	let pendingPersistentTarget = $state<string | null>(null);
+	let pendingPersistentTarget = $state<PermissionTargetInput | null>(null);
 	let submittedStepId = $state<string | null>(null);
 	let dialogEl = $state<HTMLDivElement | null>(null);
 
@@ -62,13 +67,17 @@
 		Math.min(100, Math.max(0, (remaining * 1000 / countdownDurationMs) * 100)),
 	);
 
-	function buildTargetOptions(key: string) {
+	function buildTargetOptions(
+		key: string,
+	): Array<{ target: PermissionTargetInput; key: string; label: string }> {
 		const segments = String(key || '')
 			.split('.')
 			.map((segment) => segment.trim())
 			.filter(Boolean);
 		if (segments.length === 0) return [{ target: 'operation', key: '', label: '此操作' }];
-		const options = [{ target: 'operation', key: segments.join('.'), label: '此操作' }];
+		const options: Array<{ target: PermissionTargetInput; key: string; label: string }> = [
+			{ target: 'operation', key: segments.join('.'), label: '此操作' },
+		];
 		if (segments.length > 2) {
 			options.push({
 				target: 'group',
@@ -138,7 +147,11 @@
 		};
 	});
 
-	async function decide(effect: string, scope: string, target = 'operation') {
+	async function decide(
+		effect: PermissionEffectInput,
+		scope: PermissionScopeInput,
+		target: PermissionTargetInput = 'operation',
+	) {
 		const sid = stepId;
 		if (!sid || submittedStepId === sid) return;
 		submittedStepId = sid;
@@ -159,7 +172,7 @@
 		}
 	}
 
-	function requestPersistentAllow(target: string) {
+	function requestPersistentAllow(target: PermissionTargetInput) {
 		const needsWarning =
 			target !== 'operation' ||
 			normalizedRisk === 'high' ||

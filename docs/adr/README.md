@@ -721,3 +721,4 @@
 - [0730：移除无消费者的 MCP UI 直调命令](0730-remove-unconsumed-mcp-ui-tool-call.md)
 - [0731：MCP 单服务器重连命令标明目标实体](0731-name-mcp-server-reconnect-command.md)
 - [0732：记忆检索输入复用 Memory domain enum](0732-type-memory-recall-domain.md)
+- [0733：确认命令复用权限输入 enum](0733-type-confirmation-permission-input.md)

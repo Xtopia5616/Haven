@@ -62,7 +62,7 @@
 | `get_session_lineage` | read | 当前会话的父会话和直接 Agent 子会话 |
 | `end_session` | mutate | 仅显式结束 |
 | `interrupt_session` | mutate | 停止当前输出但保留会话，可继续 |
-| `resolve_confirmation` | mutate | 显式 owner + `request_id` 选路；receipt/effect/scope/target 后端复核；返回 `resolved`/`expired`/`stale`，可重试失败保留 pending |
+| `resolve_confirmation` | mutate | 显式 owner + `request_id` 选路；`effect` / `scope` / `target` 使用生成的权限 enum，receipt 与目标祖先仍由后端复核；返回 `resolved`/`expired`/`stale`，可重试失败保留 pending |
 | `update_session_title` | mutate | trim 后不得为空 |
 
 `list_facts` / `add_fact` 返回 App-owned `MemoryFactResponse`；其中 `source_ref` 使用
@@ -111,7 +111,7 @@
 | `rollback_session` | mutate | 回滚分支并同步截断事件和投影 |
 | `update_session_title` | mutate | 更新非空标题 |
 | `delete_session` / `delete_all_sessions` | mutate | 删除一条或全部持久会话，并广播 `session:lifecycle(deleted)` |
-| `resolve_confirmation` | mutate | 输入 `{ owner, requestId, effect, scope, target }`；owner 只选择唯一 pending registry，AppCommand 不经过 Agent executor。期限由 owner 按登记的 `expires_at` 仲裁，不接受 renderer 的超时决定。结果为 `resolved`、`expired` 或 `stale`；命令错误表示可重试失败，pending UI 保留 |
+| `resolve_confirmation` | mutate | 输入 `{ owner, requestId, effect: PermissionEffectInput, scope: PermissionScopeInput, target: PermissionTargetInput }`；Tauri 只接受 Rust permission enum 的规范 snake_case 值。owner 只选择唯一 pending registry，AppCommand 不经过 Agent executor；期限由 owner 按登记的 `expires_at` 仲裁，不接受 renderer 的超时决定。结果为 `resolved`、`expired` 或 `stale`；解码/命令错误表示可重试失败，pending UI 保留 |
 
 Tauri 接收前端参数时采用其自动 camelCase → Rust snake_case 映射；页面调用处使用 camelCase。
 

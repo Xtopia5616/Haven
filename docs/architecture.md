@@ -721,7 +721,8 @@ request/result 使用命名 TS contract，`toolRunStore` 不直接 invoke（ADR 
 `continue_session`、`interrupt_session`、`end_session` 与 `rollback_session` 由
 `ChatSessionController` 单一编排并直接 invoke；请求在 `contracts/commands.ts` 使用命名 DTO，页面逻辑保留
 原 in-flight 锁、错误处理与通知顺序。`resolve_confirmation` 留在 `+layout.svelte` 的 shell confirmation
-入口，因为弹窗必须跨工作区可见；它也使用命名 request DTO 与本地 in-flight guard。没有重复 request
+入口，因为弹窗必须跨工作区可见；它使用 generated permission enums 表达 effect、scope、target，
+并保留本地 `ConfirmationDecision` view 转换与 in-flight guard。没有重复 request
 mapper 或绕过 owner 的 UI caller，IPC script 对照 Rust handler 参数、TS DTO 和直接调用边界（ADR 0371）。
 `+page.svelte` 保留 view/scroll 与 dialog/loading/menu 状态、model sync、resume target/auto-restore、
 新会话入口及非 chat-event teardown；ask/input 分流、会话启动恢复和滚动/observer 生命周期分别由

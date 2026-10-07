@@ -1240,6 +1240,45 @@ mod tests {
     }
 
     #[test]
+    fn permission_decisions_use_closed_snake_case_serde_values() {
+        for (value, json) in [
+            (PermissionEffect::Allow, "\"allow\""),
+            (PermissionEffect::Deny, "\"deny\""),
+        ] {
+            assert_eq!(serde_json::to_string(&value).unwrap(), json);
+            assert_eq!(
+                serde_json::from_str::<PermissionEffect>(json).unwrap(),
+                value
+            );
+        }
+        for (value, json) in [
+            (PermissionScope::Once, "\"once\""),
+            (PermissionScope::Session, "\"session\""),
+            (PermissionScope::Always, "\"always\""),
+        ] {
+            assert_eq!(serde_json::to_string(&value).unwrap(), json);
+            assert_eq!(
+                serde_json::from_str::<PermissionScope>(json).unwrap(),
+                value
+            );
+        }
+        for (value, json) in [
+            (PermissionTarget::Operation, "\"operation\""),
+            (PermissionTarget::Group, "\"group\""),
+            (PermissionTarget::Tool, "\"tool\""),
+        ] {
+            assert_eq!(serde_json::to_string(&value).unwrap(), json);
+            assert_eq!(
+                serde_json::from_str::<PermissionTarget>(json).unwrap(),
+                value
+            );
+        }
+        assert!(serde_json::from_str::<PermissionEffect>("\"ALLOW\"").is_err());
+        assert!(serde_json::from_str::<PermissionScope>("\"forever\"").is_err());
+        assert!(serde_json::from_str::<PermissionTarget>("\"capability\"").is_err());
+    }
+
+    #[test]
     fn canonical_role_all_variants() {
         let system = CanonicalRole::System;
         let user = CanonicalRole::User;

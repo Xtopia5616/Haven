@@ -247,6 +247,10 @@ export const PERMISSION_MODE_INPUT_VALUES = ['default', 'plan', 'auto_edit', 'au
 export type PermissionModeInput = (typeof PERMISSION_MODE_INPUT_VALUES)[number];
 export const PERMISSION_MODE_VALUES = ['default', 'plan', 'auto_edit', 'autonomous'] as const;
 export type PermissionMode = (typeof PERMISSION_MODE_VALUES)[number];
+export const PERMISSION_SCOPE_INPUT_VALUES = ['once', 'session', 'always'] as const;
+export type PermissionScopeInput = (typeof PERMISSION_SCOPE_INPUT_VALUES)[number];
+export const PERMISSION_TARGET_INPUT_VALUES = ['operation', 'group', 'tool'] as const;
+export type PermissionTargetInput = (typeof PERMISSION_TARGET_INPUT_VALUES)[number];
 export const RISK_LEVEL_INPUT_VALUES = ['safe', 'low', 'medium', 'high', 'critical'] as const;
 export type RiskLevelInput = (typeof RISK_LEVEL_INPUT_VALUES)[number];
 export const RISK_LEVEL_VALUES = ['safe', 'low', 'medium', 'high', 'critical'] as const;
@@ -338,7 +342,7 @@ export interface TauriCommandMap {
 	reset_permissions: { request: undefined; response: void };
 	reset_session_permissions: { request: undefined; response: number };
 	reset_tool_circuits: { request: undefined; response: void };
-	resolve_confirmation: { request: { owner: InteractionOwnerInput; requestId: string; effect: string; scope: string; target: string }; response: ConfirmationResolutionResult };
+	resolve_confirmation: { request: { owner: InteractionOwnerInput; requestId: string; effect: PermissionEffectInput; scope: PermissionScopeInput; target: PermissionTargetInput }; response: ConfirmationResolutionResult };
 	revoke_permission: { request: { key: string }; response: void };
 	revoke_session_permission: { request: { sessionId: string; capability: string }; response: void };
 	rollback_session: { request: { sessionId: string; targetStep: number; pause?: boolean | null; targetMessageId?: string | null }; response: void };

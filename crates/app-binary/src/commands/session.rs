@@ -235,14 +235,13 @@ pub async fn resolve_confirmation(
     app: AppHandle,
     owner: haven_agent::InteractionOwner,
     request_id: String,
-    effect: String,
-    scope: String,
-    target: String,
+    effect: haven_common::types::PermissionEffect,
+    scope: haven_common::types::PermissionScope,
+    target: haven_common::types::PermissionTarget,
 ) -> Result<ConfirmationResolutionResult, String> {
-    let (perm_effect, perm_scope) = parse_permission_decision(&effect, &scope)
-        .map_err(|error| log_err("resolve_confirmation", error))?;
-    let perm_target = haven_common::types::PermissionTarget::parse(&target)
-        .map_err(|error| log_err("resolve_confirmation", error))?;
+    let perm_effect = effect;
+    let perm_scope = scope;
+    let perm_target = target;
     let confirmed = matches!(perm_effect, haven_common::types::PermissionEffect::Allow);
     let confirmation_id: haven_common::types::ConfirmId = request_id.clone().into();
     if owner == haven_agent::InteractionOwner::AppCommand {
@@ -680,33 +679,6 @@ async fn execute_ui_confirmation_action(
         }
     }
     Ok(())
-}
-
-fn parse_permission_decision(
-    effect: &str,
-    scope: &str,
-) -> Result<
-    (
-        haven_common::types::PermissionEffect,
-        haven_common::types::PermissionScope,
-    ),
-    String,
-> {
-    use haven_common::types::{PermissionEffect, PermissionScope};
-
-    let perm_effect = match effect.trim().to_ascii_lowercase().as_str() {
-        "allow" => PermissionEffect::Allow,
-        "deny" => PermissionEffect::Deny,
-        other => return Err(format!("invalid permission effect '{other}'")),
-    };
-    let perm_scope = match scope.trim().to_ascii_lowercase().as_str() {
-        "once" => PermissionScope::Once,
-        "session" => PermissionScope::Session,
-        "always" => PermissionScope::Always,
-        other => return Err(format!("invalid permission scope '{other}'")),
-    };
-
-    Ok((perm_effect, perm_scope))
 }
 
 async fn persist_permanent_permission(
