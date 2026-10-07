@@ -1,6 +1,6 @@
 # Haven 命名规范
 
-> 版本: v1.111 | 日期: 2026-10-07
+> 版本: v1.112 | 日期: 2026-10-07
 
 本文档统一 Haven 项目各层的命名规则（变量名、函数名、文件名、crate 名、缩写大小写、跨层边界）。规范以现有代码中的事实模式为基础，新代码必须遵循；存量代码若与规范冲突，逐步迁移对齐。
 
@@ -73,7 +73,7 @@ ToolRun completion lease 的 token 标识被 claim 的 ToolRun 或 completion re
 | 工具调用（ToolCall） | Agent/模型发起的一次工具调用；前台调用等待结果并进入当前 transcript | Agent/ReAct 使用 `ToolCall`；provider 的 `tool_call_id` 保持原格式 |
 | 会话（session） | 用户与 Agent 的对话及其前台 ReAct 运行上下文 | UI 直接称“会话”；前台工具调用在会话内呈现 |
 | 会话运行（SessionRun） | `SessionSupervisor` 调度或直接准入的一次会话执行；`SessionRunEngine` 运行完整 ReAct 循环 | handler、admission、permit、lease 和 actor claim 均显式标注 `SessionRun`；直接运行的准入等待项为 `DirectSessionRunAdmissionWaiter`，具名区分注销 ID 与取消令牌；ReAct loop 的输入、重放、输出以 `ReActRun*` 标名 |
-| 工具运行（ToolRun） | 脱离当前 turn 持久运行、可取消并产生生命周期事件的工具执行 | 后端/IPC/数据库使用 `tool_run`、`tool_runs`；ID 前缀为 `toolrun-` |
+| 工具运行（ToolRun） | 脱离当前 turn 持久运行、可取消并产生生命周期事件的工具执行 | 后端/IPC/数据库使用 `tool_run`、`tool_runs`；ID 前缀为 `toolrun-`。工具查询与 completion notification 共用 `ToolRunStateView` 的状态基础 JSON；`background_wait`、kind/source 与 delivery envelope 仍由各调用者按自身职责添加（ADR 0700） |
 | 后台工具运行（background ToolRun） | 工具调用选择后台执行后启动的持久运行 | 通过 `ToolExecutionMode::Background` 启动；UI 显示“后台任务” |
 | 定时工具运行（scheduled ToolRun） | 由时间或依赖触发的工具运行 | 仍由 `schedule` 工具负责设置触发条件；UI 显示“定时任务” |
 | Memory live consumer handoff | 把已准备的 Memory event receiver future 一次性交给 ApplicationRuntime task registry 的阶段值；注册成功后才产出 `MemoryReady` | 类型为 `MemoryLiveConsumerHandoff`；由 `MemoryStartup::prepare_live_consumer` 创建，通过 `register_consumer_with` 注册，不代表 `ToolRun` 或已运行的 JoinHandle |

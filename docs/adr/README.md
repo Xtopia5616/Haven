@@ -688,3 +688,4 @@
 - [0697：共用 Tool result 数值格式化](0697-share-tool-result-formatting.md)
 - [0698：共用 untrusted record guard](0698-share-untrusted-record-guard.md)
 - [0699：从 Rust 事件目录生成 UI 通道名](0699-generate-event-channel-names.md)
+- [0700：共用 ToolRun 状态 JSON 基础投影](0700-share-toolrun-status-json-projection.md)

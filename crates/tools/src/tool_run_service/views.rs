@@ -109,16 +109,32 @@ pub struct ToolRunListView {
 
 impl ToolRunStateView {
     pub(super) fn from_entry(entry: &ToolRunEntry) -> Self {
-        match &entry.state {
+        let mut view = Self::from_runtime_state(&entry.state);
+        if let Self::Running {
+            command,
+            shell,
+            output,
+            ..
+        } = &mut view
+        {
+            *command = (entry.kind == ToolRunKind::Background).then(|| entry.command.clone());
+            *shell = (entry.kind == ToolRunKind::Background).then(|| entry.shell.clone());
+            *output = entry.tail.as_ref().and_then(|tail| {
+                let output = tail.snapshot();
+                (!output.is_empty()).then(|| output.as_str().to_string())
+            });
+        }
+        view
+    }
+
+    fn from_runtime_state(state: &ToolRunState) -> Self {
+        match state {
             ToolRunState::Waiting => Self::Waiting,
             ToolRunState::Running { started_at } => Self::Running {
                 started_at: started_at.clone(),
-                command: (entry.kind == ToolRunKind::Background).then(|| entry.command.clone()),
-                shell: (entry.kind == ToolRunKind::Background).then(|| entry.shell.clone()),
-                output: entry.tail.as_ref().and_then(|tail| {
-                    let output = tail.snapshot();
-                    (!output.is_empty()).then(|| output.as_str().to_string())
-                }),
+                command: None,
+                shell: None,
+                output: None,
             },
             ToolRunState::Completed {
                 output,
@@ -157,6 +173,95 @@ impl ToolRunStateView {
                 started_at: started_at.clone(),
                 finished_at: finished_at.clone(),
             },
+        }
+    }
+
+    fn status_json(&self, tool_run_id: &str) -> Value {
+        match self {
+            Self::Waiting => json!({
+                "tool_run_id": tool_run_id,
+                "status": "waiting",
+            }),
+            Self::Running {
+                started_at,
+                command,
+                shell,
+                output,
+            } => {
+                let mut value = serde_json::Map::new();
+                value.insert("tool_run_id".into(), json!(tool_run_id));
+                value.insert("status".into(), json!("running"));
+                if let Some(command) = command {
+                    value.insert("command".into(), json!(command));
+                }
+                if let Some(shell) = shell {
+                    value.insert("shell".into(), json!(shell));
+                }
+                value.insert("started_at".into(), json!(started_at));
+                if let Some(output) = output {
+                    value.insert("output".into(), json!(output));
+                }
+                Value::Object(value)
+            }
+            Self::Completed {
+                output,
+                exit_code,
+                truncated,
+                log_path,
+                started_at,
+                finished_at,
+            } => {
+                let mut value = json!({
+                    "tool_run_id": tool_run_id,
+                    "status": "completed",
+                    "output": output,
+                    "started_at": started_at,
+                    "finished_at": finished_at,
+                });
+                if let Some(code) = exit_code {
+                    value["exit_code"] = json!(code);
+                }
+                if *truncated {
+                    value["truncated"] = json!(true);
+                }
+                if let Some(path) = log_path {
+                    value["log_path"] = json!(path);
+                }
+                value
+            }
+            Self::Failed {
+                error,
+                error_reason,
+                log_path,
+                exit_code,
+                started_at,
+                finished_at,
+            } => {
+                let mut value = json!({
+                    "tool_run_id": tool_run_id,
+                    "status": "failed",
+                    "error": error,
+                    "error_reason": error_reason,
+                    "started_at": started_at,
+                    "finished_at": finished_at,
+                });
+                if let Some(code) = exit_code {
+                    value["exit_code"] = json!(code);
+                }
+                if let Some(path) = log_path {
+                    value["log_path"] = json!(path);
+                }
+                value
+            }
+            Self::Cancelled {
+                started_at,
+                finished_at,
+            } => json!({
+                "tool_run_id": tool_run_id,
+                "status": "cancelled",
+                "started_at": started_at,
+                "finished_at": finished_at,
+            }),
         }
     }
 
@@ -219,12 +324,24 @@ impl ToolRunStatusView {
                 tool_run_id,
                 source_step_id,
                 state,
-            } => background_status_json(
-                tool_run_id,
-                source_step_id.as_deref(),
-                state,
-                include_background_wait,
-            ),
+            } => {
+                let mut value = state.status_json(tool_run_id);
+                if include_background_wait && matches!(state, ToolRunStateView::Running { .. }) {
+                    let mut background_wait = haven_common::tools::background_wait_object(
+                        std::iter::once(tool_run_id.to_string()),
+                        "The ToolRun is still running. END YOUR TURN if you have nothing else useful to do — do not poll. The result is auto-pushed and the session is auto-woken when it finishes.",
+                    );
+                    if let Some(status) = value.as_object() {
+                        background_wait.extend(status.clone());
+                    }
+                    value = Value::Object(background_wait);
+                }
+                value["kind"] = json!("background");
+                if let Some(source_step_id) = source_step_id {
+                    value["source_step_id"] = json!(source_step_id);
+                }
+                value
+            }
             Self::Scheduled {
                 tool_run_id,
                 session_id,
@@ -286,112 +403,6 @@ pub(super) fn scheduled_tool_run_view(entry: &ScheduledToolRunEntry) -> Schedule
         prompt: entry.prompt.clone(),
         watch_tool_run_id: entry.watch_tool_run_id.clone(),
     }
-}
-
-fn background_status_json(
-    tool_run_id: &str,
-    source_step_id: Option<&str>,
-    state: &ToolRunStateView,
-    include_wait: bool,
-) -> Value {
-    let mut value = match state {
-        ToolRunStateView::Waiting => json!({
-            "tool_run_id": tool_run_id,
-            "status": "waiting",
-        }),
-        ToolRunStateView::Running {
-            started_at,
-            command,
-            shell,
-            output,
-        } => {
-            let mut value = if include_wait {
-                haven_common::tools::background_wait_object(
-                    std::iter::once(tool_run_id.to_string()),
-                    "The ToolRun is still running. END YOUR TURN if you have nothing else useful to do — do not poll. The result is auto-pushed and the session is auto-woken when it finishes.",
-                )
-            } else {
-                serde_json::Map::new()
-            };
-            value.insert("tool_run_id".into(), json!(tool_run_id));
-            value.insert("status".into(), json!("running"));
-            if let Some(command) = command {
-                value.insert("command".into(), json!(command));
-            }
-            if let Some(shell) = shell {
-                value.insert("shell".into(), json!(shell));
-            }
-            value.insert("started_at".into(), json!(started_at));
-            if let Some(output) = output {
-                value.insert("output".into(), json!(output));
-            }
-            Value::Object(value)
-        }
-        ToolRunStateView::Completed {
-            output,
-            exit_code,
-            truncated,
-            log_path,
-            started_at,
-            finished_at,
-        } => {
-            let mut value = json!({
-                "tool_run_id": tool_run_id,
-                "status": "completed",
-                "output": output,
-                "started_at": started_at,
-                "finished_at": finished_at,
-            });
-            if let Some(code) = exit_code {
-                value["exit_code"] = json!(code);
-            }
-            if *truncated {
-                value["truncated"] = json!(true);
-            }
-            if let Some(path) = log_path {
-                value["log_path"] = json!(path);
-            }
-            value
-        }
-        ToolRunStateView::Failed {
-            error,
-            error_reason,
-            log_path,
-            exit_code,
-            started_at,
-            finished_at,
-        } => {
-            let mut value = json!({
-                "tool_run_id": tool_run_id,
-                "status": "failed",
-                "error": error,
-                "error_reason": error_reason,
-                "started_at": started_at,
-                "finished_at": finished_at,
-            });
-            if let Some(code) = exit_code {
-                value["exit_code"] = json!(code);
-            }
-            if let Some(path) = log_path {
-                value["log_path"] = json!(path);
-            }
-            value
-        }
-        ToolRunStateView::Cancelled {
-            started_at,
-            finished_at,
-        } => json!({
-            "tool_run_id": tool_run_id,
-            "status": "cancelled",
-            "started_at": started_at,
-            "finished_at": finished_at,
-        }),
-    };
-    value["kind"] = json!("background");
-    if let Some(source_step_id) = source_step_id {
-        value["source_step_id"] = json!(source_step_id);
-    }
-    value
 }
 
 pub(super) fn project_board_tool_run(tool_run_id: &str, entry: &ToolRunEntry) -> ToolRunView {
@@ -570,71 +581,7 @@ pub(super) fn tool_run_lifecycle_state(state: &ToolRunState) -> ToolRunLifecycle
 /// Render the terminal status JSON for a ToolRun (mirrors `status()` output for
 /// completed/failed/cancelled states), used in completion notifications.
 pub(super) fn render_status_json(tool_run_id: &str, state: &ToolRunState) -> Value {
-    match state {
-        ToolRunState::Completed {
-            output,
-            exit_code,
-            truncated,
-            log_path,
-            started_at,
-            finished_at,
-        } => {
-            let mut v = json!({
-                "tool_run_id": tool_run_id,
-                "status": "completed",
-                "output": output,
-                "started_at": started_at,
-                "finished_at": finished_at,
-            });
-            if let Some(code) = exit_code {
-                v["exit_code"] = json!(code);
-            }
-            if *truncated {
-                v["truncated"] = json!(true);
-            }
-            if let Some(p) = log_path {
-                v["log_path"] = json!(p);
-            }
-            v
-        }
-        ToolRunState::Failed {
-            error,
-            error_reason,
-            log_path,
-            exit_code,
-            started_at,
-            finished_at,
-        } => {
-            let mut v = json!({
-                "tool_run_id": tool_run_id,
-                "status": "failed",
-                "error": error,
-                "error_reason": error_reason,
-                "started_at": started_at,
-                "finished_at": finished_at,
-            });
-            if let Some(code) = exit_code {
-                v["exit_code"] = json!(code);
-            }
-            if let Some(p) = log_path {
-                v["log_path"] = json!(p);
-            }
-            v
-        }
-        ToolRunState::Cancelled {
-            started_at,
-            finished_at,
-        } => json!({
-            "tool_run_id": tool_run_id,
-            "status": "cancelled",
-            "started_at": started_at,
-            "finished_at": finished_at,
-        }),
-        ToolRunState::Waiting => json!({ "tool_run_id": tool_run_id, "status": "waiting" }),
-        ToolRunState::Running { .. } => {
-            json!({ "tool_run_id": tool_run_id, "status": "running" })
-        }
-    }
+    ToolRunStateView::from_runtime_state(state).status_json(tool_run_id)
 }
 
 pub(super) fn render_background_status_json(
@@ -648,4 +595,49 @@ pub(super) fn render_background_status_json(
         value["source_step_id"] = json!(source_step_id);
     }
     value
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn background_status_and_completion_share_terminal_projection() {
+        let state = ToolRunState::Completed {
+            output: "result".into(),
+            exit_code: Some(0),
+            truncated: true,
+            log_path: Some("C:/Temp/full.log".into()),
+            started_at: "started".into(),
+            finished_at: "finished".into(),
+        };
+        let expected = json!({
+            "tool_run_id": "toolrun-result",
+            "status": "completed",
+            "output": "result",
+            "started_at": "started",
+            "finished_at": "finished",
+            "exit_code": 0,
+            "truncated": true,
+            "log_path": "C:/Temp/full.log",
+        });
+        let mut expected_background = expected.clone();
+        expected_background["kind"] = json!("background");
+        expected_background["source_step_id"] = json!("step-source");
+
+        assert_eq!(render_status_json("toolrun-result", &state), expected);
+        assert_eq!(
+            render_background_status_json("toolrun-result", &state, Some("step-source")),
+            expected_background,
+        );
+        assert_eq!(
+            ToolRunStatusView::Background {
+                tool_run_id: "toolrun-result".into(),
+                source_step_id: Some("step-source".into()),
+                state: ToolRunStateView::from_runtime_state(&state),
+            }
+            .to_json(false),
+            expected_background,
+        );
+    }
 }
