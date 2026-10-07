@@ -1752,7 +1752,10 @@ mod tests {
         router
             .force_request_configured(RequestKind::Vision, true)
             .await;
-        router.force_routing_flags(true, false).await;
+        router
+            .force_request_primary_for_test(RequestKind::Vision, "default_model")
+            .await
+            .unwrap();
         let messages = [image_msg(CanonicalRole::User)];
         let context = request_context(messages.into());
         assert_eq!(

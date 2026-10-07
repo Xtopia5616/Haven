@@ -497,59 +497,28 @@ impl LlmRouter {
             .rebuild_primary_routes(&cfg, route_mode);
     }
 
-    /// Test utility retained for old tests. It now edits the corresponding
-    /// request policies instead of mutating boolean routing switches.
+    /// Test utility for cross-crate tests: assign one request kind to a
+    /// configured injected model and rebuild the route table from that policy.
     #[doc(hidden)]
-    pub async fn force_request_routes(
+    pub async fn force_request_primary_for_test(
         &self,
-        stt_use_audio_model: bool,
-        vision_use_image_model: bool,
-    ) {
+        request: RequestKind,
+        model_id: &str,
+    ) -> anyhow::Result<()> {
         let mut cfg = self.config.write().await;
-        let default_id = cfg.policy(RequestKind::Chat).map(|p| p.primary.clone());
-        if let Some(default_id) = default_id {
-            let audio_id = cfg
-                .policy(RequestKind::AudioChat)
-                .map(|p| p.primary.clone())
-                .unwrap_or_else(|| default_id.clone());
-            if let Some(policy) = cfg.policy_mut(RequestKind::AudioChat) {
-                policy.primary = if stt_use_audio_model {
-                    audio_id.clone()
-                } else {
-                    default_id.clone()
-                };
-            }
-            if let Some(policy) = cfg.policy_mut(RequestKind::Transcription) {
-                policy.primary = if stt_use_audio_model {
-                    audio_id
-                } else {
-                    default_id.clone()
-                };
-            }
-            let image_id = cfg
-                .policy(RequestKind::Vision)
-                .map(|p| p.primary.clone())
-                .unwrap_or_else(|| default_id.clone());
-            if let Some(policy) = cfg.policy_mut(RequestKind::Vision) {
-                policy.primary = if vision_use_image_model {
-                    image_id
-                } else {
-                    default_id
-                };
-            }
+        let model = cfg
+            .model(model_id)
+            .ok_or_else(|| anyhow::anyhow!("test model '{model_id}' is not configured"))?;
+        if !model.capabilities.contains(&request.required_capability()) {
+            anyhow::bail!("test model '{model_id}' lacks capability for {request:?}");
         }
+        let policy = cfg
+            .policy_mut(request)
+            .ok_or_else(|| anyhow::anyhow!("test request policy {request:?} is not configured"))?;
+        policy.primary = model_id.to_string();
         self.model_directory
             .rebuild_primary_routes(&cfg, RouteMode::InjectedClients);
-    }
-
-    #[doc(hidden)]
-    pub async fn force_routing_flags(
-        &self,
-        stt_use_audio_model: bool,
-        vision_use_image_model: bool,
-    ) {
-        self.force_request_routes(stt_use_audio_model, vision_use_image_model)
-            .await;
+        Ok(())
     }
 
     /// Transcribe WAV audio through the `transcription` request policy.

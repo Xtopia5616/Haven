@@ -545,7 +545,10 @@ mod tests {
     #[tokio::test]
     async fn test_transcribe_audio_uses_default_model_when_routing_disabled() {
         let router = mock_router("走默认模型的转写");
-        router.force_routing_flags(false, true).await;
+        router
+            .force_request_primary_for_test(RequestKind::Transcription, "default_model")
+            .await
+            .unwrap();
         router
             .force_request_configured(RequestKind::Transcription, true)
             .await;
