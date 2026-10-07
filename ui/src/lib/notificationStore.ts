@@ -1,6 +1,7 @@
 import { writable } from 'svelte/store';
+import type { StatusTone } from './statusColors.ts';
 
-export type NotificationType = 'info' | 'success' | 'warning' | 'error';
+export type NotificationType = Extract<StatusTone, 'info' | 'success' | 'warning' | 'error'>;
 
 export type Notification = {
 	id: string;

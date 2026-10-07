@@ -1,4 +1,5 @@
 import type { AgentNotificationPayload } from './contracts/agent.ts';
+import type { NotificationType } from './notificationStore.ts';
 
 export const MAX_PENDING_TOOL_RUN_COMPLETION_NOTIFICATIONS = 128;
 
@@ -34,7 +35,7 @@ export function createToolRunCompletionNotificationGate(
 
 export interface ToolRunCompletionToast {
 	message: string;
-	type: 'info' | 'success' | 'error';
+	type: Extract<NotificationType, 'info' | 'success' | 'error'>;
 	durationMs: number;
 }
 
