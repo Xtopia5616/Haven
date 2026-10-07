@@ -48,6 +48,19 @@ pub(super) use stream::*;
 #[allow(unused_imports)]
 pub(super) use wire::*;
 
+/// Provider wire messages and system prompt extracted from a canonical transcript.
+pub(super) struct AnthropicMessageConversion {
+    messages: Vec<AnthropicMessage>,
+    system: Option<String>,
+}
+
+/// Anthropic's independent `thinking` and `output_config` request fields.
+#[derive(Default)]
+pub(super) struct AnthropicThinkingConfig {
+    thinking: Option<Value>,
+    output_config: Option<Value>,
+}
+
 /// Anthropic Messages API adapter for Claude models.
 pub struct AnthropicAdapter {
     endpoint: ModelEndpoint,

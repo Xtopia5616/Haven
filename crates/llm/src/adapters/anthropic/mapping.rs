@@ -194,7 +194,7 @@ impl AnthropicAdapter {
 
     pub(super) fn convert_messages(
         msgs: impl AsRef<[CanonicalMessage]>,
-    ) -> (Vec<AnthropicMessage>, Option<String>) {
+    ) -> AnthropicMessageConversion {
         let msgs = msgs.as_ref();
         let mut system_parts: Vec<String> = Vec::new();
         let mut out: Vec<AnthropicMessage> = Vec::new();
@@ -289,7 +289,10 @@ impl AnthropicAdapter {
         } else {
             Some(system_parts.join("\n\n"))
         };
-        (out, system)
+        AnthropicMessageConversion {
+            messages: out,
+            system,
+        }
     }
 
     #[cfg(test)]

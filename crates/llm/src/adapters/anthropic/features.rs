@@ -26,9 +26,9 @@ impl AnthropicAdapter {
         max_tokens: u32,
         model_name: &str,
         effort: Option<&str>,
-    ) -> (Option<Value>, Option<Value>) {
+    ) -> AnthropicThinkingConfig {
         let Some(effort) = effort.map(str::trim).filter(|value| !value.is_empty()) else {
-            return (None, None);
+            return AnthropicThinkingConfig::default();
         };
         let effort = effort.to_ascii_lowercase();
         let model = model_name.to_ascii_lowercase();
@@ -53,16 +53,19 @@ impl AnthropicAdapter {
 
         if matches!(effort.as_str(), "none" | "off" | "disabled") {
             return if adaptive || manual {
-                (Some(json!({"type": "disabled"})), None)
+                AnthropicThinkingConfig {
+                    thinking: Some(json!({"type": "disabled"})),
+                    output_config: None,
+                }
             } else {
-                (None, None)
+                AnthropicThinkingConfig::default()
             };
         }
         if adaptive {
-            return (
-                Some(json!({"type": "adaptive"})),
-                Some(json!({"effort": effort})),
-            );
+            return AnthropicThinkingConfig {
+                thinking: Some(json!({"type": "adaptive"})),
+                output_config: Some(json!({"effort": effort})),
+            };
         }
         if manual && max_tokens > 1024 {
             let ratio = match effort.as_str() {
@@ -74,12 +77,12 @@ impl AnthropicAdapter {
             let budget = ((max_tokens as f32 * ratio).round() as u32)
                 .max(1024)
                 .min(max_tokens - 1);
-            return (
-                Some(json!({"type": "enabled", "budget_tokens": budget})),
-                None,
-            );
+            return AnthropicThinkingConfig {
+                thinking: Some(json!({"type": "enabled", "budget_tokens": budget})),
+                output_config: None,
+            };
         }
-        (None, None)
+        AnthropicThinkingConfig::default()
     }
 
     pub(super) fn apply_tools_cache_breakpoint(tools: &mut [Value]) {

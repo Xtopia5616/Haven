@@ -65,7 +65,8 @@ impl AnthropicAdapter {
         let tool_names = self.tool_name_map(messages, tools);
         let cache_diagnostics =
             Self::cache_diagnostics(messages).with_provider(self.endpoint.provider.clone());
-        let (mut messages, system) = Self::convert_messages(messages);
+        let converted = Self::convert_messages(messages);
+        let mut messages = converted.messages;
         for message in &mut messages {
             if let Some(blocks) = message.content.as_array_mut() {
                 for block in blocks {
@@ -114,12 +115,13 @@ impl AnthropicAdapter {
             Self::apply_tools_cache_breakpoint(&mut tools_json);
         }
         Self::apply_messages_cache_breakpoint(&mut messages);
-        let (thinking, output_config) = Self::thinking_config(
+        let thinking_config = Self::thinking_config(
             max_tokens,
             &self.endpoint.model_name,
             self.endpoint.reasoning_effort.as_deref(),
         );
-        let thinking_active = thinking
+        let thinking_active = thinking_config
+            .thinking
             .as_ref()
             .and_then(|value| value.get("type"))
             .and_then(Value::as_str)
@@ -128,7 +130,7 @@ impl AnthropicAdapter {
             model: self.endpoint.model_name.clone(),
             max_tokens,
             messages,
-            system: Self::system_with_cache_control(system),
+            system: Self::system_with_cache_control(converted.system),
             temperature: (!thinking_active).then_some(self.endpoint.temperature),
             top_p: self.endpoint.top_p,
             top_k: self.endpoint.top_k,
@@ -139,8 +141,8 @@ impl AnthropicAdapter {
                 Some(tools_json)
             },
             tool_choice,
-            thinking,
-            output_config,
+            thinking: thinking_config.thinking,
+            output_config: thinking_config.output_config,
             stream,
             cache_diagnostics,
         }
@@ -148,7 +150,7 @@ impl AnthropicAdapter {
 
     pub(super) fn append_guidance_to_request(&self, body: &mut AnthropicRequest, guidance: &str) {
         let message = CanonicalMessage::user_text(guidance);
-        let (mut wire, _) = Self::convert_messages(std::slice::from_ref(&message));
+        let mut wire = Self::convert_messages(std::slice::from_ref(&message)).messages;
         body.messages.append(&mut wire);
     }
 }

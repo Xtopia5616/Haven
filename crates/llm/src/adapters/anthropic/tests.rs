@@ -166,7 +166,10 @@ fn convert_messages_extracts_system_and_maps_roles() {
             id: None,
         },
     ];
-    let (out, system) = AnthropicAdapter::convert_messages(msgs);
+    let AnthropicMessageConversion {
+        messages: out,
+        system,
+    } = AnthropicAdapter::convert_messages(msgs);
     assert_eq!(system.as_deref(), Some("you are helpful"));
     assert_eq!(out.len(), 1);
     assert_eq!(out[0].role, "user");
@@ -224,7 +227,7 @@ fn convert_messages_multiple_system_messages_joined() {
             id: None,
         },
     ];
-    let (_, system) = AnthropicAdapter::convert_messages(msgs);
+    let AnthropicMessageConversion { system, .. } = AnthropicAdapter::convert_messages(msgs);
     assert_eq!(system.as_deref(), Some("part one\n\npart two"));
 }
 
@@ -241,7 +244,7 @@ fn convert_messages_tool_result_block() {
         source: None,
         id: None,
     }];
-    let (out, _) = AnthropicAdapter::convert_messages(msgs);
+    let AnthropicMessageConversion { messages: out, .. } = AnthropicAdapter::convert_messages(msgs);
     assert_eq!(out.len(), 1);
     assert_eq!(out[0].role, "user");
     assert_eq!(out[0].content[0]["type"], "tool_result");
@@ -266,7 +269,7 @@ fn convert_messages_assistant_tool_use_blocks() {
         source: None,
         id: None,
     }];
-    let (out, _) = AnthropicAdapter::convert_messages(msgs);
+    let AnthropicMessageConversion { messages: out, .. } = AnthropicAdapter::convert_messages(msgs);
     assert_eq!(out.len(), 1);
     let content = out[0].content.as_array().unwrap();
     assert_eq!(content.len(), 2);
@@ -299,7 +302,7 @@ fn convert_messages_echoes_thinking_blocks_verbatim() {
         source: None,
         id: None,
     }];
-    let (out, _) = AnthropicAdapter::convert_messages(msgs);
+    let AnthropicMessageConversion { messages: out, .. } = AnthropicAdapter::convert_messages(msgs);
     assert_eq!(out.len(), 1);
     let content = out[0].content.as_array().unwrap();
     assert_eq!(content.len(), 3);
@@ -355,7 +358,8 @@ fn parse_and_echo(content: Vec<AnthropicResponseBlock>) -> Vec<Value> {
         Vec::new(),
         resp.thinking_blocks,
     );
-    let (out, _) = AnthropicAdapter::convert_messages(vec![msg]);
+    let AnthropicMessageConversion { messages: out, .. } =
+        AnthropicAdapter::convert_messages(vec![msg]);
     out[0].content.as_array().unwrap().clone()
 }
 
@@ -518,7 +522,7 @@ fn convert_messages_echo_uses_front_loaded_order_for_inconsistent_layout() {
         source: None,
         id: None,
     }];
-    let (out, _) = AnthropicAdapter::convert_messages(msgs);
+    let AnthropicMessageConversion { messages: out, .. } = AnthropicAdapter::convert_messages(msgs);
     let content = out[0].content.as_array().unwrap();
     assert_eq!(content.len(), 3);
     assert_eq!(content[0], thinking);
@@ -547,7 +551,7 @@ fn convert_messages_echo_falls_back_when_layout_text_before_exceeds_text() {
         source: None,
         id: None,
     }];
-    let (out, _) = AnthropicAdapter::convert_messages(msgs);
+    let AnthropicMessageConversion { messages: out, .. } = AnthropicAdapter::convert_messages(msgs);
     let content = out[0].content.as_array().unwrap();
     assert_eq!(content.len(), 2);
     assert_eq!(content[0], thinking);
@@ -572,7 +576,7 @@ fn convert_messages_image_part_becomes_base64_source() {
         source: None,
         id: None,
     }];
-    let (out, _) = AnthropicAdapter::convert_messages(msgs);
+    let AnthropicMessageConversion { messages: out, .. } = AnthropicAdapter::convert_messages(msgs);
     let content = out[0].content.as_array().unwrap();
     assert_eq!(content[0]["type"], "image");
     assert_eq!(content[0]["source"]["type"], "base64");
@@ -645,7 +649,7 @@ fn convert_messages_empty_user_content_skipped() {
         source: None,
         id: None,
     }];
-    let (out, _) = AnthropicAdapter::convert_messages(msgs);
+    let AnthropicMessageConversion { messages: out, .. } = AnthropicAdapter::convert_messages(msgs);
     assert!(out.is_empty());
 }
 

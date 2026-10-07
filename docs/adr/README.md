@@ -608,3 +608,4 @@
 - [0617：命名 ParsedAgentResponse](0617-name-parsed-agent-response.md)
 - [0618：统一 Tools 限长文本结果](0618-unify-tools-capped-text-result.md)
 - [0619：命名 chat thinking extras](0619-name-chat-thinking-extras.md)
+- [0620：命名 Anthropic request projection 结果](0620-name-anthropic-request-projections.md)
