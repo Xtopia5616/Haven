@@ -359,6 +359,7 @@
 | Tool result scroll surface 的 CSS 声明重复 | Admin、Memory 与通用结果列表分别声明 `max-height`、`overflow-y` 和圆角；尺寸分别是 220px、240px、200px。 | **合并共用滚动规则、保留领域尺寸**：三处使用 `.tool-result-scroll-area`，全局拥有滚动与圆角规则；Admin/Memory 通过 `--tool-result-scroll-max-height` 保留 220/240px 的布局选择（ADR 0705）。 |
 | Tool result 标题样式重复且名义窄于实际用途 | 12 个结果 renderer 重复相同的小号字体、半粗体、行高、颜色和底间距；`.tool-card-count` 还用于“用户信息”“收到回复”“输出过长”等非计数标题。 | **共享 `.tool-result-label` 样式**：全局样式唯一拥有标题和计数文本外观，renderer 只保留语义 markup，不再重复 CSS；名称覆盖其实际用途（ADR 0706）。 |
 | Tool result 文本预览样式复制和漏设 | Agent、Clipboard、File、HTTP、JSON 与 Shell renderer 的 `.content-preview` 样式声明完全一致；Input 预览使用同一表面但 120px 高度、继承行高；Window OCR 使用旧 class 却没有样式定义。 | **合并全局预览样式**：统一 class 为 `.tool-result-preview`，公共外观只有 `app.css` 一个 owner；Input 通过 CSS variable 保留 120px/normal 行高，Shell live preview 保留 280px 高度，Window OCR 补用 canonical 预览（ADR 0707）。 |
+| 三种搜索结果 renderer 重复行/路径/次级文本样式 | Clipboard、FileSearch、WebSearch 的 `.search-row`、路径链接、`:hover` 和 `.search-snippet` 声明逐项相同；内容分别是剪贴板记录、文件路径/命中行与网页 URL/标题。 | **统一展示 class 与 CSS owner**：共享行、链接和次级文本使用 `.tool-result-search-*` class 与 `app.css`；行内数据、路径生成和文件命中行仍由各 renderer 处理（ADR 0708）。 |
 | Rust 与 UI 的 Tauri event channel 目录重复 | Rust `events.rs` 定义 35 个 channel；五个 UI contract 手写相同名称，Session mapper/listener 另写 lifecycle channel；旧门禁仅比较两份列表，recording 测试也复制一组 literal。 | **Rust 事件目录生成 UI 名称清单**：五个域 array 和 Session listener 直接消费 `generatedCommands.ts`；payload map、校验与 UI 投影仍由各域拥有，门禁比较 Rust 常量与生成清单（ADR 0699）。 |
 
 此表是候选分流清单，不是完整符号目录。尚未完成的 crate、IPC/event payload、UI controller/store 与函数动词审计仍在 §5.7 范围内；完成一域后更新本表并以 ADR 记录实际迁移。

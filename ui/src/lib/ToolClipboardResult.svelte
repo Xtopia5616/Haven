@@ -21,8 +21,8 @@
 			{#snippet children(visibleEntries)}
 				<div class="tool-result-scroll-area">
 					{#each visibleEntries as entry, index (index)}
-						<div class="search-row">
-							<span class="search-snippet">{entry.content}</span>
+						<div class="tool-result-search-row">
+							<span class="tool-result-search-detail">{entry.content}</span>
 						</div>
 					{/each}
 				</div>
@@ -52,27 +52,5 @@
 		font-size: var(--md-sys-typescale-label-small-size);
 		line-height: var(--md-sys-typescale-label-small-line-height);
 		margin-top: var(--md-sys-space-2xs);
-	}
-	.search-row {
-		display: flex;
-		align-items: baseline;
-		gap: var(--md-sys-space-xs);
-		padding: 3px var(--md-sys-space-2xs);
-		border-radius: 4px;
-		font-size: var(--md-sys-typescale-label-medium-size);
-		line-height: var(--md-sys-typescale-label-medium-line-height);
-	}
-	.search-row:nth-child(odd) {
-		background: color-mix(in srgb, var(--md-sys-color-on-surface) 4%, transparent);
-	}
-	.search-snippet {
-		flex: none;
-		max-width: 140px;
-		overflow: hidden;
-		text-overflow: ellipsis;
-		white-space: nowrap;
-		font-size: var(--md-sys-typescale-label-small-size);
-		line-height: var(--md-sys-typescale-label-small-line-height);
-		color: var(--md-sys-color-on-surface-variant);
 	}
 </style>

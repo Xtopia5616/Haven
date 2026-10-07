@@ -696,3 +696,4 @@
 - [0705：共用 Tool result 滚动样式](0705-share-tool-result-scroll-style.md)
 - [0706：共用 Tool result label 样式](0706-share-tool-result-label-style.md)
 - [0707：共用 Tool result 正文预览样式](0707-share-tool-result-preview-style.md)
+- [0708：共用 Tool result 搜索行样式](0708-share-tool-result-search-row-style.md)

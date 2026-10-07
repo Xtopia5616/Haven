@@ -843,12 +843,12 @@ describe('ToolResultCard files', () => {
 		});
 		await expandToolCard(container);
 
-		expect(container.querySelectorAll('.search-row')).toHaveLength(15);
+		expect(container.querySelectorAll('.tool-result-search-row')).toHaveLength(15);
 		const moreButton = screen.getByRole('button', { name: '显示更多（剩余 235 条）' });
 		expect(moreButton).toBeTruthy();
 
 		await fireEvent.click(moreButton);
-		expect(container.querySelectorAll('.search-row')).toHaveLength(30);
+		expect(container.querySelectorAll('.tool-result-search-row')).toHaveLength(30);
 		expect(screen.getByRole('button', { name: '显示更多（剩余 220 条）' })).toBeTruthy();
 	});
 
