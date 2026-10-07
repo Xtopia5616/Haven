@@ -1,7 +1,8 @@
 import { formatMessageTime } from './messageFormat.ts';
+import type { CanonicalRole } from './contracts/generatedCommands.ts';
 
 export type NewMessageOptions = {
-	role: string;
+	role: CanonicalRole;
 	content: string;
 	type?: string | null;
 	voice?: boolean;

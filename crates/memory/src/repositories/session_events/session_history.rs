@@ -6,6 +6,7 @@
 
 use super::{Session, SessionStore};
 use haven_common::media::MediaInput;
+use haven_common::types::CanonicalRole;
 use haven_common::types::MessageAttachment;
 
 /// Typed filters for app-facing session history queries.
@@ -27,7 +28,7 @@ pub struct SessionHistoryFilter {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionMessageText {
     pub id: String,
-    pub role: String,
+    pub role: CanonicalRole,
     pub content: String,
 }
 
@@ -102,7 +103,9 @@ impl SessionStore {
                     .iter()
                     .flat_map(|message| message.attachments.iter().cloned())
                     .collect();
-                let initial_message = messages.iter().find(|message| message.role == "user");
+                let initial_message = messages
+                    .iter()
+                    .find(|message| message.role == CanonicalRole::User);
                 Ok(SessionResumeMedia {
                     initial_message_id: initial_message.map(|message| message.id.clone()),
                     initial_attachments: initial_message
@@ -140,7 +143,7 @@ impl SessionStore {
                 let user_messages = db
                     .list_recent_session_messages(&session_id, TITLE_GENERATION_MESSAGE_LIMIT)?
                     .into_iter()
-                    .filter(|message| message.role == "user")
+                    .filter(|message| message.role == CanonicalRole::User)
                     .map(|message| message.content)
                     .collect();
                 Ok(Some(SessionTitleGenerationContext { user_messages }))

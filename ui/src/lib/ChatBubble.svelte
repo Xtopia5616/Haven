@@ -14,6 +14,7 @@
 	import type { AgentToolResultEnvelope } from '$lib/contracts/agent.ts';
 	import type { AskResponseView } from '$lib/contracts/app.ts';
 	import type { ToolRunPayload } from '$lib/contracts/toolRun.ts';
+	import type { CanonicalRole } from '$lib/contracts/generatedCommands.ts';
 	import type {
 		AskMessageHandler,
 		AskSelectionChangeHandler,
@@ -28,7 +29,7 @@
 	}
 
 	interface Props {
-		role: string;
+		role: CanonicalRole;
 		content: string;
 		type?: string | null;
 		time?: string | null;

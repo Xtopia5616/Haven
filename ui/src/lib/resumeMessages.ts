@@ -5,12 +5,13 @@
 import { formatMessageTime } from './messageFormat.ts';
 import type { SessionResumeInput } from './contracts/sessionHistory.ts';
 import type { SessionStepStatus } from './contracts/generatedCommands.ts';
+import type { CanonicalRole } from './contracts/generatedCommands.ts';
 
 type PersistedToolOutcome = Extract<SessionStepStatus, 'failed' | 'cancelled' | 'unknown'>;
 
 interface ResumeMessage {
 	id: string;
-	role?: string;
+	role?: CanonicalRole;
 	content?: string;
 	type?: string | null;
 	voice?: boolean;

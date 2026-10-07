@@ -95,14 +95,26 @@ async fn rollback_with_snapshot_no_branch_point_uses_snapshot() {
     seed_event_projection(&agent, &session.id, &snapshot).await;
     agent
         .db
-        .add_message(&session.id, "user", "hello", Some("text"), None)
+        .add_message(
+            &session.id,
+            haven_common::types::CanonicalRole::User,
+            "hello",
+            Some("text"),
+            None,
+        )
         .unwrap();
     // The partial must land strictly after the user row (rollback
     // truncates rows created_at > the snapshot's last message ts).
     std::thread::sleep(std::time::Duration::from_millis(5));
     agent
         .db
-        .add_message(&session.id, "assistant", "partial", Some("text"), None)
+        .add_message(
+            &session.id,
+            haven_common::types::CanonicalRole::Assistant,
+            "partial",
+            Some("text"),
+            None,
+        )
         .unwrap();
 
     // Rollback to step 1 with pause=false (agent rollback).
@@ -126,11 +138,23 @@ async fn rollback_pause_true_removes_user_message_from_session() {
     let session = executor.create_session("user rollback").await.unwrap();
     agent
         .db
-        .add_message(&session.id, "user", "hello", Some("text"), None)
+        .add_message(
+            &session.id,
+            haven_common::types::CanonicalRole::User,
+            "hello",
+            Some("text"),
+            None,
+        )
         .unwrap();
     agent
         .db
-        .add_message(&session.id, "assistant", "thinking", Some("text"), None)
+        .add_message(
+            &session.id,
+            haven_common::types::CanonicalRole::Assistant,
+            "thinking",
+            Some("text"),
+            None,
+        )
         .unwrap();
     // Branch point at step 1: canonical ends at the user message, but
     // last_msg_at points at the thought that was persisted AFTER it (the
@@ -144,7 +168,7 @@ async fn rollback_pause_true_removes_user_message_from_session() {
         .clone();
     let thought_ts = msgs
         .iter()
-        .find(|m| m.role == "assistant")
+        .find(|m| m.role == haven_common::types::CanonicalRole::Assistant)
         .unwrap()
         .created_at
         .clone();
@@ -223,24 +247,48 @@ async fn rollback_fallback_no_branch_point_pause_true_deletes_from_last_user_mes
         .unwrap();
     agent
         .db
-        .add_message(&session.id, "user", "first", Some("text"), None)
+        .add_message(
+            &session.id,
+            haven_common::types::CanonicalRole::User,
+            "first",
+            Some("text"),
+            None,
+        )
         .unwrap();
     agent
         .db
-        .add_message(&session.id, "assistant", "reply1", Some("text"), None)
+        .add_message(
+            &session.id,
+            haven_common::types::CanonicalRole::Assistant,
+            "reply1",
+            Some("text"),
+            None,
+        )
         .unwrap();
     agent
         .db
-        .add_message(&session.id, "user", "second", Some("text"), None)
+        .add_message(
+            &session.id,
+            haven_common::types::CanonicalRole::User,
+            "second",
+            Some("text"),
+            None,
+        )
         .unwrap();
     agent
         .db
-        .add_message(&session.id, "assistant", "reply2", Some("text"), None)
+        .add_message(
+            &session.id,
+            haven_common::types::CanonicalRole::Assistant,
+            "reply2",
+            Some("text"),
+            None,
+        )
         .unwrap();
     let msgs = agent.db.list_session_messages(&session.id).unwrap();
     let reply1_ts = msgs
         .iter()
-        .find(|m| m.role == "assistant" && m.content == "reply1")
+        .find(|m| m.role == haven_common::types::CanonicalRole::Assistant && m.content == "reply1")
         .unwrap()
         .created_at
         .clone();
@@ -311,24 +359,48 @@ async fn rollback_errors_when_target_message_id_does_not_match() {
     let session = executor.create_session("strict rollback").await.unwrap();
     agent
         .db
-        .add_message(&session.id, "user", "first question", Some("text"), None)
+        .add_message(
+            &session.id,
+            haven_common::types::CanonicalRole::User,
+            "first question",
+            Some("text"),
+            None,
+        )
         .unwrap();
     agent
         .db
-        .add_message(&session.id, "assistant", "reply A", Some("text"), None)
+        .add_message(
+            &session.id,
+            haven_common::types::CanonicalRole::Assistant,
+            "reply A",
+            Some("text"),
+            None,
+        )
         .unwrap();
     agent
         .db
-        .add_message(&session.id, "user", "second question", Some("text"), None)
+        .add_message(
+            &session.id,
+            haven_common::types::CanonicalRole::User,
+            "second question",
+            Some("text"),
+            None,
+        )
         .unwrap();
     agent
         .db
-        .add_message(&session.id, "assistant", "reply B", Some("text"), None)
+        .add_message(
+            &session.id,
+            haven_common::types::CanonicalRole::Assistant,
+            "reply B",
+            Some("text"),
+            None,
+        )
         .unwrap();
     let msgs = agent.db.list_session_messages(&session.id).unwrap();
     let reply_a_ts = msgs
         .iter()
-        .find(|m| m.role == "assistant" && m.content == "reply A")
+        .find(|m| m.role == haven_common::types::CanonicalRole::Assistant && m.content == "reply A")
         .unwrap()
         .created_at
         .clone();
@@ -468,11 +540,23 @@ async fn rollback_pause_uses_target_message_ts_not_latest_user() {
     let session = executor.create_session("target ts").await.unwrap();
     agent
         .db
-        .add_message(&session.id, "user", "hello", Some("text"), None)
+        .add_message(
+            &session.id,
+            haven_common::types::CanonicalRole::User,
+            "hello",
+            Some("text"),
+            None,
+        )
         .unwrap();
     agent
         .db
-        .add_message(&session.id, "assistant", "thinking", Some("text"), None)
+        .add_message(
+            &session.id,
+            haven_common::types::CanonicalRole::Assistant,
+            "thinking",
+            Some("text"),
+            None,
+        )
         .unwrap();
     // A steering interjection persisted after "hello" but BEFORE the
     // branch-point thought timestamp (the user typed while the agent was
@@ -481,7 +565,7 @@ async fn rollback_pause_uses_target_message_ts_not_latest_user() {
         .db
         .add_message(
             &session.id,
-            "user",
+            haven_common::types::CanonicalRole::User,
             "also check the time",
             Some("text"),
             None,
@@ -496,7 +580,7 @@ async fn rollback_pause_uses_target_message_ts_not_latest_user() {
         .clone();
     let thinking_ts = msgs
         .iter()
-        .find(|m| m.role == "assistant")
+        .find(|m| m.role == haven_common::types::CanonicalRole::Assistant)
         .unwrap()
         .created_at
         .clone();
@@ -575,17 +659,35 @@ async fn rollback_pause_matches_compacted_message_id() {
     let session = executor.create_session("prefixed rollback").await.unwrap();
     agent
         .db
-        .add_message(&session.id, "user", "do it", Some("text"), None)
+        .add_message(
+            &session.id,
+            haven_common::types::CanonicalRole::User,
+            "do it",
+            Some("text"),
+            None,
+        )
         .unwrap();
     // The steering is injected BEFORE the step's LLM call, so it is
     // persisted before the branch-point thought timestamp.
     agent
         .db
-        .add_message(&session.id, "user", "use French", Some("text"), None)
+        .add_message(
+            &session.id,
+            haven_common::types::CanonicalRole::User,
+            "use French",
+            Some("text"),
+            None,
+        )
         .unwrap();
     agent
         .db
-        .add_message(&session.id, "assistant", "thinking", Some("text"), None)
+        .add_message(
+            &session.id,
+            haven_common::types::CanonicalRole::Assistant,
+            "thinking",
+            Some("text"),
+            None,
+        )
         .unwrap();
     let msgs = agent.db.list_session_messages(&session.id).unwrap();
     let steering_id = msgs
@@ -602,7 +704,7 @@ async fn rollback_pause_matches_compacted_message_id() {
         .clone();
     let thinking_ts = msgs
         .iter()
-        .find(|m| m.role == "assistant")
+        .find(|m| m.role == haven_common::types::CanonicalRole::Assistant)
         .unwrap()
         .created_at
         .clone();
@@ -921,7 +1023,7 @@ async fn rollback_ask_wait_pause_true_leaves_plain_paused() {
         .db
         .add_message(
             &session.id,
-            "user",
+            haven_common::types::CanonicalRole::User,
             "ask then user-edit rollback",
             Some("text"),
             None,
@@ -991,14 +1093,20 @@ async fn rollback_transaction_failure_keeps_agent_status_and_projections_unchang
     );
     agent
         .db
-        .add_message(&session.id, "user", "kept", Some("text"), None)
+        .add_message(
+            &session.id,
+            haven_common::types::CanonicalRole::User,
+            "kept",
+            Some("text"),
+            None,
+        )
         .unwrap();
     std::thread::sleep(std::time::Duration::from_millis(5));
     agent
         .db
         .add_message(
             &session.id,
-            "assistant",
+            haven_common::types::CanonicalRole::Assistant,
             "would be truncated",
             Some("text"),
             None,

@@ -36,7 +36,7 @@ pub(crate) fn build_extraction_window(
     let user_indices: Vec<usize> = all
         .iter()
         .enumerate()
-        .filter(|(_, m)| m.role == "user")
+        .filter(|(_, m)| m.role == haven_common::types::CanonicalRole::User)
         .map(|(i, _)| i)
         .collect();
     let start_user = cursor
@@ -77,7 +77,7 @@ pub(crate) fn build_extraction_window(
 }
 
 fn is_extraction_assistant(m: &haven_memory::repositories::messages::Message) -> bool {
-    if m.role != "assistant" {
+    if m.role != haven_common::types::CanonicalRole::Assistant {
         return false;
     }
     if m.content.starts_with(COMPACTED_SUMMARY_PREFIX) {
@@ -93,7 +93,8 @@ fn is_extraction_assistant(m: &haven_memory::repositories::messages::Message) ->
 /// (`message_type=peer_kickoff`). Cross-session mail is inject-only (not
 /// persisted as user rows), so it is not filtered here.
 fn is_low_trust_extraction_user(m: &haven_memory::repositories::messages::Message) -> bool {
-    m.role == "user" && m.message_type.as_deref() == Some("peer_kickoff")
+    m.role == haven_common::types::CanonicalRole::User
+        && m.message_type.as_deref() == Some("peer_kickoff")
 }
 
 /// Collect up to [`EXTRACTION_MAX_ASSISTANTS_PER_TURN`] assistants (closest to
@@ -121,7 +122,7 @@ fn push_turn_context(
 
     let mut tools: Vec<haven_memory::repositories::messages::Message> = turn_slice
         .iter()
-        .filter(|m| m.role == "tool")
+        .filter(|m| m.role == haven_common::types::CanonicalRole::Tool)
         .cloned()
         .collect();
     if tools.is_empty() {
@@ -160,7 +161,7 @@ fn push_turn_context(
             tools.push(haven_memory::repositories::messages::Message {
                 id: step.id.clone(),
                 session_id: step.session_id.clone(),
-                role: "tool".into(),
+                role: haven_common::types::CanonicalRole::Tool,
                 content: format!("tool({name}): {body}"),
                 message_type: Some("observation".into()),
                 created_at: ts.to_string(),
@@ -354,10 +355,12 @@ pub(crate) fn resolve_source_message(
     idx: usize,
 ) -> Option<&haven_memory::repositories::messages::Message> {
     let m = messages.get(idx)?;
-    if m.role == "user" {
+    if m.role == haven_common::types::CanonicalRole::User {
         return Some(m);
     }
-    messages[idx + 1..].iter().find(|n| n.role == "user")
+    messages[idx + 1..]
+        .iter()
+        .find(|n| n.role == haven_common::types::CanonicalRole::User)
 }
 
 /// Build a transcript string truncated to `max_chars`. Recent messages take

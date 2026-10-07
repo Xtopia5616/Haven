@@ -37,7 +37,7 @@ describe('buildResumeMessages', () => {
 			messages: [
 				{
 					id: 'm1',
-					role: 'user',
+					role: 'user' as const,
 					content: '打开记事本',
 					message_type: 'text',
 					created_at: '2026-08-01T10:00:00Z',
@@ -45,7 +45,7 @@ describe('buildResumeMessages', () => {
 				},
 				{
 					id: 'm2',
-					role: 'assistant',
+					role: 'assistant' as const,
 					content: '已打开',
 					message_type: 'text',
 					created_at: '2026-08-01T10:01:00Z',
@@ -57,12 +57,12 @@ describe('buildResumeMessages', () => {
 		expect(items).toHaveLength(2);
 		expect(items[0]).toMatchObject({
 			id: 'm1',
-			role: 'user',
+			role: 'user' as const,
 			content: '打开记事本',
 			streaming: false,
 			voice: false,
 		});
-		expect(items[1]).toMatchObject({ id: 'm2', role: 'assistant', content: '已打开' });
+		expect(items[1]).toMatchObject({ id: 'm2', role: 'assistant' as const, content: '已打开' });
 	});
 
 	it('preserves the voice flag from persisted messages', () => {
@@ -71,7 +71,7 @@ describe('buildResumeMessages', () => {
 			messages: [
 				{
 					id: 'mv',
-					role: 'user',
+					role: 'user' as const,
 					content: '打开计算器',
 					message_type: 'text',
 					created_at: '2026-08-01T10:00:00Z',
@@ -80,7 +80,7 @@ describe('buildResumeMessages', () => {
 				},
 				{
 					id: 'mt',
-					role: 'user',
+					role: 'user' as const,
 					content: '打开记事本',
 					message_type: 'text',
 					created_at: '2026-08-01T10:02:00Z',
@@ -99,7 +99,7 @@ describe('buildResumeMessages', () => {
 			messages: [
 				{
 					id: 'm1',
-					role: 'user',
+					role: 'user' as const,
 					content: 'hi',
 					message_type: 'text',
 					created_at: '2026-08-01T10:00:00Z',
@@ -132,7 +132,7 @@ describe('buildResumeMessages', () => {
 			messages: [
 				{
 					id: 'm1',
-					role: 'user',
+					role: 'user' as const,
 					content: '读取文件',
 					message_type: 'text',
 					created_at: '2026-08-01T10:00:00Z',
@@ -140,7 +140,7 @@ describe('buildResumeMessages', () => {
 				},
 				{
 					id: 'm-thought',
-					role: 'assistant',
+					role: 'assistant' as const,
 					content: '检查目标文件',
 					message_type: 'text',
 					created_at: '2026-08-01T10:01:00Z',
@@ -212,7 +212,7 @@ describe('buildResumeMessages', () => {
 			messages: [
 				{
 					id: 'm1',
-					role: 'user',
+					role: 'user' as const,
 					content: '检查',
 					message_type: 'text',
 					created_at: '2026-08-01T10:00:00Z',
@@ -220,7 +220,7 @@ describe('buildResumeMessages', () => {
 				},
 				{
 					id: 'step-s1',
-					role: 'tool',
+					role: 'tool' as const,
 					content: '{"output":"ok"}',
 					message_type: 'observation',
 					created_at: '2026-08-01T10:01:00Z',
@@ -241,7 +241,7 @@ describe('buildResumeMessages', () => {
 		});
 		const tool = items.find((item) => item.id === 'step-s1');
 		expect(tool).toMatchObject({
-			role: 'assistant',
+			role: 'assistant' as const,
 			type: 'tool',
 			toolName: 'shell',
 			toolArgs: '{"cmd":"dir"}',
@@ -254,7 +254,7 @@ describe('buildResumeMessages', () => {
 			messages: [
 				{
 					id: 'm1',
-					role: 'user',
+					role: 'user' as const,
 					content: 'hi',
 					message_type: 'text',
 					created_at: '2026-08-01T10:00:00Z',
@@ -290,7 +290,7 @@ describe('buildResumeMessages', () => {
 			messages: [
 				{
 					id: 'm1',
-					role: 'user',
+					role: 'user' as const,
 					content: 'hi',
 					message_type: 'text',
 					created_at: '2026-08-01T10:00:00Z',
@@ -298,7 +298,7 @@ describe('buildResumeMessages', () => {
 				},
 				{
 					id: 'm2',
-					role: 'assistant',
+					role: 'assistant' as const,
 					content: '稍等',
 					message_type: 'text',
 					created_at: '2026-08-01T10:01:00Z',
@@ -335,7 +335,7 @@ describe('buildResumeMessages', () => {
 			messages: [
 				{
 					id: 'm1',
-					role: 'user',
+					role: 'user' as const,
 					content: 'hi',
 					message_type: 'text',
 					created_at: '2026-08-01T10:00:00Z',
@@ -343,7 +343,7 @@ describe('buildResumeMessages', () => {
 				},
 				{
 					id: 'm2',
-					role: 'assistant',
+					role: 'assistant' as const,
 					content: '稍等，我检查一下',
 					message_type: 'text',
 					created_at: '2026-08-01T10:01:00Z',
@@ -351,7 +351,7 @@ describe('buildResumeMessages', () => {
 				},
 				{
 					id: 'm3',
-					role: 'assistant',
+					role: 'assistant' as const,
 					content: '完成了',
 					message_type: 'text',
 					created_at: '2026-08-01T10:02:00Z',
@@ -393,7 +393,7 @@ describe('buildResumeMessages', () => {
 			messages: [
 				{
 					id: 'late',
-					role: 'assistant',
+					role: 'assistant' as const,
 					content: 'later',
 					message_type: 'text',
 					created_at: '2026-08-01T10:05:00Z',
@@ -401,7 +401,7 @@ describe('buildResumeMessages', () => {
 				},
 				{
 					id: 'early',
-					role: 'user',
+					role: 'user' as const,
 					content: 'first',
 					message_type: 'text',
 					created_at: '2026-08-01T10:00:00Z',
@@ -425,7 +425,7 @@ describe('buildResumeMessages', () => {
 			messages: [
 				{
 					id: 'm1',
-					role: 'user',
+					role: 'user' as const,
 					content: 'hi',
 					message_type: 'text',
 					created_at: '2026-08-01T10:00:00Z',
@@ -433,7 +433,7 @@ describe('buildResumeMessages', () => {
 				},
 				{
 					id: 'm2',
-					role: 'assistant',
+					role: 'assistant' as const,
 					content: '稍等，我查一下',
 					message_type: 'text',
 					created_at: '2026-08-01T10:01:00Z',
@@ -441,7 +441,7 @@ describe('buildResumeMessages', () => {
 				},
 				{
 					id: 'm3',
-					role: 'assistant',
+					role: 'assistant' as const,
 					content: '完成了',
 					message_type: 'text',
 					created_at: '2026-08-01T10:02:00Z',
@@ -473,7 +473,7 @@ describe('buildResumeMessages', () => {
 			messages: [
 				{
 					id: 'm1',
-					role: 'user',
+					role: 'user' as const,
 					content: 'hi',
 					message_type: 'text',
 					created_at: '2026-08-01T10:00:00Z',
@@ -481,7 +481,7 @@ describe('buildResumeMessages', () => {
 				},
 				{
 					id: 'm2',
-					role: 'assistant',
+					role: 'assistant' as const,
 					content: '稍等',
 					message_type: 'text',
 					created_at: '2026-08-01T10:01:00.100Z',
@@ -489,7 +489,7 @@ describe('buildResumeMessages', () => {
 				},
 				{
 					id: 'm3',
-					role: 'assistant',
+					role: 'assistant' as const,
 					content: '完成了',
 					message_type: 'text',
 					created_at: '2026-08-01T10:01:00.900Z',
@@ -519,7 +519,7 @@ describe('buildResumeMessages', () => {
 			messages: [
 				{
 					id: 'm1',
-					role: 'user',
+					role: 'user' as const,
 					content: 'hi',
 					message_type: 'text',
 					created_at: '2026-08-01T10:00:00Z',
@@ -527,7 +527,7 @@ describe('buildResumeMessages', () => {
 				},
 				{
 					id: 'm2',
-					role: 'assistant',
+					role: 'assistant' as const,
 					content: '稍等',
 					message_type: 'text',
 					created_at: '2026-08-01T10:02:00Z',
@@ -559,7 +559,7 @@ describe('buildResumeMessages', () => {
 			messages: [
 				{
 					id: 'm1',
-					role: 'user',
+					role: 'user' as const,
 					content: 'do it',
 					message_type: 'text',
 					created_at: '2026-08-01T10:00:00Z',
@@ -567,7 +567,7 @@ describe('buildResumeMessages', () => {
 				},
 				{
 					id: 'step-s1',
-					role: 'assistant',
+					role: 'assistant' as const,
 					content: '你想要怎么处理？A 还是 B？',
 					message_type: 'text',
 					created_at: '2026-08-01T10:01:00Z',
@@ -607,7 +607,7 @@ describe('buildResumeMessages', () => {
 			messages: [
 				{
 					id: 'm1',
-					role: 'user',
+					role: 'user' as const,
 					content: 'do it',
 					message_type: 'text',
 					created_at: '2026-08-01T10:00:00Z',
@@ -615,7 +615,7 @@ describe('buildResumeMessages', () => {
 				},
 				{
 					id: 'step-s1',
-					role: 'assistant',
+					role: 'assistant' as const,
 					content: '继续吗？',
 					message_type: 'text',
 					created_at: '2026-08-01T10:01:00Z',
@@ -656,7 +656,7 @@ describe('buildResumeMessages', () => {
 			messages: [
 				{
 					id: 'm1',
-					role: 'user',
+					role: 'user' as const,
 					content: 'go',
 					message_type: 'text',
 					created_at: '2026-08-01T10:00:00Z',
@@ -664,7 +664,7 @@ describe('buildResumeMessages', () => {
 				},
 				{
 					id: 'step-s1',
-					role: 'assistant',
+					role: 'assistant' as const,
 					content: 'Q1？',
 					message_type: 'text',
 					created_at: '2026-08-01T10:01:00Z',
@@ -672,7 +672,7 @@ describe('buildResumeMessages', () => {
 				},
 				{
 					id: 'step-s2',
-					role: 'assistant',
+					role: 'assistant' as const,
 					content: 'Q2？',
 					message_type: 'text',
 					created_at: '2026-08-01T10:01:01Z',
@@ -714,7 +714,7 @@ describe('buildResumeMessages', () => {
 			messages: [
 				{
 					id: 'm1',
-					role: 'user',
+					role: 'user' as const,
 					content: 'hi',
 					message_type: 'text',
 					created_at: '2026-08-01T10:00:00Z',
@@ -722,7 +722,7 @@ describe('buildResumeMessages', () => {
 				},
 				{
 					id: 'step-t1',
-					role: 'assistant',
+					role: 'assistant' as const,
 					content: '稍等，我检查一下',
 					message_type: 'text',
 					created_at: '2026-08-01T10:01:00Z',
@@ -753,7 +753,7 @@ describe('buildResumeMessages', () => {
 			messages: [
 				{
 					id: 'm1',
-					role: 'user',
+					role: 'user' as const,
 					content: '打开记事本',
 					message_type: 'text',
 					created_at: '2026-08-01T10:00:00Z',
@@ -761,7 +761,7 @@ describe('buildResumeMessages', () => {
 				},
 				{
 					id: 'm3',
-					role: 'user',
+					role: 'user' as const,
 					content: '网络不好就让我帮忙',
 					message_type: 'text',
 					created_at: '2026-08-01T10:02:00Z',
@@ -792,7 +792,7 @@ describe('buildResumeMessages', () => {
 			messages: [
 				{
 					id: 'm1',
-					role: 'user',
+					role: 'user' as const,
 					content: '打开记事本',
 					message_type: 'text',
 					created_at: '2026-08-01T10:00:00Z',
@@ -800,7 +800,7 @@ describe('buildResumeMessages', () => {
 				},
 				{
 					id: 'm3',
-					role: 'user',
+					role: 'user' as const,
 					content: '网络不好就让我帮忙',
 					message_type: 'text',
 					created_at: '2026-08-01T10:02:00Z',
@@ -828,7 +828,7 @@ describe('buildResumeMessages', () => {
 			messages: [
 				{
 					id: 'm1',
-					role: 'user',
+					role: 'user' as const,
 					content: 'go',
 					message_type: 'text',
 					created_at: '2026-08-01T10:00:00Z',
@@ -836,7 +836,7 @@ describe('buildResumeMessages', () => {
 				},
 				{
 					id: 'step-s1',
-					role: 'assistant',
+					role: 'assistant' as const,
 					content: '继续吗？',
 					message_type: 'text',
 					created_at: '2026-08-01T10:01:00Z',
@@ -873,7 +873,7 @@ describe('buildResumeMessages', () => {
 			messages: [
 				{
 					id: 'm1',
-					role: 'user',
+					role: 'user' as const,
 					content: 'go',
 					message_type: 'text',
 					created_at: '2026-08-01T10:00:00Z',
@@ -881,7 +881,7 @@ describe('buildResumeMessages', () => {
 				},
 				{
 					id: 'step-s1',
-					role: 'assistant',
+					role: 'assistant' as const,
 					content: '继续吗？',
 					message_type: 'text',
 					created_at: '2026-08-01T10:01:00Z',
@@ -924,7 +924,7 @@ describe('formatMessageTime', () => {
 
 describe('mergeLiveStreaming', () => {
 	const dbMessages = [
-		{ id: 'm1', role: 'user', content: 'hi' },
+		{ id: 'm1', role: 'user' as const, content: 'hi' },
 		{ id: 'step-s1', type: 'tool', toolName: 'files', stepNumber: 1 },
 	];
 
@@ -955,7 +955,7 @@ describe('mergeLiveStreaming', () => {
 		// (both keyed by the backend-minted `step-*` id), so the merge can
 		// never show a card plus a badge for one step.
 		const db = [
-			{ id: 'm1', role: 'user', content: 'hi' },
+			{ id: 'm1', role: 'user' as const, content: 'hi' },
 			{ id: 'step-1', type: 'tool', toolName: 'files', stepNumber: 1, streaming: false },
 		];
 		const existing = [
@@ -970,10 +970,10 @@ describe('mergeLiveStreaming', () => {
 		// The live reasoning bubble and the persisted reasoning row share the
 		// minted message id, so the DB copy simply replaces the live one.
 		const db = [
-			{ id: 'm1', role: 'user', content: 'hi' },
+			{ id: 'm1', role: 'user' as const, content: 'hi' },
 			{
 				id: 'msg-9',
-				role: 'assistant',
+				role: 'assistant' as const,
 				type: 'reasoning',
 				content: '完整推理文本',
 				streaming: false,
@@ -982,7 +982,7 @@ describe('mergeLiveStreaming', () => {
 		const existing = [
 			{
 				id: 'msg-9',
-				role: 'assistant',
+				role: 'assistant' as const,
 				type: 'reasoning',
 				content: '完整推理文本',
 				streaming: false,
@@ -997,11 +997,11 @@ describe('mergeLiveStreaming', () => {
 	it('keeps finalized live reasoning when the DB has no equivalent', () => {
 		// The snap may arrive before the DB write; dropping it would lose
 		// the block entirely.
-		const db = [{ id: 'm1', role: 'user', content: 'hi' }];
+		const db = [{ id: 'm1', role: 'user' as const, content: 'hi' }];
 		const existing = [
 			{
 				id: 'msg-9',
-				role: 'assistant',
+				role: 'assistant' as const,
 				type: 'reasoning',
 				content: '新鲜推理',
 				streaming: false,
@@ -1012,9 +1012,9 @@ describe('mergeLiveStreaming', () => {
 	});
 
 	it('keeps finalized live thought text missing from the DB', () => {
-		const db = [{ id: 'm1', role: 'user', content: 'hi' }];
+		const db = [{ id: 'm1', role: 'user' as const, content: 'hi' }];
 		const existing = [
-			{ id: 'msg-8', role: 'assistant', content: '已定稿但未持久化', streaming: false },
+			{ id: 'msg-8', role: 'assistant' as const, content: '已定稿但未持久化', streaming: false },
 		];
 		const merged = mergeLiveStreaming(db, existing);
 		expect(merged.map((m) => m.id)).toContain('msg-8');
@@ -1026,13 +1026,13 @@ describe('mergeLiveStreaming', () => {
 		// the reasoning AFTER m2 (the old append-at-end behavior reordered
 		// [user, thinking, user] to [user, user, thinking] for one frame).
 		const db = [
-			{ id: 'm1', role: 'user', content: 'hi' },
-			{ id: 'm2', role: 'user', content: 'second' },
+			{ id: 'm1', role: 'user' as const, content: 'hi' },
+			{ id: 'm2', role: 'user' as const, content: 'second' },
 		];
 		const existing = [
-			{ id: 'm1', role: 'user', content: 'hi' },
-			{ id: 'msg-8', role: 'assistant', content: '思考片段', streaming: false },
-			{ id: 'm2', role: 'user', content: 'second' },
+			{ id: 'm1', role: 'user' as const, content: 'hi' },
+			{ id: 'msg-8', role: 'assistant' as const, content: '思考片段', streaming: false },
+			{ id: 'm2', role: 'user' as const, content: 'second' },
 		];
 		const merged = mergeLiveStreaming(db, existing);
 		expect(merged.map((m) => m.id)).toEqual(['m1', 'msg-8', 'm2']);
@@ -1043,13 +1043,13 @@ describe('mergeLiveStreaming', () => {
 		// streaming — the old unconditional streamingTail append pushed it
 		// after the persisted steer for one frame.
 		const db = [
-			{ id: 'm1', role: 'user', content: 'hi' },
-			{ id: 'm2', role: 'user', content: 'second' },
+			{ id: 'm1', role: 'user' as const, content: 'hi' },
+			{ id: 'm2', role: 'user' as const, content: 'second' },
 		];
 		const existing = [
-			{ id: 'm1', role: 'user', content: 'hi' },
-			{ id: 'msg-8', role: 'assistant', content: '思考中', streaming: true },
-			{ id: 'm2', role: 'user', content: 'second', steering: true },
+			{ id: 'm1', role: 'user' as const, content: 'hi' },
+			{ id: 'msg-8', role: 'assistant' as const, content: '思考中', streaming: true },
+			{ id: 'm2', role: 'user' as const, content: 'second', steering: true },
 		];
 		const merged = mergeLiveStreaming(db, existing);
 		expect(merged.map((m) => m.id)).toEqual(['m1', 'msg-8', 'm2']);
@@ -1059,13 +1059,13 @@ describe('mergeLiveStreaming', () => {
 
 	it('preserves live steering on same-id user rows from the DB', () => {
 		const db = [
-			{ id: 'm1', role: 'user', content: 'hi' },
-			{ id: 'm2', role: 'user', content: '补充' },
+			{ id: 'm1', role: 'user' as const, content: 'hi' },
+			{ id: 'm2', role: 'user' as const, content: '补充' },
 		];
 		const existing = [
-			{ id: 'm1', role: 'user', content: 'hi', received: true },
-			{ id: 'msg-t', role: 'assistant', content: '想', streaming: true },
-			{ id: 'm2', role: 'user', content: '补充', steering: true },
+			{ id: 'm1', role: 'user' as const, content: 'hi', received: true },
+			{ id: 'msg-t', role: 'assistant' as const, content: '想', streaming: true },
+			{ id: 'm2', role: 'user' as const, content: '补充', steering: true },
 		];
 		const merged = mergeLiveStreaming(db, existing);
 		expect(merged.find((m) => m.id === 'm2')!.steering).toBe(true);
@@ -1077,11 +1077,11 @@ describe('mergeLiveStreaming', () => {
 		// "Thinking…" block. handleContinue preserves it by leaving it out of
 		// partialIds; mergeLiveStreaming keeps it because the DB (post-truncate)
 		// has no row with that id.
-		const db = [{ id: 'm1', role: 'user', content: 'hi' }];
+		const db = [{ id: 'm1', role: 'user' as const, content: 'hi' }];
 		const existing = [
 			{
 				id: 'msg-9',
-				role: 'assistant',
+				role: 'assistant' as const,
 				type: 'reasoning',
 				content: '先想想一部分',
 				streaming: false,
@@ -1096,7 +1096,7 @@ describe('mergeLiveStreaming', () => {
 		// Continue resync can race the retry's ToolCall/Observation and miss the
 		// pending step row for one frame; dropping step-* cards made post-resume
 		// tool calls vanish. web_search indicators are never persisted — drop.
-		const db = [{ id: 'm1', role: 'user', content: 'hi' }];
+		const db = [{ id: 'm1', role: 'user' as const, content: 'hi' }];
 		const existing = [
 			{
 				id: 'step-cut',
@@ -1122,10 +1122,10 @@ describe('mergeLiveStreaming', () => {
 	});
 
 	it('keeps a finalized real user bubble until its DB row arrives', () => {
-		const db = [{ id: 'm1', role: 'user', content: 'hi' }];
+		const db = [{ id: 'm1', role: 'user' as const, content: 'hi' }];
 		const existing = [
-			{ id: 'm1', role: 'user', content: 'hi' },
-			{ id: 'msg-pending', role: 'user', content: '补充说明', streaming: false },
+			{ id: 'm1', role: 'user' as const, content: 'hi' },
+			{ id: 'msg-pending', role: 'user' as const, content: '补充说明', streaming: false },
 		];
 		const merged = mergeLiveStreaming(db, existing);
 		expect(merged.map((m) => m.id)).toEqual(['m1', 'msg-pending']);
@@ -1136,10 +1136,10 @@ describe('mergeLiveStreaming', () => {
 		// can land after the observation); the awaiting live card wins for the
 		// same step id so the user can answer.
 		const db = [
-			{ id: 'm1', role: 'user', content: 'hi' },
+			{ id: 'm1', role: 'user' as const, content: 'hi' },
 			{
 				id: 'step-7',
-				role: 'assistant',
+				role: 'assistant' as const,
 				type: 'ask',
 				content: '继续吗？',
 				options: [],
@@ -1169,10 +1169,10 @@ describe('mergeLiveStreaming', () => {
 		// observation→pause race window; both must keep their options, not
 		// just the first.
 		const db = [
-			{ id: 'm1', role: 'user', content: 'hi' },
+			{ id: 'm1', role: 'user' as const, content: 'hi' },
 			{
 				id: 'step-1',
-				role: 'assistant',
+				role: 'assistant' as const,
 				type: 'ask',
 				content: 'Q1？',
 				options: [],
@@ -1181,7 +1181,7 @@ describe('mergeLiveStreaming', () => {
 			},
 			{
 				id: 'step-2',
-				role: 'assistant',
+				role: 'assistant' as const,
 				type: 'ask',
 				content: 'Q2？',
 				options: [],
@@ -1222,7 +1222,7 @@ describe('mergeLiveStreaming', () => {
 		// sessions mid-tool must keep the live card, not freeze an empty
 		// badge (the old dropToolSteps behavior, now id-based).
 		const db = [
-			{ id: 'm1', role: 'user', content: 'hi' },
+			{ id: 'm1', role: 'user' as const, content: 'hi' },
 			{ id: 'step-9', type: 'tool', toolName: 'shell', stepNumber: 2, streaming: false },
 		];
 		const existing = [
@@ -1244,7 +1244,7 @@ describe('mergeLiveStreaming', () => {
 		// Once the observation lands (live card finalized), the DB copy wins
 		// as before — the streaming preference only applies mid-tool.
 		const db = [
-			{ id: 'm1', role: 'user', content: 'hi' },
+			{ id: 'm1', role: 'user' as const, content: 'hi' },
 			{
 				id: 'step-9',
 				type: 'tool',

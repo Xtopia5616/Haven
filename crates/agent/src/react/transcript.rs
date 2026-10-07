@@ -1109,8 +1109,9 @@ mod tests {
         // X12: Thought projects the messages row under the shared id.
         let msgs = db.list_session_messages(&session.id).unwrap();
         assert!(
-            msgs.iter()
-                .any(|m| m.id == mid && m.content == "thinking" && m.role == "assistant"),
+            msgs.iter().any(|m| m.id == mid
+                && m.content == "thinking"
+                && m.role == haven_common::types::CanonicalRole::Assistant),
             "expected projected thought message, got {msgs:?}"
         );
         assert!(
@@ -1547,8 +1548,9 @@ mod tests {
             .unwrap();
         let msgs = db.list_session_messages(&session.id).unwrap();
         assert!(
-            msgs.iter()
-                .any(|m| m.id == step_id && m.content == "Pick one?" && m.role == "assistant"),
+            msgs.iter().any(|m| m.id == step_id
+                && m.content == "Pick one?"
+                && m.role == haven_common::types::CanonicalRole::Assistant),
             "ask question must project under shared step id, got {msgs:?}"
         );
     }

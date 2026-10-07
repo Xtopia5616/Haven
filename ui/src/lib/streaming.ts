@@ -16,12 +16,13 @@
 // one entity and merges need no content-based dedup.
 
 import type { AgentToolResultEnvelope } from './contracts/agent.ts';
+import type { CanonicalRole } from './contracts/generatedCommands.ts';
 import { isRecord } from './contracts/objectGuards.ts';
 
 /** A chat-bubble message in the live streaming view. */
 export interface StreamMessage {
 	id: string;
-	role?: string;
+	role?: CanonicalRole;
 	content?: string;
 	type?: string | null;
 	toolName?: string;
@@ -39,6 +40,12 @@ export interface StreamMessage {
 	steering?: boolean;
 	received?: boolean;
 	result?: AgentToolResultEnvelope;
+	toolArgs?: unknown;
+	outcome?: string | null;
+	renderer?: string | null;
+	toolRunId?: string | null;
+	/** Stable ToolRun identity used to anchor its timeline card to this tool step. */
+	sourceToolRunId?: string | null;
 	_ts?: number;
 }
 
@@ -48,7 +55,9 @@ export interface StreamMessage {
  * would push tools/thoughts below an optimistic steer and jump the pending
  * user bubble around as the in-flight turn keeps producing UI.
  */
-export function agentInsertIndex(messages: Array<{ role?: string; steering?: boolean }>): number {
+export function agentInsertIndex(
+	messages: Array<{ role?: CanonicalRole; steering?: boolean }>,
+): number {
 	let i = messages.length;
 	while (i > 0 && messages[i - 1].role === 'user' && messages[i - 1].steering) {
 		i--;
@@ -201,7 +210,7 @@ export function newToolMessage({
 	outcome?: string | null | undefined;
 	renderer?: string | null | undefined;
 	result?: AgentToolResultEnvelope | undefined;
-}) {
+}): StreamMessage {
 	const isAsk = toolName === 'ask';
 	return {
 		id,

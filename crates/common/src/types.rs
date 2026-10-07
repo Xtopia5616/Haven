@@ -601,6 +601,16 @@ impl CanonicalRole {
             CanonicalRole::Tool => "tool",
         }
     }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "system" => Some(Self::System),
+            "user" => Some(Self::User),
+            "assistant" => Some(Self::Assistant),
+            "tool" => Some(Self::Tool),
+            _ => None,
+        }
+    }
 }
 
 impl std::fmt::Display for CanonicalRole {
@@ -1215,6 +1225,19 @@ mod tests {
         assert_eq!(CanonicalRole::Tool.as_str(), "tool");
         assert_eq!(CanonicalRole::System.to_string(), "system");
         assert_eq!(CanonicalRole::Tool.to_string(), "tool");
+    }
+
+    #[test]
+    fn canonical_role_parse_accepts_only_exact_wire_values() {
+        assert_eq!(CanonicalRole::parse("system"), Some(CanonicalRole::System));
+        assert_eq!(CanonicalRole::parse("user"), Some(CanonicalRole::User));
+        assert_eq!(
+            CanonicalRole::parse("assistant"),
+            Some(CanonicalRole::Assistant)
+        );
+        assert_eq!(CanonicalRole::parse("tool"), Some(CanonicalRole::Tool));
+        assert_eq!(CanonicalRole::parse("USER"), None);
+        assert_eq!(CanonicalRole::parse("developer"), None);
     }
 
     #[test]

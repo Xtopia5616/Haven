@@ -24,7 +24,7 @@ describe('ChatBubble lazy Markdown rendering', () => {
 		const { container, rerender } = render(ChatBubble, {
 			type: null,
 			time: null,
-			role: 'assistant',
+			role: 'assistant' as const,
 			content: 'first chunk',
 			streaming: true,
 		});
@@ -50,7 +50,7 @@ describe('ChatBubble lazy Markdown rendering', () => {
 		const { container, rerender } = render(ChatBubble, {
 			type: null,
 			time: null,
-			role: 'assistant',
+			role: 'assistant' as const,
 			content: 'first chunk',
 			streaming: true,
 		});

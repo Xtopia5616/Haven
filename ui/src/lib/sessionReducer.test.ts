@@ -503,7 +503,7 @@ describe('SessionReducer', () => {
 	it('moves and reconciles an optimistic message by id when a session is created', () => {
 		const optimistic: SessionMessage = {
 			id: 'u-optimistic',
-			role: 'user',
+			role: 'user' as const,
 			content: '你好',
 		};
 		const withDraft = reduceSession(initialSessionState, {
@@ -537,7 +537,7 @@ describe('SessionReducer', () => {
 			messages: {
 				'ses-live': [
 					{ id: 'step-tool', type: 'tool', content: '', streaming: true },
-					{ id: 'stale-final', role: 'assistant', content: '旧内容', streaming: false },
+					{ id: 'stale-final', role: 'assistant' as const, content: '旧内容', streaming: false },
 				],
 			},
 		};
@@ -547,14 +547,14 @@ describe('SessionReducer', () => {
 			sessionId: 'ses-live',
 			messages: [
 				{ id: 'step-tool', type: 'tool', content: '数据库尚未写完', streaming: false },
-				{ id: 'msg-db', role: 'assistant', content: '已保存', streaming: false },
+				{ id: 'msg-db', role: 'assistant' as const, content: '已保存', streaming: false },
 			],
 			preserveStreamingOnly: true,
 		});
 
 		expect(next.messages?.['ses-live']).toEqual([
 			{ id: 'step-tool', type: 'tool', content: '', streaming: true },
-			{ id: 'msg-db', role: 'assistant', content: '已保存', streaming: false },
+			{ id: 'msg-db', role: 'assistant' as const, content: '已保存', streaming: false },
 		]);
 	});
 
@@ -605,7 +605,7 @@ describe('SessionReducer', () => {
 		const resumed = reduceSession(state, {
 			type: 'session/messages/resume-loaded',
 			sessionId: pending.sessionId,
-			messages: [{ id: 'msg-resumed', role: 'assistant', content: '已恢复' }],
+			messages: [{ id: 'msg-resumed', role: 'assistant' as const, content: '已恢复' }],
 			interactions: [],
 			preserveInteractionIds: [pending.id],
 			usage: {
@@ -622,7 +622,7 @@ describe('SessionReducer', () => {
 		});
 
 		expect(resumed.messages[pending.sessionId]).toEqual([
-			{ id: 'msg-resumed', role: 'assistant', content: '已恢复' },
+			{ id: 'msg-resumed', role: 'assistant' as const, content: '已恢复' },
 		]);
 		expect(resumed.interactions[pending.id]).toEqual(pending);
 		expect(resumed.tokenStats[pending.sessionId]).toMatchObject({

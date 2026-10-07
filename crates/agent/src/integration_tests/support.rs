@@ -822,20 +822,38 @@ pub(super) async fn seed_hello_snapshot(
 ) -> Vec<haven_memory::repositories::messages::Message> {
     agent
         .db
-        .add_message(session_id, "user", "hello", Some("text"), None)
+        .add_message(
+            session_id,
+            haven_common::types::CanonicalRole::User,
+            "hello",
+            Some("text"),
+            None,
+        )
         .unwrap();
     agent
         .db
-        .add_message(session_id, "assistant", "thinking", Some("text"), None)
+        .add_message(
+            session_id,
+            haven_common::types::CanonicalRole::Assistant,
+            "thinking",
+            Some("text"),
+            None,
+        )
         .unwrap();
     agent
         .db
-        .add_message(session_id, "user", "interrupt", Some("text"), None)
+        .add_message(
+            session_id,
+            haven_common::types::CanonicalRole::User,
+            "interrupt",
+            Some("text"),
+            None,
+        )
         .unwrap();
     let msgs = agent.db.list_session_messages(session_id).unwrap();
     let thinking_ts = msgs
         .iter()
-        .find(|m| m.role == "assistant")
+        .find(|m| m.role == haven_common::types::CanonicalRole::Assistant)
         .unwrap()
         .created_at
         .clone();
@@ -862,7 +880,10 @@ pub(super) async fn seed_hello_snapshot(
             source: None,
             id: Some(
                 msgs.iter()
-                    .find(|message| message.role == "user" && message.content == "hello")
+                    .find(|message| {
+                        message.role == haven_common::types::CanonicalRole::User
+                            && message.content == "hello"
+                    })
                     .expect("seeded hello message")
                     .id
                     .clone(),

@@ -53,7 +53,7 @@ describe('submitTranscript', () => {
 	it('preserves the persisted transcript when submitting', async () => {
 		invokeMock.mockResolvedValue({});
 		select('session-a');
-		loadMessages('session-a', [{ id: 'msg-1', role: 'user', content: '第一条消息' }]);
+		loadMessages('session-a', [{ id: 'msg-1', role: 'user' as const, content: '第一条消息' }]);
 		await submitTranscript('第二条消息', { voice: false });
 
 		const list = messagesFor('session-a');
@@ -198,8 +198,8 @@ describe('submitTranscript', () => {
 		});
 		select('session-a');
 		loadMessages('session-a', [
-			{ id: 'msg-1', role: 'user', content: 'hi', received: true },
-			{ id: 'msg-2', role: 'assistant', content: '想', streaming: true },
+			{ id: 'msg-1', role: 'user' as const, content: 'hi', received: true },
+			{ id: 'msg-2', role: 'assistant' as const, content: '想', streaming: true },
 		]);
 		reactExecutionPhaseStore.set({ sessionId: 'session-a', phase: 'generating' });
 		await submitTranscript('补充', { voice: false });
@@ -216,8 +216,8 @@ describe('submitTranscript', () => {
 		invokeMock.mockResolvedValue({});
 		select('session-a');
 		loadMessages('session-a', [
-			{ id: 'msg-1', role: 'user', content: 'hi', received: true },
-			{ id: 'msg-2', role: 'assistant', content: '好的', streaming: false },
+			{ id: 'msg-1', role: 'user' as const, content: 'hi', received: true },
+			{ id: 'msg-2', role: 'assistant' as const, content: '好的', streaming: false },
 		]);
 		reactExecutionPhaseStore.set({ sessionId: null, phase: 'idle' });
 		await submitTranscript('下一题', { voice: false });
@@ -232,7 +232,7 @@ describe('submitTranscript', () => {
 		});
 		select('session-a');
 		// First message accepted, execution phase not flipped yet, no assistant bubble.
-		loadMessages('session-a', [{ id: 'msg-1', role: 'user', content: 'hi' }]);
+		loadMessages('session-a', [{ id: 'msg-1', role: 'user' as const, content: 'hi' }]);
 		reactExecutionPhaseStore.set({ sessionId: null, phase: 'idle' });
 		await submitTranscript('再加一句', { voice: false });
 		const list = messagesFor('session-a');
@@ -244,8 +244,8 @@ describe('submitTranscript', () => {
 		// Active session B is idle; the global execution phase reflects busy session A.
 		select('session-b');
 		loadMessages('session-b', [
-			{ id: 'msg-b1', role: 'user', content: 'hi', received: true },
-			{ id: 'msg-b2', role: 'assistant', content: '好的', streaming: false },
+			{ id: 'msg-b1', role: 'user' as const, content: 'hi', received: true },
+			{ id: 'msg-b2', role: 'assistant' as const, content: '好的', streaming: false },
 		]);
 		reactExecutionPhaseStore.set({ sessionId: 'session-a', phase: 'generating' });
 		await submitTranscript('下一题', { voice: false });

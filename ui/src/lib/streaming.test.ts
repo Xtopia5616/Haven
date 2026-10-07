@@ -133,13 +133,13 @@ describe('accumulateStreamChunk (thought)', () => {
 describe('resetStreamBlocks', () => {
 	it('removes all live output segments but keeps tool and user messages', () => {
 		const messages: StreamMessage[] = [
-			{ id: 'user-1', role: 'user', content: 'request' },
-			{ id: STEP_ID, role: 'assistant', content: 'old', streaming: true },
-			{ id: `${STEP_ID}-1`, role: 'assistant', content: 'old tail', streaming: false },
-			{ id: 'tool-1', role: 'assistant', type: 'tool', content: 'search', streaming: false },
+			{ id: 'user-1', role: 'user' as const, content: 'request' },
+			{ id: STEP_ID, role: 'assistant' as const, content: 'old', streaming: true },
+			{ id: `${STEP_ID}-1`, role: 'assistant' as const, content: 'old tail', streaming: false },
+			{ id: 'tool-1', role: 'assistant' as const, type: 'tool', content: 'search', streaming: false },
 			{
 				id: REASONING_ID,
-				role: 'assistant',
+				role: 'assistant' as const,
 				type: 'reasoning',
 				content: 'old reasoning',
 				streaming: true,
@@ -226,7 +226,7 @@ describe('accumulateStreamChunk (reasoning)', () => {
 		// anchor on run 2's thought, not run 1's.
 		const run1Thought = {
 			id: 'msg-run1',
-			role: 'assistant',
+			role: 'assistant' as const,
 			type: undefined,
 			content: '上一次的回答',
 			stepNumber: 1,
@@ -301,7 +301,7 @@ describe('applyThoughtSnap', () => {
 	it('finalizes a streaming reasoning block of the same step', () => {
 		const reasoning = {
 			id: REASONING_ID,
-			role: 'assistant',
+			role: 'assistant' as const,
 			content: '思考中',
 			streaming: true,
 		};
@@ -317,7 +317,7 @@ describe('applyThoughtSnap', () => {
 		let m = chunk([], '回答文字。');
 		const reasoning = {
 			id: REASONING_ID,
-			role: 'assistant',
+			role: 'assistant' as const,
 			content: '迟到的推理',
 			streaming: true,
 		};
@@ -331,7 +331,7 @@ describe('applyThoughtSnap', () => {
 	it('keeps a leading reasoning block in front of the merged thought', () => {
 		const reasoning = {
 			id: REASONING_ID,
-			role: 'assistant',
+			role: 'assistant' as const,
 			content: '先推理',
 			streaming: true,
 		};
@@ -344,10 +344,10 @@ describe('applyThoughtSnap', () => {
 	it('keeps the user question before the reasoning (does not jump above it)', () => {
 		// Reported bug: with [user, reasoning, thought], the off-by-one
 		// insertion pushed thinking ABOVE the user question.
-		const user = { id: 'user-1', role: 'user', content: '问题' };
+		const user = { id: 'user-1', role: 'user' as const, content: '问题' };
 		const reasoning = {
 			id: REASONING_ID,
-			role: 'assistant',
+			role: 'assistant' as const,
 			content: '思考中',
 			streaming: true,
 		};
@@ -360,16 +360,16 @@ describe('applyThoughtSnap', () => {
 	it('keeps a tool card in order when collapsing a later step', () => {
 		// A prior tool card must not sink below the merged thought/reasoning
 		// when a subsequent step's message is collapsed.
-		const user = { id: 'user-1', role: 'user', content: '问题' };
+		const user = { id: 'user-1', role: 'user' as const, content: '问题' };
 		const reasoning = {
 			id: REASONING_ID,
-			role: 'assistant',
+			role: 'assistant' as const,
 			content: '先查一下',
 			streaming: true,
 		};
 		const tool = {
 			id: 'step-tool-1',
-			role: 'assistant',
+			role: 'assistant' as const,
 			type: 'tool',
 			content: '观察结果',
 			streaming: false,
@@ -389,11 +389,11 @@ describe('applyThoughtSnap', () => {
 		// identical content — no duplicate is appended.
 		const dbCopy = {
 			id: STEP_ID,
-			role: 'assistant',
+			role: 'assistant' as const,
 			content: '完整的回答。',
 			streaming: false,
 		};
-		const m = [{ id: 'user-1', role: 'user', content: '问题' }, dbCopy];
+		const m = [{ id: 'user-1', role: 'user' as const, content: '问题' }, dbCopy];
 		const out = snap(m, '完整的回答。');
 		expect(out).toEqual(m);
 		expect(out.filter((x) => x.content === '完整的回答。')).toHaveLength(1);
@@ -405,7 +405,7 @@ describe('applyThoughtSnap', () => {
 		// authoritative text — one bubble, streaming flag cleared.
 		const dbCopy = {
 			id: STEP_ID,
-			role: 'assistant',
+			role: 'assistant' as const,
 			content: '完整的回答。',
 			streaming: false,
 		};
@@ -419,7 +419,7 @@ describe('applyThoughtSnap', () => {
 
 	it('keeps appending when the list has no equivalent content', () => {
 		// A fresh page that missed the stream still gets the full text.
-		const m = [{ id: 'user-1', role: 'user', content: '问题' }];
+		const m = [{ id: 'user-1', role: 'user' as const, content: '问题' }];
 		const out = snap(m, '完整的回答。');
 		expect(out.map((x) => x.id)).toEqual(['user-1', STEP_ID]);
 		expect(out[1]).toMatchObject({ content: '完整的回答。', streaming: false });
@@ -484,9 +484,9 @@ describe('webSearchCardContent', () => {
 describe('insertAgentMessage / steering anchors', () => {
 	it('inserts continuing agent output before trailing steering users', () => {
 		const list: StreamMessage[] = [
-			{ id: 'u1', role: 'user', content: 'hi' },
-			{ id: STEP_ID, role: 'assistant', content: '想', streaming: true },
-			{ id: 'u2', role: 'user', content: '补充', steering: true },
+			{ id: 'u1', role: 'user' as const, content: 'hi' },
+			{ id: STEP_ID, role: 'assistant' as const, content: '想', streaming: true },
+			{ id: 'u2', role: 'user' as const, content: '补充', steering: true },
 		];
 		expect(agentInsertIndex(list)).toBe(2);
 		const out = insertAgentMessage(
@@ -503,12 +503,12 @@ describe('insertAgentMessage / steering anchors', () => {
 
 	it('appends at the end when there is no trailing steering user', () => {
 		const list: StreamMessage[] = [
-			{ id: 'u1', role: 'user', content: 'hi' },
-			{ id: STEP_ID, role: 'assistant', content: '好', streaming: false },
+			{ id: 'u1', role: 'user' as const, content: 'hi' },
+			{ id: STEP_ID, role: 'assistant' as const, content: '好', streaming: false },
 		];
 		const out = insertAgentMessage(list, {
 			id: 'msg-next',
-			role: 'assistant',
+			role: 'assistant' as const,
 			content: '下一轮',
 			streaming: true,
 		});
@@ -517,8 +517,8 @@ describe('insertAgentMessage / steering anchors', () => {
 
 	it('keeps a new stream segment above a mid-turn steer', () => {
 		let m: StreamMessage[] = [
-			{ id: 'u1', role: 'user', content: 'hi' },
-			{ id: STEP_ID, role: 'assistant', content: '先查', streaming: false },
+			{ id: 'u1', role: 'user' as const, content: 'hi' },
+			{ id: STEP_ID, role: 'assistant' as const, content: '先查', streaming: false },
 			newToolMessage({
 				id: webSearchId('t', 1, 0, 'ws_1'),
 				stepNumber: 1,
@@ -526,7 +526,7 @@ describe('insertAgentMessage / steering anchors', () => {
 				content: '已联网搜索',
 				streaming: false,
 			}),
-			{ id: 'u2', role: 'user', content: '补充一句', steering: true },
+			{ id: 'u2', role: 'user' as const, content: '补充一句', steering: true },
 		];
 		m = chunk(m, '根据搜索');
 		expect(m.map((x) => x.id)).toEqual([
@@ -846,7 +846,7 @@ describe('newToolMessage', () => {
 		});
 		expect(msg).toEqual({
 			id: 'step-1',
-			role: 'assistant',
+			role: 'assistant' as const,
 			content: '',
 			toolName: 'files',
 			type: 'tool',

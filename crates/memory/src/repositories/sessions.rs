@@ -903,8 +903,14 @@ mod tests {
     fn test_search_sessions_in_messages() {
         let db = create_db();
         let session = db.create_session("session").unwrap();
-        db.add_message(&session.id, "user", "message about rust", None, None)
-            .unwrap();
+        db.add_message(
+            &session.id,
+            haven_common::types::CanonicalRole::User,
+            "message about rust",
+            None,
+            None,
+        )
+        .unwrap();
         let results = db.search_sessions("rust").unwrap();
         assert_eq!(results.len(), 1);
     }

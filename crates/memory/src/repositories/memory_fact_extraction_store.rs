@@ -88,7 +88,7 @@ mod tests {
         let user = db
             .add_message(
                 &session.id,
-                "user",
+                haven_common::types::CanonicalRole::User,
                 "Use the checked path",
                 Some("text"),
                 None,

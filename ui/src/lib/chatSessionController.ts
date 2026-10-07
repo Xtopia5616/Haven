@@ -11,6 +11,7 @@ import { isErrorStatus } from './sessionStatus.ts';
 import { processResultSessionId } from './submit.ts';
 import type { ChatFileAttachment, ChatImageAttachment } from './chatAttachmentTypes.ts';
 import type { ProcessResult } from './contracts/generatedCommands.ts';
+import type { CanonicalRole } from './contracts/generatedCommands.ts';
 import type {
 	ContinueSessionRequest,
 	EndSessionRequest,
@@ -27,7 +28,7 @@ import type {
 
 export interface RollbackRequest {
 	stepNumber: number;
-	role: string;
+	role: CanonicalRole;
 	content: string;
 	msgId: string;
 }

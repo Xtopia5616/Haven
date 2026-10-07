@@ -295,7 +295,7 @@ async function doSubmit({
 	const steering = isMidTurnSubmit(sessionId, reducer);
 	const msg = {
 		...newMessage({
-			role: 'user',
+			role: 'user' as const,
 			content: text,
 			voice,
 			time: new Date().toLocaleTimeString(),

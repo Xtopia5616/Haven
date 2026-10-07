@@ -615,7 +615,7 @@ mod tests {
         crate::repositories::messages::Message {
             id: id.into(),
             session_id: session_id.into(),
-            role: "user".into(),
+            role: haven_common::types::CanonicalRole::User,
             content: format!("content-{}", id),
             message_type: Some("text".into()),
             created_at: "2026-01-01T00:00:00Z".into(),

@@ -41,7 +41,7 @@ describe('chat session lifecycle handler', () => {
 			activeSessionId: 'ses-paused',
 			messages: {
 				['ses-paused']: [
-					{ id: 'step-thought', role: 'assistant', content: '半截回复', streaming: true },
+					{ id: 'step-thought', role: 'assistant' as const, content: '半截回复', streaming: true },
 					{
 						id: 'ask-1',
 						type: 'ask',
@@ -85,7 +85,7 @@ describe('chat session lifecycle handler', () => {
 		expect(clearAskAwaiting).not.toHaveBeenCalled();
 		expect(get(getToolOutputPreviewStore('step-shell'))).toBeUndefined();
 		expect(reducer.getMessages('ses-paused')).toEqual([
-			{ id: 'step-thought', role: 'assistant', content: '半截回复', streaming: false },
+			{ id: 'step-thought', role: 'assistant' as const, content: '半截回复', streaming: false },
 			{
 				id: 'ask-1',
 				type: 'ask',
@@ -137,7 +137,7 @@ describe('chat session lifecycle handler', () => {
 			activeSessionId: sessionId,
 			messages: {
 				[sessionId]: [
-					{ id: 'step-live', role: 'assistant', content: '最后一段', streaming: true },
+					{ id: 'step-live', role: 'assistant' as const, content: '最后一段', streaming: true },
 				],
 			},
 		});
@@ -296,7 +296,7 @@ describe('chat session lifecycle handler', () => {
 			...initialSessionState,
 			sessions: [{ id: sessionId, status: 'paused', title: '删除目标' }],
 			activeSessionId: sessionId,
-			messages: { [sessionId]: [{ id: 'msg-1', role: 'user', content: '问题' }] },
+			messages: { [sessionId]: [{ id: 'msg-1', role: 'user' as const, content: '问题' }] },
 		});
 		const onLifecycle = handler({
 			activeSessionId: sessionId,

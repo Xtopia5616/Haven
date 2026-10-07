@@ -15,28 +15,28 @@ describe('tool intent policy', () => {
 
 	it('does not treat reasoning as a visible tool preamble', () => {
 		const messages = [
-			{ role: 'user', content: '查天气' },
-			{ role: 'assistant', type: 'reasoning', content: '内部推理' },
-			{ role: 'assistant', type: 'tool', content: '' },
+			{ role: 'user' as const, content: '查天气' },
+			{ role: 'assistant' as const, type: 'reasoning', content: '内部推理' },
+			{ role: 'assistant' as const, type: 'tool', content: '' },
 		];
 		expect(hasToolPreambleBefore(messages, 2)).toBe(false);
 	});
 
 	it('recognizes ordinary assistant text immediately before a tool card', () => {
 		const messages = [
-			{ role: 'user', content: '查天气' },
-			{ role: 'assistant', content: '我先查询当前天气。' },
-			{ role: 'assistant', type: 'tool', content: '' },
+			{ role: 'user' as const, content: '查天气' },
+			{ role: 'assistant' as const, content: '我先查询当前天气。' },
+			{ role: 'assistant' as const, type: 'tool', content: '' },
 		];
 		expect(hasToolPreambleBefore(messages, 2)).toBe(true);
 	});
 
 	it('reuses one preamble for every tool in the same live batch', () => {
 		const messages = [
-			{ id: 'user-1', role: 'user', content: '整理文件并运行测试' },
-			{ id: 'step-thought', role: 'assistant', content: '我先整理文件。' },
-			{ id: 'step-tool-1', role: 'assistant', type: 'tool', content: '' },
-			{ id: 'step-tool-2', role: 'assistant', type: 'tool', content: '' },
+			{ id: 'user-1', role: 'user' as const, content: '整理文件并运行测试' },
+			{ id: 'step-thought', role: 'assistant' as const, content: '我先整理文件。' },
+			{ id: 'step-tool-1', role: 'assistant' as const, type: 'tool', content: '' },
+			{ id: 'step-tool-2', role: 'assistant' as const, type: 'tool', content: '' },
 		];
 		expect(hasToolPreambleInBlock(messages, 'step-thought')).toBe(true);
 		expect(hasToolPreambleInBlock(messages, 'step-empty')).toBe(false);

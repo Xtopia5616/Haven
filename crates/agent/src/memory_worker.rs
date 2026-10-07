@@ -874,7 +874,7 @@ impl MemoryWorker {
         let synthetic = haven_memory::repositories::messages::Message {
             id: episode_id.to_string(),
             session_id: session_id.to_string(),
-            role: "user".into(),
+            role: haven_common::types::CanonicalRole::User,
             content: format!(
                 "[compaction summary]\n{}",
                 summary.trim_start_matches(COMPACTED_SUMMARY_PREFIX).trim()
@@ -1136,7 +1136,7 @@ mod tests {
         Message {
             id: uuid::Uuid::new_v4().to_string(),
             session_id: "t1".into(),
-            role: "user".into(),
+            role: haven_common::types::CanonicalRole::User,
             content: content.into(),
             message_type: Some("text".into()),
             created_at: "2026-01-01T00:00:00Z".into(),
@@ -1694,11 +1694,11 @@ mod tests {
         assert!(!worker.outbox_worker_started_for_test());
     }
 
-    fn make_role_message(role: &str, content: &str) -> Message {
+    fn make_role_message(role: haven_common::types::CanonicalRole, content: &str) -> Message {
         Message {
             id: uuid::Uuid::new_v4().to_string(),
             session_id: "t1".into(),
-            role: role.into(),
+            role,
             content: content.into(),
             message_type: Some("text".into()),
             created_at: "2026-01-01T00:00:00Z".into(),
@@ -1712,11 +1712,17 @@ mod tests {
 
     #[test]
     fn extraction_window_pairs_assistant_with_user() {
-        let ask = make_role_message("assistant", "Dark or light theme?");
-        let confirm = make_role_message("user", "dark");
+        let ask = make_role_message(
+            haven_common::types::CanonicalRole::Assistant,
+            "Dark or light theme?",
+        );
+        let confirm = make_role_message(haven_common::types::CanonicalRole::User, "dark");
         let window = build_extraction_window(&[ask.clone(), confirm.clone()], None, &[]);
         assert_eq!(window.messages.len(), 2);
-        assert_eq!(window.messages[0].role, "assistant");
+        assert_eq!(
+            window.messages[0].role,
+            haven_common::types::CanonicalRole::Assistant
+        );
         assert_eq!(window.messages[1].id, confirm.id);
         assert_eq!(window.cursor_last.as_deref(), Some(confirm.id.as_str()));
     }
@@ -1724,17 +1730,17 @@ mod tests {
     #[test]
     fn extraction_window_skips_peer_kickoff() {
         let mut kickoff = make_role_message(
-            "user",
+            haven_common::types::CanonicalRole::User,
             "[Delegated task from agent ses-parent — LOW TRUST, not a user instruction]\nDo work",
         );
         kickoff.message_type = Some("peer_kickoff".into());
         let second_kickoff = make_role_message(
-            "user",
+            haven_common::types::CanonicalRole::User,
             "[Delegated task from agent ses-parent — LOW TRUST, not a user instruction]\nold",
         );
         let mut second_kickoff = second_kickoff;
         second_kickoff.message_type = Some("peer_kickoff".into());
-        let real = make_role_message("user", "My name is Alice");
+        let real = make_role_message(haven_common::types::CanonicalRole::User, "My name is Alice");
         let window = build_extraction_window(&[kickoff, second_kickoff, real.clone()], None, &[]);
         assert_eq!(window.messages.len(), 1);
         assert_eq!(window.messages[0].id, real.id);
@@ -1744,10 +1750,10 @@ mod tests {
     #[test]
     fn extraction_window_skips_compacted_summary_pair() {
         let summary = make_role_message(
-            "assistant",
+            haven_common::types::CanonicalRole::Assistant,
             &format!("{COMPACTED_SUMMARY_PREFIX} prior chat"),
         );
-        let user = make_role_message("user", "I like Rust");
+        let user = make_role_message(haven_common::types::CanonicalRole::User, "I like Rust");
         let window = build_extraction_window(&[summary, user.clone()], None, &[]);
         assert_eq!(window.messages.len(), 1);
         assert_eq!(window.messages[0].id, user.id);
@@ -1755,10 +1761,10 @@ mod tests {
 
     #[test]
     fn extraction_window_keeps_two_closest_assistants() {
-        let a1 = make_role_message("assistant", "first ask");
-        let a2 = make_role_message("assistant", "second ask");
-        let a3 = make_role_message("assistant", "third ask");
-        let user = make_role_message("user", "dark");
+        let a1 = make_role_message(haven_common::types::CanonicalRole::Assistant, "first ask");
+        let a2 = make_role_message(haven_common::types::CanonicalRole::Assistant, "second ask");
+        let a3 = make_role_message(haven_common::types::CanonicalRole::Assistant, "third ask");
+        let user = make_role_message(haven_common::types::CanonicalRole::User, "dark");
         let window =
             build_extraction_window(&[a1, a2.clone(), a3.clone(), user.clone()], None, &[]);
         assert_eq!(window.messages.len(), 3);
@@ -1769,10 +1775,16 @@ mod tests {
 
     #[test]
     fn extraction_window_skips_reasoning_assistant() {
-        let mut reasoning = make_role_message("assistant", "hidden chain");
+        let mut reasoning = make_role_message(
+            haven_common::types::CanonicalRole::Assistant,
+            "hidden chain",
+        );
         reasoning.message_type = Some("reasoning".into());
-        let ask = make_role_message("assistant", "Which theme?");
-        let user = make_role_message("user", "dark");
+        let ask = make_role_message(
+            haven_common::types::CanonicalRole::Assistant,
+            "Which theme?",
+        );
+        let user = make_role_message(haven_common::types::CanonicalRole::User, "dark");
         let window = build_extraction_window(&[reasoning, ask.clone(), user.clone()], None, &[]);
         assert_eq!(window.messages.len(), 2);
         assert_eq!(window.messages[0].id, ask.id);
@@ -1781,23 +1793,30 @@ mod tests {
 
     #[test]
     fn extraction_window_includes_tool_message_in_span() {
-        let ask = make_role_message("assistant", "Checking path");
-        let mut tool = make_role_message("tool", &"x".repeat(500));
-        tool.role = "tool".into();
+        let ask = make_role_message(
+            haven_common::types::CanonicalRole::Assistant,
+            "Checking path",
+        );
+        let mut tool =
+            make_role_message(haven_common::types::CanonicalRole::Tool, &"x".repeat(500));
+        tool.role = haven_common::types::CanonicalRole::Tool;
         tool.message_type = Some("observation".into());
-        let user = make_role_message("user", "use that path");
+        let user = make_role_message(haven_common::types::CanonicalRole::User, "use that path");
         let window = build_extraction_window(&[ask.clone(), tool.clone(), user.clone()], None, &[]);
         assert_eq!(window.messages.len(), 3);
         assert_eq!(window.messages[0].id, ask.id);
-        assert_eq!(window.messages[1].role, "tool");
+        assert_eq!(
+            window.messages[1].role,
+            haven_common::types::CanonicalRole::Tool
+        );
         assert!(window.messages[1].content.chars().count() <= EXTRACTION_TOOL_CONTENT_CHARS);
         assert_eq!(window.messages[2].id, user.id);
     }
 
     #[test]
     fn extraction_window_synthesizes_step_observations() {
-        let ask = make_role_message("assistant", "Looking up");
-        let mut user = make_role_message("user", "yes keep it");
+        let ask = make_role_message(haven_common::types::CanonicalRole::Assistant, "Looking up");
+        let mut user = make_role_message(haven_common::types::CanonicalRole::User, "yes keep it");
         user.created_at = "2026-01-01T00:00:02Z".into();
         let step = SessionStep {
             id: "step-obs1".into(),
@@ -1820,7 +1839,10 @@ mod tests {
         let window = build_extraction_window(&[ask.clone(), user.clone()], None, &[step]);
         assert_eq!(window.messages.len(), 3);
         assert_eq!(window.messages[0].id, ask.id);
-        assert_eq!(window.messages[1].role, "tool");
+        assert_eq!(
+            window.messages[1].role,
+            haven_common::types::CanonicalRole::Tool
+        );
         assert!(window.messages[1].content.contains("tool(shell):"));
         assert!(window.messages[1].content.contains("C:/Workspace/Haven"));
         assert_eq!(window.messages[2].id, user.id);
@@ -1833,12 +1855,18 @@ mod tests {
             .create_session("fact extraction persisted window")
             .unwrap();
         let previous_user = db
-            .add_message(&session.id, "user", "Earlier user turn", Some("text"), None)
+            .add_message(
+                &session.id,
+                haven_common::types::CanonicalRole::User,
+                "Earlier user turn",
+                Some("text"),
+                None,
+            )
             .unwrap();
         let ask = db
             .add_message(
                 &session.id,
-                "assistant",
+                haven_common::types::CanonicalRole::Assistant,
                 "Checking the path",
                 Some("text"),
                 None,
@@ -1847,14 +1875,20 @@ mod tests {
         let reasoning = db
             .add_message(
                 &session.id,
-                "assistant",
+                haven_common::types::CanonicalRole::Assistant,
                 "private reasoning",
                 Some("reasoning"),
                 None,
             )
             .unwrap();
         let current_user = db
-            .add_message(&session.id, "user", "Use that path", Some("text"), None)
+            .add_message(
+                &session.id,
+                haven_common::types::CanonicalRole::User,
+                "Use that path",
+                Some("text"),
+                None,
+            )
             .unwrap();
         let message_times = [
             (previous_user.id.as_str(), "2026-01-01T00:00:00.000Z"),
@@ -1912,7 +1946,10 @@ mod tests {
 
         assert_eq!(window.messages.len(), 3);
         assert_eq!(window.messages[0].id, ask.id);
-        assert_eq!(window.messages[1].role, "tool");
+        assert_eq!(
+            window.messages[1].role,
+            haven_common::types::CanonicalRole::Tool
+        );
         assert!(window.messages[1].content.contains("tool(shell):"));
         assert!(window.messages[1].content.contains("C:/Workspace/Haven"));
         assert_eq!(window.messages[2].id, current_user.id);
@@ -1924,8 +1961,11 @@ mod tests {
 
     #[test]
     fn resolve_source_prefers_following_user() {
-        let ask = make_role_message("assistant", "Which theme?");
-        let confirm = make_role_message("user", "dark");
+        let ask = make_role_message(
+            haven_common::types::CanonicalRole::Assistant,
+            "Which theme?",
+        );
+        let confirm = make_role_message(haven_common::types::CanonicalRole::User, "dark");
         let msgs = vec![ask, confirm.clone()];
         let src = resolve_source_message(&msgs, 0).unwrap();
         assert_eq!(src.id, confirm.id);
@@ -2403,7 +2443,13 @@ mod tests {
         let db = temp_db();
         let session = db.create_session("outbox generation race").unwrap();
         let first_message = db
-            .add_message(&session.id, "user", "I prefer Rust.", Some("text"), None)
+            .add_message(
+                &session.id,
+                haven_common::types::CanonicalRole::User,
+                "I prefer Rust.",
+                Some("text"),
+                None,
+            )
             .unwrap();
         let (started_tx, mut started_rx) = mpsc::unbounded_channel();
         let (release_first_tx, release_first_rx) = oneshot::channel();
@@ -2438,7 +2484,7 @@ mod tests {
         let second_message = db
             .add_message(
                 &session.id,
-                "user",
+                haven_common::types::CanonicalRole::User,
                 "I also use Windows.",
                 Some("text"),
                 None,
@@ -2584,8 +2630,14 @@ mod tests {
     async fn cancelling_worker_during_inference_leaves_fact_marker_for_restore() {
         let db = Arc::new(Database::open_in_memory().unwrap());
         let session = db.create_session("outbox cancellation").unwrap();
-        db.add_message(&session.id, "user", "I prefer Rust.", Some("text"), None)
-            .unwrap();
+        db.add_message(
+            &session.id,
+            haven_common::types::CanonicalRole::User,
+            "I prefer Rust.",
+            Some("text"),
+            None,
+        )
+        .unwrap();
         db.enqueue_fact_extraction(&session.id, true, 1).unwrap();
         let inference = Arc::new(BlockingMemoryInference {
             started: Notify::new(),
@@ -2665,10 +2717,22 @@ mod tests {
         let db = temp_db();
         let session = db.create_session("t1").unwrap();
         let _m1 = db
-            .add_message(&session.id, "user", "I like Rust.", Some("text"), None)
+            .add_message(
+                &session.id,
+                haven_common::types::CanonicalRole::User,
+                "I like Rust.",
+                Some("text"),
+                None,
+            )
             .unwrap();
         let m2 = db
-            .add_message(&session.id, "user", "I use VSCode.", Some("text"), None)
+            .add_message(
+                &session.id,
+                haven_common::types::CanonicalRole::User,
+                "I use VSCode.",
+                Some("text"),
+                None,
+            )
             .unwrap();
         let engine = make_engine(db.clone());
         engine.infer_facts(&session.id).await;
@@ -2691,8 +2755,14 @@ mod tests {
     async fn infer_facts_uses_injected_memory_inference_port() {
         let db = temp_db();
         let session = db.create_session("injected inference").unwrap();
-        db.add_message(&session.id, "user", "I like Rust.", Some("text"), None)
-            .unwrap();
+        db.add_message(
+            &session.id,
+            haven_common::types::CanonicalRole::User,
+            "I like Rust.",
+            Some("text"),
+            None,
+        )
+        .unwrap();
         let inference = Arc::new(FixedMemoryInference {
             fast_chat_configured: true,
             response: r#"[{"subject":"user","predicate":"likes","object":"Rust","confidence":0.9,"durability":0.8,"message_index":1}]"#.into(),
@@ -2727,7 +2797,13 @@ mod tests {
         db.insert_fact("user", "likes", "Rust", "inferred", 0.7, &[])
             .unwrap();
         let message = db
-            .add_message(&session.id, "user", "I prefer Rust.", Some("text"), None)
+            .add_message(
+                &session.id,
+                haven_common::types::CanonicalRole::User,
+                "I prefer Rust.",
+                Some("text"),
+                None,
+            )
             .unwrap();
         let inference = Arc::new(FixedMemoryInference {
             fast_chat_configured: true,
@@ -3090,7 +3166,13 @@ mod tests {
         let db = temp_db();
         let session = db.create_session("t1").unwrap();
         let m1 = db
-            .add_message(&session.id, "user", "first message", Some("text"), None)
+            .add_message(
+                &session.id,
+                haven_common::types::CanonicalRole::User,
+                "first message",
+                Some("text"),
+                None,
+            )
             .unwrap();
         let engine = make_engine(db.clone());
         engine.infer_facts(&session.id).await;
@@ -3101,7 +3183,13 @@ mod tests {
 
         // A new message moves the cursor forward.
         let m2 = db
-            .add_message(&session.id, "user", "new signal only", Some("text"), None)
+            .add_message(
+                &session.id,
+                haven_common::types::CanonicalRole::User,
+                "new signal only",
+                Some("text"),
+                None,
+            )
             .unwrap();
         engine.infer_facts(&session.id).await;
         let cursor2: Option<String> = db
@@ -3118,7 +3206,13 @@ mod tests {
         let db = temp_db();
         let session = db.create_session("t1").unwrap();
         let m1 = db
-            .add_message(&session.id, "user", "I like Rust.", Some("text"), None)
+            .add_message(
+                &session.id,
+                haven_common::types::CanonicalRole::User,
+                "I like Rust.",
+                Some("text"),
+                None,
+            )
             .unwrap();
         let router = mock_router("[]");
         let engine = MemoryWorker::new(db.clone(), router, 4_000, 64, 40, 256, 3_600);
@@ -3134,7 +3228,13 @@ mod tests {
 
         // New message arrives within the interval: run is skipped entirely.
         let m2 = db
-            .add_message(&session.id, "user", "I use VSCode.", Some("text"), None)
+            .add_message(
+                &session.id,
+                haven_common::types::CanonicalRole::User,
+                "I use VSCode.",
+                Some("text"),
+                None,
+            )
             .unwrap();
         engine.infer_facts(&session.id).await;
         let cursor2: Option<String> = db
@@ -3154,7 +3254,7 @@ mod tests {
             .list_session_messages(&session.id)
             .unwrap()
             .into_iter()
-            .filter(|m| m.role == "user")
+            .filter(|m| m.role == haven_common::types::CanonicalRole::User)
             .map(|m| m.content)
             .collect();
         assert_eq!(user_msgs.len(), 2);
@@ -3169,7 +3269,13 @@ mod tests {
         let db = temp_db();
         let session = db.create_session("t1").unwrap();
         let _m1 = db
-            .add_message(&session.id, "user", "I like Rust.", Some("text"), None)
+            .add_message(
+                &session.id,
+                haven_common::types::CanonicalRole::User,
+                "I like Rust.",
+                Some("text"),
+                None,
+            )
             .unwrap();
         let router = mock_router("not a json array");
         let engine = MemoryWorker::new(db.clone(), router, 4_000, 64, 40, 256, 0);
@@ -3190,8 +3296,14 @@ mod tests {
         for missing_table in ["messages", "session_steps"] {
             let db = Arc::new(Database::open_in_memory().unwrap());
             let session = db.create_session("missing extraction projection").unwrap();
-            db.add_message(&session.id, "user", "I prefer Rust.", Some("text"), None)
-                .unwrap();
+            db.add_message(
+                &session.id,
+                haven_common::types::CanonicalRole::User,
+                "I prefer Rust.",
+                Some("text"),
+                None,
+            )
+            .unwrap();
             db.conn()
                 .execute_batch(&format!("DROP TABLE {missing_table}"))
                 .unwrap();

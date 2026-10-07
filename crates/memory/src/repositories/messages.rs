@@ -2,7 +2,7 @@ use crate::db::Database;
 use base64::Engine as _;
 use chrono::{SecondsFormat, Utc};
 use haven_common::media::{MediaInput, message_attachment_to_media_input};
-use haven_common::types::MessageAttachment;
+use haven_common::types::{CanonicalRole, MessageAttachment};
 use rusqlite::OptionalExtension;
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -18,10 +18,18 @@ pub(crate) fn now_rfc3339_millis() -> String {
 /// created_at, tool_call_id, ui_metadata, voice, ingress_seq, media_inputs) into a `Message`. Shared by
 /// every read query so column order cannot drift between them.
 fn map_message_row(row: &rusqlite::Row) -> rusqlite::Result<Message> {
+    let role_text: String = row.get(2)?;
+    let role = CanonicalRole::parse(&role_text).ok_or_else(|| {
+        rusqlite::Error::FromSqlConversionFailure(
+            2,
+            rusqlite::types::Type::Text,
+            format!("invalid CanonicalRole in messages.role: {role_text}").into(),
+        )
+    })?;
     Ok(Message {
         id: row.get(0)?,
         session_id: row.get(1)?,
-        role: row.get(2)?,
+        role,
         content: row.get(3)?,
         message_type: row.get(4)?,
         created_at: row.get(5)?,
@@ -94,7 +102,7 @@ impl From<UiAttachmentMetadata> for MessageAttachment {
 pub struct Message {
     pub id: String,
     pub session_id: String,
-    pub role: String,
+    pub role: CanonicalRole,
     pub content: String,
     pub message_type: Option<String>,
     pub created_at: String,
@@ -160,7 +168,7 @@ impl Database {
     pub fn add_message(
         &self,
         session_id: &str,
-        role: &str,
+        role: CanonicalRole,
         content: &str,
         message_type: Option<&str>,
         tool_call_id: Option<&str>,
@@ -181,7 +189,7 @@ impl Database {
     pub fn add_message_full(
         &self,
         session_id: &str,
-        role: &str,
+        role: CanonicalRole,
         content: &str,
         message_type: Option<&str>,
         tool_call_id: Option<&str>,
@@ -232,7 +240,7 @@ impl Database {
             .collect();
         let (message, disposition) = self.add_message_full_with_media(
             session_id,
-            "user",
+            CanonicalRole::User,
             content,
             message_type,
             None,
@@ -253,7 +261,7 @@ impl Database {
     fn add_message_full_with_media(
         &self,
         session_id: &str,
-        role: &str,
+        role: CanonicalRole,
         content: &str,
         message_type: Option<&str>,
         tool_call_id: Option<&str>,
@@ -296,7 +304,7 @@ impl Database {
                 rusqlite::params![
                     id,
                     session_id,
-                    role,
+            role.as_str(),
                     content,
                     message_type,
                     created_at,
@@ -346,7 +354,7 @@ impl Database {
             Message {
                 id,
                 session_id: session_id.into(),
-                role: role.into(),
+                role,
                 content: content.into(),
                 message_type: message_type.map(String::from),
                 created_at,
@@ -763,7 +771,15 @@ mod tests {
     fn add_and_get_messages() {
         let db = test_db();
         let tid = test_session(&db);
-        let msg = db.add_message(&tid, "user", "hello", None, None).unwrap();
+        let msg = db
+            .add_message(
+                &tid,
+                haven_common::types::CanonicalRole::User,
+                "hello",
+                None,
+                None,
+            )
+            .unwrap();
         assert_eq!(msg.content, "hello");
         let msgs = db.list_session_messages(&tid).unwrap();
         assert_eq!(msgs.len(), 1);
@@ -772,15 +788,65 @@ mod tests {
     }
 
     #[test]
+    fn list_session_messages_rejects_unknown_role_from_storage() {
+        let db = test_db();
+        let session_id = test_session(&db);
+        db.add_message(&session_id, CanonicalRole::User, "hello", None, None)
+            .unwrap();
+
+        {
+            let conn = db.conn();
+            conn.execute_batch("PRAGMA ignore_check_constraints = ON")
+                .unwrap();
+            conn.execute(
+                "UPDATE messages SET role = 'developer' WHERE session_id = ?1",
+                [&session_id],
+            )
+            .unwrap();
+            conn.execute_batch("PRAGMA ignore_check_constraints = OFF")
+                .unwrap();
+        }
+
+        let error = db.list_session_messages(&session_id).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("invalid CanonicalRole in messages.role")
+        );
+    }
+
+    #[test]
     fn ingress_cursor_does_not_reuse_sequence_after_message_delete() {
         let db = test_db();
         let tid = test_session(&db);
-        let first = db.add_message(&tid, "user", "first", None, None).unwrap();
-        let second = db.add_message(&tid, "user", "second", None, None).unwrap();
+        let first = db
+            .add_message(
+                &tid,
+                haven_common::types::CanonicalRole::User,
+                "first",
+                None,
+                None,
+            )
+            .unwrap();
+        let second = db
+            .add_message(
+                &tid,
+                haven_common::types::CanonicalRole::User,
+                "second",
+                None,
+                None,
+            )
+            .unwrap();
         db.delete_message_by_id(&tid, &second.id).unwrap();
 
         let replacement = db
-            .add_message(&tid, "user", "replacement", None, None)
+            .add_message(
+                &tid,
+                haven_common::types::CanonicalRole::User,
+                "replacement",
+                None,
+                None,
+            )
             .unwrap();
         assert_eq!(first.ingress_seq, 1);
         assert_eq!(replacement.ingress_seq, 3);
@@ -792,8 +858,14 @@ mod tests {
         let db = test_db();
         let tid = test_session(&db);
         for i in 0..5 {
-            db.add_message(&tid, "user", &format!("msg {}", i), None, None)
-                .unwrap();
+            db.add_message(
+                &tid,
+                haven_common::types::CanonicalRole::User,
+                &format!("msg {}", i),
+                None,
+                None,
+            )
+            .unwrap();
         }
         let msgs = db.list_session_messages(&tid).unwrap();
         assert_eq!(msgs.len(), 5);
@@ -805,9 +877,22 @@ mod tests {
     fn list_recent_session_messages_filters() {
         let db = test_db();
         let tid = test_session(&db);
-        db.add_message(&tid, "user", "hello", Some("text"), None)
-            .unwrap();
-        db.add_message(&tid, "user", "world", None, None).unwrap();
+        db.add_message(
+            &tid,
+            haven_common::types::CanonicalRole::User,
+            "hello",
+            Some("text"),
+            None,
+        )
+        .unwrap();
+        db.add_message(
+            &tid,
+            haven_common::types::CanonicalRole::User,
+            "world",
+            None,
+            None,
+        )
+        .unwrap();
         let msgs = db.list_recent_session_messages(&tid, 1).unwrap();
         assert_eq!(msgs.len(), 1);
         assert_eq!(msgs[0].content, "world");
@@ -817,8 +902,23 @@ mod tests {
     fn pending_session_inputs_only_include_explicitly_tracked_rows() {
         let db = test_db();
         let tid = test_session(&db);
-        db.add_message(&tid, "user", "开场", None, None).unwrap();
-        let delivered = db.add_message(&tid, "user", "继续", None, None).unwrap();
+        db.add_message(
+            &tid,
+            haven_common::types::CanonicalRole::User,
+            "开场",
+            None,
+            None,
+        )
+        .unwrap();
+        let delivered = db
+            .add_message(
+                &tid,
+                haven_common::types::CanonicalRole::User,
+                "继续",
+                None,
+                None,
+            )
+            .unwrap();
         db.create_thought_step(&tid, 2, &delivered.id).unwrap();
         let pending = db
             .add_pending_user_input(
@@ -854,10 +954,22 @@ mod tests {
         // No messages at all: nothing to recover.
         assert!(db.list_pending_session_inputs(&tid).unwrap().is_empty());
         // Ordinary historical user and assistant rows are never pending.
-        db.add_message(&tid, "user", "history", Some("text"), None)
-            .unwrap();
-        db.add_message(&tid, "assistant", "hi", Some("text"), None)
-            .unwrap();
+        db.add_message(
+            &tid,
+            haven_common::types::CanonicalRole::User,
+            "history",
+            Some("text"),
+            None,
+        )
+        .unwrap();
+        db.add_message(
+            &tid,
+            haven_common::types::CanonicalRole::Assistant,
+            "hi",
+            Some("text"),
+            None,
+        )
+        .unwrap();
         assert!(db.list_pending_session_inputs(&tid).unwrap().is_empty());
     }
 
@@ -960,7 +1072,13 @@ mod tests {
         let db = test_db();
         let tid = test_session(&db);
         let msg = db
-            .add_message(&tid, "tool", "result", Some("tool_call"), Some("call-1"))
+            .add_message(
+                &tid,
+                haven_common::types::CanonicalRole::Tool,
+                "result",
+                Some("tool_call"),
+                Some("call-1"),
+            )
             .unwrap();
         assert_eq!(msg.tool_call_id.as_deref(), Some("call-1"));
         assert_eq!(msg.message_type.as_deref(), Some("tool_call"));
@@ -973,7 +1091,7 @@ mod tests {
         let att = MessageAttachment::new("image/png", "aGVsbG8=");
         db.add_message_full(
             &tid,
-            "user",
+            haven_common::types::CanonicalRole::User,
             "看图",
             Some("text"),
             None,
@@ -1013,7 +1131,7 @@ mod tests {
         attachment.size_bytes = Some(5);
         db.add_message_full(
             &tid,
-            "user",
+            haven_common::types::CanonicalRole::User,
             "看图",
             Some("text"),
             None,
@@ -1054,7 +1172,14 @@ mod tests {
     fn message_without_attachments_reads_empty_vec() {
         let db = test_db();
         let tid = test_session(&db);
-        db.add_message(&tid, "user", "plain", None, None).unwrap();
+        db.add_message(
+            &tid,
+            haven_common::types::CanonicalRole::User,
+            "plain",
+            None,
+            None,
+        )
+        .unwrap();
         let msgs = db.list_session_messages(&tid).unwrap();
         assert!(msgs[0].attachments.is_empty());
     }
@@ -1067,7 +1192,7 @@ mod tests {
         file.path = Some(r"C:\uploads\file-a\report.pdf".into());
         db.add_message_full(
             &tid,
-            "user",
+            haven_common::types::CanonicalRole::User,
             "read this",
             Some("text"),
             None,
@@ -1078,7 +1203,7 @@ mod tests {
         .unwrap();
         db.add_message_full(
             &tid,
-            "user",
+            haven_common::types::CanonicalRole::User,
             "look at this",
             Some("text"),
             None,
@@ -1097,7 +1222,7 @@ mod tests {
         let msg = Message {
             id: "m1".into(),
             session_id: "t1".into(),
-            role: "user".into(),
+            role: CanonicalRole::User,
             content: "看图".into(),
             message_type: Some("text".into()),
             created_at: "2026-01-01T00:00:00Z".into(),
@@ -1120,7 +1245,7 @@ mod tests {
         let tid = test_session(&db);
         db.add_message_full(
             &tid,
-            "user",
+            haven_common::types::CanonicalRole::User,
             "voice hello",
             Some("text"),
             None,
@@ -1129,8 +1254,14 @@ mod tests {
             None,
         )
         .unwrap();
-        db.add_message(&tid, "user", "typed hello", Some("text"), None)
-            .unwrap();
+        db.add_message(
+            &tid,
+            haven_common::types::CanonicalRole::User,
+            "typed hello",
+            Some("text"),
+            None,
+        )
+        .unwrap();
         let msgs = db.list_session_messages(&tid).unwrap();
         assert_eq!(msgs.len(), 2);
         assert!(msgs[0].voice, "voice message must keep the flag");
@@ -1142,8 +1273,23 @@ mod tests {
         let db = test_db();
         let tid = test_session(&db);
         assert!(db.get_last_message_created_at_best_effort(&tid).is_none());
-        db.add_message(&tid, "user", "first", None, None).unwrap();
-        let m2 = db.add_message(&tid, "user", "second", None, None).unwrap();
+        db.add_message(
+            &tid,
+            haven_common::types::CanonicalRole::User,
+            "first",
+            None,
+            None,
+        )
+        .unwrap();
+        let m2 = db
+            .add_message(
+                &tid,
+                haven_common::types::CanonicalRole::User,
+                "second",
+                None,
+                None,
+            )
+            .unwrap();
         let last = db
             .get_last_message_created_at_best_effort(&tid)
             .expect("some timestamp");
@@ -1163,9 +1309,23 @@ mod tests {
     fn delete_messages_after_keeps_older() {
         let db = test_db();
         let tid = test_session(&db);
-        let m1 = db.add_message(&tid, "user", "first", None, None).unwrap();
+        let m1 = db
+            .add_message(
+                &tid,
+                haven_common::types::CanonicalRole::User,
+                "first",
+                None,
+                None,
+            )
+            .unwrap();
         let m2 = db
-            .add_message(&tid, "assistant", "second", None, None)
+            .add_message(
+                &tid,
+                haven_common::types::CanonicalRole::Assistant,
+                "second",
+                None,
+                None,
+            )
             .unwrap();
         db.delete_messages_after(&tid, &m1.created_at).unwrap();
         let msgs = db.list_session_messages(&tid).unwrap();
@@ -1179,9 +1339,23 @@ mod tests {
     fn delete_messages_from_inclusive() {
         let db = test_db();
         let tid = test_session(&db);
-        let m1 = db.add_message(&tid, "user", "first", None, None).unwrap();
+        let m1 = db
+            .add_message(
+                &tid,
+                haven_common::types::CanonicalRole::User,
+                "first",
+                None,
+                None,
+            )
+            .unwrap();
         let _m2 = db
-            .add_message(&tid, "assistant", "second", None, None)
+            .add_message(
+                &tid,
+                haven_common::types::CanonicalRole::Assistant,
+                "second",
+                None,
+                None,
+            )
             .unwrap();
         // delete_messages_from deletes inclusively — m1 and m2 both gone
         db.delete_messages_from(&tid, &m1.created_at).unwrap();
@@ -1197,11 +1371,23 @@ mod tests {
         // thought row lands later. Forward-dating the steering row must
         // move it AFTER the thought row in read order.
         let steering = db
-            .add_message(&tid, "user", "steering", None, None)
+            .add_message(
+                &tid,
+                haven_common::types::CanonicalRole::User,
+                "steering",
+                None,
+                None,
+            )
             .unwrap();
         std::thread::sleep(std::time::Duration::from_millis(5));
         let thought = db
-            .add_message(&tid, "assistant", "被打断的思考", None, None)
+            .add_message(
+                &tid,
+                haven_common::types::CanonicalRole::Assistant,
+                "被打断的思考",
+                None,
+                None,
+            )
             .unwrap();
         let order_before: Vec<String> = db
             .list_session_messages(&tid)
@@ -1227,8 +1413,22 @@ mod tests {
     fn messages_cascade_on_session_delete() {
         let db = test_db();
         let tid = test_session(&db);
-        db.add_message(&tid, "user", "msg1", None, None).unwrap();
-        db.add_message(&tid, "user", "msg2", None, None).unwrap();
+        db.add_message(
+            &tid,
+            haven_common::types::CanonicalRole::User,
+            "msg1",
+            None,
+            None,
+        )
+        .unwrap();
+        db.add_message(
+            &tid,
+            haven_common::types::CanonicalRole::User,
+            "msg2",
+            None,
+            None,
+        )
+        .unwrap();
         db.delete_session(&tid).unwrap();
         let conn = db.conn();
         let count: i32 = conn

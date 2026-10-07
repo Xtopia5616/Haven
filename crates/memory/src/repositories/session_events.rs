@@ -952,7 +952,7 @@ impl SessionStore {
             .origin;
         self.persist_message_row(
             session_id,
-            "user",
+            haven_common::types::CanonicalRole::User,
             content,
             Some(origin.first_user_message_type()),
             attachments,
@@ -976,7 +976,7 @@ impl SessionStore {
     ) -> anyhow::Result<Message> {
         self.persist_message_row(
             session_id,
-            "assistant",
+            haven_common::types::CanonicalRole::Assistant,
             content,
             Some(kind.as_message_type()),
             &[],
@@ -998,7 +998,7 @@ impl SessionStore {
     ) -> anyhow::Result<Message> {
         self.persist_message_row(
             session_id,
-            "user",
+            haven_common::types::CanonicalRole::User,
             content,
             Some("text"),
             &[],
@@ -1014,7 +1014,7 @@ impl SessionStore {
     async fn persist_message_row(
         &self,
         session_id: &str,
-        role: &str,
+        role: haven_common::types::CanonicalRole,
         content: &str,
         message_type: Option<&str>,
         attachments: &[MessageAttachment],
@@ -1024,7 +1024,6 @@ impl SessionStore {
         cancel: Option<CancellationToken>,
     ) -> anyhow::Result<Message> {
         let session_id = session_id.to_owned();
-        let role = role.to_owned();
         let content = content.to_owned();
         let message_type = message_type.map(str::to_owned);
         let attachments = attachments.to_vec();
@@ -1049,7 +1048,7 @@ impl SessionStore {
             }
             db.add_message_full(
                 &session_id,
-                &role,
+                role,
                 &content,
                 message_type.as_deref(),
                 tool_call_id.as_deref(),
@@ -1309,7 +1308,7 @@ impl SessionStore {
             if let Some(message_id) = message_id.as_deref()
                 && let Some(existing) = db.get_message_by_id(&session_id, message_id)?
             {
-                if existing.role != "user"
+                if existing.role != haven_common::types::CanonicalRole::User
                     || existing.content != content
                     || existing.message_type.as_deref() != message_type.as_deref()
                 {
@@ -3648,10 +3647,22 @@ mod tests {
     async fn session_store_deletes_message_by_id_on_blocking_pool() {
         let (db, store, session_id) = store();
         let keep = db
-            .add_message(&session_id, "user", "keep", Some("text"), None)
+            .add_message(
+                &session_id,
+                haven_common::types::CanonicalRole::User,
+                "keep",
+                Some("text"),
+                None,
+            )
             .unwrap();
         let delete = db
-            .add_message(&session_id, "user", "delete", Some("text"), None)
+            .add_message(
+                &session_id,
+                haven_common::types::CanonicalRole::User,
+                "delete",
+                Some("text"),
+                None,
+            )
             .unwrap();
 
         store
@@ -3669,7 +3680,7 @@ mod tests {
         let (db, store, session_id) = store();
         db.add_message(
             &session_id,
-            "user",
+            haven_common::types::CanonicalRole::User,
             "keep only until delete",
             Some("text"),
             None,
@@ -3697,14 +3708,20 @@ mod tests {
         let second = db.create_session("second input").unwrap();
         db.add_message(
             &first_session_id,
-            "user",
+            haven_common::types::CanonicalRole::User,
             "first message",
             Some("text"),
             None,
         )
         .unwrap();
-        db.add_message(&second.id, "user", "second message", Some("text"), None)
-            .unwrap();
+        db.add_message(
+            &second.id,
+            haven_common::types::CanonicalRole::User,
+            "second message",
+            Some("text"),
+            None,
+        )
+        .unwrap();
         let kv_key = format!("fact_extraction_pending.{first_session_id}");
         db.set_kv(&kv_key, "1").unwrap();
 
@@ -3815,7 +3832,13 @@ mod tests {
     async fn session_store_session_resume_projection_groups_existing_reads() {
         let (db, store, session_id) = store();
         let message = db
-            .add_message(&session_id, "assistant", "resume message", None, None)
+            .add_message(
+                &session_id,
+                haven_common::types::CanonicalRole::Assistant,
+                "resume message",
+                None,
+                None,
+            )
             .unwrap();
         let step = db.create_thought_step(&session_id, 1, &message.id).unwrap();
         let usage = store
@@ -4076,7 +4099,7 @@ mod tests {
             .unwrap();
 
         assert!(inserted.id.starts_with("msg-"));
-        assert_eq!(inserted.role, "user");
+        assert_eq!(inserted.role, haven_common::types::CanonicalRole::User);
         assert_eq!(inserted.content, "describe this");
         assert_eq!(inserted.message_type.as_deref(), Some("text"));
         assert_eq!(inserted.tool_call_id, None);
@@ -4096,7 +4119,7 @@ mod tests {
             Some("photo.png")
         );
         assert!(persisted.voice);
-        assert_eq!(persisted.role, "user");
+        assert_eq!(persisted.role, haven_common::types::CanonicalRole::User);
         assert_eq!(persisted.content, "describe this");
         assert_eq!(persisted.message_type.as_deref(), Some("text"));
         assert_eq!(persisted.tool_call_id, None);
@@ -4128,9 +4151,9 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(user_seed.role, "user");
+        assert_eq!(user_seed.role, haven_common::types::CanonicalRole::User);
         assert_eq!(user_seed.message_type.as_deref(), Some("text"));
-        assert_eq!(kickoff_seed.role, "user");
+        assert_eq!(kickoff_seed.role, haven_common::types::CanonicalRole::User);
         assert_eq!(kickoff_seed.message_type.as_deref(), Some("peer_kickoff"));
     }
 
@@ -4155,7 +4178,7 @@ mod tests {
                 .unwrap();
 
             assert_eq!(first.id, retry.id);
-            assert_eq!(first.role, "assistant");
+            assert_eq!(first.role, haven_common::types::CanonicalRole::Assistant);
             assert_eq!(first.message_type.as_deref(), Some(expected_type));
             assert!(first.attachments.is_empty());
             assert!(!first.voice);
@@ -4169,7 +4192,7 @@ mod tests {
         let first = store
             .persist_message_row(
                 &session_id,
-                "user",
+                haven_common::types::CanonicalRole::User,
                 "retry me",
                 Some("text"),
                 &[],
@@ -4184,7 +4207,7 @@ mod tests {
         let retried = store
             .persist_message_row(
                 &session_id,
-                "user",
+                haven_common::types::CanonicalRole::User,
                 "retry me",
                 Some("text"),
                 &[],
@@ -4207,7 +4230,7 @@ mod tests {
         store
             .persist_message_row(
                 &session_id,
-                "user",
+                haven_common::types::CanonicalRole::User,
                 "original",
                 None,
                 &[],
@@ -4222,7 +4245,7 @@ mod tests {
         let error = store
             .persist_message_row(
                 &session_id,
-                "user",
+                haven_common::types::CanonicalRole::User,
                 "changed",
                 None,
                 &[],
@@ -4264,10 +4287,22 @@ mod tests {
     #[tokio::test]
     async fn session_store_reads_pending_inputs_without_an_age_cutoff() {
         let (db, store, session_id) = store();
-        db.add_message(&session_id, "user", "seed", None, None)
-            .unwrap();
+        db.add_message(
+            &session_id,
+            haven_common::types::CanonicalRole::User,
+            "seed",
+            None,
+            None,
+        )
+        .unwrap();
         let anchored = db
-            .add_message(&session_id, "user", "delivered", None, None)
+            .add_message(
+                &session_id,
+                haven_common::types::CanonicalRole::User,
+                "delivered",
+                None,
+                None,
+            )
             .unwrap();
         db.create_thought_step(&session_id, 1, &anchored.id)
             .unwrap();
@@ -4283,8 +4318,14 @@ mod tests {
                 PendingInputDisposition::FollowUp,
             )
             .unwrap();
-        db.add_message(&session_id, "assistant", "ignored", None, None)
-            .unwrap();
+        db.add_message(
+            &session_id,
+            haven_common::types::CanonicalRole::Assistant,
+            "ignored",
+            None,
+            None,
+        )
+        .unwrap();
 
         let messages = store.pending_session_inputs(&session_id).await.unwrap();
         assert_eq!(messages.len(), 1);
@@ -4294,8 +4335,14 @@ mod tests {
         assert_eq!(messages[0].disposition, PendingInputDisposition::FollowUp);
 
         let old_session = db.create_session("old input").unwrap();
-        db.add_message(&old_session.id, "user", "old seed", None, None)
-            .unwrap();
+        db.add_message(
+            &old_session.id,
+            haven_common::types::CanonicalRole::User,
+            "old seed",
+            None,
+            None,
+        )
+        .unwrap();
         let old_pending = db
             .add_pending_user_input(
                 &old_session.id,
@@ -4377,11 +4424,23 @@ mod tests {
     async fn session_store_loads_only_the_exact_session_rollback_target() {
         let (db, store, session_id) = store();
         let target = db
-            .add_message(&session_id, "user", "selected", Some("text"), None)
+            .add_message(
+                &session_id,
+                haven_common::types::CanonicalRole::User,
+                "selected",
+                Some("text"),
+                None,
+            )
             .unwrap();
         let other_session = db.create_session("other rollback target").unwrap();
         let foreign = db
-            .add_message(&other_session.id, "user", "foreign", Some("text"), None)
+            .add_message(
+                &other_session.id,
+                haven_common::types::CanonicalRole::User,
+                "foreign",
+                Some("text"),
+                None,
+            )
             .unwrap();
 
         let loaded = store
@@ -4390,7 +4449,7 @@ mod tests {
             .unwrap();
         assert_eq!(loaded.id, target.id);
         assert_eq!(loaded.session_id, session_id);
-        assert_eq!(loaded.role, "user");
+        assert_eq!(loaded.role, haven_common::types::CanonicalRole::User);
 
         for missing_id in [foreign.id.as_str(), "msg-missing"] {
             let error = store
@@ -4486,14 +4545,26 @@ mod tests {
     async fn session_store_async_recovery_truncate_applies_committed_projection_cutoff() {
         let (db, store, session_id) = store();
         let kept = db
-            .add_message(&session_id, "assistant", "kept", None, None)
+            .add_message(
+                &session_id,
+                haven_common::types::CanonicalRole::Assistant,
+                "kept",
+                None,
+                None,
+            )
             .unwrap();
         store
             .append_branch_point(&session_id, 0, 2, Some(&kept.created_at), None)
             .unwrap();
         std::thread::sleep(std::time::Duration::from_millis(5));
         let discarded = db
-            .add_message(&session_id, "assistant", "discarded", None, None)
+            .add_message(
+                &session_id,
+                haven_common::types::CanonicalRole::Assistant,
+                "discarded",
+                None,
+                None,
+            )
             .unwrap();
         append_recovery_marker(&store, &session_id, "committed");
 
@@ -4674,7 +4745,13 @@ mod tests {
             .append_usage(&session_id, &usage_input(1, 10))
             .unwrap();
         let first_message = db
-            .add_message(&session_id, "assistant", "base", None, None)
+            .add_message(
+                &session_id,
+                haven_common::types::CanonicalRole::Assistant,
+                "base",
+                None,
+                None,
+            )
             .unwrap();
         let first_step = db
             .create_thought_step(&session_id, 1, "step-first")
@@ -4694,8 +4771,14 @@ mod tests {
         store
             .append_usage(&session_id, &usage_input(2, 20))
             .unwrap();
-        db.add_message(&session_id, "assistant", "discarded", None, None)
-            .unwrap();
+        db.add_message(
+            &session_id,
+            haven_common::types::CanonicalRole::Assistant,
+            "discarded",
+            None,
+            None,
+        )
+        .unwrap();
         db.create_thought_step(&session_id, 2, "step-second")
             .unwrap();
 
@@ -4812,11 +4895,23 @@ mod tests {
             .append_transcript(&session_id, r#"{"type":"one"}"#, 1, 1)
             .unwrap();
         let message = db
-            .add_message(&session_id, "user", "keep", Some("text"), None)
+            .add_message(
+                &session_id,
+                haven_common::types::CanonicalRole::User,
+                "keep",
+                Some("text"),
+                None,
+            )
             .unwrap();
         let other_session = db.create_session("other session").unwrap();
         let foreign_message = db
-            .add_message(&other_session.id, "user", "foreign", Some("text"), None)
+            .add_message(
+                &other_session.id,
+                haven_common::types::CanonicalRole::User,
+                "foreign",
+                Some("text"),
+                None,
+            )
             .unwrap();
 
         let result = store.rollback_to(
@@ -4889,7 +4984,13 @@ mod tests {
     fn projection_truncate_after_step_uses_active_branch_cutoff_and_publishes_discard() {
         let (db, store, session_id) = store();
         let kept_message = db
-            .add_message(&session_id, "assistant", "kept", None, None)
+            .add_message(
+                &session_id,
+                haven_common::types::CanonicalRole::Assistant,
+                "kept",
+                None,
+                None,
+            )
             .unwrap();
         let kept_step = db
             .create_thought_step(&session_id, 1, &haven_common::types::new_id("step"))
@@ -4902,8 +5003,14 @@ mod tests {
             .unwrap();
 
         std::thread::sleep(std::time::Duration::from_millis(5));
-        db.add_message(&session_id, "assistant", "discarded", None, None)
-            .unwrap();
+        db.add_message(
+            &session_id,
+            haven_common::types::CanonicalRole::Assistant,
+            "discarded",
+            None,
+            None,
+        )
+        .unwrap();
         db.create_thought_step(&session_id, 2, &haven_common::types::new_id("step"))
             .unwrap();
         let discarded_usage = store
@@ -4964,8 +5071,14 @@ mod tests {
             (&no_branch_point_session_id, false),
             (&no_cutoff_session_id, true),
         ] {
-            db.add_message(session_id, "assistant", "kept", None, None)
-                .unwrap();
+            db.add_message(
+                session_id,
+                haven_common::types::CanonicalRole::Assistant,
+                "kept",
+                None,
+                None,
+            )
+            .unwrap();
             let step_id = haven_common::types::new_id("step");
             db.create_thought_step(session_id, 1, &step_id).unwrap();
             store.append_usage(session_id, &usage_input(1, 10)).unwrap();
@@ -5033,8 +5146,14 @@ mod tests {
     #[test]
     fn committed_recovery_marker_truncates_projection_and_compensates_usage() {
         let (db, store, session_id) = store();
-        db.add_message(&session_id, "assistant", "kept", None, None)
-            .unwrap();
+        db.add_message(
+            &session_id,
+            haven_common::types::CanonicalRole::Assistant,
+            "kept",
+            None,
+            None,
+        )
+        .unwrap();
         let kept_step = db
             .create_thought_step(&session_id, 1, &haven_common::types::new_id("step"))
             .unwrap();
@@ -5047,7 +5166,13 @@ mod tests {
 
         std::thread::sleep(std::time::Duration::from_millis(5));
         let discarded_message = db
-            .add_message(&session_id, "assistant", "discarded", None, None)
+            .add_message(
+                &session_id,
+                haven_common::types::CanonicalRole::Assistant,
+                "discarded",
+                None,
+                None,
+            )
             .unwrap();
         db.create_thought_step(&session_id, 2, &haven_common::types::new_id("step"))
             .unwrap();
@@ -5097,8 +5222,14 @@ mod tests {
     #[test]
     fn latest_failed_marker_outside_active_replay_overrides_earlier_commit() {
         let (db, store, session_id) = store();
-        db.add_message(&session_id, "assistant", "kept", None, None)
-            .unwrap();
+        db.add_message(
+            &session_id,
+            haven_common::types::CanonicalRole::Assistant,
+            "kept",
+            None,
+            None,
+        )
+        .unwrap();
         let kept_step = db
             .create_thought_step(&session_id, 1, &haven_common::types::new_id("step"))
             .unwrap();
@@ -5132,7 +5263,13 @@ mod tests {
 
         std::thread::sleep(std::time::Duration::from_millis(5));
         let discarded_message = db
-            .add_message(&session_id, "assistant", "must remain", None, None)
+            .add_message(
+                &session_id,
+                haven_common::types::CanonicalRole::Assistant,
+                "must remain",
+                None,
+                None,
+            )
             .unwrap();
         let discarded_step = db
             .create_thought_step(&session_id, 2, &haven_common::types::new_id("step"))
@@ -5205,8 +5342,14 @@ mod tests {
     #[test]
     fn latest_malformed_marker_outside_active_replay_blocks_earlier_commit() {
         let (db, store, session_id) = store();
-        db.add_message(&session_id, "assistant", "kept", None, None)
-            .unwrap();
+        db.add_message(
+            &session_id,
+            haven_common::types::CanonicalRole::Assistant,
+            "kept",
+            None,
+            None,
+        )
+        .unwrap();
         let kept_usage = store
             .append_usage(&session_id, &usage_input(1, 10))
             .unwrap();
@@ -5241,7 +5384,13 @@ mod tests {
             .unwrap();
         std::thread::sleep(std::time::Duration::from_millis(5));
         let later_message = db
-            .add_message(&session_id, "assistant", "must remain", None, None)
+            .add_message(
+                &session_id,
+                haven_common::types::CanonicalRole::Assistant,
+                "must remain",
+                None,
+                None,
+            )
             .unwrap();
         let later_step = db
             .create_thought_step(&session_id, 2, &haven_common::types::new_id("step"))
@@ -5293,8 +5442,14 @@ mod tests {
             (no_branch_point.as_str(), true, None),
             (no_cutoff.as_str(), true, Some(false)),
         ] {
-            db.add_message(session_id, "assistant", "anchor", None, None)
-                .unwrap();
+            db.add_message(
+                session_id,
+                haven_common::types::CanonicalRole::Assistant,
+                "anchor",
+                None,
+                None,
+            )
+            .unwrap();
             db.create_thought_step(session_id, 1, &haven_common::types::new_id("step"))
                 .unwrap();
             let anchor_usage = store.append_usage(session_id, &usage_input(1, 10)).unwrap();
@@ -5310,8 +5465,14 @@ mod tests {
                     .unwrap();
             }
             std::thread::sleep(std::time::Duration::from_millis(5));
-            db.add_message(session_id, "assistant", "later", None, None)
-                .unwrap();
+            db.add_message(
+                session_id,
+                haven_common::types::CanonicalRole::Assistant,
+                "later",
+                None,
+                None,
+            )
+            .unwrap();
             db.create_thought_step(session_id, 2, &haven_common::types::new_id("step"))
                 .unwrap();
             store.append_usage(session_id, &usage_input(2, 20)).unwrap();
@@ -5625,7 +5786,13 @@ mod tests {
     async fn committed_thought_message_and_step_share_id_and_rollback_clocks() {
         let (db, store, session_id) = store();
         let baseline = db
-            .add_message(&session_id, "user", "keep", Some("text"), None)
+            .add_message(
+                &session_id,
+                haven_common::types::CanonicalRole::User,
+                "keep",
+                Some("text"),
+                None,
+            )
             .unwrap();
         let (_, branch_cursor) = store
             .append_branch_point_from_projection(&session_id, 1, Some(5))

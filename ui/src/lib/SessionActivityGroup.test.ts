@@ -5,7 +5,7 @@ import SessionActivityGroup from './SessionActivityGroup.svelte';
 const entry = (streaming: boolean) => ({
 	message: {
 		id: 'thought-1',
-		role: 'assistant',
+		role: 'assistant' as const,
 		content: streaming ? '正在检查' : '已检查完成',
 		type: 'thought',
 		streaming,
@@ -47,7 +47,7 @@ describe('SessionActivityGroup', () => {
 			{
 				message: {
 					id: 'reasoning-1',
-					role: 'assistant',
+					role: 'assistant' as const,
 					content: '思考完成',
 					type: 'reasoning',
 					streaming: false,
@@ -57,7 +57,7 @@ describe('SessionActivityGroup', () => {
 			{
 				message: {
 					id: 'tool-1',
-					role: 'assistant',
+					role: 'assistant' as const,
 					content: '工具完成',
 					type: 'tool',
 					toolName: 'shell',
@@ -93,7 +93,7 @@ describe('SessionActivityGroup', () => {
 	it('keeps a running tool card manually collapsible across live output updates', async () => {
 		const message = (content: string) => ({
 			id: 'tool-running',
-			role: 'assistant',
+			role: 'assistant' as const,
 			content,
 			type: 'tool',
 			toolName: 'shell',
@@ -130,7 +130,7 @@ describe('SessionActivityGroup', () => {
 			{
 				message: {
 					id: 'tool-1',
-					role: 'assistant',
+					role: 'assistant' as const,
 					content: 'first result',
 					type: 'tool',
 					toolName: 'shell',
@@ -141,7 +141,7 @@ describe('SessionActivityGroup', () => {
 			{
 				message: {
 					id: 'tool-2',
-					role: 'assistant',
+					role: 'assistant' as const,
 					content: 'second result',
 					type: 'tool',
 					toolName: 'files',

@@ -378,7 +378,7 @@ describe('addNotification', () => {
 
 describe('newMessage', () => {
 	it('builds a message with default type and voice', () => {
-		const msg = newMessage({ role: 'assistant', content: 'hi' });
+		const msg = newMessage({ role: 'assistant' as const, content: 'hi' });
 		expect(msg.role).toBe('assistant');
 		expect(msg.content).toBe('hi');
 		expect(msg.type).toBeNull();
@@ -388,19 +388,19 @@ describe('newMessage', () => {
 	});
 
 	it('generates unique ids', () => {
-		const a = newMessage({ role: 'user', content: 'x' });
-		const b = newMessage({ role: 'user', content: 'x' });
+		const a = newMessage({ role: 'user' as const, content: 'x' });
+		const b = newMessage({ role: 'user' as const, content: 'x' });
 		expect(a.id).not.toBe(b.id);
 	});
 
 	it('idPrefix slots into the id between timestamp and randomness', () => {
-		const msg = newMessage({ role: 'user', content: 'x', idPrefix: 'u' });
+		const msg = newMessage({ role: 'user' as const, content: 'x', idPrefix: 'u' });
 		expect(msg.id).toMatch(/^\d+-u-[a-z0-9]+$/);
 	});
 
 	it('keeps attachments and overrides time and voice', () => {
 		const msg = newMessage({
-			role: 'user',
+			role: 'user' as const,
 			content: 'x',
 			voice: true,
 			time: '12:00:00',

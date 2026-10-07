@@ -63,7 +63,11 @@ async fn session_store_loads_title_generation_context_with_original_filter_and_l
     );
 
     for index in 0..12 {
-        let role = if index % 2 == 0 { "assistant" } else { "user" };
+        let role = if index % 2 == 0 {
+            haven_common::types::CanonicalRole::Assistant
+        } else {
+            haven_common::types::CanonicalRole::User
+        };
         db.add_message(
             &session_id,
             role,
@@ -107,13 +111,31 @@ async fn session_store_loads_title_generation_context_with_original_filter_and_l
 async fn session_store_lists_latest_prompt_messages_in_chronological_order() {
     let (db, store, session_id) = store();
     let _old = db
-        .add_message(&session_id, "user", "old", Some("text"), None)
+        .add_message(
+            &session_id,
+            haven_common::types::CanonicalRole::User,
+            "old",
+            Some("text"),
+            None,
+        )
         .unwrap();
     let middle = db
-        .add_message(&session_id, "assistant", "middle", Some("text"), None)
+        .add_message(
+            &session_id,
+            haven_common::types::CanonicalRole::Assistant,
+            "middle",
+            Some("text"),
+            None,
+        )
         .unwrap();
     let latest = db
-        .add_message(&session_id, "user", "latest", Some("text"), None)
+        .add_message(
+            &session_id,
+            haven_common::types::CanonicalRole::User,
+            "latest",
+            Some("text"),
+            None,
+        )
         .unwrap();
 
     let window = store
@@ -126,12 +148,12 @@ async fn session_store_lists_latest_prompt_messages_in_chronological_order() {
         vec![
             SessionMessageText {
                 id: middle.id,
-                role: "assistant".into(),
+                role: haven_common::types::CanonicalRole::Assistant,
                 content: "middle".into(),
             },
             SessionMessageText {
                 id: latest.id,
-                role: "user".into(),
+                role: haven_common::types::CanonicalRole::User,
                 content: "latest".into(),
             },
         ]
@@ -152,7 +174,7 @@ async fn session_store_session_resume_media_uses_first_user_and_message_order() 
     let assistant_attachment = resume_test_attachment("assistant.png");
     db.add_message_full(
         &session_id,
-        "assistant",
+        haven_common::types::CanonicalRole::Assistant,
         "before input",
         Some("text"),
         None,
@@ -165,7 +187,7 @@ async fn session_store_session_resume_media_uses_first_user_and_message_order() 
     let initial_message = db
         .add_message_full(
             &session_id,
-            "user",
+            haven_common::types::CanonicalRole::User,
             "initial input",
             Some("text"),
             None,
@@ -177,7 +199,7 @@ async fn session_store_session_resume_media_uses_first_user_and_message_order() 
     let later_attachment = resume_test_attachment("later.png");
     db.add_message_full(
         &session_id,
-        "user",
+        haven_common::types::CanonicalRole::User,
         "later input",
         Some("text"),
         None,
@@ -220,13 +242,19 @@ async fn session_store_session_resume_media_uses_first_user_and_message_order() 
 async fn session_store_session_resume_media_returns_empty_media_and_isolates_sessions() {
     let (db, store, session_id) = store();
     let initial_message = db
-        .add_message(&session_id, "user", "plain input", Some("text"), None)
+        .add_message(
+            &session_id,
+            haven_common::types::CanonicalRole::User,
+            "plain input",
+            Some("text"),
+            None,
+        )
         .unwrap();
     let other_session = db.create_session("other session").unwrap();
     let other_attachment = resume_test_attachment("other-session.png");
     db.add_message_full(
         &other_session.id,
-        "user",
+        haven_common::types::CanonicalRole::User,
         "other input",
         Some("text"),
         None,

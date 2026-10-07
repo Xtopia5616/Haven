@@ -1160,9 +1160,10 @@ async fn run_session_ask_tool_pauses_and_surfaces_question() {
 
     // The question must be persisted so the user can see and answer it.
     let msgs = agent.db.list_session_messages(&session.id).unwrap();
-    let found = msgs
-        .iter()
-        .any(|m| m.role == "assistant" && m.content.contains("Which path should I take"));
+    let found = msgs.iter().any(|m| {
+        m.role == haven_common::types::CanonicalRole::Assistant
+            && m.content.contains("Which path should I take")
+    });
     assert!(found, "question should be persisted as assistant message");
 
     let pause_triggers = agent
@@ -1329,9 +1330,10 @@ async fn run_session_ask_resumes_after_user_answer() {
     // The final answer text should be persisted, proving the loop resumed
     // past the `ask` step and reached final_answer.
     let msgs = agent.db.list_session_messages(&session.id).unwrap();
-    let answered = msgs
-        .iter()
-        .any(|m| m.role == "assistant" && m.content.contains("Going with A"));
+    let answered = msgs.iter().any(|m| {
+        m.role == haven_common::types::CanonicalRole::Assistant
+            && m.content.contains("Going with A")
+    });
     assert!(answered, "final answer should be persisted after resume");
 }
 
@@ -1436,7 +1438,10 @@ async fn retry_after_ask_answer_error_keeps_single_history() {
     // The failed attempt's partial text must be gone (overwritten).
     let partials: Vec<&str> = msgs
         .iter()
-        .filter(|m| m.role == "assistant" && m.content.contains("Let me think"))
+        .filter(|m| {
+            m.role == haven_common::types::CanonicalRole::Assistant
+                && m.content.contains("Let me think")
+        })
         .map(|m| m.content.as_str())
         .collect();
     assert!(
@@ -1447,11 +1452,17 @@ async fn retry_after_ask_answer_error_keeps_single_history() {
     // Exactly one question and one final answer.
     let questions = msgs
         .iter()
-        .filter(|m| m.role == "assistant" && m.content.contains("Proceed?"))
+        .filter(|m| {
+            m.role == haven_common::types::CanonicalRole::Assistant
+                && m.content.contains("Proceed?")
+        })
         .count();
     let finals = msgs
         .iter()
-        .filter(|m| m.role == "assistant" && m.content.contains("Answer accepted."))
+        .filter(|m| {
+            m.role == haven_common::types::CanonicalRole::Assistant
+                && m.content.contains("Answer accepted.")
+        })
         .count();
     assert_eq!(questions, 1, "ask question must appear exactly once");
     assert_eq!(finals, 1, "final answer must appear exactly once");
@@ -1585,7 +1596,7 @@ async fn run_session_multiple_asks_surface_all_questions() {
     let msgs = agent.db.list_session_messages(&session.id).unwrap();
     let persisted: String = msgs
         .iter()
-        .filter(|m| m.role == "assistant")
+        .filter(|m| m.role == haven_common::types::CanonicalRole::Assistant)
         .map(|m| m.content.as_str())
         .collect::<Vec<_>>()
         .join("\n");
@@ -1865,13 +1876,19 @@ async fn continue_session_resumes_errored_session() {
     };
     agent
         .db
-        .add_message(&session.id, "user", "hello", Some("text"), None)
+        .add_message(
+            &session.id,
+            haven_common::types::CanonicalRole::User,
+            "hello",
+            Some("text"),
+            None,
+        )
         .unwrap();
     let completed = agent
         .db
         .add_message(
             &session.id,
-            "assistant",
+            haven_common::types::CanonicalRole::Assistant,
             "completed before failure",
             Some("text"),
             None,
@@ -1913,7 +1930,7 @@ async fn continue_session_resumes_errored_session() {
         .db
         .add_message(
             &session.id,
-            "assistant",
+            haven_common::types::CanonicalRole::Assistant,
             "partial output",
             Some("text"),
             None,
@@ -2048,13 +2065,19 @@ async fn continue_session_preserves_history_without_an_error_partial_marker() {
 
     let opening = agent
         .db
-        .add_message(&session.id, "user", "opening", Some("text"), None)
+        .add_message(
+            &session.id,
+            haven_common::types::CanonicalRole::User,
+            "opening",
+            Some("text"),
+            None,
+        )
         .unwrap();
     let completed = agent
         .db
         .add_message(
             &session.id,
-            "assistant",
+            haven_common::types::CanonicalRole::Assistant,
             "completed before the interruption",
             Some("text"),
             None,
@@ -2064,7 +2087,7 @@ async fn continue_session_preserves_history_without_an_error_partial_marker() {
         .db
         .add_message(
             &session.id,
-            "assistant",
+            haven_common::types::CanonicalRole::Assistant,
             "text flushed before the app closed",
             Some("text"),
             None,

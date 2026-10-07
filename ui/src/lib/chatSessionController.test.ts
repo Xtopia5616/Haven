@@ -7,6 +7,7 @@ import type { InteractionRequest } from './contracts/app.ts';
 import type { SessionResumeInput } from './contracts/sessionHistory.ts';
 import { SessionReducer, type SessionAction } from './sessionReducer.ts';
 import type { ProcessResult } from './contracts/generatedCommands.ts';
+import type { CanonicalRole } from './contracts/generatedCommands.ts';
 
 const SESSION_ID = 'ses-00000000000000000000000000000001';
 const OTHER_SESSION_ID = 'ses-00000000000000000000000000000002';
@@ -135,7 +136,10 @@ function makeHarness(options: {
 	};
 }
 
-function addMessages(reducer: SessionReducer, ...messages: Array<{ id: string; role: string; content: string; type?: string }>) {
+function addMessages(
+	reducer: SessionReducer,
+	...messages: Array<{ id: string; role: CanonicalRole; content: string; type?: string }>
+) {
 	reducer.dispatch({
 		type: 'session/messages/resume-loaded',
 		sessionId: SESSION_ID,
@@ -160,7 +164,7 @@ describe('ChatSessionController rollback', () => {
 		const harness = makeHarness();
 		await harness.controller.confirmRollbackAction({
 			stepNumber: 4,
-			role: 'user',
+			role: 'user' as const,
 			content: '重新编辑这段',
 			msgId: USER_MESSAGE_ID,
 		});
@@ -191,7 +195,7 @@ describe('ChatSessionController rollback', () => {
 		const harness = makeHarness();
 		await harness.controller.confirmRollbackAction({
 			stepNumber: 7,
-			role: 'assistant',
+			role: 'assistant' as const,
 			content: '',
 			msgId: 'step-00000000000000000000000000000007',
 		});
@@ -212,8 +216,8 @@ describe('ChatSessionController continue', () => {
 		const harness = makeHarness();
 		addMessages(
 			harness.reducer,
-			{ id: USER_MESSAGE_ID, role: 'user', content: '写一首诗' },
-			{ id: 'step-thought', role: 'assistant', content: '已有一段', type: 'thought' },
+			{ id: USER_MESSAGE_ID, role: 'user' as const, content: '写一首诗' },
+			{ id: 'step-thought', role: 'assistant' as const, content: '已有一段', type: 'thought' },
 		);
 
 		await harness.controller.handleContinue();
@@ -240,7 +244,7 @@ describe('ChatSessionController continue', () => {
 		});
 		addMessages(harness.reducer, {
 			id: USER_MESSAGE_ID,
-			role: 'user',
+			role: 'user' as const,
 			content: '打开计算器',
 		});
 
@@ -255,7 +259,7 @@ describe('ChatSessionController continue', () => {
 				? sessionResumeInput({
 						messages: [{
 							id: USER_MESSAGE_ID,
-							role: 'user',
+							role: 'user' as const,
 							content: '打开计算器',
 							created_at: '2026-09-25T00:00:00Z',
 						}],
@@ -264,7 +268,7 @@ describe('ChatSessionController continue', () => {
 		});
 		addMessages(harness.reducer, {
 			id: USER_MESSAGE_ID,
-			role: 'user',
+			role: 'user' as const,
 			content: '打开计算器',
 		});
 
@@ -314,7 +318,7 @@ describe('ChatSessionController continue', () => {
 		});
 		const request = {
 			stepNumber: 7,
-			role: 'assistant',
+			role: 'assistant' as const,
 			content: '',
 			msgId: 'step-00000000000000000000000000000007',
 		};

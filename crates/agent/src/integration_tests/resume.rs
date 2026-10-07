@@ -270,14 +270,21 @@ async fn reopen_session_requeues_undelivered_inputs_stays_paused() {
     // The session input (first user message) is seeded into the canonical
     // directly and never carries a step anchor.
     agent
-        .persist_message_parts(&session.id, "user", "input text", Some("text"), &[], false)
+        .persist_message_parts(
+            &session.id,
+            haven_common::types::CanonicalRole::User,
+            "input text",
+            Some("text"),
+            &[],
+            false,
+        )
         .await
         .unwrap();
     // An ordinary historical user row has no pending recovery marker.
     agent
         .persist_message_parts(
             &session.id,
-            "user",
+            haven_common::types::CanonicalRole::User,
             "steering delivered",
             Some("text"),
             &[],
@@ -329,7 +336,14 @@ async fn reopen_session_marks_only_first_recovered_input_as_ask_answer() {
     // The initial user seed is not a recoverable supplement. Reproduce the
     // normal transcript shape so both later inputs are pending candidates.
     agent
-        .persist_message_parts(&session.id, "user", "input text", Some("text"), &[], false)
+        .persist_message_parts(
+            &session.id,
+            haven_common::types::CanonicalRole::User,
+            "input text",
+            Some("text"),
+            &[],
+            false,
+        )
         .await
         .unwrap();
     agent
@@ -394,7 +408,14 @@ async fn reopen_preserves_follow_up_route_after_confirm_resolves_while_ask_stays
     );
     let session = executor.create_session("input text").await.unwrap();
     agent
-        .persist_message_parts(&session.id, "user", "input text", Some("text"), &[], false)
+        .persist_message_parts(
+            &session.id,
+            haven_common::types::CanonicalRole::User,
+            "input text",
+            Some("text"),
+            &[],
+            false,
+        )
         .await
         .unwrap();
     executor
@@ -496,7 +517,14 @@ async fn reopen_session_without_pending_inputs_stays_paused() {
     let (agent, executor) = make_test_agent();
     let session = executor.create_session("input text").await.unwrap();
     agent
-        .persist_message_parts(&session.id, "user", "input text", Some("text"), &[], false)
+        .persist_message_parts(
+            &session.id,
+            haven_common::types::CanonicalRole::User,
+            "input text",
+            Some("text"),
+            &[],
+            false,
+        )
         .await
         .unwrap();
     executor
@@ -527,7 +555,7 @@ async fn resume_dedups_supplement_inputs_against_prefixed_canonical() {
     agent
         .persist_message_parts(
             &session.id,
-            "user",
+            haven_common::types::CanonicalRole::User,
             "please be brief",
             Some("text"),
             &[],
@@ -584,11 +612,25 @@ async fn resume_keeps_repeated_same_text_turns() {
     agent.set_emitter(make_recording_emitter());
     let session = executor.create_session("hello").await.unwrap();
     agent
-        .persist_message_parts(&session.id, "user", "好的", Some("text"), &[], false)
+        .persist_message_parts(
+            &session.id,
+            haven_common::types::CanonicalRole::User,
+            "好的",
+            Some("text"),
+            &[],
+            false,
+        )
         .await
         .unwrap();
     agent
-        .persist_message_parts(&session.id, "assistant", "好的", Some("text"), &[], false)
+        .persist_message_parts(
+            &session.id,
+            haven_common::types::CanonicalRole::Assistant,
+            "好的",
+            Some("text"),
+            &[],
+            false,
+        )
         .await
         .unwrap();
     // The first pair is already in the event log. The second identical user
@@ -685,7 +727,14 @@ async fn resume_does_not_recover_unmarked_historical_user_messages() {
     agent.set_emitter(make_recording_emitter());
     let session = executor.create_session("hello").await.unwrap();
     agent
-        .persist_message_parts(&session.id, "user", "hello", Some("text"), &[], false)
+        .persist_message_parts(
+            &session.id,
+            haven_common::types::CanonicalRole::User,
+            "hello",
+            Some("text"),
+            &[],
+            false,
+        )
         .await
         .unwrap();
     let canonical = vec![
@@ -710,7 +759,7 @@ async fn resume_does_not_recover_unmarked_historical_user_messages() {
     agent
         .persist_message_parts(
             &session.id,
-            "assistant",
+            haven_common::types::CanonicalRole::Assistant,
             "hi there",
             Some("text"),
             &[],
@@ -758,13 +807,20 @@ async fn resume_skips_conversation_reseed_when_canonical_is_compacted() {
     agent.set_emitter(make_recording_emitter());
     let session = executor.create_session("hello").await.unwrap();
     agent
-        .persist_message_parts(&session.id, "user", "hello", Some("text"), &[], false)
+        .persist_message_parts(
+            &session.id,
+            haven_common::types::CanonicalRole::User,
+            "hello",
+            Some("text"),
+            &[],
+            false,
+        )
         .await
         .unwrap();
     agent
         .persist_message_parts(
             &session.id,
-            "assistant",
+            haven_common::types::CanonicalRole::Assistant,
             "long ago answer",
             Some("text"),
             &[],
@@ -823,7 +879,14 @@ async fn run_session_from_id_keeps_first_user_media_out_of_snapshot_bytes() {
         .unwrap();
     let (att, asset_dir) = managed_test_image();
     agent
-        .persist_message_parts(&session.id, "user", "看图", Some("text"), &[att], false)
+        .persist_message_parts(
+            &session.id,
+            haven_common::types::CanonicalRole::User,
+            "看图",
+            Some("text"),
+            &[att],
+            false,
+        )
         .await
         .unwrap();
     agent.run_session_from_id(&session.id).await.unwrap();
@@ -849,7 +912,14 @@ async fn run_session_from_id_recovers_pending_input_without_event_log() {
         .await
         .unwrap();
     agent
-        .persist_message_parts(&session.id, "user", "initial", Some("text"), &[], false)
+        .persist_message_parts(
+            &session.id,
+            haven_common::types::CanonicalRole::User,
+            "initial",
+            Some("text"),
+            &[],
+            false,
+        )
         .await
         .unwrap();
     agent
@@ -903,7 +973,7 @@ async fn run_session_from_id_keeps_later_media_as_managed_reference() {
     agent
         .persist_message_parts(
             &session.id,
-            "user",
+            haven_common::types::CanonicalRole::User,
             "plain session",
             Some("text"),
             &[],

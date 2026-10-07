@@ -196,7 +196,7 @@ impl AgentLayer {
         // lifecycle mutation.
         // Step rollbacks (pause=false) need no message id at all.
         let is_orphan_rollback = target_msg.as_ref().is_some_and(|m| {
-            m.role == "user"
+            m.role == haven_common::types::CanonicalRole::User
                 && max_bp_ts
                     .as_deref()
                     .is_some_and(|max| m.created_at.as_str() > max)

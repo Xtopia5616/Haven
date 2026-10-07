@@ -15,7 +15,7 @@ const stateWith = (partial: Partial<SessionReducerState>): SessionReducerState =
 
 const askMessage = (id: string, content = '选择方案'): SessionMessage => ({
 	id,
-	role: 'assistant',
+	role: 'assistant' as const,
 	type: 'ask',
 	content,
 	toolName: 'ask',
@@ -50,7 +50,7 @@ describe('selectChatVisibleMessages', () => {
 	it('returns ordinary messages unchanged', () => {
 		const ordinary: SessionMessage = {
 			id: 'msg-1',
-			role: 'assistant',
+			role: 'assistant' as const,
 			type: 'text',
 			content: '完成',
 		};
@@ -64,8 +64,8 @@ describe('selectChatVisibleMessages', () => {
 	});
 
 	it('selects draft messages when there is no active session', () => {
-		const draft: SessionMessage = { id: 'msg-draft', role: 'user', content: '草稿' };
-		const other: SessionMessage = { id: 'msg-other', role: 'user', content: '其他' };
+		const draft: SessionMessage = { id: 'msg-draft', role: 'user' as const, content: '草稿' };
+		const other: SessionMessage = { id: 'msg-other', role: 'user' as const, content: '其他' };
 		const selected = selectChatVisibleMessages(
 			stateWith({
 				messages: {

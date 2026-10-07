@@ -1,4 +1,5 @@
 import type { ToolRunPayload } from './contracts/toolRun.ts';
+import type { CanonicalRole } from './contracts/generatedCommands.ts';
 import type { SessionMessage } from './sessionReducer.ts';
 import { sourceToolRunIdFromObservation } from './streaming.ts';
 
@@ -10,7 +11,7 @@ export interface SessionMessageContextMenuRequest {
 	y: number;
 	messageId: string;
 	stepNumber: number | null;
-	role: string;
+	role: CanonicalRole;
 	content: string;
 	type: string | null;
 	selectedContent: string;

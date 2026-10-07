@@ -212,13 +212,13 @@
 	let rollbackDialog = $state<{
 		open: boolean;
 		stepNumber: number | null;
-		role: string;
+		role: SessionMessageContextMenuRequest['role'] | null;
 		content: string;
 		msgId: string;
 	}>({
 		open: false,
 		stepNumber: null,
-		role: '',
+		role: null,
 		content: '',
 		msgId: '',
 	});
@@ -424,13 +424,13 @@
 	let ctxMenu = $state<{
 		stepNumber: number | null;
 		content: string;
-		role: string;
+		role: SessionMessageContextMenuRequest['role'] | null;
 		msgId: string;
 		selectedContent: string;
 	}>({
 		stepNumber: null,
 		content: '',
-		role: '',
+		role: null,
 		msgId: '',
 		selectedContent: '',
 	});
@@ -482,7 +482,7 @@
 
 	function handleCtxRollback() {
 		const step = getStepForCtxMenu();
-		if (step == null) {
+		if (step == null || ctxMenu.role == null) {
 			addNotification('无法确定此消息对应的步骤', 'error', 3000);
 			closeCtxMenu();
 			return;
@@ -514,7 +514,7 @@
 		ctxMenu = {
 			stepNumber: null,
 			content: '',
-			role: '',
+			role: null,
 			msgId: '',
 			selectedContent: '',
 		};
@@ -901,7 +901,7 @@
 		},
 		setRollbackLoading: (loading) => (rollbackLoading = loading),
 		closeRollbackDialog: () => {
-			rollbackDialog = { open: false, stepNumber: null, role: '', content: '', msgId: '' };
+			rollbackDialog = { open: false, stepNumber: null, role: null, content: '', msgId: '' };
 		},
 		closeSessionMenu: () => (sessionMenuOpen = false),
 		setContinuePending: (pending) => (continuePending = pending),
@@ -919,8 +919,14 @@
 
 	function confirmRollbackAction() {
 		const stepNumber = rollbackDialog.stepNumber;
-		if (stepNumber == null) return;
-		return chatSessionController.confirmRollbackAction({ ...rollbackDialog, stepNumber });
+		const role = rollbackDialog.role;
+		if (stepNumber == null || role == null) return;
+		return chatSessionController.confirmRollbackAction({
+			stepNumber,
+			role,
+			content: rollbackDialog.content,
+			msgId: rollbackDialog.msgId,
+		});
 	}
 
 	function pendingInteractionIdsForSession(sessionId: string) {
@@ -1114,7 +1120,7 @@
 				rollbackDialog = {
 					open: false,
 					stepNumber: null,
-					role: '',
+					role: null,
 					content: '',
 					msgId: '',
 				};

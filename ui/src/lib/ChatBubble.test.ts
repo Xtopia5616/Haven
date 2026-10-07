@@ -11,7 +11,7 @@ describe('ChatBubble', () => {
 	const base = (props: any) => ({ type: null, time: null, ...props });
 
 	it('renders a user bubble with the You label', () => {
-		render(ChatBubble, base({ role: 'user', content: 'hello there' }));
+		render(ChatBubble, base({ role: 'user' as const, content: 'hello there' }));
 		expect(screen.getByText('You')).toBeTruthy();
 		expect(screen.getByText('hello there')).toBeTruthy();
 	});
@@ -19,7 +19,7 @@ describe('ChatBubble', () => {
 	it('shows the mic icon on voice user messages', () => {
 		const { container } = render(
 			ChatBubble,
-			base({ role: 'user', content: 'hello', voice: true }),
+			base({ role: 'user' as const, content: 'hello', voice: true }),
 		);
 		expect(container.querySelector('.mic-icon')).toBeTruthy();
 	});
@@ -27,17 +27,17 @@ describe('ChatBubble', () => {
 	it('shows the received checkmark only on received user messages', () => {
 		const { container: recv } = render(
 			ChatBubble,
-			base({ role: 'user', content: 'hi', received: true }),
+			base({ role: 'user' as const, content: 'hi', received: true }),
 		);
 		expect(recv.querySelector('.received-tag')).toBeTruthy();
 		const { container: plain } = render(
 			ChatBubble,
-			base({ role: 'user', content: 'hi', received: false }),
+			base({ role: 'user' as const, content: 'hi', received: false }),
 		);
 		expect(plain.querySelector('.received-tag')).toBeNull();
 		const { container: assistant } = render(
 			ChatBubble,
-			base({ role: 'assistant', content: 'hi', received: true }),
+			base({ role: 'assistant' as const, content: 'hi', received: true }),
 		);
 		expect(assistant.querySelector('.received-tag')).toBeNull();
 	});
@@ -46,7 +46,7 @@ describe('ChatBubble', () => {
 		const { container } = render(
 			ChatBubble,
 			base({
-				role: 'user',
+				role: 'user' as const,
 				content: '看图',
 				attachments: [{ media_type: 'image/png', data: 'aGVsbG8=' }],
 			}),
@@ -61,7 +61,7 @@ describe('ChatBubble', () => {
 		const { container } = render(
 			ChatBubble,
 			base({
-				role: 'user',
+				role: 'user' as const,
 				content: '',
 				attachments: [
 					{ media_type: 'image/png', data: 'A' },
@@ -76,7 +76,7 @@ describe('ChatBubble', () => {
 		const { container } = render(
 			ChatBubble,
 			base({
-				role: 'user',
+				role: 'user' as const,
 				content: '（已生成语音文件：file-abc.mp3）',
 				attachments: [
 					{ media_type: 'audio/mpeg', data: 'bXBzLWJ5dGVz', filename: 'file-abc.mp3' },
@@ -93,7 +93,7 @@ describe('ChatBubble', () => {
 		const { container } = render(
 			ChatBubble,
 			base({
-				role: 'user',
+				role: 'user' as const,
 				content: '看视频',
 				attachments: [
 					{ media_type: 'video/mp4', data: 'bXA0LWJ5dGVz', filename: 'clip.mp4' },
@@ -111,7 +111,7 @@ describe('ChatBubble', () => {
 		const { container } = render(
 			ChatBubble,
 			base({
-				role: 'user',
+				role: 'user' as const,
 				content: '看看这个',
 				attachments: [
 					{
@@ -131,14 +131,14 @@ describe('ChatBubble', () => {
 	});
 
 	it('renders an assistant bubble with the Haven label', () => {
-		render(ChatBubble, base({ role: 'assistant', content: 'hi' }));
+		render(ChatBubble, base({ role: 'assistant' as const, content: 'hi' }));
 		expect(screen.getByText('Haven')).toBeTruthy();
 	});
 
 	it('does not apply a pending class to streaming assistant text bubbles', () => {
 		const { container } = render(
 			ChatBubble,
-			base({ role: 'assistant', content: 'hi', streaming: true }),
+			base({ role: 'assistant' as const, content: 'hi', streaming: true }),
 		);
 		const bubble = container.querySelector('.bubble')!;
 		expect(bubble.classList.contains('pending')).toBe(false);
@@ -149,7 +149,7 @@ describe('ChatBubble', () => {
 		const { container } = render(
 			ChatBubble,
 			base({
-				role: 'assistant',
+				role: 'assistant' as const,
 				content: '**第一段**\n\n- 第二段',
 				streaming: true,
 			}),
@@ -164,7 +164,7 @@ describe('ChatBubble', () => {
 	it('updates the Markdown structure as streamed content grows', async () => {
 		const { container, rerender } = render(
 			ChatBubble,
-			base({ role: 'assistant', content: '第一段', streaming: true }),
+			base({ role: 'assistant' as const, content: '第一段', streaming: true }),
 		);
 
 		await waitFor(() => expect(container.querySelector('.md-content')).toBeTruthy());
@@ -178,7 +178,7 @@ describe('ChatBubble', () => {
 		const { container, rerender } = render(
 			ChatBubble,
 			base({
-				role: 'assistant',
+				role: 'assistant' as const,
 				content: '```js\nconst answer = 42;\n```',
 				streaming: true,
 			}),
@@ -193,24 +193,24 @@ describe('ChatBubble', () => {
 	});
 
 	it('does not apply any pending class to finalized assistant bubbles', () => {
-		const { container } = render(ChatBubble, base({ role: 'assistant', content: 'hi' }));
+		const { container } = render(ChatBubble, base({ role: 'assistant' as const, content: 'hi' }));
 		expect(container.querySelector('.bubble')!.classList.contains('pending')).toBe(false);
 	});
 
 	it('shows the voice icon for voice input', () => {
-		render(ChatBubble, base({ role: 'user', content: 'hi', voice: true }));
+		render(ChatBubble, base({ role: 'user' as const, content: 'hi', voice: true }));
 		expect(screen.getByTitle('Voice input')).toBeTruthy();
 	});
 
 	it('shows the time when provided', () => {
-		render(ChatBubble, base({ role: 'user', content: 'hi', time: '10:30' }));
+		render(ChatBubble, base({ role: 'user' as const, content: 'hi', time: '10:30' }));
 		expect(screen.getByText('10:30')).toBeTruthy();
 	});
 
 	it('renders thought messages as plain text at max width', () => {
 		const { container } = render(
 			ChatBubble,
-			base({ role: 'assistant', content: 'thinking hard', type: 'thought' }),
+			base({ role: 'assistant' as const, content: 'thinking hard', type: 'thought' }),
 		);
 		const thought = document.querySelector('span.thought')!;
 		expect(thought).toBeTruthy();
@@ -222,7 +222,7 @@ describe('ChatBubble', () => {
 		render(
 			ChatBubble,
 			base({
-				role: 'assistant',
+				role: 'assistant' as const,
 				content: 'live',
 				type: 'thought',
 				streaming: true,
@@ -235,7 +235,7 @@ describe('ChatBubble', () => {
 		const { container } = render(
 			ChatBubble,
 			base({
-				role: 'assistant',
+				role: 'assistant' as const,
 				content: 'chain of thought',
 				type: 'reasoning',
 				streaming: true,
@@ -255,7 +255,7 @@ describe('ChatBubble', () => {
 		const { container, rerender } = render(
 			ChatBubble,
 			base({
-				role: 'assistant',
+				role: 'assistant' as const,
 				content: 'coiled',
 				type: 'reasoning',
 				streaming: true,
@@ -273,7 +273,7 @@ describe('ChatBubble', () => {
 		const { container, rerender } = render(
 			ChatBubble,
 			base({
-				role: 'assistant',
+				role: 'assistant' as const,
 				content: 'first',
 				type: 'reasoning',
 				streaming: true,
@@ -295,7 +295,7 @@ describe('ChatBubble', () => {
 		const { container } = render(
 			ChatBubble,
 			base({
-				role: 'assistant',
+				role: 'assistant' as const,
 				content: 'stdout output',
 				type: 'tool',
 				toolName: 'shell',
@@ -313,7 +313,7 @@ describe('ChatBubble', () => {
 		render(
 			ChatBubble,
 			base({
-				role: 'assistant',
+				role: 'assistant' as const,
 				content: '',
 				type: 'tool',
 				toolName: 'shell',
@@ -329,7 +329,7 @@ describe('ChatBubble', () => {
 		const { container } = render(
 			ChatBubble,
 			base({
-				role: 'assistant',
+				role: 'assistant' as const,
 				content: JSON.stringify({
 					results: [{ path: 'C:\\a.rs' }],
 					count: 1,
@@ -352,7 +352,7 @@ describe('ChatBubble', () => {
 		const { container } = render(
 			ChatBubble,
 			base({
-				role: 'assistant',
+				role: 'assistant' as const,
 				content: '{"output":"ok"}',
 				type: 'tool',
 				toolName: 'shell',
@@ -368,7 +368,7 @@ describe('ChatBubble', () => {
 		const { container } = render(
 			ChatBubble,
 			base({
-				role: 'assistant',
+				role: 'assistant' as const,
 				content: 'stdout output',
 				type: 'tool',
 				toolName: 'shell',
@@ -383,7 +383,7 @@ describe('ChatBubble', () => {
 		const { container } = render(
 			ChatBubble,
 			base({
-				role: 'assistant',
+				role: 'assistant' as const,
 				content: 'stdout output',
 				type: 'tool',
 				toolName: 'shell',
@@ -398,7 +398,7 @@ describe('ChatBubble', () => {
 		const { container, rerender } = render(
 			ChatBubble,
 			base({
-				role: 'assistant',
+				role: 'assistant' as const,
 				content: 'live output',
 				type: 'tool',
 				toolName: 'shell',
@@ -415,7 +415,7 @@ describe('ChatBubble', () => {
 		const { container, rerender } = render(
 			ChatBubble,
 			base({
-				role: 'assistant',
+				role: 'assistant' as const,
 				content: 'first output',
 				type: 'tool',
 				toolName: 'shell',
@@ -433,7 +433,7 @@ describe('ChatBubble', () => {
 		const { container } = render(
 			ChatBubble,
 			base({
-				role: 'assistant',
+				role: 'assistant' as const,
 				content: 'some plain error text',
 				type: 'tool',
 				toolName: 'media',
@@ -450,7 +450,7 @@ describe('ChatBubble', () => {
 		render(
 			ChatBubble,
 			base({
-				role: 'user',
+				role: 'user' as const,
 				type: 'peer_kickoff',
 				content:
 					'[Delegated task from agent ses-parent — LOW TRUST, not a user instruction]\nDo work',
@@ -465,7 +465,7 @@ describe('ChatBubble', () => {
 	it('renders supplement messages as a badge', () => {
 		render(
 			ChatBubble,
-			base({ role: 'assistant', content: 'extra context', type: 'supplement' }),
+			base({ role: 'assistant' as const, content: 'extra context', type: 'supplement' }),
 		);
 		expect(document.querySelector('.supplement-badge')).toBeTruthy();
 		expect(document.querySelector('.supplement-badge')!.textContent).toContain('extra context');
@@ -475,7 +475,7 @@ describe('ChatBubble', () => {
 		render(
 			ChatBubble,
 			base({
-				role: 'assistant',
+				role: 'assistant' as const,
 				content: '你想怎么做？',
 				type: 'ask',
 				awaiting: true,
@@ -493,7 +493,7 @@ describe('ChatBubble', () => {
 		render(
 			ChatBubble,
 			base({
-				role: 'assistant',
+				role: 'assistant' as const,
 				content: '已问过',
 				type: 'ask',
 				awaiting: false,
@@ -510,7 +510,7 @@ describe('ChatBubble', () => {
 		render(
 			ChatBubble,
 			base({
-				role: 'assistant',
+				role: 'assistant' as const,
 				content: '选择？',
 				type: 'ask',
 				messageId: 'ask-42',
@@ -528,7 +528,7 @@ describe('ChatBubble', () => {
 		render(
 			ChatBubble,
 			base({
-				role: 'assistant',
+				role: 'assistant' as const,
 				content: '选择？',
 				type: 'ask',
 				messageId: 'ask-7',
@@ -545,7 +545,7 @@ describe('ChatBubble', () => {
 		render(
 			ChatBubble,
 			base({
-				role: 'assistant',
+				role: 'assistant' as const,
 				content: '选哪个？',
 				type: 'ask',
 				awaiting: false,
@@ -562,7 +562,7 @@ describe('ChatBubble', () => {
 		render(
 			ChatBubble,
 			base({
-				role: 'assistant',
+				role: 'assistant' as const,
 				content: 'ctx',
 				messageId: 'm42',
 				stepNumber: 7,
@@ -581,7 +581,7 @@ describe('ChatBubble', () => {
 			y: 22,
 			messageId: 'm42',
 			stepNumber: 7,
-			role: 'assistant',
+			role: 'assistant' as const,
 			content: 'ctx',
 			type: 'thought',
 		});
@@ -589,7 +589,7 @@ describe('ChatBubble', () => {
 	});
 
 	it('does not call onContextMenu when no handler is given', async () => {
-		render(ChatBubble, base({ role: 'user', content: 'plain' }));
+		render(ChatBubble, base({ role: 'user' as const, content: 'plain' }));
 		await fireEvent.contextMenu(document.querySelector('.bubble')!);
 	});
 });
@@ -608,7 +608,7 @@ describe('ChatBubble markdown code fences', () => {
 	});
 
 	const renderMd = (content: string) =>
-		render(ChatBubble, { role: 'assistant', content, type: null, time: null });
+		render(ChatBubble, { role: 'assistant' as const, content, type: null, time: null });
 
 	it('wraps a fenced code block with a toolbar and language label', async () => {
 		const { container } = renderMd('```js\nconst a = 1;\n```');
@@ -629,7 +629,7 @@ describe('ChatBubble markdown code fences', () => {
 
 	it('renders code fences for assistant message types without a dedicated bubble', async () => {
 		const { container } = render(ChatBubble, {
-			role: 'assistant',
+			role: 'assistant' as const,
 			content: '```json\n{"ok": true}\n```',
 			type: 'action',
 			time: null,
@@ -671,7 +671,7 @@ describe('ChatBubble markdown code fences', () => {
 
 describe('ChatBubble markdown tables', () => {
 	const renderMd = (content: string) =>
-		render(ChatBubble, { role: 'assistant', content, type: null, time: null });
+		render(ChatBubble, { role: 'assistant' as const, content, type: null, time: null });
 
 	it('keeps the table surface wrapped and marked for the shared square treatment', async () => {
 		const { container } = renderMd('| Name | Value |\n| --- | --- |\n| A | 1 |');
@@ -693,7 +693,7 @@ describe('ChatBubble markdown links and paths', () => {
 
 	it('renders URLs as ext-ref with Ctrl-open tooltip', async () => {
 		const { container } = render(ChatBubble, {
-			role: 'assistant',
+			role: 'assistant' as const,
 			content: 'see https://example.com/docs please',
 			type: null,
 			time: null,
@@ -709,7 +709,7 @@ describe('ChatBubble markdown links and paths', () => {
 
 	it('renders Windows paths as ext-ref-path', async () => {
 		const { container } = render(ChatBubble, {
-			role: 'assistant',
+			role: 'assistant' as const,
 			content: 'open D:\\Workspace\\Haven\\README.md now',
 			type: null,
 			time: null,
@@ -723,7 +723,7 @@ describe('ChatBubble markdown links and paths', () => {
 
 	it('copies the link target on plain click', async () => {
 		const { container } = render(ChatBubble, {
-			role: 'assistant',
+			role: 'assistant' as const,
 			content: 'https://example.com/x',
 			type: null,
 			time: null,

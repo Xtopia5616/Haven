@@ -166,7 +166,7 @@
 					msg.type === 'tool' &&
 					(msg.showFallbackIntent ?? !hasToolPreambleBefore(allMessages, entry.index))}
 				<ChatBubble
-					role={String(msg.role || 'assistant')}
+					role={msg.role ?? 'assistant'}
 					content={String(msg.content || '')}
 					type={msg.type || null}
 					voice={!!msg.voice}

@@ -33,14 +33,7 @@ export interface SessionRunEndNotice {
 /** One renderer message, including the explicit dynamic tool extension points. */
 export type SessionMessage = StreamMessage & {
 	attachments?: Array<{ media_type: string; data: string; filename?: string }>;
-	toolArgs?: unknown;
-	outcome?: string | null;
-	renderer?: string | null;
-	toolRunId?: string | null;
-	/** Stable ToolRun identity used to anchor its timeline card to this tool step. */
-	sourceToolRunId?: string | null;
 	resolved?: AskResponseView | null;
-	received?: boolean;
 };
 
 export interface SessionTokenStats {

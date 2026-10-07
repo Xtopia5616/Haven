@@ -50,8 +50,8 @@ describe('session selector stores', () => {
 	});
 
 	it('switches the active message slice by reference and reuses a stable empty value', () => {
-		const firstMessage: SessionMessage = { id: 'msg-1', role: 'user', content: 'first' };
-		const secondMessage: SessionMessage = { id: 'msg-2', role: 'user', content: 'second' };
+		const firstMessage: SessionMessage = { id: 'msg-1', role: 'user' as const, content: 'first' };
+		const secondMessage: SessionMessage = { id: 'msg-2', role: 'user' as const, content: 'second' };
 		const firstMessages = [firstMessage];
 		const secondMessages = [secondMessage];
 		const emptyMessages: SessionMessage[] = [];

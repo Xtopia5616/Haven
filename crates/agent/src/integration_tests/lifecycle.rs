@@ -362,7 +362,7 @@ async fn persist_message_adds_to_db() {
     agent
         .persist_message_parts(
             &session.id,
-            "user",
+            haven_common::types::CanonicalRole::User,
             "test message",
             Some("text"),
             &[],
@@ -376,9 +376,9 @@ async fn persist_message_adds_to_db() {
     let msgs = db.list_recent_session_messages(&session.id, 50).unwrap();
     // Messages may or may not be immediately flushed depending on cache
     // ??verify at minimum the message is retrievable
-    let found = msgs
-        .iter()
-        .find(|m| m.role == "user" && m.content == "test message");
+    let found = msgs.iter().find(|m| {
+        m.role == haven_common::types::CanonicalRole::User && m.content == "test message"
+    });
     assert!(found.is_some(), "persisted user message not found in db");
 }
 
@@ -614,7 +614,7 @@ async fn persist_message_with_attachments_roundtrips() {
     agent
         .persist_message_parts(
             &session.id,
-            "user",
+            haven_common::types::CanonicalRole::User,
             "看图",
             Some("text"),
             std::slice::from_ref(&att),
@@ -627,7 +627,7 @@ async fn persist_message_with_attachments_roundtrips() {
     let msgs = db.list_recent_session_messages(&session.id, 50).unwrap();
     let found = msgs
         .iter()
-        .find(|m| m.role == "user" && m.content == "看图");
+        .find(|m| m.role == haven_common::types::CanonicalRole::User && m.content == "看图");
     assert!(found.is_some(), "persisted message not found in db");
     let msg = found.unwrap();
     assert_eq!(msg.attachments.len(), 1);
@@ -803,7 +803,7 @@ async fn process_input_continues_when_terminal_ghost_delete_fails() {
     assert_eq!(result, ProcessResult::Supplemented { message_id: None });
     let messages = db.list_session_messages(&session.id).unwrap();
     assert_eq!(messages.len(), 1);
-    assert_eq!(messages[0].role, "user");
+    assert_eq!(messages[0].role, haven_common::types::CanonicalRole::User);
     assert_eq!(messages[0].content, "more context");
     assert!(
         agent
@@ -981,7 +981,7 @@ async fn process_input_with_attachments_queues_and_persists_attachments() {
     let msgs = agent.db.list_session_messages(&session.id).unwrap();
     let user_msg = msgs
         .iter()
-        .find(|m| m.role == "user" && m.content == "看图")
+        .find(|m| m.role == haven_common::types::CanonicalRole::User && m.content == "看图")
         .expect("user message persisted");
     assert_eq!(user_msg.attachments.len(), 1);
     assert_eq!(user_msg.attachments[0].media_type, "image/png");

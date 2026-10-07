@@ -117,7 +117,7 @@ impl AgentEventEmitter for SuppressLifecycleCancelledSessionErrorEmitter {
 #[derive(Debug, Clone)]
 pub(crate) struct SessionPromptMessage {
     id: String,
-    role: String,
+    role: haven_common::types::CanonicalRole,
     content: String,
 }
 
@@ -629,7 +629,7 @@ impl AgentLayer {
         let history_lines: Vec<String> = session_prompt_history
             .iter()
             .filter(|m| {
-                !(m.role == "user"
+                !(m.role == haven_common::types::CanonicalRole::User
                     && initial
                         .message_id
                         .is_some_and(|message_id| m.id.as_str() == message_id))

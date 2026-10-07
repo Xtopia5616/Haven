@@ -25,7 +25,7 @@ describe('SessionTimeline', () => {
 
 	it('renders the message timeline immediately when the first message arrives', () => {
 		render(SessionTimeline, {
-			messages: [{ id: 'msg-1', role: 'user', content: '你好', type: 'user' }],
+			messages: [{ id: 'msg-1', role: 'user' as const, content: '你好', type: 'user' }],
 		});
 
 		expect(document.querySelector('.message-list')).toBeTruthy();
@@ -37,7 +37,7 @@ describe('SessionTimeline', () => {
 			messages: [
 				{
 					id: 'step-background',
-					role: 'assistant',
+					role: 'assistant' as const,
 					content: '{"execution_mode":"background","tool_run_id":"toolrun-bg"}',
 					type: 'tool',
 					toolName: 'shell',
@@ -104,7 +104,7 @@ describe('SessionTimeline', () => {
 
 	it('passes through the continue handler for a user-tail conversation', () => {
 		render(SessionTimeline, {
-			messages: [{ id: 'msg-1', role: 'user', content: '继续处理', type: 'user' }],
+			messages: [{ id: 'msg-1', role: 'user' as const, content: '继续处理', type: 'user' }],
 			showContinueButton: true,
 		});
 
@@ -118,7 +118,7 @@ describe('SessionTimeline', () => {
 
 	it('removes the continue handler while it is unavailable', () => {
 		render(SessionTimeline, {
-			messages: [{ id: 'msg-1', role: 'user', content: '继续处理', type: 'user' }],
+			messages: [{ id: 'msg-1', role: 'user' as const, content: '继续处理', type: 'user' }],
 			showContinueButton: true,
 			continueDisabled: true,
 		});
@@ -131,7 +131,7 @@ describe('SessionTimeline', () => {
 		const tools = [
 			{
 				id: 'step-a',
-				role: 'assistant',
+				role: 'assistant' as const,
 				content: 'first result',
 				type: 'tool',
 				toolName: 'shell',
@@ -140,7 +140,7 @@ describe('SessionTimeline', () => {
 			},
 			{
 				id: 'step-b',
-				role: 'assistant',
+				role: 'assistant' as const,
 				content: 'second result',
 				type: 'tool',
 				toolName: 'files',
@@ -161,7 +161,7 @@ describe('SessionTimeline', () => {
 			messages: [
 				{
 					id: 'msg-preamble',
-					role: 'assistant',
+					role: 'assistant' as const,
 					content: '检查相关文件',
 					type: 'thought',
 					stepNumber: 7,

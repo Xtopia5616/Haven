@@ -1807,7 +1807,7 @@ mod tests {
         let session = exec.create_session("delete atomically").await.unwrap();
         db.add_message(
             &session.id,
-            "user",
+            haven_common::types::CanonicalRole::User,
             "delete with session",
             Some("text"),
             None,
@@ -1939,10 +1939,22 @@ mod tests {
         let (exec, db) = make_executor_with_db(1);
         let first = exec.create_session("first to clear").await.unwrap();
         let second = exec.create_session("second to clear").await.unwrap();
-        db.add_message(&first.id, "user", "first message", Some("text"), None)
-            .unwrap();
-        db.add_message(&second.id, "user", "second message", Some("text"), None)
-            .unwrap();
+        db.add_message(
+            &first.id,
+            haven_common::types::CanonicalRole::User,
+            "first message",
+            Some("text"),
+            None,
+        )
+        .unwrap();
+        db.add_message(
+            &second.id,
+            haven_common::types::CanonicalRole::User,
+            "second message",
+            Some("text"),
+            None,
+        )
+        .unwrap();
         let kv_key = format!("fact_extraction_pending.{}", first.id);
         db.set_kv(&kv_key, "1").unwrap();
 

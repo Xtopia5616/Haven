@@ -183,7 +183,7 @@ impl AgentLayer {
     pub(crate) async fn persist_message_parts(
         &self,
         session_id: &str,
-        role: &str,
+        role: haven_common::types::CanonicalRole,
         content: &str,
         message_type: Option<&str>,
         attachments: &[haven_common::types::MessageAttachment],

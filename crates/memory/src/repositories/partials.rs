@@ -108,7 +108,7 @@ impl Database {
         }
         self.add_message_full(
             session_id,
-            "assistant",
+            haven_common::types::CanonicalRole::Assistant,
             content.trim(),
             Some("text"),
             None,
@@ -166,7 +166,7 @@ mod tests {
         assert!(db.promote_partial_message(&session_id).unwrap());
         let msgs = db.list_session_messages(&session_id).unwrap();
         assert_eq!(msgs.len(), 1);
-        assert_eq!(msgs[0].role, "assistant");
+        assert_eq!(msgs[0].role, haven_common::types::CanonicalRole::Assistant);
         assert_eq!(msgs[0].content, "streamed reply");
         // The row is consumed: a second promote is a no-op.
         assert!(!db.promote_partial_message(&session_id).unwrap());
@@ -184,7 +184,7 @@ mod tests {
             .unwrap();
         db.add_message_full(
             &session_id,
-            "assistant",
+            haven_common::types::CanonicalRole::Assistant,
             "newer real message",
             Some("text"),
             None,
