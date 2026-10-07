@@ -126,17 +126,4 @@
 		line-height: var(--md-sys-typescale-label-small-line-height);
 		color: var(--md-sys-color-on-surface-variant);
 	}
-	.tool-run-row {
-		display: flex;
-		align-items: center;
-		gap: var(--md-sys-space-xs);
-		font-size: var(--md-sys-typescale-label-medium-size);
-		line-height: var(--md-sys-typescale-label-medium-line-height);
-	}
-	.tool-run-id {
-		font-family: var(--md-sys-typescale-mono);
-		font-size: var(--md-sys-typescale-code-size);
-		line-height: var(--md-sys-typescale-code-line-height);
-		color: var(--md-sys-color-on-surface);
-	}
 </style>
