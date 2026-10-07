@@ -55,7 +55,7 @@
 | `get_recording_state` | read | 只返回采集状态 |
 | `set_hotkey_capture_active` | mutate | 仅控制快捷键录入期间的临时抑制状态 |
 | `start_recording` | execute | 采集生命周期由 input 管线控制 |
-| `stop_recording` | execute | 先停止采集再异步转写 |
+| `stop_recording` | execute | 成功无响应正文；先停止采集再异步转写，结果通过 transcription 事件报告 |
 | `cancel_recording` | execute | 清除 in-flight recording id |
 | `process_transcript` | execute | 附件限制和文件持久化校验 |
 | `reopen_session` | mutate | session id 选择持久化会话 |

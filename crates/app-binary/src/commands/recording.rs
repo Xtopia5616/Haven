@@ -483,12 +483,12 @@ pub async fn start_recording(
 pub async fn stop_recording(
     state: State<'_, Arc<AppState>>,
     app: tauri::AppHandle,
-) -> Result<String, String> {
+) -> Result<(), String> {
     let stop_context = state.runtime.shell.recording_stop_context().await;
     let lifecycle = state.recording_sessions.lock().await;
     let Some(session_id) = state.recording_sessions.current(&lifecycle) else {
         return match classify_stop_capture_error(&state.runtime.input_pipeline.state().await) {
-            StopCaptureErrorClass::AlreadyFinalizing => Ok(String::new()),
+            StopCaptureErrorClass::AlreadyFinalizing => Ok(()),
             StopCaptureErrorClass::CaptureStillActive => Err(log_err(
                 "stop_recording",
                 "麦克风正由其他操作使用，无法停止此录音".to_string(),
@@ -528,7 +528,7 @@ pub async fn stop_recording(
             )
             .await
             {
-                Ok(()) => Ok(String::new()),
+                Ok(()) => Ok(()),
                 Err(error) => Err(log_err("stop_recording", error)),
             };
         }
@@ -560,7 +560,7 @@ pub async fn stop_recording(
         },
     )
     .await;
-    Ok(String::new())
+    Ok(())
 }
 
 #[tauri::command]

@@ -709,3 +709,4 @@
 - [0718：统一 ToolRun 身份字段名](0718-unify-tool-run-identity-field-name.md)
 - [0719：Agent observation 使用唯一执行 outcome 来源](0719-agent-observation-single-outcome-source.md)
 - [0720：MCP 服务器快照列表命令标明实体](0720-name-mcp-server-snapshot-list-command.md)
+- [0721：移除 stop_recording 的空字符串成功响应](0721-remove-empty-stop-recording-response.md)
