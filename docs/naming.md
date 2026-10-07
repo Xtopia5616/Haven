@@ -1,6 +1,6 @@
 # Haven 命名规范
 
-> 版本: v1.84 | 日期: 2026-10-07
+> 版本: v1.85 | 日期: 2026-10-07
 
 本文档统一 Haven 项目各层的命名规则（变量名、函数名、文件名、crate 名、缩写大小写、跨层边界）。规范以现有代码中的事实模式为基础，新代码必须遵循；存量代码若与规范冲突，逐步迁移对齐。
 
@@ -28,6 +28,7 @@
 - **Session 时间线按组件职责分名**：`SessionTimeline` 拥有加载/空状态边界，`SessionMessageTimeline` 渲染已有消息、活动与 ToolRun；二者负责不同的 presentation 状态，保留组件边界，不再用 `ChatMessageTimeline` 命名当前会话的消息 renderer（ADR 0653）。
 - **Session 标题生成输入按真实数据命名**：`SessionTitleGenerationContext.user_messages` 传给 Agent `TitleGenerator::generate(user_messages)`，不得称为整个 `conversation`，因为 Memory 会明确过滤出用户消息并保持时间顺序（ADR 0651）。
 - **Session prompt-history 配置由 Session 拥有**：首次 system prompt 的历史消息条数位于 `SessionConfig.prompt_history_limit` / `[session].prompt_history_limit`；Memory 配置只管理 Memory 功能，不保留已移出的 `session_window_size` 旧字段或 alias（ADR 0652）。
+- **Memory fact write candidate 使用具名字段并共享策略转换**：从 `LlmFact` 解析出的来源引用与事实字段进入 `MemoryFactCandidate`，生产与测试都经过 `prepare_fact_candidates` 做同一套清洗、敏感值过滤和范围归一；不以 test-only 元组 alias 或第二份写入策略表达该阶段（ADR 0654）。
 - **运行上下文按角色命名**：一起解析出的执行程序与工作目录使用 `ResolvedShellContext { shell, working_directory }`，解析动作命名为 `resolve_shell_context`，避免把两个不同含义的值作为位置 tuple 传给前后台执行路径（ADR 0628）。
 - **跨组件提交输入共享类型 owner**：同一 chat submission attachment 在 Composer、页面、session controller 和 submit coordinator 之间复用 `chatAttachmentTypes.ts` 中的 `ChatImageAttachment` / `ChatFileAttachment`；仅用于预览的文件大小留在 `InputRouter` 的 `PendingChatFileAttachment`，历史消息 renderer 的宽松 `ChatBubbleAttachment` 继续独立（ADR 0629）。
 - **结果类型由领域 owner 定义**：同一业务结果从数据库仓储传到异步 service/store 时，复用领域类型并只在边界调度执行；不要让中间层把具名对象拆回 tuple 再重建。

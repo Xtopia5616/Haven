@@ -6,9 +6,6 @@
 
 use serde::Deserialize;
 
-#[cfg(test)]
-use haven_memory::repositories::facts::FactSourceRef;
-
 /// A fact extracted by the LLM, deserialized from the model's JSON response.
 #[derive(Clone, Deserialize)]
 pub(crate) struct LlmFact {
@@ -70,19 +67,6 @@ where
 fn default_confidence() -> f64 {
     0.7
 }
-
-/// One extracted fact ready for the shared persistence path:
-/// (subject, predicate, object, confidence, tags, source reference, durability).
-#[cfg(test)]
-pub(crate) type FactDraft = (
-    String,
-    String,
-    String,
-    f64,
-    Vec<String>,
-    Option<FactSourceRef>,
-    f64,
-);
 
 /// Fact tags allowed to enter long-term memory. The extraction prompt asks
 /// the model to stick to these, but it may still emit arbitrary values; this

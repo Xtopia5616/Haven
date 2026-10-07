@@ -642,3 +642,4 @@
 - [0651：按 user-only 数据命名 Agent Session 标题输入](0651-name-session-title-user-message-input.md)
 - [0652：将 prompt-history 限制配置归入 Session](0652-move-prompt-history-limit-to-session-config.md)
 - [0653：按 Session 职责命名消息时间线 renderer](0653-name-session-message-timeline-renderer.md)
+- [0654：统一 Memory fact candidate 持久化策略入口](0654-share-memory-fact-candidate-policy.md)

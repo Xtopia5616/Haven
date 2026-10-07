@@ -26,8 +26,6 @@ use haven_memory::{
 use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
 
-#[cfg(test)]
-use crate::fact_extraction::FactDraft;
 use crate::fact_extraction::{
     LlmFact, extract_json_array, normalize_predicate, sanitize_fact_field, sanitize_tags,
 };
@@ -47,6 +45,18 @@ use crate::memory_service::MemoryService;
 use haven_memory::repositories::facts::Fact;
 
 const PERSIST_CONFIDENCE_FLOOR: f64 = 0.55;
+
+/// Extraction fields after resolving transcript provenance, before the
+/// shared sanitization and persistence policy builds a database write.
+struct MemoryFactCandidate {
+    subject: String,
+    predicate: String,
+    object: String,
+    confidence: f64,
+    tags: Vec<String>,
+    source_ref: Option<FactSourceRef>,
+    durability: f64,
+}
 
 /// Background memory worker: fact extraction, maintenance, outbox draining,
 /// and embedding catch-up. Prompt assembly does not depend on this type.
@@ -516,7 +526,8 @@ impl MemoryWorker {
                 if facts.is_empty() {
                     tracing::debug!("LLM found no facts in session {}", session_id);
                 }
-                let writes = self.prepare_fact_writes(&facts, &window.messages);
+                let fact_count = facts.len();
+                let writes = self.prepare_fact_writes(facts, &window.messages);
                 let Some(last_message_id) = window.cursor_last.as_deref() else {
                     return true;
                 };
@@ -534,7 +545,7 @@ impl MemoryWorker {
                     Err(_) => {
                         tracing::warn!(
                             session_id = %session_id,
-                            fact_count = facts.len(),
+                            fact_count,
                             "ordinary fact extraction commit failed; keeping extraction cursor unchanged"
                         );
                         return false;
@@ -599,10 +610,32 @@ impl MemoryWorker {
     /// persisted provenance reference (M1).
     fn prepare_fact_writes(
         &self,
-        facts: &[LlmFact],
+        facts: Vec<LlmFact>,
         messages: &[haven_memory::repositories::messages::Message],
     ) -> Vec<MemoryFactWrite> {
-        let mut writes = Vec::with_capacity(facts.len());
+        let candidates = facts.into_iter().map(|fact| {
+            let source_ref = fact
+                .message_index
+                .and_then(|idx| resolve_source_message(messages, idx))
+                .map(|message| FactSourceRef::from_message(&message.id, &message.content));
+            MemoryFactCandidate {
+                subject: fact.subject,
+                predicate: fact.predicate,
+                object: fact.object,
+                confidence: fact.confidence,
+                tags: fact.tags,
+                source_ref,
+                durability: fact.durability.unwrap_or(0.6),
+            }
+        });
+        self.prepare_fact_candidates(candidates)
+    }
+
+    fn prepare_fact_candidates(
+        &self,
+        facts: impl IntoIterator<Item = MemoryFactCandidate>,
+    ) -> Vec<MemoryFactWrite> {
+        let mut writes = Vec::new();
         for fact in facts {
             let subject = sanitize_fact_field(&fact.subject, self.sanitize_max_chars);
             let predicate = normalize_predicate(&fact.predicate);
@@ -621,10 +654,6 @@ impl MemoryWorker {
             // (e.g. 1.2) does not skew decay/ordering.
             let confidence = fact.confidence.clamp(0.5, 1.0);
             let tags = sanitize_tags(&fact.tags);
-            let source_ref = fact
-                .message_index
-                .and_then(|idx| resolve_source_message(messages, idx))
-                .map(|message| FactSourceRef::from_message(&message.id, &message.content));
             writes.push(MemoryFactWrite {
                 subject,
                 is_single_valued_predicate: is_single_valued_predicate(&predicate),
@@ -632,39 +661,16 @@ impl MemoryWorker {
                 object,
                 confidence,
                 tags,
-                source_ref,
-                durability: fact.durability.unwrap_or(0.6).clamp(0.1, 1.0),
+                source_ref: fact.source_ref,
+                durability: fact.durability.clamp(0.1, 1.0),
             });
         }
         writes
     }
 
     #[cfg(test)]
-    async fn persist_fact_batch(&self, facts: Vec<FactDraft>) -> anyhow::Result<bool> {
-        let mut writes = Vec::with_capacity(facts.len());
-        for (subject, predicate, object, confidence, tags, source_ref, durability) in facts {
-            let subject = sanitize_fact_field(&subject, self.sanitize_max_chars);
-            let predicate = normalize_predicate(&predicate);
-            let object = sanitize_fact_field(&object, self.sanitize_max_chars);
-            if subject.is_empty()
-                || predicate.is_empty()
-                || object.is_empty()
-                || is_sensitive_predicate(&predicate)
-                || is_sensitive_object(&object)
-            {
-                continue;
-            }
-            writes.push(MemoryFactWrite {
-                subject,
-                is_single_valued_predicate: is_single_valued_predicate(&predicate),
-                predicate,
-                object,
-                confidence: confidence.clamp(0.5, 1.0),
-                tags: sanitize_tags(&tags),
-                source_ref,
-                durability: durability.clamp(0.1, 1.0),
-            });
-        }
+    async fn persist_fact_batch(&self, facts: Vec<MemoryFactCandidate>) -> anyhow::Result<bool> {
+        let writes = self.prepare_fact_candidates(facts);
         self.fact_store
             .persist_inferred_batch(writes, PERSIST_CONFIDENCE_FLOOR)
             .await
@@ -893,7 +899,7 @@ impl MemoryWorker {
                         session_id
                     );
                 }
-                self.prepare_fact_writes(&facts, std::slice::from_ref(&synthetic))
+                self.prepare_fact_writes(facts, std::slice::from_ref(&synthetic))
             }
             Err(_) => {
                 tracing::warn!(
@@ -2769,45 +2775,45 @@ mod tests {
 
         let wrote = worker
             .persist_fact_batch(vec![
-                (
-                    "user".into(),
-                    "likes".into(),
-                    "Rust".into(),
-                    0.4,
-                    vec!["Preference".into()],
-                    Some(FactSourceRef {
+                MemoryFactCandidate {
+                    subject: "user".into(),
+                    predicate: "likes".into(),
+                    object: "Rust".into(),
+                    confidence: 0.4,
+                    tags: vec!["Preference".into()],
+                    source_ref: Some(FactSourceRef {
                         message_id: "msg-reconfirmed-rust".into(),
                         snippet: "I still use Rust.".into(),
                     }),
-                    0.8,
-                ),
-                (
-                    "user".into(),
-                    "likes".into(),
-                    "Coffee".into(),
-                    0.549,
-                    vec![],
-                    None,
-                    0.6,
-                ),
-                (
-                    "user".into(),
-                    "likes".into(),
-                    "SQLite".into(),
-                    0.55,
-                    vec![],
-                    None,
-                    0.6,
-                ),
-                (
-                    "user".into(),
-                    "project_path".into(),
-                    "D:/new-project".into(),
-                    0.5,
-                    vec![],
-                    None,
-                    0.6,
-                ),
+                    durability: 0.8,
+                },
+                MemoryFactCandidate {
+                    subject: "user".into(),
+                    predicate: "likes".into(),
+                    object: "Coffee".into(),
+                    confidence: 0.549,
+                    tags: vec![],
+                    source_ref: None,
+                    durability: 0.6,
+                },
+                MemoryFactCandidate {
+                    subject: "user".into(),
+                    predicate: "likes".into(),
+                    object: "SQLite".into(),
+                    confidence: 0.55,
+                    tags: vec![],
+                    source_ref: None,
+                    durability: 0.6,
+                },
+                MemoryFactCandidate {
+                    subject: "user".into(),
+                    predicate: "project_path".into(),
+                    object: "D:/new-project".into(),
+                    confidence: 0.5,
+                    tags: vec![],
+                    source_ref: None,
+                    durability: 0.6,
+                },
             ])
             .await
             .unwrap();
