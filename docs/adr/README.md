@@ -610,3 +610,4 @@
 - [0619：命名 chat thinking extras](0619-name-chat-thinking-extras.md)
 - [0620：命名 Anthropic request projection 结果](0620-name-anthropic-request-projections.md)
 - [0621：命名 Gemini content conversion 结果](0621-name-gemini-content-conversion.md)
+- [0622：命名 OpenAI Responses input conversion 结果](0622-name-openai-responses-input-conversion.md)

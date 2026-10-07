@@ -52,6 +52,12 @@ pub(super) use stream::*;
 #[allow(unused_imports)]
 pub(super) use wire::*;
 
+/// OpenAI Responses input items and their separate system instructions.
+pub(super) struct ResponsesInputConversion {
+    input: Vec<Value>,
+    instructions: Option<String>,
+}
+
 /// OpenAI Responses API adapter (`/v1/responses`), for GPT-5 and other
 /// models that only ship on the Responses protocol.
 pub struct OpenAiResponsesAdapter {

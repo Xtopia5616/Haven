@@ -71,7 +71,7 @@ impl OpenAiResponsesAdapter {
             .reasoning_echo_max_chars
             .unwrap_or(Self::MAX_REASONING_ECHO_CHARS);
         let requires_reasoning_echo = self.requires_reasoning_echo();
-        let (mut input, instructions) =
+        let mut converted_input =
             if self.developer_input_state.load(Ordering::Relaxed) == DEVELOPER_INPUT_UNSUPPORTED {
                 Self::convert_input_with_memory_split(
                     messages,
@@ -82,7 +82,7 @@ impl OpenAiResponsesAdapter {
             } else {
                 Self::convert_input(messages, max_reasoning_echo_chars, requires_reasoning_echo)
             };
-        for item in &mut input {
+        for item in &mut converted_input.input {
             if item.get("type").and_then(Value::as_str) == Some("function_call")
                 && let Some(name) = item.get("name").and_then(Value::as_str)
             {
@@ -130,8 +130,8 @@ impl OpenAiResponsesAdapter {
         });
         ResponsesRequest {
             model: self.endpoint.model_name.clone(),
-            instructions,
-            input,
+            instructions: converted_input.instructions,
+            input: converted_input.input,
             max_output_tokens: Some(max_output_tokens),
             temperature,
             top_p,
@@ -152,7 +152,7 @@ impl OpenAiResponsesAdapter {
 
     pub(super) fn append_guidance_to_request(&self, body: &mut ResponsesRequest, guidance: &str) {
         let message = CanonicalMessage::user_text(guidance);
-        let (mut input, _) =
+        let mut converted_input =
             if self.developer_input_state.load(Ordering::Relaxed) == DEVELOPER_INPUT_UNSUPPORTED {
                 Self::convert_input_with_memory_split(
                     std::slice::from_ref(&message),
@@ -171,7 +171,7 @@ impl OpenAiResponsesAdapter {
                     self.requires_reasoning_echo(),
                 )
             };
-        body.input.append(&mut input);
+        body.input.append(&mut converted_input.input);
     }
 
     pub(super) async fn send_request(

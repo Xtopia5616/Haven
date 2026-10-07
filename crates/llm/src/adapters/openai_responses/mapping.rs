@@ -44,7 +44,7 @@ impl OpenAiResponsesAdapter {
         msgs: impl AsRef<[CanonicalMessage]>,
         max_reasoning_echo_chars: usize,
         requires_reasoning_echo: bool,
-    ) -> (Vec<Value>, Option<String>) {
+    ) -> ResponsesInputConversion {
         Self::convert_input_with_memory_split(
             msgs,
             max_reasoning_echo_chars,
@@ -58,7 +58,7 @@ impl OpenAiResponsesAdapter {
         max_reasoning_echo_chars: usize,
         requires_reasoning_echo: bool,
         developer_input_supported: bool,
-    ) -> (Vec<Value>, Option<String>) {
+    ) -> ResponsesInputConversion {
         let msgs = msgs.as_ref();
         let mut instructions: Vec<String> = Vec::new();
         let mut session_context: Vec<String> = Vec::new();
@@ -277,7 +277,10 @@ impl OpenAiResponsesAdapter {
         } else {
             Some(instructions.join("\n\n"))
         };
-        (items, instructions)
+        ResponsesInputConversion {
+            input: items,
+            instructions,
+        }
     }
 
     pub(super) fn downgrade_developer_input(body: &mut ResponsesRequest) -> bool {

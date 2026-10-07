@@ -81,7 +81,10 @@ fn convert_input_extracts_instructions() {
             id: None,
         },
     ];
-    let (items, instructions) = OpenAiResponsesAdapter::convert_input(
+    let ResponsesInputConversion {
+        input: items,
+        instructions,
+    } = OpenAiResponsesAdapter::convert_input(
         msgs,
         OpenAiResponsesAdapter::MAX_REASONING_ECHO_CHARS,
         false,
@@ -123,7 +126,7 @@ fn convert_input_function_call_and_output() {
             id: None,
         },
     ];
-    let (items, _) = OpenAiResponsesAdapter::convert_input(
+    let ResponsesInputConversion { input: items, .. } = OpenAiResponsesAdapter::convert_input(
         msgs,
         OpenAiResponsesAdapter::MAX_REASONING_ECHO_CHARS,
         false,
@@ -174,7 +177,7 @@ fn convert_input_echoes_reasoning_for_thinking_mode() {
             id: None,
         },
     ];
-    let (items, _) = OpenAiResponsesAdapter::convert_input(
+    let ResponsesInputConversion { input: items, .. } = OpenAiResponsesAdapter::convert_input(
         msgs.clone(),
         OpenAiResponsesAdapter::MAX_REASONING_ECHO_CHARS,
         true,
@@ -198,7 +201,7 @@ fn convert_input_echoes_reasoning_for_thinking_mode() {
     // Providers without the echo requirement get NO reasoning item: the
     // plain-text form is DeepSeek-compat-specific, and other APIs neither
     // require nor accept it.
-    let (no_echo, _) = OpenAiResponsesAdapter::convert_input(
+    let ResponsesInputConversion { input: no_echo, .. } = OpenAiResponsesAdapter::convert_input(
         msgs,
         OpenAiResponsesAdapter::MAX_REASONING_ECHO_CHARS,
         false,
@@ -243,7 +246,9 @@ fn convert_input_synthesizes_empty_reasoning_for_tool_turns_when_echo_required()
             id: None,
         },
     ];
-    let (with_echo, _) = OpenAiResponsesAdapter::convert_input(
+    let ResponsesInputConversion {
+        input: with_echo, ..
+    } = OpenAiResponsesAdapter::convert_input(
         msgs.clone(),
         OpenAiResponsesAdapter::MAX_REASONING_ECHO_CHARS,
         true,
@@ -256,7 +261,7 @@ fn convert_input_synthesizes_empty_reasoning_for_tool_turns_when_echo_required()
     assert_eq!(with_echo[2]["type"], "function_call");
     assert_eq!(with_echo[3]["type"], "function_call_output");
     // Without the echo requirement the reasoning item must not appear.
-    let (no_echo, _) = OpenAiResponsesAdapter::convert_input(
+    let ResponsesInputConversion { input: no_echo, .. } = OpenAiResponsesAdapter::convert_input(
         msgs,
         OpenAiResponsesAdapter::MAX_REASONING_ECHO_CHARS,
         false,
@@ -286,7 +291,7 @@ fn convert_input_truncates_oversized_reasoning_to_tail() {
         source: None,
         id: None,
     }];
-    let (items, _) = OpenAiResponsesAdapter::convert_input(
+    let ResponsesInputConversion { input: items, .. } = OpenAiResponsesAdapter::convert_input(
         msgs,
         OpenAiResponsesAdapter::MAX_REASONING_ECHO_CHARS,
         true,
@@ -321,7 +326,7 @@ fn convert_input_skips_blank_reasoning() {
         source: None,
         id: None,
     }];
-    let (items, _) = OpenAiResponsesAdapter::convert_input(
+    let ResponsesInputConversion { input: items, .. } = OpenAiResponsesAdapter::convert_input(
         msgs,
         OpenAiResponsesAdapter::MAX_REASONING_ECHO_CHARS,
         false,
@@ -354,7 +359,7 @@ fn convert_input_image_and_audio() {
         source: None,
         id: None,
     }];
-    let (items, _) = OpenAiResponsesAdapter::convert_input(
+    let ResponsesInputConversion { input: items, .. } = OpenAiResponsesAdapter::convert_input(
         msgs,
         OpenAiResponsesAdapter::MAX_REASONING_ECHO_CHARS,
         false,
@@ -665,7 +670,7 @@ fn convert_input_supplies_missing_web_search_call_action() {
         source: None,
         id: None,
     }];
-    let (items, _) = OpenAiResponsesAdapter::convert_input(
+    let ResponsesInputConversion { input: items, .. } = OpenAiResponsesAdapter::convert_input(
         msgs,
         OpenAiResponsesAdapter::MAX_REASONING_ECHO_CHARS,
         false,
@@ -705,7 +710,7 @@ fn convert_input_round_trips_complete_web_search_call_verbatim() {
         source: None,
         id: None,
     }];
-    let (items, _) = OpenAiResponsesAdapter::convert_input(
+    let ResponsesInputConversion { input: items, .. } = OpenAiResponsesAdapter::convert_input(
         msgs,
         OpenAiResponsesAdapter::MAX_REASONING_ECHO_CHARS,
         false,
