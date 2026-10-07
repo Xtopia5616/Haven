@@ -176,7 +176,7 @@ impl AgentLayer {
         self.react_engine.limits()
     }
 
-    /// Persist a message into the session's message stream (conversation history).
+    /// Persist a message into the session transcript.
     /// Returns the persisted message so callers can roll it back precisely
     /// (e.g. when the session turns out to be terminal right after).
     #[cfg(test)]
@@ -241,7 +241,7 @@ impl AgentLayer {
         Ok(changed)
     }
 
-    /// Interrupt the current model/tool run without closing the conversation.
+    /// Interrupt the current model/tool run without closing the session.
     /// The paused session keeps its durable snapshot and can accept a later
     /// follow-up, while the cancellation token stops an in-flight provider call.
     pub async fn interrupt_session(&self, session_id: &str) -> anyhow::Result<()> {
@@ -469,7 +469,7 @@ impl AgentLayer {
         //   (no LLM round-trip), then report its outcome through the dedicated
         //   ToolRun-completion notification path.
         // - `continue`: resume the session that scheduled the ToolRun; the
-        //   scheduled ToolRun text is injected into that session's conversation and the
+        //   scheduled ToolRun text is injected into that session's transcript and the
         //   session is woken, so a scheduled "keep going at 3pm" continues the
         //   same ReAct loop without anyone speaking. A continue-mode ToolRun
         //   without a session id is an error (no fallback). Its outcome uses

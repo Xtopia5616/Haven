@@ -61,7 +61,7 @@ export function createChatAgentEventHandlers({
 			if (!data?.stepId) return;
 			// Live tool output is a bounded, UI-only preview. Keep it out of the
 			// session reducer: updating the reducer here would rebuild the whole
-			// conversation projection on every shell-output tick and can starve
+			// session projection on every shell-output tick and can starve
 			// button/collapsible input while a tool is running.
 			setToolOutputPreview(data.stepId, data.output || '', data.sessionId);
 		},

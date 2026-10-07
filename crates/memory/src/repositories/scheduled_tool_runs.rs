@@ -648,7 +648,7 @@ impl Database {
     }
 
     /// All persisted tool_runs for one owning session, optionally filtered by
-    /// kind, newest first. Used by the conversation timeline to hydrate its
+    /// kind, newest first. Used by the session timeline to hydrate its
     /// bounded session-scoped ToolRun history after a switch or restart.
     pub fn list_tool_runs_for_session(
         &self,

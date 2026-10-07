@@ -285,11 +285,11 @@ export function parseToolRunResultInject(text: string | undefined | null): {
 	return { operation: 'result_injected', tool_run_id: toolRunId, status, auto: true };
 }
 
-// Streaming blocks always live at the tail of the conversation (or just in
+// Streaming blocks always live at the tail of the transcript (or just in
 // front of the step's own thought message), so scanning backwards finds a
 // unique message id in O(tail-distance) instead of O(whole list) — a full
 // forward scan per chunk would cost O(n) on every batched flush of a long
-// conversation. The id is unique, so direction never changes the result.
+// transcript. The id is unique, so direction never changes the result.
 function lastIndexById(messages: StreamMessage[], id: string) {
 	for (let i = messages.length - 1; i >= 0; i--) {
 		if (messages[i].id === id) return i;

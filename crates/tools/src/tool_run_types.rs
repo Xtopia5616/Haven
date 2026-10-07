@@ -13,7 +13,7 @@ pub enum ScheduleMode {
     #[default]
     Tool,
     /// Resume the session that scheduled this ToolRun, delivering its prompt as
-    /// a new instruction in the same conversation. This is only available while
+    /// a new instruction in the same session. This is only available while
     /// the owning session is live; ending or removing that session cancels it.
     Continue,
 }

@@ -12,7 +12,7 @@ export async function listToolRunRows(): Promise<Array<ToolRunPayload | null> | 
 	return Array.isArray(rows) ? rows.map(mapToolRunPayload) : null;
 }
 
-/** Load terminal ToolRun records, optionally restricted to one conversation. */
+/** Load terminal ToolRun records, optionally restricted to one session. */
 export async function listToolRunHistory(
 	kind?: ToolRunKind,
 	limit = 50,

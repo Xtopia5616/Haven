@@ -809,7 +809,7 @@ mod tests {
         let sessions = db.list_sessions(1, 0).unwrap();
         assert_eq!(sessions.len(), 1);
         // The most recent session must come first —the app start
-        // conversation restore relies on this ordering.
+        // session restore relies on this ordering.
         assert_eq!(sessions[0].id, second.id);
         assert_ne!(sessions[0].id, first.id);
     }

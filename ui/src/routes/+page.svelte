@@ -252,7 +252,7 @@
 	$effect(() => syncStore(activeSessionTokenStatsStore, (next) => (tokenStats = next)));
 
 	// Per-LLM-call usage detail for the active session (restored from the
-	// persisted `llm_usage` when a resume conversation opens). Used by the
+	// persisted `llm_usage` when a session resumes). Used by the
 	// session-level token tooltip and call count.
 	let llmUsage = $state<SessionLlmUsage[]>(
 		currentReducerState.activeSessionId
@@ -293,7 +293,7 @@
 	);
 	// Tooltip for the token widget. While the active session is still running
 	// (streaming, tool-calling, or queued) more `agent:usage` events are
-	// expected. A finished or history-opened conversation with no persisted
+	// expected. A finished or history-opened session with no persisted
 	// usage will never receive events, so show a neutral hint instead.
 	const tokenStatsHint = $derived(isGenerating || sessionRunning ? '等待 LLM 统计' : '暂无统计');
 	const tokenUsageDetails = $derived.by(() =>
@@ -562,11 +562,11 @@
 		// 新会话 = explicit fresh start. While `newSessionIntentStore` is set, no
 		// event-driven path may auto-assign an existing session (loadSessions
 		// auto-assign, session:lifecycle(created), auto-restore), otherwise the next message
-		// would append to the old conversation instead of starting a new session.
+		// would append to the old session instead of starting a new one.
 		// The intent is cleared only when the user's own submission creates a
 		// session (submit.ts) or they explicitly switch to another session. Also
 		// persisted to localStorage so the next app launch skips restoring the
-		// previous conversation.
+		// previous session.
 		newSessionIntentStore.set(true);
 		if (browser) localStorage.setItem(NEW_SESSION_INTENT_STORAGE_KEY, '1');
 		dispatchSession({ type: 'session/cleared' });
@@ -622,7 +622,7 @@
 	const showContinueButton = $derived(
 		!!activeSessionId && shouldShowContinueButton(messages, activeRunFailed),
 	);
-	// Keep the affordance visible for every user-tail conversation, but do not
+	// Keep the affordance visible when a session ends with a user message, but do not
 	// let it race a normal pending/running turn. `continue_session` is only a
 	// retry operation for paused/error sessions.
 	const continueDisabled = $derived(
@@ -800,7 +800,7 @@
 		if (dead) return;
 
 		// Load configured Chat profiles and the current route primary for the
-		// toolbar. Fire-and-forget so loading settings never delays conversation
+		// toolbar. Fire-and-forget so loading settings never delays chat
 		// rendering.
 		loadSettings()
 			.then((s) => {
@@ -824,14 +824,14 @@
 				reportError(e, { context: '+page', message: '加载设置失败', log: false });
 			});
 
-		// Load the session list and auto-restore the last conversation in
-		// parallel; the conversation renders as soon as its data arrives,
+		// Load the session list and auto-restore the last session in
+		// parallel; chat renders as soon as its data arrives,
 		// without waiting for `reopen_session` (a second IPC round-trip that
 		// only makes the session resumable for follow-up messages).
 		await sessionStartup.loadInitialSessions(initialSessionResumeTarget);
 		if (dead) return;
 
-		// Conversation just opened (history resume or auto-restore): scroll to
+		// Session just opened (history resume or auto-restore): scroll to
 		// the real bottom, forcing the estimated content-visibility heights to
 		// render first (see scrollToBottomAfterOpen).
 		if (activeSessionId) {

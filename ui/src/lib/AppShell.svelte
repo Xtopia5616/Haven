@@ -261,7 +261,7 @@
 	}
 	/* Secondary workspaces use WorkspaceSurface for their shared frame and
 	 * entry motion. Keeping chat outside that component preserves its full-bleed
-	 * conversation layout. */
+	 * chat layout. */
 	:global(.content:not(.content--chat) .page-shell) {
 		max-width: clamp(640px, 92vw, var(--md-sys-content-max-width));
 		min-width: 0;

@@ -2,7 +2,7 @@ import type { ToolRunPayload } from './contracts/toolRun.ts';
 import type { SessionMessage } from './sessionReducer.ts';
 import { sourceToolRunIdFromObservation } from './streaming.ts';
 
-/** Messages that describe agent work rather than user-facing conversation. */
+/** Messages that describe agent work rather than user-facing transcript content. */
 const MERGED_MESSAGE_TYPES = new Set(['thought', 'reasoning', 'tool']);
 
 export interface SessionMessageContextMenuRequest {
@@ -68,7 +68,7 @@ export function isMergedSessionMessage(message: SessionMessage): boolean {
 /**
  * Group adjacent agent-work messages into compact, independently collapsible
  * timeline items. User-facing messages and actionable ask cards remain as
- * standalone entries so the conversation order and required toolRuns stay
+ * standalone entries so the session transcript order and required toolRuns stay
  * obvious.
  */
 export function groupSessionMessages(messages: SessionMessage[]): SessionTranscriptItem[] {
@@ -94,7 +94,7 @@ export function groupSessionMessages(messages: SessionMessage[]): SessionTranscr
 			// The first entry can change while a live tool batch is reconciled:
 			// for example, a late thought/reasoning block may be inserted before
 			// the already-visible tool cards. Anchor the group to the surrounding
-			// conversation boundary and step, rather than to that mutable first
+			// session boundary and step, rather than to that mutable first
 			// entry, so Svelte keeps the disclosure instances and their local open
 			// state alive.
 			const stepAnchor =

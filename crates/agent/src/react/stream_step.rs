@@ -385,7 +385,7 @@ impl<'a> StreamSession<'a> {
 /// A provider stream that delivers no chunk for this long is announced to the
 /// UI as `StreamStalled` — long before the router's idle timeout aborts the
 /// stream, so the status chip can show a factual waiting state instead of a
-/// frozen conversation. Covers the first-chunk wait too (the anchor starts at
+/// frozen transcript. Covers the first-chunk wait too (the anchor starts at
 /// the call's creation). Configurable via `context_limits.stream_stall_warn_delay_ms`
 /// (was a `STALL_WARN_DELAY_MS` constant before it was unified into settings).
 ///

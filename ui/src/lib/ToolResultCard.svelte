@@ -593,7 +593,7 @@
 				var(--md-sys-motion-easing-standard),
 			box-shadow var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard);
 	}
-	/* ChatBubble owns the shared conversation surface. Embedded tool cards
+	/* ChatBubble owns the shared chat surface. Embedded tool cards
 	 * keep their semantic header/details but do not create a second card. */
 	.tool-card.embedded {
 		background: transparent;

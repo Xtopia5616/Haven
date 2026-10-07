@@ -5,7 +5,7 @@ import {
 } from './sessionReducer.ts';
 import type { AskResponseView } from './contracts/app.ts';
 
-/** Select the active conversation's messages with ask interaction state projected by id. */
+/** Select the active session's messages with ask interaction state projected by id. */
 export function selectChatVisibleMessages(
 	state: SessionReducerState,
 	activeSessionId: string | null,

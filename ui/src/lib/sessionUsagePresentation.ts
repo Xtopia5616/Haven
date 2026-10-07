@@ -193,7 +193,7 @@ export function cacheOutcomeLabel(outcome: string | null | undefined): string {
 /**
  * Project raw session usage into the fields needed by the detail popover.
  * Restored sessions use the last persisted call for "current" values because
- * the live event stream is no longer present after reopening a conversation.
+ * the live event stream is no longer present after reopening a session.
  */
 export function buildTokenUsageDetails(
 	stats: SessionTokenStatsView,

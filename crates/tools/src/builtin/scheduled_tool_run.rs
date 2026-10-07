@@ -16,10 +16,10 @@ use crate::{Tool, ToolConcurrency, ToolResult};
 /// ReAct loop, so the agent can schedule and continue working.
 ///
 /// Two fire behaviors are available via `mode`:
-/// - `tool` (default): call the tool in `tool_name` with `tool_args` —///   use `tool_name` `notify` with `tool_args` `{title, body}` to send a
-///   message at fire time.
-/// - `continue`: resume the session that scheduled the scheduled_tool_run, delivering
-///   `prompt` as the continuation instruction in the same conversation.
+/// - `tool` (default): call the tool in `tool_name` with `tool_args`; use the
+///   `notify` tool with `{title, body}` to send a message at fire time.
+/// - `continue`: resume the session that scheduled the ToolRun, delivering
+///   `prompt` as a continuation instruction in that session.
 pub struct ScheduleTool {
     pub service: Arc<ToolRunService>,
     /// Weak probe into the tool registry so `set` can reject unknown

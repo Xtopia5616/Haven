@@ -12,7 +12,7 @@
 	}
 
 	/**
-	 * SessionHeader — keeps the active conversation identity and lifecycle
+	 * SessionHeader — keeps the active session identity and lifecycle
 	 * state visible above the message timeline.
 	 */
 	let {

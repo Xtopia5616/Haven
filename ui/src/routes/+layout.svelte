@@ -87,7 +87,7 @@
 
 	// Secondary workspaces are intentionally loaded after the chat shell is
 	// interactive. Their views contain the largest forms, lists and tool cards;
-	// keeping them out of the initial module graph makes the first conversation
+	// keeping them out of the initial module graph makes the first chat
 	// paint independent of settings/tools/memory code. ToolRunCenter is nested in
 	// the history workspace and is loaded with MemoryView.
 	type TabId = 'chat' | 'tools' | 'memory' | 'settings';
@@ -594,9 +594,9 @@
 	$effect(() => syncStore(interactionsStore, (v) => (interactionDict = v)));
 	// Session lifecycle events expose the derived pause reason directly. The
 	// ToolRun registry remains available for the task panel and counts, but it
-	// no longer determines why a paused conversation is waiting.
+	// no longer determines why a paused session is waiting.
 	// Active chat is paused while its own background ToolRun(s) still run —
-	// the selected conversation supplies the titlebar's "等待任务" state.
+	// the selected session supplies the titlebar's "等待任务" state.
 	const awaitingBackgroundActive = $derived.by(() => {
 		if (!activeSessionId) return false;
 		const session = sessions.find((t) => t.id === activeSessionId);

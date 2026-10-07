@@ -139,7 +139,7 @@ pub(crate) fn emit_recording_error(
 /// The transcript is **not** submitted to the agent here: the frontend
 /// listens for `transcription:result` and delivers the text through the same
 /// `process_transcript` path as a typed message, so voice input continues the
-/// currently open conversation (session) instead of always starting a new one.
+/// currently open session instead of always starting a new one.
 pub(crate) async fn finalize_transcription(
     state: &Arc<AppState>,
     app: &tauri::AppHandle,

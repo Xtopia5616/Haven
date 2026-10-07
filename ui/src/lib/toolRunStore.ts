@@ -84,7 +84,7 @@ function touchSessionToolRunCache(
 	return next;
 }
 
-/** Pin the visible conversation's cache entry until the user switches away. */
+/** Pin the visible session's cache entry until the user switches away. */
 export function setActiveSessionToolRun(sessionId: string | null) {
 	activeTimelineSessionId = sessionId;
 	if (!sessionId) return;
@@ -109,7 +109,7 @@ export function upsertSessionToolRun(payload: ToolRunPayload) {
 	});
 }
 
-/** Hydrate terminal ToolRuns for one conversation after switching or restart. */
+/** Hydrate terminal ToolRuns for one session after switching or restart. */
 export async function refreshSessionToolRuns(sessionId: string) {
 	if (!sessionId) return;
 	const requestId = (sessionToolRunRefreshRequests.get(sessionId) || 0) + 1;

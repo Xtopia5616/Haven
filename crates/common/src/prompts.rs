@@ -118,7 +118,7 @@ End of stable instructions.\n\
 /// Short fallback guidance added only after an unclassified tool failure.
 pub const TOOL_FAILURE_DIAGNOSIS: &str = "Use the error to guide the next call; check state before repeating an action whose outcome is unclear.";
 
-/// Conversation title generator (small_model).
+/// Session title generator (small_model).
 pub const TITLE_SYSTEM_PROMPT: &str =
     "Write a concise title in the conversation's language. Return only the title.";
 

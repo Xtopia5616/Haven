@@ -20,7 +20,7 @@ pub struct PartialMessageCheckpoint {
 /// - the app crashed and the session is finalized to `error` at startup,
 /// - the session itself is deleted (FK cascade).
 ///
-/// Never read by the canonical conversation flows; the row lives outside
+/// Never read by the canonical transcript flows; the row lives outside
 /// `messages`, so no compaction-style filtering is needed.
 impl Database {
     /// Upsert the current partial stream text for a session.

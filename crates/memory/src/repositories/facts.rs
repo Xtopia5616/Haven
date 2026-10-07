@@ -32,7 +32,7 @@ pub struct Fact {
     /// RFC3339 timestamp of the last time this fact was observed.
     #[serde(default)]
     pub last_seen_at: Option<String>,
-    /// The conversation message this fact was extracted from, if known.
+    /// The session message this fact was extracted from, if known.
     #[serde(default)]
     pub source_ref: Option<FactSourceRef>,
     /// 0..1 rating of how long this fact stays useful. Scales the effective
@@ -47,7 +47,7 @@ fn default_durability() -> f64 {
     1.0
 }
 
-/// Reference back to the conversation message a fact was extracted from.
+/// Reference back to the session message a fact was extracted from.
 /// Rehydrated from provenance_* columns on `facts` for traceability
 /// and contradiction checks.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -281,7 +281,7 @@ impl Database {
         })
     }
 
-    /// Insert, reinforce, or correct a fact extracted from a conversation.
+    /// Insert, reinforce, or correct a fact extracted from a session transcript.
     ///
     /// - Same (subject, predicate, object) triple already present →
     ///   reinforcement: bump `mention_count`, refresh `last_seen_at`, and
@@ -293,7 +293,7 @@ impl Database {
     ///   dropped entirely ([`UpsertOutcome::Skipped`]) — user facts win.
     /// - Otherwise → plain insert.
     ///
-    /// `source_ref` points at the supporting conversation message; on
+    /// `source_ref` points at the supporting session message; on
     /// reinforcement it replaces the stored reference when provided. The
     /// durability variant additionally records the incoming 0..1 durability
     /// rating (reinforcement keeps the higher of the two).

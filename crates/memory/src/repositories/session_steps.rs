@@ -21,7 +21,7 @@ pub struct SessionStep {
     pub confirmed: Option<bool>,
     /// Whether the tool output was hidden from the user in the live chat
     /// (`"silent": true` in the tool input). Persisted so the history resume
-    /// renders the same as the live conversation.
+    /// renders the same as the live transcript.
     pub silent: bool,
     pub started_at: Option<String>,
     pub completed_at: Option<String>,

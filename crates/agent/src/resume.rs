@@ -642,7 +642,7 @@ impl AgentLayer {
         // the bounded cached result when it is ready.
         self.memory_worker
             .prefetch_prompt_memory(session_id, description);
-        // S2: exclude this session from Past conversation excerpts. The first
+        // S2: exclude this session from past conversation excerpts. The first
         // prompt deliberately carries an empty MEMORY fence and is patched in
         // place once the prefetch completes.
         let system_prompt = self

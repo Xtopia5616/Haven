@@ -187,7 +187,7 @@ function drainQueue(lane: SubmissionLane) {
 /**
  * Deliver a user submission (typed input or voice transcript) to the
  * backend through the same `process_transcript` path so voice input
- * continues the currently open conversation instead of starting a new one.
+ * continues the currently open session instead of starting a new one.
  *
  * The optimistic message is appended first under the active session id, or
  * under `_draft` when no session is open. If the backend replies with

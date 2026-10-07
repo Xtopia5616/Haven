@@ -247,7 +247,7 @@ fn catalog_group_prompt(group: ToolCatalogGroup) -> ToolPrompt {
         ),
         ToolCatalogGroup::System => (
             "Inspect or control the local PC: files, shell, windows, input, media, network, and notifications.",
-            "Do not use for Haven conversation state or peer-agent coordination.",
+            "Do not use for Haven session state or peer-agent coordination.",
         ),
         ToolCatalogGroup::Agent => (
             "Delegate work or exchange messages with peer agents.",
@@ -1414,7 +1414,7 @@ mod tests {
         let index = render_tool_index(&defs);
         assert_eq!(index.matches("- system:").count(), 1);
         assert!(index.contains("when to use: Inspect or control the local PC"));
-        assert!(index.contains("when not to use: Do not use for Haven conversation state"));
+        assert!(index.contains("when not to use: Do not use for Haven session state"));
         assert!(index.contains("key operations: files.read, files.write"));
         assert!(index.contains("files(2 operations)"));
         assert!(!index.contains("input_schema"));

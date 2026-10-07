@@ -620,7 +620,7 @@
 			border-color var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard),
 			box-shadow var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard);
 	}
-	/* The global long-conversation optimization may skip off-screen bubbles;
+	/* The global long-transcript optimization may skip off-screen bubbles;
 	 * the active stream is the exception because its newest text must paint
 	 * immediately and remain available to the auto-follow scroll boundary. */
 	.bubble.streaming {
@@ -699,7 +699,7 @@
 		border-left: 3px solid color-mix(in srgb, var(--md-sys-color-secondary) 65%, transparent);
 	}
 	/* Embedded tool calls sit inside the Agent work surface. The outer
-	 * activity group already provides the conversation edge, so remove the
+	 * activity group already provides the transcript edge, so remove the
 	 * nested border entirely rather than stacking two competing surfaces. */
 	.bubble.compact.tool.assistant {
 		border: none;

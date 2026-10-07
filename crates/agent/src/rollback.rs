@@ -180,7 +180,7 @@ impl AgentLayer {
             .retain(|&k, b| k <= target_step && b.event_cursor <= event_len);
 
         // Truncate session messages persisted after the branch point so the
-        // conversation context matches the restored snapshot.
+        // session transcript context matches the restored snapshot.
         //
         // A user message may be persisted AFTER the newest branch point:
         // an interjection sent while the session was erroring (its supplement

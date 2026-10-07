@@ -601,7 +601,7 @@ impl AuthorizationEngine {
 
         // Deny always wins over Allow (permanent deny → session deny →
         // permanent allow → session allow). Session deny can override a
-        // permanent allow for the rest of that conversation.
+        // permanent allow for the rest of that session.
         if match_grant(&cfg.permanent, key) == Some(PermissionEffect::Deny) {
             return AuthorizationDecision::Blocked {
                 reason: format!("permanently denied: {key}"),

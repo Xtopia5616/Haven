@@ -122,8 +122,8 @@
 		}
 	}
 
-	// Keep one text draft per conversation while this composer stays mounted.
-	// The fresh-conversation slot is separate from every persisted session.
+	// Keep one text draft per session while this composer stays mounted.
+	// The fresh-session slot is separate from every persisted session.
 	$effect(() => {
 		const nextSessionId = activeSessionId || DRAFT_SESSION_ID;
 		const previous = untrack(() => ({

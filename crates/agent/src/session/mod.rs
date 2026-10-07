@@ -295,7 +295,7 @@ pub enum SessionSupervisorEvent {
     InteractionRequested {
         envelope: Box<InteractionEnvelope>,
     },
-    /// The final pending confirmation woke a paused conversation.
+    /// The final pending confirmation woke a paused session.
     /// `AgentLayer` projects this through the existing session lifecycle event.
     SessionResumed {
         session_id: String,

@@ -5,7 +5,7 @@ import type { ToolRunKind } from './contracts/toolRun.ts';
  *
  * The wire/runtime entity is `ToolRun`; the UI calls its two kinds
  * "后台任务" and "定时任务". Foreground is an execution mode, while a session
- * is a conversation; neither is a ToolRun kind.
+ * represents the user conversation; neither is a ToolRun kind.
  */
 
 export const TOOL_RUN_KIND_LABELS: Record<ToolRunKind, string> = {

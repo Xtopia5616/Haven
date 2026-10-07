@@ -859,7 +859,7 @@ pub struct SessionResumeResponse {
     pub messages: Vec<Message>,
     pub steps: Vec<SessionStep>,
     /// Persisted cumulative token/cost counters for the session, so a resumed
-    /// or auto-restored conversation can restore the token-stats display.
+    /// or auto-restored session can restore the token-stats display.
     pub usage: Option<haven_memory::repositories::usage::SessionUsage>,
     /// Per-LLM-call usage detail (one row per model response: step, role,
     /// model, tokens, cost, duration), oldest first.

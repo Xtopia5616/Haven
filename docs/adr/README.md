@@ -666,3 +666,4 @@
 - [0675：统一 Settings 运行时应用类型名](0675-name-settings-runtime-apply-types.md)
 - [0676：澄清 ToolRun 持久化与 lease 术语](0676-clarify-toolrun-lease-terminology.md)
 - [0677：删除未使用的消息 thread_id 保留字段](0677-remove-unused-message-thread-id.md)
+- [0678：区分 Session 实体与 conversation 内容用词](0678-distinguish-session-and-conversation-wording.md)

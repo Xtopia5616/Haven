@@ -21,7 +21,7 @@ export type ContinueMessage = {
 };
 
 /**
- * The retry affordance belongs to the conversation tail, not only to the
+ * The retry affordance belongs to the session transcript tail, not only to the
  * session error event. A persisted user turn can be the last visible item
  * when a paused session has not started (or has not yet reported) its next
  * assistant block.

@@ -8,7 +8,7 @@
 	}
 
 	/**
-	 * Shared loading surface for workspace views and the conversation shell.
+	 * Shared loading surface for workspace views and the chat shell.
 	 * The three bars are the small voice pattern from Haven's mark.
 	 */
 	let { label = '正在加载…', detail = '', variant = 'page' }: Props = $props();

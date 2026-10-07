@@ -86,7 +86,7 @@ export interface AgentChunkBatchItem {
 	payload: AgentChunkPayload;
 }
 
-/** One in-memory runtime state tree for the conversation. */
+/** One in-memory runtime state tree for the session. */
 export interface SessionReducerState {
 	sessions: SessionSummary[];
 	activeSessionId: string | null;

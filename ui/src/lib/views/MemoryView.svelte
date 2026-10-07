@@ -323,7 +323,7 @@
 	async function resumeSession(session: SessionHistoryRow) {
 		try {
 			const wasError = isErrorStatus(session.status);
-			// Opening an errored conversation is read-only. Reopening it here used
+			// Opening an errored session is read-only. Reopening it here used
 			// to change the in-memory status to Paused before the chat could render,
 			// which hid the actual failure state. Continue/retry performs the
 			// explicit transition when the user asks for it.

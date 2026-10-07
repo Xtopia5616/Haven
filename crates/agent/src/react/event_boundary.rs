@@ -362,7 +362,7 @@ impl ReActEngine {
     /// Pause the session because the run exhausted its step budget. Mirrors
     /// `pause_turn`'s event-boundary side effects (Paused status,
     /// infer) but does NOT persist an assistant chat message: system notices
-    /// of this kind must not pollute the conversation stream as fake agent
+    /// of this kind must not pollute the session transcript as fake agent
     /// replies —they are surfaced as a notification (in-app toast +
     /// Windows) instead, so the user sees them without the chat pretending
     /// the turn produced an answer.

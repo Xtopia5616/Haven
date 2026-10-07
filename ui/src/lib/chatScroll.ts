@@ -1,10 +1,10 @@
-/** Distance in pixels at which the conversation is considered to be at its end. */
+/** Distance in pixels at which the transcript is considered to be at its end. */
 export const CHAT_SCROLL_BOTTOM_THRESHOLD = 32;
 /** Smaller settled range used to hide the jump button without flickering. */
 export const CHAT_SCROLL_SETTLED_THRESHOLD = 4;
 
 /**
- * Return the remaining scrollable distance below a conversation viewport.
+ * Return the remaining scrollable distance below the transcript viewport.
  * Clamping keeps fractional/overscrolled browser values from producing a
  * negative distance.
  */
@@ -27,7 +27,7 @@ export function chatBottomOverlayClearance(pageBottom: number, overlayTop: numbe
 	return Math.max(0, pageBottom - overlayTop);
 }
 
-/** Whether the conversation viewport is close enough to its end to follow it. */
+/** Whether the transcript viewport is close enough to its end to follow it. */
 export function isChatNearBottom(
 	element: {
 		scrollHeight: number;

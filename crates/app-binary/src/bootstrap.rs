@@ -312,7 +312,7 @@ pub(crate) fn run() {
             // Deferred cold-start work (MCP connect, skills scan, audio
             // prewarm) runs after the window exists so the UI can paint a
             // 加载中 chip instead of sitting on a black webview. The event bus
-            // is installed first so a fresh conversation can be dispatched
+            // is installed first so a fresh session can be dispatched
             // immediately while catalog discovery continues in the background.
             {
                 let emit_handle = handle.clone();

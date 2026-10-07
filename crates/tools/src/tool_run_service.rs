@@ -459,7 +459,7 @@ impl ToolRunService {
         store.list_tool_runs(kind.map(str::to_owned)).await
     }
 
-    /// List persisted ToolRuns owned by one session for its conversation
+    /// List persisted ToolRuns owned by one session for its timeline
     /// timeline. This remains a read-only projection through the ToolRun store.
     pub async fn list_persisted_tool_runs_for_session(
         &self,
