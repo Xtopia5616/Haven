@@ -347,6 +347,13 @@ impl ToolInputValidationFailure {
     }
 }
 
+/// Agent-level interpretation of a provider response for one ReAct step.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ParsedAgentResponse {
+    pub thought: Option<String>,
+    pub tool_calls: Vec<ToolCall>,
+}
+
 pub struct ReActEngine {
     router: Arc<RwLock<Arc<LlmRouter>>>,
     executor: Arc<SessionSupervisor>,
@@ -655,7 +662,7 @@ impl ReActEngine {
     pub fn parse_default_model_response(
         response: &LlmResponse,
         step_number: u32,
-    ) -> (Option<String>, Vec<ToolCall>) {
+    ) -> ParsedAgentResponse {
         let text = response.text.trim().to_string();
 
         // Some OpenAI-compatible gateways leak one natural-language token while
@@ -715,7 +722,10 @@ impl ReActEngine {
             Vec::new()
         };
 
-        (thought, tool_calls)
+        ParsedAgentResponse {
+            thought,
+            tool_calls,
+        }
     }
 
     /// Mark the session Error without propagating DB failures (the loop is
@@ -1821,7 +1831,10 @@ mod tests {
     #[test]
     fn parse_empty_response_no_tool_calls() {
         let r = resp("", vec![], None);
-        let (thought, tool_calls) = ReActEngine::parse_default_model_response(&r, 1);
+        let ParsedAgentResponse {
+            thought,
+            tool_calls,
+        } = ReActEngine::parse_default_model_response(&r, 1);
         assert_eq!(thought, None);
         assert!(tool_calls.is_empty());
     }
@@ -1830,7 +1843,10 @@ mod tests {
     fn parse_text_only_no_finish_reason_keeps_thought_no_action() {
         // step_number=1, Stop finish, but step>0 required for implicit final.
         let r = resp("hello", vec![], Some(FinishReason::Stop));
-        let (thought, tool_calls) = ReActEngine::parse_default_model_response(&r, 0);
+        let ParsedAgentResponse {
+            thought,
+            tool_calls,
+        } = ReActEngine::parse_default_model_response(&r, 0);
         assert_eq!(thought.as_deref(), Some("hello"));
         assert!(tool_calls.is_empty(), "step 0 must not auto-finalize");
     }
@@ -1838,7 +1854,10 @@ mod tests {
     #[test]
     fn parse_text_with_stop_finish_step_nonzero_auto_finalizes() {
         let r = resp("the answer is 42", vec![], Some(FinishReason::Stop));
-        let (thought, tool_calls) = ReActEngine::parse_default_model_response(&r, 1);
+        let ParsedAgentResponse {
+            thought,
+            tool_calls,
+        } = ReActEngine::parse_default_model_response(&r, 1);
         assert_eq!(thought.as_deref(), Some("the answer is 42"));
         assert_eq!(tool_calls.len(), 1);
         assert!(tool_calls[0].is_final);
@@ -1854,7 +1873,10 @@ mod tests {
             arguments: serde_json::json!({"path": "x.txt"}),
         };
         let r = resp("thinking", vec![tc], Some(FinishReason::ToolCalls));
-        let (thought, tool_calls) = ReActEngine::parse_default_model_response(&r, 1);
+        let ParsedAgentResponse {
+            thought,
+            tool_calls,
+        } = ReActEngine::parse_default_model_response(&r, 1);
         assert_eq!(thought.as_deref(), Some("thinking"));
         assert_eq!(tool_calls.len(), 1);
         assert!(!tool_calls[0].is_final);
@@ -1872,7 +1894,10 @@ mod tests {
         };
         for text in ["我", "I", "我先", "Go"] {
             let r = resp(text, vec![tc.clone()], Some(FinishReason::ToolCalls));
-            let (thought, tool_calls) = ReActEngine::parse_default_model_response(&r, 1);
+            let ParsedAgentResponse {
+                thought,
+                tool_calls,
+            } = ReActEngine::parse_default_model_response(&r, 1);
             assert_eq!(thought, None, "{text:?} must not become a thought bubble");
             assert_eq!(tool_calls.len(), 1);
         }
@@ -1886,7 +1911,10 @@ mod tests {
             arguments: serde_json::json!({"path": "x.txt"}),
         };
         let r = resp("正在读取文件。", vec![tc], Some(FinishReason::ToolCalls));
-        let (thought, tool_calls) = ReActEngine::parse_default_model_response(&r, 1);
+        let ParsedAgentResponse {
+            thought,
+            tool_calls,
+        } = ReActEngine::parse_default_model_response(&r, 1);
         assert_eq!(thought.as_deref(), Some("正在读取文件。"));
         assert_eq!(tool_calls.len(), 1);
     }
@@ -1899,7 +1927,8 @@ mod tests {
             arguments: serde_json::json!({"answer": "done"}),
         };
         let r = resp("answering", vec![tc], Some(FinishReason::ToolCalls));
-        let (_, tool_calls) = ReActEngine::parse_default_model_response(&r, 2);
+        let ParsedAgentResponse { tool_calls, .. } =
+            ReActEngine::parse_default_model_response(&r, 2);
         assert!(tool_calls[0].is_final);
     }
 
@@ -1914,7 +1943,8 @@ mod tests {
                 arguments: serde_json::json!({}),
             };
             let r = resp("t", vec![tc], Some(FinishReason::ToolCalls));
-            let (_, tool_calls) = ReActEngine::parse_default_model_response(&r, 1);
+            let ParsedAgentResponse { tool_calls, .. } =
+                ReActEngine::parse_default_model_response(&r, 1);
             assert!(!tool_calls[0].is_final, "{name} must not be final");
         }
     }
@@ -1927,7 +1957,8 @@ mod tests {
             arguments: serde_json::json!({}),
         };
         let r = resp("", vec![tc], Some(FinishReason::ToolCalls));
-        let (_, tool_calls) = ReActEngine::parse_default_model_response(&r, 1);
+        let ParsedAgentResponse { tool_calls, .. } =
+            ReActEngine::parse_default_model_response(&r, 1);
         assert!(tool_calls[0].tool_call_id.is_some());
         assert!(!tool_calls[0].tool_call_id.as_ref().unwrap().is_empty());
     }
@@ -1947,7 +1978,8 @@ mod tests {
             },
         ];
         let r = resp("multi", tcs, Some(FinishReason::ToolCalls));
-        let (_, tool_calls) = ReActEngine::parse_default_model_response(&r, 1);
+        let ParsedAgentResponse { tool_calls, .. } =
+            ReActEngine::parse_default_model_response(&r, 1);
         assert_eq!(tool_calls.len(), 2);
         assert_eq!(tool_calls[0].tool_name, "search");
         assert_eq!(tool_calls[1].tool_name, "read_file");
@@ -1968,7 +2000,8 @@ mod tests {
             },
         ];
         let r = resp("", tcs, Some(FinishReason::ToolCalls));
-        let (_, tool_calls) = ReActEngine::parse_default_model_response(&r, 1);
+        let ParsedAgentResponse { tool_calls, .. } =
+            ReActEngine::parse_default_model_response(&r, 1);
         assert_eq!(tool_calls.len(), 2);
         assert_eq!(tool_calls[0].tool_call_id.as_deref(), Some("same"));
         assert_ne!(tool_calls[0].tool_call_id, tool_calls[1].tool_call_id);
@@ -1989,7 +2022,8 @@ mod tests {
             arguments: serde_json::json!({}),
         };
         let r = resp("text", vec![tc], Some(FinishReason::Stop));
-        let (_, tool_calls) = ReActEngine::parse_default_model_response(&r, 1);
+        let ParsedAgentResponse { tool_calls, .. } =
+            ReActEngine::parse_default_model_response(&r, 1);
         assert_eq!(tool_calls.len(), 1);
         assert!(!tool_calls[0].is_final);
     }
@@ -1997,7 +2031,7 @@ mod tests {
     #[test]
     fn parse_text_trimmed_for_thought() {
         let r = resp("  spaced thought  ", vec![], Some(FinishReason::Stop));
-        let (thought, _) = ReActEngine::parse_default_model_response(&r, 1);
+        let ParsedAgentResponse { thought, .. } = ReActEngine::parse_default_model_response(&r, 1);
         assert_eq!(thought.as_deref(), Some("spaced thought"));
     }
 }

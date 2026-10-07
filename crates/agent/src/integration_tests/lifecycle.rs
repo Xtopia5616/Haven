@@ -652,7 +652,10 @@ fn parse_default_model_response_final_answer_from_text() {
         web_search_calls: Vec::new(),
         thinking_blocks: Vec::new(),
     };
-    let (thought, tool_calls) = ReActEngine::parse_default_model_response(&resp, 1);
+    let ParsedAgentResponse {
+        thought,
+        tool_calls,
+    } = ReActEngine::parse_default_model_response(&resp, 1);
     assert_eq!(thought, Some("Session done.".into()));
     assert_eq!(tool_calls.len(), 1);
     assert!(tool_calls[0].is_final);
@@ -675,7 +678,10 @@ fn parse_default_model_response_with_tool_calls() {
         web_search_calls: Vec::new(),
         thinking_blocks: Vec::new(),
     };
-    let (thought, tool_calls) = ReActEngine::parse_default_model_response(&resp, 2);
+    let ParsedAgentResponse {
+        thought,
+        tool_calls,
+    } = ReActEngine::parse_default_model_response(&resp, 2);
     assert_eq!(thought, Some("Opening file.".into()));
     assert_eq!(tool_calls.len(), 1);
     assert!(!tool_calls[0].is_final);
@@ -702,7 +708,10 @@ fn parse_default_model_response_final_answer_tool_call() {
         web_search_calls: Vec::new(),
         thinking_blocks: Vec::new(),
     };
-    let (thought, tool_calls) = ReActEngine::parse_default_model_response(&resp, 1);
+    let ParsedAgentResponse {
+        thought,
+        tool_calls,
+    } = ReActEngine::parse_default_model_response(&resp, 1);
     assert_eq!(thought, Some("All done.".into()));
     assert_eq!(tool_calls.len(), 1);
     assert!(tool_calls[0].is_final);

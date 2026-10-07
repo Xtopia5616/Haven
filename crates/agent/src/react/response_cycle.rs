@@ -87,11 +87,10 @@ impl ReActEngine {
                     let retry_context = request_context.with_user_instruction(nudge);
                     match stream.retry(&retry_context).await {
                         Ok(retry_call) => {
-                            let (retry_thought, retry_tool_calls) =
-                                ReActEngine::parse_default_model_response(
-                                    &retry_call.response,
-                                    ctx.step_num,
-                                );
+                            let parsed_response = ReActEngine::parse_default_model_response(
+                                &retry_call.response,
+                                ctx.step_num,
+                            );
                             self.record_step_usage(
                                 ctx,
                                 stream.request(),
@@ -101,8 +100,8 @@ impl ReActEngine {
                             )
                             .await;
                             response = retry_call.response;
-                            thought = retry_thought;
-                            tool_calls = retry_tool_calls;
+                            thought = parsed_response.thought;
+                            tool_calls = parsed_response.tool_calls;
                         }
                         Err(haven_llm::LlmError::Cancelled) => {
                             return ResponseCycleOutcome::Cancelled;

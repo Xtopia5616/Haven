@@ -354,7 +354,9 @@ impl ReActEngine {
         // failed/empty candidate is only visible as streamed scratch output;
         // the accepted response below is the first response that may become
         // durable assistant state.
-        let (thought, tool_calls) = Self::parse_default_model_response(&response, step_num);
+        let parsed_response = Self::parse_default_model_response(&response, step_num);
+        let thought = parsed_response.thought;
+        let tool_calls = parsed_response.tool_calls;
         deadline.ensure_remaining("response parsing")?;
         let pending_ask = !self
             .executor

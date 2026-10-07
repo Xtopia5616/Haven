@@ -55,7 +55,8 @@ pub use prompt_context::{
 };
 pub use prompt_renderer::{MemorySections, PromptRenderer};
 pub use react::{
-    LoopExit, MetricsSnapshot, PauseReason, ReActEngine, ToolCatalogPort, UiMetricsSnapshot,
+    LoopExit, MetricsSnapshot, ParsedAgentResponse, PauseReason, ReActEngine, ToolCatalogPort,
+    UiMetricsSnapshot,
 };
 pub use session::{
     ConfirmResolution, ManagedAssetLeasePort, RunHandler, SessionInfo, SessionRunEngine,

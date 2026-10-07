@@ -605,3 +605,4 @@
 - [0614：删除 StreamMetricsSnapshot 同义 alias](0614-remove-stream-metrics-snapshot-alias.md)
 - [0615：明确 Rust 组件角色后缀](0615-define-rust-component-role-suffixes.md)
 - [0616：命名 SessionRunEngine](0616-name-session-run-engine.md)
+- [0617：命名 ParsedAgentResponse](0617-name-parsed-agent-response.md)
