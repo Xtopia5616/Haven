@@ -55,10 +55,10 @@ pub struct ModelEndpoint {
     pub auth_header_prefix: String,
     // §2.9: streaming timeout (None = no timeout until SSE ends)
     pub timeout_streaming_secs: Option<u64>,
-    // §2.8: reasoning / thinking intensity from the chat UI ("low" | "medium" |
-    // "high", plus "none"/"off"/"disabled" to turn thinking off). Chat adapter
-    // forwards it as OpenAI `reasoning_effort` and, for DeepSeek/Kimi, also as
-    // vendor `thinking` extras; Responses adapter maps it to `reasoning.effort`.
+    // §2.8: provider-facing reasoning / thinking override. The chat toolbar
+    // writes its common low/medium/high/off choices; config may also hold
+    // provider-specific tokens such as max, xhigh, none, or disabled. Adapters
+    // map or forward this open value according to the selected provider.
     pub reasoning_effort: Option<String>,
     /// Provider built-in web search mode for Responses-API endpoints
     /// (DeepSeek etc.): `"off"` | `"auto"` | `"always"`. `None` defers to the

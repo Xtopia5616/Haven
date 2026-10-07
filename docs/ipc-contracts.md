@@ -49,7 +49,7 @@
 | `discover_models` | execute | 可选 `providerName` 指已配置的连接名；可选 `requestKind` 使用从 Rust `RequestKind` 生成的 `RequestKindInput` union，`transcription` 选择 STT 配置路径；仅 HTTP(S) endpoint；显式输入 key 使用 provider preset 的鉴权方案；已保存 key 仅发送到名称与地址均匹配的 provider；keyless 预设可显式跳过鉴权；代理沿用对应 Provider 设置 |
 | `discover_all_models` | execute | 只查询已配置 provider，并沿用各自代理设置 |
 | `switch_model` | mutate | `requestKind` 为 `RequestKind`；`modelId` 必须是已配置且支持该请求能力的模型 |
-| `set_reasoning_effort` | mutate | `requestKind` 选择当前已分配模型后再保存 |
+| `set_reasoning_effort` | mutate | `requestKind` 选择当前已分配模型；`effort` 使用 generated `ReasoningEffortSelectionInput`（`low` / `medium` / `high` / `off`），`null` 清除覆盖。ModelConfig 中 provider-specific effort 保持开放字符串，由 LLM adapter 映射 |
 | `set_web_search` | mutate | `requestKind` 选择当前已分配模型；可选 `mode` 使用 `WebSearchModeInput` (`off` / `auto` / `always`)；`null` 清除显式覆盖并回退到环境/default resolution；启用内置搜索前校验 provider capability |
 | `get_recording_state` | read | 只返回采集状态 |
 | `set_hotkey_capture_active` | mutate | 仅控制快捷键录入期间的临时抑制状态 |

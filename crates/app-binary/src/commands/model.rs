@@ -4,10 +4,31 @@ use haven_common::config::{
     AppConfig, LlmConfig, ModelConfig, ProviderConfig, RequestKind, provider_config_wire_style,
 };
 use haven_llm::{ModelDiscoveryAuthHeader, ModelInfo, ModelRegistry};
+use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use tauri::Manager;
 use tauri::State;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReasoningEffortSelection {
+    Low,
+    Medium,
+    High,
+    Off,
+}
+
+impl ReasoningEffortSelection {
+    const fn as_config_value(self) -> &'static str {
+        match self {
+            Self::Low => "low",
+            Self::Medium => "medium",
+            Self::High => "high",
+            Self::Off => "off",
+        }
+    }
+}
 
 fn model_slot_for_request(
     cfg: &mut LlmConfig,
@@ -603,22 +624,18 @@ pub async fn switch_model(
     Ok(())
 }
 
-/// Set the reasoning effort of the model assigned to a request route
-/// (e.g. "low"/"medium"/"high").
+/// Set one of the chat toolbar's common reasoning effort choices on the model
+/// assigned to a request route. `None` clears the override. Provider-specific
+/// values already stored in ModelConfig remain open and are handled by LLM adapters.
 /// Updates config.toml and hot-swaps the LlmRouter at runtime.
 #[tauri::command]
 pub async fn set_reasoning_effort(
     request_kind: RequestKind,
-    effort: Option<String>,
+    effort: Option<ReasoningEffortSelection>,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
     let state = app.state::<Arc<AppState>>();
-
-    let normalized = match effort {
-        Some(e) if e.trim().is_empty() => None,
-        Some(e) => Some(e.trim().to_string()),
-        None => None,
-    };
+    let normalized = effort.map(|effort| effort.as_config_value().to_string());
 
     update_request_model_field(
         &state,
@@ -705,6 +722,28 @@ mod tests {
         let mut cfg = AppConfig::default();
         cfg.llm.providers = providers;
         cfg
+    }
+
+    #[test]
+    fn reasoning_effort_selection_accepts_toolbar_values_and_rejects_provider_values() {
+        for (wire, selection) in [
+            ("low", ReasoningEffortSelection::Low),
+            ("medium", ReasoningEffortSelection::Medium),
+            ("high", ReasoningEffortSelection::High),
+            ("off", ReasoningEffortSelection::Off),
+        ] {
+            assert_eq!(
+                serde_json::from_str::<ReasoningEffortSelection>(&format!("\"{wire}\"")).unwrap(),
+                selection
+            );
+            assert_eq!(selection.as_config_value(), wire);
+        }
+
+        for wire in ["", "none", "disabled", "xhigh", "max", "HIGH"] {
+            assert!(
+                serde_json::from_str::<ReasoningEffortSelection>(&format!("\"{wire}\"")).is_err()
+            );
+        }
     }
 
     #[test]

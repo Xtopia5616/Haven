@@ -98,7 +98,10 @@
 	} from '$lib/contracts/sessionHistory.ts';
 	import type { ToolRunPayload, ToolRunStatus } from '$lib/contracts/toolRun.ts';
 	import type { AgentMediaPlanPayload } from '$lib/contracts/agent.ts';
-	import type { WebSearchModeInput } from '$lib/contracts/generatedCommands.ts';
+	import type {
+		ReasoningEffortSelectionInput,
+		WebSearchModeInput,
+	} from '$lib/contracts/generatedCommands.ts';
 	import type { ChatFileAttachment, ChatImageAttachment } from '$lib/chatAttachmentTypes.ts';
 	import type { SessionMessageContextMenuRequest } from '$lib/sessionTimeline.ts';
 	import type { ReActExecutionPhaseSnapshot } from '$lib/sessionRuntimeStore.ts';
@@ -399,7 +402,7 @@
 		).length;
 	});
 
-	const effortOptions = [
+	const effortOptions: Array<{ value: ReasoningEffortSelectionInput | ''; label: string }> = [
 		{ value: '', label: '默认' },
 		{ value: 'low', label: '低' },
 		{ value: 'medium', label: '中' },

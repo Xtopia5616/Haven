@@ -80,6 +80,8 @@ export interface LogInfo { enabled: boolean; level: string; path: string | null 
 export interface LogTail { path: string; content: string }
 export interface McpRefreshResult { added: string[]; removed: string[]; updated: string[]; failed: string[] }
 export interface ApiKeyStatus { models: Record<string, boolean>; providers: Record<string, boolean>; stt: boolean; ocr: boolean; ocr_secret: boolean }
+export const REASONING_EFFORT_SELECTION_INPUT_VALUES = ['low', 'medium', 'high', 'off'] as const;
+export type ReasoningEffortSelectionInput = (typeof REASONING_EFFORT_SELECTION_INPUT_VALUES)[number];
 export interface RecordingStatus { is_recording: boolean; is_toggle: boolean }
 export const CONFIRMATION_RESOLUTION_RESULT_VALUES = ['resolved', 'expired', 'stale'] as const;
 export type ConfirmationResolutionResult = (typeof CONFIRMATION_RESOLUTION_RESULT_VALUES)[number];
@@ -359,7 +361,7 @@ export interface TauriCommandMap {
 	search_session_history_filtered: { request: { query?: string | null; status?: SessionHistoryStatusFilterInput | null; startDate?: string | null; endDate?: string | null; limit?: number | null; offset?: number | null }; response: SessionRecordDto[] };
 	search_session_history_paginated: { request: { query: string; limit: number; offset: number }; response: SessionRecordDto[] };
 	set_hotkey_capture_active: { request: { active: boolean }; response: void };
-	set_reasoning_effort: { request: { requestKind: RequestKindInput; effort?: string | null }; response: void };
+	set_reasoning_effort: { request: { requestKind: RequestKindInput; effort?: ReasoningEffortSelectionInput | null }; response: void };
 	set_skill_enabled: { request: { name: string; enabled: boolean }; response: void };
 	set_tool_enabled: { request: { name: string; enabled: boolean }; response: void };
 	set_web_search: { request: { requestKind: RequestKindInput; mode?: WebSearchModeInput | null }; response: void };

@@ -5,7 +5,10 @@ import type {
 	SetWebSearchRequest,
 	SwitchModelRequest,
 } from './contracts/commands.ts';
-import type { WebSearchModeInput } from './contracts/generatedCommands.ts';
+import type {
+	ReasoningEffortSelectionInput,
+	WebSearchModeInput,
+} from './contracts/generatedCommands.ts';
 
 export interface ChatModelOption {
 	/** Stable id of a configured ModelConfig, used by RequestPolicy.primary. */
@@ -101,7 +104,7 @@ export function createChatModelOperations(dependencies: ChatModelOperationsDepen
 		);
 	}
 
-	function selectEffort(value: string): Promise<void> {
+	function selectEffort(value: ReasoningEffortSelectionInput | ''): Promise<void> {
 		const label = dependencies.getEffortLabel(value) || '默认';
 		return runOperation(
 			() =>

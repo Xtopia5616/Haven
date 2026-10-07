@@ -1,13 +1,15 @@
 <script lang="ts">
 	import type { ChatModelOption } from '$lib/chatModelOperations.ts';
-	import type { WebSearchModeInput } from '$lib/contracts/generatedCommands.ts';
+	import type {
+		ReasoningEffortSelectionInput,
+		WebSearchModeInput,
+	} from '$lib/contracts/generatedCommands.ts';
 	import MaterialButton from './MaterialButton.svelte';
 	import MaterialChoiceChip from './MaterialChoiceChip.svelte';
 	import MaterialCollapsible from './MaterialCollapsible.svelte';
 	import Icon from './Icon.svelte';
 	import MenuItem from './MenuItem.svelte';
 
-	type MenuOption = { value: string; label: string };
 	interface Props {
 		modelMenuOpen?: boolean;
 		currentModelName?: string;
@@ -15,9 +17,9 @@
 		modelOptions?: ChatModelOption[];
 		onToggleMenu?: () => void;
 		onModelSelect?: (model: ChatModelOption) => void | Promise<void>;
-		effortOptions?: MenuOption[];
+		effortOptions?: Array<{ value: ReasoningEffortSelectionInput | ''; label: string }>;
 		currentEffort?: string;
-		onEffortSelect?: (value: string) => void | Promise<void>;
+		onEffortSelect?: (value: ReasoningEffortSelectionInput | '') => void | Promise<void>;
 		webSearchSupported?: boolean;
 		webSearchOptions?: Array<{ value: WebSearchModeInput; label: string }>;
 		currentWebSearch?: string;
