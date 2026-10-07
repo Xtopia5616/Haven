@@ -1,6 +1,6 @@
 # Haven 命名规范
 
-> 版本: v1.100 | 日期: 2026-10-07
+> 版本: v1.101 | 日期: 2026-10-07
 
 本文档统一 Haven 项目各层的命名规则（变量名、函数名、文件名、crate 名、缩写大小写、跨层边界）。规范以现有代码中的事实模式为基础，新代码必须遵循；存量代码若与规范冲突，逐步迁移对齐。
 
@@ -23,6 +23,7 @@
 - **IPC 请求类型按命令 owner 命名**：前端 wrapper 的 request alias 必须从它实际调用的 generated command 派生；即使两个命令的字段形状相同，也分别命名，如 `SetSkillEnabledRequest` / `SetToolEnabledRequest`、`ReconnectMcpRequest` / `RemoveMcpServerRequest`，不要用某一个命令的类型 alias 覆盖另一个命令（ADR 0681）。
 - **Tool renderer 只按当前 manifest key 派发**：`ToolPresentation.renderer` 是开放扩展字符串，但 UI 仅为当前明确登记的 renderer key 选择专用组件；未知 key 使用通用 JSON renderer。不要把 root/tool 名称或旧的 `haven`、`admin`、`settings` 别名隐式解释成管理面板（ADR 0682）。
 - **Admin capability 唯一拥有管理工具名**：`AdminCapability::tool_name` 唯一映射 `haven_*` 工具名；model operation surface 先解析到同一 enum 再取工具名，不在 request helper 或 metadata 中另存重复字符串（ADR 0683）。
+- **Admin operation 统一从组合 owner 构造**：配置操作由 `AdminSurfaces` 通过共享 `AdminServices` 构造；不保留无生产调用方的 `ConfigAdminContext`、`ConfigAdminTool` 或单独 builder 作为第二条装配路径（ADR 0684）。
 - **认证方案与凭据分阶段命名**：header policy 使用 `AuthHeaderScheme { header_name, prefix }`；将密钥应用到方案后得到 LLM registry 拥有的 `ModelDiscoveryAuthHeader { header_name, value }`，该类型直接跨 App→LLM API 传递；一次 model discovery 的输入由 `ResolvedDiscoveryAuth { api_key, auth_header }` 表达。含实际凭据的类型不自动派生 `Debug`，避免调试格式意外暴露密钥。
 - **模型配置引用与供应商身份分名**：`ModelConfig::provider_name` 指向 `ProviderConfig::name`（用户配置的连接名称）；`ProviderConfig::provider` 与 `ModelEndpoint::provider` 表示供应商身份。Serde/TOML/IPC 字段统一为 `provider_name`；设置编辑器内部使用 `providerName`，只在 generated IPC 边界转换命名风格。按连接名查找使用 `LlmConfig::provider_config_by_name`（ADR 0632）。
 - **配置投影视图引用生成字段**：UI helper 仅消费设置 DTO 的部分字段时，用 `Pick<GeneratedInput, ...>` 派生投影，不手写同形字段；确有草稿中间态允许 `null` 的字段在投影中显式拓宽，并与 required wire contract 区分。`apiStyle.ts` 的 `ProviderStyleInput` 基于 generated `ProviderConfigInput`，只为 `provider` 与 `base_url` 保留 UI 草稿 nullable 语义（ADR 0643）。

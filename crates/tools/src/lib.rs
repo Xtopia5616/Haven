@@ -133,10 +133,9 @@ pub use adapters::{McpToolAdapter, SkillToolAdapter};
 pub use asset_registry::{GeneratedMediaCleanupGuard, ManagedAsset, ManagedAssetRegistry};
 pub use builtin::{
     AdminCapability, AdminContext, AdminOperationError, AdminRequest, AdminSurfaces, AgentTool,
-    ConfigAdminContext, ConfigAdminOperation, ConfigAdminTool, ConfigOperationArgs,
-    ConfigOperationError, ConfigOperationOutput, ConfigViewOutput, DiagnosticsOperationArgs,
-    LogLevelOutput, McpOperationArgs, McpRefreshAction, McpRefreshPlan, McpRefreshTarget,
-    MediaTranscriptionResult, MediaTranscriptionStatus, NativeMcpOperationArgs,
+    ConfigOperationArgs, ConfigOperationError, ConfigOperationOutput, ConfigViewOutput,
+    DiagnosticsOperationArgs, LogLevelOutput, McpOperationArgs, McpRefreshAction, McpRefreshPlan,
+    McpRefreshTarget, MediaTranscriptionResult, MediaTranscriptionStatus, NativeMcpOperationArgs,
     SkillsOperationArgs, ToolsOperationArgs,
 };
 pub use catalog::McpServerIndexEntry;

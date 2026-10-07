@@ -108,10 +108,9 @@ pub(crate) async fn resolve_media_capabilities(
 pub use crate::tool_runtime::{MemoryRecallPort, MemoryRecallSlot, new_memory_recall_slot};
 pub use admin::{
     AdminCapability, AdminContext, AdminOperationError, AdminRequest, AdminSurfaces,
-    ConfigAdminContext, ConfigAdminOperation, ConfigAdminTool, ConfigOperationArgs,
-    ConfigOperationError, ConfigOperationOutput, ConfigViewOutput, DiagnosticsOperationArgs,
-    LogLevelOutput, McpOperationArgs, McpRefreshAction, McpRefreshPlan, McpRefreshTarget,
-    NativeMcpOperationArgs, SkillsOperationArgs, ToolsOperationArgs,
+    ConfigOperationArgs, ConfigOperationError, ConfigOperationOutput, ConfigViewOutput,
+    DiagnosticsOperationArgs, LogLevelOutput, McpOperationArgs, McpRefreshAction, McpRefreshPlan,
+    McpRefreshTarget, NativeMcpOperationArgs, SkillsOperationArgs, ToolsOperationArgs,
 };
 pub use media::{MediaTranscriptionResult, MediaTranscriptionStatus};
 pub use memory::MemoryTool;

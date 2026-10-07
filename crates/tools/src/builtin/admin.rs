@@ -60,31 +60,6 @@ pub struct AdminContext {
     pub tool_control: Option<Arc<dyn ToolControlPort>>,
 }
 
-/// Narrow context retained for callers that construct only the config
-/// operation. It contains no generic operation dispatcher state.
-#[derive(Clone)]
-pub struct ConfigAdminContext {
-    pub config_service: Option<Arc<ConfigService>>,
-    pub config_apply_gate: Option<Arc<tokio::sync::Mutex<()>>>,
-    pub log_level: Option<Arc<dyn LogLevelPort>>,
-}
-
-impl From<ConfigAdminContext> for AdminContext {
-    fn from(context: ConfigAdminContext) -> Self {
-        Self {
-            config_service: context.config_service,
-            config_apply_gate: context.config_apply_gate,
-            session_store: None,
-            memory_facts: None,
-            router: None,
-            log_path: None,
-            file_logging_enabled: false,
-            log_level: context.log_level,
-            tool_control: None,
-        }
-    }
-}
-
 const MODEL_TOGGLEABLE_TOOL_NAMES: &[&str] = &[
     "media",
     "ask",
@@ -1281,24 +1256,11 @@ impl TypedToolOperation for McpAdminOperation {
 }
 
 #[derive(Clone)]
-pub struct ConfigAdminOperation {
+pub(crate) struct ConfigAdminOperation {
     services: Arc<AdminServices>,
 }
 
 impl ConfigAdminOperation {
-    pub fn new(context: ConfigAdminContext) -> Self {
-        Self {
-            services: Arc::new(AdminServices::new(
-                context.into(),
-                SkillRegistry::new(),
-                Arc::new(McpManager::new()),
-                Arc::new(RwLock::new(HashMap::new())),
-                ToolRegistry::new(),
-                0,
-                0,
-            )),
-        }
-    }
     fn from_services(services: Arc<AdminServices>) -> Self {
         Self { services }
     }
@@ -1475,16 +1437,6 @@ impl TypedToolOperation for ConfigAdminOperation {
             }
         }
     }
-}
-
-pub type ConfigAdminTool = TypedToolAdapter<ConfigAdminOperation>;
-
-pub fn new_config_admin_tool(context: ConfigAdminContext) -> ConfigAdminTool {
-    TypedToolAdapter::new(
-        "haven_config",
-        "Read masked configuration or change the typed runtime log level.",
-        ConfigAdminOperation::new(context),
-    )
 }
 
 /// The current catalog generation's five typed admin operations. Native app
@@ -1896,15 +1848,46 @@ mod tests {
         )
     }
 
-    fn config_tool() -> (ConfigAdminTool, Arc<ConfigService>, TempDir) {
+    fn config_tool_with_service(
+        service: Arc<ConfigService>,
+        log_level: Option<Arc<dyn LogLevelPort>>,
+    ) -> TypedToolAdapter<ConfigAdminOperation> {
+        let context = AdminContext {
+            config_service: Some(service),
+            config_apply_gate: None,
+            session_store: None,
+            memory_facts: None,
+            router: None,
+            log_path: None,
+            file_logging_enabled: false,
+            log_level,
+            tool_control: None,
+        };
+        let services = Arc::new(AdminServices::new(
+            context,
+            SkillRegistry::new(),
+            Arc::new(McpManager::new()),
+            Arc::new(RwLock::new(HashMap::new())),
+            ToolRegistry::new(),
+            0,
+            0,
+        ));
+        TypedToolAdapter::new(
+            AdminCapability::Config.tool_name(),
+            AdminCapability::Config.description(),
+            ConfigAdminOperation::from_services(services),
+        )
+    }
+
+    fn config_tool() -> (
+        TypedToolAdapter<ConfigAdminOperation>,
+        Arc<ConfigService>,
+        TempDir,
+    ) {
         let dir = TempDir::new().expect("temporary config directory");
         let loader = ConfigLoader::load_from(&dir.path().join("config.toml")).unwrap();
         let service = Arc::new(test_config_service(loader));
-        let tool = new_config_admin_tool(ConfigAdminContext {
-            config_service: Some(service.clone()),
-            config_apply_gate: None,
-            log_level: None,
-        });
+        let tool = config_tool_with_service(service.clone(), None);
         (tool, service, dir)
     }
 
@@ -3387,11 +3370,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let loader = ConfigLoader::load_from(&dir.path().join("config.toml")).unwrap();
         let service = Arc::new(test_config_service(loader));
-        let tool = new_config_admin_tool(ConfigAdminContext {
-            config_service: Some(service.clone()),
-            config_apply_gate: None,
-            log_level: Some(Arc::new(FailingLogLevelPort)),
-        });
+        let tool = config_tool_with_service(service.clone(), Some(Arc::new(FailingLogLevelPort)));
 
         let error = tool
             .execute(
