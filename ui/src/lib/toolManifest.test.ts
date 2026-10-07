@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import ToolAdminResult from './ToolAdminResult.svelte';
 import ToolFileSearchResult from './ToolFileSearchResult.svelte';
+import ToolJsonResult from './ToolJsonResult.svelte';
 import { parseToolResult } from './toolResultParsing.ts';
 import { getToolResultRenderer } from './toolResultRenderers.ts';
 import {
@@ -168,8 +169,8 @@ describe('manifest-driven result renderers', () => {
 		expect(getToolResultRenderer('custom', 'files.search', data)).toBe(ToolFileSearchResult);
 	});
 
-	it('uses the manifest renderer for haven operations while keeping root haven', () => {
-		setToolManifests([manifest('haven.diagnostics.status', 'haven', 'settings')]);
+	it('uses the canonical admin renderer while keeping the manifest root', () => {
+		setToolManifests([manifest('haven.diagnostics.status', 'haven', 'haven_diagnostics')]);
 		const data = { status: 'ok', version: '0.1.0' };
 
 		expect(toolRootName('haven.diagnostics.status')).toBe('haven');
@@ -181,13 +182,13 @@ describe('manifest-driven result renderers', () => {
 		);
 	});
 
-	it('uses the manifest renderer without payload shape metadata', () => {
-		setToolManifests([manifest('custom.operation', 'custom', 'settings')]);
+	it('renders an unknown extension renderer as generic JSON', () => {
+		setToolManifests([manifest('custom.operation', 'custom', 'custom_extension')]);
 		expect(parseToolResult('custom.operation', JSON.stringify({ value: 1 }))).toMatchObject({
 			kind: 'custom',
 		});
 		expect(getToolResultRenderer('custom', 'custom.operation', { value: 1 })).toBe(
-			ToolAdminResult,
+			ToolJsonResult,
 		);
 	});
 });

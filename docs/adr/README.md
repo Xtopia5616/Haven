@@ -670,3 +670,4 @@
 - [0679：统一 Session 运行态与持久历史术语](0679-unify-session-runtime-and-history-terms.md)
 - [0680：明确内置工具 manifest 列表命令](0680-name-builtin-tool-manifest-list-command.md)
 - [0681：按命令 owner 命名前端 IPC 请求类型](0681-name-ipc-requests-by-command-owner.md)
+- [0682：删除未登记的 Tool renderer 别名](0682-remove-unregistered-tool-renderer-aliases.md)

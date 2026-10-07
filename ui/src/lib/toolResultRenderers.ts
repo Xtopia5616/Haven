@@ -18,6 +18,14 @@ import ToolWebSearchResult from './ToolWebSearchResult.svelte';
 import ToolWindowResult from './ToolWindowResult.svelte';
 import { toolRendererName } from './toolManifest.ts';
 
+const adminRendererNames: ReadonlySet<string> = new Set([
+	'haven_diagnostics',
+	'haven_config',
+	'haven_skills',
+	'haven_tools',
+	'haven_mcp',
+]);
+
 const renderers = {
 	shell: ToolShellResult,
 	notify: ToolNotifyResult,
@@ -85,31 +93,7 @@ export function getToolResultRenderer(
 		if (scope === 'input') return ToolInputResult;
 		return ToolSystemResult;
 	}
-	if (
-		kind === 'custom' &&
-		(selectedRenderer === 'haven' ||
-			selectedRenderer === 'admin' ||
-			selectedRenderer === 'settings')
-	) {
-		const operation =
-			typeof _data === 'object' && _data !== null && 'operation' in _data
-				? (_data as { operation?: unknown }).operation
-				: null;
-		if (typeof operation === 'string' && operation.startsWith('tool_runs_')) {
-			return ToolRunsResult;
-		}
-		if (typeof operation === 'string' && operation.startsWith('schedule_')) {
-			return ToolScheduleResult;
-		}
-		return ToolAdminResult;
-	}
-	if (
-		kind === 'custom' &&
-		['haven_diagnostics', 'haven_config', 'haven_skills', 'haven_tools', 'haven_mcp'].includes(
-			selectedRenderer,
-		)
-	)
-		return ToolAdminResult;
+	if (kind === 'custom' && adminRendererNames.has(selectedRenderer)) return ToolAdminResult;
 	if (kind === 'custom' && selectedRenderer === 'http') return ToolHttpResult;
 	if (kind === 'custom' && selectedRenderer === 'web_search') return ToolWebSearchResult;
 	if (kind === 'custom' && selectedRenderer === 'memory') return ToolMemoryResult;
