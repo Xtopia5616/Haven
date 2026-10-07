@@ -84,7 +84,8 @@ impl SessionSupervisor {
             .ok_or_else(|| anyhow::anyhow!("session '{}' not found", session_id))?;
         match status {
             SessionStatus::Running => {
-                self.cancel_direct_session_run_waiters(session_id).await;
+                self.cancel_direct_session_run_admission_waiters(session_id)
+                    .await;
                 let cancel = self.cancellation_token(session_id).await;
                 // Cancellation is a control-plane request. Do not wait for a
                 // provider/tool to cooperate here: the UI must regain its
@@ -158,7 +159,8 @@ impl SessionSupervisor {
             self.finish_ended_session(session_id, cascade).await;
             return Ok(SessionStatus::Completed);
         };
-        self.cancel_direct_session_run_waiters(session_id).await;
+        self.cancel_direct_session_run_admission_waiters(session_id)
+            .await;
         let status = actor
             .snapshot()
             .await
@@ -225,7 +227,8 @@ impl SessionSupervisor {
                 "session '{}' lost its end closing marker",
                 session_id
             );
-            self.cancel_direct_session_run_waiters(session_id).await;
+            self.cancel_direct_session_run_admission_waiters(session_id)
+                .await;
             self.dequeue_pending(session_id).await;
             actor
         };
@@ -364,7 +367,8 @@ impl SessionSupervisor {
     /// Cancel and join a run without holding the registry gate. A live ReAct
     /// handler may need that gate to finish a child-session operation.
     async fn quiesce_session(&self, session_id: &str) -> anyhow::Result<()> {
-        self.cancel_direct_session_run_waiters(session_id).await;
+        self.cancel_direct_session_run_admission_waiters(session_id)
+            .await;
         if let Some(actor) = self.actor_for(session_id).await {
             actor.cancel_actor();
             self.dequeue_pending(session_id).await;
@@ -463,7 +467,8 @@ impl SessionSupervisor {
             .cloned()
             .collect::<Vec<_>>();
         for actor in &actors {
-            self.cancel_direct_session_run_waiters(&actor.id).await;
+            self.cancel_direct_session_run_admission_waiters(&actor.id)
+                .await;
             actor.cancel_actor();
             if preserve_scheduled {
                 self.cancel_session_background_tool_runs(&actor.id).await;
@@ -497,7 +502,10 @@ impl SessionSupervisor {
             .clear();
         self.pending_queue.lock().await.clear();
         self.scheduled_confirms.lock().await.clear();
-        self.direct_session_run_waiters.lock().await.clear();
+        self.direct_session_run_admission_waiters
+            .lock()
+            .await
+            .clear();
         Ok(())
     }
 
@@ -653,7 +661,8 @@ impl SessionSupervisor {
             retry_queue: self.terminal_cleanup_retry_queue.clone(),
             session_id: session_id.to_string(),
         };
-        self.cancel_direct_session_run_waiters(session_id).await;
+        self.cancel_direct_session_run_admission_waiters(session_id)
+            .await;
         Ok(closing)
     }
 
@@ -760,7 +769,8 @@ impl SessionSupervisor {
             return Ok(false);
         }
         if transition.terminal {
-            self.cancel_direct_session_run_waiters(session_id).await;
+            self.cancel_direct_session_run_admission_waiters(session_id)
+                .await;
             self.dequeue_pending(session_id).await;
             // A terminal status can be requested while the run is still
             // unwinding. Defer cleanup until `unmark_running` observes the

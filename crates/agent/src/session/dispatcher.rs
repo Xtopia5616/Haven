@@ -163,24 +163,24 @@ impl Drop for DirectSessionRunLease {
     }
 }
 
-struct DirectSessionRunWaiterGuard {
+struct DirectSessionRunAdmissionWaiterGuard {
     executor: Arc<super::SessionSupervisor>,
     session_id: String,
     waiter_id: Option<usize>,
 }
 
-impl DirectSessionRunWaiterGuard {
+impl DirectSessionRunAdmissionWaiterGuard {
     async fn unregister(&mut self) {
         if let Some(waiter_id) = self.waiter_id {
             self.executor
-                .unregister_direct_session_run_waiter(&self.session_id, waiter_id)
+                .unregister_direct_session_run_admission_waiter(&self.session_id, waiter_id)
                 .await;
             self.waiter_id = None;
         }
     }
 }
 
-impl Drop for DirectSessionRunWaiterGuard {
+impl Drop for DirectSessionRunAdmissionWaiterGuard {
     fn drop(&mut self) {
         let Some(waiter_id) = self.waiter_id.take() else {
             return;
@@ -189,7 +189,7 @@ impl Drop for DirectSessionRunWaiterGuard {
         let session_id = self.session_id.clone();
         tokio::spawn(async move {
             executor
-                .unregister_direct_session_run_waiter(&session_id, waiter_id)
+                .unregister_direct_session_run_admission_waiter(&session_id, waiter_id)
                 .await;
         });
     }
@@ -548,10 +548,10 @@ impl SessionSupervisor {
                 return None;
             }
             waiter_id = self
-                .register_direct_session_run_waiter(session_id, waiter_cancel.clone())
+                .register_direct_session_run_admission_waiter(session_id, waiter_cancel.clone())
                 .await;
         }
-        let mut waiter = DirectSessionRunWaiterGuard {
+        let mut waiter = DirectSessionRunAdmissionWaiterGuard {
             executor: self.clone(),
             session_id: session_id.to_string(),
             waiter_id: Some(waiter_id),

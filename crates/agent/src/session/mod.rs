@@ -40,7 +40,14 @@ pub use haven_common::types::FollowUp;
 pub type SessionRunHandler =
     Arc<dyn Fn(String) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send>> + Send + Sync>;
 
-type DirectSessionRunWaiters = HashMap<String, Vec<(usize, CancellationToken)>>;
+/// A direct SessionRun blocked on admission capacity. The id unregisters only
+/// this waiter; lifecycle operations cancel its token to wake the capacity wait.
+struct DirectSessionRunAdmissionWaiter {
+    waiter_id: usize,
+    cancellation: CancellationToken,
+}
+
+type DirectSessionRunAdmissionWaiters = HashMap<String, Vec<DirectSessionRunAdmissionWaiter>>;
 
 /// Process-local history-purge admission block with cancellation-safe cleanup.
 /// The block is held while runs quiesce and durable rows are removed; dropping
@@ -382,10 +389,10 @@ pub struct SessionSupervisor {
     terminal_cleanup_cascade_overrides: Arc<StdMutex<HashMap<String, bool>>>,
     terminal_cleanup_retry_queue: Arc<TerminalCleanupRetryQueue>,
     terminal_cleanup_retry_rx: StdMutex<Option<mpsc::UnboundedReceiver<String>>>,
-    /// Direct resumes waiting for a run slot can be cancelled by delete/clear
-    /// instead of waiting for an unrelated session to release capacity.
-    direct_session_run_waiters: Arc<Mutex<DirectSessionRunWaiters>>,
-    direct_session_run_waiter_id: AtomicUsize,
+    /// Direct SessionRun admissions waiting for a run slot can be cancelled by
+    /// delete/clear instead of waiting for unrelated work to release capacity.
+    direct_session_run_admission_waiters: Arc<Mutex<DirectSessionRunAdmissionWaiters>>,
+    direct_session_run_admission_waiter_id: AtomicUsize,
     /// A direct-run owner remains reserved until its exit reconciliation has
     /// completed. Actor `running` may clear slightly earlier, so this marker
     /// prevents same-session re-admission during that cleanup handoff.
@@ -491,8 +498,8 @@ impl SessionSupervisor {
                 sender: retry_tx,
             }),
             terminal_cleanup_retry_rx: StdMutex::new(Some(retry_rx)),
-            direct_session_run_waiters: Arc::new(Mutex::new(HashMap::new())),
-            direct_session_run_waiter_id: AtomicUsize::new(0),
+            direct_session_run_admission_waiters: Arc::new(Mutex::new(HashMap::new())),
+            direct_session_run_admission_waiter_id: AtomicUsize::new(0),
             direct_session_run_leases: StdMutex::new(HashMap::new()),
             direct_session_run_lease_id: AtomicUsize::new(0),
             dispatcher_started: std::sync::atomic::AtomicBool::new(false),
@@ -775,48 +782,51 @@ impl SessionSupervisor {
         }
     }
 
-    pub(crate) async fn register_direct_session_run_waiter(
+    pub(crate) async fn register_direct_session_run_admission_waiter(
         &self,
         session_id: &str,
         cancellation: CancellationToken,
     ) -> usize {
         let waiter_id = self
-            .direct_session_run_waiter_id
+            .direct_session_run_admission_waiter_id
             .fetch_add(1, Ordering::Relaxed)
             .wrapping_add(1);
-        self.direct_session_run_waiters
+        self.direct_session_run_admission_waiters
             .lock()
             .await
             .entry(session_id.to_string())
             .or_default()
-            .push((waiter_id, cancellation));
+            .push(DirectSessionRunAdmissionWaiter {
+                waiter_id,
+                cancellation,
+            });
         waiter_id
     }
 
-    pub(crate) async fn unregister_direct_session_run_waiter(
+    pub(crate) async fn unregister_direct_session_run_admission_waiter(
         &self,
         session_id: &str,
         waiter_id: usize,
     ) {
-        let mut waiters = self.direct_session_run_waiters.lock().await;
+        let mut waiters = self.direct_session_run_admission_waiters.lock().await;
         let Some(session_waiters) = waiters.get_mut(session_id) else {
             return;
         };
-        session_waiters.retain(|(id, _)| *id != waiter_id);
+        session_waiters.retain(|waiter| waiter.waiter_id != waiter_id);
         if session_waiters.is_empty() {
             waiters.remove(session_id);
         }
     }
 
-    pub(crate) async fn cancel_direct_session_run_waiters(&self, session_id: &str) {
+    pub(crate) async fn cancel_direct_session_run_admission_waiters(&self, session_id: &str) {
         let waiters = self
-            .direct_session_run_waiters
+            .direct_session_run_admission_waiters
             .lock()
             .await
             .remove(session_id);
         if let Some(waiters) = waiters {
-            for (_, cancellation) in waiters {
-                cancellation.cancel();
+            for waiter in waiters {
+                waiter.cancellation.cancel();
             }
         }
     }
@@ -1939,7 +1949,12 @@ mod tests {
 
         assert!(exec.actors.lock().await.is_empty());
         assert!(exec.pending_queue.lock().await.is_empty());
-        assert!(exec.direct_session_run_waiters.lock().await.is_empty());
+        assert!(
+            exec.direct_session_run_admission_waiters
+                .lock()
+                .await
+                .is_empty()
+        );
         assert_eq!(db.count_sessions().unwrap(), 0);
         assert!(db.get_session(&first.id).unwrap().is_none());
         assert!(db.get_session(&second.id).unwrap().is_none());
@@ -2006,7 +2021,7 @@ mod tests {
 
         for _ in 0..100 {
             if exec
-                .direct_session_run_waiters
+                .direct_session_run_admission_waiters
                 .lock()
                 .await
                 .contains_key(&session.id)
@@ -2016,7 +2031,7 @@ mod tests {
             tokio::time::sleep(std::time::Duration::from_millis(5)).await;
         }
         assert!(
-            exec.direct_session_run_waiters
+            exec.direct_session_run_admission_waiters
                 .lock()
                 .await
                 .contains_key(&session.id),
@@ -2081,7 +2096,7 @@ mod tests {
         tokio::time::timeout(std::time::Duration::from_secs(1), async {
             loop {
                 if exec
-                    .direct_session_run_waiters
+                    .direct_session_run_admission_waiters
                     .lock()
                     .await
                     .contains_key(&waiting.id)
@@ -2103,7 +2118,7 @@ mod tests {
         tokio::time::timeout(std::time::Duration::from_secs(1), async {
             loop {
                 if !exec
-                    .direct_session_run_waiters
+                    .direct_session_run_admission_waiters
                     .lock()
                     .await
                     .contains_key(&waiting.id)
