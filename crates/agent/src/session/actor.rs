@@ -13,7 +13,7 @@
 use super::SessionRunEngine;
 use super::{FollowUp, SessionInfo, SessionStatus, SessionWaitingReason, StepInfo};
 use crate::interaction::{InteractionKind, InteractionRequest, InteractionStatus};
-use crate::react::{LoopExit, ReActEngine, ReActState, RunInput, RunReplay};
+use crate::react::{LoopExit, ReActEngine, ReActRunInput, ReActRunReplay, ReActState};
 use futures_util::FutureExt;
 use haven_common::types::MessageAttachment;
 #[cfg(test)]
@@ -65,7 +65,7 @@ pub(crate) struct StatusTransition {
 }
 
 #[derive(Debug)]
-pub(crate) struct RunClaim {
+pub(crate) struct SessionRunClaim {
     pub accepted: bool,
 }
 
@@ -110,7 +110,7 @@ pub(crate) struct ConfirmDecision {
     pub wake_session: bool,
 }
 
-pub(crate) struct ReactRunOutput {
+pub(crate) struct ReActRunOutput {
     pub(crate) exit: LoopExit,
     pub(crate) events: Vec<crate::types::TranscriptRecord>,
 }
@@ -165,11 +165,11 @@ pub(crate) enum ActorCommand {
         engine: SessionRunEngine,
         reply: oneshot::Sender<anyhow::Result<()>>,
     },
-    RunReactLoop {
+    RunReActLoop {
         engine: Arc<ReActEngine>,
-        replay: RunReplay,
-        input: RunInput,
-        reply: oneshot::Sender<anyhow::Result<ReactRunOutput>>,
+        replay: ReActRunReplay,
+        input: ReActRunInput,
+        reply: oneshot::Sender<anyhow::Result<ReActRunOutput>>,
     },
     Snapshot {
         reply: oneshot::Sender<SessionInfo>,
@@ -186,10 +186,10 @@ pub(crate) enum ActorCommand {
         persist: bool,
         reply: oneshot::Sender<anyhow::Result<StatusTransition>>,
     },
-    ClaimRun {
-        reply: oneshot::Sender<anyhow::Result<RunClaim>>,
+    ClaimSessionRun {
+        reply: oneshot::Sender<anyhow::Result<SessionRunClaim>>,
     },
-    BeginDirectRun {
+    BeginDirectSessionRun {
         reply: oneshot::Sender<bool>,
     },
     FinishRun {
@@ -409,17 +409,17 @@ impl SessionActorHandle {
         self.send(ActorCommand::SetWaitingReason { reason }).await
     }
 
-    pub(crate) async fn claim_run(&self) -> anyhow::Result<RunClaim> {
+    pub(crate) async fn claim_session_run(&self) -> anyhow::Result<SessionRunClaim> {
         let (reply, rx) = oneshot::channel();
-        self.send(ActorCommand::ClaimRun { reply }).await?;
+        self.send(ActorCommand::ClaimSessionRun { reply }).await?;
         rx.await
             .map_err(|_| anyhow::anyhow!("session actor '{}' dropped run claim", self.id))?
     }
 
-    pub(crate) async fn begin_direct_run(&self) -> bool {
+    pub(crate) async fn begin_direct_session_run(&self) -> bool {
         let (reply, rx) = oneshot::channel();
         if self
-            .send(ActorCommand::BeginDirectRun { reply })
+            .send(ActorCommand::BeginDirectSessionRun { reply })
             .await
             .is_err()
         {
@@ -462,11 +462,11 @@ impl SessionActorHandle {
     pub(crate) async fn run_react_loop(
         &self,
         engine: Arc<ReActEngine>,
-        replay: RunReplay,
-        input: RunInput,
-    ) -> anyhow::Result<ReactRunOutput> {
+        replay: ReActRunReplay,
+        input: ReActRunInput,
+    ) -> anyhow::Result<ReActRunOutput> {
         let (reply, rx) = oneshot::channel();
-        self.send(ActorCommand::RunReactLoop {
+        self.send(ActorCommand::RunReActLoop {
             engine,
             replay,
             input,
@@ -880,18 +880,18 @@ pub(crate) struct SessionState {
     messaging: SessionMessagingState,
     /// The active ReAct run and its captured hot transcript are owned by this
     /// session state and polled only by the actor task.
-    react_run: Option<ActiveReactRun>,
+    react_run: Option<ActiveReActRun>,
 }
 
-type ReactLoopFuture = Pin<Box<dyn Future<Output = anyhow::Result<ReactRunOutput>> + Send>>;
+type ReactLoopFuture = Pin<Box<dyn Future<Output = anyhow::Result<ReActRunOutput>> + Send>>;
 
 /// The active-loop slot owns its future and reply together. Its presence also
 /// represents the per-run claim; after completion, `Claimed` keeps duplicate
 /// starts closed until the surrounding actor run releases that claim.
-enum ActiveReactRun {
+enum ActiveReActRun {
     Running {
         future: ReactLoopFuture,
-        reply: oneshot::Sender<anyhow::Result<ReactRunOutput>>,
+        reply: oneshot::Sender<anyhow::Result<ReActRunOutput>>,
         claimed: bool,
     },
     Claimed,
@@ -985,7 +985,7 @@ pub(crate) fn spawn(
                 Command(Option<ActorCommand>),
                 ReleaseRun(Option<()>),
                 Run(anyhow::Result<()>),
-                ReactLoop(anyhow::Result<ReactRunOutput>),
+                ReactLoop(anyhow::Result<ReActRunOutput>),
             }
             let wake = tokio::select! {
                 command = rx.recv() => Wake::Command(command),
@@ -998,9 +998,9 @@ pub(crate) fn spawn(
                 } => Wake::Run(result),
                 result = async {
                     match state.react_run.as_mut() {
-                        Some(ActiveReactRun::Running { future, .. }) => future.as_mut().await,
+                        Some(ActiveReActRun::Running { future, .. }) => future.as_mut().await,
                         None => std::future::pending().await,
-                        Some(ActiveReactRun::Claimed) => std::future::pending().await,
+                        Some(ActiveReActRun::Claimed) => std::future::pending().await,
                     }
                 } => Wake::ReactLoop(result),
             };
@@ -1013,7 +1013,7 @@ pub(crate) fn spawn(
                 _ => release_run_rx.try_recv().is_ok(),
             };
             if release_requested {
-                release_direct_run(&mut state, &run_state);
+                release_direct_session_run(&mut state, &run_state);
             }
             let command = match wake {
                 Wake::Command(Some(command)) => command,
@@ -1022,7 +1022,7 @@ pub(crate) fn spawn(
                         let _ =
                             reply.send(Err(anyhow::anyhow!("session actor stopped during run")));
                     }
-                    if let Some(ActiveReactRun::Running { reply, .. }) = state.react_run.take() {
+                    if let Some(ActiveReActRun::Running { reply, .. }) = state.react_run.take() {
                         react_run_state.send_replace(false);
                         let _ = reply.send(Err(anyhow::anyhow!(
                             "session actor stopped during ReAct loop"
@@ -1043,14 +1043,14 @@ pub(crate) fn spawn(
                     continue;
                 }
                 Wake::ReactLoop(result) => {
-                    let Some(ActiveReactRun::Running { reply, claimed, .. }) =
+                    let Some(ActiveReActRun::Running { reply, claimed, .. }) =
                         state.react_run.take()
                     else {
                         unreachable!("only a running ReAct loop can complete")
                     };
                     react_run_state.send_replace(false);
                     if claimed {
-                        state.react_run = Some(ActiveReactRun::Claimed);
+                        state.react_run = Some(ActiveReActRun::Claimed);
                     }
                     let _ = reply.send(result);
                     continue;
@@ -1214,7 +1214,7 @@ pub(crate) fn spawn(
                     }));
                     active_run_reply = Some(reply);
                 }
-                ActorCommand::RunReactLoop {
+                ActorCommand::RunReActLoop {
                     engine,
                     replay,
                     input,
@@ -1242,12 +1242,12 @@ pub(crate) fn spawn(
                                     )
                                 })
                                 .and_then(std::convert::identity);
-                        result.map(|exit| ReactRunOutput {
+                        result.map(|exit| ReActRunOutput {
                             exit,
                             events: react_state.events.clone(),
                         })
                     });
-                    state.react_run = Some(ActiveReactRun::Running {
+                    state.react_run = Some(ActiveReActRun::Running {
                         future,
                         reply,
                         claimed: true,
@@ -1281,15 +1281,15 @@ pub(crate) fn spawn(
                     };
                     let _ = reply.send(result);
                 }
-                ActorCommand::ClaimRun { reply } => {
-                    let result = claim_run(&store, &mut state, &status, &run_state).await;
+                ActorCommand::ClaimSessionRun { reply } => {
+                    let result = claim_session_run(&store, &mut state, &status, &run_state).await;
                     if result.as_ref().is_ok_and(|claim| claim.accepted) {
                         current_run_cancellation = actor_lifetime.child_token();
                         run_cancellation.send_replace(current_run_cancellation.clone());
                     }
                     let _ = reply.send(result);
                 }
-                ActorCommand::BeginDirectRun { reply } => {
+                ActorCommand::BeginDirectSessionRun { reply } => {
                     let accepted = !state.running && !state.info.status.is_terminal();
                     if accepted {
                         current_run_cancellation = actor_lifetime.child_token();
@@ -1302,8 +1302,8 @@ pub(crate) fn spawn(
                 ActorCommand::FinishRun { reply } => {
                     state.running = false;
                     match state.react_run.as_mut() {
-                        Some(ActiveReactRun::Running { claimed, .. }) => *claimed = false,
-                        Some(ActiveReactRun::Claimed) => state.react_run = None,
+                        Some(ActiveReActRun::Running { claimed, .. }) => *claimed = false,
+                        Some(ActiveReActRun::Claimed) => state.react_run = None,
                         None => {}
                     }
                     let _ = run_state.send(false);
@@ -1313,7 +1313,7 @@ pub(crate) fn spawn(
                     let _ = reply.send(state.running);
                 }
                 ActorCommand::ReactLoopBarrier { reply } => {
-                    let running = matches!(&state.react_run, Some(ActiveReactRun::Running { .. }));
+                    let running = matches!(&state.react_run, Some(ActiveReActRun::Running { .. }));
                     let _ = reply.send(running);
                 }
                 ActorCommand::DrainFollowUps { reply } => {
@@ -1641,11 +1641,11 @@ pub(crate) fn spawn(
     handle
 }
 
-fn release_direct_run(state: &mut SessionState, run_state: &watch::Sender<bool>) {
+fn release_direct_session_run(state: &mut SessionState, run_state: &watch::Sender<bool>) {
     state.running = false;
     match state.react_run.as_mut() {
-        Some(ActiveReactRun::Running { claimed, .. }) => *claimed = false,
-        Some(ActiveReactRun::Claimed) => state.react_run = None,
+        Some(ActiveReActRun::Running { claimed, .. }) => *claimed = false,
+        Some(ActiveReActRun::Claimed) => state.react_run = None,
         None => {}
     }
     let _ = run_state.send(false);
@@ -1757,14 +1757,14 @@ async fn transition(
     })
 }
 
-async fn claim_run(
+async fn claim_session_run(
     store: &SessionStore,
     state: &mut SessionState,
     status: &watch::Sender<SessionStatus>,
     run_state: &watch::Sender<bool>,
-) -> anyhow::Result<RunClaim> {
+) -> anyhow::Result<SessionRunClaim> {
     if state.info.status != SessionStatus::Pending || state.running {
-        return Ok(RunClaim { accepted: false });
+        return Ok(SessionRunClaim { accepted: false });
     }
     super::SessionSupervisor::persist_status(store, &state.info.id, SessionStatus::Running).await?;
     state.info.status = SessionStatus::Running;
@@ -1773,7 +1773,7 @@ async fn claim_run(
     state.running = true;
     status.send_replace(SessionStatus::Running);
     let _ = run_state.send(true);
-    Ok(RunClaim { accepted: true })
+    Ok(SessionRunClaim { accepted: true })
 }
 
 fn queue_follow_up(
@@ -2187,11 +2187,11 @@ mod queue_tests {
         let store = SessionStore::new(db);
         let info = empty_state().info;
         let actor = spawn(store, info, Vec::new());
-        assert!(actor.begin_direct_run().await);
+        assert!(actor.begin_direct_session_run().await);
 
         let (started_tx, mut started_rx) = watch::channel(false);
         let cancellation = actor.run_cancellation_token();
-        let handler: crate::session::RunHandler = Arc::new(move |_session_id| {
+        let handler: crate::session::SessionRunHandler = Arc::new(move |_session_id| {
             let cancellation = cancellation.clone();
             let started_tx = started_tx.clone();
             Box::pin(async move {
@@ -2249,7 +2249,7 @@ mod queue_tests {
                 .expect("temporary database"),
         );
         let actor = spawn(SessionStore::new(db), empty_state().info, Vec::new());
-        assert!(actor.begin_direct_run().await);
+        assert!(actor.begin_direct_session_run().await);
 
         for index in 0..ACTOR_MAILBOX_CAPACITY {
             actor
@@ -2285,7 +2285,7 @@ mod queue_tests {
         let run_polls = Arc::new(AtomicUsize::new(0));
         let run_cancellation = actor.run_cancellation_token();
         let handler_polls = run_polls.clone();
-        let handler: crate::session::RunHandler = Arc::new(move |_session_id| {
+        let handler: crate::session::SessionRunHandler = Arc::new(move |_session_id| {
             let cancellation = run_cancellation.clone();
             let polls = handler_polls.clone();
             Box::pin(async move {
@@ -2337,7 +2337,7 @@ mod queue_tests {
     }
 
     #[tokio::test]
-    async fn direct_run_release_is_coalesced_when_actor_mailbox_is_full() {
+    async fn direct_session_run_release_is_coalesced_when_actor_mailbox_is_full() {
         use std::time::Duration;
 
         let directory = tempfile::tempdir().expect("temporary database directory");
@@ -2347,7 +2347,7 @@ mod queue_tests {
         );
         let actor = spawn(SessionStore::new(db), empty_state().info, Vec::new());
         let mut run_state = actor.run_state();
-        assert!(actor.begin_direct_run().await);
+        assert!(actor.begin_direct_session_run().await);
         assert!(*run_state.borrow());
 
         for index in 0..ACTOR_MAILBOX_CAPACITY {
@@ -2507,12 +2507,12 @@ mod queue_tests {
                 actor
                     .run_react_loop(
                         engine,
-                        RunReplay {
+                        ReActRunReplay {
                             events,
                             canonical: Vec::new(),
                             branch_points: HashMap::new(),
                         },
-                        RunInput {
+                        ReActRunInput {
                             session_id,
                             start_step: 1,
                             emitter: Arc::new(NoopEmitter),
@@ -2523,7 +2523,7 @@ mod queue_tests {
             }
         };
 
-        assert!(actor.begin_direct_run().await);
+        assert!(actor.begin_direct_session_run().await);
         let first = run_loop(1).await.expect("first ReAct loop");
         assert_eq!(
             first.exit,
@@ -2545,7 +2545,7 @@ mod queue_tests {
         );
 
         actor.finish_run().await.expect("finish first run");
-        assert!(actor.begin_direct_run().await);
+        assert!(actor.begin_direct_session_run().await);
         let second = run_loop(2).await.expect("next ReAct loop");
         assert_eq!(
             second.exit,

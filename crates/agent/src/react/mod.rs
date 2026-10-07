@@ -56,7 +56,7 @@ pub(crate) use context::tool_run_result_message_id;
 use hooks::{LoopHooksHandle, default_hooks};
 pub(crate) use hooks::{MemoryPatchHandle, default_hooks_with_patch};
 pub use r#loop::{LoopExit, PauseReason};
-pub(crate) use r#loop::{RunInput, RunReplay};
+pub(crate) use r#loop::{ReActRunInput, ReActRunReplay};
 use metrics::{Counter as MetricsCounter, Phase as MetricsPhase, ReActMetrics};
 pub use metrics::{MetricsSnapshot, UiMetricsSnapshot};
 pub(crate) use request_context::RequestContext;

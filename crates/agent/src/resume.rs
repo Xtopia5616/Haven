@@ -22,12 +22,12 @@
 use crate::AgentLayer;
 use crate::event::{AgentEvent, AgentEventEmitter};
 use crate::react::DurableEventState;
-use crate::react::{RunInput, RunReplay};
+use crate::react::{ReActRunInput, ReActRunReplay};
 use crate::resume_support::{
     decode_builtin_tool_selection, infer_resume_step, load_mcp_tool_names, load_skill_names,
 };
 
-use crate::session::{DirectRunLease, SessionStatus};
+use crate::session::{DirectSessionRunLease, SessionStatus};
 use crate::types::{
     ReActRound, TranscriptRecord, project_transcript_with_strategy, seed_events_from_canonical,
 };
@@ -41,11 +41,11 @@ enum TerminalErrorEventOwner {
     SessionSupervisor,
 }
 
-struct DirectRunGuard {
-    lease: Option<DirectRunLease>,
+struct DirectSessionRunGuard {
+    lease: Option<DirectSessionRunLease>,
 }
 
-impl DirectRunGuard {
+impl DirectSessionRunGuard {
     async fn finish(&mut self) {
         if let Some(lease) = self.lease.as_mut() {
             lease.finish().await;
@@ -256,7 +256,7 @@ impl AgentLayer {
         let direct_lease = match terminal_error_owner {
             TerminalErrorEventOwner::AgentEventBus => Some(
                 self.executor
-                    .begin_direct_run(session_id)
+                    .begin_direct_session_run(session_id)
                     .await
                     .ok_or_else(|| {
                         anyhow::anyhow!("session '{}' is closing or already running", session_id)
@@ -264,7 +264,7 @@ impl AgentLayer {
             ),
             TerminalErrorEventOwner::SessionSupervisor => None,
         };
-        let _direct_guard = DirectRunGuard {
+        let _direct_guard = DirectSessionRunGuard {
             lease: direct_lease,
         };
 
@@ -524,12 +524,12 @@ impl AgentLayer {
         let result = actor
             .run_react_loop(
                 self.react_engine.clone(),
-                RunReplay {
+                ReActRunReplay {
                     events,
                     canonical,
                     branch_points,
                 },
-                RunInput {
+                ReActRunInput {
                     session_id: session_id.to_string(),
                     start_step,
                     emitter: emitter_arc,
@@ -701,12 +701,12 @@ impl AgentLayer {
         let result = actor
             .run_react_loop(
                 self.react_engine.clone(),
-                RunReplay {
+                ReActRunReplay {
                     events,
                     canonical,
                     branch_points,
                 },
-                RunInput {
+                ReActRunInput {
                     session_id: session_id.to_string(),
                     start_step: 1,
                     emitter: emitter_arc,
@@ -744,7 +744,7 @@ impl AgentLayer {
 }
 
 #[cfg(test)]
-mod direct_run_guard_tests {
+mod direct_session_run_guard_tests {
     use super::*;
     use crate::session::SessionSupervisor;
     use haven_common::config::ContextLimitsConfig;
@@ -805,7 +805,7 @@ mod direct_run_guard_tests {
     }
 
     #[tokio::test]
-    async fn cancelled_direct_run_finish_retries_terminal_cleanup() {
+    async fn cancelled_direct_session_run_finish_retries_terminal_cleanup() {
         let db = Arc::new(Database::open_in_memory().unwrap());
         let executor = Arc::new(SessionSupervisor::new_for_test(
             db,
@@ -818,7 +818,7 @@ mod direct_run_guard_tests {
             .unwrap();
         let waiting_session = executor.create_session("waiting direct run").await.unwrap();
         let lease = executor
-            .begin_direct_run(&session.id)
+            .begin_direct_session_run(&session.id)
             .await
             .expect("direct run should acquire a lease");
         executor
@@ -826,7 +826,7 @@ mod direct_run_guard_tests {
             .await
             .unwrap();
         let actor = lease.actor.clone();
-        let mut guard = DirectRunGuard { lease: Some(lease) };
+        let mut guard = DirectSessionRunGuard { lease: Some(lease) };
         let lifecycle = executor.lifecycle_guard().await;
         let mut finish = tokio::spawn(async move { guard.finish().await });
 
@@ -844,7 +844,9 @@ mod direct_run_guard_tests {
         let waiting_executor = executor.clone();
         let waiting_id = waiting_session.id.clone();
         let mut waiting_admission =
-            tokio::spawn(async move { waiting_executor.begin_direct_run(&waiting_id).await });
+            tokio::spawn(
+                async move { waiting_executor.begin_direct_session_run(&waiting_id).await },
+            );
         assert!(
             tokio::time::timeout(Duration::from_millis(25), &mut waiting_admission)
                 .await
@@ -876,7 +878,8 @@ mod direct_run_guard_tests {
     }
 
     #[tokio::test]
-    async fn cancelled_direct_run_reconciliation_reserves_same_session_until_cleanup_finishes() {
+    async fn cancelled_direct_session_run_reconciliation_reserves_same_session_until_cleanup_finishes()
+     {
         let db = Arc::new(Database::open_in_memory().unwrap());
         let executor = Arc::new(SessionSupervisor::new_for_test(
             db,
@@ -888,7 +891,7 @@ mod direct_run_guard_tests {
             .await
             .unwrap();
         let mut lease = executor
-            .begin_direct_run(&session.id)
+            .begin_direct_session_run(&session.id)
             .await
             .expect("direct run should acquire a lease");
         let actor = lease.actor.clone();
@@ -924,7 +927,9 @@ mod direct_run_guard_tests {
         let waiting_executor = executor.clone();
         let waiting_id = session.id.clone();
         let mut waiting_admission =
-            tokio::spawn(async move { waiting_executor.begin_direct_run(&waiting_id).await });
+            tokio::spawn(
+                async move { waiting_executor.begin_direct_session_run(&waiting_id).await },
+            );
         assert!(
             tokio::time::timeout(Duration::from_millis(25), &mut waiting_admission)
                 .await
@@ -954,7 +959,7 @@ mod direct_run_guard_tests {
 
         let released_lease = tokio::time::timeout(Duration::from_secs(2), async {
             loop {
-                if let Some(lease) = executor.begin_direct_run(&session.id).await {
+                if let Some(lease) = executor.begin_direct_session_run(&session.id).await {
                     break lease;
                 }
                 tokio::task::yield_now().await;
@@ -967,7 +972,8 @@ mod direct_run_guard_tests {
     }
 
     #[tokio::test]
-    async fn dropping_direct_run_guard_cancels_actor_owned_react_loop_before_releasing_permit() {
+    async fn dropping_direct_session_run_guard_cancels_actor_owned_react_loop_before_releasing_permit()
+     {
         let db = Arc::new(Database::open_in_memory().unwrap());
         let executor = Arc::new(SessionSupervisor::new_for_test(
             db.clone(),
@@ -983,7 +989,7 @@ mod direct_run_guard_tests {
             .await
             .unwrap();
         let lease = executor
-            .begin_direct_run(&session.id)
+            .begin_direct_session_run(&session.id)
             .await
             .expect("direct run should acquire a lease");
         let actor = lease.actor.clone();
@@ -1010,16 +1016,16 @@ mod direct_run_guard_tests {
 
         let session_id = session.id.clone();
         let react_task = tokio::spawn(async move {
-            let _guard = DirectRunGuard { lease: Some(lease) };
+            let _guard = DirectSessionRunGuard { lease: Some(lease) };
             loop_actor
                 .run_react_loop(
                     engine,
-                    RunReplay {
+                    ReActRunReplay {
                         events: Vec::new(),
                         canonical: vec![CanonicalMessage::user_text("keep the model call open")],
                         branch_points: Default::default(),
                     },
-                    RunInput {
+                    ReActRunInput {
                         session_id,
                         start_step: 1,
                         emitter: Arc::new(NoopEmitter),
@@ -1035,7 +1041,9 @@ mod direct_run_guard_tests {
         let waiting_executor = executor.clone();
         let waiting_id = waiting_session.id.clone();
         let mut waiting_admission =
-            tokio::spawn(async move { waiting_executor.begin_direct_run(&waiting_id).await });
+            tokio::spawn(
+                async move { waiting_executor.begin_direct_session_run(&waiting_id).await },
+            );
         assert!(
             tokio::time::timeout(Duration::from_millis(25), &mut waiting_admission)
                 .await

@@ -120,24 +120,6 @@ pub struct BranchPoint {
     pub last_msg_at: Option<String>,
 }
 
-/// Per-run step budget recorded on the snapshot for observability (R4 / J1).
-///
-/// Storage is diagnostic only — the live loop still reads `max_steps` /
-/// `session_max_steps` from the engine. Resume grants another full per-run
-/// budget; `session_max_steps` (when set) caps absolute `step_number`.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
-pub struct RunBudget {
-    /// First step number this run will execute (`start_step`).
-    pub start_step: u32,
-    /// Inclusive last step this run may reach.
-    pub effective_max: u32,
-    /// Configured per-run `max_steps` at run start.
-    pub max_steps: u32,
-    /// Optional session-lifetime absolute step cap.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub session_max_steps: Option<u32>,
-}
-
 /// Read-only views derived together from the durable transcript event log.
 #[derive(Debug, Clone)]
 pub struct TranscriptProjection {

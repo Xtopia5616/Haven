@@ -1,5 +1,7 @@
 # ADR 0220：移除 run budget 的死写 actor 状态
 
+> 本文第 3 项中保留公开 `RunBudget` 类型的决定已由 [ADR 0635](0635-unify-agent-session-run-terminology.md) 部分替代；其余决定仍有效。
+
 - 状态：已采纳（2026-09-24）
 - 范围：`haven-agent` 的 SessionActor run budget mailbox 状态
 - 关联：[ADR 0214](0214-react-run-inside-session-actor.md)

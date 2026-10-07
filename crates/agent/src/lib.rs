@@ -59,7 +59,7 @@ pub use react::{
     UiMetricsSnapshot,
 };
 pub use session::{
-    ConfirmResolution, ManagedAssetLeasePort, RunHandler, SessionInfo, SessionRunEngine,
+    ConfirmResolution, ManagedAssetLeasePort, SessionInfo, SessionRunEngine, SessionRunHandler,
     SessionStatus, SessionSupervisor, SessionSupervisorEvent, SessionToolOverlayPort,
     SessionToolPorts, SessionWaitingReason, StepInfo, ToolAuthorizationPort, ToolExecution,
     ToolExecutionContext, ToolExecutionPort, ToolObservationPort,
@@ -67,7 +67,7 @@ pub use session::{
 pub use storage_error::sqlite_storage_failure_message;
 
 pub use types::{
-    BranchPoint, ProcessResult, ReActRound, RunBudget, ToolCall, ToolRecord, TranscriptProjection,
+    BranchPoint, ProcessResult, ReActRound, ToolCall, ToolRecord, TranscriptProjection,
     TranscriptRecord, project_transcript, project_transcript_with_strategy,
     seed_events_from_canonical,
 };

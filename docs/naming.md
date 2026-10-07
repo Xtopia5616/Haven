@@ -1,6 +1,6 @@
 # Haven 命名规范
 
-> 版本: v1.65 | 日期: 2026-10-07
+> 版本: v1.66 | 日期: 2026-10-07
 
 本文档统一 Haven 项目各层的命名规则（变量名、函数名、文件名、crate 名、缩写大小写、跨层边界）。规范以现有代码中的事实模式为基础，新代码必须遵循；存量代码若与规范冲突，逐步迁移对齐。
 
@@ -29,6 +29,7 @@
 |---|---|---|
 | 工具调用（ToolCall） | Agent/模型发起的一次工具调用；前台调用等待结果并进入当前 transcript | Agent/ReAct 使用 `ToolCall`；provider 的 `tool_call_id` 保持原格式 |
 | 会话（session） | 用户与 Agent 的对话及其前台 ReAct 运行上下文 | UI 直接称“会话”；前台工具调用在会话内呈现 |
+| 会话运行（SessionRun） | `SessionSupervisor` 调度或直接准入的一次会话执行；`SessionRunEngine` 运行完整 ReAct 循环 | handler、admission、permit、lease 和 actor claim 均显式标注 `SessionRun`；ReAct loop 的输入、重放、输出以 `ReActRun*` 标名 |
 | 工具运行（ToolRun） | 脱离当前 turn 持久运行、可取消并产生生命周期事件的工具执行 | 后端/IPC/数据库使用 `tool_run`、`tool_runs`；ID 前缀为 `toolrun-` |
 | 后台工具运行（background ToolRun） | 工具调用选择后台执行后启动的持久运行 | 通过 `ToolExecutionMode::Background` 启动；UI 显示“后台任务” |
 | 定时工具运行（scheduled ToolRun） | 由时间或依赖触发的工具运行 | 仍由 `schedule` 工具负责设置触发条件；UI 显示“定时任务” |
@@ -36,6 +37,8 @@
 | 录音结果（`RecordingResult`） | `haven-input` 拥有的固定格式采集结果：16 kHz 单声道 PCM、停止原因、时长和采集错误 | 通过 `RecordingResult::encode_wav()` 编码；它与 Tools 持有的 `RecordedAudio`（已登记 WAV 资产结果）不是同一层结果 |
 
 定时工具运行的 `mode` 只作为行为说明：`tool` 显示“调用工具”，`continue` 显示“继续会话”。运行状态统一显示“待执行 / 运行中 / 已完成 / 失败 / 已取消”；原始枚举值只留在 wire、日志或调试详情中。
+
+`SessionRun` 是 SessionSupervisor 的会话执行/准入单位；`ToolRun` 是可脱离当前 turn 持久运行的工具工作单元，二者不共享身份或生命周期。`ReActRunInput`、`ReActRunReplay`、`ReActRunOutput` 是 ReActEngine 一次循环的调用数据，不新增持久 run 实体。准入计数器、RAII permit、直接运行 lease 与 actor claim 有不同释放点，保持独立结构并按 owner 命名（ADR 0635）。
 
 `ToolExecutionMode::Foreground/Background` 表示调用执行方式；持久 `ToolRunKind` 只有 `Background/Scheduled`。会话是对话实体，不是 `ToolRunKind`，不得把“会话”塞进任务类型映射。
 

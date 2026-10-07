@@ -1,16 +1,16 @@
 //! Run boundary owned by the session supervisor.
 
-use super::RunHandler;
+use super::SessionRunHandler;
 
 /// Executes one complete ReAct run.  The supervisor owns admission and
 /// lifecycle; this type owns only the run implementation boundary.
 #[derive(Clone)]
 pub struct SessionRunEngine {
-    handler: RunHandler,
+    handler: SessionRunHandler,
 }
 
 impl SessionRunEngine {
-    pub fn new(handler: RunHandler) -> Self {
+    pub fn new(handler: SessionRunHandler) -> Self {
         Self { handler }
     }
 

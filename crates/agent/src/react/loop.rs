@@ -45,7 +45,7 @@ pub enum LoopExit {
     Error(String),
 }
 
-struct RunBudgetConfig {
+struct ReActStepBudget {
     start_step: u32,
     max_steps: u32,
     effective_max: u32,
@@ -86,21 +86,21 @@ impl TurnDeadline {
 
 /// Durable replay data submitted to the session actor. The actor constructs
 /// the hot projection from this value and owns it for the lifetime of the run.
-pub(crate) struct RunReplay {
+pub(crate) struct ReActRunReplay {
     pub(crate) events: Vec<TranscriptRecord>,
     pub(crate) canonical: Vec<CanonicalMessage>,
     pub(crate) branch_points: HashMap<u32, BranchPoint>,
 }
 
 /// Run metadata passed to the actor-owned loop.
-pub(crate) struct RunInput {
+pub(crate) struct ReActRunInput {
     pub(crate) session_id: String,
     pub(crate) start_step: u32,
     pub(crate) emitter: Arc<dyn AgentEventEmitter>,
     pub(crate) run_id: u64,
 }
 
-impl RunBudgetConfig {
+impl ReActStepBudget {
     fn new(max_steps: u32, session_max_steps: Option<u32>, start_step: u32) -> Self {
         let per_run_cap = max_steps.max(start_step.saturating_sub(1).saturating_add(max_steps));
         let effective_max = session_max_steps.map_or(per_run_cap, |cap| per_run_cap.min(cap));
@@ -128,17 +128,17 @@ impl ReActEngine {
     /// every boundary advances one coherent event/projection state.
     pub(crate) async fn run_react_loop(
         &self,
-        input: RunInput,
+        input: ReActRunInput,
         state: &mut ReActState,
     ) -> anyhow::Result<LoopExit> {
-        let RunInput {
+        let ReActRunInput {
             session_id,
             start_step,
             emitter,
             run_id,
         } = input;
         let session_id = session_id.as_str();
-        let budget = RunBudgetConfig::from_engine(self, start_step);
+        let budget = ReActStepBudget::from_engine(self, start_step);
         tracing::info!(
             session_id,
             run_id,
@@ -217,8 +217,8 @@ impl ReActEngine {
                 .run_state_boundary(session_id, state, step_num, &emitter, run_id)
                 .await
             {
-                RunBoundary::Run => {}
-                RunBoundary::Exit(exit) => return Ok(exit),
+                ReActRunBoundary::Run => {}
+                ReActRunBoundary::Exit(exit) => return Ok(exit),
             }
 
             let deadline = TurnDeadline::from_now(self.limits().turn_deadline_secs);
@@ -330,16 +330,16 @@ impl ReActEngine {
         step_num: u32,
         emitter: &Arc<dyn AgentEventEmitter>,
         run_id: u64,
-    ) -> RunBoundary {
+    ) -> ReActRunBoundary {
         match self.executor.get_active_session_status(session_id).await {
-            None | Some(SessionStatus::Completed) => RunBoundary::Exit(
+            None | Some(SessionStatus::Completed) => ReActRunBoundary::Exit(
                 self.exit_at_boundary(session_id, state, step_num, LoopExit::Completed)
                     .await,
             ),
             Some(SessionStatus::Error) => {
                 self.emit_error(emitter, session_id, "session interrupted")
                     .await;
-                RunBoundary::Exit(
+                ReActRunBoundary::Exit(
                     self.exit_at_boundary(
                         session_id,
                         state,
@@ -349,11 +349,11 @@ impl ReActEngine {
                     .await,
                 )
             }
-            Some(status) if status.is_paused() => RunBoundary::Exit(
+            Some(status) if status.is_paused() => ReActRunBoundary::Exit(
                 self.exit_external_pause(session_id, state, step_num, emitter, run_id)
                     .await,
             ),
-            _ => RunBoundary::Run,
+            _ => ReActRunBoundary::Run,
         }
     }
 }
@@ -362,18 +362,18 @@ fn deadline_cancel_at(deadline: TurnDeadline) -> tokio::time::Instant {
     deadline.at
 }
 
-enum RunBoundary {
+enum ReActRunBoundary {
     Run,
     Exit(LoopExit),
 }
 
 #[cfg(test)]
 mod tests {
-    use super::RunBudgetConfig;
+    use super::ReActStepBudget;
 
     #[test]
     fn fresh_run_uses_the_configured_step_budget() {
-        let budget = RunBudgetConfig::new(4, None, 1);
+        let budget = ReActStepBudget::new(4, None, 1);
 
         assert_eq!(budget.start_step, 1);
         assert_eq!(budget.max_steps, 4);
@@ -382,7 +382,7 @@ mod tests {
 
     #[test]
     fn resumed_run_gets_a_full_budget_but_respects_session_cap() {
-        let budget = RunBudgetConfig::new(4, Some(9), 7);
+        let budget = ReActStepBudget::new(4, Some(9), 7);
 
         assert_eq!(budget.start_step, 7);
         assert_eq!(budget.max_steps, 4);
@@ -391,7 +391,7 @@ mod tests {
 
     #[test]
     fn resumed_run_allows_retry_until_its_absolute_end() {
-        let budget = RunBudgetConfig::new(4, Some(9), 7);
+        let budget = ReActStepBudget::new(4, Some(9), 7);
 
         assert!(budget.allows_tool_retry(7));
         assert!(budget.allows_tool_retry(8));

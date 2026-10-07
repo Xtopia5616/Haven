@@ -363,7 +363,7 @@ impl AgentLayer {
         }
         let agent = self.clone();
         let executor = self.executor.clone();
-        let handler: RunHandler = Arc::new(move |session_id: String| {
+        let handler: SessionRunHandler = Arc::new(move |session_id: String| {
             let agent = agent.clone();
             Box::pin(async move {
                 agent

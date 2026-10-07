@@ -150,7 +150,7 @@ async fn dispatcher_react_failure_has_one_terminal_event_owner() {
     let mut events = executor.subscribe_events();
 
     let run_agent = agent.clone();
-    let handler: RunHandler = Arc::new(move |session_id: String| {
+    let handler: SessionRunHandler = Arc::new(move |session_id: String| {
         let run_agent = run_agent.clone();
         Box::pin(async move {
             run_agent
@@ -2107,42 +2107,4 @@ async fn continue_session_non_error_fails() {
     // Session is Pending, not Error ??should refuse.
     let result = agent.continue_session(&session.id).await;
     assert!(result.is_err());
-}
-
-/// R4: pause snapshots record the live per-run budget for observability.
-#[tokio::test]
-async fn pause_snapshot_includes_run_budget() {
-    let tools = Arc::new(ToolsFacade::new());
-    tools
-        .registry()
-        .register(Arc::new(haven_tools::builtin::ask::AskTool) as ToolHandle)
-        .await
-        .unwrap();
-    let mock = Arc::new(ScriptedMock::new(vec![ScriptedResponse::Chunk(
-        StreamChunk {
-            text: Some("Asking.".into()),
-            tool_calls: vec![CanonicalToolCall {
-                id: "tc1".into(),
-                name: "ask".into(),
-                arguments: serde_json::json!({"question": "Ready?"}),
-            }],
-            finish_reason: Some(FinishReason::ToolCalls),
-            usage: None,
-            model: None,
-            reasoning: None,
-            web_search: None,
-            web_search_calls: Vec::new(),
-            thinking_blocks: Vec::new(),
-        },
-    )]));
-    let (agent, executor) = make_test_agent_with(mock, tools);
-    let collector = Arc::new(EventCollector::new());
-    agent.set_emitter(collector);
-    agent.set_max_steps(12).unwrap();
-    let session = executor.create_session("budget on pause").await.unwrap();
-    agent.run_session_from_id(&session.id).await.unwrap();
-    assert_eq!(
-        executor.get_active_session_status(&session.id).await,
-        Some(SessionStatus::Paused)
-    );
 }

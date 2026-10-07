@@ -15,7 +15,7 @@ fn session_run_error_reason(error: &anyhow::Error) -> String {
 /// limit that is lowered while all permits are held: permits returned by old
 /// runs can make the later limit larger than configured. Tracking active runs
 /// directly makes resize semantics exact.
-pub(super) struct RunAdmission {
+pub(super) struct SessionRunAdmission {
     state: StdMutex<AdmissionState>,
     notify: Notify,
 }
@@ -25,11 +25,11 @@ struct AdmissionState {
     active: usize,
 }
 
-pub(super) struct RunPermit {
-    admission: Arc<RunAdmission>,
+pub(super) struct SessionRunPermit {
+    admission: Arc<SessionRunAdmission>,
 }
 
-impl RunAdmission {
+impl SessionRunAdmission {
     pub(super) fn new(limit: usize) -> Self {
         Self {
             state: StdMutex::new(AdmissionState {
@@ -43,7 +43,7 @@ impl RunAdmission {
     pub(super) async fn acquire(
         self: &Arc<Self>,
         cancellation: &CancellationToken,
-    ) -> Option<RunPermit> {
+    ) -> Option<SessionRunPermit> {
         loop {
             // Register before checking the state so a release/resize cannot
             // notify between the check and awaiting the notification.
@@ -52,7 +52,7 @@ impl RunAdmission {
                 return None;
             }
             if self.try_take() {
-                return Some(RunPermit {
+                return Some(SessionRunPermit {
                     admission: self.clone(),
                 });
             }
@@ -64,8 +64,8 @@ impl RunAdmission {
     }
 
     #[cfg(test)]
-    pub(super) fn try_acquire(self: &Arc<Self>) -> Option<RunPermit> {
-        self.try_take().then(|| RunPermit {
+    pub(super) fn try_acquire(self: &Arc<Self>) -> Option<SessionRunPermit> {
+        self.try_take().then(|| SessionRunPermit {
             admission: self.clone(),
         })
     }
@@ -108,7 +108,7 @@ impl RunAdmission {
     }
 }
 
-impl Drop for RunPermit {
+impl Drop for SessionRunPermit {
     fn drop(&mut self) {
         self.admission.release();
     }
@@ -117,31 +117,31 @@ impl Drop for RunPermit {
 /// A direct (non-dispatcher) run owns an admission permit for its lifetime.
 /// Dispatcher-owned runs never create this value because their actor is
 /// already marked running.
-pub(crate) struct DirectRunLease {
+pub(crate) struct DirectSessionRunLease {
     pub(crate) actor: actor::SessionActorHandle,
     executor: Arc<super::SessionSupervisor>,
     session_id: String,
     lease_id: usize,
-    permit: Option<RunPermit>,
+    permit: Option<SessionRunPermit>,
     finished: bool,
 }
 
-impl DirectRunLease {
+impl DirectSessionRunLease {
     pub(crate) async fn finish(&mut self) {
         if self.finished {
             return;
         }
         self.executor
-            .end_direct_run(&self.session_id, &self.actor)
+            .end_direct_session_run(&self.session_id, &self.actor)
             .await;
         self.finished = true;
         self.executor
-            .release_direct_run_lease(&self.session_id, self.lease_id);
+            .release_direct_session_run_lease(&self.session_id, self.lease_id);
         self.permit.take();
     }
 }
 
-impl Drop for DirectRunLease {
+impl Drop for DirectSessionRunLease {
     fn drop(&mut self) {
         if self.finished {
             return;
@@ -154,31 +154,33 @@ impl Drop for DirectRunLease {
         let permit = self.permit.take();
         tokio::spawn(async move {
             actor.await_react_loop_finished().await;
-            executor.end_cancelled_direct_run(&session_id, &actor).await;
-            executor.release_direct_run_lease(&session_id, lease_id);
+            executor
+                .end_cancelled_direct_session_run(&session_id, &actor)
+                .await;
+            executor.release_direct_session_run_lease(&session_id, lease_id);
             drop(permit);
         });
     }
 }
 
-struct DirectRunWaiterGuard {
+struct DirectSessionRunWaiterGuard {
     executor: Arc<super::SessionSupervisor>,
     session_id: String,
     waiter_id: Option<usize>,
 }
 
-impl DirectRunWaiterGuard {
+impl DirectSessionRunWaiterGuard {
     async fn unregister(&mut self) {
         if let Some(waiter_id) = self.waiter_id {
             self.executor
-                .unregister_direct_waiter(&self.session_id, waiter_id)
+                .unregister_direct_session_run_waiter(&self.session_id, waiter_id)
                 .await;
             self.waiter_id = None;
         }
     }
 }
 
-impl Drop for DirectRunWaiterGuard {
+impl Drop for DirectSessionRunWaiterGuard {
     fn drop(&mut self) {
         let Some(waiter_id) = self.waiter_id.take() else {
             return;
@@ -187,7 +189,7 @@ impl Drop for DirectRunWaiterGuard {
         let session_id = self.session_id.clone();
         tokio::spawn(async move {
             executor
-                .unregister_direct_waiter(&session_id, waiter_id)
+                .unregister_direct_session_run_waiter(&session_id, waiter_id)
                 .await;
         });
     }
@@ -198,32 +200,32 @@ impl SessionSupervisor {
         self.dispatch_tx.send_modify(|counter| *counter += 1);
     }
 
-    fn direct_run_lease_active(&self, session_id: &str) -> bool {
-        self.direct_run_leases
+    fn direct_session_run_lease_active(&self, session_id: &str) -> bool {
+        self.direct_session_run_leases
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .contains_key(session_id)
     }
 
-    fn reserve_direct_run_lease(&self, session_id: &str) -> Option<usize> {
+    fn reserve_direct_session_run_lease(&self, session_id: &str) -> Option<usize> {
         let mut leases = self
-            .direct_run_leases
+            .direct_session_run_leases
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         if leases.contains_key(session_id) {
             return None;
         }
         let lease_id = self
-            .direct_run_lease_id
+            .direct_session_run_lease_id
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         leases.insert(session_id.to_string(), lease_id);
         Some(lease_id)
     }
 
-    fn release_direct_run_lease(&self, session_id: &str, lease_id: usize) {
+    fn release_direct_session_run_lease(&self, session_id: &str, lease_id: usize) {
         let released = {
             let mut leases = self
-                .direct_run_leases
+                .direct_session_run_leases
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
             if leases.get(session_id) == Some(&lease_id) {
@@ -260,17 +262,17 @@ impl SessionSupervisor {
         self.admission.set_limit(new_max);
     }
 
-    pub fn start_dispatcher(self: Arc<Self>, handler: RunHandler) {
+    pub fn start_dispatcher(self: Arc<Self>, handler: SessionRunHandler) {
         self.start_dispatcher_with_cancellation(handler, CancellationToken::new());
     }
 
-    pub fn start_dispatcher_without_recovery(self: Arc<Self>, handler: RunHandler) {
+    pub fn start_dispatcher_without_recovery(self: Arc<Self>, handler: SessionRunHandler) {
         self.start_dispatcher_without_recovery_with_cancellation(handler, CancellationToken::new());
     }
 
     pub fn start_dispatcher_with_cancellation(
         self: Arc<Self>,
-        handler: RunHandler,
+        handler: SessionRunHandler,
         cancellation: CancellationToken,
     ) {
         self.start_dispatcher_inner(SessionRunEngine::new(handler), true, cancellation);
@@ -278,7 +280,7 @@ impl SessionSupervisor {
 
     pub fn start_dispatcher_without_recovery_with_cancellation(
         self: Arc<Self>,
-        handler: RunHandler,
+        handler: SessionRunHandler,
         cancellation: CancellationToken,
     ) {
         self.start_dispatcher_inner(SessionRunEngine::new(handler), false, cancellation);
@@ -442,14 +444,14 @@ impl SessionSupervisor {
             if self.is_session_closing(&session_id) {
                 continue;
             }
-            if self.direct_run_lease_active(&session_id) {
+            if self.direct_session_run_lease_active(&session_id) {
                 self.enqueue_pending(&session_id).await;
                 continue;
             }
             let Some(actor) = self.actor_for(&session_id).await else {
                 continue;
             };
-            match actor.claim_run().await {
+            match actor.claim_session_run().await {
                 Ok(claim) if claim.accepted => return Some(session_id),
                 Ok(_) => continue,
                 Err(error) => {
@@ -517,10 +519,10 @@ impl SessionSupervisor {
         }
     }
 
-    pub(crate) async fn begin_direct_run(
+    pub(crate) async fn begin_direct_session_run(
         self: &Arc<Self>,
         session_id: &str,
-    ) -> Option<DirectRunLease> {
+    ) -> Option<DirectSessionRunLease> {
         let actor = self.actor_for(session_id).await?;
         // A dispatcher-owned run already holds admission and the actor run
         // bit. Direct callers must not acquire a second permit or gate it.
@@ -537,7 +539,7 @@ impl SessionSupervisor {
             let current_actor = self.actor_for(session_id).await;
             if self.ensure_lifecycle_open().is_err()
                 || self.is_session_closing(session_id)
-                || self.direct_run_lease_active(session_id)
+                || self.direct_session_run_lease_active(session_id)
                 || !current_actor
                     .as_ref()
                     .is_some_and(|current| current.same_instance(&actor))
@@ -546,10 +548,10 @@ impl SessionSupervisor {
                 return None;
             }
             waiter_id = self
-                .register_direct_waiter(session_id, waiter_cancel.clone())
+                .register_direct_session_run_waiter(session_id, waiter_cancel.clone())
                 .await;
         }
-        let mut waiter = DirectRunWaiterGuard {
+        let mut waiter = DirectSessionRunWaiterGuard {
             executor: self.clone(),
             session_id: session_id.to_string(),
             waiter_id: Some(waiter_id),
@@ -566,7 +568,7 @@ impl SessionSupervisor {
         let current_actor = self.actor_for(session_id).await;
         if self.ensure_lifecycle_open().is_err()
             || self.is_session_closing(session_id)
-            || self.direct_run_lease_active(session_id)
+            || self.direct_session_run_lease_active(session_id)
             || !current_actor
                 .as_ref()
                 .is_some_and(|current| current.same_instance(&actor))
@@ -584,7 +586,7 @@ impl SessionSupervisor {
             drop(permit);
             return None;
         }
-        let Some(lease_id) = self.reserve_direct_run_lease(session_id) else {
+        let Some(lease_id) = self.reserve_direct_session_run_lease(session_id) else {
             drop(permit);
             return None;
         };
@@ -592,7 +594,7 @@ impl SessionSupervisor {
         // commit Running or set the actor's run bit. If this admission future
         // is dropped after either commit but before returning to its caller,
         // the lease cancels and reconciles the exact actor instance.
-        let lease = DirectRunLease {
+        let lease = DirectSessionRunLease {
             actor: actor.clone(),
             executor: self.clone(),
             session_id: session_id.to_string(),
@@ -623,14 +625,18 @@ impl SessionSupervisor {
                 unreachable!("terminal direct-run status was rejected before creating its lease")
             }
         }
-        if actor.begin_direct_run().await {
+        if actor.begin_direct_session_run().await {
             Some(lease)
         } else {
             None
         }
     }
 
-    pub(crate) async fn end_direct_run(&self, session_id: &str, actor: &actor::SessionActorHandle) {
+    pub(crate) async fn end_direct_session_run(
+        &self,
+        session_id: &str,
+        actor: &actor::SessionActorHandle,
+    ) {
         let finished = {
             // Finish and direct-run admission share the lifecycle gate. If the
             // run bit were released first through the actor side channel, a
@@ -645,7 +651,7 @@ impl SessionSupervisor {
         }
     }
 
-    async fn end_cancelled_direct_run(
+    async fn end_cancelled_direct_session_run(
         &self,
         session_id: &str,
         expected_actor: &actor::SessionActorHandle,

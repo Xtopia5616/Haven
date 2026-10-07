@@ -37,10 +37,10 @@ pub use haven_common::types::FollowUp;
 /// perform the ReAct loop for `session_id` and return `Ok(())` on completion.
 /// It is responsible for acquiring no permits (dispatcher already does) but
 /// is expected to update the session status on completion/error.
-pub type RunHandler =
+pub type SessionRunHandler =
     Arc<dyn Fn(String) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send>> + Send + Sync>;
 
-type DirectRunWaiters = HashMap<String, Vec<(usize, CancellationToken)>>;
+type DirectSessionRunWaiters = HashMap<String, Vec<(usize, CancellationToken)>>;
 
 /// Process-local history-purge admission block with cancellation-safe cleanup.
 /// The block is held while runs quiesce and durable rows are removed; dropping
@@ -359,7 +359,7 @@ pub struct SessionSupervisor {
     /// Admission gate for session runs. Unlike a dynamically resized Tokio
     /// semaphore, the gate tracks active runs explicitly, so lowering and
     /// raising the limit while work is in flight cannot leak permits.
-    admission: Arc<dispatcher::RunAdmission>,
+    admission: Arc<dispatcher::SessionRunAdmission>,
     /// Serializes registry changes with the durable session mutations that
     /// accompany them. This closes load-vs-delete and create-vs-clear windows
     /// where a stale actor could otherwise be installed after its DB row was
@@ -384,13 +384,13 @@ pub struct SessionSupervisor {
     terminal_cleanup_retry_rx: StdMutex<Option<mpsc::UnboundedReceiver<String>>>,
     /// Direct resumes waiting for a run slot can be cancelled by delete/clear
     /// instead of waiting for an unrelated session to release capacity.
-    direct_run_waiters: Arc<Mutex<DirectRunWaiters>>,
-    direct_waiter_id: AtomicUsize,
+    direct_session_run_waiters: Arc<Mutex<DirectSessionRunWaiters>>,
+    direct_session_run_waiter_id: AtomicUsize,
     /// A direct-run owner remains reserved until its exit reconciliation has
     /// completed. Actor `running` may clear slightly earlier, so this marker
     /// prevents same-session re-admission during that cleanup handoff.
-    direct_run_leases: StdMutex<HashMap<String, usize>>,
-    direct_run_lease_id: AtomicUsize,
+    direct_session_run_leases: StdMutex<HashMap<String, usize>>,
+    direct_session_run_lease_id: AtomicUsize,
     /// The supervisor owns exactly one dispatcher. Duplicate starts would
     /// create competing lifecycle consumers and make recovery nondeterministic.
     dispatcher_started: std::sync::atomic::AtomicBool,
@@ -439,7 +439,7 @@ mod run_engine;
 mod status;
 mod tool_ports;
 mod tool_runner;
-pub(crate) use dispatcher::DirectRunLease;
+pub(crate) use dispatcher::DirectSessionRunLease;
 pub use tool_ports::SessionToolPorts;
 pub use tool_ports::{
     ManagedAssetLeasePort, SessionToolOverlayPort, ToolAuthorizationPort, ToolExecutionContext,
@@ -480,7 +480,7 @@ impl SessionSupervisor {
             observation_port: observations,
             managed_asset_lease_port: managed_asset_leases,
             actors: Arc::new(Mutex::new(HashMap::new())),
-            admission: Arc::new(dispatcher::RunAdmission::new(max_concurrent.max(1))),
+            admission: Arc::new(dispatcher::SessionRunAdmission::new(max_concurrent.max(1))),
             lifecycle_gate: Arc::new(Mutex::new(())),
             lifecycle_blocked: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             closing_sessions: Arc::new(StdMutex::new(HashMap::new())),
@@ -491,10 +491,10 @@ impl SessionSupervisor {
                 sender: retry_tx,
             }),
             terminal_cleanup_retry_rx: StdMutex::new(Some(retry_rx)),
-            direct_run_waiters: Arc::new(Mutex::new(HashMap::new())),
-            direct_waiter_id: AtomicUsize::new(0),
-            direct_run_leases: StdMutex::new(HashMap::new()),
-            direct_run_lease_id: AtomicUsize::new(0),
+            direct_session_run_waiters: Arc::new(Mutex::new(HashMap::new())),
+            direct_session_run_waiter_id: AtomicUsize::new(0),
+            direct_session_run_leases: StdMutex::new(HashMap::new()),
+            direct_session_run_lease_id: AtomicUsize::new(0),
             dispatcher_started: std::sync::atomic::AtomicBool::new(false),
             pending_queue: Arc::new(Mutex::new(VecDeque::new())),
             dispatch_tx: watch::channel(0).0,
@@ -775,16 +775,16 @@ impl SessionSupervisor {
         }
     }
 
-    pub(crate) async fn register_direct_waiter(
+    pub(crate) async fn register_direct_session_run_waiter(
         &self,
         session_id: &str,
         cancellation: CancellationToken,
     ) -> usize {
         let waiter_id = self
-            .direct_waiter_id
+            .direct_session_run_waiter_id
             .fetch_add(1, Ordering::Relaxed)
             .wrapping_add(1);
-        self.direct_run_waiters
+        self.direct_session_run_waiters
             .lock()
             .await
             .entry(session_id.to_string())
@@ -793,8 +793,12 @@ impl SessionSupervisor {
         waiter_id
     }
 
-    pub(crate) async fn unregister_direct_waiter(&self, session_id: &str, waiter_id: usize) {
-        let mut waiters = self.direct_run_waiters.lock().await;
+    pub(crate) async fn unregister_direct_session_run_waiter(
+        &self,
+        session_id: &str,
+        waiter_id: usize,
+    ) {
+        let mut waiters = self.direct_session_run_waiters.lock().await;
         let Some(session_waiters) = waiters.get_mut(session_id) else {
             return;
         };
@@ -804,8 +808,12 @@ impl SessionSupervisor {
         }
     }
 
-    pub(crate) async fn cancel_direct_waiters(&self, session_id: &str) {
-        let waiters = self.direct_run_waiters.lock().await.remove(session_id);
+    pub(crate) async fn cancel_direct_session_run_waiters(&self, session_id: &str) {
+        let waiters = self
+            .direct_session_run_waiters
+            .lock()
+            .await
+            .remove(session_id);
         if let Some(waiters) = waiters {
             for (_, cancellation) in waiters {
                 cancellation.cancel();
@@ -1186,7 +1194,7 @@ mod tests {
         exec.update_session_status(&session.id, SessionStatus::Running)
             .await
             .unwrap();
-        assert!(actor.begin_direct_run().await);
+        assert!(actor.begin_direct_session_run().await);
 
         // ReAct marks the failed run terminal before the dispatcher clears
         // the actor's running bit. A Continue can commit after that bit clears
@@ -1344,7 +1352,7 @@ mod tests {
         // lease claim and cleanup completion.
         drop(cleanup);
         let cancellation = CancellationToken::new();
-        let handler: RunHandler = Arc::new(|_| Box::pin(async { Ok(()) }));
+        let handler: SessionRunHandler = Arc::new(|_| Box::pin(async { Ok(()) }));
         exec.clone()
             .start_dispatcher_without_recovery_with_cancellation(handler, cancellation.clone());
 
@@ -1397,7 +1405,7 @@ mod tests {
         );
 
         let cancellation = CancellationToken::new();
-        let handler: RunHandler = Arc::new(|_| Box::pin(async { Ok(()) }));
+        let handler: SessionRunHandler = Arc::new(|_| Box::pin(async { Ok(()) }));
         exec.clone()
             .start_dispatcher_without_recovery_with_cancellation(handler, cancellation.clone());
         tokio::time::timeout(std::time::Duration::from_secs(1), async {
@@ -1454,7 +1462,7 @@ mod tests {
 
         let mut events = exec.subscribe_events();
 
-        let handler: RunHandler = Arc::new(move |_id: String| {
+        let handler: SessionRunHandler = Arc::new(move |_id: String| {
             Box::pin(async move {
                 panic!("simulated handler panic");
                 #[allow(unreachable_code)]
@@ -1529,7 +1537,7 @@ mod tests {
         let in_handler_h = in_handler.clone();
         let exited_h = exited.clone();
         let exec_ref = exec.clone();
-        let handler: RunHandler = Arc::new(move |id: String| {
+        let handler: SessionRunHandler = Arc::new(move |id: String| {
             let release_h = release_h.clone();
             let in_handler_h = in_handler_h.clone();
             let exited_h = exited_h.clone();
@@ -1608,7 +1616,7 @@ mod tests {
         let pk = peak.clone();
         let done = completed.clone();
         let exec_ref = exec.clone();
-        let handler: RunHandler = Arc::new(move |id: String| {
+        let handler: SessionRunHandler = Arc::new(move |id: String| {
             let cur = cur.clone();
             let pk = pk.clone();
             let done = done.clone();
@@ -1691,7 +1699,7 @@ mod tests {
             .await
             .unwrap();
         let actor = exec.actor_for(&session.id).await.unwrap();
-        exec.end_direct_run(&session.id, &actor).await;
+        exec.end_direct_session_run(&session.id, &actor).await;
         exec.enqueue_pending(&session.id).await;
         let claimed = exec.try_claim_pending().await;
         assert_eq!(claimed.as_deref(), Some(session.id.as_str()));
@@ -1763,7 +1771,7 @@ mod tests {
     /// limit of one still admits exactly one new run.
     #[tokio::test]
     async fn admission_resize_while_running_has_no_stale_capacity() {
-        let admission = Arc::new(dispatcher::RunAdmission::new(4));
+        let admission = Arc::new(dispatcher::SessionRunAdmission::new(4));
         let mut held = Vec::new();
         for _ in 0..4 {
             held.push(admission.try_acquire().expect("initial slot available"));
@@ -1931,7 +1939,7 @@ mod tests {
 
         assert!(exec.actors.lock().await.is_empty());
         assert!(exec.pending_queue.lock().await.is_empty());
-        assert!(exec.direct_run_waiters.lock().await.is_empty());
+        assert!(exec.direct_session_run_waiters.lock().await.is_empty());
         assert_eq!(db.count_sessions().unwrap(), 0);
         assert!(db.get_session(&first.id).unwrap().is_none());
         assert!(db.get_session(&second.id).unwrap().is_none());
@@ -1992,11 +2000,13 @@ mod tests {
         let exec_for_resume = exec.clone();
         let session_id = session.id.clone();
         let resume =
-            tokio::spawn(async move { exec_for_resume.begin_direct_run(&session_id).await });
+            tokio::spawn(
+                async move { exec_for_resume.begin_direct_session_run(&session_id).await },
+            );
 
         for _ in 0..100 {
             if exec
-                .direct_run_waiters
+                .direct_session_run_waiters
                 .lock()
                 .await
                 .contains_key(&session.id)
@@ -2006,7 +2016,7 @@ mod tests {
             tokio::time::sleep(std::time::Duration::from_millis(5)).await;
         }
         assert!(
-            exec.direct_run_waiters
+            exec.direct_session_run_waiters
                 .lock()
                 .await
                 .contains_key(&session.id),
@@ -2023,7 +2033,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn direct_run_admission_promotes_paused_session_before_execution() {
+    async fn direct_session_run_admission_promotes_paused_session_before_execution() {
         let exec = make_executor(1);
         let session = exec.create_session("direct run from paused").await.unwrap();
         exec.update_session_status(&session.id, SessionStatus::Paused)
@@ -2040,7 +2050,7 @@ mod tests {
         assert!(!exec.is_run_in_flight(&session.id).await);
 
         let mut lease = exec
-            .begin_direct_run(&session.id)
+            .begin_direct_session_run(&session.id)
             .await
             .expect("paused direct run should acquire an explicit run lease");
         assert_eq!(
@@ -2052,7 +2062,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn cancelled_direct_run_admission_unregisters_waiter() {
+    async fn cancelled_direct_session_run_admission_unregisters_waiter() {
         let exec = make_executor(1);
         let occupying = exec.create_session("occupying direct run").await.unwrap();
         let waiting = exec
@@ -2060,18 +2070,18 @@ mod tests {
             .await
             .unwrap();
         let mut occupying_lease = exec
-            .begin_direct_run(&occupying.id)
+            .begin_direct_session_run(&occupying.id)
             .await
             .expect("first direct run should acquire the only permit");
 
         let waiting_exec = exec.clone();
         let waiting_id = waiting.id.clone();
         let admission =
-            tokio::spawn(async move { waiting_exec.begin_direct_run(&waiting_id).await });
+            tokio::spawn(async move { waiting_exec.begin_direct_session_run(&waiting_id).await });
         tokio::time::timeout(std::time::Duration::from_secs(1), async {
             loop {
                 if exec
-                    .direct_run_waiters
+                    .direct_session_run_waiters
                     .lock()
                     .await
                     .contains_key(&waiting.id)
@@ -2093,7 +2103,7 @@ mod tests {
         tokio::time::timeout(std::time::Duration::from_secs(1), async {
             loop {
                 if !exec
-                    .direct_run_waiters
+                    .direct_session_run_waiters
                     .lock()
                     .await
                     .contains_key(&waiting.id)
@@ -2114,11 +2124,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn stale_direct_run_cleanup_does_not_finish_reloaded_actor() {
+    async fn stale_direct_session_run_cleanup_does_not_finish_reloaded_actor() {
         let exec = make_executor(1);
         let session = exec.create_session("stale direct run owner").await.unwrap();
         let old_lease = exec
-            .begin_direct_run(&session.id)
+            .begin_direct_session_run(&session.id)
             .await
             .expect("first actor should admit a direct run");
         let old_actor = old_lease.actor.clone();
@@ -2136,7 +2146,7 @@ mod tests {
         tokio::time::timeout(std::time::Duration::from_secs(1), async {
             loop {
                 let active = exec
-                    .direct_run_leases
+                    .direct_session_run_leases
                     .lock()
                     .unwrap_or_else(|poisoned| poisoned.into_inner())
                     .contains_key(&session.id);
@@ -2151,14 +2161,14 @@ mod tests {
 
         exec.ensure_session_loaded(&session.id).await.unwrap();
         let mut new_lease = exec
-            .begin_direct_run(&session.id)
+            .begin_direct_session_run(&session.id)
             .await
             .expect("reloaded actor should admit a new direct run");
         let new_actor = exec.actor_for(&session.id).await.unwrap();
         assert!(!new_actor.same_instance(&old_actor));
         assert!(new_actor.is_running().await);
 
-        exec.end_direct_run(&session.id, &old_actor).await;
+        exec.end_direct_session_run(&session.id, &old_actor).await;
 
         assert!(
             new_actor.is_running().await,
@@ -2520,7 +2530,7 @@ mod tests {
         let allow_exit_handler = allow_exit.clone();
         let exited_handler = exited.clone();
         let exec_handler = exec.clone();
-        let handler: RunHandler = Arc::new(move |session_id: String| {
+        let handler: SessionRunHandler = Arc::new(move |session_id: String| {
             let started = started_handler.clone();
             let cancellation_seen = cancellation_seen_handler.clone();
             let allow_exit = allow_exit_handler.clone();
@@ -2637,7 +2647,7 @@ mod tests {
         let allow_exit_handler = allow_exit.clone();
         let exited_handler = exited.clone();
         let exec_handler = exec.clone();
-        let handler: RunHandler = Arc::new(move |session_id: String| {
+        let handler: SessionRunHandler = Arc::new(move |session_id: String| {
             let started = started_handler.clone();
             let cancellation_seen = cancellation_seen_handler.clone();
             let allow_exit = allow_exit_handler.clone();
@@ -2740,7 +2750,7 @@ mod tests {
         let allow_exit_handler = allow_exit.clone();
         let exited_handler = exited.clone();
         let exec_handler = exec.clone();
-        let handler: RunHandler = Arc::new(move |session_id: String| {
+        let handler: SessionRunHandler = Arc::new(move |session_id: String| {
             let started = started_handler.clone();
             let cancellation_seen = cancellation_seen_handler.clone();
             let allow_exit = allow_exit_handler.clone();
@@ -2840,7 +2850,7 @@ mod tests {
         let allow_exit_handler = allow_exit.clone();
         let exited_handler = exited.clone();
         let exec_handler = exec.clone();
-        let handler: RunHandler = Arc::new(move |session_id: String| {
+        let handler: SessionRunHandler = Arc::new(move |session_id: String| {
             let started = started_handler.clone();
             let cancellation_seen = cancellation_seen_handler.clone();
             let allow_exit = allow_exit_handler.clone();
@@ -3189,7 +3199,7 @@ mod tests {
         let handled = Arc::new(AtomicU32::new(0));
         let handled_by_runner = handled.clone();
         let exec_for_runner = exec.clone();
-        let handler: RunHandler = Arc::new(move |session_id: String| {
+        let handler: SessionRunHandler = Arc::new(move |session_id: String| {
             let handled = handled_by_runner.clone();
             let exec = exec_for_runner.clone();
             Box::pin(async move {
@@ -3303,7 +3313,7 @@ mod tests {
         let handled = Arc::new(AtomicU32::new(0));
         let handled_by_runner = handled.clone();
         let exec_for_runner = exec2.clone();
-        let handler: RunHandler = Arc::new(move |session_id: String| {
+        let handler: SessionRunHandler = Arc::new(move |session_id: String| {
             let handled = handled_by_runner.clone();
             let exec = exec_for_runner.clone();
             Box::pin(async move {
