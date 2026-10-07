@@ -897,6 +897,17 @@ describe('ToolResultCard system', () => {
 		expect(container.querySelectorAll('.meter-fill').length).toBe(2);
 	});
 
+	it('distinguishes an unsampled overview CPU from zero usage', async () => {
+		const { container } = render(ToolResultCard, {
+			toolName: 'system',
+			content: JSON.stringify({ cpu: { cores: 8, logical_cpus: 16 } }),
+		});
+		await expandToolCard(container);
+		expect(screen.getByText('本次概览未采样')).toBeTruthy();
+		expect(screen.queryByText('0.0%')).toBeNull();
+		expect(screen.getByText('8 核 / 16 线程')).toBeTruthy();
+	});
+
 	it('renders power status and no-battery state', async () => {
 		const { container } = render(ToolResultCard, {
 			toolName: 'system',

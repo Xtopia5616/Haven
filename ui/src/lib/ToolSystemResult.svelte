@@ -222,11 +222,15 @@
 {#if data.cpu}
 	<div class="meter-row">
 		<span class="meter-label">CPU</span>
-		<span class="meter-value">{Number(data.cpu.usage_pct ?? 0).toFixed(1)}%</span>
-		<span class="meter-track"
-			><span class="meter-fill" style="width: {clampPercentage(data.cpu.usage_pct)}%"
-			></span></span
-		>
+		{#if typeof data.cpu.usage_pct === 'number' && Number.isFinite(data.cpu.usage_pct)}
+			<span class="meter-value">{data.cpu.usage_pct.toFixed(1)}%</span>
+			<span class="meter-track"
+				><span class="meter-fill" style="width: {clampPercentage(data.cpu.usage_pct)}%"
+				></span></span
+			>
+		{:else}
+			<span class="meter-sub">本次概览未采样</span>
+		{/if}
 		<span class="meter-sub">{data.cpu.cores ?? 0} 核 / {data.cpu.logical_cpus ?? 0} 线程</span>
 	</div>
 {/if}
