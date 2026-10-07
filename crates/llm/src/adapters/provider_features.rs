@@ -7,6 +7,13 @@
 use haven_common::config::ModelEndpoint;
 use serde_json::Value;
 
+/// Chat request fields produced by vendor-specific reasoning policy.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub(crate) struct ChatThinkingExtras {
+    pub(crate) thinking: Option<Value>,
+    pub(crate) reasoning_effort: Option<String>,
+}
+
 /// Lowercased `provider` + `base_url` + `model_name` haystack used to detect
 /// vendor-specific extras (DeepSeek thinking, Kimi `thinking.type`, etc.) even
 /// when the endpoint is behind a gateway that sets `provider: "openai"`.
@@ -54,8 +61,9 @@ pub(crate) fn map_deepseek_effort(effort: &str) -> &'static str {
 }
 
 /// Vendor chat-completions extras derived from `reasoning_effort` + vendor
-/// detection. Returns `(thinking_object, reasoning_effort_to_send)`.
-pub(crate) fn chat_thinking_extras(endpoint: &ModelEndpoint) -> (Option<Value>, Option<String>) {
+/// detection. Fields remain optional because providers use different request
+/// shapes and may reject unsupported reasoning settings.
+pub(crate) fn chat_thinking_extras(endpoint: &ModelEndpoint) -> ChatThinkingExtras {
     let effort = endpoint
         .reasoning_effort
         .as_deref()
@@ -64,14 +72,15 @@ pub(crate) fn chat_thinking_extras(endpoint: &ModelEndpoint) -> (Option<Value>, 
 
     if is_deepseek(endpoint) {
         return match effort {
-            None => (None, None),
-            Some(e) if is_thinking_disabled(e) => {
-                (Some(serde_json::json!({"type": "disabled"})), None)
-            }
-            Some(e) => (
-                Some(serde_json::json!({"type": "enabled"})),
-                Some(map_deepseek_effort(e).to_string()),
-            ),
+            None => ChatThinkingExtras::default(),
+            Some(e) if is_thinking_disabled(e) => ChatThinkingExtras {
+                thinking: Some(serde_json::json!({"type": "disabled"})),
+                reasoning_effort: None,
+            },
+            Some(e) => ChatThinkingExtras {
+                thinking: Some(serde_json::json!({"type": "enabled"})),
+                reasoning_effort: Some(map_deepseek_effort(e).to_string()),
+            },
         };
     }
 
@@ -82,16 +91,16 @@ pub(crate) fn chat_thinking_extras(endpoint: &ModelEndpoint) -> (Option<Value>, 
     // OpenAI / other chat providers: never send disable tokens as
     // `reasoning_effort` (rejected by the API).
     match effort {
-        None => (None, None),
-        Some(e) if is_thinking_disabled(e) => (None, None),
-        Some(e) => (None, Some(e.to_string())),
+        None => ChatThinkingExtras::default(),
+        Some(e) if is_thinking_disabled(e) => ChatThinkingExtras::default(),
+        Some(e) => ChatThinkingExtras {
+            thinking: None,
+            reasoning_effort: Some(e.to_string()),
+        },
     }
 }
 
-fn kimi_chat_thinking_extras(
-    model_name: &str,
-    effort: Option<&str>,
-) -> (Option<Value>, Option<String>) {
+fn kimi_chat_thinking_extras(model_name: &str, effort: Option<&str>) -> ChatThinkingExtras {
     let model = model_name.to_ascii_lowercase();
     if model.contains("kimi-k3") || model.split(['/', '-', '_']).any(|p| p == "k3") {
         let mapped = effort.map(|e| {
@@ -107,24 +116,33 @@ fn kimi_chat_thinking_extras(
                 .to_string(),
             )
         });
-        return (None, mapped.flatten());
+        return ChatThinkingExtras {
+            thinking: None,
+            reasoning_effort: mapped.flatten(),
+        };
     }
     if model.contains("k2.7") {
-        return (None, None);
+        return ChatThinkingExtras::default();
     }
     let supports_keep = model.contains("k2.6")
         || !(model.contains("k2.5") || model.contains("k2.7") || model.contains("kimi-k3"));
 
     match effort {
-        None => (None, None),
-        Some(e) if is_thinking_disabled(e) => (Some(serde_json::json!({"type": "disabled"})), None),
+        None => ChatThinkingExtras::default(),
+        Some(e) if is_thinking_disabled(e) => ChatThinkingExtras {
+            thinking: Some(serde_json::json!({"type": "disabled"})),
+            reasoning_effort: None,
+        },
         Some(_) => {
             let thinking = if supports_keep {
                 serde_json::json!({"type": "enabled", "keep": "all"})
             } else {
                 serde_json::json!({"type": "enabled"})
             };
-            (Some(thinking), None)
+            ChatThinkingExtras {
+                thinking: Some(thinking),
+                reasoning_effort: None,
+            }
         }
     }
 }
@@ -294,25 +312,31 @@ mod tests {
             model_name: "deepseek-v4-pro".into(),
             ..Default::default()
         };
-        let (thinking, effort) = chat_thinking_extras(&base);
-        assert!(thinking.is_none());
-        assert!(effort.is_none());
+        let extras = chat_thinking_extras(&base);
+        assert!(extras.thinking.is_none());
+        assert!(extras.reasoning_effort.is_none());
 
         let enabled = ModelEndpoint {
             reasoning_effort: Some("medium".into()),
             ..base.clone()
         };
-        let (thinking, effort) = chat_thinking_extras(&enabled);
-        assert_eq!(thinking, Some(serde_json::json!({"type": "enabled"})));
-        assert_eq!(effort.as_deref(), Some("high"));
+        let extras = chat_thinking_extras(&enabled);
+        assert_eq!(
+            extras.thinking,
+            Some(serde_json::json!({"type": "enabled"}))
+        );
+        assert_eq!(extras.reasoning_effort.as_deref(), Some("high"));
 
         let disabled = ModelEndpoint {
             reasoning_effort: Some("off".into()),
             ..base
         };
-        let (thinking, effort) = chat_thinking_extras(&disabled);
-        assert_eq!(thinking, Some(serde_json::json!({"type": "disabled"})));
-        assert!(effort.is_none());
+        let extras = chat_thinking_extras(&disabled);
+        assert_eq!(
+            extras.thinking,
+            Some(serde_json::json!({"type": "disabled"}))
+        );
+        assert!(extras.reasoning_effort.is_none());
     }
 
     #[test]
@@ -324,39 +348,42 @@ mod tests {
             reasoning_effort: Some("high".into()),
             ..Default::default()
         };
-        let (thinking, effort) = chat_thinking_extras(&k26);
+        let extras = chat_thinking_extras(&k26);
         assert_eq!(
-            thinking,
+            extras.thinking,
             Some(serde_json::json!({"type": "enabled", "keep": "all"}))
         );
-        assert!(effort.is_none());
+        assert!(extras.reasoning_effort.is_none());
 
         let k25 = ModelEndpoint {
             model_name: "kimi-k2.5".into(),
             reasoning_effort: Some("low".into()),
             ..k26.clone()
         };
-        let (thinking, effort) = chat_thinking_extras(&k25);
-        assert_eq!(thinking, Some(serde_json::json!({"type": "enabled"})));
-        assert!(effort.is_none());
+        let extras = chat_thinking_extras(&k25);
+        assert_eq!(
+            extras.thinking,
+            Some(serde_json::json!({"type": "enabled"}))
+        );
+        assert!(extras.reasoning_effort.is_none());
 
         let k27 = ModelEndpoint {
             model_name: "kimi-k2.7-code".into(),
             reasoning_effort: Some("high".into()),
             ..k26.clone()
         };
-        let (thinking, effort) = chat_thinking_extras(&k27);
-        assert!(thinking.is_none());
-        assert!(effort.is_none());
+        let extras = chat_thinking_extras(&k27);
+        assert!(extras.thinking.is_none());
+        assert!(extras.reasoning_effort.is_none());
 
         let k3 = ModelEndpoint {
             model_name: "kimi-k3".into(),
             reasoning_effort: Some("medium".into()),
             ..k26
         };
-        let (thinking, effort) = chat_thinking_extras(&k3);
-        assert!(thinking.is_none());
-        assert_eq!(effort.as_deref(), Some("high"));
+        let extras = chat_thinking_extras(&k3);
+        assert!(extras.thinking.is_none());
+        assert_eq!(extras.reasoning_effort.as_deref(), Some("high"));
     }
 
     #[test]
@@ -405,9 +432,9 @@ mod tests {
             reasoning_effort: Some("off".into()),
             ..Default::default()
         };
-        let (thinking, effort) = chat_thinking_extras(&endpoint);
-        assert!(thinking.is_none());
-        assert!(effort.is_none());
+        let extras = chat_thinking_extras(&endpoint);
+        assert!(extras.thinking.is_none());
+        assert!(extras.reasoning_effort.is_none());
     }
 
     #[test]

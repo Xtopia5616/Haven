@@ -82,13 +82,15 @@ impl OpenAiAdapter {
             system_split,
         )
         .with_provider(self.endpoint.provider.clone());
-        let (thinking, reasoning_effort) = chat_thinking_extras(&self.endpoint);
-        let omit_temperature = reasoning_effort.is_some() || thinking.is_some();
+        let thinking_extras = chat_thinking_extras(&self.endpoint);
+        let omit_temperature =
+            thinking_extras.reasoning_effort.is_some() || thinking_extras.thinking.is_some();
         // DeepSeek explicitly documents these sampling parameters as
         // unsupported in thinking mode. Omit them instead of relying on the
         // compatibility behavior that silently ignores them.
         let deepseek_thinking = is_deepseek(&self.endpoint)
-            && thinking
+            && thinking_extras
+                .thinking
                 .as_ref()
                 .and_then(|value| value.get("type"))
                 .and_then(Value::as_str)
@@ -134,8 +136,8 @@ impl OpenAiAdapter {
             stop: self.endpoint.stop.clone(),
             seed: self.endpoint.seed,
             response_format: self.endpoint.response_format.clone(),
-            reasoning_effort,
-            thinking,
+            reasoning_effort: thinking_extras.reasoning_effort,
+            thinking: thinking_extras.thinking,
             stream_options: if stream {
                 Some(StreamOptions {
                     include_usage: true,
