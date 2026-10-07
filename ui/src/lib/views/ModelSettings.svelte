@@ -10,7 +10,10 @@
 	import StatusBadge from '$lib/StatusBadge.svelte';
 	import SettingsSection from '$lib/SettingsSection.svelte';
 	import SettingsField from '$lib/SettingsField.svelte';
-	import { createModelDiscovery } from '$lib/modelDiscovery.ts';
+	import {
+		createModelDiscovery,
+		type DiscoveredModelMetadataFill,
+	} from '$lib/modelDiscovery.ts';
 	import { emptyModel, capabilityOptions, requestPolicyOptions } from '$lib/modelRoles.ts';
 	import { withNumberValue, withStringValue } from '$lib/typedCallbacks.ts';
 	import type {
@@ -51,7 +54,7 @@
 		keyConfiguredProviders?: Record<string, boolean>;
 		mcpServerNames?: string[];
 		loaded?: boolean;
-		onDiscoverySettled?: (fills: Array<Record<string, unknown>>) => void;
+		onDiscoverySettled?: (fills: DiscoveredModelMetadataFill[]) => void;
 		onProviderDiscoveryFailure?: (providerName: string, staticCatalog: boolean) => void;
 	}
 	import {

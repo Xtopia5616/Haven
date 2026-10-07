@@ -32,6 +32,7 @@
 	import { loadSettings } from '$lib/settingsCommand.ts';
 	import { checkShellAvailable, readApiKeyStatus } from '$lib/diagnosticsCommands.ts';
 	import ModelSettings from './ModelSettings.svelte';
+	import type { DiscoveredModelMetadataFill } from '$lib/modelDiscovery.ts';
 	import SettingsBehavior from './SettingsBehavior.svelte';
 	import SettingsAppearance from './SettingsAppearance.svelte';
 	import SettingsDiagnostics from './SettingsDiagnostics.svelte';
@@ -508,12 +509,11 @@ import {
 		settingsTab = id;
 	}
 
-	function reBaselineAfterDiscovery(fills: Array<Record<string, unknown>>) {
+	function reBaselineAfterDiscovery(fills: DiscoveredModelMetadataFill[]) {
 		if (
 			!mounted ||
 			!settingsLoaded ||
 			!savedSnapshot ||
-			!Array.isArray(fills) ||
 			fills.length === 0
 		)
 			return;
@@ -524,15 +524,12 @@ import {
 			for (const fill of fills) {
 				const model = models.find((item) => item.id === fill.id);
 				if (!model) continue;
-				const contextWindow = fill.context_window;
-				if (contextWindow === null || typeof contextWindow === 'number')
-					model.context_window = contextWindow;
-				const inputCost = fill.cost_per_1k_input_tokens;
-				if (inputCost === null || typeof inputCost === 'number')
-					model.cost_per_1k_input_tokens = inputCost;
-				const outputCost = fill.cost_per_1k_output_tokens;
-				if (outputCost === null || typeof outputCost === 'number')
-					model.cost_per_1k_output_tokens = outputCost;
+				if (fill.context_window !== undefined)
+					model.context_window = fill.context_window;
+				if (fill.cost_per_1k_input_tokens !== undefined)
+					model.cost_per_1k_input_tokens = fill.cost_per_1k_input_tokens;
+				if (fill.cost_per_1k_output_tokens !== undefined)
+					model.cost_per_1k_output_tokens = fill.cost_per_1k_output_tokens;
 			}
 			snapshot.llm = { ...llmSnapshot, models };
 			savedSnapshot = JSON.stringify(snapshot);

@@ -3,27 +3,29 @@ import { addNotification } from '$lib/notificationStore.ts';
 import { isKeylessProvider } from '$lib/apiStyle.ts';
 import { discoverAllModels, discoverModels } from '$lib/modelDiscoveryCommands.ts';
 import type { DiscoveredModelMap } from '$lib/contracts/model.ts';
+import type { ModelDraft, ProviderDraft } from '$lib/settingsModelTypes.ts';
 
-type Provider = {
-	name: string;
-	base_url: string;
-	api_key?: string;
-	api_style?: string | null;
-	provider?: string | null;
-	proxy_url?: string | null;
-	no_proxy?: string | null;
-};
+type ModelDiscoveryProvider = Pick<
+	ProviderDraft,
+	'name' | 'base_url' | 'api_key' | 'api_style' | 'provider' | 'proxy_url' | 'no_proxy'
+>;
+
+type DiscoveredModelMetadataPatch = Partial<
+	Pick<ModelDraft, 'context_window' | 'cost_per_1k_input_tokens' | 'cost_per_1k_output_tokens'>
+>;
+
+export type DiscoveredModelMetadataFill = Pick<ModelDraft, 'id'> & DiscoveredModelMetadataPatch;
 
 export interface ModelDiscoveryContext {
-	getProviders: () => Provider[];
-	getModels: () => Array<Record<string, any>>;
+	getProviders: () => ModelDiscoveryProvider[];
+	getModels: () => ModelDraft[];
 	getDiscoveredModels: () => DiscoveredModelMap;
 	setModels: (models: DiscoveredModelMap) => void;
 	isProviderFetching?: (providerName: string) => boolean;
 	isRefreshingAll?: () => boolean;
 	setProviderFetching: (providerName: string, fetching: boolean) => void;
 	setRefreshingAll: (refreshing: boolean) => void;
-	onDiscoverySettled?: (fills: Array<Record<string, unknown>>) => void;
+	onDiscoverySettled?: (fills: DiscoveredModelMetadataFill[]) => void;
 }
 
 /**
@@ -32,12 +34,12 @@ export interface ModelDiscoveryContext {
  * fills empty fields.
  */
 export function applyDiscoveredModelMeta(
-	slot: Record<string, any>,
+	slot: ModelDraft,
 	models: DiscoveredModelMap,
 	providerName: string,
 	modelId: string,
 	{ overwrite = false }: { overwrite?: boolean } = {},
-): Record<string, unknown> {
+): DiscoveredModelMetadataPatch {
 	const model = (models[providerName] || []).find((item) => item.id === modelId);
 	if (!model) {
 		if (overwrite) {
@@ -49,7 +51,7 @@ export function applyDiscoveredModelMeta(
 		}
 		return {};
 	}
-	const wrote: Record<string, unknown> = {};
+	const wrote: DiscoveredModelMetadataPatch = {};
 	if (overwrite || slot.context_window == null || slot.context_window === 0) {
 		const next = model.context_window && model.context_window > 0 ? model.context_window : null;
 		if (slot.context_window !== next) {
@@ -85,7 +87,7 @@ export function createModelDiscovery(context: ModelDiscoveryContext) {
 	let lastRefreshNotify = 0;
 
 	function backfillModelMetaFromDiscovery() {
-		const fills: Array<Record<string, unknown>> = [];
+		const fills: DiscoveredModelMetadataFill[] = [];
 		for (const slot of context.getModels()) {
 			if (!slot?.providerName || !slot?.model) continue;
 			const wrote = applyDiscoveredModelMeta(
@@ -190,7 +192,7 @@ export function createModelDiscovery(context: ModelDiscoveryContext) {
 		refreshAllModels,
 		refreshProviderModels,
 		applyDiscoveredModelMeta: (
-			slot: Record<string, any>,
+			slot: ModelDraft,
 			providerName: string,
 			modelId: string,
 			options?: { overwrite?: boolean },
