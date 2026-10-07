@@ -36,7 +36,7 @@ pub use registry::{
     FALLBACK_CONTEXT_WINDOW, ModelDiscoveryAuthHeader, ModelInfo, ModelRegistry,
     context_window_for, model_info_from_json,
 };
-pub use router::{LlmRouter, StreamAttemptHooks};
+pub use router::{LlmRouter, StreamAttemptHooks, StreamAttemptOutputDisposition};
 pub use stt::{
     McpToolCaller, McpToolOutcome, ResolvedSttConfig, SttClient, build_stt_client,
     resolve_stt_config,

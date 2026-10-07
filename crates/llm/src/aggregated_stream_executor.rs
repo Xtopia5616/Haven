@@ -19,12 +19,14 @@ use tokio_util::sync::CancellationToken;
 use crate::client::{LlmClient, retry_backoff_policy, retry_jitter_sample};
 use crate::request_descriptor::RequestDescriptor;
 use crate::request_pipeline::{RequestExecutionPolicy, RetryPolicy, execute_with_timeout};
+use crate::router::StreamAttemptOutputDisposition;
 use crate::stream_rules::StreamRule;
 use crate::streaming;
 use crate::types::{LlmError, LlmResponse, StreamChunk, StreamRequest, ToolDefinition};
 
-pub(crate) type ChunkCallback = Box<dyn FnMut(&StreamChunk) + Send + 'static>;
-pub(crate) type AttemptCallback = Box<dyn FnMut(bool) + Send + 'static>;
+pub(crate) type StreamChunkCallback = Box<dyn FnMut(&StreamChunk) + Send + 'static>;
+pub(crate) type StreamAttemptStartCallback =
+    Box<dyn FnMut(StreamAttemptOutputDisposition) + Send + 'static>;
 
 /// Shared immutable request data reused across every provider attempt.
 #[derive(Clone)]
@@ -46,26 +48,26 @@ impl StreamContext {
 
 /// Active callbacks shared by a logical stream and all its attempts.
 pub(crate) struct ActiveStreamHooks {
-    on_chunk: Arc<StdMutex<ChunkCallback>>,
-    on_attempt_start: Arc<StdMutex<AttemptCallback>>,
+    on_chunk: Arc<StdMutex<StreamChunkCallback>>,
+    on_attempt_start: Arc<StdMutex<StreamAttemptStartCallback>>,
 }
 
 impl ActiveStreamHooks {
     pub(crate) fn new(
-        on_chunk: ChunkCallback,
-        on_attempt_start: AttemptCallback,
-        replace_output_on_start: bool,
+        on_chunk: StreamChunkCallback,
+        on_attempt_start: StreamAttemptStartCallback,
+        output_disposition_on_start: StreamAttemptOutputDisposition,
     ) -> Self {
         let hooks = Self {
             on_chunk: Arc::new(StdMutex::new(on_chunk)),
             on_attempt_start: Arc::new(StdMutex::new(on_attempt_start)),
         };
-        hooks.notify_attempt_start(replace_output_on_start);
+        hooks.notify_attempt_start(output_disposition_on_start);
         hooks
     }
 
-    fn notify_attempt_start(&self, replace_output: bool) {
-        self.on_attempt_start.lock().unwrap()(replace_output);
+    fn notify_attempt_start(&self, disposition: StreamAttemptOutputDisposition) {
+        self.on_attempt_start.lock().unwrap()(disposition);
     }
 }
 
@@ -185,7 +187,7 @@ impl<'a> AggregatedStreamExecutor<'a> {
             "stream aborted by rule '{}', injecting guidance and retrying with primary",
             rule_name
         );
-        hooks.notify_attempt_start(true);
+        hooks.notify_attempt_start(StreamAttemptOutputDisposition::ReplaceExisting);
         // Keep this fresh read at the retry boundary: an in-flight guidance
         // retry historically observes the current idle setting, while the
         // initial attempts keep the request's original snapshot.
@@ -478,7 +480,11 @@ mod tests {
     }
 
     fn hooks() -> ActiveStreamHooks {
-        ActiveStreamHooks::new(Box::new(|_| {}), Box::new(|_| {}), false)
+        ActiveStreamHooks::new(
+            Box::new(|_| {}),
+            Box::new(|_| {}),
+            StreamAttemptOutputDisposition::PreserveExisting,
+        )
     }
 
     #[tokio::test]
@@ -614,9 +620,11 @@ mod tests {
                     },
                     {
                         let attempt_starts = attempt_starts.clone();
-                        Box::new(move |replace| attempt_starts.lock().unwrap().push(replace))
+                        Box::new(move |disposition| {
+                            attempt_starts.lock().unwrap().push(disposition)
+                        })
                     },
-                    false,
+                    StreamAttemptOutputDisposition::PreserveExisting,
                 ),
                 CancellationToken::new(),
                 {
@@ -652,7 +660,13 @@ mod tests {
             *delivered_chunks.lock().unwrap(),
             vec![Some("safe answer".into())]
         );
-        assert_eq!(*attempt_starts.lock().unwrap(), vec![false, true]);
+        assert_eq!(
+            *attempt_starts.lock().unwrap(),
+            vec![
+                StreamAttemptOutputDisposition::PreserveExisting,
+                StreamAttemptOutputDisposition::ReplaceExisting
+            ]
+        );
         assert_eq!(idle_refreshes.load(Ordering::SeqCst), 1);
         assert_eq!(projection_calls.load(Ordering::SeqCst), 1);
     }

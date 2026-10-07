@@ -9,7 +9,10 @@ use super::identity::{IdentityMap, StreamBlockIdentity};
 use super::*;
 use crate::types::media_inputs_from_events;
 use haven_common::config::RequestKind;
-use haven_llm::{LlmResponse, LlmRouter, StreamAttemptHooks, StreamRequest, ToolDefinition};
+use haven_llm::{
+    LlmResponse, LlmRouter, StreamAttemptHooks, StreamAttemptOutputDisposition, StreamRequest,
+    ToolDefinition,
+};
 
 pub(super) struct StreamedLlmCall {
     pub(super) response: LlmResponse,
@@ -347,7 +350,7 @@ impl<'a> StreamSession<'a> {
                 self.request,
                 request_context,
                 &self.identity_map,
-                true,
+                StreamAttemptOutputDisposition::ReplaceExisting,
                 self.tools,
                 self.tool_token_estimate,
                 self.cancel.clone(),
@@ -438,7 +441,7 @@ impl StreamForwarder {
     ) -> (
         Self,
         impl FnMut(&haven_llm::StreamChunk) + Send + 'static,
-        impl FnMut(bool) + Send + 'static,
+        impl FnMut(StreamAttemptOutputDisposition) + Send + 'static,
     ) {
         let (chunk_tx, chunk_consumer_task) =
             EventDispatcher::spawn_chunk_event_consumer(&ctx.emitter, max_batch_bytes);
@@ -488,8 +491,8 @@ impl StreamForwarder {
         let reset_attempt_generation = attempt_generation.clone();
         let attempt_session = checkpoint_session.clone();
         let attempt_store = partial_store.clone();
-        let on_attempt_start = move |replace_output: bool| {
-            if !replace_output {
+        let on_attempt_start = move |disposition: StreamAttemptOutputDisposition| {
+            if disposition != StreamAttemptOutputDisposition::ReplaceExisting {
                 return;
             }
             let generation = attempt_store.begin_attempt(&attempt_session);
@@ -738,7 +741,7 @@ impl ReActEngine {
     /// primary step call and the post-compaction retry so the two cannot
     /// drift. Error handling stays at the call site.
     /// A primary call and every replacement retry use the same lifecycle;
-    /// `replace_output_on_start` only controls whether the previous partial
+    /// `output_disposition_on_start` controls whether the previous partial
     /// output is discarded before the provider attempt begins.
     #[allow(clippy::too_many_arguments)] // consolidated stream setup; params are read-only
     pub(super) async fn stream_llm_call(
@@ -748,14 +751,14 @@ impl ReActEngine {
         request: RequestKind,
         request_context: &RequestContext,
         identity_map: &IdentityMap,
-        replace_output_on_start: bool,
+        output_disposition_on_start: StreamAttemptOutputDisposition,
         tools: &[ToolDefinition],
         tool_token_estimate: u32,
         cancel: tokio_util::sync::CancellationToken,
         partial_thought: &Arc<std::sync::Mutex<String>>,
         partial_reasoning: &Arc<std::sync::Mutex<String>>,
     ) -> Result<StreamedLlmCall, haven_llm::LlmError> {
-        if replace_output_on_start {
+        if output_disposition_on_start == StreamAttemptOutputDisposition::ReplaceExisting {
             // A replacement stream owns the partial scratch row from this
             // step. Remove it before the new attempt starts so a failed retry
             // cannot leave the previous attempt eligible for end-session
@@ -806,7 +809,7 @@ impl ReActEngine {
                     tools,
                     max_output_tokens: Some(max_output_tokens),
                 },
-                StreamAttemptHooks::new(on_chunk, on_attempt_start, replace_output_on_start),
+                StreamAttemptHooks::new(on_chunk, on_attempt_start, output_disposition_on_start),
                 cancel,
             )
             .await;
@@ -920,7 +923,7 @@ impl ReActEngine {
                 *request,
                 request_context,
                 state.identity_map.as_ref(),
-                false,
+                StreamAttemptOutputDisposition::PreserveExisting,
                 tools,
                 tool_token_estimate,
                 cancel.clone(),
@@ -1044,7 +1047,7 @@ impl ReActEngine {
                                 retry_request,
                                 &projection.request_context,
                                 state.identity_map.as_ref(),
-                                true,
+                                StreamAttemptOutputDisposition::ReplaceExisting,
                                 tools,
                                 tool_token_estimate,
                                 cancel.clone(),

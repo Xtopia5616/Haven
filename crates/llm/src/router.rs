@@ -76,29 +76,38 @@ pub struct LlmRouter {
     rate_limited: RwLock<HashMap<String, Instant>>,
 }
 
+/// How a new provider attempt treats output already visible to the caller.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StreamAttemptOutputDisposition {
+    /// Keep the output from the existing provider attempt.
+    PreserveExisting,
+    /// Clear the output from the existing provider attempt before new chunks.
+    ReplaceExisting,
+}
+
 /// Callbacks and output policy for one routed streaming request.
 ///
 /// The provider may make several attempts for one logical Agent turn. The
-/// chunk callback receives provider deltas; the attempt callback marks whether
-/// a new attempt replaces the already visible output. Keeping these controls
+/// chunk callback receives provider deltas; the attempt callback receives the
+/// disposition for output already visible. Keeping these controls
 /// together prevents callers from accidentally handling retry boundaries as
 /// ordinary chunks.
 pub struct StreamAttemptHooks {
     on_chunk: Box<dyn FnMut(&StreamChunk) + Send + 'static>,
-    on_attempt_start: Box<dyn FnMut(bool) + Send + 'static>,
-    replace_output_on_start: bool,
+    on_attempt_start: Box<dyn FnMut(StreamAttemptOutputDisposition) + Send + 'static>,
+    output_disposition_on_start: StreamAttemptOutputDisposition,
 }
 
 impl StreamAttemptHooks {
     pub fn new(
         on_chunk: impl FnMut(&StreamChunk) + Send + 'static,
-        on_attempt_start: impl FnMut(bool) + Send + 'static,
-        replace_output_on_start: bool,
+        on_attempt_start: impl FnMut(StreamAttemptOutputDisposition) + Send + 'static,
+        output_disposition_on_start: StreamAttemptOutputDisposition,
     ) -> Self {
         Self {
             on_chunk: Box::new(on_chunk),
             on_attempt_start: Box::new(on_attempt_start),
-            replace_output_on_start,
+            output_disposition_on_start,
         }
     }
 }
@@ -877,7 +886,11 @@ impl LlmRouter {
                 tools,
                 max_output_tokens: None,
             },
-            StreamAttemptHooks::new(on_chunk, |_| {}, false),
+            StreamAttemptHooks::new(
+                on_chunk,
+                |_| {},
+                StreamAttemptOutputDisposition::PreserveExisting,
+            ),
             cancel,
         )
         .await
@@ -885,8 +898,8 @@ impl LlmRouter {
 
     /// Stream-chat with explicit output-attempt boundaries.
     ///
-    /// `on_attempt_start(true)` means the new provider attempt replaces the
-    /// previous visible output. The callback is deliberately separate from
+    /// `on_attempt_start` receives whether the new attempt preserves or
+    /// replaces previous visible output. The callback is deliberately separate from
     /// `on_chunk`: a provider retry can start a new response before its first
     /// chunk arrives, and concatenating both attempts is never valid.
     /// The cancellable method above keeps the callback-only API for
@@ -938,9 +951,9 @@ impl LlmRouter {
         let StreamAttemptHooks {
             on_chunk,
             on_attempt_start,
-            replace_output_on_start,
+            output_disposition_on_start,
         } = hooks;
-        let hooks = ActiveStreamHooks::new(on_chunk, on_attempt_start, replace_output_on_start);
+        let hooks = ActiveStreamHooks::new(on_chunk, on_attempt_start, output_disposition_on_start);
 
         let cfg = self.config.read().await;
         let primary_policy = RequestExecutionPolicy::primary(&cfg);
@@ -1822,7 +1835,11 @@ mod tests {
                     tools: &[],
                     max_output_tokens: Some(23),
                 },
-                StreamAttemptHooks::new(|_| {}, |_| {}, false),
+                StreamAttemptHooks::new(
+                    |_| {},
+                    |_| {},
+                    StreamAttemptOutputDisposition::PreserveExisting,
+                ),
                 CancellationToken::new(),
             )
             .await
@@ -1835,7 +1852,11 @@ mod tests {
                     tools: &tools,
                     max_output_tokens: Some(41),
                 },
-                StreamAttemptHooks::new(|_| {}, |_| {}, false),
+                StreamAttemptHooks::new(
+                    |_| {},
+                    |_| {},
+                    StreamAttemptOutputDisposition::PreserveExisting,
+                ),
                 CancellationToken::new(),
             )
             .await
@@ -3762,7 +3783,11 @@ mod tests {
                         tools: &tools,
                         max_output_tokens: Some(64),
                     },
-                    StreamAttemptHooks::new(|_| {}, |_| {}, false),
+                    StreamAttemptHooks::new(
+                        |_| {},
+                        |_| {},
+                        StreamAttemptOutputDisposition::PreserveExisting,
+                    ),
                     task_cancel,
                 )
                 .await

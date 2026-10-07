@@ -1,6 +1,6 @@
 # Haven 命名规范
 
-> 版本: v1.88 | 日期: 2026-10-07
+> 版本: v1.89 | 日期: 2026-10-07
 
 本文档统一 Haven 项目各层的命名规则（变量名、函数名、文件名、crate 名、缩写大小写、跨层边界）。规范以现有代码中的事实模式为基础，新代码必须遵循；存量代码若与规范冲突，逐步迁移对齐。
 
@@ -24,6 +24,7 @@
 - **事件 sink 按 channel 域和载荷角色命名**：持久 ToolRun 生命周期的 typed event stream 用 `ToolRunLifecycleEventSink` / `set_lifecycle_event_sink`；前台工具实时输出的 raw channel/payload 回调用 `set_live_output_event_sink`。两种 UI 通知来源的身份、payload 和生命周期不同，保持分离（ADR 0655）。
 - **配置代次统一使用 `ConfigVersion`**：配置快照代次在 App apply plan、MCP 重连授权与配置操作结果中都使用 Common 的 `ConfigVersion`；跨边界或结果字段写明 `config_version`。ToolRegistry、MCP catalog、Skills catalog 的各自目录代次仍按 owner 分开（ADR 0656）。
 - **异步任务句柄标明执行职责且不保留恒真 optional**：Agent 有序 thought/reasoning chunk 队列由 `spawn_chunk_event_consumer` 创建，返回并直接持有 Tokio `JoinHandle`；不以泛名 `ConsumerHandle` 或始终为 `Some` 的 `Option<JoinHandle>` 隐藏任务 owner（ADR 0657）。
+- **重试回调传领域状态而非语义布尔值**：LLM provider attempt 开始时用 `StreamAttemptOutputDisposition::{PreserveExisting, ReplaceExisting}` 表达如何处理前一次可见输出；chunk 和 attempt-start callbacks 分别称为 `StreamChunkCallback` 与 `StreamAttemptStartCallback`（ADR 0658）。
 - **原始事件 envelope 保持 dynamic payload unknown**：Tauri listener adapter 只标注 `TauriEvent<unknown>` envelope；payload 在领域 mapper 验证前保持 `unknown`，不以 `any` 绕过 channel contract（ADR 0647）。
 - **首次 session prompt 的历史上下文统一命名**：Agent `SystemPromptBuilder` 的输入以及内部预算渲染参数统一叫 `session_prompt_history`，与加载器和 `SessionPromptMessage` 的用途保持一致；模型提示正文中描述“conversation”的自然语言不强制替换（ADR 0648）。
 - **Session compaction 的共享 prompt 常量标明领域**：Common 导出的 compaction 摘要指令统一叫 `SESSION_COMPACTION_SUMMARY_PROMPT`，由 Agent compactor 使用；指令正文为模型描述要总结的对话，继续保留自然语言 “conversation”（ADR 0649）。
