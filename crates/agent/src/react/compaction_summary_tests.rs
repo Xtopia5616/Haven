@@ -44,7 +44,7 @@ async fn compaction_summary_persists_trimmed_episode_marker_then_wakes_worker() 
         Some(summary.trim())
     );
     assert_eq!(
-        db.pending_summary_extractions().unwrap(),
+        crate::test_support::list_pending_summary_extraction_rows(&db).unwrap(),
         vec![(session.id.clone(), episode_id.clone())]
     );
     assert_eq!(
@@ -85,7 +85,7 @@ async fn compaction_summary_below_threshold_persists_without_marker_and_empty_su
     );
     assert!(db.episode_text(&empty_episode_id).unwrap().is_none());
     assert_eq!(
-        db.pending_summary_extractions().unwrap(),
+        crate::test_support::list_pending_summary_extraction_rows(&db).unwrap(),
         vec![(session.id.clone(), threshold_episode_id.clone())]
     );
     assert!(
@@ -126,7 +126,11 @@ async fn failed_compaction_summary_does_not_wake_worker_or_prevent_later_success
         db.episode_text(&failed_episode_id).unwrap().as_deref(),
         Some("original summary")
     );
-    assert!(db.pending_summary_extractions().unwrap().is_empty());
+    assert!(
+        crate::test_support::list_pending_summary_extraction_rows(&db)
+            .unwrap()
+            .is_empty()
+    );
     assert!(
         worker
             .pending_summary_outbox_value_for_test(&failed_episode_id)
@@ -139,7 +143,7 @@ async fn failed_compaction_summary_does_not_wake_worker_or_prevent_later_success
         .persist_compaction_summary(&session.id, succeeding_summary, &succeeding_episode_id)
         .await;
     assert_eq!(
-        db.pending_summary_extractions().unwrap(),
+        crate::test_support::list_pending_summary_extraction_rows(&db).unwrap(),
         vec![(session.id.clone(), succeeding_episode_id.clone())]
     );
     assert_eq!(

@@ -121,6 +121,32 @@ impl Database {
 mod tests {
     use crate::Database;
 
+    fn pending_summary_extraction_rows(db: &Database) -> anyhow::Result<Vec<(String, String)>> {
+        let Some(high_water) = db.pending_summary_extraction_high_water()? else {
+            return Ok(Vec::new());
+        };
+        let mut after_key = None;
+        let mut rows = Vec::new();
+        loop {
+            let page = db.pending_summary_extractions_page(
+                after_key.as_deref(),
+                &high_water,
+                crate::repositories::kv_store::MAX_MEMORY_OUTBOX_PAGE_SIZE,
+            )?;
+            if page.is_empty() {
+                break;
+            }
+            after_key = page.last().map(|marker| marker.key.clone());
+            for marker in page {
+                marker
+                    .state
+                    .map_err(|error| anyhow::anyhow!("invalid marker {}: {error}", marker.key))?;
+                rows.push((marker.session_id, marker.episode_id));
+            }
+        }
+        Ok(rows)
+    }
+
     #[test]
     fn add_episode_persists_row() {
         let db = Database::open_in_memory().unwrap();
@@ -189,16 +215,16 @@ mod tests {
         db.add_episode_with_pending_extraction(&session.id, summary, &id, true)
             .unwrap();
         assert_eq!(
-            db.pending_summary_extractions().unwrap(),
+            pending_summary_extraction_rows(&db).unwrap(),
             vec![(session.id.clone(), id.clone())]
         );
 
         db.clear_summary_extraction(&session.id, &id).unwrap();
-        assert!(db.pending_summary_extractions().unwrap().is_empty());
+        assert!(pending_summary_extraction_rows(&db).unwrap().is_empty());
         db.add_episode_with_pending_extraction(&session.id, summary, &id, true)
             .unwrap();
         assert_eq!(
-            db.pending_summary_extractions().unwrap(),
+            pending_summary_extraction_rows(&db).unwrap(),
             vec![(session.id, id)]
         );
     }

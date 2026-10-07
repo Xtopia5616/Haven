@@ -2164,7 +2164,10 @@ mod tests {
 
         tokio::time::timeout(std::time::Duration::from_secs(10), async {
             loop {
-                if db.pending_fact_extractions().unwrap().is_empty() {
+                if crate::test_support::list_pending_fact_extraction_rows(&db)
+                    .unwrap()
+                    .is_empty()
+                {
                     break;
                 }
                 tokio::time::sleep(std::time::Duration::from_millis(10)).await;
@@ -2225,7 +2228,10 @@ mod tests {
             .unwrap();
         tokio::time::timeout(std::time::Duration::from_secs(2), async {
             loop {
-                if db.pending_summary_extractions().unwrap().is_empty() {
+                if crate::test_support::list_pending_summary_extraction_rows(&db)
+                    .unwrap()
+                    .is_empty()
+                {
                     break;
                 }
                 tokio::time::sleep(std::time::Duration::from_millis(10)).await;
@@ -2234,7 +2240,7 @@ mod tests {
         .await
         .expect("a fact backoff must not block a ready summary marker");
         assert_eq!(
-            db.pending_fact_extractions().unwrap(),
+            crate::test_support::list_pending_fact_extraction_rows(&db).unwrap(),
             vec![(session.id, false, 1)]
         );
         worker.shutdown();
@@ -2324,8 +2330,12 @@ mod tests {
             .unwrap();
         tokio::time::timeout(std::time::Duration::from_secs(2), async {
             loop {
-                if db.pending_fact_extractions().unwrap().is_empty()
-                    && db.pending_summary_extractions().unwrap().is_empty()
+                if crate::test_support::list_pending_fact_extraction_rows(&db)
+                    .unwrap()
+                    .is_empty()
+                    && crate::test_support::list_pending_summary_extraction_rows(&db)
+                        .unwrap()
+                        .is_empty()
                 {
                     break;
                 }
@@ -2382,7 +2392,7 @@ mod tests {
         .expect("failed acknowledgement should requeue the live job");
 
         assert_eq!(
-            db.pending_fact_extractions().unwrap(),
+            crate::test_support::list_pending_fact_extraction_rows(&db).unwrap(),
             vec![(session.id.clone(), false, 1)]
         );
         worker.shutdown();
@@ -2449,7 +2459,7 @@ mod tests {
             Some(2)
         );
         assert_eq!(
-            db.pending_fact_extractions().unwrap(),
+            crate::test_support::list_pending_fact_extraction_rows(&db).unwrap(),
             vec![(session.id.clone(), true, 2)],
             "the old in-flight generation must not clear the newer same-bypass marker"
         );
@@ -2466,7 +2476,9 @@ mod tests {
             .expect("second extraction should still be waiting");
         tokio::time::timeout(std::time::Duration::from_secs(2), async {
             loop {
-                if db.pending_fact_extractions().unwrap().is_empty()
+                if crate::test_support::list_pending_fact_extraction_rows(&db)
+                    .unwrap()
+                    .is_empty()
                     && worker.pending_outbox_value_for_test(&session.id).is_none()
                 {
                     break;
@@ -2546,7 +2558,9 @@ mod tests {
                     )
                     .unwrap();
                 if attempts >= 2
-                    && db.pending_summary_extractions().unwrap().is_empty()
+                    && crate::test_support::list_pending_summary_extraction_rows(&db)
+                        .unwrap()
+                        .is_empty()
                     && worker
                         .pending_summary_outbox_value_for_test(episode_id)
                         .is_none()
@@ -2601,7 +2615,7 @@ mod tests {
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
 
         assert_eq!(
-            db.pending_fact_extractions().unwrap(),
+            crate::test_support::list_pending_fact_extraction_rows(&db).unwrap(),
             vec![(session.id.clone(), true, 1)]
         );
         assert_eq!(
@@ -2632,7 +2646,10 @@ mod tests {
             .unwrap();
         tokio::time::timeout(std::time::Duration::from_secs(2), async {
             loop {
-                if db.pending_fact_extractions().unwrap().is_empty() {
+                if crate::test_support::list_pending_fact_extraction_rows(&db)
+                    .unwrap()
+                    .is_empty()
+                {
                     break;
                 }
                 tokio::time::sleep(std::time::Duration::from_millis(10)).await;
@@ -3222,7 +3239,7 @@ mod tests {
             Some((1, false))
         );
         assert_eq!(engine.outbox_projection_len_for_test(), 2);
-        let durable = db.pending_fact_extractions().unwrap();
+        let durable = crate::test_support::list_pending_fact_extraction_rows(&db).unwrap();
         assert!(durable.contains(&(first.id, true, 2)));
         assert!(durable.contains(&(second.id, false, 1)));
     }
@@ -3242,7 +3259,7 @@ mod tests {
             .unwrap();
 
         let pending = db
-            .run_blocking(|db| db.pending_fact_extractions())
+            .run_blocking(crate::test_support::list_pending_fact_extraction_rows)
             .await
             .unwrap();
         let in_memory = engine.pending_outbox_value_for_test(&session.id);

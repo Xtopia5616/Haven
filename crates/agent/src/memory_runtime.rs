@@ -680,7 +680,7 @@ mod tests {
 
     async fn pending(db: &Arc<Database>) -> Vec<(String, bool)> {
         db.clone()
-            .run_blocking(|db| db.pending_fact_extractions())
+            .run_blocking(crate::test_support::list_pending_fact_extraction_rows)
             .await
             .unwrap()
             .into_iter()
@@ -690,7 +690,7 @@ mod tests {
 
     async fn pending_generations(db: &Arc<Database>) -> Vec<(String, bool, i64)> {
         db.clone()
-            .run_blocking(|db| db.pending_fact_extractions())
+            .run_blocking(crate::test_support::list_pending_fact_extraction_rows)
             .await
             .unwrap()
     }

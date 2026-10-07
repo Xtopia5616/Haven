@@ -453,38 +453,6 @@ impl Database {
         .collect()
     }
 
-    /// Full diagnostic helper retained for repository tests and one-off
-    /// inspection. Runtime consumers must use the bounded page API.
-    pub fn pending_fact_extractions(&self) -> anyhow::Result<Vec<(String, bool, i64)>> {
-        let Some(high_water) = self.pending_fact_extraction_high_water()? else {
-            return Ok(Vec::new());
-        };
-        let mut after_key = None;
-        let mut pending = Vec::new();
-        loop {
-            let page = self.pending_fact_extractions_page(
-                after_key.as_deref(),
-                &high_water,
-                MAX_MEMORY_OUTBOX_PAGE_SIZE,
-            )?;
-            if page.is_empty() {
-                break;
-            }
-            after_key = page.last().map(|marker| marker.key.clone());
-            for marker in page {
-                let state = marker
-                    .state
-                    .map_err(|error| anyhow::anyhow!("invalid marker {}: {error}", marker.key))?;
-                pending.push((
-                    marker.session_id,
-                    state.bypass_throttle,
-                    state.event_sequence,
-                ));
-            }
-        }
-        Ok(pending)
-    }
-
     pub fn update_pending_fact_extraction_retry_if_current(
         &self,
         key: &str,
@@ -617,34 +585,6 @@ impl Database {
             })
         })
         .collect()
-    }
-
-    /// Full diagnostic helper retained for repository tests and one-off
-    /// inspection. Runtime consumers must use the bounded page API.
-    pub fn pending_summary_extractions(&self) -> anyhow::Result<Vec<(String, String)>> {
-        let Some(high_water) = self.pending_summary_extraction_high_water()? else {
-            return Ok(Vec::new());
-        };
-        let mut after_key = None;
-        let mut pending = Vec::new();
-        loop {
-            let page = self.pending_summary_extractions_page(
-                after_key.as_deref(),
-                &high_water,
-                MAX_MEMORY_OUTBOX_PAGE_SIZE,
-            )?;
-            if page.is_empty() {
-                break;
-            }
-            after_key = page.last().map(|marker| marker.key.clone());
-            for marker in page {
-                marker
-                    .state
-                    .map_err(|error| anyhow::anyhow!("invalid marker {}: {error}", marker.key))?;
-                pending.push((marker.session_id, marker.episode_id));
-            }
-        }
-        Ok(pending)
     }
 
     pub fn update_summary_extraction_retry_if_current(
@@ -850,6 +790,62 @@ mod tests {
         Database::open_in_memory().expect("create in-memory db")
     }
 
+    fn pending_fact_extraction_rows(db: &Database) -> anyhow::Result<Vec<(String, bool, i64)>> {
+        let Some(high_water) = db.pending_fact_extraction_high_water()? else {
+            return Ok(Vec::new());
+        };
+        let mut after_key = None;
+        let mut rows = Vec::new();
+        loop {
+            let page = db.pending_fact_extractions_page(
+                after_key.as_deref(),
+                &high_water,
+                MAX_MEMORY_OUTBOX_PAGE_SIZE,
+            )?;
+            if page.is_empty() {
+                break;
+            }
+            after_key = page.last().map(|marker| marker.key.clone());
+            for marker in page {
+                let state = marker
+                    .state
+                    .map_err(|error| anyhow::anyhow!("invalid marker {}: {error}", marker.key))?;
+                rows.push((
+                    marker.session_id,
+                    state.bypass_throttle,
+                    state.event_sequence,
+                ));
+            }
+        }
+        Ok(rows)
+    }
+
+    fn pending_summary_extraction_rows(db: &Database) -> anyhow::Result<Vec<(String, String)>> {
+        let Some(high_water) = db.pending_summary_extraction_high_water()? else {
+            return Ok(Vec::new());
+        };
+        let mut after_key = None;
+        let mut rows = Vec::new();
+        loop {
+            let page = db.pending_summary_extractions_page(
+                after_key.as_deref(),
+                &high_water,
+                MAX_MEMORY_OUTBOX_PAGE_SIZE,
+            )?;
+            if page.is_empty() {
+                break;
+            }
+            after_key = page.last().map(|marker| marker.key.clone());
+            for marker in page {
+                marker
+                    .state
+                    .map_err(|error| anyhow::anyhow!("invalid marker {}: {error}", marker.key))?;
+                rows.push((marker.session_id, marker.episode_id));
+            }
+        }
+        Ok(rows)
+    }
+
     #[test]
     fn memory_event_cursor_optional_distinguishes_missing_from_zero() {
         let db = test_db();
@@ -929,7 +925,7 @@ mod tests {
         )
         .unwrap();
 
-        let mut pending = db.pending_summary_extractions().unwrap();
+        let mut pending = pending_summary_extraction_rows(&db).unwrap();
         pending.sort();
         let mut expected = vec![
             (session.id.clone(), first_episode_id.clone()),
@@ -940,7 +936,7 @@ mod tests {
         db.clear_summary_extraction(&session.id, &first_episode_id)
             .unwrap();
         assert_eq!(
-            db.pending_summary_extractions().unwrap(),
+            pending_summary_extraction_rows(&db).unwrap(),
             vec![(session.id, second_episode_id)]
         );
     }
@@ -1140,7 +1136,7 @@ mod tests {
         db.enqueue_fact_extraction(&session.id, false, 1).unwrap();
         db.enqueue_fact_extraction(&session.id, true, 2).unwrap();
         assert_eq!(
-            db.pending_fact_extractions().unwrap(),
+            pending_fact_extraction_rows(&db).unwrap(),
             vec![(session.id.clone(), true, 2)]
         );
 
@@ -1149,14 +1145,14 @@ mod tests {
                 .unwrap()
         );
         assert_eq!(
-            db.pending_fact_extractions().unwrap(),
+            pending_fact_extraction_rows(&db).unwrap(),
             vec![(session.id.clone(), true, 2)]
         );
         assert!(
             db.clear_pending_fact_extraction_if_current(&session.id, 2, true)
                 .unwrap()
         );
-        assert!(db.pending_fact_extractions().unwrap().is_empty());
+        assert!(pending_fact_extraction_rows(&db).unwrap().is_empty());
     }
 
     #[test]
@@ -1171,7 +1167,7 @@ mod tests {
                 .unwrap()
         );
         assert_eq!(
-            db.pending_fact_extractions().unwrap(),
+            pending_fact_extraction_rows(&db).unwrap(),
             vec![(session.id.clone(), true, 5)]
         );
 
@@ -1179,7 +1175,7 @@ mod tests {
             db.clear_pending_fact_extraction_if_current(&session.id, 5, true)
                 .unwrap()
         );
-        assert!(db.pending_fact_extractions().unwrap().is_empty());
+        assert!(pending_fact_extraction_rows(&db).unwrap().is_empty());
     }
 
     #[test]

@@ -353,7 +353,9 @@ mod tests {
         assert_eq!(count, 1);
         assert_eq!(content, summary);
         assert_eq!(
-            db.pending_summary_extractions().unwrap(),
+            pending_summary_rows(&store, &CancellationToken::new())
+                .await
+                .unwrap(),
             vec![(session.id.clone(), episode_id.clone())]
         );
 
@@ -364,7 +366,9 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(
-            db.pending_summary_extractions().unwrap(),
+            pending_summary_rows(&store, &CancellationToken::new())
+                .await
+                .unwrap(),
             vec![(session.id, episode_id)]
         );
     }
@@ -381,7 +385,12 @@ mod tests {
             .persist_compaction_summary(&session.id, original, &episode_id, false)
             .await
             .unwrap();
-        assert!(db.pending_summary_extractions().unwrap().is_empty());
+        assert!(
+            pending_summary_rows(&store, &CancellationToken::new())
+                .await
+                .unwrap()
+                .is_empty()
+        );
 
         let error = store
             .persist_compaction_summary(
@@ -407,7 +416,12 @@ mod tests {
             )
             .unwrap();
         assert_eq!(content, original);
-        assert!(db.pending_summary_extractions().unwrap().is_empty());
+        assert!(
+            pending_summary_rows(&store, &CancellationToken::new())
+                .await
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[tokio::test]
@@ -616,7 +630,7 @@ mod tests {
         drop(lock);
 
         assert_eq!(
-            db.pending_fact_extractions().unwrap(),
+            pending_fact_rows(&store, &cancellation).await.unwrap(),
             vec![(session.id, false, 1)]
         );
         drop(store);

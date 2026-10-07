@@ -27,6 +27,8 @@ mod rollback;
 mod rollback_support;
 mod session;
 mod storage_error;
+#[cfg(test)]
+mod test_support;
 mod title;
 mod types;
 
