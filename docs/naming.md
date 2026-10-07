@@ -1,6 +1,6 @@
 # Haven 命名规范
 
-> 版本: v1.81 | 日期: 2026-10-07
+> 版本: v1.82 | 日期: 2026-10-07
 
 本文档统一 Haven 项目各层的命名规则（变量名、函数名、文件名、crate 名、缩写大小写、跨层边界）。规范以现有代码中的事实模式为基础，新代码必须遵循；存量代码若与规范冲突，逐步迁移对齐。
 
@@ -25,6 +25,7 @@
 - **首次 session prompt 的历史上下文统一命名**：Agent `SystemPromptBuilder` 的输入以及内部预算渲染参数统一叫 `session_prompt_history`，与加载器和 `SessionPromptMessage` 的用途保持一致；模型提示正文中描述“conversation”的自然语言不强制替换（ADR 0648）。
 - **Session compaction 的共享 prompt 常量标明领域**：Common 导出的 compaction 摘要指令统一叫 `SESSION_COMPACTION_SUMMARY_PROMPT`，由 Agent compactor 使用；指令正文为模型描述要总结的对话，继续保留自然语言 “conversation”（ADR 0649）。
 - **Session 页面样式标识使用实体名**：当前会话主列与 SessionRail 的退出动画分别使用 `.session-column` 和 `session-rail-exit`；页面内部 class/keyframes 按组件职责命名，不用旧产品词 conversation（ADR 0650）。
+- **Session 标题生成输入按真实数据命名**：`SessionTitleGenerationContext.user_messages` 传给 Agent `TitleGenerator::generate(user_messages)`，不得称为整个 `conversation`，因为 Memory 会明确过滤出用户消息并保持时间顺序（ADR 0651）。
 - **运行上下文按角色命名**：一起解析出的执行程序与工作目录使用 `ResolvedShellContext { shell, working_directory }`，解析动作命名为 `resolve_shell_context`，避免把两个不同含义的值作为位置 tuple 传给前后台执行路径（ADR 0628）。
 - **跨组件提交输入共享类型 owner**：同一 chat submission attachment 在 Composer、页面、session controller 和 submit coordinator 之间复用 `chatAttachmentTypes.ts` 中的 `ChatImageAttachment` / `ChatFileAttachment`；仅用于预览的文件大小留在 `InputRouter` 的 `PendingChatFileAttachment`，历史消息 renderer 的宽松 `ChatBubbleAttachment` 继续独立（ADR 0629）。
 - **结果类型由领域 owner 定义**：同一业务结果从数据库仓储传到异步 service/store 时，复用领域类型并只在边界调度执行；不要让中间层把具名对象拆回 tuple 再重建。

@@ -3,7 +3,7 @@ use haven_common::prompts::TITLE_SYSTEM_PROMPT;
 use haven_llm::{LlmRouter, PromptRequest};
 use std::sync::Arc;
 
-/// Generates concise conversation titles using the small_model endpoint.
+/// Generates concise session titles from user messages using the small_model endpoint.
 #[derive(Clone)]
 pub struct TitleGenerator {
     router: Arc<LlmRouter>,
@@ -14,10 +14,10 @@ impl TitleGenerator {
         Self { router }
     }
 
-    /// Generate a short title from conversation messages.
+    /// Generate a short session title from the session's user messages.
     /// Returns `None` if the LLM call fails or returns empty text.
-    pub async fn generate(&self, conversation: &[String]) -> Option<String> {
-        if conversation.is_empty() {
+    pub async fn generate(&self, user_messages: &[String]) -> Option<String> {
+        if user_messages.is_empty() {
             return None;
         }
         // No-op without an outbound call when the small_model endpoint is not
@@ -29,14 +29,14 @@ impl TitleGenerator {
         {
             return None;
         }
-        let conv_text = conversation.join("\n");
+        let user_message_text = user_messages.join("\n");
 
         match self
             .router
             .chat_with_prompt_request(PromptRequest::new(
                 RequestKind::FastChat,
                 TITLE_SYSTEM_PROMPT,
-                conv_text,
+                user_message_text,
             ))
             .await
         {
@@ -163,11 +163,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn empty_conversation_returns_none() {
+    async fn empty_user_messages_return_none() {
         let tr = test_router(ok_response("ignored")).await;
         let generator = TitleGenerator::new(tr.router);
         assert!(generator.generate(&[]).await.is_none());
-        // No LLM call should be made for an empty conversation.
+        // No LLM call should be made without any user messages.
         assert!(tr.mock.calls.lock().unwrap().is_empty());
     }
 
@@ -196,7 +196,7 @@ mod tests {
             Some("整理代码")
         );
 
-        // The prompt must be a system + user message pair carrying the conversation.
+        // The prompt must carry the submitted user message after the system instruction.
         let calls = tr.mock.calls.lock().unwrap();
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].len(), 2);

@@ -639,3 +639,4 @@
 - [0648：统一 Agent system prompt 历史上下文参数名](0648-name-agent-session-prompt-history-parameter.md)
 - [0649：按 Session compaction 用途命名共享 prompt 常量](0649-name-session-compaction-summary-prompt.md)
 - [0650：统一 Chat route 的 Session CSS 标识](0650-name-session-route-css-identifiers.md)
+- [0651：按 user-only 数据命名 Agent Session 标题输入](0651-name-session-title-user-message-input.md)

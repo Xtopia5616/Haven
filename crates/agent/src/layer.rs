@@ -1025,7 +1025,7 @@ impl AgentLayer {
         self.executor
             .ensure_session_loaded_locked(&record.id)
             .await?;
-        // Human conversations get a title as soon as their first input is
+        // User-originated sessions get a title as soon as their first input is
         // durable. Peer kickoff sessions use their explicit title/fallback
         // path below and must not spend a small-model call here.
         if dispatch && record.origin == haven_memory::SessionOrigin::User {

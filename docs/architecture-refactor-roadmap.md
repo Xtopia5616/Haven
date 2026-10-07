@@ -310,6 +310,7 @@
 | Agent `SystemPromptBuilder` 历史上下文参数遗漏 prompt-history 术语 | Session 消息 loader 与 run 参数使用 `session_prompt_history`，但 `build`、`build_for_session`、无 Memory builder 及预算渲染 helper 仍叫 `conversation_history` / `history`，导致同一用途在提示词构造边界改名。 | **统一输入用途名**：builder 与上下文预算 helper 均使用 `session_prompt_history`；提示正文中的自然语言 “conversation” 保留，消息筛选和预算行为不变（ADR 0648）。 |
 | Common Session compaction prompt 常量使用 conversation 旧域名 | `CONVERSATION_SUMMARY_PROMPT` 是 Agent compactor 消费的 session transcript 压缩指令前缀，当前 Session 在代码和运行时中已有唯一领域 owner。 | **常量名称标明生命周期用途**：Common/Agent 共享常量改为 `SESSION_COMPACTION_SUMMARY_PROMPT`；模型指令正文和生成摘要行为保持不变（ADR 0649）。 |
 | Chat route 的 Session 主列与 rail 动画使用 conversation CSS 标识 | `+page.svelte` 的 `.conversation-column` 承载当前 Session 内容，`conversation-rail-exit` 动画应用于 `SessionRail`；标识与组件、状态 owner 不一致。 | **按 UI 实体职责命名**：改为 `.session-column` 与 `session-rail-exit`，只改变 Svelte 内部 selector/keyframe 名称，不影响布局和动画（ADR 0650）。 |
+| Agent 标题生成入口把 user-only 内容泛称 conversation | Memory `SessionTitleGenerationContext.user_messages` 从持久消息中筛选 user role 并按时间顺序返回；Agent 的 `TitleGenerator::generate` 参数与局部拼接值仍叫 `conversation` / `conv_text`，暗示输入包含完整 transcript。 | **按实际输入数据命名**：入口、局部文本、测试名和注释改用 `user_messages` / `user_message_text`；筛选、顺序、提示和 title 行为不变（ADR 0651）。 |
 
 此表是候选分流清单，不是完整符号目录。尚未完成的 crate、IPC/event payload、UI controller/store 与函数动词审计仍在 §5.7 范围内；完成一域后更新本表并以 ADR 记录实际迁移。
 
