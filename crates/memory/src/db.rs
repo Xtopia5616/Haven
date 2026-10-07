@@ -617,7 +617,7 @@ mod tests {
             session_id: session_id.into(),
             role: haven_common::types::CanonicalRole::User,
             content: format!("content-{}", id),
-            message_type: Some("text".into()),
+            message_type: Some(haven_common::types::TranscriptMessageKind::Text),
             created_at: "2026-01-01T00:00:00Z".into(),
             tool_call_id: None,
             attachments: vec![],

@@ -1809,7 +1809,7 @@ mod tests {
             &session.id,
             haven_common::types::CanonicalRole::User,
             "delete with session",
-            Some("text"),
+            Some(haven_common::types::TranscriptMessageKind::Text),
             None,
         )
         .unwrap();
@@ -1943,7 +1943,7 @@ mod tests {
             &first.id,
             haven_common::types::CanonicalRole::User,
             "first message",
-            Some("text"),
+            Some(haven_common::types::TranscriptMessageKind::Text),
             None,
         )
         .unwrap();
@@ -1951,7 +1951,7 @@ mod tests {
             &second.id,
             haven_common::types::CanonicalRole::User,
             "second message",
-            Some("text"),
+            Some(haven_common::types::TranscriptMessageKind::Text),
             None,
         )
         .unwrap();

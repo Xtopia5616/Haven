@@ -274,7 +274,7 @@ async fn reopen_session_requeues_undelivered_inputs_stays_paused() {
             &session.id,
             haven_common::types::CanonicalRole::User,
             "input text",
-            Some("text"),
+            Some(haven_common::types::TranscriptMessageKind::Text),
             &[],
             false,
         )
@@ -286,7 +286,7 @@ async fn reopen_session_requeues_undelivered_inputs_stays_paused() {
             &session.id,
             haven_common::types::CanonicalRole::User,
             "steering delivered",
-            Some("text"),
+            Some(haven_common::types::TranscriptMessageKind::Text),
             &[],
             false,
         )
@@ -299,7 +299,7 @@ async fn reopen_session_requeues_undelivered_inputs_stays_paused() {
         .persist_pending_user_input(
             &session.id,
             "steering lost",
-            Some("text"),
+            Some(haven_common::types::TranscriptMessageKind::Text),
             &[],
             false,
             None,
@@ -340,7 +340,7 @@ async fn reopen_session_marks_only_first_recovered_input_as_ask_answer() {
             &session.id,
             haven_common::types::CanonicalRole::User,
             "input text",
-            Some("text"),
+            Some(haven_common::types::TranscriptMessageKind::Text),
             &[],
             false,
         )
@@ -352,7 +352,7 @@ async fn reopen_session_marks_only_first_recovered_input_as_ask_answer() {
         .persist_pending_user_input(
             &session.id,
             "answer",
-            Some("text"),
+            Some(haven_common::types::TranscriptMessageKind::Text),
             &[],
             false,
             None,
@@ -367,7 +367,7 @@ async fn reopen_session_marks_only_first_recovered_input_as_ask_answer() {
         .persist_pending_user_input(
             &session.id,
             "follow-up",
-            Some("text"),
+            Some(haven_common::types::TranscriptMessageKind::Text),
             &[],
             false,
             None,
@@ -412,7 +412,7 @@ async fn reopen_preserves_follow_up_route_after_confirm_resolves_while_ask_stays
             &session.id,
             haven_common::types::CanonicalRole::User,
             "input text",
-            Some("text"),
+            Some(haven_common::types::TranscriptMessageKind::Text),
             &[],
             false,
         )
@@ -521,7 +521,7 @@ async fn reopen_session_without_pending_inputs_stays_paused() {
             &session.id,
             haven_common::types::CanonicalRole::User,
             "input text",
-            Some("text"),
+            Some(haven_common::types::TranscriptMessageKind::Text),
             &[],
             false,
         )
@@ -557,7 +557,7 @@ async fn resume_dedups_supplement_inputs_against_prefixed_canonical() {
             &session.id,
             haven_common::types::CanonicalRole::User,
             "please be brief",
-            Some("text"),
+            Some(haven_common::types::TranscriptMessageKind::Text),
             &[],
             false,
         )
@@ -616,7 +616,7 @@ async fn resume_keeps_repeated_same_text_turns() {
             &session.id,
             haven_common::types::CanonicalRole::User,
             "好的",
-            Some("text"),
+            Some(haven_common::types::TranscriptMessageKind::Text),
             &[],
             false,
         )
@@ -627,7 +627,7 @@ async fn resume_keeps_repeated_same_text_turns() {
             &session.id,
             haven_common::types::CanonicalRole::Assistant,
             "好的",
-            Some("text"),
+            Some(haven_common::types::TranscriptMessageKind::Text),
             &[],
             false,
         )
@@ -661,7 +661,7 @@ async fn resume_keeps_repeated_same_text_turns() {
         .persist_pending_user_input(
             &session.id,
             "好的",
-            Some("text"),
+            Some(haven_common::types::TranscriptMessageKind::Text),
             &[],
             false,
             None,
@@ -731,7 +731,7 @@ async fn resume_does_not_recover_unmarked_historical_user_messages() {
             &session.id,
             haven_common::types::CanonicalRole::User,
             "hello",
-            Some("text"),
+            Some(haven_common::types::TranscriptMessageKind::Text),
             &[],
             false,
         )
@@ -761,7 +761,7 @@ async fn resume_does_not_recover_unmarked_historical_user_messages() {
             &session.id,
             haven_common::types::CanonicalRole::Assistant,
             "hi there",
-            Some("text"),
+            Some(haven_common::types::TranscriptMessageKind::Text),
             &[],
             false,
         )
@@ -811,7 +811,7 @@ async fn resume_skips_conversation_reseed_when_canonical_is_compacted() {
             &session.id,
             haven_common::types::CanonicalRole::User,
             "hello",
-            Some("text"),
+            Some(haven_common::types::TranscriptMessageKind::Text),
             &[],
             false,
         )
@@ -822,7 +822,7 @@ async fn resume_skips_conversation_reseed_when_canonical_is_compacted() {
             &session.id,
             haven_common::types::CanonicalRole::Assistant,
             "long ago answer",
-            Some("text"),
+            Some(haven_common::types::TranscriptMessageKind::Text),
             &[],
             false,
         )
@@ -883,7 +883,7 @@ async fn run_session_from_id_keeps_first_user_media_out_of_snapshot_bytes() {
             &session.id,
             haven_common::types::CanonicalRole::User,
             "看图",
-            Some("text"),
+            Some(haven_common::types::TranscriptMessageKind::Text),
             &[att],
             false,
         )
@@ -916,7 +916,7 @@ async fn run_session_from_id_recovers_pending_input_without_event_log() {
             &session.id,
             haven_common::types::CanonicalRole::User,
             "initial",
-            Some("text"),
+            Some(haven_common::types::TranscriptMessageKind::Text),
             &[],
             false,
         )
@@ -928,7 +928,7 @@ async fn run_session_from_id_recovers_pending_input_without_event_log() {
         .persist_pending_user_input(
             &session.id,
             "accepted before first run",
-            Some("text"),
+            Some(haven_common::types::TranscriptMessageKind::Text),
             &[],
             false,
             None,
@@ -975,7 +975,7 @@ async fn run_session_from_id_keeps_later_media_as_managed_reference() {
             &session.id,
             haven_common::types::CanonicalRole::User,
             "plain session",
-            Some("text"),
+            Some(haven_common::types::TranscriptMessageKind::Text),
             &[],
             false,
         )

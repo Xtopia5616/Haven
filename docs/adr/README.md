@@ -715,3 +715,4 @@
 - [0724：Resume usage record 复用 LlmCallKind](0724-type-resume-usage-call-kind.md)
 - [0725：Session step 状态复用闭合生命周期类型](0725-type-session-step-status.md)
 - [0726：消息角色复用 CanonicalRole](0726-reuse-canonical-role-for-messages.md)
+- [0727：持久消息类别复用 TranscriptMessageKind](0727-type-persisted-transcript-message-kind.md)

@@ -4,8 +4,11 @@
 
 import { formatMessageTime } from './messageFormat.ts';
 import type { SessionResumeInput } from './contracts/sessionHistory.ts';
-import type { SessionStepStatus } from './contracts/generatedCommands.ts';
-import type { CanonicalRole } from './contracts/generatedCommands.ts';
+import type {
+	CanonicalRole,
+	SessionStepStatus,
+	TranscriptMessageKind,
+} from './contracts/generatedCommands.ts';
 
 type PersistedToolOutcome = Extract<SessionStepStatus, 'failed' | 'cancelled' | 'unknown'>;
 
@@ -13,6 +16,7 @@ interface ResumeMessage {
 	id: string;
 	role?: CanonicalRole;
 	content?: string;
+	/** Renderer-only presentation type; mapped from the durable message kind. */
 	type?: string | null;
 	voice?: boolean;
 	time?: string;
@@ -30,6 +34,29 @@ interface ResumeMessage {
 	/** Live-only mid-turn anchor marking a user message as steering; the DB
 	 * has no such flag (agent:supplement clears it on the live entry). */
 	steering?: boolean;
+}
+
+function persistedMessagePresentationType(
+	kind: TranscriptMessageKind | null | undefined,
+): string | undefined {
+	switch (kind) {
+		case undefined:
+		case null:
+		case 'text':
+			return undefined;
+		case 'thought':
+			return 'thought';
+		case 'tool_call':
+			return 'tool_call';
+		case 'observation':
+			return 'tool';
+		case 'reasoning':
+			return 'reasoning';
+		case 'peer_kickoff':
+			return 'peer_kickoff';
+	}
+	const exhaustive: never = kind;
+	return exhaustive;
 }
 
 
@@ -180,11 +207,7 @@ export function buildResumeMessages(data: SessionResumeInput): ResumeMessage[] {
 			// though the persisted transcript uses the OpenAI `tool` role.
 			role: isToolObservation ? 'assistant' : msg.role,
 			content: msg.content,
-			type: isToolObservation
-				? 'tool'
-				: msg.message_type === 'text'
-					? undefined
-					: msg.message_type || undefined,
+			type: isToolObservation ? 'tool' : persistedMessagePresentationType(msg.message_type),
 			...(isToolObservation
 				? {
 						toolName: persistedToolName || 'tool',

@@ -619,6 +619,45 @@ impl std::fmt::Display for CanonicalRole {
     }
 }
 
+/// Closed kind stored on a durable transcript row. This classifies persisted
+/// message content; renderer-only values such as `tool`, `ask`, and
+/// `supplement` belong to the UI presentation projection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TranscriptMessageKind {
+    Text,
+    Thought,
+    ToolCall,
+    Observation,
+    Reasoning,
+    PeerKickoff,
+}
+
+impl TranscriptMessageKind {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Text => "text",
+            Self::Thought => "thought",
+            Self::ToolCall => "tool_call",
+            Self::Observation => "observation",
+            Self::Reasoning => "reasoning",
+            Self::PeerKickoff => "peer_kickoff",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "text" => Some(Self::Text),
+            "thought" => Some(Self::Thought),
+            "tool_call" => Some(Self::ToolCall),
+            "observation" => Some(Self::Observation),
+            "reasoning" => Some(Self::Reasoning),
+            "peer_kickoff" => Some(Self::PeerKickoff),
+            _ => None,
+        }
+    }
+}
+
 /// Origin of a user-role inject into the canonical transcript (Phase 6 / B3).
 /// Runtime queues already carry structured flags (`is_answer`, etc.).
 /// Canonical content stores **raw** text + `source`; LLM adapters prepend
@@ -1238,6 +1277,29 @@ mod tests {
         assert_eq!(CanonicalRole::parse("tool"), Some(CanonicalRole::Tool));
         assert_eq!(CanonicalRole::parse("USER"), None);
         assert_eq!(CanonicalRole::parse("developer"), None);
+    }
+
+    #[test]
+    fn transcript_message_kind_has_a_closed_snake_case_vocabulary() {
+        let kinds = [
+            (TranscriptMessageKind::Text, "text"),
+            (TranscriptMessageKind::Thought, "thought"),
+            (TranscriptMessageKind::ToolCall, "tool_call"),
+            (TranscriptMessageKind::Observation, "observation"),
+            (TranscriptMessageKind::Reasoning, "reasoning"),
+            (TranscriptMessageKind::PeerKickoff, "peer_kickoff"),
+        ];
+
+        for (kind, value) in kinds {
+            assert_eq!(kind.as_str(), value);
+            assert_eq!(TranscriptMessageKind::parse(value), Some(kind));
+            assert_eq!(
+                serde_json::to_string(&kind).unwrap(),
+                format!("\"{value}\"")
+            );
+        }
+        assert_eq!(TranscriptMessageKind::parse("tool"), None);
+        assert_eq!(TranscriptMessageKind::parse("future"), None);
     }
 
     #[test]

@@ -84,7 +84,7 @@ impl AgentLayer {
                 &self.executor,
                 session_id,
                 transcript,
-                Some("text"),
+                Some(haven_common::types::TranscriptMessageKind::Text),
                 attachments,
                 voice,
                 requested_disposition,

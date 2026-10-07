@@ -1880,7 +1880,7 @@ async fn continue_session_resumes_errored_session() {
             &session.id,
             haven_common::types::CanonicalRole::User,
             "hello",
-            Some("text"),
+            Some(haven_common::types::TranscriptMessageKind::Text),
             None,
         )
         .unwrap();
@@ -1890,7 +1890,7 @@ async fn continue_session_resumes_errored_session() {
             &session.id,
             haven_common::types::CanonicalRole::Assistant,
             "completed before failure",
-            Some("text"),
+            Some(haven_common::types::TranscriptMessageKind::Text),
             None,
         )
         .unwrap();
@@ -1932,7 +1932,7 @@ async fn continue_session_resumes_errored_session() {
             &session.id,
             haven_common::types::CanonicalRole::Assistant,
             "partial output",
-            Some("text"),
+            Some(haven_common::types::TranscriptMessageKind::Text),
             None,
         )
         .unwrap();
@@ -2069,7 +2069,7 @@ async fn continue_session_preserves_history_without_an_error_partial_marker() {
             &session.id,
             haven_common::types::CanonicalRole::User,
             "opening",
-            Some("text"),
+            Some(haven_common::types::TranscriptMessageKind::Text),
             None,
         )
         .unwrap();
@@ -2079,7 +2079,7 @@ async fn continue_session_preserves_history_without_an_error_partial_marker() {
             &session.id,
             haven_common::types::CanonicalRole::Assistant,
             "completed before the interruption",
-            Some("text"),
+            Some(haven_common::types::TranscriptMessageKind::Text),
             None,
         )
         .unwrap();
@@ -2089,7 +2089,7 @@ async fn continue_session_preserves_history_without_an_error_partial_marker() {
             &session.id,
             haven_common::types::CanonicalRole::Assistant,
             "text flushed before the app closed",
-            Some("text"),
+            Some(haven_common::types::TranscriptMessageKind::Text),
             None,
         )
         .unwrap();

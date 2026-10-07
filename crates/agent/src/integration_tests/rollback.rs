@@ -99,7 +99,7 @@ async fn rollback_with_snapshot_no_branch_point_uses_snapshot() {
             &session.id,
             haven_common::types::CanonicalRole::User,
             "hello",
-            Some("text"),
+            Some(haven_common::types::TranscriptMessageKind::Text),
             None,
         )
         .unwrap();
@@ -112,7 +112,7 @@ async fn rollback_with_snapshot_no_branch_point_uses_snapshot() {
             &session.id,
             haven_common::types::CanonicalRole::Assistant,
             "partial",
-            Some("text"),
+            Some(haven_common::types::TranscriptMessageKind::Text),
             None,
         )
         .unwrap();
@@ -142,7 +142,7 @@ async fn rollback_pause_true_removes_user_message_from_session() {
             &session.id,
             haven_common::types::CanonicalRole::User,
             "hello",
-            Some("text"),
+            Some(haven_common::types::TranscriptMessageKind::Text),
             None,
         )
         .unwrap();
@@ -152,7 +152,7 @@ async fn rollback_pause_true_removes_user_message_from_session() {
             &session.id,
             haven_common::types::CanonicalRole::Assistant,
             "thinking",
-            Some("text"),
+            Some(haven_common::types::TranscriptMessageKind::Text),
             None,
         )
         .unwrap();
@@ -251,7 +251,7 @@ async fn rollback_fallback_no_branch_point_pause_true_deletes_from_last_user_mes
             &session.id,
             haven_common::types::CanonicalRole::User,
             "first",
-            Some("text"),
+            Some(haven_common::types::TranscriptMessageKind::Text),
             None,
         )
         .unwrap();
@@ -261,7 +261,7 @@ async fn rollback_fallback_no_branch_point_pause_true_deletes_from_last_user_mes
             &session.id,
             haven_common::types::CanonicalRole::Assistant,
             "reply1",
-            Some("text"),
+            Some(haven_common::types::TranscriptMessageKind::Text),
             None,
         )
         .unwrap();
@@ -271,7 +271,7 @@ async fn rollback_fallback_no_branch_point_pause_true_deletes_from_last_user_mes
             &session.id,
             haven_common::types::CanonicalRole::User,
             "second",
-            Some("text"),
+            Some(haven_common::types::TranscriptMessageKind::Text),
             None,
         )
         .unwrap();
@@ -281,7 +281,7 @@ async fn rollback_fallback_no_branch_point_pause_true_deletes_from_last_user_mes
             &session.id,
             haven_common::types::CanonicalRole::Assistant,
             "reply2",
-            Some("text"),
+            Some(haven_common::types::TranscriptMessageKind::Text),
             None,
         )
         .unwrap();
@@ -363,7 +363,7 @@ async fn rollback_errors_when_target_message_id_does_not_match() {
             &session.id,
             haven_common::types::CanonicalRole::User,
             "first question",
-            Some("text"),
+            Some(haven_common::types::TranscriptMessageKind::Text),
             None,
         )
         .unwrap();
@@ -373,7 +373,7 @@ async fn rollback_errors_when_target_message_id_does_not_match() {
             &session.id,
             haven_common::types::CanonicalRole::Assistant,
             "reply A",
-            Some("text"),
+            Some(haven_common::types::TranscriptMessageKind::Text),
             None,
         )
         .unwrap();
@@ -383,7 +383,7 @@ async fn rollback_errors_when_target_message_id_does_not_match() {
             &session.id,
             haven_common::types::CanonicalRole::User,
             "second question",
-            Some("text"),
+            Some(haven_common::types::TranscriptMessageKind::Text),
             None,
         )
         .unwrap();
@@ -393,7 +393,7 @@ async fn rollback_errors_when_target_message_id_does_not_match() {
             &session.id,
             haven_common::types::CanonicalRole::Assistant,
             "reply B",
-            Some("text"),
+            Some(haven_common::types::TranscriptMessageKind::Text),
             None,
         )
         .unwrap();
@@ -544,7 +544,7 @@ async fn rollback_pause_uses_target_message_ts_not_latest_user() {
             &session.id,
             haven_common::types::CanonicalRole::User,
             "hello",
-            Some("text"),
+            Some(haven_common::types::TranscriptMessageKind::Text),
             None,
         )
         .unwrap();
@@ -554,7 +554,7 @@ async fn rollback_pause_uses_target_message_ts_not_latest_user() {
             &session.id,
             haven_common::types::CanonicalRole::Assistant,
             "thinking",
-            Some("text"),
+            Some(haven_common::types::TranscriptMessageKind::Text),
             None,
         )
         .unwrap();
@@ -567,7 +567,7 @@ async fn rollback_pause_uses_target_message_ts_not_latest_user() {
             &session.id,
             haven_common::types::CanonicalRole::User,
             "also check the time",
-            Some("text"),
+            Some(haven_common::types::TranscriptMessageKind::Text),
             None,
         )
         .unwrap();
@@ -663,7 +663,7 @@ async fn rollback_pause_matches_compacted_message_id() {
             &session.id,
             haven_common::types::CanonicalRole::User,
             "do it",
-            Some("text"),
+            Some(haven_common::types::TranscriptMessageKind::Text),
             None,
         )
         .unwrap();
@@ -675,7 +675,7 @@ async fn rollback_pause_matches_compacted_message_id() {
             &session.id,
             haven_common::types::CanonicalRole::User,
             "use French",
-            Some("text"),
+            Some(haven_common::types::TranscriptMessageKind::Text),
             None,
         )
         .unwrap();
@@ -685,7 +685,7 @@ async fn rollback_pause_matches_compacted_message_id() {
             &session.id,
             haven_common::types::CanonicalRole::Assistant,
             "thinking",
-            Some("text"),
+            Some(haven_common::types::TranscriptMessageKind::Text),
             None,
         )
         .unwrap();
@@ -1025,7 +1025,7 @@ async fn rollback_ask_wait_pause_true_leaves_plain_paused() {
             &session.id,
             haven_common::types::CanonicalRole::User,
             "ask then user-edit rollback",
-            Some("text"),
+            Some(haven_common::types::TranscriptMessageKind::Text),
             None,
         )
         .unwrap();
@@ -1097,7 +1097,7 @@ async fn rollback_transaction_failure_keeps_agent_status_and_projections_unchang
             &session.id,
             haven_common::types::CanonicalRole::User,
             "kept",
-            Some("text"),
+            Some(haven_common::types::TranscriptMessageKind::Text),
             None,
         )
         .unwrap();
@@ -1108,7 +1108,7 @@ async fn rollback_transaction_failure_keeps_agent_status_and_projections_unchang
             &session.id,
             haven_common::types::CanonicalRole::Assistant,
             "would be truncated",
-            Some("text"),
+            Some(haven_common::types::TranscriptMessageKind::Text),
             None,
         )
         .unwrap();

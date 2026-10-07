@@ -95,7 +95,7 @@ pub(crate) async fn persist_pending_user_input(
     executor: &crate::session::SessionSupervisor,
     session_id: &str,
     content: &str,
-    message_type: Option<&str>,
+    message_type: Option<haven_common::types::TranscriptMessageKind>,
     attachments: &[MessageAttachment],
     voice: bool,
     disposition: haven_memory::PendingInputDisposition,

@@ -343,7 +343,7 @@ impl ReActEngine {
                     committed.project_assistant_message(
                         message_id.clone(),
                         text.trim(),
-                        Some("text".into()),
+                        Some(haven_common::types::TranscriptMessageKind::Text),
                     );
                 }
             }
@@ -352,7 +352,7 @@ impl ReActEngine {
                     committed.project_assistant_message(
                         message_id.clone(),
                         text.trim(),
-                        Some("reasoning".into()),
+                        Some(haven_common::types::TranscriptMessageKind::Reasoning),
                     );
                 }
             }
@@ -368,7 +368,7 @@ impl ReActEngine {
                     committed.project_assistant_message(
                         message_id.clone(),
                         text.trim(),
-                        Some("text".into()),
+                        Some(haven_common::types::TranscriptMessageKind::Text),
                     );
                 }
                 for card in tool_call_cards {
@@ -396,7 +396,7 @@ impl ReActEngine {
                     committed.project_assistant_message(
                         card.step_id.clone(),
                         history_observation.trim(),
-                        Some("text".into()),
+                        Some(haven_common::types::TranscriptMessageKind::Text),
                     );
                 }
             }
@@ -1160,7 +1160,9 @@ mod tests {
         let msgs = db.list_session_messages(&session.id).unwrap();
         assert!(
             msgs.iter().any(|m| {
-                m.id == mid && m.content == "why" && m.message_type.as_deref() == Some("reasoning")
+                m.id == mid
+                    && m.content == "why"
+                    && m.message_type == Some(haven_common::types::TranscriptMessageKind::Reasoning)
             }),
             "expected projected reasoning message, got {msgs:?}"
         );

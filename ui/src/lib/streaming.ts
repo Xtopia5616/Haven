@@ -24,6 +24,7 @@ export interface StreamMessage {
 	id: string;
 	role?: CanonicalRole;
 	content?: string;
+	/** Renderer-only presentation discriminator; it is not a durable message kind. */
 	type?: string | null;
 	toolName?: string;
 	voice?: boolean;

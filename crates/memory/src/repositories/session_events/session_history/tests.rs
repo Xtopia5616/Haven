@@ -72,7 +72,7 @@ async fn session_store_loads_title_generation_context_with_original_filter_and_l
             &session_id,
             role,
             &format!("{role}-{index}"),
-            Some("text"),
+            Some(haven_common::types::TranscriptMessageKind::Text),
             None,
         )
         .unwrap();
@@ -115,7 +115,7 @@ async fn session_store_lists_latest_prompt_messages_in_chronological_order() {
             &session_id,
             haven_common::types::CanonicalRole::User,
             "old",
-            Some("text"),
+            Some(haven_common::types::TranscriptMessageKind::Text),
             None,
         )
         .unwrap();
@@ -124,7 +124,7 @@ async fn session_store_lists_latest_prompt_messages_in_chronological_order() {
             &session_id,
             haven_common::types::CanonicalRole::Assistant,
             "middle",
-            Some("text"),
+            Some(haven_common::types::TranscriptMessageKind::Text),
             None,
         )
         .unwrap();
@@ -133,7 +133,7 @@ async fn session_store_lists_latest_prompt_messages_in_chronological_order() {
             &session_id,
             haven_common::types::CanonicalRole::User,
             "latest",
-            Some("text"),
+            Some(haven_common::types::TranscriptMessageKind::Text),
             None,
         )
         .unwrap();
@@ -176,7 +176,7 @@ async fn session_store_session_resume_media_uses_first_user_and_message_order() 
         &session_id,
         haven_common::types::CanonicalRole::Assistant,
         "before input",
-        Some("text"),
+        Some(haven_common::types::TranscriptMessageKind::Text),
         None,
         std::slice::from_ref(&assistant_attachment),
         false,
@@ -189,7 +189,7 @@ async fn session_store_session_resume_media_uses_first_user_and_message_order() 
             &session_id,
             haven_common::types::CanonicalRole::User,
             "initial input",
-            Some("text"),
+            Some(haven_common::types::TranscriptMessageKind::Text),
             None,
             std::slice::from_ref(&initial_attachment),
             false,
@@ -201,7 +201,7 @@ async fn session_store_session_resume_media_uses_first_user_and_message_order() 
         &session_id,
         haven_common::types::CanonicalRole::User,
         "later input",
-        Some("text"),
+        Some(haven_common::types::TranscriptMessageKind::Text),
         None,
         std::slice::from_ref(&later_attachment),
         false,
@@ -246,7 +246,7 @@ async fn session_store_session_resume_media_returns_empty_media_and_isolates_ses
             &session_id,
             haven_common::types::CanonicalRole::User,
             "plain input",
-            Some("text"),
+            Some(haven_common::types::TranscriptMessageKind::Text),
             None,
         )
         .unwrap();
@@ -256,7 +256,7 @@ async fn session_store_session_resume_media_returns_empty_media_and_isolates_ses
         &other_session.id,
         haven_common::types::CanonicalRole::User,
         "other input",
-        Some("text"),
+        Some(haven_common::types::TranscriptMessageKind::Text),
         None,
         std::slice::from_ref(&other_attachment),
         false,

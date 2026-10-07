@@ -93,6 +93,54 @@ describe('buildResumeMessages', () => {
 		expect(items[1]).toMatchObject({ id: 'mt', voice: false });
 	});
 
+	it('maps durable message kinds to renderer presentation types', () => {
+		const items = buildResumeMessages({
+			session: sampleSession,
+			messages: [
+				{
+					id: 'thought',
+					role: 'assistant',
+					content: 'thinking',
+					message_type: 'thought',
+					created_at: '2026-08-01T10:00:00Z',
+					attachments: [],
+				},
+				{
+					id: 'tool-call',
+					role: 'assistant',
+					content: 'calling',
+					message_type: 'tool_call',
+					created_at: '2026-08-01T10:01:00Z',
+					attachments: [],
+				},
+				{
+					id: 'reasoning',
+					role: 'assistant',
+					content: 'reasoning',
+					message_type: 'reasoning',
+					created_at: '2026-08-01T10:02:00Z',
+					attachments: [],
+				},
+				{
+					id: 'peer-kickoff',
+					role: 'user',
+					content: 'delegate',
+					message_type: 'peer_kickoff',
+					created_at: '2026-08-01T10:03:00Z',
+					attachments: [],
+				},
+			],
+			steps: [],
+		});
+
+		expect(items.map(({ id, type }) => [id, type])).toEqual([
+			['thought', 'thought'],
+			['tool-call', 'tool_call'],
+			['reasoning', 'reasoning'],
+			['peer-kickoff', 'peer_kickoff'],
+		]);
+	});
+
 	it('adds tool badges from steps with tool_name', () => {
 		const items = buildResumeMessages({
 			session: sampleSession,

@@ -185,7 +185,7 @@ impl AgentLayer {
         session_id: &str,
         role: haven_common::types::CanonicalRole,
         content: &str,
-        message_type: Option<&str>,
+        message_type: Option<haven_common::types::TranscriptMessageKind>,
         attachments: &[haven_common::types::MessageAttachment],
         voice: bool,
     ) -> anyhow::Result<haven_memory::repositories::messages::Message> {

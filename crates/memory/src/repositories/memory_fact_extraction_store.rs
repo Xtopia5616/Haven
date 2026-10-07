@@ -90,7 +90,7 @@ mod tests {
                 &session.id,
                 haven_common::types::CanonicalRole::User,
                 "Use the checked path",
-                Some("text"),
+                Some(haven_common::types::TranscriptMessageKind::Text),
                 None,
             )
             .unwrap();

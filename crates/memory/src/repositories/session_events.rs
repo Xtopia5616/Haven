@@ -18,7 +18,7 @@ use crate::repositories::sessions::{Session, SessionOrigin};
 use crate::repositories::usage::{LlmUsageRecord, LlmUsageRecordInput, SessionUsage};
 use chrono::{SecondsFormat, Utc};
 use haven_common::SessionStatus;
-use haven_common::types::MessageAttachment;
+use haven_common::types::{MessageAttachment, TranscriptMessageKind};
 use rusqlite::OptionalExtension;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -83,10 +83,10 @@ pub enum RecoveryPartialKind {
 }
 
 impl RecoveryPartialKind {
-    const fn as_message_type(self) -> &'static str {
+    const fn as_message_type(self) -> TranscriptMessageKind {
         match self {
-            Self::Thought => "text",
-            Self::Reasoning => "reasoning",
+            Self::Thought => TranscriptMessageKind::Text,
+            Self::Reasoning => TranscriptMessageKind::Reasoning,
         }
     }
 }
@@ -225,7 +225,7 @@ pub enum SessionProjectionIntent {
     AssistantMessage {
         message_id: String,
         content: String,
-        message_type: Option<String>,
+        message_type: Option<TranscriptMessageKind>,
     },
     ThoughtStep {
         message_id: String,
@@ -280,7 +280,7 @@ impl SessionCommitted {
         &mut self,
         message_id: impl Into<String>,
         content: impl Into<String>,
-        message_type: Option<String>,
+        message_type: Option<TranscriptMessageKind>,
     ) {
         self.projections
             .push(SessionProjectionIntent::AssistantMessage {
@@ -1000,7 +1000,7 @@ impl SessionStore {
             session_id,
             haven_common::types::CanonicalRole::User,
             content,
-            Some("text"),
+            Some(TranscriptMessageKind::Text),
             &[],
             false,
             Some(message_id),
@@ -1016,7 +1016,7 @@ impl SessionStore {
         session_id: &str,
         role: haven_common::types::CanonicalRole,
         content: &str,
-        message_type: Option<&str>,
+        message_type: Option<TranscriptMessageKind>,
         attachments: &[MessageAttachment],
         voice: bool,
         message_id: Option<&str>,
@@ -1025,7 +1025,6 @@ impl SessionStore {
     ) -> anyhow::Result<Message> {
         let session_id = session_id.to_owned();
         let content = content.to_owned();
-        let message_type = message_type.map(str::to_owned);
         let attachments = attachments.to_vec();
         let message_id = message_id.map(str::to_owned);
         let tool_call_id = tool_call_id.map(str::to_owned);
@@ -1035,7 +1034,7 @@ impl SessionStore {
             {
                 if existing.role != role
                     || existing.content != content
-                    || existing.message_type.as_deref() != message_type.as_deref()
+                    || existing.message_type != message_type
                     || existing.tool_call_id.as_deref() != tool_call_id.as_deref()
                 {
                     anyhow::bail!(
@@ -1050,7 +1049,7 @@ impl SessionStore {
                 &session_id,
                 role,
                 &content,
-                message_type.as_deref(),
+                message_type,
                 tool_call_id.as_deref(),
                 &attachments,
                 voice,
@@ -1292,7 +1291,7 @@ impl SessionStore {
         &self,
         session_id: &str,
         content: &str,
-        message_type: Option<&str>,
+        message_type: Option<TranscriptMessageKind>,
         attachments: &[MessageAttachment],
         voice: bool,
         message_id: Option<&str>,
@@ -1301,7 +1300,6 @@ impl SessionStore {
     ) -> anyhow::Result<PendingSessionInput> {
         let session_id = session_id.to_owned();
         let content = content.to_owned();
-        let message_type = message_type.map(str::to_owned);
         let attachments = attachments.to_vec();
         let message_id = message_id.map(str::to_owned);
         let persist = move |db: &Database| {
@@ -1310,7 +1308,7 @@ impl SessionStore {
             {
                 if existing.role != haven_common::types::CanonicalRole::User
                     || existing.content != content
-                    || existing.message_type.as_deref() != message_type.as_deref()
+                    || existing.message_type != message_type
                 {
                     anyhow::bail!(
                         "message idempotency conflict for session {} message {}",
@@ -1328,7 +1326,7 @@ impl SessionStore {
             db.add_pending_user_input(
                 &session_id,
                 &content,
-                message_type.as_deref(),
+                message_type,
                 &attachments,
                 voice,
                 message_id.as_deref(),
@@ -3121,7 +3119,7 @@ impl Database {
                     message_id,
                     session_id,
                     content,
-                    message_type,
+                    (*message_type).map(TranscriptMessageKind::as_str),
                     created_at,
                     ingress_seq,
                 ],
@@ -3651,7 +3649,7 @@ mod tests {
                 &session_id,
                 haven_common::types::CanonicalRole::User,
                 "keep",
-                Some("text"),
+                Some(haven_common::types::TranscriptMessageKind::Text),
                 None,
             )
             .unwrap();
@@ -3660,7 +3658,7 @@ mod tests {
                 &session_id,
                 haven_common::types::CanonicalRole::User,
                 "delete",
-                Some("text"),
+                Some(haven_common::types::TranscriptMessageKind::Text),
                 None,
             )
             .unwrap();
@@ -3682,7 +3680,7 @@ mod tests {
             &session_id,
             haven_common::types::CanonicalRole::User,
             "keep only until delete",
-            Some("text"),
+            Some(haven_common::types::TranscriptMessageKind::Text),
             None,
         )
         .unwrap();
@@ -3710,7 +3708,7 @@ mod tests {
             &first_session_id,
             haven_common::types::CanonicalRole::User,
             "first message",
-            Some("text"),
+            Some(haven_common::types::TranscriptMessageKind::Text),
             None,
         )
         .unwrap();
@@ -3718,7 +3716,7 @@ mod tests {
             &second.id,
             haven_common::types::CanonicalRole::User,
             "second message",
-            Some("text"),
+            Some(haven_common::types::TranscriptMessageKind::Text),
             None,
         )
         .unwrap();
@@ -4101,7 +4099,10 @@ mod tests {
         assert!(inserted.id.starts_with("msg-"));
         assert_eq!(inserted.role, haven_common::types::CanonicalRole::User);
         assert_eq!(inserted.content, "describe this");
-        assert_eq!(inserted.message_type.as_deref(), Some("text"));
+        assert_eq!(
+            inserted.message_type,
+            Some(haven_common::types::TranscriptMessageKind::Text)
+        );
         assert_eq!(inserted.tool_call_id, None);
         assert_eq!(inserted.attachments, attachments);
         assert!(inserted.voice);
@@ -4121,7 +4122,10 @@ mod tests {
         assert!(persisted.voice);
         assert_eq!(persisted.role, haven_common::types::CanonicalRole::User);
         assert_eq!(persisted.content, "describe this");
-        assert_eq!(persisted.message_type.as_deref(), Some("text"));
+        assert_eq!(
+            persisted.message_type,
+            Some(haven_common::types::TranscriptMessageKind::Text)
+        );
         assert_eq!(persisted.tool_call_id, None);
         assert_eq!(persisted.media_inputs.len(), 1);
     }
@@ -4152,20 +4156,30 @@ mod tests {
             .unwrap();
 
         assert_eq!(user_seed.role, haven_common::types::CanonicalRole::User);
-        assert_eq!(user_seed.message_type.as_deref(), Some("text"));
+        assert_eq!(
+            user_seed.message_type,
+            Some(haven_common::types::TranscriptMessageKind::Text)
+        );
         assert_eq!(kickoff_seed.role, haven_common::types::CanonicalRole::User);
-        assert_eq!(kickoff_seed.message_type.as_deref(), Some("peer_kickoff"));
+        assert_eq!(
+            kickoff_seed.message_type,
+            Some(haven_common::types::TranscriptMessageKind::PeerKickoff)
+        );
     }
 
     #[tokio::test]
     async fn session_store_recovery_partial_fixes_role_and_type_and_is_idempotent() {
         let (db, store, session_id) = store();
         for (message_id, kind, expected_type) in [
-            ("msg-recovery-thought", RecoveryPartialKind::Thought, "text"),
+            (
+                "msg-recovery-thought",
+                RecoveryPartialKind::Thought,
+                TranscriptMessageKind::Text,
+            ),
             (
                 "msg-recovery-reasoning",
                 RecoveryPartialKind::Reasoning,
-                "reasoning",
+                TranscriptMessageKind::Reasoning,
             ),
         ] {
             let first = store
@@ -4179,7 +4193,7 @@ mod tests {
 
             assert_eq!(first.id, retry.id);
             assert_eq!(first.role, haven_common::types::CanonicalRole::Assistant);
-            assert_eq!(first.message_type.as_deref(), Some(expected_type));
+            assert_eq!(first.message_type, Some(expected_type));
             assert!(first.attachments.is_empty());
             assert!(!first.voice);
         }
@@ -4194,7 +4208,7 @@ mod tests {
                 &session_id,
                 haven_common::types::CanonicalRole::User,
                 "retry me",
-                Some("text"),
+                Some(haven_common::types::TranscriptMessageKind::Text),
                 &[],
                 false,
                 Some("msg-retry"),
@@ -4209,7 +4223,7 @@ mod tests {
                 &session_id,
                 haven_common::types::CanonicalRole::User,
                 "retry me",
-                Some("text"),
+                Some(haven_common::types::TranscriptMessageKind::Text),
                 &[],
                 false,
                 Some("msg-retry"),
@@ -4375,7 +4389,7 @@ mod tests {
             .add_pending_user_input(
                 &session_id,
                 "pending",
-                Some("text"),
+                Some(haven_common::types::TranscriptMessageKind::Text),
                 &[],
                 false,
                 None,
@@ -4388,7 +4402,7 @@ mod tests {
         failed.project_assistant_message(
             pending.message.id.clone(),
             "conflict",
-            Some("text".into()),
+            Some(haven_common::types::TranscriptMessageKind::Text),
         );
         assert!(store.commit_transcript(&session_id, &failed).is_err());
         assert_eq!(
@@ -4428,7 +4442,7 @@ mod tests {
                 &session_id,
                 haven_common::types::CanonicalRole::User,
                 "selected",
-                Some("text"),
+                Some(haven_common::types::TranscriptMessageKind::Text),
                 None,
             )
             .unwrap();
@@ -4438,7 +4452,7 @@ mod tests {
                 &other_session.id,
                 haven_common::types::CanonicalRole::User,
                 "foreign",
-                Some("text"),
+                Some(haven_common::types::TranscriptMessageKind::Text),
                 None,
             )
             .unwrap();
@@ -4899,7 +4913,7 @@ mod tests {
                 &session_id,
                 haven_common::types::CanonicalRole::User,
                 "keep",
-                Some("text"),
+                Some(haven_common::types::TranscriptMessageKind::Text),
                 None,
             )
             .unwrap();
@@ -4909,7 +4923,7 @@ mod tests {
                 &other_session.id,
                 haven_common::types::CanonicalRole::User,
                 "foreign",
-                Some("text"),
+                Some(haven_common::types::TranscriptMessageKind::Text),
                 None,
             )
             .unwrap();
@@ -5702,7 +5716,11 @@ mod tests {
             2,
             3,
         );
-        committed.project_assistant_message(message_id.clone(), "thinking", Some("text".into()));
+        committed.project_assistant_message(
+            message_id.clone(),
+            "thinking",
+            Some(haven_common::types::TranscriptMessageKind::Text),
+        );
         committed.project_thought_step(message_id.clone(), 3);
         committed.project_tool_call_step(
             tool_run_id.clone(),
@@ -5734,7 +5752,11 @@ mod tests {
     async fn cancellable_session_commit_port_writes_with_existing_store_semantics() {
         let (db, store, session_id) = store();
         let mut committed = SessionCommitted::transcript(r#"{"type":"port"}"#, 2, 3);
-        committed.project_assistant_message("step-port-thought", "port write", Some("text".into()));
+        committed.project_assistant_message(
+            "step-port-thought",
+            "port write",
+            Some(haven_common::types::TranscriptMessageKind::Text),
+        );
 
         let result = store
             .commit_transcript_cancellable(&session_id, committed, Some(CancellationToken::new()))
@@ -5790,7 +5812,7 @@ mod tests {
                 &session_id,
                 haven_common::types::CanonicalRole::User,
                 "keep",
-                Some("text"),
+                Some(haven_common::types::TranscriptMessageKind::Text),
                 None,
             )
             .unwrap();
@@ -5810,7 +5832,11 @@ mod tests {
             6,
             1,
         );
-        committed.project_assistant_message(message_id, "keep thought", Some("text".into()));
+        committed.project_assistant_message(
+            message_id,
+            "keep thought",
+            Some(haven_common::types::TranscriptMessageKind::Text),
+        );
         let result = store.commit_transcript(&session_id, &committed).unwrap();
         store
             .create_thought_step(&session_id, 1, message_id)
@@ -5897,7 +5923,7 @@ mod tests {
         committed.project_assistant_message(
             "step-event-first",
             "persist after event",
-            Some("text".into()),
+            Some(haven_common::types::TranscriptMessageKind::Text),
         );
 
         let result = store.commit_transcript(&session_id, &committed).unwrap();

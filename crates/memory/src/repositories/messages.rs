@@ -2,7 +2,7 @@ use crate::db::Database;
 use base64::Engine as _;
 use chrono::{SecondsFormat, Utc};
 use haven_common::media::{MediaInput, message_attachment_to_media_input};
-use haven_common::types::{CanonicalRole, MessageAttachment};
+use haven_common::types::{CanonicalRole, MessageAttachment, TranscriptMessageKind};
 use rusqlite::OptionalExtension;
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -26,12 +26,26 @@ fn map_message_row(row: &rusqlite::Row) -> rusqlite::Result<Message> {
             format!("invalid CanonicalRole in messages.role: {role_text}").into(),
         )
     })?;
+    let message_type_text: Option<String> = row.get(4)?;
+    let message_type = message_type_text
+        .as_deref()
+        .map(|value| {
+            TranscriptMessageKind::parse(value).ok_or_else(|| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    4,
+                    rusqlite::types::Type::Text,
+                    format!("invalid TranscriptMessageKind in messages.message_type: {value}")
+                        .into(),
+                )
+            })
+        })
+        .transpose()?;
     Ok(Message {
         id: row.get(0)?,
         session_id: row.get(1)?,
         role,
         content: row.get(3)?,
-        message_type: row.get(4)?,
+        message_type,
         created_at: row.get(5)?,
         tool_call_id: row.get(6)?,
         attachments: Database::parse_ui_metadata(row.get(7)?),
@@ -104,7 +118,7 @@ pub struct Message {
     pub session_id: String,
     pub role: CanonicalRole,
     pub content: String,
-    pub message_type: Option<String>,
+    pub message_type: Option<TranscriptMessageKind>,
     pub created_at: String,
     pub tool_call_id: Option<String>,
     pub attachments: Vec<MessageAttachment>,
@@ -170,7 +184,7 @@ impl Database {
         session_id: &str,
         role: CanonicalRole,
         content: &str,
-        message_type: Option<&str>,
+        message_type: Option<TranscriptMessageKind>,
         tool_call_id: Option<&str>,
     ) -> anyhow::Result<Message> {
         self.add_message_full(
@@ -191,7 +205,7 @@ impl Database {
         session_id: &str,
         role: CanonicalRole,
         content: &str,
-        message_type: Option<&str>,
+        message_type: Option<TranscriptMessageKind>,
         tool_call_id: Option<&str>,
         attachments: &[MessageAttachment],
         voice: bool,
@@ -227,7 +241,7 @@ impl Database {
         &self,
         session_id: &str,
         content: &str,
-        message_type: Option<&str>,
+        message_type: Option<TranscriptMessageKind>,
         attachments: &[MessageAttachment],
         voice: bool,
         id: Option<&str>,
@@ -263,7 +277,7 @@ impl Database {
         session_id: &str,
         role: CanonicalRole,
         content: &str,
-        message_type: Option<&str>,
+        message_type: Option<TranscriptMessageKind>,
         tool_call_id: Option<&str>,
         attachments: &[MessageAttachment],
         voice: bool,
@@ -306,7 +320,7 @@ impl Database {
                     session_id,
             role.as_str(),
                     content,
-                    message_type,
+                    message_type.map(TranscriptMessageKind::as_str),
                     created_at,
                     tool_call_id,
                     Self::serialize_ui_metadata(attachments),
@@ -356,7 +370,7 @@ impl Database {
                 session_id: session_id.into(),
                 role,
                 content: content.into(),
-                message_type: message_type.map(String::from),
+                message_type,
                 created_at,
                 tool_call_id: tool_call_id.map(String::from),
                 attachments: attachments.to_vec(),
@@ -816,6 +830,40 @@ mod tests {
     }
 
     #[test]
+    fn list_session_messages_rejects_renderer_kind_in_durable_message_type() {
+        let db = test_db();
+        let session_id = test_session(&db);
+        db.add_message(
+            &session_id,
+            CanonicalRole::Assistant,
+            "tool call",
+            Some(TranscriptMessageKind::ToolCall),
+            None,
+        )
+        .unwrap();
+
+        {
+            let conn = db.conn();
+            conn.execute_batch("PRAGMA ignore_check_constraints = ON")
+                .unwrap();
+            conn.execute(
+                "UPDATE messages SET message_type = 'tool' WHERE session_id = ?1",
+                [&session_id],
+            )
+            .unwrap();
+            conn.execute_batch("PRAGMA ignore_check_constraints = OFF")
+                .unwrap();
+        }
+
+        let error = db.list_session_messages(&session_id).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("invalid TranscriptMessageKind in messages.message_type")
+        );
+    }
+
+    #[test]
     fn ingress_cursor_does_not_reuse_sequence_after_message_delete() {
         let db = test_db();
         let tid = test_session(&db);
@@ -881,7 +929,7 @@ mod tests {
             &tid,
             haven_common::types::CanonicalRole::User,
             "hello",
-            Some("text"),
+            Some(haven_common::types::TranscriptMessageKind::Text),
             None,
         )
         .unwrap();
@@ -924,7 +972,7 @@ mod tests {
             .add_pending_user_input(
                 &tid,
                 "C:\\照片目录",
-                Some("text"),
+                Some(haven_common::types::TranscriptMessageKind::Text),
                 &[],
                 false,
                 None,
@@ -958,7 +1006,7 @@ mod tests {
             &tid,
             haven_common::types::CanonicalRole::User,
             "history",
-            Some("text"),
+            Some(haven_common::types::TranscriptMessageKind::Text),
             None,
         )
         .unwrap();
@@ -966,7 +1014,7 @@ mod tests {
             &tid,
             haven_common::types::CanonicalRole::Assistant,
             "hi",
-            Some("text"),
+            Some(haven_common::types::TranscriptMessageKind::Text),
             None,
         )
         .unwrap();
@@ -981,7 +1029,7 @@ mod tests {
             .add_pending_user_input(
                 &tid,
                 "丢失输入",
-                Some("text"),
+                Some(haven_common::types::TranscriptMessageKind::Text),
                 &[],
                 false,
                 None,
@@ -1012,7 +1060,7 @@ mod tests {
             .add_pending_user_input(
                 &tid,
                 "answer",
-                Some("text"),
+                Some(haven_common::types::TranscriptMessageKind::Text),
                 &[],
                 false,
                 None,
@@ -1023,7 +1071,7 @@ mod tests {
             .add_pending_user_input(
                 &tid,
                 "later input",
-                Some("text"),
+                Some(haven_common::types::TranscriptMessageKind::Text),
                 &[],
                 false,
                 None,
@@ -1055,7 +1103,7 @@ mod tests {
             db.add_pending_user_input(
                 &tid,
                 "input",
-                Some("text"),
+                Some(haven_common::types::TranscriptMessageKind::Text),
                 &[],
                 false,
                 None,
@@ -1076,12 +1124,15 @@ mod tests {
                 &tid,
                 haven_common::types::CanonicalRole::Tool,
                 "result",
-                Some("tool_call"),
+                Some(haven_common::types::TranscriptMessageKind::ToolCall),
                 Some("call-1"),
             )
             .unwrap();
         assert_eq!(msg.tool_call_id.as_deref(), Some("call-1"));
-        assert_eq!(msg.message_type.as_deref(), Some("tool_call"));
+        assert_eq!(
+            msg.message_type,
+            Some(haven_common::types::TranscriptMessageKind::ToolCall)
+        );
     }
 
     #[test]
@@ -1093,7 +1144,7 @@ mod tests {
             &tid,
             haven_common::types::CanonicalRole::User,
             "看图",
-            Some("text"),
+            Some(haven_common::types::TranscriptMessageKind::Text),
             None,
             std::slice::from_ref(&att),
             false,
@@ -1133,7 +1184,7 @@ mod tests {
             &tid,
             haven_common::types::CanonicalRole::User,
             "看图",
-            Some("text"),
+            Some(haven_common::types::TranscriptMessageKind::Text),
             None,
             std::slice::from_ref(&attachment),
             false,
@@ -1194,7 +1245,7 @@ mod tests {
             &tid,
             haven_common::types::CanonicalRole::User,
             "read this",
-            Some("text"),
+            Some(haven_common::types::TranscriptMessageKind::Text),
             None,
             std::slice::from_ref(&file),
             false,
@@ -1205,7 +1256,7 @@ mod tests {
             &tid,
             haven_common::types::CanonicalRole::User,
             "look at this",
-            Some("text"),
+            Some(haven_common::types::TranscriptMessageKind::Text),
             None,
             &[MessageAttachment::new("image/png", "aGVsbG8=")],
             false,
@@ -1224,7 +1275,7 @@ mod tests {
             session_id: "t1".into(),
             role: CanonicalRole::User,
             content: "看图".into(),
-            message_type: Some("text".into()),
+            message_type: Some(haven_common::types::TranscriptMessageKind::Text),
             created_at: "2026-01-01T00:00:00Z".into(),
             tool_call_id: None,
             attachments: vec![MessageAttachment::new("image/jpeg", "abc")],
@@ -1247,7 +1298,7 @@ mod tests {
             &tid,
             haven_common::types::CanonicalRole::User,
             "voice hello",
-            Some("text"),
+            Some(haven_common::types::TranscriptMessageKind::Text),
             None,
             &[],
             true,
@@ -1258,7 +1309,7 @@ mod tests {
             &tid,
             haven_common::types::CanonicalRole::User,
             "typed hello",
-            Some("text"),
+            Some(haven_common::types::TranscriptMessageKind::Text),
             None,
         )
         .unwrap();

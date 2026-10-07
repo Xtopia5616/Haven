@@ -826,7 +826,7 @@ pub(super) async fn seed_hello_snapshot(
             session_id,
             haven_common::types::CanonicalRole::User,
             "hello",
-            Some("text"),
+            Some(haven_common::types::TranscriptMessageKind::Text),
             None,
         )
         .unwrap();
@@ -836,7 +836,7 @@ pub(super) async fn seed_hello_snapshot(
             session_id,
             haven_common::types::CanonicalRole::Assistant,
             "thinking",
-            Some("text"),
+            Some(haven_common::types::TranscriptMessageKind::Text),
             None,
         )
         .unwrap();
@@ -846,7 +846,7 @@ pub(super) async fn seed_hello_snapshot(
             session_id,
             haven_common::types::CanonicalRole::User,
             "interrupt",
-            Some("text"),
+            Some(haven_common::types::TranscriptMessageKind::Text),
             None,
         )
         .unwrap();

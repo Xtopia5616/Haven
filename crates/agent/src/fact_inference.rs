@@ -84,8 +84,11 @@ fn is_extraction_assistant(m: &haven_memory::repositories::messages::Message) ->
         return false;
     }
     !matches!(
-        m.message_type.as_deref(),
-        Some("reasoning") | Some("thought") | Some("tool_call") | Some("observation")
+        m.message_type,
+        Some(haven_common::types::TranscriptMessageKind::Reasoning)
+            | Some(haven_common::types::TranscriptMessageKind::Thought)
+            | Some(haven_common::types::TranscriptMessageKind::ToolCall)
+            | Some(haven_common::types::TranscriptMessageKind::Observation)
     )
 }
 
@@ -94,7 +97,7 @@ fn is_extraction_assistant(m: &haven_memory::repositories::messages::Message) ->
 /// persisted as user rows), so it is not filtered here.
 fn is_low_trust_extraction_user(m: &haven_memory::repositories::messages::Message) -> bool {
     m.role == haven_common::types::CanonicalRole::User
-        && m.message_type.as_deref() == Some("peer_kickoff")
+        && m.message_type == Some(haven_common::types::TranscriptMessageKind::PeerKickoff)
 }
 
 /// Collect up to [`EXTRACTION_MAX_ASSISTANTS_PER_TURN`] assistants (closest to
@@ -163,7 +166,7 @@ fn push_turn_context(
                 session_id: step.session_id.clone(),
                 role: haven_common::types::CanonicalRole::Tool,
                 content: format!("tool({name}): {body}"),
-                message_type: Some("observation".into()),
+                message_type: Some(haven_common::types::TranscriptMessageKind::Observation),
                 created_at: ts.to_string(),
                 tool_call_id: None,
                 attachments: vec![],

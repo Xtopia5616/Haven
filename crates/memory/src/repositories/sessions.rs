@@ -75,10 +75,12 @@ pub enum SessionOrigin {
 }
 
 impl SessionOrigin {
-    pub(crate) const fn first_user_message_type(&self) -> &'static str {
+    pub(crate) const fn first_user_message_type(
+        &self,
+    ) -> haven_common::types::TranscriptMessageKind {
         match self {
-            Self::User => "text",
-            Self::AgentSpawn { .. } => "peer_kickoff",
+            Self::User => haven_common::types::TranscriptMessageKind::Text,
+            Self::AgentSpawn { .. } => haven_common::types::TranscriptMessageKind::PeerKickoff,
         }
     }
 

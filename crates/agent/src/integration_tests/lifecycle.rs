@@ -364,7 +364,7 @@ async fn persist_message_adds_to_db() {
             &session.id,
             haven_common::types::CanonicalRole::User,
             "test message",
-            Some("text"),
+            Some(haven_common::types::TranscriptMessageKind::Text),
             &[],
             false,
         )
@@ -616,7 +616,7 @@ async fn persist_message_with_attachments_roundtrips() {
             &session.id,
             haven_common::types::CanonicalRole::User,
             "看图",
-            Some("text"),
+            Some(haven_common::types::TranscriptMessageKind::Text),
             std::slice::from_ref(&att),
             false,
         )

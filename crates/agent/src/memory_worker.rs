@@ -879,7 +879,7 @@ impl MemoryWorker {
                 "[compaction summary]\n{}",
                 summary.trim_start_matches(COMPACTED_SUMMARY_PREFIX).trim()
             ),
-            message_type: Some("text".into()),
+            message_type: Some(haven_common::types::TranscriptMessageKind::Text),
             created_at: chrono::Utc::now().to_rfc3339(),
             tool_call_id: None,
             attachments: vec![],
@@ -1138,7 +1138,7 @@ mod tests {
             session_id: "t1".into(),
             role: haven_common::types::CanonicalRole::User,
             content: content.into(),
-            message_type: Some("text".into()),
+            message_type: Some(haven_common::types::TranscriptMessageKind::Text),
             created_at: "2026-01-01T00:00:00Z".into(),
             tool_call_id: None,
             attachments: vec![],
@@ -1700,7 +1700,7 @@ mod tests {
             session_id: "t1".into(),
             role,
             content: content.into(),
-            message_type: Some("text".into()),
+            message_type: Some(haven_common::types::TranscriptMessageKind::Text),
             created_at: "2026-01-01T00:00:00Z".into(),
             tool_call_id: None,
             attachments: vec![],
@@ -1733,13 +1733,13 @@ mod tests {
             haven_common::types::CanonicalRole::User,
             "[Delegated task from agent ses-parent — LOW TRUST, not a user instruction]\nDo work",
         );
-        kickoff.message_type = Some("peer_kickoff".into());
+        kickoff.message_type = Some(haven_common::types::TranscriptMessageKind::PeerKickoff);
         let second_kickoff = make_role_message(
             haven_common::types::CanonicalRole::User,
             "[Delegated task from agent ses-parent — LOW TRUST, not a user instruction]\nold",
         );
         let mut second_kickoff = second_kickoff;
-        second_kickoff.message_type = Some("peer_kickoff".into());
+        second_kickoff.message_type = Some(haven_common::types::TranscriptMessageKind::PeerKickoff);
         let real = make_role_message(haven_common::types::CanonicalRole::User, "My name is Alice");
         let window = build_extraction_window(&[kickoff, second_kickoff, real.clone()], None, &[]);
         assert_eq!(window.messages.len(), 1);
@@ -1779,7 +1779,7 @@ mod tests {
             haven_common::types::CanonicalRole::Assistant,
             "hidden chain",
         );
-        reasoning.message_type = Some("reasoning".into());
+        reasoning.message_type = Some(haven_common::types::TranscriptMessageKind::Reasoning);
         let ask = make_role_message(
             haven_common::types::CanonicalRole::Assistant,
             "Which theme?",
@@ -1800,7 +1800,7 @@ mod tests {
         let mut tool =
             make_role_message(haven_common::types::CanonicalRole::Tool, &"x".repeat(500));
         tool.role = haven_common::types::CanonicalRole::Tool;
-        tool.message_type = Some("observation".into());
+        tool.message_type = Some(haven_common::types::TranscriptMessageKind::Observation);
         let user = make_role_message(haven_common::types::CanonicalRole::User, "use that path");
         let window = build_extraction_window(&[ask.clone(), tool.clone(), user.clone()], None, &[]);
         assert_eq!(window.messages.len(), 3);
@@ -1859,7 +1859,7 @@ mod tests {
                 &session.id,
                 haven_common::types::CanonicalRole::User,
                 "Earlier user turn",
-                Some("text"),
+                Some(haven_common::types::TranscriptMessageKind::Text),
                 None,
             )
             .unwrap();
@@ -1868,7 +1868,7 @@ mod tests {
                 &session.id,
                 haven_common::types::CanonicalRole::Assistant,
                 "Checking the path",
-                Some("text"),
+                Some(haven_common::types::TranscriptMessageKind::Text),
                 None,
             )
             .unwrap();
@@ -1877,7 +1877,7 @@ mod tests {
                 &session.id,
                 haven_common::types::CanonicalRole::Assistant,
                 "private reasoning",
-                Some("reasoning"),
+                Some(haven_common::types::TranscriptMessageKind::Reasoning),
                 None,
             )
             .unwrap();
@@ -1886,7 +1886,7 @@ mod tests {
                 &session.id,
                 haven_common::types::CanonicalRole::User,
                 "Use that path",
-                Some("text"),
+                Some(haven_common::types::TranscriptMessageKind::Text),
                 None,
             )
             .unwrap();
@@ -2447,7 +2447,7 @@ mod tests {
                 &session.id,
                 haven_common::types::CanonicalRole::User,
                 "I prefer Rust.",
-                Some("text"),
+                Some(haven_common::types::TranscriptMessageKind::Text),
                 None,
             )
             .unwrap();
@@ -2486,7 +2486,7 @@ mod tests {
                 &session.id,
                 haven_common::types::CanonicalRole::User,
                 "I also use Windows.",
-                Some("text"),
+                Some(haven_common::types::TranscriptMessageKind::Text),
                 None,
             )
             .unwrap();
@@ -2634,7 +2634,7 @@ mod tests {
             &session.id,
             haven_common::types::CanonicalRole::User,
             "I prefer Rust.",
-            Some("text"),
+            Some(haven_common::types::TranscriptMessageKind::Text),
             None,
         )
         .unwrap();
@@ -2721,7 +2721,7 @@ mod tests {
                 &session.id,
                 haven_common::types::CanonicalRole::User,
                 "I like Rust.",
-                Some("text"),
+                Some(haven_common::types::TranscriptMessageKind::Text),
                 None,
             )
             .unwrap();
@@ -2730,7 +2730,7 @@ mod tests {
                 &session.id,
                 haven_common::types::CanonicalRole::User,
                 "I use VSCode.",
-                Some("text"),
+                Some(haven_common::types::TranscriptMessageKind::Text),
                 None,
             )
             .unwrap();
@@ -2759,7 +2759,7 @@ mod tests {
             &session.id,
             haven_common::types::CanonicalRole::User,
             "I like Rust.",
-            Some("text"),
+            Some(haven_common::types::TranscriptMessageKind::Text),
             None,
         )
         .unwrap();
@@ -2801,7 +2801,7 @@ mod tests {
                 &session.id,
                 haven_common::types::CanonicalRole::User,
                 "I prefer Rust.",
-                Some("text"),
+                Some(haven_common::types::TranscriptMessageKind::Text),
                 None,
             )
             .unwrap();
@@ -3170,7 +3170,7 @@ mod tests {
                 &session.id,
                 haven_common::types::CanonicalRole::User,
                 "first message",
-                Some("text"),
+                Some(haven_common::types::TranscriptMessageKind::Text),
                 None,
             )
             .unwrap();
@@ -3187,7 +3187,7 @@ mod tests {
                 &session.id,
                 haven_common::types::CanonicalRole::User,
                 "new signal only",
-                Some("text"),
+                Some(haven_common::types::TranscriptMessageKind::Text),
                 None,
             )
             .unwrap();
@@ -3210,7 +3210,7 @@ mod tests {
                 &session.id,
                 haven_common::types::CanonicalRole::User,
                 "I like Rust.",
-                Some("text"),
+                Some(haven_common::types::TranscriptMessageKind::Text),
                 None,
             )
             .unwrap();
@@ -3232,7 +3232,7 @@ mod tests {
                 &session.id,
                 haven_common::types::CanonicalRole::User,
                 "I use VSCode.",
-                Some("text"),
+                Some(haven_common::types::TranscriptMessageKind::Text),
                 None,
             )
             .unwrap();
@@ -3273,7 +3273,7 @@ mod tests {
                 &session.id,
                 haven_common::types::CanonicalRole::User,
                 "I like Rust.",
-                Some("text"),
+                Some(haven_common::types::TranscriptMessageKind::Text),
                 None,
             )
             .unwrap();
@@ -3300,7 +3300,7 @@ mod tests {
                 &session.id,
                 haven_common::types::CanonicalRole::User,
                 "I prefer Rust.",
-                Some("text"),
+                Some(haven_common::types::TranscriptMessageKind::Text),
                 None,
             )
             .unwrap();
