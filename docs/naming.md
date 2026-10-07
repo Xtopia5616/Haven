@@ -1,6 +1,6 @@
 # Haven 命名规范
 
-> 版本: v1.125 | 日期: 2026-10-07
+> 版本: v1.126 | 日期: 2026-10-07
 
 本文档统一 Haven 项目各层的命名规则（变量名、函数名、文件名、crate 名、缩写大小写、跨层边界）。规范以现有代码中的事实模式为基础，新代码必须遵循；存量代码若与规范冲突，逐步迁移对齐。
 
@@ -40,6 +40,7 @@
 - **Tool result 状态摘要行统一命名**：Agent 与 HTTP renderer 共用 `.tool-result-status-row` 的 flex/字号样式；各自的状态字段、badge 与关联信息仍归领域 renderer（ADR 0711）。
 - **Tool result 窗口行基础样式统一**：系统显示器与窗口结果复用 `.tool-result-window-row`、`.tool-result-window-primary` 和 `.tool-result-secondary-value`；内容名分别使用 `display-name`、`window-title`，分辨率与窗口元信息分别使用 `display-resolution`、`window-meta`，不将分辨率或 condition/control type 称为 PID（ADR 0712）。
 - **ExpandableContextCard header metadata 共用排版**：Builtin Tool、Tool root、MCP server 与 Skill 卡片使用 `.expandable-context-card-meta` 的 flex、间距、字号和换行规则；徽标与状态内容仍由各卡片 renderer 拥有，区别于 `.workspace-item-card-meta` 的卡片底部布局（ADR 0713）。
+- **ExpandableContextCard 正文说明共用样式**：Builtin Tool family 和 Skill 的正文描述使用 `.expandable-context-card-description`，其字体、颜色、外边距与行高由 `ui/src/app.css` 拥有；具体说明文本分别由各卡片提供（ADR 0714）。
 - **Untrusted record 识别共用一个 guard**：所有边界把未知值收窄到非空、非数组的 `Record<string, unknown>` 时使用 `isRecord`；字段语义校验继续留在各自 contract（ADR 0698）。
 - **Tauri event channel 名使用生成目录**：UI 的 App、Agent、recording、Session 与 ToolRun event-name arrays 从 Rust `events.rs` 常量生成；payload map、运行时校验与 renderer 投影仍归各域 contract（ADR 0699）。
 - **动态交互响应区分 wire 与 renderer view**：交互 envelope 的通用 `response` 保持 `unknown`；当某一交互类型在 UI 中具有稳定投影时，将 shape 命名为领域 view 并跨 reducer、controller、消息与组件复用。Ask 的答案/忽略结果统一为 `AskResponseView`，不在各层重复内联字段（ADR 0644）。

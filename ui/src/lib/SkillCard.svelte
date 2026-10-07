@@ -122,7 +122,7 @@
 		/>
 	{/snippet}
 	{#snippet children()}
-		<p class="desc">{skill.description || '暂无描述'}</p>
+		<p class="expandable-context-card-description">{skill.description || '暂无描述'}</p>
 
 		<h4>技能路径</h4>
 		<code class="path">{skill.root}</code>
@@ -181,12 +181,6 @@
 	.script-badge--missing {
 		background: var(--md-sys-color-error-container);
 		color: var(--md-sys-color-on-error-container);
-	}
-	.desc {
-		font-size: var(--md-sys-typescale-body-small-size);
-		color: var(--md-sys-color-on-surface-variant);
-		margin: var(--md-sys-space-md) 0;
-		line-height: var(--md-sys-typescale-body-small-line-height);
 	}
 	.path {
 		font-size: var(--md-sys-typescale-label-small-size);

@@ -74,7 +74,7 @@
 
 | 状态 | 当前项 |
 |---|---|
-| **Active / Next** | **Active：全项目领域术语与架构角色命名收敛**，见 §5.7。本轮已开始全仓盘点 Rust、Svelte/TypeScript、IPC 与架构文档；已完成 Tool result/ExpandableContextCard 展示样式 owner 合并与若干概念改名，继续基于 owner/生命周期/不变量证据逐域审查。暂无后续 Next。 |
+| **Active / Next** | **Active：全项目领域术语与架构角色命名收敛**，见 §5.7。本轮已开始全仓盘点 Rust、Svelte/TypeScript、IPC 与架构文档；已完成 Tool result/ExpandableContextCard 样式 owner 合并与若干概念改名，继续基于 owner/生命周期/不变量证据逐域审查。暂无后续 Next。 |
 | **Gate** | Windows 发布验收 Open，见 §5.1。 |
 
 ### 5.1 Windows 发布验收（Gate / Open）
@@ -365,6 +365,7 @@
 | Agent 与 HTTP renderer 的 action row 同名且样式重复 | 两处 `.action-row` 都是状态 badge 加关联值，且 flex、居中、gap、字号与行高完全相同。 | **统一叫 Tool result status row**：两者使用 `.tool-result-status-row` 并复用全局样式；Agent/HTTP 的字段与 badge 仍各自拥有（ADR 0711）。 |
 | Window 与 System renderer 重复窗口/显示器行样式并误标字段 | 两处窗口行的布局、隔行底色与主文本排版相同；System 用 `.window-pid` 显示分辨率，Window 用同类 `.window-pid` 样式展示 PID、condition 和 control type，`window-title` 也被复用于显示器名称。 | **合并通用排版并命名实际内容**：使用全局 `.tool-result-window-row`、`.tool-result-window-primary`、`.tool-result-secondary-value`；显示器内容命名为 `display-name`/`display-resolution`，窗口附加信息命名为 `window-meta`，保留 `window-title` 表达窗口标题（ADR 0712）。 |
 | ExpandableContextCard 子卡片重复 metadata 排版 | Builtin Tool、Tool root、MCP server 与 Skill 四种 header slot 复制同一 `.card-meta` flex、gap、label-small 字号/行高与 wrap 规则；现有 `.workspace-item-card-meta` 有 footer 排布、`margin-top:auto` 和首尾子项约束，不适用于这里。 | **建立可定位的 header 展示 owner**：统一改用全局 `.expandable-context-card-meta`；状态 badge、transport、版本、endpoint 等内容继续由各卡片管理（ADR 0713）。 |
+| ExpandableContextCard 正文描述样式重复且类名过泛 | Builtin Tool family 与 Skill 的正文说明 `.desc` 规则逐项相同，均位于可展开卡片 body；局部类名无法说明展示角色。 | **共用有领域作用域的说明样式**：改用全局 `.expandable-context-card-description`，实际描述内容仍由 Builtin Tool 与 Skill renderer 提供（ADR 0714）。 |
 | Rust 与 UI 的 Tauri event channel 目录重复 | Rust `events.rs` 定义 35 个 channel；五个 UI contract 手写相同名称，Session mapper/listener 另写 lifecycle channel；旧门禁仅比较两份列表，recording 测试也复制一组 literal。 | **Rust 事件目录生成 UI 名称清单**：五个域 array 和 Session listener 直接消费 `generatedCommands.ts`；payload map、校验与 UI 投影仍由各域拥有，门禁比较 Rust 常量与生成清单（ADR 0699）。 |
 
 此表是候选分流清单，不是完整符号目录。尚未完成的 crate、IPC/event payload、UI controller/store 与函数动词审计仍在 §5.7 范围内；完成一域后更新本表并以 ADR 记录实际迁移。

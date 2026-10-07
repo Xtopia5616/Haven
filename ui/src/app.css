@@ -1274,6 +1274,12 @@ select.md-select {
 	line-height: var(--md-sys-typescale-label-small-line-height);
 	flex-wrap: wrap;
 }
+.expandable-context-card-description {
+	font-size: var(--md-sys-typescale-body-small-size);
+	line-height: var(--md-sys-typescale-body-small-line-height);
+	color: var(--md-sys-color-on-surface-variant);
+	margin: var(--md-sys-space-md) 0;
+}
 .workspace-item-card-footer {
 	justify-content: space-between;
 	gap: var(--md-sys-space-sm);

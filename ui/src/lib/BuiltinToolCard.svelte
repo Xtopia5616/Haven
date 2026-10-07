@@ -54,7 +54,9 @@
 		</div>
 	{/snippet}
 	{#snippet children()}
-		<p class="desc">展开根能力后可查看具体操作，并分别管理每个操作的启用状态。</p>
+		<p class="expandable-context-card-description">
+			展开根能力后可查看具体操作，并分别管理每个操作的启用状态。
+		</p>
 		<div class="root-list" aria-label={`${card.label} 根能力列表`}>
 			{#each card.roots as root (root.name)}
 				<BuiltinToolRootCard {root} {onToggle} />
@@ -78,12 +80,6 @@
 		display: flex;
 		flex-direction: column;
 		gap: var(--md-sys-space-sm);
-	}
-	.desc {
-		font-size: var(--md-sys-typescale-body-small-size);
-		color: var(--md-sys-color-on-surface-variant);
-		margin: var(--md-sys-space-md) 0;
-		line-height: var(--md-sys-typescale-body-small-line-height);
 	}
 	:global(.expandable-context-card[data-card-kind='builtin-family'] .card-body) {
 		padding-bottom: var(--md-sys-space-md);
