@@ -107,7 +107,7 @@
 	</div>
 {/if}
 {#if data.user}
-	<div class="tool-card-count">用户信息</div>
+	<div class="tool-result-label">用户信息</div>
 	<div class="info-grid">
 		{#if data.user.username}<div class="info-label">用户</div>
 			<div class="info-value">{data.user.username}</div>{/if}
@@ -120,7 +120,7 @@
 	</div>
 {/if}
 {#if data.locale}
-	<div class="tool-card-count">时间与区域</div>
+	<div class="tool-result-label">时间与区域</div>
 	<div class="info-grid">
 		{#if data.locale.locale_name}<div class="info-label">区域</div>
 			<div class="info-value">{data.locale.locale_name}</div>{/if}
@@ -136,7 +136,7 @@
 	</div>
 {/if}
 {#if Array.isArray(data.networks)}
-	<div class="tool-card-count">{data.count ?? data.networks.length} 个网络接口</div>
+	<div class="tool-result-label">{data.count ?? data.networks.length} 个网络接口</div>
 	<ToolResultList items={data.networks}>
 		{#snippet children(visibleNetworks)}
 			<div class="tool-result-scroll-area">
@@ -158,7 +158,7 @@
 	</ToolResultList>
 {/if}
 {#if data.network_summary}
-	<div class="tool-card-count">网络概况</div>
+	<div class="tool-result-label">网络概况</div>
 	<div class="info-grid">
 		<div class="info-label">接口</div>
 		<div class="info-value">{data.network_summary.interface_count ?? 0}</div>
@@ -169,7 +169,7 @@
 	</div>
 {/if}
 {#if Array.isArray(data.values) || Array.isArray(data.subkeys)}
-	<div class="tool-card-count">注册表{data.path ? ` · ${data.path}` : ''}</div>
+	<div class="tool-result-label">注册表{data.path ? ` · ${data.path}` : ''}</div>
 	{#if Array.isArray(data.values) && data.values.length > 0}
 		<ToolResultList items={data.values}>
 			{#snippet children(visibleValues)}
@@ -284,7 +284,7 @@
 	<div class="tool-card-meta">运行时长 {fmtUptime(data.os.uptime_secs)}</div>
 {/if}
 {#if Array.isArray(data.displays)}
-	<div class="tool-card-count">{data.displays.length} 个显示器</div>
+	<div class="tool-result-label">{data.displays.length} 个显示器</div>
 	<ToolResultList items={data.displays}>
 		{#snippet children(visibleDisplays)}
 			<div class="tool-result-scroll-area">
@@ -301,7 +301,7 @@
 	</ToolResultList>
 {/if}
 {#if Array.isArray(data.variables)}
-	<div class="tool-card-count">
+	<div class="tool-result-label">
 		{#if envFilter}{filteredEnv.length} / {envList.length} 个变量{:else}{envList.length} 个变量{/if}
 	</div>
 	<ToolSearch
@@ -377,13 +377,6 @@
 {/if}
 
 <style>
-	.tool-card-count {
-		font-size: var(--md-sys-typescale-label-small-size);
-		font-weight: 600;
-		line-height: var(--md-sys-typescale-label-small-line-height);
-		color: var(--md-sys-color-on-surface-variant);
-		margin-bottom: var(--md-sys-space-xs);
-	}
 	.tool-card-meta {
 		font-size: var(--md-sys-typescale-label-small-size);
 		line-height: var(--md-sys-typescale-label-small-line-height);

@@ -20,7 +20,7 @@
 	);
 </script>
 
-<div class="tool-card-count">
+<div class="tool-result-label">
 	{resultCount} 个结果 · {data.mode === 'content' ? '全文' : '文件名'}
 </div>
 {#if resultList.length > 0}
@@ -44,13 +44,6 @@
 {/if}
 
 <style>
-	.tool-card-count {
-		font-size: var(--md-sys-typescale-label-small-size);
-		font-weight: 600;
-		line-height: var(--md-sys-typescale-label-small-line-height);
-		color: var(--md-sys-color-on-surface-variant);
-		margin-bottom: var(--md-sys-space-xs);
-	}
 	.tool-card-empty {
 		margin: 0;
 		font-size: var(--md-sys-typescale-label-medium-size);

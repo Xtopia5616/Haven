@@ -1331,6 +1331,14 @@ select.md-select {
 	border-radius: var(--md-sys-shape-extra-small);
 }
 
+.tool-result-label {
+	font-size: var(--md-sys-typescale-label-small-size);
+	font-weight: 600;
+	line-height: var(--md-sys-typescale-label-small-line-height);
+	color: var(--md-sys-color-on-surface-variant);
+	margin-bottom: var(--md-sys-space-xs);
+}
+
 .responsive-layout-transition {
 	transition:
 		grid-template-columns var(--md-sys-motion-duration-short)

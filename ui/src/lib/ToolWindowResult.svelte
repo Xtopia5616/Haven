@@ -35,7 +35,7 @@
 </script>
 
 {#if Array.isArray(data.windows)}
-	<div class="tool-card-count">{data.count ?? data.windows.length} 个窗口</div>
+	<div class="tool-result-label">{data.count ?? data.windows.length} 个窗口</div>
 	{#if data.windows.length > 0}
 		<ToolResultList items={data.windows}>
 			{#snippet children(visibleWindows)}
@@ -97,7 +97,7 @@
 	</div>
 	{#if data.text}<div class="tool-card-meta">{data.text}</div>{/if}
 {:else if Array.isArray(data.elements)}
-	<div class="tool-card-count">{data.count ?? data.elements.length} 个界面元素</div>
+	<div class="tool-result-label">{data.count ?? data.elements.length} 个界面元素</div>
 	<ToolResultList items={data.elements}>
 		{#snippet children(visibleElements)}
 			<div class="tool-result-scroll-area">
@@ -122,13 +122,6 @@
 {/if}
 
 <style>
-	.tool-card-count {
-		font-size: var(--md-sys-typescale-label-small-size);
-		font-weight: 600;
-		line-height: var(--md-sys-typescale-label-small-line-height);
-		color: var(--md-sys-color-on-surface-variant);
-		margin-bottom: var(--md-sys-space-xs);
-	}
 	.tool-card-empty {
 		margin: 0;
 		font-size: var(--md-sys-typescale-label-medium-size);

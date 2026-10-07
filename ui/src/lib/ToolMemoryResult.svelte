@@ -40,7 +40,7 @@
 </script>
 
 {#if Array.isArray(data.facts)}
-	<div class="tool-card-count">{facts.length} 条记忆事实</div>
+	<div class="tool-result-label">{facts.length} 条记忆事实</div>
 	{#if facts.length > 0}
 		<ToolResultList items={facts}>
 			{#snippet children(visibleFacts)}
@@ -74,7 +74,7 @@
 		<p class="tool-card-empty">没有找到记忆事实</p>
 	{/if}
 {:else if Array.isArray(data.hits)}
-	<div class="tool-card-count">{hits.length} 条召回结果{data.mode ? ` · ${data.mode}` : ''}</div>
+	<div class="tool-result-label">{hits.length} 条召回结果{data.mode ? ` · ${data.mode}` : ''}</div>
 	{#if hits.length > 0}
 		<ToolResultList items={hits}>
 			{#snippet children(visibleHits)}
@@ -111,16 +111,11 @@
 {/if}
 
 <style>
-	.tool-card-count,
 	.tool-card-meta,
 	.tool-card-empty {
 		font-size: var(--md-sys-typescale-label-small-size);
 		line-height: var(--md-sys-typescale-label-small-line-height);
 		color: var(--md-sys-color-on-surface-variant);
-	}
-	.tool-card-count {
-		font-weight: 600;
-		margin-bottom: var(--md-sys-space-xs);
 	}
 	.tool-card-meta {
 		margin-bottom: var(--md-sys-space-xs);

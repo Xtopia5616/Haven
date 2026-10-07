@@ -10,7 +10,7 @@
 </script>
 
 {#if Array.isArray(data.servers)}
-	<div class="tool-card-count">{data.servers.length} 个 MCP 服务</div>
+	<div class="tool-result-label">{data.servers.length} 个 MCP 服务</div>
 	<ToolResultList items={data.servers}>
 		{#snippet children(visibleServers)}
 			<div class="admin-list tool-result-scroll-area">
@@ -29,7 +29,7 @@
 		{/snippet}
 	</ToolResultList>
 {:else if Array.isArray(data.skills)}
-	<div class="tool-card-count">{data.skills.length} 个技能</div>
+	<div class="tool-result-label">{data.skills.length} 个技能</div>
 	<ToolResultList items={data.skills}>
 		{#snippet children(visibleSkills)}
 			<div class="admin-list tool-result-scroll-area">
@@ -46,7 +46,7 @@
 	</ToolResultList>
 {:else if Array.isArray(data.sessions) || Array.isArray(data.errors)}
 	{@const rows = Array.isArray(data.sessions) ? data.sessions : data.errors}
-	<div class="tool-card-count">{rows.length} 条记录</div>
+	<div class="tool-result-label">{rows.length} 条记录</div>
 	{#if rows.length === 0}<p class="tool-card-empty">没有记录</p>{/if}
 	<ToolResultList items={rows}>
 		{#snippet children(visibleRows: Array<Record<string, unknown>>)}
@@ -81,15 +81,10 @@
 {/if}
 
 <style>
-	.tool-card-count,
 	.tool-card-empty {
 		font-size: var(--md-sys-typescale-label-small-size);
 		line-height: var(--md-sys-typescale-label-small-line-height);
 		color: var(--md-sys-color-on-surface-variant);
-	}
-	.tool-card-count {
-		font-weight: 600;
-		margin-bottom: var(--md-sys-space-xs);
 	}
 	.tool-card-empty {
 		margin: 0;

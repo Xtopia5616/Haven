@@ -36,7 +36,7 @@
 </script>
 
 {#if operation === 'result_injected'}
-	<div class="tool-card-count">
+	<div class="tool-result-label">
 		后台任务结果已回灌，正在继续{#if data.tool_run_id}
 			· {data.tool_run_id}{/if}
 	</div>
@@ -55,7 +55,7 @@
 		<span class="tool-run-id">{data.tool_run_id || '—'}</span>
 	</div>
 {:else if Array.isArray(data.tool_runs)}
-	<div class="tool-card-count">{data.tool_runs.length} 个后台任务</div>
+	<div class="tool-result-label">{data.tool_runs.length} 个后台任务</div>
 	{#if data.tool_runs.length > 0}
 		<ToolResultList items={data.tool_runs}>
 			{#snippet children(visibleToolRuns)}
@@ -89,13 +89,6 @@
 {/if}
 
 <style>
-	.tool-card-count {
-		font-size: var(--md-sys-typescale-label-small-size);
-		font-weight: 600;
-		line-height: var(--md-sys-typescale-label-small-line-height);
-		color: var(--md-sys-color-on-surface-variant);
-		margin-bottom: var(--md-sys-space-xs);
-	}
 	.tool-card-empty,
 	.tool-card-meta {
 		font-size: var(--md-sys-typescale-label-medium-size);

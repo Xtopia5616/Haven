@@ -13,7 +13,7 @@
 	let { data = {} }: Props = $props();
 </script>
 
-<div class="tool-card-count">{data.label}</div>
+<div class="tool-result-label">{data.label}</div>
 {#if Array.isArray(data.queries) && data.queries.length > 0}
 	<div class="tool-card-meta">查询：{data.queries.join('；')}</div>
 {/if}
@@ -42,13 +42,6 @@
 {/if}
 
 <style>
-	.tool-card-count {
-		font-size: var(--md-sys-typescale-label-small-size);
-		font-weight: 600;
-		line-height: var(--md-sys-typescale-label-small-line-height);
-		color: var(--md-sys-color-on-surface-variant);
-		margin-bottom: var(--md-sys-space-xs);
-	}
 	.tool-card-meta {
 		font-size: var(--md-sys-typescale-label-small-size);
 		line-height: var(--md-sys-typescale-label-small-line-height);

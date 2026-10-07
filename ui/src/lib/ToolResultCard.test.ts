@@ -490,7 +490,7 @@ describe('ToolResultCard shell / notify / generic', () => {
 		});
 		await expandToolCard(container);
 		expect(container.querySelector('.tool-header-state')?.textContent).toContain('执行成功');
-		expect(container.querySelector('.tool-card-count')?.textContent).toContain('后台任务已完成');
+		expect(container.querySelector('.tool-result-label')?.textContent).toContain('后台任务已完成');
 		expect(screen.getByText('退出码 0')).toBeTruthy();
 		expect(screen.getByText('command output')).toBeTruthy();
 	});

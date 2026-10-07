@@ -694,3 +694,4 @@
 - [0703：分离 MCP server root 与 Tool renderer](0703-separate-mcp-root-from-tool-renderer.md)
 - [0704：删除重复的 Tool result 列表 wrapper](0704-remove-redundant-tool-card-list-wrapper.md)
 - [0705：共用 Tool result 滚动样式](0705-share-tool-result-scroll-style.md)
+- [0706：共用 Tool result label 样式](0706-share-tool-result-label-style.md)

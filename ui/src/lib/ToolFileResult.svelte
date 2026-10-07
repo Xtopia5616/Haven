@@ -123,7 +123,7 @@
 {:else if rawText}
 	<pre class="content-preview">{rawText}</pre>
 {:else if Array.isArray(data.entries)}
-	<div class="tool-card-count">{data.count ?? data.entries.length} 项</div>
+	<div class="tool-result-label">{data.count ?? data.entries.length} 项</div>
 	{#if data.entries.length > 0}
 		<ToolResultList items={data.entries}>
 			{#snippet children(visibleEntries)}
@@ -147,13 +147,6 @@
 {/if}
 
 <style>
-	.tool-card-count {
-		font-size: var(--md-sys-typescale-label-small-size);
-		font-weight: 600;
-		line-height: var(--md-sys-typescale-label-small-line-height);
-		color: var(--md-sys-color-on-surface-variant);
-		margin-bottom: var(--md-sys-space-xs);
-	}
 	.tool-card-meta {
 		font-size: var(--md-sys-typescale-label-small-size);
 		line-height: var(--md-sys-typescale-label-small-line-height);

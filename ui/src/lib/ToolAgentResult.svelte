@@ -25,10 +25,10 @@
 </script>
 
 {#if data.auto && typeof data.text === 'string'}
-	<div class="tool-card-count">自动收到同伴消息（低信任）</div>
+	<div class="tool-result-label">自动收到同伴消息（低信任）</div>
 	<pre class="content-preview">{data.text}</pre>
 {:else if Array.isArray(data.agents)}
-	<div class="tool-card-count">{data.agents.length} 个同伴</div>
+	<div class="tool-result-label">{data.agents.length} 个同伴</div>
 	{#if data.agents.length > 0}
 		<ToolResultList items={data.agents}>
 			{#snippet children(visibleAgents)}
@@ -69,7 +69,7 @@
 			子会话已排队（运行中 {data.running_sessions ?? '?'}/{data.max_concurrent ?? '?'}）
 		</div>{/if}
 {:else if data.reply}
-	<div class="tool-card-count">收到回复</div>
+	<div class="tool-result-label">收到回复</div>
 	<pre class="content-preview">{typeof data.reply === 'string'
 			? data.reply
 			: JSON.stringify(data.reply, null, 2)}</pre>
@@ -80,13 +80,6 @@
 {/if}
 
 <style>
-	.tool-card-count {
-		font-size: var(--md-sys-typescale-label-small-size);
-		font-weight: 600;
-		line-height: var(--md-sys-typescale-label-small-line-height);
-		color: var(--md-sys-color-on-surface-variant);
-		margin-bottom: var(--md-sys-space-xs);
-	}
 	.tool-card-meta {
 		font-size: var(--md-sys-typescale-label-small-size);
 		line-height: var(--md-sys-typescale-label-small-line-height);

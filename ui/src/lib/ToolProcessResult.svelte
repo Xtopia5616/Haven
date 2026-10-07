@@ -57,7 +57,7 @@
 </script>
 
 {#if Array.isArray(data.processes)}
-	<div class="tool-card-count">
+	<div class="tool-result-label">
 		{#if processFilter}{filteredProcesses.length} / {processList.length} 个进程{:else}{processList.length}
 			个进程{/if}
 	</div>
@@ -124,13 +124,6 @@
 {/if}
 
 <style>
-	.tool-card-count {
-		font-size: var(--md-sys-typescale-label-small-size);
-		font-weight: 600;
-		line-height: var(--md-sys-typescale-label-small-line-height);
-		color: var(--md-sys-color-on-surface-variant);
-		margin-bottom: var(--md-sys-space-xs);
-	}
 	.proc-table {
 		width: 100%;
 		border-collapse: collapse;

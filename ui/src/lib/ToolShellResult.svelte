@@ -15,20 +15,20 @@
 </script>
 
 {#if data.truncated}
-	<div class="tool-card-count">输出过长已截断</div>
+	<div class="tool-result-label">输出过长已截断</div>
 {/if}
 {#if data.execution_mode === 'background' && data.status === 'running'}
-	<div class="tool-card-count">
+	<div class="tool-result-label">
 		后台任务运行中{#if data.tool_run_id}
 			· {data.tool_run_id}{/if}
 	</div>
 {:else if data.execution_mode === 'background' && data.status === 'cancelled'}
-	<div class="tool-card-count">
+	<div class="tool-result-label">
 		后台任务已取消{#if data.tool_run_id}
 			· {data.tool_run_id}{/if}
 	</div>
 {:else if data.execution_mode === 'background' && (data.status === 'completed' || data.status === 'failed')}
-	<div class="tool-card-count">
+	<div class="tool-result-label">
 		后台任务{data.status === 'completed' ? '已完成' : '失败'}{#if data.tool_run_id}
 			· {data.tool_run_id}{/if}
 	</div>
@@ -45,13 +45,6 @@
 {/if}
 
 <style>
-	.tool-card-count {
-		font-size: var(--md-sys-typescale-label-small-size);
-		font-weight: 600;
-		line-height: var(--md-sys-typescale-label-small-line-height);
-		color: var(--md-sys-color-on-surface-variant);
-		margin-bottom: var(--md-sys-space-xs);
-	}
 	.tool-card-empty,
 	.tool-card-meta {
 		margin: 0;

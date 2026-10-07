@@ -35,7 +35,7 @@
 		{#if data.cancelled}<span class="tool-run-id">#{data.cancelled}</span>{/if}
 	</div>
 {:else if Array.isArray(data.scheduled_tool_runs)}
-	<div class="tool-card-count">{data.scheduled_tool_runs.length} 条定时任务</div>
+	<div class="tool-result-label">{data.scheduled_tool_runs.length} 条定时任务</div>
 	{#if data.scheduled_tool_runs.length > 0}
 		<ToolResultList items={data.scheduled_tool_runs}>
 			{#snippet children(visibleToolRuns)}
@@ -74,13 +74,6 @@
 {/if}
 
 <style>
-	.tool-card-count {
-		font-size: var(--md-sys-typescale-label-small-size);
-		font-weight: 600;
-		line-height: var(--md-sys-typescale-label-small-line-height);
-		color: var(--md-sys-color-on-surface-variant);
-		margin-bottom: var(--md-sys-space-xs);
-	}
 	.tool-card-empty,
 	.tool-card-meta {
 		font-size: var(--md-sys-typescale-label-medium-size);
