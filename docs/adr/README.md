@@ -664,3 +664,4 @@
 - [0673：区分工具与 endpoint 熔断器 owner](0673-name-tool-and-endpoint-circuit-breakers.md)
 - [0674：合并 Tools 文件读取取消包装器](0674-unify-cancellable-readers.md)
 - [0675：统一 Settings 运行时应用类型名](0675-name-settings-runtime-apply-types.md)
+- [0676：澄清 ToolRun 持久化与 lease 术语](0676-clarify-toolrun-lease-terminology.md)

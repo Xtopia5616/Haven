@@ -53,6 +53,8 @@ ReAct 按领域品牌大小写书写：类型与 enum variant 用 `ReAct`（如 
 
 应用能力可脱离当前 turn 持久运行时统一称为 `ToolRun`；当前源码、配置和 UI 不用退役的 `Job` 名称指代它。Windows `Job Object`、外部供应商异步 job 和 Memory outbox extraction job 各有独立语义，保留这些领域限定名称。
 
+ToolRun completion lease 的 token 标识被 claim 的 ToolRun 或 completion result，不标识领取它的 consumer；跨 Tools runtime 与 ToolRun persistence 共用 `ToolRunLease`。
+
 | 术语 | 含义 | UI 文案 / 代码边界 |
 |---|---|---|
 | 工具调用（ToolCall） | Agent/模型发起的一次工具调用；前台调用等待结果并进入当前 transcript | Agent/ReAct 使用 `ToolCall`；provider 的 `tool_call_id` 保持原格式 |

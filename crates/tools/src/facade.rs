@@ -298,7 +298,7 @@ impl ToolsFacade {
 
     /// Wire the app-level context for the five native admin surfaces. Called by the
     /// desktop shell after the config loader exists; later catalog rebuilds
-    /// keep the capability-scoped adapters registered. Durable action storage
+    /// keep the capability-scoped adapters registered. Durable ToolRun storage
     /// is injected separately through startup wiring by the composition root.
     pub async fn set_admin_context(
         &self,

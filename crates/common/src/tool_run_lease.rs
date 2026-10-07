@@ -1,4 +1,4 @@
-//! Pure claim/lease state shared by the tools runtime and action persistence.
+//! Pure claim/lease state shared by the Tools runtime and ToolRun persistence.
 //!
 //! The time point is generic because in-process claims use `Instant`, while
 //! SQLite leases use its UTC datetime representation. A lease never mixes
@@ -6,7 +6,7 @@
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ToolRunLease<T> {
-    // Stable action/result identity, not the identity of a claiming consumer.
+    // Identifies the leased ToolRun or completion result, not its consumer.
     claim_token: String,
     expires_at: T,
     valid: bool,
