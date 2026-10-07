@@ -65,7 +65,7 @@ impl GeminiAdapter {
 
     pub(super) fn convert_contents(
         msgs: impl AsRef<[CanonicalMessage]>,
-    ) -> (Vec<GeminiContent>, Option<Value>) {
+    ) -> GeminiContentConversion {
         let msgs = msgs.as_ref();
         let mut system_parts: Vec<String> = Vec::new();
         let mut out: Vec<GeminiContent> = Vec::new();
@@ -204,7 +204,10 @@ impl GeminiAdapter {
             };
             Some(json!({"parts": parts}))
         };
-        (out, system)
+        GeminiContentConversion {
+            contents: out,
+            system_instruction: system,
+        }
     }
 
     pub(super) fn flush_pending_tool_results(

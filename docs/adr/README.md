@@ -609,3 +609,4 @@
 - [0618：统一 Tools 限长文本结果](0618-unify-tools-capped-text-result.md)
 - [0619：命名 chat thinking extras](0619-name-chat-thinking-extras.md)
 - [0620：命名 Anthropic request projection 结果](0620-name-anthropic-request-projections.md)
+- [0621：命名 Gemini content conversion 结果](0621-name-gemini-content-conversion.md)

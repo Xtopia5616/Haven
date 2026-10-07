@@ -139,7 +139,10 @@ fn convert_contents_extracts_system_instruction() {
             id: None,
         },
     ];
-    let (contents, system) = GeminiAdapter::convert_contents(msgs);
+    let GeminiContentConversion {
+        contents,
+        system_instruction: system,
+    } = GeminiAdapter::convert_contents(msgs);
     assert_eq!(contents.len(), 1);
     assert_eq!(contents[0].role, "user");
     assert_eq!(contents[0].parts[0].text.as_deref(), Some("hi"));
@@ -151,10 +154,12 @@ fn convert_contents_extracts_system_instruction() {
 fn convert_contents_separates_dynamic_system_context() {
     let system =
         format!("stable instructions{SESSION_CONTEXT_FENCE_START}Current session: inspect cache");
-    let (_, system) =
-        GeminiAdapter::convert_contents(vec![CanonicalMessage::system(vec![ContentPart::text(
-            system,
-        )])]);
+    let GeminiContentConversion {
+        system_instruction: system,
+        ..
+    } = GeminiAdapter::convert_contents(vec![CanonicalMessage::system(vec![ContentPart::text(
+        system,
+    )])]);
 
     let system = system.unwrap();
     assert_eq!(system["parts"].as_array().unwrap().len(), 2);
@@ -180,7 +185,7 @@ fn convert_contents_tool_result_function_response() {
         source: None,
         id: None,
     }];
-    let (contents, _) = GeminiAdapter::convert_contents(msgs);
+    let GeminiContentConversion { contents, .. } = GeminiAdapter::convert_contents(msgs);
     assert_eq!(contents.len(), 1);
     assert_eq!(contents[0].role, "user");
     let fr = contents[0].parts[0].function_response.as_ref().unwrap();
@@ -222,7 +227,7 @@ fn convert_contents_tool_result_uses_function_name_of_matching_call() {
             id: None,
         },
     ];
-    let (contents, _) = GeminiAdapter::convert_contents(msgs);
+    let GeminiContentConversion { contents, .. } = GeminiAdapter::convert_contents(msgs);
     assert_eq!(contents.len(), 2);
     let fr = contents[1].parts[0].function_response.as_ref().unwrap();
     assert_eq!(fr["name"], "read_file");
@@ -284,7 +289,7 @@ fn convert_contents_parallel_same_tool_results_follow_declaration_order() {
             id: None,
         },
     ];
-    let (contents, _) = GeminiAdapter::convert_contents(msgs);
+    let GeminiContentConversion { contents, .. } = GeminiAdapter::convert_contents(msgs);
     assert_eq!(contents.len(), 3);
     // First result in the emitted stream belongs to c1 (the first
     // declared call), even though c2 completed first.
@@ -343,7 +348,7 @@ fn convert_contents_multiple_tool_results_map_their_own_call_names() {
             id: None,
         },
     ];
-    let (contents, _) = GeminiAdapter::convert_contents(msgs);
+    let GeminiContentConversion { contents, .. } = GeminiAdapter::convert_contents(msgs);
     let fr1 = contents[1].parts[0].function_response.as_ref().unwrap();
     let fr2 = contents[2].parts[0].function_response.as_ref().unwrap();
     assert_eq!(fr1["name"], "shell");
@@ -367,7 +372,7 @@ fn convert_contents_assistant_function_call() {
         source: None,
         id: None,
     }];
-    let (contents, _) = GeminiAdapter::convert_contents(msgs);
+    let GeminiContentConversion { contents, .. } = GeminiAdapter::convert_contents(msgs);
     assert_eq!(contents.len(), 1);
     assert_eq!(contents[0].role, "model");
     let fc = contents[0].parts[1].function_call.as_ref().unwrap();
@@ -397,7 +402,7 @@ fn convert_contents_echoes_function_call_thought_signature() {
         source: None,
         id: None,
     }];
-    let (contents, _) = GeminiAdapter::convert_contents(msgs);
+    let GeminiContentConversion { contents, .. } = GeminiAdapter::convert_contents(msgs);
     let wire = serde_json::to_value(&contents[0]).unwrap();
     assert_eq!(wire["parts"][1]["functionCall"]["id"], "fc_1");
     assert_eq!(wire["parts"][1]["thoughtSignature"], "sig_1");
@@ -427,7 +432,7 @@ fn convert_contents_image_and_audio_inline_data() {
         source: None,
         id: None,
     }];
-    let (contents, _) = GeminiAdapter::convert_contents(msgs);
+    let GeminiContentConversion { contents, .. } = GeminiAdapter::convert_contents(msgs);
     let inline = contents[0].parts[0].inline_data.as_ref().unwrap();
     assert_eq!(inline["mimeType"], "image/png");
     assert_eq!(inline["data"], "aGVsbG8=");

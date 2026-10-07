@@ -96,7 +96,8 @@ impl GeminiAdapter {
                     matches!(part, ContentPart::Text(text) if split_system_prompt_cache_sections(text).is_some())
                 })
         });
-        let (mut contents, system_instruction) = Self::convert_contents(messages);
+        let converted = Self::convert_contents(messages);
+        let mut contents = converted.contents;
         for content in &mut contents {
             for part in &mut content.parts {
                 if let Some(function_call) = &mut part.function_call
@@ -122,7 +123,7 @@ impl GeminiAdapter {
         }
         GeminiRequest {
             contents,
-            system_instruction,
+            system_instruction: converted.system_instruction,
             cached_content: None,
             tools: if tools_json.is_empty() {
                 None
@@ -299,7 +300,7 @@ impl GeminiAdapter {
 
     pub(super) fn append_guidance_to_request(&self, body: &mut GeminiRequest, guidance: &str) {
         let message = CanonicalMessage::user_text(guidance);
-        let (mut contents, _) = Self::convert_contents(std::slice::from_ref(&message));
+        let mut contents = Self::convert_contents(std::slice::from_ref(&message)).contents;
         body.contents.append(&mut contents);
     }
 }

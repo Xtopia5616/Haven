@@ -50,6 +50,12 @@ pub(super) use stream::*;
 #[allow(unused_imports)]
 pub(super) use wire::*;
 
+/// Gemini wire content and system instruction projected from the canonical transcript.
+pub(super) struct GeminiContentConversion {
+    contents: Vec<GeminiContent>,
+    system_instruction: Option<Value>,
+}
+
 /// Google Gemini API adapter (`generateContent` / `streamGenerateContent`).
 pub struct GeminiAdapter {
     endpoint: ModelEndpoint,
