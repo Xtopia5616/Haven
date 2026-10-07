@@ -1,6 +1,6 @@
 # Haven 命名规范
 
-> 版本: v1.36 | 日期: 2026-10-07
+> 版本: v1.37 | 日期: 2026-10-07
 
 本文档统一 Haven 项目各层的命名规则（变量名、函数名、文件名、crate 名、缩写大小写、跨层边界）。规范以现有代码中的事实模式为基础，新代码必须遵循；存量代码若与规范冲突，逐步迁移对齐。
 
@@ -42,6 +42,8 @@ Agent 从权威 `TranscriptRecord` event log 得到的派生视图统一由 `Tra
 Tools 文件名与全文搜索共用 `FileSearchResult`；匹配项由 `results` 表达，有限扫描或结果上限则由独立的 `truncation_reason` 表达。匹配数据与搜索完整性是不同结果维度，不能只根据 tuple 位置恢复。
 
 Memory summary extraction marker 的序列化值解码为 `DecodedSummaryExtractionMarker { session_id, attempt, next_attempt_at_ms }`；它是解析出的持久值，不等同于分页查询对消费者暴露的 `SummaryExtractionMarker` 或其重试状态。
+
+LLM `ModelDirectory::resolve_client` 对执行请求返回 `ResolvedModelClient { model_id, client }`：model identity 用于并发/限流/健康状态关联，`LlmClient` 是实际执行请求的 adapter。非执行目录缺失时使用默认 adapter 的 `select_client` 保持独立语义。
 
 Tools 对结构化输出中 Ask 与通知 side-channel 的解析结果分别使用 `AskSignal` 和 `NotificationSignal`；前者保留可选 question 与选项列表，后者以 `Option<NotificationSignal>` 表示是否请求通知。汇总传递给 Agent 的 `ToolSignals` 形状继续由其独立的 side-channel 契约拥有。
 

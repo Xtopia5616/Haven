@@ -14,7 +14,7 @@ use crate::client::{LlmClient, endpoint_host};
 #[cfg(test)]
 use crate::endpoint_health::{CircuitBreaker, CircuitState};
 use crate::endpoint_health::{EndpointHealth, EndpointHealthMap, new_endpoint_health_map};
-use crate::model_directory::{ModelDirectory, RouteMode};
+use crate::model_directory::{ModelDirectory, ResolvedModelClient, RouteMode};
 use crate::request_descriptor::RequestDescriptor;
 use crate::request_pipeline::{
     RequestExecutionPolicy, RequestOutcome, execute_with_retry, execute_with_timeout,
@@ -275,7 +275,8 @@ impl LlmRouter {
         F: FnOnce(String, Arc<dyn LlmClient>) -> Fut,
         Fut: std::future::Future<Output = Result<T, LlmError>>,
     {
-        let (model_id, client) = self.model_directory.resolve_client(descriptor)?;
+        let ResolvedModelClient { model_id, client } =
+            self.model_directory.resolve_client(descriptor)?;
         let check_id = model_id.clone();
         self.with_model_permit(model_id.clone(), || async move {
             self.check_circuit(&check_id).await?;
@@ -624,12 +625,13 @@ impl LlmRouter {
     /// This is process-local health state; provider rate-limit cooldowns and
     /// lifetime call counters are intentionally preserved.
     pub async fn prepare_manual_retry(&self, request: RequestKind) {
-        let Ok((model_id, _client)) = self
+        let Ok(resolved_client) = self
             .model_directory
             .resolve_client(RequestDescriptor::from(request))
         else {
             return;
         };
+        let model_id = resolved_client.model_id;
         self.health
             .write()
             .await
@@ -808,7 +810,8 @@ impl LlmRouter {
         LlmError,
     > {
         let descriptor = RequestDescriptor::from(request);
-        let (model_id, candidate) = self.model_directory.resolve_client(descriptor)?;
+        let ResolvedModelClient { model_id, client } =
+            self.model_directory.resolve_client(descriptor)?;
         let permit = self.acquire_model_permit(&model_id).await?;
         self.wait_rate_limit_cooldown(&model_id).await;
         self.check_circuit(&model_id).await?;
@@ -818,7 +821,7 @@ impl LlmRouter {
         // Raw stream callers own consumption. Once a stream is returned, its
         // later transport error must be handled by the caller without
         // replaying already-consumed deltas.
-        StreamExecutor::new(descriptor, model_id, candidate, primary_policy)
+        StreamExecutor::new(descriptor, model_id, client, primary_policy)
             .chat_stream(messages, permit, |model_id, outcome| {
                 self.project_request_outcome(model_id, outcome)
             })

@@ -30,6 +30,11 @@ struct PrimaryRoute {
     model_id: String,
 }
 
+pub(crate) struct ResolvedModelClient {
+    pub(crate) model_id: String,
+    pub(crate) client: Arc<dyn LlmClient>,
+}
+
 /// The clients and configured primary identities used by one router.
 pub(crate) struct ModelDirectory {
     clients: HashMap<String, Arc<dyn LlmClient>>,
@@ -121,7 +126,7 @@ impl ModelDirectory {
     pub(crate) fn resolve_client(
         &self,
         descriptor: RequestDescriptor,
-    ) -> Result<(String, Arc<dyn LlmClient>), LlmError> {
+    ) -> Result<ResolvedModelClient, LlmError> {
         let route = self
             .primary_routes
             .lock()
@@ -139,7 +144,7 @@ impl ModelDirectory {
         let client = self.clients.get(&model_id).cloned().ok_or_else(|| {
             LlmError::Configuration(format!("model client is unavailable: {model_id}"))
         })?;
-        Ok((model_id, client))
+        Ok(ResolvedModelClient { model_id, client })
     }
 
     /// Look up an adapter by the model identity already resolved for a request.
@@ -417,16 +422,16 @@ mod tests {
             &config,
             [("shared".into(), shared_client.clone())],
         );
-        let (chat_id, chat_client) = directory
+        let chat_client = directory
             .resolve_client(RequestDescriptor::from(RequestKind::Chat))
             .unwrap();
-        let (vision_id, vision_client) = directory
+        let vision_client = directory
             .resolve_client(RequestDescriptor::from(RequestKind::Vision))
             .unwrap();
 
-        assert_eq!(chat_id, "shared");
-        assert_eq!(vision_id, chat_id);
-        assert!(Arc::ptr_eq(&chat_client, &vision_client));
+        assert_eq!(chat_client.model_id, "shared");
+        assert_eq!(vision_client.model_id, chat_client.model_id);
+        assert!(Arc::ptr_eq(&chat_client.client, &vision_client.client));
     }
 
     #[test]
