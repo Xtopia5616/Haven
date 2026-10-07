@@ -149,12 +149,12 @@ describe('chat session lifecycle handler', () => {
 			},
 		} as never);
 
-		expect(reducer.getState().sessions[0]).toMatchObject({
+		expect(reducer.snapshot().sessions[0]).toMatchObject({
 			id: sessionId,
 			status: 'completed',
 			title: '研究',
 		});
-		expect(reducer.getState().termination).toEqual({
+		expect(reducer.snapshot().termination).toEqual({
 			sessionId,
 			status: 'completed',
 			reason: '用户主动结束会话',
@@ -195,7 +195,7 @@ describe('chat session lifecycle handler', () => {
 			},
 		} as never);
 
-		expect(reducer.getState().sessions[0]).toMatchObject({
+		expect(reducer.snapshot().sessions[0]).toMatchObject({
 			status: 'error',
 			title: '构建',
 		});
@@ -293,8 +293,8 @@ describe('chat session lifecycle handler', () => {
 
 		onLifecycle({ payload: { type: 'deleted', sessionId } } as never);
 
-		expect(reducer.getState().sessions).toEqual([]);
-		expect(reducer.getState().activeSessionId).toBeNull();
+		expect(reducer.snapshot().sessions).toEqual([]);
+		expect(reducer.snapshot().activeSessionId).toBeNull();
 		expect(reducer.getMessages(sessionId)).toEqual([]);
 		expect(flushChunksNow).toHaveBeenCalledOnce();
 		expect(clearAskAwaiting).toHaveBeenCalledWith(sessionId);

@@ -23,10 +23,10 @@ function isMidTurnSubmit(sessionId: string, reducer: SessionReducer): boolean {
 		if (m.role === 'user' && !m.received) return true;
 	}
 	// This session's own status — never borrow another session's busy chip.
-	const st = reducer.getState().sessions.find((t) => t.id === sessionId)?.status;
+	const st = reducer.snapshot().sessions.find((t) => t.id === sessionId)?.status;
 	if (isBusyStatus(st) || isPausedStatus(st)) return true;
 	// Global execution phase only applies to the active session.
-	if (reducer.getState().activeSessionId === sessionId) {
+	if (reducer.snapshot().activeSessionId === sessionId) {
 		const state = reactExecutionPhaseForSession(get(reactExecutionPhaseStore), sessionId);
 		if (
 			state === 'queued' ||
@@ -158,7 +158,7 @@ function drainQueue(lane: SubmissionLane) {
 	// move the whole remaining draft queue to that session so newly submitted
 	// messages cannot overtake it on a newly created session lane.
 	if (next.payload.pinnedSessionId == null) {
-		const active = next.payload.reducer.getState().activeSessionId;
+		const active = next.payload.reducer.snapshot().activeSessionId;
 		const intentStillFresh = get(newSessionIntentStore);
 		if (active && !intentStillFresh) {
 			const draftQueue = [next, ...lane.pendingQueue];
@@ -235,7 +235,7 @@ export async function submitTranscript(
 		files,
 		voice,
 		recordingSessionId,
-		pinnedSessionId: reducer.getState().activeSessionId,
+		pinnedSessionId: reducer.snapshot().activeSessionId,
 		freshStartAtEnqueue: get(newSessionIntentStore),
 		submissionToken:
 			submissionToken ??

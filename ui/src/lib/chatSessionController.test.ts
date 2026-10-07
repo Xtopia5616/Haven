@@ -80,8 +80,8 @@ function makeHarness(options: {
 			actions.push(action);
 			reducer.dispatch(action);
 		},
-		getActiveSessionId: () => reducer.getState().activeSessionId,
-		getSessionSnapshot: () => reducer.getState().sessions,
+		getActiveSessionId: () => reducer.snapshot().activeSessionId,
+		getSessionSnapshot: () => reducer.snapshot().sessions,
 		notify: (message, type, duration) => notifications.push({ message, type, duration }),
 		reportError: (error, reportOptions) => {
 			reportedErrors.push({ error, message: reportOptions.message });
@@ -279,7 +279,7 @@ describe('ChatSessionController continue', () => {
 
 		await harness.controller.resyncSessionMessages(SESSION_ID);
 
-		expect(harness.reducer.getState().interactions['conf-pending']?.status).toBe('pending');
+		expect(harness.reducer.snapshot().interactions['conf-pending']?.status).toBe('pending');
 		const resumeAction = harness.actions.find(
 			(action) => action.type === 'session/messages/resume-loaded',
 		);
@@ -342,7 +342,7 @@ describe('ChatSessionController session guards', () => {
 
 		await harness.controller.submitMessage('新会话第一条消息');
 
-		expect(harness.reducer.getState().activeSessionId).toBe(OTHER_SESSION_ID);
+		expect(harness.reducer.snapshot().activeSessionId).toBe(OTHER_SESSION_ID);
 		expect(harness.loadSessionsCalls).toBe(1);
 	});
 
@@ -357,7 +357,7 @@ describe('ChatSessionController session guards', () => {
 			args: { sessionId: SESSION_ID },
 		}]);
 		expect(harness.freshSessionIntent).toBe(false);
-		expect(harness.reducer.getState().activeSessionId).toBe(SESSION_ID);
+		expect(harness.reducer.snapshot().activeSessionId).toBe(SESSION_ID);
 		expect(harness.reportedErrors).toEqual([{ error, message: '完成会话失败' }]);
 	});
 
@@ -382,7 +382,7 @@ describe('ChatSessionController session guards', () => {
 		await harness.controller.switchToSession(OTHER_SESSION_ID);
 
 		expect(harness.sessionMenuClosed).toBe(1);
-		expect(harness.reducer.getState().activeSessionId).toBe(OTHER_SESSION_ID);
+		expect(harness.reducer.snapshot().activeSessionId).toBe(OTHER_SESSION_ID);
 		expect(harness.reducer.getMessages(SESSION_ID)).toEqual([]);
 		expect(harness.persistedIntentClears).toBe(1);
 		expect(harness.notifications[0]?.message).toBe('已切换到：目标会话');

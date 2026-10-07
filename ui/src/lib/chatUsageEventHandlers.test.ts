@@ -53,8 +53,8 @@ describe('createChatUsageEventHandlers', () => {
 			} as any);
 		}
 
-		expect(reducer.getState().tokenStats?.['ses-test']).toBeUndefined();
-		expect(reducer.getState().llmUsage?.['ses-test']).toEqual([
+		expect(reducer.snapshot().tokenStats?.['ses-test']).toBeUndefined();
+		expect(reducer.snapshot().llmUsage?.['ses-test']).toEqual([
 			expect.objectContaining({ call_kind: 'media', step_number: null }),
 			expect.objectContaining({ call_kind: 'tool', step_number: null }),
 		]);

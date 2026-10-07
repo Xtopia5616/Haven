@@ -162,7 +162,7 @@ describe('submitTranscript', () => {
 		});
 		await submitTranscript('hi', { voice: false });
 
-		expect(reducer.getState().activeSessionId).toBe('session-new');
+		expect(reducer.snapshot().activeSessionId).toBe('session-new');
 		expect(messagesFor('_draft')).toEqual([]);
 		const list = messagesFor('session-new');
 		expect(list).toHaveLength(1);
@@ -177,7 +177,7 @@ describe('submitTranscript', () => {
 		select('session-stale');
 		await submitTranscript('hi', { voice: false });
 
-		expect(reducer.getState().activeSessionId).toBe('session-new');
+		expect(reducer.snapshot().activeSessionId).toBe('session-new');
 		expect(messagesFor('session-stale')).toEqual([]);
 		const list = messagesFor('session-new');
 		expect(list).toHaveLength(1);
@@ -449,7 +449,7 @@ describe('submitTranscript', () => {
 		});
 		// The queued message owns the new session lane now. A third send to the
 		// active session must queue behind it instead of overtaking it.
-		await vi.waitFor(() => expect(reducer.getState().activeSessionId).toBe('session-new'));
+		await vi.waitFor(() => expect(reducer.snapshot().activeSessionId).toBe('session-new'));
 		const third = submitTranscript('不能超车', { voice: false });
 		expect(invokeMock).toHaveBeenCalledTimes(2);
 

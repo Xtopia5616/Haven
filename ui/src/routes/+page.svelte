@@ -130,7 +130,7 @@
 	let deleteTarget = $state<{ sessionId: string; title: string } | null>(null);
 	let deletingSession = $state(false);
 	const sessionReducer = appSessionReducer;
-	const currentReducerState = sessionReducer.getState();
+	const currentReducerState = sessionReducer.snapshot();
 	const emptySessionMessages: SessionMessage[] = [];
 	const emptySessionLlmUsage: SessionLlmUsage[] = [];
 	const sessionsStore = createSessionSelectorStore((state) => state.sessions);
@@ -897,8 +897,8 @@
 		submitTranscript: (text, options) => submitTranscript(text, options),
 		reducer: sessionReducer,
 		dispatch: dispatchSession,
-		getActiveSessionId: () => sessionReducer.getState().activeSessionId,
-		getSessionSnapshot: () => sessionReducer.getState().sessions,
+		getActiveSessionId: () => sessionReducer.snapshot().activeSessionId,
+		getSessionSnapshot: () => sessionReducer.snapshot().sessions,
 		notify: addNotification,
 		reportError,
 		setInputDraft: (content) => inputRouterRef?.setDraft(content),
@@ -938,7 +938,7 @@
 
 	async function switchToSession(sessionId: string) {
 		const alreadyLoaded = sessionReducer
-			.getState()
+			.snapshot()
 			.sessions.some((session) => session.id === sessionId);
 		const historical = recentHistorySessions.find((session) => session.id === sessionId);
 		if (!alreadyLoaded && historical) {
@@ -989,7 +989,7 @@
 		}
 		if (request.owner.kind !== 'session') return;
 		if (request.sessionId !== activeSessionId) await switchToSession(request.owner.sessionId);
-		if (sessionReducer.getState().activeSessionId !== request.owner.sessionId) return;
+		if (sessionReducer.snapshot().activeSessionId !== request.owner.sessionId) return;
 		dismissedAskIds = new Set([...dismissedAskIds].filter((dismissedId) => dismissedId !== id));
 		chatViewController.setAutoFollow(false);
 		await tick();

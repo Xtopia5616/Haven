@@ -81,7 +81,7 @@ describe('createAskInteractionController', () => {
 			[],
 			[],
 		);
-		expect(reducer.getState().interactions).toMatchObject({
+		expect(reducer.snapshot().interactions).toMatchObject({
 			'ask-1': expect.objectContaining({ status: 'resolved', response: { answer: 'A' } }),
 			'ask-2': expect.objectContaining({ status: 'resolved', response: { answer: 'B' } }),
 		});
@@ -115,7 +115,7 @@ describe('createAskInteractionController', () => {
 		const { controller, submitMessage } = createController();
 
 		controller.handleIgnoreAsk('ask-1');
-		const firstResolved = reducer.getState().interactions['ask-1'];
+		const firstResolved = reducer.snapshot().interactions['ask-1'];
 		reducer.dispatch({
 			type: 'session/interaction-upserted',
 			request: { ...firstResolved!, response: { answer: 'reducer answer' } },
@@ -134,7 +134,7 @@ describe('createAskInteractionController', () => {
 		const first = createController();
 		first.controller.handleIgnoreAsk('ask-history');
 
-		const oldResolved = reducer.getState().interactions['ask-history'];
+		const oldResolved = reducer.snapshot().interactions['ask-history'];
 		const current = createRequest('ask-current', '当前问题', ['选项']);
 		reducer.dispatch({
 			type: 'session/messages/resume-loaded',
@@ -175,7 +175,7 @@ describe('createAskInteractionController', () => {
 			files,
 		);
 		expect(setAutoFollow).toHaveBeenCalled();
-		expect(reducer.getState().interactions).toMatchObject({
+		expect(reducer.snapshot().interactions).toMatchObject({
 			'ask-1': expect.objectContaining({ status: 'resolved' }),
 			'ask-2': expect.objectContaining({ status: 'resolved' }),
 		});
@@ -190,7 +190,7 @@ describe('createAskInteractionController', () => {
 
 		expect(submitMessage).toHaveBeenCalledOnce();
 		expect(submitMessage).toHaveBeenCalledWith('直接回复', [], []);
-		expect(reducer.getState().interactions?.['ask-1']).toMatchObject({ status: 'pending' });
+		expect(reducer.snapshot().interactions?.['ask-1']).toMatchObject({ status: 'pending' });
 		expect(setAutoFollow).toHaveBeenCalledOnce();
 	});
 
@@ -202,7 +202,7 @@ describe('createAskInteractionController', () => {
 		controller.handleAskSubmit();
 		controller.clearAskAwaiting(SESSION_ID);
 
-		expect(reducer.getState().interactions?.['ask-1']).toBeUndefined();
+		expect(reducer.snapshot().interactions?.['ask-1']).toBeUndefined();
 		expect(reducer.getMessages(SESSION_ID)[0]).toMatchObject({
 			awaiting: false,
 			resolved: { answer: 'A' },
@@ -254,7 +254,7 @@ describe('createAskInteractionController', () => {
 		unsubscribe();
 
 		expect(observed).toEqual([{ resolved: { ignored: true }, askInteraction: undefined }]);
-		expect(reducer.getState().interactions).toMatchObject({
+		expect(reducer.snapshot().interactions).toMatchObject({
 			'confirm-same': expect.objectContaining({ kind: 'confirm', status: 'pending' }),
 			'scheduled-same': expect.objectContaining({ kind: 'scheduled_confirm', status: 'pending' }),
 			'ask-other': expect.objectContaining({ sessionId: 'ses-other', kind: 'ask', status: 'pending' }),
@@ -267,7 +267,7 @@ describe('createAskInteractionController', () => {
 
 		controller.clearAskAwaiting(SESSION_ID);
 
-		expect(reducer.getState().interactions?.['ask-freeform']).toBeUndefined();
+		expect(reducer.snapshot().interactions?.['ask-freeform']).toBeUndefined();
 		expect(reducer.getMessages(SESSION_ID)[0]).toMatchObject({
 			awaiting: false,
 			resolved: null,

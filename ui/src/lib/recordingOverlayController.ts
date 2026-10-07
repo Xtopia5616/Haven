@@ -28,8 +28,8 @@ export interface RecordingOverlayControllerDependencies {
 export interface RecordingOverlayController {
 	state: Readable<Readonly<RecordingOverlayState>>;
 	duration: Readable<number>;
-	getState: () => Readonly<RecordingOverlayState>;
-	getDuration: () => number;
+	snapshot: () => Readonly<RecordingOverlayState>;
+	durationSeconds: () => number;
 	resumeTimer: () => void;
 	startFromToolbar: () => Promise<void>;
 	stopFromToolbar: () => Promise<void>;
@@ -254,8 +254,8 @@ export function createRecordingOverlayController(
 	return {
 		state,
 		duration,
-		getState: () => ({ ...get(overlayStore) }),
-		getDuration: () => get(durationStore),
+		snapshot: () => ({ ...get(overlayStore) }),
+		durationSeconds: () => get(durationStore),
 		resumeTimer,
 		startFromToolbar,
 		stopFromToolbar,

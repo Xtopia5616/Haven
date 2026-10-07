@@ -46,7 +46,7 @@ export function createAskInteractionController({
 		reducer.getMessages(sessionId) as AskMessage[];
 
 	const pendingFor = (sessionId: string, kind: InteractionKind) =>
-		Object.values(reducer.getState().interactions || {}).filter(
+		Object.values(reducer.snapshot().interactions || {}).filter(
 			(request) =>
 				request.owner.kind === 'session' &&
 				request.owner.sessionId === sessionId &&
@@ -81,7 +81,7 @@ export function createAskInteractionController({
 			setSelectionsReady(false);
 			return;
 		}
-		const state = reducer.getState();
+		const state = reducer.snapshot();
 		const asks = messagesFor(sessionId)
 			.filter(
 				(message) =>
@@ -122,7 +122,7 @@ export function createAskInteractionController({
 	}
 
 	function resolvedResponseFor(sessionId: string, msgId: string) {
-		const request = reducer.getState().interactions[msgId];
+		const request = reducer.snapshot().interactions[msgId];
 		if (
 			request?.owner.kind !== 'session' ||
 			request.owner.sessionId !== sessionId ||

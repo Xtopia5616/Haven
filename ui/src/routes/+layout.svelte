@@ -299,7 +299,7 @@
 	}
 
 	function startNewSessionFromTasks() {
-		const currentSessionId = appSessionReducer.getState().activeSessionId;
+		const currentSessionId = appSessionReducer.snapshot().activeSessionId;
 		if (currentSessionId)
 			appSessionReducer.dispatch({
 				type: 'session/memory-cleared',
@@ -311,8 +311,8 @@
 	let theme = $state(themeStore.currentTheme);
 	$effect(() => syncStore(themeStore, (v) => (theme = v.theme)));
 
-	let overlay = $state<RecordingOverlayState>(recordingOverlayController.getState());
-	let duration = $state(recordingOverlayController.getDuration());
+	let overlay = $state<RecordingOverlayState>(recordingOverlayController.snapshot());
+	let duration = $state(recordingOverlayController.durationSeconds());
 	let reactExecutionPhase = $state<ReactExecutionPhase>('idle'); // synced from reactExecutionPhaseStore on mount
 	let activeSessionStatusLabel = $state('空闲');
 	$effect(() =>
@@ -497,7 +497,7 @@
 			if (!shouldShowToolRunCompletionInApp()) return;
 			const toast = projectToolRunCompletionToast(
 				data,
-				appSessionReducer.getState().activeSessionId,
+				appSessionReducer.snapshot().activeSessionId,
 			);
 			if (toast) addNotification(toast.message, toast.type, toast.durationMs);
 			return;
@@ -586,9 +586,9 @@
 	const sessionsStore = createSessionSelectorStore((state) => state.sessions);
 	const activeSessionIdStore = createSessionSelectorStore((state) => state.activeSessionId);
 	const interactionsStore = createSessionSelectorStore((state) => state.interactions);
-	let sessions = $state(appSessionReducer.getState().sessions);
-	let activeSessionId = $state(appSessionReducer.getState().activeSessionId);
-	let interactionDict = $state(appSessionReducer.getState().interactions);
+	let sessions = $state(appSessionReducer.snapshot().sessions);
+	let activeSessionId = $state(appSessionReducer.snapshot().activeSessionId);
+	let interactionDict = $state(appSessionReducer.snapshot().interactions);
 	$effect(() => syncStore(sessionsStore, (v) => (sessions = v)));
 	$effect(() => syncStore(activeSessionIdStore, (v) => (activeSessionId = v)));
 	$effect(() => syncStore(interactionsStore, (v) => (interactionDict = v)));
@@ -676,7 +676,7 @@
 	}: ConfirmationDecision) {
 		const resolvedStep = stepId;
 		if (!resolvedStep || confirmationRequestsInFlight.has(resolvedStep)) return false;
-		const currentRequest = appSessionReducer.getState().interactions[resolvedStep];
+		const currentRequest = appSessionReducer.snapshot().interactions[resolvedStep];
 		if (!currentRequest || currentRequest.status !== 'pending') return false;
 		confirmationRequestsInFlight.add(resolvedStep);
 		const resolvedEffect = effect || (approved ? 'allow' : 'deny');
@@ -931,7 +931,7 @@
 						const data = event.payload;
 						if (data.muted) {
 							addNotification('麦克风已静音', 'info');
-							if (recordingOverlayController.getState().isRecording) {
+							if (recordingOverlayController.snapshot().isRecording) {
 								addNotification('录音被静音强制停止', 'warning', 4000);
 								recordingOverlayController.reset('muted');
 							}
@@ -943,7 +943,7 @@
 						const data = event.payload || {};
 						if (
 							data.status === 'muted' &&
-							recordingOverlayController.getState().isRecording
+							recordingOverlayController.snapshot().isRecording
 						) {
 							recordingOverlayController.reset('muted');
 						}
@@ -1077,7 +1077,7 @@
 						// state — not a guessed "slow" label. Cleared by the next chunk
 						// (streaming) or a terminal session event (ready/error).
 						const data = event.payload;
-						const activeId = appSessionReducer.getState().activeSessionId;
+						const activeId = appSessionReducer.snapshot().activeSessionId;
 						if (data.sessionId && activeId && data.sessionId !== activeId) return;
 						if (data.sessionId) {
 							updateReactExecutionPhase(data.sessionId, 'waiting_response');

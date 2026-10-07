@@ -52,7 +52,7 @@ describe('recording overlay controller', () => {
 		await starting;
 		controller.onRecordingStarted({ isRecording: true, sessionId: 'rec-a' });
 		vi.advanceTimersByTime(3_000);
-		expect(controller.getDuration()).toBe(3);
+		expect(controller.durationSeconds()).toBe(3);
 
 		const stopping = controller.stopFromToolbar();
 		expect(state(controller)).toMatchObject({ visible: false, isRecording: false, sessionId: 'rec-a' });
@@ -146,9 +146,9 @@ describe('recording overlay controller', () => {
 		controller.onTranscriptionFinished('rec-a');
 
 		expect(state(controller)).toMatchObject({ visible: true, isRecording: true, sessionId: 'rec-b' });
-		expect(controller.getDuration()).toBe(2);
+		expect(controller.durationSeconds()).toBe(2);
 		vi.advanceTimersByTime(1_000);
-		expect(controller.getDuration()).toBe(3);
+		expect(controller.durationSeconds()).toBe(3);
 
 		controller.onTranscriptionStarted('rec-b');
 		expect(state(controller)).toMatchObject({ visible: true, isRecording: false, processing: true });
@@ -176,7 +176,7 @@ describe('recording overlay controller', () => {
 		vi.advanceTimersByTime(2_000);
 		controller.onRecordingStarted({ isRecording: true, sessionId: 'rec-a' });
 
-		expect(controller.getDuration()).toBe(2);
+		expect(controller.durationSeconds()).toBe(2);
 		expect(vi.getTimerCount()).toBe(1);
 		controller.dispose();
 	});
@@ -194,7 +194,7 @@ describe('recording overlay controller', () => {
 		controller.dispose();
 		vi.advanceTimersByTime(5_000);
 		expect(state(controller)).toMatchObject({ visible: true, isRecording: true, sessionId: 'rec-b' });
-		expect(controller.getDuration()).toBe(2);
+		expect(controller.durationSeconds()).toBe(2);
 		expect(invoke).not.toHaveBeenCalled();
 		expect(vi.getTimerCount()).toBe(0);
 	});

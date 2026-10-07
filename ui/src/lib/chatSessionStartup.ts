@@ -68,11 +68,11 @@ export function createChatSessionStartup(dependencies: ChatSessionStartupDepende
 			// An explicit history choice cancels a pending fresh-start intent.
 			dependencies.setFreshSessionIntent(false);
 			dependencies.clearPersistedFreshSessionIntent();
-			const prevActive = dependencies.reducer.getState().activeSessionId;
+			const prevActive = dependencies.reducer.snapshot().activeSessionId;
 			dependencies.dispatch({ type: 'session/selected', sessionId: resumeTarget.sessionId });
 			if (prevActive && prevActive !== resumeTarget.sessionId) {
 				const prevSession = dependencies.reducer
-					.getState()
+					.snapshot()
 					.sessions.find((session) => session.id === prevActive);
 				if (
 					!prevSession ||
@@ -113,7 +113,7 @@ export function createChatSessionStartup(dependencies: ChatSessionStartupDepende
 			const result = await dependencies.listSessions();
 			if (!isCurrentGeneration(requestGeneration) || seq !== loadSessionsSeq) return;
 			if (result && result.sessions) {
-				const before = dependencies.reducer.getState();
+				const before = dependencies.reducer.snapshot();
 				dependencies.dispatch({
 					type: 'sessions/loaded',
 					sessions: result.sessions.map((session) => ({
@@ -122,7 +122,7 @@ export function createChatSessionStartup(dependencies: ChatSessionStartupDepende
 					})),
 					autoSelect: !before.activeSessionId && !dependencies.getFreshSessionIntent(),
 				});
-				const after = dependencies.reducer.getState();
+				const after = dependencies.reducer.snapshot();
 				if (
 					after.activeSessionId &&
 					!after.sessions.some((session) => session.id === after.activeSessionId) &&
@@ -173,14 +173,14 @@ export function createChatSessionStartup(dependencies: ChatSessionStartupDepende
 		}
 		await loadSessionsSettled;
 		if (!isCurrentGeneration(requestGeneration)) return;
-		const current = dependencies.reducer.getState();
+		const current = dependencies.reducer.snapshot();
 		if (
 			current.activeSessionId &&
 			!current.sessions.some((session) => session.id === current.activeSessionId)
 		) {
 			dependencies.dispatch({ type: 'session/cleared' });
 		}
-		if (dependencies.reducer.getState().activeSessionId) return;
+		if (dependencies.reducer.snapshot().activeSessionId) return;
 
 		let latestSession: SessionResumeResponse | null;
 		try {
@@ -193,7 +193,7 @@ export function createChatSessionStartup(dependencies: ChatSessionStartupDepende
 		if (!isCurrentGeneration(requestGeneration)) return;
 		if (
 			!latestSession?.session ||
-			dependencies.reducer.getState().activeSessionId ||
+			dependencies.reducer.snapshot().activeSessionId ||
 			dependencies.getFreshSessionIntent()
 		) {
 			return;

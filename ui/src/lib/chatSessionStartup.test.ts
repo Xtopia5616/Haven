@@ -96,7 +96,7 @@ function createHarness(options: {
 			persistedIntent = false;
 		},
 		getPendingInteractionIds: (sessionId) =>
-			Object.values(reducer.getState().interactions)
+			Object.values(reducer.snapshot().interactions)
 				.filter((request) => request.sessionId === sessionId && request.status === 'pending')
 				.map((request) => request.id),
 		evictTerminalSessionMemory: (sessionId) => evicted.push(sessionId),
@@ -165,7 +165,7 @@ describe('createChatSessionStartup', () => {
 		sessionsResponse.resolve(list());
 		await load;
 
-		expect(harness.reducer.getState().activeSessionId).toBe(SESSION_ID);
+		expect(harness.reducer.snapshot().activeSessionId).toBe(SESSION_ID);
 		expect(harness.actions.map((action) => action.type)).toEqual([
 			'sessions/loaded',
 			'session/messages/resume-loaded',
@@ -242,9 +242,9 @@ describe('createChatSessionStartup', () => {
 
 		expect(harness.freshIntentChanges).toEqual([true, false]);
 		expect(harness.evicted).toEqual([SESSION_ID]);
-		expect(harness.reducer.getState().activeSessionId).toBe(OTHER_SESSION_ID);
-		expect(harness.reducer.getState().error).toEqual({ sessionId: OTHER_SESSION_ID, reason: '已停止' });
-		expect(harness.reducer.getState().sessions).toContainEqual(
+		expect(harness.reducer.snapshot().activeSessionId).toBe(OTHER_SESSION_ID);
+		expect(harness.reducer.snapshot().error).toEqual({ sessionId: OTHER_SESSION_ID, reason: '已停止' });
+		expect(harness.reducer.snapshot().sessions).toContainEqual(
 			expect.objectContaining({ id: OTHER_SESSION_ID, status: 'error' }),
 		);
 		expect(harness.deferredTargetClears).toEqual([0]);
@@ -263,7 +263,7 @@ describe('createChatSessionStartup', () => {
 		finishRestore?.(resume());
 		await initialLoad;
 
-		expect(harness.reducer.getState().activeSessionId).toBe(OTHER_SESSION_ID);
+		expect(harness.reducer.snapshot().activeSessionId).toBe(OTHER_SESSION_ID);
 		expect(harness.actions.some((action) => action.type === 'session/messages/resume-loaded')).toBe(false);
 		expect(harness.reopened).toEqual([]);
 	});

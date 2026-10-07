@@ -223,13 +223,13 @@ describe('SessionReducer', () => {
 			sessionId: 'ses-a',
 			requests: [],
 		});
-		expect(reducer.getState().interactions).toEqual({
+		expect(reducer.snapshot().interactions).toEqual({
 			[scheduledRequest.id]: scheduledRequest,
 			[appRequest.id]: appRequest,
 		});
 
 		reducer.dispatch({ type: 'sessions/cleared' });
-		expect(reducer.getState().interactions).toEqual({
+		expect(reducer.snapshot().interactions).toEqual({
 			[scheduledRequest.id]: scheduledRequest,
 			[appRequest.id]: appRequest,
 		});
@@ -289,7 +289,7 @@ describe('SessionReducer', () => {
 			reason: '   ',
 		});
 
-		expect(unchanged).toBe(reducer.getState());
+		expect(unchanged).toBe(reducer.snapshot());
 		expect(reducer.getSessionErrorReason('ses-one')).toBe('网络失败');
 		expect(reducer.getSessionErrorReason('ses-two')).toBe('超时');
 		expect(reducer.getSessionErrorReason('')).toBe('');
@@ -755,7 +755,7 @@ describe('SessionReducer', () => {
 			'后',
 		]);
 		expect(
-			reduceSession(reducer.getState(), {
+			reduceSession(reducer.snapshot(), {
 				type: 'agent/chunks',
 				chunks: [
 					{
@@ -771,7 +771,7 @@ describe('SessionReducer', () => {
 					},
 				],
 			}),
-		).toBe(reducer.getState());
+		).toBe(reducer.snapshot());
 	});
 
 	it('resets stream chunks by block identity so a new run can restart its sequence', () => {

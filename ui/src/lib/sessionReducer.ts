@@ -171,7 +171,7 @@ export class SessionReducer {
 		this.stateStore = stateStore;
 	}
 
-	getState(): SessionReducerState {
+	snapshot(): SessionReducerState {
 		return this.state;
 	}
 
