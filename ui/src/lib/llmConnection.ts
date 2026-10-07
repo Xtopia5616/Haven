@@ -4,6 +4,7 @@ import type {
 	LlmConnectionFailureReason,
 	LlmConnectionStatus,
 } from './contracts/generatedCommands.ts';
+import { isRecord } from './contracts/objectGuards.ts';
 
 export interface LlmConnectionReportView {
 	status: LlmConnectionStatus;
@@ -33,22 +34,21 @@ export function llmConnectionReasonText(reason: unknown): string {
 
 /** Convert the untyped Tauri result into the one shape consumed by the shell. */
 export function normalizeLlmConnectionReport(value: unknown): LlmConnectionReportView {
-	if (!value || typeof value !== 'object') {
+	if (!isRecord(value)) {
 		return { status: 'disconnected', reason: 'unknown' };
 	}
-	const report = value as Record<string, unknown>;
-	const status = report.status;
+	const status = value.status;
 	if (status !== 'ready' && status !== 'disconnected' && status !== 'unconfigured') {
 		return { status: 'disconnected', reason: 'unknown' };
 	}
-	const reason = typeof report.reason === 'string' && report.reason in REASONS
-		? (report.reason as LlmConnectionFailureReason)
+	const reason = typeof value.reason === 'string' && value.reason in REASONS
+		? (value.reason as LlmConnectionFailureReason)
 		: undefined;
 	return {
 		status,
 		reason,
-		provider: typeof report.provider === 'string' ? report.provider : undefined,
-		model: typeof report.model === 'string' ? report.model : undefined,
+		provider: typeof value.provider === 'string' ? value.provider : undefined,
+		model: typeof value.model === 'string' ? value.model : undefined,
 	};
 }
 

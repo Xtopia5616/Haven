@@ -5,6 +5,7 @@ import {
 	formatTokenCount,
 } from './sessionUsage';
 import type { SessionLlmUsage } from './contracts/sessionHistory.ts';
+import { isRecord } from './contracts/objectGuards.ts';
 
 /** Optional display-facing statistics; reducer state keeps its stricter model type. */
 export interface SessionTokenStatsView {
@@ -141,14 +142,13 @@ function cacheHitRatePercent(
 }
 
 function summarizeCacheDiagnostics(value: unknown): CacheDiagnosticsSummary | null {
-	if (value == null || typeof value !== 'object' || Array.isArray(value)) return null;
-	const raw = value as Record<string, unknown>;
+	if (!isRecord(value)) return null;
 	return {
-		mode: typeof raw.mode === 'string' ? raw.mode : null,
-		provider: typeof raw.provider === 'string' && raw.provider ? raw.provider : null,
-		outcome: typeof raw.outcome === 'string' ? raw.outcome : null,
-		downgraded: raw.downgraded === true,
-		usageSource: typeof raw.usage_source === 'string' ? raw.usage_source : null,
+		mode: typeof value.mode === 'string' ? value.mode : null,
+		provider: typeof value.provider === 'string' && value.provider ? value.provider : null,
+		outcome: typeof value.outcome === 'string' ? value.outcome : null,
+		downgraded: value.downgraded === true,
+		usageSource: typeof value.usage_source === 'string' ? value.usage_source : null,
 	};
 }
 

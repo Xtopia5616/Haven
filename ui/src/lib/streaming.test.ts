@@ -474,6 +474,11 @@ describe('webSearchCardContent', () => {
 			'正在联网搜索…',
 		);
 	});
+	it('does not treat an array result as a search result record', () => {
+		expect(
+			webSearchCardContent({ phase: 'completed', action: 'search', result: ['unexpected'] }),
+		).toBe('已联网搜索');
+	});
 });
 
 describe('insertAgentMessage / steering anchors', () => {

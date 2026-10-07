@@ -1,4 +1,5 @@
 import { get, writable } from 'svelte/store';
+import { isRecord } from './contracts/objectGuards.ts';
 
 export interface ToolRunCompletionNotificationChannels {
 	in_app: boolean;
@@ -18,13 +19,12 @@ const toolRunCompletionNotificationSettings = writable({
 export function normalizeToolRunCompletionNotificationChannels(
 	value: unknown,
 ): ToolRunCompletionNotificationChannels {
-	if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+	if (!isRecord(value)) {
 		return { ...DEFAULT_TOOL_RUN_COMPLETION_NOTIFICATION_CHANNELS };
 	}
-	const channels = value as Record<string, unknown>;
 	return {
-		in_app: channels.in_app !== false,
-		windows: channels.windows !== false,
+		in_app: value.in_app !== false,
+		windows: value.windows !== false,
 	};
 }
 

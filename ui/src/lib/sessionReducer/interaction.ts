@@ -1,4 +1,5 @@
 import { mapInteractionOwner, type InteractionRequest } from '../contracts/app.ts';
+import { isRecord } from '../contracts/objectGuards.ts';
 import type { InteractionKind } from '../contracts/generatedCommands.ts';
 import {
 	INTERACTION_KIND_VALUES,
@@ -153,8 +154,8 @@ function hasValidOwnerContext(request: InteractionRequest): boolean {
 }
 
 function normalizeInteraction(raw: unknown): InteractionRequest | null {
-	if (!raw || typeof raw !== 'object') return null;
-	const value = raw as Record<string, unknown>;
+	if (!isRecord(raw)) return null;
+	const value = raw;
 	const id = typeof value.id === 'string' ? value.id : '';
 	const sessionId = value.session_id;
 	const owner = mapInteractionOwner(value.owner, typeof sessionId === 'string' ? sessionId : undefined);
@@ -224,8 +225,8 @@ function normalizeInteraction(raw: unknown): InteractionRequest | null {
 
 /** Normalize the renderer-safe resume projection at the reducer boundary. */
 export function resumeInteractions(result: unknown): InteractionRequest[] {
-	if (!result || typeof result !== 'object') return [];
-	const raw = (result as { interactions?: unknown }).interactions;
+	if (!isRecord(result)) return [];
+	const raw = result.interactions;
 	if (!Array.isArray(raw)) return [];
 	return raw
 		.map(normalizeInteraction)

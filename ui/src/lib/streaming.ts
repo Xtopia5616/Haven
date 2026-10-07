@@ -16,6 +16,7 @@
 // one entity and merges need no content-based dedup.
 
 import type { AgentToolResultEnvelope } from './contracts/agent.ts';
+import { isRecord } from './contracts/objectGuards.ts';
 
 /** A chat-bubble message in the live streaming view. */
 export interface StreamMessage {
@@ -100,8 +101,8 @@ export function webSearchCardContent(
 	existingContent?: string | null,
 ): string {
 	const label = webSearchLabel(data.phase, data.action);
-	if (data.result && typeof data.result === 'object') {
-		return JSON.stringify({ label, ...(data.result as Record<string, unknown>) });
+	if (isRecord(data.result)) {
+		return JSON.stringify({ label, ...data.result });
 	}
 	if (typeof existingContent === 'string' && existingContent.trimStart().startsWith('{')) {
 		return existingContent;
@@ -229,8 +230,7 @@ export function toolRunIdFromObservation(observation: string | undefined | null)
 	try {
 		const j = JSON.parse(observation);
 		if (
-			j &&
-			typeof j === 'object' &&
+			isRecord(j) &&
 			j.execution_mode === 'background' &&
 			typeof j.tool_run_id === 'string'
 		) {
@@ -252,10 +252,9 @@ export function sourceToolRunIdFromObservation(
 	if (!observation || !toolName?.startsWith('schedule')) return null;
 	try {
 		const value: unknown = JSON.parse(observation);
-		if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
-		const result = value as Record<string, unknown>;
-		return result.operation === 'set' && typeof result.id === 'string' && result.id
-			? result.id
+		if (!isRecord(value)) return null;
+		return value.operation === 'set' && typeof value.id === 'string' && value.id
+			? value.id
 			: null;
 	} catch {
 		return null;

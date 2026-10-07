@@ -8,6 +8,7 @@ import {
 	type ToolCatalogGroup,
 	type ToolSource,
 } from './contracts/generatedCommands.ts';
+import { isRecord } from './contracts/objectGuards.ts';
 
 export type ToolManifestView = {
 	identity: {
@@ -50,15 +51,15 @@ let manifests = new Map<string, ToolManifestView>();
 
 /** Convert the snake_case Tauri payload into the camelCase UI contract. */
 export function parseToolManifest(value: unknown): ToolManifestView | null {
-	const raw = record(value);
+	const raw = isRecord(value) ? value : null;
 	if (!raw || 'manifest' in raw) return null;
-	const identity = record(raw.identity);
-	const model = record(raw.model);
-	const policy = record(raw.policy);
-	const presentation = record(raw.presentation);
-	const prompt = record(raw.prompt);
-	const availability = record(raw.availability);
-	const rootPresentation = record(raw.root_presentation);
+	const identity = isRecord(raw.identity) ? raw.identity : null;
+	const model = isRecord(raw.model) ? raw.model : null;
+	const policy = isRecord(raw.policy) ? raw.policy : null;
+	const presentation = isRecord(raw.presentation) ? raw.presentation : null;
+	const prompt = isRecord(raw.prompt) ? raw.prompt : null;
+	const availability = isRecord(raw.availability) ? raw.availability : null;
+	const rootPresentation = isRecord(raw.root_presentation) ? raw.root_presentation : null;
 	if (
 		!identity ||
 		!model ||
@@ -200,12 +201,6 @@ export function parseToolManifest(value: unknown): ToolManifestView | null {
 			requiresPermission,
 		},
 	};
-}
-
-function record(value: unknown): Record<string, unknown> | null {
-	return typeof value === 'object' && value !== null && !Array.isArray(value)
-		? (value as Record<string, unknown>)
-		: null;
 }
 
 function requiredString(value: unknown): string | null {
