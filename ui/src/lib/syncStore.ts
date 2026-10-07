@@ -7,20 +7,9 @@
  *   let mirror = $state(initial);
  *   $effect(() => syncStore(myStore, (v) => (mirror = v)));
  *
- * For convenience, `syncStoreImmediate` also assigns the current value
- * synchronously for components that need an immediate initial projection.
  */
-import type { Readable, Writable } from 'svelte/store';
+import type { Readable } from 'svelte/store';
 
 export function syncStore<T>(store: Readable<T>, apply: (v: T) => void) {
-	return store.subscribe(apply);
-}
-
-export function syncStoreImmediate<T>(
-	store: Writable<T>,
-	apply: (v: T) => void,
-	getCurrent: () => T,
-) {
-	if (getCurrent) apply(getCurrent());
 	return store.subscribe(apply);
 }
