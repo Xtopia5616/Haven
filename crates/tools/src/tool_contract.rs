@@ -1,3 +1,7 @@
+pub use haven_common::tools::{
+    ConfirmationRequirement, DataSensitivity, NetworkAccess, OperationEffect, OperationIdempotency,
+    ToolConcurrencyMode, ToolOperationScope,
+};
 use haven_common::types::{CapabilityScope, RiskLevel, permission_key};
 use serde_json::{Map, Value};
 use std::sync::Arc;
@@ -177,109 +181,6 @@ impl ToolExecutionOutcome {
             Self::Cancelled => "cancelled",
             Self::TimedOutAndTerminated => "timed_out",
             Self::TimedOutUnknown => "unknown",
-        }
-    }
-}
-
-/// Whether replaying the same operation is safe after a transient failure.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum OperationIdempotency {
-    Idempotent,
-    NonIdempotent,
-    Unknown,
-}
-
-impl OperationIdempotency {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Idempotent => "idempotent",
-            Self::NonIdempotent => "non_idempotent",
-            Self::Unknown => "unknown",
-        }
-    }
-
-    pub(crate) fn tool_retry_safety(self) -> haven_common::tools::ToolRetrySafety {
-        match self {
-            Self::Idempotent => haven_common::tools::ToolRetrySafety::SafeToRetry,
-            Self::NonIdempotent => haven_common::tools::ToolRetrySafety::UnsafeToRetry,
-            Self::Unknown => haven_common::tools::ToolRetrySafety::Unknown,
-        }
-    }
-}
-
-/// Confirmation is intentionally a policy mode, not a frontend boolean. The
-/// authorization engine still applies the active security configuration to
-/// `SecurityPolicy`; `Required` is reserved for operations with a hard floor.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ConfirmationRequirement {
-    None,
-    SecurityPolicy,
-    Required,
-}
-
-impl ConfirmationRequirement {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::None => "none",
-            Self::SecurityPolicy => "security_policy",
-            Self::Required => "required",
-        }
-    }
-}
-
-/// What the operation does. This deliberately does not reuse concurrency:
-/// read-only work can still disclose sensitive data, use the network, or
-/// create an internal artifact.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum OperationEffect {
-    ReadOnly,
-    WorkspaceWrite,
-    ExternalEffect,
-}
-
-impl OperationEffect {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::ReadOnly => "read_only",
-            Self::WorkspaceWrite => "workspace_write",
-            Self::ExternalEffect => "external_effect",
-        }
-    }
-}
-
-/// How much user-controlled information the operation may disclose or expose.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DataSensitivity {
-    None,
-    UserData,
-    Sensitive,
-}
-
-impl DataSensitivity {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::None => "none",
-            Self::UserData => "user_data",
-            Self::Sensitive => "sensitive",
-        }
-    }
-}
-
-/// Network capability of the concrete operation. `Opaque` means an external
-/// process or adapter may choose destinations that Haven cannot inspect.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum NetworkAccess {
-    None,
-    Public,
-    Opaque,
-}
-
-impl NetworkAccess {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::None => "none",
-            Self::Public => "public",
-            Self::Opaque => "opaque",
         }
     }
 }
@@ -631,24 +532,6 @@ pub enum ToolConcurrency {
     SharedResource(String),
     Resource(String),
     Exclusive,
-}
-
-/// The scope in which a typed operation is allowed to observe or mutate
-/// state. This is deliberately separate from the LLM-facing tool name: one
-/// aggregate tool can contain both global and session-scoped operations.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ToolOperationScope {
-    Global,
-    Session,
-}
-
-impl ToolOperationScope {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Global => "global",
-            Self::Session => "session",
-        }
-    }
 }
 
 /// How an operation responds to cancellation and the outer timeout. The
@@ -1391,10 +1274,10 @@ pub(crate) fn project_tool_manifest(
         availability.requires_permission = true;
     }
     let concurrency = match &policy.concurrency {
-        ToolConcurrency::ReadOnly => "read_only",
-        ToolConcurrency::SharedResource(_) => "shared_resource",
-        ToolConcurrency::Resource(_) => "resource",
-        ToolConcurrency::Exclusive => "exclusive",
+        ToolConcurrency::ReadOnly => ToolConcurrencyMode::ReadOnly,
+        ToolConcurrency::SharedResource(_) => ToolConcurrencyMode::SharedResource,
+        ToolConcurrency::Resource(_) => ToolConcurrencyMode::Resource,
+        ToolConcurrency::Exclusive => ToolConcurrencyMode::Exclusive,
     };
     ToolManifest {
         identity,
@@ -1402,13 +1285,13 @@ pub(crate) fn project_tool_manifest(
         policy: ToolPolicy {
             risk_level: policy.risk_level,
             permission_key: policy.capability.to_string(),
-            confirmation: policy.confirmation.as_str().into(),
-            idempotency: policy.idempotency.as_str().into(),
-            scope: policy.scope.as_str().into(),
-            concurrency: concurrency.into(),
-            effect: policy.effect.as_str().into(),
-            data_sensitivity: policy.data_sensitivity.as_str().into(),
-            network_access: policy.network_access.as_str().into(),
+            confirmation: policy.confirmation,
+            idempotency: policy.idempotency,
+            scope: policy.scope,
+            concurrency,
+            effect: policy.effect,
+            data_sensitivity: policy.data_sensitivity,
+            network_access: policy.network_access,
         },
         presentation,
         root_presentation,

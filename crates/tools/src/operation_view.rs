@@ -641,9 +641,15 @@ mod tests {
         assert_eq!(manifest.presentation.renderer, "files");
         assert_eq!(manifest.presentation.label, "读取文件");
         assert_eq!(manifest.policy.permission_key, "files.read");
-        assert_eq!(manifest.policy.effect, "read_only");
-        assert_eq!(manifest.policy.concurrency, "read_only");
-        assert_eq!(manifest.policy.data_sensitivity, "user_data");
+        assert_eq!(manifest.policy.effect, crate::OperationEffect::ReadOnly);
+        assert_eq!(
+            manifest.policy.concurrency,
+            crate::ToolConcurrencyMode::ReadOnly
+        );
+        assert_eq!(
+            manifest.policy.data_sensitivity,
+            crate::DataSensitivity::UserData
+        );
         assert_eq!(manifest.model.description, "Read text.");
         assert_eq!(manifest.root_presentation.label, "文件");
         assert_eq!(

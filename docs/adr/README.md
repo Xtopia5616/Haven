@@ -730,3 +730,4 @@
 - [0739：Shell availability 复用 ShellChoice 输入](0739-type-shell-availability-input.md)
 - [0740：Session permission grant 输出复用授权枚举](0740-type-session-permission-grant-output.md)
 - [0741：Memory fact source 输出复用闭合集合](0741-type-memory-fact-source-output.md)
+- [0742：Tool manifest 策略元数据复用闭合类型](0742-type-tool-policy-manifest-metadata.md)

@@ -156,6 +156,22 @@ describe('tool manifest snapshots', () => {
 		expect(getToolManifest('files.read')).toBeNull();
 		expect(getToolManifest('shell')).toBeNull();
 	});
+
+	it('rejects policy metadata outside the generated enum vocabularies', () => {
+		for (const [field, value] of [
+			['confirmation', 'future_confirmation'],
+			['idempotency', 'future_idempotency'],
+			['scope', 'future_scope'],
+			['concurrency', 'future_concurrency'],
+			['effect', 'future_effect'],
+			['data_sensitivity', 'future_sensitivity'],
+			['network_access', 'future_network'],
+		] as const) {
+			const candidate = manifest('files.read', 'files', 'files');
+			candidate.policy[field] = value;
+			expect(parseToolManifest(candidate)).toBeNull();
+		}
+	});
 });
 
 describe('manifest-driven result renderers', () => {

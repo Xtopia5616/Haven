@@ -1,6 +1,6 @@
 # Haven 命名规范
 
-> 版本: v1.147 | 日期: 2026-10-08
+> 版本: v1.148 | 日期: 2026-10-08
 
 本文档统一 Haven 项目各层的命名规则（变量名、函数名、文件名、crate 名、缩写大小写、跨层边界）。规范以现有代码中的事实模式为基础，新代码必须遵循；存量代码若与规范冲突，逐步迁移对齐。
 
@@ -30,6 +30,7 @@
 - **ToolRun completion notification 复用 App wire enum**：`notification:show` 的 source/status/discriminator 使用 App `ToolRunKindDto`、`ToolRunCompletionStatusDto`、`AgentNotificationKind`，前端 payload 类型与 runtime validator 引用 Rust 生成的类型和值清单。Agent 保留通知的 source/status runtime owner，App bridge 显式映射到 wire vocabulary（ADR 0736）。
 - **Reasoning effort command 与 provider config 分开**：聊天工具栏的 setter 只接受 generated `ReasoningEffortSelectionInput`（`low` / `medium` / `high` / `off`），`null` 清除覆盖；`ModelConfig.reasoning_effort` 仍是 provider-specific 开放字符串，以支持 `max`、`xhigh`、`none`、`disabled` 等 adapter 输入和 provider 映射（ADR 0737）。
 - **Fact source 选择与输出共享闭合集合**：App `MemoryFactSource` 对应 SQLite `facts.source` 的 `user` / `inferred` 值域，生成前端 `MemoryFactSourceInput` 与 `MemoryFactSource`。`list_facts.source` 省略或 `null` 表示不筛选；repository `Fact.source` 在 App response mapper 中严格解析后输出（ADR 0738、0741）。
+- **Tool manifest 策略类别复用 Common enum**：`ToolPolicy` 的 confirmation、idempotency、scope、concurrency mode、effect、data sensitivity 与 network access 均使用生成的 closed enum；runtime concurrency resource key 不进入 manifest，动态 `permission_key` 保持字符串（ADR 0742）。
 - **Shell availability command 复用配置 shell enum**：`check_shell_available.shell` 使用 Common `ShellChoice` / generated `ShellChoiceInput`，与 Settings 的 `default_shell` 共享 `powershell` / `cmd` / `pwsh` 词汇；未知 shell 不作为有效诊断输入（ADR 0739）。
 - **Session permission grant 输出复用授权枚举**：`SessionPermissionGrant.target` 与 `.effect` 使用 Common `PermissionTarget` / `PermissionEffect`，UI 消费生成的 closed values；分层 capability 标识继续是字符串（ADR 0740）。
 - **消息角色复用 canonical vocabulary**：持久消息、Agent history、resume/live UI 中的 `role` 使用 Common `CanonicalRole`；数据库文本在写入时由 enum 序列化，读取时严格解析，UI 消费 generated type。Provider wire role 继续由各 LLM adapter 映射；模型发现与模型配置命令用 `request_kind: RequestKind` 选择逻辑请求，UI 请求引用生成的 `RequestKindInput`。消息角色、请求路由与模型配置 ID 是不同身份，不复用 `role` 字段（ADR 0726、0728、0729）。

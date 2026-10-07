@@ -38,6 +38,9 @@ function tool(name: string, overrides: Partial<BuiltinToolEntry> = {}): BuiltinT
 				idempotency: 'idempotent',
 				scope: 'session',
 				concurrency: 'read_only',
+				effect: 'read_only',
+				dataSensitivity: 'none',
+				networkAccess: 'none',
 			},
 			presentation: {
 				label: name,

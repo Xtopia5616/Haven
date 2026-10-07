@@ -1,11 +1,25 @@
 /** Canonical frontend view of the backend-owned tool catalog manifest. */
 
 import {
+	CONFIRMATION_REQUIREMENT_VALUES,
+	DATA_SENSITIVITY_VALUES,
+	NETWORK_ACCESS_VALUES,
+	OPERATION_EFFECT_VALUES,
+	OPERATION_IDEMPOTENCY_VALUES,
 	RISK_LEVEL_VALUES,
 	TOOL_CATALOG_GROUP_VALUES,
+	TOOL_CONCURRENCY_MODE_VALUES,
+	TOOL_OPERATION_SCOPE_VALUES,
 	TOOL_SOURCE_VALUES,
+	type ConfirmationRequirement,
+	type DataSensitivity,
+	type NetworkAccess,
+	type OperationEffect,
+	type OperationIdempotency,
 	type RiskLevel,
 	type ToolCatalogGroup,
+	type ToolConcurrencyMode,
+	type ToolOperationScope,
 	type ToolSource,
 } from './contracts/generatedCommands.ts';
 import { isRecord } from './contracts/objectGuards.ts';
@@ -22,13 +36,13 @@ export type ToolManifestView = {
 	policy: {
 		riskLevel: RiskLevel;
 		permissionKey: string;
-		confirmation: string;
-		idempotency: string;
-		scope: string;
-		concurrency: string;
-		effect?: string;
-		dataSensitivity?: string;
-		networkAccess?: string;
+		confirmation: ConfirmationRequirement;
+		idempotency: OperationIdempotency;
+		scope: ToolOperationScope;
+		concurrency: ToolConcurrencyMode;
+		effect: OperationEffect;
+		dataSensitivity: DataSensitivity;
+		networkAccess: NetworkAccess;
 	};
 	presentation: {
 		label: string;
@@ -91,13 +105,13 @@ export function parseToolManifest(value: unknown): ToolManifestView | null {
 	if (operation !== null && typeof operation !== 'string') return null;
 	const riskLevel = generatedEnumValue(RISK_LEVEL_VALUES, policy.risk_level);
 	const permissionKey = requiredString(policy.permission_key);
-	const confirmation = requiredString(policy.confirmation);
-	const idempotency = requiredString(policy.idempotency);
-	const scope = requiredString(policy.scope);
-	const concurrency = requiredString(policy.concurrency);
-	const effect = requiredString(policy.effect);
-	const dataSensitivity = requiredString(policy.data_sensitivity);
-	const networkAccess = requiredString(policy.network_access);
+	const confirmation = generatedEnumValue(CONFIRMATION_REQUIREMENT_VALUES, policy.confirmation);
+	const idempotency = generatedEnumValue(OPERATION_IDEMPOTENCY_VALUES, policy.idempotency);
+	const scope = generatedEnumValue(TOOL_OPERATION_SCOPE_VALUES, policy.scope);
+	const concurrency = generatedEnumValue(TOOL_CONCURRENCY_MODE_VALUES, policy.concurrency);
+	const effect = generatedEnumValue(OPERATION_EFFECT_VALUES, policy.effect);
+	const dataSensitivity = generatedEnumValue(DATA_SENSITIVITY_VALUES, policy.data_sensitivity);
+	const networkAccess = generatedEnumValue(NETWORK_ACCESS_VALUES, policy.network_access);
 	const presentationLabel = requiredString(presentation.label);
 	const renderer = requiredString(presentation.renderer);
 	const icon = requiredString(presentation.icon);
@@ -111,13 +125,13 @@ export function parseToolManifest(value: unknown): ToolManifestView | null {
 	if (
 		riskLevel === null ||
 		!permissionKey ||
-		!confirmation ||
-		!idempotency ||
-		!scope ||
-		!concurrency ||
-		!effect ||
-		!dataSensitivity ||
-		!networkAccess ||
+		confirmation === null ||
+		idempotency === null ||
+		scope === null ||
+		concurrency === null ||
+		effect === null ||
+		dataSensitivity === null ||
+		networkAccess === null ||
 		!presentationLabel ||
 		!renderer ||
 		!icon ||

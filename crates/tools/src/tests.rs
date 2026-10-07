@@ -39,13 +39,13 @@ fn budget_test_def(name: &str, source: ToolSource) -> ToolDef {
         policy: ToolPolicy {
             risk_level: RiskLevel::Safe,
             permission_key: name.into(),
-            confirmation: "none".into(),
-            idempotency: "safe".into(),
-            scope: "session".into(),
-            concurrency: "exclusive".into(),
-            effect: "read_only".into(),
-            data_sensitivity: "none".into(),
-            network_access: "none".into(),
+            confirmation: ConfirmationRequirement::None,
+            idempotency: OperationIdempotency::Unknown,
+            scope: ToolOperationScope::Session,
+            concurrency: ToolConcurrencyMode::Exclusive,
+            effect: OperationEffect::ReadOnly,
+            data_sensitivity: DataSensitivity::None,
+            network_access: NetworkAccess::None,
         },
         presentation: ToolPresentation {
             label: name.into(),
@@ -1811,13 +1811,16 @@ async fn registered_operation_manifest_matches_runtime_policy() {
         let manifest = tool.tool_manifest();
         let def = tool.tool_def();
         assert_eq!(tool.catalog_group(), def.catalog_group, "{name}");
-        assert_eq!(manifest.policy.effect, runtime.effect.as_str(), "{name}");
-        assert_eq!(
-            manifest.policy.idempotency,
-            runtime.idempotency.as_str(),
-            "{name}"
-        );
-        assert_eq!(manifest.policy.scope, runtime.scope.as_str(), "{name}");
+        assert_eq!(manifest.policy.effect, runtime.effect, "{name}");
+        assert_eq!(manifest.policy.idempotency, runtime.idempotency, "{name}");
+        assert_eq!(manifest.policy.scope, runtime.scope, "{name}");
+        let concurrency_mode = match runtime.concurrency {
+            ToolConcurrency::ReadOnly => ToolConcurrencyMode::ReadOnly,
+            ToolConcurrency::SharedResource(_) => ToolConcurrencyMode::SharedResource,
+            ToolConcurrency::Resource(_) => ToolConcurrencyMode::Resource,
+            ToolConcurrency::Exclusive => ToolConcurrencyMode::Exclusive,
+        };
+        assert_eq!(manifest.policy.concurrency, concurrency_mode, "{name}");
         if name == "files.search" {
             assert_eq!(runtime.risk_level, RiskLevel::Low, "{name}");
             assert_eq!(
@@ -1826,15 +1829,15 @@ async fn registered_operation_manifest_matches_runtime_policy() {
                 "{name}"
             );
             assert_eq!(manifest.policy.risk_level, RiskLevel::Medium, "{name}");
-            assert_eq!(manifest.policy.confirmation, "security_policy", "{name}");
+            assert_eq!(
+                manifest.policy.confirmation,
+                ConfirmationRequirement::SecurityPolicy,
+                "{name}"
+            );
             continue;
         }
         assert_eq!(manifest.policy.risk_level, runtime.risk_level, "{name}");
-        assert_eq!(
-            manifest.policy.confirmation,
-            runtime.confirmation.as_str(),
-            "{name}"
-        );
+        assert_eq!(manifest.policy.confirmation, runtime.confirmation, "{name}");
     }
 
     let files_read = find("files.read").operation_policy(&json!({}));

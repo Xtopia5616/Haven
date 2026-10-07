@@ -91,6 +91,139 @@ pub struct ToolModel {
     pub input_schema: Value,
 }
 
+/// Whether repeating an operation after a transient failure is safe.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OperationIdempotency {
+    Idempotent,
+    NonIdempotent,
+    Unknown,
+}
+
+impl OperationIdempotency {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Idempotent => "idempotent",
+            Self::NonIdempotent => "non_idempotent",
+            Self::Unknown => "unknown",
+        }
+    }
+
+    pub const fn tool_retry_safety(self) -> ToolRetrySafety {
+        match self {
+            Self::Idempotent => ToolRetrySafety::SafeToRetry,
+            Self::NonIdempotent => ToolRetrySafety::UnsafeToRetry,
+            Self::Unknown => ToolRetrySafety::Unknown,
+        }
+    }
+}
+
+/// Confirmation behavior recorded in a tool operation policy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConfirmationRequirement {
+    None,
+    SecurityPolicy,
+    Required,
+}
+
+impl ConfirmationRequirement {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::SecurityPolicy => "security_policy",
+            Self::Required => "required",
+        }
+    }
+}
+
+/// Scope in which an operation can observe or mutate state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolOperationScope {
+    Global,
+    Session,
+}
+
+impl ToolOperationScope {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Global => "global",
+            Self::Session => "session",
+        }
+    }
+}
+
+/// Coarse concurrency class included in the tool manifest.
+///
+/// Runtime concurrency may carry a resource key. The manifest deliberately
+/// projects only the class, so its wire vocabulary remains closed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolConcurrencyMode {
+    ReadOnly,
+    SharedResource,
+    Resource,
+    Exclusive,
+}
+
+/// Runtime effect class, independent from concurrency.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OperationEffect {
+    ReadOnly,
+    WorkspaceWrite,
+    ExternalEffect,
+}
+
+impl OperationEffect {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::ReadOnly => "read_only",
+            Self::WorkspaceWrite => "workspace_write",
+            Self::ExternalEffect => "external_effect",
+        }
+    }
+}
+
+/// Data disclosure class for an operation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DataSensitivity {
+    None,
+    UserData,
+    Sensitive,
+}
+
+impl DataSensitivity {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::UserData => "user_data",
+            Self::Sensitive => "sensitive",
+        }
+    }
+}
+
+/// Network capability of the concrete operation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NetworkAccess {
+    None,
+    Public,
+    Opaque,
+}
+
+impl NetworkAccess {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Public => "public",
+            Self::Opaque => "opaque",
+        }
+    }
+}
+
 /// IPC projection of an operation policy. Runtime code does not author or
 /// match on this DTO; haven-tools builds it from the typed operation policy
 /// in one place. The shape stays stable over the Tauri/UI boundary.
@@ -98,20 +231,17 @@ pub struct ToolModel {
 pub struct ToolPolicy {
     pub risk_level: crate::types::RiskLevel,
     pub permission_key: String,
-    pub confirmation: String,
-    pub idempotency: String,
-    pub scope: String,
-    pub concurrency: String,
+    pub confirmation: ConfirmationRequirement,
+    pub idempotency: OperationIdempotency,
+    pub scope: ToolOperationScope,
+    pub concurrency: ToolConcurrencyMode,
     /// Runtime effect class. This is separate from concurrency: a read-only
     /// operation may still disclose sensitive data or contact a network.
-    #[serde(default)]
-    pub effect: String,
+    pub effect: OperationEffect,
     /// Data disclosure class for non-mutating operations.
-    #[serde(default)]
-    pub data_sensitivity: String,
+    pub data_sensitivity: DataSensitivity,
     /// Network capability required by the concrete operation.
-    #[serde(default)]
-    pub network_access: String,
+    pub network_access: NetworkAccess,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -306,6 +436,27 @@ impl ToolDef {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn assert_closed_enum_wire<T>(value: T, wire: &str)
+    where
+        T: std::fmt::Debug + PartialEq + Serialize + for<'de> Deserialize<'de>,
+    {
+        let expected = format!("\"{wire}\"");
+        assert_eq!(serde_json::to_string(&value).unwrap(), expected);
+        assert_eq!(serde_json::from_str::<T>(&expected).unwrap(), value);
+        assert!(serde_json::from_str::<T>("\"future_value\"").is_err());
+    }
+
+    #[test]
+    fn tool_policy_enums_use_strict_snake_case_values() {
+        assert_closed_enum_wire(ConfirmationRequirement::SecurityPolicy, "security_policy");
+        assert_closed_enum_wire(OperationIdempotency::NonIdempotent, "non_idempotent");
+        assert_closed_enum_wire(ToolOperationScope::Global, "global");
+        assert_closed_enum_wire(ToolConcurrencyMode::SharedResource, "shared_resource");
+        assert_closed_enum_wire(OperationEffect::WorkspaceWrite, "workspace_write");
+        assert_closed_enum_wire(DataSensitivity::UserData, "user_data");
+        assert_closed_enum_wire(NetworkAccess::Opaque, "opaque");
+    }
 
     #[test]
     fn background_wait_feedback_has_one_explicit_delivery_contract() {

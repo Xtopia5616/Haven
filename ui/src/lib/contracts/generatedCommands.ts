@@ -219,13 +219,27 @@ export const MEDIA_REPRESENTATION_KIND_VALUES = ['raw_image', 'raw_audio', 'raw_
 export type MediaRepresentationKind = (typeof MEDIA_REPRESENTATION_KIND_VALUES)[number];
 export type MediaRepresentationPayloadInput = { kind: 'inline_data'; value: { media_type: string; data: string } } | { kind: 'text'; value: string } | { kind: 'structured'; value: unknown } | { kind: 'managed_file_ref'; value: { asset_id: string; filename?: string | null } };
 export type MediaRepresentationPayload = { kind: 'inline_data'; value: { media_type: string; data: string } } | { kind: 'text'; value: string } | { kind: 'structured'; value: unknown } | { kind: 'managed_file_ref'; value: { asset_id: string; filename: string | null } };
+export const CONFIRMATION_REQUIREMENT_VALUES = ['none', 'security_policy', 'required'] as const;
+export type ConfirmationRequirement = (typeof CONFIRMATION_REQUIREMENT_VALUES)[number];
+export const DATA_SENSITIVITY_VALUES = ['none', 'user_data', 'sensitive'] as const;
+export type DataSensitivity = (typeof DATA_SENSITIVITY_VALUES)[number];
+export const NETWORK_ACCESS_VALUES = ['none', 'public', 'opaque'] as const;
+export type NetworkAccess = (typeof NETWORK_ACCESS_VALUES)[number];
+export const OPERATION_EFFECT_VALUES = ['read_only', 'workspace_write', 'external_effect'] as const;
+export type OperationEffect = (typeof OPERATION_EFFECT_VALUES)[number];
+export const OPERATION_IDEMPOTENCY_VALUES = ['idempotent', 'non_idempotent', 'unknown'] as const;
+export type OperationIdempotency = (typeof OPERATION_IDEMPOTENCY_VALUES)[number];
 export interface ToolAvailability { enabled: boolean; available: boolean; availability_reason?: string; requires_connection: boolean; requires_permission: boolean }
 export const TOOL_CATALOG_GROUP_VALUES = ['haven', 'system', 'agent', 'skills', 'mcp', 'other'] as const;
 export type ToolCatalogGroup = (typeof TOOL_CATALOG_GROUP_VALUES)[number];
+export const TOOL_CONCURRENCY_MODE_VALUES = ['read_only', 'shared_resource', 'resource', 'exclusive'] as const;
+export type ToolConcurrencyMode = (typeof TOOL_CONCURRENCY_MODE_VALUES)[number];
 export interface ToolIdentity { source: ToolSource; catalog_group: ToolCatalogGroup; root: string; operation: string | null; stable_name: string }
 export interface ToolManifest { identity: ToolIdentity; model: ToolModel; policy: ToolPolicy; presentation: ToolPresentation; root_presentation: ToolRootPresentation; prompt: ToolPrompt; availability: ToolAvailability }
 export interface ToolModel { name: string; description: string; input_schema: unknown }
-export interface ToolPolicy { risk_level: RiskLevel; permission_key: string; confirmation: string; idempotency: string; scope: string; concurrency: string; effect: string; data_sensitivity: string; network_access: string }
+export const TOOL_OPERATION_SCOPE_VALUES = ['global', 'session'] as const;
+export type ToolOperationScope = (typeof TOOL_OPERATION_SCOPE_VALUES)[number];
+export interface ToolPolicy { risk_level: RiskLevel; permission_key: string; confirmation: ConfirmationRequirement; idempotency: OperationIdempotency; scope: ToolOperationScope; concurrency: ToolConcurrencyMode; effect: OperationEffect; data_sensitivity: DataSensitivity; network_access: NetworkAccess }
 export interface ToolPresentation { label: string; renderer: string; icon: string; represented_source: ToolSource }
 export interface ToolPrompt { when_to_use: string; when_not_to_use: string; key_operations: string[] }
 export interface ToolRootPresentation { label: string; description: string; icon: string }
