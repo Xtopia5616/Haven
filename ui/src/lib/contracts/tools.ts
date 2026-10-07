@@ -21,8 +21,6 @@ import type {
 	TauriCommandRequest,
 } from './generatedCommands.ts';
 
-/** Dynamic JSON schema supplied by a builtin, Skill, or MCP tool. */
-export type ToolSchema = unknown;
 export type ToolManifestIdentityWire = GeneratedToolIdentity;
 export type ToolModelWire = GeneratedToolModel;
 export type ToolPolicyWire = GeneratedToolPolicy;
