@@ -542,12 +542,15 @@ impl AgentTool {
         let limit = list_limit(params.limit);
         let truncated = agents.len() > limit;
         agents.truncate(limit);
-        Ok(ToolResult::ok(json!({
-            "count": agents.len(),
-            "limit": limit,
-            "truncated": truncated,
-            "agents": agents,
-        })))
+        Ok(ToolResult::from_output(
+            json!({
+                "count": agents.len(),
+                "limit": limit,
+                "truncated": truncated,
+                "agents": agents,
+            }),
+            truncated,
+        ))
     }
 
     async fn op_children(

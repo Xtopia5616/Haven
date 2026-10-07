@@ -288,7 +288,6 @@ impl FileSearchEngine {
             "has_more": truncated,
         });
         if let Some(reason) = truncation {
-            output["truncated"] = serde_json::Value::Bool(true);
             output["hint"] = serde_json::Value::String(match reason {
                 TruncationReason::MaxResults => format!(
                     "Results hit the max_results cap ({max_results}). Narrow the pattern, add a line range (start_line/end_line), or raise max_results."
@@ -298,11 +297,7 @@ impl FileSearchEngine {
                 ),
             });
         }
-        Ok(if truncated {
-            ToolResult::truncated(output)
-        } else {
-            ToolResult::ok(output)
-        })
+        Ok(ToolResult::from_output(output, truncated))
     }
 }
 

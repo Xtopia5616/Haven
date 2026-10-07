@@ -88,11 +88,7 @@ pub(crate) async fn outline(
             "Outline limit reached. Continue with operation=outline and the returned next_start_line using a narrower source read if needed."
         );
     }
-    Ok(if truncated {
-        ToolResult::truncated(output)
-    } else {
-        ToolResult::ok(output)
-    })
+    Ok(ToolResult::from_output(output, truncated))
 }
 
 fn outline_symbol(line: &str, line_number: u64) -> Option<serde_json::Value> {

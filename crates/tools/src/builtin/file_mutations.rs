@@ -304,17 +304,12 @@ pub(super) async fn list(
     names.sort();
     let mut result = serde_json::json!({"entries": names, "count": names.len()});
     if truncated {
-        result["truncated"] = serde_json::Value::Bool(true);
         result["hint"] = serde_json::json!(format!(
             "Directory has more than {} entries; only the first {} are listed.",
             max_list_entries, max_list_entries
         ));
     }
-    Ok(if truncated {
-        ToolResult::truncated(result)
-    } else {
-        ToolResult::ok(result)
-    })
+    Ok(ToolResult::from_output(result, truncated))
 }
 
 /// Validate and apply every patch against the original in-memory content.

@@ -267,9 +267,6 @@ impl ShellTool {
         if let Some(code) = exit_code {
             output["exit_code"] = serde_json::Value::from(code);
         }
-        if truncated {
-            output["truncated"] = serde_json::Value::Bool(true);
-        }
         if status.success() {
             Ok(ToolResult::from_output(output, truncated))
         } else {

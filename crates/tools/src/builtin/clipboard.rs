@@ -307,10 +307,7 @@ impl ClipboardTool {
                         self.history.record(text.clone());
                         let output =
                             haven_common::encoding::truncate_output(&text, self.max_output_chars);
-                        let mut result = serde_json::json!({"operation": "read", "format": "text", "content": output.text});
-                        if output.truncated {
-                            result["truncated"] = serde_json::Value::Bool(true);
-                        }
+                        let result = serde_json::json!({"operation": "read", "format": "text", "content": output.text});
                         Ok(ToolResult::from_output(result, output.truncated))
                     }
                     ClipboardRead::Html(html) => {

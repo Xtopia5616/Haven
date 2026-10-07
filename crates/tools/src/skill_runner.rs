@@ -385,5 +385,6 @@ mod tests {
         assert!(!result.success);
         assert!(result.error.unwrap().contains("output exceeded its limit"));
         assert_eq!(result.output["truncated"], true);
+        assert!(result.truncated);
     }
 }

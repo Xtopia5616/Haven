@@ -758,11 +758,11 @@ impl ToolResult {
         envelope
     }
 
-    /// Build a successful result while keeping the transport-level truncation
-    /// bit in sync with the structured output.  Builtin tools often include a
-    /// `truncated` field in their JSON so the model can see it; callers must
-    /// also set the top-level bit because the executor and UI use that field
-    /// for observation compaction and follow-up decisions.
+    /// Build a successful result while keeping its truncation metadata in sync
+    /// with the structured output. A body-level `truncated: true` promotes the
+    /// result flag; an explicit `truncated` argument also writes the body flag
+    /// when the output is an object. Outputs without that body field can still
+    /// carry result-level truncation metadata.
     pub fn from_output(mut output: Value, truncated: bool) -> Self {
         let truncated = truncated
             || output
@@ -843,13 +843,17 @@ impl ToolResult {
         error: impl Into<String>,
         metadata: ToolErrorMetadata,
     ) -> Self {
+        let truncated = output
+            .get("truncated")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
         Self {
             success: false,
             output,
             error: Some(error.into()),
             error_class: Some(metadata.class),
             retryability: metadata.retryability,
-            truncated: false,
+            truncated,
             outcome: metadata.outcome,
             attempts: 1,
             signals: ToolSignals::default(),
@@ -2002,7 +2006,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn test_tool_result_from_output_keeps_transport_flag_in_sync() {
+    fn test_tool_result_from_output_keeps_result_flag_in_sync() {
         let truncated = ToolResult::from_output(json!({"truncated": true}), true);
         assert!(truncated.success);
         assert!(truncated.truncated);
@@ -2016,6 +2020,15 @@ pub(crate) mod tests {
         let complete = ToolResult::from_output(json!({"truncated": false}), false);
         assert!(complete.success);
         assert!(!complete.truncated);
+    }
+
+    #[test]
+    fn test_failed_tool_result_infers_body_truncation() {
+        let result = ToolResult::failed(json!({"truncated": true}), "output exceeded limit");
+
+        assert!(!result.success);
+        assert!(result.truncated);
+        assert_eq!(result.output["truncated"], true);
     }
 
     #[test]

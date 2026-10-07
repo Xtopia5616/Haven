@@ -151,7 +151,6 @@ impl WindowTool {
                 };
                 let mut result = serde_json::json!({"windows": windows, "count": count});
                 if truncated {
-                    result["truncated"] = serde_json::Value::Bool(true);
                     result["hint"] = serde_json::json!(format!(
                         "More than {} windows are open; only the first {} are listed. Filter by pid to narrow the result.",
                         max, max

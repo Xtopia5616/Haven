@@ -75,17 +75,12 @@ pub(super) async fn read_full(
         "encoding": decoded.encoding,
     });
     if is_truncated {
-        result["truncated"] = serde_json::Value::Bool(true);
         result["next_offset"] = serde_json::json!(continuation_offset(&buf, &decoded, max_chars,));
         result["hint"] = serde_json::json!(
             "Output truncated to the max chars budget. Continue with operation=read and the returned next_offset, or use start_line/end_line (lines) or operation=summary."
         );
     }
-    Ok(if is_truncated {
-        ToolResult::truncated(result)
-    } else {
-        ToolResult::ok(result)
-    })
+    Ok(ToolResult::from_output(result, is_truncated))
 }
 
 /// Return a byte cursor that resumes at the first source character omitted
@@ -226,11 +221,10 @@ pub(super) async fn read_bytes(
         "truncated": has_more || output.truncated,
         "next_offset": offset + read_bytes,
     });
-    Ok(if has_more || output.truncated {
-        ToolResult::truncated(result)
-    } else {
-        ToolResult::ok(result)
-    })
+    Ok(ToolResult::from_output(
+        result,
+        has_more || output.truncated,
+    ))
 }
 
 /// Read one line via `fill_buf`/`consume`, never buffering more than `cap`
@@ -342,11 +336,7 @@ pub(super) async fn read_lines(
                 "The first in-range line exceeds the output budget. Read this file with offset/limit (bytes mode), a narrower line range, or operation=summary."
             );
         }
-        return Ok(if more {
-            ToolResult::truncated(result)
-        } else {
-            ToolResult::ok(result)
-        });
+        return Ok(ToolResult::from_output(result, more));
     }
     // `out` is never larger than max_chars (the budget is checked before each
     // line is appended), so no extra truncation pass is needed here.
@@ -359,14 +349,13 @@ pub(super) async fn read_lines(
         "encoding": encoding.unwrap_or("empty"),
         "truncated": truncated,
     });
-    Ok(if truncated {
+    if truncated {
         let mut result = result;
         result["next_start_line"] = serde_json::json!(last_line.saturating_add(1));
         result["hint"] = serde_json::json!(
             "Output stopped at the observation budget. Continue with the returned next_start_line using operation=read."
         );
-        ToolResult::truncated(result)
-    } else {
-        ToolResult::ok(result)
-    })
+        return Ok(ToolResult::from_output(result, true));
+    }
+    Ok(ToolResult::from_output(result, false))
 }

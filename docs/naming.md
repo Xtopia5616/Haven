@@ -1,6 +1,6 @@
 # Haven 命名规范
 
-> 版本: v1.112 | 日期: 2026-10-07
+> 版本: v1.113 | 日期: 2026-10-07
 
 本文档统一 Haven 项目各层的命名规则（变量名、函数名、文件名、crate 名、缩写大小写、跨层边界）。规范以现有代码中的事实模式为基础，新代码必须遵循；存量代码若与规范冲突，逐步迁移对齐。
 
@@ -13,6 +13,7 @@
 - **同域不同形状标明角色**：同一领域中的完整 runtime state、稀疏 view 输入或 wire projection 即使字段重叠，也使用能标出约束/角色的不同类型名，不用可选字段数量来猜其含义。
 - **闭合契约与开放扩展点分开**：Rust/IPC 已声明的闭合枚举在 UI 直接复用 generated 类型，边界拒绝未知成员；不要为了未来值或旧值映射把它扩成任意字符串。只有协议或扩展点本身定义为开放字符串、且消费者必须保留原值时，才把 raw wire value 与内部归一分类分名。Tool manifest 的 source/group/risk 是闭合 generated enum；`presentation.renderer` 是开放扩展 discriminator，未知 renderer 使用通用 JSON renderer（ADR 0669）。
 - **多值结果具名**：若多个返回值各有稳定领域含义，使用具名结构体字段，不用位置元组让调用者记住各索引的语义；例如 `CreatedSession` 保存首条持久用户消息 ID，`ModelPricing` 区分 input/output 价格，`FactProvenanceColumns` 对应不同持久列，`StreamedLlmCall` 区分响应和耗时，`ToolRunEventProjection` 区分 channel 和 payload，`ParsedAgentResponse` 区分解析出的 thought 和 tool calls，`CappedText` 命名限长文本与截断状态，`ChatThinkingExtras` 区分 chat wire 的 thinking object 与 reasoning effort 字段，Anthropic request projection 分别区分 wire messages/system prompt 与 `thinking`/`output_config`，`GeminiContentConversion` 区分 provider content 与 system instruction，`ResponsesInputConversion` 区分 Responses input items 与 instructions，Tools process reader 用 `CappedStreamText` 和 `CappedStreamRead` 区分 decoded text 与 retained bytes/read error，`SkillProcessOutput` 则按 stdout/stderr 命名 Skill 进程结果，Agent 的 `CapabilityProjectedRequest` 区分 media-capability 处理后的 request context 与向 UI 发布的 `MediaPlan`，Common 的 `TruncatedOutput` 则把带省略标记的文本与截断状态放在同一结果中。
+- **ToolResult 截断元数据与正文标记分层**：`ToolResult.truncated` 是执行结果级元数据；JSON 正文的 `truncated` 是具体工具的模型可见字段。正文标记为 `true` 时必须同步结果标记；工具正文契约包含该字段时，成功结果使用 `ToolResult::from_output` 统一同步，失败构造从已有正文标记推导结果标记。正文契约不包含该字段时可只设置结果标记，不为了对齐而扩展 JSON shape（ADR 0701）。
 - **结果结构区分阶段 owner**：adapter 前的解析/归一结果与对外执行 envelope 即使携带相似字段，也分别命名其阶段职责；例如 MCP content extraction 与 `McpCallOutput` 分开承载内容转换结果和最终工具调用状态。
 - **TranscriptProjection 按读取与提交阶段分名**：公开 `TranscriptProjection` 是从 durable event log 同次派生出的 canonical messages 与 ReAct rounds；Agent 内部 `CommittedTranscriptProjection` 是 durable commit 后应用到进程内 `ReActState` 的记录包。两者 shape 和生命周期不同，不合并，也不共用泛名（ADR 0602/0671）。
 - **全局网络策略与 HTTP 目标约束分名**：Common `NetworkPolicy` 表示应用安全设置的网络访问模式；HTTP 工具内部 `HttpDestinationPolicy` 只承载目标域 allowlist 与测试 loopback 条件。请求参数和方法分别叫 `HttpRequestParams` / `HttpRequestMethod`，URL 校验/解析动作标为 `validate_http_destination` / `resolve_http_destination`，不使用泛名 `Network*`（ADR 0672）。
@@ -74,6 +75,7 @@ ToolRun completion lease 的 token 标识被 claim 的 ToolRun 或 completion re
 | 会话（session） | 用户与 Agent 的对话及其前台 ReAct 运行上下文 | UI 直接称“会话”；前台工具调用在会话内呈现 |
 | 会话运行（SessionRun） | `SessionSupervisor` 调度或直接准入的一次会话执行；`SessionRunEngine` 运行完整 ReAct 循环 | handler、admission、permit、lease 和 actor claim 均显式标注 `SessionRun`；直接运行的准入等待项为 `DirectSessionRunAdmissionWaiter`，具名区分注销 ID 与取消令牌；ReAct loop 的输入、重放、输出以 `ReActRun*` 标名 |
 | 工具运行（ToolRun） | 脱离当前 turn 持久运行、可取消并产生生命周期事件的工具执行 | 后端/IPC/数据库使用 `tool_run`、`tool_runs`；ID 前缀为 `toolrun-`。工具查询与 completion notification 共用 `ToolRunStateView` 的状态基础 JSON；`background_wait`、kind/source 与 delivery envelope 仍由各调用者按自身职责添加（ADR 0700） |
+| 工具结果（ToolResult） | 一次工具调用的成功/失败输出及执行元数据 | `ToolResult.truncated` 属于结果级元数据；正文中的 `truncated` 属于具体工具输出 shape。正文标记为 true 时两层必须同步；正文没有该字段时允许只保留结果级标记（ADR 0701） |
 | 后台工具运行（background ToolRun） | 工具调用选择后台执行后启动的持久运行 | 通过 `ToolExecutionMode::Background` 启动；UI 显示“后台任务” |
 | 定时工具运行（scheduled ToolRun） | 由时间或依赖触发的工具运行 | 仍由 `schedule` 工具负责设置触发条件；UI 显示“定时任务” |
 | Memory live consumer handoff | 把已准备的 Memory event receiver future 一次性交给 ApplicationRuntime task registry 的阶段值；注册成功后才产出 `MemoryReady` | 类型为 `MemoryLiveConsumerHandoff`；由 `MemoryStartup::prepare_live_consumer` 创建，通过 `register_consumer_with` 注册，不代表 `ToolRun` 或已运行的 JoinHandle |

@@ -123,7 +123,6 @@ impl ProcessTool {
                     .unwrap_or(Value::Null);
                 output["limit"] = serde_json::json!(limit);
                 if truncated {
-                    output["truncated"] = serde_json::Value::Bool(true);
                     output["hint"] = serde_json::json!(format!(
                         "Returned {returned} of {matching_count} matching processes. Set name_filter or raise limit up to {MAX_LIST_LIMIT}; the output character budget may reduce the returned count."
                     ));
