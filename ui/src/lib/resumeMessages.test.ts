@@ -1,9 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import {
-	buildResumeMessages,
-	mergeLiveStreaming,
-	isDisplayOnlyMessageId,
-} from './resumeMessages.ts';
+import { buildResumeMessages, mergeLiveStreaming } from './resumeMessages.ts';
 import { formatMessageTime } from './messageFormat.ts';
 
 const sampleSession = {
@@ -12,14 +8,6 @@ const sampleSession = {
 	input_text: '打开记事本',
 	created_at: '2026-08-01T10:00:00.000Z',
 };
-
-describe('resume-only message ids', () => {
-	it('recognizes display-only placeholders as non-persisted messages', () => {
-		expect(isDisplayOnlyMessageId('placeholder-ses-1')).toBe(true);
-		expect(isDisplayOnlyMessageId('msg-1')).toBe(false);
-		expect(isDisplayOnlyMessageId(null)).toBe(false);
-	});
-});
 
 describe('buildResumeMessages', () => {
 	it('carries durable unknown tool outcomes into history cards', () => {
@@ -394,10 +382,9 @@ describe('buildResumeMessages', () => {
 		expect(items.filter((i) => i.type === 'tool')).toHaveLength(1);
 	});
 
-	it('falls back to the session input text when there are no messages', () => {
+	it('does not treat session input metadata as transcript when projections are empty', () => {
 		const items = buildResumeMessages({ session: sampleSession, messages: [], steps: [] });
-		expect(items).toHaveLength(1);
-		expect(items[0]).toMatchObject({ role: 'user', content: '打开记事本' });
+		expect(items).toEqual([]);
 	});
 
 	it('sorts items chronologically', () => {
@@ -1132,13 +1119,6 @@ describe('mergeLiveStreaming', () => {
 			type: 'tool',
 			content: 'Interrupted',
 		});
-	});
-
-	it('drops finalized live user bubbles not in the DB (placeholder copies)', () => {
-		const db = [{ id: 'm1', role: 'user', content: 'hi' }];
-		const existing = [{ id: 'placeholder-xyz', role: 'user', content: 'hi', streaming: false }];
-		const merged = mergeLiveStreaming(db, existing);
-		expect(merged.map((m) => m.id)).toEqual(['m1']);
 	});
 
 	it('keeps a finalized real user bubble until its DB row arrives', () => {

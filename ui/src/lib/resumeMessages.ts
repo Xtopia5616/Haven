@@ -5,11 +5,6 @@
 import { formatMessageTime } from './messageFormat.ts';
 import type { SessionResumeInput } from './contracts/sessionHistory.ts';
 
-/** A resume-only bubble shown when a session has no persisted message rows. */
-export function isDisplayOnlyMessageId(id: unknown): boolean {
-	return typeof id === 'string' && id.startsWith('placeholder-');
-}
-
 interface ResumeMessage {
 	id: string;
 	role?: string;
@@ -55,8 +50,8 @@ function persistedToolOutcome(status: string | null | undefined): string | null 
  *   Persisted tool/ask cards (`step-*` ids) are kept the same way: Continue
  *   resync can race the retry's ToolCall/Observation and briefly miss the
  *   pending row, and dropping them made post-resume tool calls vanish.
- *   Transient cards (e.g. `web_search`) and display-only placeholder user
- *   bubbles still drop. A real live user bubble stays until its DB row lands.
+ *   Transient cards (e.g. `web_search`) drop. A real live user bubble stays
+ *   until its DB row lands.
  *
  * @param {Array<object>} dbMessages   buildResumeMessages() result
  * @param {Array<object>} existing     current session transcript entry
@@ -121,8 +116,6 @@ export function mergeLiveStreaming(
 			(m.type === 'tool' || m.type === 'ask') && String(m.id || '').startsWith('step-');
 		if (m.type === 'tool' || m.type === 'ask') {
 			if (!isPersistedCard) return;
-		} else if (m.role === 'user' && String(m.id || '').startsWith('placeholder-')) {
-			return;
 		} else if (m.role !== 'assistant' && m.role !== 'user') {
 			return;
 		}
@@ -155,7 +148,6 @@ export function mergeLiveStreaming(
 export function buildResumeMessages(data: SessionResumeInput): ResumeMessage[] {
 	const items: ResumeMessage[] = [];
 	const msgs = data.messages || [];
-	const session = data.session || {};
 	const stepById = new Map((data.steps || []).map((step) => [step.id, step]));
 
 	// Message rows persisted under a step row's id (ask questions on new
@@ -306,19 +298,6 @@ export function buildResumeMessages(data: SessionResumeInput): ResumeMessage[] {
 		}
 	}
 	items.sort((a, b) => (a._ts || 0) - (b._ts || 0));
-	// Fallback: if no messages or steps exist, show the session input text
-	// so the resume page is not completely empty.
-	if (items.length === 0 && session.input_text) {
-		items.push({
-			id: `placeholder-${session.id}`,
-			role: 'user',
-			content: session.input_text,
-			voice: false,
-			time: formatMessageTime(session.created_at || new Date().toISOString()),
-			_ts: Date.parse(session.created_at || new Date().toISOString()) || 0,
-			streaming: false,
-		});
-	}
 	// Infer stepNumber for assistant session messages by backward-forward pass.
 	// Backward: tool messages precede their action/observation in time, so
 	// walking backwards assigns stepNumber to preceding assistant messages.

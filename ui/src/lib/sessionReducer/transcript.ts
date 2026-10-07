@@ -64,7 +64,7 @@ export function reduceTranscript(
 		}
 		case 'session/messages/optimistic-added': {
 			const next = withMessages(state, action.sessionId, (messages) => [
-				...messages.filter((message) => !message.id.startsWith('placeholder-')),
+				...messages,
 				action.message,
 			]);
 			return {

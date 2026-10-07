@@ -50,23 +50,7 @@ describe('submitTranscript', () => {
 		expect(list[0].voice).toBe(false);
 	});
 
-	it('drops the resume placeholder when a real message is submitted', async () => {
-		invokeMock.mockResolvedValue({});
-		select('session-a');
-		// A rolled-back conversation: the DB is empty, so the resume rebuild
-		// showed a display-only placeholder carrying the session input text.
-		loadMessages('session-a', [
-			{ id: 'placeholder-session-a', role: 'user', content: '第一条消息' },
-		]);
-		await submitTranscript('第一条消息', { voice: false });
-
-		const list = messagesFor('session-a');
-		expect(list).toHaveLength(1);
-		expect(list[0].id).not.toBe('placeholder-session-a');
-		expect(list[0].content).toBe('第一条消息');
-	});
-
-	it('keeps the placeholder-less conversation untouched when submitting', async () => {
+	it('preserves the persisted transcript when submitting', async () => {
 		invokeMock.mockResolvedValue({});
 		select('session-a');
 		loadMessages('session-a', [{ id: 'msg-1', role: 'user', content: '第一条消息' }]);

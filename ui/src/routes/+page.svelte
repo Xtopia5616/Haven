@@ -2,7 +2,6 @@
 	import { isSessionInteractionRequest } from '$lib/contracts/app.ts';
 	import logger from '$lib/logger.ts';
 	import { reportError } from '$lib/errorHandling.ts';
-	import { isDisplayOnlyMessageId } from '$lib/resumeMessages.ts';
 	import { shouldShowContinueButton } from '$lib/continueSession.ts';
 	import {
 		isBusyStatus,
@@ -446,16 +445,12 @@
 		};
 		ctxMenu = next;
 		openContextMenuAt(ev.x, ev.y, [
-			...(isDisplayOnlyMessageId(next.msgId)
-				? []
-				: [
-						{
-							id: 'rollback',
-							label: '回退到此消息',
-							icon: 'rollback',
-							action: handleCtxRollback,
-						},
-					]),
+			{
+				id: 'rollback',
+				label: '回退到此消息',
+				icon: 'rollback',
+				action: handleCtxRollback,
+			},
 			{ id: 'copy', label: '复制', icon: 'copy', action: handleCtxCopy },
 		]);
 	}
@@ -486,10 +481,6 @@
 	}
 
 	function handleCtxRollback() {
-		if (isDisplayOnlyMessageId(ctxMenu.msgId)) {
-			closeCtxMenu();
-			return;
-		}
 		const step = getStepForCtxMenu();
 		if (step == null) {
 			addNotification('无法确定此消息对应的步骤', 'error', 3000);
