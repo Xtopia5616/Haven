@@ -666,11 +666,12 @@ Tools 通过封闭的 `ToolRunLifecycleEvent` enum 和具名 payload 发出 life
 fail closed（ADR 0380）。mapper 不接触 ToolRunService completion outbox；动态
 `tool_args` 仍是执行/完成边界上的 JSON 扩展字段，不进入 `ToolRunEvent` UI DTO（ADR 0335）。
 录音与转写事件已完成镜像审计：Rust `events.rs` 的命名 DTO 是 wire shape 权威；
-`ui/src/lib/contracts/recording.ts` 只声明路由消费的 camelCase DTO，并由唯一的
+`VadStatusEvent` 由 IPC 生成器显式导出，UI `VadStatusPayload` 直接引用该生成类型；
+`ui/src/lib/contracts/recording.ts` 只声明其它路由消费的 camelCase DTO，并由唯一的
 `mapRecordingEvent` 转换。没有第二份 snake_case wire interface，也没有布局内的字段映射；
 `recordingEventListeners` 是这组事件唯一进入该 mapper 的 listener 边界。转换保留既有可选字段
 省略、畸形值安全默认、未知附加字段忽略与 VAD 字符串透传行为，不拒绝未知 signal/state，
-因为 Rust DTO 将它们定义为字符串而非封闭枚举（ADR 0340）。
+因为 Rust DTO 将它们定义为字符串而非封闭枚举（ADR 0340、0694）。
 `recordingOverlayController.ts` 是共享 overlay state 与时长 timer 的唯一写 owner，并按 `rec-*`
 过滤 stop、error 和 transcription 对当前 overlay 的影响；`+layout.svelte` 仍拥有这些全局 listener、
 通知与 voice transcript submission，`InputRouter.svelte` 只调用 toolbar toggle，`AppShell` 和

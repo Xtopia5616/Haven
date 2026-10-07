@@ -46,6 +46,7 @@ export const TOOL_RUN_KIND_DTO_INPUT_VALUES = ['background', 'scheduled'] as con
 export type ToolRunKindDtoInput = (typeof TOOL_RUN_KIND_DTO_INPUT_VALUES)[number];
 export const TOOL_RUN_KIND_DTO_VALUES = ['background', 'scheduled'] as const;
 export type ToolRunKindDto = (typeof TOOL_RUN_KIND_DTO_VALUES)[number];
+export interface VadStatusEvent { signal: string; state: string }
 export const CAPABILITY_INPUT_VALUES = ['chat', 'fast_chat', 'vision', 'audio_input', 'transcription', 'embedding', 'image_generation', 'speech_synthesis'] as const;
 export type CapabilityInput = (typeof CAPABILITY_INPUT_VALUES)[number];
 export const CAPABILITY_VALUES = ['chat', 'fast_chat', 'vision', 'audio_input', 'transcription', 'embedding', 'image_generation', 'speech_synthesis'] as const;

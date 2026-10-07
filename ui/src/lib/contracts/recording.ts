@@ -1,6 +1,7 @@
 /** Recording and transcription IPC contract at the frontend boundary. */
 
 import type { TauriEvent } from './tauriEvent.ts';
+import type { VadStatusEvent as GeneratedVadStatusEvent } from './generatedCommands.ts';
 
 export const RECORDING_EVENT_NAMES = [
 	'recording:started',
@@ -21,7 +22,7 @@ export interface RecordingPayload {
 	durationMs?: number;
 }
 
-export interface VadStatusPayload { signal: string; state: string; }
+export type VadStatusPayload = GeneratedVadStatusEvent;
 export interface TranscriptionStartedPayload { sessionId: string; }
 export interface TranscriptionResultPayload {
 	sessionId: string;

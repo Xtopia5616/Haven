@@ -103,6 +103,10 @@ fn generate(root: &Path) -> Result<String, String> {
         "haven_app_binary_lib::events::SessionLifecycleEvent",
         TypeUse::Response,
     )?;
+    type_graph.emit_definition(
+        "haven_app_binary_lib::events::VadStatusEvent",
+        TypeUse::Response,
+    )?;
 
     let mut output = String::from(
         "// Generated from #[tauri::command] handler signatures by `scripts/generate-ipc-contracts.ps1`.\n\
