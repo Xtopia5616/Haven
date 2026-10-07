@@ -152,22 +152,8 @@ export function isSttOnlyStyle(style: string | null | undefined): boolean {
 	return n === 'deepgram' || n === 'assemblyai';
 }
 
-/**
- * Sampling / structured fields mirrored from
- * `haven_common::config::supports_sampling_field`.
- */
-export type SamplingField =
-	| 'temperature'
-	| 'top_p'
-	| 'top_k'
-	| 'frequency_penalty'
-	| 'presence_penalty'
-	| 'stop'
-	| 'seed'
-	| 'response_format'
-	| 'reasoning_effort';
-
-export const SAMPLING_FIELDS: SamplingField[] = [
+/** Sampling / structured fields listed in per-wire-style settings hints. */
+const SAMPLING_FIELDS = [
 	'temperature',
 	'top_p',
 	'top_k',
@@ -177,11 +163,11 @@ export const SAMPLING_FIELDS: SamplingField[] = [
 	'seed',
 	'response_format',
 	'reasoning_effort',
-];
+] as const;
 
 export function supportsSamplingField(
 	style: string | null | undefined,
-	field: SamplingField | string,
+	field: string,
 ): boolean {
 	const n = normalizeApiStyle(style);
 	if (n === 'deepgram' || n === 'assemblyai') return false;

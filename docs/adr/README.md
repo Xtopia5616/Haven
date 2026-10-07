@@ -629,3 +629,4 @@
 - [0638：合并 SessionRun 结束提示状态](0638-merge-session-run-end-ui-state.md)
 - [0639：从共享状态色派生 StatusBadge 子集](0639-derive-status-badge-tone-subset.md)
 - [0640：从生成命令契约派生录音控制器命令子集](0640-derive-recording-command-subset.md)
+- [0641：收敛 sampling 字段清单 owner](0641-consolidate-sampling-field-list.md)
