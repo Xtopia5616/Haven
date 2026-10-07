@@ -4,6 +4,7 @@
 	import ToolCardList from '$lib/ToolCardList.svelte';
 	import ToolResultList from '$lib/ToolResultList.svelte';
 	import ToolSearch from '$lib/ToolSearch.svelte';
+	import { clampPercentage, formatByteSize } from '$lib/toolResultFormatting.ts';
 
 	interface ProcessEntry {
 		name?: string;
@@ -14,26 +15,6 @@
 	}
 
 	let { data = {} } = $props();
-
-	function clampPct(value: unknown) {
-		const n = Number(value);
-		if (!Number.isFinite(n)) return 0;
-		return Math.max(0, Math.min(100, n));
-	}
-
-	function fmtBytes(value: unknown) {
-		const n = Number(value);
-		if (!Number.isFinite(n) || n < 0) return '—';
-		if (n < 1024) return `${n} B`;
-		const units = ['KB', 'MB', 'GB', 'TB'];
-		let unit = n;
-		let index = -1;
-		while (unit >= 1024 && index < units.length - 1) {
-			unit /= 1024;
-			index++;
-		}
-		return `${unit >= 100 ? unit.toFixed(0) : unit.toFixed(1)} ${units[index]}`;
-	}
 
 	let processFilter = $state('');
 	let processList: ProcessEntry[] = $derived(Array.isArray(data.processes) ? data.processes : []);
@@ -103,7 +84,7 @@
 									<span class="proc-meter"
 										><span
 											class="proc-meter-fill"
-											style="width: {clampPct(process.cpu)}%"
+											style="width: {clampPercentage(process.cpu)}%"
 										></span></span
 									>{Number(process.cpu ?? 0).toFixed(1)}%
 								</td>
@@ -113,7 +94,7 @@
 											class="proc-meter-fill"
 											style="width: {memPct(process)}%"
 										></span></span
-									>{fmtBytes(process.memory)}
+									>{formatByteSize(process.memory)}
 								</td>
 								<td class="proc-status">
 									<StatusBadge

@@ -5,28 +5,9 @@
 	import MaterialIconButton from '$lib/MaterialIconButton.svelte';
 	import ToolResultList from '$lib/ToolResultList.svelte';
 	import ToolSearch from '$lib/ToolSearch.svelte';
+	import { clampPercentage, formatByteSize } from '$lib/toolResultFormatting.ts';
 
 	let { data = {} } = $props();
-
-	function clampPct(value: unknown) {
-		const n = Number(value);
-		if (!Number.isFinite(n)) return 0;
-		return Math.max(0, Math.min(100, n));
-	}
-
-	function fmtBytes(value: unknown) {
-		const n = Number(value);
-		if (!Number.isFinite(n) || n < 0) return '—';
-		if (n < 1024) return `${n} B`;
-		const units = ['KB', 'MB', 'GB', 'TB'];
-		let unit = n;
-		let index = -1;
-		while (unit >= 1024 && index < units.length - 1) {
-			unit /= 1024;
-			index++;
-		}
-		return `${unit >= 100 ? unit.toFixed(0) : unit.toFixed(1)} ${units[index]}`;
-	}
 
 	function fmtUptime(value: unknown) {
 		const secs = Number(value);
@@ -243,7 +224,8 @@
 		<span class="meter-label">CPU</span>
 		<span class="meter-value">{Number(data.cpu.usage_pct ?? 0).toFixed(1)}%</span>
 		<span class="meter-track"
-			><span class="meter-fill" style="width: {clampPct(data.cpu.usage_pct)}%"></span></span
+			><span class="meter-fill" style="width: {clampPercentage(data.cpu.usage_pct)}%"
+			></span></span
 		>
 		<span class="meter-sub">{data.cpu.cores ?? 0} 核 / {data.cpu.logical_cpus ?? 0} 线程</span>
 	</div>
@@ -252,12 +234,14 @@
 	<div class="meter-row">
 		<span class="meter-label">内存</span>
 		<span class="meter-value"
-			>{fmtBytes(data.memory.used_bytes)} / {fmtBytes(data.memory.total_bytes)}</span
+			>{formatByteSize(data.memory.used_bytes)} / {formatByteSize(
+				data.memory.total_bytes,
+			)}</span
 		>
 		<span class="meter-track"
 			><span
 				class="meter-fill"
-				style="width: {clampPct(
+				style="width: {clampPercentage(
 					(Number(data.memory.used_bytes) /
 						Math.max(Number(data.memory.total_bytes), 1)) *
 						100,
@@ -273,13 +257,13 @@
 				<div class="meter-row">
 					<span class="meter-label">{disk.mount}</span>
 					<span class="meter-value"
-						>{fmtBytes(Number(disk.total_bytes) - Number(disk.available_bytes))} /
-						{fmtBytes(disk.total_bytes)}</span
+						>{formatByteSize(Number(disk.total_bytes) - Number(disk.available_bytes))} /
+						{formatByteSize(disk.total_bytes)}</span
 					>
 					<span class="meter-track"
 						><span
 							class="meter-fill"
-							style="width: {clampPct(
+							style="width: {clampPercentage(
 								(1 -
 									Number(disk.available_bytes) /
 										Math.max(Number(disk.total_bytes), 1)) *
@@ -370,7 +354,8 @@
 		<span class="meter-label">电池</span>
 		<span class="meter-value">{data.battery_percent}%</span>
 		<span class="meter-track"
-			><span class="meter-fill" style="width: {clampPct(data.battery_percent)}%"></span></span
+			><span class="meter-fill" style="width: {clampPercentage(data.battery_percent)}%"
+			></span></span
 		>
 		<span class="meter-sub"
 			>{batteryStatusLabel(data.battery_status)}{data.ac_power === 'online'

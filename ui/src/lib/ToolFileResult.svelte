@@ -2,6 +2,7 @@
 	import ExternalRef from '$lib/ExternalRef.svelte';
 	import JsonView from '$lib/JsonView.svelte';
 	import ToolResultList from '$lib/ToolResultList.svelte';
+	import { formatByteSize } from '$lib/toolResultFormatting.ts';
 
 	let { data = {}, rawText = '' } = $props();
 
@@ -19,20 +20,6 @@
 		search: '搜索结果',
 	};
 	let operationLabel = $derived(operationLabels[data.operation] || '文件结果');
-
-	function fmtBytes(value: unknown) {
-		const n = Number(value);
-		if (!Number.isFinite(n) || n < 0) return '—';
-		if (n < 1024) return `${n} B`;
-		const units = ['KB', 'MB', 'GB', 'TB'];
-		let unit = n;
-		let index = -1;
-		while (unit >= 1024 && index < units.length - 1) {
-			unit /= 1024;
-			index++;
-		}
-		return `${unit >= 100 ? unit.toFixed(0) : unit.toFixed(1)} ${units[index]}`;
-	}
 </script>
 
 {#if data.written}
@@ -88,7 +75,7 @@
 	</div>
 	<div class="tool-card-meta">
 		{data.file_type || data.mime || '无法作为文本读取'}{data.size != null
-			? ` · ${fmtBytes(data.size)}`
+			? ` · ${formatByteSize(data.size)}`
 			: ''}
 	</div>
 {:else if data.summary || data.summary_unavailable || data.summary_error}
@@ -152,7 +139,7 @@
 	{/if}
 {:else}
 	<div class="tool-card-meta">
-		{data.size != null ? `${fmtBytes(data.size)} · ` : ''}读取完成
+		{data.size != null ? `${formatByteSize(data.size)} · ` : ''}读取完成
 	</div>
 	{#if typeof data.content === 'string' && data.content}
 		<pre class="content-preview">{data.content}</pre>
