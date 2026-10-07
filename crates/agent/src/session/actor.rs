@@ -10,7 +10,7 @@
 //! ReActState 不跨 session 共享，stream identity 和 usage 仍由各自的 run/runtime
 //! owner 管理。
 
-use super::RunEngine;
+use super::SessionRunEngine;
 use super::{FollowUp, SessionInfo, SessionStatus, SessionWaitingReason, StepInfo};
 use crate::interaction::{InteractionKind, InteractionRequest, InteractionStatus};
 use crate::react::{LoopExit, ReActEngine, ReActState, RunInput, RunReplay};
@@ -162,7 +162,7 @@ impl std::fmt::Debug for InboxSubscribe {
 pub(crate) enum ActorCommand {
     Session(SessionCommand),
     Run {
-        engine: RunEngine,
+        engine: SessionRunEngine,
         reply: oneshot::Sender<anyhow::Result<()>>,
     },
     RunReactLoop {
@@ -452,7 +452,7 @@ impl SessionActorHandle {
     /// Start and await a run that is polled by this actor task. While the
     /// handler is suspended on a provider, tool, or storage future, the actor
     /// continues receiving and applying external mailbox commands.
-    pub(crate) async fn run(&self, engine: RunEngine) -> anyhow::Result<()> {
+    pub(crate) async fn run(&self, engine: SessionRunEngine) -> anyhow::Result<()> {
         let (reply, rx) = oneshot::channel();
         self.send(ActorCommand::Run { engine, reply }).await?;
         rx.await
@@ -2201,7 +2201,7 @@ mod queue_tests {
             })
         });
         let run_actor = actor.clone();
-        let run = tokio::spawn(async move { run_actor.run(RunEngine::new(handler)).await });
+        let run = tokio::spawn(async move { run_actor.run(SessionRunEngine::new(handler)).await });
         tokio::time::timeout(std::time::Duration::from_secs(1), async {
             while !*started_rx.borrow() {
                 started_rx.changed().await.expect("started signal sender");
@@ -2302,7 +2302,7 @@ mod queue_tests {
             })
         });
         let run_actor = actor.clone();
-        let run = tokio::spawn(async move { run_actor.run(RunEngine::new(handler)).await });
+        let run = tokio::spawn(async move { run_actor.run(SessionRunEngine::new(handler)).await });
 
         tokio::time::timeout(Duration::from_secs(2), async {
             while full_observations.load(Ordering::Relaxed) == 0

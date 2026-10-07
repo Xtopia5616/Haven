@@ -451,7 +451,7 @@ pub(crate) use actor::{
     CONTEXT_BATCH_MAX_CHARS, CONTEXT_BATCH_MAX_ITEMS, MessagingTitle, ReactContextBatch,
 };
 pub(crate) use queues::PendingInteractionGates;
-pub use run_engine::RunEngine;
+pub use run_engine::SessionRunEngine;
 
 impl SessionSupervisor {
     pub fn new(store: SessionStore, ports: SessionToolPorts, max_concurrent: usize) -> Self {

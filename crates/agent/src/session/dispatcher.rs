@@ -273,7 +273,7 @@ impl SessionSupervisor {
         handler: RunHandler,
         cancellation: CancellationToken,
     ) {
-        self.start_dispatcher_inner(RunEngine::new(handler), true, cancellation);
+        self.start_dispatcher_inner(SessionRunEngine::new(handler), true, cancellation);
     }
 
     pub fn start_dispatcher_without_recovery_with_cancellation(
@@ -281,12 +281,12 @@ impl SessionSupervisor {
         handler: RunHandler,
         cancellation: CancellationToken,
     ) {
-        self.start_dispatcher_inner(RunEngine::new(handler), false, cancellation);
+        self.start_dispatcher_inner(SessionRunEngine::new(handler), false, cancellation);
     }
 
     fn start_dispatcher_inner(
         self: Arc<Self>,
-        engine: RunEngine,
+        engine: SessionRunEngine,
         recover_pending: bool,
         cancellation: CancellationToken,
     ) {

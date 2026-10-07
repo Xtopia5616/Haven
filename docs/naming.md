@@ -1,6 +1,6 @@
 # Haven 命名规范
 
-> 版本: v1.45 | 日期: 2026-10-07
+> 版本: v1.46 | 日期: 2026-10-07
 
 本文档统一 Haven 项目各层的命名规则（变量名、函数名、文件名、crate 名、缩写大小写、跨层边界）。规范以现有代码中的事实模式为基础，新代码必须遵循；存量代码若与规范冲突，逐步迁移对齐。
 
@@ -166,7 +166,7 @@ Common 新增的媒体探测 helper 和本地变量用 `mime_type` 表示 MIME �
 
 | 后缀 | 主要职责 | Haven 示例 |
 |---|---|---|
-| `Engine` | 执行领域算法、反应循环或媒体处理过程 | `ReActEngine`、`VadEngine`、`FileSearchEngine`、`CaptureEngine` |
+| `Engine` | 执行领域算法、反应循环或媒体处理过程 | `ReActEngine`、`SessionRunEngine`、`VadEngine`、`FileSearchEngine`、`CaptureEngine` |
 | `Runtime` | 持有进程内活动状态、长生命周期资源或运行任务 | `ApplicationRuntime`、`MemoryRuntime`、`ToolRuntime` |
 | `Store` | 通过持久化边界读取或写入领域数据 | `SessionStore`、`MemoryFactStore`、`MemoryRecallStore` |
 | `Registry` | 按身份索引并提供目录、catalog 或可选规则集合 | `ToolRegistry`、`SkillRegistry`、`ModelRegistry`、`ManagedAssetRegistry` |

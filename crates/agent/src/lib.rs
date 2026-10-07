@@ -58,10 +58,10 @@ pub use react::{
     LoopExit, MetricsSnapshot, PauseReason, ReActEngine, ToolCatalogPort, UiMetricsSnapshot,
 };
 pub use session::{
-    ConfirmResolution, ManagedAssetLeasePort, RunEngine, RunHandler, SessionInfo, SessionStatus,
-    SessionSupervisor, SessionSupervisorEvent, SessionToolOverlayPort, SessionToolPorts,
-    SessionWaitingReason, StepInfo, ToolAuthorizationPort, ToolExecution, ToolExecutionContext,
-    ToolExecutionPort, ToolObservationPort,
+    ConfirmResolution, ManagedAssetLeasePort, RunHandler, SessionInfo, SessionRunEngine,
+    SessionStatus, SessionSupervisor, SessionSupervisorEvent, SessionToolOverlayPort,
+    SessionToolPorts, SessionWaitingReason, StepInfo, ToolAuthorizationPort, ToolExecution,
+    ToolExecutionContext, ToolExecutionPort, ToolObservationPort,
 };
 pub use storage_error::sqlite_storage_failure_message;
 
