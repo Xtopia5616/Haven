@@ -1,4 +1,4 @@
-//! Policy for structurally incomplete tool-call arguments.
+//! Classifies model responses and selects safe retries for incomplete tool calls.
 
 use super::*;
 use haven_llm::{FinishReason, LlmResponse};
@@ -7,8 +7,9 @@ use haven_llm::{FinishReason, LlmResponse};
 /// half-written JSON string.
 const INCOMPLETE_TOOL_ARGS_NUDGE: &str = "Your previous tool call had incomplete JSON arguments. Emit the same tool call again with complete, valid JSON arguments.";
 
+/// Policy result that says whether to accept, retry, or fail a model response.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum AfterLlmAction {
+pub(crate) enum ResponsePolicyDecision {
     Accept,
     RetryIncompleteToolArgs { nudge: &'static str },
     Fail { reason: String },
@@ -24,52 +25,50 @@ pub(crate) struct ResponsePolicyState {
 pub(crate) struct ResponsePolicy;
 
 impl ResponsePolicy {
-    pub(crate) fn classify(
-        thought: &Option<String>,
-        tool_calls: &[ToolCall],
-        response: &LlmResponse,
-        state: ResponsePolicyState,
-    ) -> AfterLlmAction {
+    pub(crate) fn classify(input: &ResponsePolicyInput<'_>) -> ResponsePolicyDecision {
         // An incomplete arguments object is the one response shape that is
         // safe and useful to retry automatically. Never dispatch placeholders.
-        let incomplete_tool_args = tool_calls
+        let incomplete_tool_args = input
+            .tool_calls
             .iter()
             .any(|tool_call| !tool_call.is_final && tool_call.tool_input.is_null());
         if incomplete_tool_args {
-            if !state.pending_ask
-                && response.web_search_calls.is_empty()
-                && state.incomplete_tool_args_retries_used < state.incomplete_tool_args_retries_max
+            if !input.state.pending_ask
+                && input.response.web_search_calls.is_empty()
+                && input.state.incomplete_tool_args_retries_used
+                    < input.state.incomplete_tool_args_retries_max
             {
-                return AfterLlmAction::RetryIncompleteToolArgs {
+                return ResponsePolicyDecision::RetryIncompleteToolArgs {
                     nudge: INCOMPLETE_TOOL_ARGS_NUDGE,
                 };
             }
-            return AfterLlmAction::Fail {
+            return ResponsePolicyDecision::Fail {
                 reason: "工具调用参数不是完整 JSON，无法安全执行；点击“继续生成”重新尝试。".into(),
             };
         }
 
-        let empty =
-            thought.is_none() && tool_calls.is_empty() && response.web_search_calls.is_empty();
+        let empty = input.thought.is_none()
+            && input.tool_calls.is_empty()
+            && input.response.web_search_calls.is_empty();
         if empty {
-            if state.pending_ask && response.finish_reason == Some(FinishReason::Stop) {
-                return AfterLlmAction::Accept;
+            if input.state.pending_ask && input.response.finish_reason == Some(FinishReason::Stop) {
+                return ResponsePolicyDecision::Accept;
             }
-            let reason = if Self::has_normal_finish(response, tool_calls) {
+            let reason = if Self::has_normal_finish(input.response, input.tool_calls) {
                 "模型返回了空响应；已保留当前输出，可点击“继续生成”重试。".into()
             } else {
-                Self::abnormal_finish_reason(response)
+                Self::abnormal_finish_reason(input.response)
             };
-            return AfterLlmAction::Fail { reason };
+            return ResponsePolicyDecision::Fail { reason };
         }
 
-        if !Self::has_normal_finish(response, tool_calls) {
-            return AfterLlmAction::Fail {
-                reason: Self::abnormal_finish_reason(response),
+        if !Self::has_normal_finish(input.response, input.tool_calls) {
+            return ResponsePolicyDecision::Fail {
+                reason: Self::abnormal_finish_reason(input.response),
             };
         }
 
-        AfterLlmAction::Accept
+        ResponsePolicyDecision::Accept
     }
 
     fn has_normal_finish(response: &LlmResponse, tool_calls: &[ToolCall]) -> bool {
@@ -88,6 +87,14 @@ impl ResponsePolicy {
             None => "模型没有报告正常结束原因；已保留当前输出，可点击“继续生成”重试。".into(),
         }
     }
+}
+
+/// Parsed values and loop state that determine how a model response is handled.
+pub(crate) struct ResponsePolicyInput<'a> {
+    pub thought: &'a Option<String>,
+    pub tool_calls: &'a [ToolCall],
+    pub response: &'a LlmResponse,
+    pub state: ResponsePolicyState,
 }
 
 #[cfg(test)]
@@ -116,6 +123,20 @@ mod tests {
         }
     }
 
+    fn classify_response(
+        thought: &Option<String>,
+        tool_calls: &[ToolCall],
+        response: &LlmResponse,
+        state: ResponsePolicyState,
+    ) -> ResponsePolicyDecision {
+        ResponsePolicy::classify(&ResponsePolicyInput {
+            thought,
+            tool_calls,
+            response,
+            state,
+        })
+    }
+
     #[test]
     fn normal_stop_accepts_text_without_lexical_cutoff_heuristics() {
         for text in [
@@ -125,13 +146,13 @@ mod tests {
             "路路路",
         ] {
             assert_eq!(
-                ResponsePolicy::classify(
+                classify_response(
                     &Some(text.into()),
                     &[],
                     &resp(text, Some(FinishReason::Stop)),
                     state(0, 2, false),
                 ),
-                AfterLlmAction::Accept
+                ResponsePolicyDecision::Accept
             );
         }
     }
@@ -145,13 +166,16 @@ mod tests {
             Some(FinishReason::FunctionCall),
             None,
         ] {
-            let action = ResponsePolicy::classify(
+            let decision = classify_response(
                 &Some("partial text".into()),
                 &[],
                 &resp("partial text", finish),
                 state(0, 2, false),
             );
-            assert!(matches!(action, AfterLlmAction::Fail { .. }), "{finish:?}");
+            assert!(
+                matches!(decision, ResponsePolicyDecision::Fail { .. }),
+                "{finish:?}"
+            );
         }
     }
 
@@ -166,13 +190,13 @@ mod tests {
         let response = resp("", Some(FinishReason::ToolCalls));
 
         assert!(matches!(
-            ResponsePolicy::classify(&None, &tool_calls, &response, state(0, 2, false)),
-            AfterLlmAction::RetryIncompleteToolArgs { .. }
+            classify_response(&None, &tool_calls, &response, state(0, 2, false)),
+            ResponsePolicyDecision::RetryIncompleteToolArgs { .. }
         ));
         for retry_state in [state(2, 2, false), state(0, 2, true)] {
             assert!(matches!(
-                ResponsePolicy::classify(&None, &tool_calls, &response, retry_state),
-                AfterLlmAction::Fail { .. }
+                classify_response(&None, &tool_calls, &response, retry_state),
+                ResponsePolicyDecision::Fail { .. }
             ));
         }
     }
@@ -187,13 +211,13 @@ mod tests {
         };
         for finish in [FinishReason::ToolCalls, FinishReason::FunctionCall] {
             assert_eq!(
-                ResponsePolicy::classify(
+                classify_response(
                     &None,
                     std::slice::from_ref(&tool_call),
                     &resp("", Some(finish)),
                     state(0, 2, false),
                 ),
-                AfterLlmAction::Accept
+                ResponsePolicyDecision::Accept
             );
         }
     }
@@ -202,8 +226,8 @@ mod tests {
     fn empty_response_fails_instead_of_retrying() {
         for finish in [Some(FinishReason::Stop), Some(FinishReason::Length), None] {
             assert!(matches!(
-                ResponsePolicy::classify(&None, &[], &resp("", finish), state(0, 2, false)),
-                AfterLlmAction::Fail { .. }
+                classify_response(&None, &[], &resp("", finish), state(0, 2, false)),
+                ResponsePolicyDecision::Fail { .. }
             ));
         }
     }

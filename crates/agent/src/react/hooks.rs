@@ -14,15 +14,17 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use futures_util::future::BoxFuture;
-use haven_llm::{LlmResponse, ToolDefinition};
+use haven_llm::ToolDefinition;
 use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 
 #[cfg(test)]
 pub(crate) use super::hook_policy::DefaultHooks;
 pub(crate) use super::hook_policy::{default_hooks, default_hooks_with_patch};
-use super::retries::{AfterLlmAction, ResponsePolicyState};
-use super::{PauseReason, ReActEngine, ReActState, StepCtx, ToolCall};
+#[cfg(test)]
+use super::response_policy::ResponsePolicyState;
+use super::response_policy::{ResponsePolicyDecision, ResponsePolicyInput};
+use super::{PauseReason, ReActEngine, ReActState, StepCtx};
 
 /// Mid-run MEMORY fence refresh (M2): dirty flag lives on [`crate::MemoryWorker`];
 /// patch uses [`crate::SystemPromptBuilder::patch_canonical_memory_fence`] only
@@ -67,15 +69,6 @@ pub(crate) struct BeforeToolRequest {
     pub input: Value,
 }
 
-/// Inputs needed to classify a completed LLM response. Grouping these
-/// immutable step values keeps the hook boundary explicit as it evolves.
-pub(crate) struct AfterLlmInput<'a> {
-    pub thought: &'a Option<String>,
-    pub tool_calls: &'a [ToolCall],
-    pub response: &'a LlmResponse,
-    pub state: ResponsePolicyState,
-}
-
 /// Values prepared by the prologue for the rest of the turn.
 ///
 /// Production hooks already resolve the session tool surface before deciding
@@ -110,10 +103,10 @@ pub(crate) trait LoopHooks: Send + Sync {
         &self,
         _engine: &ReActEngine,
         _ctx: &StepCtx,
-        input: AfterLlmInput<'_>,
-    ) -> AfterLlmAction {
+        input: ResponsePolicyInput<'_>,
+    ) -> ResponsePolicyDecision {
         let _ = input;
-        AfterLlmAction::Accept
+        ResponsePolicyDecision::Accept
     }
 
     /// Pre-tool safety gate (Phase 5 / E3). Default always proceeds.
@@ -162,6 +155,7 @@ pub(crate) type LoopHooksHandle = Arc<dyn LoopHooks>;
 mod tests {
     use super::*;
     use haven_common::types::CanonicalMessage;
+    use haven_llm::types::LlmResponse;
 
     #[test]
     fn noop_and_default_are_object_safe() {
@@ -369,7 +363,7 @@ mod tests {
         };
         let hooks = DefaultHooks::new();
         // after_llm does not need a real engine for classification.
-        let action = {
+        let decision = {
             // Build a minimal engine only to satisfy the trait signature.
             use crate::event::AgentEventEmitter;
             use crate::session::SessionSupervisor;
@@ -466,7 +460,7 @@ mod tests {
                 .after_llm(
                     &engine,
                     &ctx,
-                    AfterLlmInput {
+                    ResponsePolicyInput {
                         thought: &Some("让我先查一下，".into()),
                         tool_calls: &[],
                         response: &response,
@@ -475,6 +469,6 @@ mod tests {
                 )
                 .await
         };
-        assert!(matches!(action, AfterLlmAction::Fail { .. }));
+        assert!(matches!(decision, ResponsePolicyDecision::Fail { .. }));
     }
 }

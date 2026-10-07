@@ -14,10 +14,9 @@ use tokio_util::sync::CancellationToken;
 use tracing::Instrument;
 
 use super::hooks::{
-    AfterLlmInput, BeforeStepOutput, BeforeToolCallDecision, BeforeToolRequest, LoopHooks,
-    MemoryPatchHandle,
+    BeforeStepOutput, BeforeToolCallDecision, BeforeToolRequest, LoopHooks, MemoryPatchHandle,
 };
-use super::retries::{AfterLlmAction, ResponsePolicy};
+use super::response_policy::{ResponsePolicy, ResponsePolicyDecision, ResponsePolicyInput};
 use super::{PauseReason, ReActEngine, ReActState, StepCtx};
 use crate::memory_trigger::MemoryTriggerPayload;
 
@@ -114,9 +113,9 @@ impl LoopHooks for DefaultHooks {
         &self,
         _engine: &ReActEngine,
         _ctx: &StepCtx,
-        input: AfterLlmInput<'_>,
-    ) -> AfterLlmAction {
-        ResponsePolicy::classify(input.thought, input.tool_calls, input.response, input.state)
+        input: ResponsePolicyInput<'_>,
+    ) -> ResponsePolicyDecision {
+        ResponsePolicy::classify(&input)
     }
 
     fn before_tool(

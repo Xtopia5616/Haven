@@ -37,7 +37,7 @@ mod r#loop;
 mod metrics;
 mod request_context;
 mod response_cycle;
-mod retries;
+mod response_policy;
 pub(crate) mod sidecars;
 mod state;
 pub(crate) mod stream_step;

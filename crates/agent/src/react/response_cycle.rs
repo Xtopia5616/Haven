@@ -4,7 +4,7 @@
 //! turn result. This module retries only structurally incomplete tool calls;
 //! empty or abnormally terminated responses become recoverable session errors.
 
-use super::retries::{AfterLlmAction, ResponsePolicyState};
+use super::response_policy::{ResponsePolicyDecision, ResponsePolicyState};
 use super::stream_step::StreamSession;
 use super::{ReActEngine, ReActState, RequestContext, StepCtx, ToolCall};
 use haven_llm::LlmResponse;
@@ -56,7 +56,7 @@ impl ReActEngine {
                 .after_llm(
                     self,
                     ctx,
-                    super::hooks::AfterLlmInput {
+                    super::response_policy::ResponsePolicyInput {
                         thought: &thought,
                         tool_calls: &tool_calls,
                         response: &response,
@@ -70,19 +70,19 @@ impl ReActEngine {
                 .await;
 
             match decision {
-                AfterLlmAction::Accept => {
+                ResponsePolicyDecision::Accept => {
                     return ResponseCycleOutcome::Accepted(Box::new(AcceptedResponse {
                         response,
                         thought,
                         tool_calls,
                     }));
                 }
-                AfterLlmAction::Fail { reason } => {
+                ResponsePolicyDecision::Fail { reason } => {
                     self.persist_response_error(ctx, state, stream, &reason)
                         .await;
                     return ResponseCycleOutcome::RecoverableError(reason);
                 }
-                AfterLlmAction::RetryIncompleteToolArgs { nudge } => {
+                ResponsePolicyDecision::RetryIncompleteToolArgs { nudge } => {
                     *incomplete_tool_args_retries += 1;
                     let retry_context = request_context.with_user_instruction(nudge);
                     match stream.retry(&retry_context).await {
