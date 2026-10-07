@@ -699,3 +699,4 @@
 - [0708：共用 Tool result 搜索行样式](0708-share-tool-result-search-row-style.md)
 - [0709：共用 Session welcome 展示组件](0709-share-session-welcome-component.md)
 - [0710：共用 ToolRun 结果行基础样式](0710-share-toolrun-result-row-style.md)
+- [0711：共用 Tool result 状态摘要行](0711-share-tool-result-status-row.md)

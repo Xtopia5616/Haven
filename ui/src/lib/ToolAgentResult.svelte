@@ -34,7 +34,7 @@
 			{#snippet children(visibleAgents)}
 				<div class="tool-result-scroll-area">
 					{#each visibleAgents as agent (agent.name)}
-						<div class="action-row">
+						<div class="tool-result-status-row">
 							<span class="action-id">{agent.title || agent.name}</span>
 							{#if agent.role}<span class="scheduled-mode">{agent.role}</span>{/if}
 							{#if agent.status}<StatusBadge
@@ -50,13 +50,13 @@
 		<p class="tool-card-empty">没有已注册同伴</p>
 	{/if}
 {:else if data.timed_out}
-	<div class="action-row">
+	<div class="tool-result-status-row">
 		<StatusBadge label="超时" tone="error" />
 		{#if data.message_id}<span class="action-id">{data.message_id}</span>{/if}
 	</div>
 	<div class="tool-card-meta">等待同伴回复超时（{data.timeout_secs ?? '?'}s）</div>
 {:else if data.session_id}
-	<div class="action-row">
+	<div class="tool-result-status-row">
 		<StatusBadge
 			label={data.ok === false ? '失败' : '已创建'}
 			tone={data.ok === false ? 'error' : 'success'}
@@ -91,13 +91,6 @@
 		font-size: var(--md-sys-typescale-label-medium-size);
 		line-height: var(--md-sys-typescale-label-medium-line-height);
 		color: var(--md-sys-color-on-surface-variant);
-	}
-	.action-row {
-		display: flex;
-		align-items: center;
-		gap: var(--md-sys-space-xs);
-		font-size: var(--md-sys-typescale-label-medium-size);
-		line-height: var(--md-sys-typescale-label-medium-line-height);
 	}
 	.action-id {
 		font-family: var(--md-sys-typescale-mono);

@@ -362,6 +362,7 @@
 | 三种搜索结果 renderer 重复行/路径/次级文本样式 | Clipboard、FileSearch、WebSearch 的 `.search-row`、路径链接、`:hover` 和 `.search-snippet` 声明逐项相同；内容分别是剪贴板记录、文件路径/命中行与网页 URL/标题。 | **统一展示 class 与 CSS owner**：共享行、链接和次级文本使用 `.tool-result-search-*` class 与 `app.css`；行内数据、路径生成和文件命中行仍由各 renderer 处理（ADR 0708）。 |
 | Session 首屏空态与 timeline 空投影重复欢迎内容 | `SessionEmptyState` 与 `SessionMessageTimeline` 的 timelineItems 为空分支重复相同欢迎 markup 和 7 组样式；唯一行为差异是后者的 330ms 入场动画。状态决策分别属于外层加载 gate 与 timeline 投影。 | **合并到 `SessionWelcome` 展示 owner**：两个调用点复用同一 markup/style；`animated` 显式表达动画差异，SessionTimeline 的 loading/终态 gate 与 SessionMessageTimeline 的消息投影责任保留（ADR 0709）。 |
 | 后台/定时 ToolRun renderer 重复状态行排版 | `ToolRunsResult` 与 `ToolScheduleResult` 的 `.tool-run-row` 声明相同；`.tool-run-id` 也重复 mono 字体、字号、行高和颜色，后台 ID 额外有溢出截断。 | **共享 row 与 ID 基础样式**：`.tool-run-row`、`.tool-run-id` 由 `ui/src/app.css` 统一拥有，后台 renderer 仅保留 ellipsis（ADR 0710）。 |
+| Agent 与 HTTP renderer 的 action row 同名且样式重复 | 两处 `.action-row` 都是状态 badge 加关联值，且 flex、居中、gap、字号与行高完全相同。 | **统一叫 Tool result status row**：两者使用 `.tool-result-status-row` 并复用全局样式；Agent/HTTP 的字段与 badge 仍各自拥有（ADR 0711）。 |
 | Rust 与 UI 的 Tauri event channel 目录重复 | Rust `events.rs` 定义 35 个 channel；五个 UI contract 手写相同名称，Session mapper/listener 另写 lifecycle channel；旧门禁仅比较两份列表，recording 测试也复制一组 literal。 | **Rust 事件目录生成 UI 名称清单**：五个域 array 和 Session listener 直接消费 `generatedCommands.ts`；payload map、校验与 UI 投影仍由各域拥有，门禁比较 Rust 常量与生成清单（ADR 0699）。 |
 
 此表是候选分流清单，不是完整符号目录。尚未完成的 crate、IPC/event payload、UI controller/store 与函数动词审计仍在 §5.7 范围内；完成一域后更新本表并以 ADR 记录实际迁移。

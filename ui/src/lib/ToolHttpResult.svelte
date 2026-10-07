@@ -12,7 +12,7 @@
 	let { data = {} }: Props = $props();
 </script>
 
-<div class="action-row">
+<div class="tool-result-status-row">
 	<StatusBadge
 		label={String(data.status)}
 		tone={Number(data.status) >= 200 && Number(data.status) < 300 ? 'success' : 'error'}
@@ -27,13 +27,6 @@
 {/if}
 
 <style>
-	.action-row {
-		display: flex;
-		align-items: center;
-		gap: var(--md-sys-space-xs);
-		font-size: var(--md-sys-typescale-label-medium-size);
-		line-height: var(--md-sys-typescale-label-medium-line-height);
-	}
 	.tool-card-meta {
 		font-size: var(--md-sys-typescale-label-small-size);
 		line-height: var(--md-sys-typescale-label-small-line-height);
