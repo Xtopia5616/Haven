@@ -1,19 +1,25 @@
 /** Canonical frontend view of the backend-owned tool catalog manifest. */
 
-/** Open backend source token retained for forward-compatible manifest parsing. */
-export type ToolManifestSource = 'builtin' | 'skill' | 'mcp' | (string & {});
+import {
+	RISK_LEVEL_VALUES,
+	TOOL_CATALOG_GROUP_VALUES,
+	TOOL_SOURCE_VALUES,
+	type RiskLevel,
+	type ToolCatalogGroup,
+	type ToolSource,
+} from './contracts/generatedCommands.ts';
 
 export type ToolManifestView = {
 	identity: {
-		source: ToolManifestSource;
-		catalogGroup: string;
+		source: ToolSource;
+		catalogGroup: ToolCatalogGroup;
 		root: string;
 		operation: string | null;
 		stableName: string;
 	};
 	model: { name: string; description: string; inputSchema: unknown };
 	policy: {
-		riskLevel: string;
+		riskLevel: RiskLevel;
 		permissionKey: string;
 		confirmation: string;
 		idempotency: string;
@@ -27,7 +33,7 @@ export type ToolManifestView = {
 		label: string;
 		renderer: string;
 		icon: string;
-		representedSource: ToolManifestSource;
+		representedSource: ToolSource;
 	};
 	rootPresentation: { label: string; description: string; icon: string };
 	prompt: { whenToUse: string; whenNotToUse: string; keyOperations: string[] };
@@ -64,18 +70,25 @@ export function parseToolManifest(value: unknown): ToolManifestView | null {
 	) {
 		return null;
 	}
-	const source = requiredString(identity.source);
-	const catalogGroup = requiredString(identity.catalog_group);
+	const source = generatedEnumValue(TOOL_SOURCE_VALUES, identity.source);
+	const catalogGroup = generatedEnumValue(TOOL_CATALOG_GROUP_VALUES, identity.catalog_group);
 	const root = requiredString(identity.root);
 	const stableName = requiredString(identity.stable_name);
 	const modelName = requiredString(model.name);
 	const modelDescription = requiredString(model.description);
-	if (!source || !catalogGroup || !root || !stableName || !modelName || !modelDescription)
+	if (
+		source === null ||
+		catalogGroup === null ||
+		!root ||
+		!stableName ||
+		!modelName ||
+		!modelDescription
+	)
 		return null;
 	if (!('input_schema' in model)) return null;
 	const operation = identity.operation;
 	if (operation !== null && typeof operation !== 'string') return null;
-	const riskLevel = requiredString(policy.risk_level);
+	const riskLevel = generatedEnumValue(RISK_LEVEL_VALUES, policy.risk_level);
 	const permissionKey = requiredString(policy.permission_key);
 	const confirmation = requiredString(policy.confirmation);
 	const idempotency = requiredString(policy.idempotency);
@@ -87,12 +100,15 @@ export function parseToolManifest(value: unknown): ToolManifestView | null {
 	const presentationLabel = requiredString(presentation.label);
 	const renderer = requiredString(presentation.renderer);
 	const icon = requiredString(presentation.icon);
-	const representedSource = requiredString(presentation.represented_source);
+	const representedSource = generatedEnumValue(
+		TOOL_SOURCE_VALUES,
+		presentation.represented_source,
+	);
 	const whenToUse = requiredString(prompt.when_to_use);
 	const whenNotToUse = requiredString(prompt.when_not_to_use);
 	const keyOperations = prompt.key_operations;
 	if (
-		!riskLevel ||
+		riskLevel === null ||
 		!permissionKey ||
 		!confirmation ||
 		!idempotency ||
@@ -104,7 +120,7 @@ export function parseToolManifest(value: unknown): ToolManifestView | null {
 		!presentationLabel ||
 		!renderer ||
 		!icon ||
-		!representedSource ||
+		representedSource === null ||
 		!whenToUse ||
 		!whenNotToUse ||
 		!Array.isArray(keyOperations) ||
@@ -196,6 +212,13 @@ function requiredString(value: unknown): string | null {
 	return typeof value === 'string' && value.length > 0 ? value : null;
 }
 
+function generatedEnumValue<const Values extends readonly string[]>(
+	values: Values,
+	value: unknown,
+): Values[number] | null {
+	return (values as readonly unknown[]).includes(value) ? (value as Values[number]) : null;
+}
+
 function booleanValue(value: unknown): boolean | null {
 	return typeof value === 'boolean' ? value : null;
 }
@@ -238,6 +261,6 @@ export function toolLabel(toolName: string): string | null {
 	return getToolManifest(toolName)?.presentation.label ?? null;
 }
 
-export function toolRepresentedSource(toolName: string): ToolManifestSource | null {
+export function toolRepresentedSource(toolName: string): ToolSource | null {
 	return getToolManifest(toolName)?.presentation.representedSource ?? null;
 }

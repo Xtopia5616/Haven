@@ -49,9 +49,7 @@ function stripToolPrefix(name: string, prefix: string): string | null {
 export function classifyToolSource(toolName: string): ToolSource {
 	const name = String(toolName || '');
 	const representedSource = toolRepresentedSource(name);
-	if (representedSource === 'mcp') return 'mcp';
-	if (representedSource === 'skill') return 'skill';
-	if (representedSource === 'builtin') return 'builtin';
+	if (representedSource !== null) return representedSource;
 	// The activation tools are implemented by Haven, but their card represents
 	// the capability being activated, so keep them visually consistent with the
 	// dynamic tools they expose.
@@ -71,7 +69,7 @@ export function toolSourceLabel(source: ToolSource): string {
 			return 'MCP';
 		case 'skill':
 			return 'Skill';
-		default:
+		case 'builtin':
 			return '内置';
 	}
 }

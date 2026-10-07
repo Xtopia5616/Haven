@@ -657,3 +657,4 @@
 - [0666：统一 ToolRun 源码中的退役 Job 词汇](0666-remove-retired-job-wording-from-tool-runs.md)
 - [0667：统一 ReAct 类型名大小写](0667-unify-react-type-name-casing.md)
 - [0668：删除无用 Tool operation helper 并收紧列表 snippet 类型](0668-remove-unused-tool-operation-helper-and-snippet-any.md)
+- [0669：统一 UI Tool manifest 枚举契约](0669-close-ui-tool-manifest-enum-contracts.md)

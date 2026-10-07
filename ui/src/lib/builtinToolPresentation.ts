@@ -1,11 +1,12 @@
 import type { ToolManifestView } from './toolManifest.ts';
+import type { RiskLevel, ToolCatalogGroup } from './contracts/generatedCommands.ts';
 
 export type BuiltinToolEntry = {
 	name: string;
 	label: string;
 	desc: string;
-	risk: string;
-	category: string;
+	risk: RiskLevel;
+	category: ToolCatalogGroup;
 	root: string;
 	rootLabel: string;
 	rootDescription: string;
@@ -29,7 +30,7 @@ export type BuiltinToolRootCard = {
 
 export type BuiltinToolCard = {
 	kind: 'family-group';
-	name: string;
+	name: ToolCatalogGroup;
 	label: string;
 	roots: BuiltinToolRootCard[];
 };
@@ -61,7 +62,7 @@ export function builtinToolEntryFromManifest(manifest: ToolManifestView): Builti
  * and enabled flags for the operation-level controls.
  */
 export function groupBuiltinTools(tools: BuiltinToolEntry[]): BuiltinToolCard[] {
-	const groups = new Map<string, BuiltinToolCard>();
+	const groups = new Map<ToolCatalogGroup, BuiltinToolCard>();
 
 	for (const tool of tools) {
 		const category = tool.category;
@@ -104,21 +105,19 @@ export function groupBuiltinTools(tools: BuiltinToolEntry[]): BuiltinToolCard[] 
 	);
 }
 
-function categoryOrder(category: string): number {
-	return { haven: 0, system: 1, agent: 2, skills: 3, mcp: 4, other: 5 }[category] ?? 99;
+function categoryOrder(category: ToolCatalogGroup): number {
+	return { haven: 0, system: 1, agent: 2, skills: 3, mcp: 4, other: 5 }[category];
 }
 
-function categoryLabel(category: string): string {
-	return (
-		{
-			haven: 'Haven',
-			system: 'System',
-			agent: 'Agent',
-			skills: 'Skills',
-			mcp: 'MCP',
-			other: 'Other',
-		}[category] || category
-	);
+function categoryLabel(category: ToolCatalogGroup): string {
+	return {
+		haven: 'Haven',
+		system: 'System',
+		agent: 'Agent',
+		skills: 'Skills',
+		mcp: 'MCP',
+		other: 'Other',
+	}[category];
 }
 
 function normalizedQuery(query: string): string {
