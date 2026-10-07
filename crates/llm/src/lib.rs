@@ -33,7 +33,8 @@ pub use image_gen::{
 };
 pub use ocr::{OcrClient, OcrResult, build_ocr_client};
 pub use registry::{
-    FALLBACK_CONTEXT_WINDOW, ModelInfo, ModelRegistry, context_window_for, model_info_from_json,
+    FALLBACK_CONTEXT_WINDOW, ModelDiscoveryAuthHeader, ModelInfo, ModelRegistry,
+    context_window_for, model_info_from_json,
 };
 pub use router::{LlmRouter, StreamAttemptHooks};
 pub use stt::{

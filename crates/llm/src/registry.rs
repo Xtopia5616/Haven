@@ -240,6 +240,13 @@ pub struct ModelRegistry {
     discovered: Vec<ModelInfo>,
 }
 
+/// Explicit authorization header supplied to model discovery. The value can
+/// contain a credential, so this type deliberately does not implement `Debug`.
+pub struct ModelDiscoveryAuthHeader {
+    pub header_name: String,
+    pub value: String,
+}
+
 impl ModelRegistry {
     pub fn new() -> Self {
         Self {
@@ -250,14 +257,13 @@ impl ModelRegistry {
     /// Fetch models from a provider's `/models` endpoint.
     ///
     /// `auth_header` overrides the default `Authorization: Bearer <key>`
-    /// scheme with a literal `(header_name, header_value)` pair — used by the
-    /// settings UI for Anthropic (`x-api-key`), Gemini (`x-goog-api-key`) and
-    /// custom-gateway endpoints.
+    /// scheme with an explicit header — used by the settings UI for Anthropic
+    /// (`x-api-key`), Gemini (`x-goog-api-key`) and custom-gateway endpoints.
     pub async fn discover_from(
         &mut self,
         base_url: &str,
         api_key: &str,
-        auth_header: Option<(&str, &str)>,
+        auth_header: Option<&ModelDiscoveryAuthHeader>,
     ) -> Result<Vec<ModelInfo>, crate::LlmError> {
         self.discover_from_with_proxy(base_url, api_key, auth_header, None, None)
             .await
@@ -270,7 +276,7 @@ impl ModelRegistry {
         &mut self,
         base_url: &str,
         api_key: &str,
-        auth_header: Option<(&str, &str)>,
+        auth_header: Option<&ModelDiscoveryAuthHeader>,
         proxy_url: Option<&str>,
         no_proxy: Option<&str>,
     ) -> Result<Vec<ModelInfo>, crate::LlmError> {
@@ -297,14 +303,18 @@ impl ModelRegistry {
         let mut resp = None;
         for (index, url) in urls.iter().enumerate() {
             let mut req = client.get(url);
-            if let Some((name, value)) = auth_header {
+            if let Some(auth_header) = auth_header {
                 let name =
-                    reqwest::header::HeaderName::from_bytes(name.as_bytes()).map_err(|_| {
-                        crate::LlmError::InvalidResponse("invalid custom auth header name".into())
+                    reqwest::header::HeaderName::from_bytes(auth_header.header_name.as_bytes())
+                        .map_err(|_| {
+                            crate::LlmError::InvalidResponse(
+                                "invalid custom auth header name".into(),
+                            )
+                        })?;
+                let value =
+                    reqwest::header::HeaderValue::from_str(&auth_header.value).map_err(|_| {
+                        crate::LlmError::InvalidResponse("invalid custom auth header value".into())
                     })?;
-                let value = reqwest::header::HeaderValue::from_str(value).map_err(|_| {
-                    crate::LlmError::InvalidResponse("invalid custom auth header value".into())
-                })?;
                 req = req.header(name, value);
             } else if !api_key.is_empty() {
                 req = req.header("Authorization", format!("Bearer {}", api_key));

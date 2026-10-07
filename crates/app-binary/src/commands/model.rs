@@ -3,8 +3,7 @@ use crate::commands::log_err;
 use haven_common::config::{
     AppConfig, LlmConfig, ModelConfig, ProviderConfig, RequestKind, provider_config_wire_style,
 };
-use haven_llm::ModelInfo;
-use haven_llm::ModelRegistry;
+use haven_llm::{ModelDiscoveryAuthHeader, ModelInfo, ModelRegistry};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use tauri::Manager;
@@ -131,29 +130,58 @@ fn stt_only_catalog(api_style: Option<&str>) -> Option<Vec<ModelInfo>> {
     )
 }
 
-/// The auth scheme a provider uses for model discovery and chat: an explicit
+/// Header policy a provider uses for model discovery and chat: an explicit
 /// `x-api-key` / `x-goog-api-key` style (customized header or the Anthropic /
 /// Gemini wire protocol) or the OpenAI-style `Authorization: Bearer`.
-fn provider_auth_scheme(p: &ProviderConfig) -> (String, String) {
-    let customized = p.auth_header_name != "Authorization" || p.auth_header_prefix != "Bearer";
-    if customized {
-        (p.auth_header_name.clone(), p.auth_header_prefix.clone())
-    } else {
-        match p.api_style.as_deref().map(haven_llm::normalize_api_style) {
-            Some("anthropic") => ("x-api-key".to_string(), String::new()),
-            Some("gemini") => ("x-goog-api-key".to_string(), String::new()),
-            _ => ("Authorization".to_string(), "Bearer".to_string()),
+struct AuthHeaderScheme {
+    header_name: String,
+    prefix: String,
+}
+
+/// Credentials resolved for one model-discovery request. The API key is passed
+/// to the registry separately from the optional explicit HTTP header.
+/// This type deliberately does not implement `Debug` because it contains a key.
+struct ResolvedDiscoveryAuth {
+    api_key: String,
+    auth_header: Option<ModelDiscoveryAuthHeader>,
+}
+
+impl AuthHeaderScheme {
+    fn header_for_key(&self, api_key: &str) -> ModelDiscoveryAuthHeader {
+        let value = if self.prefix.is_empty() {
+            api_key.to_string()
+        } else {
+            format!("{} {}", self.prefix, api_key)
+        };
+        ModelDiscoveryAuthHeader {
+            header_name: self.header_name.clone(),
+            value,
         }
     }
 }
 
-/// Build the `Authorization`-style value. A `None` prefix means the key is
-/// sent raw (Anthropic / Gemini API keys).
-fn auth_value(prefix: &str, key: &str) -> String {
-    if prefix.is_empty() {
-        key.to_string()
+fn provider_auth_scheme(p: &ProviderConfig) -> AuthHeaderScheme {
+    let customized = p.auth_header_name != "Authorization" || p.auth_header_prefix != "Bearer";
+    if customized {
+        AuthHeaderScheme {
+            header_name: p.auth_header_name.clone(),
+            prefix: p.auth_header_prefix.clone(),
+        }
     } else {
-        format!("{} {}", prefix, key)
+        match p.api_style.as_deref().map(haven_llm::normalize_api_style) {
+            Some("anthropic") => AuthHeaderScheme {
+                header_name: "x-api-key".to_string(),
+                prefix: String::new(),
+            },
+            Some("gemini") => AuthHeaderScheme {
+                header_name: "x-goog-api-key".to_string(),
+                prefix: String::new(),
+            },
+            _ => AuthHeaderScheme {
+                header_name: "Authorization".to_string(),
+                prefix: "Bearer".to_string(),
+            },
+        }
     }
 }
 
@@ -173,30 +201,37 @@ fn resolve_discovery_auth(
     provider: Option<&str>,
     auth_header_name: Option<&str>,
     auth_header_prefix: Option<&str>,
-) -> Option<(String, (String, String))> {
+) -> Option<ResolvedDiscoveryAuth> {
     let requested = normalize_endpoint_url(base_url);
     let provider_cfg = provider.and_then(|name| cfg.llm.provider(name));
 
     if !api_key.is_empty() {
-        let (h, pfx) = if let Some(header_name) = auth_header_name.filter(|name| !name.is_empty()) {
-            (
-                header_name.to_string(),
-                auth_header_prefix.unwrap_or_default().to_string(),
-            )
+        let scheme = if let Some(header_name) = auth_header_name.filter(|name| !name.is_empty()) {
+            AuthHeaderScheme {
+                header_name: header_name.to_string(),
+                prefix: auth_header_prefix.unwrap_or_default().to_string(),
+            }
         } else {
             provider_cfg
                 .filter(|p| normalize_endpoint_url(&p.base_url) == requested)
                 .map(provider_auth_scheme)
-                .unwrap_or_else(|| ("Authorization".to_string(), "Bearer".to_string()))
+                .unwrap_or_else(|| AuthHeaderScheme {
+                    header_name: "Authorization".to_string(),
+                    prefix: "Bearer".to_string(),
+                })
         };
-        let value = auth_value(&pfx, api_key);
-        return Some((api_key.to_string(), (h, value)));
+        return Some(ResolvedDiscoveryAuth {
+            api_key: api_key.to_string(),
+            auth_header: Some(scheme.header_for_key(api_key)),
+        });
     }
 
     if let Some(p) = provider_cfg.filter(|p| normalize_endpoint_url(&p.base_url) == requested) {
-        let (h, pfx) = provider_auth_scheme(p);
-        let value = auth_value(&pfx, &p.api_key);
-        return Some((p.api_key.clone(), (h, value)));
+        let scheme = provider_auth_scheme(p);
+        return Some(ResolvedDiscoveryAuth {
+            api_key: p.api_key.clone(),
+            auth_header: Some(scheme.header_for_key(&p.api_key)),
+        });
     }
     None
 }
@@ -283,11 +318,17 @@ pub async fn check_llm_connection(
 /// Resolve the auth scheme (header name, prefix) for an STT provider during
 /// model discovery. Gemini uses its `x-goog-api-key` wire scheme; every other
 /// provider goes through the OpenAI-style `Authorization: Bearer`.
-fn stt_auth_scheme(provider: &str) -> (String, String) {
+fn stt_auth_scheme(provider: &str) -> AuthHeaderScheme {
     if provider == "gemini" {
-        ("x-goog-api-key".to_string(), String::new())
+        AuthHeaderScheme {
+            header_name: "x-goog-api-key".to_string(),
+            prefix: String::new(),
+        }
     } else {
-        ("Authorization".to_string(), "Bearer".to_string())
+        AuthHeaderScheme {
+            header_name: "Authorization".to_string(),
+            prefix: "Bearer".to_string(),
+        }
     }
 }
 
@@ -348,8 +389,11 @@ pub async fn discover_models(
         return Ok(list);
     }
 
-    let key_and_auth = if api_key.is_empty() && skip_auth.unwrap_or(false) {
-        Some((String::new(), None))
+    let resolved_auth = if api_key.is_empty() && skip_auth.unwrap_or(false) {
+        Some(ResolvedDiscoveryAuth {
+            api_key: String::new(),
+            auth_header: None,
+        })
     } else if role.as_deref().and_then(RequestKind::from_str) == Some(RequestKind::Transcription) {
         // STT discovery: prefer an explicit key, otherwise use only the named
         // `llm.providers` entry selected by the request or media settings.
@@ -365,9 +409,10 @@ pub async fn discover_models(
                 .provider(scheme_name)
                 .map(|p| p.provider.as_str())
                 .unwrap_or(scheme_name);
-            let (h, pfx) = stt_auth_scheme(backend);
-            let value = auth_value(&pfx, &api_key);
-            Some((api_key.clone(), Some((h, value))))
+            Some(ResolvedDiscoveryAuth {
+                api_key: api_key.clone(),
+                auth_header: Some(stt_auth_scheme(backend).header_for_key(&api_key)),
+            })
         } else if let Some(name) = provider
             .as_deref()
             .filter(|n| !n.is_empty())
@@ -388,9 +433,10 @@ pub async fn discover_models(
             && let Some(p) = cfg.llm.provider(name)
             && normalize_endpoint_url(&p.base_url) == requested
         {
-            let (h, pfx) = stt_auth_scheme(&p.provider);
-            let value = auth_value(&pfx, &p.api_key);
-            Some((p.api_key.clone(), Some((h, value))))
+            Some(ResolvedDiscoveryAuth {
+                api_key: p.api_key.clone(),
+                auth_header: Some(stt_auth_scheme(&p.provider).header_for_key(&p.api_key)),
+            })
         } else {
             None
         }
@@ -403,10 +449,9 @@ pub async fn discover_models(
             auth_header_name.as_deref(),
             auth_header_prefix.as_deref(),
         )
-        .map(|(key, auth)| (key, Some(auth)))
     };
 
-    let (key, auth) = key_and_auth.ok_or_else(|| {
+    let resolved_auth = resolved_auth.ok_or_else(|| {
         "未找到可用的 API Key：请填写 API Key，或先保存 Provider 配置（其 Base URL 需与请求地址一致）"
             .to_string()
     })?;
@@ -420,9 +465,8 @@ pub async fn discover_models(
     let models = reg
         .discover_from_with_proxy(
             &base_url,
-            &key,
-            auth.as_ref()
-                .map(|(header, value)| (header.as_str(), value.as_str())),
+            &resolved_auth.api_key,
+            resolved_auth.auth_header.as_ref(),
             proxy_url.as_deref(),
             no_proxy.as_deref(),
         )
@@ -473,7 +517,7 @@ pub async fn discover_all_models(
             results.insert(p.name.clone(), list);
             continue;
         }
-        let (header, prefix) = provider_auth_scheme(p);
+        let auth_scheme = provider_auth_scheme(p);
         let name = p.name.clone();
         let base_url = p.base_url.clone();
         let api_key = p.api_key.clone();
@@ -482,11 +526,11 @@ pub async fn discover_all_models(
         let auth_header = if api_key.is_empty() {
             None
         } else {
-            Some((header, auth_value(&prefix, &api_key)))
+            Some(auth_scheme.header_for_key(&api_key))
         };
         handles.push(tokio::spawn(async move {
             let mut reg = ModelRegistry::new();
-            let auth_ref = auth_header.as_ref().map(|(h, v)| (h.as_str(), v.as_str()));
+            let auth_ref = auth_header.as_ref();
             match reg
                 .discover_from_with_proxy(
                     &base_url,
@@ -692,13 +736,11 @@ mod tests {
             Some(""),
         );
 
-        assert_eq!(
-            auth,
-            Some((
-                "entered-key".into(),
-                ("x-api-key".into(), "entered-key".into())
-            ))
-        );
+        let auth = auth.expect("explicit key resolves");
+        assert_eq!(auth.api_key, "entered-key");
+        let header = auth.auth_header.expect("explicit key has a header");
+        assert_eq!(header.header_name, "x-api-key");
+        assert_eq!(header.value, "entered-key");
     }
 
     #[test]
@@ -717,13 +759,13 @@ mod tests {
             None,
             None,
         );
-        assert_eq!(
-            matching,
-            Some((
-                "stored-key".into(),
-                ("x-api-key".into(), "stored-key".into())
-            ))
-        );
+        let matching = matching.expect("matching provider endpoint resolves");
+        assert_eq!(matching.api_key, "stored-key");
+        let header = matching
+            .auth_header
+            .expect("stored provider key has a header");
+        assert_eq!(header.header_name, "x-api-key");
+        assert_eq!(header.value, "stored-key");
 
         let mismatched = resolve_discovery_auth(
             &cfg,
@@ -733,7 +775,7 @@ mod tests {
             Some("Authorization"),
             Some("Bearer"),
         );
-        assert_eq!(mismatched, None);
+        assert!(mismatched.is_none());
     }
 
     #[test]
