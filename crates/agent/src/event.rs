@@ -6,6 +6,7 @@ use crate::session::SessionInfo;
 use async_trait::async_trait;
 use haven_common::SessionStatus;
 use haven_common::config::RequestKind;
+use haven_common::tools::{OperationIdempotency, ToolOperationScope};
 use haven_common::types::LlmCallKind;
 use haven_memory::SessionStore;
 use haven_tools::ToolResultEnvelope;
@@ -72,9 +73,9 @@ pub enum AgentEvent {
         /// tool card keeps one id through placeholder → fill → DB badge.
         step_id: String,
         /// Replay policy of the concrete operation, not just its tool name.
-        idempotency: String,
+        idempotency: OperationIdempotency,
         /// Whether the operation targets session-local or global state.
-        operation_scope: String,
+        operation_scope: ToolOperationScope,
         /// Backend-owned renderer selected from the operation manifest.
         renderer: String,
         /// Canonical execution metadata, including the UI outcome. The

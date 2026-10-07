@@ -13,6 +13,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use haven_common::config::RequestKind;
+use haven_common::tools::{OperationIdempotency, ToolOperationScope};
 use haven_memory::{SessionEvent, TRANSCRIPT_EVENT_TYPE};
 use serde_json::Value;
 use tokio::sync::broadcast;
@@ -45,8 +46,8 @@ pub(super) struct StoredObservationUi {
     pub silent: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub ask_options: Vec<String>,
-    pub idempotency: String,
-    pub operation_scope: String,
+    pub idempotency: OperationIdempotency,
+    pub operation_scope: ToolOperationScope,
     pub renderer: String,
     pub result: haven_tools::ToolResultEnvelope,
 }

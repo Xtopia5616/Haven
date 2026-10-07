@@ -278,8 +278,8 @@ fn committed_ui_for(event: &TranscriptEvent) -> Option<CommittedUi> {
                 tool_index: card.tool_index,
                 silent: card.silent,
                 ask_options: card.ask_options.clone(),
-                idempotency: card.idempotency.as_str().to_owned(),
-                operation_scope: card.operation_scope.as_str().to_owned(),
+                idempotency: card.idempotency,
+                operation_scope: card.operation_scope,
                 renderer: card.renderer.clone(),
                 result: card.result_envelope.clone(),
             }),
@@ -1419,13 +1419,34 @@ mod tests {
         assert_eq!(rounds[0].tools[0].observation.as_deref(), Some("ok"));
         assert_eq!(rounds[0].tools[0].tool_index, 0);
         assert_eq!(rounds[0].tools[0].step_id, step_id);
-        let durable_sequence = engine
+        let durable_events = engine
             .event_store
             .read_active_transcript(&session.id)
-            .unwrap()
+            .unwrap();
+        let committed_event = durable_events
             .first()
             .expect("committed tool-result event")
-            .sequence as u64;
+            .clone();
+        let durable_sequence = committed_event.sequence as u64;
+        let durable_payload: Value = serde_json::from_str(&committed_event.payload).unwrap();
+        assert_eq!(durable_payload["ui"]["card"]["idempotency"], "idempotent");
+        assert_eq!(durable_payload["ui"]["card"]["operation_scope"], "session");
+        let replay_events = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let replay_emitter: Arc<dyn AgentEventEmitter> = Arc::new(RecordingEmitter {
+            events: replay_events.clone(),
+        });
+        super::committed_ui::CommittedUiPublisher::new()
+            .publish(&replay_emitter, &durable_events)
+            .await;
+        assert!(replay_events.lock().unwrap().iter().any(|event| matches!(
+            event,
+            crate::event::AgentEvent::Observation {
+                idempotency: haven_tools::OperationIdempotency::Idempotent,
+                operation_scope: haven_tools::ToolOperationScope::Session,
+                event_seq: Some(sequence),
+                ..
+            } if *sequence == durable_sequence
+        )));
         let ev = ui_events.lock().unwrap();
         assert!(
             ev.iter().any(|e| matches!(

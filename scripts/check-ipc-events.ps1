@@ -90,6 +90,7 @@ $agentEvents = Get-Content $agentEventsPath -Raw
 $agentEventBridge = Get-Content $agentEventBridgePath -Raw
 $agentContract = Get-Content $agentContractPath -Raw
 $agentWire = Get-Content $agentWirePath -Raw
+$committedUi = Get-Content (Join-Path $root 'crates/agent/src/react/committed_ui.rs') -Raw
 if (-not [regex]::IsMatch($agentEvents, '(?s)struct\s+AgentNotificationEvent\s*\{[^}]*notification_kind[^}]*tool_run_kind[^}]*tool_run_id[^}]*tool_run_status')) {
     throw 'AgentNotificationEvent must keep the ToolRun completion notification discriminator and routing fields in its named wire DTO'
 }
@@ -99,6 +100,11 @@ if (-not [regex]::IsMatch($agentEventBridge, 'ToolRunCompletionNotification\s*\{
 }
 if (-not [regex]::IsMatch($agentEvents, '(?s)struct\s+AgentNotificationEvent\s*\{[^}]*tool_run_kind:\s*Option<ToolRunKindDto>[^}]*tool_run_id[^}]*tool_run_status:\s*Option<ToolRunCompletionStatusDto>')) {
     throw 'AgentNotificationEvent must use App-owned ToolRun notification enums'
+}
+if (-not [regex]::IsMatch($agentWire, '(?s)Observation\s*\{[^}]*idempotency:\s*OperationIdempotency[^}]*operation_scope:\s*ToolOperationScope') -or
+    -not [regex]::IsMatch($committedUi, '(?s)struct\s+StoredObservationUi\s*\{[^}]*idempotency:\s*OperationIdempotency[^}]*operation_scope:\s*ToolOperationScope') -or
+    -not [regex]::IsMatch($agentEvents, '(?s)struct\s+AgentObservationEvent\s*\{[^}]*idempotency:\s*OperationIdempotency[^}]*operation_scope:\s*ToolOperationScope')) {
+    throw 'observation idempotency and operation scope must retain their Common enum types through durable UI metadata and the App wire DTO'
 }
 if (-not [regex]::IsMatch($agentContract, '(?s)export interface AgentNotificationPayload\s*\{[^}]*notificationKind\?:\s*AgentNotificationKind[^}]*toolRunKind\?:\s*ToolRunKindDto[^}]*toolRunId\?:\s*string[^}]*toolRunStatus\?:\s*ToolRunCompletionStatusDto')) {
     throw 'frontend notification contract must use generated ToolRun completion source, identity, and status types'
@@ -114,6 +120,12 @@ if (-not [regex]::IsMatch($agentContract, "(?s)function\s+optionalSessionId\([^)
 }
 if (-not [regex]::IsMatch($agentContract, '(?s)export interface AgentNotificationPayload\s*\{[^}]*sessionId\?:\s*string')) {
     throw 'frontend notification contract must make the real session association optional'
+}
+if (-not [regex]::IsMatch($agentContract, "(?s)import\s*\{[^}]*OPERATION_IDEMPOTENCY_VALUES[^}]*TOOL_OPERATION_SCOPE_VALUES[^}]*\}\s*from\s*'\./generatedCommands\.ts'") -or
+    -not [regex]::IsMatch($agentContract, '(?s)interface\s+AgentObservationPayload\s*\{[^}]*idempotency:\s*OperationIdempotency[^}]*operationScope:\s*ToolOperationScope') -or
+    -not [regex]::IsMatch($agentContract, 'isOneOf\(idempotency,\s*OPERATION_IDEMPOTENCY_VALUES\)') -or
+    -not [regex]::IsMatch($agentContract, 'isOneOf\(operationScope,\s*TOOL_OPERATION_SCOPE_VALUES\)')) {
+    throw 'Agent observation metadata must use generated Common enum types and runtime values'
 }
 if (-not [regex]::IsMatch($agentWire, 'renderer:\s*String') -or
     -not [regex]::IsMatch($agentContract, '(?s)interface\s+AgentObservationPayload\s*\{[^}]*renderer:\s*string;') -or

@@ -3,7 +3,9 @@
 import type {
 	AgentNotificationKind,
 	LlmCallKind,
+	OperationIdempotency,
 	RequestKind,
+	ToolOperationScope,
 	ToolRunCompletionStatusDto,
 	ToolRunKindDto,
 } from './generatedCommands.ts';
@@ -11,6 +13,8 @@ import {
 	AGENT_EVENT_NAMES,
 	AGENT_NOTIFICATION_KIND_VALUES,
 	LLM_CALL_KIND_VALUES,
+	OPERATION_IDEMPOTENCY_VALUES,
+	TOOL_OPERATION_SCOPE_VALUES,
 	TOOL_RUN_COMPLETION_STATUS_DTO_VALUES,
 	TOOL_RUN_KIND_DTO_VALUES,
 } from './generatedCommands.ts';
@@ -29,7 +33,6 @@ export type ToolErrorClass =
 	| 'other';
 export type ToolRetrySafety = 'idempotent' | 'non_idempotent' | 'unknown';
 export type ToolRetryability = 'retryable' | 'not_retryable' | 'unknown';
-export type ToolOperationScope = 'global' | 'session';
 
 export interface AgentThoughtPayload {
 	sessionId: string;
@@ -65,7 +68,7 @@ export interface AgentObservationPayload {
 	toolIndex: number;
 	askOptions: string[];
 	stepId: string;
-	idempotency: ToolRetrySafety;
+	idempotency: OperationIdempotency;
 	operationScope: ToolOperationScope;
 	renderer: string;
 	result: AgentToolResultEnvelope;
@@ -295,7 +298,6 @@ const TOOL_ERROR_CLASSES = [
 ] as const;
 const TOOL_RETRY_SAFETY = ['idempotent', 'non_idempotent', 'unknown'] as const;
 const TOOL_RETRYABILITY = ['retryable', 'not_retryable', 'unknown'] as const;
-const TOOL_OPERATION_SCOPES = ['global', 'session'] as const;
 
 function mapToolResult(value: unknown): AgentToolResultEnvelope | null {
 	if (!isRecord(value)) return null;
@@ -454,8 +456,8 @@ export function mapAgentEvent(
 				askOptions === null ||
 				stepId === null ||
 				renderer === null ||
-				!isOneOf(idempotency, TOOL_RETRY_SAFETY) ||
-				!isOneOf(operationScope, TOOL_OPERATION_SCOPES) ||
+				!isOneOf(idempotency, OPERATION_IDEMPOTENCY_VALUES) ||
+				!isOneOf(operationScope, TOOL_OPERATION_SCOPE_VALUES) ||
 				(toolCallId !== null && typeof toolCallId !== 'string') ||
 				result === null ||
 				!optionalNumberIsValid(payload, 'event_seq')

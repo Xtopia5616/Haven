@@ -226,7 +226,7 @@ DTO 位于 `crates/app-binary/src/events.rs`；前端镜像分别位于
 | `llm:config_changed` | `()` | 设置页、模型页 | 无 payload；通知页面重新读取脱敏配置。 |
 | `agent:thought` | `AgentThoughtEvent` | 聊天页 | 按 `message_id` 归并；可选 `event_seq` 是已提交的 `session_events.sequence`，缺失表示没有 durable 行的 snap。文本不得重复写入普通日志。 |
 | `agent:tool_call` | `AgentToolCallEvent` | 聊天页 | `input` 是工具参数动态扩展点；其余执行身份固定，`silent` 由后端计算。同一 `event_seq` 可以对应多个 `step_id`，前端按 `(event_seq, step_id)` 去重。 |
-| `agent:observation` | `AgentObservationEvent` | 聊天页 | 与 ToolCall 的 `step_id` / `tool_call_id` 关联；工具输出按后端门禁净化。去重键是 `(event_seq, step_id)`。 |
+| `agent:observation` | `AgentObservationEvent` | 聊天页 | 与 ToolCall 的 `step_id` / `tool_call_id` 关联；`idempotency` / `operation_scope` 使用 generated Common enum；工具输出按后端门禁净化。去重键是 `(event_seq, step_id)`（ADR 0743）。 |
 | `agent:stream_stalled` | `AgentStreamStalledEvent` | 根布局、聊天页 | 状态提示可重复；不得携带 provider 原始响应。 |
 | `agent:thought_chunk` / `agent:reasoning_chunk` | `Agent*ChunkEvent` | 聊天页 | 只使用 chunk `seq`，不分配 durable `event_seq`。丢失 chunk 时由完整消息投影兜底。 |
 | `agent:stream_reset` | `AgentStreamResetEvent` | 聊天页 | 与 chunk 共用后端有序队列；先清空对应 live thought/reasoning，再接受新尝试；不回滚 durable transcript。 |

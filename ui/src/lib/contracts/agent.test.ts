@@ -356,6 +356,18 @@ describe('agent IPC contract', () => {
 			mapAgentEventContract({ event: 'agent:observation', id: 8, payload: withoutRenderer }),
 		).toBeNull();
 		expect(mapAgentEventContract({ event: 'agent:observation', id: 8, payload })).not.toBeNull();
+		for (const [field, value] of [
+			['idempotency', 'future_idempotency'],
+			['operation_scope', 'future_scope'],
+		] as const) {
+			expect(
+				mapAgentEventContract({
+					event: 'agent:observation',
+					id: 8,
+					payload: { ...payload, [field]: value },
+				}),
+			).toBeNull();
+		}
 		payload.result.outcome = 'future_outcome';
 		expect(mapAgentEventContract({ event: 'agent:observation', id: 8, payload })).toBeNull();
 	});
