@@ -595,3 +595,4 @@
 - [0604：命名 Memory summary marker 解码结果](0604-name-memory-summary-marker-decode-result.md)
 - [0605：删除 UI Tool result parser 空泛 alias](0605-remove-tool-result-object-alias.md)
 - [0606：命名 LLM resolved model client](0606-name-llm-resolved-model-client.md)
+- [0607：删除 UI command invoker 同义 alias](0607-remove-ui-command-invoker-aliases.md)

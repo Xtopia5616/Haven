@@ -19,8 +19,6 @@ import type {
 	SessionSummary,
 } from './sessionReducer.ts';
 
-export type ChatInvoke = TauriCommandInvoke;
-
 export interface ChatImageAttachment {
 	media_type: string;
 	data: string;
@@ -38,7 +36,7 @@ export interface RollbackRequest {
 }
 
 export interface ChatSessionControllerDependencies {
-	invoke: ChatInvoke;
+	invoke: TauriCommandInvoke;
 	submitTranscript: (text: string, options: {
 		images: ChatImageAttachment[] | null | undefined;
 		files: ChatFileAttachment[] | null | undefined;

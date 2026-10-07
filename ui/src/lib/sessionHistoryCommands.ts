@@ -13,8 +13,6 @@ import type {
 } from './contracts/sessionHistory.ts';
 import type { TauriCommandInvoke } from './contracts/generatedCommands.ts';
 
-export type SessionHistoryInvoker = TauriCommandInvoke;
-
 /** List the current in-memory session summaries for the chat shell. */
 export function listSessions(): Promise<SessionListResponse> {
 	return invoke('get_sessions');
@@ -38,7 +36,7 @@ export function searchHistoryFiltered(request: HistoryFilterRequest): Promise<Se
 /** Load the durable projection used by session resume and transcript reload. */
 export function getSessionForResume(
 	request: SessionIdRequest,
-	invokeCommand: SessionHistoryInvoker = invoke,
+	invokeCommand: TauriCommandInvoke = invoke,
 ): Promise<SessionResumeResponse> {
 	return invokeCommand('get_session_for_resume', request);
 }
