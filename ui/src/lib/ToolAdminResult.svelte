@@ -13,7 +13,7 @@
 	<div class="tool-card-count">{data.servers.length} 个 MCP 服务</div>
 	<ToolResultList items={data.servers}>
 		{#snippet children(visibleServers)}
-			<div class="admin-list">
+			<div class="admin-list tool-result-scroll-area">
 				{#each visibleServers as server, index (server.name ?? index)}
 					<div class="admin-row">
 						<span class="admin-name">{server.name || '未命名服务'}</span>
@@ -32,7 +32,7 @@
 	<div class="tool-card-count">{data.skills.length} 个技能</div>
 	<ToolResultList items={data.skills}>
 		{#snippet children(visibleSkills)}
-			<div class="admin-list">
+			<div class="admin-list tool-result-scroll-area">
 				{#each visibleSkills as skill, index (skill.name ?? index)}
 					<div class="admin-row">
 						<span class="admin-name">{skill.name || '未命名技能'}</span>
@@ -50,7 +50,7 @@
 	{#if rows.length === 0}<p class="tool-card-empty">没有记录</p>{/if}
 	<ToolResultList items={rows}>
 		{#snippet children(visibleRows: Array<Record<string, unknown>>)}
-			<div class="admin-list">
+			<div class="admin-list tool-result-scroll-area">
 				{#each visibleRows as row, index (row.id ?? index)}
 					<div class="admin-row">
 						<span class="admin-name">{row.title || row.id || '未命名会话'}</span>
@@ -95,9 +95,7 @@
 		margin: 0;
 	}
 	.admin-list {
-		max-height: 220px;
-		overflow-y: auto;
-		border-radius: var(--md-sys-shape-extra-small);
+		--tool-result-scroll-max-height: 220px;
 	}
 	.admin-row {
 		display: flex;

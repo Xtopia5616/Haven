@@ -44,7 +44,7 @@
 	{#if facts.length > 0}
 		<ToolResultList items={facts}>
 			{#snippet children(visibleFacts)}
-				<div class="memory-list">
+				<div class="memory-list tool-result-scroll-area">
 					{#each visibleFacts as fact, index (`${fact.id ?? `${fact.subject ?? ''}:${fact.predicate ?? ''}:${index}`}`)}
 						<div class="memory-row">
 							<div class="memory-triple">
@@ -78,7 +78,7 @@
 	{#if hits.length > 0}
 		<ToolResultList items={hits}>
 			{#snippet children(visibleHits)}
-				<div class="memory-list">
+				<div class="memory-list tool-result-scroll-area">
 					{#each visibleHits as hit, index (hit.entity_id ?? index)}
 						<div class="memory-row">
 							<div class="memory-hit-text">{hit.text || '—'}</div>
@@ -129,9 +129,7 @@
 		margin: 0;
 	}
 	.memory-list {
-		max-height: 240px;
-		overflow-y: auto;
-		border-radius: var(--md-sys-shape-extra-small);
+		--tool-result-scroll-max-height: 240px;
 	}
 	.memory-row {
 		padding: var(--md-sys-space-2xs) var(--md-sys-space-xs);
