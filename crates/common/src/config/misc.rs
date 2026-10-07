@@ -48,11 +48,8 @@ impl Default for SessionConfig {
             max_concurrent: 3,
             prompt_history_limit: 50,
             history_retention_days: 90,
-            // Per-run ReAct step budget (raised 30 → 200 so long multi-tool
-            // sessions don't hit the cap mid-run; see refactor-dedup.md A9
-            // review note). Resumes grant a fresh budget, so a session can run
-            // well past this total across pause/resume cycles unless
-            // `max_steps_per_session` is set.
+            // Each resumed Session starts a new run and receives this budget
+            // again; `max_steps_per_session` applies the separate lifetime cap.
             max_steps_per_run: 500,
             max_steps_per_session: None,
         }
