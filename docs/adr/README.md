@@ -643,3 +643,4 @@
 - [0652：将 prompt-history 限制配置归入 Session](0652-move-prompt-history-limit-to-session-config.md)
 - [0653：按 Session 职责命名消息时间线 renderer](0653-name-session-message-timeline-renderer.md)
 - [0654：统一 Memory fact candidate 持久化策略入口](0654-share-memory-fact-candidate-policy.md)
+- [0655：区分 ToolRun 生命周期与前台实时输出 sink](0655-name-tool-run-event-sinks.md)

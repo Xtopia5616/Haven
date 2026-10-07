@@ -1356,11 +1356,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_event_sink_receives_set_fire_cancel() {
+    async fn lifecycle_event_sink_receives_set_fire_cancel() {
         let center = Arc::new(ToolRunService::new());
         let events = Arc::new(Mutex::new(Vec::new()));
         let sink_events = events.clone();
-        center.set_event_sink(Arc::new(move |event| {
+        center.set_lifecycle_event_sink(Arc::new(move |event| {
             sink_events.lock().unwrap().push(event.into_test_parts());
         }));
         let mut rx = center.take_tool_run_receiver().expect("receiver available");

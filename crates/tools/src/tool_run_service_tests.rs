@@ -81,7 +81,7 @@ fn capture_tool_run_events(
 ) -> Arc<std::sync::Mutex<Vec<(String, Value)>>> {
     let events = Arc::new(std::sync::Mutex::new(Vec::new()));
     let sink_events = Arc::clone(&events);
-    service.set_event_sink(Arc::new(move |event| {
+    service.set_lifecycle_event_sink(Arc::new(move |event| {
         sink_events.lock().unwrap().push(event.into_test_parts());
     }));
     events
@@ -1254,7 +1254,7 @@ async fn test_cancel_for_session_cleans_up() {
     let tool_runs = Arc::new(ToolRunService::new());
     let events = Arc::new(std::sync::Mutex::new(Vec::new()));
     let sink_events = events.clone();
-    tool_runs.set_event_sink(Arc::new(move |event| {
+    tool_runs.set_lifecycle_event_sink(Arc::new(move |event| {
         sink_events.lock().unwrap().push(event.into_test_parts());
     }));
     let id = tool_runs
@@ -1572,11 +1572,11 @@ async fn committed_background_completion_keeps_source_step_identity() {
 
 #[cfg(windows)]
 #[tokio::test]
-async fn test_event_sink_receives_lifecycle() {
+async fn lifecycle_event_sink_receives_lifecycle_events() {
     let tool_runs = Arc::new(ToolRunService::new());
     let events = Arc::new(std::sync::Mutex::new(Vec::new()));
     let sink_events = events.clone();
-    tool_runs.set_event_sink(Arc::new(move |event| {
+    tool_runs.set_lifecycle_event_sink(Arc::new(move |event| {
         sink_events.lock().unwrap().push(event.into_test_parts());
     }));
     let id = tool_runs
@@ -1770,7 +1770,7 @@ async fn test_tool_run_output_preview_emitted() {
     let tool_runs = Arc::new(ToolRunService::new());
     let events = Arc::new(std::sync::Mutex::new(Vec::new()));
     let sink_events = events.clone();
-    tool_runs.set_event_sink(Arc::new(move |event| {
+    tool_runs.set_lifecycle_event_sink(Arc::new(move |event| {
         sink_events.lock().unwrap().push(event.into_test_parts());
     }));
     // A ToolRun that keeps running past one emit interval while producing
@@ -2535,7 +2535,7 @@ async fn test_restore_scheduled_tool_run_uses_tool_run_session_and_schedule_due_
     )
     .unwrap();
     let service = Arc::new(ToolRunService::new());
-    service.set_event_sink(Arc::new(move |event| {
+    service.set_lifecycle_event_sink(Arc::new(move |event| {
         sink_events.lock().unwrap().push(event.into_test_parts());
     }));
     service
@@ -2903,7 +2903,7 @@ async fn test_unified_completion_bus_emits_scheduled_transition() {
     let service = Arc::new(ToolRunService::new());
     let events = Arc::new(std::sync::Mutex::new(Vec::new()));
     let sink_events = events.clone();
-    service.set_event_sink(Arc::new(move |event| {
+    service.set_lifecycle_event_sink(Arc::new(move |event| {
         sink_events.lock().unwrap().push(event.into_test_parts());
     }));
     let mut rx = service
@@ -3956,7 +3956,7 @@ async fn test_scheduled_lifecycle_events_reuse_persisted_timestamps() {
         .await;
     let events = Arc::new(std::sync::Mutex::new(Vec::new()));
     let sink_events = events.clone();
-    service.set_event_sink(Arc::new(move |event| {
+    service.set_lifecycle_event_sink(Arc::new(move |event| {
         sink_events.lock().unwrap().push(event.into_test_parts());
     }));
     let mut rx = service

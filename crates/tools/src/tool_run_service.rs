@@ -54,7 +54,7 @@ use views::{
 };
 
 /// Optional typed sink for the closed ToolRun lifecycle event contract.
-pub use crate::tool_run_lifecycle::EventSink;
+pub use crate::tool_run_lifecycle::ToolRunLifecycleEventSink;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ToolRunKind {
@@ -276,9 +276,9 @@ pub struct ToolRunService {
     max_scheduled_tool_runs: RwLock<usize>,
     /// Upper bound for absolute timer schedules.
     max_due_horizon_secs: RwLock<i64>,
-    /// Optional UI event sink (see `EventSink`). Wired by the desktop shell
-    /// to forward lifecycle events as Tauri events.
-    event_sink: ToolRunLifecycle,
+    /// Optional UI sink for ToolRun lifecycle events. Wired by the desktop
+    /// shell to forward lifecycle events as Tauri events.
+    lifecycle_events: ToolRunLifecycle,
     /// Persistent ToolRun store; `None` in headless/test builds (in-memory only).
     /// Terminal ToolRun rows stay here as history even after the in-memory board
     /// reaps them (`TERMINAL_JOB_TTL`), so results survive app restarts.
@@ -312,7 +312,7 @@ impl ToolRunService {
             tool_run_terminal_ttl: RwLock::new(Duration::from_secs(600)),
             max_scheduled_tool_runs: RwLock::new(32),
             max_due_horizon_secs: RwLock::new(365 * 24 * 3600),
-            event_sink: ToolRunLifecycle::default(),
+            lifecycle_events: ToolRunLifecycle::default(),
             tool_run_store: RwLock::new(None),
             shutdown_token: CancellationToken::new(),
             shutting_down: AtomicBool::new(false),
@@ -412,14 +412,14 @@ impl ToolRunService {
         }
     }
 
-    /// Install the UI event sink (called once by the desktop shell).
-    pub fn set_event_sink(&self, sink: EventSink) {
-        self.event_sink.set_event_sink(sink);
+    /// Install the UI sink for ToolRun lifecycle events (called by the desktop shell).
+    pub fn set_lifecycle_event_sink(&self, sink: ToolRunLifecycleEventSink) {
+        self.lifecycle_events.install_event_sink(sink);
     }
 
     /// Forward a lifecycle event to the installed sink (no-op without one).
     fn emit(&self, event: ToolRunLifecycleEvent) {
-        self.event_sink.emit(event);
+        self.lifecycle_events.emit(event);
     }
 
     /// Replace the unified context limits (background ToolRun concurrency cap,

@@ -2,8 +2,8 @@ use crate::ToolRunLifecycleEvent;
 use serde_json::Value;
 use std::sync::{Arc, Mutex, MutexGuard};
 
-/// Typed sink for ToolRun lifecycle events.
-pub type EventSink = Arc<dyn Fn(ToolRunLifecycleEvent) + Send + Sync>;
+/// Typed callback for the ToolRun lifecycle event stream.
+pub type ToolRunLifecycleEventSink = Arc<dyn Fn(ToolRunLifecycleEvent) + Send + Sync>;
 
 /// The foreground tool-output channel is separate from ToolRun lifecycle
 /// events and retains its existing internal JSON envelope.
@@ -24,11 +24,11 @@ fn lock_or_recover<'a, T>(lock: &'a Mutex<T>, name: &'static str) -> MutexGuard<
 /// its own state, cancellation mechanics, and durable representation.
 #[derive(Default)]
 pub(crate) struct ToolRunLifecycle {
-    sink: Mutex<Option<EventSink>>,
+    sink: Mutex<Option<ToolRunLifecycleEventSink>>,
 }
 
 impl ToolRunLifecycle {
-    pub(crate) fn set_event_sink(&self, sink: EventSink) {
+    pub(crate) fn install_event_sink(&self, sink: ToolRunLifecycleEventSink) {
         *lock_or_recover(&self.sink, "tool_run_event_sink") = Some(sink);
     }
 

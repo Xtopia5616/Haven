@@ -16,9 +16,9 @@ use tokio::sync::RwLock;
 
 /// Shared hub that foreground tools (currently shell) use to push live
 /// output previews to the UI. Wired once by the desktop shell via
-/// [`LiveOutputHub::set_event_sink`].
+/// [`LiveOutputHub::set_live_output_event_sink`].
 pub struct LiveOutputHub {
-    event_sink: LiveOutputEventSinkState,
+    live_output_event_sink: LiveOutputEventSinkState,
     /// Shared policy owned by ToolRunService; this hub only emits the
     /// foreground tool-card projection.
     tail_factory: ToolRunTailFactory,
@@ -41,14 +41,14 @@ impl LiveOutputHub {
 
     pub(crate) fn with_tail_factory(tail_factory: ToolRunTailFactory) -> Self {
         Self {
-            event_sink: LiveOutputEventSinkState::default(),
+            live_output_event_sink: LiveOutputEventSinkState::default(),
             tail_factory,
             emit_interval: RwLock::new(Duration::from_millis(500)),
         }
     }
 
-    pub fn set_event_sink(&self, sink: LiveOutputEventSink) {
-        self.event_sink.set(sink);
+    pub fn set_live_output_event_sink(&self, sink: LiveOutputEventSink) {
+        self.live_output_event_sink.set(sink);
     }
 
     pub(crate) async fn set_emit_interval(
@@ -75,7 +75,7 @@ impl LiveOutputHub {
         if step_id.is_empty() {
             return;
         }
-        self.event_sink.emit(
+        self.live_output_event_sink.emit(
             "agent:tool_output",
             json!({
                 "session_id": session_id,
@@ -130,7 +130,7 @@ mod tests {
         let last = Arc::new(Mutex::new(String::new()));
         let hits2 = hits.clone();
         let last2 = last.clone();
-        hub.set_event_sink(Arc::new(move |event, payload| {
+        hub.set_live_output_event_sink(Arc::new(move |event, payload| {
             assert_eq!(event, "agent:tool_output");
             assert_eq!(payload["session_id"], "ses-1");
             assert_eq!(payload["step_id"], "step-1");
@@ -158,7 +158,7 @@ mod tests {
         let hub = Arc::new(LiveOutputHub::new());
         let hits = Arc::new(AtomicUsize::new(0));
         let hits2 = hits.clone();
-        hub.set_event_sink(Arc::new(move |event, payload| {
+        hub.set_live_output_event_sink(Arc::new(move |event, payload| {
             assert_eq!(event, "agent:tool_output");
             assert_eq!(payload["step_id"], "step-live");
             hits2.fetch_add(1, Ordering::SeqCst);
@@ -195,7 +195,7 @@ mod tests {
         let hub = Arc::new(LiveOutputHub::new());
         let hits = Arc::new(AtomicUsize::new(0));
         let hits2 = hits.clone();
-        hub.set_event_sink(Arc::new(move |event, payload| {
+        hub.set_live_output_event_sink(Arc::new(move |event, payload| {
             assert_eq!(event, "agent:tool_output");
             assert_eq!(payload["output"], "already available");
             hits2.fetch_add(1, Ordering::SeqCst);
@@ -256,7 +256,7 @@ mod tests {
         let last = Arc::new(Mutex::new(String::new()));
         let hits2 = hits.clone();
         let last2 = last.clone();
-        hub.set_event_sink(Arc::new(move |event, payload| {
+        hub.set_live_output_event_sink(Arc::new(move |event, payload| {
             assert_eq!(event, "agent:tool_output");
             *last2.lock().unwrap() = payload["output"].as_str().unwrap().into();
             hits2.fetch_add(1, Ordering::SeqCst);

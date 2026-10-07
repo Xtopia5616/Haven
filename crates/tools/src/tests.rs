@@ -1722,7 +1722,7 @@ async fn private_live_output_ids_are_stripped_and_reinjected() {
     let hits2 = hits.clone();
     mgr.share_services()
         .live_outputs
-        .set_event_sink(Arc::new(move |_event, payload| {
+        .set_live_output_event_sink(Arc::new(move |_event, payload| {
             if let Some(sid) = payload["step_id"].as_str() {
                 hits2.lock().unwrap().push(sid.to_string());
             }

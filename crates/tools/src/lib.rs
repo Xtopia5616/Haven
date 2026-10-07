@@ -186,8 +186,8 @@ pub use tool_run_events::{
 pub(crate) use tool_run_lifecycle::ToolRunLifecycle;
 pub(crate) use tool_run_service::BackgroundShellRequest;
 pub use tool_run_service::{
-    BackgroundToolRunCompletion, EventSink, ScheduledToolRunResultCompletion, ToolRunCompletion,
-    ToolRunCompletionReceiver,
+    BackgroundToolRunCompletion, ScheduledToolRunResultCompletion, ToolRunCompletion,
+    ToolRunCompletionReceiver, ToolRunLifecycleEventSink,
 };
 pub use tool_run_service::{
     ScheduledToolRunView, ToolRunKind, ToolRunListView, ToolRunRestoreSummary, ToolRunService,

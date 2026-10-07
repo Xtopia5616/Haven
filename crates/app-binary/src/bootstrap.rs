@@ -327,7 +327,7 @@ pub(crate) fn run() {
             // Project the typed ToolRun lifecycle stream into the App-owned
             // IPC DTO before it reaches the frontend.
             let tool_run_sink_handle = handle.clone();
-            state.runtime.services.tool_runs.set_event_sink(Arc::new(
+            state.runtime.services.tool_runs.set_lifecycle_event_sink(Arc::new(
                 move |event: ToolRunLifecycleEvent| {
                     emit_tool_run_event(&tool_run_sink_handle, event);
                 },
@@ -337,25 +337,29 @@ pub(crate) fn run() {
             // shell (and future long-running tools) can expand the chat card
             // while still running.
             let tool_output_handle = handle.clone();
-                state.runtime.services.live_outputs.set_event_sink(Arc::new(
-                move |event: String, payload: serde_json::Value| {
-                    if event != AGENT_TOOL_OUTPUT_EVENT {
-                        tracing::warn!(event, "dropping unknown live tool-output event");
-                        return;
-                    }
-                    match serde_json::from_value::<AgentToolOutputEvent>(payload) {
-                        Ok(projected) => {
-                            log_ignored_result!(
-                                "event.agent_tool_output",
-                                tool_output_handle.emit(AGENT_TOOL_OUTPUT_EVENT, projected)
-                            );
+            state
+                .runtime
+                .services
+                .live_outputs
+                .set_live_output_event_sink(Arc::new(
+                    move |event: String, payload: serde_json::Value| {
+                        if event != AGENT_TOOL_OUTPUT_EVENT {
+                            tracing::warn!(event, "dropping unknown live tool-output event");
+                            return;
                         }
-                        Err(error) => {
-                            tracing::warn!("dropping malformed live tool-output event: {error}");
+                        match serde_json::from_value::<AgentToolOutputEvent>(payload) {
+                            Ok(projected) => {
+                                log_ignored_result!(
+                                    "event.agent_tool_output",
+                                    tool_output_handle.emit(AGENT_TOOL_OUTPUT_EVENT, projected)
+                                );
+                            }
+                            Err(error) => {
+                                tracing::warn!("dropping malformed live tool-output event: {error}");
+                            }
                         }
-                    }
-                },
-            ));
+                    },
+                ));
 
             let cfg = state.runtime.config_service.snapshot()?.config;
             let is_hold = cfg.hotkey.mode == haven_common::types::HotkeyMode::Hold;
