@@ -75,7 +75,15 @@ fn base64_decoded_len(s: &str) -> usize {
 /// `output.content` keeps a metadata-only list of every block (no raw payload)
 /// for UI fidelity. Unknown or malformed block types are preserved rather than
 /// silently dropped.
-pub(crate) fn extract_mcp_content(content: &[Value], max_binary_payload: usize) -> (Value, String) {
+pub(crate) struct McpContentExtraction {
+    pub(crate) output: Value,
+    pub(crate) text_summary: String,
+}
+
+pub(crate) fn extract_mcp_content(
+    content: &[Value],
+    max_binary_payload: usize,
+) -> McpContentExtraction {
     let mut text_parts: Vec<String> = Vec::new();
     let mut images: Vec<Value> = Vec::new();
     let mut audio: Vec<Value> = Vec::new();
@@ -225,7 +233,10 @@ pub(crate) fn extract_mcp_content(content: &[Value], max_binary_payload: usize) 
         output.insert("resources".into(), Value::Array(resources));
     }
 
-    (Value::Object(output), text)
+    McpContentExtraction {
+        output: Value::Object(output),
+        text_summary: text,
+    }
 }
 
 // ---------------------------------------------------------------------------

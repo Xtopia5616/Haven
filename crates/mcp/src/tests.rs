@@ -439,8 +439,9 @@ fn extract_mcp_content_plain_text() {
     .as_array()
     .unwrap()
     .clone();
-    let (output, text) = extract_mcp_content(&content, 2 * 1024 * 1024);
-    assert_eq!(text, "hello\nworld");
+    let extracted = extract_mcp_content(&content, 2 * 1024 * 1024);
+    let output = extracted.output;
+    assert_eq!(extracted.text_summary, "hello\nworld");
     assert_eq!(output["text"], "hello\nworld");
     assert!(output.get("images").is_none());
     assert!(output.get("audio").is_none());
@@ -460,10 +461,19 @@ fn extract_mcp_content_image_and_audio() {
     .as_array()
     .unwrap()
     .clone();
-    let (output, text) = extract_mcp_content(&content, 2 * 1024 * 1024);
-    assert!(text.contains("caption"));
-    assert!(text.contains("[image block returned: image/png"));
-    assert!(text.contains("[audio block returned: audio/wav"));
+    let extracted = extract_mcp_content(&content, 2 * 1024 * 1024);
+    let output = extracted.output;
+    assert!(extracted.text_summary.contains("caption"));
+    assert!(
+        extracted
+            .text_summary
+            .contains("[image block returned: image/png")
+    );
+    assert!(
+        extracted
+            .text_summary
+            .contains("[audio block returned: audio/wav")
+    );
 
     let images = output["images"].as_array().unwrap();
     assert_eq!(images.len(), 1);
@@ -496,8 +506,9 @@ fn extract_mcp_content_text_resource() {
     .as_array()
     .unwrap()
     .clone();
-    let (output, text) = extract_mcp_content(&content, 2 * 1024 * 1024);
-    assert_eq!(text, "file contents here");
+    let extracted = extract_mcp_content(&content, 2 * 1024 * 1024);
+    let output = extracted.output;
+    assert_eq!(extracted.text_summary, "file contents here");
     assert_eq!(output["text"], "file contents here");
     assert!(output.get("resources").is_none());
 }
@@ -518,9 +529,14 @@ fn extract_mcp_content_blob_resource() {
     .as_array()
     .unwrap()
     .clone();
-    let (output, text) = extract_mcp_content(&content, 2 * 1024 * 1024);
-    assert!(text.contains("[resource block returned: result.bin"));
-    assert!(text.contains("~4 decoded bytes"));
+    let extracted = extract_mcp_content(&content, 2 * 1024 * 1024);
+    let output = extracted.output;
+    assert!(
+        extracted
+            .text_summary
+            .contains("[resource block returned: result.bin")
+    );
+    assert!(extracted.text_summary.contains("~4 decoded bytes"));
     let resources = output["resources"].as_array().unwrap();
     assert_eq!(resources.len(), 1);
     assert_eq!(resources[0]["uri"], "result.bin");
@@ -541,9 +557,14 @@ fn extract_mcp_content_resource_no_readable_payload() {
     .as_array()
     .unwrap()
     .clone();
-    let (output, text) = extract_mcp_content(&content, 2 * 1024 * 1024);
-    assert!(text.contains("[resource block returned: memory://note"));
-    assert!(text.contains("no readable payload"));
+    let extracted = extract_mcp_content(&content, 2 * 1024 * 1024);
+    let output = extracted.output;
+    assert!(
+        extracted
+            .text_summary
+            .contains("[resource block returned: memory://note")
+    );
+    assert!(extracted.text_summary.contains("no readable payload"));
     assert!(output.get("resources").is_none());
 }
 
@@ -556,10 +577,10 @@ fn extract_mcp_content_type_less_block_preserved() {
     .as_array()
     .unwrap()
     .clone();
-    let (_, text) = extract_mcp_content(&content, 2 * 1024 * 1024);
+    let extracted = extract_mcp_content(&content, 2 * 1024 * 1024);
     // Both malformed/unknown blocks must be preserved, not swallowed.
-    assert!(text.contains("somedata"));
-    assert!(text.contains("weird"));
+    assert!(extracted.text_summary.contains("somedata"));
+    assert!(extracted.text_summary.contains("weird"));
 }
 
 #[test]
@@ -571,8 +592,9 @@ fn extract_mcp_content_oversized_image_capped() {
     .as_array()
     .unwrap()
     .clone();
-    let (output, text) = extract_mcp_content(&content, 2 * 1024 * 1024);
-    assert!(text.contains("oversized"));
+    let extracted = extract_mcp_content(&content, 2 * 1024 * 1024);
+    let output = extracted.output;
+    assert!(extracted.text_summary.contains("oversized"));
     let images = output["images"].as_array().unwrap();
     assert_eq!(images.len(), 1);
     assert_eq!(images[0]["oversized"], true);
@@ -583,7 +605,8 @@ fn extract_mcp_content_oversized_image_capped() {
 #[test]
 fn extract_mcp_content_empty() {
     let content = json!([]).as_array().unwrap().clone();
-    let (output, text) = extract_mcp_content(&content, 2 * 1024 * 1024);
-    assert_eq!(text, "");
+    let extracted = extract_mcp_content(&content, 2 * 1024 * 1024);
+    let output = extracted.output;
+    assert_eq!(extracted.text_summary, "");
     assert_eq!(output["text"], "");
 }

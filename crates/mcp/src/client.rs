@@ -838,7 +838,7 @@ impl McpClient {
         };
 
         let content = result["content"].as_array().cloned().unwrap_or_default();
-        let (output, text) = extract_mcp_content(&content, self.max_binary_payload);
+        let extracted = extract_mcp_content(&content, self.max_binary_payload);
 
         let is_error = result
             .get("isError")
@@ -847,8 +847,8 @@ impl McpClient {
 
         Ok(McpCallOutput {
             success: !is_error,
-            output,
-            error: is_error.then_some(text),
+            output: extracted.output,
+            error: is_error.then_some(extracted.text_summary),
         })
     }
 
