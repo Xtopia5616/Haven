@@ -12,7 +12,7 @@ use crate::aggregated_stream_executor::{
 use crate::call_executor::CallExecutor;
 use crate::client::{LlmClient, endpoint_host};
 #[cfg(test)]
-use crate::endpoint_health::{CircuitBreaker, CircuitState};
+use crate::endpoint_health::{EndpointCircuitBreaker, EndpointCircuitState};
 use crate::endpoint_health::{EndpointHealth, EndpointHealthMap, new_endpoint_health_map};
 use crate::model_directory::{ModelDirectory, ResolvedModelClient, RouteMode};
 use crate::request_descriptor::RequestDescriptor;
@@ -1929,7 +1929,7 @@ mod tests {
         let before = router.health.read().await;
         assert_eq!(
             before["default_model"].circuit_breaker.state,
-            CircuitState::Open
+            EndpointCircuitState::Open
         );
         assert_eq!(before["small_model"].consecutive_failures, 0);
         drop(before);
@@ -2536,20 +2536,20 @@ mod tests {
 
     #[test]
     fn circuit_breaker_new_is_closed() {
-        let mut cb = CircuitBreaker::new();
+        let mut cb = EndpointCircuitBreaker::new();
         assert!(cb.allow_request());
     }
 
     #[test]
     fn circuit_breaker_record_success_resets_consecutive_failures() {
-        let mut cb = CircuitBreaker::new();
+        let mut cb = EndpointCircuitBreaker::new();
         cb.consecutive_failures = 5;
         cb.failure_count = 5;
         cb.total_calls = 5;
         cb.record_success();
         assert_eq!(cb.consecutive_failures, 0);
         assert_eq!(cb.total_calls, 6);
-        assert_eq!(cb.state, CircuitState::Closed);
+        assert_eq!(cb.state, EndpointCircuitState::Closed);
         assert!(cb.opened_at.is_none());
     }
 
@@ -2557,25 +2557,29 @@ mod tests {
     fn circuit_breaker_success_does_not_close_open_breaker() {
         // A stale success from a request dispatched before the breaker tripped
         // must NOT close it — only a HalfOpen probe may (M8).
-        let mut cb = CircuitBreaker::new();
-        cb.state = CircuitState::Open;
+        let mut cb = EndpointCircuitBreaker::new();
+        cb.state = EndpointCircuitState::Open;
         cb.opened_at = Some(Instant::now());
         cb.consecutive_failures = 3;
         cb.record_success();
-        assert_eq!(cb.state, CircuitState::Open, "open breaker stays open");
+        assert_eq!(
+            cb.state,
+            EndpointCircuitState::Open,
+            "open breaker stays open"
+        );
         assert_eq!(cb.consecutive_failures, 3, "counters not reset");
         assert!(cb.opened_at.is_some());
         // Simulate the cooldown elapsing: probe goes HalfOpen, its success closes.
         cb.opened_at = Some(Instant::now() - Duration::from_secs(31));
         assert!(cb.allow_request());
-        assert_eq!(cb.state, CircuitState::HalfOpen);
+        assert_eq!(cb.state, EndpointCircuitState::HalfOpen);
         cb.record_success();
-        assert_eq!(cb.state, CircuitState::Closed);
+        assert_eq!(cb.state, EndpointCircuitState::Closed);
     }
 
     #[test]
     fn circuit_breaker_record_failure_increments_counters() {
-        let mut cb = CircuitBreaker::new();
+        let mut cb = EndpointCircuitBreaker::new();
         cb.record_failure();
         assert_eq!(cb.consecutive_failures, 1);
         assert_eq!(cb.failure_count, 1);
@@ -2584,7 +2588,7 @@ mod tests {
 
     #[test]
     fn circuit_breaker_opens_at_threshold() {
-        let mut cb = CircuitBreaker::new();
+        let mut cb = EndpointCircuitBreaker::new();
         cb.record_failure();
         cb.record_failure();
         assert!(cb.allow_request());
@@ -2596,66 +2600,66 @@ mod tests {
 
     #[test]
     fn circuit_breaker_ignores_historical_success_rate() {
-        let mut cb = CircuitBreaker::new();
+        let mut cb = EndpointCircuitBreaker::new();
         for _ in 0..100 {
             cb.record_success();
         }
         for _ in 0..3 {
             cb.record_failure();
         }
-        assert_eq!(cb.state, CircuitState::Open);
+        assert_eq!(cb.state, EndpointCircuitState::Open);
         assert!(!cb.allow_request());
     }
 
     #[test]
     fn circuit_breaker_half_open_after_cooldown() {
-        let mut cb = CircuitBreaker::new();
+        let mut cb = EndpointCircuitBreaker::new();
         // Force open with a past timestamp
-        cb.state = CircuitState::Open;
+        cb.state = EndpointCircuitState::Open;
         cb.opened_at = Some(Instant::now() - Duration::from_secs(31));
         assert!(cb.allow_request());
-        assert_eq!(cb.state, CircuitState::HalfOpen);
+        assert_eq!(cb.state, EndpointCircuitState::HalfOpen);
     }
 
     #[test]
     fn circuit_breaker_allows_only_one_half_open_probe() {
-        let mut cb = CircuitBreaker::new();
-        cb.state = CircuitState::Open;
+        let mut cb = EndpointCircuitBreaker::new();
+        cb.state = EndpointCircuitState::Open;
         cb.opened_at = Some(Instant::now() - Duration::from_secs(31));
         assert!(cb.allow_request());
         assert!(!cb.allow_request());
         cb.record_failure();
-        assert_eq!(cb.state, CircuitState::Open);
+        assert_eq!(cb.state, EndpointCircuitState::Open);
         cb.opened_at = Some(Instant::now() - Duration::from_secs(31));
         assert!(cb.allow_request());
         cb.record_success();
-        assert_eq!(cb.state, CircuitState::Closed);
+        assert_eq!(cb.state, EndpointCircuitState::Closed);
     }
 
     #[test]
     fn circuit_breaker_stays_open_within_cooldown() {
-        let mut cb = CircuitBreaker::new();
-        cb.state = CircuitState::Open;
+        let mut cb = EndpointCircuitBreaker::new();
+        cb.state = EndpointCircuitState::Open;
         cb.opened_at = Some(Instant::now());
         assert!(!cb.allow_request());
     }
 
     #[test]
     fn circuit_breaker_full_state_transition_cycle() {
-        let mut cb = CircuitBreaker::new();
+        let mut cb = EndpointCircuitBreaker::new();
         // Closed → Open
         for _ in 0..3 {
             cb.record_failure();
         }
         assert!(!cb.allow_request());
         // Open → HalfOpen (simulate cooldown elapsed)
-        cb.state = CircuitState::Open;
+        cb.state = EndpointCircuitState::Open;
         cb.opened_at = Some(Instant::now() - Duration::from_secs(31));
         assert!(cb.allow_request());
-        assert_eq!(cb.state, CircuitState::HalfOpen);
+        assert_eq!(cb.state, EndpointCircuitState::HalfOpen);
         // HalfOpen → Closed (on success)
         cb.record_success();
-        assert_eq!(cb.state, CircuitState::Closed);
+        assert_eq!(cb.state, EndpointCircuitState::Closed);
     }
 
     #[test]
@@ -2708,7 +2712,7 @@ mod tests {
         health.consecutive_failures = 3;
         health.last_failure_time = Some(Instant::now());
         health.is_healthy = false;
-        health.circuit_breaker.state = CircuitState::Open;
+        health.circuit_breaker.state = EndpointCircuitState::Open;
         health.circuit_breaker.consecutive_failures = 3;
         health.circuit_breaker.failure_count = 3;
         health.circuit_breaker.total_calls = 7;
@@ -2719,7 +2723,7 @@ mod tests {
         assert!(health.is_healthy);
         assert_eq!(health.consecutive_failures, 0);
         assert!(health.last_failure_time.is_none());
-        assert_eq!(health.circuit_breaker.state, CircuitState::Closed);
+        assert_eq!(health.circuit_breaker.state, EndpointCircuitState::Closed);
         assert_eq!(health.circuit_breaker.consecutive_failures, 0);
         assert_eq!(health.circuit_breaker.failure_count, 3);
         assert_eq!(health.circuit_breaker.total_calls, 7);
@@ -2790,7 +2794,7 @@ mod tests {
         {
             let mut health = router.health.write().await;
             let endpoint = health.get_mut("default_model").unwrap();
-            endpoint.circuit_breaker.state = CircuitState::Open;
+            endpoint.circuit_breaker.state = EndpointCircuitState::Open;
             endpoint.circuit_breaker.consecutive_failures = 3;
             endpoint.circuit_breaker.opened_at = Some(Instant::now());
         }

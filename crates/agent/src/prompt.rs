@@ -1053,6 +1053,7 @@ fn sanitize_prompt_field(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::PromptRuntimeContext;
     use haven_common::types::RiskLevel;
     use serde_json::json;
 
