@@ -19,7 +19,6 @@ function render(component: any, props: Record<string, any> = {}) {
 	if (component !== ToolResultCard) return testingLibraryRender(component, props);
 	const renderers: Record<string, string> = {
 		files: 'files',
-		haven: 'haven',
 		http: 'http',
 		load_mcp: 'load_mcp',
 		mcp__filesystem__read: 'filesystem',
@@ -921,7 +920,8 @@ describe('ToolResultCard system', () => {
 describe('ToolResultCard haven aggregate', () => {
 	it('routes ToolRun operations to their dedicated result renderer', async () => {
 		const { container } = render(ToolResultCard, {
-			toolName: 'haven',
+			toolName: 'tool_runs.cancel',
+			renderer: 'tool_runs',
 			content: JSON.stringify({
 				operation: 'tool_runs_cancel',
 				tool_run_id: 'toolrun-2',
@@ -1020,7 +1020,8 @@ describe('ToolResultCard process', () => {
 describe('ToolResultCard tool_runs', () => {
 	it('renders the ToolRun id with a completed badge', async () => {
 		const { container } = render(ToolResultCard, {
-			toolName: 'haven',
+			toolName: 'tool_runs.list',
+			renderer: 'tool_runs',
 			content: JSON.stringify({
 				operation: 'tool_runs_list',
 				tool_run_id: 'toolrun-1',
@@ -1036,7 +1037,8 @@ describe('ToolResultCard tool_runs', () => {
 
 	it('renders cancel results with an explicit status', async () => {
 		const { container } = render(ToolResultCard, {
-			toolName: 'haven',
+			toolName: 'tool_runs.cancel',
+			renderer: 'tool_runs',
 			content: JSON.stringify({
 				operation: 'tool_runs_cancel',
 				tool_run_id: 'toolrun-2',
@@ -1208,7 +1210,8 @@ describe('ToolResultCard http', () => {
 	});
 	it('renders a single scheduled tool result with id, mode and fires_at', async () => {
 		const { container } = render(ToolResultCard, {
-			toolName: 'haven',
+			toolName: 'schedule.set',
+			renderer: 'schedule',
 			content: JSON.stringify({
 				operation: 'schedule_set',
 				id: 'r42',
@@ -1225,7 +1228,8 @@ describe('ToolResultCard http', () => {
 
 	it('renders a schedule cancellation as a dedicated result', async () => {
 		const { container } = render(ToolResultCard, {
-			toolName: 'haven',
+			toolName: 'schedule.cancel',
+			renderer: 'schedule',
 			content: JSON.stringify({ operation: 'schedule_cancel', cancelled: 'toolrun-42' }),
 		});
 		await expandToolCard(container);
@@ -1264,7 +1268,8 @@ describe('ToolResultCard memory', () => {
 describe('ToolResultCard admin capabilities', () => {
 	it('renders tool toggles as a compact status result', async () => {
 		const { container } = render(ToolResultCard, {
-			toolName: 'haven',
+			toolName: 'haven.tools.tool_disable',
+			renderer: 'haven_tools',
 			content: JSON.stringify({
 				operation: 'tool_disable',
 				name: 'files',
