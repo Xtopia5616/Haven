@@ -20,12 +20,12 @@ pub struct HttpTool {
     /// Cap on how much of the response body is read (and thus buffered).
     pub max_body_bytes: usize,
     /// Optional host allowlist. Empty means public hosts are allowed after
-    /// the SSRF network policy has rejected local/private destinations.
+    /// destination validation has rejected local/private hosts.
     pub allowed_domains: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default)]
-struct NetworkPolicy {
+struct HttpDestinationPolicy {
     allowed_domains: Vec<String>,
     /// Only enabled by unit tests so the canned loopback HTTP servers can be
     /// exercised without weakening production policy.
@@ -35,16 +35,16 @@ struct NetworkPolicy {
 /// HTTP method.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "UPPERCASE")]
-pub enum NetworkMethod {
+pub enum HttpRequestMethod {
     Get,
     Post,
 }
 
-impl NetworkMethod {
+impl HttpRequestMethod {
     pub fn as_str(&self) -> &'static str {
         match self {
-            NetworkMethod::Get => "GET",
-            NetworkMethod::Post => "POST",
+            HttpRequestMethod::Get => "GET",
+            HttpRequestMethod::Post => "POST",
         }
     }
 }
@@ -52,10 +52,10 @@ impl NetworkMethod {
 /// Typed parameters for `HttpTool`. Entry ① (native `run`) and entry ②
 /// (`Tool::execute` with LLM JSON) both land in `HttpTool::run`.
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
-pub struct NetworkParams {
+pub struct HttpRequestParams {
     /// HTTP method; defaults to GET.
     #[serde(default)]
-    pub method: Option<NetworkMethod>,
+    pub method: Option<HttpRequestMethod>,
     /// The URL to request.
     pub url: String,
     /// Optional HTTP headers as key-value pairs.
@@ -78,7 +78,7 @@ impl HttpTool {
     /// serialization overhead). Entry ② deserializes JSON and delegates here.
     pub async fn run(
         &self,
-        params: NetworkParams,
+        params: HttpRequestParams,
         cancel: CancellationToken,
     ) -> anyhow::Result<ToolResult> {
         if cancel.is_cancelled() {
@@ -167,7 +167,7 @@ impl Tool for HttpTool {
     }
 
     fn default_timeout_secs(&self) -> u64 {
-        // `NetworkParams::timeout_secs` is the provider/request timeout. The
+        // `HttpRequestParams::timeout_secs` is the provider/request timeout. The
         // outer tool execution timer gets a small handoff margin below.
         20
     }
@@ -230,10 +230,11 @@ impl Tool for HttpTool {
         })
     }
 
-    /// Entry ②: LLM JSON entry — convert/validate into `NetworkParams`, then
+    /// Entry ②: LLM JSON entry — convert/validate into `HttpRequestParams`, then
     /// land in the same implementation as entry ①.
     async fn execute(&self, input: Value, cancel: CancellationToken) -> anyhow::Result<ToolResult> {
-        let params = crate::tool_contract::parse_tool_input::<NetworkParams>(&self.name(), input)?;
+        let params =
+            crate::tool_contract::parse_tool_input::<HttpRequestParams>(&self.name(), input)?;
         self.run(params, cancel).await
     }
 }
@@ -249,7 +250,7 @@ async fn execute_once(
     max_body_bytes: usize,
     allowed_domains: &[String],
 ) -> anyhow::Result<ToolResult> {
-    let policy = NetworkPolicy {
+    let destination_policy = HttpDestinationPolicy {
         allowed_domains: allowed_domains.to_vec(),
         allow_loopback: cfg!(test),
     };
@@ -257,7 +258,8 @@ async fn execute_once(
         .timeout(Duration::from_secs(timeout_secs))
         .redirect(reqwest::redirect::Policy::none())
         .user_agent("Haven/1.0");
-    let (validated_url, pinned_address) = resolve_validated_network_url(url, &policy).await?;
+    let (validated_url, pinned_address) =
+        resolve_http_destination(url, &destination_policy).await?;
     if let Some(address) = pinned_address
         && let Some(host) = validated_url.host_str()
     {
@@ -284,7 +286,7 @@ async fn execute_once(
         body,
         as_html,
         max_body_bytes,
-        &policy,
+        &destination_policy,
     )
     .await
 }
@@ -302,9 +304,9 @@ async fn execute_once_with(
     body: Option<&str>,
     as_html: bool,
     max_body_bytes: usize,
-    policy: &NetworkPolicy,
+    destination_policy: &HttpDestinationPolicy,
 ) -> anyhow::Result<ToolResult> {
-    let mut current_url = validate_network_url(url, policy).await?;
+    let mut current_url = validate_http_destination(url, destination_policy).await?;
     let mut current_method = method.to_string();
     let mut current_body = body.map(str::to_owned);
     let current_headers = headers.to_vec();
@@ -341,7 +343,7 @@ async fn execute_once_with(
             anyhow::bail!("HTTP redirect limit exceeded");
         }
         let next_url = current_url.join(&location)?;
-        let next_url = validate_network_url(next_url.as_str(), policy).await?;
+        let next_url = validate_http_destination(next_url.as_str(), destination_policy).await?;
         if response.status() == reqwest::StatusCode::SEE_OTHER
             || (matches!(
                 response.status(),
@@ -419,16 +421,18 @@ async fn execute_once_with(
 
 const MAX_REDIRECT_HOPS: usize = 10;
 
-async fn validate_network_url(
+async fn validate_http_destination(
     raw_url: &str,
-    policy: &NetworkPolicy,
+    destination_policy: &HttpDestinationPolicy,
 ) -> anyhow::Result<reqwest::Url> {
-    Ok(resolve_validated_network_url(raw_url, policy).await?.0)
+    Ok(resolve_http_destination(raw_url, destination_policy)
+        .await?
+        .0)
 }
 
-async fn resolve_validated_network_url(
+async fn resolve_http_destination(
     raw_url: &str,
-    policy: &NetworkPolicy,
+    destination_policy: &HttpDestinationPolicy,
 ) -> anyhow::Result<(reqwest::Url, Option<SocketAddr>)> {
     let url = reqwest::Url::parse(raw_url)
         .map_err(|error| anyhow::anyhow!("invalid HTTP URL: {}", error))?;
@@ -447,16 +451,16 @@ async fn resolve_validated_network_url(
         .ok_or_else(|| anyhow::anyhow!("HTTP URL has no supported port"))?;
 
     if is_blocked_metadata_host(&normalized_host)
-        && !(policy.allow_loopback && normalized_host == "localhost")
+        && !(destination_policy.allow_loopback && normalized_host == "localhost")
     {
         anyhow::bail!("HTTP destination is a blocked metadata host");
     }
-    if !domain_allowed(&normalized_host, &policy.allowed_domains) {
+    if !domain_allowed(&normalized_host, &destination_policy.allowed_domains) {
         anyhow::bail!("HTTP destination is not in the configured domain allowlist");
     }
 
     if let Ok(ip) = normalized_host.parse::<IpAddr>() {
-        if is_blocked_ip(ip, policy.allow_loopback) {
+        if is_blocked_ip(ip, destination_policy.allow_loopback) {
             anyhow::bail!("HTTP destination resolves to a blocked local or private address");
         }
         return Ok((url, None));
@@ -467,7 +471,7 @@ async fn resolve_validated_network_url(
         .map_err(|error| anyhow::anyhow!("failed to resolve HTTP host: {}", error))?;
     let mut validated_addresses = Vec::new();
     for address in addresses {
-        if is_blocked_ip(address.ip(), policy.allow_loopback) {
+        if is_blocked_ip(address.ip(), destination_policy.allow_loopback) {
             anyhow::bail!("HTTP host resolves to a blocked local or private address");
         }
         validated_addresses.push(address);
@@ -1000,7 +1004,7 @@ mod tests {
             Some("payload"),
             false,
             1024 * 1024,
-            &NetworkPolicy {
+            &HttpDestinationPolicy {
                 allowed_domains: Vec::new(),
                 allow_loopback: true,
             },
@@ -1057,8 +1061,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn network_policy_blocks_local_private_and_metadata_destinations() {
-        let policy = NetworkPolicy::default();
+    async fn http_destination_policy_blocks_local_private_and_metadata_destinations() {
+        let destination_policy = HttpDestinationPolicy::default();
         for url in [
             "http://localhost/",
             "http://127.0.0.1/",
@@ -1069,14 +1073,16 @@ mod tests {
             "http://[fd00::1]/",
         ] {
             assert!(
-                validate_network_url(url, &policy).await.is_err(),
+                validate_http_destination(url, &destination_policy)
+                    .await
+                    .is_err(),
                 "destination must be blocked: {url}"
             );
         }
     }
 
     #[test]
-    fn network_policy_domain_allowlist_supports_exact_and_subdomain_entries() {
+    fn http_destination_policy_allowlist_supports_exact_and_subdomain_entries() {
         assert!(domain_allowed("example.com", &[]));
         assert!(domain_allowed(
             "api.example.com",
@@ -1094,18 +1100,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn network_policy_allows_loopback_only_for_explicit_test_policy() {
-        let policy = NetworkPolicy {
+    async fn http_destination_policy_allows_loopback_only_for_test_configuration() {
+        let destination_policy = HttpDestinationPolicy {
             allowed_domains: Vec::new(),
             allow_loopback: true,
         };
         assert!(
-            validate_network_url("http://127.0.0.1:1/", &policy)
+            validate_http_destination("http://127.0.0.1:1/", &destination_policy)
                 .await
                 .is_ok()
         );
         assert!(
-            validate_network_url("http://localhost:1/", &policy)
+            validate_http_destination("http://localhost:1/", &destination_policy)
                 .await
                 .is_ok()
         );
@@ -1116,17 +1122,17 @@ mod tests {
         let initial = reqwest::Url::parse("https://public.example/start").unwrap();
         let target = initial.join("http://127.0.0.1:8080/").unwrap();
         assert!(
-            validate_network_url(target.as_str(), &NetworkPolicy::default())
+            validate_http_destination(target.as_str(), &HttpDestinationPolicy::default())
                 .await
                 .is_err()
         );
 
-        let allowlist = NetworkPolicy {
+        let allowlist = HttpDestinationPolicy {
             allowed_domains: vec!["example.com".into()],
             allow_loopback: false,
         };
         assert!(
-            validate_network_url("https://other.example.com/", &allowlist)
+            validate_http_destination("https://other.example.com/", &allowlist)
                 .await
                 .is_err()
         );
@@ -1137,8 +1143,8 @@ mod tests {
         let url = serve_once("200 OK", "text/plain", "hello native").await;
         let result = HttpTool::default()
             .run(
-                NetworkParams {
-                    method: Some(NetworkMethod::Get),
+                HttpRequestParams {
+                    method: Some(HttpRequestMethod::Get),
                     url: url.clone(),
                     headers: None,
                     body: None,
