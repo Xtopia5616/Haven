@@ -19,14 +19,13 @@ export type {
 	AgentChunkBatchItem,
 	ResumeUsage,
 	SessionAction,
-	SessionError,
 	SessionMessage,
 	SessionOptimisticMessage,
 	SessionReducerState,
 	SessionReplayState,
 	SessionSummary,
-	SessionTermination,
-	SessionTerminationStatus,
+	SessionRunEndNotice,
+	SessionRunEndStatus,
 	SessionTokenStats,
 	StreamBlockIds,
 } from './sessionReducer/types.ts';
@@ -89,11 +88,10 @@ export function reduceSession(
 		case 'session/selected':
 		case 'session/cleared':
 		case 'session/status-updated':
-		case 'session/error-shown':
-		case 'session/error-cleared':
+		case 'session/run-end-notice-cleared':
 		case 'session/error-reason-remembered':
 		case 'session/error-reason-forgotten':
-		case 'session/termination-shown':
+		case 'session/run-ended':
 		case 'session/retained-error':
 		case 'session/title-updated':
 			return reduceLifecycle(inputState, action);

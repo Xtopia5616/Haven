@@ -10,7 +10,7 @@ export interface ChatSessionEventContext {
 	isFreshSessionIntent: () => boolean;
 	adoptDraftMessages: (sessionId: string) => boolean;
 	dispatchSession: (action: SessionAction) => void;
-	getSessionErrorId: () => string | null;
+	getErroredSessionId: () => string | null;
 	clearAskAwaiting: (sessionId: string | null) => void;
 	evictTerminalSessionMemory: (sessionId: string) => void;
 	clearStepBlockIds: (sessionId: string | null) => void;
@@ -29,7 +29,7 @@ export function createChatSessionEventHandler({
 	isFreshSessionIntent,
 	adoptDraftMessages,
 	dispatchSession,
-	getSessionErrorId,
+	getErroredSessionId,
 	clearAskAwaiting,
 	evictTerminalSessionMemory,
 	clearStepBlockIds,
@@ -78,24 +78,27 @@ export function createChatSessionEventHandler({
 			case 'updated': {
 				const isActive = getActiveSessionId() === data.sessionId;
 				const shouldForgetError =
-					getSessionErrorId() === data.sessionId && isBusyStatus(data.status);
+					getErroredSessionId() === data.sessionId && isBusyStatus(data.status);
 				// A resume (pending) means the user's answer was received. The ask
 				// pause itself is reported as paused and must not clear the indicator.
 				if (isActive && data.status === 'pending') clearAskAwaiting(data.sessionId);
 
-				dispatchSession({
-					type: 'session/status-updated',
-					sessionId: data.sessionId,
-					status: data.status,
-					title: data.title,
-					waitingReason: data.waitingReason,
-				});
 				if (data.status === 'paused' && data.reason?.trim()) {
 					dispatchSession({
-						type: 'session/termination-shown',
+						type: 'session/run-ended',
 						sessionId: data.sessionId,
 						status: data.status,
 						reason: data.reason,
+						title: data.title,
+						waitingReason: data.waitingReason,
+					});
+				} else {
+					dispatchSession({
+						type: 'session/status-updated',
+						sessionId: data.sessionId,
+						status: data.status,
+						title: data.title,
+						waitingReason: data.waitingReason,
 					});
 				}
 				if (shouldForgetError) {
@@ -115,17 +118,12 @@ export function createChatSessionEventHandler({
 			case 'completed': {
 				const reason = data.reason?.trim() || '会话已正常结束。';
 				dispatchSession({
-					type: 'session/status-updated',
-					sessionId: data.sessionId,
-					status: 'completed',
-					title: data.title,
-					waitingReason: null,
-				});
-				dispatchSession({
-					type: 'session/termination-shown',
+					type: 'session/run-ended',
 					sessionId: data.sessionId,
 					status: 'completed',
 					reason,
+					title: data.title,
+					waitingReason: null,
 				});
 				if (getActiveSessionId() === data.sessionId) clearAskAwaiting(data.sessionId);
 				cleanupTerminalSession(data.sessionId);
@@ -134,13 +132,13 @@ export function createChatSessionEventHandler({
 			case 'error': {
 				const reason = data.error?.trim() || '本次会话因错误停止，暂未收到更具体的原因。';
 				dispatchSession({
-					type: 'session/status-updated',
+					type: 'session/run-ended',
 					sessionId: data.sessionId,
 					status: 'error',
 					title: data.title,
 					waitingReason: null,
+					reason,
 				});
-				dispatchSession({ type: 'session/error-shown', sessionId: data.sessionId, reason });
 				dispatchSession({
 					type: 'session/error-reason-remembered',
 					sessionId: data.sessionId,

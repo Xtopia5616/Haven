@@ -28,9 +28,9 @@ export type ContinueMessage = {
  */
 export function shouldShowContinueButton(
 	messages: ContinueMessage[],
-	activeSessionError = false,
+	activeRunFailed = false,
 ): boolean {
-	if (activeSessionError) return true;
+	if (activeRunFailed) return true;
 	const last = messages[messages.length - 1];
 	return last?.role === 'user';
 }

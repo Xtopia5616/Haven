@@ -8,7 +8,7 @@ import type {
 	AgentWebSearchPayload,
 } from '../contracts/agent.ts';
 import type { InteractionRequest } from '../contracts/app.ts';
-import type { InteractionKind } from '../contracts/generatedCommands.ts';
+import type { InteractionKind, SessionStatus } from '../contracts/generatedCommands.ts';
 import type { SessionLlmUsage, SessionResumeUsage } from '../contracts/sessionHistory.ts';
 import type { StreamMessage } from '../streaming.ts';
 
@@ -22,16 +22,11 @@ export interface SessionSummary {
 	[key: string]: unknown;
 }
 
-export interface SessionError {
-	sessionId: string;
-	reason: string;
-}
+export type SessionRunEndStatus = Extract<SessionStatus, 'paused' | 'completed' | 'error'>;
 
-export type SessionTerminationStatus = 'paused' | 'completed' | 'error';
-
-export interface SessionTermination {
+export interface SessionRunEndNotice {
 	sessionId: string;
-	status: SessionTerminationStatus;
+	status: SessionRunEndStatus;
 	reason: string;
 }
 
@@ -95,8 +90,7 @@ export interface AgentChunkBatchItem {
 export interface SessionReducerState {
 	sessions: SessionSummary[];
 	activeSessionId: string | null;
-	error: SessionError | null;
-	termination: SessionTermination | null;
+	runEndNotice: SessionRunEndNotice | null;
 	/** Volatile per-session error reasons used when reopening history during this app run. */
 	sessionErrorReasons: Record<string, string>;
 	messages: Record<string, SessionMessage[]>;
@@ -130,16 +124,17 @@ export type SessionAction =
 			title?: string | null;
 			waitingReason?: string | null;
 	  }
-	| { type: 'session/error-shown'; sessionId: string; reason: string }
-	| { type: 'session/error-cleared'; sessionId?: string | null }
 	| { type: 'session/error-reason-remembered'; sessionId: string; reason: string }
 	| { type: 'session/error-reason-forgotten'; sessionId: string }
 	| {
-			type: 'session/termination-shown';
+			type: 'session/run-ended';
 			sessionId: string;
-			status: SessionTerminationStatus;
+			status: SessionRunEndStatus;
 			reason: string;
+			title?: string | null;
+			waitingReason?: string | null;
 	  }
+	| { type: 'session/run-end-notice-cleared'; sessionId?: string | null }
 	| { type: 'session/retained-error'; session: SessionSummary }
 	| { type: 'session/title-updated'; sessionId: string; title: string }
 	| { type: 'session/messages/optimistic-added'; sessionId: string; message: SessionMessage }
@@ -224,8 +219,7 @@ export interface StreamBlockIds {
 export const initialSessionState: SessionReducerState = {
 	sessions: [],
 	activeSessionId: null,
-	error: null,
-	termination: null,
+	runEndNotice: null,
 	sessionErrorReasons: {},
 	messages: {},
 	interactions: {},

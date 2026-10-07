@@ -87,7 +87,7 @@
 		SessionAction,
 		SessionMessage,
 		SessionSummary,
-		SessionTermination,
+		SessionRunEndNotice,
 		SessionTokenStats,
 	} from '$lib/sessionReducer.ts';
 	import type { SessionTokenStatsView } from '$lib/sessionUsagePresentation.ts';
@@ -148,8 +148,7 @@
 			? (state.llmUsage[state.activeSessionId] ?? emptySessionLlmUsage)
 			: emptySessionLlmUsage,
 	);
-	const sessionErrorStore = createSessionSelectorStore((state) => state.error);
-	const sessionTerminationStore = createSessionSelectorStore((state) => state.termination);
+	const sessionRunEndNoticeStore = createSessionSelectorStore((state) => state.runEndNotice);
 	let sessions = $state(currentReducerState.sessions);
 	let activeSessionId = $state(currentReducerState.activeSessionId);
 	let interactionDict = $state(currentReducerState.interactions);
@@ -158,8 +157,7 @@
 		currentReducerState.messages[currentReducerState.activeSessionId || DRAFT_SESSION_ID] ??
 			emptySessionMessages,
 	);
-	let sessionError = $state(currentReducerState.error);
-	let sessionTermination = $state(currentReducerState.termination);
+	let sessionRunEndNotice = $state(currentReducerState.runEndNotice);
 
 	function dispatchSession(action: SessionAction) {
 		sessionReducer.dispatch(action);
@@ -169,8 +167,7 @@
 	$effect(() => syncStore(activeSessionIdStore, (next) => (activeSessionId = next)));
 	$effect(() => syncStore(interactionsStore, (next) => (interactionDict = next)));
 	$effect(() => syncStore(activeSessionMessagesStore, (next) => (activeSessionMessages = next)));
-	$effect(() => syncStore(sessionErrorStore, (next) => (sessionError = next)));
-	$effect(() => syncStore(sessionTerminationStore, (next) => (sessionTermination = next)));
+	$effect(() => syncStore(sessionRunEndNoticeStore, (next) => (sessionRunEndNotice = next)));
 	// Interaction requests are shared by the ask cards and confirmation modal.
 	// The modal keeps only its current presentation id; pending requests remain
 	// owned by SessionReducer so ask/confirm/scheduled-confirm cannot drift.
@@ -617,25 +614,28 @@
 		),
 	);
 
-	const activeSessionError = $derived(
-		!!activeSessionId && sessionError?.sessionId === activeSessionId,
+	const activeRunFailed = $derived(
+		!!activeSessionId &&
+			sessionRunEndNotice?.sessionId === activeSessionId &&
+			sessionRunEndNotice.status === 'error',
 	);
-	const activeSessionTermination = $derived(
-		!!activeSessionId && sessionTermination?.sessionId === activeSessionId
-			? sessionTermination
+	const activeSessionRunEndNotice = $derived(
+		!!activeSessionId && sessionRunEndNotice?.sessionId === activeSessionId
+			? sessionRunEndNotice
 			: null,
 	);
-	const sessionErrorId = $derived(sessionError?.sessionId || null);
-	const sessionErrorReason = $derived(sessionError?.reason || '');
+	const erroredSessionId = $derived(
+		sessionRunEndNotice?.status === 'error' ? sessionRunEndNotice.sessionId : null,
+	);
 	let continuePending = $state(false);
 	const showContinueButton = $derived(
-		!!activeSessionId && shouldShowContinueButton(messages, activeSessionError),
+		!!activeSessionId && shouldShowContinueButton(messages, activeRunFailed),
 	);
 	// Keep the affordance visible for every user-tail conversation, but do not
 	// let it race a normal pending/running turn. `continue_session` is only a
 	// retry operation for paused/error sessions.
 	const continueDisabled = $derived(
-		continuePending || (!activeSessionError && !isPausedStatus(activeSessionStatus)),
+		continuePending || (!activeRunFailed && !isPausedStatus(activeSessionStatus)),
 	);
 
 	// Auto-scroll to the newest message whenever messages change.
@@ -767,7 +767,7 @@
 				return adopted;
 			},
 			dispatchSession,
-			getSessionErrorId: () => sessionErrorId,
+			getErroredSessionId: () => erroredSessionId,
 			clearAskAwaiting: (sessionId) => {
 				clearAskAwaiting(sessionId);
 				if (sessionId) dispatchSession({ type: 'session/interactions-cleared', sessionId });
@@ -966,8 +966,9 @@
 		await chatSessionController.switchToSession(sessionId);
 		if (historical && isErrorStatus(historical.status)) {
 			dispatchSession({
-				type: 'session/error-shown',
+				type: 'session/run-ended',
 				sessionId,
+				status: 'error',
 				reason:
 					sessionReducer.getSessionErrorReason(sessionId) ||
 					'本次会话因错误停止，暂未收到更具体的原因。',
@@ -1170,7 +1171,7 @@
 	<div class="conversation-column">
 		<SessionHeader
 			title={sessionHeaderTitle}
-			hasSession={!!activeSessionId && !activeSessionTermination}
+			hasSession={!!activeSessionId && !activeSessionRunEndNotice}
 			onNew={newSession}
 			onDelete={requestDeleteSession}
 			onEnd={endSession}
@@ -1214,10 +1215,8 @@
 					{hotkeyBinding}
 					{awaitingBackground}
 					{awaitingBackgroundCount}
-					{activeSessionError}
-					{sessionErrorReason}
-					terminationStatus={activeSessionTermination?.status || null}
-					terminationReason={activeSessionTermination?.reason || ''}
+					runEndStatus={activeSessionRunEndNotice?.status || null}
+					runEndReason={activeSessionRunEndNotice?.reason || ''}
 					{showContinueButton}
 					{continueDisabled}
 					continueBusy={continuePending}

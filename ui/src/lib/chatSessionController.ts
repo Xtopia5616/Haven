@@ -196,7 +196,7 @@ export class ChatSessionController {
 		const strategy: ContinueStrategy = pickContinueStrategy(currentMessages);
 		try {
 			await this.dependencies.invoke('continue_session', { sessionId } satisfies SessionIdRequest);
-			this.dependencies.dispatch({ type: 'session/error-cleared', sessionId });
+			this.dependencies.dispatch({ type: 'session/run-end-notice-cleared', sessionId });
 
 			// A failed reload does not prove that visible messages were partial.
 			try {

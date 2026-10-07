@@ -626,3 +626,4 @@
 - [0635：统一 Agent SessionRun / ReActRun 术语并删除空壳预算类型](0635-unify-agent-session-run-terminology.md)
 - [0636：明确 Memory live consumer 的一次性 handoff](0636-name-memory-live-consumer-handoff.md)
 - [0637：统一 ReAct response policy 输入与判定术语](0637-unify-react-response-policy-types.md)
+- [0638：合并 SessionRun 结束提示状态](0638-merge-session-run-end-ui-state.md)

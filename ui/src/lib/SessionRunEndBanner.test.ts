@@ -1,10 +1,10 @@
 import { render, screen } from '@testing-library/svelte';
 import { describe, expect, it } from 'vitest';
-import SessionTerminationBanner from './SessionTerminationBanner.svelte';
+import SessionRunEndBanner from './SessionRunEndBanner.svelte';
 
-describe('SessionTerminationBanner', () => {
+describe('SessionRunEndBanner', () => {
 	it('shows the error reason and distinguishes saved content from the failed part', () => {
-		render(SessionTerminationBanner, { status: 'error', reason: '响应头等待超过 60 秒' });
+		render(SessionRunEndBanner, { status: 'error', reason: '响应头等待超过 60 秒' });
 
 		expect(screen.getByRole('alert')).toBeTruthy();
 		expect(screen.getByText('错误')).toBeTruthy();
@@ -14,7 +14,7 @@ describe('SessionTerminationBanner', () => {
 	});
 
 	it('shows the reason for a normally completed conversation', () => {
-		render(SessionTerminationBanner, { status: 'completed', reason: '用户主动结束会话' });
+		render(SessionRunEndBanner, { status: 'completed', reason: '用户主动结束会话' });
 
 		expect(screen.getByRole('status')).toBeTruthy();
 		expect(screen.getByText('已结束')).toBeTruthy();
@@ -22,7 +22,7 @@ describe('SessionTerminationBanner', () => {
 	});
 
 	it('shows the reason when the user interrupts a conversation', () => {
-		render(SessionTerminationBanner, { status: 'paused', reason: '用户主动打断输出' });
+		render(SessionRunEndBanner, { status: 'paused', reason: '用户主动打断输出' });
 
 		expect(screen.getByRole('status')).toBeTruthy();
 		expect(screen.getByText('已暂停')).toBeTruthy();
@@ -30,7 +30,7 @@ describe('SessionTerminationBanner', () => {
 	});
 
 	it('uses a friendly fallback when no reason is available', () => {
-		render(SessionTerminationBanner, { status: 'error', reason: '' });
+		render(SessionRunEndBanner, { status: 'error', reason: '' });
 
 		expect(screen.getByText(/暂未收到更具体的原因/)).toBeTruthy();
 	});

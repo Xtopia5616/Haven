@@ -3,7 +3,7 @@
 	import ChatMessageTimeline from '$lib/ChatMessageTimeline.svelte';
 	import SessionEmptyState from './SessionEmptyState.svelte';
 	import LoadingState from './LoadingState.svelte';
-	import SessionTerminationBanner from './SessionTerminationBanner.svelte';
+	import SessionRunEndBanner from './SessionRunEndBanner.svelte';
 
 	type MessageTimelineProps = ComponentProps<typeof ChatMessageTimeline>;
 	type Props = MessageTimelineProps & { loading?: boolean };
@@ -21,16 +21,16 @@
 		sessionToolRuns = [],
 		awaitingBackground = false,
 		loading = false,
-		terminationStatus = null,
-		terminationReason = '',
+		runEndStatus = null,
+		runEndReason = '',
 		...restProps
 	}: Props = $props();
 </script>
 
 {#if loading}
 	<LoadingState label="正在加载 Haven…" detail="正在准备你的工作区" />
-{:else if messages.length === 0 && terminationStatus}
-	<SessionTerminationBanner status={terminationStatus} reason={terminationReason} />
+{:else if messages.length === 0 && runEndStatus}
+	<SessionRunEndBanner status={runEndStatus} reason={runEndReason} />
 {:else if messages.length === 0 && sessionToolRuns.length === 0 && !awaitingBackground}
 	<SessionEmptyState hotkeyBinding={restProps.hotkeyBinding} />
 {:else}
@@ -41,8 +41,8 @@
 		{messages}
 		{sessionToolRuns}
 		{awaitingBackground}
-		{terminationStatus}
-		{terminationReason}
+		{runEndStatus}
+		{runEndReason}
 		{...restProps}
 	/>
 {/if}

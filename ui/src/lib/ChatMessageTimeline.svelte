@@ -4,7 +4,7 @@
 	import ChatBubble from '$lib/ChatBubble.svelte';
 	import Logo from '$lib/Logo.svelte';
 	import MaterialButton from '$lib/MaterialButton.svelte';
-	import SessionTerminationBanner from '$lib/SessionTerminationBanner.svelte';
+	import SessionRunEndBanner from '$lib/SessionRunEndBanner.svelte';
 	import ToolRunTimelineCard from '$lib/ToolRunTimelineCard.svelte';
 	import { hasToolPreambleBefore } from '$lib/toolIntent.ts';
 	import SessionActivityGroup from '$lib/SessionActivityGroup.svelte';
@@ -15,7 +15,7 @@
 		type AskSelectionChangeHandler,
 		type SessionMessageContextMenuRequest,
 	} from '$lib/sessionTimeline.ts';
-	import type { SessionMessage } from '$lib/sessionReducer.ts';
+	import type { SessionMessage, SessionRunEndStatus } from '$lib/sessionReducer.ts';
 	import type { ToolRunPayload } from '$lib/contracts/toolRun.ts';
 
 	interface Props {
@@ -24,10 +24,8 @@
 		hotkeyBinding?: string;
 		awaitingBackground?: boolean;
 		awaitingBackgroundCount?: number;
-		activeSessionError?: boolean;
-		sessionErrorReason?: string;
-		terminationStatus?: 'paused' | 'completed' | 'error' | null;
-		terminationReason?: string;
+		runEndStatus?: SessionRunEndStatus | null;
+		runEndReason?: string;
 		showContinueButton?: boolean;
 		continueDisabled?: boolean;
 		continueBusy?: boolean;
@@ -47,10 +45,8 @@
 		hotkeyBinding = 'Ctrl+Shift+Space',
 		awaitingBackground = false,
 		awaitingBackgroundCount = 0,
-		activeSessionError = false,
-		sessionErrorReason = '',
-		terminationStatus = null,
-		terminationReason = '',
+		runEndStatus = null,
+		runEndReason = '',
 		showContinueButton = false,
 		continueDisabled = false,
 		continueBusy = false,
@@ -67,14 +63,14 @@
 	let timelineItems = $derived(
 		groupSessionTimeline(messages, {
 			toolRuns: sessionToolRuns,
-			awaitingBackground: awaitingBackground && !activeSessionError && !terminationStatus,
+			awaitingBackground: awaitingBackground && !runEndStatus,
 			awaitingBackgroundCount,
 		}),
 	);
 	let awaitingBackgroundToolRunId = $derived(
 		firstWaitingBackgroundToolRunId(
 			sessionToolRuns,
-			awaitingBackground && !activeSessionError && !terminationStatus,
+			awaitingBackground && !runEndStatus,
 		),
 	);
 </script>
@@ -160,10 +156,10 @@
 			{/if}
 		{/each}
 	</div>
-	{#if terminationStatus}
-		<SessionTerminationBanner
-			status={terminationStatus}
-			reason={terminationReason || sessionErrorReason}
+	{#if runEndStatus}
+		<SessionRunEndBanner
+			status={runEndStatus}
+			reason={runEndReason}
 		/>
 	{/if}
 	{#if showContinueButton && !continueDisabled}

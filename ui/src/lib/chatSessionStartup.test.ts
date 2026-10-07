@@ -170,13 +170,14 @@ describe('createChatSessionStartup', () => {
 			'sessions/loaded',
 			'session/messages/resume-loaded',
 			'session/selected',
-			'session/error-shown',
+			'session/run-ended',
 			'session/retained-error',
 			'sessions/loaded',
 		]);
 		expect(harness.actions[1]).toMatchObject({ preserveInteractionIds: ['conf-live'] });
 		expect(harness.actions[3]).toMatchObject({
-			type: 'session/error-shown',
+			type: 'session/run-ended',
+			status: 'error',
 			reason: '本次会话因错误停止，暂未收到更具体的原因。',
 		});
 		expect(harness.reopened).toEqual([]);
@@ -243,7 +244,11 @@ describe('createChatSessionStartup', () => {
 		expect(harness.freshIntentChanges).toEqual([true, false]);
 		expect(harness.evicted).toEqual([SESSION_ID]);
 		expect(harness.reducer.snapshot().activeSessionId).toBe(OTHER_SESSION_ID);
-		expect(harness.reducer.snapshot().error).toEqual({ sessionId: OTHER_SESSION_ID, reason: '已停止' });
+		expect(harness.reducer.snapshot().runEndNotice).toEqual({
+			sessionId: OTHER_SESSION_ID,
+			status: 'error',
+			reason: '已停止',
+		});
 		expect(harness.reducer.snapshot().sessions).toContainEqual(
 			expect.objectContaining({ id: OTHER_SESSION_ID, status: 'error' }),
 		);

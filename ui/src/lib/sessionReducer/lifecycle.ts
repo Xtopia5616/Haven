@@ -9,11 +9,10 @@ type LifecycleReducerAction = SessionActionOf<
 	| 'session/selected'
 	| 'session/cleared'
 	| 'session/status-updated'
-	| 'session/error-shown'
-	| 'session/error-cleared'
+	| 'session/run-end-notice-cleared'
 	| 'session/error-reason-remembered'
 	| 'session/error-reason-forgotten'
-	| 'session/termination-shown'
+	| 'session/run-ended'
 	| 'session/retained-error'
 	| 'session/title-updated'
 	| 'session/deleted'
@@ -30,27 +29,20 @@ export function reduceLifecycle(
 	switch (action.type) {
 		case 'sessions/loaded': {
 			const sessions = action.sessions.map(cloneSession);
-			const activeError =
-				state.error && state.error.sessionId === state.activeSessionId
-					? state.sessions.find((session) => session.id === state.activeSessionId)
+			const activeRunEndNotice =
+				state.runEndNotice && state.runEndNotice.sessionId === state.activeSessionId
+					? state.runEndNotice
 					: null;
-			const activeTermination =
-				state.termination && state.termination.sessionId === state.activeSessionId
-					? state.termination
-					: null;
-			if (activeError && !sessions.some((session) => session.id === activeError.id)) {
-				sessions.push({ ...activeError, status: 'error' });
-			}
 			if (
-				activeTermination &&
-				!sessions.some((session) => session.id === activeTermination.sessionId)
+				activeRunEndNotice &&
+				!sessions.some((session) => session.id === activeRunEndNotice.sessionId)
 			) {
 				const previous = state.sessions.find(
-					(session) => session.id === activeTermination.sessionId,
+					(session) => session.id === activeRunEndNotice.sessionId,
 				);
 				sessions.push({
-					...(previous || { id: activeTermination.sessionId }),
-					status: activeTermination.status,
+					...(previous || { id: activeRunEndNotice.sessionId }),
+					status: activeRunEndNotice.status,
 				});
 			}
 			if (action.autoSelect && !state.activeSessionId) {
@@ -68,8 +60,7 @@ export function reduceLifecycle(
 				...state,
 				sessions: [],
 				activeSessionId: null,
-				error: null,
-				termination: null,
+				runEndNotice: null,
 				sessionErrorReasons: {},
 			};
 		}
@@ -98,23 +89,20 @@ export function reduceLifecycle(
 						...state,
 						sessions,
 						activeSessionId: action.sessionId,
-						error: null,
-						termination: null,
+						runEndNotice: null,
 					};
 		}
 		case 'session/selected':
 			return {
 				...state,
 				activeSessionId: action.sessionId,
-				error:
-					state.error && state.error.sessionId !== action.sessionId ? null : state.error,
-				termination:
-					state.termination && state.termination.sessionId !== action.sessionId
+				runEndNotice:
+					state.runEndNotice && state.runEndNotice.sessionId !== action.sessionId
 						? null
-						: state.termination,
+						: state.runEndNotice,
 			};
 		case 'session/cleared':
-			return { ...state, activeSessionId: null, error: null, termination: null };
+			return { ...state, activeSessionId: null, runEndNotice: null };
 		case 'session/status-updated': {
 			const current = state.sessions.find((session) => session.id === action.sessionId);
 			if (!current) return state;
@@ -125,13 +113,11 @@ export function reduceLifecycle(
 				current.status !== action.status ||
 				current.waitingReason !== waitingReason ||
 				current.title !== title;
-			const terminalStateChanged =
-				state.termination?.sessionId === action.sessionId &&
+			const runEndNoticeInvalidated =
+				state.runEndNotice?.sessionId === action.sessionId &&
 				action.status !== 'completed' &&
 				action.status !== 'error';
-			const shouldClearError =
-				state.error?.sessionId === action.sessionId && isBusyStatus(action.status);
-			if (!sessionChanged && !terminalStateChanged && !shouldClearError) return state;
+			if (!sessionChanged && !runEndNoticeInvalidated) return state;
 			const sessions = sessionChanged
 				? state.sessions.map((session) =>
 						session.id === action.sessionId
@@ -149,54 +135,12 @@ export function reduceLifecycle(
 			return {
 				...state,
 				sessions,
-				...(shouldClearError ? { error: null } : {}),
-				...(terminalStateChanged ? { termination: null } : {}),
+				...(runEndNoticeInvalidated ? { runEndNotice: null } : {}),
 			};
 		}
-		case 'session/error-shown': {
-			const current = state.sessions.find((session) => session.id === action.sessionId);
-			const isActive = state.activeSessionId === action.sessionId;
-			const sessionChanged = !!current && current.status !== 'error';
-			const errorChanged =
-				isActive &&
-				(state.error?.sessionId !== action.sessionId ||
-					state.error?.reason !== action.reason);
-			const terminationChanged =
-				isActive &&
-				(state.termination?.sessionId !== action.sessionId ||
-					state.termination?.status !== 'error' ||
-					state.termination?.reason !== action.reason);
-			if (!sessionChanged && !errorChanged && !terminationChanged) return state;
-			const sessions = sessionChanged
-				? state.sessions.map((session) =>
-						session.id === action.sessionId ? { ...session, status: 'error' } : session,
-					)
-				: state.sessions;
-			return {
-				...state,
-				sessions,
-				...(isActive
-					? {
-							error: { sessionId: action.sessionId, reason: action.reason },
-							termination: {
-								sessionId: action.sessionId,
-								status: 'error' as const,
-								reason: action.reason,
-							},
-						}
-					: {}),
-			};
-		}
-		case 'session/error-cleared':
-			return !action.sessionId || state.error?.sessionId === action.sessionId
-				? {
-						...state,
-						error: null,
-						termination:
-							!action.sessionId || state.termination?.sessionId === action.sessionId
-								? null
-								: state.termination,
-					}
+		case 'session/run-end-notice-cleared':
+			return !action.sessionId || state.runEndNotice?.sessionId === action.sessionId
+				? { ...state, runEndNotice: null }
 				: state;
 		case 'session/error-reason-remembered': {
 			const reason = action.reason.trim();
@@ -217,33 +161,49 @@ export function reduceLifecycle(
 			delete sessionErrorReasons[action.sessionId];
 			return { ...state, sessionErrorReasons };
 		}
-		case 'session/termination-shown': {
-			const alreadyShown =
-				state.activeSessionId === action.sessionId &&
-				state.termination?.sessionId === action.sessionId &&
-				state.termination.status === action.status &&
-				state.termination.reason === action.reason;
-			if (alreadyShown) return state;
+		case 'session/run-ended': {
 			const current = state.sessions.find((session) => session.id === action.sessionId);
-			if (!current) return state;
-			if (state.activeSessionId !== action.sessionId && current?.status === action.status)
-				return state;
-			const sessions = state.sessions.map((session) =>
-				session.id === action.sessionId ? { ...session, status: action.status } : session,
-			);
-			if (state.activeSessionId !== action.sessionId) return { ...state, sessions };
+			const isActive = state.activeSessionId === action.sessionId;
+			const waitingReason =
+				action.waitingReason !== undefined ? action.waitingReason : current?.waitingReason;
+			const title = action.title != null ? action.title : current?.title;
+			const sessionChanged =
+				!!current &&
+				(current.status !== action.status ||
+					current.waitingReason !== waitingReason ||
+					current.title !== title);
+			const noticeChanged =
+				isActive &&
+				(state.runEndNotice?.sessionId !== action.sessionId ||
+					state.runEndNotice.status !== action.status ||
+					state.runEndNotice.reason !== action.reason);
+			if (!sessionChanged && !noticeChanged) return state;
+			const sessions = sessionChanged
+				? state.sessions.map((session) =>
+						session.id === action.sessionId
+							? {
+									...session,
+									status: action.status,
+									...(action.waitingReason !== undefined
+										? { waitingReason: action.waitingReason }
+										: {}),
+									...(action.title != null ? { title: action.title } : {}),
+								}
+							: session,
+					)
+				: state.sessions;
 			return {
 				...state,
 				sessions,
-				termination: {
-					sessionId: action.sessionId,
-					status: action.status,
-					reason: action.reason,
-				},
-				error:
-					action.status === 'error'
-						? { sessionId: action.sessionId, reason: action.reason }
-						: null,
+				...(isActive
+					? {
+							runEndNotice: {
+								sessionId: action.sessionId,
+								status: action.status,
+								reason: action.reason,
+							},
+						}
+					: {}),
 			};
 		}
 		case 'session/retained-error': {
@@ -273,9 +233,8 @@ export function reduceLifecycle(
 				sessionErrorReasons,
 				activeSessionId:
 					state.activeSessionId === action.sessionId ? null : state.activeSessionId,
-				error: state.error?.sessionId === action.sessionId ? null : state.error,
-				termination:
-					state.termination?.sessionId === action.sessionId ? null : state.termination,
+				runEndNotice:
+					state.runEndNotice?.sessionId === action.sessionId ? null : state.runEndNotice,
 			};
 		}
 	}

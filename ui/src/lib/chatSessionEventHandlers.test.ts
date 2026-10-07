@@ -21,7 +21,7 @@ function handler(options: {
 		isFreshSessionIntent: () => options.fresh ?? false,
 		adoptDraftMessages: () => options.adoptedDraft ?? false,
 		dispatchSession: options.dispatchSession,
-		getSessionErrorId: () => null,
+		getErroredSessionId: () => null,
 		clearAskAwaiting: options.clearAskAwaiting ?? vi.fn(),
 		evictTerminalSessionMemory: options.evictTerminalSessionMemory ?? vi.fn(),
 		clearStepBlockIds: options.clearStepBlockIds ?? vi.fn(),
@@ -37,6 +37,8 @@ describe('chat session lifecycle handler', () => {
 		const clearAskAwaiting = vi.fn();
 		const reducer = new SessionReducer({
 			...initialSessionState,
+			sessions: [{ id: 'ses-paused', status: 'running' }],
+			activeSessionId: 'ses-paused',
 			messages: {
 				['ses-paused']: [
 					{ id: 'step-thought', role: 'assistant', content: '半截回复', streaming: true },
@@ -65,10 +67,20 @@ describe('chat session lifecycle handler', () => {
 				status: 'paused',
 				waitingReason: 'ask',
 				title: 'Question',
-				reason: null,
+				reason: '用户主动打断输出',
 			},
 		} as never);
 
+		expect(reducer.snapshot().sessions[0]).toMatchObject({
+			status: 'paused',
+			waitingReason: 'ask',
+			title: 'Question',
+		});
+		expect(reducer.snapshot().runEndNotice).toEqual({
+			sessionId: 'ses-paused',
+			status: 'paused',
+			reason: '用户主动打断输出',
+		});
 		expect(flushChunksNow).toHaveBeenCalledOnce();
 		expect(clearAskAwaiting).not.toHaveBeenCalled();
 		expect(get(getToolOutputPreviewStore('step-shell'))).toBeUndefined();
@@ -154,7 +166,7 @@ describe('chat session lifecycle handler', () => {
 			status: 'completed',
 			title: '研究',
 		});
-		expect(reducer.snapshot().termination).toEqual({
+		expect(reducer.snapshot().runEndNotice).toEqual({
 			sessionId,
 			status: 'completed',
 			reason: '用户主动结束会话',
@@ -168,7 +180,7 @@ describe('chat session lifecycle handler', () => {
 		expect(get(getToolOutputPreviewStore('step-live'))).toBeUndefined();
 	});
 
-	it('projects an error and updates terminal status, error details, and cleanup together', () => {
+	it('projects one error run-end notice with terminal status and cleanup', () => {
 		const sessionId = 'ses-error';
 		const clearAskAwaiting = vi.fn();
 		const evictTerminalSessionMemory = vi.fn();
@@ -198,6 +210,11 @@ describe('chat session lifecycle handler', () => {
 		expect(reducer.snapshot().sessions[0]).toMatchObject({
 			status: 'error',
 			title: '构建',
+		});
+		expect(reducer.snapshot().runEndNotice).toEqual({
+			sessionId,
+			status: 'error',
+			reason: '网络请求超时',
 		});
 		expect(reducer.getSessionErrorReason(sessionId)).toBe('网络请求超时');
 		expect(clearAskAwaiting).toHaveBeenCalledOnce();

@@ -224,7 +224,7 @@ describe('ChatSessionController continue', () => {
 		]);
 		expect(harness.invokeCalls[0]?.args).toEqual({ sessionId: SESSION_ID });
 		expect(harness.submitCalls.map((call) => call.text)).toEqual(['继续']);
-		expect(harness.actions.map((action) => action.type)).toContain('session/error-cleared');
+		expect(harness.actions.map((action) => action.type)).toContain('session/run-end-notice-cleared');
 		expect(harness.actions.map((action) => action.type)).toContain('session/replay-reset');
 		expect(harness.autoFollow).toEqual([true]);
 		expect(harness.continuePending).toEqual([true, false]);

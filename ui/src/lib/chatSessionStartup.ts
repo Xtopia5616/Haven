@@ -84,8 +84,9 @@ export function createChatSessionStartup(dependencies: ChatSessionStartupDepende
 			}
 			if (resumeTarget.wasError) {
 				dependencies.dispatch({
-					type: 'session/error-shown',
+					type: 'session/run-ended',
 					sessionId: resumeTarget.sessionId,
+					status: 'error',
 					reason:
 						resumeTarget.errorReason ||
 						dependencies.reducer.getSessionErrorReason(resumeTarget.sessionId) ||
@@ -126,8 +127,7 @@ export function createChatSessionStartup(dependencies: ChatSessionStartupDepende
 				if (
 					after.activeSessionId &&
 					!after.sessions.some((session) => session.id === after.activeSessionId) &&
-					!after.error &&
-					!after.termination
+					!after.runEndNotice
 				) {
 					dependencies.dispatch({ type: 'session/cleared' });
 				}
@@ -214,8 +214,9 @@ export function createChatSessionStartup(dependencies: ChatSessionStartupDepende
 		dependencies.dispatch({ type: 'session/selected', sessionId: latestSession.session.id });
 		if (wasError) {
 			dependencies.dispatch({
-				type: 'session/error-shown',
+				type: 'session/run-ended',
 				sessionId: latestSession.session.id,
+				status: 'error',
 				reason:
 					dependencies.reducer.getSessionErrorReason(latestSession.session.id) ||
 					'本次会话因错误停止，暂未收到更具体的原因。',

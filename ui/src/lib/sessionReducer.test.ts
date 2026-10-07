@@ -239,7 +239,7 @@ describe('SessionReducer', () => {
 		const state = stateWith({
 			sessions: [{ ...session('ses-terminal', 'completed'), waitingReason: null }],
 			activeSessionId: 'ses-terminal',
-			termination: {
+			runEndNotice: {
 				sessionId: 'ses-terminal',
 				status: 'completed',
 				reason: '已结束',
@@ -257,7 +257,7 @@ describe('SessionReducer', () => {
 		).toBe(state);
 		expect(
 			reduceSession(state, {
-				type: 'session/termination-shown',
+				type: 'session/run-ended',
 				sessionId: 'ses-terminal',
 				status: 'completed',
 				reason: '已结束',
@@ -372,7 +372,7 @@ describe('SessionReducer', () => {
 		const state = stateWith({
 			sessions: [session('ses-error', 'error')],
 			activeSessionId: 'ses-error',
-			error: { sessionId: 'ses-error', reason: '网络失败' },
+			runEndNotice: { sessionId: 'ses-error', status: 'error', reason: '网络失败' },
 		});
 
 		const next = reduceSession(state, {
@@ -383,12 +383,11 @@ describe('SessionReducer', () => {
 		expect(next.sessions).toEqual([session('ses-other'), session('ses-error', 'error')]);
 	});
 
-	it('clears an error only when the same session becomes busy or is left', () => {
+	it('clears an error run-end notice when the session resumes or is left', () => {
 		const state = stateWith({
 			sessions: [session('ses-error', 'error')],
 			activeSessionId: 'ses-error',
-			error: { sessionId: 'ses-error', reason: '失败' },
-			termination: { sessionId: 'ses-error', status: 'error', reason: '失败' },
+			runEndNotice: { sessionId: 'ses-error', status: 'error', reason: '失败' },
 		});
 
 		expect(
@@ -396,29 +395,27 @@ describe('SessionReducer', () => {
 				type: 'session/status-updated',
 				sessionId: 'ses-other',
 				status: 'running',
-			}).error,
-		).toEqual(state.error);
+			}).runEndNotice,
+		).toEqual(state.runEndNotice);
 		expect(
-			reduceSession(state, { type: 'session/selected', sessionId: 'ses-error' }).error,
-		).toEqual(state.error);
+			reduceSession(state, { type: 'session/selected', sessionId: 'ses-error' }).runEndNotice,
+		).toEqual(state.runEndNotice);
 		expect(
 			reduceSession(state, {
 				type: 'session/status-updated',
 				sessionId: 'ses-error',
 				status: 'pending',
-			}).error,
+			}).runEndNotice,
 		).toBeNull();
 		const left = reduceSession(state, { type: 'session/selected', sessionId: 'ses-other' });
-		expect(left.error).toBeNull();
-		expect(left.termination).toBeNull();
+		expect(left.runEndNotice).toBeNull();
 	});
 
 	it('clears the current error when a newly created session is activated', () => {
 		const state = stateWith({
 			sessions: [session('ses-error', 'error')],
 			activeSessionId: 'ses-error',
-			error: { sessionId: 'ses-error', reason: '失败' },
-			termination: { sessionId: 'ses-error', status: 'error', reason: '失败' },
+			runEndNotice: { sessionId: 'ses-error', status: 'error', reason: '失败' },
 		});
 
 		const next = reduceSession(state, {
@@ -429,16 +426,14 @@ describe('SessionReducer', () => {
 		});
 
 		expect(next.activeSessionId).toBe('ses-new');
-		expect(next.error).toBeNull();
-		expect(next.termination).toBeNull();
+		expect(next.runEndNotice).toBeNull();
 	});
 
 	it('preserves the current error when an unrelated background session is created', () => {
 		const state = stateWith({
 			sessions: [session('ses-error', 'error')],
 			activeSessionId: 'ses-error',
-			error: { sessionId: 'ses-error', reason: '失败' },
-			termination: { sessionId: 'ses-error', status: 'error', reason: '失败' },
+			runEndNotice: { sessionId: 'ses-error', status: 'error', reason: '失败' },
 		});
 
 		const next = reduceSession(state, {
@@ -449,36 +444,31 @@ describe('SessionReducer', () => {
 		});
 
 		expect(next.activeSessionId).toBe('ses-error');
-		expect(next.error).toEqual(state.error);
-		expect(next.termination).toEqual(state.termination);
+		expect(next.runEndNotice).toEqual(state.runEndNotice);
 	});
 
 	it('clears the current error when the active session is cleared or deleted', () => {
 		const state = stateWith({
 			sessions: [session('ses-error', 'error'), session('ses-other')],
 			activeSessionId: 'ses-error',
-			error: { sessionId: 'ses-error', reason: '失败' },
-			termination: { sessionId: 'ses-error', status: 'error', reason: '失败' },
+			runEndNotice: { sessionId: 'ses-error', status: 'error', reason: '失败' },
 		});
 
 		const cleared = reduceSession(state, { type: 'session/cleared' });
 		expect(cleared.activeSessionId).toBeNull();
-		expect(cleared.error).toBeNull();
-		expect(cleared.termination).toBeNull();
+		expect(cleared.runEndNotice).toBeNull();
 
 		const deleted = reduceSession(state, { type: 'session/deleted', sessionId: 'ses-error' });
 		expect(deleted.sessions).toEqual([session('ses-other')]);
 		expect(deleted.activeSessionId).toBeNull();
-		expect(deleted.error).toBeNull();
-		expect(deleted.termination).toBeNull();
+		expect(deleted.runEndNotice).toBeNull();
 	});
 
 	it('preserves an active terminal reason when a live-session refresh omits it', () => {
 		const state = stateWith({
 			sessions: [session('ses-done', 'completed')],
 			activeSessionId: 'ses-done',
-			error: null,
-			termination: {
+			runEndNotice: {
 				sessionId: 'ses-done' as const,
 				status: 'completed' as const,
 				reason: '用户主动结束会话',
@@ -491,7 +481,7 @@ describe('SessionReducer', () => {
 		});
 
 		expect(next.sessions).toContainEqual(session('ses-done', 'completed'));
-		expect(next.termination?.reason).toBe('用户主动结束会话');
+		expect(next.runEndNotice?.reason).toBe('用户主动结束会话');
 	});
 
 	it('notifies subscribers after every dispatch', () => {
@@ -812,29 +802,29 @@ describe('SessionReducer', () => {
 		});
 	});
 
-	it('keeps lifecycle error and termination projections aligned across list refreshes', () => {
+	it('keeps the run-end notice aligned across list refreshes', () => {
 		const running = stateWith({
 			sessions: [session('ses-terminal', 'running')],
 			activeSessionId: 'ses-terminal',
 		});
 		const failed = reduceSession(running, {
-			type: 'session/error-shown',
+			type: 'session/run-ended',
 			sessionId: 'ses-terminal',
+			status: 'error',
 			reason: '连接中断',
 		});
-		expect(failed.error?.reason).toBe('连接中断');
-		expect(failed.termination?.status).toBe('error');
+		expect(failed.runEndNotice?.reason).toBe('连接中断');
+		expect(failed.runEndNotice?.status).toBe('error');
 
 		const recovered = reduceSession(failed, {
 			type: 'session/status-updated',
 			sessionId: 'ses-terminal',
 			status: 'pending',
 		});
-		expect(recovered.error).toBeNull();
-		expect(recovered.termination).toBeNull();
+		expect(recovered.runEndNotice).toBeNull();
 
 		const completed = reduceSession(recovered, {
-			type: 'session/termination-shown',
+			type: 'session/run-ended',
 			sessionId: 'ses-terminal',
 			status: 'completed',
 			reason: '用户主动结束会话',
@@ -844,7 +834,7 @@ describe('SessionReducer', () => {
 			sessions: [],
 		});
 		expect(refreshed.sessions).toContainEqual(session('ses-terminal', 'completed'));
-		expect(refreshed.termination).toEqual({
+		expect(refreshed.runEndNotice).toEqual({
 			sessionId: 'ses-terminal',
 			status: 'completed',
 			reason: '用户主动结束会话',

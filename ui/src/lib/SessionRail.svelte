@@ -20,7 +20,7 @@
 	}: Props = $props();
 
 	// The reducer may retain the active completed session briefly so the
-	// conversation can show its termination message. It is no longer switchable
+	// conversation can show its run-end notice. It is no longer switchable
 	// from the live-session rail; persisted history remains available separately.
 	const switchableSessions = $derived(
 		sessions.filter((session) => session.status !== 'completed'),

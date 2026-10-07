@@ -75,7 +75,7 @@ describe('session selector stores', () => {
 
 		root.set({ ...initial, activeSessionId: 'ses-missing' });
 		const emptySelection = values.at(-1);
-		root.set({ ...initial, activeSessionId: null, error: { sessionId: 'ses-3', reason: 'x' } });
+		root.set({ ...initial, activeSessionId: null, runEndNotice: { sessionId: 'ses-3', status: 'error', reason: 'x' } });
 		expect(values).toHaveLength(3);
 		expect(emptySelection).toBe(emptyMessages);
 		expect(values.at(-1)).toBe(emptyMessages);

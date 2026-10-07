@@ -1,6 +1,6 @@
 # Haven 命名规范
 
-> 版本: v1.68 | 日期: 2026-10-07
+> 版本: v1.69 | 日期: 2026-10-07
 
 本文档统一 Haven 项目各层的命名规则（变量名、函数名、文件名、crate 名、缩写大小写、跨层边界）。规范以现有代码中的事实模式为基础，新代码必须遵循；存量代码若与规范冲突，逐步迁移对齐。
 
@@ -52,6 +52,8 @@ Memory `partial_messages` 中尚未提交到 canonical transcript 的流式文�
 Agent 从权威 `TranscriptRecord` event log 得到的派生视图统一由 `TranscriptProjection` 表达：`canonical_messages` 是发给模型的 provider-neutral transcript，`react_rounds` 是 Agent 步骤/工具恢复视图。二者同源并可同次计算，但有不同消费者与约束，不互相替代，也不合并成一种消息 shape。
 
 ReAct response hook 与分类器共享 `ResponsePolicyInput`；分类器返回 `ResponsePolicyDecision`（接受、结构参数重试或可恢复失败）。response cycle 执行策略后再返回 `ResponseCycleOutcome`，二者是不同阶段，不合成一个状态类型。实现模块使用 `response_policy.rs`，不再用只覆盖 retry 的 `retries.rs` 命名整个分类器（ADR 0637）。
+
+SessionReducer 的当前 run 结束提示统一为 `SessionRunEndNotice { sessionId, status, reason }`，状态范围从 generated `SessionStatus` 派生为 paused/completed/error。活动错误不再另存一份 `SessionError`；生命周期 reducer 用单一 `session/run-ended` action 同步会话状态和提示，继续生成成功后用 `session/run-end-notice-cleared` 清理。历史错误原因映射仍按 session 单独保留（ADR 0638）。
 
 Tools 文件名与全文搜索共用 `FileSearchResult`；匹配项由 `results` 表达，有限扫描或结果上限则由独立的 `truncation_reason` 表达。匹配数据与搜索完整性是不同结果维度，不能只根据 tuple 位置恢复。
 
