@@ -235,7 +235,7 @@ fn channel_maps_every_variant_to_expected_channel() {
                 step_number: Some(1),
                 duration_ms: Some(42),
                 role: Some(haven_common::config::RequestKind::Chat),
-                call_kind: "agent".into(),
+                call_kind: haven_common::types::LlmCallKind::Agent,
                 has_cost: false,
             },
             "agent:usage",
@@ -249,6 +249,40 @@ fn channel_maps_every_variant_to_expected_channel() {
             event
         );
     }
+}
+
+#[test]
+fn usage_event_keeps_call_kind_typed_and_serializes_the_canonical_value() {
+    let event = AgentEvent::Usage {
+        session_id: "ses-usage".into(),
+        prompt_tokens: 1,
+        completion_tokens: 2,
+        total_tokens: 3,
+        cached_tokens: 0,
+        cache_creation_tokens: 0,
+        cache_miss_tokens: 1,
+        context_tokens: 1,
+        cache_exclusive: false,
+        cache_accounting: "unknown".into(),
+        cost_usd: None,
+        model: None,
+        cumulative_prompt_tokens: 1,
+        cumulative_completion_tokens: 2,
+        cumulative_total_tokens: 3,
+        cumulative_cached_tokens: 0,
+        cumulative_cache_creation_tokens: 0,
+        cumulative_cache_miss_tokens: 0,
+        cache_diagnostics: None,
+        cumulative_cost_usd: None,
+        context_window: None,
+        step_number: Some(1),
+        duration_ms: None,
+        role: Some(haven_common::config::RequestKind::Chat),
+        call_kind: haven_common::types::LlmCallKind::Tool,
+        has_cost: false,
+    };
+
+    assert_eq!(TauriEmitter::payload(&event, None)["call_kind"], "tool");
 }
 
 #[test]

@@ -8,7 +8,6 @@ import { addNotification } from './notificationStore.ts';
 import { coalesceTokenTotal, formatTokenCount } from './sessionUsage.ts';
 import type { SessionAction, SessionTokenStats } from './sessionReducer.ts';
 import { rememberMediaPlan } from './mediaPlanStore.ts';
-import logger from '$lib/logger.ts';
 import {
 	mediaPlanNoticeLabel,
 	mediaPlanProjectionLabel,
@@ -37,13 +36,6 @@ export function createChatUsageEventHandlers({
 			const d = event.payload;
 			if (!d.sessionId) return;
 			const callKind = d.callKind;
-			if (callKind !== 'agent' && callKind !== 'media' && callKind !== 'tool') {
-				logger.error(
-					'chatUsageEventHandlers',
-					`Unsupported usage call kind: ${String(callKind)}`,
-				);
-				return;
-			}
 			const prompt = d.promptTokens || 0;
 			const completion = d.completionTokens || 0;
 			const cached = d.cachedTokens || 0;

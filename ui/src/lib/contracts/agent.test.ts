@@ -46,7 +46,7 @@ describe('agent IPC contract', () => {
 		expect(event.payload).not.toHaveProperty('session_id');
 	});
 
-	it('preserves dynamic usage diagnostics while mapping fixed fields', () => {
+	it('maps typed usage kind and preserves dynamic diagnostics', () => {
 		const event = mapAgentEvent({
 			event: 'agent:usage',
 			id: 2,
@@ -75,7 +75,7 @@ describe('agent IPC contract', () => {
 				step_number: 3,
 				duration_ms: 42,
 				role: 'chat',
-				call_kind: 'future_call_kind',
+				call_kind: 'media',
 				has_cost: false,
 			},
 		});
@@ -83,8 +83,41 @@ describe('agent IPC contract', () => {
 		expect(event.payload.sessionId).toBe('ses-1');
 		expect(event.payload.promptTokens).toBe(10);
 		expect(event.payload.cacheDiagnostics).toEqual({ source: 'provider' });
-		expect(event.payload.callKind).toBe('future_call_kind');
+		expect(event.payload.callKind).toBe('media');
 		expect(event.payload).not.toHaveProperty('prompt_tokens');
+	});
+
+	it('rejects an unknown usage kind at the event boundary', () => {
+		const mapped = mapAgentEventContract({
+			event: 'agent:usage',
+			id: 2,
+			payload: {
+				session_id: 'ses-1',
+				prompt_tokens: 0,
+				completion_tokens: 0,
+				total_tokens: 0,
+				cached_tokens: 0,
+				cache_creation_tokens: 0,
+				cache_miss_tokens: 0,
+				context_tokens: 0,
+				cache_exclusive: false,
+				cache_accounting: 'unknown',
+				cost_usd: null,
+				model: null,
+				cumulative_prompt_tokens: 0,
+				cumulative_completion_tokens: 0,
+				cumulative_total_tokens: 0,
+				cumulative_cached_tokens: 0,
+				cumulative_cache_creation_tokens: 0,
+				cumulative_cache_miss_tokens: 0,
+				cumulative_cost_usd: null,
+				context_window: null,
+				call_kind: 'future_call_kind',
+				has_cost: false,
+			},
+		});
+
+		expect(mapped).toBeNull();
 	});
 
 	it('maps stream replacement boundaries to camelCase', () => {

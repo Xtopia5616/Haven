@@ -1,7 +1,7 @@
 /** Agent event IPC contract at the frontend boundary. */
 
-import type { RequestKind } from './generatedCommands.ts';
-import { AGENT_EVENT_NAMES } from './generatedCommands.ts';
+import type { LlmCallKind, RequestKind } from './generatedCommands.ts';
+import { AGENT_EVENT_NAMES, LLM_CALL_KIND_VALUES } from './generatedCommands.ts';
 import type { TauriEvent } from './tauriEvent.ts';
 import { isRecord } from './objectGuards.ts';
 
@@ -173,7 +173,7 @@ export interface AgentUsagePayload {
 	stepNumber?: number;
 	durationMs?: number;
 	role?: RequestKind;
-	callKind: 'agent' | 'media' | 'tool';
+	callKind: LlmCallKind;
 	hasCost: boolean;
 }
 
@@ -700,7 +700,7 @@ export function mapAgentEvent(
 				!optionalNumberIsValid(payload, 'step_number') ||
 				!optionalNumberIsValid(payload, 'duration_ms') ||
 				!optionalStringIsValid(payload, 'role') ||
-				typeof payload.call_kind !== 'string' ||
+				!isOneOf(payload.call_kind, LLM_CALL_KIND_VALUES) ||
 				typeof payload.has_cost !== 'boolean'
 			)
 				return null;
@@ -738,7 +738,7 @@ export function mapAgentEvent(
 						? { durationMs: payload.duration_ms as number }
 						: {}),
 					...(payload.role !== undefined ? { role: payload.role as RequestKind } : {}),
-					callKind: payload.call_kind as AgentUsagePayload['callKind'],
+					callKind: payload.call_kind,
 					hasCost: payload.has_cost,
 				},
 			};

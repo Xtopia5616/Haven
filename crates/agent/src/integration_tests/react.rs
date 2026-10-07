@@ -804,7 +804,7 @@ async fn media_tool_usage_flows_to_event_and_database() {
                 completion_tokens: 7,
                 total_tokens: 18,
                 ..
-            } if session_id == &session.id && call_kind == "media"
+            } if session_id == &session.id && *call_kind == haven_common::types::LlmCallKind::Media
         )
     }));
 }

@@ -34,9 +34,9 @@ impl CacheAccounting {
 
 /// The runtime owner of one LLM usage record.
 ///
-/// Durable usage rows and the `agent:usage` IPC event keep the established
-/// snake_case string representation; runtime inputs use this enum so callers
-/// cannot introduce an unrecognized usage category.
+/// Runtime inputs and the live `agent:usage` event use this closed category.
+/// Its snake_case JSON representation matches the persisted `llm_usage`
+/// string column, which remains a storage-boundary projection.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum LlmCallKind {

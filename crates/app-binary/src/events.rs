@@ -614,7 +614,7 @@ pub(crate) struct AgentUsageEvent {
     #[serde(skip_serializing_if = "Option::is_none")]
     /// Request kind serialized under the established `role` wire field.
     pub role: Option<haven_common::config::RequestKind>,
-    pub call_kind: String,
+    pub call_kind: haven_common::types::LlmCallKind,
     pub has_cost: bool,
 }
 

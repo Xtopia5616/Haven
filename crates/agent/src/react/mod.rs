@@ -865,7 +865,7 @@ impl ReActEngine {
                 step_number: Some(step_number as u32),
                 duration_ms,
                 request_kind: Some(request),
-                call_kind: LlmCallKind::Agent.as_str().to_string(),
+                call_kind: LlmCallKind::Agent,
                 has_cost: call_has_cost,
             },
         )
@@ -932,7 +932,7 @@ impl ReActEngine {
                 step_number: Some(step_number as u32),
                 duration_ms: tool_usage.duration_ms,
                 request_kind: Some(request),
-                call_kind: call_kind.as_str().to_string(),
+                call_kind,
                 has_cost: step_cost.is_some(),
             };
             pending.push(PendingToolUsage {
@@ -1112,7 +1112,7 @@ impl ReActEngine {
                     step_number: step_number.and_then(|step| u32::try_from(step).ok()),
                     duration_ms,
                     request_kind: Some(request),
-                    call_kind: call_kind.as_str().to_string(),
+                    call_kind,
                     has_cost: call_has_cost,
                 },
             )

@@ -137,7 +137,7 @@ Admin 操作最终由 `TypedToolAdapter` 或 `AdminSurfaces.execute` 序列化�
 | `agent:media_plan` | `AgentMediaPlanEvent` 含 session/step/run、`role`、strategy、projections/notices、optional event_seq | typed media projection；提交后序号由 Agent committed UI publisher 分配，App owns serialized wire mapping。 |
 | `agent:web_search` | `AgentWebSearchEvent { session_id, phase, step_number, run_id, call_id?, action?, result?: Value }` | envelope typed，provider/search result 为动态 JSON；Agent/provider owner 结果形状，App mapper owner wire。 |
 | `agent:supplement`, `agent:compaction` | `AgentSupplementEvent` 含上下文/step/run/message/source/id/event_seq；`AgentCompactionEvent` 含 summary/token counts/degraded/episode/event_seq | 固定 typed DTO + 用户内容字符串；sequence 与 producer policy 由 Agent owner。 |
-| `agent:usage` | `AgentUsageEvent` 含 token/cost/model/cache/context/step/duration/call-kind，diagnostics 为 `Option<CacheDiagnostics>` | typed DTO；cache diagnostics 不再是裸 Value，provider call kind 的 string 语义由 LLM/Agent 投影 owner。 |
+| `agent:usage` | `AgentUsageEvent` 含 token/cost/model/cache/context/step/duration 与 `LlmCallKind`，diagnostics 为 `Option<CacheDiagnostics>` | typed DTO；`LlmCallKind` 同时拥有 runtime 输入和 live event 的闭合值域；历史 `LlmUsageRecord.call_kind` 仍是 DB 读模型的字符串投影。 |
 | `agent:tool_output` | `AgentToolOutputEvent { session_id, step_id, output: String }` | 固定 typed string payload；工具 output 展示语义由 Agent/Tools 提供，App mapper 负责 wire。 |
 | `notification:show` | `AgentNotificationEvent { session_id?, title, body, notification_kind?, tool_run_kind?, tool_run_id?, tool_run_status? }` | 固定 typed notification envelope；`session_id` 只表示真实可选会话关联，正文自由字符串由 Agent producer 和 App notification/UI adapter 管理。 |
 

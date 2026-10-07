@@ -6,6 +6,7 @@ use crate::session::SessionInfo;
 use async_trait::async_trait;
 use haven_common::SessionStatus;
 use haven_common::config::RequestKind;
+use haven_common::types::LlmCallKind;
 use haven_memory::SessionStore;
 use haven_tools::ToolResultEnvelope;
 use serde::{Deserialize, Serialize};
@@ -294,7 +295,7 @@ pub enum AgentEvent {
         /// Request kind serialized under the established `role` wire field.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         role: Option<RequestKind>,
-        call_kind: String,
+        call_kind: LlmCallKind,
         /// Whether `cost_usd` is a real priced value (vs absent pricing).
         has_cost: bool,
     },
@@ -1256,7 +1257,7 @@ pub struct UsagePayload {
     /// Request kind; `AgentEvent::Usage` serializes it as the established
     /// `role` field.
     pub request_kind: Option<RequestKind>,
-    pub call_kind: String,
+    pub call_kind: LlmCallKind,
     pub has_cost: bool,
 }
 

@@ -669,7 +669,7 @@ impl TauriEmitter {
                 step_number: *step_number,
                 duration_ms: *duration_ms,
                 role: *role,
-                call_kind: call_kind.clone(),
+                call_kind: *call_kind,
                 has_cost: *has_cost,
             }),
         }

@@ -134,6 +134,8 @@ Tools 对结构化输出中 Ask 与通知 side-channel 的解析结果分别使�
 
 跨端枚举的允许值以 generated IPC contract 为单一来源；UI 可以为这些值维护展示标签，但选项数组应从生成值派生，并让边界/事件 contract 直接引用生成类型，不另手写相同 union。
 
+`LlmCallKind` 的 `agent` / `media` / `tool` 是闭合的本地 usage 类别；runtime 输入与 live `agent:usage` event 共用生成 enum。持久 `LlmUsageRecord.call_kind` 保持数据库读模型字符串，不把存储投影误当第二个 runtime/wire owner（ADR 0271、0723）。
+
 Tauri command 名与 request/response 类型由 `generatedCommands.ts` 从 Rust handler 生成；`contracts/commands.ts` 只追加 reviewed boundary/security metadata，并用 `Record<TauriCommandName, CommandContract>` 保证每个生成 command 恰有对应审阅项。
 
 跨 crate 的同字段 DTO 先按 owner 和用途判断是否合并：Memory `SessionMessageText` 是存储查询返回的纯文本消息行；Agent 私有 `SessionPromptMessage` 是组装首次 session prompt 的输入。它们通过显式转换跨边界，不应让 Memory 依赖 Agent，也不应让 Agent 的 prompt 类型成为 Memory 的规范类型。

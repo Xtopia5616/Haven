@@ -123,6 +123,7 @@ fn generate(root: &Path) -> Result<String, String> {
             TypeUse::Response,
         )?;
     }
+    type_graph.emit_definition("haven_common::types::LlmCallKind", TypeUse::Response)?;
     type_graph.emit_definition("haven_mcp::protocol::McpClientStatus", TypeUse::Response)?;
     type_graph.emit_external_unit_variant_values(
         "haven_mcp::protocol::McpClientStatus",
