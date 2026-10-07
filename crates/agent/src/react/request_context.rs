@@ -42,6 +42,13 @@ pub(crate) struct RequestContext {
     repairs: usize,
 }
 
+/// Provider request context after applying an adapter's media capabilities,
+/// together with the plan reported to the UI for that same projection.
+pub(super) struct CapabilityProjectedRequest {
+    pub(super) request_context: RequestContext,
+    pub(super) media_plan: MediaPlan,
+}
+
 impl RequestContext {
     /// Build the provider view from the current durable projection.
     ///
@@ -118,22 +125,22 @@ impl RequestContext {
     /// capabilities. Durable canonical state stays provider-neutral; this
     /// request-only copy may replace an unsafe raw part with an explicit safe
     /// text fallback and returns stable diagnostics for the UI/log.
-    pub(super) fn with_capabilities(
+    pub(super) fn project_for_capabilities(
         &self,
         capabilities: &CapabilityProfile,
         strategy: MediaInputStrategy,
-    ) -> (Self, MediaPlan) {
+    ) -> CapabilityProjectedRequest {
         let mut planned_inputs = Vec::new();
         let mut media_positions = Vec::new();
         if self.media_summary.media_part_count == 0 {
-            return (
-                self.clone(),
-                MediaPlan {
+            return CapabilityProjectedRequest {
+                request_context: self.clone(),
+                media_plan: MediaPlan {
                     strategy,
                     projections: Vec::new(),
                     notices: Vec::new(),
                 },
-            );
+            };
         }
         for (message_index, message) in self.messages.iter().enumerate() {
             for (part_index, _part) in message.content.iter().enumerate() {
@@ -164,7 +171,10 @@ impl RequestContext {
                 .iter()
                 .all(|projection| projection.mode == MediaProjectionMode::Raw)
         {
-            return (self.clone(), plan);
+            return CapabilityProjectedRequest {
+                request_context: self.clone(),
+                media_plan: plan,
+            };
         }
         let projected_by_asset = projected
             .into_iter()
@@ -205,16 +215,16 @@ impl RequestContext {
         }
         let repairs = crate::sanitize_canonical(&mut messages);
         let media_summary = canonical_media_summary(&messages);
-        (
-            Self {
+        CapabilityProjectedRequest {
+            request_context: Self {
                 message_tokens: estimate_message_tokens(&messages),
                 messages: Arc::new(messages),
                 media_inputs: Arc::clone(&self.media_inputs),
                 media_summary,
                 repairs,
             },
-            plan,
-        )
+            media_plan: plan,
+        }
     }
 
     pub(super) fn messages(&self) -> &[CanonicalMessage] {
@@ -589,11 +599,14 @@ mod tests {
             ),
             None,
         );
-        let (planned, plan) =
-            context.with_capabilities(&CapabilityProfile::default(), MediaInputStrategy::Auto);
+        let projection = context
+            .project_for_capabilities(&CapabilityProfile::default(), MediaInputStrategy::Auto);
 
-        assert!(plan.is_empty());
-        assert!(Arc::ptr_eq(&context.messages, &planned.messages));
+        assert!(projection.media_plan.is_empty());
+        assert!(Arc::ptr_eq(
+            &context.messages,
+            &projection.request_context.messages
+        ));
         assert!(context.raw_media_fits_profile(&CapabilityProfile::default()));
     }
 
@@ -697,21 +710,21 @@ mod tests {
             ..CapabilityProfile::default()
         };
 
-        let (planned, plan) = context.with_capabilities(&profile, MediaInputStrategy::Auto);
+        let projection = context.project_for_capabilities(&profile, MediaInputStrategy::Auto);
 
         assert!(
-            !planned.messages()[0]
+            !projection.request_context.messages()[0]
                 .content
                 .iter()
                 .any(|part| matches!(part, ContentPart::Image { .. }))
         );
-        assert!(planned.messages()[0].content.iter().any(|part| {
+        assert!(projection.request_context.messages()[0].content.iter().any(|part| {
             matches!(
                 part,
                 ContentPart::Text(text) if text.contains("cannot safely accept this media type")
             )
         }));
-        assert!(plan.notices.iter().any(|notice| {
+        assert!(projection.media_plan.notices.iter().any(|notice| {
             notice.code == haven_common::media::MediaPlanNoticeCode::RawCapabilityUnsupported
         }));
     }
@@ -736,8 +749,8 @@ mod tests {
             ..CapabilityProfile::default()
         };
 
-        let (planned, plan) = context.with_capabilities(&profile, MediaInputStrategy::Auto);
-        let content = &planned.messages()[0].content;
+        let projection = context.project_for_capabilities(&profile, MediaInputStrategy::Auto);
+        let content = &projection.request_context.messages()[0].content;
         assert_eq!(
             content
                 .iter()
@@ -757,7 +770,7 @@ mod tests {
                 .count(),
             1
         );
-        assert!(plan.notices.iter().any(|notice| {
+        assert!(projection.media_plan.notices.iter().any(|notice| {
             notice.code == haven_common::media::MediaPlanNoticeCode::InputPartLimit
         }));
     }
@@ -793,9 +806,9 @@ mod tests {
             ..CapabilityProfile::default()
         };
 
-        let (_, plan) = context.with_capabilities(&profile, MediaInputStrategy::Auto);
+        let projection = context.project_for_capabilities(&profile, MediaInputStrategy::Auto);
 
-        assert_eq!(plan.projections[0].asset_id, asset_id);
+        assert_eq!(projection.media_plan.projections[0].asset_id, asset_id);
     }
 
     #[test]
@@ -846,7 +859,7 @@ mod tests {
 
         let context =
             RequestContext::from_state(&ReActState::new(events, messages, HashMap::new()), None);
-        let (_, plan) = context.with_capabilities(
+        let projection = context.project_for_capabilities(
             &CapabilityProfile {
                 audio: haven_common::media::CapabilitySupport::Supported,
                 ..CapabilityProfile::default()
@@ -854,8 +867,8 @@ mod tests {
             MediaInputStrategy::Auto,
         );
 
-        assert_eq!(plan.projections.len(), 1);
-        assert_eq!(plan.projections[0].asset_id, audio_id);
+        assert_eq!(projection.media_plan.projections.len(), 1);
+        assert_eq!(projection.media_plan.projections[0].asset_id, audio_id);
     }
 
     #[test]
@@ -895,7 +908,7 @@ mod tests {
             HashMap::new(),
         );
         let context = RequestContext::from_state(&state, None);
-        let (_, plan) = context.with_capabilities(
+        let projection = context.project_for_capabilities(
             &CapabilityProfile {
                 audio: haven_common::media::CapabilitySupport::Supported,
                 ..CapabilityProfile::default()
@@ -903,7 +916,7 @@ mod tests {
             MediaInputStrategy::Auto,
         );
 
-        assert_eq!(plan.projections.len(), 1);
-        assert_eq!(plan.projections[0].asset_id, asset_id);
+        assert_eq!(projection.media_plan.projections.len(), 1);
+        assert_eq!(projection.media_plan.projections[0].asset_id, asset_id);
     }
 }

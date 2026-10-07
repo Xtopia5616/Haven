@@ -1026,7 +1026,7 @@ impl ReActEngine {
                         let retry_request =
                             super::choose_agent_request(&router, &raw_retry_context).await;
                         *request = retry_request;
-                        let (retry_context, media_plan) = raw_retry_context.with_capabilities(
+                        let projection = raw_retry_context.project_for_capabilities(
                             &router.capability_profile_for_request(retry_request),
                             self.media_strategy(),
                         );
@@ -1036,7 +1036,7 @@ impl ReActEngine {
                             ctx.step_num,
                             ctx.run_id,
                             retry_request,
-                            media_plan,
+                            projection.media_plan,
                         )
                         .await;
                         match self
@@ -1044,7 +1044,7 @@ impl ReActEngine {
                                 ctx,
                                 router.clone(),
                                 retry_request,
-                                &retry_context,
+                                &projection.request_context,
                                 state.identity_map.as_ref(),
                                 true,
                                 tools,

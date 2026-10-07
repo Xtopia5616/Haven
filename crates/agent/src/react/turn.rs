@@ -270,7 +270,7 @@ impl ReActEngine {
         let tool_token_estimate = prepared_tools.token_estimate;
         let router = self.router();
         let request = choose_agent_request(&router, &request_context).await;
-        let (request_context, media_plan) = request_context.with_capabilities(
+        let projection = request_context.project_for_capabilities(
             &router.capability_profile_for_request(request),
             self.media_strategy(),
         );
@@ -283,7 +283,7 @@ impl ReActEngine {
             step_num,
             ctx.run_id,
             request,
-            media_plan,
+            projection.media_plan,
         )
         .await;
         let mut effects = EffectBatch::continue_batch();
@@ -294,7 +294,7 @@ impl ReActEngine {
             "ReAct turn: session={} step={} messages={} tools={}",
             session_id,
             step_num,
-            request_context.messages().len(),
+            projection.request_context.messages().len(),
             tools.len()
         );
         let mut stream = super::stream_step::StreamSession::new(
@@ -372,7 +372,7 @@ impl ReActEngine {
                 &ctx,
                 state,
                 &mut stream,
-                &request_context,
+                &projection.request_context,
                 response,
                 thought,
                 tool_calls,

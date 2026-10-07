@@ -612,3 +612,4 @@
 - [0621：命名 Gemini content conversion 结果](0621-name-gemini-content-conversion.md)
 - [0622：命名 OpenAI Responses input conversion 结果](0622-name-openai-responses-input-conversion.md)
 - [0623：命名 Tools capped stream 结果](0623-name-tools-capped-stream-results.md)
+- [0624：命名 Agent capability-projected request](0624-name-agent-capability-projected-request.md)
