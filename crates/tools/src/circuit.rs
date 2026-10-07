@@ -3,15 +3,15 @@ use std::sync::{Mutex as StdMutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-enum CircuitState {
+enum ToolCircuitState {
     Closed,
     Open,
     HalfOpen,
 }
 
 /// Circuit breaker protecting a single tool from being called repeatedly
-/// while it is failing. Mirrors the LLM-level `CircuitBreaker` pattern but
-/// operates per tool-name.
+/// while it is failing. Mirrors the LLM-level `EndpointCircuitBreaker` pattern
+/// but operates per tool-name.
 ///
 /// State machine:
 /// - **Closed**: normal operation. Consecutive failures increment the counter.
@@ -22,7 +22,7 @@ enum CircuitState {
 /// - **HalfOpen**: a single probe request is allowed. On success the breaker
 ///   closes; on failure it re-opens.
 pub struct ToolCircuitBreaker {
-    state: CircuitState,
+    state: ToolCircuitState,
     consecutive_failures: u32,
     opened_at: Option<Instant>,
     probe_in_flight: bool,
@@ -33,7 +33,7 @@ pub struct ToolCircuitBreaker {
 impl ToolCircuitBreaker {
     pub fn new(failure_threshold: u32, cooldown: Duration) -> Self {
         Self {
-            state: CircuitState::Closed,
+            state: ToolCircuitState::Closed,
             consecutive_failures: 0,
             opened_at: None,
             probe_in_flight: false,
@@ -44,8 +44,8 @@ impl ToolCircuitBreaker {
 
     pub fn allow_request(&mut self) -> bool {
         match self.state {
-            CircuitState::Closed => true,
-            CircuitState::HalfOpen => {
+            ToolCircuitState::Closed => true,
+            ToolCircuitState::HalfOpen => {
                 // The state is shared by concurrent tool calls. Once the
                 // cooldown probe has been claimed, fail closed until that
                 // probe records a success or failure.
@@ -56,11 +56,11 @@ impl ToolCircuitBreaker {
                     true
                 }
             }
-            CircuitState::Open => {
+            ToolCircuitState::Open => {
                 if let Some(opened) = self.opened_at
                     && opened.elapsed() >= self.cooldown
                 {
-                    self.state = CircuitState::HalfOpen;
+                    self.state = ToolCircuitState::HalfOpen;
                     self.probe_in_flight = true;
                     true
                 } else {
@@ -72,7 +72,7 @@ impl ToolCircuitBreaker {
 
     pub fn record_success(&mut self) {
         self.consecutive_failures = 0;
-        self.state = CircuitState::Closed;
+        self.state = ToolCircuitState::Closed;
         self.opened_at = None;
         self.probe_in_flight = false;
     }
@@ -80,14 +80,14 @@ impl ToolCircuitBreaker {
     pub fn record_failure(&mut self) {
         self.consecutive_failures += 1;
         if self.consecutive_failures >= self.failure_threshold {
-            self.state = CircuitState::Open;
+            self.state = ToolCircuitState::Open;
             self.opened_at = Some(Instant::now());
             self.probe_in_flight = false;
         }
     }
 
     pub fn is_open(&self) -> bool {
-        self.state == CircuitState::Open
+        self.state == ToolCircuitState::Open
     }
 
     pub fn consecutive_failures(&self) -> u32 {

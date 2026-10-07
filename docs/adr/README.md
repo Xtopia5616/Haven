@@ -661,3 +661,4 @@
 - [0670：移除 Session 输入 metadata 的 transcript placeholder](0670-remove-session-input-transcript-placeholder.md)
 - [0671：区分 Agent transcript projection 的读取与提交阶段](0671-distinguish-committed-transcript-projection.md)
 - [0672：区分 HTTP 目标策略与全局 NetworkPolicy](0672-name-http-destination-policy.md)
+- [0673：区分工具与 endpoint 熔断器 owner](0673-name-tool-and-endpoint-circuit-breakers.md)

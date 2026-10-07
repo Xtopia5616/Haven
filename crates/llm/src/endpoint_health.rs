@@ -2,15 +2,15 @@ use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) enum CircuitState {
+pub(crate) enum EndpointCircuitState {
     Closed,
     Open,
     HalfOpen,
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct CircuitBreaker {
-    pub(crate) state: CircuitState,
+pub(crate) struct EndpointCircuitBreaker {
+    pub(crate) state: EndpointCircuitState,
     pub(crate) consecutive_failures: u32,
     pub(crate) last_failure_time: Option<Instant>,
     pub(crate) failure_count: u32,
@@ -22,10 +22,10 @@ pub(crate) struct CircuitBreaker {
     pub(crate) half_open_probe_in_flight: bool,
 }
 
-impl CircuitBreaker {
+impl EndpointCircuitBreaker {
     pub(crate) fn new() -> Self {
         Self {
-            state: CircuitState::Closed,
+            state: EndpointCircuitState::Closed,
             consecutive_failures: 0,
             last_failure_time: None,
             failure_count: 0,
@@ -42,25 +42,25 @@ impl CircuitBreaker {
         // recent failures. Only a HalfOpen probe (or a Closed-state success) may
         // transition the breaker to Closed.
         match self.state {
-            CircuitState::Open => return,
-            CircuitState::HalfOpen => {
+            EndpointCircuitState::Open => return,
+            EndpointCircuitState::HalfOpen => {
                 self.half_open_probe_in_flight = false;
             }
-            CircuitState::Closed => {}
+            EndpointCircuitState::Closed => {}
         }
         self.consecutive_failures = 0;
         self.total_calls += 1;
-        self.state = CircuitState::Closed;
+        self.state = EndpointCircuitState::Closed;
         self.opened_at = None;
     }
 
     pub(crate) fn record_failure(&mut self) {
         // A completion from a request that was admitted before the breaker
         // opened must not extend the open window or mutate its counters.
-        if self.state == CircuitState::Open {
+        if self.state == EndpointCircuitState::Open {
             return;
         }
-        let half_open_probe = self.state == CircuitState::HalfOpen;
+        let half_open_probe = self.state == EndpointCircuitState::HalfOpen;
         self.consecutive_failures += 1;
         self.failure_count += 1;
         self.total_calls += 1;
@@ -69,7 +69,7 @@ impl CircuitBreaker {
         // The breaker protects against a current outage. A historical success
         // rate must not mask a fresh run of consecutive failures.
         if half_open_probe || self.consecutive_failures >= 3 {
-            self.state = CircuitState::Open;
+            self.state = EndpointCircuitState::Open;
             self.opened_at = Some(Instant::now());
             self.half_open_probe_in_flight = false;
         }
@@ -79,7 +79,7 @@ impl CircuitBreaker {
     /// session's next request reaches the router. Historical call counters
     /// remain intact; only the consecutive-failure gate is cleared.
     pub(crate) fn reset_for_manual_retry(&mut self) {
-        self.state = CircuitState::Closed;
+        self.state = EndpointCircuitState::Closed;
         self.consecutive_failures = 0;
         self.last_failure_time = None;
         self.opened_at = None;
@@ -88,8 +88,8 @@ impl CircuitBreaker {
 
     pub(crate) fn allow_request(&mut self) -> bool {
         match self.state {
-            CircuitState::Closed => true,
-            CircuitState::HalfOpen => {
+            EndpointCircuitState::Closed => true,
+            EndpointCircuitState::HalfOpen => {
                 if self.half_open_probe_in_flight {
                     false
                 } else {
@@ -97,11 +97,11 @@ impl CircuitBreaker {
                     true
                 }
             }
-            CircuitState::Open => {
+            EndpointCircuitState::Open => {
                 // §2.6: 30s cool-down, then HalfOpen
                 if let Some(opened) = self.opened_at {
                     if opened.elapsed() >= Duration::from_secs(30) {
-                        self.state = CircuitState::HalfOpen;
+                        self.state = EndpointCircuitState::HalfOpen;
                         self.half_open_probe_in_flight = true;
                         true
                     } else {
@@ -120,7 +120,7 @@ pub(crate) struct EndpointHealth {
     pub(crate) consecutive_failures: u32,
     pub(crate) last_failure_time: Option<Instant>,
     pub(crate) is_healthy: bool,
-    pub(crate) circuit_breaker: CircuitBreaker,
+    pub(crate) circuit_breaker: EndpointCircuitBreaker,
 }
 
 impl EndpointHealth {
@@ -129,14 +129,14 @@ impl EndpointHealth {
             consecutive_failures: 0,
             last_failure_time: None,
             is_healthy: true,
-            circuit_breaker: CircuitBreaker::new(),
+            circuit_breaker: EndpointCircuitBreaker::new(),
         }
     }
 
     pub(crate) fn record_success(&mut self) {
         // Mirror the circuit breaker: a stale success from a pre-open request
         // must not mark the endpoint healthy again (M8).
-        if self.circuit_breaker.state == CircuitState::Open {
+        if self.circuit_breaker.state == EndpointCircuitState::Open {
             return;
         }
         self.consecutive_failures = 0;
