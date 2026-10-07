@@ -4,6 +4,7 @@ import { invoke } from '$lib/tauri.ts';
 import { loadSettings } from '$lib/settingsCommand.ts';
 import type { SettingsPayload } from '$lib/contracts/settings.ts';
 import type { ChatModelOption } from '$lib/chatModelOperations.ts';
+import type { WebSearchModeInput } from '$lib/contracts/generatedCommands.ts';
 
 type ModelSyncOptions = {
 	isDead: () => boolean;
@@ -84,7 +85,7 @@ export function createChatModelSync(options: ModelSyncOptions) {
 		const webSearchSupported = !!selectedModel && supportsBuiltinWebSearch(apiStyle);
 		const storedWebSearch = selectedModel?.web_search || 'off';
 		let webSearch = storedWebSearch;
-		let normalizedWebSearch: string | null = null;
+		let normalizedWebSearch: WebSearchModeInput | null = null;
 		if (selectedModel && !webSearchSupported && webSearch !== 'off') {
 			webSearch = 'off';
 			normalizedWebSearch = 'off';

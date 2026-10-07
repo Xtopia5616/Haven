@@ -265,6 +265,8 @@ export const SHELL_CHOICE_VALUES = ['powershell', 'cmd', 'pwsh'] as const;
 export type ShellChoice = (typeof SHELL_CHOICE_VALUES)[number];
 export const TRANSCRIPT_MESSAGE_KIND_VALUES = ['text', 'thought', 'tool_call', 'observation', 'reasoning', 'peer_kickoff'] as const;
 export type TranscriptMessageKind = (typeof TRANSCRIPT_MESSAGE_KIND_VALUES)[number];
+export const WEB_SEARCH_MODE_INPUT_VALUES = ['off', 'auto', 'always'] as const;
+export type WebSearchModeInput = (typeof WEB_SEARCH_MODE_INPUT_VALUES)[number];
 export interface ModelInfo { id: string; provider: string; name: string; context_window: number; supports_streaming: boolean; supports_tools: boolean; supports_vision: boolean; cost_per_1k_input_tokens?: number; cost_per_1k_output_tokens?: number }
 export const LLM_CONNECTION_FAILURE_REASON_VALUES = ['network', 'timeout', 'authentication', 'rate_limited', 'circuit_open', 'server', 'request_rejected', 'invalid_response', 'configuration', 'unknown'] as const;
 export type LlmConnectionFailureReason = (typeof LLM_CONNECTION_FAILURE_REASON_VALUES)[number];
@@ -354,7 +356,7 @@ export interface TauriCommandMap {
 	set_reasoning_effort: { request: { requestKind: RequestKindInput; effort?: string | null }; response: void };
 	set_skill_enabled: { request: { name: string; enabled: boolean }; response: void };
 	set_tool_enabled: { request: { name: string; enabled: boolean }; response: void };
-	set_web_search: { request: { requestKind: RequestKindInput; mode?: string | null }; response: void };
+	set_web_search: { request: { requestKind: RequestKindInput; mode?: WebSearchModeInput | null }; response: void };
 	stage_ocr_credential: { request: { apiSecret: boolean; value: string }; response: string };
 	stage_provider_credential: { request: { providerName: string; apiKey: string }; response: string };
 	start_recording: { request: undefined; response: void };

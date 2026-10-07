@@ -1,5 +1,6 @@
 <script lang="ts">
 	import type { ChatModelOption } from '$lib/chatModelOperations.ts';
+	import type { WebSearchModeInput } from '$lib/contracts/generatedCommands.ts';
 	import MaterialButton from './MaterialButton.svelte';
 	import MaterialChoiceChip from './MaterialChoiceChip.svelte';
 	import MaterialCollapsible from './MaterialCollapsible.svelte';
@@ -18,9 +19,9 @@
 		currentEffort?: string;
 		onEffortSelect?: (value: string) => void | Promise<void>;
 		webSearchSupported?: boolean;
-		webSearchOptions?: MenuOption[];
+		webSearchOptions?: Array<{ value: WebSearchModeInput; label: string }>;
 		currentWebSearch?: string;
-		onWebSearchSelect?: (value: string) => void | Promise<void>;
+		onWebSearchSelect?: (value: WebSearchModeInput) => void | Promise<void>;
 	}
 
 	let {

@@ -722,3 +722,4 @@
 - [0731：MCP 单服务器重连命令标明目标实体](0731-name-mcp-server-reconnect-command.md)
 - [0732：记忆检索输入复用 Memory domain enum](0732-type-memory-recall-domain.md)
 - [0733：确认命令复用权限输入 enum](0733-type-confirmation-permission-input.md)
+- [0734：联网搜索设置复用生成模式 enum](0734-type-web-search-mode-input.md)

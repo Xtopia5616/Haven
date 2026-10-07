@@ -16,6 +16,7 @@
 //! | `deepgram` / `assemblyai`  | same              | n/a                 |
 
 use haven_common::config::ModelEndpoint;
+use serde::{Deserialize, Serialize};
 
 pub use haven_common::config::{
     is_known_api_style, is_openai_family_wire_style, is_stt_only_style, is_tts_only_style,
@@ -25,7 +26,8 @@ pub use haven_common::config::{
 /// Web search mode for a provider's built-in search tool. Selected via the
 /// endpoint's `web_search` config field or the `HAVEN_WEB_SEARCH` environment
 /// variable (`off` | `auto` | `always`). Unconfigured defaults to `off`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum WebSearchMode {
     /// Never expose / force the built-in search tool.
     Off,
@@ -85,6 +87,20 @@ mod tests {
         assert_eq!(normalize_api_style("OpenAI-Responses"), "openai-responses");
         assert_eq!(normalize_api_style("xai"), "xai");
         assert_eq!(normalize_api_style("unknown"), "invalid");
+    }
+
+    #[test]
+    fn web_search_mode_uses_closed_snake_case_wire_values() {
+        for (mode, wire) in [
+            (WebSearchMode::Off, "\"off\""),
+            (WebSearchMode::Auto, "\"auto\""),
+            (WebSearchMode::Always, "\"always\""),
+        ] {
+            assert_eq!(serde_json::to_string(&mode).unwrap(), wire);
+            assert_eq!(serde_json::from_str::<WebSearchMode>(wire).unwrap(), mode);
+        }
+        assert!(serde_json::from_str::<WebSearchMode>("\"required\"").is_err());
+        assert!(serde_json::from_str::<WebSearchMode>("\"AUTO\"").is_err());
     }
 
     #[test]

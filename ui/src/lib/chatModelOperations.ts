@@ -5,6 +5,7 @@ import type {
 	SetWebSearchRequest,
 	SwitchModelRequest,
 } from './contracts/commands.ts';
+import type { WebSearchModeInput } from './contracts/generatedCommands.ts';
 
 export interface ChatModelOption {
 	/** Stable id of a configured ModelConfig, used by RequestPolicy.primary. */
@@ -68,7 +69,7 @@ export function createChatModelOperations(dependencies: ChatModelOperationsDepen
 			() => {
 				dependencies.closeModelMenu();
 				let webSearch = model.webSearch;
-				let normalizedWebSearch: string | null = null;
+				let normalizedWebSearch: WebSearchModeInput | null = null;
 				if (!model.webSearchSupported && webSearch !== 'off') {
 					webSearch = 'off';
 					normalizedWebSearch = 'off';
@@ -116,7 +117,7 @@ export function createChatModelOperations(dependencies: ChatModelOperationsDepen
 		);
 	}
 
-	function selectWebSearch(value: string): Promise<void> {
+	function selectWebSearch(value: WebSearchModeInput): Promise<void> {
 		if (!dependencies.isWebSearchSupported() && value !== 'off') {
 			dependencies.notify('当前模型线协议不支持内置联网搜索', 'info', 3000);
 			return Promise.resolve();

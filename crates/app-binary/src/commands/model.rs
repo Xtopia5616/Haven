@@ -637,33 +637,29 @@ pub async fn set_reasoning_effort(
 
 /// Set the provider built-in web search mode of a named model assignment
 /// ("off" | "auto" | "always"). "auto" lets the model decide when to search;
-/// any other value (including empty) is rejected. Updates config.toml and
-/// hot-swaps the LlmRouter at runtime.
+/// any other value (including empty) is rejected. `None` clears the explicit
+/// model override and restores environment/default resolution. Updates
+/// config.toml and hot-swaps the LlmRouter at runtime.
 ///
 /// Non-`off` modes are rejected when the selected model/request's provider wire style does not
 /// support a built-in search tool (see `supports_builtin_web_search`).
 #[tauri::command]
 pub async fn set_web_search(
     request_kind: RequestKind,
-    mode: Option<String>,
+    mode: Option<haven_llm::WebSearchMode>,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
     let state = app.state::<Arc<AppState>>();
 
-    let normalized = mode.as_deref().map(|m| m.trim().to_ascii_lowercase());
-    match normalized.as_deref() {
-        Some("off") | Some("auto") | Some("always") | None => {}
-        _ => {
-            return Err(log_err(
-                "set_web_search",
-                format!(
-                    "invalid web search mode: {:?} (expected off|auto|always)",
-                    mode
-                ),
-            ));
-        }
-    }
-    let requires_builtin_search = !matches!(normalized.as_deref(), Some("off") | None);
+    let normalized = mode.map(|mode| match mode {
+        haven_llm::WebSearchMode::Off => "off",
+        haven_llm::WebSearchMode::Auto => "auto",
+        haven_llm::WebSearchMode::Always => "always",
+    });
+    let requires_builtin_search = matches!(
+        mode,
+        Some(haven_llm::WebSearchMode::Auto | haven_llm::WebSearchMode::Always)
+    );
 
     update_request_model_field(
         &state,
@@ -676,7 +672,7 @@ pub async fn set_web_search(
             validate_builtin_search(config, request_kind)
         },
         |slot| {
-            slot.web_search = normalized;
+            slot.web_search = normalized.map(str::to_string);
             Ok(())
         },
     )

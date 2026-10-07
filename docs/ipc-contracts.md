@@ -50,7 +50,7 @@
 | `discover_all_models` | execute | 只查询已配置 provider，并沿用各自代理设置 |
 | `switch_model` | mutate | `requestKind` 为 `RequestKind`；`modelId` 必须是已配置且支持该请求能力的模型 |
 | `set_reasoning_effort` | mutate | `requestKind` 选择当前已分配模型后再保存 |
-| `set_web_search` | mutate | `requestKind` 选择当前已分配模型；启用内置搜索前校验 provider capability |
+| `set_web_search` | mutate | `requestKind` 选择当前已分配模型；可选 `mode` 使用 `WebSearchModeInput` (`off` / `auto` / `always`)；`null` 清除显式覆盖并回退到环境/default resolution；启用内置搜索前校验 provider capability |
 | `get_recording_state` | read | 只返回采集状态 |
 | `set_hotkey_capture_active` | mutate | 仅控制快捷键录入期间的临时抑制状态 |
 | `start_recording` | execute | 采集生命周期由 input 管线控制 |
