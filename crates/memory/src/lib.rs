@@ -40,10 +40,11 @@ pub use repositories::session_events::{
     ProjectionCutoff, RECOVERY_PERSISTENCE_EVENT_TYPE, RecoveryPersistenceStatus,
     RollbackProjectionBoundary, RollbackRequest, RollbackResult, SessionCommitResult,
     SessionCommitted, SessionCommittedEvent, SessionCursor, SessionEvent, SessionEventInput,
-    SessionEventPage, SessionEventSubscription, SessionHistoryFilter, SessionMessageText,
-    SessionProjectionIntent, SessionReplayState, SessionResumeMedia, SessionResumeProjection,
-    SessionStore, SessionTitleGenerationContext, TIMELINE_ROLLBACK_EVENT_TYPE,
-    TRANSCRIPT_EVENT_TYPE, USAGE_DISCARDED_EVENT_TYPE, USAGE_RECORDED_EVENT_TYPE,
+    SessionEventPage, SessionEventSubscription, SessionHistoryFilter, SessionHistoryStatusFilter,
+    SessionMessageText, SessionProjectionIntent, SessionReplayState, SessionResumeMedia,
+    SessionResumeProjection, SessionStore, SessionTitleGenerationContext,
+    TIMELINE_ROLLBACK_EVENT_TYPE, TRANSCRIPT_EVENT_TYPE, USAGE_DISCARDED_EVENT_TYPE,
+    USAGE_RECORDED_EVENT_TYPE,
 };
 pub use repositories::sessions::{Session, SessionOrigin};
 pub use repositories::tool_run_completion_outbox::ToolRunCompletionOutboxRow;

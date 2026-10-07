@@ -27,7 +27,8 @@ use tokio_util::sync::CancellationToken;
 
 mod session_history;
 pub use session_history::{
-    SessionHistoryFilter, SessionMessageText, SessionResumeMedia, SessionTitleGenerationContext,
+    SessionHistoryFilter, SessionHistoryStatusFilter, SessionMessageText, SessionResumeMedia,
+    SessionTitleGenerationContext,
 };
 
 pub const TRANSCRIPT_EVENT_TYPE: &str = "transcript";

@@ -83,7 +83,7 @@ pub async fn search_session_history(
 pub async fn search_session_history_filtered(
     state: State<'_, Arc<AppState>>,
     query: Option<String>,
-    status: Option<String>,
+    status: Option<haven_memory::SessionHistoryStatusFilter>,
     start_date: Option<String>,
     end_date: Option<String>,
     limit: Option<i64>,
@@ -110,7 +110,7 @@ pub async fn export_session_history(
     state: State<'_, Arc<AppState>>,
     start_date: Option<String>,
     end_date: Option<String>,
-    status: Option<String>,
+    status: Option<haven_memory::SessionHistoryStatusFilter>,
 ) -> Result<String, String> {
     let sessions = state
         .runtime

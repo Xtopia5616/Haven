@@ -279,6 +279,8 @@ export interface McpToolInfo { name: string; description: string; input_schema: 
 export const MEMORY_ENTITY_KIND_INPUT_VALUES = ['fact', 'episode'] as const;
 export type MemoryEntityKindInput = (typeof MEMORY_ENTITY_KIND_INPUT_VALUES)[number];
 export interface Message { id: string; session_id: string; role: CanonicalRole; content: string; message_type: TranscriptMessageKind | null; created_at: string; tool_call_id: string | null; attachments: MessageAttachment[]; media_inputs?: MediaInput[]; voice: boolean }
+export const SESSION_HISTORY_STATUS_FILTER_INPUT_VALUES = ['pending', 'running', 'paused', 'completed', 'error'] as const;
+export type SessionHistoryStatusFilterInput = (typeof SESSION_HISTORY_STATUS_FILTER_INPUT_VALUES)[number];
 export interface SessionStep { id: string; session_id: string; step_number: number; tool_index: number; thought: string | null; tool_name: string | null; tool_input: string | null; tool_call_id: string | null; observation: string | null; status: SessionStepStatus; is_high_risk: boolean; confirmed: boolean | null; silent: boolean; started_at: string | null; completed_at: string | null; created_at: string }
 export interface LlmUsageRecord { id: string; session_id: string; step_number: number | null; role: RequestKind; call_kind: LlmCallKind; model: string | null; prompt_tokens: number; completion_tokens: number; total_tokens: number; cached_tokens: number; cache_creation_tokens: number; cache_miss_tokens: number; cache_accounting: string; cache_diagnostics?: unknown; context_tokens: number; context_window: number | null; cost_usd: number; has_cost: boolean; duration_ms: number | null; created_at: string }
 export interface SessionUsage { prompt_tokens: number; completion_tokens: number; total_tokens: number; cached_tokens: number; cache_creation_tokens: number; cache_miss_tokens: number; context_tokens: number; context_window: number | null; cost_usd: number; has_cost: boolean }
@@ -308,7 +310,7 @@ export interface TauriCommandMap {
 	enable_autostart: { request: undefined; response: void };
 	end_session: { request: { sessionId: string }; response: void };
 	execute_skill: { request: { name: string; params: unknown }; response: SkillExecutionResponse };
-	export_session_history: { request: { startDate?: string | null; endDate?: string | null; status?: string | null }; response: string };
+	export_session_history: { request: { startDate?: string | null; endDate?: string | null; status?: SessionHistoryStatusFilterInput | null }; response: string };
 	get_api_key_status: { request: undefined; response: ApiKeyStatus };
 	get_bootstrap_status: { request: undefined; response: BootstrapStatus };
 	get_latest_session_for_resume: { request: undefined; response: SessionResumeResponse | null };
@@ -350,7 +352,7 @@ export interface TauriCommandMap {
 	rollback_session: { request: { sessionId: string; targetStep: number; pause?: boolean | null; targetMessageId?: string | null }; response: void };
 	run_memory_maintenance: { request: undefined; response: number };
 	search_session_history: { request: { query: string }; response: SessionRecordDto[] };
-	search_session_history_filtered: { request: { query?: string | null; status?: string | null; startDate?: string | null; endDate?: string | null; limit?: number | null; offset?: number | null }; response: SessionRecordDto[] };
+	search_session_history_filtered: { request: { query?: string | null; status?: SessionHistoryStatusFilterInput | null; startDate?: string | null; endDate?: string | null; limit?: number | null; offset?: number | null }; response: SessionRecordDto[] };
 	search_session_history_paginated: { request: { query: string; limit: number; offset: number }; response: SessionRecordDto[] };
 	set_hotkey_capture_active: { request: { active: boolean }; response: void };
 	set_reasoning_effort: { request: { requestKind: RequestKindInput; effort?: string | null }; response: void };

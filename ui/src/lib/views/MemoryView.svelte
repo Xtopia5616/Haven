@@ -41,6 +41,8 @@
 	import WorkspacePageHeader from '$lib/WorkspacePageHeader.svelte';
 	import WorkspaceSectionHeader from '$lib/WorkspaceSectionHeader.svelte';
 	import type { SessionHistoryFilterRequest } from '$lib/contracts/commands.ts';
+	import { SESSION_HISTORY_STATUS_FILTER_INPUT_VALUES } from '$lib/contracts/generatedCommands.ts';
+	import type { SessionHistoryStatusFilterInput } from '$lib/contracts/generatedCommands.ts';
 	import type {
 		Fact,
 		MemoryRecallFilter,
@@ -96,7 +98,7 @@
 	let loadFactsSeq = 0;
 	let loadTaskHistorySeq = 0;
 	const PAGE_SIZE = 50;
-	let statusFilter = $state('');
+	let statusFilter = $state<'' | SessionHistoryStatusFilterInput>('');
 	let startDate = $state('');
 	let endDate = $state('');
 	let showDateFilter = $state(false);
@@ -136,7 +138,7 @@
 		tags: '',
 	});
 	let addingFact = $state(false);
-	const statusOptions = [
+	const statusOptions: Array<{ value: '' | SessionHistoryStatusFilterInput; label: string }> = [
 		{ value: '', label: '全部状态' },
 		{ value: 'completed', label: '已完成' },
 		{ value: 'paused', label: '已暂停' },
@@ -308,7 +310,17 @@
 		void sessionsRefresh.refresh();
 	}
 	function handleStatusFilterChange(value: string) {
-		statusFilter = value;
+		if (value === '') {
+			statusFilter = '';
+		} else if (
+			SESSION_HISTORY_STATUS_FILTER_INPUT_VALUES.includes(
+				value as SessionHistoryStatusFilterInput,
+			)
+		) {
+			statusFilter = value as SessionHistoryStatusFilterInput;
+		} else {
+			return;
+		}
 		handleFilterChange();
 	}
 	function handleRecallKindChange(value: MemoryRecallFilter) {

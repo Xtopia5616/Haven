@@ -25,8 +25,8 @@
 | `search_session_history_paginated` | read | 参数化搜索并分页 |
 | `count_session_history_search` | read | 参数化搜索匹配数 |
 | `search_session_history` | read | 返回前 50 条参数化搜索匹配 |
-| `search_session_history_filtered` | read | 按状态、日期和文本筛选并分页 |
-| `export_session_history` | read | 导出日期/状态筛选后的持久会话记录 |
+| `search_session_history_filtered` | read | `status` 使用生成的 `SessionHistoryStatusFilterInput`；`null` 表示不过滤；按状态、日期和文本筛选并分页 |
+| `export_session_history` | read | `status` 使用生成的 `SessionHistoryStatusFilterInput`；`null` 表示不过滤；导出日期/状态筛选后的持久会话记录 |
 | `get_log_info` | read | 不返回环境详情 |
 | `read_log_tail` | read | 尾部长度受限 |
 | `log_frontend_error` | mutate | 脱敏后写入后端日志 |

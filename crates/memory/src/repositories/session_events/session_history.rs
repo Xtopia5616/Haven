@@ -9,6 +9,32 @@ use haven_common::media::MediaInput;
 use haven_common::types::CanonicalRole;
 use haven_common::types::MessageAttachment;
 
+/// Persisted session lifecycle values accepted by session-history filters.
+///
+/// This query enum is strict at the IPC boundary. `SessionStatus` remains the
+/// lifecycle owner and keeps its fail-safe unknown-status decoding behavior.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionHistoryStatusFilter {
+    Pending,
+    Running,
+    Paused,
+    Completed,
+    Error,
+}
+
+impl SessionHistoryStatusFilter {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::Running => "running",
+            Self::Paused => "paused",
+            Self::Completed => "completed",
+            Self::Error => "error",
+        }
+    }
+}
+
 /// Typed filters for app-facing session history queries.
 ///
 /// `limit` and `offset` are required so each caller keeps ownership of its
@@ -16,7 +42,7 @@ use haven_common::types::MessageAttachment;
 #[derive(Debug, Clone)]
 pub struct SessionHistoryFilter {
     pub query: Option<String>,
-    pub status: Option<String>,
+    pub status: Option<SessionHistoryStatusFilter>,
     pub start_date: Option<String>,
     pub end_date: Option<String>,
     pub limit: i64,
@@ -226,7 +252,7 @@ impl SessionStore {
             .run_blocking(move |db| {
                 db.search_sessions_filtered(
                     filter.query.as_deref(),
-                    filter.status.as_deref(),
+                    filter.status.map(SessionHistoryStatusFilter::as_str),
                     filter.start_date.as_deref(),
                     filter.end_date.as_deref(),
                     filter.limit,

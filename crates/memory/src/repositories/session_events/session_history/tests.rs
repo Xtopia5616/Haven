@@ -2,6 +2,25 @@ use super::*;
 use crate::Database;
 use std::sync::Arc;
 
+#[test]
+fn session_history_status_filter_has_closed_snake_case_values() {
+    for (status, wire) in [
+        (SessionHistoryStatusFilter::Pending, "\"pending\""),
+        (SessionHistoryStatusFilter::Running, "\"running\""),
+        (SessionHistoryStatusFilter::Paused, "\"paused\""),
+        (SessionHistoryStatusFilter::Completed, "\"completed\""),
+        (SessionHistoryStatusFilter::Error, "\"error\""),
+    ] {
+        assert_eq!(serde_json::to_string(&status).unwrap(), wire);
+        assert_eq!(
+            serde_json::from_str::<SessionHistoryStatusFilter>(wire).unwrap(),
+            status
+        );
+    }
+    assert!(serde_json::from_str::<SessionHistoryStatusFilter>("\"all\"").is_err());
+    assert!(serde_json::from_str::<SessionHistoryStatusFilter>("\"COMPLETED\"").is_err());
+}
+
 fn store() -> (Arc<Database>, SessionStore, String) {
     let db = Arc::new(Database::open_in_memory().unwrap());
     let session = db.create_session("input").unwrap();
@@ -329,7 +348,7 @@ async fn session_store_history_ports_preserve_database_query_semantics() {
 
     let filter = SessionHistoryFilter {
         query: Some("needle".into()),
-        status: Some("pending".into()),
+        status: Some(SessionHistoryStatusFilter::Pending),
         start_date: None,
         end_date: None,
         limit: 10,
@@ -345,7 +364,7 @@ async fn session_store_history_ports_preserve_database_query_semantics() {
         as_json(
             db.search_sessions_filtered(
                 filter.query.as_deref(),
-                filter.status.as_deref(),
+                filter.status.map(SessionHistoryStatusFilter::as_str),
                 filter.start_date.as_deref(),
                 filter.end_date.as_deref(),
                 filter.limit,

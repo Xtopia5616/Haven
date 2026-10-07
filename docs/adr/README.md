@@ -723,3 +723,4 @@
 - [0732：记忆检索输入复用 Memory domain enum](0732-type-memory-recall-domain.md)
 - [0733：确认命令复用权限输入 enum](0733-type-confirmation-permission-input.md)
 - [0734：联网搜索设置复用生成模式 enum](0734-type-web-search-mode-input.md)
+- [0735：Session history 查询复用严格状态过滤 enum](0735-type-session-history-status-filter.md)
