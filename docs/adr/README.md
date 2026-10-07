@@ -675,3 +675,4 @@
 - [0684：删除未使用的 Config Admin 构造兼容入口](0684-remove-config-admin-compat-constructor.md)
 - [0685：移除 Agent prompt 的 eager registry fallback](0685-remove-prompt-eager-registry-fallback.md)
 - [0686：删除 LLM Router 旧布尔路由入口](0686-remove-llm-router-legacy-route-flags.md)
+- [0687：缩短 Release 构建时间并保留内嵌 UI](0687-speed-release-build-with-thin-lto.md)
