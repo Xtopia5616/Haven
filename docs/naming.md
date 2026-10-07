@@ -1,6 +1,6 @@
 # Haven 命名规范
 
-> 版本: v1.113 | 日期: 2026-10-07
+> 版本: v1.114 | 日期: 2026-10-07
 
 本文档统一 Haven 项目各层的命名规则（变量名、函数名、文件名、crate 名、缩写大小写、跨层边界）。规范以现有代码中的事实模式为基础，新代码必须遵循；存量代码若与规范冲突，逐步迁移对齐。
 
@@ -22,7 +22,7 @@
 - **Session IPC 包装模块按实体命名**：前端 `sessionCommands.ts` 集中封装 Session 的运行态列表、历史读取、恢复、生命周期与标题命令；单个函数仍按操作阶段使用 `listRuntimeSessions`、`listSessionHistory`、`getSessionForResume`、`deleteSession` 等领域动词，不因模块收纳在同一个文件而抹去状态范围（ADR 0679）。
 - **工具清单明确来源**：`list_builtin_tool_manifests` 只返回内置工具的 manifest，不包含 Skill 或 MCP manifest；命令与响应类型分别标出 `builtin_tool_manifests` 和 `BuiltinToolManifestListResponse`。Tools 与 Skills 的 App 命令按 domain 分模块（ADR 0680）。
 - **IPC 请求类型按命令 owner 命名**：前端 wrapper 的 request alias 必须从它实际调用的 generated command 派生；即使两个命令的字段形状相同，也分别命名，如 `SetSkillEnabledRequest` / `SetToolEnabledRequest`、`ReconnectMcpRequest` / `RemoveMcpServerRequest`，不要用某一个命令的类型 alias 覆盖另一个命令（ADR 0681）。
-- **Tool renderer 只按当前 manifest key 派发**：`ToolPresentation.renderer` 是开放扩展字符串，但 UI 仅为当前明确登记的 renderer key 选择专用组件；未知 key 使用通用 JSON renderer。不要把 root/tool 名称或旧的 `haven`、`admin`、`settings` 别名隐式解释成管理面板（ADR 0682）。
+- **Tool renderer 只按展示职责派发**：`ToolPresentation.renderer` 是开放扩展字符串；UI 仅为当前明确登记的 renderer key 选择专用组件，未知 key 使用通用 JSON renderer。MCP 固定使用 `mcp` renderer，server name 只放在 `ToolIdentity.root` / `root_presentation`，不能兼任组件分派键；builtin renderer 使用明确登记的 key，Skill 使用固定 `skills` root。不要把旧的 `haven`、`admin`、`settings` 别名隐式解释成管理面板（ADR 0682、0703）。
 - **Admin capability 唯一拥有管理工具名**：`AdminCapability::tool_name` 唯一映射 `haven_*` 工具名；model operation surface 先解析到同一 enum 再取工具名，不在 request helper 或 metadata 中另存重复字符串（ADR 0683）。
 - **Admin operation 统一从组合 owner 构造**：配置操作由 `AdminSurfaces` 通过共享 `AdminServices` 构造；不保留无生产调用方的 `ConfigAdminContext`、`ConfigAdminTool` 或单独 builder 作为第二条装配路径（ADR 0684）。
 - **认证方案与凭据分阶段命名**：header policy 使用 `AuthHeaderScheme { header_name, prefix }`；将密钥应用到方案后得到 LLM registry 拥有的 `ModelDiscoveryAuthHeader { header_name, value }`，该类型直接跨 App→LLM API 传递；一次 model discovery 的输入由 `ResolvedDiscoveryAuth { api_key, auth_header }` 表达。含实际凭据的类型不自动派生 `Debug`，避免调试格式意外暴露密钥。
@@ -126,7 +126,7 @@ Tauri command 名与 request/response 类型由 `generatedCommands.ts` 从 Rust 
 
 同一领域类型跨 runtime 与 wire 边界时，只有序列化格式、字段策略或演进 owner 确实不同才保留两个类型，并在名称中标出边界角色。当前 Tools `ToolRunKind` 是执行运行时分类；App `ToolRunKindDto` 是 IPC/event DTO 枚举，二者值相同但 owner、Serde 与向前演进责任不同。
 
-Tools manifest 的 generated `ToolManifest` 是 Rust snake_case wire DTO；renderer parser 投影出的 camelCase 结构叫 `ToolManifestView`。source、represented source、catalog group 与 risk level 复用 generated 闭合枚举；`presentation.renderer` 保持开放扩展字符串，未知值落到通用 JSON renderer（ADR 0669）。
+Tools manifest 的 generated `ToolManifest` 是 Rust snake_case wire DTO；renderer parser 投影出的 camelCase 结构叫 `ToolManifestView`。source、represented source、catalog group 与 risk level 复用 generated 闭合枚举；`presentation.renderer` 保持开放扩展字符串，MCP 使用固定 `mcp` 值，server identity 由 root 字段表达，未知 renderer 落到通用 JSON renderer（ADR 0669、0703）。
 
 严格生成的 IPC `LlmConnectionReport` 与容忍缺失可选显示信息的 `LlmConnectionReportView` 分属 wire 与 renderer 视图；共享的 status/reason 枚举直接引用生成契约，归一化函数负责将不可信返回值投影为 view。
 

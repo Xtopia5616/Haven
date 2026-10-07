@@ -81,7 +81,8 @@ fn mcp_operation_spec(
         catalog_group: ToolCatalogGroup::Mcp,
         presentation: ToolPresentation {
             label: name.to_string(),
-            renderer: server_name.to_string(),
+            // Keep server identity in root; renderer is only a UI dispatch key.
+            renderer: "mcp".into(),
             icon: "tools".into(),
             represented_source: ToolSource::Mcp,
         },
@@ -380,9 +381,13 @@ mod tests {
 
     /// A test MCP tool adapter backed by a mock client.
     fn mcp_adapter(schema: serde_json::Value) -> McpToolAdapter {
+        mcp_adapter_for("test-server", schema)
+    }
+
+    fn mcp_adapter_for(server_name: &str, schema: serde_json::Value) -> McpToolAdapter {
         let client = McpClient::new(
             &haven_common::McpServerConfig {
-                name: "test-server".into(),
+                name: server_name.into(),
                 command: "echo".into(),
                 ..Default::default()
             },
@@ -394,7 +399,7 @@ mod tests {
             description: "Greets the user".into(),
             input_schema: schema,
         };
-        McpToolAdapter::new(Arc::new(client), "test-server", info)
+        McpToolAdapter::new(Arc::new(client), server_name, info)
     }
 
     #[tokio::test]
@@ -435,12 +440,13 @@ mod tests {
     }
 
     #[test]
-    fn mcp_manifest_keeps_server_as_catalog_root() {
-        let adapter = mcp_adapter(serde_json::json!({"type": "object"}));
+    fn mcp_manifest_separates_server_root_from_result_renderer() {
+        let adapter = mcp_adapter_for("agent", serde_json::json!({"type": "object"}));
         let manifest = adapter.tool_manifest();
-        assert_eq!(manifest.identity.root, "test-server");
+        assert_eq!(manifest.identity.root, "agent");
         assert_eq!(manifest.identity.operation.as_deref(), Some("greet"));
-        assert_eq!(manifest.identity.stable_name, "mcp__test-server__greet");
+        assert_eq!(manifest.identity.stable_name, "mcp__agent__greet");
+        assert_eq!(manifest.presentation.renderer, "mcp");
     }
 
     #[tokio::test]

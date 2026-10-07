@@ -191,4 +191,10 @@ describe('manifest-driven result renderers', () => {
 			ToolJsonResult,
 		);
 	});
+
+	it('keeps MCP results generic when a server name collides with a built-in renderer', () => {
+		expect(
+			getToolResultRenderer('custom', 'mcp__agent__list', { agents: [] }, 'mcp'),
+		).toBe(ToolJsonResult);
+	});
 });
