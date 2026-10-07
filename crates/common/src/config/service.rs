@@ -539,7 +539,7 @@ mod tests {
         let (service, _dir) = service();
         let receiver = service.subscribe().unwrap();
         let mut settings = service.settings().unwrap();
-        settings.session.max_steps += 1;
+        settings.session.max_steps_per_run += 1;
         settings.hotkey.key_binding = "Ctrl+Alt+H".into();
 
         let update = service
@@ -576,7 +576,7 @@ mod tests {
         let (service, _dir) = service();
         let before = service.snapshot().unwrap();
         let result = service.edit::<()>(|config| -> anyhow::Result<()> {
-            config.session.max_steps = 1;
+            config.session.max_steps_per_run = 1;
             anyhow::bail!("reject test mutation")
         });
 

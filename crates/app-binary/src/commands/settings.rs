@@ -321,15 +321,22 @@ async fn execute_settings_apply_phase(
             }
         }
         SettingsApplyPhase::SessionRuntime => {
-            if let Err(error) = state.runtime.agent.set_max_steps(config.session.max_steps) {
-                return SettingsApplyOutcome::failed("update_settings max steps", error);
+            if let Err(error) = state
+                .runtime
+                .agent
+                .set_max_steps_per_run(config.session.max_steps_per_run)
+            {
+                return SettingsApplyOutcome::failed("update_settings max_steps_per_run", error);
             }
             if let Err(error) = state
                 .runtime
                 .agent
-                .set_session_max_steps(config.session.session_max_steps)
+                .set_max_steps_per_session(config.session.max_steps_per_session)
             {
-                return SettingsApplyOutcome::failed("update_settings session max steps", error);
+                return SettingsApplyOutcome::failed(
+                    "update_settings max_steps_per_session",
+                    error,
+                );
             }
             state
                 .runtime

@@ -54,7 +54,7 @@ impl AgentLayer {
         executor: Arc<SessionSupervisor>,
         tools: AgentToolPorts,
         router: Arc<LlmRouter>,
-        max_steps: u32,
+        max_steps_per_run: u32,
         session_prompt_history_limit: usize,
         context_limits: ContextLimitsConfig,
     ) -> AgentStartup {
@@ -87,7 +87,7 @@ impl AgentLayer {
                 tool_catalog,
                 executor.clone(),
                 memory_store,
-                max_steps,
+                max_steps_per_run,
                 context_limits.clone(),
             )
             .with_hooks(crate::react::default_hooks_with_patch(memory_patch))
@@ -318,12 +318,16 @@ impl AgentLayer {
         self.memory.recall(query).await
     }
 
-    pub fn set_max_steps(&self, max_steps: u32) -> anyhow::Result<()> {
-        self.react_engine.set_max_steps(max_steps)
+    pub fn set_max_steps_per_run(&self, max_steps_per_run: u32) -> anyhow::Result<()> {
+        self.react_engine.set_max_steps_per_run(max_steps_per_run)
     }
 
-    pub fn set_session_max_steps(&self, session_max_steps: Option<u32>) -> anyhow::Result<()> {
-        self.react_engine.set_session_max_steps(session_max_steps)
+    pub fn set_max_steps_per_session(
+        &self,
+        max_steps_per_session: Option<u32>,
+    ) -> anyhow::Result<()> {
+        self.react_engine
+            .set_max_steps_per_session(max_steps_per_session)
     }
 
     /// Live three-way connectivity probe to the default-model endpoint. Used

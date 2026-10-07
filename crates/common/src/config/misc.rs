@@ -32,14 +32,14 @@ pub struct SessionConfig {
     /// Age in days before an entire session and its owned history are removed.
     /// Zero disables automatic session retention cleanup.
     pub history_retention_days: u32,
-    /// Per-run ReAct step budget. Each `run` (including pause→resume) grants a
-    /// fresh budget via `effective_max` (see `docs/architecture.md` §2.4).
-    pub max_steps: u32,
-    /// Optional session-lifetime step cap across pause/resume cycles (Phase 8 /
-    /// J1). `None` = unlimited (preserve current UX). When set, the loop uses
-    /// `min(per_run_cap, session_max_steps.saturating_sub(steps_used))`.
+    /// ReAct step budget for each run. Resuming after pause starts a new run
+    /// with a fresh budget (see `docs/architecture.md` §2.4).
+    pub max_steps_per_run: u32,
+    /// Optional cumulative step cap for the full Session across pause/resume
+    /// cycles (Phase 8 / J1). `None` = unlimited. When set, it caps the
+    /// absolute `step_number` reached by all runs in this Session.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub session_max_steps: Option<u32>,
+    pub max_steps_per_session: Option<u32>,
 }
 
 impl Default for SessionConfig {
@@ -52,9 +52,9 @@ impl Default for SessionConfig {
             // sessions don't hit the cap mid-run; see refactor-dedup.md A9
             // review note). Resumes grant a fresh budget, so a session can run
             // well past this total across pause/resume cycles unless
-            // `session_max_steps` is set.
-            max_steps: 500,
-            session_max_steps: None,
+            // `max_steps_per_session` is set.
+            max_steps_per_run: 500,
+            max_steps_per_session: None,
         }
     }
 }

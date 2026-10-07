@@ -100,8 +100,8 @@ export interface NotifyChannelsInput { in_app?: boolean; windows?: boolean }
 export interface NotifyChannels { in_app: boolean; windows: boolean }
 export interface SecurityConfigInput { permission_mode?: PermissionModeInput; sandbox_mode?: SandboxModeInput; writable_roots?: string[]; network_policy?: NetworkPolicyInput; encrypt_sensitive?: boolean; permissions?: StoredPermissionInput[] }
 export interface SecurityConfig { permission_mode: PermissionMode; sandbox_mode: SandboxMode; writable_roots?: string[]; network_policy: NetworkPolicy; encrypt_sensitive: boolean; permissions?: StoredPermission[] }
-export interface SessionConfigInput { max_concurrent?: number; prompt_history_limit?: number; history_retention_days?: number; max_steps?: number; session_max_steps?: number | null }
-export interface SessionConfig { max_concurrent: number; prompt_history_limit: number; history_retention_days: number; max_steps: number; session_max_steps?: number }
+export interface SessionConfigInput { max_concurrent?: number; prompt_history_limit?: number; history_retention_days?: number; max_steps_per_run?: number; max_steps_per_session?: number | null }
+export interface SessionConfig { max_concurrent: number; prompt_history_limit: number; history_retention_days: number; max_steps_per_run: number; max_steps_per_session?: number }
 export interface SkillsConfigInput { root?: string | null; enabled?: string[] | null }
 export interface SkillsConfig { root: string | null; enabled?: string[] }
 export interface SkillsExecConfigInput { venv_root?: string; work_dir?: string; timeout_secs?: number; max_output_lines?: number; cpu_time_secs?: number | null; max_memory_mb?: number | null }

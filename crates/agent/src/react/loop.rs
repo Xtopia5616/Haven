@@ -47,8 +47,8 @@ pub enum LoopExit {
 
 struct ReActStepBudget {
     start_step: u32,
-    max_steps: u32,
-    effective_max: u32,
+    max_steps_per_run: u32,
+    max_allowed_step_number: u32,
 }
 
 /// Absolute wall-clock boundary shared by every phase of one model turn.
@@ -101,24 +101,31 @@ pub(crate) struct ReActRunInput {
 }
 
 impl ReActStepBudget {
-    fn new(max_steps: u32, session_max_steps: Option<u32>, start_step: u32) -> Self {
-        let per_run_cap = max_steps.max(start_step.saturating_sub(1).saturating_add(max_steps));
-        let effective_max = session_max_steps.map_or(per_run_cap, |cap| per_run_cap.min(cap));
+    fn new(max_steps_per_run: u32, max_steps_per_session: Option<u32>, start_step: u32) -> Self {
+        let max_step_number_for_run = max_steps_per_run.max(
+            start_step
+                .saturating_sub(1)
+                .saturating_add(max_steps_per_run),
+        );
+        let max_allowed_step_number = max_steps_per_session
+            .map_or(max_step_number_for_run, |cap| {
+                max_step_number_for_run.min(cap)
+            });
         Self {
             start_step,
-            max_steps,
-            effective_max,
+            max_steps_per_run,
+            max_allowed_step_number,
         }
     }
 
     fn from_engine(engine: &ReActEngine, start_step: u32) -> Self {
-        let max_steps = *engine.max_steps.lock().unwrap();
-        let session_cap = *engine.session_max_steps.lock().unwrap();
-        Self::new(max_steps, session_cap, start_step)
+        let max_steps_per_run = *engine.max_steps_per_run.lock().unwrap();
+        let max_steps_per_session = *engine.max_steps_per_session.lock().unwrap();
+        Self::new(max_steps_per_run, max_steps_per_session, start_step)
     }
 
-    fn allows_tool_retry(&self, step_num: u32) -> bool {
-        step_num < self.effective_max
+    fn allows_tool_retry(&self, step_number: u32) -> bool {
+        step_number < self.max_allowed_step_number
     }
 }
 
@@ -143,8 +150,8 @@ impl ReActEngine {
             session_id,
             run_id,
             start_step = budget.start_step,
-            max_steps = budget.max_steps,
-            effective_max = budget.effective_max,
+            max_steps_per_run = budget.max_steps_per_run,
+            max_allowed_step_number = budget.max_allowed_step_number,
             "ReAct run started"
         );
 
@@ -206,7 +213,7 @@ impl ReActEngine {
         let mut incomplete_tool_args_retries = 0u32;
         let mut tool_retry_budget = ToolRetryBudget::default();
         let mut last_step = start_step.saturating_sub(1);
-        for step_num in budget.start_step..=budget.effective_max {
+        for step_num in budget.start_step..=budget.max_allowed_step_number {
             last_step = step_num;
             let parent_cancel = self.executor.cancellation_token(session_id).await;
             if parent_cancel.is_cancelled() {
@@ -376,8 +383,8 @@ mod tests {
         let budget = ReActStepBudget::new(4, None, 1);
 
         assert_eq!(budget.start_step, 1);
-        assert_eq!(budget.max_steps, 4);
-        assert_eq!(budget.effective_max, 4);
+        assert_eq!(budget.max_steps_per_run, 4);
+        assert_eq!(budget.max_allowed_step_number, 4);
     }
 
     #[test]
@@ -385,8 +392,8 @@ mod tests {
         let budget = ReActStepBudget::new(4, Some(9), 7);
 
         assert_eq!(budget.start_step, 7);
-        assert_eq!(budget.max_steps, 4);
-        assert_eq!(budget.effective_max, 9);
+        assert_eq!(budget.max_steps_per_run, 4);
+        assert_eq!(budget.max_allowed_step_number, 9);
     }
 
     #[test]

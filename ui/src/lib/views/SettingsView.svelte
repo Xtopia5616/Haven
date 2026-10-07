@@ -86,9 +86,9 @@
 				Pick<
 					SessionConfigInput,
 					| 'max_concurrent'
-					| 'max_steps'
+					| 'max_steps_per_run'
 					| 'history_retention_days'
-					| 'session_max_steps'
+					| 'max_steps_per_session'
 					| 'prompt_history_limit'
 				>
 			>
@@ -144,18 +144,18 @@
 			Pick<
 				SessionConfigInput,
 				| 'max_concurrent'
-				| 'max_steps'
+				| 'max_steps_per_run'
 				| 'history_retention_days'
-				| 'session_max_steps'
+				| 'max_steps_per_session'
 				| 'prompt_history_limit'
 			>
 		>
 	>({
 		max_concurrent: 3,
 		prompt_history_limit: 50,
-		max_steps: 500,
+		max_steps_per_run: 500,
 		history_retention_days: 90,
-		session_max_steps: null,
+		max_steps_per_session: null,
 	});
 	let contextLimits = $state<Partial<ContextLimitsConfigInput>>({
 		compaction_ratio: 0.65,
@@ -419,9 +419,9 @@
 			session: {
 				max_concurrent: asNumber(session.max_concurrent),
 				prompt_history_limit: asNumber(session.prompt_history_limit),
-				max_steps: asNumber(session.max_steps),
+				max_steps_per_run: asNumber(session.max_steps_per_run),
 				history_retention_days: asNumber(session.history_retention_days),
-				session_max_steps: session.session_max_steps ?? null,
+				max_steps_per_session: session.max_steps_per_session ?? null,
 			},
 			memory: {
 				fact_inference_enabled: memory.fact_inference_enabled,
@@ -851,7 +851,7 @@
 				session = {
 					...session,
 					...(settings.session || {}),
-					session_max_steps: settings.session?.session_max_steps ?? null,
+					max_steps_per_session: settings.session?.max_steps_per_session ?? null,
 				};
 				contextLimits = settings.context_limits || contextLimits;
 				memory = { ...memory, ...(settings.memory || {}) };
@@ -1105,9 +1105,9 @@
 						session: {
 							max_concurrent: session.max_concurrent,
 							prompt_history_limit: session.prompt_history_limit,
-							max_steps: session.max_steps,
+							max_steps_per_run: session.max_steps_per_run,
 							history_retention_days: session.history_retention_days,
-							session_max_steps: session.session_max_steps ?? null,
+							max_steps_per_session: session.max_steps_per_session ?? null,
 						},
 						memory: {
 							fact_inference_enabled: memory.fact_inference_enabled,

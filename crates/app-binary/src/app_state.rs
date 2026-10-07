@@ -343,8 +343,8 @@ impl AppState {
             Arc::new(tools.share_services().mcp.clone());
         let router_media_build = build_router_media(&cfg, Some(mcp_caller));
         let router = Arc::clone(&router_media_build.router);
-        let max_steps = cfg.session.max_steps;
-        let session_max_steps = cfg.session.session_max_steps;
+        let max_steps_per_run = cfg.session.max_steps_per_run;
+        let max_steps_per_session = cfg.session.max_steps_per_session;
         let session_prompt_history_limit = cfg.session.prompt_history_limit;
 
         let executor = Arc::new(SessionSupervisor::new(
@@ -371,14 +371,14 @@ impl AppState {
             executor.clone(),
             agent_tool_ports,
             router.clone(),
-            max_steps,
+            max_steps_per_run,
             session_prompt_history_limit,
             context_limits,
         );
         let agent = Arc::new(agent_startup.agent);
         let memory_startup = agent_startup.memory_startup;
         agent.set_media_strategy(cfg.media.input_strategy)?;
-        agent.set_session_max_steps(session_max_steps)?;
+        agent.set_max_steps_per_session(max_steps_per_session)?;
 
         let input_pipeline = Arc::new(InputPipeline::new());
         input_pipeline.set_ring_buffer_capacity_secs(context_limits_clone.input_ring_buffer_secs);
@@ -904,7 +904,7 @@ mod tests {
 
         // The default config is loaded and accessible via the mutex.
         let cfg = state.runtime.config_service.snapshot().unwrap().config;
-        assert!(cfg.session.max_steps > 0);
+        assert!(cfg.session.max_steps_per_run > 0);
         assert_eq!(cfg.media.stt.provider, "llm");
         assert_eq!(state.bootstrap_status(), BootstrapStatus::Loading);
     }
@@ -1122,7 +1122,7 @@ mod tests {
             .await
             .unwrap();
         let mut config = state.runtime.config_service.snapshot().unwrap().config;
-        config.session.max_steps = 42;
+        config.session.max_steps_per_run = 42;
         state
             .runtime
             .config_service
@@ -1145,7 +1145,7 @@ mod tests {
                 .unwrap()
                 .config
                 .session
-                .max_steps,
+                .max_steps_per_run,
             42
         );
     }

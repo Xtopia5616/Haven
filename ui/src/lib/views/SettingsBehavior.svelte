@@ -18,9 +18,9 @@
 		Pick<
 			SessionConfigInput,
 			| 'max_concurrent'
-			| 'max_steps'
+			| 'max_steps_per_run'
 			| 'history_retention_days'
-			| 'session_max_steps'
+			| 'max_steps_per_session'
 			| 'prompt_history_limit'
 		>
 	>;
@@ -120,29 +120,31 @@
 			/>
 		</SettingsField>
 		<SettingsField
-			label="每轮最大步骤数"
-			id="session-max-steps"
-			description="一次运行（包括暂停后恢复）的 ReAct 步骤上限。"
+			label="单次执行最大步数"
+			id="session-max-steps-per-run"
+			description="每次会话执行各自获得的 ReAct 步骤预算。"
 		>
 			<MaterialNumberField
-				id="session-max-steps"
-				value={session.max_steps}
+				id="session-max-steps-per-run"
+				value={session.max_steps_per_run}
 				min={1}
 				max={1000}
-				onChange={withNumberValue((value) => (session.max_steps = value))}
+				onChange={withNumberValue((value) => (session.max_steps_per_run = value))}
 			/>
 		</SettingsField>
 		<SettingsField
-			label="会话累计步骤上限"
-			id="session-lifetime-max-steps"
-			description="跨暂停和恢复累计；设为 0 表示不限。"
+			label="会话累计最大步数"
+			id="session-max-steps-per-session"
+			description="从会话开始累计所有执行；设为 0 表示不限。"
 		>
 			<MaterialNumberField
-				id="session-lifetime-max-steps"
-				value={session.session_max_steps ?? 0}
+				id="session-max-steps-per-session"
+				value={session.max_steps_per_session ?? 0}
 				min={0}
 				max={100000}
-				onChange={withNumberValue((value) => (session.session_max_steps = value || null))}
+				onChange={withNumberValue(
+					(value) => (session.max_steps_per_session = value || null),
+				)}
 			/>
 		</SettingsField>
 		<SettingsField

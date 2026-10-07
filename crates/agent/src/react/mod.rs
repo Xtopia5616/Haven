@@ -368,9 +368,9 @@ pub struct ReActEngine {
     /// Agent-owned usage persistence and cumulative counters. The runtime
     /// preserves per-session ordering without blocking the session actor.
     usage_runtime: UsageRuntime,
-    max_steps: Mutex<u32>,
-    /// Optional session-lifetime step cap (Phase 8 / J1). `None` = unlimited.
-    session_max_steps: Mutex<Option<u32>>,
+    max_steps_per_run: Mutex<u32>,
+    /// Optional Session-lifetime step cap (Phase 8 / J1). `None` = unlimited.
+    max_steps_per_session: Mutex<Option<u32>>,
     /// Hot-reloaded via [`Self::set_context_limits`] on settings save.
     context_limits: std::sync::Mutex<ContextLimitsConfig>,
     /// Hot-reloaded provider-facing media projection policy.
@@ -431,7 +431,7 @@ impl ReActEngine {
         tool_catalog: Arc<dyn ToolCatalogPort>,
         executor: Arc<SessionSupervisor>,
         memory_store: MemoryStore,
-        max_steps: u32,
+        max_steps_per_run: u32,
         context_limits: ContextLimitsConfig,
     ) -> Self {
         let metrics = Arc::new(ReActMetrics::new());
@@ -446,8 +446,8 @@ impl ReActEngine {
             memory_store,
             event_store,
             usage_runtime,
-            max_steps: Mutex::new(max_steps),
-            session_max_steps: Mutex::new(None),
+            max_steps_per_run: Mutex::new(max_steps_per_run),
+            max_steps_per_session: Mutex::new(None),
             context_limits: std::sync::Mutex::new(context_limits),
             media_strategy: Mutex::new(MediaInputStrategy::Auto),
             run_counter: AtomicU64::new(0),
@@ -533,14 +533,18 @@ impl ReActEngine {
         *self.media_strategy.lock().unwrap()
     }
 
-    pub fn set_max_steps(&self, max_steps: u32) -> anyhow::Result<()> {
-        *runtime_setting_lock(&self.max_steps, "max steps")? = max_steps;
+    pub fn set_max_steps_per_run(&self, max_steps_per_run: u32) -> anyhow::Result<()> {
+        *runtime_setting_lock(&self.max_steps_per_run, "max steps per run")? = max_steps_per_run;
         Ok(())
     }
 
     /// Set optional session-lifetime step cap (`None` = unlimited).
-    pub fn set_session_max_steps(&self, session_max_steps: Option<u32>) -> anyhow::Result<()> {
-        *runtime_setting_lock(&self.session_max_steps, "session max steps")? = session_max_steps;
+    pub fn set_max_steps_per_session(
+        &self,
+        max_steps_per_session: Option<u32>,
+    ) -> anyhow::Result<()> {
+        *runtime_setting_lock(&self.max_steps_per_session, "max steps per session")? =
+            max_steps_per_session;
         Ok(())
     }
 

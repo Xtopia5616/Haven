@@ -107,7 +107,7 @@ pub(crate) async fn set_status_and_emit_with_waiting_reason(
 /// Interval (in ReAct steps) at which long-running sessions re-run fact
 /// fact memory mid-session, so memory is refreshed before the session
 /// ever pauses or completes.
-/// Message persisted when a run exhausts its step budget (`max_steps`). The
+/// Message persisted when a run exhausts its step budget (`max_steps_per_run`). The
 /// session is intentionally paused at an event boundary —the session is NOT finished,
 /// and the next user message resumes it with a fresh budget. System notices
 /// like this must NOT land in the chat as an assistant bubble; they are

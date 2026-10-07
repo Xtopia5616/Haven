@@ -549,7 +549,7 @@ async fn budget_exhaustion_pauses_with_notification_and_no_chat_message() {
         },
     )]));
     let (agent, executor) = make_test_agent_with(client, Arc::new(ToolsFacade::new()));
-    agent.set_max_steps(1).unwrap();
+    agent.set_max_steps_per_run(1).unwrap();
     let recorder = make_recording_emitter();
     agent.set_emitter(recorder.clone());
     let session = executor.create_session("session").await.unwrap();

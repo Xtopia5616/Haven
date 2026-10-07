@@ -445,7 +445,7 @@ mod tests {
         assert!(cfg.notification.tool_run_completed.windows);
         assert_eq!(cfg.session.max_concurrent, 3);
         assert_eq!(cfg.session.prompt_history_limit, 50);
-        assert_eq!(cfg.session.max_steps, 500);
+        assert_eq!(cfg.session.max_steps_per_run, 500);
         assert_eq!(cfg.context_limits.compaction_ratio, 0.65);
         assert_eq!(cfg.context_limits.compaction_reserve_tokens, 8192);
         assert_eq!(cfg.context_limits.default_context_window, 64_000);

@@ -284,9 +284,9 @@ async fn replace_router_and_router_work() {
 }
 
 #[tokio::test]
-async fn set_max_steps_updates_field() {
+async fn set_max_steps_per_run_updates_field() {
     let (agent, executor) = make_test_agent();
-    agent.set_max_steps(5).unwrap();
+    agent.set_max_steps_per_run(5).unwrap();
 
     let recorder = Arc::new(RecordingEmitter {
         thoughts: std::sync::Mutex::new(Vec::new()),

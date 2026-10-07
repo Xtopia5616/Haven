@@ -375,10 +375,9 @@ Compaction summary episode 与首个 pending marker 只由 `MemoryStore::persist
 - 调用 `LlmRouter`、执行 `haven-tools` 工具、写 `haven-memory`、
   通过 `AgentEvent` 对外发事件。
 
-**步数预算（Phase 7/8 / J1）**：`session.max_steps` 是**单次 run**上限。pause / ask / confirm 后再次
-resume 会按 `per_run_cap = max(max_steps, start_step - 1 + max_steps)` 再给满额。可选
-`session.session_max_steps: Option<u32>`（默认 `None` = 不限）在绝对 `step_number` 上截断：
-`effective_max = min(per_run_cap, session_max_steps)`。该限制由 `SessionConfig` 提供，计算仍由 ReAct run budget 持有（ADR 0220）。
+**步数预算（Phase 7/8 / J1）**：`session.max_steps_per_run` 是每次 ReAct run 获得的步数预算；暂停后恢复会启动新 run 并重新获得该预算。可选
+`session.max_steps_per_session: Option<u32>`（默认 `None` = 不限）限制整个持久 Session 跨所有 run 可到达的绝对 `step_number`。
+`max_allowed_step_number = min(max_step_number_for_run, max_steps_per_session)`。二者 owner 都是 `SessionConfig`，一个按每次执行计数，一个按持久 Session 生命周期累计；计算由 ReAct run budget 持有（ADR 0220）。
 
 **判定标准**：会话的业务编排中心，不知道也不关心 provider 细节 / 录音硬件细节。
 

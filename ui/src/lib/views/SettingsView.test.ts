@@ -272,9 +272,9 @@ describe('SettingsView diagnostics export', () => {
 			session: {
 				max_concurrent: 3,
 				prompt_history_limit: 73,
-				max_steps: 500,
+				max_steps_per_run: 500,
 				history_retention_days: 90,
-				session_max_steps: 750,
+				max_steps_per_session: 750,
 			},
 			context_limits: {
 				compaction_ratio: 0.65,
@@ -329,7 +329,7 @@ describe('SettingsView diagnostics export', () => {
 		await waitFor(() => expect(invoke).toHaveBeenCalledWith('get_api_key_status'));
 		await waitFor(() => expect(invoke).toHaveBeenCalledWith('is_autostart_enabled'));
 		await fireEvent.click(screen.getByRole('tab', { name: /对话与行为/ }));
-		expect(((await screen.findByLabelText('会话累计步骤上限')) as HTMLInputElement).value).toBe(
+		expect(((await screen.findByLabelText('会话累计最大步数')) as HTMLInputElement).value).toBe(
 			'750',
 		);
 		expect(
@@ -347,7 +347,7 @@ describe('SettingsView diagnostics export', () => {
 		await fireEvent.click(await screen.findByRole('switch', { name: '会话开始 Windows 通知' }));
 		expect(screen.getByRole('tab', { name: /界面与通知.*已修改/ })).toBeTruthy();
 		expect(
-			(container.querySelector('#session-lifetime-max-steps') as HTMLInputElement).value,
+			(container.querySelector('#session-max-steps-per-session') as HTMLInputElement).value,
 		).toBe('750');
 		await fireEvent.click(await screen.findByRole('button', { name: '保存' }));
 
@@ -356,7 +356,7 @@ describe('SettingsView diagnostics export', () => {
 		);
 		const update = invoke.mock.calls.find(([command]) => command === 'update_settings');
 		const saved = update?.[1]?.settings;
-		expect(saved.session.session_max_steps).toBe(750);
+		expect(saved.session.max_steps_per_session).toBe(750);
 		expect(saved.session.prompt_history_limit).toBe(73);
 		expect(saved.memory.fact_inference_enabled).toBe(false);
 		expect(saved.hotkey.mute_hotkey).toBe('Ctrl+M');
