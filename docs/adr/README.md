@@ -684,3 +684,4 @@
 - [0693：Ask controller 直接使用 SessionMessage](0693-use-session-message-in-ask-controller.md)
 - [0694：生成 VAD status event 契约](0694-generate-vad-status-event-contract.md)
 - [0695：交互事件复用生成 wire 类型](0695-use-generated-interaction-event-wire-type.md)
+- [0696：生成 App shell 事件契约并共享校验](0696-generate-app-shell-event-contracts.md)

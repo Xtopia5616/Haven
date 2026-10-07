@@ -279,7 +279,7 @@ pub(crate) fn run() {
                                         emit_handle.emit(
                                             SKILLS_STATUS_CHANGED_EVENT,
                                             SkillsStatusChangedEvent {
-                                                op: "auto_refresh".into(),
+                                                op: SkillsStatusOperation::AutoRefresh,
                                             },
                                         )
                                     );

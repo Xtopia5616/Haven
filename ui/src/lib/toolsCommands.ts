@@ -1,4 +1,5 @@
 import { invoke } from '$lib/tauri.ts';
+import { isMcpClientStatus } from './contracts/mcpClientStatus.ts';
 import type {
 	ReconnectMcpRequest,
 	RemoveMcpServerRequest,
@@ -16,15 +17,6 @@ import type {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-function isMcpClientStatus(value: unknown): value is McpServerSnapshot['status'] {
-	if (value === 'Disconnected' || value === 'Connecting' || value === 'Connected') return true;
-	if (!isRecord(value) || Object.keys(value).length !== 1 || !('Offline' in value)) return false;
-	const offline = value.Offline;
-	return (
-		isRecord(offline) && Object.keys(offline).length === 1 && typeof offline.error === 'string'
-	);
 }
 
 function validateMcpServerSnapshots(value: unknown): McpServerSnapshot[] {

@@ -6,7 +6,8 @@
 	import ExpandableContextCard from '$lib/ExpandableContextCard.svelte';
 	import StatusBadge from '$lib/StatusBadge.svelte';
 	import { copyText } from '$lib/clipboard.ts';
-	import type { McpClientStatus, McpServerSnapshot } from '$lib/contracts/tools.ts';
+	import type { McpClientStatus } from '$lib/contracts/generatedCommands.ts';
+	import type { McpServerSnapshot } from '$lib/contracts/tools.ts';
 	import type { ContextMenuItem } from '$lib/contextMenu.ts';
 
 	interface Props {

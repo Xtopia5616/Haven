@@ -1,6 +1,6 @@
 # Haven 命名规范
 
-> 版本: v1.107 | 日期: 2026-10-07
+> 版本: v1.108 | 日期: 2026-10-07
 
 本文档统一 Haven 项目各层的命名规则（变量名、函数名、文件名、crate 名、缩写大小写、跨层边界）。规范以现有代码中的事实模式为基础，新代码必须遵循；存量代码若与规范冲突，逐步迁移对齐。
 
@@ -29,6 +29,7 @@
 - **配置投影视图引用生成字段**：UI helper 仅消费设置 DTO 的部分字段时，用 `Pick<GeneratedInput, ...>` 派生投影，不手写同形字段；确有草稿中间态允许 `null` 的字段在投影中显式拓宽，并与 required wire contract 区分。`apiStyle.ts` 的 `ProviderStyleInput` 基于 generated `ProviderConfigInput`，只为 `provider` 与 `base_url` 保留 UI 草稿 nullable 语义（ADR 0643）。
 - **预算化 JSON 结果具名**：同时供 tool JSON 与 `ToolResult` envelope 使用的截断状态，应与 JSON value 一起由 `JsonListBudgetResult { value, truncated }` 返回；执行预算操作使用 `cap_json_list`，调用方通过字段消费结果（ADR 0627）。
 - **TypeScript 运行时词汇唯一化**：当某组字符串值只用于本模块的运行时遍历时，以 `as const` 值清单作为唯一 owner；不要再并列手写同值 union。函数若有意接受清单外的未知字符串并返回拒绝/回退结果，参数应标为 `string`；无跨模块消费者的类型和值清单不额外导出。
+- **App shell 事件复用生成契约**：未变换的 app event payload 与闭合状态 enum 直接引用 Rust 生成 DTO/值清单；校验函数也按领域状态共用。只有进行 camelCase 映射、owner 关联或其它 renderer 归一化的事件才保留独立 view 类型（ADR 0696）。
 - **动态交互响应区分 wire 与 renderer view**：交互 envelope 的通用 `response` 保持 `unknown`；当某一交互类型在 UI 中具有稳定投影时，将 shape 命名为领域 view 并跨 reducer、controller、消息与组件复用。Ask 的答案/忽略结果统一为 `AskResponseView`，不在各层重复内联字段（ADR 0644）。
 - **配置发现使用命名投影和领域 patch**：Model discovery 输入字段从 `ProviderDraft` / `ModelDraft` 派生，catalog 更新只以 `DiscoveredModelMetadataFill` 回传被填充的 model id 与 metadata。不要用 `Record<string, any>` 或开放 key/value map 表达已知 config 字段（ADR 0645）。
 - **事件 handler 使用 channel→payload contract map**：Tauri event contract 的每个 channel 都有 `AgentEventPayloadMap` / 对应域 map；adapter callback 使用 `AgentEventListenerMap` 这类按 channel 映射的函数类型。UI transformation controller 使用 `satisfies` 校验它实际处理的子集，避免退化成 `Record<string, (event: any) => void>`（ADR 0646）。

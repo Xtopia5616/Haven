@@ -161,13 +161,7 @@ impl desktop::ShellHandler for HavenShellHandler {
         if let Err(error) = self.app_h.emit(
             TRAY_STATUS_CHANGED_EVENT,
             TrayStatusChangedEvent {
-                status: match status {
-                    TrayStatus::Normal => "normal",
-                    TrayStatus::Recording => "recording",
-                    TrayStatus::Muted => "muted",
-                    TrayStatus::Busy => "busy",
-                }
-                .into(),
+                status: status.into(),
                 tooltip: tooltip.into(),
             },
         ) {

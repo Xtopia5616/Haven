@@ -3,6 +3,7 @@ import type { InteractionKind } from '../contracts/generatedCommands.ts';
 import {
 	INTERACTION_KIND_VALUES,
 	INTERACTION_STATUS_VALUES,
+	RISK_LEVEL_VALUES,
 } from '../contracts/generatedCommands.ts';
 import type { SessionActionOf, SessionReducerState } from './types.ts';
 
@@ -151,8 +152,6 @@ function hasValidOwnerContext(request: InteractionRequest): boolean {
 	}
 }
 
-const RISK_LEVELS = ['safe', 'low', 'medium', 'high', 'critical'] as const;
-
 function normalizeInteraction(raw: unknown): InteractionRequest | null {
 	if (!raw || typeof raw !== 'object') return null;
 	const value = raw as Record<string, unknown>;
@@ -197,7 +196,7 @@ function normalizeInteraction(raw: unknown): InteractionRequest | null {
 		options,
 		...(typeof toolName === 'string' ? { toolName } : {}),
 		...(typeof riskLevel === 'string' &&
-		RISK_LEVELS.includes(riskLevel as (typeof RISK_LEVELS)[number])
+		RISK_LEVEL_VALUES.includes(riskLevel as (typeof RISK_LEVEL_VALUES)[number])
 			? { riskLevel: riskLevel as InteractionRequest['riskLevel'] }
 			: {}),
 		...(typeof summary === 'string' ? { summary } : {}),

@@ -45,7 +45,8 @@ impl haven_tools::LogLevelPort for ReloadLogLevelPort {
 /// `loading` while MCP/skills/audio prewarm finish in the background;
 /// `ready` once that deferred work completes (or immediately when there is
 /// nothing deferred).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum BootstrapStatus {
     Loading,
     Ready,
@@ -648,7 +649,7 @@ impl AppState {
         let skills_cfg_enabled = cfg.skills.enabled.clone();
 
         emit(AppBootstrapEvent {
-            status: BootstrapStatus::Loading.as_str().to_string(),
+            status: BootstrapStatus::Loading,
         });
 
         let bootstrap_runtime = runtime.clone();
@@ -779,7 +780,7 @@ impl AppState {
 
             bootstrap_ready.store(true, Ordering::Release);
             emit(AppBootstrapEvent {
-                status: BootstrapStatus::Ready.as_str().to_string(),
+                status: BootstrapStatus::Ready,
             });
             tracing::info!("app bootstrap ready (MCP/skills/audio prewarm finished)");
             });

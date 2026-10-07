@@ -18,6 +18,8 @@ export interface UiMetricsSnapshot { frames: number; chunks: number; drops: numb
 export interface SessionInfo { id: string; input: string; summary: string; title: string | null; status: SessionStatus; waiting_reason?: SessionWaitingReason; steps: StepInfo[]; created_at: string; updated_at: string }
 export interface StepInfo { id: string; step_number: number; tool_name: string; input: unknown; output: unknown | null; status: string; risk_level: RiskLevel; confirmed: boolean | null }
 export type ProcessResult = { 'SessionCreated': { session_id: string; message_id?: string | null } } | { 'Supplemented': { message_id?: string | null } };
+export const BOOTSTRAP_STATUS_VALUES = ['loading', 'ready'] as const;
+export type BootstrapStatus = (typeof BOOTSTRAP_STATUS_VALUES)[number];
 export interface RuntimeSessionListResponse { sessions: SessionInfo[] }
 export interface BuiltinToolManifestListResponse { tools: ToolManifest[] }
 export interface McpToolCallResponse { success: boolean; output: unknown; error: string | null }
@@ -37,15 +39,26 @@ export interface SessionRecordDto { id: string; input_text: string; title: strin
 export interface SessionResumeResponse { session: SessionRecordDto; messages: Message[]; steps: SessionStep[]; usage: SessionUsage | null; llm_usage: LlmUsageRecord[]; interactions: InteractionRequestedEvent[] }
 export interface SessionPermissionGrant { session_id: string; session_title: string | null; capability: string; target: string; effect: string }
 export interface ShellAvailability { available: boolean }
+export interface AppBootstrapEvent { status: BootstrapStatus }
+export interface HotkeyConflictEvent { binding: string; error: string }
+export interface HotkeyRebindEvent { old_binding: string; new_binding: string }
 export interface InteractionRequestedEvent { id: string; session_id?: string; owner: InteractionOwner; kind: InteractionKind; status: InteractionStatus; options?: string[]; tool_name?: string; risk_level?: RiskLevel; summary?: string; permission_key?: string; invocation_step_id?: string; tool_index?: number; tool_call_id?: string; created_at: string; expires_at?: string }
+export interface McpStatusChangedEvent { name: string; status: McpClientStatus }
+export interface MuteChangedEvent { muted: boolean }
 export type SessionLifecycleEvent = { type: 'created'; session_id: string; status: SessionStatus; waiting_reason?: SessionWaitingReason | null; title: string | null } | { type: 'updated'; session_id: string; status: SessionUpdateStatus; waiting_reason?: SessionWaitingReason | null; title: string; reason?: string | null } | { type: 'completed'; session_id: string; title: string; reason: string } | { type: 'error'; session_id: string; title: string; error: string } | { type: 'title_updated'; session_id: string; title: string } | { type: 'deleted'; session_id: string | null };
 export const SESSION_UPDATE_STATUS_VALUES = ['pending', 'running', 'paused'] as const;
 export type SessionUpdateStatus = (typeof SESSION_UPDATE_STATUS_VALUES)[number];
+export interface SkillsStatusChangedEvent { op: SkillsStatusOperation }
+export const SKILLS_STATUS_OPERATION_VALUES = ['refresh', 'auto_refresh', 'toggle'] as const;
+export type SkillsStatusOperation = (typeof SKILLS_STATUS_OPERATION_VALUES)[number];
 export interface ToolRunEvent { id: string; kind: ToolRunKindDto; status?: ToolRunStatus; session_id?: string; source_step_id?: string; started_at?: string; finished_at?: string; due_at?: string; title?: string; body?: string; mode?: string; command?: string; output?: string; error?: string; error_reason?: string; exit_code?: number; preview?: string }
 export const TOOL_RUN_KIND_DTO_INPUT_VALUES = ['background', 'scheduled'] as const;
 export type ToolRunKindDtoInput = (typeof TOOL_RUN_KIND_DTO_INPUT_VALUES)[number];
 export const TOOL_RUN_KIND_DTO_VALUES = ['background', 'scheduled'] as const;
 export type ToolRunKindDto = (typeof TOOL_RUN_KIND_DTO_VALUES)[number];
+export interface TrayStatusChangedEvent { status: TrayStatusEventValue; tooltip: string }
+export const TRAY_STATUS_EVENT_VALUE_VALUES = ['normal', 'recording', 'muted', 'busy'] as const;
+export type TrayStatusEventValue = (typeof TRAY_STATUS_EVENT_VALUE_VALUES)[number];
 export interface VadStatusEvent { signal: string; state: string }
 export const CAPABILITY_INPUT_VALUES = ['chat', 'fast_chat', 'vision', 'audio_input', 'transcription', 'embedding', 'image_generation', 'speech_synthesis'] as const;
 export type CapabilityInput = (typeof CAPABILITY_INPUT_VALUES)[number];
@@ -205,6 +218,7 @@ export interface SessionStep { id: string; session_id: string; step_number: numb
 export interface LlmUsageRecord { id: string; session_id: string; step_number: number | null; role: RequestKind; call_kind: string; model: string | null; prompt_tokens: number; completion_tokens: number; total_tokens: number; cached_tokens: number; cache_creation_tokens: number; cache_miss_tokens: number; cache_accounting: string; cache_diagnostics?: unknown; context_tokens: number; context_window: number | null; cost_usd: number; has_cost: boolean; duration_ms: number | null; created_at: string }
 export interface SessionUsage { prompt_tokens: number; completion_tokens: number; total_tokens: number; cached_tokens: number; cache_creation_tokens: number; cache_miss_tokens: number; context_tokens: number; context_window: number | null; cost_usd: number; has_cost: boolean }
 export interface SkillInfo { name: string; description: string; version: string | null; language: string; enabled: boolean; root: string; has_script: boolean }
+export const MCP_CLIENT_STATUS_UNIT_VALUES = ['Disconnected', 'Connecting', 'Connected'] as const;
 
 export interface TauriCommandMap {
 	add_fact: { request: { subject: string; predicate: string; object: string; tags?: string[] | null }; response: MemoryFactResponse };

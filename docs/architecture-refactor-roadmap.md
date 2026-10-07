@@ -349,6 +349,7 @@
 | 架构描述重复、模块清单过期与概念表缺项 | `docs/architecture.md` 有两条几乎重复的 ReAct 描述，引用已删除的 `retries` / `RunEngine` 名称且漏列当前模块；输出清单仍用 `StoredBranchPoint` / `ToolBox` / `ToolsManager`，命名规范未集中说明 Message、Transcript、Interaction 与 Tool manifest 的相邻概念。 | **已按当前 owner 对齐权威文档**：合并 ReAct 描述，更新 ToolRun 生命周期措辞和输出清单；在 `docs/naming.md` 补充概念词表，并明确保留类型边界（ADR 0689）。 |
 | VAD status event wire 字段在 Rust 与 UI 重复声明 | Rust `VadStatusEvent` 是唯一 wire DTO，但 `recording.ts::VadStatusPayload` 又手写相同的 `{ signal: string, state: string }`；这两个字段没有大小写映射。架构已有意保留未知 VAD 字符串，以允许新增 signal/state。 | **生成并复用唯一 wire 类型**：IPC generator 显式导出 `VadStatusEvent`，UI payload alias 引用生成 DTO；未知字符串透传与畸形值默认行为保持不变（ADR 0694）。 |
 | App interaction event wire shape 重复定义 | `app.ts::AppWirePayloadMap['interaction:requested']` 逐字段重复生成的 Rust `InteractionRequestedEvent`，包括 owner union、可选字段和 snake_case 名；独立 `InteractionRequest` 才是经过校验及 camelCase 投影的 renderer view。 | **wire 层引用生成 DTO**：删除手写 interaction wire shape，直接使用 generated `InteractionRequestedEvent`；保留未知值校验、owner/session 一致性检查和 renderer view（ADR 0695）。 |
+| App shell event 的 DTO、enum 值与 validator 重复维护 | `AppWirePayloadMap` 重复声明多种 event payload；Rust 启动、托盘、Skills DTO 用 `String` 表达闭合值；App UI 手写相同值 union/校验数组；MCP 状态校验在 event 与 command 两个入口重复。 | **Rust DTO/enum 成为单一契约 owner**：显式生成 App shell event DTO 与状态值；UI 直接复用未变换 DTO，RiskLevel 和 MCP 状态共用生成值/validator，保留 Interaction 与 hotkey rebind renderer 投影（ADR 0696）。 |
 
 此表是候选分流清单，不是完整符号目录。尚未完成的 crate、IPC/event payload、UI controller/store 与函数动词审计仍在 §5.7 范围内；完成一域后更新本表并以 ADR 记录实际迁移。
 

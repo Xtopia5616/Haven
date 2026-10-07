@@ -574,6 +574,67 @@ impl RustTypeGraph {
         }
     }
 
+    pub(crate) fn emit_external_unit_variant_values(
+        &mut self,
+        key: &str,
+        values_name: &str,
+        usage: TypeUse,
+    ) -> Result<(), String> {
+        let definition = self
+            .definitions
+            .get(key)
+            .ok_or_else(|| format!("no Rust enum declaration for {key}"))?;
+        if !definition.serializable && matches!(usage, TypeUse::Response) {
+            return Err(format!(
+                "Rust IPC enum {} does not derive Serialize",
+                definition.key
+            ));
+        }
+        if !definition.deserializable && matches!(usage, TypeUse::Request) {
+            return Err(format!(
+                "Rust IPC enum {} does not derive Deserialize",
+                definition.key
+            ));
+        }
+        if definition.serde.untagged
+            || definition.serde.tag.is_some()
+            || definition.serde.content.is_some()
+        {
+            return Err(format!(
+                "{} is not externally tagged and has no string unit-variant values",
+                definition.key
+            ));
+        }
+        let TypeKind::Enum(variants) = &definition.kind else {
+            return Err(format!("{} is not a Rust enum", definition.key));
+        };
+        let values = variants
+            .iter()
+            .filter(|variant| {
+                variant.unit
+                    && match usage {
+                        TypeUse::Response => !variant.skip_serializing,
+                        TypeUse::Request => !variant.skip_deserializing,
+                    }
+            })
+            .map(|variant| quote_ts_string(&variant.name))
+            .collect::<Vec<_>>();
+        if values.is_empty() {
+            return Err(format!(
+                "{} has no serializable unit variants",
+                definition.key
+            ));
+        }
+        self.emitted.insert(
+            format!("runtime-values::{values_name}"),
+            format!(
+                "export const {values_name} = [{}] as const;",
+                values.join(", ")
+            ),
+        );
+        Ok(())
+    }
+
     fn render_definition(&mut self, key: &str, usage: TypeUse) -> Result<String, String> {
         let definition = self.definitions.get(key).cloned().expect("known key");
         let name = emitted_name(&definition.name, usage);
@@ -1561,6 +1622,33 @@ mod tests {
                 "export type InteractionKind = (typeof INTERACTION_KIND_VALUES)[number];"
             )
         );
+    }
+
+    #[test]
+    fn external_enum_exports_runtime_values_for_its_unit_variants() {
+        let item: syn::ItemEnum = syn::parse_quote! {
+            #[derive(serde::Serialize)]
+            enum McpClientStatus {
+                Disconnected,
+                Connecting,
+                Connected,
+                Offline { error: String },
+            }
+        };
+        let context = RustTypeGraph::test_context();
+        let mut graph = RustTypeGraph::default();
+        graph.collect_items(&[Item::Enum(item)], &context).unwrap();
+        graph
+            .emit_external_unit_variant_values(
+                "test_crate::McpClientStatus",
+                "MCP_CLIENT_STATUS_UNIT_VALUES",
+                TypeUse::Response,
+            )
+            .unwrap();
+
+        assert!(graph.declarations().contains(
+            "export const MCP_CLIENT_STATUS_UNIT_VALUES = ['Disconnected', 'Connecting', 'Connected'] as const;"
+        ));
     }
 
     #[test]

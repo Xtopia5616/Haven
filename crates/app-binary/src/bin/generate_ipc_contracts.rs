@@ -107,6 +107,26 @@ fn generate(root: &Path) -> Result<String, String> {
         "haven_app_binary_lib::events::VadStatusEvent",
         TypeUse::Response,
     )?;
+    for event_type in [
+        "AppBootstrapEvent",
+        "TrayStatusChangedEvent",
+        "MuteChangedEvent",
+        "McpStatusChangedEvent",
+        "SkillsStatusChangedEvent",
+        "HotkeyConflictEvent",
+        "HotkeyRebindEvent",
+    ] {
+        type_graph.emit_definition(
+            &format!("haven_app_binary_lib::events::{event_type}"),
+            TypeUse::Response,
+        )?;
+    }
+    type_graph.emit_definition("haven_mcp::protocol::McpClientStatus", TypeUse::Response)?;
+    type_graph.emit_external_unit_variant_values(
+        "haven_mcp::protocol::McpClientStatus",
+        "MCP_CLIENT_STATUS_UNIT_VALUES",
+        TypeUse::Response,
+    )?;
 
     let mut output = String::from(
         "// Generated from #[tauri::command] handler signatures by `scripts/generate-ipc-contracts.ps1`.\n\

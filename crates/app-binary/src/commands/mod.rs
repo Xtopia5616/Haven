@@ -217,7 +217,7 @@ pub(crate) async fn finalize_admin_ui_operation(
                 app,
                 crate::events::SKILLS_STATUS_CHANGED_EVENT,
                 crate::events::SkillsStatusChangedEvent {
-                    op: "toggle".into(),
+                    op: crate::events::SkillsStatusOperation::Toggle,
                 },
                 "resolve_ui_confirmation skill",
             );

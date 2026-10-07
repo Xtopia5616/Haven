@@ -326,13 +326,33 @@ pub struct RecordingErrorEvent {
 
 #[derive(Clone, Serialize)]
 pub(crate) struct AppBootstrapEvent {
-    pub status: String,
+    pub status: crate::app_state::BootstrapStatus,
 }
 
 #[derive(Clone, Serialize)]
 pub(crate) struct TrayStatusChangedEvent {
-    pub status: String,
+    pub status: TrayStatusEventValue,
     pub tooltip: String,
+}
+
+#[derive(Clone, Copy, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum TrayStatusEventValue {
+    Normal,
+    Recording,
+    Muted,
+    Busy,
+}
+
+impl From<crate::desktop::TrayStatus> for TrayStatusEventValue {
+    fn from(status: crate::desktop::TrayStatus) -> Self {
+        match status {
+            crate::desktop::TrayStatus::Normal => Self::Normal,
+            crate::desktop::TrayStatus::Recording => Self::Recording,
+            crate::desktop::TrayStatus::Muted => Self::Muted,
+            crate::desktop::TrayStatus::Busy => Self::Busy,
+        }
+    }
 }
 
 #[derive(Clone, Serialize)]
@@ -348,7 +368,15 @@ pub(crate) struct McpStatusChangedEvent {
 
 #[derive(Clone, Serialize)]
 pub(crate) struct SkillsStatusChangedEvent {
-    pub op: String,
+    pub op: SkillsStatusOperation,
+}
+
+#[derive(Clone, Copy, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum SkillsStatusOperation {
+    Refresh,
+    AutoRefresh,
+    Toggle,
 }
 
 #[derive(Clone, Serialize)]
@@ -601,6 +629,44 @@ pub(crate) struct AgentToolOutputEvent {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn app_shell_status_dtos_keep_their_lowercase_wire_values() {
+        assert_eq!(
+            serde_json::to_value(AppBootstrapEvent {
+                status: crate::app_state::BootstrapStatus::Loading,
+            })
+            .unwrap(),
+            serde_json::json!({ "status": "loading" })
+        );
+
+        for (status, expected) in [
+            (crate::desktop::TrayStatus::Normal, "normal"),
+            (crate::desktop::TrayStatus::Recording, "recording"),
+            (crate::desktop::TrayStatus::Muted, "muted"),
+            (crate::desktop::TrayStatus::Busy, "busy"),
+        ] {
+            assert_eq!(
+                serde_json::to_value(TrayStatusChangedEvent {
+                    status: status.into(),
+                    tooltip: "Haven".into(),
+                })
+                .unwrap(),
+                serde_json::json!({ "status": expected, "tooltip": "Haven" })
+            );
+        }
+
+        for (op, expected) in [
+            (SkillsStatusOperation::Refresh, "refresh"),
+            (SkillsStatusOperation::AutoRefresh, "auto_refresh"),
+            (SkillsStatusOperation::Toggle, "toggle"),
+        ] {
+            assert_eq!(
+                serde_json::to_value(SkillsStatusChangedEvent { op }).unwrap(),
+                serde_json::json!({ "op": expected })
+            );
+        }
+    }
 
     #[test]
     fn test_recording_event_serde() {

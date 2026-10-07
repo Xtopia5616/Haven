@@ -1,14 +1,25 @@
 /** App-shell IPC event contract at the frontend boundary. */
 
 import type { TauriEvent } from './tauriEvent.ts';
+import { isMcpClientStatus } from './mcpClientStatus.ts';
 import {
+	BOOTSTRAP_STATUS_VALUES,
 	INTERACTION_KIND_VALUES,
 	INTERACTION_STATUS_VALUES,
+	SKILLS_STATUS_OPERATION_VALUES,
+	RISK_LEVEL_VALUES,
+	TRAY_STATUS_EVENT_VALUE_VALUES,
+	type AppBootstrapEvent as GeneratedAppBootstrapEvent,
+	type HotkeyConflictEvent as GeneratedHotkeyConflictEvent,
 	type InteractionKind,
 	type InteractionOwner as InteractionOwnerWire,
 	type InteractionRequestedEvent as GeneratedInteractionRequestedEvent,
 	type InteractionStatus,
+	type McpStatusChangedEvent as GeneratedMcpStatusChangedEvent,
+	type MuteChangedEvent as GeneratedMuteChangedEvent,
 	type RiskLevel,
+	type SkillsStatusChangedEvent as GeneratedSkillsStatusChangedEvent,
+	type TrayStatusChangedEvent as GeneratedTrayStatusChangedEvent,
 } from './generatedCommands.ts';
 
 export const APP_EVENT_NAMES = [
@@ -24,28 +35,6 @@ export const APP_EVENT_NAMES = [
 ] as const;
 
 export type AppEventName = (typeof APP_EVENT_NAMES)[number];
-export type TrayStatus = 'normal' | 'recording' | 'muted' | 'busy';
-export type SkillsStatusOperation = 'refresh' | 'auto_refresh' | 'toggle';
-export type McpStatus =
-	'Disconnected' | 'Connecting' | 'Connected' | { Offline: { error: string } };
-
-export interface AppBootstrapPayload {
-	status: 'loading' | 'ready';
-}
-export interface TrayStatusPayload {
-	status: TrayStatus;
-	tooltip: string;
-}
-export interface MuteChangedPayload {
-	muted: boolean;
-}
-export interface McpStatusPayload {
-	name: string;
-	status: McpStatus;
-}
-export interface SkillsStatusPayload {
-	op: SkillsStatusOperation;
-}
 export type InteractionOwnerView =
 	| { kind: 'session'; sessionId: string }
 	| { kind: 'scheduled_tool_run'; toolRunId: string }
@@ -102,47 +91,26 @@ export function isSessionInteractionRequest(
 ): request is Extract<InteractionRequest, { owner: { kind: 'session' } }> {
 	return request.owner.kind === 'session' && request.sessionId === request.owner.sessionId;
 }
-export interface HotkeyConflictPayload {
-	binding: string;
-	error: string;
-}
 export interface HotkeyRebindPayload {
 	oldBinding: string;
 	newBinding: string;
 }
 
 export interface AppEventPayloadMap {
-	'app:bootstrap': AppBootstrapPayload;
-	'tray:status_changed': TrayStatusPayload;
-	'mute:changed': MuteChangedPayload;
-	'mcp:status_change': McpStatusPayload;
-	'skills:status_change': SkillsStatusPayload;
+	'app:bootstrap': GeneratedAppBootstrapEvent;
+	'tray:status_changed': GeneratedTrayStatusChangedEvent;
+	'mute:changed': GeneratedMuteChangedEvent;
+	'mcp:status_change': GeneratedMcpStatusChangedEvent;
+	'skills:status_change': GeneratedSkillsStatusChangedEvent;
 	'interaction:requested': InteractionRequest;
-	'hotkey:conflict': HotkeyConflictPayload;
+	'hotkey:conflict': GeneratedHotkeyConflictEvent;
 	'hotkey:rebind': HotkeyRebindPayload;
-	'llm:config_changed': null;
-}
-
-interface AppWirePayloadMap {
-	'app:bootstrap': { status: 'loading' | 'ready' };
-	'tray:status_changed': { status: TrayStatus; tooltip: string };
-	'mute:changed': { muted: boolean };
-	'mcp:status_change': { name: string; status: McpStatus };
-	'skills:status_change': { op: SkillsStatusOperation };
-	'interaction:requested': GeneratedInteractionRequestedEvent;
-	'hotkey:conflict': { binding: string; error: string };
-	'hotkey:rebind': { old_binding: string; new_binding: string };
 	'llm:config_changed': null;
 }
 
 type WireRecord = Record<string, unknown>;
 
 const APP_EVENT_NAME_SET = new Set<string>(APP_EVENT_NAMES);
-const MCP_STATUS_NAMES = ['Disconnected', 'Connecting', 'Connected'] as const;
-const BOOTSTRAP_STATUSES = ['loading', 'ready'] as const;
-const TRAY_STATUSES = ['normal', 'recording', 'muted', 'busy'] as const;
-const SKILLS_STATUS_OPERATIONS = ['refresh', 'auto_refresh', 'toggle'] as const;
-const RISK_LEVELS = ['safe', 'low', 'medium', 'high', 'critical'] as const;
 
 function isRecord(value: unknown): value is WireRecord {
 	return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -179,13 +147,6 @@ function isOneOf<const Values extends readonly string[]>(
 	values: Values,
 ): value is Values[number] {
 	return typeof value === 'string' && values.includes(value);
-}
-
-function isMcpStatus(value: unknown): value is McpStatus {
-	if (isOneOf(value, MCP_STATUS_NAMES)) return true;
-	if (!isRecord(value) || Object.keys(value).length !== 1 || !isRecord(value.Offline))
-		return false;
-	return Object.keys(value.Offline).length === 1 && typeof value.Offline.error === 'string';
 }
 
 function optionalOneOfIsValid<const Values extends readonly string[]>(
@@ -253,20 +214,30 @@ export function mapAppEvent(event: unknown): TauriEvent<AppEventPayloadMap[AppEv
 
 	switch (event.event) {
 		case 'app:bootstrap':
-			if (!isOneOf(p.status, BOOTSTRAP_STATUSES)) return null;
-			return { ...tauriEvent, payload: p as AppWirePayloadMap['app:bootstrap'] };
+			if (!isOneOf(p.status, BOOTSTRAP_STATUS_VALUES)) return null;
+			return {
+				...tauriEvent,
+				payload: p as unknown as AppEventPayloadMap['app:bootstrap'],
+			};
 		case 'tray:status_changed':
-			if (!isOneOf(p.status, TRAY_STATUSES) || typeof p.tooltip !== 'string') return null;
-			return { ...tauriEvent, payload: p as AppWirePayloadMap['tray:status_changed'] };
+			if (!isOneOf(p.status, TRAY_STATUS_EVENT_VALUE_VALUES) || typeof p.tooltip !== 'string')
+				return null;
+			return {
+				...tauriEvent,
+				payload: p as unknown as AppEventPayloadMap['tray:status_changed'],
+			};
 		case 'mute:changed':
 			if (typeof p.muted !== 'boolean') return null;
-			return { ...tauriEvent, payload: p as AppWirePayloadMap['mute:changed'] };
+			return { ...tauriEvent, payload: p as unknown as AppEventPayloadMap['mute:changed'] };
 		case 'mcp:status_change':
-			if (typeof p.name !== 'string' || !isMcpStatus(p.status)) return null;
+			if (typeof p.name !== 'string' || !isMcpClientStatus(p.status)) return null;
 			return { ...tauriEvent, payload: { name: p.name, status: p.status } };
 		case 'skills:status_change':
-			if (!isOneOf(p.op, SKILLS_STATUS_OPERATIONS)) return null;
-			return { ...tauriEvent, payload: p as AppWirePayloadMap['skills:status_change'] };
+			if (!isOneOf(p.op, SKILLS_STATUS_OPERATION_VALUES)) return null;
+			return {
+				...tauriEvent,
+				payload: p as unknown as AppEventPayloadMap['skills:status_change'],
+			};
 		case 'interaction:requested': {
 			const id = requiredString(p, 'id');
 			const sessionId = p.session_id;
@@ -283,7 +254,7 @@ export function mapAppEvent(event: unknown): TauriEvent<AppEventPayloadMap[AppEv
 				createdAt === null ||
 				!stringArray(options) ||
 				!optionalStringIsValid(p, 'tool_name') ||
-				!optionalOneOfIsValid(p, 'risk_level', RISK_LEVELS) ||
+				!optionalOneOfIsValid(p, 'risk_level', RISK_LEVEL_VALUES) ||
 				!optionalStringIsValid(p, 'summary') ||
 				!optionalStringIsValid(p, 'permission_key') ||
 				!optionalStringIsValid(p, 'invocation_step_id') ||
@@ -300,7 +271,7 @@ export function mapAppEvent(event: unknown): TauriEvent<AppEventPayloadMap[AppEv
 			const owner = mapInteractionOwner(p.owner, sessionId as string | undefined);
 			if (!owner) return null;
 
-			const wire = p as unknown as AppWirePayloadMap['interaction:requested'];
+			const wire = p as unknown as GeneratedInteractionRequestedEvent;
 			const payload = {
 					id,
 					...(sessionId === undefined ? {} : { sessionId }),

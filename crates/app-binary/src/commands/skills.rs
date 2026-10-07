@@ -4,7 +4,7 @@ use crate::commands::log_err;
 use crate::commands::{
     app_command_authorization_request, emit_event_logged, queue_ui_confirmation,
 };
-use crate::events::{SKILLS_STATUS_CHANGED_EVENT, SkillsStatusChangedEvent};
+use crate::events::{SKILLS_STATUS_CHANGED_EVENT, SkillsStatusChangedEvent, SkillsStatusOperation};
 use haven_common::types::{RiskLevel, permission_key};
 use haven_tools::{
     AuthorizationDecision, AuthorizationRequest, NetworkAccess, OperationPolicy, SkillInfo,
@@ -44,7 +44,7 @@ pub async fn refresh_skills(
         &app,
         SKILLS_STATUS_CHANGED_EVENT,
         SkillsStatusChangedEvent {
-            op: "refresh".into(),
+            op: SkillsStatusOperation::Refresh,
         },
         "skills_refreshed",
     );

@@ -3,7 +3,6 @@
  * Tool manifest projections and runtime MCP status validation remain at the renderer boundary.
  */
 import type {
-	McpClientStatus as GeneratedMcpClientStatus,
 	McpRefreshResult as GeneratedMcpRefreshResult,
 	McpServerConfig as GeneratedMcpServerConfig,
 	McpServerSnapshot as GeneratedMcpServerSnapshot,
@@ -15,7 +14,6 @@ import type {
 
 export type BuiltinToolManifestListResponse = GeneratedBuiltinToolManifestListResponse;
 export type SkillInfo = GeneratedSkillInfo;
-export type McpClientStatus = GeneratedMcpClientStatus;
 export type McpToolInfo = GeneratedMcpToolInfo;
 export type McpServerSnapshot = GeneratedMcpServerSnapshot;
 export type McpServerConfig = GeneratedMcpServerConfig;
