@@ -629,8 +629,11 @@ mod tests {
         lock.execute_batch("ROLLBACK").unwrap();
         drop(lock);
 
+        let verification_cancellation = CancellationToken::new();
         assert_eq!(
-            pending_fact_rows(&store, &cancellation).await.unwrap(),
+            pending_fact_rows(&store, &verification_cancellation)
+                .await
+                .unwrap(),
             vec![(session.id, false, 1)]
         );
         drop(store);
