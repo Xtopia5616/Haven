@@ -480,13 +480,41 @@ impl From<haven_memory::MemoryHit> for MemoryRecallItem {
 ///
 /// This keeps the IPC surface independent from the repository's `Fact` model;
 /// update the projection deliberately when fields should reach the renderer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MemoryFactSource {
+    User,
+    Inferred,
+}
+
+impl MemoryFactSource {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::User => "user",
+            Self::Inferred => "inferred",
+        }
+    }
+}
+
+impl TryFrom<&str> for MemoryFactSource {
+    type Error = &'static str;
+
+    fn try_from(source: &str) -> Result<Self, Self::Error> {
+        match source {
+            "user" => Ok(Self::User),
+            "inferred" => Ok(Self::Inferred),
+            _ => Err("unsupported fact source"),
+        }
+    }
+}
+
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct MemoryFactResponse {
     pub id: String,
     pub subject: String,
     pub predicate: String,
     pub object: String,
-    pub source: String,
+    pub source: MemoryFactSource,
     pub confidence: f64,
     pub tags: Vec<String>,
     pub created_at: String,
@@ -496,14 +524,19 @@ pub struct MemoryFactResponse {
     pub durability: f64,
 }
 
-impl From<haven_memory::repositories::facts::Fact> for MemoryFactResponse {
-    fn from(fact: haven_memory::repositories::facts::Fact) -> Self {
-        Self {
+impl TryFrom<haven_memory::repositories::facts::Fact> for MemoryFactResponse {
+    type Error = String;
+
+    fn try_from(fact: haven_memory::repositories::facts::Fact) -> Result<Self, Self::Error> {
+        let source =
+            MemoryFactSource::try_from(fact.source.as_str()).map_err(|error| error.to_string())?;
+
+        Ok(Self {
             id: fact.id,
             subject: fact.subject,
             predicate: fact.predicate,
             object: fact.object,
-            source: fact.source,
+            source,
             confidence: fact.confidence,
             tags: fact.tags,
             created_at: fact.created_at,
@@ -511,7 +544,7 @@ impl From<haven_memory::repositories::facts::Fact> for MemoryFactResponse {
             last_seen_at: fact.last_seen_at,
             source_ref: fact.source_ref.map(Into::into),
             durability: fact.durability,
-        }
+        })
     }
 }
 
@@ -570,7 +603,7 @@ mod tests {
 
     #[test]
     fn memory_fact_response_exposes_only_its_explicit_wire_projection() {
-        let response = MemoryFactResponse::from(haven_memory::repositories::facts::Fact {
+        let mut fact = haven_memory::repositories::facts::Fact {
             id: "fact-0123456789abcdef0123456789abcdef".into(),
             subject: "user".into(),
             predicate: "likes".into(),
@@ -586,7 +619,8 @@ mod tests {
                 snippet: "I like Rust.".into(),
             }),
             durability: 0.9,
-        });
+        };
+        let response = MemoryFactResponse::try_from(fact.clone()).unwrap();
 
         assert_eq!(
             serde_json::to_value(response).unwrap(),
@@ -608,5 +642,33 @@ mod tests {
                 "durability": 0.9,
             })
         );
+
+        fact.source = "external".into();
+        assert_eq!(
+            MemoryFactResponse::try_from(fact).unwrap_err(),
+            "unsupported fact source"
+        );
+    }
+
+    #[test]
+    fn memory_fact_source_uses_the_database_source_values() {
+        for (wire, source) in [
+            ("user", MemoryFactSource::User),
+            ("inferred", MemoryFactSource::Inferred),
+        ] {
+            assert_eq!(
+                serde_json::from_str::<MemoryFactSource>(&format!("\"{wire}\"")).unwrap(),
+                source
+            );
+            assert_eq!(
+                serde_json::to_string(&source).unwrap(),
+                format!("\"{wire}\"")
+            );
+            assert_eq!(source.as_str(), wire);
+        }
+
+        for wire in ["", "external", "USER"] {
+            assert!(serde_json::from_str::<MemoryFactSource>(&format!("\"{wire}\"")).is_err());
+        }
     }
 }

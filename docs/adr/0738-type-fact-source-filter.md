@@ -4,6 +4,8 @@
 
 已采纳并实施。
 
+后续：ADR 0741 将 `MemoryFactResponse.source` 也收窄为共享的 `MemoryFactSource`，不改变本 ADR 对筛选请求的决定。
+
 ## 背景
 
 `list_facts.source` 只由 Memory 页面调用，页面的固定选择是全部、`user`、`inferred`。事实表 `facts.source` 有 SQLite `CHECK(source IN ('user','inferred'))`；写入验证也只允许这两个值。UI 当前把全部映射为 `null`，把两个具体选择作为字符串发送。

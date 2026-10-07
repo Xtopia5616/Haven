@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { invoke } from '$lib/tauri.ts';
+import type { Fact } from './contracts/memory.ts';
 import { addFact, deleteFact, listFacts, recallMemory } from './memoryCommands.ts';
 
 vi.mock('$lib/tauri.ts', () => ({ invoke: vi.fn() }));
@@ -16,7 +17,7 @@ describe('memory command boundary', () => {
 				subject: 'user',
 				predicate: 'likes',
 				object: 'tea',
-				source: 'user',
+				source: 'user' as const,
 				confidence: 1,
 				tags: [],
 				created_at: '2026-09-26T00:00:00Z',
@@ -27,7 +28,7 @@ describe('memory command boundary', () => {
 				future_field: 'retained',
 			},
 		];
-		invokeMock.mockResolvedValue(response);
+		invokeMock.mockResolvedValue(response as unknown as Fact[]);
 
 		await expect(listFacts({ source: null })).resolves.toBe(response);
 		expect(invokeMock).toHaveBeenCalledWith('list_facts', { source: null });

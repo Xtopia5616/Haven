@@ -72,15 +72,17 @@ export const BOOTSTRAP_STATUS_VALUES = ['loading', 'ready'] as const;
 export type BootstrapStatus = (typeof BOOTSTRAP_STATUS_VALUES)[number];
 export interface RuntimeSessionListResponse { sessions: SessionInfo[] }
 export interface BuiltinToolManifestListResponse { tools: ToolManifest[] }
-export interface MemoryFactResponse { id: string; subject: string; predicate: string; object: string; source: string; confidence: number; tags: string[]; created_at: string; mention_count: number; last_seen_at: string | null; source_ref: MemoryFactSourceRef | null; durability: number }
+export interface MemoryFactResponse { id: string; subject: string; predicate: string; object: string; source: MemoryFactSource; confidence: number; tags: string[]; created_at: string; mention_count: number; last_seen_at: string | null; source_ref: MemoryFactSourceRef | null; durability: number }
+export const MEMORY_FACT_SOURCE_INPUT_VALUES = ['user', 'inferred'] as const;
+export type MemoryFactSourceInput = (typeof MEMORY_FACT_SOURCE_INPUT_VALUES)[number];
+export const MEMORY_FACT_SOURCE_VALUES = ['user', 'inferred'] as const;
+export type MemoryFactSource = (typeof MEMORY_FACT_SOURCE_VALUES)[number];
 export interface MemoryFactSourceRef { message_id: string; snippet: string }
 export interface MemoryRecallItem { entity_id: string; text: string; score: number; model: string }
 export interface SkillExecutionResponse { success: boolean; output: unknown; error: string | null }
 export interface LogInfo { enabled: boolean; level: string; path: string | null }
 export interface LogTail { path: string; content: string }
 export interface McpRefreshResult { added: string[]; removed: string[]; updated: string[]; failed: string[] }
-export const FACT_SOURCE_FILTER_INPUT_VALUES = ['user', 'inferred'] as const;
-export type FactSourceFilterInput = (typeof FACT_SOURCE_FILTER_INPUT_VALUES)[number];
 export interface ApiKeyStatus { models: Record<string, boolean>; providers: Record<string, boolean>; stt: boolean; ocr: boolean; ocr_secret: boolean }
 export const REASONING_EFFORT_SELECTION_INPUT_VALUES = ['low', 'medium', 'high', 'off'] as const;
 export type ReasoningEffortSelectionInput = (typeof REASONING_EFFORT_SELECTION_INPUT_VALUES)[number];
@@ -333,7 +335,7 @@ export interface TauriCommandMap {
 	interrupt_session: { request: { sessionId: string }; response: void };
 	is_autostart_enabled: { request: undefined; response: boolean };
 	list_builtin_tool_manifests: { request: undefined; response: BuiltinToolManifestListResponse };
-	list_facts: { request: { source?: FactSourceFilterInput | null }; response: MemoryFactResponse[] };
+	list_facts: { request: { source?: MemoryFactSourceInput | null }; response: MemoryFactResponse[] };
 	list_mcp_servers: { request: undefined; response: McpServerSnapshot[] };
 	list_permissions: { request: undefined; response: StoredPermission[] };
 	list_runtime_sessions: { request: undefined; response: RuntimeSessionListResponse };

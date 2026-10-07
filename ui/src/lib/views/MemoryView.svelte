@@ -42,11 +42,11 @@
 	import WorkspaceSectionHeader from '$lib/WorkspaceSectionHeader.svelte';
 	import type { SessionHistoryFilterRequest } from '$lib/contracts/commands.ts';
 	import {
-		FACT_SOURCE_FILTER_INPUT_VALUES,
+		MEMORY_FACT_SOURCE_INPUT_VALUES,
 		SESSION_HISTORY_STATUS_FILTER_INPUT_VALUES,
 	} from '$lib/contracts/generatedCommands.ts';
 	import type {
-		FactSourceFilterInput,
+		MemoryFactSourceInput,
 		SessionHistoryStatusFilterInput,
 	} from '$lib/contracts/generatedCommands.ts';
 	import type {
@@ -136,7 +136,7 @@
 	});
 	let facts = $state<Fact[]>([]);
 	let factsLoaded = $state(false);
-	let factSourceFilter = $state<FactSourceFilterInput | ''>('');
+	let factSourceFilter = $state<MemoryFactSourceInput | ''>('');
 	let newFact = $state<{ predicate: string; object: string; tags: string }>({
 		predicate: '',
 		object: '',
@@ -149,7 +149,7 @@
 		{ value: 'paused', label: '已暂停' },
 		{ value: 'error', label: '错误' },
 	];
-	const factSourceOptions: Array<{ value: FactSourceFilterInput | ''; label: string }> = [
+	const factSourceOptions: Array<{ value: MemoryFactSourceInput | ''; label: string }> = [
 		{ value: '', label: '全部来源' },
 		{ value: 'user', label: '手动' },
 		{ value: 'inferred', label: '推断' },
@@ -510,8 +510,8 @@
 	function handleFactSourceFilterChange(value: string) {
 		if (value === '') {
 			factSourceFilter = '';
-		} else if (FACT_SOURCE_FILTER_INPUT_VALUES.includes(value as FactSourceFilterInput)) {
-			factSourceFilter = value as FactSourceFilterInput;
+		} else if (MEMORY_FACT_SOURCE_INPUT_VALUES.includes(value as MemoryFactSourceInput)) {
+			factSourceFilter = value as MemoryFactSourceInput;
 		}
 	}
 	async function addFact() {

@@ -11,13 +11,13 @@
 		MemoryRecallFilter,
 		MemoryRecallState,
 	} from '$lib/contracts/memory.ts';
-	import type { FactSourceFilterInput } from '$lib/contracts/generatedCommands.ts';
+	import type { MemoryFactSourceInput } from '$lib/contracts/generatedCommands.ts';
 
 	interface Props {
 		facts?: Fact[];
 		factsLoaded?: boolean;
-		factSourceFilter?: FactSourceFilterInput | '';
-		factSourceOptions?: Array<{ value: FactSourceFilterInput | ''; label: string }>;
+		factSourceFilter?: MemoryFactSourceInput | '';
+		factSourceOptions?: Array<{ value: MemoryFactSourceInput | ''; label: string }>;
 		newFact?: { predicate: string; object: string; tags: string };
 		addingFact?: boolean;
 		memoryRecall: MemoryRecallState;

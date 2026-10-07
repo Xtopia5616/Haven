@@ -729,3 +729,4 @@
 - [0738：Fact source 筛选复用持久化闭合集合](0738-type-fact-source-filter.md)
 - [0739：Shell availability 复用 ShellChoice 输入](0739-type-shell-availability-input.md)
 - [0740：Session permission grant 输出复用授权枚举](0740-type-session-permission-grant-output.md)
+- [0741：Memory fact source 输出复用闭合集合](0741-type-memory-fact-source-output.md)
