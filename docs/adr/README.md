@@ -683,3 +683,4 @@
 - [0692：按 Session 命令标明 request alias owner](0692-session-command-request-alias-owners.md)
 - [0693：Ask controller 直接使用 SessionMessage](0693-use-session-message-in-ask-controller.md)
 - [0694：生成 VAD status event 契约](0694-generate-vad-status-event-contract.md)
+- [0695：交互事件复用生成 wire 类型](0695-use-generated-interaction-event-wire-type.md)

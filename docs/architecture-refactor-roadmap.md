@@ -348,6 +348,7 @@
 | Common `ToolDef` 与 LLM `ToolDefinition` 名称近似 | Common `ToolDef` 是 provider-neutral 的共享定义；LLM `ToolDefinition` 是 `{type, function}` 请求中间形状，并被 Agent 用于 prompt token 估算。两者分别由 Common catalog 与 LLM request 边界拥有，但旧名没有显出该层次。 | **已显式标出 LLM 边界**：将 `haven_llm::ToolDefinition` 改为 `LlmToolDefinition` 并迁移 workspace 消费者，不保留旧名 alias；`ToolDef → LlmToolDefinition → provider wire` 转换与序列化 shape 不变（ADR 0691）。 |
 | 架构描述重复、模块清单过期与概念表缺项 | `docs/architecture.md` 有两条几乎重复的 ReAct 描述，引用已删除的 `retries` / `RunEngine` 名称且漏列当前模块；输出清单仍用 `StoredBranchPoint` / `ToolBox` / `ToolsManager`，命名规范未集中说明 Message、Transcript、Interaction 与 Tool manifest 的相邻概念。 | **已按当前 owner 对齐权威文档**：合并 ReAct 描述，更新 ToolRun 生命周期措辞和输出清单；在 `docs/naming.md` 补充概念词表，并明确保留类型边界（ADR 0689）。 |
 | VAD status event wire 字段在 Rust 与 UI 重复声明 | Rust `VadStatusEvent` 是唯一 wire DTO，但 `recording.ts::VadStatusPayload` 又手写相同的 `{ signal: string, state: string }`；这两个字段没有大小写映射。架构已有意保留未知 VAD 字符串，以允许新增 signal/state。 | **生成并复用唯一 wire 类型**：IPC generator 显式导出 `VadStatusEvent`，UI payload alias 引用生成 DTO；未知字符串透传与畸形值默认行为保持不变（ADR 0694）。 |
+| App interaction event wire shape 重复定义 | `app.ts::AppWirePayloadMap['interaction:requested']` 逐字段重复生成的 Rust `InteractionRequestedEvent`，包括 owner union、可选字段和 snake_case 名；独立 `InteractionRequest` 才是经过校验及 camelCase 投影的 renderer view。 | **wire 层引用生成 DTO**：删除手写 interaction wire shape，直接使用 generated `InteractionRequestedEvent`；保留未知值校验、owner/session 一致性检查和 renderer view（ADR 0695）。 |
 
 此表是候选分流清单，不是完整符号目录。尚未完成的 crate、IPC/event payload、UI controller/store 与函数动词审计仍在 §5.7 范围内；完成一域后更新本表并以 ADR 记录实际迁移。
 

@@ -6,6 +6,7 @@ import {
 	INTERACTION_STATUS_VALUES,
 	type InteractionKind,
 	type InteractionOwner as InteractionOwnerWire,
+	type InteractionRequestedEvent as GeneratedInteractionRequestedEvent,
 	type InteractionStatus,
 	type RiskLevel,
 } from './generatedCommands.ts';
@@ -128,26 +129,7 @@ interface AppWirePayloadMap {
 	'mute:changed': { muted: boolean };
 	'mcp:status_change': { name: string; status: McpStatus };
 	'skills:status_change': { op: SkillsStatusOperation };
-	'interaction:requested': {
-		id: string;
-		session_id?: string;
-		owner:
-			| { kind: 'session'; session_id: string }
-			| { kind: 'scheduled_tool_run'; tool_run_id: string }
-			| { kind: 'app_command' };
-		kind: InteractionKind;
-		status: InteractionStatus;
-		options?: string[];
-		tool_name?: string;
-		risk_level?: RiskLevel;
-		summary?: string;
-		permission_key?: string;
-		invocation_step_id?: string;
-		tool_index?: number;
-		tool_call_id?: string;
-		created_at: string;
-		expires_at?: string;
-	};
+	'interaction:requested': GeneratedInteractionRequestedEvent;
 	'hotkey:conflict': { binding: string; error: string };
 	'hotkey:rebind': { old_binding: string; new_binding: string };
 	'llm:config_changed': null;
@@ -318,7 +300,7 @@ export function mapAppEvent(event: unknown): TauriEvent<AppEventPayloadMap[AppEv
 			const owner = mapInteractionOwner(p.owner, sessionId as string | undefined);
 			if (!owner) return null;
 
-			const wire = p as AppWirePayloadMap['interaction:requested'];
+			const wire = p as unknown as AppWirePayloadMap['interaction:requested'];
 			const payload = {
 					id,
 					...(sessionId === undefined ? {} : { sessionId }),

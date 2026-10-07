@@ -1,6 +1,6 @@
 # Haven 命名规范
 
-> 版本: v1.106 | 日期: 2026-10-07
+> 版本: v1.107 | 日期: 2026-10-07
 
 本文档统一 Haven 项目各层的命名规则（变量名、函数名、文件名、crate 名、缩写大小写、跨层边界）。规范以现有代码中的事实模式为基础，新代码必须遵循；存量代码若与规范冲突，逐步迁移对齐。
 
@@ -79,7 +79,7 @@ ToolRun completion lease 的 token 标识被 claim 的 ToolRun 或 completion re
 | 持久会话事件（`SessionEvent`） | `session_events` 中 append-only 的恢复与回滚权威记录 | Memory 持有 event row、sequence 与存储；`TranscriptRecord` 是其版本化 payload，不是第二条日志 |
 | 会话消息（`Message`） | 从已提交 transcript 投影出的持久消息行，不是恢复来源 | UI reducer 的 `SessionMessage` 是独立 renderer shape；`TranscriptProjection` 是从事件流派生的读取视图，含 `canonical_messages` 与 `react_rounds` |
 | 运行事件（`AgentEvent` / `SessionSupervisorEvent`） | 进程内的 Agent 输出或 Supervisor 生命周期通知，不作为 durable transcript | durable 写入仍使用 `SessionEvent`；UI `session:lifecycle` 是 App 投影契约 |
-| 交互请求（`InteractionRequest`） | Agent 内用于 Ask/Confirm/ScheduledConfirm 的状态与继续执行数据；可包含不应发送到 UI 的工具输入和授权 receipt | `InteractionOwner` 只负责进程内 owner routing；`InteractionRequestedEvent` 是 App 的 UI projection，前端 `InteractionOwnerView` 是 camelCase 边界类型 |
+| 交互请求（`InteractionRequest`） | Agent 内用于 Ask/Confirm/ScheduledConfirm 的状态与继续执行数据；可包含不应发送到 UI 的工具输入和授权 receipt | `InteractionOwner` 只负责进程内 owner routing；生成的 `InteractionRequestedEvent` 是 App wire projection，前端 `InteractionRequest` 是经过校验的 camelCase view |
 | 工具实现、定义与清单 | `ToolHandle` 是单个共享可执行实现；Common `ToolDef` 是 provider-neutral 的模型调用定义；LLM `LlmToolDefinition` 是转换后的 `{type, function}` 请求中间形状；`ToolManifest` 是 Tauri/UI 的 identity、policy 与 presentation projection | `ToolDef → LlmToolDefinition → provider adapter wire`；`ToolRegistry` 持有可执行实现；`ToolCatalogSnapshot` / `OperationCatalog` 是模型可见目录投影；`OperationRegistry` 管已安装、deferred 与 session operations。目录可见不等同于授权 |
 
 定时工具运行的 `mode` 只作为行为说明：`tool` 显示“调用工具”，`continue` 显示“继续会话”。运行状态统一显示“待执行 / 运行中 / 已完成 / 失败 / 已取消”；原始枚举值只留在 wire、日志或调试详情中。
