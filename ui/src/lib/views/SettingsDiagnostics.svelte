@@ -8,8 +8,8 @@
 	import SettingsSection from '$lib/SettingsSection.svelte';
 	import { addNotification } from '$lib/notificationStore.ts';
 	import { reportError } from '$lib/errorHandling.ts';
-	import { getPerformanceMetrics } from '$lib/performanceMetrics.ts';
-	import { getLogInfo, readLogTail } from '$lib/diagnosticsCommands.ts';
+	import { readPerformanceMetricsSnapshot } from '$lib/performanceMetrics.ts';
+	import { readLogInfo, readLogTail } from '$lib/diagnosticsCommands.ts';
 	import { withBooleanValue, withStringValue } from '$lib/typedCallbacks.ts';
 	import type { LogConfigInput } from '$lib/contracts/generatedCommands.ts';
 
@@ -44,7 +44,7 @@
 	async function openLogViewer() {
 		logView.loading = true;
 		try {
-			const info = await getLogInfo();
+			const info = await readLogInfo();
 			if (!info?.enabled) {
 				addNotification('文件日志未启用，请先打开文件日志', 'warning', 4000);
 				return;
@@ -65,7 +65,7 @@
 	async function exportPerformanceSnapshot() {
 		performanceMetricsLoading = true;
 		try {
-			const snapshot = await getPerformanceMetrics();
+			const snapshot = await readPerformanceMetricsSnapshot();
 			const blob = new Blob([JSON.stringify(snapshot, null, 2)], {
 				type: 'application/json',
 			});

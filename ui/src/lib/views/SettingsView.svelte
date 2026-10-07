@@ -30,7 +30,7 @@
 	import { registerSettingsLeaveGuard } from '$lib/settingsGuard.ts';
 	import { resolveSettingsSaveAction } from '$lib/settingsSaveAction.ts';
 	import { loadSettings } from '$lib/settingsCommand.ts';
-	import { checkShellAvailable, getApiKeyStatus } from '$lib/diagnosticsCommands.ts';
+	import { checkShellAvailable, readApiKeyStatus } from '$lib/diagnosticsCommands.ts';
 	import ModelSettings from './ModelSettings.svelte';
 	import SettingsBehavior from './SettingsBehavior.svelte';
 	import SettingsAppearance from './SettingsAppearance.svelte';
@@ -957,7 +957,7 @@
 		}
 	}
 	async function refreshApiKeyStatus() {
-		const { providers, ...flags } = await getApiKeyStatus();
+		const { providers, ...flags } = await readApiKeyStatus();
 		keyConfigured = { ...keyConfigured, ...flags };
 		keyConfiguredProviders = { ...providers };
 	}

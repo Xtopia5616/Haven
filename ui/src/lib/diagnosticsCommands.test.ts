@@ -1,9 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
 	checkShellAvailable,
-	getApiKeyStatus,
-	getLogInfo,
-	readPerformanceMetricsSnapshot,
+	readApiKeyStatus,
+	readLogInfo,
+	requestPerformanceMetricsSnapshot,
 	readLogTail,
 } from './diagnosticsCommands.ts';
 import { invoke } from './tauri.ts';
@@ -22,7 +22,7 @@ describe('diagnostics command boundary', () => {
 			.mockResolvedValueOnce({ enabled: true, level: 'debug', path: 'C:/logs/haven.2026-09-26' })
 			.mockResolvedValueOnce({ path: 'C:/logs/haven.2026-09-26', content: 'first\nsecond' });
 
-		await expect(getLogInfo()).resolves.toEqual({
+		await expect(readLogInfo()).resolves.toEqual({
 			enabled: true,
 			level: 'debug',
 			path: 'C:/logs/haven.2026-09-26',
@@ -48,7 +48,7 @@ describe('diagnostics command boundary', () => {
 			} as never);
 
 		await expect(checkShellAvailable({ shell: 'pwsh' })).resolves.toEqual({ available: true });
-		await expect(getApiKeyStatus()).resolves.toEqual({
+		await expect(readApiKeyStatus()).resolves.toEqual({
 			models: { 'model-a': true, 'model-b': false },
 			providers: { cloud: true },
 			stt: false,
@@ -70,8 +70,8 @@ describe('diagnostics command boundary', () => {
 			.mockResolvedValueOnce(snapshot as never)
 			.mockResolvedValueOnce(snapshot as never);
 
-		await expect(readPerformanceMetricsSnapshot(ui)).resolves.toBe(snapshot);
-		await expect(readPerformanceMetricsSnapshot()).resolves.toBe(snapshot);
+		await expect(requestPerformanceMetricsSnapshot(ui)).resolves.toBe(snapshot);
+		await expect(requestPerformanceMetricsSnapshot()).resolves.toBe(snapshot);
 		expect(invoke).toHaveBeenNthCalledWith(1, 'get_performance_metrics', { ui });
 		expect(invoke).toHaveBeenNthCalledWith(2, 'get_performance_metrics', undefined);
 	});
@@ -80,6 +80,6 @@ describe('diagnostics command boundary', () => {
 		const failure = new Error('command failed');
 		vi.mocked(invoke).mockRejectedValueOnce(failure);
 
-		await expect(getLogInfo()).rejects.toBe(failure);
+		await expect(readLogInfo()).rejects.toBe(failure);
 	});
 });

@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
-	getPerformanceMetrics,
+	readPerformanceMetricsSnapshot,
 	registerPerformanceMetricsProvider,
 } from './performanceMetrics.ts';
 import type { UiMetricsSnapshot } from './contracts/commands.ts';
@@ -20,7 +20,7 @@ describe('performance metrics export boundary', () => {
 		vi.mocked(invoke).mockResolvedValue({ counters: {}, ui } as never);
 		const unregister = registerPerformanceMetricsProvider(() => ui);
 
-		await expect(getPerformanceMetrics()).resolves.toEqual({ counters: {}, ui });
+		await expect(readPerformanceMetricsSnapshot()).resolves.toEqual({ counters: {}, ui });
 		expect(invoke).toHaveBeenCalledWith('get_performance_metrics', { ui });
 
 		unregister();

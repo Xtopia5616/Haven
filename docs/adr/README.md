@@ -619,3 +619,4 @@
 - [0628：命名 Tools shell 执行上下文](0628-name-tools-shell-context.md)
 - [0629：统一 UI chat 提交附件类型 owner](0629-unify-chat-submission-attachment-types.md)
 - [0630：命名 UI 状态快照与录音时长 accessor](0630-name-ui-state-snapshot-accessors.md)
+- [0631：统一 UI diagnostics 读取 wrapper 动词](0631-unify-ui-diagnostics-read-verbs.md)

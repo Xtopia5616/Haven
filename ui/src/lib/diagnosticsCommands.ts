@@ -17,7 +17,7 @@ import {
 } from './contracts/settings.ts';
 
 /** Read log metadata using the existing settings response validator. */
-export function getLogInfo(): Promise<LogInfo> {
+export function readLogInfo(): Promise<LogInfo> {
 	return invoke('get_log_info').then(parseLogInfo);
 }
 
@@ -34,12 +34,12 @@ export function checkShellAvailable(
 }
 
 /** Read credential-presence flags only; provider and model identifiers stay dynamic. */
-export function getApiKeyStatus(): Promise<ApiKeyStatus> {
+export function readApiKeyStatus(): Promise<ApiKeyStatus> {
 	return invoke('get_api_key_status').then(parseApiKeyStatus);
 }
 
 /** Read content-free metrics with typed known fields and open diagnostics extensions. */
-export function readPerformanceMetricsSnapshot(
+export function requestPerformanceMetricsSnapshot(
 	ui?: UiMetricsSnapshot,
 ): Promise<PerformanceMetricsSnapshot> {
 	return invoke('get_performance_metrics', ui ? { ui } : undefined).then(

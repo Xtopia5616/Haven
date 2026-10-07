@@ -101,7 +101,7 @@ Assert-Contains (Get-Source 'ui/src/lib/contracts/settings.ts') 'function parseS
 
 $toolsCommands = Get-Source 'ui/src/lib/toolsCommands.ts'
 Assert-Contains $toolsCommands 'invoke\(''list_mcp_tools''\)\.then\(\(value:\s*unknown\)\s*=>\s*validateMcpServerSnapshots\(value\)\)' 'MCP status response uses its runtime validator'
-Assert-Contains (Get-Source 'ui/src/lib/toolManifest.ts') 'function parseToolManifest\(value:\s*unknown\):\s*ToolManifest\s*\|\s*null' 'tool manifest parser accepts unknown'
+Assert-Contains (Get-Source 'ui/src/lib/toolManifest.ts') 'function parseToolManifest\(value:\s*unknown\):\s*ToolManifestView\s*\|\s*null' 'tool manifest parser accepts unknown and returns its renderer view'
 
 $diagnosticsCommands = Get-Source 'ui/src/lib/diagnosticsCommands.ts'
 foreach ($parser in @('parseLogInfo', 'parseLogTail', 'parseShellAvailability', 'parseApiKeyStatus')) {
@@ -143,7 +143,7 @@ Assert-Contains $memoryCommands 'Result\s*<\s*MemoryFactResponse\s*,\s*String\s*
 Assert-Contains $memoryDtos 'pub\s+struct\s+MemoryFactResponse' 'MemoryFactResponse is declared at the App IPC boundary'
 Assert-Contains $memoryDtos 'pub\s+struct\s+MemoryFactSourceRef' 'MemoryFactSourceRef is declared at the App IPC boundary'
 Assert-Contains $memoryUiContracts 'MemoryFactResponse\s+as\s+GeneratedMemoryFactResponse' 'UI Fact alias imports its generated Rust response type'
-Assert-Contains $memoryUiContracts 'MemoryFactSourceRef\s+as\s+GeneratedMemoryFactSourceRef' 'UI FactSourceRef alias imports its generated Rust response type'
+Assert-NotContains $memoryUiContracts 'MemoryFactSourceRef\s+as\s+GeneratedMemoryFactSourceRef' 'UI does not reintroduce the unused FactSourceRef alias'
 Assert-NotContains $memoryCommands 'Result\s*<\s*Vec\s*<\s*Fact\s*>' 'repository Fact must not be returned as the Tauri list_facts wire type'
 
 $toolsView = Get-Source 'ui/src/lib/views/ToolsView.svelte'
