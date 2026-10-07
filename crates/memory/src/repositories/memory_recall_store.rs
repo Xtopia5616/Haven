@@ -127,7 +127,8 @@ mod tests {
             "user likes Rust",
         )
         .unwrap();
-        // Simulate a legacy vector row predating the embedding write filter.
+        // Include a sensitive embedding row to prove retrieval enforces the
+        // visibility filter even when such a row is already present.
         db.save_embedding(
             entity_kind::FACT,
             &hidden.id,

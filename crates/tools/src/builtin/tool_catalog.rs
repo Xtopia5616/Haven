@@ -102,8 +102,8 @@ impl CatalogSource {
     fn parse(value: Option<&str>) -> anyhow::Result<Self> {
         match value.unwrap_or("all").trim().to_ascii_lowercase().as_str() {
             "all" => Ok(Self::All),
-            "builtin" | "builtins" => Ok(Self::Builtin),
-            "skill" | "skills" => Ok(Self::Skill),
+            "builtin" => Ok(Self::Builtin),
+            "skill" => Ok(Self::Skill),
             "mcp" => Ok(Self::Mcp),
             other => {
                 anyhow::bail!("source must be one of all, builtin, skill, or mcp; got '{other}'")
@@ -1088,15 +1088,25 @@ mod tests {
     use crate::builtin::notify::NotifyTool;
 
     #[test]
-    fn source_aliases_are_normalized() {
+    fn source_filter_accepts_only_canonical_names() {
         assert_eq!(
-            CatalogSource::parse(Some("builtins")).unwrap(),
+            CatalogSource::parse(Some("all")).unwrap(),
+            CatalogSource::All
+        );
+        assert_eq!(
+            CatalogSource::parse(Some("builtin")).unwrap(),
             CatalogSource::Builtin
         );
         assert_eq!(
-            CatalogSource::parse(Some("skills")).unwrap(),
+            CatalogSource::parse(Some("skill")).unwrap(),
             CatalogSource::Skill
         );
+        assert_eq!(
+            CatalogSource::parse(Some("mcp")).unwrap(),
+            CatalogSource::Mcp
+        );
+        assert!(CatalogSource::parse(Some("builtins")).is_err());
+        assert!(CatalogSource::parse(Some("skills")).is_err());
         assert!(CatalogSource::parse(Some("unknown")).is_err());
     }
 

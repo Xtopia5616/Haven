@@ -33,7 +33,7 @@ interface ResumeMessage {
 	steering?: boolean;
 }
 
-function historicalToolOutcome(status: string | null | undefined): string | null {
+function persistedToolOutcome(status: string | null | undefined): string | null {
 	return status === 'failed' || status === 'cancelled' || status === 'unknown' ? status : null;
 }
 
@@ -192,8 +192,8 @@ export function buildResumeMessages(data: SessionResumeInput): ResumeMessage[] {
 						...(step?.tool_input != null && step.tool_input !== ''
 							? { toolArgs: step.tool_input }
 							: {}),
-						...(historicalToolOutcome(step?.status)
-							? { outcome: historicalToolOutcome(step?.status) }
+						...(persistedToolOutcome(step?.status)
+							? { outcome: persistedToolOutcome(step?.status) }
 							: {}),
 					}
 				: {}),
@@ -280,8 +280,8 @@ export function buildResumeMessages(data: SessionResumeInput): ResumeMessage[] {
 			...(step.tool_input != null && step.tool_input !== ''
 				? { toolArgs: step.tool_input }
 				: {}),
-			...(historicalToolOutcome(step.status)
-				? { outcome: historicalToolOutcome(step.status) }
+			...(persistedToolOutcome(step.status)
+				? { outcome: persistedToolOutcome(step.status) }
 				: {}),
 			voice: false,
 			time: formatMessageTime(step.created_at),

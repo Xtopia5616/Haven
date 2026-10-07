@@ -3,7 +3,12 @@ import { capabilityOptions, emptyModel, requestPolicyOptions } from './modelRole
 
 describe('model routing metadata', () => {
 	it('creates an unassigned named model without fixed role slots', () => {
-		expect(emptyModel('local')).toMatchObject({ id: 'local', provider: '', model: '', capabilities: [] });
+		expect(emptyModel('local')).toMatchObject({
+			id: 'local',
+			providerName: '',
+			model: '',
+			capabilities: [],
+		});
 	});
 
 	it('keeps request kinds and capabilities as separate option sets', () => {

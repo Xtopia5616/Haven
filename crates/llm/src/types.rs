@@ -13,26 +13,19 @@ pub use haven_common::types::CacheAccounting;
 pub struct CacheDiagnostics {
     /// `off`, `key`, `split`, `implicit`, or `explicit` describes the effective
     /// wire strategy.
-    #[serde(default)]
     pub mode: String,
     /// Configured provider identity for the request, independent of its wire
     /// protocol adapter (for example a named OpenAI-compatible gateway).
-    #[serde(default)]
     pub provider: String,
-    #[serde(default)]
     pub key_requested: bool,
-    #[serde(default)]
     pub system_split: bool,
     /// True when an optional cache extension was rejected and retried safely.
-    #[serde(default)]
     pub downgraded: bool,
     /// `disabled`, `unknown`, `hit`, or `miss`; no provider-usage response is
     /// deliberately kept as `unknown`, never guessed as a cache miss.
-    #[serde(default)]
     pub outcome: String,
     /// `provider` means a cache usage field was present, including an
     /// explicit zero. `unavailable` means the response omitted cache usage.
-    #[serde(default = "cache_usage_unavailable")]
     pub usage_source: String,
 }
 
@@ -931,13 +924,16 @@ mod tests {
     }
 
     #[test]
-    fn old_cache_diagnostics_deserialize_with_missing_metadata() {
-        let diagnostics: CacheDiagnostics = serde_json::from_str(
+    fn cache_diagnostics_requires_the_current_metadata_shape() {
+        let current = CacheDiagnostics::for_request(true, false);
+        let encoded = serde_json::to_value(&current).unwrap();
+        let decoded: CacheDiagnostics = serde_json::from_value(encoded).unwrap();
+        assert_eq!(decoded, current);
+
+        let old = serde_json::from_str::<CacheDiagnostics>(
             r#"{"mode":"key","key_requested":true,"system_split":false,"downgraded":false,"outcome":"unknown"}"#,
-        )
-        .unwrap();
-        assert_eq!(diagnostics.provider, "");
-        assert_eq!(diagnostics.usage_source, "unavailable");
+        );
+        assert!(old.is_err(), "partial old diagnostics must be rejected");
     }
     use std::time::Duration;
 

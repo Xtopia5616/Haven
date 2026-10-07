@@ -95,7 +95,7 @@
 		let index = 1;
 		while (modelFor(`${base}-${index}`)) index += 1;
 		const model = emptyModel(`${base}-${index}`);
-		model.provider = providerName;
+		model.providerName = providerName;
 		llmConfig.models.push(model);
 		return model;
 	}
@@ -107,10 +107,10 @@
 	}
 	function setModel(model: ModelDraft, modelId: string) {
 		model.model = modelId;
-		discovery.applyDiscoveredModelMeta(model, model.provider, modelId, { overwrite: true });
+		discovery.applyDiscoveredModelMeta(model, model.providerName, modelId, { overwrite: true });
 	}
 	function setModelProvider(model: ModelDraft, providerName: string) {
-		model.provider = providerName;
+		model.providerName = providerName;
 		model.model = '';
 		model.context_window = null;
 		model.cost_per_1k_input_tokens = null;
@@ -159,7 +159,7 @@
 	}
 	function modelLabel(model: ModelDraft) {
 		const serviceModel = model.model || '尚未选择服务模型';
-		return `${model.id} · ${model.provider || '未绑定 Provider'} / ${serviceModel}`;
+		return `${model.id} · ${model.providerName || '未绑定 Provider'} / ${serviceModel}`;
 	}
 	function modelOptionsForPolicy(policy: RequestPolicyDraft) {
 		const capability = requestCapability[policy.request];
@@ -356,7 +356,7 @@
 			llmConfig.providers[idx] = provider;
 			if (oldName !== name) {
 				for (const model of llmConfig.models)
-					if (model.provider === oldName) model.provider = name;
+					if (model.providerName === oldName) model.providerName = name;
 				if (stt?.provider === oldName) stt.provider = name;
 				if (tts?.provider === oldName) tts.provider = name;
 				if (imageGen?.provider === oldName) imageGen.provider = name;
@@ -374,7 +374,7 @@
 	function deleteProvider(idx: number) {
 		const provider = llmConfig.providers[idx];
 		if (!provider) return;
-		if (llmConfig.models.some((model) => model.provider === provider.name)) {
+		if (llmConfig.models.some((model) => model.providerName === provider.name)) {
 			addNotification(
 				`请先移除 Provider「${provider.name}」下的模型，再删除该 Provider`,
 				'error',

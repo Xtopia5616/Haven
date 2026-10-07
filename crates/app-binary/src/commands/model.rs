@@ -38,7 +38,7 @@ fn set_request_route(
     let model = llm
         .model(model_config_id)
         .ok_or_else(|| format!("unknown model configuration: {model_config_id}"))?;
-    if !model.is_assigned() || llm.provider(&model.provider).is_none() {
+    if !model.is_assigned() || llm.provider_config_by_name(&model.provider_name).is_none() {
         return Err(format!(
             "model configuration is incomplete: {model_config_id}"
         ));
@@ -64,7 +64,7 @@ fn validate_builtin_search(config: &AppConfig, selector: &str) -> Result<(), Str
     let style = llm
         .providers
         .iter()
-        .find(|provider| provider.name == slot.provider)
+        .find(|provider| provider.name == slot.provider_name)
         .map(provider_config_wire_style)
         .unwrap_or("openai-chat");
     if !haven_llm::supports_builtin_web_search(style) {
@@ -198,12 +198,12 @@ fn resolve_discovery_auth(
     cfg: &AppConfig,
     base_url: &str,
     api_key: &str,
-    provider: Option<&str>,
+    provider_name: Option<&str>,
     auth_header_name: Option<&str>,
     auth_header_prefix: Option<&str>,
 ) -> Option<ResolvedDiscoveryAuth> {
     let requested = normalize_endpoint_url(base_url);
-    let provider_cfg = provider.and_then(|name| cfg.llm.provider(name));
+    let provider_cfg = provider_name.and_then(|name| cfg.llm.provider_config_by_name(name));
 
     if !api_key.is_empty() {
         let scheme = if let Some(header_name) = auth_header_name.filter(|name| !name.is_empty()) {
@@ -279,7 +279,7 @@ fn api_key_status(cfg: &AppConfig) -> ApiKeyStatus {
         let configured = model.is_assigned()
             && cfg
                 .llm
-                .provider(&model.provider)
+                .provider_config_by_name(&model.provider_name)
                 .is_some_and(haven_common::config::provider_credentials_ready);
         models.insert(model.id.clone(), configured);
     }
@@ -338,7 +338,7 @@ fn stt_auth_scheme(provider: &str) -> AuthHeaderScheme {
 /// key). The auth scheme follows the provider's wire protocol (Anthropic /
 /// Gemini / custom auth header), not just OpenAI-style Bearer.
 ///
-/// When `api_key` is empty (masked) and `provider` names a configured provider
+/// When `api_key` is empty (masked) and `provider_name` names a configured provider
 /// whose base URL matches `base_url`, the stored key is used — never sent to
 /// an arbitrary renderer-supplied host. `skip_auth` is reserved for explicit
 /// keyless provider presets. `role = "transcription"` resolves
@@ -352,7 +352,7 @@ fn stt_auth_scheme(provider: &str) -> AuthHeaderScheme {
 pub async fn discover_models(
     base_url: String,
     api_key: String,
-    provider: Option<String>,
+    provider_name: Option<String>,
     role: Option<String>,
     auth_header_name: Option<String>,
     auth_header_prefix: Option<String>,
@@ -379,8 +379,8 @@ pub async fn discover_models(
     // return the static catalog so the model picker can still assign a model.
     // The selected STT value is always a name from `llm.providers`; unsaved
     // discovery can still use the requested URL host below.
-    if let Some(name) = provider.as_deref().filter(|n| !n.is_empty())
-        && let Some(p) = cfg.llm.provider(name)
+    if let Some(name) = provider_name.as_deref().filter(|n| !n.is_empty())
+        && let Some(p) = cfg.llm.provider_config_by_name(name)
         && let Some(list) = stt_only_catalog(p.api_style.as_deref())
     {
         return Ok(list);
@@ -400,20 +400,20 @@ pub async fn discover_models(
         let stt = &cfg.media.stt;
         let requested = normalize_endpoint_url(&base_url);
         if !api_key.is_empty() {
-            let scheme_name = provider
+            let scheme_name = provider_name
                 .as_deref()
                 .filter(|n| !n.is_empty())
                 .unwrap_or(stt.provider.as_str());
             let backend = cfg
                 .llm
-                .provider(scheme_name)
+                .provider_config_by_name(scheme_name)
                 .map(|p| p.provider.as_str())
                 .unwrap_or(scheme_name);
             Some(ResolvedDiscoveryAuth {
                 api_key: api_key.clone(),
                 auth_header: Some(stt_auth_scheme(backend).header_for_key(&api_key)),
             })
-        } else if let Some(name) = provider
+        } else if let Some(name) = provider_name
             .as_deref()
             .filter(|n| !n.is_empty())
             .or(Some(stt.provider.as_str()))
@@ -430,7 +430,7 @@ pub async fn discover_models(
                         | "assemblyai"
                 )
             })
-            && let Some(p) = cfg.llm.provider(name)
+            && let Some(p) = cfg.llm.provider_config_by_name(name)
             && normalize_endpoint_url(&p.base_url) == requested
         {
             Some(ResolvedDiscoveryAuth {
@@ -445,7 +445,7 @@ pub async fn discover_models(
             &cfg,
             &base_url,
             &api_key,
-            provider.as_deref(),
+            provider_name.as_deref(),
             auth_header_name.as_deref(),
             auth_header_prefix.as_deref(),
         )
@@ -459,7 +459,7 @@ pub async fn discover_models(
     let mut reg = ModelRegistry::new();
     tracing::info!(
         endpoint_host = %haven_llm::endpoint_host(&base_url),
-        provider = provider.as_deref().unwrap_or("unknown"),
+        provider_name = provider_name.as_deref().unwrap_or("unknown"),
         "discovering models"
     );
     let models = reg
@@ -474,7 +474,7 @@ pub async fn discover_models(
         .map_err(|e| {
             tracing::warn!(
                 endpoint_host = %haven_llm::endpoint_host(&base_url),
-                provider = provider.as_deref().unwrap_or("unknown"),
+                provider_name = provider_name.as_deref().unwrap_or("unknown"),
                 reason = e.connection_failure_reason().as_str(),
                 error = %haven_common::error::sanitize_error_text(&e.to_string()),
                 "model discovery failed"
@@ -483,7 +483,7 @@ pub async fn discover_models(
         })?;
     tracing::info!(
         endpoint_host = %haven_llm::endpoint_host(&base_url),
-        provider = provider.as_deref().unwrap_or("unknown"),
+        provider_name = provider_name.as_deref().unwrap_or("unknown"),
         model_count = models.len(),
         "model discovery completed"
     );
@@ -856,14 +856,14 @@ mod tests {
         llm.models.extend([
             ModelConfig {
                 id: "chat-primary".into(),
-                provider: "primary".into(),
+                provider_name: "primary".into(),
                 model: "provider/model-a".into(),
                 capabilities: vec![haven_common::config::Capability::Chat],
                 ..Default::default()
             },
             ModelConfig {
                 id: "chat-alternate".into(),
-                provider: "primary".into(),
+                provider_name: "primary".into(),
                 model: "provider/model-b".into(),
                 capabilities: vec![haven_common::config::Capability::Chat],
                 ..Default::default()
@@ -889,7 +889,7 @@ mod tests {
             cfg_with_providers(vec![provider("primary", "api-key", Some("openai-chat"))]).llm;
         llm.models.push(ModelConfig {
             id: "embedding-only".into(),
-            provider: "primary".into(),
+            provider_name: "primary".into(),
             model: "provider/embedding".into(),
             capabilities: vec![haven_common::config::Capability::Embedding],
             ..Default::default()
@@ -916,7 +916,7 @@ mod tests {
         )]);
         cfg.llm.models.push(ModelConfig {
             id: "chat-model".into(),
-            provider: "chat-provider".into(),
+            provider_name: "chat-provider".into(),
             ..Default::default()
         });
         cfg.llm.request_policies.push(RequestPolicy {

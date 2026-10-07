@@ -591,7 +591,7 @@ mod tests {
         config.llm.set_model(
             "default_model",
             ModelConfig {
-                provider: "openai".into(),
+                provider_name: "openai".into(),
                 model: "old-model".into(),
                 ..Default::default()
             },

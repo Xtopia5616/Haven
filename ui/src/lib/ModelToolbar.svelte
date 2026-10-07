@@ -47,7 +47,7 @@
 		const query = modelFilter.trim().toLocaleLowerCase();
 		if (!query) return modelOptions;
 		return modelOptions.filter((model) =>
-			`${model.name} ${model.provider} ${model.model}`.toLocaleLowerCase().includes(query),
+			`${model.name} ${model.providerName} ${model.model}`.toLocaleLowerCase().includes(query),
 		);
 	});
 
@@ -121,7 +121,7 @@
 							{#snippet children()}
 								<span class="model-item-main">
 									<span class="model-item-name">{model.name}</span>
-									<span class="model-item-provider">{model.provider} / {model.model}</span>
+					<span class="model-item-provider">{model.providerName} / {model.model}</span>
 								</span>
 								{#if model.id === currentModelId}
 									<Icon name="check" size={16} />

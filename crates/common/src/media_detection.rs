@@ -42,7 +42,6 @@ impl DetectedMediaKind {
 /// Result of the canonical content/filename probe.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MediaProbe {
-    #[serde(rename = "media_type")]
     pub media_kind: DetectedMediaKind,
     pub mime_type: String,
 }
@@ -381,6 +380,23 @@ mod tests {
         assert_eq!(
             probe_media(b"\x00\x00\x00\x18ftypisom", "x.mp4").media_kind,
             DetectedMediaKind::Video
+        );
+    }
+
+    #[test]
+    fn media_probe_serde_uses_the_detected_kind_name() {
+        let probe = MediaProbe::new(DetectedMediaKind::Image, "image/png");
+        let serialized = serde_json::to_value(&probe).unwrap();
+        assert_eq!(serialized["media_kind"], "image");
+        assert_eq!(serialized["mime_type"], "image/png");
+        assert!(serialized.get("media_type").is_none());
+
+        assert!(
+            serde_json::from_value::<MediaProbe>(serde_json::json!({
+                "media_type": "image",
+                "mime_type": "image/png"
+            }))
+            .is_err()
         );
     }
 

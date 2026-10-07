@@ -55,11 +55,11 @@
 	}: Props = $props();
 
 	function modelsForProvider(providerName: string) {
-		return models.filter((model) => model.provider === providerName);
+		return models.filter((model) => model.providerName === providerName);
 	}
 	const unboundModels = $derived.by(() => {
 		const providerNames = new Set(providers.map((provider) => provider.name));
-		return models.filter((model) => !providerNames.has(model.provider));
+		return models.filter((model) => !providerNames.has(model.providerName));
 	});
 </script>
 
@@ -209,9 +209,9 @@
 				<ModelConfigCard
 					{model}
 					{providers}
-					options={modelOptions(model.provider)}
-					loading={!!modelFetching[model.provider]}
-					hasDiscoveredModels={Array.isArray(modelsByProvider[model.provider])}
+					options={modelOptions(model.providerName)}
+					loading={!!modelFetching[model.providerName]}
+					hasDiscoveredModels={Array.isArray(modelsByProvider[model.providerName])}
 					{onRefreshProvider}
 					{onRenameModel}
 					{onSetModel}

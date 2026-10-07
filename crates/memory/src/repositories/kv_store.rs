@@ -56,19 +56,6 @@ fn encode_fact_extraction_marker(state: &FactExtractionMarkerState) -> String {
 fn decode_fact_extraction_marker(value: &str) -> anyhow::Result<FactExtractionMarkerState> {
     let parts = value.split(':').collect::<Vec<_>>();
     match parts.as_slice() {
-        ["0"] => Ok(FactExtractionMarkerState {
-            event_sequence: 0,
-            bypass_throttle: false,
-            attempt: 0,
-            next_attempt_at_ms: 0,
-        }),
-        ["1"] => Ok(FactExtractionMarkerState {
-            event_sequence: 0,
-            bypass_throttle: true,
-            attempt: 0,
-            next_attempt_at_ms: 0,
-        }),
-        [sequence, bypass] => decode_fact_marker_parts(sequence, bypass, "0", "0"),
         [sequence, bypass, attempt, due] => {
             decode_fact_marker_parts(sequence, bypass, attempt, due)
         }
@@ -115,29 +102,24 @@ fn encode_summary_extraction_marker(
 }
 
 fn decode_summary_extraction_marker(value: &str) -> anyhow::Result<DecodedSummaryExtractionMarker> {
-    if let Some((session_id, retry)) = value.rsplit_once(':')
-        && let Some((session_id, attempt)) = session_id.rsplit_once(':')
-    {
-        let attempt = attempt.parse::<u32>()?;
-        let next_attempt_at_ms = retry.parse::<i64>()?;
-        anyhow::ensure!(
-            !session_id.trim().is_empty() && next_attempt_at_ms >= 0,
-            "invalid summary extraction marker"
-        );
-        return Ok(DecodedSummaryExtractionMarker {
-            session_id: session_id.to_owned(),
-            attempt,
-            next_attempt_at_ms,
-        });
-    }
+    let mut parts = value.split(':');
+    let session_id = parts.next().unwrap_or_default();
+    let attempt = parts
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("invalid summary extraction marker"))?
+        .parse::<u32>()?;
+    let next_attempt_at_ms = parts
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("invalid summary extraction marker"))?
+        .parse::<i64>()?;
     anyhow::ensure!(
-        !value.trim().is_empty(),
+        !session_id.trim().is_empty() && parts.next().is_none() && next_attempt_at_ms >= 0,
         "invalid summary extraction marker"
     );
     Ok(DecodedSummaryExtractionMarker {
-        session_id: value.to_owned(),
-        attempt: 0,
-        next_attempt_at_ms: 0,
+        session_id: session_id.to_owned(),
+        attempt,
+        next_attempt_at_ms,
     })
 }
 
@@ -857,7 +839,10 @@ fn parse_memory_event_cursor(value: Option<&str>) -> anyhow::Result<i64> {
 
 #[cfg(test)]
 mod tests {
-    use super::MAX_MEMORY_OUTBOX_PAGE_SIZE;
+    use super::{
+        MAX_MEMORY_OUTBOX_PAGE_SIZE, decode_fact_extraction_marker,
+        decode_summary_extraction_marker,
+    };
     use crate::db::Database;
     use haven_common::types::new_id;
 
@@ -980,7 +965,8 @@ mod tests {
             .unwrap();
         db.set_kv("fact_extraction_episode_done.gone.msg-11", "gone")
             .unwrap();
-        db.set_kv("fact_extraction_pending.gone", "1").unwrap();
+        db.set_kv("fact_extraction_pending.gone", "0:1:0:0")
+            .unwrap();
         db.set_kv("fact_extraction_pending_poison.gone", "bad fact marker")
             .unwrap();
         db.set_kv(
@@ -1099,8 +1085,11 @@ mod tests {
             &session.id,
         )
         .unwrap();
-        db.set_kv(&format!("fact_extraction_pending.{}", session.id), "1")
-            .unwrap();
+        db.set_kv(
+            &format!("fact_extraction_pending.{}", session.id),
+            "0:1:0:0",
+        )
+        .unwrap();
         db.add_episode_with_pending_extraction(
             &session.id,
             "A durable summary with an extraction marker for session cleanup.",
@@ -1194,29 +1183,18 @@ mod tests {
     }
 
     #[test]
-    fn legacy_boolean_fact_marker_is_readable_and_upgraded_on_enqueue() {
-        let db = test_db();
-        let session = db.create_session("t-legacy-pending").unwrap();
-        db.set_kv(&format!("fact_extraction_pending.{}", session.id), "1")
-            .unwrap();
-
-        assert_eq!(
-            db.pending_fact_extractions().unwrap(),
-            vec![(session.id.clone(), true, 0)]
-        );
-        db.enqueue_fact_extraction(&session.id, false, 8).unwrap();
-        assert_eq!(
-            db.pending_fact_extractions().unwrap(),
-            vec![(session.id.clone(), true, 8)]
-        );
-        assert!(
-            !db.clear_pending_fact_extraction_if_current(&session.id, 0, true)
-                .unwrap()
-        );
-        assert!(
-            db.clear_pending_fact_extraction_if_current(&session.id, 8, true)
-                .unwrap()
-        );
+    fn fact_extraction_marker_requires_all_current_fields() {
+        for old_format in ["0", "1", "8:1"] {
+            assert!(
+                decode_fact_extraction_marker(old_format).is_err(),
+                "old marker format {old_format:?} must be rejected"
+            );
+        }
+        let current = decode_fact_extraction_marker("8:1:2:5000").unwrap();
+        assert_eq!(current.event_sequence, 8);
+        assert!(current.bypass_throttle);
+        assert_eq!(current.attempt, 2);
+        assert_eq!(current.next_attempt_at_ms, 5000);
     }
 
     #[test]
@@ -1378,26 +1356,12 @@ mod tests {
     }
 
     #[test]
-    fn legacy_summary_marker_is_read_as_immediately_runnable() {
-        let db = test_db();
-        let session = db.create_session("legacy summary marker").unwrap();
-        let key = format!(
-            "fact_extraction_episode_pending.{}.{}",
-            session.id,
-            new_id("msg")
-        );
-        db.set_kv(&key, &session.id).unwrap();
-
-        let high_water = db.pending_summary_extraction_high_water().unwrap().unwrap();
-        let marker = db
-            .pending_summary_extractions_page(None, &high_water, 64)
-            .unwrap()
-            .remove(0);
-
-        assert_eq!(marker.value, session.id);
-        let state = marker.state.unwrap();
-        assert_eq!(state.attempt, 0);
-        assert_eq!(state.next_attempt_at_ms, 0);
+    fn summary_extraction_marker_requires_attempt_and_deadline() {
+        assert!(decode_summary_extraction_marker("ses-123").is_err());
+        let current = decode_summary_extraction_marker("ses-123:2:5000").unwrap();
+        assert_eq!(current.session_id, "ses-123");
+        assert_eq!(current.attempt, 2);
+        assert_eq!(current.next_attempt_at_ms, 5000);
     }
 
     #[test]

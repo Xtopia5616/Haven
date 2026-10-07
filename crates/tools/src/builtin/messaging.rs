@@ -1456,9 +1456,9 @@ mod tests {
         v.as_object_mut()
             .unwrap()
             .insert("operation".into(), json!(operation));
-        // Legacy round-trip tests exercise the one-shot receipt behavior
-        // explicitly. New tests that omit `ack` use a raw operation object to
-        // verify the safer default.
+        // One-shot receipt round trips request acknowledgement explicitly.
+        // Tests that omit `ack` use a raw operation object to verify the
+        // safer default.
         if operation == "inbox" && v.get("ack").is_none() {
             v.as_object_mut().unwrap().insert("ack".into(), json!(true));
         }

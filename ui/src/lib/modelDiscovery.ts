@@ -87,11 +87,11 @@ export function createModelDiscovery(context: ModelDiscoveryContext) {
 	function backfillModelMetaFromDiscovery() {
 		const fills: Array<Record<string, unknown>> = [];
 		for (const slot of context.getModels()) {
-			if (!slot?.provider || !slot?.model) continue;
+			if (!slot?.providerName || !slot?.model) continue;
 			const wrote = applyDiscoveredModelMeta(
 				slot,
 				context.getDiscoveredModels(),
-				slot.provider,
+				slot.providerName,
 				slot.model,
 			);
 			if (Object.keys(wrote).length) fills.push({ id: slot.id, ...wrote });
@@ -112,7 +112,7 @@ export function createModelDiscovery(context: ModelDiscoveryContext) {
 			const list = await discoverModels({
 				baseUrl: provider.base_url,
 				apiKey: provider.api_key || '',
-				provider: providerName,
+				providerName,
 				...(auth?.authHeaderName ? { authHeaderName: auth.authHeaderName } : {}),
 				...(auth?.authHeaderPrefix !== undefined
 					? { authHeaderPrefix: auth.authHeaderPrefix }

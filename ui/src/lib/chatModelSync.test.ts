@@ -61,7 +61,7 @@ describe('chat model route sync', () => {
 				models: [
 					{
 						id: 'chat-profile',
-						provider: 'cloud',
+						provider_name: 'cloud',
 						model: 'gpt-5',
 						capabilities: ['chat'],
 						reasoning_effort: 'high',
@@ -69,19 +69,19 @@ describe('chat model route sync', () => {
 					},
 					{
 						id: 'local-chat',
-						provider: 'local',
+						provider_name: 'local',
 						model: 'llama3',
 						capabilities: ['chat'],
 					},
 					{
 						id: 'fast-only',
-						provider: 'cloud',
+						provider_name: 'cloud',
 						model: 'gpt-5-mini',
 						capabilities: ['fast_chat'],
 					},
 					{
 						id: 'incomplete-chat',
-						provider: 'cloud',
+						provider_name: 'cloud',
 						model: '',
 						capabilities: ['chat'],
 					},
@@ -93,7 +93,7 @@ describe('chat model route sync', () => {
 			{
 				id: 'chat-profile',
 				name: 'chat-profile',
-				provider: 'cloud',
+				providerName: 'cloud',
 				model: 'gpt-5',
 				reasoningEffort: 'high',
 				webSearch: 'auto',
@@ -103,7 +103,7 @@ describe('chat model route sync', () => {
 			{
 				id: 'local-chat',
 				name: 'local-chat',
-				provider: 'local',
+				providerName: 'local',
 				model: 'llama3',
 				reasoningEffort: '',
 				webSearch: 'off',
@@ -130,7 +130,7 @@ describe('chat model route sync', () => {
 				models: [
 					{
 						id: 'chat-profile',
-						provider: 'cloud',
+						provider_name: 'cloud',
 						model: 'gpt-5',
 						capabilities: ['chat'],
 					},
@@ -154,7 +154,7 @@ describe('chat model route sync', () => {
 				models: [
 					{
 						id: 'chat-profile',
-						provider: 'cloud',
+						provider_name: 'cloud',
 						model: 'gpt-5',
 						capabilities: ['chat'],
 						web_search: 'always',
@@ -179,7 +179,7 @@ describe('chat model route sync', () => {
 				models: [
 					{
 						id: 'chat-profile',
-						provider: 'gemini',
+						provider_name: 'gemini',
 						model: 'gemini-2.5-pro',
 						capabilities: ['chat'],
 						web_search: 'always',

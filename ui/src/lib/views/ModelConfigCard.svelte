@@ -54,9 +54,9 @@
 		...providers.map((provider) => ({ value: provider.name, label: provider.name })),
 	]);
 	const needsProviderBinding = $derived(
-		!providers.some((provider) => provider.name === model.provider),
+		!providers.some((provider) => provider.name === model.providerName),
 	);
-	const assigned = $derived(!!model.provider && !!model.model && !needsProviderBinding);
+	const assigned = $derived(!!model.providerName && !!model.model && !needsProviderBinding);
 	const configuredCapabilities = $derived(
 		capabilityOptions.filter((item) => (model.capabilities || []).includes(item.value)),
 	);
@@ -72,11 +72,11 @@
 						<strong class="model-config-id">{model.id}</strong>
 						<span class="model-provider-name">
 							{#if needsProviderBinding}
-								{model.provider
-									? `Provider 不存在：${model.provider}`
+								{model.providerName
+									? `Provider 不存在：${model.providerName}`
 									: '尚未绑定 Provider'}
 							{:else}
-								{model.provider} · {model.model || '尚未选择服务模型'}
+								{model.providerName} · {model.model || '尚未选择服务模型'}
 							{/if}
 						</span>
 					</span>
@@ -113,7 +113,7 @@
 							<label class="field-label" for="{fieldId}-provider">Provider</label>
 							<MaterialSelect
 								id="{fieldId}-provider"
-								value={model.provider || ''}
+								value={model.providerName || ''}
 								options={providerOptions}
 								ariaLabel={`为模型 ${model.id} 选择 Provider`}
 								onChange={withStringValue((value) =>
@@ -132,18 +132,18 @@
 									{loading}
 									onChange={withStringValue((value) => onSetModel(model, value))}
 									onFocus={() => {
-										if (model.provider && !hasDiscoveredModels)
-											onRefreshProvider(model.provider);
+										if (model.providerName && !hasDiscoveredModels)
+											onRefreshProvider(model.providerName);
 									}}
 								/>
 								<MaterialIconButton
 									icon="refresh"
-									label={`刷新 ${model.provider} 的模型目录`}
+									label={`刷新 ${model.providerName} 的模型目录`}
 									title="刷新模型目录"
 									size="dense"
 									ariaBusy={loading}
-									disabled={!model.provider || loading}
-									onclick={() => onRefreshProvider(model.provider)}
+									disabled={!model.providerName || loading}
+									onclick={() => onRefreshProvider(model.providerName)}
 								/>
 							</div>
 						</div>

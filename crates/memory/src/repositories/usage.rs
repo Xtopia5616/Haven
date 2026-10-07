@@ -1528,7 +1528,7 @@ mod tests {
     }
 
     #[test]
-    fn session_usage_read_clamps_legacy_values_above_u32_max() {
+    fn session_usage_read_saturates_values_above_u32_max() {
         let db = test_db();
         let session = db.create_session("hello").unwrap();
         db.persist_llm_call_and_refresh_session_usage(
@@ -1547,11 +1547,11 @@ mod tests {
         )
         .unwrap();
 
-        let legacy_count = i64::from(u32::MAX) + 1;
+        let out_of_range_count = i64::from(u32::MAX) + 1;
         let conn = db.conn();
         conn.execute(
             "UPDATE session_usage SET prompt_tokens = ?2, total_tokens = ?2 WHERE session_id = ?1",
-            rusqlite::params![session.id, legacy_count],
+            rusqlite::params![session.id, out_of_range_count],
         )
         .unwrap();
         drop(conn);

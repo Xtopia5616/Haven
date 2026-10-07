@@ -62,7 +62,7 @@ describe('SettingsView diagnostics export', () => {
 				models: [
 					{
 						id: 'chat-slot',
-						provider: 'primary',
+						provider_name: 'primary',
 						model: 'before-switch',
 						capabilities: ['chat'],
 					},
@@ -130,7 +130,7 @@ describe('SettingsView diagnostics export', () => {
 				models: [
 					{
 						id: 'chat-slot',
-						provider: 'primary',
+						provider_name: 'primary',
 						model: 'gpt-test',
 						capabilities: ['chat'],
 					},

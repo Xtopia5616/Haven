@@ -271,7 +271,7 @@ impl Database {
         // rollback's `delete_messages_after` deletes with `created_at > ?`
         // and would otherwise fail to discard the later message.
         let now = now_rfc3339_millis();
-        let created_at = match self.get_last_message_created_at(session_id) {
+        let created_at = match self.get_last_message_created_at_best_effort(session_id) {
             Some(last) if last >= now => Self::bump_millis(&last),
             _ => now,
         };
@@ -586,18 +586,17 @@ impl Database {
         Ok(())
     }
 
-    /// Return the `created_at` of the most recent message in a session, or
-    /// `None` if the session has no messages. Used by rollback to record the
-    /// high-water mark at branch-point creation time.
-    pub fn get_last_message_created_at(&self, session_id: &str) -> Option<String> {
+    /// Return the most recent message timestamp when the read succeeds. A
+    /// database read failure is treated as unavailable; use the strict
+    /// variant when a missing cutoff could affect recovery correctness.
+    pub fn get_last_message_created_at_best_effort(&self, session_id: &str) -> Option<String> {
         self.try_get_last_message_created_at(session_id)
             .ok()
             .flatten()
     }
 
-    /// Strict variant for recovery boundaries. Unlike the historical helper,
-    /// this preserves SQLite read errors so callers never turn an unknown
-    /// branch cutoff into a valid-looking `NULL` cutoff.
+    /// Return the most recent message timestamp and preserve SQLite read
+    /// errors so recovery callers never turn an unknown cutoff into `NULL`.
     pub fn try_get_last_message_created_at(
         &self,
         session_id: &str,
@@ -1139,14 +1138,14 @@ mod tests {
     }
 
     #[test]
-    fn get_last_message_created_at_returns_latest() {
+    fn get_last_message_created_at_best_effort_returns_latest() {
         let db = test_db();
         let tid = test_session(&db);
-        assert!(db.get_last_message_created_at(&tid).is_none());
+        assert!(db.get_last_message_created_at_best_effort(&tid).is_none());
         db.add_message(&tid, "user", "first", None, None).unwrap();
         let m2 = db.add_message(&tid, "user", "second", None, None).unwrap();
         let last = db
-            .get_last_message_created_at(&tid)
+            .get_last_message_created_at_best_effort(&tid)
             .expect("some timestamp");
         assert_eq!(last, m2.created_at);
     }

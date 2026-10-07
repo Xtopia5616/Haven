@@ -216,7 +216,7 @@ impl Default for ModelEndpoint {
 #[derive(Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default, deny_unknown_fields)]
 pub struct ProviderConfig {
-    /// Unique id referenced by [`ModelConfig::provider`] and the settings UI.
+    /// Unique name referenced by [`ModelConfig::provider_name`] and the settings UI.
     pub name: String,
     /// Vendor identity used for provider-specific capabilities and display.
     #[serde(default)]
@@ -445,8 +445,8 @@ impl Default for RequestPolicy {
 pub struct ModelConfig {
     /// Stable user-chosen identity referenced by [`RequestPolicy`].
     pub id: String,
-    /// Name of the configured provider that owns this model assignment.
-    pub provider: String,
+    /// Configured provider name that owns this model assignment.
+    pub provider_name: String,
     /// Model id on that provider.
     pub model: String,
     #[serde(default)]
@@ -479,12 +479,12 @@ impl ModelConfig {
     }
 
     pub fn is_assigned(&self) -> bool {
-        !self.provider.is_empty() && !self.model.is_empty()
+        !self.provider_name.is_empty() && !self.model.is_empty()
     }
 }
 
-/// Model→(provider, model) assignment. New configuration uses [`ModelConfig`]
-/// plus [`RequestPolicy`]. `provider` names a [`ProviderConfig`]; `model` is
+/// Model→(configured provider, model) assignment. New configuration uses [`ModelConfig`]
+/// plus [`RequestPolicy`]. `provider_name` names a [`ProviderConfig`]; `model` is
 /// a model id on that provider. All tuning fields are optional overrides:
 /// `None` falls back to the provider default, then
 /// `context_limits.default_context_window` / [`ModelEndpoint`] built-ins.
@@ -613,7 +613,7 @@ impl LlmConfig {
         let model = self.model(&policy.primary)?;
         (model.is_assigned()
             && self
-                .provider(model.provider.as_str())
+                .provider_config_by_name(model.provider_name.as_str())
                 .is_some_and(provider_credentials_ready)
             && model.capabilities.contains(&request.required_capability()))
         .then_some(model)
@@ -623,9 +623,11 @@ impl LlmConfig {
         self.route_model(request).is_some()
     }
 
-    /// Look up a provider by name.
-    pub fn provider(&self, name: &str) -> Option<&ProviderConfig> {
-        self.providers.iter().find(|p| p.name == name)
+    /// Look up a configured provider by its unique name.
+    pub fn provider_config_by_name(&self, provider_name: &str) -> Option<&ProviderConfig> {
+        self.providers
+            .iter()
+            .find(|provider| provider.name == provider_name)
     }
 
     /// Materialize a named model from its provider and per-model overrides.
@@ -647,7 +649,7 @@ impl LlmConfig {
                 capabilities: model.capabilities.clone(),
             };
         }
-        let Some(p) = self.provider(model.provider.as_str()) else {
+        let Some(p) = self.provider_config_by_name(model.provider_name.as_str()) else {
             return RoutedModel {
                 id: model.id.clone(),
                 endpoint: ep,
@@ -977,7 +979,7 @@ mod tests {
             }],
             models: vec![ModelConfig {
                 id: "default_model".into(),
-                provider: "chat".into(),
+                provider_name: "chat".into(),
                 model: "gpt-4o".into(),
                 capabilities: vec![Capability::Chat],
                 web_search: Some("auto".into()),
@@ -1007,7 +1009,7 @@ mod tests {
             }],
             models: vec![ModelConfig {
                 id: "default_model".into(),
-                provider: "ds".into(),
+                provider_name: "ds".into(),
                 model: "deepseek-reasoner".into(),
                 capabilities: vec![Capability::Chat],
                 web_search: Some("always".into()),
@@ -1040,7 +1042,7 @@ mod tests {
             providers: vec![ollama],
             models: vec![ModelConfig {
                 id: "default_model".into(),
-                provider: "local".into(),
+                provider_name: "local".into(),
                 model: "llama3.2".into(),
                 capabilities: vec![Capability::Chat],
                 ..Default::default()
@@ -1095,6 +1097,35 @@ mod tests {
     }
 
     #[test]
+    fn model_provider_name_is_explicit_in_the_config_and_ipc_wire_key() {
+        let model = ModelConfig {
+            id: "chat-model".into(),
+            provider_name: "primary-profile".into(),
+            model: "gpt-5".into(),
+            ..Default::default()
+        };
+
+        let serialized = serde_json::to_value(&model).expect("serialize model config");
+        assert_eq!(serialized["provider_name"], "primary-profile");
+        assert!(serialized.get("provider").is_none());
+
+        let decoded: ModelConfig = serde_json::from_value(serde_json::json!({
+            "id": "chat-model",
+            "provider_name": "primary-profile",
+            "model": "gpt-5"
+        }))
+        .expect("decode the canonical model config key");
+        assert_eq!(decoded.provider_name, "primary-profile");
+
+        let old_key = serde_json::from_value::<ModelConfig>(serde_json::json!({
+            "id": "chat-model",
+            "provider": "primary-profile",
+            "model": "gpt-5"
+        }));
+        assert!(old_key.is_err(), "the old ambiguous key must be rejected");
+    }
+
+    #[test]
     fn request_policy_requires_the_configured_primary() {
         let llm = LlmConfig {
             providers: vec![ProviderConfig {
@@ -1104,7 +1135,7 @@ mod tests {
             }],
             models: vec![ModelConfig {
                 id: "vision-primary".into(),
-                provider: "primary".into(),
+                provider_name: "primary".into(),
                 model: "vision-a".into(),
                 capabilities: vec![Capability::Vision],
                 ..Default::default()
@@ -1129,7 +1160,7 @@ mod tests {
             }],
             models: vec![ModelConfig {
                 id: "shared-model".into(),
-                provider: "shared".into(),
+                provider_name: "shared".into(),
                 model: "gpt-4o".into(),
                 capabilities: vec![Capability::Chat, Capability::Vision],
                 ..Default::default()

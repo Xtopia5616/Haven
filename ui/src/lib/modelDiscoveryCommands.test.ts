@@ -14,7 +14,7 @@ describe('model discovery command boundary', () => {
 		const request: DiscoverModelsRequest = {
 			baseUrl: 'https://models.example/v1',
 			apiKey: 'key',
-			provider: 'custom-provider',
+			providerName: 'custom-provider',
 			role: 'transcription',
 		};
 		const models: Array<ModelInfo & { provider_metadata: { tier: string } }> = [

@@ -116,7 +116,9 @@
 	});
 
 	const TERMINAL_TOOL_RUN = new Set<string>(['completed', 'failed', 'cancelled']);
-	const TOOL_STATE_ALIASES: Record<string, string> = {
+	// Agent observation outcomes use `succeeded`; durable ToolRun lifecycle uses
+	// `completed`. Project the Agent result into the shared card display state.
+	const AGENT_TOOL_OUTCOME_DISPLAY_STATES: Record<string, string> = {
 		succeeded: 'completed',
 	};
 	const TOOL_STATE_LABELS: Record<string, string> = {
@@ -152,8 +154,8 @@
 	);
 	let effectiveOutcome = $derived(outcome || result?.outcome || toolRunOutcome || null);
 	let toolState: string = $derived.by(() => {
-		const rawState = effectiveOutcome || (liveStreaming ? 'running' : 'completed');
-		return TOOL_STATE_ALIASES[rawState] || rawState;
+		const outcome = effectiveOutcome || (liveStreaming ? 'running' : 'completed');
+		return AGENT_TOOL_OUTCOME_DISPLAY_STATES[outcome] || outcome;
 	});
 	let toolStateLabel = $derived(TOOL_STATE_LABELS[toolState] || toolState);
 	// Preview chunks are a display-only side channel. They may briefly be empty
@@ -973,8 +975,7 @@
 	.tool-state[data-state='waiting'] {
 		color: var(--md-sys-color-tertiary);
 	}
-	.tool-state[data-state='completed'],
-	.tool-state[data-state='succeeded'] {
+	.tool-state[data-state='completed'] {
 		color: var(--md-sys-color-success);
 	}
 	.tool-state[data-state='failed'],

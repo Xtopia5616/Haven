@@ -1791,8 +1791,11 @@ mod tests {
             None,
         )
         .unwrap();
-        db.set_kv(&format!("fact_extraction_pending.{}", session.id), "1")
-            .unwrap();
+        db.set_kv(
+            &format!("fact_extraction_pending.{}", session.id),
+            "0:1:0:0",
+        )
+        .unwrap();
 
         exec.delete_session(&session.id).await.unwrap();
 

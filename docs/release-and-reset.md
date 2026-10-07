@@ -6,11 +6,13 @@
 
 Haven 处于测试阶段。数据库 schema、`config.toml` 与内部 IPC 契约可以进行破坏性调整；发布说明会明确本次是否需要重置。没有明确写出兼容承诺的旧数据不得假定可继续使用。
 
-截至 2026-10-06，当前数据库契约为 schema v37（ADR 0392、0393、0402、0416、0442、0445、0458、0463、0464、0524）：后台与定时工具运行统一持久化在 `tool_runs`，依赖关系使用 `watch_tool_run_id` / `result_summary`，定时运行完成结果使用 `tool_run_completion_outbox`；session authorization grants 由会话外键级联管理。`pending_session_inputs` 持久跟踪尚未进入 `UserInject` event 的用户输入，并在同一事务保存 `answer` / `follow_up` disposition，不再使用两天恢复窗口。唯一的 pending Answer reservation 防止 Ask 尚未由 `UserInject` 确认时后续输入被重复路由为答案；恢复只读取该 marker，不按重启时的交互 gate 重新判断。`sessions.origin` 与 `sessions.parent_session_id` 持久记录普通用户会话或 `agent.spawn` peer 的来源及 parent lineage，且不改变 session lifecycle。后台 shell ToolRun 持久化 `tool_runs.source_step_id`，关联发起它的 Agent `ToolCall`，并在 ToolRun event 与终态结果交付中保留。v37 不再读取旧 interaction event 的 `prompt` 字段或缺少 payload `step_number` 的旧 compaction event，也不做旧 schema 运行时迁移；升级前，完全退出 Haven 后删除 `%APPDATA%\haven\haven.db`、`haven.db-wal` 与 `haven.db-shm`（非 Windows 开发环境为 `~/.local/share/haven` 下的同名文件），再启动应用。旧的 `actions` 表、`act-` ID、completion outbox 与 tool name 不做兼容迁移。删除数据库会清除会话、记忆、工具运行和用量。
+截至 2026-10-07，当前数据库契约为 schema v38（ADR 0392、0393、0402、0416、0442、0445、0458、0463、0464、0524、0633）：后台与定时工具运行统一持久化在 `tool_runs`，依赖关系使用 `watch_tool_run_id` / `result_summary`，定时运行完成结果使用 `tool_run_completion_outbox`；session authorization grants 由会话外键级联管理。`pending_session_inputs` 持久跟踪尚未进入 `UserInject` event 的用户输入，并在同一事务保存 `answer` / `follow_up` disposition，不再使用两天恢复窗口。唯一的 pending Answer reservation 防止 Ask 尚未由 `UserInject` 确认时后续输入被重复路由为答案；恢复只读取该 marker，不按重启时的交互 gate 重新判断。`sessions.origin` 与 `sessions.parent_session_id` 持久记录普通用户会话或 `agent.spawn` peer 的来源及 parent lineage，且不改变 session lifecycle。后台 shell ToolRun 持久化 `tool_runs.source_step_id`，关联发起它的 Agent `ToolCall`，并在 ToolRun event 与终态结果交付中保留。v37 不再读取旧 interaction event 的 `prompt` 字段或缺少 payload `step_number` 的旧 compaction event，也不做旧 schema 运行时迁移；升级前，完全退出 Haven 后删除 `%APPDATA%\haven\haven.db`、`haven.db-wal` 与 `haven.db-shm`（非 Windows 开发环境为 `~/.local/share/haven` 下的同名文件），再启动应用。旧的 `actions` 表、`act-` ID、completion outbox 与 tool name 不做兼容迁移。删除数据库会清除会话、记忆、工具运行和用量。
+
+schema v38 仅接受事实提取 marker 的当前完整格式：旧 boolean、缺 retry metadata 的短格式和 summary value-only marker 都不再解析；`CacheDiagnostics` 也要求当前完整 metadata shape。升级前必须按下文删除数据库。`MediaProbe` 使用 `media_kind` / `mime_type` Serde key，不接受旧 `media_type` key；它不属于持久表或当前 IPC DTO。MCP `inputSchema` 和 LLM provider wire 字段仍按当前外部协议解析，不属于 Haven 历史数据兼容。
 
 ## 当前配置契约
 
-`config.toml` 只接受当前配置结构，不执行旧字段搬迁、旧名称映射、凭据导入或静默兼容。配置表启用未知字段拒绝；当前结构允许缺省的字段仍使用安全默认值。本版本将 `context_limits.cut_off_retries` 改为 `incomplete_tool_args_retries`，将后台/终态 Job 限制字段重命名为 ToolRun 字段，并删除 `empty_response_max_retries` 与 `empty_response_retry_delay_ms`；含这些旧字段的配置会导致整份配置解析失败。工具根名从 `actions` 改为 `tool_runs`，旧名称下的权限 key 不迁移。其它旧字段（例如 `[memory].history_retention_days`、`llm.balanced_model`、旧安全策略字段和已删除的顶层 `[audio]`）也会导致整份配置解析失败。
+`config.toml` 只接受当前配置结构，不执行旧字段搬迁、旧名称映射、凭据导入或静默兼容。配置表启用未知字段拒绝；当前结构允许缺省的字段仍使用安全默认值。本版本将 `context_limits.cut_off_retries` 改为 `incomplete_tool_args_retries`，将后台/终态 Job 限制字段重命名为 ToolRun 字段，并删除 `empty_response_max_retries` 与 `empty_response_retry_delay_ms`；含这些旧字段的配置会导致整份配置解析失败。工具根名从 `actions` 改为 `tool_runs`，旧名称下的权限 key 不迁移。`llm.models[]` 中绑定连接的字段现为 `provider_name`；原 `provider` 字段不再接受，含旧字段的配置会导致整份配置解析失败。其它旧字段（例如 `[memory].history_retention_days`、`llm.balanced_model`、旧安全策略字段和已删除的顶层 `[audio]`）也会导致整份配置解析失败。
 
 解析失败时，Haven 将原文件复制到带时间戳的 `config.toml.*.bak`，并在当前进程使用默认配置；原文件不会在启动时自动转换或覆盖。需要继续使用时，按下文“仅重建配置”删除当前 `config.toml`，再在应用中重新配置。
 
@@ -39,7 +41,7 @@ Windows 的唯一数据根目录是 `%APPDATA%\haven`。其中包括：
 1. 完全退出 Haven，并确认没有 `Haven.exe` 进程仍在运行。
 2. 如需检查旧配置，先在 `%APPDATA%\haven` 之外复制 `config.toml`；旧文件或自动备份可能包含明文密钥，必须妥善保管。
 3. 删除 `%APPDATA%\haven\config.toml`（非 Windows 开发环境为 `~/.local/share/haven/config.toml`）。
-4. 重新启动 Haven，再配置模型、OCR 与 MCP 凭据。schema v37 版本升级还需按下方说明删除数据库。
+4. 重新启动 Haven，再配置模型、OCR 与 MCP 凭据。schema v38 版本升级还需按下方说明删除数据库。
 
 ### 完整重置数据根目录
 
@@ -48,7 +50,7 @@ Windows 的唯一数据根目录是 `%APPDATA%\haven`。其中包括：
 3. 删除 `%APPDATA%\haven`（非 Windows 为 `~/.local/share/haven`）。
 4. 重新启动 Haven；应用会创建新的默认配置和数据库。
 
-完整重置会永久删除本机会话、记忆、后台/定时 ToolRun、授权决定、日志、技能和媒体缓存；除非先自行备份，否则无法恢复。schema v37 升级必须同时删除 `haven.db`、`haven.db-wal`、`haven.db-shm` 和旧 `config.toml`，否则旧数据库会被拒绝打开，旧工具名与配置 key 也不会映射。
+完整重置会永久删除本机会话、记忆、后台/定时 ToolRun、授权决定、日志、技能和媒体缓存；除非先自行备份，否则无法恢复。schema v38 升级要求删除 `haven.db`、`haven.db-wal` 与 `haven.db-shm`，否则旧数据库会被拒绝打开。只有配置仍含不再接受的旧 key（如 `llm.models[].provider`）时，才另外按“仅重建配置”删除 `config.toml`。
 
 ## 发布前验证
 

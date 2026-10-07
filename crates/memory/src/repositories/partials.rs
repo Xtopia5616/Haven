@@ -101,7 +101,7 @@ impl Database {
         if content.trim().is_empty() {
             return Ok(false);
         }
-        if let Some(last) = self.get_last_message_created_at(session_id)
+        if let Some(last) = self.get_last_message_created_at_best_effort(session_id)
             && last >= updated_at
         {
             return Ok(false);

@@ -643,7 +643,7 @@ mod tests {
         llm.set_model(
             "small_model",
             ModelConfig {
-                provider: "openai".into(),
+                provider_name: "openai".into(),
                 model: "gpt-4o-mini".into(),
                 max_tokens: Some(4096),
                 ..Default::default()
@@ -652,7 +652,7 @@ mod tests {
         llm.set_model(
             "default_model",
             ModelConfig {
-                provider: "openai".into(),
+                provider_name: "openai".into(),
                 model: "gpt-4o".into(),
                 max_tokens: Some(20_000),
                 ..Default::default()
@@ -691,7 +691,7 @@ mod tests {
         llm.set_model(
             "default_model",
             ModelConfig {
-                provider: "openai".into(),
+                provider_name: "openai".into(),
                 model: "gpt-4o".into(),
                 reasoning_echo_max_chars: Some(1234),
                 ..Default::default()
@@ -700,7 +700,7 @@ mod tests {
         llm.set_model(
             "small_model",
             ModelConfig {
-                provider: "openai".into(),
+                provider_name: "openai".into(),
                 model: "gpt-4o-mini".into(),
                 ..Default::default()
             },
@@ -745,13 +745,13 @@ mod tests {
         settings.llm.providers[1].name = "renamed".to_string();
         settings.llm.models.push(ModelConfig {
             id: "default_model".into(),
-            provider: "openai".into(),
+            provider_name: "openai".into(),
             model: "new-model".into(),
             ..Default::default()
         });
         settings.llm.models.push(ModelConfig {
             id: "retired_model".into(),
-            provider: "openai".into(),
+            provider_name: "openai".into(),
             model: "old-model".into(),
             ..Default::default()
         });
@@ -1017,6 +1017,10 @@ base_url = "https://api.deepseek.com"
                 "[llm]\nbalanced_model = \"old-model\"\n",
             ),
             (
+                "old model provider reference field",
+                "[[llm.models]]\nid = \"assistant\"\nprovider = \"primary\"\nmodel = \"gpt-test\"\n",
+            ),
+            (
                 "plaintext provider credential",
                 "[[llm.providers]]\nname = \"primary\"\napi_key = \"old-secret\"\n",
             ),
@@ -1177,6 +1181,11 @@ provider = "deepgram"
 name = "deepgram"
 provider = "deepgram"
 base_url = "https://api.deepgram.com"
+
+[[llm.models]]
+id = "transcription-model"
+provider_name = "deepgram"
+model = "nova-3"
 "#,
         )
         .unwrap();
@@ -1184,6 +1193,7 @@ base_url = "https://api.deepgram.com"
         let loader = ConfigLoader::load_from(&path).unwrap();
         assert_eq!(loader.config().media.stt.provider, "deepgram");
         assert_eq!(loader.config().llm.providers[0].name, "deepgram");
+        assert_eq!(loader.config().llm.models[0].provider_name, "deepgram");
         let backups = dir
             .read_dir()
             .unwrap()

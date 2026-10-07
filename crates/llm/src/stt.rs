@@ -327,14 +327,7 @@ pub(crate) async fn transcribe_via_chat(
         )],
         preferred_representation: Some(MediaRepresentationKind::RawAudio),
     };
-    let mut capabilities = router.capability_profile_for_request(RequestKind::AudioChat);
-    // Lightweight/custom clients historically did not publish a capability
-    // profile. Preserve the chat fallback for that case; an explicit
-    // `Unsupported` value must still fail through the planner with a useful
-    // error instead of sending an invalid request.
-    if capabilities.audio == haven_common::media::CapabilitySupport::Unknown {
-        capabilities.audio = haven_common::media::CapabilitySupport::Supported;
-    }
+    let capabilities = router.capability_profile_for_request(RequestKind::AudioChat);
     let plan = build_media_plan(
         std::slice::from_ref(&input),
         &capabilities,
@@ -427,10 +420,18 @@ mod tests {
     struct MockLlm {
         text: String,
         calls: AtomicU64,
+        audio_support: haven_common::media::CapabilitySupport,
     }
 
     #[async_trait]
     impl LlmClient for MockLlm {
+        fn capability_profile(&self) -> haven_common::media::CapabilityProfile {
+            haven_common::media::CapabilityProfile {
+                audio: self.audio_support,
+                ..Default::default()
+            }
+        }
+
         async fn chat(&self, messages: Vec<CanonicalMessage>) -> Result<LlmResponse, LlmError> {
             self.calls.fetch_add(1, Ordering::SeqCst);
             let has_audio = messages.iter().any(|m| {
@@ -488,10 +489,14 @@ mod tests {
         }
     }
 
-    fn mock_router(text: &str) -> Arc<LlmRouter> {
+    fn mock_router_with_audio_support(
+        text: &str,
+        audio_support: haven_common::media::CapabilitySupport,
+    ) -> Arc<LlmRouter> {
         let client: Arc<dyn LlmClient> = Arc::new(MockLlm {
             text: text.into(),
             calls: AtomicU64::new(0),
+            audio_support,
         });
         Arc::new(LlmRouter::new_with_clients(
             client.clone(),
@@ -499,6 +504,10 @@ mod tests {
             client.clone(),
             client,
         ))
+    }
+
+    fn mock_router(text: &str) -> Arc<LlmRouter> {
+        mock_router_with_audio_support(text, haven_common::media::CapabilitySupport::Supported)
     }
 
     #[tokio::test]
@@ -520,6 +529,20 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_transcribe_audio_rejects_unknown_audio_capability() {
+        let router = mock_router_with_audio_support(
+            "ignored",
+            haven_common::media::CapabilitySupport::Unknown,
+        );
+        router
+            .force_request_configured(RequestKind::AudioChat, true)
+            .await;
+
+        let err = router.transcribe_audio(&[0u8; 44]).await.unwrap_err();
+        assert!(matches!(&err, LlmError::UnsupportedCapability(_)));
+    }
+
+    #[tokio::test]
     async fn test_transcribe_audio_uses_default_model_when_routing_disabled() {
         let router = mock_router("走默认模型的转写");
         router.force_routing_flags(false, true).await;
@@ -536,6 +559,13 @@ mod tests {
 
     #[async_trait]
     impl LlmClient for MockLlmErr {
+        fn capability_profile(&self) -> haven_common::media::CapabilityProfile {
+            haven_common::media::CapabilityProfile {
+                audio: haven_common::media::CapabilitySupport::Supported,
+                ..Default::default()
+            }
+        }
+
         async fn chat(&self, _: Vec<CanonicalMessage>) -> Result<LlmResponse, LlmError> {
             Err(self.err.clone())
         }

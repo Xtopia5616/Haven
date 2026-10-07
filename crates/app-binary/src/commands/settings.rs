@@ -143,12 +143,12 @@ fn validate_settings_payload(settings: &haven_common::config::Settings) -> anyho
         anyhow::bail!("MCP environment values must be changed through the MCP settings commands");
     }
     for model in &settings.llm.models {
-        if model.provider.trim().is_empty()
+        if model.provider_name.trim().is_empty()
             || !settings
                 .llm
                 .providers
                 .iter()
-                .any(|provider| provider.name == model.provider)
+                .any(|provider| provider.name == model.provider_name)
         {
             anyhow::bail!("every configured model must reference a configured Provider");
         }
@@ -956,11 +956,11 @@ mod tests {
     fn settings_boundary_requires_each_model_to_reference_a_configured_provider() {
         for llm in [
             serde_json::json!({
-                "models": [{ "id": "assistant", "provider": "", "model": "model-a" }]
+                "models": [{ "id": "assistant", "provider_name": "", "model": "model-a" }]
             }),
             serde_json::json!({
                 "providers": [{ "name": "primary" }],
-                "models": [{ "id": "assistant", "provider": "removed", "model": "model-a" }]
+                "models": [{ "id": "assistant", "provider_name": "removed", "model": "model-a" }]
             }),
         ] {
             let settings: Settings =
@@ -976,7 +976,7 @@ mod tests {
         let settings: Settings = serde_json::from_value(serde_json::json!({
             "llm": {
                 "providers": [{ "name": "primary" }],
-                "models": [{ "id": "assistant", "provider": "primary", "model": "model-a" }]
+                "models": [{ "id": "assistant", "provider_name": "primary", "model": "model-a" }]
             }
         }))
         .unwrap();

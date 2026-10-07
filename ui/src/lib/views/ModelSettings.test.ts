@@ -50,7 +50,7 @@ describe('ModelSettings provider surface', () => {
 		expect(invoke).toHaveBeenCalledWith('discover_models', {
 			baseUrl: provider.base_url,
 			apiKey: provider.api_key,
-			provider: provider.name,
+			providerName: provider.name,
 			proxyUrl: null,
 			noProxy: null,
 		});
@@ -125,7 +125,7 @@ describe('ModelSettings provider surface', () => {
 			expect(invoke).toHaveBeenCalledWith('discover_models', {
 				baseUrl: 'https://api.openai.com/v1',
 				apiKey: 'test-key',
-				provider: 'proxied',
+				providerName: 'proxied',
 				authHeaderName: 'Authorization',
 				authHeaderPrefix: 'Bearer',
 				proxyUrl: 'http://127.0.0.1:7890',
@@ -157,7 +157,7 @@ describe('ModelSettings provider surface', () => {
 			expect(invoke).toHaveBeenCalledWith('discover_models', {
 				baseUrl: 'https://api.openai.com/v1',
 				apiKey: 'new-key',
-				provider: 'primary',
+				providerName: 'primary',
 				authHeaderName: 'Authorization',
 				authHeaderPrefix: 'Bearer',
 				proxyUrl: null,
@@ -202,7 +202,7 @@ describe('ModelSettings provider surface', () => {
 		};
 		const config = {
 			providers: [provider],
-			models: [{ id: 'default', provider: 'local', model: 'llama3', capabilities: ['chat'] }],
+			models: [{ id: 'default', providerName: 'local', model: 'llama3', capabilities: ['chat'] }],
 			request_policies: [],
 		};
 		renderSettings({ ...props(config.providers, config.models), llmConfig: config });
@@ -210,7 +210,7 @@ describe('ModelSettings provider surface', () => {
 		await fireEvent.click(screen.getByRole('button', { name: '删除 Provider local' }));
 
 		expect(config.providers).toHaveLength(1);
-		expect(config.models[0]).toMatchObject({ provider: 'local', model: 'llama3' });
+		expect(config.models[0]).toMatchObject({ providerName: 'local', model: 'llama3' });
 	});
 
 	it('shows unbound models in a repair section and lets the user choose a provider', async () => {
@@ -227,7 +227,7 @@ describe('ModelSettings provider surface', () => {
 			models: [
 				{
 					id: 'assistant',
-					provider: 'removed-provider',
+					providerName: 'removed-provider',
 					model: 'old-model',
 					capabilities: ['chat'],
 				},
@@ -244,7 +244,7 @@ describe('ModelSettings provider surface', () => {
 		await fireEvent.click(providerSelect);
 		await fireEvent.click(screen.getByRole('option', { name: 'local' }));
 
-		expect(config.models[0]).toMatchObject({ provider: 'local', model: '' });
+		expect(config.models[0]).toMatchObject({ providerName: 'local', model: '' });
 	});
 
 	it('moves a model to another provider and clears provider-specific metadata', async () => {
@@ -260,7 +260,7 @@ describe('ModelSettings provider surface', () => {
 			models: [
 				{
 					id: 'assistant',
-					provider: 'primary',
+					providerName: 'primary',
 					model: 'model-a',
 					capabilities: ['chat'],
 					context_window: 128000,
@@ -278,7 +278,7 @@ describe('ModelSettings provider surface', () => {
 		await fireEvent.click(screen.getByRole('option', { name: 'backup' }));
 
 		expect(config.models[0]).toMatchObject({
-			provider: 'backup',
+			providerName: 'backup',
 			model: '',
 			context_window: null,
 			cost_per_1k_input_tokens: null,

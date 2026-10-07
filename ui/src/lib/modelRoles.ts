@@ -36,7 +36,7 @@ export const requestPolicyOptions = REQUEST_KIND_VALUES.map((value) => ({
 export function emptyModel(id: string) {
 	return {
 		id,
-		provider: '',
+		providerName: '',
 		model: '',
 		capabilities: [],
 		temperature: null as number | null,

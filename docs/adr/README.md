@@ -620,3 +620,5 @@
 - [0629：统一 UI chat 提交附件类型 owner](0629-unify-chat-submission-attachment-types.md)
 - [0630：命名 UI 状态快照与录音时长 accessor](0630-name-ui-state-snapshot-accessors.md)
 - [0631：统一 UI diagnostics 读取 wrapper 动词](0631-unify-ui-diagnostics-read-verbs.md)
+- [0632：区分模型配置连接引用与供应商身份](0632-name-configured-model-provider-reference.md)
+- [0633：移除过时的 Haven 内部兼容入口](0633-remove-obsolete-internal-compatibility.md)

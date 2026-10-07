@@ -987,7 +987,7 @@ mod tests {
             &first.id,
         )
         .unwrap();
-        db.set_kv(&format!("fact_extraction_pending.{}", first.id), "1")
+        db.set_kv(&format!("fact_extraction_pending.{}", first.id), "0:1:0:0")
             .unwrap();
         db.checkpoint_memory_event_cursor(&first.id, 12).unwrap();
 
@@ -1077,7 +1077,7 @@ mod tests {
             &first.id,
         )
         .unwrap();
-        db.set_kv(&format!("fact_extraction_pending.{}", first.id), "1")
+        db.set_kv(&format!("fact_extraction_pending.{}", first.id), "0:1:0:0")
             .unwrap();
         db.checkpoint_memory_event_cursor(&first.id, 15).unwrap();
 

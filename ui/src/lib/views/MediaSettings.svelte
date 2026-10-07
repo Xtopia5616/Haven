@@ -181,7 +181,7 @@
 				(await discoverModels({
 					baseUrl: base,
 					apiKey: key,
-					provider: name,
+					providerName: name,
 					role: 'transcription',
 					proxyUrl: provider?.proxy_url ?? null,
 					noProxy: provider?.no_proxy ?? null,

@@ -68,7 +68,7 @@ describe('createChatModelOperations', () => {
 		await harness.controller.selectModel({
 			id: 'chat-profile',
 			name: 'chat-profile',
-			provider: 'provider',
+			providerName: 'provider',
 			model: 'provider/model',
 			reasoningEffort: 'high',
 			webSearch: 'auto',
@@ -98,7 +98,7 @@ describe('createChatModelOperations', () => {
 		await harness.controller.selectModel({
 			id: 'local-chat',
 			name: 'local-chat',
-			provider: 'local',
+			providerName: 'local',
 			model: 'llama3',
 			reasoningEffort: '',
 			webSearch: 'always',
@@ -119,7 +119,7 @@ describe('createChatModelOperations', () => {
 		await harness.controller.selectModel({
 			id: 'gemini-chat',
 			name: 'gemini-chat',
-			provider: 'gemini',
+			providerName: 'gemini',
 			model: 'gemini-2.5-pro',
 			reasoningEffort: 'high',
 			webSearch: 'always',
@@ -171,7 +171,7 @@ describe('createChatModelOperations', () => {
 				controller.selectModel({
 					id: 'chat-profile',
 					name: 'chat-profile',
-					provider: 'provider',
+					providerName: 'provider',
 					model: 'provider/model',
 					reasoningEffort: '',
 					webSearch: 'off',

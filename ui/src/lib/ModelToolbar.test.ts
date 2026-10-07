@@ -20,7 +20,7 @@ describe('ModelToolbar', () => {
 				{
 					id: 'chat-profile',
 					name: 'chat-profile',
-					provider: 'primary',
+					providerName: 'primary',
 					model: 'gpt-5',
 					reasoningEffort: '',
 					webSearch: 'off',

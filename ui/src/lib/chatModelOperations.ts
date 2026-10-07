@@ -10,7 +10,7 @@ export interface ChatModelOption {
 	/** Stable id of a configured ModelConfig, used by RequestPolicy.primary. */
 	id: string;
 	name: string;
-	provider: string;
+	providerName: string;
 	model: string;
 	reasoningEffort: string;
 	webSearch: string;

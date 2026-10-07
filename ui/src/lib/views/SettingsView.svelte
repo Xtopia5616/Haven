@@ -67,7 +67,14 @@
 		StoredPermission,
 	} from '$lib/contracts/generatedCommands.ts';
 	import type { DiscoveredModelMap } from '$lib/contracts/model.ts';
-	import type { ModelDraft, ProviderDraft, SettingsLlmState } from '$lib/settingsModelTypes.ts';
+import {
+	settingsLlmInputFromState,
+	settingsLlmStateFromConfig,
+	modelDraftFromConfig,
+	type ModelDraft,
+	type ProviderDraft,
+	type SettingsLlmState,
+} from '$lib/settingsModelTypes.ts';
 
 	type SettingsSnapshot = {
 		default_shell?: ShellChoiceInput;
@@ -402,7 +409,7 @@
 	function buildPersistableSettings() {
 		return {
 			default_shell: defaultShell,
-			llm: llmConfig,
+					llm: llmConfig,
 			hotkey: { key_binding: hotkeyBinding, mode: hotkeyMode, mute_hotkey: muteHotkey },
 			session: {
 				max_concurrent: asNumber(session.max_concurrent),
@@ -659,7 +666,7 @@
 			const chatPolicy = settings.llm.request_policies.find((policy) => policy.request === 'chat');
 			const chatModelId = chatPolicy?.primary || 'default_model';
 			const remote = settings.llm.models.find((model) => model.id === chatModelId);
-			if (remote) applyRemoteChatModelFields(remote);
+			if (remote) applyRemoteChatModelFields(modelDraftFromConfig(remote));
 		} catch (error) {
 			reportError(error, {
 				context: 'SettingsView',
@@ -676,7 +683,7 @@
 			const chatPolicy = settings.llm.request_policies.find((policy) => policy.request === 'chat');
 			const chatModelId = chatPolicy?.primary || 'default_model';
 			const remote = settings.llm.models.find((model) => model.id === chatModelId);
-			if (remote) applyRemoteChatModelFields(remote);
+			if (remote) applyRemoteChatModelFields(modelDraftFromConfig(remote));
 		} catch (error) {
 			reportError(error, {
 				context: 'SettingsView',
@@ -834,7 +841,7 @@
 			const settings = await loadSettings();
 			if (!mounted) return;
 			if (settings) {
-				llmConfig = settings.llm || llmConfig;
+				llmConfig = settings.llm ? settingsLlmStateFromConfig(settings.llm) : llmConfig;
 				llmConfig.providers = Array.isArray(llmConfig.providers) ? llmConfig.providers : [];
 				llmConfig.models = Array.isArray(llmConfig.models) ? llmConfig.models : [];
 				llmConfig.request_policies = Array.isArray(llmConfig.request_policies)
@@ -1068,7 +1075,7 @@
 	function validateModelProviderBindings() {
 		const providerNames = new Set((llmConfig.providers || []).map((provider) => provider.name));
 		const invalidModels = (llmConfig.models || []).filter(
-			(model) => !model.provider || !providerNames.has(model.provider),
+			(model) => !model.providerName || !providerNames.has(model.providerName),
 		);
 		if (invalidModels.length) {
 			const modelIds = invalidModels.map((model) => model.id).join('、');
@@ -1091,7 +1098,7 @@
 				settings:
 					/** @type {import('$lib/contracts/settings.ts').SettingsUpdatePayload} */ {
 						default_shell: defaultShell,
-						llm: llmConfig,
+						llm: settingsLlmInputFromState(llmConfig),
 						hotkey: {
 							key_binding: hotkeyBinding,
 							mode: hotkeyMode,

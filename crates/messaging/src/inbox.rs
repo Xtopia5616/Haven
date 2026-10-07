@@ -2361,14 +2361,14 @@ mod tests {
     }
 
     #[test]
-    fn thread_id_roundtrips_through_the_wire_format() {
+    fn optional_thread_id_roundtrips_through_the_wire_format() {
         let (_dir, _bus) = test_bus();
         let mut env = env_from("ses-a", "ses-b", "线程消息");
         env.thread_id = Some("thread-1".into());
         let line = serde_json::to_string(&env).unwrap();
         let decoded: Envelope = serde_json::from_str(&line).unwrap();
         assert_eq!(decoded.thread_id.as_deref(), Some("thread-1"));
-        // Old-format lines without the field still parse.
+        // A message without thread context keeps the field unset.
         let mut without = env.clone();
         without.thread_id = None;
         let line = serde_json::to_string(&without).unwrap();

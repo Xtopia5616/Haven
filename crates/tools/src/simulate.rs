@@ -314,9 +314,8 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
-    fn test_input_and_simulation_key_names_are_compatible() {
-        // Input parsing intentionally treats these simulation aliases as
-        // modifiers rather than as keys.
+    fn test_input_and_simulation_key_labels_stay_aligned() {
+        // Input parsing treats these modifiers as flags rather than keys.
         const MODIFIER_EXCEPTIONS: &[&str] = &["shift", "ctrl", "control", "alt", "win", "lwin"];
 
         use haven_input::hotkey::KeyCode;

@@ -1,17 +1,39 @@
 import type {
 	CapabilityInput,
+	LlmConfig,
 	LlmConfigInput,
+	ModelConfig,
 	ModelConfigInput,
 	ProviderConfigInput,
 	RequestPolicyInput,
 } from './contracts/generatedCommands.ts';
 
-export type ModelDraft = Omit<ModelConfigInput, 'id' | 'provider' | 'model' | 'capabilities'> & {
+export type ModelDraft = Omit<ModelConfigInput, 'id' | 'provider_name' | 'model' | 'capabilities'> & {
 	id: string;
-	provider: string;
+	providerName: string;
 	model: string;
 	capabilities: CapabilityInput[];
 };
+
+/** Project the Rust-owned `provider_name` wire key into the settings editor name. */
+export function modelDraftFromConfig(model: ModelConfig): ModelDraft {
+	const { provider_name: providerName, ...fields } = model;
+	return { ...fields, providerName };
+}
+
+/** Restore the Rust-owned `provider_name` key at the update_settings boundary. */
+export function modelConfigInputFromDraft(model: ModelDraft): ModelConfigInput {
+	const { providerName, ...fields } = model;
+	return { ...fields, provider_name: providerName };
+}
+
+/** Convert a loaded wire config once before it enters the settings editor. */
+export function settingsLlmStateFromConfig(config: LlmConfig): SettingsLlmState {
+	return {
+		...config,
+		models: config.models.map(modelDraftFromConfig),
+	};
+}
 
 export type ProviderDraft = ProviderConfigInput & {
 	name: string;
@@ -53,3 +75,11 @@ export type SettingsLlmState = Omit<LlmConfigInput, 'providers' | 'models' | 're
 	request_policies: RequestPolicyDraft[];
 	max_concurrent_requests: number;
 };
+
+/** Convert editor state back to the stable Rust-owned command shape. */
+export function settingsLlmInputFromState(config: SettingsLlmState): LlmConfigInput {
+	return {
+		...config,
+		models: config.models.map(modelConfigInputFromDraft),
+	};
+}

@@ -19,7 +19,8 @@ type ModelSyncOptions = {
 function chatModelOptions(settings: SettingsPayload): ChatModelOption[] {
 	const providers = new Map(settings.llm.providers.map((provider) => [provider.name, provider]));
 	return settings.llm.models.flatMap((model) => {
-		const provider = providers.get(model.provider);
+		const providerName = model.provider_name;
+		const provider = providers.get(providerName);
 		if (
 			!model.capabilities.includes('chat') ||
 			!model.model ||
@@ -32,7 +33,7 @@ function chatModelOptions(settings: SettingsPayload): ChatModelOption[] {
 			{
 				id: model.id,
 				name: model.id,
-				provider: model.provider,
+				providerName,
 				model: model.model,
 				reasoningEffort: model.reasoning_effort || '',
 				webSearch: model.web_search || 'off',
@@ -75,8 +76,9 @@ export function createChatModelSync(options: ModelSyncOptions) {
 		setModelOptions(chatModelOptions(settings));
 		const chatPolicy = settings.llm.request_policies.find((policy) => policy.request === 'chat');
 		const selectedModel = settings.llm.models.find((model) => model.id === chatPolicy?.primary);
-		const provider = selectedModel
-			? settings.llm.providers.find((item) => item.name === selectedModel.provider)
+		const providerName = selectedModel?.provider_name;
+		const provider = providerName
+			? settings.llm.providers.find((item) => item.name === providerName)
 			: undefined;
 		const apiStyle = normalizeApiStyle(provider?.api_style || 'openai-chat');
 		const webSearchSupported = !!selectedModel && supportsBuiltinWebSearch(apiStyle);

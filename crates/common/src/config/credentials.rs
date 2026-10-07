@@ -270,7 +270,7 @@ pub(crate) fn prepare_after_edit(
             consumed.insert(slot);
         } else if provider.api_key.is_empty() {
             if provider.api_key_ref.is_none()
-                && let Some(previous) = before.llm.provider(&provider.name)
+                && let Some(previous) = before.llm.provider_config_by_name(&provider.name)
             {
                 provider.api_key_ref = previous.api_key_ref.clone();
                 provider.api_key = previous.api_key.clone();
@@ -285,7 +285,7 @@ pub(crate) fn prepare_after_edit(
             provider.api_key_ref = Some(store_secret_if_needed(
                 before
                     .llm
-                    .provider(&provider.name)
+                    .provider_config_by_name(&provider.name)
                     .and_then(|previous| previous.api_key_ref.as_deref()),
                 &provider.api_key,
                 store,
@@ -350,7 +350,7 @@ fn validate_reference_changes(
         };
         let same_provider = before
             .llm
-            .provider(&provider.name)
+            .provider_config_by_name(&provider.name)
             .and_then(|previous| previous.api_key_ref.as_deref())
             == Some(reference);
         let staged_for_provider = staged
