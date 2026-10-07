@@ -727,3 +727,4 @@
 - [0736：ToolRun 通知事件复用 wire enum](0736-type-tool-run-notification-event-fields.md)
 - [0737：推理强度 setter 类型化并保留开放 provider 配置](0737-type-reasoning-effort-selection.md)
 - [0738：Fact source 筛选复用持久化闭合集合](0738-type-fact-source-filter.md)
+- [0739：Shell availability 复用 ShellChoice 输入](0739-type-shell-availability-input.md)

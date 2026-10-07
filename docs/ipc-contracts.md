@@ -86,7 +86,7 @@
 | `revoke_session_permission` | mutate | 按 session id 与 capability 撤销单条会话 grant |
 | `reset_permissions` | mutate | 只清除永久规则，保留会话 grant 与当前默认策略 |
 | `reset_session_permissions` | mutate | 只清除持久会话授权，保留永久规则 |
-| `check_shell_available` | read | 只返回 available |
+| `check_shell_available` | read | 必填 `shell` 使用 generated `ShellChoiceInput`（`powershell` / `cmd` / `pwsh`）；只返回 available |
 | `enable_autostart` | execute | 仅 release 构建 |
 | `disable_autostart` | execute | 只能删除受管条目 |
 | `is_autostart_enabled` | read | 只返回状态布尔值 |
@@ -168,7 +168,7 @@ exit_code?, preview? }`。`source_step_id` 仅用于将由 Agent 工具调用启
 | `get_log_info` | read | 日志状态与路径信息 |
 | `read_log_tail` | read | 有界日志尾部 |
 | `log_frontend_error` | mutate | 记录已净化的前端错误 |
-| `check_shell_available` | read | 查询 shell 是否可用 |
+| `check_shell_available` | read | `shell` 使用 generated `ShellChoiceInput` 查询已配置 shell 是否可用 |
 
 上述命令的 Rust 响应均为命名 DTO，前端由 `ui/src/lib/contracts/settings.ts` 在消费前校验。
 日志内容仍按日志查看器用途返回，不能复用于普通错误提示或其它 IPC 事件。

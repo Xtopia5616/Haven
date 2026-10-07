@@ -31,6 +31,7 @@
 	import { resolveSettingsSaveAction } from '$lib/settingsSaveAction.ts';
 	import { loadSettings } from '$lib/settingsCommand.ts';
 	import { checkShellAvailable, readApiKeyStatus } from '$lib/diagnosticsCommands.ts';
+	import { SHELL_CHOICE_INPUT_VALUES } from '$lib/contracts/generatedCommands.ts';
 	import ModelSettings from './ModelSettings.svelte';
 	import type { DiscoveredModelMetadataFill } from '$lib/modelDiscovery.ts';
 	import SettingsBehavior from './SettingsBehavior.svelte';
@@ -130,7 +131,11 @@
 	let muteHotkey = $state<string | null>(null);
 	let autostartEnabled = $state(false);
 	let defaultShell = $state<ShellChoiceInput>('powershell');
-	let shellAvailable = $state({ cmd: false, powershell: false, pwsh: false });
+	let shellAvailable = $state<Record<ShellChoiceInput, boolean>>({
+		cmd: false,
+		powershell: false,
+		pwsh: false,
+	});
 	let audio = $state<AudioConfig>({
 		sample_rate: 16000,
 		channels: 1,
@@ -376,7 +381,7 @@
 	let skipNextChatModelSync = false;
 
 	async function checkShells() {
-		for (const shell of ['cmd', 'powershell', 'pwsh'] as const) {
+		for (const shell of SHELL_CHOICE_INPUT_VALUES) {
 			try {
 				shellAvailable[shell] = (await checkShellAvailable({ shell })).available;
 			} catch (error) {

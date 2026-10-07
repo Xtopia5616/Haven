@@ -301,7 +301,7 @@ export interface TauriCommandMap {
 	cancel_recording: { request: undefined; response: void };
 	cancel_tool_run: { request: { toolRunId: string; kind: ToolRunKindDtoInput }; response: boolean };
 	check_llm_connection: { request: undefined; response: LlmConnectionReport };
-	check_shell_available: { request: { shell: string }; response: ShellAvailability };
+	check_shell_available: { request: { shell: ShellChoiceInput }; response: ShellAvailability };
 	clear_facts: { request: undefined; response: number };
 	clear_tool_run_history: { request: undefined; response: number };
 	continue_session: { request: { sessionId: string }; response: void };

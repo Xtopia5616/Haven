@@ -6,6 +6,7 @@ use crate::config_runtime::{
 };
 use crate::events::{HOTKEY_REBIND_EVENT, HotkeyRebindEvent};
 use crate::runtime::ApplicationRuntime;
+use haven_common::types::ShellChoice;
 use serde::Serialize;
 use std::future::Future;
 use std::sync::Arc;
@@ -829,17 +830,16 @@ pub async fn reset_session_permissions(state: State<'_, Arc<AppState>>) -> Resul
 }
 
 #[tauri::command]
-pub async fn check_shell_available(shell: String) -> Result<ShellAvailability, String> {
+pub async fn check_shell_available(shell: ShellChoice) -> Result<ShellAvailability, String> {
     #[cfg(windows)]
-    let available = match shell.as_str() {
-        "cmd" | "powershell" => true,
-        "pwsh" => shell_on_path("pwsh.exe"),
-        _ => true,
+    let available = match shell {
+        ShellChoice::Cmd | ShellChoice::Powershell => true,
+        ShellChoice::Pwsh => shell_on_path("pwsh.exe"),
     };
     #[cfg(not(windows))]
-    let available = match shell.as_str() {
-        "pwsh" => shell_on_path("pwsh"),
-        _ => true,
+    let available = match shell {
+        ShellChoice::Cmd | ShellChoice::Powershell => true,
+        ShellChoice::Pwsh => shell_on_path("pwsh"),
     };
     Ok(ShellAvailability { available })
 }
@@ -897,7 +897,7 @@ mod tests {
         AppConfig, ConfigLoader, ConfigService, InMemoryCredentialStore, LogLevel, Settings,
         StoredPermission,
     };
-    use haven_common::types::PermissionEffect;
+    use haven_common::types::{PermissionEffect, ShellChoice};
 
     fn config_service_with_config(config: AppConfig) -> (ConfigService, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
@@ -947,6 +947,25 @@ mod tests {
             serde_json::to_value(ShellAvailability { available: true }).unwrap(),
             serde_json::json!({"available": true})
         );
+    }
+
+    #[test]
+    fn shell_availability_input_uses_the_configured_shell_vocabulary() {
+        for (wire, shell) in [
+            ("powershell", ShellChoice::Powershell),
+            ("cmd", ShellChoice::Cmd),
+            ("pwsh", ShellChoice::Pwsh),
+        ] {
+            assert_eq!(
+                serde_json::from_str::<ShellChoice>(&format!("\"{wire}\"")).unwrap(),
+                shell
+            );
+            assert_eq!(shell.as_str(), wire);
+        }
+
+        for wire in ["", "bash", "fish", "CMD"] {
+            assert!(serde_json::from_str::<ShellChoice>(&format!("\"{wire}\"")).is_err());
+        }
     }
 
     #[test]

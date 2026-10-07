@@ -30,7 +30,7 @@
 		hotkeyBinding: string;
 		session: SessionDraft;
 		defaultShell: ShellChoiceInput;
-		shellAvailable: { cmd: boolean; powershell: boolean; pwsh: boolean };
+		shellAvailable: Record<ShellChoiceInput, boolean>;
 		memory: MemoryDraft;
 		memoryMaintenance: { running: boolean; lastCount: number | null };
 		onHotkeyModeChange?: (value: HotkeyModeInput) => void;
@@ -55,11 +55,11 @@
 		onRunMaintenance = () => {},
 	}: Props = $props();
 
-	const SHELL_OPTIONS = [
+	const SHELL_OPTIONS: Array<{ value: ShellChoiceInput; label: string }> = [
 		{ value: 'cmd', label: '命令提示符（cmd.exe）' },
 		{ value: 'powershell', label: 'Windows PowerShell' },
 		{ value: 'pwsh', label: 'PowerShell 7（pwsh）' },
-	] as const;
+	];
 
 	function shellOptions() {
 		return SHELL_OPTIONS.map((option) =>
