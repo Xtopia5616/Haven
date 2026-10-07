@@ -1608,7 +1608,7 @@ async fn lifecycle_event_sink_receives_lifecycle_events() {
 
 #[cfg(windows)]
 #[tokio::test]
-async fn test_board_lists_all_jobs_with_session() {
+async fn test_board_lists_all_tool_runs_by_session() {
     let tool_runs = Arc::new(ToolRunService::new());
     let (id_a, id_b) = spawn_two_echo_tool_runs(&tool_runs).await;
     wait_terminal(&tool_runs, &id_a, 10).await;

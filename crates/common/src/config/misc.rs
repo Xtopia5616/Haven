@@ -178,13 +178,12 @@ pub struct ContextLimitsConfig {
     pub reasoning_echo_max_chars: usize,
     // —— background ToolRun caps ——
     /// Bounded live-output tail (chars) kept per running ToolRun for `tool_run:output`
-    /// preview events. Was `JOB_TAIL_MAX_CHARS = 2000`.
+    /// preview events.
     pub background_tool_run_tail_max_chars: usize,
-    /// Cadence of `tool_run:output` events while a action produces output (ms).
-    /// Was `JOB_OUTPUT_EMIT_INTERVAL = 1500`.
+    /// Cadence of `tool_run:output` events while a tool action produces output (ms).
     pub background_tool_run_output_emit_interval_ms: u64,
-    /// Terminal tool_runs stay on the board this long (secs), then are reaped by
-    /// the next spawn. Was `TERMINAL_JOB_TTL = 600`.
+    /// Terminal ToolRuns stay on the board this long (secs), then are reaped by
+    /// the next spawn.
     pub tool_run_terminal_ttl_secs: u64,
     // —— safety boundaries (raising these widens the attack surface) ——
     /// MCP binary content (image/audio/resource blob) kept in observations

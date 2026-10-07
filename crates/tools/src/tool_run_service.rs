@@ -281,7 +281,8 @@ pub struct ToolRunService {
     lifecycle_events: ToolRunLifecycle,
     /// Persistent ToolRun store; `None` in headless/test builds (in-memory only).
     /// Terminal ToolRun rows stay here as history even after the in-memory board
-    /// reaps them (`TERMINAL_JOB_TTL`), so results survive app restarts.
+    /// reaps them according to `tool_run_terminal_ttl_secs`, so results survive
+    /// app restarts.
     tool_run_store: RwLock<Option<ToolRunStore>>,
     /// Cancels process runners, output preview loops and scheduled timers
     /// during application teardown.

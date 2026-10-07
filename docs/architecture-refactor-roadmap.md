@@ -324,6 +324,7 @@
 | UI tool contracts 导出未消费的泛 schema alias | `contracts/tools.ts::ToolSchema` 仅是 `unknown` 的命名导出；全仓没有导入方，不限制 JSON schema 形状，也不承担独立 runtime/wire role。实际 schema 仍由生成的 Tool DTO 的 `input_schema` 字段携带。 | **删除无消费者 alias**：移除 `ToolSchema` 导出，不改生成 DTO 或工具 manifest 解析（ADR 0663）。 |
 | Agent direct SessionRun admission waiter 使用位置元组 | SessionSupervisor 按 Session ID 保存直接运行的准入等待项；每项的 `usize` 与 `CancellationToken` 分别用于注销单个等待项和由 lifecycle 操作取消阻塞准入的等待。注册表、guard 与取消入口都使用 `waiter` 泛名，tuple 访问靠位置表达角色。 | **具名等待项并统一准入名**：条目改为 `DirectSessionRunAdmissionWaiter { waiter_id, cancellation }`；注册表、guard 和跨模块取消调用显式标出 admission 等待职责（ADR 0664）。 |
 | UI contracts 与 presentation 保留未消费类型别名 | 引用计数扫描发现 `BuiltinEnabledFilter`、两个 History search request alias、8 个 Tool manifest wire alias 和 `SessionEventName` 只在声明处出现；`SESSION_EVENT_NAMES` 也没有消费者。它们不增加字段约束、UI 角色或事件登记行为。 | **删除死导出和死清单**：删除 12 个 alias 与 `SESSION_EVENT_NAMES`，保留 generated DTO、实际事件监听 map 与有消费者的 contracts façade（ADR 0665）。 |
+| ToolRun 源码注释与测试名残留旧 Job 词汇 | ToolRun 配置字段注释保留退役的 `JOB_TAIL_MAX_CHARS`、`JOB_OUTPUT_EMIT_INTERVAL`、`TERMINAL_JOB_TTL` 名称；ToolRunService 历史注释和一项 board 测试也把 ToolRun 称为 job。它们与当前唯一术语 `ToolRun` 不一致。 | **清理当前源命名**：删除旧常量名脚注，注释引用 `tool_run_terminal_ttl_secs`，测试改称 tool runs；保留 Windows Job Object、上游 provider job 与 Memory extraction job（ADR 0666）。 |
 
 此表是候选分流清单，不是完整符号目录。尚未完成的 crate、IPC/event payload、UI controller/store 与函数动词审计仍在 §5.7 范围内；完成一域后更新本表并以 ADR 记录实际迁移。
 

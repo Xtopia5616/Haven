@@ -654,3 +654,4 @@
 - [0663：删除未使用的 ToolSchema UI alias](0663-remove-unused-tool-schema-alias.md)
 - [0664：具名 SessionRun 准入等待项](0664-name-session-run-admission-waiter.md)
 - [0665：清理未消费的 UI contracts 类型](0665-remove-unused-ui-contract-aliases.md)
+- [0666：统一 ToolRun 源码中的退役 Job 词汇](0666-remove-retired-job-wording-from-tool-runs.md)
