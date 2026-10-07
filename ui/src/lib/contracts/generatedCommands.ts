@@ -88,6 +88,8 @@ export interface SessionRecordDto { id: string; input_text: string; title: strin
 export interface SessionResumeResponse { session: SessionRecordDto; messages: Message[]; steps: SessionStep[]; usage: SessionUsage | null; llm_usage: LlmUsageRecord[]; interactions: InteractionRequestedEvent[] }
 export interface SessionPermissionGrant { session_id: string; session_title: string | null; capability: string; target: string; effect: string }
 export interface ShellAvailability { available: boolean }
+export const AGENT_NOTIFICATION_KIND_VALUES = ['tool_run_completion'] as const;
+export type AgentNotificationKind = (typeof AGENT_NOTIFICATION_KIND_VALUES)[number];
 export interface AppBootstrapEvent { status: BootstrapStatus }
 export interface HotkeyConflictEvent { binding: string; error: string }
 export interface HotkeyRebindEvent { old_binding: string; new_binding: string }
@@ -100,6 +102,8 @@ export type SessionUpdateStatus = (typeof SESSION_UPDATE_STATUS_VALUES)[number];
 export interface SkillsStatusChangedEvent { op: SkillsStatusOperation }
 export const SKILLS_STATUS_OPERATION_VALUES = ['refresh', 'auto_refresh', 'toggle'] as const;
 export type SkillsStatusOperation = (typeof SKILLS_STATUS_OPERATION_VALUES)[number];
+export const TOOL_RUN_COMPLETION_STATUS_DTO_VALUES = ['completed', 'failed'] as const;
+export type ToolRunCompletionStatusDto = (typeof TOOL_RUN_COMPLETION_STATUS_DTO_VALUES)[number];
 export interface ToolRunEvent { tool_run_id: string; kind: ToolRunKindDto; status?: ToolRunStatus; session_id?: string; source_step_id?: string; started_at?: string; finished_at?: string; due_at?: string; title?: string; body?: string; mode?: string; command?: string; output?: string; error?: string; error_reason?: string; exit_code?: number; preview?: string }
 export const TOOL_RUN_KIND_DTO_INPUT_VALUES = ['background', 'scheduled'] as const;
 export type ToolRunKindDtoInput = (typeof TOOL_RUN_KIND_DTO_INPUT_VALUES)[number];

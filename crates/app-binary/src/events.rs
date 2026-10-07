@@ -66,6 +66,13 @@ pub enum ToolRunKindDto {
     Scheduled,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolRunCompletionStatusDto {
+    Completed,
+    Failed,
+}
+
 /// The minimal ToolRun record displayed by the task panel and history.
 ///
 /// This intentionally excludes internal dynamic tool parameters, continuation
@@ -570,11 +577,11 @@ pub(crate) struct AgentNotificationEvent {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub notification_kind: Option<AgentNotificationKind>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub tool_run_kind: Option<String>,
+    pub tool_run_kind: Option<ToolRunKindDto>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_run_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub tool_run_status: Option<String>,
+    pub tool_run_status: Option<ToolRunCompletionStatusDto>,
 }
 
 #[derive(Clone, Copy, Serialize)]

@@ -1,6 +1,6 @@
 # Haven 命名规范
 
-> 版本: v1.141 | 日期: 2026-10-08
+> 版本: v1.142 | 日期: 2026-10-08
 
 本文档统一 Haven 项目各层的命名规则（变量名、函数名、文件名、crate 名、缩写大小写、跨层边界）。规范以现有代码中的事实模式为基础，新代码必须遵循；存量代码若与规范冲突，逐步迁移对齐。
 
@@ -27,6 +27,7 @@
 - **确认权限值复用生成 enum**：`resolve_confirmation` 的 `effect`、`scope`、`target` 分别使用 Common `PermissionEffect`、`PermissionScope`、`PermissionTarget` 及 generated input types；`ConfirmationDecision` 继续表示含步骤 ID 和批准语义的 UI callback，再由 shell 转成 request（ADR 0733）。
 - **联网搜索模式复用闭合 enum**：`set_web_search.mode` 使用 LLM `WebSearchMode` / generated `WebSearchModeInput`，UI 选择只提交 `off` / `auto` / `always`；可选 `null` 仍表示清除模型覆盖，并不等于显式 `off`（ADR 0734）。
 - **Session history status filter 使用严格查询 enum**：搜索与导出请求使用 Memory `SessionHistoryStatusFilter` / generated `SessionHistoryStatusFilterInput`；空 UI 选择映射为无过滤。它与生命周期 `SessionStatus` 分开，避免把生命周期未知值的 fail-safe fallback 暴露为 IPC 输入行为（ADR 0735）。
+- **ToolRun completion notification 复用 App wire enum**：`notification:show` 的 source/status/discriminator 使用 App `ToolRunKindDto`、`ToolRunCompletionStatusDto`、`AgentNotificationKind`，前端 payload 类型与 runtime validator 引用 Rust 生成的类型和值清单。Agent 保留通知的 source/status runtime owner，App bridge 显式映射到 wire vocabulary（ADR 0736）。
 - **消息角色复用 canonical vocabulary**：持久消息、Agent history、resume/live UI 中的 `role` 使用 Common `CanonicalRole`；数据库文本在写入时由 enum 序列化，读取时严格解析，UI 消费 generated type。Provider wire role 继续由各 LLM adapter 映射；模型发现与模型配置命令用 `request_kind: RequestKind` 选择逻辑请求，UI 请求引用生成的 `RequestKindInput`。消息角色、请求路由与模型配置 ID 是不同身份，不复用 `role` 字段（ADR 0726、0728、0729）。
 - **模型操作路由参数明确命名**：`discover_models`、`switch_model`、`set_reasoning_effort` 与 `set_web_search` 均以 `request_kind: RequestKind` 标识逻辑请求路由；参数命令仅修改该路由当前分配的模型。选择指定模型配置时使用独立的 `model_id`（ADR 0728、0729）。
 - **持久消息类别与 UI 展示类型分开**：`messages.message_type` 使用 Common `TranscriptMessageKind` 表达 SQLite 闭合集合，写库序列化、读库严格解析并生成到 resume IPC；`StreamMessage.type` 是 renderer presentation discriminator，由 resume mapper 从 durable kind 投影，不复用或冒充持久类别（ADR 0727）。

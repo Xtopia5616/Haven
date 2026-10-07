@@ -488,6 +488,20 @@ describe('agent IPC contract', () => {
 			toolRunId: 'toolrun-background',
 			toolRunStatus: 'failed',
 		});
+		const completed = mapAgentEvent({
+			event: 'notification:show',
+			id: 15,
+			payload: {
+				session_id: 'ses-background',
+				title: '后台任务已完成',
+				body: '完成',
+				notification_kind: 'tool_run_completion',
+				tool_run_kind: 'background',
+				tool_run_id: 'toolrun-completed',
+				tool_run_status: 'completed',
+			},
+		});
+		expect(completed.payload).toMatchObject({ toolRunStatus: 'completed' });
 
 		for (const payload of [
 			{ session_id: '', title: 'generic', body: 'body' },
@@ -512,6 +526,15 @@ describe('agent IPC contract', () => {
 				body: 'y',
 				notification_kind: 'tool_run_completion',
 				tool_run_kind: 'scheduled',
+				tool_run_id: 'toolrun-1',
+				tool_run_status: 'failed',
+			},
+			{
+				session_id: 'ses-1',
+				title: 'x',
+				body: 'y',
+				notification_kind: 'tool_run_completion',
+				tool_run_kind: 'foreground',
 				tool_run_id: 'toolrun-1',
 				tool_run_status: 'failed',
 			},

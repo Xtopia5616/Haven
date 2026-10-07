@@ -315,24 +315,6 @@ pub enum ToolRunCompletionStatus {
     Failed,
 }
 
-impl ToolRunCompletionStatus {
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Completed => "completed",
-            Self::Failed => "failed",
-        }
-    }
-}
-
-impl ToolRunNotificationSource {
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Background => "background",
-            Self::Scheduled => "scheduled",
-        }
-    }
-}
-
 #[async_trait]
 pub trait AgentEventEmitter: Send + Sync {
     async fn emit(&self, event: AgentEvent);

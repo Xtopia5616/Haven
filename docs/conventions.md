@@ -231,7 +231,7 @@ reportError(e, { context: 'SettingsView', message: '操作失败', log: false })
 | `SessionUpdated` status=`paused`（waiting reason 非 confirmation） | `session_paused.windows` | `false` | `会话已暂停: …` |
 | `SessionUpdated` status=`pending`（且上一状态为 paused/error） | `session_resumed.windows` | `false` | `会话已恢复: …` |
 | `AgentEvent::Notification` | **不读配置**，总是弹 | — | title/body 原样（设置页注明始终开启） |
-| `AgentEvent::ToolRunCompletionNotification` | `tool_run_completed.windows` | `true` | title/body 原样；wire 仍走 `notification:show`，带 `tool_run_kind` / `tool_run_id` / `tool_run_status` 标记和可选真实 session 关联 |
+| `AgentEvent::ToolRunCompletionNotification` | `tool_run_completed.windows` | `true` | title/body 原样；wire 仍走 `notification:show`，source/status 分别使用 generated `ToolRunKindDto` / `ToolRunCompletionStatusDto`，并带 `tool_run_id` 和可选真实 session 关联 |
 
 标题统一产品名 `Haven`。
 

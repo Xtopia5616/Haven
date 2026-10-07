@@ -97,8 +97,14 @@ if (-not [regex]::IsMatch($agentEventBridge, 'ToolRunCompletionNotification\s*\{
     -not [regex]::IsMatch($agentEventBridge, 'notification_kind:\s*Some\(AgentNotificationKind::ToolRunCompletion\)')) {
     throw 'ToolRun completion AgentEvent must be projected as the explicit notification_kind marker'
 }
-if (-not [regex]::IsMatch($agentContract, "(?s)export interface AgentNotificationPayload\s*\{[^}]*notificationKind\?:\s*'tool_run_completion'[^}]*toolRunKind\?:\s*'background'\s*\|\s*'scheduled'[^}]*toolRunId\?:\s*string[^}]*toolRunStatus\?:\s*'completed'\s*\|\s*'failed'")) {
-    throw 'frontend notification contract must declare ToolRun completion source, identity, and terminal status fields'
+if (-not [regex]::IsMatch($agentEvents, '(?s)struct\s+AgentNotificationEvent\s*\{[^}]*tool_run_kind:\s*Option<ToolRunKindDto>[^}]*tool_run_id[^}]*tool_run_status:\s*Option<ToolRunCompletionStatusDto>')) {
+    throw 'AgentNotificationEvent must use App-owned ToolRun notification enums'
+}
+if (-not [regex]::IsMatch($agentContract, '(?s)export interface AgentNotificationPayload\s*\{[^}]*notificationKind\?:\s*AgentNotificationKind[^}]*toolRunKind\?:\s*ToolRunKindDto[^}]*toolRunId\?:\s*string[^}]*toolRunStatus\?:\s*ToolRunCompletionStatusDto')) {
+    throw 'frontend notification contract must use generated ToolRun completion source, identity, and status types'
+}
+if (-not [regex]::IsMatch($agentContract, '(?s)notificationKind\s*!==\s*undefined.*?AGENT_NOTIFICATION_KIND_VALUES.*?TOOL_RUN_COMPLETION_STATUS_DTO_VALUES.*?TOOL_RUN_KIND_DTO_VALUES')) {
+    throw 'notification event validators must consume generated Rust enum vocabularies'
 }
 if (-not [regex]::IsMatch($agentContract, "(?s)notificationKind\s*===\s*'tool_run_completion'.*?optionalSessionId\(payload\).*?if\s*\(notificationKind\s*!==\s*undefined\).*?const\s+sessionId\s*=\s*optionalSessionId\(payload\)")) {
     throw 'generic and ToolRun completion notifications must accept an absent session association through the optional session mapper'

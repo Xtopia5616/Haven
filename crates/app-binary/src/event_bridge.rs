@@ -149,6 +149,19 @@ mod tests {
                 "tool_run_status": "failed",
             })
         );
+
+        let completed_completion = AgentEvent::ToolRunCompletionNotification {
+            tool_run_kind: ToolRunNotificationSource::Background,
+            tool_run_id: "toolrun-completed".into(),
+            session_id: Some("ses-owner".into()),
+            tool_run_status: Some(ToolRunCompletionStatus::Completed),
+            title: "后台任务已完成".into(),
+            body: "完成".into(),
+        };
+        assert_eq!(
+            TauriEmitter::payload(&completed_completion, None)["tool_run_status"],
+            "completed"
+        );
     }
 
     #[test]
@@ -613,9 +626,21 @@ impl TauriEmitter {
                 title: title.clone(),
                 body: body.clone(),
                 notification_kind: Some(AgentNotificationKind::ToolRunCompletion),
-                tool_run_kind: Some(tool_run_kind.as_str().to_string()),
+                tool_run_kind: Some(match tool_run_kind {
+                    haven_agent::ToolRunNotificationSource::Background => {
+                        ToolRunKindDto::Background
+                    }
+                    haven_agent::ToolRunNotificationSource::Scheduled => ToolRunKindDto::Scheduled,
+                }),
                 tool_run_id: Some(tool_run_id.clone()),
-                tool_run_status: tool_run_status.map(|status| status.as_str().to_string()),
+                tool_run_status: tool_run_status.map(|status| match status {
+                    haven_agent::ToolRunCompletionStatus::Completed => {
+                        ToolRunCompletionStatusDto::Completed
+                    }
+                    haven_agent::ToolRunCompletionStatus::Failed => {
+                        ToolRunCompletionStatusDto::Failed
+                    }
+                }),
             }),
             AgentEvent::Usage {
                 session_id,

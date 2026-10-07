@@ -1,7 +1,19 @@
 /** Agent event IPC contract at the frontend boundary. */
 
-import type { LlmCallKind, RequestKind } from './generatedCommands.ts';
-import { AGENT_EVENT_NAMES, LLM_CALL_KIND_VALUES } from './generatedCommands.ts';
+import type {
+	AgentNotificationKind,
+	LlmCallKind,
+	RequestKind,
+	ToolRunCompletionStatusDto,
+	ToolRunKindDto,
+} from './generatedCommands.ts';
+import {
+	AGENT_EVENT_NAMES,
+	AGENT_NOTIFICATION_KIND_VALUES,
+	LLM_CALL_KIND_VALUES,
+	TOOL_RUN_COMPLETION_STATUS_DTO_VALUES,
+	TOOL_RUN_KIND_DTO_VALUES,
+} from './generatedCommands.ts';
 import type { TauriEvent } from './tauriEvent.ts';
 import { isRecord } from './objectGuards.ts';
 
@@ -142,10 +154,10 @@ export interface AgentNotificationPayload {
 	sessionId?: string;
 	title: string;
 	body: string;
-	notificationKind?: 'tool_run_completion';
-	toolRunKind?: 'background' | 'scheduled';
+	notificationKind?: AgentNotificationKind;
+	toolRunKind?: ToolRunKindDto;
 	toolRunId?: string;
-	toolRunStatus?: 'completed' | 'failed';
+	toolRunStatus?: ToolRunCompletionStatusDto;
 }
 
 export interface AgentUsagePayload {
@@ -225,6 +237,10 @@ function optionalSessionId(record: WireRecord): string | undefined | null {
 
 function finiteNumber(value: unknown): value is number {
 	return typeof value === 'number' && Number.isFinite(value);
+}
+
+function isGeneratedValue<T extends string>(values: readonly T[], value: unknown): value is T {
+	return (values as readonly unknown[]).includes(value);
 }
 
 function requiredNumber(record: WireRecord, field: string): number | null {
@@ -753,6 +769,11 @@ export function mapAgentEvent(
 		}
 		case 'notification:show': {
 			const notificationKind = payload.notification_kind;
+			if (
+				notificationKind !== undefined &&
+				!isGeneratedValue(AGENT_NOTIFICATION_KIND_VALUES, notificationKind)
+			)
+				return null;
 			if (notificationKind === 'tool_run_completion') {
 				const sessionId = optionalSessionId(payload);
 				const title = requiredString(payload, 'title');
@@ -762,15 +783,14 @@ export function mapAgentEvent(
 				const toolRunStatus = payload.tool_run_status;
 				if (
 					toolRunStatus !== undefined &&
-					toolRunStatus !== 'completed' &&
-					toolRunStatus !== 'failed'
+					!isGeneratedValue(TOOL_RUN_COMPLETION_STATUS_DTO_VALUES, toolRunStatus)
 				)
 					return null;
 				if (
 					sessionId === null ||
 					title === null ||
 					body === null ||
-					(toolRunKind !== 'background' && toolRunKind !== 'scheduled') ||
+					!isGeneratedValue(TOOL_RUN_KIND_DTO_VALUES, toolRunKind) ||
 					toolRunId === null ||
 					toolRunId.length === 0 ||
 					(toolRunKind === 'background' &&

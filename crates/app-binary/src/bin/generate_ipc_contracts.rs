@@ -109,6 +109,18 @@ fn generate(root: &Path) -> Result<String, String> {
         "haven_app_binary_lib::events::VadStatusEvent",
         TypeUse::Response,
     )?;
+    // Notification event fields use the App-owned wire vocabularies. Keep
+    // their TypeScript types and validator values generated from these enums.
+    for event_enum in [
+        "ToolRunKindDto",
+        "ToolRunCompletionStatusDto",
+        "AgentNotificationKind",
+    ] {
+        type_graph.emit_definition(
+            &format!("haven_app_binary_lib::events::{event_enum}"),
+            TypeUse::Response,
+        )?;
+    }
     for event_type in [
         "AppBootstrapEvent",
         "TrayStatusChangedEvent",
