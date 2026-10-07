@@ -11,7 +11,7 @@
 - **边界语义不撞名**：不同 crate/边界中的类型即使位于不同命名空间，也要能从类型名看出领域或 wire 角色；同名但不同状态空间时用领域限定词，不要求合并状态 owner。例如 Memory durable `SessionEvent` 与 Agent process-local `SessionSupervisorEvent` 各自保留 owner。
 - **Serde alias 只表示 wire 名称差异**：字段默认 Serde 名已等于 alias 时删除重复 alias；只保留外部协议确实发送的其它字段拼法，例如 Gemini 的 `finishReason`。Haven 自有配置或 payload 的旧名不作为隐式兼容入口（ADR 0662）。
 - **同域不同形状标明角色**：同一领域中的完整 runtime state、稀疏 view 输入或 wire projection 即使字段重叠，也使用能标出约束/角色的不同类型名，不用可选字段数量来猜其含义。
-- **原始值与归一分类分名**：边界 parser 为向前兼容而保留的开放字符串，使用带契约/领域前缀的类型名（如 `ToolManifestSource`）；UI 内部归一到已知集合的类别直接使用 generated 闭合 `ToolSource`，不要在 utility 再声明一份相同 union，也不要让相同类型名同时表示不同约束。
+- **闭合契约与开放扩展点分开**：Rust/IPC 已声明的闭合枚举在 UI 直接复用 generated 类型，边界拒绝未知成员；不要为了未来值或旧值映射把它扩成任意字符串。只有协议或扩展点本身定义为开放字符串、且消费者必须保留原值时，才把 raw wire value 与内部归一分类分名。Tool manifest 的 source/group/risk 是闭合 generated enum；`presentation.renderer` 是开放扩展 discriminator，未知 renderer 使用通用 JSON renderer（ADR 0669）。
 - **多值结果具名**：若多个返回值各有稳定领域含义，使用具名结构体字段，不用位置元组让调用者记住各索引的语义；例如 `CreatedSession` 保存首条持久用户消息 ID，`ModelPricing` 区分 input/output 价格，`FactProvenanceColumns` 对应不同持久列，`StreamedLlmCall` 区分响应和耗时，`ToolRunEventProjection` 区分 channel 和 payload，`ParsedAgentResponse` 区分解析出的 thought 和 tool calls，`CappedText` 命名限长文本与截断状态，`ChatThinkingExtras` 区分 chat wire 的 thinking object 与 reasoning effort 字段，Anthropic request projection 分别区分 wire messages/system prompt 与 `thinking`/`output_config`，`GeminiContentConversion` 区分 provider content 与 system instruction，`ResponsesInputConversion` 区分 Responses input items 与 instructions，Tools process reader 用 `CappedStreamText` 和 `CappedStreamRead` 区分 decoded text 与 retained bytes/read error，`SkillProcessOutput` 则按 stdout/stderr 命名 Skill 进程结果，Agent 的 `CapabilityProjectedRequest` 区分 media-capability 处理后的 request context 与向 UI 发布的 `MediaPlan`，Common 的 `TruncatedOutput` 则把带省略标记的文本与截断状态放在同一结果中。
 - **结果结构区分阶段 owner**：adapter 前的解析/归一结果与对外执行 envelope 即使携带相似字段，也分别命名其阶段职责；例如 MCP content extraction 与 `McpCallOutput` 分开承载内容转换结果和最终工具调用状态。
 - **认证方案与凭据分阶段命名**：header policy 使用 `AuthHeaderScheme { header_name, prefix }`；将密钥应用到方案后得到 LLM registry 拥有的 `ModelDiscoveryAuthHeader { header_name, value }`，该类型直接跨 App→LLM API 传递；一次 model discovery 的输入由 `ResolvedDiscoveryAuth { api_key, auth_header }` 表达。含实际凭据的类型不自动派生 `Debug`，避免调试格式意外暴露密钥。
@@ -99,7 +99,7 @@ Tauri command 名与 request/response 类型由 `generatedCommands.ts` 从 Rust 
 
 同一领域类型跨 runtime 与 wire 边界时，只有序列化格式、字段策略或演进 owner 确实不同才保留两个类型，并在名称中标出边界角色。当前 Tools `ToolRunKind` 是执行运行时分类；App `ToolRunKindDto` 是 IPC/event DTO 枚举，二者值相同但 owner、Serde 与向前演进责任不同。
 
-Tools manifest 的 generated `ToolManifest` 是 Rust snake_case wire DTO；renderer parser 投影出的 camelCase 结构叫 `ToolManifestView`。其中开放来源字符串叫 `ToolManifestSource`，闭合的实现/代表来源枚举继续复用 generated `ToolSource`。
+Tools manifest 的 generated `ToolManifest` 是 Rust snake_case wire DTO；renderer parser 投影出的 camelCase 结构叫 `ToolManifestView`。source、represented source、catalog group 与 risk level 复用 generated 闭合枚举；`presentation.renderer` 保持开放扩展字符串，未知值落到通用 JSON renderer（ADR 0669）。
 
 严格生成的 IPC `LlmConnectionReport` 与容忍缺失可选显示信息的 `LlmConnectionReportView` 分属 wire 与 renderer 视图；共享的 status/reason 枚举直接引用生成契约，归一化函数负责将不可信返回值投影为 view。
 
