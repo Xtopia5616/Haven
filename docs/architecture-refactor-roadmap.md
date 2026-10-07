@@ -351,6 +351,7 @@
 | App interaction event wire shape 重复定义 | `app.ts::AppWirePayloadMap['interaction:requested']` 逐字段重复生成的 Rust `InteractionRequestedEvent`，包括 owner union、可选字段和 snake_case 名；独立 `InteractionRequest` 才是经过校验及 camelCase 投影的 renderer view。 | **wire 层引用生成 DTO**：删除手写 interaction wire shape，直接使用 generated `InteractionRequestedEvent`；保留未知值校验、owner/session 一致性检查和 renderer view（ADR 0695）。 |
 | App shell event 的 DTO、enum 值与 validator 重复维护 | `AppWirePayloadMap` 重复声明多种 event payload；Rust 启动、托盘、Skills DTO 用 `String` 表达闭合值；App UI 手写相同值 union/校验数组；MCP 状态校验在 event 与 command 两个入口重复。 | **Rust DTO/enum 成为单一契约 owner**：显式生成 App shell event DTO 与状态值；UI 直接复用未变换 DTO，RiskLevel 和 MCP 状态共用生成值/validator，保留 Interaction 与 hotkey rebind renderer 投影（ADR 0696）。 |
 | Tool result renderer 重复字节与百分比格式逻辑 | 文件、进程、系统 renderer 分别复制相同的字节单位/舍入/非法值处理；进程和系统 renderer 也各有相同的 0–100 百分比限幅。 | **共用纯格式化函数**：使用 `formatByteSize` 与 `clampPercentage`；字段 shape 与 renderer 分派继续留在各自 owner（ADR 0697）。 |
+| UI untrusted object guard 多处同义实现 | 8 个 IPC、command 与 tool-result 边界各自声明相同的非空/非数组对象判断，其中 parser 使用名称 `isObject`。 | **共用 `isRecord` 类型守卫**：集中基础对象识别，边界各自保留字段语义校验与用途类型（ADR 0698）。 |
 
 此表是候选分流清单，不是完整符号目录。尚未完成的 crate、IPC/event payload、UI controller/store 与函数动词审计仍在 §5.7 范围内；完成一域后更新本表并以 ADR 记录实际迁移。
 

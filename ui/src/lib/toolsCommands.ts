@@ -1,5 +1,6 @@
 import { invoke } from '$lib/tauri.ts';
 import { isMcpClientStatus } from './contracts/mcpClientStatus.ts';
+import { isRecord } from './contracts/objectGuards.ts';
 import type {
 	ReconnectMcpRequest,
 	RemoveMcpServerRequest,
@@ -14,10 +15,6 @@ import type {
 	BuiltinToolManifestListResponse,
 	UpdateMcpServerRequest,
 } from './contracts/tools.ts';
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
 
 function validateMcpServerSnapshots(value: unknown): McpServerSnapshot[] {
 	if (

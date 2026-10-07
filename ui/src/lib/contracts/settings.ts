@@ -8,6 +8,7 @@ import type {
 	Settings as GeneratedSettings,
 	TauriCommandRequest,
 } from './generatedCommands.ts';
+import { isRecord } from './objectGuards.ts';
 
 export type LogInfo = GeneratedLogInfo;
 export type LogTail = GeneratedLogTail;
@@ -19,10 +20,6 @@ export type SettingsPayload = GeneratedSettings;
 
 /** Rust-owned settings input shape, including Serde defaults for omitted fields. */
 export type SettingsUpdatePayload = TauriCommandRequest<'update_settings'>['settings'];
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
 
 /**
  * The full Settings shape is owned by haven_common::config::Settings. Keep the

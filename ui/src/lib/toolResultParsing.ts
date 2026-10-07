@@ -1,14 +1,10 @@
 import { toolRendererName, toolRootName } from './toolManifest.ts';
+import { isRecord } from './contracts/objectGuards.ts';
 
 export type ParsedToolResult = {
 	kind: 'custom' | 'generic' | 'shell' | 'notify' | 'raw';
 	data: unknown;
 };
-
-/** @param value unknown JSON-like value */
-function isObject(value: unknown): value is Record<string, unknown> {
-	return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
 
 /**
  * Whether this tool observation can be rendered as a card. Every non-empty
@@ -47,7 +43,7 @@ export function parseToolResult(
 		let data: Record<string, unknown> | null = null;
 		try {
 			const value: unknown = JSON.parse(content);
-			if (isObject(value)) data = value;
+			if (isRecord(value)) data = value;
 		} catch {
 			// Plain text output — still renderable in the terminal card.
 		}
@@ -64,7 +60,7 @@ export function parseToolResult(
 		// Not JSON — plain text, rendered in the raw card.
 		return { kind: 'raw', data: null };
 	}
-	if (!isObject(data)) {
+	if (!isRecord(data)) {
 		// JSON arrays / primitives — pretty-printed in the raw card.
 		return { kind: 'raw', data };
 	}

@@ -686,3 +686,4 @@
 - [0695：交互事件复用生成 wire 类型](0695-use-generated-interaction-event-wire-type.md)
 - [0696：生成 App shell 事件契约并共享校验](0696-generate-app-shell-event-contracts.md)
 - [0697：共用 Tool result 数值格式化](0697-share-tool-result-formatting.md)
+- [0698：共用 untrusted record guard](0698-share-untrusted-record-guard.md)

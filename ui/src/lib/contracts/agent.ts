@@ -2,6 +2,7 @@
 
 import type { RequestKind } from './generatedCommands.ts';
 import type { TauriEvent } from './tauriEvent.ts';
+import { isRecord } from './objectGuards.ts';
 
 export const AGENT_EVENT_NAMES = [
 	'agent:thought',
@@ -220,10 +221,6 @@ export interface AgentEventPayloadMap {
 type WireRecord = Record<string, unknown>;
 
 const AGENT_EVENT_NAME_SET = new Set<string>(AGENT_EVENT_NAMES);
-
-function isRecord(value: unknown): value is WireRecord {
-	return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
 
 function hasOwn(record: WireRecord, field: string): boolean {
 	return Object.prototype.hasOwnProperty.call(record, field);

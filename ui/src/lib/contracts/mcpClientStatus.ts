@@ -2,12 +2,7 @@ import {
 	MCP_CLIENT_STATUS_UNIT_VALUES,
 	type McpClientStatus,
 } from './generatedCommands.ts';
-
-type WireRecord = Record<string, unknown>;
-
-function isRecord(value: unknown): value is WireRecord {
-	return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
+import { isRecord } from './objectGuards.ts';
 
 function isOneOf<const Values extends readonly string[]>(
 	value: unknown,

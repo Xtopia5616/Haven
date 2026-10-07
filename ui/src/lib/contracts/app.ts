@@ -2,6 +2,7 @@
 
 import type { TauriEvent } from './tauriEvent.ts';
 import { isMcpClientStatus } from './mcpClientStatus.ts';
+import { isRecord } from './objectGuards.ts';
 import {
 	BOOTSTRAP_STATUS_VALUES,
 	INTERACTION_KIND_VALUES,
@@ -111,10 +112,6 @@ export interface AppEventPayloadMap {
 type WireRecord = Record<string, unknown>;
 
 const APP_EVENT_NAME_SET = new Set<string>(APP_EVENT_NAMES);
-
-function isRecord(value: unknown): value is WireRecord {
-	return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
 
 function finiteNumber(value: unknown): value is number {
 	return typeof value === 'number' && Number.isFinite(value);

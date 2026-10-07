@@ -1,6 +1,6 @@
 # Haven 命名规范
 
-> 版本: v1.109 | 日期: 2026-10-07
+> 版本: v1.110 | 日期: 2026-10-07
 
 本文档统一 Haven 项目各层的命名规则（变量名、函数名、文件名、crate 名、缩写大小写、跨层边界）。规范以现有代码中的事实模式为基础，新代码必须遵循；存量代码若与规范冲突，逐步迁移对齐。
 
@@ -31,6 +31,7 @@
 - **TypeScript 运行时词汇唯一化**：当某组字符串值只用于本模块的运行时遍历时，以 `as const` 值清单作为唯一 owner；不要再并列手写同值 union。函数若有意接受清单外的未知字符串并返回拒绝/回退结果，参数应标为 `string`；无跨模块消费者的类型和值清单不额外导出。
 - **App shell 事件复用生成契约**：未变换的 app event payload 与闭合状态 enum 直接引用 Rust 生成 DTO/值清单；校验函数也按领域状态共用。只有进行 camelCase 映射、owner 关联或其它 renderer 归一化的事件才保留独立 view 类型（ADR 0696）。
 - **Tool result 共用纯格式化**：跨 renderer 相同的 byte-size 与 percentage 表示使用 `formatByteSize` / `clampPercentage`；具体 payload 字段解析仍归各自 renderer（ADR 0697）。
+- **Untrusted record 识别共用一个 guard**：所有边界把未知值收窄到非空、非数组的 `Record<string, unknown>` 时使用 `isRecord`；字段语义校验继续留在各自 contract（ADR 0698）。
 - **动态交互响应区分 wire 与 renderer view**：交互 envelope 的通用 `response` 保持 `unknown`；当某一交互类型在 UI 中具有稳定投影时，将 shape 命名为领域 view 并跨 reducer、controller、消息与组件复用。Ask 的答案/忽略结果统一为 `AskResponseView`，不在各层重复内联字段（ADR 0644）。
 - **配置发现使用命名投影和领域 patch**：Model discovery 输入字段从 `ProviderDraft` / `ModelDraft` 派生，catalog 更新只以 `DiscoveredModelMetadataFill` 回传被填充的 model id 与 metadata。不要用 `Record<string, any>` 或开放 key/value map 表达已知 config 字段（ADR 0645）。
 - **事件 handler 使用 channel→payload contract map**：Tauri event contract 的每个 channel 都有 `AgentEventPayloadMap` / 对应域 map；adapter callback 使用 `AgentEventListenerMap` 这类按 channel 映射的函数类型。UI transformation controller 使用 `satisfies` 校验它实际处理的子集，避免退化成 `Record<string, (event: any) => void>`（ADR 0646）。

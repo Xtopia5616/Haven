@@ -14,6 +14,7 @@ import {
 	type SessionUpdateStatus,
 	type SessionWaitingReason,
 } from './generatedCommands.ts';
+import { isRecord } from './objectGuards.ts';
 import type { TauriEvent } from './tauriEvent.ts';
 
 /** Compile-time guard: Rust lifecycle variants and the renderer mapper stay aligned. */
@@ -154,10 +155,6 @@ function mapWaitingReason(value: unknown): SessionWaitingReason | null | undefin
 	return (SESSION_WAITING_REASON_VALUES as readonly unknown[]).includes(value)
 		? (value as SessionWaitingReason)
 		: undefined;
-}
-
-function isRecord(value: unknown): value is SessionWireRecord {
-	return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 function requiredSessionId(payload: SessionWireRecord): string | null {

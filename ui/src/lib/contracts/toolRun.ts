@@ -4,6 +4,7 @@ import type {
 } from './generatedCommands.ts';
 import { TOOL_RUN_KIND_DTO_VALUES, TOOL_RUN_STATUS_VALUES } from './generatedCommands.ts';
 import type { TauriEvent } from './tauriEvent.ts';
+import { isRecord } from './objectGuards.ts';
 
 /**
  * ToolRun IPC contract at the frontend boundary.
@@ -61,10 +62,6 @@ const OPTIONAL_STRING_FIELDS = [
 	'error_reason',
 	'preview',
 ] as const;
-
-function isRecord(value: unknown): value is WireRecord {
-	return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
 
 function isToolRunKind(value: unknown): value is ToolRunKind {
 	return (TOOL_RUN_KIND_DTO_VALUES as readonly unknown[]).includes(value);
