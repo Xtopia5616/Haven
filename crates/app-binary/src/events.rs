@@ -430,7 +430,6 @@ pub(crate) struct AgentObservationEvent {
     pub tool_index: u32,
     pub ask_options: Vec<String>,
     pub step_id: String,
-    pub outcome: String,
     pub idempotency: String,
     pub operation_scope: String,
     pub renderer: String,

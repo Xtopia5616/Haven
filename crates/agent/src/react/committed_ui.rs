@@ -45,7 +45,6 @@ pub(super) struct StoredObservationUi {
     pub silent: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub ask_options: Vec<String>,
-    pub outcome: String,
     pub idempotency: String,
     pub operation_scope: String,
     pub renderer: String,
@@ -334,7 +333,6 @@ pub(super) fn agent_events_from_committed(event: &SessionEvent) -> Vec<AgentEven
                 tool_index: card.tool_index,
                 ask_options: card.ask_options,
                 step_id: card.step_id,
-                outcome: card.outcome,
                 idempotency: card.idempotency,
                 operation_scope: card.operation_scope,
                 renderer: card.renderer,

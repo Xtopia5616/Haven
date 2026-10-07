@@ -190,7 +190,7 @@ describe('agent IPC contract', () => {
 		});
 	});
 
-	it('maps outcome and event sequence for ordered tool observations', () => {
+	it('maps the canonical result envelope and event sequence for ordered tool observations', () => {
 		const event = mapAgentEvent({
 			event: 'agent:observation',
 			id: 6,
@@ -205,7 +205,6 @@ describe('agent IPC contract', () => {
 				tool_index: 0,
 				ask_options: [],
 				step_id: 'step-1',
-				outcome: 'unknown',
 				idempotency: 'unknown',
 				operation_scope: 'global',
 				renderer: 'messaging',
@@ -223,7 +222,7 @@ describe('agent IPC contract', () => {
 			},
 		});
 
-		expect(event.payload.outcome).toBe('unknown');
+		expect(event.payload).not.toHaveProperty('outcome');
 		expect(event.payload.operationScope).toBe('global');
 		expect(event.payload.eventSeq).toBe(17);
 		expect(event.payload.result).toEqual({
@@ -249,7 +248,6 @@ describe('agent IPC contract', () => {
 			tool_index: 0,
 			ask_options: [],
 			step_id: 'step-1',
-			outcome: 'succeeded',
 			idempotency: 'idempotent',
 			operation_scope: 'session',
 			renderer: 'files',
@@ -296,7 +294,7 @@ describe('agent IPC contract', () => {
 		).not.toBeNull();
 	});
 
-	it('rejects unknown observation and tool-result enum values', () => {
+	it('accepts observations without a duplicate outcome and rejects unknown result enums', () => {
 		const payload = {
 			session_id: 'ses-1',
 			observation: 'result',
@@ -304,10 +302,10 @@ describe('agent IPC contract', () => {
 			step_number: 1,
 			run_id: 1,
 			silent: false,
+			tool_call_id: null,
 			tool_index: 0,
 			ask_options: [],
 			step_id: 'step-1',
-			outcome: 'future_outcome',
 			idempotency: 'unknown',
 			operation_scope: 'session',
 			renderer: 'files',
@@ -324,8 +322,7 @@ describe('agent IPC contract', () => {
 		expect(
 			mapAgentEventContract({ event: 'agent:observation', id: 8, payload: withoutRenderer }),
 		).toBeNull();
-		expect(mapAgentEventContract({ event: 'agent:observation', id: 8, payload })).toBeNull();
-		payload.outcome = 'succeeded';
+		expect(mapAgentEventContract({ event: 'agent:observation', id: 8, payload })).not.toBeNull();
 		payload.result.outcome = 'future_outcome';
 		expect(mapAgentEventContract({ event: 'agent:observation', id: 8, payload })).toBeNull();
 	});

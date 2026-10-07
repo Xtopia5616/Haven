@@ -6,7 +6,6 @@ import type { TauriEvent } from './tauriEvent.ts';
 import { isRecord } from './objectGuards.ts';
 
 export type AgentEventName = (typeof AGENT_EVENT_NAMES)[number];
-export type ToolObservationOutcome = 'succeeded' | 'failed' | 'cancelled' | 'timed_out' | 'unknown';
 export type ToolResultOutcome =
 	'succeeded' | 'failed' | 'cancelled' | 'timed_out_and_terminated' | 'timed_out_unknown';
 export type ToolErrorClass =
@@ -54,7 +53,6 @@ export interface AgentObservationPayload {
 	toolIndex: number;
 	askOptions: string[];
 	stepId: string;
-	outcome: ToolObservationOutcome;
 	idempotency: ToolRetrySafety;
 	operationScope: ToolOperationScope;
 	renderer: string;
@@ -264,13 +262,6 @@ function isOneOf<const Values extends readonly string[]>(
 	return typeof value === 'string' && values.includes(value);
 }
 
-const TOOL_OBSERVATION_OUTCOMES = [
-	'succeeded',
-	'failed',
-	'cancelled',
-	'timed_out',
-	'unknown',
-] as const;
 const TOOL_RESULT_OUTCOMES = [
 	'succeeded',
 	'failed',
@@ -431,7 +422,6 @@ export function mapAgentEvent(
 			const toolIndex = requiredNumber(payload, 'tool_index');
 			const askOptions = stringArray(payload.ask_options) ? payload.ask_options : null;
 			const stepId = requiredString(payload, 'step_id');
-			const outcome = payload.outcome;
 			const idempotency = payload.idempotency;
 			const operationScope = payload.operation_scope;
 			const renderer = requiredString(payload, 'renderer');
@@ -448,7 +438,6 @@ export function mapAgentEvent(
 				askOptions === null ||
 				stepId === null ||
 				renderer === null ||
-				!isOneOf(outcome, TOOL_OBSERVATION_OUTCOMES) ||
 				!isOneOf(idempotency, TOOL_RETRY_SAFETY) ||
 				!isOneOf(operationScope, TOOL_OPERATION_SCOPES) ||
 				(toolCallId !== null && typeof toolCallId !== 'string') ||
@@ -469,7 +458,6 @@ export function mapAgentEvent(
 					toolIndex,
 					askOptions,
 					stepId,
-					outcome,
 					idempotency,
 					operationScope,
 					renderer,

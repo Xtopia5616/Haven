@@ -118,10 +118,12 @@
 	});
 
 	const TERMINAL_TOOL_RUN = new Set<string>(['completed', 'failed', 'cancelled']);
-	// Agent observation outcomes use `succeeded`; durable ToolRun lifecycle uses
-	// `completed`. Project the Agent result into the shared card display state.
-	const AGENT_TOOL_OUTCOME_DISPLAY_STATES: Record<string, string> = {
+	// Tool result outcomes use a richer enum than the shared card display state.
+	// Project the canonical result value before rendering it beside ToolRun status.
+	const TOOL_RESULT_OUTCOME_DISPLAY_STATES: Record<string, string> = {
 		succeeded: 'completed',
+		timed_out_and_terminated: 'timed_out',
+		timed_out_unknown: 'unknown',
 	};
 	const TOOL_STATE_LABELS: Record<string, string> = {
 		running: '执行中',
@@ -157,7 +159,7 @@
 	let effectiveOutcome = $derived(outcome || result?.outcome || toolRunOutcome || null);
 	let toolState: string = $derived.by(() => {
 		const outcome = effectiveOutcome || (liveStreaming ? 'running' : 'completed');
-		return AGENT_TOOL_OUTCOME_DISPLAY_STATES[outcome] || outcome;
+		return TOOL_RESULT_OUTCOME_DISPLAY_STATES[outcome] || outcome;
 	});
 	let toolStateLabel = $derived(TOOL_STATE_LABELS[toolState] || toolState);
 	// Preview chunks are a display-only side channel. They may briefly be empty

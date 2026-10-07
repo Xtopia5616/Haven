@@ -707,3 +707,4 @@
 - [0716：集中屏幕阅读器隐藏文本样式](0716-centralize-sr-only-utility.md)
 - [0717：统一 Tool result 元信息类与样式 owner](0717-unify-tool-result-meta-style.md)
 - [0718：统一 ToolRun 身份字段名](0718-unify-tool-run-identity-field-name.md)
+- [0719：Agent observation 使用唯一执行 outcome 来源](0719-agent-observation-single-outcome-source.md)

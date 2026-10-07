@@ -70,16 +70,14 @@ pub enum AgentEvent {
         /// Same `step-*` id the matching `ToolCall` event carried, so the live
         /// tool card keeps one id through placeholder → fill → DB badge.
         step_id: String,
-        /// Durable terminal execution outcome for the tool card.
-        outcome: String,
         /// Replay policy of the concrete operation, not just its tool name.
         idempotency: String,
         /// Whether the operation targets session-local or global state.
         operation_scope: String,
         /// Backend-owned renderer selected from the operation manifest.
         renderer: String,
-        /// Stable result metadata; operation-specific payload stays in
-        /// `observation` and is not forced into a shared output schema.
+        /// Canonical execution metadata, including the UI outcome. The
+        /// operation-specific payload stays in `observation`.
         result: ToolResultEnvelope,
         /// Sequence of the committed `session_events` row that produced this
         /// UI projection.

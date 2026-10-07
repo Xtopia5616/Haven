@@ -152,6 +152,31 @@ mod tests {
     }
 
     #[test]
+    fn agent_observation_uses_the_result_envelope_as_its_only_outcome_source() {
+        let event = AgentEvent::Observation {
+            session_id: "ses-1".into(),
+            observation: "operation result".into(),
+            tool_name: "files.read".into(),
+            step_number: 1,
+            run_id: 1,
+            silent: false,
+            tool_call_id: Some("call-1".into()),
+            tool_index: 0,
+            ask_options: Vec::new(),
+            step_id: "step-1".into(),
+            idempotency: "idempotent".into(),
+            operation_scope: "session".into(),
+            renderer: "files".into(),
+            result: haven_tools::ToolResultEnvelope::default(),
+            event_seq: Some(1),
+        };
+
+        let payload = TauriEmitter::payload(&event, None);
+        assert_eq!(payload["result"]["outcome"], "failed");
+        assert!(payload.get("outcome").is_none());
+    }
+
+    #[test]
     fn session_lifecycle_variants_share_one_channel_and_keep_terminal_details_typed() {
         let completed = AgentEvent::SessionCompleted {
             session_id: "ses-completed".into(),
@@ -337,7 +362,6 @@ impl TauriEmitter {
                 tool_index,
                 ask_options,
                 step_id,
-                outcome,
                 idempotency,
                 operation_scope,
                 renderer,
@@ -354,7 +378,6 @@ impl TauriEmitter {
                 tool_index: *tool_index,
                 ask_options: ask_options.clone(),
                 step_id: step_id.clone(),
-                outcome: outcome.clone(),
                 idempotency: idempotency.clone(),
                 operation_scope: operation_scope.clone(),
                 renderer: renderer.clone(),

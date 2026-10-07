@@ -452,6 +452,21 @@ describe('ToolResultCard outcomes', () => {
 			container.querySelector('[data-detail="output"] .tool-result-message')?.textContent,
 		).toBe('调用失败');
 	});
+
+	it.each([
+		['timed_out_and_terminated', '执行超时', 'timed_out'],
+		['timed_out_unknown', '结果未知，可能已执行', 'unknown'],
+	])('projects canonical result outcome %s into the card status', (outcome, label, state) => {
+		const { container } = render(ToolResultCard, {
+			toolName: 'messaging',
+			content: 'request timed out',
+			result: { outcome },
+		});
+
+		const headerState = container.querySelector('.tool-header-state');
+		expect(headerState?.textContent).toContain(label);
+		expect(headerState?.getAttribute('data-state')).toBe(state);
+	});
 });
 
 describe('ToolResultCard shell / notify / generic', () => {

@@ -36,9 +36,7 @@ use crate::types::{ToolCall, TranscriptRecord, canonical_for_snapshot_with_media
 use haven_common::types::InjectSource;
 use haven_common::types::{CanonicalToolCall, MessageAttachment};
 use haven_memory::{CURRENT_EVENT_VERSION, SessionCommitted, SessionEvent, TRANSCRIPT_EVENT_TYPE};
-use haven_tools::{
-    OperationIdempotency, ToolExecutionOutcome, ToolOperationScope, ToolResultEnvelope,
-};
+use haven_tools::{OperationIdempotency, ToolOperationScope, ToolResultEnvelope};
 use serde_json::Value;
 use std::sync::Arc;
 
@@ -73,7 +71,6 @@ pub(super) struct ObservationCard {
     pub tool_index: u32,
     pub silent: bool,
     pub ask_options: Vec<String>,
-    pub outcome: ToolExecutionOutcome,
     pub idempotency: OperationIdempotency,
     pub operation_scope: ToolOperationScope,
     pub renderer: String,
@@ -281,7 +278,6 @@ fn committed_ui_for(event: &TranscriptEvent) -> Option<CommittedUi> {
                 tool_index: card.tool_index,
                 silent: card.silent,
                 ask_options: card.ask_options.clone(),
-                outcome: card.outcome.as_str().to_owned(),
                 idempotency: card.idempotency.as_str().to_owned(),
                 operation_scope: card.operation_scope.as_str().to_owned(),
                 renderer: card.renderer.clone(),
@@ -1399,7 +1395,6 @@ mod tests {
                         tool_index: 0,
                         silent: false,
                         ask_options: vec![],
-                        outcome: haven_tools::ToolExecutionOutcome::Succeeded,
                         idempotency: haven_tools::OperationIdempotency::Idempotent,
                         operation_scope: haven_tools::ToolOperationScope::Session,
                         renderer: "generic".into(),
@@ -1535,7 +1530,6 @@ mod tests {
                         tool_index: 0,
                         silent: false,
                         ask_options: vec!["A".into(), "B".into()],
-                        outcome: haven_tools::ToolExecutionOutcome::Succeeded,
                         idempotency: haven_tools::OperationIdempotency::Idempotent,
                         operation_scope: haven_tools::ToolOperationScope::Session,
                         renderer: "generic".into(),

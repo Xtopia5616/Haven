@@ -211,7 +211,6 @@ impl ToolBatchState {
                 tool_index,
                 silent,
                 ask_options,
-                outcome,
                 idempotency,
                 operation_scope,
                 renderer,

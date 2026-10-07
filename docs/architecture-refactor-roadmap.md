@@ -74,7 +74,7 @@
 
 | 状态 | 当前项 |
 |---|---|
-| **Active / Next** | **Active：全项目领域术语与架构角色命名收敛**，见 §5.7。本轮已开始全仓盘点 Rust、Svelte/TypeScript、IPC 与架构文档；已完成 Tool result/ExpandableContextCard 样式 owner 合并与若干概念改名，继续基于 owner/生命周期/不变量证据逐域审查。暂无后续 Next。 |
+| **Active / Next** | **Active：全项目领域术语与架构角色命名收敛**，见 §5.7。本轮已开始全仓盘点 Rust、Svelte/TypeScript、IPC 与架构文档；已完成 Tool result/ExpandableContextCard 样式 owner 合并与若干概念改名，并在 ADR 0718/0719 收敛 ToolRun 身份和 Agent observation outcome 来源；继续基于 owner/生命周期/不变量证据逐域审查。暂无后续 Next。 |
 | **Gate** | Windows 发布验收 Open，见 §5.1。 |
 
 ### 5.1 Windows 发布验收（Gate / Open）
@@ -371,6 +371,7 @@
 | 四个 UI 组件重复 `.sr-only` accessibility helper | InputRouter、ToolRunCenter、MemoryRecall 与 ToolsView 的屏幕阅读器专用文本使用完全相同的隐藏定位、裁剪、尺寸与边框规则。 | **集中无障碍隐藏工具类**：全局 `app.css` 唯一拥有 `.sr-only` 规则，组件继续提供各自语义 label（ADR 0716）。 |
 | Tool result 元信息类名与样式 owner 分散 | 14 个 renderer 使用 `.tool-card-meta`，但元信息属于结果内容而非卡片；Agent、Clipboard、File、HTTP、Runs、Schedule、System、WebSearch 的 compact 样式最终完全相同。Clipboard、Runs、Schedule 还残留被后续小字号覆盖的旧 medium 声明。Input、Media、Memory、Shell 的实际排版不同；Process 与 Window 没有对应局部 CSS。 | **统一结果元信息术语与样式 owner**：统一用 `.tool-result-meta`，compact、input、media、memory、shell 五个 modifier 由 `app.css` 拥有；无样式差异的 Process、Window 保留基础标记，不引入新样式（ADR 0717）。 |
 | ToolRun 身份字段在持久行、事件与定时结果间漂移 | `ToolRunRow` / `ScheduledToolRunRow`、`ToolRunView`、Tauri `ToolRunEvent` 与 UI payload 曾用泛名 `id`；定时 set/cancel 与 schedule status 则输出 `tool_run_id`，status 投影还重复输出两种 key，测试投影保留 scheduled-only `id` 别名。前端 contract/store 已覆盖真实 payload，但一个 Session activity renderer 仍读取 `ToolRunPayload.id`。 | **统一 ToolRun 实体身份名**：Rust/JSON/IPC 使用 `tool_run_id`，UI DTO 使用 `toolRunId`；删除重复 `id` 与 `cancelled: <id>` 输出以及旧字段读取。物理列 `tool_runs.id` 保留，Tauri envelope 的数值 `event.id` 不变；无数据库 schema 变化（ADR 0718）。 |
+| Agent observation 重复承载 execution outcome | `AgentEvent::Observation` / committed UI 投影在顶层输出 `outcome: String`，同时 `result: ToolResultEnvelope` 已携带同一执行结果；前者用 `ToolExecutionOutcome::as_str()` 缩略成 `timed_out` / `unknown`，后者保留完整 enum。UI mapper 两边都校验，card 优先取顶层值；App 通道测试还可构造顶层成功、nested 默认失败的不一致 payload。 | **以结果 envelope 为唯一来源**：删除 observation 和 committed UI 投影中的顶层 outcome；UI 卡片从 `result.outcome` 映射展示状态。恢复历史仍可读 `session_steps.status`，该字段是持久化展示投影而非第二个 event 来源；数据库 schema 和 canonical transcript 不变（ADR 0719）。 |
 | Rust 与 UI 的 Tauri event channel 目录重复 | Rust `events.rs` 定义 35 个 channel；五个 UI contract 手写相同名称，Session mapper/listener 另写 lifecycle channel；旧门禁仅比较两份列表，recording 测试也复制一组 literal。 | **Rust 事件目录生成 UI 名称清单**：五个域 array 和 Session listener 直接消费 `generatedCommands.ts`；payload map、校验与 UI 投影仍由各域拥有，门禁比较 Rust 常量与生成清单（ADR 0699）。 |
 
 此表是候选分流清单，不是完整符号目录。尚未完成的 crate、IPC/event payload、UI controller/store 与函数动词审计仍在 §5.7 范围内；完成一域后更新本表并以 ADR 记录实际迁移。

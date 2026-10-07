@@ -69,7 +69,6 @@ fn channel_maps_every_variant_to_expected_channel() {
                 ask_options: vec![],
                 step_id: "step-1".into(),
                 tool_index: 0,
-                outcome: "succeeded".into(),
                 idempotency: "idempotent".into(),
                 operation_scope: "session".into(),
                 renderer: "generic".into(),

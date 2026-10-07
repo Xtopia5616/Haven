@@ -344,7 +344,6 @@ export function reduceAgent(inputState: SessionReducerState, action: AgentReduce
 					toolName: payload.toolName,
 					content: payload.observation,
 					askOptions: payload.askOptions || [],
-					outcome: payload.outcome,
 					renderer: payload.renderer,
 					result: payload.result,
 					toolRunId: toolRunIdFromObservation(payload.observation),
