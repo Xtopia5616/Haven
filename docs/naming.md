@@ -1,6 +1,6 @@
 # Haven 命名规范
 
-> 版本: v1.117 | 日期: 2026-10-07
+> 版本: v1.119 | 日期: 2026-10-07
 
 本文档统一 Haven 项目各层的命名规则（变量名、函数名、文件名、crate 名、缩写大小写、跨层边界）。规范以现有代码中的事实模式为基础，新代码必须遵循；存量代码若与规范冲突，逐步迁移对齐。
 
@@ -34,6 +34,7 @@
 - **Tool result 共用纯格式化**：跨 renderer 相同的 byte-size 与 percentage 表示使用 `formatByteSize` / `clampPercentage`；具体 payload 字段解析仍归各自 renderer（ADR 0697）。
 - **Tool result 列表与滚动展示分层**：`ToolResultList` 负责分页和“显示更多”；`.tool-result-scroll-area` 负责共享限高滚动样式，不单独建无逻辑组件。各 renderer 可通过 `--tool-result-scroll-max-height` 调整本地高度；分页与滚动仍是不同职责（ADR 0704/0705）。
 - **Tool result section label 只有一个样式 owner**：渲染器标题和计数统一使用 `.tool-result-label`，由 `ui/src/app.css` 定义。原 `.tool-card-count` 不只表示计数，不再用含义过窄的 card/count 名称或重复组件 CSS（ADR 0706）。
+- **Tool result 正文预览共用样式**：文本/JSON 内容使用 `.tool-result-preview` 全局样式；renderer 只通过 `--tool-result-preview-max-height` 和 `--tool-result-preview-line-height` 表达确有差异的布局，不重复定义预览外观（ADR 0707）。
 - **Untrusted record 识别共用一个 guard**：所有边界把未知值收窄到非空、非数组的 `Record<string, unknown>` 时使用 `isRecord`；字段语义校验继续留在各自 contract（ADR 0698）。
 - **Tauri event channel 名使用生成目录**：UI 的 App、Agent、recording、Session 与 ToolRun event-name arrays 从 Rust `events.rs` 常量生成；payload map、运行时校验与 renderer 投影仍归各域 contract（ADR 0699）。
 - **动态交互响应区分 wire 与 renderer view**：交互 envelope 的通用 `response` 保持 `unknown`；当某一交互类型在 UI 中具有稳定投影时，将 shape 命名为领域 view 并跨 reducer、controller、消息与组件复用。Ask 的答案/忽略结果统一为 `AskResponseView`，不在各层重复内联字段（ADR 0644）。

@@ -33,7 +33,7 @@
 		<p class="tool-card-empty">剪贴板历史为空</p>
 	{/if}
 {:else if typeof data.content === 'string' && data.content}
-	<pre class="content-preview">{data.content}</pre>
+	<pre class="tool-result-preview">{data.content}</pre>
 {:else}
 	<p class="tool-card-empty">剪贴板为空</p>
 {/if}
@@ -74,19 +74,5 @@
 		font-size: var(--md-sys-typescale-label-small-size);
 		line-height: var(--md-sys-typescale-label-small-line-height);
 		color: var(--md-sys-color-on-surface-variant);
-	}
-	.content-preview {
-		background: var(--md-sys-color-surface-container-high);
-		color: var(--md-sys-color-on-surface-variant);
-		padding: var(--md-sys-space-xs) var(--md-sys-space-sm);
-		border-radius: var(--md-sys-shape-small);
-		font-family: var(--md-sys-typescale-mono);
-		font-size: var(--md-sys-typescale-code-size);
-		line-height: var(--md-sys-typescale-code-line-height);
-		white-space: pre-wrap;
-		word-break: break-word;
-		max-height: 180px;
-		overflow-y: auto;
-		margin: var(--md-sys-space-xs) 0 0;
 	}
 </style>

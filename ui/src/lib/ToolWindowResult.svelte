@@ -83,7 +83,7 @@
 		<span class="window-op">{data.success === false ? 'OCR 失败' : 'OCR 完成'}</span
 		>{#if mediaAssetId}<span class="window-asset">{mediaAssetId}</span>{/if}
 	</div>
-	{#if mediaText}<pre class="content-preview">{mediaText}</pre>{:else if data.reason}<p
+	{#if mediaText}<pre class="tool-result-preview">{mediaText}</pre>{:else if data.reason}<p
 			class="tool-card-empty"
 		>
 			{data.reason}

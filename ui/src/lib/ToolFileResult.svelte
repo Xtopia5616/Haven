@@ -66,7 +66,7 @@
 		>
 		{#if data.path}<ExternalRef class="file-path" target={data.path} />{/if}
 	</div>
-	{#if data.description}<pre class="content-preview">{data.description}</pre>{/if}
+	{#if data.description}<pre class="tool-result-preview">{data.description}</pre>{/if}
 	{#if data.reason}<p class="tool-card-empty">{data.reason}</p>{/if}
 {:else if data.binary}
 	<div class="file-row">
@@ -85,14 +85,14 @@
 		>
 		{#if data.path}<ExternalRef class="file-path" target={data.path} />{/if}
 	</div>
-	{#if data.summary}<pre class="content-preview">{data.summary}</pre>{/if}
+	{#if data.summary}<pre class="tool-result-preview">{data.summary}</pre>{/if}
 	{#if data.reason}<p class="tool-card-empty">{data.reason}</p>{/if}
 {:else if data.too_large}
 	<div class="file-row">
 		<span class="file-op">文件过大</span><ExternalRef class="file-path" target={data.path} />
 	</div>
 	{#if typeof data.content === 'string' && data.content}
-		<pre class="content-preview">{data.content}</pre>
+		<pre class="tool-result-preview">{data.content}</pre>
 	{/if}
 {:else if data.warning || data.error}
 	<div class="file-row">
@@ -121,7 +121,7 @@
 	<div class="tool-card-meta">{operationLabel}</div>
 	<JsonView value={data} defaultDepth={1} />
 {:else if rawText}
-	<pre class="content-preview">{rawText}</pre>
+	<pre class="tool-result-preview">{rawText}</pre>
 {:else if Array.isArray(data.entries)}
 	<div class="tool-result-label">{data.count ?? data.entries.length} 项</div>
 	{#if data.entries.length > 0}
@@ -142,7 +142,7 @@
 		{data.size != null ? `${formatByteSize(data.size)} · ` : ''}读取完成
 	</div>
 	{#if typeof data.content === 'string' && data.content}
-		<pre class="content-preview">{data.content}</pre>
+		<pre class="tool-result-preview">{data.content}</pre>
 	{/if}
 {/if}
 
@@ -218,19 +218,5 @@
 		font-weight: 700;
 		line-height: var(--md-sys-typescale-label-small-line-height);
 		color: var(--md-sys-color-secondary);
-	}
-	.content-preview {
-		background: var(--md-sys-color-surface-container-high);
-		color: var(--md-sys-color-on-surface-variant);
-		padding: var(--md-sys-space-xs) var(--md-sys-space-sm);
-		border-radius: var(--md-sys-shape-small);
-		font-family: var(--md-sys-typescale-mono);
-		font-size: var(--md-sys-typescale-code-size);
-		line-height: var(--md-sys-typescale-code-line-height);
-		white-space: pre-wrap;
-		word-break: break-word;
-		max-height: 180px;
-		overflow-y: auto;
-		margin: var(--md-sys-space-xs) 0 0;
 	}
 </style>

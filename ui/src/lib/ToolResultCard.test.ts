@@ -471,7 +471,7 @@ describe('ToolResultCard shell / notify / generic', () => {
 			content: JSON.stringify({ output: 'line1\nline2', truncated: true }),
 		});
 		await expandToolCard(container);
-		expect(container.querySelector('.content-preview')!.textContent).toBe('line1\nline2');
+		expect(container.querySelector('.tool-result-preview')!.textContent).toBe('line1\nline2');
 		expect(screen.getByText('输出过长已截断')).toBeTruthy();
 	});
 
@@ -532,7 +532,7 @@ describe('ToolResultCard raw', () => {
 		});
 		await expandToolCard(container);
 		expect(screen.getByText('媒体')).toBeTruthy();
-		expect(container.querySelector('.content-preview')!.textContent).toContain(
+		expect(container.querySelector('.tool-result-preview')!.textContent).toContain(
 			'some plain text',
 		);
 	});
@@ -543,8 +543,8 @@ describe('ToolResultCard raw', () => {
 			content: JSON.stringify([1, 2, { a: 'b' }]),
 		});
 		await expandToolCard(container);
-		expect(container.querySelector('.content-preview')!.textContent).toContain('"a"');
-		expect(container.querySelector('.content-preview')!.textContent).toContain('"b"');
+		expect(container.querySelector('.tool-result-preview')!.textContent).toContain('"a"');
+		expect(container.querySelector('.tool-result-preview')!.textContent).toContain('"b"');
 	});
 });
 
@@ -1107,6 +1107,7 @@ describe('ToolResultCard window', () => {
 		expect(screen.getByText('OCR 完成')).toBeTruthy();
 		expect(screen.getByText('asset-0123456789abcdef0123456789abcdef')).toBeTruthy();
 		expect(screen.getByText('窗口中的文字')).toBeTruthy();
+		expect(container.querySelector('.tool-result-preview')?.textContent).toBe('窗口中的文字');
 	});
 });
 

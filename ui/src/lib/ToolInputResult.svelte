@@ -29,7 +29,7 @@
 	<div class="input-action">
 		<span class="input-badge">{label}</span><span>{data.chars ?? 0} 个字符</span>
 	</div>
-	{#if data.typed}<pre class="content-preview">{data.typed}</pre>{/if}
+	{#if data.typed}<pre class="tool-result-preview">{data.typed}</pre>{/if}
 {:else if data.operation === 'key'}
 	<div class="input-action">
 		<span class="input-badge">{label}</span><code>{data.pressed || '—'}</code>
@@ -76,17 +76,8 @@
 		color: var(--md-sys-color-on-surface-variant);
 		font-size: var(--md-sys-typescale-label-small-size);
 	}
-	.content-preview {
-		max-height: 120px;
-		margin: var(--md-sys-space-xs) 0 0;
-		padding: var(--md-sys-space-xs) var(--md-sys-space-sm);
-		overflow-y: auto;
-		white-space: pre-wrap;
-		word-break: break-word;
-		border-radius: var(--md-sys-shape-small);
-		background: var(--md-sys-color-surface-container-high);
-		color: var(--md-sys-color-on-surface-variant);
-		font-family: var(--md-sys-typescale-mono);
-		font-size: var(--md-sys-typescale-code-size);
+	.tool-result-preview {
+		--tool-result-preview-max-height: 120px;
+		--tool-result-preview-line-height: normal;
 	}
 </style>

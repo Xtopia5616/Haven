@@ -26,7 +26,7 @@
 
 {#if data.auto && typeof data.text === 'string'}
 	<div class="tool-result-label">自动收到同伴消息（低信任）</div>
-	<pre class="content-preview">{data.text}</pre>
+	<pre class="tool-result-preview">{data.text}</pre>
 {:else if Array.isArray(data.agents)}
 	<div class="tool-result-label">{data.agents.length} 个同伴</div>
 	{#if data.agents.length > 0}
@@ -70,13 +70,13 @@
 		</div>{/if}
 {:else if data.reply}
 	<div class="tool-result-label">收到回复</div>
-	<pre class="content-preview">{typeof data.reply === 'string'
+	<pre class="tool-result-preview">{typeof data.reply === 'string'
 			? data.reply
 			: JSON.stringify(data.reply, null, 2)}</pre>
 {:else if typeof data.text === 'string' && data.text}
-	<pre class="content-preview">{data.text}</pre>
+	<pre class="tool-result-preview">{data.text}</pre>
 {:else}
-	<pre class="content-preview">{JSON.stringify(data, null, 2)}</pre>
+	<pre class="tool-result-preview">{JSON.stringify(data, null, 2)}</pre>
 {/if}
 
 <style>
@@ -91,20 +91,6 @@
 		font-size: var(--md-sys-typescale-label-medium-size);
 		line-height: var(--md-sys-typescale-label-medium-line-height);
 		color: var(--md-sys-color-on-surface-variant);
-	}
-	.content-preview {
-		background: var(--md-sys-color-surface-container-high);
-		color: var(--md-sys-color-on-surface-variant);
-		padding: var(--md-sys-space-xs) var(--md-sys-space-sm);
-		border-radius: var(--md-sys-shape-small);
-		font-family: var(--md-sys-typescale-mono);
-		font-size: var(--md-sys-typescale-code-size);
-		line-height: var(--md-sys-typescale-code-line-height);
-		white-space: pre-wrap;
-		word-break: break-word;
-		max-height: 180px;
-		overflow-y: auto;
-		margin: var(--md-sys-space-xs) 0 0;
 	}
 	.action-row {
 		display: flex;
