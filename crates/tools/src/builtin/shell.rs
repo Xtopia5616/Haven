@@ -9,7 +9,7 @@ use tokio_util::sync::CancellationToken;
 use crate::live_output::LiveOutputHub;
 use crate::{
     BackgroundShellRequest, ToolRunService, append_windows_diagnostics, build_shell_command_silent,
-    collect_byte_cap, is_progress_clixml, read_stream_capped, sanitize_shell_output,
+    collect_byte_cap, is_progress_clixml, read_stream_text_capped, sanitize_shell_output,
     summarize_error, write_output_log,
 };
 use crate::{Tool, ToolExecutionMode, ToolExecutionOutcome, ToolResult};
@@ -211,23 +211,22 @@ impl ShellTool {
             (None, None)
         };
         let stdout_fut =
-            read_stream_capped(child.stdout.take(), max_collect, tail.as_ref().cloned());
+            read_stream_text_capped(child.stdout.take(), max_collect, tail.as_ref().cloned());
         let stderr_fut =
-            read_stream_capped(child.stderr.take(), max_collect, tail.as_ref().cloned());
+            read_stream_text_capped(child.stderr.take(), max_collect, tail.as_ref().cloned());
         // Read both pipes concurrently: reading stdout to EOF first can
         // deadlock when the child fills the stderr pipe buffer meanwhile.
         // Keep the whole wait/read operation inside the cancellation race so
         // a foreground shell call does not ignore user cancellation.
         let command_result = async {
-            let ((stdout, stdout_overflow), (stderr, stderr_overflow)) =
-                tokio::join!(stdout_fut, stderr_fut);
+            let (stdout, stderr) = tokio::join!(stdout_fut, stderr_fut);
             if let Some(flag) = &running {
                 flag.store(false, std::sync::atomic::Ordering::Relaxed);
             }
             let status = child.wait().await?;
-            anyhow::Ok(((stdout, stdout_overflow), (stderr, stderr_overflow), status))
+            anyhow::Ok((stdout, stderr, status))
         };
-        let ((stdout, stdout_overflow), (stderr, stderr_overflow), status) = tokio::select! {
+        let (stdout, stderr, status) = tokio::select! {
             result = command_result => result?,
             _ = cancel.cancelled() => {
                 let _ = child.kill().await;
@@ -238,22 +237,22 @@ impl ShellTool {
             }
         };
 
+        let truncated = stdout.overflowed || stderr.overflowed;
         let mut raw_combined = String::new();
-        if !stdout.is_empty() {
-            raw_combined.push_str(&stdout);
+        if !stdout.text.is_empty() {
+            raw_combined.push_str(&stdout.text);
         }
-        if !stderr.is_empty() {
+        if !stderr.text.is_empty() {
             if !raw_combined.is_empty() {
                 raw_combined.push('\n');
             }
-            raw_combined.push_str(&stderr);
+            raw_combined.push_str(&stderr.text);
         }
         // Strip PowerShell's NativeCommandError / CLIXML formatting noise so
         // the reported text carries the real output, not the wrapper.
         let combined = sanitize_shell_output(&raw_combined, &shell);
 
         let (text, _) = haven_common::encoding::truncate_output(&combined, max_chars);
-        let truncated = stdout_overflow || stderr_overflow;
         let exit_code = status.code();
         let mut output = serde_json::json!({"output": text, "shell": shell});
         if let Some(code) = exit_code {
@@ -272,17 +271,17 @@ impl ShellTool {
             // capture so the root cause stays recoverable. Error text is
             // condensed (progress bars dropped, tail kept) and a Windows-trap
             // hint is appended when it matches a common pitfall.
-            let sanitized_stderr = sanitize_shell_output(&stderr, &shell);
+            let sanitized_stderr = sanitize_shell_output(&stderr.text, &shell);
             let err_source = if !sanitized_stderr.trim().is_empty() {
                 sanitized_stderr.as_str()
             } else if !text.trim().is_empty() {
                 text.as_str()
-            } else if is_progress_clixml(&stderr) {
+            } else if is_progress_clixml(&stderr.text) {
                 // Progress-only CLIXML already sanitized to empty — do not
                 // reintroduce the noise via the raw stderr fallback.
                 ""
             } else {
-                stderr.as_str()
+                stderr.text.as_str()
             };
             let mut err_text = summarize_error(err_source, 2000);
             let code_str = exit_code

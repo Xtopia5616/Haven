@@ -152,7 +152,7 @@ pub use output::{
     CappedText, OutputBudget, ToolOutput, append_windows_diagnostics, is_progress_clixml,
     sanitize_shell_output, summarize_error,
 };
-pub(crate) use process::read_stream_capped;
+pub(crate) use process::read_stream_text_capped;
 pub use registry::{
     DeferredToolCatalog, OperationRegistry, RegistryProbe, SessionToolOverlay, ToolCatalogSnapshot,
     ToolCatalogVersion, ToolRegistry,

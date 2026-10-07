@@ -1,4 +1,4 @@
-use crate::process::read_stream_capped_with;
+use crate::process::{CappedStreamRead, drain_stream_with_byte_cap};
 use crate::tool_contract::ToolResult;
 use haven_common::config::SkillsExecConfig;
 use haven_common::encoding;
@@ -13,6 +13,12 @@ use tokio_util::sync::CancellationToken;
 /// continue draining after the cap so a child can never deadlock on a full
 /// pipe merely because its result is too large for Haven to keep.
 const MAX_SKILL_STREAM_BYTES: usize = 8 * 1024 * 1024;
+
+struct SkillProcessOutput {
+    exit_status: std::process::ExitStatus,
+    stdout: CappedStreamRead,
+    stderr: CappedStreamRead,
+}
 
 /// Sandbox executor for skill scripts (M4-02).
 ///
@@ -140,7 +146,7 @@ impl SkillRunner {
         // Feed stdin, drain both output pipes, and wait for process exit as one
         // deadline-bound operation. Waiting first can deadlock when a child
         // fills either OS pipe before it exits.
-        let (exit_status, stdout_buf, stdout_overflowed, stderr_buf, stderr_overflowed) = tokio::select! {
+        let process_output = tokio::select! {
             result = async {
                 use tokio::io::AsyncWriteExt;
 
@@ -151,12 +157,12 @@ impl SkillRunner {
                     }
                     Ok::<(), std::io::Error>(())
                 };
-                let read_stdout = read_stream_capped_with(
+                let read_stdout = drain_stream_with_byte_cap(
                     stdout,
                     MAX_SKILL_STREAM_BYTES,
                     |_| {},
                 );
-                let read_stderr = read_stream_capped_with(
+                let read_stderr = drain_stream_with_byte_cap(
                     stderr,
                     MAX_SKILL_STREAM_BYTES,
                     |_| {},
@@ -172,16 +178,16 @@ impl SkillRunner {
                         sanitize_error_text(&error.to_string())
                     )
                 })?;
-                let (stdout_buf, stdout_overflowed, stdout_error) = stdout;
-                if let Some(error) = stdout_error {
+                let mut stdout = stdout;
+                if let Some(error) = stdout.error.take() {
                     anyhow::bail!(
                         "failed to read stdout from skill '{}': {}",
                         pid_label,
                         sanitize_error_text(&error.to_string())
                     );
                 }
-                let (stderr_buf, stderr_overflowed, stderr_error) = stderr;
-                if let Some(error) = stderr_error {
+                let mut stderr = stderr;
+                if let Some(error) = stderr.error.take() {
                     anyhow::bail!(
                         "failed to read stderr from skill '{}': {}",
                         pid_label,
@@ -195,13 +201,11 @@ impl SkillRunner {
                         sanitize_error_text(&error.to_string())
                     )
                 })?;
-                Ok::<_, anyhow::Error>((
+                Ok::<_, anyhow::Error>(SkillProcessOutput {
                     exit_status,
-                    stdout_buf,
-                    stdout_overflowed,
-                    stderr_buf,
-                    stderr_overflowed,
-                ))
+                    stdout,
+                    stderr,
+                })
             } => result?,
             _ = cancel.cancelled() => {
                 // Dropping the child and its containment guard terminates the
@@ -226,11 +230,12 @@ impl SkillRunner {
             )));
         }
 
-        if stdout_overflowed || stderr_overflowed {
-            let stdout_preview =
-                encoding::decode_lossy(&stdout_buf[..stdout_buf.len().min(8 * 1024)]);
+        if process_output.stdout.overflowed || process_output.stderr.overflowed {
+            let stdout_preview = encoding::decode_lossy(
+                &process_output.stdout.bytes[..process_output.stdout.bytes.len().min(8 * 1024)],
+            );
             let stderr_preview = sanitize_error_text(&encoding::decode_lossy(
-                &stderr_buf[..stderr_buf.len().min(8 * 1024)],
+                &process_output.stderr.bytes[..process_output.stderr.bytes.len().min(8 * 1024)],
             ));
             return Ok(ToolResult::failed(
                 serde_json::json!({
@@ -245,9 +250,9 @@ impl SkillRunner {
             ));
         }
 
-        let stdout = encoding::decode_lossy(&stdout_buf);
-        let stderr = encoding::decode_lossy(&stderr_buf);
-        let exit_code = exit_status.code().unwrap_or(-1);
+        let stdout = encoding::decode_lossy(&process_output.stdout.bytes);
+        let stderr = encoding::decode_lossy(&process_output.stderr.bytes);
+        let exit_code = process_output.exit_status.code().unwrap_or(-1);
 
         let out_line_count = stdout.lines().take(max_lines.saturating_add(1)).count();
         let err_line_count = stderr.lines().take(max_lines.saturating_add(1)).count();

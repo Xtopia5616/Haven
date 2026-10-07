@@ -1,5 +1,18 @@
 use crate::tool_run_output::ToolRunOutputTail;
 
+/// Decoded stream text retained within its byte cap.
+pub(crate) struct CappedStreamText {
+    pub(crate) text: String,
+    pub(crate) overflowed: bool,
+}
+
+/// Retained stream bytes plus overflow and read-error state.
+pub(crate) struct CappedStreamRead {
+    pub(crate) bytes: Vec<u8>,
+    pub(crate) overflowed: bool,
+    pub(crate) error: Option<std::io::Error>,
+}
+
 /// Terminate a child process together with its whole process tree. On
 /// Windows, dropping a tokio Child only terminates the direct process; the
 /// real command (a grandchild of the cmd.exe/powershell.exe wrapper) would
@@ -25,12 +38,11 @@ pub(crate) async fn kill_process_tree(pid: u32) {
 /// early can make the child fail writes (broken pipe) and flip its exit code.
 /// When `tail` is given, every decoded chunk is also appended to the shared
 /// bounded live-output tail (for `tool_run:output` preview events).
-/// Returns `(text, overflowed)`.
-pub(crate) async fn read_stream_capped<R>(
+pub(crate) async fn read_stream_text_capped<R>(
     stdout: Option<R>,
     max_bytes: usize,
     tail: Option<ToolRunOutputTail>,
-) -> (String, bool)
+) -> CappedStreamText
 where
     R: tokio::io::AsyncRead + Unpin,
 {
@@ -39,7 +51,7 @@ where
     // tail preview. Non-UTF-8 streams (legacy GBK tools) are decoded lossily
     // per chunk and the carry is reset, so it never grows unbounded.
     let mut pending = Vec::new();
-    let (buf, overflowed, _) = read_stream_capped_with(stdout, max_bytes, |chunk| {
+    let read = drain_stream_with_byte_cap(stdout, max_bytes, |chunk| {
         let Some(tail) = tail.as_ref() else {
             return;
         };
@@ -72,25 +84,34 @@ where
         }
     })
     .await;
-    (haven_common::encoding::decode_lossy(&buf), overflowed)
+    // Shell and background ToolRun output keep their existing best-effort
+    // behavior; SkillRunner uses the byte-level result to surface read errors.
+    CappedStreamText {
+        text: haven_common::encoding::decode_lossy(&read.bytes),
+        overflowed: read.overflowed,
+    }
 }
 
 /// Drain a stream to EOF while retaining at most `max_bytes`. Bytes past the
 /// cap are discarded rather than closing the pipe, so the child can continue
 /// writing and finish normally. `on_chunk` observes all bytes, including the
 /// discarded tail, for bounded live previews.
-pub(crate) async fn read_stream_capped_with<R, F>(
+pub(crate) async fn drain_stream_with_byte_cap<R, F>(
     stdout: Option<R>,
     max_bytes: usize,
     mut on_chunk: F,
-) -> (Vec<u8>, bool, Option<std::io::Error>)
+) -> CappedStreamRead
 where
     R: tokio::io::AsyncRead + Unpin,
     F: FnMut(&[u8]),
 {
     use tokio::io::AsyncReadExt;
     let Some(mut stream) = stdout else {
-        return (Vec::new(), false, None);
+        return CappedStreamRead {
+            bytes: Vec::new(),
+            overflowed: false,
+            error: None,
+        };
     };
     let mut buf = Vec::new();
     let mut tmp = [0u8; 8192];
@@ -113,38 +134,48 @@ where
                     overflowed = true;
                 }
             }
-            Err(error) => return (buf, overflowed, Some(error)),
+            Err(error) => {
+                return CappedStreamRead {
+                    bytes: buf,
+                    overflowed,
+                    error: Some(error),
+                };
+            }
         }
     }
-    (buf, overflowed, None)
+    CappedStreamRead {
+        bytes: buf,
+        overflowed,
+        error: None,
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{read_stream_capped, read_stream_capped_with};
+    use super::{drain_stream_with_byte_cap, read_stream_text_capped};
     use crate::tool_run_output::ToolRunOutputPort;
     use std::time::Duration;
 
     #[tokio::test]
-    async fn test_read_stream_capped_under_cap() {
-        let (text, overflowed) = read_stream_capped(Some(&b"hello"[..]), 8192, None).await;
-        assert_eq!(text, "hello");
-        assert!(!overflowed);
+    async fn test_read_stream_text_capped_under_cap() {
+        let output = read_stream_text_capped(Some(&b"hello"[..]), 8192, None).await;
+        assert_eq!(output.text, "hello");
+        assert!(!output.overflowed);
     }
 
     #[tokio::test]
-    async fn test_read_stream_capped_none() {
-        let (text, overflowed) = read_stream_capped::<&[u8]>(None, 8192, None).await;
-        assert_eq!(text, "");
-        assert!(!overflowed);
+    async fn test_read_stream_text_capped_none() {
+        let output = read_stream_text_capped::<&[u8]>(None, 8192, None).await;
+        assert_eq!(output.text, "");
+        assert!(!output.overflowed);
     }
 
     #[tokio::test]
-    async fn test_read_stream_capped_over_cap() {
+    async fn test_read_stream_text_capped_over_cap() {
         let data = vec![b'x'; 1000];
-        let (text, overflowed) = read_stream_capped(Some(&data[..]), 100, None).await;
-        assert_eq!(text.len(), 100);
-        assert!(overflowed);
+        let output = read_stream_text_capped(Some(&data[..]), 100, None).await;
+        assert_eq!(output.text.len(), 100);
+        assert!(output.overflowed);
     }
 
     #[tokio::test]
@@ -159,9 +190,9 @@ mod tests {
             }
         });
 
-        let (bytes, overflowed, read_error) = tokio::time::timeout(
+        let read = tokio::time::timeout(
             Duration::from_secs(2),
-            read_stream_capped_with(Some(reader), 100, |_| {}),
+            drain_stream_with_byte_cap(Some(reader), 100, |_| {}),
         )
         .await
         .expect("reader should drain the full stream");
@@ -170,32 +201,32 @@ mod tests {
             .expect("writer should not block after the retained-output cap")
             .unwrap();
 
-        assert_eq!(bytes, vec![b'x'; 100]);
-        assert!(overflowed);
-        assert!(read_error.is_none());
+        assert_eq!(read.bytes, vec![b'x'; 100]);
+        assert!(read.overflowed);
+        assert!(read.error.is_none());
     }
 
     #[tokio::test]
-    async fn test_read_stream_capped_appends_tail() {
+    async fn test_read_stream_text_capped_appends_tail() {
         let tail = ToolRunOutputPort::new().new_tail().await;
-        let (text, _) =
-            read_stream_capped(Some(&b"hello tail"[..]), 8192, Some(tail.clone())).await;
-        assert_eq!(text, "hello tail");
+        let output =
+            read_stream_text_capped(Some(&b"hello tail"[..]), 8192, Some(tail.clone())).await;
+        assert_eq!(output.text, "hello tail");
         assert_eq!(tail.snapshot().as_str(), "hello tail");
         // A second chunk appends (multi-chunk tee).
-        read_stream_capped(Some(&b" more"[..]), 8192, Some(tail.clone())).await;
+        read_stream_text_capped(Some(&b" more"[..]), 8192, Some(tail.clone())).await;
         assert_eq!(tail.snapshot().as_str(), "hello tail more");
     }
 
     #[tokio::test]
-    async fn test_read_stream_capped_tail_carries_split_multibyte() {
+    async fn test_read_stream_text_capped_tail_carries_split_multibyte() {
         // 8191 ASCII + a 3-byte UTF-8 char: the first 8192-byte read splits the
         // char (lead byte only), the second read finishes it. The live tail must
         // still show the char intact, not GBK-fallback mojibake.
         let tail = ToolRunOutputPort::new().new_tail().await;
         let mut content = "a".repeat(8191);
         content.push('中');
-        read_stream_capped(Some(content.as_bytes()), 10_000, Some(tail.clone())).await;
+        read_stream_text_capped(Some(content.as_bytes()), 10_000, Some(tail.clone())).await;
         let snapshot = tail.snapshot();
         let t = snapshot.as_str();
         assert!(

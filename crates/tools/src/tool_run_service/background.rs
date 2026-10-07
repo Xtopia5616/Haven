@@ -278,33 +278,32 @@ impl ToolRunService {
             let max_collect = collect_byte_cap(max_chars);
             let stdout_tail = runner_tail.clone();
             let stderr_tail = runner_tail.clone();
-            let stdout_fut = read_stream_capped(
+            let stdout_fut = read_stream_text_capped(
                 child.stdout.take(),
                 max_collect,
                 Some(stdout_tail),
             );
-            let stderr_fut = read_stream_capped(
+            let stderr_fut = read_stream_text_capped(
                 child.stderr.take(),
                 max_collect,
                 Some(stderr_tail),
             );
             let run = async {
-                let ((stdout, stdout_overflow), (stderr, stderr_overflow)) =
-                    tokio::join!(stdout_fut, stderr_fut);
+                let (stdout, stderr) = tokio::join!(stdout_fut, stderr_fut);
                 let status = child.wait().await;
-                let mut combined = stdout;
-                if !stderr.is_empty() {
+                let truncated = stdout.overflowed || stderr.overflowed;
+                let mut combined = stdout.text;
+                if !stderr.text.is_empty() {
                     if !combined.is_empty() {
                         combined.push('\n');
                     }
-                    combined.push_str(&stderr);
+                    combined.push_str(&stderr.text);
                 }
                 // Strip PowerShell's NativeCommandError/CLIXML formatting so
                 // the payload carries the real message, not the noise.
                 combined = sanitize_shell_output(&combined, &shell_owned);
                 let exit_code = status.as_ref().ok().and_then(|s| s.code());
                 let success = matches!(status, Ok(s) if s.success());
-                let truncated = stdout_overflow || stderr_overflow;
                 (combined, success, exit_code, truncated)
             };
             tokio::pin!(run);
