@@ -1843,6 +1843,19 @@ select.md-select {
 	box-shadow: var(--md-sys-elevation-3);
 }
 
+/* Visually hidden text remains available to assistive technology. */
+.sr-only {
+	position: absolute;
+	width: 1px;
+	height: 1px;
+	padding: 0;
+	margin: -1px;
+	overflow: hidden;
+	clip: rect(0, 0, 0, 0);
+	white-space: nowrap;
+	border: 0;
+}
+
 /* State layer helper (interactive surfaces) */
 .state-layer {
 	position: relative;
