@@ -127,7 +127,7 @@ impl AdminCapability {
         Self::Mcp,
     ];
 
-    pub(crate) fn name(self) -> &'static str {
+    pub(crate) fn tool_name(self) -> &'static str {
         match self {
             Self::Diagnostics => "haven_diagnostics",
             Self::Config => "haven_config",
@@ -391,17 +391,6 @@ pub enum AdminRequest {
 }
 
 impl AdminRequest {
-    pub fn tool_name(&self) -> &'static str {
-        match self {
-            Self::Diagnostics(_) => "haven_diagnostics",
-            Self::Config(_) => "haven_config",
-            Self::Skills(_) => "haven_skills",
-            Self::Tools(_) => "haven_tools",
-            Self::Mcp(_) => "haven_mcp",
-            Self::NativeMcp(_) => "haven_mcp",
-        }
-    }
-
     pub fn model_operation_name(&self) -> &'static str {
         match self {
             Self::Diagnostics(DiagnosticsOperationArgs::Status) => "haven.diagnostics.status",
@@ -678,18 +667,24 @@ fn model_metadata(
         .split_once('.')
         .expect("Admin operation contract names include a surface and operation");
     let capability = match surface {
-        "diagnostics" => "haven_diagnostics",
-        "config" => "haven_config",
-        "skills" => "haven_skills",
-        "tools" => "haven_tools",
-        "mcp" => "haven_mcp",
+        "diagnostics" => AdminCapability::Diagnostics,
+        "config" => AdminCapability::Config,
+        "skills" => AdminCapability::Skills,
+        "tools" => AdminCapability::Tools,
+        "mcp" => AdminCapability::Mcp,
         _ => panic!("unknown Admin operation surface `{surface}`"),
     };
     let risk_level = super::operation_contract::operation_contract(contract_name)
         .risk_override
         .unwrap_or(RiskLevel::High);
 
-    metadata(capability, operation, risk_level, idempotency, concurrency)
+    metadata(
+        capability.tool_name(),
+        operation,
+        risk_level,
+        idempotency,
+        concurrency,
+    )
 }
 
 fn output_schema(branches: Vec<Value>) -> Value {
@@ -1535,27 +1530,27 @@ impl AdminSurfaces {
     pub(crate) fn tools(&self) -> Vec<ToolHandle> {
         vec![
             Arc::new(TypedToolAdapter::new(
-                AdminCapability::Diagnostics.name(),
+                AdminCapability::Diagnostics.tool_name(),
                 AdminCapability::Diagnostics.description(),
                 self.diagnostics.clone(),
             )),
             Arc::new(TypedToolAdapter::new(
-                AdminCapability::Config.name(),
+                AdminCapability::Config.tool_name(),
                 AdminCapability::Config.description(),
                 self.config.clone(),
             )),
             Arc::new(TypedToolAdapter::new(
-                AdminCapability::Skills.name(),
+                AdminCapability::Skills.tool_name(),
                 AdminCapability::Skills.description(),
                 self.skills.clone(),
             )),
             Arc::new(TypedToolAdapter::new(
-                AdminCapability::Tools.name(),
+                AdminCapability::Tools.tool_name(),
                 AdminCapability::Tools.description(),
                 self.tools.clone(),
             )),
             Arc::new(TypedToolAdapter::new(
-                AdminCapability::Mcp.name(),
+                AdminCapability::Mcp.tool_name(),
                 AdminCapability::Mcp.description(),
                 self.mcp.clone(),
             )),
@@ -2009,7 +2004,7 @@ mod tests {
         let tools = surfaces.tools();
         for (case, request) in cases.iter().zip(&requests) {
             let operation = request.model_operation_name();
-            let model_tool = tool_for(&tools, request.tool_name());
+            let model_tool = tool_for(&tools, case.surface);
             let model_risk = model_tool.risk_level(&case.input);
             let native_risk = surfaces.metadata(request).risk_level;
             let contract_risk = super::super::operation_contract::operation_contract(operation)

@@ -671,3 +671,4 @@
 - [0680：明确内置工具 manifest 列表命令](0680-name-builtin-tool-manifest-list-command.md)
 - [0681：按命令 owner 命名前端 IPC 请求类型](0681-name-ipc-requests-by-command-owner.md)
 - [0682：删除未登记的 Tool renderer 别名](0682-remove-unregistered-tool-renderer-aliases.md)
+- [0683：统一 Admin capability 工具名 owner](0683-centralize-admin-capability-tool-names.md)
