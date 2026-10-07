@@ -41,15 +41,15 @@ Assert-SetEqual 'Rust event directory vs frontend event directory' $rustEvents $
 # Runtime event validators must consume the enum vocabularies emitted by the
 # Rust IPC generator. check-ipc-contracts.ps1 verifies those generated values
 # against Rust; these checks prevent validators from growing a second list.
-$sessionStatus = Get-Content (Join-Path $root 'ui/src/lib/sessionStatus.ts') -Raw
+$sessionContract = Get-Content (Join-Path $root 'ui/src/lib/contracts/session.ts') -Raw
 $toolRunContract = Get-Content (Join-Path $root 'ui/src/lib/contracts/toolRun.ts') -Raw
-if (-not [regex]::IsMatch($sessionStatus, "(?s)import\s*\{[^}]*SESSION_STATUS_VALUES[^}]*SESSION_WAITING_REASON_VALUES[^}]*\}\s*from\s*'\./contracts/generatedCommands\.ts'") -or
-    -not [regex]::IsMatch($sessionStatus, 'SESSION_STATUSES\s*=\s*SESSION_STATUS_VALUES') -or
-    -not [regex]::IsMatch($sessionStatus, 'SESSION_WAITING_REASONS\s*=\s*SESSION_WAITING_REASON_VALUES')) {
+if (-not [regex]::IsMatch($sessionContract, "(?s)import\s*\{[^}]*SESSION_STATUS_VALUES[^}]*SESSION_UPDATE_STATUS_VALUES[^}]*SESSION_WAITING_REASON_VALUES[^}]*\}\s*from\s*'\./generatedCommands\.ts'") -or
+    -not [regex]::IsMatch($sessionContract, '(?s)function\s+mapSessionStatus\(value:\s*unknown\).*?SESSION_STATUS_VALUES') -or
+    -not [regex]::IsMatch($sessionContract, '(?s)function\s+mapUpdateStatus\(value:\s*unknown\).*?SESSION_UPDATE_STATUS_VALUES') -or
+    -not [regex]::IsMatch($sessionContract, '(?s)function\s+mapWaitingReason\(value:\s*unknown\).*?SESSION_WAITING_REASON_VALUES')) {
     throw 'session event validators must use the generated Rust session enum vocabularies'
 }
 $sessionWire = Get-Content (Join-Path $root 'crates/app-binary/src/events.rs') -Raw
-$sessionContract = Get-Content (Join-Path $root 'ui/src/lib/contracts/session.ts') -Raw
 if (-not [regex]::IsMatch($sessionWire, 'SESSION_LIFECYCLE_EVENT:\s*&str\s*=\s*"session:lifecycle"') -or
     -not [regex]::IsMatch($sessionWire, '(?s)#\[serde\(\s*tag\s*=\s*"type".*?enum\s+SessionLifecycleEvent')) {
     throw 'session lifecycle must use one Rust channel and a tagged SessionLifecycleEvent enum'
