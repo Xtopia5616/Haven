@@ -79,6 +79,8 @@ export interface SkillExecutionResponse { success: boolean; output: unknown; err
 export interface LogInfo { enabled: boolean; level: string; path: string | null }
 export interface LogTail { path: string; content: string }
 export interface McpRefreshResult { added: string[]; removed: string[]; updated: string[]; failed: string[] }
+export const FACT_SOURCE_FILTER_INPUT_VALUES = ['user', 'inferred'] as const;
+export type FactSourceFilterInput = (typeof FACT_SOURCE_FILTER_INPUT_VALUES)[number];
 export interface ApiKeyStatus { models: Record<string, boolean>; providers: Record<string, boolean>; stt: boolean; ocr: boolean; ocr_secret: boolean }
 export const REASONING_EFFORT_SELECTION_INPUT_VALUES = ['low', 'medium', 'high', 'off'] as const;
 export type ReasoningEffortSelectionInput = (typeof REASONING_EFFORT_SELECTION_INPUT_VALUES)[number];
@@ -329,7 +331,7 @@ export interface TauriCommandMap {
 	interrupt_session: { request: { sessionId: string }; response: void };
 	is_autostart_enabled: { request: undefined; response: boolean };
 	list_builtin_tool_manifests: { request: undefined; response: BuiltinToolManifestListResponse };
-	list_facts: { request: { source?: string | null }; response: MemoryFactResponse[] };
+	list_facts: { request: { source?: FactSourceFilterInput | null }; response: MemoryFactResponse[] };
 	list_mcp_servers: { request: undefined; response: McpServerSnapshot[] };
 	list_permissions: { request: undefined; response: StoredPermission[] };
 	list_runtime_sessions: { request: undefined; response: RuntimeSessionListResponse };

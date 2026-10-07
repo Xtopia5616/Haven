@@ -40,7 +40,7 @@
 | `toggle_mcp_server` | execute | 启用前先连接 |
 | `run_memory_maintenance` | mutate | 维护路径统一清理 |
 | `recall_memory` | read | 可选 `kind` 使用生成的 `MemoryEntityKindInput`（`fact` / `episode`）；省略时默认为 `fact`。UI 的 `all` 只在 renderer 展开为两次 typed 查询；limit 有界且事实结果过滤凭据 |
-| `list_facts` | read | 只读事实投影 |
+| `list_facts` | read | 可选 `source` 使用 generated `FactSourceFilterInput`（`user` / `inferred`）；`null` 或省略表示全部来源 |
 | `add_fact` | mutate | 拒绝凭据样式内容 |
 | `delete_fact` | mutate | 按 fact id 删除 |
 | `clear_facts` | mutate | 清空长期事实并失效派生缓存 |

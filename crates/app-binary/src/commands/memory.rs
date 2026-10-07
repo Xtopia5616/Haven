@@ -2,8 +2,25 @@ use crate::app_state::AppState;
 use crate::commands::contracts::{MemoryFactResponse, MemoryRecallItem};
 use crate::commands::log_err;
 use haven_memory::recall::{MemoryEntityKind, MemoryQuery};
+use serde::Deserialize;
 use std::sync::Arc;
 use tauri::State;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FactSourceFilter {
+    User,
+    Inferred,
+}
+
+impl FactSourceFilter {
+    const fn as_source_str(self) -> &'static str {
+        match self {
+            Self::User => "user",
+            Self::Inferred => "inferred",
+        }
+    }
+}
 
 /// Run the full memory maintenance pass (fact dedup, sensitive purge,
 /// stale-fact flush, embedding pruning, bounded embed catch-up). Hot-path
@@ -50,8 +67,9 @@ pub async fn recall_memory(
 #[tauri::command]
 pub async fn list_facts(
     state: State<'_, Arc<AppState>>,
-    source: Option<String>,
+    source: Option<FactSourceFilter>,
 ) -> Result<Vec<MemoryFactResponse>, String> {
+    let source = source.map(|source| source.as_source_str().to_string());
     state
         .runtime
         .memory_fact_store
@@ -59,6 +77,34 @@ pub async fn list_facts(
         .await
         .map(|facts| facts.into_iter().map(MemoryFactResponse::from).collect())
         .map_err(|e| log_err("list_facts", e))
+}
+
+#[cfg(test)]
+mod fact_source_filter_tests {
+    use super::FactSourceFilter;
+
+    #[test]
+    fn fact_source_filter_accepts_only_persisted_source_values() {
+        for (wire, source) in [
+            ("user", FactSourceFilter::User),
+            ("inferred", FactSourceFilter::Inferred),
+        ] {
+            assert_eq!(
+                serde_json::from_str::<FactSourceFilter>(&format!("\"{wire}\"")).unwrap(),
+                source
+            );
+            assert_eq!(source.as_source_str(), wire);
+        }
+
+        for wire in ["", "system", "imported", "USER"] {
+            assert!(serde_json::from_str::<FactSourceFilter>(&format!("\"{wire}\"")).is_err());
+        }
+        assert!(
+            serde_json::from_str::<Option<FactSourceFilter>>("null")
+                .unwrap()
+                .is_none()
+        );
+    }
 }
 
 #[derive(Debug, PartialEq, Eq)]
