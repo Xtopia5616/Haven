@@ -1,7 +1,7 @@
 <script lang="ts">
 	import type { ComponentProps } from 'svelte';
 	import SessionMessageTimeline from '$lib/SessionMessageTimeline.svelte';
-	import SessionEmptyState from './SessionEmptyState.svelte';
+	import SessionWelcome from '$lib/SessionWelcome.svelte';
 	import LoadingState from './LoadingState.svelte';
 	import SessionRunEndBanner from './SessionRunEndBanner.svelte';
 
@@ -31,7 +31,7 @@
 {:else if messages.length === 0 && runEndStatus}
 	<SessionRunEndBanner status={runEndStatus} reason={runEndReason} />
 {:else if messages.length === 0 && sessionToolRuns.length === 0 && !awaitingBackground}
-	<SessionEmptyState hotkeyBinding={restProps.hotkeyBinding} />
+	<SessionWelcome hotkeyBinding={restProps.hotkeyBinding} />
 {:else}
 	<!-- Mount the populated timeline as soon as messages, ToolRuns, or a wait state exist. -->
 	<SessionMessageTimeline

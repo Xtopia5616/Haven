@@ -1,14 +1,14 @@
 import { fireEvent, render, screen } from '@testing-library/svelte';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import SessionTimeline from './SessionTimeline.svelte';
-import emptyStateSource from './SessionEmptyState.svelte?raw';
+import welcomeSource from './SessionWelcome.svelte?raw';
 
-const emptyStateStyles = emptyStateSource.match(/<style>([\s\S]*?)<\/style>/)?.[1];
+const welcomeStyles = welcomeSource.match(/<style>([\s\S]*?)<\/style>/)?.[1];
 const testStyleElement = document.createElement('style');
 
 beforeAll(() => {
-	if (!emptyStateStyles) throw new Error('SessionEmptyState component styles are missing');
-	testStyleElement.textContent = emptyStateStyles;
+	if (!welcomeStyles) throw new Error('SessionWelcome component styles are missing');
+	testStyleElement.textContent = welcomeStyles;
 	document.head.append(testStyleElement);
 });
 

@@ -1,15 +1,16 @@
 <script lang="ts">
+	import { fly } from 'svelte/transition';
 	import Logo from './Logo.svelte';
 
 	interface Props {
 		hotkeyBinding?: string;
+		animated?: boolean;
 	}
 
-	/** SessionEmptyState is the lightweight first-paint welcome surface. */
-	let { hotkeyBinding = 'Ctrl+Shift+Space' }: Props = $props();
+	let { hotkeyBinding = 'Ctrl+Shift+Space', animated = false }: Props = $props();
 </script>
 
-<div class="welcome">
+<div class="welcome" in:fly={{ y: animated ? 12 : 0, duration: animated ? 330 : 0 }}>
 	<div class="welcome-mark"><Logo size={48} /></div>
 	<h2>Haven</h2>
 	<span class="welcome-kicker">本地 AI 助手</span>
