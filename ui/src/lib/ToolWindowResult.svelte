@@ -38,7 +38,7 @@
 	<div class="tool-card-count">{data.count ?? data.windows.length} 个窗口</div>
 	{#if data.windows.length > 0}
 		<ToolResultList items={data.windows}>
-			{#snippet children(visibleWindows = /** @type {any[]} */ ([]))}
+			{#snippet children(visibleWindows)}
 				<div class="tool-card-list">
 					{#each visibleWindows as window (window.hwnd ?? window.title)}
 						<div class="window-row">
@@ -99,7 +99,7 @@
 {:else if Array.isArray(data.elements)}
 	<div class="tool-card-count">{data.count ?? data.elements.length} 个界面元素</div>
 	<ToolResultList items={data.elements}>
-		{#snippet children(visibleElements = /** @type {any[]} */ ([]))}
+		{#snippet children(visibleElements)}
 			<div class="tool-card-list">
 				{#each visibleElements as element, index (element.name ?? index)}
 					<div class="window-row">

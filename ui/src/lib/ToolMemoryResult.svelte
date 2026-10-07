@@ -43,7 +43,7 @@
 	<div class="tool-card-count">{facts.length} 条记忆事实</div>
 	{#if facts.length > 0}
 		<ToolResultList items={facts}>
-			{#snippet children(visibleFacts = /** @type {any[]} */ ([]))}
+			{#snippet children(visibleFacts)}
 				<div class="memory-list">
 					{#each visibleFacts as fact, index (`${fact.id ?? `${fact.subject ?? ''}:${fact.predicate ?? ''}:${index}`}`)}
 						<div class="memory-row">
@@ -77,7 +77,7 @@
 	<div class="tool-card-count">{hits.length} 条召回结果{data.mode ? ` · ${data.mode}` : ''}</div>
 	{#if hits.length > 0}
 		<ToolResultList items={hits}>
-			{#snippet children(visibleHits = /** @type {any[]} */ ([]))}
+			{#snippet children(visibleHits)}
 				<div class="memory-list">
 					{#each visibleHits as hit, index (hit.entity_id ?? index)}
 						<div class="memory-row">

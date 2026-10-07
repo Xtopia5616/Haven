@@ -157,7 +157,7 @@
 {#if Array.isArray(data.networks)}
 	<div class="tool-card-count">{data.count ?? data.networks.length} 个网络接口</div>
 	<ToolResultList items={data.networks}>
-		{#snippet children(visibleNetworks = /** @type {any[]} */ ([]))}
+		{#snippet children(visibleNetworks)}
 			<div class="tool-card-list">
 				{#each visibleNetworks as network (network.name)}
 					<div class="network-row">
@@ -191,7 +191,7 @@
 	<div class="tool-card-count">注册表{data.path ? ` · ${data.path}` : ''}</div>
 	{#if Array.isArray(data.values) && data.values.length > 0}
 		<ToolResultList items={data.values}>
-			{#snippet children(visibleValues = /** @type {any[]} */ ([]))}
+			{#snippet children(visibleValues)}
 				<div class="tool-card-list">
 					{#each visibleValues as value (value)}<div class="env-row">
 							<span class="env-name">{value}</span>
@@ -201,7 +201,7 @@
 		</ToolResultList>
 	{:else if Array.isArray(data.subkeys) && data.subkeys.length > 0}
 		<ToolResultList items={data.subkeys}>
-			{#snippet children(visibleSubkeys = /** @type {any[]} */ ([]))}
+			{#snippet children(visibleSubkeys)}
 				<div class="tool-card-list">
 					{#each visibleSubkeys as key (key)}<div class="env-row">
 							<span class="env-name">{key}</span>
@@ -268,7 +268,7 @@
 {/if}
 {#if Array.isArray(data.disks)}
 	<ToolResultList items={data.disks}>
-		{#snippet children(visibleDisks = /** @type {any[]} */ ([]))}
+		{#snippet children(visibleDisks)}
 			{#each visibleDisks as disk (disk.mount)}
 				<div class="meter-row">
 					<span class="meter-label">{disk.mount}</span>
@@ -298,7 +298,7 @@
 {#if Array.isArray(data.displays)}
 	<div class="tool-card-count">{data.displays.length} 个显示器</div>
 	<ToolResultList items={data.displays}>
-		{#snippet children(visibleDisplays = /** @type {any[]} */ ([]))}
+		{#snippet children(visibleDisplays)}
 			<div class="tool-card-list">
 				{#each visibleDisplays as display (display.name ?? display.left)}
 					<div class="window-row">
@@ -324,7 +324,7 @@
 	/>
 	{#if filteredEnv.length > 0}
 		<ToolResultList items={filteredEnv}>
-			{#snippet children(visibleEnv = /** @type {any[]} */ ([]))}
+			{#snippet children(visibleEnv)}
 				<div class="tool-card-list">
 					{#each visibleEnv as variable (variable.name)}
 						<div class="env-row">

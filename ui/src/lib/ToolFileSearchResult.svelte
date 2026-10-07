@@ -25,7 +25,7 @@
 </div>
 {#if resultList.length > 0}
 	<ToolResultList items={resultList}>
-		{#snippet children(visibleResults = /** @type {any[]} */ ([]))}
+		{#snippet children(visibleResults)}
 			<div class="tool-card-list">
 				{#each visibleResults as result (result.path + (result.line ?? ''))}
 					<div class="search-row">

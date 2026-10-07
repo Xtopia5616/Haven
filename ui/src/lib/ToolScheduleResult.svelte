@@ -38,7 +38,7 @@
 	<div class="tool-card-count">{data.scheduled_tool_runs.length} 条定时任务</div>
 	{#if data.scheduled_tool_runs.length > 0}
 		<ToolResultList items={data.scheduled_tool_runs}>
-			{#snippet children(visibleToolRuns = /** @type {any[]} */ ([]))}
+			{#snippet children(visibleToolRuns)}
 				<div class="tool-card-list">
 					{#each visibleToolRuns as toolRun (toolRun.id)}
 						<div class="scheduled-row">

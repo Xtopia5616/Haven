@@ -18,7 +18,7 @@
 {:else if Array.isArray(data.entries)}
 	{#if data.entries.length > 0}
 		<ToolResultList items={data.entries}>
-			{#snippet children(visibleEntries = /** @type {any[]} */ ([]))}
+			{#snippet children(visibleEntries)}
 				<div class="tool-card-list">
 					{#each visibleEntries as entry, index (index)}
 						<div class="search-row">

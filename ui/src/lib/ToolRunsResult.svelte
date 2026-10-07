@@ -59,7 +59,7 @@
 	<div class="tool-card-count">{data.tool_runs.length} 个后台任务</div>
 	{#if data.tool_runs.length > 0}
 		<ToolResultList items={data.tool_runs}>
-			{#snippet children(visibleToolRuns = /** @type {any[]} */ ([]))}
+			{#snippet children(visibleToolRuns)}
 				<ToolCardList>
 					{#each visibleToolRuns as toolRun (toolRun.tool_run_id)}
 						<div class="tool-run-row">

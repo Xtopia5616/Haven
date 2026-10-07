@@ -20,7 +20,7 @@
 {#if Array.isArray(data.results)}
 	{#if data.results.length > 0}
 		<ToolResultList items={data.results}>
-			{#snippet children(visibleResults = /** @type {any[]} */ ([]))}
+			{#snippet children(visibleResults)}
 				<div class="tool-card-list">
 					{#each visibleResults as result (result.url + result.title)}
 						<div class="search-row">

@@ -898,7 +898,7 @@
 					timeout_secs: media.image_gen?.timeout_secs || 120,
 				};
 				mcpServerNames = (settings.mcp_servers || [])
-					.map((/** @type {any} */ server) => server.name || '')
+					.map((server) => server.name || '')
 					.filter(Boolean);
 				notification = { ...notification, ...(settings.notification || {}) };
 				setToolRunCompletionNotificationChannels(notification.tool_run_completed);

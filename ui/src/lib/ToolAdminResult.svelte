@@ -12,7 +12,7 @@
 {#if Array.isArray(data.servers)}
 	<div class="tool-card-count">{data.servers.length} 个 MCP 服务</div>
 	<ToolResultList items={data.servers}>
-		{#snippet children(visibleServers = /** @type {any[]} */ ([]))}
+		{#snippet children(visibleServers)}
 			<div class="admin-list">
 				{#each visibleServers as server, index (server.name ?? index)}
 					<div class="admin-row">
@@ -31,7 +31,7 @@
 {:else if Array.isArray(data.skills)}
 	<div class="tool-card-count">{data.skills.length} 个技能</div>
 	<ToolResultList items={data.skills}>
-		{#snippet children(visibleSkills = /** @type {any[]} */ ([]))}
+		{#snippet children(visibleSkills)}
 			<div class="admin-list">
 				{#each visibleSkills as skill, index (skill.name ?? index)}
 					<div class="admin-row">

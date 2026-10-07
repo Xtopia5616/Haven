@@ -88,7 +88,7 @@
 		ariaLabel="筛选进程"
 	/>
 	<ToolResultList items={filteredProcesses}>
-		{#snippet children(visibleProcesses = /** @type {any[]} */ ([]))}
+		{#snippet children(visibleProcesses)}
 			<ToolCardList>
 				<table class="proc-table">
 					<thead>

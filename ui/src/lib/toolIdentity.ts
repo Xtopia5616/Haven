@@ -1,7 +1,6 @@
 /** Shared tool-name → source / label helpers for chat tool cards. */
 
 import {
-	getToolManifest,
 	toolLabel,
 	toolRepresentedSource,
 	toolRootName,
@@ -38,12 +37,6 @@ export const TOOL_LABELS: Record<string, string> = {
 };
 
 export { toolRootName };
-
-/** Return the fixed operation for a model-facing operation view. */
-export function toolOperationName(toolName: string): string | null {
-	const manifest = getToolManifest(toolName);
-	return manifest?.identity.operation ?? null;
-}
 
 /** Strip the provider-safe namespace prefix from a dynamic tool name. */
 function stripToolPrefix(name: string, prefix: string): string | null {

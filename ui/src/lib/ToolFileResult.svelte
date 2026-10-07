@@ -118,7 +118,7 @@
 {:else if Array.isArray(data.symbols)}
 	<div class="tool-card-meta">{operationLabel} · {data.count ?? data.symbols.length} 个符号</div>
 	<ToolResultList items={data.symbols}>
-		{#snippet children(visibleSymbols = /** @type {any[]} */ ([]))}
+		{#snippet children(visibleSymbols)}
 			<div class="tool-card-list">
 				{#each visibleSymbols as symbol (symbol.line)}
 					<div class="env-row">
@@ -139,7 +139,7 @@
 	<div class="tool-card-count">{data.count ?? data.entries.length} 项</div>
 	{#if data.entries.length > 0}
 		<ToolResultList items={data.entries}>
-			{#snippet children(visibleEntries = /** @type {any[]} */ ([]))}
+			{#snippet children(visibleEntries)}
 				<div class="tool-card-list">
 					{#each visibleEntries as entry (entry)}
 						<div class="env-row"><span class="env-name">{entry}</span></div>

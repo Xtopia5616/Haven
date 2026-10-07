@@ -32,7 +32,7 @@
 	<div class="tool-card-count">{data.agents.length} 个同伴</div>
 	{#if data.agents.length > 0}
 		<ToolResultList items={data.agents}>
-			{#snippet children(visibleAgents = /** @type {any[]} */ ([]))}
+			{#snippet children(visibleAgents)}
 				<ToolCardList>
 					{#each visibleAgents as agent (agent.name)}
 						<div class="action-row">
