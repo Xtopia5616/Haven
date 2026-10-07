@@ -149,7 +149,7 @@ pub use haven_skills::{
 };
 pub use live_output::LiveOutputHub;
 pub use output::{
-    OutputBudget, ToolOutput, append_windows_diagnostics, is_progress_clixml,
+    CappedText, OutputBudget, ToolOutput, append_windows_diagnostics, is_progress_clixml,
     sanitize_shell_output, summarize_error,
 };
 pub(crate) use process::read_stream_capped;

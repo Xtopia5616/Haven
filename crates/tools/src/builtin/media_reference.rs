@@ -174,11 +174,6 @@ pub(crate) fn media_result_envelope_named(
     serde_json::to_value(result).expect("media result is serializable")
 }
 
-pub(crate) fn bound_text(text: &str, max_chars: usize) -> (String, bool) {
-    let bounded: String = text.chars().take(max_chars).collect();
-    (bounded, text.chars().count() > max_chars)
-}
-
 pub(crate) fn operation_name(operation: MediaOperation) -> &'static str {
     match operation {
         MediaOperation::Inspect => "inspect",

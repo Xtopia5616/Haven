@@ -13,11 +13,11 @@ use tokio_util::sync::CancellationToken;
 use crate::document::{
     MAX_DOCUMENT_BYTES, extract_document_page_with_cancel, supports_document_path,
 };
-use crate::{ManagedAsset, ToolLlmUsage, ToolResult};
+use crate::{ManagedAsset, OutputBudget, ToolLlmUsage, ToolResult};
 
 use super::media_reference::{
-    bound_text, classify_managed_media, confidence_passes, media_result_envelope,
-    media_result_envelope_named, operation_name,
+    classify_managed_media, confidence_passes, media_result_envelope, media_result_envelope_named,
+    operation_name,
 };
 use super::{MAX_FOCUS_CHARS, MediaOperation, MediaTool};
 
@@ -268,14 +268,14 @@ impl MediaTranscriber {
         llm_usage: Vec<haven_llm::LlmCallUsage>,
     ) -> MediaTranscriptionResult {
         let text = text.into();
-        let (text, truncated) = bound_text(text.trim(), self.max_output_chars);
-        if text.is_empty() {
+        let capped = OutputBudget::new(self.max_output_chars).cap_text(text.trim());
+        if capped.text.is_empty() {
             return MediaTranscriptionResult::empty();
         }
         MediaTranscriptionResult {
             status: MediaTranscriptionStatus::Succeeded,
-            text: Some(text),
-            truncated,
+            text: Some(capped.text),
+            truncated: capped.truncated,
             error: None,
             llm_usage,
         }
@@ -486,16 +486,16 @@ impl MediaTool {
                 if !response.text.trim().is_empty()
                     && confidence_passes(response.confidence, self.ocr_min_confidence) =>
             {
-                let (text, text_truncated) =
-                    bound_text(response.text.trim(), self.max_output_chars);
+                let capped =
+                    OutputBudget::new(self.max_output_chars).cap_text(response.text.trim());
                 let mut output = self.media_result_output(
                     MediaOperation::Ocr,
                     Some(&asset),
                     Some(MediaRepresentationKind::OcrText),
-                    Some(&text),
+                    Some(&capped.text),
                 );
                 output["untrusted_content"] = Value::Bool(true);
-                Ok(if text_truncated {
+                Ok(if capped.truncated {
                     ToolResult::truncated(output)
                 } else {
                     ToolResult::ok(output)
@@ -596,11 +596,15 @@ impl MediaTool {
                 return Ok(result);
             }
         };
-        let (text, text_truncated) = bound_text(response.text.trim(), self.max_output_chars);
-        let mut output =
-            self.media_result_output(operation, Some(&asset), Some(representation), Some(&text));
+        let capped = OutputBudget::new(self.max_output_chars).cap_text(response.text.trim());
+        let mut output = self.media_result_output(
+            operation,
+            Some(&asset),
+            Some(representation),
+            Some(&capped.text),
+        );
         output["untrusted_content"] = Value::Bool(true);
-        let mut result = if text_truncated {
+        let mut result = if capped.truncated {
             ToolResult::truncated(output)
         } else {
             ToolResult::ok(output)

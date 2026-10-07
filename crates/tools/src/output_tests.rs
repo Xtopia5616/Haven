@@ -2,9 +2,9 @@ use super::*;
 
 #[test]
 fn output_budget_caps_text_without_splitting_utf8() {
-    let (text, truncated) = OutputBudget::new(3).cap_text("你好世界");
-    assert_eq!(text, "你好世");
-    assert!(truncated);
+    let capped = OutputBudget::new(3).cap_text("你好世界");
+    assert_eq!(capped.text, "你好世");
+    assert!(capped.truncated);
 }
 
 #[test]

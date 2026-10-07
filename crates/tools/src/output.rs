@@ -1,6 +1,13 @@
 use crate::tool_contract::ToolResult;
 use serde_json::Value;
 
+/// Text bounded by an [`OutputBudget`], with truncation reported separately.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CappedText {
+    pub text: String,
+    pub truncated: bool,
+}
+
 /// One output budget shared by tool observations and the recovery metadata
 /// shown with them. Tools may add domain-specific limits before this boundary,
 /// but the final model/UI observation is capped here.
@@ -25,10 +32,13 @@ impl OutputBudget {
         result.observation_text(self.max_chars)
     }
 
-    pub fn cap_text(self, text: &str) -> (String, bool) {
+    pub fn cap_text(self, text: &str) -> CappedText {
         let mut chars = text.chars();
         let output: String = chars.by_ref().take(self.max_chars).collect();
-        (output, chars.next().is_some())
+        CappedText {
+            text: output,
+            truncated: chars.next().is_some(),
+        }
     }
 }
 

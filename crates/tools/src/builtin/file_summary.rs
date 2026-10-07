@@ -180,10 +180,6 @@ async fn read_summary_source(
     })
 }
 
-fn cap_chars(text: &str, max_chars: usize) -> (String, bool) {
-    OutputBudget::new(max_chars).cap_text(text)
-}
-
 /// Build a stable System + User pair. The system message is static; all
 /// caller/file-controlled values are serialized as explicit data fields in the
 /// user message so they cannot become system instructions by concatenation.
@@ -192,15 +188,15 @@ pub(super) fn build_summary_messages(
     focus: Option<&str>,
     provenance: &str,
 ) -> Vec<CanonicalMessage> {
-    let (focus, focus_truncated) = focus
-        .map(|value| cap_chars(value, MAX_SUMMARY_FOCUS_CHARS))
-        .unwrap_or_else(|| (String::new(), false));
+    let focus = focus
+        .map(|value| OutputBudget::new(MAX_SUMMARY_FOCUS_CHARS).cap_text(value))
+        .unwrap_or_else(|| OutputBudget::new(MAX_SUMMARY_FOCUS_CHARS).cap_text(""));
     let fenced_content = format!(
         "{UNTRUSTED_DOCUMENT_START}: provenance={provenance}; untrusted external content]\n{content}\n{UNTRUSTED_DOCUMENT_END}"
     );
     let data = serde_json::json!({
-        "focus": focus,
-        "focus_truncated": focus_truncated,
+        "focus": focus.text,
+        "focus_truncated": focus.truncated,
         "file_content": fenced_content,
         "file_content_provenance": provenance,
     });

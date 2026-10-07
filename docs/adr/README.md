@@ -606,3 +606,4 @@
 - [0615：明确 Rust 组件角色后缀](0615-define-rust-component-role-suffixes.md)
 - [0616：命名 SessionRunEngine](0616-name-session-run-engine.md)
 - [0617：命名 ParsedAgentResponse](0617-name-parsed-agent-response.md)
+- [0618：统一 Tools 限长文本结果](0618-unify-tools-capped-text-result.md)
