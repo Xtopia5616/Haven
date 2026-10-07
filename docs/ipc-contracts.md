@@ -81,7 +81,7 @@
 | `get_bootstrap_status` | read | 返回 `loading` / `ready` 的 `BootstrapStatus`；与 `app:bootstrap.status` 共用闭合枚举 |
 | `update_settings` | mutate | shared loader 保留遮蔽密钥和工具段 |
 | `list_permissions` | read | 只返回永久规则 key/effect |
-| `list_session_permissions` | read | 返回会话 id/title、capability、target、allow/deny |
+| `list_session_permissions` | read | 返回会话 id/title、动态 capability；`target` / `effect` 使用 generated `PermissionTarget` / `PermissionEffect` |
 | `revoke_permission` | mutate | 精确撤销永久规则 key，不影响会话 grant |
 | `revoke_session_permission` | mutate | 按 session id 与 capability 撤销单条会话 grant |
 | `reset_permissions` | mutate | 只清除永久规则，保留会话 grant 与当前默认策略 |

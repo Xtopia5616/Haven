@@ -90,7 +90,7 @@ export type ConfirmationResolutionResult = (typeof CONFIRMATION_RESOLUTION_RESUL
 export interface SessionLineageResponse { parent: SessionRecordDto | null; children: SessionRecordDto[] }
 export interface SessionRecordDto { id: string; input_text: string; title: string | null; status: SessionStatus; created_at: string; updated_at: string }
 export interface SessionResumeResponse { session: SessionRecordDto; messages: Message[]; steps: SessionStep[]; usage: SessionUsage | null; llm_usage: LlmUsageRecord[]; interactions: InteractionRequestedEvent[] }
-export interface SessionPermissionGrant { session_id: string; session_title: string | null; capability: string; target: string; effect: string }
+export interface SessionPermissionGrant { session_id: string; session_title: string | null; capability: string; target: PermissionTarget; effect: PermissionEffect }
 export interface ShellAvailability { available: boolean }
 export const AGENT_NOTIFICATION_KIND_VALUES = ['tool_run_completion'] as const;
 export type AgentNotificationKind = (typeof AGENT_NOTIFICATION_KIND_VALUES)[number];
@@ -259,6 +259,8 @@ export const PERMISSION_SCOPE_INPUT_VALUES = ['once', 'session', 'always'] as co
 export type PermissionScopeInput = (typeof PERMISSION_SCOPE_INPUT_VALUES)[number];
 export const PERMISSION_TARGET_INPUT_VALUES = ['operation', 'group', 'tool'] as const;
 export type PermissionTargetInput = (typeof PERMISSION_TARGET_INPUT_VALUES)[number];
+export const PERMISSION_TARGET_VALUES = ['operation', 'group', 'tool'] as const;
+export type PermissionTarget = (typeof PERMISSION_TARGET_VALUES)[number];
 export const RISK_LEVEL_INPUT_VALUES = ['safe', 'low', 'medium', 'high', 'critical'] as const;
 export type RiskLevelInput = (typeof RISK_LEVEL_INPUT_VALUES)[number];
 export const RISK_LEVEL_VALUES = ['safe', 'low', 'medium', 'high', 'critical'] as const;

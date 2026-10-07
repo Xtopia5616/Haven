@@ -1,6 +1,6 @@
 # Haven 命名规范
 
-> 版本: v1.145 | 日期: 2026-10-08
+> 版本: v1.146 | 日期: 2026-10-08
 
 本文档统一 Haven 项目各层的命名规则（变量名、函数名、文件名、crate 名、缩写大小写、跨层边界）。规范以现有代码中的事实模式为基础，新代码必须遵循；存量代码若与规范冲突，逐步迁移对齐。
 
@@ -31,6 +31,7 @@
 - **Reasoning effort command 与 provider config 分开**：聊天工具栏的 setter 只接受 generated `ReasoningEffortSelectionInput`（`low` / `medium` / `high` / `off`），`null` 清除覆盖；`ModelConfig.reasoning_effort` 仍是 provider-specific 开放字符串，以支持 `max`、`xhigh`、`none`、`disabled` 等 adapter 输入和 provider 映射（ADR 0737）。
 - **Fact source 筛选复用持久化闭合集合**：`list_facts.source` 使用 App `FactSourceFilter` / generated `FactSourceFilterInput`，其值域与 SQLite `facts.source` 约束一致（`user` / `inferred`）；省略或 `null` 表示不筛选。事实输出的 `source` 继续按现有 response projection 序列化（ADR 0738）。
 - **Shell availability command 复用配置 shell enum**：`check_shell_available.shell` 使用 Common `ShellChoice` / generated `ShellChoiceInput`，与 Settings 的 `default_shell` 共享 `powershell` / `cmd` / `pwsh` 词汇；未知 shell 不作为有效诊断输入（ADR 0739）。
+- **Session permission grant 输出复用授权枚举**：`SessionPermissionGrant.target` 与 `.effect` 使用 Common `PermissionTarget` / `PermissionEffect`，UI 消费生成的 closed values；分层 capability 标识继续是字符串（ADR 0740）。
 - **消息角色复用 canonical vocabulary**：持久消息、Agent history、resume/live UI 中的 `role` 使用 Common `CanonicalRole`；数据库文本在写入时由 enum 序列化，读取时严格解析，UI 消费 generated type。Provider wire role 继续由各 LLM adapter 映射；模型发现与模型配置命令用 `request_kind: RequestKind` 选择逻辑请求，UI 请求引用生成的 `RequestKindInput`。消息角色、请求路由与模型配置 ID 是不同身份，不复用 `role` 字段（ADR 0726、0728、0729）。
 - **模型操作路由参数明确命名**：`discover_models`、`switch_model`、`set_reasoning_effort` 与 `set_web_search` 均以 `request_kind: RequestKind` 标识逻辑请求路由；参数命令仅修改该路由当前分配的模型。选择指定模型配置时使用独立的 `model_id`（ADR 0728、0729）。
 - **持久消息类别与 UI 展示类型分开**：`messages.message_type` 使用 Common `TranscriptMessageKind` 表达 SQLite 闭合集合，写库序列化、读库严格解析并生成到 resume IPC；`StreamMessage.type` 是 renderer presentation discriminator，由 resume mapper 从 durable kind 投影，不复用或冒充持久类别（ADR 0727）。

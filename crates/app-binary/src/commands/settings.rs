@@ -6,7 +6,7 @@ use crate::config_runtime::{
 };
 use crate::events::{HOTKEY_REBIND_EVENT, HotkeyRebindEvent};
 use crate::runtime::ApplicationRuntime;
-use haven_common::types::ShellChoice;
+use haven_common::types::{PermissionEffect, PermissionTarget, ShellChoice};
 use serde::Serialize;
 use std::future::Future;
 use std::sync::Arc;
@@ -611,8 +611,8 @@ pub struct SessionPermissionGrant {
     pub session_id: String,
     pub session_title: Option<String>,
     pub capability: String,
-    pub target: String,
-    pub effect: &'static str,
+    pub target: PermissionTarget,
+    pub effect: PermissionEffect,
 }
 
 #[tauri::command]
@@ -631,11 +631,8 @@ pub async fn list_session_permissions(
                     session_id: stored.session_id,
                     session_title: stored.session_title,
                     capability: stored.grant.capability.to_string(),
-                    target: stored.grant.target.as_str().to_string(),
-                    effect: match stored.grant.effect {
-                        haven_common::types::PermissionEffect::Allow => "allow",
-                        haven_common::types::PermissionEffect::Deny => "deny",
-                    },
+                    target: stored.grant.target,
+                    effect: stored.grant.effect,
                 })
                 .collect()
         })
@@ -886,7 +883,7 @@ pub async fn is_autostart_enabled() -> Result<bool, String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        ShellAvailability, apply_settings_edit, spawn_settings_hotkey_task,
+        SessionPermissionGrant, ShellAvailability, apply_settings_edit, spawn_settings_hotkey_task,
         validate_settings_payload,
     };
     use crate::app_state::AppState;
@@ -897,7 +894,7 @@ mod tests {
         AppConfig, ConfigLoader, ConfigService, InMemoryCredentialStore, LogLevel, Settings,
         StoredPermission,
     };
-    use haven_common::types::{PermissionEffect, ShellChoice};
+    use haven_common::types::{PermissionEffect, PermissionTarget, ShellChoice};
 
     fn config_service_with_config(config: AppConfig) -> (ConfigService, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
@@ -966,6 +963,28 @@ mod tests {
         for wire in ["", "bash", "fish", "CMD"] {
             assert!(serde_json::from_str::<ShellChoice>(&format!("\"{wire}\"")).is_err());
         }
+    }
+
+    #[test]
+    fn session_permission_grant_serializes_typed_target_and_effect_as_existing_strings() {
+        let grant = SessionPermissionGrant {
+            session_id: "ses-00000000000000000000000000000000".into(),
+            session_title: Some("session title".into()),
+            capability: "files.read".into(),
+            target: PermissionTarget::Group,
+            effect: PermissionEffect::Deny,
+        };
+
+        assert_eq!(
+            serde_json::to_value(grant).unwrap(),
+            serde_json::json!({
+                "session_id": "ses-00000000000000000000000000000000",
+                "session_title": "session title",
+                "capability": "files.read",
+                "target": "group",
+                "effect": "deny"
+            })
+        );
     }
 
     #[test]

@@ -1,7 +1,10 @@
 import { fireEvent, render, screen } from '@testing-library/svelte';
 import { describe, expect, it, vi } from 'vitest';
 import SettingsSecurity from './SettingsSecurity.svelte';
-import type { SecurityConfigInput } from '$lib/contracts/generatedCommands.ts';
+import type {
+	SecurityConfigInput,
+	SessionPermissionGrant,
+} from '$lib/contracts/generatedCommands.ts';
 
 function createSecurity(): SecurityConfigInput & {
 	permissions: Array<{ key: string; effect: string }>;
@@ -35,7 +38,7 @@ describe('SettingsSecurity', () => {
 	});
 
 	it('shows and revokes session allow and deny grants by exact session', async () => {
-		const grant = {
+		const grant: SessionPermissionGrant = {
 			session_id: 'ses-test',
 			session_title: '测试对话',
 			capability: 'files.write',
