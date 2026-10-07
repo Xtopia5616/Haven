@@ -482,13 +482,19 @@ fn tool_run_projection_maps_scheduled_progress_to_the_public_contract() {
         },
     );
     payload.title = Some("Reminder".into());
-    let (channel, event) = project_tool_run_event(haven_tools::ToolRunLifecycleEvent::Updated(
+    let projection = project_tool_run_event(haven_tools::ToolRunLifecycleEvent::Updated(
         haven_tools::ToolRunLifecycleUpdate::StateChanged(Box::new(payload)),
     ));
-    assert_eq!(channel, TOOL_RUN_UPDATED_EVENT);
-    assert_eq!(event.status, Some(haven_common::ToolRunStatus::Running));
-    assert_eq!(event.started_at.as_deref(), Some("2026-10-06T12:00:00Z"));
-    assert_eq!(event.title.as_deref(), Some("Reminder"));
+    assert_eq!(projection.channel, TOOL_RUN_UPDATED_EVENT);
+    assert_eq!(
+        projection.payload.status,
+        Some(haven_common::ToolRunStatus::Running)
+    );
+    assert_eq!(
+        projection.payload.started_at.as_deref(),
+        Some("2026-10-06T12:00:00Z")
+    );
+    assert_eq!(projection.payload.title.as_deref(), Some("Reminder"));
 }
 
 #[test]
@@ -502,11 +508,11 @@ fn tool_run_projection_maps_session_attachment_as_a_metadata_update() {
             },
         ),
     );
-    let (channel, event) = project_tool_run_event(event);
+    let projection = project_tool_run_event(event);
 
-    assert_eq!(channel, TOOL_RUN_UPDATED_EVENT);
+    assert_eq!(projection.channel, TOOL_RUN_UPDATED_EVENT);
     assert_eq!(
-        serde_json::to_value(event).unwrap(),
+        serde_json::to_value(projection.payload).unwrap(),
         serde_json::json!({
             "id": "toolrun-attached",
             "kind": "background",
@@ -523,11 +529,14 @@ fn tool_run_output_projection_uses_only_typed_preview_fields() {
         source_step_id: Some("step-output".into()),
         output: "preview".into(),
     });
-    let (channel, event) = project_tool_run_event(event);
-    assert_eq!(channel, TOOL_RUN_OUTPUT_EVENT);
-    assert_eq!(event.id, "toolrun-output");
-    assert_eq!(event.source_step_id.as_deref(), Some("step-output"));
-    assert_eq!(event.output.as_deref(), Some("preview"));
+    let projection = project_tool_run_event(event);
+    assert_eq!(projection.channel, TOOL_RUN_OUTPUT_EVENT);
+    assert_eq!(projection.payload.id, "toolrun-output");
+    assert_eq!(
+        projection.payload.source_step_id.as_deref(),
+        Some("step-output")
+    );
+    assert_eq!(projection.payload.output.as_deref(), Some("preview"));
 }
 
 #[test]

@@ -600,3 +600,5 @@
 - [0609：命名 LLM model pricing 结果](0609-name-llm-model-pricing-result.md)
 - [0610：统一 Memory predicate count 结果 owner](0610-unify-memory-predicate-count-result-owner.md)
 - [0611：命名 Fact provenance column projection](0611-name-fact-provenance-columns.md)
+- [0612：命名 Agent streamed LLM call 结果](0612-name-agent-stream-call-result.md)
+- [0613：命名 ToolRun event projection](0613-name-tool-run-event-projection.md)

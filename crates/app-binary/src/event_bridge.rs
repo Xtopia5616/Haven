@@ -15,26 +15,31 @@ pub(crate) struct TauriEmitter {
     pub(crate) notifications: Arc<DesktopNotifications>,
 }
 
+pub(crate) struct ToolRunEventProjection {
+    pub(crate) channel: &'static str,
+    pub(crate) payload: ToolRunEvent,
+}
+
 /// Adapt a typed Tools lifecycle event to the App-owned Tauri contract.
 pub(crate) fn emit_tool_run_event(handle: &tauri::AppHandle, event: ToolRunLifecycleEvent) {
-    let (channel, action) = project_tool_run_event(event);
-    if let Err(error) = handle.emit(channel, action) {
+    let projection = project_tool_run_event(event);
+    if let Err(error) = handle.emit(projection.channel, projection.payload) {
         tracing::warn!(
-            event = channel,
+            event = projection.channel,
             "failed to emit ToolRun lifecycle event: {error}"
         );
     }
 }
 
-pub(crate) fn project_tool_run_event(event: ToolRunLifecycleEvent) -> (&'static str, ToolRunEvent) {
+pub(crate) fn project_tool_run_event(event: ToolRunLifecycleEvent) -> ToolRunEventProjection {
     match event {
-        ToolRunLifecycleEvent::Created(payload) => (
-            TOOL_RUN_CREATED_EVENT,
-            ToolRunEvent::from_lifecycle_payload(payload),
-        ),
-        ToolRunLifecycleEvent::Updated(update) => (
-            TOOL_RUN_UPDATED_EVENT,
-            match update {
+        ToolRunLifecycleEvent::Created(payload) => ToolRunEventProjection {
+            channel: TOOL_RUN_CREATED_EVENT,
+            payload: ToolRunEvent::from_lifecycle_payload(payload),
+        },
+        ToolRunLifecycleEvent::Updated(update) => ToolRunEventProjection {
+            channel: TOOL_RUN_UPDATED_EVENT,
+            payload: match update {
                 haven_tools::ToolRunLifecycleUpdate::StateChanged(payload) => {
                     ToolRunEvent::from_lifecycle_payload(*payload)
                 }
@@ -42,15 +47,15 @@ pub(crate) fn project_tool_run_event(event: ToolRunLifecycleEvent) -> (&'static 
                     ToolRunEvent::from_session_attached_payload(payload)
                 }
             },
-        ),
-        ToolRunLifecycleEvent::Output(payload) => (
-            TOOL_RUN_OUTPUT_EVENT,
-            ToolRunEvent::from_output_payload(payload),
-        ),
-        ToolRunLifecycleEvent::Finished(payload) => (
-            TOOL_RUN_FINISHED_EVENT,
-            ToolRunEvent::from_lifecycle_payload(payload),
-        ),
+        },
+        ToolRunLifecycleEvent::Output(payload) => ToolRunEventProjection {
+            channel: TOOL_RUN_OUTPUT_EVENT,
+            payload: ToolRunEvent::from_output_payload(payload),
+        },
+        ToolRunLifecycleEvent::Finished(payload) => ToolRunEventProjection {
+            channel: TOOL_RUN_FINISHED_EVENT,
+            payload: ToolRunEvent::from_lifecycle_payload(payload),
+        },
     }
 }
 
@@ -66,9 +71,9 @@ mod tests {
             source_step_id: Some("step-output-preview".into()),
             output: "bounded tail snapshot".into(),
         });
-        let (channel, projected) = project_tool_run_event(event);
-        assert_eq!(channel, TOOL_RUN_OUTPUT_EVENT);
-        let wire = serde_json::to_value(projected).unwrap();
+        let projection = project_tool_run_event(event);
+        assert_eq!(projection.channel, TOOL_RUN_OUTPUT_EVENT);
+        let wire = serde_json::to_value(projection.payload).unwrap();
         assert_eq!(
             wire,
             serde_json::json!({

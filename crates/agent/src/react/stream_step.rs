@@ -11,6 +11,11 @@ use crate::types::media_inputs_from_events;
 use haven_common::config::RequestKind;
 use haven_llm::{LlmResponse, LlmRouter, StreamAttemptHooks, StreamRequest, ToolDefinition};
 
+pub(super) struct StreamedLlmCall {
+    pub(super) response: LlmResponse,
+    pub(super) duration_ms: u64,
+}
+
 struct CheckpointRequest {
     session_id: String,
     generation: u64,
@@ -334,7 +339,7 @@ impl<'a> StreamSession<'a> {
     pub(super) async fn retry(
         &self,
         request_context: &RequestContext,
-    ) -> Result<(LlmResponse, u64), haven_llm::LlmError> {
+    ) -> Result<StreamedLlmCall, haven_llm::LlmError> {
         self.engine
             .stream_llm_call(
                 self.ctx,
@@ -751,7 +756,7 @@ impl ReActEngine {
         cancel: tokio_util::sync::CancellationToken,
         partial_thought: &Arc<std::sync::Mutex<String>>,
         partial_reasoning: &Arc<std::sync::Mutex<String>>,
-    ) -> Result<(LlmResponse, u64), haven_llm::LlmError> {
+    ) -> Result<StreamedLlmCall, haven_llm::LlmError> {
         if replace_output_on_start {
             // A replacement stream owns the partial scratch row from this
             // step. Remove it before the new attempt starts so a failed retry
@@ -861,7 +866,10 @@ impl ReActEngine {
                     tool_schema_token_estimate = tool_token_estimate,
                     "ReAct::stream_llm_call: provider cache usage"
                 );
-                Ok((resp, duration_ms))
+                Ok(StreamedLlmCall {
+                    response: resp,
+                    duration_ms,
+                })
             }
             Err(e) => Err(e),
         }
@@ -923,10 +931,16 @@ impl ReActEngine {
             )
             .await
         {
-            Ok((resp, duration_ms)) => {
-                self.record_step_usage(ctx, *request, &resp, duration_ms, cancel.clone())
-                    .await;
-                StepCallOutcome::Response(Box::new(resp))
+            Ok(streamed_call) => {
+                self.record_step_usage(
+                    ctx,
+                    *request,
+                    &streamed_call.response,
+                    streamed_call.duration_ms,
+                    cancel.clone(),
+                )
+                .await;
+                StepCallOutcome::Response(Box::new(streamed_call.response))
             }
             Err(haven_llm::LlmError::ContextLengthExceeded) => {
                 tracing::warn!(
@@ -1041,16 +1055,16 @@ impl ReActEngine {
                             )
                             .await
                         {
-                            Ok((retry_resp, retry_duration_ms)) => {
+                            Ok(retry_call) => {
                                 self.record_step_usage(
                                     ctx,
                                     retry_request,
-                                    &retry_resp,
-                                    retry_duration_ms,
+                                    &retry_call.response,
+                                    retry_call.duration_ms,
                                     cancel.clone(),
                                 )
                                 .await;
-                                StepCallOutcome::Response(Box::new(retry_resp))
+                                StepCallOutcome::Response(Box::new(retry_call.response))
                             }
                             Err(haven_llm::LlmError::Cancelled) => StepCallOutcome::Cancelled,
                             Err(e2) => {
@@ -1483,7 +1497,7 @@ mod tests {
             .expect("primary stream minted reasoning id");
 
         let retry_context = RequestContext::from_state(&state, None);
-        let (retry, _duration_ms) = stream.retry(&retry_context).await.unwrap();
+        let retry = stream.retry(&retry_context).await.unwrap().response;
         assert_eq!(retry.text, "Finished.");
         assert_eq!(
             state
