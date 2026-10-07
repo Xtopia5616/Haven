@@ -645,20 +645,6 @@ async fn execute_ui_confirmation_action(
     pending: UiConfirmationPending,
 ) -> Result<(), String> {
     match &pending.action {
-        UiConfirmationAction::Mcp { client, tool, args } => {
-            state
-                .runtime
-                .services
-                .mcp
-                .call_tool(
-                    client,
-                    tool,
-                    args.clone(),
-                    tokio_util::sync::CancellationToken::new(),
-                )
-                .await
-                .map_err(|error| log_err("resolve_ui_confirmation mcp", error))?;
-        }
         UiConfirmationAction::Skill { name, params } => {
             let skill = state
                 .runtime
@@ -981,7 +967,7 @@ mod tests {
         )
         .await
         .unwrap();
-        let tool_name = "mcp__test__write";
+        let tool_name = "skill__test";
         let tool_input = serde_json::json!({});
         let authorization_request = state
             .runtime
@@ -1005,10 +991,9 @@ mod tests {
                 request,
                 authorization_request,
                 receipt,
-                action: UiConfirmationAction::Mcp {
-                    client: "test".into(),
-                    tool: "write".into(),
-                    args: tool_input,
+                action: UiConfirmationAction::Skill {
+                    name: "test".into(),
+                    params: tool_input,
                 },
             },
         );
@@ -1282,7 +1267,7 @@ mod tests {
         )
         .await
         .unwrap();
-        let tool_name = "mcp__test__write";
+        let tool_name = "skill__test";
         let tool_input = serde_json::json!({});
         let authorization_request = state
             .runtime
@@ -1303,10 +1288,9 @@ mod tests {
             request,
             authorization_request,
             receipt,
-            action: UiConfirmationAction::Mcp {
-                client: "test".into(),
-                tool: "write".into(),
-                args: tool_input,
+            action: UiConfirmationAction::Skill {
+                name: "test".into(),
+                params: tool_input,
             },
         };
 

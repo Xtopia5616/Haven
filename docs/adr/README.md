@@ -718,3 +718,4 @@
 - [0727：持久消息类别复用 TranscriptMessageKind](0727-type-persisted-transcript-message-kind.md)
 - [0728：模型发现请求显式使用 RequestKind](0728-type-model-discovery-request-kind.md)
 - [0729：模型配置命令复用 RequestKind 路由](0729-type-model-operation-request-kind.md)
+- [0730：移除无消费者的 MCP UI 直调命令](0730-remove-unconsumed-mcp-ui-tool-call.md)

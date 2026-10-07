@@ -63,7 +63,6 @@ export const TAURI_COMMAND_CONTRACTS = {
 	list_mcp_servers: { boundary: 'read', security: 'snapshot only; env values redacted; invocation remains gated' },
 	reconnect_mcp: { boundary: 'execute', security: 'AuthorizationEngine; typed native operation reconnects one existing configured server after final version check' },
 	refresh_mcp_servers: { boundary: 'execute', security: 'AuthorizationEngine; one batch over persisted config diff and its affected targets; no renderer process arguments' },
-	mcp_tool_call: { boundary: 'execute', security: 'AuthorizationEngine; direct confirmations are queued and renderer errors are safe' },
 	add_mcp_server: { boundary: 'execute', security: 'AuthorizationEngine; shared native admin operation validates and persists config' },
 	update_mcp_server: { boundary: 'execute', security: 'AuthorizationEngine; shared native admin operation validates and reconnects safely' },
 	remove_mcp_server: { boundary: 'execute', security: 'AuthorizationEngine; shared native admin operation removes client and config' },

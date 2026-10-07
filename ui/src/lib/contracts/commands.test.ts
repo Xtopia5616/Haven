@@ -3,8 +3,8 @@ import { TAURI_COMMAND_CONTRACTS, TAURI_COMMAND_NAMES, type CommandBoundary } fr
 
 describe('Tauri command boundary directory', () => {
 	it('contains the complete unique command set without duplicating generated shapes', () => {
-		expect(TAURI_COMMAND_NAMES).toHaveLength(81);
-		expect(new Set(TAURI_COMMAND_NAMES).size).toBe(81);
+		expect(TAURI_COMMAND_NAMES).toHaveLength(80);
+		expect(new Set(TAURI_COMMAND_NAMES).size).toBe(80);
 		expect(TAURI_COMMAND_NAMES).toEqual(Object.keys(TAURI_COMMAND_CONTRACTS));
 		for (const contract of Object.values(TAURI_COMMAND_CONTRACTS)) {
 			expect(Object.keys(contract).sort()).toEqual(['boundary', 'security']);
@@ -19,13 +19,11 @@ describe('Tauri command boundary directory', () => {
 		expect(executeCommands).toEqual(
 			expect.arrayContaining([
 				'open_external',
-				'mcp_tool_call',
 				'execute_skill',
 				'process_transcript',
 				'open_skills_dir',
 			]),
 		);
-		expect(TAURI_COMMAND_CONTRACTS.mcp_tool_call.security).toContain('AuthorizationEngine');
 		expect(TAURI_COMMAND_CONTRACTS.execute_skill.security).toContain('AuthorizationEngine');
 	});
 

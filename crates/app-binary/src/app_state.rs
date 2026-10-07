@@ -111,15 +111,10 @@ impl RecordingSessionOwner {
     }
 }
 
-/// A renderer-triggered MCP/skill invocation waiting in the same confirmation
-/// queue as agent tool_runs. Raw arguments stay backend-only until the request is
+/// A renderer-triggered Skill invocation waiting in the same confirmation queue
+/// as agent tool_runs. Raw arguments stay backend-only until the request is
 /// resolved and are never part of an IPC error payload.
 pub(crate) enum UiConfirmationAction {
-    Mcp {
-        client: String,
-        tool: String,
-        args: serde_json::Value,
-    },
     Skill {
         name: String,
         params: serde_json::Value,

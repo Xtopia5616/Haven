@@ -34,7 +34,6 @@
 | `list_mcp_servers` | read | 返回服务器配置/状态/工具清单快照，不执行工具，env 值统一遮蔽 |
 | `reconnect_mcp` | execute | 只能选择已配置客户端 |
 | `refresh_mcp_servers` | execute | renderer 触发的配置客户端 reconcile；不接收进程参数 |
-| `mcp_tool_call` | execute | 适配器调用经过 AuthorizationEngine |
 | `add_mcp_server` | execute | 共享 self 操作校验并持久化 |
 | `update_mcp_server` | execute | 共享 self 操作安全重连 |
 | `remove_mcp_server` | execute | 共享 self 操作删除 |

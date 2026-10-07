@@ -676,7 +676,6 @@ pub(crate) fn run() {
             commands::mcp::list_mcp_servers,
             commands::mcp::reconnect_mcp,
             commands::mcp::refresh_mcp_servers,
-            commands::mcp::mcp_tool_call,
             commands::mcp::add_mcp_server,
             commands::mcp::update_mcp_server,
             commands::mcp::remove_mcp_server,

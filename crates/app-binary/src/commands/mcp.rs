@@ -1,19 +1,14 @@
-use crate::app_state::{AppState, UiConfirmationAction};
-use crate::commands::contracts::McpToolCallResponse;
+use crate::app_state::AppState;
 use crate::commands::log_err;
-use crate::commands::{app_command_authorization_request, queue_ui_confirmation};
 use crate::events::{MCP_STATUS_CHANGED_EVENT, McpStatusChangedEvent};
 use crate::logging::sanitize_error_text;
 use haven_common::McpServerConfig;
-use haven_common::types::RiskLevel;
-use haven_tools::{AuthorizationDecision, McpClientStatus, McpServerSnapshot, OperationPolicy};
-use serde_json::Value;
+use haven_tools::{McpClientStatus, McpServerSnapshot};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tauri::AppHandle;
 use tauri::Emitter;
 use tauri::State;
-use tokio_util::sync::CancellationToken;
 
 #[tauri::command]
 pub async fn list_mcp_servers(
@@ -213,65 +208,6 @@ pub async fn refresh_mcp_servers(
     .await?;
     crate::commands::finalize_admin_ui_operation(&state, &app, &request).await?;
     serde_json::from_value(result.output).map_err(|error| log_err("refresh_mcp_servers", error))
-}
-
-#[tauri::command]
-pub async fn mcp_tool_call(
-    state: State<'_, Arc<AppState>>,
-    app: AppHandle,
-    client: String,
-    tool: String,
-    args: Value,
-) -> Result<McpToolCallResponse, String> {
-    // Same qualified name + High risk as McpToolAdapter so permanent grants
-    // from agent confirmations apply to this direct invocation too.
-    let tool_key = haven_tools::McpToolAdapter::qualified_name_of(&client, &tool);
-    let policy = OperationPolicy::external(tool_key.clone(), RiskLevel::High);
-    let authorization_request = app_command_authorization_request(&tool_key, args.clone(), policy);
-    match state
-        .runtime
-        .services
-        .authorization
-        .authorize(&authorization_request)
-        .await
-    {
-        AuthorizationDecision::AutoApproved => {}
-        AuthorizationDecision::RequiresConfirmation { receipt, .. } => {
-            let tool_run_args = args.clone();
-            return Err(queue_ui_confirmation(
-                &state,
-                &app,
-                authorization_request,
-                receipt,
-                UiConfirmationAction::Mcp {
-                    client,
-                    tool,
-                    args: tool_run_args,
-                },
-            )
-            .await?);
-        }
-        AuthorizationDecision::Blocked { reason, .. } => {
-            return Err(log_err(
-                "mcp_tool_call",
-                format!("MCP tool call blocked by security policy ({reason})"),
-            ));
-        }
-    }
-
-    let cancel = CancellationToken::new();
-    let result = state
-        .runtime
-        .services
-        .mcp
-        .call_tool(&client, &tool, args, cancel)
-        .await
-        .map_err(|e| log_err("mcp_tool_call", e))?;
-    Ok(McpToolCallResponse {
-        success: result.success,
-        output: result.output,
-        error: result.error,
-    })
 }
 
 #[tauri::command]

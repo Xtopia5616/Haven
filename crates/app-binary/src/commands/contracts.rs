@@ -7,7 +7,7 @@
 
 /// Version of the public Tauri command directory.
 pub const IPC_CONTRACT_VERSION: u16 = 1;
-pub const EXPECTED_COMMAND_COUNT: usize = 81;
+pub const EXPECTED_COMMAND_COUNT: usize = 80;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CommandBoundary {
@@ -138,11 +138,6 @@ pub const COMMAND_CONTRACTS: &[CommandContract] = &[
         name: "refresh_mcp_servers",
         boundary: CommandBoundary::Execute,
         security: "AuthorizationEngine; one batch over persisted config diff and its affected targets; no renderer process arguments",
-    },
-    CommandContract {
-        name: "mcp_tool_call",
-        boundary: CommandBoundary::Execute,
-        security: "AuthorizationEngine; confirmation queues direct calls and errors are renderer-safe",
     },
     CommandContract {
         name: "add_mcp_server",
@@ -453,16 +448,6 @@ pub const COMMAND_CONTRACTS: &[CommandContract] = &[
     },
 ];
 
-/// Responses whose outer shape was historically assembled as JSON but is now
-/// a named DTO. The nested `Value` remains deliberate because MCP/skill output
-/// is provider/tool-defined extension data rather than a stable Haven shape.
-#[derive(Debug, Clone, serde::Serialize)]
-pub struct McpToolCallResponse {
-    pub success: bool,
-    pub output: serde_json::Value,
-    pub error: Option<String>,
-}
-
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct SkillExecutionResponse {
     pub success: bool,
@@ -564,7 +549,6 @@ mod tests {
             .map(|contract| contract.name)
             .collect();
         assert_eq!(names.len(), COMMAND_CONTRACTS.len());
-        assert!(names.contains(&"mcp_tool_call"));
         assert!(names.contains(&"execute_skill"));
         assert!(names.contains(&"resolve_confirmation"));
         assert!(names.contains(&"reset_permissions"));
@@ -575,16 +559,6 @@ mod tests {
 
     #[test]
     fn dynamic_execution_payloads_have_fixed_outer_shape() {
-        let mcp = serde_json::to_value(McpToolCallResponse {
-            success: true,
-            output: serde_json::json!({"value": 1}),
-            error: None,
-        })
-        .unwrap();
-        assert_eq!(
-            mcp,
-            serde_json::json!({"success": true, "output": {"value": 1}, "error": null})
-        );
         let skill = serde_json::to_value(SkillExecutionResponse {
             success: false,
             output: serde_json::json!(null),

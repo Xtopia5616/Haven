@@ -72,7 +72,6 @@ export const BOOTSTRAP_STATUS_VALUES = ['loading', 'ready'] as const;
 export type BootstrapStatus = (typeof BOOTSTRAP_STATUS_VALUES)[number];
 export interface RuntimeSessionListResponse { sessions: SessionInfo[] }
 export interface BuiltinToolManifestListResponse { tools: ToolManifest[] }
-export interface McpToolCallResponse { success: boolean; output: unknown; error: string | null }
 export interface MemoryFactResponse { id: string; subject: string; predicate: string; object: string; source: string; confidence: number; tags: string[]; created_at: string; mention_count: number; last_seen_at: string | null; source_ref: MemoryFactSourceRef | null; durability: number }
 export interface MemoryFactSourceRef { message_id: string; snippet: string }
 export interface MemoryRecallItem { entity_id: string; text: string; score: number; model: string }
@@ -324,7 +323,6 @@ export interface TauriCommandMap {
 	list_tool_run_history: { request: { kind?: ToolRunKindDtoInput | null; limit?: number | null; sessionId?: string | null }; response: ToolRunEvent[] };
 	list_tool_runs: { request: undefined; response: ToolRunEvent[] };
 	log_frontend_error: { request: { message: string }; response: void };
-	mcp_tool_call: { request: { client: string; tool: string; args: unknown }; response: McpToolCallResponse };
 	open_external: { request: { target: string }; response: void };
 	open_skills_dir: { request: undefined; response: string };
 	process_transcript: { request: { transcript: string; activeSessionId?: string | null; attachments?: MessageAttachmentInput[] | null; voice?: boolean | null; recordingSessionId?: string | null }; response: ProcessResult };
