@@ -348,8 +348,10 @@ Compaction summary episode 与首个 pending marker 只由 `MemoryStore::persist
 
 - `capture/`：CPAL 采集线程 + 环形缓冲 + 重采样。
 - `vad.rs`：tract ONNX 语音活动检测（含常驻 worker 线程）。
-- `lib.rs` 的 `InputPipeline`：录音状态机（start / stop / cancel）、VAD 判定 →
-  自动停止、PCM/WAV 序列化和采集侧错误。
+- `lib.rs` 的 `InputPipeline`：录音状态机（`start_capture` / `stop_capture` /
+  `cancel_capture`）、固定时长 `capture_for`、VAD 判定与自动停止、PCM/WAV 序列化和采集侧错误。
+  `update_audio_config` 替换音频参数；`set_ring_buffer_capacity_secs` 设置下一次 capture engine
+  spawn 使用的容量，当前 engine 不在线 resize。
 - `hotkey.rs`：快捷键字符串解析为中性 `KeyCombo`（与平台解耦）。
 
 **判定标准**：管「何时/怎么采」——录音生命周期、VAD 和音频产出；**不实现** provider
@@ -620,7 +622,7 @@ limit、创建时间倒序和 errors 的 status 过滤顺序保持原样。组�
   不迁入此模块（ADR 0403、0469、0470）。
 - `event_bridge.rs`：`AgentEvent` → 前端 channel 和显式 wire DTO 映射，包含 ToolRun
   生命周期投影与通知副通道。
-- `handlers.rs`：`ShellHandler` / `InputHandler` 的 Tauri、输入管线和托盘适配；user
+- `handlers.rs`：`ShellHandler` / `InputEventHandler` 的 Tauri、输入管线和托盘适配；user
   recording lifecycle 通过 `RecordingSessionOwner` 与命令共享身份交接，保留 VAD、自动停止
   和托盘图标更新适配。
 - `bootstrap.rs`：Tauri 启动与桌面生命周期编排，包括托盘、全局快捷键、单实例、自启、日志和退出；

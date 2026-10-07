@@ -439,11 +439,11 @@ pub async fn start_recording(
         .await
         .recording_revision;
     let lifecycle = state.recording_sessions.lock().await;
-    if let Err(e) = state.runtime.pipeline.start_recording().await {
+    if let Err(e) = state.runtime.input_pipeline.start_capture().await {
         // The hotkey may have started a recording a moment earlier, or a VAD
         // auto-stop may be finalizing: the pipeline is busy, not broken.
-        let pipeline_state = state.runtime.pipeline.state().await;
-        if matches!(pipeline_state, haven_input::RecordingState::Recording)
+        let capture_state = state.runtime.input_pipeline.state().await;
+        if matches!(capture_state, haven_input::RecordingState::Recording)
             && let Some(session_id) = state.recording_sessions.current(&lifecycle)
         {
             state
@@ -457,9 +457,9 @@ pub async fn start_recording(
             emit_recording_started(&app, &session_id);
             return Ok(());
         }
-        let msg = if matches!(pipeline_state, haven_input::RecordingState::Processing) {
+        let msg = if matches!(capture_state, haven_input::RecordingState::Processing) {
             "正在处理上一条录音，请稍候再试".to_string()
-        } else if matches!(pipeline_state, haven_input::RecordingState::Recording) {
+        } else if matches!(capture_state, haven_input::RecordingState::Recording) {
             "麦克风正由其他操作使用，请稍候再试".to_string()
         } else {
             format!("录音启动失败，请检查麦克风配置: {e}")
@@ -487,7 +487,7 @@ pub async fn stop_recording(
     let stop_context = state.runtime.shell.recording_stop_context().await;
     let lifecycle = state.recording_sessions.lock().await;
     let Some(session_id) = state.recording_sessions.current(&lifecycle) else {
-        return match classify_stop_capture_error(&state.runtime.pipeline.state().await) {
+        return match classify_stop_capture_error(&state.runtime.input_pipeline.state().await) {
             StopCaptureErrorClass::AlreadyFinalizing => Ok(String::new()),
             StopCaptureErrorClass::CaptureStillActive => Err(log_err(
                 "stop_recording",
@@ -504,16 +504,16 @@ pub async fn stop_recording(
     // clicking stop, and STT + agent run as background work that
     // drives the rest of the UI through `transcription:*` / `session:*`
     // events.
-    let result = match state.runtime.pipeline.stop_capture().await {
+    let result = match state.runtime.input_pipeline.stop_capture().await {
         Ok(result) => result,
         Err(e) => {
             // Another path (VAD auto-stop, mute, double click) already owns
             // the stop: the pipeline is Pending (finished) or Processing
             // (finalizing elsewhere). Not an error for the UI — emitting a
             // failure toast here would blame the user for a race they won.
-            let pipeline_state = state.runtime.pipeline.state().await;
+            let capture_state = state.runtime.input_pipeline.state().await;
             return match settle_owned_stop_capture_error(
-                &pipeline_state,
+                &capture_state,
                 &session_id,
                 e.to_string(),
                 || async {
@@ -577,8 +577,8 @@ pub async fn cancel_recording(
     };
     state
         .runtime
-        .pipeline
-        .cancel_recording()
+        .input_pipeline
+        .cancel_capture()
         .await
         .map_err(|e| log_err("cancel_recording", e))?;
     state
@@ -745,7 +745,7 @@ mod tests {
 
     #[tokio::test]
     async fn pending_and_processing_stop_failures_return_success_and_correlate_one_error() {
-        for pipeline_state in [
+        for capture_state in [
             haven_input::RecordingState::Pending,
             haven_input::RecordingState::Processing,
         ] {
@@ -758,7 +758,7 @@ mod tests {
             let events_in_closure = events.clone();
 
             let outcome = settle_owned_stop_capture_error(
-                &pipeline_state,
+                &capture_state,
                 &session_id,
                 "stop raced with another finalizer".to_string(),
                 move || async move {

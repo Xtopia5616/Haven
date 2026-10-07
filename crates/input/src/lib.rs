@@ -58,10 +58,10 @@ fn lock_std_or_recover<'a, T>(
     })
 }
 
-/// Unified input-pipeline hook surface. Both methods have no-op defaults, so
+/// Unified input-pipeline event hooks. Both methods have no-op defaults, so
 /// an implementation only overrides the hooks it needs.
 #[async_trait]
-pub trait InputHandler: Send + Sync {
+pub trait InputEventHandler: Send + Sync {
     /// Fired (sync) on each VAD signal/state transition. May be throttled by
     /// the pipeline before delivery.
     fn on_vad_status(&self, _signal: vad::VadSignal, _state: vad::VadState) {}
@@ -126,16 +126,16 @@ impl Default for RecordingResult {
 }
 
 pub struct InputPipeline {
-    config: Arc<Mutex<AudioConfig>>,
+    audio_config: Arc<Mutex<AudioConfig>>,
     state: Mutex<RecordingState>,
     engine: Arc<StdMutex<Option<CaptureEngineHandle>>>,
     /// VAD worker thread handle (spawned by `prewarm`, reused by every
     /// recording; owns the resident model).
     vad_worker: Arc<StdMutex<Option<Arc<VadWorker>>>>,
     /// Audio ring buffer size in seconds (from `context_limits`).
-    ring_buffer_secs: Arc<std::sync::Mutex<usize>>,
+    ring_buffer_capacity_secs: Arc<std::sync::Mutex<usize>>,
     vad_detector: Arc<Mutex<vad::VadDetector>>,
-    handler: OnceHandler<dyn InputHandler>,
+    event_handler: OnceHandler<dyn InputEventHandler>,
     cancel_token: StdMutex<Option<CancellationToken>>,
     result_rx: StdMutex<Option<tokio::sync::oneshot::Receiver<RecordingResult>>>,
 }
@@ -144,13 +144,13 @@ impl InputPipeline {
     pub fn new() -> Self {
         let vad_detector = vad::VadDetector::new(0.5, 1500);
         Self {
-            config: Arc::new(Mutex::new(AudioConfig::default())),
+            audio_config: Arc::new(Mutex::new(AudioConfig::default())),
             state: Mutex::new(RecordingState::Pending),
             engine: Arc::new(StdMutex::new(None)),
             vad_worker: Arc::new(StdMutex::new(None)),
-            ring_buffer_secs: Arc::new(std::sync::Mutex::new(20)),
+            ring_buffer_capacity_secs: Arc::new(std::sync::Mutex::new(20)),
             vad_detector: Arc::new(Mutex::new(vad_detector)),
-            handler: OnceHandler::new(),
+            event_handler: OnceHandler::new(),
             cancel_token: StdMutex::new(None),
             result_rx: StdMutex::new(None),
         }
@@ -164,21 +164,22 @@ impl Default for InputPipeline {
 }
 
 impl InputPipeline {
-    /// Install the unified input handler. May only be installed once; a second
+    /// Install the input event handler. May only be installed once; a second
     /// install is ignored and logged (the handler never changes at runtime).
-    pub fn set_handler(&self, handler: Arc<dyn InputHandler>) {
-        self.handler.set(handler);
+    pub fn install_event_handler(&self, event_handler: Arc<dyn InputEventHandler>) {
+        self.event_handler.set(event_handler);
     }
 
-    /// Replace the unified context limits (audio ring buffer size).
-    pub fn set_limits(&self, limits: &haven_common::config::ContextLimitsConfig) {
-        *lock_std_or_recover(&self.ring_buffer_secs, "ring_buffer_secs") =
-            limits.input_ring_buffer_secs;
+    /// Set the audio ring capacity used when the capture engine is next spawned.
+    /// An already-running capture engine retains its current capacity.
+    pub fn set_ring_buffer_capacity_secs(&self, capacity_secs: usize) {
+        *lock_std_or_recover(&self.ring_buffer_capacity_secs, "ring_buffer_capacity_secs") =
+            capacity_secs;
     }
 
     /// Start the capture engine at app startup so the first recording pays no
     /// engine-spawn latency. No capture stream is opened here (the microphone
-    /// is only claimed while recording); `start_recording` opens the stream
+    /// is only claimed while recording); `start_capture` opens the stream
     /// itself. The VAD worker thread is also spawned here (off the async
     /// runtime): the model loads on it in the background, so the first
     /// recording does not stall on ONNX graph compilation — its first
@@ -187,8 +188,11 @@ impl InputPipeline {
         {
             let mut guard = lock_std_or_recover(&self.engine, "engine");
             if guard.is_none() {
-                let ring_secs = *lock_std_or_recover(&self.ring_buffer_secs, "ring_buffer_secs");
-                match capture::spawn_engine(ring_secs) {
+                let ring_capacity_secs = *lock_std_or_recover(
+                    &self.ring_buffer_capacity_secs,
+                    "ring_buffer_capacity_secs",
+                );
+                match capture::spawn_engine(ring_capacity_secs) {
                     Ok(h) => {
                         *guard = Some(h);
                         tracing::debug!("audio capture engine prewarmed");
@@ -226,7 +230,8 @@ impl InputPipeline {
         self.vad_detector.lock().await.state()
     }
 
-    pub async fn start_recording(&self) -> Result<()> {
+    /// Start user-facing audio capture with VAD auto-stop and event callbacks.
+    pub async fn start_capture(&self) -> Result<()> {
         self.start_inner(LoopMode::Normal).await
     }
 
@@ -235,8 +240,8 @@ impl InputPipeline {
     /// notifications, and the capture is capped by the configured
     /// `max_duration_secs` so a runaway tool call cannot monopolize the
     /// microphone. Fails when a user recording is already in flight.
-    pub async fn record_for(&self, duration: Duration) -> Result<RecordingResult> {
-        let max = Duration::from_secs(self.config.lock().await.max_duration_secs.max(1));
+    pub async fn capture_for(&self, duration: Duration) -> Result<RecordingResult> {
+        let max = Duration::from_secs(self.audio_config.lock().await.max_duration_secs.max(1));
         let duration = duration.min(max);
         self.start_inner(LoopMode::Timed { duration }).await?;
         // The loop ends by itself at `duration`; `stop_capture` closes the
@@ -261,9 +266,11 @@ impl InputPipeline {
             match existing {
                 Some(h) => h,
                 None => {
-                    let ring_secs =
-                        *lock_std_or_recover(&self.ring_buffer_secs, "ring_buffer_secs");
-                    match capture::spawn_engine(ring_secs) {
+                    let ring_capacity_secs = *lock_std_or_recover(
+                        &self.ring_buffer_capacity_secs,
+                        "ring_buffer_capacity_secs",
+                    );
+                    match capture::spawn_engine(ring_capacity_secs) {
                         Ok(h) => {
                             *lock_std_or_recover(&self.engine, "engine") = Some(h.clone());
                             h
@@ -318,11 +325,11 @@ impl InputPipeline {
         *lock_std_or_recover(&self.result_rx, "result_rx") = Some(rx);
 
         let loop_data = LoopData {
-            config: self.config.clone(),
+            audio_config: self.audio_config.clone(),
             engine: handle.clone(),
             vad_worker,
             vad_detector: self.vad_detector.clone(),
-            handler: self.handler.snap(),
+            event_handler: self.event_handler.snap(),
             failed: handle.stream_failed.clone(),
             silent_abort: handle.silent_abort.clone(),
             mode,
@@ -340,8 +347,8 @@ impl InputPipeline {
         let start = std::time::Instant::now();
         let max_duration = match data.mode {
             LoopMode::Normal => {
-                let config = data.config.lock().await;
-                Duration::from_secs(config.max_duration_secs)
+                let audio_config = data.audio_config.lock().await;
+                Duration::from_secs(audio_config.max_duration_secs)
             }
             LoopMode::Timed { duration } => duration,
         };
@@ -376,7 +383,7 @@ impl InputPipeline {
                 // that path steals the stop, emits UI events and submits the
                 // transcript as a user voice message.
                 if matches!(data.mode, LoopMode::Normal) {
-                    notify_auto_stop(&data.handler);
+                    notify_auto_stop(&data.event_handler);
                 }
                 let elapsed = start.elapsed();
                 return RecordingResult {
@@ -407,7 +414,7 @@ impl InputPipeline {
                 // Timed (agent-tool) recordings must not notify the handler:
                 // that path stops the shell recording and emits UI events.
                 if matches!(data.mode, LoopMode::Normal) {
-                    notify_auto_stop(&data.handler);
+                    notify_auto_stop(&data.event_handler);
                 }
                 let elapsed = start.elapsed();
                 let capture_error =
@@ -511,14 +518,14 @@ impl InputPipeline {
                         // Notify outside the detector lock: the hook may emit
                         // events and must not stall VAD inference.
                         if last_vad_status.elapsed() >= VAD_THROTTLE_INTERVAL {
-                            if let Some(h) = &data.handler {
-                                h.on_vad_status(signal, state);
+                            if let Some(handler) = &data.event_handler {
+                                handler.on_vad_status(signal, state);
                             }
                             last_vad_status = std::time::Instant::now();
                         }
 
                         if signal == vad::VadSignal::AutoStop {
-                            notify_auto_stop(&data.handler);
+                            notify_auto_stop(&data.event_handler);
                             let elapsed = start.elapsed();
                             let capture_error = capture_error_for(
                                 data.mode,
@@ -547,7 +554,8 @@ impl InputPipeline {
         }
     }
 
-    pub async fn cancel_recording(&self) -> Result<()> {
+    /// Cancel an active capture and discard its buffered audio.
+    pub async fn cancel_capture(&self) -> Result<()> {
         // Capture the cancel_token and result_rx belonging to the current
         // recording BEFORE setting state to Pending (see stop_capture_inner
         // for the same ordering rationale).
@@ -589,7 +597,7 @@ impl InputPipeline {
     /// is intentionally kept resident during normal recording cancellation so
     /// the next recording remains fast; only application shutdown drops it.
     pub async fn shutdown(&self) -> Result<()> {
-        self.cancel_recording().await?;
+        self.cancel_capture().await?;
 
         if let Some(handle) = lock_std_or_recover(&self.engine, "engine").take() {
             handle.stop_and_clear();
@@ -659,10 +667,10 @@ impl InputPipeline {
     /// Apply a new audio configuration: `max_duration_secs` is read by the
     /// recording loop; `silence_timeout_ms` and `vad_threshold` are
     /// propagated to the VAD detector.
-    pub async fn update_config(&self, config: AudioConfig) {
+    pub async fn update_audio_config(&self, config: AudioConfig) {
         let vad_threshold = config.vad_threshold;
         let silence_timeout_ms = config.silence_timeout_ms;
-        *self.config.lock().await = config;
+        *self.audio_config.lock().await = config;
         *self.vad_detector.lock().await = vad::VadDetector::new(vad_threshold, silence_timeout_ms);
     }
 }
@@ -781,13 +789,13 @@ fn vad_worker_loop(
 }
 
 struct LoopData {
-    config: Arc<Mutex<AudioConfig>>,
+    audio_config: Arc<Mutex<AudioConfig>>,
     engine: CaptureEngineHandle,
     vad_worker: Option<Arc<VadWorker>>,
     vad_detector: Arc<Mutex<vad::VadDetector>>,
-    /// Handler snapshot taken at `start_recording`; the loop never locks the
+    /// Handler snapshot taken at `start_capture`; the loop never locks the
     /// pipeline's handler storage.
-    handler: Option<Arc<dyn InputHandler>>,
+    event_handler: Option<Arc<dyn InputEventHandler>>,
     failed: Arc<AtomicBool>,
     silent_abort: Arc<AtomicBool>,
     mode: LoopMode,
@@ -796,11 +804,11 @@ struct LoopData {
 /// Fire the async auto-stop hook on a spawned session: the recording loop must
 /// return promptly (the hook drives the stop path that awaits this loop's
 /// result), so it can never be awaited in place.
-fn notify_auto_stop(handler: &Option<Arc<dyn InputHandler>>) {
-    if let Some(h) = handler {
-        let h = h.clone();
+fn notify_auto_stop(event_handler: &Option<Arc<dyn InputEventHandler>>) {
+    if let Some(handler) = event_handler {
+        let handler = handler.clone();
         tokio::spawn(async move {
-            h.on_auto_stop().await;
+            handler.on_auto_stop().await;
         });
     }
 }
@@ -829,7 +837,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_update_config_changes_state() {
+    async fn test_update_audio_config_changes_state() {
         let pipeline = InputPipeline::new();
         let config = AudioConfig {
             sample_rate: 44100,
@@ -839,7 +847,7 @@ mod tests {
             silence_timeout_ms: 2000,
             vad_threshold: 0.3,
         };
-        pipeline.update_config(config).await;
+        pipeline.update_audio_config(config).await;
         let vad_threshold = pipeline.vad_detector.lock().await.threshold;
         let silence_frames = pipeline.vad_detector.lock().await.silence_max_frames;
         assert_eq!(vad_threshold, 0.3);
@@ -857,15 +865,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_set_handler() {
+    async fn test_install_event_handler() {
         struct StopHandler;
         #[async_trait]
-        impl InputHandler for StopHandler {
+        impl InputEventHandler for StopHandler {
             async fn on_auto_stop(&self) {}
         }
         let pipeline = InputPipeline::new();
-        pipeline.set_handler(Arc::new(StopHandler));
-        assert!(pipeline.handler.is_installed());
+        pipeline.install_event_handler(Arc::new(StopHandler));
+        assert!(pipeline.event_handler.is_installed());
     }
 
     #[tokio::test]

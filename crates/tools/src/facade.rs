@@ -558,13 +558,13 @@ mod capability_tests {
         assert!(after_config_publish.tts);
         assert!(tools.tts_configured().await);
 
-        let pipeline = Arc::new(haven_input::InputPipeline::new());
+        let input_pipeline = Arc::new(haven_input::InputPipeline::new());
         tools
             .coordinator
             .runtime
             .update_platform(|current| {
                 let mut next = current.clone();
-                next.audio_pipeline = Some(pipeline);
+                next.input_pipeline = Some(input_pipeline);
                 next
             })
             .await;

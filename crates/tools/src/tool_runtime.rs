@@ -58,7 +58,7 @@ pub fn new_memory_recall_slot() -> MemoryRecallSlot {
 pub(crate) struct PlatformRuntime {
     pub(crate) router: Option<Arc<LlmRouter>>,
     pub(crate) admin_context: Option<AdminContext>,
-    pub(crate) audio_pipeline: Option<Arc<haven_input::InputPipeline>>,
+    pub(crate) input_pipeline: Option<Arc<haven_input::InputPipeline>>,
     pub(crate) tts_client: Option<Arc<dyn haven_llm::TtsClient>>,
     pub(crate) stt_client: Option<Arc<dyn haven_llm::SttClient>>,
     pub(crate) ocr_client: Option<Arc<dyn haven_llm::OcrClient>>,
@@ -193,7 +193,7 @@ pub struct StartupWiring {
     pub security: SecurityConfig,
     pub router: Arc<LlmRouter>,
     pub media_config: haven_common::config::MediaConfig,
-    pub audio_pipeline: Option<Arc<haven_input::InputPipeline>>,
+    pub input_pipeline: Option<Arc<haven_input::InputPipeline>>,
     pub stt_client: Option<Arc<dyn haven_llm::SttClient>>,
     pub ocr_client: Option<Arc<dyn haven_llm::OcrClient>>,
     pub image_gen_client: Option<Arc<dyn haven_llm::ImageGenClient>>,

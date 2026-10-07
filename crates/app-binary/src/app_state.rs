@@ -380,8 +380,8 @@ impl AppState {
         agent.set_media_strategy(cfg.media.input_strategy)?;
         agent.set_session_max_steps(session_max_steps)?;
 
-        let pipeline = Arc::new(InputPipeline::new());
-        pipeline.set_limits(&context_limits_clone);
+        let input_pipeline = Arc::new(InputPipeline::new());
+        input_pipeline.set_ring_buffer_capacity_secs(context_limits_clone.input_ring_buffer_secs);
         let shell = Arc::new(DesktopShell::new());
         let runtime = Arc::new(ApplicationRuntime::new(RuntimeServices {
             session_store: session_store.clone(),
@@ -390,7 +390,7 @@ impl AppState {
             executor: executor.clone(),
             agent: agent.clone(),
             memory_startup,
-            pipeline: pipeline.clone(),
+            input_pipeline: input_pipeline.clone(),
             shell: shell.clone(),
             log_filter_handles: filter_handles.clone(),
             config_service: config_service.clone(),
@@ -573,7 +573,7 @@ impl AppState {
                 security: cfg.security.clone(),
                 router: router.clone(),
                 media_config: cfg.media.clone(),
-                audio_pipeline: Some(pipeline.clone()),
+                input_pipeline: Some(input_pipeline.clone()),
                 stt_client: stt_client.clone(),
                 ocr_client,
                 image_gen_client,
@@ -625,7 +625,7 @@ impl AppState {
         F: Fn(AppBootstrapEvent) + Send + Sync + 'static,
     {
         let tools = self.runtime.tools.clone();
-        let pipeline = self.runtime.pipeline.clone();
+        let input_pipeline = self.runtime.input_pipeline.clone();
         let agent = self.runtime.agent.clone();
         let runtime = self.runtime.clone();
         let bootstrap_ready = self.bootstrap_ready.clone();
@@ -656,7 +656,7 @@ impl AppState {
             .spawn_with_child_token("app-bootstrap", move |cancel| async move {
             // Audio engine + VAD worker: first recording must not pay spawn
             // latency, but window creation should not wait for it either.
-            pipeline.prewarm().await;
+            input_pipeline.prewarm().await;
 
             // Start new conversations immediately. Recovery of sessions left
             // Pending by a previous process is deferred until the catalog is

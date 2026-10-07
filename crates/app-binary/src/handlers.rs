@@ -1,4 +1,4 @@
-//! Host adapters for desktop shell and input callbacks.
+//! Host adapters for desktop shell and input event callbacks.
 
 use crate::app_state::AppState;
 use crate::desktop::{self, RecordingStartContext, RecordingStopContext, TrayStatus};
@@ -32,7 +32,7 @@ where
 /// assignments on `DesktopShell`.
 pub(crate) struct HavenShellHandler {
     pub(crate) app_h: tauri::AppHandle,
-    pub(crate) pipeline: Arc<haven_input::InputPipeline>,
+    pub(crate) input_pipeline: Arc<haven_input::InputPipeline>,
     pub(crate) shell_arc: Arc<desktop::DesktopShell>,
     pub(crate) tray: tauri::tray::TrayIcon,
 }
@@ -46,9 +46,9 @@ impl desktop::ShellHandler for HavenShellHandler {
         // pipeline is actually recording would leave the UI stuck in the
         // recording state (and every stop attempt failing with "not
         // recording") if startup errors.
-        if let Err(e) = self.pipeline.start_recording().await {
+        if let Err(e) = self.input_pipeline.start_capture().await {
             if matches!(
-                self.pipeline.state().await,
+                self.input_pipeline.state().await,
                 haven_input::RecordingState::Recording
             ) && state.recording_sessions.current(&lifecycle).is_some()
             {
@@ -59,7 +59,7 @@ impl desktop::ShellHandler for HavenShellHandler {
                     .await;
                 return;
             }
-            tracing::warn!("pipeline start_recording failed: {e}");
+            tracing::warn!("input pipeline start_capture failed: {e}");
             self.shell_arc
                 .sync_recording_if_revision(false, context.recording_revision)
                 .await;
@@ -79,7 +79,7 @@ impl desktop::ShellHandler for HavenShellHandler {
         let lifecycle = state.recording_sessions.lock().await;
         let (session_id, result) = match stop_capture_for_owned_recording(
             state.recording_sessions.current(&lifecycle),
-            || self.pipeline.stop_capture(),
+            || self.input_pipeline.stop_capture(),
         )
         .await
         {
@@ -226,16 +226,16 @@ mod tests {
     }
 }
 
-/// Concrete `InputHandler` wiring VAD status + auto-stop to the Tauri app
+/// Concrete `InputEventHandler` wiring VAD status + auto-stop to the Tauri app
 /// handle and the desktop shell. Replaces the former separate
 /// `set_vad_status_callback` + `set_on_auto_stop` bindings on `InputPipeline`.
-pub(crate) struct HavenInputHandler {
+pub(crate) struct HavenInputEventHandler {
     pub(crate) app_h: tauri::AppHandle,
     pub(crate) shell_arc: Arc<desktop::DesktopShell>,
 }
 
 #[async_trait::async_trait]
-impl haven_input::InputHandler for HavenInputHandler {
+impl haven_input::InputEventHandler for HavenInputEventHandler {
     fn on_vad_status(
         &self,
         signal: haven_input::vad::VadSignal,

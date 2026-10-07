@@ -140,7 +140,7 @@ fn tool_output_cap(
 /// new router with stale specialized clients.
 pub struct MediaDeps {
     pub router: Option<Arc<haven_llm::LlmRouter>>,
-    pub audio_pipeline: Option<Arc<haven_input::InputPipeline>>,
+    pub input_pipeline: Option<Arc<haven_input::InputPipeline>>,
     pub stt_client: Option<Arc<dyn haven_llm::SttClient>>,
     pub ocr_client: Option<Arc<dyn haven_llm::OcrClient>>,
     pub image_gen_client: Option<Arc<dyn haven_llm::ImageGenClient>>,
@@ -203,7 +203,7 @@ pub async fn register_builtin_tools(
         media:
             MediaDeps {
                 router,
-                audio_pipeline,
+                input_pipeline,
                 stt_client,
                 ocr_client,
                 image_gen_client,
@@ -221,7 +221,7 @@ pub async fn register_builtin_tools(
     let limits = &limits;
     let mut admin_surfaces: Option<Arc<admin::AdminSurfaces>> = None;
     let audio_runtime = Arc::new(
-        media_audio::AudioRuntime::with_tts(audio_pipeline, tts_client)
+        media_audio::AudioRuntime::with_tts(input_pipeline, tts_client)
             .with_managed_assets(managed_assets.clone()),
     );
     tools.push(Arc::new(ask::typed_adapter()));

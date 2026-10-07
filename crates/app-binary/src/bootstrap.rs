@@ -6,7 +6,7 @@ use crate::commands;
 use crate::desktop::TrayStatus;
 use crate::event_bridge::{TauriEmitter, emit_tool_run_event};
 use crate::events::*;
-use crate::handlers::{HavenInputHandler, HavenShellHandler, make_tray_icon};
+use crate::handlers::{HavenInputEventHandler, HavenShellHandler, make_tray_icon};
 use crate::logging::init_tracing;
 use crate::notification::DesktopNotifications;
 use haven_common::config::LogConfig;
@@ -456,23 +456,24 @@ pub(crate) fn run() {
             tokio::task::block_in_place(|| {
                 let rt = tokio::runtime::Handle::current();
                 let shell_arc = state.runtime.shell.clone();
-                let pipeline = state.runtime.pipeline.clone();
+                let input_pipeline = state.runtime.input_pipeline.clone();
                 let tray_ref = tray.clone();
                 let handler = Arc::new(HavenShellHandler {
                     app_h: handle.clone(),
-                    pipeline,
+                    input_pipeline,
                     shell_arc: shell_arc.clone(),
                     tray: tray_ref,
                 });
                 shell_arc.set_handler(handler);
 
-                // Wire up unified input handler (VAD status + auto-stop)
+                // Wire up input event handler (VAD status + auto-stop)
                 {
                     let app_h = handle.clone();
                     let shell_arc = state.runtime.shell.clone();
                     state
-                        .runtime.pipeline
-                        .set_handler(Arc::new(HavenInputHandler { app_h, shell_arc }));
+                        .runtime
+                        .input_pipeline
+                        .install_event_handler(Arc::new(HavenInputEventHandler { app_h, shell_arc }));
                 }
 
                 rt.block_on(shell.set_hold_mode(is_hold));

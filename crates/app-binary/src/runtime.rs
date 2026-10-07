@@ -39,7 +39,7 @@ pub struct ApplicationRuntime {
     pub(crate) executor: Arc<SessionSupervisor>,
     pub(crate) agent: Arc<AgentLayer>,
     pub(crate) memory_startup: MemoryStartup,
-    pub(crate) pipeline: Arc<InputPipeline>,
+    pub(crate) input_pipeline: Arc<InputPipeline>,
     pub(crate) shell: Arc<DesktopShell>,
     pub(crate) log_filter_handles: Vec<reload::Handle<EnvFilter, Registry>>,
     pub(crate) config_service: Arc<ConfigService>,
@@ -62,7 +62,7 @@ pub(crate) struct RuntimeServices {
     pub(crate) executor: Arc<SessionSupervisor>,
     pub(crate) agent: Arc<AgentLayer>,
     pub(crate) memory_startup: MemoryStartup,
-    pub(crate) pipeline: Arc<InputPipeline>,
+    pub(crate) input_pipeline: Arc<InputPipeline>,
     pub(crate) shell: Arc<DesktopShell>,
     pub(crate) log_filter_handles: Vec<reload::Handle<EnvFilter, Registry>>,
     pub(crate) config_service: Arc<ConfigService>,
@@ -81,7 +81,7 @@ impl ApplicationRuntime {
             executor: runtime_services.executor,
             agent: runtime_services.agent,
             memory_startup: runtime_services.memory_startup,
-            pipeline: runtime_services.pipeline,
+            input_pipeline: runtime_services.input_pipeline,
             shell: runtime_services.shell,
             log_filter_handles: runtime_services.log_filter_handles,
             config_service: runtime_services.config_service,
@@ -288,7 +288,7 @@ impl ApplicationRuntime {
         // Stop producers before consumers and resource owners. In particular,
         // this prevents a final recording or session run from starting while
         // its backing process/network resources are being torn down.
-        if let Err(error) = self.pipeline.shutdown().await {
+        if let Err(error) = self.input_pipeline.shutdown().await {
             tracing::warn!(error = %error, "input pipeline shutdown failed");
         }
         if let Err(error) = self.executor.clear_all_sessions_for_shutdown().await {

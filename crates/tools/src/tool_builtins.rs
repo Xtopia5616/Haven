@@ -50,7 +50,7 @@ impl ToolBuiltins {
         let limits = platform.context_limits.clone();
         let router = platform.router.clone();
         let admin_context = platform.admin_context.clone();
-        let audio_pipeline = platform.audio_pipeline.clone();
+        let input_pipeline = platform.input_pipeline.clone();
         let stt_client = platform.stt_client.clone();
         let ocr_client = platform.ocr_client.clone();
         let image_gen_client = platform.image_gen_client.clone();
@@ -75,7 +75,7 @@ impl ToolBuiltins {
             managed_assets: runtime.managed_assets.clone(),
             media: MediaDeps {
                 router,
-                audio_pipeline,
+                input_pipeline,
                 stt_client,
                 ocr_client,
                 image_gen_client,

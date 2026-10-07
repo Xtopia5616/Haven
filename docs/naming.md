@@ -1,6 +1,6 @@
 # Haven 命名规范
 
-> 版本: v1.64 | 日期: 2026-10-07
+> 版本: v1.65 | 日期: 2026-10-07
 
 本文档统一 Haven 项目各层的命名规则（变量名、函数名、文件名、crate 名、缩写大小写、跨层边界）。规范以现有代码中的事实模式为基础，新代码必须遵循；存量代码若与规范冲突，逐步迁移对齐。
 
@@ -32,6 +32,7 @@
 | 工具运行（ToolRun） | 脱离当前 turn 持久运行、可取消并产生生命周期事件的工具执行 | 后端/IPC/数据库使用 `tool_run`、`tool_runs`；ID 前缀为 `toolrun-` |
 | 后台工具运行（background ToolRun） | 工具调用选择后台执行后启动的持久运行 | 通过 `ToolExecutionMode::Background` 启动；UI 显示“后台任务” |
 | 定时工具运行（scheduled ToolRun） | 由时间或依赖触发的工具运行 | 仍由 `schedule` 工具负责设置触发条件；UI 显示“定时任务” |
+| 音频输入管线（`InputPipeline`） | `haven-input` 对麦克风采集、VAD 与采集循环的唯一 owner；不拥有转写、provider fallback 或 App 的录音 UI 状态 | 常规采集用 `start_capture` / `stop_capture` / `cancel_capture`；固定时长采集用 `capture_for`；回调契约为 `InputEventHandler`。App 与 Tools 的字段统一叫 `input_pipeline` |
 | 录音结果（`RecordingResult`） | `haven-input` 拥有的固定格式采集结果：16 kHz 单声道 PCM、停止原因、时长和采集错误 | 通过 `RecordingResult::encode_wav()` 编码；它与 Tools 持有的 `RecordedAudio`（已登记 WAV 资产结果）不是同一层结果 |
 
 定时工具运行的 `mode` 只作为行为说明：`tool` 显示“调用工具”，`continue` 显示“继续会话”。运行状态统一显示“待执行 / 运行中 / 已完成 / 失败 / 已取消”；原始枚举值只留在 wire、日志或调试详情中。
@@ -139,6 +140,8 @@ Hotkey 领域中，`KeyCombo::has_modifier` 表示修饰键位掩码判断；`Ke
 VAD 模型输出语音概率的推理入口使用 `infer_speech_probability`；检测器接收该值时使用 `observe_probability`，明确它会根据概率推进检测状态并产出 `VadSignal`。避免在同一条职责链里用通用 `infer`、`process` 和 `prob` 隐去输入输出含义。
 
 Input capture 内部的 engine owner 和命令分别使用 `CaptureEngine`、`CaptureEngineCommand`、`CaptureEngineHandle`；活动 ring 的直接读取叫 `drain_buffered`，隐藏 mutex 共享实现。`Resampler` 的状态式转换入口使用 `resample` / `resample_into`，区分音频变换和泛化的 `process`。
+
+`InputPipeline` 的 ring capacity 配置入口叫 `set_ring_buffer_capacity_secs`，音频参数替换叫 `update_audio_config`。ring capacity 当前只在下一次 capture engine spawn 时生效；运行中 engine 不会因设置变更而 resize（ADR 0634）。
 
 Common 媒体探测 helper 和变量以 `mime_type` 表示 MIME 字符串，探测/扩展名映射函数使用 `*_mime_type`；`MediaProbe` 的 Rust 与 Serde 字段统一为 `media_kind`，MIME 字符串为 `mime_type`，不为旧 `media_type` key 保留别名。此规则仅针对探测结果；消息附件、受管媒体资产及 provider wire 中表示 MIME 字符串的 `media_type` 按各自现行契约保留。`DetectedMediaKind` 是 bytes/extension/MIME 推出的粗分类（含 `Unknown`）。能力规划的 `MediaModality` 没有 `Unknown`，继续表示模型能力合同，不与检测失败分类合并。
 

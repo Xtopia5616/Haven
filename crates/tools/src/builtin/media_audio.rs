@@ -34,7 +34,7 @@ const MAX_SPEAK_CHARS: usize = 4_000;
 pub(crate) struct AudioRuntime {
     /// Shared capture pipeline. `None` in headless/test contexts where
     /// recording is unavailable; the `record` operation then fails cleanly.
-    pipeline: Option<Arc<InputPipeline>>,
+    input_pipeline: Option<Arc<InputPipeline>>,
     /// Shared TTS client. `None` means TTS is disabled or failed to initialize.
     tts: Option<Arc<dyn TtsClient>>,
     /// Injectable playback boundary keeps the tool testable without a speaker.
@@ -67,16 +67,16 @@ impl AudioPlayback for SystemAudioPlayback {
 
 impl AudioRuntime {
     #[cfg(test)]
-    pub(crate) fn new(pipeline: Option<Arc<InputPipeline>>) -> Self {
-        Self::with_tts(pipeline, None)
+    pub(crate) fn new(input_pipeline: Option<Arc<InputPipeline>>) -> Self {
+        Self::with_tts(input_pipeline, None)
     }
 
     pub(crate) fn with_tts(
-        pipeline: Option<Arc<InputPipeline>>,
+        input_pipeline: Option<Arc<InputPipeline>>,
         tts: Option<Arc<dyn TtsClient>>,
     ) -> Self {
         Self {
-            pipeline,
+            input_pipeline,
             tts,
             playback: Arc::new(SystemAudioPlayback),
             managed_assets: ManagedAssetRegistry::default(),
@@ -90,7 +90,7 @@ impl AudioRuntime {
     }
 
     pub(crate) fn record_available(&self) -> bool {
-        self.pipeline.is_some()
+        self.input_pipeline.is_some()
     }
 
     pub(crate) fn tts_available(&self) -> bool {
@@ -112,7 +112,7 @@ impl AudioRuntime {
         params: &MediaParams,
         cancel: CancellationToken,
     ) -> anyhow::Result<RecordedAudio> {
-        let Some(pipeline) = &self.pipeline else {
+        let Some(input_pipeline) = &self.input_pipeline else {
             return Err(anyhow::anyhow!(
                 "media record: recording is unavailable in this context"
             ));
@@ -126,7 +126,7 @@ impl AudioRuntime {
             .duration
             .unwrap_or(DEFAULT_RECORD_SECS)
             .clamp(1.0, MAX_RECORD_SECS);
-        match pipeline.state().await {
+        match input_pipeline.state().await {
             haven_input::RecordingState::Recording => {
                 return Err(anyhow::anyhow!(
                     "media record: a recording is already in progress, try again later"
@@ -141,13 +141,13 @@ impl AudioRuntime {
         }
 
         let result = tokio::select! {
-            r = pipeline.record_for(Duration::from_secs_f64(duration)) => r.map_err(|e| {
+            r = input_pipeline.capture_for(Duration::from_secs_f64(duration)) => r.map_err(|e| {
                 anyhow::anyhow!("media record: recording failed: {e}")
             })?,
             _ = cancel.cancelled() => {
                 // Release the microphone promptly; the partial capture is
                 // discarded (nothing was delivered to the agent).
-                let _ = pipeline.stop_capture().await;
+                let _ = input_pipeline.stop_capture().await;
                 return Err(anyhow::anyhow!("media record: recording cancelled"));
             }
         };

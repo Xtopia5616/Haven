@@ -54,7 +54,7 @@ pub(crate) async fn resolve_media_capabilities(platform: &PlatformRuntime) -> Me
         platform.stt_client.is_some(),
     )
     .await;
-    capabilities.record = platform.audio_pipeline.is_some();
+    capabilities.record = platform.input_pipeline.is_some();
     capabilities.ocr = platform.ocr_client.is_some();
     capabilities.generate = platform.image_gen_client.is_some();
     capabilities.speak = platform.tts_client.is_some();

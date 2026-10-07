@@ -1,4 +1,4 @@
-//! One-shot hook handler slots shared by the shell and input hook surfaces.
+//! One-shot handler slots shared by the shell and input event surfaces.
 
 use std::sync::Arc;
 use std::sync::OnceLock;
@@ -9,7 +9,7 @@ use std::sync::OnceLock;
 /// builds) instead of panicking unconditionally, so a startup wiring mistake
 /// is diagnosable rather than crashing the process.
 ///
-/// `T` is normally a `dyn Trait` (e.g. `dyn ShellHandler` / `dyn InputHandler`),
+/// `T` is normally a `dyn Trait` (e.g. `dyn ShellHandler` / `dyn InputEventHandler`),
 /// so the slot stores `Arc<T>` and hands out clones without any locking; the
 /// handler itself is immutable after install.
 pub struct OnceHandler<T: ?Sized> {

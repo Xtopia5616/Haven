@@ -196,10 +196,10 @@ async fn execute_settings_apply_phase(
         SettingsApplyPhase::InputPipeline => {
             state
                 .runtime
-                .pipeline
-                .update_config(config.media.audio.clone())
+                .input_pipeline
+                .update_audio_config(config.media.audio.clone())
                 .await;
-            timing.tick("pipeline.update_config");
+            timing.tick("input_pipeline.update_audio_config");
             match state
                 .runtime
                 .agent
@@ -293,7 +293,10 @@ async fn execute_settings_apply_phase(
             }
         }
         SettingsApplyPhase::ContextLimits => {
-            state.runtime.pipeline.set_limits(&config.context_limits);
+            state
+                .runtime
+                .input_pipeline
+                .set_ring_buffer_capacity_secs(config.context_limits.input_ring_buffer_secs);
             let result = state
                 .runtime
                 .tools
