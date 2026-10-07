@@ -21,6 +21,11 @@ pub struct ModelInfo {
     pub cost_per_1k_output_tokens: Option<f64>,
 }
 
+struct ModelPricing {
+    cost_per_1k_input_tokens: Option<f64>,
+    cost_per_1k_output_tokens: Option<f64>,
+}
+
 impl ModelInfo {
     /// Minimal entry used by STT-only static catalogs (no context / pricing).
     pub fn bare(id: impl Into<String>, provider: impl Into<String>) -> Self {
@@ -74,7 +79,7 @@ pub fn model_info_from_json(m: &serde_json::Value) -> Option<ModelInfo> {
         .or_else(|| m.get("provider").and_then(|v| v.as_str()))
         .unwrap_or("unknown")
         .to_string();
-    let (cost_in, cost_out) = extract_pricing(m);
+    let pricing = extract_pricing(m);
     Some(ModelInfo {
         id,
         provider,
@@ -86,8 +91,8 @@ pub fn model_info_from_json(m: &serde_json::Value) -> Option<ModelInfo> {
             .unwrap_or(true),
         supports_tools: extract_supports_tools(m),
         supports_vision: extract_supports_vision(m),
-        cost_per_1k_input_tokens: cost_in,
-        cost_per_1k_output_tokens: cost_out,
+        cost_per_1k_input_tokens: pricing.cost_per_1k_input_tokens,
+        cost_per_1k_output_tokens: pricing.cost_per_1k_output_tokens,
     })
 }
 
@@ -205,17 +210,17 @@ fn extract_supports_tools(m: &serde_json::Value) -> bool {
 
 /// OpenRouter / LiteLLM style: `pricing.prompt` / `pricing.completion` are
 /// USD **per token**. Convert to USD per 1K tokens.
-fn extract_pricing(m: &serde_json::Value) -> (Option<f64>, Option<f64>) {
+fn extract_pricing(m: &serde_json::Value) -> ModelPricing {
     let prompt = m
         .pointer("/pricing/prompt")
         .or_else(|| m.pointer("/pricing/input"));
     let completion = m
         .pointer("/pricing/completion")
         .or_else(|| m.pointer("/pricing/output"));
-    (
-        prompt.and_then(per_token_to_per_1k),
-        completion.and_then(per_token_to_per_1k),
-    )
+    ModelPricing {
+        cost_per_1k_input_tokens: prompt.and_then(per_token_to_per_1k),
+        cost_per_1k_output_tokens: completion.and_then(per_token_to_per_1k),
+    }
 }
 
 fn per_token_to_per_1k(v: &serde_json::Value) -> Option<f64> {

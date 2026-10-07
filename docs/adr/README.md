@@ -597,3 +597,4 @@
 - [0606：命名 LLM resolved model client](0606-name-llm-resolved-model-client.md)
 - [0607：删除 UI command invoker 同义 alias](0607-remove-ui-command-invoker-aliases.md)
 - [0608：命名 MCP 内容提取结果](0608-name-mcp-content-extraction-result.md)
+- [0609：命名 LLM model pricing 结果](0609-name-llm-model-pricing-result.md)
