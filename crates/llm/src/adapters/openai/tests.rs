@@ -397,7 +397,7 @@ fn prompt_cache_key_is_stable_across_memory_refreshes() {
         "{stable}{MEMORY_FENCE_START}refreshed recalled fact"
     ))]);
     let user = CanonicalMessage::user_text("continue");
-    let tools = vec![ToolDefinition {
+    let tools = vec![LlmToolDefinition {
         tool_type: "function".into(),
         function: ToolFunction {
             name: "read".into(),
@@ -425,7 +425,7 @@ fn prompt_cache_key_canonicalizes_nested_tool_schema_objects() {
     });
     let system = CanonicalMessage::system(vec![ContentPart::text("stable system")]);
     let user = CanonicalMessage::user_text("session anchor");
-    let tool = |parameters| ToolDefinition {
+    let tool = |parameters| LlmToolDefinition {
         tool_type: "function".into(),
         function: ToolFunction {
             name: "read".into(),
@@ -578,7 +578,7 @@ fn prompt_cache_key_changes_when_tools_change_or_is_unsupported() {
     let client = OpenAiAdapter::new(ModelEndpoint::default());
     let system = CanonicalMessage::system(vec![ContentPart::text("stable system")]);
     let user = CanonicalMessage::user_text("session anchor");
-    let one_tool = vec![ToolDefinition {
+    let one_tool = vec![LlmToolDefinition {
         tool_type: "function".into(),
         function: ToolFunction {
             name: "read".into(),
@@ -588,7 +588,7 @@ fn prompt_cache_key_changes_when_tools_change_or_is_unsupported() {
     }];
     let two_tools = vec![
         one_tool[0].clone(),
-        ToolDefinition {
+        LlmToolDefinition {
             tool_type: "function".into(),
             function: ToolFunction {
                 name: "write".into(),
@@ -864,7 +864,7 @@ fn rejected_prompt_cache_key_is_reprobed_after_cooldown() {
 fn build_request_body_with_tools() {
     let ep = ModelEndpoint::default();
     let client = OpenAiAdapter::new(ep);
-    let tools = vec![ToolDefinition {
+    let tools = vec![LlmToolDefinition {
         tool_type: "function".into(),
         function: ToolFunction {
             name: "search".into(),
@@ -880,7 +880,7 @@ fn build_request_body_with_tools() {
 
 #[test]
 fn openai_projects_dotted_names_but_deepseek_keeps_128_character_names() {
-    let dotted = ToolDefinition {
+    let dotted = LlmToolDefinition {
         tool_type: "function".into(),
         function: ToolFunction {
             name: "files.read".into(),
@@ -906,7 +906,7 @@ fn openai_projects_dotted_names_but_deepseek_keeps_128_character_names() {
     })
     .build_request_body(
         vec![],
-        vec![ToolDefinition {
+        vec![LlmToolDefinition {
             tool_type: "function".into(),
             function: ToolFunction {
                 name: long_name.clone(),
@@ -932,7 +932,7 @@ fn xai_style_preserves_documented_tool_names() {
     );
     let body = client.build_request_body(
         vec![],
-        vec![ToolDefinition {
+        vec![LlmToolDefinition {
             tool_type: "function".into(),
             function: ToolFunction {
                 name: "files.read".into(),
@@ -1452,7 +1452,7 @@ fn extract_tool_calls_missing_id_defaults_to_empty() {
 
 #[test]
 fn convert_tools_single_tool() {
-    let tools = vec![ToolDefinition {
+    let tools = vec![LlmToolDefinition {
         tool_type: "function".into(),
         function: ToolFunction {
             name: "read".into(),
@@ -1470,7 +1470,7 @@ fn convert_tools_single_tool() {
 #[test]
 fn convert_tools_multiple_tools() {
     let tools = vec![
-        ToolDefinition {
+        LlmToolDefinition {
             tool_type: "function".into(),
             function: ToolFunction {
                 name: "a".into(),
@@ -1478,7 +1478,7 @@ fn convert_tools_multiple_tools() {
                 parameters: serde_json::json!({}),
             },
         },
-        ToolDefinition {
+        LlmToolDefinition {
             tool_type: "function".into(),
             function: ToolFunction {
                 name: "b".into(),
@@ -1501,7 +1501,7 @@ fn convert_tools_empty_vec() {
 
 #[test]
 fn convert_tools_sanitizes_non_object_schema() {
-    let result = OpenAiAdapter::convert_tools(vec![ToolDefinition {
+    let result = OpenAiAdapter::convert_tools(vec![LlmToolDefinition {
         tool_type: "function".into(),
         function: ToolFunction {
             name: "broken".into(),
@@ -1518,7 +1518,7 @@ fn convert_tools_sanitizes_non_object_schema() {
 
 #[test]
 fn openai_convert_tools_projects_root_union_schema() {
-    let tools = vec![ToolDefinition {
+    let tools = vec![LlmToolDefinition {
         tool_type: "function".into(),
         function: ToolFunction {
             name: "schedule".into(),
@@ -1574,7 +1574,7 @@ fn openai_chat_projects_schedule_schema_for_xai_provider() {
         ..Default::default()
     };
     let client = OpenAiAdapter::new(endpoint);
-    let schedule = ToolDefinition {
+    let schedule = LlmToolDefinition {
         tool_type: "function".into(),
         function: ToolFunction {
             name: "schedule".into(),
@@ -1637,7 +1637,7 @@ fn openai_chat_projects_schedule_schema_for_xai_provider() {
 
 #[test]
 fn openai_convert_tools_projects_undiscriminated_root_union_schema() {
-    let tools = vec![ToolDefinition {
+    let tools = vec![LlmToolDefinition {
         tool_type: "function".into(),
         function: ToolFunction {
             name: "example".into(),

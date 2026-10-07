@@ -10,7 +10,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::client::LlmClient;
 use crate::stream_rules::{StreamRule, StreamRuleMode, check_stream_rules};
-use crate::types::{FinishReason, LlmError, LlmResponse, StreamChunk, ToolDefinition};
+use crate::types::{FinishReason, LlmError, LlmResponse, LlmToolDefinition, StreamChunk};
 
 /// Budget for the FIRST chunk of a stream, applied before any data has
 /// arrived: providers run server-side "thinking" and may delay the first
@@ -107,7 +107,7 @@ pub(crate) fn scale_stream_idle(base: Duration, messages: &[CanonicalMessage]) -
 pub(crate) async fn aggregate_stream_cancellable_shared(
     client: Arc<dyn LlmClient>,
     messages: Arc<[CanonicalMessage]>,
-    tools: Arc<[ToolDefinition]>,
+    tools: Arc<[LlmToolDefinition]>,
     on_chunk: Arc<StdMutex<impl FnMut(&StreamChunk) + Send + 'static>>,
     cancel: CancellationToken,
     stream_rules: &RwLock<Vec<StreamRule>>,
@@ -136,7 +136,7 @@ pub(crate) async fn aggregate_stream_cancellable_shared(
 pub(crate) async fn aggregate_stream_cancellable_shared_with_guidance(
     client: Arc<dyn LlmClient>,
     messages: Arc<[CanonicalMessage]>,
-    tools: Arc<[ToolDefinition]>,
+    tools: Arc<[LlmToolDefinition]>,
     guidance: Option<String>,
     on_chunk: Arc<StdMutex<impl FnMut(&StreamChunk) + Send + 'static>>,
     cancel: CancellationToken,
@@ -442,7 +442,7 @@ mod tests {
         async fn chat_stream_with_tools_output_cap_shared(
             &self,
             _messages: Arc<[CanonicalMessage]>,
-            _tools: Arc<[ToolDefinition]>,
+            _tools: Arc<[LlmToolDefinition]>,
             _max_output_tokens: Option<u32>,
         ) -> Result<
             Pin<Box<dyn futures_util::Stream<Item = Result<StreamChunk, LlmError>> + Send>>,
@@ -483,7 +483,7 @@ mod tests {
         async fn chat_stream_with_tools_output_cap_shared(
             &self,
             messages: Arc<[CanonicalMessage]>,
-            tools: Arc<[ToolDefinition]>,
+            tools: Arc<[LlmToolDefinition]>,
             _max_output_tokens: Option<u32>,
         ) -> Result<
             Pin<Box<dyn futures_util::Stream<Item = Result<StreamChunk, LlmError>> + Send>>,
@@ -507,7 +507,7 @@ mod tests {
         async fn chat_stream_with_tools_output_cap_shared_guidance(
             &self,
             messages: Arc<[CanonicalMessage]>,
-            tools: Arc<[ToolDefinition]>,
+            tools: Arc<[LlmToolDefinition]>,
             guidance: String,
             _max_output_tokens: Option<u32>,
         ) -> Result<
@@ -538,7 +538,7 @@ mod tests {
             aggregate_stream_cancellable_shared(
                 client,
                 Arc::<[CanonicalMessage]>::from(Vec::new()),
-                Arc::<[ToolDefinition]>::from(Vec::new()),
+                Arc::<[LlmToolDefinition]>::from(Vec::new()),
                 on_chunk,
                 task_cancel,
                 rules.as_ref(),
@@ -563,7 +563,7 @@ mod tests {
         let client: Arc<dyn LlmClient> = probe.clone();
         let rules = RwLock::new(Vec::new());
         let messages = vec![CanonicalMessage::user_text("hello")];
-        let tools = vec![ToolDefinition {
+        let tools = vec![LlmToolDefinition {
             tool_type: "function".into(),
             function: ToolFunction {
                 name: "probe".into(),
@@ -608,7 +608,7 @@ mod tests {
         let client: Arc<dyn LlmClient> = probe.clone();
         let rules = RwLock::new(Vec::new());
         let messages = Arc::<[CanonicalMessage]>::from(vec![CanonicalMessage::user_text("hello")]);
-        let tools = Arc::<[ToolDefinition]>::from(vec![ToolDefinition {
+        let tools = Arc::<[LlmToolDefinition]>::from(vec![LlmToolDefinition {
             tool_type: "function".into(),
             function: ToolFunction {
                 name: "probe".into(),
@@ -649,7 +649,7 @@ mod tests {
         let result = probe
             .chat_stream_with_tools_output_cap_shared_guidance(
                 Arc::from(vec![CanonicalMessage::user_text("hello")]),
-                Arc::from(Vec::<ToolDefinition>::new()),
+                Arc::from(Vec::<LlmToolDefinition>::new()),
                 "Please continue without code fences.".into(),
                 Some(128),
             )

@@ -23,8 +23,8 @@ use haven_common::CapabilitySupport;
 use haven_common::types::{CanonicalMessage, CanonicalRole, CanonicalToolCall, ContentPart};
 
 use crate::types::{
-    CacheAccounting, CacheDiagnostics, Embedding, FinishReason, LlmError, LlmResponse, StreamChunk,
-    SttResult, ToolDefinition, Usage,
+    CacheAccounting, CacheDiagnostics, Embedding, FinishReason, LlmError, LlmResponse,
+    LlmToolDefinition, StreamChunk, SttResult, Usage,
 };
 use base64::Engine;
 use haven_common::config::ModelEndpoint;
@@ -184,7 +184,7 @@ impl GeminiAdapter {
     pub(super) fn tool_name_map(
         &self,
         messages: &[CanonicalMessage],
-        tools: &[ToolDefinition],
+        tools: &[LlmToolDefinition],
     ) -> ToolNameMap {
         // Gemini's FunctionDeclaration allows more punctuation than its
         // FunctionCall/FunctionResponse name fields. Use the round-trip-safe
@@ -195,7 +195,7 @@ impl GeminiAdapter {
     pub(super) async fn chat_inner(
         &self,
         messages: Vec<CanonicalMessage>,
-        tools: Vec<ToolDefinition>,
+        tools: Vec<LlmToolDefinition>,
     ) -> Result<LlmResponse, LlmError> {
         self.chat_inner_with_max_tokens(messages, tools, None).await
     }
@@ -203,7 +203,7 @@ impl GeminiAdapter {
     pub(super) async fn chat_inner_with_max_tokens(
         &self,
         messages: Vec<CanonicalMessage>,
-        tools: Vec<ToolDefinition>,
+        tools: Vec<LlmToolDefinition>,
         max_output_tokens: Option<u32>,
     ) -> Result<LlmResponse, LlmError> {
         let tool_names = self.tool_name_map(&messages, &tools);
@@ -281,7 +281,7 @@ impl LlmClient for GeminiAdapter {
     async fn chat_with_tools(
         &self,
         messages: Vec<CanonicalMessage>,
-        tools: Vec<ToolDefinition>,
+        tools: Vec<LlmToolDefinition>,
     ) -> Result<LlmResponse, LlmError> {
         self.chat_inner(messages, tools).await
     }
@@ -289,7 +289,7 @@ impl LlmClient for GeminiAdapter {
     async fn chat_with_tools_output_cap(
         &self,
         messages: Vec<CanonicalMessage>,
-        tools: Vec<ToolDefinition>,
+        tools: Vec<LlmToolDefinition>,
         max_output_tokens: Option<u32>,
     ) -> Result<LlmResponse, LlmError> {
         self.chat_inner_with_max_tokens(messages, tools, max_output_tokens)
@@ -306,7 +306,7 @@ impl LlmClient for GeminiAdapter {
     async fn chat_stream_with_tools(
         &self,
         messages: Vec<CanonicalMessage>,
-        tools: Vec<ToolDefinition>,
+        tools: Vec<LlmToolDefinition>,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamChunk, LlmError>> + Send>>, LlmError> {
         self.chat_stream_inner(messages, tools).await
     }
@@ -314,7 +314,7 @@ impl LlmClient for GeminiAdapter {
     async fn chat_stream_with_tools_output_cap_shared(
         &self,
         messages: Arc<[CanonicalMessage]>,
-        tools: Arc<[ToolDefinition]>,
+        tools: Arc<[LlmToolDefinition]>,
         max_output_tokens: Option<u32>,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamChunk, LlmError>> + Send>>, LlmError> {
         self.chat_stream_inner_with_max_tokens_shared(
@@ -328,7 +328,7 @@ impl LlmClient for GeminiAdapter {
     async fn chat_stream_with_tools_output_cap_shared_guidance(
         &self,
         messages: Arc<[CanonicalMessage]>,
-        tools: Arc<[ToolDefinition]>,
+        tools: Arc<[LlmToolDefinition]>,
         guidance: String,
         max_output_tokens: Option<u32>,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamChunk, LlmError>> + Send>>, LlmError> {

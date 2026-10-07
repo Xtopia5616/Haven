@@ -5,7 +5,7 @@ use haven_common::types::{
     CanonicalMessage, CanonicalRole, CanonicalToolCall, ContentPart, InjectSource, RiskLevel,
 };
 use haven_llm::{
-    FinishReason, LlmClient, LlmError, LlmResponse, StreamChunk, ToolDefinition, Usage,
+    FinishReason, LlmClient, LlmError, LlmResponse, LlmToolDefinition, StreamChunk, Usage,
 };
 use haven_tools::{Tool, ToolConcurrency, ToolHandle, ToolResult, ToolsFacade};
 use std::collections::{HashMap, VecDeque};

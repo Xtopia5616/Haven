@@ -296,19 +296,19 @@ impl AnthropicAdapter {
     }
 
     #[cfg(test)]
-    pub(super) fn convert_tools(tools: impl AsRef<[ToolDefinition]>) -> Vec<Value> {
+    pub(super) fn convert_tools(tools: impl AsRef<[LlmToolDefinition]>) -> Vec<Value> {
         Self::convert_tools_with_names(tools, &ToolNameMap::default())
     }
 
     pub(super) fn convert_tools_with_names(
-        tools: impl AsRef<[ToolDefinition]>,
+        tools: impl AsRef<[LlmToolDefinition]>,
         tool_names: &ToolNameMap,
     ) -> Vec<Value> {
         tools
             .as_ref()
             .iter()
             .map(|t| {
-                // Defense in depth: the local ToolDefinition constructor
+                // Defense in depth: the local LlmToolDefinition constructor
                 // sanitizes schemas, but cached/direct definitions can still
                 // contain a null or non-object root.
                 let parameters = crate::types::canonicalize_json(

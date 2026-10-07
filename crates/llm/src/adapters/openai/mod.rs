@@ -29,8 +29,8 @@ use haven_common::prompts::{MEMORY_FENCE_START, SESSION_CONTEXT_FENCE_START};
 use haven_common::types::{CanonicalMessage, CanonicalRole, CanonicalToolCall, ContentPart};
 
 use crate::types::{
-    CacheAccounting, CacheDiagnostics, Embedding, FinishReason, LlmError, LlmResponse, StreamChunk,
-    SttResult, ToolDefinition, Usage,
+    CacheAccounting, CacheDiagnostics, Embedding, FinishReason, LlmError, LlmResponse,
+    LlmToolDefinition, StreamChunk, SttResult, Usage,
 };
 use haven_common::config::ModelEndpoint;
 
@@ -115,7 +115,7 @@ impl OpenAiAdapter {
     pub(super) fn tool_name_map(
         &self,
         messages: &[CanonicalMessage],
-        tools: &[ToolDefinition],
+        tools: &[LlmToolDefinition],
     ) -> ToolNameMap {
         let policy = if self.style == "xai" {
             // xAI's current function-calling reference does not document a
@@ -159,7 +159,7 @@ impl LlmClient for OpenAiAdapter {
     async fn chat_with_tools(
         &self,
         messages: Vec<CanonicalMessage>,
-        tools: Vec<ToolDefinition>,
+        tools: Vec<LlmToolDefinition>,
     ) -> Result<LlmResponse, LlmError> {
         self.chat_inner(messages, tools, false).await
     }
@@ -167,7 +167,7 @@ impl LlmClient for OpenAiAdapter {
     async fn chat_with_tools_output_cap(
         &self,
         messages: Vec<CanonicalMessage>,
-        tools: Vec<ToolDefinition>,
+        tools: Vec<LlmToolDefinition>,
         max_output_tokens: Option<u32>,
     ) -> Result<LlmResponse, LlmError> {
         self.chat_inner_with_max_tokens(messages, tools, false, max_output_tokens)
@@ -184,7 +184,7 @@ impl LlmClient for OpenAiAdapter {
     async fn chat_stream_with_tools(
         &self,
         messages: Vec<CanonicalMessage>,
-        tools: Vec<ToolDefinition>,
+        tools: Vec<LlmToolDefinition>,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamChunk, LlmError>> + Send>>, LlmError> {
         self.chat_stream_inner(messages, tools).await
     }
@@ -192,7 +192,7 @@ impl LlmClient for OpenAiAdapter {
     async fn chat_stream_with_tools_output_cap_shared(
         &self,
         messages: Arc<[CanonicalMessage]>,
-        tools: Arc<[ToolDefinition]>,
+        tools: Arc<[LlmToolDefinition]>,
         max_output_tokens: Option<u32>,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamChunk, LlmError>> + Send>>, LlmError> {
         self.chat_stream_inner_with_max_tokens_shared(
@@ -206,7 +206,7 @@ impl LlmClient for OpenAiAdapter {
     async fn chat_stream_with_tools_output_cap_shared_guidance(
         &self,
         messages: Arc<[CanonicalMessage]>,
-        tools: Arc<[ToolDefinition]>,
+        tools: Arc<[LlmToolDefinition]>,
         guidance: String,
         max_output_tokens: Option<u32>,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamChunk, LlmError>> + Send>>, LlmError> {

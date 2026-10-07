@@ -20,7 +20,7 @@ impl OpenAiAdapter {
     pub(super) fn prompt_cache_key(
         &self,
         messages: &[CanonicalMessage],
-        tools: &[ToolDefinition],
+        tools: &[LlmToolDefinition],
         web_search_mode: WebSearchMode,
     ) -> Option<String> {
         // OpenAI documents this field for its Chat Completions API. Other
@@ -72,7 +72,7 @@ impl OpenAiAdapter {
         // MCP/Skill therefore gets a new routing key rather than contaminating
         // the old cache shard.
         // Hash the exact provider tool projection, not the canonical
-        // ToolDefinition. This keeps the routing key aligned with the wire
+        // LlmToolDefinition. This keeps the routing key aligned with the wire
         // schema after recursive JSON canonicalization.
         let tool_names = self.tool_name_map(messages, tools);
         let tool_value =

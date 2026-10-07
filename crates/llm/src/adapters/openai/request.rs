@@ -5,7 +5,7 @@ impl OpenAiAdapter {
     pub(super) fn build_request_body(
         &self,
         messages: Vec<CanonicalMessage>,
-        tools: Vec<ToolDefinition>,
+        tools: Vec<LlmToolDefinition>,
         stream: bool,
     ) -> OpenAiRequest {
         self.build_request_body_with_mode_and_max_tokens(
@@ -21,7 +21,7 @@ impl OpenAiAdapter {
     pub(super) fn build_request_body_with_mode(
         &self,
         messages: Vec<CanonicalMessage>,
-        tools: Vec<ToolDefinition>,
+        tools: Vec<LlmToolDefinition>,
         stream: bool,
         web_search_mode: WebSearchMode,
     ) -> OpenAiRequest {
@@ -37,7 +37,7 @@ impl OpenAiAdapter {
     pub(super) fn build_request_body_with_mode_and_max_tokens(
         &self,
         messages: Vec<CanonicalMessage>,
-        tools: Vec<ToolDefinition>,
+        tools: Vec<LlmToolDefinition>,
         stream: bool,
         web_search_mode: WebSearchMode,
         max_tokens: u32,
@@ -54,7 +54,7 @@ impl OpenAiAdapter {
     pub(super) fn build_request_body_with_mode_and_max_tokens_shared(
         &self,
         messages: &[CanonicalMessage],
-        tools: &[ToolDefinition],
+        tools: &[LlmToolDefinition],
         stream: bool,
         web_search_mode: WebSearchMode,
         max_tokens: u32,
@@ -232,7 +232,7 @@ impl OpenAiAdapter {
     pub(super) async fn chat_inner(
         &self,
         messages: Vec<CanonicalMessage>,
-        tools: Vec<ToolDefinition>,
+        tools: Vec<LlmToolDefinition>,
         stream: bool,
     ) -> Result<LlmResponse, LlmError> {
         self.chat_inner_with_max_tokens(messages, tools, stream, None)
@@ -242,7 +242,7 @@ impl OpenAiAdapter {
     pub(super) async fn chat_inner_with_max_tokens(
         &self,
         messages: Vec<CanonicalMessage>,
-        tools: Vec<ToolDefinition>,
+        tools: Vec<LlmToolDefinition>,
         stream: bool,
         max_tokens: Option<u32>,
     ) -> Result<LlmResponse, LlmError> {

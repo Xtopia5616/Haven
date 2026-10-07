@@ -514,7 +514,7 @@ pub struct HealthCheckRequest {
 
 /// OpenAI-compatible tool definition for function calling.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ToolDefinition {
+pub struct LlmToolDefinition {
     #[serde(rename = "type")]
     pub tool_type: String,
     pub function: ToolFunction,
@@ -535,7 +535,7 @@ pub struct ToolFunction {
 pub struct StreamRequest<'a> {
     pub request: RequestKind,
     pub messages: &'a [CanonicalMessage],
-    pub tools: &'a [ToolDefinition],
+    pub tools: &'a [LlmToolDefinition],
     pub max_output_tokens: Option<u32>,
 }
 
@@ -546,7 +546,7 @@ pub struct StreamRequest<'a> {
 pub struct CompleteRequest {
     pub request: RequestKind,
     pub messages: Vec<CanonicalMessage>,
-    pub tools: Vec<ToolDefinition>,
+    pub tools: Vec<LlmToolDefinition>,
     pub max_output_tokens: Option<u32>,
 }
 
@@ -561,7 +561,7 @@ impl CompleteRequest {
         }
     }
 
-    pub fn with_tools(mut self, tools: Vec<ToolDefinition>) -> Self {
+    pub fn with_tools(mut self, tools: Vec<LlmToolDefinition>) -> Self {
         self.tools = tools;
         self
     }
@@ -601,11 +601,11 @@ pub fn stable_json_bytes(value: &Value) -> Vec<u8> {
 
 /// Canonical tool definition → LLM-boundary tool definition. The agent and
 /// providers consume the shared `haven_common::tools::ToolDef`; only at the
-/// provider boundary is it expressed as the OpenAI-shaped `ToolDefinition`
+/// provider boundary is it expressed as the OpenAI-shaped `LlmToolDefinition`
 /// each adapter converts to its own wire format.
-impl From<haven_common::tools::ToolDef> for ToolDefinition {
+impl From<haven_common::tools::ToolDef> for LlmToolDefinition {
     fn from(def: haven_common::tools::ToolDef) -> Self {
-        ToolDefinition {
+        LlmToolDefinition {
             tool_type: "function".into(),
             function: ToolFunction {
                 name: def.name,
@@ -1233,8 +1233,8 @@ mod tests {
     }
 
     #[test]
-    fn tool_definition_construction() {
-        let td = ToolDefinition {
+    fn llm_tool_definition_construction() {
+        let td = LlmToolDefinition {
             tool_type: "function".into(),
             function: ToolFunction {
                 name: "my_tool".into(),
@@ -1259,14 +1259,14 @@ mod tests {
     }
 
     #[test]
-    fn tool_definition_from_tool_def() {
+    fn llm_tool_definition_from_tool_def() {
         let def = haven_common::tools::ToolDef::new(
             "files",
             "Read and write files",
             serde_json::json!({"type": "object"}),
             haven_common::types::RiskLevel::Safe,
         );
-        let td = ToolDefinition::from(def);
+        let td = LlmToolDefinition::from(def);
         assert_eq!(td.tool_type, "function");
         assert_eq!(td.function.name, "files");
         assert_eq!(td.function.description, "Read and write files");
@@ -1312,14 +1312,14 @@ mod tests {
     }
 
     #[test]
-    fn tool_definition_from_null_schema_is_object() {
+    fn llm_tool_definition_from_null_schema_is_object() {
         let def = haven_common::tools::ToolDef::new(
             "mcp_broken",
             "schema was null",
             Value::Null,
             haven_common::types::RiskLevel::High,
         );
-        let td = ToolDefinition::from(def);
+        let td = LlmToolDefinition::from(def);
         assert!(td.function.parameters.is_object());
         assert!(!td.function.parameters.is_null());
     }

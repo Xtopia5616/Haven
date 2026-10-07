@@ -14,7 +14,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use futures_util::future::BoxFuture;
-use haven_llm::ToolDefinition;
+use haven_llm::LlmToolDefinition;
 use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 
@@ -77,7 +77,7 @@ pub(crate) struct BeforeToolRequest {
 /// empty and let the turn build the surface itself.
 #[derive(Default)]
 pub(crate) struct BeforeStepOutput {
-    pub(crate) tool_definitions: Option<Arc<Vec<ToolDefinition>>>,
+    pub(crate) tool_definitions: Option<Arc<Vec<LlmToolDefinition>>>,
     pub(crate) tool_token_estimate: Option<u32>,
     pub(crate) tool_catalog: Option<Arc<haven_tools::ToolCatalogSnapshot>>,
     pub(crate) memory_trigger: Option<crate::memory_trigger::MemoryTriggerPayload>,
@@ -180,7 +180,7 @@ mod tests {
         use async_trait::async_trait;
         use haven_llm::client::LlmClient;
         use haven_llm::router::LlmRouter;
-        use haven_llm::types::{LlmError, LlmResponse, StreamChunk, ToolDefinition};
+        use haven_llm::types::{LlmError, LlmResponse, LlmToolDefinition, StreamChunk};
         use haven_memory::Database;
         use haven_tools::ToolsFacade;
         use std::pin::Pin;
@@ -194,7 +194,7 @@ mod tests {
             async fn chat_with_tools(
                 &self,
                 _: Vec<CanonicalMessage>,
-                _: Vec<ToolDefinition>,
+                _: Vec<LlmToolDefinition>,
             ) -> Result<LlmResponse, LlmError> {
                 Err(LlmError::Unknown("silent".into()))
             }
@@ -210,7 +210,7 @@ mod tests {
             async fn chat_stream_with_tools(
                 &self,
                 _: Vec<CanonicalMessage>,
-                _: Vec<ToolDefinition>,
+                _: Vec<LlmToolDefinition>,
             ) -> Result<
                 Pin<Box<dyn futures_util::Stream<Item = Result<StreamChunk, LlmError>> + Send>>,
                 LlmError,
@@ -220,7 +220,7 @@ mod tests {
             async fn chat_stream_with_tools_output_cap_shared(
                 &self,
                 _messages: std::sync::Arc<[CanonicalMessage]>,
-                _tools: std::sync::Arc<[ToolDefinition]>,
+                _tools: std::sync::Arc<[LlmToolDefinition]>,
                 _max_output_tokens: Option<u32>,
             ) -> Result<
                 Pin<Box<dyn futures_util::Stream<Item = Result<StreamChunk, LlmError>> + Send>>,
@@ -370,7 +370,7 @@ mod tests {
             use async_trait::async_trait;
             use haven_llm::client::LlmClient;
             use haven_llm::router::LlmRouter;
-            use haven_llm::types::{LlmError, StreamChunk, ToolDefinition};
+            use haven_llm::types::{LlmError, LlmToolDefinition, StreamChunk};
             use haven_memory::Database;
             use haven_tools::ToolsFacade;
             use std::pin::Pin;
@@ -384,7 +384,7 @@ mod tests {
                 async fn chat_with_tools(
                     &self,
                     _: Vec<CanonicalMessage>,
-                    _: Vec<ToolDefinition>,
+                    _: Vec<LlmToolDefinition>,
                 ) -> Result<LlmResponse, LlmError> {
                     Err(LlmError::Unknown("silent".into()))
                 }
@@ -400,7 +400,7 @@ mod tests {
                 async fn chat_stream_with_tools(
                     &self,
                     _: Vec<CanonicalMessage>,
-                    _: Vec<ToolDefinition>,
+                    _: Vec<LlmToolDefinition>,
                 ) -> Result<
                     Pin<Box<dyn futures_util::Stream<Item = Result<StreamChunk, LlmError>> + Send>>,
                     LlmError,
@@ -410,7 +410,7 @@ mod tests {
                 async fn chat_stream_with_tools_output_cap_shared(
                     &self,
                     _messages: std::sync::Arc<[CanonicalMessage]>,
-                    _tools: std::sync::Arc<[ToolDefinition]>,
+                    _tools: std::sync::Arc<[LlmToolDefinition]>,
                     _max_output_tokens: Option<u32>,
                 ) -> Result<
                     Pin<Box<dyn futures_util::Stream<Item = Result<StreamChunk, LlmError>> + Send>>,

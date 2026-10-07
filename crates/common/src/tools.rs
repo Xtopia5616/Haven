@@ -3,7 +3,7 @@
 //! This is the single structured tool abstraction shared by the whole
 //! workspace: the registry (`haven-tools`) and the session schema builder
 //! (`haven-agent`) produce [`ToolDef`]s, the LLM boundary (`haven-llm`)
-//! converts them into its provider-facing [`ToolDefinition`], and the UI
+//! converts them into its provider-facing [`LlmToolDefinition`], and the UI
 //! boundary consumes the [`ToolDef::json`] wire shape. Nothing hand-assembles
 //! or re-parses loose `{name, description, risk_level, input_schema}` JSON.
 

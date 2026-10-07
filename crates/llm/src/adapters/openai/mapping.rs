@@ -243,23 +243,23 @@ impl OpenAiAdapter {
     }
 
     #[cfg(test)]
-    pub(super) fn convert_tools(tools: Vec<ToolDefinition>) -> Vec<OpenAiTool> {
+    pub(super) fn convert_tools(tools: Vec<LlmToolDefinition>) -> Vec<OpenAiTool> {
         Self::convert_tools_ref(&tools)
     }
 
     #[cfg(test)]
-    pub(super) fn convert_tools_ref(tools: &[ToolDefinition]) -> Vec<OpenAiTool> {
+    pub(super) fn convert_tools_ref(tools: &[LlmToolDefinition]) -> Vec<OpenAiTool> {
         Self::convert_tools_ref_with_names(tools, &ToolNameMap::default())
     }
 
     pub(super) fn convert_tools_ref_with_names(
-        tools: &[ToolDefinition],
+        tools: &[LlmToolDefinition],
         tool_names: &ToolNameMap,
     ) -> Vec<OpenAiTool> {
         tools
             .iter()
             .map(|t| {
-                // Defense in depth: `ToolDefinition::from` already sanitizes,
+                // Defense in depth: `LlmToolDefinition::from` already sanitizes,
                 // but direct constructors / cache hits may still carry Null
                 // or a non-object root.
                 let parameters =

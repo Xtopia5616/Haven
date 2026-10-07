@@ -6,7 +6,7 @@
 //! the alias mapping local to one request while preserving canonical names in
 //! the LLM types consumed by the Agent.
 
-use crate::types::ToolDefinition;
+use crate::types::LlmToolDefinition;
 use haven_common::types::{CanonicalMessage, CanonicalRole};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeSet, HashMap};
@@ -29,7 +29,7 @@ pub(crate) struct ToolNameMap {
 
 impl ToolNameMap {
     pub(crate) fn for_request(
-        tools: &[ToolDefinition],
+        tools: &[LlmToolDefinition],
         messages: &[CanonicalMessage],
         policy: ToolNamePolicy,
     ) -> Self {
@@ -165,8 +165,8 @@ mod tests {
     use super::*;
     use crate::types::ToolFunction;
 
-    fn tool(name: &str) -> ToolDefinition {
-        ToolDefinition {
+    fn tool(name: &str) -> LlmToolDefinition {
+        LlmToolDefinition {
             tool_type: "function".into(),
             function: ToolFunction {
                 name: name.into(),

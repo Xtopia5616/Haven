@@ -10,7 +10,7 @@ use haven_common::retry::{
 };
 use haven_common::types::CanonicalMessage;
 
-use crate::types::{Embedding, LlmError, LlmResponse, StreamChunk, SttResult, ToolDefinition};
+use crate::types::{Embedding, LlmError, LlmResponse, LlmToolDefinition, StreamChunk, SttResult};
 
 /// User-Agent sent on every provider HTTP request so Haven's traffic is
 /// identifiable server-side: DeepSeek, OpenAI, Anthropic, Gemini and most
@@ -139,7 +139,7 @@ pub trait LlmClient: Send + Sync {
     async fn chat_with_tools(
         &self,
         _messages: Vec<CanonicalMessage>,
-        _tools: Vec<ToolDefinition>,
+        _tools: Vec<LlmToolDefinition>,
     ) -> Result<LlmResponse, LlmError> {
         Err(LlmError::UnsupportedCapability(
             "tool calling is not supported by this adapter".into(),
@@ -163,7 +163,7 @@ pub trait LlmClient: Send + Sync {
     async fn chat_with_tools_output_cap(
         &self,
         _messages: Vec<CanonicalMessage>,
-        _tools: Vec<ToolDefinition>,
+        _tools: Vec<LlmToolDefinition>,
         _max_output_tokens: Option<u32>,
     ) -> Result<LlmResponse, LlmError> {
         Err(LlmError::UnsupportedCapability(
@@ -179,7 +179,7 @@ pub trait LlmClient: Send + Sync {
     async fn chat_stream_with_tools(
         &self,
         _messages: Vec<CanonicalMessage>,
-        _tools: Vec<ToolDefinition>,
+        _tools: Vec<LlmToolDefinition>,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamChunk, LlmError>> + Send>>, LlmError> {
         Err(LlmError::UnsupportedCapability(
             "streaming tool calling is not supported by this adapter".into(),
@@ -195,7 +195,7 @@ pub trait LlmClient: Send + Sync {
     async fn chat_stream_with_tools_output_cap_shared(
         &self,
         messages: Arc<[CanonicalMessage]>,
-        tools: Arc<[ToolDefinition]>,
+        tools: Arc<[LlmToolDefinition]>,
         max_output_tokens: Option<u32>,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamChunk, LlmError>> + Send>>, LlmError> {
         let _ = (messages, tools, max_output_tokens);
@@ -214,7 +214,7 @@ pub trait LlmClient: Send + Sync {
     async fn chat_stream_with_tools_output_cap_shared_guidance(
         &self,
         messages: Arc<[CanonicalMessage]>,
-        tools: Arc<[ToolDefinition]>,
+        tools: Arc<[LlmToolDefinition]>,
         guidance: String,
         max_output_tokens: Option<u32>,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamChunk, LlmError>> + Send>>, LlmError> {

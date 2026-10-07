@@ -4,7 +4,7 @@ impl OpenAiResponsesAdapter {
     pub(super) fn tool_name_map(
         &self,
         messages: &[CanonicalMessage],
-        tools: &[ToolDefinition],
+        tools: &[LlmToolDefinition],
     ) -> ToolNameMap {
         let max_len = if is_deepseek(&self.endpoint) { 128 } else { 64 };
         ToolNameMap::for_request(tools, messages, ToolNamePolicy::Restricted { max_len })
@@ -23,7 +23,7 @@ impl OpenAiResponsesAdapter {
     pub(super) fn build_request_body(
         &self,
         messages: Vec<CanonicalMessage>,
-        tools: Vec<ToolDefinition>,
+        tools: Vec<LlmToolDefinition>,
         stream: bool,
     ) -> ResponsesRequest {
         self.build_request_body_with_mode_and_max_tokens(
@@ -39,7 +39,7 @@ impl OpenAiResponsesAdapter {
     pub(super) fn build_request_body_with_mode(
         &self,
         messages: Vec<CanonicalMessage>,
-        tools: Vec<ToolDefinition>,
+        tools: Vec<LlmToolDefinition>,
         stream: bool,
         web_search_mode: WebSearchMode,
     ) -> ResponsesRequest {
@@ -55,7 +55,7 @@ impl OpenAiResponsesAdapter {
     pub(super) fn build_request_body_with_mode_and_max_tokens(
         &self,
         messages: impl AsRef<[CanonicalMessage]>,
-        tools: impl AsRef<[ToolDefinition]>,
+        tools: impl AsRef<[LlmToolDefinition]>,
         stream: bool,
         web_search_mode: WebSearchMode,
         max_output_tokens: u32,
@@ -265,7 +265,7 @@ impl OpenAiResponsesAdapter {
     pub(super) async fn chat_inner(
         &self,
         messages: Vec<CanonicalMessage>,
-        tools: Vec<ToolDefinition>,
+        tools: Vec<LlmToolDefinition>,
         stream: bool,
     ) -> Result<LlmResponse, LlmError> {
         self.chat_inner_with_max_tokens(messages, tools, stream, None)
@@ -275,7 +275,7 @@ impl OpenAiResponsesAdapter {
     pub(super) async fn chat_inner_with_max_tokens(
         &self,
         messages: Vec<CanonicalMessage>,
-        tools: Vec<ToolDefinition>,
+        tools: Vec<LlmToolDefinition>,
         stream: bool,
         max_output_tokens: Option<u32>,
     ) -> Result<LlmResponse, LlmError> {

@@ -85,7 +85,7 @@ impl LlmClient for AssemblyAiAdapter {
     async fn chat_stream_with_tools_output_cap_shared(
         &self,
         _messages: Arc<[CanonicalMessage]>,
-        _tools: Arc<[crate::types::ToolDefinition]>,
+        _tools: Arc<[crate::types::LlmToolDefinition]>,
         _max_output_tokens: Option<u32>,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamChunk, LlmError>> + Send>>, LlmError> {
         Err(LlmError::UnsupportedCapability(

@@ -720,7 +720,7 @@ fn build_request_body_uses_manual_budget_for_claude_37() {
 fn build_request_body_with_tools() {
     let ep = ModelEndpoint::default();
     let client = AnthropicAdapter::new(ep);
-    let tools = vec![ToolDefinition {
+    let tools = vec![LlmToolDefinition {
         tool_type: "function".into(),
         function: ToolFunction {
             name: "search".into(),
@@ -746,7 +746,7 @@ fn anthropic_projects_dotted_tool_names_to_its_documented_safe_set() {
     let client = AnthropicAdapter::new(ModelEndpoint::default());
     let body = client.build_request_body(
         vec![],
-        vec![ToolDefinition {
+        vec![LlmToolDefinition {
             tool_type: "function".into(),
             function: ToolFunction {
                 name: "files.read".into(),
@@ -766,7 +766,7 @@ fn anthropic_preserves_tool_names_up_to_128_characters() {
     let client = AnthropicAdapter::new(ModelEndpoint::default());
     let body = client.build_request_body(
         vec![],
-        vec![ToolDefinition {
+        vec![LlmToolDefinition {
             tool_type: "function".into(),
             function: ToolFunction {
                 name: long_name.clone(),
@@ -782,7 +782,7 @@ fn anthropic_preserves_tool_names_up_to_128_characters() {
 
 #[test]
 fn convert_tools_sanitizes_non_object_schema_without_flattening_unions() {
-    let tools = AnthropicAdapter::convert_tools(vec![ToolDefinition {
+    let tools = AnthropicAdapter::convert_tools(vec![LlmToolDefinition {
         tool_type: "function".into(),
         function: ToolFunction {
             name: "schedule".into(),
@@ -799,7 +799,7 @@ fn convert_tools_sanitizes_non_object_schema_without_flattening_unions() {
 
     assert!(tools[0]["input_schema"].get("oneOf").is_some());
 
-    let sanitized = AnthropicAdapter::convert_tools(vec![ToolDefinition {
+    let sanitized = AnthropicAdapter::convert_tools(vec![LlmToolDefinition {
         tool_type: "function".into(),
         function: ToolFunction {
             name: "broken".into(),
@@ -859,7 +859,7 @@ fn serialized_request_preserves_all_cache_breakpoints() {
                 id: None,
             },
         ],
-        vec![ToolDefinition {
+        vec![LlmToolDefinition {
             tool_type: "function".into(),
             function: ToolFunction {
                 name: "lookup".into(),
@@ -1053,7 +1053,7 @@ fn system_with_cache_control_caches_only_stable_prompt_prefix() {
 #[test]
 fn web_search_mode_injects_server_tool() {
     let client = AnthropicAdapter::new(ModelEndpoint::default());
-    let client_tool = ToolDefinition {
+    let client_tool = LlmToolDefinition {
         tool_type: "function".into(),
         function: ToolFunction {
             name: "search".into(),
@@ -1081,7 +1081,7 @@ fn web_search_mode_injects_server_tool() {
         Some(json!({"type": "tool", "name": "web_search"}))
     );
 
-    let with_fn = vec![ToolDefinition {
+    let with_fn = vec![LlmToolDefinition {
         tool_type: "function".into(),
         function: ToolFunction {
             name: "shell".into(),
@@ -1113,7 +1113,7 @@ fn web_search_mode_injects_server_tool() {
 #[test]
 fn client_tool_cache_boundary_stays_before_server_tools() {
     let mut tools = AnthropicAdapter::convert_tools(vec![
-        ToolDefinition {
+        LlmToolDefinition {
             tool_type: "function".into(),
             function: ToolFunction {
                 name: "one".into(),
@@ -1121,7 +1121,7 @@ fn client_tool_cache_boundary_stays_before_server_tools() {
                 parameters: json!({"type": "object"}),
             },
         },
-        ToolDefinition {
+        LlmToolDefinition {
             tool_type: "function".into(),
             function: ToolFunction {
                 name: "two".into(),

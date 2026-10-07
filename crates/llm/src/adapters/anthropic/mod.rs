@@ -22,8 +22,8 @@ use haven_common::prompts::split_system_prompt_cache_sections;
 use haven_common::types::{CanonicalMessage, CanonicalRole, CanonicalToolCall, ContentPart};
 
 use crate::types::{
-    CacheAccounting, CacheDiagnostics, FinishReason, LlmError, LlmResponse, StreamChunk,
-    ToolDefinition, Usage,
+    CacheAccounting, CacheDiagnostics, FinishReason, LlmError, LlmResponse, LlmToolDefinition,
+    StreamChunk, Usage,
 };
 use haven_common::config::ModelEndpoint;
 
@@ -93,7 +93,7 @@ impl AnthropicAdapter {
     pub(super) fn tool_name_map(
         &self,
         messages: &[CanonicalMessage],
-        tools: &[ToolDefinition],
+        tools: &[LlmToolDefinition],
     ) -> ToolNameMap {
         // Anthropic documents `^[a-zA-Z0-9_-]{1,128}$` for tool names.
         ToolNameMap::for_request(tools, messages, ToolNamePolicy::Restricted { max_len: 128 })
@@ -102,7 +102,7 @@ impl AnthropicAdapter {
     pub(super) async fn chat_inner(
         &self,
         messages: Vec<CanonicalMessage>,
-        tools: Vec<ToolDefinition>,
+        tools: Vec<LlmToolDefinition>,
         stream: bool,
     ) -> Result<LlmResponse, LlmError> {
         self.chat_inner_with_max_tokens(messages, tools, stream, None)
@@ -112,7 +112,7 @@ impl AnthropicAdapter {
     pub(super) async fn chat_inner_with_max_tokens(
         &self,
         messages: Vec<CanonicalMessage>,
-        tools: Vec<ToolDefinition>,
+        tools: Vec<LlmToolDefinition>,
         stream: bool,
         max_tokens: Option<u32>,
     ) -> Result<LlmResponse, LlmError> {
@@ -188,7 +188,7 @@ impl LlmClient for AnthropicAdapter {
     async fn chat_with_tools(
         &self,
         messages: Vec<CanonicalMessage>,
-        tools: Vec<ToolDefinition>,
+        tools: Vec<LlmToolDefinition>,
     ) -> Result<LlmResponse, LlmError> {
         self.chat_inner(messages, tools, false).await
     }
@@ -196,7 +196,7 @@ impl LlmClient for AnthropicAdapter {
     async fn chat_with_tools_output_cap(
         &self,
         messages: Vec<CanonicalMessage>,
-        tools: Vec<ToolDefinition>,
+        tools: Vec<LlmToolDefinition>,
         max_output_tokens: Option<u32>,
     ) -> Result<LlmResponse, LlmError> {
         self.chat_inner_with_max_tokens(messages, tools, false, max_output_tokens)
@@ -213,7 +213,7 @@ impl LlmClient for AnthropicAdapter {
     async fn chat_stream_with_tools(
         &self,
         messages: Vec<CanonicalMessage>,
-        tools: Vec<ToolDefinition>,
+        tools: Vec<LlmToolDefinition>,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamChunk, LlmError>> + Send>>, LlmError> {
         self.chat_stream_inner(messages, tools).await
     }
@@ -221,7 +221,7 @@ impl LlmClient for AnthropicAdapter {
     async fn chat_stream_with_tools_output_cap_shared(
         &self,
         messages: Arc<[CanonicalMessage]>,
-        tools: Arc<[ToolDefinition]>,
+        tools: Arc<[LlmToolDefinition]>,
         max_output_tokens: Option<u32>,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamChunk, LlmError>> + Send>>, LlmError> {
         self.chat_stream_inner_with_max_tokens_shared(
@@ -235,7 +235,7 @@ impl LlmClient for AnthropicAdapter {
     async fn chat_stream_with_tools_output_cap_shared_guidance(
         &self,
         messages: Arc<[CanonicalMessage]>,
-        tools: Arc<[ToolDefinition]>,
+        tools: Arc<[LlmToolDefinition]>,
         guidance: String,
         max_output_tokens: Option<u32>,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamChunk, LlmError>> + Send>>, LlmError> {

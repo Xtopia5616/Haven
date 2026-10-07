@@ -1099,7 +1099,7 @@ mod tests {
         async fn chat_stream_with_tools_output_cap_shared(
             &self,
             _messages: std::sync::Arc<[CanonicalMessage]>,
-            _tools: std::sync::Arc<[haven_llm::types::ToolDefinition]>,
+            _tools: std::sync::Arc<[haven_llm::types::LlmToolDefinition]>,
             _max_output_tokens: Option<u32>,
         ) -> Result<
             Pin<Box<dyn futures_util::Stream<Item = Result<StreamChunk, LlmError>> + Send>>,

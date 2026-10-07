@@ -16,7 +16,7 @@ use crate::request_descriptor::RequestDescriptor;
 use crate::request_pipeline::{
     RequestExecutionPolicy, RequestOutcome, execute_with_retry, execute_with_timeout,
 };
-use crate::types::{Embedding, LlmError, LlmResponse, ToolDefinition};
+use crate::types::{Embedding, LlmError, LlmResponse, LlmToolDefinition};
 
 pub(crate) struct CallExecutor {
     descriptor: RequestDescriptor,
@@ -46,7 +46,7 @@ impl CallExecutor {
     pub(crate) async fn complete<F, Fut>(
         &self,
         messages: Vec<CanonicalMessage>,
-        tools: Vec<ToolDefinition>,
+        tools: Vec<LlmToolDefinition>,
         max_output_tokens: Option<u32>,
         project_outcome: F,
     ) -> Result<LlmResponse, LlmError>
@@ -211,7 +211,7 @@ mod tests {
         async fn chat_with_tools_output_cap(
             &self,
             messages: Vec<CanonicalMessage>,
-            tools: Vec<ToolDefinition>,
+            tools: Vec<LlmToolDefinition>,
             max_output_tokens: Option<u32>,
         ) -> Result<LlmResponse, LlmError> {
             self.calls.lock().unwrap().push(ObservedCall::Tools {
@@ -284,8 +284,8 @@ mod tests {
         vec![CanonicalMessage::user(vec![ContentPart::text("hello")])]
     }
 
-    fn tool() -> ToolDefinition {
-        ToolDefinition {
+    fn tool() -> LlmToolDefinition {
+        LlmToolDefinition {
             tool_type: "function".into(),
             function: crate::types::ToolFunction {
                 name: "lookup".into(),

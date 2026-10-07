@@ -159,7 +159,7 @@ impl LlmClient for UnavailableLlmClient {
     async fn chat_stream_with_tools_output_cap_shared(
         &self,
         _messages: std::sync::Arc<[haven_common::types::CanonicalMessage]>,
-        _tools: std::sync::Arc<[crate::types::ToolDefinition]>,
+        _tools: std::sync::Arc<[crate::types::LlmToolDefinition]>,
         _max_output_tokens: Option<u32>,
     ) -> Result<
         std::pin::Pin<

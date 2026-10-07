@@ -19,7 +19,7 @@ impl LlmClient for FinalAnswerMock {
     async fn chat_with_tools(
         &self,
         _: Vec<CanonicalMessage>,
-        _: Vec<ToolDefinition>,
+        _: Vec<LlmToolDefinition>,
     ) -> Result<LlmResponse, LlmError> {
         Err(LlmError::Unknown(
             "mock: chat_with_tools not implemented".into(),
@@ -39,7 +39,7 @@ impl LlmClient for FinalAnswerMock {
     async fn chat_stream_with_tools(
         &self,
         _: Vec<CanonicalMessage>,
-        _: Vec<ToolDefinition>,
+        _: Vec<LlmToolDefinition>,
     ) -> Result<
         Pin<Box<dyn futures_util::Stream<Item = Result<StreamChunk, LlmError>> + Send>>,
         LlmError,
@@ -64,7 +64,7 @@ impl LlmClient for FinalAnswerMock {
     async fn chat_stream_with_tools_output_cap_shared(
         &self,
         _messages: Arc<[CanonicalMessage]>,
-        _tools: Arc<[ToolDefinition]>,
+        _tools: Arc<[LlmToolDefinition]>,
         _max_output_tokens: Option<u32>,
     ) -> Result<
         Pin<Box<dyn futures_util::Stream<Item = Result<StreamChunk, LlmError>> + Send>>,
@@ -431,7 +431,7 @@ impl LlmClient for ScriptedMock {
     async fn chat_with_tools(
         &self,
         _: Vec<CanonicalMessage>,
-        _: Vec<ToolDefinition>,
+        _: Vec<LlmToolDefinition>,
     ) -> Result<LlmResponse, LlmError> {
         Err(LlmError::Unknown("mock: use chat_stream_with_tools".into()))
     }
@@ -447,14 +447,14 @@ impl LlmClient for ScriptedMock {
     async fn chat_stream_with_tools(
         &self,
         messages: Vec<CanonicalMessage>,
-        _: Vec<ToolDefinition>,
+        _: Vec<LlmToolDefinition>,
     ) -> Result<
         Pin<Box<dyn futures_util::Stream<Item = Result<StreamChunk, LlmError>> + Send>>,
         LlmError,
     > {
         self.chat_stream_with_tools_output_cap_shared(
             messages.into(),
-            Arc::<[ToolDefinition]>::from(Vec::new()),
+            Arc::<[LlmToolDefinition]>::from(Vec::new()),
             None,
         )
         .await
@@ -462,7 +462,7 @@ impl LlmClient for ScriptedMock {
     async fn chat_stream_with_tools_output_cap_shared(
         &self,
         messages: Arc<[CanonicalMessage]>,
-        _tools: Arc<[ToolDefinition]>,
+        _tools: Arc<[LlmToolDefinition]>,
         _max_output_tokens: Option<u32>,
     ) -> Result<
         Pin<Box<dyn futures_util::Stream<Item = Result<StreamChunk, LlmError>> + Send>>,
@@ -551,7 +551,7 @@ impl LlmClient for VisionUsageMock {
     async fn chat_stream_with_tools_output_cap_shared(
         &self,
         _messages: Arc<[CanonicalMessage]>,
-        _tools: Arc<[ToolDefinition]>,
+        _tools: Arc<[LlmToolDefinition]>,
         _max_output_tokens: Option<u32>,
     ) -> Result<
         Pin<Box<dyn futures_util::Stream<Item = Result<StreamChunk, LlmError>> + Send>>,

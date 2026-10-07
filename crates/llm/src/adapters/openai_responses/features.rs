@@ -16,7 +16,7 @@ impl OpenAiResponsesAdapter {
     pub(super) fn prompt_cache_key(
         &self,
         messages: &[CanonicalMessage],
-        tools: &[ToolDefinition],
+        tools: &[LlmToolDefinition],
         web_search_mode: WebSearchMode,
     ) -> Option<String> {
         // OpenAI documents the field for Responses. xAI documents the same
@@ -67,7 +67,7 @@ impl OpenAiResponsesAdapter {
         hasher.update(crate::types::stable_json_bytes(&capability_value));
 
         // Hash the exact provider tool projection, not the canonical
-        // ToolDefinition. In particular, sanitized schemas must not select a
+        // LlmToolDefinition. In particular, sanitized schemas must not select a
         // different cache shard from the wire request they produce.
         let tool_names = self.tool_name_map(messages, tools);
         let tool_value =

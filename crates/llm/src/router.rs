@@ -27,8 +27,8 @@ use haven_common::types::{CanonicalMessage, ContentPart};
 use crate::stream_rules::{StreamRule, StreamRuleMatch, check_stream_rules};
 use crate::types::{
     CompleteRequest, Embedding, EmbeddingRequest, HealthCheckRequest, LlmConnectionReport,
-    LlmConnectionStatus, LlmError, LlmResponse, PromptRequest, StreamChunk, StreamRequest,
-    ToolDefinition, Usage,
+    LlmConnectionStatus, LlmError, LlmResponse, LlmToolDefinition, PromptRequest, StreamChunk,
+    StreamRequest, Usage,
 };
 use futures_util::future::join_all;
 use haven_common::config::{
@@ -820,7 +820,7 @@ impl LlmRouter {
         &self,
         request: RequestKind,
         messages: &[CanonicalMessage],
-        tools: &[ToolDefinition],
+        tools: &[LlmToolDefinition],
         on_chunk: impl FnMut(&StreamChunk) + Send + 'static,
     ) -> Result<LlmResponse, LlmError> {
         self.chat_stream_with_tools_aggregated_cancellable(
@@ -848,7 +848,7 @@ impl LlmRouter {
         &self,
         request: RequestKind,
         messages: &[CanonicalMessage],
-        tools: &[ToolDefinition],
+        tools: &[LlmToolDefinition],
         on_chunk: impl FnMut(&StreamChunk) + Send + 'static,
         cancel: CancellationToken,
     ) -> Result<LlmResponse, LlmError> {
@@ -1638,7 +1638,7 @@ mod tests {
         async fn chat_with_tools(
             &self,
             _: Vec<CanonicalMessage>,
-            _: Vec<ToolDefinition>,
+            _: Vec<LlmToolDefinition>,
         ) -> Result<LlmResponse, LlmError> {
             if self.fail_chat {
                 Err(LlmError::ServerError("mock: chat_with_tools failed".into()))
@@ -1658,7 +1658,7 @@ mod tests {
         async fn chat_with_tools_output_cap(
             &self,
             messages: Vec<CanonicalMessage>,
-            tools: Vec<ToolDefinition>,
+            tools: Vec<LlmToolDefinition>,
             _max_output_tokens: Option<u32>,
         ) -> Result<LlmResponse, LlmError> {
             self.chat_with_tools(messages, tools).await
@@ -1679,7 +1679,7 @@ mod tests {
         async fn chat_stream_with_tools(
             &self,
             _: Vec<CanonicalMessage>,
-            _: Vec<ToolDefinition>,
+            _: Vec<LlmToolDefinition>,
         ) -> Result<
             Pin<Box<dyn futures_util::Stream<Item = Result<StreamChunk, LlmError>> + Send>>,
             LlmError,
@@ -1693,7 +1693,7 @@ mod tests {
         async fn chat_stream_with_tools_output_cap_shared(
             &self,
             _messages: Arc<[CanonicalMessage]>,
-            _tools: Arc<[ToolDefinition]>,
+            _tools: Arc<[LlmToolDefinition]>,
             _max_output_tokens: Option<u32>,
         ) -> Result<
             Pin<Box<dyn futures_util::Stream<Item = Result<StreamChunk, LlmError>> + Send>>,
@@ -1736,7 +1736,7 @@ mod tests {
         async fn chat_stream_with_tools_output_cap_shared(
             &self,
             messages: Arc<[CanonicalMessage]>,
-            tools: Arc<[ToolDefinition]>,
+            tools: Arc<[LlmToolDefinition]>,
             max_output_tokens: Option<u32>,
         ) -> Result<
             Pin<Box<dyn futures_util::Stream<Item = Result<StreamChunk, LlmError>> + Send>>,
@@ -1769,7 +1769,7 @@ mod tests {
         }]);
         let ordinary_messages = vec![ordinary_message];
         let tool_messages = vec![tool_message];
-        let tools = vec![ToolDefinition {
+        let tools = vec![LlmToolDefinition {
             tool_type: "function".into(),
             function: crate::types::ToolFunction {
                 name: "probe_tool".into(),
@@ -1853,7 +1853,7 @@ mod tests {
             *ordinary_probe.seen.lock().unwrap(),
             vec![serde_json::json!({
                 "messages": serde_json::to_value(&ordinary_messages).unwrap(),
-                "tools": serde_json::to_value(Vec::<ToolDefinition>::new()).unwrap(),
+                "tools": serde_json::to_value(Vec::<LlmToolDefinition>::new()).unwrap(),
                 "max_output_tokens": 23,
             })],
             "the Chat request must route its borrowed message slice unchanged"
@@ -2240,7 +2240,7 @@ mod tests {
         async fn chat_with_tools(
             &self,
             _: Vec<CanonicalMessage>,
-            _: Vec<ToolDefinition>,
+            _: Vec<LlmToolDefinition>,
         ) -> Result<LlmResponse, LlmError> {
             Err(Unknown("mock: no chat_with_tools".into()))
         }
@@ -2256,7 +2256,7 @@ mod tests {
         async fn chat_stream_with_tools(
             &self,
             _: Vec<CanonicalMessage>,
-            _: Vec<ToolDefinition>,
+            _: Vec<LlmToolDefinition>,
         ) -> Result<
             Pin<Box<dyn futures_util::Stream<Item = Result<StreamChunk, LlmError>> + Send>>,
             LlmError,
@@ -2293,7 +2293,7 @@ mod tests {
         async fn chat_stream_with_tools_output_cap_shared(
             &self,
             _messages: Arc<[CanonicalMessage]>,
-            _tools: Arc<[ToolDefinition]>,
+            _tools: Arc<[LlmToolDefinition]>,
             _max_output_tokens: Option<u32>,
         ) -> Result<
             Pin<Box<dyn futures_util::Stream<Item = Result<StreamChunk, LlmError>> + Send>>,
@@ -2343,7 +2343,7 @@ mod tests {
         crate::streaming::aggregate_stream_cancellable_shared(
             client,
             Arc::<[CanonicalMessage]>::from(Vec::new()),
-            Arc::<[ToolDefinition]>::from(Vec::new()),
+            Arc::<[LlmToolDefinition]>::from(Vec::new()),
             on_chunk,
             CancellationToken::new(),
             &rules,
@@ -3181,7 +3181,7 @@ mod tests {
         async fn chat_stream_with_tools_output_cap_shared(
             &self,
             _: Arc<[CanonicalMessage]>,
-            _: Arc<[ToolDefinition]>,
+            _: Arc<[LlmToolDefinition]>,
             _: Option<u32>,
         ) -> Result<
             Pin<Box<dyn futures_util::Stream<Item = Result<StreamChunk, LlmError>> + Send>>,
@@ -3306,7 +3306,7 @@ mod tests {
         async fn chat_stream_with_tools_output_cap_shared(
             &self,
             _: Arc<[CanonicalMessage]>,
-            _: Arc<[ToolDefinition]>,
+            _: Arc<[LlmToolDefinition]>,
             _: Option<u32>,
         ) -> Result<
             Pin<Box<dyn futures_util::Stream<Item = Result<StreamChunk, LlmError>> + Send>>,
@@ -3524,7 +3524,7 @@ mod tests {
             async fn chat_with_tools_output_cap(
                 &self,
                 _: Vec<CanonicalMessage>,
-                tools: Vec<ToolDefinition>,
+                tools: Vec<LlmToolDefinition>,
                 max_output_tokens: Option<u32>,
             ) -> Result<LlmResponse, LlmError> {
                 self.0
@@ -3567,7 +3567,7 @@ mod tests {
             )
             .await
             .unwrap();
-        let tools = vec![ToolDefinition {
+        let tools = vec![LlmToolDefinition {
             tool_type: "function".into(),
             function: crate::types::ToolFunction {
                 name: "probe".into(),
@@ -3652,7 +3652,7 @@ mod tests {
             async fn chat_stream_with_tools_output_cap_shared(
                 &self,
                 _: Arc<[CanonicalMessage]>,
-                _: Arc<[ToolDefinition]>,
+                _: Arc<[LlmToolDefinition]>,
                 _: Option<u32>,
             ) -> Result<
                 Pin<Box<dyn futures_util::Stream<Item = Result<StreamChunk, LlmError>> + Send>>,

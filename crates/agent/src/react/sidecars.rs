@@ -12,7 +12,7 @@ use std::sync::Arc;
 use std::sync::Mutex;
 
 use haven_common::config::RequestKind;
-use haven_llm::ToolDefinition;
+use haven_llm::LlmToolDefinition;
 use haven_messaging::MessagingService;
 use haven_tools::ToolCatalogVersion;
 
@@ -75,7 +75,7 @@ impl Default for MessagingPoller {
 /// one immutable catalog version.
 #[derive(Clone)]
 pub(crate) struct PreparedToolDefinitions {
-    pub(crate) definitions: Arc<Vec<ToolDefinition>>,
+    pub(crate) definitions: Arc<Vec<LlmToolDefinition>>,
     pub(crate) token_estimate: u32,
 }
 

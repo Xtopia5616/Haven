@@ -27,7 +27,7 @@ impl AnthropicAdapter {
     pub(super) async fn chat_stream_inner(
         &self,
         messages: Vec<CanonicalMessage>,
-        tools: Vec<ToolDefinition>,
+        tools: Vec<LlmToolDefinition>,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamChunk, LlmError>> + Send>>, LlmError> {
         self.chat_stream_inner_with_max_tokens(messages, tools, None)
             .await
@@ -36,7 +36,7 @@ impl AnthropicAdapter {
     pub(super) async fn chat_stream_inner_with_max_tokens(
         &self,
         messages: Vec<CanonicalMessage>,
-        tools: Vec<ToolDefinition>,
+        tools: Vec<LlmToolDefinition>,
         max_tokens: Option<u32>,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamChunk, LlmError>> + Send>>, LlmError> {
         self.chat_stream_inner_with_max_tokens_shared(&messages, &tools, max_tokens)
@@ -46,7 +46,7 @@ impl AnthropicAdapter {
     pub(super) async fn chat_stream_inner_with_max_tokens_shared(
         &self,
         messages: &[CanonicalMessage],
-        tools: &[ToolDefinition],
+        tools: &[LlmToolDefinition],
         max_tokens: Option<u32>,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamChunk, LlmError>> + Send>>, LlmError> {
         self.chat_stream_inner_with_max_tokens_shared_guidance(messages, tools, None, max_tokens)
@@ -56,7 +56,7 @@ impl AnthropicAdapter {
     pub(super) async fn chat_stream_inner_with_max_tokens_shared_guidance(
         &self,
         messages: &[CanonicalMessage],
-        tools: &[ToolDefinition],
+        tools: &[LlmToolDefinition],
         guidance: Option<&str>,
         max_tokens: Option<u32>,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamChunk, LlmError>> + Send>>, LlmError> {

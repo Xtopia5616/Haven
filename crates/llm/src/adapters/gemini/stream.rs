@@ -4,7 +4,7 @@ impl GeminiAdapter {
     pub(super) async fn chat_stream_inner(
         &self,
         messages: Vec<CanonicalMessage>,
-        tools: Vec<ToolDefinition>,
+        tools: Vec<LlmToolDefinition>,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamChunk, LlmError>> + Send>>, LlmError> {
         self.chat_stream_inner_with_max_tokens(messages, tools, None)
             .await
@@ -13,7 +13,7 @@ impl GeminiAdapter {
     pub(super) async fn chat_stream_inner_with_max_tokens(
         &self,
         messages: Vec<CanonicalMessage>,
-        tools: Vec<ToolDefinition>,
+        tools: Vec<LlmToolDefinition>,
         max_output_tokens: Option<u32>,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamChunk, LlmError>> + Send>>, LlmError> {
         self.chat_stream_inner_with_max_tokens_shared(&messages, &tools, max_output_tokens)
@@ -23,7 +23,7 @@ impl GeminiAdapter {
     pub(super) async fn chat_stream_inner_with_max_tokens_shared(
         &self,
         messages: &[CanonicalMessage],
-        tools: &[ToolDefinition],
+        tools: &[LlmToolDefinition],
         max_output_tokens: Option<u32>,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamChunk, LlmError>> + Send>>, LlmError> {
         self.chat_stream_inner_with_max_tokens_shared_guidance(
@@ -38,7 +38,7 @@ impl GeminiAdapter {
     pub(super) async fn chat_stream_inner_with_max_tokens_shared_guidance(
         &self,
         messages: &[CanonicalMessage],
-        tools: &[ToolDefinition],
+        tools: &[LlmToolDefinition],
         guidance: Option<&str>,
         max_output_tokens: Option<u32>,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamChunk, LlmError>> + Send>>, LlmError> {

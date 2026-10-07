@@ -54,7 +54,7 @@ impl GeminiAdapter {
     pub(super) fn build_request_body(
         &self,
         messages: Vec<CanonicalMessage>,
-        tools: Vec<ToolDefinition>,
+        tools: Vec<LlmToolDefinition>,
         _stream: bool,
     ) -> GeminiRequest {
         self.build_request_body_with_mode_and_max_tokens(
@@ -69,7 +69,7 @@ impl GeminiAdapter {
     pub(super) fn build_request_body_with_mode(
         &self,
         messages: Vec<CanonicalMessage>,
-        tools: Vec<ToolDefinition>,
+        tools: Vec<LlmToolDefinition>,
         web_search_mode: WebSearchMode,
     ) -> GeminiRequest {
         self.build_request_body_with_mode_and_max_tokens(
@@ -83,7 +83,7 @@ impl GeminiAdapter {
     pub(super) fn build_request_body_with_mode_and_max_tokens(
         &self,
         messages: impl AsRef<[CanonicalMessage]>,
-        tools: impl AsRef<[ToolDefinition]>,
+        tools: impl AsRef<[LlmToolDefinition]>,
         web_search_mode: WebSearchMode,
         max_output_tokens: u32,
     ) -> GeminiRequest {

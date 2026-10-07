@@ -23,7 +23,7 @@ impl AnthropicAdapter {
     pub(super) fn build_request_body(
         &self,
         messages: Vec<CanonicalMessage>,
-        tools: Vec<ToolDefinition>,
+        tools: Vec<LlmToolDefinition>,
         stream: bool,
     ) -> AnthropicRequest {
         self.build_request_body_with_mode_and_max_tokens(
@@ -39,7 +39,7 @@ impl AnthropicAdapter {
     pub(super) fn build_request_body_with_mode(
         &self,
         messages: Vec<CanonicalMessage>,
-        tools: Vec<ToolDefinition>,
+        tools: Vec<LlmToolDefinition>,
         stream: bool,
         web_search_mode: WebSearchMode,
     ) -> AnthropicRequest {
@@ -55,7 +55,7 @@ impl AnthropicAdapter {
     pub(super) fn build_request_body_with_mode_and_max_tokens(
         &self,
         messages: impl AsRef<[CanonicalMessage]>,
-        tools: impl AsRef<[ToolDefinition]>,
+        tools: impl AsRef<[LlmToolDefinition]>,
         stream: bool,
         web_search_mode: WebSearchMode,
         max_tokens: u32,

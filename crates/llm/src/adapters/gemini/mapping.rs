@@ -321,12 +321,12 @@ impl GeminiAdapter {
     }
 
     #[cfg(test)]
-    pub(super) fn convert_tools(tools: impl AsRef<[ToolDefinition]>) -> Vec<GeminiTool> {
+    pub(super) fn convert_tools(tools: impl AsRef<[LlmToolDefinition]>) -> Vec<GeminiTool> {
         Self::convert_tools_with_names(tools, &ToolNameMap::default())
     }
 
     pub(super) fn convert_tools_with_names(
-        tools: impl AsRef<[ToolDefinition]>,
+        tools: impl AsRef<[LlmToolDefinition]>,
         tool_names: &ToolNameMap,
     ) -> Vec<GeminiTool> {
         tools

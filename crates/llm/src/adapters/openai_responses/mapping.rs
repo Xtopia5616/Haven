@@ -295,19 +295,19 @@ impl OpenAiResponsesAdapter {
     }
 
     #[cfg(test)]
-    pub(super) fn convert_tools(tools: impl AsRef<[ToolDefinition]>) -> Vec<Value> {
+    pub(super) fn convert_tools(tools: impl AsRef<[LlmToolDefinition]>) -> Vec<Value> {
         Self::convert_tools_with_names(tools, &ToolNameMap::default())
     }
 
     pub(super) fn convert_tools_with_names(
-        tools: impl AsRef<[ToolDefinition]>,
+        tools: impl AsRef<[LlmToolDefinition]>,
         tool_names: &ToolNameMap,
     ) -> Vec<Value> {
         tools
             .as_ref()
             .iter()
             .map(|t| {
-                // Defense in depth: `ToolDefinition::from` already sanitizes,
+                // Defense in depth: `LlmToolDefinition::from` already sanitizes,
                 // but direct constructors / cache hits may still carry Null.
                 let parameters = crate::types::canonicalize_json(
                     crate::adapters::tool_schema::project_tool_parameters_for_object_root(

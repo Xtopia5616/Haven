@@ -749,7 +749,7 @@ mod direct_session_run_guard_tests {
     use crate::session::SessionSupervisor;
     use haven_common::config::ContextLimitsConfig;
     use haven_common::types::CanonicalMessage;
-    use haven_llm::{LlmClient, LlmError, LlmResponse, StreamChunk, ToolDefinition};
+    use haven_llm::{LlmClient, LlmError, LlmResponse, LlmToolDefinition, StreamChunk};
     use haven_memory::Database;
     use haven_tools::ToolsFacade;
     use std::pin::Pin;
@@ -782,7 +782,7 @@ mod direct_session_run_guard_tests {
         async fn chat_stream_with_tools_output_cap_shared(
             &self,
             _messages: Arc<[CanonicalMessage]>,
-            _tools: Arc<[ToolDefinition]>,
+            _tools: Arc<[LlmToolDefinition]>,
             _max_output_tokens: Option<u32>,
         ) -> Result<
             Pin<Box<dyn futures_util::Stream<Item = Result<StreamChunk, LlmError>> + Send>>,

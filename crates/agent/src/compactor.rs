@@ -2,7 +2,7 @@ use crate::is_dangling_boundary;
 use haven_common::config::RequestKind;
 use haven_common::prompts::SESSION_COMPACTION_SUMMARY_PROMPT;
 use haven_common::types::{CanonicalMessage, ContentPart};
-use haven_llm::{LlmError, LlmRouter, ToolDefinition};
+use haven_llm::{LlmError, LlmRouter, LlmToolDefinition};
 use std::sync::Arc;
 use std::sync::{LazyLock, OnceLock};
 use tiktoken_rs::o200k_base;
@@ -92,7 +92,7 @@ pub fn estimate_message_tokens(messages: &[CanonicalMessage]) -> u32 {
 /// Estimate the serialized schema cost once per request. Tool definitions are
 /// not part of the durable transcript, but they occupy the same provider
 /// context window as messages.
-pub fn estimate_tool_tokens(tools: &[ToolDefinition]) -> u32 {
+pub fn estimate_tool_tokens(tools: &[LlmToolDefinition]) -> u32 {
     serde_json::to_string(tools)
         .ok()
         .map(|json| estimate_tokens(&json))
@@ -109,7 +109,7 @@ pub const PROVIDER_REQUEST_OVERHEAD_TOKENS: u32 = 256;
 /// dangling tool-call repairs still participate in the budget.
 pub fn estimate_provider_request_tokens(
     messages: &[CanonicalMessage],
-    tools: &[ToolDefinition],
+    tools: &[LlmToolDefinition],
 ) -> u32 {
     estimate_provider_request_tokens_with_message_estimate(
         messages,
@@ -123,7 +123,7 @@ pub fn estimate_provider_request_tokens(
 /// boundaries need a sanitized clone and a fresh message pass.
 pub fn estimate_provider_request_tokens_with_message_estimate(
     messages: &[CanonicalMessage],
-    tools: &[ToolDefinition],
+    tools: &[LlmToolDefinition],
     cached_message_tokens: u32,
 ) -> u32 {
     estimate_provider_request_tokens_with_estimates(
@@ -623,7 +623,7 @@ impl ContextCompactor {
     pub async fn compact(
         &self,
         messages: &[CanonicalMessage],
-        tools: &[ToolDefinition],
+        tools: &[LlmToolDefinition],
         router: &Arc<LlmRouter>,
         cancel: CancellationToken,
     ) -> Result<Option<CompactionResult>, LlmError> {
@@ -767,7 +767,7 @@ impl ContextCompactor {
 mod tests {
     use super::*;
     use haven_common::types::CanonicalRole;
-    use haven_llm::{LlmClient, LlmResponse, StreamChunk, ToolDefinition};
+    use haven_llm::{LlmClient, LlmResponse, LlmToolDefinition, StreamChunk};
     use std::pin::Pin;
 
     struct FailingSummaryClient;
@@ -795,7 +795,7 @@ mod tests {
         async fn chat_stream_with_tools_output_cap_shared(
             &self,
             _messages: std::sync::Arc<[CanonicalMessage]>,
-            _tools: std::sync::Arc<[ToolDefinition]>,
+            _tools: std::sync::Arc<[LlmToolDefinition]>,
             _max_output_tokens: Option<u32>,
         ) -> Result<
             Pin<Box<dyn futures_util::Stream<Item = Result<StreamChunk, LlmError>> + Send>>,

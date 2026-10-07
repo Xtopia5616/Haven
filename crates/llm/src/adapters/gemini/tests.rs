@@ -540,7 +540,7 @@ fn build_request_body_with_tools_and_config() {
         ..Default::default()
     };
     let client = GeminiAdapter::new(ep);
-    let tools = vec![ToolDefinition {
+    let tools = vec![LlmToolDefinition {
         tool_type: "function".into(),
         function: ToolFunction {
             name: "search".into(),
@@ -568,7 +568,7 @@ fn gemini_projects_dotted_tool_names_for_call_and_response_round_trips() {
     let client = GeminiAdapter::new(ModelEndpoint::default());
     let body = client.build_request_body(
         vec![],
-        vec![ToolDefinition {
+        vec![LlmToolDefinition {
             tool_type: "function".into(),
             function: ToolFunction {
                 name: "files.read".into(),
@@ -589,7 +589,7 @@ fn gemini_projects_dotted_tool_names_for_call_and_response_round_trips() {
 
 #[test]
 fn convert_tools_projects_gemini_schema_subset() {
-    let tools = GeminiAdapter::convert_tools(vec![ToolDefinition {
+    let tools = GeminiAdapter::convert_tools(vec![LlmToolDefinition {
         tool_type: "function".into(),
         function: ToolFunction {
             name: "schedule".into(),
@@ -768,7 +768,7 @@ fn serialized_request_uses_gemini_rest_wire_names() {
     });
     let body = client.build_request_body(
         vec![CanonicalMessage::user_text("hello")],
-        vec![ToolDefinition {
+        vec![LlmToolDefinition {
             tool_type: "function".into(),
             function: ToolFunction {
                 name: "file".into(),
@@ -848,7 +848,7 @@ async fn explicit_cache_replaces_system_and_tools_and_reuses_resource() {
     let messages = vec![CanonicalMessage::system(vec![ContentPart::text(format!(
         "stable{SESSION_CONTEXT_FENCE_START}session"
     ))])];
-    let tools = vec![ToolDefinition {
+    let tools = vec![LlmToolDefinition {
         tool_type: "function".into(),
         function: ToolFunction {
             name: "inspect".into(),

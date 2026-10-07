@@ -22,7 +22,7 @@ use crate::request_pipeline::{RequestExecutionPolicy, RetryPolicy, execute_with_
 use crate::router::StreamAttemptOutputDisposition;
 use crate::stream_rules::StreamRule;
 use crate::streaming;
-use crate::types::{LlmError, LlmResponse, StreamChunk, StreamRequest, ToolDefinition};
+use crate::types::{LlmError, LlmResponse, LlmToolDefinition, StreamChunk, StreamRequest};
 
 pub(crate) type StreamChunkCallback = Box<dyn FnMut(&StreamChunk) + Send + 'static>;
 pub(crate) type StreamAttemptStartCallback =
@@ -32,7 +32,7 @@ pub(crate) type StreamAttemptStartCallback =
 #[derive(Clone)]
 pub(crate) struct StreamContext {
     pub(crate) messages: Arc<[CanonicalMessage]>,
-    pub(crate) tools: Arc<[ToolDefinition]>,
+    pub(crate) tools: Arc<[LlmToolDefinition]>,
     pub(crate) max_output_tokens: Option<u32>,
 }
 
@@ -369,7 +369,7 @@ mod tests {
         async fn chat_stream_with_tools_output_cap_shared(
             &self,
             messages: Arc<[CanonicalMessage]>,
-            tools: Arc<[ToolDefinition]>,
+            tools: Arc<[LlmToolDefinition]>,
             max_output_tokens: Option<u32>,
         ) -> Result<MockStream, LlmError> {
             self.seen
@@ -422,7 +422,7 @@ mod tests {
         async fn chat_stream_with_tools_output_cap_shared_guidance(
             &self,
             messages: Arc<[CanonicalMessage]>,
-            tools: Arc<[ToolDefinition]>,
+            tools: Arc<[LlmToolDefinition]>,
             guidance: String,
             max_output_tokens: Option<u32>,
         ) -> Result<MockStream, LlmError> {
@@ -467,7 +467,7 @@ mod tests {
     fn context() -> StreamContext {
         StreamContext {
             messages: Arc::from(vec![CanonicalMessage::user_text("prompt")]),
-            tools: Arc::from(vec![ToolDefinition {
+            tools: Arc::from(vec![LlmToolDefinition {
                 tool_type: "function".into(),
                 function: crate::types::ToolFunction {
                     name: "probe".into(),

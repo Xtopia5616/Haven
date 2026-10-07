@@ -503,7 +503,7 @@ fn build_request_body_skips_temperature_one() {
 fn build_request_body_with_tools() {
     let ep = ModelEndpoint::default();
     let client = OpenAiResponsesAdapter::new(ep);
-    let tools = vec![ToolDefinition {
+    let tools = vec![LlmToolDefinition {
         tool_type: "function".into(),
         function: ToolFunction {
             name: "search".into(),
@@ -527,7 +527,7 @@ fn deepseek_responses_projects_tool_names_and_historical_calls() {
         model_name: "deepseek-v4-pro".into(),
         ..Default::default()
     });
-    let tools = vec![ToolDefinition {
+    let tools = vec![LlmToolDefinition {
         tool_type: "function".into(),
         function: ToolFunction {
             name: "files.read".into(),
@@ -558,7 +558,7 @@ fn deepseek_responses_projects_tool_names_and_historical_calls() {
 
 #[test]
 fn responses_tools_project_root_union_to_object_schema() {
-    let tools = OpenAiResponsesAdapter::convert_tools(vec![ToolDefinition {
+    let tools = OpenAiResponsesAdapter::convert_tools(vec![LlmToolDefinition {
         tool_type: "function".into(),
         function: ToolFunction {
             name: "schedule".into(),
@@ -610,7 +610,7 @@ fn responses_tools_project_root_union_to_object_schema() {
 fn web_search_mode_shapes_the_request() {
     let ep = ModelEndpoint::default();
     let client = OpenAiResponsesAdapter::new(ep);
-    let defs = vec![ToolDefinition {
+    let defs = vec![LlmToolDefinition {
         tool_type: "function".into(),
         function: ToolFunction {
             name: "file".into(),
@@ -1080,7 +1080,7 @@ fn prompt_cache_key_matches_the_sanitized_responses_tool_wire() {
     });
     let system = CanonicalMessage::system(vec![ContentPart::text("stable system")]);
     let user = CanonicalMessage::user_text("session anchor");
-    let tool = |parameters| ToolDefinition {
+    let tool = |parameters| LlmToolDefinition {
         tool_type: "function".into(),
         function: crate::types::ToolFunction {
             name: "read".into(),
@@ -1204,7 +1204,7 @@ fn prompt_cache_key_changes_when_tools_change_or_is_unsupported() {
     let client = OpenAiResponsesAdapter::new(ModelEndpoint::default());
     let system = CanonicalMessage::system(vec![ContentPart::text("stable system")]);
     let user = CanonicalMessage::user_text("session input");
-    let one_tool = vec![ToolDefinition {
+    let one_tool = vec![LlmToolDefinition {
         tool_type: "function".into(),
         function: crate::types::ToolFunction {
             name: "read".into(),
@@ -1214,7 +1214,7 @@ fn prompt_cache_key_changes_when_tools_change_or_is_unsupported() {
     }];
     let two_tools = vec![
         one_tool[0].clone(),
-        ToolDefinition {
+        LlmToolDefinition {
             tool_type: "function".into(),
             function: crate::types::ToolFunction {
                 name: "write".into(),

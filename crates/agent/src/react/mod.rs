@@ -12,7 +12,7 @@ use haven_common::media::{
 };
 use haven_common::types::MessageAttachment;
 use haven_common::types::{CanonicalMessage, ContentPart, LlmCallKind};
-use haven_llm::{FinishReason, LlmResponse, LlmRouter, ToolDefinition};
+use haven_llm::{FinishReason, LlmResponse, LlmRouter, LlmToolDefinition};
 #[cfg(test)]
 use haven_memory::Database;
 use haven_memory::{MemoryStore, SessionStore};
@@ -601,7 +601,7 @@ impl ReActEngine {
                 .iter()
                 .cloned()
                 .map(Into::into)
-                .collect::<Vec<ToolDefinition>>(),
+                .collect::<Vec<LlmToolDefinition>>(),
         );
         let token_estimate = crate::compactor::estimate_tool_tokens(&definitions);
         let prepared = PreparedToolDefinitions {
@@ -1405,7 +1405,7 @@ mod tests {
         async fn chat_with_tools(
             &self,
             _: Vec<CanonicalMessage>,
-            _: Vec<ToolDefinition>,
+            _: Vec<LlmToolDefinition>,
         ) -> Result<LlmResponse, LlmError> {
             Err(LlmError::Unknown(
                 "mock: chat_with_tools not implemented".into(),
@@ -1425,7 +1425,7 @@ mod tests {
         async fn chat_stream_with_tools(
             &self,
             _: Vec<CanonicalMessage>,
-            _: Vec<ToolDefinition>,
+            _: Vec<LlmToolDefinition>,
         ) -> Result<
             Pin<Box<dyn futures_util::Stream<Item = Result<StreamChunk, LlmError>> + Send>>,
             LlmError,
@@ -1437,7 +1437,7 @@ mod tests {
         async fn chat_stream_with_tools_output_cap_shared(
             &self,
             _messages: Arc<[CanonicalMessage]>,
-            _tools: Arc<[ToolDefinition]>,
+            _tools: Arc<[LlmToolDefinition]>,
             _max_output_tokens: Option<u32>,
         ) -> Result<
             Pin<Box<dyn futures_util::Stream<Item = Result<StreamChunk, LlmError>> + Send>>,

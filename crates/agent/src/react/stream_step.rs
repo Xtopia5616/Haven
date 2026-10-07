@@ -10,8 +10,8 @@ use super::*;
 use crate::types::media_inputs_from_events;
 use haven_common::config::RequestKind;
 use haven_llm::{
-    LlmResponse, LlmRouter, StreamAttemptHooks, StreamAttemptOutputDisposition, StreamRequest,
-    ToolDefinition,
+    LlmResponse, LlmRouter, LlmToolDefinition, StreamAttemptHooks, StreamAttemptOutputDisposition,
+    StreamRequest,
 };
 
 pub(super) struct StreamedLlmCall {
@@ -275,7 +275,7 @@ pub(super) struct StreamSession<'a> {
     ctx: &'a StepCtx,
     router: Arc<LlmRouter>,
     request: RequestKind,
-    tools: &'a [ToolDefinition],
+    tools: &'a [LlmToolDefinition],
     tool_token_estimate: u32,
     identity_map: Arc<IdentityMap>,
     cancel: tokio_util::sync::CancellationToken,
@@ -290,7 +290,7 @@ impl<'a> StreamSession<'a> {
         ctx: &'a StepCtx,
         router: Arc<LlmRouter>,
         request: RequestKind,
-        tools: &'a [ToolDefinition],
+        tools: &'a [LlmToolDefinition],
         tool_token_estimate: u32,
         identity_map: Arc<IdentityMap>,
         cancel: tokio_util::sync::CancellationToken,
@@ -752,7 +752,7 @@ impl ReActEngine {
         request_context: &RequestContext,
         identity_map: &IdentityMap,
         output_disposition_on_start: StreamAttemptOutputDisposition,
-        tools: &[ToolDefinition],
+        tools: &[LlmToolDefinition],
         tool_token_estimate: u32,
         cancel: tokio_util::sync::CancellationToken,
         partial_thought: &Arc<std::sync::Mutex<String>>,
@@ -907,7 +907,7 @@ impl ReActEngine {
         ctx: &StepCtx,
         router: Arc<LlmRouter>,
         request: &mut RequestKind,
-        tools: &[ToolDefinition],
+        tools: &[LlmToolDefinition],
         tool_token_estimate: u32,
         cancel: tokio_util::sync::CancellationToken,
         state: &mut ReActState,
@@ -1326,7 +1326,7 @@ mod tests {
         async fn chat_with_tools(
             &self,
             _messages: Vec<CanonicalMessage>,
-            _tools: Vec<ToolDefinition>,
+            _tools: Vec<LlmToolDefinition>,
         ) -> Result<LlmResponse, LlmError> {
             self.chat(Vec::new()).await
         }
@@ -1346,7 +1346,7 @@ mod tests {
         async fn chat_stream_with_tools(
             &self,
             _messages: Vec<CanonicalMessage>,
-            _tools: Vec<ToolDefinition>,
+            _tools: Vec<LlmToolDefinition>,
         ) -> Result<
             Pin<Box<dyn futures_util::Stream<Item = Result<StreamChunk, LlmError>> + Send>>,
             LlmError,
@@ -1362,7 +1362,7 @@ mod tests {
         async fn chat_stream_with_tools_output_cap_shared(
             &self,
             _messages: Arc<[CanonicalMessage]>,
-            _tools: Arc<[ToolDefinition]>,
+            _tools: Arc<[LlmToolDefinition]>,
             _max_output_tokens: Option<u32>,
         ) -> Result<
             Pin<Box<dyn futures_util::Stream<Item = Result<StreamChunk, LlmError>> + Send>>,
