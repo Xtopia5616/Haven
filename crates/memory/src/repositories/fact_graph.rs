@@ -20,6 +20,13 @@ use std::collections::HashSet;
 const CONTRADICTION_DEMOTE_FACTOR: f64 = super::facts::CONTRADICTION_DEMOTE_FACTOR;
 const PROVENANCE_SNIPPET_MAX_CHARS: usize = 120;
 
+#[derive(Default)]
+struct FactProvenanceColumns {
+    provenance_item_id: Option<String>,
+    provenance_record_id: Option<String>,
+    provenance_snippet: Option<String>,
+}
+
 fn serialize_tags(tags: &[&str]) -> String {
     serde_json::to_string(tags).unwrap_or_else(|_| "[]".into())
 }
@@ -171,8 +178,7 @@ impl<'db> FactGraph<'db> {
             node_kind_for_label(object),
             object,
         )?;
-        let (prov_item, prov_record, prov_snippet) =
-            Self::provenance_cols_from_source_ref(conn, source_ref)?;
+        let provenance = Self::provenance_cols_from_source_ref(conn, source_ref)?;
         conn.execute(
             "INSERT INTO facts (
                 id, subject, subject_id, predicate, object, object_id,
@@ -191,9 +197,9 @@ impl<'db> FactGraph<'db> {
                 now,
                 tags_json,
                 now,
-                prov_item,
-                prov_record,
-                prov_snippet,
+                provenance.provenance_item_id,
+                provenance.provenance_record_id,
+                provenance.provenance_snippet,
                 durability
             ],
         )?;
@@ -220,10 +226,10 @@ impl<'db> FactGraph<'db> {
     fn provenance_cols_from_source_ref(
         conn: &Connection,
         source_ref: Option<&FactSourceRef>,
-    ) -> anyhow::Result<(Option<String>, Option<String>, Option<String>)> {
+    ) -> anyhow::Result<FactProvenanceColumns> {
         let sanitized = sanitize_source_ref(source_ref);
         let Some(refer) = sanitized.as_ref() else {
-            return Ok((None, None, None));
+            return Ok(FactProvenanceColumns::default());
         };
         let snippet = if refer.snippet.is_empty() {
             None
@@ -231,7 +237,10 @@ impl<'db> FactGraph<'db> {
             Some(refer.snippet.clone())
         };
         if refer.message_id.is_empty() {
-            return Ok((None, None, snippet));
+            return Ok(FactProvenanceColumns {
+                provenance_snippet: snippet,
+                ..FactProvenanceColumns::default()
+            });
         }
         let in_items = conn
             .query_row(
@@ -242,9 +251,17 @@ impl<'db> FactGraph<'db> {
             .optional()?
             .is_some();
         if in_items {
-            Ok((Some(refer.message_id.clone()), None, snippet))
+            Ok(FactProvenanceColumns {
+                provenance_item_id: Some(refer.message_id.clone()),
+                provenance_snippet: snippet,
+                ..FactProvenanceColumns::default()
+            })
         } else {
-            Ok((None, Some(refer.message_id.clone()), snippet))
+            Ok(FactProvenanceColumns {
+                provenance_record_id: Some(refer.message_id.clone()),
+                provenance_snippet: snippet,
+                ..FactProvenanceColumns::default()
+            })
         }
     }
 
@@ -625,8 +642,7 @@ impl<'db> FactGraph<'db> {
             }
             let tag_refs: Vec<&str> = merged_tags.iter().map(|s| s.as_str()).collect();
             let tags_json = serialize_tags(&tag_refs);
-            let (prov_item, prov_record, prov_snippet) =
-                Self::provenance_cols_from_source_ref(conn, merged_ref)?;
+            let provenance = Self::provenance_cols_from_source_ref(conn, merged_ref)?;
             conn.execute(
                 "UPDATE facts
                  SET mention_count = mention_count + 1, last_seen_at = ?1, confidence = ?2,
@@ -636,9 +652,9 @@ impl<'db> FactGraph<'db> {
                 rusqlite::params![
                     now,
                     boosted,
-                    prov_item,
-                    prov_record,
-                    prov_snippet,
+                    provenance.provenance_item_id,
+                    provenance.provenance_record_id,
+                    provenance.provenance_snippet,
                     tags_json,
                     merged_durability,
                     existing.id
