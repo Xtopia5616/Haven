@@ -9,6 +9,13 @@ pub use super::fact_maintenance::{
 pub use super::fact_query::fact_effective_confidence;
 pub use super::fact_security::{is_sensitive_object, is_sensitive_predicate, is_sensitive_text};
 
+/// Predicate row count used by memory maintenance policy.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct PredicateCount {
+    pub predicate: String,
+    pub row_count: u64,
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Fact {
     pub id: String,
@@ -337,7 +344,7 @@ impl Database {
     }
 
     /// Distinct predicates with row counts, highest count first (M6).
-    pub fn list_predicate_counts(&self) -> anyhow::Result<Vec<(String, u64)>> {
+    pub fn list_predicate_counts(&self) -> anyhow::Result<Vec<PredicateCount>> {
         FactMaintenance::new(self).list_predicate_counts()
     }
 
@@ -1014,7 +1021,11 @@ mod tests {
         db.cache_invalidate_all_facts();
 
         let counts = db.list_predicate_counts().unwrap();
-        assert!(counts.iter().any(|(p, n)| p == "fav_lang" && *n == 2));
+        assert!(
+            counts
+                .iter()
+                .any(|count| count.predicate == "fav_lang" && count.row_count == 2)
+        );
         let rewritten = db.rewrite_predicate("fav_lang", "language").unwrap();
         assert_eq!(rewritten, 2);
         let remaining = db.list_facts().unwrap();

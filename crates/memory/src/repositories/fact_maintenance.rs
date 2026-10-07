@@ -12,7 +12,9 @@ use std::collections::{HashMap, HashSet};
 
 use super::fact_query::{FACT_COLS, fact_age_days, fact_effective_confidence, fact_from_row};
 use super::fact_security::sensitive_fact_where_sql;
-use super::facts::{CONTRADICTION_DEMOTE_FACTOR, Fact, all_single_valued_predicates};
+use super::facts::{
+    CONTRADICTION_DEMOTE_FACTOR, Fact, PredicateCount, all_single_valued_predicates,
+};
 
 /// Live-floor for maintenance contradiction scans (X5). Below this, upsert
 /// demotion / flush already treat the fact as inactive in the prompt.
@@ -51,7 +53,7 @@ impl<'db> FactMaintenance<'db> {
     }
 
     /// Distinct predicates with row counts, highest count first (M6).
-    pub(crate) fn list_predicate_counts(&self) -> anyhow::Result<Vec<(String, u64)>> {
+    pub(crate) fn list_predicate_counts(&self) -> anyhow::Result<Vec<PredicateCount>> {
         let conn = self.db.conn();
         let mut stmt = conn.prepare(
             "SELECT predicate, COUNT(*) AS n FROM facts
@@ -59,7 +61,10 @@ impl<'db> FactMaintenance<'db> {
              ORDER BY n DESC, predicate ASC",
         )?;
         let rows = stmt.query_map([], |r| {
-            Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)? as u64))
+            Ok(PredicateCount {
+                predicate: r.get(0)?,
+                row_count: r.get::<_, i64>(1)? as u64,
+            })
         })?;
         Ok(rows.collect::<Result<Vec<_>, _>>()?)
     }

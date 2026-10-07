@@ -4,13 +4,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::Database;
 use crate::repositories::facts::ContradictionCandidate;
-
-/// Predicate row count returned to maintenance policy callers.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct PredicateCount {
-    pub predicate: String,
-    pub row_count: u64,
-}
+pub use crate::repositories::facts::PredicateCount;
 
 /// Typed persistence boundary for scheduled memory maintenance persistence.
 ///
@@ -138,17 +132,7 @@ impl MemoryMaintenanceStore {
 
     /// Return exact predicate counts for maintenance policy decisions.
     pub async fn list_predicate_counts(&self) -> anyhow::Result<Vec<PredicateCount>> {
-        self.run(None, |db| db.list_predicate_counts())
-            .await
-            .map(|counts| {
-                counts
-                    .into_iter()
-                    .map(|(predicate, row_count)| PredicateCount {
-                        predicate,
-                        row_count,
-                    })
-                    .collect()
-            })
+        self.run(None, |db| db.list_predicate_counts()).await
     }
 
     /// Rewrite one predicate and run the repository's existing duplicate
