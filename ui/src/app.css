@@ -1266,6 +1266,14 @@ select.md-select {
 .workspace-item-card-meta > :last-child {
 	flex: 0 0 auto;
 }
+.expandable-context-card-meta {
+	display: flex;
+	align-items: center;
+	gap: var(--md-sys-space-sm);
+	font-size: var(--md-sys-typescale-label-small-size);
+	line-height: var(--md-sys-typescale-label-small-line-height);
+	flex-wrap: wrap;
+}
 .workspace-item-card-footer {
 	justify-content: space-between;
 	gap: var(--md-sys-space-sm);

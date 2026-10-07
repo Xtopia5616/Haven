@@ -701,3 +701,4 @@
 - [0710：共用 ToolRun 结果行基础样式](0710-share-toolrun-result-row-style.md)
 - [0711：共用 Tool result 状态摘要行](0711-share-tool-result-status-row.md)
 - [0712：共用 Tool result 窗口与显示器行基础样式](0712-share-tool-result-window-row-style.md)
+- [0713：共用 ExpandableContextCard 元信息行排版](0713-share-expandable-card-metadata-row.md)

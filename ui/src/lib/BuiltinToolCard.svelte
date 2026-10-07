@@ -47,7 +47,7 @@
 <ExpandableContextCard cardKind="builtin-family" {contextMenuItems} showActions={false}>
 	{#snippet header()}
 		<div class="card-name">{card.label}</div>
-		<div class="card-meta">
+		<div class="expandable-context-card-meta">
 			<StatusBadge label={`${card.roots.length} 个根能力`} tone={'neutral' as const} />
 			<StatusBadge label={`${operations.length} 个操作`} tone={'neutral' as const} />
 			<StatusBadge label={statusLabel} tone={statusTone} />
@@ -73,14 +73,6 @@
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
-	}
-	.card-meta {
-		display: flex;
-		gap: var(--md-sys-space-sm);
-		align-items: center;
-		font-size: var(--md-sys-typescale-label-small-size);
-		line-height: var(--md-sys-typescale-label-small-line-height);
-		flex-wrap: wrap;
 	}
 	.root-list {
 		display: flex;

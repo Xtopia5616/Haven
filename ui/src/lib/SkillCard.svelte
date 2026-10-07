@@ -97,7 +97,7 @@
 <ExpandableContextCard {contextMenuItems}>
 	{#snippet header()}
 		<div class="card-name">{skill.name}</div>
-		<div class="card-meta">
+		<div class="expandable-context-card-meta">
 			{#if skill.version}
 				<span class="meta-badge">{skill.version}</span>
 			{/if}
@@ -159,14 +159,6 @@
 		line-height: var(--md-sys-typescale-body-large-line-height);
 		color: var(--md-sys-color-on-surface);
 		margin-bottom: var(--md-sys-space-xs);
-	}
-	.card-meta {
-		display: flex;
-		gap: var(--md-sys-space-sm);
-		align-items: center;
-		font-size: var(--md-sys-typescale-label-small-size);
-		line-height: var(--md-sys-typescale-label-small-line-height);
-		flex-wrap: wrap;
 	}
 	.meta-badge {
 		background: var(--md-sys-color-surface-container-high);

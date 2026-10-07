@@ -108,7 +108,7 @@
 			<span class="card-name-text">{server.name}</span>
 			<span class="tool-count">{server.tools?.length || 0} 个工具</span>
 		</div>
-		<div class="card-meta">
+		<div class="expandable-context-card-meta">
 			<span class="transport-badge">{server.transport || 'stdio'}</span>
 			{#if server.url}
 				<span class="endpoint">{server.url}</span>
@@ -202,14 +202,6 @@
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
-	}
-	.card-meta {
-		display: flex;
-		gap: var(--md-sys-space-sm);
-		align-items: center;
-		font-size: var(--md-sys-typescale-label-small-size);
-		line-height: var(--md-sys-typescale-label-small-line-height);
-		flex-wrap: wrap;
 	}
 	.transport-badge {
 		background: var(--md-sys-color-surface-container-high);

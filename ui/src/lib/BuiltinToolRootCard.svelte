@@ -79,7 +79,7 @@
 				<div class="card-subtitle" title={root.description}>{root.name}</div>
 			</div>
 		</div>
-		<div class="card-meta">
+		<div class="expandable-context-card-meta">
 			<StatusBadge label={`${operations.length} 个操作`} tone={'neutral' as const} />
 			<StatusBadge label={statusLabel} tone={statusTone} />
 		</div>
@@ -162,14 +162,6 @@
 	}
 	.card-title {
 		min-width: 0;
-	}
-	.card-meta {
-		display: flex;
-		gap: var(--md-sys-space-sm);
-		align-items: center;
-		font-size: var(--md-sys-typescale-label-small-size);
-		line-height: var(--md-sys-typescale-label-small-line-height);
-		flex-wrap: wrap;
 	}
 	.card-subtitle {
 		font-family: var(--md-sys-typescale-mono);
