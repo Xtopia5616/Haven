@@ -593,3 +593,4 @@
 - [0602：命名 Agent transcript projection 结果](0602-name-agent-transcript-projection.md)
 - [0603：命名 Tools file search 结果](0603-name-tools-file-search-result.md)
 - [0604：命名 Memory summary marker 解码结果](0604-name-memory-summary-marker-decode-result.md)
+- [0605：删除 UI Tool result parser 空泛 alias](0605-remove-tool-result-object-alias.md)

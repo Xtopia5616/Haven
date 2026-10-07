@@ -1,14 +1,12 @@
 import { toolRendererName, toolRootName } from './toolManifest.ts';
 
-type ToolResultObject = Record<string, any>;
-
 export type ParsedToolResult = {
 	kind: 'custom' | 'generic' | 'shell' | 'notify' | 'raw';
 	data: unknown;
 };
 
 /** @param value unknown JSON-like value */
-function isObject(value: unknown): value is ToolResultObject {
+function isObject(value: unknown): value is Record<string, unknown> {
 	return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
@@ -46,7 +44,7 @@ export function parseToolResult(
 		return toolName === 'shell' ? { kind: 'shell', data: null } : null;
 	}
 	if (rootToolName === 'shell') {
-		let data: ToolResultObject | null = null;
+		let data: Record<string, unknown> | null = null;
 		try {
 			const value: unknown = JSON.parse(content);
 			if (isObject(value)) data = value;
