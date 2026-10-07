@@ -77,7 +77,7 @@ mod tests {
         assert_eq!(
             wire,
             serde_json::json!({
-                "id": "toolrun-output-preview",
+                "tool_run_id": "toolrun-output-preview",
                 "kind": "background",
                 "status": "running",
                 "source_step_id": "step-output-preview",

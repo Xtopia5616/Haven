@@ -7,7 +7,7 @@ use super::*;
 /// prompts, and dependency watch ids deliberately stay in `ToolRunEntry`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ToolRunView {
-    pub id: String,
+    pub tool_run_id: String,
     pub kind: ToolRunKind,
     pub status: ToolRunStatus,
     pub session_id: Option<String>,
@@ -349,7 +349,6 @@ impl ToolRunStatusView {
                 state,
             } => {
                 let mut value = json!({
-                    "id": tool_run_id,
                     "tool_run_id": tool_run_id,
                     "kind": "scheduled",
                     "status": state.status().as_str(),
@@ -407,7 +406,7 @@ pub(super) fn scheduled_tool_run_view(entry: &ScheduledToolRunEntry) -> Schedule
 
 pub(super) fn project_board_tool_run(tool_run_id: &str, entry: &ToolRunEntry) -> ToolRunView {
     let mut view = ToolRunView {
-        id: tool_run_id.to_string(),
+        tool_run_id: tool_run_id.to_string(),
         kind: entry.kind,
         status: entry.state.status(),
         session_id: entry.session_id.clone(),
@@ -498,14 +497,13 @@ pub(super) fn project_board_tool_run(tool_run_id: &str, entry: &ToolRunEntry) ->
 
 #[cfg(test)]
 pub(super) fn scheduled_status_json(
-    id: &str,
+    tool_run_id: &str,
     session_id: Option<&str>,
     entry: &ScheduledToolRunEntry,
     state: &ToolRunState,
 ) -> Value {
     let mut value = json!({
-        "id": id,
-        "tool_run_id": id,
+        "tool_run_id": tool_run_id,
         "kind": "scheduled",
         "status": state.status().as_str(),
         "title": entry.title,
@@ -525,13 +523,16 @@ pub(super) fn scheduled_status_json(
 }
 
 pub(super) fn scheduled_lifecycle_payload(
-    id: &str,
+    tool_run_id: &str,
     session_id: Option<&str>,
     entry: &ScheduledToolRunEntry,
     state: &ToolRunState,
 ) -> ToolRunLifecyclePayload {
-    let mut payload =
-        ToolRunLifecyclePayload::new(ToolRunKind::Scheduled, id, tool_run_lifecycle_state(state));
+    let mut payload = ToolRunLifecyclePayload::new(
+        ToolRunKind::Scheduled,
+        tool_run_id,
+        tool_run_lifecycle_state(state),
+    );
     payload.session_id = session_id.map(str::to_string);
     payload.title = Some(entry.title.clone());
     payload.body = Some(entry.body.clone());

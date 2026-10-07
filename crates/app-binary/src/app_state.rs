@@ -1103,11 +1103,11 @@ mod tests {
 
         let db = Database::open(&db_path).unwrap();
         let pending = db.list_pending_scheduled_tool_runs().unwrap();
-        assert!(pending.iter().any(|row| row.id == tool_run_id));
+        assert!(pending.iter().any(|row| row.tool_run_id == tool_run_id));
         assert_eq!(
             pending
                 .iter()
-                .find(|row| row.id == tool_run_id)
+                .find(|row| row.tool_run_id == tool_run_id)
                 .map(|row| row.status.as_str()),
             Some("waiting")
         );

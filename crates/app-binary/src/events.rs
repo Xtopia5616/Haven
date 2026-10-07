@@ -73,7 +73,7 @@ pub enum ToolRunKindDto {
 /// than a stable UI contract and may contain sensitive values.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct ToolRunEvent {
-    pub id: String,
+    pub tool_run_id: String,
     pub kind: ToolRunKindDto,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub status: Option<ToolRunStatus>,
@@ -113,7 +113,7 @@ impl ToolRunEvent {
         let started_at = payload.state.started_at().map(str::to_owned);
         let finished_at = payload.state.finished_at().map(str::to_owned);
         Self {
-            id: payload.tool_run_id,
+            tool_run_id: payload.tool_run_id,
             kind: match payload.kind {
                 haven_tools::ToolRunKind::Background => ToolRunKindDto::Background,
                 haven_tools::ToolRunKind::Scheduled => ToolRunKindDto::Scheduled,
@@ -140,7 +140,7 @@ impl ToolRunEvent {
     /// cannot carry command metadata, dynamic arguments, or unbounded stderr.
     pub(crate) fn from_output_payload(payload: ToolRunOutputPayload) -> Self {
         Self {
-            id: payload.tool_run_id,
+            tool_run_id: payload.tool_run_id,
             kind: ToolRunKindDto::Background,
             status: Some(ToolRunStatus::Running),
             session_id: None,
@@ -164,7 +164,7 @@ impl ToolRunEvent {
         payload: haven_tools::ToolRunSessionAttachedPayload,
     ) -> Self {
         Self {
-            id: payload.tool_run_id,
+            tool_run_id: payload.tool_run_id,
             kind: ToolRunKindDto::Background,
             status: None,
             session_id: Some(payload.session_id),
@@ -188,7 +188,7 @@ impl ToolRunEvent {
 impl From<ToolRunView> for ToolRunEvent {
     fn from(view: ToolRunView) -> Self {
         Self {
-            id: view.id,
+            tool_run_id: view.tool_run_id,
             kind: match view.kind {
                 haven_tools::ToolRunKind::Background => ToolRunKindDto::Background,
                 haven_tools::ToolRunKind::Scheduled => ToolRunKindDto::Scheduled,
@@ -746,7 +746,7 @@ mod tests {
         assert_eq!(
             serde_json::to_value(event).unwrap(),
             serde_json::json!({
-                "id": "toolrun-1",
+                "tool_run_id": "toolrun-1",
                 "kind": "background",
                 "status": "completed",
                 "started_at": "2026-09-23T10:00:00Z",
@@ -772,7 +772,7 @@ mod tests {
         let event = ToolRunEvent::from_lifecycle_payload(payload);
         let wire = serde_json::to_value(event).unwrap();
 
-        assert_eq!(wire["id"], "toolrun-2");
+        assert_eq!(wire["tool_run_id"], "toolrun-2");
         assert_eq!(wire["kind"], "scheduled");
         assert_eq!(wire["status"], "waiting");
         assert!(wire.get("tool_name").is_none());
@@ -783,7 +783,7 @@ mod tests {
     #[test]
     fn background_tool_run_view_preserves_the_tool_run_event_wire_contract() {
         let event = ToolRunEvent::from(ToolRunView {
-            id: "toolrun-board-background".into(),
+            tool_run_id: "toolrun-board-background".into(),
             kind: haven_tools::ToolRunKind::Background,
             status: ToolRunStatus::Completed,
             session_id: Some("ses-1".into()),
@@ -805,7 +805,7 @@ mod tests {
         assert_eq!(
             serde_json::to_value(event).unwrap(),
             serde_json::json!({
-                "id": "toolrun-board-background",
+                "tool_run_id": "toolrun-board-background",
                 "kind": "background",
                 "status": "completed",
                 "session_id": "ses-1",
@@ -822,7 +822,7 @@ mod tests {
     #[test]
     fn scheduled_tool_run_view_preserves_wire_contract_without_internal_fields() {
         let event = ToolRunEvent::from(ToolRunView {
-            id: "toolrun-board-scheduled".into(),
+            tool_run_id: "toolrun-board-scheduled".into(),
             kind: haven_tools::ToolRunKind::Scheduled,
             status: ToolRunStatus::Waiting,
             session_id: Some("ses-2".into()),
@@ -845,7 +845,7 @@ mod tests {
         assert_eq!(
             wire,
             serde_json::json!({
-                "id": "toolrun-board-scheduled",
+                "tool_run_id": "toolrun-board-scheduled",
                 "kind": "scheduled",
                 "status": "waiting",
                 "session_id": "ses-2",

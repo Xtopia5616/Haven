@@ -66,8 +66,8 @@
 			...toolRunHistory.map((toolRun) => projectToolRunCard(toolRun, options)),
 		];
 		return toolRuns.filter((row) => {
-			if (seenIds.has(row.id)) return false;
-			seenIds.add(row.id);
+			if (seenIds.has(row.toolRunId)) return false;
+			seenIds.add(row.toolRunId);
 			return true;
 		});
 	});
@@ -84,7 +84,7 @@
 	});
 	const hasFilters = $derived(Boolean(query.trim() || filter !== 'all'));
 
-	const selectedRow = $derived(toolRunRows.find((row) => row.id === selectedToolRunId) || null);
+	const selectedRow = $derived(toolRunRows.find((row) => row.toolRunId === selectedToolRunId) || null);
 
 	const toolRunGroups = $derived.by(() => {
 		return [
@@ -113,7 +113,7 @@
 	});
 
 	function selectRow(row: ToolRunCardProjection) {
-		selectedToolRunId = row.id;
+		selectedToolRunId = row.toolRunId;
 		detailOpen = true;
 	}
 
@@ -202,10 +202,10 @@
 						count={group.rows.length}
 					>
 						{#snippet children()}
-							{#each group.rows as row (row.id)}
+							{#each group.rows as row (row.toolRunId)}
 								<article
 									class="task-card workspace-item-card motion-list-item"
-									class:selected={selectedToolRunId === row.id && detailOpen}
+									class:selected={selectedToolRunId === row.toolRunId && detailOpen}
 								>
 									<button
 										class="task-card-main workspace-item-card-main"
@@ -246,7 +246,7 @@
 											<span>{row.timing}</span>
 										</span>
 										<span class="task-card-footer workspace-item-card-footer">
-											<span class="workspace-item-card-id">{row.id}</span>
+											<span class="workspace-item-card-id">{row.toolRunId}</span>
 											<span
 												class="workspace-item-card-open"
 												aria-hidden="true">打开</span
@@ -259,13 +259,13 @@
 												<MaterialButton
 													variant="danger"
 													label="停止后台任务"
-													onclick={() => onCancel?.(row.id, 'background')}
+													onclick={() => onCancel?.(row.toolRunId, 'background')}
 												/>
 											{:else if row.kind === 'scheduled' && (row.status === 'waiting' || row.status === 'running')}
 												<MaterialButton
 													variant="outlined"
 													label="取消此定时任务"
-													onclick={() => onCancel?.(row.id, 'scheduled')}
+													onclick={() => onCancel?.(row.toolRunId, 'scheduled')}
 												/>
 											{/if}
 										</div>
@@ -325,7 +325,7 @@
 					</div>
 					<div>
 						<dt>任务编号</dt>
-						<dd><code class="task-code">{selectedRow.id}</code></dd>
+						<dd><code class="task-code">{selectedRow.toolRunId}</code></dd>
 					</div>
 					{#if selectedRow.kind === 'background'}
 						<div>
@@ -370,14 +370,14 @@
 						<MaterialButton
 							variant="danger"
 							label="停止任务"
-							onclick={() => onCancel?.(selectedRow.id, 'background')}
+							onclick={() => onCancel?.(selectedRow.toolRunId, 'background')}
 						/>
 					{/if}
 					{#if selectedRow.kind === 'scheduled' && (selectedRow.status === 'waiting' || selectedRow.status === 'running')}
 						<MaterialButton
 							variant="danger"
 							label="取消定时任务"
-							onclick={() => onCancel?.(selectedRow.id, 'scheduled')}
+							onclick={() => onCancel?.(selectedRow.toolRunId, 'scheduled')}
 						/>
 					{/if}
 					{#if selectedRow.sessionId}

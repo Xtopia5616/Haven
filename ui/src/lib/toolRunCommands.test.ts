@@ -13,17 +13,17 @@ describe('ToolRun command contract boundary', () => {
 	it('normalizes list_tool_runs rows through the shared ToolRunEvent mapper', async () => {
 		invokeMock.mockResolvedValue([
 			{
-				id: 'toolrun-1',
+				tool_run_id: 'toolrun-1',
 				kind: 'background',
 				status: 'running',
 				session_id: 'ses-1',
 				future_wire_field: 'ignored',
 			},
-			{ id: 'toolrun-2', kind: 'future-kind' },
+			{ tool_run_id: 'toolrun-2', kind: 'future-kind' },
 		] as never);
 
 		await expect(listToolRunRows()).resolves.toEqual([
-			{ id: 'toolrun-1', kind: 'background', status: 'running', sessionId: 'ses-1' },
+			{ toolRunId: 'toolrun-1', kind: 'background', status: 'running', sessionId: 'ses-1' },
 			null,
 		]);
 		expect(invokeMock).toHaveBeenCalledOnce();

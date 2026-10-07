@@ -8,7 +8,7 @@ describe('tool run IPC contract', () => {
 				event: 'tool_run:finished',
 				id: 4,
 				payload: {
-					id: 'toolrun-1',
+					tool_run_id: 'toolrun-1',
 					kind: 'background',
 					status: 'completed',
 					session_id: 'ses-1',
@@ -22,7 +22,7 @@ describe('tool run IPC contract', () => {
 			event: 'tool_run:finished',
 			id: 4,
 			payload: {
-				id: 'toolrun-1',
+				toolRunId: 'toolrun-1',
 				kind: 'background',
 				status: 'completed',
 				sessionId: 'ses-1',
@@ -34,45 +34,46 @@ describe('tool run IPC contract', () => {
 	});
 
 	it('keeps omitted optional fields absent and rejects explicit nulls', () => {
-		expect(mapToolRunPayload({ id: 'toolrun-2', kind: 'scheduled' })).toEqual({
-			id: 'toolrun-2',
+		expect(mapToolRunPayload({ tool_run_id: 'toolrun-2', kind: 'scheduled' })).toEqual({
+			toolRunId: 'toolrun-2',
 			kind: 'scheduled',
 		});
 		expect(
-			mapToolRunPayload({ id: 'toolrun-2', kind: 'scheduled', session_id: null, status: null }),
+			mapToolRunPayload({ tool_run_id: 'toolrun-2', kind: 'scheduled', session_id: null, status: null }),
 		).toBeNull();
-		expect(mapToolRunPayload({ id: 'toolrun-2', kind: 'scheduled', exit_code: null })).toBeNull();
+		expect(mapToolRunPayload({ tool_run_id: 'toolrun-2', kind: 'scheduled', exit_code: null })).toBeNull();
 		expect(
-			mapToolRunPayload({ id: 'toolrun-2', kind: 'background', source_step_id: 42 }),
+			mapToolRunPayload({ tool_run_id: 'toolrun-2', kind: 'background', source_step_id: 42 }),
 		).toBeNull();
 	});
 
 	it('rejects unknown ToolRun statuses and kinds', () => {
 		expect(
-			mapToolRunPayload({ id: 'toolrun-3', kind: 'background', status: 'unexpected' }),
+			mapToolRunPayload({ tool_run_id: 'toolrun-3', kind: 'background', status: 'unexpected' }),
 		).toBeNull();
 		expect(
-			mapToolRunPayload({ id: 'toolrun-4', kind: 'future-kind', status: 'running' }),
+			mapToolRunPayload({ tool_run_id: 'toolrun-4', kind: 'future-kind', status: 'running' }),
 		).toBeNull();
 	});
 
 	it('fails closed when required fields are missing or malformed', () => {
 		expect(mapToolRunPayload({ kind: 'background' })).toBeNull();
-		expect(mapToolRunPayload({ id: '', kind: 'background' })).toBeNull();
-		expect(mapToolRunPayload({ id: 'toolrun-5' })).toBeNull();
-		expect(mapToolRunPayload({ id: 'toolrun-6', kind: 'background', session_id: 42 })).toBeNull();
+		expect(mapToolRunPayload({ id: 'toolrun-legacy', kind: 'background' })).toBeNull();
+		expect(mapToolRunPayload({ tool_run_id: '', kind: 'background' })).toBeNull();
+		expect(mapToolRunPayload({ tool_run_id: 'toolrun-5' })).toBeNull();
+		expect(mapToolRunPayload({ tool_run_id: 'toolrun-6', kind: 'background', session_id: 42 })).toBeNull();
 		expect(
-			mapToolRunEvent({ event: 'tool_run:finished', id: 4, payload: { id: 'toolrun-7' } }),
+			mapToolRunEvent({ event: 'tool_run:finished', id: 4, payload: { tool_run_id: 'toolrun-7' } }),
 		).toBeNull();
 	});
 
 	it('does not transform dynamic tool_args into a board field', () => {
 		const toolArgs = { query: { tags: ['private', 'nested'], limit: 3 } };
-		const wire = { id: 'toolrun-8', kind: 'scheduled', tool_args: toolArgs };
+		const wire = { tool_run_id: 'toolrun-8', kind: 'scheduled', tool_args: toolArgs };
 
 		// ToolRunEvent intentionally excludes execution arguments. Keep the JSON
 		// extension opaque to this UI DTO mapper rather than stringifying it.
-		expect(mapToolRunPayload(wire)).toEqual({ id: 'toolrun-8', kind: 'scheduled' });
+		expect(mapToolRunPayload(wire)).toEqual({ toolRunId: 'toolrun-8', kind: 'scheduled' });
 		expect(wire.tool_args).toBe(toolArgs);
 		expect(wire.tool_args).toEqual({ query: { tags: ['private', 'nested'], limit: 3 } });
 	});

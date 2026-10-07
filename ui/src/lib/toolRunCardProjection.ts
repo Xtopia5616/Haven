@@ -17,7 +17,7 @@ export interface ToolRunCardDetails {
 
 /** Shared visible structure for background and scheduled ToolRun cards. */
 export interface ToolRunCardProjection {
-	id: string;
+	toolRunId: string;
 	kind: ToolRunPayload['kind'];
 	status?: ToolRunStatus;
 	sessionId?: string;
@@ -140,7 +140,7 @@ export function projectToolRunCard(
 			};
 
 	return {
-		id: toolRun.id,
+		toolRunId: toolRun.toolRunId,
 		kind: toolRun.kind,
 		status,
 		sessionId: toolRun.sessionId,

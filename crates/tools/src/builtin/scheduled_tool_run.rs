@@ -227,7 +227,7 @@ impl ScheduleTool {
                 };
                 let mut output = serde_json::json!({
                     "operation": "set",
-                    "id": id,
+                    "tool_run_id": id,
                     "mode": mode.as_str(),
                     "fires_at": fires_at,
                     "wakes_session": mode == ScheduleMode::Continue,
@@ -279,7 +279,7 @@ impl ScheduleTool {
                     .ok_or_else(|| anyhow::anyhow!("tool_run_id is required for cancel"))?;
                 if self.service.cancel_for_session(&id, session_id).await {
                     Ok(ToolResult::ok(
-                        serde_json::json!({ "operation": "cancel", "cancelled": id }),
+                        serde_json::json!({ "operation": "cancel", "tool_run_id": id }),
                     ))
                 } else {
                     anyhow::bail!("scheduled ToolRun '{}' not found or no longer waiting", id)
@@ -810,7 +810,7 @@ mod tests {
             .unwrap();
         let rows = db.list_pending_scheduled_tool_runs().unwrap();
         assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].id, id);
+        assert_eq!(rows[0].tool_run_id, id);
         assert!(rows[0].due_at.is_empty());
         assert_eq!(rows[0].watch_tool_run_id.as_deref(), Some("toolrun-nope"));
     }
@@ -1094,7 +1094,8 @@ mod tests {
             )
             .await
             .unwrap();
-        let id = result.output["id"].as_str().unwrap().to_string();
+        let id = result.output["tool_run_id"].as_str().unwrap().to_string();
+        assert!(result.output.get("id").is_none());
 
         let list = tool
             .execute(
@@ -1107,7 +1108,10 @@ mod tests {
             list.output["scheduled_tool_runs"].as_array().unwrap().len(),
             1
         );
-        assert_eq!(list.output["scheduled_tool_runs"][0]["id"], json!(id));
+        assert_eq!(
+            list.output["scheduled_tool_runs"][0]["tool_run_id"],
+            json!(id)
+        );
         assert_eq!(
             list.output["scheduled_tool_runs"][0]["body"],
             json!("water")
@@ -1121,7 +1125,8 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(cancelled.output["cancelled"], json!(id));
+        assert_eq!(cancelled.output["tool_run_id"], json!(id));
+        assert!(cancelled.output.get("cancelled").is_none());
 
         // Cancelling again fails.
         let err = tool
@@ -1337,7 +1342,7 @@ mod tests {
         let id = center.set(tool_spec(3600, "Drink", "water")).await.unwrap();
         let pending = db.list_pending_scheduled_tool_runs().unwrap();
         assert_eq!(pending.len(), 1);
-        assert_eq!(pending[0].id, id);
+        assert_eq!(pending[0].tool_run_id, id);
         assert_eq!(pending[0].body, "water");
         assert_eq!(pending[0].mode, "tool");
 
@@ -1373,7 +1378,7 @@ mod tests {
                 .iter()
                 .find(|(n, _)| n == "tool_run:created")
                 .expect("tool_run:created emitted");
-            assert_eq!(set_evt.1["id"], id);
+            assert_eq!(set_evt.1["tool_run_id"], id);
             assert_eq!(set_evt.1["body"], "fire me");
             assert!(set_evt.1["due_at"].as_str().is_some());
         }
@@ -1387,13 +1392,14 @@ mod tests {
             let evs = events.lock().unwrap();
             let running_evt = evs
                 .iter()
-                .find(|(name, payload)| name == "tool_run:updated" && payload["id"] == id)
+                .find(|(name, payload)| name == "tool_run:updated" && payload["tool_run_id"] == id)
                 .expect("tool_run:updated emitted when scheduled ToolRun starts");
             assert_eq!(running_evt.1["status"], "running");
             assert!(running_evt.1["started_at"].as_str().is_some());
             assert!(
-                !evs.iter()
-                    .any(|(n, payload)| n == "tool_run:finished" && payload["id"] == id)
+                !evs.iter().any(|(n, payload)| {
+                    n == "tool_run:finished" && payload["tool_run_id"] == id
+                })
             );
         }
         center.complete_scheduled(&id).await.unwrap();
@@ -1401,9 +1407,9 @@ mod tests {
             let evs = events.lock().unwrap();
             let fired_evt = evs
                 .iter()
-                .find(|(n, payload)| n == "tool_run:finished" && payload["id"] == id)
+                .find(|(n, payload)| n == "tool_run:finished" && payload["tool_run_id"] == id)
                 .expect("tool_run:finished emitted after completion acknowledgement");
-            assert_eq!(fired_evt.1["id"], id);
+            assert_eq!(fired_evt.1["tool_run_id"], id);
             assert_eq!(fired_evt.1["mode"], "tool");
         }
 
@@ -1417,9 +1423,9 @@ mod tests {
             let evs = events.lock().unwrap();
             let cancel_evt = evs
                 .iter()
-                .find(|(n, payload)| n == "tool_run:finished" && payload["id"] == id2)
+                .find(|(n, payload)| n == "tool_run:finished" && payload["tool_run_id"] == id2)
                 .expect("tool_run:finished emitted");
-            assert_eq!(cancel_evt.1["id"], id2);
+            assert_eq!(cancel_evt.1["tool_run_id"], id2);
             assert_eq!(cancel_evt.1["status"], "cancelled");
         }
     }

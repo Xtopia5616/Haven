@@ -48,7 +48,7 @@ describe('SessionTimeline', () => {
 			],
 			sessionToolRuns: [
 				{
-					id: 'toolrun-bg',
+					toolRunId: 'toolrun-bg',
 					kind: 'background',
 					status: 'running',
 					sessionId: 'ses-1',
@@ -80,7 +80,7 @@ describe('SessionTimeline', () => {
 			messages: [],
 			sessionToolRuns: [
 				{
-					id: 'toolrun-scheduled',
+					toolRunId: 'toolrun-scheduled',
 					kind: 'scheduled',
 					status: 'waiting',
 					sessionId: 'ses-1',

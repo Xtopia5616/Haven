@@ -17,7 +17,7 @@ describe('projectToolRunCard', () => {
 	it('projects background cards with the shared fields and background details', () => {
 		const card = projectToolRunCard(
 			{
-				id: 'toolrun-background',
+				toolRunId: 'toolrun-background',
 				kind: 'background',
 				status: 'completed',
 				sessionId: 'ses-1',
@@ -32,7 +32,7 @@ describe('projectToolRunCard', () => {
 		);
 
 		expect(card).toMatchObject({
-			id: 'toolrun-background',
+			toolRunId: 'toolrun-background',
 			kind: 'background',
 			status: 'completed',
 			sessionId: 'ses-1',
@@ -58,7 +58,7 @@ describe('projectToolRunCard', () => {
 	it('projects scheduled cards with the same structure and scheduled details', () => {
 		const card = projectToolRunCard(
 			{
-				id: 'toolrun-scheduled',
+				toolRunId: 'toolrun-scheduled',
 				kind: 'scheduled',
 				status: 'completed',
 				sessionId: 'ses-1',
@@ -71,7 +71,7 @@ describe('projectToolRunCard', () => {
 		);
 
 		expect(card).toMatchObject({
-			id: 'toolrun-scheduled',
+			toolRunId: 'toolrun-scheduled',
 			kind: 'scheduled',
 			status: 'completed',
 			sessionId: 'ses-1',

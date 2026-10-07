@@ -18,7 +18,7 @@ fn scheduled_execution_claim_key(tool_run_id: &str) -> String {
 ///   continuation message; `session_id` is the session that scheduled the ToolRun.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ScheduledToolRunRow {
-    pub id: String,
+    pub tool_run_id: String,
     pub due_at: String,
     pub title: String,
     pub body: String,
@@ -39,7 +39,7 @@ impl Database {
     #[allow(clippy::too_many_arguments)]
     pub fn save_scheduled_tool_run(
         &self,
-        id: &str,
+        tool_run_id: &str,
         due_at: &str,
         title: &str,
         body: &str,
@@ -59,7 +59,7 @@ impl Database {
             "INSERT INTO tool_runs (id, kind, due_at, title, body, mode, session_id, tool_name, tool_args, prompt, watch_tool_run_id, status, created_at)
              VALUES (?1, 'scheduled', ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 'waiting', datetime('now'))",
             rusqlite::params![
-                id,
+                tool_run_id,
                 due_at,
                 title,
                 body,
@@ -85,7 +85,7 @@ impl Database {
         )?;
         let rows = stmt.query_map([], |row| {
             Ok(ScheduledToolRunRow {
-                id: row.get(0)?,
+                tool_run_id: row.get(0)?,
                 due_at: row.get(1)?,
                 title: row.get(2)?,
                 body: row.get(3)?,
@@ -118,7 +118,7 @@ impl Database {
         )?;
         let rows = stmt.query_map([], |row| {
             Ok(ScheduledToolRunRow {
-                id: row.get(0)?,
+                tool_run_id: row.get(0)?,
                 due_at: row.get(1)?,
                 title: row.get(2)?,
                 body: row.get(3)?,
@@ -141,24 +141,28 @@ impl Database {
 
     /// Claim a scheduled ToolRun's trigger. Terminal rows remain durable history
     /// and are no longer re-armed on the next startup.
-    pub fn start_scheduled_tool_run(&self, id: &str, started_at: &str) -> anyhow::Result<bool> {
+    pub fn start_scheduled_tool_run(
+        &self,
+        tool_run_id: &str,
+        started_at: &str,
+    ) -> anyhow::Result<bool> {
         let conn = self.conn();
         let changed = conn.execute(
             "UPDATE tool_runs SET status = 'running', started_at = ?2
              WHERE id = ?1 AND kind = 'scheduled' AND status = 'waiting'",
-            rusqlite::params![id, started_at],
+            rusqlite::params![tool_run_id, started_at],
         )?;
         Ok(changed > 0)
     }
 
     /// Put a scheduled ToolRun back into its durable waiting state when its
     /// trigger could not be delivered to a live consumer.
-    pub fn requeue_scheduled_tool_run(&self, id: &str) -> anyhow::Result<bool> {
+    pub fn requeue_scheduled_tool_run(&self, tool_run_id: &str) -> anyhow::Result<bool> {
         let conn = self.conn();
         let changed = conn.execute(
             "UPDATE tool_runs SET status = 'waiting', started_at = NULL, finished_at = NULL
              WHERE id = ?1 AND kind = 'scheduled' AND status = 'running'",
-            rusqlite::params![id],
+            rusqlite::params![tool_run_id],
         )?;
         Ok(changed > 0)
     }
@@ -169,7 +173,7 @@ impl Database {
     /// path and does not create a second completion result.
     pub fn finish_scheduled_tool_run(
         &self,
-        id: &str,
+        tool_run_id: &str,
         status: ToolRunStatus,
         result_summary: Option<&str>,
         error_reason: Option<&str>,
@@ -189,7 +193,7 @@ impl Database {
                      result_summary = ?3, error_reason = ?4, finished_at = ?5
                  WHERE id = ?1 AND kind = 'scheduled' AND status = 'running'",
                 rusqlite::params![
-                    id,
+                    tool_run_id,
                     status.as_str(),
                     result_summary,
                     error_reason,
@@ -201,11 +205,11 @@ impl Database {
             }
             conn.execute(
                 "DELETE FROM kv_store WHERE key = ?1",
-                [scheduled_execution_claim_key(id)],
+                [scheduled_execution_claim_key(tool_run_id)],
             )?;
             if matches!(status, ToolRunStatus::Completed | ToolRunStatus::Failed) {
                 let mut status_json = json!({
-                    "tool_run_id": id,
+                    "tool_run_id": tool_run_id,
                     "status": status.as_str(),
                     "finished_at": finished_at,
                 });
@@ -228,7 +232,7 @@ impl Database {
                      SELECT id, id, session_id, ?2, ?3
                      FROM tool_runs
                      WHERE id = ?1 AND kind = 'scheduled' AND mode = 'tool' AND status = ?2",
-                    rusqlite::params![id, status.as_str(), status_json.to_string()],
+                    rusqlite::params![tool_run_id, status.as_str(), status_json.to_string()],
                 )?;
             }
             Ok::<_, anyhow::Error>(true)
@@ -249,7 +253,7 @@ impl Database {
     /// producer. This projection is intentionally separate from UI/history.
     pub fn get_tool_run_dependency(
         &self,
-        id: &str,
+        tool_run_id: &str,
     ) -> anyhow::Result<Option<ToolRunDependencyRow>> {
         let conn = self.conn();
         let mut stmt = conn.prepare(
@@ -262,7 +266,7 @@ impl Database {
                     END
              FROM tool_runs WHERE id = ?1",
         )?;
-        let mut rows = stmt.query_map([id], |row| {
+        let mut rows = stmt.query_map([tool_run_id], |row| {
             Ok(ToolRunDependencyRow {
                 status: ToolRunStatus::from_status_str(&row.get::<_, String>(0)?),
                 result: row.get(1)?,
@@ -274,14 +278,18 @@ impl Database {
     /// Cancel a waiting or currently-running scheduled ToolRun while retaining
     /// its terminal history. An accepted confirmation's durable execution
     /// claim makes cancellation ineligible before this CAS runs.
-    pub fn cancel_scheduled_tool_run(&self, id: &str, finished_at: &str) -> anyhow::Result<bool> {
+    pub fn cancel_scheduled_tool_run(
+        &self,
+        tool_run_id: &str,
+        finished_at: &str,
+    ) -> anyhow::Result<bool> {
         let conn = self.conn();
-        let claim_key = scheduled_execution_claim_key(id);
+        let claim_key = scheduled_execution_claim_key(tool_run_id);
         let changed = conn.execute(
             "UPDATE tool_runs SET status = 'cancelled', finished_at = ?2
              WHERE id = ?1 AND kind = 'scheduled' AND status IN ('waiting', 'running')
                AND NOT EXISTS (SELECT 1 FROM kv_store WHERE key = ?3)",
-            rusqlite::params![id, finished_at, claim_key],
+            rusqlite::params![tool_run_id, finished_at, claim_key],
         )?;
         Ok(changed > 0)
     }
@@ -292,18 +300,18 @@ impl Database {
     /// checked under one SQLite writer transaction.
     pub fn claim_scheduled_tool_run_execution(
         &self,
-        id: &str,
+        tool_run_id: &str,
         request_id: &str,
     ) -> anyhow::Result<bool> {
         anyhow::ensure!(!request_id.trim().is_empty(), "request ID is required");
         let conn = self.conn();
-        let key = scheduled_execution_claim_key(id);
+        let key = scheduled_execution_claim_key(tool_run_id);
         conn.execute_batch("BEGIN IMMEDIATE")?;
         let result = (|| -> anyhow::Result<bool> {
             let status: Option<String> = conn
                 .query_row(
                     "SELECT status FROM tool_runs WHERE id = ?1 AND kind = 'scheduled'",
-                    [id],
+                    [tool_run_id],
                     |row| row.get(0),
                 )
                 .optional()?;
@@ -342,11 +350,11 @@ impl Database {
     /// grant persistence fails. A different request's claim is never removed.
     pub fn release_scheduled_tool_run_execution_claim(
         &self,
-        id: &str,
+        tool_run_id: &str,
         request_id: &str,
     ) -> anyhow::Result<bool> {
         let conn = self.conn();
-        let key = scheduled_execution_claim_key(id);
+        let key = scheduled_execution_claim_key(tool_run_id);
         conn.execute_batch("BEGIN IMMEDIATE")?;
         let result = (|| -> anyhow::Result<bool> {
             let existing: Option<String> = conn
@@ -379,7 +387,7 @@ impl Database {
     /// of leaving it invisible to the pending-ToolRun query forever.
     pub fn fail_waiting_scheduled_tool_run(
         &self,
-        id: &str,
+        tool_run_id: &str,
         error_reason: &str,
         finished_at: &str,
     ) -> anyhow::Result<bool> {
@@ -387,7 +395,7 @@ impl Database {
         let changed = conn.execute(
             "UPDATE tool_runs SET status = 'failed', error_reason = ?2, finished_at = ?3
              WHERE id = ?1 AND kind = 'scheduled' AND status = 'waiting'",
-            rusqlite::params![id, error_reason, finished_at],
+            rusqlite::params![tool_run_id, error_reason, finished_at],
         )?;
         Ok(changed > 0)
     }
@@ -400,7 +408,7 @@ impl Database {
 /// exit_code/started_at/finished_at). `status` is authoritative for both kinds.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ToolRunRow {
-    pub id: String,
+    pub tool_run_id: String,
     pub kind: String,
     pub due_at: Option<String>,
     pub title: String,
@@ -436,7 +444,7 @@ const TOOL_RUN_COLUMNS: &str = "id, kind, due_at, title, body, mode, session_id,
 
 fn row_to_tool_run(row: &rusqlite::Row<'_>) -> rusqlite::Result<ToolRunRow> {
     Ok(ToolRunRow {
-        id: row.get(0)?,
+        tool_run_id: row.get(0)?,
         kind: row.get(1)?,
         due_at: row.get(2)?,
         title: row.get(3)?,
@@ -467,18 +475,18 @@ impl Database {
     /// because each kind owns its own payload fields.
     pub fn save_tool_run(
         &self,
-        id: &str,
+        tool_run_id: &str,
         session_id: Option<&str>,
         command: &str,
         started_at: &str,
     ) -> anyhow::Result<()> {
-        self.save_tool_run_with_source(id, session_id, command, started_at, None)
+        self.save_tool_run_with_source(tool_run_id, session_id, command, started_at, None)
     }
 
     /// Persist a background ToolRun with its originating Agent tool step.
     pub fn save_tool_run_with_source(
         &self,
-        id: &str,
+        tool_run_id: &str,
         session_id: Option<&str>,
         command: &str,
         started_at: &str,
@@ -488,26 +496,30 @@ impl Database {
         conn.execute(
             "INSERT INTO tool_runs (id, kind, session_id, source_step_id, command, status, started_at, created_at)
              VALUES (?1, 'background', ?2, ?3, ?4, 'running', ?5, datetime('now'))",
-            rusqlite::params![id, session_id, source_step_id, command, started_at],
+            rusqlite::params![tool_run_id, session_id, source_step_id, command, started_at],
         )?;
         Ok(())
     }
 
     /// Record the owning session of a background ToolRun (arrives after spawn via
     /// the tool manager's session binding).
-    pub fn update_tool_run_session(&self, id: &str, session_id: &str) -> anyhow::Result<()> {
+    pub fn update_tool_run_session(
+        &self,
+        tool_run_id: &str,
+        session_id: &str,
+    ) -> anyhow::Result<()> {
         let conn = self.conn();
         conn.execute_batch("BEGIN IMMEDIATE")?;
         let result = (|| {
             conn.execute(
                 "UPDATE tool_runs SET session_id = ?2 WHERE id = ?1 AND kind = 'background'",
-                rusqlite::params![id, session_id],
+                rusqlite::params![tool_run_id, session_id],
             )?;
             conn.execute(
                 "UPDATE tool_run_completion_outbox
                  SET session_id = ?2, claimed_until = NULL, delivered_at = NULL
                  WHERE tool_run_id = ?1 AND session_id IS NULL",
-                rusqlite::params![id, session_id],
+                rusqlite::params![tool_run_id, session_id],
             )?;
             Ok::<_, anyhow::Error>(())
         })();
@@ -529,7 +541,7 @@ impl Database {
     #[allow(clippy::too_many_arguments)]
     pub fn finish_tool_run(
         &self,
-        id: &str,
+        tool_run_id: &str,
         status: ToolRunStatus,
         output: Option<&str>,
         error: Option<&str>,
@@ -549,7 +561,7 @@ impl Database {
                  log_path = ?6, exit_code = ?7, finished_at = ?8
              WHERE id = ?1 AND kind = 'background' AND status = 'running'",
             rusqlite::params![
-                id,
+                tool_run_id,
                 status.as_str(),
                 output,
                 error,
@@ -565,13 +577,17 @@ impl Database {
     /// Persist cancellation of a running background ToolRun. Cancellation has
     /// no transcript completion outbox entry, but still competes with process
     /// completion for the same single terminal transition.
-    pub fn cancel_background_tool_run(&self, id: &str, finished_at: &str) -> anyhow::Result<bool> {
+    pub fn cancel_background_tool_run(
+        &self,
+        tool_run_id: &str,
+        finished_at: &str,
+    ) -> anyhow::Result<bool> {
         let conn = self.conn();
         let changed = conn.execute(
             "UPDATE tool_runs
              SET status = 'cancelled', finished_at = ?2
              WHERE id = ?1 AND kind = 'background' AND status = 'running'",
-            rusqlite::params![id, finished_at],
+            rusqlite::params![tool_run_id, finished_at],
         )?;
         Ok(changed > 0)
     }
@@ -582,7 +598,7 @@ impl Database {
     #[allow(clippy::too_many_arguments)]
     pub fn finish_tool_run_with_completion(
         &self,
-        id: &str,
+        tool_run_id: &str,
         status: ToolRunStatus,
         output: Option<&str>,
         error: Option<&str>,
@@ -605,7 +621,7 @@ impl Database {
                      log_path = ?6, exit_code = ?7, finished_at = ?8
                  WHERE id = ?1 AND kind = 'background' AND status = 'running'",
                 rusqlite::params![
-                    id,
+                    tool_run_id,
                     status.as_str(),
                     output,
                     error,
@@ -624,7 +640,7 @@ impl Database {
                  SELECT id, id, session_id, ?2, ?3
                  FROM tool_runs
                  WHERE id = ?1 AND kind = 'background' AND status = ?2",
-                rusqlite::params![id, status.as_str(), status_json],
+                rusqlite::params![tool_run_id, status.as_str(), status_json],
             )?;
             Ok::<_, anyhow::Error>(true)
         })();
@@ -670,18 +686,18 @@ impl Database {
         Ok(out)
     }
 
-    /// One persisted ToolRun by id (either kind).
-    pub fn get_tool_run(&self, id: &str) -> anyhow::Result<Option<ToolRunRow>> {
+    /// One persisted ToolRun by `tool_run_id` (either kind).
+    pub fn get_tool_run(&self, tool_run_id: &str) -> anyhow::Result<Option<ToolRunRow>> {
         let conn = self.conn();
         let mut stmt = conn.prepare(&format!(
             "SELECT {TOOL_RUN_COLUMNS} FROM tool_runs WHERE id = ?1"
         ))?;
-        let mut rows = stmt.query_map([id], row_to_tool_run)?;
+        let mut rows = stmt.query_map([tool_run_id], row_to_tool_run)?;
         rows.next().transpose().map_err(Into::into)
     }
 
-    /// Remove a persisted ToolRun (background or scheduled) by id.
-    pub fn delete_tool_run(&self, id: &str) -> anyhow::Result<bool> {
+    /// Remove a persisted ToolRun (background or scheduled) by `tool_run_id`.
+    pub fn delete_tool_run(&self, tool_run_id: &str) -> anyhow::Result<bool> {
         // Rebuild a missing background completion row before deciding whether
         // history is deletable. The delete predicate and acknowledgement both
         // run as SQLite writer statements, so they cannot race into deleting
@@ -696,7 +712,7 @@ impl Database {
                    FROM tool_run_completion_outbox
                    WHERE tool_run_id = ?1 AND delivered_at IS NULL
                )",
-            rusqlite::params![id],
+            rusqlite::params![tool_run_id],
         )?;
         Ok(changed > 0)
     }
@@ -709,7 +725,7 @@ impl Database {
         let conn = self.conn();
         conn.execute_batch("BEGIN IMMEDIATE")?;
         let result = (|| -> anyhow::Result<Vec<String>> {
-            let ids = {
+            let tool_run_ids = {
                 let mut stmt = conn.prepare(
                     "SELECT id FROM tool_runs
                      WHERE status IN ('completed', 'failed', 'cancelled')
@@ -721,8 +737,8 @@ impl Database {
                 let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
                 rows.collect::<Result<Vec<_>, _>>()?
             };
-            let mut deleted = Vec::with_capacity(ids.len());
-            for id in ids {
+            let mut deleted_tool_run_ids = Vec::with_capacity(tool_run_ids.len());
+            for tool_run_id in tool_run_ids {
                 let changed = conn.execute(
                     "DELETE FROM tool_runs
                      WHERE id = ?1 AND status IN ('completed', 'failed', 'cancelled')
@@ -730,18 +746,18 @@ impl Database {
                            SELECT 1 FROM tool_run_completion_outbox
                            WHERE tool_run_id = ?1 AND delivered_at IS NULL
                        )",
-                    rusqlite::params![id],
+                    rusqlite::params![tool_run_id],
                 )?;
                 if changed > 0 {
-                    deleted.push(id);
+                    deleted_tool_run_ids.push(tool_run_id);
                 }
             }
-            Ok(deleted)
+            Ok(deleted_tool_run_ids)
         })();
         match result {
-            Ok(ids) => {
+            Ok(deleted_tool_run_ids) => {
                 conn.execute_batch("COMMIT")?;
-                Ok(ids)
+                Ok(deleted_tool_run_ids)
             }
             Err(error) => {
                 let _ = conn.execute_batch("ROLLBACK");
@@ -842,16 +858,16 @@ mod tests {
         let pending = db.list_pending_scheduled_tool_runs().unwrap();
         assert_eq!(pending.len(), 3);
         // Ordered by due_at ascending.
-        assert_eq!(pending[0].id, "toolrun-2");
+        assert_eq!(pending[0].tool_run_id, "toolrun-2");
         assert_eq!(pending[0].body, "stand up");
         assert_eq!(pending[0].mode, "continue");
         assert_eq!(pending[0].session_id.as_deref(), Some("ses-7"));
         assert_eq!(pending[0].prompt.as_deref(), Some("check the weather"));
-        assert_eq!(pending[1].id, "toolrun-1");
+        assert_eq!(pending[1].tool_run_id, "toolrun-1");
         assert_eq!(pending[1].mode, "tool");
         assert_eq!(pending[1].tool_name.as_deref(), Some("notify"));
         assert_eq!(pending[1].prompt, None);
-        assert_eq!(pending[2].id, "toolrun-3");
+        assert_eq!(pending[2].tool_run_id, "toolrun-3");
         assert_eq!(pending[2].mode, "tool");
         assert_eq!(pending[2].tool_name.as_deref(), Some("files"));
         assert!(pending[2].tool_args.as_deref().unwrap().contains("read"));
@@ -911,7 +927,7 @@ mod tests {
 
         let pending = db.list_pending_scheduled_tool_runs().unwrap();
         let continuation = pending.first().unwrap();
-        assert_eq!(continuation.id, continuation_id);
+        assert_eq!(continuation.tool_run_id, continuation_id);
         assert!(continuation.due_at.is_empty());
         assert_eq!(
             continuation.watch_tool_run_id.as_deref(),
@@ -1072,7 +1088,10 @@ mod tests {
         let rows = db
             .list_tool_runs_for_session(None, Some(&session_id))
             .unwrap();
-        let ids = rows.into_iter().map(|row| row.id).collect::<Vec<_>>();
+        let ids = rows
+            .into_iter()
+            .map(|row| row.tool_run_id)
+            .collect::<Vec<_>>();
         assert_eq!(ids.len(), 2);
         assert!(ids.contains(&background_id));
         assert!(ids.contains(&scheduled_id));
@@ -1367,14 +1386,20 @@ mod tests {
         assert_eq!(backgrounds.len(), 2);
         assert!(db.list_tool_runs(Some("scheduled")).unwrap().is_empty());
 
-        let finished = backgrounds.iter().find(|a| a.id == "toolrun-1").unwrap();
+        let finished = backgrounds
+            .iter()
+            .find(|row| row.tool_run_id == "toolrun-1")
+            .unwrap();
         assert_eq!(finished.status, ToolRunStatus::Completed);
         assert_eq!(finished.output.as_deref(), Some("hello"));
         assert_eq!(finished.exit_code, Some(0));
         assert_eq!(finished.session_id.as_deref(), Some("ses-9"));
         assert!(finished.finished_at.is_some());
 
-        let failed = backgrounds.iter().find(|a| a.id == "toolrun-2").unwrap();
+        let failed = backgrounds
+            .iter()
+            .find(|row| row.tool_run_id == "toolrun-2")
+            .unwrap();
         assert_eq!(failed.status, ToolRunStatus::Failed);
         assert_eq!(failed.session_id.as_deref(), Some("ses-9"));
         assert_eq!(
@@ -1567,7 +1592,7 @@ mod tests {
         // ToolRun listing still surfaces the completed scheduled ToolRun as history.
         let scheduled = db.list_tool_runs(Some("scheduled")).unwrap();
         assert_eq!(scheduled.len(), 1);
-        assert_eq!(scheduled[0].id, "toolrun-1");
+        assert_eq!(scheduled[0].tool_run_id, "toolrun-1");
         assert_eq!(scheduled[0].status, ToolRunStatus::Completed);
         assert_eq!(scheduled[0].kind, "scheduled");
     }
@@ -1614,7 +1639,10 @@ mod tests {
             .filter(|a| a.status == ToolRunStatus::Running)
             .count();
         assert_eq!(running_left, 0);
-        let j2 = backgrounds.iter().find(|a| a.id == "toolrun-2").unwrap();
+        let j2 = backgrounds
+            .iter()
+            .find(|row| row.tool_run_id == "toolrun-2")
+            .unwrap();
         assert_eq!(j2.status, ToolRunStatus::Failed);
         assert!(j2.error_reason.as_deref().unwrap().contains("restarted"));
         let scheduled = db.get_tool_run("toolrun-3").unwrap().unwrap();

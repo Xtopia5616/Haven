@@ -81,18 +81,18 @@ describe('sessionTimeline grouping', () => {
 				type: 'tool',
 				stepNumber: 4,
 				toolName: 'schedule.set',
-				content: '{"operation":"set","id":"toolrun-scheduled"}',
+				content: '{"operation":"set","tool_run_id":"toolrun-scheduled"}',
 			}),
 		];
 		const toolRuns = [
 			{
-				id: 'toolrun-background',
+				toolRunId: 'toolrun-background',
 				kind: 'background' as const,
 				status: 'running' as const,
 				sessionId: 'ses-1',
 			},
 			{
-				id: 'toolrun-scheduled',
+				toolRunId: 'toolrun-scheduled',
 				kind: 'scheduled' as const,
 				status: 'waiting' as const,
 				sessionId: 'ses-1',
@@ -114,7 +114,7 @@ describe('sessionTimeline grouping', () => {
 		});
 		expect(items[1]).toMatchObject({
 			kind: 'tool_run',
-			toolRun: { id: 'toolrun-scheduled', kind: 'scheduled' },
+			toolRun: { toolRunId: 'toolrun-scheduled', kind: 'scheduled' },
 			awaitingBackgroundResult: false,
 		});
 	});
@@ -135,7 +135,7 @@ describe('sessionTimeline grouping', () => {
 		];
 		const items = groupSessionTimeline(messages, {
 			toolRuns: [{
-				id: 'toolrun-source',
+				toolRunId: 'toolrun-source',
 				kind: 'background',
 				sourceStepId: 'stable-source-step',
 			}],
@@ -147,7 +147,7 @@ describe('sessionTimeline grouping', () => {
 
 	it('keeps unanchored toolRuns in the owning session timeline and emits one wait fallback', () => {
 		const toolRun = {
-			id: 'toolrun-unanchored',
+			toolRunId: 'toolrun-unanchored',
 			kind: 'background' as const,
 			status: 'running' as const,
 			sessionId: 'ses-1',
@@ -161,7 +161,7 @@ describe('sessionTimeline grouping', () => {
 		expect(items.map((item) => item.kind)).toEqual(['message', 'tool_run']);
 		expect(items[1]).toMatchObject({
 			kind: 'tool_run',
-			toolRun: { id: 'toolrun-unanchored' },
+			toolRun: { toolRunId: 'toolrun-unanchored' },
 			awaitingBackgroundResult: true,
 		});
 
@@ -179,9 +179,9 @@ describe('sessionTimeline grouping', () => {
 		expect(
 			firstWaitingBackgroundToolRunId(
 				[
-					{ id: 'toolrun-later', kind: 'background', status: 'running', startedAt: '2026-10-06T11:00:00Z' },
-					{ id: 'toolrun-scheduled', kind: 'scheduled', status: 'waiting' },
-					{ id: 'toolrun-earlier', kind: 'background', status: 'running', startedAt: '2026-10-06T10:00:00Z' },
+					{ toolRunId: 'toolrun-later', kind: 'background', status: 'running', startedAt: '2026-10-06T11:00:00Z' },
+					{ toolRunId: 'toolrun-scheduled', kind: 'scheduled', status: 'waiting' },
+					{ toolRunId: 'toolrun-earlier', kind: 'background', status: 'running', startedAt: '2026-10-06T10:00:00Z' },
 				],
 				true,
 			),
@@ -191,7 +191,7 @@ describe('sessionTimeline grouping', () => {
 
 	it('folds a terminal background result into its source tool card without a duplicate ToolRun card', () => {
 		const toolRun = {
-			id: 'toolrun-finished',
+			toolRunId: 'toolrun-finished',
 			kind: 'background' as const,
 			status: 'completed' as const,
 			sessionId: 'ses-1',
@@ -200,10 +200,10 @@ describe('sessionTimeline grouping', () => {
 		const transcriptResult = message('tool-finished', {
 			type: 'tool',
 			toolRunId: null,
-			sourceToolRunId: toolRun.id,
+			sourceToolRunId: toolRun.toolRunId,
 			content: JSON.stringify({
 				execution_mode: 'background',
-				tool_run_id: toolRun.id,
+				tool_run_id: toolRun.toolRunId,
 				status: 'completed',
 				output: toolRun.output,
 			}),
@@ -213,13 +213,13 @@ describe('sessionTimeline grouping', () => {
 		expect(items).toHaveLength(1);
 		expect(items[0]).toMatchObject({
 			kind: 'activity',
-			entries: [{ message: { id: 'tool-finished', sourceToolRunId: toolRun.id } }],
+			entries: [{ message: { id: 'tool-finished', sourceToolRunId: toolRun.toolRunId } }],
 		});
 	});
 
 	it('keeps terminal detail on the source tool card until the transcript receives it', () => {
 		const toolRun = {
-			id: 'toolrun-unprojected',
+			toolRunId: 'toolrun-unprojected',
 			kind: 'background' as const,
 			status: 'failed' as const,
 			sessionId: 'ses-1',
@@ -227,8 +227,8 @@ describe('sessionTimeline grouping', () => {
 		};
 		const source = message('tool-unprojected', {
 			type: 'tool',
-			toolRunId: toolRun.id,
-			sourceToolRunId: toolRun.id,
+			toolRunId: toolRun.toolRunId,
+			sourceToolRunId: toolRun.toolRunId,
 			content: '{"background":true,"status":"running"}',
 		});
 		const items = groupSessionTimeline([source], { toolRuns: [toolRun] });
@@ -236,7 +236,7 @@ describe('sessionTimeline grouping', () => {
 		expect(items).toHaveLength(1);
 		expect(items[0]).toMatchObject({
 			kind: 'activity',
-			entries: [{ message: { id: 'tool-unprojected', toolRunId: toolRun.id } }],
+			entries: [{ message: { id: 'tool-unprojected', toolRunId: toolRun.toolRunId } }],
 		});
 	});
 });

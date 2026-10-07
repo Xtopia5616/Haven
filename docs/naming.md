@@ -1,6 +1,6 @@
 # Haven 命名规范
 
-> 版本: v1.129 | 日期: 2026-10-07
+> 版本: v1.130 | 日期: 2026-10-07
 
 本文档统一 Haven 项目各层的命名规则（变量名、函数名、文件名、crate 名、缩写大小写、跨层边界）。规范以现有代码中的事实模式为基础，新代码必须遵循；存量代码若与规范冲突，逐步迁移对齐。
 
@@ -270,6 +270,8 @@ Common 媒体探测 helper 和变量以 `mime_type` 表示 MIME 字符串，探�
 
 ### ID 规范
 实体 ID 统一 `{prefix}-{uuid32}`，一律用 `haven_common::types::new_id(prefix)`，禁止手拼。完整前缀表见 `AGENTS.md`.
+
+- ToolRun 身份字段在 Rust 类型、事件与 JSON 结果中统一命名 `tool_run_id`；前端 IPC/view DTO 只在边界映射为 `toolRunId`，不再接受或输出泛名 `id` 别名。数据库物理列 `tool_runs.id` 保持不变，Repository 行字段命名 `tool_run_id`。Tauri event envelope 的数值 `event.id` 是另一实体，继续保留原名。
 
 ---
 

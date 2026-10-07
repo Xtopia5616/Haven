@@ -5,15 +5,14 @@
 	interface Props {
 		data?: {
 			operation?: string;
-			cancelled?: string | number | boolean;
+			tool_run_id?: string;
 			scheduled_tool_runs?: Array<{
-				id: string;
+				tool_run_id: string;
 				title?: string;
 				body?: string;
 				mode?: string;
 				fires_at?: string;
 			}>;
-			id?: string;
 			mode?: string;
 			fires_at?: string;
 			title?: string;
@@ -32,7 +31,7 @@
 {#if operation === 'cancel'}
 	<div class="tool-run-row">
 		<span class="scheduled-mode">已取消</span>
-		{#if data.cancelled}<span class="tool-run-id">#{data.cancelled}</span>{/if}
+		{#if data.tool_run_id}<span class="tool-run-id">#{data.tool_run_id}</span>{/if}
 	</div>
 {:else if Array.isArray(data.scheduled_tool_runs)}
 	<div class="tool-result-label">{data.scheduled_tool_runs.length} 条定时任务</div>
@@ -40,7 +39,7 @@
 		<ToolResultList items={data.scheduled_tool_runs}>
 			{#snippet children(visibleToolRuns)}
 				<div class="tool-result-scroll-area">
-					{#each visibleToolRuns as toolRun (toolRun.id)}
+					{#each visibleToolRuns as toolRun (toolRun.tool_run_id)}
 						<div class="scheduled-row">
 							<span class="scheduled-title"
 								>{toolRunTitle({
@@ -61,9 +60,9 @@
 	{:else}
 		<p class="tool-result-message">没有待触发的定时任务</p>
 	{/if}
-{:else if operation === 'set' || (data.id && data.mode)}
+{:else if operation === 'set' || (data.tool_run_id && data.mode)}
 	<div class="tool-run-row">
-		<span class="tool-run-id">#{data.id}</span>
+		<span class="tool-run-id">#{data.tool_run_id}</span>
 		<span class="scheduled-mode">{scheduleModeLabel(data.mode)}</span>
 	</div>
 	{#if data.fires_at}

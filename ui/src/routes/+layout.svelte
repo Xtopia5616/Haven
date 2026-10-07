@@ -1129,13 +1129,13 @@
 							if (p.status === 'cancelled') {
 								appSessionReducer.dispatch({
 									type: 'session/scheduled-tool-run-cancelled',
-									toolRunId: p.id,
+									toolRunId: p.toolRunId,
 								});
 							}
 							upsertSessionToolRun(p);
 							// Scheduled ToolRuns leave the pending list at terminal state;
 							// execution notifications arrive through `notification:show`.
-							removeToolRun(p.id);
+							removeToolRun(p.toolRunId);
 						}
 					},
 				}),

@@ -133,7 +133,7 @@ pub(crate) struct ScheduledToolRunEntry {
 }
 
 struct ScheduledTerminalRetry {
-    id: String,
+    tool_run_id: String,
     schedule: ScheduledToolRunEntry,
     started_at: String,
     status: ToolRunStatus,
@@ -1479,15 +1479,17 @@ impl ToolRunService {
             match store.list_live_scheduled_tool_runs().await {
                 Ok(rows) => {
                     for row in rows.into_iter().filter(|row| {
-                        row.session_id.as_deref() == Some(session_id) && !live_ids.contains(&row.id)
+                        row.session_id.as_deref() == Some(session_id)
+                            && !live_ids.contains(&row.tool_run_id)
                     }) {
-                        if let Err(error) =
-                            self.cancel_untracked_scheduled_row(&store, &row.id).await
+                        if let Err(error) = self
+                            .cancel_untracked_scheduled_row(&store, &row.tool_run_id)
+                            .await
                         {
                             first_error.get_or_insert_with(|| {
                                 error.context(format!(
                                     "failed to cancel untracked scheduled ToolRun {}",
-                                    row.id
+                                    row.tool_run_id
                                 ))
                             });
                         }
@@ -1603,7 +1605,7 @@ impl ToolRunService {
         let now = chrono::Utc::now();
         let mut overdue_tool_run_ids = Vec::new();
         for row in rows {
-            if self.tool_runs.read().await.contains_key(&row.id) {
+            if self.tool_runs.read().await.contains_key(&row.tool_run_id) {
                 continue;
             }
             let watch_tool_run_id = row
@@ -1613,9 +1615,9 @@ impl ToolRunService {
                 .filter(|id| !id.is_empty())
                 .map(str::to_string);
             if row.watch_tool_run_id.is_some() && watch_tool_run_id.is_none() {
-                tracing::warn!(tool_run_id = %row.id, "skipping scheduled ToolRun with empty dependency id");
+                tracing::warn!(tool_run_id = %row.tool_run_id, "skipping scheduled ToolRun with empty dependency id");
                 self.quarantine_invalid_scheduled_row(
-                    &row.id,
+                    &row.tool_run_id,
                     "定时任务依赖 ID 无效，已隔离为失败",
                 )
                 .await;
@@ -1623,9 +1625,9 @@ impl ToolRunService {
             }
             let due = if watch_tool_run_id.is_some() {
                 if !row.due_at.trim().is_empty() {
-                    tracing::warn!(tool_run_id = %row.id, "skipping scheduled ToolRun with both timer and dependency triggers");
+                    tracing::warn!(tool_run_id = %row.tool_run_id, "skipping scheduled ToolRun with both timer and dependency triggers");
                     self.quarantine_invalid_scheduled_row(
-                        &row.id,
+                        &row.tool_run_id,
                         "定时任务触发器配置冲突，已隔离为失败",
                     )
                     .await;
@@ -1636,9 +1638,9 @@ impl ToolRunService {
                 match chrono::DateTime::parse_from_rfc3339(&row.due_at) {
                     Ok(value) => Some(value.with_timezone(&chrono::Utc)),
                     Err(error) => {
-                        tracing::warn!(tool_run_id = %row.id, "skipping scheduled ToolRun with invalid due_at: {error}");
+                        tracing::warn!(tool_run_id = %row.tool_run_id, "skipping scheduled ToolRun with invalid due_at: {error}");
                         self.quarantine_invalid_scheduled_row(
-                            &row.id,
+                            &row.tool_run_id,
                             "定时任务 due_at 无效，已隔离为失败",
                         )
                         .await;
@@ -1647,18 +1649,21 @@ impl ToolRunService {
                 }
             };
             let Some(mode) = ScheduleMode::parse(&row.mode) else {
-                tracing::warn!(tool_run_id = %row.id, "skipping scheduled ToolRun with invalid mode");
-                self.quarantine_invalid_scheduled_row(&row.id, "定时任务 mode 无效，已隔离为失败")
-                    .await;
+                tracing::warn!(tool_run_id = %row.tool_run_id, "skipping scheduled ToolRun with invalid mode");
+                self.quarantine_invalid_scheduled_row(
+                    &row.tool_run_id,
+                    "定时任务 mode 无效，已隔离为失败",
+                )
+                .await;
                 continue;
             };
             let tool_args = match row.tool_args.as_deref() {
                 Some(value) => match serde_json::from_str(value) {
                     Ok(value) => Some(value),
                     Err(error) => {
-                        tracing::warn!(tool_run_id = %row.id, "skipping scheduled ToolRun with invalid tool_args: {error}");
+                        tracing::warn!(tool_run_id = %row.tool_run_id, "skipping scheduled ToolRun with invalid tool_args: {error}");
                         self.quarantine_invalid_scheduled_row(
-                            &row.id,
+                            &row.tool_run_id,
                             "定时任务 tool_args 无效，已隔离为失败",
                         )
                         .await;
@@ -1688,12 +1693,12 @@ impl ToolRunService {
             };
             if !valid_payload {
                 tracing::warn!(
-                    tool_run_id = %row.id,
+                    tool_run_id = %row.tool_run_id,
                     mode = %row.mode,
                     "skipping scheduled ToolRun with missing mode-specific payload"
                 );
                 self.quarantine_invalid_scheduled_row(
-                    &row.id,
+                    &row.tool_run_id,
                     "定时任务缺少 mode 所需载荷，已隔离为失败",
                 )
                 .await;
@@ -1710,7 +1715,7 @@ impl ToolRunService {
                 watch_tool_run_id: watch_tool_run_id.clone(),
             };
             let timer_entry = entry.clone();
-            let id = row.id;
+            let id = row.tool_run_id;
             let session_id = row.session_id;
             self.tool_runs.write().await.insert(
                 id.clone(),

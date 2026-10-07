@@ -56,10 +56,11 @@ function trimSessionToolRuns(entries: Record<string, ToolRunPayload>) {
 	const newest = Object.values(entries)
 		.sort(
 			(left, right) =>
-				toolRunRecency(right).localeCompare(toolRunRecency(left)) || right.id.localeCompare(left.id),
+				toolRunRecency(right).localeCompare(toolRunRecency(left)) ||
+				right.toolRunId.localeCompare(left.toolRunId),
 		)
 		.slice(0, SESSION_TOOL_RUN_MAX);
-	return Object.fromEntries(newest.map((entry) => [entry.id, entry]));
+	return Object.fromEntries(newest.map((entry) => [entry.toolRunId, entry]));
 }
 
 function touchSessionToolRunCache(
@@ -95,7 +96,7 @@ export function setActiveSessionToolRun(sessionId: string | null) {
 
 /** Keep a lifecycle event in the owning session's timeline cache. */
 export function upsertSessionToolRun(payload: ToolRunPayload) {
-	if (!payload.id || !payload.sessionId) return;
+	if (!payload.toolRunId || !payload.sessionId) return;
 	sessionToolRunVersions.set(
 		payload.sessionId,
 		(sessionToolRunVersions.get(payload.sessionId) || 0) + 1,
@@ -104,7 +105,7 @@ export function upsertSessionToolRun(payload: ToolRunPayload) {
 		const entries = current[payload.sessionId!] || {};
 		return touchSessionToolRunCache(current, payload.sessionId!, {
 			...entries,
-			[payload.id]: { ...entries[payload.id], ...payload },
+			[payload.toolRunId]: { ...entries[payload.toolRunId], ...payload },
 		});
 	});
 }
@@ -121,7 +122,7 @@ export async function refreshSessionToolRuns(sessionId: string) {
 		sessionToolRunStore.update((current) => {
 			const nextRows: Record<string, ToolRunPayload> = {};
 			for (const row of rows) {
-				if (row.sessionId === sessionId) nextRows[row.id] = row;
+				if (row.sessionId === sessionId) nextRows[row.toolRunId] = row;
 			}
 			// Keep events received after the DB read began; they may be newer than
 			// the command response or not persisted yet.
@@ -140,7 +141,7 @@ export async function refreshSessionToolRuns(sessionId: string) {
 }
 
 export function upsertToolRun(payload: ToolRunPayload) {
-	const key = payload.id;
+	const key = payload.toolRunId;
 	if (!key) return;
 	toolRunStateVersion++;
 	toolRunStore.update((current) => {
@@ -154,13 +155,13 @@ export function upsertToolRun(payload: ToolRunPayload) {
 }
 
 /** Drop a ToolRun removed from the live board by a terminal lifecycle event. */
-export function removeToolRun(id: string) {
-	if (!id) return;
+export function removeToolRun(toolRunId: string) {
+	if (!toolRunId) return;
 	toolRunStateVersion++;
 	toolRunStore.update((current) => {
-		if (!(id in current)) return current;
+		if (!(toolRunId in current)) return current;
 		const next = { ...current };
-		delete next[id];
+		delete next[toolRunId];
 		return next;
 	});
 }
@@ -182,11 +183,11 @@ export async function refreshToolRuns() {
 					logger.warn('toolRunStore', 'Dropping malformed toolRun board row');
 					continue;
 				}
-				const key = row.id;
+				const key = row.toolRunId;
 				const merged: ToolRunPayload = {
 					...(current[key] || {}),
 					...row,
-					id: key,
+					toolRunId: key,
 				};
 				// Terminal background ToolRuns do not belong in the live registry.
 				if (merged.kind === 'background' && merged.status && merged.status !== 'running') {
@@ -205,8 +206,8 @@ export async function refreshToolRuns() {
 	}
 }
 
-export async function cancelToolRun(id: string, kind: ToolRunKind = 'background') {
-	return cancelToolRunCommand({ toolRunId: id, kind });
+export async function cancelToolRun(toolRunId: string, kind: ToolRunKind = 'background') {
+	return cancelToolRunCommand({ toolRunId, kind });
 }
 
 /**
@@ -220,7 +221,7 @@ export function finalizeBackgroundToolRunMessages(payload: ToolRunPayload) {
 	appSessionReducer.dispatch({
 		type: 'session/background-result',
 		sessionId: payload.sessionId,
-		toolRunId: payload.id,
+		toolRunId: payload.toolRunId,
 		content,
 	});
 }

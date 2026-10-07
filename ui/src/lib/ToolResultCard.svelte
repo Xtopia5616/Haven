@@ -145,7 +145,7 @@
 		toolRunId
 			? {
 					...($toolRunStore[toolRunId] || {}),
-					...(toolRunData?.id === toolRunId ? toolRunData : {}),
+					...(toolRunData?.toolRunId === toolRunId ? toolRunData : {}),
 				}
 			: null,
 	);

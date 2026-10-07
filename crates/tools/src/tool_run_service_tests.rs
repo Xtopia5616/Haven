@@ -646,7 +646,7 @@ async fn persisted_tool_run_query_uses_bound_database_kind_filter_and_order() {
     assert_eq!(
         background
             .iter()
-            .map(|row| row.id.as_str())
+            .map(|row| row.tool_run_id.as_str())
             .collect::<Vec<_>>(),
         [
             "toolrun-00000000000000000000000000000002",
@@ -659,7 +659,10 @@ async fn persisted_tool_run_query_uses_bound_database_kind_filter_and_order() {
         .await
         .unwrap();
     assert_eq!(scheduled.len(), 1);
-    assert_eq!(scheduled[0].id, "toolrun-00000000000000000000000000000003");
+    assert_eq!(
+        scheduled[0].tool_run_id,
+        "toolrun-00000000000000000000000000000003"
+    );
 }
 
 /// Spawn the two fixture echo ToolRuns (`tool-run-a` / `tool-run-b`) and attach them to
@@ -960,7 +963,7 @@ async fn test_tool_run_result_persisted_to_db() {
         let rows = db.list_tool_runs(Some("background")).unwrap();
         if let Some(row) = rows
             .iter()
-            .find(|r| r.id == id && r.status == haven_common::ToolRunStatus::Completed)
+            .find(|r| r.tool_run_id == id && r.status == haven_common::ToolRunStatus::Completed)
         {
             break row.clone();
         }
@@ -1201,7 +1204,10 @@ async fn test_running_status_includes_command_and_live_output() {
     }
     // The running row of the board carries the same command + output.
     let board = tool_runs.board().await;
-    let row = board.iter().find(|row| row.id == id).expect("on board");
+    let row = board
+        .iter()
+        .find(|row| row.tool_run_id == id)
+        .expect("on board");
     assert!(row.command.as_deref().unwrap().contains("live-line"));
     assert!(row.preview.as_deref().unwrap_or("").contains("live-line"));
 }
@@ -1616,7 +1622,10 @@ async fn test_board_lists_all_tool_runs_by_session() {
 
     let rows = tool_runs.board().await;
     assert_eq!(rows.len(), 2, "all tool_runs on board: {rows:?}");
-    let by_id: HashMap<_, _> = rows.iter().map(|row| (row.id.as_str(), row)).collect();
+    let by_id: HashMap<_, _> = rows
+        .iter()
+        .map(|row| (row.tool_run_id.as_str(), row))
+        .collect();
     assert_eq!(by_id[&id_a.as_str()].session_id.as_deref(), Some("ses-1"));
     assert_eq!(by_id[&id_b.as_str()].session_id.as_deref(), Some("ses-2"));
     assert_eq!(by_id[&id_a.as_str()].status, ToolRunStatus::Completed);
@@ -1713,7 +1722,10 @@ async fn board_returns_typed_safe_views_in_started_order() {
 
     let board = service.board().await;
     assert_eq!(
-        board.iter().map(|row| row.id.as_str()).collect::<Vec<_>>(),
+        board
+            .iter()
+            .map(|row| row.tool_run_id.as_str())
+            .collect::<Vec<_>>(),
         [
             "toolrun-scheduled-waiting",
             "toolrun-background-old",
@@ -1874,7 +1886,7 @@ async fn test_unified_service_owns_scheduled_state_and_cancel() {
 
     let board = service.board().await;
     assert_eq!(board.len(), 1);
-    assert_eq!(board[0].id, id);
+    assert_eq!(board[0].tool_run_id, id);
     assert_eq!(board[0].kind, ToolRunKind::Scheduled);
     assert_eq!(board[0].status, ToolRunStatus::Waiting);
     assert_eq!(board[0].title.as_deref(), Some("Unified"));
@@ -2946,7 +2958,7 @@ async fn test_unified_completion_bus_emits_scheduled_transition() {
         .lock()
         .unwrap()
         .iter()
-        .find(|(name, payload)| name == "tool_run:updated" && payload["id"] == id)
+        .find(|(name, payload)| name == "tool_run:updated" && payload["tool_run_id"] == id)
         .map(|(_, payload)| payload.clone())
         .expect("scheduled running update event");
     assert_eq!(updated["status"], "running");
@@ -3446,18 +3458,25 @@ async fn test_scheduled_fire_without_receiver_is_requeued_durably() {
         "waiting"
     );
     let pending = db.list_pending_scheduled_tool_runs().unwrap();
-    assert_eq!(pending.iter().filter(|row| row.id == id).count(), 1);
+    assert_eq!(
+        pending.iter().filter(|row| row.tool_run_id == id).count(),
+        1
+    );
     assert_eq!(
         pending
             .iter()
-            .find(|row| row.id == id)
+            .find(|row| row.tool_run_id == id)
             .unwrap()
             .session_id
             .as_deref(),
         Some("ses-no-receiver")
     );
     assert_eq!(
-        pending.iter().find(|row| row.id == id).unwrap().status,
+        pending
+            .iter()
+            .find(|row| row.tool_run_id == id)
+            .unwrap()
+            .status,
         haven_common::ToolRunStatus::Waiting
     );
 
@@ -3987,7 +4006,9 @@ async fn test_scheduled_lifecycle_events_reuse_persisted_timestamps() {
         .unwrap()
         .iter()
         .find(|(name, payload)| {
-            name == "tool_run:updated" && payload["id"] == id && payload["status"] == "running"
+            name == "tool_run:updated"
+                && payload["tool_run_id"] == id
+                && payload["status"] == "running"
         })
         .map(|(_, payload)| payload.clone())
         .expect("scheduled running event");
@@ -4010,7 +4031,7 @@ async fn test_scheduled_lifecycle_events_reuse_persisted_timestamps() {
         .lock()
         .unwrap()
         .iter()
-        .find(|(name, payload)| name == "tool_run:finished" && payload["id"] == id)
+        .find(|(name, payload)| name == "tool_run:finished" && payload["tool_run_id"] == id)
         .map(|(_, payload)| payload.clone())
         .expect("scheduled completion event");
     let row = db
@@ -4042,7 +4063,7 @@ async fn test_scheduled_lifecycle_events_reuse_persisted_timestamps() {
         .lock()
         .unwrap()
         .iter()
-        .find(|(name, payload)| name == "tool_run:finished" && payload["id"] == cancel_id)
+        .find(|(name, payload)| name == "tool_run:finished" && payload["tool_run_id"] == cancel_id)
         .map(|(_, payload)| payload.clone())
         .expect("scheduled cancellation event");
     let cancel_row = db

@@ -39,7 +39,7 @@ describe('upsertToolRun', () => {
 
 	it('keeps the explicit background create payload', () => {
 		upsertToolRun({
-			id: 'toolrun-1',
+			toolRunId: 'toolrun-1',
 			kind: 'background',
 			status: 'running',
 			startedAt: '2026-01-01T00:00:00Z',
@@ -47,21 +47,21 @@ describe('upsertToolRun', () => {
 		const row = get(toolRunStore)['toolrun-1'];
 		expect(row.status).toBe('running');
 		expect(row.kind).toBe('background');
-		expect(row.id).toBe('toolrun-1');
+		expect(row.toolRunId).toBe('toolrun-1');
 	});
 
 	it('keeps a session binding update after an evicted row', () => {
-		upsertToolRun({ id: 'toolrun-ghost', kind: 'background', status: 'completed' });
+		upsertToolRun({ toolRunId: 'toolrun-ghost', kind: 'background', status: 'completed' });
 		removeToolRun('toolrun-ghost');
-		upsertToolRun({ id: 'toolrun-ghost', kind: 'background', sessionId: 'ses-1' });
+		upsertToolRun({ toolRunId: 'toolrun-ghost', kind: 'background', sessionId: 'ses-1' });
 		const row = get(toolRunStore)['toolrun-ghost'];
 		expect(row.status).toBeUndefined();
 		expect(row.sessionId).toBe('ses-1');
 	});
 
 	it('keeps an explicit terminal status from tool_run:finished', () => {
-		upsertToolRun({ id: 'toolrun-2', kind: 'background', status: 'running' });
-		upsertToolRun({ id: 'toolrun-2', kind: 'background', status: 'completed', output: 'done' });
+		upsertToolRun({ toolRunId: 'toolrun-2', kind: 'background', status: 'running' });
+		upsertToolRun({ toolRunId: 'toolrun-2', kind: 'background', status: 'completed', output: 'done' });
 		const row = get(toolRunStore)['toolrun-2'];
 		expect(row.status).toBe('completed');
 		expect(row.output).toBe('done');
@@ -70,19 +70,19 @@ describe('upsertToolRun', () => {
 	it('evicts terminal rows before live running rows when over capacity', () => {
 		for (let i = 0; i < 70; i++) {
 			upsertToolRun({
-				id: `toolrun-done-${i}`,
+				toolRunId: `toolrun-done-${i}`,
 				kind: 'background',
 				status: 'completed',
 			});
 		}
-		upsertToolRun({ id: 'toolrun-live', kind: 'background', status: 'running' });
+		upsertToolRun({ toolRunId: 'toolrun-live', kind: 'background', status: 'running' });
 		const store = get(toolRunStore);
 		expect(store['toolrun-live']?.status).toBe('running');
 		expect(Object.keys(store).length).toBeLessThanOrEqual(64);
 	});
 
 	it('removeToolRun drops the row', () => {
-		upsertToolRun({ id: 'toolrun-3', kind: 'background', status: 'running' });
+		upsertToolRun({ toolRunId: 'toolrun-3', kind: 'background', status: 'running' });
 		removeToolRun('toolrun-3');
 		expect(get(toolRunStore)['toolrun-3']).toBeUndefined();
 	});
@@ -104,9 +104,9 @@ describe('upsertToolRun', () => {
 
 		const olderRefresh = refreshToolRuns();
 		const newerRefresh = refreshToolRuns();
-		resolveNewer([{ id: 'toolrun-new', kind: 'scheduled', status: 'waiting' }]);
+		resolveNewer([{ tool_run_id: 'toolrun-new', kind: 'scheduled', status: 'waiting' }]);
 		await newerRefresh;
-		resolveOlder([{ id: 'toolrun-old', kind: 'scheduled', status: 'waiting' }]);
+		resolveOlder([{ tool_run_id: 'toolrun-old', kind: 'scheduled', status: 'waiting' }]);
 		await olderRefresh;
 
 		expect(get(toolRunStore)['toolrun-new']?.status).toBe('waiting');
@@ -124,8 +124,8 @@ describe('upsertToolRun', () => {
 			.mockReturnValueOnce(refreshResponse as never);
 
 		const refresh = refreshToolRuns();
-		upsertToolRun({ id: 'toolrun-race', kind: 'scheduled', status: 'running' });
-		resolveRefresh([{ id: 'toolrun-race', kind: 'scheduled', status: 'waiting' }]);
+		upsertToolRun({ toolRunId: 'toolrun-race', kind: 'scheduled', status: 'running' });
+		resolveRefresh([{ tool_run_id: 'toolrun-race', kind: 'scheduled', status: 'waiting' }]);
 		await refresh;
 
 		expect(get(toolRunStore)['toolrun-race']?.status).toBe('running');
@@ -137,10 +137,10 @@ describe('upsertToolRun', () => {
 		vi.mocked(invoke)
 			.mockReset()
 			.mockResolvedValue([
-				{ id: 'toolrun-background-live', kind: 'background', status: 'running' },
-				{ id: 'toolrun-background-history', kind: 'background', status: 'completed' },
-				{ id: 'toolrun-scheduled-waiting', kind: 'scheduled', status: 'waiting' },
-				{ id: 'toolrun-scheduled-running', kind: 'scheduled', status: 'running' },
+				{ tool_run_id: 'toolrun-background-live', kind: 'background', status: 'running' },
+				{ tool_run_id: 'toolrun-background-history', kind: 'background', status: 'completed' },
+				{ tool_run_id: 'toolrun-scheduled-waiting', kind: 'scheduled', status: 'waiting' },
+				{ tool_run_id: 'toolrun-scheduled-running', kind: 'scheduled', status: 'running' },
 			]);
 
 		await refreshToolRuns();
@@ -172,7 +172,7 @@ describe('upsertToolRun', () => {
 			],
 		});
 		finalizeBackgroundToolRunMessages({
-			id: 'toolrun-fin',
+			toolRunId: 'toolrun-fin',
 			kind: 'background',
 			status: 'cancelled',
 			output: 'stopped',
@@ -206,7 +206,7 @@ describe('upsertToolRun', () => {
 		});
 
 		finalizeBackgroundToolRunMessages({
-			id: 'toolrun-scheduled-fin',
+			toolRunId: 'toolrun-scheduled-fin',
 			kind: 'scheduled',
 			status: 'completed',
 		});
@@ -228,14 +228,14 @@ describe('session ToolRun history hydration', () => {
 	it('loads terminal rows for the selected session after switching or restart', async () => {
 		vi.mocked(invoke).mockResolvedValue([
 			{
-				id: 'toolrun-session-1',
+				tool_run_id: 'toolrun-session-1',
 				kind: 'scheduled',
 				status: 'completed',
 				session_id: 'ses-1',
 				title: 'Reminder',
 			},
 			{
-				id: 'toolrun-other-session',
+				tool_run_id: 'toolrun-other-session',
 				kind: 'background',
 				status: 'failed',
 				session_id: 'ses-2',
@@ -265,7 +265,7 @@ describe('session ToolRun history hydration', () => {
 
 		const refresh = refreshSessionToolRuns('ses-1');
 		upsertSessionToolRun({
-			id: 'toolrun-race',
+			toolRunId: 'toolrun-race',
 			kind: 'background',
 			status: 'failed',
 			sessionId: 'ses-1',
@@ -273,7 +273,7 @@ describe('session ToolRun history hydration', () => {
 		});
 		resolveHistory([
 			{
-				id: 'toolrun-race',
+				tool_run_id: 'toolrun-race',
 				kind: 'background',
 				status: 'completed',
 				session_id: 'ses-1',
@@ -291,7 +291,7 @@ describe('session ToolRun history hydration', () => {
 	it('bounds the cached ToolRun rows and number of cached sessions', () => {
 		for (let index = 0; index < 205; index++) {
 			upsertSessionToolRun({
-				id: `toolrun-cap-${index}`,
+				toolRunId: `toolrun-cap-${index}`,
 				kind: 'scheduled',
 				status: 'completed',
 				sessionId: 'ses-capacity',
@@ -302,7 +302,7 @@ describe('session ToolRun history hydration', () => {
 		expect(Object.keys(get(sessionToolRunStore)['ses-capacity'] || {})).toHaveLength(200);
 		for (let index = 0; index < 17; index++) {
 			upsertSessionToolRun({
-				id: `toolrun-session-${index}`,
+				toolRunId: `toolrun-session-${index}`,
 				kind: 'scheduled',
 				sessionId: `ses-capacity-${index}`,
 			});

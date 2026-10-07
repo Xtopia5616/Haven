@@ -23,7 +23,7 @@ export type ToolRunKind = GeneratedToolRunKindDto;
 export type ToolRunStatus = GeneratedToolRunStatus;
 
 export interface ToolRunPayload {
-	id: string;
+	toolRunId: string;
 	kind: ToolRunKind;
 	status?: ToolRunStatus;
 	sessionId?: string;
@@ -94,11 +94,11 @@ function hasValidOptionalFields(payload: WireRecord): boolean {
  */
 export function mapToolRunPayload(payload: unknown): ToolRunPayload | null {
 	if (!isRecord(payload)) return null;
-	if (typeof payload.id !== 'string' || payload.id.length === 0) return null;
+	if (typeof payload.tool_run_id !== 'string' || payload.tool_run_id.length === 0) return null;
 	if (!isToolRunKind(payload.kind)) return null;
 	if (!hasValidOptionalFields(payload)) return null;
 
-	const mapped: ToolRunPayload = { id: payload.id, kind: payload.kind };
+	const mapped: ToolRunPayload = { toolRunId: payload.tool_run_id, kind: payload.kind };
 	if (isToolRunStatus(payload.status)) mapped.status = payload.status;
 	if (typeof payload.session_id === 'string') mapped.sessionId = payload.session_id;
 	if (typeof payload.source_step_id === 'string') mapped.sourceStepId = payload.source_step_id;

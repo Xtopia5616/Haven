@@ -370,7 +370,7 @@ describe('toolRunEventListeners', () => {
 			event: 'tool_run:finished',
 			id: 3,
 			payload: {
-				id: 'toolrun-1',
+				tool_run_id: 'toolrun-1',
 				kind: 'background',
 				session_id: 'ses-1',
 				exit_code: 0,
@@ -381,7 +381,7 @@ describe('toolRunEventListeners', () => {
 			event: 'tool_run:finished',
 			id: 3,
 			payload: {
-				id: 'toolrun-1',
+				toolRunId: 'toolrun-1',
 				kind: 'background',
 				sessionId: 'ses-1',
 				exitCode: 0,

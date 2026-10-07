@@ -502,11 +502,11 @@ impl ToolRunService {
                 {
                     let missing = {
                         let mut tool_runs = self.tool_runs.write().await;
-                        if tool_runs.contains_key(&row.id) {
+                        if tool_runs.contains_key(&row.tool_run_id) {
                             false
                         } else {
                             tool_runs.insert(
-                                row.id.clone(),
+                                row.tool_run_id.clone(),
                                 ToolRunEntry {
                                     kind: ToolRunKind::Background,
                                     session_id: Some(session_id.to_string()),
@@ -528,7 +528,7 @@ impl ToolRunService {
                         }
                     };
                     if missing {
-                        self.cancel_owned_background_tool_run(&row.id, session_id)
+                        self.cancel_owned_background_tool_run(&row.tool_run_id, session_id)
                             .await;
                     }
                 }

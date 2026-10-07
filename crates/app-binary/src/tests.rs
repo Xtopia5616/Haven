@@ -514,7 +514,7 @@ fn tool_run_projection_maps_session_attachment_as_a_metadata_update() {
     assert_eq!(
         serde_json::to_value(projection.payload).unwrap(),
         serde_json::json!({
-            "id": "toolrun-attached",
+            "tool_run_id": "toolrun-attached",
             "kind": "background",
             "session_id": "ses-owner",
             "source_step_id": "step-origin",
@@ -531,7 +531,7 @@ fn tool_run_output_projection_uses_only_typed_preview_fields() {
     });
     let projection = project_tool_run_event(event);
     assert_eq!(projection.channel, TOOL_RUN_OUTPUT_EVENT);
-    assert_eq!(projection.payload.id, "toolrun-output");
+    assert_eq!(projection.payload.tool_run_id, "toolrun-output");
     assert_eq!(
         projection.payload.source_step_id.as_deref(),
         Some("step-output")

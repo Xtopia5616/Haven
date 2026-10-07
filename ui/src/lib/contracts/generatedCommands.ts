@@ -101,7 +101,7 @@ export type SessionUpdateStatus = (typeof SESSION_UPDATE_STATUS_VALUES)[number];
 export interface SkillsStatusChangedEvent { op: SkillsStatusOperation }
 export const SKILLS_STATUS_OPERATION_VALUES = ['refresh', 'auto_refresh', 'toggle'] as const;
 export type SkillsStatusOperation = (typeof SKILLS_STATUS_OPERATION_VALUES)[number];
-export interface ToolRunEvent { id: string; kind: ToolRunKindDto; status?: ToolRunStatus; session_id?: string; source_step_id?: string; started_at?: string; finished_at?: string; due_at?: string; title?: string; body?: string; mode?: string; command?: string; output?: string; error?: string; error_reason?: string; exit_code?: number; preview?: string }
+export interface ToolRunEvent { tool_run_id: string; kind: ToolRunKindDto; status?: ToolRunStatus; session_id?: string; source_step_id?: string; started_at?: string; finished_at?: string; due_at?: string; title?: string; body?: string; mode?: string; command?: string; output?: string; error?: string; error_reason?: string; exit_code?: number; preview?: string }
 export const TOOL_RUN_KIND_DTO_INPUT_VALUES = ['background', 'scheduled'] as const;
 export type ToolRunKindDtoInput = (typeof TOOL_RUN_KIND_DTO_INPUT_VALUES)[number];
 export const TOOL_RUN_KIND_DTO_VALUES = ['background', 'scheduled'] as const;

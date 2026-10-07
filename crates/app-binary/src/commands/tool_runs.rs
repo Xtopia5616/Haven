@@ -10,7 +10,7 @@ use tauri::State;
 /// the UI's ToolRun panel. Mirrors the `tool_run:created` / `tool_run:updated`
 /// / `tool_run:finished` / `tool_run:output` events so the panel can hydrate
 /// on mount / navigation. Both ToolRun kinds use the same named DTO and
-/// stable `id` field; the tool implementation's `tool_run_id` is not exposed.
+/// explicit `tool_run_id` field, matching the `tool_runs` entity.
 ///
 /// Live tasks come from the unified in-memory board (with output preview); terminal
 /// ToolRun rows that already aged out of the board's TTL are merged back in from
@@ -23,7 +23,7 @@ pub async fn list_tool_runs(state: State<'_, Arc<AppState>>) -> Result<Vec<ToolR
     let mut live_ids = std::collections::HashSet::new();
     for row in live_rows {
         let event = ToolRunEvent::from(row);
-        live_ids.insert(event.id.clone());
+        live_ids.insert(event.tool_run_id.clone());
         rows.push(event);
     }
     let history = state
@@ -34,7 +34,7 @@ pub async fn list_tool_runs(state: State<'_, Arc<AppState>>) -> Result<Vec<ToolR
         .await
         .map_err(|e| log_err("list_tool_runs history", e))?;
     for tool_run in history {
-        if live_ids.contains(&tool_run.id) {
+        if live_ids.contains(&tool_run.tool_run_id) {
             continue;
         }
         let preview = tool_run
@@ -162,7 +162,7 @@ fn tool_run_event_from_row(
         ),
     };
     ToolRunEvent {
-        id: row.id,
+        tool_run_id: row.tool_run_id,
         kind,
         status: Some(row.status),
         session_id: row.session_id,
@@ -201,7 +201,7 @@ mod tests {
     #[test]
     fn persisted_tool_run_projection_uses_one_safe_row_mapper() {
         let row = ToolRunRow {
-            id: "toolrun-history".into(),
+            tool_run_id: "toolrun-history".into(),
             kind: "scheduled".into(),
             due_at: Some("2026-09-27T10:00:00Z".into()),
             title: String::new(),
@@ -230,7 +230,7 @@ mod tests {
             Some("result".into()),
         );
 
-        assert_eq!(event.id, "toolrun-history");
+        assert_eq!(event.tool_run_id, "toolrun-history");
         assert_eq!(event.kind, crate::events::ToolRunKindDto::Scheduled);
         assert_eq!(event.status, Some(ToolRunStatus::Completed));
         assert_eq!(event.due_at, None);
@@ -249,7 +249,7 @@ mod tests {
             super::PersistedToolRunProjection::History,
             None,
         );
-        assert_eq!(event.id, "toolrun-history");
+        assert_eq!(event.tool_run_id, "toolrun-history");
         assert_eq!(event.kind, crate::events::ToolRunKindDto::Scheduled);
         assert_eq!(event.status, Some(ToolRunStatus::Completed));
         assert_eq!(event.due_at.as_deref(), Some("2026-09-27T10:00:00Z"));

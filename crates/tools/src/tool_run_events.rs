@@ -147,7 +147,6 @@ impl ToolRunLifecycleEvent {
         }
 
         fn lifecycle_payload(payload: ToolRunLifecyclePayload) -> Value {
-            let is_scheduled = payload.kind == ToolRunKind::Scheduled;
             let mut value = json!({
                 "tool_run_id": payload.tool_run_id,
                 "kind": match payload.kind {
@@ -155,9 +154,6 @@ impl ToolRunLifecycleEvent {
                     ToolRunKind::Scheduled => "scheduled",
                 },
             });
-            if is_scheduled {
-                value["id"] = value["tool_run_id"].clone();
-            }
             value["status"] = json!(payload.state.status().as_str());
             if let Some(started_at) = payload.state.started_at() {
                 value["started_at"] = json!(started_at);
@@ -190,9 +186,8 @@ impl ToolRunLifecycleEvent {
                 ("tool_run:updated".into(), lifecycle_payload(*payload))
             }
             Self::Updated(ToolRunLifecycleUpdate::SessionAttached(payload)) => {
-                let id = payload.tool_run_id;
                 let mut value = json!({
-                    "tool_run_id": id,
+                    "tool_run_id": payload.tool_run_id,
                     "kind": "background",
                     "session_id": payload.session_id,
                 });

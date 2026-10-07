@@ -223,14 +223,14 @@ export function reduceTranscript(
 
 /** Normalize a terminal background ToolRun into the tool-card payload. */
 export function backgroundToolRunResultContent(payload: ToolRunPayload): string | null {
-	if (payload.kind !== 'background' || !payload.id) return null;
+	if (payload.kind !== 'background' || !payload.toolRunId) return null;
 	const status = payload.status ?? 'completed';
 	const rawOutput = payload.output ?? payload.error ?? '';
 	if (typeof rawOutput === 'string' && rawOutput.trim().startsWith('{')) return rawOutput;
 	return JSON.stringify({
 		output: rawOutput,
 		background: true,
-		tool_run_id: payload.id,
+		tool_run_id: payload.toolRunId,
 		status,
 		...(payload.exitCode != null ? { exit_code: payload.exitCode } : {}),
 		...(payload.error && !payload.output ? { error: payload.error } : {}),

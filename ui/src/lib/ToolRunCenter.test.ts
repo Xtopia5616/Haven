@@ -26,7 +26,7 @@ describe('ToolRunCenter', () => {
 			...commonProps,
 			runningBackgroundToolRuns: [
 				{
-					id: 'toolrun-1',
+					toolRunId: 'toolrun-1',
 					kind: 'background',
 					status: 'running',
 					sessionId: 'ses-1',
@@ -50,7 +50,7 @@ describe('ToolRunCenter', () => {
 	it('shows only pending scheduled tasks', () => {
 		render(ToolRunCenter, {
 			...commonProps,
-			pendingScheduledToolRuns: [{ id: 'toolrun-pending', kind: 'scheduled', body: '稍后继续' }],
+			pendingScheduledToolRuns: [{ toolRunId: 'toolrun-pending', kind: 'scheduled', body: '稍后继续' }],
 		});
 
 		expect(screen.getByRole('heading', { name: '进行中' })).toBeTruthy();
@@ -64,7 +64,7 @@ describe('ToolRunCenter', () => {
 			...commonProps,
 			pendingScheduledToolRuns: [
 				{
-					id: 'toolrun-running-scheduled',
+					toolRunId: 'toolrun-running-scheduled',
 					kind: 'scheduled',
 					status: 'running',
 					body: '已触发',
@@ -85,7 +85,7 @@ describe('ToolRunCenter', () => {
 			...commonProps,
 			runningBackgroundToolRuns: [
 				{
-					id: 'toolrun-background',
+					toolRunId: 'toolrun-background',
 					kind: 'background',
 					status: 'running',
 					sessionId: 'ses-1',
@@ -94,7 +94,7 @@ describe('ToolRunCenter', () => {
 			],
 			pendingScheduledToolRuns: [
 				{
-					id: 'toolrun-scheduled',
+					toolRunId: 'toolrun-scheduled',
 					kind: 'scheduled',
 					status: 'waiting',
 					title: '稍后整理',
@@ -133,7 +133,7 @@ describe('ToolRunCenter', () => {
 		render(ToolRunCenter, {
 			...commonProps,
 			runningBackgroundToolRuns: [
-				{ id: 'toolrun-running', kind: 'background', status: 'running' },
+				{ toolRunId: 'toolrun-running', kind: 'background', status: 'running' },
 			],
 		});
 

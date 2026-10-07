@@ -76,13 +76,13 @@ describe('canRenderToolResult', () => {
 		expect(
 			canRenderToolResult(
 				'haven',
-				JSON.stringify({ operation: 'schedule_set', id: 'r1', mode: 'notify' }),
+				JSON.stringify({ operation: 'schedule_set', tool_run_id: 'r1', mode: 'notify' }),
 			),
 		).toBe(true);
 		expect(
 			canRenderToolResult(
 				'haven',
-				JSON.stringify({ operation: 'schedule_cancel', cancelled: 'toolrun-1' }),
+				JSON.stringify({ operation: 'schedule_cancel', tool_run_id: 'toolrun-1' }),
 			),
 		).toBe(true);
 		expect(
@@ -477,7 +477,7 @@ describe('ToolResultCard shell / notify / generic', () => {
 
 	it('renders the exit code for a completed background shell ToolRun', async () => {
 		upsertToolRun({
-			id: 'toolrun-shell-1',
+			toolRunId: 'toolrun-shell-1',
 			kind: 'background',
 			status: 'completed',
 			output: 'command output',
@@ -1227,13 +1227,13 @@ describe('ToolResultCard http', () => {
 		await expandToolCard(container);
 		expect(container.querySelector('.status-failed')).toBeTruthy();
 	});
-	it('renders a single scheduled tool result with id, mode and fires_at', async () => {
+	it('renders a single scheduled tool result with tool_run_id, mode and fires_at', async () => {
 		const { container } = render(ToolResultCard, {
 			toolName: 'schedule.set',
 			renderer: 'schedule',
 			content: JSON.stringify({
 				operation: 'schedule_set',
-				id: 'r42',
+				tool_run_id: 'r42',
 				mode: 'tool',
 				fires_at: '2026-08-05T09:00:00+08:00',
 				wakes_session: true,
@@ -1249,7 +1249,7 @@ describe('ToolResultCard http', () => {
 		const { container } = render(ToolResultCard, {
 			toolName: 'schedule.cancel',
 			renderer: 'schedule',
-			content: JSON.stringify({ operation: 'schedule_cancel', cancelled: 'toolrun-42' }),
+			content: JSON.stringify({ operation: 'schedule_cancel', tool_run_id: 'toolrun-42' }),
 		});
 		await expandToolCard(container);
 		expect(screen.getByText('已取消')).toBeTruthy();

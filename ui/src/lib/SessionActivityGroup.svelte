@@ -108,7 +108,7 @@
 			toolRuns.find(
 				(toolRun) =>
 					toolRun.kind === 'background' &&
-					(toolRun.sourceStepId === message.id || sourceId === toolRun.id),
+					(toolRun.sourceStepId === message.id || sourceId === toolRun.toolRunId),
 			) ?? null
 		);
 	}
@@ -117,8 +117,8 @@
 		if (toolRun.status === 'running' || toolRun.status === 'waiting') return false;
 		return allMessages.some(
 			(message) =>
-				message.sourceToolRunId === toolRun.id &&
-				message.toolRunId !== toolRun.id &&
+				message.sourceToolRunId === toolRun.toolRunId &&
+				message.toolRunId !== toolRun.toolRunId &&
 				!message.streaming,
 		);
 	}
@@ -188,13 +188,13 @@
 					awaiting={!!msg.awaiting}
 					received={!!msg.received}
 					resolved={msg.resolved || null}
-					toolRunId={resultInTranscript ? null : msg.toolRunId || backgroundToolRun?.id || null}
+					toolRunId={resultInTranscript ? null : msg.toolRunId || backgroundToolRun?.toolRunId || null}
 					toolRunData={resultInTranscript ? null : backgroundToolRun}
 					awaitingBackgroundResult={
-						!resultInTranscript && backgroundToolRun?.id === awaitingBackgroundToolRunId
+						!resultInTranscript && backgroundToolRun?.toolRunId === awaitingBackgroundToolRunId
 					}
 					awaitingBackgroundCount={
-						backgroundToolRun?.id === awaitingBackgroundToolRunId ? awaitingBackgroundCount : 0
+						backgroundToolRun?.toolRunId === awaitingBackgroundToolRunId ? awaitingBackgroundCount : 0
 					}
 					compact
 					{onContextMenu}

@@ -152,7 +152,7 @@ export interface SessionTimelineOptions {
 function compareToolRuns(left: ToolRunPayload, right: ToolRunPayload): number {
 	const leftTime = left.startedAt || left.dueAt || '';
 	const rightTime = right.startedAt || right.dueAt || '';
-	return leftTime.localeCompare(rightTime) || left.id.localeCompare(right.id);
+	return leftTime.localeCompare(rightTime) || left.toolRunId.localeCompare(right.toolRunId);
 }
 
 /** Resolve the same running toolRun used for the timeline wait indicator. */
@@ -164,7 +164,7 @@ export function firstWaitingBackgroundToolRunId(
 	return (
 		[...toolRuns].sort(compareToolRuns).find(
 			(toolRun) => toolRun.kind === 'background' && toolRun.status === 'running',
-		)?.id ?? null
+		)?.toolRunId ?? null
 	);
 }
 
@@ -200,7 +200,7 @@ export function groupSessionTimeline(
 				? stepIndex
 				: messages.findIndex(
 						(message) =>
-							message.type === 'tool' && sourceToolRunId(message) === toolRun.id,
+							message.type === 'tool' && sourceToolRunId(message) === toolRun.toolRunId,
 					);
 		if (sourceIndex < 0) {
 			trailing.push(toolRun);
@@ -241,20 +241,20 @@ export function groupSessionTimeline(
 		((keepWithLiveSource || isLiveTimelineItem(item)) ? activeItems : result).push(item);
 	};
 	const toolRunItem = (toolRun: ToolRunPayload): SessionTimelineToolRunItem => {
-		const awaitingResult = toolRun.id === firstWaitingToolRunId;
+		const awaitingResult = toolRun.toolRunId === firstWaitingToolRunId;
 		const terminalOutputAlreadyInTranscript =
 			toolRun.kind === 'background' &&
 			toolRun.status !== 'running' &&
 			toolRun.status !== 'waiting' &&
 			messages.some(
 				(message) =>
-					message.sourceToolRunId === toolRun.id &&
-					message.toolRunId !== toolRun.id &&
+					message.sourceToolRunId === toolRun.toolRunId &&
+					message.toolRunId !== toolRun.toolRunId &&
 					!message.streaming,
 			);
 		return {
 			kind: 'tool_run',
-			id: `tool-run-${toolRun.id}`,
+			id: `tool-run-${toolRun.toolRunId}`,
 			toolRun,
 			awaitingBackgroundResult: awaitingResult,
 			awaitingBackgroundCount: awaitingResult ? awaitingBackgroundCount : 0,

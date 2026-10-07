@@ -253,8 +253,8 @@ export function sourceToolRunIdFromObservation(
 	try {
 		const value: unknown = JSON.parse(observation);
 		if (!isRecord(value)) return null;
-		return value.operation === 'set' && typeof value.id === 'string' && value.id
-			? value.id
+		return value.operation === 'set' && typeof value.tool_run_id === 'string' && value.tool_run_id
+			? value.tool_run_id
 			: null;
 	} catch {
 		return null;

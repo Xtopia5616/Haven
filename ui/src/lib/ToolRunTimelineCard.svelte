@@ -70,7 +70,7 @@
 	const backgroundResult = $derived(
 		JSON.stringify({
 			background: true,
-			tool_run_id: toolRun?.id,
+			tool_run_id: toolRun?.toolRunId,
 			status: toolRun?.status ?? 'running',
 			output: showTerminalOutput
 				? toolRun?.output || toolRun?.preview || toolRun?.error || ''
@@ -87,8 +87,8 @@
 		outcome={toolRun?.status ?? 'running'}
 		content={backgroundResult}
 		toolArgs={toolRun?.command ? { command: toolRun.command } : null}
-		messageId={toolRun?.sourceStepId ?? toolRun?.id ?? 'background-tool-run-wait'}
-		toolRunId={showTerminalOutput ? toolRun?.id ?? null : null}
+		messageId={toolRun?.sourceStepId ?? toolRun?.toolRunId ?? 'background-tool-run-wait'}
+		toolRunId={showTerminalOutput ? toolRun?.toolRunId ?? null : null}
 		toolRunData={showTerminalOutput ? toolRun ?? null : null}
 		toolRunOutputHidden={!!toolRun && !showTerminalOutput}
 		{awaitingBackgroundResult}

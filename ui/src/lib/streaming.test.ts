@@ -942,7 +942,7 @@ describe('sourceToolRunIdFromObservation', () => {
 		expect(
 			sourceToolRunIdFromObservation(
 				'schedule.set',
-				JSON.stringify({ operation: 'set', id: 'toolrun-scheduled' }),
+				JSON.stringify({ operation: 'set', tool_run_id: 'toolrun-scheduled' }),
 			),
 		).toBe('toolrun-scheduled');
 	});
@@ -951,7 +951,7 @@ describe('sourceToolRunIdFromObservation', () => {
 		expect(
 			sourceToolRunIdFromObservation(
 				'files.read',
-				JSON.stringify({ operation: 'set', id: 'toolrun-not-a-tool-run' }),
+				JSON.stringify({ operation: 'set', tool_run_id: 'toolrun-not-a-tool-run' }),
 			),
 		).toBeNull();
 	});

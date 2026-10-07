@@ -363,10 +363,10 @@
 		if (!activeSessionId) return [];
 		const toolRuns = new Map<string, ToolRunPayload>();
 		for (const toolRun of Object.values(sessionToolRunsById[activeSessionId] || {})) {
-			toolRuns.set(toolRun.id, toolRun);
+			toolRuns.set(toolRun.toolRunId, toolRun);
 		}
 		for (const toolRun of Object.values(toolRunsById)) {
-			if (toolRun.sessionId === activeSessionId) toolRuns.set(toolRun.id, toolRun);
+			if (toolRun.sessionId === activeSessionId) toolRuns.set(toolRun.toolRunId, toolRun);
 		}
 		return [...toolRuns.values()];
 	});

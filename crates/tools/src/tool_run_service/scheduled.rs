@@ -579,7 +579,7 @@ impl ToolRunService {
 
     async fn retry_scheduled_terminal_persistence(self: &Arc<Self>, retry: ScheduledTerminalRetry) {
         let ScheduledTerminalRetry {
-            id,
+            tool_run_id,
             schedule,
             started_at,
             status,
@@ -591,7 +591,7 @@ impl ToolRunService {
             .terminal_persistence_retries
             .write()
             .await
-            .insert(id.clone())
+            .insert(tool_run_id.clone())
         {
             return;
         }
@@ -622,7 +622,7 @@ impl ToolRunService {
                 let _terminal = service.terminal_transition.lock().await;
                 match service
                     .persist_scheduled_terminal(
-                        &id,
+                        &tool_run_id,
                         status,
                         result_summary.as_deref(),
                         error_reason.as_deref(),
@@ -642,7 +642,7 @@ impl ToolRunService {
                             continue;
                         };
                         if service
-                            .finish_scheduled_in_memory(&id, &schedule, state)
+                            .finish_scheduled_in_memory(&tool_run_id, &schedule, state)
                             .await
                         {
                             signal = RetrySignal::Succeeded;
@@ -653,7 +653,7 @@ impl ToolRunService {
                     }
                     Ok(false) => {
                         tracing::warn!(
-                            tool_run_id = %id,
+                            tool_run_id = %tool_run_id,
                             "scheduled terminal retry found no running durable row"
                         );
                         signal = RetrySignal::Terminal;
@@ -661,7 +661,7 @@ impl ToolRunService {
                     }
                     Err(error) => {
                         tracing::warn!(
-                            tool_run_id = %id,
+                            tool_run_id = %tool_run_id,
                             "scheduled terminal persistence retry failed: {error}"
                         );
                         completed_attempts = next_attempt;
@@ -673,7 +673,7 @@ impl ToolRunService {
                 .terminal_persistence_retries
                 .write()
                 .await
-                .remove(&id);
+                .remove(&tool_run_id);
         });
     }
 
@@ -722,7 +722,7 @@ impl ToolRunService {
             Ok(false) => return Ok(false),
             Err(error) => {
                 self.retry_scheduled_terminal_persistence(ScheduledTerminalRetry {
-                    id: id.to_string(),
+                    tool_run_id: id.to_string(),
                     schedule: schedule.clone(),
                     started_at: timestamps.started_at.clone(),
                     status,
