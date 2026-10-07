@@ -663,3 +663,4 @@
 - [0672：区分 HTTP 目标策略与全局 NetworkPolicy](0672-name-http-destination-policy.md)
 - [0673：区分工具与 endpoint 熔断器 owner](0673-name-tool-and-endpoint-circuit-breakers.md)
 - [0674：合并 Tools 文件读取取消包装器](0674-unify-cancellable-readers.md)
+- [0675：统一 Settings 运行时应用类型名](0675-name-settings-runtime-apply-types.md)

@@ -331,7 +331,7 @@ impl RuntimeConfigApplyPlan {
 /// A named point in the settings runtime-apply sequence. These phases describe
 /// ordering and observability only; they do not imply rollback boundaries.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum SettingsApplyPhase {
+pub(crate) enum SettingsRuntimeApplyPhase {
     RouterPrepare,
     InputPipeline,
     Shell,
@@ -350,7 +350,7 @@ pub(crate) enum SettingsApplyPhase {
     HotkeyRebindEvent,
 }
 
-impl SettingsApplyPhase {
+impl SettingsRuntimeApplyPhase {
     fn target(self) -> RuntimeConfigTarget {
         match self {
             Self::RouterPrepare | Self::RouterPublish => RuntimeConfigTarget::LlmRouter,
@@ -400,13 +400,13 @@ impl SettingsApplyPhase {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum SettingsApplyFailureKind {
+pub(crate) enum SettingsRuntimeApplyFailureKind {
     RouterPrepare,
     RuntimeOwner,
     ToolCatalogRebuild,
 }
 
-impl SettingsApplyFailureKind {
+impl SettingsRuntimeApplyFailureKind {
     fn as_str(self) -> &'static str {
         match self {
             Self::RouterPrepare => "router_prepare",
@@ -416,36 +416,36 @@ impl SettingsApplyFailureKind {
     }
 }
 
-const SETTINGS_APPLY_PHASE_ORDER: [SettingsApplyPhase; 16] = [
-    SettingsApplyPhase::RouterPrepare,
-    SettingsApplyPhase::InputPipeline,
-    SettingsApplyPhase::Shell,
-    SettingsApplyPhase::Security,
-    SettingsApplyPhase::McpConfig,
-    SettingsApplyPhase::McpMonitors,
-    SettingsApplyPhase::RouterPublish,
-    SettingsApplyPhase::ContextLimits,
-    SettingsApplyPhase::SessionRuntime,
-    SettingsApplyPhase::ToolSettings,
-    SettingsApplyPhase::Skills,
-    SettingsApplyPhase::Logging,
-    SettingsApplyPhase::HotkeyMode,
-    SettingsApplyPhase::HotkeyUnregister,
-    SettingsApplyPhase::HotkeyRegister,
-    SettingsApplyPhase::HotkeyRebindEvent,
+const SETTINGS_RUNTIME_APPLY_PHASE_ORDER: [SettingsRuntimeApplyPhase; 16] = [
+    SettingsRuntimeApplyPhase::RouterPrepare,
+    SettingsRuntimeApplyPhase::InputPipeline,
+    SettingsRuntimeApplyPhase::Shell,
+    SettingsRuntimeApplyPhase::Security,
+    SettingsRuntimeApplyPhase::McpConfig,
+    SettingsRuntimeApplyPhase::McpMonitors,
+    SettingsRuntimeApplyPhase::RouterPublish,
+    SettingsRuntimeApplyPhase::ContextLimits,
+    SettingsRuntimeApplyPhase::SessionRuntime,
+    SettingsRuntimeApplyPhase::ToolSettings,
+    SettingsRuntimeApplyPhase::Skills,
+    SettingsRuntimeApplyPhase::Logging,
+    SettingsRuntimeApplyPhase::HotkeyMode,
+    SettingsRuntimeApplyPhase::HotkeyUnregister,
+    SettingsRuntimeApplyPhase::HotkeyRegister,
+    SettingsRuntimeApplyPhase::HotkeyRebindEvent,
 ];
 
 /// Typed settings targets and ordered stages derived from the shared runtime
 /// target map. The snapshot version is authoritative for apply diagnostics.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct SettingsApplyPlan {
+pub(crate) struct SettingsRuntimeApplyPlan {
     pub(crate) config_version: ConfigVersion,
     pub(crate) live_targets: Vec<RuntimeConfigTarget>,
     pub(crate) restart_required_targets: Vec<RuntimeConfigTarget>,
-    phases: Vec<SettingsApplyPhase>,
+    phases: Vec<SettingsRuntimeApplyPhase>,
 }
 
-impl SettingsApplyPlan {
+impl SettingsRuntimeApplyPlan {
     pub(crate) fn from_change(
         change: &ConfigChanged,
         snapshot: &ConfigSnapshot,
@@ -454,7 +454,7 @@ impl SettingsApplyPlan {
         let runtime_plan = RuntimeConfigApplyPlan::from_change(change);
         debug_assert_eq!(runtime_plan.config_version, snapshot.version);
         let hotkey_binding_changed = old_hotkey != snapshot.config.hotkey.key_binding;
-        let phases = SETTINGS_APPLY_PHASE_ORDER
+        let phases = SETTINGS_RUNTIME_APPLY_PHASE_ORDER
             .into_iter()
             .filter(|phase| {
                 runtime_plan.live.contains(&phase.target())
@@ -470,27 +470,27 @@ impl SettingsApplyPlan {
         }
     }
 
-    pub(crate) fn phases(&self) -> &[SettingsApplyPhase] {
+    pub(crate) fn phases(&self) -> &[SettingsRuntimeApplyPhase] {
         &self.phases
     }
 }
 
 /// Safe metadata captured for the active settings runtime-apply phase.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct SettingsApplyObservation {
+pub(crate) struct SettingsRuntimeApplyObservation {
     pub(crate) config_version: ConfigVersion,
-    pub(crate) phase: SettingsApplyPhase,
-    pub(crate) failure_kind: Option<SettingsApplyFailureKind>,
+    pub(crate) phase: SettingsRuntimeApplyPhase,
+    pub(crate) failure_kind: Option<SettingsRuntimeApplyFailureKind>,
     pub(crate) router_published: bool,
     pub(crate) restart_required_targets: Vec<RuntimeConfigTarget>,
 }
 
-impl SettingsApplyObservation {
+impl SettingsRuntimeApplyObservation {
     fn record(
         &self,
         command: &str,
         error: &dyn std::fmt::Display,
-        failure_kind: Option<SettingsApplyFailureKind>,
+        failure_kind: Option<SettingsRuntimeApplyFailureKind>,
     ) {
         let safe_error = crate::logging::sanitize_error_text(&error.to_string());
         if let Some(failure_kind) = failure_kind {
@@ -524,13 +524,13 @@ impl SettingsApplyObservation {
 /// structured failure/warning logging; a pre-rendered error is used only for
 /// Router preparation, whose builder already crosses `log_err` boundaries.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum SettingsApplyOutcome {
+pub(crate) enum SettingsRuntimeApplyOutcome {
     Applied,
     Failed {
         command: &'static str,
         error: String,
         already_rendered: bool,
-        failure_kind: SettingsApplyFailureKind,
+        failure_kind: SettingsRuntimeApplyFailureKind,
         router_published: bool,
     },
     Warning {
@@ -539,7 +539,7 @@ pub(crate) enum SettingsApplyOutcome {
     },
 }
 
-impl SettingsApplyOutcome {
+impl SettingsRuntimeApplyOutcome {
     pub(crate) fn applied() -> Self {
         Self::Applied
     }
@@ -549,7 +549,7 @@ impl SettingsApplyOutcome {
             command,
             error: error.to_string(),
             already_rendered: false,
-            failure_kind: SettingsApplyFailureKind::RuntimeOwner,
+            failure_kind: SettingsRuntimeApplyFailureKind::RuntimeOwner,
             router_published: false,
         }
     }
@@ -562,7 +562,7 @@ impl SettingsApplyOutcome {
             command,
             error: error.to_string(),
             already_rendered: false,
-            failure_kind: SettingsApplyFailureKind::ToolCatalogRebuild,
+            failure_kind: SettingsRuntimeApplyFailureKind::ToolCatalogRebuild,
             router_published: false,
         }
     }
@@ -575,7 +575,7 @@ impl SettingsApplyOutcome {
             command,
             error: error.to_string(),
             already_rendered: false,
-            failure_kind: SettingsApplyFailureKind::ToolCatalogRebuild,
+            failure_kind: SettingsRuntimeApplyFailureKind::ToolCatalogRebuild,
             router_published: true,
         }
     }
@@ -585,7 +585,7 @@ impl SettingsApplyOutcome {
             command,
             error,
             already_rendered: true,
-            failure_kind: SettingsApplyFailureKind::RouterPrepare,
+            failure_kind: SettingsRuntimeApplyFailureKind::RouterPrepare,
             router_published: false,
         }
     }
@@ -601,28 +601,28 @@ impl SettingsApplyOutcome {
 /// Owns the settings phase sequence and its failure observations. Side effects
 /// remain in their existing runtime owners and are supplied as phase callbacks.
 pub(crate) struct SettingsRuntimeApplyCoordinator {
-    plan: SettingsApplyPlan,
-    phase: Option<SettingsApplyPhase>,
-    failure_kind: Option<SettingsApplyFailureKind>,
+    plan: SettingsRuntimeApplyPlan,
+    phase: Option<SettingsRuntimeApplyPhase>,
+    failure_kind: Option<SettingsRuntimeApplyFailureKind>,
     router_published: bool,
 }
 
 impl SettingsRuntimeApplyCoordinator {
     pub(crate) fn new(change: &ConfigChanged, snapshot: &ConfigSnapshot, old_hotkey: &str) -> Self {
         Self {
-            plan: SettingsApplyPlan::from_change(change, snapshot, old_hotkey),
+            plan: SettingsRuntimeApplyPlan::from_change(change, snapshot, old_hotkey),
             phase: None,
             failure_kind: None,
             router_published: false,
         }
     }
 
-    pub(crate) fn plan(&self) -> &SettingsApplyPlan {
+    pub(crate) fn plan(&self) -> &SettingsRuntimeApplyPlan {
         &self.plan
     }
 
     pub(crate) fn failed_phase_name(&self) -> Option<&'static str> {
-        self.phase.map(SettingsApplyPhase::as_str)
+        self.phase.map(SettingsRuntimeApplyPhase::as_str)
     }
 
     /// State of the security consumer after the most recent failed phase.
@@ -633,13 +633,13 @@ impl SettingsRuntimeApplyCoordinator {
         let Some(failed_phase) = self.phase else {
             return "unknown";
         };
-        if failed_phase == SettingsApplyPhase::Security {
+        if failed_phase == SettingsRuntimeApplyPhase::Security {
             return "incomplete_fail_closed";
         }
         let phases = self.plan.phases();
         let Some(security_index) = phases
             .iter()
-            .position(|phase| *phase == SettingsApplyPhase::Security)
+            .position(|phase| *phase == SettingsRuntimeApplyPhase::Security)
         else {
             return "unchanged";
         };
@@ -657,19 +657,19 @@ impl SettingsRuntimeApplyCoordinator {
     /// preserving the existing partial-apply behavior.
     pub(crate) async fn apply<F, Fut>(&mut self, mut execute: F) -> Result<(), String>
     where
-        F: FnMut(SettingsApplyPhase) -> Fut,
-        Fut: Future<Output = SettingsApplyOutcome>,
+        F: FnMut(SettingsRuntimeApplyPhase) -> Fut,
+        Fut: Future<Output = SettingsRuntimeApplyOutcome>,
     {
         for phase in self.plan.phases().iter().copied() {
             self.phase = Some(phase);
             self.failure_kind = None;
             match execute(phase).await {
-                SettingsApplyOutcome::Applied => {
-                    if phase == SettingsApplyPhase::RouterPublish {
+                SettingsRuntimeApplyOutcome::Applied => {
+                    if phase == SettingsRuntimeApplyPhase::RouterPublish {
                         self.router_published = true;
                     }
                 }
-                SettingsApplyOutcome::Failed {
+                SettingsRuntimeApplyOutcome::Failed {
                     command,
                     error,
                     already_rendered,
@@ -687,7 +687,7 @@ impl SettingsRuntimeApplyCoordinator {
                         .record(command, &rendered, Some(failure_kind));
                     return Err(rendered);
                 }
-                SettingsApplyOutcome::Warning { command, error } => {
+                SettingsRuntimeApplyOutcome::Warning { command, error } => {
                     self.observation(phase).record(command, &error, None);
                 }
             }
@@ -695,9 +695,9 @@ impl SettingsRuntimeApplyCoordinator {
         Ok(())
     }
 
-    fn observation(&self, phase: SettingsApplyPhase) -> SettingsApplyObservation {
+    fn observation(&self, phase: SettingsRuntimeApplyPhase) -> SettingsRuntimeApplyObservation {
         debug_assert_eq!(self.phase, Some(phase));
-        SettingsApplyObservation {
+        SettingsRuntimeApplyObservation {
             config_version: self.plan.config_version,
             phase,
             failure_kind: self.failure_kind,
@@ -707,7 +707,7 @@ impl SettingsRuntimeApplyCoordinator {
     }
 
     #[cfg(test)]
-    fn current_phase(&self) -> Option<SettingsApplyPhase> {
+    fn current_phase(&self) -> Option<SettingsRuntimeApplyPhase> {
         self.phase
     }
 
@@ -717,7 +717,7 @@ impl SettingsRuntimeApplyCoordinator {
     }
 
     #[cfg(test)]
-    fn current_observation(&self) -> Option<SettingsApplyObservation> {
+    fn current_observation(&self) -> Option<SettingsRuntimeApplyObservation> {
         self.phase.map(|phase| self.observation(phase))
     }
 }
@@ -759,10 +759,10 @@ mod tests {
         let mut coordinator = SettingsRuntimeApplyCoordinator::new(&before_security, &snapshot, "");
         let _ = coordinator
             .apply(|phase| async move {
-                if phase == SettingsApplyPhase::InputPipeline {
-                    SettingsApplyOutcome::failed("settings_test", "input pipeline failed")
+                if phase == SettingsRuntimeApplyPhase::InputPipeline {
+                    SettingsRuntimeApplyOutcome::failed("settings_test", "input pipeline failed")
                 } else {
-                    SettingsApplyOutcome::applied()
+                    SettingsRuntimeApplyOutcome::applied()
                 }
             })
             .await;
@@ -776,10 +776,10 @@ mod tests {
             SettingsRuntimeApplyCoordinator::new(&security_failure, &snapshot, "");
         let _ = coordinator
             .apply(|phase| async move {
-                if phase == SettingsApplyPhase::Security {
-                    SettingsApplyOutcome::failed("settings_test", "grant restore failed")
+                if phase == SettingsRuntimeApplyPhase::Security {
+                    SettingsRuntimeApplyOutcome::failed("settings_test", "grant restore failed")
                 } else {
-                    SettingsApplyOutcome::applied()
+                    SettingsRuntimeApplyOutcome::applied()
                 }
             })
             .await;
@@ -795,10 +795,10 @@ mod tests {
         let mut coordinator = SettingsRuntimeApplyCoordinator::new(&after_security, &snapshot, "");
         let _ = coordinator
             .apply(|phase| async move {
-                if phase == SettingsApplyPhase::ToolSettings {
-                    SettingsApplyOutcome::failed("settings_test", "tool settings failed")
+                if phase == SettingsRuntimeApplyPhase::ToolSettings {
+                    SettingsRuntimeApplyOutcome::failed("settings_test", "tool settings failed")
                 } else {
-                    SettingsApplyOutcome::applied()
+                    SettingsRuntimeApplyOutcome::applied()
                 }
             })
             .await;
@@ -963,28 +963,28 @@ mod tests {
     fn settings_plan_uses_shared_targets_and_declares_the_existing_phase_order() {
         let change = settings_change(18);
         let snapshot = settings_snapshot(18, "Ctrl+Alt+N");
-        let plan = SettingsApplyPlan::from_change(&change, &snapshot, "Ctrl+Alt+O");
+        let plan = SettingsRuntimeApplyPlan::from_change(&change, &snapshot, "Ctrl+Alt+O");
 
         assert_eq!(plan.config_version, snapshot.version);
         assert_eq!(
             plan.phases(),
             &[
-                SettingsApplyPhase::RouterPrepare,
-                SettingsApplyPhase::InputPipeline,
-                SettingsApplyPhase::Shell,
-                SettingsApplyPhase::Security,
-                SettingsApplyPhase::McpConfig,
-                SettingsApplyPhase::McpMonitors,
-                SettingsApplyPhase::RouterPublish,
-                SettingsApplyPhase::ContextLimits,
-                SettingsApplyPhase::SessionRuntime,
-                SettingsApplyPhase::ToolSettings,
-                SettingsApplyPhase::Skills,
-                SettingsApplyPhase::Logging,
-                SettingsApplyPhase::HotkeyMode,
-                SettingsApplyPhase::HotkeyUnregister,
-                SettingsApplyPhase::HotkeyRegister,
-                SettingsApplyPhase::HotkeyRebindEvent,
+                SettingsRuntimeApplyPhase::RouterPrepare,
+                SettingsRuntimeApplyPhase::InputPipeline,
+                SettingsRuntimeApplyPhase::Shell,
+                SettingsRuntimeApplyPhase::Security,
+                SettingsRuntimeApplyPhase::McpConfig,
+                SettingsRuntimeApplyPhase::McpMonitors,
+                SettingsRuntimeApplyPhase::RouterPublish,
+                SettingsRuntimeApplyPhase::ContextLimits,
+                SettingsRuntimeApplyPhase::SessionRuntime,
+                SettingsRuntimeApplyPhase::ToolSettings,
+                SettingsRuntimeApplyPhase::Skills,
+                SettingsRuntimeApplyPhase::Logging,
+                SettingsRuntimeApplyPhase::HotkeyMode,
+                SettingsRuntimeApplyPhase::HotkeyUnregister,
+                SettingsRuntimeApplyPhase::HotkeyRegister,
+                SettingsRuntimeApplyPhase::HotkeyRebindEvent,
             ]
         );
         assert_eq!(
@@ -996,18 +996,25 @@ mod tests {
         );
 
         let unchanged_hotkey = settings_snapshot(18, "Ctrl+Alt+O");
-        let plan = SettingsApplyPlan::from_change(&change, &unchanged_hotkey, "Ctrl+Alt+O");
-        assert!(plan.phases().contains(&SettingsApplyPhase::HotkeyMode));
+        let plan = SettingsRuntimeApplyPlan::from_change(&change, &unchanged_hotkey, "Ctrl+Alt+O");
         assert!(
-            !plan
-                .phases()
-                .contains(&SettingsApplyPhase::HotkeyUnregister)
+            plan.phases()
+                .contains(&SettingsRuntimeApplyPhase::HotkeyMode)
         );
-        assert!(!plan.phases().contains(&SettingsApplyPhase::HotkeyRegister));
         assert!(
             !plan
                 .phases()
-                .contains(&SettingsApplyPhase::HotkeyRebindEvent)
+                .contains(&SettingsRuntimeApplyPhase::HotkeyUnregister)
+        );
+        assert!(
+            !plan
+                .phases()
+                .contains(&SettingsRuntimeApplyPhase::HotkeyRegister)
+        );
+        assert!(
+            !plan
+                .phases()
+                .contains(&SettingsRuntimeApplyPhase::HotkeyRebindEvent)
         );
     }
 
@@ -1018,7 +1025,7 @@ mod tests {
             domains: vec![ConfigDomain::SkillsExec],
         };
         let snapshot = settings_snapshot(21, "Ctrl+Alt+O");
-        let plan = SettingsApplyPlan::from_change(&change, &snapshot, "Ctrl+Alt+O");
+        let plan = SettingsRuntimeApplyPlan::from_change(&change, &snapshot, "Ctrl+Alt+O");
 
         assert!(plan.live_targets.is_empty());
         assert_eq!(
@@ -1035,14 +1042,14 @@ mod tests {
             domains: vec![ConfigDomain::SkillsExec, ConfigDomain::Skills],
         };
         let snapshot = settings_snapshot(22, "Ctrl+Alt+O");
-        let plan = SettingsApplyPlan::from_change(&change, &snapshot, "Ctrl+Alt+O");
+        let plan = SettingsRuntimeApplyPlan::from_change(&change, &snapshot, "Ctrl+Alt+O");
 
         assert_eq!(plan.live_targets, vec![RuntimeConfigTarget::Skills]);
         assert_eq!(
             plan.restart_required_targets,
             vec![RuntimeConfigTarget::Skills]
         );
-        assert_eq!(plan.phases(), &[SettingsApplyPhase::Skills]);
+        assert_eq!(plan.phases(), &[SettingsRuntimeApplyPhase::Skills]);
     }
 
     #[tokio::test]
@@ -1058,7 +1065,7 @@ mod tests {
                 let seen = seen_by_callback.clone();
                 async move {
                     seen.lock().unwrap().push(phase);
-                    SettingsApplyOutcome::applied()
+                    SettingsRuntimeApplyOutcome::applied()
                 }
             })
             .await
@@ -1071,7 +1078,7 @@ mod tests {
         assert_eq!(successful_metadata.config_version, 19);
         assert_eq!(
             successful_metadata.phase,
-            SettingsApplyPhase::HotkeyRebindEvent
+            SettingsRuntimeApplyPhase::HotkeyRebindEvent
         );
         assert!(successful_metadata.router_published);
         assert_eq!(
@@ -1083,7 +1090,7 @@ mod tests {
         );
 
         for (failed_index, failed_phase) in expected_phases.iter().copied().enumerate() {
-            if failed_phase == SettingsApplyPhase::HotkeyRebindEvent {
+            if failed_phase == SettingsRuntimeApplyPhase::HotkeyRebindEvent {
                 // This callback is warning-only in production; its warning
                 // behavior has a separate regression test below.
                 continue;
@@ -1097,16 +1104,19 @@ mod tests {
                     async move {
                         seen.lock().unwrap().push(phase);
                         if phase == failed_phase {
-                            if phase == SettingsApplyPhase::RouterPrepare {
-                                SettingsApplyOutcome::failed_already_rendered(
+                            if phase == SettingsRuntimeApplyPhase::RouterPrepare {
+                                SettingsRuntimeApplyOutcome::failed_already_rendered(
                                     "settings_phase_test",
                                     "phase failed".into(),
                                 )
                             } else {
-                                SettingsApplyOutcome::failed("settings_phase_test", "phase failed")
+                                SettingsRuntimeApplyOutcome::failed(
+                                    "settings_phase_test",
+                                    "phase failed",
+                                )
                             }
                         } else {
-                            SettingsApplyOutcome::applied()
+                            SettingsRuntimeApplyOutcome::applied()
                         }
                     }
                 })
@@ -1123,15 +1133,17 @@ mod tests {
             assert_eq!(failure.phase, failed_phase);
             assert_eq!(
                 failure.failure_kind,
-                Some(if failed_phase == SettingsApplyPhase::RouterPrepare {
-                    SettingsApplyFailureKind::RouterPrepare
-                } else {
-                    SettingsApplyFailureKind::RuntimeOwner
-                })
+                Some(
+                    if failed_phase == SettingsRuntimeApplyPhase::RouterPrepare {
+                        SettingsRuntimeApplyFailureKind::RouterPrepare
+                    } else {
+                        SettingsRuntimeApplyFailureKind::RuntimeOwner
+                    }
+                )
             );
             assert_eq!(
                 failure.router_published,
-                expected_phases[..failed_index].contains(&SettingsApplyPhase::RouterPublish)
+                expected_phases[..failed_index].contains(&SettingsRuntimeApplyPhase::RouterPublish)
             );
             assert_eq!(
                 failure.restart_required_targets,
@@ -1157,13 +1169,13 @@ mod tests {
         let result = coordinator
             .apply(|phase| {
                 seen.push(phase);
-                let outcome = if phase == SettingsApplyPhase::RouterPublish {
-                    SettingsApplyOutcome::failed_catalog_rebuild_after_router_publish(
+                let outcome = if phase == SettingsRuntimeApplyPhase::RouterPublish {
+                    SettingsRuntimeApplyOutcome::failed_catalog_rebuild_after_router_publish(
                         "update_settings router publish",
                         "catalog conflict",
                     )
                 } else {
-                    SettingsApplyOutcome::applied()
+                    SettingsRuntimeApplyOutcome::applied()
                 };
                 async move { outcome }
             })
@@ -1173,15 +1185,15 @@ mod tests {
         assert_eq!(
             seen,
             vec![
-                SettingsApplyPhase::RouterPrepare,
-                SettingsApplyPhase::RouterPublish,
+                SettingsRuntimeApplyPhase::RouterPrepare,
+                SettingsRuntimeApplyPhase::RouterPublish,
             ]
         );
         let failure = coordinator.current_observation().unwrap();
-        assert_eq!(failure.phase, SettingsApplyPhase::RouterPublish);
+        assert_eq!(failure.phase, SettingsRuntimeApplyPhase::RouterPublish);
         assert_eq!(
             failure.failure_kind,
-            Some(SettingsApplyFailureKind::ToolCatalogRebuild)
+            Some(SettingsRuntimeApplyFailureKind::ToolCatalogRebuild)
         );
         assert!(failure.router_published);
     }
@@ -1204,17 +1216,17 @@ mod tests {
         let result = coordinator
             .apply(|phase| {
                 let result = match phase {
-                    SettingsApplyPhase::RouterPrepare => {
-                        SettingsApplyOutcome::failed_already_rendered(
+                    SettingsRuntimeApplyPhase::RouterPrepare => {
+                        SettingsRuntimeApplyOutcome::failed_already_rendered(
                             "update_settings",
                             "client preparation failed".into(),
                         )
                     }
-                    SettingsApplyPhase::RouterPublish => {
+                    SettingsRuntimeApplyPhase::RouterPublish => {
                         router_published = true;
-                        SettingsApplyOutcome::applied()
+                        SettingsRuntimeApplyOutcome::applied()
                     }
-                    _ => SettingsApplyOutcome::applied(),
+                    _ => SettingsRuntimeApplyOutcome::applied(),
                 };
                 async move { result }
             })
@@ -1224,7 +1236,7 @@ mod tests {
         assert!(!router_published);
         let failure = coordinator.current_observation().unwrap();
         assert_eq!(failure.config_version, snapshot.version);
-        assert_eq!(failure.phase, SettingsApplyPhase::RouterPrepare);
+        assert_eq!(failure.phase, SettingsRuntimeApplyPhase::RouterPrepare);
         assert!(!failure.router_published);
         assert_eq!(
             failure.restart_required_targets,
@@ -1247,20 +1259,20 @@ mod tests {
 
         coordinator
             .apply(|phase| async move {
-                if phase == SettingsApplyPhase::HotkeyRebindEvent {
-                    SettingsApplyOutcome::warning(
+                if phase == SettingsRuntimeApplyPhase::HotkeyRebindEvent {
+                    SettingsRuntimeApplyOutcome::warning(
                         "update_settings hotkey rebind event",
                         "event failed",
                     )
                 } else {
-                    SettingsApplyOutcome::applied()
+                    SettingsRuntimeApplyOutcome::applied()
                 }
             })
             .await
             .unwrap();
 
         let metadata = coordinator.current_observation().unwrap();
-        assert_eq!(metadata.phase, SettingsApplyPhase::HotkeyRebindEvent);
+        assert_eq!(metadata.phase, SettingsRuntimeApplyPhase::HotkeyRebindEvent);
         assert_eq!(metadata.config_version, snapshot.version);
         assert!(!metadata.router_published);
         assert!(metadata.restart_required_targets.is_empty());
@@ -1318,13 +1330,13 @@ mod tests {
             .unwrap();
         let rendered = tracing::subscriber::with_default(subscriber, || {
             runtime.block_on(coordinator.apply(|phase| async move {
-                if phase == SettingsApplyPhase::Skills {
-                    SettingsApplyOutcome::failed(
+                if phase == SettingsRuntimeApplyPhase::Skills {
+                    SettingsRuntimeApplyOutcome::failed(
                         "update_settings skills",
                         "request failed with api_key=never-log-this-secret",
                     )
                 } else {
-                    SettingsApplyOutcome::applied()
+                    SettingsRuntimeApplyOutcome::applied()
                 }
             }))
         })
@@ -1349,7 +1361,7 @@ mod tests {
             domains: vec![ConfigDomain::SkillsExec, ConfigDomain::Memory],
         };
         let snapshot = settings_snapshot(24, "Ctrl+Alt+O");
-        let plan = SettingsApplyPlan::from_change(&change, &snapshot, "Ctrl+Alt+O");
+        let plan = SettingsRuntimeApplyPlan::from_change(&change, &snapshot, "Ctrl+Alt+O");
 
         assert_eq!(plan.config_version, snapshot.version);
         assert_eq!(
