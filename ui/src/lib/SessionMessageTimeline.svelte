@@ -68,10 +68,7 @@
 		}),
 	);
 	let awaitingBackgroundToolRunId = $derived(
-		firstWaitingBackgroundToolRunId(
-			sessionToolRuns,
-			awaitingBackground && !runEndStatus,
-		),
+		firstWaitingBackgroundToolRunId(sessionToolRuns, awaitingBackground && !runEndStatus),
 	);
 </script>
 
@@ -157,10 +154,7 @@
 		{/each}
 	</div>
 	{#if runEndStatus}
-		<SessionRunEndBanner
-			status={runEndStatus}
-			reason={runEndReason}
-		/>
+		<SessionRunEndBanner status={runEndStatus} reason={runEndReason} />
 	{/if}
 	{#if showContinueButton && !continueDisabled}
 		<div class="continue-action" in:fly={{ y: 6, duration: 240 }}>

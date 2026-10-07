@@ -1,20 +1,19 @@
 <script lang="ts">
 	import type { ComponentProps } from 'svelte';
-	import ChatMessageTimeline from '$lib/ChatMessageTimeline.svelte';
+	import SessionMessageTimeline from '$lib/SessionMessageTimeline.svelte';
 	import SessionEmptyState from './SessionEmptyState.svelte';
 	import LoadingState from './LoadingState.svelte';
 	import SessionRunEndBanner from './SessionRunEndBanner.svelte';
 
-	type MessageTimelineProps = ComponentProps<typeof ChatMessageTimeline>;
-	type Props = MessageTimelineProps & { loading?: boolean };
+	type SessionMessageTimelineProps = ComponentProps<typeof SessionMessageTimeline>;
+	type Props = SessionMessageTimelineProps & { loading?: boolean };
 
 	/**
 	 * SessionTimeline is the semantic boundary for streamed
 	 * messages, tool results and ask/confirm interactions.
 	 *
-	 * The empty state is deliberately kept separate from the message renderer.
-	 * ChatMessageTimeline pulls in markdown, syntax highlighting and tool-card
-	 * components, none of which are needed for the first blank session.
+	 * Loading/empty presentation stays separate from rendering a populated
+	 * session message timeline.
 	 */
 	let {
 		messages = [],
@@ -34,10 +33,8 @@
 {:else if messages.length === 0 && sessionToolRuns.length === 0 && !awaitingBackground}
 	<SessionEmptyState hotkeyBinding={restProps.hotkeyBinding} />
 {:else}
-	<!-- Keep the message renderer available for the first streamed event. A
-	     lazy component boundary here turns normal IPC latency into a loading
-	     gap and can leave the conversation blank after a chunk-load failure. -->
-	<ChatMessageTimeline
+	<!-- Mount the populated timeline as soon as messages, ToolRuns, or a wait state exist. -->
+	<SessionMessageTimeline
 		{messages}
 		{sessionToolRuns}
 		{awaitingBackground}
