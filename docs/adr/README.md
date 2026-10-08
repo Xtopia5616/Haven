@@ -760,3 +760,4 @@
 - [0769：图标按钮使用注册表键类型](0769-type-icon-button-registry-key.md)
 - [0770：Context menu 图标使用注册表键类型](0770-type-context-menu-icon.md)
 - [0771：ExpandableContextCard kind 使用闭合集合](0771-type-expandable-context-card-kind.md)
+- [0772：CountChip 使用数值数量 prop](0772-type-count-chip-count.md)
