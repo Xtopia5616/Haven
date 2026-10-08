@@ -3,7 +3,7 @@
 	let mcpServers = $state<McpServerSnapshot[]>([]);
 	let skills = $state<SkillInfo[]>([]);
 	let builtinTools = $state<BuiltinToolEntry[]>([]);
-	let activeTab = $state<'builtin' | 'mcp' | 'skills'>('builtin');
+	let activeTab = $state<ToolTabId>('builtin');
 	let searchQuery = $state('');
 	let enabledFilter = $state<'all' | 'enabled' | 'disabled'>('all');
 	let mcpDialogOpen = $state(false);
@@ -63,6 +63,14 @@
 		url?: string;
 		transport?: string;
 	}
+
+	const TOOL_TAB_IDS = ['builtin', 'mcp', 'skills'] as const;
+	type ToolTabId = (typeof TOOL_TAB_IDS)[number];
+	const TOOL_TAB_LABELS: Record<ToolTabId, string> = {
+		builtin: '内置工具',
+		mcp: 'MCP',
+		skills: '技能',
+	};
 
 	let unlistenSkills: { dispose: () => void } | undefined;
 	let unlistenMcp: { dispose: () => void } | undefined;
@@ -375,13 +383,12 @@
 		);
 	}
 
-	const tabs = [
-		{ id: 'builtin', label: '内置工具' },
-		{ id: 'mcp', label: 'MCP' },
-		{ id: 'skills', label: '技能' },
-	];
+	const tabs = TOOL_TAB_IDS.map((id) => ({ id, label: TOOL_TAB_LABELS[id] }));
+	function isToolTabId(value: string): value is ToolTabId {
+		return TOOL_TAB_IDS.some((tabId) => tabId === value);
+	}
 	function selectToolTab(tabId: string) {
-		if (tabId === 'builtin' || tabId === 'mcp' || tabId === 'skills') activeTab = tabId;
+		if (isToolTabId(tabId)) activeTab = tabId;
 	}
 </script>
 

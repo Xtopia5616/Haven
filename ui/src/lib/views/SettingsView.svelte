@@ -326,14 +326,15 @@
 			keys: ['log'],
 		},
 	] as const;
-	let settingsTab = $state('behavior');
-	let visitedSettingsTabs = $state<string[]>(['behavior']);
-	let modelSection = $state<'models' | 'media'>('models');
+	type SettingsTabId = (typeof SETTINGS_SECTIONS)[number]['id'];
+	let settingsTab = $state<SettingsTabId>('behavior');
+	let visitedSettingsTabs = $state<SettingsTabId[]>(['behavior']);
+	let modelSection = $state<Extract<SettingsTabId, 'models' | 'media'>>('models');
 	let activeSettingsSection = $derived(
 		SETTINGS_SECTIONS.find((section) => section.id === settingsTab) ?? SETTINGS_SECTIONS[0],
 	);
 	let dirtySettingsSectionIds = $derived.by(() => {
-		if (!settingsLoaded || !savedSnapshot) return [] as string[];
+		if (!settingsLoaded || !savedSnapshot) return [] as SettingsTabId[];
 		try {
 			const current = buildPersistableSettings() as Record<string, unknown>;
 			const baseline = JSON.parse(savedSnapshot) as Record<string, unknown>;
@@ -343,7 +344,7 @@
 				),
 			).map((section) => section.id);
 		} catch {
-			return [] as string[];
+			return [] as SettingsTabId[];
 		}
 	});
 	let settingsTabs = $derived(
@@ -511,8 +512,12 @@
 		saveError = '';
 	}
 
+	function isSettingsTabId(value: string): value is SettingsTabId {
+		return SETTINGS_SECTIONS.some((section) => section.id === value);
+	}
+
 	function changeSettingsTab(id: string) {
-		if (id === settingsTab) return;
+		if (!isSettingsTabId(id) || id === settingsTab) return;
 		if (id === 'models' || id === 'media') modelSection = id;
 		if (!visitedSettingsTabs.includes(id)) visitedSettingsTabs = [...visitedSettingsTabs, id];
 		settingsTab = id;
