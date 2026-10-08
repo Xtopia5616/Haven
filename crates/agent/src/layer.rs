@@ -164,6 +164,12 @@ impl AgentLayer {
         self.react_engine.set_context_limits(limits)
     }
 
+    /// Hot-reload the memory LLM extraction gate. Pending durable markers are
+    /// retained while disabled and resume when re-enabled.
+    pub fn set_fact_inference_enabled(&self, enabled: bool) {
+        self.memory_worker.set_fact_inference_enabled(enabled);
+    }
+
     /// Hot-reload the provider-facing media projection policy.
     pub fn set_media_strategy(
         &self,

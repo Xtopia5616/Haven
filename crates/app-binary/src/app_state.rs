@@ -363,6 +363,7 @@ impl AppState {
             context_limits,
         );
         let agent = Arc::new(agent_startup.agent);
+        agent.set_fact_inference_enabled(cfg.memory.fact_inference_enabled);
         let memory_startup = agent_startup.memory_startup;
         agent.set_media_strategy(cfg.media.input_strategy)?;
         agent.set_max_steps_per_session(max_steps_per_session)?;

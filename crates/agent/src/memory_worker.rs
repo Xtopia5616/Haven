@@ -6,8 +6,7 @@ use outbox::{MemoryExtractionHandler, MemoryOutbox};
 use outbox::{OUTBOX_PAGE_SIZE, current_epoch_millis};
 
 use std::collections::HashMap;
-#[cfg(test)]
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
@@ -67,6 +66,9 @@ pub struct MemoryWorker {
     fact_extraction_store: MemoryFactExtractionStore,
     maintenance_store: MemoryMaintenanceStore,
     inference: Arc<dyn MemoryInferencePort>,
+    /// Runtime policy gate for model-backed fact extraction. Durable outbox
+    /// markers remain pending while this is disabled.
+    fact_inference_enabled: AtomicBool,
     /// Cap (chars) for transcripts sent to the SmallModel for fact
     /// extraction. Prevents unbounded token cost on long conversations.
     max_transcript_chars: usize,
@@ -157,6 +159,7 @@ impl MemoryWorker {
             fact_extraction_store,
             maintenance_store,
             inference,
+            fact_inference_enabled: AtomicBool::new(true),
             max_transcript_chars,
             max_known_facts,
             sanitize_max_chars,
@@ -303,6 +306,16 @@ impl MemoryWorker {
         self.outbox.start_outbox_worker(cancellation, handler).await
     }
 
+    pub(crate) fn set_fact_inference_enabled(&self, enabled: bool) {
+        if self.fact_inference_enabled.swap(enabled, Ordering::AcqRel) != enabled {
+            self.outbox.notify_worker();
+        }
+    }
+
+    pub(crate) fn fact_inference_enabled(&self) -> bool {
+        self.fact_inference_enabled.load(Ordering::Acquire)
+    }
+
     /// Stop background work owned by this worker. Pending extraction markers
     /// remain durable for the next process start.
     pub(crate) fn shutdown(&self) {
@@ -387,17 +400,30 @@ impl MemoryWorker {
     /// messages are still processed by the next allowed run (and by the
     /// maintenance pass regardless).
     pub async fn infer_facts(&self, session_id: &str) -> bool {
-        self.infer_facts_inner(session_id, false).await
+        matches!(
+            self.infer_facts_inner(session_id, false).await,
+            FactInferenceOutcome::Done
+        )
     }
 
     /// Pause-path extraction: bypasses the time throttle so a same-step
     /// interval infer cannot starve the post-pause pass that has the
     /// fresher transcript (Phase 3 / G2).
     pub async fn infer_facts_on_pause(&self, session_id: &str) -> bool {
-        self.infer_facts_inner(session_id, true).await
+        matches!(
+            self.infer_facts_inner(session_id, true).await,
+            FactInferenceOutcome::Done
+        )
     }
 
-    async fn infer_facts_inner(&self, session_id: &str, bypass_throttle: bool) -> bool {
+    async fn infer_facts_inner(
+        &self,
+        session_id: &str,
+        bypass_throttle: bool,
+    ) -> FactInferenceOutcome {
+        if !self.fact_inference_enabled.load(Ordering::Acquire) {
+            return FactInferenceOutcome::Disabled;
+        }
         // Time throttle: at most one LLM extraction per interval per session.
         // kv_store key `fact_extraction_last_run.<session_id>` = RFC3339 of
         // the last run that actually called the model. The cleanup routine
@@ -417,7 +443,7 @@ impl MemoryWorker {
                         session_id,
                         error
                     );
-                    return false;
+                    return FactInferenceOutcome::Retryable;
                 }
             };
             if let Some(ts) = last_run
@@ -425,13 +451,20 @@ impl MemoryWorker {
                 && (chrono::Utc::now() - prev.with_timezone(&chrono::Utc)).num_seconds()
                     < self.fact_extraction_min_interval_secs as i64
             {
+                let elapsed_secs = (chrono::Utc::now() - prev.with_timezone(&chrono::Utc))
+                    .num_seconds()
+                    .max(0) as u64;
+                let wait_secs = self
+                    .fact_extraction_min_interval_secs
+                    .saturating_sub(elapsed_secs)
+                    .max(1);
                 tracing::debug!(
                     "fact inference: throttled (last run {} < {}s ago) for session {}",
                     ts,
                     self.fact_extraction_min_interval_secs,
                     session_id
                 );
-                return false;
+                return FactInferenceOutcome::Throttled { wait_secs };
             }
         }
 
@@ -447,13 +480,13 @@ impl MemoryWorker {
                     session_id,
                     error
                 );
-                return false;
+                return FactInferenceOutcome::Retryable;
             }
         };
         let messages = transcript.messages;
         let steps = transcript.steps;
         if messages.is_empty() {
-            return true;
+            return FactInferenceOutcome::Done;
         }
 
         // Incremental window (M1+M4): cursor tracks user message ids; each new
@@ -472,7 +505,7 @@ impl MemoryWorker {
                     session_id,
                     error
                 );
-                return false;
+                return FactInferenceOutcome::Retryable;
             }
         };
         let window = build_extraction_window(&messages, cursor.as_deref(), &steps);
@@ -496,9 +529,9 @@ impl MemoryWorker {
                     session_id,
                     error
                 );
-                return false;
+                return FactInferenceOutcome::Retryable;
             }
-            return true;
+            return FactInferenceOutcome::Done;
         }
 
         // Stamp the run timestamp BEFORE calling the model: the throttle
@@ -517,7 +550,7 @@ impl MemoryWorker {
                     session_id,
                     error
                 );
-                return false;
+                return FactInferenceOutcome::Retryable;
             }
         }
 
@@ -529,7 +562,7 @@ impl MemoryWorker {
                 let fact_count = facts.len();
                 let writes = self.prepare_fact_writes(facts, &window.messages);
                 let Some(last_message_id) = window.cursor_last.as_deref() else {
-                    return true;
+                    return FactInferenceOutcome::Done;
                 };
                 match self
                     .fact_store
@@ -542,28 +575,30 @@ impl MemoryWorker {
                     .await
                 {
                     Ok(wrote) => wrote,
-                    Err(_) => {
+                    Err(error) => {
                         tracing::warn!(
                             session_id = %session_id,
                             fact_count,
+                            error = %haven_common::error::sanitize_error_text(&error.to_string()),
                             "ordinary fact extraction commit failed; keeping extraction cursor unchanged"
                         );
-                        return false;
+                        return FactInferenceOutcome::Retryable;
                     }
                 }
             }
-            Err(_) => {
+            Err(error) => {
                 tracing::warn!(
                     session_id = %session_id,
+                    error = %haven_common::error::sanitize_error_text(&error.to_string()),
                     "LLM fact extraction failed; keeping extraction cursor unchanged"
                 );
-                return false;
+                return FactInferenceOutcome::Retryable;
             }
         };
         if wrote {
             self.mark_memory_dirty(session_id);
         }
-        true
+        FactInferenceOutcome::Done
     }
 
     /// Full memory maintenance pass, independent of any extraction: collapse
@@ -586,6 +621,7 @@ impl MemoryWorker {
             self.inference.as_ref(),
             self.inference_semaphore.as_ref(),
             self.memory.as_ref(),
+            self.fact_inference_enabled.load(Ordering::Acquire),
         )
         .run(None)
         .await
@@ -600,6 +636,7 @@ impl MemoryWorker {
             self.inference.as_ref(),
             self.inference_semaphore.as_ref(),
             self.memory.as_ref(),
+            self.fact_inference_enabled.load(Ordering::Acquire),
         )
         .run(Some(cancellation))
         .await
@@ -705,8 +742,7 @@ impl MemoryWorker {
         let response = self
             .inference
             .fast_chat(FACT_EXTRACTION_SYSTEM_PROMPT, &user_content)
-            .await
-            .map_err(|_| anyhow::anyhow!("small model chat failed"))?;
+            .await?;
 
         if response.trim().is_empty() {
             tracing::debug!("LLM fact extraction: empty model response, treating as no facts");
@@ -714,8 +750,13 @@ impl MemoryWorker {
         }
 
         let json_str = extract_json_array(&response);
-        let facts: Vec<LlmFact> = serde_json::from_str(&json_str)
-            .map_err(|_| anyhow::anyhow!("failed to parse LLM fact JSON"))?;
+        let facts: Vec<LlmFact> = serde_json::from_str(&json_str).map_err(|error| {
+            anyhow::anyhow!(
+                "failed to parse LLM fact JSON at line {}, column {}",
+                error.line(),
+                error.column()
+            )
+        })?;
 
         tracing::info!("LLM fact extraction: {} facts extracted", facts.len());
         Ok(facts)
@@ -764,17 +805,31 @@ impl MemoryWorker {
     /// full-table dedup / sensitive / flush — that stays on the scheduler via
     /// [`Self::run_memory_maintenance`].
     pub async fn infer_session(&self, session_id: &str) -> bool {
-        let completed = self.infer_facts(session_id).await;
+        matches!(
+            self.infer_session_outcome(session_id).await,
+            FactInferenceOutcome::Done
+        )
+    }
+
+    async fn infer_session_outcome(&self, session_id: &str) -> FactInferenceOutcome {
+        let outcome = self.infer_facts_inner(session_id, false).await;
         self.memory.embed_new_memory().await;
-        completed
+        outcome
     }
 
     /// Pause-path variant: bypasses the extraction time throttle so a
     /// same-step interval infer cannot starve the fresher post-pause pass.
     pub async fn infer_session_on_pause(&self, session_id: &str) -> bool {
-        let completed = self.infer_facts_on_pause(session_id).await;
+        matches!(
+            self.infer_session_on_pause_outcome(session_id).await,
+            FactInferenceOutcome::Done
+        )
+    }
+
+    async fn infer_session_on_pause_outcome(&self, session_id: &str) -> FactInferenceOutcome {
+        let outcome = self.infer_facts_inner(session_id, true).await;
         self.memory.embed_new_memory().await;
-        completed
+        outcome
     }
 
     /// Drop mid-run MEMORY patch bookkeeping for a finished session.
@@ -937,12 +992,16 @@ impl MemoryWorker {
 
 #[async_trait::async_trait]
 impl MemoryExtractionHandler for MemoryWorker {
-    async fn infer_session(&self, session_id: &str) -> bool {
-        MemoryWorker::infer_session(self, session_id).await
+    fn fact_inference_enabled(&self) -> bool {
+        MemoryWorker::fact_inference_enabled(self)
     }
 
-    async fn infer_session_on_pause(&self, session_id: &str) -> bool {
-        MemoryWorker::infer_session_on_pause(self, session_id).await
+    async fn infer_session(&self, session_id: &str) -> FactInferenceOutcome {
+        MemoryWorker::infer_session_outcome(self, session_id).await
+    }
+
+    async fn infer_session_on_pause(&self, session_id: &str) -> FactInferenceOutcome {
+        MemoryWorker::infer_session_on_pause_outcome(self, session_id).await
     }
 
     async fn infer_facts_from_summary(
@@ -961,6 +1020,15 @@ pub enum SummaryExtractOutcome {
     Done,
     Throttled { wait_secs: u64 },
     Retryable { wait_secs: u64 },
+}
+
+/// Result of processing a durable transcript fact-extraction marker.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FactInferenceOutcome {
+    Done,
+    Throttled { wait_secs: u64 },
+    Retryable,
+    Disabled,
 }
 
 #[cfg(test)]
@@ -983,6 +1051,7 @@ mod tests {
     use std::collections::VecDeque;
     use std::pin::Pin;
     use std::sync::atomic::AtomicUsize;
+    use std::time::Duration;
     use tokio::sync::{Notify, mpsc, oneshot};
 
     struct FixedMemoryInference {
@@ -1574,6 +1643,7 @@ mod tests {
             worker.inference.as_ref(),
             worker.inference_semaphore.as_ref(),
             worker.memory.as_ref(),
+            true,
         )
         .merge_predicates_with_llm()
         .await;
@@ -1630,6 +1700,7 @@ mod tests {
             worker.inference.as_ref(),
             worker.inference_semaphore.as_ref(),
             worker.memory.as_ref(),
+            true,
         )
         .arbitrate_contradictions_with_llm()
         .await;
@@ -1659,6 +1730,7 @@ mod tests {
             worker.inference.as_ref(),
             worker.inference_semaphore.as_ref(),
             worker.memory.as_ref(),
+            true,
         );
         assert_eq!(maintenance.merge_predicates_with_llm().await, 0);
         assert_eq!(maintenance.arbitrate_contradictions_with_llm().await, 0);
@@ -2235,6 +2307,7 @@ mod tests {
                 &fact_marker.value,
                 4,
                 current_epoch_millis() + 60_000,
+                false,
             )
             .unwrap()
         );
@@ -3236,7 +3309,11 @@ mod tests {
                 None,
             )
             .unwrap();
-        engine.infer_facts(&session.id).await;
+        let outcome = engine.infer_facts_inner(&session.id, false).await;
+        assert!(matches!(
+            outcome,
+            FactInferenceOutcome::Throttled { wait_secs } if (1..=3_600).contains(&wait_secs)
+        ));
         let cursor2: Option<String> = db
             .get_kv(&format!("fact_extraction.{}", session.id))
             .unwrap();
@@ -3320,6 +3397,129 @@ mod tests {
                 "missing {missing_table} must not advance the extraction cursor"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn disabled_fact_inference_keeps_durable_marker_until_reenabled() {
+        let db = temp_db();
+        let session = db.create_session("disabled inference").unwrap();
+        let message = db
+            .add_message(
+                &session.id,
+                haven_common::types::CanonicalRole::User,
+                "I prefer Rust.",
+                Some(haven_common::types::TranscriptMessageKind::Text),
+                None,
+            )
+            .unwrap();
+        let inference = Arc::new(FixedMemoryInference {
+            fast_chat_configured: true,
+            response:
+                r#"[{"subject":"user","predicate":"likes","object":"Rust","confidence":0.9}]"#
+                    .into(),
+            calls: AtomicUsize::new(0),
+        });
+        let memory = Arc::new(MemoryService::new(db.clone(), None, 64));
+        let worker = Arc::new(MemoryWorker::new_with_inference(
+            memory.clone(),
+            memory.memory_fact_store(),
+            inference.clone(),
+            4_000,
+            64,
+            256,
+            0,
+        ));
+        worker.set_fact_inference_enabled(false);
+        let cancellation = CancellationToken::new();
+        worker.start_outbox_worker(&cancellation).await.unwrap();
+        worker
+            .enqueue_infer_durable(&session.id, true, 1, &cancellation)
+            .await
+            .unwrap();
+
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        assert!(
+            db.get_kv(&format!("fact_extraction_pending.{}", session.id))
+                .unwrap()
+                .is_some(),
+            "disabling inference must preserve durable work"
+        );
+        assert_eq!(inference.calls.load(Ordering::Relaxed), 0);
+
+        worker.set_fact_inference_enabled(true);
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if db
+                    .get_kv(&format!("fact_extraction.{}", session.id))
+                    .unwrap()
+                    .as_deref()
+                    == Some(message.id.as_str())
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("reenabling inference should drain the marker");
+        assert_eq!(inference.calls.load(Ordering::Relaxed), 1);
+        worker.shutdown();
+    }
+
+    #[tokio::test]
+    async fn failed_pause_extraction_does_not_bypass_throttle_on_retry() {
+        let db = temp_db();
+        let session = db.create_session("pause retry throttle").unwrap();
+        db.add_message(
+            &session.id,
+            haven_common::types::CanonicalRole::User,
+            "I prefer Rust.",
+            Some(haven_common::types::TranscriptMessageKind::Text),
+            None,
+        )
+        .unwrap();
+        let worker = Arc::new(MemoryWorker::new(
+            db.clone(),
+            mock_router("not a json array"),
+            4_000,
+            64,
+            40,
+            256,
+            3_600,
+        ));
+        let cancellation = CancellationToken::new();
+        worker.start_outbox_worker(&cancellation).await.unwrap();
+        worker
+            .enqueue_infer_durable(&session.id, true, 1, &cancellation)
+            .await
+            .unwrap();
+
+        let state = tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                let high_water = db
+                    .pending_fact_extraction_high_water()
+                    .unwrap()
+                    .expect("failed extraction marker remains pending");
+                let markers = db
+                    .pending_fact_extractions_page(None, &high_water, 64)
+                    .unwrap();
+                let state = markers
+                    .into_iter()
+                    .find(|marker| marker.session_id == session.id)
+                    .and_then(|marker| marker.state.ok());
+                if let Some(state) = state
+                    && state.attempt > 0
+                {
+                    break state;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("failed extraction should be durably scheduled for retry");
+        assert_eq!(state.attempt, 1);
+        assert!(!state.bypass_throttle);
+        worker.shutdown();
     }
 
     #[tokio::test]

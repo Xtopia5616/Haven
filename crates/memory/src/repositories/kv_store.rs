@@ -459,11 +459,15 @@ impl Database {
         expected_value: &str,
         attempt: u32,
         next_attempt_at_ms: i64,
+        clear_bypass_throttle: bool,
     ) -> anyhow::Result<bool> {
         anyhow::ensure!(next_attempt_at_ms >= 0, "retry deadline cannot be negative");
         let mut state = decode_fact_extraction_marker(expected_value)?;
         state.attempt = attempt;
         state.next_attempt_at_ms = next_attempt_at_ms;
+        if clear_bypass_throttle {
+            state.bypass_throttle = false;
+        }
         let changed = self.conn().execute(
             "UPDATE kv_store SET value = ?3, updated_at = ?4
              WHERE key = ?1 AND value = ?2",
@@ -1264,7 +1268,7 @@ mod tests {
     fn fact_retry_metadata_survives_same_generation_and_resets_for_new_event() {
         let db = test_db();
         let session = db.create_session("retry metadata").unwrap();
-        db.enqueue_fact_extraction(&session.id, false, 1).unwrap();
+        db.enqueue_fact_extraction(&session.id, true, 1).unwrap();
         let high_water = db.pending_fact_extraction_high_water().unwrap().unwrap();
         let original = db
             .pending_fact_extractions_page(None, &high_water, 64)
@@ -1276,6 +1280,7 @@ mod tests {
                 &original.value,
                 3,
                 50_000,
+                true,
             )
             .unwrap()
         );
@@ -1286,6 +1291,7 @@ mod tests {
             .remove(0);
         assert_eq!(retried.state.as_ref().unwrap().attempt, 3);
         assert_eq!(retried.state.as_ref().unwrap().next_attempt_at_ms, 50_000);
+        assert!(!retried.state.as_ref().unwrap().bypass_throttle);
         assert!(
             !db.clear_pending_fact_extraction_marker_if_current(&retried.key, &original.value)
                 .unwrap()

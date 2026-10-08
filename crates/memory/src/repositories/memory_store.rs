@@ -123,6 +123,7 @@ impl MemoryStore {
         expected_value: String,
         attempt: u32,
         next_attempt_at_ms: i64,
+        clear_bypass_throttle: bool,
         cancellation: &CancellationToken,
     ) -> anyhow::Result<bool> {
         self.db
@@ -132,6 +133,7 @@ impl MemoryStore {
                     &expected_value,
                     attempt,
                     next_attempt_at_ms,
+                    clear_bypass_throttle,
                 )
             })
             .await

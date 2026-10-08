@@ -20,6 +20,7 @@ pub(super) struct MemoryMaintenancePass<'a> {
     inference: &'a dyn MemoryInferencePort,
     inference_semaphore: &'a Semaphore,
     memory: &'a MemoryService,
+    fact_inference_enabled: bool,
 }
 
 impl<'a> MemoryMaintenancePass<'a> {
@@ -28,12 +29,14 @@ impl<'a> MemoryMaintenancePass<'a> {
         inference: &'a dyn MemoryInferencePort,
         inference_semaphore: &'a Semaphore,
         memory: &'a MemoryService,
+        fact_inference_enabled: bool,
     ) -> Self {
         Self {
             maintenance_store,
             inference,
             inference_semaphore,
             memory,
+            fact_inference_enabled,
         }
     }
 
@@ -172,7 +175,11 @@ impl<'a> MemoryMaintenancePass<'a> {
         }
 
         ensure_memory_maintenance_active(cancellation)?;
-        let merged = self.merge_predicates_with_llm().await;
+        let merged = if self.fact_inference_enabled {
+            self.merge_predicates_with_llm().await
+        } else {
+            0
+        };
         ensure_memory_maintenance_active(cancellation)?;
         // Alias merges can create new single-valued multi-object conflicts;
         // re-run the rule keeper before LLM arbitration so merge-created
@@ -199,7 +206,11 @@ impl<'a> MemoryMaintenancePass<'a> {
             0
         };
         ensure_memory_maintenance_active(cancellation)?;
-        let arbitrated = self.arbitrate_contradictions_with_llm().await;
+        let arbitrated = if self.fact_inference_enabled {
+            self.arbitrate_contradictions_with_llm().await
+        } else {
+            0
+        };
         ensure_memory_maintenance_active(cancellation)?;
         // Catch up on vector indexing too, so memory that accumulated while
         // the embedding model was unconfigured gets indexed once it is set up.

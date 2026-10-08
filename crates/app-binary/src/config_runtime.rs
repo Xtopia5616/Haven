@@ -262,7 +262,7 @@ pub(crate) enum RuntimeConfigTarget {
     Hotkey,
     Skills,
     ToolSettings,
-    MemoryRuntime,
+    MemoryInference,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -300,7 +300,7 @@ impl RuntimeConfigApplyPlan {
                 ConfigDomain::Log => plan.push_live(RuntimeConfigTarget::Logging),
                 ConfigDomain::Skills => plan.push_live(RuntimeConfigTarget::Skills),
                 ConfigDomain::SkillsExec => plan.push_restart(RuntimeConfigTarget::Skills),
-                ConfigDomain::Memory => plan.push_restart(RuntimeConfigTarget::MemoryRuntime),
+                ConfigDomain::Memory => plan.push_live(RuntimeConfigTarget::MemoryInference),
                 ConfigDomain::Notification => {
                     // Notification settings are read from the current
                     // snapshot by the notification sink; no rebuild is needed.
@@ -340,6 +340,7 @@ pub(crate) enum SettingsRuntimeApplyPhase {
     McpMonitors,
     RouterPublish,
     ContextLimits,
+    FactInference,
     SessionRuntime,
     ToolSettings,
     Skills,
@@ -359,6 +360,7 @@ impl SettingsRuntimeApplyPhase {
             Self::Security => RuntimeConfigTarget::Security,
             Self::McpConfig | Self::McpMonitors => RuntimeConfigTarget::Mcp,
             Self::ContextLimits => RuntimeConfigTarget::ContextLimits,
+            Self::FactInference => RuntimeConfigTarget::MemoryInference,
             Self::SessionRuntime => RuntimeConfigTarget::SessionRuntime,
             Self::ToolSettings => RuntimeConfigTarget::ToolSettings,
             Self::Skills => RuntimeConfigTarget::Skills,
@@ -380,6 +382,7 @@ impl SettingsRuntimeApplyPhase {
             Self::McpMonitors => "mcp_monitors",
             Self::RouterPublish => "router_publish",
             Self::ContextLimits => "context_limits",
+            Self::FactInference => "fact_inference",
             Self::SessionRuntime => "session_runtime",
             Self::ToolSettings => "tool_settings",
             Self::Skills => "skills",
@@ -416,7 +419,7 @@ impl SettingsRuntimeApplyFailureKind {
     }
 }
 
-const SETTINGS_RUNTIME_APPLY_PHASE_ORDER: [SettingsRuntimeApplyPhase; 16] = [
+const SETTINGS_RUNTIME_APPLY_PHASE_ORDER: [SettingsRuntimeApplyPhase; 17] = [
     SettingsRuntimeApplyPhase::RouterPrepare,
     SettingsRuntimeApplyPhase::InputPipeline,
     SettingsRuntimeApplyPhase::Shell,
@@ -425,6 +428,7 @@ const SETTINGS_RUNTIME_APPLY_PHASE_ORDER: [SettingsRuntimeApplyPhase; 16] = [
     SettingsRuntimeApplyPhase::McpMonitors,
     SettingsRuntimeApplyPhase::RouterPublish,
     SettingsRuntimeApplyPhase::ContextLimits,
+    SettingsRuntimeApplyPhase::FactInference,
     SettingsRuntimeApplyPhase::SessionRuntime,
     SettingsRuntimeApplyPhase::ToolSettings,
     SettingsRuntimeApplyPhase::Skills,
@@ -977,6 +981,7 @@ mod tests {
                 SettingsRuntimeApplyPhase::McpMonitors,
                 SettingsRuntimeApplyPhase::RouterPublish,
                 SettingsRuntimeApplyPhase::ContextLimits,
+                SettingsRuntimeApplyPhase::FactInference,
                 SettingsRuntimeApplyPhase::SessionRuntime,
                 SettingsRuntimeApplyPhase::ToolSettings,
                 SettingsRuntimeApplyPhase::Skills,
@@ -989,10 +994,7 @@ mod tests {
         );
         assert_eq!(
             plan.restart_required_targets,
-            vec![
-                RuntimeConfigTarget::Skills,
-                RuntimeConfigTarget::MemoryRuntime
-            ]
+            vec![RuntimeConfigTarget::Skills]
         );
 
         let unchanged_hotkey = settings_snapshot(18, "Ctrl+Alt+O");
@@ -1083,10 +1085,7 @@ mod tests {
         assert!(successful_metadata.router_published);
         assert_eq!(
             successful_metadata.restart_required_targets,
-            vec![
-                RuntimeConfigTarget::Skills,
-                RuntimeConfigTarget::MemoryRuntime
-            ]
+            vec![RuntimeConfigTarget::Skills]
         );
 
         for (failed_index, failed_phase) in expected_phases.iter().copied().enumerate() {
@@ -1147,10 +1146,7 @@ mod tests {
             );
             assert_eq!(
                 failure.restart_required_targets,
-                vec![
-                    RuntimeConfigTarget::Skills,
-                    RuntimeConfigTarget::MemoryRuntime
-                ]
+                vec![RuntimeConfigTarget::Skills]
             );
         }
     }
@@ -1240,10 +1236,7 @@ mod tests {
         assert!(!failure.router_published);
         assert_eq!(
             failure.restart_required_targets,
-            vec![
-                RuntimeConfigTarget::Skills,
-                RuntimeConfigTarget::MemoryRuntime
-            ]
+            vec![RuntimeConfigTarget::Skills]
         );
     }
 
@@ -1350,12 +1343,12 @@ mod tests {
         assert!(logs.contains("failure_kind=\"runtime_owner\""));
         assert!(logs.contains("router_published=true"));
         assert!(logs.contains("restart_required=true"));
-        assert!(logs.contains("restart_required_targets=[Skills, MemoryRuntime]"));
+        assert!(logs.contains("restart_required_targets=[Skills]"));
         assert!(!logs.contains("never-log-this-secret"));
     }
 
     #[test]
-    fn restart_required_targets_are_retained_in_settings_plan() {
+    fn memory_inference_setting_is_applied_live_without_restart() {
         let change = ConfigChanged {
             version: 24,
             domains: vec![ConfigDomain::SkillsExec, ConfigDomain::Memory],
@@ -1366,13 +1359,13 @@ mod tests {
         assert_eq!(plan.config_version, snapshot.version);
         assert_eq!(
             plan.restart_required_targets,
-            vec![
-                RuntimeConfigTarget::Skills,
-                RuntimeConfigTarget::MemoryRuntime
-            ]
+            vec![RuntimeConfigTarget::Skills]
         );
-        assert!(plan.live_targets.is_empty());
-        assert!(plan.phases().is_empty());
+        assert_eq!(
+            plan.live_targets,
+            vec![RuntimeConfigTarget::MemoryInference]
+        );
+        assert_eq!(plan.phases(), &[SettingsRuntimeApplyPhase::FactInference]);
     }
     #[tokio::test]
     async fn model_edit_no_op_skips_router_rebuild() {

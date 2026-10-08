@@ -9,7 +9,7 @@ use haven_memory::repositories::kv_store::{
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 
-use super::SummaryExtractOutcome;
+use super::{FactInferenceOutcome, SummaryExtractOutcome};
 
 const OUTBOX_RETRY_MAX_SECS: u64 = 30;
 pub(super) const OUTBOX_PAGE_SIZE: usize = MAX_MEMORY_OUTBOX_PAGE_SIZE;
@@ -59,9 +59,11 @@ impl FactExtractionJob {
 
 #[async_trait::async_trait]
 pub(super) trait MemoryExtractionHandler: Send + Sync {
-    async fn infer_session(&self, session_id: &str) -> bool;
+    fn fact_inference_enabled(&self) -> bool;
 
-    async fn infer_session_on_pause(&self, session_id: &str) -> bool;
+    async fn infer_session(&self, session_id: &str) -> FactInferenceOutcome;
+
+    async fn infer_session_on_pause(&self, session_id: &str) -> FactInferenceOutcome;
 
     async fn infer_facts_from_summary(
         &self,
@@ -165,6 +167,10 @@ impl MemoryOutbox {
             self.shutdown_token.cancel();
         }
         self.outbox_notify.notify_waiters();
+    }
+
+    pub(super) fn notify_worker(&self) {
+        self.outbox_notify.notify_one();
     }
 
     #[cfg(test)]
@@ -446,7 +452,7 @@ impl MemoryOutbox {
         cancellation: &CancellationToken,
         handler: &dyn MemoryExtractionHandler,
     ) -> anyhow::Result<bool> {
-        let completed = tokio::select! {
+        let mut outcome = tokio::select! {
             biased;
             _ = cancellation.cancelled() => anyhow::bail!("memory outbox cancelled"),
             completed = async {
@@ -460,7 +466,10 @@ impl MemoryOutbox {
         if cancellation.is_cancelled() {
             anyhow::bail!("memory outbox cancelled");
         }
-        if completed {
+        if matches!(outcome, FactInferenceOutcome::Disabled) {
+            return Ok(false);
+        }
+        if matches!(outcome, FactInferenceOutcome::Done) {
             match self
                 .memory_store
                 .clear_fact_extraction_marker_if_current_cancellable(
@@ -480,15 +489,28 @@ impl MemoryOutbox {
                 }
                 Ok(false) => return Ok(true),
                 Err(error) if cancellation.is_cancelled() => return Err(error),
-                Err(error) => tracing::warn!(
-                    session = %marker.session_id,
-                    error = %error,
-                    "fact extraction durable acknowledgement failed"
-                ),
+                Err(error) => {
+                    tracing::warn!(
+                        session = %marker.session_id,
+                        error = %error,
+                        "fact extraction durable acknowledgement failed"
+                    );
+                    outcome = FactInferenceOutcome::Retryable;
+                }
             }
         }
-        let mut attempt = state.attempt;
-        let wait_secs = next_outbox_retry_secs(&mut attempt, 0);
+        let (attempt, wait_secs, clear_bypass_throttle) = match outcome {
+            FactInferenceOutcome::Done => unreachable!("completed marker returns above"),
+            FactInferenceOutcome::Disabled => unreachable!("disabled marker returns above"),
+            FactInferenceOutcome::Throttled { wait_secs } => {
+                (state.attempt, wait_secs.max(1), false)
+            }
+            FactInferenceOutcome::Retryable => {
+                let mut attempt = state.attempt;
+                let wait_secs = next_outbox_retry_secs(&mut attempt, 0);
+                (attempt, wait_secs, true)
+            }
+        };
         let due = retry_due_after_secs(wait_secs);
         self.memory_store
             .update_fact_extraction_retry_if_current_cancellable(
@@ -496,6 +518,7 @@ impl MemoryOutbox {
                 marker.value,
                 attempt,
                 due,
+                clear_bypass_throttle,
                 cancellation,
             )
             .await?;
@@ -656,6 +679,14 @@ impl MemoryOutbox {
                 }
                 let notified = engine.outbox_notify.notified();
                 tokio::pin!(notified);
+                if !handler.fact_inference_enabled() {
+                    tokio::select! {
+                        biased;
+                        _ = cancellation.cancelled() => return,
+                        _ = &mut notified => {}
+                    }
+                    continue;
+                }
                 match engine
                     .scan_outbox_pass(&cancellation, handler.as_ref())
                     .await

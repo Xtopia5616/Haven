@@ -327,6 +327,14 @@ async fn execute_settings_apply_phase(
                 },
             }
         }
+        SettingsRuntimeApplyPhase::FactInference => {
+            state
+                .runtime
+                .agent
+                .set_fact_inference_enabled(config.memory.fact_inference_enabled);
+            timing.tick("set_fact_inference_enabled");
+            SettingsRuntimeApplyOutcome::applied()
+        }
         SettingsRuntimeApplyPhase::SessionRuntime => {
             if let Err(error) = state
                 .runtime
