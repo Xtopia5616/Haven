@@ -12,6 +12,7 @@ import {
 } from './toolOutputPreviewStore.ts';
 import { getToolResultRenderer } from './toolResultRenderers.ts';
 import ToolJsonResult from './ToolJsonResult.svelte';
+import ToolShellResult from './ToolShellResult.svelte';
 
 const searchJson = (results: any[], extra: any = {}) =>
 	JSON.stringify({ results, count: results.length, mode: 'filename', ...extra });
@@ -179,6 +180,63 @@ describe('operation view UI contract', () => {
 		expect(getToolResultRenderer('custom', 'files', [{ media: {} }], 'files')).toBe(
 			ToolJsonResult,
 		);
+	});
+
+	it('falls back to JsonView for malformed builtin nested records and array items', () => {
+		const malformedResults: Array<{
+			renderer: string;
+			data: Record<string, unknown>;
+		}> = [
+			{ renderer: 'files.search', data: { results: [null] } },
+			{ renderer: 'files.search', data: { results: null } },
+			{ renderer: 'files', data: { results: [{ path: 42 }] } },
+			{ renderer: 'files', data: { media: [] } },
+			{ renderer: 'media', data: { media: { available_representations: [null] } } },
+			{ renderer: 'agent', data: { agents: [null] } },
+			{ renderer: 'process', data: { processes: [null] } },
+			{ renderer: 'process', data: { processes: null } },
+			{ renderer: 'clipboard', data: { entries: [null] } },
+			{ renderer: 'clipboard', data: { entries: null } },
+			{ renderer: 'input', data: { operation: 'click', clicked: [12, '20'] } },
+			{ renderer: 'window', data: { elements: [null] } },
+			{ renderer: 'tool_runs', data: { tool_runs: [null] } },
+			{ renderer: 'schedule', data: { scheduled_tool_runs: [null] } },
+			{ renderer: 'system', data: { os: [] } },
+			{ renderer: 'system', data: { networks: [{ ips: null }] } },
+			{ renderer: 'system', data: { scope: 'process', processes: [null] } },
+			{ renderer: 'haven_mcp', data: { servers: [null] } },
+			{ renderer: 'http', data: { status: '200' } },
+			{ renderer: 'web_search', data: { results: [null] } },
+			{ renderer: 'web_search', data: { queries: null } },
+			{ renderer: 'memory', data: { facts: [null] } },
+			{ renderer: 'memory', data: { hits: null } },
+		];
+
+		for (const { renderer, data } of malformedResults) {
+			expect(getToolResultRenderer('custom', renderer, data, renderer)).toBe(ToolJsonResult);
+		}
+	});
+
+	it('keeps valid builtin shapes specialized and unknown extension renderers open', () => {
+		expect(
+			getToolResultRenderer(
+				'custom',
+				'system',
+				{
+					scope: 'process',
+					processes: [{ pid: 42, name: 'haven', cpu: 1, memory: 2, status: 'Run' }],
+				},
+				'system',
+			),
+		).not.toBe(ToolJsonResult);
+		expect(
+			getToolResultRenderer('custom', 'mcp__filesystem__read', { extra: [null] }, 'mcp'),
+		).toBe(ToolJsonResult);
+	});
+
+	it('keeps shell streaming placeholders and falls back for malformed shell metadata', () => {
+		expect(getToolResultRenderer('shell', 'shell', null)).toBe(ToolShellResult);
+		expect(getToolResultRenderer('shell', 'shell', { truncated: 'yes' })).toBe(ToolJsonResult);
 	});
 });
 
@@ -436,7 +494,8 @@ describe('ToolResultCard outcomes', () => {
 		});
 		await expandToolCard(failed.container);
 		expect(
-			failed.container.querySelector('[data-detail="output"] .tool-result-message')?.textContent,
+			failed.container.querySelector('[data-detail="output"] .tool-result-message')
+				?.textContent,
 		).toBe('调用失败');
 		expect(failed.container.querySelector('.tool-result-message--error')).toBeTruthy();
 	});
@@ -505,7 +564,9 @@ describe('ToolResultCard shell / notify / generic', () => {
 		});
 		await expandToolCard(container);
 		expect(container.querySelector('.tool-header-state')?.textContent).toContain('执行成功');
-		expect(container.querySelector('.tool-result-label')?.textContent).toContain('后台任务已完成');
+		expect(container.querySelector('.tool-result-label')?.textContent).toContain(
+			'后台任务已完成',
+		);
 		expect(screen.getByText('退出码 0')).toBeTruthy();
 		expect(screen.getByText('command output')).toBeTruthy();
 	});

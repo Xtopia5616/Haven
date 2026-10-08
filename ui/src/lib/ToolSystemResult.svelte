@@ -7,7 +7,69 @@
 	import ToolSearch from '$lib/ToolSearch.svelte';
 	import { clampPercentage, formatByteSize } from '$lib/toolResultFormatting.ts';
 
-	let { data = {} } = $props();
+	interface Props {
+		data?: {
+			scope?: string;
+			operation?: string;
+			path?: string;
+			name?: string;
+			value?: string;
+			note?: string;
+			reason?: string;
+			count?: number;
+			deleted?: boolean;
+			set?: boolean;
+			removed?: boolean;
+			available?: boolean;
+			ac_power?: string;
+			battery_percent?: number;
+			battery_present?: boolean;
+			battery_saver?: boolean;
+			battery_status?: string;
+			locked?: boolean;
+			sleep?: boolean;
+			hibernate?: boolean;
+			os?: {
+				name?: string;
+				hostname?: string;
+				arch?: string;
+				uptime_secs?: number;
+			};
+			user?: {
+				username?: string;
+				computer_name?: string;
+				home?: string;
+				cwd?: string;
+			};
+			locale?: {
+				locale_name?: string;
+				ui_language?: string;
+				local_time?: string;
+				timezone_offset_hours?: number;
+			};
+			cpu?: { usage_pct?: number; cores?: number; logical_cpus?: number };
+			memory?: { used_bytes?: number; total_bytes?: number; available_bytes?: number };
+			network_summary?: {
+				interface_count?: number;
+				up_or_unknown?: number;
+				down?: number;
+			};
+			networks?: Array<{ name?: string; state?: string; ips?: string[] }>;
+			disks?: Array<{ mount?: string; total_bytes?: number; available_bytes?: number }>;
+			displays?: Array<{
+				name?: string;
+				left?: number;
+				width?: number;
+				height?: number;
+				primary?: boolean;
+			}>;
+			variables?: Array<{ name?: string; value?: string }>;
+			values?: string[];
+			subkeys?: string[];
+		};
+	}
+
+	let { data = {} }: Props = $props();
 
 	function fmtUptime(value: unknown) {
 		const secs = Number(value);
@@ -281,7 +343,9 @@
 	</ToolResultList>
 {/if}
 {#if data.os?.uptime_secs != null}
-	<div class="tool-result-meta tool-result-meta--compact">运行时长 {fmtUptime(data.os.uptime_secs)}</div>
+	<div class="tool-result-meta tool-result-meta--compact">
+		运行时长 {fmtUptime(data.os.uptime_secs)}
+	</div>
 {/if}
 {#if Array.isArray(data.displays)}
 	<div class="tool-result-label">{data.displays.length} 个显示器</div>
@@ -330,7 +394,7 @@
 									className="env-copy"
 									label="复制值"
 									title="复制值"
-									onclick={() => copyEnvValue(variable.value)}
+									onclick={() => copyEnvValue(variable.value ?? '')}
 								/>
 							{/if}
 						</div>

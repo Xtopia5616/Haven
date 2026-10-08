@@ -8,12 +8,20 @@
 	interface ProcessEntry {
 		name?: string;
 		pid?: string | number;
-		cpu?: unknown;
-		memory?: unknown;
-		status?: unknown;
+		cpu?: number;
+		memory?: number;
+		status?: string;
 	}
 
-	let { data = {} } = $props();
+	interface Props {
+		data?: {
+			processes?: ProcessEntry[];
+			operation?: string;
+			killed?: string | number;
+		};
+	}
+
+	let { data = {} }: Props = $props();
 
 	let processFilter = $state('');
 	let processList: ProcessEntry[] = $derived(Array.isArray(data.processes) ? data.processes : []);
@@ -105,7 +113,9 @@
 						{/each}
 					</tbody>
 				</table>
-				{#if visibleProcesses.length === 0}<p class="tool-result-message tool-result-message--spaced">
+				{#if visibleProcesses.length === 0}<p
+						class="tool-result-message tool-result-message--spaced"
+					>
 						没有匹配的进程
 					</p>{/if}
 			</div>

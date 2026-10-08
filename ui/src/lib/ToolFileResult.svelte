@@ -4,7 +4,44 @@
 	import ToolResultList from '$lib/ToolResultList.svelte';
 	import { formatByteSize } from '$lib/toolResultFormatting.ts';
 
-	let { data = {}, rawText = '' } = $props();
+	interface Props {
+		data?: {
+			operation?: string;
+			path?: string;
+			from?: string;
+			to?: string;
+			line?: number;
+			size?: number;
+			count?: number;
+			written?: boolean;
+			edited?: boolean;
+			copied?: boolean;
+			moved?: boolean;
+			deleted?: boolean;
+			created?: boolean;
+			image?: boolean;
+			understand_error?: boolean;
+			understand_unavailable?: boolean;
+			description?: string;
+			reason?: string;
+			binary?: boolean;
+			file_type?: string;
+			mime?: string;
+			summary?: string;
+			summary_error?: boolean;
+			summary_unavailable?: boolean;
+			too_large?: boolean;
+			content?: string;
+			warning?: string;
+			error?: string;
+			matches?: unknown;
+			symbols?: Array<{ line?: number; kind?: string; name?: string }>;
+			entries?: string[];
+		};
+		rawText?: string;
+	}
+
+	let { data = {}, rawText = '' }: Props = $props();
 
 	const operationLabels: Record<string, string> = {
 		read: '读取完成',
@@ -19,41 +56,56 @@
 		summary: '摘要结果',
 		search: '搜索结果',
 	};
-	let operationLabel = $derived(operationLabels[data.operation] || '文件结果');
+	let operationLabel = $derived(operationLabels[data.operation ?? ''] || '文件结果');
 </script>
 
 {#if data.written}
 	<div class="file-row">
-		<span class="file-op">已写入</span><ExternalRef class="file-path" target={data.path} />
+		<span class="file-op">已写入</span><ExternalRef
+			class="file-path"
+			target={data.path ?? ''}
+		/>
 	</div>
 {:else if data.edited}
 	<div class="file-row">
 		<span class="file-op">已编辑</span><ExternalRef
 			class="file-path"
-			target={data.path}
+			target={data.path ?? ''}
 		/>{#if data.line != null}<span class="file-line">L{data.line}</span>{/if}
 	</div>
 {:else if data.copied}
 	<div class="file-row">
-		<span class="file-op">已复制</span><ExternalRef class="file-path" target={data.from} />
+		<span class="file-op">已复制</span><ExternalRef
+			class="file-path"
+			target={data.from ?? ''}
+		/>
 	</div>
 	<div class="file-row">
-		<span class="file-op-to">→</span><ExternalRef class="file-path" target={data.to} />
+		<span class="file-op-to">→</span><ExternalRef class="file-path" target={data.to ?? ''} />
 	</div>
 {:else if data.moved}
 	<div class="file-row">
-		<span class="file-op">已移动</span><ExternalRef class="file-path" target={data.from} />
+		<span class="file-op">已移动</span><ExternalRef
+			class="file-path"
+			target={data.from ?? ''}
+		/>
 	</div>
 	<div class="file-row">
-		<span class="file-op-to">→</span><ExternalRef class="file-path" target={data.to} />
+		<span class="file-op-to">→</span><ExternalRef class="file-path" target={data.to ?? ''} />
 	</div>
 {:else if data.deleted}
 	<div class="file-row">
-		<span class="file-op">已删除</span><ExternalRef class="file-path" target={data.path} />
+		<span class="file-op">已删除</span><ExternalRef
+			class="file-path"
+			target={data.path ?? ''}
+		/>
 	</div>
 {:else if data.created}
 	<div class="file-row">
-		<span class="file-op">已创建目录</span><ExternalRef class="file-path" target={data.path} />
+		<span class="file-op">已创建目录</span><ExternalRef
+			class="file-path"
+			target={data.path ?? ''}
+		/>
 	</div>
 {:else if data.image}
 	<div class="file-row">
@@ -89,7 +141,10 @@
 	{#if data.reason}<p class="tool-result-message">{data.reason}</p>{/if}
 {:else if data.too_large}
 	<div class="file-row">
-		<span class="file-op">文件过大</span><ExternalRef class="file-path" target={data.path} />
+		<span class="file-op">文件过大</span><ExternalRef
+			class="file-path"
+			target={data.path ?? ''}
+		/>
 	</div>
 	{#if typeof data.content === 'string' && data.content}
 		<pre class="tool-result-preview">{data.content}</pre>
@@ -103,7 +158,9 @@
 	{#if data.error}<p class="tool-result-message">{data.error}</p>{/if}
 	{#if data.matches}<JsonView value={data.matches} defaultDepth={1} />{/if}
 {:else if Array.isArray(data.symbols)}
-	<div class="tool-result-meta tool-result-meta--compact">{operationLabel} · {data.count ?? data.symbols.length} 个符号</div>
+	<div class="tool-result-meta tool-result-meta--compact">
+		{operationLabel} · {data.count ?? data.symbols.length} 个符号
+	</div>
 	<ToolResultList items={data.symbols}>
 		{#snippet children(visibleSymbols)}
 			<div class="tool-result-scroll-area">

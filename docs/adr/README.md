@@ -733,3 +733,4 @@
 - [0742：Tool manifest 策略元数据复用闭合类型](0742-type-tool-policy-manifest-metadata.md)
 - [0743：Agent Observation 策略元数据复用 Common enum](0743-type-agent-observation-policy-metadata.md)
 - [0744：Tool result envelope metadata 复用闭合类型](0744-type-tool-result-envelope-metadata.md)
+- [0745：在 UI builtin renderer 边界校验 ToolResult 输出](0745-validate-builtin-tool-result-renderers.md)

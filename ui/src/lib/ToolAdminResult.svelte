@@ -2,7 +2,34 @@
 	import JsonView from '$lib/JsonView.svelte';
 	import ToolResultList from '$lib/ToolResultList.svelte';
 
-	let { data = {} } = $props();
+	interface AdminRow extends Record<string, unknown> {
+		id?: string;
+		title?: string;
+		status?: string;
+		name?: string;
+		connected?: boolean;
+		enabled?: boolean;
+		tools?: number;
+		error?: string;
+	}
+
+	interface Props {
+		data?: {
+			servers?: AdminRow[];
+			skills?: AdminRow[];
+			sessions?: AdminRow[];
+			errors?: AdminRow[];
+			level?: string;
+			saved?: boolean;
+			name?: string;
+			enabled?: boolean;
+			connected?: boolean | AdminRow[];
+			created?: boolean;
+			removed?: boolean;
+		};
+	}
+
+	let { data = {} }: Props = $props();
 
 	function statusLabel(value: unknown) {
 		return value ? '已连接' : '未连接';
@@ -45,9 +72,11 @@
 		{/snippet}
 	</ToolResultList>
 {:else if Array.isArray(data.sessions) || Array.isArray(data.errors)}
-	{@const rows = Array.isArray(data.sessions) ? data.sessions : data.errors}
+	{@const rows = Array.isArray(data.sessions) ? data.sessions : (data.errors ?? [])}
 	<div class="tool-result-label">{rows.length} 条记录</div>
-	{#if rows.length === 0}<p class="tool-result-message tool-result-message--compact">没有记录</p>{/if}
+	{#if rows.length === 0}<p class="tool-result-message tool-result-message--compact">
+			没有记录
+		</p>{/if}
 	<ToolResultList items={rows}>
 		{#snippet children(visibleRows: Array<Record<string, unknown>>)}
 			<div class="admin-list tool-result-scroll-area">

@@ -18,7 +18,7 @@
 			available?: boolean;
 			reason?: string;
 			error?: string;
-			capture_error?: string;
+			capture_error?: boolean;
 			transcript?: string;
 			played?: boolean;
 			characters?: number;
@@ -66,15 +66,23 @@
 		>
 	</div>
 	{#if assetId}<div class="tool-result-meta tool-result-meta--media">资产：{assetId}</div>{/if}
-	{#if representation}<div class="tool-result-meta tool-result-meta--media">表示：{representation}</div>{/if}
+	{#if representation}<div class="tool-result-meta tool-result-meta--media">
+			表示：{representation}
+		</div>{/if}
 	{#if availableRepresentations.length}<div class="tool-result-meta tool-result-meta--media">
 			可用表示：{availableRepresentations.join('、')}
 		</div>{/if}
-	{#if recommendedNext}<div class="tool-result-meta tool-result-meta--media">建议下一步：{recommendedNext}</div>{/if}
+	{#if recommendedNext}<div class="tool-result-meta tool-result-meta--media">
+			建议下一步：{recommendedNext}
+		</div>{/if}
 	{#if data.available === false}
-		<p class="tool-result-message tool-result-message--media">{data.reason || '录音能力当前不可用'}</p>
+		<p class="tool-result-message tool-result-message--media">
+			{data.reason || '录音能力当前不可用'}
+		</p>
 	{:else if data.error || data.capture_error}
-		<p class="tool-result-message tool-result-message--media">{data.error || data.reason || '录音采集失败'}</p>
+		<p class="tool-result-message tool-result-message--media">
+			{data.error || data.reason || '录音采集失败'}
+		</p>
 	{:else if data.transcript}
 		<pre class="media-text">{data.transcript}</pre>
 	{/if}
@@ -102,13 +110,21 @@
 		>
 	</div>
 {:else}
-	{#if representation}<div class="tool-result-meta tool-result-meta--media">表示：{representation}</div>{/if}
+	{#if representation}<div class="tool-result-meta tool-result-meta--media">
+			表示：{representation}
+		</div>{/if}
 	{#if availableRepresentations.length}
-		<div class="tool-result-meta tool-result-meta--media">可用表示：{availableRepresentations.join('、')}</div>
+		<div class="tool-result-meta tool-result-meta--media">
+			可用表示：{availableRepresentations.join('、')}
+		</div>
 	{/if}
-	{#if recommendedNext}<div class="tool-result-meta tool-result-meta--media">建议下一步：{recommendedNext}</div>{/if}
+	{#if recommendedNext}<div class="tool-result-meta tool-result-meta--media">
+			建议下一步：{recommendedNext}
+		</div>{/if}
 	{#if data.available === false}
-		<p class="tool-result-message tool-result-message--media">{data.reason || '此媒体能力当前不可用'}</p>
+		<p class="tool-result-message tool-result-message--media">
+			{data.reason || '此媒体能力当前不可用'}
+		</p>
 	{:else if text}
 		<pre class="media-text">{text}</pre>
 	{:else if data.operation === 'inspect'}
