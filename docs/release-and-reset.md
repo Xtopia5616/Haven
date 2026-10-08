@@ -14,6 +14,8 @@ schema v39 仅接受事实提取 marker 的当前完整格式：旧 boolean、�
 
 `config.toml` 只接受当前配置结构，不执行旧字段搬迁、旧名称映射、凭据导入或静默兼容。配置表启用未知字段拒绝；当前结构允许缺省的字段仍使用安全默认值。本版本将 `context_limits.cut_off_retries` 改为 `incomplete_tool_args_retries`，将后台/终态 Job 限制字段重命名为 ToolRun 字段，并删除 `empty_response_max_retries` 与 `empty_response_retry_delay_ms`；含这些旧字段的配置会导致整份配置解析失败。工具根名从 `actions` 改为 `tool_runs`，旧名称下的权限 key 不迁移。`llm.models[]` 中绑定连接的字段现为 `provider_name`；原 `provider` 字段不再接受，含旧字段的配置会导致整份配置解析失败。Session 步数预算配置现为 `[session].max_steps_per_run` 与 `[session].max_steps_per_session`；旧 `max_steps` / `session_max_steps` 不接受，遇到旧 key 时整份配置解析失败；如需保留预算数值，先手动将两项改为新 key，否则重建配置。其它旧字段（例如 `[memory].history_retention_days`、`llm.balanced_model`、旧安全策略字段和已删除的顶层 `[audio]`）也会导致整份配置解析失败。
 
+运行中的 `ConfigService` 会在持久化前核对 `config.toml` 是否仍与加载时一致；若 Haven 外部编辑了配置，当前进程会拒绝覆盖并提示重启加载最新配置。外部修改无需删除配置或数据库。
+
 Session prompt 首次上下文条数目前配置在 `[session].prompt_history_limit`（默认 50）；旧 `[memory].session_window_size` 不再接受或自动搬迁。若要保留其它配置，手动将数值移到新 key 并删除旧 key；否则按“仅重建配置”删除 `config.toml` 后重新设置。遇到旧 key 时配置会整体解析失败、先备份原文件并在当前进程使用默认值；数据库不受影响。
 
 解析失败时，Haven 将原文件复制到带时间戳的 `config.toml.*.bak`，并在当前进程使用默认配置；原文件不会在启动时自动转换或覆盖。需要继续使用时，按下文“仅重建配置”删除当前 `config.toml`，再在应用中重新配置。

@@ -585,6 +585,32 @@ mod tests {
     }
 
     #[test]
+    fn external_config_edit_is_not_overwritten_by_a_stale_service_snapshot() {
+        let (service, _dir) = service();
+        let before = service.snapshot().unwrap();
+        let path = service.path().unwrap();
+        let mut external = before.config.clone();
+        external.session.max_concurrent = 9;
+        let external_toml = toml::to_string_pretty(&external).unwrap();
+        std::fs::write(&path, &external_toml).unwrap();
+
+        let result = service.edit(|config| {
+            config.session.max_concurrent = 4;
+            Ok(())
+        });
+
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("changed outside Haven")
+        );
+        assert_eq!(service.snapshot().unwrap(), before);
+        assert_eq!(std::fs::read_to_string(path).unwrap(), external_toml);
+    }
+
+    #[test]
     fn model_patch_is_typed_and_reports_llm_domain() {
         let (service, _dir) = service();
         let mut config = service.snapshot().unwrap().config;

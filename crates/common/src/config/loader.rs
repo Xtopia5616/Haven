@@ -72,6 +72,19 @@ settings_pair! {
 pub struct ConfigLoader {
     path: PathBuf,
     config: AppConfig,
+    source_fingerprint: Option<u64>,
+}
+
+/// Non-cryptographic freshness marker only; the file is still protected by
+/// normal credential handling, while this prevents a stale process snapshot
+/// from overwriting an out-of-band edit.
+fn fingerprint_config_file(content: &[u8]) -> u64 {
+    let mut hash = 0xcbf29ce484222325_u64;
+    for byte in content {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    hash
 }
 
 /// Backup path with a timestamp so a failed or re-corrupted config never
@@ -261,14 +274,17 @@ impl ConfigLoader {
             tracing::info!("config not found; creating default config");
             let default_cfg = AppConfig::default();
             let toml_str = toml::to_string_pretty(&default_cfg)?;
+            let source_fingerprint = fingerprint_config_file(toml_str.as_bytes());
             std::fs::write(path, toml_str)?;
             return Ok(Self {
                 path: path.to_path_buf(),
                 config: default_cfg,
+                source_fingerprint: Some(source_fingerprint),
             });
         }
         tracing::info!("loading config");
         let content = std::fs::read_to_string(path)?;
+        let source_fingerprint = Some(fingerprint_config_file(content.as_bytes()));
         let config = match toml::from_str::<AppConfig>(&content) {
             Ok(config) => {
                 if let Some(entry) = invalid_config_entry(&config) {
@@ -286,6 +302,7 @@ impl ConfigLoader {
         Ok(Self {
             path: path.to_path_buf(),
             config,
+            source_fingerprint,
         })
     }
 
@@ -317,10 +334,26 @@ impl ConfigLoader {
             let _ = std::fs::remove_file(&tmp_path);
             return Err(error.into());
         }
+        if let Some(expected) = self.source_fingerprint {
+            let current = match std::fs::read(&self.path) {
+                Ok(content) => fingerprint_config_file(&content),
+                Err(error) => {
+                    let _ = std::fs::remove_file(&tmp_path);
+                    return Err(error.into());
+                }
+            };
+            if current != expected {
+                let _ = std::fs::remove_file(&tmp_path);
+                anyhow::bail!(
+                    "config file changed outside Haven; restart Haven to load the latest settings"
+                );
+            }
+        }
         if let Err(error) = std::fs::rename(&tmp_path, &self.path) {
             let _ = std::fs::remove_file(&tmp_path);
             return Err(error.into());
         }
+        self.source_fingerprint = Some(fingerprint_config_file(toml_str.as_bytes()));
         Ok(())
     }
 
@@ -779,6 +812,7 @@ mod tests {
         let mut loader = ConfigLoader {
             path: PathBuf::from("unused"),
             config: cfg,
+            source_fingerprint: None,
         };
         loader.apply_settings(&settings);
         // Keys preserved by provider name.
@@ -822,6 +856,7 @@ mod tests {
         let mut loader = ConfigLoader {
             path: PathBuf::from("unused"),
             config: cfg,
+            source_fingerprint: None,
         };
         loader.apply_settings(&settings);
         let media = &loader.config().media;
@@ -881,6 +916,7 @@ mod tests {
         let mut loader = ConfigLoader {
             path: PathBuf::from("unused"),
             config: cfg,
+            source_fingerprint: None,
         };
         loader.apply_settings(&settings);
 
