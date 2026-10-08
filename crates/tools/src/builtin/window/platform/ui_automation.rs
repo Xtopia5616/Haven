@@ -6,6 +6,68 @@ use super::window_list::{
     find_window_by_title, hwnd_from_window_id, visible_window_title, window_id,
 };
 
+const UIA_E_FAIL: windows::core::HRESULT = windows::core::HRESULT(0x8000_4005_u32 as i32);
+const RPC_E_CHANGED_MODE: windows::core::HRESULT = windows::core::HRESULT(0x8001_0106_u32 as i32);
+const UIA_RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(50);
+
+struct ComApartmentGuard {
+    uninitialize_on_drop: bool,
+}
+
+impl ComApartmentGuard {
+    fn initialize_mta() -> anyhow::Result<Self> {
+        use windows::Win32::System::Com::{COINIT_MULTITHREADED, CoInitializeEx};
+
+        let result = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
+        if result.is_ok() {
+            Ok(Self {
+                uninitialize_on_drop: true,
+            })
+        } else if result == RPC_E_CHANGED_MODE {
+            // A blocking-pool thread may already have an STA apartment. COM
+            // remains initialized in that apartment, but this call must not
+            // be balanced with CoUninitialize.
+            Ok(Self {
+                uninitialize_on_drop: false,
+            })
+        } else {
+            Err(windows::core::Error::from_hresult(result).into())
+        }
+    }
+}
+
+impl Drop for ComApartmentGuard {
+    fn drop(&mut self) {
+        if self.uninitialize_on_drop {
+            unsafe { windows::Win32::System::Com::CoUninitialize() };
+        }
+    }
+}
+
+fn is_ui_automation_e_fail(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        cause
+            .downcast_ref::<windows::core::Error>()
+            .is_some_and(|error| error.code() == UIA_E_FAIL)
+    })
+}
+
+fn retry_ui_automation_e_fail<T>(
+    mut operation: impl FnMut() -> anyhow::Result<T>,
+) -> anyhow::Result<T> {
+    let mut attempt = 0;
+    loop {
+        match operation() {
+            Err(error) if attempt == 0 && is_ui_automation_e_fail(&error) => {
+                attempt += 1;
+                tracing::debug!(attempt, "Retrying transient UI Automation E_FAIL once");
+                std::thread::sleep(UIA_RETRY_DELAY);
+            }
+            result => return result,
+        }
+    }
+}
+
 fn control_type_name(id: i32) -> &'static str {
     use windows::Win32::UI::Accessibility::*;
     // Match against known UIA control type ids.
@@ -161,7 +223,7 @@ fn ui_automation_element(
     super::super::ui_automation::UiElementTarget,
 )> {
     use windows::Win32::Foundation::HWND as WinHwnd;
-    use windows::Win32::System::Com::*;
+    use windows::Win32::System::Com::{CLSCTX_INPROC_SERVER, CoCreateInstance};
     use windows::Win32::UI::Accessibility::*;
 
     if let Some(control_type) = query.control_type.as_deref()
@@ -170,7 +232,6 @@ fn ui_automation_element(
         anyhow::bail!("control_type must be one of the supported UI Automation control type names");
     }
 
-    let _ = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
     let target_hwnd =
         ui_automation_target_hwnd(query.window_id.as_deref(), query.title.as_deref())?;
     let automation: IUIAutomation =
@@ -305,12 +366,14 @@ fn ui_automation_element(
 pub(crate) fn resolve_ui_element(
     query: &super::super::ui_automation::UiElementQuery,
 ) -> anyhow::Result<super::super::ui_automation::UiElementTarget> {
+    let _com = ComApartmentGuard::initialize_mta()?;
     ui_automation_element(query).map(|(_, target)| target)
 }
 
 pub(crate) fn focus_ui_element(
     query: &super::super::ui_automation::UiElementQuery,
 ) -> anyhow::Result<super::super::ui_automation::UiElementTarget> {
+    let _com = ComApartmentGuard::initialize_mta()?;
     let (element, target) = ui_automation_element(query)?;
     unsafe { element.SetFocus()? };
     Ok(target)
@@ -320,6 +383,7 @@ pub(crate) fn invoke_ui_element(
     query: &super::super::ui_automation::UiElementQuery,
 ) -> anyhow::Result<super::super::ui_automation::UiElementTarget> {
     use windows::Win32::UI::Accessibility::{IUIAutomationInvokePattern, UIA_InvokePatternId};
+    let _com = ComApartmentGuard::initialize_mta()?;
     let (element, target) = ui_automation_element(query)?;
     let pattern: IUIAutomationInvokePattern =
         unsafe { element.GetCurrentPatternAs(UIA_InvokePatternId)? };
@@ -332,6 +396,7 @@ pub(crate) fn set_ui_element_value(
     value: &str,
 ) -> anyhow::Result<super::super::ui_automation::UiElementTarget> {
     use windows::Win32::UI::Accessibility::{IUIAutomationValuePattern, UIA_ValuePatternId};
+    let _com = ComApartmentGuard::initialize_mta()?;
     let (element, target) = ui_automation_element(query)?;
     let pattern: IUIAutomationValuePattern =
         unsafe { element.GetCurrentPatternAs(UIA_ValuePatternId)? };
@@ -344,6 +409,7 @@ pub(crate) fn toggle_ui_element(
     query: &super::super::ui_automation::UiElementQuery,
 ) -> anyhow::Result<super::super::ui_automation::UiElementTarget> {
     use windows::Win32::UI::Accessibility::{IUIAutomationTogglePattern, UIA_TogglePatternId};
+    let _com = ComApartmentGuard::initialize_mta()?;
     let (element, target) = ui_automation_element(query)?;
     let pattern: IUIAutomationTogglePattern =
         unsafe { element.GetCurrentPatternAs(UIA_TogglePatternId)? };
@@ -357,6 +423,7 @@ pub(crate) fn select_ui_element(
     use windows::Win32::UI::Accessibility::{
         IUIAutomationSelectionItemPattern, UIA_SelectionItemPatternId,
     };
+    let _com = ComApartmentGuard::initialize_mta()?;
     let (element, target) = ui_automation_element(query)?;
     let pattern: IUIAutomationSelectionItemPattern =
         unsafe { element.GetCurrentPatternAs(UIA_SelectionItemPatternId)? };
@@ -370,11 +437,18 @@ pub(crate) fn enumerate_ui_tree(
     target_window_id: Option<&str>,
     title: Option<&str>,
 ) -> anyhow::Result<Vec<Value>> {
+    retry_ui_automation_e_fail(|| enumerate_ui_tree_once(target_window_id, title))
+}
+
+fn enumerate_ui_tree_once(
+    target_window_id: Option<&str>,
+    title: Option<&str>,
+) -> anyhow::Result<Vec<Value>> {
     use windows::Win32::Foundation::HWND as WinHwnd;
     use windows::Win32::System::Com::*;
     use windows::Win32::UI::Accessibility::*;
 
-    let _ = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
+    let _com = ComApartmentGuard::initialize_mta()?;
 
     let target_hwnd: HWND =
         if let Some(window_id) = target_window_id.filter(|s| !s.trim().is_empty()) {
@@ -463,7 +537,7 @@ pub(crate) fn any_ui_name_contains(title: Option<&str>, needle: &str) -> anyhow:
     use windows::Win32::System::Com::*;
     use windows::Win32::UI::Accessibility::*;
 
-    let _ = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
+    let _com = ComApartmentGuard::initialize_mta()?;
 
     let target_hwnd: HWND = if let Some(t) = title.filter(|s| !s.trim().is_empty()) {
         let hwnd = find_window_by_title(t.trim())?;
@@ -505,4 +579,39 @@ pub(crate) fn any_ui_name_contains(title: Option<&str>, needle: &str) -> anyhow:
         }
     }
     Ok(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{UIA_E_FAIL, is_ui_automation_e_fail, retry_ui_automation_e_fail};
+    use windows::core::Error;
+
+    #[test]
+    fn ui_tree_retries_once_after_e_fail() {
+        let mut attempts = 0;
+        let result = retry_ui_automation_e_fail(|| {
+            attempts += 1;
+            if attempts == 1 {
+                Err(Error::from_hresult(UIA_E_FAIL).into())
+            } else {
+                Ok("recovered")
+            }
+        })
+        .unwrap();
+
+        assert_eq!(result, "recovered");
+        assert_eq!(attempts, 2);
+    }
+
+    #[test]
+    fn ui_tree_does_not_retry_other_failures() {
+        let mut attempts = 0;
+        let result: anyhow::Result<()> = retry_ui_automation_e_fail(|| {
+            attempts += 1;
+            Err(anyhow::anyhow!("unrelated failure"))
+        });
+
+        assert_eq!(attempts, 1);
+        assert!(!is_ui_automation_e_fail(result.as_ref().unwrap_err()));
+    }
 }

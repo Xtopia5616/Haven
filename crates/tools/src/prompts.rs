@@ -7,7 +7,7 @@
 pub(crate) const TOOL_RUNS_DESCRIPTION: &str = "Inspect or cancel this session's background and scheduled tasks through one task view. Results arrive automatically; do not poll.";
 pub(crate) const ASK_DESCRIPTION: &str = "Ask the user one focused question when a required choice or value is missing. One question per call.";
 pub(crate) const CHECKLIST_DESCRIPTION: &str = "Add, update, remove, clear, or list non-blocking checklist items for this session. New items may start done or open.";
-pub(crate) const CLIPBOARD_DESCRIPTION: &str = "Read or write clipboard text, HTML, images, and file lists; image/file reads become managed asset_id values, and inspect recent text history. For writes, always specify format and its matching payload: text uses text, html uses html with optional text as its plain-text fallback, image uses asset_id, and files uses files.";
+pub(crate) const CLIPBOARD_DESCRIPTION: &str = "Read or write clipboard text, HTML, images, and file lists; image/file reads become managed asset_id values, and inspect recent text history (the history request samples the current text when available). For writes, always specify format and its matching payload: text uses text, html uses html with optional text as its plain-text fallback, image uses asset_id, and files uses files.";
 pub(crate) const FILES_DESCRIPTION: &str = "Read, inspect, hash, create, edit, patch, copy, move, delete, list, outline, summarize, or search files. Use media for managed non-text assets and carry forward its asset_id.";
 pub(crate) const HTTP_DESCRIPTION: &str = "Fetch a known HTTP(S) URL with GET or POST. This is not web search; use an active search tool for discovery.";
 pub(crate) const INPUT_DESCRIPTION: &str = "Send keyboard or mouse input. Prefer UI Automation element targets when available; coordinate actions use screen pixels.";
@@ -159,7 +159,7 @@ pub(crate) fn operation_text(name: &str) -> OperationText {
             when_to_use: "Use only when the user asks to put content on the clipboard; always provide format so the payload is unambiguous.",
         },
         "clipboard.history" => OperationText {
-            description: "List recent clipboard history entries.",
+            description: "List recent clipboard text and sample the current clipboard text when available.",
             when_to_use: "Use when the current clipboard is insufficient and history is relevant.",
         },
         "input.type" => OperationText {

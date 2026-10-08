@@ -516,7 +516,8 @@ trigger command，`ToolConcurrency` 也不是跨 Tauri/worker 的互斥机制。
 表达。
 
 Clipboard 的文本、HTML、图片和文件列表都从 `clipboard` 根工具进入；图片/文件读取先复制到受管媒体
-资产并只向模型返回 `asset_id`。`media.render` 复用有界文档表示管线按页返回结果，不新增独立的
+资产并只向模型返回 `asset_id`。`clipboard.history` 是进程内有界文本历史；每次查询会采样当前系统剪贴板的
+文本（若可读），因此可纳入其它程序刚写入的内容，但不作为后台剪贴板监视器。`media.render` 复用有界文档表示管线按页返回结果，不新增独立的
 `audio`、`file_search` 或 HTTP 搜索根工具。
 
 `scope=info` 的 `category`：

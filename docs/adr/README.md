@@ -798,3 +798,4 @@
 - [0807：从数值输入组件派生包装层 Props](0807-derive-number-field-wrapper-props.md)
 - [0808：使用生成的 LayoutProps 类型化 route children](0808-type-route-layout-children-prop.md)
 - [0810：确认批次恢复计划与结果原子清理](0810-confirmation-batch-recovery-and-atomic-clear.md)
+- [0811：剪贴板历史查询采样当前文本](0811-clipboard-history-samples-current-text.md)

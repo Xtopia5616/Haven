@@ -162,17 +162,27 @@ fn find_window(
         })
         .collect();
     if matches.len() > 1 {
-        anyhow::bail!(
-            "title '{}' matched {} windows; provide window_id or pid",
-            title.unwrap_or(""),
-            matches.len()
-        );
+        return Err(ambiguous_window_error(title, pid, matches.len()));
     }
     Ok(matches
         .first()
         .copied()
         .and_then(|window| window["hwnd"].as_u64())
         .map(|hwnd| hwnd as usize as HWND))
+}
+
+fn ambiguous_window_error(title: Option<&str>, pid: Option<u32>, matches: usize) -> anyhow::Error {
+    let scope = match (title, pid) {
+        (Some(title), Some(pid)) => format!("title '{}' for pid {}", title, pid),
+        (Some(title), None) => format!("title '{}'", title),
+        (None, Some(pid)) => format!("pid {}", pid),
+        (None, None) => "window selector".to_owned(),
+    };
+    anyhow::anyhow!(
+        "{} matched {} windows; provide window_id to select one",
+        scope,
+        matches
+    )
 }
 
 fn window_not_found(
@@ -213,4 +223,30 @@ pub(crate) fn foreground_title_contains(needle: &str) -> anyhow::Result<bool> {
         .as_str()
         .map(|t| t.contains(needle))
         .unwrap_or(false))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ambiguous_window_error;
+
+    #[test]
+    fn ambiguous_pid_requires_window_id() {
+        let error = ambiguous_window_error(None, Some(45_736), 2).to_string();
+
+        assert_eq!(
+            error,
+            "pid 45736 matched 2 windows; provide window_id to select one"
+        );
+        assert!(!error.contains("provide pid"));
+    }
+
+    #[test]
+    fn ambiguous_title_and_pid_requires_window_id() {
+        let error = ambiguous_window_error(Some("Haven"), Some(45_736), 2).to_string();
+
+        assert_eq!(
+            error,
+            "title 'Haven' for pid 45736 matched 2 windows; provide window_id to select one"
+        );
+    }
 }

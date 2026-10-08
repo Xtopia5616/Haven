@@ -85,6 +85,7 @@ fn now_ms() -> u64 {
 /// Per-entry content truncation so a history dump stays readable.
 pub struct ClipboardTool {
     history: Arc<ClipboardHistory>,
+    clipboard_text_reader: Arc<dyn Fn() -> anyhow::Result<String> + Send + Sync>,
     /// Output cap (chars) for clipboard content.
     max_output_chars: usize,
     /// Default `limit` for the `history` operation when the caller omits it.
@@ -156,6 +157,7 @@ impl ClipboardTool {
     ) -> Self {
         Self {
             history,
+            clipboard_text_reader: Arc::new(read_text_clipboard),
             max_output_chars,
             default_limit,
             max_history_limit,
@@ -166,6 +168,15 @@ impl ClipboardTool {
 
     pub(crate) fn with_managed_assets(mut self, managed_assets: ManagedAssetRegistry) -> Self {
         self.managed_assets = managed_assets;
+        self
+    }
+
+    #[cfg(test)]
+    fn with_clipboard_text_reader(
+        mut self,
+        reader: impl Fn() -> anyhow::Result<String> + Send + Sync + 'static,
+    ) -> Self {
+        self.clipboard_text_reader = Arc::new(reader);
         self
     }
 }
@@ -370,6 +381,27 @@ impl ClipboardTool {
                 if cancel.is_cancelled() {
                     anyhow::bail!("cancelled");
                 }
+                let history = Arc::clone(&self.history);
+                let read_text = Arc::clone(&self.clipboard_text_reader);
+                let current_text = tokio::task::spawn_blocking(move || read_text()).await;
+                if cancel.is_cancelled() {
+                    anyhow::bail!("cancelled");
+                }
+                match current_text {
+                    Ok(Ok(text)) => history.record(text),
+                    Ok(Err(error)) => {
+                        tracing::debug!(
+                            error = %error,
+                            "Could not sample current clipboard text for history"
+                        );
+                    }
+                    Err(error) => {
+                        tracing::debug!(
+                            error = %error,
+                            "Clipboard history snapshot task failed"
+                        );
+                    }
+                }
                 let limit = params
                     .limit
                     .map(|l| (l.min(self.max_history_limit as u64)) as usize)
@@ -440,6 +472,15 @@ enum ClipboardRead {
     Html(String),
     Image(arboard::ImageData<'static>),
     Files(Vec<PathBuf>),
+}
+
+fn read_text_clipboard() -> anyhow::Result<String> {
+    match read_clipboard(ClipboardFormat::Text)? {
+        ClipboardRead::Text(text) => Ok(text),
+        ClipboardRead::Html(_) | ClipboardRead::Image(_) | ClipboardRead::Files(_) => {
+            unreachable!("explicit text clipboard reads return text")
+        }
+    }
 }
 
 fn read_clipboard(format: ClipboardFormat) -> anyhow::Result<ClipboardRead> {
@@ -809,6 +850,7 @@ mod tests {
 
     fn test_tool() -> ClipboardTool {
         ClipboardTool::new(Arc::new(ClipboardHistory::new(10)), 20_000, 10, 100, 2000)
+            .with_clipboard_text_reader(|| anyhow::bail!("clipboard access is disabled in tests"))
     }
 
     #[test]
@@ -1040,6 +1082,19 @@ mod tests {
         assert_eq!(entries[1]["content"], "alpha");
         assert_eq!(result.output["total"], 2);
         assert!(entries[0]["timestamp_ms"].as_u64().unwrap() > 0);
+    }
+
+    #[tokio::test]
+    async fn test_history_operation_records_current_clipboard_text() {
+        let tool = test_tool().with_clipboard_text_reader(|| Ok("program text".into()));
+
+        let result = tool
+            .execute(json!({"operation": "history"}), CancellationToken::new())
+            .await
+            .unwrap();
+
+        assert_eq!(result.output["total"], 1);
+        assert_eq!(result.output["entries"][0]["content"], "program text");
     }
 
     #[tokio::test]
