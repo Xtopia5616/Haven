@@ -3,7 +3,7 @@
 // history resume flow.
 
 import { formatMessageTime } from './messageFormat.ts';
-import type { SessionResumeInput } from './contracts/sessionHistory.ts';
+import type { SessionResumeMessage, SessionResumeStep } from './contracts/sessionHistory.ts';
 import type {
 	CanonicalRole,
 	SessionStepStatus,
@@ -12,6 +12,20 @@ import type {
 import type { SessionMessagePresentationType, ToolResultPresentationOutcome } from './streaming.ts';
 
 type PersistedToolOutcome = Extract<SessionStepStatus, 'failed' | 'cancelled' | 'unknown'>;
+
+type ResumeMessageProjectionRow = Pick<
+	SessionResumeMessage,
+	'id' | 'role' | 'content' | 'created_at'
+> &
+	Partial<Omit<SessionResumeMessage, 'id' | 'role' | 'content' | 'created_at'>>;
+type ResumeStepProjectionRow = Pick<SessionResumeStep, 'id' | 'step_number' | 'created_at'> &
+	Partial<Omit<SessionResumeStep, 'id' | 'step_number' | 'created_at'>>;
+
+/** Tolerant transcript rows consumed by the resume-message projection. */
+export interface ResumeTranscriptProjectionInput {
+	messages?: ResumeMessageProjectionRow[];
+	steps?: ResumeStepProjectionRow[];
+}
 
 interface ResumeMessage {
 	id: string;
@@ -179,7 +193,9 @@ export function mergeLiveStreaming(
  * X12: these tables are materialized views of `TranscriptEvent` / execution
  * status — live UI still uses AgentEvent; this path is history/reload only.
  */
-export function buildResumeMessages(data: SessionResumeInput): ResumeMessage[] {
+export function buildResumeMessages<T extends ResumeTranscriptProjectionInput>(
+	data: T,
+): ResumeMessage[] {
 	const items: ResumeMessage[] = [];
 	const msgs = data.messages || [];
 	const stepById = new Map((data.steps || []).map((step) => [step.id, step]));

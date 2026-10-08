@@ -4,17 +4,17 @@ import {
 	type ChatSessionControllerDependencies,
 } from './chatSessionController.ts';
 import type { InteractionRequest } from './contracts/app.ts';
-import type { SessionResumeInput } from './contracts/sessionHistory.ts';
 import { SessionReducer, type SessionAction } from './sessionReducer.ts';
 import type { ProcessResult } from './contracts/generatedCommands.ts';
 import type { CanonicalRole } from './contracts/generatedCommands.ts';
 import type { SessionMessagePresentationType } from './streaming.ts';
+import type { ResumeTranscriptProjectionInput } from './resumeMessages.ts';
 
 const SESSION_ID = 'ses-00000000000000000000000000000001';
 const OTHER_SESSION_ID = 'ses-00000000000000000000000000000002';
 const USER_MESSAGE_ID = 'msg-00000000000000000000000000000001';
 
-function sessionResumeInput(overrides: Partial<SessionResumeInput> = {}): SessionResumeInput {
+function resumeResponseFixture(overrides: Partial<ResumeTranscriptProjectionInput> = {}) {
 	return {
 		session: { id: SESSION_ID, status: 'paused' },
 		messages: [],
@@ -71,7 +71,7 @@ function makeHarness(
 			const result = options.invoke
 				? await options.invoke(command, args)
 				: command === 'get_session_for_resume'
-					? sessionResumeInput()
+					? resumeResponseFixture()
 					: undefined;
 			return result as T;
 		},
@@ -255,7 +255,7 @@ describe('ChatSessionController continue', () => {
 	it('resubmits the original user turn when it did not survive the resume reload', async () => {
 		const harness = makeHarness({
 			invoke: (command) =>
-				command === 'get_session_for_resume' ? sessionResumeInput() : undefined,
+				command === 'get_session_for_resume' ? resumeResponseFixture() : undefined,
 		});
 		addMessages(harness.reducer, {
 			id: USER_MESSAGE_ID,
@@ -272,7 +272,7 @@ describe('ChatSessionController continue', () => {
 		const harness = makeHarness({
 			invoke: (command) =>
 				command === 'get_session_for_resume'
-					? sessionResumeInput({
+					? resumeResponseFixture({
 							messages: [
 								{
 									id: USER_MESSAGE_ID,
@@ -318,7 +318,7 @@ describe('ChatSessionController continue', () => {
 		});
 		const harness = makeHarness({
 			invoke: (command) =>
-				command === 'continue_session' ? continueCommand : sessionResumeInput(),
+				command === 'continue_session' ? continueCommand : resumeResponseFixture(),
 		});
 
 		const first = harness.controller.handleContinue();
@@ -337,7 +337,7 @@ describe('ChatSessionController continue', () => {
 		});
 		const harness = makeHarness({
 			invoke: (command) =>
-				command === 'rollback_session' ? rollbackCommand : sessionResumeInput(),
+				command === 'rollback_session' ? rollbackCommand : resumeResponseFixture(),
 		});
 		const request = {
 			stepNumber: 7,
