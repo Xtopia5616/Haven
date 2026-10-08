@@ -773,3 +773,4 @@
 - [0782：对齐 Memory renderer 嵌套 Props 的 null 语义](0782-align-memory-renderer-prop-nullability.md)
 - [0783：要求 HTTP renderer 的响应状态](0783-require-http-result-status.md)
 - [0784：校验非空剪贴板历史的 total](0784-require-clipboard-history-total.md)
+- [0785：对齐 Agent renderer root Props 的 null 语义](0785-align-agent-result-prop-nullability.md)

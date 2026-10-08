@@ -5,24 +5,24 @@
 
 	interface Props {
 		data?: {
-			auto?: boolean;
-			text?: string;
+			auto?: boolean | null;
+			text?: string | null;
 			agents?: Array<{
 				name: string;
 				title?: string | null;
 				role?: string | null;
 				status: ToolAgentPresenceStatus;
 			}>;
-			timed_out?: boolean;
-			message_id?: string;
-			timeout_secs?: number;
-			session_id?: string;
-			ok?: boolean;
-			parent?: string;
-			role?: string;
-			queued?: boolean;
-			running_sessions?: number;
-			max_concurrent?: number;
+			timed_out?: boolean | null;
+			message_id?: string | null;
+			timeout_secs?: number | null;
+			session_id?: string | null;
+			ok?: boolean | null;
+			parent?: string | null;
+			role?: string | null;
+			queued?: boolean | null;
+			running_sessions?: number | null;
+			max_concurrent?: number | null;
 			reply?: unknown;
 		};
 	}

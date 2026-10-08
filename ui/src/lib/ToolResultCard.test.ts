@@ -11,6 +11,7 @@ import {
 	setToolOutputPreview,
 } from './toolOutputPreviewStore.ts';
 import { getToolResultRenderer } from './toolResultRenderers.ts';
+import ToolAgentResult from './ToolAgentResult.svelte';
 import ToolClipboardResult from './ToolClipboardResult.svelte';
 import ToolFileResult from './ToolFileResult.svelte';
 import ToolFileSearchResult from './ToolFileSearchResult.svelte';
@@ -218,6 +219,7 @@ describe('operation view UI contract', () => {
 			},
 			{ renderer: 'agent', data: { agents: [null] } },
 			{ renderer: 'agent', data: { agents: [{ name: 'peer', status: 'future' }] } },
+			{ renderer: 'agent', data: { auto: 'yes' } },
 			{ renderer: 'process', data: { processes: [null] } },
 			{ renderer: 'process', data: { processes: null } },
 			{ renderer: 'process', data: { operation: 'restart' } },
@@ -306,6 +308,28 @@ describe('operation view UI contract', () => {
 	});
 
 	it('keeps valid builtin shapes specialized and unknown extension renderers open', () => {
+		expect(
+			getToolResultRenderer(
+				'custom',
+				'agent',
+				{
+					auto: null,
+					text: null,
+					timed_out: null,
+					message_id: null,
+					timeout_secs: null,
+					session_id: null,
+					ok: null,
+					parent: null,
+					role: null,
+					queued: null,
+					running_sessions: null,
+					max_concurrent: null,
+					reply: null,
+				},
+				'agent',
+			),
+		).toBe(ToolAgentResult);
 		expect(
 			getToolResultRenderer(
 				'custom',
