@@ -1,7 +1,7 @@
 <script lang="ts">
 	import StatusBadge from '$lib/StatusBadge.svelte';
 	import ToolResultList from '$lib/ToolResultList.svelte';
-	import type { ToolAgentPresenceStatus } from './toolAgentPresence.ts';
+	import type { ToolAgentPresenceStatus } from './toolResultPresentation.ts';
 
 	interface Props {
 		data?: {

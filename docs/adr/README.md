@@ -744,3 +744,4 @@
 - [0753：Tool result hint 只按文本渲染](0753-render-tool-result-hints-as-text.md)
 - [0754：Admin session renderer 状态复用 SessionStatus](0754-type-admin-session-renderer-status.md)
 - [0755：Agent presence renderer 状态复用闭合值](0755-type-agent-presence-renderer-status.md)
+- [0756：Shell ToolResult 复用闭合执行状态](0756-type-shell-tool-result-status.md)

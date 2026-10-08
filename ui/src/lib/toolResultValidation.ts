@@ -1,7 +1,7 @@
 import { isRecord } from './contracts/objectGuards.ts';
 import { isSessionStatus } from './contracts/session.ts';
 import { isToolRunStatus } from './contracts/toolRun.ts';
-import { isToolAgentPresenceStatus } from './toolAgentPresence.ts';
+import { isToolAgentPresenceStatus, isToolExecutionMode } from './toolResultPresentation.ts';
 
 type JsonRecord = Record<string, unknown>;
 type FieldGuard = (value: unknown) => boolean;
@@ -454,8 +454,8 @@ function validBuiltinRendererData(renderer: string, data: JsonRecord): boolean {
 		case 'shell':
 			return hasValidOptionalFields(data, {
 				truncated: isBoolean,
-				execution_mode: (value) => value === 'foreground' || value === 'background',
-				status: isString,
+				execution_mode: isToolExecutionMode,
+				status: isToolRunStatus,
 				tool_run_id: isString,
 				exit_code: isFiniteNumber,
 			});

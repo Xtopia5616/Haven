@@ -317,6 +317,22 @@ describe('operation view UI contract', () => {
 	it('keeps shell streaming placeholders and falls back for malformed shell metadata', () => {
 		expect(getToolResultRenderer('shell', 'shell', null)).toBe(ToolShellResult);
 		expect(getToolResultRenderer('shell', 'shell', { truncated: 'yes' })).toBe(ToolJsonResult);
+		expect(
+			getToolResultRenderer('shell', 'shell', {
+				execution_mode: 'background',
+				status: 'running',
+				tool_run_id: 'toolrun-1',
+			}),
+		).toBe(ToolShellResult);
+		expect(
+			getToolResultRenderer('shell', 'shell', {
+				execution_mode: 'background',
+				status: 'future',
+			}),
+		).toBe(ToolJsonResult);
+		expect(getToolResultRenderer('shell', 'shell', { execution_mode: 'detached' })).toBe(
+			ToolJsonResult,
+		);
 	});
 });
 

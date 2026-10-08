@@ -1,10 +1,13 @@
 <script lang="ts">
+	import type { ToolRunStatus } from '$lib/contracts/toolRun.ts';
+	import type { ToolExecutionMode } from './toolResultPresentation.ts';
+
 	interface Props {
 		data?: {
-			truncated?: boolean;
-			execution_mode?: 'foreground' | 'background';
-			status?: string;
-			tool_run_id?: string;
+			truncated?: boolean | null;
+			execution_mode?: ToolExecutionMode | null;
+			status?: ToolRunStatus | null;
+			tool_run_id?: string | null;
 			exit_code?: number | null;
 		};
 		shellText?: string;
