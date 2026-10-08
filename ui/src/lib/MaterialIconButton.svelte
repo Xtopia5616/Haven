@@ -1,5 +1,6 @@
 <script lang="ts">
 	import Icon from './Icon.svelte';
+	import type { IconName } from './icons.ts';
 	import type { Snippet } from 'svelte';
 
 	interface Props {
@@ -13,7 +14,7 @@
 			| 'success-outline'
 			| 'tonal';
 		size?: 'default' | 'toolbar' | 'dense';
-		icon?: string;
+		icon?: IconName;
 		onclick?: () => void;
 		disabled?: boolean;
 		ariaExpanded?: boolean;

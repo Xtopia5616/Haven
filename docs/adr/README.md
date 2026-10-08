@@ -757,3 +757,4 @@
 - [0766：Session reducer 复用生成等待原因类型](0766-type-session-waiting-reasons.md)
 - [0767：SessionSummary 使用显式 UI projection](0767-normalize-session-summary-view.md)
 - [0768：录音停止原因复用闭合 wire enum](0768-type-recording-stop-reason.md)
+- [0769：图标按钮使用注册表键类型](0769-type-icon-button-registry-key.md)
