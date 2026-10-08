@@ -373,7 +373,6 @@
 	let saveError = $state('');
 	let saveBarHeight = $state(0);
 	let settingsViewElement = $state<HTMLDivElement | null>(null);
-	let saveBarSlotPosition = $state({ left: 0, width: 0, bottom: 0 });
 	let securityRuntimeStatus = $state<'current' | 'unchanged' | 'incomplete'>('current');
 	let securityRuntimeNotice = $state('安全策略已按当前配置完成运行时应用。');
 	let mounted = true;
@@ -1283,29 +1282,6 @@
 	$effect(() => {
 		const content = settingsViewElement?.closest<HTMLElement>('.content');
 		if (!content) return;
-
-		const updatePosition = () => {
-			const rect = content.getBoundingClientRect();
-			saveBarSlotPosition = {
-				left: rect.left,
-				width: rect.width,
-				bottom: Math.max(0, window.innerHeight - rect.bottom),
-			};
-		};
-		const observer =
-			typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(updatePosition);
-		observer?.observe(content);
-		window.addEventListener('resize', updatePosition);
-		updatePosition();
-		return () => {
-			observer?.disconnect();
-			window.removeEventListener('resize', updatePosition);
-		};
-	});
-
-	$effect(() => {
-		const content = settingsViewElement?.closest<HTMLElement>('.content');
-		if (!content) return;
 		if (saveBarVisible) {
 			content.style.setProperty('--settings-save-bar-clearance', `${saveBarHeight}px`);
 		} else {
@@ -1454,9 +1430,6 @@
 	</div>
 	<div
 		class="settings-save-bar-slot"
-		style:left={`${saveBarSlotPosition.left}px`}
-		style:width={`${saveBarSlotPosition.width}px`}
-		style:bottom={`${saveBarSlotPosition.bottom}px`}
 	>
 		<SettingsSaveBar
 			visible={saveBarVisible}
@@ -1553,12 +1526,13 @@
 	}
 	.settings-save-bar-slot {
 		position: fixed;
+		inset-inline: 0;
 		bottom: 0;
 		z-index: var(--md-sys-z-drawer);
+		width: 100%;
 		min-width: 0;
 		display: flex;
 		justify-content: center;
-		padding-inline: var(--md-sys-content-gutter);
 		pointer-events: none;
 	}
 	:global(.content:not(.content--chat) .page-shell:has(.settings-view-shell)) {

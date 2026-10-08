@@ -85,8 +85,7 @@
 	.save-bar {
 		position: relative;
 		width: 100%;
-		max-width: var(--md-sys-content-max-width);
-		margin-inline: auto;
+		max-width: none;
 		pointer-events: auto;
 		display: flex;
 		align-items: center;
@@ -166,22 +165,8 @@
 	}
 	@media screen and (min-width: 840px) {
 		.save-bar {
-			align-items: stretch;
-			flex-direction: column;
-		}
-		.save-actions,
-		.save-actions :global(.md-btn),
-		.save-button-status {
-			width: 100%;
-		}
-		.save-actions :global(.md-btn) {
-			min-width: 0;
-		}
-		.save-actions {
-			grid-template-columns: 1fr;
-		}
-		.save-actions {
-			align-items: stretch;
+			align-items: center;
+			flex-direction: row;
 		}
 	}
 </style>
