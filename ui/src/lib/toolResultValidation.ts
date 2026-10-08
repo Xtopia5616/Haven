@@ -3,6 +3,8 @@ import { isSessionStatus } from './contracts/session.ts';
 import { isToolRunStatus } from './contracts/toolRun.ts';
 import {
 	isToolAgentPresenceStatus,
+	isToolAcPowerState,
+	isToolBatteryState,
 	isToolExecutionMode,
 	isToolScheduleMode,
 } from './toolResultPresentation.ts';
@@ -73,18 +75,10 @@ function validFileSearchResult(row: JsonRecord): boolean {
 function validSystemData(data: JsonRecord): boolean {
 	return (
 		hasValidOptionalFields(data, {
-			...stringFields(
-				'scope',
-				'operation',
-				'path',
-				'name',
-				'value',
-				'note',
-				'reason',
-				'ac_power',
-				'battery_status',
-			),
+			...stringFields('scope', 'operation', 'path', 'name', 'value', 'note', 'reason'),
 			...numberFields('count', 'battery_percent'),
+			ac_power: isToolAcPowerState,
+			battery_status: isToolBatteryState,
 			...booleanFields(
 				'deleted',
 				'available',

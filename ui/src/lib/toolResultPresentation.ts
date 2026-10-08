@@ -21,3 +21,19 @@ export type ToolScheduleMode = (typeof toolScheduleModes)[number];
 export function isToolScheduleMode(value: unknown): value is ToolScheduleMode {
 	return toolScheduleModes.some((mode) => mode === value);
 }
+
+export const toolAcPowerStates = ['offline', 'online', 'unknown'] as const;
+
+export type ToolAcPowerState = (typeof toolAcPowerStates)[number];
+
+export function isToolAcPowerState(value: unknown): value is ToolAcPowerState {
+	return toolAcPowerStates.some((state) => state === value);
+}
+
+export const toolBatteryStates = ['high', 'low', 'critical', 'charging', 'unknown'] as const;
+
+export type ToolBatteryState = (typeof toolBatteryStates)[number];
+
+export function isToolBatteryState(value: unknown): value is ToolBatteryState {
+	return toolBatteryStates.some((state) => state === value);
+}

@@ -6,6 +6,7 @@
 	import ToolResultList from '$lib/ToolResultList.svelte';
 	import ToolSearch from '$lib/ToolSearch.svelte';
 	import { clampPercentage, formatByteSize } from '$lib/toolResultFormatting.ts';
+	import type { ToolAcPowerState, ToolBatteryState } from './toolResultPresentation.ts';
 
 	interface Props {
 		data?: {
@@ -21,11 +22,11 @@
 			set?: boolean;
 			removed?: boolean;
 			available?: boolean;
-			ac_power?: string;
+			ac_power?: ToolAcPowerState | null;
 			battery_percent?: number;
 			battery_present?: boolean;
 			battery_saver?: boolean;
-			battery_status?: string;
+			battery_status?: ToolBatteryState | null;
 			locked?: boolean;
 			sleep?: boolean;
 			hibernate?: boolean;

@@ -228,6 +228,8 @@ describe('operation view UI contract', () => {
 			{ renderer: 'system', data: { os: [] } },
 			{ renderer: 'system', data: { networks: [{ ips: null }] } },
 			{ renderer: 'system', data: { scope: 'process', processes: [null] } },
+			{ renderer: 'system', data: { scope: 'power', ac_power: 'plugged' } },
+			{ renderer: 'system', data: { scope: 'power', battery_status: 'empty' } },
 			{ renderer: 'haven_mcp', data: { servers: [null] } },
 			{
 				renderer: 'haven_diagnostics',
