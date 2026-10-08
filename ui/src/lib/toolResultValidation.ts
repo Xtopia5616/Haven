@@ -409,7 +409,7 @@ function validBuiltinRendererData(renderer: string, data: JsonRecord): boolean {
 					(row) =>
 						hasValidOptionalFields(
 							row,
-							stringFields('tool_run_id', 'title', 'body', 'mode', 'fires_at'),
+							stringFields('tool_run_id', 'title', 'body', 'mode', 'due_at'),
 						) && isString(row.tool_run_id),
 				)
 			);

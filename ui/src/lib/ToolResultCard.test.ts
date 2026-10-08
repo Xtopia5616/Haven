@@ -205,6 +205,10 @@ describe('operation view UI contract', () => {
 				data: { tool_runs: [{ tool_run_id: 'toolrun-1', status: 'future-status' }] },
 			},
 			{ renderer: 'schedule', data: { scheduled_tool_runs: [null] } },
+			{
+				renderer: 'schedule',
+				data: { scheduled_tool_runs: [{ tool_run_id: 'toolrun-1', due_at: 42 }] },
+			},
 			{ renderer: 'system', data: { os: [] } },
 			{ renderer: 'system', data: { networks: [{ ips: null }] } },
 			{ renderer: 'system', data: { scope: 'process', processes: [null] } },
@@ -1360,6 +1364,29 @@ describe('ToolResultCard http', () => {
 		await expandToolCard(container);
 		expect(screen.getByText('已取消')).toBeTruthy();
 		expect(screen.getByText('#toolrun-42')).toBeTruthy();
+	});
+
+	it('renders list due_at from the scheduled ToolRun projection', async () => {
+		const { container } = render(ToolResultCard, {
+			toolName: 'schedule.list',
+			renderer: 'schedule',
+			content: JSON.stringify({
+				operation: 'schedule_list',
+				scheduled_tool_runs: [
+					{
+						tool_run_id: 'toolrun-scheduled',
+						title: '每日摘要',
+						body: '生成今日摘要',
+						mode: 'continue',
+						due_at: '2026-10-09T09:00:00+08:00',
+					},
+				],
+			}),
+		});
+		await expandToolCard(container);
+		expect(screen.getByText('每日摘要')).toBeTruthy();
+		expect(screen.getByText('继续会话')).toBeTruthy();
+		expect(screen.getByText('2026-10-09T09:00:00+08:00')).toBeTruthy();
 	});
 });
 

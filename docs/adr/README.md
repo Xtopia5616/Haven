@@ -735,3 +735,4 @@
 - [0744：Tool result envelope metadata 复用闭合类型](0744-type-tool-result-envelope-metadata.md)
 - [0745：在 UI builtin renderer 边界校验 ToolResult 输出](0745-validate-builtin-tool-result-renderers.md)
 - [0746：ToolRun board 输出复用生成状态类型](0746-type-tool-run-board-output-status.md)
+- [0747：Schedule 列表 renderer 对齐 due_at 字段](0747-align-scheduled-tool-run-output-field.md)

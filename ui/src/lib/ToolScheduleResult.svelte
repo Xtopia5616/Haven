@@ -11,7 +11,7 @@
 				title?: string;
 				body?: string;
 				mode?: string;
-				fires_at?: string;
+				due_at?: string;
 			}>;
 			mode?: string;
 			fires_at?: string;
@@ -49,8 +49,7 @@
 								})}</span
 							>
 							<span class="scheduled-mode">{scheduleModeLabel(toolRun.mode)}</span>
-							{#if toolRun.fires_at}<span class="scheduled-time"
-									>{toolRun.fires_at}</span
+							{#if toolRun.due_at}<span class="scheduled-time">{toolRun.due_at}</span
 								>{/if}
 						</div>
 					{/each}
