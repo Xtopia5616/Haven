@@ -200,6 +200,10 @@ describe('operation view UI contract', () => {
 			{ renderer: 'input', data: { operation: 'click', clicked: [12, '20'] } },
 			{ renderer: 'window', data: { elements: [null] } },
 			{ renderer: 'tool_runs', data: { tool_runs: [null] } },
+			{
+				renderer: 'tool_runs',
+				data: { tool_runs: [{ tool_run_id: 'toolrun-1', status: 'future-status' }] },
+			},
 			{ renderer: 'schedule', data: { scheduled_tool_runs: [null] } },
 			{ renderer: 'system', data: { os: [] } },
 			{ renderer: 'system', data: { networks: [{ ips: null }] } },
@@ -1154,6 +1158,20 @@ describe('ToolResultCard tool_runs', () => {
 		await expandToolCard(container);
 		expect(screen.getByText('已取消')).toBeTruthy();
 		expect(screen.getByText('toolrun-2')).toBeTruthy();
+	});
+
+	it('renders list rows with generated ToolRun statuses', async () => {
+		const { container } = render(ToolResultCard, {
+			toolName: 'tool_runs.list',
+			renderer: 'tool_runs',
+			content: JSON.stringify({
+				operation: 'tool_runs_list',
+				tool_runs: [{ tool_run_id: 'toolrun-3', status: 'running' }],
+			}),
+		});
+		await expandToolCard(container);
+		expect(screen.getByText('toolrun-3')).toBeTruthy();
+		expect(screen.getByText('运行中')).toBeTruthy();
 	});
 });
 

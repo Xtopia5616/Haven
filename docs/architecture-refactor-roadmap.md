@@ -198,6 +198,8 @@
 
 **Memory fact source props 复核（2026-10-08）：** `MaterialSelect` 的 change 值是原始 `string`，但 `MemoryCenter` options/filter 与 Memory command 都使用生成的 `MemoryFactSourceInput`。现在组件在 select 边界接受空筛选或生成 source 值，丢弃未知字符串；回调仅暴露 `MemoryFactSourceInput | ''`，`MemoryView` 不再重复枚举检查/cast。`isMemoryFactSourceInput` 复用生成值清单并覆盖未知值与空 sentinel 的测试；查询行为、IPC 与持久化契约不变。
 
+**ToolRun board 输出 renderer 复核（2026-10-08）：** producer `ToolRunListView::to_json` 对列表行总是输出真实 `ToolRunStatus`；UI 原来只要求行内 `status` 是字符串。现在 `ToolRunsResult` 的 `ToolRunSummary` 将 `tool_run_id` 与生成 `ToolRunStatus` 标为必填，registry 使用 `contracts/toolRun.ts::isToolRunStatus` 校验行状态，缺失/未知状态回退原始 JSON。单项 inspect 的 root status 仍允许 `not_found` 等查询状态字符串。ToolResult 的异构 JSON 边界与 producer wire 不变（ADR 0746）。
+
 #### 首轮全仓符号扫描与候选分流
 
 | 范围 | 证据与调用边界 | 当前分类 / 下一步 |

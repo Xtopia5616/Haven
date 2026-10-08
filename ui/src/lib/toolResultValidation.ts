@@ -1,4 +1,5 @@
 import { isRecord } from './contracts/objectGuards.ts';
+import { isToolRunStatus } from './contracts/toolRun.ts';
 
 type JsonRecord = Record<string, unknown>;
 type FieldGuard = (value: unknown) => boolean;
@@ -387,9 +388,7 @@ function validBuiltinRendererData(renderer: string, data: JsonRecord): boolean {
 				hasValidRecordArray(
 					data,
 					'tool_runs',
-					(row) =>
-						hasValidOptionalFields(row, stringFields('tool_run_id', 'status')) &&
-						isString(row.tool_run_id),
+					(row) => isString(row.tool_run_id) && isToolRunStatus(row.status),
 				)
 			);
 		case 'schedule':

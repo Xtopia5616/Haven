@@ -3,8 +3,9 @@
 	import JsonView from '$lib/JsonView.svelte';
 	import StatusBadge from '$lib/StatusBadge.svelte';
 	import ToolResultList from '$lib/ToolResultList.svelte';
+	import type { ToolRunStatus } from '$lib/contracts/toolRun.ts';
 
-	type ToolRunSummary = { tool_run_id?: string; status?: string };
+	type ToolRunSummary = { tool_run_id: string; status: ToolRunStatus };
 
 	interface Props {
 		data?: {

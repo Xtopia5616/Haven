@@ -64,7 +64,7 @@ function isToolRunKind(value: unknown): value is ToolRunKind {
 	return (TOOL_RUN_KIND_DTO_VALUES as readonly unknown[]).includes(value);
 }
 
-function isToolRunStatus(value: unknown): value is ToolRunStatus {
+export function isToolRunStatus(value: unknown): value is ToolRunStatus {
 	return (TOOL_RUN_STATUS_VALUES as readonly unknown[]).includes(value);
 }
 
