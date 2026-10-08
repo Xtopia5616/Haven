@@ -778,3 +778,4 @@
 - [0787：对齐 Files 与 Input renderer Props 的 null 语义](0787-align-file-input-result-prop-nullability.md)
 - [0788：对齐 Media 与 Window renderer 的 nested null 语义](0788-align-media-window-result-prop-nullability.md)
 - [0789：对齐 System renderer 的嵌套 Props null 语义](0789-align-system-result-prop-nullability.md)
+- [0790：收窄 ToolRun card 的详情投影](0790-trim-toolrun-card-details.md)

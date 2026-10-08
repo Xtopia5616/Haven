@@ -6,13 +6,8 @@ export interface ToolRunCardDetails {
 	command?: string;
 	output?: string;
 	error?: string;
-	errorReason?: string;
-	exitCode?: number;
 	preview?: string;
-	dueAt?: string;
-	title?: string;
 	body?: string;
-	mode?: string;
 }
 
 /** Shared visible structure for background and scheduled ToolRun cards. */
@@ -125,17 +120,12 @@ export function projectToolRunCard(
 	const context = scheduled ? scheduleModeLabel(toolRun.mode) : sessionTitle || '无关联会话';
 	const details: ToolRunCardDetails = scheduled
 		? {
-				dueAt: toolRun.dueAt,
-				title: toolRun.title,
 				body: toolRun.body,
-				mode: toolRun.mode,
 			}
 		: {
 				command: toolRun.command,
 				output: toolRun.output,
 				error: toolRun.error,
-				errorReason: toolRun.errorReason,
-				exitCode: toolRun.exitCode,
 				preview: toolRun.preview,
 			};
 

@@ -60,12 +60,9 @@ describe('projectToolRunCard', () => {
 				command: '整理下载目录',
 				output: '已移动 3 个文件',
 				error: 'diagnostic detail',
-				errorReason: 'summary',
-				exitCode: 0,
 				preview: '当前进度',
 			},
 		});
-		expect(card.details.dueAt).toBeUndefined();
 	});
 
 	it('projects scheduled cards with the same structure and scheduled details', () => {
@@ -96,12 +93,9 @@ describe('projectToolRunCard', () => {
 			context: '继续会话',
 			timing: '2分后',
 			details: {
-				dueAt: '2026-09-27T12:00:00Z',
-				title: '稍后整理',
 				body: '整理下载目录',
-				mode: 'continue',
 			},
 		});
-		expect(card.details.command).toBeUndefined();
+		expect(card.details).toEqual({ body: '整理下载目录' });
 	});
 });
