@@ -22,6 +22,14 @@ export function isToolScheduleMode(value: unknown): value is ToolScheduleMode {
 	return toolScheduleModes.some((mode) => mode === value);
 }
 
+export const toolFileSearchModes = ['filename', 'content'] as const;
+
+export type ToolFileSearchMode = (typeof toolFileSearchModes)[number];
+
+export function isToolFileSearchMode(value: unknown): value is ToolFileSearchMode {
+	return toolFileSearchModes.some((mode) => mode === value);
+}
+
 export const toolAcPowerStates = ['offline', 'online', 'unknown'] as const;
 
 export type ToolAcPowerState = (typeof toolAcPowerStates)[number];

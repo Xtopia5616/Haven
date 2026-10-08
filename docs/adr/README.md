@@ -761,3 +761,4 @@
 - [0770：Context menu 图标使用注册表键类型](0770-type-context-menu-icon.md)
 - [0771：ExpandableContextCard kind 使用闭合集合](0771-type-expandable-context-card-kind.md)
 - [0772：CountChip 使用数值数量 prop](0772-type-count-chip-count.md)
+- [0773：File search mode 闭合生产与 renderer 契约](0773-close-file-search-mode-contract.md)

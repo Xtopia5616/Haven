@@ -1,12 +1,13 @@
 <script lang="ts">
 	import ExternalRef from '$lib/ExternalRef.svelte';
 	import ToolResultList from '$lib/ToolResultList.svelte';
+	import type { ToolFileSearchMode } from '$lib/toolResultPresentation.ts';
 
 	interface Props {
 		data?: {
 			results?: Array<{ path: string; line?: number | null; snippet?: string }>;
 			count?: number;
-			mode?: string;
+			mode?: ToolFileSearchMode;
 		};
 	}
 

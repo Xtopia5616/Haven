@@ -189,6 +189,7 @@ describe('operation view UI contract', () => {
 		}> = [
 			{ renderer: 'files.search', data: { results: [null] } },
 			{ renderer: 'files.search', data: { results: null } },
+			{ renderer: 'files.search', data: { results: [], mode: 'future-mode' } },
 			{ renderer: 'files', data: { results: [{ path: 42 }] } },
 			{ renderer: 'files', data: { media: [] } },
 			{ renderer: 'media', data: { media: { available_representations: [null] } } },

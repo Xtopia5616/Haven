@@ -5,7 +5,7 @@ use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
 use super::file_outline;
-use super::file_search::{FileSearchEngine, SearchOptions, SearchRequest};
+use super::file_search::{FileSearchEngine, FileSearchMode, SearchOptions, SearchRequest};
 use super::media::{MediaParams, MediaTool};
 use crate::{ManagedAssetRegistry, ToolResult};
 
@@ -468,7 +468,7 @@ impl FilesTool {
                     search_root.clone().unwrap_or_default(),
                     params.pattern.clone().unwrap_or_default(),
                     SearchOptions {
-                        mode: params.mode.clone(),
+                        mode: Some(FileSearchMode::parse(params.mode.as_deref())?),
                         max_depth: params.max_depth,
                         max_results: params.max_results,
                         ignore_hidden: params.ignore_hidden,

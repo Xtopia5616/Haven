@@ -228,6 +228,8 @@
 
 **CountChip 数量 prop 复核（2026-10-08）：** 全部消费者传递列表长度、过滤结果数或 number 类型总数，没有字符串计数。prop 原接受 `number | string` 并通过 `Number()` 隐式转换；现限定为 `number`，有限值显示 floor 后的非负整数，负数和非有限值显示 0（ADR 0772）。
 
+**File search result mode 复核（2026-10-08）：** `files.search` schema 已声明 `filename/content`，但 FilesTool 参数和 `SearchRequest` 曾使用开放字符串，并原样回写 `ToolResult.output.mode`。现由 Rust `FileSearchMode` 在入口拒绝未知值、序列化闭合结果；UI renderer prop 与 nested validator 共用 `ToolFileSearchMode`，未知动态输出回退 JsonView（ADR 0773）。
+
 **Session waiting reason state/action 复核（2026-10-08）：** runtime list 的 `waiting_reason` 与 `session:lifecycle` mapper 输出均使用 generated `SessionWaitingReason`；reducer state 和 `status-updated` / `run-ended` actions 原先却使用 `unknown` / `string`。现改为 `SessionWaitingReason | null`；唯一容错 helper 继续在 unknown input 上校验值域并对未知值返回 `null`（ADR 0766）。
 
 **SessionSummary renderer projection 复核（2026-10-08）：** `SessionSummary` 原有开放索引签名混装 runtime `SessionInfo`、persisted `SessionRecordDto` 与 `SessionHistoryRow`，startup 直接 spread 全部 runtime DTO，lineage/switcher 也泄漏 `input_text`。现将 reducer 行限定为实际消费的 `id/status/title/input/inputText/waitingReason`；三个来源在各自 UI 边界显式映射，并以 startup/switcher tests 固定不再输出 `input_text`（ADR 0767）。

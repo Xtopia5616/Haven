@@ -7,6 +7,7 @@ import {
 	isToolAcPowerState,
 	isToolBatteryState,
 	isToolExecutionMode,
+	isToolFileSearchMode,
 	isToolMediaFileKind,
 	isToolMediaModality,
 	isToolScheduleMode,
@@ -317,7 +318,7 @@ function validBuiltinRendererData(renderer: string, data: JsonRecord): boolean {
 			return (
 				hasValidOptionalFields(data, {
 					count: isFiniteNumber,
-					mode: isString,
+					mode: isToolFileSearchMode,
 				}) && hasValidRecordArray(data, 'results', validFileSearchResult)
 			);
 		case 'files':

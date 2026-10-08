@@ -63,11 +63,28 @@ fn reserve_scan_entry(
 
 /// Typed request passed from the files aggregate tool to the search engine.
 /// The JSON-shaped `Value` entry remains only at the model boundary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FileSearchMode {
+    Filename,
+    Content,
+}
+
+impl FileSearchMode {
+    pub fn parse(value: Option<&str>) -> anyhow::Result<Self> {
+        match value.unwrap_or("filename") {
+            "filename" => Ok(Self::Filename),
+            "content" => Ok(Self::Content),
+            value => anyhow::bail!("unsupported file search mode: {value}"),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SearchRequest {
     pub root: String,
     pub pattern: String,
-    pub mode: String,
+    pub mode: FileSearchMode,
     pub max_depth: usize,
     pub max_results: usize,
     pub ignore_hidden: bool,
@@ -78,7 +95,7 @@ pub struct SearchRequest {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SearchOptions {
-    pub mode: Option<String>,
+    pub mode: Option<FileSearchMode>,
     pub max_depth: Option<i64>,
     pub max_results: Option<i64>,
     pub ignore_hidden: Option<bool>,
@@ -101,11 +118,16 @@ impl SearchRequest {
             .as_str()
             .ok_or_else(|| anyhow::anyhow!("pattern is required"))?
             .to_string();
+        let mode = match input.get("mode") {
+            None | Some(Value::Null) => None,
+            Some(Value::String(value)) => Some(FileSearchMode::parse(Some(value))?),
+            Some(_) => anyhow::bail!("file search mode must be a string"),
+        };
         Ok(Self::new(
             root,
             pattern,
             SearchOptions {
-                mode: input["mode"].as_str().map(str::to_owned),
+                mode,
                 max_depth: input["max_depth"].as_i64(),
                 max_results: input["max_results"].as_i64(),
                 ignore_hidden: input["ignore_hidden"].as_bool(),
@@ -133,7 +155,7 @@ impl SearchRequest {
         Self {
             root,
             pattern,
-            mode: options.mode.unwrap_or_else(|| "filename".into()),
+            mode: options.mode.unwrap_or(FileSearchMode::Filename),
             max_depth: options.max_depth.unwrap_or(10).max(0) as usize,
             max_results: options
                 .max_results
@@ -248,7 +270,7 @@ impl FileSearchEngine {
             _ = cancel.cancelled() => anyhow::bail!("cancelled"),
         };
 
-        let mode_for_closure = mode.clone();
+        let mode_for_closure = mode;
         let cancel_inner = cancel.clone();
         let snippet_chars = self.snippet_chars;
         let max_window_bytes = self.max_window_bytes;
@@ -257,7 +279,7 @@ impl FileSearchEngine {
             search_files(SearchParams {
                 root: &root_path,
                 pattern: &pattern_str,
-                mode: &mode_for_closure,
+                mode: mode_for_closure,
                 max_depth,
                 max_results,
                 ignore_hidden,
@@ -305,7 +327,7 @@ impl FileSearchEngine {
 struct SearchParams<'a> {
     root: &'a Path,
     pattern: &'a str,
-    mode: &'a str,
+    mode: FileSearchMode,
     max_depth: usize,
     max_results: usize,
     ignore_hidden: bool,
@@ -334,7 +356,7 @@ struct ContentSearchParams<'a> {
 
 fn search_files(params: SearchParams<'_>) -> FileSearchResult {
     match params.mode {
-        "content" => search_content_parallel(&ContentSearchParams {
+        FileSearchMode::Content => search_content_parallel(&ContentSearchParams {
             root: params.root,
             pattern: params.pattern,
             max_depth: params.max_depth,
@@ -347,7 +369,7 @@ fn search_files(params: SearchParams<'_>) -> FileSearchResult {
             max_window_bytes: params.max_window_bytes,
             cancel: params.cancel,
         }),
-        _ => search_filenames_parallel(
+        FileSearchMode::Filename => search_filenames_parallel(
             params.root,
             params.pattern,
             params.max_depth,
@@ -910,6 +932,33 @@ mod tests {
     use super::*;
     use serde_json::json;
     use std::io::Read;
+
+    #[test]
+    fn search_request_rejects_unknown_modes_at_the_dynamic_boundary() {
+        let error = SearchRequest::from_value(
+            json!({"root": ".", "pattern": "*.rs", "mode": "future-mode"}),
+            100,
+            1024,
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("unsupported file search mode"));
+    }
+
+    #[test]
+    fn search_request_defaults_to_filename_mode_and_accepts_content_mode() {
+        let default_request =
+            SearchRequest::from_value(json!({"root": ".", "pattern": "*.rs"}), 100, 1024).unwrap();
+        assert_eq!(default_request.mode, FileSearchMode::Filename);
+
+        let content_request = SearchRequest::from_value(
+            json!({"root": ".", "pattern": "fn main", "mode": "content"}),
+            100,
+            1024,
+        )
+        .unwrap();
+        assert_eq!(content_request.mode, FileSearchMode::Content);
+    }
 
     #[test]
     fn test_glob_to_regex() {
