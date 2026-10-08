@@ -156,8 +156,7 @@ function validSystemData(data: JsonRecord): boolean {
 function validProcessData(data: JsonRecord): boolean {
 	return (
 		hasValidOptionalFields(data, {
-			...stringFields('operation', 'name_filter'),
-			...numberFields('count', 'matching_count', 'returned', 'limit'),
+			...stringFields('operation'),
 			killed: isStringOrNumber,
 		}) &&
 		hasValidRecordArray(data, 'processes', (row) =>
@@ -350,16 +349,7 @@ function validBuiltinRendererData(renderer: string, data: JsonRecord): boolean {
 					...stringFields('content'),
 					...numberFields('total'),
 					...booleanFields('written'),
-				}) &&
-				hasValidRecordArray(
-					data,
-					'entries',
-					(row) =>
-						hasValidOptionalFields(row, {
-							content: isString,
-							timestamp_ms: isFiniteNumber,
-						}) && isString(row.content),
-				)
+				}) && hasValidRecordArray(data, 'entries', (row) => isString(row.content))
 			);
 		case 'agent':
 			return (

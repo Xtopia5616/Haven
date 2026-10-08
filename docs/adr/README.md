@@ -740,3 +740,4 @@
 - [0749：路由页签在共享 MaterialTabs 边界收窄](0749-narrow-route-tab-ids-at-shared-material-tabs.md)
 - [0750：Memory renderer 数值 props 对齐嵌套校验](0750-type-memory-renderer-numeric-props.md)
 - [0751：HTTP renderer body props 对齐校验](0751-type-http-renderer-body.md)
+- [0752：Tool result renderer 只校验展示消费字段](0752-validate-only-consumed-tool-result-fields.md)

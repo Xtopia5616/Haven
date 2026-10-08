@@ -232,6 +232,26 @@ describe('operation view UI contract', () => {
 		expect(
 			getToolResultRenderer(
 				'custom',
+				'clipboard',
+				{ entries: [{ content: 'copied text', timestamp_ms: 'not rendered' }] },
+				'clipboard',
+			),
+		).not.toBe(ToolJsonResult);
+		expect(
+			getToolResultRenderer(
+				'custom',
+				'process',
+				{
+					processes: [{ pid: 42, name: 'haven', cpu: 1, memory: 2, status: 'Run' }],
+					matching_count: 'not rendered',
+					name_filter: [],
+				},
+				'process',
+			),
+		).not.toBe(ToolJsonResult);
+		expect(
+			getToolResultRenderer(
+				'custom',
 				'system',
 				{
 					scope: 'process',
