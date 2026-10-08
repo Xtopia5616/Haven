@@ -15,59 +15,75 @@
 	interface Props {
 		data?: {
 			scope?: ToolSystemScope | null;
-			path?: string;
-			name?: string;
-			value?: string;
-			note?: string;
-			reason?: string;
-			count?: number;
-			deleted?: boolean;
-			set?: boolean;
-			removed?: boolean;
-			available?: boolean;
+			path?: string | null;
+			name?: string | null;
+			value?: string | null;
+			note?: string | null;
+			reason?: string | null;
+			count?: number | null;
+			deleted?: boolean | null;
+			set?: boolean | null;
+			removed?: boolean | null;
+			available?: boolean | null;
 			ac_power?: ToolAcPowerState | null;
-			battery_percent?: number;
-			battery_present?: boolean;
-			battery_saver?: boolean;
+			battery_percent?: number | null;
+			battery_present?: boolean | null;
+			battery_saver?: boolean | null;
 			battery_status?: ToolBatteryState | null;
-			locked?: boolean;
-			sleep?: boolean;
-			hibernate?: boolean;
+			locked?: boolean | null;
+			sleep?: boolean | null;
+			hibernate?: boolean | null;
 			os?: {
-				name?: string;
-				hostname?: string;
-				arch?: string;
-				uptime_secs?: number;
-			};
+				name?: string | null;
+				hostname?: string | null;
+				arch?: string | null;
+				uptime_secs?: number | null;
+			} | null;
 			user?: {
-				username?: string;
-				computer_name?: string;
-				home?: string;
-				cwd?: string;
-			};
+				username?: string | null;
+				computer_name?: string | null;
+				home?: string | null;
+				cwd?: string | null;
+			} | null;
 			locale?: {
-				locale_name?: string;
-				ui_language?: string;
-				local_time?: string;
-				timezone_offset_hours?: number;
-			};
-			cpu?: { usage_pct?: number; cores?: number; logical_cpus?: number };
-			memory?: { used_bytes?: number; total_bytes?: number; available_bytes?: number };
+				locale_name?: string | null;
+				ui_language?: string | null;
+				local_time?: string | null;
+				timezone_offset_hours?: number | null;
+			} | null;
+			cpu?: {
+				usage_pct?: number | null;
+				cores?: number | null;
+				logical_cpus?: number | null;
+			} | null;
+			memory?: {
+				used_bytes?: number | null;
+				total_bytes?: number | null;
+				available_bytes?: number | null;
+			} | null;
 			network_summary?: {
-				interface_count?: number;
-				up_or_unknown?: number;
-				down?: number;
-			};
-			networks?: Array<{ name?: string; state?: string; ips?: string[] }>;
-			disks?: Array<{ mount?: string; total_bytes?: number; available_bytes?: number }>;
-			displays?: Array<{
-				name?: string;
-				left?: number;
-				width?: number;
-				height?: number;
-				primary?: boolean;
+				interface_count?: number | null;
+				up_or_unknown?: number | null;
+				down?: number | null;
+			} | null;
+			networks?: Array<{
+				name?: string | null;
+				state?: string | null;
+				ips?: string[];
 			}>;
-			variables?: Array<{ name?: string; value?: string }>;
+			disks?: Array<{
+				mount?: string | null;
+				total_bytes?: number | null;
+				available_bytes?: number | null;
+			}>;
+			displays?: Array<{
+				name?: string | null;
+				left?: number | null;
+				width?: number | null;
+				height?: number | null;
+				primary?: boolean | null;
+			}>;
+			variables?: Array<{ name?: string | null; value?: string | null }>;
 			values?: string[];
 			subkeys?: string[];
 		};

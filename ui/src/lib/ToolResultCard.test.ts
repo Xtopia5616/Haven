@@ -270,6 +270,7 @@ describe('operation view UI contract', () => {
 			},
 			{ renderer: 'schedule', data: { operation: 'set', mode: 'future' } },
 			{ renderer: 'system', data: { os: [] } },
+			{ renderer: 'system', data: { os: { hostname: 42 } } },
 			{ renderer: 'system', data: { networks: [{ ips: null }] } },
 			{ renderer: 'system', data: { scope: 'future-scope' } },
 			{ renderer: 'system', data: { scope: { unexpected: true } } },
@@ -314,6 +315,55 @@ describe('operation view UI contract', () => {
 	});
 
 	it('keeps valid builtin shapes specialized and unknown extension renderers open', () => {
+		expect(
+			getToolResultRenderer(
+				'custom',
+				'system',
+				{
+					scope: null,
+					path: null,
+					name: null,
+					value: null,
+					note: null,
+					reason: null,
+					count: null,
+					deleted: null,
+					set: null,
+					removed: null,
+					available: null,
+					ac_power: null,
+					battery_percent: null,
+					battery_present: null,
+					battery_saver: null,
+					battery_status: null,
+					locked: null,
+					sleep: null,
+					hibernate: null,
+					os: { name: null, hostname: null, arch: null, uptime_secs: null },
+					user: { username: null, computer_name: null, home: null, cwd: null },
+					locale: {
+						locale_name: null,
+						ui_language: null,
+						local_time: null,
+						timezone_offset_hours: null,
+					},
+					cpu: { usage_pct: null, cores: null, logical_cpus: null },
+					memory: { used_bytes: null, total_bytes: null, available_bytes: null },
+					network_summary: {
+						interface_count: null,
+						up_or_unknown: null,
+						down: null,
+					},
+					networks: [{ name: null, state: null, ips: [] }],
+					disks: [{ mount: null, total_bytes: null, available_bytes: null }],
+					displays: [{ name: null, left: null, width: null, height: null, primary: null }],
+					variables: [{ name: null, value: null }],
+					values: [],
+					subkeys: [],
+				},
+				'system',
+			),
+		).toBe(ToolSystemResult);
 		expect(
 			getToolResultRenderer(
 				'custom',

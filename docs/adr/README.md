@@ -777,3 +777,4 @@
 - [0786：要求 Process renderer 的完整列表行字段](0786-require-process-row-renderer-fields.md)
 - [0787：对齐 Files 与 Input renderer Props 的 null 语义](0787-align-file-input-result-prop-nullability.md)
 - [0788：对齐 Media 与 Window renderer 的 nested null 语义](0788-align-media-window-result-prop-nullability.md)
+- [0789：对齐 System renderer 的嵌套 Props null 语义](0789-align-system-result-prop-nullability.md)
