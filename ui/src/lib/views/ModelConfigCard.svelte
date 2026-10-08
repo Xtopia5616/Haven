@@ -9,12 +9,13 @@
 	import { capabilityOptions } from '$lib/modelRoles.ts';
 	import { withNumberValue, withStringValue } from '$lib/typedCallbacks.ts';
 	import type { CapabilityInput } from '$lib/contracts/generatedCommands.ts';
+	import type { SelectOption } from '$lib/selectOption.ts';
 	import type { ModelDraft, ModelOverrideField } from '$lib/settingsModelTypes.ts';
 
 	interface Props {
 		model: ModelDraft;
 		providers?: Array<{ name: string }>;
-		options?: Array<{ value: string; label: string }>;
+		options?: SelectOption[];
 		loading?: boolean;
 		hasDiscoveredModels?: boolean;
 		onRefreshProvider: (provider: string) => void;

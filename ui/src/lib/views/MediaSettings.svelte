@@ -7,6 +7,7 @@
 	import SettingsSection from '$lib/SettingsSection.svelte';
 	import MaterialNumberField from '$lib/MaterialNumberField.svelte';
 	import MaterialSelect from '$lib/MaterialSelect.svelte';
+	import type { SelectOption } from '$lib/selectOption.ts';
 	import MaterialAutocomplete from '$lib/MaterialAutocomplete.svelte';
 	import ApiKeyDialog from '$lib/ApiKeyDialog.svelte';
 	import ApiKeyField from '$lib/ApiKeyField.svelte';
@@ -91,8 +92,8 @@
 	function providerByName(name: string): NamedProvider | undefined {
 		return llmConfig.providers.find((provider) => provider.name === name);
 	}
-	function mediaProviderOptions(current: string): Array<{ value: string; label: string }> {
-		const options: Array<{ value: string; label: string }> = [
+	function mediaProviderOptions(current: string): SelectOption[] {
+		const options: SelectOption[] = [
 			{ value: 'none', label: '未配置' },
 		];
 		for (const provider of llmConfig.providers)

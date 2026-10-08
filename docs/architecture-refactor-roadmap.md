@@ -266,6 +266,8 @@
 
 **共享按钮与菜单项 role prop 复核（2026-10-08）：** 主题外观页给 `MaterialButton` 传入的 role 只有 `radio`，现由 Props 闭合；`MenuItem` 调用只使用 `menuitem` 与 `menuitemradio`，也已收窄为闭合 Props union。测试移除 `as any`，不改变页面行为或跨端契约（ADR 0796）。
 
+**MaterialSelect option row owner 复核（2026-10-08）：** MaterialSelect、ModelConfigCard、ProviderList 与 MediaSettings 原先分别声明相同的 value/label 行；现在共用 `selectOption.ts::SelectOption`，可选 group 由选择器继续支持。option 内容生成与交互行为不变（ADR 0797）。
+
 #### 首轮全仓符号扫描与候选分流
 
 | 范围 | 证据与调用边界 | 当前分类 / 下一步 |

@@ -7,6 +7,7 @@
 	import StatusBadge from '$lib/StatusBadge.svelte';
 	import type { CapabilityInput } from '$lib/contracts/generatedCommands.ts';
 	import type { DiscoveredModelMap } from '$lib/contracts/model.ts';
+	import type { SelectOption } from '$lib/selectOption.ts';
 	import type { ModelDraft, ModelOverrideField, ProviderDraft } from '$lib/settingsModelTypes.ts';
 	import ModelConfigCard from './ModelConfigCard.svelte';
 
@@ -16,7 +17,7 @@
 		modelsByProvider?: DiscoveredModelMap;
 		modelFetching?: Record<string, boolean>;
 		refreshingAll?: boolean;
-		modelOptions: (providerName: string) => Array<{ value: string; label: string }>;
+		modelOptions: (providerName: string) => SelectOption[];
 		isProviderKeyConfigured: (provider: ProviderDraft) => boolean;
 		apiStyleLabel: (provider: ProviderDraft) => string;
 		onRefreshAll?: () => void;

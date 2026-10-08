@@ -3,8 +3,8 @@
 	import { cubicOut } from 'svelte/easing';
 	import Icon from './Icon.svelte';
 	import type { ControlWidth } from './controlWidth.ts';
+	import type { SelectOption } from './selectOption.ts';
 
-	type SelectOption = { value: string; label: string; group?: string };
 	type MenuRow =
 		{ kind: 'group'; label: string } | { kind: 'option'; label: string; value: string };
 
