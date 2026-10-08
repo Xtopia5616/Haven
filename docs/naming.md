@@ -31,6 +31,7 @@
 - **录音停止原因是 App wire enum**：`RecordingStopReasonDto` 覆盖 pipeline stop 与 App 手动取消，生成到前端事件 contract；Input `RecordingReason` 仍拥有采集域语义。VAD signal/state 按既有扩展约定保持开放字符串。Overlay renderer 不保留不可达的停止原因 prop（ADR 0768）。
 - **图标按钮使用注册表键**：`MaterialIconButton.icon` 只接受 `icons.ts::IconName`，固定应用按钮不传任意字符串；底层 `Icon.name` 继续接受动态元数据并对未知键回退 help，避免收窄 tool/navigation extension surface（ADR 0769）。
 - **Context menu 图标使用注册表键**：`ContextMenuItem.icon` 由应用内 action builder 创建，只接受 `icons.ts::IconName`；renderer 保留 `hasIcon` 运行时 guard，隔离 JS/dynamic 输入的异常值（ADR 0770）。
+- **ExpandableContextCard 类型标签是闭合 presentation 值**：`cardKind` 只接受 `builtin-family`、`builtin-root`、`mcp-server`，缺省时省略 data attribute，不用空字符串表示缺席（ADR 0771）。
 - **Reasoning effort command 与 provider config 分开**：聊天工具栏的 setter 只接受 generated `ReasoningEffortSelectionInput`（`low` / `medium` / `high` / `off`），`null` 清除覆盖；`ModelConfig.reasoning_effort` 仍是 provider-specific 开放字符串，以支持 `max`、`xhigh`、`none`、`disabled` 等 adapter 输入和 provider 映射（ADR 0737）。
 - **Fact source 选择与输出共享闭合集合**：App `MemoryFactSource` 对应 SQLite `facts.source` 的 `user` / `inferred` 值域，生成前端 `MemoryFactSourceInput` 与 `MemoryFactSource`。`list_facts.source` 省略或 `null` 表示不筛选；repository `Fact.source` 在 App response mapper 中严格解析后输出（ADR 0738、0741）。
 - **Tool manifest 策略类别复用 Common enum**：`ToolPolicy` 的 confirmation、idempotency、scope、concurrency mode、effect、data sensitivity 与 network access 均使用生成的 closed enum；runtime concurrency resource key 不进入 manifest，动态 `permission_key` 保持字符串（ADR 0742）。

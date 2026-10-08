@@ -6,7 +6,7 @@
 	import { cubicOut } from 'svelte/easing';
 
 	interface Props {
-		cardKind?: string;
+		cardKind?: 'builtin-family' | 'builtin-root' | 'mcp-server';
 		contextMenuItems?: ContextMenuItem[];
 		header?: Snippet;
 		actions?: Snippet;
@@ -19,7 +19,7 @@
 	 *
 	 */
 	let {
-		cardKind = '',
+		cardKind,
 		contextMenuItems = [],
 		header,
 		actions = undefined,
@@ -50,7 +50,7 @@
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <div
 	class="expandable-context-card motion-list-item"
-	data-card-kind={cardKind || undefined}
+	data-card-kind={cardKind}
 	class:expanded
 	oncontextmenu={handleContextMenu}
 >
