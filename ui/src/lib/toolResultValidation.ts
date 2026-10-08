@@ -10,6 +10,7 @@ import {
 	isToolFileSearchMode,
 	isToolMediaFileKind,
 	isToolMediaModality,
+	isToolMemoryRecallMode,
 	isToolScheduleMode,
 } from './toolResultPresentation.ts';
 
@@ -426,7 +427,8 @@ function validBuiltinRendererData(renderer: string, data: JsonRecord): boolean {
 		case 'memory':
 			return (
 				hasValidOptionalFields(data, {
-					...stringFields('operation', 'mode'),
+					...stringFields('operation'),
+					mode: isToolMemoryRecallMode,
 					deleted: isFiniteNumber,
 				}) &&
 				hasValidObjectFields(data, { stored: stringFields('predicate', 'object') }) &&

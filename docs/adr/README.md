@@ -762,3 +762,4 @@
 - [0771：ExpandableContextCard kind 使用闭合集合](0771-type-expandable-context-card-kind.md)
 - [0772：CountChip 使用数值数量 prop](0772-type-count-chip-count.md)
 - [0773：File search mode 闭合生产与 renderer 契约](0773-close-file-search-mode-contract.md)
+- [0774：Memory recall mode renderer 复用闭合值](0774-type-memory-recall-mode-renderer.md)

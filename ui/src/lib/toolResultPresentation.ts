@@ -30,6 +30,14 @@ export function isToolFileSearchMode(value: unknown): value is ToolFileSearchMod
 	return toolFileSearchModes.some((mode) => mode === value);
 }
 
+export const toolMemoryRecallModes = ['keyword', 'hybrid'] as const;
+
+export type ToolMemoryRecallMode = (typeof toolMemoryRecallModes)[number];
+
+export function isToolMemoryRecallMode(value: unknown): value is ToolMemoryRecallMode {
+	return toolMemoryRecallModes.some((mode) => mode === value);
+}
+
 export const toolAcPowerStates = ['offline', 'online', 'unknown'] as const;
 
 export type ToolAcPowerState = (typeof toolAcPowerStates)[number];

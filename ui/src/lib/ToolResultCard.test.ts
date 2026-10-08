@@ -251,6 +251,7 @@ describe('operation view UI contract', () => {
 			{ renderer: 'memory', data: { facts: [{ confidence: '0.75' }] } },
 			{ renderer: 'memory', data: { hits: null } },
 			{ renderer: 'memory', data: { hits: [{ score: '0.9' }] } },
+			{ renderer: 'memory', data: { hits: [], mode: 'future-mode' } },
 		];
 
 		for (const { renderer, data } of malformedResults) {
