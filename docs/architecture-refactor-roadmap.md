@@ -198,6 +198,8 @@
 
 **ToolRun schedule mode 类型复核（2026-10-08）：** scheduled service view、lifecycle payload、App `ToolRunEvent` 与 UI `ToolRunPayload` 现共用 Rust `ScheduleMode` 导出的 generated enum；ToolResult schedule renderer 也从该 generated 值域导出 presentation alias/guard。DB 历史文本在 App 读取边界解析，未知值不进入 renderer；`tool` / `continue` wire JSON 不变（ADR 0791）。
 
+**ToolRun card tone prop 复核（2026-10-08）：** projection 按 generated `ToolRunStatus` 只输出 `scheduled`、`running`、`error`、`success` 或 `neutral`，tone 现由 `ToolRunCardTone` 同时约束 projection 和映射函数；现有 `data-tone` / `data-variant` 展示值不变（ADR 0793）。
+
 **Transcript renderer props 复核（2026-10-08）：** `StreamMessage`、resume projection、ChatBubble、ToolResultCard、continue/tool-intent helpers 与 context-menu request 共用 `SessionMessagePresentationType`；它表达 `thought`、`reasoning`、`tool`、`ask`、`peer_kickoff`、`supplement` 与无专用 bubble 的持久 `tool_call` 投影，不复用闭合持久 `TranscriptMessageKind`。tool outcome props 使用 `ToolResultPresentationOutcome`，组合生成的 `ToolExecutionOutcome`、`ToolRunStatus` 和恢复历史中允许的 `unknown`；ToolResultCard 的 `type` 仅接受 `tool`/`ask`，流式 reasoning 的 `msgType` 也只接受实际 producer 发出的 `reasoning`。manifest renderer key 仍是开放字符串，未知 renderer 走 JSON fallback，保留扩展点。空输出的超时提示现在按 `timed_out_and_terminated` 的展示映射判断，保持结果字段与 renderer 映射一致。以上仅收紧 UI 内部视图契约，不改变 IPC、event 或持久化值；其它组件/store/controller/handler 调用映射及 contracts 非 alias 类型审查仍在 Active 范围。
 
 **Memory fact source props 复核（2026-10-08）：** `MaterialSelect` 的 change 值是原始 `string`，但 `MemoryCenter` options/filter 与 Memory command 都使用生成的 `MemoryFactSourceInput`。现在组件在 select 边界接受空筛选或生成 source 值，丢弃未知字符串；回调仅暴露 `MemoryFactSourceInput | ''`，`MemoryView` 不再重复枚举检查/cast。`isMemoryFactSourceInput` 复用生成值清单并覆盖未知值与空 sentinel 的测试；查询行为、IPC 与持久化契约不变。

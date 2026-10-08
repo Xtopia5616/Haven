@@ -25,6 +25,21 @@ describe('projectToolRunCard', () => {
 		);
 
 		expect(card.statusLabel).toBe('');
+		expect(card.tone).toBe('neutral');
+	});
+
+	it('maps finite ToolRun states to the card tone vocabulary', () => {
+		const toneFor = (kind: 'background' | 'scheduled', status: ToolRunStatus) =>
+			projectToolRunCard({
+				toolRunId: `toolrun-${kind}`,
+				kind,
+				status,
+			}, projectionOptions).tone;
+
+		expect(toneFor('background', 'running')).toBe('running');
+		expect(toneFor('background', 'failed')).toBe('error');
+		expect(toneFor('background', 'cancelled')).toBe('neutral');
+		expect(toneFor('scheduled', 'waiting')).toBe('scheduled');
 	});
 
 	it('projects background cards with the shared fields and background details', () => {

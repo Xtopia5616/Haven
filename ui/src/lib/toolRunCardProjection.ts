@@ -1,6 +1,8 @@
 import type { ToolRunPayload, ToolRunStatus } from './contracts/toolRun.ts';
 import { scheduleModeLabel, toolRunTitle } from './toolRunTerminology.ts';
 
+export type ToolRunCardTone = 'scheduled' | 'running' | 'error' | 'success' | 'neutral';
+
 /** Kind-specific fields retained by the shared ToolRun card projection. */
 export interface ToolRunCardDetails {
 	command?: string;
@@ -19,7 +21,7 @@ export interface ToolRunCardProjection {
 	title: string;
 	searchText: string;
 	statusLabel: string;
-	tone: string;
+	tone: ToolRunCardTone;
 	summary: string;
 	context: string;
 	timing: string;
@@ -48,7 +50,7 @@ function scheduledStatusLabel(status?: ToolRunStatus): string {
 	}
 }
 
-function scheduledTone(status?: ToolRunStatus): string {
+function scheduledTone(status?: ToolRunStatus): ToolRunCardTone {
 	if (status === 'waiting') return 'scheduled';
 	if (status === 'running') return 'running';
 	if (status === 'failed') return 'error';
@@ -56,7 +58,7 @@ function scheduledTone(status?: ToolRunStatus): string {
 	return 'neutral';
 }
 
-function backgroundTone(status?: ToolRunStatus): string {
+function backgroundTone(status?: ToolRunStatus): ToolRunCardTone {
 	if (status === 'failed') return 'error';
 	if (status === 'completed') return 'success';
 	return status === 'running' ? 'running' : 'neutral';

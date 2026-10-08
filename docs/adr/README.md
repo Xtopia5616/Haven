@@ -781,3 +781,4 @@
 - [0790：收窄 ToolRun card 的详情投影](0790-trim-toolrun-card-details.md)
 - [0791：类型化 ToolRun 的定时模式](0791-type-toolrun-schedule-mode.md)
 - [0792：导航页签使用注册表图标键](0792-type-navigation-tab-icon.md)
+- [0793：收窄 ToolRun card tone](0793-type-toolrun-card-tone.md)
