@@ -743,3 +743,4 @@
 - [0752：Tool result renderer 只校验展示消费字段](0752-validate-only-consumed-tool-result-fields.md)
 - [0753：Tool result hint 只按文本渲染](0753-render-tool-result-hints-as-text.md)
 - [0754：Admin session renderer 状态复用 SessionStatus](0754-type-admin-session-renderer-status.md)
+- [0755：Agent presence renderer 状态复用闭合值](0755-type-agent-presence-renderer-status.md)

@@ -193,6 +193,7 @@ describe('operation view UI contract', () => {
 			{ renderer: 'files', data: { media: [] } },
 			{ renderer: 'media', data: { media: { available_representations: [null] } } },
 			{ renderer: 'agent', data: { agents: [null] } },
+			{ renderer: 'agent', data: { agents: [{ name: 'peer', status: 'future' }] } },
 			{ renderer: 'process', data: { processes: [null] } },
 			{ renderer: 'process', data: { processes: null } },
 			{ renderer: 'clipboard', data: { entries: [null] } },
@@ -239,6 +240,25 @@ describe('operation view UI contract', () => {
 				'clipboard',
 				{ entries: [{ content: 'copied text', timestamp_ms: 'not rendered' }] },
 				'clipboard',
+			),
+		).not.toBe(ToolJsonResult);
+		expect(
+			getToolResultRenderer(
+				'custom',
+				'messaging',
+				{
+					agents: [
+						{
+							name: 'peer',
+							title: null,
+							role: null,
+							status: 'online',
+							last_seen: { opaque: true },
+							capabilities: 'not rendered',
+						},
+					],
+				},
+				'agent',
 			),
 		).not.toBe(ToolJsonResult);
 		expect(

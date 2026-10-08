@@ -1,12 +1,18 @@
 <script lang="ts">
 	import StatusBadge from '$lib/StatusBadge.svelte';
 	import ToolResultList from '$lib/ToolResultList.svelte';
+	import type { ToolAgentPresenceStatus } from './toolAgentPresence.ts';
 
 	interface Props {
 		data?: {
 			auto?: boolean;
 			text?: string;
-			agents?: Array<{ name: string; title?: string; role?: string; status?: string }>;
+			agents?: Array<{
+				name: string;
+				title?: string | null;
+				role?: string | null;
+				status: ToolAgentPresenceStatus;
+			}>;
 			timed_out?: boolean;
 			message_id?: string;
 			timeout_secs?: number;
@@ -54,7 +60,9 @@
 		<StatusBadge label="超时" tone="error" />
 		{#if data.message_id}<span class="action-id">{data.message_id}</span>{/if}
 	</div>
-	<div class="tool-result-meta tool-result-meta--compact">等待同伴回复超时（{data.timeout_secs ?? '?'}s）</div>
+	<div class="tool-result-meta tool-result-meta--compact">
+		等待同伴回复超时（{data.timeout_secs ?? '?'}s）
+	</div>
 {:else if data.session_id}
 	<div class="tool-result-status-row">
 		<StatusBadge
@@ -63,8 +71,12 @@
 		/>
 		<span class="action-id">{data.session_id}</span>
 	</div>
-	{#if data.parent}<div class="tool-result-meta tool-result-meta--compact">父会话 {data.parent}</div>{/if}
-	{#if data.role}<div class="tool-result-meta tool-result-meta--compact">角色 {data.role}</div>{/if}
+	{#if data.parent}<div class="tool-result-meta tool-result-meta--compact">
+			父会话 {data.parent}
+		</div>{/if}
+	{#if data.role}<div class="tool-result-meta tool-result-meta--compact">
+			角色 {data.role}
+		</div>{/if}
 	{#if data.queued}<div class="tool-result-meta tool-result-meta--compact">
 			子会话已排队（运行中 {data.running_sessions ?? '?'}/{data.max_concurrent ?? '?'}）
 		</div>{/if}

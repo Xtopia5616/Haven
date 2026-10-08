@@ -1,6 +1,7 @@
 import { isRecord } from './contracts/objectGuards.ts';
 import { isSessionStatus } from './contracts/session.ts';
 import { isToolRunStatus } from './contracts/toolRun.ts';
+import { isToolAgentPresenceStatus } from './toolAgentPresence.ts';
 
 type JsonRecord = Record<string, unknown>;
 type FieldGuard = (value: unknown) => boolean;
@@ -368,10 +369,9 @@ function validBuiltinRendererData(renderer: string, data: JsonRecord): boolean {
 					data,
 					'agents',
 					(row) =>
-						hasValidOptionalFields(
-							row,
-							stringFields('name', 'title', 'role', 'status'),
-						) && isString(row.name),
+						isString(row.name) &&
+						hasValidOptionalFields(row, stringFields('title', 'role')) &&
+						isToolAgentPresenceStatus(row.status),
 				)
 			);
 		case 'tool_runs':
