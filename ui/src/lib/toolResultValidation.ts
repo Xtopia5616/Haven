@@ -1,4 +1,5 @@
 import { isRecord } from './contracts/objectGuards.ts';
+import { isSessionStatus } from './contracts/session.ts';
 import { isToolRunStatus } from './contracts/toolRun.ts';
 
 type JsonRecord = Record<string, unknown>;
@@ -238,10 +239,17 @@ function validMediaData(data: JsonRecord): boolean {
 }
 
 const adminRowFields: Record<string, FieldGuard> = {
-	...stringFields('id', 'title', 'status', 'name', 'error'),
+	...stringFields('id', 'title', 'name', 'error'),
 	...booleanFields('connected', 'enabled'),
 	tools: isFiniteNumber,
 };
+
+function validAdminRow(row: JsonRecord): boolean {
+	return (
+		hasValidOptionalFields(row, adminRowFields) &&
+		(!('status' in row) || isSessionStatus(row.status))
+	);
+}
 
 function validAdminData(data: JsonRecord): boolean {
 	return (
@@ -250,13 +258,10 @@ function validAdminData(data: JsonRecord): boolean {
 			...booleanFields('saved', 'enabled', 'created', 'removed'),
 			connected: (value) =>
 				isBoolean(value) ||
-				(Array.isArray(value) &&
-					value.every(
-						(row) => isRecord(row) && hasValidOptionalFields(row, adminRowFields),
-					)),
+				(Array.isArray(value) && value.every((row) => isRecord(row) && validAdminRow(row))),
 		}) &&
 		['servers', 'skills', 'sessions', 'errors'].every((key) =>
-			hasValidRecordArray(data, key, (row) => hasValidOptionalFields(row, adminRowFields)),
+			hasValidRecordArray(data, key, validAdminRow),
 		)
 	);
 }

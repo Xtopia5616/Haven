@@ -140,9 +140,11 @@ export function mapSessionEvent(
 }
 
 function mapSessionStatus(value: unknown): SessionStatus | null {
-	return (SESSION_STATUS_VALUES as readonly unknown[]).includes(value)
-		? (value as SessionStatus)
-		: null;
+	return isSessionStatus(value) ? value : null;
+}
+
+export function isSessionStatus(value: unknown): value is SessionStatus {
+	return (SESSION_STATUS_VALUES as readonly unknown[]).includes(value);
 }
 
 function mapUpdateStatus(value: unknown): SessionUpdateStatus | null {

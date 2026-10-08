@@ -1,11 +1,12 @@
 <script lang="ts">
 	import JsonView from '$lib/JsonView.svelte';
 	import ToolResultList from '$lib/ToolResultList.svelte';
+	import type { SessionStatus } from './contracts/generatedCommands.ts';
 
 	interface AdminRow extends Record<string, unknown> {
 		id?: string;
-		title?: string;
-		status?: string;
+		title?: string | null;
+		status?: SessionStatus;
 		name?: string;
 		connected?: boolean;
 		enabled?: boolean;

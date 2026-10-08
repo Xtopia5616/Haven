@@ -213,6 +213,10 @@ describe('operation view UI contract', () => {
 			{ renderer: 'system', data: { networks: [{ ips: null }] } },
 			{ renderer: 'system', data: { scope: 'process', processes: [null] } },
 			{ renderer: 'haven_mcp', data: { servers: [null] } },
+			{
+				renderer: 'haven_diagnostics',
+				data: { sessions: [{ id: 'ses-1', status: 'future' }] },
+			},
 			{ renderer: 'http', data: { status: '200' } },
 			{ renderer: 'http', data: { status: 200, body: { unexpected: true } } },
 			{ renderer: 'web_search', data: { results: [null] } },
@@ -235,6 +239,14 @@ describe('operation view UI contract', () => {
 				'clipboard',
 				{ entries: [{ content: 'copied text', timestamp_ms: 'not rendered' }] },
 				'clipboard',
+			),
+		).not.toBe(ToolJsonResult);
+		expect(
+			getToolResultRenderer(
+				'custom',
+				'haven_diagnostics',
+				{ sessions: [{ id: 'ses-1', status: 'running' }] },
+				'haven_diagnostics',
 			),
 		).not.toBe(ToolJsonResult);
 		expect(
