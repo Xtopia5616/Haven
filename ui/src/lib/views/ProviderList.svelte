@@ -386,7 +386,7 @@
 		font-weight: 650;
 		color: var(--md-sys-color-on-surface);
 	}
-	@media (max-width: 700px) {
+	@container settings-content (max-width: 700px) {
 		.provider-toolbar {
 			align-items: flex-start;
 			flex-direction: column;
@@ -402,7 +402,7 @@
 			justify-content: flex-end;
 		}
 	}
-	@media (max-width: 455px) {
+	@container settings-content (max-width: 455px) {
 		.provider-toolbar-actions {
 			align-items: stretch;
 			flex-direction: column-reverse;
