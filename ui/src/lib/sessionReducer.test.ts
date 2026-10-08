@@ -8,8 +8,9 @@ import {
 	type SessionReducerState,
 	type SessionSummary,
 } from './sessionReducer.ts';
+import type { SessionStatus } from './contracts/generatedCommands.ts';
 
-const session = (id: string, status = 'pending'): SessionSummary => ({ id, status });
+const session = (id: string, status: SessionStatus = 'pending'): SessionSummary => ({ id, status });
 const stateWith = (partial: Partial<SessionReducerState>): SessionReducerState => ({
 	...initialSessionState,
 	...partial,
@@ -235,7 +236,7 @@ describe('SessionReducer', () => {
 		});
 	});
 
-	it('keeps identical terminal lifecycle projections from notifying selectors again', () => {
+	it('keeps identical terminal run-end projections from notifying selectors again', () => {
 		const state = stateWith({
 			sessions: [{ ...session('ses-terminal', 'completed'), waitingReason: null }],
 			activeSessionId: 'ses-terminal',
@@ -246,15 +247,6 @@ describe('SessionReducer', () => {
 			},
 		});
 
-		expect(
-			reduceSession(state, {
-				type: 'session/status-updated',
-				sessionId: 'ses-terminal',
-				status: 'completed',
-				title: null,
-				waitingReason: null,
-			}),
-		).toBe(state);
 		expect(
 			reduceSession(state, {
 				type: 'session/run-ended',
@@ -537,7 +529,12 @@ describe('SessionReducer', () => {
 			messages: {
 				'ses-live': [
 					{ id: 'step-tool', type: 'tool', content: '', streaming: true },
-					{ id: 'stale-final', role: 'assistant' as const, content: '旧内容', streaming: false },
+					{
+						id: 'stale-final',
+						role: 'assistant' as const,
+						content: '旧内容',
+						streaming: false,
+					},
 				],
 			},
 		};

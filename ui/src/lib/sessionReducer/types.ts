@@ -8,7 +8,11 @@ import type {
 	AgentWebSearchPayload,
 } from '../contracts/agent.ts';
 import type { AskResponseView, InteractionRequest } from '../contracts/app.ts';
-import type { InteractionKind, SessionStatus } from '../contracts/generatedCommands.ts';
+import type {
+	InteractionKind,
+	SessionStatus,
+	SessionUpdateStatus,
+} from '../contracts/generatedCommands.ts';
 import type { SessionLlmUsage, SessionResumeUsage } from '../contracts/sessionHistory.ts';
 import type { SessionMessagePresentationType, StreamMessage } from '../streaming.ts';
 
@@ -17,7 +21,7 @@ export const DRAFT_SESSION_ID = '_draft';
 /** The session summary fields used by the chat shell. */
 export interface SessionSummary {
 	id: string;
-	status: string;
+	status: SessionStatus;
 	waitingReason?: unknown;
 	[key: string]: unknown;
 }
@@ -104,7 +108,7 @@ export type SessionAction =
 			sessionId: string;
 			freshStart: boolean;
 			adoptedDraft: boolean;
-			status?: string;
+			status?: SessionStatus;
 			title?: string | null;
 	  }
 	| { type: 'session/selected'; sessionId: string | null }
@@ -113,7 +117,7 @@ export type SessionAction =
 	| {
 			type: 'session/status-updated';
 			sessionId: string;
-			status: string;
+			status: SessionUpdateStatus;
 			title?: string | null;
 			waitingReason?: string | null;
 	  }

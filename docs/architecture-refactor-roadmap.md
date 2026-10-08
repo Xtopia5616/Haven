@@ -214,6 +214,10 @@
 
 **主题 props 与 store 状态复核（2026-10-08）：** `themeStore` 仅接受 `light` / `dark`，但内部状态、setter 与 `AppShell.theme` 原先都标成开放 `string`。现由 `themeStore.ts::ThemeMode` 统一该有限值域；localStorage 和 document attribute 仍在进入 store 前做 runtime guard，非法 setter 输入仍无副作用（ADR 0764）。
 
+**Session reducer 状态类型复核（2026-10-08）：** `SessionSummary.status`、创建 action 和 lifecycle update action 曾各自降为 `string`；现在分别复用 generated `SessionStatus` 与 `SessionUpdateStatus`，event view 删除重复的非终态 `Extract` alias，run-end notice 继续用终态子集 `SessionRunEndStatus`。状态更新 action 保证非终态，因此 reducer 删除了其不可能接收 completed/error 的分支（ADR 0765）。
+
+**Recording VAD payload 复核（2026-10-08）：** 当前 producer 把 Input 内部 `VadSignal` / `VadState` 映射为 App event 字符串，UI overlay 保留未知 state，renderer 仅以 `speech` 决定显示。ADR 0340/0694 明确要求 signal/state 的未知字符串透传以兼容新增值；内部算法 enum 不构成稳定 App wire owner，因此生成 DTO、mapper 和 overlay state 继续保持开放字符串，不合并两个状态空间。
+
 **Memory result props 与 nested validator 复核（2026-10-08）：** `ToolMemoryResult` 的 fact confidence 与 recall score 只在嵌套 validator 验证有限数值后进入组件；props 和 `scoreLabel` 现使用相同数值约束，`null` 保持为缺省值。畸形数值字符串仍在 registry 回退到原始 JSON，不再依赖 `Number()` 静默转换（ADR 0750）。
 
 **HTTP renderer body prop 复核（2026-10-08）：** registry 已将 HTTP `body` 限制为字符串（允许缺省/null）；renderer prop 原为 `unknown`，尽管组件只呈现字符串。现在 props 与 validator 一致，HTTP body object 的负向 fallback 有覆盖（ADR 0751）。

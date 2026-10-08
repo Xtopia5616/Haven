@@ -113,10 +113,7 @@ export function reduceLifecycle(
 				current.status !== action.status ||
 				current.waitingReason !== waitingReason ||
 				current.title !== title;
-			const runEndNoticeInvalidated =
-				state.runEndNotice?.sessionId === action.sessionId &&
-				action.status !== 'completed' &&
-				action.status !== 'error';
+			const runEndNoticeInvalidated = state.runEndNotice?.sessionId === action.sessionId;
 			if (!sessionChanged && !runEndNoticeInvalidated) return state;
 			const sessions = sessionChanged
 				? state.sessions.map((session) =>
@@ -207,13 +204,14 @@ export function reduceLifecycle(
 			};
 		}
 		case 'session/retained-error': {
+			const errorSession: SessionSummary = { ...action.session, status: 'error' };
 			const sessions = state.sessions.some((session) => session.id === action.session.id)
 				? state.sessions.map((session) =>
 						session.id === action.session.id
-							? { ...session, ...action.session, status: 'error' }
+							? { ...session, ...errorSession }
 							: session,
 					)
-				: [...state.sessions, { ...action.session, status: 'error' }];
+				: [...state.sessions, errorSession];
 			return { ...state, sessions };
 		}
 		case 'session/title-updated':

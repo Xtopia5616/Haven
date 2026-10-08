@@ -28,8 +28,6 @@ export const SESSION_LIFECYCLE_KINDS = {
 	deleted: true,
 } satisfies Record<GeneratedSessionLifecycleEvent['type'], true>;
 
-type NonTerminalSessionStatus = Extract<SessionStatus, 'pending' | 'running' | 'paused'>;
-
 export type SessionLifecyclePayload =
 	| {
 			type: 'created';
@@ -41,7 +39,7 @@ export type SessionLifecyclePayload =
 	| {
 			type: 'updated';
 			sessionId: string;
-			status: NonTerminalSessionStatus;
+			status: SessionUpdateStatus;
 			waitingReason: SessionWaitingReason | null;
 			title: string;
 			reason: string | null;

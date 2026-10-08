@@ -119,6 +119,8 @@ ToolRun completion lease 的 token 标识被 claim 的 ToolRun 或 completion re
 | 交互请求（`InteractionRequest`） | Agent 内用于 Ask/Confirm/ScheduledConfirm 的状态与继续执行数据；可包含不应发送到 UI 的工具输入和授权 receipt | `InteractionOwner` 只负责进程内 owner routing；生成的 `InteractionRequestedEvent` 是 App wire projection，前端 `InteractionRequest` 是经过校验的 camelCase view |
 | 工具实现、定义与清单 | `ToolHandle` 是单个共享可执行实现；Common `ToolDef` 是 provider-neutral 的模型调用定义；LLM `LlmToolDefinition` 是转换后的 `{type, function}` 请求中间形状；`ToolManifest` 是 Tauri/UI 的 identity、policy 与 presentation projection | `ToolDef → LlmToolDefinition → provider adapter wire`；`ToolRegistry` 持有可执行实现；`ToolCatalogSnapshot` / `OperationCatalog` 是模型可见目录投影；`OperationRegistry` 管已安装、deferred 与 session operations。目录可见不等同于授权 |
 
+Session UI reducer 的 `SessionSummary.status` 与创建 action 使用 generated `SessionStatus`，lifecycle update action 使用 generated `SessionUpdateStatus`；run-end notice 再通过 `SessionRunEndStatus` 提取其终态子集。只处理不可信动态文本的状态 helper 可以继续接收 `string` 并提供未知值 fallback（ADR 0765）。
+
 定时工具运行的 `mode` 只作为行为说明：`tool` 显示“调用工具”，`continue` 显示“继续会话”。运行状态统一显示“待执行 / 运行中 / 已完成 / 失败 / 已取消”；原始枚举值只留在 wire、日志或调试详情中。
 
 `SessionRun` 是 SessionSupervisor 的会话执行/准入单位；`ToolRun` 是可脱离当前 turn 持久运行的工具工作单元，二者不共享身份或生命周期。`ReActRunInput`、`ReActRunReplay`、`ReActRunOutput` 是 ReActEngine 一次循环的调用数据，不新增持久 run 实体。准入计数器、RAII permit、直接运行 lease 与 actor claim 有不同释放点，保持独立结构并按 owner 命名（ADR 0635）。
