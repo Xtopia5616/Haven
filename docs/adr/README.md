@@ -782,3 +782,4 @@
 - [0791：类型化 ToolRun 的定时模式](0791-type-toolrun-schedule-mode.md)
 - [0792：导航页签使用注册表图标键](0792-type-navigation-tab-icon.md)
 - [0793：收窄 ToolRun card tone](0793-type-toolrun-card-tone.md)
+- [0794：移除未使用的工作区指标组件](0794-remove-unused-workspace-metric-strip.md)
