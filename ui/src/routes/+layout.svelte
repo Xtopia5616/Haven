@@ -696,7 +696,6 @@
 				type: 'session/interaction-resolution-result',
 				id: resolvedStep,
 				result: resolution,
-				response: { approved, effect: resolvedEffect, scope: resolvedScope },
 			});
 			if (resolution === 'expired')
 				addNotification('确认已过期，操作未执行', 'warning', 4000);

@@ -9,6 +9,7 @@ import type {
 } from '../contracts/agent.ts';
 import type { AskResponseView, InteractionRequest } from '../contracts/app.ts';
 import type {
+	ConfirmationResolutionResult,
 	InteractionKind,
 	SessionStatus,
 	SessionUpdateStatus,
@@ -182,13 +183,12 @@ export type SessionAction =
 			preserveInteractionIds?: string[];
 	  }
 	| { type: 'session/interactions-cleared'; sessionId: string; kind?: InteractionKind }
-	| { type: 'session/interaction-resolved'; id: string; response?: unknown }
+	| { type: 'session/interaction-resolved'; id: string; response?: AskResponseView }
 	| { type: 'session/scheduled-tool-run-cancelled'; toolRunId: string }
 	| {
 			type: 'session/interaction-resolution-result';
 			id: string;
-			result: 'resolved' | 'expired' | 'stale';
-			response?: unknown;
+			result: ConfirmationResolutionResult;
 	  }
 	| { type: 'agent/chunks'; chunks: AgentChunkBatchItem[] }
 	| { type: 'agent/thought'; payload: AgentThoughtPayload }

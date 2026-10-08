@@ -5,7 +5,7 @@ import {
 	type SessionMessage,
 	type SessionReducerState,
 } from './sessionReducer.ts';
-import type { InteractionRequest } from './contracts/app.ts';
+import type { AskResponseView, InteractionRequest } from './contracts/app.ts';
 import { projectChatVisibleMessages, selectChatVisibleMessages } from './chatVisibleMessages.ts';
 
 const stateWith = (partial: Partial<SessionReducerState>): SessionReducerState => ({
@@ -25,7 +25,7 @@ const askInteraction = (
 	id: string,
 	status: InteractionRequest['status'],
 	options: string[],
-	response?: unknown,
+	response?: AskResponseView,
 ): InteractionRequest => ({
 	id,
 	sessionId: 'ses-1',

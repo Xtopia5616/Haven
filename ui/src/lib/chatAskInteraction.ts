@@ -87,7 +87,7 @@ export function createAskInteractionController({
 					request.owner.sessionId === sessionId &&
 					request.kind === 'ask' &&
 					request.status === 'resolved'
-						? (request.response as AskResponseView | undefined)
+						? request.response
 						: undefined;
 				return { id: message.id, resolved: response || null };
 			});
@@ -123,7 +123,7 @@ export function createAskInteractionController({
 			request.status !== 'resolved'
 		)
 			return undefined;
-		return request.response as AskResponseView | undefined;
+		return request.response;
 	}
 
 	function submitActionAnswers(

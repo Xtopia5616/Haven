@@ -54,7 +54,8 @@ interface InteractionRequestBase {
 	toolCallId?: string;
 	createdAt: string;
 	expiresAt?: string;
-	response?: unknown;
+	/** Renderer-local answer projection for an Ask interaction. */
+	response?: AskResponseView;
 }
 export type InteractionRequest =
 	| (InteractionRequestBase & {

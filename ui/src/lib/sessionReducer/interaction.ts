@@ -117,7 +117,6 @@ export function reduceInteraction(
 					[action.id]: {
 						...request,
 						status: action.result,
-						...(action.response === undefined ? {} : { response: action.response }),
 					},
 				},
 			};
