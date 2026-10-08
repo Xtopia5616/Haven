@@ -41,13 +41,10 @@
 	import WorkspacePageHeader from '$lib/WorkspacePageHeader.svelte';
 	import WorkspaceSectionHeader from '$lib/WorkspaceSectionHeader.svelte';
 	import type { SessionHistoryFilterRequest } from '$lib/contracts/commands.ts';
-	import { MEMORY_FACT_SOURCE_INPUT_VALUES } from '$lib/contracts/generatedCommands.ts';
-	import type {
-		MemoryFactSourceInput,
-		SessionHistoryStatusFilterInput,
-	} from '$lib/contracts/generatedCommands.ts';
+	import type { SessionHistoryStatusFilterInput } from '$lib/contracts/generatedCommands.ts';
 	import type {
 		Fact,
+		MemoryFactSourceFilter,
 		MemoryRecallFilter,
 		MemoryRecallKind,
 		MemoryRecallState,
@@ -133,7 +130,7 @@
 	});
 	let facts = $state<Fact[]>([]);
 	let factsLoaded = $state(false);
-	let factSourceFilter = $state<MemoryFactSourceInput | ''>('');
+	let factSourceFilter = $state<MemoryFactSourceFilter>('');
 	let newFact = $state<{ predicate: string; object: string; tags: string }>({
 		predicate: '',
 		object: '',
@@ -146,7 +143,7 @@
 		{ value: 'paused', label: '已暂停' },
 		{ value: 'error', label: '错误' },
 	];
-	const factSourceOptions: Array<{ value: MemoryFactSourceInput | ''; label: string }> = [
+	const factSourceOptions: Array<{ value: MemoryFactSourceFilter; label: string }> = [
 		{ value: '', label: '全部来源' },
 		{ value: 'user', label: '手动' },
 		{ value: 'inferred', label: '推断' },
@@ -496,12 +493,8 @@
 			reportError(error, { context: 'MemoryView', message: '加载事实失败', log: false });
 		}
 	}
-	function handleFactSourceFilterChange(value: string) {
-		if (value === '') {
-			factSourceFilter = '';
-		} else if (MEMORY_FACT_SOURCE_INPUT_VALUES.includes(value as MemoryFactSourceInput)) {
-			factSourceFilter = value as MemoryFactSourceInput;
-		}
+	function handleFactSourceFilterChange(value: MemoryFactSourceFilter) {
+		factSourceFilter = value;
 	}
 	async function addFact() {
 		const predicate = newFact.predicate.trim();

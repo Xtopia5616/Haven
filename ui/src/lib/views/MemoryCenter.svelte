@@ -2,29 +2,28 @@
 	import MaterialButton from '$lib/MaterialButton.svelte';
 	import MaterialDialog from '$lib/MaterialDialog.svelte';
 	import MaterialSelect from '$lib/MaterialSelect.svelte';
-	import { isMemoryRecallFilter } from '$lib/contracts/memory.ts';
+	import {
+		isMemoryFactSourceInput,
+		isMemoryRecallFilter,
+		type MemoryFactSourceFilter,
+	} from '$lib/contracts/memory.ts';
 	import LongTermFacts from './LongTermFacts.svelte';
 	import MemoryRecall from './MemoryRecall.svelte';
 	import CountChip from '$lib/CountChip.svelte';
-	import type {
-		Fact,
-		MemoryRecallFilter,
-		MemoryRecallState,
-	} from '$lib/contracts/memory.ts';
-	import type { MemoryFactSourceInput } from '$lib/contracts/generatedCommands.ts';
+	import type { Fact, MemoryRecallFilter, MemoryRecallState } from '$lib/contracts/memory.ts';
 
 	interface Props {
 		facts?: Fact[];
 		factsLoaded?: boolean;
-		factSourceFilter?: MemoryFactSourceInput | '';
-		factSourceOptions?: Array<{ value: MemoryFactSourceInput | ''; label: string }>;
+		factSourceFilter?: MemoryFactSourceFilter;
+		factSourceOptions?: Array<{ value: MemoryFactSourceFilter; label: string }>;
 		newFact?: { predicate: string; object: string; tags: string };
 		addingFact?: boolean;
 		memoryRecall: MemoryRecallState;
 		onRecallKindChange?: (value: MemoryRecallFilter) => void;
 		onRunRecall?: () => void;
 		onClearRecall?: () => void;
-		onFactSourceFilterChange?: (value: string) => void;
+		onFactSourceFilterChange?: (value: MemoryFactSourceFilter) => void;
 		onAddFact?: () => boolean | Promise<boolean>;
 		onDeleteFact?: (factId: string) => void;
 	}
@@ -57,6 +56,12 @@
 		if (isMemoryRecallFilter(value)) {
 			onRecallKindChange(value);
 			onRunRecall();
+		}
+	}
+
+	function handleFactSourceFilterInput(value: string) {
+		if (value === '' || isMemoryFactSourceInput(value)) {
+			onFactSourceFilterChange(value);
 		}
 	}
 
@@ -102,7 +107,7 @@
 					ariaLabel="事实来源"
 					width="compact"
 					options={factSourceOptions}
-					onChange={onFactSourceFilterChange}
+					onChange={handleFactSourceFilterInput}
 				/>
 			</div>
 		{/if}
