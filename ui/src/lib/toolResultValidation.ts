@@ -1,7 +1,11 @@
 import { isRecord } from './contracts/objectGuards.ts';
 import { isSessionStatus } from './contracts/session.ts';
 import { isToolRunStatus } from './contracts/toolRun.ts';
-import { isToolAgentPresenceStatus, isToolExecutionMode } from './toolResultPresentation.ts';
+import {
+	isToolAgentPresenceStatus,
+	isToolExecutionMode,
+	isToolScheduleMode,
+} from './toolResultPresentation.ts';
 
 type JsonRecord = Record<string, unknown>;
 type FieldGuard = (value: unknown) => boolean;
@@ -390,23 +394,18 @@ function validBuiltinRendererData(renderer: string, data: JsonRecord): boolean {
 		case 'schedule':
 			return (
 				hasValidOptionalFields(data, {
-					...stringFields(
-						'operation',
-						'tool_run_id',
-						'mode',
-						'fires_at',
-						'title',
-						'body',
-					),
+					...stringFields('operation', 'tool_run_id', 'fires_at'),
+					mode: isToolScheduleMode,
 				}) &&
 				hasValidRecordArray(
 					data,
 					'scheduled_tool_runs',
 					(row) =>
-						hasValidOptionalFields(
-							row,
-							stringFields('tool_run_id', 'title', 'body', 'mode', 'due_at'),
-						) && isString(row.tool_run_id),
+						isString(row.tool_run_id) &&
+						isString(row.title) &&
+						isString(row.body) &&
+						isToolScheduleMode(row.mode) &&
+						isString(row.due_at),
 				)
 			);
 		case 'admin':

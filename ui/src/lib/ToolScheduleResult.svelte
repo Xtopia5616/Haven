@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { scheduleModeLabel, toolRunTitle } from '$lib/toolRunTerminology.ts';
 	import ToolResultList from '$lib/ToolResultList.svelte';
+	import type { ToolScheduleMode } from './toolResultPresentation.ts';
 
 	interface Props {
 		data?: {
@@ -8,15 +9,13 @@
 			tool_run_id?: string;
 			scheduled_tool_runs?: Array<{
 				tool_run_id: string;
-				title?: string;
-				body?: string;
-				mode?: string;
-				due_at?: string;
+				title: string;
+				body: string;
+				mode: ToolScheduleMode;
+				due_at: string;
 			}>;
-			mode?: string;
+			mode?: ToolScheduleMode;
 			fires_at?: string;
-			title?: string;
-			body?: string;
 		};
 	}
 

@@ -210,6 +210,21 @@ describe('operation view UI contract', () => {
 				renderer: 'schedule',
 				data: { scheduled_tool_runs: [{ tool_run_id: 'toolrun-1', due_at: 42 }] },
 			},
+			{
+				renderer: 'schedule',
+				data: {
+					scheduled_tool_runs: [
+						{
+							tool_run_id: 'toolrun-1',
+							title: 'test',
+							body: 'test',
+							mode: 'future',
+							due_at: '',
+						},
+					],
+				},
+			},
+			{ renderer: 'schedule', data: { operation: 'set', mode: 'future' } },
 			{ renderer: 'system', data: { os: [] } },
 			{ renderer: 'system', data: { networks: [{ ips: null }] } },
 			{ renderer: 'system', data: { scope: 'process', processes: [null] } },
@@ -240,6 +255,30 @@ describe('operation view UI contract', () => {
 				'clipboard',
 				{ entries: [{ content: 'copied text', timestamp_ms: 'not rendered' }] },
 				'clipboard',
+			),
+		).not.toBe(ToolJsonResult);
+		expect(
+			getToolResultRenderer(
+				'custom',
+				'schedule',
+				{
+					scheduled_tool_runs: [
+						{
+							tool_run_id: 'toolrun-1',
+							title: 'scheduled',
+							body: 'body',
+							mode: 'continue',
+							due_at: '',
+							tool_args: [null],
+						},
+					],
+					operation: 'set',
+					mode: 'tool',
+					tool_run_id: 'toolrun-2',
+					fires_at: '',
+					title: [],
+				},
+				'schedule',
 			),
 		).not.toBe(ToolJsonResult);
 		expect(
