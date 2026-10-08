@@ -13,7 +13,6 @@ export type RecordingOverlayState = {
 	processing: boolean;
 	sessionId: string | null;
 	startedAt: string | number | null;
-	reason: string | null;
 	vadState: string;
 };
 
@@ -45,7 +44,7 @@ export interface RecordingOverlayController {
 	onRecordingError: (event: RecordingErrorPayload) => void;
 	onTranscriptionStarted: (sessionId: string) => void;
 	onTranscriptionFinished: (sessionId: string) => void;
-	reset: (reason?: string | null) => void;
+	reset: () => void;
 	dispose: () => void;
 }
 
@@ -58,7 +57,6 @@ function initialState(): RecordingOverlayState {
 		processing: false,
 		sessionId: null,
 		startedAt: null,
-		reason: null,
 		vadState: 'silent',
 	};
 }
@@ -111,11 +109,11 @@ export function createRecordingOverlayController(
 		}, 1000);
 	}
 
-	function reset(reason: string | null = null) {
+	function reset() {
 		const current = get(overlayStore);
 		remember(terminalSessions, current.sessionId);
 		stopTimer();
-		update({ ...initialState(), reason });
+		update(initialState());
 	}
 
 	async function startFromToolbar() {
@@ -125,7 +123,6 @@ export function createRecordingOverlayController(
 			processing: false,
 			sessionId: null,
 			startedAt: null,
-			reason: null,
 			vadState: 'silent',
 		});
 		try {
@@ -189,7 +186,6 @@ export function createRecordingOverlayController(
 				visible: true,
 				isRecording: true,
 				processing: false,
-				reason: null,
 			});
 			if (durationTimer === null) startTimer(false);
 			return;
@@ -201,7 +197,6 @@ export function createRecordingOverlayController(
 			processing: false,
 			sessionId,
 			startedAt: now(),
-			reason: null,
 			vadState: 'silent',
 		});
 		startTimer(true);
@@ -212,14 +207,14 @@ export function createRecordingOverlayController(
 		remember(stoppedSessions, sessionId);
 		if (!sessionId || get(overlayStore).sessionId !== sessionId) return;
 
-		const reason = event.reason ?? null;
+		const reason = event.reason;
 		if (reason === 'cancel') {
 			reset();
 			return;
 		}
 
 		const processing = reason === 'silence' || reason === 'max_duration';
-		update({ isRecording: false, processing, visible: true, reason, vadState: 'silent' });
+		update({ isRecording: false, processing, visible: true, vadState: 'silent' });
 		stopTimer();
 	}
 

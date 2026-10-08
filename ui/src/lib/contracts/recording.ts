@@ -3,6 +3,8 @@
 import type { TauriEvent } from './tauriEvent.ts';
 import {
 	RECORDING_EVENT_NAMES,
+	RECORDING_STOP_REASON_DTO_VALUES,
+	type RecordingStopReasonDto,
 	type VadStatusEvent as GeneratedVadStatusEvent,
 } from './generatedCommands.ts';
 
@@ -11,11 +13,18 @@ export type RecordingEventName = (typeof RECORDING_EVENT_NAMES)[number];
 export interface RecordingPayload {
 	isRecording: boolean;
 	sessionId?: string;
-	reason?: string;
+	reason?: RecordingStopReasonDto;
 	durationMs?: number;
 }
 
 export type VadStatusPayload = GeneratedVadStatusEvent;
+
+function isRecordingStopReason(value: unknown): value is RecordingStopReasonDto {
+	return (
+		typeof value === 'string' &&
+		RECORDING_STOP_REASON_DTO_VALUES.includes(value as RecordingStopReasonDto)
+	);
+}
 export interface TranscriptionStartedPayload {
 	sessionId: string;
 }
@@ -59,7 +68,7 @@ export function mapRecordingEvent<K extends RecordingEventName>(
 					...(typeof payload.session_id === 'string'
 						? { sessionId: payload.session_id }
 						: {}),
-					...(typeof payload.reason === 'string' ? { reason: payload.reason } : {}),
+					...(isRecordingStopReason(payload.reason) ? { reason: payload.reason } : {}),
 					...(typeof payload.duration_ms === 'number'
 						? { durationMs: payload.duration_ms }
 						: {}),

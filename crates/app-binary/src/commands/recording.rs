@@ -3,7 +3,7 @@ use crate::commands::{emit_event_logged, log_err, log_storage_err};
 use crate::desktop::{DesktopShell, RecordingStopContext};
 use crate::events::{
     RECORDING_ERROR_EVENT, RECORDING_STARTED_EVENT, RECORDING_STOPPED_EVENT, RecordingErrorEvent,
-    RecordingEvent, TRANSCRIPTION_ERROR_EVENT, TRANSCRIPTION_RESULT_EVENT,
+    RecordingEvent, RecordingStopReasonDto, TRANSCRIPTION_ERROR_EVENT, TRANSCRIPTION_RESULT_EVENT,
     TRANSCRIPTION_STARTED_EVENT, TranscriptionErrorEvent, TranscriptionResultEvent,
     TranscriptionStartedEvent,
 };
@@ -49,12 +49,12 @@ pub fn set_hotkey_capture_active(
     Ok(())
 }
 
-pub(crate) fn recording_reason_str(reason: RecordingReason) -> &'static str {
+pub(crate) fn recording_stop_reason_dto(reason: RecordingReason) -> RecordingStopReasonDto {
     match reason {
-        RecordingReason::Manual => "manual",
-        RecordingReason::Silence => "silence",
-        RecordingReason::MaxDuration => "max_duration",
-        RecordingReason::Cancel => "cancel",
+        RecordingReason::Manual => RecordingStopReasonDto::Manual,
+        RecordingReason::Silence => RecordingStopReasonDto::Silence,
+        RecordingReason::MaxDuration => RecordingStopReasonDto::MaxDuration,
+        RecordingReason::Cancel => RecordingStopReasonDto::Cancel,
     }
 }
 
@@ -87,14 +87,11 @@ pub(crate) fn emit_recording_started(
     );
 }
 
-/// Emit `recording:stopped` with the supplied reason and duration. `reason`
-/// may be either a `RecordingReason` (from the pipeline) or a literal
-/// `"cancel"` for the manual cancel command, which doesn't go through the
-/// pipeline's stop path.
+/// Emit `recording:stopped` with the supplied reason and duration.
 pub(crate) fn emit_recording_stopped(
     app: &tauri::AppHandle,
     session_id: haven_common::types::SessionId,
-    reason: &str,
+    reason: RecordingStopReasonDto,
     duration_ms: Option<u64>,
 ) {
     emit_event_logged(
@@ -103,7 +100,7 @@ pub(crate) fn emit_recording_stopped(
         RecordingEvent {
             is_recording: false,
             session_id: Some(session_id),
-            reason: Some(reason.to_string()),
+            reason: Some(reason),
             duration_ms,
         },
         "recording_stopped",
@@ -363,7 +360,7 @@ pub(crate) async fn finish_recording_stop<EmitStopped, Schedule, ScheduleFuture>
     emit_stopped: EmitStopped,
     schedule: Schedule,
 ) where
-    EmitStopped: FnOnce(haven_common::types::SessionId, &'static str, u64) + Send,
+    EmitStopped: FnOnce(haven_common::types::SessionId, RecordingStopReasonDto, u64) + Send,
     Schedule: FnOnce(haven_common::types::SessionId, RecordingResult) -> ScheduleFuture + Send,
     ScheduleFuture: std::future::Future<Output = bool> + Send,
 {
@@ -384,7 +381,7 @@ pub(crate) async fn finish_recording_stop<EmitStopped, Schedule, ScheduleFuture>
 
     emit_stopped(
         session_id.clone(),
-        recording_reason_str(result.reason),
+        recording_stop_reason_dto(result.reason),
         result.duration_ms,
     );
 
@@ -596,7 +593,7 @@ pub async fn cancel_recording(
             .unwrap_or_else(|p| p.into_inner())
             .remove(recording_id.as_str());
     }
-    emit_recording_stopped(&app, session_id, "cancel", None);
+    emit_recording_stopped(&app, session_id, RecordingStopReasonDto::Cancel, None);
     Ok(())
 }
 
@@ -911,7 +908,7 @@ mod tests {
                     let expected_session_id = old_session_id.clone();
                     move |session_id, reason, duration_ms| {
                         assert_eq!(session_id, expected_session_id);
-                        assert_eq!(reason, "silence");
+                        assert_eq!(reason, RecordingStopReasonDto::Silence);
                         assert_eq!(duration_ms, 37);
                         push_order(&order, "stopped");
                     }
@@ -1024,7 +1021,7 @@ mod tests {
                 result,
                 shell_update: RecordingStopShellUpdate::RefreshCurrent,
             },
-            |_session_id, reason, _duration_ms| assert_eq!(reason, "cancel"),
+            |_session_id, reason, _duration_ms| assert_eq!(reason, RecordingStopReasonDto::Cancel),
             {
                 let schedule_called = schedule_called.clone();
                 move |_session_id, _result| async move {
@@ -1072,7 +1069,7 @@ mod tests {
             },
             move |event_session_id, reason, _duration_ms| {
                 assert_eq!(event_session_id, stopped_session_id);
-                assert_eq!(reason, "silence");
+                assert_eq!(reason, RecordingStopReasonDto::Silence);
             },
             {
                 let shell = shell.clone();

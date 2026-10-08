@@ -291,9 +291,21 @@ pub struct RecordingEvent {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub session_id: Option<haven_common::types::SessionId>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub reason: Option<String>,
+    pub reason: Option<RecordingStopReasonDto>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub duration_ms: Option<u64>,
+}
+
+/// App-owned closed vocabulary for why an interactive recording stopped.
+/// Input's `RecordingReason` remains an acquisition detail; this enum also
+/// covers the App cancellation command and owns the stable event wire values.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RecordingStopReasonDto {
+    Manual,
+    Silence,
+    MaxDuration,
+    Cancel,
 }
 
 #[derive(Clone, Serialize)]
@@ -687,12 +699,27 @@ mod tests {
         let ev = RecordingEvent {
             is_recording: true,
             session_id: Some("s1".into()),
-            reason: Some("manual".into()),
+            reason: Some(RecordingStopReasonDto::Manual),
             duration_ms: Some(1000),
         };
         let json = serde_json::to_string(&ev).unwrap();
         assert!(json.contains("\"is_recording\":true"));
         assert!(json.contains("\"session_id\":\"s1\""));
+        assert!(json.contains("\"reason\":\"manual\""));
+    }
+
+    #[test]
+    fn recording_stop_reason_uses_closed_snake_case_values() {
+        let values = [
+            (RecordingStopReasonDto::Manual, "manual"),
+            (RecordingStopReasonDto::Silence, "silence"),
+            (RecordingStopReasonDto::MaxDuration, "max_duration"),
+            (RecordingStopReasonDto::Cancel, "cancel"),
+        ];
+
+        for (reason, expected) in values {
+            assert_eq!(serde_json::to_value(reason).unwrap(), expected);
+        }
     }
 
     #[test]

@@ -8,7 +8,6 @@
 		processing?: boolean;
 		duration?: number;
 		vadState?: string;
-		reason?: string | null;
 		onCancel?: (() => Promise<void>) | null;
 	}
 
@@ -17,7 +16,6 @@
 		processing = false,
 		duration = 0,
 		vadState = 'silent',
-		reason = null,
 		onCancel = null,
 	}: Props = $props();
 
@@ -91,9 +89,6 @@
 				</span>
 				<span class="timer">{display}</span>
 			</div>
-			{#if isRecording && !processing && reason}
-				<span class="reason" title={reason}>结束原因: {reason}</span>
-			{/if}
 		</div>
 	</div>
 {/if}
@@ -215,14 +210,5 @@
 	}
 	.overlay.processing .timer {
 		color: var(--md-sys-color-primary);
-	}
-	.reason {
-		overflow: hidden;
-		text-overflow: ellipsis;
-		white-space: nowrap;
-		font-size: var(--md-sys-typescale-label-small-size);
-		line-height: var(--md-sys-typescale-label-small-line-height);
-		color: var(--md-sys-color-on-surface-variant);
-		opacity: 0.7;
 	}
 </style>

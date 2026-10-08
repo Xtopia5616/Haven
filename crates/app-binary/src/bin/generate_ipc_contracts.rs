@@ -112,6 +112,7 @@ fn generate(root: &Path) -> Result<String, String> {
     // Notification event fields use the App-owned wire vocabularies. Keep
     // their TypeScript types and validator values generated from these enums.
     for event_enum in [
+        "RecordingStopReasonDto",
         "ToolRunKindDto",
         "ToolRunCompletionStatusDto",
         "AgentNotificationKind",

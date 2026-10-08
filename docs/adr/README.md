@@ -756,3 +756,4 @@
 - [0765：Session UI reducer 复用生成状态类型](0765-type-session-reducer-statuses.md)
 - [0766：Session reducer 复用生成等待原因类型](0766-type-session-waiting-reasons.md)
 - [0767：SessionSummary 使用显式 UI projection](0767-normalize-session-summary-view.md)
+- [0768：录音停止原因复用闭合 wire enum](0768-type-recording-stop-reason.md)

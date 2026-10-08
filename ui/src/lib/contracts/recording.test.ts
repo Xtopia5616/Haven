@@ -126,6 +126,15 @@ describe('recording IPC contract', () => {
 		expect(event.payload).toEqual({ isRecording: false });
 	});
 
+	it('omits a stop reason outside the generated closed vocabulary', () => {
+		const event = mapRecordingEvent({
+			event: 'recording:stopped',
+			id: 10,
+			payload: { is_recording: false, reason: 'future_reason' },
+		});
+		expect(event.payload).toEqual({ isRecording: false });
+	});
+
 	it('omits malformed optional transcription confidence', () => {
 		const event = mapRecordingEvent({
 			event: 'transcription:result',

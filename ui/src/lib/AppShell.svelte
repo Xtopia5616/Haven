@@ -40,7 +40,6 @@
 			processing: false,
 			sessionId: null,
 			startedAt: null,
-			reason: null,
 			vadState: 'silent',
 		},
 		duration = 0,
@@ -127,7 +126,6 @@
 		processing={overlay.processing}
 		{duration}
 		vadState={overlay.vadState}
-		reason={overlay.reason}
 		onCancel={onCancelRecording}
 	/>
 	<NotificationToast />

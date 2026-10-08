@@ -87,7 +87,7 @@ describe('recording overlay controller', () => {
 			sessionId: 'rec-fast',
 			reason: 'silence',
 		});
-		expect(state(controller)).toMatchObject({ visible: true, processing: true, reason: 'silence' });
+		expect(state(controller)).toMatchObject({ visible: true, processing: true });
 		start.resolve();
 		stop.resolve();
 		await Promise.all([starting, stopping]);
@@ -207,9 +207,9 @@ describe('recording overlay controller', () => {
 		await cancelling;
 		expect(state(controller).sessionId).toBeNull();
 		controller.onRecordingStarted({ isRecording: true, sessionId: 'rec-b' });
-		controller.reset('muted');
+		controller.reset();
 		controller.onTranscriptionStarted('rec-b');
-		expect(state(controller)).toMatchObject({ visible: false, processing: false, reason: 'muted' });
+		expect(state(controller)).toMatchObject({ visible: false, processing: false });
 	});
 
 	it('does not let an older cancel completion clear a newer recording', async () => {

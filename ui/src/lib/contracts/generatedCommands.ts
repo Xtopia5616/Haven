@@ -102,6 +102,8 @@ export interface HotkeyRebindEvent { old_binding: string; new_binding: string }
 export interface InteractionRequestedEvent { id: string; session_id?: string; owner: InteractionOwner; kind: InteractionKind; status: InteractionStatus; options?: string[]; tool_name?: string; risk_level?: RiskLevel; summary?: string; permission_key?: string; invocation_step_id?: string; tool_index?: number; tool_call_id?: string; created_at: string; expires_at?: string }
 export interface McpStatusChangedEvent { name: string; status: McpClientStatus }
 export interface MuteChangedEvent { muted: boolean }
+export const RECORDING_STOP_REASON_DTO_VALUES = ['manual', 'silence', 'max_duration', 'cancel'] as const;
+export type RecordingStopReasonDto = (typeof RECORDING_STOP_REASON_DTO_VALUES)[number];
 export type SessionLifecycleEvent = { type: 'created'; session_id: string; status: SessionStatus; waiting_reason?: SessionWaitingReason | null; title: string | null } | { type: 'updated'; session_id: string; status: SessionUpdateStatus; waiting_reason?: SessionWaitingReason | null; title: string; reason?: string | null } | { type: 'completed'; session_id: string; title: string; reason: string } | { type: 'error'; session_id: string; title: string; error: string } | { type: 'title_updated'; session_id: string; title: string } | { type: 'deleted'; session_id: string | null };
 export const SESSION_UPDATE_STATUS_VALUES = ['pending', 'running', 'paused'] as const;
 export type SessionUpdateStatus = (typeof SESSION_UPDATE_STATUS_VALUES)[number];

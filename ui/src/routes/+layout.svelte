@@ -932,7 +932,7 @@
 							addNotification('麦克风已静音', 'info');
 							if (recordingOverlayController.snapshot().isRecording) {
 								addNotification('录音被静音强制停止', 'warning', 4000);
-								recordingOverlayController.reset('muted');
+								recordingOverlayController.reset();
 							}
 						} else {
 							addNotification('麦克风已取消静音', 'info');
@@ -944,7 +944,7 @@
 							data.status === 'muted' &&
 							recordingOverlayController.snapshot().isRecording
 						) {
-							recordingOverlayController.reset('muted');
+							recordingOverlayController.reset();
 						}
 					},
 					'hotkey:conflict': (event) => {
