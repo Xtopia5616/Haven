@@ -268,6 +268,11 @@
 		min-width: 0;
 		max-width: 100%;
 	}
+	@container settings-content (min-width: 701px) {
+		.provider-toolbar-actions :global(.md-btn:last-child) {
+			margin-right: var(--md-sys-space-lg);
+		}
+	}
 	.providers-list {
 		display: flex;
 		flex-direction: column;

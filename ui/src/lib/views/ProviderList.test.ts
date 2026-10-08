@@ -9,5 +9,8 @@ describe('ProviderList responsive layout', () => {
 		);
 		expect(providerListSource).toContain('@container settings-content (max-width: 700px)');
 		expect(providerListSource).toContain('@container settings-content (max-width: 455px)');
+		expect(providerListSource).toContain(
+			'margin-right: var(--md-sys-space-lg);',
+		);
 	});
 });
