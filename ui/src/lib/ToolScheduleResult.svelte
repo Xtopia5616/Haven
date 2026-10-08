@@ -1,12 +1,16 @@
 <script lang="ts">
 	import { scheduleModeLabel, toolRunTitle } from '$lib/toolRunTerminology.ts';
 	import ToolResultList from '$lib/ToolResultList.svelte';
-	import type { ToolScheduleMode } from './toolResultPresentation.ts';
+	import {
+		normalizeToolScheduleOperation,
+		type ToolScheduleMode,
+		type ToolScheduleResultOperation,
+	} from './toolResultPresentation.ts';
 
 	interface Props {
 		data?: {
-			operation?: string;
-			tool_run_id?: string;
+			operation?: ToolScheduleResultOperation | null;
+			tool_run_id?: string | null;
 			scheduled_tool_runs?: Array<{
 				tool_run_id: string;
 				title: string;
@@ -14,17 +18,13 @@
 				mode: ToolScheduleMode;
 				due_at: string;
 			}>;
-			mode?: ToolScheduleMode;
-			fires_at?: string;
+			mode?: ToolScheduleMode | null;
+			fires_at?: string | null;
 		};
 	}
 
 	let { data = {} }: Props = $props();
-	let operation = $derived(
-		typeof data.operation === 'string'
-			? data.operation.replace(/^schedule_/, '')
-			: data.operation,
-	);
+	let operation = $derived(normalizeToolScheduleOperation(data.operation));
 </script>
 
 {#if operation === 'cancel'}

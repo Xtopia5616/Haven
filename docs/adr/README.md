@@ -768,3 +768,4 @@
 - [0777：Process 与 System renderer 复用闭合输出值](0777-type-process-and-system-renderer-values.md)
 - [0778：Files 与 Input renderer 复用闭合输出值](0778-type-file-and-input-result-values.md)
 - [0779：Media 与 Window renderer 复用闭合输出值](0779-type-media-and-window-renderer-values.md)
+- [0780：ToolRuns 与 Schedule renderer 复用闭合 operation](0780-type-toolrun-and-schedule-renderer-operations.md)

@@ -284,6 +284,76 @@ export function isToolRunResultStatus(value: unknown): value is ToolRunResultSta
 	return value === 'not_found' || isToolRunStatus(value);
 }
 
+export const toolRunsResultOperations = [
+	'list',
+	'inspect',
+	'cancel',
+	'result_injected',
+	'tool_runs_list',
+	'tool_runs_inspect',
+	'tool_runs_cancel',
+	'tool_runs_result_injected',
+] as const;
+
+export type ToolRunsResultOperation = (typeof toolRunsResultOperations)[number];
+
+export type ToolRunsOperation = 'list' | 'inspect' | 'cancel' | 'result_injected';
+
+export function isToolRunsResultOperation(value: unknown): value is ToolRunsResultOperation {
+	return toolRunsResultOperations.some((operation) => operation === value);
+}
+
+export function normalizeToolRunsOperation(
+	value: ToolRunsResultOperation | null | undefined,
+): ToolRunsOperation | null | undefined {
+	switch (value) {
+		case 'tool_runs_list':
+			return 'list';
+		case 'tool_runs_inspect':
+			return 'inspect';
+		case 'tool_runs_cancel':
+			return 'cancel';
+		case 'tool_runs_result_injected':
+			return 'result_injected';
+		default:
+			return value;
+	}
+}
+
+export const toolScheduleResultOperations = [
+	'set',
+	'list',
+	'cancel',
+	'schedule_set',
+	'schedule_list',
+	'schedule_cancel',
+] as const;
+
+export type ToolScheduleResultOperation = (typeof toolScheduleResultOperations)[number];
+
+export type ToolScheduleOperation = 'set' | 'list' | 'cancel';
+
+export function isToolScheduleResultOperation(
+	value: unknown,
+): value is ToolScheduleResultOperation {
+	return toolScheduleResultOperations.some((operation) => operation === value);
+}
+
+export function normalizeToolScheduleOperation(
+	value: ToolScheduleResultOperation | null | undefined,
+): ToolScheduleOperation | null | undefined {
+	switch (value) {
+		case 'schedule_set':
+			return 'set';
+		case 'schedule_list':
+			return 'list';
+		case 'schedule_cancel':
+			return 'cancel';
+		default:
+			return value;
+	}
+}
+
 export const toolAcPowerStates = ['offline', 'online', 'unknown'] as const;
 
 export type ToolAcPowerState = (typeof toolAcPowerStates)[number];

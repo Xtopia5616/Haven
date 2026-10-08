@@ -22,6 +22,8 @@ import {
 	isToolScheduleMode,
 	isToolSystemScope,
 	isToolMediaOperation,
+	isToolRunsResultOperation,
+	isToolScheduleResultOperation,
 	isToolWindowControlType,
 	isToolWindowFormat,
 	isToolWindowOperation,
@@ -398,7 +400,8 @@ function validBuiltinRendererData(renderer: string, data: JsonRecord): boolean {
 		case 'tool_runs':
 			return (
 				hasValidOptionalFields(data, {
-					...stringFields('operation', 'tool_run_id'),
+					operation: isToolRunsResultOperation,
+					tool_run_id: isString,
 					status: isToolRunResultStatus,
 					...booleanFields('cancelled'),
 					exit_code: isFiniteNumber,
@@ -412,7 +415,8 @@ function validBuiltinRendererData(renderer: string, data: JsonRecord): boolean {
 		case 'schedule':
 			return (
 				hasValidOptionalFields(data, {
-					...stringFields('operation', 'tool_run_id', 'fires_at'),
+					operation: isToolScheduleResultOperation,
+					...stringFields('tool_run_id', 'fires_at'),
 					mode: isToolScheduleMode,
 				}) &&
 				hasValidRecordArray(

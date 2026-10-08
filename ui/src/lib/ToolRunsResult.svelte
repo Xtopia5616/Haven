@@ -4,36 +4,41 @@
 	import StatusBadge from '$lib/StatusBadge.svelte';
 	import ToolResultList from '$lib/ToolResultList.svelte';
 	import type { ToolRunStatus } from '$lib/contracts/toolRun.ts';
-	import type { ToolRunResultStatus } from '$lib/toolResultPresentation.ts';
+	import {
+		normalizeToolRunsOperation,
+		type ToolRunResultStatus,
+		type ToolRunsResultOperation,
+	} from '$lib/toolResultPresentation.ts';
 
 	type ToolRunSummary = { tool_run_id: string; status: ToolRunStatus };
 
 	interface Props {
 		data?: {
-			operation?: string;
-			tool_run_id?: string;
+			operation?: ToolRunsResultOperation | null;
+			tool_run_id?: string | null;
 			status?: ToolRunResultStatus | null;
-			cancelled?: boolean;
+			cancelled?: boolean | null;
 			tool_runs?: ToolRunSummary[];
 			exit_code?: number | null;
 		};
 	}
 
 	let { data = {} }: Props = $props();
-	let operation = $derived(
-		typeof data.operation === 'string'
-			? data.operation.replace(/^tool_runs_/, '')
-			: data.operation,
-	);
+	let operation = $derived(normalizeToolRunsOperation(data.operation));
 
-	function statusTone(status: unknown): 'error' | 'info' | 'warning' | 'success' | 'neutral' {
-		const value = String(status ?? '').toLowerCase();
-		if (value.includes('error') || value.includes('fail')) return 'error';
-		if (value.includes('run') || value.includes('progress')) return 'info';
-		if (value.includes('cancel') || value.includes('pause')) return 'warning';
-		if (value.includes('complete') || value.includes('success') || value === 'done')
-			return 'success';
-		return 'neutral';
+	const statusTones: Record<
+		ToolRunResultStatus,
+		'error' | 'info' | 'warning' | 'success' | 'neutral'
+	> = {
+		waiting: 'warning',
+		running: 'info',
+		completed: 'success',
+		failed: 'error',
+		cancelled: 'warning',
+		not_found: 'neutral',
+	};
+	function statusTone(status: ToolRunResultStatus | null | undefined) {
+		return status ? statusTones[status] : 'neutral';
 	}
 </script>
 

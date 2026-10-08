@@ -17,7 +17,9 @@ import ToolJsonResult from './ToolJsonResult.svelte';
 import ToolMediaResult from './ToolMediaResult.svelte';
 import ToolShellResult from './ToolShellResult.svelte';
 import ToolSystemResult from './ToolSystemResult.svelte';
+import ToolRunsResult from './ToolRunsResult.svelte';
 import ToolWindowResult from './ToolWindowResult.svelte';
+import ToolScheduleResult from './ToolScheduleResult.svelte';
 
 const searchJson = (results: any[], extra: any = {}) =>
 	JSON.stringify({ results, count: results.length, mode: 'filename', ...extra });
@@ -225,12 +227,14 @@ describe('operation view UI contract', () => {
 			{ renderer: 'window', data: { operation: 'screenshot', format: 'jpeg' } },
 			{ renderer: 'window', data: { elements: [{ control_type: 'FutureControl' }] } },
 			{ renderer: 'tool_runs', data: { tool_runs: [null] } },
+			{ renderer: 'tool_runs', data: { operation: 'pause' } },
 			{ renderer: 'tool_runs', data: { tool_run_id: 'toolrun-1', status: 'future-status' } },
 			{
 				renderer: 'tool_runs',
 				data: { tool_runs: [{ tool_run_id: 'toolrun-1', status: 'future-status' }] },
 			},
 			{ renderer: 'schedule', data: { scheduled_tool_runs: [null] } },
+			{ renderer: 'schedule', data: { operation: 'pause' } },
 			{
 				renderer: 'schedule',
 				data: { scheduled_tool_runs: [{ tool_run_id: 'toolrun-1', due_at: 42 }] },
@@ -327,6 +331,22 @@ describe('operation view UI contract', () => {
 				'window',
 			),
 		).toBe(ToolWindowResult);
+		expect(
+			getToolResultRenderer(
+				'custom',
+				'tool_runs',
+				{ operation: 'tool_runs_result_injected', status: 'completed' },
+				'tool_runs',
+			),
+		).toBe(ToolRunsResult);
+		expect(
+			getToolResultRenderer(
+				'custom',
+				'schedule',
+				{ operation: 'schedule_set', tool_run_id: 'toolrun-1', mode: 'tool' },
+				'schedule',
+			),
+		).toBe(ToolScheduleResult);
 		expect(
 			getToolResultRenderer(
 				'custom',
