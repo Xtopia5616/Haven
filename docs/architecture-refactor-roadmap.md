@@ -230,6 +230,8 @@
 
 **System network summary nested contract 复核（2026-10-08）：** Rust producer 对存在的 summary 固定输出三个计数；UI 曾允许 summary 对象缺字段并由模板补零。现在 nested guard/Props 要求完整有限计数，缺项回退原始 JSON，完整 producer shape 继续使用专用 renderer（ADR 0800）。
 
+**System nested renderer contract 复核（2026-10-08）：** producer 对存在的 CPU/memory 对象保证 renderer 所读的 cores/logical_cpus/used_bytes/total_bytes；只有 CPU usage sample 可缺省。磁盘、网络和 Windows 显示器行也要求 renderer 读取的 mount/字节、name/state/IPs、name/宽高/primary 完整；非 Windows display 的 `{ available: false, note }` producer sentinel 保持可用说明视图。显示器 key 使用必需的 name；guard/Props 对齐这些 shape，并移除对 renderer 不读的 memory available_bytes 与 display left 校验，异常值回退/附加字段保留行为有测试（ADR 0801）。
+
 **MemoryView 页签 ID 复核（2026-10-08）：** Memory 的 `sessions`、`tasks`、`memory` 曾分别出现在 union、URL guard 清单和 MaterialTabs options 中。现在 `MEMORY_TAB_IDS` tuple 是 ID 唯一来源，`MemoryTabId` 从中派生，选项按 tuple 顺序映射穷尽标签表；URL 校验和呈现值因此不会独立漂移，路由参数与可见顺序不变（ADR 0748）。
 
 **共享 MaterialTabs 的路由 ID 复核（2026-10-08）：** Settings 页签 ID 从 `SETTINGS_SECTIONS` 派生；原始 `string` callback 入口现在先经该 source guard，再写入已收窄的 active/visited state。Tools 页签以 `TOOL_TAB_IDS` tuple 派生 union、runtime guard 与 options，穷尽标签表检查 UI 文案；共用组件仍接受动态 `NavigationTab`，两页有效顺序及交互不变（ADR 0749）。

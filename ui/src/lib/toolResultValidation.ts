@@ -52,6 +52,13 @@ function hasValidOptionalFields(
 	});
 }
 
+function hasValidRequiredFields(
+	data: JsonRecord,
+	fields: Readonly<Record<string, FieldGuard>>,
+): boolean {
+	return Object.entries(fields).every(([key, guard]) => guard(data[key]));
+}
+
 function hasValidRecordArray(
 	data: JsonRecord,
 	key: string,
@@ -143,16 +150,17 @@ function validSystemData(data: JsonRecord): boolean {
 			},
 			cpu: {
 				usage_pct: isFiniteNumber,
+			},
+		}) &&
+		hasValidRequiredObjectFields(data, {
+			cpu: {
 				cores: isFiniteNumber,
 				logical_cpus: isFiniteNumber,
 			},
 			memory: {
 				used_bytes: isFiniteNumber,
 				total_bytes: isFiniteNumber,
-				available_bytes: isFiniteNumber,
 			},
-		}) &&
-		hasValidRequiredObjectFields(data, {
 			network_summary: {
 				interface_count: isFiniteNumber,
 				up_or_unknown: isFiniteNumber,
@@ -163,25 +171,30 @@ function validSystemData(data: JsonRecord): boolean {
 			data,
 			'networks',
 			(row) =>
-				hasValidOptionalFields(row, { name: isString, state: isString }) &&
-				hasValidOptionalArrayField(row, 'ips', isStringArray),
+				hasValidRequiredFields(row, {
+					name: isString,
+					state: isString,
+					ips: isStringArray,
+				}),
 		) &&
 		hasValidRecordArray(data, 'disks', (row) =>
-			hasValidOptionalFields(row, {
+			hasValidRequiredFields(row, {
 				mount: isString,
 				total_bytes: isFiniteNumber,
 				available_bytes: isFiniteNumber,
 			}),
 		) &&
-		hasValidRecordArray(data, 'displays', (row) =>
-			hasValidOptionalFields(row, {
+		hasValidRecordArray(data, 'displays', (row) => {
+			if (row.available === false && !('name' in row)) {
+				return hasValidOptionalFields(row, { note: isString });
+			}
+			return hasValidRequiredFields(row, {
 				name: isString,
-				left: isFiniteNumber,
 				width: isFiniteNumber,
 				height: isFiniteNumber,
 				primary: isBoolean,
-			}),
-		) &&
+			});
+		}) &&
 		(['values', 'subkeys'] as const).every((key) =>
 			hasValidOptionalArrayField(data, key, isStringArray),
 		) &&

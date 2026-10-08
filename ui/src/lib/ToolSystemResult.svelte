@@ -12,6 +12,25 @@
 		ToolSystemScope,
 	} from './toolResultPresentation.ts';
 
+	type SystemDisplayInfo = {
+		name: string;
+		width: number;
+		height: number;
+		primary: boolean;
+	};
+	type SystemDisplayUnavailable = { available: false; note?: string | null };
+	type SystemDisplay = SystemDisplayInfo | SystemDisplayUnavailable;
+
+	function isSystemDisplayInfo(display: SystemDisplay): display is SystemDisplayInfo {
+		return 'name' in display;
+	}
+
+	function isSystemDisplayUnavailable(
+		display: SystemDisplay,
+	): display is SystemDisplayUnavailable {
+		return 'available' in display && display.available === false;
+	}
+
 	interface Props {
 		data?: {
 			scope?: ToolSystemScope | null;
@@ -53,36 +72,21 @@
 			} | null;
 			cpu?: {
 				usage_pct?: number | null;
-				cores?: number | null;
-				logical_cpus?: number | null;
+				cores: number;
+				logical_cpus: number;
 			} | null;
 			memory?: {
-				used_bytes?: number | null;
-				total_bytes?: number | null;
-				available_bytes?: number | null;
+				used_bytes: number;
+				total_bytes: number;
 			} | null;
 			network_summary?: {
 				interface_count: number;
 				up_or_unknown: number;
 				down: number;
 			} | null;
-			networks?: Array<{
-				name?: string | null;
-				state?: string | null;
-				ips?: string[];
-			}>;
-			disks?: Array<{
-				mount?: string | null;
-				total_bytes?: number | null;
-				available_bytes?: number | null;
-			}>;
-			displays?: Array<{
-				name?: string | null;
-				left?: number | null;
-				width?: number | null;
-				height?: number | null;
-				primary?: boolean | null;
-			}>;
+			networks?: Array<{ name: string; state: string; ips: string[] }>;
+			disks?: Array<{ mount: string; total_bytes: number; available_bytes: number }>;
+			displays?: SystemDisplay[];
 			variables?: Array<{ name?: string | null; value?: string | null }>;
 			values?: string[];
 			subkeys?: string[];
@@ -131,6 +135,10 @@
 
 	let envFilter = $state('');
 	let envList = $derived(Array.isArray(data.variables) ? data.variables : []);
+	let displayRows = $derived((data.displays ?? []).filter(isSystemDisplayInfo));
+	let displayUnavailable = $derived(
+		(data.displays ?? []).find(isSystemDisplayUnavailable) ?? null,
+	);
 	let filteredEnv = $derived(
 		envFilter
 			? envList.filter((variable) => {
@@ -228,7 +236,7 @@
 							<span class="network-name">{network.name || '未命名接口'}</span>
 							<span class="network-state">{networkStateLabel(network.state)}</span>
 						</div>
-						{#if Array.isArray(network.ips) && network.ips.length > 0}<div
+						{#if network.ips.length > 0}<div
 								class="network-ips"
 							>
 								{network.ips.join(' · ')}
@@ -313,7 +321,7 @@
 		{:else}
 			<span class="meter-sub">本次概览未采样</span>
 		{/if}
-		<span class="meter-sub">{data.cpu.cores ?? 0} 核 / {data.cpu.logical_cpus ?? 0} 线程</span>
+		<span class="meter-sub">{data.cpu.cores} 核 / {data.cpu.logical_cpus} 线程</span>
 	</div>
 {/if}
 {#if data.memory}
@@ -343,7 +351,7 @@
 				<div class="meter-row">
 					<span class="meter-label">{disk.mount}</span>
 					<span class="meter-value"
-						>{formatByteSize(Number(disk.total_bytes) - Number(disk.available_bytes))} /
+						>{formatByteSize(disk.total_bytes - disk.available_bytes)} /
 						{formatByteSize(disk.total_bytes)}</span
 					>
 					<span class="meter-track"
@@ -351,8 +359,7 @@
 							class="meter-fill"
 							style="width: {clampPercentage(
 								(1 -
-									Number(disk.available_bytes) /
-										Math.max(Number(disk.total_bytes), 1)) *
+									disk.available_bytes / Math.max(disk.total_bytes, 1)) *
 									100,
 							)}%"
 						></span></span
@@ -367,12 +374,16 @@
 		运行时长 {fmtUptime(data.os.uptime_secs)}
 	</div>
 {/if}
-{#if Array.isArray(data.displays)}
-	<div class="tool-result-label">{data.displays.length} 个显示器</div>
-	<ToolResultList items={data.displays}>
+{#if displayUnavailable}
+	<div class="tool-result-label">显示器</div>
+	<p class="tool-result-message">{displayUnavailable.note || '此系统能力当前不可用'}</p>
+{/if}
+{#if displayRows.length > 0}
+	<div class="tool-result-label">{displayRows.length} 个显示器</div>
+	<ToolResultList items={displayRows}>
 		{#snippet children(visibleDisplays)}
 			<div class="tool-result-scroll-area">
-				{#each visibleDisplays as display (display.name ?? display.left)}
+				{#each visibleDisplays as display (display.name)}
 					<div class="tool-result-window-row">
 						<span class="tool-result-window-primary display-name"
 							>{display.name || 'Display'}{display.primary ? ' · 主屏' : ''}</span

@@ -789,3 +789,4 @@
 - [0798：将性能指标 view 对齐到生成的 Rust DTO](0798-type-performance-metrics-response-view.md)
 - [0799：复用 ToolRun card projection props](0799-reuse-toolrun-projection-props.md)
 - [0800：要求 System network summary 提供完整计数](0800-require-system-network-summary-counts.md)
+- [0801：对齐 System renderer nested shapes](0801-align-system-renderer-nested-shapes.md)

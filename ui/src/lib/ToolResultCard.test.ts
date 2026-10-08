@@ -61,9 +61,12 @@ describe('canRenderToolResult', () => {
 		expect(canRenderToolResult('files', searchJson([{ path: 'a.rs' }]))).toBe(true);
 	});
 	it('accepts grouped system/haven results and independent aggregate tools', () => {
-		expect(canRenderToolResult('system', JSON.stringify({ cpu: { usage_pct: 12 } }))).toBe(
-			true,
-		);
+		expect(
+			canRenderToolResult(
+				'system',
+				JSON.stringify({ cpu: { usage_pct: 12, cores: 8, logical_cpus: 16 } }),
+			),
+		).toBe(true);
 		expect(
 			canRenderToolResult(
 				'system',
@@ -271,11 +274,19 @@ describe('operation view UI contract', () => {
 			{ renderer: 'schedule', data: { operation: 'set', mode: 'future' } },
 			{ renderer: 'system', data: { os: [] } },
 			{ renderer: 'system', data: { os: { hostname: 42 } } },
+			{ renderer: 'system', data: { cpu: { usage_pct: 5, logical_cpus: 8 } } },
+			{ renderer: 'system', data: { memory: { used_bytes: 512 } } },
+			{ renderer: 'system', data: { networks: [{ state: 'up', ips: [] }] } },
 			{
 				renderer: 'system',
 				data: { network_summary: { interface_count: 1, up_or_unknown: 1 } },
 			},
-			{ renderer: 'system', data: { networks: [{ ips: null }] } },
+			{ renderer: 'system', data: { networks: [{ name: 'Wi-Fi', state: 'up', ips: null }] } },
+			{ renderer: 'system', data: { disks: [{ mount: 'C:', available_bytes: 1 }] } },
+			{
+				renderer: 'system',
+				data: { displays: [{ name: 'DISPLAY1', height: 1080, primary: true }] },
+			},
 			{ renderer: 'system', data: { scope: 'future-scope' } },
 			{ renderer: 'system', data: { scope: { unexpected: true } } },
 			{ renderer: 'system', data: { scope: 'process', processes: [null] } },
@@ -312,7 +323,12 @@ describe('operation view UI contract', () => {
 			getToolResultRenderer(
 				'custom',
 				'system',
-				{ scope: 'info', operation: { unexpected: true }, os: { name: 'Windows' } },
+				{
+					scope: 'info',
+					operation: { unexpected: true },
+					os: { name: 'Windows' },
+					memory: { used_bytes: 512, total_bytes: 1024, available_bytes: 'unused' },
+				},
 				'system',
 			),
 		).toBe(ToolSystemResult);
@@ -351,16 +367,16 @@ describe('operation view UI contract', () => {
 						local_time: null,
 						timezone_offset_hours: null,
 					},
-					cpu: { usage_pct: null, cores: null, logical_cpus: null },
-					memory: { used_bytes: null, total_bytes: null, available_bytes: null },
+					cpu: { usage_pct: null, cores: 8, logical_cpus: 16 },
+					memory: { used_bytes: 512, total_bytes: 1024 },
 					network_summary: {
 						interface_count: 1,
 						up_or_unknown: 1,
 						down: 0,
 					},
-					networks: [{ name: null, state: null, ips: [] }],
-					disks: [{ mount: null, total_bytes: null, available_bytes: null }],
-					displays: [{ name: null, left: null, width: null, height: null, primary: null }],
+					networks: [{ name: 'Wi-Fi', state: 'up', ips: [] }],
+					disks: [{ mount: 'C:', total_bytes: 1024, available_bytes: 512 }],
+					displays: [{ name: 'DISPLAY1', width: 1920, height: 1080, primary: true }],
 					variables: [{ name: null, value: null }],
 					values: [],
 					subkeys: [],
@@ -1478,6 +1494,18 @@ describe('ToolResultCard files', () => {
 });
 
 describe('ToolResultCard system', () => {
+	it('renders unavailable display enumeration from non-Windows producers', async () => {
+		const { container } = render(ToolResultCard, {
+			toolName: 'system',
+			content: JSON.stringify({
+				scope: 'display',
+				displays: [{ available: false, note: 'display enumeration requires Windows' }],
+			}),
+		});
+		await expandToolCard(container);
+		expect(screen.getByText('display enumeration requires Windows')).toBeTruthy();
+	});
+
 	it('renders network category results instead of generic JSON', async () => {
 		const { container } = render(ToolResultCard, {
 			toolName: 'system',
