@@ -200,6 +200,8 @@
 
 **ToolRun card tone prop 复核（2026-10-08）：** projection 按 generated `ToolRunStatus` 只输出 `scheduled`、`running`、`error`、`success` 或 `neutral`，tone 现由 `ToolRunCardTone` 同时约束 projection 和映射函数；现有 `data-tone` / `data-variant` 展示值不变（ADR 0793）。
 
+**MCP server transport renderer contract 复核（2026-10-08）：** `McpServerSnapshot.transport` 与 Common `McpTransportType` 现贯穿 MCP snapshot 和 generated UI response；Tauri 的 `stdio` / `http` JSON 字符串保持不变，UI mapper 拒绝未知 transport，设置卡片不再把缺值伪装成 `stdio`（ADR 0795）。
+
 **未消费 UI 组件复核（2026-10-08）：** `WorkspaceMetricStrip.svelte` 在全仓没有 production import、渲染调用或外部 CSS consumer，其专用 Props 与样式现已删除；没有现存页面行为变化（ADR 0794）。
 
 **Transcript renderer props 复核（2026-10-08）：** `StreamMessage`、resume projection、ChatBubble、ToolResultCard、continue/tool-intent helpers 与 context-menu request 共用 `SessionMessagePresentationType`；它表达 `thought`、`reasoning`、`tool`、`ask`、`peer_kickoff`、`supplement` 与无专用 bubble 的持久 `tool_call` 投影，不复用闭合持久 `TranscriptMessageKind`。tool outcome props 使用 `ToolResultPresentationOutcome`，组合生成的 `ToolExecutionOutcome`、`ToolRunStatus` 和恢复历史中允许的 `unknown`；ToolResultCard 的 `type` 仅接受 `tool`/`ask`，流式 reasoning 的 `msgType` 也只接受实际 producer 发出的 `reasoning`。manifest renderer key 仍是开放字符串，未知 renderer 走 JSON fallback，保留扩展点。空输出的超时提示现在按 `timed_out_and_terminated` 的展示映射判断，保持结果字段与 renderer 映射一致。以上仅收紧 UI 内部视图契约，不改变 IPC、event 或持久化值；其它组件/store/controller/handler 调用映射及 contracts 非 alias 类型审查仍在 Active 范围。

@@ -278,7 +278,10 @@ async fn initialize_handshake_and_tools_are_discovered() {
         client.status().await,
         haven_tools::McpClientStatus::Connected
     ));
-    assert_eq!(client.snapshot().await.transport, "http");
+    assert_eq!(
+        client.snapshot().await.transport,
+        haven_common::McpTransportType::Http
+    );
     let tools = client.list_tools().await.unwrap();
     assert_eq!(tools.len(), 4);
     assert_eq!(tools[0].name, "echo");

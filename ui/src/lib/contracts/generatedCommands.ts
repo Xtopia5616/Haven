@@ -314,7 +314,7 @@ export interface LlmConnectionReport { status: LlmConnectionStatus; reason?: Llm
 export const LLM_CONNECTION_STATUS_VALUES = ['ready', 'disconnected', 'unconfigured'] as const;
 export type LlmConnectionStatus = (typeof LLM_CONNECTION_STATUS_VALUES)[number];
 export type McpClientStatus = 'Disconnected' | 'Connecting' | 'Connected' | { 'Offline': { error: string } };
-export interface McpServerSnapshot { name: string; transport: string; command: string; args: string[]; env: string[]; cwd: string | null; url: string; enabled: boolean; status: McpClientStatus; tools: McpToolInfo[]; last_error: string | null; diagnostic: string | null; last_seen_at: number | null }
+export interface McpServerSnapshot { name: string; transport: McpTransportType; command: string; args: string[]; env: string[]; cwd: string | null; url: string; enabled: boolean; status: McpClientStatus; tools: McpToolInfo[]; last_error: string | null; diagnostic: string | null; last_seen_at: number | null }
 export interface McpToolInfo { name: string; description: string; input_schema: unknown }
 export const MEMORY_ENTITY_KIND_INPUT_VALUES = ['fact', 'episode'] as const;
 export type MemoryEntityKindInput = (typeof MEMORY_ENTITY_KIND_INPUT_VALUES)[number];

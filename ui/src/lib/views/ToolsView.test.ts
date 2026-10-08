@@ -132,7 +132,15 @@ describe('ToolsView toolbar actions', () => {
 				};
 			}
 			if (command === 'list_mcp_servers') {
-				return [{ name: 'docs-server', enabled: true, status: 'Disconnected', tools: [] }];
+				return [
+					{
+						name: 'docs-server',
+						transport: 'stdio',
+						enabled: true,
+						status: 'Disconnected',
+						tools: [],
+					},
+				];
 			}
 			if (command === 'list_skills') {
 				return [
@@ -260,7 +268,15 @@ describe('ToolsView toolbar actions', () => {
 		invoke.mockImplementation(async (command: string) => {
 			if (command === 'list_builtin_tool_manifests') return { tools: [] };
 			if (command === 'list_mcp_servers') {
-				return [{ name: 'docs-server', enabled: true, status: 'Connected', tools: [] }];
+				return [
+					{
+						name: 'docs-server',
+						transport: 'stdio',
+						enabled: true,
+						status: 'Connected',
+						tools: [],
+					},
+				];
 			}
 			if (command === 'list_skills') return [];
 			if (command === 'reconnect_mcp_server') {

@@ -33,6 +33,7 @@ describe('ToolsView command boundary', () => {
 		const mcpResponse = [
 			{
 				name: 'future-server',
+				transport: 'stdio',
 				status: { Offline: { error: 'server unavailable' } },
 				tools: [{ name: 'future-tool', input_schema: { type: 'object', extra: true } }],
 				future_field: ['retained'],
@@ -61,11 +62,27 @@ describe('ToolsView command boundary', () => {
 
 	it('rejects MCP server snapshots with a status outside the current Rust enum', async () => {
 		invoke.mockResolvedValueOnce([
-			{ name: 'future-server', status: { FutureStatus: { note: 'unsupported' } } },
+			{
+				name: 'future-server',
+				transport: 'stdio',
+				status: { FutureStatus: { note: 'unsupported' } },
+			},
 		]);
 
 		await expect(listMcpServers()).rejects.toThrow('Invalid MCP server snapshot status');
 		expect(invoke).toHaveBeenCalledWith('list_mcp_servers');
+	});
+
+	it('rejects MCP server snapshots with an unknown transport', async () => {
+		invoke.mockResolvedValueOnce([
+			{
+				name: 'future-server',
+				transport: 'future-transport',
+				status: 'Connected',
+			},
+		]);
+
+		await expect(listMcpServers()).rejects.toThrow('Invalid MCP server snapshot transport');
 	});
 
 	it('keeps circuit reset as a void command and propagates its rejection', async () => {

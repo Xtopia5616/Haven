@@ -95,7 +95,7 @@ fn mcp_client_status_serialize() {
 fn mcp_server_snapshot_roundtrip() {
     let snap = McpServerSnapshot {
         name: "test".into(),
-        transport: "http".into(),
+        transport: haven_common::McpTransportType::Http,
         command: "".into(),
         args: vec![],
         env: vec!["AUTHORIZATION=Bearer x".into()],
@@ -178,7 +178,7 @@ async fn mcp_client_snapshot_initial() {
     );
     let snap = client.snapshot().await;
     assert_eq!(snap.name, "test");
-    assert_eq!(snap.transport, "stdio");
+    assert_eq!(snap.transport, haven_common::McpTransportType::Stdio);
     assert!(snap.enabled);
     assert!(matches!(snap.status, McpClientStatus::Disconnected));
     assert!(snap.tools.is_empty());

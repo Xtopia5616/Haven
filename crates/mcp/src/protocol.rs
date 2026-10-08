@@ -1,3 +1,4 @@
+use haven_common::McpTransportType;
 use serde_json::Value;
 
 pub(crate) const PROTOCOL_VERSION: &str = "2024-11-05";
@@ -268,7 +269,7 @@ pub enum McpClientStatus {
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct McpServerSnapshot {
     pub name: String,
-    pub transport: String,
+    pub transport: McpTransportType,
     pub command: String,
     pub args: Vec<String>,
     pub env: Vec<String>,

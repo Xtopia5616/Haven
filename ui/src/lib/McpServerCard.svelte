@@ -109,7 +109,7 @@
 			<span class="tool-count">{server.tools?.length || 0} 个工具</span>
 		</div>
 		<div class="expandable-context-card-meta">
-			<span class="transport-badge">{server.transport || 'stdio'}</span>
+			<span class="transport-badge">{server.transport}</span>
 			{#if server.url}
 				<span class="endpoint">{server.url}</span>
 			{/if}

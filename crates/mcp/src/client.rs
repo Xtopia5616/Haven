@@ -330,7 +330,7 @@ impl McpClient {
     pub async fn snapshot(&self) -> McpServerSnapshot {
         McpServerSnapshot {
             name: self.name.clone(),
-            transport: self.transport.as_str().into(),
+            transport: self.transport.clone(),
             command: self.command.clone(),
             args: self.args.clone(),
             env: self.env.clone(),
