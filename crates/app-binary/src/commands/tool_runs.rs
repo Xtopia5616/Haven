@@ -3,6 +3,7 @@ use crate::commands::log_err;
 use crate::events::{ToolRunEvent, ToolRunKindDto};
 use haven_common::ToolRunStatus;
 use haven_memory::ToolRunRow;
+use haven_tools::ScheduleMode;
 use std::sync::Arc;
 use tauri::State;
 
@@ -158,7 +159,7 @@ fn tool_run_event_from_row(
             row.due_at,
             (!row.title.is_empty()).then_some(row.title),
             row.body,
-            row.mode,
+            row.mode.as_deref().and_then(ScheduleMode::parse),
         ),
     };
     ToolRunEvent {
@@ -243,6 +244,7 @@ mod tests {
             assert!(!serialized.contains(internal_value));
         }
 
+        let mut invalid_mode_row = row.clone();
         let event = tool_run_event_from_row(
             row,
             crate::events::ToolRunKindDto::Scheduled,
@@ -254,11 +256,21 @@ mod tests {
         assert_eq!(event.status, Some(ToolRunStatus::Completed));
         assert_eq!(event.due_at.as_deref(), Some("2026-09-27T10:00:00Z"));
         assert_eq!(event.title, None);
+        assert_eq!(event.mode, Some(haven_tools::ScheduleMode::Continue));
         assert_eq!(event.preview, None);
         let serialized = serde_json::to_string(&event).unwrap();
         for internal_value in ["internal-args", "internal prompt", "private/tool-run.log"] {
             assert!(!serialized.contains(internal_value));
         }
+
+        invalid_mode_row.mode = Some("future_mode".into());
+        let event = tool_run_event_from_row(
+            invalid_mode_row,
+            crate::events::ToolRunKindDto::Scheduled,
+            super::PersistedToolRunProjection::History,
+            None,
+        );
+        assert_eq!(event.mode, None);
     }
 
     #[test]

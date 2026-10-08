@@ -1,4 +1,4 @@
-use crate::ToolRunKind;
+use crate::{ScheduleMode, ToolRunKind};
 use haven_common::ToolRunStatus;
 #[cfg(test)]
 use serde_json::{Value, json};
@@ -90,7 +90,7 @@ pub struct ToolRunLifecyclePayload {
     pub due_at: Option<String>,
     pub title: Option<String>,
     pub body: Option<String>,
-    pub mode: Option<String>,
+    pub mode: Option<ScheduleMode>,
     pub output: Option<String>,
     pub error: Option<String>,
     pub error_reason: Option<String>,
@@ -167,12 +167,14 @@ impl ToolRunLifecycleEvent {
                 ("due_at", payload.due_at),
                 ("title", payload.title),
                 ("body", payload.body),
-                ("mode", payload.mode),
                 ("output", payload.output),
                 ("error", payload.error),
                 ("error_reason", payload.error_reason),
             ] {
                 set_optional_string(&mut value, key, field);
+            }
+            if let Some(mode) = payload.mode {
+                value["mode"] = json!(mode);
             }
             if let Some(exit_code) = payload.exit_code {
                 value["exit_code"] = json!(exit_code);

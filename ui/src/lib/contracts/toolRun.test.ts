@@ -47,6 +47,18 @@ describe('tool run IPC contract', () => {
 		).toBeNull();
 	});
 
+	it('uses generated ScheduleMode values for ToolRun lifecycle rows', () => {
+		expect(
+			mapToolRunPayload({ tool_run_id: 'toolrun-9', kind: 'scheduled', mode: 'continue' }),
+		).toEqual({ toolRunId: 'toolrun-9', kind: 'scheduled', mode: 'continue' });
+		expect(
+			mapToolRunPayload({ tool_run_id: 'toolrun-10', kind: 'scheduled', mode: 'future_mode' }),
+		).toBeNull();
+		expect(
+			mapToolRunPayload({ tool_run_id: 'toolrun-11', kind: 'scheduled', mode: null }),
+		).toBeNull();
+	});
+
 	it('rejects unknown ToolRun statuses and kinds', () => {
 		expect(
 			mapToolRunPayload({ tool_run_id: 'toolrun-3', kind: 'background', status: 'unexpected' }),

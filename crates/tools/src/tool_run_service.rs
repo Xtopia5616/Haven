@@ -1126,7 +1126,7 @@ impl ToolRunService {
                             title: schedule.title.clone(),
                             body: schedule.body.clone(),
                             due_at: schedule.due_at.clone(),
-                            mode: schedule.mode.as_str().to_string(),
+                            mode: schedule.mode,
                             tool_name: schedule.tool_name.clone(),
                             tool_args: schedule.tool_args.clone(),
                             prompt: schedule.prompt.clone(),

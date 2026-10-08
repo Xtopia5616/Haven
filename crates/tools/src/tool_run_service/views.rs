@@ -17,7 +17,7 @@ pub struct ToolRunView {
     pub due_at: Option<String>,
     pub title: Option<String>,
     pub body: Option<String>,
-    pub mode: Option<String>,
+    pub mode: Option<ScheduleMode>,
     pub command: Option<String>,
     pub output: Option<String>,
     pub error: Option<String>,
@@ -89,7 +89,7 @@ pub struct ScheduledToolRunView {
     pub title: String,
     pub body: String,
     pub due_at: String,
-    pub mode: String,
+    pub mode: ScheduleMode,
     pub tool_name: Option<String>,
     pub tool_args: Option<Value>,
     pub prompt: Option<String>,
@@ -396,7 +396,7 @@ pub(super) fn scheduled_tool_run_view(entry: &ScheduledToolRunEntry) -> Schedule
         title: entry.title.clone(),
         body: entry.body.clone(),
         due_at: entry.due_at.clone(),
-        mode: entry.mode.as_str().to_string(),
+        mode: entry.mode,
         tool_name: entry.tool_name.clone(),
         tool_args: entry.tool_args.clone(),
         prompt: entry.prompt.clone(),
@@ -481,7 +481,7 @@ pub(super) fn project_board_tool_run(tool_run_id: &str, entry: &ToolRunEntry) ->
             view.due_at = Some(schedule.due_at.clone());
             view.title = Some(schedule.title.clone());
             view.body = Some(schedule.body.clone());
-            view.mode = Some(schedule.mode.as_str().to_string());
+            view.mode = Some(schedule.mode);
         }
     } else {
         let preview = view
@@ -536,7 +536,7 @@ pub(super) fn scheduled_lifecycle_payload(
     payload.session_id = session_id.map(str::to_string);
     payload.title = Some(entry.title.clone());
     payload.body = Some(entry.body.clone());
-    payload.mode = Some(entry.mode.as_str().to_string());
+    payload.mode = Some(entry.mode);
     payload.due_at = Some(entry.due_at.clone());
     if let ToolRunState::Failed { error_reason, .. } = state {
         payload.error_reason = Some(error_reason.clone());

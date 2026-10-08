@@ -1740,7 +1740,7 @@ async fn board_returns_typed_safe_views_in_started_order() {
     assert_eq!(board[0].due_at.as_deref(), Some("2026-09-23T10:30:00Z"));
     assert_eq!(board[0].title.as_deref(), Some("Safe title"));
     assert_eq!(board[0].body.as_deref(), Some("Safe body"));
-    assert_eq!(board[0].mode.as_deref(), Some("continue"));
+    assert_eq!(board[0].mode, Some(ScheduleMode::Continue));
 
     assert_eq!(board[1].kind, ToolRunKind::Background);
     assert_eq!(board[1].status, ToolRunStatus::Completed);
@@ -1898,7 +1898,7 @@ async fn test_unified_service_owns_scheduled_state_and_cancel() {
             .as_deref()
             .is_some_and(|due_at| !due_at.is_empty())
     );
-    assert_eq!(board[0].mode.as_deref(), Some("continue"));
+    assert_eq!(board[0].mode, Some(ScheduleMode::Continue));
     let status = service.status_view(&id).await.to_json(true);
     assert_eq!(status["session_id"], "ses-unified");
     assert_eq!(status["due_at"], board[0].due_at.as_deref().unwrap());

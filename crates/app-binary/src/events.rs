@@ -1,6 +1,6 @@
 use haven_common::tools::{OperationIdempotency, ToolOperationScope, ToolResultEnvelope};
 use haven_common::{SessionStatus, SessionWaitingReason, ToolRunStatus};
-use haven_tools::{ToolRunLifecyclePayload, ToolRunOutputPayload, ToolRunView};
+use haven_tools::{ScheduleMode, ToolRunLifecyclePayload, ToolRunOutputPayload, ToolRunView};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -100,7 +100,7 @@ pub struct ToolRunEvent {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub body: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub mode: Option<String>,
+    pub mode: Option<ScheduleMode>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub command: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -809,7 +809,7 @@ mod tests {
         );
         payload.title = Some("Reminder".into());
         payload.body = Some("Take a break".into());
-        payload.mode = Some("tool".into());
+        payload.mode = Some(ScheduleMode::Tool);
         let event = ToolRunEvent::from_lifecycle_payload(payload);
         let wire = serde_json::to_value(event).unwrap();
 
@@ -873,7 +873,7 @@ mod tests {
             due_at: Some("2026-09-24T10:00:00Z".into()),
             title: Some("Take a break".into()),
             body: Some("Stand up".into()),
-            mode: Some("continue".into()),
+            mode: Some(ScheduleMode::Continue),
             command: None,
             output: None,
             error: None,

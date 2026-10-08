@@ -1,8 +1,10 @@
 import type {
 	ToolRunKindDto as GeneratedToolRunKindDto,
 	ToolRunStatus as GeneratedToolRunStatus,
+	ScheduleMode as GeneratedScheduleMode,
 } from './generatedCommands.ts';
 import {
+	SCHEDULE_MODE_VALUES,
 	TOOL_RUN_EVENT_NAMES,
 	TOOL_RUN_KIND_DTO_VALUES,
 	TOOL_RUN_STATUS_VALUES,
@@ -21,6 +23,7 @@ import { isRecord } from './objectGuards.ts';
 export type ToolRunEventName = (typeof TOOL_RUN_EVENT_NAMES)[number];
 export type ToolRunKind = GeneratedToolRunKindDto;
 export type ToolRunStatus = GeneratedToolRunStatus;
+export type ScheduleMode = GeneratedScheduleMode;
 
 export interface ToolRunPayload {
 	toolRunId: string;
@@ -33,7 +36,7 @@ export interface ToolRunPayload {
 	dueAt?: string;
 	title?: string;
 	body?: string;
-	mode?: string;
+	mode?: ScheduleMode;
 	command?: string;
 	output?: string;
 	error?: string;
@@ -52,7 +55,6 @@ const OPTIONAL_STRING_FIELDS = [
 	'due_at',
 	'title',
 	'body',
-	'mode',
 	'command',
 	'output',
 	'error',
@@ -68,8 +70,15 @@ export function isToolRunStatus(value: unknown): value is ToolRunStatus {
 	return (TOOL_RUN_STATUS_VALUES as readonly unknown[]).includes(value);
 }
 
+export function isScheduleMode(value: unknown): value is ScheduleMode {
+	return (SCHEDULE_MODE_VALUES as readonly unknown[]).includes(value);
+}
+
 function hasValidOptionalFields(payload: WireRecord): boolean {
 	if (payload.status !== undefined && !isToolRunStatus(payload.status)) {
+		return false;
+	}
+	if (payload.mode !== undefined && !isScheduleMode(payload.mode)) {
 		return false;
 	}
 	if (
@@ -107,7 +116,7 @@ export function mapToolRunPayload(payload: unknown): ToolRunPayload | null {
 	if (typeof payload.due_at === 'string') mapped.dueAt = payload.due_at;
 	if (typeof payload.title === 'string') mapped.title = payload.title;
 	if (typeof payload.body === 'string') mapped.body = payload.body;
-	if (typeof payload.mode === 'string') mapped.mode = payload.mode;
+	if (isScheduleMode(payload.mode)) mapped.mode = payload.mode;
 	if (typeof payload.command === 'string') mapped.command = payload.command;
 	if (typeof payload.output === 'string') mapped.output = payload.output;
 	if (typeof payload.error === 'string') mapped.error = payload.error;

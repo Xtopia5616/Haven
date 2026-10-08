@@ -779,3 +779,4 @@
 - [0788：对齐 Media 与 Window renderer 的 nested null 语义](0788-align-media-window-result-prop-nullability.md)
 - [0789：对齐 System renderer 的嵌套 Props null 语义](0789-align-system-result-prop-nullability.md)
 - [0790：收窄 ToolRun card 的详情投影](0790-trim-toolrun-card-details.md)
+- [0791：类型化 ToolRun 的定时模式](0791-type-toolrun-schedule-mode.md)

@@ -112,7 +112,7 @@ export const SKILLS_STATUS_OPERATION_VALUES = ['refresh', 'auto_refresh', 'toggl
 export type SkillsStatusOperation = (typeof SKILLS_STATUS_OPERATION_VALUES)[number];
 export const TOOL_RUN_COMPLETION_STATUS_DTO_VALUES = ['completed', 'failed'] as const;
 export type ToolRunCompletionStatusDto = (typeof TOOL_RUN_COMPLETION_STATUS_DTO_VALUES)[number];
-export interface ToolRunEvent { tool_run_id: string; kind: ToolRunKindDto; status?: ToolRunStatus; session_id?: string; source_step_id?: string; started_at?: string; finished_at?: string; due_at?: string; title?: string; body?: string; mode?: string; command?: string; output?: string; error?: string; error_reason?: string; exit_code?: number; preview?: string }
+export interface ToolRunEvent { tool_run_id: string; kind: ToolRunKindDto; status?: ToolRunStatus; session_id?: string; source_step_id?: string; started_at?: string; finished_at?: string; due_at?: string; title?: string; body?: string; mode?: ScheduleMode; command?: string; output?: string; error?: string; error_reason?: string; exit_code?: number; preview?: string }
 export const TOOL_RUN_KIND_DTO_INPUT_VALUES = ['background', 'scheduled'] as const;
 export type ToolRunKindDtoInput = (typeof TOOL_RUN_KIND_DTO_INPUT_VALUES)[number];
 export const TOOL_RUN_KIND_DTO_VALUES = ['background', 'scheduled'] as const;
@@ -325,6 +325,8 @@ export interface SessionStep { id: string; session_id: string; step_number: numb
 export interface LlmUsageRecord { id: string; session_id: string; step_number: number | null; role: RequestKind; call_kind: LlmCallKind; model: string | null; prompt_tokens: number; completion_tokens: number; total_tokens: number; cached_tokens: number; cache_creation_tokens: number; cache_miss_tokens: number; cache_accounting: string; cache_diagnostics?: unknown; context_tokens: number; context_window: number | null; cost_usd: number; has_cost: boolean; duration_ms: number | null; created_at: string }
 export interface SessionUsage { prompt_tokens: number; completion_tokens: number; total_tokens: number; cached_tokens: number; cache_creation_tokens: number; cache_miss_tokens: number; context_tokens: number; context_window: number | null; cost_usd: number; has_cost: boolean }
 export interface SkillInfo { name: string; description: string; version: string | null; language: string; enabled: boolean; root: string; has_script: boolean }
+export const SCHEDULE_MODE_VALUES = ['tool', 'continue'] as const;
+export type ScheduleMode = (typeof SCHEDULE_MODE_VALUES)[number];
 export const MCP_CLIENT_STATUS_UNIT_VALUES = ['Disconnected', 'Connecting', 'Connected'] as const;
 
 export interface TauriCommandMap {

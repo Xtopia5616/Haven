@@ -167,7 +167,7 @@ impl ToolRunService {
         created.session_id = session_id.clone();
         created.title = Some(title.clone());
         created.body = Some(body.clone());
-        created.mode = Some(mode.as_str().to_string());
+        created.mode = Some(mode);
         created.due_at = Some(due_at.clone());
         self.emit(ToolRunLifecycleEvent::Created(created));
 
