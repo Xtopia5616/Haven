@@ -320,8 +320,15 @@
 		}
 	}
 
-	function mapLineageSession(session: SessionLineageResponse['children'][number]): SessionSummary {
-		return { ...session, title: session.title || session.input_text };
+	function mapLineageSession(
+		session: SessionLineageResponse['children'][number],
+	): SessionSummary {
+		return {
+			id: session.id,
+			status: session.status,
+			title: session.title || session.input_text,
+			inputText: session.input_text,
+		};
 	}
 
 	async function loadSessionLineage(sessionId: string | null) {
@@ -949,7 +956,7 @@
 					session: {
 						id: historical.id,
 						input: historical.input_text,
-						input_text: historical.input_text,
+						inputText: historical.input_text,
 						title: historical.title,
 						status: 'error',
 					},

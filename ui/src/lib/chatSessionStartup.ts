@@ -49,7 +49,7 @@ export function createChatSessionStartup(dependencies: ChatSessionStartupDepende
 			session: {
 				id: resumeTarget.sessionId,
 				input: resumeTarget.summary || '',
-				input_text: resumeTarget.summary || '',
+				inputText: resumeTarget.summary || '',
 				title: resumeTarget.title || null,
 				status: 'error',
 			},
@@ -118,7 +118,10 @@ export function createChatSessionStartup(dependencies: ChatSessionStartupDepende
 				dependencies.dispatch({
 					type: 'sessions/loaded',
 					sessions: result.sessions.map((session) => ({
-						...session,
+						id: session.id,
+						status: session.status,
+						input: session.input,
+						title: session.title,
 						waitingReason: session.waiting_reason ?? null,
 					})),
 					autoSelect: !before.activeSessionId && !dependencies.getFreshSessionIntent(),

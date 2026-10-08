@@ -24,7 +24,9 @@ export interface SessionSummary {
 	id: string;
 	status: SessionStatus;
 	waitingReason?: SessionWaitingReason | null;
-	[key: string]: unknown;
+	title?: string | null;
+	input?: string;
+	inputText?: string;
 }
 
 export type SessionRunEndStatus = Extract<SessionStatus, 'paused' | 'completed' | 'error'>;

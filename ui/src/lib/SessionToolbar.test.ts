@@ -217,14 +217,14 @@ describe('SessionToolbar', () => {
 					id: 'ses-parent',
 					status: 'paused',
 					title: '父会话',
-					input_text: '父会话',
+					inputText: '父会话',
 				},
 				children: [
 					{
 						id: 'ses-child',
 						status: 'completed',
 						title: 'Agent 调研',
-						input_text: 'Agent 调研',
+						inputText: 'Agent 调研',
 					},
 				],
 			},

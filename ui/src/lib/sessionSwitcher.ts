@@ -16,8 +16,10 @@ export function buildSessionSwitcherOptions(
 		...history
 			.filter((session) => !liveIds.has(session.id))
 			.map((session) => ({
-				...session,
+				id: session.id,
+				status: session.status,
 				title: session.title || session.input_text,
+				inputText: session.input_text,
 			})),
 	];
 }

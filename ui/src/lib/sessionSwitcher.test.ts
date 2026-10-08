@@ -31,6 +31,8 @@ describe('buildSessionSwitcherOptions', () => {
 			id: 'ses-old',
 			status: 'completed',
 			title: '旧绘画会话',
+			inputText: '旧绘画会话',
 		});
+		expect(options[1]).not.toHaveProperty('input_text');
 	});
 });

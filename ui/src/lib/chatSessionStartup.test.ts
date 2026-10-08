@@ -132,6 +132,22 @@ afterEach(() => {
 });
 
 describe('createChatSessionStartup', () => {
+	it('projects runtime session rows into the reducer renderer shape', async () => {
+		const harness = createHarness({ listRuntimeSessions: async () => list(SESSION_ID) });
+
+		await harness.startup.loadSessions();
+
+		expect(harness.reducer.snapshot().sessions).toEqual([
+			{
+				id: SESSION_ID,
+				status: 'paused',
+				input: '',
+				title: null,
+				waitingReason: 'user_input',
+			},
+		]);
+	});
+
 	it('waits for session-list selection before auto-restore and preserves restore order', async () => {
 		const errorResume = resume('error');
 		const sessionsResponse = deferred<RuntimeSessionListResponse>();

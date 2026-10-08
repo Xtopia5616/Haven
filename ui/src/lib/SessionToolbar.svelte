@@ -194,7 +194,11 @@
 									<Icon name="chevronLeft" size={16} />
 									<span class="session-menu-item-main">
 										<span class="session-menu-item-title">返回父会话</span>
-										<span class="session-menu-item-status">{parentSession.title || parentSession.input_text || '未命名会话'}</span>
+										<span class="session-menu-item-status"
+											>{parentSession.title ||
+												parentSession.inputText ||
+												'未命名会话'}</span
+										>
 									</span>
 								{/snippet}
 							</MenuItem>
@@ -208,8 +212,14 @@
 								{#snippet children()}
 									<Icon name="chevronRight" size={16} />
 									<span class="session-menu-item-main">
-										<span class="session-menu-item-title">{child.title || child.input_text || '未命名子会话'}</span>
-										<span class="session-menu-item-status">Agent 子会话 · {sessionStatusLabel(child)}</span>
+										<span class="session-menu-item-title"
+											>{child.title ||
+												child.inputText ||
+												'未命名子会话'}</span
+										>
+										<span class="session-menu-item-status"
+											>Agent 子会话 · {sessionStatusLabel(child)}</span
+										>
 									</span>
 								{/snippet}
 							</MenuItem>
