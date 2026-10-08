@@ -433,11 +433,13 @@ function validBuiltinRendererData(renderer: string, data: JsonRecord): boolean {
 		case 'admin':
 			return validAdminData(data);
 		case 'http':
-			return hasValidOptionalFields(data, {
-				status: isFiniteNumber,
-				truncated: isBoolean,
-				body: isString,
-			});
+			return (
+				isFiniteNumber(data.status) &&
+				hasValidOptionalFields(data, {
+					truncated: isBoolean,
+					body: isString,
+				})
+			);
 		case 'web_search':
 			return (
 				hasValidOptionalFields(data, { label: isString }) &&

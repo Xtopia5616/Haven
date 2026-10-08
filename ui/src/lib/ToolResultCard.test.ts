@@ -13,6 +13,7 @@ import {
 import { getToolResultRenderer } from './toolResultRenderers.ts';
 import ToolFileResult from './ToolFileResult.svelte';
 import ToolFileSearchResult from './ToolFileSearchResult.svelte';
+import ToolHttpResult from './ToolHttpResult.svelte';
 import ToolInputResult from './ToolInputResult.svelte';
 import ToolJsonResult from './ToolJsonResult.svelte';
 import ToolMediaResult from './ToolMediaResult.svelte';
@@ -271,6 +272,8 @@ describe('operation view UI contract', () => {
 				data: { sessions: [{ id: 'ses-1', status: 'future' }] },
 			},
 			{ renderer: 'http', data: { status: '200' } },
+			{ renderer: 'http', data: {} },
+			{ renderer: 'http', data: { status: null } },
 			{ renderer: 'http', data: { status: 200, body: { unexpected: true } } },
 			{ renderer: 'web_search', data: { results: [null] } },
 			{ renderer: 'web_search', data: { queries: null } },
@@ -301,6 +304,14 @@ describe('operation view UI contract', () => {
 	});
 
 	it('keeps valid builtin shapes specialized and unknown extension renderers open', () => {
+		expect(
+			getToolResultRenderer(
+				'custom',
+				'http',
+				{ status: 200, truncated: null, body: null },
+				'http',
+			),
+		).toBe(ToolHttpResult);
 		expect(
 			getToolResultRenderer(
 				'custom',
