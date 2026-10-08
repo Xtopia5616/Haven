@@ -204,6 +204,8 @@
 
 **共享 MaterialTabs 的路由 ID 复核（2026-10-08）：** Settings 页签 ID 从 `SETTINGS_SECTIONS` 派生；原始 `string` callback 入口现在先经该 source guard，再写入已收窄的 active/visited state。Tools 页签以 `TOOL_TAB_IDS` tuple 派生 union、runtime guard 与 options，穷尽标签表检查 UI 文案；共用组件仍接受动态 `NavigationTab`，两页有效顺序及交互不变（ADR 0749）。
 
+**Memory result props 与 nested validator 复核（2026-10-08）：** `ToolMemoryResult` 的 fact confidence 与 recall score 只在嵌套 validator 验证有限数值后进入组件；props 和 `scoreLabel` 现使用相同数值约束，`null` 保持为缺省值。畸形数值字符串仍在 registry 回退到原始 JSON，不再依赖 `Number()` 静默转换（ADR 0750）。
+
 #### 首轮全仓符号扫描与候选分流
 
 | 范围 | 证据与调用边界 | 当前分类 / 下一步 |

@@ -217,7 +217,9 @@ describe('operation view UI contract', () => {
 			{ renderer: 'web_search', data: { results: [null] } },
 			{ renderer: 'web_search', data: { queries: null } },
 			{ renderer: 'memory', data: { facts: [null] } },
+			{ renderer: 'memory', data: { facts: [{ confidence: '0.75' }] } },
 			{ renderer: 'memory', data: { hits: null } },
+			{ renderer: 'memory', data: { hits: [{ score: '0.9' }] } },
 		];
 
 		for (const { renderer, data } of malformedResults) {

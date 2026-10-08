@@ -7,14 +7,14 @@
 		subject?: string;
 		predicate?: string;
 		object?: string;
-		confidence?: unknown;
+		confidence?: number | null;
 		tags?: string[];
 		source_snippet?: string;
 	};
 	type MemoryHit = {
 		entity_id?: string;
 		text?: string;
-		score?: unknown;
+		score?: number | null;
 		model?: string;
 	};
 
@@ -33,9 +33,8 @@
 	let facts = $derived(data.facts ?? []);
 	let hits = $derived(data.hits ?? []);
 
-	function scoreLabel(value: unknown): string {
-		const score = Number(value);
-		return Number.isFinite(score) ? score.toFixed(2) : '—';
+	function scoreLabel(value: number): string {
+		return Number.isFinite(value) ? value.toFixed(2) : '—';
 	}
 </script>
 
@@ -74,7 +73,9 @@
 		<p class="tool-result-message tool-result-message--compact">没有找到记忆事实</p>
 	{/if}
 {:else if Array.isArray(data.hits)}
-	<div class="tool-result-label">{hits.length} 条召回结果{data.mode ? ` · ${data.mode}` : ''}</div>
+	<div class="tool-result-label">
+		{hits.length} 条召回结果{data.mode ? ` · ${data.mode}` : ''}
+	</div>
 	{#if hits.length > 0}
 		<ToolResultList items={hits}>
 			{#snippet children(visibleHits)}
@@ -106,7 +107,9 @@
 		<span class="memory-badge">已删除</span><span>{data.deleted ?? 0} 条事实</span>
 	</div>
 {:else}
-	<div class="tool-result-meta tool-result-meta--memory">记忆操作：{data.operation || '结果'}</div>
+	<div class="tool-result-meta tool-result-meta--memory">
+		记忆操作：{data.operation || '结果'}
+	</div>
 	<JsonView value={data} defaultDepth={1} />
 {/if}
 
