@@ -12,9 +12,10 @@
 	import { dragScroll } from '$lib/dragScroll.ts';
 	import type { RecordingOverlayState } from '$lib/recordingOverlayController.ts';
 	import type { NavigationTabsProps } from '$lib/navigationTypes.ts';
+	import type { ThemeMode } from '$lib/themeStore.ts';
 
 	interface Props extends NavigationTabsProps {
-		theme?: string;
+		theme?: ThemeMode;
 		onToggleTheme?: () => void;
 		overlay?: RecordingOverlayState;
 		duration?: number;

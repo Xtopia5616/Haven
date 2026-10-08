@@ -1,6 +1,7 @@
 import { writable } from 'svelte/store';
 
-const VALID_THEMES = ['light', 'dark'];
+const VALID_THEMES = ['light', 'dark'] as const;
+export type ThemeMode = (typeof VALID_THEMES)[number];
 
 const CUSTOM_PREFIX = 'custom:';
 
@@ -38,15 +39,20 @@ function writeStorage(key: string, value: string) {
 	}
 }
 
-function detectInitialTheme(): string {
+function isThemeMode(value: unknown): value is ThemeMode {
+	return typeof value === 'string' && VALID_THEMES.some((theme) => theme === value);
+}
+
+function detectInitialTheme(): ThemeMode {
 	const stored = readStorage(THEME_KEY);
-	if (stored && VALID_THEMES.includes(stored)) return stored;
+	if (isThemeMode(stored)) return stored;
 	if (typeof document === 'undefined') return 'dark';
 	const el = document.documentElement;
 	const existing = el.getAttribute('data-theme');
-	if (existing && VALID_THEMES.includes(existing)) return existing;
+	if (isThemeMode(existing)) return existing;
 	const prefersDark =
-		typeof window.matchMedia === 'function' && window.matchMedia('(prefers-color-scheme: dark)').matches;
+		typeof window.matchMedia === 'function' &&
+		window.matchMedia('(prefers-color-scheme: dark)').matches;
 	return prefersDark ? 'dark' : 'light';
 }
 
@@ -83,7 +89,9 @@ function mixHex(foreground: string, background: string, foregroundWeight: number
 }
 
 function relativeLuminance(hex: string): number {
-	const channels = [1, 3, 5].map((offset) => Number.parseInt(hex.slice(offset, offset + 2), 16) / 255);
+	const channels = [1, 3, 5].map(
+		(offset) => Number.parseInt(hex.slice(offset, offset + 2), 16) / 255,
+	);
 	const linear = channels.map((channel) =>
 		channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4,
 	);
@@ -97,7 +105,7 @@ function contrastingText(hex: string): string {
 	return blackContrast >= whiteContrast ? '#000000' : '#ffffff';
 }
 
-function applyAccentContrast(accent: string, theme: string) {
+function applyAccentContrast(accent: string, theme: ThemeMode) {
 	if (typeof document === 'undefined') return;
 	const root = document.documentElement;
 	const accentHex = resolveAccentHex(accent);
@@ -106,9 +114,7 @@ function applyAccentContrast(accent: string, theme: string) {
 	const secondary = dark
 		? mixHex(accentHex, '#bec6dc', 0.42)
 		: mixHex(accentHex, '#545f70', 0.68);
-	const tertiary = dark
-		? mixHex(accentHex, '#e7b9d1', 0.5)
-		: mixHex(accentHex, '#735b6c', 0.6);
+	const tertiary = dark ? mixHex(accentHex, '#e7b9d1', 0.5) : mixHex(accentHex, '#735b6c', 0.6);
 	const primaryContainer = dark
 		? mixHex(accentHex, '#222631', 0.22)
 		: mixHex(accentHex, '#ffffff', 0.2);
@@ -122,11 +128,14 @@ function applyAccentContrast(accent: string, theme: string) {
 	root.style.setProperty('--md-accent-on-secondary', contrastingText(secondary));
 	root.style.setProperty('--md-accent-on-tertiary', contrastingText(tertiary));
 	root.style.setProperty('--md-accent-on-primary-container', contrastingText(primaryContainer));
-	root.style.setProperty('--md-accent-on-secondary-container', contrastingText(secondaryContainer));
+	root.style.setProperty(
+		'--md-accent-on-secondary-container',
+		contrastingText(secondaryContainer),
+	);
 	root.style.setProperty('--md-accent-on-tertiary-container', contrastingText(tertiaryContainer));
 }
 
-function applyTheme(theme: string) {
+function applyTheme(theme: ThemeMode) {
 	if (typeof document === 'undefined') return;
 	document.documentElement.setAttribute('data-theme', theme);
 	applyAccentContrast(currentAccent, theme);
@@ -148,13 +157,23 @@ function createStore() {
 	const { subscribe, set } = writable({ theme: currentTheme, accent: currentAccent });
 	return {
 		subscribe,
-		get currentTheme() { return currentTheme; },
-		get currentAccent() { return currentAccent; },
-		get accentColor() { return resolveAccentHex(currentAccent); },
-		get presets() { return ACCENT_PRESETS; },
-		get isPreset() { return !!ACCENT_PRESETS[currentAccent]; },
-		setTheme(theme: string) {
-			if (!VALID_THEMES.includes(theme)) return;
+		get currentTheme() {
+			return currentTheme;
+		},
+		get currentAccent() {
+			return currentAccent;
+		},
+		get accentColor() {
+			return resolveAccentHex(currentAccent);
+		},
+		get presets() {
+			return ACCENT_PRESETS;
+		},
+		get isPreset() {
+			return !!ACCENT_PRESETS[currentAccent];
+		},
+		setTheme(theme: ThemeMode) {
+			if (!isThemeMode(theme)) return;
 			currentTheme = theme;
 			applyTheme(theme);
 			writeStorage(THEME_KEY, theme);

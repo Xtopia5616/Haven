@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { get } from 'svelte/store';
+import type { ThemeMode } from './themeStore.ts';
 
 async function loadThemeStore() {
 	vi.resetModules();
@@ -73,7 +74,7 @@ describe('themeStore', () => {
 
 	it('ignores invalid themes', async () => {
 		const { themeStore } = await loadThemeStore();
-		themeStore.setTheme('sepia');
+		themeStore.setTheme('sepia' as unknown as ThemeMode);
 		expect(themeStore.currentTheme).toBe('dark');
 	});
 
@@ -112,9 +113,15 @@ describe('themeStore', () => {
 	it('updates accent contrast tokens for custom colors and both themes', async () => {
 		const { themeStore } = await loadThemeStore();
 		themeStore.setAccent('#ffff00');
-		expect(document.documentElement.style.getPropertyValue('--md-accent-on-primary')).toBe('#000000');
-		expect(document.documentElement.style.getPropertyValue('--md-accent-on-secondary')).toBe('#000000');
-		expect(document.documentElement.style.getPropertyValue('--md-accent-on-tertiary')).toBe('#000000');
+		expect(document.documentElement.style.getPropertyValue('--md-accent-on-primary')).toBe(
+			'#000000',
+		);
+		expect(document.documentElement.style.getPropertyValue('--md-accent-on-secondary')).toBe(
+			'#000000',
+		);
+		expect(document.documentElement.style.getPropertyValue('--md-accent-on-tertiary')).toBe(
+			'#000000',
+		);
 		expect(
 			document.documentElement.style.getPropertyValue('--md-accent-on-primary-container'),
 		).toBe('#ffffff');
