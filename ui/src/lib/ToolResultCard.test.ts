@@ -211,6 +211,7 @@ describe('operation view UI contract', () => {
 			{ renderer: 'files', data: { symbols: [{ name: 42 }] } },
 			{ renderer: 'files', data: { media: [] } },
 			{ renderer: 'media', data: { media: { available_representations: [null] } } },
+			{ renderer: 'media', data: { media: { filename: 42 } } },
 			{ renderer: 'media', data: { representation: 'unknown_representation' } },
 			{ renderer: 'media', data: { operation: 'future-operation' } },
 			{ renderer: 'media', data: { modality: 'archive' } },
@@ -235,6 +236,7 @@ describe('operation view UI contract', () => {
 			{ renderer: 'input', data: { operation: 'click', button: 'primary' } },
 			{ renderer: 'input', data: { operation: 'type', typed: 42 } },
 			{ renderer: 'window', data: { elements: [null] } },
+			{ renderer: 'window', data: { windows: [{ title: 42 }] } },
 			{ renderer: 'window', data: { operation: 'restart' } },
 			{ renderer: 'window', data: { operation: 'wait', condition: 'visible' } },
 			{ renderer: 'window', data: { operation: 'screenshot', format: 'jpeg' } },
@@ -312,6 +314,65 @@ describe('operation view UI contract', () => {
 	});
 
 	it('keeps valid builtin shapes specialized and unknown extension renderers open', () => {
+		expect(
+			getToolResultRenderer(
+				'custom',
+				'media',
+				{
+					operation: 'inspect',
+					media: {
+						asset_id: null,
+						filename: null,
+						representation: null,
+						recommended_next: null,
+						content: { opaque: true },
+					},
+					asset_id: null,
+					duration_ms: null,
+					available: null,
+					reason: null,
+					error: null,
+					capture_error: null,
+					transcript: null,
+					played: null,
+					characters: null,
+					volume: null,
+					muted: null,
+					modality: null,
+					file_kind: null,
+				},
+				'media',
+			),
+		).toBe(ToolMediaResult);
+		expect(
+			getToolResultRenderer(
+				'custom',
+				'window',
+				{
+					media: { asset_id: null, content: { opaque: true } },
+					windows: [{ hwnd: null, title: null, pid: null }],
+					elements: [{ name: null, control_type: null }],
+					count: null,
+					available: null,
+					note: null,
+					operation: 'wait',
+					title: null,
+					pid: null,
+					focused: null,
+					closed: null,
+					width: null,
+					height: null,
+					format: null,
+					success: null,
+					reason: null,
+					matched: null,
+					timed_out: null,
+					condition: null,
+					text: null,
+				},
+				'window',
+			),
+		).toBe(ToolWindowResult);
 		expect(
 			getToolResultRenderer(
 				'custom',

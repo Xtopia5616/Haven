@@ -212,6 +212,8 @@
 
 **Files/Input renderer Props nullability 复核（2026-10-08）：** Files optional root scalars 与 outline row line/name、Input scalar fields 的 Props 现匹配 optional-field guard 接受的 null-as-absent；坐标 tuple 与数组容器保持严格结构验证（ADR 0787）。
 
+**Media/Window renderer nested Props 复核（2026-10-08）：** root/object/row optional fields 已表达 guard 接受的 null-as-absent；Media content 继续以 unknown 传递，representation、UIA discriminator 和 array item 仍严格验证（ADR 0788）。
+
 **MemoryView 页签 ID 复核（2026-10-08）：** Memory 的 `sessions`、`tasks`、`memory` 曾分别出现在 union、URL guard 清单和 MaterialTabs options 中。现在 `MEMORY_TAB_IDS` tuple 是 ID 唯一来源，`MemoryTabId` 从中派生，选项按 tuple 顺序映射穷尽标签表；URL 校验和呈现值因此不会独立漂移，路由参数与可见顺序不变（ADR 0748）。
 
 **共享 MaterialTabs 的路由 ID 复核（2026-10-08）：** Settings 页签 ID 从 `SETTINGS_SECTIONS` 派生；原始 `string` callback 入口现在先经该 source guard，再写入已收窄的 active/visited state。Tools 页签以 `TOOL_TAB_IDS` tuple 派生 union、runtime guard 与 options，穷尽标签表检查 UI 文案；共用组件仍接受动态 `NavigationTab`，两页有效顺序及交互不变（ADR 0749）。

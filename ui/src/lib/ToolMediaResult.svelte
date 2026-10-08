@@ -11,27 +11,27 @@
 		data?: {
 			operation?: ToolMediaOperation | null;
 			media?: {
-				asset_id?: string;
-				filename?: string;
+				asset_id?: string | null;
+				filename?: string | null;
 				representation?: MediaRepresentationKind | null;
 				available_representations?: MediaRepresentationKind[];
-				recommended_next?: string;
+				recommended_next?: string | null;
 				content?: unknown;
-			};
-			asset_id?: string;
+			} | null;
+			asset_id?: string | null;
 			representation?: MediaRepresentationKind | null;
-			duration_ms?: number;
-			available?: boolean;
-			reason?: string;
-			error?: string;
-			capture_error?: boolean;
-			transcript?: string;
-			played?: boolean;
-			characters?: number;
-			volume?: number;
-			muted?: boolean;
-			modality?: ToolMediaModality;
-			file_kind?: ToolMediaFileKind;
+			duration_ms?: number | null;
+			available?: boolean | null;
+			reason?: string | null;
+			error?: string | null;
+			capture_error?: boolean | null;
+			transcript?: string | null;
+			played?: boolean | null;
+			characters?: number | null;
+			volume?: number | null;
+			muted?: boolean | null;
+			modality?: ToolMediaModality | null;
+			file_kind?: ToolMediaFileKind | null;
 		};
 	}
 

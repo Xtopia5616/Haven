@@ -10,27 +10,34 @@
 
 	interface Props {
 		data?: {
-			media?: { asset_id?: string; content?: unknown };
-			asset_id?: string;
-			windows?: Array<{ hwnd?: number | string; title?: string; pid?: number }>;
-			elements?: Array<{ name?: string; control_type?: ToolWindowControlType | null }>;
-			count?: number;
-			available?: boolean;
-			note?: string;
+			media?: { asset_id?: string | null; content?: unknown } | null;
+			asset_id?: string | null;
+			windows?: Array<{
+				hwnd?: number | string | null;
+				title?: string | null;
+				pid?: number | null;
+			}>;
+			elements?: Array<{
+				name?: string | null;
+				control_type?: ToolWindowControlType | null;
+			}>;
+			count?: number | null;
+			available?: boolean | null;
+			note?: string | null;
 			operation?: ToolWindowOperation | null;
-			title?: string;
-			pid?: number;
-			focused?: string;
-			closed?: string;
-			width?: number;
-			height?: number;
+			title?: string | null;
+			pid?: number | null;
+			focused?: string | null;
+			closed?: string | null;
+			width?: number | null;
+			height?: number | null;
 			format?: ToolWindowFormat | null;
-			success?: boolean;
-			reason?: string;
-			matched?: boolean;
-			timed_out?: boolean;
+			success?: boolean | null;
+			reason?: string | null;
+			matched?: boolean | null;
+			timed_out?: boolean | null;
 			condition?: ToolWindowWaitCondition | null;
-			text?: string;
+			text?: string | null;
 		};
 	}
 
