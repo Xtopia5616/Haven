@@ -229,7 +229,7 @@
 <style>
 	.provider-toolbar {
 		display: flex;
-		flex-wrap: wrap;
+		flex-wrap: nowrap;
 		align-items: center;
 		justify-content: space-between;
 		gap: var(--md-sys-space-lg);
@@ -261,17 +261,17 @@
 	}
 	.provider-toolbar-actions {
 		display: flex;
-		flex-wrap: wrap;
+		flex-wrap: nowrap;
 		align-items: center;
 		gap: var(--md-sys-space-sm);
 		flex: 0 1 auto;
 		min-width: 0;
 		max-width: 100%;
+		transform: translateX(calc(0px - var(--md-sys-space-2xl)));
 	}
-	@container settings-content (min-width: 701px) {
-		.provider-toolbar-actions :global(.md-btn:last-child) {
-			margin-right: var(--md-sys-space-lg);
-		}
+	.provider-toolbar-actions :global(.md-btn:last-child) {
+		flex-shrink: 0;
+		white-space: nowrap;
 	}
 	.providers-list {
 		display: flex;
@@ -415,14 +415,6 @@
 		}
 	}
 	@container settings-content (max-width: 455px) {
-		.provider-toolbar-actions {
-			align-items: stretch;
-			flex-direction: column-reverse;
-		}
-		.provider-toolbar-actions :global(.md-btn),
-		.provider-toolbar-actions :global(.refresh-btn) {
-			width: 100%;
-		}
 		.provider-card,
 		.provider-models-section,
 		.unbound-section {
