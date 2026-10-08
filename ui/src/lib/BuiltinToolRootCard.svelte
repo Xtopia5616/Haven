@@ -6,6 +6,7 @@
 	import MaterialIconButton from '$lib/MaterialIconButton.svelte';
 	import Icon from '$lib/Icon.svelte';
 	import { copyText } from '$lib/clipboard.ts';
+	import type { ContextMenuItem } from '$lib/contextMenu.ts';
 	import type {
 		BuiltinToolEntry,
 		BuiltinToolRootCard as BuiltinToolRootCardModel,
@@ -54,7 +55,7 @@
 		copyText(JSON.stringify(schema, null, 2), '根能力 Schema');
 	}
 
-	let contextMenuItems = $derived([
+	let contextMenuItems: ContextMenuItem[] = $derived([
 		{
 			id: 'copyName',
 			label: '复制名称',

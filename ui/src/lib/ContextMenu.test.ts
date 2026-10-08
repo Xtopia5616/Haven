@@ -1,8 +1,9 @@
 import { describe, it, expect, vi } from 'vitest';
 import { render, fireEvent, waitFor } from '@testing-library/svelte';
 import ContextMenu from './ContextMenu.svelte';
+import type { ContextMenuItem } from './contextMenu.ts';
 
-function baseItems() {
+function baseItems(): ContextMenuItem[] {
 	return [
 		{ id: 'a', label: '打开', icon: 'open', action: vi.fn() },
 		{ id: 'b', label: '删除', icon: 'delete', danger: true, action: vi.fn() },

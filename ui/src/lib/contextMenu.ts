@@ -1,9 +1,10 @@
 import { writable } from 'svelte/store';
+import type { IconName } from './icons.ts';
 
 export type ContextMenuItem = {
 	id?: string;
 	label?: string;
-	icon?: string;
+	icon?: IconName;
 	danger?: boolean;
 	disabled?: boolean;
 	separator?: boolean;

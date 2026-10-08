@@ -38,13 +38,13 @@
 						? {
 								id: 'disable',
 								label: '禁用',
-								icon: 'power',
+								icon: 'power' as const,
 								action: () => onToggle?.(skill.name, false),
 							}
 						: {
 								id: 'enable',
 								label: '启用',
-								icon: 'power',
+								icon: 'power' as const,
 								action: () => onToggle?.(skill.name, true),
 							},
 				]

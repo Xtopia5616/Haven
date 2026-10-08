@@ -2,6 +2,7 @@
 	import StatusBadge from '$lib/StatusBadge.svelte';
 	import ExpandableContextCard from '$lib/ExpandableContextCard.svelte';
 	import { copyText } from '$lib/clipboard.ts';
+	import type { ContextMenuItem } from '$lib/contextMenu.ts';
 	import BuiltinToolRootCard from '$lib/BuiltinToolRootCard.svelte';
 	import type {
 		BuiltinToolCard as BuiltinToolCardModel,
@@ -28,7 +29,7 @@
 		copyText(JSON.stringify(schema, null, 2), '能力族 Schema');
 	}
 
-	let contextMenuItems = $derived([
+	let contextMenuItems: ContextMenuItem[] = $derived([
 		{
 			id: 'copyName',
 			label: '复制名称',
