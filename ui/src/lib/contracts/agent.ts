@@ -3,6 +3,10 @@
 import type {
 	AgentNotificationKind,
 	LlmCallKind,
+	MediaInputStrategy,
+	MediaPlanNoticeCode,
+	MediaProjectionMode,
+	MediaRepresentationKind,
 	OperationIdempotency,
 	RequestKind,
 	ToolErrorClass,
@@ -16,7 +20,12 @@ import {
 	AGENT_EVENT_NAMES,
 	AGENT_NOTIFICATION_KIND_VALUES,
 	LLM_CALL_KIND_VALUES,
+	MEDIA_INPUT_STRATEGY_VALUES,
+	MEDIA_PLAN_NOTICE_CODE_VALUES,
+	MEDIA_PROJECTION_MODE_VALUES,
+	MEDIA_REPRESENTATION_KIND_VALUES,
 	OPERATION_IDEMPOTENCY_VALUES,
+	REQUEST_KIND_VALUES,
 	TOOL_ERROR_CLASS_VALUES,
 	TOOL_EXECUTION_OUTCOME_VALUES,
 	TOOL_OPERATION_SCOPE_VALUES,
@@ -103,13 +112,13 @@ export interface AgentMediaPlanPayload {
 	runId: number;
 	/** RequestKind string under the established `role` wire field. */
 	role: RequestKind;
-	strategy: string;
+	strategy: MediaInputStrategy;
 	projections: Array<{
 		assetId: string;
-		representation: string;
-		mode: string;
+		representation: MediaRepresentationKind;
+		mode: MediaProjectionMode;
 	}>;
-	notices: Array<{ assetId: string; code: string }>;
+	notices: Array<{ assetId: string; code: MediaPlanNoticeCode }>;
 	eventSeq?: number;
 }
 
@@ -539,21 +548,22 @@ export function mapAgentEvent(
 			const sessionId = requiredSessionId(payload);
 			const stepNumber = requiredNumber(payload, 'step_number');
 			const runId = requiredNumber(payload, 'run_id');
-			const role = requiredString(payload, 'role');
-			const strategy = requiredString(payload, 'strategy');
+			const role = payload.role;
+			const strategy = payload.strategy;
 			const projections =
 				Array.isArray(payload.projections) &&
 				payload.projections.every(
 					(item) =>
 						isRecord(item) &&
 						typeof item.asset_id === 'string' &&
-						typeof item.representation === 'string' &&
-						typeof item.mode === 'string',
+						isOneOf(item.representation, MEDIA_REPRESENTATION_KIND_VALUES) &&
+						isOneOf(item.mode, MEDIA_PROJECTION_MODE_VALUES),
 				)
 					? payload.projections.map((item) => ({
 							assetId: (item as WireRecord).asset_id as string,
-							representation: (item as WireRecord).representation as string,
-							mode: (item as WireRecord).mode as string,
+							representation: (item as WireRecord)
+								.representation as MediaRepresentationKind,
+							mode: (item as WireRecord).mode as MediaProjectionMode,
 						}))
 					: null;
 			const notices =
@@ -562,19 +572,19 @@ export function mapAgentEvent(
 					(item) =>
 						isRecord(item) &&
 						typeof item.asset_id === 'string' &&
-						typeof item.code === 'string',
+						isOneOf(item.code, MEDIA_PLAN_NOTICE_CODE_VALUES),
 				)
 					? payload.notices.map((item) => ({
 							assetId: (item as WireRecord).asset_id as string,
-							code: (item as WireRecord).code as string,
+							code: (item as WireRecord).code as MediaPlanNoticeCode,
 						}))
 					: null;
 			if (
 				sessionId === null ||
 				stepNumber === null ||
 				runId === null ||
-				role === null ||
-				strategy === null ||
+				!isOneOf(role, REQUEST_KIND_VALUES) ||
+				!isOneOf(strategy, MEDIA_INPUT_STRATEGY_VALUES) ||
 				projections === null ||
 				notices === null ||
 				!optionalNumberIsValid(payload, 'event_seq')
@@ -586,7 +596,7 @@ export function mapAgentEvent(
 					sessionId,
 					stepNumber,
 					runId,
-					role: role as RequestKind,
+					role,
 					strategy,
 					projections,
 					notices,

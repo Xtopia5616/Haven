@@ -205,6 +205,10 @@ export const MEDIA_INPUT_STRATEGY_INPUT_VALUES = ['auto', 'raw_preferred', 'extr
 export type MediaInputStrategyInput = (typeof MEDIA_INPUT_STRATEGY_INPUT_VALUES)[number];
 export const MEDIA_INPUT_STRATEGY_VALUES = ['auto', 'raw_preferred', 'extracted_preferred', 'text_only_safe'] as const;
 export type MediaInputStrategy = (typeof MEDIA_INPUT_STRATEGY_VALUES)[number];
+export const MEDIA_PLAN_NOTICE_CODE_VALUES = ['raw_capability_unsupported', 'raw_capability_unknown', 'raw_mime_unsupported', 'raw_size_exceeded', 'derived_fallback', 'managed_reference_fallback', 'strategy_excluded', 'input_part_limit', 'no_compatible_representation'] as const;
+export type MediaPlanNoticeCode = (typeof MEDIA_PLAN_NOTICE_CODE_VALUES)[number];
+export const MEDIA_PROJECTION_MODE_VALUES = ['raw', 'derived', 'managed_reference'] as const;
+export type MediaProjectionMode = (typeof MEDIA_PROJECTION_MODE_VALUES)[number];
 export type MediaProvenanceInput = { kind: 'original' } | { kind: 'derived'; operation: MediaDerivationInput; provider?: string | null; source_kind?: MediaRepresentationKindInput | null };
 export type MediaProvenance = { kind: 'original' } | { kind: 'derived'; operation: MediaDerivation; provider?: string | null; source_kind?: MediaRepresentationKind | null };
 export interface MediaRepresentationInput { representation: MediaRepresentationKindInput; provenance: MediaProvenanceInput; confidence?: number | null; cost?: MediaRepresentationCostInput | null; availability: MediaRepresentationAvailabilityInput; payload: MediaRepresentationPayloadInput }

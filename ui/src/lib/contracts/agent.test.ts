@@ -180,47 +180,57 @@ describe('agent IPC contract', () => {
 		});
 	});
 
-	it('keeps future enum strings and drops unknown additive fields', () => {
-		const event = mapAgentEvent({
-			event: 'agent:media_plan',
-			id: 8,
-			payload: {
-				session_id: 'ses-1',
-				step_number: 4,
-				run_id: 8,
-				role: 'future_request_kind',
-				strategy: 'future_strategy',
-				projections: [
-					{
-						asset_id: 'asset-1',
-						representation: 'future_representation',
-						mode: 'future_mode',
-						provenance: 'added-wire-field',
-					},
-				],
-				notices: [{ asset_id: 'asset-1', code: 'future_notice', added: true }],
-				event_seq: 9,
-				added_wire_field: 'ignored',
-			},
-		});
-
-		expect(event).not.toBeNull();
-		expect(event?.payload).toEqual({
-			sessionId: 'ses-1',
-			stepNumber: 4,
-			runId: 8,
-			role: 'future_request_kind',
-			strategy: 'future_strategy',
+	it('rejects unknown closed media-plan enum values but ignores additive fields', () => {
+		const payload = {
+			session_id: 'ses-1',
+			step_number: 4,
+			run_id: 8,
+			role: 'vision',
+			strategy: 'auto',
 			projections: [
 				{
-					assetId: 'asset-1',
-					representation: 'future_representation',
-					mode: 'future_mode',
+					asset_id: 'asset-1',
+					representation: 'ocr_text',
+					mode: 'derived',
+					provenance: 'added-wire-field',
 				},
 			],
-			notices: [{ assetId: 'asset-1', code: 'future_notice' }],
+			notices: [{ asset_id: 'asset-1', code: 'raw_capability_unknown', added: true }],
+			event_seq: 9,
+			added_wire_field: 'ignored',
+		};
+		const event = mapAgentEvent({ event: 'agent:media_plan', id: 8, payload });
+
+		expect(event?.payload).toMatchObject({
+			role: 'vision',
+			strategy: 'auto',
+			projections: [{ representation: 'ocr_text', mode: 'derived' }],
+			notices: [{ code: 'raw_capability_unknown' }],
 			eventSeq: 9,
 		});
+		expect(event?.payload).not.toHaveProperty('added_wire_field');
+
+		const invalidPayloads = [
+			{ ...payload, role: 'future_request_kind' },
+			{ ...payload, strategy: 'future_strategy' },
+			{
+				...payload,
+				projections: [
+					{ ...payload.projections[0], representation: 'future_representation' },
+				],
+			},
+			{ ...payload, projections: [{ ...payload.projections[0], mode: 'future_mode' }] },
+			{ ...payload, notices: [{ ...payload.notices[0], code: 'future_notice' }] },
+		];
+		for (const invalidPayload of invalidPayloads) {
+			expect(
+				mapAgentEventContract({
+					event: 'agent:media_plan',
+					id: 9,
+					payload: invalidPayload,
+				}),
+			).toBeNull();
+		}
 	});
 
 	it('maps the canonical result envelope and event sequence for ordered tool observations', () => {
@@ -355,13 +365,19 @@ describe('agent IPC contract', () => {
 		expect(
 			mapAgentEventContract({ event: 'agent:observation', id: 8, payload: withoutRenderer }),
 		).toBeNull();
-		expect(mapAgentEventContract({ event: 'agent:observation', id: 8, payload })).not.toBeNull();
+		expect(
+			mapAgentEventContract({ event: 'agent:observation', id: 8, payload }),
+		).not.toBeNull();
 		const unknownRetrySafety = {
 			...payload,
 			result: { ...payload.result, retry_safety: 'future_retry_safety' },
 		};
 		expect(
-			mapAgentEventContract({ event: 'agent:observation', id: 8, payload: unknownRetrySafety }),
+			mapAgentEventContract({
+				event: 'agent:observation',
+				id: 8,
+				payload: unknownRetrySafety,
+			}),
 		).toBeNull();
 		for (const [field, value] of [
 			['idempotency', 'future_idempotency'],
