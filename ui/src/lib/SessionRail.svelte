@@ -184,12 +184,8 @@
 	.session-rail__item:hover {
 		background: var(--md-sys-color-surface-container);
 	}
-	.session-rail__item:focus-visible {
-		outline: 2px solid var(--md-sys-color-primary);
-		outline-offset: 1px;
-	}
 	.session-rail__item.selected {
-		border-color: color-mix(in srgb, var(--md-sys-color-primary) 24%, transparent);
+		border-color: var(--md-sys-selection-outline-color);
 		background: color-mix(
 			in srgb,
 			var(--md-sys-color-primary-container) 72%,

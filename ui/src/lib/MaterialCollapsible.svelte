@@ -96,15 +96,10 @@
 		text-align: left;
 	}
 	.md-collapsible-header:focus-visible {
-		outline: 2px solid var(--md-sys-color-primary);
-		outline-offset: 2px;
 		border-radius: 4px;
 	}
 	.md-collapsible[data-variant='error'] .md-collapsible-header:hover {
 		color: var(--md-sys-color-error, #ba1a1a);
-	}
-	.md-collapsible[data-variant='error'] .md-collapsible-header:focus-visible {
-		outline-color: var(--md-sys-color-error, #ba1a1a);
 	}
 	.md-collapsible-caret {
 		display: inline-flex;

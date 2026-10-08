@@ -282,6 +282,9 @@
 	--md-sys-chat-max-width: 800px;
 	--md-sys-chat-surface-width: 100%;
 	--md-sys-focus-ring: 0 0 0 3px color-mix(in srgb, var(--md-sys-color-primary) 30%, transparent);
+	--md-sys-selection-outline-color: var(--md-sys-color-primary);
+	--md-sys-selection-outline-width: 2px;
+	--md-sys-selection-outline-offset: -2px;
 
 	/* ---------- Motion (expressive spring-like) ---------- */
 	--md-sys-motion-easing-standard: cubic-bezier(0.2, 0, 0, 1);
@@ -1154,6 +1157,21 @@ select.md-select {
 	background: var(--md-sys-color-primary-container);
 	box-shadow: var(--md-sys-elevation-2);
 	transform: translateY(-1px);
+}
+:where(
+	.md-choice-chip.selected,
+	.session-rail__item.selected,
+	.workspace-item-card.selected,
+	.policy-option.selected,
+	.token-stats.selected,
+	.accent-swatch-selected,
+	.accent-custom.accent-custom-selected
+):not(:focus-visible) {
+	outline: var(--md-sys-selection-outline-width) solid var(--md-sys-selection-outline-color);
+	outline-offset: var(--md-sys-selection-outline-offset);
+}
+:where(.accent-swatch-selected):not(:focus-visible) {
+	outline-color: var(--md-sys-color-on-primary);
 }
 .workspace-item-card:hover::after {
 	opacity: var(--md-sys-state-hover-opacity);

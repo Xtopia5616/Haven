@@ -154,10 +154,6 @@
 	.workspace-link:active {
 		transform: scale(0.985);
 	}
-	.workspace-link:focus-visible {
-		outline: 2px solid var(--md-sys-color-primary);
-		outline-offset: 2px;
-	}
 	.workspace-link.active {
 		border-color: transparent;
 		background: var(--md-sys-color-secondary-container);

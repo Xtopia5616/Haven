@@ -72,11 +72,6 @@
 		background: var(--md-sys-color-surface-container-highest);
 	}
 
-	.menu-item:focus-visible {
-		outline: 2px solid var(--md-sys-color-primary);
-		outline-offset: -2px;
-	}
-
 	.menu-item.selected {
 		background: var(--md-sys-color-secondary-container);
 		color: var(--md-sys-color-on-secondary-container);

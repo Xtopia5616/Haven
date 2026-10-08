@@ -72,11 +72,6 @@
 		opacity: var(--md-sys-state-hover-opacity);
 	}
 
-	.md-choice-chip:focus-visible {
-		outline: 2px solid var(--md-sys-color-primary);
-		outline-offset: 2px;
-	}
-
 	.md-choice-chip.selected {
 		border-color: var(--md-sys-color-primary);
 		background: var(--md-sys-color-primary-container);

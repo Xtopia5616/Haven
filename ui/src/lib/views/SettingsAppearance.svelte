@@ -164,10 +164,6 @@
 		max-width: var(--md-comp-settings-control-width);
 		flex-wrap: wrap;
 	}
-	:global(.md-btn.accent-swatch-selected) {
-		outline: 2px solid var(--md-sys-color-on-surface);
-		outline-offset: -2px;
-	}
 	.accent-custom {
 		position: relative;
 		display: inline-flex;
@@ -192,10 +188,12 @@
 		border-color: var(--md-sys-color-on-surface);
 		background: var(--md-sys-color-surface-container);
 	}
-	.accent-custom:focus-within,
-	.accent-custom.accent-custom-selected {
+	.accent-custom:focus-within {
 		border-color: var(--md-sys-color-primary);
 		box-shadow: inset 0 0 0 1px var(--md-sys-color-primary);
+	}
+	.accent-custom.accent-custom-selected {
+		border-color: var(--md-sys-selection-outline-color);
 	}
 	.accent-custom-preview {
 		width: 28px;
