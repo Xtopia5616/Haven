@@ -267,11 +267,15 @@
 		flex: 0 1 auto;
 		min-width: 0;
 		max-width: 100%;
-		transform: translateX(calc(0px - var(--md-sys-space-2xl)));
 	}
 	.provider-toolbar-actions :global(.md-btn:last-child) {
 		flex-shrink: 0;
 		white-space: nowrap;
+	}
+	@container settings-content (min-width: 701px) {
+		.provider-toolbar-actions {
+			transform: translateX(calc(0px - var(--md-sys-space-2xl)));
+		}
 	}
 	.providers-list {
 		display: flex;
@@ -401,6 +405,15 @@
 	@container settings-content (max-width: 700px) {
 		.provider-toolbar {
 			align-items: flex-start;
+			flex-direction: column;
+		}
+		.provider-toolbar-copy,
+		.provider-toolbar-actions {
+			width: 100%;
+		}
+		.provider-toolbar-actions {
+			flex-wrap: wrap;
+			justify-content: flex-end;
 		}
 		.provider-card {
 			grid-template-columns: minmax(0, 1fr);
@@ -410,6 +423,14 @@
 		}
 	}
 	@container settings-content (max-width: 455px) {
+		.provider-toolbar-actions {
+			align-items: stretch;
+			flex-direction: column-reverse;
+		}
+		.provider-toolbar-actions :global(.md-btn),
+		.provider-toolbar-actions :global(.refresh-btn) {
+			width: 100%;
+		}
 		.provider-card,
 		.provider-models-section,
 		.unbound-section {
