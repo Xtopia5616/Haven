@@ -393,7 +393,19 @@
 </script>
 
 <div class="tools-page">
-	<WorkspacePageHeader title="工具" description="管理 Haven 可调用的工具、MCP 服务与技能。" />
+	<WorkspacePageHeader title="工具" description="管理 Haven 可调用的工具、MCP 服务与技能。">
+		{#snippet children()}
+			{#if activeTab === 'builtin'}
+				<MaterialButton variant="outlined" label="重置熔断" onclick={resetToolCircuits} />
+			{:else if activeTab === 'mcp'}
+				<RefreshButton loading={mcpRefreshing} onclick={refreshMcpList} />
+				<MaterialButton variant="outlined" label="添加" onclick={openAddDialog} />
+			{:else}
+				<RefreshButton loading={skillsRefreshing} onclick={refreshSkills} />
+				<MaterialButton variant="outlined" label="打开技能文件夹" onclick={openFolder} />
+			{/if}
+		{/snippet}
+	</WorkspacePageHeader>
 
 	<div class="tools-workspace workspace-secondary-layout responsive-layout-transition">
 		<nav
@@ -459,17 +471,7 @@
 					<WorkspaceSectionHeader
 						title="内置工具"
 						description="Haven 自带的可调用能力；按能力族、根能力和具体操作三级收纳，可展开后分别启停。"
-					>
-						{#snippet children()}
-							<div class="toolbar-actions toolbar-actions--paired">
-								<MaterialButton
-									variant="outlined"
-									label="重置熔断"
-									onclick={resetToolCircuits}
-								/>
-							</div>
-						{/snippet}
-					</WorkspaceSectionHeader>
+					/>
 					{@render resourceToolbar()}
 					{#if builtinTools.length === 0}
 						<AsyncState
@@ -494,23 +496,7 @@
 					<WorkspaceSectionHeader
 						title="MCP 服务器"
 						description="连接外部工具服务，并查看当前连接状态。"
-					>
-						{#snippet children()}
-							<div class="toolbar-actions toolbar-actions--paired">
-								<RefreshButton
-									width="equal"
-									loading={mcpRefreshing}
-									onclick={refreshMcpList}
-								/>
-								<MaterialButton
-									variant="outlined"
-									width="equal"
-									label="添加"
-									onclick={openAddDialog}
-								/>
-							</div>
-						{/snippet}
-					</WorkspaceSectionHeader>
+					/>
 					{@render resourceToolbar()}
 					{#if mcpServers.length === 0}
 						<AsyncState
@@ -544,23 +530,7 @@
 					<WorkspaceSectionHeader
 						title="技能"
 						description="管理可被 Agent 调用的技能和执行脚本。"
-					>
-						{#snippet children()}
-							<div class="toolbar-actions toolbar-actions--paired">
-								<RefreshButton
-									width="equal"
-									loading={skillsRefreshing}
-									onclick={refreshSkills}
-								/>
-								<MaterialButton
-									variant="outlined"
-									width="equal"
-									label="打开"
-									onclick={openFolder}
-								/>
-							</div>
-						{/snippet}
-					</WorkspaceSectionHeader>
+					/>
 					{@render resourceToolbar()}
 					{#if skills.length === 0}
 						<AsyncState
@@ -632,14 +602,6 @@
 		grid-template-columns: repeat(auto-fit, minmax(min(100%, 360px), 1fr));
 		gap: var(--md-sys-space-sm);
 	}
-	.toolbar-actions {
-		display: flex;
-		flex-wrap: wrap;
-		gap: var(--md-sys-space-sm);
-	}
-	.toolbar-actions--paired {
-		flex: 0 0 auto;
-	}
 	@media (max-width: 700px) {
 		.resource-toolbar {
 			align-items: stretch;
@@ -660,29 +622,10 @@
 		.resource-filter-controls :global(.md-select-container) {
 			width: 100%;
 		}
-		.toolbar-actions {
-			width: 100%;
-		}
-		.toolbar-actions--paired {
-			flex: 0 0 100%;
-		}
-		.toolbar-actions :global(.md-btn) {
-			flex: 1 1 0;
-		}
 	}
 	@media (max-width: 455px) {
 		:global(.resource-count) {
 			align-self: flex-start;
-		}
-		.toolbar-actions {
-			flex-direction: column;
-		}
-		.toolbar-actions :global(.md-btn) {
-			width: 100%;
-			flex: 0 0 var(--md-comp-button-small-height);
-		}
-		.toolbar-actions--paired {
-			width: 100%;
 		}
 	}
 	@media (min-width: 840px) {

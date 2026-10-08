@@ -112,6 +112,8 @@ describe('ToolRunCenter', () => {
 
 		let cards = Array.from(container.querySelectorAll('.task-card'));
 		expect(cards).toHaveLength(2);
+		expect(cards[0].querySelector('.status-badge')?.getAttribute('data-tone')).toBe('info');
+		expect(cards[1].querySelector('.status-badge')?.getAttribute('data-tone')).toBe('warning');
 		expect(cards[0].textContent).toContain('后台任务');
 		expect(cards[0].textContent).toContain('running');
 		expect(cards[0].textContent).toContain('整理下载目录');

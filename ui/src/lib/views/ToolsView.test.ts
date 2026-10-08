@@ -78,7 +78,7 @@ describe('ToolsView toolbar actions', () => {
 		});
 	});
 
-	it('keeps MCP and skill toolbar actions text-only', async () => {
+	it('places MCP and skill actions in the shared page action bar', async () => {
 		render(ToolsView);
 
 		await waitFor(() => expect(screen.getByRole('tab', { name: '技能' })).toBeTruthy());
@@ -104,21 +104,19 @@ describe('ToolsView toolbar actions', () => {
 		await fireEvent.click(screen.getByRole('tab', { name: 'MCP' }));
 		expect(screen.getByRole('heading', { name: 'MCP 服务器' })).toBeTruthy();
 		const addButton = screen.getByRole('button', { name: '添加' });
-		const mcpToolbarButtons = Array.from(document.querySelectorAll('.toolbar-actions .md-btn'));
-		const mcpToolbar = addButton.closest('.toolbar-actions');
+		const mcpToolbar = addButton.closest('[role="toolbar"]');
+		const mcpToolbarButtons = Array.from(mcpToolbar?.querySelectorAll('.md-btn') || []);
 		await fireEvent.click(screen.getByRole('tab', { name: '技能' }));
-		const openFolderButton = screen.getByRole('button', { name: '打开' });
-		const skillToolbarButtons = Array.from(
-			document.querySelectorAll('.toolbar-actions .md-btn'),
-		);
-		const skillToolbar = openFolderButton.closest('.toolbar-actions');
+		const openFolderButton = screen.getByRole('button', { name: '打开技能文件夹' });
+		const skillToolbar = openFolderButton.closest('[role="toolbar"]');
+		const skillToolbarButtons = Array.from(skillToolbar?.querySelectorAll('.md-btn') || []);
 
 		expect(addButton.querySelector('svg')).toBeNull();
 		expect(openFolderButton.querySelector('svg')).toBeNull();
 		expect(mcpToolbarButtons).toHaveLength(2);
 		expect(skillToolbarButtons).toHaveLength(2);
-		expect(mcpToolbar?.classList.contains('toolbar-actions--paired')).toBe(true);
-		expect(skillToolbar?.classList.contains('toolbar-actions--paired')).toBe(true);
+		expect(mcpToolbar?.getAttribute('aria-label')).toBe('工具操作');
+		expect(skillToolbar).toBe(mcpToolbar);
 		for (const button of [...mcpToolbarButtons, ...skillToolbarButtons]) {
 			expect(button.classList.contains('md-btn')).toBe(true);
 		}

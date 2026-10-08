@@ -32,6 +32,7 @@
 	import { clearToolRunHistory, listToolRunHistory } from '$lib/toolRunCommands.ts';
 	import MaterialDialog from '$lib/MaterialDialog.svelte';
 	import MaterialButton from '$lib/MaterialButton.svelte';
+	import RefreshButton from '$lib/RefreshButton.svelte';
 	import MaterialTabs from '$lib/MaterialTabs.svelte';
 	import MaterialDatePicker from '$lib/MaterialDatePicker.svelte';
 	import { openContextMenu } from '$lib/contextMenu.ts';
@@ -570,7 +571,24 @@
 </script>
 
 <div class="memory-page">
-	<WorkspacePageHeader title="历史" description="回顾会话、任务和长期记忆。" />
+	<WorkspacePageHeader title="历史" description="回顾会话、任务和长期记忆。">
+		{#snippet children()}
+			{#if activeTab === 'tasks'}
+				<RefreshButton
+					loading={toolRunHistoryLoading}
+					disabled={clearingTasks}
+					onclick={loadTaskHistory}
+				/>
+				<MaterialButton
+					variant="danger"
+					label={clearingTasks ? '正在清空…' : '清空历史'}
+					ariaBusy={clearingTasks}
+					onclick={() => (showClearTasksDialog = true)}
+					disabled={clearingTasks || toolRunHistoryLoading || toolRunHistory.length === 0}
+				/>
+			{/if}
+		{/snippet}
+	</WorkspacePageHeader>
 	<div class="memory-layout workspace-secondary-layout responsive-layout-transition">
 		<aside
 			class="memory-sidebar workspace-secondary-sidebar responsive-layout-panel"
@@ -645,16 +663,7 @@
 						<WorkspaceSectionHeader
 							title="任务历史"
 							description="查看后台任务和定时任务的当前状态及最近历史。"
-						>
-							{#snippet children()}
-								<MaterialButton
-									variant="danger"
-									label="清空历史"
-									onclick={() => (showClearTasksDialog = true)}
-									disabled={toolRunHistoryLoading || toolRunHistory.length === 0}
-								/>
-							{/snippet}
-						</WorkspaceSectionHeader>
+						/>
 						<ToolRunCenter
 							{runningBackgroundToolRuns}
 							{pendingScheduledToolRuns}

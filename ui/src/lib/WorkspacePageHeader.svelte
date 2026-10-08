@@ -15,7 +15,7 @@
 		title = '',
 		description = '',
 		headingId = undefined,
-		children = undefined,
+		children: actions = undefined,
 	}: Props = $props();
 </script>
 
@@ -24,9 +24,9 @@
 		<h1 id={headingId}>{title}</h1>
 		{#if description}<p>{description}</p>{/if}
 	</div>
-	{#if children}
-		<div class="page-heading-actions">
-			{@render children?.()}
+	{#if actions}
+		<div class="page-heading-actions md-toolbar" role="toolbar" aria-label={`${title}操作`}>
+			{@render actions?.()}
 		</div>
 	{/if}
 </header>

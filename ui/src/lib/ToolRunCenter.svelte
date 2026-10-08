@@ -8,6 +8,7 @@
 	import MaterialDialog from '$lib/MaterialDialog.svelte';
 	import MaterialSelect from '$lib/MaterialSelect.svelte';
 	import CountChip from '$lib/CountChip.svelte';
+	import StatusBadge from '$lib/StatusBadge.svelte';
 	import HistoryListGroup from '$lib/HistoryListGroup.svelte';
 	import { projectToolRunCard } from '$lib/toolRunCardProjection.ts';
 	import { toolRunKindLabel } from '$lib/toolRunTerminology.ts';
@@ -135,6 +136,14 @@
 		query = '';
 		filter = 'all';
 	}
+
+	function statusTone(tone: ToolRunCardProjection['tone']) {
+		if (tone === 'error') return 'error';
+		if (tone === 'success') return 'success';
+		if (tone === 'running') return 'info';
+		if (tone === 'scheduled') return 'warning';
+		return 'neutral';
+	}
 </script>
 
 <section class="task-center" aria-label="任务历史">
@@ -226,9 +235,10 @@
 												></span>
 												{toolRunKindLabel(row.kind)}
 											</span>
-											<span class="md-badge" data-variant={row.tone}
-												>{row.statusLabel}</span
-											>
+											<StatusBadge
+												label={row.statusLabel}
+												tone={statusTone(row.tone)}
+											/>
 										</span>
 										<strong class="workspace-item-card-title"
 											>{row.title}</strong
@@ -305,9 +315,10 @@
 							></span>
 							{toolRunKindLabel(selectedRow.kind)}
 						</span>
-						<span class="md-badge" data-variant={selectedRow.tone}
-							>{selectedRow.statusLabel}</span
-						>
+						<StatusBadge
+							label={selectedRow.statusLabel}
+							tone={statusTone(selectedRow.tone)}
+						/>
 					</div>
 					<p class="task-dialog-summary">{selectedRow.summary}</p>
 				</div>
@@ -441,8 +452,8 @@
 		justify-content: space-between;
 		gap: var(--md-sys-space-sm);
 	}
-	.task-card-header :global(.md-badge),
-	:global(.task-dialog-type-row .md-badge) {
+	.task-card-header :global(.status-badge),
+	:global(.task-dialog-type-row .status-badge) {
 		flex: 0 0 auto;
 	}
 	.task-card-meta-separator {
