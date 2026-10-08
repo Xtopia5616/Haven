@@ -1159,18 +1159,24 @@ select.md-select {
 	transform: translateY(-1px);
 }
 :where(
-	.md-choice-chip.selected,
-	.session-rail__item.selected,
-	.workspace-item-card.selected,
-	.policy-option.selected,
-	.token-stats.selected,
-	.accent-swatch-selected,
-	.accent-custom.accent-custom-selected
+	.selected,
+	[aria-selected='true'],
+	[aria-checked='true'],
+	[aria-pressed='true'],
+	[aria-current='page']
 ):not(:focus-visible) {
 	outline: var(--md-sys-selection-outline-width) solid var(--md-sys-selection-outline-color);
 	outline-offset: var(--md-sys-selection-outline-offset);
 }
-:where(.accent-swatch-selected):not(:focus-visible) {
+:where(
+	.md-btn--filled[aria-checked='true'],
+	.md-btn--filled[aria-pressed='true'],
+	.accent-swatch-selected,
+	.md-datepicker-day.selected,
+	.md-datepicker-year-btn.selected,
+	.ask-option.selected,
+	.effort-row .md-choice-chip.selected
+):not(:focus-visible) {
 	outline-color: var(--md-sys-color-on-primary);
 }
 .workspace-item-card:hover::after {
