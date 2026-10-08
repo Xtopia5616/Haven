@@ -1,4 +1,5 @@
 import { isRecord } from './contracts/objectGuards.ts';
+import { isMediaRepresentationKind } from './contracts/media.ts';
 import { isSessionStatus } from './contracts/session.ts';
 import { isToolRunStatus } from './contracts/toolRun.ts';
 import {
@@ -6,6 +7,8 @@ import {
 	isToolAcPowerState,
 	isToolBatteryState,
 	isToolExecutionMode,
+	isToolMediaFileKind,
+	isToolMediaModality,
 	isToolScheduleMode,
 } from './toolResultPresentation.ts';
 
@@ -18,6 +21,8 @@ const isFiniteNumber = (value: unknown): value is number =>
 	typeof value === 'number' && Number.isFinite(value);
 const isStringOrNumber = (value: unknown): boolean => isString(value) || isFiniteNumber(value);
 const isStringArray = (value: unknown): boolean => Array.isArray(value) && value.every(isString);
+const isMediaRepresentationArray = (value: unknown): boolean =>
+	Array.isArray(value) && value.every(isMediaRepresentationKind);
 
 function hasValidOptionalFields(
 	data: JsonRecord,
@@ -208,31 +213,25 @@ function validWindowData(data: JsonRecord): boolean {
 function validMediaData(data: JsonRecord): boolean {
 	return (
 		hasValidOptionalFields(data, {
-			...stringFields(
-				'operation',
-				'asset_id',
-				'representation',
-				'reason',
-				'error',
-				'transcript',
-				'modality',
-				'file_kind',
-			),
+			...stringFields('operation', 'asset_id', 'reason', 'error', 'transcript'),
 			...numberFields('duration_ms', 'characters', 'volume'),
 			...booleanFields('available', 'played', 'muted', 'capture_error'),
+			representation: isMediaRepresentationKind,
+			modality: isToolMediaModality,
+			file_kind: isToolMediaFileKind,
 		}) &&
 		hasValidObjectFields(data, {
 			media: {
 				asset_id: isString,
 				filename: isString,
-				representation: isString,
+				representation: isMediaRepresentationKind,
 				recommended_next: isString,
 			},
 		}) &&
 		hasValidOptionalArrayField(
 			isRecord(data.media) ? data.media : {},
 			'available_representations',
-			isStringArray,
+			isMediaRepresentationArray,
 		)
 	);
 }

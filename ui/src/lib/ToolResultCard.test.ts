@@ -192,6 +192,13 @@ describe('operation view UI contract', () => {
 			{ renderer: 'files', data: { results: [{ path: 42 }] } },
 			{ renderer: 'files', data: { media: [] } },
 			{ renderer: 'media', data: { media: { available_representations: [null] } } },
+			{ renderer: 'media', data: { representation: 'unknown_representation' } },
+			{ renderer: 'media', data: { modality: 'archive' } },
+			{ renderer: 'media', data: { file_kind: 'package' } },
+			{
+				renderer: 'media',
+				data: { media: { available_representations: ['managed_file_ref', 'future'] } },
+			},
 			{ renderer: 'agent', data: { agents: [null] } },
 			{ renderer: 'agent', data: { agents: [{ name: 'peer', status: 'future' }] } },
 			{ renderer: 'process', data: { processes: [null] } },
@@ -257,6 +264,23 @@ describe('operation view UI contract', () => {
 				'clipboard',
 				{ entries: [{ content: 'copied text', timestamp_ms: 'not rendered' }] },
 				'clipboard',
+			),
+		).not.toBe(ToolJsonResult);
+		expect(
+			getToolResultRenderer(
+				'custom',
+				'media',
+				{
+					representation: 'document_pages',
+					modality: 'document',
+					file_kind: 'document',
+					media: {
+						representation: 'managed_file_ref',
+						available_representations: ['managed_file_ref', 'document_pages'],
+						content: { opaque: true },
+					},
+				},
+				'media',
 			),
 		).not.toBe(ToolJsonResult);
 		expect(

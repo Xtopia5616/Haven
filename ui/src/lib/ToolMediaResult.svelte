@@ -1,5 +1,7 @@
 <script lang="ts">
 	import JsonView from '$lib/JsonView.svelte';
+	import type { MediaRepresentationKind } from './contracts/generatedCommands.ts';
+	import type { ToolMediaFileKind, ToolMediaModality } from './toolResultPresentation.ts';
 
 	interface Props {
 		data?: {
@@ -7,13 +9,13 @@
 			media?: {
 				asset_id?: string;
 				filename?: string;
-				representation?: string;
-				available_representations?: string[];
+				representation?: MediaRepresentationKind | null;
+				available_representations?: MediaRepresentationKind[];
 				recommended_next?: string;
 				content?: unknown;
 			};
 			asset_id?: string;
-			representation?: string;
+			representation?: MediaRepresentationKind | null;
 			duration_ms?: number;
 			available?: boolean;
 			reason?: string;
@@ -24,8 +26,8 @@
 			characters?: number;
 			volume?: number;
 			muted?: boolean;
-			modality?: string;
-			file_kind?: string;
+			modality?: ToolMediaModality;
+			file_kind?: ToolMediaFileKind;
 		};
 	}
 

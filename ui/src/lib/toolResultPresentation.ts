@@ -37,3 +37,33 @@ export type ToolBatteryState = (typeof toolBatteryStates)[number];
 export function isToolBatteryState(value: unknown): value is ToolBatteryState {
 	return toolBatteryStates.some((state) => state === value);
 }
+
+export const toolMediaModalities = [
+	'text',
+	'image',
+	'audio',
+	'video',
+	'document',
+	'unknown',
+] as const;
+
+export type ToolMediaModality = (typeof toolMediaModalities)[number];
+
+export function isToolMediaModality(value: unknown): value is ToolMediaModality {
+	return toolMediaModalities.some((modality) => modality === value);
+}
+
+export const toolMediaFileKinds = [
+	'image',
+	'audio',
+	'video',
+	'document',
+	'text',
+	'binary',
+] as const;
+
+export type ToolMediaFileKind = (typeof toolMediaFileKinds)[number];
+
+export function isToolMediaFileKind(value: unknown): value is ToolMediaFileKind {
+	return toolMediaFileKinds.some((fileKind) => fileKind === value);
+}
