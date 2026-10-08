@@ -903,6 +903,21 @@ describe('ToolResultCard collapsible', () => {
 });
 
 describe('ToolResultCard files', () => {
+	it('renders tool hints only when the dynamic value is text', async () => {
+		const { container } = render(ToolResultCard, {
+			toolName: 'files',
+			content: JSON.stringify({
+				operation: 'create_dir',
+				created: true,
+				path: 'D:\\tmp\\reports',
+				hint: { unexpected: 'object' },
+			}),
+		});
+		await expandToolCard(container);
+		expect(screen.getByText('已创建目录')).toBeTruthy();
+		expect(container.querySelector('.tool-card-hint')).toBeNull();
+	});
+
 	it('renders create_dir with the file-specific result UI', async () => {
 		const { container } = render(ToolResultCard, {
 			toolName: 'files',

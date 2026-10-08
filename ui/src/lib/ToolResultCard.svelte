@@ -235,6 +235,7 @@
 	});
 	let kind = $derived(parsed?.kind ?? null);
 	let data: Record<string, unknown> = $derived(isRecord(parsed?.data) ? parsed.data : {});
+	let toolOutputHintText = $derived(typeof data.hint === 'string' ? data.hint : '');
 	let emptyOutputLabel = $derived.by(() => {
 		if (effectiveOutcome === 'failed') return '调用失败';
 		if (effectiveOutcome === 'cancelled') return '调用已取消';
@@ -561,8 +562,8 @@
 					{:else}
 						<p class="tool-result-message">{emptyOutputLabel}</p>
 					{/if}
-					{#if data.hint}
-						<div class="tool-card-hint">{data.hint}</div>
+					{#if toolOutputHintText}
+						<div class="tool-card-hint">{toolOutputHintText}</div>
 					{/if}
 				</section>
 				{#if awaitingBackgroundResult}
