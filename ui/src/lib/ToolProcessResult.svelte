@@ -7,18 +7,18 @@
 	import type { ToolProcessOperation, ToolProcessStatus } from './toolResultPresentation.ts';
 
 	interface ProcessEntry {
-		name?: string;
-		pid?: string | number;
-		cpu?: number;
-		memory?: number;
-		status?: ToolProcessStatus | null;
+		name: string;
+		pid: string | number;
+		cpu: number;
+		memory: number;
+		status: ToolProcessStatus;
 	}
 
 	interface Props {
 		data?: {
 			processes?: ProcessEntry[];
 			operation?: ToolProcessOperation | null;
-			killed?: string | number;
+			killed?: string | number | null;
 		};
 	}
 

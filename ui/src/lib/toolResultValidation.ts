@@ -184,13 +184,11 @@ function validProcessData(data: JsonRecord): boolean {
 			killed: isStringOrNumber,
 		}) &&
 		hasValidRecordArray(data, 'processes', (row) =>
-			hasValidOptionalFields(row, {
-				name: isString,
-				pid: isStringOrNumber,
-				cpu: isFiniteNumber,
-				memory: isFiniteNumber,
-				status: isToolProcessStatus,
-			}),
+			isString(row.name) &&
+				isStringOrNumber(row.pid) &&
+				isFiniteNumber(row.cpu) &&
+				isFiniteNumber(row.memory) &&
+				isToolProcessStatus(row.status),
 		)
 	);
 }

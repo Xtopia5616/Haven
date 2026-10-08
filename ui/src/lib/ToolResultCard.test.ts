@@ -20,6 +20,7 @@ import ToolInputResult from './ToolInputResult.svelte';
 import ToolJsonResult from './ToolJsonResult.svelte';
 import ToolMediaResult from './ToolMediaResult.svelte';
 import ToolMemoryResult from './ToolMemoryResult.svelte';
+import ToolProcessResult from './ToolProcessResult.svelte';
 import ToolShellResult from './ToolShellResult.svelte';
 import ToolSystemResult from './ToolSystemResult.svelte';
 import ToolRunsResult from './ToolRunsResult.svelte';
@@ -222,6 +223,7 @@ describe('operation view UI contract', () => {
 			{ renderer: 'agent', data: { auto: 'yes' } },
 			{ renderer: 'process', data: { processes: [null] } },
 			{ renderer: 'process', data: { processes: null } },
+			{ renderer: 'process', data: { processes: [{ name: 'app.exe', pid: 4, status: 'Run' }] } },
 			{ renderer: 'process', data: { operation: 'restart' } },
 			{ renderer: 'process', data: { processes: [{ status: 'Unknown(73)' }] } },
 			{ renderer: 'clipboard', data: { entries: [null] } },
@@ -308,6 +310,19 @@ describe('operation view UI contract', () => {
 	});
 
 	it('keeps valid builtin shapes specialized and unknown extension renderers open', () => {
+		expect(
+			getToolResultRenderer(
+				'custom',
+				'process',
+				{
+					operation: null,
+					processes: [
+						{ name: 'app.exe', pid: 4, cpu: 0.5, memory: 1024, status: 'Run' },
+					],
+				},
+				'process',
+			),
+		).toBe(ToolProcessResult);
 		expect(
 			getToolResultRenderer(
 				'custom',
@@ -1419,8 +1434,20 @@ describe('ToolResultCard process', () => {
 			content: JSON.stringify({
 				scope: 'process',
 				processes: [
-					{ pid: 100, name: 'chrome.exe', cpu: 3.5, memory: 500 * 1024 * 1024 },
-					{ pid: 200, name: 'explorer.exe', cpu: 0.2, memory: 200 * 1024 * 1024 },
+					{
+						pid: 100,
+						name: 'chrome.exe',
+						cpu: 3.5,
+						memory: 500 * 1024 * 1024,
+						status: 'Run',
+					},
+					{
+						pid: 200,
+						name: 'explorer.exe',
+						cpu: 0.2,
+						memory: 200 * 1024 * 1024,
+						status: 'Sleep',
+					},
 				],
 			}),
 		});
@@ -1437,10 +1464,10 @@ describe('ToolResultCard process', () => {
 			content: JSON.stringify({
 				scope: 'process',
 				processes: [
-					{ pid: 1, name: 'a.exe', status: 'Run' },
-					{ pid: 2, name: 'b.exe', status: 'Sleep' },
-					{ pid: 3, name: 'c.exe', status: 'Zombie' },
-					{ pid: 4, name: 'd.exe', status: 'Unknown' },
+					{ pid: 1, name: 'a.exe', cpu: 0, memory: 0, status: 'Run' },
+					{ pid: 2, name: 'b.exe', cpu: 0, memory: 0, status: 'Sleep' },
+					{ pid: 3, name: 'c.exe', cpu: 0, memory: 0, status: 'Zombie' },
+					{ pid: 4, name: 'd.exe', cpu: 0, memory: 0, status: 'Unknown' },
 				],
 			}),
 		});
@@ -1457,8 +1484,8 @@ describe('ToolResultCard process', () => {
 			content: JSON.stringify({
 				scope: 'process',
 				processes: [
-					{ pid: 1, name: 'chrome.exe' },
-					{ pid: 2, name: 'explorer.exe' },
+					{ pid: 1, name: 'chrome.exe', cpu: 0, memory: 0, status: 'Run' },
+					{ pid: 2, name: 'explorer.exe', cpu: 0, memory: 0, status: 'Sleep' },
 				],
 			}),
 		});
@@ -1472,7 +1499,13 @@ describe('ToolResultCard process', () => {
 	});
 
 	it('paginates processes in the shared fifteen-row pages', async () => {
-		const processes = Array.from({ length: 60 }, (_, i) => ({ pid: i + 1, name: `p${i}.exe` }));
+		const processes = Array.from({ length: 60 }, (_, i) => ({
+			pid: i + 1,
+			name: `p${i}.exe`,
+			cpu: 0,
+			memory: 0,
+			status: 'Run',
+		}));
 		const { container } = render(ToolResultCard, {
 			toolName: 'system',
 			content: JSON.stringify({ scope: 'process', processes }),
