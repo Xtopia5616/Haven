@@ -7,29 +7,29 @@
 	} from '$lib/toolResultPresentation.ts';
 
 	type MemoryFact = {
-		id?: string;
-		subject?: string;
-		predicate?: string;
-		object?: string;
+		id?: string | null;
+		subject?: string | null;
+		predicate?: string | null;
+		object?: string | null;
 		confidence?: number | null;
-		tags?: string[];
-		source_snippet?: string;
+		tags?: string[] | null;
+		source_snippet?: string | null;
 	};
 	type MemoryHit = {
-		entity_id?: string;
-		text?: string;
+		entity_id?: string | null;
+		text?: string | null;
 		score?: number | null;
-		model?: string;
+		model?: string | null;
 	};
 
 	interface Props {
 		data?: {
 			facts?: MemoryFact[];
 			hits?: MemoryHit[];
-			mode?: ToolMemoryRecallMode;
+			mode?: ToolMemoryRecallMode | null;
 			operation?: ToolMemoryOperation | null;
-			stored?: { predicate?: string; object?: string };
-			deleted?: number;
+			stored?: { predicate?: string | null; object?: string | null } | null;
+			deleted?: number | null;
 		};
 	}
 

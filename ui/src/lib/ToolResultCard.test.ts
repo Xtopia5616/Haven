@@ -16,6 +16,7 @@ import ToolFileSearchResult from './ToolFileSearchResult.svelte';
 import ToolInputResult from './ToolInputResult.svelte';
 import ToolJsonResult from './ToolJsonResult.svelte';
 import ToolMediaResult from './ToolMediaResult.svelte';
+import ToolMemoryResult from './ToolMemoryResult.svelte';
 import ToolShellResult from './ToolShellResult.svelte';
 import ToolSystemResult from './ToolSystemResult.svelte';
 import ToolRunsResult from './ToolRunsResult.svelte';
@@ -275,6 +276,7 @@ describe('operation view UI contract', () => {
 			{ renderer: 'web_search', data: { queries: null } },
 			{ renderer: 'web_search', data: { results: [{ title: 'x', url: 'https://a.test', snippet: 42 }] } },
 			{ renderer: 'memory', data: { facts: [null] } },
+			{ renderer: 'memory', data: { facts: [{ tags: 42 }] } },
 			{ renderer: 'memory', data: { operation: 'future-operation' } },
 			{ renderer: 'memory', data: { facts: [{ confidence: '0.75' }] } },
 			{ renderer: 'memory', data: { hits: null } },
@@ -299,6 +301,29 @@ describe('operation view UI contract', () => {
 	});
 
 	it('keeps valid builtin shapes specialized and unknown extension renderers open', () => {
+		expect(
+			getToolResultRenderer(
+				'custom',
+				'memory',
+				{
+					mode: null,
+					facts: [
+						{
+							id: null,
+							subject: null,
+							predicate: null,
+							object: null,
+							confidence: null,
+							tags: null,
+							source_snippet: null,
+						},
+					],
+					stored: null,
+					deleted: null,
+				},
+				'memory',
+			),
+		).toBe(ToolMemoryResult);
 		expect(
 			getToolResultRenderer(
 				'custom',

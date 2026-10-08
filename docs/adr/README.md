@@ -770,3 +770,4 @@
 - [0779：Media 与 Window renderer 复用闭合输出值](0779-type-media-and-window-renderer-values.md)
 - [0780：ToolRuns 与 Schedule renderer 复用闭合 operation](0780-type-toolrun-and-schedule-renderer-operations.md)
 - [0781：对齐搜索 renderer props 与 optional-field guard 的 null 语义](0781-align-search-renderer-prop-nullability.md)
+- [0782：对齐 Memory renderer 嵌套 Props 的 null 语义](0782-align-memory-renderer-prop-nullability.md)
