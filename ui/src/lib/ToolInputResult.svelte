@@ -5,13 +5,13 @@
 	interface Props {
 		data?: {
 			operation?: ToolInputOperation | null;
-			chars?: number;
-			typed?: string;
-			pressed?: string;
+			chars?: number | null;
+			typed?: string | null;
+			pressed?: string | null;
 			clicked?: [number, number];
 			button?: ToolInputButton | null;
 			moved_to?: [number, number];
-			scrolled?: number;
+			scrolled?: number | null;
 		};
 	}
 

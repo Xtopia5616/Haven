@@ -208,6 +208,7 @@ describe('operation view UI contract', () => {
 			{ renderer: 'files', data: { results: [{ path: 42 }] } },
 			{ renderer: 'files', data: { operation: 'future-operation' } },
 			{ renderer: 'files', data: { symbols: [{ kind: 'macro' }] } },
+			{ renderer: 'files', data: { symbols: [{ name: 42 }] } },
 			{ renderer: 'files', data: { media: [] } },
 			{ renderer: 'media', data: { media: { available_representations: [null] } } },
 			{ renderer: 'media', data: { representation: 'unknown_representation' } },
@@ -232,6 +233,7 @@ describe('operation view UI contract', () => {
 			{ renderer: 'input', data: { operation: 'click', clicked: [12, '20'] } },
 			{ renderer: 'input', data: { operation: 'restart' } },
 			{ renderer: 'input', data: { operation: 'click', button: 'primary' } },
+			{ renderer: 'input', data: { operation: 'type', typed: 42 } },
 			{ renderer: 'window', data: { elements: [null] } },
 			{ renderer: 'window', data: { operation: 'restart' } },
 			{ renderer: 'window', data: { operation: 'wait', condition: 'visible' } },
@@ -310,6 +312,39 @@ describe('operation view UI contract', () => {
 	});
 
 	it('keeps valid builtin shapes specialized and unknown extension renderers open', () => {
+		expect(
+			getToolResultRenderer(
+				'custom',
+				'files',
+				{
+					operation: 'read',
+					path: null,
+					line: null,
+					size: null,
+					count: null,
+					content: null,
+					symbols: [{ line: null, kind: null, name: null }],
+				},
+				'files',
+			),
+		).toBe(ToolFileResult);
+		expect(
+			getToolResultRenderer(
+				'custom',
+				'input',
+				{
+					operation: 'click',
+					chars: null,
+					typed: null,
+					pressed: null,
+					scrolled: null,
+					button: null,
+					clicked: [1, 2],
+					moved_to: [3, 4],
+				},
+				'input',
+			),
+		).toBe(ToolInputResult);
 		expect(
 			getToolResultRenderer(
 				'custom',

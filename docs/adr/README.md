@@ -775,3 +775,4 @@
 - [0784：校验非空剪贴板历史的 total](0784-require-clipboard-history-total.md)
 - [0785：对齐 Agent renderer root Props 的 null 语义](0785-align-agent-result-prop-nullability.md)
 - [0786：要求 Process renderer 的完整列表行字段](0786-require-process-row-renderer-fields.md)
+- [0787：对齐 Files 与 Input renderer Props 的 null 语义](0787-align-file-input-result-prop-nullability.md)
