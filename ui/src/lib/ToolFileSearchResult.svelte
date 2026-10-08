@@ -5,9 +5,9 @@
 
 	interface Props {
 		data?: {
-			results?: Array<{ path: string; line?: number | null; snippet?: string }>;
-			count?: number;
-			mode?: ToolFileSearchMode;
+			results?: Array<{ path: string; line?: number | null; snippet?: string | null }>;
+			count?: number | null;
+			mode?: ToolFileSearchMode | null;
 		};
 	}
 

@@ -4,9 +4,9 @@
 
 	interface Props {
 		data?: {
-			label?: string;
+			label?: string | null;
 			queries?: string[];
-			results?: Array<{ url: string; title: string; snippet?: string }>;
+			results?: Array<{ url: string; title: string; snippet?: string | null }>;
 		};
 	}
 

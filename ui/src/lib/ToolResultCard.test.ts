@@ -12,12 +12,14 @@ import {
 } from './toolOutputPreviewStore.ts';
 import { getToolResultRenderer } from './toolResultRenderers.ts';
 import ToolFileResult from './ToolFileResult.svelte';
+import ToolFileSearchResult from './ToolFileSearchResult.svelte';
 import ToolInputResult from './ToolInputResult.svelte';
 import ToolJsonResult from './ToolJsonResult.svelte';
 import ToolMediaResult from './ToolMediaResult.svelte';
 import ToolShellResult from './ToolShellResult.svelte';
 import ToolSystemResult from './ToolSystemResult.svelte';
 import ToolRunsResult from './ToolRunsResult.svelte';
+import ToolWebSearchResult from './ToolWebSearchResult.svelte';
 import ToolWindowResult from './ToolWindowResult.svelte';
 import ToolScheduleResult from './ToolScheduleResult.svelte';
 
@@ -196,6 +198,7 @@ describe('operation view UI contract', () => {
 		}> = [
 			{ renderer: 'files.search', data: { results: [null] } },
 			{ renderer: 'files.search', data: { results: null } },
+			{ renderer: 'files.search', data: { results: [{ path: 'a.rs', snippet: 42 }] } },
 			{ renderer: 'files.search', data: { results: [], mode: 'future-mode' } },
 			{ renderer: 'files', data: { results: [{ path: 42 }] } },
 			{ renderer: 'files', data: { operation: 'future-operation' } },
@@ -270,6 +273,7 @@ describe('operation view UI contract', () => {
 			{ renderer: 'http', data: { status: 200, body: { unexpected: true } } },
 			{ renderer: 'web_search', data: { results: [null] } },
 			{ renderer: 'web_search', data: { queries: null } },
+			{ renderer: 'web_search', data: { results: [{ title: 'x', url: 'https://a.test', snippet: 42 }] } },
 			{ renderer: 'memory', data: { facts: [null] } },
 			{ renderer: 'memory', data: { operation: 'future-operation' } },
 			{ renderer: 'memory', data: { facts: [{ confidence: '0.75' }] } },
@@ -295,6 +299,26 @@ describe('operation view UI contract', () => {
 	});
 
 	it('keeps valid builtin shapes specialized and unknown extension renderers open', () => {
+		expect(
+			getToolResultRenderer(
+				'custom',
+				'files.search',
+				{
+					count: null,
+					mode: null,
+					results: [{ path: 'a.rs', line: null, snippet: null }],
+				},
+				'files.search',
+			),
+		).toBe(ToolFileSearchResult);
+		expect(
+			getToolResultRenderer(
+				'custom',
+				'web_search',
+				{ label: null, results: [{ title: 'A', url: 'https://a.test', snippet: null }] },
+				'web_search',
+			),
+		).toBe(ToolWebSearchResult);
 		expect(
 			getToolResultRenderer(
 				'custom',
