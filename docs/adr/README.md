@@ -739,3 +739,4 @@
 - [0748：MemoryView 页签 ID 使用单一来源](0748-single-source-memory-view-tab-ids.md)
 - [0749：路由页签在共享 MaterialTabs 边界收窄](0749-narrow-route-tab-ids-at-shared-material-tabs.md)
 - [0750：Memory renderer 数值 props 对齐嵌套校验](0750-type-memory-renderer-numeric-props.md)
+- [0751：HTTP renderer body props 对齐校验](0751-type-http-renderer-body.md)

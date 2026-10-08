@@ -5,7 +5,7 @@
 		data?: {
 			status?: number;
 			truncated?: boolean;
-			body?: unknown;
+			body?: string | null;
 		};
 	}
 
@@ -20,7 +20,9 @@
 			? 'status-completed'
 			: 'status-failed'}
 	/>
-	{#if data.truncated}<span class="tool-result-meta tool-result-meta--compact">（响应过长已截断）</span>{/if}
+	{#if data.truncated}<span class="tool-result-meta tool-result-meta--compact"
+			>（响应过长已截断）</span
+		>{/if}
 </div>
 {#if typeof data.body === 'string' && data.body}
 	<pre class="tool-result-preview">{data.body}</pre>

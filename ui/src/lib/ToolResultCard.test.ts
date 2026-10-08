@@ -214,6 +214,7 @@ describe('operation view UI contract', () => {
 			{ renderer: 'system', data: { scope: 'process', processes: [null] } },
 			{ renderer: 'haven_mcp', data: { servers: [null] } },
 			{ renderer: 'http', data: { status: '200' } },
+			{ renderer: 'http', data: { status: 200, body: { unexpected: true } } },
 			{ renderer: 'web_search', data: { results: [null] } },
 			{ renderer: 'web_search', data: { queries: null } },
 			{ renderer: 'memory', data: { facts: [null] } },

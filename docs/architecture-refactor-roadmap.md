@@ -206,6 +206,8 @@
 
 **Memory result props 与 nested validator 复核（2026-10-08）：** `ToolMemoryResult` 的 fact confidence 与 recall score 只在嵌套 validator 验证有限数值后进入组件；props 和 `scoreLabel` 现使用相同数值约束，`null` 保持为缺省值。畸形数值字符串仍在 registry 回退到原始 JSON，不再依赖 `Number()` 静默转换（ADR 0750）。
 
+**HTTP renderer body prop 复核（2026-10-08）：** registry 已将 HTTP `body` 限制为字符串（允许缺省/null）；renderer prop 原为 `unknown`，尽管组件只呈现字符串。现在 props 与 validator 一致，HTTP body object 的负向 fallback 有覆盖（ADR 0751）。
+
 #### 首轮全仓符号扫描与候选分流
 
 | 范围 | 证据与调用边界 | 当前分类 / 下一步 |
