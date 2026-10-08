@@ -26,14 +26,23 @@
 	import { TOOL_INTENT_FALLBACK } from '$lib/toolIntent.ts';
 	import { toolIconName, toolRendererName, toolRootName } from '$lib/toolManifest.ts';
 	import type { AgentToolResultEnvelope } from '$lib/contracts/agent.ts';
-	import type { ToolRunPayload } from '$lib/contracts/toolRun.ts';
+	import type { ToolRunPayload, ToolRunStatus } from '$lib/contracts/toolRun.ts';
 	import type { ContextMenuItem } from '$lib/contextMenu.ts';
+	import type { ToolResultPresentationOutcome } from '$lib/streaming.ts';
+
+	type TerminalToolRunStatus = Extract<ToolRunStatus, 'completed' | 'failed' | 'cancelled'>;
+
+	function isTerminalToolRunStatus(
+		status: ToolRunStatus | undefined,
+	): status is TerminalToolRunStatus {
+		return status === 'completed' || status === 'failed' || status === 'cancelled';
+	}
 
 	interface Props {
-		type?: string;
+		type?: 'tool' | 'ask';
 		embedded?: boolean;
 		toolName?: string;
-		outcome?: string | null;
+		outcome?: ToolResultPresentationOutcome | null;
 		renderer?: string | null;
 		result?: AgentToolResultEnvelope | null;
 		content?: string;
@@ -117,7 +126,6 @@
 		selectedOptions = awaiting ? [...selectedAskOptions] : [];
 	});
 
-	const TERMINAL_TOOL_RUN = new Set<string>(['completed', 'failed', 'cancelled']);
 	// Tool result outcomes use a richer enum than the shared card display state.
 	// Project the canonical result value before rendering it beside ToolRun status.
 	const TOOL_RESULT_OUTCOME_DISPLAY_STATES: Record<string, string> = {
@@ -154,7 +162,7 @@
 	let toolRunRunning = $derived(!!boundToolRun && boundToolRun.status === 'running');
 	let liveStreaming = $derived(streaming || toolRunRunning || !!livePreview);
 	let toolRunOutcome = $derived(
-		boundToolRun && TERMINAL_TOOL_RUN.has(boundToolRun.status ?? '') ? boundToolRun.status : null,
+		boundToolRun && isTerminalToolRunStatus(boundToolRun.status) ? boundToolRun.status : null,
 	);
 	let effectiveOutcome = $derived(outcome || result?.outcome || toolRunOutcome || null);
 	let toolState: string = $derived.by(() => {
@@ -180,7 +188,7 @@
 				status: 'running',
 			});
 		}
-		if (boundToolRun && TERMINAL_TOOL_RUN.has(boundToolRun.status ?? '')) {
+		if (boundToolRun && isTerminalToolRunStatus(boundToolRun.status)) {
 			const rawOut =
 				typeof boundToolRun.output === 'string'
 					? boundToolRun.output
@@ -196,7 +204,9 @@
 				tool_run_id: toolRunId,
 				status: boundToolRun.status,
 				...(boundToolRun.exitCode != null ? { exit_code: boundToolRun.exitCode } : {}),
-				...(boundToolRun.error && !boundToolRun.output ? { error: boundToolRun.error } : {}),
+				...(boundToolRun.error && !boundToolRun.output
+					? { error: boundToolRun.error }
+					: {}),
 			});
 		}
 		if (livePreview != null && livePreview !== '') {
@@ -228,7 +238,7 @@
 	let emptyOutputLabel = $derived.by(() => {
 		if (effectiveOutcome === 'failed') return '调用失败';
 		if (effectiveOutcome === 'cancelled') return '调用已取消';
-		if (effectiveOutcome === 'timed_out') return '调用超时';
+		if (toolState === 'timed_out') return '调用超时';
 		if (effectiveOutcome === 'unknown') return '调用结果未知';
 		return kind === 'shell' ? '（无输出）' : '（无结果）';
 	});
@@ -534,7 +544,9 @@
 					{#if toolRunOutputHidden}
 						<p class="tool-result-message">结果已在会话消息中显示</p>
 					{:else if failedWithoutOutput}
-						<p class="tool-result-message tool-result-message--error">{emptyOutputLabel}</p>
+						<p class="tool-result-message tool-result-message--error">
+							{emptyOutputLabel}
+						</p>
 					{:else if BodyRenderer}
 						<BodyRenderer
 							kind={kind ?? undefined}

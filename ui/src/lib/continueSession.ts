@@ -7,14 +7,16 @@
  * 2. LLM interrupted mid-generation → send "继续".
  */
 
+import type { CanonicalRole } from './contracts/generatedCommands.ts';
+import type { SessionMessagePresentationType } from './streaming.ts';
+
 export type ContinueStrategy =
-	| { mode: 'resend_user'; text: string; messageId?: string }
-	| { mode: 'continue'; text: '继续' };
+	{ mode: 'resend_user'; text: string; messageId?: string } | { mode: 'continue'; text: '继续' };
 
 /** Message shape used by continue heuristics (extra fields allowed). */
 export type ContinueMessage = {
-	role?: string;
-	type?: string | null;
+	role?: CanonicalRole;
+	type?: SessionMessagePresentationType | null;
 	content?: string;
 	id?: string;
 	toolName?: string;

@@ -10,7 +10,7 @@ import type {
 import type { AskResponseView, InteractionRequest } from '../contracts/app.ts';
 import type { InteractionKind, SessionStatus } from '../contracts/generatedCommands.ts';
 import type { SessionLlmUsage, SessionResumeUsage } from '../contracts/sessionHistory.ts';
-import type { StreamMessage } from '../streaming.ts';
+import type { SessionMessagePresentationType, StreamMessage } from '../streaming.ts';
 
 export const DRAFT_SESSION_ID = '_draft';
 
@@ -75,7 +75,7 @@ export interface SessionOptimisticMessage {
 
 export interface AgentChunkBatchItem {
 	kind: 'thought' | 'reasoning';
-	msgType?: string;
+	msgType?: Extract<SessionMessagePresentationType, 'reasoning'>;
 	payload: AgentChunkPayload;
 }
 

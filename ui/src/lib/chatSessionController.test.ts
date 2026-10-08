@@ -8,6 +8,7 @@ import type { SessionResumeInput } from './contracts/sessionHistory.ts';
 import { SessionReducer, type SessionAction } from './sessionReducer.ts';
 import type { ProcessResult } from './contracts/generatedCommands.ts';
 import type { CanonicalRole } from './contracts/generatedCommands.ts';
+import type { SessionMessagePresentationType } from './streaming.ts';
 
 const SESSION_ID = 'ses-00000000000000000000000000000001';
 const OTHER_SESSION_ID = 'ses-00000000000000000000000000000002';
@@ -25,13 +26,15 @@ function sessionResumeInput(overrides: Partial<SessionResumeInput> = {}): Sessio
 	};
 }
 
-function makeHarness(options: {
-	invoke?: (command: string, args?: unknown) => unknown | Promise<unknown>;
-	submit?: (
-		text: string,
-		args: Parameters<ChatSessionControllerDependencies['submitTranscript']>[1],
-	) => ProcessResult | Promise<ProcessResult>;
-} = {}) {
+function makeHarness(
+	options: {
+		invoke?: (command: string, args?: unknown) => unknown | Promise<unknown>;
+		submit?: (
+			text: string,
+			args: Parameters<ChatSessionControllerDependencies['submitTranscript']>[1],
+		) => ProcessResult | Promise<ProcessResult>;
+	} = {},
+) {
 	const reducer = new SessionReducer();
 	reducer.dispatch({
 		type: 'sessions/loaded',
@@ -138,7 +141,12 @@ function makeHarness(options: {
 
 function addMessages(
 	reducer: SessionReducer,
-	...messages: Array<{ id: string; role: CanonicalRole; content: string; type?: string }>
+	...messages: Array<{
+		id: string;
+		role: CanonicalRole;
+		content: string;
+		type?: SessionMessagePresentationType;
+	}>
 ) {
 	reducer.dispatch({
 		type: 'session/messages/resume-loaded',
@@ -217,7 +225,12 @@ describe('ChatSessionController continue', () => {
 		addMessages(
 			harness.reducer,
 			{ id: USER_MESSAGE_ID, role: 'user' as const, content: '写一首诗' },
-			{ id: 'step-thought', role: 'assistant' as const, content: '已有一段', type: 'thought' },
+			{
+				id: 'step-thought',
+				role: 'assistant' as const,
+				content: '已有一段',
+				type: 'thought',
+			},
 		);
 
 		await harness.controller.handleContinue();
@@ -228,7 +241,9 @@ describe('ChatSessionController continue', () => {
 		]);
 		expect(harness.invokeCalls[0]?.args).toEqual({ sessionId: SESSION_ID });
 		expect(harness.submitCalls.map((call) => call.text)).toEqual(['继续']);
-		expect(harness.actions.map((action) => action.type)).toContain('session/run-end-notice-cleared');
+		expect(harness.actions.map((action) => action.type)).toContain(
+			'session/run-end-notice-cleared',
+		);
 		expect(harness.actions.map((action) => action.type)).toContain('session/replay-reset');
 		expect(harness.autoFollow).toEqual([true]);
 		expect(harness.continuePending).toEqual([true, false]);
@@ -255,16 +270,19 @@ describe('ChatSessionController continue', () => {
 
 	it('does not resubmit an original user turn still present in the authoritative snapshot', async () => {
 		const harness = makeHarness({
-			invoke: (command) => command === 'get_session_for_resume'
-				? sessionResumeInput({
-						messages: [{
-							id: USER_MESSAGE_ID,
-							role: 'user' as const,
-							content: '打开计算器',
-							created_at: '2026-09-25T00:00:00Z',
-						}],
-					})
-				: undefined,
+			invoke: (command) =>
+				command === 'get_session_for_resume'
+					? sessionResumeInput({
+							messages: [
+								{
+									id: USER_MESSAGE_ID,
+									role: 'user' as const,
+									content: '打开计算器',
+									created_at: '2026-09-25T00:00:00Z',
+								},
+							],
+						})
+					: undefined,
 		});
 		addMessages(harness.reducer, {
 			id: USER_MESSAGE_ID,
@@ -279,7 +297,10 @@ describe('ChatSessionController continue', () => {
 
 	it('preserves pending interactions when a resume snapshot contains none', async () => {
 		const harness = makeHarness();
-		harness.reducer.dispatch({ type: 'session/interaction-upserted', request: pendingInteraction() });
+		harness.reducer.dispatch({
+			type: 'session/interaction-upserted',
+			request: pendingInteraction(),
+		});
 
 		await harness.controller.resyncSessionMessages(SESSION_ID);
 
@@ -302,7 +323,9 @@ describe('ChatSessionController continue', () => {
 
 		const first = harness.controller.handleContinue();
 		await harness.controller.handleContinue();
-		expect(harness.invokeCalls.filter((call) => call.command === 'continue_session')).toHaveLength(1);
+		expect(
+			harness.invokeCalls.filter((call) => call.command === 'continue_session'),
+		).toHaveLength(1);
 		finishContinue?.();
 		await first;
 	});
@@ -326,7 +349,9 @@ describe('ChatSessionController continue', () => {
 		const first = harness.controller.confirmRollbackAction(request);
 		await harness.controller.confirmRollbackAction(request);
 
-		expect(harness.invokeCalls.filter((call) => call.command === 'rollback_session')).toHaveLength(1);
+		expect(
+			harness.invokeCalls.filter((call) => call.command === 'rollback_session'),
+		).toHaveLength(1);
 		expect(harness.invokeCalls[0]?.args).toEqual({
 			sessionId: SESSION_ID,
 			targetStep: 7,
@@ -356,10 +381,12 @@ describe('ChatSessionController session guards', () => {
 
 		await harness.controller.endSession();
 
-		expect(harness.invokeCalls).toEqual([{
-			command: 'end_session',
-			args: { sessionId: SESSION_ID },
-		}]);
+		expect(harness.invokeCalls).toEqual([
+			{
+				command: 'end_session',
+				args: { sessionId: SESSION_ID },
+			},
+		]);
 		expect(harness.freshSessionIntent).toBe(false);
 		expect(harness.reducer.snapshot().activeSessionId).toBe(SESSION_ID);
 		expect(harness.reportedErrors).toEqual([{ error, message: '完成会话失败' }]);
@@ -371,10 +398,12 @@ describe('ChatSessionController session guards', () => {
 
 		await harness.controller.interruptOutput();
 
-		expect(harness.invokeCalls).toEqual([{
-			command: 'interrupt_session',
-			args: { sessionId: SESSION_ID },
-		}]);
+		expect(harness.invokeCalls).toEqual([
+			{
+				command: 'interrupt_session',
+				args: { sessionId: SESSION_ID },
+			},
+		]);
 		expect(harness.interruptPending).toEqual([true, false]);
 		expect(harness.reportedErrors).toEqual([{ error, message: '中断输出失败' }]);
 		expect(harness.notifications).toEqual([]);

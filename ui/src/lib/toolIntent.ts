@@ -5,11 +5,20 @@
  * deterministic and intentionally generic: the raw command remains available
  * in task details, but never becomes the primary task title by accident.
  */
+
+import type { CanonicalRole } from './contracts/generatedCommands.ts';
+import type { SessionMessagePresentationType } from './streaming.ts';
+
 export const TOOL_INTENT_FALLBACK = '调用工具';
 
 /** Detect a preamble in one live ReAct thought block. */
 export function hasToolPreambleInBlock(
-	messages: Array<{ id: string; role?: string; type?: string | null; content?: string }>,
+	messages: Array<{
+		id: string;
+		role?: CanonicalRole;
+		type?: SessionMessagePresentationType | null;
+		content?: string;
+	}>,
 	blockId: string | null | undefined,
 ): boolean {
 	if (!blockId) return false;
@@ -39,7 +48,11 @@ export function toolRunIntentLabel(intent: { title?: string; body?: string }): s
  * summary and must not suppress the deterministic fallback.
  */
 export function hasToolPreambleBefore(
-	messages: Array<{ role?: string; type?: string | null; content?: string }>,
+	messages: Array<{
+		role?: CanonicalRole;
+		type?: SessionMessagePresentationType | null;
+		content?: string;
+	}>,
 	toolIndex: number,
 ): boolean {
 	for (let index = toolIndex - 1; index >= 0; index -= 1) {

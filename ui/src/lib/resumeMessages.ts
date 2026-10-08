@@ -9,6 +9,7 @@ import type {
 	SessionStepStatus,
 	TranscriptMessageKind,
 } from './contracts/generatedCommands.ts';
+import type { SessionMessagePresentationType, ToolResultPresentationOutcome } from './streaming.ts';
 
 type PersistedToolOutcome = Extract<SessionStepStatus, 'failed' | 'cancelled' | 'unknown'>;
 
@@ -17,7 +18,7 @@ interface ResumeMessage {
 	role?: CanonicalRole;
 	content?: string;
 	/** Renderer-only presentation type; mapped from the durable message kind. */
-	type?: string | null;
+	type?: SessionMessagePresentationType | null;
 	voice?: boolean;
 	time?: string;
 	_ts?: number;
@@ -30,7 +31,7 @@ interface ResumeMessage {
 	/** JSON tool-call arguments from `session_steps.tool_input`. */
 	toolArgs?: unknown;
 	/** Durable tool outcome used to render failed/cancelled/unknown history. */
-	outcome?: string | null;
+	outcome?: ToolResultPresentationOutcome | null;
 	/** Live-only mid-turn anchor marking a user message as steering; the DB
 	 * has no such flag (agent:supplement clears it on the live entry). */
 	steering?: boolean;
@@ -38,7 +39,7 @@ interface ResumeMessage {
 
 function persistedMessagePresentationType(
 	kind: TranscriptMessageKind | null | undefined,
-): string | undefined {
+): SessionMessagePresentationType | undefined {
 	switch (kind) {
 		case undefined:
 		case null:
@@ -58,7 +59,6 @@ function persistedMessagePresentationType(
 	const exhaustive: never = kind;
 	return exhaustive;
 }
-
 
 function persistedToolOutcome(
 	status: SessionStepStatus | null | undefined,

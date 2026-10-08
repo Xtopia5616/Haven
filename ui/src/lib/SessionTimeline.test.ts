@@ -25,7 +25,7 @@ describe('SessionTimeline', () => {
 
 	it('renders the message timeline immediately when the first message arrives', () => {
 		render(SessionTimeline, {
-			messages: [{ id: 'msg-1', role: 'user' as const, content: '你好', type: 'user' }],
+			messages: [{ id: 'msg-1', role: 'user' as const, content: '你好' }],
 		});
 
 		expect(document.querySelector('.message-list')).toBeTruthy();
@@ -39,7 +39,7 @@ describe('SessionTimeline', () => {
 					id: 'step-background',
 					role: 'assistant' as const,
 					content: '{"execution_mode":"background","tool_run_id":"toolrun-bg"}',
-					type: 'tool',
+					type: 'tool' as const,
 					toolName: 'shell',
 					sourceToolRunId: 'toolrun-bg',
 					stepNumber: 2,
@@ -72,7 +72,9 @@ describe('SessionTimeline', () => {
 		expect(container.querySelectorAll('.tool-run-wait-note')).toHaveLength(1);
 		expect(container.querySelector('.tool-run-timeline-card')).toBeNull();
 		expect(container.querySelector('.awaiting-bg-banner')).toBeNull();
-		expect(container.querySelector('.activity-group')?.textContent).toContain('等待后台任务结果');
+		expect(container.querySelector('.activity-group')?.textContent).toContain(
+			'等待后台任务结果',
+		);
 	});
 
 	it('uses the shared ToolRun card for scheduled details when the transcript is empty', () => {
@@ -104,7 +106,7 @@ describe('SessionTimeline', () => {
 
 	it('passes through the continue handler for a user-tail conversation', () => {
 		render(SessionTimeline, {
-			messages: [{ id: 'msg-1', role: 'user' as const, content: '继续处理', type: 'user' }],
+			messages: [{ id: 'msg-1', role: 'user' as const, content: '继续处理' }],
 			showContinueButton: true,
 		});
 
@@ -118,7 +120,7 @@ describe('SessionTimeline', () => {
 
 	it('removes the continue handler while it is unavailable', () => {
 		render(SessionTimeline, {
-			messages: [{ id: 'msg-1', role: 'user' as const, content: '继续处理', type: 'user' }],
+			messages: [{ id: 'msg-1', role: 'user' as const, content: '继续处理' }],
 			showContinueButton: true,
 			continueDisabled: true,
 		});
@@ -133,7 +135,7 @@ describe('SessionTimeline', () => {
 				id: 'step-a',
 				role: 'assistant' as const,
 				content: 'first result',
-				type: 'tool',
+				type: 'tool' as const,
 				toolName: 'shell',
 				stepNumber: 7,
 				streaming: false,
@@ -142,7 +144,7 @@ describe('SessionTimeline', () => {
 				id: 'step-b',
 				role: 'assistant' as const,
 				content: 'second result',
-				type: 'tool',
+				type: 'tool' as const,
 				toolName: 'files',
 				stepNumber: 7,
 				streaming: false,
@@ -163,7 +165,7 @@ describe('SessionTimeline', () => {
 					id: 'msg-preamble',
 					role: 'assistant' as const,
 					content: '检查相关文件',
-					type: 'thought',
+					type: 'thought' as const,
 					stepNumber: 7,
 					streaming: false,
 				},

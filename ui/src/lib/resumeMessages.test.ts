@@ -973,7 +973,7 @@ describe('formatMessageTime', () => {
 describe('mergeLiveStreaming', () => {
 	const dbMessages = [
 		{ id: 'm1', role: 'user' as const, content: 'hi' },
-		{ id: 'step-s1', type: 'tool', toolName: 'files', stepNumber: 1 },
+		{ id: 'step-s1', type: 'tool' as const, toolName: 'files', stepNumber: 1 },
 	];
 
 	it('merges DB messages with no streaming tail', () => {
@@ -982,7 +982,7 @@ describe('mergeLiveStreaming', () => {
 	});
 
 	it('appends streaming messages not already in the DB', () => {
-		const existing = [{ id: 'step-s2', type: 'tool', stepNumber: 2, streaming: true }];
+		const existing = [{ id: 'step-s2', type: 'tool' as const, stepNumber: 2, streaming: true }];
 		const merged = mergeLiveStreaming(dbMessages, existing);
 		expect(merged.map((m) => m.id)).toEqual(['m1', 'step-s1', 'step-s2']);
 	});
@@ -990,7 +990,7 @@ describe('mergeLiveStreaming', () => {
 	it('drops streaming messages whose id already exists in the DB', () => {
 		const existing = [
 			{ id: 'm1', streaming: true },
-			{ id: 'step-other', type: 'tool', streaming: true },
+			{ id: 'step-other', type: 'tool' as const, streaming: true },
 		];
 		const merged = mergeLiveStreaming(dbMessages, existing);
 		expect(merged.map((m) => m.id)).toEqual(['m1', 'step-s1', 'step-other']);
@@ -1004,10 +1004,22 @@ describe('mergeLiveStreaming', () => {
 		// never show a card plus a badge for one step.
 		const db = [
 			{ id: 'm1', role: 'user' as const, content: 'hi' },
-			{ id: 'step-1', type: 'tool', toolName: 'files', stepNumber: 1, streaming: false },
+			{
+				id: 'step-1',
+				type: 'tool' as const,
+				toolName: 'files',
+				stepNumber: 1,
+				streaming: false,
+			},
 		];
 		const existing = [
-			{ id: 'step-1', type: 'tool', toolName: 'files', stepNumber: 1, streaming: true },
+			{
+				id: 'step-1',
+				type: 'tool' as const,
+				toolName: 'files',
+				stepNumber: 1,
+				streaming: true,
+			},
 		];
 		const merged = mergeLiveStreaming(db, existing);
 		expect(merged.map((m) => m.id)).toEqual(['m1', 'step-1']);
@@ -1022,7 +1034,7 @@ describe('mergeLiveStreaming', () => {
 			{
 				id: 'msg-9',
 				role: 'assistant' as const,
-				type: 'reasoning',
+				type: 'reasoning' as const,
 				content: '完整推理文本',
 				streaming: false,
 			},
@@ -1031,7 +1043,7 @@ describe('mergeLiveStreaming', () => {
 			{
 				id: 'msg-9',
 				role: 'assistant' as const,
-				type: 'reasoning',
+				type: 'reasoning' as const,
 				content: '完整推理文本',
 				streaming: false,
 			},
@@ -1050,7 +1062,7 @@ describe('mergeLiveStreaming', () => {
 			{
 				id: 'msg-9',
 				role: 'assistant' as const,
-				type: 'reasoning',
+				type: 'reasoning' as const,
 				content: '新鲜推理',
 				streaming: false,
 			},
@@ -1062,7 +1074,12 @@ describe('mergeLiveStreaming', () => {
 	it('keeps finalized live thought text missing from the DB', () => {
 		const db = [{ id: 'm1', role: 'user' as const, content: 'hi' }];
 		const existing = [
-			{ id: 'msg-8', role: 'assistant' as const, content: '已定稿但未持久化', streaming: false },
+			{
+				id: 'msg-8',
+				role: 'assistant' as const,
+				content: '已定稿但未持久化',
+				streaming: false,
+			},
 		];
 		const merged = mergeLiveStreaming(db, existing);
 		expect(merged.map((m) => m.id)).toContain('msg-8');
@@ -1130,7 +1147,7 @@ describe('mergeLiveStreaming', () => {
 			{
 				id: 'msg-9',
 				role: 'assistant' as const,
-				type: 'reasoning',
+				type: 'reasoning' as const,
 				content: '先想想一部分',
 				streaming: false,
 			},
@@ -1148,14 +1165,14 @@ describe('mergeLiveStreaming', () => {
 		const existing = [
 			{
 				id: 'step-cut',
-				type: 'tool',
+				type: 'tool' as const,
 				toolName: 'shell',
 				content: 'Interrupted',
 				streaming: false,
 			},
 			{
 				id: 'tool-t-1-0-web_search',
-				type: 'tool',
+				type: 'tool' as const,
 				toolName: 'web_search',
 				content: '已联网搜索',
 				streaming: false,
@@ -1164,7 +1181,7 @@ describe('mergeLiveStreaming', () => {
 		const merged = mergeLiveStreaming(db, existing);
 		expect(merged.map((m) => m.id)).toEqual(['m1', 'step-cut']);
 		expect(merged.find((m) => m.id === 'step-cut')).toMatchObject({
-			type: 'tool',
+			type: 'tool' as const,
 			content: 'Interrupted',
 		});
 	});
@@ -1188,7 +1205,7 @@ describe('mergeLiveStreaming', () => {
 			{
 				id: 'step-7',
 				role: 'assistant' as const,
-				type: 'ask',
+				type: 'ask' as const,
 				content: '继续吗？',
 				options: [],
 				awaiting: false,
@@ -1198,7 +1215,7 @@ describe('mergeLiveStreaming', () => {
 		const existing = [
 			{
 				id: 'step-7',
-				type: 'ask',
+				type: 'ask' as const,
 				toolName: 'ask',
 				content: '继续吗？',
 				options: ['A', 'B'],
@@ -1221,7 +1238,7 @@ describe('mergeLiveStreaming', () => {
 			{
 				id: 'step-1',
 				role: 'assistant' as const,
-				type: 'ask',
+				type: 'ask' as const,
 				content: 'Q1？',
 				options: [],
 				awaiting: false,
@@ -1230,7 +1247,7 @@ describe('mergeLiveStreaming', () => {
 			{
 				id: 'step-2',
 				role: 'assistant' as const,
-				type: 'ask',
+				type: 'ask' as const,
 				content: 'Q2？',
 				options: [],
 				awaiting: false,
@@ -1240,7 +1257,7 @@ describe('mergeLiveStreaming', () => {
 		const existing = [
 			{
 				id: 'step-1',
-				type: 'ask',
+				type: 'ask' as const,
 				toolName: 'ask',
 				content: 'Q1？',
 				options: ['A'],
@@ -1249,7 +1266,7 @@ describe('mergeLiveStreaming', () => {
 			},
 			{
 				id: 'step-2',
-				type: 'ask',
+				type: 'ask' as const,
 				toolName: 'ask',
 				content: 'Q2？',
 				options: ['B'],
@@ -1271,12 +1288,18 @@ describe('mergeLiveStreaming', () => {
 		// badge (the old dropToolSteps behavior, now id-based).
 		const db = [
 			{ id: 'm1', role: 'user' as const, content: 'hi' },
-			{ id: 'step-9', type: 'tool', toolName: 'shell', stepNumber: 2, streaming: false },
+			{
+				id: 'step-9',
+				type: 'tool' as const,
+				toolName: 'shell',
+				stepNumber: 2,
+				streaming: false,
+			},
 		];
 		const existing = [
 			{
 				id: 'step-9',
-				type: 'tool',
+				type: 'tool' as const,
 				toolName: 'shell',
 				stepNumber: 2,
 				content: '',
@@ -1295,7 +1318,7 @@ describe('mergeLiveStreaming', () => {
 			{ id: 'm1', role: 'user' as const, content: 'hi' },
 			{
 				id: 'step-9',
-				type: 'tool',
+				type: 'tool' as const,
 				toolName: 'shell',
 				stepNumber: 2,
 				content: 'done',
@@ -1305,7 +1328,7 @@ describe('mergeLiveStreaming', () => {
 		const existing = [
 			{
 				id: 'step-9',
-				type: 'tool',
+				type: 'tool' as const,
 				toolName: 'shell',
 				stepNumber: 2,
 				content: 'done',

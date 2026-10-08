@@ -193,7 +193,10 @@ describe('ChatBubble', () => {
 	});
 
 	it('does not apply any pending class to finalized assistant bubbles', () => {
-		const { container } = render(ChatBubble, base({ role: 'assistant' as const, content: 'hi' }));
+		const { container } = render(
+			ChatBubble,
+			base({ role: 'assistant' as const, content: 'hi' }),
+		);
 		expect(container.querySelector('.bubble')!.classList.contains('pending')).toBe(false);
 	});
 
@@ -627,11 +630,11 @@ describe('ChatBubble markdown code fences', () => {
 		expect(container.querySelector('.md-code-wrap code')!.textContent).toContain('plain lines');
 	});
 
-	it('renders code fences for assistant message types without a dedicated bubble', async () => {
+	it('renders code fences for persisted message types without a dedicated bubble', async () => {
 		const { container } = render(ChatBubble, {
 			role: 'assistant' as const,
 			content: '```json\n{"ok": true}\n```',
-			type: 'action',
+			type: 'tool_call',
 			time: null,
 		});
 		await waitFor(() => expect(container.querySelector('.md-code-wrap')).toBeTruthy());

@@ -20,6 +20,10 @@
 		AskSelectionChangeHandler,
 		SessionMessageContextMenuRequest,
 	} from '$lib/sessionTimeline.ts';
+	import type {
+		SessionMessagePresentationType,
+		ToolResultPresentationOutcome,
+	} from '$lib/streaming.ts';
 
 	interface ChatBubbleAttachment {
 		media_type?: string;
@@ -31,12 +35,12 @@
 	interface Props {
 		role: CanonicalRole;
 		content: string;
-		type?: string | null;
+		type?: SessionMessagePresentationType | null;
 		time?: string | null;
 		voice?: boolean;
 		streaming?: boolean;
 		toolName?: string;
-		outcome?: string | null;
+		outcome?: ToolResultPresentationOutcome | null;
 		renderer?: string | null;
 		result?: AgentToolResultEnvelope | null;
 		messageId?: string;

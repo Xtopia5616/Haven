@@ -19,7 +19,13 @@ import {
 
 const STEP_ID = 'msg-thought-1';
 const REASONING_ID = 'msg-reasoning-1';
-const BASE = {
+const BASE: {
+	messageId: string;
+	msgType: 'reasoning' | undefined;
+	stepNumber: number;
+	runId: number;
+	time: string;
+} = {
 	messageId: STEP_ID,
 	msgType: undefined,
 	stepNumber: 1,
@@ -30,7 +36,7 @@ const BASE = {
 const chunk = (
 	messages: StreamMessage[],
 	delta: string,
-	opts: { msgType?: string; stepNumber?: number; runId?: number; time?: string } = {},
+	opts: { msgType?: 'reasoning'; stepNumber?: number; runId?: number; time?: string } = {},
 ): StreamMessage[] => accumulateStreamChunk(messages, { ...BASE, delta, ...opts });
 
 const snap = (
@@ -135,8 +141,19 @@ describe('resetStreamBlocks', () => {
 		const messages: StreamMessage[] = [
 			{ id: 'user-1', role: 'user' as const, content: 'request' },
 			{ id: STEP_ID, role: 'assistant' as const, content: 'old', streaming: true },
-			{ id: `${STEP_ID}-1`, role: 'assistant' as const, content: 'old tail', streaming: false },
-			{ id: 'tool-1', role: 'assistant' as const, type: 'tool', content: 'search', streaming: false },
+			{
+				id: `${STEP_ID}-1`,
+				role: 'assistant' as const,
+				content: 'old tail',
+				streaming: false,
+			},
+			{
+				id: 'tool-1',
+				role: 'assistant' as const,
+				type: 'tool',
+				content: 'search',
+				streaming: false,
+			},
 			{
 				id: REASONING_ID,
 				role: 'assistant' as const,
@@ -154,7 +171,7 @@ describe('resetStreamBlocks', () => {
 });
 
 describe('accumulateStreamChunk (reasoning)', () => {
-	const base = { ...BASE, messageId: REASONING_ID, msgType: 'reasoning' };
+	const base = { ...BASE, messageId: REASONING_ID, msgType: 'reasoning' as const };
 
 	it('never splits reasoning into segments', () => {
 		let m = accumulateStreamChunk([], { ...base, delta: '先想想。' });
@@ -370,7 +387,7 @@ describe('applyThoughtSnap', () => {
 		const tool = {
 			id: 'step-tool-1',
 			role: 'assistant' as const,
-			type: 'tool',
+			type: 'tool' as const,
 			content: '观察结果',
 			streaming: false,
 			stepNumber: 1,
@@ -584,7 +601,7 @@ describe('accumulateStreamChunk after websearch boundary', () => {
 	});
 
 	it('opens a new Thinking bubble after search instead of appending to the previous one', () => {
-		const r = { ...BASE, messageId: REASONING_ID, msgType: 'reasoning' };
+		const r = { ...BASE, messageId: REASONING_ID, msgType: 'reasoning' as const };
 		let m = accumulateStreamChunk([], { ...r, delta: '先想想要不要搜' });
 		m = finalizeStreamBlocks(m, REASONING_ID, null);
 		m = [
@@ -617,7 +634,7 @@ describe('accumulateStreamChunk after websearch boundary', () => {
 	});
 
 	it('puts a full-text reasoning reconcile on the post-search segment', () => {
-		const r = { ...BASE, messageId: REASONING_ID, msgType: 'reasoning' };
+		const r = { ...BASE, messageId: REASONING_ID, msgType: 'reasoning' as const };
 		let m = accumulateStreamChunk([], { ...r, delta: '搜前' });
 		m = finalizeStreamBlocks(m, REASONING_ID, null);
 		m = [
@@ -642,7 +659,7 @@ describe('accumulateStreamChunk after websearch boundary', () => {
 	});
 
 	it('strips the pre-search prefix from a full-text first post-search delta', () => {
-		const r = { ...BASE, messageId: REASONING_ID, msgType: 'reasoning' };
+		const r = { ...BASE, messageId: REASONING_ID, msgType: 'reasoning' as const };
 		let m = accumulateStreamChunk([], { ...r, delta: '搜前' });
 		m = finalizeStreamBlocks(m, REASONING_ID, null);
 		m = [
@@ -729,7 +746,7 @@ describe('applyThoughtSnap with websearch segments', () => {
 	});
 
 	it('keeps split Thinking bubbles and finalizes them in place', () => {
-		const r = { ...BASE, messageId: REASONING_ID, msgType: 'reasoning' };
+		const r = { ...BASE, messageId: REASONING_ID, msgType: 'reasoning' as const };
 		let m = accumulateStreamChunk([], { ...r, delta: '搜前思考' });
 		m = finalizeStreamBlocks(m, REASONING_ID, null);
 		m = [
@@ -925,7 +942,11 @@ describe('toolRunIdFromObservation', () => {
 	it('extracts tool_run_id from background shell observations', () => {
 		expect(
 			toolRunIdFromObservation(
-				JSON.stringify({ execution_mode: 'background', tool_run_id: 'toolrun-1', status: 'running' }),
+				JSON.stringify({
+					execution_mode: 'background',
+					tool_run_id: 'toolrun-1',
+					status: 'running',
+				}),
 			),
 		).toBe('toolrun-1');
 	});

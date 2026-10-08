@@ -1,13 +1,14 @@
 import logger from './logger.ts';
 import type { AgentChunkPayload } from './contracts/agent.ts';
 import type { UiMetricsSnapshot } from './contracts/commands.ts';
+import type { SessionMessagePresentationType } from './streaming.ts';
 import type { AgentChunkBatchItem, SessionAction } from './sessionReducer.ts';
 
 export interface PendingChunk {
 	tid: string;
 	sid: string;
 	delta: string;
-	msgType: string | undefined;
+	msgType: Extract<SessionMessagePresentationType, 'reasoning'> | undefined;
 	stepNumber: number;
 	runId: number;
 	seq?: number;
@@ -54,7 +55,7 @@ interface StreamChunkEvent {
 export interface StreamEventAggregator {
 	chunkHandler: (
 		isThought: boolean,
-		msgType: string | undefined,
+		msgType: Extract<SessionMessagePresentationType, 'reasoning'> | undefined,
 	) => (event: StreamChunkEvent) => void;
 	blockIdsOf: (sessionId: string, stepNumber: number, runId: number) => StepBlockIds;
 	clearStepBlockIds: (sessionId: string | null) => void;
@@ -169,7 +170,10 @@ export function createStreamEventAggregator({
 		flushPendingChunks();
 	}
 
-	function chunkHandler(isThought: boolean, msgType: string | undefined) {
+	function chunkHandler(
+		isThought: boolean,
+		msgType: Extract<SessionMessagePresentationType, 'reasoning'> | undefined,
+	) {
 		return (event: StreamChunkEvent) => {
 			const data = event.payload;
 			const sessionId = data.sessionId;

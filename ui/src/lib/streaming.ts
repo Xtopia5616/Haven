@@ -16,8 +16,21 @@
 // one entity and merges need no content-based dedup.
 
 import type { AgentToolResultEnvelope } from './contracts/agent.ts';
-import type { CanonicalRole } from './contracts/generatedCommands.ts';
+import type {
+	CanonicalRole,
+	SessionStepStatus,
+	ToolExecutionOutcome,
+	ToolRunStatus,
+} from './contracts/generatedCommands.ts';
 import { isRecord } from './contracts/objectGuards.ts';
+
+/** Renderer-only session message kinds; durable message kinds map into this view. */
+export type SessionMessagePresentationType =
+	'thought' | 'reasoning' | 'tool' | 'ask' | 'peer_kickoff' | 'supplement' | 'tool_call';
+
+/** Outcome values projected from tool results, ToolRuns, and persisted history. */
+export type ToolResultPresentationOutcome =
+	ToolExecutionOutcome | Extract<SessionStepStatus, 'unknown'> | ToolRunStatus;
 
 /** A chat-bubble message in the live streaming view. */
 export interface StreamMessage {
@@ -25,7 +38,7 @@ export interface StreamMessage {
 	role?: CanonicalRole;
 	content?: string;
 	/** Renderer-only presentation discriminator; it is not a durable message kind. */
-	type?: string | null;
+	type?: SessionMessagePresentationType | null;
 	toolName?: string;
 	voice?: boolean;
 	stepNumber?: number | null;
@@ -42,7 +55,7 @@ export interface StreamMessage {
 	received?: boolean;
 	result?: AgentToolResultEnvelope;
 	toolArgs?: unknown;
-	outcome?: string | null;
+	outcome?: ToolResultPresentationOutcome | null;
 	renderer?: string | null;
 	toolRunId?: string | null;
 	/** Stable ToolRun identity used to anchor its timeline card to this tool step. */
@@ -208,7 +221,7 @@ export function newToolMessage({
 	 * so the placeholder's args are preserved via object spread. */
 	toolArgs?: unknown;
 	showFallbackIntent?: boolean | undefined;
-	outcome?: string | null | undefined;
+	outcome?: ToolResultPresentationOutcome | null | undefined;
 	renderer?: string | null | undefined;
 	result?: AgentToolResultEnvelope | undefined;
 }): StreamMessage {
@@ -239,11 +252,7 @@ export function toolRunIdFromObservation(observation: string | undefined | null)
 	if (!observation) return null;
 	try {
 		const j = JSON.parse(observation);
-		if (
-			isRecord(j) &&
-			j.execution_mode === 'background' &&
-			typeof j.tool_run_id === 'string'
-		) {
+		if (isRecord(j) && j.execution_mode === 'background' && typeof j.tool_run_id === 'string') {
 			return j.tool_run_id;
 		}
 	} catch {
@@ -263,7 +272,9 @@ export function sourceToolRunIdFromObservation(
 	try {
 		const value: unknown = JSON.parse(observation);
 		if (!isRecord(value)) return null;
-		return value.operation === 'set' && typeof value.tool_run_id === 'string' && value.tool_run_id
+		return value.operation === 'set' &&
+			typeof value.tool_run_id === 'string' &&
+			value.tool_run_id
 			? value.tool_run_id
 			: null;
 	} catch {
@@ -318,7 +329,7 @@ function newStreamMessage({
 	id: string;
 	content: string;
 	streaming?: boolean;
-	msgType?: string | undefined;
+	msgType?: 'reasoning' | undefined;
 	stepNumber?: number | null;
 	runId?: number | null;
 	time?: string;
@@ -339,7 +350,7 @@ function newStreamMessage({
 /**
  * Fold one streamed delta into the in-memory message list for a step.
  * @param {Array<object>} messages
- * @param {{ messageId: string, delta: string, msgType: string|undefined, stepNumber: number, runId: number, time: string }} opts
+ * @param {{ messageId: string, delta: string, msgType: 'reasoning'|undefined, stepNumber: number, runId: number, time: string }} opts
  * @returns {Array<object>}
  */
 /** Next suffix id for a post-tool / post-websearch thought segment
@@ -364,7 +375,7 @@ function appendAfterFinalized(
 	opts: {
 		messageId: string;
 		delta: string;
-		msgType: string | undefined;
+		msgType: 'reasoning' | undefined;
 		stepNumber: number;
 		runId: number;
 		time: string;
@@ -418,7 +429,7 @@ export function accumulateStreamChunk(
 	opts: {
 		messageId: string;
 		delta: string;
-		msgType: string | undefined;
+		msgType: 'reasoning' | undefined;
 		stepNumber: number;
 		runId: number;
 		time: string;

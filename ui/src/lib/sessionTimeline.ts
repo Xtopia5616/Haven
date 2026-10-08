@@ -2,6 +2,7 @@ import type { ToolRunPayload } from './contracts/toolRun.ts';
 import type { CanonicalRole } from './contracts/generatedCommands.ts';
 import type { SessionMessage } from './sessionReducer.ts';
 import { sourceToolRunIdFromObservation } from './streaming.ts';
+import type { SessionMessagePresentationType } from './streaming.ts';
 
 /** Messages that describe agent work rather than user-facing transcript content. */
 const MERGED_MESSAGE_TYPES = new Set(['thought', 'reasoning', 'tool']);
@@ -13,7 +14,7 @@ export interface SessionMessageContextMenuRequest {
 	stepNumber: number | null;
 	role: CanonicalRole;
 	content: string;
-	type: string | null;
+	type: SessionMessagePresentationType | null;
 	selectedContent: string;
 }
 
@@ -163,9 +164,10 @@ export function firstWaitingBackgroundToolRunId(
 ): string | null {
 	if (!awaitingBackground) return null;
 	return (
-		[...toolRuns].sort(compareToolRuns).find(
-			(toolRun) => toolRun.kind === 'background' && toolRun.status === 'running',
-		)?.toolRunId ?? null
+		[...toolRuns]
+			.sort(compareToolRuns)
+			.find((toolRun) => toolRun.kind === 'background' && toolRun.status === 'running')
+			?.toolRunId ?? null
 	);
 }
 
@@ -201,7 +203,8 @@ export function groupSessionTimeline(
 				? stepIndex
 				: messages.findIndex(
 						(message) =>
-							message.type === 'tool' && sourceToolRunId(message) === toolRun.toolRunId,
+							message.type === 'tool' &&
+							sourceToolRunId(message) === toolRun.toolRunId,
 					);
 		if (sourceIndex < 0) {
 			trailing.push(toolRun);
@@ -230,16 +233,13 @@ export function groupSessionTimeline(
 	const activeItems: SessionTimelineItem[] = [];
 	// A live item stays visible after transcript rows that arrived after its source.
 	const isLiveTimelineItem = (item: SessionTimelineItem) =>
-			(item.kind === 'activity' &&
-				(item.streaming ||
-					item.entries.some(({ index }) => runningSourceIndexes.has(index)))) ||
-			(item.kind === 'message' && runningSourceIndexes.has(item.index)) ||
-			(item.kind === 'tool_run' && item.toolRun.status === 'running');
-	const appendTimelineItem = (
-		item: SessionTimelineItem,
-		keepWithLiveSource = false,
-	) => {
-		((keepWithLiveSource || isLiveTimelineItem(item)) ? activeItems : result).push(item);
+		(item.kind === 'activity' &&
+			(item.streaming ||
+				item.entries.some(({ index }) => runningSourceIndexes.has(index)))) ||
+		(item.kind === 'message' && runningSourceIndexes.has(item.index)) ||
+		(item.kind === 'tool_run' && item.toolRun.status === 'running');
+	const appendTimelineItem = (item: SessionTimelineItem, keepWithLiveSource = false) => {
+		(keepWithLiveSource || isLiveTimelineItem(item) ? activeItems : result).push(item);
 	};
 	const toolRunItem = (toolRun: ToolRunPayload): SessionTimelineToolRunItem => {
 		const awaitingResult = toolRun.toolRunId === firstWaitingToolRunId;

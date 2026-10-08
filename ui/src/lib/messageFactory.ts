@@ -1,10 +1,11 @@
 import { formatMessageTime } from './messageFormat.ts';
 import type { CanonicalRole } from './contracts/generatedCommands.ts';
+import type { SessionMessagePresentationType } from './streaming.ts';
 
 export type NewMessageOptions = {
 	role: CanonicalRole;
 	content: string;
-	type?: string | null;
+	type?: SessionMessagePresentationType | null;
 	voice?: boolean;
 	time?: string | null;
 	attachments?: Array<{ media_type: string; data: string }>;

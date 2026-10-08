@@ -51,7 +51,6 @@ describe('selectChatVisibleMessages', () => {
 		const ordinary: SessionMessage = {
 			id: 'msg-1',
 			role: 'assistant' as const,
-			type: 'text',
 			content: '完成',
 		};
 		const selected = selectChatVisibleMessages(

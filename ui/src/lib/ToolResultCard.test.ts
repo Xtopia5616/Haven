@@ -498,6 +498,18 @@ describe('ToolResultCard outcomes', () => {
 				?.textContent,
 		).toBe('调用失败');
 		expect(failed.container.querySelector('.tool-result-message--error')).toBeTruthy();
+
+		failed.unmount();
+		const timedOut = render(ToolResultCard, {
+			toolName: 'files',
+			content: '',
+			outcome: 'timed_out_and_terminated',
+		});
+		await expandToolCard(timedOut.container);
+		expect(
+			timedOut.container.querySelector('[data-detail="output"] .tool-result-message')
+				?.textContent,
+		).toBe('调用超时');
 	});
 
 	it('uses the result envelope when the outcome prop is absent', async () => {
