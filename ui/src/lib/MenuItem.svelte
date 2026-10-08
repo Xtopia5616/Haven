@@ -5,7 +5,7 @@
 		selected?: boolean;
 		disabled?: boolean;
 		danger?: boolean;
-		role?: string;
+		role?: 'menuitem' | 'menuitemradio';
 		ariaChecked?: boolean;
 		label?: string;
 		className?: string;

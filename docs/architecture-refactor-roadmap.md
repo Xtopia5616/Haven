@@ -264,6 +264,8 @@
 
 **HTTP renderer body prop 复核（2026-10-08）：** registry 已将 HTTP `body` 限制为字符串（允许缺省/null）；renderer prop 原为 `unknown`，尽管组件只呈现字符串。现在 props 与 validator 一致，HTTP body object 的负向 fallback 有覆盖（ADR 0751）。
 
+**共享按钮与菜单项 role prop 复核（2026-10-08）：** 主题外观页给 `MaterialButton` 传入的 role 只有 `radio`，现由 Props 闭合；`MenuItem` 调用只使用 `menuitem` 与 `menuitemradio`，也已收窄为闭合 Props union。测试移除 `as any`，不改变页面行为或跨端契约（ADR 0796）。
+
 #### 首轮全仓符号扫描与候选分流
 
 | 范围 | 证据与调用边界 | 当前分类 / 下一步 |

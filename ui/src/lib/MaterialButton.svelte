@@ -14,7 +14,7 @@
 		ariaExpanded?: boolean;
 		ariaChecked?: boolean;
 		ariaPressed?: boolean;
-		role?: string;
+		role?: 'radio';
 		style?: string;
 		ariaHaspopup?: 'menu' | 'listbox' | 'tree' | 'grid' | 'dialog' | boolean;
 		id?: string;

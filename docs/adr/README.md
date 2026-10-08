@@ -784,3 +784,4 @@
 - [0793：收窄 ToolRun card tone](0793-type-toolrun-card-tone.md)
 - [0794：移除未使用的工作区指标组件](0794-remove-unused-workspace-metric-strip.md)
 - [0795：类型化 MCP server snapshot transport](0795-type-mcp-server-snapshot-transport.md)
+- [0796：收窄共享按钮与菜单项 role props](0796-narrow-shared-button-menu-role-props.md)
