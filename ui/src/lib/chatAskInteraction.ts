@@ -168,7 +168,7 @@ export function createAskInteractionController({
 		const response: AskResponseView = resolved.ignored
 			? { ignored: true }
 			: { answer: resolved.answer || '' };
-		reducer.dispatch({ type: 'session/interaction-resolved', id: msgId, response });
+		reducer.dispatch({ type: 'session/ask-resolved', id: msgId, response });
 		ids.add(msgId);
 		resolvedAskIds.set(sessionId, ids);
 		const byMessage = askSelections.get(sessionId);

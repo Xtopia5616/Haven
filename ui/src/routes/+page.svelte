@@ -204,7 +204,7 @@
 				return {
 					id: request.id,
 					kind: request.kind,
-					title: `${request.kind === 'scheduled_confirm' ? '定时任务' : '权限'}确认 · ${sessionTitle}`,
+					title: `权限确认 · ${sessionTitle}`,
 					detail: request.summary || request.toolName || '等待你的许可',
 				};
 			}),

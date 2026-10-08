@@ -183,7 +183,7 @@ export type SessionAction =
 			preserveInteractionIds?: string[];
 	  }
 	| { type: 'session/interactions-cleared'; sessionId: string; kind?: InteractionKind }
-	| { type: 'session/interaction-resolved'; id: string; response?: AskResponseView }
+	| { type: 'session/ask-resolved'; id: string; response: AskResponseView }
 	| { type: 'session/scheduled-tool-run-cancelled'; toolRunId: string }
 	| {
 			type: 'session/interaction-resolution-result';

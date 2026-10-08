@@ -1,5 +1,4 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { InteractionKind } from './contracts/generatedCommands.ts';
 import { createAskInteractionController } from './chatAskInteraction.ts';
 import { SessionReducer } from './sessionReducer.ts';
 
@@ -116,9 +115,11 @@ describe('createAskInteractionController', () => {
 
 		controller.handleIgnoreAsk('ask-1');
 		const firstResolved = reducer.snapshot().interactions['ask-1'];
+		if (!firstResolved || firstResolved.kind !== 'ask')
+			throw new Error('expected an Ask interaction to be resolved');
 		reducer.dispatch({
 			type: 'session/interaction-upserted',
-			request: { ...firstResolved!, response: { answer: 'reducer answer' } },
+			request: { ...firstResolved, response: { answer: 'reducer answer' } },
 		});
 		controller.handleIgnoreAsk('ask-2');
 
@@ -215,23 +216,34 @@ describe('createAskInteractionController', () => {
 		const { controller } = createController();
 		controller.handleIgnoreAsk('ask-1');
 
-		const interaction = (
-			id: string,
-			sessionId: string,
-			kind: InteractionKind,
-		) => ({
-			id,
-			sessionId,
-			owner: { kind: 'session' as const, sessionId },
-			kind,
-			status: 'pending' as const,
-			options: [],
-			createdAt: '',
-		});
 		for (const request of [
-			interaction('confirm-same', SESSION_ID, 'confirm'),
-			interaction('scheduled-same', SESSION_ID, 'scheduled_confirm'),
-			interaction('ask-other', 'ses-other', 'ask'),
+			{
+				id: 'confirm-same',
+				sessionId: SESSION_ID,
+				owner: { kind: 'session' as const, sessionId: SESSION_ID },
+				kind: 'confirm' as const,
+				status: 'pending' as const,
+				options: [],
+				createdAt: '',
+			},
+			{
+				id: 'scheduled-same',
+				sessionId: SESSION_ID,
+				owner: { kind: 'scheduled_tool_run' as const, toolRunId: 'toolrun-scheduled' },
+				kind: 'scheduled_confirm' as const,
+				status: 'pending' as const,
+				options: [],
+				createdAt: '',
+			},
+			{
+				id: 'ask-other',
+				sessionId: 'ses-other',
+				owner: { kind: 'session' as const, sessionId: 'ses-other' },
+				kind: 'ask' as const,
+				status: 'pending' as const,
+				options: [],
+				createdAt: '',
+			},
 		])
 			reducer.dispatch({ type: 'session/interaction-upserted', request });
 

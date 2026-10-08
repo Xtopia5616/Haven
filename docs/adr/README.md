@@ -793,3 +793,4 @@
 - [0802：类型化 interaction resolution views](0802-type-interaction-resolution-views.md)
 - [0803：移除未消费的录音事件字段](0803-remove-unused-recording-event-fields.md)
 - [0804：区分 Ask answer 与 ignored response](0804-discriminate-ask-response-view.md)
+- [0805：关联 interaction kind 与 owner](0805-correlate-interaction-kind-and-owner.md)

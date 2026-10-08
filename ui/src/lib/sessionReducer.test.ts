@@ -43,6 +43,25 @@ describe('resume interaction normalization', () => {
 					options: ['A', 'B'],
 					createdAt: '2026-09-25T00:02:00Z',
 				},
+				{
+					id: 'step-ask-resume',
+					session_id: 'ses-ask-resume',
+					owner: { kind: 'session', session_id: 'ses-ask-resume' },
+					kind: 'ask',
+					status: 'pending',
+					options: ['继续'],
+					created_at: '2026-09-25T00:02:00Z',
+				},
+				{
+					id: 'conf-scheduled-resume',
+					session_id: 'ses-scheduled-context',
+					owner: { kind: 'scheduled_tool_run', tool_run_id: 'toolrun-resume' },
+					kind: 'scheduled_confirm',
+					status: 'pending',
+					options: [],
+					created_at: '2026-09-25T00:02:00Z',
+					expires_at: '2026-09-25T00:03:00Z',
+				},
 				{ id: 'missing-session', kind: 'ask', status: 'pending' },
 				{ id: 'invalid-session', session_id: 7, kind: 'ask', status: 'pending' },
 				{
@@ -64,6 +83,33 @@ describe('resume interaction normalization', () => {
 					created_at: '2026-09-25T00:00:00Z',
 					expires_at: 'invalid',
 				},
+				{
+					id: 'ask-with-app-command-owner',
+					owner: { kind: 'app_command' },
+					kind: 'ask',
+					status: 'pending',
+					options: [],
+					created_at: '2026-09-25T00:00:00Z',
+				},
+				{
+					id: 'confirm-with-scheduled-owner',
+					owner: { kind: 'scheduled_tool_run', tool_run_id: 'toolrun-resume' },
+					kind: 'confirm',
+					status: 'pending',
+					options: [],
+					created_at: '2026-09-25T00:00:00Z',
+					expires_at: '2026-09-25T00:01:00Z',
+				},
+				{
+					id: 'scheduled-confirm-with-session-owner',
+					session_id: 'ses-wire',
+					owner: { kind: 'session', session_id: 'ses-wire' },
+					kind: 'scheduled_confirm',
+					status: 'pending',
+					options: [],
+					created_at: '2026-09-25T00:00:00Z',
+					expires_at: '2026-09-25T00:01:00Z',
+				},
 			],
 		});
 
@@ -83,6 +129,25 @@ describe('resume interaction normalization', () => {
 				createdAt: '2026-09-25T00:00:00Z',
 				expiresAt: '2026-09-25T00:01:00Z',
 			},
+			{
+				id: 'step-ask-resume',
+				sessionId: 'ses-ask-resume',
+				owner: { kind: 'session', sessionId: 'ses-ask-resume' },
+				kind: 'ask',
+				status: 'pending',
+				options: ['继续'],
+				createdAt: '2026-09-25T00:02:00Z',
+			},
+			{
+				id: 'conf-scheduled-resume',
+				sessionId: 'ses-scheduled-context',
+				owner: { kind: 'scheduled_tool_run', toolRunId: 'toolrun-resume' },
+				kind: 'scheduled_confirm',
+				status: 'pending',
+				options: [],
+				createdAt: '2026-09-25T00:02:00Z',
+				expiresAt: '2026-09-25T00:03:00Z',
+			},
 		]);
 	});
 
@@ -93,6 +158,27 @@ describe('resume interaction normalization', () => {
 });
 
 describe('SessionReducer', () => {
+	it('does not resolve a confirmation through the Ask-only reducer action', () => {
+		const pending = {
+			id: 'conf-not-an-ask',
+			sessionId: 'ses-a',
+			owner: { kind: 'session' as const, sessionId: 'ses-a' },
+			kind: 'confirm' as const,
+			status: 'pending' as const,
+			options: [],
+			createdAt: '2026-09-25T00:00:00Z',
+		};
+		const initial = stateWith({ interactions: { [pending.id]: pending } });
+
+		const unchanged = reduceSession(initial, {
+			type: 'session/ask-resolved',
+			id: pending.id,
+			response: { answer: 'approve' },
+		});
+
+		expect(unchanged).toBe(initial);
+	});
+
 	it('keeps explicit confirmation outcomes distinct and removes stale requests', () => {
 		const pending = {
 			id: 'conf-terminal',

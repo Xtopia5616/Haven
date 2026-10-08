@@ -61,6 +61,28 @@ describe('app-shell IPC contract', () => {
 		expect(event?.payload).not.toHaveProperty('future_field');
 	});
 
+	it('accepts a Session-owned Ask interaction', () => {
+		const event = mapAppEvent({
+			event: 'interaction:requested',
+			id: 24,
+			payload: {
+				id: 'step-ask-event',
+				session_id: 'ses-ask-event',
+				owner: { kind: 'session', session_id: 'ses-ask-event' },
+				kind: 'ask',
+				status: 'pending',
+				options: ['继续', '停止'],
+				created_at: '2026-01-01T00:00:00Z',
+			},
+		});
+
+		expect(event?.payload).toMatchObject({
+			id: 'step-ask-event',
+			kind: 'ask',
+			owner: { kind: 'session', sessionId: 'ses-ask-event' },
+		});
+	});
+
 	it('rejects unknown interaction enum values while defaulting omitted options', () => {
 		const event = mapAppEvent({
 			event: 'interaction:requested',
@@ -83,38 +105,75 @@ describe('app-shell IPC contract', () => {
 		{
 			owner: { kind: 'app_command' },
 			expectedOwner: { kind: 'app_command' },
+			kind: 'confirm',
 		},
 		{
 			owner: { kind: 'scheduled_tool_run', tool_run_id: 'toolrun-1' },
-		expectedOwner: { kind: 'scheduled_tool_run', toolRunId: 'toolrun-1' },
+			expectedOwner: { kind: 'scheduled_tool_run', toolRunId: 'toolrun-1' },
+			kind: 'scheduled_confirm',
 		},
 		{
 			owner: { kind: 'scheduled_tool_run', tool_run_id: 'toolrun-1' },
 			session_id: 'ses-context',
-		expectedOwner: { kind: 'scheduled_tool_run', toolRunId: 'toolrun-1' },
+			expectedOwner: { kind: 'scheduled_tool_run', toolRunId: 'toolrun-1' },
+			kind: 'scheduled_confirm',
 		},
-	])('maps explicit owner routes and optional session context', ({ owner, session_id, expectedOwner }) => {
-		const event = mapAppEvent({
-			event: 'interaction:requested',
-			id: 20,
-			payload: {
-				id: 'conf-owner',
-				...(session_id ? { session_id } : {}),
-				owner,
-				kind: 'confirm',
-				status: 'pending',
-				created_at: '2026-01-01T00:00:00Z',
-				expires_at: '2026-01-01T00:05:00Z',
-			},
-		});
+	])(
+		'maps explicit owner routes and optional session context',
+		({ owner, session_id, expectedOwner, kind }) => {
+			const event = mapAppEvent({
+				event: 'interaction:requested',
+				id: 20,
+				payload: {
+					id: 'conf-owner',
+					...(session_id ? { session_id } : {}),
+					owner,
+					kind,
+					status: 'pending',
+					created_at: '2026-01-01T00:00:00Z',
+					expires_at: '2026-01-01T00:05:00Z',
+				},
+			});
 
-		expect(event?.payload).toMatchObject({
-			id: 'conf-owner',
-			owner: expectedOwner,
-		});
-		if (session_id) expect(event?.payload).toMatchObject({ sessionId: session_id });
-		else expect(event?.payload).not.toHaveProperty('sessionId');
-	});
+			expect(event?.payload).toMatchObject({
+				id: 'conf-owner',
+				owner: expectedOwner,
+				kind,
+			});
+			if (session_id) expect(event?.payload).toMatchObject({ sessionId: session_id });
+			else expect(event?.payload).not.toHaveProperty('sessionId');
+		},
+	);
+
+	it.each([
+		{ kind: 'ask', owner: { kind: 'app_command' } },
+		{ kind: 'confirm', owner: { kind: 'scheduled_tool_run', tool_run_id: 'toolrun-1' } },
+		{
+			kind: 'scheduled_confirm',
+			owner: { kind: 'session', session_id: 'ses-1' },
+			session_id: 'ses-1',
+		},
+		{ kind: 'scheduled_confirm', owner: { kind: 'app_command' } },
+	])(
+		'rejects an interaction kind that does not belong to its owner: $kind',
+		({ kind, owner, session_id }) => {
+			const event = mapAppEvent({
+				event: 'interaction:requested',
+				id: 23,
+				payload: {
+					id: 'interaction-owner-kind-mismatch',
+					...(session_id ? { session_id } : {}),
+					owner,
+					kind,
+					status: 'pending',
+					options: [],
+					created_at: '2026-01-01T00:00:00Z',
+					expires_at: '2026-01-01T00:05:00Z',
+				},
+			});
+			expect(event).toBeNull();
+		},
+	);
 
 	it.each([undefined, 'not-a-deadline'])('rejects pending confirmations without a valid owner deadline', (expiresAt) => {
 		const event = mapAppEvent({

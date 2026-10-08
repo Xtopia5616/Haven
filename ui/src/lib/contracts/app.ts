@@ -42,7 +42,6 @@ export function interactionOwnerToWire(owner: InteractionOwnerView): Interaction
 }
 interface InteractionRequestBase {
 	id: string;
-	kind: InteractionKind;
 	status: InteractionStatus;
 	options: string[];
 	toolName?: string;
@@ -54,27 +53,60 @@ interface InteractionRequestBase {
 	toolCallId?: string;
 	createdAt: string;
 	expiresAt?: string;
-	/** Renderer-local answer projection for an Ask interaction. */
-	response?: AskResponseView;
 }
+type SessionInteractionOwner = Extract<InteractionOwnerView, { kind: 'session' }>;
+type ScheduledToolRunInteractionOwner = Extract<
+	InteractionOwnerView,
+	{ kind: 'scheduled_tool_run' }
+>;
+type AppCommandInteractionOwner = Extract<InteractionOwnerView, { kind: 'app_command' }>;
+
 export type InteractionRequest =
 	| (InteractionRequestBase & {
-			owner: Extract<InteractionOwnerView, { kind: 'session' }>;
+			kind: Extract<InteractionKind, 'ask'>;
+			owner: SessionInteractionOwner;
 			sessionId: string;
+			/** Renderer-local answer projection for an Ask interaction. */
+			response?: AskResponseView;
 	  })
 	| (InteractionRequestBase & {
-			owner: Extract<InteractionOwnerView, { kind: 'scheduled_tool_run' }>;
+			kind: Extract<InteractionKind, 'confirm'>;
+			owner: SessionInteractionOwner;
+			sessionId: string;
+			response?: never;
+	  })
+	| (InteractionRequestBase & {
+			kind: Extract<InteractionKind, 'confirm'>;
+			owner: AppCommandInteractionOwner;
+			sessionId?: never;
+			response?: never;
+	  })
+	| (InteractionRequestBase & {
+			kind: Extract<InteractionKind, 'scheduled_confirm'>;
+			owner: ScheduledToolRunInteractionOwner;
 			sessionId?: string;
-	  })
-	| (InteractionRequestBase & {
-			owner: Extract<InteractionOwnerView, { kind: 'app_command' }>;
-		sessionId?: never;
+			response?: never;
 	  });
 
 /** Normalized renderer view for a resolved Ask interaction's response. */
 export type AskResponseView =
 	| { answer: string; ignored?: false }
 	| { ignored: true; answer?: never };
+
+/** Runtime producer/owner combinations used by the interaction event and resume projections. */
+export function isValidInteractionKindOwnerPair(
+	kind: unknown,
+	owner: InteractionOwnerView,
+): boolean {
+	switch (owner.kind) {
+		case 'session':
+			return kind === 'ask' || kind === 'confirm';
+		case 'scheduled_tool_run':
+			return kind === 'scheduled_confirm';
+		case 'app_command':
+			return kind === 'confirm';
+	}
+}
 
 export function isSessionInteractionRequest(
 	request: InteractionRequest,
@@ -255,7 +287,7 @@ export function mapAppEvent(event: unknown): TauriEvent<AppEventPayloadMap[AppEv
 			)
 				return null;
 			const owner = mapInteractionOwner(p.owner, sessionId as string | undefined);
-			if (!owner) return null;
+			if (!owner || !isValidInteractionKindOwnerPair(kind, owner)) return null;
 
 			const wire = p as unknown as GeneratedInteractionRequestedEvent;
 			const payload = {

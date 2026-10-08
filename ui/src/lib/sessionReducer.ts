@@ -131,7 +131,7 @@ export function reduceSession(
 		case 'session/interaction-upserted':
 		case 'session/interactions-hydrated':
 		case 'session/interactions-cleared':
-		case 'session/interaction-resolved':
+		case 'session/ask-resolved':
 		case 'session/interaction-resolution-result':
 		case 'session/scheduled-tool-run-cancelled':
 			return reduceInteraction(inputState, action);

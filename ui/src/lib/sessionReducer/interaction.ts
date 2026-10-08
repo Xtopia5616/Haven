@@ -1,4 +1,8 @@
-import { mapInteractionOwner, type InteractionRequest } from '../contracts/app.ts';
+import {
+	isValidInteractionKindOwnerPair,
+	mapInteractionOwner,
+	type InteractionRequest,
+} from '../contracts/app.ts';
 import { isRecord } from '../contracts/objectGuards.ts';
 import type { InteractionKind } from '../contracts/generatedCommands.ts';
 import {
@@ -14,7 +18,7 @@ type InteractionReducerAction = SessionActionOf<
 	| 'session/interactions-hydrated'
 	| 'session/interactions-cleared'
 	| 'session/asks-settled'
-	| 'session/interaction-resolved'
+	| 'session/ask-resolved'
 	| 'session/interaction-resolution-result'
 	| 'session/scheduled-tool-run-cancelled'
 >;
@@ -87,9 +91,15 @@ export function reduceInteraction(
 					),
 				),
 			};
-		case 'session/interaction-resolved': {
+		case 'session/ask-resolved': {
 			const request = state.interactions[action.id];
-			if (!request || request.status !== 'pending') return state;
+			if (
+				!request ||
+				request.kind !== 'ask' ||
+				request.owner.kind !== 'session' ||
+				request.status !== 'pending'
+			)
+				return state;
 			return {
 				...state,
 				interactions: {
@@ -97,7 +107,7 @@ export function reduceInteraction(
 					[action.id]: {
 						...request,
 						status: 'resolved',
-						...(action.response === undefined ? {} : { response: action.response }),
+						response: action.response,
 					},
 				},
 			};
@@ -175,6 +185,8 @@ function normalizeInteraction(raw: unknown): InteractionRequest | null {
 		typeof createdAt !== 'string'
 	)
 		return null;
+	const interactionKind = kind as InteractionRequest['kind'];
+	if (!isValidInteractionKindOwnerPair(interactionKind, owner)) return null;
 	if (
 		status === 'pending' &&
 		kind !== 'ask' &&
@@ -191,7 +203,6 @@ function normalizeInteraction(raw: unknown): InteractionRequest | null {
 	const expiresAt = value.expires_at;
 	const normalized = {
 		id,
-		kind: kind as InteractionRequest['kind'],
 		status: status as InteractionRequest['status'],
 		options,
 		...(typeof toolName === 'string' ? { toolName } : {}),
@@ -209,14 +220,20 @@ function normalizeInteraction(raw: unknown): InteractionRequest | null {
 	};
 	if (owner.kind === 'session') {
 		if (sessionId !== owner.sessionId) return null;
-		return { ...normalized, sessionId: owner.sessionId, owner };
+		if (interactionKind === 'ask')
+			return { ...normalized, kind: interactionKind, sessionId: owner.sessionId, owner };
+		if (interactionKind === 'confirm')
+			return { ...normalized, kind: interactionKind, sessionId: owner.sessionId, owner };
+		return null;
 	}
 	if (owner.kind === 'app_command') {
-		if (sessionId !== undefined) return null;
-		return { ...normalized, owner };
+		if (sessionId !== undefined || interactionKind !== 'confirm') return null;
+		return { ...normalized, kind: interactionKind, owner };
 	}
+	if (interactionKind !== 'scheduled_confirm') return null;
 	return {
 		...normalized,
+		kind: interactionKind,
 		...(sessionId === undefined ? {} : { sessionId: sessionId as string }),
 		owner,
 	};
