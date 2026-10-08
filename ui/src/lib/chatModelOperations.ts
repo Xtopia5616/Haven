@@ -68,7 +68,11 @@ export function createChatModelOperations(dependencies: ChatModelOperationsDepen
 
 	function selectModel(model: ChatModelOption): Promise<void> {
 		return runOperation(
-			() => dependencies.invoke('switch_model', { requestKind: 'chat', modelId: model.id }),
+			() =>
+				dependencies.invoke('switch_model', {
+					requestKind: 'chat',
+					modelConfigId: model.id,
+				}),
 			() => {
 				dependencies.closeModelMenu();
 				let webSearch = model.webSearch;

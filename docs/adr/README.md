@@ -805,3 +805,6 @@
 - [0814：空剪贴板读取与程序写入历史](0814-empty-clipboard-reads-and-program-history.md)
 - [0815：有限重试瞬态 UI Automation E_FAIL](0815-retry-transient-ui-automation-e-fail.md)
 - [0816：按需加载内置工具并取消固定批次上限](0816-load-builtins-on-demand-without-fixed-batch-cap.md)
+- [0817：让记忆事实推断设置控制运行时](0817-make-memory-fact-inference-setting-effective.md)
+- [0818：拒绝用过期快照覆盖外部配置](0818-reject-stale-config-snapshot-writes.md)
+- [0819：明确区分模型配置 ID 与 Provider 服务模型 ID](0819-name-model-identities-explicitly.md)

@@ -101,6 +101,7 @@
 					<div class="model-fields">
 						<div class="model-field settings-field-layout model-id-field">
 							<label class="field-label" for="{fieldId}-id">模型配置 ID</label>
+							<span class="advanced-hint">Haven 内部路由标识，不会发送给 Provider</span>
 							<input
 								id="{fieldId}-id"
 								class="md-input model-id-input"
@@ -124,6 +125,7 @@
 						</div>
 						<div class="model-field settings-field-layout model-service-field">
 							<label class="field-label" for="{fieldId}-name">服务模型 ID</label>
+							<span class="advanced-hint">此值会作为 API 请求中的 model 参数发送给 Provider</span>
 							<div class="service-model-control">
 								<MaterialAutocomplete
 									id="{fieldId}-name"

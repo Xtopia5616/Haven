@@ -158,7 +158,7 @@
 					<div class="provider-models-heading">
 						<div>
 							<h5>模型</h5>
-							<p>模型配置 ID 会被路由策略引用；服务模型 ID 对应 Provider 目录。</p>
+							<p>模型配置 ID 是 Haven 内部路由标识；服务模型 ID 对应 Provider 目录并会发送到 API。</p>
 						</div>
 						<MaterialButton
 							variant="outlined"

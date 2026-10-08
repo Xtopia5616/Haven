@@ -604,12 +604,13 @@ async fn update_request_model_field(
 }
 
 /// Select a configured model assignment as the primary for a request kind.
-/// `request_kind` identifies the route and `model_id` is a named ModelConfig id.
+/// `request_kind` identifies the route and `model_config_id` is a named
+/// Haven ModelConfig identity. The Provider service model ID is not accepted here.
 /// Updates config.toml and hot-swaps the LlmRouter at runtime.
 #[tauri::command]
 pub async fn switch_model(
     request_kind: RequestKind,
-    model_id: String,
+    model_config_id: String,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
     let state = app.state::<Arc<AppState>>();
@@ -617,7 +618,8 @@ pub async fn switch_model(
         .runtime
         .config_runtime_coordinator
         .edit_model_and_apply(&state, "switch_model", |config| {
-            set_request_route(&mut config.llm, request_kind, &model_id).map_err(anyhow::Error::msg)
+            set_request_route(&mut config.llm, request_kind, &model_config_id)
+                .map_err(anyhow::Error::msg)
         })
         .await?;
     crate::commands::emit_llm_config_changed(&app);

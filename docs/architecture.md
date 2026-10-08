@@ -198,9 +198,11 @@ OS 句柄和进程生命周期适配不属于该共享契约面，统一归 `hav
   与 native transcription 也在 Router route/permit boundary 从原 `RequestKind` 构造 descriptor。
   health adapter 调用和已选 client 的 native `transcribe` 不再推导 route capability；STT fallback
   以独立 `AudioChat` purpose 重新进入 aggregated route。usage owner 仍由调用方表达（ADR 0319、0329、0339）。
-- 聊天页模型选择器与设置页共用 `llm.request_policies`：菜单展示声明了 `chat` 能力的具名
-  `ModelConfig`，提交其配置 ID 并更新 `RequestKind::Chat` 的 `primary`；Provider 的服务模型
-  ID 只由模型配置编辑器维护。切换因此改变全局 Chat 默认路由，而不就地改写模型配置（ADR 0437）。
+- 模型的两个标识保持独立：`ModelConfig.id` 是 Haven 内部模型配置 ID，供 `RequestPolicy.primary`、
+  路由和模型选择 IPC 引用；`ModelConfig.model` 是 Provider 服务模型 ID，映射到协议请求的 `model` 值。
+  `switch_model` 的 `modelConfigId` 只接受前者；配置页分别标注并说明二者用途。它们不可合并，因为
+  Haven 可用多个内部配置指向同一个 Provider 模型，也可让同一 Provider 模型在不同配置下使用不同参数。
+  聊天页模型选择器与设置页共用 `llm.request_policies`，切换只改变全局 Chat 默认路由（ADR 0437、0819）。
 - `model_directory.rs`：crate-private `ModelDirectory`，从 Router 的配置 snapshot
   构造 provider client map 与以 `RequestKind` 为原 key 的 primary route；key 唯一保存 route
   purpose，route value 保存 capability 与 model id，执行解析核对 descriptor capability 并 fail closed。它还集中 client/model

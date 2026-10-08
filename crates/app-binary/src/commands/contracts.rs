@@ -214,7 +214,7 @@ pub const COMMAND_CONTRACTS: &[CommandContract] = &[
     CommandContract {
         name: "switch_model",
         boundary: CommandBoundary::Mutate,
-        security: "request kind selects the route; modelId is an assigned, capability-compatible ModelConfig id",
+        security: "requestKind selects the route; modelConfigId is an assigned, capability-compatible Haven ModelConfig identity, not a Provider service model ID",
     },
     CommandContract {
         name: "set_reasoning_effort",

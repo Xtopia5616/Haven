@@ -406,7 +406,7 @@ export interface TauriCommandMap {
 	stage_provider_credential: { request: { providerName: string; apiKey: string }; response: string };
 	start_recording: { request: undefined; response: void };
 	stop_recording: { request: undefined; response: void };
-	switch_model: { request: { requestKind: RequestKindInput; modelId: string }; response: void };
+	switch_model: { request: { requestKind: RequestKindInput; modelConfigId: string }; response: void };
 	toggle_mcp_server: { request: { name: string; enabled: boolean }; response: void };
 	update_mcp_server: { request: { name: string; config: McpServerConfigInput }; response: void };
 	update_session_title: { request: { sessionId: string; title: string }; response: void };

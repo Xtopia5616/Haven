@@ -31,6 +31,8 @@ pub struct ModelEndpoint {
         deserialize_with = "super::deserialize_runtime_secret"
     )]
     pub api_key: String,
+    /// Provider-facing service model identifier sent in protocol requests.
+    /// It is distinct from Haven's stable model-configuration identity.
     pub model_name: String,
     pub max_tokens: u32,
     pub temperature: f32,
@@ -426,6 +428,8 @@ impl RequestKind {
 #[serde(default, deny_unknown_fields)]
 pub struct RequestPolicy {
     pub request: RequestKind,
+    /// `ModelConfig.id` (Haven identity), never `ModelConfig.model` (the
+    /// Provider service model identifier).
     pub primary: String,
 }
 
@@ -443,11 +447,13 @@ impl Default for RequestPolicy {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(default, deny_unknown_fields)]
 pub struct ModelConfig {
-    /// Stable user-chosen identity referenced by [`RequestPolicy`].
+    /// Stable Haven identity referenced by [`RequestPolicy::primary`], model
+    /// selection IPC, and route metadata. This value is not sent to Providers.
     pub id: String,
     /// Configured provider name that owns this model assignment.
     pub provider_name: String,
-    /// Model id on that provider.
+    /// Provider's service model identifier sent in API requests. This is not
+    /// the Haven model-configuration identity in [`Self::id`].
     pub model: String,
     #[serde(default)]
     pub capabilities: Vec<Capability>,
@@ -492,6 +498,8 @@ impl ModelConfig {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(default, deny_unknown_fields)]
 pub struct RoutedModel {
+    /// Haven model-configuration identity. The Provider service model ID is
+    /// stored on `endpoint.model_name`.
     pub id: String,
     pub endpoint: ModelEndpoint,
     pub capabilities: Vec<Capability>,

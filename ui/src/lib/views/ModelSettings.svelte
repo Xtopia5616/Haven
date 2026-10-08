@@ -497,12 +497,12 @@
 								/>
 							</div>
 							<div class="model-field settings-field-layout">
-								<span class="field-label">首选模型</span>
+								<span class="field-label">模型配置 ID</span>
 								<MaterialSelect
 									id="policy-{policy.request}-primary"
 									value={policy.primary || ''}
 									options={modelOptionsForPolicy(policy)}
-									ariaLabel={`${policy.request} 的首选模型`}
+									ariaLabel={`${policy.request} 的模型配置 ID`}
 									onChange={withStringValue((value) => (policy.primary = value))}
 								/>
 							</div>
@@ -524,6 +524,9 @@
 					<MaterialButton variant="outlined" label="添加请求路由" onclick={addPolicy} />
 				</div>
 			</div>
+			<p class="cost-hint">
+				请求路由选择的是 Haven 内部的模型配置 ID；服务模型 ID 仅在上方模型配置中维护，并作为 Provider API 的 model 值发送。
+			</p>
 			<p class="cost-hint">
 				模型上下文和成本默认读取 Provider
 				目录元数据；没有元数据时可在模型的高级参数中填写。未配置上下文时回退到「限制」页的默认值。

@@ -77,7 +77,7 @@ describe('createChatModelOperations', () => {
 		});
 
 		expect(harness.calls).toEqual([
-			{ command: 'switch_model', payload: { requestKind: 'chat', modelId: 'chat-profile' } },
+			{ command: 'switch_model', payload: { requestKind: 'chat', modelConfigId: 'chat-profile' } },
 		]);
 		expect(harness.modelMenuClosed).toBe(1);
 		expect(harness.modelIds).toEqual(['chat-profile']);
@@ -107,7 +107,7 @@ describe('createChatModelOperations', () => {
 		});
 
 		expect(harness.calls).toEqual([
-			{ command: 'switch_model', payload: { requestKind: 'chat', modelId: 'local-chat' } },
+			{ command: 'switch_model', payload: { requestKind: 'chat', modelConfigId: 'local-chat' } },
 			{ command: 'set_web_search', payload: { requestKind: 'chat', mode: 'off' } },
 		]);
 		expect(harness.webSearchModes).toEqual(['off']);
@@ -128,7 +128,7 @@ describe('createChatModelOperations', () => {
 		});
 
 		expect(harness.calls).toEqual([
-			{ command: 'switch_model', payload: { requestKind: 'chat', modelId: 'gemini-chat' } },
+			{ command: 'switch_model', payload: { requestKind: 'chat', modelConfigId: 'gemini-chat' } },
 			{ command: 'set_web_search', payload: { requestKind: 'chat', mode: 'auto' } },
 		]);
 		expect(harness.webSearchModes).toEqual(['auto']);

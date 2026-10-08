@@ -172,7 +172,7 @@ describe('SettingsView diagnostics export', () => {
 		await waitFor(() =>
 			expect(container.querySelector('.policy-card')?.textContent).toContain('chat'),
 		);
-		expect(screen.getByRole('button', { name: 'chat 的首选模型' }).textContent).toContain(
+		expect(screen.getByRole('button', { name: 'chat 的模型配置 ID' }).textContent).toContain(
 			'chat-slot · primary / gpt-test',
 		);
 	});
