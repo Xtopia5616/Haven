@@ -1,3 +1,5 @@
+import { isToolRunStatus, type ToolRunStatus } from './contracts/toolRun.ts';
+
 export const toolAgentPresenceStatuses = ['online', 'offline'] as const;
 
 export type ToolAgentPresenceStatus = (typeof toolAgentPresenceStatuses)[number];
@@ -36,6 +38,12 @@ export type ToolMemoryRecallMode = (typeof toolMemoryRecallModes)[number];
 
 export function isToolMemoryRecallMode(value: unknown): value is ToolMemoryRecallMode {
 	return toolMemoryRecallModes.some((mode) => mode === value);
+}
+
+export type ToolRunResultStatus = ToolRunStatus | 'not_found';
+
+export function isToolRunResultStatus(value: unknown): value is ToolRunResultStatus {
+	return value === 'not_found' || isToolRunStatus(value);
 }
 
 export const toolAcPowerStates = ['offline', 'online', 'unknown'] as const;

@@ -4,6 +4,7 @@
 	import StatusBadge from '$lib/StatusBadge.svelte';
 	import ToolResultList from '$lib/ToolResultList.svelte';
 	import type { ToolRunStatus } from '$lib/contracts/toolRun.ts';
+	import type { ToolRunResultStatus } from '$lib/toolResultPresentation.ts';
 
 	type ToolRunSummary = { tool_run_id: string; status: ToolRunStatus };
 
@@ -11,7 +12,7 @@
 		data?: {
 			operation?: string;
 			tool_run_id?: string;
-			status?: string;
+			status?: ToolRunResultStatus | null;
 			cancelled?: boolean;
 			tool_runs?: ToolRunSummary[];
 			exit_code?: number | null;

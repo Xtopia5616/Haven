@@ -209,6 +209,7 @@ describe('operation view UI contract', () => {
 			{ renderer: 'input', data: { operation: 'click', clicked: [12, '20'] } },
 			{ renderer: 'window', data: { elements: [null] } },
 			{ renderer: 'tool_runs', data: { tool_runs: [null] } },
+			{ renderer: 'tool_runs', data: { tool_run_id: 'toolrun-1', status: 'future-status' } },
 			{
 				renderer: 'tool_runs',
 				data: { tool_runs: [{ tool_run_id: 'toolrun-1', status: 'future-status' }] },
@@ -1317,6 +1318,20 @@ describe('ToolResultCard tool_runs', () => {
 		expect(screen.getByText('toolrun-1')).toBeTruthy();
 		expect(screen.getByText('已完成')).toBeTruthy();
 		expect(screen.getByText('退出码 0')).toBeTruthy();
+	});
+
+	it('renders not-found inspect status as a query result', async () => {
+		const { container } = render(ToolResultCard, {
+			toolName: 'tool_runs.inspect',
+			renderer: 'tool_runs',
+			content: JSON.stringify({
+				operation: 'inspect',
+				tool_run_id: 'toolrun-missing',
+				status: 'not_found',
+			}),
+		});
+		await expandToolCard(container);
+		expect(screen.getByText('未找到')).toBeTruthy();
 	});
 
 	it('renders cancel results with an explicit status', async () => {

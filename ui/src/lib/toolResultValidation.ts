@@ -11,6 +11,7 @@ import {
 	isToolMediaFileKind,
 	isToolMediaModality,
 	isToolMemoryRecallMode,
+	isToolRunResultStatus,
 	isToolScheduleMode,
 } from './toolResultPresentation.ts';
 
@@ -376,7 +377,8 @@ function validBuiltinRendererData(renderer: string, data: JsonRecord): boolean {
 		case 'tool_runs':
 			return (
 				hasValidOptionalFields(data, {
-					...stringFields('operation', 'tool_run_id', 'status'),
+					...stringFields('operation', 'tool_run_id'),
+					status: isToolRunResultStatus,
 					...booleanFields('cancelled'),
 					exit_code: isFiniteNumber,
 				}) &&
