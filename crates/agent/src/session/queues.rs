@@ -298,6 +298,19 @@ impl SessionSupervisor {
         actor.clear_interactions(kind).await
     }
 
+    /// Remove requests from the live actor registry after a transaction has
+    /// already appended their durable clear event.
+    pub async fn forget_interactions(
+        &self,
+        session_id: &str,
+        ids: &[String],
+    ) -> anyhow::Result<()> {
+        let Some(actor) = self.actor_for(session_id).await else {
+            return Ok(());
+        };
+        actor.forget_interactions(ids.to_vec()).await
+    }
+
     /// Resolve an interaction only in the actor named by `session_id`.
     ///
     /// The actor appends the durable decision event before mutating its
@@ -408,7 +421,28 @@ impl SessionSupervisor {
         session_id: &str,
         requests: Vec<crate::interaction::InteractionRequest>,
     ) -> anyhow::Result<()> {
+        self.request_confirm_batch_inner(session_id, requests, None)
+            .await
+    }
+
+    pub(crate) async fn request_confirm_batch_with_plan(
+        self: &Arc<Self>,
+        session_id: &str,
+        requests: Vec<crate::interaction::InteractionRequest>,
+        plan: crate::react::tool_batch_plan::ConfirmationBatchPlan,
+    ) -> anyhow::Result<()> {
+        self.request_confirm_batch_inner(session_id, requests, Some(plan))
+            .await
+    }
+
+    async fn request_confirm_batch_inner(
+        self: &Arc<Self>,
+        session_id: &str,
+        requests: Vec<crate::interaction::InteractionRequest>,
+        plan: Option<crate::react::tool_batch_plan::ConfirmationBatchPlan>,
+    ) -> anyhow::Result<()> {
         if requests.is_empty() {
+            anyhow::ensure!(plan.is_none(), "confirmation batch plan has no requests");
             return Ok(());
         }
 
@@ -432,7 +466,13 @@ impl SessionSupervisor {
             .actor_for(session_id)
             .await
             .ok_or_else(|| anyhow::anyhow!("session '{}' not found", session_id))?;
-        actor.request_confirm_batch(requests.clone()).await?;
+        if let Some(plan) = plan {
+            actor
+                .request_confirm_batch_with_plan(requests.clone(), plan)
+                .await?;
+        } else {
+            actor.request_confirm_batch(requests.clone()).await?;
+        }
 
         for request in requests {
             self.emit_event(SessionSupervisorEvent::InteractionRequested {

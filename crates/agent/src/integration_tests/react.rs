@@ -2045,6 +2045,65 @@ async fn continue_session_resumes_errored_session() {
 }
 
 #[tokio::test]
+async fn continue_from_error_clears_stale_confirmation_requests() {
+    let (agent, executor) = make_test_agent();
+    let session = executor
+        .create_session("error with stale confirmation")
+        .await
+        .unwrap();
+    let request = crate::interaction::InteractionRequest::confirm(
+        &session.id,
+        1,
+        "test.operation".into(),
+        serde_json::json!({"value": "safe-test-input"}),
+        "call-stale-confirmation".into(),
+        "step-stale-confirmation".into(),
+        0,
+        haven_common::types::RiskLevel::High,
+        Some(haven_tools::ConfirmationReceipt {
+            confirmation_id: haven_common::types::new_id("conf").into(),
+            capability: haven_common::types::CapabilityScope::try_new("test.operation").unwrap(),
+            canonical_input_hash: String::new(),
+            effective_risk: haven_common::types::RiskLevel::High,
+            policy_revision: 1,
+            expires_at: chrono::Utc::now().timestamp().max(0) as u64 + 300,
+        }),
+    );
+    executor
+        .request_confirm_batch(&session.id, vec![request.clone()])
+        .await
+        .unwrap();
+    agent
+        .db
+        .update_session_status(&session.id, SessionStatus::Error)
+        .unwrap();
+    executor
+        .update_session_status(&session.id, SessionStatus::Error)
+        .await
+        .unwrap();
+
+    agent.continue_session(&session.id).await.unwrap();
+
+    assert!(
+        executor.interaction_requests(&session.id).await.is_empty(),
+        "Continue from Error must cancel old confirmation requests"
+    );
+    let active_events = agent
+        .react_engine
+        .event_store
+        .read_active_domain_events(&session.id)
+        .unwrap();
+    assert!(active_events.iter().any(|event| {
+        event.event_type == haven_memory::INTERACTION_CLEARED_EVENT_TYPE
+            && serde_json::from_str::<serde_json::Value>(&event.payload)
+                .ok()
+                .and_then(|payload| payload.get("ids").cloned())
+                .and_then(|ids| ids.as_array().cloned())
+                .is_some_and(|ids| ids.iter().any(|id| id.as_str() == Some(&request.id)))
+    }));
+}
+
+#[tokio::test]
 async fn continue_session_preserves_history_without_an_error_partial_marker() {
     // App/process interruption can leave a periodic snapshot whose branch
     // point predates several already-persisted rounds. That snapshot is valid

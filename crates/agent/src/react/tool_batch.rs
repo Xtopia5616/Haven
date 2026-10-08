@@ -55,9 +55,24 @@ pub(super) struct ToolBatchState {
     pending_asks: Vec<(u32, String, String)>,
     last_retryable_call: Option<(u32, Option<String>)>,
     tool_usages: Vec<ToolLlmUsage>,
+    confirmation_completion: Option<(Vec<String>, u32)>,
+    completed_confirm_request_ids: Vec<String>,
 }
 
 impl ToolBatchState {
+    pub(super) fn set_confirmation_completion(
+        &mut self,
+        request_ids: Vec<String>,
+        final_tool_index: u32,
+    ) {
+        self.completed_confirm_request_ids = request_ids.clone();
+        self.confirmation_completion = Some((request_ids, final_tool_index));
+    }
+
+    pub(super) fn completed_confirmation_ids(&self) -> Vec<String> {
+        self.completed_confirm_request_ids.clone()
+    }
+
     /// Project already committed observations into canonical history in plan
     /// order. Durable events and their UI cards are published as each tool
     /// finishes; only the model-facing projection waits for the whole batch.
@@ -226,8 +241,19 @@ impl ToolBatchState {
         result: CompletedTool,
         state: &mut ReActState,
     ) -> anyhow::Result<TranscriptEvent> {
+        let tool_index = result.tool_index;
+        let clear_confirmation_ids = self
+            .confirmation_completion
+            .as_ref()
+            .filter(|(_, final_tool_index)| *final_tool_index == tool_index)
+            .map(|(ids, _)| ids.clone());
         let event = self.prepare_tool_result(ctx, result).await?;
-        engine.commit_tool_result(ctx, event.clone(), state).await?;
+        engine
+            .commit_tool_result(ctx, event.clone(), state, clear_confirmation_ids.as_deref())
+            .await?;
+        if clear_confirmation_ids.is_some() {
+            self.confirmation_completion = None;
+        }
         Ok(event)
     }
 }

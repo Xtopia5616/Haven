@@ -235,6 +235,7 @@ pub(crate) enum ActorCommand {
     },
     RequestConfirmBatch {
         requests: Vec<InteractionRequest>,
+        plan: Option<crate::react::tool_batch_plan::ConfirmationBatchPlan>,
         reply: oneshot::Sender<anyhow::Result<()>>,
     },
     ListInteractions {
@@ -245,6 +246,10 @@ pub(crate) enum ActorCommand {
     ClearInteractions {
         kind: Option<InteractionKind>,
         reply: oneshot::Sender<anyhow::Result<()>>,
+    },
+    ForgetInteractions {
+        ids: Vec<String>,
+        reply: oneshot::Sender<()>,
     },
     RecordStep {
         step: Box<StepInfo>,
@@ -625,9 +630,29 @@ impl SessionActorHandle {
         &self,
         requests: Vec<InteractionRequest>,
     ) -> anyhow::Result<()> {
+        self.request_confirm_batch_inner(requests, None).await
+    }
+
+    pub(crate) async fn request_confirm_batch_with_plan(
+        &self,
+        requests: Vec<InteractionRequest>,
+        plan: crate::react::tool_batch_plan::ConfirmationBatchPlan,
+    ) -> anyhow::Result<()> {
+        self.request_confirm_batch_inner(requests, Some(plan)).await
+    }
+
+    async fn request_confirm_batch_inner(
+        &self,
+        requests: Vec<InteractionRequest>,
+        plan: Option<crate::react::tool_batch_plan::ConfirmationBatchPlan>,
+    ) -> anyhow::Result<()> {
         let (reply, rx) = oneshot::channel();
-        self.send(ActorCommand::RequestConfirmBatch { requests, reply })
-            .await?;
+        self.send(ActorCommand::RequestConfirmBatch {
+            requests,
+            plan,
+            reply,
+        })
+        .await?;
         rx.await.map_err(|_| {
             anyhow::anyhow!("session actor '{}' dropped confirmation batch", self.id)
         })?
@@ -662,6 +687,14 @@ impl SessionActorHandle {
             .await?;
         rx.await
             .map_err(|_| anyhow::anyhow!("session actor '{}' dropped interaction clear", self.id))?
+    }
+
+    pub(crate) async fn forget_interactions(&self, ids: Vec<String>) -> anyhow::Result<()> {
+        let (reply, rx) = oneshot::channel();
+        self.send(ActorCommand::ForgetInteractions { ids, reply })
+            .await?;
+        rx.await
+            .map_err(|_| anyhow::anyhow!("session actor '{}' dropped interaction forget", self.id))
     }
 
     pub(crate) async fn resolve_interaction(
@@ -1414,10 +1447,15 @@ pub(crate) fn spawn(
                     }
                     let _ = reply.send(result);
                 }
-                ActorCommand::RequestConfirmBatch { requests, reply } => {
+                ActorCommand::RequestConfirmBatch {
+                    requests,
+                    plan,
+                    reply,
+                } => {
                     let result = async {
                         let mut ids = HashSet::with_capacity(requests.len());
-                        let mut events = Vec::with_capacity(requests.len());
+                        let mut events =
+                            Vec::with_capacity(requests.len() + usize::from(plan.is_some()));
                         for request in &requests {
                             anyhow::ensure!(
                                 request.kind == InteractionKind::Confirm
@@ -1437,6 +1475,13 @@ pub(crate) fn spawn(
                             events.push(SessionEventInput::new(
                                 INTERACTION_REQUESTED_EVENT_TYPE,
                                 serde_json::to_string(request)?,
+                            ));
+                        }
+                        if let Some(plan) = &plan {
+                            plan.validate_requests(&requests)?;
+                            events.push(SessionEventInput::new(
+                                haven_memory::CONFIRMATION_BATCH_PLANNED_EVENT_TYPE,
+                                serde_json::to_string(plan)?,
                             ));
                         }
                         anyhow::ensure!(
@@ -1510,6 +1555,13 @@ pub(crate) fn spawn(
                             .retain(|request| !kind.is_none_or(|wanted| request.kind == wanted));
                     }
                     let _ = reply.send(result);
+                }
+                ActorCommand::ForgetInteractions { ids, reply } => {
+                    let ids = ids.into_iter().collect::<HashSet<_>>();
+                    state
+                        .interactions
+                        .retain(|request| !ids.contains(&request.id));
+                    let _ = reply.send(());
                 }
                 ActorCommand::RecordStep { step } => {
                     if state.running && state.info.status == SessionStatus::Running {

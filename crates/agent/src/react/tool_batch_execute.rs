@@ -14,7 +14,7 @@ use super::tool_batch::{
 use super::tool_batch_plan::ToolBatchPlan;
 use super::tool_batch_policy::ToolRetryBudget;
 use super::*;
-use crate::types::ToolCall;
+use crate::types::{ToolCall, TranscriptRecord};
 use futures_util::StreamExt;
 use haven_memory::repositories::session_steps::ToolStepOutcome;
 use haven_tools::{ToolConcurrency, ToolExecutionOutcome};
@@ -251,58 +251,9 @@ impl ReActEngine {
             }
         } else {
             // A confirmation is a barrier for the whole assistant batch. Do
-            // not execute any sibling before the user decides: otherwise a
-            // later result would need a second durable in-memory batch state
-            // to survive the pause. Every plan entry is carried in one
-            // pending record and resumed through the same ordered slots.
-            let gated_by_index: HashMap<
-                u32,
-                (
-                    haven_common::types::RiskLevel,
-                    haven_tools::ConfirmationReceipt,
-                ),
-            > = admission
-                .need_confirm
-                .iter()
-                .filter_map(|tool| match &tool.details {
-                    crate::interaction::InteractionDetails::Confirm {
-                        tool_index,
-                        risk_level,
-                        receipt: Some(receipt),
-                        ..
-                    } => Some((*tool_index, (*risk_level, receipt.clone()))),
-                    _ => None,
-                })
-                .collect();
-            admission.need_confirm = plan
-                .iter()
-                .map(|planned| {
-                    let (risk_level, receipt) = gated_by_index
-                        .get(&planned.tool_index)
-                        .map(|(risk, receipt)| (*risk, Some(receipt.clone())))
-                        .unwrap_or((haven_common::types::RiskLevel::Safe, None));
-                    {
-                        let mut request = crate::interaction::InteractionRequest::confirm(
-                            session_id,
-                            step_num,
-                            planned.tool_call.tool_name.clone(),
-                            planned.tool_call.tool_input.clone(),
-                            planned.tool_call.tool_call_id.clone().unwrap_or_default(),
-                            planned.step_id.clone(),
-                            planned.tool_index,
-                            risk_level,
-                            receipt,
-                        );
-                        // Safe, blocked, invalid, and already trusted calls do
-                        // not need a user decision, but remain in the same
-                        // ordered barrier and are revalidated on resume.
-                        if !gated_by_index.contains_key(&planned.tool_index) {
-                            let _ = request.resolve(serde_json::Value::Bool(true));
-                        }
-                        request
-                    }
-                })
-                .collect();
+            // not execute any sibling before the user decides. Persist the
+            // complete ordered plan separately; only real permission gates
+            // enter the interaction owner registry.
             admission.runnable.clear();
             admission.failures.clear();
         }
@@ -771,6 +722,11 @@ impl ReActEngine {
         // Prefer confirm pause; stash ask pending so finish_confirm_batch's
         // next turn still surfaces the question.
         if !need_confirm.is_empty() {
+            let confirmation_plan = super::tool_batch_plan::ConfirmationBatchPlan::from_plan(
+                step_num,
+                &plan,
+                &need_confirm,
+            )?;
             if !batch_state.asked_questions.is_empty() {
                 // Ask question rows were projected inside apply(ToolResult).
                 self.executor
@@ -791,7 +747,7 @@ impl ReActEngine {
                 }
             }
             self.executor
-                .request_confirm_batch(session_id, need_confirm)
+                .request_confirm_batch_with_plan(session_id, need_confirm, confirmation_plan)
                 .await?;
             let mut pause = super::effects::EffectBatch::continue_batch();
             pause.pause(
@@ -883,16 +839,40 @@ impl ReActEngine {
         if pending.is_empty() {
             return Ok(ToolBatchOutcome::Continue);
         }
-        let step_num = pending
+        let active_events = self
+            .event_store
+            .read_active_events_async(session_id)
+            .await?;
+        let continuation = super::tool_batch_plan::ConfirmationBatchPlan::replay(&active_events)?
+            .unwrap_or_else(|| {
+                super::tool_batch_plan::ConfirmationBatchPlan::from_confirm_requests(&pending)
+            });
+        continuation.validate_requests(&pending)?;
+        let step_num = continuation.step_number;
+        let canonical_calls = state
+            .events
             .iter()
-            .find_map(|request| match &request.details {
-                crate::interaction::InteractionDetails::Confirm { step_number, .. } => {
-                    Some(*step_number)
-                }
+            .rev()
+            .find_map(|event| match event {
+                TranscriptRecord::ToolCall {
+                    step_number,
+                    tool_calls,
+                    ..
+                } if *step_number == step_num => Some(tool_calls.as_slice()),
                 _ => None,
             })
-            .unwrap_or(0);
-        let plan = ToolBatchPlan::from_confirm_requests(&pending);
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "confirmation batch at step {} has no durable ToolCall transcript",
+                    step_num
+                )
+            })?;
+        let plan = ToolBatchPlan::from_confirmation_batch(&continuation, canonical_calls)?;
+        anyhow::ensure!(
+            super::tool_batch_plan::ConfirmationBatchPlan::from_plan(step_num, &plan, &pending,)?
+                == continuation,
+            "confirmation batch plan does not match its durable ToolCall transcript"
+        );
         let catalog = self.tool_catalog.catalog_snapshot(session_id).await;
         let proj_ctx = StepCtx {
             session_id: session_id.to_string(),
@@ -903,23 +883,49 @@ impl ReActEngine {
         let mut runnable = Vec::new();
         let mut results = ToolBatchResults::new(plan.len());
         let mut batch_state = ToolBatchState::default();
-        let tool_calls: Vec<ToolCall> = plan
+        let validation_failures = self
+            .validate_indexed_tool_inputs_from_catalog(catalog.as_ref(), plan.indexed_tool_calls());
+        let requests_by_id = pending
             .iter()
-            .map(|planned| planned.tool_call.clone())
-            .collect();
-        let validation_failures =
-            self.validate_tool_inputs_from_catalog(catalog.as_ref(), &tool_calls);
+            .map(|request| (request.id.as_str(), request))
+            .collect::<HashMap<_, _>>();
+        let confirmation_ids = pending
+            .iter()
+            .map(|request| request.id.clone())
+            .collect::<Vec<_>>();
+        batch_state.set_confirmation_completion(
+            confirmation_ids,
+            plan.iter()
+                .last()
+                .expect("a confirmation batch must contain a tool")
+                .tool_index,
+        );
 
-        for (plan_index, (planned, pending_request)) in plan.iter().zip(pending.iter()).enumerate()
+        for (plan_index, (planned, durable_tool)) in
+            plan.iter().zip(continuation.tools.iter()).enumerate()
         {
-            let Some(decision) = pending_request.decision() else {
-                tracing::warn!(
-                    session_id,
-                    step_num,
-                    plan_index,
-                    "confirm batch resumed before every decision was recorded"
-                );
-                return Ok(ToolBatchOutcome::Continue);
+            let pending_request = match durable_tool.confirmation_request_id.as_deref() {
+                Some(request_id) => Some(*requests_by_id.get(request_id).ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "confirmation request '{}' is missing from its active batch",
+                        request_id
+                    )
+                })?),
+                None => None,
+            };
+            let decision = if let Some(pending_request) = pending_request {
+                let Some(decision) = pending_request.decision() else {
+                    tracing::warn!(
+                        session_id,
+                        step_num,
+                        plan_index,
+                        "confirm batch resumed before every decision was recorded"
+                    );
+                    return Ok(ToolBatchOutcome::Continue);
+                };
+                decision
+            } else {
+                true
             };
             if plan_index >= MAX_RUNTIME_TOOL_CALLS_PER_BATCH {
                 let error = format!(
@@ -964,18 +970,18 @@ impl ReActEngine {
                     // Only calls that actually crossed the confirmation
                     // gate may bypass it on resume. Siblings that were safe
                     // at admission have no receipt and are rechecked normally.
-                    receipt: match &pending_request.details {
+                    receipt: pending_request.and_then(|request| match &request.details {
                         crate::interaction::InteractionDetails::Confirm { receipt, .. } => {
                             receipt.clone()
                         }
                         _ => None,
-                    },
+                    }),
                     concurrency,
                 });
             } else {
-                let error = if pending_request.status
-                    == crate::interaction::InteractionStatus::Expired
-                {
+                let error = if pending_request.is_some_and(|request| {
+                    request.status == crate::interaction::InteractionStatus::Expired
+                }) {
                     format!(
                         "The operation '{}' was not executed because confirmation timed out. Do not retry it; ask the user to confirm again if it is still needed.",
                         planned.tool_call.tool_name
@@ -1031,14 +1037,11 @@ impl ReActEngine {
         batch_state
             .project_ordered_results(self, &proj_ctx, execution.results, state)
             .await?;
+        self.executor
+            .forget_interactions(session_id, &batch_state.completed_confirmation_ids())
+            .await?;
 
         if execution.cancelled {
-            self.executor
-                .clear_interactions_persisted(
-                    session_id,
-                    Some(crate::interaction::InteractionKind::Confirm),
-                )
-                .await?;
             return Ok(ToolBatchOutcome::Done(
                 self.exit_cancelled(session_id, state, step_num).await,
             ));
@@ -1054,13 +1057,6 @@ impl ReActEngine {
                 step_num
             );
         }
-        self.executor
-            .clear_interactions_persisted(
-                session_id,
-                Some(crate::interaction::InteractionKind::Confirm),
-            )
-            .await?;
-
         let pending_ask = if !batch_state.asked_questions.is_empty() {
             Some(crate::interaction::InteractionRequest::ask(
                 session_id,

@@ -485,12 +485,19 @@ impl ReActEngine {
         ctx: &StepCtx,
         event: TranscriptEvent,
         state: &mut ReActState,
+        clear_confirmation_ids: Option<&[String]>,
     ) -> anyhow::Result<()> {
         anyhow::ensure!(
             matches!(&event, TranscriptEvent::ToolResult { .. }),
             "tool-result commit requires a ToolResult transcript event"
         );
-        let (_, record, _, committed) = self.build_transcript_item(ctx, event).await?;
+        let (_, record, _, mut committed) = self.build_transcript_item(ctx, event).await?;
+        if let Some(ids) = clear_confirmation_ids {
+            committed.push_trailing_event(
+                haven_memory::INTERACTION_CLEARED_EVENT_TYPE,
+                serde_json::json!({ "ids": ids }).to_string(),
+            );
+        }
         let write_result = {
             let _timer = self.metrics.start(
                 MetricsPhase::EventAppend,

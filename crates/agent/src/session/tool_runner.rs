@@ -452,14 +452,19 @@ impl SessionSupervisor {
         context: ToolStepContext,
     ) -> anyhow::Result<()> {
         let step_id_for_log = context.step_id.clone();
-        self.store
+        let started = self
+            .store
             .ensure_and_start_tool_step(context.into_write(), None)
             .await
-            .map(|_| ())
             .map_err(|e| {
                 tracing::error!("start_tool_step failed for step {}: {}", step_id_for_log, e);
                 anyhow::anyhow!("failed to mark tool intent running {step_id_for_log}: {e}")
-            })
+            })?;
+        anyhow::ensure!(
+            started,
+            "tool step {step_id_for_log} is already terminal; refusing to replay its side effect"
+        );
+        Ok(())
     }
 
     pub async fn observation_text(&self, tool_name: &str, result: &ToolResult) -> String {
@@ -2761,6 +2766,20 @@ mod tool_step_persistence_tests {
         );
         assert!(finished[0].started_at.is_some());
         assert!(finished[0].completed_at.is_some());
+
+        let replay = supervisor
+            .start_tool_step_with_identity(
+                &session.id,
+                "files.read",
+                &input,
+                5,
+                3,
+                Some("provider-call-5"),
+                step_id,
+            )
+            .await
+            .expect_err("a terminal tool step must not start its side effect again");
+        assert!(replay.to_string().contains("already terminal"));
     }
 }
 

@@ -47,6 +47,10 @@ pub const USAGE_DISCARDED_EVENT_TYPE: &str = "usage_discarded";
 pub const INTERACTION_REQUESTED_EVENT_TYPE: &str = "interaction_requested";
 pub const INTERACTION_RESOLVED_EVENT_TYPE: &str = "interaction_resolved";
 pub const INTERACTION_CLEARED_EVENT_TYPE: &str = "interaction_cleared";
+/// Agent-owned ordered plan for the full ReAct tool batch paused by one or
+/// more confirmation requests. Memory stores the payload without interpreting
+/// its fields.
+pub const CONFIRMATION_BATCH_PLANNED_EVENT_TYPE: &str = "confirmation_batch_planned";
 /// Two-phase marker for recovery-only partial persistence. It is deliberately
 /// an append-only control event so an interrupted repair remains observable
 /// even when materialized projection rows are incomplete.
@@ -253,6 +257,10 @@ pub enum SessionProjectionIntent {
 pub struct SessionCommitted {
     pub events: Vec<SessionCommittedEvent>,
     pub projections: Vec<SessionProjectionIntent>,
+    /// Domain control events appended after transcript events in the same
+    /// transaction. Used when a transcript result also closes a lifecycle
+    /// gate, so recovery cannot observe one without the other.
+    pub trailing_events: Vec<SessionEventInput>,
 }
 
 impl SessionCommitted {
@@ -260,12 +268,24 @@ impl SessionCommitted {
         Self {
             events: vec![SessionCommittedEvent::new(payload, run_id, step_number)],
             projections: Vec::new(),
+            trailing_events: Vec::new(),
         }
     }
 
     pub fn push_transcript(&mut self, payload: impl Into<String>, run_id: u64, step_number: u32) {
         self.events
             .push(SessionCommittedEvent::new(payload, run_id, step_number));
+    }
+
+    /// Append a domain event after this commit's transcript events, atomically
+    /// with their projections.
+    pub fn push_trailing_event(
+        &mut self,
+        event_type: impl Into<String>,
+        payload: impl Into<String>,
+    ) {
+        self.trailing_events
+            .push(SessionEventInput::new(event_type, payload));
     }
 
     /// Clear durable ingress recovery state in the same transaction as the
@@ -323,7 +343,8 @@ impl SessionCommitted {
     }
 
     fn event_inputs(&self) -> Vec<SessionEventInput> {
-        self.events
+        let mut inputs = self
+            .events
             .iter()
             .map(|event| {
                 SessionEventInput::transcript(
@@ -332,7 +353,9 @@ impl SessionCommitted {
                     event.step_number,
                 )
             })
-            .collect()
+            .collect::<Vec<_>>();
+        inputs.extend(self.trailing_events.iter().cloned());
+        inputs
     }
 }
 
@@ -1658,7 +1681,7 @@ impl SessionStore {
         let events = committed.event_inputs();
         Self::validate_inputs(&events)?;
         anyhow::ensure!(
-            committed.events.len() <= MAX_TRANSCRIPT_BATCH_EVENTS,
+            events.len() <= MAX_TRANSCRIPT_BATCH_EVENTS,
             "transcript batch exceeds {} events",
             MAX_TRANSCRIPT_BATCH_EVENTS
         );
@@ -1677,7 +1700,7 @@ impl SessionStore {
         );
         if committed.events.is_empty() {
             anyhow::ensure!(
-                committed.projections.is_empty(),
+                committed.projections.is_empty() && committed.trailing_events.is_empty(),
                 "transcript projection batch must have an event"
             );
             return Ok(SessionCommitResult::default());
@@ -6032,6 +6055,45 @@ mod tests {
                 .map(|event| event.sequence)
                 .collect::<Vec<_>>(),
             (1..=64).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn trailing_interaction_clear_rolls_back_with_tool_result_event() {
+        let (db, store, session_id) = store();
+        db.conn()
+            .execute_batch(
+                "CREATE TRIGGER reject_confirmation_clear
+                 BEFORE INSERT ON session_events
+                 WHEN NEW.event_type = 'interaction_cleared'
+                 BEGIN SELECT RAISE(ABORT, 'test confirmation clear failure'); END;",
+            )
+            .unwrap();
+        let mut committed = SessionCommitted::transcript(r#"{"type":"tool_result"}"#, 1, 2);
+        committed.push_trailing_event(INTERACTION_CLEARED_EVENT_TYPE, r#"{"ids":["conf-test"]}"#);
+
+        let error = store
+            .commit_transcript(&session_id, &committed)
+            .expect_err("the injected clear failure must abort both events");
+
+        assert!(
+            error
+                .to_string()
+                .contains("test confirmation clear failure")
+        );
+        assert!(store.read_all(&session_id).unwrap().is_empty());
+
+        db.conn()
+            .execute_batch("DROP TRIGGER reject_confirmation_clear;")
+            .unwrap();
+        let result = store.commit_transcript(&session_id, &committed).unwrap();
+        assert_eq!(
+            result
+                .events
+                .iter()
+                .map(|event| event.event_type.as_str())
+                .collect::<Vec<_>>(),
+            [TRANSCRIPT_EVENT_TYPE, INTERACTION_CLEARED_EVENT_TYPE]
         );
     }
 

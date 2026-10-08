@@ -538,7 +538,7 @@ impl ReActEngine {
         state: &ReActState,
         step_number: u32,
     ) -> bool {
-        self.ensure_event_boundary_with_error_partials(session_id, state, step_number, None, false)
+        self.ensure_event_boundary_with_error_partials(session_id, state, step_number, None)
             .await
     }
 
@@ -552,22 +552,20 @@ impl ReActEngine {
         state: &ReActState,
         step_number: u32,
     ) -> bool {
-        self.ensure_event_boundary_with_error_partials(session_id, state, step_number, None, false)
+        self.ensure_event_boundary_with_error_partials(session_id, state, step_number, None)
             .await
     }
 
-    /// Same boundary check as [`Self::ensure_event_boundary_after_tool_results`], but the
-    /// completed confirmation batch must not remain resumable. Writing the
-    /// result events and clearing confirm interactions in one boundary prevents
-    /// a crash between result projection and the in-memory gate cleanup from
-    /// replaying an already executed side effect.
+    /// Confirm interactions are cleared atomically with the final ToolResult
+    /// by `SessionStore::commit_transcript`; this read only verifies that the
+    /// completed event boundary remains available before the next model call.
     pub(super) async fn ensure_event_boundary_after_confirm_results(
         &self,
         session_id: &str,
         state: &ReActState,
         step_number: u32,
     ) -> bool {
-        self.ensure_event_boundary_with_error_partials(session_id, state, step_number, None, true)
+        self.ensure_event_boundary_with_error_partials(session_id, state, step_number, None)
             .await
     }
 
@@ -581,7 +579,6 @@ impl ReActEngine {
         state: &ReActState,
         step_number: u32,
         error_partial_message_ids: Option<&[String]>,
-        clear_confirm_interactions: bool,
     ) -> bool {
         let result = self
             .read_event_boundary_with_error_partials(
@@ -589,7 +586,6 @@ impl ReActEngine {
                 state,
                 step_number,
                 error_partial_message_ids,
-                clear_confirm_interactions,
             )
             .await;
         if !result {
@@ -604,7 +600,6 @@ impl ReActEngine {
         state: &ReActState,
         step_number: u32,
         _error_partial_message_ids: Option<&[String]>,
-        _clear_confirm_interactions: bool,
     ) -> bool {
         // Some lifecycle callers do not carry a provider run id (for example
         // a pause boundary). There is no serialized ReAct state to write:
@@ -619,12 +614,7 @@ impl ReActEngine {
             .await;
         match saved {
             Ok(cursor) => {
-                let _ = (
-                    cursor,
-                    state,
-                    _error_partial_message_ids,
-                    _clear_confirm_interactions,
-                );
+                let _ = (cursor, state, _error_partial_message_ids);
                 true
             }
             Err(error) => {
@@ -791,7 +781,6 @@ impl ReActEngine {
                 state,
                 ctx.step_num,
                 Some(&error_partial_message_ids),
-                false,
             )
             .await;
         // The stream text now lives in the message stream (persisted above),

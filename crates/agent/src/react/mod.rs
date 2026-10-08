@@ -43,7 +43,7 @@ mod state;
 pub(crate) mod stream_step;
 mod tool_batch;
 mod tool_batch_execute;
-mod tool_batch_plan;
+pub(crate) mod tool_batch_plan;
 mod tool_batch_policy;
 mod tool_ports;
 mod transcript;
@@ -642,8 +642,22 @@ impl ReActEngine {
         catalog: &haven_tools::ToolCatalogSnapshot,
         tool_calls: &[ToolCall],
     ) -> Vec<ToolInputValidationFailure> {
+        self.validate_indexed_tool_inputs_from_catalog(
+            catalog,
+            tool_calls
+                .iter()
+                .enumerate()
+                .map(|(tool_index, tool_call)| (tool_index as u32, tool_call)),
+        )
+    }
+
+    pub(crate) fn validate_indexed_tool_inputs_from_catalog<'a>(
+        &self,
+        catalog: &haven_tools::ToolCatalogSnapshot,
+        tool_calls: impl IntoIterator<Item = (u32, &'a ToolCall)>,
+    ) -> Vec<ToolInputValidationFailure> {
         let mut failures = Vec::new();
-        for (tool_index, tool_call) in tool_calls.iter().enumerate() {
+        for (tool_index, tool_call) in tool_calls {
             if tool_call.is_final {
                 continue;
             }
@@ -653,7 +667,7 @@ impl ReActEngine {
             };
             if let Err(error) = result {
                 failures.push(ToolInputValidationFailure {
-                    tool_index: tool_index as u32,
+                    tool_index,
                     tool_name: tool_call.tool_name.clone(),
                     details: vec![error.to_string()],
                 });

@@ -4422,6 +4422,100 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn confirmation_plan_and_real_requests_pause_atomically() {
+        let db = temp_db();
+        let exec = Arc::new(SessionSupervisor::new_for_test(
+            db.clone(),
+            Arc::new(ToolsFacade::new()),
+            1,
+        ));
+        let session = exec
+            .create_session("confirmation continuation")
+            .await
+            .unwrap();
+        let input = serde_json::json!({"path": "notes.txt"});
+        let step_id = "step-confirmation-plan";
+        let request = crate::interaction::InteractionRequest::confirm(
+            &session.id,
+            4,
+            "files.write".into(),
+            input.clone(),
+            "call-confirmation-plan".into(),
+            step_id.into(),
+            2,
+            haven_common::types::RiskLevel::High,
+            Some(haven_tools::ConfirmationReceipt {
+                confirmation_id: haven_common::types::new_id("conf").into(),
+                capability: haven_common::types::CapabilityScope::try_new("files.write").unwrap(),
+                canonical_input_hash: String::new(),
+                effective_risk: haven_common::types::RiskLevel::High,
+                policy_revision: 1,
+                expires_at: chrono::Utc::now().timestamp().max(0) as u64 + 300,
+            }),
+        );
+        let plan = crate::react::tool_batch_plan::ConfirmationBatchPlan {
+            step_number: 4,
+            tools: vec![crate::react::tool_batch_plan::ConfirmationBatchTool {
+                step_id: step_id.into(),
+                tool_index: 2,
+                tool_call_id: Some("call-confirmation-plan".into()),
+                confirmation_request_id: Some(request.id.clone()),
+            }],
+        };
+
+        db.conn()
+            .execute_batch(
+                "CREATE TRIGGER reject_confirmation_plan
+                 BEFORE INSERT ON session_events
+                 WHEN NEW.event_type = 'confirmation_batch_planned'
+                 BEGIN SELECT RAISE(ABORT, 'test confirmation plan append failure'); END;",
+            )
+            .unwrap();
+        assert!(
+            exec.request_confirm_batch_with_plan(&session.id, vec![request.clone()], plan.clone())
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            exec.get_active_session_status(&session.id).await,
+            Some(SessionStatus::Pending)
+        );
+        assert!(exec.interaction_requests(&session.id).await.is_empty());
+        assert!(
+            exec.store
+                .read_active_domain_events_async(&session.id)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+
+        db.conn()
+            .execute_batch("DROP TRIGGER reject_confirmation_plan;")
+            .unwrap();
+        exec.request_confirm_batch_with_plan(&session.id, vec![request.clone()], plan)
+            .await
+            .unwrap();
+        assert_eq!(
+            exec.get_active_session_status(&session.id).await,
+            Some(SessionStatus::Paused)
+        );
+        let events = exec
+            .store
+            .read_active_domain_events_async(&session.id)
+            .await
+            .unwrap();
+        assert_eq!(events.len(), 2);
+        assert_eq!(
+            events[0].event_type,
+            haven_memory::INTERACTION_REQUESTED_EVENT_TYPE
+        );
+        assert_eq!(
+            events[1].event_type,
+            haven_memory::CONFIRMATION_BATCH_PLANNED_EVENT_TYPE
+        );
+    }
+
+    #[tokio::test]
     async fn plain_pause_has_no_interaction() {
         let db = temp_db();
         let tools = Arc::new(ToolsFacade::new());

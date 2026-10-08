@@ -1,6 +1,208 @@
 use super::support::*;
 use super::*;
 
+struct ConfirmationBatchCounterTool {
+    tool_name: &'static str,
+    risk: RiskLevel,
+    executions: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+#[async_trait]
+impl Tool for ConfirmationBatchCounterTool {
+    fn name(&self) -> String {
+        self.tool_name.into()
+    }
+
+    fn description(&self) -> String {
+        "Counts confirmation batch test executions".into()
+    }
+
+    fn risk_level(&self, _: &serde_json::Value) -> RiskLevel {
+        self.risk
+    }
+
+    fn input_schema(&self) -> serde_json::Value {
+        serde_json::json!({"type": "object"})
+    }
+
+    async fn execute(
+        &self,
+        _: serde_json::Value,
+        _: CancellationToken,
+    ) -> anyhow::Result<ToolResult> {
+        self.executions
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(ToolResult::ok(serde_json::json!({"executed": true})))
+    }
+}
+
+#[tokio::test]
+async fn mixed_confirmation_batch_pauses_only_real_gates_and_resumes_all_tools() {
+    let tools = Arc::new(ToolsFacade::new());
+    let safe_executions = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let gated_executions = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    for (tool_name, risk, executions) in [
+        ("batch_safe", RiskLevel::Safe, safe_executions.clone()),
+        ("batch_gated", RiskLevel::High, gated_executions.clone()),
+    ] {
+        tools
+            .registry()
+            .register(Arc::new(ConfirmationBatchCounterTool {
+                tool_name,
+                risk,
+                executions,
+            }) as ToolHandle)
+            .await
+            .unwrap();
+    }
+    let mock = Arc::new(ScriptedMock::new(vec![
+        ScriptedResponse::Chunk(StreamChunk {
+            text: Some("Run both operations after confirmation.".into()),
+            tool_calls: vec![
+                CanonicalToolCall {
+                    id: "safe-call".into(),
+                    name: "batch_safe".into(),
+                    arguments: serde_json::json!({}),
+                },
+                CanonicalToolCall {
+                    id: "gated-call".into(),
+                    name: "batch_gated".into(),
+                    arguments: serde_json::json!({}),
+                },
+            ],
+            finish_reason: Some(FinishReason::ToolCalls),
+            usage: None,
+            model: None,
+            reasoning: None,
+            web_search: None,
+            web_search_calls: Vec::new(),
+            thinking_blocks: Vec::new(),
+        }),
+        ScriptedResponse::Chunk(StreamChunk {
+            text: Some("Both operations completed.".into()),
+            tool_calls: vec![CanonicalToolCall {
+                id: "final".into(),
+                name: "final_answer".into(),
+                arguments: serde_json::json!({}),
+            }],
+            finish_reason: Some(FinishReason::Stop),
+            usage: None,
+            model: None,
+            reasoning: None,
+            web_search: None,
+            web_search_calls: Vec::new(),
+            thinking_blocks: Vec::new(),
+        }),
+    ]));
+    let (agent, executor) = make_test_agent_with(mock, tools.clone());
+    tools
+        .share_services()
+        .authorization
+        .set_permission_mode(haven_common::types::PermissionMode::Autonomous)
+        .await;
+    let gated_authorization = tools
+        .resolve_authorization_request(
+            Some("ses-confirm-check"),
+            "batch_gated",
+            &serde_json::json!({}),
+        )
+        .await;
+    assert_eq!(gated_authorization.policy.risk_level, RiskLevel::High);
+    assert!(matches!(
+        tools
+            .share_services()
+            .authorization
+            .authorize(&gated_authorization)
+            .await,
+        haven_tools::AuthorizationDecision::RequiresConfirmation { .. }
+    ));
+    let session = executor
+        .create_session("mixed confirmation batch")
+        .await
+        .unwrap();
+    let collector = Arc::new(EventCollector::new());
+    agent.set_emitter(collector.clone());
+
+    let first_history = agent.run_session_from_id(&session.id).await.unwrap();
+
+    let confirmations = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            let requests = executor
+                .pending_interactions(&session.id, crate::interaction::InteractionKind::Confirm)
+                .await;
+            if !requests.is_empty() {
+                break requests;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the real gated operation should register a pending confirmation");
+    let status = executor.get_active_session_status(&session.id).await;
+    let event_types = agent
+        .react_engine
+        .event_store
+        .read_active_domain_events(&session.id)
+        .unwrap()
+        .into_iter()
+        .map(|event| event.event_type)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        status,
+        Some(haven_common::SessionStatus::Paused),
+        "the high risk sibling should hold the mixed batch at confirmation; rounds={}, ui_events={}, requests={}, safe_runs={}, gated_runs={}, events={event_types:?}",
+        first_history.len(),
+        collector.events.lock().unwrap().len(),
+        confirmations.len(),
+        safe_executions.load(std::sync::atomic::Ordering::SeqCst),
+        gated_executions.load(std::sync::atomic::Ordering::SeqCst),
+    );
+    assert_eq!(
+        confirmations.len(),
+        1,
+        "only the gated operation is an owner request"
+    );
+    assert_eq!(safe_executions.load(std::sync::atomic::Ordering::SeqCst), 0);
+    assert_eq!(
+        gated_executions.load(std::sync::atomic::Ordering::SeqCst),
+        0
+    );
+    executor
+        .resolve_interaction(
+            &session.id,
+            &confirmations[0].id,
+            serde_json::Value::Bool(true),
+            false,
+        )
+        .await
+        .unwrap()
+        .expect("the real confirmation request should resolve");
+
+    agent.run_session_from_id(&session.id).await.unwrap();
+
+    assert_eq!(safe_executions.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert_eq!(
+        gated_executions.load(std::sync::atomic::Ordering::SeqCst),
+        1
+    );
+    assert!(executor.interaction_requests(&session.id).await.is_empty());
+    let events = agent
+        .react_engine
+        .event_store
+        .read_active_domain_events(&session.id)
+        .unwrap();
+    assert!(
+        events
+            .iter()
+            .any(|event| event.event_type == haven_memory::CONFIRMATION_BATCH_PLANNED_EVENT_TYPE)
+    );
+    assert!(
+        events
+            .iter()
+            .any(|event| event.event_type == haven_memory::INTERACTION_CLEARED_EVENT_TYPE)
+    );
+}
+
 #[tokio::test]
 async fn run_session_parallel_tool_execution() {
     let tools = Arc::new(ToolsFacade::new());

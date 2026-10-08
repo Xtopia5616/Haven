@@ -431,7 +431,7 @@ impl AgentLayer {
             // Continuing explicitly cancels every pending interaction; status
             // alone flipping to Pending is not enough because the actor owns
             // the request lifecycle.
-            if state.is_some_and(|status| status.is_paused()) {
+            if state.is_some_and(|status| status.is_paused() || status == SessionStatus::Error) {
                 self.executor
                     .clear_interactions_persisted(session_id, None)
                     .await?;
