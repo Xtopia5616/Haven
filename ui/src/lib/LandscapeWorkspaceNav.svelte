@@ -1,15 +1,9 @@
 <script lang="ts">
 	import { onMount, tick } from 'svelte';
 	import Icon from './Icon.svelte';
-	import type { NavigationTab } from './navigationTypes.ts';
+	import type { NavigationTabsProps } from './navigationTypes.ts';
 
-	interface Props {
-		tabs?: NavigationTab[];
-		activeTab?: string;
-		onNavigate?: (tabId: string) => void;
-	}
-
-	let { tabs = [], activeTab = 'chat', onNavigate = () => {} }: Props = $props();
+	let { tabs = [], activeTab = 'chat', onNavigate = () => {} }: NavigationTabsProps = $props();
 	let navElement: HTMLElement | undefined;
 	let linkElements = $state<Record<string, HTMLButtonElement>>({});
 	let measuredIndicator = $state({ x: 0, y: 0, visible: false });

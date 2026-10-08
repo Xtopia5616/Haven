@@ -751,3 +751,4 @@
 - [0760：Session resume 投影输入归属 builder](0760-session-resume-projection-input-owner.md)
 - [0761：Agent media-plan event 复用生成闭合 enum](0761-type-agent-media-plan-event-enums.md)
 - [0762：Agent usage renderer 复用闭合 accounting 类型](0762-type-agent-usage-accounting.md)
+- [0763：导航组件共享 tabs selection props](0763-share-navigation-tab-selection-props.md)

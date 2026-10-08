@@ -161,6 +161,8 @@ Tauri command 名与 request/response 类型由 `generatedCommands.ts` 从 Rust 
 
 同一领域类型跨 runtime 与 wire 边界时，只有序列化格式、字段策略或演进 owner 确实不同才保留两个类型，并在名称中标出边界角色。当前 Tools `ToolRunKind` 是执行运行时分类；App `ToolRunKindDto` 是 IPC/event DTO 枚举，二者值相同但 owner、Serde 与向前演进责任不同。
 
+导航组件消费 `NavigationTab` 列表时，共用 `navigationTypes.ts::NavigationTabsProps` 表达 tabs、active tab 与 navigation callback；ID 类型从 `NavigationTab['id']` 派生。`MaterialTabs` 可在此基础上添加 ARIA、样式和面板选项，`AppShell` 可组合其它 shell props。
+
 Tools manifest 的 generated `ToolManifest` 是 Rust snake_case wire DTO；renderer parser 投影出的 camelCase 结构叫 `ToolManifestView`。source、represented source、catalog group 与 risk level 复用 generated 闭合枚举；`presentation.renderer` 保持开放扩展字符串，MCP 使用固定 `mcp` 值，server identity 由 root 字段表达，未知 renderer 落到通用 JSON renderer（ADR 0669、0703）。
 
 严格生成的 IPC `LlmConnectionReport` 与容忍缺失可选显示信息的 `LlmConnectionReportView` 分属 wire 与 renderer 视图；共享的 status/reason 枚举直接引用生成契约，归一化函数负责将不可信返回值投影为 view。

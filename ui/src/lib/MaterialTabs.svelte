@@ -1,12 +1,9 @@
 <script lang="ts">
 	import { onMount, tick } from 'svelte';
 	import Icon from './Icon.svelte';
-	import type { NavigationTab } from './navigationTypes.ts';
+	import type { NavigationTabsProps } from './navigationTypes.ts';
 
-	interface Props {
-		tabs?: NavigationTab[];
-		activeTab?: string;
-		onNavigate?: (tabId: string) => void;
+	interface Props extends NavigationTabsProps {
 		ariaLabel?: string;
 		idPrefix?: string;
 		panelIdPrefix?: string;
@@ -211,10 +208,7 @@
 				? tabRect.left -
 					originLeft +
 					(Number.parseFloat(tabsStyle.getPropertyValue('--md-sys-space-sm')) || 8)
-				: tabRect.left -
-					originLeft +
-					tabsElement.scrollLeft +
-					(tabRect.width - width) / 2,
+				: tabRect.left - originLeft + tabsElement.scrollLeft + (tabRect.width - width) / 2,
 			y: vertical
 				? tabRect.top - originTop + (tabRect.height - height) / 2
 				: tabRect.bottom -
@@ -367,10 +361,7 @@
 			{#if tab.hint}<small>{tab.hint}</small>{/if}
 		</button>
 	{/each}
-	<span
-		class="md-tabs__indicator"
-		aria-hidden="true"
-		ontransitionend={finishIndicatorTransition}
+	<span class="md-tabs__indicator" aria-hidden="true" ontransitionend={finishIndicatorTransition}
 	></span>
 </div>
 
@@ -408,5 +399,4 @@
 		font-size: var(--md-sys-typescale-label-small-size);
 		color: var(--md-sys-color-on-surface-variant);
 	}
-
 </style>

@@ -5,3 +5,10 @@ export interface NavigationTab {
 	hint?: string;
 	icon?: string;
 }
+
+/** Shared selection contract for components that render NavigationTab lists. */
+export interface NavigationTabsProps {
+	tabs?: NavigationTab[];
+	activeTab?: NavigationTab['id'];
+	onNavigate?: (tabId: NavigationTab['id']) => void;
+}

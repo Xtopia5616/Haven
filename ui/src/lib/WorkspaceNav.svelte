@@ -1,14 +1,8 @@
 <script lang="ts">
 	import MaterialTabs from './MaterialTabs.svelte';
-	import type { NavigationTab } from './navigationTypes.ts';
+	import type { NavigationTabsProps } from './navigationTypes.ts';
 
-	interface Props {
-		tabs?: NavigationTab[];
-		activeTab?: string;
-		onNavigate?: (tabId: string) => void;
-	}
-
-	let { tabs = [], activeTab = 'chat', onNavigate = () => {} }: Props = $props();
+	let { tabs = [], activeTab = 'chat', onNavigate = () => {} }: NavigationTabsProps = $props();
 </script>
 
 <nav aria-label="工作区导航">
