@@ -86,6 +86,7 @@ fn now_ms() -> u64 {
 pub struct ClipboardTool {
     history: Arc<ClipboardHistory>,
     clipboard_text_reader: Arc<dyn Fn() -> anyhow::Result<String> + Send + Sync>,
+    clipboard_text_writer: Arc<dyn Fn(String) -> anyhow::Result<()> + Send + Sync>,
     /// Output cap (chars) for clipboard content.
     max_output_chars: usize,
     /// Default `limit` for the `history` operation when the caller omits it.
@@ -158,6 +159,7 @@ impl ClipboardTool {
         Self {
             history,
             clipboard_text_reader: Arc::new(read_text_clipboard),
+            clipboard_text_writer: Arc::new(write_text_clipboard),
             max_output_chars,
             default_limit,
             max_history_limit,
@@ -177,6 +179,15 @@ impl ClipboardTool {
         reader: impl Fn() -> anyhow::Result<String> + Send + Sync + 'static,
     ) -> Self {
         self.clipboard_text_reader = Arc::new(reader);
+        self
+    }
+
+    #[cfg(test)]
+    fn with_clipboard_text_writer(
+        mut self,
+        writer: impl Fn(String) -> anyhow::Result<()> + Send + Sync + 'static,
+    ) -> Self {
+        self.clipboard_text_writer = Arc::new(writer);
         self
     }
 }
@@ -308,7 +319,13 @@ impl ClipboardTool {
                     anyhow::bail!("cancelled");
                 }
                 let format = params.format.unwrap_or(ClipboardFormat::Auto);
-                let read = tokio::task::spawn_blocking(move || read_clipboard(format)).await??;
+                let read = if format == ClipboardFormat::Text {
+                    let read_text = Arc::clone(&self.clipboard_text_reader);
+                    tokio::task::spawn_blocking(move || read_text().map(ClipboardRead::Text))
+                        .await??
+                } else {
+                    tokio::task::spawn_blocking(move || read_clipboard(format)).await??
+                };
 
                 if cancel.is_cancelled() {
                     anyhow::bail!("cancelled");
@@ -362,8 +379,16 @@ impl ClipboardTool {
                 let asset_id = params.asset_id.clone();
                 let files = params.files.clone();
                 let registry = self.managed_assets.clone();
+                let text_writer = Arc::clone(&self.clipboard_text_writer);
                 tokio::task::spawn_blocking(move || {
-                    write_clipboard(format, text, html, asset_id, files, registry)
+                    if format == ClipboardFormat::Text {
+                        let text = text.ok_or_else(|| {
+                            anyhow::anyhow!("text is required for text clipboard writes")
+                        })?;
+                        text_writer(text)
+                    } else {
+                        write_clipboard(format, text, html, asset_id, files, registry)
+                    }
                 })
                 .await??;
 
@@ -475,11 +500,20 @@ enum ClipboardRead {
 }
 
 fn read_text_clipboard() -> anyhow::Result<String> {
-    match read_clipboard(ClipboardFormat::Text)? {
-        ClipboardRead::Text(text) => Ok(text),
-        ClipboardRead::Html(_) | ClipboardRead::Image(_) | ClipboardRead::Files(_) => {
-            unreachable!("explicit text clipboard reads return text")
-        }
+    let mut clipboard = arboard::Clipboard::new()?;
+    normalize_text_clipboard_result(clipboard.get_text())
+}
+
+fn normalize_text_clipboard_result(
+    result: Result<String, arboard::Error>,
+) -> anyhow::Result<String> {
+    match result {
+        Ok(text) => Ok(text),
+        // Windows reports ERROR_NOT_FOUND when CF_UNICODETEXT is absent;
+        // arboard normalizes that to ContentNotAvailable. An empty text read
+        // is the useful clipboard contract when no text is available.
+        Err(arboard::Error::ContentNotAvailable) => Ok(String::new()),
+        Err(error) => Err(error.into()),
     }
 }
 
@@ -487,7 +521,9 @@ fn read_clipboard(format: ClipboardFormat) -> anyhow::Result<ClipboardRead> {
     match format {
         ClipboardFormat::Text => {
             let mut clipboard = arboard::Clipboard::new()?;
-            Ok(ClipboardRead::Text(clipboard.get_text()?))
+            Ok(ClipboardRead::Text(normalize_text_clipboard_result(
+                clipboard.get_text(),
+            )?))
         }
         ClipboardFormat::Html => read_html(),
         ClipboardFormat::Image => {
@@ -509,9 +545,30 @@ fn read_clipboard(format: ClipboardFormat) -> anyhow::Result<ClipboardRead> {
             if let Ok(image) = image_result {
                 return Ok(ClipboardRead::Image(image));
             }
-            read_files()
+            match read_files() {
+                Ok(files) => Ok(files),
+                Err(error) if is_missing_file_list_format(&error) => {
+                    Ok(ClipboardRead::Text(String::new()))
+                }
+                Err(error) => Err(error),
+            }
         }
     }
+}
+
+#[cfg(windows)]
+fn is_missing_file_list_format(error: &anyhow::Error) -> bool {
+    const ERROR_NOT_FOUND: i32 = 1168;
+    error.chain().any(|cause| {
+        cause
+            .downcast_ref::<clipboard_win::ErrorCode>()
+            .is_some_and(|error| error.raw_code() == ERROR_NOT_FOUND)
+    })
+}
+
+#[cfg(not(windows))]
+fn is_missing_file_list_format(_error: &anyhow::Error) -> bool {
+    false
 }
 
 fn write_clipboard(
@@ -526,8 +583,7 @@ fn write_clipboard(
         ClipboardFormat::Text | ClipboardFormat::Auto => {
             let text =
                 text.ok_or_else(|| anyhow::anyhow!("text is required for text clipboard writes"))?;
-            let mut clipboard = arboard::Clipboard::new()?;
-            clipboard.set_text(text)?;
+            write_text_clipboard(text)?;
         }
         ClipboardFormat::Html => {
             let html =
@@ -556,6 +612,12 @@ fn write_clipboard(
             set_files(&files)?;
         }
     }
+    Ok(())
+}
+
+fn write_text_clipboard(text: String) -> anyhow::Result<()> {
+    let mut clipboard = arboard::Clipboard::new()?;
+    clipboard.set_text(text)?;
     Ok(())
 }
 
@@ -934,6 +996,50 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_programmatic_text_write_read_is_visible_in_history() {
+        let clipboard = Arc::new(Mutex::new(String::new()));
+        let reader_clipboard = Arc::clone(&clipboard);
+        let writer_clipboard = Arc::clone(&clipboard);
+        let tool = test_tool()
+            .with_clipboard_text_reader(move || {
+                Ok(reader_clipboard
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .clone())
+            })
+            .with_clipboard_text_writer(move |text| {
+                *writer_clipboard.lock().unwrap_or_else(|p| p.into_inner()) = text;
+                Ok(())
+            });
+
+        let write = tool
+            .execute(
+                json!({"operation": "write", "format": "text", "text": "program text"}),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert!(write.success);
+
+        let read = tool
+            .execute(
+                json!({"operation": "read", "format": "text"}),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert!(read.success);
+        assert_eq!(read.output["content"], "program text");
+
+        let history = tool
+            .execute(json!({"operation": "history"}), CancellationToken::new())
+            .await
+            .unwrap();
+        assert_eq!(history.output["total"], 1);
+        assert_eq!(history.output["entries"][0]["content"], "program text");
+    }
+
+    #[tokio::test]
     async fn test_clipboard_write_rejects_ambiguous_payloads() {
         let tool = test_tool();
         for input in [
@@ -1063,6 +1169,24 @@ mod tests {
         let history = ClipboardHistory::new(10);
         history.record(String::new());
         assert!(history.is_empty());
+    }
+
+    #[test]
+    fn test_text_read_maps_unavailable_content_to_empty() {
+        assert_eq!(
+            normalize_text_clipboard_result(Err(arboard::Error::ContentNotAvailable)).unwrap(),
+            ""
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn test_auto_read_maps_missing_file_list_to_empty() {
+        let error = anyhow::Error::new(clipboard_win::ErrorCode::new_system(1168));
+        assert!(is_missing_file_list_format(&error));
+
+        let unrelated = anyhow::Error::new(clipboard_win::ErrorCode::new_system(5));
+        assert!(!is_missing_file_list_format(&unrelated));
     }
 
     #[tokio::test]
