@@ -76,6 +76,7 @@ describe('createChatEventController', () => {
 				'agent:web_search',
 				'agent:supplement',
 				'agent:tool_call',
+				'agent:tool_call_chunk',
 				'agent:tool_output',
 				'agent:observation',
 				'agent:usage',
