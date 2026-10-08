@@ -9,6 +9,7 @@ use super::window_list::{
 const UIA_E_FAIL: windows::core::HRESULT = windows::core::HRESULT(0x8000_4005_u32 as i32);
 const RPC_E_CHANGED_MODE: windows::core::HRESULT = windows::core::HRESULT(0x8001_0106_u32 as i32);
 const UIA_RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(50);
+const UIA_MAX_ATTEMPTS: usize = 3;
 
 struct ComApartmentGuard {
     uninitialize_on_drop: bool,
@@ -58,9 +59,13 @@ fn retry_ui_automation_e_fail<T>(
     let mut attempt = 0;
     loop {
         match operation() {
-            Err(error) if attempt == 0 && is_ui_automation_e_fail(&error) => {
+            Err(error) if attempt + 1 < UIA_MAX_ATTEMPTS && is_ui_automation_e_fail(&error) => {
                 attempt += 1;
-                tracing::debug!(attempt, "Retrying transient UI Automation E_FAIL once");
+                tracing::debug!(
+                    attempt,
+                    max_attempts = UIA_MAX_ATTEMPTS,
+                    "Retrying transient UI Automation E_FAIL"
+                );
                 std::thread::sleep(UIA_RETRY_DELAY);
             }
             result => return result,
@@ -583,15 +588,17 @@ pub(crate) fn any_ui_name_contains(title: Option<&str>, needle: &str) -> anyhow:
 
 #[cfg(test)]
 mod tests {
-    use super::{UIA_E_FAIL, is_ui_automation_e_fail, retry_ui_automation_e_fail};
+    use super::{
+        UIA_E_FAIL, UIA_MAX_ATTEMPTS, is_ui_automation_e_fail, retry_ui_automation_e_fail,
+    };
     use windows::core::Error;
 
     #[test]
-    fn ui_tree_retries_once_after_e_fail() {
+    fn ui_tree_retries_transient_e_fail_twice() {
         let mut attempts = 0;
         let result = retry_ui_automation_e_fail(|| {
             attempts += 1;
-            if attempts == 1 {
+            if attempts <= 2 {
                 Err(Error::from_hresult(UIA_E_FAIL).into())
             } else {
                 Ok("recovered")
@@ -600,7 +607,19 @@ mod tests {
         .unwrap();
 
         assert_eq!(result, "recovered");
-        assert_eq!(attempts, 2);
+        assert_eq!(attempts, UIA_MAX_ATTEMPTS);
+    }
+
+    #[test]
+    fn ui_tree_stops_after_three_e_fail_attempts() {
+        let mut attempts = 0;
+        let result: anyhow::Result<()> = retry_ui_automation_e_fail(|| {
+            attempts += 1;
+            Err(Error::from_hresult(UIA_E_FAIL).into())
+        });
+
+        assert_eq!(attempts, UIA_MAX_ATTEMPTS);
+        assert!(is_ui_automation_e_fail(result.as_ref().unwrap_err()));
     }
 
     #[test]

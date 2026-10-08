@@ -800,3 +800,4 @@
 - [0810：确认批次恢复计划与结果原子清理](0810-confirmation-batch-recovery-and-atomic-clear.md)
 - [0811：剪贴板历史查询采样当前文本](0811-clipboard-history-samples-current-text.md)
 - [0814：空剪贴板读取与程序写入历史](0814-empty-clipboard-reads-and-program-history.md)
+- [0815：有限重试瞬态 UI Automation E_FAIL](0815-retry-transient-ui-automation-e-fail.md)
