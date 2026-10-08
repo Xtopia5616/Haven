@@ -78,7 +78,7 @@ describe('ToolsView toolbar actions', () => {
 		});
 	});
 
-	it('places MCP and skill actions in the shared page action bar', async () => {
+	it('places MCP and skill actions beside each section heading', async () => {
 		render(ToolsView);
 
 		await waitFor(() => expect(screen.getByRole('tab', { name: '技能' })).toBeTruthy());
@@ -115,8 +115,8 @@ describe('ToolsView toolbar actions', () => {
 		expect(openFolderButton.querySelector('svg')).toBeNull();
 		expect(mcpToolbarButtons).toHaveLength(2);
 		expect(skillToolbarButtons).toHaveLength(2);
-		expect(mcpToolbar?.getAttribute('aria-label')).toBe('工具操作');
-		expect(skillToolbar).toBe(mcpToolbar);
+		expect(mcpToolbar?.getAttribute('aria-label')).toBe('MCP 服务器操作');
+		expect(skillToolbar?.getAttribute('aria-label')).toBe('技能操作');
 		for (const button of [...mcpToolbarButtons, ...skillToolbarButtons]) {
 			expect(button.classList.contains('md-btn')).toBe(true);
 		}

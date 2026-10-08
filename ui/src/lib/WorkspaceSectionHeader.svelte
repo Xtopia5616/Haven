@@ -25,7 +25,11 @@
 		{#if description}<p>{description}</p>{/if}
 	</div>
 	{#if children}
-		<div class="workspace-section-header__actions">
+		<div
+			class="workspace-section-header__actions"
+			role="toolbar"
+			aria-label={`${title}操作`}
+		>
 			{@render children?.()}
 		</div>
 	{/if}

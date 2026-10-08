@@ -393,19 +393,7 @@
 </script>
 
 <div class="tools-page">
-	<WorkspacePageHeader title="工具" description="管理 Haven 可调用的工具、MCP 服务与技能。">
-		{#snippet children()}
-			{#if activeTab === 'builtin'}
-				<MaterialButton variant="outlined" label="重置熔断" onclick={resetToolCircuits} />
-			{:else if activeTab === 'mcp'}
-				<RefreshButton loading={mcpRefreshing} onclick={refreshMcpList} />
-				<MaterialButton variant="outlined" label="添加" onclick={openAddDialog} />
-			{:else}
-				<RefreshButton loading={skillsRefreshing} onclick={refreshSkills} />
-				<MaterialButton variant="outlined" label="打开技能文件夹" onclick={openFolder} />
-			{/if}
-		{/snippet}
-	</WorkspacePageHeader>
+	<WorkspacePageHeader title="工具" description="管理 Haven 可调用的工具、MCP 服务与技能。" />
 
 	<div class="tools-workspace workspace-secondary-layout responsive-layout-transition">
 		<nav
@@ -471,7 +459,11 @@
 					<WorkspaceSectionHeader
 						title="内置工具"
 						description="Haven 自带的可调用能力；按能力族、根能力和具体操作三级收纳，可展开后分别启停。"
-					/>
+					>
+						{#snippet children()}
+							<MaterialButton variant="outlined" label="重置熔断" onclick={resetToolCircuits} />
+						{/snippet}
+					</WorkspaceSectionHeader>
 					{@render resourceToolbar()}
 					{#if builtinTools.length === 0}
 						<AsyncState
@@ -496,7 +488,21 @@
 					<WorkspaceSectionHeader
 						title="MCP 服务器"
 						description="连接外部工具服务，并查看当前连接状态。"
-					/>
+					>
+						{#snippet children()}
+							<RefreshButton
+								width="equal"
+								loading={mcpRefreshing}
+								onclick={refreshMcpList}
+							/>
+							<MaterialButton
+								variant="outlined"
+								width="equal"
+								label="添加"
+								onclick={openAddDialog}
+							/>
+						{/snippet}
+					</WorkspaceSectionHeader>
 					{@render resourceToolbar()}
 					{#if mcpServers.length === 0}
 						<AsyncState
@@ -530,7 +536,21 @@
 					<WorkspaceSectionHeader
 						title="技能"
 						description="管理可被 Agent 调用的技能和执行脚本。"
-					/>
+					>
+						{#snippet children()}
+							<RefreshButton
+								width="equal"
+								loading={skillsRefreshing}
+								onclick={refreshSkills}
+							/>
+							<MaterialButton
+								variant="outlined"
+								width="equal"
+								label="打开技能文件夹"
+								onclick={openFolder}
+							/>
+						{/snippet}
+					</WorkspaceSectionHeader>
 					{@render resourceToolbar()}
 					{#if skills.length === 0}
 						<AsyncState
