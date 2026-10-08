@@ -1,11 +1,15 @@
 <script lang="ts">
 	import JsonView from '$lib/JsonView.svelte';
 	import type { MediaRepresentationKind } from './contracts/generatedCommands.ts';
-	import type { ToolMediaFileKind, ToolMediaModality } from './toolResultPresentation.ts';
+	import type {
+		ToolMediaFileKind,
+		ToolMediaModality,
+		ToolMediaOperation,
+	} from './toolResultPresentation.ts';
 
 	interface Props {
 		data?: {
-			operation?: string;
+			operation?: ToolMediaOperation | null;
 			media?: {
 				asset_id?: string;
 				filename?: string;
@@ -43,7 +47,7 @@
 		typeof media.recommended_next === 'string' ? media.recommended_next : '',
 	);
 	let text = $derived(typeof media.content === 'string' ? media.content : '');
-	const operationLabels: Record<string, string> = {
+	const operationLabels: Partial<Record<ToolMediaOperation, string>> = {
 		record: '录音完成',
 		play: '播放完成',
 		speak: '朗读完成',
@@ -52,7 +56,9 @@
 		mute_get: '当前静音状态',
 		mute_set: '静音状态已设置',
 	};
-	let operationLabel = $derived(operationLabels[data.operation ?? ''] || '媒体操作');
+	let operationLabel = $derived(
+		(data.operation && operationLabels[data.operation]) || '媒体操作',
+	);
 </script>
 
 <div class="media-detail">

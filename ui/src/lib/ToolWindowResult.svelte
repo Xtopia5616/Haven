@@ -1,29 +1,35 @@
 <script lang="ts">
 	import JsonView from '$lib/JsonView.svelte';
 	import ToolResultList from '$lib/ToolResultList.svelte';
+	import type {
+		ToolWindowControlType,
+		ToolWindowFormat,
+		ToolWindowOperation,
+		ToolWindowWaitCondition,
+	} from './toolResultPresentation.ts';
 
 	interface Props {
 		data?: {
 			media?: { asset_id?: string; content?: unknown };
 			asset_id?: string;
 			windows?: Array<{ hwnd?: number | string; title?: string; pid?: number }>;
-			elements?: Array<{ name?: string; control_type?: string }>;
+			elements?: Array<{ name?: string; control_type?: ToolWindowControlType | null }>;
 			count?: number;
 			available?: boolean;
 			note?: string;
-			operation?: string;
+			operation?: ToolWindowOperation | null;
 			title?: string;
 			pid?: number;
 			focused?: string;
 			closed?: string;
 			width?: number;
 			height?: number;
-			format?: string;
+			format?: ToolWindowFormat | null;
 			success?: boolean;
 			reason?: string;
 			matched?: boolean;
 			timed_out?: boolean;
-			condition?: string;
+			condition?: ToolWindowWaitCondition | null;
 			text?: string;
 		};
 	}

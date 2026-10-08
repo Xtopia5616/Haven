@@ -21,6 +21,11 @@ import {
 	isToolRunResultStatus,
 	isToolScheduleMode,
 	isToolSystemScope,
+	isToolMediaOperation,
+	isToolWindowControlType,
+	isToolWindowFormat,
+	isToolWindowOperation,
+	isToolWindowWaitCondition,
 } from './toolResultPresentation.ts';
 
 type JsonRecord = Record<string, unknown>;
@@ -191,15 +196,15 @@ function validProcessData(data: JsonRecord): boolean {
 function validWindowData(data: JsonRecord): boolean {
 	return (
 		hasValidOptionalFields(data, {
+			operation: isToolWindowOperation,
+			format: isToolWindowFormat,
+			condition: isToolWindowWaitCondition,
 			...stringFields(
-				'operation',
 				'note',
 				'title',
 				'focused',
 				'closed',
-				'format',
 				'reason',
-				'condition',
 				'text',
 				'asset_id',
 			),
@@ -217,7 +222,10 @@ function validWindowData(data: JsonRecord): boolean {
 			}),
 		) &&
 		hasValidRecordArray(data, 'elements', (row) =>
-			hasValidOptionalFields(row, { name: isString, control_type: isString }),
+			hasValidOptionalFields(row, {
+				name: isString,
+				control_type: isToolWindowControlType,
+			}),
 		)
 	);
 }
@@ -225,7 +233,8 @@ function validWindowData(data: JsonRecord): boolean {
 function validMediaData(data: JsonRecord): boolean {
 	return (
 		hasValidOptionalFields(data, {
-			...stringFields('operation', 'asset_id', 'reason', 'error', 'transcript'),
+			operation: isToolMediaOperation,
+			...stringFields('asset_id', 'reason', 'error', 'transcript'),
 			...numberFields('duration_ms', 'characters', 'volume'),
 			...booleanFields('available', 'played', 'muted', 'capture_error'),
 			representation: isMediaRepresentationKind,

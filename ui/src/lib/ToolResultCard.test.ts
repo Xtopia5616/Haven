@@ -14,8 +14,10 @@ import { getToolResultRenderer } from './toolResultRenderers.ts';
 import ToolFileResult from './ToolFileResult.svelte';
 import ToolInputResult from './ToolInputResult.svelte';
 import ToolJsonResult from './ToolJsonResult.svelte';
+import ToolMediaResult from './ToolMediaResult.svelte';
 import ToolShellResult from './ToolShellResult.svelte';
 import ToolSystemResult from './ToolSystemResult.svelte';
+import ToolWindowResult from './ToolWindowResult.svelte';
 
 const searchJson = (results: any[], extra: any = {}) =>
 	JSON.stringify({ results, count: results.length, mode: 'filename', ...extra });
@@ -199,6 +201,7 @@ describe('operation view UI contract', () => {
 			{ renderer: 'files', data: { media: [] } },
 			{ renderer: 'media', data: { media: { available_representations: [null] } } },
 			{ renderer: 'media', data: { representation: 'unknown_representation' } },
+			{ renderer: 'media', data: { operation: 'future-operation' } },
 			{ renderer: 'media', data: { modality: 'archive' } },
 			{ renderer: 'media', data: { file_kind: 'package' } },
 			{
@@ -217,6 +220,10 @@ describe('operation view UI contract', () => {
 			{ renderer: 'input', data: { operation: 'restart' } },
 			{ renderer: 'input', data: { operation: 'click', button: 'primary' } },
 			{ renderer: 'window', data: { elements: [null] } },
+			{ renderer: 'window', data: { operation: 'restart' } },
+			{ renderer: 'window', data: { operation: 'wait', condition: 'visible' } },
+			{ renderer: 'window', data: { operation: 'screenshot', format: 'jpeg' } },
+			{ renderer: 'window', data: { elements: [{ control_type: 'FutureControl' }] } },
 			{ renderer: 'tool_runs', data: { tool_runs: [null] } },
 			{ renderer: 'tool_runs', data: { tool_run_id: 'toolrun-1', status: 'future-status' } },
 			{
@@ -300,6 +307,26 @@ describe('operation view UI contract', () => {
 				'input',
 			),
 		).toBe(ToolInputResult);
+		expect(
+			getToolResultRenderer(
+				'custom',
+				'files',
+				{ operation: 'read', media: { asset_id: 'asset-1', content: 'plain text' } },
+				'files',
+			),
+		).toBe(ToolMediaResult);
+		expect(
+			getToolResultRenderer(
+				'custom',
+				'window',
+				{
+					operation: 'wait',
+					condition: 'title_contains',
+					elements: [{ control_type: 'Unknown' }],
+				},
+				'window',
+			),
+		).toBe(ToolWindowResult);
 		expect(
 			getToolResultRenderer(
 				'custom',

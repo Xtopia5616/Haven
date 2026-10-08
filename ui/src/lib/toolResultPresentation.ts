@@ -83,6 +83,122 @@ export function isToolInputButton(value: unknown): value is ToolInputButton {
 	return toolInputButtons.some((button) => button === value);
 }
 
+export const toolMediaOperations = [
+	'inspect',
+	'describe',
+	'ocr',
+	'transcribe',
+	'extract',
+	'render',
+	'generate',
+	'record',
+	'play',
+	'speak',
+	'volume_get',
+	'volume_set',
+	'mute_get',
+	'mute_set',
+	'read',
+	'summary',
+] as const;
+
+export type ToolMediaOperation = (typeof toolMediaOperations)[number];
+
+export function isToolMediaOperation(value: unknown): value is ToolMediaOperation {
+	return toolMediaOperations.some((operation) => operation === value);
+}
+
+export const toolWindowOperations = [
+	'list',
+	'foreground',
+	'focus',
+	'close',
+	'screenshot',
+	'ocr',
+	'ui_tree',
+	'observe',
+	'invoke',
+	'set_value',
+	'toggle',
+	'select',
+	'wait',
+] as const;
+
+export type ToolWindowOperation = (typeof toolWindowOperations)[number];
+
+export function isToolWindowOperation(value: unknown): value is ToolWindowOperation {
+	return toolWindowOperations.some((operation) => operation === value);
+}
+
+export const toolWindowWaitConditions = [
+	'title_contains',
+	'foreground_contains',
+	'ui_text',
+] as const;
+
+export type ToolWindowWaitCondition = (typeof toolWindowWaitConditions)[number];
+
+export function isToolWindowWaitCondition(value: unknown): value is ToolWindowWaitCondition {
+	return toolWindowWaitConditions.some((condition) => condition === value);
+}
+
+export const toolWindowFormats = ['png'] as const;
+
+export type ToolWindowFormat = (typeof toolWindowFormats)[number];
+
+export function isToolWindowFormat(value: unknown): value is ToolWindowFormat {
+	return toolWindowFormats.some((format) => format === value);
+}
+
+export const toolWindowControlTypes = [
+	'Button',
+	'Calendar',
+	'CheckBox',
+	'ComboBox',
+	'Edit',
+	'Hyperlink',
+	'Image',
+	'ListItem',
+	'List',
+	'Menu',
+	'MenuBar',
+	'MenuItem',
+	'ProgressBar',
+	'RadioButton',
+	'ScrollBar',
+	'Slider',
+	'Spinner',
+	'StatusBar',
+	'Tab',
+	'TabItem',
+	'Text',
+	'ToolBar',
+	'ToolTip',
+	'Tree',
+	'TreeItem',
+	'Custom',
+	'Group',
+	'Thumb',
+	'DataGrid',
+	'DataItem',
+	'Document',
+	'SplitButton',
+	'Window',
+	'Pane',
+	'Header',
+	'HeaderItem',
+	'Table',
+	'TitleBar',
+	'Separator',
+	'Unknown',
+] as const;
+
+export type ToolWindowControlType = (typeof toolWindowControlTypes)[number];
+
+export function isToolWindowControlType(value: unknown): value is ToolWindowControlType {
+	return toolWindowControlTypes.some((controlType) => controlType === value);
+}
+
 export const toolScheduleModes = ['tool', 'continue'] as const;
 
 export type ToolScheduleMode = (typeof toolScheduleModes)[number];
