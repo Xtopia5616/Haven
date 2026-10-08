@@ -71,11 +71,10 @@ export type InteractionRequest =
 		sessionId?: never;
 	  });
 
-/** Normalized renderer view for a resolved Ask interaction's dynamic response. */
-export interface AskResponseView {
-	answer?: string;
-	ignored?: boolean;
-}
+/** Normalized renderer view for a resolved Ask interaction's response. */
+export type AskResponseView =
+	| { answer: string; ignored?: false }
+	| { ignored: true; answer?: never };
 
 export function isSessionInteractionRequest(
 	request: InteractionRequest,

@@ -792,3 +792,4 @@
 - [0801：对齐 System renderer nested shapes](0801-align-system-renderer-nested-shapes.md)
 - [0802：类型化 interaction resolution views](0802-type-interaction-resolution-views.md)
 - [0803：移除未消费的录音事件字段](0803-remove-unused-recording-event-fields.md)
+- [0804：区分 Ask answer 与 ignored response](0804-discriminate-ask-response-view.md)

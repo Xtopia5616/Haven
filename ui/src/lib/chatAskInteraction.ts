@@ -165,7 +165,9 @@ export function createAskInteractionController({
 		const ids = resolvedAskIds.get(sessionId) || new Set<string>();
 		// A double-click must not compose and submit the same answer twice.
 		if (ids.has(msgId)) return;
-		const response = resolved.ignored ? { ignored: true } : { answer: resolved.answer || '' };
+		const response: AskResponseView = resolved.ignored
+			? { ignored: true }
+			: { answer: resolved.answer || '' };
 		reducer.dispatch({ type: 'session/interaction-resolved', id: msgId, response });
 		ids.add(msgId);
 		resolvedAskIds.set(sessionId, ids);
