@@ -1,8 +1,9 @@
 <script lang="ts">
 	import JsonView from '$lib/JsonView.svelte';
+	import type { ParsedToolResult } from './toolResultParsing.ts';
 
 	interface Props {
-		kind?: string;
+		kind?: ParsedToolResult['kind'];
 		data?: unknown;
 		rawText?: string;
 	}
