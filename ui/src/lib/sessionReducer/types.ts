@@ -12,6 +12,7 @@ import type {
 	InteractionKind,
 	SessionStatus,
 	SessionUpdateStatus,
+	SessionWaitingReason,
 } from '../contracts/generatedCommands.ts';
 import type { SessionLlmUsage, SessionResumeUsage } from '../contracts/sessionHistory.ts';
 import type { SessionMessagePresentationType, StreamMessage } from '../streaming.ts';
@@ -22,7 +23,7 @@ export const DRAFT_SESSION_ID = '_draft';
 export interface SessionSummary {
 	id: string;
 	status: SessionStatus;
-	waitingReason?: unknown;
+	waitingReason?: SessionWaitingReason | null;
 	[key: string]: unknown;
 }
 
@@ -119,7 +120,7 @@ export type SessionAction =
 			sessionId: string;
 			status: SessionUpdateStatus;
 			title?: string | null;
-			waitingReason?: string | null;
+			waitingReason?: SessionWaitingReason | null;
 	  }
 	| { type: 'session/error-reason-remembered'; sessionId: string; reason: string }
 	| { type: 'session/error-reason-forgotten'; sessionId: string }
@@ -129,7 +130,7 @@ export type SessionAction =
 			status: SessionRunEndStatus;
 			reason: string;
 			title?: string | null;
-			waitingReason?: string | null;
+			waitingReason?: SessionWaitingReason | null;
 	  }
 	| { type: 'session/run-end-notice-cleared'; sessionId?: string | null }
 	| { type: 'session/retained-error'; session: SessionSummary }

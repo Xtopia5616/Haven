@@ -754,3 +754,4 @@
 - [0763：导航组件共享 tabs selection props](0763-share-navigation-tab-selection-props.md)
 - [0764：主题 store 使用闭合 ThemeMode](0764-type-theme-store-mode.md)
 - [0765：Session UI reducer 复用生成状态类型](0765-type-session-reducer-statuses.md)
+- [0766：Session reducer 复用生成等待原因类型](0766-type-session-waiting-reasons.md)
