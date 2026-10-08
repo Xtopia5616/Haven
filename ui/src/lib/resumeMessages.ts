@@ -185,7 +185,28 @@ export function mergeLiveStreaming(
 			out.push(f.item);
 		}
 	}
-	return out;
+	// The database transcript is ordered by durable message time, while the
+	// live UI keeps unreceived steering inputs pinned after the agent's ongoing
+	// work. Rebuilding from DB rows can therefore put committed agent messages
+	// after those inputs. Re-anchor the still-pending user rows at the tail,
+	// preserving their original submission order, until agent:supplement clears
+	// each live-only steering marker.
+	const pendingSteeringIds = new Set(liveSteeringIds);
+	if (pendingSteeringIds.size === 0) return out;
+	const pendingSteering = out.filter(
+		(m) => m.role === 'user' && pendingSteeringIds.has(m.id) && m.steering,
+	);
+	if (pendingSteering.length === 0) return out;
+	const pendingSteeringOrder = new Map(
+		existing
+			.filter((m) => pendingSteeringIds.has(m.id))
+			.map((m, index) => [m.id, index]),
+	);
+	pendingSteering.sort(
+		(a, b) => (pendingSteeringOrder.get(a.id) ?? 0) - (pendingSteeringOrder.get(b.id) ?? 0),
+	);
+	const pendingIds = new Set(pendingSteering.map((m) => m.id));
+	return [...out.filter((m) => !pendingIds.has(m.id)), ...pendingSteering];
 }
 
 /**

@@ -1136,6 +1136,24 @@ describe('mergeLiveStreaming', () => {
 		expect(merged.find((m) => m.id === 'm2')!.steering).toBe(true);
 	});
 
+	it('reanchors pending steering after later DB-ordered agent messages', () => {
+		const db = [
+			{ id: 'm1', role: 'user' as const, content: 'hi' },
+			{ id: 'm2', role: 'user' as const, content: '补充' },
+			{ id: 'msg-after', role: 'assistant' as const, content: '继续处理' },
+		];
+		const existing = [
+			{ id: 'm1', role: 'user' as const, content: 'hi' },
+			{ id: 'msg-after', role: 'assistant' as const, content: '继续处理' },
+			{ id: 'm2', role: 'user' as const, content: '补充', steering: true },
+		];
+
+		const merged = mergeLiveStreaming(db, existing);
+
+		expect(merged.map((message) => message.id)).toEqual(['m1', 'msg-after', 'm2']);
+		expect(merged.at(-1)).toMatchObject({ id: 'm2', steering: true });
+	});
+
 	it('keeps the interrupted partial reasoning after a continue resync', () => {
 		// After continue_session truncates the errored step's partial output
 		// from the DB, the resync must NOT clear the already-streamed

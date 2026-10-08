@@ -641,6 +641,36 @@ describe('SessionReducer', () => {
 		]);
 	});
 
+	it('preserves and reanchors pending steering during streaming-only resume', () => {
+		const state: typeof initialSessionState = {
+			...initialSessionState,
+			messages: {
+				'ses-live': [
+					{ id: 'm1', role: 'user' as const, content: 'hi' },
+					{ id: 'm2', role: 'user' as const, content: '补充', steering: true },
+				],
+			},
+		};
+
+		const next = reduceSession(state, {
+			type: 'session/messages/resume-loaded',
+			sessionId: 'ses-live',
+			messages: [
+				{ id: 'm1', role: 'user' as const, content: 'hi' },
+				{ id: 'm2', role: 'user' as const, content: '补充' },
+				{ id: 'msg-after', role: 'assistant' as const, content: '继续处理' },
+			],
+			preserveStreamingOnly: true,
+		});
+
+		expect(next.messages?.['ses-live'].map((message) => message.id)).toEqual([
+			'm1',
+			'msg-after',
+			'm2',
+		]);
+		expect(next.messages?.['ses-live'][2]).toMatchObject({ id: 'm2', steering: true });
+	});
+
 	it('does not drop a live confirmation when resume snapshot is behind the event', () => {
 		const pending = {
 			id: 'conf-live',

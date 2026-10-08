@@ -164,7 +164,9 @@ export function reduceTranscript(
 			const existing = messagesOf(state, action.sessionId).filter(
 				(message) =>
 					!excluded.has(message.id) &&
-					(!action.preserveStreamingOnly || message.streaming),
+					(!action.preserveStreamingOnly ||
+						message.streaming ||
+						(message.role === 'user' && message.steering)),
 			);
 			return withMessages(state, action.sessionId, () =>
 				mergeLiveStreaming(action.messages, existing),
