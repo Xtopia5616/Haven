@@ -7,9 +7,9 @@
 			chars?: number;
 			typed?: string;
 			pressed?: string;
-			clicked?: unknown[];
+			clicked?: [number, number];
 			button?: string;
-			moved_to?: unknown[];
+			moved_to?: [number, number];
 			scrolled?: number;
 		};
 	}

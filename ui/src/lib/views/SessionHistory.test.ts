@@ -4,9 +4,9 @@ import SessionHistory from './SessionHistory.svelte';
 import type { SessionHistoryRow } from '$lib/contracts/sessionHistory.ts';
 
 const commonProps = {
-	statusOptions: [{ value: '', label: '全部状态' }],
+	statusOptions: [{ value: '' as const, label: '全部状态' }],
 	displayTitle: (_session: SessionHistoryRow) => '研究会话',
-	statusVariant: (_status: string): 'success' => 'success',
+	statusVariant: (_status: SessionHistoryRow['status']): 'success' => 'success',
 	formatMessageTime: (_value: string) => '刚刚',
 };
 
@@ -23,6 +23,23 @@ describe('SessionHistory actions', () => {
 
 		const count = document.querySelector('.filter-bar > .count-chip');
 		expect(count?.textContent).toBe('共 3 条历史');
+	});
+
+	it('emits only a generated session status from the filter control', async () => {
+		const onStatusFilterChange = vi.fn();
+		render(SessionHistory, {
+			...commonProps,
+			statusOptions: [
+				{ value: 'completed' as const, label: '已完成' },
+				{ value: '' as const, label: '全部状态' },
+			],
+			onStatusFilterChange,
+		});
+
+		await fireEvent.click(screen.getByRole('button', { name: '会话状态' }));
+		await fireEvent.click(screen.getByRole('option', { name: '已完成' }));
+
+		expect(onStatusFilterChange).toHaveBeenCalledWith('completed');
 	});
 
 	it('offers a direct next step when there is no history', async () => {

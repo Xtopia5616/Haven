@@ -2,19 +2,22 @@
 	import MaterialIconButton from './MaterialIconButton.svelte';
 	import StatusDot from './StatusDot.svelte';
 	import { toolRunKindLabel } from '$lib/toolRunTerminology.ts';
+	import type { LlmConnectionStatus } from '$lib/contracts/generatedCommands.ts';
+	import type { RecordingOverlayState } from './recordingOverlayController.ts';
+	import type { ReActExecutionPhase } from './sessionRuntimeStore.ts';
 
 	interface Props {
-		overlay?: { isRecording?: boolean; processing?: boolean };
-		executionPhase?: string;
-		busySessions?: ReadonlySet<unknown>;
+		overlay?: Partial<Pick<RecordingOverlayState, 'isRecording' | 'processing'>>;
+		executionPhase?: ReActExecutionPhase;
+		busySessions?: ReadonlySet<string>;
 		activeSessionStatusLabel?: string;
-		runtime?: string;
+		runtime?: 'unknown' | 'tauri' | 'browser';
 		bootstrapReady?: boolean;
-		llmConnected?: string | null;
+		llmConnected?: LlmConnectionStatus | null;
 		llmConnectionDetail?: string | null;
 		awaitingBackgroundActive?: boolean;
 		runningBackgroundToolRunCount?: number;
-		pendingScheduledToolRuns?: unknown[];
+		pendingScheduledToolRunCount?: number;
 		onOpenTasks?: () => void;
 	}
 
@@ -29,7 +32,7 @@
 		llmConnectionDetail = null,
 		awaitingBackgroundActive = false,
 		runningBackgroundToolRunCount = 0,
-		pendingScheduledToolRuns = [],
+		pendingScheduledToolRunCount = 0,
 		onOpenTasks = () => {},
 	}: Props = $props();
 
@@ -93,7 +96,7 @@
 		return executionStatusLabel;
 	});
 
-	const taskCount = $derived(runningBackgroundToolRunCount + pendingScheduledToolRuns.length);
+	const taskCount = $derived(runningBackgroundToolRunCount + pendingScheduledToolRunCount);
 	const hasTaskActivity = $derived(taskCount > 0 || awaitingBackgroundActive);
 
 	const statusColor = $derived.by(() => {
@@ -141,10 +144,12 @@
 			parts.push(modelStatusTitle);
 		}
 		if (runningBackgroundToolRunCount > 0) {
-			parts.push(`${runningBackgroundToolRunCount} 个${toolRunKindLabel('background')}运行中`);
+			parts.push(
+				`${runningBackgroundToolRunCount} 个${toolRunKindLabel('background')}运行中`,
+			);
 		}
-		if (pendingScheduledToolRuns.length > 0) {
-			parts.push(`${pendingScheduledToolRuns.length} 条${toolRunKindLabel('scheduled')}`);
+		if (pendingScheduledToolRunCount > 0) {
+			parts.push(`${pendingScheduledToolRunCount} 条${toolRunKindLabel('scheduled')}`);
 		}
 		return parts.length > 0
 			? `状态：${statusLabel}；${parts.join('；')}`
@@ -153,9 +158,10 @@
 
 	const toolRunTitle = $derived.by(() => {
 		const parts = [];
-		if (runningBackgroundToolRunCount > 0) parts.push(`${runningBackgroundToolRunCount} 个后台任务运行中`);
-		if (pendingScheduledToolRuns.length > 0) {
-			parts.push(`${pendingScheduledToolRuns.length} 条${toolRunKindLabel('scheduled')}`);
+		if (runningBackgroundToolRunCount > 0)
+			parts.push(`${runningBackgroundToolRunCount} 个后台任务运行中`);
+		if (pendingScheduledToolRunCount > 0) {
+			parts.push(`${pendingScheduledToolRunCount} 条${toolRunKindLabel('scheduled')}`);
 		}
 		return parts.length > 0 ? `打开任务：${parts.join('，')}` : '打开任务查看详情';
 	});

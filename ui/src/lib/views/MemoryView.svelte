@@ -41,10 +41,7 @@
 	import WorkspacePageHeader from '$lib/WorkspacePageHeader.svelte';
 	import WorkspaceSectionHeader from '$lib/WorkspaceSectionHeader.svelte';
 	import type { SessionHistoryFilterRequest } from '$lib/contracts/commands.ts';
-	import {
-		MEMORY_FACT_SOURCE_INPUT_VALUES,
-		SESSION_HISTORY_STATUS_FILTER_INPUT_VALUES,
-	} from '$lib/contracts/generatedCommands.ts';
+	import { MEMORY_FACT_SOURCE_INPUT_VALUES } from '$lib/contracts/generatedCommands.ts';
 	import type {
 		MemoryFactSourceInput,
 		SessionHistoryStatusFilterInput,
@@ -278,7 +275,9 @@
 		const sequence = loadSessionsSeq;
 		loading = true;
 		try {
-			const more = await searchSessionHistoryFiltered(filterParams({ limit: PAGE_SIZE, offset }));
+			const more = await searchSessionHistoryFiltered(
+				filterParams({ limit: PAGE_SIZE, offset }),
+			);
 			if (sequence !== loadSessionsSeq) return;
 			if (more && more.length > 0) {
 				sessions = [...sessions, ...more];
@@ -314,18 +313,8 @@
 		endDate = '';
 		void sessionsRefresh.refresh();
 	}
-	function handleStatusFilterChange(value: string) {
-		if (value === '') {
-			statusFilter = '';
-		} else if (
-			SESSION_HISTORY_STATUS_FILTER_INPUT_VALUES.includes(
-				value as SessionHistoryStatusFilterInput,
-			)
-		) {
-			statusFilter = value as SessionHistoryStatusFilterInput;
-		} else {
-			return;
-		}
+	function handleStatusFilterChange(value: '' | SessionHistoryStatusFilterInput) {
+		statusFilter = value;
 		handleFilterChange();
 	}
 	function handleRecallKindChange(value: MemoryRecallFilter) {
@@ -785,7 +774,11 @@
 		/>
 	{/snippet}
 </MaterialDialog>
-<MaterialDialog open={showClearDialog} onClose={() => (showClearDialog = false)} title="删除全部会话">
+<MaterialDialog
+	open={showClearDialog}
+	onClose={() => (showClearDialog = false)}
+	title="删除全部会话"
+>
 	{#snippet children()}<p class="dialog-text">
 			将永久删除全部会话记录（长期事实不受影响）。此操作不可撤销。
 		</p>{/snippet}

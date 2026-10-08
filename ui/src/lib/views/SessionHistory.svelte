@@ -7,13 +7,19 @@
 	import CountChip from '$lib/CountChip.svelte';
 	import HistoryListGroup from '$lib/HistoryListGroup.svelte';
 	import type { SessionHistoryRow } from '$lib/contracts/sessionHistory.ts';
+	import {
+		SESSION_HISTORY_STATUS_FILTER_INPUT_VALUES,
+		type SessionHistoryStatusFilterInput,
+	} from '$lib/contracts/generatedCommands.ts';
+
+	type SessionHistoryStatusSelection = '' | SessionHistoryStatusFilterInput;
 
 	interface Props {
 		sessions?: SessionHistoryRow[];
 		searchQuery?: string;
 		totalCount?: number;
-		statusFilter?: string;
-		statusOptions?: Array<{ value: string; label: string }>;
+		statusFilter?: SessionHistoryStatusSelection;
+		statusOptions?: Array<{ value: SessionHistoryStatusSelection; label: string }>;
 		startDate?: string;
 		endDate?: string;
 		loading?: boolean;
@@ -23,7 +29,7 @@
 		onSearchQueryChange?: (value: string) => void;
 		onSearchInput?: () => void;
 		onClearFilters?: () => void;
-		onStatusFilterChange?: (value: string) => void;
+		onStatusFilterChange?: (value: SessionHistoryStatusSelection) => void;
 		onOpenDateFilter?: () => void;
 		onResume?: (session: SessionHistoryRow) => void;
 		onNewSession?: () => void;
@@ -36,7 +42,7 @@
 		onLoadMore?: () => void;
 		displayTitle?: (session: SessionHistoryRow) => string;
 		statusVariant?: (
-			status: string,
+			status: SessionHistoryRow['status'],
 		) => 'default' | 'primary' | 'secondary' | 'success' | 'warning' | 'error';
 		formatMessageTime?: (value: string) => string;
 	}
@@ -72,18 +78,27 @@
 		statusVariant = () => 'default',
 		formatMessageTime = (value) => value,
 	}: Props = $props();
-	const statusLabels: Record<string, string> = {
+	const statusLabels: Record<SessionHistoryRow['status'], string> = {
 		pending: '排队中',
 		running: '运行中',
 		paused: '已暂停',
 		completed: '已完成',
 		error: '错误',
 	};
-	function sessionStatusLabel(status: string) {
-		return statusLabels[status] || status;
+	function sessionStatusLabel(status: SessionHistoryRow['status']) {
+		return statusLabels[status];
+	}
+	function isSessionHistoryStatusFilterInput(
+		value: string,
+	): value is SessionHistoryStatusFilterInput {
+		return SESSION_HISTORY_STATUS_FILTER_INPUT_VALUES.some((candidate) => candidate === value);
 	}
 	function handleStatusChange(value: string) {
-		onStatusFilterChange(value);
+		if (value === '') {
+			onStatusFilterChange('');
+		} else if (isSessionHistoryStatusFilterInput(value)) {
+			onStatusFilterChange(value);
+		}
 	}
 	function handleSessionKeydown(event: KeyboardEvent, session: SessionHistoryRow) {
 		if (event.target !== event.currentTarget) return;

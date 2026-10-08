@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { render, screen } from '@testing-library/svelte';
 import WorkspaceStatus from './WorkspaceStatus.svelte';
+import type { ReActExecutionPhase } from './sessionRuntimeStore.ts';
 
 describe('WorkspaceStatus', () => {
 	it('explains that browser preview has no Tauri backend', () => {
@@ -75,7 +76,7 @@ describe('WorkspaceStatus', () => {
 	});
 
 	it('uses the selected text for the request, response, and tool-result phases', () => {
-		const labels = [
+		const labels: Array<[ReActExecutionPhase, string]> = [
 			['requesting', '请求中'],
 			['waiting_response', '等待响应'],
 			['waiting_result', '等待结果'],
@@ -98,7 +99,7 @@ describe('WorkspaceStatus', () => {
 				runtime: 'tauri',
 				bootstrapReady: true,
 				activeSessionStatusLabel,
-				busySessions: new Set(),
+				busySessions: new Set<string>(),
 			});
 			expect(
 				screen.getByRole('status', { name: `状态：${activeSessionStatusLabel}` }),

@@ -619,9 +619,7 @@
 	);
 	let dismissedConfirmationIds = $state(new Set<string>());
 	let requestedConfirmationId = $state<string | null>(null);
-	$effect(() =>
-		syncStore(requestedConfirmationIdStore, (id) => (requestedConfirmationId = id)),
-	);
+	$effect(() => syncStore(requestedConfirmationIdStore, (id) => (requestedConfirmationId = id)));
 	const activeConfirmRequest = $derived.by(() => {
 		if (requestedConfirmationId) {
 			const requested = pendingConfirmInteractions.find(
@@ -652,8 +650,9 @@
 				? '当前操作'
 				: activeConfirmRequest.sessionId
 					? String(
-							sessions.find((session) => session.id === activeConfirmRequest.sessionId)
-								?.title || activeConfirmRequest.sessionId,
+							sessions.find(
+								(session) => session.id === activeConfirmRequest.sessionId,
+							)?.title || activeConfirmRequest.sessionId,
 						)
 					: '定时任务'
 			: '',
@@ -698,11 +697,11 @@
 				result: resolution,
 				response: { approved, effect: resolvedEffect, scope: resolvedScope },
 			});
-			if (resolution === 'expired') addNotification('确认已过期，操作未执行', 'warning', 4000);
+			if (resolution === 'expired')
+				addNotification('确认已过期，操作未执行', 'warning', 4000);
 			else if (resolution === 'stale') {
 				addNotification('确认请求已失效或已处理，请查看会话结果', 'warning', 4000);
-			}
-			else if (approved && currentRequest?.owner.kind === 'app_command') {
+			} else if (approved && currentRequest?.owner.kind === 'app_command') {
 				addNotification('权限已确认，操作正在执行', 'info', 4000);
 			}
 			return true;
@@ -1205,7 +1204,7 @@
 				: null}
 			{awaitingBackgroundActive}
 			{runningBackgroundToolRunCount}
-			{pendingScheduledToolRuns}
+			pendingScheduledToolRunCount={pendingScheduledToolRuns.length}
 			onOpenTasks={() => switchTab('memory', 'tasks')}
 		/>
 	{/snippet}
