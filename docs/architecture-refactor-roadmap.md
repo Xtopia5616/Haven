@@ -268,6 +268,8 @@
 
 **MaterialSelect option row owner 复核（2026-10-08）：** MaterialSelect、ModelConfigCard、ProviderList 与 MediaSettings 原先分别声明相同的 value/label 行；现在共用 `selectOption.ts::SelectOption`，可选 group 由选择器继续支持。option 内容生成与交互行为不变（ADR 0797）。
 
+**Diagnostics performance metrics view owner 复核（2026-10-08）：** `PerformanceMetricsSnapshot` 曾在生成的 Rust `MetricsSnapshot` 上叠加开放索引签名，但 producer 字段固定，唯一生产 consumer 是原样 JSON 下载。现在保留有语义的 UI 名称并直接引用生成 DTO；运行时序列化仍保留对象原有字段（ADR 0798）。
+
 #### 首轮全仓符号扫描与候选分流
 
 | 范围 | 证据与调用边界 | 当前分类 / 下一步 |

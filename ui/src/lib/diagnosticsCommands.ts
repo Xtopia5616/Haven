@@ -38,7 +38,7 @@ export function readApiKeyStatus(): Promise<ApiKeyStatus> {
 	return invoke('get_api_key_status').then(parseApiKeyStatus);
 }
 
-/** Read content-free metrics with typed known fields and open diagnostics extensions. */
+/** Read the content-free metrics response using its generated Rust-owned shape. */
 export function requestPerformanceMetricsSnapshot(
 	ui?: UiMetricsSnapshot,
 ): Promise<PerformanceMetricsSnapshot> {
