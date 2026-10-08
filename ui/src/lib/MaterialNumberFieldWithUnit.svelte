@@ -1,16 +1,12 @@
 <script lang="ts">
 	import MaterialNumberField from './MaterialNumberField.svelte';
+	import type { ComponentProps } from 'svelte';
 	import type { ControlWidth } from './controlWidth.ts';
 
-	interface Props {
-		value?: number;
+	interface Props extends Omit<ComponentProps<typeof MaterialNumberField>, 'width'> {
 		unit?: string;
-		onChange?: (value: number) => void;
-		id?: string;
-		min?: number;
-		max?: number;
-		step?: number;
 		className?: string;
+		/** Width of the composite control container. */
 		width?: ControlWidth;
 	}
 
