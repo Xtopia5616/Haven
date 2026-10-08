@@ -788,7 +788,6 @@ impl Tool for ToolCatalogTool {
                 "operations": {
                     "type": "array",
                     "minItems": 1,
-                    "maxItems": 64,
                     "uniqueItems": true,
                     "items": { "type": "string", "minLength": 1, "maxLength": 128 },
                     "description": "Exact dotted built-in operation names to activate for this session"

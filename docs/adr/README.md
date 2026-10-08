@@ -804,3 +804,4 @@
 - [0813：流式展示未完成的工具调用参数](0813-stream-tool-call-argument-previews.md)
 - [0814：空剪贴板读取与程序写入历史](0814-empty-clipboard-reads-and-program-history.md)
 - [0815：有限重试瞬态 UI Automation E_FAIL](0815-retry-transient-ui-automation-e-fail.md)
+- [0816：按需加载内置工具并取消固定批次上限](0816-load-builtins-on-demand-without-fixed-batch-cap.md)

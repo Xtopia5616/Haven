@@ -687,6 +687,12 @@ async fn stable_core_tools_are_registered_without_optional_providers() {
             .all(|tool| is_core_model_tool(&tool.name())),
         "default rebuild must keep deferred builtins out of the global provider registry"
     );
+    for name in ["files.read", "files.outline", "files.search", "system.info"] {
+        assert!(
+            mgr.registry().get(name).await.is_none(),
+            "convenience operation {name} must be loaded on demand"
+        );
+    }
 }
 
 #[tokio::test]
@@ -843,16 +849,29 @@ async fn test_tool_catalog_exposes_three_layers_without_loading_deferred_tools()
         .execute_tool(
             Some(session_id),
             "tool_catalog",
-            json!({
-                "action": "load",
-                "source": "builtin",
-                "operations": ["window.screenshot"]
-            }),
+            {
+                let operations = std::iter::once("window.screenshot".to_string())
+                    .chain((0..64).map(|index| format!("missing.operation_{index}")))
+                    .collect::<Vec<_>>();
+                json!({
+                    "action": "load",
+                    "source": "builtin",
+                    "operations": operations
+                })
+            },
             CancellationToken::new(),
         )
         .await
         .unwrap();
     assert!(loaded.success);
+    assert_eq!(loaded.output["status"], "loaded");
+    assert_eq!(
+        loaded.output["missing_operations"]
+            .as_array()
+            .unwrap()
+            .len(),
+        64
+    );
     assert!(
         mgr.get_tool_for_session(Some(session_id), "window.screenshot")
             .await
@@ -937,6 +956,11 @@ async fn test_tools_facade_disabled_tool_excluded_and_blocked() {
 async fn test_tools_facade_execute_builtin_tool() {
     let mgr = ToolsFacade::new();
     mgr.rebuild_catalog().await.unwrap();
+    let session_id = "ses-0123456789abcdef0123456789abcdef";
+    assert!(
+        mgr.load_builtin_operations_for_session(session_id, Some(vec!["files.read".into()]), None)
+            .await
+    );
 
     let tmp = TempDir::new().unwrap();
     let file = tmp.path().join("hello.txt");
@@ -944,7 +968,7 @@ async fn test_tools_facade_execute_builtin_tool() {
 
     let result = mgr
         .execute_tool(
-            None,
+            Some(session_id),
             "files.read",
             json!({"path": file.to_string_lossy()}),
             CancellationToken::new(),

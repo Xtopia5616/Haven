@@ -85,20 +85,10 @@ fn tool_config_enabled(settings: &HashMap<String, ToolConfig>, name: &str) -> bo
 }
 
 /// The always-visible provider surface is deliberately small. These tools
-/// support clarification, narrow source inspection, and activation of deeper
-/// capability layers; all other enabled builtins and Skills are loaded into a
+/// support clarification, notification, and activation/discovery of deeper
+/// capability layers; built-in operations and Skills are loaded into a
 /// session only when requested by the model.
-const CORE_MODEL_TOOLS: &[&str] = &[
-    "ask",
-    "notify",
-    "tool_catalog",
-    "load_skill",
-    "load_mcp",
-    "files.read",
-    "files.outline",
-    "files.search",
-    "system.info",
-];
+const CORE_MODEL_TOOLS: &[&str] = &["ask", "notify", "tool_catalog", "load_skill", "load_mcp"];
 
 fn is_core_model_tool(name: &str) -> bool {
     CORE_MODEL_TOOLS.contains(&name)

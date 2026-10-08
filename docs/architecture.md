@@ -142,7 +142,9 @@ root 和第三层 operation 的名称、描述与精确 schema；未选中的 bu
 host-owned deferred catalog，由 `tool_catalog` 的 `action=load` 按 operation/root 原子加载到当前 session；
 启用 Skill 只进入紧凑索引，由 `load_skill` 按名称加载为 session-scoped 的 `skill__...`；
 MCP 服务器索引保持紧凑，仍由 `load_mcp` 按服务器加载并注册到 `SessionToolOverlay`
-（ADR 0127、0131、0137、0145、0148）。
+（ADR 0127、0131、0137、0145、0148、0816）。provider 常驻工具只保留澄清、通知和目录/加载入口；
+`files.read`、`files.outline`、`files.search`、`system.info` 等 operation 由模型按需加载。内置 `load`
+请求不设固定 operation 数量上限，批次仍受 `context_limits.max_tools_per_request` 的原子准入预算约束。
 模型可见 observation 对结构化结果优先保留错误、路径、hint 与续读游标；工具定义和失败结果
 分别暴露静态/具体 retry safety，仓库会话的 shell/files 相对路径默认对齐 workspace root，
 同时保留 Temp sandbox fallback（ADR 0128）。
