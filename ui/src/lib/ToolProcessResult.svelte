@@ -4,19 +4,20 @@
 	import ToolResultList from '$lib/ToolResultList.svelte';
 	import ToolSearch from '$lib/ToolSearch.svelte';
 	import { clampPercentage, formatByteSize } from '$lib/toolResultFormatting.ts';
+	import type { ToolProcessOperation, ToolProcessStatus } from './toolResultPresentation.ts';
 
 	interface ProcessEntry {
 		name?: string;
 		pid?: string | number;
 		cpu?: number;
 		memory?: number;
-		status?: string;
+		status?: ToolProcessStatus | null;
 	}
 
 	interface Props {
 		data?: {
 			processes?: ProcessEntry[];
-			operation?: string;
+			operation?: ToolProcessOperation | null;
 			killed?: string | number;
 		};
 	}
@@ -41,7 +42,7 @@
 		if (!maxProcMem) return 0;
 		return Math.min(100, ((Number(process.memory) || 0) / maxProcMem) * 100);
 	}
-	const processStatusLabels: Record<string, string> = {
+	const processStatusLabels: Partial<Record<ToolProcessStatus, string>> = {
 		Run: '运行中',
 		Sleep: '休眠',
 		Idle: '空闲',
@@ -50,12 +51,18 @@
 		Dead: '已结束',
 		Tracing: '跟踪',
 		Unknown: '未知',
+		Wakekill: '唤醒终止',
+		Waking: '唤醒中',
+		Parked: '已挂起',
+		LockBlocked: '锁等待',
+		UninterruptibleDiskSleep: '不可中断等待',
+		Suspended: '已暂停',
 	};
-	function procStatusLabel(status: unknown) {
-		return processStatusLabels[String(status ?? '')] ?? String(status ?? '未知');
+	function procStatusLabel(status: ToolProcessStatus | null | undefined) {
+		return (status && processStatusLabels[status]) || status || '未知';
 	}
-	function procStatusTone(status: unknown) {
-		const normalized = String(status ?? '').toLowerCase();
+	function procStatusTone(status: ToolProcessStatus | null | undefined) {
+		const normalized = status?.toLowerCase() ?? '';
 		if (normalized.includes('run')) return 'success';
 		if (normalized.includes('zombie') || normalized.includes('dead')) return 'error';
 		if (normalized.includes('sleep') || normalized.includes('idle')) return 'neutral';

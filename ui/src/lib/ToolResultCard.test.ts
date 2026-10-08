@@ -13,6 +13,7 @@ import {
 import { getToolResultRenderer } from './toolResultRenderers.ts';
 import ToolJsonResult from './ToolJsonResult.svelte';
 import ToolShellResult from './ToolShellResult.svelte';
+import ToolSystemResult from './ToolSystemResult.svelte';
 
 const searchJson = (results: any[], extra: any = {}) =>
 	JSON.stringify({ results, count: results.length, mode: 'filename', ...extra });
@@ -204,6 +205,8 @@ describe('operation view UI contract', () => {
 			{ renderer: 'agent', data: { agents: [{ name: 'peer', status: 'future' }] } },
 			{ renderer: 'process', data: { processes: [null] } },
 			{ renderer: 'process', data: { processes: null } },
+			{ renderer: 'process', data: { operation: 'restart' } },
+			{ renderer: 'process', data: { processes: [{ status: 'Unknown(73)' }] } },
 			{ renderer: 'clipboard', data: { entries: [null] } },
 			{ renderer: 'clipboard', data: { entries: null } },
 			{ renderer: 'input', data: { operation: 'click', clicked: [12, '20'] } },
@@ -236,6 +239,8 @@ describe('operation view UI contract', () => {
 			{ renderer: 'schedule', data: { operation: 'set', mode: 'future' } },
 			{ renderer: 'system', data: { os: [] } },
 			{ renderer: 'system', data: { networks: [{ ips: null }] } },
+			{ renderer: 'system', data: { scope: 'future-scope' } },
+			{ renderer: 'system', data: { scope: { unexpected: true } } },
 			{ renderer: 'system', data: { scope: 'process', processes: [null] } },
 			{ renderer: 'system', data: { scope: 'power', ac_power: 'plugged' } },
 			{ renderer: 'system', data: { scope: 'power', battery_status: 'empty' } },
@@ -259,6 +264,17 @@ describe('operation view UI contract', () => {
 		for (const { renderer, data } of malformedResults) {
 			expect(getToolResultRenderer('custom', renderer, data, renderer)).toBe(ToolJsonResult);
 		}
+	});
+
+	it('ignores malformed system operation metadata unused by the system renderer', () => {
+		expect(
+			getToolResultRenderer(
+				'custom',
+				'system',
+				{ scope: 'info', operation: { unexpected: true }, os: { name: 'Windows' } },
+				'system',
+			),
+		).toBe(ToolSystemResult);
 	});
 
 	it('keeps valid builtin shapes specialized and unknown extension renderers open', () => {
@@ -1258,6 +1274,7 @@ describe('ToolResultCard process', () => {
 					{ pid: 1, name: 'a.exe', status: 'Run' },
 					{ pid: 2, name: 'b.exe', status: 'Sleep' },
 					{ pid: 3, name: 'c.exe', status: 'Zombie' },
+					{ pid: 4, name: 'd.exe', status: 'Unknown' },
 				],
 			}),
 		});
@@ -1265,6 +1282,7 @@ describe('ToolResultCard process', () => {
 		expect(screen.getByText('运行中')).toBeTruthy();
 		expect(screen.getByText('休眠')).toBeTruthy();
 		expect(screen.getByText('僵尸')).toBeTruthy();
+		expect(screen.getByText('未知')).toBeTruthy();
 	});
 
 	it('filters processes by name', async () => {

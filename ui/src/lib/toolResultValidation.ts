@@ -12,8 +12,11 @@ import {
 	isToolMediaFileKind,
 	isToolMediaModality,
 	isToolMemoryRecallMode,
+	isToolProcessOperation,
+	isToolProcessStatus,
 	isToolRunResultStatus,
 	isToolScheduleMode,
+	isToolSystemScope,
 } from './toolResultPresentation.ts';
 
 type JsonRecord = Record<string, unknown>;
@@ -84,7 +87,8 @@ function validFileSearchResult(row: JsonRecord): boolean {
 function validSystemData(data: JsonRecord): boolean {
 	return (
 		hasValidOptionalFields(data, {
-			...stringFields('scope', 'operation', 'path', 'name', 'value', 'note', 'reason'),
+			scope: isToolSystemScope,
+			...stringFields('path', 'name', 'value', 'note', 'reason'),
 			...numberFields('count', 'battery_percent'),
 			ac_power: isToolAcPowerState,
 			battery_status: isToolBatteryState,
@@ -165,7 +169,7 @@ function validSystemData(data: JsonRecord): boolean {
 function validProcessData(data: JsonRecord): boolean {
 	return (
 		hasValidOptionalFields(data, {
-			...stringFields('operation'),
+			operation: isToolProcessOperation,
 			killed: isStringOrNumber,
 		}) &&
 		hasValidRecordArray(data, 'processes', (row) =>
@@ -174,7 +178,7 @@ function validProcessData(data: JsonRecord): boolean {
 				pid: isStringOrNumber,
 				cpu: isFiniteNumber,
 				memory: isFiniteNumber,
-				status: isString,
+				status: isToolProcessStatus,
 			}),
 		)
 	);

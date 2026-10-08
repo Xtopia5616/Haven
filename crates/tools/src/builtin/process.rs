@@ -87,7 +87,7 @@ impl ProcessTool {
                                     "name": name,
                                     "cpu": proc.cpu_usage(),
                                     "memory": proc.memory(),
-                                    "status": format!("{:?}", proc.status()),
+                                    "status": process_status_output(proc.status()),
                                 }))
                             })
                             .collect();
@@ -162,6 +162,30 @@ impl ProcessTool {
                 ))
             }
         }
+    }
+}
+
+/// Keep process status values stable and finite across the dynamic ToolResult
+/// boundary. `sysinfo::ProcessStatus::Unknown` carries a platform code, which
+/// is intentionally normalized to the UI's generic unknown state.
+fn process_status_output(status: sysinfo::ProcessStatus) -> &'static str {
+    use sysinfo::ProcessStatus;
+
+    match status {
+        ProcessStatus::Idle => "Idle",
+        ProcessStatus::Run => "Run",
+        ProcessStatus::Sleep => "Sleep",
+        ProcessStatus::Stop => "Stop",
+        ProcessStatus::Zombie => "Zombie",
+        ProcessStatus::Tracing => "Tracing",
+        ProcessStatus::Dead => "Dead",
+        ProcessStatus::Wakekill => "Wakekill",
+        ProcessStatus::Waking => "Waking",
+        ProcessStatus::Parked => "Parked",
+        ProcessStatus::LockBlocked => "LockBlocked",
+        ProcessStatus::UninterruptibleDiskSleep => "UninterruptibleDiskSleep",
+        ProcessStatus::Suspended => "Suspended",
+        ProcessStatus::Unknown(_) => "Unknown",
     }
 }
 
@@ -241,6 +265,18 @@ mod tests {
     #[test]
     fn test_process_tool_name() {
         assert_eq!(ProcessTool::default().name(), "process");
+    }
+
+    #[test]
+    fn process_status_output_normalizes_platform_unknown_codes() {
+        assert_eq!(
+            process_status_output(sysinfo::ProcessStatus::Unknown(73)),
+            "Unknown"
+        );
+        assert_eq!(
+            process_status_output(sysinfo::ProcessStatus::UninterruptibleDiskSleep),
+            "UninterruptibleDiskSleep"
+        );
     }
 
     #[test]

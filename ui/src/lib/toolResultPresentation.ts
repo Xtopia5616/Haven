@@ -40,6 +40,53 @@ export function isToolMemoryOperation(value: unknown): value is ToolMemoryOperat
 	return toolMemoryOperations.some((operation) => operation === value);
 }
 
+export const toolProcessOperations = ['list', 'kill'] as const;
+
+export type ToolProcessOperation = (typeof toolProcessOperations)[number];
+
+export function isToolProcessOperation(value: unknown): value is ToolProcessOperation {
+	return toolProcessOperations.some((operation) => operation === value);
+}
+
+export const toolProcessStatuses = [
+	'Idle',
+	'Run',
+	'Sleep',
+	'Stop',
+	'Zombie',
+	'Tracing',
+	'Dead',
+	'Wakekill',
+	'Waking',
+	'Parked',
+	'LockBlocked',
+	'UninterruptibleDiskSleep',
+	'Suspended',
+	'Unknown',
+] as const;
+
+export type ToolProcessStatus = (typeof toolProcessStatuses)[number];
+
+export function isToolProcessStatus(value: unknown): value is ToolProcessStatus {
+	return toolProcessStatuses.some((status) => status === value);
+}
+
+export const toolSystemScopes = [
+	'info',
+	'overview',
+	'env',
+	'registry',
+	'power',
+	'display',
+	'displays',
+] as const;
+
+export type ToolSystemScope = (typeof toolSystemScopes)[number];
+
+export function isToolSystemScope(value: unknown): value is ToolSystemScope {
+	return toolSystemScopes.some((scope) => scope === value);
+}
+
 export const toolMemoryRecallModes = ['keyword', 'hybrid'] as const;
 
 export type ToolMemoryRecallMode = (typeof toolMemoryRecallModes)[number];

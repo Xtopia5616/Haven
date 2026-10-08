@@ -6,12 +6,15 @@
 	import ToolResultList from '$lib/ToolResultList.svelte';
 	import ToolSearch from '$lib/ToolSearch.svelte';
 	import { clampPercentage, formatByteSize } from '$lib/toolResultFormatting.ts';
-	import type { ToolAcPowerState, ToolBatteryState } from './toolResultPresentation.ts';
+	import type {
+		ToolAcPowerState,
+		ToolBatteryState,
+		ToolSystemScope,
+	} from './toolResultPresentation.ts';
 
 	interface Props {
 		data?: {
-			scope?: string;
-			operation?: string;
+			scope?: ToolSystemScope | null;
 			path?: string;
 			name?: string;
 			value?: string;
