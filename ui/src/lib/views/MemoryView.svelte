@@ -53,7 +53,13 @@
 	import type { SessionHistoryRow } from '$lib/contracts/sessionHistory.ts';
 	import type { ContextMenuItem } from '$lib/contextMenu.ts';
 
-	type MemoryTabId = 'sessions' | 'tasks' | 'memory';
+	const MEMORY_TAB_IDS = ['sessions', 'tasks', 'memory'] as const;
+	type MemoryTabId = (typeof MEMORY_TAB_IDS)[number];
+	const MEMORY_TAB_LABELS: Record<MemoryTabId, string> = {
+		sessions: '会话历史',
+		tasks: '任务历史',
+		memory: '长期记忆',
+	};
 
 	interface Props {
 		isVisible?: boolean;
@@ -104,20 +110,15 @@
 	let showDateFilter = $state(false);
 	let editingTitle = $state<string | null>(null);
 	let renameValue = $state('');
-	const MEMORY_TAB_IDS: readonly MemoryTabId[] = ['sessions', 'tasks', 'memory'];
 	function isMemoryTabId(value: string | null): value is MemoryTabId {
-		return value !== null && MEMORY_TAB_IDS.includes(value as MemoryTabId);
+		return value !== null && MEMORY_TAB_IDS.some((tabId) => tabId === value);
 	}
 	function memoryTabFromUrl(): MemoryTabId {
 		const section = get(page).url.searchParams.get('section');
 		return isMemoryTabId(section) ? section : 'sessions';
 	}
 	let activeTab = $state<MemoryTabId>(memoryTabFromUrl());
-	const memoryTabs = [
-		{ id: 'sessions', label: '会话历史' },
-		{ id: 'tasks', label: '任务历史' },
-		{ id: 'memory', label: '长期记忆' },
-	];
+	const memoryTabs = MEMORY_TAB_IDS.map((id) => ({ id, label: MEMORY_TAB_LABELS[id] }));
 	let toolRunHistory = $state<ToolRunPayload[]>([]);
 	let toolRunHistoryLoading = $state(false);
 	let toolRunHistoryFailed = $state(false);
