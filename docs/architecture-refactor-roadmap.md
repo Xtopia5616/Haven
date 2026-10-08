@@ -234,6 +234,8 @@
 
 **Interaction resolution view owner 复核（2026-10-08）：** Ask 的 renderer-local response 现由 `AskResponseView` 在 contract/reducer 间贯通，chat consumers 不再从 `unknown` cast；confirmation action 的 result 使用 generated `ConfirmationResolutionResult`，并删除没有读取方的确认详情 response 附加对象。IPC、event 与可见状态行为不变（ADR 0802）。
 
+**Recording event mapper 复核（2026-10-08）：** Rust `RecordingEvent.is_recording` 与 started/stopped 事件名表达重复状态，stop `duration_ms` 和 transcription `confidence` 也无 UI 消费者；空转写提示使用的 transcription `duration_ms` 则保留。renderer DTO/mapper 现只暴露生产 handler 读取的 session id、stop reason、transcript 与其 duration；Rust/Tauri wire 和 overlay 行为不变（ADR 0803）。
+
 **MemoryView 页签 ID 复核（2026-10-08）：** Memory 的 `sessions`、`tasks`、`memory` 曾分别出现在 union、URL guard 清单和 MaterialTabs options 中。现在 `MEMORY_TAB_IDS` tuple 是 ID 唯一来源，`MemoryTabId` 从中派生，选项按 tuple 顺序映射穷尽标签表；URL 校验和呈现值因此不会独立漂移，路由参数与可见顺序不变（ADR 0748）。
 
 **共享 MaterialTabs 的路由 ID 复核（2026-10-08）：** Settings 页签 ID 从 `SETTINGS_SECTIONS` 派生；原始 `string` callback 入口现在先经该 source guard，再写入已收窄的 active/visited state。Tools 页签以 `TOOL_TAB_IDS` tuple 派生 union、runtime guard 与 options，穷尽标签表检查 UI 文案；共用组件仍接受动态 `NavigationTab`，两页有效顺序及交互不变（ADR 0749）。

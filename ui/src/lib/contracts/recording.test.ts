@@ -18,10 +18,8 @@ describe('recording IPC contract', () => {
 			event: 'recording:stopped',
 			id: 1,
 			payload: {
-				isRecording: false,
 				sessionId: 'rec-1',
 				reason: 'silence',
-				durationMs: 1200,
 			},
 		});
 	});
@@ -35,7 +33,7 @@ describe('recording IPC contract', () => {
 		expect(event.payload).toEqual({ signal: 'future_signal', state: 'future_state' });
 	});
 
-	it('maps the transcription lifecycle without changing optional confidence', () => {
+	it('maps the transcription lifecycle fields consumed by the UI', () => {
 		const started = mapRecordingEvent({
 			event: 'transcription:started',
 			id: 3,
@@ -58,7 +56,6 @@ describe('recording IPC contract', () => {
 			sessionId: 'rec-3',
 			text: 'hello',
 			durationMs: 800,
-			confidence: 0.85,
 		});
 	});
 
@@ -123,7 +120,16 @@ describe('recording IPC contract', () => {
 			id: 6,
 			payload: { is_recording: false, session_id: 3, reason: null, duration_ms: 'unknown' },
 		});
-		expect(event.payload).toEqual({ isRecording: false });
+		expect(event.payload).toEqual({});
+	});
+
+	it('does not copy redundant recording state from the wire payload', () => {
+		const event = mapRecordingEvent({
+			event: 'recording:started',
+			id: 11,
+			payload: { is_recording: true, session_id: 'rec-11' },
+		});
+		expect(event.payload).toEqual({ sessionId: 'rec-11' });
 	});
 
 	it('omits a stop reason outside the generated closed vocabulary', () => {
@@ -132,10 +138,10 @@ describe('recording IPC contract', () => {
 			id: 10,
 			payload: { is_recording: false, reason: 'future_reason' },
 		});
-		expect(event.payload).toEqual({ isRecording: false });
+		expect(event.payload).toEqual({});
 	});
 
-	it('omits malformed optional transcription confidence', () => {
+	it('does not project unconsumed transcription confidence', () => {
 		const event = mapRecordingEvent({
 			event: 'transcription:result',
 			id: 9,
@@ -143,7 +149,7 @@ describe('recording IPC contract', () => {
 				session_id: 'rec-9',
 				text: 'hello',
 				duration_ms: 800,
-				confidence: 'high',
+				confidence: 0.95,
 			},
 		});
 		expect(event.payload).toEqual({ sessionId: 'rec-9', text: 'hello', durationMs: 800 });

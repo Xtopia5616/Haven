@@ -11,10 +11,8 @@ import {
 export type RecordingEventName = (typeof RECORDING_EVENT_NAMES)[number];
 
 export interface RecordingPayload {
-	isRecording: boolean;
 	sessionId?: string;
 	reason?: RecordingStopReasonDto;
-	durationMs?: number;
 }
 
 export type VadStatusPayload = GeneratedVadStatusEvent;
@@ -32,7 +30,6 @@ export interface TranscriptionResultPayload {
 	sessionId: string;
 	text: string;
 	durationMs: number;
-	confidence?: number;
 }
 export interface RecordingErrorPayload {
 	sessionId: string;
@@ -64,14 +61,10 @@ export function mapRecordingEvent<K extends RecordingEventName>(
 			return {
 				...event,
 				payload: {
-					isRecording: Boolean(payload.is_recording),
 					...(typeof payload.session_id === 'string'
 						? { sessionId: payload.session_id }
 						: {}),
 					...(isRecordingStopReason(payload.reason) ? { reason: payload.reason } : {}),
-					...(typeof payload.duration_ms === 'number'
-						? { durationMs: payload.duration_ms }
-						: {}),
 				},
 			} as unknown as TauriEvent<RecordingEventPayloadMap[K]>;
 		case 'recording:vad_status':
@@ -105,9 +98,6 @@ export function mapRecordingEvent<K extends RecordingEventName>(
 					sessionId: typeof payload.session_id === 'string' ? payload.session_id : '',
 					text: typeof payload.text === 'string' ? payload.text : '',
 					durationMs: typeof payload.duration_ms === 'number' ? payload.duration_ms : 0,
-					...(typeof payload.confidence === 'number'
-						? { confidence: payload.confidence }
-						: {}),
 				},
 			} as unknown as TauriEvent<RecordingEventPayloadMap[K]>;
 	}
