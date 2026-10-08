@@ -62,24 +62,35 @@ describe('recording IPC contract', () => {
 		});
 	});
 
-	it.each(['recording:error', 'transcription:error'] as const)(
-		'maps %s errors to the same consumer payload',
-		(eventName) => {
-			const event = mapRecordingEvent({
-				event: eventName,
-				id: 5,
-				payload: {
-					session_id: 'rec-5',
-					error: 'transcription unavailable',
-					future_field: 1,
-				},
-			});
-			expect(event.payload).toEqual({
-				sessionId: 'rec-5',
+	it('maps recording and transcription failures to their respective payloads', () => {
+		const recordingError = mapRecordingEvent({
+			event: 'recording:error',
+			id: 5,
+			payload: {
+				session_id: 'rec-5',
+				error: 'microphone unavailable',
+				future_field: 1,
+			},
+		});
+		const transcriptionError = mapRecordingEvent({
+			event: 'transcription:error',
+			id: 6,
+			payload: {
+				session_id: 'rec-5',
 				error: 'transcription unavailable',
-			});
-		},
-	);
+				future_field: 1,
+			},
+		});
+
+		expect(recordingError.payload).toEqual({
+			sessionId: 'rec-5',
+			error: 'microphone unavailable',
+		});
+		expect(transcriptionError.payload).toEqual({
+			sessionId: 'rec-5',
+			error: 'transcription unavailable',
+		});
+	});
 
 	it('uses safe values for a malformed transcription payload', () => {
 		const event = mapRecordingEvent({
