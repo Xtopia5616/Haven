@@ -1,11 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import { projectToolRunCard } from './toolRunCardProjection.ts';
+import type { ToolRunStatus } from './contracts/toolRun.ts';
 
 const projectionOptions = {
-	toolRunStatusLabel: (status: string) => {
+	toolRunStatusLabel: (status: ToolRunStatus | undefined) => {
 		if (status === 'running') return '运行中';
 		if (status === 'completed') return '已完成';
-		return status;
+		return status || '';
 	},
 	sessionTitleFor: (toolRun: { sessionId?: string }) =>
 		toolRun.sessionId === 'ses-1' ? '研究会话' : '',
@@ -14,6 +15,18 @@ const projectionOptions = {
 };
 
 describe('projectToolRunCard', () => {
+	it('leaves a missing background status label blank', () => {
+		const card = projectToolRunCard(
+			{
+				toolRunId: 'toolrun-background',
+				kind: 'background',
+			},
+			projectionOptions,
+		);
+
+		expect(card.statusLabel).toBe('');
+	});
+
 	it('projects background cards with the shared fields and background details', () => {
 		const card = projectToolRunCard(
 			{

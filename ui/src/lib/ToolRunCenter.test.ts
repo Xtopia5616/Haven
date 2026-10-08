@@ -1,9 +1,11 @@
 import { render, screen, fireEvent } from '@testing-library/svelte';
 import { describe, expect, it, vi } from 'vitest';
 import ToolRunCenter from './ToolRunCenter.svelte';
+import type { ToolRunStatus } from './contracts/toolRun.ts';
 
 const commonProps = {
-	toolRunStatusLabel: (status: string) => (status === 'completed' ? '已完成' : status),
+	toolRunStatusLabel: (status: ToolRunStatus | undefined) =>
+		status === 'completed' ? '已完成' : status || '',
 	sessionTitleFor: ({ sessionId }: { sessionId?: string }) =>
 		sessionId === 'ses-1' ? '研究会话' : '',
 	toolRunDuration: () => '3s',
@@ -50,7 +52,9 @@ describe('ToolRunCenter', () => {
 	it('shows only pending scheduled tasks', () => {
 		render(ToolRunCenter, {
 			...commonProps,
-			pendingScheduledToolRuns: [{ toolRunId: 'toolrun-pending', kind: 'scheduled', body: '稍后继续' }],
+			pendingScheduledToolRuns: [
+				{ toolRunId: 'toolrun-pending', kind: 'scheduled', body: '稍后继续' },
+			],
 		});
 
 		expect(screen.getByRole('heading', { name: '进行中' })).toBeTruthy();

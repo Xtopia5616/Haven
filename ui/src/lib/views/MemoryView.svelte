@@ -52,7 +52,7 @@
 		MemoryRecallKind,
 		MemoryRecallState,
 	} from '$lib/contracts/memory.ts';
-	import type { ToolRunKind, ToolRunPayload } from '$lib/contracts/toolRun.ts';
+	import type { ToolRunKind, ToolRunPayload, ToolRunStatus } from '$lib/contracts/toolRun.ts';
 	import type { SessionHistoryRow } from '$lib/contracts/sessionHistory.ts';
 	import type { ContextMenuItem } from '$lib/contextMenu.ts';
 
@@ -63,7 +63,7 @@
 		onNewSession?: () => void;
 		runningBackgroundToolRuns?: ToolRunPayload[];
 		pendingScheduledToolRuns?: ToolRunPayload[];
-		toolRunStatusLabel?: (status: string) => string;
+		toolRunStatusLabel?: (status: ToolRunStatus | undefined) => string;
 		sessionTitleFor?: (toolRun: Pick<ToolRunPayload, 'sessionId'>) => string;
 		toolRunDuration?: (toolRun: ToolRunPayload) => string;
 		scheduledToolRunCountdown?: (dueAt?: string) => string;

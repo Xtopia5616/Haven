@@ -32,7 +32,7 @@ export interface ToolRunCardProjection {
 }
 
 export interface ToolRunCardProjectionOptions {
-	toolRunStatusLabel: (status: string) => string;
+	toolRunStatusLabel: (status: ToolRunStatus | undefined) => string;
 	sessionTitleFor: (toolRun: Pick<ToolRunPayload, 'sessionId'>) => string;
 	toolRunDuration: (toolRun: ToolRunPayload) => string;
 	scheduledToolRunCountdown: (dueAt?: string) => string;
@@ -148,7 +148,9 @@ export function projectToolRunCard(
 		searchText: scheduled ? scheduleModeLabel(toolRun.mode) : sessionTitle || '后台任务',
 		statusLabel: scheduled
 			? scheduledStatusLabel(status)
-			: options.toolRunStatusLabel(status || ''),
+			: status
+				? options.toolRunStatusLabel(status)
+				: '',
 		tone: scheduled ? scheduledTone(status) : backgroundTone(status),
 		summary: rowSummary(toolRun, title, status, options),
 		context,

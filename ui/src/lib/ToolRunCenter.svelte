@@ -11,7 +11,7 @@
 	import HistoryListGroup from '$lib/HistoryListGroup.svelte';
 	import { projectToolRunCard } from '$lib/toolRunCardProjection.ts';
 	import { toolRunKindLabel } from '$lib/toolRunTerminology.ts';
-	import type { ToolRunKind, ToolRunPayload } from '$lib/contracts/toolRun.ts';
+	import type { ToolRunKind, ToolRunPayload, ToolRunStatus } from '$lib/contracts/toolRun.ts';
 	import type {
 		ToolRunCardProjection,
 		ToolRunCardProjectionOptions,
@@ -23,7 +23,7 @@
 		toolRunHistory?: ToolRunPayload[];
 		toolRunHistoryLoading?: boolean;
 		toolRunHistoryFailed?: boolean;
-		toolRunStatusLabel?: (status: string) => string;
+		toolRunStatusLabel?: (status: ToolRunStatus | undefined) => string;
 		sessionTitleFor?: (toolRun: Pick<ToolRunPayload, 'sessionId'>) => string;
 		toolRunDuration?: (toolRun: ToolRunPayload) => string;
 		scheduledToolRunCountdown?: (dueAt?: string) => string;
@@ -84,7 +84,9 @@
 	});
 	const hasFilters = $derived(Boolean(query.trim() || filter !== 'all'));
 
-	const selectedRow = $derived(toolRunRows.find((row) => row.toolRunId === selectedToolRunId) || null);
+	const selectedRow = $derived(
+		toolRunRows.find((row) => row.toolRunId === selectedToolRunId) || null,
+	);
 
 	const toolRunGroups = $derived.by(() => {
 		return [
@@ -205,7 +207,8 @@
 							{#each group.rows as row (row.toolRunId)}
 								<article
 									class="task-card workspace-item-card motion-list-item"
-									class:selected={selectedToolRunId === row.toolRunId && detailOpen}
+									class:selected={selectedToolRunId === row.toolRunId &&
+										detailOpen}
 								>
 									<button
 										class="task-card-main workspace-item-card-main"
@@ -246,7 +249,9 @@
 											<span>{row.timing}</span>
 										</span>
 										<span class="task-card-footer workspace-item-card-footer">
-											<span class="workspace-item-card-id">{row.toolRunId}</span>
+											<span class="workspace-item-card-id"
+												>{row.toolRunId}</span
+											>
 											<span
 												class="workspace-item-card-open"
 												aria-hidden="true">打开</span
@@ -259,13 +264,15 @@
 												<MaterialButton
 													variant="danger"
 													label="停止后台任务"
-													onclick={() => onCancel?.(row.toolRunId, 'background')}
+													onclick={() =>
+														onCancel?.(row.toolRunId, 'background')}
 												/>
 											{:else if row.kind === 'scheduled' && (row.status === 'waiting' || row.status === 'running')}
 												<MaterialButton
 													variant="outlined"
 													label="取消此定时任务"
-													onclick={() => onCancel?.(row.toolRunId, 'scheduled')}
+													onclick={() =>
+														onCancel?.(row.toolRunId, 'scheduled')}
 												/>
 											{/if}
 										</div>
