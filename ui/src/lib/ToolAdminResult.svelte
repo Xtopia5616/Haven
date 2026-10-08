@@ -3,30 +3,36 @@
 	import ToolResultList from '$lib/ToolResultList.svelte';
 	import type { SessionStatus } from './contracts/generatedCommands.ts';
 
-	interface AdminRow extends Record<string, unknown> {
-		id?: string;
+	interface AdminServerRow extends Record<string, unknown> {
+		name?: string | null;
+		connected?: boolean | null;
+		tools?: number | null;
+	}
+
+	interface AdminSkillRow extends Record<string, unknown> {
+		name?: string | null;
+		enabled?: boolean | null;
+	}
+
+	interface AdminActivityRow extends Record<string, unknown> {
+		id?: string | null;
 		title?: string | null;
 		status?: SessionStatus;
-		name?: string;
-		connected?: boolean;
-		enabled?: boolean;
-		tools?: number;
-		error?: string;
 	}
 
 	interface Props {
 		data?: {
-			servers?: AdminRow[];
-			skills?: AdminRow[];
-			sessions?: AdminRow[];
-			errors?: AdminRow[];
-			level?: string;
-			saved?: boolean;
-			name?: string;
-			enabled?: boolean;
-			connected?: boolean | AdminRow[];
-			created?: boolean;
-			removed?: boolean;
+			servers?: AdminServerRow[];
+			skills?: AdminSkillRow[];
+			sessions?: AdminActivityRow[];
+			errors?: AdminActivityRow[];
+			level?: string | null;
+			saved?: boolean | null;
+			name?: string | null;
+			enabled?: boolean | null;
+			connected?: boolean | unknown[] | null;
+			created?: boolean | null;
+			removed?: boolean | null;
 		};
 	}
 

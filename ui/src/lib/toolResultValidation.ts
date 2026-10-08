@@ -238,15 +238,9 @@ function validMediaData(data: JsonRecord): boolean {
 	);
 }
 
-const adminRowFields: Record<string, FieldGuard> = {
-	...stringFields('id', 'title', 'name', 'error'),
-	...booleanFields('connected', 'enabled'),
-	tools: isFiniteNumber,
-};
-
-function validAdminRow(row: JsonRecord): boolean {
+function validAdminActivityRow(row: JsonRecord): boolean {
 	return (
-		hasValidOptionalFields(row, adminRowFields) &&
+		hasValidOptionalFields(row, stringFields('id', 'title')) &&
 		(!('status' in row) || isSessionStatus(row.status))
 	);
 }
@@ -256,13 +250,20 @@ function validAdminData(data: JsonRecord): boolean {
 		hasValidOptionalFields(data, {
 			...stringFields('level', 'name'),
 			...booleanFields('saved', 'enabled', 'created', 'removed'),
-			connected: (value) =>
-				isBoolean(value) ||
-				(Array.isArray(value) && value.every((row) => isRecord(row) && validAdminRow(row))),
+			connected: (value) => isBoolean(value) || Array.isArray(value),
 		}) &&
-		['servers', 'skills', 'sessions', 'errors'].every((key) =>
-			hasValidRecordArray(data, key, validAdminRow),
-		)
+		hasValidRecordArray(data, 'servers', (row) =>
+			hasValidOptionalFields(row, {
+				name: isString,
+				connected: isBoolean,
+				tools: isFiniteNumber,
+			}),
+		) &&
+		hasValidRecordArray(data, 'skills', (row) =>
+			hasValidOptionalFields(row, { name: isString, enabled: isBoolean }),
+		) &&
+		hasValidRecordArray(data, 'sessions', validAdminActivityRow) &&
+		hasValidRecordArray(data, 'errors', validAdminActivityRow)
 	);
 }
 

@@ -252,6 +252,23 @@ describe('operation view UI contract', () => {
 		expect(
 			getToolResultRenderer(
 				'custom',
+				'haven_mcp',
+				{
+					servers: [
+						{
+							name: 'server',
+							connected: true,
+							tools: 2,
+							status: { unexpected: true },
+						},
+					],
+				},
+				'haven_mcp',
+			),
+		).not.toBe(ToolJsonResult);
+		expect(
+			getToolResultRenderer(
+				'custom',
 				'process',
 				{
 					processes: [{ pid: 42, name: 'haven', cpu: 1, memory: 2, status: 'Run' }],
