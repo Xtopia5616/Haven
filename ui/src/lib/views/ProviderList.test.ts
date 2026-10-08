@@ -9,6 +9,9 @@ describe('ProviderList responsive layout', () => {
 		);
 		expect(providerListSource).toContain('white-space: nowrap;');
 		expect(providerListSource).not.toContain('flex-direction: column-reverse;');
+		expect(providerListSource).not.toMatch(
+			/@container settings-content \(max-width: 700px\)\s*\{\s*\.provider-toolbar\s*\{[^}]*flex-direction:\s*column;/s,
+		);
 		expect(providerListSource).toContain('@container settings-content (max-width: 700px)');
 		expect(providerListSource).toContain('@container settings-content (max-width: 455px)');
 	});

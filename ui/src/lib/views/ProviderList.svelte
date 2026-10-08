@@ -401,11 +401,6 @@
 	@container settings-content (max-width: 700px) {
 		.provider-toolbar {
 			align-items: flex-start;
-			flex-direction: column;
-		}
-		.provider-toolbar-actions {
-			width: 100%;
-			justify-content: flex-end;
 		}
 		.provider-card {
 			grid-template-columns: minmax(0, 1fr);
