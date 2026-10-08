@@ -379,7 +379,11 @@ function validBuiltinRendererData(renderer: string, data: JsonRecord): boolean {
 					...stringFields('content'),
 					...numberFields('total'),
 					...booleanFields('written'),
-				}) && hasValidRecordArray(data, 'entries', (row) => isString(row.content))
+				}) &&
+				hasValidRecordArray(data, 'entries', (row) => isString(row.content)) &&
+				(!Array.isArray(data.entries) ||
+					data.entries.length === 0 ||
+					isFiniteNumber(data.total))
 			);
 		case 'agent':
 			return (

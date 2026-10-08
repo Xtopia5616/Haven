@@ -772,3 +772,4 @@
 - [0781：对齐搜索 renderer props 与 optional-field guard 的 null 语义](0781-align-search-renderer-prop-nullability.md)
 - [0782：对齐 Memory renderer 嵌套 Props 的 null 语义](0782-align-memory-renderer-prop-nullability.md)
 - [0783：要求 HTTP renderer 的响应状态](0783-require-http-result-status.md)
+- [0784：校验非空剪贴板历史的 total](0784-require-clipboard-history-total.md)

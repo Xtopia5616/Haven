@@ -3,10 +3,10 @@
 
 	interface Props {
 		data?: {
-			written?: boolean;
+			written?: boolean | null;
 			entries?: Array<{ content: string }>;
-			total?: number;
-			content?: string;
+			total?: number | null;
+			content?: string | null;
 		};
 	}
 

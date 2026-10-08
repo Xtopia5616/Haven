@@ -11,6 +11,7 @@ import {
 	setToolOutputPreview,
 } from './toolOutputPreviewStore.ts';
 import { getToolResultRenderer } from './toolResultRenderers.ts';
+import ToolClipboardResult from './ToolClipboardResult.svelte';
 import ToolFileResult from './ToolFileResult.svelte';
 import ToolFileSearchResult from './ToolFileSearchResult.svelte';
 import ToolHttpResult from './ToolHttpResult.svelte';
@@ -223,6 +224,7 @@ describe('operation view UI contract', () => {
 			{ renderer: 'process', data: { processes: [{ status: 'Unknown(73)' }] } },
 			{ renderer: 'clipboard', data: { entries: [null] } },
 			{ renderer: 'clipboard', data: { entries: null } },
+			{ renderer: 'clipboard', data: { entries: [{ content: 'copied text' }] } },
 			{ renderer: 'input', data: { operation: 'click', clicked: [12, '20'] } },
 			{ renderer: 'input', data: { operation: 'restart' } },
 			{ renderer: 'input', data: { operation: 'click', button: 'primary' } },
@@ -304,6 +306,17 @@ describe('operation view UI contract', () => {
 	});
 
 	it('keeps valid builtin shapes specialized and unknown extension renderers open', () => {
+		expect(
+			getToolResultRenderer(
+				'custom',
+				'clipboard',
+				{ entries: [{ content: 'copied text' }], total: 1, written: null, content: null },
+				'clipboard',
+			),
+		).toBe(ToolClipboardResult);
+		expect(
+			getToolResultRenderer('custom', 'clipboard', { entries: [], written: null }, 'clipboard'),
+		).toBe(ToolClipboardResult);
 		expect(
 			getToolResultRenderer(
 				'custom',
@@ -411,7 +424,7 @@ describe('operation view UI contract', () => {
 			getToolResultRenderer(
 				'custom',
 				'clipboard',
-				{ entries: [{ content: 'copied text', timestamp_ms: 'not rendered' }] },
+				{ entries: [{ content: 'copied text', timestamp_ms: 'not rendered' }], total: 1 },
 				'clipboard',
 			),
 		).not.toBe(ToolJsonResult);
