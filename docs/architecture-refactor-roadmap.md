@@ -226,6 +226,8 @@
 
 **System renderer nested Props nullability 复核（2026-10-08）：** System root/object/row 的 nullable optional fields 现与 guard 语义一致；ips/values/subkeys 与 array containers 保持严格，network state 保持开放文本（ADR 0789）。
 
+**System network state producer owner 复核（2026-10-08）：** network detail 的 `state` 来自 `sysinfo::NetworkData::operational_state().to_string()`；renderer 翻译当前已知状态并把未知状态作为原文呈现。由于值由外部库的显示格式提供，保持字符串 Props/guard 可让新增状态继续使用专用 renderer，不触发整块 JSON fallback。
+
 **MemoryView 页签 ID 复核（2026-10-08）：** Memory 的 `sessions`、`tasks`、`memory` 曾分别出现在 union、URL guard 清单和 MaterialTabs options 中。现在 `MEMORY_TAB_IDS` tuple 是 ID 唯一来源，`MemoryTabId` 从中派生，选项按 tuple 顺序映射穷尽标签表；URL 校验和呈现值因此不会独立漂移，路由参数与可见顺序不变（ADR 0748）。
 
 **共享 MaterialTabs 的路由 ID 复核（2026-10-08）：** Settings 页签 ID 从 `SETTINGS_SECTIONS` 派生；原始 `string` callback 入口现在先经该 source guard，再写入已收窄的 active/visited state。Tools 页签以 `TOOL_TAB_IDS` tuple 派生 union、runtime guard 与 options，穷尽标签表检查 UI 文案；共用组件仍接受动态 `NavigationTab`，两页有效顺序及交互不变（ADR 0749）。
@@ -271,6 +273,10 @@
 **Diagnostics performance metrics view owner 复核（2026-10-08）：** `PerformanceMetricsSnapshot` 曾在生成的 Rust `MetricsSnapshot` 上叠加开放索引签名，但 producer 字段固定，唯一生产 consumer 是原样 JSON 下载。现在保留有语义的 UI 名称并直接引用生成 DTO；运行时序列化仍保留对象原有字段（ADR 0798）。
 
 **ToolRunCenter / MemoryView props owner 复核（2026-10-08）：** ToolRunCenter 的四个 projection callbacks 现引用 `ToolRunCardProjectionOptions`；MemoryView 原样转交 ToolRunCenter 的数据与 callbacks 现从子组件 Props 派生，消除两处重复 shape。列表状态与动作行为不变（ADR 0799）。
+
+**全量 Svelte Props 引用复核（2026-10-08）：** 对 `ui/src` 所有 Svelte `interface Props` 做符号引用扫描，没有发现只声明/解构而未参与组件逻辑的 prop；低引用候选 `BuiltinToolCard.tool` 是解构别名 `card` 并实际供模板消费。此轮未发现需要删除的组件入口，Props 与组件类型别名审计继续覆盖 owner 与命名映射。
+
+**Production UI type alias 引用复核（2026-10-08）：** 对非测试 `.ts` / `.svelte` 源中的 `type` aliases 做声明与引用计数，没有发现只声明而无第二处生产引用的 alias。低引用项如 `TerminalToolRunStatus` 为守卫 predicate 的类型谓词，`MenuRow` 为 MaterialSelect 内部渲染 union，均有明确单一消费者；没有因引用数低而删除领域类型。
 
 #### 首轮全仓符号扫描与候选分流
 
