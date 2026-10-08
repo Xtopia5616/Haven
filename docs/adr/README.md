@@ -796,3 +796,4 @@
 - [0805：关联 interaction kind 与 owner](0805-correlate-interaction-kind-and-owner.md)
 - [0806：类型化 Ask controller 的附件输入](0806-type-ask-controller-attachments.md)
 - [0807：从数值输入组件派生包装层 Props](0807-derive-number-field-wrapper-props.md)
+- [0808：使用生成的 LayoutProps 类型化 route children](0808-type-route-layout-children-prop.md)

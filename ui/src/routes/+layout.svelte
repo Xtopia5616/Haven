@@ -76,6 +76,7 @@
 	import { interactionOwnerToWire } from '$lib/contracts/app.ts';
 	import type { LlmConnectionReportView } from '$lib/llmConnection.ts';
 	import type { LlmConnectionStatus } from '$lib/contracts/generatedCommands.ts';
+	import type { LayoutProps } from './$types';
 
 	import AppShell from '$lib/AppShell.svelte';
 	import ConfirmationDialog from '$lib/ConfirmationDialog.svelte';
@@ -84,7 +85,7 @@
 	import WorkspaceSurface from '$lib/WorkspaceSurface.svelte';
 	import WorkspaceStatus from '$lib/WorkspaceStatus.svelte';
 
-	let { children } = $props();
+	let { children }: LayoutProps = $props();
 
 	// Secondary workspaces are intentionally loaded after the chat shell is
 	// interactive. Their views contain the largest forms, lists and tool cards;
