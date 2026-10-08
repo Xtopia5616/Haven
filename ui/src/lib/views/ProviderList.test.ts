@@ -10,6 +10,8 @@ describe('ProviderList responsive layout', () => {
 		expect(providerListSource).toContain(
 			'transform: translateX(calc(0px - var(--md-sys-space-2xl)));',
 		);
+		expect(providerListSource).toContain('flex: 0 0 auto;');
+		expect(providerListSource).toContain('margin-right: var(--md-sys-space-2xl);');
 		expect(providerListSource).toContain('flex-direction: column-reverse;');
 		expect(providerListSource).toContain('width: 100%;');
 		expect(providerListSource).toContain('@container settings-content (max-width: 700px)');

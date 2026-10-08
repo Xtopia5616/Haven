@@ -274,7 +274,11 @@
 	}
 	@container settings-content (min-width: 701px) {
 		.provider-toolbar-actions {
+			flex: 0 0 auto;
 			transform: translateX(calc(0px - var(--md-sys-space-2xl)));
+		}
+		.provider-toolbar-actions :global(.md-btn:last-child) {
+			margin-right: var(--md-sys-space-2xl);
 		}
 	}
 	.providers-list {
