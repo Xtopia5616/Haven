@@ -45,6 +45,7 @@ impl LlmClient for FinalAnswerMock {
         LlmError,
     > {
         let chunk = StreamChunk {
+            tool_call_updates: Vec::new(),
             text: Some("Done.".into()),
             tool_calls: vec![CanonicalToolCall {
                 id: "final".into(),
@@ -71,6 +72,7 @@ impl LlmClient for FinalAnswerMock {
         LlmError,
     > {
         let chunk = StreamChunk {
+            tool_call_updates: Vec::new(),
             text: Some("Done.".into()),
             tool_calls: vec![CanonicalToolCall {
                 id: "final".into(),

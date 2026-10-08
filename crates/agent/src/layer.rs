@@ -252,6 +252,17 @@ impl AgentLayer {
                     Some(haven_common::SessionWaitingReason::UserInterrupt),
                 )
                 .await?;
+            if let Err(error) = self
+                .executor
+                .persist_session_run_end_reason(session_id, "用户主动打断输出")
+                .await
+            {
+                tracing::error!(
+                    session_id,
+                    error = %error,
+                    "failed to persist session run-end reason"
+                );
+            }
             self.events
                 .emit_session_updated_with_reason_and_waiting_reason(
                     session_id,
@@ -398,6 +409,7 @@ impl AgentLayer {
         {
             let mut events_rx = self.executor.subscribe_events();
             let events = self.events.clone();
+            let executor = self.executor.clone();
             let memory_worker = self.memory_worker.clone();
             let cancellation = cancellation.clone();
             tokio::spawn(async move {
@@ -446,12 +458,23 @@ impl AgentLayer {
                                 .await;
                         }
                         SessionSupervisorEvent::SessionEndPaused { session_id } => {
+                            let reason = "结束未完成，会话已暂停，可重试";
+                            if let Err(error) = executor
+                                .persist_session_run_end_reason(&session_id, reason)
+                                .await
+                            {
+                                tracing::error!(
+                                    session_id,
+                                    error = %error,
+                                    "failed to persist session run-end reason"
+                                );
+                            }
                             events
                                 .emit_session_updated_with_reason_and_waiting_reason(
                                     &session_id,
                                     SessionStatus::Paused,
                                     Some(haven_common::SessionWaitingReason::EndIncomplete),
-                                    Some("结束未完成，会话已暂停，可重试"),
+                                    Some(reason),
                                 )
                                 .await;
                         }
@@ -845,6 +868,17 @@ impl AgentLayer {
     }
 
     pub async fn emit_session_completed(&self, session_id: &str, title: &str, reason: &str) {
+        if let Err(error) = self
+            .executor
+            .persist_session_run_end_reason(session_id, reason)
+            .await
+        {
+            tracing::error!(
+                session_id,
+                error = %error,
+                "failed to persist session run-end reason"
+            );
+        }
         self.events
             .emit_session_completed(session_id, title, reason)
             .await;

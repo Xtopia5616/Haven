@@ -137,6 +137,7 @@ impl OpenAiResponsesAdapter {
                                         arguments: CanonicalToolCall::from_wire_args(&args),
                                     })
                                     .collect(),
+                                tool_call_updates: Vec::new(),
                                 finish_reason: state.finish_reason,
                                 usage: state.usage.take(),
                                 model: state.last_model.clone(),
@@ -175,16 +176,26 @@ impl OpenAiResponsesAdapter {
                         Some((Ok(chunk), state))
                     }
                     Ok(ResponsesStreamEvent::FunctionCallArgsDelta { item_id, delta }) => {
-                        if let (Some(id), Some(d)) = (item_id, delta)
-                            && let Some((_, _, _, args)) = state
-                                .tool_calls
-                                .iter_mut()
-                                .find(|(tid, _, _, _)| tid == &id)
-                        {
-                            args.push_str(&d);
-                        }
                         let mut chunk = empty_chunk();
                         chunk.model = state.last_model.clone();
+                        if let (Some(id), Some(d)) = (item_id, delta)
+                            && let Some((index, (_, call_id, name, args))) = state
+                                .tool_calls
+                                .iter_mut()
+                                .enumerate()
+                                .find(|(_, (tid, _, _, _))| tid == &id)
+                        {
+                            args.push_str(&d);
+                            chunk
+                                .tool_call_updates
+                                .push(crate::types::StreamToolCallUpdate {
+                                    index: index as u32,
+                                    id: (!call_id.is_empty()).then(|| call_id.clone()),
+                                    name: (!name.is_empty()).then(|| name.clone()),
+                                    arguments_delta: Some(d),
+                                    arguments_snapshot: None,
+                                });
+                        }
                         Some((Ok(chunk), state))
                     }
                     Ok(ResponsesStreamEvent::OutputItemAdded { item }) => {
@@ -194,12 +205,29 @@ impl OpenAiResponsesAdapter {
                             match item_type {
                                 "function_call" => {
                                     if let Some(id) = item.id.clone() {
+                                        let index = state.tool_calls.len();
+                                        let call_id =
+                                            item.call_id.clone().unwrap_or_else(|| id.clone());
+                                        let name = item.name.unwrap_or_default();
+                                        let arguments = item.arguments.unwrap_or_default();
                                         state.tool_calls.push((
                                             id,
-                                            item.call_id.or(item.id).unwrap_or_default(),
-                                            item.name.unwrap_or_default(),
-                                            item.arguments.unwrap_or_default(),
+                                            call_id.clone(),
+                                            name.clone(),
+                                            arguments.clone(),
                                         ));
+                                        let mut chunk = empty_chunk();
+                                        chunk.model = state.last_model.clone();
+                                        chunk.tool_call_updates.push(
+                                            crate::types::StreamToolCallUpdate {
+                                                index: index as u32,
+                                                id: (!call_id.is_empty()).then_some(call_id),
+                                                name: (!name.is_empty()).then_some(name),
+                                                arguments_snapshot: Some(arguments),
+                                                arguments_delta: None,
+                                            },
+                                        );
+                                        return Some((Ok(chunk), state));
                                     }
                                 }
                                 "web_search_call" => {
@@ -237,33 +265,52 @@ impl OpenAiResponsesAdapter {
                         if let Some(item) = item
                             && let Some(item_type) = item.item_type.as_deref()
                         {
-                            if item_type == "function_call" {
-                                if let Some(item_id) = item.id.clone() {
-                                    let call_id =
-                                        item.call_id.clone().unwrap_or_else(|| item_id.clone());
-                                    if let Some((_, resolved_id, name, args)) = state
-                                        .tool_calls
-                                        .iter_mut()
-                                        .find(|(lookup_id, _, _, _)| lookup_id == &item_id)
-                                    {
-                                        *resolved_id = call_id;
-                                        if let Some(item_name) = item.name {
-                                            *name = item_name;
-                                        }
-                                        if let Some(arguments) = item.arguments {
-                                            *args = arguments;
-                                        }
-                                    } else {
-                                        state.tool_calls.push((
-                                            item_id,
-                                            call_id,
-                                            item.name.unwrap_or_default(),
-                                            item.arguments.unwrap_or_default(),
-                                        ));
+                            if item_type == "function_call"
+                                && let Some(item_id) = item.id.clone()
+                            {
+                                let call_id =
+                                    item.call_id.clone().unwrap_or_else(|| item_id.clone());
+                                if let Some((_, resolved_id, name, args)) = state
+                                    .tool_calls
+                                    .iter_mut()
+                                    .find(|(lookup_id, _, _, _)| lookup_id == &item_id)
+                                {
+                                    *resolved_id = call_id;
+                                    if let Some(item_name) = item.name {
+                                        *name = item_name;
                                     }
+                                    if let Some(arguments) = item.arguments {
+                                        *args = arguments;
+                                    }
+                                } else {
+                                    state.tool_calls.push((
+                                        item_id.clone(),
+                                        call_id,
+                                        item.name.unwrap_or_default(),
+                                        item.arguments.unwrap_or_default(),
+                                    ));
                                 }
+                                let Some((index, (_, call_id, name, arguments))) = state
+                                    .tool_calls
+                                    .iter()
+                                    .enumerate()
+                                    .find(|(_, (lookup_id, _, _, _))| lookup_id == &item_id)
+                                else {
+                                    let mut chunk = empty_chunk();
+                                    chunk.model = state.last_model.clone();
+                                    return Some((Ok(chunk), state));
+                                };
                                 let mut chunk = empty_chunk();
                                 chunk.model = state.last_model.clone();
+                                chunk
+                                    .tool_call_updates
+                                    .push(crate::types::StreamToolCallUpdate {
+                                        index: index as u32,
+                                        id: (!call_id.is_empty()).then(|| call_id.clone()),
+                                        name: (!name.is_empty()).then(|| name.clone()),
+                                        arguments_snapshot: Some(arguments.clone()),
+                                        arguments_delta: None,
+                                    });
                                 return Some((Ok(chunk), state));
                             }
                             // The authoritative `web_search_call` payload
@@ -419,6 +466,7 @@ impl OpenAiResponsesAdapter {
                                     arguments: CanonicalToolCall::from_wire_args(&args),
                                 })
                                 .collect(),
+                            tool_call_updates: Vec::new(),
                             finish_reason: state.finish_reason,
                             usage: state.usage.take(),
                             model: state.last_model.clone(),

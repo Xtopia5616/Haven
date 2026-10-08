@@ -39,7 +39,6 @@ fn test_window_tool_risk_level() {
         t.risk_level(&json!({"operation": "close"})),
         RiskLevel::High
     );
-    assert_eq!(t.risk_level(&json!({"operation": "ocr"})), RiskLevel::High);
     assert_eq!(
         t.risk_level(&json!({"operation": "ui_tree"})),
         RiskLevel::Low
@@ -70,6 +69,7 @@ fn test_window_tool_input_schema() {
     ] {
         assert!(names.contains(&expected), "missing {expected}");
     }
+    assert!(!names.contains(&"ocr"));
     assert!(
         schema["properties"]["condition"]["enum"]
             .as_array()
@@ -226,39 +226,12 @@ async fn test_window_native_entry_lands_in_run() {
                 control_type: None,
                 index: None,
                 value: None,
-                ocr: None,
                 session_id: None,
             },
             CancellationToken::new(),
         )
         .await;
     assert!(result.is_err());
-}
-
-#[tokio::test]
-async fn test_window_ocr_without_router() {
-    let result = tool()
-        .execute(json!({"operation": "ocr"}), CancellationToken::new())
-        .await;
-    let result = match result {
-        Ok(result) => result,
-        Err(error)
-            if error.to_string().contains("BitBlt failed")
-                || error.to_string().contains("screenshot requires Windows") =>
-        {
-            // CI and headless Windows sessions do not expose a capturable
-            // desktop. The provider-unavailable branch is still covered
-            // when a screen capture is available; this test must not turn
-            // desktop availability into a workspace-wide test failure.
-            return;
-        }
-        Err(error) => panic!("unexpected OCR setup failure: {error}"),
-    };
-    assert!(result.success);
-    assert_eq!(result.output["available"], false);
-    assert!(result.output["asset_id"].as_str().is_some());
-    assert!(result.output["media"]["asset_id"].as_str().is_some());
-    assert!(result.output.get("path").is_none());
 }
 
 #[tokio::test]

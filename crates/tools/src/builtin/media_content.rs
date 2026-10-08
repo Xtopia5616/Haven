@@ -465,7 +465,7 @@ impl MediaTool {
         let client = self
             .ocr_client
             .clone()
-            .expect("ocr_available implies an OCR client");
+            .expect("OCR capability requires an OCR client");
         let bytes = match self.read_bounded(&asset, &cancel).await {
             Ok(bytes) => bytes,
             Err(error) => {

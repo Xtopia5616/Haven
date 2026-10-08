@@ -40,6 +40,11 @@ export interface StreamMessage {
 	/** Renderer-only presentation discriminator; it is not a durable message kind. */
 	type?: SessionMessagePresentationType | null;
 	toolName?: string;
+	/** Tool-call argument preview metadata. It is volatile and never persisted. */
+	toolCallPreview?: boolean;
+	toolCallIndex?: number;
+	toolArgsStreaming?: boolean;
+	toolArgsTruncated?: boolean;
 	voice?: boolean;
 	stepNumber?: number | null;
 	runId?: number | null;
@@ -203,6 +208,10 @@ export function newToolMessage({
 	toolRunId = null,
 	sourceToolRunId = null,
 	toolArgs = undefined,
+	toolCallPreview = false,
+	toolCallIndex = undefined,
+	toolArgsStreaming = false,
+	toolArgsTruncated = false,
 	showFallbackIntent = undefined,
 	outcome = undefined,
 	renderer = undefined,
@@ -220,6 +229,10 @@ export function newToolMessage({
 	/** Live ToolCall.input or resume tool_input; omitted on observation fills
 	 * so the placeholder's args are preserved via object spread. */
 	toolArgs?: unknown;
+	toolCallPreview?: boolean;
+	toolCallIndex?: number | undefined;
+	toolArgsStreaming?: boolean;
+	toolArgsTruncated?: boolean;
 	showFallbackIntent?: boolean | undefined;
 	outcome?: ToolResultPresentationOutcome | null | undefined;
 	renderer?: string | null | undefined;
@@ -243,6 +256,10 @@ export function newToolMessage({
 		...(toolRunId ? { toolRunId } : {}),
 		...(sourceToolRunId ? { sourceToolRunId } : {}),
 		...(toolArgs !== undefined ? { toolArgs } : {}),
+		...(toolCallPreview ? { toolCallPreview: true } : {}),
+		...(toolCallIndex !== undefined ? { toolCallIndex } : {}),
+		...(toolArgsStreaming ? { toolArgsStreaming: true } : {}),
+		...(toolArgsTruncated ? { toolArgsTruncated: true } : {}),
 		...(isAsk && askOptions ? { options: askOptions, awaiting: true } : {}),
 	};
 }

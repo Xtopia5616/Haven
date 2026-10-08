@@ -633,6 +633,7 @@ mod tests {
             input_text: format!("input-{}", id),
             title: None,
             status: haven_common::SessionStatus::Pending,
+            run_end_reason: None,
             created_at: "2026-01-01T00:00:00Z".into(),
             updated_at: "2026-01-01T00:00:00Z".into(),
             origin: crate::repositories::sessions::SessionOrigin::User,

@@ -298,6 +298,7 @@ fn stream_chunk_has_retry_barrier_output(chunk: &StreamChunk) -> bool {
             .as_ref()
             .is_some_and(|reasoning| !reasoning.is_empty())
         || !chunk.tool_calls.is_empty()
+        || !chunk.tool_call_updates.is_empty()
         || chunk.web_search.is_some()
         || !chunk.web_search_calls.is_empty()
 }
@@ -387,6 +388,7 @@ mod tests {
                 }
                 ProbeMode::MetadataThenFailure if attempt == 0 => Ok(Box::pin(stream::iter(vec![
                     Ok(StreamChunk {
+                        tool_call_updates: Vec::new(),
                         model: Some("metadata-only".into()),
                         usage: Some(Usage::default()),
                         finish_reason: Some(crate::types::FinishReason::Stop),
@@ -396,17 +398,20 @@ mod tests {
                 ]))),
                 ProbeMode::MetadataThenFailure => {
                     Ok(Box::pin(stream::iter(vec![Ok(StreamChunk {
+                        tool_call_updates: Vec::new(),
                         text: Some("completed after retry".into()),
                         ..StreamChunk::default()
                     })])))
                 }
                 ProbeMode::RuleAbortThenGuidance => {
                     Ok(Box::pin(stream::iter(vec![Ok(StreamChunk {
+                        tool_call_updates: Vec::new(),
                         text: Some("forbidden".into()),
                         ..StreamChunk::default()
                     })])))
                 }
                 ProbeMode::RetryThenSuccess => Ok(Box::pin(stream::iter(vec![Ok(StreamChunk {
+                    tool_call_updates: Vec::new(),
                     text: Some("completed".into()),
                     usage: Some(Usage {
                         prompt_tokens: 9,
@@ -433,6 +438,7 @@ mod tests {
                 max_output_tokens,
             ));
             Ok(Box::pin(stream::iter(vec![Ok(StreamChunk {
+                tool_call_updates: Vec::new(),
                 text: Some("safe answer".into()),
                 ..StreamChunk::default()
             })])))
@@ -553,6 +559,7 @@ mod tests {
     #[test]
     fn retry_barrier_ignores_metadata_and_counts_delivered_content() {
         let metadata_only = StreamChunk {
+            tool_call_updates: Vec::new(),
             model: Some("model-name".into()),
             usage: Some(Usage::default()),
             finish_reason: Some(crate::types::FinishReason::Stop),
@@ -562,14 +569,17 @@ mod tests {
 
         for content in [
             StreamChunk {
+                tool_call_updates: Vec::new(),
                 text: Some("answer".into()),
                 ..StreamChunk::default()
             },
             StreamChunk {
+                tool_call_updates: Vec::new(),
                 reasoning: Some("reasoning".into()),
                 ..StreamChunk::default()
             },
             StreamChunk {
+                tool_call_updates: Vec::new(),
                 tool_calls: vec![haven_common::types::CanonicalToolCall {
                     id: "call-1".into(),
                     name: "file".into(),

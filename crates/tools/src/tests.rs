@@ -598,15 +598,12 @@ async fn test_tools_facade_rebuild_catalog_registers_builtins() {
         "system.info",
         "files.write",
         "files.list",
-        "process.list",
         "clipboard.read",
         "input.click",
         "window.list",
         "media.inspect",
         "tool_runs.list",
         "schedule.list",
-        "preferences.get",
-        "checklist.list",
         "agent.list",
     ] {
         let view = mgr.get_tool(name).await;
@@ -648,13 +645,23 @@ async fn test_tools_facade_rebuild_catalog_registers_builtins() {
     assert!(mgr.get_tool("clipboard").await.is_none());
     assert!(mgr.get_tool("system.env.get").await.is_some());
     assert!(mgr.get_tool("system.power.hibernate").await.is_some());
-    assert_eq!(
-        mgr.get_tool("process.kill")
-            .await
-            .expect("process.kill view")
-            .risk_level(&json!({})),
-        haven_common::types::RiskLevel::High
-    );
+    for name in [
+        "process.list",
+        "process.kill",
+        "preferences.get",
+        "checklist.list",
+        "window.ocr",
+        "system.env.set",
+        "system.env.unset",
+        "system.registry.set",
+        "system.registry.delete_value",
+        "system.registry.delete_key",
+    ] {
+        assert!(
+            mgr.get_tool(name).await.is_none(),
+            "removed operation {name}"
+        );
+    }
     assert!(mgr.get_tool("haven").await.is_none());
     assert!(mgr.get_tool("tool_catalog").await.is_some());
     assert!(mgr.get_tool("load_skill").await.is_some());

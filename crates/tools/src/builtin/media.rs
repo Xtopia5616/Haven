@@ -329,10 +329,6 @@ impl MediaTool {
         self
     }
 
-    pub(crate) fn ocr_available(&self) -> bool {
-        self.capabilities.ocr
-    }
-
     pub(crate) fn capability_available(&self, operation: &str) -> bool {
         self.capabilities.allows(operation)
     }

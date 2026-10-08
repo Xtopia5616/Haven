@@ -20,7 +20,6 @@ import ToolInputResult from './ToolInputResult.svelte';
 import ToolJsonResult from './ToolJsonResult.svelte';
 import ToolMediaResult from './ToolMediaResult.svelte';
 import ToolMemoryResult from './ToolMemoryResult.svelte';
-import ToolProcessResult from './ToolProcessResult.svelte';
 import ToolShellResult from './ToolShellResult.svelte';
 import ToolSystemResult from './ToolSystemResult.svelte';
 import ToolRunsResult from './ToolRunsResult.svelte';
@@ -65,12 +64,6 @@ describe('canRenderToolResult', () => {
 			canRenderToolResult(
 				'system',
 				JSON.stringify({ cpu: { usage_pct: 12, cores: 8, logical_cpus: 16 } }),
-			),
-		).toBe(true);
-		expect(
-			canRenderToolResult(
-				'system',
-				JSON.stringify({ scope: 'process', processes: [{ pid: 1 }] }),
 			),
 		).toBe(true);
 		expect(
@@ -121,12 +114,6 @@ describe('canRenderToolResult', () => {
 			canRenderToolResult('system', JSON.stringify({ scope: 'clipboard', content: 'hi' })),
 		).toBe(true);
 		expect(canRenderToolResult('system', JSON.stringify({ battery_percent: 80 }))).toBe(true);
-		expect(
-			canRenderToolResult(
-				'system',
-				JSON.stringify({ scope: 'process', operation: 'kill', killed: 42 }),
-			),
-		).toBe(true);
 		expect(
 			canRenderToolResult(
 				'haven',
@@ -226,11 +213,6 @@ describe('operation view UI contract', () => {
 			{ renderer: 'agent', data: { agents: [null] } },
 			{ renderer: 'agent', data: { agents: [{ name: 'peer', status: 'future' }] } },
 			{ renderer: 'agent', data: { auto: 'yes' } },
-			{ renderer: 'process', data: { processes: [null] } },
-			{ renderer: 'process', data: { processes: null } },
-			{ renderer: 'process', data: { processes: [{ name: 'app.exe', pid: 4, status: 'Run' }] } },
-			{ renderer: 'process', data: { operation: 'restart' } },
-			{ renderer: 'process', data: { processes: [{ status: 'Unknown(73)' }] } },
 			{ renderer: 'clipboard', data: { entries: [null] } },
 			{ renderer: 'clipboard', data: { entries: null } },
 			{ renderer: 'clipboard', data: { entries: [{ content: 'copied text' }] } },
@@ -289,7 +271,6 @@ describe('operation view UI contract', () => {
 			},
 			{ renderer: 'system', data: { scope: 'future-scope' } },
 			{ renderer: 'system', data: { scope: { unexpected: true } } },
-			{ renderer: 'system', data: { scope: 'process', processes: [null] } },
 			{ renderer: 'system', data: { scope: 'power', ac_power: 'plugged' } },
 			{ renderer: 'system', data: { scope: 'power', battery_status: 'empty' } },
 			{ renderer: 'haven_mcp', data: { servers: [null] } },
@@ -303,7 +284,10 @@ describe('operation view UI contract', () => {
 			{ renderer: 'http', data: { status: 200, body: { unexpected: true } } },
 			{ renderer: 'web_search', data: { results: [null] } },
 			{ renderer: 'web_search', data: { queries: null } },
-			{ renderer: 'web_search', data: { results: [{ title: 'x', url: 'https://a.test', snippet: 42 }] } },
+			{
+				renderer: 'web_search',
+				data: { results: [{ title: 'x', url: 'https://a.test', snippet: 42 }] },
+			},
 			{ renderer: 'memory', data: { facts: [null] } },
 			{ renderer: 'memory', data: { facts: [{ tags: 42 }] } },
 			{ renderer: 'memory', data: { operation: 'future-operation' } },
@@ -479,19 +463,6 @@ describe('operation view UI contract', () => {
 		expect(
 			getToolResultRenderer(
 				'custom',
-				'process',
-				{
-					operation: null,
-					processes: [
-						{ name: 'app.exe', pid: 4, cpu: 0.5, memory: 1024, status: 'Run' },
-					],
-				},
-				'process',
-			),
-		).toBe(ToolProcessResult);
-		expect(
-			getToolResultRenderer(
-				'custom',
 				'agent',
 				{
 					auto: null,
@@ -520,7 +491,12 @@ describe('operation view UI contract', () => {
 			),
 		).toBe(ToolClipboardResult);
 		expect(
-			getToolResultRenderer('custom', 'clipboard', { entries: [], written: null }, 'clipboard'),
+			getToolResultRenderer(
+				'custom',
+				'clipboard',
+				{ entries: [], written: null },
+				'clipboard',
+			),
 		).toBe(ToolClipboardResult);
 		expect(
 			getToolResultRenderer(
@@ -716,29 +692,6 @@ describe('operation view UI contract', () => {
 					],
 				},
 				'haven_mcp',
-			),
-		).not.toBe(ToolJsonResult);
-		expect(
-			getToolResultRenderer(
-				'custom',
-				'process',
-				{
-					processes: [{ pid: 42, name: 'haven', cpu: 1, memory: 2, status: 'Run' }],
-					matching_count: 'not rendered',
-					name_filter: [],
-				},
-				'process',
-			),
-		).not.toBe(ToolJsonResult);
-		expect(
-			getToolResultRenderer(
-				'custom',
-				'system',
-				{
-					scope: 'process',
-					processes: [{ pid: 42, name: 'haven', cpu: 1, memory: 2, status: 'Run' }],
-				},
-				'system',
 			),
 		).not.toBe(ToolJsonResult);
 		expect(
@@ -998,7 +951,7 @@ describe('ToolResultCard outcomes', () => {
 			content: 'request timed out',
 			outcome: 'unknown',
 		});
-		expect(screen.getByText('结果未知，可能已执行')).toBeTruthy();
+		expect(screen.getByText('结果未知')).toBeTruthy();
 		expect(screen.getByTitle('该操作可能已经产生副作用，禁止自动重试')).toBeTruthy();
 	});
 
@@ -1054,7 +1007,7 @@ describe('ToolResultCard outcomes', () => {
 
 	it.each([
 		['timed_out_and_terminated', '执行超时', 'timed_out'],
-		['timed_out_unknown', '结果未知，可能已执行', 'unknown'],
+		['timed_out_unknown', '结果未知', 'unknown'],
 	])('projects canonical result outcome %s into the card status', (outcome, label, state) => {
 		const { container } = render(ToolResultCard, {
 			toolName: 'messaging',
@@ -1566,16 +1519,6 @@ describe('ToolResultCard system', () => {
 		expect(screen.getByText('使用电池')).toBeTruthy();
 		expect(screen.getByText('未检测到电池')).toBeTruthy();
 	});
-
-	it('routes a process child through the system aggregate renderer', async () => {
-		const { container } = render(ToolResultCard, {
-			toolName: 'system',
-			content: JSON.stringify({ scope: 'process', operation: 'kill', killed: 42 }),
-		});
-		await expandToolCard(container);
-		expect(screen.getByText('已终止')).toBeTruthy();
-		expect(screen.getByText('PID 42')).toBeTruthy();
-	});
 });
 
 describe('ToolResultCard haven aggregate', () => {
@@ -1592,109 +1535,6 @@ describe('ToolResultCard haven aggregate', () => {
 		await expandToolCard(container);
 		expect(screen.getByText('已取消')).toBeTruthy();
 		expect(screen.getByText('toolrun-2')).toBeTruthy();
-	});
-});
-
-describe('ToolResultCard process', () => {
-	it('renders a kill result with the process-specific action UI', async () => {
-		const { container } = render(ToolResultCard, {
-			toolName: 'system',
-			content: JSON.stringify({ scope: 'process', operation: 'kill', killed: 42 }),
-		});
-		await expandToolCard(container);
-		expect(screen.getByText('已终止')).toBeTruthy();
-		expect(screen.getByText('PID 42')).toBeTruthy();
-	});
-
-	it('renders a process table with pid, cpu and memory', async () => {
-		const { container } = render(ToolResultCard, {
-			toolName: 'system',
-			content: JSON.stringify({
-				scope: 'process',
-				processes: [
-					{
-						pid: 100,
-						name: 'chrome.exe',
-						cpu: 3.5,
-						memory: 500 * 1024 * 1024,
-						status: 'Run',
-					},
-					{
-						pid: 200,
-						name: 'explorer.exe',
-						cpu: 0.2,
-						memory: 200 * 1024 * 1024,
-						status: 'Sleep',
-					},
-				],
-			}),
-		});
-		await expandToolCard(container);
-		expect(screen.getByText('2 个进程')).toBeTruthy();
-		expect(screen.getByText('chrome.exe')).toBeTruthy();
-		expect(screen.getByText('explorer.exe')).toBeTruthy();
-		expect(screen.getByText('500 MB')).toBeTruthy();
-	});
-
-	it('renders a status badge column with mapped labels', async () => {
-		const { container } = render(ToolResultCard, {
-			toolName: 'system',
-			content: JSON.stringify({
-				scope: 'process',
-				processes: [
-					{ pid: 1, name: 'a.exe', cpu: 0, memory: 0, status: 'Run' },
-					{ pid: 2, name: 'b.exe', cpu: 0, memory: 0, status: 'Sleep' },
-					{ pid: 3, name: 'c.exe', cpu: 0, memory: 0, status: 'Zombie' },
-					{ pid: 4, name: 'd.exe', cpu: 0, memory: 0, status: 'Unknown' },
-				],
-			}),
-		});
-		await expandToolCard(container);
-		expect(screen.getByText('运行中')).toBeTruthy();
-		expect(screen.getByText('休眠')).toBeTruthy();
-		expect(screen.getByText('僵尸')).toBeTruthy();
-		expect(screen.getByText('未知')).toBeTruthy();
-	});
-
-	it('filters processes by name', async () => {
-		const { container } = render(ToolResultCard, {
-			toolName: 'system',
-			content: JSON.stringify({
-				scope: 'process',
-				processes: [
-					{ pid: 1, name: 'chrome.exe', cpu: 0, memory: 0, status: 'Run' },
-					{ pid: 2, name: 'explorer.exe', cpu: 0, memory: 0, status: 'Sleep' },
-				],
-			}),
-		});
-		await expandToolCard(container);
-		await fireEvent.input(screen.getByPlaceholderText('筛选进程...'), {
-			target: { value: 'chrome' },
-		});
-		expect(screen.getByText('1 / 2 个进程')).toBeTruthy();
-		expect(screen.getByText('chrome.exe')).toBeTruthy();
-		expect(screen.queryByText('explorer.exe')).toBeNull();
-	});
-
-	it('paginates processes in the shared fifteen-row pages', async () => {
-		const processes = Array.from({ length: 60 }, (_, i) => ({
-			pid: i + 1,
-			name: `p${i}.exe`,
-			cpu: 0,
-			memory: 0,
-			status: 'Run',
-		}));
-		const { container } = render(ToolResultCard, {
-			toolName: 'system',
-			content: JSON.stringify({ scope: 'process', processes }),
-		});
-		await expandToolCard(container);
-		expect(screen.getByText('60 个进程')).toBeTruthy();
-		expect(screen.getByText('p14.exe')).toBeTruthy();
-		expect(screen.queryByText('p15.exe')).toBeNull();
-		await fireEvent.click(screen.getByRole('button', { name: '显示更多（剩余 45 条）' }));
-		expect(screen.getByText('p29.exe')).toBeTruthy();
-		expect(screen.queryByText('p30.exe')).toBeNull();
 	});
 });
 
@@ -1777,28 +1617,6 @@ describe('ToolResultCard window', () => {
 		expect(screen.getByText('截图已生成')).toBeTruthy();
 		expect(screen.getByText('asset-0123456789abcdef0123456789abcdef')).toBeTruthy();
 		expect(screen.getByText('1920×1080 · PNG')).toBeTruthy();
-	});
-
-	it('renders window OCR through the operation renderer', async () => {
-		const { container } = render(ToolResultCard, {
-			toolName: 'window.ocr',
-			renderer: 'window',
-			content: JSON.stringify({
-				operation: 'ocr',
-				asset_id: 'asset-0123456789abcdef0123456789abcdef',
-				media: {
-					asset_id: 'asset-0123456789abcdef0123456789abcdef',
-					representation: 'ocr_text',
-					content: '窗口中的文字',
-				},
-				representation: 'ocr_text',
-			}),
-		});
-		await expandToolCard(container);
-		expect(screen.getByText('OCR 完成')).toBeTruthy();
-		expect(screen.getByText('asset-0123456789abcdef0123456789abcdef')).toBeTruthy();
-		expect(screen.getByText('窗口中的文字')).toBeTruthy();
-		expect(container.querySelector('.tool-result-preview')?.textContent).toBe('窗口中的文字');
 	});
 });
 

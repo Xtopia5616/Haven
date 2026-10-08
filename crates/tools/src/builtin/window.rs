@@ -33,7 +33,6 @@ pub enum WindowOperation {
     Focus,
     Close,
     Screenshot,
-    Ocr,
     UiTree,
     Observe,
     Invoke,
@@ -91,9 +90,6 @@ pub struct WindowParams {
     /// currently means toggle once when omitted.
     #[serde(default)]
     pub value: Option<String>,
-    /// Include OCR in `observe` when the dedicated OCR capability exists.
-    #[serde(default)]
-    pub ocr: Option<bool>,
     /// Private runtime context injected by `ToolsFacade`; never part of the
     /// LLM-facing schema.
     #[serde(rename = "_session_id", default, skip_serializing)]
@@ -210,7 +206,6 @@ impl WindowTool {
                 output["format"] = serde_json::json!(capture.format);
                 Ok(ToolResult::ok(output))
             }
-            WindowOperation::Ocr => self.ocr(params.session_id.as_deref(), cancel).await,
             WindowOperation::UiTree => {
                 let title_owned = title;
                 let window_id = params.window_id.clone();

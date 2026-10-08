@@ -36,21 +36,15 @@ pub struct SystemParams {
     /// Sub-operation for env/registry/power.
     #[serde(default)]
     pub operation: Option<String>,
-    /// Env var name for get/set/unset, or registry value name.
+    /// Environment variable or registry value name.
     #[serde(default)]
     pub name: Option<String>,
     /// Environment variable prefix filter for `scope=env`, `operation=list`.
     #[serde(default)]
     pub prefix: Option<String>,
-    /// Env/registry value.
-    #[serde(default)]
-    pub value: Option<String>,
     /// Registry path.
     #[serde(default)]
     pub path: Option<String>,
-    /// Registry value type.
-    #[serde(default, rename = "type")]
-    pub value_type: Option<String>,
     /// Environment persistence scope when `scope=env`; defaults to process.
     #[serde(default)]
     pub env_scope: Option<EnvScope>,
@@ -94,7 +88,6 @@ impl SystemTool {
                         } else {
                             params.name
                         },
-                        value: params.value,
                         scope: params.env_scope,
                     },
                     cancel,
@@ -109,8 +102,6 @@ impl SystemTool {
                             operation: Some(op),
                             path: params.path,
                             name: params.name,
-                            value: params.value,
-                            value_type: params.value_type,
                         },
                         cancel,
                     )
@@ -166,21 +157,16 @@ impl SystemTool {
 fn parse_env_op(op: Option<&str>) -> anyhow::Result<EnvOperation> {
     match op.unwrap_or("list") {
         "get" => Ok(EnvOperation::Get),
-        "set" => Ok(EnvOperation::Set),
-        "unset" => Ok(EnvOperation::Unset),
         "list" => Ok(EnvOperation::List),
-        other => anyhow::bail!("unknown env operation '{}'", other),
+        other => anyhow::bail!("unknown env operation '{}'; use get or list", other),
     }
 }
 
 fn parse_registry_op(op: Option<&str>) -> anyhow::Result<RegistryOperation> {
     match op.unwrap_or("list") {
         "get" => Ok(RegistryOperation::Get),
-        "set" => Ok(RegistryOperation::Set),
-        "delete_value" => Ok(RegistryOperation::DeleteValue),
-        "delete_key" => Ok(RegistryOperation::DeleteKey),
         "list" => Ok(RegistryOperation::List),
-        other => anyhow::bail!("unknown registry operation '{}'", other),
+        other => anyhow::bail!("unknown registry operation '{}'; use get or list", other),
     }
 }
 
@@ -213,14 +199,10 @@ impl Tool for SystemTool {
         });
         match scope {
             "env" => match op {
-                "set" | "unset" | "list" => RiskLevel::High,
+                "list" => RiskLevel::High,
                 _ => RiskLevel::Low,
             },
-            "registry" => match op {
-                "set" | "delete_value" => RiskLevel::High,
-                "delete_key" => RiskLevel::Critical,
-                _ => RiskLevel::Medium,
-            },
+            "registry" => RiskLevel::Medium,
             "power" => match op {
                 // Lock/sleep are disruptive but recoverable; treat hibernate
                 // as Critical so "Critical only" still gates the most severe
@@ -265,10 +247,8 @@ impl Tool for SystemTool {
                 "operation": { "type": "string" },
                 "name": { "type": "string" },
                 "prefix": { "type": "string" },
-                "value": { "type": "string" },
                 "path": { "type": "string" },
-                "type": { "type": "string", "enum": ["String", "DWord", "QWord", "Binary", "MultiString", "ExpandString"] }
-                ,"env_scope": { "type": "string", "enum": ["process", "user", "machine"] }
+                "env_scope": { "type": "string", "enum": ["process", "user", "machine"] }
             },
             "oneOf": [
                 {
@@ -308,16 +288,6 @@ impl Tool for SystemTool {
                             "properties": { "scope": { "const": "env" }, "operation": { "const": "get" }, "name": { "type": "string", "minLength": 1 }, "env_scope": { "type": "string", "enum": ["process", "user", "machine"] } },
                             "required": ["scope", "operation", "name"]
                         },
-                        {
-                            "additionalProperties": false,
-                            "properties": { "scope": { "const": "env" }, "operation": { "const": "set" }, "name": { "type": "string", "minLength": 1 }, "value": { "type": "string" }, "env_scope": { "type": "string", "enum": ["process", "user", "machine"] } },
-                            "required": ["scope", "operation", "name", "value"]
-                        },
-                        {
-                            "additionalProperties": false,
-                            "properties": { "scope": { "const": "env" }, "operation": { "const": "unset" }, "name": { "type": "string", "minLength": 1 }, "env_scope": { "type": "string", "enum": ["process", "user", "machine"] } },
-                            "required": ["scope", "operation", "name"]
-                        }
                     ]
                 },
                 {
@@ -333,21 +303,6 @@ impl Tool for SystemTool {
                             "properties": { "scope": { "const": "registry" }, "operation": { "const": "get" }, "path": { "type": "string", "minLength": 1 }, "name": { "type": "string", "minLength": 1 } },
                             "required": ["scope", "operation", "path", "name"]
                         },
-                        {
-                            "additionalProperties": false,
-                            "properties": { "scope": { "const": "registry" }, "operation": { "const": "set" }, "path": { "type": "string", "minLength": 1 }, "name": { "type": "string", "minLength": 1 }, "value": { "type": "string" }, "type": { "type": "string", "enum": ["String", "DWord", "QWord", "Binary", "MultiString", "ExpandString"] } },
-                            "required": ["scope", "operation", "path", "name", "value"]
-                        },
-                        {
-                            "additionalProperties": false,
-                            "properties": { "scope": { "const": "registry" }, "operation": { "const": "delete_value" }, "path": { "type": "string", "minLength": 1 }, "name": { "type": "string", "minLength": 1 } },
-                            "required": ["scope", "operation", "path", "name"]
-                        },
-                        {
-                            "additionalProperties": false,
-                            "properties": { "scope": { "const": "registry" }, "operation": { "const": "delete_key" }, "path": { "type": "string", "minLength": 1 } },
-                            "required": ["scope", "operation", "path"]
-                        }
                     ]
                 },
                 {
@@ -851,10 +806,6 @@ mod tests {
             tool.risk_level(&json!({"scope": "power", "operation": "hibernate"})),
             RiskLevel::Critical
         );
-        assert_eq!(
-            tool.risk_level(&json!({"scope": "env", "operation": "set"})),
-            RiskLevel::High
-        );
         // Omitted operation defaults to list for both risk and execution.
         assert_eq!(tool.risk_level(&json!({"scope": "env"})), RiskLevel::High);
     }
@@ -890,13 +841,15 @@ mod tests {
     }
 
     #[test]
-    fn registry_delete_requires_a_value_name() {
+    fn registry_writes_are_rejected() {
         let tool = SystemTool::default();
         assert!(
             tool.validate_input(&serde_json::json!({
                 "scope": "registry",
-                "operation": "delete_value",
-                "path": "HKCU\\Software\\Haven"
+                "operation": "set",
+                "path": "HKCU\\Software\\Haven",
+                "name": "LastSession",
+                "value": "x"
             }))
             .is_err()
         );
@@ -907,8 +860,32 @@ mod tests {
                 "path": "HKCU\\Software\\Haven",
                 "name": "LastSession"
             }))
-            .is_ok()
+            .is_err()
         );
+        assert!(
+            tool.validate_input(&serde_json::json!({
+                "scope": "registry",
+                "operation": "delete_key",
+                "path": "HKCU\\Software\\Haven"
+            }))
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn environment_mutations_are_rejected() {
+        let tool = SystemTool::default();
+        for operation in ["set", "unset"] {
+            assert!(
+                tool.validate_input(&serde_json::json!({
+                    "scope": "env",
+                    "operation": operation,
+                    "name": "HAVEN_TEST",
+                    "value": "x"
+                }))
+                .is_err()
+            );
+        }
     }
 
     #[tokio::test]
@@ -1048,9 +1025,7 @@ mod tests {
                     operation: None,
                     name: None,
                     prefix: None,
-                    value: None,
                     path: None,
-                    value_type: None,
                     env_scope: None,
                 },
                 CancellationToken::new(),

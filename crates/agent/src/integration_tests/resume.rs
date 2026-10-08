@@ -1029,6 +1029,7 @@ async fn run_session_from_id_trims_dangling_tool_call_before_resume() {
         .unwrap();
     let mock = Arc::new(ScriptedMock::new(vec![ScriptedResponse::Chunk(
         StreamChunk {
+            tool_call_updates: Vec::new(),
             text: Some("Done.".into()),
             tool_calls: vec![CanonicalToolCall {
                 id: "final".into(),

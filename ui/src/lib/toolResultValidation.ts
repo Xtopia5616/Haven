@@ -16,8 +16,6 @@ import {
 	isToolMediaFileKind,
 	isToolMediaModality,
 	isToolMemoryRecallMode,
-	isToolProcessOperation,
-	isToolProcessStatus,
 	isToolRunResultStatus,
 	isToolScheduleMode,
 	isToolSystemScope,
@@ -167,15 +165,12 @@ function validSystemData(data: JsonRecord): boolean {
 				down: isFiniteNumber,
 			},
 		}) &&
-		hasValidRecordArray(
-			data,
-			'networks',
-			(row) =>
-				hasValidRequiredFields(row, {
-					name: isString,
-					state: isString,
-					ips: isStringArray,
-				}),
+		hasValidRecordArray(data, 'networks', (row) =>
+			hasValidRequiredFields(row, {
+				name: isString,
+				state: isString,
+				ips: isStringArray,
+			}),
 		) &&
 		hasValidRecordArray(data, 'disks', (row) =>
 			hasValidRequiredFields(row, {
@@ -204,37 +199,13 @@ function validSystemData(data: JsonRecord): boolean {
 	);
 }
 
-function validProcessData(data: JsonRecord): boolean {
-	return (
-		hasValidOptionalFields(data, {
-			operation: isToolProcessOperation,
-			killed: isStringOrNumber,
-		}) &&
-		hasValidRecordArray(data, 'processes', (row) =>
-			isString(row.name) &&
-				isStringOrNumber(row.pid) &&
-				isFiniteNumber(row.cpu) &&
-				isFiniteNumber(row.memory) &&
-				isToolProcessStatus(row.status),
-		)
-	);
-}
-
 function validWindowData(data: JsonRecord): boolean {
 	return (
 		hasValidOptionalFields(data, {
 			operation: isToolWindowOperation,
 			format: isToolWindowFormat,
 			condition: isToolWindowWaitCondition,
-			...stringFields(
-				'note',
-				'title',
-				'focused',
-				'closed',
-				'reason',
-				'text',
-				'asset_id',
-			),
+			...stringFields('note', 'title', 'focused', 'closed', 'reason', 'text', 'asset_id'),
 			...numberFields('count', 'pid', 'width', 'height'),
 			...booleanFields('available', 'success', 'matched', 'timed_out'),
 		}) &&
@@ -372,8 +343,6 @@ function validBuiltinRendererData(renderer: string, data: JsonRecord): boolean {
 			return validFileData(data);
 		case 'media':
 			return validMediaData(data);
-		case 'process':
-			return validProcessData(data);
 		case 'window':
 			return validWindowData(data);
 		case 'system':

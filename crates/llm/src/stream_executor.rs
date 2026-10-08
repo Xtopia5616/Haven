@@ -177,6 +177,7 @@ mod tests {
                 Behavior::Pending => std::future::pending().await,
                 Behavior::RetryThenSuccess | Behavior::Success => {
                     Ok(Box::pin(stream::iter([Ok(StreamChunk {
+                        tool_call_updates: Vec::new(),
                         text: Some("ready".into()),
                         ..StreamChunk::default()
                     })])))

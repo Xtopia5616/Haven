@@ -9,6 +9,7 @@ export const AGENT_EVENT_NAMES = [
 	'agent:observation',
 	'agent:thought_chunk',
 	'agent:reasoning_chunk',
+	'agent:tool_call_chunk',
 	'agent:stream_reset',
 	'agent:media_plan',
 	'agent:web_search',
@@ -90,7 +91,7 @@ export interface RecordingStatus { is_recording: boolean; is_toggle: boolean }
 export const CONFIRMATION_RESOLUTION_RESULT_VALUES = ['resolved', 'expired', 'stale'] as const;
 export type ConfirmationResolutionResult = (typeof CONFIRMATION_RESOLUTION_RESULT_VALUES)[number];
 export interface SessionLineageResponse { parent: SessionRecordDto | null; children: SessionRecordDto[] }
-export interface SessionRecordDto { id: string; input_text: string; title: string | null; status: SessionStatus; created_at: string; updated_at: string }
+export interface SessionRecordDto { id: string; input_text: string; title: string | null; status: SessionStatus; run_end_reason?: string; created_at: string; updated_at: string }
 export interface SessionResumeResponse { session: SessionRecordDto; messages: Message[]; steps: SessionStep[]; usage: SessionUsage | null; llm_usage: LlmUsageRecord[]; interactions: InteractionRequestedEvent[] }
 export interface SessionPermissionGrant { session_id: string; session_title: string | null; capability: string; target: PermissionTarget; effect: PermissionEffect }
 export interface ShellAvailability { available: boolean }

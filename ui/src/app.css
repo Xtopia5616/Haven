@@ -511,11 +511,7 @@
 	--md-sys-color-primary-fixed: var(--md-sys-color-primary-container);
 	--md-sys-color-on-primary-fixed: var(--md-sys-color-on-primary-container);
 
-	--md-sys-color-secondary: color-mix(
-		in srgb,
-		var(--md-accent-hex, #2c5090) 68%,
-		#545f70
-	);
+	--md-sys-color-secondary: color-mix(in srgb, var(--md-accent-hex, #2c5090) 68%, #545f70);
 	--md-sys-color-on-secondary: var(--md-accent-on-secondary, #ffffff);
 	--md-sys-color-secondary-container: color-mix(
 		in srgb,
@@ -524,11 +520,7 @@
 	);
 	--md-sys-color-on-secondary-container: var(--md-accent-on-secondary-container, #000000);
 
-	--md-sys-color-tertiary: color-mix(
-		in srgb,
-		var(--md-accent-hex, #2c5090) 60%,
-		#735b6c
-	);
+	--md-sys-color-tertiary: color-mix(in srgb, var(--md-accent-hex, #2c5090) 60%, #735b6c);
 	--md-sys-color-on-tertiary: var(--md-accent-on-tertiary, #ffffff);
 	--md-sys-color-tertiary-container: color-mix(
 		in srgb,
@@ -539,21 +531,13 @@
 
 	--md-sys-color-background: color-mix(in srgb, var(--md-accent-hex, #2c5090) 2%, #f7f8fc);
 	--md-sys-color-surface: var(--md-sys-color-background);
-	--md-sys-color-surface-variant: color-mix(
-		in srgb,
-		var(--md-accent-hex, #2c5090) 7%,
-		#e3e1ec
-	);
+	--md-sys-color-surface-variant: color-mix(in srgb, var(--md-accent-hex, #2c5090) 7%, #e3e1ec);
 	--md-sys-color-surface-container-low: color-mix(
 		in srgb,
 		var(--md-accent-hex, #2c5090) 3%,
 		#f1f3f8
 	);
-	--md-sys-color-surface-container: color-mix(
-		in srgb,
-		var(--md-accent-hex, #2c5090) 4%,
-		#e9edf4
-	);
+	--md-sys-color-surface-container: color-mix(in srgb, var(--md-accent-hex, #2c5090) 4%, #e9edf4);
 	--md-sys-color-surface-container-high: color-mix(
 		in srgb,
 		var(--md-accent-hex, #2c5090) 5%,
@@ -565,20 +549,12 @@
 		#d9dfe9
 	);
 	--md-sys-color-outline: color-mix(in srgb, var(--md-accent-hex, #2c5090) 5%, #777680);
-	--md-sys-color-outline-variant: color-mix(
-		in srgb,
-		var(--md-accent-hex, #2c5090) 16%,
-		#c3c9d5
-	);
+	--md-sys-color-outline-variant: color-mix(in srgb, var(--md-accent-hex, #2c5090) 16%, #c3c9d5);
 	--md-sys-color-inverse-primary: var(--md-accent-hex, #2c5090);
 }
 
 [data-theme='dark'][data-accent]:not([data-accent='blue']) {
-	--md-sys-color-primary: color-mix(
-		in srgb,
-		var(--md-accent-hex, #2c5090) 55%,
-		#ffffff
-	);
+	--md-sys-color-primary: color-mix(in srgb, var(--md-accent-hex, #2c5090) 55%, #ffffff);
 	--md-sys-color-on-primary: var(--md-accent-on-primary, #000000);
 	--md-sys-color-primary-container: color-mix(
 		in srgb,
@@ -587,17 +563,9 @@
 	);
 	--md-sys-color-on-primary-container: var(--md-accent-on-primary-container, #ffffff);
 	--md-sys-color-primary-fixed: var(--md-sys-color-primary);
-	--md-sys-color-on-primary-fixed: color-mix(
-		in srgb,
-		var(--md-accent-hex, #2c5090) 80%,
-		#000000
-	);
+	--md-sys-color-on-primary-fixed: color-mix(in srgb, var(--md-accent-hex, #2c5090) 80%, #000000);
 
-	--md-sys-color-secondary: color-mix(
-		in srgb,
-		var(--md-accent-hex, #2c5090) 42%,
-		#bec6dc
-	);
+	--md-sys-color-secondary: color-mix(in srgb, var(--md-accent-hex, #2c5090) 42%, #bec6dc);
 	--md-sys-color-on-secondary: var(--md-accent-on-secondary, #000000);
 	--md-sys-color-secondary-container: color-mix(
 		in srgb,
@@ -606,11 +574,7 @@
 	);
 	--md-sys-color-on-secondary-container: var(--md-accent-on-secondary-container, #ffffff);
 
-	--md-sys-color-tertiary: color-mix(
-		in srgb,
-		var(--md-accent-hex, #2c5090) 50%,
-		#e7b9d1
-	);
+	--md-sys-color-tertiary: color-mix(in srgb, var(--md-accent-hex, #2c5090) 50%, #e7b9d1);
 	--md-sys-color-on-tertiary: var(--md-accent-on-tertiary, #000000);
 	--md-sys-color-tertiary-container: color-mix(
 		in srgb,
@@ -621,21 +585,13 @@
 
 	--md-sys-color-background: color-mix(in srgb, var(--md-accent-hex, #2c5090) 3%, #181b24);
 	--md-sys-color-surface: var(--md-sys-color-background);
-	--md-sys-color-surface-variant: color-mix(
-		in srgb,
-		var(--md-accent-hex, #2c5090) 8%,
-		#4c5160
-	);
+	--md-sys-color-surface-variant: color-mix(in srgb, var(--md-accent-hex, #2c5090) 8%, #4c5160);
 	--md-sys-color-surface-container-low: color-mix(
 		in srgb,
 		var(--md-accent-hex, #2c5090) 4%,
 		#1d2029
 	);
-	--md-sys-color-surface-container: color-mix(
-		in srgb,
-		var(--md-accent-hex, #2c5090) 5%,
-		#222631
-	);
+	--md-sys-color-surface-container: color-mix(in srgb, var(--md-accent-hex, #2c5090) 5%, #222631);
 	--md-sys-color-surface-container-high: color-mix(
 		in srgb,
 		var(--md-accent-hex, #2c5090) 6%,
@@ -647,11 +603,7 @@
 		#303646
 	);
 	--md-sys-color-outline: color-mix(in srgb, var(--md-accent-hex, #2c5090) 10%, #9b9ba6);
-	--md-sys-color-outline-variant: color-mix(
-		in srgb,
-		var(--md-accent-hex, #2c5090) 18%,
-		#414754
-	);
+	--md-sys-color-outline-variant: color-mix(in srgb, var(--md-accent-hex, #2c5090) 18%, #414754);
 	--md-sys-color-inverse-primary: var(--md-accent-hex, #2c5090);
 }
 
@@ -873,29 +825,69 @@ samp {
 }
 
 /* Shared sizing modes. Groups choose the available space; controls avoid local fixed widths. */
-:is(.md-btn, .md-input, .md-textarea, .md-select-container, .md-number-field,
-	.md-number-field-with-unit, .api-key-field, .ma-root)[data-width='content'] {
+:is(
+	.md-btn,
+	.md-input,
+	.md-textarea,
+	.md-select-container,
+	.md-number-field,
+	.md-number-field-with-unit,
+	.api-key-field,
+	.ma-root
+)[data-width='content'] {
 	width: fit-content;
 	max-width: 100%;
 	flex: 0 1 auto;
 }
-:is(.md-btn, .md-input, .md-textarea, .md-select-container, .md-number-field,
-	.md-number-field-with-unit, .api-key-field, .ma-root)[data-width='compact'] {
+:is(
+	.md-btn,
+	.md-input,
+	.md-textarea,
+	.md-select-container,
+	.md-number-field,
+	.md-number-field-with-unit,
+	.api-key-field,
+	.ma-root
+)[data-width='compact'] {
 	width: min(100%, var(--md-comp-control-compact-width));
 	max-width: 100%;
 }
-:is(.md-btn, .md-input, .md-textarea, .md-select-container, .md-number-field,
-	.md-number-field-with-unit, .api-key-field, .ma-root)[data-width='standard'] {
+:is(
+	.md-btn,
+	.md-input,
+	.md-textarea,
+	.md-select-container,
+	.md-number-field,
+	.md-number-field-with-unit,
+	.api-key-field,
+	.ma-root
+)[data-width='standard'] {
 	width: min(100%, var(--md-comp-settings-control-width));
 	max-width: 100%;
 }
-:is(.md-btn, .md-input, .md-textarea, .md-select-container, .md-number-field,
-	.md-number-field-with-unit, .api-key-field, .ma-root)[data-width='fill'] {
+:is(
+	.md-btn,
+	.md-input,
+	.md-textarea,
+	.md-select-container,
+	.md-number-field,
+	.md-number-field-with-unit,
+	.api-key-field,
+	.ma-root
+)[data-width='fill'] {
 	width: 100%;
 	max-width: 100%;
 }
-:is(.md-btn, .md-input, .md-textarea, .md-select-container, .md-number-field,
-	.md-number-field-with-unit, .api-key-field, .ma-root)[data-width='equal'] {
+:is(
+	.md-btn,
+	.md-input,
+	.md-textarea,
+	.md-select-container,
+	.md-number-field,
+	.md-number-field-with-unit,
+	.api-key-field,
+	.ma-root
+)[data-width='equal'] {
 	flex: 1 1 0;
 	min-width: 0;
 }
@@ -1022,8 +1014,10 @@ input.md-input,
 select.md-select,
 textarea.md-textarea {
 	width: 100%;
+	box-sizing: border-box;
 	font-family: inherit;
 	font-size: var(--md-sys-typescale-body-large-size);
+	line-height: var(--md-sys-typescale-body-large-line-height);
 	padding: 0 var(--md-sys-space-lg);
 	height: var(--md-comp-textfield-container-height);
 	background: transparent;
@@ -1096,6 +1090,30 @@ select.md-select {
 	border-color: color-mix(in srgb, var(--md-sys-color-on-surface) 12%, transparent);
 	pointer-events: none;
 }
+.md-input--compact {
+	height: var(--md-comp-textfield-container-height);
+	padding: 0 var(--md-sys-space-sm);
+	background: var(--md-sys-color-surface-container-high);
+	border-color: var(--md-sys-color-outline-variant);
+	border-radius: var(--md-sys-shape-small);
+	font-size: var(--md-sys-typescale-body-small-size);
+	line-height: var(--md-sys-typescale-body-small-line-height);
+}
+.md-input--compact:focus {
+	padding: 0 calc(var(--md-sys-space-sm) - 1px);
+}
+.md-textarea--code {
+	font-family: var(--md-sys-typescale-mono);
+	font-size: var(--md-sys-typescale-code-size);
+	line-height: var(--md-sys-typescale-code-line-height);
+}
+.md-textarea--compact {
+	min-height: 72px;
+	padding: var(--md-sys-space-sm);
+}
+.md-textarea--compact:focus {
+	padding: calc(var(--md-sys-space-sm) - 1px);
+}
 
 /* ---------- Workspace item cards ---------- */
 /* Shared by task and memory item cards. Domain views only own the
@@ -1167,6 +1185,10 @@ select.md-select {
 ):not(:focus-visible) {
 	outline: var(--md-sys-selection-outline-width) solid var(--md-sys-selection-outline-color);
 	outline-offset: var(--md-sys-selection-outline-offset);
+}
+.md-tabs .md-tab[aria-selected='true']:not(:focus-visible),
+.landscape-workspace-nav .workspace-link[aria-current='page']:not(:focus-visible) {
+	outline: none;
 }
 :where(
 	.md-btn--filled[aria-checked='true'],
@@ -1384,10 +1406,7 @@ select.md-select {
 	border-radius: var(--md-sys-shape-small);
 	font-family: var(--md-sys-typescale-mono);
 	font-size: var(--md-sys-typescale-code-size);
-	line-height: var(
-		--tool-result-preview-line-height,
-		var(--md-sys-typescale-code-line-height)
-	);
+	line-height: var(--tool-result-preview-line-height, var(--md-sys-typescale-code-line-height));
 	white-space: pre-wrap;
 	word-break: break-word;
 	max-height: var(--tool-result-preview-max-height, 180px);
@@ -1797,7 +1816,12 @@ select.md-select {
 		mask-image: linear-gradient(90deg, transparent, currentColor 18px, currentColor 100%);
 	}
 	.md-tabs.workspace-secondary-tabs--sidebar.md-tabs--scroll-hint-right {
-		mask-image: linear-gradient(90deg, currentColor 0, currentColor calc(100% - 18px), transparent);
+		mask-image: linear-gradient(
+			90deg,
+			currentColor 0,
+			currentColor calc(100% - 18px),
+			transparent
+		);
 	}
 	.md-tabs.workspace-secondary-tabs--sidebar.md-tabs--scroll-hint-left.md-tabs--scroll-hint-right {
 		mask-image: linear-gradient(

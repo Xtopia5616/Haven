@@ -74,7 +74,7 @@ struct SuppressLifecycleCancelledSessionErrorEmitter {
 #[async_trait::async_trait]
 impl AgentEventEmitter for SuppressLifecycleCancelledSessionErrorEmitter {
     async fn emit(&self, event: AgentEvent) {
-        if let AgentEvent::SessionError { session_id, .. } = &event {
+        if let AgentEvent::SessionError { session_id, error } = &event {
             let _lifecycle = self.executor.lifecycle_guard().await;
             if self.executor.ensure_lifecycle_open().is_err()
                 || self.executor.is_session_closing(session_id)
@@ -86,7 +86,19 @@ impl AgentEventEmitter for SuppressLifecycleCancelledSessionErrorEmitter {
                 return;
             }
             match self.executor.mark_run_failed_if_active(session_id).await {
-                Ok(true) => {}
+                Ok(true) => {
+                    if let Err(persist_error) = self
+                        .executor
+                        .persist_session_run_end_reason(session_id, error)
+                        .await
+                    {
+                        tracing::error!(
+                            session_id,
+                            error = %persist_error,
+                            "failed to persist session run-end reason"
+                        );
+                    }
+                }
                 Ok(false) => {
                     tracing::debug!(
                         session_id,

@@ -139,27 +139,22 @@ fn find_window(
     title: Option<&str>,
     pid: Option<u32>,
 ) -> anyhow::Result<Option<HWND>> {
+    let title = title.filter(|value| !value.trim().is_empty());
     if let Some(window_id) = window_id {
         let hwnd = hwnd_from_window_id(window_id)?;
-        let windows = enumerate_windows(pid)?;
+        let windows = enumerate_windows(None)?;
         return Ok(windows
             .iter()
-            .any(|window| window["window_id"].as_str() == Some(window_id))
+            .any(|window| window_id_matches(window, window_id, pid))
             .then_some(hwnd));
     }
-    let windows = enumerate_windows(pid)?;
+    if title.is_none() && pid.is_none() {
+        anyhow::bail!("a title or pid is required");
+    }
+    let windows = enumerate_windows(None)?;
     let matches: Vec<&Value> = windows
         .iter()
-        .filter(|window| {
-            title
-                .map(|needle| {
-                    window["title"]
-                        .as_str()
-                        .map(|value| value.contains(needle))
-                        .unwrap_or(false)
-                })
-                .unwrap_or(true)
-        })
+        .filter(|window| window_matches(window, title, pid))
         .collect();
     if matches.len() > 1 {
         return Err(ambiguous_window_error(title, pid, matches.len()));
@@ -171,7 +166,22 @@ fn find_window(
         .map(|hwnd| hwnd as usize as HWND))
 }
 
+fn window_matches(window: &Value, title: Option<&str>, pid: Option<u32>) -> bool {
+    let matches_pid = pid.is_none_or(|pid| window["pid"].as_u64() == Some(pid as u64));
+    let matches_title = title.is_none_or(|needle| {
+        window["title"]
+            .as_str()
+            .is_some_and(|value| value.contains(needle))
+    });
+    matches_pid && matches_title
+}
+
+fn window_id_matches(window: &Value, window_id: &str, pid: Option<u32>) -> bool {
+    window["window_id"].as_str() == Some(window_id) && window_matches(window, None, pid)
+}
+
 fn ambiguous_window_error(title: Option<&str>, pid: Option<u32>, matches: usize) -> anyhow::Error {
+    let title = title.filter(|value| !value.trim().is_empty());
     let scope = match (title, pid) {
         (Some(title), Some(pid)) => format!("title '{}' for pid {}", title, pid),
         (Some(title), None) => format!("title '{}'", title),
@@ -227,7 +237,27 @@ pub(crate) fn foreground_title_contains(needle: &str) -> anyhow::Result<bool> {
 
 #[cfg(test)]
 mod tests {
-    use super::ambiguous_window_error;
+    use super::{ambiguous_window_error, window_matches};
+    use serde_json::json;
+
+    #[test]
+    fn pid_filter_is_applied_even_when_title_is_empty() {
+        let target = json!({"title": "Haven", "pid": 45736});
+        let other_process = json!({"title": "Haven", "pid": 99999});
+
+        assert!(window_matches(&target, Some(""), Some(45_736)));
+        assert!(!window_matches(&other_process, Some(""), Some(45_736)));
+    }
+
+    #[test]
+    fn empty_title_does_not_appear_in_ambiguity_error() {
+        let error = ambiguous_window_error(Some("  "), Some(45_736), 2).to_string();
+
+        assert_eq!(
+            error,
+            "pid 45736 matched 2 windows; provide window_id to select one"
+        );
+    }
 
     #[test]
     fn ambiguous_pid_requires_window_id() {

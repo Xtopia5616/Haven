@@ -25,6 +25,129 @@ struct CheckpointRequest {
     content: String,
 }
 
+const TOOL_CALL_PREVIEW_MAX_BYTES: usize = 8 * 1024;
+const TOOL_CALL_PREVIEW_MAX_CALLS: usize = 32;
+const TOOL_CALL_PREVIEW_INTERVAL: std::time::Duration = std::time::Duration::from_millis(50);
+
+struct ToolCallPreviewState {
+    preview_id: String,
+    tool_name: String,
+    arguments: String,
+    arguments_truncated: bool,
+    last_emitted: Option<std::time::Instant>,
+    dirty: bool,
+}
+
+struct ToolCallPreviewUpdate<'a> {
+    tool_index: u32,
+    tool_name: Option<&'a str>,
+    arguments_delta: Option<&'a str>,
+    arguments_snapshot: Option<&'a str>,
+}
+
+fn bounded_text_prefix(value: &str, max_bytes: usize) -> &str {
+    let mut end = value.len().min(max_bytes);
+    while !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    &value[..end]
+}
+
+fn update_tool_call_preview(
+    states: &Arc<std::sync::Mutex<HashMap<u32, ToolCallPreviewState>>>,
+    session_id: &Arc<str>,
+    step_number: u32,
+    run_id: u64,
+    update: ToolCallPreviewUpdate<'_>,
+    allow_emit: bool,
+    force_emit: bool,
+) -> Option<crate::event::ChunkItem> {
+    let mut states = states.lock().unwrap();
+    if !states.contains_key(&update.tool_index) && states.len() >= TOOL_CALL_PREVIEW_MAX_CALLS {
+        return None;
+    }
+    let state = states
+        .entry(update.tool_index)
+        .or_insert_with(|| ToolCallPreviewState {
+            preview_id: haven_common::types::new_id("call"),
+            tool_name: String::new(),
+            arguments: String::new(),
+            arguments_truncated: false,
+            last_emitted: None,
+            dirty: false,
+        });
+    if let Some(name) = update.tool_name {
+        state.tool_name = name.chars().take(256).collect();
+    }
+    if let Some(snapshot) = update.arguments_snapshot {
+        let prefix = bounded_text_prefix(snapshot, TOOL_CALL_PREVIEW_MAX_BYTES);
+        state.arguments.clear();
+        state.arguments.push_str(prefix);
+        state.arguments_truncated = prefix.len() < snapshot.len();
+    } else if let Some(delta) = update.arguments_delta {
+        let remaining = TOOL_CALL_PREVIEW_MAX_BYTES.saturating_sub(state.arguments.len());
+        let prefix = bounded_text_prefix(delta, remaining);
+        state.arguments.push_str(prefix);
+        state.arguments_truncated |= prefix.len() < delta.len();
+    }
+    state.dirty = true;
+
+    let now = std::time::Instant::now();
+    let interval_elapsed = state
+        .last_emitted
+        .is_none_or(|last| now.duration_since(last) >= TOOL_CALL_PREVIEW_INTERVAL);
+    if !allow_emit || (!force_emit && !interval_elapsed) {
+        return None;
+    }
+
+    state.last_emitted = Some(now);
+    state.dirty = false;
+    Some(crate::event::ChunkItem::ToolCallPreview {
+        session_id: session_id.clone(),
+        preview_id: Arc::from(state.preview_id.as_str()),
+        tool_name: state.tool_name.clone(),
+        arguments: state.arguments.clone(),
+        arguments_truncated: state.arguments_truncated,
+        step_number,
+        run_id,
+        tool_index: update.tool_index,
+    })
+}
+
+fn drain_pending_tool_call_previews(
+    states: &Arc<std::sync::Mutex<HashMap<u32, ToolCallPreviewState>>>,
+    session_id: &Arc<str>,
+    step_number: u32,
+    run_id: u64,
+) -> Vec<crate::event::ChunkItem> {
+    let mut states = states.lock().unwrap();
+    let mut pending = states
+        .iter_mut()
+        .filter_map(|(&tool_index, state)| {
+            if !state.dirty {
+                return None;
+            }
+            state.dirty = false;
+            state.last_emitted = Some(std::time::Instant::now());
+            Some(crate::event::ChunkItem::ToolCallPreview {
+                session_id: session_id.clone(),
+                preview_id: Arc::from(state.preview_id.as_str()),
+                tool_name: state.tool_name.clone(),
+                arguments: state.arguments.clone(),
+                arguments_truncated: state.arguments_truncated,
+                step_number,
+                run_id,
+                tool_index,
+            })
+        })
+        .collect::<Vec<_>>();
+    pending.sort_by_key(|item| match item {
+        crate::event::ChunkItem::ToolCallPreview { tool_index, .. } => *tool_index,
+        _ => u32::MAX,
+    });
+    pending
+}
+
 /// A single bounded, latest-wins checkpoint writer for one stream.
 ///
 /// Streaming callbacks are synchronous, so they cannot await a database
@@ -398,9 +521,9 @@ fn now_millis() -> u64 {
         .unwrap_or(0)
 }
 
-/// One LLM call's live-chunk forwarding bundle: micro-batched
-/// one ordered thought/reasoning queue (see `spawn_chunk_event_consumer`), the
-/// web-search event session, and a stall watchdog that emits `StreamStalled`
+/// One LLM call's live-chunk forwarding bundle: one ordered
+/// thought/reasoning/tool-preview queue (see `spawn_chunk_event_consumer`),
+/// the web-search event session, and a stall watchdog that emits `StreamStalled`
 /// when the provider goes silent mid-call — the router only aborts at its
 /// idle timeout, so without the watchdog the UI would sit frozen with
 /// zero feedback during the whole stall window. `flush` drains the
@@ -408,13 +531,18 @@ fn now_millis() -> u64 {
 ///
 /// The `on_chunk` callback accumulates into the partial buffers
 /// (checkpointed into `partial_messages` for crash recovery) and forwards
-/// text chunks to the frontend. Thought and reasoning chunks share the same
-/// queue, so interleaved provider output keeps its arrival order.
+/// text chunks and raw tool-call argument snapshots to the frontend. Thought,
+/// reasoning and tool previews share the same queue, so interleaved provider
+/// output keeps its arrival order.
 struct StreamForwarder {
     chunk_tx: crate::event::ChunkSender,
     ws_pump: WebSearchPump,
     reset_pending: Arc<std::sync::atomic::AtomicBool>,
     reset_marker: crate::event::ChunkItem,
+    tool_call_previews: Arc<std::sync::Mutex<HashMap<u32, ToolCallPreviewState>>>,
+    preview_session_id: Arc<str>,
+    preview_step_number: u32,
+    preview_run_id: u64,
     chunk_consumer_task: tokio::task::JoinHandle<()>,
     checkpoint_writer: CheckpointWriter,
     ws_session: tokio::task::JoinHandle<()>,
@@ -483,6 +611,8 @@ impl StreamForwarder {
         let thought_mid = Arc::<str>::from(thought_msg_id.as_str());
         let reasoning_mid = Arc::<str>::from(reasoning_msg_id.as_str());
         let reset_pending = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let tool_call_previews = Arc::new(std::sync::Mutex::new(HashMap::new()));
+        let tool_call_previews_attempt = tool_call_previews.clone();
         let reset_pt = pt.clone();
         let reset_pr = pr.clone();
         let reset_checkpoint_state = checkpoint_state.clone();
@@ -495,6 +625,7 @@ impl StreamForwarder {
             if disposition != StreamAttemptOutputDisposition::ReplaceExisting {
                 return;
             }
+            tool_call_previews_attempt.lock().unwrap().clear();
             let generation = attempt_store.begin_attempt(&attempt_session);
             reset_attempt_generation.store(generation, std::sync::atomic::Ordering::Release);
             reset_pt.lock().unwrap().clear();
@@ -518,6 +649,8 @@ impl StreamForwarder {
         let reset_marker_session = session_id_c.clone();
         let reset_marker_thought = thought_mid.clone();
         let reset_marker_reasoning = reasoning_mid.clone();
+        let tool_call_previews_chunk = tool_call_previews.clone();
+        let preview_session_id = session_id_c.clone();
         let first_content_seen = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let first_content_seen_c = first_content_seen.clone();
         let stream_started = std::time::Instant::now();
@@ -525,7 +658,8 @@ impl StreamForwarder {
         let on_chunk = move |c: &haven_llm::StreamChunk| {
             metrics_c.increment(MetricsCounter::StreamChunks);
             if (c.text.as_ref().is_some_and(|text| !text.is_empty())
-                || c.reasoning.as_ref().is_some_and(|text| !text.is_empty()))
+                || c.reasoning.as_ref().is_some_and(|text| !text.is_empty())
+                || !c.tool_call_updates.is_empty())
                 && !first_content_seen_c.swap(true, std::sync::atomic::Ordering::AcqRel)
             {
                 metrics_c.increment(MetricsCounter::FirstTokens);
@@ -612,6 +746,48 @@ impl StreamForwarder {
                 }
                 last_chunk_c.store(now_millis(), std::sync::atomic::Ordering::Relaxed);
             }
+            for update in &c.tool_call_updates {
+                let item = update_tool_call_preview(
+                    &tool_call_previews_chunk,
+                    &session_id_c,
+                    step_num,
+                    run_id,
+                    ToolCallPreviewUpdate {
+                        tool_index: update.index,
+                        tool_name: update.name.as_deref(),
+                        arguments_delta: update.arguments_delta.as_deref(),
+                        arguments_snapshot: update.arguments_snapshot.as_deref(),
+                    },
+                    stream_ready,
+                    false,
+                );
+                if let Some(error) = item.and_then(|item| chunk_tx_c.try_send(item).err()) {
+                    metrics_c.increment(MetricsCounter::ChunkDrops);
+                    tracing::warn!(error, "tool-call preview chunk channel closed");
+                }
+                last_chunk_c.store(now_millis(), std::sync::atomic::Ordering::Relaxed);
+            }
+            for (tool_index, call) in c.tool_calls.iter().enumerate() {
+                let arguments = serde_json::to_string(&call.arguments).unwrap_or_default();
+                let item = update_tool_call_preview(
+                    &tool_call_previews_chunk,
+                    &session_id_c,
+                    step_num,
+                    run_id,
+                    ToolCallPreviewUpdate {
+                        tool_index: tool_index as u32,
+                        tool_name: Some(&call.name),
+                        arguments_delta: None,
+                        arguments_snapshot: Some(&arguments),
+                    },
+                    stream_ready,
+                    true,
+                );
+                if let Some(error) = item.and_then(|item| chunk_tx_c.try_send(item).err()) {
+                    metrics_c.increment(MetricsCounter::ChunkDrops);
+                    tracing::warn!(error, "final tool-call preview chunk channel closed");
+                }
+            }
             if let Some(ws) = &c.web_search {
                 let event = AgentEvent::WebSearch {
                     session_id: session_id_c.to_string(),
@@ -670,6 +846,10 @@ impl StreamForwarder {
                     step_number: step_num,
                     run_id,
                 },
+                tool_call_previews,
+                preview_session_id,
+                preview_step_number: step_num,
+                preview_run_id: run_id,
                 chunk_consumer_task,
                 checkpoint_writer,
                 ws_pump,
@@ -700,6 +880,16 @@ impl StreamForwarder {
             // when the bounded fast-path queue is full.
             if let Err(error) = self.chunk_tx.try_send(self.reset_marker.clone()) {
                 tracing::debug!(error, "stream reset consumer closed before flush");
+            }
+        }
+        for item in drain_pending_tool_call_previews(
+            &self.tool_call_previews,
+            &self.preview_session_id,
+            self.preview_step_number,
+            self.preview_run_id,
+        ) {
+            if let Err(error) = self.chunk_tx.try_send(item) {
+                tracing::debug!(error, "tool-call preview consumer closed before flush");
             }
         }
         drop(self.chunk_tx);
@@ -1415,6 +1605,7 @@ mod tests {
 
     fn chunk(text: &str, finish_reason: FinishReason) -> StreamChunk {
         StreamChunk {
+            tool_call_updates: Vec::new(),
             text: Some(text.into()),
             finish_reason: Some(finish_reason),
             usage: Some(Usage::default()),

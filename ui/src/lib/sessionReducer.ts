@@ -58,6 +58,19 @@ function resumeSession(
 	action: Extract<SessionAction, { type: 'session/messages/resume-loaded' }>,
 ): SessionReducerState {
 	let next = reduceTranscript(state, action);
+	const resumedMessages = next.messages[action.sessionId] || [];
+	const liveMessages = resumedMessages.filter((message) => !message.toolCallPreview);
+	if (liveMessages.length !== resumedMessages.length) {
+		const chunkSeqByMessage = { ...next.replay.chunkSeqByMessage };
+		for (const message of resumedMessages) {
+			if (message.toolCallPreview) delete chunkSeqByMessage[message.id];
+		}
+		next = {
+			...next,
+			messages: { ...next.messages, [action.sessionId]: liveMessages },
+			replay: { ...next.replay, chunkSeqByMessage },
+		};
+	}
 	if (action.interactions) {
 		next = reduceInteraction(next, {
 			type: 'session/interactions-hydrated',
@@ -137,6 +150,7 @@ export function reduceSession(
 			return reduceInteraction(inputState, action);
 
 		case 'agent/chunks':
+		case 'agent/tool-call-chunk':
 		case 'agent/thought':
 		case 'agent/stream-reset':
 		case 'agent/web-search':

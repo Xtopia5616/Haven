@@ -25,7 +25,7 @@ describe('SessionActivityGroup', () => {
 		await rerender({ entries: [entry(false)], streaming: false, stepCount: 1 });
 
 		expect(header.getAttribute('aria-expanded')).toBe('false');
-		expect(container.textContent).toContain('已完成工作过程');
+		expect(container.textContent).toContain('已完成思考');
 	});
 
 	it('preserves a manual expansion after completion', async () => {

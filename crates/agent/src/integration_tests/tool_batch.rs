@@ -57,6 +57,7 @@ async fn mixed_confirmation_batch_pauses_only_real_gates_and_resumes_all_tools()
     }
     let mock = Arc::new(ScriptedMock::new(vec![
         ScriptedResponse::Chunk(StreamChunk {
+            tool_call_updates: Vec::new(),
             text: Some("Run both operations after confirmation.".into()),
             tool_calls: vec![
                 CanonicalToolCall {
@@ -79,6 +80,7 @@ async fn mixed_confirmation_batch_pauses_only_real_gates_and_resumes_all_tools()
             thinking_blocks: Vec::new(),
         }),
         ScriptedResponse::Chunk(StreamChunk {
+            tool_call_updates: Vec::new(),
             text: Some("Both operations completed.".into()),
             tool_calls: vec![CanonicalToolCall {
                 id: "final".into(),
@@ -219,6 +221,7 @@ async fn run_session_parallel_tool_execution() {
         .unwrap();
     let mock = Arc::new(ScriptedMock::new(vec![
         ScriptedResponse::Chunk(StreamChunk {
+            tool_call_updates: Vec::new(),
             text: Some("Running both in parallel.".into()),
             tool_calls: vec![
                 CanonicalToolCall {
@@ -241,6 +244,7 @@ async fn run_session_parallel_tool_execution() {
             thinking_blocks: Vec::new(),
         }),
         ScriptedResponse::Chunk(StreamChunk {
+            tool_call_updates: Vec::new(),
             text: Some("Done.".into()),
             tool_calls: vec![CanonicalToolCall {
                 id: "final".into(),
@@ -308,6 +312,7 @@ async fn parallel_tool_result_is_published_before_a_slow_sibling_finishes() {
         .unwrap();
     let mock = Arc::new(ScriptedMock::new(vec![
         ScriptedResponse::Chunk(StreamChunk {
+            tool_call_updates: Vec::new(),
             text: Some("Run the fast and slow tools.".into()),
             tool_calls: vec![
                 CanonicalToolCall {
@@ -330,6 +335,7 @@ async fn parallel_tool_result_is_published_before_a_slow_sibling_finishes() {
             thinking_blocks: Vec::new(),
         }),
         ScriptedResponse::Chunk(StreamChunk {
+            tool_call_updates: Vec::new(),
             text: Some("Both tools finished.".into()),
             tool_calls: vec![CanonicalToolCall {
                 id: "final".into(),
@@ -448,6 +454,7 @@ async fn run_session_contains_custom_extension_panic() {
         .collect();
     let mock = Arc::new(ScriptedMock::new(vec![
         ScriptedResponse::Chunk(StreamChunk {
+            tool_call_updates: Vec::new(),
             text: Some("Running extension checks.".into()),
             tool_calls: calls,
             finish_reason: Some(FinishReason::ToolCalls),
@@ -459,6 +466,7 @@ async fn run_session_contains_custom_extension_panic() {
             thinking_blocks: Vec::new(),
         }),
         ScriptedResponse::Chunk(StreamChunk {
+            tool_call_updates: Vec::new(),
             text: Some("Recovered after extension failures.".into()),
             tool_calls: vec![CanonicalToolCall {
                 id: "final".into(),
@@ -591,6 +599,7 @@ async fn run_session_contains_real_mcp_and_skill_adapter_panics() {
     }
     let mock = Arc::new(ScriptedMock::new(vec![
         ScriptedResponse::Chunk(StreamChunk {
+            tool_call_updates: Vec::new(),
             text: Some("Running adapter checks.".into()),
             tool_calls: vec![
                 CanonicalToolCall {
@@ -613,6 +622,7 @@ async fn run_session_contains_real_mcp_and_skill_adapter_panics() {
             thinking_blocks: Vec::new(),
         }),
         ScriptedResponse::Chunk(StreamChunk {
+            tool_call_updates: Vec::new(),
             text: Some("Recovered after adapter failures.".into()),
             tool_calls: vec![CanonicalToolCall {
                 id: "final".into(),
@@ -680,6 +690,7 @@ async fn run_session_cancelled_mid_batch_surfaces_interrupted_tools() {
         .unwrap();
     let mock = Arc::new(ScriptedMock::new(vec![ScriptedResponse::Chunk(
         StreamChunk {
+            tool_call_updates: Vec::new(),
             text: Some("Running both in parallel.".into()),
             tool_calls: vec![
                 CanonicalToolCall {

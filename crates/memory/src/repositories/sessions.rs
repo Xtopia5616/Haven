@@ -9,7 +9,7 @@ const SEARCH_WHERE: &str = "WHERE input_text LIKE ?1 OR title LIKE ?1
     OR EXISTS (SELECT 1 FROM messages
                WHERE messages.session_id = sessions.id AND messages.content LIKE ?1)";
 
-/// Map a row produced by a history-list query (id, input, title, status, timestamps).
+/// Map a row produced by a session-record query, including provenance and run-end reason.
 fn map_session_list_row(row: &rusqlite::Row) -> rusqlite::Result<Session> {
     let status = row.get::<_, String>(3)?;
     let origin =
@@ -19,6 +19,7 @@ fn map_session_list_row(row: &rusqlite::Row) -> rusqlite::Result<Session> {
         input_text: row.get(1)?,
         title: row.get(2)?,
         status: SessionStatus::from_status_str(&status),
+        run_end_reason: row.get(8)?,
         created_at: row.get(4)?,
         updated_at: row.get(5)?,
         origin,
@@ -56,6 +57,7 @@ pub struct Session {
     pub input_text: String,
     pub title: Option<String>,
     pub status: SessionStatus,
+    pub run_end_reason: Option<String>,
     pub created_at: String,
     pub updated_at: String,
     #[serde(default)]
@@ -161,6 +163,7 @@ impl Database {
             input_text: input_text.into(),
             title: None,
             status: SessionStatus::Pending,
+            run_end_reason: None,
             created_at: now.clone(),
             updated_at: now,
             origin,
@@ -171,7 +174,7 @@ impl Database {
         let conn = self.conn();
         let mut stmt = conn.prepare(
             "SELECT id, input_text, title, status, created_at, updated_at,
-                    origin, parent_session_id
+                    origin, parent_session_id, run_end_reason
              FROM sessions WHERE id = ?1",
         )?;
         let mut rows = stmt.query(rusqlite::params![id])?;
@@ -228,9 +231,35 @@ impl Database {
         let now = Utc::now().to_rfc3339();
         let conn = self.conn();
         conn.execute(
-            "UPDATE sessions SET status = ?1, updated_at = ?2 WHERE id = ?3",
+            "UPDATE sessions SET status = ?1, updated_at = ?2,
+                run_end_reason = CASE WHEN ?1 IN ('pending', 'running') THEN NULL ELSE run_end_reason END
+             WHERE id = ?3",
             rusqlite::params![status.as_str(), now, id],
         )?;
+        self.cache_invalidate_session_history_page();
+        Ok(())
+    }
+
+    pub fn set_session_run_end_reason(&self, id: &str, reason: &str) -> anyhow::Result<()> {
+        let reason = haven_common::error::sanitize_error_text(reason)
+            .trim()
+            .to_owned();
+        anyhow::ensure!(
+            !reason.is_empty(),
+            "session run-end reason must not be empty"
+        );
+        let now = Utc::now().to_rfc3339();
+        let conn = self.conn();
+        let changed = conn.execute(
+            "UPDATE sessions SET run_end_reason = ?1, updated_at = ?2
+             WHERE id = ?3 AND status IN ('paused', 'completed', 'error')",
+            rusqlite::params![reason, now, id],
+        )?;
+        anyhow::ensure!(
+            changed > 0,
+            "session '{}' is missing or no longer in a run-end status",
+            id
+        );
         self.cache_invalidate_session_history_page();
         Ok(())
     }
@@ -258,7 +287,7 @@ impl Database {
         let conn = self.conn();
         let mut stmt = conn.prepare(
             "SELECT id, input_text, title, status, created_at, updated_at,
-                    origin, parent_session_id
+                    origin, parent_session_id, run_end_reason
              FROM sessions ORDER BY created_at DESC LIMIT ?1 OFFSET ?2",
         )?;
         let rows = stmt.query_map(rusqlite::params![limit, offset], map_session_list_row)?;
@@ -277,7 +306,7 @@ impl Database {
         let conn = self.conn();
         let mut stmt = conn.prepare(&format!(
             "SELECT id, input_text, title, status, created_at, updated_at,
-                    origin, parent_session_id
+                    origin, parent_session_id, run_end_reason
              FROM sessions {SEARCH_WHERE}
              ORDER BY created_at DESC LIMIT 50",
         ))?;
@@ -315,7 +344,7 @@ impl Database {
         let conn = self.conn();
         let mut stmt = conn.prepare(&format!(
             "SELECT id, input_text, title, status, created_at, updated_at,
-                    origin, parent_session_id
+                    origin, parent_session_id, run_end_reason
              FROM sessions {SEARCH_WHERE}
              ORDER BY created_at DESC LIMIT ?2 OFFSET ?3",
         ))?;
@@ -340,7 +369,7 @@ impl Database {
         let conn = self.conn();
         let mut stmt = conn.prepare(
             "SELECT id, input_text, title, status, created_at, updated_at,
-                    origin, parent_session_id
+                    origin, parent_session_id, run_end_reason
              FROM sessions
              WHERE origin = 'agent_spawn' AND parent_session_id = ?1
              ORDER BY created_at DESC, id ASC LIMIT ?2 OFFSET ?3",
@@ -632,7 +661,7 @@ impl Database {
 
         let sql = format!(
             "SELECT id, input_text, title, status, created_at, updated_at, \
-                    origin, parent_session_id \
+                    origin, parent_session_id, run_end_reason \
              FROM sessions {where_clause} ORDER BY created_at DESC LIMIT ? OFFSET ?"
         );
 

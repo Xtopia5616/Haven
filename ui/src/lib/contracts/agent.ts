@@ -100,6 +100,18 @@ export interface AgentChunkPayload {
 	seq: number;
 }
 
+export interface AgentToolCallChunkPayload {
+	sessionId: string;
+	previewId: string;
+	toolName: string;
+	arguments: string;
+	argumentsTruncated: boolean;
+	stepNumber: number;
+	runId: number;
+	toolIndex: number;
+	seq: number;
+}
+
 export interface AgentStreamResetPayload {
 	sessionId: string;
 	stepNumber: number;
@@ -210,6 +222,7 @@ export interface AgentEventPayloadMap {
 	'agent:observation': AgentObservationPayload;
 	'agent:thought_chunk': AgentChunkPayload;
 	'agent:reasoning_chunk': AgentChunkPayload;
+	'agent:tool_call_chunk': AgentToolCallChunkPayload;
 	'agent:stream_reset': AgentStreamResetPayload;
 	'agent:media_plan': AgentMediaPlanPayload;
 	'agent:web_search': AgentWebSearchPayload;
@@ -494,6 +507,43 @@ export function mapAgentEvent(
 			return {
 				...tauriEvent,
 				payload: { sessionId, delta, stepNumber, runId, messageId, seq },
+			};
+		}
+		case 'agent:tool_call_chunk': {
+			const sessionId = requiredSessionId(payload);
+			const previewId = requiredString(payload, 'preview_id');
+			const toolName = requiredString(payload, 'tool_name');
+			const argumentsText = requiredString(payload, 'arguments');
+			const argumentsTruncated = requiredBoolean(payload, 'arguments_truncated');
+			const stepNumber = requiredNumber(payload, 'step_number');
+			const runId = requiredNumber(payload, 'run_id');
+			const toolIndex = requiredNumber(payload, 'tool_index');
+			const seq = requiredNumber(payload, 'seq');
+			if (
+				sessionId === null ||
+				previewId === null ||
+				toolName === null ||
+				argumentsText === null ||
+				argumentsTruncated === null ||
+				stepNumber === null ||
+				runId === null ||
+				toolIndex === null ||
+				seq === null
+			)
+				return null;
+			return {
+				...tauriEvent,
+				payload: {
+					sessionId,
+					previewId,
+					toolName,
+					arguments: argumentsText,
+					argumentsTruncated,
+					stepNumber,
+					runId,
+					toolIndex,
+					seq,
+				},
 			};
 		}
 		case 'agent:stream_reset': {

@@ -1,4 +1,5 @@
 import type { AgentSupplementPayload } from '../contracts/agent.ts';
+import type { AgentToolCallChunkPayload } from '../contracts/agent.ts';
 import {
 	toolRunIdFromObservation,
 	sourceToolRunIdFromObservation,
@@ -27,6 +28,7 @@ import type { AgentChunkBatchItem, SessionActionOf, SessionReducerState } from '
 
 type AgentReducerAction = SessionActionOf<
 	| 'agent/chunks'
+	| 'agent/tool-call-chunk'
 	| 'agent/thought'
 	| 'agent/stream-reset'
 	| 'agent/web-search'
@@ -124,6 +126,74 @@ function applyAgentChunks(
 			: {}),
 	};
 }
+
+function isToolCallPreviewFor(
+	message: {
+		toolCallPreview?: boolean;
+		stepNumber?: number | null;
+		runId?: number | null;
+		toolCallIndex?: number;
+	},
+	stepNumber: number,
+	runId: number,
+	toolIndex?: number,
+): boolean {
+	return (
+		message.toolCallPreview === true &&
+		message.stepNumber === stepNumber &&
+		message.runId === runId &&
+		(toolIndex === undefined || message.toolCallIndex === toolIndex)
+	);
+}
+
+function reduceToolCallChunk(
+	state: SessionReducerState,
+	payload: AgentToolCallChunkPayload,
+): SessionReducerState {
+	if (!payload.sessionId || !payload.previewId) return state;
+	const replay = replayOf(state);
+	const previous = replay.chunkSeqByMessage[payload.previewId];
+	if (previous != null && payload.seq <= previous) return state;
+	const replayState = {
+		...state,
+		replay: {
+			...replay,
+			chunkSeqByMessage: {
+				...replay.chunkSeqByMessage,
+				[payload.previewId]: payload.seq,
+			},
+		},
+	};
+	return withMessages(replayState, payload.sessionId, (messages) => {
+		const existing = messages.findIndex((message) => message.id === payload.previewId);
+		const preview = newToolMessage({
+			id: payload.previewId,
+			stepNumber: payload.stepNumber,
+			toolName: payload.toolName || 'tool_call',
+			streaming: true,
+			toolArgs: payload.arguments,
+			toolCallPreview: true,
+			toolCallIndex: payload.toolIndex,
+			toolArgsStreaming: true,
+			toolArgsTruncated: payload.argumentsTruncated,
+		});
+		if (existing >= 0) {
+			const next = messages.slice();
+			next[existing] = { ...next[existing], ...preview };
+			return next;
+		}
+		const withoutDuplicate = messages.filter(
+			(message) =>
+				!isToolCallPreviewFor(
+					message,
+					payload.stepNumber,
+					payload.runId,
+					payload.toolIndex,
+				),
+		);
+		return insertAgentMessage(withoutDuplicate, { ...preview, runId: payload.runId });
+	});
+}
 function applySupplement(
 	state: SessionReducerState,
 	payload: AgentSupplementPayload,
@@ -180,11 +250,17 @@ function applySupplement(
 		return next;
 	});
 }
-export function reduceAgent(inputState: SessionReducerState, action: AgentReducerAction): SessionReducerState {
+export function reduceAgent(
+	inputState: SessionReducerState,
+	action: AgentReducerAction,
+): SessionReducerState {
 	const state = inputState;
 	switch (action.type) {
 		case 'agent/chunks': {
 			return applyAgentChunks(state, action.chunks);
+		}
+		case 'agent/tool-call-chunk': {
+			return reduceToolCallChunk(state, action.payload);
 		}
 		case 'agent/thought': {
 			const payload = action.payload;
@@ -210,20 +286,32 @@ export function reduceAgent(inputState: SessionReducerState, action: AgentReduce
 				payload.runId,
 			);
 			return withMessages(registered, payload.sessionId, (messages) =>
-				applyThoughtSnap(messages, {
-					messageId: payload.messageId,
-					reasoningId: ids.reasoningId,
-					thought: payload.thought,
-					stepNumber: payload.stepNumber,
-					runId: payload.runId,
-					time: new Date().toLocaleTimeString(),
-				}),
+				applyThoughtSnap(
+					messages.filter(
+						(message) =>
+							!isToolCallPreviewFor(message, payload.stepNumber, payload.runId),
+					),
+					{
+						messageId: payload.messageId,
+						reasoningId: ids.reasoningId,
+						thought: payload.thought,
+						stepNumber: payload.stepNumber,
+						runId: payload.runId,
+						time: new Date().toLocaleTimeString(),
+					},
+				),
 			);
 		}
 		case 'agent/stream-reset': {
 			const payload = action.payload;
 			const next = withMessages(state, payload.sessionId, (messages) =>
-				resetStreamBlocks(messages, payload.reasoningMessageId, payload.thoughtMessageId),
+				resetStreamBlocks(
+					messages,
+					payload.reasoningMessageId,
+					payload.thoughtMessageId,
+				).filter(
+					(message) => !isToolCallPreviewFor(message, payload.stepNumber, payload.runId),
+				),
 			);
 			const replay = replayOf(next);
 			const chunkSeqByMessage = { ...replay.chunkSeqByMessage };
@@ -304,10 +392,19 @@ export function reduceAgent(inputState: SessionReducerState, action: AgentReduce
 			if (!accepted) return state;
 			const ids = blockIdsOf(accepted, payload.sessionId, payload.stepNumber, payload.runId);
 			return withMessages(accepted, payload.sessionId, (messages) => {
+				const withoutPreview = messages.filter(
+					(message) =>
+						!isToolCallPreviewFor(
+							message,
+							payload.stepNumber,
+							payload.runId,
+							payload.toolIndex,
+						),
+				);
 				const fixed = finalizeStreamBlocks(
 					payload.suppressStreamedThought
-						? dropStreamedThought(messages, ids.thoughtId)
-						: messages,
+						? dropStreamedThought(withoutPreview, ids.thoughtId)
+						: withoutPreview,
 					ids.reasoningId,
 					ids.thoughtId,
 				);
@@ -337,7 +434,16 @@ export function reduceAgent(inputState: SessionReducerState, action: AgentReduce
 			if (!accepted) return state;
 			const ids = blockIdsOf(accepted, payload.sessionId, payload.stepNumber, payload.runId);
 			const updated = withMessages(accepted, payload.sessionId, (messages) => {
-				const index = messages.findIndex((message) => message.id === payload.stepId);
+				const withoutPreview = messages.filter(
+					(message) =>
+						!isToolCallPreviewFor(
+							message,
+							payload.stepNumber,
+							payload.runId,
+							payload.toolIndex,
+						),
+				);
+				const index = withoutPreview.findIndex((message) => message.id === payload.stepId);
 				const message = newToolMessage({
 					id: payload.stepId,
 					stepNumber: payload.stepNumber,
@@ -351,10 +457,10 @@ export function reduceAgent(inputState: SessionReducerState, action: AgentReduce
 						payload.toolName,
 						payload.observation,
 					),
-					showFallbackIntent: !hasToolPreambleInBlock(messages, ids.thoughtId),
+					showFallbackIntent: !hasToolPreambleInBlock(withoutPreview, ids.thoughtId),
 				});
-				if (index < 0) return insertAgentMessage(messages, message);
-				const next = messages.slice();
+				if (index < 0) return insertAgentMessage(withoutPreview, message);
+				const next = withoutPreview.slice();
 				next[index] = { ...next[index], ...message, streaming: false };
 				return next;
 			});

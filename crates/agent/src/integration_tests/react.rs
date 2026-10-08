@@ -66,6 +66,7 @@ async fn run_session_emits_supplement_when_additional_context_queued() {
 #[tokio::test]
 async fn empty_response_stops_with_continue_instead_of_auto_retry() {
     let empty = StreamChunk {
+        tool_call_updates: Vec::new(),
         text: None,
         tool_calls: Vec::new(),
         finish_reason: Some(FinishReason::Stop),
@@ -77,6 +78,7 @@ async fn empty_response_stops_with_continue_instead_of_auto_retry() {
         thinking_blocks: Vec::new(),
     };
     let replacement = StreamChunk {
+        tool_call_updates: Vec::new(),
         text: Some("Recovered after retry.".into()),
         tool_calls: vec![CanonicalToolCall {
             id: "final-after-empty".into(),
@@ -197,6 +199,7 @@ async fn dispatcher_react_failure_has_one_terminal_event_owner() {
 #[tokio::test]
 async fn incomplete_tool_args_retry_before_dispatching_the_rebuilt_call() {
     let incomplete = StreamChunk {
+        tool_call_updates: Vec::new(),
         text: None,
         tool_calls: vec![CanonicalToolCall {
             id: "incomplete-call".into(),
@@ -212,6 +215,7 @@ async fn incomplete_tool_args_retry_before_dispatching_the_rebuilt_call() {
         thinking_blocks: Vec::new(),
     };
     let rebuilt = StreamChunk {
+        tool_call_updates: Vec::new(),
         text: None,
         tool_calls: vec![CanonicalToolCall {
             id: "rebuilt-call".into(),
@@ -227,6 +231,7 @@ async fn incomplete_tool_args_retry_before_dispatching_the_rebuilt_call() {
         thinking_blocks: Vec::new(),
     };
     let final_answer = StreamChunk {
+        tool_call_updates: Vec::new(),
         text: Some("Recovered safely.".into()),
         tool_calls: vec![CanonicalToolCall {
             id: "final-call".into(),
@@ -280,6 +285,7 @@ async fn incomplete_tool_args_retry_before_dispatching_the_rebuilt_call() {
 #[tokio::test]
 async fn interrupt_then_continue_on_same_actor_uses_a_fresh_run_token() {
     let final_answer = |id: &str, text: &str| StreamChunk {
+        tool_call_updates: Vec::new(),
         text: Some(text.into()),
         tool_calls: vec![CanonicalToolCall {
             id: id.into(),
@@ -414,6 +420,7 @@ async fn turn_deadline_stops_after_non_cooperative_blocking_tool() {
         .unwrap();
     let mock = Arc::new(ScriptedMock::new(vec![ScriptedResponse::Chunk(
         StreamChunk {
+            tool_call_updates: Vec::new(),
             text: Some("Run the blocking operation.".into()),
             tool_calls: vec![CanonicalToolCall {
                 id: "blocking-call".into(),
@@ -459,6 +466,7 @@ async fn loop_pauses_on_pending_ask_instead_of_heuristic_final() {
     // pause and wait for the user's answer instead of completing.
     let client = Arc::new(ScriptedMock::new(vec![ScriptedResponse::Chunk(
         StreamChunk {
+            tool_call_updates: Vec::new(),
             text: Some("I'll stop here.".into()),
             tool_calls: vec![],
             finish_reason: Some(FinishReason::Stop),
@@ -528,6 +536,7 @@ async fn budget_exhaustion_pauses_with_notification_and_no_chat_message() {
     // consumes its 1-step budget without ever producing a final answer.
     let client = Arc::new(ScriptedMock::new(vec![ScriptedResponse::Chunk(
         StreamChunk {
+            tool_call_updates: Vec::new(),
             text: Some("keep working".into()),
             tool_calls: vec![CanonicalToolCall {
                 id: "c1".into(),
@@ -593,6 +602,7 @@ async fn budget_exhaustion_pauses_with_notification_and_no_chat_message() {
 async fn abnormal_text_finish_preserves_partial_and_waits_for_continue() {
     let client = Arc::new(ScriptedMock::new(vec![
         ScriptedResponse::Chunk(StreamChunk {
+            tool_call_updates: Vec::new(),
             text: Some("Here is the partial answer".into()),
             tool_calls: vec![],
             finish_reason: Some(FinishReason::Length),
@@ -604,6 +614,7 @@ async fn abnormal_text_finish_preserves_partial_and_waits_for_continue() {
             thinking_blocks: Vec::new(),
         }),
         ScriptedResponse::Chunk(StreamChunk {
+            tool_call_updates: Vec::new(),
             text: Some("Here is the complete answer.".into()),
             tool_calls: vec![],
             finish_reason: Some(FinishReason::Stop),
@@ -644,6 +655,7 @@ async fn run_session_executes_tool_then_final_answer() {
         .unwrap();
     let mock = Arc::new(ScriptedMock::new(vec![
         ScriptedResponse::Chunk(StreamChunk {
+            tool_call_updates: Vec::new(),
             text: Some("I'll echo that.".into()),
             tool_calls: vec![CanonicalToolCall {
                 id: "tc1".into(),
@@ -659,6 +671,7 @@ async fn run_session_executes_tool_then_final_answer() {
             thinking_blocks: Vec::new(),
         }),
         ScriptedResponse::Chunk(StreamChunk {
+            tool_call_updates: Vec::new(),
             text: Some("Done.".into()),
             tool_calls: vec![CanonicalToolCall {
                 id: "final".into(),
@@ -742,6 +755,7 @@ async fn media_tool_usage_flows_to_event_and_database() {
     tools.registry().register(media_tool).await.unwrap();
     let main_client = Arc::new(ScriptedMock::new(vec![
         ScriptedResponse::Chunk(StreamChunk {
+            tool_call_updates: Vec::new(),
             text: Some("I will inspect the image.".into()),
             tool_calls: vec![CanonicalToolCall {
                 id: "media-call".into(),
@@ -760,6 +774,7 @@ async fn media_tool_usage_flows_to_event_and_database() {
             thinking_blocks: Vec::new(),
         }),
         ScriptedResponse::Chunk(StreamChunk {
+            tool_call_updates: Vec::new(),
             text: Some("The image was inspected.".into()),
             tool_calls: vec![CanonicalToolCall {
                 id: "final".into(),
@@ -824,6 +839,7 @@ async fn run_session_empty_tool_call_id_stays_consistent_in_canonical() {
         .unwrap();
     let mock = Arc::new(ScriptedMock::new(vec![
         ScriptedResponse::Chunk(StreamChunk {
+            tool_call_updates: Vec::new(),
             text: Some("I'll echo that.".into()),
             tool_calls: vec![CanonicalToolCall {
                 id: String::new(), // provider sends empty id
@@ -839,6 +855,7 @@ async fn run_session_empty_tool_call_id_stays_consistent_in_canonical() {
             thinking_blocks: Vec::new(),
         }),
         ScriptedResponse::Chunk(StreamChunk {
+            tool_call_updates: Vec::new(),
             text: Some("Done.".into()),
             tool_calls: vec![CanonicalToolCall {
                 id: "final".into(),
@@ -902,6 +919,7 @@ async fn run_session_injects_mid_turn_steering_before_final_content() {
         .unwrap();
     let mock = Arc::new(ScriptedMock::new(vec![
         ScriptedResponse::Chunk(StreamChunk {
+            tool_call_updates: Vec::new(),
             text: Some("I'll echo that.".into()),
             tool_calls: vec![CanonicalToolCall {
                 id: "tc1".into(),
@@ -920,6 +938,7 @@ async fn run_session_injects_mid_turn_steering_before_final_content() {
         // in flight, so the final-content branch must pick it up.
         ScriptedResponse::ChunkDelayed(
             StreamChunk {
+                tool_call_updates: Vec::new(),
                 text: Some("Done.".into()),
                 tool_calls: vec![CanonicalToolCall {
                     id: "final".into(),
@@ -938,6 +957,7 @@ async fn run_session_injects_mid_turn_steering_before_final_content() {
         ),
         // The re-run after the steering was injected also answers finally.
         ScriptedResponse::Chunk(StreamChunk {
+            tool_call_updates: Vec::new(),
             text: Some("Understood, continuing in French.".into()),
             tool_calls: vec![CanonicalToolCall {
                 id: "final2".into(),
@@ -1025,6 +1045,7 @@ async fn run_session_injects_steering_between_tool_calls() {
         .unwrap();
     let mock = Arc::new(ScriptedMock::new(vec![
         ScriptedResponse::Chunk(StreamChunk {
+            tool_call_updates: Vec::new(),
             text: Some("Running the tool.".into()),
             tool_calls: vec![CanonicalToolCall {
                 id: "tc1".into(),
@@ -1040,6 +1061,7 @@ async fn run_session_injects_steering_between_tool_calls() {
             thinking_blocks: Vec::new(),
         }),
         ScriptedResponse::Chunk(StreamChunk {
+            tool_call_updates: Vec::new(),
             text: Some("Done.".into()),
             tool_calls: vec![CanonicalToolCall {
                 id: "final".into(),
@@ -1110,6 +1132,7 @@ async fn run_session_ask_tool_pauses_and_surfaces_question() {
         .unwrap();
     let mock = Arc::new(ScriptedMock::new(vec![
         ScriptedResponse::Chunk(StreamChunk {
+            tool_call_updates: Vec::new(),
             text: Some("I need to clarify before proceeding.".into()),
             tool_calls: vec![CanonicalToolCall {
                 id: "tc1".into(),
@@ -1128,6 +1151,7 @@ async fn run_session_ask_tool_pauses_and_surfaces_question() {
         // consumed; include a final_answer anyway to catch regressions
         // where the loop incorrectly continues.
         ScriptedResponse::Chunk(StreamChunk {
+            tool_call_updates: Vec::new(),
             text: Some("Done.".into()),
             tool_calls: vec![CanonicalToolCall {
                 id: "final".into(),
@@ -1194,6 +1218,7 @@ async fn ask_interaction_survives_executor_restart_from_durable_snapshot() {
         .unwrap();
     let mock = Arc::new(ScriptedMock::new(vec![ScriptedResponse::Chunk(
         StreamChunk {
+            tool_call_updates: Vec::new(),
             text: Some("Need a decision.".into()),
             tool_calls: vec![CanonicalToolCall {
                 id: "ask-restart".into(),
@@ -1270,6 +1295,7 @@ async fn run_session_ask_resumes_after_user_answer() {
     let mock = Arc::new(ScriptedMock::new(vec![
         // Step 1: agent asks.
         ScriptedResponse::Chunk(StreamChunk {
+            tool_call_updates: Vec::new(),
             text: Some("Clarifying.".into()),
             tool_calls: vec![CanonicalToolCall {
                 id: "tc1".into(),
@@ -1286,6 +1312,7 @@ async fn run_session_ask_resumes_after_user_answer() {
         }),
         // Step 2 (after resume): final answer.
         ScriptedResponse::Chunk(StreamChunk {
+            tool_call_updates: Vec::new(),
             text: Some("Going with A.".into()),
             tool_calls: vec![CanonicalToolCall {
                 id: "final".into(),
@@ -1352,6 +1379,7 @@ async fn retry_after_ask_answer_error_keeps_single_history() {
     let mock = Arc::new(ScriptedMock::new(vec![
         // Step 1: ask the question.
         ScriptedResponse::Chunk(StreamChunk {
+            tool_call_updates: Vec::new(),
             text: Some("Asking.".into()),
             tool_calls: vec![CanonicalToolCall {
                 id: "tc1".into(),
@@ -1369,6 +1397,7 @@ async fn retry_after_ask_answer_error_keeps_single_history() {
         // Step 2 (after the answer): streams a partial thought, then fails.
         ScriptedResponse::ChunkThenErr(
             StreamChunk {
+                tool_call_updates: Vec::new(),
                 text: Some("Let me think...".into()),
                 tool_calls: vec![],
                 finish_reason: None,
@@ -1383,6 +1412,7 @@ async fn retry_after_ask_answer_error_keeps_single_history() {
         ),
         // Step 2 retry: final answer.
         ScriptedResponse::Chunk(StreamChunk {
+            tool_call_updates: Vec::new(),
             text: Some("Answer accepted.".into()),
             tool_calls: vec![CanonicalToolCall {
                 id: "final".into(),
@@ -1493,6 +1523,7 @@ async fn run_session_notify_tool_emits_notification_without_pausing() {
         .unwrap();
     let mock = Arc::new(ScriptedMock::new(vec![
         ScriptedResponse::Chunk(StreamChunk {
+            tool_call_updates: Vec::new(),
             text: Some("Notifying the user.".into()),
             tool_calls: vec![CanonicalToolCall {
                 id: "tc1".into(),
@@ -1508,6 +1539,7 @@ async fn run_session_notify_tool_emits_notification_without_pausing() {
             thinking_blocks: Vec::new(),
         }),
         ScriptedResponse::Chunk(StreamChunk {
+            tool_call_updates: Vec::new(),
             text: Some("Done.".into()),
             tool_calls: vec![CanonicalToolCall {
                 id: "final".into(),
@@ -1561,6 +1593,7 @@ async fn run_session_multiple_asks_surface_all_questions() {
         .unwrap();
     let mock = Arc::new(ScriptedMock::new(vec![ScriptedResponse::Chunk(
         StreamChunk {
+            tool_call_updates: Vec::new(),
             text: Some("Two questions.".into()),
             tool_calls: vec![
                 CanonicalToolCall {
@@ -1627,6 +1660,7 @@ async fn pause_snapshot_and_resume_keep_own_final_answer_in_canonical() {
     ));
     let mock = Arc::new(ScriptedMock::new(vec![
         ScriptedResponse::Chunk(StreamChunk {
+            tool_call_updates: Vec::new(),
             text: Some("First answer.".into()),
             tool_calls: vec![],
             finish_reason: Some(FinishReason::Stop),
@@ -1638,6 +1672,7 @@ async fn pause_snapshot_and_resume_keep_own_final_answer_in_canonical() {
             thinking_blocks: Vec::new(),
         }),
         ScriptedResponse::Chunk(StreamChunk {
+            tool_call_updates: Vec::new(),
             text: Some("Second answer.".into()),
             tool_calls: vec![],
             finish_reason: Some(FinishReason::Stop),
@@ -1758,6 +1793,7 @@ async fn run_session_compaction_retry_on_context_exceeded() {
         .unwrap();
     let mock = Arc::new(ScriptedMock::new(vec![
         ScriptedResponse::Chunk(StreamChunk {
+            tool_call_updates: Vec::new(),
             text: Some("Calling echo.".into()),
             tool_calls: vec![CanonicalToolCall {
                 id: "tc1".into(),
@@ -1774,6 +1810,7 @@ async fn run_session_compaction_retry_on_context_exceeded() {
         }),
         ScriptedResponse::Err(LlmError::ContextLengthExceeded),
         ScriptedResponse::Chunk(StreamChunk {
+            tool_call_updates: Vec::new(),
             text: Some("Done after compaction.".into()),
             tool_calls: vec![CanonicalToolCall {
                 id: "final".into(),

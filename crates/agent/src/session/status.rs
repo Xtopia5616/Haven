@@ -672,6 +672,16 @@ impl SessionSupervisor {
             .await
     }
 
+    pub async fn persist_session_run_end_reason(
+        &self,
+        session_id: &str,
+        reason: &str,
+    ) -> anyhow::Result<()> {
+        self.store
+            .set_session_run_end_reason(session_id, reason)
+            .await
+    }
+
     /// Update a status only when the actor is still in `expected`.
     ///
     /// The check and transition are serialized inside the session actor. This
@@ -709,6 +719,16 @@ impl SessionSupervisor {
         let is_error =
             changed || self.get_session_status(session_id).await == Some(SessionStatus::Error);
         if is_error {
+            if let Err(error) = self
+                .persist_session_run_end_reason(session_id, &reason)
+                .await
+            {
+                tracing::error!(
+                    session_id,
+                    error = %error,
+                    "failed to persist session run-end reason"
+                );
+            }
             self.emit_event(SessionSupervisorEvent::SessionError {
                 session_id: session_id.to_string(),
                 reason,

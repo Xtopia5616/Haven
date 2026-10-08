@@ -2,7 +2,7 @@
 // emits these strings via SessionStatus::as_str(); see crates/agent/src/session.rs.
 //
 // statusColor() returns a theme token for inline badges (SessionCard dot).
-// statusVariant() returns a MaterialBadge variant for the memory/sessions page.
+// statusVariant() returns a workspace-item-card-kind color key for history rows.
 // Paused sessions carry a derived waitingReason so views do not infer the
 // cause by combining status, interactions, and ToolRun state.
 // isBusyStatus() covers dispatcher queue (pending) and claimed run (running).

@@ -548,6 +548,20 @@ impl SessionStore {
             .await
     }
 
+    /// Persist the last user-visible explanation for a completed, failed, or
+    /// paused session run. A new pending/running transition clears this value.
+    pub async fn set_session_run_end_reason(
+        &self,
+        session_id: &str,
+        reason: &str,
+    ) -> anyhow::Result<()> {
+        let session_id = session_id.to_owned();
+        let reason = reason.to_owned();
+        self.db
+            .run_blocking(move |db| db.set_session_run_end_reason(&session_id, &reason))
+            .await
+    }
+
     /// Ensure a pending action-step row exists with the supplied durable
     /// invocation identity and confirmation decision.
     pub async fn ensure_tool_step(
@@ -1582,7 +1596,8 @@ impl SessionStore {
         conn.execute_batch("BEGIN IMMEDIATE")?;
         let result = (|| {
             let changed = conn.execute(
-                "UPDATE sessions SET status = ?1, updated_at = ?2
+                "UPDATE sessions SET status = ?1, updated_at = ?2,
+                    run_end_reason = CASE WHEN ?1 IN ('pending', 'running') THEN NULL ELSE run_end_reason END
                  WHERE id = ?3 AND status = ?4",
                 rusqlite::params![
                     next_status.as_str(),

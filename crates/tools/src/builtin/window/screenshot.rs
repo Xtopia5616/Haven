@@ -4,7 +4,7 @@ use tokio_util::sync::CancellationToken;
 use super::WindowParams;
 use super::WindowTool;
 use super::platform;
-use crate::builtin::media::{MediaOperation, MediaParams, register_generated_asset};
+use crate::builtin::media::register_generated_asset;
 use crate::{ManagedAsset, ToolResult};
 
 pub(super) struct ManagedCapture {
@@ -69,28 +69,7 @@ impl WindowTool {
         output.insert("elements".into(), serde_json::json!(elements));
         output.insert("count".into(), serde_json::json!(count));
         output.insert("screenshot".into(), screenshot);
-        let mut output = Value::Object(output);
-        if params.ocr.unwrap_or(false) {
-            let ocr = media_tool
-                .run(
-                    MediaParams {
-                        operation: MediaOperation::Ocr,
-                        asset_id: Some(capture.asset.asset_id.clone()),
-                        focus: None,
-                        prompt: None,
-                        page_index: None,
-                        file_path: None,
-                        text: None,
-                        duration: None,
-                        volume: None,
-                        muted: None,
-                        session_id: params.session_id,
-                    },
-                    cancel,
-                )
-                .await?;
-            output["ocr"] = ocr.output;
-        }
+        let output = Value::Object(output);
         Ok(ToolResult::ok(output))
     }
 
@@ -176,36 +155,5 @@ impl WindowTool {
             }
         };
         capture.ok_or_else(|| anyhow::anyhow!("cancelled"))
-    }
-
-    pub(super) async fn ocr(
-        &self,
-        session_id: Option<&str>,
-        cancel: CancellationToken,
-    ) -> anyhow::Result<ToolResult> {
-        // OCR is a thin producer + consumer convenience operation. The
-        // screenshot is registered first, then all bytes/capability handling
-        // is delegated to the canonical media tool.
-        let capture = self.capture_screen(session_id, cancel.clone()).await?;
-        self.media_tool
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("media runtime is not wired"))?
-            .run(
-                MediaParams {
-                    operation: MediaOperation::Ocr,
-                    asset_id: Some(capture.asset.asset_id),
-                    focus: None,
-                    prompt: None,
-                    page_index: None,
-                    file_path: None,
-                    text: None,
-                    duration: None,
-                    volume: None,
-                    muted: None,
-                    session_id: session_id.map(str::to_owned),
-                },
-                cancel,
-            )
-            .await
     }
 }

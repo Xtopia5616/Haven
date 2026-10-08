@@ -169,23 +169,23 @@
 		width: 100%;
 		min-height: 60px;
 		padding: var(--md-sys-space-sm);
-		border: 1px solid transparent;
+		border: 0;
 		border-radius: var(--md-sys-shape-medium);
 		background: transparent;
 		color: var(--md-sys-color-on-surface);
 		font: inherit;
 		text-align: left;
 		cursor: pointer;
-		transition:
-			background-color var(--md-sys-motion-duration-short)
-				var(--md-sys-motion-easing-standard),
-			border-color var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard);
+		transition: background-color var(--md-sys-motion-duration-short)
+			var(--md-sys-motion-easing-standard);
+	}
+	.session-rail__item:not(:focus-visible) {
+		outline: none;
 	}
 	.session-rail__item:hover {
 		background: var(--md-sys-color-surface-container);
 	}
 	.session-rail__item.selected {
-		border-color: var(--md-sys-selection-outline-color);
 		background: color-mix(
 			in srgb,
 			var(--md-sys-color-primary-container) 72%,

@@ -190,6 +190,7 @@ impl AnthropicAdapter {
                             let mut final_chunk = StreamChunk {
                                 text: None,
                                 tool_calls: std::mem::take(&mut state.pending_tool_calls),
+                                tool_call_updates: Vec::new(),
                                 finish_reason: state.stop_reason,
                                 usage: state.usage.take(),
                                 model: state.last_model.clone(),
@@ -365,6 +366,26 @@ impl AnthropicAdapter {
                         }
                         let mut chunk = empty_chunk();
                         chunk.model = state.last_model.clone();
+                        if state.blocks[index].kind == BlockKind::ToolUse {
+                            let tool_index = state
+                                .blocks
+                                .iter()
+                                .take(index)
+                                .filter(|block| block.kind == BlockKind::ToolUse)
+                                .count();
+                            let block = &state.blocks[index];
+                            chunk.tool_call_updates.push(
+                                crate::types::StreamToolCallUpdate {
+                                    index: tool_index as u32,
+                                    id: (!block.tool_id.is_empty())
+                                        .then(|| block.tool_id.clone()),
+                                    name: (!block.tool_name.is_empty())
+                                        .then(|| block.tool_name.clone()),
+                                    arguments_snapshot: Some(block.tool_input.clone()),
+                                    arguments_delta: None,
+                                },
+                            );
+                        }
                         Some((Ok(chunk), state))
                     }
                     Ok(AnthropicStreamEvent::ContentBlockDelta { index, delta }) => {
@@ -389,8 +410,27 @@ impl AnthropicAdapter {
                                 }
                             }
                             AnthropicStreamDelta::InputJsonDelta { partial_json } => {
+                                let tool_index = state
+                                    .blocks
+                                    .iter()
+                                    .take(index)
+                                    .filter(|block| block.kind == BlockKind::ToolUse)
+                                    .count();
                                 if let Some(block) = state.blocks.get_mut(index) {
                                     block.tool_input.push_str(&partial_json);
+                                    if block.kind == BlockKind::ToolUse {
+                                        chunk.tool_call_updates.push(
+                                            crate::types::StreamToolCallUpdate {
+                                                index: tool_index as u32,
+                                                id: (!block.tool_id.is_empty())
+                                                    .then(|| block.tool_id.clone()),
+                                                name: (!block.tool_name.is_empty())
+                                                    .then(|| block.tool_name.clone()),
+                                                arguments_delta: Some(partial_json),
+                                                arguments_snapshot: None,
+                                            },
+                                        );
+                                    }
                                 }
                             }
                             AnthropicStreamDelta::Other => {}
@@ -509,6 +549,7 @@ impl AnthropicAdapter {
                         let mut final_chunk = StreamChunk {
                             text: None,
                             tool_calls: std::mem::take(&mut state.pending_tool_calls),
+                            tool_call_updates: Vec::new(),
                             finish_reason: state.stop_reason,
                             usage: state.usage.take(),
                             model: state.last_model.clone(),

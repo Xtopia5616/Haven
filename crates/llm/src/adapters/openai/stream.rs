@@ -178,6 +178,7 @@ impl OpenAiAdapter {
                                         arguments: CanonicalToolCall::from_wire_args(&args),
                                     })
                                     .collect(),
+                                tool_call_updates: Vec::new(),
                                 finish_reason: None,
                                 usage: state.usage.take(),
                                 model: state.last_model.clone(),
@@ -225,6 +226,7 @@ impl OpenAiAdapter {
                             let text = stream_content(&choice).and_then(|content| {
                                 append_stream_text(&mut state.accumulated_text, &content)
                             });
+                            let mut tool_call_updates = Vec::new();
                             if let Some(delta) = choice_delta(&choice)
                                 && let Some(calls) = &delta.tool_calls
                             {
@@ -243,6 +245,14 @@ impl OpenAiAdapter {
                                         c.function.name.as_deref(),
                                         c.function.arguments.as_deref(),
                                     );
+                                    let (id, name, _) = &state.tool_calls_acc[idx];
+                                    tool_call_updates.push(crate::types::StreamToolCallUpdate {
+                                        index: idx as u32,
+                                        id: (!id.is_empty()).then(|| id.clone()),
+                                        name: (!name.is_empty()).then(|| name.clone()),
+                                        arguments_delta: c.function.arguments.clone(),
+                                        arguments_snapshot: None,
+                                    });
                                 }
                             }
                             // DeepSeek's built-in web search: accumulate the
@@ -268,6 +278,7 @@ impl OpenAiAdapter {
                                     reasoning: choice_delta(&choice)
                                         .and_then(|d| d.reasoning_content.clone()),
                                     tool_calls: Vec::new(),
+                                    tool_call_updates,
                                     finish_reason,
                                     usage: None,
                                     model: state.last_model.clone(),
@@ -283,6 +294,7 @@ impl OpenAiAdapter {
                                     text: None,
                                     reasoning: None,
                                     tool_calls: Vec::new(),
+                                    tool_call_updates: Vec::new(),
                                     finish_reason: None,
                                     usage: state.usage.take(),
                                     model: state.last_model.clone(),

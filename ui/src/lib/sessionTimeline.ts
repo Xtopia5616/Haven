@@ -151,10 +151,31 @@ export interface SessionTimelineOptions {
 	awaitingBackgroundCount?: number;
 }
 
+function toolRunOrderTime(toolRun: ToolRunPayload): number | null {
+	// A scheduled run gains `startedAt` when it fires, but its `dueAt` remains
+	// the stable ordering key. Sorting it by `startedAt` first could move it
+	// past sibling schedules merely because its lifecycle advanced.
+	const candidates =
+		toolRun.kind === 'scheduled'
+			? [toolRun.dueAt, toolRun.startedAt]
+			: [toolRun.startedAt, toolRun.dueAt];
+	for (const candidate of candidates) {
+		if (!candidate) continue;
+		const timestamp = Date.parse(candidate);
+		if (Number.isFinite(timestamp)) return timestamp;
+	}
+	return null;
+}
+
 function compareToolRuns(left: ToolRunPayload, right: ToolRunPayload): number {
-	const leftTime = left.startedAt || left.dueAt || '';
-	const rightTime = right.startedAt || right.dueAt || '';
-	return leftTime.localeCompare(rightTime) || left.toolRunId.localeCompare(right.toolRunId);
+	const leftTime = toolRunOrderTime(left);
+	const rightTime = toolRunOrderTime(right);
+	if (leftTime == null && rightTime != null) return 1;
+	if (leftTime != null && rightTime == null) return -1;
+	if (leftTime != null && rightTime != null && leftTime !== rightTime) {
+		return leftTime - rightTime;
+	}
+	return left.toolRunId.localeCompare(right.toolRunId);
 }
 
 /** Resolve the same running toolRun used for the timeline wait indicator. */

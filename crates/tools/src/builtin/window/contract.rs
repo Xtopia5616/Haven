@@ -19,9 +19,6 @@ impl Tool for WindowTool {
     fn risk_level(&self, input: &Value) -> RiskLevel {
         match input["operation"].as_str() {
             Some("close") => RiskLevel::High,
-            // OCR uploads a full-screen capture to the vision model.
-            Some("ocr") => RiskLevel::High,
-            Some("observe") if input["ocr"].as_bool() == Some(true) => RiskLevel::High,
             Some("focus") => RiskLevel::Medium,
             Some("ui_tree") | Some("observe") | Some("wait") => RiskLevel::Low,
             Some("invoke") | Some("set_value") | Some("toggle") | Some("select") => {
@@ -56,10 +53,10 @@ impl Tool for WindowTool {
     }
 
     fn input_schema(&self) -> Value {
-        let mut schema = serde_json::json!({
+        let schema = serde_json::json!({
             "type": "object",
             "properties": {
-                "operation": { "type": "string", "enum": ["list", "foreground", "focus", "close", "screenshot", "ocr", "ui_tree", "observe", "invoke", "set_value", "toggle", "select", "wait"] },
+                "operation": { "type": "string", "enum": ["list", "foreground", "focus", "close", "screenshot", "ui_tree", "observe", "invoke", "set_value", "toggle", "select", "wait"] },
                 "title": { "type": "string" },
                 "window_id": { "type": "string", "pattern": "^hwnd:[0-9a-f]+$" },
                 "pid": { "type": "integer", "minimum": 1 },
@@ -71,7 +68,6 @@ impl Tool for WindowTool {
                 "control_type": { "type": "string", "enum": UIA_CONTROL_TYPE_NAMES },
                 "index": { "type": "integer", "minimum": 0 },
                 "value": { "type": "string", "maxLength": 20000 },
-                "ocr": { "type": "boolean" }
             },
             "required": ["operation"],
             "oneOf": [
@@ -82,8 +78,7 @@ impl Tool for WindowTool {
                         "operation": { "const": "observe" },
                         "window_id": { "type": "string", "pattern": "^hwnd:[0-9a-f]+$" },
                         "title": { "type": "string", "minLength": 1 },
-                        "pid": { "type": "integer", "minimum": 1 },
-                        "ocr": { "type": "boolean" }
+                        "pid": { "type": "integer", "minimum": 1 }
                     },
                     "required": ["operation"]
                 },
@@ -188,12 +183,6 @@ impl Tool for WindowTool {
                 {
                     "type": "object",
                     "additionalProperties": false,
-                    "properties": { "operation": { "const": "ocr" } },
-                    "required": ["operation"]
-                },
-                {
-                    "type": "object",
-                    "additionalProperties": false,
                     "properties": { "operation": { "const": "ui_tree" }, "title": { "type": "string", "minLength": 1 }, "window_id": { "type": "string", "pattern": "^hwnd:[0-9a-f]+$" } },
                     "required": ["operation"]
                 },
@@ -211,23 +200,6 @@ impl Tool for WindowTool {
                 }
             ]
         });
-        let ocr_available = self
-            .media_tool
-            .as_ref()
-            .is_some_and(|media_tool| media_tool.ocr_available());
-        if !ocr_available {
-            if let Some(operations) = schema["properties"]["operation"]
-                .get_mut("enum")
-                .and_then(Value::as_array_mut)
-            {
-                operations.retain(|operation| operation.as_str() != Some("ocr"));
-            }
-            if let Some(branches) = schema.get_mut("oneOf").and_then(Value::as_array_mut) {
-                branches.retain(|branch| {
-                    branch["properties"]["operation"]["const"].as_str() != Some("ocr")
-                });
-            }
-        }
         schema
     }
 

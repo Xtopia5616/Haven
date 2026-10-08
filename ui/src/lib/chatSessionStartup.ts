@@ -2,8 +2,11 @@ import { buildResumeMessages } from './resumeMessages.ts';
 import { createSessionRefreshScheduler } from './sessionRefresh.ts';
 import { isErrorStatus } from './sessionStatus.ts';
 import { resumeInteractions } from './sessionReducer.ts';
-import type { SessionAction, SessionReducer } from './sessionReducer.ts';
-import type { RuntimeSessionListResponse, SessionResumeResponse } from './contracts/sessionHistory.ts';
+import type { SessionAction, SessionReducer, SessionRunEndStatus } from './sessionReducer.ts';
+import type {
+	RuntimeSessionListResponse,
+	SessionResumeResponse,
+} from './contracts/sessionHistory.ts';
 import type { SessionResumeTarget } from './sessionIntentStore.ts';
 
 export interface ChatSessionStartupDependencies {
@@ -22,7 +25,10 @@ export interface ChatSessionStartupDependencies {
 	setInitialLoading: (loading: boolean) => void;
 	deferResumeTargetClear: () => void;
 	warn: (message: string, error: unknown) => void;
-	reportError: (error: unknown, options: { context: string; message: string; log: boolean }) => unknown;
+	reportError: (
+		error: unknown,
+		options: { context: string; message: string; log: boolean },
+	) => unknown;
 }
 
 /**
@@ -82,21 +88,26 @@ export function createChatSessionStartup(dependencies: ChatSessionStartupDepende
 					dependencies.evictTerminalSessionMemory(prevActive);
 				}
 			}
-			if (resumeTarget.wasError) {
+			const runEndStatus: SessionRunEndStatus | undefined =
+				resumeTarget.runEndStatus || (resumeTarget.wasError ? 'error' : undefined);
+			if (runEndStatus) {
 				dependencies.dispatch({
 					type: 'session/run-ended',
 					sessionId: resumeTarget.sessionId,
-					status: 'error',
+					status: runEndStatus,
 					reason:
+						resumeTarget.runEndReason ||
 						resumeTarget.errorReason ||
 						dependencies.reducer.getSessionErrorReason(resumeTarget.sessionId) ||
-						'本次会话因错误停止，暂未收到更具体的原因。',
+						(runEndStatus === 'error'
+							? '本次会话因错误停止，暂未收到更具体的原因。'
+							: ''),
 				});
-				retainErroredSession(resumeTarget);
+				if (runEndStatus === 'error') retainErroredSession(resumeTarget);
 			}
 			// Keep the target alive through the current mount's initialization.
 			dependencies.deferResumeTargetClear();
-			if (!resumeTarget.wasError) {
+			if (runEndStatus !== 'error') {
 				// Opening history can rehydrate a terminal session into the live
 				// paused-session projection. That memory-only transition emits no
 				// lifecycle event, so refresh the switcher immediately instead of
@@ -151,7 +162,7 @@ export function createChatSessionStartup(dependencies: ChatSessionStartupDepende
 		return run;
 	}
 
-		/** Immediate refresh for explicit ToolRun requests; lifecycle bursts share the scheduler. */
+	/** Immediate refresh for explicit ToolRun requests; lifecycle bursts share the scheduler. */
 	function loadSessions(): Promise<void> {
 		if (disposed) return Promise.resolve();
 		const run = loadSessionsRefresh.refresh();
@@ -205,6 +216,8 @@ export function createChatSessionStartup(dependencies: ChatSessionStartupDepende
 		if (latestSession.session.status === 'completed') return;
 
 		const wasError = isErrorStatus(latestSession.session.status);
+		const runEndStatus: SessionRunEndStatus | undefined =
+			latestSession.session.status === 'paused' ? 'paused' : wasError ? 'error' : undefined;
 		dependencies.dispatch({
 			type: 'session/messages/resume-loaded',
 			sessionId: latestSession.session.id,
@@ -215,20 +228,23 @@ export function createChatSessionStartup(dependencies: ChatSessionStartupDepende
 			llmUsage: latestSession.llm_usage,
 		});
 		dependencies.dispatch({ type: 'session/selected', sessionId: latestSession.session.id });
-		if (wasError) {
+		if (runEndStatus) {
 			dependencies.dispatch({
 				type: 'session/run-ended',
 				sessionId: latestSession.session.id,
-				status: 'error',
+				status: runEndStatus,
 				reason:
+					latestSession.session.run_end_reason ||
 					dependencies.reducer.getSessionErrorReason(latestSession.session.id) ||
-					'本次会话因错误停止，暂未收到更具体的原因。',
+					(runEndStatus === 'error' ? '本次会话因错误停止，暂未收到更具体的原因。' : ''),
 			});
-			retainErroredSession({
-				sessionId: latestSession.session.id,
-				summary: latestSession.session.input_text,
-				title: latestSession.session.title,
-			});
+			if (runEndStatus === 'error') {
+				retainErroredSession({
+					sessionId: latestSession.session.id,
+					summary: latestSession.session.input_text,
+					title: latestSession.session.title,
+				});
+			}
 		}
 		try {
 			if (!wasError) {

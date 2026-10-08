@@ -4,7 +4,6 @@ import ToolFileSearchResult from './ToolFileSearchResult.svelte';
 import ToolJsonResult from './ToolJsonResult.svelte';
 import ToolNotifyResult from './ToolNotifyResult.svelte';
 import ToolShellResult from './ToolShellResult.svelte';
-import ToolProcessResult from './ToolProcessResult.svelte';
 import ToolRunsResult from './ToolRunsResult.svelte';
 import ToolClipboardResult from './ToolClipboardResult.svelte';
 import ToolHttpResult from './ToolHttpResult.svelte';
@@ -39,7 +38,6 @@ type BuiltinResultRenderer =
 	| typeof ToolAgentResult
 	| typeof ToolFileResult
 	| typeof ToolFileSearchResult
-	| typeof ToolProcessResult
 	| typeof ToolClipboardResult
 	| typeof ToolInputResult
 	| typeof ToolWindowResult
@@ -76,7 +74,6 @@ export function getToolResultRenderer(
 			renderer = ToolFileSearchResult;
 			contractName = 'files.search';
 		} else if (selectedRenderer === 'agent') renderer = ToolAgentResult;
-		else if (selectedRenderer === 'process') renderer = ToolProcessResult;
 		else if (selectedRenderer === 'clipboard') renderer = ToolClipboardResult;
 		else if (selectedRenderer === 'input') renderer = ToolInputResult;
 		else if (selectedRenderer === 'window') renderer = ToolWindowResult;
@@ -92,18 +89,12 @@ export function getToolResultRenderer(
 			} else renderer = ToolFileResult;
 		} else if (selectedRenderer === 'system') {
 			const scope = data?.scope;
-			if (scope === 'process') renderer = ToolProcessResult;
-			else if (scope === 'window') renderer = ToolWindowResult;
+			if (scope === 'window') renderer = ToolWindowResult;
 			else if (scope === 'clipboard') renderer = ToolClipboardResult;
 			else if (scope === 'input') renderer = ToolInputResult;
 			else renderer = ToolSystemResult;
 			contractName =
-				scope === 'process' ||
-				scope === 'window' ||
-				scope === 'clipboard' ||
-				scope === 'input'
-					? scope
-					: 'system';
+				scope === 'window' || scope === 'clipboard' || scope === 'input' ? scope : 'system';
 		} else if (adminRendererNames.has(selectedRenderer)) {
 			renderer = ToolAdminResult;
 			contractName = 'admin';

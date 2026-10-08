@@ -813,6 +813,7 @@ async fn rollback_while_ask_wait_clears_interaction_gate() {
         .unwrap();
     let mock = Arc::new(ScriptedMock::new(vec![ScriptedResponse::Chunk(
         StreamChunk {
+            tool_call_updates: Vec::new(),
             text: Some("Need a choice.".into()),
             tool_calls: vec![CanonicalToolCall {
                 id: "tc1".into(),
@@ -899,6 +900,7 @@ async fn rollback_mid_tool_batch_joins_and_restores() {
         .unwrap();
     let mock = Arc::new(ScriptedMock::new(vec![
         ScriptedResponse::Chunk(StreamChunk {
+            tool_call_updates: Vec::new(),
             text: Some("Running both.".into()),
             tool_calls: vec![
                 CanonicalToolCall {
@@ -921,6 +923,7 @@ async fn rollback_mid_tool_batch_joins_and_restores() {
             thinking_blocks: Vec::new(),
         }),
         ScriptedResponse::Chunk(StreamChunk {
+            tool_call_updates: Vec::new(),
             text: Some("Should not run after rollback.".into()),
             tool_calls: vec![CanonicalToolCall {
                 id: "final".into(),
@@ -995,6 +998,7 @@ async fn rollback_ask_wait_pause_true_leaves_plain_paused() {
         .unwrap();
     let mock = Arc::new(ScriptedMock::new(vec![ScriptedResponse::Chunk(
         StreamChunk {
+            tool_call_updates: Vec::new(),
             text: Some("Need a choice.".into()),
             tool_calls: vec![CanonicalToolCall {
                 id: "tc1".into(),

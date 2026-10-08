@@ -8,7 +8,7 @@
 //! version stamp rejects both older and newer database contracts.
 
 /// Current database contract. Any schema change requires a fresh database.
-pub const SCHEMA_VERSION: i32 = 38;
+pub const SCHEMA_VERSION: i32 = 39;
 /// Current schema, created idempotently on every open.
 const SCHEMA_SQL: &[&str] = &[
     "CREATE TABLE IF NOT EXISTS sessions (
@@ -17,6 +17,7 @@ const SCHEMA_SQL: &[&str] = &[
         title TEXT,
         status TEXT NOT NULL DEFAULT 'pending'
             CHECK(status IN ('pending','running','paused','completed','error')),
+        run_end_reason TEXT,
         created_at TEXT NOT NULL DEFAULT (datetime('now')),
         updated_at TEXT NOT NULL DEFAULT (datetime('now')),
         origin TEXT NOT NULL DEFAULT 'user'

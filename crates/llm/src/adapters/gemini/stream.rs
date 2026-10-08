@@ -152,6 +152,7 @@ impl GeminiAdapter {
                                 // adapter: per-delta chunks carry none, the
                                 // final chunk carries all merged calls.
                                 tool_calls,
+                                tool_call_updates: Vec::new(),
                                 finish_reason: state.finish_reason,
                                 usage: state.usage.take(),
                                 model: state.last_model.clone(),
@@ -257,6 +258,12 @@ impl GeminiAdapter {
                                     if let Some(fc) = part.function_call
                                         && let Some(name) = fc.name
                                     {
+                                        let tool_index = state
+                                            .tool_calls_acc
+                                            .iter()
+                                            .take(idx)
+                                            .filter(|call| !call.name.is_empty())
+                                            .count();
                                         while state.tool_calls_acc.len() <= idx {
                                             state.tool_calls_acc.push(CanonicalToolCall {
                                                 id: format!("call_{}", state.tool_calls_acc.len()),
@@ -270,8 +277,22 @@ impl GeminiAdapter {
                                         state.tool_calls_acc[idx].name =
                                             state.tool_names.to_canonical(&name);
                                         if let Some(args) = fc.args {
-                                            state.tool_calls_acc[idx].arguments = args;
+                                            state.tool_calls_acc[idx].arguments = args.clone();
                                         }
+                                        let call = &state.tool_calls_acc[idx];
+                                        chunk.tool_call_updates.push(
+                                            crate::types::StreamToolCallUpdate {
+                                                index: tool_index as u32,
+                                                id: (!call.id.is_empty()).then(|| call.id.clone()),
+                                                name: (!call.name.is_empty())
+                                                    .then(|| call.name.clone()),
+                                                arguments_delta: None,
+                                                arguments_snapshot: serde_json::to_string(
+                                                    &call.arguments,
+                                                )
+                                                .ok(),
+                                            },
+                                        );
                                     }
                                 }
                             }

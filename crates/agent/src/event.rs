@@ -119,9 +119,22 @@ pub enum AgentEvent {
         /// Same semantics as `ThoughtChunk::message_id`.
         message_id: String,
     },
+    /// Ephemeral live preview of raw tool-call arguments. These fragments may
+    /// not form valid JSON and are never persisted or executed; `ToolCall`
+    /// remains the authoritative complete invocation.
+    ToolCallChunk {
+        session_id: String,
+        preview_id: String,
+        tool_name: String,
+        arguments: String,
+        arguments_truncated: bool,
+        step_number: u32,
+        run_id: u64,
+        tool_index: u32,
+    },
     /// Ordered boundary emitted before a replacement stream attempt. The
-    /// frontend removes only the live thought/reasoning blocks for this step;
-    /// durable transcript events remain authoritative.
+    /// frontend removes live thought/reasoning blocks and tool-call previews
+    /// for this step; durable transcript events remain authoritative.
     StreamReset {
         session_id: String,
         step_number: u32,
@@ -200,9 +213,9 @@ pub enum AgentEvent {
         /// projection and is absent for every other status.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         waiting_reason: Option<haven_common::SessionWaitingReason>,
-        /// Optional user-visible explanation for a status transition. This is
-        /// populated for explicit user interruptions so the UI can explain
-        /// why a resumable session stopped producing output.
+        /// Optional user-visible explanation for a run-end transition. The
+        /// same sanitized value is persisted in `sessions.run_end_reason` so
+        /// history can restore the explanation after an app restart.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         reason: Option<String>,
     },
@@ -328,15 +341,15 @@ pub trait AgentEventEmitter: Send + Sync {
 /// so eviction is a logged last resort, not a normal path.
 ///
 /// Overflow policy: the OLDEST queued chunk event (`ThoughtChunk` /
-/// `ReasoningChunk`) is evicted to make room for the new event — never the
-/// newest one. Chunk deltas are self-healing: the step's final
+/// `ReasoningChunk` / `ToolCallChunk`) is evicted to make room for the new
+/// event — never the newest one. Text chunks are self-healing: the step's final
 /// `agent:thought` snap and the full-text reasoning reconcile replace the
-/// accumulated streamed text, so losing an old intermediate chunk is
-/// invisible in the end state. Stream-reset markers are authoritative ordering
-/// events and are kept in preference to ordinary status events. Dropping the
-/// newest event (or a non-chunk event like the snap, session status, completion,
-/// error) would lose authoritative state permanently — the very events that
-/// repair the stream.
+/// accumulated streamed text. Tool-call previews are latest-value snapshots
+/// and the final complete call event replaces them. Stream-reset markers are
+/// authoritative ordering events and are kept in preference to ordinary
+/// status events. Dropping the newest event (or a non-chunk event like the
+/// snap, session status, completion, error) would lose authoritative state
+/// permanently — the very events that repair the stream.
 ///
 /// Ordering within one producer is preserved (FIFO); concurrent producers
 /// interleave, exactly as with direct awaited emits.
@@ -378,12 +391,14 @@ impl BufferedEmitter {
     }
 }
 
-/// Whether an event is a streamed chunk delta (self-healing via the step's
-/// final snap / full-text reconcile, so the safest overflow eviction target).
+/// Whether an event is a streamed chunk or latest-value preview. Text chunks
+/// reconcile from the final snap; tool previews are replaced by the final call.
 fn is_chunk_event(event: &AgentEvent) -> bool {
     matches!(
         event,
-        AgentEvent::ThoughtChunk { .. } | AgentEvent::ReasoningChunk { .. }
+        AgentEvent::ThoughtChunk { .. }
+            | AgentEvent::ReasoningChunk { .. }
+            | AgentEvent::ToolCallChunk { .. }
     )
 }
 
@@ -504,11 +519,11 @@ impl AgentEventEmitter for EventBus {
 
 /// One ordered item in the live-stream event pipeline.
 ///
-/// Thought and reasoning used to have independent queues, which meant a
-/// retry could overtake the other kind of chunk. A single queue makes output
-/// order explicit and lets a retry insert a reset marker before its first
-/// delta. Both ids are `Arc<str>` so the producer's per-token hot loop shares
-/// allocations instead of cloning the session/message ids each time.
+/// Thought, reasoning and tool-call previews used to have independent queues,
+/// which meant a retry could overtake another kind of output. A single queue
+/// makes output order explicit and lets a retry insert a reset marker before
+/// its first delta. Shared ids are `Arc<str>` so the producer hot loop avoids
+/// cloning the session/message ids each time.
 #[derive(Clone)]
 pub(crate) enum ChunkItem {
     Delta {
@@ -525,6 +540,16 @@ pub(crate) enum ChunkItem {
         reasoning_message_id: Arc<str>,
         step_number: u32,
         run_id: u64,
+    },
+    ToolCallPreview {
+        session_id: Arc<str>,
+        preview_id: Arc<str>,
+        tool_name: String,
+        arguments: String,
+        arguments_truncated: bool,
+        step_number: u32,
+        run_id: u64,
+        tool_index: u32,
     },
 }
 
@@ -592,6 +617,53 @@ impl ChunkMailbox {
                     });
                 }
             }
+            preview @ ChunkItem::ToolCallPreview { .. } => {
+                let key = match &preview {
+                    ChunkItem::ToolCallPreview {
+                        session_id,
+                        preview_id,
+                        step_number,
+                        run_id,
+                        tool_index,
+                        ..
+                    } => (
+                        session_id.clone(),
+                        preview_id.clone(),
+                        *step_number,
+                        *run_id,
+                        *tool_index,
+                    ),
+                    _ => unreachable!(),
+                };
+                let after_reset = pending
+                    .iter()
+                    .rposition(|queued| matches!(queued, ChunkItem::Reset { .. }))
+                    .map_or(0, |index| index + 1);
+                let previous = (after_reset..pending.len()).rev().find(|&index| {
+                    matches!(
+                        &pending[index],
+                        ChunkItem::ToolCallPreview {
+                            session_id,
+                            preview_id,
+                            step_number,
+                            run_id,
+                            tool_index,
+                            ..
+                        } if session_id == &key.0
+                            && preview_id == &key.1
+                            && *step_number == key.2
+                            && *run_id == key.3
+                            && *tool_index == key.4
+                    )
+                });
+                if let Some(index) = previous {
+                    pending.remove(index);
+                }
+                // Move the replacement to the tail so it stays ordered after
+                // any thought/reasoning deltas or tool previews that arrived
+                // since its prior snapshot.
+                pending.push_back(preview);
+            }
             reset @ ChunkItem::Reset { .. } => {
                 // Reset is a control boundary, never a droppable value. Keep
                 // every boundary in order: a delta after an earlier reset
@@ -650,7 +722,8 @@ impl ChunkSender {
 }
 /// Per-chunk micro-batching parameters. Incoming per-token chunks are aggregated
 /// for at most this duration before a single `ThoughtChunk`/`ReasoningChunk` with
-/// the concatenated `delta` is emitted, dramatically reducing Tauri IPC frequency.
+/// the concatenated `delta` is emitted. Tool-call snapshots share this ordered
+/// path and coalesce by preview identity.
 const CHUNK_BATCH_INTERVAL: std::time::Duration = std::time::Duration::from_millis(50);
 
 async fn emit_chunk_delta(
@@ -683,6 +756,32 @@ async fn emit_chunk_delta(
         }
     };
     emitter.emit(event).await;
+}
+
+#[allow(clippy::too_many_arguments)] // Mirrors the transient tool-call preview event fields.
+async fn emit_tool_call_preview(
+    emitter: &Arc<dyn AgentEventEmitter>,
+    session_id: Arc<str>,
+    preview_id: Arc<str>,
+    tool_name: String,
+    arguments: String,
+    arguments_truncated: bool,
+    step_number: u32,
+    run_id: u64,
+    tool_index: u32,
+) {
+    emitter
+        .emit(AgentEvent::ToolCallChunk {
+            session_id: session_id.to_string(),
+            preview_id: preview_id.to_string(),
+            tool_name,
+            arguments,
+            arguments_truncated,
+            step_number,
+            run_id,
+            tool_index,
+        })
+        .await;
 }
 
 async fn emit_stream_reset(
@@ -749,23 +848,48 @@ async fn run_chunk_batcher_inner(
             mut reasoning,
         } = first
         else {
-            if let ChunkItem::Reset {
-                session_id,
-                thought_message_id,
-                reasoning_message_id,
-                step_number,
-                run_id,
-            } = first
-            {
-                emit_stream_reset(
-                    &emitter,
+            match first {
+                ChunkItem::Reset {
                     session_id,
                     thought_message_id,
                     reasoning_message_id,
                     step_number,
                     run_id,
-                )
-                .await;
+                } => {
+                    emit_stream_reset(
+                        &emitter,
+                        session_id,
+                        thought_message_id,
+                        reasoning_message_id,
+                        step_number,
+                        run_id,
+                    )
+                    .await;
+                }
+                ChunkItem::ToolCallPreview {
+                    session_id,
+                    preview_id,
+                    tool_name,
+                    arguments,
+                    arguments_truncated,
+                    step_number,
+                    run_id,
+                    tool_index,
+                } => {
+                    emit_tool_call_preview(
+                        &emitter,
+                        session_id,
+                        preview_id,
+                        tool_name,
+                        arguments,
+                        arguments_truncated,
+                        step_number,
+                        run_id,
+                        tool_index,
+                    )
+                    .await;
+                }
+                ChunkItem::Delta { .. } => unreachable!(),
             }
             continue;
         };
@@ -870,6 +994,41 @@ async fn run_chunk_batcher_inner(
                                 reset_step_number,
                                 reset_run_id,
                             ).await;
+                            break;
+                        }
+                        Some(preview @ ChunkItem::ToolCallPreview { .. }) => {
+                            emit_chunk_delta(
+                                &emitter,
+                                session_id.clone(),
+                                message_id.clone(),
+                                std::mem::take(&mut buf),
+                                step_number,
+                                run_id,
+                                reasoning,
+                            ).await;
+                            if let ChunkItem::ToolCallPreview {
+                                session_id,
+                                preview_id,
+                                tool_name,
+                                arguments,
+                                arguments_truncated,
+                                step_number,
+                                run_id,
+                                tool_index,
+                            } = preview
+                            {
+                                emit_tool_call_preview(
+                                    &emitter,
+                                    session_id,
+                                    preview_id,
+                                    tool_name,
+                                    arguments,
+                                    arguments_truncated,
+                                    step_number,
+                                    run_id,
+                                    tool_index,
+                                ).await;
+                            }
                             break;
                         }
                         None => {

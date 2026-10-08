@@ -242,7 +242,7 @@ pub(crate) fn operation_attributes(
     };
     let network = match name {
         "http" | "files.summary" | "media.describe" | "media.ocr" | "media.transcribe"
-        | "media.generate" | "window.ocr" => NetworkAccess::Public,
+        | "media.generate" => NetworkAccess::Public,
         "shell" | "load_mcp" | "load_skill" => NetworkAccess::Opaque,
         name if name.starts_with("mcp__")
             || name.starts_with("mcp::")
@@ -1073,12 +1073,9 @@ pub(crate) fn default_tool_label(name: &str) -> String {
         "haven" => "Haven 管理与会话工具",
         "memory" => "记忆",
         "agent" => "Agent 协作",
-        "process" => "进程",
         "clipboard" => "剪贴板",
         "input" => "输入控制",
         "window" => "窗口与屏幕",
-        "preferences" => "会话偏好",
-        "checklist" => "检查清单",
         "tool_runs" => "后台任务",
         "schedule" => "定时任务",
         "web_search" => "联网搜索",
@@ -1101,7 +1098,6 @@ pub(crate) fn default_root_presentation(
             "files" => ("文件", "folder"),
             "media" => ("媒体", "image"),
             "system" => ("系统", "settings"),
-            "process" => ("进程", "activity"),
             "clipboard" => ("剪贴板", "clipboard"),
             "input" => ("输入控制", "keyboard"),
             "window" => ("窗口与屏幕", "monitor"),
@@ -1109,8 +1105,6 @@ pub(crate) fn default_root_presentation(
             "agent" => ("Agent 协作", "users"),
             "tool_runs" => ("后台任务", "clock"),
             "schedule" => ("定时任务", "bell"),
-            "preferences" => ("会话偏好", "settings"),
-            "checklist" => ("检查清单", "checklist"),
             "haven" => ("Haven", "settings"),
             _ => (root, "tools"),
         },

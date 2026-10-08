@@ -362,7 +362,7 @@ Compaction summary episode 与首个 pending marker 只由 `MemoryStore::persist
 ### 2.5 `haven-agent` —— ReAct 编排与会话执行
 
 - `react/`：模块覆盖 `committed_ui`、`context`、`effects`、`event_boundary`、`hook_policy`、`hooks`、`identity`、`inject`、`loop`、`metrics`、`request_context`、`response_cycle`、`response_policy`、`sidecars`、`state`、`stream_step`、`tool_batch`、`tool_batch_execute`、`tool_batch_plan`、`tool_batch_policy`、`tool_ports`、`transcript`、`turn`、`turn_end` 与 `usage`，按 `SessionRun → Turn → ToolBatch` 分层。`response_policy` 分类响应，`response_cycle` 执行有限重试；`tool_batch_plan` 固定调用身份，`tool_batch_execute` 管理并发、取消和逐项 durable commit，`tool_batch_policy` 复用 `RecoveryPolicy` 分类失败与重试预算，`tool_batch` 按 assistant 调用顺序更新 canonical transcript。`context` 只收集有界上下文，`RequestContext` 从 durable canonical 构造不可变 provider request，`inject` 经 `apply_transcript` 投影，`turn_end` 组装最终 `EffectBatch`，`event_boundary` 负责事件流完整性与 lifecycle 边界，hooks 定义扩展契约，`hook_policy` 装配生产副作用策略。
-- 流式输出由 `stream_step` 产生，`event.rs` 用一个有序 chunk 队列归并 thought/reasoning；provider retry 通过 `agent:stream_reset` 标记新的输出代次，UI 只清理 live stream block，不修改 durable transcript。`streamAggregator` 只合并相邻且同身份的 chunk，保留交错输出顺序；最终 thought/reasoning 投影仍是丢 chunk 时的权威修复路径。
+- 流式输出由 `stream_step` 产生，`event.rs` 用一个有序队列归并 thought/reasoning 与工具参数预览；provider retry 通过 `agent:stream_reset` 标记新的输出代次，UI 清理对应的 live stream block 和临时调用预览，不修改 durable transcript。工具参数预览按工具索引合并、限长并节流；不完整 JSON 作为文本展示，不参与解析或执行，最终 ToolCall 投影是权威调用。`streamAggregator` 只合并相邻且同身份的文本 chunk，保留交错输出顺序；最终 thought/reasoning 投影仍是丢 chunk 时的权威修复路径。
 - **X12 持久化契约**：ReAct 将 live transcript 作为 `SessionCommitted` domain intent 提交给 `SessionStore`；Agent 负责 ReAct 事件 payload 与消息/步骤语义，Memory 将 intent 翻译为物化行。Store 在同一 SQLite 事务中先追加 `session_events`，再写入 intent 指定的 `messages` / `session_steps` 投影；投影失败时整笔回滚，事务提交后才使 cache 失效并广播事件。Agent 随后由 `CommittedUiPublisher` 按 `session_events.sequence` 发布 Thought、ToolCall、Observation、Supplement、ingress MediaPlan 与 Compaction，再更新进程内 canonical。assistant Thought 消息行与 durable event 同事务提交；共享 `step-*` 的 Thought 执行步骤作为可修复的后置 Store 投影写入，失败不会撤销已提交事件或重复发布。流式分片只用 `chunk_seq`；WebSearch、Usage，以及请求准备阶段的 MediaPlan（`event_seq` 为空）不占用这条 durable 序号。同一 sequence 的并行工具卡按 `(eventSeq, stepId)` 去重。交互请求由 `SessionActor` 命令追加为 domain event，Agent 从活动 `session_events` replay 交互状态；若 Ask `tool_result` 已提交而独立 `interaction_requested` 尚未提交，replay 以稳定 `step_id` 恢复 pending Ask，后续 `UserInject(source=answer)` 或 clear event 关闭它（ADR 0440）。resume、rollback 和实时重放均从 event sequence 读取，事件流本身承载恢复游标。rollback 的 event cursor 用于 active transcript 投影，event sequence 用于 append-only timeline；`last_msg_at` 只用于截断物化消息投影，三者由 `SessionStore` 封装且不得互相推导或作为 transcript 真源。多模态输入在 ingress 接受 `MessageAttachment`，但事件/数据库 canonical 投影使用 `MediaAsset → MediaRepresentation → MediaPlan`，事件不保存 inline bytes；OCR/STT 成功追加派生表示且保留 raw asset。合法旁路限于语义受限的 ingress user seed、recovery partial 与终态 ToolRun-result 三个 `SessionStore` 写端口；seed 消息类型由持久化的 session origin 决定。interaction lifecycle event 只承载请求状态和引用 ID，Ask 正文只在 canonical transcript 出现一次。
 - **工具调用身份契约**：同一 assistant tool batch 内，`tool_index` 是 provider 调用数组的零基稳定位置，`step_id` 是该调用的持久执行行/卡片身份，`tool_call_id` 是 provider 调用身份；`session_steps` 与 ReAct events 同步保存三者。确认恢复必须按完整身份关联，禁止按工具名、参数或 observation 文本猜测；缺失事件流不再从步骤投影重建 ReAct transcript，旧数据按 reset 边界处理。并行工具的每项结果在完成后单独提交并按 durable sequence 发布 UI；canonical history 与 event replay 按 `step_number + tool_index` 排序（ADR 0433）。
 - **工具参数验证契约**：执行前只验证，不用 schema default、首个 enum 或类型占位符改写输入；无效参数以包含 `tool_index`、工具名和验证明细的失败 observation 返回给模型，避免改变副作用语义。
@@ -419,21 +419,20 @@ Temp（全局约束）。
 ### 2.5.2 内置 `system` 工具（机器信息与系统控制）
 
 统一实现：`haven-tools` 的 `builtin/system.rs`。`env` / `registry` / `power` 以及桌面能力仍可
-在代码中由聚合实现承载，但模型目录统一暴露 `system.*`、`process.*`、`clipboard.*`、
+在代码中由聚合实现承载，但模型目录统一暴露 `system.*`、`clipboard.*`、
 `input.*`、`window.*` 点号 operation view；`files.*` 与 `media.*` 也遵循同一规则。聚合根
 只保留给 native/Tauri 或内部路由，不作为模型可见入口。
 
 | scope | 能力 | 风险 |
 |---|---|---|
 | `info`（默认） | 只读机器快照；`category=` 细分 | Safe |
-| `env` | 环境变量 get/set/unset/list；`scope=process/user/machine`，list 可用 `name` 作前缀过滤 | get=Low；list/set/unset=High |
-| `registry` | Windows 注册表 get/set/delete_value/delete_key/list；值删除要求 `name`，键删除为递归删除 | 读=Medium；值写/删=High；键删=Critical |
+| `env` | 环境变量 get/list；`scope=process/user/machine`，list 可用 `prefix` 过滤 | get=Low；list=High |
+| `registry` | Windows 注册表 get/list；路径读取与枚举 | Medium |
 | `power` | 电源 status / lock / sleep / hibernate | status=Safe；lock/sleep=High；hibernate=Critical |
 | `display` | 监视器几何 + DPI/缩放 + 刷新率 | Safe |
-| `process` | 进程 list / kill | list=Low；kill=High |
 | `clipboard` | 剪贴板 read / write / history | read/history=Low；write=Medium |
 | `input` | 键鼠 type / key / click / move / scroll | move/scroll=Low；其它=Medium |
-| `window` | 窗口 list / foreground / focus / close / screenshot / OCR / UI tree / observe / invoke / set_value / toggle / select / wait | 读/观察=Low；语义操作/focus=Medium；close/OCR=High |
+| `window` | 窗口 list / foreground / focus / close / screenshot / UI tree / observe / invoke / set_value / toggle / select / wait；截图后由 `media.ocr` 执行 OCR | 读/观察=Low；语义操作/focus=Medium；close=High |
 
 `ToolRunService`（`haven-tools/src/tool_run_service.rs`）是后台与定时任务的唯一运行时状态机；
 shell 进程、定时器和 ToolRun dependency 共享一个 ToolRun map、一个生命周期 sink 和一个
@@ -566,8 +565,7 @@ Windows 子进程通过 Job Object 回收进程树；受限网络只允许经过
 ### 2.5.4 Admin Surface
 
 模型看到 `haven.diagnostics.*`、`haven.config.*`、`haven.skills.*`、`haven.tools.*`、
-`haven.mcp.*` 等点号 operation view，以及独立的 `tool_runs.*`、`schedule.*`、
-`preferences.*`、`checklist.*`。聚合器只负责内部路由，
+`haven.mcp.*` 等点号 operation view，以及独立的 `tool_runs.*`、`schedule.*`。聚合器只负责内部路由，
 每个 operation 继续复用子工具自己的严格 schema、风险等级、幂等性、并发资源和
 session 归属；因此 `mcp_add` 是 High，而 `mcp_list` 是 Low，二者不会因共用根名
 而被压平。

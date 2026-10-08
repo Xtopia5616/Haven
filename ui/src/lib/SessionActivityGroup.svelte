@@ -78,7 +78,7 @@
 				? `等待 ${awaitingBackgroundCount} 个后台任务结果`
 				: '等待后台任务结果';
 		}
-		if (!currentEntry) return '工作过程';
+		if (!currentEntry) return '思考';
 		if (streaming) {
 			if (currentEntry.type === 'tool') {
 				return `正在执行 ${toolDisplayName(String(currentEntry.toolName || '工具'))}`;
@@ -86,7 +86,7 @@
 			if (currentEntry.type === 'reasoning') return '正在思考';
 			return '正在整理下一步';
 		}
-		return toolCount > 0 ? `已完成 ${toolCount} 个操作` : '已完成工作过程';
+		return toolCount > 0 ? `已完成 ${toolCount} 个操作` : '已完成思考';
 	});
 
 	let meta = $derived(
@@ -128,7 +128,7 @@
 	class="activity-group"
 	class:is-streaming={streaming}
 	data-surface="outlined"
-	aria-label="Agent 工作过程"
+	aria-label="Agent 思考"
 >
 	<!-- Keep child disclosure components mounted. The outer summary is a
 	     second, independent disclosure; lazy-unmounting it reset the manual
@@ -161,7 +161,8 @@
 				{@const msg = entry.message}
 				{@const backgroundToolRun = backgroundToolRunFor(msg)}
 				{@const resultInTranscript =
-					backgroundToolRun != null && terminalOutputAlreadyInTranscript(backgroundToolRun)}
+					backgroundToolRun != null &&
+					terminalOutputAlreadyInTranscript(backgroundToolRun)}
 				{@const showFallbackIntent =
 					msg.type === 'tool' &&
 					(msg.showFallbackIntent ?? !hasToolPreambleBefore(allMessages, entry.index))}
@@ -178,24 +179,26 @@
 					result={msg.result}
 					messageId={msg.id}
 					stepNumber={msg.stepNumber ?? null}
-					toolArgs={
-						msg.toolArgs ??
-						(backgroundToolRun?.command ? { command: backgroundToolRun.command } : null)
-					}
+					toolArgs={msg.toolArgs ??
+						(backgroundToolRun?.command
+							? { command: backgroundToolRun.command }
+							: null)}
 					attachments={msg.attachments || []}
 					{showFallbackIntent}
 					options={msg.options || []}
 					awaiting={!!msg.awaiting}
 					received={!!msg.received}
 					resolved={msg.resolved || null}
-					toolRunId={resultInTranscript ? null : msg.toolRunId || backgroundToolRun?.toolRunId || null}
+					toolRunId={resultInTranscript
+						? null
+						: msg.toolRunId || backgroundToolRun?.toolRunId || null}
 					toolRunData={resultInTranscript ? null : backgroundToolRun}
-					awaitingBackgroundResult={
-						!resultInTranscript && backgroundToolRun?.toolRunId === awaitingBackgroundToolRunId
-					}
-					awaitingBackgroundCount={
-						backgroundToolRun?.toolRunId === awaitingBackgroundToolRunId ? awaitingBackgroundCount : 0
-					}
+					awaitingBackgroundResult={!resultInTranscript &&
+						backgroundToolRun?.toolRunId === awaitingBackgroundToolRunId}
+					awaitingBackgroundCount={backgroundToolRun?.toolRunId ===
+					awaitingBackgroundToolRunId
+						? awaitingBackgroundCount
+						: 0}
 					compact
 					{onContextMenu}
 					{onAskSelectionChange}

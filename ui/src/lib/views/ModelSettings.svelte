@@ -10,10 +10,7 @@
 	import StatusBadge from '$lib/StatusBadge.svelte';
 	import SettingsSection from '$lib/SettingsSection.svelte';
 	import SettingsField from '$lib/SettingsField.svelte';
-	import {
-		createModelDiscovery,
-		type DiscoveredModelMetadataFill,
-	} from '$lib/modelDiscovery.ts';
+	import { createModelDiscovery, type DiscoveredModelMetadataFill } from '$lib/modelDiscovery.ts';
 	import { emptyModel, capabilityOptions, requestPolicyOptions } from '$lib/modelRoles.ts';
 	import { withNumberValue, withStringValue } from '$lib/typedCallbacks.ts';
 	import type {
@@ -192,7 +189,11 @@
 			if (policy.primary === previousId) policy.primary = id;
 		}
 	}
-	function updateModelOverride(model: ModelDraft, field: ModelOverrideField, value: number | null) {
+	function updateModelOverride(
+		model: ModelDraft,
+		field: ModelOverrideField,
+		value: number | null,
+	) {
 		model[field] = value;
 	}
 	function isProviderKeyConfigured(provider: ProviderKeyCheckInput | undefined) {
@@ -482,27 +483,29 @@
 			<div class="card-list policy-list">
 				{#each llmConfig.request_policies || [] as policy (policy.request)}
 					<MaterialCard variant="outlined" className="settings-card policy-card">
-						<div class="model-field settings-field-layout">
-							<span class="field-label">请求类型</span>
-							<MaterialSelect
-								id="policy-{policy.request}"
-								value={policy.request}
-								options={requestPolicyOptions}
-								ariaLabel={`请求路由类型：${policy.request}`}
-								onChange={withStringValue((value) =>
-									setPolicyRequestFromInput(policy, value),
-								)}
-							/>
-						</div>
-						<div class="model-field settings-field-layout">
-							<span class="field-label">首选模型</span>
-							<MaterialSelect
-								id="policy-{policy.request}-primary"
-								value={policy.primary || ''}
-								options={modelOptionsForPolicy(policy)}
-								ariaLabel={`${policy.request} 的首选模型`}
-								onChange={withStringValue((value) => (policy.primary = value))}
-							/>
+						<div class="policy-fields">
+							<div class="model-field settings-field-layout">
+								<span class="field-label">请求类型</span>
+								<MaterialSelect
+									id="policy-{policy.request}"
+									value={policy.request}
+									options={requestPolicyOptions}
+									ariaLabel={`请求路由类型：${policy.request}`}
+									onChange={withStringValue((value) =>
+										setPolicyRequestFromInput(policy, value),
+									)}
+								/>
+							</div>
+							<div class="model-field settings-field-layout">
+								<span class="field-label">首选模型</span>
+								<MaterialSelect
+									id="policy-{policy.request}-primary"
+									value={policy.primary || ''}
+									options={modelOptionsForPolicy(policy)}
+									ariaLabel={`${policy.request} 的首选模型`}
+									onChange={withStringValue((value) => (policy.primary = value))}
+								/>
+							</div>
 						</div>
 						<MaterialButton
 							variant="text"
@@ -577,12 +580,21 @@
 	}
 	:global(.policy-card) {
 		display: grid;
-		grid-template-columns: minmax(0, 1fr);
-		align-items: stretch;
+		grid-template-columns: minmax(0, 1fr) auto;
+		align-items: center;
 		gap: var(--md-sys-space-md);
+	}
+	.policy-fields {
+		display: grid;
+		grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.2fr);
+		align-items: center;
+		gap: var(--md-sys-space-md);
+		min-width: 0;
 	}
 	:global(.policy-card > .md-btn) {
 		justify-self: end;
+		align-self: center;
+		white-space: nowrap;
 	}
 	.section-actions {
 		display: flex;
@@ -621,12 +633,17 @@
 		margin-bottom: 0;
 		line-height: var(--md-sys-typescale-label-small-line-height);
 	}
+	@container settings-content (max-width: 760px) {
+		:global(.policy-card) {
+			grid-template-columns: minmax(0, 1fr);
+		}
+	}
 	@container settings-content (max-width: 640px) {
 		.policy-section-heading {
 			align-items: flex-start;
 			flex-direction: column;
 		}
-		:global(.policy-card) {
+		.policy-fields {
 			grid-template-columns: 1fr;
 		}
 	}

@@ -1,10 +1,6 @@
 /** Shared tool-name → source / label helpers for chat tool cards. */
 
-import {
-	toolLabel,
-	toolRepresentedSource,
-	toolRootName,
-} from './toolManifest.ts';
+import { toolLabel, toolRepresentedSource, toolRootName } from './toolManifest.ts';
 import type { ToolSource } from './contracts/generatedCommands.ts';
 
 /** @type {Record<string, string>} */
@@ -21,12 +17,9 @@ export const TOOL_LABELS: Record<string, string> = {
 	// Skills are registered directly as independent tools.
 	web_search: '联网搜索',
 	agent: 'Agent 协作',
-	process: '进程',
 	clipboard: '剪贴板',
 	input: '输入控制',
 	window: '窗口与屏幕',
-	preferences: '会话偏好',
-	checklist: '检查清单',
 	tool_runs: '后台任务',
 	schedule: '定时任务',
 	haven_diagnostics: 'Haven 诊断',

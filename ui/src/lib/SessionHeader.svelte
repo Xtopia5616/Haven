@@ -5,6 +5,7 @@
 	interface Props {
 		title?: string;
 		hasSession?: boolean;
+		canEndSession?: boolean;
 		onNew?: () => void;
 		onDelete?: () => void;
 		onEnd?: () => void;
@@ -18,6 +19,7 @@
 	let {
 		title = '新会话',
 		hasSession = false,
+		canEndSession = true,
 		onNew,
 		onDelete,
 		onEnd,
@@ -55,15 +57,17 @@
 					icon="delete"
 					onclick={() => onDelete?.()}
 				/>
-				<MaterialIconButton
-					size="toolbar"
-					variant="success-outline"
-					className="session-header__end"
-					label="完成会话"
-					title="完成会话"
-					icon="check"
-					onclick={() => onEnd?.()}
-				/>
+				{#if canEndSession}
+					<MaterialIconButton
+						size="toolbar"
+						variant="success-outline"
+						className="session-header__end"
+						label="完成会话"
+						title="完成会话"
+						icon="check"
+						onclick={() => onEnd?.()}
+					/>
+				{/if}
 			{/if}
 		</div>
 	</div>

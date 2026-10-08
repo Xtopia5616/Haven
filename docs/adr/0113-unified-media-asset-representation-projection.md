@@ -165,7 +165,7 @@ Haven 的前端用一个附件列表提交图片、音频和普通文件，但�
 阶段 4 的表示策略与降级可见性已接通：`MediaConfig.input_strategy` 通过现有
 `ConfigService` / `ConfigChanged` 链路热应用到 ReAct；`agent:media_plan` 事件现在同时
 携带实际策略、每个资产最终选择的 representation/mode 和稳定 notice code。前端将该事件
-保留为会话内临时诊断，在对应 Agent 工作过程中显示资产表示卡，并以 toast 告知降级原因。
+保留为会话内临时诊断，在对应 Agent 思考中显示资产表示卡，并以 toast 告知降级原因。
 
 `TranscriptRecord::MediaPlan` 是事件权威中的结构化诊断，保存 snapshot-safe
 `media_inputs`、最终 projection 和稳定 notice code；`agent:media_plan` 是它的

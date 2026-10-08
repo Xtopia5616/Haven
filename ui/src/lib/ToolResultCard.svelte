@@ -62,6 +62,9 @@
 		awaitingBackgroundCount?: number;
 		toolRunOutputHidden?: boolean;
 		toolArgs?: unknown;
+		toolCallPreview?: boolean;
+		toolArgsStreaming?: boolean;
+		toolArgsTruncated?: boolean;
 		showFallbackIntent?: boolean;
 	}
 
@@ -89,6 +92,9 @@
 		awaitingBackgroundCount = 0,
 		toolRunOutputHidden = false,
 		toolArgs = null,
+		toolCallPreview = false,
+		toolArgsStreaming = false,
+		toolArgsTruncated = false,
 		showFallbackIntent = false,
 	}: Props = $props();
 
@@ -120,6 +126,17 @@
 		}
 	}
 
+	function parseDisplayedToolArgs(value: unknown): { validJson: boolean; value: unknown } {
+		if (!toolArgsStreaming || typeof value !== 'string') {
+			return { validJson: true, value: parseToolArgs(value) };
+		}
+		try {
+			return { validJson: true, value: JSON.parse(value) };
+		} catch {
+			return { validJson: false, value: null };
+		}
+	}
+
 	// Drop stale selections when the card leaves the awaiting state (answered,
 	// ignored, or session resumed) so a later ask never inherits them.
 	$effect(() => {
@@ -139,7 +156,7 @@
 		failed: '调用失败',
 		cancelled: '已取消',
 		timed_out: '执行超时',
-		unknown: '结果未知，可能已执行',
+		unknown: '结果未知',
 	};
 
 	// Foreground live tail (side-channel; not written into the message list).
@@ -169,7 +186,9 @@
 		const outcome = effectiveOutcome || (liveStreaming ? 'running' : 'completed');
 		return TOOL_RESULT_OUTCOME_DISPLAY_STATES[outcome] || outcome;
 	});
-	let toolStateLabel = $derived(TOOL_STATE_LABELS[toolState] || toolState);
+	let toolStateLabel = $derived(
+		toolCallPreview ? '准备中' : TOOL_STATE_LABELS[toolState] || toolState,
+	);
 	// Preview chunks are a display-only side channel. They may briefly be empty
 	// between output events, so they must not drive the disclosure lifecycle or
 	// a manual collapse can be reopened by the next chunk. The message/action
@@ -260,7 +279,6 @@
 		const rootToolName = toolRootName(toolName);
 		if (rootToolName === 'files' && Array.isArray(data.results)) return 'search';
 		if (rootToolName === 'system') {
-			if (data.scope === 'process') return 'activity';
 			if (data.scope === 'window') return 'monitor';
 			if (data.scope === 'clipboard') return 'clipboard';
 			if (data.scope === 'input') return 'tools';
@@ -525,16 +543,27 @@
 				{/if}
 
 				<section class="tool-detail" data-detail="args">
-					<div class="tool-detail-label">调用参数</div>
+					<div class="tool-detail-label">
+						{toolArgsStreaming ? '调用参数（生成中）' : '调用参数'}
+					</div>
 					{#if hasToolArgs}
-						{@const argsValue = parseToolArgs(toolArgs)}
-						{#if argsValue != null}
+						{@const argsDisplay = parseDisplayedToolArgs(toolArgs)}
+						{#if argsDisplay.validJson && argsDisplay.value != null}
 							<div class="tool-args">
-								<JsonView value={argsValue} defaultDepth={0} />
+								<JsonView value={argsDisplay.value} defaultDepth={0} />
 							</div>
+						{:else if toolArgsStreaming}
+							<pre
+								class="tool-args-preview"
+								aria-label="尚未完成的调用参数">{toolArgs}</pre>
 						{:else}
 							<p class="tool-result-message">（无参数）</p>
 						{/if}
+						{#if toolArgsTruncated}<p class="tool-result-message">
+								参数预览已截断
+							</p>{/if}
+					{:else if toolArgsStreaming}
+						<p class="tool-result-message">等待参数片段…</p>
 					{:else}
 						<p class="tool-result-message">（无参数）</p>
 					{/if}
@@ -544,6 +573,8 @@
 					<div class="tool-detail-label">输出结果</div>
 					{#if toolRunOutputHidden}
 						<p class="tool-result-message">结果已在会话消息中显示</p>
+					{:else if toolCallPreview}
+						<p class="tool-result-message">模型仍在生成参数，工具尚未执行</p>
 					{:else if failedWithoutOutput}
 						<p class="tool-result-message tool-result-message--error">
 							{emptyOutputLabel}
@@ -604,6 +635,13 @@
 			background-color var(--md-sys-motion-duration-short)
 				var(--md-sys-motion-easing-standard),
 			box-shadow var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard);
+	}
+	.tool-args-preview {
+		margin: 0;
+		white-space: pre-wrap;
+		overflow-wrap: anywhere;
+		font-family: var(--md-sys-typescale-body-small-font, monospace);
+		font-size: var(--md-sys-typescale-body-small-size, 0.8125rem);
 	}
 	/* ChatBubble owns the shared chat surface. Embedded tool cards
 	 * keep their semantic header/details but do not create a second card. */

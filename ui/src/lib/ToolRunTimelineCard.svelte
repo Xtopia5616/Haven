@@ -1,6 +1,11 @@
 <script lang="ts">
-	import { projectToolRunCard } from '$lib/toolRunCardProjection.ts';
-	import { toolRunStatusLabel, scheduleModeLabel, toolRunKindLabel } from '$lib/toolRunTerminology.ts';
+	import { projectToolRunCard, toolRunCardBadgeTone } from '$lib/toolRunCardProjection.ts';
+	import {
+		toolRunStatusLabel,
+		scheduleModeLabel,
+		toolRunKindLabel,
+	} from '$lib/toolRunTerminology.ts';
+	import StatusBadge from '$lib/StatusBadge.svelte';
 	import ToolResultCard from '$lib/ToolResultCard.svelte';
 	import type { ToolRunPayload } from '$lib/contracts/toolRun.ts';
 
@@ -64,9 +69,7 @@
 		}
 		return toolRun.startedAt ? `开始于 ${formatDate(toolRun.startedAt)}` : '';
 	});
-	const summary = $derived(
-		toolRun?.kind === 'scheduled' ? toolRun.body || '' : '',
-	);
+	const summary = $derived(toolRun?.kind === 'scheduled' ? toolRun.body || '' : '');
 	const backgroundResult = $derived(
 		JSON.stringify({
 			background: true,
@@ -88,42 +91,45 @@
 		content={backgroundResult}
 		toolArgs={toolRun?.command ? { command: toolRun.command } : null}
 		messageId={toolRun?.sourceStepId ?? toolRun?.toolRunId ?? 'background-tool-run-wait'}
-		toolRunId={showTerminalOutput ? toolRun?.toolRunId ?? null : null}
-		toolRunData={showTerminalOutput ? toolRun ?? null : null}
+		toolRunId={showTerminalOutput ? (toolRun?.toolRunId ?? null) : null}
+		toolRunData={showTerminalOutput ? (toolRun ?? null) : null}
 		toolRunOutputHidden={!!toolRun && !showTerminalOutput}
 		{awaitingBackgroundResult}
 		{awaitingBackgroundCount}
 	/>
 {:else}
-<article
-	class="tool-run-timeline-card"
-	data-kind="scheduled"
-	data-tone={projection?.tone ?? 'waiting'}
-	aria-label={`${toolRunKindLabel('scheduled')}：${projection?.title ?? ''}，${projection?.statusLabel ?? ''}`}
->
-	<div class="tool-run-header">
-		<span class="tool-run-kind">{toolRunKindLabel('scheduled')}</span>
-		{#if projection?.statusLabel}
-			<span class="md-badge" data-variant={projection.tone}>{projection.statusLabel}</span>
+	<article
+		class="tool-run-timeline-card"
+		data-kind="scheduled"
+		data-tone={projection?.tone ?? 'waiting'}
+		aria-label={`${toolRunKindLabel('scheduled')}：${projection?.title ?? ''}，${projection?.statusLabel ?? ''}`}
+	>
+		<div class="tool-run-header">
+			<span class="tool-run-kind">{toolRunKindLabel('scheduled')}</span>
+			{#if projection?.statusLabel}
+				<StatusBadge
+					label={projection.statusLabel}
+					tone={toolRunCardBadgeTone(projection.tone)}
+				/>
+			{/if}
+			{#if projection?.timing && toolRun?.status === 'running'}
+				<span class="tool-run-timing">{projection.timing}</span>
+			{/if}
+		</div>
+
+		<div class="tool-run-title-row">
+			<strong>{projection?.title ?? '定时任务'}</strong>
+			{#if triggerTime}<span class="tool-run-trigger-time">{triggerTime}</span>{/if}
+		</div>
+
+		{#if summary}
+			<p class="tool-run-summary">{summary}</p>
 		{/if}
-		{#if projection?.timing && toolRun?.status === 'running'}
-			<span class="tool-run-timing">{projection.timing}</span>
-		{/if}
-	</div>
 
-	<div class="tool-run-title-row">
-		<strong>{projection?.title ?? '定时任务'}</strong>
-		{#if triggerTime}<span class="tool-run-trigger-time">{triggerTime}</span>{/if}
-	</div>
-
-	{#if summary}
-		<p class="tool-run-summary">{summary}</p>
-	{/if}
-
-	<div class="scheduled-details">
-		<span>{scheduleModeLabel(toolRun.mode)}</span>
-	</div>
-</article>
+		<div class="scheduled-details">
+			<span>{scheduleModeLabel(toolRun.mode)}</span>
+		</div>
+	</article>
 {/if}
 
 <style>

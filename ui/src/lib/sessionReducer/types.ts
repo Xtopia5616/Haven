@@ -1,5 +1,6 @@
 import type {
 	AgentToolCallPayload,
+	AgentToolCallChunkPayload,
 	AgentChunkPayload,
 	AgentObservationPayload,
 	AgentStreamResetPayload,
@@ -191,6 +192,7 @@ export type SessionAction =
 			result: ConfirmationResolutionResult;
 	  }
 	| { type: 'agent/chunks'; chunks: AgentChunkBatchItem[] }
+	| { type: 'agent/tool-call-chunk'; payload: AgentToolCallChunkPayload }
 	| { type: 'agent/thought'; payload: AgentThoughtPayload }
 	| { type: 'agent/stream-reset'; payload: AgentStreamResetPayload }
 	| { type: 'agent/web-search'; payload: AgentWebSearchPayload }

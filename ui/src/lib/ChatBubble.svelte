@@ -46,6 +46,9 @@
 		messageId?: string;
 		stepNumber?: number | null;
 		toolArgs?: unknown;
+		toolCallPreview?: boolean;
+		toolArgsStreaming?: boolean;
+		toolArgsTruncated?: boolean;
 		attachments?: ChatBubbleAttachment[];
 		options?: string[];
 		awaiting?: boolean;
@@ -79,6 +82,9 @@
 		messageId = '',
 		stepNumber = null,
 		toolArgs = null,
+		toolCallPreview = false,
+		toolArgsStreaming = false,
+		toolArgsTruncated = false,
 		attachments = [],
 		options = [],
 		awaiting = false,
@@ -527,6 +533,9 @@
 				{awaitingBackgroundResult}
 				{awaitingBackgroundCount}
 				{toolArgs}
+				{toolCallPreview}
+				{toolArgsStreaming}
+				{toolArgsTruncated}
 				{showFallbackIntent}
 				{messageId}
 			/>

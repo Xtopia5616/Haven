@@ -1,5 +1,5 @@
 <script lang="ts">
-	import MaterialBadge from '$lib/MaterialBadge.svelte';
+	import StatusBadge from '$lib/StatusBadge.svelte';
 	import Icon from '$lib/Icon.svelte';
 	import MaterialButton from '$lib/MaterialButton.svelte';
 	import MaterialSelect from '$lib/MaterialSelect.svelte';
@@ -87,6 +87,20 @@
 	};
 	function sessionStatusLabel(status: SessionHistoryRow['status']) {
 		return statusLabels[status];
+	}
+	function sessionStatusBadgeTone(status: SessionHistoryRow['status']) {
+		switch (statusVariant(status)) {
+			case 'primary':
+				return 'info';
+			case 'success':
+				return 'success';
+			case 'warning':
+				return 'warning';
+			case 'error':
+				return 'error';
+			default:
+				return 'neutral';
+		}
 	}
 	function isSessionHistoryStatusFilterInput(
 		value: string,
@@ -210,9 +224,9 @@
 												></span>
 												会话
 											</span>
-											<MaterialBadge
-												variant={statusVariant(session.status)}
-												text={sessionStatusLabel(session.status)}
+											<StatusBadge
+												label={sessionStatusLabel(session.status)}
+												tone={sessionStatusBadgeTone(session.status)}
 											/>
 										</div>
 										<div class="session-title-row">

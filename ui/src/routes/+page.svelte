@@ -87,6 +87,7 @@
 		SessionMessage,
 		SessionSummary,
 		SessionRunEndNotice,
+		SessionRunEndStatus,
 		SessionTokenStats,
 	} from '$lib/sessionReducer.ts';
 	import type { SessionTokenStatsView } from '$lib/sessionUsagePresentation.ts';
@@ -261,7 +262,7 @@
 	let llmUsage = $state<SessionLlmUsage[]>(
 		currentReducerState.activeSessionId
 			? (currentReducerState.llmUsage[currentReducerState.activeSessionId] ??
-				emptySessionLlmUsage)
+					emptySessionLlmUsage)
 			: emptySessionLlmUsage,
 	);
 	$effect(() => syncStore(activeSessionLlmUsageStore, (next) => (llmUsage = next)));
@@ -972,14 +973,25 @@
 			}
 		}
 		await chatSessionController.switchToSession(sessionId);
-		if (historical && isErrorStatus(historical.status)) {
+		const historicalRunEndStatus: SessionRunEndStatus | undefined =
+			historical?.status === 'paused'
+				? 'paused'
+				: historical?.status === 'completed'
+					? 'completed'
+					: historical && isErrorStatus(historical.status)
+						? 'error'
+						: undefined;
+		if (historical && historicalRunEndStatus) {
 			dispatchSession({
 				type: 'session/run-ended',
 				sessionId,
-				status: 'error',
+				status: historicalRunEndStatus,
 				reason:
+					historical.run_end_reason ||
 					sessionReducer.getSessionErrorReason(sessionId) ||
-					'本次会话因错误停止，暂未收到更具体的原因。',
+					(historicalRunEndStatus === 'error'
+						? '本次会话因错误停止，暂未收到更具体的原因。'
+						: ''),
 			});
 		}
 	}
@@ -1002,10 +1014,11 @@
 		dismissedAskIds = new Set([...dismissedAskIds].filter((dismissedId) => dismissedId !== id));
 		chatViewController.setAutoFollow(false);
 		await tick();
-		const askCard = Array.from(messagesEl?.querySelectorAll('[data-interaction-id]') || []).find(
-			(element) => element.getAttribute('data-interaction-id') === id,
-		);
-		if (askCard instanceof HTMLElement) askCard.scrollIntoView?.({ behavior: 'smooth', block: 'center' });
+		const askCard = Array.from(
+			messagesEl?.querySelectorAll('[data-interaction-id]') || [],
+		).find((element) => element.getAttribute('data-interaction-id') === id);
+		if (askCard instanceof HTMLElement)
+			askCard.scrollIntoView?.({ behavior: 'smooth', block: 'center' });
 	}
 
 	function endSession() {
@@ -1175,7 +1188,8 @@
 	<div class="session-column">
 		<SessionHeader
 			title={sessionHeaderTitle}
-			hasSession={!!activeSessionId && !activeSessionRunEndNotice}
+			hasSession={!!activeSessionId}
+			canEndSession={activeSessionStatus !== 'completed'}
 			onNew={newSession}
 			onDelete={requestDeleteSession}
 			onEnd={endSession}
@@ -1226,7 +1240,7 @@
 					continueBusy={continuePending}
 					onContextMenu={handleContextMenu}
 					onAskSelectionChange={handleAskSelectionChange}
-					getAskSelection={getAskSelection}
+					{getAskSelection}
 					onIgnore={handleIgnoreAsk}
 					onAskSubmit={handleAskSubmit}
 					onAskDismiss={dismissAsk}

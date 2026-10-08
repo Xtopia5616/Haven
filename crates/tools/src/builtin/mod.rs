@@ -1,7 +1,6 @@
 pub mod admin;
 mod admin_support;
 pub mod ask;
-pub mod checklist;
 pub mod clipboard;
 mod env;
 mod file_outline;
@@ -18,8 +17,6 @@ pub mod messaging;
 pub mod notify;
 mod operation_contract;
 mod power;
-pub mod preferences;
-pub mod process;
 mod registry;
 pub mod scheduled_tool_run;
 pub mod shell;
@@ -285,9 +282,6 @@ pub async fn register_builtin_tools(
         tools.push(OperationViewTool::new(files_tool.clone(), contract));
     }
     add_operation_views(tools, files_tool.clone(), settings, FILE_OPERATION_VIEWS);
-    let process_tool: ToolHandle = Arc::new(process::ProcessTool {
-        max_output_chars: tool_output_cap(settings, "process", limits.max_observation_chars),
-    });
     let clipboard_tool: ToolHandle = Arc::new(
         clipboard::ClipboardTool::new(
             clipboard_history,
@@ -314,11 +308,8 @@ pub async fn register_builtin_tools(
         // schedule time; taken before the registry is shared with admin services.
         registry: Some(registry.probe()),
     });
-    let preferences_tool: ToolHandle = Arc::new(preferences::PreferencesTool::default());
-    let checklist_tool: ToolHandle = Arc::new(checklist::ChecklistTool::default());
     let window_tool: ToolHandle =
         Arc::new(window::WindowTool::new(managed_assets).with_media_tool(media_tool));
-    add_operation_views(tools, process_tool, settings, PROCESS_OPERATION_VIEWS);
     add_operation_views(tools, clipboard_tool, settings, CLIPBOARD_OPERATION_VIEWS);
     add_operation_views(tools, input_tool, settings, INPUT_OPERATION_VIEWS);
     add_operation_views(tools, window_tool, settings, WINDOW_OPERATION_VIEWS);
@@ -413,13 +404,6 @@ pub async fn register_builtin_tools(
     }
     add_tool_run_views(tools, tool_runs_tool, settings);
     add_operation_views(tools, schedule_tool, settings, SCHEDULE_OPERATION_VIEWS);
-    add_operation_views(
-        tools,
-        preferences_tool,
-        settings,
-        PREFERENCE_OPERATION_VIEWS,
-    );
-    add_operation_views(tools, checklist_tool, settings, CHECKLIST_OPERATION_VIEWS);
     admin_surfaces
 }
 
@@ -773,11 +757,6 @@ const FILE_OPERATION_VIEWS: &[SplitOperationSpec] = &[
     split_spec!("files.list", "list", "files", "folder"),
 ];
 
-const PROCESS_OPERATION_VIEWS: &[SplitOperationSpec] = &[
-    split_spec!("process.list", "list", "process", "activity"),
-    split_spec!("process.kill", "kill", "process", "activity"),
-];
-
 const CLIPBOARD_OPERATION_VIEWS: &[SplitOperationSpec] = &[
     split_spec!("clipboard.read", "read", "clipboard", "clipboard"),
     split_spec!("clipboard.write", "write", "clipboard", "clipboard"),
@@ -800,7 +779,6 @@ const WINDOW_OPERATION_VIEWS: &[SplitOperationSpec] = &[
     split_spec!("window.focus", "focus", "window", "monitor"),
     split_spec!("window.close", "close", "window", "monitor"),
     split_spec!("window.screenshot", "screenshot", "window", "image"),
-    split_spec!("window.ocr", "ocr", "window", "image"),
     split_spec!("window.ui_tree", "ui_tree", "window", "account_tree"),
     split_spec!("window.observe", "observe", "window", "image"),
     split_spec!("window.invoke", "invoke", "window", "play"),
@@ -866,26 +844,9 @@ const SCHEDULE_OPERATION_VIEWS: &[SplitOperationSpec] = &[
     split_spec!("schedule.cancel", "cancel", "schedule", "bell"),
 ];
 
-const PREFERENCE_OPERATION_VIEWS: &[SplitOperationSpec] = &[
-    split_spec!("preferences.get", "get", "preferences", "settings"),
-    split_spec!("preferences.set", "set", "preferences", "settings"),
-    split_spec!("preferences.clear", "clear", "preferences", "settings"),
-    split_spec!("preferences.list", "list", "preferences", "settings"),
-];
-
-const CHECKLIST_OPERATION_VIEWS: &[SplitOperationSpec] = &[
-    split_spec!("checklist.list", "list", "checklist", "checklist"),
-    split_spec!("checklist.add", "add", "checklist", "checklist"),
-    split_spec!("checklist.update", "update", "checklist", "checklist"),
-    split_spec!("checklist.remove", "remove", "checklist", "checklist"),
-    split_spec!("checklist.clear", "clear", "checklist", "checklist"),
-];
-
 const SYSTEM_SCOPE_OPERATION_VIEWS: &[(&str, &str, &str, &str, &str)] = &[
     ("system.env.list", "env", "list", "system", "terminal"),
     ("system.env.get", "env", "get", "system", "terminal"),
-    ("system.env.set", "env", "set", "system", "terminal"),
-    ("system.env.unset", "env", "unset", "system", "terminal"),
     (
         "system.registry.list",
         "registry",
@@ -897,27 +858,6 @@ const SYSTEM_SCOPE_OPERATION_VIEWS: &[(&str, &str, &str, &str, &str)] = &[
         "system.registry.get",
         "registry",
         "get",
-        "system",
-        "settings",
-    ),
-    (
-        "system.registry.set",
-        "registry",
-        "set",
-        "system",
-        "settings",
-    ),
-    (
-        "system.registry.delete_value",
-        "registry",
-        "delete_value",
-        "system",
-        "settings",
-    ),
-    (
-        "system.registry.delete_key",
-        "registry",
-        "delete_key",
         "system",
         "settings",
     ),
@@ -1332,7 +1272,6 @@ mod tests {
             10,
             2_000,
         );
-        let process = process::ProcessTool::default();
         let http = http::HttpTool::default();
         let input = input::InputTool;
         let system = system::SystemTool::default();
@@ -1346,11 +1285,6 @@ mod tests {
                 &media,
                 json!({"operation": "volume_set", "volume": 0.5}),
                 json!({"operation": "volume_set"}),
-            ),
-            (
-                &process,
-                json!({"operation": "kill", "pid": 1}),
-                json!({"operation": "kill", "command": "taskkill"}),
             ),
             (
                 &clipboard,
@@ -1369,8 +1303,8 @@ mod tests {
             ),
             (
                 &system,
+                json!({"scope": "env", "operation": "get", "name": "PATH"}),
                 json!({"scope": "env", "operation": "set", "name": "HAVEN_TEST", "value": "x"}),
-                json!({"scope": "env", "operation": "set", "name": "HAVEN_TEST"}),
             ),
             (
                 &window,

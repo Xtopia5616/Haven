@@ -47,6 +47,7 @@ pub(crate) const AGENT_TOOL_CALL_EVENT: &str = "agent:tool_call";
 pub(crate) const AGENT_OBSERVATION_EVENT: &str = "agent:observation";
 pub(crate) const AGENT_THOUGHT_CHUNK_EVENT: &str = "agent:thought_chunk";
 pub(crate) const AGENT_REASONING_CHUNK_EVENT: &str = "agent:reasoning_chunk";
+pub(crate) const AGENT_TOOL_CALL_CHUNK_EVENT: &str = "agent:tool_call_chunk";
 pub(crate) const AGENT_STREAM_RESET_EVENT: &str = "agent:stream_reset";
 pub(crate) const AGENT_MEDIA_PLAN_EVENT: &str = "agent:media_plan";
 pub(crate) const AGENT_WEB_SEARCH_EVENT: &str = "agent:web_search";
@@ -508,6 +509,19 @@ pub(crate) struct AgentReasoningChunkEvent {
     pub step_number: u32,
     pub run_id: u64,
     pub message_id: String,
+    pub seq: u64,
+}
+
+#[derive(Clone, Serialize)]
+pub(crate) struct AgentToolCallChunkEvent {
+    pub session_id: String,
+    pub preview_id: String,
+    pub tool_name: String,
+    pub arguments: String,
+    pub arguments_truncated: bool,
+    pub step_number: u32,
+    pub run_id: u64,
+    pub tool_index: u32,
     pub seq: u64,
 }
 

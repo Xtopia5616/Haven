@@ -28,6 +28,12 @@ export function createChatAgentEventHandlers({
 		},
 		'agent:thought_chunk': chunkHandler(true, undefined),
 		'agent:reasoning_chunk': chunkHandler(false, 'reasoning'),
+		'agent:tool_call_chunk': (event) => {
+			const data = event.payload;
+			flushChunksNow();
+			if (data?.sessionId) updateReactExecutionPhase(data.sessionId, 'generating');
+			dispatchSession({ type: 'agent/tool-call-chunk', payload: data });
+		},
 		'agent:stream_reset': (event) => {
 			const data = event.payload;
 			if (!data?.sessionId) return;

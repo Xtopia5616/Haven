@@ -73,7 +73,7 @@
 </script>
 
 {#if timelineItems.length === 0}
-	<SessionWelcome hotkeyBinding={hotkeyBinding} animated />
+	<SessionWelcome {hotkeyBinding} animated />
 {:else}
 	<div class="message-list" role="log" aria-label="会话消息">
 		{#each timelineItems as item (item.kind === 'message' ? item.message.id : item.id)}
@@ -126,6 +126,9 @@
 					messageId={msg.id}
 					stepNumber={msg.stepNumber}
 					toolArgs={msg.toolArgs ?? null}
+					toolCallPreview={msg.toolCallPreview ?? false}
+					toolArgsStreaming={msg.toolArgsStreaming ?? false}
+					toolArgsTruncated={msg.toolArgsTruncated ?? false}
 					attachments={msg.attachments}
 					{showFallbackIntent}
 					options={msg.options ?? []}

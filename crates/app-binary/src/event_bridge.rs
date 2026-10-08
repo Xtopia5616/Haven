@@ -245,7 +245,9 @@ impl AgentEventEmitter for TauriEmitter {
         self.trace_event(&event);
         let channel = Self::channel(&event);
         let chunk_seq = match &event {
-            AgentEvent::ThoughtChunk { .. } | AgentEvent::ReasoningChunk { .. } => {
+            AgentEvent::ThoughtChunk { .. }
+            | AgentEvent::ReasoningChunk { .. }
+            | AgentEvent::ToolCallChunk { .. } => {
                 Some(self.chunk_seq.fetch_add(1, Ordering::Relaxed))
             }
             _ => None,
@@ -288,6 +290,7 @@ impl TauriEmitter {
             AgentEvent::ToolRunCompletionNotification { .. } => NOTIFICATION_SHOW_EVENT,
             AgentEvent::ThoughtChunk { .. } => AGENT_THOUGHT_CHUNK_EVENT,
             AgentEvent::ReasoningChunk { .. } => AGENT_REASONING_CHUNK_EVENT,
+            AgentEvent::ToolCallChunk { .. } => AGENT_TOOL_CALL_CHUNK_EVENT,
             AgentEvent::StreamReset { .. } => AGENT_STREAM_RESET_EVENT,
             AgentEvent::MediaPlan { .. } => AGENT_MEDIA_PLAN_EVENT,
             AgentEvent::WebSearch { .. } => AGENT_WEB_SEARCH_EVENT,
@@ -505,6 +508,26 @@ impl TauriEmitter {
                 step_number: *step_number,
                 run_id: *run_id,
                 message_id: message_id.clone(),
+                seq: chunk_seq.unwrap_or(0),
+            }),
+            AgentEvent::ToolCallChunk {
+                session_id,
+                preview_id,
+                tool_name,
+                arguments,
+                arguments_truncated,
+                step_number,
+                run_id,
+                tool_index,
+            } => serialize(AgentToolCallChunkEvent {
+                session_id: session_id.clone(),
+                preview_id: preview_id.clone(),
+                tool_name: tool_name.clone(),
+                arguments: arguments.clone(),
+                arguments_truncated: *arguments_truncated,
+                step_number: *step_number,
+                run_id: *run_id,
+                tool_index: *tool_index,
                 seq: chunk_seq.unwrap_or(0),
             }),
             AgentEvent::StreamReset {
@@ -748,6 +771,23 @@ impl TauriEmitter {
                     run_id = %run_id,
                     silent = *silent,
                     "TauriEmitter::on_observation"
+                );
+            }
+            AgentEvent::ToolCallChunk {
+                session_id,
+                tool_name,
+                arguments,
+                step_number,
+                run_id,
+                ..
+            } => {
+                tracing::trace!(
+                    session_id = %session_id,
+                    tool_name = %tool_name,
+                    step_number = %step_number,
+                    run_id = %run_id,
+                    arguments_len = arguments.len(),
+                    "TauriEmitter::on_tool_call_chunk"
                 );
             }
             AgentEvent::SessionCreated(session) => {

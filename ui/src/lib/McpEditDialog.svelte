@@ -202,7 +202,7 @@
 				{#snippet children()}
 					<textarea
 						id="mcp-headers"
-						class="md-textarea"
+						class="md-textarea md-textarea--code"
 						bind:value={envText}
 						rows="3"
 						placeholder="AUTHORIZATION=Bearer abc123"
@@ -240,7 +240,7 @@
 				{#snippet children()}
 					<textarea
 						id="mcp-args"
-						class="md-textarea"
+						class="md-textarea md-textarea--code"
 						bind:value={argsText}
 						rows="3"
 						placeholder="-m&#10;mcp_server"
@@ -256,7 +256,7 @@
 				{#snippet children()}
 					<textarea
 						id="mcp-env"
-						class="md-textarea"
+						class="md-textarea md-textarea--code"
 						bind:value={envText}
 						rows="3"
 						placeholder="API_KEY=abc123"
@@ -274,32 +274,8 @@
 		flex-direction: column;
 		gap: var(--md-sys-space-md);
 	}
-	.dialog-content input[type='text'],
-	.dialog-content textarea {
-		background: var(--md-sys-color-surface-container-lowest);
-		border: 1px solid var(--md-sys-color-outline-variant);
-		border-radius: var(--md-sys-shape-small);
-		padding: var(--md-sys-space-sm) var(--md-sys-space-md);
-		color: var(--md-sys-color-on-surface);
-		font-size: var(--md-sys-typescale-body-large-size);
-		line-height: var(--md-sys-typescale-body-large-line-height);
-		font-family: inherit;
-		transition: border-color var(--md-sys-motion-duration-short)
-			var(--md-sys-motion-easing-standard);
-	}
-	.dialog-content input:focus,
-	.dialog-content textarea:focus {
-		outline: none;
-		border-color: var(--md-sys-color-primary);
-	}
-	.dialog-content input.input-error,
-	.dialog-content textarea.input-error {
+	.dialog-content .input-error,
+	.dialog-content .input-error:focus {
 		border-color: var(--md-sys-color-error);
-	}
-	.dialog-content textarea {
-		resize: vertical;
-		font-family: var(--md-sys-typescale-mono);
-		font-size: var(--md-sys-typescale-code-size);
-		line-height: var(--md-sys-typescale-code-line-height);
 	}
 </style>

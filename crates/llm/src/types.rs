@@ -875,6 +875,10 @@ fn redact_request_url(text: &str) -> String {
 pub struct StreamChunk {
     pub text: Option<String>,
     pub tool_calls: Vec<CanonicalToolCall>,
+    /// Incremental tool-call metadata for live UI previews. Argument deltas
+    /// remain raw JSON text because intermediate fragments are often invalid
+    /// JSON; completed calls still arrive in `tool_calls` as the authority.
+    pub tool_call_updates: Vec<StreamToolCallUpdate>,
     pub finish_reason: Option<FinishReason>,
     pub usage: Option<Usage>,
     pub model: Option<String>,
@@ -892,6 +896,20 @@ pub struct StreamChunk {
     /// [`haven_common::types::CanonicalMessage::thinking_blocks`]). Emitted
     /// when the provider requires it to be echoed on a later turn.
     pub thinking_blocks: Vec<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct StreamToolCallUpdate {
+    /// Zero-based position in the provider's assistant tool-call list.
+    pub index: u32,
+    /// Provider call id when it is available in this stream frame.
+    pub id: Option<String>,
+    /// Latest observed name text. Providers may split the name across frames.
+    pub name: Option<String>,
+    /// Raw JSON argument fragment; may be empty or incomplete JSON.
+    pub arguments_delta: Option<String>,
+    /// Provider snapshot for formats which repeat a partial structured value.
+    pub arguments_snapshot: Option<String>,
 }
 
 #[cfg(test)]
@@ -1189,6 +1207,7 @@ mod tests {
     #[test]
     fn stream_chunk_construction_with_text_only() {
         let chunk = StreamChunk {
+            tool_call_updates: Vec::new(),
             text: Some("delta".into()),
             tool_calls: vec![],
             finish_reason: None,
@@ -1206,6 +1225,7 @@ mod tests {
     #[test]
     fn stream_chunk_construction_with_tool_calls_and_finish_reason() {
         let chunk = StreamChunk {
+            tool_call_updates: Vec::new(),
             text: None,
             tool_calls: vec![CanonicalToolCall {
                 id: "tc1".into(),

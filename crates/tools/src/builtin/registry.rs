@@ -9,9 +9,6 @@ pub struct RegistryTool;
 #[serde(rename_all = "snake_case")]
 pub enum RegistryOperation {
     Get,
-    Set,
-    DeleteValue,
-    DeleteKey,
     List,
 }
 
@@ -27,12 +24,6 @@ pub struct RegistryParams {
     /// Value name.
     #[serde(default)]
     pub name: Option<String>,
-    /// Value data (for set).
-    #[serde(default)]
-    pub value: Option<String>,
-    /// Value type for set.
-    #[serde(default, rename = "type")]
-    pub value_type: Option<String>,
 }
 
 /// Normalize a registry path into `(hive_upper, subpath)`.
@@ -74,32 +65,6 @@ fn normalize_registry_path(path: &str) -> anyhow::Result<(String, String)> {
     }
 
     Ok((hive_str.to_uppercase(), subpath.to_string()))
-}
-
-/// Encode a string as UTF-16LE bytes (no trailing NUL).
-fn utf16le_bytes(s: &str) -> Vec<u8> {
-    s.encode_utf16().flat_map(|u| u.to_le_bytes()).collect()
-}
-
-/// Parse a hex byte string like "DE AD BE EF", "deadbeef" or "0A-0B-0C"
-/// (any non-hex separators are ignored). Returns `None`-style error for odd
-/// nibble counts or non-hex input.
-fn parse_hex_bytes(value: &str) -> anyhow::Result<Vec<u8>> {
-    let hex: String = value.chars().filter(|c| c.is_ascii_hexdigit()).collect();
-    if hex.is_empty() {
-        anyhow::bail!("invalid Binary value (no hex digits): '{}'", value);
-    }
-    if !hex.len().is_multiple_of(2) {
-        anyhow::bail!("invalid Binary value (odd hex digit count): '{}'", value);
-    }
-    hex.as_bytes()
-        .chunks(2)
-        .map(|pair| {
-            let s = std::str::from_utf8(pair).unwrap_or("");
-            u8::from_str_radix(s, 16)
-                .map_err(|_| anyhow::anyhow!("invalid Binary value: '{}'", value))
-        })
-        .collect()
 }
 
 impl RegistryTool {
@@ -146,98 +111,6 @@ impl RegistryTool {
                     let val: String = key.get_value(&name)?;
                     Ok(ToolResult::ok(
                         serde_json::json!({"path": path, "name": name, "value": val}),
-                    ))
-                }
-                RegistryOperation::Set => {
-                    let name = params
-                        .name
-                        .ok_or_else(|| anyhow::anyhow!("name is required for set"))?;
-                    let value = params
-                        .value
-                        .ok_or_else(|| anyhow::anyhow!("value is required for set"))?;
-                    let val_type = params.value_type.unwrap_or_else(|| "String".into());
-                    let (hive, subpath) = parse_hive(&path)?;
-                    let key = hive.open_subkey_with_flags(&subpath, KEY_WRITE)?;
-
-                    match val_type.as_str() {
-                        "String" => key.set_value(&name, &value)?,
-                        "DWord" => {
-                            let v: u32 = value
-                                .parse()
-                                .map_err(|_| anyhow::anyhow!("invalid DWord value: {}", value))?;
-                            key.set_value(&name, &v)?;
-                        }
-                        "QWord" => {
-                            let v: u64 = value
-                                .parse()
-                                .map_err(|_| anyhow::anyhow!("invalid QWord value: {}", value))?;
-                            key.set_value(&name, &v)?;
-                        }
-                        "Binary" => {
-                            let bytes = parse_hex_bytes(&value)?;
-                            key.set_raw_value(
-                                &name,
-                                &winreg::RegValue {
-                                    bytes: bytes.into(),
-                                    vtype: winreg::enums::REG_BINARY,
-                                },
-                            )?;
-                        }
-                        "ExpandString" => {
-                            // REG_EXPAND_SZ: same text storage as String, but
-                            // marked expandable so %VAR% resolves on read.
-                            let mut bytes = utf16le_bytes(&value);
-                            bytes.extend_from_slice(&[0, 0]); // trailing NUL
-                            key.set_raw_value(
-                                &name,
-                                &winreg::RegValue {
-                                    bytes: bytes.into(),
-                                    vtype: winreg::enums::REG_EXPAND_SZ,
-                                },
-                            )?;
-                        }
-                        "MultiString" => {
-                            // Semicolon-separated list, like reg.exe /d.
-                            let parts: Vec<&str> = value.split(';').collect();
-                            let mut bytes = Vec::new();
-                            for part in parts {
-                                bytes.extend_from_slice(&utf16le_bytes(part));
-                                bytes.extend_from_slice(&[0, 0]);
-                            }
-                            bytes.extend_from_slice(&[0, 0]); // final empty string
-                            key.set_raw_value(
-                                &name,
-                                &winreg::RegValue {
-                                    bytes: bytes.into(),
-                                    vtype: winreg::enums::REG_MULTI_SZ,
-                                },
-                            )?;
-                        }
-                        _ => anyhow::bail!("unsupported type: {}", val_type),
-                    }
-                    Ok(ToolResult::ok(
-                        serde_json::json!({"set": true, "path": path, "name": name}),
-                    ))
-                }
-                RegistryOperation::DeleteValue => {
-                    let name = params.name.ok_or_else(|| {
-                        anyhow::anyhow!("name is required for registry.delete_value")
-                    })?;
-                    let (hive, subpath) = parse_hive(&path)?;
-                    let key = hive.open_subkey_with_flags(&subpath, KEY_WRITE)?;
-                    key.delete_value(&name)?;
-                    Ok(ToolResult::ok(
-                        serde_json::json!({"deleted": true, "path": path, "name": name}),
-                    ))
-                }
-                RegistryOperation::DeleteKey => {
-                    let (hive, subpath) = parse_hive(&path)?;
-                    if subpath.is_empty() {
-                        anyhow::bail!("registry.delete_key cannot delete a hive root");
-                    }
-                    hive.delete_subkey_all(&subpath)?;
-                    Ok(ToolResult::ok(
-                        serde_json::json!({"deleted": true, "path": path, "key": true}),
                     ))
                 }
                 RegistryOperation::List => {
@@ -345,37 +218,5 @@ mod tests {
     #[test]
     fn test_normalize_empty() {
         assert!(normalize_registry_path("").is_err());
-    }
-
-    #[test]
-    fn test_parse_hex_bytes_spaces() {
-        assert_eq!(
-            parse_hex_bytes("DE AD BE EF").unwrap(),
-            vec![0xDE, 0xAD, 0xBE, 0xEF]
-        );
-    }
-
-    #[test]
-    fn test_parse_hex_bytes_compact() {
-        assert_eq!(
-            parse_hex_bytes("deadbeef").unwrap(),
-            vec![0xDE, 0xAD, 0xBE, 0xEF]
-        );
-    }
-
-    #[test]
-    fn test_parse_hex_bytes_dash_separated() {
-        assert_eq!(parse_hex_bytes("0A-0B-0C").unwrap(), vec![0x0A, 0x0B, 0x0C]);
-    }
-
-    #[test]
-    fn test_parse_hex_bytes_odd_nibbles() {
-        assert!(parse_hex_bytes("ABC").is_err());
-    }
-
-    #[test]
-    fn test_parse_hex_bytes_empty() {
-        assert!(parse_hex_bytes("").is_err());
-        assert!(parse_hex_bytes("--").is_err());
     }
 }

@@ -29,6 +29,7 @@ pub(crate) fn empty_chunk() -> StreamChunk {
     StreamChunk {
         text: None,
         tool_calls: Vec::new(),
+        tool_call_updates: Vec::new(),
         finish_reason: None,
         usage: None,
         model: None,

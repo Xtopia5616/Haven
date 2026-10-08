@@ -2,7 +2,11 @@
 	import { reportError } from '$lib/errorHandling.ts';
 	import { buildResumeMessages } from '$lib/resumeMessages.ts';
 	import { createSessionRefreshScheduler } from '$lib/sessionRefresh.ts';
-	import { appSessionReducer, resumeInteractions } from '$lib/sessionReducer.ts';
+	import {
+		appSessionReducer,
+		resumeInteractions,
+		type SessionRunEndStatus,
+	} from '$lib/sessionReducer.ts';
 	import { formatMessageTime } from '$lib/messageFormat.ts';
 	import { addNotification } from '$lib/notificationStore.ts';
 	import { sessionResumeTargetStore } from '$lib/sessionIntentStore.ts';
@@ -62,18 +66,17 @@
 		memory: '长期记忆',
 	};
 
-	interface Props
-		extends Pick<
-			ComponentProps<typeof ToolRunCenter>,
-			| 'runningBackgroundToolRuns'
-			| 'pendingScheduledToolRuns'
-			| 'toolRunStatusLabel'
-			| 'sessionTitleFor'
-			| 'toolRunDuration'
-			| 'scheduledToolRunCountdown'
-			| 'onOpenSession'
-			| 'onCancel'
-		> {
+	interface Props extends Pick<
+		ComponentProps<typeof ToolRunCenter>,
+		| 'runningBackgroundToolRuns'
+		| 'pendingScheduledToolRuns'
+		| 'toolRunStatusLabel'
+		| 'sessionTitleFor'
+		| 'toolRunDuration'
+		| 'scheduledToolRunCountdown'
+		| 'onOpenSession'
+		| 'onCancel'
+	> {
 		isVisible?: boolean;
 		onNewSession?: () => void;
 	}
@@ -336,6 +339,14 @@
 	async function resumeSession(session: SessionHistoryRow) {
 		try {
 			const wasError = isErrorStatus(session.status);
+			const runEndStatus: SessionRunEndStatus | undefined =
+				session.status === 'paused'
+					? 'paused'
+					: session.status === 'completed'
+						? 'completed'
+						: wasError
+							? 'error'
+							: undefined;
 			// Opening an errored session is read-only. Reopening it here used
 			// to change the in-memory status to Paused before the chat could render,
 			// which hid the actual failure state. Continue/retry performs the
@@ -355,8 +366,13 @@
 				sessionId: session.id,
 				summary: session.input_text,
 				title: session.title,
+				runEndStatus,
+				runEndReason: result.session.run_end_reason || '',
 				wasError,
-				errorReason: wasError ? appSessionReducer.getSessionErrorReason(session.id) : '',
+				errorReason: wasError
+					? result.session.run_end_reason ||
+						appSessionReducer.getSessionErrorReason(session.id)
+					: '',
 			});
 			await goto('/');
 		} catch (e) {
@@ -658,7 +674,9 @@
 									label={clearingTasks ? '正在清空…' : '清空历史'}
 									ariaBusy={clearingTasks}
 									onclick={() => (showClearTasksDialog = true)}
-									disabled={clearingTasks || toolRunHistoryLoading || toolRunHistory.length === 0}
+									disabled={clearingTasks ||
+										toolRunHistoryLoading ||
+										toolRunHistory.length === 0}
 								/>
 							{/snippet}
 						</WorkspaceSectionHeader>

@@ -70,14 +70,11 @@ const MODEL_TOGGLEABLE_TOOL_NAMES: &[&str] = &[
     "notify",
     "agent",
     "memory",
-    "process",
     "clipboard",
     "input",
     "window",
     "tool_runs",
     "schedule",
-    "preferences",
-    "checklist",
 ];
 
 fn is_model_toggleable_tool(name: &str) -> bool {

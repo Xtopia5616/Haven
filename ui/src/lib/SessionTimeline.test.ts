@@ -1,6 +1,8 @@
 import { fireEvent, render, screen } from '@testing-library/svelte';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import SessionTimeline from './SessionTimeline.svelte';
+import type { ToolRunPayload } from './contracts/toolRun.ts';
+import { groupSessionTimeline } from './sessionTimeline.ts';
 import welcomeSource from './SessionWelcome.svelte?raw';
 
 const welcomeStyles = welcomeSource.match(/<style>([\s\S]*?)<\/style>/)?.[1];
@@ -102,6 +104,51 @@ describe('SessionTimeline', () => {
 		expect(card?.textContent).toContain('继续会话');
 		expect(card?.textContent).toContain('计划触发');
 		expect(container.querySelector('.welcome')).toBeNull();
+	});
+
+	it('keeps scheduled ToolRun order stable when a run starts', () => {
+		const messages = [
+			{
+				id: 'step-schedule',
+				role: 'assistant' as const,
+				content: '计划任务',
+				type: 'tool' as const,
+				toolName: 'schedule',
+				stepNumber: 1,
+				streaming: false,
+			},
+		];
+		const waitingRuns = [
+			{
+				toolRunId: 'toolrun-earlier',
+				kind: 'scheduled' as const,
+				status: 'waiting' as const,
+				sourceStepId: 'step-schedule',
+				dueAt: '2026-10-08T12:00:00Z',
+			},
+			{
+				toolRunId: 'toolrun-later',
+				kind: 'scheduled' as const,
+				status: 'waiting' as const,
+				sourceStepId: 'step-schedule',
+				dueAt: '2026-10-08T12:05:00Z',
+			},
+		];
+		const startedRuns = [
+			{
+				...waitingRuns[0],
+				status: 'running' as const,
+				startedAt: '2026-10-08T12:10:00Z',
+			},
+			waitingRuns[1],
+		];
+		const runOrder = (toolRuns: ToolRunPayload[]) =>
+			groupSessionTimeline(messages, { toolRuns })
+				.filter((item) => item.kind === 'tool_run')
+				.map((item) => (item.kind === 'tool_run' ? item.toolRun.toolRunId : ''));
+
+		expect(runOrder(waitingRuns)).toEqual(['toolrun-earlier', 'toolrun-later']);
+		expect(runOrder(startedRuns)).toEqual(['toolrun-earlier', 'toolrun-later']);
 	});
 
 	it('passes through the continue handler for a user-tail conversation', () => {

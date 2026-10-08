@@ -36,8 +36,6 @@ fn is_sensitive_env_name(name: &str) -> bool {
 #[serde(rename_all = "snake_case")]
 pub enum EnvOperation {
     Get,
-    Set,
-    Unset,
     List,
 }
 
@@ -70,9 +68,6 @@ pub struct EnvParams {
     /// Environment variable name.
     #[serde(default)]
     pub name: Option<String>,
-    /// Value for set operation.
-    #[serde(default)]
-    pub value: Option<String>,
     /// Environment scope; defaults to the current process.
     #[serde(default)]
     pub scope: Option<EnvScope>,
@@ -118,30 +113,6 @@ impl EnvTool {
                     }),
                     Err(e) => anyhow::bail!("failed to read env var '{}': {}", name, e),
                 }
-            }
-            EnvOperation::Set => {
-                let name = params
-                    .name
-                    .ok_or_else(|| anyhow::anyhow!("name is required for set"))?;
-                let value = params
-                    .value
-                    .ok_or_else(|| anyhow::anyhow!("value is required for set"))?;
-                write_value(scope, &name, &value)?;
-                // Never echo a value back through the model-facing result.
-                Ok(ToolResult::ok(serde_json::json!({
-                    "set": true,
-                    "name": name,
-                    "scope": scope.as_str(),
-                })))
-            }
-            EnvOperation::Unset => {
-                let name = params
-                    .name
-                    .ok_or_else(|| anyhow::anyhow!("name is required for unset"))?;
-                remove_value(scope, &name)?;
-                Ok(ToolResult::ok(
-                    serde_json::json!({"removed": true, "name": name, "scope": scope.as_str()}),
-                ))
             }
             EnvOperation::List => {
                 let prefix = params
@@ -202,49 +173,6 @@ fn read_value(scope: EnvScope, name: &str) -> anyhow::Result<Result<String, env:
     }
 }
 
-fn write_value(scope: EnvScope, name: &str, value: &str) -> anyhow::Result<()> {
-    match scope {
-        EnvScope::Process => {
-            // Rust 2024 marks process-global environment mutation unsafe.
-            // The tool execution path serializes this resource, so this is the one
-            // deliberate process mutation boundary.
-            unsafe { env::set_var(name, value) };
-            Ok(())
-        }
-        EnvScope::User | EnvScope::Machine => {
-            #[cfg(windows)]
-            {
-                write_persistent_value(scope, name, value)
-            }
-            #[cfg(not(windows))]
-            {
-                let _ = (scope, name, value);
-                anyhow::bail!("user and machine environment scopes require Windows")
-            }
-        }
-    }
-}
-
-fn remove_value(scope: EnvScope, name: &str) -> anyhow::Result<()> {
-    match scope {
-        EnvScope::Process => {
-            unsafe { env::remove_var(name) };
-            Ok(())
-        }
-        EnvScope::User | EnvScope::Machine => {
-            #[cfg(windows)]
-            {
-                remove_persistent_value(scope, name)
-            }
-            #[cfg(not(windows))]
-            {
-                let _ = (scope, name);
-                anyhow::bail!("user and machine environment scopes require Windows")
-            }
-        }
-    }
-}
-
 fn list_values(scope: EnvScope) -> anyhow::Result<Box<dyn Iterator<Item = (String, String)>>> {
     match scope {
         EnvScope::Process => Ok(Box::new(env::vars())),
@@ -263,31 +191,22 @@ fn list_values(scope: EnvScope) -> anyhow::Result<Box<dyn Iterator<Item = (Strin
 }
 
 #[cfg(windows)]
-fn persistent_key(scope: EnvScope, write: bool) -> anyhow::Result<winreg::RegKey> {
-    use winreg::enums::{HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, KEY_READ, KEY_WRITE};
-    let (hive, path, flags) = match scope {
-        EnvScope::User => (
-            winreg::RegKey::predef(HKEY_CURRENT_USER),
-            "Environment",
-            if write { KEY_WRITE } else { KEY_READ },
-        ),
+fn persistent_key(scope: EnvScope) -> anyhow::Result<winreg::RegKey> {
+    use winreg::enums::{HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, KEY_READ};
+    let (hive, path) = match scope {
+        EnvScope::User => (winreg::RegKey::predef(HKEY_CURRENT_USER), "Environment"),
         EnvScope::Machine => (
             winreg::RegKey::predef(HKEY_LOCAL_MACHINE),
             "SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment",
-            if write { KEY_WRITE } else { KEY_READ },
         ),
         EnvScope::Process => anyhow::bail!("process scope has no persistent registry key"),
     };
-    if write {
-        Ok(hive.create_subkey(path)?.0)
-    } else {
-        Ok(hive.open_subkey_with_flags(path, flags)?)
-    }
+    Ok(hive.open_subkey_with_flags(path, KEY_READ)?)
 }
 
 #[cfg(windows)]
 fn read_persistent_value(scope: EnvScope, name: &str) -> Result<String, env::VarError> {
-    let Ok(key) = persistent_key(scope, false) else {
+    let Ok(key) = persistent_key(scope) else {
         return Err(env::VarError::NotPresent);
     };
     match key.get_value::<String, _>(name) {
@@ -297,62 +216,14 @@ fn read_persistent_value(scope: EnvScope, name: &str) -> Result<String, env::Var
 }
 
 #[cfg(windows)]
-fn write_persistent_value(scope: EnvScope, name: &str, value: &str) -> anyhow::Result<()> {
-    let key = persistent_key(scope, true)?;
-    key.set_value(name, &value)?;
-    broadcast_environment_change()?;
-    Ok(())
-}
-
-#[cfg(windows)]
-fn remove_persistent_value(scope: EnvScope, name: &str) -> anyhow::Result<()> {
-    let key = persistent_key(scope, true)?;
-    match key.delete_value(name) {
-        Ok(()) => {
-            broadcast_environment_change()?;
-            Ok(())
-        }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(error.into()),
-    }
-}
-
 #[cfg(windows)]
 fn list_persistent_values(scope: EnvScope) -> anyhow::Result<Vec<(String, String)>> {
-    let key = persistent_key(scope, false)?;
+    let key = persistent_key(scope)?;
     Ok(key
         .enum_values()
         .filter_map(|result| result.ok())
         .map(|(name, _)| (name, String::new()))
         .collect())
-}
-
-#[cfg(windows)]
-fn broadcast_environment_change() -> anyhow::Result<()> {
-    use std::os::windows::ffi::OsStrExt;
-    use windows_sys::Win32::UI::WindowsAndMessaging::{
-        HWND_BROADCAST, SMTO_ABORTIFHUNG, SendMessageTimeoutW, WM_SETTINGCHANGE,
-    };
-    let setting: Vec<u16> = std::ffi::OsStr::new("Environment")
-        .encode_wide()
-        .chain(std::iter::once(0))
-        .collect();
-    let mut result = 0usize;
-    let sent = unsafe {
-        SendMessageTimeoutW(
-            HWND_BROADCAST,
-            WM_SETTINGCHANGE,
-            0,
-            setting.as_ptr() as isize,
-            SMTO_ABORTIFHUNG,
-            5000,
-            &mut result,
-        )
-    };
-    if sent == 0 {
-        anyhow::bail!("environment value persisted but WM_SETTINGCHANGE broadcast failed")
-    }
-    Ok(())
 }
 
 impl Default for EnvTool {
@@ -385,7 +256,6 @@ mod tests {
                 EnvParams {
                     operation: Some(EnvOperation::Get),
                     name: Some(name.clone()),
-                    value: None,
                     scope: None,
                 },
                 CancellationToken::new(),
@@ -418,7 +288,6 @@ mod tests {
                 EnvParams {
                     operation: Some(EnvOperation::Get),
                     name: Some(name.clone()),
-                    value: None,
                     scope: None,
                 },
                 CancellationToken::new(),
@@ -443,7 +312,6 @@ mod tests {
                 EnvParams {
                     operation: Some(EnvOperation::Get),
                     name: Some(name),
-                    value: None,
                     scope: None,
                 },
                 CancellationToken::new(),
@@ -461,76 +329,12 @@ mod tests {
                 EnvParams {
                     operation: Some(EnvOperation::Get),
                     name: None,
-                    value: None,
                     scope: None,
                 },
                 CancellationToken::new(),
             )
             .await;
         assert!(result.is_err());
-    }
-
-    #[tokio::test]
-    async fn test_env_set_and_get_roundtrip() {
-        let name = unique_var_name("SET");
-        let result = EnvTool::default()
-            .run(
-                EnvParams {
-                    operation: Some(EnvOperation::Set),
-                    name: Some(name.clone()),
-                    value: Some("v1".into()),
-                    scope: None,
-                },
-                CancellationToken::new(),
-            )
-            .await
-            .unwrap();
-        assert!(result.success);
-        assert_eq!(result.output["set"], true);
-        assert!(result.output.get("value").is_none());
-        assert_eq!(env::var(&name).unwrap(), "v1");
-        unsafe {
-            env::remove_var(&name);
-        }
-    }
-
-    #[tokio::test]
-    async fn test_env_set_requires_value() {
-        let result = EnvTool::default()
-            .run(
-                EnvParams {
-                    operation: Some(EnvOperation::Set),
-                    name: Some(unique_var_name("SET")),
-                    value: None,
-                    scope: None,
-                },
-                CancellationToken::new(),
-            )
-            .await;
-        assert!(result.is_err());
-    }
-
-    #[tokio::test]
-    async fn test_env_unset() {
-        let name = unique_var_name("UNSET");
-        unsafe {
-            env::set_var(&name, "temp");
-        }
-        let result = EnvTool::default()
-            .run(
-                EnvParams {
-                    operation: Some(EnvOperation::Unset),
-                    name: Some(name.clone()),
-                    value: None,
-                    scope: None,
-                },
-                CancellationToken::new(),
-            )
-            .await
-            .unwrap();
-        assert!(result.success);
-        assert_eq!(result.output["removed"], true);
-        assert!(env::var_os(&name).is_none());
     }
 
     #[tokio::test]
@@ -540,7 +344,6 @@ mod tests {
                 EnvParams {
                     operation: Some(EnvOperation::List),
                     name: None,
-                    value: None,
                     scope: None,
                 },
                 CancellationToken::new(),
@@ -566,7 +369,6 @@ mod tests {
                 EnvParams {
                     operation: Some(EnvOperation::List),
                     name: Some(prefix.clone()),
-                    value: None,
                     scope: None,
                 },
                 CancellationToken::new(),
@@ -597,7 +399,6 @@ mod tests {
                 EnvParams {
                     operation: Some(EnvOperation::List),
                     name: None,
-                    value: None,
                     scope: None,
                 },
                 cancel,
@@ -617,7 +418,6 @@ mod tests {
                 EnvParams {
                     operation: Some(EnvOperation::Get),
                     name: Some(name.clone()),
-                    value: None,
                     scope: None,
                 },
                 CancellationToken::new(),

@@ -472,6 +472,7 @@ mod tests {
         ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamChunk, LlmError>> + Send>>, LlmError>
         {
             Ok(Box::pin(futures_util::stream::iter([Ok(StreamChunk {
+                tool_call_updates: Vec::new(),
                 text: Some(self.text.clone()),
                 tool_calls: Vec::new(),
                 finish_reason: Some(crate::types::FinishReason::Stop),

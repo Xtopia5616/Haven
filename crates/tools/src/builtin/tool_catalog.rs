@@ -1047,7 +1047,7 @@ fn family_description(family: &str) -> String {
     match family {
         "system" => "Inspect or control the local PC: files, shell, windows, input, media, network, and notifications.".into(),
         "agent" => "Delegate work or exchange low-trust messages with peer agents.".into(),
-        "haven" => "Manage Haven session state, memory, preferences, tasks, and capability settings.".into(),
+        "haven" => "Manage Haven session state, memory, tasks, and capability settings.".into(),
         "skills" => "Run an enabled installed Skill when its specialization matches the task.".into(),
         "mcp" => "Use a configured external MCP capability after discovering and loading the needed tools.".into(),
         _ => format!("Discover capabilities in the {family} family."),

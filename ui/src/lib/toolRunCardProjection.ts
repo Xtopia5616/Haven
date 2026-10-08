@@ -1,5 +1,11 @@
 import type { ToolRunPayload, ToolRunStatus } from './contracts/toolRun.ts';
 import { scheduleModeLabel, toolRunTitle } from './toolRunTerminology.ts';
+import type { StatusTone } from './statusColors.ts';
+
+export type ToolRunStatusBadgeTone = Extract<
+	StatusTone,
+	'neutral' | 'info' | 'success' | 'warning' | 'error'
+>;
 
 export type ToolRunCardTone = 'scheduled' | 'running' | 'error' | 'success' | 'neutral';
 
@@ -33,6 +39,15 @@ export interface ToolRunCardProjectionOptions {
 	sessionTitleFor: (toolRun: Pick<ToolRunPayload, 'sessionId'>) => string;
 	toolRunDuration: (toolRun: ToolRunPayload) => string;
 	scheduledToolRunCountdown: (dueAt?: string) => string;
+}
+
+/** Map run-card state to the shared semantic badge palette. */
+export function toolRunCardBadgeTone(tone: ToolRunCardTone): ToolRunStatusBadgeTone {
+	if (tone === 'error') return 'error';
+	if (tone === 'success') return 'success';
+	if (tone === 'running') return 'info';
+	if (tone === 'scheduled') return 'warning';
+	return 'neutral';
 }
 
 function scheduledStatusLabel(status?: ToolRunStatus): string {

@@ -113,7 +113,6 @@
 	const RULE_LABELS: Record<string, string> = {
 		shell: '执行本机命令',
 		files: '文件操作',
-		process: '进程管理',
 		http: '网络请求',
 		system: '系统能力',
 		window: '窗口控制',
@@ -157,12 +156,12 @@
 	let resetDialogOpen = $state(false);
 	let resetPending = $state(false);
 	let pendingRule = $state('');
-	let advancedBoundaryOpen = $state(
-		untrack(() => (security.writable_roots?.length ?? 0) > 0),
-	);
+	let advancedBoundaryOpen = $state(untrack(() => (security.writable_roots?.length ?? 0) > 0));
 	let resetScope = $state<'permanent' | 'session'>('permanent');
 	let permissions = $derived(Array.isArray(security?.permissions) ? security.permissions : []);
-	let storedSessionPermissions = $derived(Array.isArray(sessionPermissions) ? sessionPermissions : []);
+	let storedSessionPermissions = $derived(
+		Array.isArray(sessionPermissions) ? sessionPermissions : [],
+	);
 	let securitySummaryStatus = $derived(
 		securityDirty
 			? '未保存'
@@ -259,11 +258,13 @@
 		<div class="summary-runtime-wrap">
 			<span
 				class="summary-status"
-				class:summary-status--warning={!securityDirty && securityRuntimeStatus !== 'current'}
-			>{securitySummaryStatus}</span>
+				class:summary-status--warning={!securityDirty &&
+					securityRuntimeStatus !== 'current'}>{securitySummaryStatus}</span
+			>
 			<p
 				class="summary-runtime"
-				class:summary-runtime--warning={!securityDirty && securityRuntimeStatus !== 'current'}
+				class:summary-runtime--warning={!securityDirty &&
+					securityRuntimeStatus !== 'current'}
 			>
 				{securityDirty
 					? '这些安全设置尚未保存；当前进程继续使用已经加载的策略。'
@@ -356,7 +357,7 @@
 					<p>留空则使用各工具自己的路径边界。每行填写一个绝对路径。</p>
 					<textarea
 						id="security-writable-roots"
-						class="security-roots"
+						class="md-textarea md-textarea--code security-roots"
 						rows="3"
 						value={(security.writable_roots || []).join('\n')}
 						placeholder="例如：C:\\Users\\me\\Projects\\haven"
@@ -443,13 +444,18 @@
 					{@const meta = permissionRuleMeta(grant.capability)}
 					{@const grantId = `${grant.session_id}:${grant.capability}`}
 					<div class="perm-row" role="listitem">
-						<div class="perm-indicator" class:deny={grant.effect === 'deny'} aria-hidden="true">
+						<div
+							class="perm-indicator"
+							class:deny={grant.effect === 'deny'}
+							aria-hidden="true"
+						>
 							{grant.effect === 'deny' ? '!' : '✓'}
 						</div>
 						<div class="perm-copy">
 							<strong>{meta.label}</strong>
 							<span class="perm-scope">{meta.scope} · {grant.target}</span>
-							<span class="perm-scope">{grant.session_title || grant.session_id}</span>
+							<span class="perm-scope">{grant.session_title || grant.session_id}</span
+							>
 							<code class="perm-key">{grant.session_id} · {grant.capability}</code>
 						</div>
 						<span class="perm-effect" class:deny={grant.effect === 'deny'}>
@@ -462,13 +468,13 @@
 							disabled={pendingRule !== ''}
 							ariaBusy={pendingRule === grantId}
 							onclick={async () => {
-							pendingRule = grantId;
-							try {
-								await onRevokeSessionPermission?.(grant);
-							} finally {
-								if (pendingRule === grantId) pendingRule = '';
-							}
-						}}
+								pendingRule = grantId;
+								try {
+									await onRevokeSessionPermission?.(grant);
+								} finally {
+									if (pendingRule === grantId) pendingRule = '';
+								}
+							}}
 						/>
 					</div>
 				{/each}
@@ -690,21 +696,7 @@
 		padding: 0 var(--md-sys-space-md) var(--md-sys-space-md);
 	}
 	.security-roots {
-		box-sizing: border-box;
-		width: 100%;
 		margin-top: var(--md-sys-space-sm);
-		padding: var(--md-sys-space-sm);
-		border: 1px solid var(--md-sys-color-outline);
-		border-radius: var(--md-sys-shape-small);
-		background: var(--md-sys-color-surface-container-lowest);
-		color: var(--md-sys-color-on-surface);
-		font: inherit;
-		font-family: var(--md-sys-typescale-mono);
-		resize: vertical;
-	}
-	.security-roots:focus {
-		outline: none;
-		border-color: var(--md-sys-color-primary);
 	}
 	.rules-section {
 		padding-top: var(--md-sys-space-xl);

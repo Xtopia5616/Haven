@@ -240,7 +240,7 @@ fn cap_capability_index(value: String, budget: usize, hint: &str) -> String {
 fn catalog_group_prompt(group: ToolCatalogGroup) -> ToolPrompt {
     let (when_to_use, when_not_to_use) = match group {
         ToolCatalogGroup::Haven => (
-            "Manage Haven session state, memory, preferences, checklists, background/scheduled tasks, and capability settings.",
+            "Manage Haven session state, memory, background/scheduled tasks, and capability settings.",
             "Do not use for local PC I/O or peer-agent coordination.",
         ),
         ToolCatalogGroup::System => (

@@ -10,7 +10,7 @@
 	import CountChip from '$lib/CountChip.svelte';
 	import StatusBadge from '$lib/StatusBadge.svelte';
 	import HistoryListGroup from '$lib/HistoryListGroup.svelte';
-	import { projectToolRunCard } from '$lib/toolRunCardProjection.ts';
+	import { projectToolRunCard, toolRunCardBadgeTone } from '$lib/toolRunCardProjection.ts';
 	import { toolRunKindLabel } from '$lib/toolRunTerminology.ts';
 	import type { ToolRunKind, ToolRunPayload, ToolRunStatus } from '$lib/contracts/toolRun.ts';
 	import type {
@@ -136,14 +136,6 @@
 		query = '';
 		filter = 'all';
 	}
-
-	function statusTone(tone: ToolRunCardProjection['tone']) {
-		if (tone === 'error') return 'error';
-		if (tone === 'success') return 'success';
-		if (tone === 'running') return 'info';
-		if (tone === 'scheduled') return 'warning';
-		return 'neutral';
-	}
 </script>
 
 <section class="task-center" aria-label="任务历史">
@@ -237,7 +229,7 @@
 											</span>
 											<StatusBadge
 												label={row.statusLabel}
-												tone={statusTone(row.tone)}
+												tone={toolRunCardBadgeTone(row.tone)}
 											/>
 										</span>
 										<strong class="workspace-item-card-title"
@@ -317,7 +309,7 @@
 						</span>
 						<StatusBadge
 							label={selectedRow.statusLabel}
-							tone={statusTone(selectedRow.tone)}
+							tone={toolRunCardBadgeTone(selectedRow.tone)}
 						/>
 					</div>
 					<p class="task-dialog-summary">{selectedRow.summary}</p>

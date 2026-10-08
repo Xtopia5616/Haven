@@ -50,7 +50,9 @@
 		const query = modelFilter.trim().toLocaleLowerCase();
 		if (!query) return modelOptions;
 		return modelOptions.filter((model) =>
-			`${model.name} ${model.providerName} ${model.model}`.toLocaleLowerCase().includes(query),
+			`${model.name} ${model.providerName} ${model.model}`
+				.toLocaleLowerCase()
+				.includes(query),
 		);
 	});
 
@@ -90,12 +92,7 @@
 		{/snippet}
 	</MaterialButton>
 	{#if modelMenuOpen}
-		<div
-			class="model-menu"
-			role="dialog"
-			aria-label="选择模型"
-			aria-busy={switchingModel}
-		>
+		<div class="model-menu" role="dialog" aria-label="选择模型" aria-busy={switchingModel}>
 			<div class="model-menu-title">选择模型</div>
 			{#if switchingModel}
 				<div class="model-menu-loading" role="status">正在切换模型…</div>
@@ -103,7 +100,7 @@
 			{#if modelOptions.length > 0}
 				{#if modelOptions.length > 6}
 					<input
-						class="model-search"
+						class="md-input md-input--compact model-search"
 						type="search"
 						aria-label="搜索模型"
 						placeholder="搜索模型或提供方"
@@ -124,7 +121,9 @@
 							{#snippet children()}
 								<span class="model-item-main">
 									<span class="model-item-name">{model.name}</span>
-					<span class="model-item-provider">{model.providerName} / {model.model}</span>
+									<span class="model-item-provider"
+										>{model.providerName} / {model.model}</span
+									>
 								</span>
 								{#if model.id === currentModelId}
 									<Icon name="check" size={16} />
@@ -132,7 +131,9 @@
 							{/snippet}
 						</MenuItem>
 					{:else}
-						<div class="model-menu-empty">没有匹配的模型。请尝试搜索模型名或提供方。</div>
+						<div class="model-menu-empty">
+							没有匹配的模型。请尝试搜索模型名或提供方。
+						</div>
 					{/each}
 				</div>
 			{:else}
@@ -165,7 +166,7 @@
 									<MaterialChoiceChip
 										label={option.label}
 										selected={currentWebSearch === option.value}
-									disabled={switchingModel}
+										disabled={switchingModel}
 										onSelect={() => onWebSearchSelect(option.value)}
 									/>
 								{/each}
@@ -253,17 +254,6 @@
 	.model-search {
 		width: calc(100% - 2 * var(--md-sys-space-md));
 		margin: 0 var(--md-sys-space-md) var(--md-sys-space-xs);
-		padding: var(--md-sys-space-xs) var(--md-sys-space-sm);
-		border: 1px solid var(--md-sys-color-outline-variant);
-		border-radius: var(--md-sys-shape-small);
-		background: var(--md-sys-color-surface);
-		color: var(--md-sys-color-on-surface);
-		font: inherit;
-		font-size: var(--md-sys-typescale-body-small-size);
-	}
-	.model-search:focus-visible {
-		border-color: var(--md-sys-color-primary);
-		outline: 2px solid color-mix(in srgb, var(--md-sys-color-primary) 30%, transparent);
 	}
 	.model-menu-hint {
 		font-size: var(--md-sys-typescale-label-medium-size);

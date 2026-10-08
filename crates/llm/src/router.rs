@@ -837,8 +837,8 @@ impl LlmRouter {
     /// Applies `max_total_duration_secs` as an overall deadline (§2.12).
     /// A transient stream failure is retried only when the failed attempt did
     /// not emit a chunk. Once anything has reached `on_chunk`, replaying would
-    /// duplicate visible thought/reasoning output, so the router returns the
-    /// stream error rather than replaying that same stream.
+    /// duplicate visible thought/reasoning or tool-argument previews, so the
+    /// router returns the stream error rather than replaying that same stream.
     ///
     /// Runs under the model's concurrency permit (see
     /// [`Self::with_request_permit`]): the permit covers the whole stream —
@@ -1783,6 +1783,7 @@ mod tests {
         let ordinary_probe = Arc::new(StreamRequestProbe {
             seen: std::sync::Mutex::new(Vec::new()),
             chunks: vec![StreamChunk {
+                tool_call_updates: Vec::new(),
                 text: Some("ordinary response".into()),
                 finish_reason: Some(FinishReason::Stop),
                 ..Default::default()
@@ -1791,6 +1792,7 @@ mod tests {
         let tool_probe = Arc::new(StreamRequestProbe {
             seen: std::sync::Mutex::new(Vec::new()),
             chunks: vec![StreamChunk {
+                tool_call_updates: Vec::new(),
                 tool_calls: vec![CanonicalToolCall {
                     id: "result-call".into(),
                     name: "probe_tool".into(),
@@ -1963,6 +1965,7 @@ mod tests {
         });
         let healthy: Arc<dyn LlmClient> = Arc::new(MockStreamClient {
             chunks: vec![Ok(StreamChunk {
+                tool_call_updates: Vec::new(),
                 text: Some("recovered".into()),
                 tool_calls: Vec::new(),
                 finish_reason: Some(FinishReason::Stop),
@@ -2138,6 +2141,7 @@ mod tests {
     async fn chat_stream_with_tools_aggregated_accumulates_text_and_tool_calls() {
         let chunks: Vec<Result<StreamChunk, LlmError>> = vec![
             Ok(StreamChunk {
+                tool_call_updates: Vec::new(),
                 text: Some("Hello ".into()),
                 tool_calls: Vec::new(),
                 finish_reason: None,
@@ -2149,6 +2153,7 @@ mod tests {
                 thinking_blocks: Vec::new(),
             }),
             Ok(StreamChunk {
+                tool_call_updates: Vec::new(),
                 text: Some("world!".into()),
                 tool_calls: Vec::new(),
                 finish_reason: None,
@@ -2160,6 +2165,7 @@ mod tests {
                 thinking_blocks: Vec::new(),
             }),
             Ok(StreamChunk {
+                tool_call_updates: Vec::new(),
                 text: None,
                 tool_calls: vec![CanonicalToolCall {
                     id: "tc_1".into(),
@@ -2175,6 +2181,7 @@ mod tests {
                 thinking_blocks: Vec::new(),
             }),
             Ok(StreamChunk {
+                tool_call_updates: Vec::new(),
                 text: None,
                 tool_calls: Vec::new(),
                 finish_reason: Some(FinishReason::ToolCalls),
@@ -2265,6 +2272,7 @@ mod tests {
             let gap_delay = self.gap_delay;
             let mk = |text: &'static str| {
                 Ok(StreamChunk {
+                    tool_call_updates: Vec::new(),
                     text: Some(text.into()),
                     tool_calls: Vec::new(),
                     finish_reason: None,
@@ -2303,6 +2311,7 @@ mod tests {
             let gap_delay = self.gap_delay;
             let mk = |text: &'static str| {
                 Ok(StreamChunk {
+                    tool_call_updates: Vec::new(),
                     text: Some(text.into()),
                     tool_calls: Vec::new(),
                     finish_reason: None,
@@ -2386,6 +2395,7 @@ mod tests {
         use crate::types::{WebSearchPhase, WebSearchUpdate};
         let chunks: Vec<Result<StreamChunk, LlmError>> = vec![
             Ok(StreamChunk {
+                tool_call_updates: Vec::new(),
                 text: None,
                 tool_calls: Vec::new(),
                 finish_reason: None,
@@ -2400,6 +2410,7 @@ mod tests {
                 thinking_blocks: Vec::new(),
             }),
             Ok(StreamChunk {
+                tool_call_updates: Vec::new(),
                 text: None,
                 tool_calls: Vec::new(),
                 finish_reason: None,
@@ -2414,6 +2425,7 @@ mod tests {
                 thinking_blocks: Vec::new(),
             }),
             Ok(StreamChunk {
+                tool_call_updates: Vec::new(),
                 text: None,
                 tool_calls: Vec::new(),
                 finish_reason: None,
@@ -2432,6 +2444,7 @@ mod tests {
                 thinking_blocks: Vec::new(),
             }),
             Ok(StreamChunk {
+                tool_call_updates: Vec::new(),
                 text: Some("answer with citations".into()),
                 tool_calls: Vec::new(),
                 finish_reason: Some(FinishReason::Stop),
@@ -2516,6 +2529,7 @@ mod tests {
         }) as Arc<dyn LlmClient>;
         let ok = Arc::new(MockStreamClient {
             chunks: vec![Ok(StreamChunk {
+                tool_call_updates: Vec::new(),
                 text: Some("ok".into()),
                 tool_calls: Vec::new(),
                 finish_reason: Some(FinishReason::Stop),
@@ -2998,6 +3012,7 @@ mod tests {
     async fn chat_stream_call_succeeds_primary() {
         let client = Arc::new(MockStreamClient {
             chunks: vec![Ok(StreamChunk {
+                tool_call_updates: Vec::new(),
                 text: Some("hi".into()),
                 tool_calls: vec![],
                 finish_reason: Some(FinishReason::Stop),
@@ -3034,6 +3049,7 @@ mod tests {
                 LlmError,
             > {
                 Ok(Box::pin(stream::iter([Ok(StreamChunk {
+                    tool_call_updates: Vec::new(),
                     text: Some(self.0.into()),
                     ..StreamChunk::default()
                 })])))
@@ -3201,6 +3217,7 @@ mod tests {
                         .expect("test chunk gate remains open")
                         .forget();
                     Ok(StreamChunk {
+                        tool_call_updates: Vec::new(),
                         text: Some("first request".into()),
                         ..StreamChunk::default()
                     })

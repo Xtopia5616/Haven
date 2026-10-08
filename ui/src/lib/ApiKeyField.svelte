@@ -69,7 +69,12 @@
 		<span class="api-key-badge-label">{configured ? '已配置' : '未配置'}</span>
 	</span>
 {:else if mode === 'edit'}
-	<div class="api-key-field" data-width={width} class:empty={!configured && !value} class:disabled>
+	<div
+		class="api-key-field"
+		data-width={width}
+		class:empty={!configured && !value}
+		class:disabled
+	>
 		<input
 			{id}
 			type={showKey ? 'text' : 'password'}
@@ -128,14 +133,14 @@
 		box-sizing: border-box;
 		transition:
 			border-color var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard),
-			box-shadow var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard);
+			border-width var(--md-sys-motion-duration-fast) var(--md-sys-motion-easing-emphasized);
 	}
 	.api-key-field:hover:not(.disabled) {
 		border-color: var(--md-sys-color-on-surface);
 	}
 	.api-key-field:focus-within:not(.disabled) {
 		border-color: var(--md-sys-color-primary);
-		box-shadow: inset 0 0 0 1px var(--md-sys-color-primary);
+		border-width: 2px;
 	}
 	.api-key-field.disabled {
 		opacity: 0.55;
@@ -195,6 +200,9 @@
 		color: var(--md-sys-color-on-surface-variant);
 		letter-spacing: 0.12em;
 		opacity: 0.72;
+	}
+	.api-key-input:focus-visible {
+		box-shadow: none;
 	}
 
 	:global(.md-btn.api-key-action) {

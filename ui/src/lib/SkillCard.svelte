@@ -79,13 +79,13 @@
 		} catch (err) {
 			const msg = formatError(err);
 			try {
-			const parsed = JSON.parse(msg);
-			// The app-shell confirmation dialog owns this request. Repeating its
-			// summary and instructions inside the skill card creates a second,
-			// stale-looking permission prompt.
-			if (!parsed?.requires_confirmation) {
-				previewResult = `Error: ${msg}`;
-			}
+				const parsed = JSON.parse(msg);
+				// The app-shell confirmation dialog owns this request. Repeating its
+				// summary and instructions inside the skill card creates a second,
+				// stale-looking permission prompt.
+				if (!parsed?.requires_confirmation) {
+					previewResult = `Error: ${msg}`;
+				}
 			} catch {
 				previewResult = `Error: ${msg}`;
 			}
@@ -131,7 +131,7 @@
 			<h4>执行预览</h4>
 			<div class="preview-row">
 				<textarea
-					class="preview-input"
+					class="md-textarea md-textarea--code md-textarea--compact preview-input"
 					bind:value={previewParams}
 					rows="3"
 					placeholder={'{"key": "value"}'}
@@ -195,21 +195,6 @@
 	}
 	.preview-input {
 		flex: 1;
-		background: var(--md-sys-color-surface-container-lowest);
-		border: 1px solid var(--md-sys-color-outline-variant);
-		border-radius: var(--md-sys-shape-extra-small);
-		color: var(--md-sys-color-on-surface);
-		font-size: var(--md-sys-typescale-label-medium-size);
-		line-height: var(--md-sys-typescale-label-medium-line-height);
-		padding: var(--md-sys-space-sm);
-		font-family: var(--md-sys-typescale-mono);
-		resize: vertical;
-		transition: border-color var(--md-sys-motion-duration-short)
-			var(--md-sys-motion-easing-standard);
-	}
-	.preview-input:focus {
-		outline: none;
-		border-color: var(--md-sys-color-primary);
 	}
 	:global(.md-btn.btn-preview) {
 		align-self: stretch;
