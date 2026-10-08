@@ -794,3 +794,4 @@
 - [0803：移除未消费的录音事件字段](0803-remove-unused-recording-event-fields.md)
 - [0804：区分 Ask answer 与 ignored response](0804-discriminate-ask-response-view.md)
 - [0805：关联 interaction kind 与 owner](0805-correlate-interaction-kind-and-owner.md)
+- [0806：类型化 Ask controller 的附件输入](0806-type-ask-controller-attachments.md)

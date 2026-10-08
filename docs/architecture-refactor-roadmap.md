@@ -238,6 +238,8 @@
 
 **Interaction kind 与 owner 复核（2026-10-08）：** 生产路径只生成 Session Ask、Session/AppCommand confirm 与 ScheduledToolRun scheduled_confirm。UI contract、app event/resume mapper 现共用该路由约束；`session/ask-resolved` 只能结束 pending Session Ask 并要求 response，防止确认请求误入 Ask 展示路径（ADR 0805）。
 
+**Ask controller 附件 Props/参数复核（2026-10-08）：** controller 原先把图片/文件参数声明为 `unknown`，页面用类型断言传给提交函数；现沿用 `ChatImageAttachment[]` 和 `ChatFileAttachment[]` 的已有 domain owner，覆盖 composer payload、batch helper 与 callback，测试 fixture 同时对齐真实附件字段（ADR 0806）。
+
 **Recording event mapper 复核（2026-10-08）：** Rust `RecordingEvent.is_recording` 与 started/stopped 事件名表达重复状态，stop `duration_ms` 和 transcription `confidence` 也无 UI 消费者；空转写提示使用的 transcription `duration_ms` 则保留。renderer DTO/mapper 现只暴露生产 handler 读取的 session id、stop reason、transcript 与其 duration；Rust/Tauri wire 和 overlay 行为不变（ADR 0803）。
 
 **MemoryView 页签 ID 复核（2026-10-08）：** Memory 的 `sessions`、`tasks`、`memory` 曾分别出现在 union、URL guard 清单和 MaterialTabs options 中。现在 `MEMORY_TAB_IDS` tuple 是 ID 唯一来源，`MemoryTabId` 从中派生，选项按 tuple 顺序映射穷尽标签表；URL 校验和呈现值因此不会独立漂移，路由参数与可见顺序不变（ADR 0748）。

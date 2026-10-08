@@ -1052,11 +1052,7 @@
 			askSelectionsReady = ready;
 		},
 		submitMessage: (text, images, files) => {
-			void submitMessage(
-				text,
-				images as ChatImageAttachment[] | null | undefined,
-				files as ChatFileAttachment[] | null | undefined,
-			);
+			void submitMessage(text, images, files);
 		},
 		reducer: sessionReducer,
 	});
