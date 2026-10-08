@@ -17,16 +17,12 @@
 		ToolRunCardProjectionOptions,
 	} from '$lib/toolRunCardProjection.ts';
 
-	interface Props {
+	interface Props extends Partial<ToolRunCardProjectionOptions> {
 		runningBackgroundToolRuns?: ToolRunPayload[];
 		pendingScheduledToolRuns?: ToolRunPayload[];
 		toolRunHistory?: ToolRunPayload[];
 		toolRunHistoryLoading?: boolean;
 		toolRunHistoryFailed?: boolean;
-		toolRunStatusLabel?: (status: ToolRunStatus | undefined) => string;
-		sessionTitleFor?: (toolRun: Pick<ToolRunPayload, 'sessionId'>) => string;
-		toolRunDuration?: (toolRun: ToolRunPayload) => string;
-		scheduledToolRunCountdown?: (dueAt?: string) => string;
 		onOpenSession?: (sessionId: string) => void;
 		onCancel?: (toolRunId: string, kind?: ToolRunKind) => void;
 		onRefreshTaskHistory?: () => void;

@@ -787,3 +787,4 @@
 - [0796：收窄共享按钮与菜单项 role props](0796-narrow-shared-button-menu-role-props.md)
 - [0797：共享 MaterialSelect 的 value/label option 类型](0797-share-material-select-option-type.md)
 - [0798：将性能指标 view 对齐到生成的 Rust DTO](0798-type-performance-metrics-response-view.md)
+- [0799：复用 ToolRun card projection props](0799-reuse-toolrun-projection-props.md)

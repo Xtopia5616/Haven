@@ -9,7 +9,7 @@
 	import { clearMediaPlans } from '$lib/mediaPlanStore.ts';
 	import { clearToolOutputPreviewsForSession } from '$lib/toolOutputPreviewStore.ts';
 	import { isErrorStatus, statusVariant } from '$lib/sessionStatus.ts';
-	import { onMount, onDestroy } from 'svelte';
+	import { onMount, onDestroy, type ComponentProps } from 'svelte';
 	import { get } from 'svelte/store';
 	import { goto } from '$app/navigation';
 	import { page } from '$app/stores';
@@ -49,7 +49,7 @@
 		MemoryRecallKind,
 		MemoryRecallState,
 	} from '$lib/contracts/memory.ts';
-	import type { ToolRunKind, ToolRunPayload, ToolRunStatus } from '$lib/contracts/toolRun.ts';
+	import type { ToolRunPayload } from '$lib/contracts/toolRun.ts';
 	import type { SessionHistoryRow } from '$lib/contracts/sessionHistory.ts';
 	import type { ContextMenuItem } from '$lib/contextMenu.ts';
 
@@ -61,17 +61,20 @@
 		memory: '长期记忆',
 	};
 
-	interface Props {
+	interface Props
+		extends Pick<
+			ComponentProps<typeof ToolRunCenter>,
+			| 'runningBackgroundToolRuns'
+			| 'pendingScheduledToolRuns'
+			| 'toolRunStatusLabel'
+			| 'sessionTitleFor'
+			| 'toolRunDuration'
+			| 'scheduledToolRunCountdown'
+			| 'onOpenSession'
+			| 'onCancel'
+		> {
 		isVisible?: boolean;
 		onNewSession?: () => void;
-		runningBackgroundToolRuns?: ToolRunPayload[];
-		pendingScheduledToolRuns?: ToolRunPayload[];
-		toolRunStatusLabel?: (status: ToolRunStatus | undefined) => string;
-		sessionTitleFor?: (toolRun: Pick<ToolRunPayload, 'sessionId'>) => string;
-		toolRunDuration?: (toolRun: ToolRunPayload) => string;
-		scheduledToolRunCountdown?: (dueAt?: string) => string;
-		onOpenSession?: (sessionId: string) => void;
-		onCancel?: (toolRunId: string, kind?: ToolRunKind) => void;
 	}
 
 	let {

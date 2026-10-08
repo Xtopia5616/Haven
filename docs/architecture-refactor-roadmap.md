@@ -270,6 +270,8 @@
 
 **Diagnostics performance metrics view owner 复核（2026-10-08）：** `PerformanceMetricsSnapshot` 曾在生成的 Rust `MetricsSnapshot` 上叠加开放索引签名，但 producer 字段固定，唯一生产 consumer 是原样 JSON 下载。现在保留有语义的 UI 名称并直接引用生成 DTO；运行时序列化仍保留对象原有字段（ADR 0798）。
 
+**ToolRunCenter / MemoryView props owner 复核（2026-10-08）：** ToolRunCenter 的四个 projection callbacks 现引用 `ToolRunCardProjectionOptions`；MemoryView 原样转交 ToolRunCenter 的数据与 callbacks 现从子组件 Props 派生，消除两处重复 shape。列表状态与动作行为不变（ADR 0799）。
+
 #### 首轮全仓符号扫描与候选分流
 
 | 范围 | 证据与调用边界 | 当前分类 / 下一步 |
