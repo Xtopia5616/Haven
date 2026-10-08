@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { onMount, tick } from 'svelte';
 	import Icon from './Icon.svelte';
-	import type { NavigationTabsProps } from './navigationTypes.ts';
+	import { navigationTabIconName, type NavigationTabsProps } from './navigationTypes.ts';
 
 	interface Props extends NavigationTabsProps {
 		ariaLabel?: string;
@@ -354,7 +354,7 @@
 		>
 			{#if showIcons}
 				<span class="md-tab__icon" aria-hidden="true">
-					<Icon name={tab.icon || tab.id || 'settings'} size={17} />
+					<Icon name={navigationTabIconName(tab)} size={17} />
 				</span>
 			{/if}
 			<span>{tab.label}</span>

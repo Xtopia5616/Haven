@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { onMount, tick } from 'svelte';
 	import Icon from './Icon.svelte';
-	import type { NavigationTabsProps } from './navigationTypes.ts';
+	import { navigationTabIconName, type NavigationTabsProps } from './navigationTypes.ts';
 
 	let { tabs = [], activeTab = 'chat', onNavigate = () => {} }: NavigationTabsProps = $props();
 	let navElement: HTMLElement | undefined;
@@ -105,7 +105,7 @@
 			onclick={() => onNavigate(tab.id)}
 		>
 			<span class="workspace-link__icon" aria-hidden="true">
-				<Icon name={tab.icon || tab.id || 'settings'} size={19} />
+				<Icon name={navigationTabIconName(tab)} size={19} />
 			</span>
 			<span class="workspace-link__copy">
 				<span class="workspace-link__label">{tab.label}</span>

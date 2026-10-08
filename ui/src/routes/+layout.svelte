@@ -67,6 +67,7 @@
 		nextBootstrapProbeInterval,
 	} from '$lib/bootstrapStatus.ts';
 	import type { RecordingOverlayState } from '$lib/recordingOverlayController.ts';
+	import type { NavigationTab } from '$lib/navigationTypes.ts';
 	import type { ReActExecutionPhase } from '$lib/sessionRuntimeStore.ts';
 	import type { ToolRunKind, ToolRunPayload } from '$lib/contracts/toolRun.ts';
 	import type { ConfirmationDecision } from '$lib/confirmationTypes.ts';
@@ -1172,7 +1173,7 @@
 		eventRegistrations?.dispose();
 	});
 
-	const tabs: Array<{ id: TabId; label: string; icon: string }> = [
+	const tabs: Array<NavigationTab & { id: TabId }> = [
 		{ id: 'chat', label: '对话', icon: 'chat' },
 		{ id: 'tools', label: '工具', icon: 'briefcase' },
 		{ id: 'memory', label: '历史', icon: 'history' },

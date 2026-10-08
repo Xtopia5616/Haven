@@ -238,6 +238,8 @@
 
 **Context menu icon view 复核（2026-10-08）：** 所有 `ContextMenuItem` producer 都由 UI action builder 创建，icon 值是登记的静态键；此前领域 view type 把它放宽为 `string`。现改用 `IconName`，`ContextMenu` 继续保留 `hasIcon` guard，应对绕过 TS 的运行时数据（ADR 0770）。
 
+**Navigation tab icon prop 复核（2026-10-08）：** app-owned 页签的 icon 现由 `NavigationTab.icon` 复用注册表 `IconName`；共享 renderer 只在 tab id 是有效注册表键时才将其用作回退，未知 id 仍呈现 help fallback。底层 `Icon.name` 保持开放，供 Tool manifest 动态 icon 使用（ADR 0792）。
+
 **Expandable context-card kind prop 复核（2026-10-08）：** `cardKind` 仅由 builtin family/root 与 MCP server 三个静态 renderer 赋值，并由 builtin CSS 与 ToolsView 测试读取；原先却是开放字符串且以 `''` 表示缺席。现收窄为三个 presentation 值，缺省直接序列化为无 data attribute，保留 selector/test 行为（ADR 0771）。
 
 **CountChip 数量 prop 复核（2026-10-08）：** 全部消费者传递列表长度、过滤结果数或 number 类型总数，没有字符串计数。prop 原接受 `number | string` 并通过 `Number()` 隐式转换；现限定为 `number`，有限值显示 floor 后的非负整数，负数和非有限值显示 0（ADR 0772）。

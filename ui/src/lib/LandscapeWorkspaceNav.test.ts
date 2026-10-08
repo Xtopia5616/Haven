@@ -1,8 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, waitFor } from '@testing-library/svelte';
 import LandscapeWorkspaceNav from './LandscapeWorkspaceNav.svelte';
+import type { NavigationTab } from './navigationTypes.ts';
 
-const tabs = [
+const tabs: NavigationTab[] = [
 	{ id: 'chat', label: '对话' },
 	{ id: 'tools', label: '工具' },
 ];

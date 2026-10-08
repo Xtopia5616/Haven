@@ -1,8 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
 import { render } from '@testing-library/svelte';
 import WorkspaceNav from './WorkspaceNav.svelte';
+import type { NavigationTab } from './navigationTypes.ts';
 
-const tabs = [
+const tabs: NavigationTab[] = [
 	{ id: 'chat', label: '对话', icon: 'chat' },
 	{ id: 'tools', label: '工具', icon: 'briefcase' },
 	{ id: 'settings', label: '设置', icon: 'settings' },
