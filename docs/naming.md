@@ -153,6 +153,8 @@ Tools 对结构化输出中 Ask 与通知 side-channel 的解析结果分别使�
 
 `LlmCallKind` 的 `agent` / `media` / `tool` 是闭合的本地 usage 类别；runtime 输入、live `agent:usage` event 与恢复 DTO `LlmUsageRecord` 共用生成 enum。SQLite `llm_usage.call_kind` 原始列仍以字符串存储，在 Memory 读取边界必须解析为该 enum，不把 SQL 表示扩散成第二个 wire owner（ADR 0271、0723、0724）。
 
+`CacheAccounting` 是 usage runtime 的闭合类别。live `agent:usage` renderer 的 `cacheAccounting` 引用生成 enum，mapper 同时严格校验 `role: RequestKind`；JSON 值仍是字符串。ADR 0270 所属 durable/resume usage DTO 保持历史 `cache_accounting: string` 边界，不将旧持久值当成 live event contract。
+
 Tauri command 名与 request/response 类型由 `generatedCommands.ts` 从 Rust handler 生成；`contracts/commands.ts` 只追加 reviewed boundary/security metadata，并用 `Record<TauriCommandName, CommandContract>` 保证每个生成 command 恰有对应审阅项。
 
 跨 crate 的同字段 DTO 先按 owner 和用途判断是否合并：Memory `SessionMessageText` 是存储查询返回的纯文本消息行；Agent 私有 `SessionPromptMessage` 是组装首次 session prompt 的输入。它们通过显式转换跨边界，不应让 Memory 依赖 Agent，也不应让 Agent 的 prompt 类型成为 Memory 的规范类型。

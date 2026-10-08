@@ -255,6 +255,8 @@ export type ToolRetryability = (typeof TOOL_RETRYABILITY_VALUES)[number];
 export interface ToolRootPresentation { label: string; description: string; icon: string }
 export const TOOL_SOURCE_VALUES = ['builtin', 'skill', 'mcp'] as const;
 export type ToolSource = (typeof TOOL_SOURCE_VALUES)[number];
+export const CACHE_ACCOUNTING_VALUES = ['inclusive', 'exclusive', 'unknown'] as const;
+export type CacheAccounting = (typeof CACHE_ACCOUNTING_VALUES)[number];
 export const CANONICAL_ROLE_VALUES = ['system', 'user', 'assistant', 'tool'] as const;
 export type CanonicalRole = (typeof CANONICAL_ROLE_VALUES)[number];
 export const HOTKEY_MODE_INPUT_VALUES = ['toggle', 'hold'] as const;

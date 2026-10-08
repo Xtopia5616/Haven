@@ -750,3 +750,4 @@
 - [0759：Media ToolResult 复用生成 representation 类型](0759-type-media-result-representation.md)
 - [0760：Session resume 投影输入归属 builder](0760-session-resume-projection-input-owner.md)
 - [0761：Agent media-plan event 复用生成闭合 enum](0761-type-agent-media-plan-event-enums.md)
+- [0762：Agent usage renderer 复用闭合 accounting 类型](0762-type-agent-usage-accounting.md)

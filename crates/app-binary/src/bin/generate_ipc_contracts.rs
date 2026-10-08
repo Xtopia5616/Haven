@@ -136,6 +136,7 @@ fn generate(root: &Path) -> Result<String, String> {
         )?;
     }
     type_graph.emit_definition("haven_common::types::LlmCallKind", TypeUse::Response)?;
+    type_graph.emit_definition("haven_common::types::CacheAccounting", TypeUse::Response)?;
     for media_enum in ["MediaProjectionMode", "MediaPlanNoticeCode"] {
         let key = format!("haven_common::media::{media_enum}");
         type_graph.emit_definition(&key, TypeUse::Response)?;

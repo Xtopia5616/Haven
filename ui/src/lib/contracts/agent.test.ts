@@ -12,6 +12,38 @@ function mapAgentEvent<K extends AgentEventName>(event: TauriEvent<unknown> & { 
 	return mapped as TauriEvent<AgentEventPayloadMap[K]>;
 }
 
+function makeUsagePayload(overrides: Record<string, unknown> = {}) {
+	return {
+		session_id: 'ses-1',
+		prompt_tokens: 10,
+		completion_tokens: 4,
+		total_tokens: 14,
+		cached_tokens: 2,
+		cache_creation_tokens: 1,
+		cache_miss_tokens: 0,
+		context_tokens: 20,
+		cache_exclusive: false,
+		cache_accounting: 'inclusive',
+		cost_usd: null,
+		model: 'model-a',
+		cumulative_prompt_tokens: 10,
+		cumulative_completion_tokens: 4,
+		cumulative_total_tokens: 14,
+		cumulative_cached_tokens: 2,
+		cumulative_cache_creation_tokens: 1,
+		cumulative_cache_miss_tokens: 0,
+		cache_diagnostics: { source: 'provider' },
+		cumulative_cost_usd: null,
+		context_window: 128000,
+		step_number: 3,
+		duration_ms: 42,
+		role: 'chat',
+		call_kind: 'media',
+		has_cost: false,
+		...overrides,
+	};
+}
+
 describe('agent IPC contract', () => {
 	it('maps execution identity fields to camelCase', () => {
 		const event = mapAgentEvent({
@@ -50,34 +82,7 @@ describe('agent IPC contract', () => {
 		const event = mapAgentEvent({
 			event: 'agent:usage',
 			id: 2,
-			payload: {
-				session_id: 'ses-1',
-				prompt_tokens: 10,
-				completion_tokens: 4,
-				total_tokens: 14,
-				cached_tokens: 2,
-				cache_creation_tokens: 1,
-				cache_miss_tokens: 0,
-				context_tokens: 20,
-				cache_exclusive: false,
-				cache_accounting: 'provider',
-				cost_usd: null,
-				model: 'model-a',
-				cumulative_prompt_tokens: 10,
-				cumulative_completion_tokens: 4,
-				cumulative_total_tokens: 14,
-				cumulative_cached_tokens: 2,
-				cumulative_cache_creation_tokens: 1,
-				cumulative_cache_miss_tokens: 0,
-				cache_diagnostics: { source: 'provider' },
-				cumulative_cost_usd: null,
-				context_window: 128000,
-				step_number: 3,
-				duration_ms: 42,
-				role: 'chat',
-				call_kind: 'media',
-				has_cost: false,
-			},
+			payload: makeUsagePayload(),
 		});
 
 		expect(event.payload.sessionId).toBe('ses-1');
@@ -91,33 +96,19 @@ describe('agent IPC contract', () => {
 		const mapped = mapAgentEventContract({
 			event: 'agent:usage',
 			id: 2,
-			payload: {
-				session_id: 'ses-1',
-				prompt_tokens: 0,
-				completion_tokens: 0,
-				total_tokens: 0,
-				cached_tokens: 0,
-				cache_creation_tokens: 0,
-				cache_miss_tokens: 0,
-				context_tokens: 0,
-				cache_exclusive: false,
-				cache_accounting: 'unknown',
-				cost_usd: null,
-				model: null,
-				cumulative_prompt_tokens: 0,
-				cumulative_completion_tokens: 0,
-				cumulative_total_tokens: 0,
-				cumulative_cached_tokens: 0,
-				cumulative_cache_creation_tokens: 0,
-				cumulative_cache_miss_tokens: 0,
-				cumulative_cost_usd: null,
-				context_window: null,
-				call_kind: 'future_call_kind',
-				has_cost: false,
-			},
+			payload: makeUsagePayload({ call_kind: 'future_call_kind' }),
 		});
 
 		expect(mapped).toBeNull();
+	});
+
+	it('rejects unknown usage role and cache-accounting enums', () => {
+		for (const payload of [
+			makeUsagePayload({ role: 'future_request_kind' }),
+			makeUsagePayload({ cache_accounting: 'provider' }),
+		]) {
+			expect(mapAgentEventContract({ event: 'agent:usage', id: 3, payload })).toBeNull();
+		}
 	});
 
 	it('maps stream replacement boundaries to camelCase', () => {

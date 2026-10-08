@@ -2,6 +2,7 @@
 
 import type {
 	AgentNotificationKind,
+	CacheAccounting,
 	LlmCallKind,
 	MediaInputStrategy,
 	MediaPlanNoticeCode,
@@ -19,6 +20,7 @@ import type {
 import {
 	AGENT_EVENT_NAMES,
 	AGENT_NOTIFICATION_KIND_VALUES,
+	CACHE_ACCOUNTING_VALUES,
 	LLM_CALL_KIND_VALUES,
 	MEDIA_INPUT_STRATEGY_VALUES,
 	MEDIA_PLAN_NOTICE_CODE_VALUES,
@@ -177,7 +179,7 @@ export interface AgentUsagePayload {
 	cacheMissTokens: number;
 	contextTokens: number;
 	cacheExclusive: boolean;
-	cacheAccounting: string;
+	cacheAccounting: CacheAccounting;
 	costUsd: number | null;
 	model: string | null;
 	cumulativePromptTokens: number;
@@ -678,6 +680,8 @@ export function mapAgentEvent(
 		}
 		case 'agent:usage': {
 			const sessionId = requiredSessionId(payload);
+			const cacheAccounting = payload.cache_accounting;
+			const role = payload.role;
 			const numberFields = [
 				'prompt_tokens',
 				'completion_tokens',
@@ -697,14 +701,14 @@ export function mapAgentEvent(
 				sessionId === null ||
 				!numberFields.every((field) => finiteNumber(payload[field])) ||
 				typeof payload.cache_exclusive !== 'boolean' ||
-				typeof payload.cache_accounting !== 'string' ||
+				!isOneOf(cacheAccounting, CACHE_ACCOUNTING_VALUES) ||
 				!nullableNumberIsValid(payload.cost_usd) ||
 				!nullableStringIsValid(payload.model) ||
 				!nullableNumberIsValid(payload.cumulative_cost_usd) ||
 				!nullableNumberIsValid(payload.context_window) ||
 				!optionalNumberIsValid(payload, 'step_number') ||
 				!optionalNumberIsValid(payload, 'duration_ms') ||
-				!optionalStringIsValid(payload, 'role') ||
+				(role !== undefined && !isOneOf(role, REQUEST_KIND_VALUES)) ||
 				!isOneOf(payload.call_kind, LLM_CALL_KIND_VALUES) ||
 				typeof payload.has_cost !== 'boolean'
 			)
@@ -721,7 +725,7 @@ export function mapAgentEvent(
 					cacheMissTokens: payload.cache_miss_tokens as number,
 					contextTokens: payload.context_tokens as number,
 					cacheExclusive: payload.cache_exclusive,
-					cacheAccounting: payload.cache_accounting,
+					cacheAccounting,
 					costUsd: payload.cost_usd as number | null,
 					model: payload.model as string | null,
 					cumulativePromptTokens: payload.cumulative_prompt_tokens as number,
@@ -742,7 +746,7 @@ export function mapAgentEvent(
 					...(payload.duration_ms !== undefined
 						? { durationMs: payload.duration_ms as number }
 						: {}),
-					...(payload.role !== undefined ? { role: payload.role as RequestKind } : {}),
+					...(role !== undefined ? { role } : {}),
 					callKind: payload.call_kind,
 					hasCost: payload.has_cost,
 				},
