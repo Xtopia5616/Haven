@@ -1,7 +1,10 @@
 <script lang="ts">
 	import JsonView from '$lib/JsonView.svelte';
 	import ToolResultList from '$lib/ToolResultList.svelte';
-	import type { ToolMemoryRecallMode } from '$lib/toolResultPresentation.ts';
+	import type {
+		ToolMemoryOperation,
+		ToolMemoryRecallMode,
+	} from '$lib/toolResultPresentation.ts';
 
 	type MemoryFact = {
 		id?: string;
@@ -24,7 +27,7 @@
 			facts?: MemoryFact[];
 			hits?: MemoryHit[];
 			mode?: ToolMemoryRecallMode;
-			operation?: string;
+			operation?: ToolMemoryOperation | null;
 			stored?: { predicate?: string; object?: string };
 			deleted?: number;
 		};

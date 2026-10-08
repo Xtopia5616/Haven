@@ -8,6 +8,7 @@ import {
 	isToolBatteryState,
 	isToolExecutionMode,
 	isToolFileSearchMode,
+	isToolMemoryOperation,
 	isToolMediaFileKind,
 	isToolMediaModality,
 	isToolMemoryRecallMode,
@@ -429,7 +430,7 @@ function validBuiltinRendererData(renderer: string, data: JsonRecord): boolean {
 		case 'memory':
 			return (
 				hasValidOptionalFields(data, {
-					...stringFields('operation'),
+					operation: isToolMemoryOperation,
 					mode: isToolMemoryRecallMode,
 					deleted: isFiniteNumber,
 				}) &&

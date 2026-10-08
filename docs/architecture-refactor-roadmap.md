@@ -232,6 +232,8 @@
 
 **Memory recall renderer mode 复核（2026-10-08）：** Memory producer 的 `MemoryRecall.mode` 已由 Rust enum 约束为 `keyword/hybrid`，JSON 仅进入通用 `ToolResult.output` 后 UI 类型却开放为 string。现 renderer prop 与动态 nested validator 使用相同的 UI presentation union；未知值回退 JsonView（ADR 0774）。
 
+**Memory renderer operation 复核（2026-10-08）：** MemoryTool 输出 operation 由 Rust `MemoryOperation` match 单点映射为 `search/list/remember/forget/recall`；UI 之前将该 renderer prop 和 nested validator 都开放为 string。现两处共用 UI `ToolMemoryOperation` 值集；未知值回退 JsonView（ADR 0776）。
+
 **Session waiting reason state/action 复核（2026-10-08）：** runtime list 的 `waiting_reason` 与 `session:lifecycle` mapper 输出均使用 generated `SessionWaitingReason`；reducer state 和 `status-updated` / `run-ended` actions 原先却使用 `unknown` / `string`。现改为 `SessionWaitingReason | null`；唯一容错 helper 继续在 unknown input 上校验值域并对未知值返回 `null`（ADR 0766）。
 
 **SessionSummary renderer projection 复核（2026-10-08）：** `SessionSummary` 原有开放索引签名混装 runtime `SessionInfo`、persisted `SessionRecordDto` 与 `SessionHistoryRow`，startup 直接 spread 全部 runtime DTO，lineage/switcher 也泄漏 `input_text`。现将 reducer 行限定为实际消费的 `id/status/title/input/inputText/waitingReason`；三个来源在各自 UI 边界显式映射，并以 startup/switcher tests 固定不再输出 `input_text`（ADR 0767）。

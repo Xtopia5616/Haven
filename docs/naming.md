@@ -35,6 +35,7 @@
 - **CountChip 接受数值数量**：`count` 只使用 number；有限值向下取整、负数与非有限值显示为零，不把 numeric string 当数量（ADR 0772）。
 - **File search mode 使用闭合集合**：Rust `FileSearchMode` 和 UI `ToolFileSearchMode` 都只表达 `filename` / `content`；UI renderer 验证动态结果中的可选 mode，未知值回退通用 JSON renderer（ADR 0773）。
 - **Memory recall mode 使用闭合集合**：ToolResult renderer 的可选 mode 只接受 Memory `MemoryRecallMode` 序列化得到的 `keyword` / `hybrid`；未知动态值回退通用 JSON renderer（ADR 0774）。
+- **Memory renderer operation 使用闭合集合**：ToolResult 的 operation 只接受 `MemoryOperation` producer 输出的 `search`、`list`、`remember`、`forget`、`recall`；未知动态值回退通用 JSON renderer（ADR 0776）。
 - **ToolRun inspect status 区分生命周期与查询结果**：renderer root status 使用生成 `ToolRunStatus` 加 `not_found`；未知动态值回退通用 JSON renderer，列表行继续只接受生命周期状态（ADR 0775）。
 - **Reasoning effort command 与 provider config 分开**：聊天工具栏的 setter 只接受 generated `ReasoningEffortSelectionInput`（`low` / `medium` / `high` / `off`），`null` 清除覆盖；`ModelConfig.reasoning_effort` 仍是 provider-specific 开放字符串，以支持 `max`、`xhigh`、`none`、`disabled` 等 adapter 输入和 provider 映射（ADR 0737）。
 - **Fact source 选择与输出共享闭合集合**：App `MemoryFactSource` 对应 SQLite `facts.source` 的 `user` / `inferred` 值域，生成前端 `MemoryFactSourceInput` 与 `MemoryFactSource`。`list_facts.source` 省略或 `null` 表示不筛选；repository `Fact.source` 在 App response mapper 中严格解析后输出（ADR 0738、0741）。

@@ -764,3 +764,4 @@
 - [0773：File search mode 闭合生产与 renderer 契约](0773-close-file-search-mode-contract.md)
 - [0774：Memory recall mode renderer 复用闭合值](0774-type-memory-recall-mode-renderer.md)
 - [0775：ToolRun inspect root status 使用查询结果 union](0775-type-tool-run-inspect-result-status.md)
+- [0776：Memory renderer operation 复用闭合 producer 值](0776-type-memory-renderer-operation.md)
