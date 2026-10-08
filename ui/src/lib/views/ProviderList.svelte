@@ -229,10 +229,14 @@
 <style>
 	.provider-toolbar {
 		display: flex;
+		flex-wrap: wrap;
 		align-items: center;
 		justify-content: space-between;
 		gap: var(--md-sys-space-lg);
 		margin-bottom: var(--md-sys-space-lg);
+	}
+	.provider-toolbar-copy {
+		min-width: 0;
 	}
 	.provider-toolbar-copy h3,
 	.provider-toolbar-copy p,
@@ -257,9 +261,12 @@
 	}
 	.provider-toolbar-actions {
 		display: flex;
+		flex-wrap: wrap;
 		align-items: center;
 		gap: var(--md-sys-space-sm);
-		flex: 0 0 auto;
+		flex: 0 1 auto;
+		min-width: 0;
+		max-width: 100%;
 	}
 	.providers-list {
 		display: flex;
