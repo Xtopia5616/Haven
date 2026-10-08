@@ -271,6 +271,10 @@ describe('operation view UI contract', () => {
 			{ renderer: 'schedule', data: { operation: 'set', mode: 'future' } },
 			{ renderer: 'system', data: { os: [] } },
 			{ renderer: 'system', data: { os: { hostname: 42 } } },
+			{
+				renderer: 'system',
+				data: { network_summary: { interface_count: 1, up_or_unknown: 1 } },
+			},
 			{ renderer: 'system', data: { networks: [{ ips: null }] } },
 			{ renderer: 'system', data: { scope: 'future-scope' } },
 			{ renderer: 'system', data: { scope: { unexpected: true } } },
@@ -350,9 +354,9 @@ describe('operation view UI contract', () => {
 					cpu: { usage_pct: null, cores: null, logical_cpus: null },
 					memory: { used_bytes: null, total_bytes: null, available_bytes: null },
 					network_summary: {
-						interface_count: null,
-						up_or_unknown: null,
-						down: null,
+						interface_count: 1,
+						up_or_unknown: 1,
+						down: 0,
 					},
 					networks: [{ name: null, state: null, ips: [] }],
 					disks: [{ mount: null, total_bytes: null, available_bytes: null }],

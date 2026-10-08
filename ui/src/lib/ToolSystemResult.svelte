@@ -62,9 +62,9 @@
 				available_bytes?: number | null;
 			} | null;
 			network_summary?: {
-				interface_count?: number | null;
-				up_or_unknown?: number | null;
-				down?: number | null;
+				interface_count: number;
+				up_or_unknown: number;
+				down: number;
 			} | null;
 			networks?: Array<{
 				name?: string | null;
@@ -243,11 +243,11 @@
 	<div class="tool-result-label">网络概况</div>
 	<div class="info-grid">
 		<div class="info-label">接口</div>
-		<div class="info-value">{data.network_summary.interface_count ?? 0}</div>
+		<div class="info-value">{data.network_summary.interface_count}</div>
 		<div class="info-label">可用或未知</div>
-		<div class="info-value">{data.network_summary.up_or_unknown ?? 0}</div>
+		<div class="info-value">{data.network_summary.up_or_unknown}</div>
 		<div class="info-label">已断开</div>
-		<div class="info-value">{data.network_summary.down ?? 0}</div>
+		<div class="info-value">{data.network_summary.down}</div>
 	</div>
 {/if}
 {#if Array.isArray(data.values) || Array.isArray(data.subkeys)}

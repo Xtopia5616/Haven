@@ -78,6 +78,18 @@ function hasValidObjectFields(
 	});
 }
 
+function hasValidRequiredObjectFields(
+	data: JsonRecord,
+	fields: Readonly<Record<string, Readonly<Record<string, FieldGuard>>>>,
+): boolean {
+	return Object.entries(fields).every(([key, requiredFields]) => {
+		if (!(key in data) || data[key] == null) return true;
+		const nested = data[key];
+		if (!isRecord(nested)) return false;
+		return Object.entries(requiredFields).every(([field, guard]) => guard(nested[field]));
+	});
+}
+
 const stringFields = (...keys: string[]): Record<string, FieldGuard> =>
 	Object.fromEntries(keys.map((key) => [key, isString]));
 const numberFields = (...keys: string[]): Record<string, FieldGuard> =>
@@ -139,6 +151,8 @@ function validSystemData(data: JsonRecord): boolean {
 				total_bytes: isFiniteNumber,
 				available_bytes: isFiniteNumber,
 			},
+		}) &&
+		hasValidRequiredObjectFields(data, {
 			network_summary: {
 				interface_count: isFiniteNumber,
 				up_or_unknown: isFiniteNumber,

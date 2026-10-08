@@ -788,3 +788,4 @@
 - [0797：共享 MaterialSelect 的 value/label option 类型](0797-share-material-select-option-type.md)
 - [0798：将性能指标 view 对齐到生成的 Rust DTO](0798-type-performance-metrics-response-view.md)
 - [0799：复用 ToolRun card projection props](0799-reuse-toolrun-projection-props.md)
+- [0800：要求 System network summary 提供完整计数](0800-require-system-network-summary-counts.md)
