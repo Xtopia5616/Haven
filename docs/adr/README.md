@@ -766,3 +766,4 @@
 - [0775：ToolRun inspect root status 使用查询结果 union](0775-type-tool-run-inspect-result-status.md)
 - [0776：Memory renderer operation 复用闭合 producer 值](0776-type-memory-renderer-operation.md)
 - [0777：Process 与 System renderer 复用闭合输出值](0777-type-process-and-system-renderer-values.md)
+- [0778：Files 与 Input renderer 复用闭合输出值](0778-type-file-and-input-result-values.md)

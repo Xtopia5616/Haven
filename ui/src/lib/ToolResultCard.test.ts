@@ -11,6 +11,8 @@ import {
 	setToolOutputPreview,
 } from './toolOutputPreviewStore.ts';
 import { getToolResultRenderer } from './toolResultRenderers.ts';
+import ToolFileResult from './ToolFileResult.svelte';
+import ToolInputResult from './ToolInputResult.svelte';
 import ToolJsonResult from './ToolJsonResult.svelte';
 import ToolShellResult from './ToolShellResult.svelte';
 import ToolSystemResult from './ToolSystemResult.svelte';
@@ -192,6 +194,8 @@ describe('operation view UI contract', () => {
 			{ renderer: 'files.search', data: { results: null } },
 			{ renderer: 'files.search', data: { results: [], mode: 'future-mode' } },
 			{ renderer: 'files', data: { results: [{ path: 42 }] } },
+			{ renderer: 'files', data: { operation: 'future-operation' } },
+			{ renderer: 'files', data: { symbols: [{ kind: 'macro' }] } },
 			{ renderer: 'files', data: { media: [] } },
 			{ renderer: 'media', data: { media: { available_representations: [null] } } },
 			{ renderer: 'media', data: { representation: 'unknown_representation' } },
@@ -210,6 +214,8 @@ describe('operation view UI contract', () => {
 			{ renderer: 'clipboard', data: { entries: [null] } },
 			{ renderer: 'clipboard', data: { entries: null } },
 			{ renderer: 'input', data: { operation: 'click', clicked: [12, '20'] } },
+			{ renderer: 'input', data: { operation: 'restart' } },
+			{ renderer: 'input', data: { operation: 'click', button: 'primary' } },
 			{ renderer: 'window', data: { elements: [null] } },
 			{ renderer: 'tool_runs', data: { tool_runs: [null] } },
 			{ renderer: 'tool_runs', data: { tool_run_id: 'toolrun-1', status: 'future-status' } },
@@ -278,6 +284,22 @@ describe('operation view UI contract', () => {
 	});
 
 	it('keeps valid builtin shapes specialized and unknown extension renderers open', () => {
+		expect(
+			getToolResultRenderer(
+				'custom',
+				'files',
+				{ operation: 'outline', symbols: [{ kind: 'heading', name: 'Overview' }] },
+				'files',
+			),
+		).toBe(ToolFileResult);
+		expect(
+			getToolResultRenderer(
+				'custom',
+				'input',
+				{ operation: 'click_element', button: 'right' },
+				'input',
+			),
+		).toBe(ToolInputResult);
 		expect(
 			getToolResultRenderer(
 				'custom',

@@ -3,10 +3,11 @@
 	import JsonView from '$lib/JsonView.svelte';
 	import ToolResultList from '$lib/ToolResultList.svelte';
 	import { formatByteSize } from '$lib/toolResultFormatting.ts';
+	import type { ToolFileOperation, ToolFileSymbolKind } from './toolResultPresentation.ts';
 
 	interface Props {
 		data?: {
-			operation?: string;
+			operation?: ToolFileOperation | null;
 			path?: string;
 			from?: string;
 			to?: string;
@@ -35,7 +36,7 @@
 			warning?: string;
 			error?: string;
 			matches?: unknown;
-			symbols?: Array<{ line?: number; kind?: string; name?: string }>;
+			symbols?: Array<{ line?: number; kind?: ToolFileSymbolKind | null; name?: string }>;
 			entries?: string[];
 		};
 		rawText?: string;
@@ -43,7 +44,7 @@
 
 	let { data = {}, rawText = '' }: Props = $props();
 
-	const operationLabels: Record<string, string> = {
+	const operationLabels: Partial<Record<ToolFileOperation, string>> = {
 		read: '读取完成',
 		write: '写入完成',
 		create_dir: '目录创建完成',
@@ -56,7 +57,9 @@
 		summary: '摘要结果',
 		search: '搜索结果',
 	};
-	let operationLabel = $derived(operationLabels[data.operation ?? ''] || '文件结果');
+	let operationLabel = $derived(
+		(data.operation && operationLabels[data.operation]) || '文件结果',
+	);
 </script>
 
 {#if data.written}

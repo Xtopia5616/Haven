@@ -16,6 +16,73 @@ export function isToolExecutionMode(value: unknown): value is ToolExecutionMode 
 	return toolExecutionModes.some((mode) => mode === value);
 }
 
+export const toolFileOperations = [
+	'read',
+	'inspect',
+	'stat',
+	'hash',
+	'write',
+	'create_dir',
+	'edit',
+	'patch',
+	'copy',
+	'move',
+	'delete',
+	'list',
+	'summary',
+	'search',
+	'outline',
+] as const;
+
+export type ToolFileOperation = (typeof toolFileOperations)[number];
+
+export function isToolFileOperation(value: unknown): value is ToolFileOperation {
+	return toolFileOperations.some((operation) => operation === value);
+}
+
+export const toolFileSymbolKinds = [
+	'heading',
+	'function',
+	'class',
+	'interface',
+	'struct',
+	'enum',
+	'trait',
+	'impl',
+	'module',
+	'type',
+] as const;
+
+export type ToolFileSymbolKind = (typeof toolFileSymbolKinds)[number];
+
+export function isToolFileSymbolKind(value: unknown): value is ToolFileSymbolKind {
+	return toolFileSymbolKinds.some((kind) => kind === value);
+}
+
+export const toolInputOperations = [
+	'type',
+	'type_element',
+	'key',
+	'click',
+	'click_element',
+	'move',
+	'scroll',
+] as const;
+
+export type ToolInputOperation = (typeof toolInputOperations)[number];
+
+export function isToolInputOperation(value: unknown): value is ToolInputOperation {
+	return toolInputOperations.some((operation) => operation === value);
+}
+
+export const toolInputButtons = ['left', 'right', 'middle'] as const;
+
+export type ToolInputButton = (typeof toolInputButtons)[number];
+
+export function isToolInputButton(value: unknown): value is ToolInputButton {
+	return toolInputButtons.some((button) => button === value);
+}
+
 export const toolScheduleModes = ['tool', 'continue'] as const;
 
 export type ToolScheduleMode = (typeof toolScheduleModes)[number];

@@ -1,28 +1,29 @@
 <script lang="ts">
 	import JsonView from '$lib/JsonView.svelte';
+	import type { ToolInputButton, ToolInputOperation } from './toolResultPresentation.ts';
 
 	interface Props {
 		data?: {
-			operation?: string;
+			operation?: ToolInputOperation | null;
 			chars?: number;
 			typed?: string;
 			pressed?: string;
 			clicked?: [number, number];
-			button?: string;
+			button?: ToolInputButton | null;
 			moved_to?: [number, number];
 			scrolled?: number;
 		};
 	}
 
 	let { data = {} }: Props = $props();
-	const labels: Record<string, string> = {
+	const labels: Partial<Record<ToolInputOperation, string>> = {
 		type: '已输入文本',
 		key: '已按下按键',
 		click: '已点击',
 		move: '已移动指针',
 		scroll: '已滚动',
 	};
-	let label = $derived(labels[data.operation ?? ''] || '输入操作');
+	let label = $derived((data.operation && labels[data.operation]) || '输入操作');
 </script>
 
 {#if data.operation === 'type'}

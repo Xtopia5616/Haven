@@ -7,7 +7,11 @@ import {
 	isToolAcPowerState,
 	isToolBatteryState,
 	isToolExecutionMode,
+	isToolFileOperation,
 	isToolFileSearchMode,
+	isToolFileSymbolKind,
+	isToolInputButton,
+	isToolInputOperation,
 	isToolMemoryOperation,
 	isToolMediaFileKind,
 	isToolMediaModality,
@@ -276,8 +280,8 @@ function validAdminData(data: JsonRecord): boolean {
 function validFileData(data: JsonRecord): boolean {
 	return (
 		hasValidOptionalFields(data, {
+			operation: isToolFileOperation,
 			...stringFields(
-				'operation',
 				'path',
 				'from',
 				'to',
@@ -311,7 +315,7 @@ function validFileData(data: JsonRecord): boolean {
 		hasValidRecordArray(data, 'symbols', (row) =>
 			hasValidOptionalFields(row, {
 				line: isFiniteNumber,
-				kind: isString,
+				kind: isToolFileSymbolKind,
 				name: isString,
 			}),
 		)
@@ -341,7 +345,10 @@ function validBuiltinRendererData(renderer: string, data: JsonRecord): boolean {
 		case 'input':
 			return (
 				hasValidOptionalFields(data, {
-					...stringFields('operation', 'typed', 'pressed', 'button'),
+					operation: isToolInputOperation,
+					button: isToolInputButton,
+					typed: isString,
+					pressed: isString,
 					...numberFields('chars', 'scrolled'),
 				}) &&
 				(['clicked', 'moved_to'] as const).every((key) =>
