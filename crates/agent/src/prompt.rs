@@ -235,19 +235,6 @@ fn cap_capability_index(value: String, budget: usize, hint: &str) -> String {
     )
 }
 
-fn catalog_group_summary(group: ToolCatalogGroup) -> &'static str {
-    match group {
-        ToolCatalogGroup::Haven => "Haven sessions, memory, tasks, and settings",
-        ToolCatalogGroup::System => {
-            "Local PC and workspace: files, shell, windows, input, media, and network"
-        }
-        ToolCatalogGroup::Agent => "Peer-agent discovery, delegation, and messages",
-        ToolCatalogGroup::Skills => "Task-specific workflows from configured Skills",
-        ToolCatalogGroup::Mcp => "External tools and services from configured MCP servers",
-        ToolCatalogGroup::Other => "Additional capabilities for the task",
-    }
-}
-
 /// Render a compact first layer of the capability tree. Family summaries and
 /// representative names help route the task; `tools[]` and `tool_catalog`
 /// remain authoritative for complete names, arguments, and schemas.
@@ -262,7 +249,7 @@ fn render_tool_index(defs: &[ToolDef]) -> String {
             .as_ref()
             .map(|manifest| manifest.identity.catalog_group)
             .unwrap_or(def.catalog_group);
-        let summary = catalog_group_summary(catalog_group);
+        let summary = catalog_group.summary();
         let group = groups
             .entry(catalog_group.as_str().into())
             .or_insert_with(|| ToolIndexGroup {
@@ -1434,7 +1421,7 @@ mod tests {
 
         let index = render_tool_index(&defs);
         assert_eq!(index.matches("- system:").count(), 1);
-        assert!(index.contains("- system: Local PC and workspace"));
+        assert!(index.contains(&format!("- system: {}", ToolCatalogGroup::System.summary())));
         assert!(index.contains("roots: files(2 operations)"));
         assert!(index.contains("examples: files.read, files.write"));
         assert!(!index.contains("when not to use"));

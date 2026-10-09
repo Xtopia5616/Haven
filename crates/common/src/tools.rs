@@ -59,6 +59,20 @@ impl ToolCatalogGroup {
             Self::Other => "other",
         }
     }
+
+    /// Short routing summary shared by the Agent prompt and tool catalog.
+    pub const fn summary(self) -> &'static str {
+        match self {
+            Self::Haven => "Haven sessions, memory, tasks, and settings.",
+            Self::System => {
+                "PC and workspace tools: files, shell, windows, input, media, network, and notifications."
+            }
+            Self::Agent => "Peer-agent discovery, delegation, and messages.",
+            Self::Skills => "User-configured Skills for specialized, task-specific workflows.",
+            Self::Mcp => "User-configured MCP servers for additional integrations.",
+            Self::Other => "Additional capabilities for the task.",
+        }
+    }
 }
 
 /// Execution source of a tool. This is catalog metadata only; it does not
@@ -582,6 +596,41 @@ impl ToolDef {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tool_catalog_group_summaries_are_compact_and_user_facing() {
+        let summaries = [
+            (
+                ToolCatalogGroup::Haven,
+                "Haven sessions, memory, tasks, and settings.",
+            ),
+            (
+                ToolCatalogGroup::System,
+                "PC and workspace tools: files, shell, windows, input, media, network, and notifications.",
+            ),
+            (
+                ToolCatalogGroup::Agent,
+                "Peer-agent discovery, delegation, and messages.",
+            ),
+            (
+                ToolCatalogGroup::Skills,
+                "User-configured Skills for specialized, task-specific workflows.",
+            ),
+            (
+                ToolCatalogGroup::Mcp,
+                "User-configured MCP servers for additional integrations.",
+            ),
+            (
+                ToolCatalogGroup::Other,
+                "Additional capabilities for the task.",
+            ),
+        ];
+
+        for (group, expected) in summaries {
+            assert_eq!(group.summary(), expected);
+            assert!(group.summary().chars().count() <= 100);
+        }
+    }
 
     fn assert_closed_enum_wire<T>(value: T, wire: &str)
     where

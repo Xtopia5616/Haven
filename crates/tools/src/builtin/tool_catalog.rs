@@ -1043,14 +1043,15 @@ fn family_for_def(def: &ToolDef, source: CatalogSource) -> String {
 }
 
 fn family_description(family: &str) -> String {
-    match family {
-        "system" => "Haven's native tools for the local PC and workspace: files, shell, windows, input, media, and network.".into(),
-        "agent" => "Peer-agent discovery, delegation, and messages.".into(),
-        "haven" => "Haven sessions, memory, tasks, and settings.".into(),
-        "skills" => "User-configured Skills for task-specific workflows.".into(),
-        "mcp" => "User-configured MCP servers for additional integrations.".into(),
-        _ => format!("Additional capabilities in the {family} family."),
-    }
+    let group = match family {
+        "system" => ToolCatalogGroup::System,
+        "agent" => ToolCatalogGroup::Agent,
+        "haven" => ToolCatalogGroup::Haven,
+        "skills" => ToolCatalogGroup::Skills,
+        "mcp" => ToolCatalogGroup::Mcp,
+        _ => return format!("Additional capabilities in the {family} family."),
+    };
+    group.summary().into()
 }
 
 fn root_detail(root: &CatalogItem) -> Value {
@@ -1085,6 +1086,19 @@ mod tests {
     use super::*;
     use crate::ToolHandle;
     use crate::builtin::notify::NotifyTool;
+
+    #[test]
+    fn family_descriptions_share_the_catalog_group_summary() {
+        assert_eq!(
+            family_description("system"),
+            ToolCatalogGroup::System.summary()
+        );
+        assert_eq!(
+            family_description("skills"),
+            ToolCatalogGroup::Skills.summary()
+        );
+        assert_eq!(family_description("mcp"), ToolCatalogGroup::Mcp.summary());
+    }
 
     #[test]
     fn source_filter_accepts_only_canonical_names() {
