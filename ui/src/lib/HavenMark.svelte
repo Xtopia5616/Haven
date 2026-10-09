@@ -36,12 +36,4 @@
 		transition:
 			fill var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard);
 	}
-
-	@media (prefers-reduced-motion: reduce) {
-		.haven-mark path,
-		.haven-mark g,
-		.haven-mark rect {
-			transition: none;
-		}
-	}
 </style>

@@ -12,28 +12,13 @@
 	// run a reaction yet), which made the first toast appear instantly.
 	let items = $state<Notification[]>([]);
 	let mounted = $state(false);
-	let prefersReducedMotion = $state(false);
 	let unsub: (() => void) | null = null;
-	let disposed = false;
-	onMount(() => {
+	onMount(async () => {
 		mounted = true;
-		const motionPreference = window.matchMedia?.('(prefers-reduced-motion: reduce)');
-		const syncMotionPreference = () => {
-			if (motionPreference) prefersReducedMotion = motionPreference.matches;
-		};
-		if (motionPreference) {
-			syncMotionPreference();
-			motionPreference.addEventListener('change', syncMotionPreference);
-		}
-		void tick().then(() => {
-			if (!disposed) unsub = notificationStore.subscribe((v) => (items = v));
-		});
-		return () => motionPreference?.removeEventListener('change', syncMotionPreference);
+		await tick();
+		unsub = notificationStore.subscribe((v) => (items = v));
 	});
-	onDestroy(() => {
-		disposed = true;
-		unsub?.();
-	});
+	onDestroy(() => unsub?.());
 
 	function getToastStyle(type: Notification['type'] | undefined) {
 		const { dot, background, foreground } = getStatusColorTokens(type || 'info');
@@ -63,12 +48,7 @@
 				role={item.type === 'error' ? 'alert' : 'status'}
 				aria-live={item.type === 'error' ? 'assertive' : 'polite'}
 				aria-label={`${getToastLabel(item.type)}：${item.msg}`}
-				in:fly={{
-					x: prefersReducedMotion ? 0 : 24,
-					y: prefersReducedMotion ? 0 : 8,
-					duration: prefersReducedMotion ? 0 : 280,
-					easing: cubicOut,
-				}}
+				in:fly={{ x: 24, y: 8, duration: 280, easing: cubicOut }}
 			>
 				<span class="toast-icon">
 					<Icon

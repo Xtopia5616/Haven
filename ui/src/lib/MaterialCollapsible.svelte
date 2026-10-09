@@ -150,9 +150,4 @@
 		opacity: 1;
 		pointer-events: auto;
 	}
-	@media (prefers-reduced-motion: reduce) {
-		.md-collapsible-body--retained {
-			transition: none;
-		}
-	}
 </style>
