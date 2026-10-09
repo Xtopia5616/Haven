@@ -412,13 +412,13 @@ fn files_read_text_schema() -> serde_json::Value {
         "type": "object",
         "additionalProperties": false,
         "properties": {
-            "path": { "type": "string", "minLength": 1, "description": "File path to read" },
-            "asset_id": { "type": "string", "minLength": 1, "description": "Opaque id of a user attachment" },
-            "offset": { "type": "integer", "minimum": 0, "description": "Byte offset" },
-            "limit": { "type": "integer", "minimum": 1, "description": "Maximum bytes" },
-            "start_line": { "type": "integer", "minimum": 1, "description": "1-based first line" },
-            "end_line": { "type": "integer", "minimum": 0, "description": "1-based last line; omit for the default span" },
-            "focus": { "type": "string", "description": "Optional focus for a rich media source" }
+            "path": { "type": "string", "minLength": 1, "description": "Local file path to read" },
+            "asset_id": { "type": "string", "pattern": "^asset-[0-9a-f]{32}$", "description": "Managed attachment id returned by an earlier tool result" },
+            "offset": { "type": "integer", "minimum": 0, "default": 0, "description": "Zero-based byte offset; defaults to 0. Use byte arguments instead of line arguments" },
+            "limit": { "type": "integer", "minimum": 1, "description": "Maximum bytes to read from offset; omit for the configured default span. Do not combine with line arguments" },
+            "start_line": { "type": "integer", "minimum": 1, "default": 1, "description": "1-based first line; defaults to 1. Use line arguments instead of byte arguments" },
+            "end_line": { "type": "integer", "minimum": 1, "description": "1-based inclusive last line; omit for the default span" },
+            "focus": { "type": "string", "description": "Optional question or region of interest for a rich media source" }
         },
         "oneOf": [{ "required": ["path"] }, { "required": ["asset_id"] }]
     })
@@ -442,12 +442,12 @@ fn files_summary_schema() -> serde_json::Value {
         "type": "object",
         "additionalProperties": false,
         "properties": {
-            "path": { "type": "string", "minLength": 1, "description": "Text file path" },
-            "asset_id": { "type": "string", "minLength": 1, "description": "Opaque id of a user attachment" },
-            "start_line": { "type": "integer", "minimum": 1 },
-            "end_line": { "type": "integer", "minimum": 0 },
-            "focus": { "type": "string", "maxLength": 2000 },
-            "max_chars": { "type": "integer", "minimum": 1, "description": "Maximum source characters" }
+            "path": { "type": "string", "minLength": 1, "description": "Local text file path to summarize" },
+            "asset_id": { "type": "string", "pattern": "^asset-[0-9a-f]{32}$", "description": "Managed attachment id returned by an earlier tool result" },
+            "start_line": { "type": "integer", "minimum": 1, "default": 1, "description": "1-based first line; defaults to 1" },
+            "end_line": { "type": "integer", "minimum": 0, "description": "1-based last line; 0 or omitted means through EOF" },
+            "focus": { "type": "string", "maxLength": 2000, "description": "Optional question or topic to focus the summary on" },
+            "max_chars": { "type": "integer", "minimum": 1, "description": "Maximum source characters sent for summarization" }
         },
         "oneOf": [{ "required": ["path"] }, { "required": ["asset_id"] }]
     })
@@ -458,15 +458,15 @@ fn files_search_schema(max_results: usize) -> serde_json::Value {
         "type": "object",
         "additionalProperties": false,
         "properties": {
-            "root": { "type": "string", "minLength": 1, "description": "Directory or file path to search" },
-            "pattern": { "type": "string", "minLength": 1, "description": "Filename glob or content regex" },
-            "mode": { "type": "string", "enum": ["filename", "content"], "description": "Filename matching or text matching" },
-            "max_depth": { "type": "integer", "minimum": 0 },
-            "max_results": { "type": "integer", "minimum": 1, "maximum": max_results },
-            "ignore_hidden": { "type": "boolean" },
-            "max_file_size": { "type": "integer", "minimum": 0 },
-            "start_line": { "type": "integer", "minimum": 1 },
-            "end_line": { "type": "integer", "minimum": 0 }
+            "root": { "type": "string", "minLength": 1, "description": "Directory or file path to search under" },
+            "pattern": { "type": "string", "minLength": 1, "description": "Filename glob in filename mode; regular expression in content mode" },
+            "mode": { "type": "string", "enum": ["filename", "content"], "default": "filename", "description": "filename matches names (default); content searches text and returns matching line snippets" },
+            "max_depth": { "type": "integer", "minimum": 0, "description": "Maximum directory depth; 0 means unlimited" },
+            "max_results": { "type": "integer", "minimum": 1, "maximum": max_results, "description": "Maximum matches to return" },
+            "ignore_hidden": { "type": "boolean", "description": "Whether to skip hidden files and directories" },
+            "max_file_size": { "type": "integer", "minimum": 0, "description": "Skip content-search files larger than this many bytes" },
+            "start_line": { "type": "integer", "minimum": 1, "description": "Content-mode first line to include" },
+            "end_line": { "type": "integer", "minimum": 0, "description": "Content-mode last line; 0 or omitted means through EOF" }
         },
         "required": ["root", "pattern"]
     })
@@ -477,7 +477,7 @@ fn system_info_schema() -> serde_json::Value {
         "type": "object",
         "additionalProperties": false,
         "properties": {
-            "category": { "type": "string", "enum": ["overview", "cpu", "memory", "disk", "os", "network", "user", "locale", "all"] }
+            "category": { "type": "string", "enum": ["overview", "cpu", "memory", "disk", "os", "network", "user", "locale", "all"], "default": "overview", "description": "Information to return; overview is compact, all is broad, and locale includes local/UTC time and timezone" }
         }
     })
 }
@@ -825,7 +825,6 @@ const AGENT_OPERATION_VIEWS: &[SplitOperationSpec] = &[
     split_spec!("agent.request", "request", "agent", "users"),
     split_spec!("agent.spawn", "spawn", "agent", "users"),
     split_spec!("agent.status", "status", "agent", "users"),
-    split_spec!("agent.join", "join", "agent", "hourglass"),
     split_spec!("agent.wait", "wait", "agent", "users"),
     split_spec!("agent.stop", "stop", "agent", "users"),
     split_spec!("agent.collect", "collect", "agent", "fileText"),

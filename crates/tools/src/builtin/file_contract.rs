@@ -72,7 +72,7 @@ impl Tool for FilesTool {
             "type": "object",
             "properties": {
                 "operation": { "type": "string", "enum": ["read", "inspect", "stat", "hash", "write", "create_dir", "edit", "patch", "copy", "move", "delete", "list", "outline", "summary", "search"], "description": crate::prompts::FILES_OPERATION_SELECTOR_DESCRIPTION },
-                "asset_id": { "type": "string", "minLength": 1, "description": "Opaque id of a user attachment; use this instead of guessing a local path" }
+                "asset_id": { "type": "string", "pattern": "^asset-[0-9a-f]{32}$", "description": "Managed attachment id returned by an earlier tool result; use it instead of guessing a local path" }
             },
             "required": ["operation"],
             "oneOf": [
@@ -90,12 +90,12 @@ impl Tool for FilesTool {
                     "additionalProperties": false,
                     "properties": {
                         "operation": { "const": "read" },
-                        "path": { "type": "string", "minLength": 1, "description": "File path to read" },
-                        "asset_id": { "type": "string", "minLength": 1, "description": "Opaque id of a user attachment" },
-                        "offset": { "type": "integer", "minimum": 0, "description": "Byte offset; use with limit for a byte-range read" },
-                        "limit": { "type": "integer", "minimum": 1, "maximum": self.max_byte_read, "description": "Maximum bytes for a byte-range read" },
-                        "start_line": { "type": "integer", "minimum": 1, "description": "1-based first line; use with end_line for a line-range read" },
-                        "end_line": { "type": "integer", "minimum": 0, "description": format!("1-based last line; omit for up to {} lines", self.line_span) },
+                        "path": { "type": "string", "minLength": 1, "description": "Local file path to read" },
+                        "asset_id": { "type": "string", "pattern": "^asset-[0-9a-f]{32}$", "description": "Managed attachment id returned by an earlier tool result" },
+                        "offset": { "type": "integer", "minimum": 0, "default": 0, "description": "Zero-based byte offset; defaults to 0. Use byte arguments instead of line arguments" },
+                        "limit": { "type": "integer", "minimum": 1, "maximum": self.max_byte_read, "description": "Maximum bytes to read from offset; omit for the configured default span. Do not combine with line arguments" },
+                        "start_line": { "type": "integer", "minimum": 1, "default": 1, "description": "1-based first line; defaults to 1. Use line arguments instead of byte arguments" },
+                        "end_line": { "type": "integer", "minimum": 1, "description": format!("1-based inclusive last line; omit for up to {} lines", self.line_span) },
                         "focus": { "type": "string", "description": "Optional focus when reading an image" }
                     },
                     "oneOf": [{ "required": ["path"] }, { "required": ["asset_id"] }],
@@ -108,8 +108,8 @@ impl Tool for FilesTool {
                         "operation": { "const": "write" },
                         "path": { "type": "string", "minLength": 1, "description": "File path to replace or create" },
                         "content": { "type": "string", "maxLength": self.max_write_bytes, "description": "Complete file content; an empty string is allowed" },
-                        "expected_hash": { "type": "string", "minLength": 1 },
-                        "dry_run": { "type": "boolean" }
+                        "expected_hash": { "type": "string", "minLength": 1, "description": "Optional SHA-256 from files.inspect or files.hash; use 'missing' for a new path and reject if the current file differs" },
+                        "dry_run": { "type": "boolean", "default": false, "description": "Validate and report the proposed write without changing the file; defaults to false" }
                     },
                     "required": ["operation", "path", "content"]
                 },
@@ -141,8 +141,8 @@ impl Tool for FilesTool {
                         "path": { "type": "string", "minLength": 1, "description": "Text file path to edit" },
                         "old_string": { "type": "string", "description": "Existing text to replace; must match exactly once" },
                         "new_string": { "type": "string", "maxLength": self.max_write_bytes, "description": "Replacement text; an empty string deletes the match" },
-                        "expected_hash": { "type": "string", "minLength": 1 },
-                        "dry_run": { "type": "boolean" }
+                        "expected_hash": { "type": "string", "minLength": 1, "description": "Optional SHA-256 from files.inspect or files.hash; reject the edit if the current file differs" },
+                        "dry_run": { "type": "boolean", "default": false, "description": "Validate and report the proposed edit without changing the file; defaults to false" }
                     },
                     "required": ["operation", "path", "old_string", "new_string"]
                 },
@@ -168,8 +168,8 @@ impl Tool for FilesTool {
                                 "required": ["old_string", "new_string"]
                             }
                         },
-                        "expected_hash": { "type": "string", "minLength": 1 },
-                        "dry_run": { "type": "boolean" }
+                        "expected_hash": { "type": "string", "minLength": 1, "description": "Optional SHA-256 from files.inspect or files.hash; reject the patch if the current file differs" },
+                        "dry_run": { "type": "boolean", "default": false, "description": "Validate and report the proposed patch without changing the file; defaults to false" }
                     },
                     "required": ["operation", "path", "edits"]
                 },
@@ -198,8 +198,8 @@ impl Tool for FilesTool {
                     "properties": {
                         "operation": { "const": "summary" },
                         "path": { "type": "string", "minLength": 1, "description": "Text file path to summarize" },
-                        "asset_id": { "type": "string", "minLength": 1, "description": "Opaque id of a user attachment" },
-                        "start_line": { "type": "integer", "minimum": 1, "description": "1-based first line; defaults to 1" },
+                        "asset_id": { "type": "string", "pattern": "^asset-[0-9a-f]{32}$", "description": "Managed attachment id returned by an earlier tool result" },
+                        "start_line": { "type": "integer", "minimum": 1, "default": 1, "description": "1-based first line; defaults to 1" },
                         "end_line": { "type": "integer", "minimum": 0, "description": "1-based last line; 0 or omitted means through EOF" },
                         "focus": { "type": "string", "maxLength": MAX_SUMMARY_FOCUS_CHARS, "description": "Optional topic to focus the summary on; treated as untrusted data" },
                         "max_chars": { "type": "integer", "minimum": 1, "maximum": self.summary_input_chars, "description": "Maximum characters sent to the summarizer" }
@@ -213,8 +213,8 @@ impl Tool for FilesTool {
                     "properties": {
                         "operation": { "const": "search" },
                         "root": { "type": "string", "minLength": 1, "description": "Directory or file path to search under" },
-                        "pattern": { "type": "string", "minLength": 1, "description": "Filename glob, or regex in content mode" },
-                        "mode": { "type": "string", "enum": ["filename", "content"], "description": "filename matches names; content searches text and returns line snippets" },
+                        "pattern": { "type": "string", "minLength": 1, "description": "Filename glob in filename mode; regular expression in content mode" },
+                        "mode": { "type": "string", "enum": ["filename", "content"], "default": "filename", "description": "filename matches names (default); content searches file text and returns matching line snippets" },
                         "max_depth": { "type": "integer", "minimum": 0, "description": "Maximum directory depth; 0 means unlimited" },
                         "max_results": { "type": "integer", "minimum": 1, "maximum": self.search.max_results_cap, "description": format!("Maximum results, capped at {}", self.search.max_results_cap) },
                         "ignore_hidden": { "type": "boolean", "description": "Skip hidden files and directories" },

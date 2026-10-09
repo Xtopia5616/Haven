@@ -401,7 +401,7 @@ Parent session                    Child session(s)
 
 | 层 | 位置 | 职责 |
 |---|---|---|
-| 工具 | `haven-tools` `builtin/messaging.rs` | 统一工具名 `agent`；`operation=` list / children / history / send / inbox / ack / reply / profile / request / spawn / status / join / wait / stop / collect；通过 `haven-messaging::MessagingService` 调用 |
+| 工具 | `haven-tools` `builtin/messaging.rs` | 统一工具名 `agent`；`operation=` list / children / history / send / inbox / ack / reply / profile / request / spawn / status / wait / stop / collect；通过 `haven-messaging::MessagingService` 调用 |
 | 服务 | `haven-messaging` `messaging_service.rs` | 唯一应用层消息 port：校验 Envelope identity、claim/complete/retry/expiry、request/reply selective wait 与 receipt 生命周期 |
 | 传输 | `haven-messaging` `inbox.rs` | JSONL file transport adapter：`%APPDATA%/haven/inbox` 的 registry / mailbox / archive / lock；不向应用暴露同步 drain 语义 |
 | 编排 | `haven-agent` `layer::spawn_peer_session` | 先落库 `peer_kickoff` 并 inbox 注册 parent，再 Pending 调度；返回 `queued`（相对 `session.max_concurrent`） |
@@ -415,7 +415,7 @@ Parent session                    Child session(s)
 `delivery_attempt` 记录 at-least-once 重投次数；批量消息必须走 `send → claim → process → ack`。
 显式 `agent.inbox` 默认只 claim 不 ack，处理完成后由 `agent.ack(message_ids|claim_token)` 确认；
 `claim_token` 是进程内整批 receipt，崩溃后由 durable processing 状态触发 at-least-once 重投，
-而不是丢失消息。`agent.history` 为只读恢复入口。`agent.status/join/wait/stop/collect` 只允许当前 session 或其后代，
+而不是丢失消息。`agent.history` 为只读恢复入口。`agent.status/wait/stop/collect` 只允许当前 session 或其后代，
 并通过 `MessagingRuntime` 进入真实 `SessionSupervisor` / `SessionActor` 状态机，`stop` 走正常取消与终端清理路径。
 同进程 session 优先使用 SessionActor mailbox；跨进程仍使用 JSONL adapter 作为 fallback；子会话默认工作目录仍为
 Temp（全局约束）。

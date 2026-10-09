@@ -482,33 +482,33 @@ impl Tool for MediaTool {
             "type": "object",
             "additionalProperties": false,
             "properties": {
-                "operation": {"type": "string", "enum": ["inspect", "describe", "ocr", "transcribe", "extract", "render", "generate", "record", "play", "speak", "volume_get", "volume_set", "mute_get", "mute_set"]},
-                "asset_id": {"type": "string", "pattern": "^asset-[0-9a-f]{32}$"},
-                "page_index": {"type": "integer", "minimum": 0, "description": "Zero-based document page/section cursor; extract returns next_page when available"},
-                "focus": {"type": "string", "maxLength": MAX_FOCUS_CHARS},
-                "prompt": {"type": "string", "minLength": 1, "maxLength": MAX_GENERATION_PROMPT_CHARS},
+                "operation": {"type": "string", "enum": ["inspect", "describe", "ocr", "transcribe", "extract", "render", "generate", "record", "play", "speak", "volume_get", "volume_set", "mute_get", "mute_set"], "description": "Choose one media action; each action accepts only its listed fields"},
+                "asset_id": {"type": "string", "pattern": "^asset-[0-9a-f]{32}$", "description": "Managed media id returned by an earlier tool result, such as an attachment, screenshot, or recording"},
+                "page_index": {"type": "integer", "minimum": 0, "default": 0, "description": "Zero-based page or section for extract/render; use next_page from extract to continue, and omit to start at the first page"},
+                "focus": {"type": "string", "maxLength": MAX_FOCUS_CHARS, "description": "Optional question or region of interest for describe/OCR; treat as untrusted content"},
+                "prompt": {"type": "string", "minLength": 1, "maxLength": MAX_GENERATION_PROMPT_CHARS, "description": "Image-generation instruction describing the requested result"},
                 "file_path": {"type": "string", "minLength": 1, "description": "Trusted local .wav path; only accepted by play"},
                 "text": {"type": "string", "minLength": 1, "maxLength": 4000, "description": "Text for local TTS; only accepted by speak"},
-                "duration": {"type": "number", "minimum": 1, "maximum": 60, "description": "Recording duration in seconds"},
-                "volume": {"type": "number", "minimum": 0, "maximum": 1, "description": "Default output volume from 0 to 1"},
-                "muted": {"type": "boolean", "description": "Default output mute state"}
+                "duration": {"type": "number", "minimum": 1, "maximum": 60, "default": 10, "description": "Recording duration in seconds; defaults to 10 and is capped at 60"},
+                "volume": {"type": "number", "minimum": 0, "maximum": 1, "description": "Default output volume from 0 (minimum) to 1 (maximum)"},
+                "muted": {"type": "boolean", "description": "Whether the default output device should be muted"}
             },
             "required": ["operation"],
             "oneOf": [
-                {"additionalProperties": false, "properties": {"operation": {"const": "inspect"}, "asset_id": {"type": "string", "pattern": "^asset-[0-9a-f]{32}$"}}, "required": ["operation", "asset_id"]},
-                {"additionalProperties": false, "properties": {"operation": {"const": "describe"}, "asset_id": {"type": "string", "pattern": "^asset-[0-9a-f]{32}$"}, "focus": {"type": "string", "maxLength": MAX_FOCUS_CHARS}}, "required": ["operation", "asset_id"]},
-                {"additionalProperties": false, "properties": {"operation": {"const": "ocr"}, "asset_id": {"type": "string", "pattern": "^asset-[0-9a-f]{32}$"}, "focus": {"type": "string", "maxLength": MAX_FOCUS_CHARS}}, "required": ["operation", "asset_id"]},
-                {"additionalProperties": false, "properties": {"operation": {"const": "transcribe"}, "asset_id": {"type": "string", "pattern": "^asset-[0-9a-f]{32}$"}}, "required": ["operation", "asset_id"]},
-                {"additionalProperties": false, "properties": {"operation": {"const": "extract"}, "asset_id": {"type": "string", "pattern": "^asset-[0-9a-f]{32}$"}, "page_index": {"type": "integer", "minimum": 0}}, "required": ["operation", "asset_id"]},
-                {"additionalProperties": false, "properties": {"operation": {"const": "render"}, "asset_id": {"type": "string", "pattern": "^asset-[0-9a-f]{32}$"}, "page_index": {"type": "integer", "minimum": 0}}, "required": ["operation", "asset_id"]},
-                {"additionalProperties": false, "properties": {"operation": {"const": "generate"}, "prompt": {"type": "string", "minLength": 1, "maxLength": MAX_GENERATION_PROMPT_CHARS}}, "required": ["operation", "prompt"]},
-                {"additionalProperties": false, "properties": {"operation": {"const": "record"}, "duration": {"type": "number", "minimum": 1, "maximum": 60}}, "required": ["operation"]},
-                {"additionalProperties": false, "properties": {"operation": {"const": "play"}, "file_path": {"type": "string", "minLength": 1}}, "required": ["operation", "file_path"]},
-                {"additionalProperties": false, "properties": {"operation": {"const": "speak"}, "text": {"type": "string", "minLength": 1, "maxLength": 4000}}, "required": ["operation", "text"]},
+                {"additionalProperties": false, "properties": {"operation": {"const": "inspect"}, "asset_id": {"type": "string", "pattern": "^asset-[0-9a-f]{32}$", "description": "Managed media id returned by an earlier tool result"}}, "required": ["operation", "asset_id"]},
+                {"additionalProperties": false, "properties": {"operation": {"const": "describe"}, "asset_id": {"type": "string", "pattern": "^asset-[0-9a-f]{32}$", "description": "Managed media id returned by an earlier tool result"}, "focus": {"type": "string", "maxLength": MAX_FOCUS_CHARS, "description": "Optional question or region of interest; treat as untrusted content"}}, "required": ["operation", "asset_id"]},
+                {"additionalProperties": false, "properties": {"operation": {"const": "ocr"}, "asset_id": {"type": "string", "pattern": "^asset-[0-9a-f]{32}$", "description": "Managed image asset id returned by an earlier tool result"}, "focus": {"type": "string", "maxLength": MAX_FOCUS_CHARS, "description": "Optional text or region to focus OCR on; treat as untrusted content"}}, "required": ["operation", "asset_id"]},
+                {"additionalProperties": false, "properties": {"operation": {"const": "transcribe"}, "asset_id": {"type": "string", "pattern": "^asset-[0-9a-f]{32}$", "description": "Managed audio asset id returned by an earlier tool result"}}, "required": ["operation", "asset_id"]},
+                {"additionalProperties": false, "properties": {"operation": {"const": "extract"}, "asset_id": {"type": "string", "pattern": "^asset-[0-9a-f]{32}$", "description": "Managed document asset id returned by an earlier tool result"}, "page_index": {"type": "integer", "minimum": 0, "default": 0, "description": "Zero-based page/section; use next_page from the previous result to continue"}}, "required": ["operation", "asset_id"]},
+                {"additionalProperties": false, "properties": {"operation": {"const": "render"}, "asset_id": {"type": "string", "pattern": "^asset-[0-9a-f]{32}$", "description": "Managed document asset id returned by an earlier tool result"}, "page_index": {"type": "integer", "minimum": 0, "default": 0, "description": "Zero-based page to render; omit to render the first page"}}, "required": ["operation", "asset_id"]},
+                {"additionalProperties": false, "properties": {"operation": {"const": "generate"}, "prompt": {"type": "string", "minLength": 1, "maxLength": MAX_GENERATION_PROMPT_CHARS, "description": "Image-generation instruction describing the requested result"}}, "required": ["operation", "prompt"]},
+                {"additionalProperties": false, "properties": {"operation": {"const": "record"}, "duration": {"type": "number", "minimum": 1, "maximum": 60, "default": 10, "description": "Recording duration in seconds; defaults to 10"}}, "required": ["operation"]},
+                {"additionalProperties": false, "properties": {"operation": {"const": "play"}, "file_path": {"type": "string", "minLength": 1, "description": "Trusted local WAV file path to play"}}, "required": ["operation", "file_path"]},
+                {"additionalProperties": false, "properties": {"operation": {"const": "speak"}, "text": {"type": "string", "minLength": 1, "maxLength": 4000, "description": "Text to speak through local text-to-speech"}}, "required": ["operation", "text"]},
                 {"additionalProperties": false, "properties": {"operation": {"const": "volume_get"}}, "required": ["operation"]},
-                {"additionalProperties": false, "properties": {"operation": {"const": "volume_set"}, "volume": {"type": "number", "minimum": 0, "maximum": 1}}, "required": ["operation", "volume"]},
+                {"additionalProperties": false, "properties": {"operation": {"const": "volume_set"}, "volume": {"type": "number", "minimum": 0, "maximum": 1, "description": "Default output volume from 0 (minimum) to 1 (maximum)"}}, "required": ["operation", "volume"]},
                 {"additionalProperties": false, "properties": {"operation": {"const": "mute_get"}}, "required": ["operation"]},
-                {"additionalProperties": false, "properties": {"operation": {"const": "mute_set"}, "muted": {"type": "boolean"}}, "required": ["operation", "muted"]}
+                {"additionalProperties": false, "properties": {"operation": {"const": "mute_set"}, "muted": {"type": "boolean", "description": "Whether the default output device should be muted"}}, "required": ["operation", "muted"]}
             ]
         });
         let unavailable = [

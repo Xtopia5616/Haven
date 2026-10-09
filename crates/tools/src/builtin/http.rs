@@ -193,23 +193,23 @@ impl Tool for HttpTool {
         serde_json::json!({
             "type": "object",
             "properties": {
-                "method": { "type": "string", "enum": ["GET", "POST"], "default": "GET" },
-                "url": { "type": "string", "minLength": 1 },
-                "headers": { "type": "object" },
-                "body": { "type": "string" },
-                "as_html": { "type": "boolean" },
-                "timeout_secs": { "type": "integer", "minimum": 1, "maximum": 120 }
+                "method": { "type": "string", "enum": ["GET", "POST"], "default": "GET", "description": "GET reads a known URL; POST sends body to a known endpoint. Defaults to GET" },
+                "url": { "type": "string", "minLength": 1, "description": "Known HTTP or HTTPS URL to request; this tool does not search for URLs" },
+                "headers": { "type": "object", "additionalProperties": { "type": "string" }, "description": "Optional request headers as string name/value pairs" },
+                "body": { "type": "string", "description": "Request body for POST" },
+                "as_html": { "type": "boolean", "default": false, "description": "Return raw HTML instead of extracted readable text; defaults to false" },
+                "timeout_secs": { "type": "integer", "minimum": 1, "maximum": 120, "default": 15, "description": "Request timeout in seconds; defaults to 15, maximum 120" }
             },
             "oneOf": [
                 {
                     "type": "object",
                     "additionalProperties": false,
                     "properties": {
-                        "method": { "const": "GET", "default": "GET" },
-                        "url": { "type": "string", "minLength": 1, "description": "The URL to request" },
+                        "method": { "const": "GET", "default": "GET", "description": "Read the URL without sending a request body" },
+                        "url": { "type": "string", "minLength": 1, "description": "Known HTTP or HTTPS URL to request" },
                         "headers": { "type": "object", "additionalProperties": { "type": "string" }, "description": "Optional HTTP headers" },
-                        "as_html": { "type": "boolean", "description": "Return raw HTML instead of extracted text" },
-                        "timeout_secs": { "type": "integer", "minimum": 1, "maximum": 120, "default": 15 }
+                        "as_html": { "type": "boolean", "default": false, "description": "Return raw HTML instead of extracted readable text; defaults to false" },
+                        "timeout_secs": { "type": "integer", "minimum": 1, "maximum": 120, "default": 15, "description": "Request timeout in seconds; defaults to 15" }
                     },
                     "required": ["url"]
                 },
@@ -217,12 +217,12 @@ impl Tool for HttpTool {
                     "type": "object",
                     "additionalProperties": false,
                     "properties": {
-                        "method": { "const": "POST" },
-                        "url": { "type": "string", "minLength": 1, "description": "The URL to request" },
+                        "method": { "const": "POST", "description": "Send a request body to this URL" },
+                        "url": { "type": "string", "minLength": 1, "description": "Known HTTP or HTTPS URL to request" },
                         "headers": { "type": "object", "additionalProperties": { "type": "string" }, "description": "Optional HTTP headers" },
                         "body": { "type": "string", "description": "Request body" },
-                        "as_html": { "type": "boolean", "description": "Return raw HTML instead of extracted text" },
-                        "timeout_secs": { "type": "integer", "minimum": 1, "maximum": 120, "default": 15 }
+                        "as_html": { "type": "boolean", "default": false, "description": "Return raw HTML instead of extracted readable text; defaults to false" },
+                        "timeout_secs": { "type": "integer", "minimum": 1, "maximum": 120, "default": 15, "description": "Request timeout in seconds; defaults to 15" }
                     },
                     "required": ["method", "url"]
                 }

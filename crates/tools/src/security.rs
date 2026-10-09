@@ -122,7 +122,6 @@ pub const LOCAL_TOOL_SECURITY_MATRIX: &[LocalToolSecurityCase] = &[
     security_case!("agent.request", "agent.request", Safe),
     security_case!("agent.spawn", "agent.spawn", Medium),
     security_case!("agent.status", "agent.status", Safe),
-    security_case!("agent.join", "agent.join", Safe),
     security_case!("agent.wait", "agent.wait", Safe),
     security_case!("agent.stop", "agent.stop", High),
     security_case!("agent.collect", "agent.collect", Safe),
@@ -3039,6 +3038,7 @@ mod tests {
             "haven.skills.skill_create",
             "haven.mcp.mcp_add",
             "haven.mcp.mcp_update",
+            "haven.mcp.mcp_reload",
             "haven.mcp.mcp_remove",
         ];
         for tool in tools.iter().filter(|tool| tool.name().contains('.')) {

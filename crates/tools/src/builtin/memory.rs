@@ -374,14 +374,14 @@ impl Tool for MemoryTool {
         json!({
             "type": "object",
             "properties": {
-                "operation": { "type": "string", "enum": ["search", "list", "remember", "forget", "recall"] },
-                "query": { "type": "string", "minLength": 1 },
-                "kind": { "type": "string", "enum": ["fact", "episode"], "default": "fact" },
-                "limit": { "type": "integer", "minimum": 1, "maximum": 50 },
-                "predicate": { "type": "string", "minLength": 1 },
-                "object": { "type": "string", "minLength": 1 },
-                "tags": { "type": "array", "items": { "type": "string", "minLength": 1 }, "uniqueItems": true },
-                "subject": { "type": "string", "minLength": 1 }
+                "operation": { "type": "string", "enum": ["search", "list", "remember", "forget", "recall"], "description": "Choose fact search/list/edit or cross-session recall" },
+                "query": { "type": "string", "minLength": 1, "description": "Keywords for search; a natural-language question or topic for recall" },
+                "kind": { "type": "string", "enum": ["fact", "episode"], "default": "fact", "description": "Recall structured facts or past conversation excerpts; defaults to fact" },
+                "limit": { "type": "integer", "minimum": 1, "maximum": 50, "description": "Maximum results: defaults to 10 for search, 20 for list, and 5 for recall; recall is capped at 20" },
+                "predicate": { "type": "string", "minLength": 1, "description": "Fact attribute to remember or forget, such as preference or project" },
+                "object": { "type": "string", "minLength": 1, "description": "Fact value to remember; for forget, omit only when the user wants every value for this predicate removed" },
+                "tags": { "type": "array", "items": { "type": "string", "minLength": 1 }, "uniqueItems": true, "description": "Optional fact labels, such as identity, preference, workspace, or project"},
+                "subject": { "type": "string", "minLength": 1, "description": "Fact owner/filter; writes default to user, search filters to one owner, and list without it spans owners" }
             },
             "required": ["operation"],
             "oneOf": [
@@ -390,9 +390,9 @@ impl Tool for MemoryTool {
                     "additionalProperties": false,
                     "properties": {
                         "operation": { "const": "search" },
-                        "query": { "type": "string", "minLength": 1 },
-                        "limit": { "type": "integer", "minimum": 1, "maximum": 50 },
-                        "subject": { "type": "string", "minLength": 1 }
+                        "query": { "type": "string", "minLength": 1, "description": "Keywords to match against stored fact fields and tags" },
+                        "limit": { "type": "integer", "minimum": 1, "maximum": 50, "description": "Maximum facts to return; defaults to 10" },
+                        "subject": { "type": "string", "minLength": 1, "description": "Optional exact owner filter; omit to search across owners" }
                     },
                     "required": ["operation", "query"]
                 },
@@ -401,8 +401,8 @@ impl Tool for MemoryTool {
                     "additionalProperties": false,
                     "properties": {
                         "operation": { "const": "list" },
-                        "limit": { "type": "integer", "minimum": 1, "maximum": 50 },
-                        "subject": { "type": "string", "minLength": 1 }
+                        "limit": { "type": "integer", "minimum": 1, "maximum": 50, "description": "Maximum facts to return; defaults to 20" },
+                        "subject": { "type": "string", "minLength": 1, "description": "Optional exact owner filter; omit to list recent facts across owners" }
                     },
                     "required": ["operation"]
                 },
@@ -411,10 +411,10 @@ impl Tool for MemoryTool {
                     "additionalProperties": false,
                     "properties": {
                         "operation": { "const": "remember" },
-                        "predicate": { "type": "string", "minLength": 1 },
-                        "object": { "type": "string", "minLength": 1 },
-                        "tags": { "type": "array", "items": { "type": "string", "minLength": 1 }, "uniqueItems": true },
-                        "subject": { "type": "string", "minLength": 1 }
+                        "predicate": { "type": "string", "minLength": 1, "description": "Short fact attribute, such as preference or project" },
+                        "object": { "type": "string", "minLength": 1, "description": "The durable fact value; credential-like values are rejected" },
+                        "tags": { "type": "array", "items": { "type": "string", "minLength": 1 }, "uniqueItems": true, "description": "Optional labels: identity, preference, workspace, or project" },
+                        "subject": { "type": "string", "minLength": 1, "description": "Owner namespace; defaults to user" }
                     },
                     "required": ["operation", "predicate", "object"]
                 },
@@ -423,9 +423,9 @@ impl Tool for MemoryTool {
                     "additionalProperties": false,
                     "properties": {
                         "operation": { "const": "forget" },
-                        "predicate": { "type": "string", "minLength": 1 },
-                        "object": { "type": "string", "minLength": 1 },
-                        "subject": { "type": "string", "minLength": 1 }
+                        "predicate": { "type": "string", "minLength": 1, "description": "Fact attribute whose value should be removed" },
+                        "object": { "type": "string", "minLength": 1, "description": "Optional exact value; omit only to remove every value for this predicate" },
+                        "subject": { "type": "string", "minLength": 1, "description": "Owner namespace; defaults to user" }
                     },
                     "required": ["operation", "predicate"]
                 },
@@ -434,10 +434,10 @@ impl Tool for MemoryTool {
                     "additionalProperties": false,
                     "properties": {
                         "operation": { "const": "recall" },
-                        "query": { "type": "string", "minLength": 1 },
-                        "kind": { "type": "string", "enum": ["fact", "episode"] },
-                        "limit": { "type": "integer", "minimum": 1, "maximum": 50 },
-                        "subject": { "type": "string", "minLength": 1 }
+                        "query": { "type": "string", "minLength": 1, "description": "Natural-language question or topic to retrieve relevant history for" },
+                        "kind": { "type": "string", "enum": ["fact", "episode"], "default": "fact", "description": "Return structured facts or past conversation excerpts; defaults to fact" },
+                        "limit": { "type": "integer", "minimum": 1, "maximum": 50, "description": "Maximum matches; defaults to 5 and is capped at 20" },
+                        "subject": { "type": "string", "minLength": 1, "description": "Optional owner filter for fact recall" }
                     },
                     "required": ["operation", "query"]
                 }

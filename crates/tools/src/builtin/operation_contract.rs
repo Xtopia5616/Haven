@@ -98,7 +98,6 @@ pub(crate) fn operation_contract(name: &'static str) -> OperationContract {
         "agent.request" => ("请求 Agent", ToolCatalogGroup::Agent, false, None),
         "agent.spawn" => ("创建 Agent", ToolCatalogGroup::Agent, false, None),
         "agent.status" => ("Agent 状态", ToolCatalogGroup::Agent, true, None),
-        "agent.join" => ("等待 Agent 完成", ToolCatalogGroup::Agent, false, None),
         "agent.wait" => ("等待 Agent", ToolCatalogGroup::Agent, true, None),
         "agent.stop" => ("停止 Agent", ToolCatalogGroup::Agent, false, None),
         "agent.collect" => ("收集 Agent 结果", ToolCatalogGroup::Agent, true, None),

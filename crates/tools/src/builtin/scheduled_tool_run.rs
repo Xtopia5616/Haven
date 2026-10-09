@@ -325,17 +325,17 @@ impl Tool for ScheduleTool {
         serde_json::json!({
             "type": "object",
             "properties": {
-                "operation": { "type": "string", "enum": ["set", "list", "cancel"] },
-                "delay_secs": { "type": "integer", "minimum": 1, "maximum": 86400 },
-                "due_at": { "type": "string", "minLength": 1 },
-                "watch_tool_run_id": { "type": "string", "minLength": 1 },
-                "mode": { "type": "string", "enum": ["tool", "continue"] },
-                "title": { "type": "string", "minLength": 1 },
-                "body": { "type": "string", "minLength": 1 },
-                "tool_name": { "type": "string", "minLength": 1 },
-                "tool_args": { "type": "object" },
-                "prompt": { "type": "string", "minLength": 1 },
-                "tool_run_id": { "type": "string", "minLength": 1 }
+                "operation": { "type": "string", "enum": ["set", "list", "cancel"], "description": "Schedule future work, list schedules, or cancel one" },
+                "delay_secs": { "type": "integer", "minimum": 1, "maximum": 86400, "description": "Fire after this many seconds; choose this or due_at, not both" },
+                "due_at": { "type": "string", "minLength": 1, "description": "Absolute fire time as an ISO 8601 timestamp with timezone; choose this or delay_secs, not both" },
+                "watch_tool_run_id": { "type": "string", "minLength": 1, "description": "Schedule continuation when this background task reaches a terminal state; requires mode=continue" },
+                "mode": { "type": "string", "enum": ["tool", "continue"], "default": "tool", "description": "At fire time, call tool_name (default) or resume this session with prompt" },
+                "title": { "type": "string", "minLength": 1, "description": "Short title shown for the scheduled task; defaults to Haven" },
+                "body": { "type": "string", "minLength": 1, "description": "Required message shown when the schedule fires" },
+                "tool_name": { "type": "string", "minLength": 1, "description": "Available built-in tool to call when mode=tool" },
+                "tool_args": { "type": "object", "description": "Arguments for tool_name when mode=tool; omit or use an empty object for no arguments" },
+                "prompt": { "type": "string", "minLength": 1, "description": "Instruction delivered to this session when mode=continue" },
+                "tool_run_id": { "type": "string", "minLength": 1, "description": "Scheduled task id returned by schedule.set; required for cancel" }
             },
             "required": ["operation"],
             "oneOf": [
@@ -348,7 +348,7 @@ impl Tool for ScheduleTool {
                 {
                     "type": "object",
                     "additionalProperties": false,
-                    "properties": { "operation": { "const": "cancel" }, "tool_run_id": { "type": "string", "minLength": 1 } },
+                    "properties": { "operation": { "const": "cancel" }, "tool_run_id": { "type": "string", "minLength": 1, "description": "Scheduled task id returned by schedule.set" } },
                     "required": ["operation", "tool_run_id"]
                 },
                 {
@@ -356,14 +356,14 @@ impl Tool for ScheduleTool {
                     "additionalProperties": false,
                     "properties": {
                         "operation": { "const": "set" },
-                        "delay_secs": { "type": "integer", "minimum": 1, "maximum": 86400 },
-                        "due_at": { "type": "string", "minLength": 1 },
-                        "mode": { "type": "string", "enum": ["tool", "continue"] },
-                        "title": { "type": "string", "minLength": 1 },
-                        "body": { "type": "string", "minLength": 1 },
-                        "tool_name": { "type": "string", "minLength": 1 },
-                        "tool_args": { "type": "object" },
-                        "prompt": { "type": "string", "minLength": 1 }
+                        "delay_secs": { "type": "integer", "minimum": 1, "maximum": 86400, "description": "Fire after this many seconds; choose this or due_at, not both" },
+                        "due_at": { "type": "string", "minLength": 1, "description": "Absolute fire time as an ISO 8601 timestamp with timezone; choose this or delay_secs, not both" },
+                        "mode": { "type": "string", "enum": ["tool", "continue"], "default": "tool", "description": "Call tool_name when it fires (default), or resume this session with prompt" },
+                        "title": { "type": "string", "minLength": 1, "description": "Short task title; defaults to Haven" },
+                        "body": { "type": "string", "minLength": 1, "description": "Required message shown when the schedule fires" },
+                        "tool_name": { "type": "string", "minLength": 1, "description": "Available built-in tool to call when mode=tool" },
+                        "tool_args": { "type": "object", "description": "Arguments for tool_name when mode=tool; omit or use an empty object for no arguments" },
+                        "prompt": { "type": "string", "minLength": 1, "description": "Instruction delivered to this session when mode=continue" }
                     },
                     "required": ["operation", "body"],
                     "oneOf": [
@@ -393,11 +393,11 @@ impl Tool for ScheduleTool {
                     "additionalProperties": false,
                     "properties": {
                         "operation": { "const": "set" },
-                        "watch_tool_run_id": { "type": "string", "minLength": 1 },
+                        "watch_tool_run_id": { "type": "string", "minLength": 1, "description": "Fire when this background task completes, fails, or is cancelled" },
                         "mode": { "const": "continue" },
-                        "title": { "type": "string", "minLength": 1 },
-                        "body": { "type": "string", "minLength": 1 },
-                        "prompt": { "type": "string", "minLength": 1 }
+                        "title": { "type": "string", "minLength": 1, "description": "Short task title; defaults to Haven" },
+                        "body": { "type": "string", "minLength": 1, "description": "Required message shown when the background task finishes" },
+                        "prompt": { "type": "string", "minLength": 1, "description": "Instruction delivered to this session with the completed task result" }
                     },
                     "required": ["operation", "watch_tool_run_id", "mode", "body", "prompt"]
                 }

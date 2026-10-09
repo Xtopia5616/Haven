@@ -242,13 +242,13 @@ impl Tool for SystemTool {
         serde_json::json!({
             "type": "object",
             "properties": {
-                "scope": { "type": "string", "enum": ["info", "overview", "env", "registry", "power", "display", "displays"] },
-                "category": { "type": "string", "enum": ["overview", "cpu", "memory", "disk", "os", "network", "user", "locale", "all"] },
-                "operation": { "type": "string" },
-                "name": { "type": "string" },
-                "prefix": { "type": "string" },
-                "path": { "type": "string" },
-                "env_scope": { "type": "string", "enum": ["process", "user", "machine"] }
+                "scope": { "type": "string", "enum": ["info", "overview", "env", "registry", "power", "display", "displays"], "description": "Information domain: machine info (default), environment, Registry, power, or connected displays" },
+                "category": { "type": "string", "enum": ["overview", "cpu", "memory", "disk", "os", "network", "user", "locale", "all"], "default": "overview", "description": "Machine information to return; overview is compact, all is broad, and locale includes local/UTC time and timezone" },
+                "operation": { "type": "string", "description": "For env/registry use list or get; for power use status, lock, sleep, or hibernate. Defaults to list or status by scope" },
+                "name": { "type": "string", "description": "Environment variable name for env/get, or Registry value name for registry/get" },
+                "prefix": { "type": "string", "minLength": 1, "description": "Optional environment variable name prefix when listing variables" },
+                "path": { "type": "string", "description": "Windows Registry key path for registry/list or registry/get" },
+                "env_scope": { "type": "string", "enum": ["process", "user", "machine"], "default": "process", "description": "Environment variable scope to inspect; defaults to the current process" }
             },
             "oneOf": [
                 {
@@ -256,7 +256,7 @@ impl Tool for SystemTool {
                     "additionalProperties": false,
                     "properties": {
                         "scope": { "enum": ["info", "overview"] },
-                        "category": { "type": "string", "enum": ["overview", "cpu", "memory", "disk", "os", "network", "user", "locale", "all"] }
+                        "category": { "type": "string", "enum": ["overview", "cpu", "memory", "disk", "os", "network", "user", "locale", "all"], "default": "overview", "description": "Information to return; overview is compact, all is broad, and locale includes local/UTC time and timezone" }
                     }
                 },
                 {
@@ -280,12 +280,12 @@ impl Tool for SystemTool {
                     "oneOf": [
                         {
                             "additionalProperties": false,
-                            "properties": { "scope": { "const": "env" }, "operation": { "const": "list" }, "prefix": { "type": "string", "minLength": 1 }, "env_scope": { "type": "string", "enum": ["process", "user", "machine"] } },
+                            "properties": { "scope": { "const": "env" }, "operation": { "const": "list" }, "prefix": { "type": "string", "minLength": 1, "description": "Optional environment variable name prefix" }, "env_scope": { "type": "string", "enum": ["process", "user", "machine"], "default": "process", "description": "Scope to inspect; defaults to the current process" } },
                             "required": ["scope"]
                         },
                         {
                             "additionalProperties": false,
-                            "properties": { "scope": { "const": "env" }, "operation": { "const": "get" }, "name": { "type": "string", "minLength": 1 }, "env_scope": { "type": "string", "enum": ["process", "user", "machine"] } },
+                            "properties": { "scope": { "const": "env" }, "operation": { "const": "get" }, "name": { "type": "string", "minLength": 1, "description": "Exact environment variable name to read; sensitive values may be masked" }, "env_scope": { "type": "string", "enum": ["process", "user", "machine"], "default": "process", "description": "Scope to inspect; defaults to the current process" } },
                             "required": ["scope", "operation", "name"]
                         },
                     ]
@@ -295,12 +295,12 @@ impl Tool for SystemTool {
                     "oneOf": [
                         {
                             "additionalProperties": false,
-                            "properties": { "scope": { "const": "registry" }, "operation": { "const": "list" }, "path": { "type": "string", "minLength": 1 } },
+                            "properties": { "scope": { "const": "registry" }, "operation": { "const": "list" }, "path": { "type": "string", "minLength": 1, "description": "Registry key path whose values should be listed" } },
                             "required": ["scope", "path"]
                         },
                         {
                             "additionalProperties": false,
-                            "properties": { "scope": { "const": "registry" }, "operation": { "const": "get" }, "path": { "type": "string", "minLength": 1 }, "name": { "type": "string", "minLength": 1 } },
+                            "properties": { "scope": { "const": "registry" }, "operation": { "const": "get" }, "path": { "type": "string", "minLength": 1, "description": "Registry key path containing the value" }, "name": { "type": "string", "minLength": 1, "description": "Exact Registry value name to read" } },
                             "required": ["scope", "operation", "path", "name"]
                         },
                     ]

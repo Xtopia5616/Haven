@@ -1,6 +1,6 @@
 //! Cross-session messaging / peer-collab: single builtin tool `agent` with
 //! `operation` ∈ list | children | history | send | inbox | ack | reply |
-//! profile | request | spawn | status | join | wait | stop | collect.
+//! profile | request | spawn | status | wait | stop | collect.
 //! Thin tool layer over [`haven_messaging::MessagingService`].
 //!
 //! The agent name is the owning session id (injected privately as
@@ -63,7 +63,7 @@ const MAX_INBOX_ACK_IDS: usize = 100;
 const MAX_CHILDREN_PER_PARENT: usize = 8;
 const OPERATIONS: &[&str] = &[
     "list", "children", "history", "send", "inbox", "ack", "reply", "profile", "request", "spawn",
-    "status", "join", "wait", "stop", "collect",
+    "status", "wait", "stop", "collect",
 ];
 
 /// Run a blocking messaging-service operation on the blocking pool so lock
@@ -383,7 +383,6 @@ pub enum AgentOperation {
     Request,
     Spawn,
     Status,
-    Join,
     Wait,
     Stop,
     Collect,
@@ -493,10 +492,6 @@ impl AgentTool {
             AgentOperation::Spawn => self.op_spawn(params, cancel).await,
             AgentOperation::Status => {
                 self.op_control(params, cancel, AgentControlOperation::Status)
-                    .await
-            }
-            AgentOperation::Join => {
-                self.op_control(params, cancel, AgentControlOperation::Wait)
                     .await
             }
             AgentOperation::Wait => {
@@ -1180,9 +1175,7 @@ impl Tool for AgentTool {
     fn idempotency(&self, input: &Value) -> OperationIdempotency {
         match input.get("operation").and_then(Value::as_str) {
             Some("list") | Some("children") | Some("history") | Some("ack") | Some("profile")
-            | Some("status") | Some("join") | Some("wait") | Some("collect") => {
-                OperationIdempotency::Idempotent
-            }
+            | Some("status") | Some("wait") | Some("collect") => OperationIdempotency::Idempotent,
             // inbox claims mail and the delivery/reply/request/spawn/stop
             // operations have externally visible side effects.
             Some("inbox") | Some("send") | Some("reply") | Some("request") | Some("spawn")
@@ -1204,7 +1197,6 @@ impl Tool for AgentTool {
             // request waits up to MAX_REQUEST_TIMEOUT_SECS inside the tool.
             Some("request") => MAX_REQUEST_TIMEOUT_SECS + 15,
             Some("wait") => MAX_REQUEST_TIMEOUT_SECS + 15,
-            Some("join") => MAX_REQUEST_TIMEOUT_SECS + 15,
             Some("spawn") => 60,
             _ => 30,
         }
@@ -1215,48 +1207,48 @@ impl Tool for AgentTool {
             "type": "object",
             "properties": {
                 "operation": { "type": "string", "enum": OPERATIONS },
-                "target": { "type": "string", "minLength": 1 },
-                "to": { "type": "string", "minLength": 1 },
-                "text": { "type": "string", "minLength": 1 },
-                "subject": { "type": "string" },
-                "payload": { "type": "object" },
-                "type": { "type": "string", "enum": ["message", "reply", "broadcast", "request"] },
-                "expires_at": { "type": "string", "minLength": 1 },
-                "in_reply_to": { "type": "string", "minLength": 1 },
-                "capability": { "type": "string", "minLength": 1, "maxLength": MAX_CAPABILITY_BYTES },
-                "parent": { "type": "string", "minLength": 1, "maxLength": 64 },
-                "status": { "type": "string", "enum": ["online", "offline"] },
-                "role": { "type": "string", "minLength": 1 },
-                "title": { "type": "string", "minLength": 1 },
-                "capabilities": { "type": "array", "minItems": 1, "maxItems": MAX_CAPABILITIES, "uniqueItems": true, "items": { "type": "string", "minLength": 1, "maxLength": MAX_CAPABILITY_BYTES } },
-                "timeout_secs": { "type": "integer", "minimum": 1, "maximum": MAX_REQUEST_TIMEOUT_SECS },
-                "limit": { "type": "integer", "minimum": 1, "maximum": MAX_LIST_LIMIT },
-                "ack": { "type": "boolean" },
-                "message_ids": { "type": "array", "minItems": 1, "maxItems": MAX_INBOX_ACK_IDS, "uniqueItems": true, "items": { "type": "string", "pattern": "^msg-[0-9a-f]{32}$" } },
-                "claim_token": { "type": "string", "pattern": "^claim-[0-9a-f]{32}$" },
-                "task": { "type": "string", "minLength": 1 }
+                "target": { "type": "string", "minLength": 1, "description": "Agent session id for history, status, wait, stop, or collect; lifecycle control is limited to descendants" },
+                "to": { "type": "string", "minLength": 1, "description": "Recipient session id; use '*' only to broadcast with send" },
+                "text": { "type": "string", "minLength": 1, "description": "Concise message, reply, or request body" },
+                "subject": { "type": "string", "description": "Optional short topic label, not an instruction channel" },
+                "payload": { "type": "object", "description": "Optional structured low-trust data; keep it small and do not include secrets" },
+                "type": { "type": "string", "enum": ["message", "reply", "broadcast", "request"], "description": "Message type for send; defaults to message" },
+                "expires_at": { "type": "string", "minLength": 1, "description": "Optional RFC 3339 expiration timestamp" },
+                "in_reply_to": { "type": "string", "minLength": 1, "description": "Message id to reply to; omit to use the latest matching peer message" },
+                "capability": { "type": "string", "minLength": 1, "maxLength": MAX_CAPABILITY_BYTES, "description": "Exact capability token to filter agents by" },
+                "parent": { "type": "string", "minLength": 1, "maxLength": 64, "description": "Exact parent session id to filter agents by" },
+                "status": { "type": "string", "enum": ["online", "offline"], "description": "Filter agents to online or offline" },
+                "role": { "type": "string", "minLength": 1, "description": "Agent role label; on list this is an exact filter, on profile/spawn it describes the agent" },
+                "title": { "type": "string", "minLength": 1, "description": "Short human-readable agent title" },
+                "capabilities": { "type": "array", "minItems": 1, "maxItems": MAX_CAPABILITIES, "uniqueItems": true, "items": { "type": "string", "minLength": 1, "maxLength": MAX_CAPABILITY_BYTES }, "description": "Declared capability tokens used for peer discovery" },
+                "timeout_secs": { "type": "integer", "minimum": 1, "maximum": MAX_REQUEST_TIMEOUT_SECS, "default": DEFAULT_REQUEST_TIMEOUT_SECS, "description": "Maximum wait in seconds; defaults to 60 and is capped at 300" },
+                "limit": { "type": "integer", "minimum": 1, "maximum": MAX_LIST_LIMIT, "description": "Maximum results; list defaults to 50, history/collect to 20" },
+                "ack": { "type": "boolean", "default": false, "description": "For inbox only: acknowledge immediately. Defaults to false; process messages, then call ack" },
+                "message_ids": { "type": "array", "minItems": 1, "maxItems": MAX_INBOX_ACK_IDS, "uniqueItems": true, "items": { "type": "string", "pattern": "^msg-[0-9a-f]{32}$" }, "description": "Message ids from the claimed inbox batch to acknowledge" },
+                "claim_token": { "type": "string", "pattern": "^claim-[0-9a-f]{32}$", "description": "Claim token returned by inbox; acknowledges that entire batch" },
+                "task": { "type": "string", "minLength": 1, "description": "Clear task brief for the new child agent" }
             },
             "required": ["operation"],
             "oneOf": [
-                { "type": "object", "additionalProperties": false, "properties": { "operation": { "const": "list" }, "role": { "type": "string", "minLength": 1, "maxLength": MAX_ROLE_BYTES }, "capability": { "type": "string", "minLength": 1, "maxLength": MAX_CAPABILITY_BYTES }, "parent": { "type": "string", "minLength": 1, "maxLength": 64 }, "status": { "type": "string", "enum": ["online", "offline"] }, "limit": { "type": "integer", "minimum": 1, "maximum": MAX_LIST_LIMIT } }, "required": ["operation"] },
+                { "type": "object", "additionalProperties": false, "properties": { "operation": { "const": "list" }, "role": { "type": "string", "minLength": 1, "maxLength": MAX_ROLE_BYTES, "description": "Exact role filter" }, "capability": { "type": "string", "minLength": 1, "maxLength": MAX_CAPABILITY_BYTES, "description": "Exact capability token filter" }, "parent": { "type": "string", "minLength": 1, "maxLength": 64, "description": "Exact parent session id filter" }, "status": { "type": "string", "enum": ["online", "offline"], "description": "Filter to online or offline agents" }, "limit": { "type": "integer", "minimum": 1, "maximum": MAX_LIST_LIMIT, "description": "Maximum results; defaults to 50" } }, "required": ["operation"] },
                 { "type": "object", "additionalProperties": false, "properties": { "operation": { "const": "children" } }, "required": ["operation"] },
-                { "type": "object", "additionalProperties": false, "properties": { "operation": { "const": "history" }, "target": { "type": "string", "minLength": 1, "maxLength": 64 }, "limit": { "type": "integer", "minimum": 1, "maximum": MAX_HISTORY_LIMIT } }, "required": ["operation"] },
-                { "type": "object", "additionalProperties": false, "properties": { "operation": { "const": "inbox" }, "ack": { "type": "boolean" } }, "required": ["operation"] },
+                { "type": "object", "additionalProperties": false, "properties": { "operation": { "const": "history" }, "target": { "type": "string", "minLength": 1, "maxLength": 64, "description": "Current session or descendant session id; omit to read this session's history" }, "limit": { "type": "integer", "minimum": 1, "maximum": MAX_HISTORY_LIMIT, "description": "Maximum messages; defaults to 20" } }, "required": ["operation"] },
+                { "type": "object", "additionalProperties": false, "properties": { "operation": { "const": "inbox" }, "ack": { "type": "boolean", "default": false, "description": "Acknowledge immediately; defaults to false so messages can be processed before ack" } }, "required": ["operation"] },
                 { "oneOf": [
-                    { "type": "object", "properties": { "operation": { "const": "ack" }, "message_ids": { "type": "array", "minItems": 1, "maxItems": MAX_INBOX_ACK_IDS, "uniqueItems": true, "items": { "type": "string", "pattern": "^msg-[0-9a-f]{32}$" } } }, "required": ["operation", "message_ids"] },
-                    { "type": "object", "properties": { "operation": { "const": "ack" }, "claim_token": { "type": "string", "pattern": "^claim-[0-9a-f]{32}$" } }, "required": ["operation", "claim_token"] }
+                    { "type": "object", "properties": { "operation": { "const": "ack" }, "message_ids": { "type": "array", "minItems": 1, "maxItems": MAX_INBOX_ACK_IDS, "uniqueItems": true, "items": { "type": "string", "pattern": "^msg-[0-9a-f]{32}$" }, "description": "Ids from the inbox claim to acknowledge selectively" } }, "required": ["operation", "message_ids"] },
+                    { "type": "object", "properties": { "operation": { "const": "ack" }, "claim_token": { "type": "string", "pattern": "^claim-[0-9a-f]{32}$", "description": "Token returned by inbox; acknowledges that whole claimed batch" } }, "required": ["operation", "claim_token"] }
                 ] },
                 {
                     "type": "object",
                     "additionalProperties": false,
                     "properties": {
                         "operation": { "const": "send" },
-                        "to": { "type": "string", "minLength": 1 },
-                        "text": { "type": "string", "minLength": 1 },
-                        "subject": { "type": "string" },
-                        "payload": { "type": "object" },
-                        "type": { "type": "string", "enum": ["message", "reply", "broadcast", "request"] },
-                        "expires_at": { "type": "string", "minLength": 1 }
+                        "to": { "type": "string", "minLength": 1, "description": "Recipient session id; use '*' to broadcast to online peers" },
+                        "text": { "type": "string", "minLength": 1, "description": "Concise low-trust message for the recipient" },
+                        "subject": { "type": "string", "description": "Optional short topic label" },
+                        "payload": { "type": "object", "description": "Optional structured low-trust data; do not include secrets" },
+                        "type": { "type": "string", "enum": ["message", "reply", "broadcast", "request"], "default": "message", "description": "Envelope type; defaults to message" },
+                        "expires_at": { "type": "string", "minLength": 1, "description": "Optional RFC 3339 expiration timestamp" }
                     },
                     "required": ["operation", "to", "text"]
                 },
@@ -1265,12 +1257,12 @@ impl Tool for AgentTool {
                     "additionalProperties": false,
                     "properties": {
                         "operation": { "const": "reply" },
-                        "to": { "type": "string", "minLength": 1 },
-                        "text": { "type": "string", "minLength": 1 },
-                        "subject": { "type": "string" },
-                        "payload": { "type": "object" },
-                        "expires_at": { "type": "string", "minLength": 1 },
-                        "in_reply_to": { "type": "string", "minLength": 1 }
+                        "to": { "type": "string", "minLength": 1, "description": "Optional recipient session id; omit to infer the latest peer message" },
+                        "text": { "type": "string", "minLength": 1, "description": "Concise reply body" },
+                        "subject": { "type": "string", "description": "Optional short topic label" },
+                        "payload": { "type": "object", "description": "Optional structured low-trust data; do not include secrets" },
+                        "expires_at": { "type": "string", "minLength": 1, "description": "Optional RFC 3339 expiration timestamp" },
+                        "in_reply_to": { "type": "string", "minLength": 1, "description": "Specific message id to reply to; omit to use the latest received message" }
                     },
                     "required": ["operation", "text"]
                 },
@@ -1279,9 +1271,9 @@ impl Tool for AgentTool {
                     "additionalProperties": false,
                     "properties": {
                         "operation": { "const": "profile" },
-                        "role": { "type": "string", "minLength": 1 },
-                        "title": { "type": "string", "minLength": 1 },
-                        "capabilities": { "type": "array", "minItems": 1, "maxItems": MAX_CAPABILITIES, "uniqueItems": true, "items": { "type": "string", "minLength": 1, "maxLength": MAX_CAPABILITY_BYTES } }
+                        "role": { "type": "string", "minLength": 1, "description": "Role label to announce; omit all profile fields to read the current profile" },
+                        "title": { "type": "string", "minLength": 1, "description": "Short human-readable title to announce" },
+                        "capabilities": { "type": "array", "minItems": 1, "maxItems": MAX_CAPABILITIES, "uniqueItems": true, "items": { "type": "string", "minLength": 1, "maxLength": MAX_CAPABILITY_BYTES }, "description": "Capability tokens to announce for peer discovery" }
                     },
                     "required": ["operation"]
                 },
@@ -1290,12 +1282,12 @@ impl Tool for AgentTool {
                     "additionalProperties": false,
                     "properties": {
                         "operation": { "const": "request" },
-                        "to": { "type": "string", "minLength": 1 },
-                        "text": { "type": "string", "minLength": 1 },
-                        "subject": { "type": "string" },
-                        "payload": { "type": "object" },
-                        "expires_at": { "type": "string", "minLength": 1 },
-                        "timeout_secs": { "type": "integer", "minimum": 1, "maximum": MAX_REQUEST_TIMEOUT_SECS }
+                        "to": { "type": "string", "minLength": 1, "description": "Recipient session id; requests cannot be broadcast" },
+                        "text": { "type": "string", "minLength": 1, "description": "Concise request with the needed context and expected reply" },
+                        "subject": { "type": "string", "description": "Optional short topic label" },
+                        "payload": { "type": "object", "description": "Optional structured low-trust data; do not include secrets" },
+                        "expires_at": { "type": "string", "minLength": 1, "description": "Optional RFC 3339 expiration timestamp" },
+                        "timeout_secs": { "type": "integer", "minimum": 1, "maximum": MAX_REQUEST_TIMEOUT_SECS, "default": DEFAULT_REQUEST_TIMEOUT_SECS, "description": "How long to wait once for a reply; defaults to 60 seconds, maximum 300" }
                     },
                     "required": ["operation", "to", "text"]
                 },
@@ -1304,18 +1296,17 @@ impl Tool for AgentTool {
                     "additionalProperties": false,
                     "properties": {
                         "operation": { "const": "spawn" },
-                        "task": { "type": "string", "minLength": 1 },
-                        "title": { "type": "string", "minLength": 1 },
-                        "role": { "type": "string", "minLength": 1 },
-                        "capabilities": { "type": "array", "minItems": 1, "maxItems": MAX_CAPABILITIES, "uniqueItems": true, "items": { "type": "string", "minLength": 1, "maxLength": MAX_CAPABILITY_BYTES } }
+                        "task": { "type": "string", "minLength": 1, "description": "Self-contained task brief for the child agent" },
+                        "title": { "type": "string", "minLength": 1, "description": "Optional short title for the child" },
+                        "role": { "type": "string", "minLength": 1, "description": "Optional role label for peer discovery" },
+                        "capabilities": { "type": "array", "minItems": 1, "maxItems": MAX_CAPABILITIES, "uniqueItems": true, "items": { "type": "string", "minLength": 1, "maxLength": MAX_CAPABILITY_BYTES }, "description": "Optional capability tokens for peer discovery" }
                     },
                     "required": ["operation", "task"]
                 },
-                { "type": "object", "additionalProperties": false, "properties": { "operation": { "const": "status" }, "target": { "type": "string", "minLength": 1, "maxLength": 64 } }, "required": ["operation"] },
-                { "type": "object", "additionalProperties": false, "properties": { "operation": { "const": "join" }, "target": { "type": "string", "minLength": 1, "maxLength": 64 }, "timeout_secs": { "type": "integer", "minimum": 1, "maximum": MAX_REQUEST_TIMEOUT_SECS } }, "required": ["operation", "target"] },
-                { "type": "object", "additionalProperties": false, "properties": { "operation": { "const": "wait" }, "target": { "type": "string", "minLength": 1, "maxLength": 64 }, "timeout_secs": { "type": "integer", "minimum": 1, "maximum": MAX_REQUEST_TIMEOUT_SECS } }, "required": ["operation", "target"] },
-                { "type": "object", "additionalProperties": false, "properties": { "operation": { "const": "stop" }, "target": { "type": "string", "minLength": 1, "maxLength": 64 } }, "required": ["operation", "target"] },
-                { "type": "object", "additionalProperties": false, "properties": { "operation": { "const": "collect" }, "target": { "type": "string", "minLength": 1, "maxLength": 64 }, "limit": { "type": "integer", "minimum": 1, "maximum": MAX_HISTORY_LIMIT } }, "required": ["operation", "target"] }
+                { "type": "object", "additionalProperties": false, "properties": { "operation": { "const": "status" }, "target": { "type": "string", "minLength": 1, "maxLength": 64, "description": "Current session or descendant session id; omit to read this session's status" } }, "required": ["operation"] },
+                { "type": "object", "additionalProperties": false, "properties": { "operation": { "const": "wait" }, "target": { "type": "string", "minLength": 1, "maxLength": 64, "description": "Required descendant session id to wait for" }, "timeout_secs": { "type": "integer", "minimum": 1, "maximum": MAX_REQUEST_TIMEOUT_SECS, "default": DEFAULT_REQUEST_TIMEOUT_SECS, "description": "Maximum wait; defaults to 60 seconds, maximum 300" } }, "required": ["operation", "target"] },
+                { "type": "object", "additionalProperties": false, "properties": { "operation": { "const": "stop" }, "target": { "type": "string", "minLength": 1, "maxLength": 64, "description": "Required descendant session id to stop" } }, "required": ["operation", "target"] },
+                { "type": "object", "additionalProperties": false, "properties": { "operation": { "const": "collect" }, "target": { "type": "string", "minLength": 1, "maxLength": 64, "description": "Current session or descendant session id to collect history from" }, "limit": { "type": "integer", "minimum": 1, "maximum": MAX_HISTORY_LIMIT, "description": "Maximum messages to return; defaults to 20" } }, "required": ["operation", "target"] }
             ],
         })
     }
@@ -2023,9 +2014,17 @@ mod tests {
         let tool = AgentTool::new(Arc::new(MessagingService::default_root()));
         let err = tool.validate_input(&json!({})).unwrap_err().to_string();
         assert!(err.contains("operation"), "{err}");
-        // The schema must not leak the private _session_id field.
-        assert!(tool.input_schema().get("_session_id").is_none());
-        assert!(tool.input_schema().get("session_id").is_none());
+        let schema = tool.input_schema();
+        // The schema must not leak private session fields or duplicate wait aliases.
+        assert!(schema.get("_session_id").is_none());
+        assert!(schema.get("session_id").is_none());
+        assert!(
+            !schema["properties"]["operation"]["enum"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|value| value == "join")
+        );
         assert_eq!(tool.name(), "agent");
     }
 
