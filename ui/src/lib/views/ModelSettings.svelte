@@ -1,6 +1,5 @@
 <script lang="ts">
 	import { addNotification } from '$lib/notificationStore.ts';
-	import MaterialCard from '$lib/MaterialCard.svelte';
 	import MaterialSelect from '$lib/MaterialSelect.svelte';
 	import MaterialButton from '$lib/MaterialButton.svelte';
 	import MaterialNumberField from '$lib/MaterialNumberField.svelte';
@@ -480,41 +479,65 @@
 					tone="info"
 				/>
 			</div>
-			<div class="card-list policy-list">
-				{#each llmConfig.request_policies || [] as policy (policy.request)}
-					<MaterialCard variant="outlined" className="settings-card policy-card">
-						<div class="policy-fields">
-							<div class="model-field settings-field-layout">
-								<span class="field-label">请求类型</span>
-								<MaterialSelect
-									id="policy-{policy.request}"
-									value={policy.request}
-									options={requestPolicyOptions}
-									ariaLabel={`请求路由类型：${policy.request}`}
-									onChange={withStringValue((value) =>
-										setPolicyRequestFromInput(policy, value),
-									)}
-								/>
-							</div>
-							<div class="model-field settings-field-layout">
-								<span class="field-label">模型配置 ID</span>
-								<MaterialSelect
-									id="policy-{policy.request}-primary"
-									value={policy.primary || ''}
-									options={modelOptionsForPolicy(policy)}
-									ariaLabel={`${policy.request} 的模型配置 ID`}
-									onChange={withStringValue((value) => (policy.primary = value))}
-								/>
-							</div>
+			<div class="policy-list">
+				{#if (llmConfig.request_policies || []).length}
+					<div class="policy-table" role="table" aria-label="请求路由策略">
+						<div class="policy-table-header" role="row">
+							<span role="columnheader">请求类型</span>
+							<span role="columnheader">模型配置 ID</span>
+							<span role="columnheader">操作</span>
 						</div>
-						<MaterialButton
-							variant="text"
-							label="移除策略"
-							onclick={() => removePolicy(policy)}
-						/>
-					</MaterialCard>
-				{/each}
-				{#if !(llmConfig.request_policies || []).length}
+						<div class="policy-table-body" role="rowgroup">
+							{#each llmConfig.request_policies || [] as policy (policy.request)}
+								<div class="policy-table-row" role="row">
+									<div class="policy-cell" role="cell" aria-label="请求类型">
+										<span class="policy-cell-label" aria-hidden="true"
+											>请求类型</span
+										>
+										<MaterialSelect
+											id="policy-{policy.request}"
+											value={policy.request}
+											options={requestPolicyOptions}
+											ariaLabel={`请求路由类型：${policy.request}`}
+											onChange={withStringValue((value) =>
+												setPolicyRequestFromInput(policy, value),
+											)}
+										/>
+									</div>
+									<div class="policy-cell" role="cell" aria-label="模型配置 ID">
+										<span class="policy-cell-label" aria-hidden="true"
+											>模型配置 ID</span
+										>
+										<MaterialSelect
+											id="policy-{policy.request}-primary"
+											value={policy.primary || ''}
+											options={modelOptionsForPolicy(policy)}
+											ariaLabel={`${policy.request} 的模型配置 ID`}
+											onChange={withStringValue(
+												(value) => (policy.primary = value),
+											)}
+										/>
+									</div>
+									<div
+										class="policy-cell policy-actions-cell"
+										role="cell"
+										aria-label="操作"
+									>
+										<span class="policy-cell-label" aria-hidden="true"
+											>操作</span
+										>
+										<MaterialButton
+											variant="text"
+											label="移除策略"
+											ariaLabel={`移除${requestPolicyOptions.find((option) => option.value === policy.request)?.label || policy.request}路由`}
+											onclick={() => removePolicy(policy)}
+										/>
+									</div>
+								</div>
+							{/each}
+						</div>
+					</div>
+				{:else}
 					<div class="policy-empty">
 						<strong>还没有请求路由</strong>
 						<span>添加策略后，Haven 才能按请求类型选择已配置的模型。</span>
@@ -525,7 +548,8 @@
 				</div>
 			</div>
 			<p class="cost-hint">
-				请求路由选择的是 Haven 内部的模型配置 ID；服务模型 ID 仅在上方模型配置中维护，并作为 Provider API 的 model 值发送。
+				请求路由选择的是 Haven 内部的模型配置 ID；服务模型 ID 仅在上方模型配置中维护，并作为
+				Provider API 的 model 值发送。
 			</p>
 			<p class="cost-hint">
 				模型上下文和成本默认读取 Provider
@@ -545,17 +569,6 @@
 />
 
 <style>
-	.card-list {
-		display: flex;
-		flex-direction: column;
-		gap: var(--md-sys-space-md);
-	}
-	:global(.settings-card) {
-		border: 1px solid var(--md-sys-color-outline-variant);
-		border-radius: var(--md-sys-shape-medium);
-		background: var(--md-sys-color-surface-container-lowest);
-		padding: var(--md-sys-space-md);
-	}
 	.policy-section-heading {
 		display: flex;
 		align-items: flex-start;
@@ -581,22 +594,57 @@
 	.policy-list {
 		margin-top: var(--md-sys-space-md);
 	}
-	:global(.policy-card) {
+	.policy-table {
+		position: relative;
+		border: 1px solid var(--md-sys-color-outline-variant);
+		border-radius: var(--md-sys-shape-medium);
+		background: var(--md-sys-color-surface-container-lowest);
+	}
+	.policy-table-header,
+	:global(.policy-table-row) {
 		display: grid;
-		grid-template-columns: minmax(0, 1fr) auto;
+		grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.2fr) auto;
 		align-items: center;
 		gap: var(--md-sys-space-md);
 	}
-	.policy-fields {
-		display: grid;
-		grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.2fr);
-		align-items: center;
-		gap: var(--md-sys-space-md);
+	.policy-table-header {
+		padding: var(--md-sys-space-sm) var(--md-sys-space-md);
+		border-bottom: 1px solid var(--md-sys-color-outline-variant);
+		background: var(--md-sys-color-surface-container-low);
+		border-radius: var(--md-sys-shape-medium) var(--md-sys-shape-medium) 0 0;
+		font-size: var(--md-sys-typescale-label-medium-size);
+		font-weight: 600;
+		line-height: var(--md-sys-typescale-label-medium-line-height);
+		color: var(--md-sys-color-on-surface-variant);
+	}
+	.policy-table-header > :last-child {
+		text-align: right;
+	}
+	.policy-table-body {
+		display: flex;
+		flex-direction: column;
+	}
+	:global(.policy-table-row) {
+		min-width: 0;
+		border: 0;
+		border-radius: 0;
+		background: transparent;
+		padding: var(--md-sys-space-sm) var(--md-sys-space-md);
+	}
+	:global(.policy-table-row + .policy-table-row) {
+		border-top: 1px solid var(--md-sys-color-outline-variant);
+	}
+	.policy-cell {
 		min-width: 0;
 	}
-	:global(.policy-card > .md-btn) {
-		justify-self: end;
-		align-self: center;
+	.policy-cell-label {
+		display: none;
+	}
+	.policy-actions-cell {
+		display: flex;
+		justify-content: flex-end;
+	}
+	:global(.policy-actions-cell > .md-btn) {
 		white-space: nowrap;
 	}
 	.section-actions {
@@ -604,17 +652,6 @@
 		justify-content: flex-end;
 		gap: var(--md-sys-space-sm);
 		margin-top: var(--md-sys-space-sm);
-	}
-	.model-field {
-		min-width: 0;
-	}
-	.field-label {
-		font-size: var(--md-sys-typescale-label-small-size);
-		font-weight: 600;
-		text-transform: uppercase;
-		letter-spacing: var(--md-sys-typescale-overline-letter-spacing);
-		line-height: var(--md-sys-typescale-label-small-line-height);
-		color: var(--md-sys-color-on-surface-variant);
 	}
 	.policy-empty {
 		display: flex;
@@ -636,18 +673,39 @@
 		margin-bottom: 0;
 		line-height: var(--md-sys-typescale-label-small-line-height);
 	}
-	@container settings-content (max-width: 760px) {
-		:global(.policy-card) {
-			grid-template-columns: minmax(0, 1fr);
-		}
-	}
 	@container settings-content (max-width: 640px) {
 		.policy-section-heading {
 			align-items: flex-start;
 			flex-direction: column;
 		}
-		.policy-fields {
+		.policy-table-header {
+			position: absolute;
+			top: 0;
+			left: 0;
+			width: 1px;
+			height: 1px;
+			padding: 0;
+			margin: -1px;
+			overflow: hidden;
+			clip-path: inset(50%);
+			white-space: nowrap;
+			border: 0;
+		}
+		:global(.policy-table-row) {
 			grid-template-columns: 1fr;
+			align-items: stretch;
+			gap: var(--md-sys-space-sm);
+		}
+		.policy-cell-label {
+			display: block;
+			margin-bottom: var(--md-sys-space-xs);
+			font-size: var(--md-sys-typescale-label-small-size);
+			font-weight: 600;
+			line-height: var(--md-sys-typescale-label-small-line-height);
+			color: var(--md-sys-color-on-surface-variant);
+		}
+		.policy-actions-cell {
+			justify-content: flex-start;
 		}
 	}
 </style>

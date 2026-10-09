@@ -160,7 +160,7 @@ describe('SettingsView diagnostics export', () => {
 		const { container } = render(SettingsView);
 		await waitFor(() => expect(handlers.has('llm:config_changed')).toBe(true));
 		await fireEvent.click(screen.getByRole('tab', { name: /模型与连接/ }));
-		expect(container.querySelector('.policy-card')).toBeNull();
+		expect(container.querySelector('[role="table"]')).toBeNull();
 
 		settings.llm.request_policies = [{ request: 'chat', primary: 'chat-slot' }];
 		handlers.get('llm:config_changed')?.({
@@ -170,8 +170,10 @@ describe('SettingsView diagnostics export', () => {
 		});
 
 		await waitFor(() =>
-			expect(container.querySelector('.policy-card')?.textContent).toContain('chat'),
+			expect(container.querySelector('.policy-table-row')?.textContent).toContain('chat'),
 		);
+		expect(screen.getByRole('table', { name: '请求路由策略' })).toBeDefined();
+		expect(screen.getByRole('columnheader', { name: '模型配置 ID' })).toBeDefined();
 		expect(screen.getByRole('button', { name: 'chat 的模型配置 ID' }).textContent).toContain(
 			'chat-slot · primary / gpt-test',
 		);
