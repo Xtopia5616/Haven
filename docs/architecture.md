@@ -162,8 +162,9 @@ CI 以 `scripts/check-crate-dependencies.ps1` 对此表执行内部 crate 依赖
   `ConfigService` 持有版本化 live snapshot、串行 typed patch、原子持久化和无密钥变更通知。
 - `types.rs`：跨 crate 的规范类型 —— 实体 ID（`new_id` / newtype）、`CanonicalMessage` /
   `ContentPart` / `CanonicalToolCall`、`MessageAttachment`、`FollowUp`、`RiskLevel`、
-  `HotkeyMode` / `ShellChoice` 等。`CanonicalToolCall` 只承载规范化后的参数值；Provider wire
-  参数序列化与完成流解析/截断修复由 `haven-llm::adapters::tool_arguments` 持有。
+  `CapabilityScope`、`HotkeyMode` / `ShellChoice` 等。`CapabilityScope` 是授权身份的 typed
+  owner，提供 capability ancestry；`CanonicalToolCall` 只承载规范化后的参数值，Provider
+  wire 参数序列化与完成流解析/截断修复由 `haven-llm::adapters::tool_arguments` 持有。
 - `media.rs` / `media_detection.rs`：provider-neutral 的 `MediaAsset`、
   `MediaRepresentation`、能力画像、统一文件探测和纯 `MediaPlan` 计划器；只选择安全的
   raw/derived/managed 表示，不执行文件 I/O 或 provider 路由。文件/MIME 探测以

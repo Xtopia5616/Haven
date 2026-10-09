@@ -391,10 +391,16 @@ impl CapabilityScope {
 
     /// Return this capability and all of its intentional parent scopes.
     pub fn candidates(&self) -> Vec<Self> {
-        permission_key_candidates(&self.0)
-            .into_iter()
-            .map(Self::new)
-            .collect()
+        let mut candidates = Vec::new();
+        let mut end = self.0.len();
+        loop {
+            candidates.push(Self::new(self.0[..end].to_owned()));
+            match self.0[..end].rfind('.') {
+                Some(index) => end = index,
+                None => break,
+            }
+        }
+        candidates
     }
 
     /// Resolve a user-selected target to a capability in this capability's
@@ -509,26 +515,6 @@ pub fn permission_key(tool_name: &str, params: &serde_json::Value) -> String {
 /// Tool root of a capability identity (`system.power.lock` → `system`).
 pub fn permission_tool_root(key: &str) -> &str {
     key.find('.').map_or(key, |index| &key[..index])
-}
-
-/// Ancestor keys for grant matching: exact key first, then parents.
-///
-/// `files.delete` → `["files.delete", "files"]`
-/// `system.power.lock` → `["system.power.lock", "system.power", "system"]`
-///
-/// Legacy colon keys are deliberately not interpreted here. The authorization
-/// engine ignores persisted keys that fail current capability validation.
-pub fn permission_key_candidates(key: &str) -> Vec<&str> {
-    let mut out = Vec::new();
-    let mut end = key.len();
-    loop {
-        out.push(&key[..end]);
-        match key[..end].rfind('.') {
-            Some(i) => end = i,
-            None => break,
-        }
-    }
-    out
 }
 
 // ---------------------------------------------------------------------------
@@ -1525,19 +1511,6 @@ mod tests {
     }
 
     #[test]
-    fn permission_key_candidates_walk_parents() {
-        assert_eq!(
-            permission_key_candidates("system.power.lock"),
-            vec!["system.power.lock", "system.power", "system"]
-        );
-        assert_eq!(
-            permission_key_candidates("system.power.lock"),
-            vec!["system.power.lock", "system.power", "system"]
-        );
-        assert_eq!(permission_key_candidates("shell"), vec!["shell"]);
-    }
-
-    #[test]
     fn capability_scope_is_typed_and_preserves_hierarchical_matching() {
         let scope = CapabilityScope::from("system.power.lock");
         assert_eq!(scope.as_str(), "system.power.lock");
@@ -1548,6 +1521,10 @@ mod tests {
                 CapabilityScope::from("system.power"),
                 CapabilityScope::from("system"),
             ]
+        );
+        assert_eq!(
+            CapabilityScope::from("shell").candidates(),
+            vec![CapabilityScope::from("shell")]
         );
         assert_eq!(
             serde_json::to_string(&scope).unwrap(),
