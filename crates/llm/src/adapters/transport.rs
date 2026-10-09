@@ -7,6 +7,7 @@
 use std::time::Duration;
 
 use futures_util::StreamExt;
+use haven_common::bounded_bytes::BoundedBytes;
 use haven_common::config::ModelEndpoint;
 use reqwest::header::{CONTENT_TYPE, HeaderMap, HeaderValue};
 use serde::de::DeserializeOwned;
@@ -31,27 +32,14 @@ pub(crate) async fn read_bytes_bounded(
     resp: reqwest::Response,
     limit: usize,
 ) -> Result<Vec<u8>, LlmError> {
-    if resp
-        .content_length()
-        .is_some_and(|length| length > limit as u64)
-    {
-        return Err(body_limit_error(limit));
-    }
-    let mut body = Vec::with_capacity(
-        resp.content_length()
-            .map(|length| length as usize)
-            .unwrap_or(0)
-            .min(limit),
-    );
+    let mut body =
+        BoundedBytes::new(limit, resp.content_length()).map_err(|_| body_limit_error(limit))?;
     let mut stream = resp.bytes_stream();
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.map_err(LlmError::from)?;
-        if chunk.len() > limit.saturating_sub(body.len()) {
-            return Err(body_limit_error(limit));
-        }
-        body.extend_from_slice(&chunk);
+        body.push(&chunk).map_err(|_| body_limit_error(limit))?;
     }
-    Ok(body)
+    Ok(body.into_vec())
 }
 
 pub(crate) async fn read_text_bounded(

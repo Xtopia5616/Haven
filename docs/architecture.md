@@ -1,6 +1,6 @@
 # Haven 架构与 crate 职责
 
-> 版本: v1.14 | 日期: 2026-10-07
+> 版本: v1.15 | 日期: 2026-10-10
 > 范围: `crates/` (Rust 后端, Tauri 2)
 > 原则: **依赖单向、叶子优先**。上层 crate 只依赖下层，绝不反向依赖；共享数据与类型放叶子（`haven-common`），
 > 组件职责按「谁拥有实现、谁只消费接口」划分。
@@ -62,6 +62,10 @@ haven-skills ──► haven-common, haven-platform
 `CacheDiagnostics` 由 LLM adapter 填充，Agent 原样透传，App event 使用同一 Rust 类型，Memory 只在 SQLite
 字符串列边界编码/解码。缓存策略、结果和用量来源是闭合枚举；界面和生成的 command DTO 不再把诊断当作
 任意 JSON。provider 名称仍是开放字符串，因为它标识配置中的 provider，而非协议枚举（ADR 0852）。
+
+`haven-common::bounded_bytes::BoundedBytes` 持有跨网络适配器共享的响应体字节不变量：Content-Length 超限预拒绝、
+有界预分配与逐块追加前的容量检查。LLM 与 MCP transport 各自保留流读取、取消、deadline、文本/JSON 解码及协议错误映射；
+Common 不拥有网络 I/O 或这些传输生命周期（ADR 0855）。
 
 `haven-mcp` 内部按职责分为 `protocol.rs`（MCP/JSON-RPC DTO 与内容归一化）、
 `transport.rs`（stdio、Streamable HTTP、SSE 和进程边界）、`client.rs`（单服务器连接、

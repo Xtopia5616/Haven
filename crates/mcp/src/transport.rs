@@ -1,6 +1,7 @@
 use crate::protocol::{REQUEST_TIMEOUT_SECS, jsonrpc_notification, jsonrpc_request};
 use crate::sse::SseParser;
 use futures_util::StreamExt;
+use haven_common::bounded_bytes::BoundedBytes;
 use haven_platform::process_containment::ProcessContainment;
 use serde_json::Value;
 use std::sync::Arc;
@@ -599,13 +600,8 @@ async fn read_bytes_bounded_inner(
     if cancel.is_cancelled() {
         anyhow::bail!("MCP response body read cancelled");
     }
-    if resp
-        .content_length()
-        .is_some_and(|length| length > limit as u64)
-    {
-        anyhow::bail!("MCP response body exceeds the {} byte limit", limit);
-    }
-    let mut body = Vec::with_capacity(resp.content_length().unwrap_or(0) as usize);
+    let mut body =
+        BoundedBytes::new(limit, resp.content_length()).map_err(|_| mcp_body_limit_error(limit))?;
     let mut stream = resp.bytes_stream();
     loop {
         if cancel.is_cancelled() {
@@ -619,12 +615,13 @@ async fn read_bytes_bounded_inner(
             break;
         };
         let chunk = chunk?;
-        if chunk.len() > limit.saturating_sub(body.len()) {
-            anyhow::bail!("MCP response body exceeds the {} byte limit", limit);
-        }
-        body.extend_from_slice(&chunk);
+        body.push(&chunk).map_err(|_| mcp_body_limit_error(limit))?;
     }
-    Ok(body)
+    Ok(body.into_vec())
+}
+
+fn mcp_body_limit_error(limit: usize) -> anyhow::Error {
+    anyhow::anyhow!("MCP response body exceeds the {} byte limit", limit)
 }
 
 async fn read_text_bounded(

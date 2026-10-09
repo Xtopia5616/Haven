@@ -1,3 +1,4 @@
+pub mod bounded_bytes;
 pub mod config;
 pub mod encoding;
 pub mod error;
