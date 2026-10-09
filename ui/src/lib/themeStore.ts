@@ -1,4 +1,4 @@
-import { writable } from 'svelte/store';
+import { get, writable } from 'svelte/store';
 
 const VALID_THEMES = ['light', 'dark'] as const;
 export type ThemeMode = (typeof VALID_THEMES)[number];
@@ -135,49 +135,48 @@ function applyAccentContrast(accent: string, theme: ThemeMode) {
 	root.style.setProperty('--md-accent-on-tertiary-container', contrastingText(tertiaryContainer));
 }
 
-function applyTheme(theme: ThemeMode) {
+function applyTheme(theme: ThemeMode, accent: string) {
 	if (typeof document === 'undefined') return;
 	document.documentElement.setAttribute('data-theme', theme);
-	applyAccentContrast(currentAccent, theme);
+	applyAccentContrast(accent, theme);
 }
 
-function applyAccent(accent: string) {
+function applyAccent(accent: string, theme: ThemeMode) {
 	if (typeof document === 'undefined') return;
 	document.documentElement.setAttribute('data-accent', accent);
 	document.documentElement.style.setProperty('--md-accent-hex', resolveAccentHex(accent));
-	applyAccentContrast(accent, currentTheme);
+	applyAccentContrast(accent, theme);
 }
 
-let currentTheme = detectInitialTheme();
-let currentAccent = detectInitialAccent();
-applyTheme(currentTheme);
-applyAccent(currentAccent);
-
 function createStore() {
-	const { subscribe, set } = writable({ theme: currentTheme, accent: currentAccent });
+	const state = writable({ theme: detectInitialTheme(), accent: detectInitialAccent() });
+	const initial = get(state);
+	applyTheme(initial.theme, initial.accent);
+	applyAccent(initial.accent, initial.theme);
+
 	return {
-		subscribe,
+		subscribe: state.subscribe,
 		get currentTheme() {
-			return currentTheme;
+			return get(state).theme;
 		},
 		get currentAccent() {
-			return currentAccent;
+			return get(state).accent;
 		},
 		get accentColor() {
-			return resolveAccentHex(currentAccent);
+			return resolveAccentHex(get(state).accent);
 		},
 		get presets() {
 			return ACCENT_PRESETS;
 		},
 		get isPreset() {
-			return !!ACCENT_PRESETS[currentAccent];
+			return !!ACCENT_PRESETS[get(state).accent];
 		},
 		setTheme(theme: ThemeMode) {
 			if (!isThemeMode(theme)) return;
-			currentTheme = theme;
-			applyTheme(theme);
+			const { accent } = get(state);
+			applyTheme(theme, accent);
 			writeStorage(THEME_KEY, theme);
-			set({ theme: currentTheme, accent: currentAccent });
+			state.set({ theme, accent });
 		},
 		setAccent(accent: string) {
 			if (!accent) return;
@@ -185,14 +184,14 @@ function createStore() {
 				if (/^#[0-9a-f]{6}$/i.test(accent) && !ACCENT_PRESETS[accent]) {
 					accent = CUSTOM_PREFIX + accent;
 				}
-				currentAccent = accent;
-				applyAccent(accent);
+				const { theme } = get(state);
+				applyAccent(accent, theme);
 				writeStorage(ACCENT_KEY, accent);
-				set({ theme: currentTheme, accent: currentAccent });
+				state.set({ theme, accent });
 			}
 		},
 		toggle() {
-			this.setTheme(currentTheme === 'dark' ? 'light' : 'dark');
+			this.setTheme(get(state).theme === 'dark' ? 'light' : 'dark');
 		},
 	};
 }

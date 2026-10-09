@@ -204,6 +204,8 @@
 
 **IPC owner 登记完整性复核（2026-10-09）：** owner guard 先前遗漏 `memoryCommands.clear_facts` 以及 ToolRun 历史列表/清理命令，导致这些已有 wrappers 没有旁路检查。现在 owner 表与实际 `memoryCommands.ts` / `toolRunCommands.ts` invoke 清单对齐，MemoryView 的禁止直调断言也覆盖 `clear_facts`；架构文档同步列出所有 ToolRun 与 Memory 命令 owner（ADR 0838）。其他命令域和 route/shell 的单一 owner 仍持续审计。
 
+**Theme store 单一状态源复核（2026-10-09）：** `themeStore.ts` 的模块变量与 writable 原先各保存一份 `theme`/`accent`，setter 必须手动双写。现在 writable snapshot 是唯一可变 owner，getter 从该状态派生；localStorage/document 仍只作为经过校验的初始化入口和 setter 副作用，不改视觉或持久格式（ADR 0839）。其余 UI store/controller 与 contract owner 审计仍在 Active 范围。
+
 **Store 单元测试归属复核（2026-10-09）：** ADR 0203 已删除跨领域生产 `stores.ts`，但历史测试桶 `stores.test.ts` 仍跨 ToolRun、通知、消息工厂、Session runtime 与用量格式五个 owner。现按源模块拆到对应 `*.test.ts`，原有 39 个测试均保留；旧桶删除，不保留测试聚合入口。生产状态与运行行为不变；前端 controller/store 与 contract 全域 owner 审计仍在 Active 范围。
 
 **ToolRun card details projection 复核（2026-10-08）：** 对照 `ToolRunCenter` 的生产读取点后，从 `ToolRunCardDetails` 移除仅被构造、没有消费者的 `dueAt`、`title`、`mode`、`errorReason` 与 `exitCode`；保留搜索、摘要和详情面板实际读取的五个字段。仅收窄本地派生 view，不改 ToolRun IPC 或持久化 contract（ADR 0790）。
