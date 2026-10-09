@@ -108,7 +108,6 @@
 		ReasoningEffortSelectionInput,
 		WebSearchModeInput,
 	} from '$lib/contracts/generatedCommands.ts';
-	import type { ChatAttachmentPayload, ChatFileAttachment } from '$lib/chatAttachmentTypes.ts';
 	import type { SessionMessageContextMenuRequest } from '$lib/sessionTimeline.ts';
 	import type { ReActExecutionPhaseSnapshot } from '$lib/sessionRuntimeStore.ts';
 
@@ -932,14 +931,6 @@
 		setAutoFollow: (follow) => chatViewController.setAutoFollow(follow),
 	});
 
-	function submitMessage(
-		text: string,
-		images?: ChatAttachmentPayload[] | null,
-		files?: ChatFileAttachment[] | null,
-	) {
-		return chatSessionController.submitMessage(text, images, files);
-	}
-
 	function confirmRollbackAction() {
 		const stepNumber = rollbackDialog.stepNumber;
 		const role = rollbackDialog.role;
@@ -1076,14 +1067,13 @@
 			askSelectionsReady = ready;
 		},
 		submitMessage: (text, images, files) => {
-			void submitMessage(text, images, files);
+			void chatSessionController.submitMessage(text, images, files);
 		},
 		reducer: sessionReducer,
 	});
 	const {
 		clearAskAwaiting,
 		computeAskSelectionsReady,
-		handleInputSubmit: routeInputSubmission,
 		handleAskSelectionChange,
 		getAskSelection,
 		handleAskSubmit,
@@ -1094,25 +1084,6 @@
 		activeSessionId;
 		askSelectionsReady = computeAskSelectionsReady();
 	});
-
-	// Entry point for Composer: it normalizes every input
-	// format (typed text, pasted/picked images, attached files, voice) into a
-	// single payload and forwards it here. Composer already cleared its
-	// draft, so the page just delivers the message and resumes auto-follow.
-	// When every pending ask has selected options, Enter composes those
-	// answers (space-joined) and appends any typed text; otherwise a typed
-	// message bypasses the ask batch and resumes immediately.
-	function handleInputSubmit({
-		text,
-		images,
-		files,
-	}: {
-		text: string;
-		images: ChatAttachmentPayload[];
-		files: ChatFileAttachment[];
-	}) {
-		routeInputSubmission({ text, images, files });
-	}
 
 	const activeSession = $derived(
 		activeSessionId ? sessions.find((session) => session.id === activeSessionId) : null,
@@ -1270,7 +1241,7 @@
 			{askHasOptions}
 			allowEmptySubmit={askSelectionsReady}
 			{...inputLimits}
-			onsubmit={handleInputSubmit}
+			onsubmit={askInteraction.handleInputSubmit}
 			onstop={interruptOutput}
 		>
 			{#snippet toolbarLeft()}

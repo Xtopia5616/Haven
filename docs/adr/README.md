@@ -824,3 +824,4 @@
 - [0843：按结构命名 Chat 附件输入 payload](0843-name-chat-attachment-payload-by-shape.md)
 - [0844：合并 Chat Composer 组件 owner](0844-merge-chat-composer-component-owner.md)
 - [0845：从 Chat 提交中投影掉文件预览大小](0845-project-file-preview-size-out-of-chat-submit.md)
+- [0846：将 Chat 提交回调直接接到所属 controller](0846-wire-chat-submit-callbacks-to-their-owners.md)
