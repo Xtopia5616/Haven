@@ -7,8 +7,8 @@
 		isBusyStatus,
 		isErrorStatus,
 		isPausedStatus,
+		sessionStatusLabel,
 		sessionWaitingReason,
-		waitingReasonLabel,
 	} from '$lib/sessionStatus.ts';
 	import { submitTranscript } from '$lib/submit.ts';
 	import { createChatSessionController } from '$lib/chatSessionController.ts';
@@ -51,7 +51,6 @@
 	import { get } from 'svelte/store';
 	import { invoke, isTauri } from '$lib/tauri.ts';
 	import {
-		activeSessionStatusLabelStore,
 		reactExecutionPhaseStore,
 		reactExecutionPhaseForSession,
 		updateReactExecutionPhase,
@@ -1115,17 +1114,6 @@
 		routeInputSubmission({ text, images, files });
 	}
 
-	function sessionStatusLabel(session: SessionSummary) {
-		if (isErrorStatus(session.status)) return '错误';
-		if (session.status === 'completed') return '空闲';
-		const waitingLabel = waitingReasonLabel(sessionWaitingReason(session));
-		if (waitingLabel) return waitingLabel;
-		if (isPausedStatus(session.status)) return '已暂停';
-		if (session.status === 'pending') return '排队中';
-		if (session.status === 'running') return '运行中';
-		return '空闲';
-	}
-
 	const activeSession = $derived(
 		activeSessionId ? sessions.find((session) => session.id === activeSessionId) : null,
 	);
@@ -1135,9 +1123,6 @@
 	const activeSessionStatusLabel = $derived(
 		activeSession ? sessionStatusLabel(activeSession) : '空闲',
 	);
-	$effect(() => {
-		activeSessionStatusLabelStore.set(activeSessionStatusLabel);
-	});
 </script>
 
 <div class="chat-page responsive-layout-transition" bind:this={chatPageEl}>

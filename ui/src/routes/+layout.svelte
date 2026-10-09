@@ -2,7 +2,6 @@
 	import '../app.css';
 	import {
 		reactExecutionPhaseStore,
-		activeSessionStatusLabelStore,
 		updateReactExecutionPhase,
 	} from '$lib/sessionRuntimeStore.ts';
 	import { recordingOverlayController } from '$lib/recordingOverlayController.ts';
@@ -44,7 +43,12 @@
 	import { page } from '$app/stores';
 	import { goto } from '$app/navigation';
 	import { syncStore } from '$lib/syncStore.ts';
-	import { isBusyStatus, isPausedStatus, sessionWaitingReason } from '$lib/sessionStatus.ts';
+	import {
+		isBusyStatus,
+		isPausedStatus,
+		sessionStatusLabel,
+		sessionWaitingReason,
+	} from '$lib/sessionStatus.ts';
 	import { confirmLeaveSettingsIfNeeded } from '$lib/settingsGuard.ts';
 	import { loadSettings } from '$lib/settingsCommands.ts';
 	import { toolRunStatusLabel } from '$lib/toolRunTerminology.ts';
@@ -315,11 +319,7 @@
 
 	let overlay = $state<RecordingOverlayState>(recordingOverlayController.snapshot());
 	let duration = $state(recordingOverlayController.durationSeconds());
-	let reactExecutionPhase = $state<ReActExecutionPhase>('idle'); // synced from reactExecutionPhaseStore on mount
-	let activeSessionStatusLabel = $state('空闲');
-	$effect(() =>
-		syncStore(activeSessionStatusLabelStore, (value) => (activeSessionStatusLabel = value)),
-	);
+	let reactExecutionPhase = $state<ReActExecutionPhase>('idle'); // synced from reactExecutionPhaseStore
 	// Runtime mode is intentionally separate from backend bootstrap state:
 	// browser Vite preview has no Tauri backend at all, while a Tauri webview
 	// can still be waiting for Rust startup.
@@ -594,6 +594,9 @@
 	$effect(() => syncStore(sessionsStore, (v) => (sessions = v)));
 	$effect(() => syncStore(activeSessionIdStore, (v) => (activeSessionId = v)));
 	$effect(() => syncStore(interactionsStore, (v) => (interactionDict = v)));
+	const activeSessionStatusLabel = $derived(
+		sessionStatusLabel(sessions.find((session) => session.id === activeSessionId)),
+	);
 	// Session lifecycle events expose the derived pause reason directly. The
 	// ToolRun registry remains available for the task panel and counts, but it
 	// no longer determines why a paused session is waiting.

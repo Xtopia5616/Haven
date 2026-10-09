@@ -11,6 +11,7 @@
 		SESSION_HISTORY_STATUS_FILTER_INPUT_VALUES,
 		type SessionHistoryStatusFilterInput,
 	} from '$lib/contracts/generatedCommands.ts';
+	import { sessionHistoryStatusLabel } from '$lib/sessionStatus.ts';
 
 	type SessionHistoryStatusSelection = '' | SessionHistoryStatusFilterInput;
 
@@ -78,16 +79,6 @@
 		statusVariant = () => 'default',
 		formatMessageTime = (value) => value,
 	}: Props = $props();
-	const statusLabels: Record<SessionHistoryRow['status'], string> = {
-		pending: '排队中',
-		running: '运行中',
-		paused: '已暂停',
-		completed: '已完成',
-		error: '错误',
-	};
-	function sessionStatusLabel(status: SessionHistoryRow['status']) {
-		return statusLabels[status];
-	}
 	function sessionStatusBadgeTone(status: SessionHistoryRow['status']) {
 		switch (statusVariant(status)) {
 			case 'primary':
@@ -225,7 +216,7 @@
 												会话
 											</span>
 											<StatusBadge
-												label={sessionStatusLabel(session.status)}
+												label={sessionHistoryStatusLabel(session.status)}
 												tone={sessionStatusBadgeTone(session.status)}
 											/>
 										</div>

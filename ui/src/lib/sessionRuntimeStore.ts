@@ -16,9 +16,6 @@ export const reactExecutionPhaseStore = writable<ReActExecutionPhaseSnapshot>({
 	phase: 'idle',
 });
 
-// Presentation status for the selected session, consumed by the shell.
-export const activeSessionStatusLabelStore = writable('空闲');
-
 export function updateReactExecutionPhase(sessionId: string | null, phase: ReActExecutionPhase) {
 	reactExecutionPhaseStore.set({ sessionId, phase });
 }

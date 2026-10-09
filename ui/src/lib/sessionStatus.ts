@@ -9,6 +9,7 @@
 
 import {
 	SESSION_WAITING_REASON_VALUES,
+	type SessionStatus,
 	type SessionWaitingReason,
 } from './contracts/generatedCommands.ts';
 
@@ -41,6 +42,14 @@ const VARIANT_MAP: Record<
 	paused: 'warning',
 	completed: 'success',
 	error: 'error',
+};
+
+const SESSION_HISTORY_STATUS_LABELS: Record<SessionStatus, string> = {
+	pending: '排队中',
+	running: '运行中',
+	paused: '已暂停',
+	completed: '已完成',
+	error: '错误',
 };
 
 export function isPausedStatus(status: string | undefined | null): boolean {
@@ -77,6 +86,32 @@ export function isBusyStatus(status: string | undefined | null): boolean {
 /** Terminal failure states that should remain read-only when history is opened. */
 export function isErrorStatus(status: string | undefined | null): boolean {
 	return status === 'error';
+}
+
+/** Project active Session status and waiting reason into one user-facing label. */
+export function sessionStatusLabel(
+	session:
+		| {
+				status: string;
+				waitingReason?: unknown;
+		  }
+		| null
+		| undefined,
+): string {
+	if (!session) return '空闲';
+	if (isErrorStatus(session.status)) return '错误';
+	if (session.status === 'completed') return '空闲';
+	const waitingLabel = waitingReasonLabel(sessionWaitingReason(session));
+	if (waitingLabel) return waitingLabel;
+	if (isPausedStatus(session.status)) return '已暂停';
+	if (session.status === 'pending') return '排队中';
+	if (session.status === 'running') return '运行中';
+	return '空闲';
+}
+
+/** Keep history's terminal wording explicit while sharing the status owner. */
+export function sessionHistoryStatusLabel(status: SessionStatus): string {
+	return SESSION_HISTORY_STATUS_LABELS[status];
 }
 
 export function statusColor(status: string) {

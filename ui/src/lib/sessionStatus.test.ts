@@ -6,6 +6,8 @@ import {
 import {
 	isBusyStatus,
 	isPausedStatus,
+	sessionHistoryStatusLabel,
+	sessionStatusLabel,
 	sessionWaitingReason,
 	statusColor,
 	statusVariant,
@@ -15,7 +17,13 @@ import {
 
 describe('SESSION_STATUS_VALUES', () => {
 	it('covers the canonical backend session statuses', () => {
-		expect(SESSION_STATUS_VALUES).toEqual(['pending', 'running', 'paused', 'completed', 'error']);
+		expect(SESSION_STATUS_VALUES).toEqual([
+			'pending',
+			'running',
+			'paused',
+			'completed',
+			'error',
+		]);
 	});
 });
 
@@ -102,5 +110,36 @@ describe('isErrorStatus', () => {
 		expect(isErrorStatus('error')).toBe(true);
 		expect(isErrorStatus('paused')).toBe(false);
 		expect(isErrorStatus('completed')).toBe(false);
+	});
+});
+
+describe('sessionStatusLabel', () => {
+	it('projects the current session state to its single display label', () => {
+		expect(sessionStatusLabel(null)).toBe('空闲');
+		expect(sessionStatusLabel({ status: 'pending' })).toBe('排队中');
+		expect(sessionStatusLabel({ status: 'running' })).toBe('运行中');
+		expect(sessionStatusLabel({ status: 'paused' })).toBe('已暂停');
+		expect(sessionStatusLabel({ status: 'paused', waitingReason: 'background_task' })).toBe(
+			'等待任务',
+		);
+		expect(sessionStatusLabel({ status: 'completed' })).toBe('空闲');
+		expect(sessionStatusLabel({ status: 'error' })).toBe('错误');
+	});
+
+	it('keeps waiting reasons ahead of the generic paused label', () => {
+		expect(sessionStatusLabel({ status: 'paused', waitingReason: 'scheduled_task' })).toBe(
+			'等待定时任务',
+		);
+		expect(sessionStatusLabel({ status: 'paused', waitingReason: 'unknown' })).toBe('已暂停');
+	});
+});
+
+describe('sessionHistoryStatusLabel', () => {
+	it('names persisted history states with an explicit terminal label', () => {
+		expect(sessionHistoryStatusLabel('pending')).toBe('排队中');
+		expect(sessionHistoryStatusLabel('running')).toBe('运行中');
+		expect(sessionHistoryStatusLabel('paused')).toBe('已暂停');
+		expect(sessionHistoryStatusLabel('completed')).toBe('已完成');
+		expect(sessionHistoryStatusLabel('error')).toBe('错误');
 	});
 });

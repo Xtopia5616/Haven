@@ -819,3 +819,4 @@
 - [0838：补齐 UI 命令 owner 门禁清单](0838-complete-ui-command-owner-guard.md)
 - [0839：以 themeStore writable 作为唯一状态源](0839-use-theme-store-as-single-state-source.md)
 - [0840：只展示有信息量的工具目录指引](0840-omit-empty-tool-routing-guidance.md)
+- [0841：从 Session reducer 派生会话状态标签](0841-derive-session-status-label-from-reducer.md)
