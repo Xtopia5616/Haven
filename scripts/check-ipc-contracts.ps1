@@ -110,13 +110,35 @@ foreach ($parser in @('parseLogInfo', 'parseLogTail', 'parseShellAvailability', 
     Assert-Contains $diagnosticsCommands ("\.then\(" + $parser + '\)') "diagnostics response uses $parser"
 }
 
+$uiFiles = Get-ChildItem (Join-Path $root 'ui/src') -Recurse -File | Where-Object { $_.Extension -in @('.ts', '.svelte') }
 $layout = Get-Source 'ui/src/routes/+layout.svelte'
 Assert-Contains $layout '(?s)const report = await invoke\(''check_llm_connection''\);\s*if \(generation === llmProbeGeneration\) applyLlmConnectionReport\(report\);' 'LLM connection report is normalized only for the current probe'
+Assert-Contains $layout "invoke\('get_bootstrap_status'\)" 'App shell owns the startup readiness probe'
+Assert-Contains $layout "invoke\('resolve_confirmation',\s*confirmationRequest\)" 'App shell owns global confirmation resolution'
 
-# Keep existing command-family ownership boundaries. Helpers are the only
-# direct invoke owners for these audited command families.
-$uiFiles = Get-ChildItem (Join-Path $root 'ui/src') -Recurse -File | Where-Object { $_.Extension -in @('.ts', '.svelte') }
+$recordingOverlayController = Get-Source 'ui/src/lib/recordingOverlayController.ts'
+Assert-Contains $recordingOverlayController "type RecordingCommandName = Extract<\s*TauriCommandName,\s*'start_recording'\s*\|\s*'stop_recording'\s*\|\s*'cancel_recording'\s*>" 'recording controller narrows its dynamic invoke port to the recording lifecycle'
+Assert-Contains $recordingOverlayController 'invoke:\s*\(command:\s*RecordingCommandName\)\s*=>\s*invoke\(command\)' 'recording controller is the sole dynamic invoke owner'
+$submit = Get-Source 'ui/src/lib/submit.ts'
+Assert-Contains $submit "invoke\('process_transcript',\s*request\)" 'submit coordinator owns transcript processing'
+$errorHandling = Get-Source 'ui/src/lib/errorHandling.ts'
+Assert-Contains $errorHandling "invoke\('log_frontend_error',\s*\{\s*message:\s*notificationMessage\s*\}\)" 'error handling owns frontend error logging'
+$externalRef = Get-Source 'ui/src/lib/externalRef.ts'
+Assert-Contains $externalRef "invoke\('open_external',\s*\{\s*target:\s*value\s*\}\)" 'external reference policy owns external opening'
+foreach ($file in $uiFiles) {
+    if ($file.Name -eq 'recordingOverlayController.ts') { continue }
+    Assert-NotContains (Get-Content $file.FullName -Raw) '\binvoke\s*\(\s*(?:command|cmd)\s*\)' "dynamic Tauri invoke is not allowed outside the narrowed recording controller: $($file.Name)"
+}
+
+# Keep command-family ownership explicit. Domain adapters own feature commands;
+# route/infrastructure modules may invoke only commands whose full lifecycle or
+# policy they already own.
 $ownedCommands = @{
+    '+layout.svelte' = @('get_bootstrap_status', 'check_llm_connection', 'resolve_confirmation')
+    'submit.ts' = @('process_transcript')
+    'errorHandling.ts' = @('log_frontend_error')
+    'externalRef.ts' = @('open_external')
+    'recordingOverlayController.ts' = @('start_recording', 'stop_recording', 'cancel_recording')
     'toolRunCommands.ts' = @('list_tool_runs', 'list_tool_run_history', 'clear_tool_run_history', 'cancel_tool_run')
     'toolsCommands.ts' = @('list_builtin_tool_manifests', 'list_mcp_servers', 'reset_tool_circuits', 'refresh_mcp_servers', 'set_skill_enabled', 'set_tool_enabled', 'refresh_skills', 'open_skills_dir', 'add_mcp_server', 'update_mcp_server', 'remove_mcp_server', 'reconnect_mcp_server', 'toggle_mcp_server', 'execute_skill')
     'memoryCommands.ts' = @('list_facts', 'add_fact', 'delete_fact', 'clear_facts', 'recall_memory')

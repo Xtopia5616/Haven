@@ -210,6 +210,8 @@
 
 **Session 状态标签投影复核（2026-10-10）：** Chat route 原先将 reducer 已有的 active session 重新格式化后写入 `activeSessionStatusLabelStore`，shell 再订阅该全局可变副本；同时页面工具栏和 shell 各有相同映射，SessionHistory 还有状态文案表。现由 `sessionStatus` 集中管理运行态与历史态标签，页面和 shell 分别从同一 Session reducer 状态派生，删除可变 store、同步 effect 与组件内副本。运行态完成显示“空闲”、历史列表显示“已完成”，保留各自语境，其余状态的优先级不变（ADR 0841）。其余 UI store/controller 与 contract owner 审计仍在 Active 范围。
 
+**Route/App shell 命令 owner 复核（2026-10-10）：** +layout.svelte 的直接命令限定为启动 readiness、generation-gated LLM 连接探测与全局 confirmation resolution；submit.ts、errorHandling.ts、externalRef.ts 和 RecordingOverlayController 分别继续拥有提交、错误日志、外链策略与录音生命周期。IPC owner guard 现登记全部这些 literal invoke owner，简单变量形式的动态 invoke 只允许窄化到录音命令集合；不为唯一调用增加转发 wrapper。feature view/component 的直接 invoke 仍由领域 adapter/callback 阻止（ADR 0842）。Route shell 其余 controller、event 与状态职责仍按 Active 范围继续审计。
+
 **ToolRun card details projection 复核（2026-10-08）：** 对照 `ToolRunCenter` 的生产读取点后，从 `ToolRunCardDetails` 移除仅被构造、没有消费者的 `dueAt`、`title`、`mode`、`errorReason` 与 `exitCode`；保留搜索、摘要和详情面板实际读取的五个字段。仅收窄本地派生 view，不改 ToolRun IPC 或持久化 contract（ADR 0790）。
 
 **ToolRun schedule mode 类型复核（2026-10-08）：** scheduled service view、lifecycle payload、App `ToolRunEvent` 与 UI `ToolRunPayload` 现共用 Rust `ScheduleMode` 导出的 generated enum；ToolResult schedule renderer 也从该 generated 值域导出 presentation alias/guard。DB 历史文本在 App 读取边界解析，未知值不进入 renderer；`tool` / `continue` wire JSON 不变（ADR 0791）。

@@ -330,7 +330,7 @@ Common 媒体探测 helper 和变量以 `mime_type` 表示 MIME 字符串，探�
 - 不保留跨领域聚合 store 桶文件；各领域状态由对应的 `xxxStore.ts` 模块拥有，调用方直接导入其领域 owner。
 - IPC DTO 的前端 alias 放在对应领域的 `contracts/` 模块，已知字段从 generated command type 派生；确需开放扩展时显式叠加索引签名，不把稳定响应整体退化为 `Record<string, unknown>`。`contracts/` 中被生产消费者使用的重导出是领域导入 façade，不拥有第二份 wire shape；未使用的同名 alias 应删除。仅做状态判断/标签映射的 UI utility 直接导入 generated enum/value，不再导出同名的无变更 alias；有独立 renderer shape 或领域角色时才定义前端类型。模块内部若另声明只改名、不增加形状约束或角色语义的类型 alias，也直接使用规范 owner 类型；不要用局部别名制造第二套词汇。不同生产者若传递同一个 generated command payload（例如性能指标 aggregator），也直接引用该 contract；只有 shape 或语义角色变化时才定义 renderer 类型。
 - 同一通用依赖注入类型若被 feature 局部 alias 仅改名（如 `TauriCommandInvoke`），controller dependency 与 command wrapper 参数直接使用 generated owner；只有缩窄能力或输入/输出约束时才另定义专用 invoker port。
-- 前端领域命令适配器文件统一使用复数 `*Commands.ts`（如 `settingsCommands.ts`、`toolsCommands.ts`）；模块内单个操作使用对应的单数领域动词。`lib/views/` 中的 feature view 与 `lib/` UI 组件通过具名 command adapter 或 callback 发起领域动作，不直接 `invoke`；不保留 `*Command.ts` 旧文件 alias。Route/shell 的跨域启动与应用生命周期命令另按路由职责审计。
+- 前端领域命令适配器文件统一使用复数 `*Commands.ts`（如 `settingsCommands.ts`、`toolsCommands.ts`）；模块内单个操作使用对应的单数领域动词。`lib/views/` 中的 feature view 与 `lib/` UI 组件通过具名 command adapter 或 callback 发起领域动作，不直接 `invoke`；不保留 `*Command.ts` 旧文件 alias。Route/shell 的跨域启动与应用生命周期命令由实际编排该生命周期的 route/shell 独占，且必须列入 IPC owner 门禁；不得借此绕过已有领域 adapter。
 - 多个组件共享的表单字段、回调输入或字段联合类型由领域类型模块单一定义；持久配置草稿用 `Draft`，仅供编辑器使用的临时表单用 `Form`，供回调判定的输入用 `Input`，避免不同生命周期共用含糊名称。
 - 前端颜色主题由 `themeStore.ts::ThemeMode` 表达为 `light | dark`；localStorage 与 document attribute 是不可信字符串入口，读取时必须验证再进入主题状态。
 - 从共享 discriminated union 提取给不同 reducer 使用的私有动作子集，以 `<Domain>ReducerAction` 标明实际消费者；`Action`、`Props` 等短名只在明确的组件或模块作用域内作为私有局部类型使用。
