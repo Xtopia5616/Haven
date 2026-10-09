@@ -922,13 +922,19 @@ fn tool_detail(def: &ToolDef, source: CatalogSource, loaded: bool) -> Value {
         .map(|manifest| &manifest.prompt)
         .or(def.prompt.as_ref())
     {
-        object.insert(
-            "guidance".into(),
-            serde_json::json!({
-                "when_to_use": compact_text(&prompt.when_to_use, 320),
-                "when_not_to_use": compact_text(&prompt.when_not_to_use, 320),
-            }),
-        );
+        let mut guidance = serde_json::Map::new();
+        for (key, value) in [
+            ("when_to_use", &prompt.when_to_use),
+            ("when_not_to_use", &prompt.when_not_to_use),
+        ] {
+            let value = compact_text(value, 320);
+            if !value.is_empty() {
+                guidance.insert(key.into(), Value::String(value));
+            }
+        }
+        if !guidance.is_empty() {
+            object.insert("guidance".into(), Value::Object(guidance));
+        }
     }
     if !loaded {
         match source {
@@ -1133,6 +1139,26 @@ mod tests {
         assert_eq!(detail["load"]["tool"], "tool_catalog");
         assert_eq!(detail["load"]["arguments"]["action"], "load");
         assert_eq!(detail["load"]["arguments"]["source"], "builtin");
+    }
+
+    #[test]
+    fn detail_omits_empty_prompt_guidance() {
+        let def = ToolDef::new(
+            "files.read",
+            "Read text",
+            serde_json::json!({"type": "object"}),
+            RiskLevel::Low,
+        )
+        .with_prompt(haven_common::tools::ToolPrompt {
+            when_to_use: "Read source text".into(),
+            when_not_to_use: String::new(),
+            key_operations: vec!["files.read".into()],
+        });
+
+        let detail = tool_detail(&def, CatalogSource::Builtin, false);
+
+        assert_eq!(detail["guidance"]["when_to_use"], "Read source text");
+        assert!(detail["guidance"].get("when_not_to_use").is_none());
     }
 
     #[test]

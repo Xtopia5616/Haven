@@ -88,7 +88,7 @@ fn mcp_operation_spec(
         },
         prompt: ToolPrompt {
             when_to_use: description.to_string(),
-            when_not_to_use: "Use only after explicitly loading this MCP capability.".into(),
+            when_not_to_use: String::new(),
             key_operations: vec![name.to_string()],
         },
         identity: Some(OperationIdentity {
@@ -143,7 +143,7 @@ fn skill_operation_spec(name: &str, description: &str, schema: Value) -> Operati
         },
         prompt: ToolPrompt {
             when_to_use: description.to_string(),
-            when_not_to_use: "Use a narrower operation when one is available.".into(),
+            when_not_to_use: String::new(),
             key_operations: vec![name.to_string()],
         },
         identity: Some(OperationIdentity {

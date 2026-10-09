@@ -534,8 +534,7 @@ fn operation_spec(
         },
         prompt: ToolPrompt {
             when_to_use: prompt.into(),
-            when_not_to_use:
-                "Use only for this named operation; its operation/scope fields are fixed.".into(),
+            when_not_to_use: String::new(),
             key_operations: vec![name.into()],
         },
         identity: None,
@@ -568,7 +567,9 @@ fn operation_specs(max_results: usize) -> Vec<OperationSpec> {
     vec![
         OperationSpec {
             name: "files.read".into(),
-            description: tool_prompts::operation_text("files.read").description.into(),
+            description: tool_prompts::operation_text("files.read")
+                .description
+                .into(),
             fixed: vec![("operation".into(), serde_json::json!("read"))],
             schema: files_read_text_schema(),
             policy: OperationPolicy {
@@ -591,15 +592,19 @@ fn operation_specs(max_results: usize) -> Vec<OperationSpec> {
                 represented_source: haven_common::tools::ToolSource::Builtin,
             },
             prompt: ToolPrompt {
-                when_to_use: tool_prompts::operation_text("files.read").when_to_use.into(),
-                when_not_to_use: "Use a different operation view for another action; do not add an operation field.".into(),
+                when_to_use: tool_prompts::operation_text("files.read")
+                    .when_to_use
+                    .into(),
+                when_not_to_use: String::new(),
                 key_operations: vec!["files.read".into()],
             },
             identity: None,
         },
         OperationSpec {
             name: "files.outline".into(),
-            description: tool_prompts::operation_text("files.outline").description.into(),
+            description: tool_prompts::operation_text("files.outline")
+                .description
+                .into(),
             fixed: vec![("operation".into(), serde_json::json!("outline"))],
             schema: files_outline_schema(),
             policy: OperationPolicy {
@@ -622,15 +627,19 @@ fn operation_specs(max_results: usize) -> Vec<OperationSpec> {
                 represented_source: haven_common::tools::ToolSource::Builtin,
             },
             prompt: ToolPrompt {
-                when_to_use: tool_prompts::operation_text("files.outline").when_to_use.into(),
-                when_not_to_use: "Use a different operation view for another action; do not add an operation field.".into(),
+                when_to_use: tool_prompts::operation_text("files.outline")
+                    .when_to_use
+                    .into(),
+                when_not_to_use: String::new(),
                 key_operations: vec!["files.outline".into()],
             },
             identity: None,
         },
         OperationSpec {
             name: "files.summary".into(),
-            description: tool_prompts::operation_text("files.summary").description.into(),
+            description: tool_prompts::operation_text("files.summary")
+                .description
+                .into(),
             fixed: vec![("operation".into(), serde_json::json!("summary"))],
             schema: files_summary_schema(),
             policy: OperationPolicy {
@@ -653,15 +662,19 @@ fn operation_specs(max_results: usize) -> Vec<OperationSpec> {
                 represented_source: haven_common::tools::ToolSource::Builtin,
             },
             prompt: ToolPrompt {
-                when_to_use: tool_prompts::operation_text("files.summary").when_to_use.into(),
-                when_not_to_use: "Use a different operation view for another action; do not add an operation field.".into(),
+                when_to_use: tool_prompts::operation_text("files.summary")
+                    .when_to_use
+                    .into(),
+                when_not_to_use: String::new(),
                 key_operations: vec!["files.summary".into()],
             },
             identity: None,
         },
         OperationSpec {
             name: "files.search".into(),
-            description: tool_prompts::operation_text("files.search").description.into(),
+            description: tool_prompts::operation_text("files.search")
+                .description
+                .into(),
             fixed: vec![("operation".into(), serde_json::json!("search"))],
             schema: files_search_schema(max_results),
             policy: OperationPolicy {
@@ -684,15 +697,19 @@ fn operation_specs(max_results: usize) -> Vec<OperationSpec> {
                 represented_source: haven_common::tools::ToolSource::Builtin,
             },
             prompt: ToolPrompt {
-                when_to_use: tool_prompts::operation_text("files.search").when_to_use.into(),
-                when_not_to_use: "Use a different operation view for another action; do not add an operation field.".into(),
+                when_to_use: tool_prompts::operation_text("files.search")
+                    .when_to_use
+                    .into(),
+                when_not_to_use: String::new(),
                 key_operations: vec!["files.search".into()],
             },
             identity: None,
         },
         OperationSpec {
             name: "system.info".into(),
-            description: tool_prompts::operation_text("system.info").description.into(),
+            description: tool_prompts::operation_text("system.info")
+                .description
+                .into(),
             fixed: vec![("scope".into(), serde_json::json!("info"))],
             schema: system_info_schema(),
             policy: OperationPolicy {
@@ -715,8 +732,10 @@ fn operation_specs(max_results: usize) -> Vec<OperationSpec> {
                 represented_source: haven_common::tools::ToolSource::Builtin,
             },
             prompt: ToolPrompt {
-                when_to_use: tool_prompts::operation_text("system.info").when_to_use.into(),
-                when_not_to_use: "Use a different operation view for another action; do not add an operation field.".into(),
+                when_to_use: tool_prompts::operation_text("system.info")
+                    .when_to_use
+                    .into(),
+                when_not_to_use: String::new(),
                 key_operations: vec!["system.info".into()],
             },
             identity: None,

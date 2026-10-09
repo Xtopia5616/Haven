@@ -474,6 +474,8 @@ pub struct ToolManifest {
 /// This is deliberately not part of [`ToolDef::json`] or provider tool
 /// parameters. It helps the system-prompt catalog explain a capability
 /// without duplicating that prose in every provider-facing description.
+/// `when_not_to_use` may be empty when the tool name or schema already makes
+/// the choice clear.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ToolPrompt {
     pub when_to_use: String,
