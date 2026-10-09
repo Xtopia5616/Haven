@@ -1044,12 +1044,12 @@ fn family_for_def(def: &ToolDef, source: CatalogSource) -> String {
 
 fn family_description(family: &str) -> String {
     match family {
-        "system" => "Inspect or control the local PC: files, shell, windows, input, media, network, and notifications.".into(),
-        "agent" => "Delegate work or exchange low-trust messages with peer agents.".into(),
-        "haven" => "Manage Haven session state, memory, tasks, and capability settings.".into(),
-        "skills" => "Run an enabled installed Skill when its specialization matches the task.".into(),
-        "mcp" => "Use a configured external MCP capability after discovering and loading the needed tools.".into(),
-        _ => format!("Discover capabilities in the {family} family."),
+        "system" => "Haven's native tools for the local PC and workspace: files, shell, windows, input, media, and network.".into(),
+        "agent" => "Peer-agent discovery, delegation, and messages.".into(),
+        "haven" => "Haven sessions, memory, tasks, and settings.".into(),
+        "skills" => "User-configured Skills for task-specific workflows.".into(),
+        "mcp" => "User-configured MCP servers for additional integrations.".into(),
+        _ => format!("Additional capabilities in the {family} family."),
     }
 }
 
