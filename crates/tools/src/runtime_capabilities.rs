@@ -33,7 +33,7 @@ pub(crate) struct ToolCapabilitySnapshot {
 }
 
 impl ToolCapabilitySnapshot {
-    pub(crate) fn runtime_capabilities(self) -> RuntimeCapabilities {
+    pub(crate) fn project_runtime_capabilities(self) -> RuntimeCapabilities {
         RuntimeCapabilities {
             vision: self.media.describe,
             image_generation: self.media.generate,
@@ -214,7 +214,7 @@ mod tests {
             false,
             &[],
         );
-        let capabilities = snapshot.runtime_capabilities();
+        let capabilities = snapshot.project_runtime_capabilities();
 
         assert!(capabilities.vision);
         assert!(capabilities.image_generation);
@@ -234,7 +234,7 @@ mod tests {
             false,
             &[],
         );
-        let capabilities = snapshot.runtime_capabilities();
+        let capabilities = snapshot.project_runtime_capabilities();
 
         assert!(capabilities.recording);
         assert!(!capabilities.transcription);
@@ -258,7 +258,7 @@ mod tests {
         assert!(snapshot.media.record);
         assert_eq!(snapshot.web_search, WebSearchAvailability::Provider);
         assert_eq!(
-            snapshot.runtime_capabilities().web_search,
+            snapshot.project_runtime_capabilities().web_search,
             WebSearchAvailability::Provider
         );
     }

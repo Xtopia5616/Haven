@@ -832,3 +832,4 @@
 - [0851：区分 Usage 缓存未命中字段与有效值 accessor](0851-distinguish-effective-cache-miss-usage-accessor.md)
 - [0852：统一 Prompt Cache 用量契约](0852-unify-prompt-cache-usage-contract.md)
 - [0853：由单一模块拥有工具媒体能力解析](0853-own-tool-media-capability-resolution-in-one-module.md)
+- [0854：明确命名工具能力快照投影](0854-name-capability-projection-explicitly.md)

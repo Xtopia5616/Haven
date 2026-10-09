@@ -435,7 +435,7 @@ impl ToolsFacade {
         let platform = self.coordinator.runtime.platform().await;
         self.tool_capability_snapshot(&platform)
             .await
-            .runtime_capabilities()
+            .project_runtime_capabilities()
     }
 
     /// Construct the single capability view used by facade reads and builtin
