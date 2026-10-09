@@ -892,7 +892,7 @@ fn names_match(def: &ToolDef, requested: &str, source: CatalogSource) -> bool {
 }
 
 fn tool_item(def: &ToolDef, source: CatalogSource, loaded: bool) -> CatalogItem {
-    let root = tool_root(def);
+    let root = def.root_name();
     CatalogItem {
         name: def.name.clone(),
         source,
@@ -1026,13 +1026,6 @@ fn mcp_tool_detail(server_name: &str, info: &McpToolInfo, loaded: bool) -> Value
             "arguments": { "server_name": server_name, "tool_names": [info.name] }
         },
     })
-}
-
-fn tool_root(def: &ToolDef) -> String {
-    def.manifest
-        .as_ref()
-        .map(|manifest| manifest.identity.root.clone())
-        .unwrap_or_else(|| def.name.split('.').next().unwrap_or(&def.name).to_string())
 }
 
 fn family_for_def(def: &ToolDef, source: CatalogSource) -> String {

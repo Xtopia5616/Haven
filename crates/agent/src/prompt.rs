@@ -244,7 +244,7 @@ fn render_tool_index(defs: &[ToolDef]) -> String {
                 roots: BTreeMap::new(),
                 key_operations: BTreeSet::new(),
             });
-        let root = compact_index_text(&tool_root(def), 96);
+        let root = compact_index_text(def.root_name(), 96);
         *group.roots.entry(root).or_default() += 1;
         let operation_names = def
             .prompt
@@ -292,13 +292,6 @@ fn render_tool_index(defs: &[ToolDef]) -> String {
         ));
     }
     rendered
-}
-
-fn tool_root(def: &ToolDef) -> String {
-    def.manifest
-        .as_ref()
-        .map(|manifest| manifest.identity.root.clone())
-        .unwrap_or_else(|| def.name.split('.').next().unwrap_or(&def.name).to_string())
 }
 
 fn render_skill_index(skills: &[haven_tools::SkillInfo]) -> String {

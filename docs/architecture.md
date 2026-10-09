@@ -1,6 +1,6 @@
 # Haven 架构与 crate 职责
 
-> 版本: v1.18 | 日期: 2026-10-10
+> 版本: v1.19 | 日期: 2026-10-10
 > 范围: `crates/` (Rust 后端, Tauri 2)
 > 原则: **依赖单向、叶子优先**。上层 crate 只依赖下层，绝不反向依赖；共享数据与类型放叶子（`haven-common`），
 > 组件职责按「谁拥有实现、谁只消费接口」划分。
@@ -181,6 +181,7 @@ CI 以 `scripts/check-crate-dependencies.ps1` 对此表执行内部 crate 依赖
   `CapabilityScope`、`HotkeyMode` / `ShellChoice` 等。`CapabilityScope` 是授权身份的 typed
   owner，提供 capability ancestry；`CanonicalToolCall` 只承载规范化后的参数值，Provider
   wire 参数序列化与完成流解析/截断修复由 `haven-llm::adapters::tool_arguments` 持有。
+- `tools.rs`：canonical `ToolDef` 与工具目录元数据；`ToolDef::root_name` 唯一投影 manifest root，或无 manifest 时工具名的第一段，供 Agent prompt 与 Tools catalog 共用（ADR 0859）。
 - `media.rs` / `media_detection.rs`：provider-neutral 的 `MediaAsset`、
   `MediaRepresentation`、能力画像、统一文件探测和纯 `MediaPlan` 计划器；只选择安全的
   raw/derived/managed 表示，不执行文件 I/O 或 provider 路由。文件/MIME 探测以

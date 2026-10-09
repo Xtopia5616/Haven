@@ -561,6 +561,15 @@ impl ToolDef {
         }
     }
 
+    /// Return the catalog root recorded by the manifest, or the first segment
+    /// of the tool name when the definition has no manifest metadata.
+    pub fn root_name(&self) -> &str {
+        self.manifest
+            .as_ref()
+            .map(|manifest| manifest.identity.root.as_str())
+            .unwrap_or_else(|| self.name.split('.').next().unwrap_or(&self.name))
+    }
+
     pub fn with_retry_safety(mut self, retry_safety: ToolRetrySafety) -> Self {
         self.retry_safety = retry_safety;
         self
