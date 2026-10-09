@@ -12,30 +12,63 @@
 	// run a reaction yet), which made the first toast appear instantly.
 	let items = $state<Notification[]>([]);
 	let mounted = $state(false);
+	let prefersReducedMotion = $state(false);
 	let unsub: (() => void) | null = null;
-	onMount(async () => {
+	let disposed = false;
+	onMount(() => {
 		mounted = true;
-		await tick();
-		unsub = notificationStore.subscribe((v) => (items = v));
+		const motionPreference = window.matchMedia?.('(prefers-reduced-motion: reduce)');
+		const syncMotionPreference = () => {
+			if (motionPreference) prefersReducedMotion = motionPreference.matches;
+		};
+		if (motionPreference) {
+			syncMotionPreference();
+			motionPreference.addEventListener('change', syncMotionPreference);
+		}
+		void tick().then(() => {
+			if (!disposed) unsub = notificationStore.subscribe((v) => (items = v));
+		});
+		return () => motionPreference?.removeEventListener('change', syncMotionPreference);
 	});
-	onDestroy(() => unsub?.());
+	onDestroy(() => {
+		disposed = true;
+		unsub?.();
+	});
 
 	function getToastStyle(type: Notification['type'] | undefined) {
 		const { dot, background, foreground } = getStatusColorTokens(type || 'info');
 		return `--toast-accent: ${dot}; --toast-background: ${background}; --toast-foreground: ${foreground};`;
 	}
+
+	function getToastLabel(type: Notification['type']) {
+		switch (type) {
+			case 'success':
+				return '操作成功';
+			case 'error':
+				return '操作失败';
+			case 'warning':
+				return '需要留意';
+			default:
+				return '通知';
+		}
+	}
 </script>
 
 {#if mounted}
-	<div class="toast-container">
+	<div class="toast-container" role="region" aria-label="通知">
 		{#each items as item (item.id)}
 			<div
 				class="toast toast-{item.type || 'info'}"
 				style={getToastStyle(item.type)}
 				role={item.type === 'error' ? 'alert' : 'status'}
 				aria-live={item.type === 'error' ? 'assertive' : 'polite'}
-				aria-label={item.msg}
-				in:fly={{ x: '100%', duration: 450, easing: cubicOut }}
+				aria-label={`${getToastLabel(item.type)}：${item.msg}`}
+				in:fly={{
+					x: prefersReducedMotion ? 0 : 24,
+					y: prefersReducedMotion ? 0 : 8,
+					duration: prefersReducedMotion ? 0 : 280,
+					easing: cubicOut,
+				}}
 			>
 				<span class="toast-icon">
 					<Icon
@@ -49,7 +82,10 @@
 						size={20}
 					/>
 				</span>
-				<span class="toast-msg">{item.msg}</span>
+				<span class="toast-content">
+					<span class="toast-label">{getToastLabel(item.type)}</span>
+					<span class="toast-msg">{item.msg}</span>
+				</span>
 			</div>
 		{/each}
 	</div>
@@ -57,72 +93,104 @@
 
 <style>
 	.toast-container {
-		--toast-viewport-height: 100vh;
-		--toast-bottom-offset: min(
-			80px,
-			max(
-				var(--md-sys-space-lg),
-				calc(
-					var(--toast-viewport-height) - 80px - var(--md-sys-space-lg)
-				)
-			)
-		);
 		position: fixed;
-		bottom: var(--toast-bottom-offset);
+		bottom: max(var(--md-sys-space-xl), env(safe-area-inset-bottom));
 		right: var(--md-sys-content-gutter);
 		z-index: var(--md-sys-z-toast);
 		display: flex;
 		flex-direction: column;
-		gap: var(--md-sys-space-sm);
-		max-height: max(
-			0px,
-			calc(
-				var(--toast-viewport-height) - var(--toast-bottom-offset) - var(--md-sys-space-lg)
-			)
-		);
+		align-items: flex-end;
+		gap: var(--md-sys-space-md);
+		max-height: calc(100vh - 2 * var(--md-sys-space-xl));
 		overflow-y: auto;
 		overscroll-behavior: contain;
+		padding: 2px;
 	}
 	@supports (height: 100dvh) {
 		.toast-container {
-			--toast-viewport-height: 100dvh;
+			max-height: calc(100dvh - 2 * var(--md-sys-space-xl));
 		}
 	}
 	.toast {
-		padding: var(--md-sys-space-sm) var(--md-sys-space-lg);
-		padding-left: calc(var(--md-sys-space-lg) + 3px);
-		border-radius: var(--md-sys-shape-small);
-		font-size: var(--md-sys-typescale-body-small-size);
-		font-weight: 600;
-		line-height: var(--md-sys-typescale-body-small-line-height);
-		box-shadow: var(--md-sys-elevation-2);
-		width: min(320px, calc(100vw - 2 * var(--md-sys-content-gutter)));
+		padding: var(--md-sys-space-md) var(--md-sys-space-lg);
+		border: 1px solid
+			color-mix(in srgb, var(--toast-accent) 24%, var(--md-sys-color-outline-variant));
+		border-radius: var(--md-sys-shape-large);
+		width: min(360px, calc(100vw - 2 * var(--md-sys-content-gutter)));
 		display: flex;
-		align-items: center;
-		gap: var(--md-sys-space-sm);
+		align-items: flex-start;
+		gap: var(--md-sys-space-md);
 		pointer-events: auto;
-		border-left: 3px solid var(--toast-accent);
-		background: var(--toast-background);
-		color: var(--toast-foreground);
+		background: color-mix(
+			in srgb,
+			var(--md-sys-color-surface-container-lowest) 94%,
+			var(--toast-accent)
+		);
+		color: var(--md-sys-color-on-surface);
+		box-shadow:
+			0 14px 34px color-mix(in srgb, var(--md-sys-color-shadow) 18%, transparent),
+			0 2px 8px color-mix(in srgb, var(--md-sys-color-shadow) 10%, transparent),
+			inset 0 1px 0 color-mix(in srgb, var(--md-sys-color-on-surface) 5%, transparent);
+		backdrop-filter: blur(18px) saturate(1.18);
+		-webkit-backdrop-filter: blur(18px) saturate(1.18);
 	}
 	.toast-icon {
 		display: flex;
 		align-items: center;
-		flex-shrink: 0;
-		width: 20px;
-		height: 20px;
+		justify-content: center;
+		flex: 0 0 36px;
+		width: 36px;
+		height: 36px;
+		margin-top: 1px;
+		border-radius: var(--md-sys-shape-medium);
+		background: var(--toast-background);
+		color: var(--toast-foreground);
 	}
 	.toast-icon :global(svg) {
 		width: 20px;
 		height: 20px;
 	}
-	.toast-msg {
+	.toast-content {
+		display: flex;
 		flex: 1;
 		min-width: 0;
+		flex-direction: column;
+		gap: 2px;
+	}
+	.toast-label {
+		color: var(--toast-accent);
+		font-size: var(--md-sys-typescale-label-medium-size);
+		font-weight: 700;
+		letter-spacing: var(--md-sys-typescale-label-letter-spacing);
+		line-height: var(--md-sys-typescale-label-medium-line-height);
+	}
+	.toast-msg {
+		font-size: var(--md-sys-typescale-body-medium-size);
+		font-weight: 500;
+		line-height: var(--md-sys-typescale-body-medium-line-height);
 		overflow-wrap: anywhere;
 		white-space: normal;
 	}
 	.toast-error {
-		font-weight: 700;
+		border-color: color-mix(
+			in srgb,
+			var(--toast-accent) 36%,
+			var(--md-sys-color-outline-variant)
+		);
+		box-shadow:
+			0 14px 34px color-mix(in srgb, var(--md-sys-color-error) 12%, transparent),
+			0 2px 8px color-mix(in srgb, var(--md-sys-color-shadow) 10%, transparent),
+			inset 0 1px 0 color-mix(in srgb, var(--md-sys-color-on-surface) 5%, transparent);
+	}
+	@media (max-width: 520px) {
+		.toast-container {
+			right: max(12px, env(safe-area-inset-right));
+			bottom: max(12px, env(safe-area-inset-bottom));
+			left: max(12px, env(safe-area-inset-left));
+			align-items: stretch;
+		}
+		.toast {
+			width: 100%;
+		}
 	}
 </style>
