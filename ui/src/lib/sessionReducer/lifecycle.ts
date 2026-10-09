@@ -125,7 +125,14 @@ export function reduceLifecycle(
 				current.status !== action.status ||
 				current.waitingReason !== waitingReason ||
 				current.title !== title;
-			const runEndNoticeInvalidated = base.runEndNotice?.sessionId === action.sessionId;
+			const currentNotice =
+				base.runEndNotice?.sessionId === action.sessionId ? base.runEndNotice : null;
+			// A user interrupt can publish a reason-bearing paused event before the
+			// dispatcher publishes its generic run-exit pause. Keep the first notice
+			// when that duplicate update arrives without a new reason.
+			const runEndNoticeInvalidated =
+				currentNotice !== null &&
+				!(action.status === 'paused' && currentNotice.status === 'paused');
 			if (!sessionChanged && !runEndNoticeInvalidated) return base;
 			const sessions = sessionChanged
 				? base.sessions.map((session) =>
