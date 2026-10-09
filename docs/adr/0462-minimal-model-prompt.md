@@ -2,7 +2,7 @@
 
 ## 状态
 
-拟议（2026-10-04，待二次校准）。
+Accepted（2026-10-10）。
 
 ## 背景
 
@@ -17,6 +17,7 @@ Haven 将稳定系统提示、动态能力索引、当前可用的工具 schema�
 5. 保留专用任务提示中的解析契约和领域策略，包括记忆 JSON 字段、摘要结构、语音/OCR 的逐字输出，以及检索内容的数据边界。
 6. 后续仅在具体执行问题可复现时增加对应提示，并尽量限定到相关能力或失败场景。
 7. Haven 自己生成并发送给模型的指令、媒体围栏和附件占位说明统一使用英文。用户输入、文件内容、Skill/MCP 定义和工具结果属于数据，保留原文，不为统一提示语言而翻译。
+8. 能力索引只负责发现，不代表当前 session 已加载，也不承载完整 schema 或授权结论。每次 provider 请求使用不可变的 session catalog snapshot；成功加载 builtin、Skill 或 MCP 后，新能力进入后续请求的 `tools[]`。当前 run 的系统提示保持稳定，resume 时再从全局目录重建索引。
 
 ## 替代方案
 
@@ -28,7 +29,9 @@ Haven 将稳定系统提示、动态能力索引、当前可用的工具 schema�
 
 常规请求的稳定系统前缀更短；Skill/MCP 名单只通过能力索引出现，内部预算不再进入模型上下文。Haven 生成的媒体/附件说明也统一为英文。具体工具的行为继续由当前 API schema 与操作说明决定。失败提示保留分类信息，但表达为建议。
 
-验证：Rust workspace 格式、check、严格 Clippy、全量测试，以及 UI check、测试和生产构建均通过；`git diff --check` 通过。提示词在实际模型交互中的效果仍待二次校准。
+验证：原有 prompt 测试覆盖预算、能力索引、缓存失效和 resume 重建；新增测试确认加载 deferred builtin 后，完整 schema 进入 session catalog，而提示词仍只保留能力索引。`docs/prompt-routing-evaluation.md` 增加了 native、Skill、MCP、索引省略、无须加载、能力不可用及混合来源场景，供固定 provider/model 做针对性复核。该场景集是校准协议，不是跨模型效果保证；本次未调用外部 provider。后续提示改动应由可复现的场景失败驱动。
+
+结构复核：`prompt.rs` 超过 800 行，但生产职责仍是构建与维护同一份 session system prompt；目录快照获取和记忆投影分别已有 `PromptContextProvider`、`PromptRenderer` owner。能力索引渲染目前与该 prompt 的 cache/rebuild 生命周期一致，因此暂留在 builder 模块；若场景校准反复显示索引维护与 prompt 生命周期互相牵扯，再拆成私有模块，不以行数本身触发拆分。
 
 ## 回滚
 
