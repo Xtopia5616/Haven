@@ -2,11 +2,15 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
 	deleteAllSessions,
 	deleteSession,
+	continueSession,
+	endSession,
 	getLatestSessionForResume,
 	getSessionLineage,
 	getSessionForResume,
+	interruptSession,
 	listRuntimeSessions,
 	listSessionHistory,
+	rollbackSession,
 	reopenSession,
 	searchSessionHistoryFiltered,
 	updateSessionTitle,
@@ -82,14 +86,27 @@ describe('session history command boundary', () => {
 		]);
 	});
 
-	it('uses an injected typed invoker for controller tests and preserves the request', async () => {
-		const request = { sessionId: 'ses-injected' };
-		const response = { session: { id: request.sessionId } };
-		const invokeCommand = vi.fn().mockResolvedValue(response);
+	it('owns rollback and active session lifecycle commands', async () => {
+		const request = { sessionId: 'ses-lifecycle' };
+		const rollbackRequest = {
+			sessionId: request.sessionId,
+			targetStep: 3,
+			pause: true,
+			targetMessageId: 'msg-00000000000000000000000000000001',
+		};
+		invokeMock.mockResolvedValue(undefined as never);
 
-		await expect(getSessionForResume(request, invokeCommand)).resolves.toBe(response);
-		expect(invokeCommand).toHaveBeenCalledOnce();
-		expect(invokeCommand).toHaveBeenCalledWith('get_session_for_resume', request);
+		await rollbackSession(rollbackRequest);
+		await endSession(request);
+		await interruptSession(request);
+		await continueSession(request);
+
+		expect(invokeMock.mock.calls).toEqual([
+			['rollback_session', rollbackRequest],
+			['end_session', request],
+			['interrupt_session', request],
+			['continue_session', request],
+		]);
 	});
 
 	it('forwards history mutations and keeps the command result values', async () => {

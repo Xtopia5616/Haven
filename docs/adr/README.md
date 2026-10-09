@@ -815,3 +815,4 @@
 - [0834：统一工具目录的分组摘要来源](0834-single-source-tool-catalog-group-summaries.md)
 - [0835：按生产 owner 拆分遗留 store 测试桶](0835-split-store-test-bucket-by-owner.md)
 - [0836：集中聊天模型命令 owner](0836-centralize-chat-model-command-ownership.md)
+- [0837：通过 Session 命令 owner 调用会话生命周期](0837-route-session-lifecycle-through-session-commands.md)

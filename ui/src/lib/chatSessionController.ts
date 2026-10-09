@@ -1,7 +1,7 @@
 import { reportError, type ErrorReportOptions } from './errorHandling.ts';
 import { addNotification, type NotificationType } from './notificationStore.ts';
 import { buildResumeMessages } from './resumeMessages.ts';
-import { getSessionForResume } from './sessionCommands.ts';
+import type * as sessionCommandAdapter from './sessionCommands.ts';
 import {
 	pickContinueStrategy,
 	shouldResubmitOriginalUser,
@@ -10,21 +10,9 @@ import {
 import { isErrorStatus } from './sessionStatus.ts';
 import { processResultSessionId } from './submit.ts';
 import type { ChatFileAttachment, ChatImageAttachment } from './chatAttachmentTypes.ts';
-import type { ProcessResult } from './contracts/generatedCommands.ts';
-import type { CanonicalRole } from './contracts/generatedCommands.ts';
-import type {
-	ContinueSessionRequest,
-	EndSessionRequest,
-	InterruptSessionRequest,
-	RollbackSessionRequest,
-} from './contracts/commands.ts';
-import type { TauriCommandInvoke } from './contracts/generatedCommands.ts';
+import type { ProcessResult, CanonicalRole } from './contracts/generatedCommands.ts';
 import { resumeInteractions as resumeInteractionsFromProjection } from './sessionReducer.ts';
-import type {
-	SessionAction,
-	SessionReducer,
-	SessionSummary,
-} from './sessionReducer.ts';
+import type { SessionAction, SessionReducer, SessionSummary } from './sessionReducer.ts';
 
 export interface RollbackRequest {
 	stepNumber: number;
@@ -34,13 +22,23 @@ export interface RollbackRequest {
 }
 
 export interface ChatSessionControllerDependencies {
-	invoke: TauriCommandInvoke;
-	submitTranscript: (text: string, options: {
-		images: ChatImageAttachment[] | null | undefined;
-		files: ChatFileAttachment[] | null | undefined;
-		reducer: SessionReducer;
-		submissionToken?: string;
-	}) => Promise<ProcessResult>;
+	commands: Pick<
+		typeof sessionCommandAdapter,
+		| 'continueSession'
+		| 'endSession'
+		| 'getSessionForResume'
+		| 'interruptSession'
+		| 'rollbackSession'
+	>;
+	submitTranscript: (
+		text: string,
+		options: {
+			images: ChatImageAttachment[] | null | undefined;
+			files: ChatFileAttachment[] | null | undefined;
+			reducer: SessionReducer;
+			submissionToken?: string;
+		},
+	) => Promise<ProcessResult>;
 	reducer: SessionReducer;
 	dispatch: (action: SessionAction) => void;
 	getActiveSessionId: () => string | null;
@@ -102,12 +100,12 @@ export class ChatSessionController {
 		this.rollbackInFlight = true;
 		this.dependencies.setRollbackLoading(true);
 		try {
-			await this.dependencies.invoke('rollback_session', {
+			await this.dependencies.commands.rollbackSession({
 				sessionId,
 				targetStep: request.stepNumber,
 				pause: request.role === 'user',
 				targetMessageId: request.msgId,
-			} satisfies RollbackSessionRequest);
+			});
 			this.dependencies.dispatch({ type: 'session/replay-reset', sessionId });
 			this.dependencies.clearStepBlockIds(sessionId);
 			await this.resyncSessionMessages(sessionId);
@@ -166,7 +164,7 @@ export class ChatSessionController {
 		// Prevent lifecycle events from auto-selecting an existing session while ending.
 		this.dependencies.setFreshSessionIntent(true);
 		try {
-			await this.dependencies.invoke('end_session', { sessionId } satisfies EndSessionRequest);
+			await this.dependencies.commands.endSession({ sessionId });
 		} catch (error) {
 			// Keep the active pointer attached so a still-running session stays visible.
 			this.dependencies.setFreshSessionIntent(false);
@@ -180,10 +178,7 @@ export class ChatSessionController {
 		this.interruptInFlight = true;
 		this.dependencies.setInterruptPending(true);
 		try {
-			await this.dependencies.invoke(
-				'interrupt_session',
-				{ sessionId } satisfies InterruptSessionRequest,
-			);
+			await this.dependencies.commands.interruptSession({ sessionId });
 			this.dependencies.notify('输出已中断，可继续生成', 'info', 2000);
 		} catch (error) {
 			this.report(error, '中断输出失败');
@@ -204,10 +199,7 @@ export class ChatSessionController {
 		const preContinueMessageIds = new Set(currentMessages.map((message) => message.id));
 		const strategy: ContinueStrategy = pickContinueStrategy(currentMessages);
 		try {
-			await this.dependencies.invoke(
-				'continue_session',
-				{ sessionId } satisfies ContinueSessionRequest,
-			);
+			await this.dependencies.commands.continueSession({ sessionId });
 			this.dependencies.dispatch({ type: 'session/run-end-notice-cleared', sessionId });
 
 			// A failed reload does not prove that visible messages were partial.
@@ -274,7 +266,7 @@ export class ChatSessionController {
 		sessionId: string,
 		options: { preserveStreamingOnly?: boolean; excludeMessageIds?: string[] } = {},
 	): Promise<void> {
-		const result = await getSessionForResume({ sessionId }, this.dependencies.invoke);
+		const result = await this.dependencies.commands.getSessionForResume({ sessionId });
 		this.dependencies.dispatch({
 			type: 'session/messages/resume-loaded',
 			sessionId,
@@ -284,9 +276,7 @@ export class ChatSessionController {
 			usage: result.usage,
 			llmUsage: result.llm_usage,
 			...(options.preserveStreamingOnly ? { preserveStreamingOnly: true } : {}),
-			...(options.excludeMessageIds
-				? { excludeMessageIds: options.excludeMessageIds }
-				: {}),
+			...(options.excludeMessageIds ? { excludeMessageIds: options.excludeMessageIds } : {}),
 		});
 	}
 

@@ -198,7 +198,9 @@
 
 **Feature view 命令 owner 复核（2026-10-09）：** `SettingsView` 的设置读写、凭据暂存、授权管理、维护和 autostart 操作现经 `settingsCommands.ts`，原单数 `settingsCommand.ts` 路径删除；`SkillCard` 不再直接 `invoke('execute_skill')`，由 ToolsView 传入 `executeSkill` owner callback，wrapper 属于 `toolsCommands.ts`。命令 request/response 仍由 generated contract 约束，AuthorizationEngine、确认等待、保存顺序和错误呈现不变；IPC 门禁检查唯一 direct invoke owner。`lib/views/` 与组件的该类直调缺口已关闭；路由/App shell 生命周期、其他 controller/handler 与非 alias contract 的全域 owner 审计仍在 Active 范围。
 
-**Chat 模型命令 owner 复核（2026-10-09）：** `switch_model`、`set_reasoning_effort`、`set_web_search` 统一由 `chatModelCommands.ts` invoke；toolbar 操作和配置同步共用同一 generated-contract adapter，`chatModelOperations` 不再维护专用 invoke overload，IPC 检查阻止同域旁路。旧值规范化与 UI 操作的错误/刷新行为不变（ADR 0836）。Route/shell 生命周期、Session controller 和其余 feature command owner 仍待复核。
+**Chat 模型命令 owner 复核（2026-10-09）：** `switch_model`、`set_reasoning_effort`、`set_web_search` 统一由 `chatModelCommands.ts` invoke；toolbar 操作和配置同步共用同一 generated-contract adapter，`chatModelOperations` 不再维护专用 invoke overload，IPC 检查阻止同域旁路。旧值规范化与 UI 操作的错误/刷新行为不变（ADR 0836）。Session lifecycle 命令边界现由 ADR 0837 收口；Route/shell 生命周期、controller 的其他职责与其余 feature command owner 仍待复核。
+
+**Session command owner 复核（2026-10-09）：** `sessionCommands.ts` 现在统一包装会话恢复/历史/管理及 rollback、end、interrupt、continue；`ChatSessionController` 只接收该模块导出的受限 command port，不再注入可调用任意 Tauri 命令的通用 invoker。`getSessionForResume` 删除无生产需要的 injected invoker 参数，IPC owner 表与当前 wrappers 对齐（ADR 0837）。Route/App shell、其他 controller/handler 与非 alias contracts 仍在 Active 审计范围。
 
 **Store 单元测试归属复核（2026-10-09）：** ADR 0203 已删除跨领域生产 `stores.ts`，但历史测试桶 `stores.test.ts` 仍跨 ToolRun、通知、消息工厂、Session runtime 与用量格式五个 owner。现按源模块拆到对应 `*.test.ts`，原有 39 个测试均保留；旧桶删除，不保留测试聚合入口。生产状态与运行行为不变；前端 controller/store 与 contract 全域 owner 审计仍在 Active 范围。
 

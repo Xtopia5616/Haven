@@ -646,7 +646,8 @@ live event、resume、rollback 同步和 reconnect replay 都只通过 typed `Se
 状态，selector 的最后一个订阅者离开时释放 root subscription（ADR 0322）。
 `ui/src/lib/chatSessionController.ts` 负责会话命令的异步编排：
 权威 resume reload、interaction 保留、切换与终态会话内存回收、rollback、continue、end/interrupt 和
-`submitTranscript` 提交适配；它通过 typed dependency 接收 invoke、reducer dispatch、
+`submitTranscript` 提交适配；会话 Tauri 命令由 `ui/src/lib/sessionCommands.ts` 单一 invoke owner 持有，
+controller 通过受限 command port 接收生命周期方法，并通过 typed dependency 接收 reducer dispatch、
 session snapshot、通知/错误报告和页面回调，不持有 Svelte state 或 DOM。
 `ui/src/lib/chatEventController.ts` 只组合聊天页的 session/app/agent/usage handler map 并拥有
 异步注册/释放生命周期；它通过显式 typed dependencies 连接页面 reducer、错误/ask/stream 清理、

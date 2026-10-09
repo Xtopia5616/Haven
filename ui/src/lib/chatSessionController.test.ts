@@ -7,6 +7,7 @@ import type { InteractionRequest } from './contracts/app.ts';
 import { SessionReducer, type SessionAction } from './sessionReducer.ts';
 import type { ProcessResult } from './contracts/generatedCommands.ts';
 import type { CanonicalRole } from './contracts/generatedCommands.ts';
+import type { SessionResumeResponse } from './contracts/sessionHistory.ts';
 import type { SessionMessagePresentationType } from './streaming.ts';
 import type { ResumeTranscriptProjectionInput } from './resumeMessages.ts';
 
@@ -28,7 +29,7 @@ function resumeResponseFixture(overrides: Partial<ResumeTranscriptProjectionInpu
 
 function makeHarness(
 	options: {
-		invoke?: (command: string, args?: unknown) => unknown | Promise<unknown>;
+		runCommand?: (command: string, args?: unknown) => unknown | Promise<unknown>;
 		submit?: (
 			text: string,
 			args: Parameters<ChatSessionControllerDependencies['submitTranscript']>[1],
@@ -45,7 +46,7 @@ function makeHarness(
 	});
 	reducer.dispatch({ type: 'session/selected', sessionId: SESSION_ID });
 
-	const invokeCalls: Array<{ command: string; args?: unknown }> = [];
+	const commandCalls: Array<{ command: string; args?: unknown }> = [];
 	const submitCalls: Array<{
 		text: string;
 		args: Parameters<ChatSessionControllerDependencies['submitTranscript']>[1];
@@ -65,16 +66,33 @@ function makeHarness(
 	let sessionMenuClosed = 0;
 	let loadSessionsCalls = 0;
 
-	const dependencies: ChatSessionControllerDependencies = {
-		invoke: async <T = unknown>(command: string, args?: unknown): Promise<T> => {
-			invokeCalls.push({ command, args });
-			const result = options.invoke
-				? await options.invoke(command, args)
-				: command === 'get_session_for_resume'
-					? resumeResponseFixture()
-					: undefined;
-			return result as T;
+	const runCommand = async (command: string, args?: unknown): Promise<unknown> => {
+		commandCalls.push({ command, args });
+		return options.runCommand
+			? await options.runCommand(command, args)
+			: command === 'get_session_for_resume'
+				? resumeResponseFixture()
+				: undefined;
+	};
+	const commands: ChatSessionControllerDependencies['commands'] = {
+		rollbackSession: async (request) => {
+			await runCommand('rollback_session', request);
 		},
+		endSession: async (request) => {
+			await runCommand('end_session', request);
+		},
+		interruptSession: async (request) => {
+			await runCommand('interrupt_session', request);
+		},
+		continueSession: async (request) => {
+			await runCommand('continue_session', request);
+		},
+		getSessionForResume: async (request) =>
+			(await runCommand('get_session_for_resume', request)) as SessionResumeResponse,
+	};
+
+	const dependencies: ChatSessionControllerDependencies = {
+		commands,
 		submitTranscript: async (text, args) => {
 			submitCalls.push({ text, args });
 			return options.submit ? await options.submit(text, args) : { Supplemented: {} };
@@ -110,7 +128,7 @@ function makeHarness(
 	return {
 		controller: createChatSessionController(dependencies),
 		reducer,
-		invokeCalls,
+		commandCalls,
 		submitCalls,
 		actions,
 		notifications,
@@ -177,7 +195,7 @@ describe('ChatSessionController rollback', () => {
 			msgId: USER_MESSAGE_ID,
 		});
 
-		expect(harness.invokeCalls[0]).toEqual({
+		expect(harness.commandCalls[0]).toEqual({
 			command: 'rollback_session',
 			args: {
 				sessionId: SESSION_ID,
@@ -208,7 +226,7 @@ describe('ChatSessionController rollback', () => {
 			msgId: 'step-00000000000000000000000000000007',
 		});
 
-		expect(harness.invokeCalls[0]?.args).toEqual({
+		expect(harness.commandCalls[0]?.args).toEqual({
 			sessionId: SESSION_ID,
 			targetStep: 7,
 			pause: false,
@@ -235,11 +253,11 @@ describe('ChatSessionController continue', () => {
 
 		await harness.controller.handleContinue();
 
-		expect(harness.invokeCalls.map((call) => call.command)).toEqual([
+		expect(harness.commandCalls.map((call) => call.command)).toEqual([
 			'continue_session',
 			'get_session_for_resume',
 		]);
-		expect(harness.invokeCalls[0]?.args).toEqual({ sessionId: SESSION_ID });
+		expect(harness.commandCalls[0]?.args).toEqual({ sessionId: SESSION_ID });
 		expect(harness.submitCalls.map((call) => call.text)).toEqual(['继续']);
 		expect(harness.actions.map((action) => action.type)).toContain(
 			'session/run-end-notice-cleared',
@@ -254,7 +272,7 @@ describe('ChatSessionController continue', () => {
 
 	it('resubmits the original user turn when it did not survive the resume reload', async () => {
 		const harness = makeHarness({
-			invoke: (command) =>
+			runCommand: (command) =>
 				command === 'get_session_for_resume' ? resumeResponseFixture() : undefined,
 		});
 		addMessages(harness.reducer, {
@@ -270,7 +288,7 @@ describe('ChatSessionController continue', () => {
 
 	it('does not resubmit an original user turn still present in the authoritative snapshot', async () => {
 		const harness = makeHarness({
-			invoke: (command) =>
+			runCommand: (command) =>
 				command === 'get_session_for_resume'
 					? resumeResponseFixture({
 							messages: [
@@ -317,14 +335,14 @@ describe('ChatSessionController continue', () => {
 			finishContinue = resolve;
 		});
 		const harness = makeHarness({
-			invoke: (command) =>
+			runCommand: (command) =>
 				command === 'continue_session' ? continueCommand : resumeResponseFixture(),
 		});
 
 		const first = harness.controller.handleContinue();
 		await harness.controller.handleContinue();
 		expect(
-			harness.invokeCalls.filter((call) => call.command === 'continue_session'),
+			harness.commandCalls.filter((call) => call.command === 'continue_session'),
 		).toHaveLength(1);
 		finishContinue?.();
 		await first;
@@ -336,7 +354,7 @@ describe('ChatSessionController continue', () => {
 			finishRollback = resolve;
 		});
 		const harness = makeHarness({
-			invoke: (command) =>
+			runCommand: (command) =>
 				command === 'rollback_session' ? rollbackCommand : resumeResponseFixture(),
 		});
 		const request = {
@@ -350,9 +368,9 @@ describe('ChatSessionController continue', () => {
 		await harness.controller.confirmRollbackAction(request);
 
 		expect(
-			harness.invokeCalls.filter((call) => call.command === 'rollback_session'),
+			harness.commandCalls.filter((call) => call.command === 'rollback_session'),
 		).toHaveLength(1);
-		expect(harness.invokeCalls[0]?.args).toEqual({
+		expect(harness.commandCalls[0]?.args).toEqual({
 			sessionId: SESSION_ID,
 			targetStep: 7,
 			pause: false,
@@ -377,11 +395,11 @@ describe('ChatSessionController session guards', () => {
 
 	it('keeps the session selected when end fails and clears fresh-session intent', async () => {
 		const error = new Error('end failed');
-		const harness = makeHarness({ invoke: () => Promise.reject(error) });
+		const harness = makeHarness({ runCommand: () => Promise.reject(error) });
 
 		await harness.controller.endSession();
 
-		expect(harness.invokeCalls).toEqual([
+		expect(harness.commandCalls).toEqual([
 			{
 				command: 'end_session',
 				args: { sessionId: SESSION_ID },
@@ -394,11 +412,11 @@ describe('ChatSessionController session guards', () => {
 
 	it('clears the interrupt pending state and reports failure without success toast', async () => {
 		const error = new Error('interrupt failed');
-		const harness = makeHarness({ invoke: () => Promise.reject(error) });
+		const harness = makeHarness({ runCommand: () => Promise.reject(error) });
 
 		await harness.controller.interruptOutput();
 
-		expect(harness.invokeCalls).toEqual([
+		expect(harness.commandCalls).toEqual([
 			{
 				command: 'interrupt_session',
 				args: { sessionId: SESSION_ID },

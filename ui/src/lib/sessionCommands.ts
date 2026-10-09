@@ -1,8 +1,12 @@
 import { invoke } from './tauri.ts';
 import type {
+	ContinueSessionRequest,
 	DeleteSessionRequest,
+	EndSessionRequest,
 	GetSessionForResumeRequest,
 	GetSessionLineageRequest,
+	InterruptSessionRequest,
+	RollbackSessionRequest,
 	ReopenSessionRequest,
 	SessionHistoryFilterRequest,
 	SessionHistoryPageRequest,
@@ -14,7 +18,6 @@ import type {
 	RuntimeSessionListResponse,
 	SessionResumeResponse,
 } from './contracts/sessionHistory.ts';
-import type { TauriCommandInvoke } from './contracts/generatedCommands.ts';
 
 /** List the current in-memory session summaries for the chat shell. */
 export function listRuntimeSessions(): Promise<RuntimeSessionListResponse> {
@@ -29,21 +32,24 @@ export function getSessionLineage(
 }
 
 /** Load a recent persisted history page for the compact chat session switcher. */
-export function listSessionHistory(request: SessionHistoryPageRequest): Promise<SessionHistoryRow[]> {
+export function listSessionHistory(
+	request: SessionHistoryPageRequest,
+): Promise<SessionHistoryRow[]> {
 	return invoke('list_session_history', request);
 }
 
 /** Load the persisted history page using the existing flat Tauri arguments. */
-export function searchSessionHistoryFiltered(request: SessionHistoryFilterRequest): Promise<SessionHistoryRow[]> {
+export function searchSessionHistoryFiltered(
+	request: SessionHistoryFilterRequest,
+): Promise<SessionHistoryRow[]> {
 	return invoke('search_session_history_filtered', request);
 }
 
 /** Load the durable projection used by session resume and transcript reload. */
 export function getSessionForResume(
 	request: GetSessionForResumeRequest,
-	invokeCommand: TauriCommandInvoke = invoke,
 ): Promise<SessionResumeResponse> {
-	return invokeCommand('get_session_for_resume', request);
+	return invoke('get_session_for_resume', request);
 }
 
 /** Load the most recent persisted session projection for startup resume. */
@@ -69,4 +75,24 @@ export function deleteAllSessions(): Promise<number> {
 /** Rename one persisted session. */
 export function updateSessionTitle(request: UpdateSessionTitleRequest): Promise<void> {
 	return invoke('update_session_title', request);
+}
+
+/** Roll back a session's durable transcript and runtime state. */
+export function rollbackSession(request: RollbackSessionRequest): Promise<void> {
+	return invoke('rollback_session', request);
+}
+
+/** End the active session through the session lifecycle boundary. */
+export function endSession(request: EndSessionRequest): Promise<void> {
+	return invoke('end_session', request);
+}
+
+/** Interrupt the active session's current output. */
+export function interruptSession(request: InterruptSessionRequest): Promise<void> {
+	return invoke('interrupt_session', request);
+}
+
+/** Continue the active session's paused or failed run. */
+export function continueSession(request: ContinueSessionRequest): Promise<void> {
+	return invoke('continue_session', request);
 }

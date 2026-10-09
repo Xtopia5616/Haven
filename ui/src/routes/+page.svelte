@@ -27,10 +27,15 @@
 	import {
 		deleteSession,
 		listSessionHistory,
+		getSessionForResume,
 		getLatestSessionForResume,
 		getSessionLineage,
 		listRuntimeSessions,
 		reopenSession,
+		rollbackSession,
+		endSession as endSessionCommand,
+		interruptSession,
+		continueSession,
 	} from '$lib/sessionCommands.ts';
 	import {
 		appSessionReducer,
@@ -897,7 +902,13 @@
 	const { loadSessions, scheduleLoadSessions } = sessionStartup;
 
 	const chatSessionController = createChatSessionController({
-		invoke,
+		commands: {
+			getSessionForResume,
+			rollbackSession,
+			endSession: endSessionCommand,
+			interruptSession,
+			continueSession,
+		},
 		submitTranscript: (text, options) => submitTranscript(text, options),
 		reducer: sessionReducer,
 		dispatch: dispatchSession,
