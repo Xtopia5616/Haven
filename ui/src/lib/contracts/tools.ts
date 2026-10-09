@@ -8,17 +8,20 @@ import type {
 	McpServerSnapshot as GeneratedMcpServerSnapshot,
 	McpToolInfo as GeneratedMcpToolInfo,
 	SkillInfo as GeneratedSkillInfo,
+	SkillExecutionResponse as GeneratedSkillExecutionResponse,
 	BuiltinToolManifestListResponse as GeneratedBuiltinToolManifestListResponse,
 	TauriCommandRequest,
 } from './generatedCommands.ts';
 
 export type BuiltinToolManifestListResponse = GeneratedBuiltinToolManifestListResponse;
 export type SkillInfo = GeneratedSkillInfo;
+export type SkillExecutionResponse = GeneratedSkillExecutionResponse;
 export type McpToolInfo = GeneratedMcpToolInfo;
 export type McpServerSnapshot = GeneratedMcpServerSnapshot;
 export type McpServerConfig = GeneratedMcpServerConfig;
 export type McpServerConfigInput = TauriCommandRequest<'add_mcp_server'>['config'];
 export type McpRefreshResult = GeneratedMcpRefreshResult;
+export type ExecuteSkillRequest = TauriCommandRequest<'execute_skill'>;
 
 /** Flat command arguments are aliases of the generated Rust handler shapes. */
 export type ReconnectMcpServerRequest = TauriCommandRequest<'reconnect_mcp_server'>;

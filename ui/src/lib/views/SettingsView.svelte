@@ -14,7 +14,6 @@
 		onAnimationEnd?: (event: AnimationEvent) => void;
 	} = $props();
 	import { onMount, onDestroy, tick } from 'svelte';
-	import { invoke } from '$lib/tauri.ts';
 	import { registerListeners } from '$lib/events.ts';
 	import MaterialDialog from '$lib/MaterialDialog.svelte';
 	import MaterialButton from '$lib/MaterialButton.svelte';
@@ -29,7 +28,23 @@
 	import { reportError } from '$lib/errorHandling.ts';
 	import { registerSettingsLeaveGuard } from '$lib/settingsGuard.ts';
 	import { resolveSettingsSaveAction } from '$lib/settingsSaveAction.ts';
-	import { loadSettings } from '$lib/settingsCommand.ts';
+	import {
+		disableAutostart,
+		discardStagedCredentials,
+		enableAutostart,
+		isAutostartEnabled,
+		listSessionPermissions,
+		loadSettings,
+		resetPermissions as resetPermissionsCommand,
+		resetSessionPermissions as resetSessionPermissionsCommand,
+		revokePermission as revokePermissionCommand,
+		revokeSessionPermission as revokeSessionPermissionCommand,
+		runMemoryMaintenance,
+		setHotkeyCaptureActive as setHotkeyCaptureActiveCommand,
+		stageOcrCredential,
+		stageProviderCredential,
+		updateSettings as updateSettingsCommand,
+	} from '$lib/settingsCommands.ts';
 	import { checkShellAvailable, readApiKeyStatus } from '$lib/diagnosticsCommands.ts';
 	import { SHELL_CHOICE_INPUT_VALUES } from '$lib/contracts/generatedCommands.ts';
 	import ModelSettings from './ModelSettings.svelte';
@@ -775,7 +790,7 @@
 	}
 
 	function requestDiscardStagedCredentials() {
-		void invoke('discard_staged_credentials').catch((error) =>
+		void discardStagedCredentials().catch((error) =>
 			reportError(error, {
 				context: 'SettingsView',
 				message: '清理未保存的凭据失败',
@@ -919,7 +934,7 @@
 			reportError(e, { context: 'SettingsView', message: '加载设置失败', log: false });
 		}
 		try {
-			sessionPermissions = await invoke('list_session_permissions');
+			sessionPermissions = await listSessionPermissions();
 			if (!mounted) return;
 		} catch (e) {
 			reportError(e, {
@@ -940,7 +955,7 @@
 		}
 		if (mounted) settingsLoaded = true;
 		try {
-			autostartEnabled = await invoke('is_autostart_enabled');
+			autostartEnabled = await isAutostartEnabled();
 			if (!mounted) return;
 		} catch (e) {
 			reportError(e, {
@@ -958,7 +973,7 @@
 	async function runMaintenance() {
 		memoryMaintenance.running = true;
 		try {
-			memoryMaintenance.lastCount = await invoke('run_memory_maintenance');
+			memoryMaintenance.lastCount = await runMemoryMaintenance();
 			addNotification(
 				`记忆维护完成（清理 ${memoryMaintenance.lastCount} 项）`,
 				'success',
@@ -977,7 +992,7 @@
 	}
 	async function revokePermission(key: string) {
 		try {
-			await invoke('revoke_permission', { key });
+			await revokePermissionCommand(key);
 			security.permissions = security.permissions.filter(
 				(permission) => permission.key !== key,
 			);
@@ -990,7 +1005,7 @@
 	}
 	async function revokeSessionPermission(grant: SessionPermissionGrant) {
 		try {
-			await invoke('revoke_session_permission', {
+			await revokeSessionPermissionCommand({
 				sessionId: grant.session_id,
 				capability: grant.capability,
 			});
@@ -1008,7 +1023,7 @@
 
 	async function resetPermissions() {
 		try {
-			await invoke('reset_permissions');
+			await resetPermissionsCommand();
 			security.permissions = [];
 			patchSnapshotSecurityPermissions([]);
 			addNotification('权限规则已清除', 'success');
@@ -1020,7 +1035,7 @@
 	}
 	async function resetSessionPermissions() {
 		try {
-			const removed = await invoke('reset_session_permissions');
+			const removed = await resetSessionPermissionsCommand();
 			sessionPermissions = [];
 			addNotification(`已清除 ${removed} 条会话授权`, 'success');
 			return true;
@@ -1036,7 +1051,7 @@
 		hotkeyBinding = value;
 	}
 	function setHotkeyCaptureActive(active: boolean) {
-		void invoke('set_hotkey_capture_active', { active }).catch((error) => {
+		void setHotkeyCaptureActiveCommand(active).catch((error) => {
 			reportError(error, {
 				context: 'SettingsView',
 				message: active ? '暂停录音快捷键失败' : '恢复录音快捷键失败',
@@ -1055,7 +1070,7 @@
 	async function stageSettingsCredentials() {
 		for (const provider of llmConfig.providers || []) {
 			if (provider.api_key) {
-				provider.api_key_ref = await invoke('stage_provider_credential', {
+				provider.api_key_ref = await stageProviderCredential({
 					providerName: provider.name,
 					apiKey: provider.api_key,
 				});
@@ -1063,14 +1078,14 @@
 			delete provider.api_key;
 		}
 		if (ocr.api_key) {
-			ocr.api_key_ref = await invoke('stage_ocr_credential', {
+			ocr.api_key_ref = await stageOcrCredential({
 				apiSecret: false,
 				value: ocr.api_key,
 			});
 			ocr.api_key = '';
 		}
 		if (ocr.api_secret) {
-			ocr.api_secret_ref = await invoke('stage_ocr_credential', {
+			ocr.api_secret_ref = await stageOcrCredential({
 				apiSecret: true,
 				value: ocr.api_secret,
 			});
@@ -1101,7 +1116,7 @@
 			await reconcileChatModelBeforeSave();
 			await stageSettingsCredentials();
 			skipNextChatModelSync = true;
-			await invoke('update_settings', {
+			await updateSettingsCommand({
 				settings:
 					/** @type {import('$lib/contracts/settings.ts').SettingsUpdatePayload} */ {
 						default_shell: defaultShell,
@@ -1219,8 +1234,8 @@
 				});
 			}
 			try {
-				if (autostartEnabled) await invoke('enable_autostart');
-				else await invoke('disable_autostart');
+				if (autostartEnabled) await enableAutostart();
+				else await disableAutostart();
 			} catch (e) {
 				autostartEnabled = !autostartEnabled;
 				reportError(e, {

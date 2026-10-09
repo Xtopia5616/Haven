@@ -5,15 +5,20 @@
 	import ExpandableContextCard from '$lib/ExpandableContextCard.svelte';
 	import { copyText } from '$lib/clipboard.ts';
 	import { formatError } from '$lib/formatError.ts';
-	import type { SkillInfo } from '$lib/contracts/tools.ts';
+	import type {
+		ExecuteSkillRequest,
+		SkillExecutionResponse,
+		SkillInfo,
+	} from '$lib/contracts/tools.ts';
 	import type { ContextMenuItem } from '$lib/contextMenu.ts';
 
 	interface Props {
 		skill: SkillInfo;
+		onPreview: (request: ExecuteSkillRequest) => Promise<SkillExecutionResponse>;
 		onToggle?: (name: string, enabled: boolean) => void | Promise<void>;
 	}
 
-	let { skill, onToggle }: Props = $props();
+	let { skill, onPreview, onToggle }: Props = $props();
 
 	function handleToggle(checked: boolean) {
 		onToggle?.(skill.name, checked);
@@ -68,10 +73,7 @@
 			return;
 		}
 		try {
-			const { invoke } = await import('$lib/tauri.ts');
-			// Do not bypass AuthorizationEngine — preview must respect the same
-			// confirmation / permanent-deny rules as agent-invoked skills.
-			const result = await invoke('execute_skill', {
+			const result = await onPreview({
 				name: skill.name,
 				params,
 			});

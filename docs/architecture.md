@@ -683,7 +683,7 @@ fail closed（ADR 0380）。mapper 不接触 ToolRunService completion outbox；
 `RecordingIndicator` 只负责布局/展示。VAD payload 暂无 session ID，只能按当前 recording 状态门控
 （ADR 0472）。
 Settings 的完整 wire shape 由 `haven_common::config::Settings` 所有；前端不再从多个页面直接读取
-`invoke('get_settings')` 的原始结果，所有读取经 `ui/src/lib/settingsCommand.ts::loadSettings` 和
+`invoke('get_settings')` 的原始结果，所有读取经 `ui/src/lib/settingsCommands.ts::loadSettings` 和
 `ui/src/lib/contracts/settings.ts::parseSettingsPayload`。validator 只检查根对象，保留未知配置字段、
 未知枚举字符串和既有 snake_case 配置字段；null/非对象继续作为空结果，命令错误原样进入现有 catch。
 Settings 表单状态仍由 `SettingsView` 持有，`settingsSaveAction` 与 `settingsGuard` 只负责纯 UI 状态，

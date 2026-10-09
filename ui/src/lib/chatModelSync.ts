@@ -1,7 +1,7 @@
 import { reportError } from '$lib/errorHandling.ts';
 import { normalizeApiStyle, supportsBuiltinWebSearch } from '$lib/apiStyle.ts';
 import { invoke } from '$lib/tauri.ts';
-import { loadSettings } from '$lib/settingsCommand.ts';
+import { loadSettings } from '$lib/settingsCommands.ts';
 import type { SettingsPayload } from '$lib/contracts/settings.ts';
 import type { ChatModelOption } from '$lib/chatModelOperations.ts';
 import type { WebSearchModeInput } from '$lib/contracts/generatedCommands.ts';

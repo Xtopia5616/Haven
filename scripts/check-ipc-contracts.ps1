@@ -95,8 +95,8 @@ Assert-Contains $toolRunCommands 'rows\.map\(mapToolRunPayload\)' 'tool run rows
 $toolRunContract = Get-Source 'ui/src/lib/contracts/toolRun.ts'
 Assert-Contains $toolRunContract 'function mapToolRunPayload\(payload:\s*unknown\):\s*ToolRunPayload\s*\|\s*null' 'tool run mapper accepts unknown'
 
-$settingsCommand = Get-Source 'ui/src/lib/settingsCommand.ts'
-Assert-Contains $settingsCommand 'invoke\(''get_settings''\)\.then\(parseSettingsPayload\)' 'settings response uses its runtime parser'
+$settingsCommands = Get-Source 'ui/src/lib/settingsCommands.ts'
+Assert-Contains $settingsCommands 'invoke\(''get_settings''\)\.then\(parseSettingsPayload\)' 'settings response uses its runtime parser'
 Assert-Contains (Get-Source 'ui/src/lib/contracts/settings.ts') 'function parseSettingsPayload\(value:\s*unknown\):\s*SettingsPayload\s*\|\s*null' 'settings parser accepts unknown'
 
 $toolsCommands = Get-Source 'ui/src/lib/toolsCommands.ts'
@@ -118,11 +118,12 @@ Assert-Contains $layout '(?s)const report = await invoke\(''check_llm_connection
 $uiFiles = Get-ChildItem (Join-Path $root 'ui/src') -Recurse -File | Where-Object { $_.Extension -in @('.ts', '.svelte') }
 $ownedCommands = @{
     'toolRunCommands.ts' = @('list_tool_runs', 'cancel_tool_run')
-    'toolsCommands.ts' = @('list_builtin_tool_manifests', 'list_mcp_servers', 'reset_tool_circuits', 'refresh_mcp_servers', 'set_skill_enabled', 'set_tool_enabled', 'refresh_skills', 'open_skills_dir', 'add_mcp_server', 'update_mcp_server', 'remove_mcp_server', 'reconnect_mcp_server', 'toggle_mcp_server')
+    'toolsCommands.ts' = @('list_builtin_tool_manifests', 'list_mcp_servers', 'reset_tool_circuits', 'refresh_mcp_servers', 'set_skill_enabled', 'set_tool_enabled', 'refresh_skills', 'open_skills_dir', 'add_mcp_server', 'update_mcp_server', 'remove_mcp_server', 'reconnect_mcp_server', 'toggle_mcp_server', 'execute_skill')
     'memoryCommands.ts' = @('list_facts', 'add_fact', 'delete_fact', 'recall_memory')
     'sessionCommands.ts' = @('list_runtime_sessions', 'list_session_history', 'count_session_history', 'search_session_history', 'search_session_history_paginated', 'count_session_history_search', 'search_session_history_filtered', 'export_session_history', 'get_latest_session_for_resume', 'reopen_session', 'delete_session', 'delete_all_sessions', 'update_session_title')
     'modelDiscoveryCommands.ts' = @('discover_models', 'discover_all_models')
     'diagnosticsCommands.ts' = @('get_log_info', 'read_log_tail', 'check_shell_available', 'get_api_key_status', 'get_performance_metrics')
+    'settingsCommands.ts' = @('get_settings', 'discard_staged_credentials', 'list_session_permissions', 'is_autostart_enabled', 'run_memory_maintenance', 'revoke_permission', 'revoke_session_permission', 'reset_permissions', 'reset_session_permissions', 'set_hotkey_capture_active', 'stage_provider_credential', 'stage_ocr_credential', 'update_settings', 'enable_autostart', 'disable_autostart')
 }
 foreach ($file in $uiFiles) {
     foreach ($owner in $ownedCommands.Keys) {
@@ -151,5 +152,7 @@ Assert-NotContains $memoryCommands 'Result\s*<\s*Vec\s*<\s*Fact\s*>' 'repository
 
 $toolsView = Get-Source 'ui/src/lib/views/ToolsView.svelte'
 Assert-NotContains $toolsView '\binvoke\s*\(' 'ToolsView must use toolsCommands.ts'
+$skillCard = Get-Source 'ui/src/lib/SkillCard.svelte'
+Assert-NotContains $skillCard "invoke\s*\(\s*'execute_skill'" 'SkillCard must delegate execution through its ToolsView owner'
 
 Write-Host "IPC contract verified: $($implemented.Count) handlers agree across Rust registration, generated TypeScript, reviewed security metadata, and docs; runtime validators and audited UI owners remain in place."

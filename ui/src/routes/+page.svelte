@@ -19,7 +19,7 @@
 	import { projectChatVisibleMessages } from '$lib/chatVisibleMessages.ts';
 	import { createChatModelSync } from '$lib/chatModelSync.ts';
 	import { buildSessionSwitcherOptions } from '$lib/sessionSwitcher.ts';
-	import { loadSettings } from '$lib/settingsCommand.ts';
+	import { loadSettings } from '$lib/settingsCommands.ts';
 	import { createChatModelOperations } from '$lib/chatModelOperations.ts';
 	import { createStreamEventAggregator } from '$lib/streamAggregator.ts';
 	import { registerPerformanceMetricsProvider } from '$lib/performanceMetrics.ts';

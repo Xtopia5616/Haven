@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
 	addMcpServer,
+	executeSkill,
 	listBuiltinToolManifests,
 	listMcpServers,
 	listSkills,
@@ -55,7 +56,9 @@ describe('ToolsView command boundary', () => {
 		expect(manifests).toBe(manifestResponse);
 		expect(servers).toBe(mcpResponse);
 		expect(servers[0].status).toEqual({ Offline: { error: 'server unavailable' } });
-		expect((servers[0] as unknown as Record<string, unknown>).future_field).toEqual(['retained']);
+		expect((servers[0] as unknown as Record<string, unknown>).future_field).toEqual([
+			'retained',
+		]);
 		expect(servers[0].tools[0].input_schema).toEqual({ type: 'object', extra: true });
 		expect(skills).toBe(emptySkills);
 	});
@@ -160,5 +163,20 @@ describe('ToolsView command boundary', () => {
 			name: 'files.read',
 			enabled: true,
 		});
+	});
+
+	it('executes Skills through the typed command boundary and preserves confirmation errors', async () => {
+		const request = { name: 'meeting-notes', params: { topic: 'planning' } };
+		const response = { success: true, output: { summary: 'ready' }, error: null };
+		invoke.mockResolvedValueOnce(response);
+
+		expect(await executeSkill(request)).toBe(response);
+		expect(invoke).toHaveBeenCalledWith('execute_skill', request);
+
+		const confirmationError = new Error('{"requires_confirmation":true}');
+		invoke.mockReset();
+		invoke.mockRejectedValueOnce(confirmationError);
+		await expect(executeSkill(request)).rejects.toBe(confirmationError);
+		expect(invoke).toHaveBeenCalledWith('execute_skill', request);
 	});
 });

@@ -12,6 +12,7 @@
 	import { onMount, onDestroy } from 'svelte';
 	import {
 		addMcpServer,
+		executeSkill,
 		openSkillsDir,
 		reconnectMcpServer,
 		refreshMcpServers as refreshMcpServersCommand,
@@ -461,7 +462,11 @@
 						description="Haven 自带的可调用能力；按能力族、根能力和具体操作三级收纳，可展开后分别启停。"
 					>
 						{#snippet children()}
-							<MaterialButton variant="outlined" label="重置熔断" onclick={resetToolCircuits} />
+							<MaterialButton
+								variant="outlined"
+								label="重置熔断"
+								onclick={resetToolCircuits}
+							/>
 						{/snippet}
 					</WorkspaceSectionHeader>
 					{@render resourceToolbar()}
@@ -565,7 +570,11 @@
 					{:else}
 						<div class="resource-list resource-list--managed">
 							{#each visibleSkills as skill (skill.name)}
-								<SkillCard {skill} onToggle={handleToggle} />
+								<SkillCard
+									{skill}
+									onPreview={executeSkill}
+									onToggle={handleToggle}
+								/>
 							{/each}
 						</div>
 					{/if}

@@ -196,6 +196,8 @@
 
 **Session 页面组件职责复核（2026-10-09）：** `SessionHeader` 展示当前会话身份并提供生命周期动作，`SessionRail` 只筛选/切换驻留会话，`SessionToolbar` 提供会话级模型与运行状态操作；路由页负责装配。`SessionTimeline` 拥有加载、终态和空态 gate，`SessionMessageTimeline` 负责有内容时的 transcript 投影，`SessionActivityGroup` 呈现分组执行活动。`SessionTimeline` 的 props 从底层组件派生，仅增加 `loading`，没有复制另一份稳定数据 shape。各自消费者、状态作用域与生命周期明确，保留现有 owner，不改名或合并；UI 组件、stores/controllers、handler 和非 alias contracts 的全域审计仍在 Active 范围。
 
+**Feature view 命令 owner 复核（2026-10-09）：** `SettingsView` 的设置读写、凭据暂存、授权管理、维护和 autostart 操作现经 `settingsCommands.ts`，原单数 `settingsCommand.ts` 路径删除；`SkillCard` 不再直接 `invoke('execute_skill')`，由 ToolsView 传入 `executeSkill` owner callback，wrapper 属于 `toolsCommands.ts`。命令 request/response 仍由 generated contract 约束，AuthorizationEngine、确认等待、保存顺序和错误呈现不变；IPC 门禁检查唯一 direct invoke owner。`lib/views/` 与组件的该类直调缺口已关闭；路由/App shell 生命周期、其他 controller/handler 与非 alias contract 的全域 owner 审计仍在 Active 范围。
+
 **ToolRun card details projection 复核（2026-10-08）：** 对照 `ToolRunCenter` 的生产读取点后，从 `ToolRunCardDetails` 移除仅被构造、没有消费者的 `dueAt`、`title`、`mode`、`errorReason` 与 `exitCode`；保留搜索、摘要和详情面板实际读取的五个字段。仅收窄本地派生 view，不改 ToolRun IPC 或持久化 contract（ADR 0790）。
 
 **ToolRun schedule mode 类型复核（2026-10-08）：** scheduled service view、lifecycle payload、App `ToolRunEvent` 与 UI `ToolRunPayload` 现共用 Rust `ScheduleMode` 导出的 generated enum；ToolResult schedule renderer 也从该 generated 值域导出 presentation alias/guard。DB 历史文本在 App 读取边界解析，未知值不进入 renderer；`tool` / `continue` wire JSON 不变（ADR 0791）。

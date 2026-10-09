@@ -14,6 +14,8 @@ import type {
 	SkillInfo,
 	ToggleMcpServerRequest,
 	BuiltinToolManifestListResponse,
+	ExecuteSkillRequest,
+	SkillExecutionResponse,
 	UpdateMcpServerRequest,
 } from './contracts/tools.ts';
 
@@ -65,6 +67,11 @@ export function refreshMcpServers(): Promise<McpRefreshResult> {
 /** Set the persisted and live Skill enabled state through the admin command. */
 export function setSkillEnabled(request: SetSkillEnabledRequest): Promise<void> {
 	return invoke('set_skill_enabled', request);
+}
+
+/** Execute a Skill through the same backend authorization path used by Agent calls. */
+export function executeSkill(request: ExecuteSkillRequest): Promise<SkillExecutionResponse> {
+	return invoke('execute_skill', request);
 }
 
 /** Re-scan the configured skills directory and rebuild the tool catalog. */

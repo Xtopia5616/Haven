@@ -202,11 +202,14 @@
 
 | 组件类型 | 职责 | 禁止 |
 |---|---|---|
-| **`lib/` 组件** | 纯展示、可复用、无业务逻辑 | 直接调用 `invoke`、访问 store |
-| **`routes/` 页面** | 业务编排、数据加载、invoke 调用 | 直接操作 DOM |
-| **`lib/` 容器组件** | 布局、状态提升 | 业务逻辑 |
+| **Route / App shell** | 路由装配、启动与跨域应用生命周期 | 直接操作 DOM；把 feature draft 或领域状态机堆入 shell |
+| **`lib/views/` feature view** | 单一领域的加载、编辑草稿和页面交互；经领域 `*Commands.ts` 发起 Tauri 命令 | 直接调用 `invoke`；复制 command adapter 的请求/响应处理 |
+| **全局投影宿主** | 由 AppShell 单例挂载，订阅对应全局投影并呈现，例如通知与 context menu host | 成为投影数据的第二写入 owner |
+| **UI 行为组件** | 拥有局部输入状态，通过 callback/controller port 请求动作，例如 InputRouter | 直接调用 `invoke`；拥有跨页面生命周期 |
+| **普通可复用组件 / renderer** | 展示 props、局部交互和视觉结构 | 直接调用 `invoke`、读取全局 store、加载领域页面数据 |
+| **领域 command adapter (`*Commands.ts`)** | 按领域封装生成契约对应的 `invoke`，并在必要时验证响应 | 持有 Svelte 页面状态或决定用户可见通知文案 |
 
-例外：`MaterialDialog` 可以接收 `onClose` 回调；`MaterialSwitch` 接收 `onChange` 回调。
+领域 view 把动作交给 command adapter；复用组件把动作交给 owner callback。闭合的 Tauri request/response 直接来自 `generatedCommands.ts`，不在组件 props 或 view 内重新声明 wire shape。
 
 `WorkspaceSurface` 是任务、工具、记忆和设置等次级工作区的唯一外框。它只负责容器几何、主题背景、边框、阴影和工作区切换时的入场动效；页面标题、筛选器、列表和详情内容由各工作区自己提供。对话工作区保持全宽布局，不套用此外框。
 
@@ -473,6 +476,8 @@ onDestroy(() => {
 
 ## 8. 文件与目录结构
 
+下图列出路由、壳层和常用模块的代表性文件，不是完整文件清单。领域 store、command adapter 和 controller 按职责分置独立模块，不通过跨领域聚合桶转发。
+
 ```
 ui/src/
 ├── app.css                 # 全局 token + 组件原始类
@@ -481,9 +486,12 @@ ui/src/
 │   ├── AppShell.svelte     # 工作区壳层
 │   ├── Icon.svelte          # 统一尺寸与可访问性的图标原语
 │   ├── icons.ts             # 唯一图形定义和静态 HTML 图标渲染器
-│   ├── stores.ts           # 共享 writable stores
 │   ├── tauri.ts            # Tauri 桥接懒加载
 │   ├── themeStore.ts       # 主题管理
+│   ├── notificationStore.ts # 通知状态 owner
+│   ├── toolRunStore.ts     # ToolRun 投影状态 owner
+│   ├── settingsCommands.ts # 设置命令适配器
+│   ├── toolsCommands.ts    # 工具命令适配器
 │   ├── ChatBubble.svelte   # 聊天气泡
 │   ├── ConfirmationDialog.svelte
 │   ├── Logo.svelte
@@ -504,7 +512,11 @@ ui/src/
 │   ├── SkillDetailDrawer.svelte
 │   ├── ToolRunTimelineCard.svelte
 │   ├── ConversationTimeline.svelte
-│   └── ToolResultCard.svelte
+│   ├── ToolResultCard.svelte
+│   └── views/
+│       ├── SettingsView.svelte
+│       ├── ToolsView.svelte
+│       └── MemoryView.svelte
 └── routes/
     ├── +layout.svelte      # 布局 + 事件总线
     └── +page.svelte        # 聊天页与工作区 Tab
@@ -588,7 +600,7 @@ Haven 的核心场景是“快速开始一段对话，并清楚知道它当前�
 
 - UI 改动可以重排页面、拆分编排和提取公共组件，但不能为了视觉效果破坏现有后端行为。
 - 所有共享 token、基础控件和状态表现必须有唯一实现；禁止新旧两套按钮、Tab、状态徽章或保存栏长期并存。
-- `lib/` 组件保持展示和交互抽象，业务数据加载、Tauri `invoke` 和事件订阅由路由或领域编排层负责，遵守本文第 2.4 节。
+- `lib/` 中的领域 view 可拥有本领域的加载状态和编辑草稿，但通过 `*Commands.ts` 调用 Tauri；可复用组件经 props/callback 工作。路由与 App shell 保留跨域装配和应用生命周期职责，遵守本文第 2.4 节。
 
 ### 10.2 信息架构
 
@@ -726,7 +738,7 @@ ready + 用户修改 → dirty → saving → saved | error
 | 使用 `<slot>` | 使用 `{@render children?.()}` |
 | 使用 `export let` | 使用 `$props()` 解构 |
 | 使用 `$:` 响应式标签 | 使用 `$derived` 或 `$effect` |
-| 组件内直接调用 `invoke` | 在路由页面调用，通过 props 传入 |
+| `lib/views/` 或可复用组件直接调用 `invoke` | 领域 view 调用 `*Commands.ts`；子组件通过 owner callback 请求动作 |
 | 在 `$effect` 中修改 `$state` 变量 | 使用事件处理器或 `$derived` |
 | 重复的 CSS 代码（如多个组件实现切换开关） | 提取为公共组件 |
 

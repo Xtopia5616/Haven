@@ -46,7 +46,7 @@
 	import { syncStore } from '$lib/syncStore.ts';
 	import { isBusyStatus, isPausedStatus, sessionWaitingReason } from '$lib/sessionStatus.ts';
 	import { confirmLeaveSettingsIfNeeded } from '$lib/settingsGuard.ts';
-	import { loadSettings } from '$lib/settingsCommand.ts';
+	import { loadSettings } from '$lib/settingsCommands.ts';
 	import { toolRunStatusLabel } from '$lib/toolRunTerminology.ts';
 	import { setToolManifests } from '$lib/toolManifest.ts';
 	import { listBuiltinToolManifests } from '$lib/toolsCommands.ts';
