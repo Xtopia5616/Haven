@@ -9,7 +9,7 @@ impl GeminiAdapter {
                 Some(FinishReason::ContentFilter)
             }
             "MALFORMED_FUNCTION_CALL" => Some(FinishReason::ToolCalls),
-            _ => FinishReason::from_openai(&s.to_lowercase()),
+            _ => FinishReason::parse_provider_value(&s.to_lowercase()),
         }
     }
 

@@ -136,7 +136,7 @@ impl AnthropicAdapter {
             finish_reason: json
                 .stop_reason
                 .as_deref()
-                .and_then(FinishReason::from_openai),
+                .and_then(FinishReason::parse_provider_value),
             usage,
             model: model.or_else(|| Some(self.endpoint.model_name.clone())),
             reasoning: if reasoning.is_empty() {

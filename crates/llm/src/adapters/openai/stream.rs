@@ -271,7 +271,7 @@ impl OpenAiAdapter {
                             let finish_reason = choice
                                 .finish_reason
                                 .as_ref()
-                                .and_then(|s| FinishReason::from_openai(s));
+                                .and_then(|value| FinishReason::parse_provider_value(value));
                             Some((
                                 Ok(StreamChunk {
                                     text,

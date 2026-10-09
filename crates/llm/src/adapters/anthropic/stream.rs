@@ -508,7 +508,7 @@ impl AnthropicAdapter {
                     }
                     Ok(AnthropicStreamEvent::MessageDelta { delta, usage }) => {
                         if let Some(sr) = delta.stop_reason.as_deref() {
-                            state.stop_reason = FinishReason::from_openai(sr);
+                            state.stop_reason = FinishReason::parse_provider_value(sr);
                         }
                         if let (Some(u), Some(existing)) = (usage, state.usage.as_mut()) {
                             existing.completion_tokens = u.output_tokens;

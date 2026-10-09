@@ -69,7 +69,7 @@ impl OpenAiAdapter {
             tool_calls,
             finish_reason: choice
                 .finish_reason
-                .and_then(|s| FinishReason::from_openai(&s)),
+                .and_then(|s| FinishReason::parse_provider_value(&s)),
             usage,
             model: model.or_else(|| Some(self.endpoint.model_name.clone())),
             reasoning,

@@ -828,3 +828,4 @@
 - [0847：区分录音身份与会话身份](0847-distinguish-recording-identity-from-session.md)
 - [0848：将工具参数 wire 转换归入 LLM adapter](0848-own-tool-argument-wire-conversion-in-llm-adapters.md)
 - [0849：由 CapabilityScope 独占 capability ancestry](0849-own-capability-ancestry-in-capability-scope.md)
+- [0850：移除结束原因解析器的 OpenAI 专属命名](0850-name-provider-finish-reason-parser-generically.md)

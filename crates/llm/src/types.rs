@@ -360,11 +360,10 @@ impl fmt::Display for FinishReason {
 }
 
 impl FinishReason {
-    /// Parse a finish_reason string from any OpenAI-compatible provider.
-    /// Accepts standard OpenAI values plus common non-standard variants
-    /// from Ollama, vLLM, Google Gemini, Anthropic, etc.
-    pub fn from_openai(s: &str) -> Option<Self> {
-        match s {
+    /// Parse a recognized provider finish-reason label into the canonical
+    /// cross-provider value. Provider-only encodings remain adapter-owned.
+    pub fn parse_provider_value(value: &str) -> Option<Self> {
+        match value {
             "stop" | "end" | "end_turn" | "completed" | "done" => Some(FinishReason::Stop),
             "length" | "max_tokens" | "incomplete" | "max_length" => Some(FinishReason::Length),
             "tool_calls" | "tool_use" | "tools" => Some(FinishReason::ToolCalls),
@@ -979,31 +978,50 @@ mod tests {
     }
 
     #[test]
-    fn finish_reason_from_openai_known_strings() {
-        assert_eq!(FinishReason::from_openai("stop"), Some(FinishReason::Stop));
+    fn finish_reason_parses_shared_provider_labels() {
         assert_eq!(
-            FinishReason::from_openai("length"),
+            FinishReason::parse_provider_value("stop"),
+            Some(FinishReason::Stop)
+        );
+        assert_eq!(
+            FinishReason::parse_provider_value("length"),
             Some(FinishReason::Length)
         );
         assert_eq!(
-            FinishReason::from_openai("tool_calls"),
+            FinishReason::parse_provider_value("tool_calls"),
             Some(FinishReason::ToolCalls)
         );
         assert_eq!(
-            FinishReason::from_openai("content_filter"),
+            FinishReason::parse_provider_value("content_filter"),
             Some(FinishReason::ContentFilter)
         );
         assert_eq!(
-            FinishReason::from_openai("function_call"),
+            FinishReason::parse_provider_value("function_call"),
             Some(FinishReason::FunctionCall)
+        );
+        assert_eq!(
+            FinishReason::parse_provider_value("end_turn"),
+            Some(FinishReason::Stop)
+        );
+        assert_eq!(
+            FinishReason::parse_provider_value("max_tokens"),
+            Some(FinishReason::Length)
+        );
+        assert_eq!(
+            FinishReason::parse_provider_value("tool_use"),
+            Some(FinishReason::ToolCalls)
+        );
+        assert_eq!(
+            FinishReason::parse_provider_value("safety"),
+            Some(FinishReason::ContentFilter)
         );
     }
 
     #[test]
-    fn finish_reason_from_openai_unknown_returns_none() {
-        assert_eq!(FinishReason::from_openai("unknown_reason"), None);
-        assert_eq!(FinishReason::from_openai(""), None);
-        assert_eq!(FinishReason::from_openai("STOP"), None);
+    fn finish_reason_parser_rejects_unknown_or_unormalized_values() {
+        assert_eq!(FinishReason::parse_provider_value("unknown_reason"), None);
+        assert_eq!(FinishReason::parse_provider_value(""), None);
+        assert_eq!(FinishReason::parse_provider_value("STOP"), None);
     }
 
     #[test]
