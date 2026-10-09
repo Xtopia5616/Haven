@@ -44,63 +44,10 @@ use crate::{
     ConfirmationRequirement, OperationIdempotency, OperationPolicy, ToolConcurrency, ToolHandle,
     ToolOperationScope,
 };
-use haven_common::config::RequestKind;
 use haven_common::tools::{ToolCatalogGroup, ToolPresentation, ToolPrompt};
 use haven_common::types::RiskLevel;
 use haven_mcp::McpManager;
 use haven_skills::SkillRegistry;
-
-/// Resolve capability truth for the model-backed media operations. A
-/// configured role is not enough: routing may fall back to another role and
-/// the selected adapter may explicitly reject the representation.
-pub(crate) async fn resolve_media_capabilities(
-    router: Option<&Arc<haven_llm::LlmRouter>>,
-    dedicated_stt_available: bool,
-) -> media::MediaCapabilities {
-    let Some(router) = router else {
-        return media::MediaCapabilities {
-            transcribe: dedicated_stt_available,
-            ..media::MediaCapabilities::default()
-        };
-    };
-
-    let vision_available = router.is_request_configured(RequestKind::Vision).await
-        && router
-            .capability_profile_for_request(RequestKind::Vision)
-            .image
-            .is_supported();
-
-    let transcribe_available = if router
-        .is_request_configured(RequestKind::Transcription)
-        .await
-    {
-        let configured = router
-            .is_request_configured(RequestKind::Transcription)
-            .await;
-        let profile = router.capability_profile_for_request(RequestKind::Transcription);
-        let style = {
-            let config = router.config().await;
-            config
-                .route(RequestKind::Transcription)
-                .map(|model| haven_llm::adapters::api_style_for(&model.endpoint))
-                .unwrap_or("openai-chat")
-        };
-        let unknown_custom_route = profile.audio == haven_common::media::CapabilitySupport::Unknown
-            && !haven_llm::adapters::is_known_api_style(style);
-        configured
-            && (profile.audio.is_supported()
-                || haven_llm::is_stt_only_style(style)
-                || unknown_custom_route)
-    } else {
-        false
-    };
-
-    media::MediaCapabilities {
-        describe: vision_available,
-        transcribe: transcribe_available || dedicated_stt_available,
-        ..media::MediaCapabilities::default()
-    }
-}
 
 pub use crate::tool_runtime::{MemoryRecallPort, MemoryRecallSlot, new_memory_recall_slot};
 pub use admin::{

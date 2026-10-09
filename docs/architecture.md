@@ -93,6 +93,8 @@ messaging 与 memory recall 是进程服务，在 `wire_startup` 里绑定一次
 lease 操作、目录投影、runtime capability 请求和录音转写入口；启动及 runtime/catalog 更新转发给 coordinator。
 能力判断由 tools crate 唯一构造的 crate-private `ToolCapabilitySnapshot` 收口：prompt runtime、
 媒体 operation catalog、TTS/STT 与录音 gate 使用同一 typed 能力值，搜索优先级由它统一投影。
+媒体能力由单一 resolver owner 推导：分别判断 LLM 路由与专用 STT 后端，再合并录音、OCR、图像生成
+和 TTS 等运行时服务可用性；内置工具目录不另行拥有能力解析。
 snapshot 每次从当前 `PlatformRuntime`、Router config 与 MCP index 重建；三者没有共同版本钟，故当前不缓存。
 该 snapshot 只含能力结果，不暴露 Router、MCP manager、Database 或授权执行 facade（ADR 0331）。
 配置侧仍由 app-binary 的 `RuntimeConfigCoordinator` 持有 config apply gate，并准备/发布 Router 与媒体

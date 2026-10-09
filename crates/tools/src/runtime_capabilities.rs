@@ -4,7 +4,7 @@
 //! index. This module resolves the snapshot's typed capability inputs and
 //! keeps the resulting policy separate from facade composition.
 
-use crate::builtin::{self, media::MediaCapabilities};
+use crate::builtin::media::MediaCapabilities;
 use crate::catalog::McpServerIndexEntry;
 use crate::tool_runtime::{PlatformRuntime, RuntimeCapabilities, WebSearchAvailability};
 use haven_common::config::{ModelEndpoint, RequestKind};
@@ -15,7 +15,7 @@ pub(crate) async fn resolve_snapshot(
     platform: &PlatformRuntime,
     mcp_index: &[McpServerIndexEntry],
 ) -> ToolCapabilitySnapshot {
-    let media = resolve_media_capabilities(platform).await;
+    let media = resolve_tool_media_capabilities(platform).await;
     let chat_endpoint = configured_chat_endpoint(platform.router.as_ref()).await;
     let provider_search_available = provider_search_available(chat_endpoint.as_ref());
     assemble_tool_capability_snapshot(media, provider_search_available, mcp_index)
@@ -45,20 +45,70 @@ impl ToolCapabilitySnapshot {
     }
 }
 
-/// Resolve the media capability snapshot shared by prompt reporting and
-/// transcription ingress. Capture, generation, OCR, and TTS remain distinct
-/// from provider-backed vision and transcription capabilities.
-pub(crate) async fn resolve_media_capabilities(platform: &PlatformRuntime) -> MediaCapabilities {
-    let mut capabilities = builtin::resolve_media_capabilities(
-        platform.router.as_ref(),
-        platform.stt_client.is_some(),
-    )
-    .await;
+/// Combine configured LLM routes and available runtime services into the
+/// media capability snapshot shared by prompt reporting and tool admission.
+/// Capture, generation, OCR, and TTS remain independent of transcription.
+async fn resolve_tool_media_capabilities(platform: &PlatformRuntime) -> MediaCapabilities {
+    let mut capabilities =
+        resolve_backend_media_capabilities(platform.router.as_ref(), platform.stt_client.is_some())
+            .await;
     capabilities.record = platform.input_pipeline.is_some();
     capabilities.ocr = platform.ocr_client.is_some();
     capabilities.generate = platform.image_gen_client.is_some();
     capabilities.speak = platform.tts_client.is_some();
     capabilities
+}
+
+/// Resolve the LLM route and dedicated STT capabilities available to media
+/// operations. The module-level tool resolver adds the remaining local
+/// runtime services before publishing one `MediaCapabilities` value.
+async fn resolve_backend_media_capabilities(
+    router: Option<&Arc<LlmRouter>>,
+    dedicated_stt_available: bool,
+) -> MediaCapabilities {
+    let Some(router) = router else {
+        return MediaCapabilities {
+            transcribe: dedicated_stt_available,
+            ..MediaCapabilities::default()
+        };
+    };
+
+    let vision_available = router.is_request_configured(RequestKind::Vision).await
+        && router
+            .capability_profile_for_request(RequestKind::Vision)
+            .image
+            .is_supported();
+
+    let transcribe_available = if router
+        .is_request_configured(RequestKind::Transcription)
+        .await
+    {
+        let configured = router
+            .is_request_configured(RequestKind::Transcription)
+            .await;
+        let profile = router.capability_profile_for_request(RequestKind::Transcription);
+        let style = {
+            let config = router.config().await;
+            config
+                .route(RequestKind::Transcription)
+                .map(|model| haven_llm::adapters::api_style_for(&model.endpoint))
+                .unwrap_or("openai-chat")
+        };
+        let unknown_custom_route = profile.audio == haven_common::media::CapabilitySupport::Unknown
+            && !haven_llm::adapters::is_known_api_style(style);
+        configured
+            && (profile.audio.is_supported()
+                || haven_llm::is_stt_only_style(style)
+                || unknown_custom_route)
+    } else {
+        false
+    };
+
+    MediaCapabilities {
+        describe: vision_available,
+        transcribe: transcribe_available || dedicated_stt_available,
+        ..MediaCapabilities::default()
+    }
 }
 
 async fn configured_chat_endpoint(router: Option<&Arc<LlmRouter>>) -> Option<ModelEndpoint> {
