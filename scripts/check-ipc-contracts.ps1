@@ -117,9 +117,9 @@ Assert-Contains $layout '(?s)const report = await invoke\(''check_llm_connection
 # direct invoke owners for these audited command families.
 $uiFiles = Get-ChildItem (Join-Path $root 'ui/src') -Recurse -File | Where-Object { $_.Extension -in @('.ts', '.svelte') }
 $ownedCommands = @{
-    'toolRunCommands.ts' = @('list_tool_runs', 'cancel_tool_run')
+    'toolRunCommands.ts' = @('list_tool_runs', 'list_tool_run_history', 'clear_tool_run_history', 'cancel_tool_run')
     'toolsCommands.ts' = @('list_builtin_tool_manifests', 'list_mcp_servers', 'reset_tool_circuits', 'refresh_mcp_servers', 'set_skill_enabled', 'set_tool_enabled', 'refresh_skills', 'open_skills_dir', 'add_mcp_server', 'update_mcp_server', 'remove_mcp_server', 'reconnect_mcp_server', 'toggle_mcp_server', 'execute_skill')
-    'memoryCommands.ts' = @('list_facts', 'add_fact', 'delete_fact', 'recall_memory')
+    'memoryCommands.ts' = @('list_facts', 'add_fact', 'delete_fact', 'clear_facts', 'recall_memory')
     'sessionCommands.ts' = @('list_runtime_sessions', 'get_session_lineage', 'list_session_history', 'search_session_history_filtered', 'get_session_for_resume', 'get_latest_session_for_resume', 'reopen_session', 'delete_session', 'delete_all_sessions', 'update_session_title', 'rollback_session', 'end_session', 'interrupt_session', 'continue_session')
     'modelDiscoveryCommands.ts' = @('discover_models', 'discover_all_models')
     'diagnosticsCommands.ts' = @('get_log_info', 'read_log_tail', 'check_shell_available', 'get_api_key_status', 'get_performance_metrics')
@@ -139,7 +139,7 @@ foreach ($file in $uiFiles) {
 }
 
 $memoryView = Get-Source 'ui/src/lib/views/MemoryView.svelte'
-Assert-NotContains $memoryView 'invoke\s*\(\s*''(?:list_facts|add_fact|delete_fact|recall_memory)''' 'MemoryView must use memoryCommands.ts'
+Assert-NotContains $memoryView 'invoke\s*\(\s*''(?:list_facts|add_fact|delete_fact|clear_facts|recall_memory)''' 'MemoryView must use memoryCommands.ts'
 $memoryCommands = Get-Source 'crates/app-binary/src/commands/memory.rs'
 $memoryDtos = Get-Source 'crates/app-binary/src/commands/contracts.rs'
 $memoryUiContracts = Get-Source 'ui/src/lib/contracts/memory.ts'

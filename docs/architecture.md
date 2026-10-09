@@ -721,17 +721,20 @@ agent event contract 已完成对应 mapper/validator 或边界审计（ADR 0330
 0348、0350、0376）；live interaction event 与 resume snake_case DTO 保持各自 mapper。命令 request/response
 的静态 TypeScript contract 由 Rust handler/Serde DTO 生成至 `generatedCommands.ts`，不在多份手写定义间
 同步字段（ADR 0394）；生成类型不替代运行时校验，event mappers 与动态扩展 payload 仍按各 domain 手工维护。
-Settings update payload 仍由 SettingsView 的单一 builder 构造。ToolRun board 的活跃
-`list_tool_runs`/`cancel_tool_run` 经 `toolRunCommands.ts`；list response 复用 `mapToolRunPayload`，cancel
-request/result 使用命名 TS contract，`toolRunStore` 不直接 invoke（ADR 0348）。命令静态 request/response
-统一使用 Rust 生成 contract；每个领域仍负责运行时校验、直接调用编排和安全审计。事件尚无全局 codegen，
-各事件 mapper 继续按 ADR 逐域维护。
+Settings update payload 仍由 SettingsView 的单一 builder 构造。ToolRun board 的
+`list_tool_runs`、`list_tool_run_history`、`clear_tool_run_history` 与 `cancel_tool_run` 经
+`toolRunCommands.ts`；list rows 复用 `mapToolRunPayload`，cancel request/result 使用命名 TS contract，
+`toolRunStore` 不直接 invoke（ADR 0348）。MemoryView 的 list/add/delete/clear/recall 命令经
+`memoryCommands.ts`。命令静态 request/response 统一使用 Rust 生成 contract；每个领域仍负责运行时校验、
+直接调用编排和安全审计。事件尚无全局 codegen，各事件 mapper 继续按 ADR 逐域维护。
 `continue_session`、`interrupt_session`、`end_session` 与 `rollback_session` 由
-`ChatSessionController` 单一编排并直接 invoke；请求在 `contracts/commands.ts` 使用命名 DTO，页面逻辑保留
-原 in-flight 锁、错误处理与通知顺序。`resolve_confirmation` 留在 `+layout.svelte` 的 shell confirmation
+`sessionCommands.ts` 唯一 invoke；`ChatSessionController` 通过受限 command port 单一编排并保留原
+in-flight 锁、错误处理与通知顺序。请求在 `contracts/commands.ts` 使用命名 DTO。`resolve_confirmation` 留在
+`+layout.svelte` 的 shell confirmation
 入口，因为弹窗必须跨工作区可见；它使用 generated permission enums 表达 effect、scope、target，
 并保留本地 `ConfirmationDecision` view 转换与 in-flight guard。没有重复 request
-mapper 或绕过 owner 的 UI caller，IPC script 对照 Rust handler 参数、TS DTO 和直接调用边界（ADR 0371）。
+mapper 或绕过 owner 的 UI caller，IPC script 对照 Rust handler 参数、TS DTO 和直接调用边界
+（ADR 0371、0837）。
 `+page.svelte` 保留 view/scroll 与 dialog/loading/menu 状态、model sync、resume target/auto-restore、
 新会话入口及非 chat-event teardown；ask/input 分流、会话启动恢复和滚动/observer 生命周期分别由
 `chatAskInteraction`、`chatSessionStartup`、`chatViewController` 拥有，在 mount 时按 listener-ready 顺序

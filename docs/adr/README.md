@@ -816,3 +816,4 @@
 - [0835：按生产 owner 拆分遗留 store 测试桶](0835-split-store-test-bucket-by-owner.md)
 - [0836：集中聊天模型命令 owner](0836-centralize-chat-model-command-ownership.md)
 - [0837：通过 Session 命令 owner 调用会话生命周期](0837-route-session-lifecycle-through-session-commands.md)
+- [0838：补齐 UI 命令 owner 门禁清单](0838-complete-ui-command-owner-guard.md)
