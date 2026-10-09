@@ -228,11 +228,16 @@ fn cap_capability_index(value: String, budget: usize, hint: &str) -> String {
     }
     let suffix = format!("\n… {hint}");
     let head_budget = budget.saturating_sub(suffix.chars().count());
-    format!(
-        "{}{}",
-        truncate_chars(value.trim_end(), head_budget),
-        suffix
-    )
+    let candidate = truncate_chars(value.trim_end(), head_budget);
+    let head = if candidate.ends_with('\n') {
+        candidate.trim_end().to_string()
+    } else {
+        candidate
+            .rsplit_once('\n')
+            .map(|(complete_lines, _)| complete_lines.trim_end().to_string())
+            .unwrap_or(candidate)
+    };
+    format!("{head}{suffix}")
 }
 
 /// Render a compact first layer of the capability tree. Family summaries and
@@ -1579,6 +1584,18 @@ mod tests {
         assert!(rendered.chars().count() <= 128);
         assert!(rendered.ends_with("… use catalog"));
         assert_eq!(CAPABILITY_INDEX_TOTAL_CHAR_BUDGET, 7168);
+    }
+
+    #[test]
+    fn capability_index_truncation_keeps_complete_entries() {
+        let rendered = cap_capability_index(
+            "first item\nsecond item\nthird item".into(),
+            27,
+            "use catalog",
+        );
+
+        assert_eq!(rendered, "first item\n… use catalog");
+        assert!(rendered.chars().count() <= 27);
     }
 
     #[tokio::test]
