@@ -320,23 +320,59 @@ fn render_skill_index(skills: &[haven_tools::SkillInfo]) -> String {
         return String::new();
     }
 
-    let names = enabled
-        .iter()
-        .map(|skill| compact_index_text(&skill.name, 96))
-        .collect::<Vec<_>>();
-    let mut rendered = format!(
-        "\nUser-configured Skills ({}, load with `load_skill`):\n  names: {}\n",
-        enabled.len(),
-        compact_index_text(&names.join(", "), 640)
+    const LINE_OVERHEAD: usize = 5; // "- ", ": ", and "\n"
+    const MIN_NAME_CHARS: usize = 12;
+    const MIN_DESCRIPTION_CHARS: usize = 24;
+    const MAX_NAME_CHARS: usize = 96;
+    const MAX_DESCRIPTION_CHARS: usize = 180;
+
+    let header = format!(
+        "\nUser-configured Skills ({}; load with `load_skill`):\n",
+        enabled.len()
     );
-    if enabled.len() <= 4 {
-        rendered.push_str("  details:\n");
-        for skill in enabled {
-            let description = compact_index_text(&skill.description, 240);
-            rendered.push_str(&format!("    - {}: {}\n", skill.name, description));
+    let available = SKILL_INDEX_CHAR_BUDGET.saturating_sub(header.chars().count());
+    let min_line_chars = LINE_OVERHEAD + MIN_NAME_CHARS + MIN_DESCRIPTION_CHARS;
+    let mut visible_count = enabled.len().min(available / min_line_chars);
+    let mut omitted = omitted_skills_note(enabled.len().saturating_sub(visible_count));
+
+    while visible_count > 0 {
+        let entry_budget = available.saturating_sub(omitted.chars().count()) / visible_count;
+        if entry_budget >= min_line_chars {
+            break;
+        }
+        visible_count -= 1;
+        omitted = omitted_skills_note(enabled.len().saturating_sub(visible_count));
+    }
+
+    let mut rendered = header;
+    if let Some(entry_budget) = available
+        .saturating_sub(omitted.chars().count())
+        .checked_div(visible_count)
+    {
+        let content_budget = entry_budget.saturating_sub(LINE_OVERHEAD);
+        let name_budget = (content_budget / 3)
+            .clamp(MIN_NAME_CHARS, MAX_NAME_CHARS)
+            .min(content_budget.saturating_sub(MIN_DESCRIPTION_CHARS));
+        let description_budget = content_budget
+            .saturating_sub(name_budget)
+            .min(MAX_DESCRIPTION_CHARS);
+
+        for skill in enabled.iter().take(visible_count) {
+            let name = compact_index_text(&skill.name, name_budget);
+            let description = compact_index_text(&skill.description, description_budget);
+            rendered.push_str(&format!("- {name}: {description}\n"));
         }
     }
+    rendered.push_str(&omitted);
     rendered
+}
+
+fn omitted_skills_note(count: usize) -> String {
+    if count == 0 {
+        String::new()
+    } else {
+        format!("… {count} more; use `tool_catalog` to browse.\n")
+    }
 }
 
 fn render_mcp_index(entries: &[McpServerIndexEntry]) -> String {
@@ -1070,6 +1106,66 @@ mod tests {
         assert!(rendered.contains("empty (0 tools)"));
         assert!(rendered.contains("large (9 tools); use `load_mcp` to select concrete tools"));
         assert!(!rendered.contains("tool_8"));
+    }
+
+    fn prompt_skill(name: String, description: String) -> haven_tools::SkillInfo {
+        haven_tools::SkillInfo {
+            name,
+            description,
+            version: None,
+            language: "en".into(),
+            enabled: true,
+            root: String::new(),
+            has_script: true,
+            disabled_reason: None,
+            load_error: None,
+        }
+    }
+
+    #[test]
+    fn skill_index_keeps_a_purpose_for_each_skill_within_budget() {
+        let skills = (0..8)
+            .map(|index| {
+                prompt_skill(
+                    format!("skill-{index}"),
+                    format!(
+                        "Purpose of workflow {index}. {}",
+                        "Extra details. ".repeat(20)
+                    ),
+                )
+            })
+            .collect::<Vec<_>>();
+
+        let rendered = render_skill_index(&skills);
+
+        assert!(rendered.chars().count() <= SKILL_INDEX_CHAR_BUDGET);
+        assert!(!rendered.contains("  names:"));
+        for index in 0..skills.len() {
+            assert!(rendered.contains(&format!("skill-{index}: Purpose of workflow {index}")));
+        }
+    }
+
+    #[test]
+    fn skill_index_keeps_complete_lines_and_counts_omitted_skills() {
+        let skills = (0..80)
+            .map(|index| {
+                prompt_skill(
+                    format!("skill-{index}"),
+                    format!("Workflow purpose {index}. {}", "More details. ".repeat(20)),
+                )
+            })
+            .collect::<Vec<_>>();
+
+        let rendered = render_skill_index(&skills);
+
+        assert!(rendered.chars().count() <= SKILL_INDEX_CHAR_BUDGET);
+        assert!(rendered.contains("more; use `tool_catalog` to browse."));
+        assert!(rendered.contains("skill-0: Workflow purpose 0"));
+        assert!(!rendered.contains("skill-79:"));
+        for line in rendered.lines().filter(|line| line.starts_with("- ")) {
+            let (_, description) = line.split_once(": ").expect("skill line has description");
+            assert!(!description.trim().is_empty());
+        }
     }
 
     struct FixedPromptToolPort {
