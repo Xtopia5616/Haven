@@ -821,3 +821,4 @@
 - [0840：只展示有信息量的工具目录指引](0840-omit-empty-tool-routing-guidance.md)
 - [0841：从 Session reducer 派生会话状态标签](0841-derive-session-status-label-from-reducer.md)
 - [0842：固定 Route 与 App shell 的命令 owner](0842-pin-route-and-app-shell-command-owners.md)
+- [0843：按结构命名 Chat 附件输入 payload](0843-name-chat-attachment-payload-by-shape.md)

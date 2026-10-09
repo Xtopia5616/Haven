@@ -9,7 +9,7 @@ import {
 } from './continueSession.ts';
 import { isErrorStatus } from './sessionStatus.ts';
 import { processResultSessionId } from './submit.ts';
-import type { ChatFileAttachment, ChatImageAttachment } from './chatAttachmentTypes.ts';
+import type { ChatAttachmentPayload, ChatFileAttachment } from './chatAttachmentTypes.ts';
 import type { ProcessResult, CanonicalRole } from './contracts/generatedCommands.ts';
 import { resumeInteractions as resumeInteractionsFromProjection } from './sessionReducer.ts';
 import type { SessionAction, SessionReducer, SessionSummary } from './sessionReducer.ts';
@@ -33,7 +33,7 @@ export interface ChatSessionControllerDependencies {
 	submitTranscript: (
 		text: string,
 		options: {
-			images: ChatImageAttachment[] | null | undefined;
+			images: ChatAttachmentPayload[] | null | undefined;
 			files: ChatFileAttachment[] | null | undefined;
 			reducer: SessionReducer;
 			submissionToken?: string;
@@ -238,7 +238,7 @@ export class ChatSessionController {
 	/** Submit an input-router payload, keeping created-session selection in sync. */
 	async submitMessage(
 		text: string,
-		images?: ChatImageAttachment[] | null,
+		images?: ChatAttachmentPayload[] | null,
 		files?: ChatFileAttachment[] | null,
 		submissionToken?: string,
 	): Promise<void> {

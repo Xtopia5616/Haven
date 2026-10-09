@@ -1,7 +1,7 @@
 import type { SessionMessage, SessionReducer } from './sessionReducer.ts';
 import type { InteractionKind } from './contracts/generatedCommands.ts';
 import type { AskResponseView } from './contracts/app.ts';
-import type { ChatFileAttachment, ChatImageAttachment } from './chatAttachmentTypes.ts';
+import type { ChatAttachmentPayload, ChatFileAttachment } from './chatAttachmentTypes.ts';
 
 interface AskInteractionContext {
 	getActiveSessionId: () => string | null;
@@ -9,7 +9,7 @@ interface AskInteractionContext {
 	setSelectionsReady: (ready: boolean) => void;
 	submitMessage: (
 		text: string,
-		images?: ChatImageAttachment[] | null,
+		images?: ChatAttachmentPayload[] | null,
 		files?: ChatFileAttachment[] | null,
 	) => void;
 	reducer: SessionReducer;
@@ -21,7 +21,7 @@ interface ResolveAskOptions {
 
 interface InputSubmitPayload {
 	text: string;
-	images: ChatImageAttachment[];
+	images: ChatAttachmentPayload[];
 	files: ChatFileAttachment[];
 }
 
@@ -135,7 +135,7 @@ export function createAskInteractionController({
 		sessionId: string,
 		resolvedIds: Set<string> | undefined,
 		extraText = '',
-		images: ChatImageAttachment[] = [],
+		images: ChatAttachmentPayload[] = [],
 		files: ChatFileAttachment[] = [],
 	) {
 		if (!resolvedIds || resolvedIds.size === 0) return;
@@ -193,7 +193,7 @@ export function createAskInteractionController({
 	function trySubmitAskSelections(
 		sessionId: string,
 		extraText: string,
-		images: ChatImageAttachment[],
+		images: ChatAttachmentPayload[],
 		files: ChatFileAttachment[],
 	) {
 		const awaiting = pendingFor(sessionId, 'ask');

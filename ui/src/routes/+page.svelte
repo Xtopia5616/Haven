@@ -108,7 +108,7 @@
 		ReasoningEffortSelectionInput,
 		WebSearchModeInput,
 	} from '$lib/contracts/generatedCommands.ts';
-	import type { ChatFileAttachment, ChatImageAttachment } from '$lib/chatAttachmentTypes.ts';
+	import type { ChatAttachmentPayload, ChatFileAttachment } from '$lib/chatAttachmentTypes.ts';
 	import type { SessionMessageContextMenuRequest } from '$lib/sessionTimeline.ts';
 	import type { ReActExecutionPhaseSnapshot } from '$lib/sessionRuntimeStore.ts';
 
@@ -934,7 +934,7 @@
 
 	function submitMessage(
 		text: string,
-		images?: ChatImageAttachment[] | null,
+		images?: ChatAttachmentPayload[] | null,
 		files?: ChatFileAttachment[] | null,
 	) {
 		return chatSessionController.submitMessage(text, images, files);
@@ -1108,7 +1108,7 @@
 		files,
 	}: {
 		text: string;
-		images: ChatImageAttachment[];
+		images: ChatAttachmentPayload[];
 		files: ChatFileAttachment[];
 	}) {
 		routeInputSubmission({ text, images, files });

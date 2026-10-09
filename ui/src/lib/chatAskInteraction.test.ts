@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { ChatFileAttachment, ChatImageAttachment } from './chatAttachmentTypes.ts';
+import type { ChatAttachmentPayload, ChatFileAttachment } from './chatAttachmentTypes.ts';
 import { createAskInteractionController } from './chatAskInteraction.ts';
 import { SessionReducer } from './sessionReducer.ts';
 
@@ -163,7 +163,7 @@ describe('createAskInteractionController', () => {
 			createRequest('ask-2', '第二个问题', ['B'], []),
 		);
 		const { controller, submitMessage, setAutoFollow } = createController();
-		const images: ChatImageAttachment[] = [{ media_type: 'image/png', data: 'image' }];
+		const images: ChatAttachmentPayload[] = [{ media_type: 'image/png', data: 'image' }];
 		const files: ChatFileAttachment[] = [
 			{ filename: 'notes.txt', media_type: 'text/plain', data: 'file' },
 		];

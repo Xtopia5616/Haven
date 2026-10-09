@@ -13,7 +13,7 @@
 	import Icon from '$lib/Icon.svelte';
 	import { copyText } from '$lib/clipboard.ts';
 	import type { ContextMenuItem } from '$lib/contextMenu.ts';
-	import type { ChatFileAttachment, ChatImageAttachment } from '$lib/chatAttachmentTypes.ts';
+	import type { ChatAttachmentPayload, ChatFileAttachment } from '$lib/chatAttachmentTypes.ts';
 	import { DRAFT_SESSION_ID } from '$lib/sessionReducer.ts';
 
 	interface PendingChatFileAttachment extends ChatFileAttachment {
@@ -22,7 +22,7 @@
 
 	interface InputPayload {
 		text: string;
-		images: ChatImageAttachment[];
+		images: ChatAttachmentPayload[];
 		files: PendingChatFileAttachment[];
 	}
 
@@ -82,7 +82,7 @@
 	// Pending image attachments (multimodal): [{ mediaType, data }] with data
 	// holding base64 bytes (no data: prefix). Filled by paste / file picker,
 	// sent along with the next message, cleared on submit.
-	let pendingImages = $state<ChatImageAttachment[]>([]);
+	let pendingImages = $state<ChatAttachmentPayload[]>([]);
 
 	// Pending non-image attachments: [{ media_type, data, filename, size }].
 	// Ordinary files are persisted by the backend and handed to the agent as a
@@ -180,8 +180,8 @@
 	}
 
 	/** Read a File as a { media_type, data } attachment without re-encoding. */
-	function readAsAttachment(file: File): Promise<ChatImageAttachment> {
-		return new Promise<ChatImageAttachment>((resolve, reject) => {
+	function readAsAttachment(file: File): Promise<ChatAttachmentPayload> {
+		return new Promise<ChatAttachmentPayload>((resolve, reject) => {
 			const reader = new FileReader();
 			reader.onload = () => {
 				const dataUrl = String(reader.result || '');
@@ -198,7 +198,7 @@
 	 * Downscale and re-encode an image File to JPEG to reduce payload size.
 	 * Returns null if compression isn't possible (e.g. browser lacks the API).
 	 */
-	async function tryCompressImage(file: File): Promise<ChatImageAttachment | null> {
+	async function tryCompressImage(file: File): Promise<ChatAttachmentPayload | null> {
 		if (typeof createImageBitmap !== 'function' || typeof document === 'undefined') return null;
 		try {
 			const bitmap = await createImageBitmap(file);
@@ -233,7 +233,7 @@
 	 * Compresses to JPEG when the result is smaller than the original;
 	 * otherwise keeps the original encoding.
 	 */
-	async function fileToAttachment(file: File): Promise<ChatImageAttachment> {
+	async function fileToAttachment(file: File): Promise<ChatAttachmentPayload> {
 		if (file.size > maxImageBytes) {
 			throw new Error(`图片超过 ${Math.round(maxImageBytes / 1024 / 1024)}MB 上限`);
 		}
