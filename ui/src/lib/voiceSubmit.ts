@@ -10,9 +10,6 @@ import type { ProcessResult } from './contracts/generatedCommands.ts';
  * @param {string} text
  * @returns the generated `ProcessResult` contract
  */
-export function submitVoiceTranscript(
-	text: string,
-	recordingSessionId?: string,
-): Promise<ProcessResult> {
-	return submitTranscript(text, { voice: true, recordingSessionId, reducer: appSessionReducer });
+export function submitVoiceTranscript(text: string, recordingId?: string): Promise<ProcessResult> {
+	return submitTranscript(text, { voice: true, recordingId, reducer: appSessionReducer });
 }

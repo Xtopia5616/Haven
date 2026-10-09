@@ -476,13 +476,13 @@ describe('recordingEventListeners', () => {
 		const received: string[] = [];
 		const listeners = recordingEventListeners({
 			'recording:started': (event) => {
-				received.push(`${event.event}:${event.payload.sessionId}`);
+				received.push(`${event.event}:${event.payload.recordingId}`);
 			},
 			'recording:stopped': (event) => {
 				received.push(`${event.event}:${event.payload.reason}`);
 			},
 			'transcription:started': (event) => {
-				received.push(`${event.event}:${event.payload.sessionId}`);
+				received.push(`${event.event}:${event.payload.recordingId}`);
 			},
 			'transcription:result': (event) => {
 				received.push(`${event.event}:${event.payload.text}`);
@@ -492,16 +492,16 @@ describe('recordingEventListeners', () => {
 		const arrivals = [
 			{
 				event: 'recording:started',
-				payload: { is_recording: true, session_id: 'rec-1' },
+				payload: { is_recording: true, recording_id: 'rec-1' },
 			},
 			{
 				event: 'recording:stopped',
 				payload: { is_recording: false, reason: 'silence' },
 			},
-			{ event: 'transcription:started', payload: { session_id: 'rec-1' } },
+			{ event: 'transcription:started', payload: { recording_id: 'rec-1' } },
 			{
 				event: 'transcription:result',
-				payload: { session_id: 'rec-1', text: 'hello', duration_ms: 800 },
+				payload: { recording_id: 'rec-1', text: 'hello', duration_ms: 800 },
 			},
 		] as const;
 

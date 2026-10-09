@@ -54,21 +54,21 @@ pub enum BootstrapStatus {
 
 /// Serializes the app's user-facing recording controls and owns their current
 /// `rec-*` correlation identity. The input pipeline also serves timed tool
-/// captures; those captures have no frontend recording session and must not
+/// captures; those captures have no app recording identity and must not
 /// be claimed or stopped by the app voice controls.
 #[derive(Default)]
-pub(crate) struct RecordingSessionOwner {
+pub(crate) struct RecordingLifecycleOwner {
     transition: tokio::sync::Mutex<()>,
-    current_session_id: std::sync::Mutex<Option<haven_common::types::SessionId>>,
+    current_recording_id: std::sync::Mutex<Option<haven_common::types::RecordingId>>,
 }
 
-pub(crate) struct RecordingLifecyclePermit<'a> {
+pub(crate) struct RecordingLifecycleGuard<'a> {
     _guard: tokio::sync::MutexGuard<'a, ()>,
 }
 
-impl RecordingSessionOwner {
-    pub(crate) async fn lock(&self) -> RecordingLifecyclePermit<'_> {
-        RecordingLifecyclePermit {
+impl RecordingLifecycleOwner {
+    pub(crate) async fn lock(&self) -> RecordingLifecycleGuard<'_> {
+        RecordingLifecycleGuard {
             _guard: self.transition.lock().await,
         }
     }
@@ -77,10 +77,10 @@ impl RecordingSessionOwner {
     /// one only after a start path has established that capture.
     pub(crate) fn begin(
         &self,
-        _permit: &RecordingLifecyclePermit<'_>,
-    ) -> haven_common::types::SessionId {
+        _guard: &RecordingLifecycleGuard<'_>,
+    ) -> haven_common::types::RecordingId {
         let mut current = self
-            .current_session_id
+            .current_recording_id
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         current
@@ -90,21 +90,21 @@ impl RecordingSessionOwner {
 
     pub(crate) fn current(
         &self,
-        _permit: &RecordingLifecyclePermit<'_>,
-    ) -> Option<haven_common::types::SessionId> {
-        self.current_session_id
+        _guard: &RecordingLifecycleGuard<'_>,
+    ) -> Option<haven_common::types::RecordingId> {
+        self.current_recording_id
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clone()
     }
 
-    /// Detach the ID while the transition permit is held, before another
+    /// Detach the ID while the transition guard is held, before another
     /// start can observe the pipeline's already-Pending state.
     pub(crate) fn finish(
         &self,
-        _permit: &RecordingLifecyclePermit<'_>,
-    ) -> Option<haven_common::types::SessionId> {
-        self.current_session_id
+        _guard: &RecordingLifecycleGuard<'_>,
+    ) -> Option<haven_common::types::RecordingId> {
+        self.current_recording_id
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .take()
@@ -232,8 +232,8 @@ pub struct AppState {
     pub(crate) runtime: Arc<ApplicationRuntime>,
     /// App-owned voice recording lifecycle and event identity. It is separate
     /// from timed `media.record` captures, which share the input pipeline but
-    /// do not produce voice-session events.
-    pub(crate) recording_sessions: RecordingSessionOwner,
+    /// do not produce app recording events.
+    pub(crate) recording_lifecycle: RecordingLifecycleOwner,
     /// LLM-backed ingress transcription usage waiting for the frontend to
     /// submit the transcript to its concrete session. The
     /// `rec-*` key is deliberately kept separate from durable `ses-*` ids.
@@ -579,7 +579,7 @@ impl AppState {
 
         Ok(Self {
             runtime,
-            recording_sessions: RecordingSessionOwner::default(),
+            recording_lifecycle: RecordingLifecycleOwner::default(),
             pending_recording_usage: Arc::new(std::sync::Mutex::new(HashMap::new())),
             bootstrap_ready: Arc::new(AtomicBool::new(false)),
             #[cfg(test)]
@@ -809,8 +809,8 @@ mod tests {
     use tempfile::tempdir;
 
     #[tokio::test]
-    async fn recording_session_handoff_serializes_the_next_start() {
-        let owner = Arc::new(RecordingSessionOwner::default());
+    async fn recording_lifecycle_handoff_serializes_the_next_start() {
+        let owner = Arc::new(RecordingLifecycleOwner::default());
         let lifecycle = owner.lock().await;
         let first_id = owner.begin(&lifecycle);
 
@@ -829,7 +829,7 @@ mod tests {
 
         let next_id = tokio::time::timeout(std::time::Duration::from_secs(1), next_start)
             .await
-            .expect("the next start should acquire the lifecycle permit")
+            .expect("the next start should acquire the lifecycle guard")
             .unwrap();
         assert_ne!(next_id, first_id);
         assert!(next_id.as_str().starts_with("rec-"));
@@ -837,12 +837,12 @@ mod tests {
 
     #[tokio::test]
     async fn concurrent_recording_stops_can_detach_an_identity_only_once() {
-        let owner = Arc::new(RecordingSessionOwner::default());
+        let owner = Arc::new(RecordingLifecycleOwner::default());
         let lifecycle = owner.lock().await;
-        let session_id = owner.begin(&lifecycle);
+        let recording_id = owner.begin(&lifecycle);
         drop(lifecycle);
 
-        let stop = |owner: Arc<RecordingSessionOwner>| async move {
+        let stop = |owner: Arc<RecordingLifecycleOwner>| async move {
             let lifecycle = owner.lock().await;
             owner.finish(&lifecycle)
         };
@@ -852,7 +852,7 @@ mod tests {
             usize::from(first.is_some()) + usize::from(second.is_some()),
             1
         );
-        assert_eq!(first.or(second), Some(session_id));
+        assert_eq!(first.or(second), Some(recording_id));
     }
 
     #[tokio::test]

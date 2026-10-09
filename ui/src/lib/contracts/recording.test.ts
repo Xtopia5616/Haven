@@ -8,7 +8,7 @@ describe('recording IPC contract', () => {
 			id: 1,
 			payload: {
 				is_recording: false,
-				session_id: 'rec-1',
+				recording_id: 'rec-1',
 				reason: 'silence',
 				duration_ms: 1200,
 				future_field: 'ignored',
@@ -18,7 +18,7 @@ describe('recording IPC contract', () => {
 			event: 'recording:stopped',
 			id: 1,
 			payload: {
-				sessionId: 'rec-1',
+				recordingId: 'rec-1',
 				reason: 'silence',
 			},
 		});
@@ -37,13 +37,13 @@ describe('recording IPC contract', () => {
 		const started = mapRecordingEvent({
 			event: 'transcription:started',
 			id: 3,
-			payload: { session_id: 'rec-3', future_field: 'ignored' },
+			payload: { recording_id: 'rec-3', future_field: 'ignored' },
 		});
 		const result = mapRecordingEvent({
 			event: 'transcription:result',
 			id: 4,
 			payload: {
-				session_id: 'rec-3',
+				recording_id: 'rec-3',
 				text: 'hello',
 				duration_ms: 800,
 				confidence: 0.85,
@@ -51,9 +51,9 @@ describe('recording IPC contract', () => {
 			},
 		});
 
-		expect(started.payload).toEqual({ sessionId: 'rec-3' });
+		expect(started.payload).toEqual({ recordingId: 'rec-3' });
 		expect(result.payload).toEqual({
-			sessionId: 'rec-3',
+			recordingId: 'rec-3',
 			text: 'hello',
 			durationMs: 800,
 		});
@@ -64,7 +64,7 @@ describe('recording IPC contract', () => {
 			event: 'recording:error',
 			id: 5,
 			payload: {
-				session_id: 'rec-5',
+				recording_id: 'rec-5',
 				error: 'microphone unavailable',
 				future_field: 1,
 			},
@@ -73,18 +73,18 @@ describe('recording IPC contract', () => {
 			event: 'transcription:error',
 			id: 6,
 			payload: {
-				session_id: 'rec-5',
+				recording_id: 'rec-5',
 				error: 'transcription unavailable',
 				future_field: 1,
 			},
 		});
 
 		expect(recordingError.payload).toEqual({
-			sessionId: 'rec-5',
+			recordingId: 'rec-5',
 			error: 'microphone unavailable',
 		});
 		expect(transcriptionError.payload).toEqual({
-			sessionId: 'rec-5',
+			recordingId: 'rec-5',
 			error: 'transcription unavailable',
 		});
 	});
@@ -93,9 +93,9 @@ describe('recording IPC contract', () => {
 		const event = mapRecordingEvent({
 			event: 'transcription:result',
 			id: 1,
-			payload: { session_id: 42, text: null, duration_ms: 'slow' },
+			payload: { recording_id: 42, text: null, duration_ms: 'slow' },
 		});
-		expect(event.payload).toEqual({ sessionId: '', text: '', durationMs: 0 });
+		expect(event.payload).toEqual({ recordingId: '', text: '', durationMs: 0 });
 	});
 
 	it('retains safe defaults for malformed VAD and error fields', () => {
@@ -107,19 +107,29 @@ describe('recording IPC contract', () => {
 		const error = mapRecordingEvent({
 			event: 'recording:error',
 			id: 8,
-			payload: { session_id: 42, error: null },
+			payload: { recording_id: 42, error: null },
 		});
 
 		expect(vad.payload).toEqual({ signal: 'none', state: 'silent' });
-		expect(error.payload).toEqual({ sessionId: '', error: '' });
+		expect(error.payload).toEqual({ recordingId: '', error: '' });
 	});
 
 	it('omits malformed optional recording fields', () => {
 		const event = mapRecordingEvent({
 			event: 'recording:stopped',
 			id: 6,
-			payload: { is_recording: false, session_id: 3, reason: null, duration_ms: 'unknown' },
+			payload: { is_recording: false, recording_id: 3, reason: null, duration_ms: 'unknown' },
 		});
+		expect(event.payload).toEqual({});
+	});
+
+	it('does not accept a conversation session field as a recording identity', () => {
+		const event = mapRecordingEvent({
+			event: 'recording:started',
+			id: 12,
+			payload: { session_id: 'rec-legacy' },
+		});
+
 		expect(event.payload).toEqual({});
 	});
 
@@ -127,9 +137,9 @@ describe('recording IPC contract', () => {
 		const event = mapRecordingEvent({
 			event: 'recording:started',
 			id: 11,
-			payload: { is_recording: true, session_id: 'rec-11' },
+			payload: { is_recording: true, recording_id: 'rec-11' },
 		});
-		expect(event.payload).toEqual({ sessionId: 'rec-11' });
+		expect(event.payload).toEqual({ recordingId: 'rec-11' });
 	});
 
 	it('omits a stop reason outside the generated closed vocabulary', () => {
@@ -146,12 +156,12 @@ describe('recording IPC contract', () => {
 			event: 'transcription:result',
 			id: 9,
 			payload: {
-				session_id: 'rec-9',
+				recording_id: 'rec-9',
 				text: 'hello',
 				duration_ms: 800,
 				confidence: 0.95,
 			},
 		});
-		expect(event.payload).toEqual({ sessionId: 'rec-9', text: 'hello', durationMs: 800 });
+		expect(event.payload).toEqual({ recordingId: 'rec-9', text: 'hello', durationMs: 800 });
 	});
 });

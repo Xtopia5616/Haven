@@ -290,7 +290,7 @@ pub(crate) enum SessionUpdateStatus {
 pub struct RecordingEvent {
     pub is_recording: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub session_id: Option<haven_common::types::SessionId>,
+    pub recording_id: Option<haven_common::types::RecordingId>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<RecordingStopReasonDto>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -317,7 +317,7 @@ pub struct VadStatusEvent {
 
 #[derive(Clone, Serialize)]
 pub struct TranscriptionResultEvent {
-    pub session_id: haven_common::types::SessionId,
+    pub recording_id: haven_common::types::RecordingId,
     pub text: String,
     pub duration_ms: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -328,12 +328,12 @@ pub struct TranscriptionResultEvent {
 /// covering the gap between `recording:stopped` and `transcription:result`.
 #[derive(Clone, Serialize)]
 pub struct TranscriptionStartedEvent {
-    pub session_id: haven_common::types::SessionId,
+    pub recording_id: haven_common::types::RecordingId,
 }
 
 #[derive(Clone, Serialize)]
 pub struct TranscriptionErrorEvent {
-    pub session_id: haven_common::types::SessionId,
+    pub recording_id: haven_common::types::RecordingId,
     pub error: String,
 }
 
@@ -341,7 +341,7 @@ pub struct TranscriptionErrorEvent {
 /// transcription failure because it can occur before capture begins.
 #[derive(Clone, Serialize)]
 pub struct RecordingErrorEvent {
-    pub session_id: haven_common::types::SessionId,
+    pub recording_id: haven_common::types::RecordingId,
     pub error: String,
 }
 
@@ -712,13 +712,14 @@ mod tests {
     fn test_recording_event_serde() {
         let ev = RecordingEvent {
             is_recording: true,
-            session_id: Some("s1".into()),
+            recording_id: Some("rec-1".into()),
             reason: Some(RecordingStopReasonDto::Manual),
             duration_ms: Some(1000),
         };
         let json = serde_json::to_string(&ev).unwrap();
         assert!(json.contains("\"is_recording\":true"));
-        assert!(json.contains("\"session_id\":\"s1\""));
+        assert!(json.contains("\"recording_id\":\"rec-1\""));
+        assert!(!json.contains("session_id"));
         assert!(json.contains("\"reason\":\"manual\""));
     }
 
@@ -928,12 +929,12 @@ mod tests {
     fn test_recording_event_skips_optional_none() {
         let ev = RecordingEvent {
             is_recording: false,
-            session_id: None,
+            recording_id: None,
             reason: None,
             duration_ms: None,
         };
         let json = serde_json::to_string(&ev).unwrap();
-        assert!(!json.contains("session_id"));
+        assert!(!json.contains("recording_id"));
         assert!(!json.contains("reason"));
     }
 
@@ -950,29 +951,30 @@ mod tests {
     #[test]
     fn test_transcription_result_event_serde() {
         let ev = TranscriptionResultEvent {
-            session_id: "s1".into(),
+            recording_id: "rec-1".into(),
             text: "hello".into(),
             duration_ms: 500,
             confidence: Some(0.95),
         };
         let json = serde_json::to_string(&ev).unwrap();
-        assert!(json.contains("\"session_id\":\"s1\""));
+        assert!(json.contains("\"recording_id\":\"rec-1\""));
+        assert!(!json.contains("session_id"));
         assert!(json.contains("\"confidence\":0.95"));
     }
 
     #[test]
     fn test_transcription_started_event_serde() {
         let ev = TranscriptionStartedEvent {
-            session_id: "rec-abc".into(),
+            recording_id: "rec-abc".into(),
         };
         let json = serde_json::to_string(&ev).unwrap();
-        assert!(json.contains("\"session_id\":\"rec-abc\""));
+        assert!(json.contains("\"recording_id\":\"rec-abc\""));
     }
 
     #[test]
     fn test_transcription_error_event_serde() {
         let ev = TranscriptionErrorEvent {
-            session_id: "s1".into(),
+            recording_id: "rec-1".into(),
             error: "timeout".into(),
         };
         let json = serde_json::to_string(&ev).unwrap();
@@ -982,12 +984,12 @@ mod tests {
     #[test]
     fn recording_error_event_has_the_stable_wire_shape() {
         let event = RecordingErrorEvent {
-            session_id: "rec-1".into(),
+            recording_id: "rec-1".into(),
             error: "microphone unavailable".into(),
         };
         assert_eq!(
             serde_json::to_value(event).unwrap(),
-            serde_json::json!({ "session_id": "rec-1", "error": "microphone unavailable" })
+            serde_json::json!({ "recording_id": "rec-1", "error": "microphone unavailable" })
         );
     }
 
@@ -995,7 +997,7 @@ mod tests {
     fn test_recording_event_all_fields_serialized() {
         let ev = RecordingEvent {
             is_recording: false,
-            session_id: None,
+            recording_id: None,
             reason: None,
             duration_ms: None,
         };

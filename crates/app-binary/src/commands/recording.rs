@@ -1,4 +1,4 @@
-use crate::app_state::{AppState, RecordingLifecyclePermit};
+use crate::app_state::{AppState, RecordingLifecycleGuard};
 use crate::commands::{emit_event_logged, log_err, log_storage_err};
 use crate::desktop::{DesktopShell, RecordingStopContext};
 use crate::events::{
@@ -59,27 +59,27 @@ pub(crate) fn recording_stop_reason_dto(reason: RecordingReason) -> RecordingSto
 }
 
 /// The `rec-*` ID of an app-owned recording. Call while holding
-/// `recording_sessions.lock()`; duplicate starts can reuse the active ID.
-pub(crate) fn begin_recording_session(
+/// `recording_lifecycle.lock()`; duplicate starts can reuse the active ID.
+pub(crate) fn begin_recording(
     state: &AppState,
-    lifecycle: &RecordingLifecyclePermit<'_>,
-) -> haven_common::types::SessionId {
-    state.recording_sessions.begin(lifecycle)
+    lifecycle: &RecordingLifecycleGuard<'_>,
+) -> haven_common::types::RecordingId {
+    state.recording_lifecycle.begin(lifecycle)
 }
 
-/// Emit `recording:started` with the session's id. Used by both the
+/// Emit `recording:started` with the recording's ID. Used by both the
 /// `start_recording` Tauri command and the shell hotkey start path so the
 /// wire shape stays consistent across entry points.
 pub(crate) fn emit_recording_started(
     app: &tauri::AppHandle,
-    session_id: &haven_common::types::SessionId,
+    recording_id: &haven_common::types::RecordingId,
 ) {
     emit_event_logged(
         app,
         RECORDING_STARTED_EVENT,
         RecordingEvent {
             is_recording: true,
-            session_id: Some(session_id.clone()),
+            recording_id: Some(recording_id.clone()),
             reason: None,
             duration_ms: None,
         },
@@ -90,7 +90,7 @@ pub(crate) fn emit_recording_started(
 /// Emit `recording:stopped` with the supplied reason and duration.
 pub(crate) fn emit_recording_stopped(
     app: &tauri::AppHandle,
-    session_id: haven_common::types::SessionId,
+    recording_id: haven_common::types::RecordingId,
     reason: RecordingStopReasonDto,
     duration_ms: Option<u64>,
 ) {
@@ -99,7 +99,7 @@ pub(crate) fn emit_recording_stopped(
         RECORDING_STOPPED_EVENT,
         RecordingEvent {
             is_recording: false,
-            session_id: Some(session_id),
+            recording_id: Some(recording_id),
             reason: Some(reason),
             duration_ms,
         },
@@ -111,7 +111,7 @@ pub(crate) fn emit_recording_stopped(
 /// failures have no active capture and receive a fresh correlation ID.
 pub(crate) fn emit_recording_error(
     app: &tauri::AppHandle,
-    session_id: Option<haven_common::types::SessionId>,
+    recording_id: Option<haven_common::types::RecordingId>,
     error: impl Into<String>,
 ) {
     let error = sanitize_error_text(&error.into());
@@ -119,7 +119,7 @@ pub(crate) fn emit_recording_error(
         app,
         RECORDING_ERROR_EVENT,
         RecordingErrorEvent {
-            session_id: session_id.unwrap_or_else(|| haven_common::types::new_id("rec").into()),
+            recording_id: recording_id.unwrap_or_else(|| haven_common::types::new_id("rec").into()),
             error,
         },
         "recording_error",
@@ -140,7 +140,7 @@ pub(crate) fn emit_recording_error(
 pub(crate) async fn finalize_transcription(
     state: &Arc<AppState>,
     app: &tauri::AppHandle,
-    session_id: haven_common::types::SessionId,
+    recording_id: haven_common::types::RecordingId,
     result: RecordingResult,
 ) -> Option<String> {
     // Tell the UI STT is about to run, before the (potentially slow)
@@ -149,7 +149,7 @@ pub(crate) async fn finalize_transcription(
         app,
         TRANSCRIPTION_STARTED_EVENT,
         TranscriptionStartedEvent {
-            session_id: session_id.clone(),
+            recording_id: recording_id.clone(),
         },
         "transcription_started",
     );
@@ -159,7 +159,7 @@ pub(crate) async fn finalize_transcription(
             app,
             TRANSCRIPTION_ERROR_EVENT,
             TranscriptionErrorEvent {
-                session_id,
+                recording_id,
                 error: sanitize_error_text(&error),
             },
             "transcription_capture_error",
@@ -172,7 +172,7 @@ pub(crate) async fn finalize_transcription(
             app,
             TRANSCRIPTION_RESULT_EVENT,
             TranscriptionResultEvent {
-                session_id,
+                recording_id,
                 text: String::new(),
                 duration_ms: result.duration_ms,
                 confidence: None,
@@ -214,13 +214,13 @@ pub(crate) async fn finalize_transcription(
                         "dropping stale pending recording usage"
                     );
                 }
-                pending.insert(session_id.to_string(), llm_usage);
+                pending.insert(recording_id.to_string(), llm_usage);
             }
             emit_event_logged(
                 app,
                 TRANSCRIPTION_RESULT_EVENT,
                 TranscriptionResultEvent {
-                    session_id: session_id.clone(),
+                    recording_id: recording_id.clone(),
                     text: text.clone(),
                     duration_ms: result.duration_ms,
                     confidence: None,
@@ -234,7 +234,7 @@ pub(crate) async fn finalize_transcription(
                 .pending_recording_usage
                 .lock()
                 .unwrap_or_else(|p| p.into_inner())
-                .remove(session_id.as_str());
+                .remove(recording_id.as_str());
             // There is nothing to submit, but the UI still needs the
             // "transcribing" overlay closed. The frontend treats an empty
             // `transcription:result` as "close, add no message".
@@ -242,7 +242,7 @@ pub(crate) async fn finalize_transcription(
                 app,
                 TRANSCRIPTION_RESULT_EVENT,
                 TranscriptionResultEvent {
-                    session_id: session_id.clone(),
+                    recording_id: recording_id.clone(),
                     text: String::new(),
                     duration_ms: result.duration_ms,
                     confidence: None,
@@ -259,12 +259,12 @@ pub(crate) async fn finalize_transcription(
                 .pending_recording_usage
                 .lock()
                 .unwrap_or_else(|p| p.into_inner())
-                .remove(session_id.as_str());
+                .remove(recording_id.as_str());
             emit_event_logged(
                 app,
                 TRANSCRIPTION_ERROR_EVENT,
                 TranscriptionErrorEvent {
-                    session_id,
+                    recording_id,
                     error: sanitize_error_text(
                         &transcription
                             .error
@@ -309,7 +309,7 @@ pub(crate) fn classify_stop_capture_error(
 
 pub(crate) async fn settle_owned_stop_capture_error<SyncShell, SyncFuture, Detach, EmitError>(
     state: &haven_input::RecordingState,
-    expected_session_id: &haven_common::types::SessionId,
+    expected_recording_id: &haven_common::types::RecordingId,
     error: String,
     sync_shell: SyncShell,
     detach: Detach,
@@ -318,16 +318,16 @@ pub(crate) async fn settle_owned_stop_capture_error<SyncShell, SyncFuture, Detac
 where
     SyncShell: FnOnce() -> SyncFuture,
     SyncFuture: std::future::Future<Output = ()>,
-    Detach: FnOnce() -> Option<haven_common::types::SessionId>,
-    EmitError: FnOnce(haven_common::types::SessionId, String),
+    Detach: FnOnce() -> Option<haven_common::types::RecordingId>,
+    EmitError: FnOnce(haven_common::types::RecordingId, String),
 {
     if classify_stop_capture_error(state) == StopCaptureErrorClass::CaptureStillActive {
         return Err(error);
     }
 
     sync_shell().await;
-    if let Some(session_id) = stop_error_event_session_id(detach(), expected_session_id) {
-        emit_error(session_id, error);
+    if let Some(recording_id) = stop_error_event_recording_id(detach(), expected_recording_id) {
+        emit_error(recording_id, error);
     }
     Ok(())
 }
@@ -335,23 +335,23 @@ where
 /// Return the detached capture ID only when it is the same recording whose
 /// stop failed. This prevents a delayed failure from emitting an error for a
 /// newer recording that acquired ownership in between.
-pub(crate) fn stop_error_event_session_id(
-    detached: Option<haven_common::types::SessionId>,
-    expected: &haven_common::types::SessionId,
-) -> Option<haven_common::types::SessionId> {
+pub(crate) fn stop_error_event_recording_id(
+    detached: Option<haven_common::types::RecordingId>,
+    expected: &haven_common::types::RecordingId,
+) -> Option<haven_common::types::RecordingId> {
     detached.filter(|detached_id| detached_id == expected)
 }
 
 pub(crate) struct RecordingStopCompletion<'a> {
-    pub(crate) lifecycle: RecordingLifecyclePermit<'a>,
+    pub(crate) lifecycle: RecordingLifecycleGuard<'a>,
     pub(crate) stop_context: RecordingStopContext,
-    pub(crate) session_id: haven_common::types::SessionId,
+    pub(crate) recording_id: haven_common::types::RecordingId,
     pub(crate) result: RecordingResult,
     pub(crate) shell_update: RecordingStopShellUpdate,
 }
 
 /// Complete the synchronous portion of a successful app-owned recording
-/// stop, release the lifecycle permit, then hand transcription to the single
+/// stop, release the lifecycle guard, then hand transcription to the single
 /// app-scoped scheduler. The closures keep event and scheduling adapters
 /// injectable so the ordering can be tested without a Tauri runtime.
 pub(crate) async fn finish_recording_stop<EmitStopped, Schedule, ScheduleFuture>(
@@ -360,14 +360,14 @@ pub(crate) async fn finish_recording_stop<EmitStopped, Schedule, ScheduleFuture>
     emit_stopped: EmitStopped,
     schedule: Schedule,
 ) where
-    EmitStopped: FnOnce(haven_common::types::SessionId, RecordingStopReasonDto, u64) + Send,
-    Schedule: FnOnce(haven_common::types::SessionId, RecordingResult) -> ScheduleFuture + Send,
+    EmitStopped: FnOnce(haven_common::types::RecordingId, RecordingStopReasonDto, u64) + Send,
+    Schedule: FnOnce(haven_common::types::RecordingId, RecordingResult) -> ScheduleFuture + Send,
     ScheduleFuture: std::future::Future<Output = bool> + Send,
 {
     let RecordingStopCompletion {
         lifecycle,
         stop_context,
-        session_id,
+        recording_id,
         result,
         shell_update,
     } = completion;
@@ -380,7 +380,7 @@ pub(crate) async fn finish_recording_stop<EmitStopped, Schedule, ScheduleFuture>
     }
 
     emit_stopped(
-        session_id.clone(),
+        recording_id.clone(),
         recording_stop_reason_dto(result.reason),
         result.duration_ms,
     );
@@ -393,7 +393,7 @@ pub(crate) async fn finish_recording_stop<EmitStopped, Schedule, ScheduleFuture>
         .await
     {
         tracing::trace!(
-            recording_id = %session_id,
+            recording_id = %recording_id,
             "skipping stale auto-stop toggle reset"
         );
     }
@@ -402,9 +402,9 @@ pub(crate) async fn finish_recording_stop<EmitStopped, Schedule, ScheduleFuture>
     if result.reason == RecordingReason::Cancel {
         return;
     }
-    if !schedule(session_id.clone(), result).await {
+    if !schedule(recording_id.clone(), result).await {
         tracing::warn!(
-            recording_id = %session_id,
+            recording_id = %recording_id,
             "recording transcription task rejected during application shutdown"
         );
     }
@@ -415,12 +415,12 @@ pub(crate) async fn finish_recording_stop<EmitStopped, Schedule, ScheduleFuture>
 pub(crate) fn schedule_recording_transcription(
     state: Arc<AppState>,
     app: tauri::AppHandle,
-    session_id: haven_common::types::SessionId,
+    recording_id: haven_common::types::RecordingId,
     result: RecordingResult,
 ) -> bool {
     let runtime = state.runtime.clone();
     runtime.spawn("recording-transcription", async move {
-        let _ = finalize_transcription(&state, &app, session_id, result).await;
+        let _ = finalize_transcription(&state, &app, recording_id, result).await;
     })
 }
 
@@ -435,13 +435,13 @@ pub async fn start_recording(
         .recording_stop_context()
         .await
         .recording_revision;
-    let lifecycle = state.recording_sessions.lock().await;
+    let lifecycle = state.recording_lifecycle.lock().await;
     if let Err(e) = state.runtime.input_pipeline.start_capture().await {
         // The hotkey may have started a recording a moment earlier, or a VAD
         // auto-stop may be finalizing: the pipeline is busy, not broken.
         let capture_state = state.runtime.input_pipeline.state().await;
         if matches!(capture_state, haven_input::RecordingState::Recording)
-            && let Some(session_id) = state.recording_sessions.current(&lifecycle)
+            && let Some(recording_id) = state.recording_lifecycle.current(&lifecycle)
         {
             state
                 .runtime
@@ -451,7 +451,7 @@ pub async fn start_recording(
             // This command may be reconciling a toolbar click with a capture
             // that was started by the hotkey. Re-emit the stable identity so
             // the renderer can bind its optimistic state to that capture.
-            emit_recording_started(&app, &session_id);
+            emit_recording_started(&app, &recording_id);
             return Ok(());
         }
         let msg = if matches!(capture_state, haven_input::RecordingState::Processing) {
@@ -471,8 +471,8 @@ pub async fn start_recording(
         .shell
         .sync_recording_if_revision(true, expected_recording_revision)
         .await;
-    let session_id = begin_recording_session(&state, &lifecycle);
-    emit_recording_started(&app, &session_id);
+    let recording_id = begin_recording(&state, &lifecycle);
+    emit_recording_started(&app, &recording_id);
     Ok(())
 }
 
@@ -482,8 +482,8 @@ pub async fn stop_recording(
     app: tauri::AppHandle,
 ) -> Result<(), String> {
     let stop_context = state.runtime.shell.recording_stop_context().await;
-    let lifecycle = state.recording_sessions.lock().await;
-    let Some(session_id) = state.recording_sessions.current(&lifecycle) else {
+    let lifecycle = state.recording_lifecycle.lock().await;
+    let Some(recording_id) = state.recording_lifecycle.current(&lifecycle) else {
         return match classify_stop_capture_error(&state.runtime.input_pipeline.state().await) {
             StopCaptureErrorClass::AlreadyFinalizing => Ok(()),
             StopCaptureErrorClass::CaptureStillActive => Err(log_err(
@@ -511,7 +511,7 @@ pub async fn stop_recording(
             let capture_state = state.runtime.input_pipeline.state().await;
             return match settle_owned_stop_capture_error(
                 &capture_state,
-                &session_id,
+                &recording_id,
                 e.to_string(),
                 || async {
                     state
@@ -520,8 +520,8 @@ pub async fn stop_recording(
                         .sync_recording_if_revision(false, stop_context.recording_revision)
                         .await;
                 },
-                || state.recording_sessions.finish(&lifecycle),
-                |session_id, error| emit_recording_error(&app, Some(session_id), error),
+                || state.recording_lifecycle.finish(&lifecycle),
+                |recording_id, error| emit_recording_error(&app, Some(recording_id), error),
             )
             .await
             {
@@ -530,8 +530,8 @@ pub async fn stop_recording(
             };
         }
     };
-    let detached_session_id = state.recording_sessions.finish(&lifecycle);
-    debug_assert_eq!(detached_session_id.as_ref(), Some(&session_id));
+    let detached_recording_id = state.recording_lifecycle.finish(&lifecycle);
+    debug_assert_eq!(detached_recording_id.as_ref(), Some(&recording_id));
     let state_for_transcription = state.inner().clone();
     let app_for_transcription = app.clone();
     let shell = state.runtime.shell.clone();
@@ -540,18 +540,18 @@ pub async fn stop_recording(
         RecordingStopCompletion {
             lifecycle,
             stop_context,
-            session_id,
+            recording_id,
             result,
             shell_update: RecordingStopShellUpdate::StopIfRevision(stop_context.recording_revision),
         },
-        move |session_id, reason, duration_ms| {
-            emit_recording_stopped(&app, session_id, reason, Some(duration_ms));
+        move |recording_id, reason, duration_ms| {
+            emit_recording_stopped(&app, recording_id, reason, Some(duration_ms));
         },
-        move |session_id, result| async move {
+        move |recording_id, result| async move {
             schedule_recording_transcription(
                 state_for_transcription,
                 app_for_transcription,
-                session_id,
+                recording_id,
                 result,
             )
         },
@@ -566,8 +566,8 @@ pub async fn cancel_recording(
     app: tauri::AppHandle,
 ) -> Result<(), String> {
     let stop_context = state.runtime.shell.recording_stop_context().await;
-    let lifecycle = state.recording_sessions.lock().await;
-    let Some(session_id) = state.recording_sessions.current(&lifecycle) else {
+    let lifecycle = state.recording_lifecycle.lock().await;
+    let Some(recording_id) = state.recording_lifecycle.current(&lifecycle) else {
         // Timed media-tool captures share the pipeline but have no overlay
         // identity, so the voice cancel command must not stop them.
         return Ok(());
@@ -585,7 +585,7 @@ pub async fn cancel_recording(
         .await;
     // No transcription follows a cancel: detach this identity before a new
     // capture can start and remove any usage awaiting renderer submission.
-    let cancelled_recording_id = state.recording_sessions.finish(&lifecycle);
+    let cancelled_recording_id = state.recording_lifecycle.finish(&lifecycle);
     if let Some(recording_id) = cancelled_recording_id {
         state
             .pending_recording_usage
@@ -593,7 +593,7 @@ pub async fn cancel_recording(
             .unwrap_or_else(|p| p.into_inner())
             .remove(recording_id.as_str());
     }
-    emit_recording_stopped(&app, session_id, RecordingStopReasonDto::Cancel, None);
+    emit_recording_stopped(&app, recording_id, RecordingStopReasonDto::Cancel, None);
     Ok(())
 }
 
@@ -604,7 +604,7 @@ pub async fn process_transcript(
     active_session_id: Option<String>,
     attachments: Option<Vec<haven_common::types::MessageAttachment>>,
     voice: Option<bool>,
-    recording_session_id: Option<String>,
+    recording_id: Option<String>,
 ) -> Result<haven_agent::ProcessResult, String> {
     let limits = state
         .runtime
@@ -670,7 +670,7 @@ pub async fn process_transcript(
                 .release_pending_managed_assets(&attachments);
         }
     }
-    let pending_recording_usage = recording_session_id.as_deref().and_then(|id| {
+    let pending_recording_usage = recording_id.as_deref().and_then(|id| {
         state
             .pending_recording_usage
             .lock()
@@ -695,7 +695,7 @@ pub async fn process_transcript(
                 .await;
         } else {
             tracing::warn!(
-                recording_session_id,
+                recording_id,
                 "discarding transcription usage without a target session"
             );
         }
@@ -718,7 +718,7 @@ pub async fn process_transcript(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app_state::RecordingSessionOwner;
+    use crate::app_state::RecordingLifecycleOwner;
     use crate::desktop::{ShellHandler, TrayStatus};
     use std::sync::Mutex as StdMutex;
     use std::sync::atomic::Ordering;
@@ -746,9 +746,9 @@ mod tests {
             haven_input::RecordingState::Pending,
             haven_input::RecordingState::Processing,
         ] {
-            let owner = RecordingSessionOwner::default();
+            let owner = RecordingLifecycleOwner::default();
             let lifecycle = owner.lock().await;
-            let session_id = owner.begin(&lifecycle);
+            let recording_id = owner.begin(&lifecycle);
             let sync_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
             let events = Arc::new(StdMutex::new(Vec::new()));
             let sync_calls_in_closure = sync_calls.clone();
@@ -756,17 +756,17 @@ mod tests {
 
             let outcome = settle_owned_stop_capture_error(
                 &capture_state,
-                &session_id,
+                &recording_id,
                 "stop raced with another finalizer".to_string(),
                 move || async move {
                     sync_calls_in_closure.fetch_add(1, Ordering::SeqCst);
                 },
                 || owner.finish(&lifecycle),
-                move |event_session_id, error| {
+                move |event_recording_id, error| {
                     events_in_closure
                         .lock()
                         .unwrap_or_else(|poisoned| poisoned.into_inner())
-                        .push((event_session_id, error));
+                        .push((event_recording_id, error));
                 },
             )
             .await;
@@ -778,16 +778,19 @@ mod tests {
                 *events
                     .lock()
                     .unwrap_or_else(|poisoned| poisoned.into_inner()),
-                vec![(session_id, "stop raced with another finalizer".to_string())]
+                vec![(
+                    recording_id,
+                    "stop raced with another finalizer".to_string()
+                )]
             );
         }
     }
 
     #[tokio::test]
     async fn active_capture_stop_failure_returns_error_without_side_effects() {
-        let owner = RecordingSessionOwner::default();
+        let owner = RecordingLifecycleOwner::default();
         let lifecycle = owner.lock().await;
-        let session_id = owner.begin(&lifecycle);
+        let recording_id = owner.begin(&lifecycle);
         let sync_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let detach_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let event_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -799,7 +802,7 @@ mod tests {
 
         let outcome = settle_owned_stop_capture_error(
             &haven_input::RecordingState::Recording,
-            &session_id,
+            &recording_id,
             "capture is still recording".to_string(),
             move || async move {
                 sync_in_closure.fetch_add(1, Ordering::SeqCst);
@@ -808,7 +811,7 @@ mod tests {
                 detach_in_closure.fetch_add(1, Ordering::SeqCst);
                 owner_for_detach.finish(lifecycle_for_detach)
             },
-            move |_session_id, _error| {
+            move |_recording_id, _error| {
                 event_in_closure.fetch_add(1, Ordering::SeqCst);
             },
         )
@@ -818,28 +821,28 @@ mod tests {
         assert_eq!(sync_calls.load(Ordering::SeqCst), 0);
         assert_eq!(detach_calls.load(Ordering::SeqCst), 0);
         assert_eq!(event_calls.load(Ordering::SeqCst), 0);
-        assert_eq!(owner.current(&lifecycle), Some(session_id));
+        assert_eq!(owner.current(&lifecycle), Some(recording_id));
     }
 
     #[tokio::test]
     async fn stop_error_event_uses_only_the_detached_recording_identity() {
-        let owner = RecordingSessionOwner::default();
+        let owner = RecordingLifecycleOwner::default();
         let lifecycle = owner.lock().await;
-        let session_id = owner.begin(&lifecycle);
+        let recording_id = owner.begin(&lifecycle);
         let detached = owner.finish(&lifecycle);
 
         assert_eq!(
-            stop_error_event_session_id(detached, &session_id),
-            Some(session_id.clone())
+            stop_error_event_recording_id(detached, &recording_id),
+            Some(recording_id.clone())
         );
         assert_eq!(
-            stop_error_event_session_id(
+            stop_error_event_recording_id(
                 Some(haven_common::types::new_id("rec").into()),
-                &session_id
+                &recording_id
             ),
             None
         );
-        assert_eq!(stop_error_event_session_id(None, &session_id), None);
+        assert_eq!(stop_error_event_recording_id(None, &recording_id), None);
     }
 
     struct TrayOrderRecorder(Arc<StdMutex<Vec<&'static str>>>);
@@ -875,16 +878,16 @@ mod tests {
         shell.set_handler(Arc::new(TrayOrderRecorder(order.clone())));
         let stop_context = shell.recording_stop_context().await;
 
-        let owner = Arc::new(RecordingSessionOwner::default());
+        let owner = Arc::new(RecordingLifecycleOwner::default());
         let owner_for_schedule = owner.clone();
         let lifecycle = owner.lock().await;
-        let old_session_id = owner.begin(&lifecycle);
-        assert_eq!(owner.finish(&lifecycle), Some(old_session_id.clone()));
+        let old_recording_id = owner.begin(&lifecycle);
+        assert_eq!(owner.finish(&lifecycle), Some(old_recording_id.clone()));
 
         let (started_tx, started_rx) = oneshot::channel();
         let (release_tx, release_rx) = oneshot::channel();
         let (finished_tx, mut finished_rx) = oneshot::channel();
-        let (next_session_tx, next_session_rx) = oneshot::channel();
+        let (next_recording_tx, next_recording_rx) = oneshot::channel();
 
         let mut result = RecordingResult::default();
         result.reason = RecordingReason::Silence;
@@ -897,7 +900,7 @@ mod tests {
                 RecordingStopCompletion {
                     lifecycle,
                     stop_context,
-                    session_id: old_session_id.clone(),
+                    recording_id: old_recording_id.clone(),
                     result,
                     shell_update: RecordingStopShellUpdate::StopIfRevision(
                         stop_context.recording_revision,
@@ -905,9 +908,9 @@ mod tests {
                 },
                 {
                     let order = order.clone();
-                    let expected_session_id = old_session_id.clone();
-                    move |session_id, reason, duration_ms| {
-                        assert_eq!(session_id, expected_session_id);
+                    let expected_recording_id = old_recording_id.clone();
+                    move |recording_id, reason, duration_ms| {
+                        assert_eq!(recording_id, expected_recording_id);
                         assert_eq!(reason, RecordingStopReasonDto::Silence);
                         assert_eq!(duration_ms, 37);
                         push_order(&order, "stopped");
@@ -916,9 +919,9 @@ mod tests {
                 {
                     let shell = shell.clone();
                     let order = order.clone();
-                    let expected_session_id = old_session_id.clone();
-                    move |session_id, _result| async move {
-                        assert_eq!(session_id, expected_session_id);
+                    let expected_recording_id = old_recording_id.clone();
+                    move |recording_id, _result| async move {
+                        assert_eq!(recording_id, expected_recording_id);
                         assert_eq!(
                             *order
                                 .lock()
@@ -929,15 +932,15 @@ mod tests {
 
                         let lifecycle = owner_for_schedule.lock().await;
                         assert!(owner_for_schedule.current(&lifecycle).is_none());
-                        let next_session_id = owner_for_schedule.begin(&lifecycle);
+                        let next_recording_id = owner_for_schedule.begin(&lifecycle);
                         drop(lifecycle);
-                        next_session_tx.send(next_session_id).unwrap();
+                        next_recording_tx.send(next_recording_id).unwrap();
                         push_order(&order, "scheduled");
 
                         tokio::spawn(async move {
-                            started_tx.send(session_id.clone()).unwrap();
+                            started_tx.send(recording_id.clone()).unwrap();
                             let _ = release_rx.await;
-                            finished_tx.send(session_id).unwrap();
+                            finished_tx.send(recording_id).unwrap();
                         });
                         true
                     }
@@ -947,16 +950,16 @@ mod tests {
         .await
         .expect("stop completion must not wait for transcription");
 
-        let next_session_id = next_session_rx.await.unwrap();
-        assert_ne!(next_session_id, old_session_id);
-        assert_eq!(started_rx.await.unwrap(), old_session_id);
+        let next_recording_id = next_recording_rx.await.unwrap();
+        assert_ne!(next_recording_id, old_recording_id);
+        assert_eq!(started_rx.await.unwrap(), old_recording_id);
         assert_eq!(
             finished_rx.try_recv(),
             Err(oneshot::error::TryRecvError::Empty),
             "the fake transcription must remain behind its gate"
         );
         release_tx.send(()).unwrap();
-        assert_eq!(finished_rx.await.unwrap(), old_session_id);
+        assert_eq!(finished_rx.await.unwrap(), old_recording_id);
         assert_eq!(
             *order
                 .lock()
@@ -970,9 +973,9 @@ mod tests {
         let shell = Arc::new(DesktopShell::new());
         shell.toggle_recording().await;
         let stop_context = shell.recording_stop_context().await;
-        let owner = RecordingSessionOwner::default();
+        let owner = RecordingLifecycleOwner::default();
         let lifecycle = owner.lock().await;
-        let session_id = owner.begin(&lifecycle);
+        let recording_id = owner.begin(&lifecycle);
         owner.finish(&lifecycle);
 
         let mut result = RecordingResult::default();
@@ -982,16 +985,16 @@ mod tests {
             RecordingStopCompletion {
                 lifecycle,
                 stop_context,
-                session_id,
+                recording_id,
                 result,
                 shell_update: RecordingStopShellUpdate::StopIfRevision(
                     stop_context.recording_revision,
                 ),
             },
-            |_session_id, _reason, _duration_ms| {},
+            |_recording_id, _reason, _duration_ms| {},
             {
                 let shell = shell.clone();
-                |_session_id, _result| async move {
+                |_recording_id, _result| async move {
                     assert!(shell.state().await.is_recording_toggle);
                     true
                 }
@@ -1004,9 +1007,9 @@ mod tests {
     #[tokio::test]
     async fn cancel_reason_does_not_schedule_transcription() {
         let shell = DesktopShell::new();
-        let owner = RecordingSessionOwner::default();
+        let owner = RecordingLifecycleOwner::default();
         let lifecycle = owner.lock().await;
-        let session_id = owner.begin(&lifecycle);
+        let recording_id = owner.begin(&lifecycle);
         owner.finish(&lifecycle);
         let mut result = RecordingResult::default();
         result.reason = RecordingReason::Cancel;
@@ -1017,14 +1020,16 @@ mod tests {
             RecordingStopCompletion {
                 lifecycle,
                 stop_context: shell.recording_stop_context().await,
-                session_id,
+                recording_id,
                 result,
                 shell_update: RecordingStopShellUpdate::RefreshCurrent,
             },
-            |_session_id, reason, _duration_ms| assert_eq!(reason, RecordingStopReasonDto::Cancel),
+            |_recording_id, reason, _duration_ms| {
+                assert_eq!(reason, RecordingStopReasonDto::Cancel)
+            },
             {
                 let schedule_called = schedule_called.clone();
-                move |_session_id, _result| async move {
+                move |_recording_id, _result| async move {
                     schedule_called.store(true, Ordering::SeqCst);
                     true
                 }
@@ -1050,30 +1055,30 @@ mod tests {
         shell.toggle_recording().await;
         shell.toggle_recording().await;
 
-        let owner = RecordingSessionOwner::default();
+        let owner = RecordingLifecycleOwner::default();
         let lifecycle = owner.lock().await;
-        let session_id = owner.begin(&lifecycle);
+        let recording_id = owner.begin(&lifecycle);
         owner.finish(&lifecycle);
         let mut result = RecordingResult::default();
         result.reason = RecordingReason::Silence;
-        let stopped_session_id = session_id.clone();
+        let stopped_recording_id = recording_id.clone();
 
         finish_recording_stop(
             &shell,
             RecordingStopCompletion {
                 lifecycle,
                 stop_context,
-                session_id,
+                recording_id,
                 result,
                 shell_update: RecordingStopShellUpdate::RefreshCurrent,
             },
-            move |event_session_id, reason, _duration_ms| {
-                assert_eq!(event_session_id, stopped_session_id);
+            move |event_recording_id, reason, _duration_ms| {
+                assert_eq!(event_recording_id, stopped_recording_id);
                 assert_eq!(reason, RecordingStopReasonDto::Silence);
             },
             {
                 let shell = shell.clone();
-                move |_session_id, _result| async move {
+                move |_recording_id, _result| async move {
                     let state = shell.state().await;
                     assert!(state.is_recording);
                     assert!(state.is_recording_toggle);

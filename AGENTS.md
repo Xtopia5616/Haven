@@ -89,7 +89,7 @@ corepack pnpm run check
 | 前缀 | 实体 | 位置 |
 |---|---|---|
 | `conf-` | 安全确认请求 | `haven_agent` |
-| `rec-` | 录音会话（一次录音一个 id，`recording:started`/`transcription:*` 事件共用） | `haven_app` |
+| `rec-` | 录音（一次录音一个 id，`recording:started`/`transcription:*` 事件共用） | `haven_app` |
 | `file-` | 临时文件名 | `haven_app` |
 | `call-` | provider 返回空 tool_call_id 时的本地兜底 | `haven_agent` |
 
@@ -99,9 +99,9 @@ corepack pnpm run check
 - **内容行与执行行共用 id**（同一实体在 `messages` 与 `session_steps` 各存一面，内容只落 messages，另一面只存执行态）：assistant thought 的消息行与 thought 步骤行共用 `step-*` id（流式气泡 id 按 `step` 前缀 mint，`session_steps.thought` 列新数据不再写入）；补充输入/steering 的 thought 步骤行与用户消息行共用 `msg-*` id（消息行先落库，步骤行以 `message_id` 复用）；ask 问题消息行与 ask 步骤行共用 `step-*` id（问题文本在 `apply(ToolResult)` 投影到 messages，resume 的 snapshot-less 重建跳过 `tool_name='ask'` 步骤）。前端身份关联一律按 id；内容相等不能作为身份兜底。
 - **resume 恢复补充输入按时间不按内容**：有 `session_events` 时按 sequence replay；没有事件流就没有可恢复 transcript，不得从 snapshot 导入。resume 时仅当 executor 队列为空（崩溃/重启）才把未进入事件流的 user 消息重新排队；禁止再引入内容比对去重。前端 `submitTranscript` 使用 in-flight lane 串行；只有复用同一显式 `submissionToken` 的同一请求共享 promise，无 token 的提交即使内容相同也独立排队；后端不对用户输入做内容去重。
 - **Rollback 双时钟**：`BranchPoint.event_cursor` 截断 events；`last_msg_at` 截断投影表。每次投影写必须 `note_last_msg_at`。
-- Rust/DB/事件字段统一 snake_case `xxx_id`（`session_id`、`tool_run_id`、`message_id`…）；前端在边界转 camelCase `xxxId`。
+- Rust/DB/事件字段统一 snake_case `xxx_id`（`session_id` 专指对话、`recording_id` 专指录音、`tool_run_id`、`message_id`…）；前端在边界转 camelCase `xxxId`。
 - 术语：**session** = 对话（ReAct 主实体）；**tool call** = Agent/模型发起的一次工具调用；**tool run** = 可脱离当前 turn 持久运行的工具工作单元（后台运行/定时运行由 `tool_runs.kind` 区分）。执行方式使用 `ToolExecutionMode::{Foreground, Background}`；定时触发仍是 `schedule` 工具的职责。UI 文案使用「会话」「任务」「后台任务」「定时任务」。
-- 实体 ID newtype 集中在 `haven_common::types`（`id_newtype!` 宏生成，`struct X(pub String)`，serde 按普通字符串序列化）：目前只有 `ConfirmId`/`SessionId` 在运行时被使用，其余实体继续用 `String`；新增真正需要类型隔离的实体 ID 时再补 newtype，不要提前定义未使用的类型。
+- 实体 ID newtype 集中在 `haven_common::types`（`id_newtype!` 宏生成，`struct X(pub String)`，serde 按普通字符串序列化）：目前只有 `ConfirmId`/`RecordingId` 在运行时被使用，其余实体继续用 `String`；新增真正需要类型隔离的实体 ID 时再补 newtype，不要提前定义未使用的类型。
 - 序号类字段（u64 代次，非持久实体）：`run_id`（run 实例）、`gen_id`（流式代次）、MCP JSON-RPC `next_id`，保持现有命名并加文档说明。
 - 外部 ID（LLM `tool_call_id`、模型 ID、MCP `Mcp-Session-Id`）保持 provider 格式，不套用本规范。
 - kv_store key 用 `domain.key` 风格（如 `fact_extraction.{session_id}`、`fact_extraction_pending.{session_id}`），内嵌的实体 ID 必须是规范格式。

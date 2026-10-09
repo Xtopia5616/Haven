@@ -3,10 +3,7 @@ import { browser } from '$app/environment';
 import { DRAFT_SESSION_ID, type SessionReducer } from './sessionReducer.ts';
 import { reactExecutionPhaseForSession, reactExecutionPhaseStore } from './sessionRuntimeStore.ts';
 import { newMessage } from './messageFactory.ts';
-import {
-	newSessionIntentStore,
-	NEW_SESSION_INTENT_STORAGE_KEY,
-} from './sessionIntentStore.ts';
+import { newSessionIntentStore, NEW_SESSION_INTENT_STORAGE_KEY } from './sessionIntentStore.ts';
 import { isBusyStatus, isPausedStatus } from './sessionStatus.ts';
 import { invoke } from './tauri.ts';
 import type { ChatAttachmentPayload, ChatFileAttachment } from './chatAttachmentTypes.ts';
@@ -211,7 +208,7 @@ interface SubmitOptions {
 	images?: ChatAttachmentPayload[] | null;
 	files?: ChatFileAttachment[] | null;
 	voice?: boolean;
-	recordingSessionId?: string;
+	recordingId?: string;
 	/** Reuse only when multiple invocations represent the same user intent. */
 	submissionToken?: string;
 	/** The application-wide session reducer. */
@@ -224,7 +221,7 @@ export async function submitTranscript(
 		images = null,
 		files = null,
 		voice = false,
-		recordingSessionId,
+		recordingId,
 		submissionToken,
 		reducer,
 	}: SubmitOptions,
@@ -234,12 +231,11 @@ export async function submitTranscript(
 		images,
 		files,
 		voice,
-		recordingSessionId,
+		recordingId,
 		pinnedSessionId: reducer.snapshot().activeSessionId,
 		freshStartAtEnqueue: get(newSessionIntentStore),
 		submissionToken:
-			submissionToken ??
-			(voice && recordingSessionId ? `recording:${recordingSessionId}` : undefined),
+			submissionToken ?? (voice && recordingId ? `recording:${recordingId}` : undefined),
 		reducer,
 	};
 	const lane = laneFor(payload);
@@ -271,7 +267,7 @@ async function doSubmit({
 	images = null,
 	files = null,
 	voice = false,
-	recordingSessionId,
+	recordingId,
 	pinnedSessionId,
 	freshStartAtEnqueue,
 	reducer,
@@ -310,7 +306,7 @@ async function doSubmit({
 			activeSessionId: activeId || null,
 			attachments: hasAttachments ? attachments : null,
 			voice,
-			...(recordingSessionId ? { recordingSessionId } : {}),
+			...(recordingId ? { recordingId } : {}),
 		};
 		const result = await invoke('process_transcript', request);
 		const createdId = processResultSessionId(result);

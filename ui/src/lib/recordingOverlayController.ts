@@ -11,7 +11,7 @@ export type RecordingOverlayState = {
 	visible: boolean;
 	isRecording: boolean;
 	processing: boolean;
-	sessionId: string | null;
+	recordingId: string | null;
 	startedAt: string | number | null;
 	vadState: string;
 };
@@ -42,20 +42,20 @@ export interface RecordingOverlayController {
 	onRecordingStopped: (event: RecordingPayload) => void;
 	onVadStatus: (event: VadStatusPayload) => void;
 	onRecordingError: (event: RecordingErrorPayload) => void;
-	onTranscriptionStarted: (sessionId: string) => void;
-	onTranscriptionFinished: (sessionId: string) => void;
+	onTranscriptionStarted: (recordingId: string) => void;
+	onTranscriptionFinished: (recordingId: string) => void;
 	reset: () => void;
 	dispose: () => void;
 }
 
-const SESSION_HISTORY_LIMIT = 128;
+const RECORDING_HISTORY_LIMIT = 128;
 
 function initialState(): RecordingOverlayState {
 	return {
 		visible: false,
 		isRecording: false,
 		processing: false,
-		sessionId: null,
+		recordingId: null,
 		startedAt: null,
 		vadState: 'silent',
 	};
@@ -74,18 +74,18 @@ export function createRecordingOverlayController(
 	const now = dependencies.now ?? Date.now;
 	const setTimer = dependencies.setInterval ?? globalThis.setInterval;
 	const clearTimer = dependencies.clearInterval ?? globalThis.clearInterval;
-	const stoppedSessions = new Set<string>();
-	const terminalSessions = new Set<string>();
+	const stoppedRecordingIds = new Set<string>();
+	const terminalRecordingIds = new Set<string>();
 	let durationTimer: ReturnType<typeof setInterval> | null = null;
 	let lifecycleRevision = 0;
 
-	function remember(sessions: Set<string>, sessionId: string | null) {
-		if (!sessionId) return;
-		sessions.delete(sessionId);
-		sessions.add(sessionId);
-		if (sessions.size > SESSION_HISTORY_LIMIT) {
-			const oldest = sessions.values().next().value;
-			if (oldest !== undefined) sessions.delete(oldest);
+	function remember(recordingIds: Set<string>, recordingId: string | null) {
+		if (!recordingId) return;
+		recordingIds.delete(recordingId);
+		recordingIds.add(recordingId);
+		if (recordingIds.size > RECORDING_HISTORY_LIMIT) {
+			const oldest = recordingIds.values().next().value;
+			if (oldest !== undefined) recordingIds.delete(oldest);
 		}
 	}
 
@@ -111,7 +111,7 @@ export function createRecordingOverlayController(
 
 	function reset() {
 		const current = get(overlayStore);
-		remember(terminalSessions, current.sessionId);
+		remember(terminalRecordingIds, current.recordingId);
 		stopTimer();
 		update(initialState());
 	}
@@ -121,7 +121,7 @@ export function createRecordingOverlayController(
 			visible: true,
 			isRecording: true,
 			processing: false,
-			sessionId: null,
+			recordingId: null,
 			startedAt: null,
 			vadState: 'silent',
 		});
@@ -146,10 +146,10 @@ export function createRecordingOverlayController(
 		} catch (error) {
 			if (
 				lifecycleRevision === optimisticRevision &&
-				get(overlayStore).sessionId === before.sessionId
+				get(overlayStore).recordingId === before.recordingId
 			) {
 				update({ isRecording: true, visible: true });
-				if (before.sessionId) startTimer(false);
+				if (before.recordingId) startTimer(false);
 			}
 			throw error;
 		}
@@ -175,11 +175,15 @@ export function createRecordingOverlayController(
 	}
 
 	function onRecordingStarted(event: RecordingPayload) {
-		const sessionId = event.sessionId ?? null;
-		if (sessionId && (stoppedSessions.has(sessionId) || terminalSessions.has(sessionId))) return;
+		const recordingId = event.recordingId ?? null;
+		if (
+			recordingId &&
+			(stoppedRecordingIds.has(recordingId) || terminalRecordingIds.has(recordingId))
+		)
+			return;
 
 		const current = get(overlayStore);
-		if (sessionId && current.sessionId === sessionId) {
+		if (recordingId && current.recordingId === recordingId) {
 			// A duplicate started event reconciles a missed UI start without
 			// restarting the elapsed timer for the same capture.
 			update({
@@ -195,7 +199,7 @@ export function createRecordingOverlayController(
 			visible: true,
 			isRecording: true,
 			processing: false,
-			sessionId,
+			recordingId,
 			startedAt: now(),
 			vadState: 'silent',
 		});
@@ -203,9 +207,9 @@ export function createRecordingOverlayController(
 	}
 
 	function onRecordingStopped(event: RecordingPayload) {
-		const sessionId = event.sessionId ?? null;
-		remember(stoppedSessions, sessionId);
-		if (!sessionId || get(overlayStore).sessionId !== sessionId) return;
+		const recordingId = event.recordingId ?? null;
+		remember(stoppedRecordingIds, recordingId);
+		if (!recordingId || get(overlayStore).recordingId !== recordingId) return;
 
 		const reason = event.reason;
 		if (reason === 'cancel') {
@@ -220,24 +224,25 @@ export function createRecordingOverlayController(
 
 	function onVadStatus(event: VadStatusPayload) {
 		if (!get(overlayStore).isRecording) return;
-		// VAD events do not carry a recording session id, so they can only be
+		// VAD events do not carry a recording ID, so they can only be
 		// gated by the currently visible recording state.
 		update({ vadState: event.state || 'silent' }, false);
 	}
 
 	function onRecordingError(event: RecordingErrorPayload) {
-		if (get(overlayStore).sessionId === event.sessionId) reset();
+		if (get(overlayStore).recordingId === event.recordingId) reset();
 	}
 
-	function onTranscriptionStarted(sessionId: string) {
-		if (terminalSessions.has(sessionId) || get(overlayStore).sessionId !== sessionId) return;
+	function onTranscriptionStarted(recordingId: string) {
+		if (terminalRecordingIds.has(recordingId) || get(overlayStore).recordingId !== recordingId)
+			return;
 		update({ isRecording: false, processing: true, visible: true, vadState: 'silent' });
 		stopTimer();
 	}
 
-	function onTranscriptionFinished(sessionId: string) {
-		remember(terminalSessions, sessionId);
-		if (get(overlayStore).sessionId === sessionId) reset();
+	function onTranscriptionFinished(recordingId: string) {
+		remember(terminalRecordingIds, recordingId);
+		if (get(overlayStore).recordingId === recordingId) reset();
 	}
 
 	function resumeTimer() {

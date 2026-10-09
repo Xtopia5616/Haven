@@ -5,25 +5,25 @@ use crate::desktop::{self, RecordingStartContext, RecordingStopContext, TrayStat
 use crate::events;
 use crate::events::*;
 use crate::logging::sanitize_error_text;
-use haven_common::types::SessionId;
+use haven_common::types::RecordingId;
 use std::sync::Arc;
 use tauri::{Emitter, Manager};
 
 async fn stop_capture_for_owned_recording<T, E, Stop, StopFuture>(
-    session_id: Option<SessionId>,
+    recording_id: Option<RecordingId>,
     stop_capture: Stop,
-) -> Result<Option<(SessionId, T)>, (SessionId, E)>
+) -> Result<Option<(RecordingId, T)>, (RecordingId, E)>
 where
     Stop: FnOnce() -> StopFuture,
     StopFuture: std::future::Future<Output = Result<T, E>>,
 {
-    let Some(session_id) = session_id else {
+    let Some(recording_id) = recording_id else {
         return Ok(None);
     };
 
     match stop_capture().await {
-        Ok(result) => Ok(Some((session_id, result))),
-        Err(error) => Err((session_id, error)),
+        Ok(result) => Ok(Some((recording_id, result))),
+        Err(error) => Err((recording_id, error)),
     }
 }
 
@@ -41,7 +41,7 @@ pub(crate) struct HavenShellHandler {
 impl desktop::ShellHandler for HavenShellHandler {
     async fn on_recording_start(&self, context: RecordingStartContext) {
         let state = self.app_h.state::<Arc<AppState>>();
-        let lifecycle = state.recording_sessions.lock().await;
+        let lifecycle = state.recording_lifecycle.lock().await;
         // Start the pipeline first: emitting `recording:started` before the
         // pipeline is actually recording would leave the UI stuck in the
         // recording state (and every stop attempt failing with "not
@@ -50,10 +50,10 @@ impl desktop::ShellHandler for HavenShellHandler {
             if matches!(
                 self.input_pipeline.state().await,
                 haven_input::RecordingState::Recording
-            ) && state.recording_sessions.current(&lifecycle).is_some()
+            ) && state.recording_lifecycle.current(&lifecycle).is_some()
             {
                 // Another app entry point established this user capture while
-                // the Shell callback waited for its lifecycle permit.
+                // the Shell callback waited for its lifecycle guard.
                 self.shell_arc
                     .sync_recording_if_revision(true, context.recording_revision)
                     .await;
@@ -70,15 +70,15 @@ impl desktop::ShellHandler for HavenShellHandler {
             );
             return;
         }
-        let session_id = crate::commands::begin_recording_session(&state, &lifecycle);
-        crate::commands::emit_recording_started(&self.app_h, &session_id);
+        let recording_id = crate::commands::begin_recording(&state, &lifecycle);
+        crate::commands::emit_recording_started(&self.app_h, &recording_id);
     }
 
     async fn on_recording_stop(&self, stop_context: RecordingStopContext) {
         let state = self.app_h.state::<Arc<AppState>>();
-        let lifecycle = state.recording_sessions.lock().await;
-        let (session_id, result) = match stop_capture_for_owned_recording(
-            state.recording_sessions.current(&lifecycle),
+        let lifecycle = state.recording_lifecycle.lock().await;
+        let (recording_id, result) = match stop_capture_for_owned_recording(
+            state.recording_lifecycle.current(&lifecycle),
             || self.input_pipeline.stop_capture(),
         )
         .await
@@ -86,21 +86,21 @@ impl desktop::ShellHandler for HavenShellHandler {
             Ok(Some(stopped)) => stopped,
             Ok(None) => {
                 // A timed media-tool capture shares InputPipeline but is not
-                // an app voice session. Clear stale shell chrome without
+                // an app-owned recording. Clear stale shell chrome without
                 // stopping it.
                 self.shell_arc.refresh_tray().await;
                 return;
             }
-            Err((session_id, error)) => {
+            Err((recording_id, error)) => {
                 tracing::warn!("pipeline stop_capture failed: {error}");
                 self.shell_arc.refresh_tray().await;
-                let detached = state.recording_sessions.finish(&lifecycle);
-                if let Some(session_id) =
-                    crate::commands::stop_error_event_session_id(detached, &session_id)
+                let detached = state.recording_lifecycle.finish(&lifecycle);
+                if let Some(recording_id) =
+                    crate::commands::stop_error_event_recording_id(detached, &recording_id)
                 {
                     crate::commands::emit_recording_error(
                         &self.app_h,
-                        Some(session_id),
+                        Some(recording_id),
                         format!("录音停止失败: {error}"),
                     );
                 }
@@ -111,8 +111,8 @@ impl desktop::ShellHandler for HavenShellHandler {
         // capture first and notify the UI, then run STT in the background.
         // Without this, VAD-triggered auto-stops would also keep the
         // "recording" overlay visible for the duration of the STT call.
-        let detached_session_id = state.recording_sessions.finish(&lifecycle);
-        debug_assert_eq!(detached_session_id.as_ref(), Some(&session_id));
+        let detached_recording_id = state.recording_lifecycle.finish(&lifecycle);
+        debug_assert_eq!(detached_recording_id.as_ref(), Some(&recording_id));
         let state_for_transcription = state.inner().clone();
         let app_for_transcription = self.app_h.clone();
         let app_for_event = self.app_h.clone();
@@ -121,23 +121,23 @@ impl desktop::ShellHandler for HavenShellHandler {
             crate::commands::RecordingStopCompletion {
                 lifecycle,
                 stop_context,
-                session_id,
+                recording_id,
                 result,
                 shell_update: crate::commands::RecordingStopShellUpdate::RefreshCurrent,
             },
-            move |session_id, reason, duration_ms| {
+            move |recording_id, reason, duration_ms| {
                 crate::commands::emit_recording_stopped(
                     &app_for_event,
-                    session_id,
+                    recording_id,
                     reason,
                     Some(duration_ms),
                 );
             },
-            move |session_id, result| async move {
+            move |recording_id, result| async move {
                 crate::commands::schedule_recording_transcription(
                     state_for_transcription,
                     app_for_transcription,
-                    session_id,
+                    recording_id,
                     result,
                 )
             },
@@ -199,7 +199,7 @@ mod tests {
         let stop_calls_in_closure = stop_calls.clone();
         let capture_in_closure = capture_state.clone();
 
-        let outcome = stop_capture_for_owned_recording(None::<SessionId>, move || async move {
+        let outcome = stop_capture_for_owned_recording(None::<RecordingId>, move || async move {
             stop_calls_in_closure.fetch_add(1, Ordering::SeqCst);
             *capture_in_closure
                 .lock()

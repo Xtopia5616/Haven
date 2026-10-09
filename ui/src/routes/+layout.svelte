@@ -888,20 +888,22 @@
 					},
 					'transcription:started': (event) => {
 						addNotification('正在转写录音…', 'info', 2000);
-						recordingOverlayController.onTranscriptionStarted(event.payload.sessionId);
+						recordingOverlayController.onTranscriptionStarted(
+							event.payload.recordingId,
+						);
 					},
 					'transcription:result': (event) => {
 						const data = event.payload;
-						// Overlay completion is session-scoped; transcript delivery below
+						// Overlay completion is recording-scoped; transcript delivery below
 						// still runs for late results from an older recording.
-						recordingOverlayController.onTranscriptionFinished(data.sessionId);
+						recordingOverlayController.onTranscriptionFinished(data.recordingId);
 						const text = (data.text || '').trim();
 						if (text) {
 							// Same path as a typed message (see `submitVoiceTranscript`):
 							// appends the voice message, submits with the current
 							// `activeSessionId`, and migrates the message into the session if
 							// the backend created a fresh one.
-							submitVoiceTranscript(text, data.sessionId).catch((e) => {
+							submitVoiceTranscript(text, data.recordingId).catch((e) => {
 								reportError(e, {
 									context: '+layout',
 									message: '语音提交失败',
@@ -926,7 +928,7 @@
 							'error',
 							5000,
 						);
-						recordingOverlayController.onTranscriptionFinished(data.sessionId);
+						recordingOverlayController.onTranscriptionFinished(data.recordingId);
 					},
 				}),
 				...appEventListeners({

@@ -75,8 +75,8 @@ impl LlmCallKind {
 //     memory_items shares the message id space), `step-` (session_steps),
 //     `fact-` (facts), `toolrun-` (ToolRuns — background and scheduled),
 //     `usage-` (llm_usage);
-//     `conf-` (safety-gateway confirmations), `rec-` (voice recording
-//     sessions), `file-` (temporary files), `call-` (locally synthesized
+//     `conf-` (safety-gateway confirmations), `rec-` (voice recordings),
+//     `file-` (temporary files), `call-` (locally synthesized
 //     tool-call ids when the provider sends an empty one) are in-process only
 //     and never persisted.
 //   - External ids (LLM `tool_call_id`, provider model ids, MCP session ids)
@@ -150,11 +150,11 @@ id_newtype! {
 }
 
 id_newtype! {
-    /// Unique identifier for a voice-recording session (`rec-{uuid32}`).
+    /// Unique identifier for a voice recording (`rec-{uuid32}`).
     /// Ephemeral: one id per recording, generated at `recording:started` and
     /// shared by the `recording:stopped` and `transcription:*` events of the
     /// same recording (owned and handed off by the app recording lifecycle).
-    SessionId
+    RecordingId
 }
 
 /// MCP transport type.
@@ -1674,7 +1674,7 @@ mod tests {
         assert_eq!(AsRef::<str>::as_ref(&confirm), confirm.as_str());
         let restored: String = confirm.clone().into();
         assert_eq!(restored, confirm.0);
-        let from_str: SessionId = "rec-abc".into();
+        let from_str: RecordingId = "rec-abc".into();
         assert_eq!(from_str.0, "rec-abc");
     }
 

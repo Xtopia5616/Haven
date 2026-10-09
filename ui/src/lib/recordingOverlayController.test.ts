@@ -46,23 +46,35 @@ describe('recording overlay controller', () => {
 		const { controller } = makeController(invoke);
 
 		const starting = controller.startFromToolbar();
-		expect(state(controller)).toMatchObject({ visible: true, isRecording: true, sessionId: null });
+		expect(state(controller)).toMatchObject({
+			visible: true,
+			isRecording: true,
+			recordingId: null,
+		});
 		start.resolve();
 		await starting;
-		controller.onRecordingStarted({ sessionId: 'rec-a' });
+		controller.onRecordingStarted({ recordingId: 'rec-a' });
 		vi.advanceTimersByTime(3_000);
 		expect(controller.durationSeconds()).toBe(3);
 
 		const stopping = controller.stopFromToolbar();
-		expect(state(controller)).toMatchObject({ visible: false, isRecording: false, sessionId: 'rec-a' });
+		expect(state(controller)).toMatchObject({
+			visible: false,
+			isRecording: false,
+			recordingId: 'rec-a',
+		});
 		expect(vi.getTimerCount()).toBe(0);
 		controller.onRecordingStopped({
-			sessionId: 'rec-a',
+			recordingId: 'rec-a',
 			reason: 'manual',
 		});
 		stop.resolve();
 		await stopping;
-		expect(state(controller)).toMatchObject({ visible: true, isRecording: false, sessionId: 'rec-a' });
+		expect(state(controller)).toMatchObject({
+			visible: true,
+			isRecording: false,
+			recordingId: 'rec-a',
+		});
 		expect(invoke.mock.calls.map(([command]) => command)).toEqual([
 			'start_recording',
 			'stop_recording',
@@ -78,11 +90,11 @@ describe('recording overlay controller', () => {
 		const { controller } = makeController(invoke);
 
 		const starting = controller.toggleFromToolbar();
-		controller.onRecordingStarted({ sessionId: 'rec-fast' });
+		controller.onRecordingStarted({ recordingId: 'rec-fast' });
 		const stopping = controller.toggleFromToolbar();
 		expect(state(controller)).toMatchObject({ visible: false, isRecording: false });
 		controller.onRecordingStopped({
-			sessionId: 'rec-fast',
+			recordingId: 'rec-fast',
 			reason: 'silence',
 		});
 		expect(state(controller)).toMatchObject({ visible: true, processing: true });
@@ -107,71 +119,97 @@ describe('recording overlay controller', () => {
 		const { controller } = makeController(invoke);
 
 		const starting = controller.startFromToolbar();
-		controller.onRecordingStarted({ sessionId: 'rec-a' });
+		controller.onRecordingStarted({ recordingId: 'rec-a' });
 		failedStart.reject(new Error('start failed after a newer lifecycle event'));
 		await starting;
-		expect(state(controller)).toMatchObject({ visible: true, isRecording: true, sessionId: 'rec-a' });
+		expect(state(controller)).toMatchObject({
+			visible: true,
+			isRecording: true,
+			recordingId: 'rec-a',
+		});
 		controller.dispose();
 
-		const failedController = makeController(vi.fn().mockRejectedValue(new Error('busy'))).controller;
+		const failedController = makeController(
+			vi.fn().mockRejectedValue(new Error('busy')),
+		).controller;
 		await failedController.startFromToolbar();
-		expect(state(failedController)).toMatchObject({ visible: false, isRecording: false, sessionId: null });
+		expect(state(failedController)).toMatchObject({
+			visible: false,
+			isRecording: false,
+			recordingId: null,
+		});
 	});
 
 	it('restores a matching recording when an optimistic stop fails', async () => {
 		const invoke = vi.fn().mockRejectedValue(new Error('stop failed'));
 		const failingController = makeController(invoke).controller;
-		failingController.onRecordingStarted({ sessionId: 'rec-a' });
+		failingController.onRecordingStarted({ recordingId: 'rec-a' });
 
 		await expect(failingController.stopFromToolbar()).rejects.toThrow('stop failed');
-		expect(state(failingController)).toMatchObject({ visible: true, isRecording: true, sessionId: 'rec-a' });
+		expect(state(failingController)).toMatchObject({
+			visible: true,
+			isRecording: true,
+			recordingId: 'rec-a',
+		});
 		expect(vi.getTimerCount()).toBe(1);
 		failingController.dispose();
 	});
 
 	it('ignores an older stop and transcription lifecycle without stopping the new timer', () => {
 		const { controller } = makeController();
-		controller.onRecordingStarted({ sessionId: 'rec-a' });
-		controller.onRecordingStopped({ sessionId: 'rec-a', reason: 'manual' });
+		controller.onRecordingStarted({ recordingId: 'rec-a' });
+		controller.onRecordingStopped({ recordingId: 'rec-a', reason: 'manual' });
 		controller.onTranscriptionStarted('rec-a');
-		controller.onRecordingStarted({ sessionId: 'rec-b' });
+		controller.onRecordingStarted({ recordingId: 'rec-b' });
 		vi.advanceTimersByTime(2_000);
 
 		controller.onTranscriptionStarted('rec-a');
-		controller.onRecordingStopped({ sessionId: 'rec-a', reason: 'cancel' });
-		controller.onRecordingError({ sessionId: 'rec-a', error: 'old recording failed' });
+		controller.onRecordingStopped({ recordingId: 'rec-a', reason: 'cancel' });
+		controller.onRecordingError({ recordingId: 'rec-a', error: 'old recording failed' });
 		controller.onTranscriptionFinished('rec-a');
 
-		expect(state(controller)).toMatchObject({ visible: true, isRecording: true, sessionId: 'rec-b' });
+		expect(state(controller)).toMatchObject({
+			visible: true,
+			isRecording: true,
+			recordingId: 'rec-b',
+		});
 		expect(controller.durationSeconds()).toBe(2);
 		vi.advanceTimersByTime(1_000);
 		expect(controller.durationSeconds()).toBe(3);
 
 		controller.onTranscriptionStarted('rec-b');
-		expect(state(controller)).toMatchObject({ visible: true, isRecording: false, processing: true });
+		expect(state(controller)).toMatchObject({
+			visible: true,
+			isRecording: false,
+			processing: true,
+		});
 		controller.onTranscriptionFinished('rec-b');
-		expect(state(controller)).toMatchObject({ visible: false, processing: false, sessionId: null });
+		expect(state(controller)).toMatchObject({
+			visible: false,
+			processing: false,
+			recordingId: null,
+		});
 		expect(vi.getTimerCount()).toBe(0);
 	});
 
 	it('applies VAD only while recording and only lets a matching stop change the overlay', () => {
 		const { controller } = makeController();
-		controller.onRecordingStarted({ sessionId: 'rec-a' });
+		controller.onRecordingStarted({ recordingId: 'rec-a' });
 		controller.onVadStatus({ state: 'speech', signal: 'speech_start' });
 		expect(state(controller).vadState).toBe('speech');
 
-		controller.onRecordingStopped({ sessionId: 'rec-other', reason: 'cancel' });
-		expect(state(controller)).toMatchObject({ isRecording: true, sessionId: 'rec-a' });
-		controller.onRecordingStopped({ sessionId: 'rec-a', reason: 'manual' });
+		controller.onRecordingStopped({ recordingId: 'rec-other', reason: 'cancel' });
+		expect(state(controller)).toMatchObject({ isRecording: true, recordingId: 'rec-a' });
+		controller.onRecordingStopped({ recordingId: 'rec-a', reason: 'manual' });
 		controller.onVadStatus({ state: 'silent', signal: 'none' });
 		expect(state(controller).vadState).toBe('silent');
 	});
 
 	it('treats a repeated started event for the same capture as an idempotent confirmation', () => {
 		const { controller } = makeController();
-		controller.onRecordingStarted({ sessionId: 'rec-a' });
+		controller.onRecordingStarted({ recordingId: 'rec-a' });
 		vi.advanceTimersByTime(2_000);
-		controller.onRecordingStarted({ sessionId: 'rec-a' });
+		controller.onRecordingStarted({ recordingId: 'rec-a' });
 
 		expect(controller.durationSeconds()).toBe(2);
 		expect(vi.getTimerCount()).toBe(1);
@@ -180,17 +218,24 @@ describe('recording overlay controller', () => {
 
 	it('hides after cancel even on command failure and disposes only its timer', async () => {
 		const failedCancel = makeController(vi.fn().mockRejectedValue(new Error('cancel failed')));
-		failedCancel.controller.onRecordingStarted({ sessionId: 'rec-a' });
+		failedCancel.controller.onRecordingStarted({ recordingId: 'rec-a' });
 		const cancelResult = failedCancel.controller.cancel();
 		await expect(cancelResult).rejects.toThrow('cancel failed');
-		expect(state(failedCancel.controller)).toMatchObject({ visible: false, isRecording: false });
+		expect(state(failedCancel.controller)).toMatchObject({
+			visible: false,
+			isRecording: false,
+		});
 
 		const { controller, invoke } = makeController();
-		controller.onRecordingStarted({ sessionId: 'rec-b' });
+		controller.onRecordingStarted({ recordingId: 'rec-b' });
 		vi.advanceTimersByTime(2_000);
 		controller.dispose();
 		vi.advanceTimersByTime(5_000);
-		expect(state(controller)).toMatchObject({ visible: true, isRecording: true, sessionId: 'rec-b' });
+		expect(state(controller)).toMatchObject({
+			visible: true,
+			isRecording: true,
+			recordingId: 'rec-b',
+		});
 		expect(controller.durationSeconds()).toBe(2);
 		expect(invoke).not.toHaveBeenCalled();
 		expect(vi.getTimerCount()).toBe(0);
@@ -199,12 +244,12 @@ describe('recording overlay controller', () => {
 	it('retires a muted or cancelled overlay so late transcription events stay hidden', async () => {
 		const cancel = deferred<void>();
 		const { controller } = makeController(vi.fn(() => cancel.promise));
-		controller.onRecordingStarted({ sessionId: 'rec-a' });
+		controller.onRecordingStarted({ recordingId: 'rec-a' });
 		const cancelling = controller.cancel();
 		cancel.resolve();
 		await cancelling;
-		expect(state(controller).sessionId).toBeNull();
-		controller.onRecordingStarted({ sessionId: 'rec-b' });
+		expect(state(controller).recordingId).toBeNull();
+		controller.onRecordingStarted({ recordingId: 'rec-b' });
 		controller.reset();
 		controller.onTranscriptionStarted('rec-b');
 		expect(state(controller)).toMatchObject({ visible: false, processing: false });
@@ -213,14 +258,18 @@ describe('recording overlay controller', () => {
 	it('does not let an older cancel completion clear a newer recording', async () => {
 		const cancel = deferred<void>();
 		const { controller } = makeController(vi.fn(() => cancel.promise));
-		controller.onRecordingStarted({ sessionId: 'rec-a' });
+		controller.onRecordingStarted({ recordingId: 'rec-a' });
 		const cancelling = controller.cancel();
-		controller.onRecordingStopped({ sessionId: 'rec-a', reason: 'cancel' });
-		controller.onRecordingStarted({ sessionId: 'rec-b' });
+		controller.onRecordingStopped({ recordingId: 'rec-a', reason: 'cancel' });
+		controller.onRecordingStarted({ recordingId: 'rec-b' });
 		cancel.resolve();
 		await cancelling;
 
-		expect(state(controller)).toMatchObject({ visible: true, isRecording: true, sessionId: 'rec-b' });
+		expect(state(controller)).toMatchObject({
+			visible: true,
+			isRecording: true,
+			recordingId: 'rec-b',
+		});
 		expect(vi.getTimerCount()).toBe(1);
 		controller.dispose();
 	});

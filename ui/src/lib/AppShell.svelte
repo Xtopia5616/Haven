@@ -38,7 +38,7 @@
 			visible: false,
 			isRecording: false,
 			processing: false,
-			sessionId: null,
+			recordingId: null,
 			startedAt: null,
 			vadState: 'silent',
 		},

@@ -81,7 +81,7 @@ describe('submitTranscript', () => {
 		invokeMock.mockResolvedValue({});
 		await submitTranscript('voice text', {
 			voice: true,
-			recordingSessionId: 'rec-00000000000000000000000000000000',
+			recordingId: 'rec-00000000000000000000000000000000',
 		});
 
 		expect(invoke).toHaveBeenCalledWith('process_transcript', {
@@ -89,7 +89,7 @@ describe('submitTranscript', () => {
 			activeSessionId: null,
 			attachments: null,
 			voice: true,
-			recordingSessionId: 'rec-00000000000000000000000000000000',
+			recordingId: 'rec-00000000000000000000000000000000',
 		});
 	});
 

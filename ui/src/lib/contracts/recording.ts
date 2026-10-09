@@ -11,7 +11,7 @@ import {
 export type RecordingEventName = (typeof RECORDING_EVENT_NAMES)[number];
 
 export interface RecordingPayload {
-	sessionId?: string;
+	recordingId?: string;
 	reason?: RecordingStopReasonDto;
 }
 
@@ -24,19 +24,19 @@ function isRecordingStopReason(value: unknown): value is RecordingStopReasonDto 
 	);
 }
 export interface TranscriptionStartedPayload {
-	sessionId: string;
+	recordingId: string;
 }
 export interface TranscriptionResultPayload {
-	sessionId: string;
+	recordingId: string;
 	text: string;
 	durationMs: number;
 }
 export interface RecordingErrorPayload {
-	sessionId: string;
+	recordingId: string;
 	error: string;
 }
 export interface TranscriptionErrorPayload {
-	sessionId: string;
+	recordingId: string;
 	error: string;
 }
 
@@ -61,8 +61,8 @@ export function mapRecordingEvent<K extends RecordingEventName>(
 			return {
 				...event,
 				payload: {
-					...(typeof payload.session_id === 'string'
-						? { sessionId: payload.session_id }
+					...(typeof payload.recording_id === 'string'
+						? { recordingId: payload.recording_id }
 						: {}),
 					...(isRecordingStopReason(payload.reason) ? { reason: payload.reason } : {}),
 				},
@@ -80,7 +80,8 @@ export function mapRecordingEvent<K extends RecordingEventName>(
 			return {
 				...event,
 				payload: {
-					sessionId: typeof payload.session_id === 'string' ? payload.session_id : '',
+					recordingId:
+						typeof payload.recording_id === 'string' ? payload.recording_id : '',
 					error: typeof payload.error === 'string' ? payload.error : '',
 				},
 			} as unknown as TauriEvent<RecordingEventPayloadMap[K]>;
@@ -88,14 +89,16 @@ export function mapRecordingEvent<K extends RecordingEventName>(
 			return {
 				...event,
 				payload: {
-					sessionId: typeof payload.session_id === 'string' ? payload.session_id : '',
+					recordingId:
+						typeof payload.recording_id === 'string' ? payload.recording_id : '',
 				},
 			} as unknown as TauriEvent<RecordingEventPayloadMap[K]>;
 		case 'transcription:result':
 			return {
 				...event,
 				payload: {
-					sessionId: typeof payload.session_id === 'string' ? payload.session_id : '',
+					recordingId:
+						typeof payload.recording_id === 'string' ? payload.recording_id : '',
 					text: typeof payload.text === 'string' ? payload.text : '',
 					durationMs: typeof payload.duration_ms === 'number' ? payload.duration_ms : 0,
 				},
