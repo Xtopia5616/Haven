@@ -30,6 +30,28 @@ pub fn new_id(prefix: &str) -> String {
     format!("{prefix}-{}", uuid::Uuid::new_v4().simple())
 }
 
+/// Check that `id` is a lowercase simple UUID paired with the requested
+/// entity prefix (without the separating hyphen).
+pub fn is_canonical_id(id: &str, prefix: &str) -> bool {
+    if prefix.is_empty()
+        || !prefix
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
+    {
+        return false;
+    }
+    let Some(suffix) = id
+        .strip_prefix(prefix)
+        .and_then(|remainder| remainder.strip_prefix('-'))
+    else {
+        return false;
+    };
+    suffix.len() == 32
+        && suffix
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
 /// Defines an entity-id newtype: `pub struct $name(pub String)` with the
 /// standard derives plus the conversions/accessors the rest of the codebase
 /// relies on. Serializes as the plain `{prefix}-{uuid32}` string on the wire,

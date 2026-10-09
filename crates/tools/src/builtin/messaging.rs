@@ -20,7 +20,7 @@
 //! 4. auto `receipt` confirms the peer actually read the mail
 
 use async_trait::async_trait;
-use haven_common::types::RiskLevel;
+use haven_common::types::{RiskLevel, is_canonical_id};
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -270,7 +270,7 @@ fn check_message_ids(ids: Option<Vec<String>>) -> anyhow::Result<Vec<String>> {
     }
     let mut unique = std::collections::HashSet::with_capacity(ids.len());
     for id in &ids {
-        if !is_canonical_message_id(id) {
+        if !is_canonical_id(id, "msg") {
             anyhow::bail!("invalid message id '{id}'");
         }
         if !unique.insert(id) {
@@ -290,16 +290,6 @@ fn list_limit(limit: Option<u64>) -> usize {
     limit
         .unwrap_or(DEFAULT_LIST_LIMIT as u64)
         .clamp(1, MAX_LIST_LIMIT as u64) as usize
-}
-
-fn is_canonical_message_id(id: &str) -> bool {
-    let Some(suffix) = id.strip_prefix("msg-") else {
-        return false;
-    };
-    suffix.len() == 32
-        && suffix
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
 fn envelope_to_tool_json(env: &Envelope) -> Value {

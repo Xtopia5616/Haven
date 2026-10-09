@@ -1,6 +1,6 @@
 # Haven 架构与 crate 职责
 
-> 版本: v1.16 | 日期: 2026-10-10
+> 版本: v1.17 | 日期: 2026-10-10
 > 范围: `crates/` (Rust 后端, Tauri 2)
 > 原则: **依赖单向、叶子优先**。上层 crate 只依赖下层，绝不反向依赖；共享数据与类型放叶子（`haven-common`），
 > 组件职责按「谁拥有实现、谁只消费接口」划分。
@@ -173,7 +173,7 @@ CI 以 `scripts/check-crate-dependencies.ps1` 对此表执行内部 crate 依赖
 
 - `config/`：TOML 配置 schema（`AppConfig` / `Settings` / 各子配置）+ `ConfigLoader` 文件边界；
   `ConfigService` 持有版本化 live snapshot、串行 typed patch、原子持久化和无密钥变更通知。
-- `types.rs`：跨 crate 的规范类型 —— 实体 ID（`new_id` / newtype）、`CanonicalMessage` /
+- `types.rs`：跨 crate 的规范类型 —— 实体 ID（`new_id` / `is_canonical_id` / newtype）、`CanonicalMessage` /
   `ContentPart` / `CanonicalToolCall`、`MessageAttachment`、`FollowUp`、`RiskLevel`、
   `CapabilityScope`、`HotkeyMode` / `ShellChoice` 等。`CapabilityScope` 是授权身份的 typed
   owner，提供 capability ancestry；`CanonicalToolCall` 只承载规范化后的参数值，Provider

@@ -310,7 +310,7 @@ Common 媒体探测 helper 和变量以 `mime_type` 表示 MIME 字符串，探�
   - 例外：`asr` 是用户输入的关键词（意图识别 vocabulary，与 `ocr` 相邻），属于**输入信号**，不是 provider 模块名，不并入 `stt` 词汇表。二者语义不同，各归其位。
 
 ### ID 规范
-实体 ID 统一 `{prefix}-{uuid32}`，一律用 `haven_common::types::new_id(prefix)`，禁止手拼。完整前缀表见 `AGENTS.md`.
+实体 ID 统一 `{prefix}-{uuid32}`，一律用 `haven_common::types::new_id(prefix)` 生成，并用 `haven_common::types::is_canonical_id(id, prefix)` 校验；校验函数的 `prefix` 参数不带连字符，禁止各 crate 重复实现格式检查。完整前缀表见 `AGENTS.md`.
 
 - ToolRun 身份字段在 Rust 类型、事件与 JSON 结果中统一命名 `tool_run_id`；前端 IPC/view DTO 只在边界映射为 `toolRunId`，不再接受或输出泛名 `id` 别名。数据库物理列 `tool_runs.id` 保持不变，Repository 行字段命名 `tool_run_id`。Tauri event envelope 的数值 `event.id` 是另一实体，继续保留原名。
 

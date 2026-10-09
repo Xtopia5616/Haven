@@ -11,6 +11,8 @@ use std::time::Duration;
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 
+use haven_common::types::is_canonical_id;
+
 use crate::inbox::{AgentInfo, Envelope, InboxBus, MessageType, SendOutcome, validate_agent_name};
 
 /// Transport port used by [`MessagingService`].
@@ -524,7 +526,7 @@ impl MessagingService {
         payload: Option<serde_json::Value>,
         expires_at: Option<String>,
     ) -> anyhow::Result<SentMessage> {
-        if !is_canonical_message_id(in_reply_to) {
+        if !is_canonical_id(in_reply_to, "msg") {
             anyhow::bail!("in_reply_to must be a canonical message id");
         }
         let mut envelope = Envelope::new(from, to, text);
@@ -539,7 +541,7 @@ impl MessagingService {
 
     /// Construct and deliver a read receipt through the same message path.
     pub fn receipt(&self, from: &str, to: &str, in_reply_to: &str) -> anyhow::Result<SentMessage> {
-        if !is_canonical_message_id(in_reply_to) {
+        if !is_canonical_id(in_reply_to, "msg") {
             anyhow::bail!("receipt in_reply_to must be a canonical message id");
         }
         let mut envelope = Envelope::new(from, to, "已读");
@@ -562,7 +564,7 @@ impl MessagingService {
     ) -> anyhow::Result<Option<Envelope>> {
         validate_agent_name(recipient)?;
         validate_agent_name(expected_from)?;
-        if !is_canonical_message_id(request_id) {
+        if !is_canonical_id(request_id, "msg") {
             anyhow::bail!("request id must be a canonical message id");
         }
         let deadline = tokio::time::Instant::now() + timeout;
@@ -622,7 +624,7 @@ impl MessagingService {
     }
 
     fn ack(&self, recipient: &str, ids: &[String]) -> anyhow::Result<()> {
-        if ids.iter().any(|id| !is_canonical_message_id(id)) {
+        if ids.iter().any(|id| !is_canonical_id(id, "msg")) {
             anyhow::bail!("ack message ids must be canonical message ids");
         }
         if let Some(mailbox) = self.mailbox()
@@ -742,7 +744,7 @@ fn validate_message_envelope(to: &str, envelope: &Envelope) -> anyhow::Result<()
             to
         );
     }
-    if !is_canonical_message_id(&envelope.id) {
+    if !is_canonical_id(&envelope.id, "msg") {
         anyhow::bail!(
             "invalid message id '{}': expected msg-{{uuid32}}",
             envelope.id
@@ -755,7 +757,7 @@ fn validate_message_envelope(to: &str, envelope: &Envelope) -> anyhow::Result<()
         validate_agent_name(reply_address)?;
     }
     if let Some(in_reply_to) = &envelope.in_reply_to
-        && !is_canonical_message_id(in_reply_to)
+        && !is_canonical_id(in_reply_to, "msg")
     {
         anyhow::bail!("in_reply_to must be a canonical message id");
     }
@@ -769,7 +771,7 @@ fn validate_message_envelope(to: &str, envelope: &Envelope) -> anyhow::Result<()
         let Some(in_reply_to) = envelope.in_reply_to.as_deref() else {
             anyhow::bail!("receipt messages require in_reply_to");
         };
-        if !is_canonical_message_id(in_reply_to) {
+        if !is_canonical_id(in_reply_to, "msg") {
             anyhow::bail!("receipt in_reply_to must be a canonical message id");
         }
     }
@@ -786,16 +788,6 @@ pub fn is_expired(envelope: &Envelope) -> bool {
             .map(|parsed| parsed <= chrono::Utc::now())
             .unwrap_or(false)
     })
-}
-
-fn is_canonical_message_id(id: &str) -> bool {
-    let Some(suffix) = id.strip_prefix("msg-") else {
-        return false;
-    };
-    suffix.len() == 32
-        && suffix
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
 #[cfg(test)]
