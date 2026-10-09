@@ -173,14 +173,13 @@ describe('Composer attachment intake', () => {
 			});
 			readers[0].dispatchEvent(new ProgressEvent('load'));
 			await vi.waitFor(() => expect(sendButton.disabled).toBe(false));
+			expect(screen.getByText('5 B')).toBeTruthy();
 
 			await fireEvent.click(sendButton);
 			expect(onsubmit).toHaveBeenCalledWith({
 				text: 'include my attachment',
 				images: [],
-				files: [
-					{ media_type: 'text/plain', data: 'aGVsbG8=', filename: 'notes.txt', size: 5 },
-				],
+				files: [{ media_type: 'text/plain', data: 'aGVsbG8=', filename: 'notes.txt' }],
 			});
 		} finally {
 			readAsDataURL.mockRestore();
@@ -222,7 +221,7 @@ describe('Composer attachment intake', () => {
 			expect(onsubmit).toHaveBeenCalledWith({
 				text: '',
 				images: [],
-				files: [{ media_type: 'text/plain', data: 'b25l', filename: 'one.txt', size: 3 }],
+				files: [{ media_type: 'text/plain', data: 'b25l', filename: 'one.txt' }],
 			});
 		} finally {
 			readAsDataURL.mockRestore();

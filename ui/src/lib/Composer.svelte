@@ -23,7 +23,7 @@
 	interface ComposerSubmitPayload {
 		text: string;
 		images: ChatAttachmentPayload[];
-		files: PendingChatFileAttachment[];
+		files: ChatFileAttachment[];
 	}
 
 	interface TextSelection {
@@ -388,7 +388,11 @@
 		}
 		const text = transcriptInput.trim();
 		const images = pendingImages;
-		const files = pendingFiles;
+		const files = pendingFiles.map(({ media_type, data, filename }) => ({
+			media_type,
+			data,
+			filename,
+		}));
 		if (!text && images.length === 0 && files.length === 0 && !allowEmptySubmit) return;
 		cachedDrafts.delete(transcriptDraftSessionId);
 		transcriptInput = '';
