@@ -817,3 +817,4 @@
 - [0836：集中聊天模型命令 owner](0836-centralize-chat-model-command-ownership.md)
 - [0837：通过 Session 命令 owner 调用会话生命周期](0837-route-session-lifecycle-through-session-commands.md)
 - [0838：补齐 UI 命令 owner 门禁清单](0838-complete-ui-command-owner-guard.md)
+- [0840：只展示有信息量的工具目录指引](0840-omit-empty-tool-routing-guidance.md)
