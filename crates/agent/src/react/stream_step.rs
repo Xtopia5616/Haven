@@ -1042,7 +1042,7 @@ impl ReActEngine {
                     context_message_count = request_context.messages().len(),
                     provider_prompt_tokens = usage.prompt_tokens,
                     cached_tokens = usage.cached_tokens,
-                    cache_miss_tokens = usage.cache_miss_tokens(),
+                    cache_miss_tokens = usage.effective_cache_miss_tokens(),
                     cache_creation_tokens = usage.cache_creation_tokens,
                     cache_accounting = usage.cache_accounting.as_str(),
                     cache_hit_rate_percent = ?cache_hit_rate_percent,

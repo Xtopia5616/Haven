@@ -1715,7 +1715,7 @@ fn usage_parses_cache_write_and_miss_tokens() {
     let normalized = usage.to_usage(None);
     assert_eq!(normalized.cached_tokens, 70);
     assert_eq!(normalized.cache_creation_tokens, 10);
-    assert_eq!(normalized.cache_miss_tokens(), 20);
+    assert_eq!(normalized.effective_cache_miss_tokens(), 20);
 }
 
 #[test]

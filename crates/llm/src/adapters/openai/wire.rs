@@ -253,7 +253,7 @@ impl OpenAiUsage {
             model_name,
         );
         let derived_misses = if self.cached_tokens_reported().is_some() {
-            usage.cache_miss_tokens()
+            usage.effective_cache_miss_tokens()
         } else {
             0
         };

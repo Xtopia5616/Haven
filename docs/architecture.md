@@ -191,6 +191,8 @@ OS 句柄和进程生命周期适配不属于该共享契约面，统一归 `hav
   `CanonicalToolCall` 不负责 provider JSON 字符串或流截断修复。
 - `FinishReason` 是 provider-neutral 结束分类；各 adapter 单独处理协议专有值，共用标签通过
   `FinishReason::parse_provider_value` 归一化。
+- `Usage.cache_miss_tokens` 是 adapter 写入的归一化字段；调用方用
+  `Usage::effective_cache_miss_tokens()` 取有效值，为零时按 `CacheAccounting` 推导。
 - 聊天页「联网搜索」为命名模型级 `off|auto|always`；仅
   `supports_builtin_web_search(api_style)` 为真时由对应适配器注入内置搜索工具，
   UI 对不支持的线协议灰显。

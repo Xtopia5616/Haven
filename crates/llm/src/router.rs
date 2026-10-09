@@ -1120,7 +1120,7 @@ impl LlmRouter {
         let endpoint = self.model_directory.endpoint_for_request(&cfg, request)?;
         compute_cost_usd(
             endpoint,
-            usage.cache_miss_tokens(),
+            usage.effective_cache_miss_tokens(),
             usage.cached_tokens,
             usage.cache_creation_tokens,
             usage.completion_tokens,

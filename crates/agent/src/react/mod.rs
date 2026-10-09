@@ -812,7 +812,7 @@ impl ReActEngine {
                     total_tokens: usage.total_tokens,
                     cached_tokens: usage.cached_tokens,
                     cache_creation_tokens: usage.cache_creation_tokens,
-                    cache_miss_tokens: usage.cache_miss_tokens(),
+                    cache_miss_tokens: usage.effective_cache_miss_tokens(),
                     cache_accounting: usage.cache_accounting,
                     cache_diagnostics,
                     cost_usd: step_cost.unwrap_or(0.0),
@@ -861,7 +861,7 @@ impl ReActEngine {
                 total_tokens: usage.total_tokens,
                 cached_tokens: usage.cached_tokens,
                 cache_creation_tokens: usage.cache_creation_tokens,
-                cache_miss_tokens: usage.cache_miss_tokens(),
+                cache_miss_tokens: usage.effective_cache_miss_tokens(),
                 context_tokens: usage.context_tokens(),
                 cache_exclusive: usage.cache_exclusive_of_prompt(),
                 cache_accounting: usage.cache_accounting.as_str().into(),
@@ -928,7 +928,7 @@ impl ReActEngine {
                 total_tokens: usage.total_tokens,
                 cached_tokens: usage.cached_tokens,
                 cache_creation_tokens: usage.cache_creation_tokens,
-                cache_miss_tokens: usage.cache_miss_tokens(),
+                cache_miss_tokens: usage.effective_cache_miss_tokens(),
                 context_tokens: usage.context_tokens(),
                 cache_exclusive: usage.cache_exclusive_of_prompt(),
                 cache_accounting: cache_accounting.clone(),
@@ -960,7 +960,7 @@ impl ReActEngine {
                     total_tokens: usage.total_tokens,
                     cached_tokens: usage.cached_tokens,
                     cache_creation_tokens: usage.cache_creation_tokens,
-                    cache_miss_tokens: usage.cache_miss_tokens(),
+                    cache_miss_tokens: usage.effective_cache_miss_tokens(),
                     cache_accounting: usage.cache_accounting,
                     cache_diagnostics,
                     cost_usd: step_cost.unwrap_or(0.0),
@@ -1039,7 +1039,7 @@ impl ReActEngine {
             let usage_total = usage.total_tokens;
             let usage_cached = usage.cached_tokens;
             let usage_cache_creation = usage.cache_creation_tokens;
-            let usage_cache_miss = usage.cache_miss_tokens();
+            let usage_cache_miss = usage.effective_cache_miss_tokens();
             let usage_cache_accounting = usage.cache_accounting.as_str().to_string();
             let cache_diagnostics = usage
                 .cache_diagnostics
@@ -1108,7 +1108,7 @@ impl ReActEngine {
                     total_tokens: usage.total_tokens,
                     cached_tokens: usage.cached_tokens,
                     cache_creation_tokens: usage.cache_creation_tokens,
-                    cache_miss_tokens: usage.cache_miss_tokens(),
+                    cache_miss_tokens: usage.effective_cache_miss_tokens(),
                     context_tokens: usage_context_tokens,
                     cache_exclusive: usage.cache_exclusive_of_prompt(),
                     cache_accounting: usage_cache_accounting,

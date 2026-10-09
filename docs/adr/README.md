@@ -829,3 +829,4 @@
 - [0848：将工具参数 wire 转换归入 LLM adapter](0848-own-tool-argument-wire-conversion-in-llm-adapters.md)
 - [0849：由 CapabilityScope 独占 capability ancestry](0849-own-capability-ancestry-in-capability-scope.md)
 - [0850：移除结束原因解析器的 OpenAI 专属命名](0850-name-provider-finish-reason-parser-generically.md)
+- [0851：区分 Usage 缓存未命中字段与有效值 accessor](0851-distinguish-effective-cache-miss-usage-accessor.md)

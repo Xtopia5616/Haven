@@ -153,7 +153,7 @@ Session、ScheduledToolRun 与 AppCommand 确认均由各自 owner 和稳定 req
 
 范围覆盖所有 Rust crate、Svelte/TypeScript、Tauri IPC/事件，以及对应架构、命名和契约文档。职责以 `docs/architecture.md` 为准，术语与角色动词以 `docs/naming.md` 为准；已完成决定和实现细节只保存在对应 ADR，不在路线图重复列实现日志。
 
-最近完成的 Chat 输入审查已统一 submission payload 与生成的 `MessageAttachmentInput` 字段 owner；本地文件预览大小在 Composer 提交边界移除；`Composer.svelte` 成为单一输入组件 owner，route callback 直接连接 AskInteraction 与 ChatSessionController（ADR 0843–0846）。录音身份与会话身份已在 Rust、IPC、UI 和文档中分开命名（ADR 0847）。Provider 工具参数 wire 转换从 Common 归回 LLM adapter 私有边界，capability ancestry 由唯一 typed owner `CapabilityScope` 直接提供（ADR 0848–0849）；provider-neutral 结束原因解析移除 OpenAI 专属命名（ADR 0850）。这些局部结果不代表 UI 或全仓审计完成。
+最近完成的 Chat 输入审查已统一 submission payload 与生成的 `MessageAttachmentInput` 字段 owner；本地文件预览大小在 Composer 提交边界移除；`Composer.svelte` 成为单一输入组件 owner，route callback 直接连接 AskInteraction 与 ChatSessionController（ADR 0843–0846）。录音身份与会话身份已在 Rust、IPC、UI 和文档中分开命名（ADR 0847）。Provider 工具参数 wire 转换从 Common 归回 LLM adapter 私有边界，capability ancestry 由唯一 typed owner `CapabilityScope` 直接提供（ADR 0848–0849）；provider-neutral 结束原因解析移除 OpenAI 专属命名（ADR 0850）；Usage 的原始字段与有效值 accessor 采用不同名称（ADR 0851）。这些局部结果不代表 UI 或全仓审计完成。
 
 #### 当前审计覆盖与剩余范围
 

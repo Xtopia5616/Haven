@@ -142,8 +142,9 @@ pub struct Usage {
     /// Other providers typically leave this at 0.
     #[serde(default)]
     pub cache_creation_tokens: u32,
-    /// Input tokens that were not read from prompt cache. Adapters compute
-    /// this from their explicit accounting contract before aggregation.
+    /// Adapter-resolved input tokens that were not read from prompt cache.
+    /// Callers use `effective_cache_miss_tokens()` to derive a fallback when
+    /// this normalized value is zero.
     #[serde(default)]
     pub cache_miss_tokens: u32,
     #[serde(default)]
@@ -247,8 +248,10 @@ impl Usage {
         }
     }
 
-    /// Normal, non-cached input tokens used for cache-aware pricing.
-    pub fn cache_miss_tokens(&self) -> u32 {
+    /// Effective normal, non-cached input tokens used for cache-aware pricing.
+    /// A non-zero adapter-resolved field wins; otherwise derive from the
+    /// provider's cache accounting contract.
+    pub fn effective_cache_miss_tokens(&self) -> u32 {
         if self.cache_miss_tokens > 0 {
             return self.cache_miss_tokens;
         }
@@ -1063,7 +1066,7 @@ mod tests {
     }
 
     #[test]
-    fn usage_cache_miss_uses_explicit_provider_value() {
+    fn effective_cache_miss_uses_adapter_resolved_value() {
         let mut usage = Usage::from_counts_with_accounting(
             100,
             10,
@@ -1074,7 +1077,32 @@ mod tests {
             None,
         );
         usage.cache_miss_tokens = 24;
-        assert_eq!(usage.cache_miss_tokens(), 24);
+        assert_eq!(usage.effective_cache_miss_tokens(), 24);
+    }
+
+    #[test]
+    fn effective_cache_miss_derives_from_accounting_when_unset() {
+        let inclusive = Usage::from_counts_with_accounting(
+            100,
+            10,
+            0,
+            70,
+            10,
+            CacheAccounting::Inclusive,
+            None,
+        );
+        assert_eq!(inclusive.effective_cache_miss_tokens(), 20);
+
+        let exclusive = Usage::from_counts_with_accounting(
+            100,
+            10,
+            0,
+            70,
+            10,
+            CacheAccounting::Exclusive,
+            None,
+        );
+        assert_eq!(exclusive.effective_cache_miss_tokens(), 100);
     }
 
     #[test]
