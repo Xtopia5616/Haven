@@ -235,7 +235,7 @@ export class ChatSessionController {
 		}
 	}
 
-	/** Submit an input-router payload, keeping created-session selection in sync. */
+	/** Submit a Composer payload, keeping created-session selection in sync. */
 	async submitMessage(
 		text: string,
 		images?: ChatAttachmentPayload[] | null,

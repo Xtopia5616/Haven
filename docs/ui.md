@@ -205,7 +205,7 @@
 | **Route / App shell** | 路由装配、启动与跨域应用生命周期；可直接执行由该层独占编排的跨域启动/生命周期命令，且必须登记在 IPC owner 门禁中 | 直接操作 DOM；把 feature draft 或领域状态机堆入 shell；直接发起已有领域 command adapter 拥有的动作 |
 | **`lib/views/` feature view** | 单一领域的加载、编辑草稿和页面交互；经领域 `*Commands.ts` 发起 Tauri 命令 | 直接调用 `invoke`；复制 command adapter 的请求/响应处理 |
 | **全局投影宿主** | 由 AppShell 单例挂载，订阅对应全局投影并呈现，例如通知与 context menu host | 成为投影数据的第二写入 owner |
-| **UI 行为组件** | 拥有局部输入状态，通过 callback/controller port 请求动作，例如 InputRouter | 直接调用 `invoke`；拥有跨页面生命周期 |
+| **UI 行为组件** | 拥有局部输入状态，通过 callback/controller port 请求动作，例如 Composer | 直接调用 `invoke`；拥有跨页面生命周期 |
 | **普通可复用组件 / renderer** | 展示 props、局部交互和视觉结构 | 直接调用 `invoke`、读取全局 store、加载领域页面数据 |
 | **领域 command adapter (`*Commands.ts`)** | 按领域封装生成契约对应的 `invoke`，并在必要时验证响应 | 持有 Svelte 页面状态或决定用户可见通知文案 |
 

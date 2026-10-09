@@ -822,3 +822,4 @@
 - [0841：从 Session reducer 派生会话状态标签](0841-derive-session-status-label-from-reducer.md)
 - [0842：固定 Route 与 App shell 的命令 owner](0842-pin-route-and-app-shell-command-owners.md)
 - [0843：按结构命名 Chat 附件输入 payload](0843-name-chat-attachment-payload-by-shape.md)
+- [0844：合并 Chat Composer 组件 owner](0844-merge-chat-composer-component-owner.md)

@@ -113,7 +113,7 @@
 	import type { ReActExecutionPhaseSnapshot } from '$lib/sessionRuntimeStore.ts';
 
 	let chatPageEl = $state<HTMLElement | null>(null);
-	let inputRouterRef = $state<{ setDraft: (text: string) => void } | null>(null);
+	let composerRef = $state<{ setDraft: (text: string) => void } | null>(null);
 	let recentHistorySessions = $state<SessionHistoryRow[]>([]);
 	let historyRefreshSeq = 0;
 	let sessionLineage = $state<{
@@ -124,7 +124,7 @@
 	let sessionLineageError = $state(false);
 	let sessionLineageSeq = 0;
 
-	// Attachment & compression limits for the input router, loaded from the
+	// Attachment & compression limits for Composer, loaded from the
 	// persisted [context_limits] config (editable on the settings "媒体"
 	// page). Defaults mirror the backend config until settings arrive.
 	let inputLimits = $state({
@@ -915,7 +915,7 @@
 		getSessionSnapshot: () => sessionReducer.snapshot().sessions,
 		notify: addNotification,
 		reportError,
-		setInputDraft: (content) => inputRouterRef?.setDraft(content),
+		setInputDraft: (content) => composerRef?.setDraft(content),
 		loadSessions,
 		clearStepBlockIds,
 		setFreshSessionIntent: (value) => newSessionIntentStore.set(value),
@@ -1065,7 +1065,7 @@
 	}
 
 	// True when every currently awaiting ask card has at least one selected
-	// option — InputRouter then allows Enter with an empty draft.
+	// option — Composer then allows Enter with an empty draft.
 	let askSelectionsReady = $state(false);
 	const askInteraction = createAskInteractionController({
 		getActiveSessionId: () => activeSessionId,
@@ -1095,9 +1095,9 @@
 		askSelectionsReady = computeAskSelectionsReady();
 	});
 
-	// Entry point for the InputRouter component: it normalizes every input
+	// Entry point for Composer: it normalizes every input
 	// format (typed text, pasted/picked images, attached files, voice) into a
-	// single payload and forwards it here. The router already cleared its
+	// single payload and forwards it here. Composer already cleared its
 	// draft, so the page just delivers the message and resumes auto-follow.
 	// When every pending ask has selected options, Enter composes those
 	// answers (space-joined) and appends any typed text; otherwise a typed
@@ -1260,7 +1260,7 @@
 		</div>
 
 		<Composer
-			bind:this={inputRouterRef}
+			bind:this={composerRef}
 			{activeSessionId}
 			{hotkeyBinding}
 			{isGenerating}

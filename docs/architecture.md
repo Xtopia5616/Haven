@@ -680,7 +680,7 @@ fail closed（ADR 0380）。mapper 不接触 ToolRunService completion outbox；
 因为 Rust DTO 将它们定义为字符串而非封闭枚举（ADR 0340、0694）。
 `recordingOverlayController.ts` 是共享 overlay state 与时长 timer 的唯一写 owner，并按 `rec-*`
 过滤 stop、error 和 transcription 对当前 overlay 的影响；`+layout.svelte` 仍拥有这些全局 listener、
-通知与 voice transcript submission，`InputRouter.svelte` 只调用 toolbar toggle，`AppShell` 和
+通知与 voice transcript submission，`Composer.svelte` 只调用 toolbar toggle，`AppShell` 和
 `RecordingIndicator` 只负责布局/展示。VAD payload 暂无 session ID，只能按当前 recording 状态门控
 （ADR 0472）。
 Settings 的完整 wire shape 由 `haven_common::config::Settings` 所有；前端不再从多个页面直接读取
