@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { get } from 'svelte/store';
 
 vi.mock('./tauri.ts', () => ({
@@ -6,20 +6,7 @@ vi.mock('./tauri.ts', () => ({
 }));
 
 import { invoke } from './tauri.ts';
-import {
-	formatTokenCount,
-	formatCostUsd,
-	coalesceTokenTotal,
-	cumulativeCacheHitRatePercent,
-} from './sessionUsage.ts';
 import { appSessionReducer } from './sessionReducer.ts';
-import { notificationStore, addNotification } from './notificationStore.ts';
-import { newMessage } from './messageFactory.ts';
-import {
-	reactExecutionPhaseForSession,
-	reactExecutionPhaseStore,
-	updateReactExecutionPhase,
-} from './sessionRuntimeStore.ts';
 import {
 	toolRunStore,
 	sessionToolRunStore,
@@ -61,7 +48,12 @@ describe('upsertToolRun', () => {
 
 	it('keeps an explicit terminal status from tool_run:finished', () => {
 		upsertToolRun({ toolRunId: 'toolrun-2', kind: 'background', status: 'running' });
-		upsertToolRun({ toolRunId: 'toolrun-2', kind: 'background', status: 'completed', output: 'done' });
+		upsertToolRun({
+			toolRunId: 'toolrun-2',
+			kind: 'background',
+			status: 'completed',
+			output: 'done',
+		});
 		const row = get(toolRunStore)['toolrun-2'];
 		expect(row.status).toBe('completed');
 		expect(row.output).toBe('done');
@@ -138,7 +130,11 @@ describe('upsertToolRun', () => {
 			.mockReset()
 			.mockResolvedValue([
 				{ tool_run_id: 'toolrun-background-live', kind: 'background', status: 'running' },
-				{ tool_run_id: 'toolrun-background-history', kind: 'background', status: 'completed' },
+				{
+					tool_run_id: 'toolrun-background-history',
+					kind: 'background',
+					status: 'completed',
+				},
 				{ tool_run_id: 'toolrun-scheduled-waiting', kind: 'scheduled', status: 'waiting' },
 				{ tool_run_id: 'toolrun-scheduled-running', kind: 'scheduled', status: 'running' },
 			]);
@@ -312,244 +308,5 @@ describe('session ToolRun history hydration', () => {
 		expect(Object.keys(store)).toHaveLength(16);
 		expect(Object.keys(store['ses-capacity'] || {})).toHaveLength(200);
 		expect(Object.keys(store['ses-capacity-16'] || {})).toHaveLength(1);
-	});
-});
-
-describe('addNotification', () => {
-	beforeEach(() => {
-		vi.useFakeTimers();
-		notificationStore.set([]);
-		vi.mocked(invoke).mockClear();
-	});
-	afterEach(() => {
-		vi.useRealTimers();
-	});
-
-	it('adds a notification with msg and type', () => {
-		addNotification('hello', 'info');
-		const items = get(notificationStore);
-		expect(items).toHaveLength(1);
-		expect(items[0].msg).toBe('hello');
-		expect(items[0].type).toBe('info');
-		expect(typeof items[0].id).toBe('string');
-	});
-
-	it('deduplicates identical msg+type', () => {
-		addNotification('same', 'warning');
-		addNotification('same', 'warning');
-		addNotification('same', 'info');
-		expect(get(notificationStore)).toHaveLength(2);
-	});
-
-	it('auto-removes after the duration', () => {
-		addNotification('temp', 'info', 1000);
-		expect(get(notificationStore)).toHaveLength(1);
-		vi.advanceTimersByTime(999);
-		expect(get(notificationStore)).toHaveLength(1);
-		vi.advanceTimersByTime(2);
-		expect(get(notificationStore)).toHaveLength(0);
-	});
-
-	it('removes only its own notification', () => {
-		addNotification('a', 'info', 1000);
-		addNotification('b', 'info', 5000);
-		vi.advanceTimersByTime(1001);
-		const items = get(notificationStore);
-		expect(items).toHaveLength(1);
-		expect(items[0].msg).toBe('b');
-	});
-
-	it('keeps error toasts presentational', () => {
-		const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
-		addNotification('boom', 'error');
-		addNotification('ok', 'info');
-		addNotification('oops', 'warning');
-		expect(spy).not.toHaveBeenCalled();
-		expect(invoke).not.toHaveBeenCalled();
-		spy.mockRestore();
-	});
-
-	it('does not log or mirror informational notifications', () => {
-		addNotification('正在加载…', 'info');
-
-		expect(invoke).not.toHaveBeenCalled();
-	});
-});
-
-describe('newMessage', () => {
-	it('builds a message with default type and voice', () => {
-		const msg = newMessage({ role: 'assistant' as const, content: 'hi' });
-		expect(msg.role).toBe('assistant');
-		expect(msg.content).toBe('hi');
-		expect(msg.type).toBeNull();
-		expect(msg.voice).toBe(false);
-		expect(typeof msg.id).toBe('string');
-		expect(msg.time).toBeTruthy();
-	});
-
-	it('generates unique ids', () => {
-		const a = newMessage({ role: 'user' as const, content: 'x' });
-		const b = newMessage({ role: 'user' as const, content: 'x' });
-		expect(a.id).not.toBe(b.id);
-	});
-
-	it('idPrefix slots into the id between timestamp and randomness', () => {
-		const msg = newMessage({ role: 'user' as const, content: 'x', idPrefix: 'u' });
-		expect(msg.id).toMatch(/^\d+-u-[a-z0-9]+$/);
-	});
-
-	it('keeps attachments and overrides time and voice', () => {
-		const msg = newMessage({
-			role: 'user' as const,
-			content: 'x',
-			voice: true,
-			time: '12:00:00',
-			attachments: [{ media_type: 'image/png', data: 'a' }],
-		});
-		expect(msg.voice).toBe(true);
-		expect(msg.time).toBe('12:00:00');
-		expect(msg.attachments).toEqual([{ media_type: 'image/png', data: 'a' }]);
-	});
-});
-
-describe('ReAct execution phase', () => {
-	beforeEach(() => {
-		reactExecutionPhaseStore.set({ sessionId: null, phase: 'idle' });
-	});
-
-	it('keeps each phase until a lifecycle event advances or clears it', () => {
-		updateReactExecutionPhase('ses-phase', 'requesting');
-		expect(get(reactExecutionPhaseStore)).toEqual({
-			sessionId: 'ses-phase',
-			phase: 'requesting',
-		});
-
-		updateReactExecutionPhase('ses-phase', 'waiting_response');
-		expect(get(reactExecutionPhaseStore).phase).toBe('waiting_response');
-
-		updateReactExecutionPhase('ses-phase', 'idle');
-		expect(get(reactExecutionPhaseStore)).toEqual({
-			sessionId: 'ses-phase',
-			phase: 'idle',
-		});
-	});
-
-	it('exposes a phase only to its source session', () => {
-		const snapshot = { sessionId: 'ses-background', phase: 'generating' } as const;
-
-		expect(reactExecutionPhaseForSession(snapshot, 'ses-background')).toBe('generating');
-		expect(reactExecutionPhaseForSession(snapshot, 'ses-active')).toBe('idle');
-		expect(reactExecutionPhaseForSession(snapshot, null)).toBe('idle');
-	});
-});
-
-describe('token usage helpers', () => {
-	it('coalesceTokenTotal fills omitted total', () => {
-		expect(coalesceTokenTotal(10, 5, 0)).toBe(15);
-		expect(coalesceTokenTotal(10, 5, 20)).toBe(20);
-		expect(coalesceTokenTotal(0, 0, 0)).toBe(0);
-	});
-
-	it('coalesceTokenTotal adds exclusive cache when total is omitted', () => {
-		expect(coalesceTokenTotal(100, 20, 0, 400, 50, 'exclusive')).toBe(570);
-		expect(coalesceTokenTotal(100, 20, 0, 80, 0)).toBe(120);
-		expect(coalesceTokenTotal(100, 20, 125, 80, 0)).toBe(125);
-	});
-
-	it('calculates a mixed-provider cache rate from each call contract', () => {
-		const rate = cumulativeCacheHitRatePercent([
-			{
-				call_kind: 'agent',
-				prompt_tokens: 100,
-				cached_tokens: 100,
-				cache_accounting: 'inclusive',
-			},
-			{
-				call_kind: 'agent',
-				prompt_tokens: 100,
-				cached_tokens: 400,
-				cache_accounting: 'exclusive',
-			},
-		]);
-		expect(rate).toBeCloseTo((500 / 600) * 100, 6);
-	});
-
-	it('does not guess a cache rate for unknown calls', () => {
-		expect(
-			cumulativeCacheHitRatePercent([
-				{
-					call_kind: 'agent',
-					prompt_tokens: 100,
-					cached_tokens: 80,
-					cache_accounting: 'unknown',
-				},
-			]),
-		).toBeNull();
-	});
-
-	it('excludes media-owned calls from the Agent cache rate', () => {
-		expect(
-			cumulativeCacheHitRatePercent([
-				{
-					call_kind: 'agent',
-					prompt_tokens: 100,
-					cached_tokens: 50,
-					cache_accounting: 'inclusive',
-				},
-				{
-					call_kind: 'media',
-					prompt_tokens: 10_000,
-					cached_tokens: 0,
-					cache_accounting: 'unknown',
-				},
-			]),
-		).toBe(50);
-	});
-});
-
-describe('formatTokenCount', () => {
-	it('formats plain counts without suffix', () => {
-		expect(formatTokenCount(0)).toBe('0');
-		expect(formatTokenCount(999)).toBe('999');
-	});
-
-	it('formats thousands with K suffix', () => {
-		expect(formatTokenCount(1234)).toBe('1.23K');
-		expect(formatTokenCount(12000)).toBe('12K');
-	});
-
-	it('formats millions with M suffix', () => {
-		expect(formatTokenCount(1234567)).toBe('1.23M');
-	});
-
-	it('tolerates non-numeric input', () => {
-		expect(formatTokenCount(undefined as any)).toBe('0');
-		expect(formatTokenCount('300' as any)).toBe('300');
-	});
-});
-
-describe('formatCostUsd', () => {
-	it('returns null for missing or non-finite values', () => {
-		expect(formatCostUsd(null)).toBeNull();
-		expect(formatCostUsd(undefined)).toBeNull();
-		expect(formatCostUsd(NaN)).toBeNull();
-		expect(formatCostUsd(Infinity)).toBeNull();
-	});
-
-	it('formats zero', () => {
-		expect(formatCostUsd(0)).toBe('$0.00');
-	});
-
-	it('uses 4 decimals for sub-cent costs', () => {
-		expect(formatCostUsd(0.00123)).toBe('$0.0012');
-	});
-
-	it('uses 3 decimals under one dollar', () => {
-		expect(formatCostUsd(0.1234)).toBe('$0.123');
-	});
-
-	it('uses 2 decimals for whole dollars', () => {
-		expect(formatCostUsd(1.5)).toBe('$1.50');
-		expect(formatCostUsd(21)).toBe('$21.00');
 	});
 });

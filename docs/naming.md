@@ -1,6 +1,6 @@
 # Haven 命名规范
 
-> 版本: v1.151 | 日期: 2026-10-09
+> 版本: v1.152 | 日期: 2026-10-09
 
 本文档统一 Haven 项目各层的命名规则（变量名、函数名、文件名、crate 名、缩写大小写、跨层边界）。规范以现有代码中的事实模式为基础，新代码必须遵循；存量代码若与规范冲突，逐步迁移对齐。
 
@@ -322,6 +322,7 @@ Common 媒体探测 helper 和变量以 `mime_type` 表示 MIME 字符串，探�
 
 ### 模块（`.ts`）
 - 工具 / 状态模块 → **camelCase**：`streaming.ts`、`voiceSubmit.ts`、`markdownRenderer.ts`、`sessionStatus.ts`、`modelRoles.ts`。
+- 单元测试文件使用被测模块或组件名加 `.test.ts`；一个测试文件只归属一个生产 owner，跨 owner 的集成流程以实际流程模块命名，不借用已删除的聚合模块名。
 - 前端逻辑模块、测试、Vite/Svelte 配置和 Node 工具脚本统一使用 TypeScript；Node 工具脚本使用 `.ts` 并由固定 Node 工具链直接运行。
 - Svelte 组件脚本的目标形式为 `<script lang="ts">`；存量组件按域分批迁移，迁移时补齐参数、状态和 DOM 引用类型。
 - UI 源码不新增 `.js` / `.mjs` 独立实现模块；迁移完成后，Svelte 组件也不再保留普通 `<script>`。

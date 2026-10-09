@@ -198,6 +198,8 @@
 
 **Feature view 命令 owner 复核（2026-10-09）：** `SettingsView` 的设置读写、凭据暂存、授权管理、维护和 autostart 操作现经 `settingsCommands.ts`，原单数 `settingsCommand.ts` 路径删除；`SkillCard` 不再直接 `invoke('execute_skill')`，由 ToolsView 传入 `executeSkill` owner callback，wrapper 属于 `toolsCommands.ts`。命令 request/response 仍由 generated contract 约束，AuthorizationEngine、确认等待、保存顺序和错误呈现不变；IPC 门禁检查唯一 direct invoke owner。`lib/views/` 与组件的该类直调缺口已关闭；路由/App shell 生命周期、其他 controller/handler 与非 alias contract 的全域 owner 审计仍在 Active 范围。
 
+**Store 单元测试归属复核（2026-10-09）：** ADR 0203 已删除跨领域生产 `stores.ts`，但历史测试桶 `stores.test.ts` 仍跨 ToolRun、通知、消息工厂、Session runtime 与用量格式五个 owner。现按源模块拆到对应 `*.test.ts`，原有 39 个测试均保留；旧桶删除，不保留测试聚合入口。生产状态与运行行为不变；前端 controller/store 与 contract 全域 owner 审计仍在 Active 范围。
+
 **ToolRun card details projection 复核（2026-10-08）：** 对照 `ToolRunCenter` 的生产读取点后，从 `ToolRunCardDetails` 移除仅被构造、没有消费者的 `dueAt`、`title`、`mode`、`errorReason` 与 `exitCode`；保留搜索、摘要和详情面板实际读取的五个字段。仅收窄本地派生 view，不改 ToolRun IPC 或持久化 contract（ADR 0790）。
 
 **ToolRun schedule mode 类型复核（2026-10-08）：** scheduled service view、lifecycle payload、App `ToolRunEvent` 与 UI `ToolRunPayload` 现共用 Rust `ScheduleMode` 导出的 generated enum；ToolResult schedule renderer 也从该 generated 值域导出 presentation alias/guard。DB 历史文本在 App 读取边界解析，未知值不进入 renderer；`tool` / `continue` wire JSON 不变（ADR 0791）。
