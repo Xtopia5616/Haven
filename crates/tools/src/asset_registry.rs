@@ -5,11 +5,11 @@
 //! read-only files operation; paths never need to enter the LLM transcript.
 
 use std::collections::{HashMap, HashSet};
-use std::fs::Metadata;
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, RwLock};
 
 use chrono::{DateTime, Utc};
+use haven_platform::filesystem::is_link_or_reparse_point;
 
 /// Host-owned metadata needed to resolve a managed attachment.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -486,7 +486,7 @@ impl ManagedAssetRegistry {
             .iter()
             .filter_map(|(asset_id, asset)| {
                 let exists = std::fs::symlink_metadata(&asset.path)
-                    .map(|metadata| metadata.is_file() && !is_link_or_reparse(&metadata))
+                    .map(|metadata| metadata.is_file() && !is_link_or_reparse_point(&metadata))
                     .unwrap_or(false);
                 (!exists).then_some(asset_id.clone())
             })
@@ -574,13 +574,13 @@ fn is_safe_managed_file(root: &Path, path: &Path) -> bool {
     let Ok(root_metadata) = std::fs::symlink_metadata(root) else {
         return false;
     };
-    if !root_metadata.is_dir() || is_link_or_reparse(&root_metadata) {
+    if !root_metadata.is_dir() || is_link_or_reparse_point(&root_metadata) {
         return false;
     }
     let Ok(path_metadata) = std::fs::symlink_metadata(path) else {
         return false;
     };
-    if !path_metadata.is_file() || is_link_or_reparse(&path_metadata) {
+    if !path_metadata.is_file() || is_link_or_reparse_point(&path_metadata) {
         return false;
     }
 
@@ -612,7 +612,7 @@ fn is_safe_managed_file(root: &Path, path: &Path) -> bool {
         let Ok(metadata) = std::fs::symlink_metadata(&current) else {
             return false;
         };
-        if is_link_or_reparse(&metadata) {
+        if is_link_or_reparse_point(&metadata) {
             return false;
         }
     }
@@ -643,20 +643,6 @@ fn path_is_equal(left: &Path, right: &Path) -> bool {
     {
         left == right
     }
-}
-
-#[cfg(windows)]
-fn is_link_or_reparse(metadata: &Metadata) -> bool {
-    use std::os::windows::fs::MetadataExt;
-
-    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0400;
-    metadata.file_type().is_symlink()
-        || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
-}
-
-#[cfg(not(windows))]
-fn is_link_or_reparse(metadata: &Metadata) -> bool {
-    metadata.file_type().is_symlink()
 }
 
 #[cfg(test)]

@@ -836,3 +836,4 @@
 - [0855：共享有界响应体字节累积不变量](0855-share-bounded-response-buffer-invariant.md)
 - [0856：集中 Agent token budget owner](0856-centralize-agent-token-budget-ownership.md)
 - [0857：集中规范实体 ID 校验](0857-centralize-canonical-id-validation.md)
+- [0858：集中 filesystem reparse metadata 检查](0858-centralize-filesystem-reparse-metadata-check.md)

@@ -1,6 +1,6 @@
 # Haven 架构与 crate 职责
 
-> 版本: v1.17 | 日期: 2026-10-10
+> 版本: v1.18 | 日期: 2026-10-10
 > 范围: `crates/` (Rust 后端, Tauri 2)
 > 原则: **依赖单向、叶子优先**。上层 crate 只依赖下层，绝不反向依赖；共享数据与类型放叶子（`haven-common`），
 > 组件职责按「谁拥有实现、谁只消费接口」划分。
@@ -34,7 +34,7 @@ haven-skills ──► haven-common, haven-platform
 | crate | 依赖 | 说明 |
 |---|---|---|
 | `haven-common` | 无内部依赖 | 纯叶子，全 workspace 共享；`usage` 子域拥有跨层用量契约和值枚举 |
-| `haven-platform` | `haven-common` | CredentialStore 端口与引用校验；Windows 凭据管理器和子进程适配 |
+| `haven-platform` | `haven-common` | CredentialStore 端口、共享 filesystem metadata 安全检查；Windows 凭据管理器和子进程适配 |
 | `haven-llm` | `haven-common` | 只依赖共享层，不依赖任何业务 crate |
 | `haven-memory` | `haven-common` | 持久化（当前 SQLite schema、历史迁移、仓库） |
 | `haven-skills` | `haven-common`, `haven-platform` | 技能目录解析与 venv 子进程 containment |
@@ -57,6 +57,9 @@ haven-skills ──► haven-common, haven-platform
 子进程共用的 `ProcessContainment`：Windows 使用 kill-on-close Job Object，并要求以 suspended
 状态创建进程、先分配 Job 再恢复唯一初始线程；其他平台保持原有 no-op 行为。平台 crate 拥有该
 操作系统顺序和 FFI，adapter 仍拥有命令配置、管道、取消、等待与工具生命周期（ADR 0513、0515）。
+`haven-platform::filesystem::is_link_or_reparse_point` 统一检查单个 metadata 是否为 symlink 或 Windows
+reparse point；它不解析路径或制定允许根目录。App 上传/清理、Tools 资产登记和 Tools 安全沙箱继续各自
+拥有路径遍历、canonicalization、根目录策略及 fail-closed 处理（ADR 0858）。
 
 `haven-common::usage` 是跨层用量值的唯一契约 owner：`CacheAccounting`、`LlmCallKind` 与
 `CacheDiagnostics` 由 LLM adapter 填充，Agent 原样透传，App event 使用同一 Rust 类型，Memory 只在 SQLite

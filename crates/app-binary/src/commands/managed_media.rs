@@ -1,6 +1,7 @@
 //! App-owned upload and managed-media file lifecycle.
 
 use haven_memory::SessionStore;
+use haven_platform::filesystem::is_link_or_reparse_point;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct ManagedMediaCleanupCounts {
@@ -256,7 +257,7 @@ fn cleanup_unreferenced_upload_batches_sync(
         }
         Err(error) => return Err(format!("读取上传目录失败: {error}")),
     };
-    if !root_metadata.is_dir() || is_link_or_reparse(&root_metadata) {
+    if !root_metadata.is_dir() || is_link_or_reparse_point(&root_metadata) {
         return Ok(0);
     }
     let leased_paths = registry.leased_or_pending_paths();
@@ -282,7 +283,9 @@ fn cleanup_unreferenced_upload_batches_sync(
             }
         };
         let name = entry.file_name().to_string_lossy().into_owned();
-        if !metadata.is_dir() || is_link_or_reparse(&metadata) || !is_generated_upload_batch(&name)
+        if !metadata.is_dir()
+            || is_link_or_reparse_point(&metadata)
+            || !is_generated_upload_batch(&name)
         {
             continue;
         }
@@ -318,7 +321,7 @@ fn cleanup_stale_upload_staging_sync(
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(0),
         Err(error) => return Err(format!("读取上传暂存根目录失败: {error}")),
     };
-    if !root_metadata.is_dir() || is_link_or_reparse(&root_metadata) {
+    if !root_metadata.is_dir() || is_link_or_reparse_point(&root_metadata) {
         return Ok(0);
     }
     let entries = match std::fs::read_dir(root) {
@@ -344,7 +347,7 @@ fn cleanup_stale_upload_staging_sync(
         };
         let name = entry.file_name().to_string_lossy().into_owned();
         if !metadata.is_dir()
-            || is_link_or_reparse(&metadata)
+            || is_link_or_reparse_point(&metadata)
             || !is_generated_upload_staging(&name)
         {
             continue;
@@ -383,7 +386,7 @@ fn cleanup_unreferenced_generated_media_sync(
         }
         Err(error) => return Err(format!("读取生成媒体根目录失败: {error}")),
     };
-    if !root_metadata.is_dir() || is_link_or_reparse(&root_metadata) {
+    if !root_metadata.is_dir() || is_link_or_reparse_point(&root_metadata) {
         return Ok(0);
     }
     let leased_paths = registry.leased_paths();
@@ -409,7 +412,10 @@ fn cleanup_unreferenced_generated_media_sync(
             }
         };
         let name = entry.file_name().to_string_lossy().into_owned();
-        if !metadata.is_file() || is_link_or_reparse(&metadata) || !is_generated_media_file(&name) {
+        if !metadata.is_file()
+            || is_link_or_reparse_point(&metadata)
+            || !is_generated_media_file(&name)
+        {
             continue;
         }
         let path_is_referenced = referenced_paths
@@ -559,7 +565,7 @@ async fn persist_file_attachments_to_with_limit_and_registry(
     let root_metadata = tokio::fs::symlink_metadata(&root)
         .await
         .map_err(|e| format!("读取上传目录元数据失败: {e}"))?;
-    if !root_metadata.is_dir() || is_link_or_reparse(&root_metadata) {
+    if !root_metadata.is_dir() || is_link_or_reparse_point(&root_metadata) {
         return Err("上传目录不能是符号链接或重解析点".to_string());
     }
     tokio::fs::create_dir(&staging_dir)
@@ -679,7 +685,7 @@ fn upload_tree_size(path: &std::path::Path) -> Result<u64, String> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(0),
         Err(error) => return Err(format!("读取上传目录元数据失败: {error}")),
     };
-    if is_link_or_reparse(&metadata) {
+    if is_link_or_reparse_point(&metadata) {
         return Ok(0);
     }
     if metadata.is_file() {
@@ -695,20 +701,6 @@ fn upload_tree_size(path: &std::path::Path) -> Result<u64, String> {
         total = total.saturating_add(upload_tree_size(&entry.path())?);
     }
     Ok(total)
-}
-
-#[cfg(windows)]
-fn is_link_or_reparse(metadata: &std::fs::Metadata) -> bool {
-    use std::os::windows::fs::MetadataExt;
-
-    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0400;
-    metadata.file_type().is_symlink()
-        || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
-}
-
-#[cfg(not(windows))]
-fn is_link_or_reparse(metadata: &std::fs::Metadata) -> bool {
-    metadata.file_type().is_symlink()
 }
 
 fn path_is_equal_or_child(root: &std::path::Path, candidate: &std::path::Path) -> bool {

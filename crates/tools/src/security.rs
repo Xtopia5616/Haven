@@ -8,6 +8,7 @@ use haven_common::types::{
     CapabilityScope, NetworkPolicy, PermissionEffect, PermissionMode, PermissionScope, RiskLevel,
     SandboxMode,
 };
+use haven_platform::filesystem::is_link_or_reparse_point;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
@@ -178,7 +179,7 @@ pub const LOCAL_TOOL_SECURITY_MATRIX: &[LocalToolSecurityCase] = &[
     security_case!("haven.mcp.mcp_update", "haven.mcp.mcp_update", High),
     security_case!("haven.mcp.mcp_toggle", "haven.mcp.mcp_toggle", High),
     security_case!("haven.mcp.mcp_remove", "haven.mcp.mcp_remove", High),
-    security_case!("haven.mcp.mcp_reload", "haven.mcp.mcp_reload", Medium),
+    security_case!("haven.mcp.mcp_reload", "haven.mcp.mcp_reload", High),
 ];
 
 /// Check an absolute local path without applying a tool-specific allowlist.
@@ -1168,7 +1169,7 @@ fn resolve_path_without_reparse(path: &Path) -> Option<PathBuf> {
         existing.push(component.as_os_str());
         match std::fs::symlink_metadata(&existing) {
             Ok(metadata) => {
-                if is_reparse_point(&metadata) {
+                if is_link_or_reparse_point(&metadata) {
                     return None;
                 }
                 if index + 1 < components.len() && !metadata.file_type().is_dir() {
@@ -1189,19 +1190,6 @@ fn resolve_path_without_reparse(path: &Path) -> Option<PathBuf> {
         resolved.push(component);
     }
     Some(resolved)
-}
-
-#[cfg(windows)]
-fn is_reparse_point(metadata: &std::fs::Metadata) -> bool {
-    use std::os::windows::fs::MetadataExt;
-
-    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0400;
-    metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
-}
-
-#[cfg(not(windows))]
-fn is_reparse_point(metadata: &std::fs::Metadata) -> bool {
-    metadata.file_type().is_symlink()
 }
 
 fn is_unc_or_device_path(path: &Path) -> bool {
@@ -3038,8 +3026,8 @@ mod tests {
             "haven.skills.skill_create",
             "haven.mcp.mcp_add",
             "haven.mcp.mcp_update",
-            "haven.mcp.mcp_reload",
             "haven.mcp.mcp_remove",
+            "haven.mcp.mcp_reload",
         ];
         for tool in tools.iter().filter(|tool| tool.name().contains('.')) {
             let name = tool.name();
