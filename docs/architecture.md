@@ -33,7 +33,7 @@ haven-skills ──► haven-common, haven-platform
 
 | crate | 依赖 | 说明 |
 |---|---|---|
-| `haven-common` | 无内部依赖 | 纯叶子，全 workspace 共享 |
+| `haven-common` | 无内部依赖 | 纯叶子，全 workspace 共享；`usage` 子域拥有跨层用量契约和值枚举 |
 | `haven-platform` | `haven-common` | CredentialStore 端口与引用校验；Windows 凭据管理器和子进程适配 |
 | `haven-llm` | `haven-common` | 只依赖共享层，不依赖任何业务 crate |
 | `haven-memory` | `haven-common` | 持久化（当前 SQLite schema、历史迁移、仓库） |
@@ -57,6 +57,11 @@ haven-skills ──► haven-common, haven-platform
 子进程共用的 `ProcessContainment`：Windows 使用 kill-on-close Job Object，并要求以 suspended
 状态创建进程、先分配 Job 再恢复唯一初始线程；其他平台保持原有 no-op 行为。平台 crate 拥有该
 操作系统顺序和 FFI，adapter 仍拥有命令配置、管道、取消、等待与工具生命周期（ADR 0513、0515）。
+
+`haven-common::usage` 是跨层用量值的唯一契约 owner：`CacheAccounting`、`LlmCallKind` 与
+`CacheDiagnostics` 由 LLM adapter 填充，Agent 原样透传，App event 使用同一 Rust 类型，Memory 只在 SQLite
+字符串列边界编码/解码。缓存策略、结果和用量来源是闭合枚举；界面和生成的 command DTO 不再把诊断当作
+任意 JSON。provider 名称仍是开放字符串，因为它标识配置中的 provider，而非协议枚举（ADR 0852）。
 
 `haven-mcp` 内部按职责分为 `protocol.rs`（MCP/JSON-RPC DTO 与内容归一化）、
 `transport.rs`（stdio、Streamable HTTP、SSE 和进程边界）、`client.rs`（单服务器连接、

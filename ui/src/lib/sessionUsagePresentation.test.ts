@@ -3,6 +3,7 @@ import {
 	buildTokenUsageDetails,
 	buildTokenUsageTooltip,
 	estimateToolDataTokens,
+	type SessionTokenStatsView,
 } from './sessionUsagePresentation.ts';
 
 describe('estimateToolDataTokens', () => {
@@ -99,12 +100,14 @@ describe('buildTokenUsageDetails', () => {
 			totalTokens: 100,
 			cacheDiagnostics: {
 				provider: 'openai',
-				mode: 'key',
+				strategy: 'key',
+				key_requested: true,
+				system_split: false,
 				downgraded: false,
 				outcome: 'unknown',
 				usage_source: 'unavailable',
 			},
-		};
+		} satisfies SessionTokenStatsView;
 		const tooltip = buildTokenUsageTooltip(stats, []);
 		const details = buildTokenUsageDetails(stats, []);
 
@@ -127,7 +130,9 @@ describe('buildTokenUsageDetails', () => {
 				model: 'gateway-model',
 				cacheDiagnostics: {
 					provider: 'openai-compatible',
-					mode: 'off',
+					strategy: 'off',
+					key_requested: false,
+					system_split: false,
 					downgraded: true,
 					outcome: 'miss',
 					usage_source: 'provider',

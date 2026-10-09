@@ -3252,7 +3252,7 @@ fn bump_message_millis(last: &str) -> String {
 mod tests {
     use super::*;
     use haven_common::config::RequestKind;
-    use haven_common::types::{CacheAccounting, LlmCallKind};
+    use haven_common::usage::{CacheAccounting, LlmCallKind};
 
     fn usage_input(step_number: i32, total_tokens: u32) -> LlmUsageRecordInput {
         LlmUsageRecordInput {

@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex as StdMutex};
 
 use haven_common::config::RequestKind;
-use haven_common::types::{CacheAccounting, LlmCallKind};
+use haven_common::usage::{CacheAccounting, CacheDiagnostics, LlmCallKind};
 use haven_memory::{LlmUsageRecordInput, SessionStore};
 use tokio::sync::{Mutex, mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
@@ -29,7 +29,7 @@ pub(crate) struct UsageUpdate {
     pub cache_creation_tokens: u32,
     pub cache_miss_tokens: u32,
     pub cache_accounting: CacheAccounting,
-    pub cache_diagnostics: Option<String>,
+    pub cache_diagnostics: Option<CacheDiagnostics>,
     pub cost_usd: f64,
     pub has_cost: bool,
     pub duration_ms: Option<u64>,

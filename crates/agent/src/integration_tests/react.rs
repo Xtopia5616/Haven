@@ -799,7 +799,7 @@ async fn media_tool_usage_flows_to_event_and_database() {
 
     let calls = agent.db.list_session_llm_usage(&session.id).unwrap();
     assert_eq!(calls.len(), 1, "only the media client reports usage");
-    assert_eq!(calls[0].call_kind, haven_common::types::LlmCallKind::Media);
+    assert_eq!(calls[0].call_kind, haven_common::usage::LlmCallKind::Media);
     assert_eq!(calls[0].step_number, Some(1));
     assert_eq!(calls[0].role, haven_common::config::RequestKind::Vision);
     assert_eq!(calls[0].model.as_deref(), Some("vision-test"));
@@ -819,7 +819,7 @@ async fn media_tool_usage_flows_to_event_and_database() {
                 completion_tokens: 7,
                 total_tokens: 18,
                 ..
-            } if session_id == &session.id && *call_kind == haven_common::types::LlmCallKind::Media
+            } if session_id == &session.id && *call_kind == haven_common::usage::LlmCallKind::Media
         )
     }));
 }
@@ -1944,7 +1944,7 @@ async fn continue_session_resumes_errored_session() {
             &haven_memory::LlmUsageRecordInput {
                 step_number: Some(1),
                 request_kind: haven_common::config::RequestKind::Chat,
-                call_kind: haven_common::types::LlmCallKind::Agent,
+                call_kind: haven_common::usage::LlmCallKind::Agent,
                 model: Some("test-model".into()),
                 prompt_tokens: 10,
                 completion_tokens: 0,
@@ -1952,7 +1952,7 @@ async fn continue_session_resumes_errored_session() {
                 cached_tokens: 0,
                 cache_creation_tokens: 0,
                 cache_miss_tokens: 0,
-                cache_accounting: haven_common::types::CacheAccounting::Unknown,
+                cache_accounting: haven_common::usage::CacheAccounting::Unknown,
                 cache_diagnostics: None,
                 cost_usd: 0.0,
                 has_cost: false,
@@ -1984,7 +1984,7 @@ async fn continue_session_resumes_errored_session() {
             &haven_memory::LlmUsageRecordInput {
                 step_number: Some(2),
                 request_kind: haven_common::config::RequestKind::Chat,
-                call_kind: haven_common::types::LlmCallKind::Agent,
+                call_kind: haven_common::usage::LlmCallKind::Agent,
                 model: Some("test-model".into()),
                 prompt_tokens: 20,
                 completion_tokens: 0,
@@ -1992,7 +1992,7 @@ async fn continue_session_resumes_errored_session() {
                 cached_tokens: 0,
                 cache_creation_tokens: 0,
                 cache_miss_tokens: 0,
-                cache_accounting: haven_common::types::CacheAccounting::Unknown,
+                cache_accounting: haven_common::usage::CacheAccounting::Unknown,
                 cache_diagnostics: None,
                 cost_usd: 0.0,
                 has_cost: false,

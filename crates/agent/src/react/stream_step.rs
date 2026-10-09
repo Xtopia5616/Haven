@@ -1017,12 +1017,12 @@ impl ReActEngine {
             Ok(resp) => {
                 let usage = resp.usage.clone().normalize();
                 let cache_denominator = match usage.cache_accounting {
-                    haven_common::types::CacheAccounting::Inclusive => usage.prompt_tokens,
-                    haven_common::types::CacheAccounting::Exclusive => usage
+                    haven_common::usage::CacheAccounting::Inclusive => usage.prompt_tokens,
+                    haven_common::usage::CacheAccounting::Exclusive => usage
                         .prompt_tokens
                         .saturating_add(usage.cached_tokens)
                         .saturating_add(usage.cache_creation_tokens),
-                    haven_common::types::CacheAccounting::Unknown => 0,
+                    haven_common::usage::CacheAccounting::Unknown => 0,
                 };
                 let cache_hit_rate_percent = (cache_denominator > 0).then(|| {
                     (f64::from(usage.cached_tokens) / f64::from(cache_denominator) * 100.0)
@@ -1047,7 +1047,8 @@ impl ReActEngine {
                     cache_accounting = usage.cache_accounting.as_str(),
                     cache_hit_rate_percent = ?cache_hit_rate_percent,
                     cache_provider = cache_diagnostics.map_or("unknown", |item| item.provider.as_str()),
-                    cache_mode = cache_diagnostics.map_or("unknown", |item| item.mode.as_str()),
+                    cache_strategy = cache_diagnostics
+                        .map_or("unknown", |item| item.strategy.as_str()),
                     cache_outcome = cache_diagnostics.map_or("unknown", |item| item.outcome.as_str()),
                     cache_usage_source = cache_diagnostics.map_or("unavailable", |item| item.usage_source.as_str()),
                     cache_key_requested = cache_diagnostics.is_some_and(|item| item.key_requested),

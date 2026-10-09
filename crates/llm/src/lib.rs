@@ -43,8 +43,7 @@ pub use stt::{
 };
 pub use tts::{ResolvedTtsConfig, TtsClient, build_tts_client, resolve_tts_config};
 pub use types::{
-    CacheAccounting, CacheDiagnostics, CompleteRequest, FinishReason, LlmCallUsage,
-    LlmConnectionFailureReason, LlmConnectionReport, LlmConnectionStatus, LlmError, LlmResponse,
-    LlmToolDefinition, PromptRequest, StreamChunk, StreamRequest, StreamToolCallUpdate, SttResult,
-    ToolFunction, Usage,
+    CompleteRequest, FinishReason, LlmCallUsage, LlmConnectionFailureReason, LlmConnectionReport,
+    LlmConnectionStatus, LlmError, LlmResponse, LlmToolDefinition, PromptRequest, StreamChunk,
+    StreamRequest, StreamToolCallUpdate, SttResult, ToolFunction, Usage,
 };

@@ -4,8 +4,13 @@ import {
 	formatCostUsd,
 	formatTokenCount,
 } from './sessionUsage';
+import type {
+	CacheAccounting,
+	CacheDiagnosticOutcome,
+	CacheDiagnostics,
+	PromptCacheStrategy,
+} from './contracts/generatedCommands.ts';
 import type { SessionLlmUsage } from './contracts/sessionHistory.ts';
-import { isRecord } from './contracts/objectGuards.ts';
 
 /** Optional display-facing statistics; reducer state keeps its stricter model type. */
 export interface SessionTokenStatsView {
@@ -15,7 +20,7 @@ export interface SessionTokenStatsView {
 	cachedTokens?: number;
 	cacheCreationTokens?: number;
 	cacheMissTokens?: number;
-	cacheAccounting?: string;
+	cacheAccounting?: CacheAccounting;
 	contextTokens?: number;
 	cacheExclusive?: boolean;
 	cumulativePromptTokens?: number;
@@ -27,16 +32,8 @@ export interface SessionTokenStatsView {
 	cumulativeCostUsd?: number | null;
 	contextWindow?: number | null;
 	model?: string | null;
-	cacheDiagnostics?: unknown;
+	cacheDiagnostics?: CacheDiagnostics;
 	restored?: boolean;
-}
-
-export interface CacheDiagnosticsSummary {
-	mode: string | null;
-	provider: string | null;
-	outcome: string | null;
-	downgraded: boolean;
-	usageSource: string | null;
 }
 
 export interface TokenUsageDetails {
@@ -48,7 +45,7 @@ export interface TokenUsageDetails {
 	currentCacheMissTokens: number;
 	currentCacheRatePercent: number | null;
 	currentCacheKnown?: boolean;
-	currentCacheDiagnostics?: CacheDiagnosticsSummary | null;
+	currentCacheDiagnostics?: CacheDiagnostics | null;
 	contextTokens: number;
 	contextWindow: number | null;
 	contextRatePercent: number | null;
@@ -141,27 +138,16 @@ function cacheHitRatePercent(
 	return Math.min(100, Math.max(0, (cached / denominator) * 100));
 }
 
-function summarizeCacheDiagnostics(value: unknown): CacheDiagnosticsSummary | null {
-	if (!isRecord(value)) return null;
-	return {
-		mode: typeof value.mode === 'string' ? value.mode : null,
-		provider: typeof value.provider === 'string' && value.provider ? value.provider : null,
-		outcome: typeof value.outcome === 'string' ? value.outcome : null,
-		downgraded: value.downgraded === true,
-		usageSource: typeof value.usage_source === 'string' ? value.usage_source : null,
-	};
-}
-
-function cacheUsageIsKnown(diagnostics: CacheDiagnosticsSummary | null): boolean {
+function cacheUsageIsKnown(diagnostics: CacheDiagnostics | null | undefined): boolean {
 	if (!diagnostics) return true;
 	if (diagnostics.outcome === 'disabled') return true;
-	if (diagnostics.outcome === 'unknown' || diagnostics.usageSource === 'unavailable')
+	if (diagnostics.outcome === 'unknown' || diagnostics.usage_source === 'unavailable')
 		return false;
 	return true;
 }
 
-export function cacheModeLabel(mode: string | null | undefined): string {
-	switch (mode) {
+export function cacheStrategyLabel(strategy: PromptCacheStrategy | null | undefined): string {
+	switch (strategy) {
 		case 'off':
 			return '已关闭';
 		case 'key':
@@ -177,7 +163,7 @@ export function cacheModeLabel(mode: string | null | undefined): string {
 	}
 }
 
-export function cacheOutcomeLabel(outcome: string | null | undefined): string {
+export function cacheOutcomeLabel(outcome: CacheDiagnosticOutcome | null | undefined): string {
 	switch (outcome) {
 		case 'disabled':
 			return '未启用';
@@ -222,11 +208,9 @@ export function buildTokenUsageDetails(
 	const currentAccounting = useLastCall
 		? lastCall?.cache_accounting || 'unknown'
 		: stats.cacheAccounting || (stats.cacheExclusive ? 'exclusive' : 'unknown');
-	const currentCacheDiagnostics = summarizeCacheDiagnostics(
-		useLastCall
-			? lastCall?.cache_diagnostics
-			: (stats.cacheDiagnostics ?? lastCall?.cache_diagnostics),
-	);
+	const currentCacheDiagnostics = useLastCall
+		? lastCall?.cache_diagnostics
+		: (stats.cacheDiagnostics ?? lastCall?.cache_diagnostics);
 	const currentCacheKnown = cacheUsageIsKnown(currentCacheDiagnostics);
 	const currentTotalTokens = coalesceTokenTotal(
 		currentPromptTokens,
@@ -249,9 +233,7 @@ export function buildTokenUsageDetails(
 	const cumulativeCacheMissTokens = stats.cumulativeCacheMissTokens || 0;
 	const cumulativeCacheKnown =
 		agentCalls.length > 0
-			? agentCalls.every((call) =>
-					cacheUsageIsKnown(summarizeCacheDiagnostics(call.cache_diagnostics)),
-				)
+			? agentCalls.every((call) => cacheUsageIsKnown(call.cache_diagnostics))
 			: currentCacheKnown;
 
 	return {
@@ -364,12 +346,12 @@ export function buildTokenUsageTooltip(
 	if (details.currentCacheDiagnostics) {
 		const diagnostics = details.currentCacheDiagnostics;
 		const diagnosticLine = [
-			`缓存策略 ${cacheModeLabel(diagnostics.mode)}`,
+			`缓存策略 ${cacheStrategyLabel(diagnostics.strategy)}`,
 			`结果 ${cacheOutcomeLabel(diagnostics.outcome)}`,
 			diagnostics.provider ? `提供方 ${diagnostics.provider}` : null,
-			diagnostics.usageSource === 'provider'
+			diagnostics.usage_source === 'provider'
 				? '用量来源 provider'
-				: diagnostics.usageSource === 'unavailable'
+				: diagnostics.usage_source === 'unavailable'
 					? '用量来源未提供'
 					: '用量来源未知',
 			diagnostics.downgraded ? '已降级' : '未降级',

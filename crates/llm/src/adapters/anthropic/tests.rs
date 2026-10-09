@@ -1224,8 +1224,14 @@ fn anthropic_cache_usage_fields_distinguish_omitted_from_explicit_zero() {
         missing.cache_read_tokens_reported(),
         missing.cache_usage_reported(),
     );
-    assert_eq!(unavailable.outcome, "unknown");
-    assert_eq!(unavailable.usage_source, "unavailable");
+    assert_eq!(
+        unavailable.outcome,
+        haven_common::usage::CacheDiagnosticOutcome::Unknown
+    );
+    assert_eq!(
+        unavailable.usage_source,
+        haven_common::usage::CacheUsageSource::Unavailable
+    );
 
     let zero: AnthropicUsage =
         serde_json::from_str(r#"{"input_tokens":100,"cache_read_input_tokens":0}"#).unwrap();
@@ -1234,8 +1240,14 @@ fn anthropic_cache_usage_fields_distinguish_omitted_from_explicit_zero() {
         zero.cache_read_tokens_reported(),
         zero.cache_usage_reported(),
     );
-    assert_eq!(reported_zero.outcome, "miss");
-    assert_eq!(reported_zero.usage_source, "provider");
+    assert_eq!(
+        reported_zero.outcome,
+        haven_common::usage::CacheDiagnosticOutcome::Miss
+    );
+    assert_eq!(
+        reported_zero.usage_source,
+        haven_common::usage::CacheUsageSource::Provider
+    );
 
     let write_only: AnthropicUsage =
         serde_json::from_str(r#"{"input_tokens":100,"cache_creation_input_tokens":50}"#).unwrap();
@@ -1243,8 +1255,14 @@ fn anthropic_cache_usage_fields_distinguish_omitted_from_explicit_zero() {
         write_only.cache_read_tokens_reported(),
         write_only.cache_usage_reported(),
     );
-    assert_eq!(missing_read.outcome, "unknown");
-    assert_eq!(missing_read.usage_source, "provider");
+    assert_eq!(
+        missing_read.outcome,
+        haven_common::usage::CacheDiagnosticOutcome::Unknown
+    );
+    assert_eq!(
+        missing_read.usage_source,
+        haven_common::usage::CacheUsageSource::Provider
+    );
 }
 
 #[test]

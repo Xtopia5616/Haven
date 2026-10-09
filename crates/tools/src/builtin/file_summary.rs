@@ -1,6 +1,7 @@
 use haven_common::config::RequestKind;
 use haven_common::prompts::FILE_SUMMARY_SYSTEM_PROMPT;
-use haven_common::types::{CanonicalMessage, ContentPart, LlmCallKind};
+use haven_common::types::{CanonicalMessage, ContentPart};
+use haven_common::usage::LlmCallKind;
 use haven_llm::{CompleteRequest, LlmRouter};
 use std::sync::Arc;
 use tokio::io::BufReader;

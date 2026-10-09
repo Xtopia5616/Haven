@@ -4,7 +4,7 @@
 	import Icon from './Icon.svelte';
 	import type { SessionSummary } from '$lib/sessionReducer/types.ts';
 	import {
-		cacheModeLabel,
+		cacheStrategyLabel,
 		cacheOutcomeLabel,
 		type SessionTokenStatsView,
 		type TokenUsageDetails,
@@ -53,7 +53,8 @@
 	let tokenStatsWrap = $state<HTMLElement | null>(null);
 	let tokenDetailsEl = $state<HTMLDivElement | null>(null);
 	const supportsNativePopover =
-		typeof HTMLElement !== 'undefined' && typeof HTMLElement.prototype.showPopover === 'function';
+		typeof HTMLElement !== 'undefined' &&
+		typeof HTMLElement.prototype.showPopover === 'function';
 
 	function positionTokenDetails() {
 		const anchor = tokenStatsWrap;
@@ -64,17 +65,17 @@
 		const anchorRect = anchor.getBoundingClientRect();
 		const panelRect = panel.getBoundingClientRect();
 		const viewportMargin = 12;
-		const horizontalAlignment = window.innerWidth >= 641
-			? anchorRect.right - panelRect.width
-			: anchorRect.left;
+		const horizontalAlignment =
+			window.innerWidth >= 641 ? anchorRect.right - panelRect.width : anchorRect.left;
 		const left = Math.max(
 			viewportMargin,
 			Math.min(horizontalAlignment, window.innerWidth - panelRect.width - viewportMargin),
 		);
 		const below = anchorRect.bottom + 8;
-		const top = below + panelRect.height <= window.innerHeight - viewportMargin
-			? below
-			: Math.max(viewportMargin, anchorRect.top - panelRect.height - 8);
+		const top =
+			below + panelRect.height <= window.innerHeight - viewportMargin
+				? below
+				: Math.max(viewportMargin, anchorRect.top - panelRect.height - 8);
 
 		panel.style.left = `${left}px`;
 		panel.style.top = `${top}px`;
@@ -181,7 +182,9 @@
 					{#if sessionLineageLoading}
 						<div class="session-lineage-empty">正在加载会话关系…</div>
 					{:else if sessionLineageError}
-						<div class="session-lineage-empty">加载会话关系失败，重新打开菜单可重试</div>
+						<div class="session-lineage-empty">
+							加载会话关系失败，重新打开菜单可重试
+						</div>
 					{:else if sessionLineage?.parent || sessionLineage?.children.length}
 						{#if sessionLineage.parent}
 							{@const parentSession = sessionLineage.parent}
@@ -334,7 +337,9 @@
 				{#if tokenUsageDetails.currentCacheDiagnostics}
 					<div class="token-detail-line">
 						<span>策略 / 结果</span><strong
-							>{cacheModeLabel(tokenUsageDetails.currentCacheDiagnostics.mode)} /
+							>{cacheStrategyLabel(
+								tokenUsageDetails.currentCacheDiagnostics.strategy,
+							)} /
 							{cacheOutcomeLabel(
 								tokenUsageDetails.currentCacheDiagnostics.outcome,
 							)}</strong
@@ -349,9 +354,9 @@
 					{/if}
 					<div class="token-detail-line">
 						<span>用量来源</span><strong
-							>{tokenUsageDetails.currentCacheDiagnostics.usageSource === 'provider'
+							>{tokenUsageDetails.currentCacheDiagnostics.usage_source === 'provider'
 								? '提供方返回'
-								: tokenUsageDetails.currentCacheDiagnostics.usageSource ===
+								: tokenUsageDetails.currentCacheDiagnostics.usage_source ===
 									  'unavailable'
 									? '未提供'
 									: '未知'}</strong

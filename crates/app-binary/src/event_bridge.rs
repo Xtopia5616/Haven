@@ -702,7 +702,7 @@ impl TauriEmitter {
                 cache_miss_tokens: *cache_miss_tokens,
                 context_tokens: *context_tokens,
                 cache_exclusive: *cache_exclusive,
-                cache_accounting: cache_accounting.clone(),
+                cache_accounting: *cache_accounting,
                 cost_usd: *cost_usd,
                 model: model.clone(),
                 cumulative_prompt_tokens: *cumulative_prompt_tokens,

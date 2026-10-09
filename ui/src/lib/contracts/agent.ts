@@ -3,6 +3,7 @@
 import type {
 	AgentNotificationKind,
 	CacheAccounting,
+	CacheDiagnostics,
 	LlmCallKind,
 	MediaInputStrategy,
 	MediaPlanNoticeCode,
@@ -21,12 +22,15 @@ import {
 	AGENT_EVENT_NAMES,
 	AGENT_NOTIFICATION_KIND_VALUES,
 	CACHE_ACCOUNTING_VALUES,
+	CACHE_DIAGNOSTIC_OUTCOME_VALUES,
+	CACHE_USAGE_SOURCE_VALUES,
 	LLM_CALL_KIND_VALUES,
 	MEDIA_INPUT_STRATEGY_VALUES,
 	MEDIA_PLAN_NOTICE_CODE_VALUES,
 	MEDIA_PROJECTION_MODE_VALUES,
 	MEDIA_REPRESENTATION_KIND_VALUES,
 	OPERATION_IDEMPOTENCY_VALUES,
+	PROMPT_CACHE_STRATEGY_VALUES,
 	REQUEST_KIND_VALUES,
 	TOOL_ERROR_CLASS_VALUES,
 	TOOL_EXECUTION_OUTCOME_VALUES,
@@ -200,7 +204,7 @@ export interface AgentUsagePayload {
 	cumulativeCachedTokens: number;
 	cumulativeCacheCreationTokens: number;
 	cumulativeCacheMissTokens: number;
-	cacheDiagnostics?: unknown;
+	cacheDiagnostics?: CacheDiagnostics;
 	cumulativeCostUsd: number | null;
 	contextWindow: number | null;
 	stepNumber?: number;
@@ -328,6 +332,30 @@ function mapToolResult(value: unknown): AgentToolResultEnvelope | null {
 		verificationHint: value.verification_hint as string | null | undefined,
 		nextAction: value.next_action as string | null | undefined,
 		assets: value.assets,
+	};
+}
+
+function mapCacheDiagnostics(value: unknown): CacheDiagnostics | null {
+	if (
+		!isRecord(value) ||
+		!isOneOf(value.strategy, PROMPT_CACHE_STRATEGY_VALUES) ||
+		typeof value.provider !== 'string' ||
+		typeof value.key_requested !== 'boolean' ||
+		typeof value.system_split !== 'boolean' ||
+		typeof value.downgraded !== 'boolean' ||
+		!isOneOf(value.outcome, CACHE_DIAGNOSTIC_OUTCOME_VALUES) ||
+		!isOneOf(value.usage_source, CACHE_USAGE_SOURCE_VALUES)
+	) {
+		return null;
+	}
+	return {
+		strategy: value.strategy,
+		provider: value.provider,
+		key_requested: value.key_requested,
+		system_split: value.system_split,
+		downgraded: value.downgraded,
+		outcome: value.outcome,
+		usage_source: value.usage_source,
 	};
 }
 
@@ -731,6 +759,11 @@ export function mapAgentEvent(
 		case 'agent:usage': {
 			const sessionId = requiredSessionId(payload);
 			const cacheAccounting = payload.cache_accounting;
+			const rawCacheDiagnostics = payload.cache_diagnostics;
+			const cacheDiagnostics =
+				rawCacheDiagnostics === undefined
+					? undefined
+					: mapCacheDiagnostics(rawCacheDiagnostics);
 			const role = payload.role;
 			const numberFields = [
 				'prompt_tokens',
@@ -749,6 +782,7 @@ export function mapAgentEvent(
 			] as const;
 			if (
 				sessionId === null ||
+				(rawCacheDiagnostics !== undefined && cacheDiagnostics === null) ||
 				!numberFields.every((field) => finiteNumber(payload[field])) ||
 				typeof payload.cache_exclusive !== 'boolean' ||
 				!isOneOf(cacheAccounting, CACHE_ACCOUNTING_VALUES) ||
@@ -785,9 +819,7 @@ export function mapAgentEvent(
 					cumulativeCacheCreationTokens:
 						payload.cumulative_cache_creation_tokens as number,
 					cumulativeCacheMissTokens: payload.cumulative_cache_miss_tokens as number,
-					...(payload.cache_diagnostics !== undefined
-						? { cacheDiagnostics: payload.cache_diagnostics }
-						: {}),
+					...(cacheDiagnostics !== undefined ? { cacheDiagnostics } : {}),
 					cumulativeCostUsd: payload.cumulative_cost_usd as number | null,
 					contextWindow: payload.context_window as number | null,
 					...(payload.step_number !== undefined

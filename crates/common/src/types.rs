@@ -1,69 +1,5 @@
 use serde::{Deserialize, Serialize};
 
-/// How a provider accounts for prompt-cache tokens in `prompt_tokens`.
-///
-/// This value crosses the LLM, agent and durable-memory layers. The database
-/// still stores its snake_case representation, but runtime code should not
-/// pass the same three strings through every usage wrapper.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum CacheAccounting {
-    Inclusive,
-    Exclusive,
-    #[default]
-    Unknown,
-}
-
-impl CacheAccounting {
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Inclusive => "inclusive",
-            Self::Exclusive => "exclusive",
-            Self::Unknown => "unknown",
-        }
-    }
-
-    pub fn parse(value: &str) -> Self {
-        match value {
-            "inclusive" => Self::Inclusive,
-            "exclusive" => Self::Exclusive,
-            _ => Self::Unknown,
-        }
-    }
-}
-
-/// The runtime owner of one LLM usage record.
-///
-/// Runtime inputs and the live `agent:usage` event use this closed category.
-/// Its snake_case JSON representation matches the persisted `llm_usage`
-/// string column, which remains a storage-boundary projection.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum LlmCallKind {
-    Agent,
-    Media,
-    Tool,
-}
-
-impl LlmCallKind {
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Agent => "agent",
-            Self::Media => "media",
-            Self::Tool => "tool",
-        }
-    }
-
-    pub fn parse(value: &str) -> Option<Self> {
-        match value {
-            "agent" => Some(Self::Agent),
-            "media" => Some(Self::Media),
-            "tool" => Some(Self::Tool),
-            _ => None,
-        }
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Entity identifiers
 // ---------------------------------------------------------------------------
@@ -1000,28 +936,6 @@ impl From<&str> for FollowUp {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn llm_call_kind_string_and_serde_contract() {
-        for (kind, value) in [
-            (LlmCallKind::Agent, "agent"),
-            (LlmCallKind::Media, "media"),
-            (LlmCallKind::Tool, "tool"),
-        ] {
-            assert_eq!(kind.as_str(), value);
-            assert_eq!(LlmCallKind::parse(value), Some(kind));
-            assert_eq!(
-                serde_json::to_string(&kind).unwrap(),
-                format!("\"{value}\"")
-            );
-            assert_eq!(
-                serde_json::from_str::<LlmCallKind>(&format!("\"{value}\"")).unwrap(),
-                kind
-            );
-        }
-        assert_eq!(LlmCallKind::parse("unknown"), None);
-        assert!(serde_json::from_str::<LlmCallKind>("\"unknown\"").is_err());
-    }
 
     #[test]
     fn permission_decisions_use_closed_snake_case_serde_values() {

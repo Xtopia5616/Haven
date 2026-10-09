@@ -628,7 +628,7 @@ pub(crate) struct AgentUsageEvent {
     pub cache_miss_tokens: u32,
     pub context_tokens: u32,
     pub cache_exclusive: bool,
-    pub cache_accounting: String,
+    pub cache_accounting: haven_common::usage::CacheAccounting,
     pub cost_usd: Option<f64>,
     pub model: Option<String>,
     pub cumulative_prompt_tokens: u32,
@@ -638,7 +638,7 @@ pub(crate) struct AgentUsageEvent {
     pub cumulative_cache_creation_tokens: u32,
     pub cumulative_cache_miss_tokens: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub cache_diagnostics: Option<haven_llm::CacheDiagnostics>,
+    pub cache_diagnostics: Option<haven_common::usage::CacheDiagnostics>,
     pub cumulative_cost_usd: Option<f64>,
     pub context_window: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -648,7 +648,7 @@ pub(crate) struct AgentUsageEvent {
     #[serde(skip_serializing_if = "Option::is_none")]
     /// Request kind serialized under the established `role` wire field.
     pub role: Option<haven_common::config::RequestKind>,
-    pub call_kind: haven_common::types::LlmCallKind,
+    pub call_kind: haven_common::usage::LlmCallKind,
     pub has_cost: bool,
 }
 

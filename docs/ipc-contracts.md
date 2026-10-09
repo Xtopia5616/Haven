@@ -234,7 +234,7 @@ DTO 位于 `crates/app-binary/src/events.rs`；前端镜像分别位于
 | `agent:web_search` | `AgentWebSearchEvent` | 聊天页 | `result` 是 provider 动态扩展点；错误和结果按阶段更新。不占用 durable `event_seq`。 |
 | `agent:supplement` | `AgentSupplementEvent` | 聊天页 | 按 `(event_seq, supplement_id)` 去重；只发送补充上下文，不发送快照内部对象。 |
 | `agent:compaction` | `AgentCompactionEvent { summary, tokens_before, tokens_after, degraded, episode_id?, event_seq? }` | 聊天页 | `event_seq` 对应该条压缩摘要的 durable sequence。`degraded=true` 表示摘要请求未完成、使用了 `[older context omitted]`，UI 必须提示较早内容已省略；不发送快照内部对象。 |
-| `agent:usage` | `AgentUsageEvent` | 用量面板、聊天页 | 不占用 durable `event_seq`，live 事件自带累计值。固定 token/cost/cache/context 字段；`role` 字段承载 `RequestKind` 字符串；`call_kind` 使用 generated `LlmCallKind`（`agent` 主循环、`media` 媒体推理、`tool` 其它工具内部 LLM 调用），后二者均不更新主循环累计统计；`cache_diagnostics` 仅为 provider 诊断扩展点；缓存率由每次调用的 accounting 合同计算，未知口径不得猜测。 |
+| `agent:usage` | `AgentUsageEvent` | 用量面板、聊天页 | 不占用 durable `event_seq`，live 事件自带累计值。固定 token/cost/cache/context 字段；`role` 字段承载 `RequestKind` 字符串；`call_kind` 与 `cache_accounting` 使用 Common 生成枚举；`cache_diagnostics` 使用 Common 的 typed `CacheDiagnostics`，其中策略、结果和来源均为闭合枚举，前端 mapper 校验完整字段；缓存率由每次调用的 accounting 合同计算，未知口径不得猜测。 |
 | `agent:tool_output` | `AgentToolOutputEvent` | 聊天页 | UI-only 的有界输出通道；未知 channel 或畸形 payload 直接丢弃并记录。 |
 | `notification:show` | `AgentNotificationEvent` | 根布局 | 通用纯文本通知可省略 session 关联；ToolRun completion 元数据使用生成的 `ToolRunKindDto` / `ToolRunCompletionStatusDto` 与 `AgentNotificationKind`；背景任务必须带真实 `session_id` 和终态，定时任务不带该状态。正文不承载密钥、完整命令输出或原始 provider 错误。 |
 

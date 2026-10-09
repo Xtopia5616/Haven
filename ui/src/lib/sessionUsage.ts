@@ -1,4 +1,5 @@
 import type { SessionLlmUsage } from './contracts/sessionHistory.ts';
+import type { CacheAccounting } from './contracts/generatedCommands.ts';
 
 /**
  * Reconstruct `total` when a provider omitted it. Matches
@@ -17,7 +18,7 @@ export function coalesceTokenTotal(
 	total = 0,
 	cached = 0,
 	creation = 0,
-	cacheAccounting: string = 'unknown',
+	cacheAccounting: CacheAccounting = 'unknown',
 ) {
 	if (total) return total;
 	const extra = cacheAccounting === 'exclusive' ? cached + creation : 0;
@@ -35,7 +36,8 @@ export function cumulativeCacheHitRatePercent(calls: SessionLlmUsage[]): number 
 	if (
 		!agentCalls.length ||
 		agentCalls.some(
-			(call) => !['inclusive', 'exclusive'].includes(call.cache_accounting || 'unknown'),
+			(call) =>
+				call.cache_accounting !== 'inclusive' && call.cache_accounting !== 'exclusive',
 		)
 	) {
 		return null;

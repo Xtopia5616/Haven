@@ -21,10 +21,11 @@ use haven_common::CapabilityProfile;
 #[cfg(test)]
 use haven_common::CapabilitySupport;
 use haven_common::types::{CanonicalMessage, CanonicalRole, CanonicalToolCall, ContentPart};
+use haven_common::usage::{CacheAccounting, CacheDiagnostics};
 
 use crate::types::{
-    CacheAccounting, CacheDiagnostics, Embedding, FinishReason, LlmError, LlmResponse,
-    LlmToolDefinition, StreamChunk, SttResult, Usage,
+    Embedding, FinishReason, LlmError, LlmResponse, LlmToolDefinition, StreamChunk, SttResult,
+    Usage,
 };
 use base64::Engine;
 use haven_common::config::ModelEndpoint;

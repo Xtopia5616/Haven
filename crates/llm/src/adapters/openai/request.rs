@@ -184,10 +184,10 @@ impl OpenAiAdapter {
                 body.prompt_cache_key = None;
                 body.cache_diagnostics.key_requested = false;
                 body.cache_diagnostics.downgraded = true;
-                body.cache_diagnostics.mode = if body.cache_diagnostics.system_split {
-                    "split".into()
+                body.cache_diagnostics.strategy = if body.cache_diagnostics.system_split {
+                    haven_common::usage::PromptCacheStrategy::Split
                 } else {
-                    "off".into()
+                    haven_common::usage::PromptCacheStrategy::Off
                 };
                 tracing::warn!(
                     endpoint = %crate::client::endpoint_log_location(url),

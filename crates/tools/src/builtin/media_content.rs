@@ -3,7 +3,7 @@
 use haven_common::media::MediaRepresentationKind;
 use haven_common::media_detection::DetectedMediaKind;
 use haven_common::prompts::IMAGE_ANALYSIS_SYSTEM_PROMPT;
-use haven_common::types::LlmCallKind;
+use haven_common::usage::LlmCallKind;
 use haven_llm::{LlmRouter, SttClient};
 use serde_json::Value;
 use std::sync::Arc;

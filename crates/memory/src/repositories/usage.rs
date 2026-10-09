@@ -2,11 +2,24 @@ use crate::db::Database;
 #[cfg(test)]
 use crate::repositories::messages::now_rfc3339_millis;
 use haven_common::config::RequestKind;
-use haven_common::types::{CacheAccounting, LlmCallKind};
+use haven_common::usage::{CacheAccounting, CacheDiagnostics, LlmCallKind};
 use rusqlite::OptionalExtension;
 use rusqlite::types::Type;
 
 const SESSION_USAGE_TOKEN_MAX: i64 = u32::MAX as i64;
+
+fn serialize_cache_diagnostics(
+    diagnostics: Option<&CacheDiagnostics>,
+) -> anyhow::Result<Option<String>> {
+    diagnostics
+        .map(serde_json::to_string)
+        .transpose()
+        .map_err(Into::into)
+}
+
+fn deserialize_cache_diagnostics(value: Option<&str>) -> Option<CacheDiagnostics> {
+    value.and_then(|value| serde_json::from_str(value).ok())
+}
 
 fn clamp_session_usage_tokens(value: i64) -> u32 {
     value.clamp(0, SESSION_USAGE_TOKEN_MAX) as u32
@@ -46,7 +59,7 @@ impl SessionUsage {
             self.total_tokens,
             self.cached_tokens,
             self.cache_creation_tokens,
-            "unknown",
+            CacheAccounting::Unknown,
         );
     }
 }
@@ -57,12 +70,12 @@ fn coalesced_total(
     total_tokens: u32,
     cached_tokens: u32,
     cache_creation_tokens: u32,
-    cache_accounting: &str,
+    cache_accounting: CacheAccounting,
 ) -> u32 {
     if total_tokens != 0 {
         return total_tokens;
     }
-    let extra = if cache_accounting == "exclusive" {
+    let extra = if cache_accounting == CacheAccounting::Exclusive {
         cached_tokens.saturating_add(cache_creation_tokens)
     } else {
         0
@@ -139,9 +152,9 @@ pub struct LlmUsageRecord {
     /// report cache accounting. Only per-call rows can safely express this
     /// when a session switches providers.
     #[serde(default)]
-    pub cache_accounting: String,
+    pub cache_accounting: CacheAccounting,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cache_diagnostics: Option<serde_json::Value>,
+    pub cache_diagnostics: Option<CacheDiagnostics>,
     /// Tokens occupying the provider context window for this call.
     #[serde(default)]
     pub context_tokens: u32,
@@ -171,7 +184,7 @@ pub struct LlmUsageRecordInput {
     pub cache_creation_tokens: u32,
     pub cache_miss_tokens: u32,
     pub cache_accounting: CacheAccounting,
-    pub cache_diagnostics: Option<String>,
+    pub cache_diagnostics: Option<CacheDiagnostics>,
     pub cost_usd: f64,
     pub has_cost: bool,
     pub duration_ms: Option<u64>,
@@ -199,11 +212,8 @@ impl LlmUsageRecord {
             cached_tokens: input.cached_tokens,
             cache_creation_tokens: input.cache_creation_tokens,
             cache_miss_tokens: input.cache_miss_tokens,
-            cache_accounting: input.cache_accounting.as_str().to_string(),
-            cache_diagnostics: input
-                .cache_diagnostics
-                .as_deref()
-                .and_then(|value| serde_json::from_str(value).ok()),
+            cache_accounting: input.cache_accounting,
+            cache_diagnostics: input.cache_diagnostics.clone(),
             context_tokens: input.context_tokens,
             context_window: input.context_window,
             cost_usd: input.cost_usd,
@@ -220,7 +230,7 @@ impl LlmUsageRecord {
             self.total_tokens,
             self.cached_tokens,
             self.cache_creation_tokens,
-            &self.cache_accounting,
+            self.cache_accounting,
         );
     }
 }
@@ -254,7 +264,7 @@ impl SessionUsageDelta {
         cached_tokens: u32,
         cache_creation_tokens: u32,
         cache_miss_tokens: u32,
-        cache_accounting: &str,
+        cache_accounting: CacheAccounting,
         cost_usd: f64,
         has_cost: bool,
         context_tokens: u32,
@@ -398,8 +408,8 @@ impl Database {
             cached_tokens,
             cache_creation_tokens,
             cache_miss_tokens,
-            cache_accounting: cache_accounting.into(),
-            cache_diagnostics: cache_diagnostics.and_then(|value| serde_json::from_str(value).ok()),
+            cache_accounting: CacheAccounting::parse(cache_accounting),
+            cache_diagnostics: deserialize_cache_diagnostics(cache_diagnostics),
             context_tokens: 0,
             context_window: None,
             cost_usd,
@@ -597,7 +607,7 @@ impl Database {
                 cached_tokens,
                 cache_creation_tokens,
                 cache_miss_tokens,
-                cache_accounting,
+                CacheAccounting::parse(cache_accounting),
                 cost_usd,
                 has_cost,
                 context_tokens,
@@ -618,9 +628,8 @@ impl Database {
                 cached_tokens,
                 cache_creation_tokens,
                 cache_miss_tokens,
-                cache_accounting: cache_accounting.into(),
-                cache_diagnostics: cache_diagnostics
-                    .and_then(|value| serde_json::from_str(value).ok()),
+                cache_accounting: CacheAccounting::parse(cache_accounting),
+                cache_diagnostics: deserialize_cache_diagnostics(cache_diagnostics),
                 context_tokens,
                 context_window,
                 cost_usd,
@@ -662,6 +671,8 @@ impl Database {
         let result = (|| -> anyhow::Result<Vec<LlmUsageRecord>> {
             let mut delta = SessionUsageDelta::default();
             for (input, (id, created_at)) in inputs.iter().zip(&stamped) {
+                let cache_diagnostics =
+                    serialize_cache_diagnostics(input.cache_diagnostics.as_ref())?;
                 Self::insert_llm_call_usage_conn(
                     &conn,
                     id,
@@ -677,7 +688,7 @@ impl Database {
                     input.cache_creation_tokens,
                     input.cache_miss_tokens,
                     input.cache_accounting.as_str(),
-                    input.cache_diagnostics.as_deref(),
+                    cache_diagnostics.as_deref(),
                     input.context_tokens,
                     input.context_window,
                     input.cost_usd,
@@ -693,7 +704,7 @@ impl Database {
                     input.cached_tokens,
                     input.cache_creation_tokens,
                     input.cache_miss_tokens,
-                    input.cache_accounting.as_str(),
+                    input.cache_accounting,
                     input.cost_usd,
                     input.has_cost,
                     input.context_tokens,
@@ -705,30 +716,8 @@ impl Database {
             Ok(inputs
                 .iter()
                 .zip(&stamped)
-                .map(|(input, (id, created_at))| LlmUsageRecord {
-                    id: id.clone(),
-                    session_id: session_id.into(),
-                    step_number: input.step_number,
-                    role: input.request_kind,
-                    call_kind: input.call_kind,
-                    model: input.model.clone(),
-                    prompt_tokens: input.prompt_tokens,
-                    completion_tokens: input.completion_tokens,
-                    total_tokens: input.total_tokens,
-                    cached_tokens: input.cached_tokens,
-                    cache_creation_tokens: input.cache_creation_tokens,
-                    cache_miss_tokens: input.cache_miss_tokens,
-                    cache_accounting: input.cache_accounting.as_str().to_string(),
-                    cache_diagnostics: input
-                        .cache_diagnostics
-                        .as_deref()
-                        .and_then(|value| serde_json::from_str(value).ok()),
-                    context_tokens: input.context_tokens,
-                    context_window: input.context_window,
-                    cost_usd: input.cost_usd,
-                    has_cost: input.has_cost,
-                    duration_ms: input.duration_ms,
-                    created_at: created_at.clone(),
+                .map(|(input, (id, created_at))| {
+                    LlmUsageRecord::from_input(id.clone(), session_id, input, created_at.clone())
                 })
                 .collect())
         })();
@@ -777,11 +766,7 @@ impl Database {
         conn: &rusqlite::Connection,
         record: &LlmUsageRecord,
     ) -> anyhow::Result<()> {
-        let cache_diagnostics = record
-            .cache_diagnostics
-            .as_ref()
-            .map(serde_json::to_string)
-            .transpose()?;
+        let cache_diagnostics = serialize_cache_diagnostics(record.cache_diagnostics.as_ref())?;
         Self::insert_llm_call_usage_conn(
             conn,
             &record.id,
@@ -796,7 +781,7 @@ impl Database {
             record.cached_tokens,
             record.cache_creation_tokens,
             record.cache_miss_tokens,
-            &record.cache_accounting,
+            record.cache_accounting.as_str(),
             cache_diagnostics.as_deref(),
             record.context_tokens,
             record.context_window,
@@ -814,7 +799,7 @@ impl Database {
             record.cached_tokens,
             record.cache_creation_tokens,
             record.cache_miss_tokens,
-            &record.cache_accounting,
+            record.cache_accounting,
             record.cost_usd,
             record.has_cost,
             record.context_tokens,
@@ -854,7 +839,7 @@ impl Database {
             total_tokens,
             cached_tokens,
             cache_creation_tokens,
-            cache_accounting,
+            CacheAccounting::parse(cache_accounting),
         );
         conn.execute(
             "INSERT INTO llm_usage
@@ -1090,10 +1075,10 @@ impl Database {
                 cached_tokens: row.get(9)?,
                 cache_creation_tokens: row.get(10)?,
                 cache_miss_tokens: row.get(11)?,
-                cache_accounting: row.get(12)?,
+                cache_accounting: CacheAccounting::parse(&row.get::<_, String>(12)?),
                 cache_diagnostics: row
                     .get::<_, Option<String>>(13)?
-                    .and_then(|value| serde_json::from_str(&value).ok()),
+                    .and_then(|value| deserialize_cache_diagnostics(Some(&value))),
                 context_tokens: row.get(14)?,
                 context_window: row.get(15)?,
                 cost_usd: row.get(16)?,
@@ -1118,7 +1103,7 @@ mod tests {
     use crate::LlmUsageRecordInput;
     use crate::db::Database;
     use haven_common::config::RequestKind;
-    use haven_common::types::{CacheAccounting, LlmCallKind};
+    use haven_common::usage::{CacheAccounting, LlmCallKind};
 
     fn test_db() -> Database {
         Database::open_in_memory().expect("create in-memory db")
@@ -1623,7 +1608,7 @@ mod tests {
             0,
             0,
             0,
-            "unknown",
+            CacheAccounting::Unknown,
             None,
             0.0,
             false,
@@ -1748,8 +1733,8 @@ mod tests {
 
         let calls = db.list_session_llm_usage(&session.id).unwrap();
         assert_eq!(calls.len(), 2);
-        assert_eq!(calls[0].cache_accounting, "inclusive");
-        assert_eq!(calls[1].cache_accounting, "exclusive");
+        assert_eq!(calls[0].cache_accounting, CacheAccounting::Inclusive);
+        assert_eq!(calls[1].cache_accounting, CacheAccounting::Exclusive);
         let total = db.get_session_usage(&session.id).unwrap().unwrap();
         assert_eq!(total.prompt_tokens, 200);
         assert_eq!(total.cached_tokens, 500);

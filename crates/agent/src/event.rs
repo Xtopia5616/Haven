@@ -7,7 +7,7 @@ use async_trait::async_trait;
 use haven_common::SessionStatus;
 use haven_common::config::RequestKind;
 use haven_common::tools::{OperationIdempotency, ToolOperationScope, ToolResultEnvelope};
-use haven_common::types::LlmCallKind;
+use haven_common::usage::{CacheAccounting, CacheDiagnostics, LlmCallKind};
 use haven_memory::SessionStore;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -282,7 +282,7 @@ pub enum AgentEvent {
         cache_exclusive: bool,
         /// Explicit per-call cache token accounting contract (`inclusive`,
         /// `exclusive`, or `unknown` for unsupported providers).
-        cache_accounting: String,
+        cache_accounting: CacheAccounting,
         cost_usd: Option<f64>,
         model: Option<String>,
         /// Cumulative totals across the entire session (incl. this step).
@@ -294,7 +294,7 @@ pub enum AgentEvent {
         cumulative_cache_miss_tokens: u32,
         /// Non-sensitive routing/outcome metadata; never includes cache key or prompt text.
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        cache_diagnostics: Option<haven_llm::CacheDiagnostics>,
+        cache_diagnostics: Option<CacheDiagnostics>,
         cumulative_cost_usd: Option<f64>,
         /// Configured context window for the model (tokens). When `None`,
         /// the UI falls back to a generic budget indicator.
@@ -1381,7 +1381,7 @@ pub struct UsagePayload {
     pub cache_miss_tokens: u32,
     pub context_tokens: u32,
     pub cache_exclusive: bool,
-    pub cache_accounting: String,
+    pub cache_accounting: CacheAccounting,
     pub cost_usd: Option<f64>,
     pub model: Option<String>,
     pub cumulative_prompt_tokens: u32,
@@ -1390,7 +1390,7 @@ pub struct UsagePayload {
     pub cumulative_cached_tokens: u32,
     pub cumulative_cache_creation_tokens: u32,
     pub cumulative_cache_miss_tokens: u32,
-    pub cache_diagnostics: Option<haven_llm::CacheDiagnostics>,
+    pub cache_diagnostics: Option<CacheDiagnostics>,
     pub cumulative_cost_usd: Option<f64>,
     pub context_window: Option<u32>,
     pub step_number: Option<u32>,

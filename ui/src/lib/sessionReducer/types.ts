@@ -10,6 +10,8 @@ import type {
 } from '../contracts/agent.ts';
 import type { AskResponseView, InteractionRequest } from '../contracts/app.ts';
 import type {
+	CacheAccounting,
+	CacheDiagnostics,
 	ConfirmationResolutionResult,
 	InteractionKind,
 	SessionStatus,
@@ -64,8 +66,8 @@ export interface SessionTokenStats {
 	cumulativeCostUsd: number | null;
 	contextWindow: number | null;
 	model: string | null;
-	cacheAccounting?: string;
-	cacheDiagnostics?: unknown;
+	cacheAccounting?: CacheAccounting;
+	cacheDiagnostics?: CacheDiagnostics;
 	restored?: boolean;
 	lastUpdated?: number;
 }

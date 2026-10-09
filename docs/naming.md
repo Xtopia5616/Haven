@@ -170,7 +170,7 @@ Tools 对结构化输出中 Ask 与通知 side-channel 的解析结果分别使�
 
 `LlmCallKind` 的 `agent` / `media` / `tool` 是闭合的本地 usage 类别；runtime 输入、live `agent:usage` event 与恢复 DTO `LlmUsageRecord` 共用生成 enum。SQLite `llm_usage.call_kind` 原始列仍以字符串存储，在 Memory 读取边界必须解析为该 enum，不把 SQL 表示扩散成第二个 wire owner（ADR 0271、0723、0724）。
 
-`CacheAccounting` 是 usage runtime 的闭合类别。live `agent:usage` renderer 的 `cacheAccounting` 引用生成 enum，mapper 同时严格校验 `role: RequestKind`；JSON 值仍是字符串。ADR 0270 所属 durable/resume usage DTO 保持历史 `cache_accounting: string` 边界，不将旧持久值当成 live event contract。
+`CacheAccounting`、`LlmCallKind` 与 `CacheDiagnostics` 由 `haven_common::usage` 统一定义；缓存策略、结果和来源使用生成枚举。live `agent:usage` mapper 校验完整诊断对象，persisted `LlmUsageRecord` 也复用相同闭合类型；仅 SQLite TEXT 列保存其 JSON/字符串表示。Serde wire value 仍为 snake_case 字符串，字段名统一使用 `strategy`，不保留旧 `mode` 别名（ADR 0852）。
 
 Tauri command 名与 request/response 类型由 `generatedCommands.ts` 从 Rust handler 生成；`contracts/commands.ts` 只追加 reviewed boundary/security metadata，并用 `Record<TauriCommandName, CommandContract>` 保证每个生成 command 恰有对应审阅项。
 

@@ -864,7 +864,10 @@ async fn explicit_cache_replaces_system_and_tools_and_reuses_resource() {
     );
     assert!(body.system_instruction.is_none());
     assert!(body.tools.is_none());
-    assert_eq!(body.cache_diagnostics.mode, "explicit");
+    assert_eq!(
+        body.cache_diagnostics.strategy,
+        haven_common::usage::PromptCacheStrategy::Explicit
+    );
     assert_eq!(body.cache_diagnostics.provider, "gemini");
     assert!(body.cache_diagnostics.system_split);
     let wire = serde_json::to_value(&body).unwrap();
@@ -966,7 +969,10 @@ async fn explicit_cache_tracks_alternating_sessions_and_memory_content() {
         );
         client.prepare_cached_content(&mut body).await;
         assert_eq!(body.cached_content.as_deref(), Some(expected_names[index]));
-        assert_eq!(body.cache_diagnostics.mode, "explicit");
+        assert_eq!(
+            body.cache_diagnostics.strategy,
+            haven_common::usage::PromptCacheStrategy::Explicit
+        );
     }
 
     let requests = server.await.unwrap();
@@ -1119,14 +1125,26 @@ fn cache_usage_fields_distinguish_omitted_from_explicit_zero() {
     assert!(missing.cached_tokens.is_none());
     let unavailable = CacheDiagnostics::for_explicit_provider_cache(false)
         .with_provider_usage(missing.cached_tokens, false);
-    assert_eq!(unavailable.outcome, "unknown");
-    assert_eq!(unavailable.usage_source, "unavailable");
+    assert_eq!(
+        unavailable.outcome,
+        haven_common::usage::CacheDiagnosticOutcome::Unknown
+    );
+    assert_eq!(
+        unavailable.usage_source,
+        haven_common::usage::CacheUsageSource::Unavailable
+    );
 
     let zero: GeminiUsage =
         serde_json::from_str(r#"{"promptTokenCount":100,"cachedContentTokenCount":0}"#).unwrap();
     assert_eq!(zero.cached_tokens, Some(0));
     let reported_zero = CacheDiagnostics::for_explicit_provider_cache(false)
         .with_provider_usage(zero.cached_tokens, true);
-    assert_eq!(reported_zero.outcome, "miss");
-    assert_eq!(reported_zero.usage_source, "provider");
+    assert_eq!(
+        reported_zero.outcome,
+        haven_common::usage::CacheDiagnosticOutcome::Miss
+    );
+    assert_eq!(
+        reported_zero.usage_source,
+        haven_common::usage::CacheUsageSource::Provider
+    );
 }

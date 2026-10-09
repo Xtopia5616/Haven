@@ -1457,11 +1457,20 @@ async fn rejected_prompt_cache_key_retries_without_key_and_disables_it() {
     assert_eq!(response.text, "ok");
     let diagnostics = response.usage.cache_diagnostics.unwrap();
     assert_eq!(diagnostics.provider, "openai");
-    assert_eq!(diagnostics.mode, "off");
+    assert_eq!(
+        diagnostics.strategy,
+        haven_common::usage::PromptCacheStrategy::Off
+    );
     assert!(!diagnostics.key_requested);
     assert!(diagnostics.downgraded);
-    assert_eq!(diagnostics.outcome, "unknown");
-    assert_eq!(diagnostics.usage_source, "unavailable");
+    assert_eq!(
+        diagnostics.outcome,
+        haven_common::usage::CacheDiagnosticOutcome::Unknown
+    );
+    assert_eq!(
+        diagnostics.usage_source,
+        haven_common::usage::CacheUsageSource::Unavailable
+    );
     assert!(
         client
             .build_request_body(messages, Vec::new(), false)
@@ -1607,8 +1616,14 @@ fn cache_usage_fields_distinguish_omitted_from_explicit_zero() {
         missing.cached_tokens_reported(),
         missing.cache_usage_reported(),
     );
-    assert_eq!(unavailable.outcome, "unknown");
-    assert_eq!(unavailable.usage_source, "unavailable");
+    assert_eq!(
+        unavailable.outcome,
+        haven_common::usage::CacheDiagnosticOutcome::Unknown
+    );
+    assert_eq!(
+        unavailable.usage_source,
+        haven_common::usage::CacheUsageSource::Unavailable
+    );
 
     let zero: ResponsesUsage =
         serde_json::from_str(r#"{"input_tokens":100,"input_tokens_details":{"cached_tokens":0}}"#)
@@ -1616,8 +1631,14 @@ fn cache_usage_fields_distinguish_omitted_from_explicit_zero() {
     assert!(zero.cache_usage_reported());
     let reported_zero = CacheDiagnostics::for_request(true, false)
         .with_provider_usage(zero.cached_tokens_reported(), zero.cache_usage_reported());
-    assert_eq!(reported_zero.outcome, "miss");
-    assert_eq!(reported_zero.usage_source, "provider");
+    assert_eq!(
+        reported_zero.outcome,
+        haven_common::usage::CacheDiagnosticOutcome::Miss
+    );
+    assert_eq!(
+        reported_zero.usage_source,
+        haven_common::usage::CacheUsageSource::Provider
+    );
 
     let write_only: ResponsesUsage = serde_json::from_str(
         r#"{"input_tokens":100,"input_tokens_details":{"cache_write_tokens":10}}"#,
@@ -1627,8 +1648,14 @@ fn cache_usage_fields_distinguish_omitted_from_explicit_zero() {
         write_only.cached_tokens_reported(),
         write_only.cache_usage_reported(),
     );
-    assert_eq!(missing_read.outcome, "unknown");
-    assert_eq!(missing_read.usage_source, "provider");
+    assert_eq!(
+        missing_read.outcome,
+        haven_common::usage::CacheDiagnosticOutcome::Unknown
+    );
+    assert_eq!(
+        missing_read.usage_source,
+        haven_common::usage::CacheUsageSource::Provider
+    );
 }
 
 #[test]

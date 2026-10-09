@@ -258,16 +258,12 @@ export type ToolRetryability = (typeof TOOL_RETRYABILITY_VALUES)[number];
 export interface ToolRootPresentation { label: string; description: string; icon: string }
 export const TOOL_SOURCE_VALUES = ['builtin', 'skill', 'mcp'] as const;
 export type ToolSource = (typeof TOOL_SOURCE_VALUES)[number];
-export const CACHE_ACCOUNTING_VALUES = ['inclusive', 'exclusive', 'unknown'] as const;
-export type CacheAccounting = (typeof CACHE_ACCOUNTING_VALUES)[number];
 export const CANONICAL_ROLE_VALUES = ['system', 'user', 'assistant', 'tool'] as const;
 export type CanonicalRole = (typeof CANONICAL_ROLE_VALUES)[number];
 export const HOTKEY_MODE_INPUT_VALUES = ['toggle', 'hold'] as const;
 export type HotkeyModeInput = (typeof HOTKEY_MODE_INPUT_VALUES)[number];
 export const HOTKEY_MODE_VALUES = ['toggle', 'hold'] as const;
 export type HotkeyMode = (typeof HOTKEY_MODE_VALUES)[number];
-export const LLM_CALL_KIND_VALUES = ['agent', 'media', 'tool'] as const;
-export type LlmCallKind = (typeof LLM_CALL_KIND_VALUES)[number];
 export const MCP_TRANSPORT_TYPE_INPUT_VALUES = ['stdio', 'http'] as const;
 export type McpTransportTypeInput = (typeof MCP_TRANSPORT_TYPE_INPUT_VALUES)[number];
 export const MCP_TRANSPORT_TYPE_VALUES = ['stdio', 'http'] as const;
@@ -306,6 +302,17 @@ export const SHELL_CHOICE_VALUES = ['powershell', 'cmd', 'pwsh'] as const;
 export type ShellChoice = (typeof SHELL_CHOICE_VALUES)[number];
 export const TRANSCRIPT_MESSAGE_KIND_VALUES = ['text', 'thought', 'tool_call', 'observation', 'reasoning', 'peer_kickoff'] as const;
 export type TranscriptMessageKind = (typeof TRANSCRIPT_MESSAGE_KIND_VALUES)[number];
+export const CACHE_ACCOUNTING_VALUES = ['inclusive', 'exclusive', 'unknown'] as const;
+export type CacheAccounting = (typeof CACHE_ACCOUNTING_VALUES)[number];
+export const CACHE_DIAGNOSTIC_OUTCOME_VALUES = ['disabled', 'unknown', 'hit', 'miss'] as const;
+export type CacheDiagnosticOutcome = (typeof CACHE_DIAGNOSTIC_OUTCOME_VALUES)[number];
+export interface CacheDiagnostics { strategy: PromptCacheStrategy; provider: string; key_requested: boolean; system_split: boolean; downgraded: boolean; outcome: CacheDiagnosticOutcome; usage_source: CacheUsageSource }
+export const CACHE_USAGE_SOURCE_VALUES = ['provider', 'unavailable'] as const;
+export type CacheUsageSource = (typeof CACHE_USAGE_SOURCE_VALUES)[number];
+export const LLM_CALL_KIND_VALUES = ['agent', 'media', 'tool'] as const;
+export type LlmCallKind = (typeof LLM_CALL_KIND_VALUES)[number];
+export const PROMPT_CACHE_STRATEGY_VALUES = ['off', 'key', 'split', 'implicit', 'explicit'] as const;
+export type PromptCacheStrategy = (typeof PROMPT_CACHE_STRATEGY_VALUES)[number];
 export const WEB_SEARCH_MODE_INPUT_VALUES = ['off', 'auto', 'always'] as const;
 export type WebSearchModeInput = (typeof WEB_SEARCH_MODE_INPUT_VALUES)[number];
 export interface ModelInfo { id: string; provider: string; name: string; context_window: number; supports_streaming: boolean; supports_tools: boolean; supports_vision: boolean; cost_per_1k_input_tokens?: number; cost_per_1k_output_tokens?: number }
@@ -323,7 +330,7 @@ export interface Message { id: string; session_id: string; role: CanonicalRole; 
 export const SESSION_HISTORY_STATUS_FILTER_INPUT_VALUES = ['pending', 'running', 'paused', 'completed', 'error'] as const;
 export type SessionHistoryStatusFilterInput = (typeof SESSION_HISTORY_STATUS_FILTER_INPUT_VALUES)[number];
 export interface SessionStep { id: string; session_id: string; step_number: number; tool_index: number; thought: string | null; tool_name: string | null; tool_input: string | null; tool_call_id: string | null; observation: string | null; status: SessionStepStatus; is_high_risk: boolean; confirmed: boolean | null; silent: boolean; started_at: string | null; completed_at: string | null; created_at: string }
-export interface LlmUsageRecord { id: string; session_id: string; step_number: number | null; role: RequestKind; call_kind: LlmCallKind; model: string | null; prompt_tokens: number; completion_tokens: number; total_tokens: number; cached_tokens: number; cache_creation_tokens: number; cache_miss_tokens: number; cache_accounting: string; cache_diagnostics?: unknown; context_tokens: number; context_window: number | null; cost_usd: number; has_cost: boolean; duration_ms: number | null; created_at: string }
+export interface LlmUsageRecord { id: string; session_id: string; step_number: number | null; role: RequestKind; call_kind: LlmCallKind; model: string | null; prompt_tokens: number; completion_tokens: number; total_tokens: number; cached_tokens: number; cache_creation_tokens: number; cache_miss_tokens: number; cache_accounting: CacheAccounting; cache_diagnostics?: CacheDiagnostics; context_tokens: number; context_window: number | null; cost_usd: number; has_cost: boolean; duration_ms: number | null; created_at: string }
 export interface SessionUsage { prompt_tokens: number; completion_tokens: number; total_tokens: number; cached_tokens: number; cache_creation_tokens: number; cache_miss_tokens: number; context_tokens: number; context_window: number | null; cost_usd: number; has_cost: boolean }
 export interface SkillInfo { name: string; description: string; version: string | null; language: string; enabled: boolean; root: string; has_script: boolean }
 export const SCHEDULE_MODE_VALUES = ['tool', 'continue'] as const;

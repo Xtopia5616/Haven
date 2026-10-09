@@ -13,6 +13,7 @@ pub mod text;
 pub mod tool_run_lease;
 pub mod tools;
 pub mod types;
+pub mod usage;
 pub mod workspace;
 
 pub use config::{
@@ -44,6 +45,10 @@ pub use tools::{
 
 pub use lifecycle::{SessionStatus, SessionStepStatus, SessionWaitingReason, ToolRunStatus};
 pub use types::{
-    CacheAccounting, CanonicalMessage, CanonicalRole, CanonicalToolCall, ContentPart, FollowUp,
-    InjectSource, LlmCallKind, MessageAttachment, PEER_KICKOFF_PREFIX, TranscriptMessageKind,
+    CanonicalMessage, CanonicalRole, CanonicalToolCall, ContentPart, FollowUp, InjectSource,
+    MessageAttachment, PEER_KICKOFF_PREFIX, TranscriptMessageKind,
+};
+pub use usage::{
+    CacheAccounting, CacheDiagnosticOutcome, CacheDiagnostics, CacheUsageSource, LlmCallKind,
+    PromptCacheStrategy,
 };

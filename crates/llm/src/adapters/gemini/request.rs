@@ -244,10 +244,10 @@ impl GeminiAdapter {
                     .await;
                 *body = uncached_body.clone();
                 body.cache_diagnostics.downgraded = true;
-                body.cache_diagnostics.mode = if body.cache_diagnostics.system_split {
-                    "split".into()
+                body.cache_diagnostics.strategy = if body.cache_diagnostics.system_split {
+                    haven_common::usage::PromptCacheStrategy::Split
                 } else {
-                    "implicit".into()
+                    haven_common::usage::PromptCacheStrategy::Implicit
                 };
                 tracing::debug!(
                     endpoint = %crate::client::endpoint_log_location(url),

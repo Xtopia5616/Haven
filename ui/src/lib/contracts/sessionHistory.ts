@@ -18,11 +18,7 @@ export type SessionResumeStep = GeneratedSessionStep;
 export type SessionResumeUsage = GeneratedSessionUsage;
 
 /** Renderer usage projection derives its fields from the Rust usage DTO. */
-export type SessionLlmUsage = Omit<
-	Partial<GeneratedLlmUsageRecord>,
-	'cache_diagnostics' | 'cost_usd'
-> & {
-	cache_diagnostics?: unknown;
+export type SessionLlmUsage = Omit<Partial<GeneratedLlmUsageRecord>, 'cost_usd'> & {
 	cost_usd?: number | null;
 };
 

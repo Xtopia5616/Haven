@@ -11,7 +11,8 @@ use haven_common::media::{
     MediaProjectionMode, build_media_plan, message_attachment_to_media_input,
 };
 use haven_common::types::MessageAttachment;
-use haven_common::types::{CanonicalMessage, ContentPart, LlmCallKind};
+use haven_common::types::{CanonicalMessage, ContentPart};
+use haven_common::usage::LlmCallKind;
 use haven_llm::{FinishReason, LlmResponse, LlmRouter, LlmToolDefinition};
 #[cfg(test)]
 use haven_memory::Database;
@@ -794,10 +795,7 @@ impl ReActEngine {
 
         let model = response.model.clone().or_else(|| usage.model_name.clone());
         let call_has_cost = step_cost.is_some();
-        let cache_diagnostics = usage
-            .cache_diagnostics
-            .as_ref()
-            .and_then(|diagnostics| serde_json::to_string(diagnostics).ok());
+        let cache_diagnostics = usage.cache_diagnostics.clone();
         let totals = match self
             .usage_runtime
             .record(
@@ -864,7 +862,7 @@ impl ReActEngine {
                 cache_miss_tokens: usage.effective_cache_miss_tokens(),
                 context_tokens: usage.context_tokens(),
                 cache_exclusive: usage.cache_exclusive_of_prompt(),
-                cache_accounting: usage.cache_accounting.as_str().into(),
+                cache_accounting: usage.cache_accounting,
                 cost_usd: step_cost,
                 model,
                 cumulative_prompt_tokens: cum_prompt,
@@ -916,11 +914,8 @@ impl ReActEngine {
                 .model
                 .clone()
                 .or_else(|| usage.model_name.clone());
-            let cache_accounting = usage.cache_accounting.as_str().to_string();
-            let cache_diagnostics = usage
-                .cache_diagnostics
-                .as_ref()
-                .and_then(|value| serde_json::to_string(value).ok());
+            let cache_accounting = usage.cache_accounting;
+            let cache_diagnostics = usage.cache_diagnostics.clone();
             let payload = UsagePayload {
                 session_id: session_id.to_string(),
                 prompt_tokens: usage.prompt_tokens,
@@ -931,7 +926,7 @@ impl ReActEngine {
                 cache_miss_tokens: usage.effective_cache_miss_tokens(),
                 context_tokens: usage.context_tokens(),
                 cache_exclusive: usage.cache_exclusive_of_prompt(),
-                cache_accounting: cache_accounting.clone(),
+                cache_accounting,
                 cost_usd: step_cost,
                 model: model.clone(),
                 cumulative_prompt_tokens: 0,
@@ -1040,11 +1035,8 @@ impl ReActEngine {
             let usage_cached = usage.cached_tokens;
             let usage_cache_creation = usage.cache_creation_tokens;
             let usage_cache_miss = usage.effective_cache_miss_tokens();
-            let usage_cache_accounting = usage.cache_accounting.as_str().to_string();
-            let cache_diagnostics = usage
-                .cache_diagnostics
-                .as_ref()
-                .and_then(|value| serde_json::to_string(value).ok());
+            let usage_cache_accounting = usage.cache_accounting;
+            let cache_diagnostics = usage.cache_diagnostics.clone();
             let cache_diagnostics_for_event = usage.cache_diagnostics.clone();
             let store = self.event_store.clone();
             let session_id_for_persist = session_id.to_string();
@@ -1068,7 +1060,7 @@ impl ReActEngine {
                         cached_tokens: usage_cached,
                         cache_creation_tokens: usage_cache_creation,
                         cache_miss_tokens: usage_cache_miss,
-                        cache_accounting: usage.cache_accounting,
+                        cache_accounting: usage_cache_accounting,
                         cache_diagnostics,
                         cost_usd: call_cost,
                         has_cost: call_has_cost,

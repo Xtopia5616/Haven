@@ -32,7 +32,15 @@ function makeUsagePayload(overrides: Record<string, unknown> = {}) {
 		cumulative_cached_tokens: 2,
 		cumulative_cache_creation_tokens: 1,
 		cumulative_cache_miss_tokens: 0,
-		cache_diagnostics: { source: 'provider' },
+		cache_diagnostics: {
+			strategy: 'key',
+			provider: 'openai',
+			key_requested: true,
+			system_split: false,
+			downgraded: false,
+			outcome: 'unknown',
+			usage_source: 'unavailable',
+		},
 		cumulative_cost_usd: null,
 		context_window: 128000,
 		step_number: 3,
@@ -78,7 +86,7 @@ describe('agent IPC contract', () => {
 		expect(event.payload).not.toHaveProperty('session_id');
 	});
 
-	it('maps typed usage kind and preserves dynamic diagnostics', () => {
+	it('maps typed usage kind and diagnostics', () => {
 		const event = mapAgentEvent({
 			event: 'agent:usage',
 			id: 2,
@@ -87,7 +95,15 @@ describe('agent IPC contract', () => {
 
 		expect(event.payload.sessionId).toBe('ses-1');
 		expect(event.payload.promptTokens).toBe(10);
-		expect(event.payload.cacheDiagnostics).toEqual({ source: 'provider' });
+		expect(event.payload.cacheDiagnostics).toEqual({
+			strategy: 'key',
+			provider: 'openai',
+			key_requested: true,
+			system_split: false,
+			downgraded: false,
+			outcome: 'unknown',
+			usage_source: 'unavailable',
+		});
 		expect(event.payload.callKind).toBe('media');
 		expect(event.payload).not.toHaveProperty('prompt_tokens');
 	});
@@ -102,10 +118,13 @@ describe('agent IPC contract', () => {
 		expect(mapped).toBeNull();
 	});
 
-	it('rejects unknown usage role and cache-accounting enums', () => {
+	it('rejects unknown usage and cache diagnostic enums', () => {
 		for (const payload of [
 			makeUsagePayload({ role: 'future_request_kind' }),
 			makeUsagePayload({ cache_accounting: 'provider' }),
+			makeUsagePayload({
+				cache_diagnostics: { ...makeUsagePayload().cache_diagnostics, strategy: 'future' },
+			}),
 		]) {
 			expect(mapAgentEventContract({ event: 'agent:usage', id: 3, payload })).toBeNull();
 		}

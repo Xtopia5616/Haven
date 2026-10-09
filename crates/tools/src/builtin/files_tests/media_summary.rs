@@ -120,7 +120,7 @@ use super::*;
         assert_eq!(result.llm_usage.len(), 1);
         assert_eq!(
             result.llm_usage[0].call_kind,
-            haven_common::types::LlmCallKind::Tool
+            haven_common::usage::LlmCallKind::Tool
         );
         assert_eq!(result.llm_usage[0].request, RequestKind::FastChat);
         assert_eq!(result.llm_usage[0].usage.total_tokens, 18);
