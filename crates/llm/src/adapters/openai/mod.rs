@@ -14,9 +14,10 @@ use sha2::{Digest, Sha256};
 use crate::adapters::{
     LineMode, MAX_JSON_RESPONSE_BYTES, MAX_STREAM_TOOL_CALLS, ToolNameMap, ToolNamePolicy,
     WebSearchMode, build_client, build_headers, chat_thinking_extras, health_check_request,
-    is_deepseek, line_payload_channel, normalize_web_search_call_item, read_text_bounded,
-    reasoning_tail, reasoning_text_from_thinking_blocks, requires_reasoning_echo,
-    resolve_web_search_mode, send_request, spawn_line_reader, stream_header_timeout,
+    is_deepseek, line_payload_channel, normalize_web_search_call_item,
+    parse_completed_tool_arguments, read_text_bounded, reasoning_tail,
+    reasoning_text_from_thinking_blocks, requires_reasoning_echo, resolve_web_search_mode,
+    send_request, serialize_tool_arguments, spawn_line_reader, stream_header_timeout,
     xai_search_mode,
 };
 use crate::client::LlmClient;

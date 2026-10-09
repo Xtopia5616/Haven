@@ -45,7 +45,7 @@ impl OpenAiResponsesAdapter {
                             name,
                             arguments: item
                                 .arguments
-                                .map(|a| CanonicalToolCall::from_wire_args(&a))
+                                .map(|a| parse_completed_tool_arguments(&a))
                                 .unwrap_or(Value::Null),
                         });
                     }

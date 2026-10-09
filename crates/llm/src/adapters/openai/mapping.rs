@@ -106,7 +106,7 @@ impl OpenAiAdapter {
                     calls
                         .iter()
                         .map(|tc| {
-                            let args = tc.args_to_wire();
+                            let args = serialize_tool_arguments(&tc.arguments);
                             OpenAiMessageToolCall {
                                 id: tc.id.clone(),
                                 call_type: "function".into(),
@@ -234,7 +234,7 @@ impl OpenAiAdapter {
                     out.push(CanonicalToolCall {
                         id,
                         name,
-                        arguments: CanonicalToolCall::from_wire_args(&args),
+                        arguments: parse_completed_tool_arguments(&args),
                     });
                 }
             }

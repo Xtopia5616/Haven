@@ -8,6 +8,7 @@ pub mod openai;
 pub mod openai_responses;
 mod provider_features;
 mod stream;
+mod tool_arguments;
 mod tool_schema;
 mod transport;
 mod web_search;
@@ -19,6 +20,7 @@ pub use capabilities::{
     supports_builtin_web_search, xai_search_mode,
 };
 pub use openai::OpenAiAdapter;
+pub(crate) use tool_arguments::{parse_completed_tool_arguments, serialize_tool_arguments};
 
 /// Bound provider-controlled tool-call indices before streaming aggregation.
 pub(crate) const MAX_STREAM_TOOL_CALLS: usize = 128;

@@ -134,7 +134,7 @@ impl OpenAiResponsesAdapter {
                                     .map(|(_, id, name, args)| CanonicalToolCall {
                                         id,
                                         name: state.tool_names.to_canonical(&name),
-                                        arguments: CanonicalToolCall::from_wire_args(&args),
+                                        arguments: parse_completed_tool_arguments(&args),
                                     })
                                     .collect(),
                                 tool_call_updates: Vec::new(),
@@ -463,7 +463,7 @@ impl OpenAiResponsesAdapter {
                                 .map(|(_, id, name, args)| CanonicalToolCall {
                                     id,
                                     name: state.tool_names.to_canonical(&name),
-                                    arguments: CanonicalToolCall::from_wire_args(&args),
+                                    arguments: parse_completed_tool_arguments(&args),
                                 })
                                 .collect(),
                             tool_call_updates: Vec::new(),

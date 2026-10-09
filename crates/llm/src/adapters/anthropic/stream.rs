@@ -457,9 +457,7 @@ impl AnthropicAdapter {
                                     state.pending_tool_calls.push(CanonicalToolCall {
                                         id: block.tool_id.clone(),
                                         name: state.tool_names.to_canonical(&block.tool_name),
-                                        arguments: CanonicalToolCall::from_wire_args(
-                                            &block.tool_input,
-                                        ),
+                                        arguments: parse_completed_tool_arguments(&block.tool_input),
                                     });
                                     state.layout.push((
                                         Self::LAYOUT_KIND_TOOL_USE,

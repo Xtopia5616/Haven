@@ -162,7 +162,8 @@ CI 以 `scripts/check-crate-dependencies.ps1` 对此表执行内部 crate 依赖
   `ConfigService` 持有版本化 live snapshot、串行 typed patch、原子持久化和无密钥变更通知。
 - `types.rs`：跨 crate 的规范类型 —— 实体 ID（`new_id` / newtype）、`CanonicalMessage` /
   `ContentPart` / `CanonicalToolCall`、`MessageAttachment`、`FollowUp`、`RiskLevel`、
-  `HotkeyMode` / `ShellChoice` 等。
+  `HotkeyMode` / `ShellChoice` 等。`CanonicalToolCall` 只承载规范化后的参数值；Provider wire
+  参数序列化与完成流解析/截断修复由 `haven-llm::adapters::tool_arguments` 持有。
 - `media.rs` / `media_detection.rs`：provider-neutral 的 `MediaAsset`、
   `MediaRepresentation`、能力画像、统一文件探测和纯 `MediaPlan` 计划器；只选择安全的
   raw/derived/managed 表示，不执行文件 I/O 或 provider 路由。文件/MIME 探测以
@@ -185,6 +186,8 @@ OS 句柄和进程生命周期适配不属于该共享契约面，统一归 `hav
   - `anthropic` → Messages API（可选 server `web_search_*`）；无 embedding
   - `gemini` → `generateContent`（可选 `google_search` grounding）；embedding 走 `batchEmbedContents`
   - `deepgram` / `assemblyai` → STT only
+- `adapters/tool_arguments.rs`：adapter 私有的工具参数 wire 序列化与完成流解析；Common 中的
+  `CanonicalToolCall` 不负责 provider JSON 字符串或流截断修复。
 - 聊天页「联网搜索」为命名模型级 `off|auto|always`；仅
   `supports_builtin_web_search(api_style)` 为真时由对应适配器注入内置搜索工具，
   UI 对不支持的线协议灰显。

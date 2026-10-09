@@ -211,7 +211,7 @@ impl OpenAiResponsesAdapter {
                                 "type": "function_call",
                                 "call_id": tc.id,
                                 "name": tc.name,
-                                "arguments": tc.args_to_wire()
+                                "arguments": serialize_tool_arguments(&tc.arguments)
                             }));
                         }
                     }

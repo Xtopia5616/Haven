@@ -826,3 +826,4 @@
 - [0845：从 Chat 提交中投影掉文件预览大小](0845-project-file-preview-size-out-of-chat-submit.md)
 - [0846：将 Chat 提交回调直接接到所属 controller](0846-wire-chat-submit-callbacks-to-their-owners.md)
 - [0847：区分录音身份与会话身份](0847-distinguish-recording-identity-from-session.md)
+- [0848：将工具参数 wire 转换归入 LLM adapter](0848-own-tool-argument-wire-conversion-in-llm-adapters.md)
