@@ -85,7 +85,7 @@
 					label: '单次请求工具数上限',
 					unit: 'count',
 					danger: true,
-					hint: '发给模型的 tools 数组最大长度。默认 64（提供方硬顶约 350）。内置工具优先保留；load_mcp 可按 tool_names 只加载子集，整服超限时返回工具目录供再选。',
+					hint: '发给模型的 tools 数组最大长度。默认 256（提供方硬顶约 350）。内置工具优先保留；load_mcp 可按 tool_names 只加载子集，整服超限时返回工具目录供再选。',
 				},
 				{
 					key: 'max_transcript_chars',

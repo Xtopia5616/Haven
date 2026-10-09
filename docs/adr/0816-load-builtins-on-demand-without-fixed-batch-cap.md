@@ -4,6 +4,8 @@
 
 Accepted — 2026-10-08
 
+后续说明：工具请求预算的默认值由 [ADR 0820](0820-raise-default-tool-budget.md) 从 64 提高到 256；本文其余按需加载与无固定批次上限的决定继续有效。
+
 ## 背景
 
 `tool_catalog(action=load)` 的 `operations` schema 将一次请求固定限制为 64 项，即使当前 deferred catalog 中有更多可用内置 operation。与此同时，`files.read`、`files.outline`、`files.search` 和 `system.info` 被放进常驻 provider surface，模型无需先从目录中选择就会收到它们的 schema。

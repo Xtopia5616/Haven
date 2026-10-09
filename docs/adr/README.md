@@ -808,3 +808,4 @@
 - [0817：让记忆事实推断设置控制运行时](0817-make-memory-fact-inference-setting-effective.md)
 - [0818：拒绝用过期快照覆盖外部配置](0818-reject-stale-config-snapshot-writes.md)
 - [0819：明确区分模型配置 ID 与 Provider 服务模型 ID](0819-name-model-identities-explicitly.md)
+- [0820：将默认工具请求预算提高到 256](0820-raise-default-tool-budget.md)

@@ -221,7 +221,7 @@
 		event_chunk_batch_max_bytes: 8 * 1024,
 		input_ring_buffer_secs: 20,
 		embedding_chunk_size: 10,
-		max_tools_per_request: 64,
+		max_tools_per_request: 256,
 	});
 	let memory = $state<Required<Pick<MemoryConfigInput, 'fact_inference_enabled'>>>({
 		fact_inference_enabled: true,
