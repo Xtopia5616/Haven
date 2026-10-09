@@ -814,3 +814,4 @@
 - [0833：通过领域命令适配器调用设置与 Skill 执行命令](0833-route-settings-commands-through-domain-adapters.md)
 - [0834：统一工具目录的分组摘要来源](0834-single-source-tool-catalog-group-summaries.md)
 - [0835：按生产 owner 拆分遗留 store 测试桶](0835-split-store-test-bucket-by-owner.md)
+- [0836：集中聊天模型命令 owner](0836-centralize-chat-model-command-ownership.md)

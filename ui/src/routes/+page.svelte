@@ -18,6 +18,7 @@
 	import { createChatViewController } from '$lib/chatViewController.ts';
 	import { projectChatVisibleMessages } from '$lib/chatVisibleMessages.ts';
 	import { createChatModelSync } from '$lib/chatModelSync.ts';
+	import * as chatModelCommands from '$lib/chatModelCommands.ts';
 	import { buildSessionSwitcherOptions } from '$lib/sessionSwitcher.ts';
 	import { loadSettings } from '$lib/settingsCommands.ts';
 	import { createChatModelOperations } from '$lib/chatModelOperations.ts';
@@ -697,7 +698,7 @@
 	});
 	const { applyDefaultModelFromSettings, refreshDefaultModelFromBackend } = modelSync;
 	const modelOperations = createChatModelOperations({
-		invoke,
+		commands: chatModelCommands,
 		setSkipNextDefaultModelRefresh: (skip) => {
 			skipNextDefaultModelRefresh = skip;
 		},

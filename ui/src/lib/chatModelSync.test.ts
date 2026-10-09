@@ -3,15 +3,17 @@ import { createChatModelSync } from './chatModelSync.ts';
 import type { ChatModelOption } from './chatModelOperations.ts';
 import type { SettingsPayload } from './contracts/settings.ts';
 
-const { invoke } = vi.hoisted(() => ({ invoke: vi.fn() }));
+const { setWebSearch } = vi.hoisted(() => ({ setWebSearch: vi.fn() }));
 
-vi.mock('$lib/tauri.ts', () => ({ invoke }));
+vi.mock('$lib/chatModelCommands.ts', () => ({ setWebSearch }));
 
-function settingsFor(options: {
-	primary?: string;
-	models?: Array<Record<string, unknown>>;
-	providers?: Array<Record<string, unknown>>;
-} = {}) {
+function settingsFor(
+	options: {
+		primary?: string;
+		models?: Array<Record<string, unknown>>;
+		providers?: Array<Record<string, unknown>>;
+	} = {},
+) {
 	return {
 		llm: {
 			request_policies: options.primary
@@ -47,7 +49,7 @@ function createSync(setModelOptions: (models: ChatModelOption[]) => void) {
 
 describe('chat model route sync', () => {
 	it('lists configured chat profiles and selects the route primary by profile id', () => {
-		invoke.mockReset();
+		setWebSearch.mockReset();
 		const modelOptions = vi.fn();
 		const { sync, state } = createSync(modelOptions);
 
@@ -117,7 +119,7 @@ describe('chat model route sync', () => {
 		expect(state.webSearch).toEqual(['auto']);
 		expect(state.webSearchSupported).toEqual([true]);
 		expect(state.apiStyles).toEqual(['openai-responses']);
-		expect(invoke).not.toHaveBeenCalledWith('discover_models', expect.anything());
+		expect(setWebSearch).not.toHaveBeenCalled();
 	});
 
 	it('keeps selectable profiles visible when no chat primary is configured', () => {
@@ -144,7 +146,7 @@ describe('chat model route sync', () => {
 	});
 
 	it('clears a stale web-search mode on an unsupported selected profile', () => {
-		invoke.mockReset().mockResolvedValue(undefined);
+		setWebSearch.mockReset().mockResolvedValue(undefined);
 		const { sync, state } = createSync(vi.fn());
 
 		sync.applyDefaultModelFromSettings(
@@ -165,11 +167,11 @@ describe('chat model route sync', () => {
 
 		expect(state.webSearch).toEqual(['off']);
 		expect(state.webSearchSupported).toEqual([false]);
-		expect(invoke).toHaveBeenCalledWith('set_web_search', { requestKind: 'chat', mode: 'off' });
+		expect(setWebSearch).toHaveBeenCalledWith({ requestKind: 'chat', mode: 'off' });
 	});
 
 	it('normalizes Gemini always search mode to auto', () => {
-		invoke.mockReset().mockResolvedValue(undefined);
+		setWebSearch.mockReset().mockResolvedValue(undefined);
 		const { sync, state } = createSync(vi.fn());
 
 		sync.applyDefaultModelFromSettings(
@@ -190,6 +192,6 @@ describe('chat model route sync', () => {
 
 		expect(state.webSearch).toEqual(['auto']);
 		expect(state.webSearchSupported).toEqual([true]);
-		expect(invoke).toHaveBeenCalledWith('set_web_search', { requestKind: 'chat', mode: 'auto' });
+		expect(setWebSearch).toHaveBeenCalledWith({ requestKind: 'chat', mode: 'auto' });
 	});
 });

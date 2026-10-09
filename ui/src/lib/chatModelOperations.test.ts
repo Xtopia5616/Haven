@@ -2,16 +2,20 @@ import { describe, expect, it } from 'vitest';
 import {
 	createChatModelOperations,
 	type ChatModelOperationsDependencies,
-	type ChatModelOperationsInvoke,
 } from './chatModelOperations.ts';
 
-function makeHarness(options: {
-	failure?: unknown;
-	webSearchSupported?: boolean;
-} = {}) {
+function makeHarness(
+	options: {
+		failure?: unknown;
+		webSearchSupported?: boolean;
+	} = {},
+) {
 	const calls: Array<{ command: string; payload: unknown }> = [];
 	const notifications: Array<{ message: string; type: string; duration: number }> = [];
-	const errors: Array<{ error: unknown; options: { context: string; message: string; log?: boolean } }> = [];
+	const errors: Array<{
+		error: unknown;
+		options: { context: string; message: string; log?: boolean };
+	}> = [];
 	const suppressed: boolean[] = [];
 	const modelIds: string[] = [];
 	const modelNames: string[] = [];
@@ -21,13 +25,18 @@ function makeHarness(options: {
 	const webSearchSupport: boolean[] = [];
 	let modelMenuClosed = 0;
 
-	const invoke = (async (command: string, payload: unknown) => {
+	const recordCommand = async (command: string, payload: unknown) => {
 		calls.push({ command, payload });
 		if (options.failure !== undefined) throw options.failure;
-	}) as ChatModelOperationsInvoke;
+	};
+	const commands: ChatModelOperationsDependencies['commands'] = {
+		switchModel: (request) => recordCommand('switch_model', request),
+		setReasoningEffort: (request) => recordCommand('set_reasoning_effort', request),
+		setWebSearch: (request) => recordCommand('set_web_search', request),
+	};
 
 	const dependencies: ChatModelOperationsDependencies = {
-		invoke,
+		commands,
 		setSkipNextDefaultModelRefresh: (skip) => suppressed.push(skip),
 		setCurrentModelId: (value) => modelIds.push(value),
 		setCurrentModelName: (value) => modelNames.push(value),
@@ -77,7 +86,10 @@ describe('createChatModelOperations', () => {
 		});
 
 		expect(harness.calls).toEqual([
-			{ command: 'switch_model', payload: { requestKind: 'chat', modelConfigId: 'chat-profile' } },
+			{
+				command: 'switch_model',
+				payload: { requestKind: 'chat', modelConfigId: 'chat-profile' },
+			},
 		]);
 		expect(harness.modelMenuClosed).toBe(1);
 		expect(harness.modelIds).toEqual(['chat-profile']);
@@ -107,7 +119,10 @@ describe('createChatModelOperations', () => {
 		});
 
 		expect(harness.calls).toEqual([
-			{ command: 'switch_model', payload: { requestKind: 'chat', modelConfigId: 'local-chat' } },
+			{
+				command: 'switch_model',
+				payload: { requestKind: 'chat', modelConfigId: 'local-chat' },
+			},
 			{ command: 'set_web_search', payload: { requestKind: 'chat', mode: 'off' } },
 		]);
 		expect(harness.webSearchModes).toEqual(['off']);
@@ -128,7 +143,10 @@ describe('createChatModelOperations', () => {
 		});
 
 		expect(harness.calls).toEqual([
-			{ command: 'switch_model', payload: { requestKind: 'chat', modelConfigId: 'gemini-chat' } },
+			{
+				command: 'switch_model',
+				payload: { requestKind: 'chat', modelConfigId: 'gemini-chat' },
+			},
 			{ command: 'set_web_search', payload: { requestKind: 'chat', mode: 'auto' } },
 		]);
 		expect(harness.webSearchModes).toEqual(['auto']);

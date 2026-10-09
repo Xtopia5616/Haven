@@ -695,6 +695,10 @@ Settings 表单状态仍由 `SettingsView` 持有，`settingsSaveAction` 与 `se
 `get_api_key_status` 读取统一经 `ui/src/lib/diagnosticsCommands.ts`；`contracts/settings.ts` 的既有
 parsers 继续校验 ADR 0007 的命名响应 DTO，并作为日志、shell 与 API-key 响应的唯一 validator/mapper；
 metrics 响应保持开放以保留动态诊断字段。
+Chat toolbar 的 `switch_model`、`set_reasoning_effort` 与 `set_web_search` 统一经
+`ui/src/lib/chatModelCommands.ts` 发出；`chatModelOperations` 拥有用户操作后的 toolbar 状态、错误与刷新抑制，
+`chatModelSync` 只从 Settings 派生配置视图并在必要时用相同 adapter 规范化旧 web-search 值，避免多个模块各自
+成为同一命令的 invoke owner（ADR 0836）。
 `performanceMetrics.ts` 继续拥有 renderer 计数 provider（ADR 0370）。app-shell 事件的批量
 `appEventListeners` 与单条 `registerAppListener` 共用 `mapAppEvent` adapter；ToolsView 的 MCP/Skills
 刷新监听也经过该入口，布局只拥有 MCP 通知副作用，Skills 不再保留空 listener。Rust MCP status 使用

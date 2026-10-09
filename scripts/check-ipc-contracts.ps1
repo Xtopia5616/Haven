@@ -124,6 +124,7 @@ $ownedCommands = @{
     'modelDiscoveryCommands.ts' = @('discover_models', 'discover_all_models')
     'diagnosticsCommands.ts' = @('get_log_info', 'read_log_tail', 'check_shell_available', 'get_api_key_status', 'get_performance_metrics')
     'settingsCommands.ts' = @('get_settings', 'discard_staged_credentials', 'list_session_permissions', 'is_autostart_enabled', 'run_memory_maintenance', 'revoke_permission', 'revoke_session_permission', 'reset_permissions', 'reset_session_permissions', 'set_hotkey_capture_active', 'stage_provider_credential', 'stage_ocr_credential', 'update_settings', 'enable_autostart', 'disable_autostart')
+    'chatModelCommands.ts' = @('switch_model', 'set_reasoning_effort', 'set_web_search')
 }
 foreach ($file in $uiFiles) {
     foreach ($owner in $ownedCommands.Keys) {

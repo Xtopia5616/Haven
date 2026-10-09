@@ -1,10 +1,6 @@
 import type { ErrorReportOptions } from './errorHandling.ts';
 import type { NotificationType } from './notificationStore.ts';
-import type {
-	SetReasoningEffortRequest,
-	SetWebSearchRequest,
-	SwitchModelRequest,
-} from './contracts/commands.ts';
+import * as chatModelCommands from './chatModelCommands.ts';
 import type {
 	ReasoningEffortSelectionInput,
 	WebSearchModeInput,
@@ -22,14 +18,8 @@ export interface ChatModelOption {
 	webSearchSupported: boolean;
 }
 
-export interface ChatModelOperationsInvoke {
-	(command: 'switch_model', payload: SwitchModelRequest): Promise<void>;
-	(command: 'set_reasoning_effort', payload: SetReasoningEffortRequest): Promise<void>;
-	(command: 'set_web_search', payload: SetWebSearchRequest): Promise<void>;
-}
-
 export interface ChatModelOperationsDependencies {
-	invoke: ChatModelOperationsInvoke;
+	commands: typeof chatModelCommands;
 	setSkipNextDefaultModelRefresh: (skip: boolean) => void;
 	setCurrentModelId: (value: string) => void;
 	setCurrentModelName: (value: string) => void;
@@ -69,7 +59,7 @@ export function createChatModelOperations(dependencies: ChatModelOperationsDepen
 	function selectModel(model: ChatModelOption): Promise<void> {
 		return runOperation(
 			() =>
-				dependencies.invoke('switch_model', {
+				dependencies.commands.switchModel({
 					requestKind: 'chat',
 					modelConfigId: model.id,
 				}),
@@ -92,8 +82,8 @@ export function createChatModelOperations(dependencies: ChatModelOperationsDepen
 				dependencies.setWebSearchSupported(model.webSearchSupported);
 				dependencies.notify(`已切换对话模型：${model.name}`, 'success', 3000);
 				if (normalizedWebSearch) {
-					dependencies
-						.invoke('set_web_search', { requestKind: 'chat', mode: normalizedWebSearch })
+					dependencies.commands
+						.setWebSearch({ requestKind: 'chat', mode: normalizedWebSearch })
 						.catch((error) =>
 							dependencies.reportError(error, {
 								context: '+page',
@@ -112,7 +102,7 @@ export function createChatModelOperations(dependencies: ChatModelOperationsDepen
 		const label = dependencies.getEffortLabel(value) || '默认';
 		return runOperation(
 			() =>
-				dependencies.invoke('set_reasoning_effort', {
+				dependencies.commands.setReasoningEffort({
 					requestKind: 'chat',
 					effort: value || null,
 				}),
@@ -131,7 +121,7 @@ export function createChatModelOperations(dependencies: ChatModelOperationsDepen
 		}
 		const label = dependencies.getWebSearchLabel(value) || '关闭';
 		return runOperation(
-			() => dependencies.invoke('set_web_search', { requestKind: 'chat', mode: value }),
+			() => dependencies.commands.setWebSearch({ requestKind: 'chat', mode: value }),
 			() => {
 				dependencies.setCurrentWebSearch(value);
 				dependencies.notify(`联网搜索: ${label}`, 'success', 2500);

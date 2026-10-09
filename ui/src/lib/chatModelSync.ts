@@ -1,6 +1,6 @@
 import { reportError } from '$lib/errorHandling.ts';
 import { normalizeApiStyle, supportsBuiltinWebSearch } from '$lib/apiStyle.ts';
-import { invoke } from '$lib/tauri.ts';
+import { setWebSearch } from '$lib/chatModelCommands.ts';
 import { loadSettings } from '$lib/settingsCommands.ts';
 import type { SettingsPayload } from '$lib/contracts/settings.ts';
 import type { ChatModelOption } from '$lib/chatModelOperations.ts';
@@ -22,11 +22,7 @@ function chatModelOptions(settings: SettingsPayload): ChatModelOption[] {
 	return settings.llm.models.flatMap((model) => {
 		const providerName = model.provider_name;
 		const provider = providers.get(providerName);
-		if (
-			!model.capabilities.includes('chat') ||
-			!model.model ||
-			!provider
-		) {
+		if (!model.capabilities.includes('chat') || !model.model || !provider) {
 			return [];
 		}
 		const apiStyle = normalizeApiStyle(provider.api_style || 'openai-chat');
@@ -75,7 +71,9 @@ export function createChatModelSync(options: ModelSyncOptions) {
 		}
 
 		setModelOptions(chatModelOptions(settings));
-		const chatPolicy = settings.llm.request_policies.find((policy) => policy.request === 'chat');
+		const chatPolicy = settings.llm.request_policies.find(
+			(policy) => policy.request === 'chat',
+		);
 		const selectedModel = settings.llm.models.find((model) => model.id === chatPolicy?.primary);
 		const providerName = selectedModel?.provider_name;
 		const provider = providerName
@@ -104,7 +102,7 @@ export function createChatModelSync(options: ModelSyncOptions) {
 		// Normalize stale settings so they cannot become active if the profile or
 		// provider wire style changes later.
 		if (normalizedWebSearch) {
-			invoke('set_web_search', { requestKind: 'chat', mode: normalizedWebSearch }).catch((error) => {
+			setWebSearch({ requestKind: 'chat', mode: normalizedWebSearch }).catch((error) => {
 				reportError(error, {
 					context: '+page',
 					message: '同步对话模型联网搜索设置失败',
