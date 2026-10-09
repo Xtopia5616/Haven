@@ -604,7 +604,7 @@ impl ReActEngine {
                 .map(Into::into)
                 .collect::<Vec<LlmToolDefinition>>(),
         );
-        let token_estimate = crate::compactor::estimate_tool_tokens(&definitions);
+        let token_estimate = crate::token_budget::estimate_tool_tokens(&definitions);
         let prepared = PreparedToolDefinitions {
             definitions,
             token_estimate,
@@ -1244,7 +1244,7 @@ impl ReActEngine {
         // `needs_compaction` would re-estimate the whole canonical and undo
         // the incremental cache.
         let cached_message_tokens = state.estimate_canonical_tokens();
-        let request_tokens = crate::compactor::estimate_provider_request_tokens_with_estimates(
+        let request_tokens = crate::token_budget::estimate_provider_request_tokens_with_estimates(
             &state.canonical,
             cached_message_tokens,
             tool_token_estimate,
@@ -1382,14 +1382,14 @@ mod tests {
 
         assert_eq!(
             state.estimate_canonical_tokens(),
-            crate::compactor::estimate_message_tokens(&state.canonical),
+            crate::token_budget::estimate_message_tokens(&state.canonical),
         );
         Arc::make_mut(&mut state.canonical)
             .push(text_msg(CanonicalRole::Assistant, "appended message"));
         state.mark_canonical_append();
         assert_eq!(
             state.estimate_canonical_tokens(),
-            crate::compactor::estimate_message_tokens(&state.canonical),
+            crate::token_budget::estimate_message_tokens(&state.canonical),
         );
 
         assert!(executor.actor_for_now(session_id).is_none());

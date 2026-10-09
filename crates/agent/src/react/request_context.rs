@@ -11,7 +11,7 @@ use super::{
     CanonicalMediaSummary, MediaRequirements, ReActEngine, ReActState, RetryNudge,
     canonical_media_summary,
 };
-use crate::compactor::estimate_message_tokens;
+use crate::token_budget::estimate_message_tokens;
 use crate::types::TranscriptRecord;
 use haven_common::media::{
     CapabilityProfile, MediaInput, MediaInputStrategy, MediaModality, MediaPlan,

@@ -983,7 +983,7 @@ impl ReActEngine {
         // during stream setup; retries create a new context with its own
         // precise estimate.
         let estimated_input_tokens =
-            crate::compactor::estimate_provider_request_tokens_with_estimates(
+            crate::token_budget::estimate_provider_request_tokens_with_estimates(
                 request_context.messages(),
                 request_context.message_tokens(),
                 tool_token_estimate,
@@ -1670,7 +1670,7 @@ mod tests {
             router,
             RequestKind::Vision,
             &[],
-            crate::compactor::estimate_tool_tokens(&[]),
+            crate::token_budget::estimate_tool_tokens(&[]),
             state.identity_map.clone(),
             CancellationToken::new(),
             &partial_thought,

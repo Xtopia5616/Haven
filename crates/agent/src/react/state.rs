@@ -16,7 +16,7 @@ use tokio_util::sync::CancellationToken;
 
 use super::identity::{IdentityMap, StreamBlockIdentity};
 use super::{CanonicalMediaSummary, MediaRequirements, canonical_media_summary};
-use crate::compactor::estimate_message_tokens;
+use crate::token_budget::estimate_message_tokens;
 use crate::types::{BranchPoint, TranscriptRecord};
 use haven_common::types::CanonicalMessage;
 

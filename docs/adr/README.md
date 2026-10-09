@@ -834,3 +834,4 @@
 - [0853：由单一模块拥有工具媒体能力解析](0853-own-tool-media-capability-resolution-in-one-module.md)
 - [0854：明确命名工具能力快照投影](0854-name-capability-projection-explicitly.md)
 - [0855：共享有界响应体字节累积不变量](0855-share-bounded-response-buffer-invariant.md)
+- [0856：集中 Agent token budget owner](0856-centralize-agent-token-budget-ownership.md)

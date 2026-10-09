@@ -1,156 +1,16 @@
 use crate::is_dangling_boundary;
+use crate::token_budget::{
+    PROVIDER_REQUEST_OVERHEAD_TOKENS, estimate_message_token_cost, estimate_message_tokens,
+    estimate_provider_request_tokens, estimate_provider_request_tokens_with_estimates,
+    estimate_tokens, estimate_tool_tokens, truncate_prefix_to_token_budget,
+    truncate_suffix_to_token_budget,
+};
 use haven_common::config::RequestKind;
 use haven_common::prompts::SESSION_COMPACTION_SUMMARY_PROMPT;
 use haven_common::types::{CanonicalMessage, ContentPart};
 use haven_llm::{LlmError, LlmRouter, LlmToolDefinition};
 use std::sync::Arc;
-use std::sync::{LazyLock, OnceLock};
-use tiktoken_rs::o200k_base;
 use tokio_util::sync::CancellationToken;
-
-static TOKENIZER: LazyLock<Result<tiktoken_rs::CoreBPE, String>> =
-    LazyLock::new(|| o200k_base().map_err(|error| error.to_string()));
-static TOKENIZER_WARNING_LOGGED: OnceLock<()> = OnceLock::new();
-
-/// Token estimation using o200k_base tokenizer for accurate counts.
-pub fn estimate_tokens(text: &str) -> u32 {
-    match &*TOKENIZER {
-        Ok(tokenizer) => tokenizer.encode_with_special_tokens(text).len() as u32,
-        Err(error) => {
-            TOKENIZER_WARNING_LOGGED.get_or_init(|| {
-                tracing::error!(error = %error, "failed to initialize tokenizer; using conservative character estimate");
-            });
-            text.chars().count().div_ceil(4) as u32
-        }
-    }
-}
-
-/// Estimate the provider-visible token cost of one canonical message.
-///
-/// The estimator intentionally stays provider-neutral. It covers the content
-/// and the extra fields that can be echoed into a request; protocol framing is
-/// accounted for by the provider adapters and the small safety reserve in the
-/// compactor.
-fn estimate_message_token_cost(msg: &CanonicalMessage) -> u32 {
-    let mut total = 0u32;
-    for part in &msg.content {
-        match part {
-            ContentPart::Text(t) => total = total.saturating_add(estimate_tokens(t)),
-            ContentPart::Image { .. } => total = total.saturating_add(200), // rough image token cost
-            ContentPart::Audio { .. } => total = total.saturating_add(500), // rough audio token cost
-            ContentPart::Video { .. } => total = total.saturating_add(1_500), // rough video token cost
-        }
-    }
-    // Reasoning (thinking-mode) is echoed back to the provider on every
-    // request and can dwarf the message text itself (a single turn's
-    // reasoning routinely reaches 10k chars). It must count toward the
-    // context budget or compaction never triggers on reasoning-heavy
-    // conversations, the request body explodes, and providers stall.
-    if let Some(r) = &msg.reasoning {
-        total = total.saturating_add(estimate_tokens(r));
-    }
-    // Anthropic thinking blocks and built-in search items are echoed as raw
-    // JSON. Count their complete serialized form, including signatures and
-    // provider metadata, rather than only the visible thinking text.
-    for block in &msg.thinking_blocks {
-        total = total.saturating_add(estimate_serialized_tokens(block));
-    }
-    if !msg.web_search_calls.is_empty() {
-        total = total.saturating_add(estimate_serialized_tokens(&msg.web_search_calls));
-    }
-    if let Some(calls) = &msg.tool_calls {
-        // Tool arguments can be large (for example a generated patch). The
-        // old fixed 50-token allowance missed that provider-visible payload.
-        for call in calls {
-            total = total
-                .saturating_add(estimate_serialized_tokens(call))
-                .saturating_add(10);
-        }
-    }
-    if let Some(tool_call_id) = &msg.tool_call_id {
-        total = total.saturating_add(estimate_tokens(tool_call_id));
-    }
-    total
-}
-
-fn estimate_serialized_tokens<T: serde::Serialize>(value: &T) -> u32 {
-    serde_json::to_string(value)
-        .ok()
-        .map(|json| estimate_tokens(&json))
-        .unwrap_or_default()
-}
-
-/// Estimate tokens in a list of canonical messages by summing each message's
-/// provider-visible cost.
-pub fn estimate_message_tokens(messages: &[CanonicalMessage]) -> u32 {
-    messages
-        .iter()
-        .map(estimate_message_token_cost)
-        .fold(0, u32::saturating_add)
-}
-
-/// Estimate the serialized schema cost once per request. Tool definitions are
-/// not part of the durable transcript, but they occupy the same provider
-/// context window as messages.
-pub fn estimate_tool_tokens(tools: &[LlmToolDefinition]) -> u32 {
-    serde_json::to_string(tools)
-        .ok()
-        .map(|json| estimate_tokens(&json))
-        .unwrap_or_default()
-}
-
-/// Provider framing and adapter-side fields are not represented in canonical
-/// messages. Keep one conservative allowance shared by compaction and the
-/// dynamic output-cap calculation.
-pub const PROVIDER_REQUEST_OVERHEAD_TOKENS: u32 = 256;
-
-/// Estimate the request that will actually reach a provider. Sanitization is
-/// applied to a clone so durable transcript state remains authoritative while
-/// dangling tool-call repairs still participate in the budget.
-pub fn estimate_provider_request_tokens(
-    messages: &[CanonicalMessage],
-    tools: &[LlmToolDefinition],
-) -> u32 {
-    estimate_provider_request_tokens_with_message_estimate(
-        messages,
-        tools,
-        estimate_message_tokens(messages),
-    )
-}
-
-/// Cache-friendly variant used by the ReAct preflight. Healthy canonical
-/// arrays reuse the incremental message estimate; only malformed tool
-/// boundaries need a sanitized clone and a fresh message pass.
-pub fn estimate_provider_request_tokens_with_message_estimate(
-    messages: &[CanonicalMessage],
-    tools: &[LlmToolDefinition],
-    cached_message_tokens: u32,
-) -> u32 {
-    estimate_provider_request_tokens_with_estimates(
-        messages,
-        cached_message_tokens,
-        estimate_tool_tokens(tools),
-    )
-}
-
-/// Cache-friendly request estimator when both transcript and tool schemas
-/// already have version-scoped token estimates.
-pub fn estimate_provider_request_tokens_with_estimates(
-    messages: &[CanonicalMessage],
-    cached_message_tokens: u32,
-    tool_token_estimate: u32,
-) -> u32 {
-    let message_tokens = if crate::canonical::canonical_pairing_healthy(messages) {
-        cached_message_tokens
-    } else {
-        let mut provider_messages = messages.to_vec();
-        crate::sanitize_canonical(&mut provider_messages);
-        estimate_message_tokens(&provider_messages)
-    };
-    message_tokens
-        .saturating_add(tool_token_estimate)
-        .saturating_add(PROVIDER_REQUEST_OVERHEAD_TOKENS)
-}
 
 /// Prefix sums let the compaction planner compare many candidate boundaries
 /// without re-tokenizing the same messages for every candidate.
@@ -186,54 +46,6 @@ const SUMMARY_INPUT_TOKEN_BUDGET: u32 = 16_000;
 const SUMMARY_TEXT_TOKEN_BUDGET: u32 = 768;
 const SUMMARY_MESSAGE_TOKEN_BUDGET: u32 = 1_024;
 const SUMMARY_REQUEST_OVERHEAD_TOKENS: u32 = PROVIDER_REQUEST_OVERHEAD_TOKENS;
-
-fn truncate_to_token_budget(text: &str, max_tokens: u32) -> String {
-    if max_tokens == 0 {
-        return String::new();
-    }
-    if estimate_tokens(text) <= max_tokens {
-        return text.to_string();
-    }
-
-    let chars: Vec<char> = text.chars().collect();
-    let mut low = 0usize;
-    let mut high = chars.len();
-    while low < high {
-        let middle = (low + high).div_ceil(2);
-        let candidate: String = chars[..middle].iter().collect();
-        if estimate_tokens(&candidate) <= max_tokens {
-            low = middle;
-        } else {
-            high = middle - 1;
-        }
-    }
-    chars[..low].iter().collect()
-}
-
-fn truncate_from_end_to_token_budget(text: &str, max_tokens: u32) -> String {
-    if max_tokens == 0 {
-        return String::new();
-    }
-    if estimate_tokens(text) <= max_tokens {
-        return text.to_string();
-    }
-
-    let chars: Vec<char> = text.chars().collect();
-    let mut low = 0usize;
-    let mut high = chars.len();
-    while low < high {
-        let take = (low + high).div_ceil(2);
-        let start = chars.len().saturating_sub(take);
-        let candidate: String = chars[start..].iter().collect();
-        if estimate_tokens(&candidate) <= max_tokens {
-            low = take;
-        } else {
-            high = take - 1;
-        }
-    }
-    let start = chars.len().saturating_sub(low);
-    chars[start..].iter().collect()
-}
 
 #[derive(Debug, Clone)]
 pub struct CompactionResult {
@@ -409,9 +221,9 @@ impl ContextCompactor {
             let head_budget = body_budget / 2;
             let tail_budget = body_budget.saturating_sub(head_budget);
             let split = lines.len().div_ceil(2);
-            let head = truncate_to_token_budget(&lines[..split].concat(), head_budget);
-            let tail = truncate_from_end_to_token_budget(&lines[split..].concat(), tail_budget);
-            truncate_to_token_budget(&format!("{head}{marker}{tail}"), available)
+            let head = truncate_prefix_to_token_budget(&lines[..split].concat(), head_budget);
+            let tail = truncate_suffix_to_token_budget(&lines[split..].concat(), tail_budget);
+            truncate_prefix_to_token_budget(&format!("{head}{marker}{tail}"), available)
         };
 
         let mut text = String::with_capacity(
@@ -702,8 +514,10 @@ impl ContextCompactor {
                 .await
             {
                 Ok(response) => {
-                    let text =
-                        truncate_to_token_budget(response.text.trim(), SUMMARY_TEXT_TOKEN_BUDGET);
+                    let text = truncate_prefix_to_token_budget(
+                        response.text.trim(),
+                        SUMMARY_TEXT_TOKEN_BUDGET,
+                    );
                     (!text.is_empty()).then_some(text)
                 }
                 Err(LlmError::Cancelled) => return Err(LlmError::Cancelled),
@@ -1263,7 +1077,7 @@ mod tests {
     #[test]
     fn summary_output_truncation_is_token_bounded() {
         let text = "摘要内容 ".repeat(2_000);
-        let truncated = truncate_to_token_budget(&text, SUMMARY_TEXT_TOKEN_BUDGET);
+        let truncated = truncate_prefix_to_token_budget(&text, SUMMARY_TEXT_TOKEN_BUDGET);
 
         assert!(!truncated.is_empty());
         assert!(estimate_tokens(&truncated) <= SUMMARY_TEXT_TOKEN_BUDGET);

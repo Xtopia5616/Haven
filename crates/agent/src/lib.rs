@@ -30,6 +30,7 @@ mod storage_error;
 #[cfg(test)]
 mod test_support;
 mod title;
+mod token_budget;
 mod types;
 
 pub(crate) use canonical::{is_dangling_boundary, sanitize_canonical};

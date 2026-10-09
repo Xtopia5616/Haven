@@ -1,6 +1,6 @@
 # Haven 架构与 crate 职责
 
-> 版本: v1.15 | 日期: 2026-10-10
+> 版本: v1.16 | 日期: 2026-10-10
 > 范围: `crates/` (Rust 后端, Tauri 2)
 > 原则: **依赖单向、叶子优先**。上层 crate 只依赖下层，绝不反向依赖；共享数据与类型放叶子（`haven-common`），
 > 组件职责按「谁拥有实现、谁只消费接口」划分。
@@ -395,6 +395,7 @@ Compaction summary episode 与首个 pending marker 只由 `MemoryStore::persist
 - `layer.rs` + `ingress.rs` / `resume.rs` / `resume_support.rs`：对外入口与 resume 恢复；`resume_support` 只提供确定性的候选合并、悬空工具调用修复和运行时工具选择恢复。
 - `canonical.rs`：发送前 `sanitize_canonical` 闸门。
 - `memory_worker.rs` / `memory_service.rs` / `memory_index.rs` / `prompt_context.rs` / `prompt_renderer.rs` / `prompt.rs` / `compactor.rs` / `rollback.rs` / `rollback_support.rs` / `title.rs` / `event.rs` / `partial.rs`；`memory_service` 统一 typed memory/embedding/cache 边界，`prompt_context` 取得 bounded turn snapshot，`prompt_renderer` 纯渲染 bounded MEMORY fence；`rollback.rs` 编排生命周期与 DB 双时钟，`rollback_support` 只操作 events 和 branch cursor。
+- `token_budget.rs`：Agent 的 tokenizer 初始化、provider-visible message/tool/request 估算与前缀/后缀文本 token 截断唯一 owner。`ReActState` 只持有版本作用域的增量 canonical token estimate cache；`compactor.rs` 保留 compaction 专属的区间前缀和、范围选择与 summary 编排，`prompt_renderer.rs` 保留按完整行选择与 MEMORY fence 布局（ADR 0856）。
 - Memory outbox retry 与 `MemoryRuntime` 恢复退避复用 common 纯策略/退避计算；worker 仍拥有 marker、cursor、等待、取消与恢复时序（ADR 0268、0447）。
 - `fact_extraction.rs`：事实抽取 DTO、LLM 字段 coercion、标签/谓词规范化、prompt
   字段清洗和 JSON array 提取；`MemoryWorker` 负责调度与持久化（ADR 0029、0169）。

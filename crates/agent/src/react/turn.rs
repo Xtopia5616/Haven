@@ -261,7 +261,7 @@ impl ReActEngine {
             Some(definitions) => super::sidecars::PreparedToolDefinitions {
                 token_estimate: before_step
                     .tool_token_estimate
-                    .unwrap_or_else(|| crate::compactor::estimate_tool_tokens(&definitions)),
+                    .unwrap_or_else(|| crate::token_budget::estimate_tool_tokens(&definitions)),
                 definitions,
             },
             None => self.prepare_tool_definitions(session_id, &catalog),

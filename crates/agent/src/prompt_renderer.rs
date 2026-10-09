@@ -7,7 +7,7 @@
 use haven_common::prompts::{MAIN_SYSTEM_PROMPT, render};
 use haven_common::types::{CanonicalMessage, CanonicalRole, ContentPart};
 
-use crate::compactor::estimate_tokens;
+use crate::token_budget::{estimate_tokens, truncate_prefix_to_token_budget};
 
 pub const MEMORY_START: &str = haven_common::prompts::MEMORY_FENCE_START;
 pub const MEMORY_END: &str = haven_common::prompts::MEMORY_FENCE_END;
@@ -150,36 +150,13 @@ fn truncate_lines_to_token_budget(text: &str, max_tokens: u32) -> String {
         let candidate = format!("{out}{line}\n");
         if estimate_tokens(&candidate) > max_tokens {
             if out.is_empty() {
-                return truncate_to_token_budget(line, max_tokens);
+                return truncate_prefix_to_token_budget(line, max_tokens);
             }
             break;
         }
         out = candidate;
     }
     out
-}
-
-fn truncate_to_token_budget(text: &str, max_tokens: u32) -> String {
-    if max_tokens == 0 || estimate_tokens(text) <= max_tokens {
-        return if max_tokens == 0 {
-            String::new()
-        } else {
-            text.to_string()
-        };
-    }
-    let chars: Vec<char> = text.chars().collect();
-    let mut low = 0usize;
-    let mut high = chars.len();
-    while low < high {
-        let middle = (low + high).div_ceil(2);
-        let candidate: String = chars[..middle].iter().collect();
-        if estimate_tokens(&candidate) <= max_tokens {
-            low = middle;
-        } else {
-            high = middle - 1;
-        }
-    }
-    chars[..low].iter().collect()
 }
 
 fn splice(s: &str, start: usize, end: usize, replacement: &str) -> String {

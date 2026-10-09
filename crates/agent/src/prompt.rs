@@ -13,7 +13,6 @@ use haven_tools::{McpServerIndexEntry, WebSearchAvailability};
 #[cfg(test)]
 use haven_memory::Database;
 
-use crate::compactor::estimate_tokens;
 use crate::memory_service::{MemoryService, PromptMemoryCandidates};
 use crate::prompt_context::{
     PromptCatalogContent, PromptCatalogVersions, PromptContextProvider, PromptToolPort,
@@ -21,6 +20,7 @@ use crate::prompt_context::{
 #[cfg(test)]
 use crate::prompt_renderer::MEMORY_END;
 use crate::prompt_renderer::{MEMORY_START, MemorySections, PromptRenderer};
+use crate::token_budget::{estimate_tokens, truncate_prefix_to_token_budget};
 
 /// Builds the system prompt, including a **short** tools / MCP index.
 ///
@@ -107,28 +107,6 @@ fn truncate_chars(text: &str, max_chars: usize) -> String {
     text.chars().take(max_chars).collect()
 }
 
-fn truncate_to_token_budget(text: &str, max_tokens: u32) -> String {
-    if max_tokens == 0 {
-        return String::new();
-    }
-    if estimate_tokens(text) <= max_tokens {
-        return text.to_string();
-    }
-    let chars: Vec<char> = text.chars().collect();
-    let mut low = 0usize;
-    let mut high = chars.len();
-    while low < high {
-        let middle = (low + high).div_ceil(2);
-        let candidate: String = chars[..middle].iter().collect();
-        if estimate_tokens(&candidate) <= max_tokens {
-            low = middle;
-        } else {
-            high = middle - 1;
-        }
-    }
-    chars[..low].iter().collect()
-}
-
 fn render_recent_context_with_budget(
     session_prompt_history: &[String],
     max_chars: usize,
@@ -154,7 +132,8 @@ fn render_recent_context_with_budget(
             message,
             RECENT_CONTEXT_ITEM_MAX_CHARS.min(max_chars),
         );
-        let safe_message = truncate_to_token_budget(&safe_message, RECENT_CONTEXT_ITEM_MAX_TOKENS);
+        let safe_message =
+            truncate_prefix_to_token_budget(&safe_message, RECENT_CONTEXT_ITEM_MAX_TOKENS);
         let line = format!("  {safe_message}\n");
         let line_chars = line.chars().count();
         let line_tokens = estimate_tokens(&line);
@@ -181,7 +160,7 @@ fn render_recent_context_with_budget(
             session_prompt_history.last().unwrap(),
             available_chars,
         );
-        let safe_message = truncate_to_token_budget(&safe_message, available_tokens);
+        let safe_message = truncate_prefix_to_token_budget(&safe_message, available_tokens);
         selected.push(truncate_chars(
             &format!("  {safe_message}\n"),
             available_chars,
@@ -196,7 +175,7 @@ fn render_recent_context_with_budget(
         rendered.push('\n');
     }
     if estimate_tokens(&rendered) > max_tokens {
-        truncate_to_token_budget(&rendered, max_tokens)
+        truncate_prefix_to_token_budget(&rendered, max_tokens)
     } else {
         rendered
     }
@@ -584,7 +563,7 @@ impl SystemPromptBuilder {
             SESSION_DESCRIPTION_CHAR_BUDGET,
         );
         let session_description =
-            truncate_to_token_budget(&session_description, SESSION_DESCRIPTION_TOKEN_BUDGET);
+            truncate_prefix_to_token_budget(&session_description, SESSION_DESCRIPTION_TOKEN_BUDGET);
         let runtime_snapshot = self.render_runtime_snapshot().await;
         let prefix = format!(
             "{SESSION_CONTEXT_FENCE_START}Runtime snapshot:\n{runtime_snapshot}\n\nCurrent session: {session_description}\n\n"
