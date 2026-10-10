@@ -8,8 +8,8 @@ use tokio::io::BufReader;
 use tokio_util::sync::CancellationToken;
 
 use super::file_paths::looks_like_binary;
-use super::file_read::read_line_bounded;
 use super::{MAX_SUMMARY_FOCUS_CHARS, UNTRUSTED_DOCUMENT_END, UNTRUSTED_DOCUMENT_START};
+use crate::builtin::file_line_reader::read_line_bounded;
 use crate::{OutputBudget, ToolLlmUsage, ToolResult};
 
 /// Summarize plain text with the fast route when configured, falling back to

@@ -1,9 +1,10 @@
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncSeekExt, BufReader};
+use tokio::io::{AsyncReadExt, AsyncSeekExt, BufReader};
 use tokio_util::sync::CancellationToken;
 
 use super::file_classification::{FileClassificationKind, classify_file_by_extension};
 use super::file_paths::{binary_result, looks_like_binary};
 use crate::ToolResult;
+use crate::builtin::file_line_reader::read_line_bounded;
 
 /// Read a text file in full. Multimodal path inputs are deliberately treated
 /// as binary; managed media must enter through the `media(asset_id)` tool.
@@ -225,43 +226,6 @@ pub(super) async fn read_bytes(
         result,
         has_more || output.truncated,
     ))
-}
-
-/// Read one line via `fill_buf`/`consume`, never buffering more than `cap`
-/// bytes. Returns `Ok(None)` at EOF, else `Ok(Some((bytes, exceeded)))` where
-/// `exceeded` is true when the line is longer than `cap` (only the first
-/// `cap` bytes were copied and the remainder stays in the reader). Bounds the
-/// memory used by pathological single-line files (minified bundles, base64).
-pub(super) async fn read_line_bounded(
-    reader: &mut BufReader<tokio::fs::File>,
-    buf: &mut Vec<u8>,
-    cap: usize,
-) -> anyhow::Result<Option<(usize, bool)>> {
-    buf.clear();
-    loop {
-        let available = reader.fill_buf().await?;
-        if available.is_empty() {
-            return Ok(if buf.is_empty() {
-                None
-            } else {
-                Some((buf.len(), false))
-            });
-        }
-        let remaining = cap.saturating_sub(buf.len());
-        if remaining == 0 {
-            return Ok(Some((buf.len(), true)));
-        }
-        let window = &available[..available.len().min(remaining)];
-        if let Some(pos) = window.iter().position(|&b| b == b'\n') {
-            let take = pos + 1;
-            buf.extend_from_slice(&available[..take]);
-            reader.consume(take);
-            return Ok(Some((buf.len(), false)));
-        }
-        buf.extend_from_slice(window);
-        let n = window.len();
-        reader.consume(n);
-    }
 }
 
 /// Line-mode segmented read (C): return lines `start_line`..=`end_line` (1-based).

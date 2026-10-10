@@ -3,6 +3,7 @@ mod admin_support;
 pub mod ask;
 pub mod clipboard;
 mod env;
+mod file_line_reader;
 mod file_outline;
 pub mod file_search;
 pub mod files;
