@@ -892,3 +892,4 @@
 - [0901：让 MCP profile 只由 ConfigService 持有](0901-read-mcp-server-config-from-config-service.md)
 - [0902：从单一 MemoryStores 装配共享 typed capabilities](0902-share-memory-store-bundle-capabilities.md)
 - [0903：将 MCP 与 Skills 具体 owner 留在 Tools 内](0903-keep-mcp-and-skill-implementations-inside-tools.md)
+- [0904：通过 AdminOperationPort 隔离 AdminOperationSet](0904-hide-admin-operation-set-behind-port.md)

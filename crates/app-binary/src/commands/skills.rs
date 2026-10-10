@@ -58,7 +58,7 @@ pub async fn set_skill_enabled(
     enabled: bool,
     app: AppHandle,
 ) -> Result<(), String> {
-    // Route through the native admin surface: one implementation for
+    // Route through the native admin operation: one implementation for
     // the UI toggle and the LLM's skill_enable / skill_disable ops. The op
     // updates the registry allowlist and persists `skills.enabled` to config.toml
     // via ConfigService.

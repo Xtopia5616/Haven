@@ -290,7 +290,7 @@ impl ToolRuntimeCoordinator {
             self.builtins
                 .build_context(&self.core, &self.runtime, platform, capabilities);
         let settings = context.settings.clone();
-        let admin_surfaces = builtin::register_builtin_tools(&mut all_tools, context).await;
+        let admin_operations = builtin::register_builtin_tools(&mut all_tools, context).await;
 
         let all_tools: Vec<ToolHandle> = all_tools
             .into_iter()
@@ -322,7 +322,7 @@ impl ToolRuntimeCoordinator {
         self.runtime
             .publish_builtin_catalog(crate::tool_runtime::BuiltinCatalog {
                 tools: all_tools,
-                admin_surfaces,
+                admin_operations,
             })
             .await;
         self.core

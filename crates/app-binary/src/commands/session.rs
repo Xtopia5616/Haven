@@ -691,7 +691,7 @@ async fn execute_ui_confirmation_action(
                 .map_err(|error| log_err("resolve_ui_confirmation skill", error))?;
         }
         UiConfirmationAction::Admin { request } => {
-            let result = crate::commands::execute_admin_surface(
+            let result = crate::commands::execute_admin_operation(
                 state,
                 "resolve_ui_confirmation admin",
                 request.as_ref().clone(),

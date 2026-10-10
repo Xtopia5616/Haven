@@ -130,7 +130,7 @@ pub use asset_registry::{
     GeneratedMediaCleanupGuard, ManagedAsset, ManagedAssetLifecyclePort, ManagedAssetRegistry,
 };
 pub use builtin::{
-    AdminCapability, AdminContext, AdminOperationError, AdminRequest, AdminSurfaces, AgentTool,
+    AdminCapability, AdminContext, AdminOperationError, AdminRequest, AgentTool,
     ConfigOperationArgs, ConfigOperationError, ConfigOperationOutput, ConfigViewOutput,
     DiagnosticsOperationArgs, LogLevelOutput, McpOperationArgs, McpRefreshAction, McpRefreshPlan,
     McpRefreshTarget, MediaTranscriptionResult, MediaTranscriptionStatus, NativeMcpOperationArgs,
@@ -139,8 +139,8 @@ pub use builtin::{
 pub use catalog::McpServerIndexEntry;
 pub use circuit::ToolCircuitRegistry;
 pub use facade::{
-    McpRuntimePort, McpStatusEventReceiver, SkillCatalogPort, ToolRunAgentCapability,
-    ToolRunCompletionCapability, ToolRunManagementCapability,
+    AdminOperationPort, McpRuntimePort, McpStatusEventReceiver, SkillCatalogPort,
+    ToolRunAgentCapability, ToolRunCompletionCapability, ToolRunManagementCapability,
 };
 #[cfg(feature = "test-support")]
 pub use facade::{ToolCatalogTestSupportPort, ToolRunTestSupportPort};

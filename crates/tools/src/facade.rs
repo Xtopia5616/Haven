@@ -4,6 +4,7 @@ use crate::registry::OperationRegistry;
 use haven_mcp::McpManager;
 use haven_skills::SkillRegistry;
 use std::path::PathBuf;
+use tokio_util::sync::CancellationToken;
 
 /// Capability for running a validated Skill in its isolated subprocess.
 #[async_trait::async_trait]
@@ -131,6 +132,38 @@ pub trait SkillCatalogPort: Send + Sync {
     async fn get_skill(&self, name: &str) -> Option<Skill>;
 
     async fn resolved_root(&self) -> PathBuf;
+}
+
+/// App-facing capability for metadata lookup and execution of one typed admin
+/// request. The concrete admin operation set remains owned by Tools.
+#[async_trait::async_trait]
+pub trait AdminOperationPort: Send + Sync {
+    fn risk_level(&self, request: &AdminRequest) -> haven_common::types::RiskLevel;
+
+    async fn execute(
+        &self,
+        request: AdminRequest,
+        cancel: CancellationToken,
+    ) -> Result<ToolResult, AdminOperationError>;
+}
+
+struct SharedAdminOperationPort {
+    operation_set: Arc<crate::builtin::admin::AdminOperationSet>,
+}
+
+#[async_trait::async_trait]
+impl AdminOperationPort for SharedAdminOperationPort {
+    fn risk_level(&self, request: &AdminRequest) -> haven_common::types::RiskLevel {
+        self.operation_set.metadata(request).risk_level
+    }
+
+    async fn execute(
+        &self,
+        request: AdminRequest,
+        cancel: CancellationToken,
+    ) -> Result<ToolResult, AdminOperationError> {
+        self.operation_set.execute(request, cancel).await
+    }
 }
 
 struct SharedSkillCatalogPort {
@@ -446,7 +479,7 @@ impl ToolsFacade {
     }
 
     /// Create a non-owning, typed admin capability for live tool toggles.
-    /// `Weak` prevents the native admin surface from forming a facade cycle.
+    /// `Weak` prevents the native admin operation set from forming a facade cycle.
     pub fn tool_control_port(self: &Arc<Self>) -> Arc<dyn ToolControlPort> {
         Arc::new(ToolControlHandle(Arc::downgrade(self)))
     }
@@ -679,7 +712,7 @@ impl ToolsFacade {
         self.coordinator.apply_security(security).await;
     }
 
-    /// Wire the app-level context for the five native admin surfaces. Called by the
+    /// Wire the app-level context for the five native admin operations. Called by the
     /// desktop shell after the config loader exists; later catalog rebuilds
     /// keep the capability-scoped adapters registered. Durable ToolRun storage
     /// is injected separately through startup wiring by the composition root.
@@ -697,15 +730,17 @@ impl ToolsFacade {
         self.coordinator.set_tool_settings(settings).await
     }
 
-    /// The five native admin surfaces, when the desktop shell wired the app
-    /// context. The model sees the same operations through five typed adapters.
-    pub async fn admin_surfaces(&self) -> Option<Arc<builtin::AdminSurfaces>> {
+    /// Metadata and execution capability for typed admin requests, when the
+    /// desktop shell wired the app context. Provider tools use the same
+    /// internally owned operations through their typed adapters.
+    pub async fn admin_operations(&self) -> Option<Arc<dyn AdminOperationPort>> {
         self.coordinator
             .runtime
             .builtin_catalog()
             .await
-            .admin_surfaces
+            .admin_operations
             .clone()
+            .map(|operation_set| Arc::new(SharedAdminOperationPort { operation_set }) as _)
     }
 
     /// Flip the `enabled` flag for one builtin tool in the in-memory

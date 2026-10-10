@@ -515,7 +515,7 @@ impl AppState {
             t0.elapsed().as_millis()
         );
 
-        // Wire the five typed admin surfaces: the assistant can read status,
+        // Wire the five typed admin operations: the assistant can read status,
         // change typed config, toggle skills/tools/MCP servers, tail logs, and
         // switch the runtime log level (via the tracing reload handles).
         let log_path = Some(

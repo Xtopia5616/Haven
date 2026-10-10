@@ -52,11 +52,12 @@ use haven_mcp::McpManager;
 use haven_skills::SkillRegistry;
 
 pub use crate::tool_runtime::{MemoryRecallPort, MemoryRecallSlot, new_memory_recall_slot};
+pub(crate) use admin::AdminOperationSet;
 pub use admin::{
-    AdminCapability, AdminContext, AdminOperationError, AdminRequest, AdminSurfaces,
-    ConfigOperationArgs, ConfigOperationError, ConfigOperationOutput, ConfigViewOutput,
-    DiagnosticsOperationArgs, LogLevelOutput, McpOperationArgs, McpRefreshAction, McpRefreshPlan,
-    McpRefreshTarget, NativeMcpOperationArgs, SkillsOperationArgs, ToolsOperationArgs,
+    AdminCapability, AdminContext, AdminOperationError, AdminRequest, ConfigOperationArgs,
+    ConfigOperationError, ConfigOperationOutput, ConfigViewOutput, DiagnosticsOperationArgs,
+    LogLevelOutput, McpOperationArgs, McpRefreshAction, McpRefreshPlan, McpRefreshTarget,
+    NativeMcpOperationArgs, SkillsOperationArgs, ToolsOperationArgs,
 };
 pub use media::{MediaTranscriptionResult, MediaTranscriptionStatus};
 pub use memory::MemoryTool;
@@ -127,7 +128,7 @@ pub(crate) struct BuiltinContext {
 pub(crate) async fn register_builtin_tools(
     tools: &mut Vec<ToolHandle>,
     context: BuiltinContext,
-) -> Option<Arc<admin::AdminSurfaces>> {
+) -> Option<Arc<admin::AdminOperationSet>> {
     let BuiltinContext {
         skill_registry,
         skill_runner,
@@ -163,7 +164,7 @@ pub(crate) async fn register_builtin_tools(
     } = context;
     let settings = &settings;
     let limits = &limits;
-    let mut admin_surfaces: Option<Arc<admin::AdminSurfaces>> = None;
+    let mut admin_operations: Option<Arc<admin::AdminOperationSet>> = None;
     let audio_runtime = Arc::new(
         media_audio::AudioRuntime::with_tts(input_pipeline, tts_client)
             .with_managed_assets(managed_assets.clone()),
@@ -335,7 +336,7 @@ pub(crate) async fn register_builtin_tools(
         let memory_tool: ToolHandle =
             Arc::new(memory::MemoryTool::new(memory_facts, memory_recall));
         add_operation_views(tools, memory_tool, settings, MEMORY_OPERATION_VIEWS);
-        let surfaces = Arc::new(admin::AdminSurfaces::new(
+        let operation_set = Arc::new(admin::AdminOperationSet::new(
             ctx,
             skill_registry.clone(),
             mcp_manager.clone(),
@@ -344,15 +345,15 @@ pub(crate) async fn register_builtin_tools(
             limits.self_tool_max_instructions_bytes,
             limits.self_tool_max_script_bytes,
         ));
-        for capability_tool in surfaces.tools() {
+        for capability_tool in operation_set.tools() {
             let capability = capability_tool.name();
             add_admin_operation_views(tools, capability_tool, settings, &capability);
         }
-        admin_surfaces = Some(surfaces);
+        admin_operations = Some(operation_set);
     }
     add_tool_run_views(tools, tool_runs_tool, settings);
     add_operation_views(tools, schedule_tool, settings, SCHEDULE_OPERATION_VIEWS);
-    admin_surfaces
+    admin_operations
 }
 
 fn files_read_text_schema() -> serde_json::Value {

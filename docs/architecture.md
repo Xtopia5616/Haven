@@ -99,7 +99,7 @@ tool settings、context limits、shell 与 security，热更新整份替换。cr
 `ToolRuntimeCoordinator` 是 `ToolCore`、`ToolRuntime`、`ToolBuiltins` 的组装 owner，并负责
 PlatformRuntime 发布、MCP discovery config/index 更新和 builtin catalog rebuild 的工具侧顺序。
 messaging 与 memory recall 是进程服务，在 `wire_startup` 里绑定一次，不放进这份快照；
-`admin_surfaces` 随成功的 catalog rebuild 写入 `BuiltinCatalog`。`tool_builtins.rs` 组合 MCP/Skills
+`admin_operations` 随成功的 catalog rebuild 写入 `BuiltinCatalog`，其实现类型 `AdminOperationSet` 留在 Tools 内部；App 通过 `AdminOperationPort` 查询授权风险并执行请求。`tool_builtins.rs` 组合 MCP/Skills
 与具体 builtin provider。MCP、skills、授权、媒体资产、ToolRun 与 live output 由构造时交出的
 `ToolServices` 提供；授权、受管资产生命周期、Skill 执行、live-output sink、ToolRun、MCP runtime 状态和 Skills catalog/config 均通过窄 capability ports 暴露。MCP 工具调用另以 LLM 的 `McpToolCaller` 能力提供。Agent/App 的消费端 ports 映射 Tools owner ports；ToolRun 完成接收器在 Tools 内部绑定状态机与恢复协调器，调用方不接触具体 `ToolRunService`（ADR 0895–0899）。`McpManager` 与 `SkillRegistry` 只留在 Tools composition owner 内部（ADR 0903）。组合根仍是 `ApplicationRuntime`，
 不另建 `AppRuntime`。`ToolsFacade` 是对外 façade，保留执行与授权入口、session overlay/asset

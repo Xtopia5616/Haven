@@ -74,19 +74,19 @@ pub(crate) struct PlatformRuntime {
     pub(crate) security: SecurityConfig,
 }
 
-/// Builtin tools and the admin surfaces produced by one successful rebuild.
+/// Builtin tools and the admin operation set produced by one successful rebuild.
 /// The pair is published together so a rejected rebuild cannot expose new
-/// tools without the surfaces that own them, or the reverse.
+/// tools without the operations that own them, or the reverse.
 pub(crate) struct BuiltinCatalog {
     pub(crate) tools: Vec<crate::tool_contract::ToolHandle>,
-    pub(crate) admin_surfaces: Option<Arc<crate::builtin::AdminSurfaces>>,
+    pub(crate) admin_operations: Option<Arc<crate::builtin::AdminOperationSet>>,
 }
 
 impl BuiltinCatalog {
     pub(crate) fn empty() -> Self {
         Self {
             tools: Vec::new(),
-            admin_surfaces: None,
+            admin_operations: None,
         }
     }
 }

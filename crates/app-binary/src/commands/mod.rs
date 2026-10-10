@@ -95,19 +95,19 @@ pub(crate) fn validate_command_id(id: &str, field_name: &str, prefix: &str) -> R
 /// Execute one native admin request through the typed operation that owns its
 /// capability. This helper is intentionally separate from authorization so a
 /// queued UI confirmation can resume the exact same request.
-pub(crate) async fn execute_admin_surface(
+pub(crate) async fn execute_admin_operation(
     state: &AppState,
     ctx: &str,
     request: haven_tools::AdminRequest,
 ) -> Result<haven_tools::ToolResult, String> {
-    let admin_surfaces = state
+    let admin_operations = state
         .runtime
         .tools
-        .admin_surfaces()
+        .admin_operations()
         .await
-        .ok_or_else(|| log_err(ctx, "admin surfaces are not wired"))?;
+        .ok_or_else(|| log_err(ctx, "admin operations are not wired"))?;
     let cancel = tokio_util::sync::CancellationToken::new();
-    let result = admin_surfaces
+    let result = admin_operations
         .execute(request, cancel)
         .await
         .map_err(|e| log_err(ctx, e))?;
@@ -131,16 +131,15 @@ pub(crate) async fn authorize_admin_request(
     ctx: &str,
     request: haven_tools::AdminRequest,
 ) -> Result<haven_tools::ToolResult, String> {
-    let admin_surfaces = state
+    let admin_operations = state
         .runtime
         .tools
-        .admin_surfaces()
+        .admin_operations()
         .await
-        .ok_or_else(|| log_err(ctx, "admin surfaces are not wired"))?;
+        .ok_or_else(|| log_err(ctx, "admin operations are not wired"))?;
     let operation_name = request.model_operation_name();
-    let metadata = admin_surfaces.metadata(&request);
     let tool_name = operation_name.to_string();
-    let risk_level = metadata.risk_level;
+    let risk_level = admin_operations.risk_level(&request);
     let input = request.input();
     let network_access = request.network_access();
     let policy = haven_tools::OperationPolicy::native(
@@ -159,7 +158,7 @@ pub(crate) async fn authorize_admin_request(
     let execute_request = request.clone();
     dispatch_authorized_admin_request(
         decision,
-        || execute_admin_surface(state, ctx, execute_request),
+        || execute_admin_operation(state, ctx, execute_request),
         |receipt| async move {
             queue_ui_confirmation(
                 state,

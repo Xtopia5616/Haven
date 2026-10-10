@@ -2,7 +2,7 @@
 //!
 //! Each surface is an independent [`TypedToolOperation`]. JSON is accepted
 //! only by the provider-facing [`TypedToolAdapter`]; native callers keep the
-//! typed request and invoke the same operation through [`AdminSurfaces`].
+//! typed request and invoke the same operation through [`AdminOperationSet`].
 //!
 //! The five operation contracts intentionally stay together here: this is the
 //! single authority for the capability names, tagged argument schemas, native
@@ -42,7 +42,7 @@ use admin_services::{
     ToolSetResult,
 };
 
-/// App-provided dependencies shared by all five admin surfaces.
+/// App-provided dependencies shared by all five admin operations.
 #[derive(Clone)]
 pub struct AdminContext {
     pub config_service: Option<Arc<ConfigService>>,
@@ -1446,7 +1446,7 @@ impl TypedToolOperation for ConfigAdminOperation {
 /// commands use this object as their structured entry; provider calls use the
 /// five adapters returned by `tools()`.
 #[derive(Clone)]
-pub struct AdminSurfaces {
+pub(crate) struct AdminOperationSet {
     pub(crate) diagnostics: DiagnosticsAdminOperation,
     pub(crate) config: ConfigAdminOperation,
     pub(crate) skills: SkillsAdminOperation,
@@ -1454,7 +1454,7 @@ pub struct AdminSurfaces {
     pub(crate) mcp: McpAdminOperation,
 }
 
-impl AdminSurfaces {
+impl AdminOperationSet {
     pub(crate) fn new(
         context: AdminContext,
         skill_registry: SkillRegistry,
@@ -1512,7 +1512,7 @@ impl AdminSurfaces {
         ]
     }
 
-    pub fn metadata(&self, request: &AdminRequest) -> ToolOperationMetadata {
+    pub(crate) fn metadata(&self, request: &AdminRequest) -> ToolOperationMetadata {
         match request {
             AdminRequest::Diagnostics(args) => self.diagnostics.metadata(args),
             AdminRequest::Config(args) => self.config.metadata(args),
@@ -1523,7 +1523,7 @@ impl AdminSurfaces {
         }
     }
 
-    pub async fn execute(
+    pub(crate) async fn execute(
         &self,
         request: AdminRequest,
         cancel: CancellationToken,
@@ -1809,11 +1809,11 @@ mod tests {
         );
     }
 
-    fn test_surfaces() -> (AdminSurfaces, TempDir) {
+    fn test_surfaces() -> (AdminOperationSet, TempDir) {
         test_surfaces_with_stores(None, None)
     }
 
-    fn test_surfaces_with_db(db: Arc<Database>) -> (AdminSurfaces, TempDir) {
+    fn test_surfaces_with_db(db: Arc<Database>) -> (AdminOperationSet, TempDir) {
         test_surfaces_with_stores(
             Some(SessionStore::new(db.clone())),
             Some(MemoryFactStore::new(db)),
@@ -1823,7 +1823,7 @@ mod tests {
     fn test_surfaces_with_stores(
         session_store: Option<SessionStore>,
         memory_facts: Option<MemoryFactStore>,
-    ) -> (AdminSurfaces, TempDir) {
+    ) -> (AdminOperationSet, TempDir) {
         let dir = TempDir::new().expect("temporary config directory");
         let loader = ConfigLoader::load_from(&dir.path().join("config.toml")).unwrap();
         let context = AdminContext {
@@ -1838,7 +1838,7 @@ mod tests {
             tool_control: None,
         };
         (
-            AdminSurfaces::new(
+            AdminOperationSet::new(
                 context,
                 SkillRegistry::new(),
                 Arc::new(McpManager::new()),
@@ -1920,7 +1920,7 @@ mod tests {
         }
     }
 
-    fn model_admin_operation_names(surfaces: &AdminSurfaces) -> BTreeSet<String> {
+    fn model_admin_operation_names(surfaces: &AdminOperationSet) -> BTreeSet<String> {
         let mut names = BTreeSet::new();
         for tool in surfaces.tools() {
             let tool_name = tool.name();
@@ -3262,7 +3262,7 @@ mod tests {
             log_level: None,
             tool_control: Some(manager.tool_control_port()),
         };
-        let surfaces = AdminSurfaces::new(
+        let surfaces = AdminOperationSet::new(
             context,
             manager.coordinator.builtins.skill_registry.clone(),
             Arc::new(manager.coordinator.builtins.mcp_manager.clone()),
@@ -3727,7 +3727,7 @@ mod tests {
         );
     }
 
-    fn test_surfaces_with_service() -> (AdminSurfaces, Arc<ConfigService>, TempDir) {
+    fn test_surfaces_with_service() -> (AdminOperationSet, Arc<ConfigService>, TempDir) {
         let dir = TempDir::new().expect("temporary config directory");
         let loader = ConfigLoader::load_from(&dir.path().join("config.toml")).unwrap();
         let service = Arc::new(test_config_service(loader));
@@ -3742,7 +3742,7 @@ mod tests {
             log_level: None,
             tool_control: None,
         };
-        let surfaces = AdminSurfaces::new(
+        let surfaces = AdminOperationSet::new(
             context,
             SkillRegistry::new(),
             Arc::new(McpManager::new()),

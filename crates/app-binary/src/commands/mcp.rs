@@ -226,7 +226,7 @@ pub async fn add_mcp_server(
 ) -> Result<(), String> {
     let env = resolve_redacted_mcp_environment(None, &config.env)
         .map_err(|error| log_err("add_mcp_server", error))?;
-    // Route the config mutation through the native admin surface
+    // Route the config mutation through the native admin operation
     // (mcp_add): one implementation for the UI dialog and the LLM. The op
     // persists through ConfigService and connects when enabled.
     crate::commands::authorize_admin_request(
@@ -283,7 +283,7 @@ pub async fn update_mcp_server(
         .map(|server| server.env.as_slice());
     let env = resolve_redacted_mcp_environment(existing_env, &config.env)
         .map_err(|error| log_err("update_mcp_server", error))?;
-    // Route through the native admin surface (mcp_update). The op
+    // Route through the native admin operation (mcp_update). The op
     // reconnects before persisting when the connection profile changed and
     // rolls the config back on a failed connect (stricter than the old
     // persist-then-connect order).
@@ -326,7 +326,7 @@ pub async fn remove_mcp_server(
     name: String,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
-    // Route through the native admin surface (mcp_remove): removes the
+    // Route through the native admin operation (mcp_remove): removes the
     // server from config via ConfigService, shuts down the live client,
     // and drops it from the in-memory index.
     crate::commands::authorize_admin_request(
@@ -357,7 +357,7 @@ pub async fn toggle_mcp_server(
     enabled: bool,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
-    // Route through the native admin surface (mcp_toggle). The op
+    // Route through the native admin operation (mcp_toggle). The op
     // connects before persisting when enabling (rolling the config back on a
     // failed connect) and shuts the live client down when disabling.
     crate::commands::authorize_admin_request(
