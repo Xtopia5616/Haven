@@ -172,6 +172,8 @@ OpenAI Chat 与 Responses adapter 各自持有独立的 `PromptCacheKeySupport` 
 
 App managed media 清理与 Tools asset registry 共用 `haven_common::path::path_is_equal` 和 `path_is_equal_or_child` 表达 lexical path 比较。它们不 canonicalize、不解析 symlink/reparse point，也不证明路径属于允许根；调用方继续明确表达路径来源、安全检查与 root policy（ADR 0863）。
 
+CLIXML 与 Task Scheduler XML entity decoding 使用 `haven_common::encoding::xml_unescape`，调用方直接使用共享实现，不再声明同名转发 helper；XML tag extraction 与业务含义仍由对应解析模块拥有（ADR 0864）。
+
 Tools 对结构化输出中 Ask 与通知 side-channel 的解析结果分别使用 `AskSignal` 和 `NotificationSignal`；前者保留可选 question 与选项列表，后者以 `Option<NotificationSignal>` 表示是否请求通知。汇总传递给 Agent 的 `ToolSignals` 形状继续由其独立的 side-channel 契约拥有。
 
 跨端枚举的允许值以 generated IPC contract 为单一来源；UI 可以为这些值维护展示标签，但选项数组应从生成值派生，并让边界/事件 contract 直接引用生成类型，不另手写相同 union。

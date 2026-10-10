@@ -842,3 +842,4 @@
 - [0861：共享 OpenAI prompt cache key 支持状态](0861-share-openai-prompt-cache-key-state.md)
 - [0862：跨 crate 共用 canonical JSON 编码](0862-share-canonical-json-across-crates.md)
 - [0863：共用 managed path 比较原语](0863-share-managed-path-comparison.md)
+- [0864：直接使用 Common XML entity decoder](0864-use-shared-xml-unescape-directly.md)

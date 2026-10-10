@@ -217,9 +217,9 @@ fn looks_like_utf16le(bytes: &[u8]) -> bool {
 }
 
 /// Decode XML entities. `&amp;` is unescaped last so a literal `&amp;lt;`
-/// becomes `&lt;` (text), not a double-decoded `<`. Shared by the CLIXML
-/// message decoding (haven-tools) and the scheduled ToolRun XML parsing
-/// (haven-app-binary) so the two can never diverge.
+/// becomes `&lt;` (text), not a double-decoded `<`. Shared by CLIXML message
+/// decoding (haven-tools) and Task Scheduler XML parsing for app autostart
+/// (haven-app-binary) so both call sites use the same entity rules.
 pub fn xml_unescape(text: &str) -> String {
     text.replace("&lt;", "<")
         .replace("&gt;", ">")

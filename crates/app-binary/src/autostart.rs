@@ -8,6 +8,8 @@
 //! 仅当系统通过组策略 / 企业环境禁止普通用户创建任务时才需要管理员，
 //! 此时 `enable` 会返回带权限提示的错误信息。
 
+#[cfg(target_os = "windows")]
+use haven_common::encoding::xml_unescape;
 use std::path::Path;
 
 /// 计划任务名称（根文件夹下）。
@@ -97,14 +99,6 @@ fn xml_section<'a>(xml: &'a str, tag: &str) -> Option<&'a str> {
     let open = format!("<{tag}>");
     let close = format!("</{tag}>");
     xml.split(&open).nth(1)?.split(&close).next()
-}
-
-/// 反转义任务 XML 中的实体（路径可能含 `&` 等字符）。复用 haven-common 的
-/// 实现（`&amp;` 最后替换，避免 `&amp;lt;` 被二次解码），与 CLIXML 消息解码
-/// 保持同一语义。
-#[cfg(target_os = "windows")]
-fn xml_unescape(s: &str) -> String {
-    haven_common::encoding::xml_unescape(s)
 }
 
 /// 任务 XML 的 `<Arguments>` 是否包含 `--autostart`。
