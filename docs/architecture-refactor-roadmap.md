@@ -157,6 +157,8 @@ Session、ScheduledToolRun 与 AppCommand 确认均由各自 owner 和稳定 req
 
 SessionStore event replay 的固定页容量已收回 Memory typed store，Agent runtime 只传 session、cursor 与 cancellation，不再依赖 Memory 的页大小常量（ADR 0911）。
 
+MemoryFactStore 不带抽取 cursor 的批量写入现仅在测试和 `test-support` 构建暴露；旧的无条件 summary marker ack 已删除，生产只保留 generation 条件确认（ADR 0912）。
+
 #### 当前审计覆盖与剩余范围
 
 | 范围 | 已核对的当前基线 | 尚待核对 |

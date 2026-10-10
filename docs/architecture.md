@@ -377,9 +377,10 @@ blocking 调度、事实有效置信度顺序、敏感事实过滤和 limit 属�
 prompt 行格式、subject 前缀与字段清洗（ADR 0307）。
 `MemoryFactExtractionStore` 通过同一 `MemoryService` owner 提供 ordinary/summary extraction 的
 typed cursor、共享节流时间戳，以及 ordinary transcript projections（ADR 0308、0312）。Agent 负责窗口构造、
-LLM 调用、候选解析/清洗和事实写入策略；`MemoryFactStore::persist_inferred_batch` 在一个
-blocking closure 与 SQLite 事务中完成存在性检查、图谱 upsert 和 `FactSourceRef` 持久化，
-调用方仍决定新事实置信度下限，写入失败时整批回滚（ADR 0309）。`MemoryMaintenanceStore` 还
+LLM 调用、候选解析/清洗和事实写入策略；生产 ordinary extraction 经
+`MemoryFactStore::commit_ordinary_extraction` 同事务写入事实与 transcript cursor，summary extraction 经
+`commit_summary_extraction` 同事务写入事实与 completion marker。调用方仍决定新事实置信度下限，写入失败时
+整批回滚；不带 cursor/marker 的 `persist_inferred_batch_for_test` 仅由 `test-support` 暴露供测试使用（ADR 0309、0912）。`MemoryMaintenanceStore` 还
 提供 LLM 维护的 typed persistence ports：矛盾候选读取、门控后按 id demote、predicate count DTO
 读取和逐 predicate rewrite（ADR 0311）。Agent 保留模型配置门禁、提示词/上下文、serde 解析、
 候选过滤、安全 gate、日志和降级策略；列表读取失败仍跳过对应 LLM pass，矛盾 demote 失败仍

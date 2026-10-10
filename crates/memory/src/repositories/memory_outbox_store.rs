@@ -244,22 +244,6 @@ impl MemoryOutboxStore {
             .run_blocking_cancellable(cancellation.clone(), move |db| db.episode_text(&episode_id))
             .await
     }
-
-    /// Acknowledge one completed summary-extraction job.
-    pub async fn clear_summary_extraction_cancellable(
-        &self,
-        session_id: &str,
-        episode_id: &str,
-        cancellation: &CancellationToken,
-    ) -> anyhow::Result<()> {
-        let session_id = session_id.to_owned();
-        let episode_id = episode_id.to_owned();
-        self.db
-            .run_blocking_cancellable(cancellation.clone(), move |db| {
-                db.clear_summary_extraction(&session_id, &episode_id)
-            })
-            .await
-    }
 }
 
 #[cfg(test)]
@@ -543,7 +527,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn episode_read_and_summary_ack_keep_missing_and_error_semantics() {
+    async fn episode_read_reports_missing_rows_and_database_errors() {
         let db = Arc::new(Database::open_in_memory().unwrap());
         let session = db.create_session("memory store summary outbox").unwrap();
         let episode_id = "msg-summary-store-port".to_owned();
@@ -572,23 +556,6 @@ mod tests {
                 .unwrap(),
             None
         );
-        store
-            .clear_summary_extraction_cancellable(&session.id, &episode_id, &cancellation)
-            .await
-            .unwrap();
-        assert!(
-            pending_summary_rows(&store, &cancellation)
-                .await
-                .unwrap()
-                .is_empty()
-        );
-
-        let error = store
-            .clear_summary_extraction_cancellable(&session.id, "", &cancellation)
-            .await
-            .unwrap_err();
-        assert_eq!(error.to_string(), "episode id is required");
-
         db.conn().execute_batch("DROP TABLE memory_items").unwrap();
         assert!(
             store

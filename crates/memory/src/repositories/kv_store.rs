@@ -696,6 +696,7 @@ impl Database {
     }
 
     /// Acknowledge one completed compaction-summary extraction.
+    #[cfg(test)]
     pub fn clear_summary_extraction(
         &self,
         session_id: &str,

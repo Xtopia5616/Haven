@@ -47,12 +47,10 @@ impl MemoryFactStore {
         Self { db }
     }
 
-    /// Persist a prepared batch of inferred facts in one blocking closure and
-    /// one SQLite transaction. `new_fact_confidence_floor` is selected by the
-    /// caller's extraction policy; exact re-confirmations and permitted
-    /// single-valued updates still pass through for reinforcement/correction.
-    /// Returns whether any fact was inserted, reinforced, or corrected.
-    pub async fn persist_inferred_batch(
+    /// Persist a prepared batch for Agent's direct fact-write test fixture.
+    /// Production extraction uses the atomic cursor/marker commit methods.
+    #[cfg(any(test, feature = "test-support"))]
+    pub async fn persist_inferred_batch_for_test(
         &self,
         writes: Vec<MemoryFactWrite>,
         new_fact_confidence_floor: f64,
@@ -334,7 +332,7 @@ mod tests {
 
         assert!(
             !store
-                .persist_inferred_batch(Vec::new(), 0.55)
+                .persist_inferred_batch_for_test(Vec::new(), 0.55)
                 .await
                 .unwrap()
         );
@@ -367,7 +365,7 @@ mod tests {
 
         assert!(
             store
-                .persist_inferred_batch(vec![reinforced, inserted], 0.55)
+                .persist_inferred_batch_for_test(vec![reinforced, inserted], 0.55)
                 .await
                 .unwrap()
         );
@@ -404,7 +402,7 @@ mod tests {
             .unwrap();
 
         let error = store
-            .persist_inferred_batch(
+            .persist_inferred_batch_for_test(
                 vec![
                     inferred_write("user", "likes", "SQLite"),
                     inferred_write("user", "likes", "blocked"),

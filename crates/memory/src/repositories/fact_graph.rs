@@ -477,6 +477,7 @@ impl<'db> FactGraph<'db> {
     /// confidence policy and marks canonical single-valued predicates; this
     /// repository resolves those rules against one existence snapshot and
     /// performs every accepted upsert in the same SQLite transaction.
+    #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn upsert_inferred_batch(
         &self,
         writes: &[MemoryFactWrite],

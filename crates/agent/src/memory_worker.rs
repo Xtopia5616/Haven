@@ -707,7 +707,7 @@ impl MemoryWorker {
     async fn persist_fact_batch(&self, facts: Vec<MemoryFactCandidate>) -> anyhow::Result<bool> {
         let writes = self.prepare_fact_candidates(facts);
         self.fact_store
-            .persist_inferred_batch(writes, PERSIST_CONFIDENCE_FLOOR)
+            .persist_inferred_batch_for_test(writes, PERSIST_CONFIDENCE_FLOOR)
             .await
     }
 
