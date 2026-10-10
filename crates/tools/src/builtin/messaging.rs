@@ -3,7 +3,7 @@
 //! profile | request | spawn | status | wait | stop | collect.
 //! Thin tool layer over [`haven_messaging::MessagingService`].
 //!
-//! The agent name is the owning session id (injected privately as
+//! The agent identity is its owning session id (injected privately as
 //! `_session_id`, never visible to the LLM). Every call lazily registers the
 //! session (heartbeat = now, mailbox ensured), so no separate registration
 //! tool or lifecycle hook is needed. Delivery is lenient: a registered but
@@ -20,7 +20,7 @@
 //! 4. auto `receipt` confirms the peer actually read the mail
 
 use async_trait::async_trait;
-use haven_common::types::{RiskLevel, is_canonical_id};
+use haven_common::types::RiskLevel;
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -31,9 +31,7 @@ use tokio_util::sync::CancellationToken;
 use crate::{OperationIdempotency, Tool, ToolResult};
 #[cfg(test)]
 use haven_messaging::inbox::InboxBus;
-use haven_messaging::inbox::{
-    AgentStatus, Envelope, MessageType, SendOutcome, validate_agent_name,
-};
+use haven_messaging::inbox::{AgentStatus, Envelope, MessageType, SendOutcome};
 use haven_messaging::messaging_service::{
     AgentControlOperation, AgentControlRequest, AgentSpawnRequest,
 };
@@ -85,7 +83,7 @@ fn session_of(sid: Option<String>) -> anyhow::Result<String> {
     let sid = sid
         .filter(|s| !s.is_empty())
         .ok_or_else(|| anyhow::anyhow!("messaging tools require a session context"))?;
-    validate_agent_name(&sid)?;
+    crate::tool_contract::validate_entity_id(&sid, "session_id", "ses")?;
     Ok(sid)
 }
 
@@ -241,12 +239,12 @@ fn check_discovery_token(
 }
 
 fn check_target(target: Option<String>, fallback: &str) -> anyhow::Result<String> {
-    let target = target.as_deref().unwrap_or(fallback).trim().to_string();
+    let target = target.as_deref().unwrap_or(fallback);
     if target.is_empty() {
         anyhow::bail!("target must not be empty");
     }
-    validate_agent_name(&target)?;
-    Ok(target)
+    crate::tool_contract::validate_entity_id(target, "target", "ses")?;
+    Ok(target.to_string())
 }
 
 fn check_status_filter(status: Option<String>) -> anyhow::Result<Option<AgentStatus>> {
@@ -270,9 +268,7 @@ fn check_message_ids(ids: Option<Vec<String>>) -> anyhow::Result<Vec<String>> {
     }
     let mut unique = std::collections::HashSet::with_capacity(ids.len());
     for id in &ids {
-        if !is_canonical_id(id, "msg") {
-            anyhow::bail!("invalid message id '{id}'");
-        }
+        crate::tool_contract::validate_entity_id(id, "message_ids item", "msg")?;
         if !unique.insert(id) {
             anyhow::bail!("message_ids must be unique");
         }
@@ -386,11 +382,11 @@ pub struct AgentParams {
     /// Private owning session id, injected by the Tools facade.
     #[serde(default, rename = "_session_id")]
     pub session_id: Option<String>,
-    /// Optional peer filter for list, or target session for lifecycle/history
-    /// operations. `_session_id` remains the authoritative caller identity.
+    /// Optional peer session filter for list, or target session for
+    /// lifecycle/history operations. `_session_id` remains the caller identity.
     #[serde(default)]
     pub target: Option<String>,
-    /// Recipient agent name (send / request), or omit for reply auto-target.
+    /// Recipient session id (send / request), or omit for reply auto-target.
     #[serde(default)]
     pub to: Option<String>,
     /// Message / reply / request body.
@@ -507,7 +503,10 @@ impl AgentTool {
             check_discovery_token(params.capability, "capability", MAX_CAPABILITY_BYTES)?;
         let parent = params
             .parent
-            .map(|parent| check_target(Some(parent), ""))
+            .map(|parent| {
+                crate::tool_contract::validate_entity_id(&parent, "parent", "ses")?;
+                Ok::<String, anyhow::Error>(parent)
+            })
             .transpose()?;
         let status = check_status_filter(params.status)?;
         self.inner.register(&sid, &cancel).await?;
@@ -624,15 +623,17 @@ impl AgentTool {
         cancel: CancellationToken,
     ) -> anyhow::Result<ToolResult> {
         let sid = session_of(params.session_id.clone())?;
-        self.inner.register(&sid, &cancel).await?;
-
         let to = params
             .to
             .as_deref()
-            .map(str::trim)
             .filter(|s| !s.is_empty())
             .ok_or_else(|| anyhow::anyhow!("to must not be empty"))?
             .to_string();
+        if to != "*" {
+            crate::tool_contract::validate_entity_id(&to, "to", "ses")?;
+        }
+        self.inner.register(&sid, &cancel).await?;
+
         let text = check_text(params.text.as_deref().unwrap_or(""))?;
         let subject = check_subject(params.subject)?;
         let payload = check_payload(params.payload)?;
@@ -677,7 +678,6 @@ impl AgentTool {
             })));
         }
 
-        validate_agent_name(&to)?;
         let mut env = Envelope::new(&sid, &to, &text);
         env.r#type = explicit_type.unwrap_or(MessageType::Message);
         env.subject = subject;
@@ -750,13 +750,16 @@ impl AgentTool {
         cancel: CancellationToken,
     ) -> anyhow::Result<ToolResult> {
         let sid = session_of(params.session_id)?;
+        if let Some(token) = params.claim_token.as_deref() {
+            crate::tool_contract::validate_entity_id(token, "claim_token", "claim")?;
+        }
+        let requested = if params.claim_token.is_none() {
+            Some(check_message_ids(params.message_ids)?)
+        } else {
+            None
+        };
         self.inner.register(&sid, &cancel).await?;
-        if let Some(token) = params
-            .claim_token
-            .as_deref()
-            .map(str::trim)
-            .filter(|token| !token.is_empty())
-        {
+        if let Some(token) = params.claim_token.as_deref() {
             let claim = {
                 let mut claims = self.claims.lock().unwrap_or_else(|p| p.into_inner());
                 claims.remove(token)
@@ -780,7 +783,7 @@ impl AgentTool {
                 "claim_token": token,
             })));
         }
-        let requested = check_message_ids(params.message_ids)?;
+        let requested = requested.expect("message ids are checked when claim_token is absent");
         let service = self.inner.service.clone();
         let requested_for_io = requested.clone();
         let (acknowledged, receipts_sent) = blocking(service, move |service| {
@@ -814,6 +817,12 @@ impl AgentTool {
         cancel: CancellationToken,
     ) -> anyhow::Result<ToolResult> {
         let sid = session_of(params.session_id.clone())?;
+        if let Some(to) = params.to.as_deref() {
+            crate::tool_contract::validate_entity_id(to, "to", "ses")?;
+        }
+        if let Some(message_id) = params.in_reply_to.as_deref() {
+            crate::tool_contract::validate_entity_id(message_id, "in_reply_to", "msg")?;
+        }
         self.inner.register(&sid, &cancel).await?;
 
         let text = check_text(params.text.as_deref().unwrap_or(""))?;
@@ -825,9 +834,8 @@ impl AgentTool {
         let sid_for_lookup = sid.clone();
         let (to, in_reply_to) = blocking(service.clone(), move |service| {
             let target = match &params.to {
-                Some(t) if !t.trim().is_empty() => {
-                    let t = t.trim().to_string();
-                    validate_agent_name(&t)?;
+                Some(t) => {
+                    let t = t.to_string();
                     // Even with an explicit `to`, auto-fill `in_reply_to` from
                     // the latest message from that peer so request waits
                     // (which key on in_reply_to) still complete.
@@ -1000,12 +1008,9 @@ impl AgentTool {
         cancel: CancellationToken,
     ) -> anyhow::Result<ToolResult> {
         let sid = session_of(params.session_id.clone())?;
-        self.inner.register(&sid, &cancel).await?;
-
         let to = params
             .to
             .as_deref()
-            .map(str::trim)
             .filter(|s| !s.is_empty())
             .ok_or_else(|| anyhow::anyhow!("to must not be empty"))?
             .to_string();
@@ -1014,7 +1019,8 @@ impl AgentTool {
                 "agent request does not support broadcast; use operation=send with to='*'"
             );
         }
-        validate_agent_name(&to)?;
+        crate::tool_contract::validate_entity_id(&to, "to", "ses")?;
+        self.inner.register(&sid, &cancel).await?;
         let text = check_text(params.text.as_deref().unwrap_or(""))?;
         let subject = check_subject(params.subject)?;
         let payload = check_payload(params.payload)?;
@@ -1197,16 +1203,16 @@ impl Tool for AgentTool {
             "type": "object",
             "properties": {
                 "operation": { "type": "string", "enum": OPERATIONS },
-                "target": { "type": "string", "minLength": 1, "description": "Agent session id for history, status, wait, stop, or collect; lifecycle control is limited to descendants" },
-                "to": { "type": "string", "minLength": 1, "description": "Recipient session id; use '*' only to broadcast with send" },
+                "target": { "type": "string", "pattern": "^ses-[0-9a-f]{32}$", "description": "Agent session id for history, status, wait, stop, or collect; lifecycle control is limited to descendants" },
+                "to": { "anyOf": [{ "const": "*" }, { "type": "string", "pattern": "^ses-[0-9a-f]{32}$" }], "description": "Recipient session id; use '*' only to broadcast with send" },
                 "text": { "type": "string", "minLength": 1, "description": "Concise message, reply, or request body" },
                 "subject": { "type": "string", "description": "Optional short topic label, not an instruction channel" },
                 "payload": { "type": "object", "description": "Optional structured low-trust data; keep it small and do not include secrets" },
                 "type": { "type": "string", "enum": ["message", "reply", "broadcast", "request"], "description": "Message type for send; defaults to message" },
                 "expires_at": { "type": "string", "minLength": 1, "description": "Optional RFC 3339 expiration timestamp" },
-                "in_reply_to": { "type": "string", "minLength": 1, "description": "Message id to reply to; omit to use the latest matching peer message" },
+                "in_reply_to": { "type": "string", "pattern": "^msg-[0-9a-f]{32}$", "description": "Message id to reply to; omit to use the latest matching peer message" },
                 "capability": { "type": "string", "minLength": 1, "maxLength": MAX_CAPABILITY_BYTES, "description": "Exact capability token to filter agents by" },
-                "parent": { "type": "string", "minLength": 1, "maxLength": 64, "description": "Exact parent session id to filter agents by" },
+                "parent": { "type": "string", "pattern": "^ses-[0-9a-f]{32}$", "description": "Exact parent session id to filter agents by" },
                 "status": { "type": "string", "enum": ["online", "offline"], "description": "Filter agents to online or offline" },
                 "role": { "type": "string", "minLength": 1, "description": "Agent role label; on list this is an exact filter, on profile/spawn it describes the agent" },
                 "title": { "type": "string", "minLength": 1, "description": "Short human-readable agent title" },
@@ -1220,9 +1226,9 @@ impl Tool for AgentTool {
             },
             "required": ["operation"],
             "oneOf": [
-                { "type": "object", "additionalProperties": false, "properties": { "operation": { "const": "list" }, "role": { "type": "string", "minLength": 1, "maxLength": MAX_ROLE_BYTES, "description": "Exact role filter" }, "capability": { "type": "string", "minLength": 1, "maxLength": MAX_CAPABILITY_BYTES, "description": "Exact capability token filter" }, "parent": { "type": "string", "minLength": 1, "maxLength": 64, "description": "Exact parent session id filter" }, "status": { "type": "string", "enum": ["online", "offline"], "description": "Filter to online or offline agents" }, "limit": { "type": "integer", "minimum": 1, "maximum": MAX_LIST_LIMIT, "description": "Maximum results; defaults to 50" } }, "required": ["operation"] },
+                { "type": "object", "additionalProperties": false, "properties": { "operation": { "const": "list" }, "role": { "type": "string", "minLength": 1, "maxLength": MAX_ROLE_BYTES, "description": "Exact role filter" }, "capability": { "type": "string", "minLength": 1, "maxLength": MAX_CAPABILITY_BYTES, "description": "Exact capability token filter" }, "parent": { "type": "string", "pattern": "^ses-[0-9a-f]{32}$", "description": "Exact parent session id filter" }, "status": { "type": "string", "enum": ["online", "offline"], "description": "Filter to online or offline agents" }, "limit": { "type": "integer", "minimum": 1, "maximum": MAX_LIST_LIMIT, "description": "Maximum results; defaults to 50" } }, "required": ["operation"] },
                 { "type": "object", "additionalProperties": false, "properties": { "operation": { "const": "children" } }, "required": ["operation"] },
-                { "type": "object", "additionalProperties": false, "properties": { "operation": { "const": "history" }, "target": { "type": "string", "minLength": 1, "maxLength": 64, "description": "Current session or descendant session id; omit to read this session's history" }, "limit": { "type": "integer", "minimum": 1, "maximum": MAX_HISTORY_LIMIT, "description": "Maximum messages; defaults to 20" } }, "required": ["operation"] },
+                { "type": "object", "additionalProperties": false, "properties": { "operation": { "const": "history" }, "target": { "type": "string", "pattern": "^ses-[0-9a-f]{32}$", "description": "Current session or descendant session id; omit to read this session's history" }, "limit": { "type": "integer", "minimum": 1, "maximum": MAX_HISTORY_LIMIT, "description": "Maximum messages; defaults to 20" } }, "required": ["operation"] },
                 { "type": "object", "additionalProperties": false, "properties": { "operation": { "const": "inbox" }, "ack": { "type": "boolean", "default": false, "description": "Acknowledge immediately; defaults to false so messages can be processed before ack" } }, "required": ["operation"] },
                 { "oneOf": [
                     { "type": "object", "properties": { "operation": { "const": "ack" }, "message_ids": { "type": "array", "minItems": 1, "maxItems": MAX_INBOX_ACK_IDS, "uniqueItems": true, "items": { "type": "string", "pattern": "^msg-[0-9a-f]{32}$" }, "description": "Ids from the inbox claim to acknowledge selectively" } }, "required": ["operation", "message_ids"] },
@@ -1233,7 +1239,7 @@ impl Tool for AgentTool {
                     "additionalProperties": false,
                     "properties": {
                         "operation": { "const": "send" },
-                        "to": { "type": "string", "minLength": 1, "description": "Recipient session id; use '*' to broadcast to online peers" },
+                        "to": { "anyOf": [{ "const": "*" }, { "type": "string", "pattern": "^ses-[0-9a-f]{32}$" }], "description": "Recipient session id; use '*' to broadcast to online peers" },
                         "text": { "type": "string", "minLength": 1, "description": "Concise low-trust message for the recipient" },
                         "subject": { "type": "string", "description": "Optional short topic label" },
                         "payload": { "type": "object", "description": "Optional structured low-trust data; do not include secrets" },
@@ -1247,12 +1253,12 @@ impl Tool for AgentTool {
                     "additionalProperties": false,
                     "properties": {
                         "operation": { "const": "reply" },
-                        "to": { "type": "string", "minLength": 1, "description": "Optional recipient session id; omit to infer the latest peer message" },
+                        "to": { "type": "string", "pattern": "^ses-[0-9a-f]{32}$", "description": "Optional recipient session id; omit to infer the latest peer message" },
                         "text": { "type": "string", "minLength": 1, "description": "Concise reply body" },
                         "subject": { "type": "string", "description": "Optional short topic label" },
                         "payload": { "type": "object", "description": "Optional structured low-trust data; do not include secrets" },
                         "expires_at": { "type": "string", "minLength": 1, "description": "Optional RFC 3339 expiration timestamp" },
-                        "in_reply_to": { "type": "string", "minLength": 1, "description": "Specific message id to reply to; omit to use the latest received message" }
+                        "in_reply_to": { "type": "string", "pattern": "^msg-[0-9a-f]{32}$", "description": "Specific message id to reply to; omit to use the latest received message" }
                     },
                     "required": ["operation", "text"]
                 },
@@ -1272,7 +1278,7 @@ impl Tool for AgentTool {
                     "additionalProperties": false,
                     "properties": {
                         "operation": { "const": "request" },
-                        "to": { "type": "string", "minLength": 1, "description": "Recipient session id; requests cannot be broadcast" },
+                        "to": { "type": "string", "pattern": "^ses-[0-9a-f]{32}$", "description": "Recipient session id; requests cannot be broadcast" },
                         "text": { "type": "string", "minLength": 1, "description": "Concise request with the needed context and expected reply" },
                         "subject": { "type": "string", "description": "Optional short topic label" },
                         "payload": { "type": "object", "description": "Optional structured low-trust data; do not include secrets" },
@@ -1293,10 +1299,10 @@ impl Tool for AgentTool {
                     },
                     "required": ["operation", "task"]
                 },
-                { "type": "object", "additionalProperties": false, "properties": { "operation": { "const": "status" }, "target": { "type": "string", "minLength": 1, "maxLength": 64, "description": "Current session or descendant session id; omit to read this session's status" } }, "required": ["operation"] },
-                { "type": "object", "additionalProperties": false, "properties": { "operation": { "const": "wait" }, "target": { "type": "string", "minLength": 1, "maxLength": 64, "description": "Required descendant session id to wait for" }, "timeout_secs": { "type": "integer", "minimum": 1, "maximum": MAX_REQUEST_TIMEOUT_SECS, "default": DEFAULT_REQUEST_TIMEOUT_SECS, "description": "Maximum wait; defaults to 60 seconds, maximum 300" } }, "required": ["operation", "target"] },
-                { "type": "object", "additionalProperties": false, "properties": { "operation": { "const": "stop" }, "target": { "type": "string", "minLength": 1, "maxLength": 64, "description": "Required descendant session id to stop" } }, "required": ["operation", "target"] },
-                { "type": "object", "additionalProperties": false, "properties": { "operation": { "const": "collect" }, "target": { "type": "string", "minLength": 1, "maxLength": 64, "description": "Current session or descendant session id to collect history from" }, "limit": { "type": "integer", "minimum": 1, "maximum": MAX_HISTORY_LIMIT, "description": "Maximum messages to return; defaults to 20" } }, "required": ["operation", "target"] }
+                { "type": "object", "additionalProperties": false, "properties": { "operation": { "const": "status" }, "target": { "type": "string", "pattern": "^ses-[0-9a-f]{32}$", "description": "Current session or descendant session id; omit to read this session's status" } }, "required": ["operation"] },
+                { "type": "object", "additionalProperties": false, "properties": { "operation": { "const": "wait" }, "target": { "type": "string", "pattern": "^ses-[0-9a-f]{32}$", "description": "Required descendant session id to wait for" }, "timeout_secs": { "type": "integer", "minimum": 1, "maximum": MAX_REQUEST_TIMEOUT_SECS, "default": DEFAULT_REQUEST_TIMEOUT_SECS, "description": "Maximum wait; defaults to 60 seconds, maximum 300" } }, "required": ["operation", "target"] },
+                { "type": "object", "additionalProperties": false, "properties": { "operation": { "const": "stop" }, "target": { "type": "string", "pattern": "^ses-[0-9a-f]{32}$", "description": "Required descendant session id to stop" } }, "required": ["operation", "target"] },
+                { "type": "object", "additionalProperties": false, "properties": { "operation": { "const": "collect" }, "target": { "type": "string", "pattern": "^ses-[0-9a-f]{32}$", "description": "Current session or descendant session id to collect history from" }, "limit": { "type": "integer", "minimum": 1, "maximum": MAX_HISTORY_LIMIT, "description": "Maximum messages to return; defaults to 20" } }, "required": ["operation", "target"] }
             ],
         })
     }
@@ -1320,6 +1326,71 @@ mod tests {
         let service = Arc::new(MessagingService::new(bus.clone()));
         let tool = AgentTool::new(service);
         (dir, bus, tool)
+    }
+
+    #[test]
+    fn model_facing_session_and_message_ids_require_canonical_format() {
+        assert!(session_of(Some("ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into())).is_ok());
+        assert!(session_of(Some("ses-a".into())).is_err());
+        assert!(check_target(Some("ses-b".into()), "").is_err());
+        assert!(check_message_ids(Some(vec!["msg-invalid".into()])).is_err());
+        assert!(
+            check_message_ids(Some(vec!["msg-0123456789abcdef0123456789abcdef".into()])).is_ok()
+        );
+    }
+
+    #[tokio::test]
+    async fn rejects_invalid_session_message_and_claim_ids_before_registration() {
+        let (_dir, bus, tool) = test_tools();
+        let cases = [
+            json!({
+                "operation": "send",
+                "_session_id": "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "to": "ses-invalid",
+                "text": "hello"
+            }),
+            json!({
+                "operation": "reply",
+                "_session_id": "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "in_reply_to": "msg-invalid",
+                "text": "hello"
+            }),
+            json!({
+                "operation": "ack",
+                "_session_id": "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "claim_token": "claim-invalid"
+            }),
+            json!({
+                "operation": "status",
+                "_session_id": "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "target": "ses-invalid"
+            }),
+            json!({
+                "operation": "send",
+                "_session_id": "ses-invalid",
+                "to": "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                "text": "hello"
+            }),
+        ];
+
+        for input in cases {
+            let params: AgentParams = serde_json::from_value(input.clone()).unwrap();
+            let error = tool
+                .run(params, CancellationToken::new())
+                .await
+                .unwrap_err();
+            assert!(
+                error.to_string().contains("canonical"),
+                "unexpected error for {input}: {error}"
+            );
+            assert!(
+                MessagingService::new(bus.clone())
+                    .list_agents()
+                    .unwrap()
+                    .is_empty(),
+                "invalid ID registered an agent for {input}"
+            );
+        }
     }
 
     struct TestMailbox;
@@ -1381,7 +1452,7 @@ mod tests {
             &self,
             request: AgentSpawnRequest,
         ) -> anyhow::Result<AgentSpawnResult> {
-            let child = "ses-child000000000000000000000001".to_string();
+            let child = "ses-00000000000000000000000000000001".to_string();
             self.bus.register_with_profile(
                 &child,
                 &request.capabilities,
@@ -1458,7 +1529,10 @@ mod tests {
             op("list", json!({})),
             op("children", json!({})),
             op("history", json!({})),
-            op("send", json!({"to": "ses-b", "text": "hi"})),
+            op(
+                "send",
+                json!({"to": "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "text": "hi"}),
+            ),
             op("inbox", json!({})),
             op(
                 "ack",
@@ -1468,12 +1542,18 @@ mod tests {
             op("profile", json!({"role": "coder"})),
             op(
                 "request",
-                json!({"to": "ses-b", "text": "hi", "timeout_secs": 1}),
+                json!({"to": "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "text": "hi", "timeout_secs": 1}),
             ),
             op("spawn", json!({"task": "do X"})),
             op("status", json!({})),
-            op("wait", json!({"target": "ses-b", "timeout_secs": 1})),
-            op("stop", json!({"target": "ses-b"})),
+            op(
+                "wait",
+                json!({"target": "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "timeout_secs": 1}),
+            ),
+            op(
+                "stop",
+                json!({"target": "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}),
+            ),
         ];
         for input in inputs {
             let result = tool.execute(input.clone(), CancellationToken::new()).await;
@@ -1493,7 +1573,10 @@ mod tests {
         // B comes online first (its first tool call registers it and creates
         // its mailbox).
         tool.execute(
-            with_sid(op("inbox", json!({})), "ses-b"),
+            with_sid(
+                op("inbox", json!({})),
+                "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            ),
             CancellationToken::new(),
         )
         .await
@@ -1505,9 +1588,9 @@ mod tests {
                 with_sid(
                     op(
                         "send",
-                        json!({"to": "ses-b", "text": "schema 定了吗？", "subject": "需要你确认"}),
+                        json!({"to": "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "text": "schema 定了吗？", "subject": "需要你确认"}),
                     ),
-                    "ses-a",
+                    "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                 ),
                 CancellationToken::new(),
             )
@@ -1521,14 +1604,17 @@ mod tests {
         // B reads it: system_note marks low-trust origin.
         let result = tool
             .execute(
-                with_sid(op("inbox", json!({})), "ses-b"),
+                with_sid(
+                    op("inbox", json!({})),
+                    "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                ),
                 CancellationToken::new(),
             )
             .await
             .unwrap();
         assert_eq!(result.output["count"], 1);
         let msg = &result.output["messages"][0];
-        assert_eq!(msg["from"], "ses-a");
+        assert_eq!(msg["from"], "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
         assert_eq!(msg["subject"], "需要你确认");
         assert_eq!(
             msg["system_note"].as_str().unwrap(),
@@ -1538,7 +1624,10 @@ mod tests {
         // A's inbox holds the auto receipt for the message it sent.
         let result = tool
             .execute(
-                with_sid(op("inbox", json!({})), "ses-a"),
+                with_sid(
+                    op("inbox", json!({})),
+                    "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                ),
                 CancellationToken::new(),
             )
             .await
@@ -1549,29 +1638,38 @@ mod tests {
         // B replies without `to` (last sender) and without in_reply_to.
         let result = tool
             .execute(
-                with_sid(op("reply", json!({"text": "定了，按 msg 格式走"})), "ses-b"),
+                with_sid(
+                    op("reply", json!({"text": "定了，按 msg 格式走"})),
+                    "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                ),
                 CancellationToken::new(),
             )
             .await
             .unwrap();
         assert!(result.success);
-        assert_eq!(result.output["to"], "ses-a");
+        assert_eq!(result.output["to"], "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
         assert_eq!(result.output["recipient_status"], "online");
 
         // A reads the reply, which references the original message.
         let result = tool
             .execute(
-                with_sid(op("inbox", json!({})), "ses-a"),
+                with_sid(
+                    op("inbox", json!({})),
+                    "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                ),
                 CancellationToken::new(),
             )
             .await
             .unwrap();
         assert_eq!(result.output["count"], 1);
         let reply_msg = &result.output["messages"][0];
-        assert_eq!(reply_msg["from"], "ses-b");
+        assert_eq!(reply_msg["from"], "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
         assert_eq!(reply_msg["type"], "reply");
         assert_eq!(reply_msg["in_reply_to"], a_msg_id);
-        assert_eq!(reply_msg["reply_address"], "ses-b");
+        assert_eq!(
+            reply_msg["reply_address"],
+            "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        );
         assert_eq!(reply_msg["text"], "定了，按 msg 格式走");
     }
 
@@ -1580,15 +1678,21 @@ mod tests {
         let (_dir, _bus, tool) = test_tools();
 
         tool.execute(
-            with_sid(op("inbox", json!({})), "ses-b"),
+            with_sid(
+                op("inbox", json!({})),
+                "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            ),
             CancellationToken::new(),
         )
         .await
         .unwrap();
         tool.execute(
             with_sid(
-                op("send", json!({"to": "ses-b", "text": "第一封"})),
-                "ses-a",
+                op(
+                    "send",
+                    json!({"to": "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "text": "第一封"}),
+                ),
+                "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
             ),
             CancellationToken::new(),
         )
@@ -1596,7 +1700,10 @@ mod tests {
         .unwrap();
         let result = tool
             .execute(
-                with_sid(op("inbox", json!({})), "ses-b"),
+                with_sid(
+                    op("inbox", json!({})),
+                    "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                ),
                 CancellationToken::new(),
             )
             .await
@@ -1612,16 +1719,19 @@ mod tests {
             .execute(
                 with_sid(
                     op("reply", json!({"text": "回复", "in_reply_to": orig_id})),
-                    "ses-b",
+                    "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
                 ),
                 CancellationToken::new(),
             )
             .await
             .unwrap();
-        assert_eq!(result.output["to"], "ses-a");
+        assert_eq!(result.output["to"], "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
         let result = tool
             .execute(
-                with_sid(op("inbox", json!({})), "ses-a"),
+                with_sid(
+                    op("inbox", json!({})),
+                    "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                ),
                 CancellationToken::new(),
             )
             .await
@@ -1634,7 +1744,10 @@ mod tests {
         let (_dir, _bus, tool) = test_tools();
         let result = tool
             .execute(
-                with_sid(op("reply", json!({"text": "hi"})), "ses-a"),
+                with_sid(
+                    op("reply", json!({"text": "hi"})),
+                    "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                ),
                 CancellationToken::new(),
             )
             .await;
@@ -1648,7 +1761,10 @@ mod tests {
         for bad in ["../evil", "a/b", "a b", ""] {
             let result = tool
                 .execute(
-                    with_sid(op("send", json!({"to": bad, "text": "x"})), "ses-a"),
+                    with_sid(
+                        op("send", json!({"to": bad, "text": "x"})),
+                        "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    ),
                     CancellationToken::new(),
                 )
                 .await;
@@ -1662,8 +1778,11 @@ mod tests {
         let result = tool
             .execute(
                 with_sid(
-                    op("send", json!({"to": "ses-ghost", "text": "hi"})),
-                    "ses-a",
+                    op(
+                        "send",
+                        json!({"to": "ses-ffffffffffffffffffffffffffffffff", "text": "hi"}),
+                    ),
+                    "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                 ),
                 CancellationToken::new(),
             )
@@ -1676,14 +1795,21 @@ mod tests {
     async fn send_to_offline_agent_delivers_but_reports_offline() {
         let (_dir, bus, tool) = test_tools();
         // B remains registered but is marked offline.
-        bus.register("ses-b", &[]).unwrap();
+        bus.register("ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", &[])
+            .unwrap();
         MessagingService::new(bus.clone())
-            .mark_offline("ses-b")
+            .mark_offline("ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
             .unwrap();
 
         let result = tool
             .execute(
-                with_sid(op("send", json!({"to": "ses-b", "text": "hi"})), "ses-a"),
+                with_sid(
+                    op(
+                        "send",
+                        json!({"to": "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "text": "hi"}),
+                    ),
+                    "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                ),
                 CancellationToken::new(),
             )
             .await
@@ -1696,12 +1822,17 @@ mod tests {
     #[tokio::test]
     async fn broadcast_reaches_all_online_agents_and_skips_self() {
         let (_dir, bus, tool) = test_tools();
-        bus.register("ses-b", &[]).unwrap();
-        bus.register("ses-c", &[]).unwrap();
+        bus.register("ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", &[])
+            .unwrap();
+        bus.register("ses-cccccccccccccccccccccccccccccccc", &[])
+            .unwrap();
 
         let result = tool
             .execute(
-                with_sid(op("send", json!({"to": "*", "text": "全员注意"})), "ses-a"),
+                with_sid(
+                    op("send", json!({"to": "*", "text": "全员注意"})),
+                    "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                ),
                 CancellationToken::new(),
             )
             .await
@@ -1715,10 +1846,19 @@ mod tests {
             .iter()
             .map(|r| r["to"].as_str().unwrap().to_string())
             .collect();
-        assert_eq!(recipients, vec!["ses-b".to_string(), "ses-c".to_string()]);
-        assert!(!recipients.contains(&"ses-a".into()));
+        assert_eq!(
+            recipients,
+            vec![
+                "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".to_string(),
+                "ses-cccccccccccccccccccccccccccccccc".to_string()
+            ]
+        );
+        assert!(!recipients.contains(&"ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into()));
 
-        for name in ["ses-b", "ses-c"] {
+        for name in [
+            "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "ses-cccccccccccccccccccccccccccccccc",
+        ] {
             let result = tool
                 .execute(
                     with_sid(op("inbox", json!({})), name),
@@ -1733,7 +1873,10 @@ mod tests {
         // reader) — never the broadcast itself.
         let result = tool
             .execute(
-                with_sid(op("inbox", json!({})), "ses-a"),
+                with_sid(
+                    op("inbox", json!({})),
+                    "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                ),
                 CancellationToken::new(),
             )
             .await
@@ -1756,7 +1899,10 @@ mod tests {
         let (_dir, _bus, tool) = test_tools();
         let result = tool
             .execute(
-                with_sid(op("send", json!({"to": "*", "text": "x"})), "ses-a"),
+                with_sid(
+                    op("send", json!({"to": "*", "text": "x"})),
+                    "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                ),
                 CancellationToken::new(),
             )
             .await;
@@ -1766,10 +1912,14 @@ mod tests {
     #[tokio::test]
     async fn agents_list_shows_peers_and_self() {
         let (_dir, bus, tool) = test_tools();
-        bus.register("ses-b", &[]).unwrap();
+        bus.register("ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", &[])
+            .unwrap();
         let result = tool
             .execute(
-                with_sid(op("list", json!({})), "ses-a"),
+                with_sid(
+                    op("list", json!({})),
+                    "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                ),
                 CancellationToken::new(),
             )
             .await
@@ -1780,29 +1930,41 @@ mod tests {
             .iter()
             .map(|a| a["name"].as_str().unwrap())
             .collect();
-        assert_eq!(agents, vec!["ses-a", "ses-b"]);
+        assert_eq!(
+            agents,
+            vec![
+                "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            ]
+        );
         assert!(result.output["agents"][0]["status"] == "online");
     }
 
     #[tokio::test]
     async fn agents_list_filters_and_children_are_scoped() {
         let (_dir, bus, tool) = test_tools();
-        bus.register_with_profile("ses-b", &["docs".into()], Some("API"), Some("coder"), None)
-            .unwrap();
         bus.register_with_profile(
-            "ses-child000000000000000000000001",
+            "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
             &["docs".into()],
-            Some("worker"),
+            Some("API"),
             Some("coder"),
-            Some("ses-a"),
+            None,
         )
         .unwrap();
         bus.register_with_profile(
-            "ses-child000000000000000000000002",
+            "ses-cccccccccccccccccccccccccccccccc",
+            &["docs".into()],
+            Some("worker"),
+            Some("coder"),
+            Some("ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+        )
+        .unwrap();
+        bus.register_with_profile(
+            "ses-dddddddddddddddddddddddddddddddd",
             &["web".into()],
             Some("worker"),
             Some("researcher"),
-            Some("ses-a"),
+            Some("ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
         )
         .unwrap();
 
@@ -1810,7 +1972,7 @@ mod tests {
             .execute(
                 with_sid(
                     op("list", json!({"role": "coder", "capability": "docs"})),
-                    "ses-a",
+                    "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                 ),
                 CancellationToken::new(),
             )
@@ -1822,11 +1984,20 @@ mod tests {
             .iter()
             .map(|agent| agent["name"].as_str().unwrap())
             .collect();
-        assert_eq!(names, vec!["ses-b", "ses-child000000000000000000000001"]);
+        assert_eq!(
+            names,
+            vec![
+                "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                "ses-cccccccccccccccccccccccccccccccc"
+            ]
+        );
 
         let result = tool
             .execute(
-                with_sid(op("list", json!({"limit": 1})), "ses-a"),
+                with_sid(
+                    op("list", json!({"limit": 1})),
+                    "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                ),
                 CancellationToken::new(),
             )
             .await
@@ -1838,29 +2009,42 @@ mod tests {
 
         let result = tool
             .execute(
-                with_sid(op("children", json!({})), "ses-a"),
+                with_sid(
+                    op("children", json!({})),
+                    "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                ),
                 CancellationToken::new(),
             )
             .await
             .unwrap();
         let children = result.output["children"].as_array().unwrap();
         assert_eq!(children.len(), 2);
-        assert_eq!(children[0]["name"], "ses-child000000000000000000000001");
-        assert_eq!(children[1]["name"], "ses-child000000000000000000000002");
+        assert_eq!(children[0]["name"], "ses-cccccccccccccccccccccccccccccccc");
+        assert_eq!(children[1]["name"], "ses-dddddddddddddddddddddddddddddddd");
     }
 
     #[tokio::test]
     async fn inbox_requires_explicit_ack_and_ack_is_selective() {
         let (_dir, bus, tool) = test_tools();
-        bus.register("ses-a", &[]).unwrap();
-        bus.register("ses-b", &[]).unwrap();
-        let first = Envelope::new("ses-b", "ses-a", "first");
+        bus.register("ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", &[])
+            .unwrap();
+        bus.register("ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", &[])
+            .unwrap();
+        let first = Envelope::new(
+            "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "first",
+        );
         let first_id = first.id.clone();
-        bus.deliver("ses-a", &first).unwrap();
+        bus.deliver("ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", &first)
+            .unwrap();
 
         let result = tool
             .execute(
-                with_sid(json!({"operation": "inbox"}), "ses-a"),
+                with_sid(
+                    json!({"operation": "inbox"}),
+                    "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                ),
                 CancellationToken::new(),
             )
             .await
@@ -1871,12 +2055,20 @@ mod tests {
 
         // A new message arriving after the claim must not be consumed by an
         // acknowledgement for the older id.
-        let second = Envelope::new("ses-b", "ses-a", "second");
+        let second = Envelope::new(
+            "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "second",
+        );
         let second_id = second.id.clone();
-        bus.deliver("ses-a", &second).unwrap();
+        bus.deliver("ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", &second)
+            .unwrap();
         let ack = tool
             .execute(
-                with_sid(op("ack", json!({"message_ids": [first_id]})), "ses-a"),
+                with_sid(
+                    op("ack", json!({"message_ids": [first_id]})),
+                    "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                ),
                 CancellationToken::new(),
             )
             .await
@@ -1885,7 +2077,10 @@ mod tests {
 
         let remaining = tool
             .execute(
-                with_sid(json!({"operation": "inbox"}), "ses-a"),
+                with_sid(
+                    json!({"operation": "inbox"}),
+                    "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                ),
                 CancellationToken::new(),
             )
             .await
@@ -1894,14 +2089,20 @@ mod tests {
         assert_eq!(remaining.output["messages"][0]["id"], second_id);
         let _ = tool
             .execute(
-                with_sid(op("ack", json!({"message_ids": [second_id]})), "ses-a"),
+                with_sid(
+                    op("ack", json!({"message_ids": [second_id]})),
+                    "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                ),
                 CancellationToken::new(),
             )
             .await
             .unwrap();
         let history = tool
             .execute(
-                with_sid(op("history", json!({"limit": 1})), "ses-a"),
+                with_sid(
+                    op("history", json!({"limit": 1})),
+                    "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                ),
                 CancellationToken::new(),
             )
             .await
@@ -1913,14 +2114,24 @@ mod tests {
     #[tokio::test]
     async fn inbox_claim_token_acknowledges_the_exact_claim() {
         let (_dir, bus, tool) = test_tools();
-        bus.register("ses-a", &[]).unwrap();
-        bus.register("ses-b", &[]).unwrap();
-        let message = Envelope::new("ses-b", "ses-a", "durable batch");
-        bus.deliver("ses-a", &message).unwrap();
+        bus.register("ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", &[])
+            .unwrap();
+        bus.register("ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", &[])
+            .unwrap();
+        let message = Envelope::new(
+            "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "durable batch",
+        );
+        bus.deliver("ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", &message)
+            .unwrap();
 
         let inbox = tool
             .execute(
-                with_sid(json!({"operation": "inbox"}), "ses-a"),
+                with_sid(
+                    json!({"operation": "inbox"}),
+                    "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                ),
                 CancellationToken::new(),
             )
             .await
@@ -1931,7 +2142,10 @@ mod tests {
 
         let ack = tool
             .execute(
-                with_sid(json!({"operation": "ack", "claim_token": token}), "ses-a"),
+                with_sid(
+                    json!({"operation": "ack", "claim_token": token}),
+                    "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                ),
                 CancellationToken::new(),
             )
             .await
@@ -1941,7 +2155,10 @@ mod tests {
 
         let inbox = tool
             .execute(
-                with_sid(json!({"operation": "inbox"}), "ses-a"),
+                with_sid(
+                    json!({"operation": "inbox"}),
+                    "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                ),
                 CancellationToken::new(),
             )
             .await
@@ -1955,7 +2172,13 @@ mod tests {
         // Empty text.
         let result = tool
             .execute(
-                with_sid(op("send", json!({"to": "ses-b", "text": "   "})), "ses-a"),
+                with_sid(
+                    op(
+                        "send",
+                        json!({"to": "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "text": "   "}),
+                    ),
+                    "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                ),
                 CancellationToken::new(),
             )
             .await;
@@ -1965,8 +2188,8 @@ mod tests {
         let result = tool
             .execute(
                 with_sid(
-                    op("send", json!({"to": "ses-b", "text": "hi", "payload": big})),
-                    "ses-a",
+                    op("send", json!({"to": "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "text": "hi", "payload": big})),
+                    "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                 ),
                 CancellationToken::new(),
             )
@@ -1978,9 +2201,9 @@ mod tests {
                 with_sid(
                     op(
                         "send",
-                        json!({"to": "ses-b", "text": "hi", "expires_at": "not-a-date"}),
+                        json!({"to": "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "text": "hi", "expires_at": "not-a-date"}),
                     ),
-                    "ses-a",
+                    "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                 ),
                 CancellationToken::new(),
             )
@@ -1990,8 +2213,8 @@ mod tests {
         let result = tool
             .execute(
                 with_sid(
-                    op("send", json!({"to": "ses-b", "text": "hi", "type": "yell"})),
-                    "ses-a",
+                    op("send", json!({"to": "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "text": "hi", "type": "yell"})),
+                    "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                 ),
                 CancellationToken::new(),
             )
@@ -2008,6 +2231,30 @@ mod tests {
         // The schema must not leak private session fields or duplicate wait aliases.
         assert!(schema.get("_session_id").is_none());
         assert!(schema.get("session_id").is_none());
+        assert_eq!(
+            schema["properties"]["target"]["pattern"],
+            "^ses-[0-9a-f]{32}$"
+        );
+        assert_eq!(
+            schema["properties"]["in_reply_to"]["pattern"],
+            "^msg-[0-9a-f]{32}$"
+        );
+        assert!(
+            tool.validate_input(&json!({
+                "operation": "send",
+                "to": "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "text": "hello"
+            }))
+            .is_ok()
+        );
+        assert!(
+            tool.validate_input(&json!({
+                "operation": "send",
+                "to": "ses-a",
+                "text": "hello"
+            }))
+            .is_err()
+        );
         assert!(
             !schema["properties"]["operation"]["enum"]
                 .as_array()
@@ -2025,7 +2272,13 @@ mod tests {
         cancel.cancel();
         let result = tool
             .execute(
-                with_sid(op("send", json!({"to": "ses-b", "text": "hi"})), "ses-a"),
+                with_sid(
+                    op(
+                        "send",
+                        json!({"to": "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "text": "hi"}),
+                    ),
+                    "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                ),
                 cancel,
             )
             .await;
@@ -2038,7 +2291,10 @@ mod tests {
 
         // B comes online first, then A sends.
         tool.execute(
-            with_sid(op("inbox", json!({})), "ses-b"),
+            with_sid(
+                op("inbox", json!({})),
+                "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            ),
             CancellationToken::new(),
         )
         .await
@@ -2046,8 +2302,11 @@ mod tests {
         let sent = tool
             .execute(
                 with_sid(
-                    op("send", json!({"to": "ses-b", "text": "看完回我"})),
-                    "ses-a",
+                    op(
+                        "send",
+                        json!({"to": "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "text": "看完回我"}),
+                    ),
+                    "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                 ),
                 CancellationToken::new(),
             )
@@ -2058,7 +2317,10 @@ mod tests {
         // B reads → a receipt lands in A's mailbox automatically.
         let result = tool
             .execute(
-                with_sid(op("inbox", json!({})), "ses-b"),
+                with_sid(
+                    op("inbox", json!({})),
+                    "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                ),
                 CancellationToken::new(),
             )
             .await
@@ -2067,7 +2329,10 @@ mod tests {
 
         let result = tool
             .execute(
-                with_sid(op("inbox", json!({})), "ses-a"),
+                with_sid(
+                    op("inbox", json!({})),
+                    "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                ),
                 CancellationToken::new(),
             )
             .await
@@ -2075,19 +2340,25 @@ mod tests {
         assert_eq!(result.output["count"], 1, "A receives exactly one receipt");
         let ack = &result.output["messages"][0];
         assert_eq!(ack["type"], "receipt");
-        assert_eq!(ack["from"], "ses-b");
+        assert_eq!(ack["from"], "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
         assert_eq!(ack["in_reply_to"], msg_id);
 
         // Reading the receipt produces no further acks (no loops).
         tool.execute(
-            with_sid(op("inbox", json!({})), "ses-a"),
+            with_sid(
+                op("inbox", json!({})),
+                "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            ),
             CancellationToken::new(),
         )
         .await
         .unwrap();
         let again = tool
             .execute(
-                with_sid(op("inbox", json!({})), "ses-b"),
+                with_sid(
+                    op("inbox", json!({})),
+                    "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                ),
                 CancellationToken::new(),
             )
             .await
@@ -2133,7 +2404,7 @@ mod tests {
                         "capabilities": ["web", "docs"]
                     }),
                 ),
-                "ses-a",
+                "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
             ),
             CancellationToken::new(),
         )
@@ -2141,7 +2412,10 @@ mod tests {
         .unwrap();
         let result = tool
             .execute(
-                with_sid(op("list", json!({})), "ses-a"),
+                with_sid(
+                    op("list", json!({})),
+                    "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                ),
                 CancellationToken::new(),
             )
             .await
@@ -2150,7 +2424,7 @@ mod tests {
             .as_array()
             .unwrap()
             .iter()
-            .find(|a| a["name"] == "ses-a")
+            .find(|a| a["name"] == "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
             .unwrap();
         assert_eq!(agent["role"], "researcher");
         assert_eq!(agent["title"], "调研登录");
@@ -2158,7 +2432,10 @@ mod tests {
 
         let read = tool
             .execute(
-                with_sid(op("profile", json!({})), "ses-a"),
+                with_sid(
+                    op("profile", json!({})),
+                    "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                ),
                 CancellationToken::new(),
             )
             .await
@@ -2172,14 +2449,15 @@ mod tests {
     async fn lifecycle_control_is_child_scoped_and_uses_runtime() {
         let (_dir, bus, _unused) = test_tools();
         bus.register_with_profile(
-            "ses-child000000000000000000000001",
+            "ses-00000000000000000000000000000001",
             &[],
             Some("child"),
             None,
-            Some("ses-a"),
+            Some("ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
         )
         .unwrap();
-        bus.register("ses-other", &[]).unwrap();
+        bus.register("ses-dddddddddddddddddddddddddddddddd", &[])
+            .unwrap();
         let service = Arc::new(MessagingService::new(bus.clone()));
         service
             .bind_runtime(Arc::new(TestRuntime { bus: bus.clone() }))
@@ -2191,9 +2469,9 @@ mod tests {
                 with_sid(
                     op(
                         "status",
-                        json!({"target": "ses-child000000000000000000000001"}),
+                        json!({"target": "ses-00000000000000000000000000000001"}),
                     ),
-                    "ses-a",
+                    "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                 ),
                 CancellationToken::new(),
             )
@@ -2204,7 +2482,13 @@ mod tests {
 
         let err = tool
             .execute(
-                with_sid(op("status", json!({"target": "ses-other"})), "ses-a"),
+                with_sid(
+                    op(
+                        "status",
+                        json!({"target": "ses-dddddddddddddddddddddddddddddddd"}),
+                    ),
+                    "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                ),
                 CancellationToken::new(),
             )
             .await
@@ -2220,7 +2504,10 @@ mod tests {
 
         // B online.
         tool.execute(
-            with_sid(op("inbox", json!({})), "ses-b"),
+            with_sid(
+                op("inbox", json!({})),
+                "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            ),
             CancellationToken::new(),
         )
         .await
@@ -2233,7 +2520,7 @@ mod tests {
             for _ in 0..50 {
                 let msgs = tokio::task::spawn_blocking({
                     let bus = bus_for_peer.clone();
-                    move || claim_and_ack(&bus, "ses-b")
+                    move || claim_and_ack(&bus, "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
                 })
                 .await
                 .unwrap();
@@ -2246,10 +2533,10 @@ mod tests {
                                     json!({
                                         "text": "完成了",
                                         "in_reply_to": req.id,
-                                        "to": "ses-a"
+                                        "to": "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
                                     }),
                                 ),
-                                "ses-b",
+                                "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
                             ),
                             CancellationToken::new(),
                         )
@@ -2259,7 +2546,7 @@ mod tests {
                 }
                 tokio::time::sleep(Duration::from_millis(20)).await;
             }
-            panic!("request never arrived at ses-b");
+            panic!("request never arrived at the worker session");
         });
 
         let result = tool
@@ -2267,9 +2554,9 @@ mod tests {
                 with_sid(
                     op(
                         "request",
-                        json!({"to": "ses-b", "text": "请处理", "timeout_secs": 5}),
+                        json!({"to": "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "text": "请处理", "timeout_secs": 5}),
                     ),
-                    "ses-a",
+                    "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                 ),
                 CancellationToken::new(),
             )
@@ -2279,21 +2566,25 @@ mod tests {
         assert_eq!(result.output["ok"], true);
         assert_eq!(result.output["timed_out"], false);
         assert_eq!(result.output["reply"]["text"], "完成了");
-        assert_eq!(result.output["reply"]["from"], "ses-b");
+        assert_eq!(
+            result.output["reply"]["from"],
+            "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        );
     }
 
     #[tokio::test]
     async fn message_request_times_out_without_reply() {
         let (_dir, bus, tool) = test_tools();
-        bus.register("ses-b", &[]).unwrap();
+        bus.register("ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", &[])
+            .unwrap();
         let result = tool
             .execute(
                 with_sid(
                     op(
                         "request",
-                        json!({"to": "ses-b", "text": "无人回", "timeout_secs": 1}),
+                        json!({"to": "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "text": "无人回", "timeout_secs": 1}),
                     ),
-                    "ses-a",
+                    "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                 ),
                 CancellationToken::new(),
             )
@@ -2330,7 +2621,7 @@ mod tests {
                             "capabilities": ["docs"]
                         }),
                     ),
-                    "ses-a",
+                    "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                 ),
                 CancellationToken::new(),
             )
@@ -2339,16 +2630,22 @@ mod tests {
         assert_eq!(result.output["ok"], true);
         assert_eq!(
             result.output["session_id"],
-            "ses-child000000000000000000000001"
+            "ses-00000000000000000000000000000001"
         );
-        assert_eq!(result.output["parent"], "ses-a");
+        assert_eq!(
+            result.output["parent"],
+            "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        );
         let agents = bus.list_agents().unwrap();
         let child = agents
             .iter()
-            .find(|a| a.name == "ses-child000000000000000000000001")
+            .find(|a| a.name == "ses-00000000000000000000000000000001")
             .unwrap();
         assert_eq!(child.role.as_deref(), Some("researcher"));
-        assert_eq!(child.parent.as_deref(), Some("ses-a"));
+        assert_eq!(
+            child.parent.as_deref(),
+            Some("ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+        );
         assert_eq!(child.capabilities, vec!["docs"]);
     }
 
@@ -2357,7 +2654,10 @@ mod tests {
         let (_dir, _bus, tool) = test_tools();
         let err = tool
             .execute(
-                with_sid(op("spawn", json!({"task": "x"})), "ses-a"),
+                with_sid(
+                    op("spawn", json!({"task": "x"})),
+                    "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                ),
                 CancellationToken::new(),
             )
             .await
@@ -2370,7 +2670,10 @@ mod tests {
     async fn reply_with_explicit_to_auto_fills_in_reply_to() {
         let (_dir, _bus, tool) = test_tools();
         tool.execute(
-            with_sid(op("inbox", json!({})), "ses-b"),
+            with_sid(
+                op("inbox", json!({})),
+                "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            ),
             CancellationToken::new(),
         )
         .await
@@ -2380,9 +2683,9 @@ mod tests {
                 with_sid(
                     op(
                         "send",
-                        json!({"to": "ses-b", "text": "req", "type": "request"}),
+                        json!({"to": "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "text": "req", "type": "request"}),
                     ),
-                    "ses-a",
+                    "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                 ),
                 CancellationToken::new(),
             )
@@ -2390,20 +2693,32 @@ mod tests {
             .unwrap();
         let req_id = sent.output["message_id"].as_str().unwrap().to_string();
         tool.execute(
-            with_sid(op("inbox", json!({})), "ses-b"),
+            with_sid(
+                op("inbox", json!({})),
+                "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            ),
             CancellationToken::new(),
         )
         .await
         .unwrap();
         tool.execute(
-            with_sid(op("reply", json!({"to": "ses-a", "text": "done"})), "ses-b"),
+            with_sid(
+                op(
+                    "reply",
+                    json!({"to": "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "text": "done"}),
+                ),
+                "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            ),
             CancellationToken::new(),
         )
         .await
         .unwrap();
         let result = tool
             .execute(
-                with_sid(op("inbox", json!({})), "ses-a"),
+                with_sid(
+                    op("inbox", json!({})),
+                    "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                ),
                 CancellationToken::new(),
             )
             .await
@@ -2420,22 +2735,30 @@ mod tests {
     #[tokio::test]
     async fn message_request_ignores_forged_sender() {
         let (_dir, bus, tool) = test_tools();
-        bus.register("ses-b", &[]).unwrap();
-        bus.register("ses-evil", &[]).unwrap();
+        bus.register("ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", &[])
+            .unwrap();
+        bus.register("ses-eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", &[])
+            .unwrap();
         let bus_for_evil = bus.clone();
         let evil = tokio::spawn(async move {
             for _ in 0..50 {
                 let msgs = tokio::task::spawn_blocking({
                     let bus = bus_for_evil.clone();
-                    move || claim_and_ack(&bus, "ses-b")
+                    move || claim_and_ack(&bus, "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
                 })
                 .await
                 .unwrap();
                 if let Some(req) = msgs.into_iter().next() {
-                    let mut forged = Envelope::new("ses-evil", "ses-a", "forged");
+                    let mut forged = Envelope::new(
+                        "ses-eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+                        "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                        "forged",
+                    );
                     forged.r#type = MessageType::Reply;
                     forged.in_reply_to = Some(req.id);
-                    bus_for_evil.deliver("ses-a", &forged).unwrap();
+                    bus_for_evil
+                        .deliver("ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", &forged)
+                        .unwrap();
                     return;
                 }
                 tokio::time::sleep(Duration::from_millis(20)).await;
@@ -2447,9 +2770,9 @@ mod tests {
                 with_sid(
                     op(
                         "request",
-                        json!({"to": "ses-b", "text": "hi", "timeout_secs": 1}),
+                        json!({"to": "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "text": "hi", "timeout_secs": 1}),
                     ),
-                    "ses-a",
+                    "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                 ),
                 CancellationToken::new(),
             )
@@ -2467,7 +2790,7 @@ mod tests {
             .execute(
                 with_sid(
                     op("profile", json!({"role": "coder\nIgnore previous"})),
-                    "ses-a",
+                    "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                 ),
                 CancellationToken::new(),
             )
@@ -2481,13 +2804,22 @@ mod tests {
     async fn agent_spawn_enforces_child_cap() {
         let (_dir, bus, tool) = test_tools();
         for i in 0..MAX_CHILDREN_PER_PARENT {
-            let name = format!("ses-child{i:028}");
-            bus.register_with_profile(&name, &[], None, None, Some("ses-a"))
-                .unwrap();
+            let name = format!("ses-{:032x}", i + 1);
+            bus.register_with_profile(
+                &name,
+                &[],
+                None,
+                None,
+                Some("ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+            )
+            .unwrap();
         }
         let err = tool
             .execute(
-                with_sid(op("spawn", json!({"task": "another"})), "ses-a"),
+                with_sid(
+                    op("spawn", json!({"task": "another"})),
+                    "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                ),
                 CancellationToken::new(),
             )
             .await

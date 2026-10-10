@@ -343,7 +343,7 @@ Session title 读取 API 必须在名字中表达字段投影：`SessionStore::g
   - 例外：`asr` 是用户输入的关键词（意图识别 vocabulary，与 `ocr` 相邻），属于**输入信号**，不是 provider 模块名，不并入 `stt` 词汇表。二者语义不同，各归其位。
 
 ### ID 规范
-实体 ID 统一 `{prefix}-{uuid32}`，一律用 `haven_common::types::new_id(prefix)` 生成，并用 `haven_common::types::is_canonical_id(id, prefix)` 校验；校验函数的 `prefix` 参数不带连字符，禁止各 crate 重复实现格式检查。Tauri 命令与模型可调用的 Tools 入口都在副作用或存储前校验 Haven 实体 ID；Tools 的轻量错误包装器仍委托 Common 校验器。配置凭据引用复用同一校验器；provider ID、模型配置 ID 和运行代次等非实体标识按各自领域契约处理。进程内 `claim_token` 也列入前缀表，避免未登记的 ID 空间。完整前缀表见 `AGENTS.md`.
+实体 ID 统一 `{prefix}-{uuid32}`，一律用 `haven_common::types::new_id(prefix)` 生成，并用 `haven_common::types::is_canonical_id(id, prefix)` 校验；校验函数的 `prefix` 参数不带连字符，禁止各 crate 重复实现格式检查。Tauri 命令与模型可调用的 Tools 入口都在副作用或存储前校验 Haven 实体 ID；Tools 的轻量错误包装器仍委托 Common 校验器。Agent 工具的 session、message 与 claim 参数分别使用 `ses`、`msg`、`claim` ID 空间，广播标记 `*` 是唯一接收方例外。配置凭据引用复用同一校验器；provider ID、模型配置 ID 和运行代次等非实体标识按各自领域契约处理。进程内 `claim_token` 也列入前缀表，避免未登记的 ID 空间。完整前缀表见 `AGENTS.md`.
 
 - ToolRun 身份字段在 Rust 类型、事件与 JSON 结果中统一命名 `tool_run_id`；前端 IPC/view DTO 只在边界映射为 `toolRunId`，不再接受或输出泛名 `id` 别名。数据库物理列 `tool_runs.id` 保持不变，Repository 行字段命名 `tool_run_id`。Tauri event envelope 的数值 `event.id` 是另一实体，继续保留原名。
 
