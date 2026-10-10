@@ -437,7 +437,7 @@ pub fn default_runtime_temp_root() -> PathBuf {
 /// Dedicated root for generated media. Generated artifacts have a shorter,
 /// independent lifecycle than user-uploaded files and must never share the
 /// upload batch namespace.
-pub fn default_generated_media_dir() -> PathBuf {
+pub fn default_generated_media_root() -> PathBuf {
     ConfigLoader::data_dir().join("media").join("generated")
 }
 

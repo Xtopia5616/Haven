@@ -9,7 +9,7 @@ pub(crate) use ui_automation::{
     resolve_ui_element,
 };
 
-use haven_common::config::default_generated_media_dir;
+use haven_common::config::default_generated_media_root;
 use serde_json::Value;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -101,7 +101,7 @@ impl WindowTool {
         Self {
             managed_assets,
             media_tool: None,
-            capture_root: default_generated_media_dir(),
+            capture_root: default_generated_media_root(),
         }
     }
 

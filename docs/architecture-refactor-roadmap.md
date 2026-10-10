@@ -159,6 +159,8 @@ Session、ScheduledToolRun 与 AppCommand 确认均由各自 owner 和稳定 req
 
 Rust/Common 名称审查发现 `default_work_dir()` 实际表示应用共享运行时临时根，而 `SkillsExecConfig.work_dir` 表示 Skill 脚本执行 cwd；已将 helper 统一改名为 `default_runtime_temp_root()`，并区分两者文档语义，路径和各自 owner 保持不变（ADR 0873）。
 
+同一审查也发现 Common 的 `default_generated_media_dir()` 返回值被所有调用方当作生成媒体存储 root，已统一改名为 `default_generated_media_root()`；扫描和清理仍由 App、资产访问仍由 Tools、附件读取校验仍由 Memory 各自拥有（ADR 0874）。
+
 #### 当前审计覆盖与剩余范围
 
 | 范围                                                      | 已核对的当前基线                                                                                                                                                                                                                                                                 | 尚待核对                                                                                                                                                            |

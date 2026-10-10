@@ -1,7 +1,7 @@
 //! Media generation and managed-asset registration.
 
 use chrono::{Duration as ChronoDuration, Utc};
-use haven_common::config::{GENERATED_MEDIA_RETENTION_SECS, default_generated_media_dir};
+use haven_common::config::{GENERATED_MEDIA_RETENTION_SECS, default_generated_media_root};
 use haven_common::media_detection::extension_for_mime_type;
 use serde_json::json;
 use std::path::Path;
@@ -71,7 +71,7 @@ impl MediaTool {
         if !image.media_type.starts_with("image/") {
             anyhow::bail!("image generation returned a non-image media type");
         }
-        let root = default_generated_media_dir();
+        let root = default_generated_media_root();
         let extension = extension_for_mime_type(&image.media_type);
         let path = root.join(format!(
             "{}.{}",

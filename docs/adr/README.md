@@ -852,3 +852,4 @@
 - [0871：统一 ToolRun 终态交付 payload](0871-unify-tool-run-completion-payload.md)
 - [0872：统一模型目录发现命令](0872-unify-model-discovery-command.md)
 - [0873：明确命名应用运行时临时根](0873-name-runtime-temp-root-explicitly.md)
+- [0874：按 root 角色命名生成媒体路径](0874-name-generated-media-root-by-role.md)

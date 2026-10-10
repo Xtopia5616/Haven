@@ -4,7 +4,7 @@
 //! and the Windows device adapter. It does not implement or register `Tool`;
 //! `media.rs` owns the public contract.
 
-use haven_common::config::default_generated_media_dir;
+use haven_common::config::default_generated_media_root;
 use haven_input::InputPipeline;
 use haven_llm::TtsClient;
 use serde_json::json;
@@ -80,7 +80,7 @@ impl AudioRuntime {
             tts,
             playback: Arc::new(SystemAudioPlayback),
             managed_assets: ManagedAssetRegistry::default(),
-            capture_root: default_generated_media_dir(),
+            capture_root: default_generated_media_root(),
         }
     }
 

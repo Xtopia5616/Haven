@@ -39,7 +39,7 @@ pub(super) async fn register_rich_path_asset(
     }
     let canonical = tokio::fs::canonicalize(path).await?;
     let generated_media_root =
-        tokio::fs::canonicalize(haven_common::config::default_generated_media_dir())
+        tokio::fs::canonicalize(haven_common::config::default_generated_media_root())
             .await
             .ok();
     register_canonical_rich_path_asset(

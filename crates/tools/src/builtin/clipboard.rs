@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use haven_common::config::default_generated_media_dir;
+use haven_common::config::default_generated_media_root;
 use haven_common::types::RiskLevel;
 use serde_json::Value;
 use std::borrow::Cow;
@@ -627,7 +627,7 @@ fn save_image_asset(
     image: arboard::ImageData<'static>,
     cancel: &CancellationToken,
 ) -> anyhow::Result<ManagedAsset> {
-    let root = default_generated_media_dir();
+    let root = default_generated_media_root();
     std::fs::create_dir_all(&root)?;
     let path = root.join(format!("{}.png", haven_common::types::new_id("file")));
     if cancel.is_cancelled() {
@@ -690,7 +690,7 @@ async fn copy_file_assets(
         if cancel_for_validation.is_cancelled() {
             return Ok(None);
         }
-        let root = default_generated_media_dir();
+        let root = default_generated_media_root();
         std::fs::create_dir_all(&root)?;
         Ok(Some((paths, root)))
     })

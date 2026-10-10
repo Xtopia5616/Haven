@@ -754,7 +754,7 @@ fn read_host_media(path: &str) -> Option<Vec<u8>> {
     let path = std::path::Path::new(path);
     let roots = [
         haven_common::default_runtime_temp_root().join("uploads"),
-        haven_common::config::default_generated_media_dir(),
+        haven_common::config::default_generated_media_root(),
     ];
     let canonical_path = std::fs::canonicalize(path).ok()?;
     if !roots.iter().any(|root| {

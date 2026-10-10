@@ -88,7 +88,7 @@ impl ToolsFacade {
         attachments: &[MessageAttachment],
     ) {
         let uploads_root = haven_common::default_runtime_temp_root().join("uploads");
-        let generated_root = haven_common::config::default_generated_media_dir();
+        let generated_root = haven_common::config::default_generated_media_root();
         for attachment in attachments {
             let (Some(asset_id), Some(path)) = (&attachment.asset_id, &attachment.path) else {
                 continue;
