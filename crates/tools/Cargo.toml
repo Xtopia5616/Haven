@@ -42,6 +42,7 @@ encoding_rs.workspace = true
 
 [dev-dependencies]
 haven-llm = { path = "../llm", features = ["test-support"] }
+haven-messaging = { path = "../messaging", features = ["test-support"] }
 tempfile.workspace = true
 
 [target.'cfg(windows)'.dependencies]

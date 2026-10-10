@@ -22,7 +22,7 @@ use haven_memory::{
     INTERACTION_CLEARED_EVENT_TYPE, INTERACTION_REQUESTED_EVENT_TYPE,
     INTERACTION_RESOLVED_EVENT_TYPE, SessionEventInput, SessionStore,
 };
-use haven_messaging::inbox::{Envelope, MessageType};
+use haven_messaging::{Envelope, MessageType};
 use serde_json::Value;
 use std::any::Any;
 use std::collections::{HashMap, HashSet, VecDeque};

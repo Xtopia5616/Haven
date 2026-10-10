@@ -10,6 +10,8 @@ Haven 处于测试阶段。数据库 schema、`config.toml` 与内部 IPC 契约
 
 schema v39 仅接受事实提取 marker 的当前完整格式：旧 boolean、缺 retry metadata 的短格式和 summary value-only marker 都不再解析；`CacheDiagnostics` 也要求当前完整 metadata shape。升级前必须按下文删除数据库。`MediaProbe` 使用 `media_kind` / `mime_type` Serde key，不接受旧 `media_type` key；它不属于持久表或当前 IPC DTO。MCP `inputSchema` 和 LLM provider wire 字段仍按当前外部协议解析，不属于 Haven 历史数据兼容。
 
+跨 session 消息 inbox 只接受规范 `ses-{uuid32}` 身份及规范 `msg-{uuid32}` envelope id。旧 agent-name registry 或含非规范身份的 JSONL 不迁移：遇到旧 registry 时消息操作会报错，旧消息行会从当前读取、领取和回复匹配中忽略。升级时如需继续使用 Messaging，按下方“仅重置消息收件箱”删除 `inbox/`；这会清除 peer registry、未处理消息与消息 archive，不删除 SQLite transcript、会话或记忆。
+
 ## 当前配置契约
 
 `config.toml` 只接受当前配置结构，不执行旧字段搬迁、旧名称映射、凭据导入或静默兼容。配置表启用未知字段拒绝；当前结构允许缺省的字段仍使用安全默认值。本版本将 `context_limits.cut_off_retries` 改为 `incomplete_tool_args_retries`，将后台/终态 Job 限制字段重命名为 ToolRun 字段，并删除 `empty_response_max_retries` 与 `empty_response_retry_delay_ms`；含这些旧字段的配置会导致整份配置解析失败。工具根名从 `actions` 改为 `tool_runs`，旧名称下的权限 key 不迁移。`llm.models[]` 中绑定连接的字段现为 `provider_name`；原 `provider` 字段不再接受，含旧字段的配置会导致整份配置解析失败。Session 步数预算配置现为 `[session].max_steps_per_run` 与 `[session].max_steps_per_session`；旧 `max_steps` / `session_max_steps` 不接受，遇到旧 key 时整份配置解析失败；如需保留预算数值，先手动将两项改为新 key，否则重建配置。其它旧字段（例如 `[memory].history_retention_days`、`llm.balanced_model`、旧安全策略字段和已删除的顶层 `[audio]`）也会导致整份配置解析失败。
@@ -46,6 +48,13 @@ Windows 的唯一数据根目录是 `%APPDATA%\haven`。其中包括：
 2. 如需检查旧配置，先在 `%APPDATA%\haven` 之外复制 `config.toml`；旧文件或自动备份可能包含明文密钥，必须妥善保管。
 3. 删除 `%APPDATA%\haven\config.toml`（非 Windows 开发环境为 `~/.local/share/haven/config.toml`）。
 4. 重新启动 Haven，再配置模型、OCR 与 MCP 凭据。schema v39 版本升级还需按下方说明删除数据库。
+
+### 仅重置消息收件箱
+
+1. 完全退出 Haven，并确认没有 `Haven.exe` 进程仍在运行。
+2. 如需保留待处理消息或 archive，先在 `%APPDATA%\haven` 之外备份 `inbox/`；内容可能包含会话消息。
+3. 删除 `%APPDATA%\haven\inbox`（非 Windows 开发环境为 `~/.local/share/haven/inbox`）。
+4. 重新启动 Haven；Messaging 会按规范 session ID 重建 registry 和 mailbox。SQLite transcript 不受影响。
 
 ### 完整重置数据根目录
 

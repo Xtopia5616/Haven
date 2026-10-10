@@ -11,54 +11,66 @@ use std::time::Duration;
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 
-use haven_common::types::is_canonical_id;
+use crate::contract::{
+    validate_message_batch, validate_message_envelope, validate_message_id, validate_session_id,
+};
+use crate::inbox::{AgentInfo, Envelope, InboxBus, MessageType, SendOutcome};
 
-use crate::inbox::{AgentInfo, Envelope, InboxBus, MessageType, SendOutcome, validate_agent_name};
-
-/// Transport port used by [`MessagingService`].
-///
-/// `InboxBus` implements this port for the cross-process JSONL adapter.
-/// In-process `SessionActor` delivery is exposed through [`SessionMailbox`];
-/// the claim/complete contract remains above both adapters.
-pub trait MessageTransport: std::fmt::Debug + Send + Sync {
-    fn subscribe(&self) -> watch::Receiver<u64>;
-    fn register(&self, name: &str, capabilities: &[String]) -> anyhow::Result<()>;
-    fn register_with_title(
-        &self,
-        name: &str,
-        capabilities: &[String],
-        title: Option<&str>,
-    ) -> anyhow::Result<()>;
-    fn register_with_profile(
-        &self,
-        name: &str,
-        capabilities: &[String],
-        title: Option<&str>,
-        role: Option<&str>,
-        parent: Option<&str>,
-    ) -> anyhow::Result<()>;
-    fn unregister(&self, name: &str) -> anyhow::Result<()>;
-    fn mark_offline(&self, name: &str) -> anyhow::Result<()>;
-    fn list_agents(&self) -> anyhow::Result<Vec<AgentInfo>>;
-    fn list_children(&self, parent: &str) -> anyhow::Result<Vec<AgentInfo>>;
-    fn list_descendants(&self, parent: &str) -> anyhow::Result<Vec<String>>;
-    fn deliver(&self, to: &str, envelope: &Envelope) -> anyhow::Result<SendOutcome>;
-    fn claim(&self, recipient: &str) -> anyhow::Result<Vec<Envelope>>;
-    /// Best-effort claim for background polling. `None` means the transport
-    /// is busy and the caller should retry later; the normal `claim` path may
-    /// wait for the transport lock.
-    fn try_claim(&self, recipient: &str) -> anyhow::Result<Option<Vec<Envelope>>>;
-    fn ack(&self, recipient: &str, ids: &[String]) -> anyhow::Result<()>;
-    fn last_received(&self, name: &str) -> anyhow::Result<Option<Envelope>>;
-    fn find_message(&self, name: &str, id: &str) -> anyhow::Result<Option<Envelope>>;
-    fn take_matching_replies(
-        &self,
-        name: &str,
-        in_reply_to: &str,
-        expected_from: &str,
-    ) -> anyhow::Result<Vec<Envelope>>;
-    fn history(&self, name: &str, limit: usize) -> anyhow::Result<Vec<Envelope>>;
+macro_rules! define_message_transport {
+    ($visibility:vis) => {
+        /// Transport port used internally by [`MessagingService`].
+        ///
+        /// `InboxBus` implements this port for the cross-process JSONL adapter.
+        /// In-process `SessionActor` delivery is exposed through [`SessionMailbox`];
+        /// the claim/complete contract remains above both adapters. This port is
+        /// available to other crates only through the non-default test-support
+        /// feature; production callers construct the service through its facade.
+        $visibility trait MessageTransport: std::fmt::Debug + Send + Sync {
+            fn subscribe(&self) -> watch::Receiver<u64>;
+            fn register(&self, name: &str, capabilities: &[String]) -> anyhow::Result<()>;
+            fn register_with_title(
+                &self,
+                name: &str,
+                capabilities: &[String],
+                title: Option<&str>,
+            ) -> anyhow::Result<()>;
+            fn register_with_profile(
+                &self,
+                name: &str,
+                capabilities: &[String],
+                title: Option<&str>,
+                role: Option<&str>,
+                parent: Option<&str>,
+            ) -> anyhow::Result<()>;
+            fn unregister(&self, name: &str) -> anyhow::Result<()>;
+            fn mark_offline(&self, name: &str) -> anyhow::Result<()>;
+            fn list_agents(&self) -> anyhow::Result<Vec<AgentInfo>>;
+            fn list_children(&self, parent: &str) -> anyhow::Result<Vec<AgentInfo>>;
+            fn list_descendants(&self, parent: &str) -> anyhow::Result<Vec<String>>;
+            fn deliver(&self, to: &str, envelope: &Envelope) -> anyhow::Result<SendOutcome>;
+            fn claim(&self, recipient: &str) -> anyhow::Result<Vec<Envelope>>;
+            /// Best-effort claim for background polling. `None` means the transport
+            /// is busy and the caller should retry later; the normal `claim` path may
+            /// wait for the transport lock.
+            fn try_claim(&self, recipient: &str) -> anyhow::Result<Option<Vec<Envelope>>>;
+            fn ack(&self, recipient: &str, ids: &[String]) -> anyhow::Result<()>;
+            fn last_received(&self, name: &str) -> anyhow::Result<Option<Envelope>>;
+            fn find_message(&self, name: &str, id: &str) -> anyhow::Result<Option<Envelope>>;
+            fn take_matching_replies(
+                &self,
+                name: &str,
+                in_reply_to: &str,
+                expected_from: &str,
+            ) -> anyhow::Result<Vec<Envelope>>;
+            fn history(&self, name: &str, limit: usize) -> anyhow::Result<Vec<Envelope>>;
+        }
+    };
 }
+
+#[cfg(feature = "test-support")]
+define_message_transport!(pub);
+#[cfg(not(feature = "test-support"))]
+define_message_transport!(pub(crate));
 
 impl MessageTransport for InboxBus {
     fn subscribe(&self) -> watch::Receiver<u64> {
@@ -145,6 +157,13 @@ impl MessageTransport for InboxBus {
     fn history(&self, name: &str, limit: usize) -> anyhow::Result<Vec<Envelope>> {
         InboxBus::history(self, name, limit)
     }
+}
+
+/// Create the JSONL adapter over an isolated directory for cross-crate tests.
+/// The concrete adapter stays private to `haven-messaging` in production.
+#[cfg(feature = "test-support")]
+pub fn file_transport_for_test(root: impl Into<std::path::PathBuf>) -> Arc<dyn MessageTransport> {
+    Arc::new(InboxBus::new(root))
 }
 
 /// In-process mailbox for sessions owned by the current Haven process.
@@ -263,13 +282,20 @@ impl std::fmt::Debug for MessagingService {
 }
 
 impl MessagingService {
-    /// Build a service over a transport adapter.
-    pub fn new(transport: Arc<dyn MessageTransport>) -> Self {
+    fn new(transport: Arc<dyn MessageTransport>) -> Self {
         Self {
             transport,
             mailbox: Arc::new(OnceLock::new()),
             runtime: Arc::new(OnceLock::new()),
         }
+    }
+
+    /// Build a service over an explicitly supplied transport for integration
+    /// tests. Production code uses [`Self::default_root`] or
+    /// [`Self::with_session_mailbox`].
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn new_for_test(transport: Arc<dyn MessageTransport>) -> Self {
+        Self::new(transport)
     }
 
     /// Build the desktop service over Haven's shared cross-process inbox.
@@ -317,6 +343,7 @@ impl MessagingService {
     }
 
     pub fn register(&self, name: &str, capabilities: &[String]) -> anyhow::Result<()> {
+        validate_session_id(name)?;
         self.transport.register(name, capabilities)
     }
 
@@ -326,6 +353,7 @@ impl MessagingService {
         capabilities: &[String],
         title: Option<&str>,
     ) -> anyhow::Result<()> {
+        validate_session_id(name)?;
         self.transport
             .register_with_title(name, capabilities, title)
     }
@@ -338,11 +366,16 @@ impl MessagingService {
         role: Option<&str>,
         parent: Option<&str>,
     ) -> anyhow::Result<()> {
+        validate_session_id(name)?;
+        if let Some(parent) = parent {
+            validate_session_id(parent)?;
+        }
         self.transport
             .register_with_profile(name, capabilities, title, role, parent)
     }
 
     pub fn unregister(&self, name: &str) -> anyhow::Result<()> {
+        validate_session_id(name)?;
         self.transport.unregister(name)
     }
 
@@ -350,19 +383,40 @@ impl MessagingService {
     /// the parent link after a child finishes lets a parent perform a final
     /// lifecycle lookup without racing asynchronous registry cleanup.
     pub fn mark_offline(&self, name: &str) -> anyhow::Result<()> {
+        validate_session_id(name)?;
         self.transport.mark_offline(name)
     }
 
     pub fn list_agents(&self) -> anyhow::Result<Vec<AgentInfo>> {
-        self.transport.list_agents()
+        let agents = self.transport.list_agents()?;
+        for agent in &agents {
+            validate_session_id(&agent.name)?;
+            if let Some(parent) = agent.parent.as_deref() {
+                validate_session_id(parent)?;
+            }
+        }
+        Ok(agents)
     }
 
     pub fn list_children(&self, parent: &str) -> anyhow::Result<Vec<AgentInfo>> {
-        self.transport.list_children(parent)
+        validate_session_id(parent)?;
+        let children = self.transport.list_children(parent)?;
+        for child in &children {
+            validate_session_id(&child.name)?;
+            if child.parent.as_deref() != Some(parent) {
+                anyhow::bail!("child session result has a mismatched parent_session_id");
+            }
+        }
+        Ok(children)
     }
 
     pub fn list_descendants(&self, parent: &str) -> anyhow::Result<Vec<String>> {
-        self.transport.list_descendants(parent)
+        validate_session_id(parent)?;
+        let descendants = self.transport.list_descendants(parent)?;
+        for session_id in &descendants {
+            validate_session_id(session_id)?;
+        }
+        Ok(descendants)
     }
 
     /// Deliver one already-constructed envelope through the selected
@@ -390,8 +444,8 @@ impl MessagingService {
     pub fn deliver_system_notice(&self, from: &str, to: &str, text: &str) -> anyhow::Result<()> {
         // Validate the externally supplied addresses before constructing the
         // system envelope.
-        validate_agent_name(from)?;
-        validate_agent_name(to)?;
+        validate_session_id(from)?;
+        validate_session_id(to)?;
         let mut envelope = Envelope::new(from, to, text);
         envelope.r#type = MessageType::System;
         match self.send(envelope) {
@@ -407,7 +461,7 @@ impl MessagingService {
     /// delivery lease: dropping it leaves the processing file intact and the
     /// next claim redelivers the same stable envelope ids.
     pub fn claim(&self, recipient: &str) -> anyhow::Result<MessageClaim> {
-        validate_agent_name(recipient)?;
+        validate_session_id(recipient)?;
         let envelopes = if let Some(mailbox) = self.mailbox() {
             match mailbox.claim(recipient)? {
                 Some(envelopes) => envelopes,
@@ -416,6 +470,7 @@ impl MessagingService {
         } else {
             self.transport.claim(recipient)?
         };
+        validate_message_batch(recipient, &envelopes)?;
         Ok(MessageClaim {
             service: self.clone(),
             recipient: recipient.to_string(),
@@ -428,7 +483,7 @@ impl MessagingService {
     /// A `None` result is an ordinary busy/no-op outcome, not a delivery
     /// failure.
     pub fn try_claim(&self, recipient: &str) -> anyhow::Result<Option<MessageClaim>> {
-        validate_agent_name(recipient)?;
+        validate_session_id(recipient)?;
         let envelopes = if let Some(mailbox) = self.mailbox() {
             match mailbox.try_claim(recipient)? {
                 Some(envelopes) => Some(envelopes),
@@ -437,6 +492,9 @@ impl MessagingService {
         } else {
             self.transport.try_claim(recipient)?
         };
+        if let Some(envelopes) = envelopes.as_deref() {
+            validate_message_batch(recipient, envelopes)?;
+        }
         Ok(envelopes.map(|envelopes| MessageClaim {
             service: self.clone(),
             recipient: recipient.to_string(),
@@ -445,21 +503,37 @@ impl MessagingService {
     }
 
     pub fn last_received(&self, name: &str) -> anyhow::Result<Option<Envelope>> {
-        if let Some(mailbox) = self.mailbox()
+        validate_session_id(name)?;
+        let result = if let Some(mailbox) = self.mailbox()
             && let Some(result) = mailbox.last_received(name)?
         {
-            return Ok(result);
+            result
+        } else {
+            self.transport.last_received(name)?
+        };
+        if let Some(envelope) = result.as_ref() {
+            validate_message_envelope(name, envelope)?;
         }
-        self.transport.last_received(name)
+        Ok(result)
     }
 
     pub fn find_message(&self, name: &str, id: &str) -> anyhow::Result<Option<Envelope>> {
-        if let Some(mailbox) = self.mailbox()
+        validate_session_id(name)?;
+        validate_message_id(id, "message_id")?;
+        let result = if let Some(mailbox) = self.mailbox()
             && let Some(result) = mailbox.find_message(name, id)?
         {
-            return Ok(result);
+            result
+        } else {
+            self.transport.find_message(name, id)?
+        };
+        if let Some(envelope) = result.as_ref() {
+            validate_message_envelope(name, envelope)?;
+            if envelope.id != id {
+                anyhow::bail!("message lookup returned a different message_id");
+            }
         }
-        self.transport.find_message(name, id)
+        Ok(result)
     }
 
     /// Selectively consume a reply for an outstanding request. This is a
@@ -471,6 +545,9 @@ impl MessagingService {
         in_reply_to: &str,
         expected_from: &str,
     ) -> anyhow::Result<Vec<Envelope>> {
+        validate_session_id(name)?;
+        validate_message_id(in_reply_to, "in_reply_to")?;
+        validate_session_id(expected_from)?;
         let replies = if let Some(mailbox) = self.mailbox()
             && let Some(result) = mailbox.take_matching_replies(name, in_reply_to, expected_from)?
         {
@@ -479,6 +556,7 @@ impl MessagingService {
             self.transport
                 .take_matching_replies(name, in_reply_to, expected_from)?
         };
+        validate_message_batch(name, &replies)?;
         if !replies.is_empty() {
             let _ = self.send_receipts(name, &replies);
         }
@@ -486,12 +564,16 @@ impl MessagingService {
     }
 
     pub fn history(&self, name: &str, limit: usize) -> anyhow::Result<Vec<Envelope>> {
-        if let Some(mailbox) = self.mailbox()
+        validate_session_id(name)?;
+        let entries = if let Some(mailbox) = self.mailbox()
             && let Some(result) = mailbox.history(name, limit)?
         {
-            return Ok(result);
-        }
-        self.transport.history(name, limit)
+            result
+        } else {
+            self.transport.history(name, limit)?
+        };
+        validate_message_batch(name, &entries)?;
+        Ok(entries)
     }
 
     /// Construct and deliver a request through the same validated delivery
@@ -526,9 +608,7 @@ impl MessagingService {
         payload: Option<serde_json::Value>,
         expires_at: Option<String>,
     ) -> anyhow::Result<SentMessage> {
-        if !is_canonical_id(in_reply_to, "msg") {
-            anyhow::bail!("in_reply_to must be a canonical message id");
-        }
+        validate_message_id(in_reply_to, "in_reply_to")?;
         let mut envelope = Envelope::new(from, to, text);
         envelope.r#type = MessageType::Reply;
         envelope.reply_address = Some(from.to_string());
@@ -541,9 +621,7 @@ impl MessagingService {
 
     /// Construct and deliver a read receipt through the same message path.
     pub fn receipt(&self, from: &str, to: &str, in_reply_to: &str) -> anyhow::Result<SentMessage> {
-        if !is_canonical_id(in_reply_to, "msg") {
-            anyhow::bail!("receipt in_reply_to must be a canonical message id");
-        }
+        validate_message_id(in_reply_to, "receipt in_reply_to")?;
         let mut envelope = Envelope::new(from, to, "已读");
         envelope.r#type = MessageType::Receipt;
         envelope.in_reply_to = Some(in_reply_to.to_string());
@@ -562,11 +640,9 @@ impl MessagingService {
         timeout: Duration,
         cancel: &CancellationToken,
     ) -> anyhow::Result<Option<Envelope>> {
-        validate_agent_name(recipient)?;
-        validate_agent_name(expected_from)?;
-        if !is_canonical_id(request_id, "msg") {
-            anyhow::bail!("request id must be a canonical message id");
-        }
+        validate_session_id(recipient)?;
+        validate_session_id(expected_from)?;
+        validate_message_id(request_id, "request_id")?;
         let deadline = tokio::time::Instant::now() + timeout;
         let mut wake = self.subscribe();
         loop {
@@ -605,27 +681,41 @@ impl MessagingService {
         &self,
         request: AgentSpawnRequest,
     ) -> anyhow::Result<AgentSpawnResult> {
-        self.runtime()
+        validate_session_id(&request.parent_session_id)?;
+        let result = self
+            .runtime()
             .ok_or_else(|| anyhow::anyhow!("agent spawn requires the session runtime"))?
             .spawn_peer_session(request)
-            .await
+            .await?;
+        validate_session_id(&result.session_id)?;
+        Ok(result)
     }
 
     pub async fn control_peer_session(
         &self,
         request: AgentControlRequest,
     ) -> anyhow::Result<AgentControlResult> {
-        self.runtime()
+        validate_session_id(&request.requester_session_id)?;
+        validate_session_id(&request.target_session_id)?;
+        let expected_session_id = request.target_session_id.clone();
+        let result = self
+            .runtime()
             .ok_or_else(|| {
                 anyhow::anyhow!("agent lifecycle operation requires the session runtime")
             })?
             .control_peer_session(request)
-            .await
+            .await?;
+        validate_session_id(&result.session_id)?;
+        if result.session_id != expected_session_id {
+            anyhow::bail!("agent control result session_id does not match its target");
+        }
+        Ok(result)
     }
 
     fn ack(&self, recipient: &str, ids: &[String]) -> anyhow::Result<()> {
-        if ids.iter().any(|id| !is_canonical_id(id, "msg")) {
-            anyhow::bail!("ack message ids must be canonical message ids");
+        validate_session_id(recipient)?;
+        for id in ids {
+            validate_message_id(id, "message_id")?;
         }
         if let Some(mailbox) = self.mailbox()
             && mailbox.ack(recipient, ids)?.is_some()
@@ -734,62 +824,6 @@ impl MessageClaim {
     }
 }
 
-fn validate_message_envelope(to: &str, envelope: &Envelope) -> anyhow::Result<()> {
-    validate_agent_name(to)?;
-    validate_agent_name(&envelope.from)?;
-    if envelope.to != to {
-        anyhow::bail!(
-            "message recipient mismatch: envelope targets '{}' but delivery targets '{}'",
-            envelope.to,
-            to
-        );
-    }
-    if !is_canonical_id(&envelope.id, "msg") {
-        anyhow::bail!(
-            "invalid message id '{}': expected msg-{{uuid32}}",
-            envelope.id
-        );
-    }
-    if envelope.text.trim().is_empty() {
-        anyhow::bail!("message text must not be empty");
-    }
-    if let Some(reply_address) = &envelope.reply_address {
-        validate_agent_name(reply_address)?;
-    }
-    if let Some(in_reply_to) = &envelope.in_reply_to
-        && !is_canonical_id(in_reply_to, "msg")
-    {
-        anyhow::bail!("in_reply_to must be a canonical message id");
-    }
-    chrono::DateTime::parse_from_rfc3339(&envelope.created_at)
-        .map_err(|error| anyhow::anyhow!("invalid message created_at: {error}"))?;
-    if let Some(expires_at) = &envelope.expires_at {
-        chrono::DateTime::parse_from_rfc3339(expires_at)
-            .map_err(|error| anyhow::anyhow!("invalid message expires_at: {error}"))?;
-    }
-    if envelope.r#type == MessageType::Receipt {
-        let Some(in_reply_to) = envelope.in_reply_to.as_deref() else {
-            anyhow::bail!("receipt messages require in_reply_to");
-        };
-        if !is_canonical_id(in_reply_to, "msg") {
-            anyhow::bail!("receipt in_reply_to must be a canonical message id");
-        }
-    }
-    if envelope.r#type == MessageType::Reply && envelope.in_reply_to.is_none() {
-        anyhow::bail!("reply messages require in_reply_to");
-    }
-    Ok(())
-}
-
-/// Shared expiry policy for every message adapter and mailbox.
-pub fn is_expired(envelope: &Envelope) -> bool {
-    envelope.expires_at.as_deref().is_some_and(|expires_at| {
-        chrono::DateTime::parse_from_rfc3339(expires_at)
-            .map(|parsed| parsed <= chrono::Utc::now())
-            .unwrap_or(false)
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -803,45 +837,92 @@ mod tests {
     #[test]
     fn claim_is_redeliverable_until_complete() {
         let (_dir, service) = service();
-        service.register("ses-a", &[]).unwrap();
-        service.register("ses-b", &[]).unwrap();
-        let envelope = Envelope::new("ses-a", "ses-b", "durable");
-        service.deliver("ses-b", &envelope).unwrap();
+        service
+            .register("ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", &[])
+            .unwrap();
+        service
+            .register("ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", &[])
+            .unwrap();
+        let envelope = Envelope::new(
+            "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "durable",
+        );
+        service
+            .deliver("ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", &envelope)
+            .unwrap();
 
-        let claim = service.claim("ses-b").unwrap();
+        let claim = service
+            .claim("ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
+            .unwrap();
         assert_eq!(claim.envelopes()[0].id, envelope.id);
         assert_eq!(claim.envelopes()[0].delivery_attempt, 1);
         claim.retry();
-        let retry = service.claim("ses-b").unwrap();
+        let retry = service
+            .claim("ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
+            .unwrap();
         assert_eq!(retry.envelopes()[0].id, envelope.id);
         assert_eq!(retry.envelopes()[0].delivery_attempt, 2);
         retry.retry();
 
-        let claim = service.claim("ses-b").unwrap();
+        let claim = service
+            .claim("ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
+            .unwrap();
         claim.complete().unwrap();
-        assert!(service.claim("ses-b").unwrap().is_empty());
+        assert!(
+            service
+                .claim("ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]
     fn completing_a_claim_sends_validated_receipts_without_receipt_loops() {
         let (_dir, service) = service();
-        service.register("ses-a", &[]).unwrap();
-        service.register("ses-b", &[]).unwrap();
-        let first = Envelope::new("ses-a", "ses-b", "第一封");
-        let second = Envelope::new("ses-a", "ses-b", "第二封");
-        service.deliver("ses-b", &first).unwrap();
-        service.deliver("ses-b", &second).unwrap();
+        service
+            .register("ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", &[])
+            .unwrap();
+        service
+            .register("ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", &[])
+            .unwrap();
+        let first = Envelope::new(
+            "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "第一封",
+        );
+        let second = Envelope::new(
+            "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "第二封",
+        );
+        service
+            .deliver("ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", &first)
+            .unwrap();
+        service
+            .deliver("ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", &second)
+            .unwrap();
 
-        let outcomes = service.claim("ses-b").unwrap().complete().unwrap();
+        let outcomes = service
+            .claim("ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
+            .unwrap()
+            .complete()
+            .unwrap();
         assert_eq!(outcomes.len(), 2, "one receipt per read message");
-        assert!(outcomes.iter().all(|outcome| outcome.to == "ses-a"));
+        assert!(
+            outcomes
+                .iter()
+                .all(|outcome| outcome.to == "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+        );
 
-        let receipts = service.claim("ses-a").unwrap();
+        let receipts = service
+            .claim("ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+            .unwrap();
         assert_eq!(receipts.envelopes().len(), 2);
         assert!(receipts.envelopes().iter().all(|envelope| {
             envelope.r#type == MessageType::Receipt
-                && envelope.from == "ses-b"
-                && envelope.reply_address.as_deref() == Some("ses-b")
+                && envelope.from == "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                && envelope.reply_address.as_deref() == Some("ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
         }));
         assert!(
             receipts
@@ -857,11 +938,17 @@ mod tests {
         );
         assert!(receipts.complete().unwrap().is_empty(), "no receipt loops");
 
-        let self_message = Envelope::new("ses-b", "ses-b", "给自己");
-        service.deliver("ses-b", &self_message).unwrap();
+        let self_message = Envelope::new(
+            "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "给自己",
+        );
+        service
+            .deliver("ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", &self_message)
+            .unwrap();
         assert!(
             service
-                .claim("ses-b")
+                .claim("ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
                 .unwrap()
                 .complete()
                 .unwrap()
@@ -872,34 +959,77 @@ mod tests {
     #[test]
     fn rejects_unstable_identity_and_routing_mismatch() {
         let (_dir, service) = service();
-        service.register("ses-a", &[]).unwrap();
-        service.register("ses-b", &[]).unwrap();
+        service
+            .register("ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", &[])
+            .unwrap();
+        service
+            .register("ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", &[])
+            .unwrap();
 
-        let mut envelope = Envelope::new("ses-a", "ses-b", "hello");
+        let mut envelope = Envelope::new(
+            "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "hello",
+        );
         envelope.id = "invalid-id".into();
-        let error = service.deliver("ses-b", &envelope).unwrap_err();
-        assert!(error.to_string().contains("invalid message id"));
+        let error = service
+            .deliver("ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", &envelope)
+            .unwrap_err();
+        assert!(error.to_string().contains("canonical message id"));
 
-        let envelope = Envelope::new("ses-a", "ses-b", "hello");
-        let error = service.deliver("ses-a", &envelope).unwrap_err();
+        let envelope = Envelope::new(
+            "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "hello",
+        );
+        let error = service
+            .deliver("ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", &envelope)
+            .unwrap_err();
         assert!(error.to_string().contains("recipient mismatch"));
 
-        let mut envelope = Envelope::new("ses-a", "ses-b", "hello");
+        let mut envelope = Envelope::new(
+            "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "hello",
+        );
         envelope.in_reply_to = Some("invalid-id".into());
-        let error = service.deliver("ses-b", &envelope).unwrap_err();
+        let error = service
+            .deliver("ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", &envelope)
+            .unwrap_err();
         assert!(error.to_string().contains("in_reply_to"));
     }
 
     #[test]
     fn expired_messages_are_not_claimed_but_remain_in_history() {
         let (_dir, service) = service();
-        service.register("ses-a", &[]).unwrap();
-        service.register("ses-b", &[]).unwrap();
-        let mut envelope = Envelope::new("ses-a", "ses-b", "expired");
+        service
+            .register("ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", &[])
+            .unwrap();
+        service
+            .register("ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", &[])
+            .unwrap();
+        let mut envelope = Envelope::new(
+            "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "expired",
+        );
         envelope.expires_at = Some("2000-01-01T00:00:00Z".into());
-        service.deliver("ses-b", &envelope).unwrap();
+        service
+            .deliver("ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", &envelope)
+            .unwrap();
 
-        assert!(service.claim("ses-b").unwrap().is_empty());
-        assert_eq!(service.history("ses-b", 10).unwrap()[0].id, envelope.id);
+        assert!(
+            service
+                .claim("ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            service
+                .history("ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", 10)
+                .unwrap()[0]
+                .id,
+            envelope.id
+        );
     }
 }

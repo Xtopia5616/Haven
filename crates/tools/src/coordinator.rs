@@ -402,10 +402,9 @@ mod tests {
     use super::*;
     use haven_common::config::{McpServerConfig, RouterConfig};
     use haven_memory::recall::{MemoryQuery, MemoryRecall};
-    use haven_messaging::inbox::{Envelope, SendOutcome};
-    use haven_messaging::messaging_service::{
-        AgentControlRequest, AgentControlResult, AgentSpawnRequest, AgentSpawnResult,
-        MessagingRuntime, SessionMailbox,
+    use haven_messaging::{
+        AgentControlRequest, AgentControlResult, AgentSpawnRequest, AgentSpawnResult, Envelope,
+        MessagingRuntime, SendOutcome, SessionMailbox,
     };
 
     struct UnusedMailbox;

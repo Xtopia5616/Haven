@@ -3,11 +3,18 @@
 //! Agent supplies the in-process session mailbox/runtime adapter, while Tools
 //! exposes the model-facing messaging tool over [`MessagingService`].
 
-pub mod inbox;
-pub mod messaging_service;
+mod contract;
+mod inbox;
+mod messaging_service;
+
+pub use contract::is_expired;
+pub use inbox::{AgentInfo, AgentStatus, Envelope, MessageType, SendOutcome};
 
 pub use messaging_service::{
     AgentControlOperation, AgentControlRequest, AgentControlResult, AgentSpawnRequest,
-    AgentSpawnResult, MessageClaim, MessageTransport, MessagingRuntime, MessagingService,
-    SentMessage, SessionMailbox, is_expired,
+    AgentSpawnResult, MessageClaim, MessagingRuntime, MessagingService, SentMessage,
+    SessionMailbox,
 };
+
+#[cfg(feature = "test-support")]
+pub use messaging_service::{MessageTransport, file_transport_for_test};

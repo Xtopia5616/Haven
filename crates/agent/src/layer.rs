@@ -1547,9 +1547,9 @@ mod tests {
         let events = Arc::new(EventCollector::default());
         agent.events.set_emitter(events.clone());
         let inbox_dir = tempfile::tempdir().unwrap();
-        let messaging = haven_messaging::MessagingService::new(Arc::new(
-            haven_messaging::inbox::InboxBus::new(inbox_dir.path()),
-        ));
+        let messaging = haven_messaging::MessagingService::new_for_test(
+            haven_messaging::file_transport_for_test(inbox_dir.path()),
+        );
         let scenarios = [
             ("explicit-success", Some("Explicit title"), false),
             ("explicit-failure", Some("Rejected title"), true),

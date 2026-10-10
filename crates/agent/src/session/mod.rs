@@ -921,33 +921,27 @@ impl haven_messaging::SessionMailbox for SessionSupervisor {
     fn deliver(
         &self,
         to: &str,
-        envelope: &haven_messaging::inbox::Envelope,
-    ) -> anyhow::Result<Option<haven_messaging::inbox::SendOutcome>> {
+        envelope: &haven_messaging::Envelope,
+    ) -> anyhow::Result<Option<haven_messaging::SendOutcome>> {
         let actor = self.actors.blocking_lock().get(to).cloned();
         let Some(actor) = actor else {
             return Ok(None);
         };
         actor.deliver_message(envelope.clone())?;
         self.message_tx.send_modify(|counter| *counter += 1);
-        Ok(Some(haven_messaging::inbox::SendOutcome {
+        Ok(Some(haven_messaging::SendOutcome {
             to: to.to_string(),
             delivered: true,
-            status: haven_messaging::inbox::AgentStatus::Online,
+            status: haven_messaging::AgentStatus::Online,
         }))
     }
 
-    fn claim(
-        &self,
-        recipient: &str,
-    ) -> anyhow::Result<Option<Vec<haven_messaging::inbox::Envelope>>> {
+    fn claim(&self, recipient: &str) -> anyhow::Result<Option<Vec<haven_messaging::Envelope>>> {
         let actor = self.actors.blocking_lock().get(recipient).cloned();
         Ok(actor.map(|actor| actor.claim_messages()))
     }
 
-    fn try_claim(
-        &self,
-        recipient: &str,
-    ) -> anyhow::Result<Option<Vec<haven_messaging::inbox::Envelope>>> {
+    fn try_claim(&self, recipient: &str) -> anyhow::Result<Option<Vec<haven_messaging::Envelope>>> {
         self.claim(recipient)
     }
 
@@ -963,7 +957,7 @@ impl haven_messaging::SessionMailbox for SessionSupervisor {
     fn last_received(
         &self,
         name: &str,
-    ) -> anyhow::Result<Option<Option<haven_messaging::inbox::Envelope>>> {
+    ) -> anyhow::Result<Option<Option<haven_messaging::Envelope>>> {
         let actor = self.actors.blocking_lock().get(name).cloned();
         Ok(actor.map(|actor| actor.last_received_message()))
     }
@@ -972,7 +966,7 @@ impl haven_messaging::SessionMailbox for SessionSupervisor {
         &self,
         name: &str,
         id: &str,
-    ) -> anyhow::Result<Option<Option<haven_messaging::inbox::Envelope>>> {
+    ) -> anyhow::Result<Option<Option<haven_messaging::Envelope>>> {
         let actor = self.actors.blocking_lock().get(name).cloned();
         Ok(actor.map(|actor| actor.find_message_by_id(id.to_string())))
     }
@@ -982,7 +976,7 @@ impl haven_messaging::SessionMailbox for SessionSupervisor {
         name: &str,
         in_reply_to: &str,
         expected_from: &str,
-    ) -> anyhow::Result<Option<Vec<haven_messaging::inbox::Envelope>>> {
+    ) -> anyhow::Result<Option<Vec<haven_messaging::Envelope>>> {
         let actor = self.actors.blocking_lock().get(name).cloned();
         Ok(actor.map(|actor| {
             actor.take_matching_replies_blocking(in_reply_to.to_string(), expected_from.to_string())
@@ -993,7 +987,7 @@ impl haven_messaging::SessionMailbox for SessionSupervisor {
         &self,
         name: &str,
         limit: usize,
-    ) -> anyhow::Result<Option<Vec<haven_messaging::inbox::Envelope>>> {
+    ) -> anyhow::Result<Option<Vec<haven_messaging::Envelope>>> {
         let actor = self.actors.blocking_lock().get(name).cloned();
         Ok(actor.map(|actor| actor.history_blocking(limit)))
     }
@@ -1002,7 +996,7 @@ impl haven_messaging::SessionMailbox for SessionSupervisor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use haven_messaging::inbox::MessageType;
+    use haven_messaging::MessageType;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU32, Ordering};
 
@@ -2444,7 +2438,7 @@ mod tests {
             .await
             .unwrap();
 
-        let mut expired = haven_messaging::inbox::Envelope::new(&sender.id, &receiver.id, "过期");
+        let mut expired = haven_messaging::Envelope::new(&sender.id, &receiver.id, "过期");
         expired.expires_at = Some("2000-01-01T00:00:00Z".into());
         let expired_id = expired.id.clone();
         {

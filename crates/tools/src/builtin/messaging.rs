@@ -29,15 +29,14 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
 use crate::{OperationIdempotency, Tool, ToolResult};
-#[cfg(test)]
-use haven_messaging::inbox::InboxBus;
-use haven_messaging::inbox::{AgentStatus, Envelope, MessageType, SendOutcome};
-use haven_messaging::messaging_service::{
-    AgentControlOperation, AgentControlRequest, AgentSpawnRequest,
+use haven_messaging::{
+    AgentControlOperation, AgentControlRequest, AgentSpawnRequest, AgentStatus, Envelope,
+    MessageClaim, MessageType, MessagingService, SendOutcome,
 };
 #[cfg(test)]
-use haven_messaging::messaging_service::{AgentControlResult, AgentSpawnResult, MessagingRuntime};
-use haven_messaging::messaging_service::{MessageClaim, MessagingService};
+use haven_messaging::{
+    AgentControlResult, AgentSpawnResult, MessageTransport, MessagingRuntime, SessionMailbox,
+};
 
 /// Max envelope field sizes (defensive caps; the bus is append-only JSONL).
 const MAX_TEXT_BYTES: usize = 16 * 1024;
@@ -1317,13 +1316,11 @@ impl Tool for AgentTool {
 mod tests {
     use super::*;
     use crate::Tool;
-    use haven_messaging::inbox::AgentStatus;
-    use haven_messaging::messaging_service::SessionMailbox;
 
-    fn test_tools() -> (tempfile::TempDir, Arc<InboxBus>, AgentTool) {
+    fn test_tools() -> (tempfile::TempDir, Arc<dyn MessageTransport>, AgentTool) {
         let dir = tempfile::tempdir().unwrap();
-        let bus = Arc::new(InboxBus::new(dir.path()));
-        let service = Arc::new(MessagingService::new(bus.clone()));
+        let bus = haven_messaging::file_transport_for_test(dir.path());
+        let service = Arc::new(MessagingService::new_for_test(bus.clone()));
         let tool = AgentTool::new(service);
         (dir, bus, tool)
     }
@@ -1384,7 +1381,7 @@ mod tests {
                 "unexpected error for {input}: {error}"
             );
             assert!(
-                MessagingService::new(bus.clone())
+                MessagingService::new_for_test(bus.clone())
                     .list_agents()
                     .unwrap()
                     .is_empty(),
@@ -1439,7 +1436,7 @@ mod tests {
     }
 
     struct TestRuntime {
-        bus: Arc<InboxBus>,
+        bus: Arc<dyn MessageTransport>,
     }
 
     #[async_trait]
@@ -1490,8 +1487,8 @@ mod tests {
         }
     }
 
-    fn claim_and_ack(bus: &InboxBus, name: &str) -> Vec<Envelope> {
-        let service = MessagingService::new(Arc::new(bus.clone()));
+    fn claim_and_ack(bus: &Arc<dyn MessageTransport>, name: &str) -> Vec<Envelope> {
+        let service = MessagingService::new_for_test(bus.clone());
         let claim = service.claim(name).unwrap();
         let messages = claim.envelopes().to_vec();
         claim.complete().unwrap();
@@ -1797,7 +1794,7 @@ mod tests {
         // B remains registered but is marked offline.
         bus.register("ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", &[])
             .unwrap();
-        MessagingService::new(bus.clone())
+        MessagingService::new_for_test(bus.clone())
             .mark_offline("ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
             .unwrap();
 
@@ -2458,7 +2455,7 @@ mod tests {
         .unwrap();
         bus.register("ses-dddddddddddddddddddddddddddddddd", &[])
             .unwrap();
-        let service = Arc::new(MessagingService::new(bus.clone()));
+        let service = Arc::new(MessagingService::new_for_test(bus.clone()));
         service
             .bind_runtime(Arc::new(TestRuntime { bus: bus.clone() }))
             .unwrap();
@@ -2604,7 +2601,7 @@ mod tests {
     #[tokio::test]
     async fn agent_spawn_uses_runtime_and_registers_child() {
         let (_dir, bus, _unused) = test_tools();
-        let service = Arc::new(MessagingService::new(bus.clone()));
+        let service = Arc::new(MessagingService::new_for_test(bus.clone()));
         service
             .bind_runtime(Arc::new(TestRuntime { bus: bus.clone() }))
             .unwrap();

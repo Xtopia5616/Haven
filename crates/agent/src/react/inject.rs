@@ -138,7 +138,7 @@ impl ReActEngine {
 #[cfg(test)]
 mod cross_session_format_tests {
     use super::super::context::format_cross_session_inject;
-    use haven_messaging::inbox::{Envelope, MessageType};
+    use haven_messaging::{Envelope, MessageType};
 
     #[test]
     fn formats_id_and_in_reply_to() {
