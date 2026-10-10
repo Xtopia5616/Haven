@@ -1,6 +1,6 @@
 # Haven 命名规范
 
-> 版本: v1.153 | 日期: 2026-10-10
+> 版本: v1.154 | 日期: 2026-10-10
 
 本文档统一 Haven 项目各层的命名规则（变量名、函数名、文件名、crate 名、缩写大小写、跨层边界）。规范以现有代码中的事实模式为基础，新代码必须遵循；存量代码若与规范冲突，逐步迁移对齐。
 
@@ -108,6 +108,8 @@ ReAct 按领域品牌大小写书写：类型与 enum variant 用 `ReAct`（如 
 应用能力可脱离当前 turn 持久运行时统一称为 `ToolRun`；当前源码、配置和 UI 不用退役的 `Job` 名称指代它。Windows `Job Object`、外部供应商异步 job 和 Memory outbox extraction job 各有独立语义，保留这些领域限定名称。
 
 ToolRun completion lease 的 token 标识被 claim 的 ToolRun 或 completion result，不标识领取它的 consumer；跨 Tools runtime 与 ToolRun persistence 共用 `ToolRunLease`。
+
+后台与定时 ToolRun 的终态交付统一使用 Common `ToolRunCompletionPayload`；Memory 在持久化列边界序列化，Tools 的 `ToolRunStatusView` 保持 UI 查询投影 owner，Agent 直接读取具名字段。不要把完成事件 payload 命名为 `status_json`，也不要让 UI status renderer 承担 completion 交付（ADR 0871）。
 
 | 术语 | 含义 | UI 文案 / 代码边界 |
 |---|---|---|

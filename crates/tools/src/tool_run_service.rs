@@ -1,4 +1,4 @@
-use haven_common::ToolRunStatus;
+use haven_common::{ToolRunCompletionPayload, ToolRunStatus};
 use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
@@ -48,8 +48,8 @@ pub use views::{
     ScheduledToolRunView, ToolRunListView, ToolRunStateView, ToolRunStatusView, ToolRunView,
 };
 use views::{
-    list_view_started_at, project_board_tool_run, render_background_status_json,
-    render_status_json, scheduled_lifecycle_payload, scheduled_tool_run_view,
+    list_view_started_at, project_background_completion_payload, project_board_tool_run,
+    project_completion_payload, scheduled_lifecycle_payload, scheduled_tool_run_view,
     tool_run_lifecycle_state,
 };
 
@@ -342,14 +342,14 @@ impl ToolRunService {
                 kind,
                 session_id,
                 status,
-                status_json,
+                payload,
             })) => match kind.as_str() {
                 "background" => Some(ToolRunCompletion::Background(BackgroundToolRunCompletion {
                     tool_run_id,
                     tool_run_result_id,
                     session_id,
                     status,
-                    status_json,
+                    payload,
                 })),
                 "scheduled" => Some(ToolRunCompletion::ScheduledResult(
                     ScheduledToolRunResultCompletion {
@@ -357,7 +357,7 @@ impl ToolRunService {
                         tool_run_result_id,
                         session_id,
                         status,
-                        status_json,
+                        payload,
                     },
                 )),
                 _ => {
@@ -743,78 +743,24 @@ impl ToolRunService {
     /// means another terminal transition already won the durable CAS. A
     /// service without an ToolRun store uses its in-memory transition as the
     /// commit.
-    async fn persist_terminal(
-        &self,
-        tool_run_id: &str,
-        state: &ToolRunState,
-        status_json: &Value,
-    ) -> anyhow::Result<bool> {
+    async fn persist_terminal(&self, payload: &ToolRunCompletionPayload) -> anyhow::Result<bool> {
         let Some(store) = self.tool_run_store.read().await.clone() else {
             return Ok(true);
         };
-        let (output, error, error_reason, log_path, exit_code, finished_at) = match state {
-            ToolRunState::Completed {
-                output,
-                exit_code,
-                log_path,
-                finished_at,
-                ..
-            } => (
-                Some(output.as_str()),
-                None,
-                None,
-                log_path.as_deref(),
-                *exit_code,
-                finished_at.as_str(),
-            ),
-            ToolRunState::Failed {
-                error,
-                error_reason,
-                log_path,
-                exit_code,
-                finished_at,
-                ..
-            } => (
-                None,
-                Some(error.as_str()),
-                Some(error_reason.as_str()),
-                log_path.as_deref(),
-                *exit_code,
-                finished_at.as_str(),
-            ),
-            ToolRunState::Cancelled { finished_at, .. } => {
-                (None, None, None, None, None, finished_at.as_str())
-            }
-            ToolRunState::Running { .. } | ToolRunState::Waiting => {
-                anyhow::bail!("cannot persist non-terminal background ToolRun status")
-            }
-        };
-        let tool_run_id = tool_run_id.to_string();
-        let status = state.status();
-        let output = output.map(str::to_owned);
-        let error = error.map(str::to_owned);
-        let error_reason = error_reason.map(str::to_owned);
-        let log_path = log_path.map(str::to_owned);
-        let finished_at = finished_at.to_string();
-        match status {
+        match payload.status {
             ToolRunStatus::Completed | ToolRunStatus::Failed => {
                 store
-                    .finish_background_tool_run_with_completion(
-                        tool_run_id,
-                        status,
-                        output,
-                        error,
-                        error_reason,
-                        log_path,
-                        exit_code,
-                        finished_at,
-                        status_json.clone(),
-                    )
+                    .finish_background_tool_run_with_completion(payload.clone())
                     .await
             }
             ToolRunStatus::Cancelled => {
                 store
-                    .cancel_background_tool_run(tool_run_id, finished_at)
+                    .cancel_background_tool_run(
+                        payload.tool_run_id.clone(),
+                        payload.finished_at.clone().ok_or_else(|| {
+                            anyhow::anyhow!("cancelled ToolRun completion requires finished_at")
+                        })?,
+                    )
                     .await
             }
             ToolRunStatus::Waiting | ToolRunStatus::Running => {
@@ -856,12 +802,9 @@ impl ToolRunService {
             return Ok(false);
         };
 
-        let status_json =
-            render_background_status_json(tool_run_id, state, source_step_id.as_deref());
-        match self
-            .persist_terminal(tool_run_id, state, &status_json)
-            .await
-        {
+        let payload =
+            project_background_completion_payload(tool_run_id, state, source_step_id.as_deref());
+        match self.persist_terminal(&payload).await {
             Ok(true) => {
                 {
                     let mut tool_runs = self.tool_runs.write().await;
@@ -1063,8 +1006,8 @@ impl ToolRunService {
             ToolRunState::Cancelled { .. } => ToolRunStatus::Cancelled,
             ToolRunState::Running { .. } | ToolRunState::Waiting => return,
         };
-        let status_json =
-            render_background_status_json(tool_run_id, &state, source_step_id.as_deref());
+        let payload =
+            project_background_completion_payload(tool_run_id, &state, source_step_id.as_deref());
         if let Err(error) =
             self.completion_bus
                 .send(ToolRunCompletion::Background(BackgroundToolRunCompletion {
@@ -1072,7 +1015,7 @@ impl ToolRunService {
                     tool_run_result_id: tool_run_id.to_string(),
                     session_id,
                     status,
-                    status_json,
+                    payload,
                 }))
         {
             tracing::debug!(

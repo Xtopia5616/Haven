@@ -1,4 +1,5 @@
 use super::*;
+use haven_common::ToolRunCompletionPayload;
 
 /// Safe, typed projection of one in-memory task board row.
 ///
@@ -579,23 +580,80 @@ pub(super) fn tool_run_lifecycle_state(state: &ToolRunState) -> ToolRunLifecycle
     }
 }
 
-/// Render the terminal status JSON for a ToolRun (mirrors `status()` output for
-/// completed/failed/cancelled states), used in completion notifications.
-pub(super) fn render_status_json(tool_run_id: &str, state: &ToolRunState) -> Value {
-    ToolRunStateView::from_runtime_state(state).status_json(tool_run_id)
+/// Project terminal runtime fields into the completion delivery contract.
+/// The UI status projection has its own field policy in `ToolRunStatusView`.
+pub(super) fn project_completion_payload(
+    tool_run_id: &str,
+    state: &ToolRunState,
+) -> ToolRunCompletionPayload {
+    let mut payload = ToolRunCompletionPayload {
+        tool_run_id: tool_run_id.to_owned(),
+        status: state.status(),
+        status_projection_kind: None,
+        output: None,
+        error: None,
+        error_reason: None,
+        log_path: None,
+        exit_code: None,
+        started_at: None,
+        finished_at: None,
+        source_step_id: None,
+        truncated: false,
+    };
+    match state {
+        ToolRunState::Completed {
+            output,
+            exit_code,
+            truncated,
+            log_path,
+            started_at,
+            finished_at,
+        } => {
+            payload.output = Some(output.clone());
+            payload.exit_code = *exit_code;
+            payload.truncated = *truncated;
+            payload.log_path = log_path.clone();
+            payload.started_at = Some(started_at.clone());
+            payload.finished_at = Some(finished_at.clone());
+        }
+        ToolRunState::Failed {
+            error,
+            error_reason,
+            log_path,
+            exit_code,
+            started_at,
+            finished_at,
+        } => {
+            payload.error = Some(error.clone());
+            payload.error_reason = Some(error_reason.clone());
+            payload.log_path = log_path.clone();
+            payload.exit_code = *exit_code;
+            payload.started_at = Some(started_at.clone());
+            payload.finished_at = Some(finished_at.clone());
+        }
+        ToolRunState::Cancelled {
+            started_at,
+            finished_at,
+        } => {
+            payload.started_at = Some(started_at.clone());
+            payload.finished_at = Some(finished_at.clone());
+        }
+        ToolRunState::Waiting | ToolRunState::Running { .. } => {
+            unreachable!("completion payload requires a terminal ToolRun state")
+        }
+    }
+    payload
 }
 
-pub(super) fn render_background_status_json(
+pub(super) fn project_background_completion_payload(
     tool_run_id: &str,
     state: &ToolRunState,
     source_step_id: Option<&str>,
-) -> Value {
-    let mut value = render_status_json(tool_run_id, state);
-    value["kind"] = json!("background");
-    if let Some(source_step_id) = source_step_id {
-        value["source_step_id"] = json!(source_step_id);
-    }
-    value
+) -> ToolRunCompletionPayload {
+    let mut payload = project_completion_payload(tool_run_id, state);
+    payload.status_projection_kind = Some("background".to_owned());
+    payload.source_step_id = source_step_id.map(str::to_owned);
+    payload
 }
 
 #[cfg(test)]
@@ -603,7 +661,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn background_status_and_completion_share_terminal_projection() {
+    fn completion_payload_keeps_terminal_status_fields_and_background_source() {
         let state = ToolRunState::Completed {
             output: "result".into(),
             exit_code: Some(0),
@@ -626,9 +684,17 @@ mod tests {
         expected_background["kind"] = json!("background");
         expected_background["source_step_id"] = json!("step-source");
 
-        assert_eq!(render_status_json("toolrun-result", &state), expected);
         assert_eq!(
-            render_background_status_json("toolrun-result", &state, Some("step-source")),
+            serde_json::to_value(project_completion_payload("toolrun-result", &state)).unwrap(),
+            expected,
+        );
+        assert_eq!(
+            serde_json::to_value(project_background_completion_payload(
+                "toolrun-result",
+                &state,
+                Some("step-source"),
+            ))
+            .unwrap(),
             expected_background,
         );
         assert_eq!(

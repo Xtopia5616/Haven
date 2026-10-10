@@ -542,7 +542,9 @@ kind-specific details 中保留 background command/output/error/exit code/previe
 scheduled finished payload 仍不含 execution result；completed/failed tool 的有界 `result_summary` 由
 ToolRunService 与 terminal outbox 一起提交，在 owner session 存在时由 Agent 复用共享 ToolRunResult envelope
 与 X12 投影，投影成功后 ack。Continue 仍走既有 session input transcript；cancelled scheduled ToolRun 不创建
-completion outbox 或 result transcript（ADR 0393）。
+completion outbox 或 result transcript（ADR 0393）。后台 live completion、定时 completion 和 restart reconciliation
+统一使用 Common `ToolRunCompletionPayload`；Memory 只在 SQLite `status_json` TEXT 列边界序列化该值，Agent 读取
+typed fields。Tools 的 `ToolRunStatusView` 继续独立拥有 UI status/list projection（ADR 0871）。
 Rust bridge 只为 background 提供 `tool_run:output`，scheduled ToolRun 不持有 tail。没有 durable event identity，
 因此不增加独立的 UI event dedup；`toolRunStore` 继续作为唯一前端 ToolRun 生命周期 registry，background 的终态工具卡和 transcript 投影仍按 ADR 0344 原路径。
 ToolRun completion 经 `notification:show` 发布带 `notification_kind=tool_run_completion` 标记的专用事件，

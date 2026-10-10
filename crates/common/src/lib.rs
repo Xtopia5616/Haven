@@ -12,6 +12,7 @@ pub mod path;
 pub mod prompts;
 pub mod retry;
 pub mod text;
+pub mod tool_run_completion;
 #[doc(hidden)]
 pub mod tool_run_lease;
 pub mod tools;
@@ -47,6 +48,7 @@ pub use tools::{
 };
 
 pub use lifecycle::{SessionStatus, SessionStepStatus, SessionWaitingReason, ToolRunStatus};
+pub use tool_run_completion::ToolRunCompletionPayload;
 pub use types::{
     CanonicalMessage, CanonicalRole, CanonicalToolCall, ContentPart, FollowUp, InjectSource,
     MessageAttachment, PEER_KICKOFF_PREFIX, TranscriptMessageKind,

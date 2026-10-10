@@ -76,7 +76,7 @@ pub(super) fn spawn(agent: Arc<AgentLayer>, cancellation: CancellationToken) {
                     tool_run_kind,
                     session_id,
                     status,
-                    status_json,
+                    completion_payload,
                 ) = match event {
                     haven_tools::ToolRunCompletion::Background(comp) => (
                         comp.tool_run_id,
@@ -84,7 +84,7 @@ pub(super) fn spawn(agent: Arc<AgentLayer>, cancellation: CancellationToken) {
                         "background",
                         comp.session_id,
                         comp.status,
-                        comp.status_json,
+                        comp.payload,
                     ),
                     haven_tools::ToolRunCompletion::ScheduledResult(comp) => (
                         comp.tool_run_id,
@@ -92,7 +92,7 @@ pub(super) fn spawn(agent: Arc<AgentLayer>, cancellation: CancellationToken) {
                         "scheduled",
                         comp.session_id,
                         comp.status,
-                        comp.status_json,
+                        comp.payload,
                     ),
                     haven_tools::ToolRunCompletion::Scheduled(_) => continue,
                 };
@@ -121,33 +121,28 @@ pub(super) fn spawn(agent: Arc<AgentLayer>, cancellation: CancellationToken) {
                 let comp_span = tracing::info_span!("tool_run_completion", tool_run_id = %tool_run_id, session_id = %tid);
                 let _comp_guard = comp_span.enter();
                 // Only completed/failed carry a useful payload.
-                let payload = match status_json.get("output").and_then(|v| v.as_str()) {
-                    Some(o) => o.to_string(),
-                    None => status_json
-                        .get("error")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("")
-                        .to_string(),
-                };
+                let payload = completion_payload
+                    .output
+                    .clone()
+                    .or_else(|| completion_payload.error.clone())
+                    .unwrap_or_default();
                 // Failed tool_runs carry a pre-condensed reason (progress bars
                 // stripped, tail kept) so the model and the notification
                 // see the real error, not a multi-KB progress dump. The
                 // injected context is capped either way: the model needs
                 // the reason, not the full transcript.
                 let reason = if status == haven_common::ToolRunStatus::Failed {
-                    status_json
-                        .get("error_reason")
-                        .and_then(|v| v.as_str())
+                    completion_payload
+                        .error_reason
+                        .as_deref()
                         .filter(|s| !s.is_empty())
                         .unwrap_or(&payload)
                         .to_string()
                 } else {
                     payload
                 };
-                let log_path = status_json.get("log_path").and_then(|v| v.as_str());
-                let source_step_id = status_json
-                    .get("source_step_id")
-                    .and_then(|value| value.as_str());
+                let log_path = completion_payload.log_path.as_deref();
+                let source_step_id = completion_payload.source_step_id.as_deref();
                 let msg = format_tool_run_result_message(
                     &tool_run_id,
                     tool_run_kind,

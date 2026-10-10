@@ -1,7 +1,6 @@
 use crate::db::Database;
-use haven_common::ToolRunStatus;
+use haven_common::{ToolRunCompletionPayload, ToolRunStatus};
 use rusqlite::OptionalExtension;
-use serde_json::json;
 
 const SCHEDULED_EXECUTION_CLAIM_PREFIX: &str = "scheduled_execution_claim.";
 
@@ -208,31 +207,41 @@ impl Database {
                 [scheduled_execution_claim_key(tool_run_id)],
             )?;
             if matches!(status, ToolRunStatus::Completed | ToolRunStatus::Failed) {
-                let mut status_json = json!({
-                    "tool_run_id": tool_run_id,
-                    "status": status.as_str(),
-                    "finished_at": finished_at,
-                });
-                match status {
-                    ToolRunStatus::Completed => {
-                        status_json["output"] = json!(result_summary.unwrap_or_default());
-                    }
+                let (output, error, completion_error_reason) = match status {
+                    ToolRunStatus::Completed => (
+                        Some(result_summary.unwrap_or_default().to_owned()),
+                        None,
+                        None,
+                    ),
                     ToolRunStatus::Failed => {
-                        let error = error_reason.unwrap_or_default();
-                        status_json["error"] = json!(error);
-                        status_json["error_reason"] = json!(error);
+                        let error = error_reason.unwrap_or_default().to_owned();
+                        (None, Some(error.clone()), Some(error))
                     }
                     ToolRunStatus::Waiting | ToolRunStatus::Running | ToolRunStatus::Cancelled => {
                         unreachable!("only completed/failed results are enqueued")
                     }
-                }
+                };
+                let payload_json = serde_json::to_string(&ToolRunCompletionPayload {
+                    tool_run_id: tool_run_id.to_owned(),
+                    status,
+                    status_projection_kind: None,
+                    output,
+                    error,
+                    error_reason: completion_error_reason,
+                    log_path: None,
+                    exit_code: None,
+                    started_at: None,
+                    finished_at: Some(finished_at.to_owned()),
+                    source_step_id: None,
+                    truncated: false,
+                })?;
                 conn.execute(
                     "INSERT OR IGNORE INTO tool_run_completion_outbox
                          (tool_run_id, tool_run_result_id, session_id, status, status_json)
                      SELECT id, id, session_id, ?2, ?3
                      FROM tool_runs
                      WHERE id = ?1 AND kind = 'scheduled' AND mode = 'tool' AND status = ?2",
-                    rusqlite::params![tool_run_id, status.as_str(), status_json.to_string()],
+                    rusqlite::params![tool_run_id, status.as_str(), payload_json],
                 )?;
             }
             Ok::<_, anyhow::Error>(true)
@@ -595,23 +604,22 @@ impl Database {
     /// Finalize a background ToolRun and enqueue its agent completion in one
     /// SQLite transaction. The outbox row is intentionally not acknowledged
     /// here; the agent acknowledges it only after transcript projection.
-    #[allow(clippy::too_many_arguments)]
     pub fn finish_tool_run_with_completion(
         &self,
-        tool_run_id: &str,
-        status: ToolRunStatus,
-        output: Option<&str>,
-        error: Option<&str>,
-        error_reason: Option<&str>,
-        log_path: Option<&str>,
-        exit_code: Option<i32>,
-        finished_at: &str,
-        status_json: &str,
+        payload: &ToolRunCompletionPayload,
     ) -> anyhow::Result<bool> {
         anyhow::ensure!(
-            matches!(status, ToolRunStatus::Completed | ToolRunStatus::Failed),
+            matches!(
+                payload.status,
+                ToolRunStatus::Completed | ToolRunStatus::Failed
+            ),
             "background completion outbox only accepts completed or failed tool_runs"
         );
+        let finished_at = payload
+            .finished_at
+            .as_deref()
+            .ok_or_else(|| anyhow::anyhow!("terminal ToolRun completion requires finished_at"))?;
+        let payload_json = serde_json::to_string(payload)?;
         let conn = self.conn();
         conn.execute_batch("BEGIN IMMEDIATE")?;
         let result = (|| {
@@ -621,13 +629,13 @@ impl Database {
                      log_path = ?6, exit_code = ?7, finished_at = ?8
                  WHERE id = ?1 AND kind = 'background' AND status = 'running'",
                 rusqlite::params![
-                    tool_run_id,
-                    status.as_str(),
-                    output,
-                    error,
-                    error_reason,
-                    log_path,
-                    exit_code,
+                    payload.tool_run_id,
+                    payload.status.as_str(),
+                    payload.output,
+                    payload.error,
+                    payload.error_reason,
+                    payload.log_path,
+                    payload.exit_code,
                     finished_at
                 ],
             )?;
@@ -640,7 +648,7 @@ impl Database {
                  SELECT id, id, session_id, ?2, ?3
                  FROM tool_runs
                  WHERE id = ?1 AND kind = 'background' AND status = ?2",
-                rusqlite::params![tool_run_id, status.as_str(), status_json],
+                rusqlite::params![payload.tool_run_id, payload.status.as_str(), payload_json],
             )?;
             Ok::<_, anyhow::Error>(true)
         })();
@@ -806,11 +814,33 @@ impl Database {
 #[cfg(test)]
 mod tests {
     use crate::db::Database;
-    use haven_common::ToolRunStatus;
     use haven_common::types::new_id;
+    use haven_common::{ToolRunCompletionPayload, ToolRunStatus};
 
     fn test_db() -> Database {
         Database::open_in_memory().expect("create in-memory db")
+    }
+
+    fn completion_payload(
+        tool_run_id: &str,
+        status: ToolRunStatus,
+        output: Option<&str>,
+        finished_at: &str,
+    ) -> ToolRunCompletionPayload {
+        ToolRunCompletionPayload {
+            tool_run_id: tool_run_id.to_owned(),
+            status,
+            status_projection_kind: None,
+            output: output.map(str::to_owned),
+            error: None,
+            error_reason: None,
+            log_path: None,
+            exit_code: Some(0),
+            started_at: Some("started".to_owned()),
+            finished_at: Some(finished_at.to_owned()),
+            source_step_id: None,
+            truncated: false,
+        }
     }
 
     #[test]
@@ -1528,17 +1558,12 @@ mod tests {
         let interrupted = db.get_tool_run("toolrun-restarted").unwrap().unwrap();
 
         assert!(
-            !db.finish_tool_run_with_completion(
+            !db.finish_tool_run_with_completion(&completion_payload(
                 "toolrun-restarted",
                 ToolRunStatus::Completed,
                 Some("late output"),
-                None,
-                None,
-                None,
-                Some(0),
                 "late finish",
-                r#"{"tool_run_id":"toolrun-restarted","status":"completed","output":"late output"}"#,
-            )
+            ))
             .unwrap()
         );
 
@@ -1717,17 +1742,12 @@ mod tests {
         db.save_tool_run(&pending_completion_id, None, "echo pending", now)
             .unwrap();
         assert!(
-            db.finish_tool_run_with_completion(
+            db.finish_tool_run_with_completion(&completion_payload(
                 &pending_completion_id,
                 ToolRunStatus::Completed,
                 Some("result"),
-                None,
-                None,
-                None,
-                Some(0),
                 now,
-                r#"{"tool_run_id":"toolrun-pending","status":"completed","output":"result"}"#,
-            )
+            ))
             .unwrap()
         );
 

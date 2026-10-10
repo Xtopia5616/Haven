@@ -8,9 +8,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use haven_common::ToolRunStatus;
 use haven_common::tool_run_lease::ToolRunLease;
-use serde_json::Value;
+use haven_common::{ToolRunCompletionPayload, ToolRunStatus};
 use tokio::sync::{RwLock, broadcast};
 
 use crate::tool_run_service::ToolRunService;
@@ -31,9 +30,9 @@ pub struct BackgroundToolRunCompletion {
     pub session_id: Option<String>,
     /// Canonical terminal lifecycle status.
     pub status: ToolRunStatus,
-    /// The ToolRun's status JSON (same shape `status()` returns for terminal
-    /// states), carrying the output/error payload.
-    pub status_json: Value,
+    /// Typed terminal result fields. The UI status projection is built by
+    /// `ToolRunStatusView` and has its own field policy.
+    pub payload: ToolRunCompletionPayload,
 }
 
 /// A scheduled tool ToolRun that has reached a completed or failed state.
@@ -45,7 +44,7 @@ pub struct ScheduledToolRunResultCompletion {
     pub tool_run_result_id: String,
     pub session_id: Option<String>,
     pub status: ToolRunStatus,
-    pub status_json: Value,
+    pub payload: ToolRunCompletionPayload,
 }
 
 /// One completion stream for every ToolRun kind.
@@ -322,6 +321,23 @@ impl ToolRunCompletionReceiver {
 mod tests {
     use super::*;
 
+    fn completion_payload(tool_run_id: &str, status: ToolRunStatus) -> ToolRunCompletionPayload {
+        ToolRunCompletionPayload {
+            tool_run_id: tool_run_id.to_owned(),
+            status,
+            status_projection_kind: None,
+            output: None,
+            error: None,
+            error_reason: None,
+            log_path: None,
+            exit_code: None,
+            started_at: None,
+            finished_at: None,
+            source_step_id: None,
+            truncated: false,
+        }
+    }
+
     fn scheduled_fire(tool_run_id: &str) -> ScheduledToolRunFired {
         ScheduledToolRunFired {
             tool_run_id: tool_run_id.into(),
@@ -427,7 +443,7 @@ mod tests {
             tool_run_result_id: "toolrun-background".into(),
             session_id: Some("ses-background".into()),
             status: ToolRunStatus::Completed,
-            status_json: serde_json::json!({"status": "completed"}),
+            payload: completion_payload("toolrun-background", ToolRunStatus::Completed),
         };
         bus.send(ToolRunCompletion::Background(completion.clone()))
             .unwrap();
@@ -450,7 +466,10 @@ mod tests {
                 tool_run_result_id: format!("toolrun-noise-{index}"),
                 session_id: None,
                 status: ToolRunStatus::Completed,
-                status_json: serde_json::json!({"status": "completed"}),
+                payload: completion_payload(
+                    &format!("toolrun-noise-{index}"),
+                    ToolRunStatus::Completed,
+                ),
             }))
             .unwrap();
         }

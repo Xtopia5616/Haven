@@ -198,26 +198,23 @@ async fn background_terminal_cas_loser_reconciles_without_publishing() {
     let (service, db, tool_run_id, _dir) = terminal_test_service().await;
     let events = capture_tool_run_events(&service);
     let mut rx = service.take_tool_run_receiver().unwrap();
-    let status_json = serde_json::to_string(&json!({
-        "tool_run_id": tool_run_id,
-        "status": "completed",
-        "output": "external winner",
-        "finished_at": "external finish"
-    }))
-    .unwrap();
+    let completion_payload = ToolRunCompletionPayload {
+        tool_run_id: tool_run_id.clone(),
+        status: ToolRunStatus::Completed,
+        status_projection_kind: None,
+        output: Some("external winner".to_owned()),
+        error: None,
+        error_reason: None,
+        log_path: None,
+        exit_code: Some(0),
+        started_at: None,
+        finished_at: Some("external finish".to_owned()),
+        source_step_id: None,
+        truncated: false,
+    };
     assert!(
-        db.finish_tool_run_with_completion(
-            &tool_run_id,
-            ToolRunStatus::Completed,
-            Some("external winner"),
-            None,
-            None,
-            None,
-            Some(0),
-            "external finish",
-            &status_json,
-        )
-        .unwrap()
+        db.finish_tool_run_with_completion(&completion_payload)
+            .unwrap()
     );
 
     service
@@ -306,7 +303,7 @@ async fn background_terminal_storage_error_stays_running_then_retries_once() {
     let completion = tokio::time::timeout(Duration::from_secs(1), recv_background(&mut rx))
         .await
         .expect("retry publishes after its database commit");
-    assert_eq!(completion.status_json["output"], "retry output");
+    assert_eq!(completion.payload.output.as_deref(), Some("retry output"));
     assert_no_background_completion(&mut rx).await;
 
     let outbox_count: i64 = db
@@ -405,7 +402,7 @@ async fn repeated_background_completion_is_idempotent_and_publishes_once() {
     let completion = tokio::time::timeout(Duration::from_secs(1), recv_background(&mut rx))
         .await
         .expect("first terminal commit published");
-    assert_eq!(completion.status_json["output"], "first output");
+    assert_eq!(completion.payload.output.as_deref(), Some("first output"));
     assert_no_background_completion(&mut rx).await;
 }
 
@@ -439,7 +436,7 @@ async fn persistent_late_attach_updates_outbox_without_republishing_completion()
     let outbox = db.claim_tool_run_completion().unwrap().unwrap();
     assert_eq!(outbox.tool_run_id, tool_run_id);
     assert_eq!(outbox.session_id.as_deref(), Some(session_id.as_str()));
-    assert_eq!(outbox.status_json["output"], "late owner output");
+    assert_eq!(outbox.payload.output.as_deref(), Some("late owner output"));
 }
 
 #[tokio::test]
@@ -597,7 +594,7 @@ async fn missing_store_keeps_background_tool_runs_memory_only() {
     );
     let completion = recv_background(&mut receiver).await;
     assert_eq!(completion.session_id.as_deref(), Some(session_id.as_str()));
-    assert_eq!(completion.status_json["output"], "memory result");
+    assert_eq!(completion.payload.output.as_deref(), Some("memory result"));
 }
 
 #[tokio::test]
@@ -703,12 +700,7 @@ async fn test_completion_notified_on_finish() {
     assert_eq!(comp.tool_run_id, id);
     assert_eq!(comp.status, haven_common::ToolRunStatus::Completed);
     assert_eq!(comp.session_id.as_deref(), Some("ses-A"));
-    assert!(
-        comp.status_json["output"]
-            .as_str()
-            .unwrap()
-            .contains("done")
-    );
+    assert!(comp.payload.output.as_deref().unwrap().contains("done"));
 }
 
 #[cfg(windows)]
@@ -1068,7 +1060,7 @@ async fn test_background_completion_reconciles_after_broadcast_loss() {
     };
     assert_eq!(completion.tool_run_id, "toolrun-reconcile");
     assert_eq!(completion.session_id.as_deref(), Some("ses-reconcile"));
-    assert_eq!(completion.status_json["output"], "durable output");
+    assert_eq!(completion.payload.output.as_deref(), Some("durable output"));
 
     // History deletion is rejected while the durable completion has not
     // crossed the transcript boundary.
@@ -1553,8 +1545,8 @@ async fn committed_background_completion_keeps_source_step_identity() {
 
     let completion = recv_background(&mut receiver).await;
     assert_eq!(
-        completion.status_json["source_step_id"],
-        "step-committed-source"
+        completion.payload.source_step_id.as_deref(),
+        Some("step-committed-source")
     );
     let finished = events
         .lock()
@@ -3024,7 +3016,10 @@ async fn scheduled_tool_results_use_shared_tool_run_result_transport() {
         Some("ses-completed-result")
     );
     assert_eq!(completed.status, ToolRunStatus::Completed);
-    assert_eq!(completed.status_json["output"], "bounded tool summary");
+    assert_eq!(
+        completed.payload.output.as_deref(),
+        Some("bounded tool summary")
+    );
     service
         .acknowledge_tool_run_completion(&completed.tool_run_result_id)
         .await;
@@ -3071,7 +3066,10 @@ async fn scheduled_tool_results_use_shared_tool_run_result_transport() {
     assert_eq!(failed.tool_run_result_id, failed_id);
     assert_eq!(failed.session_id.as_deref(), Some("ses-failed-result"));
     assert_eq!(failed.status, ToolRunStatus::Failed);
-    assert_eq!(failed.status_json["error_reason"], "bounded failure reason");
+    assert_eq!(
+        failed.payload.error_reason.as_deref(),
+        Some("bounded failure reason")
+    );
     service
         .acknowledge_tool_run_completion(&failed.tool_run_result_id)
         .await;
@@ -3602,7 +3600,20 @@ async fn test_scheduled_fire_recovers_after_completion_bus_lag() {
                 tool_run_result_id: format!("toolrun-noise-{index}"),
                 session_id: None,
                 status: haven_common::ToolRunStatus::Completed,
-                status_json: serde_json::json!({"status": "completed"}),
+                payload: haven_common::ToolRunCompletionPayload {
+                    tool_run_id: format!("toolrun-noise-{index}"),
+                    status: haven_common::ToolRunStatus::Completed,
+                    status_projection_kind: None,
+                    output: None,
+                    error: None,
+                    error_reason: None,
+                    log_path: None,
+                    exit_code: None,
+                    started_at: None,
+                    finished_at: None,
+                    source_step_id: None,
+                    truncated: false,
+                },
             },
         ));
     }

@@ -7,9 +7,8 @@
 //! delivery contract; scheduled firing and execution remain owned separately.
 
 use crate::db::Database;
-use haven_common::ToolRunStatus;
 use haven_common::tool_run_lease::ToolRunLease;
-use serde_json::{Value, json};
+use haven_common::{ToolRunCompletionPayload, ToolRunStatus};
 
 const CLAIM_LEASE_SECS: i64 = 30;
 
@@ -20,11 +19,11 @@ pub struct ToolRunCompletionOutboxRow {
     pub kind: String,
     pub session_id: Option<String>,
     pub status: ToolRunStatus,
-    pub status_json: Value,
+    pub payload: ToolRunCompletionPayload,
 }
 
 #[allow(clippy::too_many_arguments)]
-fn status_json(
+fn completion_payload(
     tool_run_id: &str,
     status: ToolRunStatus,
     output: Option<&str>,
@@ -35,36 +34,21 @@ fn status_json(
     started_at: Option<&str>,
     finished_at: Option<&str>,
     source_step_id: Option<&str>,
-) -> Value {
-    let mut value = json!({
-        "tool_run_id": tool_run_id,
-        "status": status.as_str(),
-    });
-    if let Some(output) = output {
-        value["output"] = json!(output);
+) -> ToolRunCompletionPayload {
+    ToolRunCompletionPayload {
+        tool_run_id: tool_run_id.to_owned(),
+        status,
+        status_projection_kind: None,
+        output: output.map(str::to_owned),
+        error: error.map(str::to_owned),
+        error_reason: error_reason.map(str::to_owned),
+        log_path: log_path.map(str::to_owned),
+        exit_code,
+        started_at: started_at.map(str::to_owned),
+        finished_at: finished_at.map(str::to_owned),
+        source_step_id: source_step_id.map(str::to_owned),
+        truncated: false,
     }
-    if let Some(error) = error {
-        value["error"] = json!(error);
-    }
-    if let Some(error_reason) = error_reason {
-        value["error_reason"] = json!(error_reason);
-    }
-    if let Some(log_path) = log_path {
-        value["log_path"] = json!(log_path);
-    }
-    if let Some(exit_code) = exit_code {
-        value["exit_code"] = json!(exit_code);
-    }
-    if let Some(started_at) = started_at {
-        value["started_at"] = json!(started_at);
-    }
-    if let Some(finished_at) = finished_at {
-        value["finished_at"] = json!(finished_at);
-    }
-    if let Some(source_step_id) = source_step_id {
-        value["source_step_id"] = json!(source_step_id);
-    }
-    value
 }
 
 impl Database {
@@ -130,7 +114,7 @@ impl Database {
                 } else {
                     output.as_deref()
                 };
-                let status_json = serde_json::to_string(&status_json(
+                let payload = serde_json::to_string(&completion_payload(
                     &tool_run_id,
                     status,
                     output,
@@ -147,7 +131,7 @@ impl Database {
                     "INSERT OR IGNORE INTO tool_run_completion_outbox
                          (tool_run_id, tool_run_result_id, session_id, status, status_json)
                      VALUES (?1, ?1, ?2, ?3, ?4)",
-                    rusqlite::params![tool_run_id, session_id, status.as_str(), status_json],
+                    rusqlite::params![tool_run_id, session_id, status.as_str(), payload],
                 )?;
             }
             Ok::<_, anyhow::Error>(())
@@ -203,7 +187,7 @@ impl Database {
                 kind,
                 session_id,
                 status,
-                status_json,
+                payload_json,
                 claimed_until,
                 now,
             )) = row
@@ -227,7 +211,7 @@ impl Database {
                 kind,
                 session_id,
                 status: ToolRunStatus::from_status_str(&status),
-                status_json: serde_json::from_str(&status_json)?,
+                payload: serde_json::from_str(&payload_json)?,
             }))
         })();
         match result {
@@ -332,7 +316,7 @@ mod tests {
         assert_eq!(row.tool_run_id, "toolrun-outbox");
         assert_eq!(row.kind, "background");
         assert_eq!(row.session_id.as_deref(), Some("ses-1"));
-        assert_eq!(row.status_json["output"], "ok");
+        assert_eq!(row.payload.output.as_deref(), Some("ok"));
         assert!(
             db.acknowledge_tool_run_completion("toolrun-outbox")
                 .unwrap()
@@ -365,8 +349,8 @@ mod tests {
 
         let completion = db.claim_tool_run_completion().unwrap().unwrap();
         assert_eq!(
-            completion.status_json["source_step_id"],
-            "step-source-reconcile"
+            completion.payload.source_step_id.as_deref(),
+            Some("step-source-reconcile")
         );
     }
 
@@ -437,7 +421,7 @@ mod tests {
             .unwrap()
             .expect("late binding must make the completion pending again");
         assert_eq!(completion.session_id.as_deref(), Some("ses-late-owner"));
-        assert_eq!(completion.status_json["output"], "late output");
+        assert_eq!(completion.payload.output.as_deref(), Some("late output"));
         assert!(!db.delete_tool_run("toolrun-late-owner").unwrap());
     }
 
@@ -481,7 +465,7 @@ mod tests {
         db.save_tool_run("toolrun-cas", Some("ses-cas"), "echo winner", "started")
             .unwrap();
 
-        assert!(db.finish_tool_run_with_completion(
+        let winning_payload = completion_payload(
             "toolrun-cas",
             ToolRunStatus::Completed,
             Some("winning output"),
@@ -489,11 +473,15 @@ mod tests {
             None,
             Some("winner.log"),
             Some(0),
-            "winner finish",
-            r#"{"tool_run_id":"toolrun-cas","status":"completed","output":"winning output","finished_at":"winner finish"}"#,
-        )
-        .unwrap());
-        assert!(!db.finish_tool_run_with_completion(
+            Some("started"),
+            Some("winner finish"),
+            None,
+        );
+        assert!(
+            db.finish_tool_run_with_completion(&winning_payload)
+                .unwrap()
+        );
+        let losing_payload = completion_payload(
             "toolrun-cas",
             ToolRunStatus::Failed,
             None,
@@ -501,10 +489,11 @@ mod tests {
             Some("late reason"),
             Some("late.log"),
             Some(1),
-            "late finish",
-            r#"{"tool_run_id":"toolrun-cas","status":"failed","error":"late error","finished_at":"late finish"}"#,
-        )
-        .unwrap());
+            Some("started"),
+            Some("late finish"),
+            None,
+        );
+        assert!(!db.finish_tool_run_with_completion(&losing_payload).unwrap());
 
         let tool_run = db.get_tool_run("toolrun-cas").unwrap().unwrap();
         assert_eq!(tool_run.status, ToolRunStatus::Completed);
@@ -518,16 +507,16 @@ mod tests {
             completion.session_id.as_deref(),
             tool_run.session_id.as_deref()
         );
-        assert_eq!(completion.status_json["status"], tool_run.status.as_str());
+        assert_eq!(completion.payload.status, tool_run.status);
         assert_eq!(
-            completion.status_json["output"],
-            tool_run.output.as_deref().unwrap()
+            completion.payload.output.as_deref(),
+            tool_run.output.as_deref()
         );
         assert_eq!(
-            completion.status_json["finished_at"],
-            tool_run.finished_at.as_deref().unwrap()
+            completion.payload.finished_at.as_deref(),
+            tool_run.finished_at.as_deref()
         );
-        assert!(completion.status_json.get("error").is_none());
+        assert!(completion.payload.error.is_none());
     }
 
     #[test]
@@ -561,15 +550,18 @@ mod tests {
             assert_eq!(result.status, status);
             match status {
                 ToolRunStatus::Completed => {
-                    assert_eq!(result.status_json["output"], "bounded success summary");
-                    assert!(result.status_json.get("error").is_none());
+                    assert_eq!(
+                        result.payload.output.as_deref(),
+                        Some("bounded success summary")
+                    );
+                    assert!(result.payload.error.is_none());
                 }
                 ToolRunStatus::Failed => {
                     assert_eq!(
-                        result.status_json["error_reason"],
-                        "bounded failure summary"
+                        result.payload.error_reason.as_deref(),
+                        Some("bounded failure summary")
                     );
-                    assert!(result.status_json.get("output").is_none());
+                    assert!(result.payload.output.is_none());
                 }
                 ToolRunStatus::Waiting | ToolRunStatus::Running | ToolRunStatus::Cancelled => {
                     unreachable!()
@@ -599,7 +591,10 @@ mod tests {
         assert_eq!(first.kind, "scheduled");
         assert_eq!(first.tool_run_result_id, "toolrun-scheduled-reconcile");
         assert_eq!(first.status, ToolRunStatus::Failed);
-        assert_eq!(first.status_json["error_reason"], "bounded failure summary");
+        assert_eq!(
+            first.payload.error_reason.as_deref(),
+            Some("bounded failure summary")
+        );
         assert!(db.claim_tool_run_completion().unwrap().is_none());
         assert!(
             db.acknowledge_tool_run_completion(&first.tool_run_result_id)

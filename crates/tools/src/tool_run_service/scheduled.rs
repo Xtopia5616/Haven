@@ -526,7 +526,7 @@ impl ToolRunService {
             tool_run_result_id: tool_run_id.to_string(),
             session_id,
             status,
-            status_json: render_status_json(tool_run_id, &state),
+            payload: project_completion_payload(tool_run_id, &state),
         };
         if let Err(error) = self
             .completion_bus

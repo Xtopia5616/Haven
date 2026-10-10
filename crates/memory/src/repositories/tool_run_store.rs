@@ -12,8 +12,7 @@ use crate::repositories::scheduled_tool_runs::{
     ScheduledToolRunRow, ToolRunDependencyRow, ToolRunRow,
 };
 use crate::repositories::tool_run_completion_outbox::ToolRunCompletionOutboxRow;
-use haven_common::ToolRunStatus;
-use serde_json::Value;
+use haven_common::{ToolRunCompletionPayload, ToolRunStatus};
 
 #[derive(Clone)]
 pub struct ToolRunStore {
@@ -226,34 +225,12 @@ impl ToolRunStore {
     /// Commit a completed/failed background row and its completion outbox
     /// record atomically. The outbox is acknowledged by the caller only after
     /// durable transcript projection.
-    #[allow(clippy::too_many_arguments)]
     pub async fn finish_background_tool_run_with_completion(
         &self,
-        tool_run_id: String,
-        status: ToolRunStatus,
-        output: Option<String>,
-        error: Option<String>,
-        error_reason: Option<String>,
-        log_path: Option<String>,
-        exit_code: Option<i32>,
-        finished_at: String,
-        status_json: Value,
+        payload: ToolRunCompletionPayload,
     ) -> anyhow::Result<bool> {
-        let status_json = serde_json::to_string(&status_json)?;
         self.db
-            .run_blocking(move |db| {
-                db.finish_tool_run_with_completion(
-                    &tool_run_id,
-                    status,
-                    output.as_deref(),
-                    error.as_deref(),
-                    error_reason.as_deref(),
-                    log_path.as_deref(),
-                    exit_code,
-                    &finished_at,
-                    &status_json,
-                )
-            })
+            .run_blocking(move |db| db.finish_tool_run_with_completion(&payload))
             .await
     }
 
@@ -394,12 +371,36 @@ mod tests {
     use super::*;
     use crate::Database;
     use haven_common::types::new_id;
-    use serde_json::json;
 
     fn store() -> (Arc<Database>, ToolRunStore) {
         let db = Arc::new(Database::open_in_memory().unwrap());
         let store = ToolRunStore::new(db.clone());
         (db, store)
+    }
+
+    fn completion_payload(
+        tool_run_id: &str,
+        status: ToolRunStatus,
+        output: Option<&str>,
+        error: Option<&str>,
+        error_reason: Option<&str>,
+        exit_code: Option<i32>,
+        finished_at: &str,
+    ) -> ToolRunCompletionPayload {
+        ToolRunCompletionPayload {
+            tool_run_id: tool_run_id.to_owned(),
+            status,
+            status_projection_kind: None,
+            output: output.map(str::to_owned),
+            error: error.map(str::to_owned),
+            error_reason: error_reason.map(str::to_owned),
+            log_path: None,
+            exit_code,
+            started_at: Some("started".to_owned()),
+            finished_at: Some(finished_at.to_owned()),
+            source_step_id: None,
+            truncated: false,
+        }
     }
 
     #[tokio::test]
@@ -440,17 +441,15 @@ mod tests {
 
         assert!(
             store
-                .finish_background_tool_run_with_completion(
-                    tool_run_id.clone(),
+                .finish_background_tool_run_with_completion(completion_payload(
+                    &tool_run_id,
                     ToolRunStatus::Completed,
-                    Some("durable result".into()),
-                    None,
+                    Some("durable result"),
                     None,
                     None,
                     Some(0),
-                    "finished".into(),
-                    json!({"tool_run_id":tool_run_id, "status":"completed", "output":"durable result"}),
-                )
+                    "finished",
+                ),)
                 .await
                 .unwrap()
         );
@@ -458,7 +457,7 @@ mod tests {
         let claimed = store.claim_pending_completion().await.unwrap().unwrap();
         assert_eq!(claimed.tool_run_id, tool_run_id);
         assert_eq!(claimed.session_id.as_deref(), Some(session_id.as_str()));
-        assert_eq!(claimed.status_json["output"], "durable result");
+        assert_eq!(claimed.payload.output.as_deref(), Some("durable result"));
         // The unexpired claim prevents another consumer from claiming it.
         assert!(store.claim_pending_completion().await.unwrap().is_none());
         assert!(
@@ -486,33 +485,29 @@ mod tests {
 
         assert!(
             store
-                .finish_background_tool_run_with_completion(
-                    tool_run_id.clone(),
+                .finish_background_tool_run_with_completion(completion_payload(
+                    &tool_run_id,
                     ToolRunStatus::Completed,
-                    Some("winner".into()),
-                    None,
+                    Some("winner"),
                     None,
                     None,
                     Some(0),
-                    "winner finish".into(),
-                    json!({"tool_run_id":tool_run_id, "status":"completed", "output":"winner"}),
-                )
+                    "winner finish",
+                ),)
                 .await
                 .unwrap()
         );
         assert!(
             !store
-                .finish_background_tool_run_with_completion(
-                    tool_run_id.clone(),
+                .finish_background_tool_run_with_completion(completion_payload(
+                    &tool_run_id,
                     ToolRunStatus::Failed,
                     None,
-                    Some("late".into()),
-                    Some("late".into()),
-                    None,
+                    Some("late"),
+                    Some("late"),
                     Some(1),
-                    "late finish".into(),
-                    json!({"tool_run_id":tool_run_id, "status":"failed", "error":"late"}),
-                )
+                    "late finish",
+                ),)
                 .await
                 .unwrap()
         );
@@ -522,7 +517,7 @@ mod tests {
         assert_eq!(row.output.as_deref(), Some("winner"));
         let completion = store.claim_pending_completion().await.unwrap().unwrap();
         assert_eq!(completion.status, row.status);
-        assert_eq!(completion.status_json["output"], "winner");
+        assert_eq!(completion.payload.output.as_deref(), Some("winner"));
     }
 
     #[tokio::test]

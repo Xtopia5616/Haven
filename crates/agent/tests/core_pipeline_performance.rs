@@ -1,10 +1,9 @@
 use std::sync::Arc;
 use std::time::Instant;
 
-use haven_common::ToolRunStatus;
 use haven_common::types::new_id;
+use haven_common::{ToolRunCompletionPayload, ToolRunStatus};
 use haven_memory::{Database, MAX_MEMORY_OUTBOX_PAGE_SIZE, MemoryStore, ToolRunStore};
-use serde_json::json;
 use tokio_util::sync::CancellationToken;
 
 const SAMPLE_COUNT: usize = 257;
@@ -21,6 +20,23 @@ fn distribution(samples_ns: &[u128]) -> (f64, f64) {
         percentile(&mut samples_ns.to_vec(), 50) as f64 / 1_000.0,
         percentile(&mut samples_ns.to_vec(), 95) as f64 / 1_000.0,
     )
+}
+
+fn completion_payload(tool_run_id: &str, output: &str) -> ToolRunCompletionPayload {
+    ToolRunCompletionPayload {
+        tool_run_id: tool_run_id.to_owned(),
+        status: ToolRunStatus::Completed,
+        status_projection_kind: None,
+        output: Some(output.to_owned()),
+        error: None,
+        error_reason: None,
+        log_path: None,
+        exit_code: Some(0),
+        started_at: None,
+        finished_at: Some("finished".to_owned()),
+        source_step_id: None,
+        truncated: false,
+    }
 }
 
 fn pending_tool_run_count(db: &Database) -> i64 {
@@ -100,17 +116,7 @@ async fn tool_run_completion_outbox_latency_depth_and_throughput_profile() {
         .await
         .unwrap();
     store
-        .finish_background_tool_run_with_completion(
-            warmup_id.clone(),
-            ToolRunStatus::Completed,
-            Some("ok".into()),
-            None,
-            None,
-            None,
-            Some(0),
-            "finished".into(),
-            json!({"tool_run_id": warmup_id, "status": "completed", "output": "ok"}),
-        )
+        .finish_background_tool_run_with_completion(completion_payload(&warmup_id, "ok"))
         .await
         .unwrap();
     let warmup = store
@@ -144,17 +150,10 @@ async fn tool_run_completion_outbox_latency_depth_and_throughput_profile() {
     for tool_run_id in &tool_run_ids {
         let started = Instant::now();
         let result = store
-            .finish_background_tool_run_with_completion(
-                tool_run_id.clone(),
-                ToolRunStatus::Completed,
-                Some("profile result".into()),
-                None,
-                None,
-                None,
-                Some(0),
-                "finished".into(),
-                json!({"tool_run_id": tool_run_id, "status": "completed", "output": "profile result"}),
-            )
+            .finish_background_tool_run_with_completion(completion_payload(
+                tool_run_id,
+                "profile result",
+            ))
             .await
             .unwrap();
         assert!(result, "each terminal ToolRun must enqueue exactly once");
