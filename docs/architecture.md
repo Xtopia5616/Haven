@@ -101,7 +101,7 @@ PlatformRuntime 发布、MCP discovery config/index 更新和 builtin catalog re
 messaging 与 memory recall 是进程服务，在 `wire_startup` 里绑定一次，不放进这份快照；
 `admin_surfaces` 随成功的 catalog rebuild 写入 `BuiltinCatalog`。`tool_builtins.rs` 组合 MCP/Skills
 与具体 builtin provider。MCP、skills、授权、媒体资产、ToolRun 与 live output 由构造时交出的
-`ToolServices` 提供；其中授权只以 `AuthorizationPort` 暴露，其他服务字段仍有具体类型。App 组合时只把实际需要的句柄复制进 `AppServices`；ToolRun IPC 和生命周期调用、Skill 子进程执行、live-output sink 接线分别通过 App-owned ports 进入 Tools adapter（ADR 0895、0896）。MCP manager 与 SkillRegistry 作为各自领域 owner 的调用面保留；其他具体句柄仍属于 §5.7 按消费者继续审查的 API 面。组合根仍是 `ApplicationRuntime`，
+`ToolServices` 提供；授权与受管资产生命周期通过 capability ports 暴露，ToolRun、Skill 子进程和 live-output 也由消费端 ports 进入 Tools adapter（ADR 0895–0897）。MCP manager 与 SkillRegistry 作为各自领域 owner 的调用面保留；ToolServices 其余公开字段仍属于 §5.7 按消费者继续审查的 API 面。组合根仍是 `ApplicationRuntime`，
 不另建 `AppRuntime`。`ToolsFacade` 是对外 façade，保留执行与授权入口、session overlay/asset
 lease 操作、目录投影、runtime capability 请求和录音转写入口；启动及 runtime/catalog 更新转发给 coordinator。
 能力判断由 tools crate 唯一构造的 crate-private `ToolCapabilitySnapshot` 收口：prompt runtime、
@@ -665,7 +665,7 @@ limit、创建时间倒序和 errors 的 status 过滤顺序保持原样。组�
   `commands/managed_media.rs`，不在录音命令内维护文件清理规则。
 - `commands/managed_media.rs`：拥有 App transcript 上传的额度、staging、原子提交、文件名/路径校验，
   以及 uploads/generated-media 两根目录和 staging 的清理。一个 App 内部写锁串行化上传与清理；
-  两根媒体目录按 `SessionStore` durable refs、`ManagedAssetRegistry` lease 与 detached TTL 对账。
+  两根媒体目录由 App 的清理 worker 按 `SessionStore` durable refs 对账，并通过 `ManagedAssetLifecyclePort` 读取/修剪 Tools owner 的 lease 与 detached TTL；具体注册表留在 Tools 内部。
   generated-media 清理在 lease/TTL 快照前获取 registry 独占 gate 并持有到 unlink 完成；Tools
   producer 从目标文件创建前持 registry 共享 permit 到 asset 登记完成；`FilesTool` 的 canonical rich path
   若解析到 generated-media 根目录的直接子文件，也在 metadata/revalidation/lease 登记期间持同一 permit，

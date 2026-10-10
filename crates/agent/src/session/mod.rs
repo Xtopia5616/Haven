@@ -1837,7 +1837,7 @@ mod tests {
         let path = temp_db_path();
         let db = Arc::new(Database::open(&path).unwrap());
         let tools = Arc::new(ToolsFacade::new());
-        let registry = tools.share_services().assets;
+        let registry = tools.share_services().managed_assets;
         let exec = Arc::new(SessionSupervisor::new_for_test(db, tools, 1));
         let assets_root = tempfile::TempDir::new().unwrap();
 
@@ -1884,7 +1884,7 @@ mod tests {
     async fn retention_deletion_releases_runtime_grants_and_asset_leases() {
         let db = Arc::new(Database::open_in_memory().unwrap());
         let tools = Arc::new(ToolsFacade::new());
-        let registry = tools.share_services().assets;
+        let registry = tools.share_services().managed_assets;
         let exec = Arc::new(SessionSupervisor::new_for_test(db.clone(), tools, 1));
         let session = exec
             .create_session("expire session-owned state")

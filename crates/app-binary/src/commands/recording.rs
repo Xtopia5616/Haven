@@ -624,7 +624,7 @@ pub async fn process_transcript(
         .clone();
     let attachments = validate_attachments(attachments.unwrap_or_default(), &limits)
         .map_err(|e| log_err("process_transcript", e))?;
-    let assets = state.runtime.tools.share_services().assets;
+    let assets = Arc::clone(&state.runtime.services.managed_assets);
     let attachments = crate::commands::managed_media::persist_file_attachments(
         attachments,
         limits.max_upload_total_bytes,

@@ -48,6 +48,42 @@ pub struct GeneratedMediaCleanupGuard {
     _guard: tokio::sync::OwnedRwLockWriteGuard<()>,
 }
 
+/// Consumer-facing lifecycle operations for the process-local managed asset
+/// owner. App cleanup and upload code depend on this capability rather than
+/// the registry implementation.
+#[async_trait::async_trait]
+pub trait ManagedAssetLifecyclePort: Send + Sync {
+    async fn lock_generated_media_cleanup(&self) -> GeneratedMediaCleanupGuard;
+
+    fn register_under_root_for_session(
+        &self,
+        session_id: &str,
+        root: &Path,
+        asset_id: &str,
+        path: PathBuf,
+        filename: Option<String>,
+        media_type: &str,
+    ) -> bool;
+
+    fn register_under_root_pending(
+        &self,
+        root: &Path,
+        asset_id: &str,
+        path: PathBuf,
+        filename: Option<String>,
+        media_type: &str,
+    ) -> bool;
+
+    fn lease_for_session(&self, session_id: &str, asset_id: &str) -> bool;
+    fn release_session(&self, session_id: &str) -> usize;
+    fn leased_paths(&self) -> Vec<PathBuf>;
+    fn leased_or_pending_paths(&self) -> Vec<PathBuf>;
+    fn unexpired_transient_paths(&self) -> Vec<PathBuf>;
+    fn prune_missing(&self) -> usize;
+    fn prune_paths_under(&self, root: &Path) -> usize;
+    fn prune_unreferenced(&self, referenced_paths: &[PathBuf]) -> usize;
+}
+
 /// Shared access held while a producer writes and registers one file or a
 /// rich-path handoff validates and registers an existing file.
 #[must_use = "the shared guard must live through generated-media validation and registration"]
@@ -568,6 +604,83 @@ impl ManagedAssetRegistry {
                     .any(|path| haven_common::path::path_is_equal(path, &asset.path))
         });
         before.saturating_sub(assets.len())
+    }
+}
+
+#[async_trait::async_trait]
+impl ManagedAssetLifecyclePort for ManagedAssetRegistry {
+    async fn lock_generated_media_cleanup(&self) -> GeneratedMediaCleanupGuard {
+        ManagedAssetRegistry::lock_generated_media_cleanup(self).await
+    }
+
+    fn register_under_root_for_session(
+        &self,
+        session_id: &str,
+        root: &Path,
+        asset_id: &str,
+        path: PathBuf,
+        filename: Option<String>,
+        media_type: &str,
+    ) -> bool {
+        ManagedAssetRegistry::register_under_root_for_session(
+            self,
+            session_id,
+            root,
+            asset_id.to_string(),
+            path,
+            filename,
+            media_type.to_string(),
+        )
+    }
+
+    fn register_under_root_pending(
+        &self,
+        root: &Path,
+        asset_id: &str,
+        path: PathBuf,
+        filename: Option<String>,
+        media_type: &str,
+    ) -> bool {
+        ManagedAssetRegistry::register_under_root_pending(
+            self,
+            root,
+            asset_id.to_string(),
+            path,
+            filename,
+            media_type.to_string(),
+        )
+    }
+
+    fn lease_for_session(&self, session_id: &str, asset_id: &str) -> bool {
+        ManagedAssetRegistry::lease_for_session(self, session_id, asset_id)
+    }
+
+    fn release_session(&self, session_id: &str) -> usize {
+        ManagedAssetRegistry::release_session(self, session_id)
+    }
+
+    fn leased_paths(&self) -> Vec<PathBuf> {
+        ManagedAssetRegistry::leased_paths(self)
+    }
+
+    fn leased_or_pending_paths(&self) -> Vec<PathBuf> {
+        ManagedAssetRegistry::leased_or_pending_paths(self)
+    }
+
+    fn unexpired_transient_paths(&self) -> Vec<PathBuf> {
+        ManagedAssetRegistry::unexpired_transient_paths(self)
+    }
+
+    fn prune_missing(&self) -> usize {
+        ManagedAssetRegistry::prune_missing(self)
+    }
+
+    fn prune_paths_under(&self, root: &Path) -> usize {
+        ManagedAssetRegistry::prune_paths_under(self, root)
+    }
+
+    fn prune_unreferenced(&self, referenced_paths: &[PathBuf]) -> usize {
+        ManagedAssetRegistry::prune_unreferenced(self, referenced_paths)
     }
 }
 

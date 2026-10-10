@@ -2,9 +2,9 @@ use super::*;
 
 /// Process services shared outside the execution facade.
 ///
-/// MCP, skills and the asset registry clone as handles. Authorization,
-/// tool_runs and live output are `Arc`s. Callers keep this bundle instead of
-/// asking `ToolsFacade` for each service.
+/// MCP and skill registries are domain owner handles. Managed assets and
+/// authorization are exposed as capability ports; remaining implementation
+/// handles in this bundle are still under the §5.7 API review.
 #[derive(Clone)]
 pub struct ToolServices {
     pub mcp: McpManager,
@@ -12,7 +12,7 @@ pub struct ToolServices {
     pub skills: SkillRegistry,
     pub skill_runner: Arc<RwLock<SkillRunner>>,
     pub authorization: Arc<dyn AuthorizationPort>,
-    pub assets: ManagedAssetRegistry,
+    pub managed_assets: Arc<dyn ManagedAssetLifecyclePort>,
     pub tool_runs: Arc<ToolRunService>,
     pub live_outputs: Arc<LiveOutputHub>,
 }
@@ -26,7 +26,7 @@ impl ToolServices {
             skills: coordinator.builtins.skill_registry.clone(),
             skill_runner: coordinator.builtins.skill_runner.clone(),
             authorization,
-            assets: coordinator.runtime.managed_assets.clone(),
+            managed_assets: Arc::new(coordinator.runtime.managed_assets.clone()),
             tool_runs: Arc::clone(&coordinator.runtime.tool_run_service),
             live_outputs: Arc::clone(&coordinator.runtime.live_outputs),
         }

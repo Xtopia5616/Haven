@@ -2,6 +2,7 @@
 
 use haven_memory::SessionStore;
 use haven_platform::filesystem::is_link_or_reparse_point;
+use std::sync::Arc;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct ManagedMediaCleanupCounts {
@@ -66,7 +67,7 @@ fn sanitize_filename(name: &str) -> String {
 pub(crate) async fn persist_file_attachments(
     attachments: Vec<haven_common::types::MessageAttachment>,
     max_total_bytes: u64,
-    registry: haven_tools::ManagedAssetRegistry,
+    registry: Arc<dyn haven_tools::ManagedAssetLifecyclePort>,
     session_id: Option<String>,
 ) -> Result<Vec<haven_common::types::MessageAttachment>, String> {
     persist_file_attachments_to_with_limit_and_registry(
@@ -125,7 +126,7 @@ pub(crate) async fn cleanup_unreferenced_upload_batches(
 pub(crate) async fn cleanup_unreferenced_managed_media(
     uploads_root: std::path::PathBuf,
     generated_root: std::path::PathBuf,
-    registry: haven_tools::ManagedAssetRegistry,
+    registry: Arc<dyn haven_tools::ManagedAssetLifecyclePort>,
     session_store: &SessionStore,
 ) -> Result<ManagedMediaCleanupCounts, String> {
     let referenced_paths = session_store
@@ -144,7 +145,7 @@ pub(crate) async fn cleanup_unreferenced_managed_media(
 async fn cleanup_unreferenced_managed_media_with_references(
     uploads_root: std::path::PathBuf,
     generated_root: std::path::PathBuf,
-    registry: haven_tools::ManagedAssetRegistry,
+    registry: Arc<dyn haven_tools::ManagedAssetLifecyclePort>,
     referenced_paths: Result<Vec<std::path::PathBuf>, String>,
 ) -> Result<ManagedMediaCleanupCounts, String> {
     let referenced_paths =
@@ -158,14 +159,14 @@ async fn cleanup_unreferenced_managed_media_with_references(
             || {
                 cleanup_unreferenced_generated_media_sync(
                     &generated_root,
-                    &registry,
+                    registry.as_ref(),
                     &referenced_paths,
                 )
             },
             || {
                 cleanup_unreferenced_upload_batches_sync(
                     &uploads_root,
-                    &registry,
+                    registry.as_ref(),
                     &referenced_paths,
                 )
             },
@@ -245,7 +246,7 @@ fn upload_write_lock() -> &'static tokio::sync::Mutex<()> {
 
 fn cleanup_unreferenced_upload_batches_sync(
     root: &std::path::Path,
-    registry: &haven_tools::ManagedAssetRegistry,
+    registry: &dyn haven_tools::ManagedAssetLifecyclePort,
     referenced_paths: &[std::path::PathBuf],
 ) -> Result<usize, String> {
     let root_metadata = match std::fs::symlink_metadata(root) {
@@ -374,7 +375,7 @@ fn cleanup_stale_upload_staging_sync(
 
 fn cleanup_unreferenced_generated_media_sync(
     root: &std::path::Path,
-    registry: &haven_tools::ManagedAssetRegistry,
+    registry: &dyn haven_tools::ManagedAssetLifecyclePort,
     referenced_paths: &[std::path::PathBuf],
 ) -> Result<usize, String> {
     let root_metadata = match std::fs::symlink_metadata(root) {
@@ -523,7 +524,10 @@ async fn persist_file_attachments_to_with_limit_and_registry(
     root: std::path::PathBuf,
     attachments: Vec<haven_common::types::MessageAttachment>,
     max_total_bytes: u64,
-    registry: Option<(haven_tools::ManagedAssetRegistry, Option<String>)>,
+    registry: Option<(
+        Arc<dyn haven_tools::ManagedAssetLifecyclePort>,
+        Option<String>,
+    )>,
 ) -> Result<Vec<haven_common::types::MessageAttachment>, String> {
     use base64::Engine as _;
 
@@ -643,18 +647,18 @@ async fn persist_file_attachments_to_with_limit_and_registry(
                 registry.register_under_root_for_session(
                     session_id,
                     &root,
-                    asset_id.clone(),
+                    asset_id,
                     std::path::PathBuf::from(path),
                     attachment.filename.clone(),
-                    attachment.media_type.clone(),
+                    &attachment.media_type,
                 )
             } else {
                 registry.register_under_root_pending(
                     &root,
-                    asset_id.clone(),
+                    asset_id,
                     std::path::PathBuf::from(path),
                     attachment.filename.clone(),
-                    attachment.media_type.clone(),
+                    &attachment.media_type,
                 )
             };
             if !registered {
@@ -787,7 +791,7 @@ mod tests {
             cleanup_unreferenced_managed_media_with_references(
                 upload_root.path().to_path_buf(),
                 generated_root.path().to_path_buf(),
-                haven_tools::ManagedAssetRegistry::default(),
+                Arc::new(haven_tools::ManagedAssetRegistry::default()),
                 Ok(Vec::new()),
             )
             .await
@@ -819,7 +823,7 @@ mod tests {
         let error = cleanup_unreferenced_managed_media_with_references(
             upload_root.path().to_path_buf(),
             generated_root.path().to_path_buf(),
-            haven_tools::ManagedAssetRegistry::default(),
+            Arc::new(haven_tools::ManagedAssetRegistry::default()),
             Err("injected SessionStore read failure".to_string()),
         )
         .await
@@ -1056,7 +1060,7 @@ mod tests {
             cleanup_unreferenced_managed_media_with_references(
                 upload_root.path().to_path_buf(),
                 generated_root.path().to_path_buf(),
-                registry.clone(),
+                Arc::new(registry.clone()),
                 Ok(vec![file.clone()]),
             )
             .await
@@ -1070,7 +1074,7 @@ mod tests {
             cleanup_unreferenced_managed_media_with_references(
                 upload_root.path().to_path_buf(),
                 generated_root.path().to_path_buf(),
-                registry.clone(),
+                Arc::new(registry.clone()),
                 Ok(vec![file.clone()]),
             )
             .await
@@ -1083,7 +1087,7 @@ mod tests {
             cleanup_unreferenced_managed_media_with_references(
                 upload_root.path().to_path_buf(),
                 generated_root.path().to_path_buf(),
-                registry,
+                Arc::new(registry),
                 Ok(Vec::new()),
             )
             .await
@@ -1124,7 +1128,7 @@ mod tests {
             cleanup_unreferenced_managed_media_with_references(
                 upload_root.path().to_path_buf(),
                 generated_root.path().to_path_buf(),
-                registry,
+                Arc::new(registry),
                 Ok(Vec::new()),
             )
             .await
@@ -1208,7 +1212,7 @@ mod tests {
             root.path().to_path_buf(),
             vec![attachment],
             1024,
-            Some((registry.clone(), None)),
+            Some((Arc::new(registry.clone()), None)),
         )
         .await
         .unwrap();
@@ -1257,12 +1261,12 @@ mod tests {
                 root.path().to_path_buf(),
                 vec![attachment],
                 1024,
-                Some((registry.clone(), None)),
+                Some((Arc::new(registry.clone()), None)),
             ),
             cleanup_unreferenced_managed_media_with_references(
                 root.path().to_path_buf(),
                 generated_root.path().to_path_buf(),
-                registry.clone(),
+                Arc::new(registry.clone()),
                 Ok(Vec::new()),
             ),
         );

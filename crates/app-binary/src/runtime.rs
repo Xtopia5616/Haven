@@ -16,7 +16,9 @@ use haven_agent::{AgentLayer, MemoryStartup, PendingSessionRecovery, SessionSupe
 use haven_common::config::ConfigService;
 use haven_input::InputPipeline;
 use haven_memory::{MemoryFactStore, SessionStore};
-use haven_tools::{AuthorizationPort, McpManager, SkillRegistry, ToolsFacade};
+use haven_tools::{
+    AuthorizationPort, ManagedAssetLifecyclePort, McpManager, SkillRegistry, ToolsFacade,
+};
 use std::future::Future;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -79,6 +81,7 @@ pub(crate) struct AppServices {
     pub(crate) authorization: Arc<dyn AuthorizationPort>,
     pub(crate) tool_runs: Arc<dyn AppToolRunPort>,
     pub(crate) live_output: Arc<dyn AppLiveOutputPort>,
+    pub(crate) managed_assets: Arc<dyn ManagedAssetLifecyclePort>,
 }
 
 impl ApplicationRuntime {
@@ -93,6 +96,7 @@ impl ApplicationRuntime {
             authorization: tool_services.authorization,
             tool_runs: app_tool_run_port_from_facade(Arc::clone(&runtime_services.tools)),
             live_output: app_live_output_port_from_facade(Arc::clone(&runtime_services.tools)),
+            managed_assets: tool_services.managed_assets,
         };
         let config_apply_gate = runtime_services.config_apply_gate;
         Self {

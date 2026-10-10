@@ -159,7 +159,7 @@ async fn run_cleanup_pass(
     executor: &SessionSupervisor,
     session_store: &SessionStore,
     roots: &CleanupRoots,
-    registry: &haven_tools::ManagedAssetRegistry,
+    registry: &std::sync::Arc<dyn haven_tools::ManagedAssetLifecyclePort>,
     retention_days: u32,
     context: &'static str,
 ) {
@@ -183,7 +183,7 @@ async fn run_cleanup_pass(
     match crate::commands::managed_media::cleanup_unreferenced_managed_media(
         roots.uploads.clone(),
         roots.generated_media.clone(),
-        registry.clone(),
+        Arc::clone(registry),
         session_store,
     )
     .await
@@ -463,7 +463,7 @@ impl AppState {
         let cleanup_executor = executor.clone();
         let cleanup_store = session_store.clone();
         let cleanup_roots = cleanup_roots.clone();
-        let cleanup_registry = tools.share_services().assets.clone();
+        let cleanup_registry = Arc::clone(&runtime.services.managed_assets);
         runtime.spawn_with_child_token("daily-cleanup", move |cancel| async move {
             let period = std::time::Duration::from_secs(86400);
             run_cleanup_pass(

@@ -980,7 +980,7 @@ mod tests {
     #[test]
     fn managed_asset_adapter_releases_only_the_requested_session_lease() {
         let tools = Arc::new(ToolsFacade::new());
-        let assets = tools.share_services().assets;
+        let assets = tools.share_services().managed_assets;
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("asset.png");
         fs::write(&path, b"asset").unwrap();
