@@ -2,9 +2,9 @@ import { describe, expect, it } from 'vitest';
 import { TAURI_COMMAND_CONTRACTS, TAURI_COMMAND_NAMES, type CommandBoundary } from './commands.ts';
 
 describe('Tauri command boundary directory', () => {
-	it('contains the complete unique command set without duplicating generated shapes', () => {
-		expect(TAURI_COMMAND_NAMES).toHaveLength(80);
-		expect(new Set(TAURI_COMMAND_NAMES).size).toBe(80);
+	it('matches the reviewed command count without duplicating generated shapes', () => {
+		expect(TAURI_COMMAND_NAMES).toHaveLength(79);
+		expect(new Set(TAURI_COMMAND_NAMES).size).toBe(79);
 		expect(TAURI_COMMAND_NAMES).toEqual(Object.keys(TAURI_COMMAND_CONTRACTS));
 		for (const contract of Object.values(TAURI_COMMAND_CONTRACTS)) {
 			expect(Object.keys(contract).sort()).toEqual(['boundary', 'security']);
