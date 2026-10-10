@@ -277,7 +277,7 @@ impl OpenAiAdapter {
                     function: OpenAiToolFunction {
                         name: tool_names.to_provider(&t.function.name),
                         description: t.function.description.clone(),
-                        parameters: crate::types::canonicalize_json(parameters),
+                        parameters: haven_common::json::canonicalize_json(parameters),
                     },
                 }
             })

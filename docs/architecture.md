@@ -66,6 +66,9 @@ reparse point；它不解析路径或制定允许根目录。App 上传/清理�
 字符串列边界编码/解码。缓存策略、结果和用量来源是闭合枚举；界面和生成的 command DTO 不再把诊断当作
 任意 JSON。provider 名称仍是开放字符串，因为它标识配置中的 provider，而非协议枚举（ADR 0852）。
 
+`haven-common::json` 唯一拥有递归 JSON 对象键排序和 canonical bytes 编码；数组顺序保留。Tools 授权确认输入
+hash 与 LLM schema/cache identity 复用相同编码，哈希域和 provider 请求/cache key 语义仍由各自领域拥有（ADR 0862）。
+
 `haven-common::bounded_bytes::BoundedBytes` 持有跨网络适配器共享的响应体字节不变量：Content-Length 超限预拒绝、
 有界预分配与逐块追加前的容量检查。LLM 与 MCP transport 各自保留流读取、取消、deadline、文本/JSON 解码及协议错误映射；
 Common 不拥有网络 I/O 或这些传输生命周期（ADR 0855）。
@@ -189,6 +192,7 @@ CI 以 `scripts/check-crate-dependencies.ps1` 对此表执行内部 crate 依赖
 - `prompts.rs`：系统提示词与各专用 prompt 常量（含 `STT_SYSTEM_PROMPT`）。
 - `retry.rs`：纯恢复策略模型。调用方提供错误分类、尝试次数和当前单调时钟，获得继续/停止决策与退避时间；不执行 sleep、取消、队列、持久化或任务生命周期。
 - `encoding.rs` / `text.rs`：编码解码（UTF-8 → GBK 回退）、文本工具。
+- `json.rs`：递归对象键 canonicalization 与 `canonical_json_bytes`，保留数组顺序；Tools 确认 hash 和 LLM schema/cache identity 共用此编码（ADR 0862）。
 
 **判定标准**：凡被 ≥2 个 crate 共享、且不依赖任何业务逻辑的纯数据/纯函数，放这里。
 OS 句柄和进程生命周期适配不属于该共享契约面，统一归 `haven-platform`。

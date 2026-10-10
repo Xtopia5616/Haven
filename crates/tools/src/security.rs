@@ -891,25 +891,8 @@ fn confirmation_expiry() -> u64 {
 }
 
 fn canonical_input_hash(input: &Value) -> String {
-    let canonical = canonicalize_json(input);
-    let digest = Sha256::digest(serde_json::to_vec(&canonical).unwrap_or_default());
+    let digest = Sha256::digest(haven_common::json::canonical_json_bytes(input));
     digest.iter().map(|byte| format!("{byte:02x}")).collect()
-}
-
-fn canonicalize_json(value: &Value) -> Value {
-    match value {
-        Value::Object(object) => {
-            let mut entries: Vec<_> = object.iter().collect();
-            entries.sort_by_key(|(key, _)| *key);
-            let mut canonical = serde_json::Map::new();
-            for (key, value) in entries {
-                canonical.insert(key.clone(), canonicalize_json(value));
-            }
-            Value::Object(canonical)
-        }
-        Value::Array(values) => Value::Array(values.iter().map(canonicalize_json).collect()),
-        _ => value.clone(),
-    }
 }
 
 fn is_auto_edit_safe(key: &CapabilityScope, policy: &OperationPolicy) -> bool {

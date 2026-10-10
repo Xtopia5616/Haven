@@ -62,7 +62,7 @@ impl OpenAiAdapter {
         // from sharing a routing shard with an incompatible wire surface.
         let capability_value = serde_json::to_value(Self::wire_capability_profile()).ok()?;
         hasher.update(b"capabilities\0");
-        hasher.update(crate::types::stable_json_bytes(&capability_value));
+        hasher.update(haven_common::json::canonical_json_bytes(&capability_value));
 
         // Tool schemas are part of the provider cache key. Changing a loaded
         // MCP/Skill therefore gets a new routing key rather than contaminating
@@ -74,7 +74,7 @@ impl OpenAiAdapter {
         let tool_value =
             serde_json::to_value(Self::convert_tools_ref_with_names(tools, &tool_names)).ok()?;
         hasher.update(b"tools\0");
-        hasher.update(crate::types::stable_json_bytes(&tool_value));
+        hasher.update(haven_common::json::canonical_json_bytes(&tool_value));
 
         // xAI's search_parameters and other OpenAI-compatible gateways may
         // vary their runtime capability surface by this mode.  Keep the

@@ -311,7 +311,7 @@ impl AnthropicAdapter {
                 // Defense in depth: the local LlmToolDefinition constructor
                 // sanitizes schemas, but cached/direct definitions can still
                 // contain a null or non-object root.
-                let parameters = crate::types::canonicalize_json(
+                let parameters = haven_common::json::canonicalize_json(
                     crate::types::sanitize_tool_parameters(t.function.parameters.clone()),
                 );
                 json!({

@@ -60,7 +60,7 @@ impl OpenAiResponsesAdapter {
         // shard created for another representation.
         let capability_value = serde_json::to_value(Self::wire_capability_profile()).ok()?;
         hasher.update(b"capabilities\0");
-        hasher.update(crate::types::stable_json_bytes(&capability_value));
+        hasher.update(haven_common::json::canonical_json_bytes(&capability_value));
 
         // Hash the exact provider tool projection, not the canonical
         // LlmToolDefinition. In particular, sanitized schemas must not select a
@@ -69,7 +69,7 @@ impl OpenAiResponsesAdapter {
         let tool_value =
             serde_json::to_value(Self::convert_tools_with_names(tools, &tool_names)).ok()?;
         hasher.update(b"tools\0");
-        hasher.update(crate::types::stable_json_bytes(&tool_value));
+        hasher.update(haven_common::json::canonical_json_bytes(&tool_value));
         // Built-in web search changes the Responses tool surface and
         // tool-choice semantics, so it must select a distinct cache shard.
         hasher.update([match web_search_mode {

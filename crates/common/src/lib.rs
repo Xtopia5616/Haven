@@ -3,6 +3,7 @@ pub mod config;
 pub mod encoding;
 pub mod error;
 pub mod hooks;
+pub mod json;
 pub mod lifecycle;
 pub mod log_file;
 pub mod media;

@@ -90,7 +90,7 @@ pub(crate) fn prompt_cache_compaction_marker(
             })
     })?;
     let value = serde_json::to_value(summary).ok()?;
-    Some(crate::types::stable_json_bytes(&value))
+    Some(haven_common::json::canonical_json_bytes(&value))
 }
 
 /// Describe only the raw media surface of a provider-visible request.  Media
@@ -128,7 +128,8 @@ pub(crate) fn prompt_cache_media_marker(
             }));
         }
     }
-    (!surface.is_empty()).then(|| crate::types::stable_json_bytes(&serde_json::json!(surface)))
+    (!surface.is_empty())
+        .then(|| haven_common::json::canonical_json_bytes(&serde_json::json!(surface)))
 }
 
 /// Adapter returned when endpoint construction fails. Keeping the failure in

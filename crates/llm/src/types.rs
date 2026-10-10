@@ -2,7 +2,7 @@ use haven_common::config::RequestKind;
 use haven_common::types::{CanonicalMessage, CanonicalToolCall};
 use haven_common::usage::{CacheAccounting, CacheDiagnostics};
 use serde::{Deserialize, Serialize};
-use serde_json::{Map, Value};
+use serde_json::Value;
 use std::fmt;
 use thiserror::Error;
 
@@ -451,33 +451,6 @@ impl CompleteRequest {
         self.max_output_tokens = Some(max_output_tokens);
         self
     }
-}
-
-/// Canonicalize JSON object keys recursively for cache identity and provider
-/// wire stability. Object key order is not schema semantics; array order is
-/// preserved because it can be meaningful in JSON Schema (`allOf`, `oneOf`,
-/// `prefixItems`, and enum values).
-pub fn canonicalize_json(value: Value) -> Value {
-    match value {
-        Value::Array(values) => Value::Array(values.into_iter().map(canonicalize_json).collect()),
-        Value::Object(object) => {
-            let mut entries: Vec<_> = object.into_iter().collect();
-            entries.sort_by(|left, right| left.0.cmp(&right.0));
-            let sorted: Map<String, Value> = entries
-                .into_iter()
-                .map(|(key, value)| (key, canonicalize_json(value)))
-                .collect();
-            Value::Object(sorted)
-        }
-        other => other,
-    }
-}
-
-/// Serialize a JSON value with [`canonicalize_json`] ordering. This is used
-/// only for cache identity; provider request serialization remains owned by
-/// each adapter.
-pub fn stable_json_bytes(value: &Value) -> Vec<u8> {
-    serde_json::to_vec(&canonicalize_json(value.clone())).unwrap_or_default()
 }
 
 /// Canonical tool definition → LLM-boundary tool definition. The agent and
@@ -1239,7 +1212,7 @@ mod tests {
             "a": [{"d": 4, "c": 3}, "keep-order"]
         });
         assert_eq!(
-            String::from_utf8(stable_json_bytes(&value)).unwrap(),
+            String::from_utf8(haven_common::json::canonical_json_bytes(&value)).unwrap(),
             r#"{"a":[{"c":3,"d":4},"keep-order"],"z":{"a":2,"b":1}}"#
         );
     }

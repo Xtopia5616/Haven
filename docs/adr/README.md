@@ -840,3 +840,4 @@
 - [0859：集中工具 root name 投影](0859-centralize-tool-root-name-projection.md)
 - [0860：集中 UI 运行时值校验原子谓词](0860-centralize-ui-runtime-value-guards.md)
 - [0861：共享 OpenAI prompt cache key 支持状态](0861-share-openai-prompt-cache-key-state.md)
+- [0862：跨 crate 共用 canonical JSON 编码](0862-share-canonical-json-across-crates.md)

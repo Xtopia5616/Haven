@@ -26,12 +26,12 @@ impl GeminiAdapter {
         hasher.update(b"haven-gemini-cached-content-v1\0");
         hasher.update(self.endpoint.model_name.as_bytes());
         hasher.update([0]);
-        hasher.update(crate::types::stable_json_bytes(system_instruction));
+        hasher.update(haven_common::json::canonical_json_bytes(system_instruction));
         hasher.update([0]);
         let tools = tools
             .map(|value| serde_json::to_value(value).unwrap_or(Value::Null))
             .unwrap_or(Value::Null);
-        hasher.update(crate::types::stable_json_bytes(&tools));
+        hasher.update(haven_common::json::canonical_json_bytes(&tools));
         let digest = hasher.finalize();
         let fingerprint = digest[..16]
             .iter()
