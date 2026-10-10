@@ -147,32 +147,32 @@ pub(crate) fn operation_text(name: &str) -> OperationText {
             when_to_use: "Use when the current clipboard is insufficient and history is relevant.",
         },
         "input.type" => OperationText {
-            description: "Type text into the focused application.",
-            when_to_use: "Use only when the intended foreground target is clear.",
+            description: "Inject text into the focused application and report how many SendInput events Windows accepted.",
+            when_to_use: "Use only when the intended foreground target is clear; accepted events do not prove that the application processed the text.",
         },
         "input.type_element" => OperationText {
-            description: "Type text into a uniquely identified UI Automation control.",
-            when_to_use: "Prefer this when the target control can be identified by name and type.",
+            description: "Focus a uniquely identified UI Automation control, inject text, and report accepted SendInput events.",
+            when_to_use: "Prefer this when the target control can be identified by name and type; accepted events do not prove application-level processing.",
         },
         "input.key" => OperationText {
-            description: "Press a keyboard key or shortcut.",
-            when_to_use: "Use only when the target application and key effect are clear.",
+            description: "Inject a keyboard key or shortcut into the current foreground window; the result reports accepted input events and verifies the foreground window stayed the same.",
+            when_to_use: "Use only when the target application and key effect are clear; inspect the returned foreground identity. This verifies the input recipient, not the application's semantic response.",
         },
         "input.click" => OperationText {
-            description: "Click screen coordinates in the foreground application.",
-            when_to_use: "Use when coordinates are known and no stable UI element target is available.",
+            description: "Inject a click at screen coordinates and report how many SendInput events Windows accepted.",
+            when_to_use: "Use when coordinates are known and no stable UI element target is available; accepted events do not prove that the application handled the click.",
         },
         "input.click_element" => OperationText {
-            description: "Click a uniquely identified UI Automation control.",
-            when_to_use: "Prefer this over coordinates; specify an index when names are duplicated.",
+            description: "Click the center of a uniquely identified UI Automation control and report accepted SendInput events.",
+            when_to_use: "Prefer this over coordinates; specify an index when names are duplicated. Accepted events do not prove that the application handled the click.",
         },
         "input.move" => OperationText {
-            description: "Move the mouse pointer to screen coordinates.",
+            description: "Move the mouse pointer and report how many SendInput events Windows accepted.",
             when_to_use: "Use when pointer placement itself is required.",
         },
         "input.scroll" => OperationText {
-            description: "Scroll the foreground application.",
-            when_to_use: "Use when the target window and scroll direction are clear.",
+            description: "Inject a wheel event and report how many SendInput events Windows accepted.",
+            when_to_use: "Use when the target window and scroll direction are clear; accepted events do not prove that the application processed the scroll.",
         },
         "window.list" => OperationText {
             description: "List visible desktop windows and titles.",
@@ -183,8 +183,8 @@ pub(crate) fn operation_text(name: &str) -> OperationText {
             when_to_use: "Use before an action that depends on the active window.",
         },
         "window.focus" => OperationText {
-            description: "Focus a window by title or PID.",
-            when_to_use: "Use only when the target is unambiguous.",
+            description: "Focus a window by title or PID and verify it became the foreground window.",
+            when_to_use: "Use only when the target is unambiguous; treat a verification failure as an uncertain side effect and do not report focus as successful.",
         },
         "window.close" => OperationText {
             description: "Close a window by title or PID.",
@@ -424,14 +424,14 @@ pub(crate) fn operation_text(name: &str) -> OperationText {
         },
         "haven.diagnostics.logs_tail" => OperationText {
             description: "Read a bounded tail of Haven logs.",
-            when_to_use: "Use when recent logs are needed for diagnosis.",
+            when_to_use: "Use when recent framework or application log lines are needed; the result includes the tail lines when file logging is available.",
         },
         "haven.diagnostics.sessions" => OperationText {
             description: "List Haven session diagnostics.",
             when_to_use: "Use when inspecting session lifecycle or health.",
         },
         "haven.diagnostics.errors" => OperationText {
-            description: "List recent Haven errors.",
+            description: "List recent session errors recorded by Haven.",
             when_to_use: "Use when diagnosing recent failures.",
         },
         "haven.config.config_get" => OperationText {
@@ -455,8 +455,8 @@ pub(crate) fn operation_text(name: &str) -> OperationText {
             when_to_use: "Use only when the user explicitly asks to disable it.",
         },
         "haven.skills.skill_create" => OperationText {
-            description: "Create an executable Haven skill from metadata, instructions, and a Python entry script.",
-            when_to_use: "Use only when the user explicitly asks to create a skill; include a reviewed script that reads JSON from stdin and returns JSON on stdout.",
+            description: "Create an executable Haven skill from metadata and instructions, with an optional Python entry script.",
+            when_to_use: "Use only when the user explicitly asks to create a skill. Omit script to use Haven's starter template, or provide a reviewed script that reads UTF-8 JSON from stdin and emits one JSON envelope on stdout.",
         },
         "haven.tools.tool_enable" => OperationText {
             description: "Enable a built-in Haven tool.",

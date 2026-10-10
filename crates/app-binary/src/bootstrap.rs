@@ -231,7 +231,7 @@ pub(crate) fn run() {
             // manual refresh.
             {
                 let emit_handle = handle.clone();
-                let mut rx = state.runtime.services.mcp.subscribe();
+                let mut rx = state.runtime.services.mcp.subscribe_status_events();
                 state
                     .runtime
                     .spawn_with_child_token("mcp-status-forwarder", move |cancel| async move {
@@ -239,7 +239,7 @@ pub(crate) fn run() {
                         tokio::select! {
                             _ = cancel.cancelled() => break,
                             result = rx.recv() => match result {
-                                Ok(ev) => {
+                                Some(ev) => {
                                     log_ignored_result!(
                                         "event.mcp_status_changed",
                                         emit_handle.emit(
@@ -251,8 +251,7 @@ pub(crate) fn run() {
                                         )
                                     );
                                 }
-                                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
-                                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                                None => break,
                             }
                         }
                     }

@@ -26,3 +26,9 @@ Describe the skill behavior here.
 ```
 
 有效 skill 的不可执行原因也会显示在列表中，例如配置 allowlist 将其禁用，或缺少 `scripts/main.py` / `scripts/<name>.py` 入口脚本。配置已启用但缺少脚本时，列表会分别说明配置状态和当前不可执行状态；可以关闭该配置，但不能在入口脚本缺失时启用。
+
+## `skill_create` 默认 Python 脚手架
+
+创建 skill 时可以省略 `script`，Haven 会生成 `scripts/main.py` 入门模板。模板通过 `sys.stdin.buffer.read()` 读取输入，并用 `utf-8-sig` 解码后解析 JSON object；`run(params)` 应返回结构化字典，推荐把机器可用结果放在 `hashes`、`detected` 等字段，把人读说明放在 `report`。
+
+入口会将 `run(params)` 的标准输出重定向到内存缓冲区，避免调试 `print()` 污染协议；进程最终只向 stdout 输出一行 JSON envelope，成功包含 `ok: true`，异常包含 `ok: false` 与 `error: {type, message}`。不要向 stderr 写日志：skill runner 将非空 stderr 或非零退出视为执行失败。模板保证正常 Python 异常也走 JSON 错误 envelope；语法错误、解释器启动失败等发生在脚本入口执行前的错误仍由 runner 报告。

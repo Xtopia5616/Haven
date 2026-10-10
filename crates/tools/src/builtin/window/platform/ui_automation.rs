@@ -392,7 +392,7 @@ pub(crate) fn invoke_ui_element(
     let (element, target) = ui_automation_element(query)?;
     let pattern: IUIAutomationInvokePattern =
         unsafe { element.GetCurrentPatternAs(UIA_InvokePatternId)? };
-    unsafe { pattern.Invoke()? };
+    unsafe { pattern.Invoke() }.map_err(|error| unknown_ui_action_error("invoke", error))?;
     Ok(target)
 }
 
@@ -406,7 +406,8 @@ pub(crate) fn set_ui_element_value(
     let pattern: IUIAutomationValuePattern =
         unsafe { element.GetCurrentPatternAs(UIA_ValuePatternId)? };
     let value = windows::core::BSTR::from(value);
-    unsafe { pattern.SetValue(&value)? };
+    unsafe { pattern.SetValue(&value) }
+        .map_err(|error| unknown_ui_action_error("set_value", error))?;
     Ok(target)
 }
 
@@ -418,7 +419,7 @@ pub(crate) fn toggle_ui_element(
     let (element, target) = ui_automation_element(query)?;
     let pattern: IUIAutomationTogglePattern =
         unsafe { element.GetCurrentPatternAs(UIA_TogglePatternId)? };
-    unsafe { pattern.Toggle()? };
+    unsafe { pattern.Toggle() }.map_err(|error| unknown_ui_action_error("toggle", error))?;
     Ok(target)
 }
 
@@ -432,8 +433,17 @@ pub(crate) fn select_ui_element(
     let (element, target) = ui_automation_element(query)?;
     let pattern: IUIAutomationSelectionItemPattern =
         unsafe { element.GetCurrentPatternAs(UIA_SelectionItemPatternId)? };
-    unsafe { pattern.Select()? };
+    unsafe { pattern.Select() }.map_err(|error| unknown_ui_action_error("select", error))?;
     Ok(target)
+}
+
+fn unknown_ui_action_error(operation: &str, error: windows::core::Error) -> anyhow::Error {
+    anyhow::Error::new(crate::tool_contract::StructuredToolError::new(
+        format!(
+            "UI Automation {operation} returned an error after dispatch; the control may have changed: {error}"
+        ),
+        crate::tool_contract::ToolErrorMetadata::unknown_failure(),
+    ))
 }
 
 /// Enumerate interactive UI Automation elements for the foreground window
@@ -441,13 +451,15 @@ pub(crate) fn select_ui_element(
 pub(crate) fn enumerate_ui_tree(
     target_window_id: Option<&str>,
     title: Option<&str>,
+    pid: Option<u32>,
 ) -> anyhow::Result<Vec<Value>> {
-    retry_ui_automation_e_fail(|| enumerate_ui_tree_once(target_window_id, title))
+    retry_ui_automation_e_fail(|| enumerate_ui_tree_once(target_window_id, title, pid))
 }
 
 fn enumerate_ui_tree_once(
     target_window_id: Option<&str>,
     title: Option<&str>,
+    pid: Option<u32>,
 ) -> anyhow::Result<Vec<Value>> {
     use windows::Win32::Foundation::HWND as WinHwnd;
     use windows::Win32::System::Com::*;
@@ -455,18 +467,15 @@ fn enumerate_ui_tree_once(
 
     let _com = ComApartmentGuard::initialize_mta()?;
 
-    let target_hwnd: HWND =
-        if let Some(window_id) = target_window_id.filter(|s| !s.trim().is_empty()) {
-            hwnd_from_window_id(window_id)?
-        } else if let Some(t) = title.filter(|s| !s.trim().is_empty()) {
-            let hwnd = find_window_by_title(t.trim())?;
-            if hwnd.is_null() {
-                anyhow::bail!("no window found matching '{}'", t);
-            }
-            hwnd
-        } else {
-            unsafe { GetForegroundWindow() }
-        };
+    let target_hwnd: HWND = if target_window_id.is_some()
+        || title.is_some_and(|value| !value.trim().is_empty())
+        || pid.is_some()
+    {
+        super::window_list::find_window(target_window_id, title, pid)?
+            .ok_or_else(|| anyhow::anyhow!("no window found matching the supplied selectors"))?
+    } else {
+        unsafe { GetForegroundWindow() }
+    };
     if target_hwnd.is_null() {
         anyhow::bail!("no target window for ui_tree");
     }

@@ -7,6 +7,7 @@
 		name?: string | null;
 		connected?: boolean | null;
 		tools?: number | null;
+		diagnostic?: string | null;
 	}
 
 	interface AdminSkillRow extends Record<string, unknown> {
@@ -36,6 +37,10 @@
 			connected?: boolean | unknown[] | null;
 			created?: boolean | null;
 			removed?: boolean | null;
+			path?: string | null;
+			error?: string | null;
+			total_lines?: number | null;
+			lines?: string[];
 		};
 	}
 
@@ -61,6 +66,9 @@
 								>{server.tools} 个工具</span
 							>{/if}
 					</div>
+					{#if server.diagnostic}
+						<p class="tool-result-message tool-result-message--compact">{server.diagnostic}</p>
+					{/if}
 				{/each}
 			</div>
 		{/snippet}
@@ -90,6 +98,18 @@
 			</div>
 		{/snippet}
 	</ToolResultList>
+{:else if Array.isArray(data.lines)}
+	<div class="tool-result-label">日志 · {data.total_lines ?? data.lines.length} 行</div>
+	{#if data.path}<div class="tool-result-meta">{data.path}</div>{/if}
+	{#if data.lines.length > 0}
+		<pre class="tool-result-preview">{data.lines.join('\n')}</pre>
+	{:else}
+		<p class="tool-result-message tool-result-message--compact">日志文件存在，但没有可显示的日志行。</p>
+	{/if}
+{:else if data.path && data.error}
+	<div class="tool-result-label">日志不可用</div>
+	<p class="tool-result-message">{data.error}</p>
+	<div class="tool-result-meta">{data.path}</div>
 {:else if Array.isArray(data.sessions) || Array.isArray(data.errors)}
 	{@const rows = Array.isArray(data.sessions) ? data.sessions : (data.errors ?? [])}
 	<div class="tool-result-label">{rows.length} 条记录</div>
@@ -131,6 +151,12 @@
 <style>
 	.admin-list {
 		--tool-result-scroll-max-height: 220px;
+	}
+	.tool-result-preview {
+		max-height: 320px;
+		overflow: auto;
+		white-space: pre-wrap;
+		word-break: break-word;
 	}
 	.admin-row {
 		display: flex;

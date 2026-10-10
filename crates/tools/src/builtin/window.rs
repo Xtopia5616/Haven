@@ -128,15 +128,33 @@ impl WindowTool {
         }
 
         let filter_pid = match params.pid {
-            Some(pid) if pid > 0 => Some(pid as u32),
-            Some(_) => anyhow::bail!("pid must be a positive integer"),
+            Some(pid) if (1..=u32::MAX as i64).contains(&pid) => Some(pid as u32),
+            Some(_) => anyhow::bail!("pid must be a positive 32-bit integer"),
             None => None,
         };
         let title = params.title.clone();
 
         match params.operation.unwrap_or(WindowOperation::List) {
             WindowOperation::List => {
-                let windows = platform::enumerate_windows(filter_pid)?;
+                if let Some(condition) = params.condition {
+                    if condition != WaitCondition::TitleContains {
+                        anyhow::bail!(
+                            "list supports only condition=title_contains; foreground_contains and ui_text are wait conditions"
+                        );
+                    }
+                    if title.as_deref().is_none_or(|value| value.trim().is_empty()) {
+                        anyhow::bail!("title is required for list condition=title_contains");
+                    }
+                }
+                let mut windows = platform::enumerate_windows(filter_pid)?;
+                if let Some(title) = title.as_deref().filter(|value| !value.trim().is_empty()) {
+                    let needle = title.trim().to_lowercase();
+                    windows.retain(|window| {
+                        window["title"]
+                            .as_str()
+                            .is_some_and(|value| value.to_lowercase().contains(&needle))
+                    });
+                }
                 let count = windows.len();
                 let max = 200usize;
                 let truncated = count > max;
@@ -166,26 +184,35 @@ impl WindowTool {
                 if params.window_id.is_none() && target.is_none() && filter_pid.is_none() {
                     anyhow::bail!("title or pid is required for focus");
                 }
-                platform::focus_window(params.window_id.as_deref(), target, filter_pid)?;
-                Ok(window_target_result(
-                    "focus",
-                    params.window_id.as_deref(),
-                    target,
-                    filter_pid,
-                ))
+                let foreground =
+                    platform::focus_window(params.window_id.as_deref(), target, filter_pid)?;
+                let mut result =
+                    window_target_result("focus", params.window_id.as_deref(), target, filter_pid);
+                result.output["verified_foreground"] = serde_json::json!(true);
+                result.output["foreground_window"] = foreground;
+                Ok(result)
             }
             WindowOperation::Close => {
                 let target = title.as_deref().filter(|t| !t.trim().is_empty());
                 if params.window_id.is_none() && target.is_none() && filter_pid.is_none() {
                     anyhow::bail!("title or pid is required for close");
                 }
-                platform::close_window(params.window_id.as_deref(), target, filter_pid)?;
-                Ok(window_target_result(
-                    "close",
-                    params.window_id.as_deref(),
-                    target,
-                    filter_pid,
-                ))
+                let window_id = params.window_id.clone();
+                let title = target.map(ToOwned::to_owned);
+                tokio::task::spawn_blocking(move || {
+                    platform::close_window(window_id.as_deref(), title.as_deref(), filter_pid)
+                })
+                .await
+                .map_err(|error| {
+                    anyhow::Error::new(crate::tool_contract::StructuredToolError::new(
+                        format!("window.close worker failed; closure outcome is unknown: {error}"),
+                        crate::tool_contract::ToolErrorMetadata::unknown_failure(),
+                    ))
+                })??;
+                let mut result =
+                    window_target_result("close", params.window_id.as_deref(), target, filter_pid);
+                result.output["verified_closed"] = serde_json::json!(true);
+                Ok(result)
             }
             WindowOperation::Screenshot => {
                 let capture = self
@@ -209,21 +236,23 @@ impl WindowTool {
             WindowOperation::UiTree => {
                 let title_owned = title;
                 let window_id = params.window_id.clone();
+                let pid = filter_pid;
                 let elements = tokio::task::spawn_blocking(move || {
-                    platform::enumerate_ui_tree(window_id.as_deref(), title_owned.as_deref())
+                    platform::enumerate_ui_tree(window_id.as_deref(), title_owned.as_deref(), pid)
                 })
                 .await??;
                 let count = elements.len();
                 let truncated = count >= ui_automation::UI_TREE_CAP;
-                Ok(ToolResult::from_output(
-                    serde_json::json!({
-                        "operation": "ui_tree",
-                        "elements": elements,
-                        "count": count,
-                        "truncated": truncated,
-                    }),
-                    truncated,
-                ))
+                let mut output = serde_json::json!({
+                    "operation": "ui_tree",
+                    "elements": elements,
+                    "count": count,
+                    "truncated": truncated,
+                });
+                if count == 0 {
+                    output["note"] = serde_json::json!(UIA_EMPTY_RESULT_NOTE);
+                }
+                Ok(ToolResult::from_output(output, truncated))
             }
             WindowOperation::Observe => self.observe(params, cancel).await,
             WindowOperation::Invoke
@@ -259,6 +288,12 @@ impl WindowTool {
             WindowOperation::Wait => self.wait(params, cancel).await,
         }
     }
+}
+
+pub(crate) const UIA_EMPTY_RESULT_NOTE: &str = "UI Automation returned no actionable controls. Some applications do not expose a usable UIA tree; inspect the screenshot and use coordinate-based input if needed.";
+
+pub(crate) fn foreground_window_info() -> anyhow::Result<Value> {
+    platform::get_foreground_window_info()
 }
 
 fn window_target_result(

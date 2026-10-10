@@ -28,7 +28,15 @@
 			title?: string | null;
 			pid?: number | null;
 			focused?: string | null;
+			verified_foreground?: boolean | null;
+			foreground_window?: {
+				window_id?: string | null;
+				hwnd?: number | string | null;
+				title?: string | null;
+				pid?: number | null;
+			} | null;
 			closed?: string | null;
+			verified_closed?: boolean | null;
 			width?: number | null;
 			height?: number | null;
 			format?: ToolWindowFormat | null;
@@ -83,12 +91,22 @@
 	</div>
 {:else if data.operation === 'focus' || data.operation === 'close'}
 	<div class="window-detail">
-		<span class="window-op">{data.operation === 'focus' ? '已聚焦' : '已关闭'}</span>
+		<span class="window-op">{data.operation === 'focus' ? '已聚焦' : '已确认关闭'}</span>
 		{#if data.focused || data.closed}<span class="tool-result-window-primary window-title"
 				>{data.focused || data.closed}</span
 			>{/if}
 		{#if data.pid}<span class="tool-result-secondary-value window-meta">PID {data.pid}</span
 			>{/if}
+		{#if data.operation === 'focus' && data.verified_foreground === true && data.foreground_window}
+			<div class="tool-result-meta">
+				前台验证通过：{data.foreground_window.title || data.foreground_window.window_id || '未知窗口'}
+				{#if data.foreground_window.pid} · PID {data.foreground_window.pid}{/if}
+				{#if data.foreground_window.hwnd != null} · HWND {data.foreground_window.hwnd}{/if}
+			</div>
+		{/if}
+		{#if data.operation === 'close' && data.verified_closed === true}
+			<div class="tool-result-meta">窗口句柄已确认消失。</div>
+		{/if}
 	</div>
 {:else if data.operation === 'screenshot'}
 	<div class="window-detail">
@@ -120,6 +138,7 @@
 	{#if data.text}<div class="tool-result-meta">{data.text}</div>{/if}
 {:else if Array.isArray(data.elements)}
 	<div class="tool-result-label">{data.count ?? data.elements.length} 个界面元素</div>
+	{#if data.note}<p class="tool-result-message">{data.note}</p>{/if}
 	<ToolResultList items={data.elements}>
 		{#snippet children(visibleElements)}
 			<div class="tool-result-scroll-area">

@@ -138,19 +138,20 @@ pub use builtin::{
 };
 pub use catalog::McpServerIndexEntry;
 pub use circuit::ToolCircuitRegistry;
+pub use facade::{
+    McpRuntimePort, McpStatusEventReceiver, SkillCatalogPort, ToolRunAgentCapability,
+    ToolRunCompletionCapability, ToolRunManagementCapability,
+};
 #[cfg(feature = "test-support")]
 pub use facade::{ToolCatalogTestSupportPort, ToolRunTestSupportPort};
-pub use facade::{
-    ToolRunAgentCapability, ToolRunCompletionCapability, ToolRunManagementCapability,
-};
 pub use haven_common::types::CapabilityScope;
+#[cfg(any(test, feature = "test-support"))]
+pub use haven_mcp::McpManager;
 pub use haven_mcp::{
-    MCP_TOOLS_NOT_DISCOVERED_DIAGNOSTIC, McpClientStatus, McpManager, McpServerSnapshot,
-    McpStatusChangeEvent, McpToolInfo,
+    MCP_TOOLS_NOT_DISCOVERED_DIAGNOSTIC, McpClientStatus, McpServerSnapshot, McpStatusChangeEvent,
+    McpToolInfo,
 };
-pub use haven_skills::{
-    Language, Skill, SkillFileFingerprint, SkillInfo, SkillRegistry, VenvManager,
-};
+pub use haven_skills::{Language, Skill, SkillFileFingerprint, SkillInfo, VenvManager};
 pub use live_output::LiveOutputHub;
 pub(crate) use mcp_server_config::McpServerConfigSource;
 pub use output::{

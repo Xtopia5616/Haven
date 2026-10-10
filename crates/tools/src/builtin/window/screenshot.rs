@@ -22,8 +22,12 @@ impl WindowTool {
     ) -> anyhow::Result<ToolResult> {
         let window_id = params.window_id.clone();
         let title = params.title.clone();
+        let pid = params
+            .pid
+            .filter(|value| *value > 0 && *value <= u32::MAX as i64)
+            .map(|value| value as u32);
         let elements = tokio::task::spawn_blocking(move || {
-            platform::enumerate_ui_tree(window_id.as_deref(), title.as_deref())
+            platform::enumerate_ui_tree(window_id.as_deref(), title.as_deref(), pid)
         })
         .await??;
         let count = elements.len();
@@ -68,6 +72,12 @@ impl WindowTool {
         );
         output.insert("elements".into(), serde_json::json!(elements));
         output.insert("count".into(), serde_json::json!(count));
+        if count == 0 {
+            output.insert(
+                "note".into(),
+                serde_json::json!(super::UIA_EMPTY_RESULT_NOTE),
+            );
+        }
         output.insert("screenshot".into(), screenshot);
         let output = Value::Object(output);
         Ok(ToolResult::ok(output))

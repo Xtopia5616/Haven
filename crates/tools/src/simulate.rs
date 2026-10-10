@@ -5,27 +5,27 @@
 
 /// Type arbitrary Unicode text: one KEYEVENTF_UNICODE down/up pair per
 /// char, so CJK and symbols work regardless of keyboard layout.
-pub fn type_text(text: &str) -> anyhow::Result<()> {
+pub fn type_text(text: &str) -> anyhow::Result<usize> {
     imp::type_text(text)
 }
 
 /// Press a key or a '+' chord like ctrl+c.
-pub fn press_key(chord: &str) -> anyhow::Result<()> {
+pub fn press_key(chord: &str) -> anyhow::Result<usize> {
     imp::press_key(chord)
 }
 
 /// Click the mouse at screen coordinates (pixels from the top-left).
-pub fn click(x: i64, y: i64, button: &str) -> anyhow::Result<()> {
+pub fn click(x: i64, y: i64, button: &str) -> anyhow::Result<usize> {
     imp::click(x, y, button)
 }
 
 /// Move the mouse cursor to screen coordinates (pixels from the top-left).
-pub fn move_to(x: i64, y: i64) -> anyhow::Result<()> {
+pub fn move_to(x: i64, y: i64) -> anyhow::Result<usize> {
     imp::move_to(x, y)
 }
 
 /// Scroll the wheel; positive delta scrolls up/away, negative down/toward.
-pub fn scroll(delta: i64) -> anyhow::Result<()> {
+pub fn scroll(delta: i64) -> anyhow::Result<usize> {
     imp::scroll(delta)
 }
 
@@ -117,7 +117,7 @@ pub(crate) mod imp {
         }
     }
 
-    fn send_inputs(inputs: &[INPUT]) -> anyhow::Result<()> {
+    fn send_inputs(inputs: &[INPUT]) -> anyhow::Result<usize> {
         let sent = unsafe {
             SendInput(
                 inputs.len() as u32,
@@ -126,16 +126,21 @@ pub(crate) mod imp {
             )
         };
         if sent as usize != inputs.len() {
-            return Err(anyhow!(
-                "SendInput only delivered {}/{} events",
-                sent,
-                inputs.len()
+            return Err(anyhow::Error::new(
+                crate::tool_contract::StructuredToolError::new(
+                    format!(
+                        "SendInput only delivered {}/{} events; input may have partially taken effect",
+                        sent,
+                        inputs.len()
+                    ),
+                    crate::tool_contract::ToolErrorMetadata::unknown_failure(),
+                ),
             ));
         }
-        Ok(())
+        Ok(sent as usize)
     }
 
-    pub fn type_text(text: &str) -> anyhow::Result<()> {
+    pub fn type_text(text: &str) -> anyhow::Result<usize> {
         let mut inputs = Vec::with_capacity(text.chars().count() * 2);
         for c in text.chars() {
             inputs.push(INPUT {
@@ -166,7 +171,7 @@ pub(crate) mod imp {
         send_inputs(&inputs)
     }
 
-    pub fn press_key(chord: &str) -> anyhow::Result<()> {
+    pub fn press_key(chord: &str) -> anyhow::Result<usize> {
         let parts: Vec<&str> = chord.split('+').map(|p| p.trim()).collect();
         if parts.is_empty() || parts.iter().any(|p| p.is_empty()) {
             anyhow::bail!("invalid key chord '{}'", chord);
@@ -229,7 +234,7 @@ pub(crate) mod imp {
         }
     }
 
-    pub fn click(x: i64, y: i64, button: &str) -> anyhow::Result<()> {
+    pub fn click(x: i64, y: i64, button: &str) -> anyhow::Result<usize> {
         let (ax, ay) = absolute_xy(x, y);
         let (down, up) = match button {
             "right" => (MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP),
@@ -244,7 +249,7 @@ pub(crate) mod imp {
         send_inputs(&inputs)
     }
 
-    pub fn move_to(x: i64, y: i64) -> anyhow::Result<()> {
+    pub fn move_to(x: i64, y: i64) -> anyhow::Result<usize> {
         let (ax, ay) = absolute_xy(x, y);
         send_inputs(&[build_mouse_input(
             MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE,
@@ -254,7 +259,7 @@ pub(crate) mod imp {
         )])
     }
 
-    pub fn scroll(delta: i64) -> anyhow::Result<()> {
+    pub fn scroll(delta: i64) -> anyhow::Result<usize> {
         // One wheel notch = 120 units; positive scrolls away from the user.
         let data = (delta * 120) as u32;
         send_inputs(&[build_mouse_input(MOUSEEVENTF_WHEEL, 0, 0, data)])
@@ -265,23 +270,23 @@ pub(crate) mod imp {
 mod imp {
     use anyhow::anyhow;
 
-    pub fn type_text(_text: &str) -> anyhow::Result<()> {
+    pub fn type_text(_text: &str) -> anyhow::Result<usize> {
         Err(anyhow!("input simulation requires Windows"))
     }
 
-    pub fn press_key(_key: &str) -> anyhow::Result<()> {
+    pub fn press_key(_key: &str) -> anyhow::Result<usize> {
         Err(anyhow!("input simulation requires Windows"))
     }
 
-    pub fn click(_x: i64, _y: i64, _button: &str) -> anyhow::Result<()> {
+    pub fn click(_x: i64, _y: i64, _button: &str) -> anyhow::Result<usize> {
         Err(anyhow!("input simulation requires Windows"))
     }
 
-    pub fn move_to(_x: i64, _y: i64) -> anyhow::Result<()> {
+    pub fn move_to(_x: i64, _y: i64) -> anyhow::Result<usize> {
         Err(anyhow!("input simulation requires Windows"))
     }
 
-    pub fn scroll(_delta: i64) -> anyhow::Result<()> {
+    pub fn scroll(_delta: i64) -> anyhow::Result<usize> {
         Err(anyhow!("input simulation requires Windows"))
     }
 

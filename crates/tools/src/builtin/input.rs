@@ -121,7 +121,7 @@ impl InputTool {
                 if cancel.is_cancelled() {
                     anyhow::bail!("cancelled");
                 }
-                crate::simulate::type_text(text)?;
+                let accepted_events = crate::simulate::type_text(text)?;
                 // Never echo typed content into the tool result: it is
                 // persisted in the step observation and may contain a
                 // password, token, or other sensitive value.
@@ -129,7 +129,8 @@ impl InputTool {
                     "target": "element",
                     "typed": "[content redacted]",
                     "content_redacted": true,
-                    "chars": chars
+                    "chars": chars,
+                    "accepted_events": accepted_events
                 })
             }
             InputOperation::Key => {
@@ -141,8 +142,41 @@ impl InputTool {
                 if key.chars().count() > MAX_KEY_CHARS {
                     anyhow::bail!("key must be at most {MAX_KEY_CHARS} characters");
                 }
-                crate::simulate::press_key(key)?;
-                serde_json::json!({ "pressed": key })
+                let foreground_before = crate::builtin::window::foreground_window_info()?;
+                let foreground_window_id = foreground_before["window_id"]
+                    .as_str()
+                    .ok_or_else(|| {
+                        anyhow::anyhow!("key input requires a verifiable foreground window")
+                    })?
+                    .to_owned();
+                let foreground_hwnd = foreground_before["hwnd"]
+                    .as_u64()
+                    .ok_or_else(|| anyhow::anyhow!("foreground window handle is unavailable"))?;
+                let accepted_events = crate::simulate::press_key(key)?;
+                let foreground_after =
+                    crate::builtin::window::foreground_window_info().map_err(|error| {
+                        unknown_input_outcome(format!(
+                            "key input was sent to {}; foreground verification then failed: {error}",
+                            foreground_window_id
+                        ))
+                    })?;
+                let foreground_after_id = foreground_after["window_id"].as_str();
+                if foreground_after_id != Some(foreground_window_id.as_str()) {
+                    return Err(unknown_input_outcome(format!(
+                        "key input was sent while foreground was {}; it changed to {}; input may have reached a different window",
+                        foreground_window_id,
+                        foreground_after_id.unwrap_or("none")
+                    )));
+                }
+                serde_json::json!({
+                    "pressed": key,
+                    "accepted_events": accepted_events,
+                    "verified_foreground": true,
+                    "foreground_window_id": foreground_window_id,
+                    "foreground_hwnd": foreground_hwnd,
+                    "foreground_title": foreground_before["title"],
+                    "foreground_pid": foreground_before["pid"],
+                })
             }
             InputOperation::Click => {
                 let x = params
@@ -152,20 +186,22 @@ impl InputTool {
                     .y
                     .ok_or_else(|| anyhow::anyhow!("y is required for click"))?;
                 let button = params.button.unwrap_or(InputButton::Left);
-                crate::simulate::click(x, y, button.as_str())?;
-                serde_json::json!({ "clicked": [x, y], "button": button.as_str() })
+                let accepted_events = crate::simulate::click(x, y, button.as_str())?;
+                serde_json::json!({ "clicked": [x, y], "button": button.as_str(), "accepted_events": accepted_events })
             }
             InputOperation::ClickElement => {
                 let query = element_query(&params)?;
                 let target = crate::builtin::window::resolve_ui_element(&query)?;
                 let button = params.button.unwrap_or(InputButton::Left);
-                crate::simulate::click(target.center_x, target.center_y, button.as_str())?;
+                let accepted_events =
+                    crate::simulate::click(target.center_x, target.center_y, button.as_str())?;
                 serde_json::json!({
                     "target": "element",
                     "name": target.name,
                     "control_type": target.control_type,
                     "index": target.index,
-                    "button": button.as_str()
+                    "button": button.as_str(),
+                    "accepted_events": accepted_events
                 })
             }
             InputOperation::Move => {
@@ -175,13 +211,13 @@ impl InputTool {
                 let y = params
                     .y
                     .ok_or_else(|| anyhow::anyhow!("y is required for move"))?;
-                crate::simulate::move_to(x, y)?;
-                serde_json::json!({ "moved_to": [x, y] })
+                let accepted_events = crate::simulate::move_to(x, y)?;
+                serde_json::json!({ "moved_to": [x, y], "accepted_events": accepted_events })
             }
             InputOperation::Scroll => {
                 let delta = params.delta.unwrap_or(1).clamp(-100, 100);
-                crate::simulate::scroll(delta)?;
-                serde_json::json!({ "scrolled": delta })
+                let accepted_events = crate::simulate::scroll(delta)?;
+                serde_json::json!({ "scrolled": delta, "accepted_events": accepted_events })
             }
         };
         if let Some(object) = result.as_object_mut() {
@@ -189,6 +225,13 @@ impl InputTool {
         }
         Ok(ToolResult::ok(result))
     }
+}
+
+fn unknown_input_outcome(message: impl Into<String>) -> anyhow::Error {
+    anyhow::Error::new(crate::tool_contract::StructuredToolError::new(
+        message,
+        crate::tool_contract::ToolErrorMetadata::unknown_failure(),
+    ))
 }
 
 fn required_text<'a>(params: &'a InputParams, operation: &str) -> anyhow::Result<&'a str> {
@@ -206,14 +249,15 @@ fn required_text<'a>(params: &'a InputParams, operation: &str) -> anyhow::Result
 fn type_text(params: &InputParams, operation: &str) -> anyhow::Result<Value> {
     let text = required_text(params, operation)?;
     let chars = text.chars().count();
-    crate::simulate::type_text(text)?;
+    let accepted_events = crate::simulate::type_text(text)?;
     // Never echo typed content into the tool result: it is persisted in the
     // step observation and may contain a password, token, or other sensitive
     // value.
     Ok(serde_json::json!({
         "typed": "[content redacted]",
         "content_redacted": true,
-        "chars": chars
+        "chars": chars,
+        "accepted_events": accepted_events
     }))
 }
 

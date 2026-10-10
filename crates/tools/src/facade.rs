@@ -1,6 +1,9 @@
 use super::*;
 #[cfg(test)]
 use crate::registry::OperationRegistry;
+use haven_mcp::McpManager;
+use haven_skills::SkillRegistry;
+use std::path::PathBuf;
 
 /// Capability for running a validated Skill in its isolated subprocess.
 #[async_trait::async_trait]
@@ -16,6 +19,157 @@ pub trait SkillExecutionPort: Send + Sync {
 /// Capability for installing the sink used by live foreground tool previews.
 pub trait LiveOutputSinkPort: Send + Sync {
     fn set_event_sink(&self, sink: Arc<dyn Fn(String, Value) + Send + Sync>);
+}
+
+/// App-facing MCP runtime queries. Connection management and client state stay
+/// owned by `McpManager`; consumers receive only status, reconciliation and
+/// event capabilities.
+#[async_trait::async_trait]
+pub trait McpRuntimePort: Send + Sync {
+    async fn start_monitors(&self, config: &haven_common::McpDiscoveryConfig);
+
+    async fn shutdown(&self);
+
+    async fn snapshot(&self) -> Vec<McpServerSnapshot>;
+
+    async fn has_client(&self, name: &str) -> bool;
+
+    async fn client_status(&self, name: &str) -> McpClientStatus;
+
+    async fn plan_refresh(
+        &self,
+        config_version: haven_common::config::ConfigVersion,
+        servers: &[McpServerConfig],
+    ) -> McpRefreshPlan;
+
+    fn subscribe_status_events(&self) -> Box<dyn McpStatusEventReceiver>;
+}
+
+/// Cancellable-by-drop receiver for MCP status changes without exposing the
+/// manager's broadcast transport.
+#[async_trait::async_trait]
+pub trait McpStatusEventReceiver: Send {
+    async fn recv(&mut self) -> Option<McpStatusChangeEvent>;
+}
+
+struct SharedMcpRuntimePort {
+    manager: McpManager,
+}
+
+#[async_trait::async_trait]
+impl McpRuntimePort for SharedMcpRuntimePort {
+    async fn start_monitors(&self, config: &haven_common::McpDiscoveryConfig) {
+        self.manager.start_monitors(config).await;
+    }
+
+    async fn shutdown(&self) {
+        self.manager.shutdown_all().await;
+    }
+
+    async fn snapshot(&self) -> Vec<McpServerSnapshot> {
+        self.manager.snapshot().await
+    }
+
+    async fn has_client(&self, name: &str) -> bool {
+        self.manager.has_client(name).await
+    }
+
+    async fn client_status(&self, name: &str) -> McpClientStatus {
+        self.manager.client_status(name).await
+    }
+
+    async fn plan_refresh(
+        &self,
+        config_version: haven_common::config::ConfigVersion,
+        servers: &[McpServerConfig],
+    ) -> McpRefreshPlan {
+        let reconcile = self.manager.reconcile_servers(servers).await;
+        McpRefreshPlan::from_reconcile(config_version, &reconcile)
+    }
+
+    fn subscribe_status_events(&self) -> Box<dyn McpStatusEventReceiver> {
+        Box::new(BroadcastMcpStatusEventReceiver {
+            receiver: self.manager.subscribe(),
+        })
+    }
+}
+
+struct BroadcastMcpStatusEventReceiver {
+    receiver: tokio::sync::broadcast::Receiver<McpStatusChangeEvent>,
+}
+
+#[async_trait::async_trait]
+impl McpStatusEventReceiver for BroadcastMcpStatusEventReceiver {
+    async fn recv(&mut self) -> Option<McpStatusChangeEvent> {
+        loop {
+            match self.receiver.recv().await {
+                Ok(event) => return Some(event),
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => return None,
+            }
+        }
+    }
+}
+
+/// Narrow Skills catalog and configuration operations consumed outside Tools.
+#[async_trait::async_trait]
+pub trait SkillCatalogPort: Send + Sync {
+    fn catalog_version(&self) -> u64;
+
+    async fn set_config(
+        &self,
+        root: Option<PathBuf>,
+        enabled: Option<Vec<String>>,
+    ) -> anyhow::Result<()>;
+
+    async fn refresh_from_disk(&self) -> anyhow::Result<()>;
+
+    async fn list_skill_infos(&self) -> Vec<SkillInfo>;
+
+    async fn get_skill_info(&self, name: &str) -> Option<SkillInfo>;
+
+    async fn get_skill(&self, name: &str) -> Option<Skill>;
+
+    async fn resolved_root(&self) -> PathBuf;
+}
+
+struct SharedSkillCatalogPort {
+    registry: SkillRegistry,
+}
+
+#[async_trait::async_trait]
+impl SkillCatalogPort for SharedSkillCatalogPort {
+    fn catalog_version(&self) -> u64 {
+        self.registry.catalog_version()
+    }
+
+    async fn set_config(
+        &self,
+        root: Option<PathBuf>,
+        enabled: Option<Vec<String>>,
+    ) -> anyhow::Result<()> {
+        self.registry.set_config(root, enabled).await
+    }
+
+    async fn refresh_from_disk(&self) -> anyhow::Result<()> {
+        self.registry.refresh_from_disk().await
+    }
+
+    async fn list_skill_infos(&self) -> Vec<SkillInfo> {
+        self.registry.list_skill_infos().await
+    }
+
+    async fn get_skill_info(&self, name: &str) -> Option<SkillInfo> {
+        self.registry.get_skill_info(name).await
+    }
+
+    async fn get_skill(&self, name: &str) -> Option<Skill> {
+        self.registry.get_skill(name).await
+    }
+
+    async fn resolved_root(&self) -> PathBuf {
+        self.registry.resolved_root().await
+    }
 }
 
 /// Session-facing ToolRun operations used by Agent orchestration.
@@ -135,7 +289,7 @@ struct SharedToolCatalogTestSupportPort {
     installed_registry: crate::registry::ToolRegistry,
     session_overlay: crate::registry::SessionToolOverlay,
     mcp_server_config_source: crate::McpServerConfigSource,
-    mcp_manager: crate::McpManager,
+    mcp_manager: McpManager,
 }
 
 #[cfg(feature = "test-support")]
@@ -198,13 +352,14 @@ impl LiveOutputSinkPort for SharedLiveOutputSinkPort {
 
 /// Process services shared outside the execution facade.
 ///
-/// MCP and skill registries are domain owner handles. Managed assets and
-/// authorization, managed assets, Skill execution, live-output sink
-/// installation and ToolRun operations are exposed through capability ports.
+/// Process services shared outside the execution facade. MCP status/reconcile
+/// and Skills catalog operations are exposed through consumer capabilities;
+/// their concrete managers stay inside the Tools composition owner.
 #[derive(Clone)]
 pub struct ToolServices {
-    pub mcp: McpManager,
-    pub skills: SkillRegistry,
+    pub mcp: Arc<dyn McpRuntimePort>,
+    pub mcp_tool_caller: Arc<dyn haven_llm::McpToolCaller>,
+    pub skills: Arc<dyn SkillCatalogPort>,
     pub skill_execution: Arc<dyn SkillExecutionPort>,
     pub authorization: Arc<dyn AuthorizationPort>,
     pub managed_assets: Arc<dyn ManagedAssetLifecyclePort>,
@@ -223,9 +378,15 @@ impl ToolServices {
         let skill_runner = Arc::clone(&coordinator.builtins.skill_runner);
         let live_outputs = Arc::clone(&coordinator.runtime.live_outputs);
         let tool_run_service = Arc::clone(&coordinator.runtime.tool_run_service);
+        let mcp_manager = coordinator.builtins.mcp_manager.clone();
         Self {
-            mcp: coordinator.builtins.mcp_manager.clone(),
-            skills: coordinator.builtins.skill_registry.clone(),
+            mcp: Arc::new(SharedMcpRuntimePort {
+                manager: mcp_manager.clone(),
+            }),
+            mcp_tool_caller: Arc::new(mcp_manager),
+            skills: Arc::new(SharedSkillCatalogPort {
+                registry: coordinator.builtins.skill_registry.clone(),
+            }),
             skill_execution: Arc::new(SharedSkillExecutionPort {
                 runner: Arc::clone(&skill_runner),
             }),

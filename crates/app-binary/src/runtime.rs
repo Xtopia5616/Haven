@@ -17,7 +17,7 @@ use haven_common::config::ConfigService;
 use haven_input::InputPipeline;
 use haven_memory::{MemoryFactStore, SessionStore};
 use haven_tools::{
-    AuthorizationPort, ManagedAssetLifecyclePort, McpManager, SkillRegistry, ToolsFacade,
+    AuthorizationPort, ManagedAssetLifecyclePort, McpRuntimePort, SkillCatalogPort, ToolsFacade,
 };
 use std::future::Future;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -75,8 +75,9 @@ pub(crate) struct RuntimeServices {
 }
 
 pub(crate) struct AppServices {
-    pub(crate) mcp: McpManager,
-    pub(crate) skills: SkillRegistry,
+    pub(crate) mcp: Arc<dyn McpRuntimePort>,
+    pub(crate) mcp_tool_caller: Arc<dyn haven_llm::McpToolCaller>,
+    pub(crate) skills: Arc<dyn SkillCatalogPort>,
     pub(crate) skill_execution: Arc<dyn AppSkillExecutionPort>,
     pub(crate) authorization: Arc<dyn AuthorizationPort>,
     pub(crate) tool_runs: Arc<dyn AppToolRunPort>,
@@ -89,6 +90,7 @@ impl ApplicationRuntime {
         let tool_services = runtime_services.tools.share_services();
         let services = AppServices {
             mcp: tool_services.mcp,
+            mcp_tool_caller: tool_services.mcp_tool_caller,
             skills: tool_services.skills,
             skill_execution: app_skill_execution_port_from_facade(Arc::clone(
                 &runtime_services.tools,
@@ -325,7 +327,7 @@ impl ApplicationRuntime {
             tracing::warn!(error = %error, "session shutdown did not quiesce every run");
         }
         self.services().tool_runs.shutdown().await;
-        self.services().mcp.shutdown_all().await;
+        self.services().mcp.shutdown().await;
 
         let tasks = {
             let mut registered = self.tasks.lock().unwrap_or_else(|poisoned| {

@@ -25,6 +25,73 @@ use haven_mcp::McpManager;
 use haven_skills::{SkillInfo, SkillRegistry};
 
 const DIAGNOSTIC_MODEL_HEALTH_CHECK_TIMEOUT: Duration = Duration::from_secs(7);
+const MCP_RELOAD_MAX_PARALLEL_CONNECTS: usize = 8;
+const DEFAULT_SKILL_SCRIPT: &str = r###"import contextlib
+import io
+import json
+import sys
+from typing import Any
+
+
+def run(params: dict[str, Any]) -> dict[str, Any]:
+    """Replace this body with the skill logic."""
+    return {
+        "hashes": {},
+        "detected": {},
+        "report": "Implement the skill logic in run(params).",
+    }
+
+
+def error_envelope(error: BaseException) -> dict[str, Any]:
+    return {
+        "ok": False,
+        "hashes": {},
+        "detected": {},
+        "report": "",
+        "error": {"type": type(error).__name__, "message": str(error)},
+    }
+
+
+def main() -> None:
+    try:
+        raw = sys.stdin.buffer.read()
+        text = raw.decode("utf-8-sig")
+        params = json.loads(text) if text.strip() else {}
+        if not isinstance(params, dict):
+            raise ValueError("input JSON must be an object")
+
+        # Keep debug prints from corrupting the single JSON line on stdout.
+        with contextlib.redirect_stdout(io.StringIO()):
+            result = run(params)
+        if not isinstance(result, dict):
+            raise TypeError("run(params) must return a dictionary")
+
+        envelope = {
+            "ok": True,
+            "hashes": result.get("hashes", {}),
+            "detected": result.get("detected", {}),
+            "report": result.get("report", ""),
+        }
+        extra = {
+            key: value
+            for key, value in result.items()
+            if key not in {"hashes", "detected", "report", "ok", "error"}
+        }
+        if extra:
+            envelope["data"] = extra
+    except BaseException as error:
+        envelope = error_envelope(error)
+
+    try:
+        output = json.dumps(envelope, ensure_ascii=False)
+    except BaseException as error:
+        output = json.dumps(error_envelope(error), ensure_ascii=False)
+    sys.stdout.write(output + "\n")
+
+
+if __name__ == "__main__":
+    main()
+"###;
 
 pub(crate) enum NativeMcpServiceError {
     Preflight(String),
@@ -714,18 +781,17 @@ impl AdminServices {
         {
             anyhow::bail!("version too long (max 64 characters)");
         }
-        if let Some(script) = script
-            && script.len() > self.max_script_bytes
-        {
+        let script = match script {
+            Some(script) => {
+                if script.trim().is_empty() {
+                    anyhow::bail!("script must not be empty");
+                }
+                script
+            }
+            None => DEFAULT_SKILL_SCRIPT,
+        };
+        if script.len() > self.max_script_bytes {
             anyhow::bail!("script too large (max {} bytes)", self.max_script_bytes);
-        }
-        let script = script.ok_or_else(|| {
-            anyhow::anyhow!(
-                "script is required: executable Haven skills need an entry script under scripts/"
-            )
-        })?;
-        if script.trim().is_empty() {
-            anyhow::bail!("script must not be empty");
         }
 
         let root = self.skill_registry.resolved_root().await;
@@ -1010,23 +1076,50 @@ impl AdminServices {
         for name in self.mcp_manager.list_clients().await {
             self.mcp_manager.remove_client(&name).await;
         }
+        let mut pending = tokio::task::JoinSet::new();
+        let connect_slots = Arc::new(tokio::sync::Semaphore::new(
+            MCP_RELOAD_MAX_PARALLEL_CONNECTS,
+        ));
+        for server in servers.into_iter().filter(|server| server.enabled) {
+            let permit = Arc::clone(&connect_slots)
+                .acquire_owned()
+                .await
+                .map_err(|error| anyhow::anyhow!("MCP reload connect queue closed: {error}"))?;
+            let manager = Arc::clone(&self.mcp_manager);
+            pending.spawn(async move {
+                let _permit = permit;
+                let result = manager.connect_server(&server).await;
+                (server.name, result)
+            });
+        }
         let mut connected = Vec::new();
-        for server in &servers {
-            if !server.enabled {
-                continue;
-            }
-            match self.mcp_manager.connect_server(server).await {
-                Ok(()) => connected.push(McpReloadConnectionOutput::Connected {
-                    name: server.name.clone(),
-                    connected: true,
-                }),
-                Err(error) => connected.push(McpReloadConnectionOutput::Failed {
-                    name: server.name.clone(),
-                    connected: false,
-                    error: sanitize_diagnostic(&error.to_string()),
-                }),
+        while let Some(result) = pending.join_next().await {
+            match result {
+                Ok((name, Ok(()))) => connected.push((
+                    name.clone(),
+                    McpReloadConnectionOutput::Connected {
+                        name,
+                        connected: true,
+                    },
+                )),
+                Ok((name, Err(error))) => connected.push((
+                    name.clone(),
+                    McpReloadConnectionOutput::Failed {
+                        name,
+                        connected: false,
+                        error: sanitize_diagnostic(&error.to_string()),
+                    },
+                )),
+                Err(error) => {
+                    anyhow::bail!(
+                        "MCP reload connection task failed; some servers may already be connected: {}",
+                        sanitize_diagnostic(&error.to_string())
+                    );
+                }
             }
         }
+        connected.sort_by(|left, right| left.0.cmp(&right.0));
+        let connected = connected.into_iter().map(|(_, result)| result).collect();
         self.rebuild_catalog().await?;
         Ok(McpReloadOutput {
             reloaded: true,

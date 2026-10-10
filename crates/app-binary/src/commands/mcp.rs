@@ -48,7 +48,9 @@ pub async fn list_mcp_servers(
                 status: McpClientStatus::Disconnected,
                 tools: vec![],
                 last_error: None,
-                diagnostic: None,
+                diagnostic: config
+                    .enabled
+                    .then(|| haven_tools::MCP_TOOLS_NOT_DISCOVERED_DIAGNOSTIC.to_string()),
                 last_seen_at: None,
             });
         entry.enabled = config.enabled;
@@ -195,13 +197,12 @@ pub async fn refresh_mcp_servers(
         .config_service
         .snapshot()
         .map_err(|error| log_err("refresh_mcp_servers", error))?;
-    let reconcile = state
+    let plan = state
         .runtime
         .services
         .mcp
-        .reconcile_servers(&snapshot.config.mcp_servers)
+        .plan_refresh(snapshot.version, &snapshot.config.mcp_servers)
         .await;
-    let plan = haven_tools::McpRefreshPlan::from_reconcile(snapshot.version, &reconcile);
     let request =
         haven_tools::AdminRequest::NativeMcp(haven_tools::NativeMcpOperationArgs::McpRefresh {
             plan,
@@ -227,8 +228,7 @@ pub async fn add_mcp_server(
         .map_err(|error| log_err("add_mcp_server", error))?;
     // Route the config mutation through the native admin surface
     // (mcp_add): one implementation for the UI dialog and the LLM. The op
-    // persists through ConfigService, keeps the in-memory index in sync, and
-    // connects when enabled (UI always adds enabled servers).
+    // persists through ConfigService and connects when enabled.
     crate::commands::authorize_admin_request(
         &state,
         &app,
@@ -247,8 +247,8 @@ pub async fn add_mcp_server(
     )
     .await?;
 
-    // McpManager::connect_server starts the monitor; the admin service already
-    // rebuilt the catalog while holding the shared config apply gate.
+    // The admin service owns connection startup and already rebuilt the
+    // catalog while holding the shared config apply gate.
     let connected = state.runtime.services.mcp.has_client(&config.name).await;
     emit_mcp_status(
         &app,
@@ -304,8 +304,8 @@ pub async fn update_mcp_server(
     )
     .await?;
 
-    // McpManager::connect_server starts the monitor; the admin service already
-    // rebuilt the catalog while holding the shared config apply gate.
+    // The admin service owns connection startup and already rebuilt the
+    // catalog while holding the shared config apply gate.
     let connected = state.runtime.services.mcp.has_client(&name).await;
     emit_mcp_status(
         &app,
@@ -371,8 +371,8 @@ pub async fn toggle_mcp_server(
     )
     .await?;
 
-    // McpManager::connect_server starts the monitor; the admin service already
-    // rebuilt the catalog while holding the shared config apply gate.
+    // The admin service owns connection startup and already rebuilt the
+    // catalog while holding the shared config apply gate.
     let connected = state.runtime.services.mcp.has_client(&name).await;
     emit_mcp_status(
         &app,

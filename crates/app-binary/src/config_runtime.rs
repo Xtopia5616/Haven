@@ -96,7 +96,7 @@ impl RuntimeConfigCoordinator {
         ctx: &str,
     ) -> Result<PreparedRouterRuntime, String> {
         let mcp_caller: Arc<dyn haven_llm::McpToolCaller> =
-            Arc::new(state.runtime.services.mcp.clone());
+            Arc::clone(&state.runtime.services.mcp_tool_caller);
         Self::prepare_router_from_snapshot(snapshot, Some(mcp_caller), ctx)
     }
 

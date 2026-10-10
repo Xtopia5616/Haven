@@ -862,8 +862,8 @@ impl TypedToolOperation for SkillsAdminOperation {
             ),
             branch(
                 "skill_create",
-                serde_json::json!({"name": {"type": "string", "minLength": 1}, "description": {"type": "string", "minLength": 1}, "instructions": {"type": "string", "minLength": 1}, "language": {"type": "string", "enum": ["python"]}, "version": {"type": "string"}, "script": {"type": "string", "minLength": 1}}),
-                &["operation", "name", "description", "instructions", "script"],
+                serde_json::json!({"name": {"type": "string", "minLength": 1}, "description": {"type": "string", "minLength": 1}, "instructions": {"type": "string", "minLength": 1}, "language": {"type": "string", "enum": ["python"]}, "version": {"type": "string"}, "script": {"type": "string", "minLength": 1, "description": "Optional Python script; omitted values use Haven's JSON-safe starter template."}}),
+                &["operation", "name", "description", "instructions"],
             ),
         ])
     }
@@ -1094,20 +1094,26 @@ impl TypedToolOperation for McpAdminOperation {
             ),
             McpOperationArgs::McpReload => (
                 "haven.mcp.mcp_reload",
-                OperationIdempotency::Idempotent,
+                OperationIdempotency::Unknown,
                 ToolConcurrency::Resource("mcp".into()),
             ),
         };
-        model_metadata(operation, idempotency, concurrency)
+        let mut metadata = model_metadata(operation, idempotency, concurrency);
+        if matches!(args, McpOperationArgs::McpReload) {
+            metadata.timeout_secs = 60;
+        }
+        metadata
     }
     fn default_metadata(&self) -> ToolOperationMetadata {
-        metadata(
+        let mut metadata = metadata(
             "haven_mcp",
             "mcp_remove",
             RiskLevel::High,
             OperationIdempotency::Unknown,
             ToolConcurrency::Exclusive,
-        )
+        );
+        metadata.cancellation = ToolCancellationPolicy::Unknown;
+        metadata
     }
     fn input_schema(&self) -> Value {
         output_schema(vec![
@@ -1670,7 +1676,7 @@ mod tests {
                     "instructions": "Do the demo",
                     "script": "print('{}')",
                 }),
-                required: &["operation", "name", "description", "instructions", "script"],
+                required: &["operation", "name", "description", "instructions"],
                 idempotency: OperationIdempotency::Unknown,
             },
             AdminOperationCase {
@@ -1762,7 +1768,7 @@ mod tests {
                 operation: "mcp_reload",
                 input: json!({"operation": "mcp_reload"}),
                 required: &["operation"],
-                idempotency: OperationIdempotency::Idempotent,
+                idempotency: OperationIdempotency::Unknown,
             },
         ]
     }
@@ -2483,9 +2489,9 @@ mod tests {
                 "name": "private-server",
                 "enabled": true,
                 "connected": false,
-                "tools": 0,
+                "tools": null,
                 "last_error": "",
-                "diagnostic": null,
+                "diagnostic": haven_mcp::MCP_TOOLS_NOT_DISCOVERED_DIAGNOSTIC,
             }])
         );
         let mcp_text = serde_json::to_string(&mcp_wire).unwrap();
@@ -3258,8 +3264,8 @@ mod tests {
         };
         let surfaces = AdminSurfaces::new(
             context,
-            manager.share_services().skills.clone(),
-            Arc::new(manager.share_services().mcp.clone()),
+            manager.coordinator.builtins.skill_registry.clone(),
+            Arc::new(manager.coordinator.builtins.mcp_manager.clone()),
             manager
                 .coordinator
                 .builtins
@@ -3577,15 +3583,23 @@ mod tests {
             );
             assert_eq!(
                 tool.timeout_secs_for(&case.input),
-                10,
+                if case.operation == "mcp_reload" {
+                    60
+                } else {
+                    10
+                },
                 "timeout policy drift for {}:{}",
                 case.surface,
                 case.operation
             );
             assert_eq!(
                 tool.timeout_outcome(),
-                ToolExecutionOutcome::TimedOutAndTerminated,
-                "admin operations must use the declared terminating timeout contract"
+                if case.surface == "haven_mcp" {
+                    ToolExecutionOutcome::TimedOutUnknown
+                } else {
+                    ToolExecutionOutcome::TimedOutAndTerminated
+                },
+                "admin timeout outcome must match the operation side-effect boundary"
             );
         }
     }

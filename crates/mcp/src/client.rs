@@ -361,6 +361,10 @@ impl McpClient {
             cmd.stdout(std::process::Stdio::piped());
             cmd.stderr(std::process::Stdio::piped());
             cmd.kill_on_drop(true);
+            // MCP launchers that can open companion GUI applications must
+            // require an explicit opt-in. Per-server environment entries
+            // below may override this default with `MCP_AUTOLAUNCH=1`.
+            cmd.env("MCP_AUTOLAUNCH", "0");
             if let Some(cwd) = &self.cwd {
                 cmd.current_dir(cwd);
             }

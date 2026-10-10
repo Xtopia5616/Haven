@@ -203,10 +203,23 @@ function validWindowData(data: JsonRecord): boolean {
 			condition: isToolWindowWaitCondition,
 			...stringFields('note', 'title', 'focused', 'closed', 'reason', 'text', 'asset_id'),
 			...numberFields('count', 'pid', 'width', 'height'),
-			...booleanFields('available', 'success', 'matched', 'timed_out'),
+			...booleanFields(
+				'available',
+				'success',
+				'matched',
+				'timed_out',
+				'verified_foreground',
+				'verified_closed',
+			),
 		}) &&
 		hasValidObjectFields(data, {
 			media: { asset_id: isString },
+			foreground_window: {
+				window_id: isString,
+				hwnd: isStringOrNumber,
+				title: isString,
+				pid: isFiniteNumber,
+			},
 		}) &&
 		hasValidRecordArray(data, 'windows', (row) =>
 			hasValidOptionalFields(row, {
@@ -261,7 +274,8 @@ function validAdminActivityRow(row: JsonRecord): boolean {
 function validAdminData(data: JsonRecord): boolean {
 	return (
 		hasValidOptionalFields(data, {
-			...stringFields('level', 'name'),
+			...stringFields('level', 'name', 'path', 'error'),
+			...numberFields('total_lines'),
 			...booleanFields('saved', 'enabled', 'created', 'removed'),
 			connected: (value) => isBoolean(value) || Array.isArray(value),
 		}) &&
@@ -270,7 +284,8 @@ function validAdminData(data: JsonRecord): boolean {
 			hasValidOptionalFields(row, {
 				name: isString,
 				connected: isBoolean,
-				tools: isFiniteNumber,
+				tools: (value) => value === null || isFiniteNumber(value),
+				diagnostic: isString,
 			}),
 		) &&
 		hasValidRecordArray(data, 'skills', (row) =>
@@ -357,7 +372,16 @@ function validBuiltinRendererData(renderer: string, data: JsonRecord): boolean {
 					button: isToolInputButton,
 					typed: isString,
 					pressed: isString,
-					...numberFields('chars', 'scrolled'),
+					foreground_window_id: isString,
+					foreground_title: isString,
+					...numberFields(
+						'chars',
+						'scrolled',
+						'accepted_events',
+						'foreground_hwnd',
+						'foreground_pid',
+					),
+					...booleanFields('verified_foreground'),
 				}) &&
 				(['clicked', 'moved_to'] as const).every((key) =>
 					hasValidOptionalArrayField(

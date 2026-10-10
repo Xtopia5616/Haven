@@ -109,32 +109,87 @@ pub(crate) fn get_foreground_window_info() -> anyhow::Result<Value> {
 }
 
 pub(crate) fn focus_window(
-    window_id: Option<&str>,
+    selector_window_id: Option<&str>,
     title: Option<&str>,
     pid: Option<u32>,
-) -> anyhow::Result<()> {
-    let hwnd = find_window(window_id, title, pid)?
-        .ok_or_else(|| window_not_found(window_id, title, pid))?;
+) -> anyhow::Result<Value> {
+    let hwnd = find_window(selector_window_id, title, pid)?
+        .ok_or_else(|| window_not_found(selector_window_id, title, pid))?;
     unsafe {
         SetForegroundWindow(hwnd);
     }
-    Ok(())
+    let foreground = get_foreground_window_info()?;
+    let foreground_hwnd = foreground["hwnd"].as_u64();
+    if foreground_hwnd != Some(hwnd as usize as u64) {
+        let foreground_id = foreground["window_id"].as_str().unwrap_or("none");
+        return Err(anyhow::Error::new(
+            crate::tool_contract::StructuredToolError::new(
+                format!(
+                    "window focus could not be verified: requested {}, foreground is {}",
+                    window_id(hwnd),
+                    foreground_id
+                ),
+                crate::tool_contract::ToolErrorMetadata::unknown_failure(),
+            ),
+        ));
+    }
+    Ok(foreground)
 }
 
 pub(crate) fn close_window(
-    window_id: Option<&str>,
+    selector_window_id: Option<&str>,
     title: Option<&str>,
     pid: Option<u32>,
 ) -> anyhow::Result<()> {
-    let hwnd = find_window(window_id, title, pid)?
-        .ok_or_else(|| window_not_found(window_id, title, pid))?;
+    let hwnd = find_window(selector_window_id, title, pid)?
+        .ok_or_else(|| window_not_found(selector_window_id, title, pid))?;
+    let mut target_pid = 0;
     unsafe {
-        PostMessageW(hwnd, WM_CLOSE, 0, 0);
+        GetWindowThreadProcessId(hwnd, &mut target_pid);
+        if PostMessageW(hwnd, WM_CLOSE, 0, 0) == FALSE {
+            return Err(anyhow::Error::new(
+                crate::tool_contract::StructuredToolError::new(
+                    format!(
+                        "failed to post WM_CLOSE to {}; the window was not confirmed closed: {}",
+                        window_id(hwnd),
+                        std::io::Error::last_os_error()
+                    ),
+                    crate::tool_contract::ToolErrorMetadata::unknown_failure(),
+                ),
+            ));
+        }
     }
-    Ok(())
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    loop {
+        let mut current_pid = 0;
+        let still_same_window = unsafe {
+            if IsWindow(hwnd) == FALSE {
+                false
+            } else {
+                GetWindowThreadProcessId(hwnd, &mut current_pid);
+                current_pid == target_pid
+            }
+        };
+        if !still_same_window {
+            return Ok(());
+        }
+        if std::time::Instant::now() >= deadline {
+            return Err(anyhow::Error::new(
+                crate::tool_contract::StructuredToolError::new(
+                    format!(
+                        "WM_CLOSE was posted to {}, but the same window remained open after 2 seconds; closure outcome is unknown",
+                        window_id(hwnd)
+                    ),
+                    crate::tool_contract::ToolErrorMetadata::unknown_failure(),
+                ),
+            ));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
 }
 
-fn find_window(
+pub(super) fn find_window(
     window_id: Option<&str>,
     title: Option<&str>,
     pid: Option<u32>,
@@ -145,7 +200,7 @@ fn find_window(
         let windows = enumerate_windows(None)?;
         return Ok(windows
             .iter()
-            .any(|window| window_id_matches(window, window_id, pid))
+            .any(|window| window_id_matches(window, window_id, title, pid))
             .then_some(hwnd));
     }
     if title.is_none() && pid.is_none() {
@@ -176,8 +231,13 @@ fn window_matches(window: &Value, title: Option<&str>, pid: Option<u32>) -> bool
     matches_pid && matches_title
 }
 
-fn window_id_matches(window: &Value, window_id: &str, pid: Option<u32>) -> bool {
-    window["window_id"].as_str() == Some(window_id) && window_matches(window, None, pid)
+fn window_id_matches(
+    window: &Value,
+    window_id: &str,
+    title: Option<&str>,
+    pid: Option<u32>,
+) -> bool {
+    window["window_id"].as_str() == Some(window_id) && window_matches(window, title, pid)
 }
 
 fn ambiguous_window_error(title: Option<&str>, pid: Option<u32>, matches: usize) -> anyhow::Error {

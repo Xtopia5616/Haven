@@ -327,7 +327,7 @@ impl AppState {
         let agent_tool_ports =
             crate::agent_tool_adapters::agent_tool_ports_from_facade(Arc::clone(&tools));
         let mcp_caller: Arc<dyn haven_llm::McpToolCaller> =
-            Arc::new(tools.share_services().mcp.clone());
+            Arc::clone(&tools.share_services().mcp_tool_caller);
         let router_media_build = build_router_media(&cfg, Some(mcp_caller));
         let router = Arc::clone(&router_media_build.router);
         let max_steps_per_run = cfg.session.max_steps_per_run;

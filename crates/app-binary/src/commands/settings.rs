@@ -266,7 +266,7 @@ async fn execute_settings_apply_phase(
                 .mcp
                 .start_monitors(&config.mcp_discovery)
                 .await;
-            timing.tick("mcp_manager.start_monitors");
+            timing.tick("mcp_runtime.start_monitors");
             SettingsRuntimeApplyOutcome::applied()
         }
         SettingsRuntimeApplyPhase::RouterPublish => {

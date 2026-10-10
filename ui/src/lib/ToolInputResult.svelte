@@ -8,6 +8,12 @@
 			chars?: number | null;
 			typed?: string | null;
 			pressed?: string | null;
+			accepted_events?: number | null;
+			verified_foreground?: boolean | null;
+			foreground_window_id?: string | null;
+			foreground_title?: string | null;
+			foreground_hwnd?: number | null;
+			foreground_pid?: number | null;
 			clicked?: [number, number];
 			button?: ToolInputButton | null;
 			moved_to?: [number, number];
@@ -33,8 +39,15 @@
 	{#if data.typed}<pre class="tool-result-preview">{data.typed}</pre>{/if}
 {:else if data.operation === 'key'}
 	<div class="input-action">
-		<span class="input-badge">{label}</span><code>{data.pressed || '—'}</code>
+		<span class="input-badge">按键已注入</span><code>{data.pressed || '—'}</code>
 	</div>
+	{#if data.verified_foreground === true}
+		<div class="tool-result-meta tool-result-meta--input">
+			SendInput 接收 {data.accepted_events ?? '未知'} 个事件；前台窗口已验证：{data.foreground_title || data.foreground_window_id || '未知'}
+			{#if data.foreground_pid} · PID {data.foreground_pid}{/if}
+			{#if data.foreground_hwnd != null} · HWND {data.foreground_hwnd}{/if}
+		</div>
+	{/if}
 {:else if data.operation === 'click'}
 	<div class="input-action">
 		<span class="input-badge">{label}</span><span
@@ -54,6 +67,11 @@
 {:else}
 	<div class="tool-result-meta tool-result-meta--input">输入操作</div>
 	<JsonView value={data} defaultDepth={1} />
+{/if}
+{#if data.operation !== 'key' && data.accepted_events != null}
+	<div class="tool-result-meta tool-result-meta--input">
+		Windows 已接收 {data.accepted_events} 个输入事件；这不证明应用已完成对应操作。
+	</div>
 {/if}
 
 <style>

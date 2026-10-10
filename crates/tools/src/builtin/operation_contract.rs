@@ -235,7 +235,7 @@ pub(crate) fn operation_contract(name: &'static str) -> OperationContract {
             "重载 MCP",
             ToolCatalogGroup::Haven,
             false,
-            Some(RiskLevel::Medium),
+            Some(RiskLevel::High),
         ),
         _ => (name, ToolCatalogGroup::Other, false, None),
     };
@@ -255,14 +255,14 @@ pub(crate) fn operation_contract(name: &'static str) -> OperationContract {
         | "haven.mcp.mcp_list"
         | "haven.mcp.mcp_connect"
         | "haven.mcp.mcp_disconnect"
-        | "haven.mcp.mcp_toggle"
-        | "haven.mcp.mcp_reload" => OperationIdempotency::Idempotent,
+        | "haven.mcp.mcp_toggle" => OperationIdempotency::Idempotent,
         // Creation and replacement/removal requests must be verified before
         // replay because their first attempt may already have changed state.
         "haven.skills.skill_create"
         | "haven.mcp.mcp_add"
         | "haven.mcp.mcp_update"
-        | "haven.mcp.mcp_remove" => OperationIdempotency::Unknown,
+        | "haven.mcp.mcp_remove"
+        | "haven.mcp.mcp_reload" => OperationIdempotency::Unknown,
         _ if read_only => OperationIdempotency::Idempotent,
         _ => OperationIdempotency::NonIdempotent,
     };

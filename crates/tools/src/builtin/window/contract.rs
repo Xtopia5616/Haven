@@ -116,7 +116,9 @@ impl Tool for WindowTool {
                     "additionalProperties": false,
                     "properties": {
                         "operation": { "const": "list" },
-                        "pid": { "type": "integer", "minimum": 1 }
+                        "pid": { "type": "integer", "minimum": 1, "maximum": 4_294_967_295u64 },
+                        "condition": { "const": "title_contains" },
+                        "title": { "type": "string", "minLength": 1 }
                     },
                     "required": ["operation"]
                 },
@@ -183,7 +185,7 @@ impl Tool for WindowTool {
                 {
                     "type": "object",
                     "additionalProperties": false,
-                    "properties": { "operation": { "const": "ui_tree" }, "title": { "type": "string", "minLength": 1 }, "window_id": { "type": "string", "pattern": "^hwnd:[0-9a-f]+$" } },
+                    "properties": { "operation": { "const": "ui_tree" }, "title": { "type": "string", "minLength": 1 }, "window_id": { "type": "string", "pattern": "^hwnd:[0-9a-f]+$" }, "pid": { "type": "integer", "minimum": 1, "maximum": 4_294_967_295u64 } },
                     "required": ["operation"]
                 },
                 {

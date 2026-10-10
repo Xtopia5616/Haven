@@ -12,7 +12,7 @@ use haven_common::config::{ContextLimitsConfig, SecurityConfig, ToolConfig};
 use haven_common::types::ShellChoice;
 use haven_llm::LlmRouter;
 use haven_memory::ToolRunStore;
-use haven_memory::recall::{MemoryQuery, MemoryRecall};
+use haven_memory::{MemoryQuery, MemoryRecall};
 use haven_messaging::{MessagingRuntime, MessagingService};
 use std::collections::HashMap;
 use std::sync::{Arc, OnceLock};

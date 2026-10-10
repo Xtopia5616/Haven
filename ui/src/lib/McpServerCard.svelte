@@ -106,7 +106,13 @@
 	{#snippet header()}
 		<div class="card-name">
 			<span class="card-name-text">{server.name}</span>
-			<span class="tool-count">{server.tools?.length || 0} 个工具</span>
+			<span class="tool-count">
+				{#if server.tools && server.tools.length > 0 || isConnected()}
+					{server.tools?.length || 0} 个工具
+				{:else}
+					工具未探测
+				{/if}
+			</span>
 		</div>
 		<div class="expandable-context-card-meta">
 			<span class="transport-badge">{server.transport}</span>
@@ -179,7 +185,7 @@
 				{/each}
 			</div>
 		{:else}
-			<p class="no-tools">暂无可用工具</p>
+			<p class="no-tools">{isConnected() ? '服务尚未提供可用工具' : '尚未发现工具列表'}</p>
 			{#if server.diagnostic}
 				<p class="diag-msg">{server.diagnostic}</p>
 			{/if}

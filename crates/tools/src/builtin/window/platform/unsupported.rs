@@ -12,7 +12,7 @@ pub(crate) fn focus_window(
     _window_id: Option<&str>,
     _title: Option<&str>,
     _pid: Option<u32>,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<serde_json::Value> {
     anyhow::bail!("window operations require Windows")
 }
 
@@ -39,6 +39,7 @@ pub(crate) fn foreground_title_contains(_needle: &str) -> anyhow::Result<bool> {
 pub(crate) fn enumerate_ui_tree(
     _window_id: Option<&str>,
     _title: Option<&str>,
+    _pid: Option<u32>,
 ) -> anyhow::Result<Vec<Value>> {
     anyhow::bail!("ui_tree requires Windows")
 }

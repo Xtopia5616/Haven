@@ -905,7 +905,7 @@ async fn tool_catalog_describe_does_not_connect_or_execute_mcp() {
         .unwrap();
     assert_eq!(result.output["status"], "ok");
     assert_eq!(result.output["source"], "mcp");
-    assert!(mgr.share_services().mcp.list_clients().await.is_empty());
+    assert!(mgr.share_services().mcp.snapshot().await.is_empty());
 }
 
 #[tokio::test]

@@ -376,7 +376,7 @@ impl ToolRuntimeCoordinator {
 mod tests {
     use super::*;
     use haven_common::config::{McpServerConfig, RouterConfig};
-    use haven_memory::recall::{MemoryQuery, MemoryRecall};
+    use haven_memory::{MemoryQuery, MemoryRecall};
     use haven_messaging::{
         AgentControlRequest, AgentControlResult, AgentSpawnRequest, AgentSpawnResult, Envelope,
         MessagingRuntime, SendOutcome, SessionMailbox,

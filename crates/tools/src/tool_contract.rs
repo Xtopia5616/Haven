@@ -357,7 +357,7 @@ pub struct ToolResult {
 /// composite tool (such as `files`) owns both kinds of work.
 #[derive(Debug, Clone)]
 pub struct ToolLlmUsage {
-    pub call_kind: haven_common::types::LlmCallKind,
+    pub call_kind: haven_common::usage::LlmCallKind,
     pub request: haven_common::config::RequestKind,
     pub usage: haven_llm::Usage,
     pub model: Option<String>,
@@ -1461,8 +1461,15 @@ pub trait Tool: Send + Sync {
             }
             _ = tokio::time::sleep(Duration::from_secs(timeout_secs)) => {
                 execution_cancel.cancel();
+                let outcome = self.timeout_outcome();
+                tracing::warn!(
+                    tool = %self.name(),
+                    timeout_secs,
+                    outcome = ?outcome,
+                    "tool execution timed out"
+                );
                 Ok(ToolResult::timed_out(
-                    self.timeout_outcome(),
+                    outcome,
                     format!("tool '{}' timed out after {}s", self.name(), timeout_secs),
                 ))
             }
