@@ -21,6 +21,7 @@ use crate::types::LlmError;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum RouteMode {
     Production,
+    #[cfg(any(test, feature = "test-support"))]
     InjectedClients,
 }
 
@@ -61,6 +62,7 @@ impl ModelDirectory {
     /// Build a directory with explicit clients. Injected clients are used by
     /// test constructors that intentionally have no provider credentials;
     /// their routes still require the configured model's declared capability.
+    #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn with_injected_clients(
         config: &RouterConfig,
         clients: impl IntoIterator<Item = (String, Arc<dyn LlmClient>)>,
@@ -97,6 +99,7 @@ impl ModelDirectory {
                 let supports_request = model.capabilities.contains(&descriptor.required_capability);
                 let credentials_ready = match route_mode {
                     RouteMode::Production => endpoint_credentials_ready(&model.endpoint),
+                    #[cfg(any(test, feature = "test-support"))]
                     RouteMode::InjectedClients => true,
                 };
                 (supports_request && credentials_ready).then_some((
@@ -111,6 +114,7 @@ impl ModelDirectory {
     }
 
     /// Rebuild request-to-primary identities after a test-only config mutation.
+    #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn rebuild_primary_routes(&self, config: &RouterConfig, mode: RouteMode) {
         *self.primary_routes.lock().unwrap() = Self::build_primary_routes(config, mode);
     }

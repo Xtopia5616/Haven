@@ -861,3 +861,4 @@
 - [0879：删除丢弃目录诊断的公开 Skill 扫描器](0879-remove-lossy-public-skill-scanner.md)
 - [0880：收回 Skill manifest 解析与未校验构造 API](0880-restrict-skill-manifest-construction.md)
 - [0881：将 LLM mock router API 限定到测试依赖](0881-isolate-llm-test-router-support.md)
+- [0882：将注入式模型路由设施限定到测试依赖](0882-gate-injected-model-routing-to-tests.md)

@@ -5,6 +5,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 
+#[cfg(any(test, feature = "test-support"))]
 use crate::adapters::adapter_for;
 use crate::aggregated_stream_executor::{
     ActiveStreamHooks, AggregatedStreamExecutor, StreamContext,
@@ -16,7 +17,9 @@ use crate::endpoint_circuit_breaker::EndpointCircuitState;
 use crate::endpoint_circuit_breaker::{
     EndpointCircuitBreaker, EndpointCircuitBreakerMap, new_endpoint_circuit_breaker_map,
 };
-use crate::model_directory::{ModelDirectory, ResolvedModelClient, RouteMode};
+#[cfg(any(test, feature = "test-support"))]
+use crate::model_directory::RouteMode;
+use crate::model_directory::{ModelDirectory, ResolvedModelClient};
 use crate::request_descriptor::RequestDescriptor;
 use crate::request_pipeline::{
     RequestExecutionPolicy, RequestOutcome, execute_with_retry, execute_with_timeout,
@@ -31,9 +34,9 @@ use crate::types::{
     StreamRequest, Usage,
 };
 use futures_util::future::join_all;
-use haven_common::config::{
-    Capability, ModelEndpoint, RequestKind, RoutedModel, RouterConfig, compute_cost_usd,
-};
+#[cfg(any(test, feature = "test-support"))]
+use haven_common::config::{Capability, ModelEndpoint, RoutedModel};
+use haven_common::config::{RequestKind, RouterConfig, compute_cost_usd};
 use haven_common::media::CapabilityProfile;
 
 // ---------------------------------------------------------------------------
