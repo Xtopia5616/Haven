@@ -1,6 +1,6 @@
 # Haven 架构与 crate 职责
 
-> 版本: v1.21 | 日期: 2026-10-10
+> 版本: v1.22 | 日期: 2026-10-10
 > 范围: `crates/` (Rust 后端, Tauri 2)
 > 原则: **依赖单向、叶子优先**。上层 crate 只依赖下层，绝不反向依赖；共享数据与类型放叶子（`haven-common`），
 > 组件职责按「谁拥有实现、谁只消费接口」划分。
@@ -60,7 +60,9 @@ haven-skills ──► haven-common, haven-platform
 `haven-platform::filesystem::is_link_or_reparse_point` 统一检查单个 metadata 是否为 symlink 或 Windows
 reparse point；它不解析路径或制定允许根目录。`haven-common::path` 统一提供纯 lexical path equality 与
 equal-or-child 比较，不访问文件系统或 canonicalize 路径（ADR 0863）。App 上传/清理、Tools 资产登记和
-Tools 安全沙箱继续各自拥有路径遍历、canonicalization、根目录策略及 fail-closed 处理（ADR 0858、0863）。
+Tools 安全沙箱与 Memory 历史附件预览读取分别保留各自的路径遍历、canonicalization、根目录策略及 fail-closed 处理。
+Memory 只会从受信的 `default_runtime_temp_root()/uploads` 与 `default_generated_media_root()` 根目录重新读取预览 bytes；
+它不创建、不登记或清理这些资产（ADR 0197、0403、0858、0863）。
 
 `haven-common::usage` 是跨层用量值的唯一契约 owner：`CacheAccounting`、`LlmCallKind` 与
 `CacheDiagnostics` 由 LLM adapter 填充，Agent 原样透传，App event 使用同一 Rust 类型，Memory 只在 SQLite
@@ -327,7 +329,7 @@ OS 句柄和进程生命周期适配不属于该共享契约面，统一归 `hav
   负责事实类型、谓词归一化策略和稳定 `Database` 外观。消息的
   `media_inputs` 是多模态 canonical 持久化投影；消息返回对象中的 `attachments` 仅是
   ingress/UI DTO。数据库的 `ui_metadata` 只保留 UI 展示与受管资产保留所需的元数据，
-  并由受信 host 根目录重建历史预览，不参与 provider 规划或 transcript 恢复。
+  并由受信 host 根目录重建历史预览，不参与 provider 规划或 transcript 恢复（ADR 0197）。
 - `embeddings.rs`：向量编码、相似度/ANN/LSH 查询、底层向量读写，以及 episode FTS 查询；关键词与向量检索仍由 `MemoryRetriever` 组合。
 
 schema 初始化不改变 X12：`session_events` 经 `SessionStore` 追加并按
@@ -339,8 +341,8 @@ scratch；完整 `events`、interaction、usage、run budget 和多套 cursor �
 测试 transcript 只投影 `session_events`。
 `UserInject` 事件只保存 `MediaInput` 元数据，reset 只替换持久化载体，不成为新的业务真源。
 
-**判定标准**：只负责 SQLite 生命周期与记忆数据持久化；Agent 编排、LLM
-provider 协议和 UI 展示逻辑不得进入本 crate。
+**判定标准**：负责 SQLite 生命周期、记忆数据持久化，以及从受信 media roots 重建历史附件预览；
+不负责创建、登记或清理媒体文件。Agent 编排、LLM provider 协议和 UI 展示逻辑不得进入本 crate。
 
 Agent 的 `memory_service.rs` 是 prompt/worker 共用的 typed memory 边界：它集中管理
 有界候选、recall、embedding/index 句柄和 prompt-memory cache；向量行的 scope、敏感
