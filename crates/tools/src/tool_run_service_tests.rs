@@ -788,7 +788,7 @@ async fn cancelled_scheduled_admission_waiting_on_cleanup_gate_is_not_published(
     let scheduled_service = Arc::clone(&service);
     let scheduled = tokio::spawn(async move {
         scheduled_service
-            .set(crate::tool_run_types::ScheduledToolRunSpec {
+            .schedule(crate::tool_run_types::ScheduledToolRunSpec {
                 due_at: None,
                 delay_secs: Some(3600),
                 watch_tool_run_id: None,
@@ -1264,7 +1264,10 @@ async fn test_cancel_for_session_cleans_up() {
         tool_runs.status_view(&id).await.to_json(true)["status"],
         "running"
     );
-    tool_runs.cancel_owned_by_session("ses-1").await;
+    tool_runs
+        .cancel_owned_by_session_checked("ses-1")
+        .await
+        .unwrap();
     assert_eq!(
         tool_runs.status_view(&id).await.to_json(true)["status"],
         "not_found"
@@ -1861,7 +1864,7 @@ async fn test_failed_tool_run_reports_exit_code_and_reason() {
 async fn test_unified_service_owns_scheduled_state_and_cancel() {
     let service = Arc::new(ToolRunService::new());
     let id = service
-        .set(crate::tool_run_types::ScheduledToolRunSpec {
+        .schedule(crate::tool_run_types::ScheduledToolRunSpec {
             due_at: None,
             delay_secs: Some(3600),
             watch_tool_run_id: None,
@@ -2020,7 +2023,7 @@ async fn background_only_session_cleanup_leaves_owned_scheduled_tool_run_waiting
     let service = Arc::new(ToolRunService::new());
     let session_id = "ses-background-only";
     let scheduled_id = service
-        .set(crate::tool_run_types::ScheduledToolRunSpec {
+        .schedule(crate::tool_run_types::ScheduledToolRunSpec {
             due_at: None,
             delay_secs: Some(3600),
             watch_tool_run_id: None,
@@ -2048,7 +2051,7 @@ async fn full_session_cleanup_cancels_background_before_scheduled() {
     let service = Arc::new(ToolRunService::new());
     let session_id = "ses-full-cancel";
     let scheduled_id = service
-        .set(crate::tool_run_types::ScheduledToolRunSpec {
+        .schedule(crate::tool_run_types::ScheduledToolRunSpec {
             due_at: None,
             delay_secs: Some(3600),
             watch_tool_run_id: None,
@@ -2078,7 +2081,10 @@ async fn full_session_cleanup_cancels_background_before_scheduled() {
     );
     let events = capture_tool_run_events(&service);
 
-    service.cancel_owned_by_session(session_id).await;
+    service
+        .cancel_owned_by_session_checked(session_id)
+        .await
+        .unwrap();
 
     assert!(kill_rx.await.is_ok(), "background kill channel is signaled");
     assert_eq!(
@@ -2124,7 +2130,10 @@ async fn session_cleanup_cancels_durable_scheduled_rows_not_yet_restored() {
     )
     .unwrap();
 
-    service.cancel_owned_by_session(session_id).await;
+    service
+        .cancel_owned_by_session_checked(session_id)
+        .await
+        .unwrap();
 
     assert_eq!(
         db.get_tool_run(tool_run_id).unwrap().unwrap().status,
@@ -2278,7 +2287,10 @@ async fn restore_and_session_cleanup_are_serialized_by_the_tool_run_gate() {
     tokio::task::yield_now().await;
     let cleanup_service = Arc::clone(&service);
     let cleanup = tokio::spawn(async move {
-        cleanup_service.cancel_owned_by_session(session_id).await;
+        cleanup_service
+            .cancel_owned_by_session_checked(session_id)
+            .await
+            .unwrap();
     });
     tokio::task::yield_now().await;
     drop(held_gate);
@@ -2393,7 +2405,10 @@ async fn session_cleanup_leaves_non_owner_running_and_terminal_history_unchanged
     );
     let events = capture_tool_run_events(&service);
 
-    service.cancel_owned_by_session(session_id).await;
+    service
+        .cancel_owned_by_session_checked(session_id)
+        .await
+        .unwrap();
 
     assert_eq!(
         db.get_tool_run(terminal_id).unwrap().unwrap().status,
@@ -2424,7 +2439,7 @@ async fn session_cleanup_continues_after_scheduled_cancel_failure() {
         .await;
     let session_id = "ses-cancel-fold";
     let blocked_id = service
-        .set(crate::tool_run_types::ScheduledToolRunSpec {
+        .schedule(crate::tool_run_types::ScheduledToolRunSpec {
             due_at: None,
             delay_secs: Some(3600),
             watch_tool_run_id: None,
@@ -2439,7 +2454,7 @@ async fn session_cleanup_continues_after_scheduled_cancel_failure() {
         .await
         .unwrap();
     let other_id = service
-        .set(crate::tool_run_types::ScheduledToolRunSpec {
+        .schedule(crate::tool_run_types::ScheduledToolRunSpec {
             due_at: None,
             delay_secs: Some(3600),
             watch_tool_run_id: None,
@@ -2462,7 +2477,15 @@ async fn session_cleanup_continues_after_scheduled_cancel_failure() {
         ))
         .unwrap();
 
-    service.cancel_owned_by_session(session_id).await;
+    let error = service
+        .cancel_owned_by_session_checked(session_id)
+        .await
+        .expect_err("one scheduled cancellation failure must be reported");
+    assert!(
+        error
+            .to_string()
+            .contains("failed to cancel scheduled ToolRun")
+    );
 
     assert_eq!(
         service.status_view(&blocked_id).await.to_json(true)["status"],
@@ -2491,7 +2514,7 @@ async fn session_cleanup_continues_after_scheduled_cancel_failure() {
 async fn typed_agent_views_keep_scoping_and_board_projection() {
     let service = Arc::new(ToolRunService::new());
     let id = service
-        .set(crate::tool_run_types::ScheduledToolRunSpec {
+        .schedule(crate::tool_run_types::ScheduledToolRunSpec {
             due_at: None,
             delay_secs: Some(3600),
             watch_tool_run_id: None,
@@ -2616,7 +2639,7 @@ async fn restored_dependency_uses_durable_producer_result_and_claims_once() {
         .set_tool_run_store(Some(ToolRunStore::new(db.clone())))
         .await;
     let admitted_id = original
-        .set(crate::tool_run_types::ScheduledToolRunSpec {
+        .schedule(crate::tool_run_types::ScheduledToolRunSpec {
             due_at: None,
             delay_secs: None,
             watch_tool_run_id: Some(producer_id.clone()),
@@ -2723,7 +2746,7 @@ async fn restart_fails_running_producer_before_recovering_dependency() {
         .set_tool_run_store(Some(ToolRunStore::new(db.clone())))
         .await;
     let dependency_id = original
-        .set(crate::tool_run_types::ScheduledToolRunSpec {
+        .schedule(crate::tool_run_types::ScheduledToolRunSpec {
             due_at: None,
             delay_secs: None,
             watch_tool_run_id: Some(producer_id.clone()),
@@ -2792,7 +2815,7 @@ async fn missing_dependency_producer_fires_once_with_not_found_status() {
         .set_tool_run_store(Some(ToolRunStore::new(db.clone())))
         .await;
     let dependency_id = original
-        .set(crate::tool_run_types::ScheduledToolRunSpec {
+        .schedule(crate::tool_run_types::ScheduledToolRunSpec {
             due_at: None,
             delay_secs: None,
             watch_tool_run_id: Some(missing_id.clone()),
@@ -2847,7 +2870,7 @@ async fn dependency_waits_while_producer_is_waiting_then_accepts_cancelled_termi
         .take_tool_run_receiver()
         .expect("receiver available");
     let producer_id = service
-        .set(crate::tool_run_types::ScheduledToolRunSpec {
+        .schedule(crate::tool_run_types::ScheduledToolRunSpec {
             due_at: None,
             delay_secs: Some(3600),
             watch_tool_run_id: None,
@@ -2862,7 +2885,7 @@ async fn dependency_waits_while_producer_is_waiting_then_accepts_cancelled_termi
         .await
         .unwrap();
     let dependency_id = service
-        .set(crate::tool_run_types::ScheduledToolRunSpec {
+        .schedule(crate::tool_run_types::ScheduledToolRunSpec {
             due_at: None,
             delay_secs: None,
             watch_tool_run_id: Some(producer_id.clone()),
@@ -2914,7 +2937,7 @@ async fn test_unified_completion_bus_emits_scheduled_transition() {
         .take_tool_run_receiver()
         .expect("unified receiver available");
     let id = service
-        .set(crate::tool_run_types::ScheduledToolRunSpec {
+        .schedule(crate::tool_run_types::ScheduledToolRunSpec {
             due_at: None,
             delay_secs: Some(1),
             watch_tool_run_id: None,
@@ -2981,7 +3004,7 @@ async fn scheduled_tool_results_use_shared_tool_run_result_transport() {
         .expect("receiver available");
 
     let completed_id = service
-        .set(crate::tool_run_types::ScheduledToolRunSpec {
+        .schedule(crate::tool_run_types::ScheduledToolRunSpec {
             due_at: None,
             delay_secs: Some(3600),
             watch_tool_run_id: None,
@@ -3025,7 +3048,7 @@ async fn scheduled_tool_results_use_shared_tool_run_result_transport() {
         .await;
 
     let failed_id = service
-        .set(crate::tool_run_types::ScheduledToolRunSpec {
+        .schedule(crate::tool_run_types::ScheduledToolRunSpec {
             due_at: None,
             delay_secs: Some(3600),
             watch_tool_run_id: None,
@@ -3087,7 +3110,7 @@ async fn scheduled_admission_keeps_running_row_until_completion_then_reaps_termi
         .take_tool_run_receiver()
         .expect("receiver available");
     let id = service
-        .set(crate::tool_run_types::ScheduledToolRunSpec {
+        .schedule(crate::tool_run_types::ScheduledToolRunSpec {
             due_at: None,
             delay_secs: Some(3600),
             watch_tool_run_id: None,
@@ -3113,7 +3136,7 @@ async fn scheduled_admission_keeps_running_row_until_completion_then_reaps_termi
     );
 
     service
-        .set(crate::tool_run_types::ScheduledToolRunSpec {
+        .schedule(crate::tool_run_types::ScheduledToolRunSpec {
             due_at: None,
             delay_secs: Some(3600),
             watch_tool_run_id: None,
@@ -3143,7 +3166,7 @@ async fn scheduled_admission_keeps_running_row_until_completion_then_reaps_termi
     );
 
     service
-        .set(crate::tool_run_types::ScheduledToolRunSpec {
+        .schedule(crate::tool_run_types::ScheduledToolRunSpec {
             due_at: None,
             delay_secs: Some(3600),
             watch_tool_run_id: None,
@@ -3181,7 +3204,7 @@ async fn scheduled_admission_keeps_running_row_available_for_cancellation() {
         .take_tool_run_receiver()
         .expect("receiver available");
     let id = service
-        .set(crate::tool_run_types::ScheduledToolRunSpec {
+        .schedule(crate::tool_run_types::ScheduledToolRunSpec {
             due_at: None,
             delay_secs: Some(3600),
             watch_tool_run_id: None,
@@ -3202,7 +3225,7 @@ async fn scheduled_admission_keeps_running_row_available_for_cancellation() {
     ));
 
     service
-        .set(crate::tool_run_types::ScheduledToolRunSpec {
+        .schedule(crate::tool_run_types::ScheduledToolRunSpec {
             due_at: None,
             delay_secs: Some(3600),
             watch_tool_run_id: None,
@@ -3245,7 +3268,7 @@ async fn scheduled_execution_claim_arbitrates_with_cancellation() {
         .expect("scheduled receiver");
 
     let approved_id = service
-        .set(crate::tool_run_types::ScheduledToolRunSpec {
+        .schedule(crate::tool_run_types::ScheduledToolRunSpec {
             due_at: None,
             delay_secs: Some(3600),
             watch_tool_run_id: None,
@@ -3296,7 +3319,7 @@ async fn scheduled_execution_claim_arbitrates_with_cancellation() {
     );
 
     let cancelled_id = service
-        .set(crate::tool_run_types::ScheduledToolRunSpec {
+        .schedule(crate::tool_run_types::ScheduledToolRunSpec {
             due_at: None,
             delay_secs: Some(3600),
             watch_tool_run_id: None,
@@ -3327,7 +3350,7 @@ async fn scheduled_execution_claim_arbitrates_with_cancellation() {
     // service's in-memory projection is stale. Repeating the same claim must
     // consult durable ToolRun state instead of trusting its local claim cache.
     let remotely_finished_id = service
-        .set(crate::tool_run_types::ScheduledToolRunSpec {
+        .schedule(crate::tool_run_types::ScheduledToolRunSpec {
             due_at: None,
             delay_secs: Some(3600),
             watch_tool_run_id: None,
@@ -3378,7 +3401,7 @@ async fn restore_marks_running_scheduled_tool_run_failed_without_replaying_it() 
         .take_tool_run_receiver()
         .expect("receiver available");
     let id = service
-        .set(crate::tool_run_types::ScheduledToolRunSpec {
+        .schedule(crate::tool_run_types::ScheduledToolRunSpec {
             due_at: None,
             delay_secs: Some(3600),
             watch_tool_run_id: None,
@@ -3434,7 +3457,7 @@ async fn test_scheduled_fire_without_receiver_is_requeued_durably() {
         .set_tool_run_store(Some(ToolRunStore::new(db.clone())))
         .await;
     let id = service
-        .set(crate::tool_run_types::ScheduledToolRunSpec {
+        .schedule(crate::tool_run_types::ScheduledToolRunSpec {
             due_at: None,
             delay_secs: Some(1),
             watch_tool_run_id: None,
@@ -3501,7 +3524,7 @@ async fn test_scheduled_fire_recovery_survives_requeue_failure_for_late_receiver
         .set_tool_run_store(Some(ToolRunStore::new(db.clone())))
         .await;
     let id = service
-        .set(crate::tool_run_types::ScheduledToolRunSpec {
+        .schedule(crate::tool_run_types::ScheduledToolRunSpec {
             due_at: None,
             delay_secs: Some(1),
             watch_tool_run_id: None,
@@ -3531,7 +3554,7 @@ async fn test_scheduled_fire_recovery_survives_requeue_failure_for_late_receiver
     );
 
     service
-        .set(crate::tool_run_types::ScheduledToolRunSpec {
+        .schedule(crate::tool_run_types::ScheduledToolRunSpec {
             due_at: None,
             delay_secs: Some(3600),
             watch_tool_run_id: None,
@@ -3577,7 +3600,7 @@ async fn test_scheduled_fire_recovers_after_completion_bus_lag() {
         .take_tool_run_receiver()
         .expect("receiver available");
     let id = service
-        .set(crate::tool_run_types::ScheduledToolRunSpec {
+        .schedule(crate::tool_run_types::ScheduledToolRunSpec {
             due_at: None,
             delay_secs: Some(1),
             watch_tool_run_id: None,
@@ -3654,7 +3677,7 @@ async fn test_scheduled_trigger_db_failure_rearms_timer() {
         .take_tool_run_receiver()
         .expect("receiver available");
     let id = service
-        .set(crate::tool_run_types::ScheduledToolRunSpec {
+        .schedule(crate::tool_run_types::ScheduledToolRunSpec {
             due_at: None,
             delay_secs: Some(1),
             watch_tool_run_id: None,
@@ -3707,7 +3730,7 @@ async fn test_scheduled_cancel_db_failure_keeps_live_state_until_retry() {
         .set_tool_run_store(Some(ToolRunStore::new(db.clone())))
         .await;
     let id = service
-        .set(crate::tool_run_types::ScheduledToolRunSpec {
+        .schedule(crate::tool_run_types::ScheduledToolRunSpec {
             due_at: None,
             delay_secs: Some(3600),
             watch_tool_run_id: None,
@@ -3766,7 +3789,7 @@ async fn test_scheduled_terminal_db_failure_retries_before_memory_transition() {
         .take_tool_run_receiver()
         .expect("receiver available");
     let id = service
-        .set(crate::tool_run_types::ScheduledToolRunSpec {
+        .schedule(crate::tool_run_types::ScheduledToolRunSpec {
             due_at: None,
             delay_secs: Some(1),
             watch_tool_run_id: None,
@@ -3993,7 +4016,7 @@ async fn test_scheduled_lifecycle_events_reuse_persisted_timestamps() {
         .take_tool_run_receiver()
         .expect("receiver available");
     let id = service
-        .set(crate::tool_run_types::ScheduledToolRunSpec {
+        .schedule(crate::tool_run_types::ScheduledToolRunSpec {
             due_at: None,
             delay_secs: Some(1),
             watch_tool_run_id: None,
@@ -4053,7 +4076,7 @@ async fn test_scheduled_lifecycle_events_reuse_persisted_timestamps() {
     assert_eq!(event["finished_at"].as_str(), row.finished_at.as_deref());
 
     let cancel_id = service
-        .set(crate::tool_run_types::ScheduledToolRunSpec {
+        .schedule(crate::tool_run_types::ScheduledToolRunSpec {
             due_at: None,
             delay_secs: Some(3600),
             watch_tool_run_id: None,
@@ -4133,7 +4156,7 @@ async fn test_restore_quarantines_corrupt_waiting_scheduled_rows() {
 async fn test_tool_run_kind_and_terminal_delete_guards() {
     let service = Arc::new(ToolRunService::new());
     let id = service
-        .set(crate::tool_run_types::ScheduledToolRunSpec {
+        .schedule(crate::tool_run_types::ScheduledToolRunSpec {
             due_at: None,
             delay_secs: Some(3600),
             watch_tool_run_id: None,
@@ -4230,7 +4253,7 @@ async fn test_shutdown_stops_scheduled_timers_and_rejects_new_work() {
         .take_tool_run_receiver()
         .expect("unified receiver available");
     let id = service
-        .set(crate::tool_run_types::ScheduledToolRunSpec {
+        .schedule(crate::tool_run_types::ScheduledToolRunSpec {
             due_at: None,
             delay_secs: Some(1),
             watch_tool_run_id: None,
@@ -4260,7 +4283,7 @@ async fn test_shutdown_stops_scheduled_timers_and_rejects_new_work() {
     );
     assert!(
         service
-            .set(crate::tool_run_types::ScheduledToolRunSpec {
+            .schedule(crate::tool_run_types::ScheduledToolRunSpec {
                 due_at: None,
                 delay_secs: Some(1),
                 watch_tool_run_id: None,

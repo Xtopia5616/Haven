@@ -20,8 +20,8 @@ use crate::{Tool, ToolConcurrency, ToolResult};
 ///   `notify` tool with `{title, body}` to send a message at fire time.
 /// - `continue`: resume the session that scheduled the ToolRun, delivering
 ///   `prompt` as a continuation instruction in that session.
-pub struct ScheduleTool {
-    pub service: Arc<ToolRunService>,
+pub(crate) struct ScheduleTool {
+    pub(crate) service: Arc<ToolRunService>,
     /// Weak probe into the tool registry so `set` can reject unknown
     /// `tool_name` values and report the scheduled tool's risk level at
     /// schedule time. `None` in headless/test builds (checks skipped).
@@ -205,7 +205,7 @@ impl ScheduleTool {
                 let prompt = params.prompt.map(|prompt| prompt.trim().to_string());
                 let id = self
                     .service
-                    .set(ScheduledToolRunSpec {
+                    .schedule(ScheduledToolRunSpec {
                         due_at: due_at.clone(),
                         delay_secs: delay.map(|d| d as u64),
                         watch_tool_run_id: watch_tool_run_id.clone(),
@@ -691,7 +691,7 @@ mod tests {
     async fn test_center_set_rejects_both_delay_and_due_at() {
         let center = Arc::new(ToolRunService::new());
         let err = center
-            .set(ScheduledToolRunSpec {
+            .schedule(ScheduledToolRunSpec {
                 due_at: Some((chrono::Utc::now() + chrono::Duration::seconds(120)).to_rfc3339()),
                 delay_secs: Some(60),
                 watch_tool_run_id: None,
@@ -775,7 +775,7 @@ mod tests {
         // to a not_found result rather than hanging forever.
         let center = Arc::new(ToolRunService::new());
         let id = center
-            .set(ScheduledToolRunSpec {
+            .schedule(ScheduledToolRunSpec {
                 due_at: None,
                 delay_secs: None,
                 watch_tool_run_id: Some("toolrun-00000000000000000000000000000001".into()),
@@ -807,7 +807,7 @@ mod tests {
             .await
             .unwrap();
         let id = center
-            .set(ScheduledToolRunSpec {
+            .schedule(ScheduledToolRunSpec {
                 due_at: None,
                 delay_secs: None,
                 watch_tool_run_id: Some(tool_run_id.clone()),
@@ -851,7 +851,7 @@ mod tests {
             .set_tool_run_store(Some(ToolRunStore::new(db.clone())))
             .await;
         let id = center
-            .set(ScheduledToolRunSpec {
+            .schedule(ScheduledToolRunSpec {
                 due_at: None,
                 delay_secs: None,
                 watch_tool_run_id: Some("toolrun-00000000000000000000000000000002".into()),
@@ -1023,7 +1023,7 @@ mod tests {
         // Absolute time 2s out, continue mode with a wake prompt.
         let due = (chrono::Utc::now() + chrono::Duration::seconds(2)).to_rfc3339();
         let id = center
-            .set(ScheduledToolRunSpec {
+            .schedule(ScheduledToolRunSpec {
                 due_at: Some(due),
                 delay_secs: None,
                 watch_tool_run_id: None,
@@ -1067,7 +1067,7 @@ mod tests {
         let mut rx = center.take_tool_run_receiver().expect("receiver available");
 
         let id = center
-            .set(ScheduledToolRunSpec {
+            .schedule(ScheduledToolRunSpec {
                 due_at: None,
                 delay_secs: Some(1),
                 watch_tool_run_id: None,
@@ -1221,7 +1221,10 @@ mod tests {
             service: center.clone(),
             registry: None,
         };
-        let id = center.set(tool_spec(1, "Test", "fire now")).await.unwrap();
+        let id = center
+            .schedule(tool_spec(1, "Test", "fire now"))
+            .await
+            .unwrap();
         let fired = tokio::time::timeout(Duration::from_secs(5), recv_scheduled(&mut rx))
             .await
             .expect("timed out waiting for scheduled_tool_run");
@@ -1234,7 +1237,7 @@ mod tests {
         // A new admission must preserve the running ToolRun until its consumer
         // acknowledges the work; both live entries remain on the board.
         let next_id = center
-            .set(tool_spec(3600, "Next", "still pending"))
+            .schedule(tool_spec(3600, "Next", "still pending"))
             .await
             .unwrap();
         let tool_runs = center.list().await;
@@ -1399,7 +1402,10 @@ mod tests {
         center
             .set_tool_run_store(Some(ToolRunStore::new(db.clone())))
             .await;
-        let id = center.set(tool_spec(3600, "Drink", "water")).await.unwrap();
+        let id = center
+            .schedule(tool_spec(3600, "Drink", "water"))
+            .await
+            .unwrap();
         let pending = db.list_pending_scheduled_tool_runs().unwrap();
         assert_eq!(pending.len(), 1);
         assert_eq!(pending[0].tool_run_id, id);
@@ -1431,7 +1437,10 @@ mod tests {
         let mut rx = center.take_tool_run_receiver().expect("receiver available");
 
         // set -> tool_run:created event with the payload.
-        let id = center.set(tool_spec(1, "Evt", "fire me")).await.unwrap();
+        let id = center
+            .schedule(tool_spec(1, "Evt", "fire me"))
+            .await
+            .unwrap();
         {
             let evs = events.lock().unwrap();
             let set_evt = evs
@@ -1475,7 +1484,7 @@ mod tests {
 
         // cancel -> tool_run:finished event.
         let id2 = center
-            .set(tool_spec(3600, "Keep", "pending"))
+            .schedule(tool_spec(3600, "Keep", "pending"))
             .await
             .unwrap();
         assert!(center.cancel(&id2).await);

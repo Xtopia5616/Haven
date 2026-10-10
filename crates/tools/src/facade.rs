@@ -16,6 +16,102 @@ pub trait LiveOutputSinkPort: Send + Sync {
     fn set_event_sink(&self, sink: Arc<dyn Fn(String, Value) + Send + Sync>);
 }
 
+/// Session-facing ToolRun operations used by Agent orchestration.
+///
+/// The state machine and completion recovery remain owned by Tools. This
+/// capability exposes only the operations needed to attach, execute, cancel,
+/// restore, and deliver session-owned ToolRuns.
+#[async_trait::async_trait]
+pub trait ToolRunAgentCapability: Send + Sync {
+    async fn attach_session(&self, tool_run_id: &str, session_id: &str);
+
+    async fn claim_scheduled_execution(
+        &self,
+        tool_run_id: &str,
+        claim_id: &str,
+    ) -> anyhow::Result<bool>;
+
+    async fn release_scheduled_execution_claim(
+        &self,
+        tool_run_id: &str,
+        claim_id: &str,
+    ) -> anyhow::Result<bool>;
+
+    async fn cancel_owned_by_session_checked(&self, session_id: &str) -> anyhow::Result<()>;
+
+    async fn cancel_owned_background_by_session(&self, session_id: &str);
+
+    async fn list_for_session_views(&self, session_id: &str) -> Vec<ToolRunListView>;
+
+    async fn complete_scheduled(&self, tool_run_id: &str) -> anyhow::Result<bool>;
+
+    async fn complete_scheduled_with_result(
+        &self,
+        tool_run_id: &str,
+        result: &str,
+    ) -> anyhow::Result<bool>;
+
+    async fn fail_scheduled(&self, tool_run_id: &str, reason: &str) -> anyhow::Result<bool>;
+
+    async fn restore(&self) -> ToolRunRestoreSummary;
+
+    async fn acknowledge_completion(&self, tool_run_result_id: &str);
+
+    async fn acknowledge_unowned_completion(&self, tool_run_result_id: &str);
+
+    fn take_completion_receiver(&self) -> Option<Box<dyn ToolRunCompletionCapability>>;
+}
+
+/// Completion stream with durable recovery kept inside the Tools owner.
+#[async_trait::async_trait]
+pub trait ToolRunCompletionCapability: Send {
+    async fn recv_scheduled_with_recovery(&mut self) -> Option<ToolRunCompletion>;
+
+    async fn recv_result_with_recovery(&mut self) -> Option<ToolRunCompletion>;
+}
+
+/// App-facing ToolRun lifecycle and management operations.
+#[async_trait::async_trait]
+pub trait ToolRunManagementCapability: Send + Sync {
+    fn set_lifecycle_event_sink(&self, sink: ToolRunLifecycleEventSink);
+
+    async fn shutdown(&self);
+
+    async fn board(&self) -> Vec<ToolRunView>;
+
+    async fn list_persisted_tool_runs(
+        &self,
+        kind: Option<&str>,
+    ) -> anyhow::Result<Vec<haven_memory::ToolRunRow>>;
+
+    async fn list_persisted_tool_runs_for_session(
+        &self,
+        session_id: &str,
+        kind: Option<&str>,
+    ) -> anyhow::Result<Vec<haven_memory::ToolRunRow>>;
+
+    async fn cancel_for_kind(&self, tool_run_id: &str, kind: &str) -> bool;
+
+    async fn delete_terminal(&self, tool_run_id: &str) -> anyhow::Result<bool>;
+
+    async fn clear_terminal_history(&self) -> anyhow::Result<u64>;
+}
+
+/// Test-only ToolRun controls for injecting persistence and deterministic state.
+#[cfg(feature = "test-support")]
+#[async_trait::async_trait]
+pub trait ToolRunTestSupportPort: Send + Sync {
+    async fn set_store(&self, store: Option<haven_memory::ToolRunStore>);
+
+    async fn schedule(&self, spec: ScheduledToolRunSpec) -> anyhow::Result<String>;
+
+    async fn status_view(&self, tool_run_id: &str) -> ToolRunStatusView;
+
+    async fn cancel(&self, tool_run_id: &str) -> bool;
+
+    async fn delete_terminal(&self, tool_run_id: &str) -> anyhow::Result<bool>;
+}
+
 struct SharedSkillExecutionPort {
     runner: Arc<RwLock<SkillRunner>>,
 }
@@ -49,8 +145,8 @@ impl LiveOutputSinkPort for SharedLiveOutputSinkPort {
 /// Process services shared outside the execution facade.
 ///
 /// MCP and skill registries are domain owner handles. Managed assets and
-/// authorization, Skill execution and live-output sink installation are
-/// exposed as capability ports. ToolRun still needs a typed owner port.
+/// authorization, managed assets, Skill execution, live-output sink
+/// installation and ToolRun operations are exposed through capability ports.
 #[derive(Clone)]
 pub struct ToolServices {
     pub mcp: McpManager,
@@ -58,7 +154,10 @@ pub struct ToolServices {
     pub skill_execution: Arc<dyn SkillExecutionPort>,
     pub authorization: Arc<dyn AuthorizationPort>,
     pub managed_assets: Arc<dyn ManagedAssetLifecyclePort>,
-    pub tool_runs: Arc<ToolRunService>,
+    pub tool_run_agent: Arc<dyn ToolRunAgentCapability>,
+    pub tool_run_management: Arc<dyn ToolRunManagementCapability>,
+    #[cfg(feature = "test-support")]
+    pub tool_run_test_support: Arc<dyn ToolRunTestSupportPort>,
     pub live_output: Arc<dyn LiveOutputSinkPort>,
 }
 
@@ -67,6 +166,7 @@ impl ToolServices {
         let authorization: Arc<dyn AuthorizationPort> = coordinator.core.authorization.clone();
         let skill_runner = Arc::clone(&coordinator.builtins.skill_runner);
         let live_outputs = Arc::clone(&coordinator.runtime.live_outputs);
+        let tool_run_service = Arc::clone(&coordinator.runtime.tool_run_service);
         Self {
             mcp: coordinator.builtins.mcp_manager.clone(),
             skills: coordinator.builtins.skill_registry.clone(),
@@ -75,7 +175,14 @@ impl ToolServices {
             }),
             authorization,
             managed_assets: Arc::new(coordinator.runtime.managed_assets.clone()),
-            tool_runs: Arc::clone(&coordinator.runtime.tool_run_service),
+            tool_run_agent: crate::tool_run_capabilities::agent_port(Arc::clone(&tool_run_service)),
+            tool_run_management: crate::tool_run_capabilities::management_port(Arc::clone(
+                &tool_run_service,
+            )),
+            #[cfg(feature = "test-support")]
+            tool_run_test_support: crate::tool_run_capabilities::test_support_port(Arc::clone(
+                &tool_run_service,
+            )),
             live_output: Arc::new(SharedLiveOutputSinkPort {
                 hub: Arc::clone(&live_outputs),
             }),

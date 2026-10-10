@@ -47,8 +47,8 @@ async fn rollback_rejects_closing_session_before_cancelling_owned_tool_runs() {
         )
         .unwrap();
     executor
-        .tool_run_service()
-        .set_tool_run_store(Some(haven_memory::ToolRunStore::new(agent.db.clone())))
+        .tool_run_test_support()
+        .set_store(Some(haven_memory::ToolRunStore::new(agent.db.clone())))
         .await;
     let before = load_event_projection(&agent, &session.id).await;
     let _closing = executor

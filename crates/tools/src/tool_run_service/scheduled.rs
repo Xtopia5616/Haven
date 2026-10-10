@@ -8,7 +8,7 @@ impl ToolRunService {
     /// is one idempotent transition that publishes the work item. The consumer
     /// owns the terminal acknowledgement so tool/session failures remain
     /// durable as `failed`.
-    pub async fn set(self: &Arc<Self>, spec: ScheduledToolRunSpec) -> anyhow::Result<String> {
+    pub async fn schedule(self: &Arc<Self>, spec: ScheduledToolRunSpec) -> anyhow::Result<String> {
         let ScheduledToolRunSpec {
             due_at,
             delay_secs,

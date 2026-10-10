@@ -14,9 +14,9 @@ use crate::{
 };
 use crate::{Tool, ToolExecutionMode, ToolExecutionOutcome, ToolResult};
 
-pub struct ShellTool {
+pub(crate) struct ShellTool {
     /// Registry of detached shell ToolRuns.
-    pub tool_runs: Arc<ToolRunService>,
+    pub(crate) tool_runs: Arc<ToolRunService>,
     /// Live stdout/stderr previews for foreground shell tool cards.
     pub live_outputs: Arc<LiveOutputHub>,
     /// Output cap (chars) for command output.

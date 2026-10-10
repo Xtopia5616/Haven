@@ -28,6 +28,7 @@ mod tests;
 mod tool_builtins;
 pub(crate) mod tool_contract;
 mod tool_core;
+mod tool_run_capabilities;
 mod tool_run_completion;
 mod tool_run_events;
 mod tool_run_lifecycle;
@@ -136,6 +137,11 @@ pub use builtin::{
 };
 pub use catalog::McpServerIndexEntry;
 pub use circuit::ToolCircuitRegistry;
+#[cfg(feature = "test-support")]
+pub use facade::ToolRunTestSupportPort;
+pub use facade::{
+    ToolRunAgentCapability, ToolRunCompletionCapability, ToolRunManagementCapability,
+};
 pub use haven_common::types::CapabilityScope;
 pub use haven_mcp::{
     MCP_TOOLS_NOT_DISCOVERED_DIAGNOSTIC, McpClientStatus, McpManager, McpServerSnapshot,
@@ -187,12 +193,13 @@ pub(crate) use tool_run_lifecycle::ToolRunLifecycle;
 pub(crate) use tool_run_service::BackgroundShellRequest;
 pub use tool_run_service::{
     BackgroundToolRunCompletion, ScheduledToolRunResultCompletion, ToolRunCompletion,
-    ToolRunCompletionReceiver, ToolRunLifecycleEventSink,
+    ToolRunLifecycleEventSink,
 };
 pub use tool_run_service::{
-    ScheduledToolRunView, ToolRunKind, ToolRunListView, ToolRunRestoreSummary, ToolRunService,
-    ToolRunStateView, ToolRunStatusView, ToolRunView,
+    ScheduledToolRunView, ToolRunKind, ToolRunListView, ToolRunRestoreSummary, ToolRunStateView,
+    ToolRunStatusView, ToolRunView,
 };
+pub(crate) use tool_run_service::{ToolRunCompletionReceiver, ToolRunService};
 pub use tool_run_types::{ScheduleMode, ScheduledToolRunFired, ScheduledToolRunSpec};
 pub use tool_runtime::{
     LogLevelPort, MemoryRecallPort, MemoryRecallSlot, RuntimeCapabilities, StartupWiring,

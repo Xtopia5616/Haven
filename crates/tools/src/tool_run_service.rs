@@ -1359,15 +1359,6 @@ impl ToolRunService {
         Ok(deleted_ids.len() as u64)
     }
 
-    /// Cancel all ToolRun kinds owned by `session_id`. This is used by explicit
-    /// session end/deletion; application shutdown uses the background-only
-    /// variant so durable scheduled work remains waiting.
-    pub async fn cancel_owned_by_session(self: &Arc<Self>, session_id: &str) {
-        if let Err(error) = self.cancel_owned_by_session_checked(session_id).await {
-            tracing::warn!(session_id = %session_id, "failed to completely cancel session-owned ToolRuns: {error}");
-        }
-    }
-
     /// Cancel session-owned ToolRuns and return scheduled durable query/cancel
     /// failures so a destructive session lifecycle can leave the durable
     /// session in place for retry. Background cancellation remains best-effort

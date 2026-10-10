@@ -19,8 +19,8 @@ pub enum ToolRunsOperation {
 /// - Without `tool_run_id`: list all (optional `status` filter).
 /// - With `tool_run_id`: return that single ToolRun's status (results are also
 ///   pushed back automatically on completion — prefer not polling).
-pub struct ToolRunsTool {
-    pub tool_runs: Arc<ToolRunService>,
+pub(crate) struct ToolRunsTool {
+    pub(crate) tool_runs: Arc<ToolRunService>,
 }
 
 /// Typed parameters for `ToolRunsTool`. Entry ① (native `run`) and entry ②

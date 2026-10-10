@@ -429,9 +429,9 @@ async fn terminal_tool_run_result_projection_is_idempotent() {
 #[tokio::test]
 async fn queued_tool_run_result_is_reconciled_after_session_becomes_terminal() {
     let (agent, memory_startup, executor) = make_test_agent_with_startup();
-    let tool_run_service = executor.tool_run_service();
-    tool_run_service
-        .set_tool_run_store(Some(ToolRunStore::new(agent.db.clone())))
+    let tool_run_test_support = executor.tool_run_test_support();
+    tool_run_test_support
+        .set_store(Some(ToolRunStore::new(agent.db.clone())))
         .await;
     let session = executor
         .create_session("terminal ToolRun race")
@@ -532,9 +532,9 @@ async fn queued_tool_run_result_is_reconciled_after_session_becomes_terminal() {
 #[tokio::test]
 async fn unowned_terminal_completion_is_acknowledged_for_history_cleanup() {
     let (agent, memory_startup, executor) = make_test_agent_with_startup();
-    let tool_run_service = executor.tool_run_service();
-    tool_run_service
-        .set_tool_run_store(Some(ToolRunStore::new(agent.db.clone())))
+    let tool_run_test_support = executor.tool_run_test_support();
+    tool_run_test_support
+        .set_store(Some(ToolRunStore::new(agent.db.clone())))
         .await;
 
     let tool_run_id = "toolrun-unowned-terminal";
@@ -596,7 +596,12 @@ async fn unowned_terminal_completion_is_acknowledged_for_history_cleanup() {
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     }
 
-    assert!(tool_run_service.delete_terminal(tool_run_id).await.unwrap());
+    assert!(
+        tool_run_test_support
+            .delete_terminal(tool_run_id)
+            .await
+            .unwrap()
+    );
     assert!(agent.db.get_tool_run(tool_run_id).unwrap().is_none());
 
     cancellation.cancel();

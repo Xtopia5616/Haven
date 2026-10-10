@@ -196,6 +196,7 @@ async fn claim_scheduled_fire(
 }
 
 impl ToolRunCompletionReceiver {
+    #[cfg(test)]
     pub async fn recv(&mut self) -> Option<ToolRunCompletion> {
         loop {
             match self.rx.recv().await {
@@ -222,6 +223,7 @@ impl ToolRunCompletionReceiver {
     /// Receive background completions without claiming scheduled fires. This
     /// narrow receiver remains useful to callers that do not consume scheduled
     /// tool results.
+    #[cfg(test)]
     pub async fn recv_background(&mut self) -> Option<ToolRunCompletion> {
         loop {
             match self.rx.recv().await {

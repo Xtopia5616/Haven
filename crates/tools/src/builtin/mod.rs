@@ -61,7 +61,6 @@ pub use admin::{
 pub use media::{MediaTranscriptionResult, MediaTranscriptionStatus};
 pub use memory::MemoryTool;
 pub use messaging::AgentTool;
-pub use scheduled_tool_run::ScheduleTool;
 
 /// Effective output cap for a tool: the per-tool `tool_settings` override
 /// when set, else the global observation budget
@@ -83,7 +82,7 @@ fn tool_output_cap(
 /// Provider and host dependencies used by media producers/consumers. Media
 /// tools are rebuilt as one generation so a settings update cannot combine a
 /// new router with stale specialized clients.
-pub struct MediaDeps {
+pub(crate) struct MediaDeps {
     pub router: Option<Arc<haven_llm::LlmRouter>>,
     pub input_pipeline: Option<Arc<haven_input::InputPipeline>>,
     pub stt_client: Option<Arc<dyn haven_llm::SttClient>>,
@@ -97,15 +96,15 @@ pub struct MediaDeps {
 /// Long-running action dependencies. Background processes and scheduled
 /// timers are admitted and transitioned by the same ToolRunService state
 /// machine; only their short-lived workers differ.
-pub struct ToolRunDeps {
-    pub live_outputs: Arc<crate::live_output::LiveOutputHub>,
-    pub service: Arc<ToolRunService>,
+pub(crate) struct ToolRunDeps {
+    pub(crate) live_outputs: Arc<crate::live_output::LiveOutputHub>,
+    pub(crate) service: Arc<ToolRunService>,
 }
 
 /// Complete dependency object for constructing the builtin catalog. Keeping
 /// this boundary as a value object makes additions explicit and prevents the
 /// constructor from growing another positional argument.
-pub struct BuiltinContext {
+pub(crate) struct BuiltinContext {
     pub skill_registry: SkillRegistry,
     pub skill_runner: Arc<RwLock<SkillRunner>>,
     pub mcp_manager: Arc<McpManager>,
@@ -125,7 +124,7 @@ pub struct BuiltinContext {
     pub tool_runs: ToolRunDeps,
 }
 
-pub async fn register_builtin_tools(
+pub(crate) async fn register_builtin_tools(
     tools: &mut Vec<ToolHandle>,
     context: BuiltinContext,
 ) -> Option<Arc<admin::AdminSurfaces>> {

@@ -13,7 +13,7 @@ use haven_tools::{
     ToolRunCompletion, ToolRunListView, ToolRunRestoreSummary,
 };
 #[cfg(test)]
-use haven_tools::{ToolRunCompletionReceiver, ToolRunService};
+use haven_tools::{ToolRunAgentCapability, ToolRunCompletionCapability, ToolRunTestSupportPort};
 use serde_json::Value;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
@@ -345,7 +345,7 @@ pub struct SessionToolPorts {
     pub(super) catalog: Arc<dyn crate::ToolCatalogPort>,
     pub(super) tool_runs: Arc<dyn AgentToolRunPort>,
     #[cfg(test)]
-    pub(super) test_tool_runs: Option<Arc<ToolRunService>>,
+    pub(super) tool_run_test_support: Option<Arc<dyn ToolRunTestSupportPort>>,
     pub(super) session_tool_overlay: Arc<dyn SessionToolOverlayPort>,
     pub(super) managed_asset_leases: Arc<dyn ManagedAssetLeasePort>,
     pub(super) observations: Arc<dyn ToolObservationPort>,
@@ -369,7 +369,7 @@ impl SessionToolPorts {
             catalog,
             tool_runs,
             #[cfg(test)]
-            test_tool_runs: None,
+            tool_run_test_support: None,
             session_tool_overlay,
             managed_asset_leases,
             observations,
@@ -379,7 +379,8 @@ impl SessionToolPorts {
     #[cfg(test)]
     pub(crate) fn from_tools_facade(tools: Arc<ToolsFacade>) -> Self {
         let services = tools.share_services();
-        let test_tool_runs = Arc::clone(&services.tool_runs);
+        let tool_run_test_support = Arc::clone(&services.tool_run_test_support);
+        let tool_runs = Arc::clone(&services.tool_run_agent);
         let catalog: Arc<dyn crate::ToolCatalogPort> = Arc::new(
             crate::react::ToolsFacadeToolCatalogAdapter::new(Arc::clone(&tools)),
         );
@@ -387,14 +388,14 @@ impl SessionToolPorts {
             Arc::new(ToolsFacadeToolExecutionAdapter::new(Arc::clone(&tools))),
             Arc::new(ToolsFacadeToolAuthorizationAdapter::new(Arc::clone(&tools))),
             catalog,
-            Arc::new(ToolsFacadeToolRunAdapter::new(Arc::clone(&test_tool_runs))),
+            Arc::new(ToolsFacadeToolRunAdapter::new(tool_runs)),
             Arc::new(ToolsFacadeSessionToolOverlayAdapter::new(Arc::clone(
                 &tools,
             ))),
             Arc::new(ToolsFacadeManagedAssetLeaseAdapter::new(Arc::clone(&tools))),
             Arc::new(ToolsFacadeToolObservationAdapter::new(tools)),
         );
-        ports.test_tool_runs = Some(test_tool_runs);
+        ports.tool_run_test_support = Some(tool_run_test_support);
         ports
     }
 
@@ -410,12 +411,12 @@ impl SessionToolPorts {
 
 #[cfg(test)]
 pub(super) struct ToolsFacadeToolRunAdapter {
-    tool_runs: Arc<ToolRunService>,
+    tool_runs: Arc<dyn ToolRunAgentCapability>,
 }
 
 #[cfg(test)]
 impl ToolsFacadeToolRunAdapter {
-    pub(super) fn new(tool_runs: Arc<ToolRunService>) -> Self {
+    pub(super) fn new(tool_runs: Arc<dyn ToolRunAgentCapability>) -> Self {
         Self { tool_runs }
     }
 }
@@ -487,44 +488,36 @@ impl AgentToolRunPort for ToolsFacadeToolRunAdapter {
 
     async fn acknowledge_completion(&self, tool_run_result_id: &str) {
         self.tool_runs
-            .acknowledge_tool_run_completion(tool_run_result_id)
+            .acknowledge_completion(tool_run_result_id)
             .await;
     }
 
     async fn acknowledge_unowned_completion(&self, tool_run_result_id: &str) {
         self.tool_runs
-            .acknowledge_unowned_tool_run_completion(tool_run_result_id)
+            .acknowledge_unowned_completion(tool_run_result_id)
             .await;
     }
 
     fn take_completion_receiver(&self) -> Option<Box<dyn ToolRunCompletionReceiverPort>> {
-        let receiver = self.tool_runs.take_tool_run_receiver()?;
-        Some(Box::new(ToolsFacadeToolRunCompletionAdapter {
-            receiver,
-            tool_runs: Arc::clone(&self.tool_runs),
-        }))
+        let receiver = self.tool_runs.take_completion_receiver()?;
+        Some(Box::new(ToolsFacadeToolRunCompletionAdapter { receiver }))
     }
 }
 
 #[cfg(test)]
 struct ToolsFacadeToolRunCompletionAdapter {
-    receiver: ToolRunCompletionReceiver,
-    tool_runs: Arc<ToolRunService>,
+    receiver: Box<dyn ToolRunCompletionCapability>,
 }
 
 #[cfg(test)]
 #[async_trait]
 impl ToolRunCompletionReceiverPort for ToolsFacadeToolRunCompletionAdapter {
     async fn recv_scheduled_with_recovery(&mut self) -> Option<ToolRunCompletion> {
-        self.receiver
-            .recv_scheduled_with_recovery(&self.tool_runs)
-            .await
+        self.receiver.recv_scheduled_with_recovery().await
     }
 
     async fn recv_result_with_recovery(&mut self) -> Option<ToolRunCompletion> {
-        self.receiver
-            .recv_tool_run_result_with_recovery(&self.tool_runs)
-            .await
+        self.receiver.recv_result_with_recovery().await
     }
 }
 

@@ -1240,10 +1240,10 @@ impl SessionSupervisor {
     }
 
     #[cfg(test)]
-    pub(crate) fn tool_run_service(&self) -> Arc<ToolRunService> {
-        self.test_tool_runs
+    pub(crate) fn tool_run_test_support(&self) -> Arc<dyn ToolRunTestSupportPort> {
+        self.tool_run_test_support
             .as_ref()
-            .expect("test session uses the Tools facade adapter")
+            .expect("test session uses Tools test-support capability")
             .clone()
     }
 

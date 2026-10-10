@@ -10,7 +10,8 @@ use haven_memory::Session as DbSession;
 use haven_memory::{Database, ToolRunStore};
 use haven_memory::{SessionAuthorizationGrant, SessionStore};
 #[cfg(test)]
-use haven_tools::ToolRunService;
+#[cfg(test)]
+use haven_tools::ToolRunTestSupportPort;
 #[cfg(test)]
 use haven_tools::ToolsFacade;
 use haven_tools::{AuthorizationDecision, ToolResult, is_silent_tool_call};
@@ -351,7 +352,7 @@ pub struct SessionSupervisor {
     /// terminal ToolRun reconciliation.
     tool_runs: Arc<dyn tool_ports::AgentToolRunPort>,
     #[cfg(test)]
-    test_tool_runs: Option<Arc<ToolRunService>>,
+    tool_run_test_support: Option<Arc<dyn ToolRunTestSupportPort>>,
     /// Agent-owned boundary for restoring and clearing per-session tool
     /// registrations. Live loading remains owned by the tool execution path.
     session_tool_overlay_port: Arc<dyn SessionToolOverlayPort>,
@@ -467,7 +468,7 @@ impl SessionSupervisor {
             catalog: _catalog,
             tool_runs,
             #[cfg(test)]
-            test_tool_runs,
+            tool_run_test_support,
             session_tool_overlay,
             managed_asset_leases,
             observations,
@@ -483,7 +484,7 @@ impl SessionSupervisor {
             authorization,
             tool_runs,
             #[cfg(test)]
-            test_tool_runs,
+            tool_run_test_support,
             session_tool_overlay_port: session_tool_overlay,
             observation_port: observations,
             managed_asset_lease_port: managed_asset_leases,
@@ -2000,8 +2001,8 @@ mod tests {
             Arc::new(ToolsFacade::new()),
             1,
         ));
-        exec.tool_run_service()
-            .set_tool_run_store(Some(ToolRunStore::new(db.clone())))
+        exec.tool_run_test_support()
+            .set_store(Some(ToolRunStore::new(db.clone())))
             .await;
 
         assert_eq!(
@@ -2638,8 +2639,8 @@ mod tests {
             .create_session("failed end while run is stuck")
             .await
             .unwrap();
-        exec.tool_run_service()
-            .set_tool_run_store(Some(ToolRunStore::new(db.clone())))
+        exec.tool_run_test_support()
+            .set_store(Some(ToolRunStore::new(db.clone())))
             .await;
         let tool_run_id = "toolrun-stuck-end-retry";
         let due_at = (chrono::Utc::now() + chrono::Duration::hours(1)).to_rfc3339();
@@ -3500,8 +3501,8 @@ mod tests {
             Arc::new(ToolsFacade::new()),
             3,
         ));
-        exec.tool_run_service()
-            .set_tool_run_store(Some(ToolRunStore::new(db.clone())))
+        exec.tool_run_test_support()
+            .set_store(Some(ToolRunStore::new(db.clone())))
             .await;
 
         assert_eq!(
@@ -3542,8 +3543,8 @@ mod tests {
             Arc::new(ToolsFacade::new()),
             1,
         ));
-        exec.tool_run_service()
-            .set_tool_run_store(Some(ToolRunStore::new(db.clone())))
+        exec.tool_run_test_support()
+            .set_store(Some(ToolRunStore::new(db.clone())))
             .await;
         let mut events = exec.subscribe_events();
         db.conn()
@@ -3590,8 +3591,8 @@ mod tests {
     async fn resident_end_partial_failure_keeps_paused_actor_and_retry_completes() {
         let (exec, db) = make_executor_with_db(1);
         let session = exec.create_session("resident end retry").await.unwrap();
-        exec.tool_run_service()
-            .set_tool_run_store(Some(ToolRunStore::new(db.clone())))
+        exec.tool_run_test_support()
+            .set_store(Some(ToolRunStore::new(db.clone())))
             .await;
         let blocked_id = "toolrun-resident-blocked";
         let cancelled_id = "toolrun-resident-cancelled";
@@ -3660,8 +3661,8 @@ mod tests {
     async fn end_status_write_failure_does_not_cancel_run_or_owned_tool_runs() {
         let (exec, db) = make_executor_with_db(1);
         let session = exec.create_session("end status write retry").await.unwrap();
-        exec.tool_run_service()
-            .set_tool_run_store(Some(ToolRunStore::new(db.clone())))
+        exec.tool_run_test_support()
+            .set_store(Some(ToolRunStore::new(db.clone())))
             .await;
         let tool_run_id = "toolrun-end-status-write-retry";
         let due_at = (chrono::Utc::now() + chrono::Duration::hours(1)).to_rfc3339();
@@ -3735,8 +3736,8 @@ mod tests {
             Arc::new(ToolsFacade::new()),
             3,
         ));
-        exec.tool_run_service()
-            .set_tool_run_store(Some(ToolRunStore::new(db.clone())))
+        exec.tool_run_test_support()
+            .set_store(Some(ToolRunStore::new(db.clone())))
             .await;
 
         exec.delete_session(&session.id).await.unwrap();
@@ -3772,8 +3773,8 @@ mod tests {
             Arc::new(ToolsFacade::new()),
             3,
         ));
-        exec.tool_run_service()
-            .set_tool_run_store(Some(ToolRunStore::new(db.clone())))
+        exec.tool_run_test_support()
+            .set_store(Some(ToolRunStore::new(db.clone())))
             .await;
         db.conn()
             .execute_batch(&format!(

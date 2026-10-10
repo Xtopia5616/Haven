@@ -1977,12 +1977,13 @@ mod scheduled_authorization_tests {
         session_id: Option<&str>,
         tool_name: &str,
     ) -> String {
-        let tool_runs = supervisor.tool_run_service();
-        let _receiver = tool_runs
-            .take_tool_run_receiver()
+        let _receiver = supervisor
+            .tool_run_port()
+            .take_completion_receiver()
             .expect("scheduled receiver");
+        let tool_runs = supervisor.tool_run_test_support();
         let tool_run_id = tool_runs
-            .set(haven_tools::ScheduledToolRunSpec {
+            .schedule(haven_tools::ScheduledToolRunSpec {
                 due_at: Some((chrono::Utc::now() + chrono::Duration::seconds(3)).to_rfc3339()),
                 delay_secs: None,
                 watch_tool_run_id: None,
@@ -2579,7 +2580,12 @@ mod scheduled_authorization_tests {
             tool_run_id: tool_run_id.clone(),
         };
 
-        assert!(supervisor.tool_run_service().cancel(&tool_run_id).await);
+        assert!(
+            supervisor
+                .tool_run_test_support()
+                .cancel(&tool_run_id)
+                .await
+        );
         assert!(
             supervisor
                 .resolve_confirmation_with_session_grant_for_owner(

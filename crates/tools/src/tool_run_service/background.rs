@@ -14,6 +14,7 @@ impl ToolRunService {
     /// Spawn a shell command as a background ToolRun. Returns the ToolRun ID; the
     /// command keeps running after this function returns. `cwd` overrides the
     /// default Temp working directory when provided.
+    #[cfg(test)]
     pub async fn spawn_shell(
         self: &Arc<Self>,
         command: &str,
@@ -28,6 +29,7 @@ impl ToolRunService {
     /// Spawn a background ToolRun with its owner bound before the process is
     /// published. Agent calls should use this variant so session shutdown can
     /// cancel a process even if it exits during the tool-result projection.
+    #[cfg(test)]
     pub async fn spawn_shell_for_session(
         self: &Arc<Self>,
         command: &str,
@@ -43,6 +45,7 @@ impl ToolRunService {
     /// Spawn a background ToolRun linked to the Agent tool step that created it.
     /// The optional source identity is persisted before the child starts so the
     /// relation survives fast completion and restart reconciliation.
+    #[cfg(test)]
     pub(crate) async fn spawn_shell_for_session_with_source(
         self: &Arc<Self>,
         command: &str,

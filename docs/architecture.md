@@ -101,7 +101,7 @@ PlatformRuntime 发布、MCP discovery config/index 更新和 builtin catalog re
 messaging 与 memory recall 是进程服务，在 `wire_startup` 里绑定一次，不放进这份快照；
 `admin_surfaces` 随成功的 catalog rebuild 写入 `BuiltinCatalog`。`tool_builtins.rs` 组合 MCP/Skills
 与具体 builtin provider。MCP、skills、授权、媒体资产、ToolRun 与 live output 由构造时交出的
-`ToolServices` 提供；授权、受管资产生命周期、Skill 执行和 live-output sink 通过 capability ports 暴露；Agent/App 的 ToolRun 操作通过消费端 ports 调用，App 的 Skill 与 live-output 调用则经消费端 ports 进入对应 Tools capability ports（ADR 0895–0898）。MCP manager 与 SkillRegistry 作为各自领域 owner 的调用面保留；ToolRunService 是 `ToolServices` 中尚待收口的具体实现字段。组合根仍是 `ApplicationRuntime`，
+`ToolServices` 提供；授权、受管资产生命周期、Skill 执行、live-output sink 和 ToolRun 均通过 capability ports 暴露。Agent/App 的消费端 ports 映射 Tools owner ports；ToolRun 完成接收器在 Tools 内部绑定状态机与恢复协调器，调用方不接触具体 `ToolRunService`（ADR 0895–0899）。MCP manager 与 SkillRegistry 作为各自领域 owner 的调用面保留。组合根仍是 `ApplicationRuntime`，
 不另建 `AppRuntime`。`ToolsFacade` 是对外 façade，保留执行与授权入口、session overlay/asset
 lease 操作、目录投影、runtime capability 请求和录音转写入口；启动及 runtime/catalog 更新转发给 coordinator。
 能力判断由 tools crate 唯一构造的 crate-private `ToolCapabilitySnapshot` 收口：prompt runtime、
@@ -524,7 +524,7 @@ ToolRunService 仍是唯一状态 owner；实现按职责放在 `tool_run_servic
 `ToolRunStatus::can_transition_to` / `tool_run_terminal::can_claim_terminal` 单点定义；background admission 直接进入
 `running`，`waiting → running` 只属于 scheduled fire。提交前后的重复检查跨越 durable CAS 与内存投影/回滚边界，保留为竞态校验。
 执行副作用、outbox、retry 与 UI finished 投影继续按 kind 分流；trigger/execution、deadline/claim identity 和 restart recovery
-语义需先决策，当前不引入新的 ToolRun 状态或自动 replay（ADR 0352）。产品已确认 background 与 scheduled 的完成记录、任务卡和 transcript 投影采用统一格式，但保留类型细节；ToolRunCenter 活动卡片由 `projectToolRunCard` 统一投影，scheduled tool 的 completed/failed outcome 则已按 ADR 0393 复用 ToolRun completion outbox 与 Agent 的 ToolRunResult/X12 投影路径。该审计还发现 `ToolRunService::set` 的 scheduled
+语义需先决策，当前不引入新的 ToolRun 状态或自动 replay（ADR 0352）。产品已确认 background 与 scheduled 的完成记录、任务卡和 transcript 投影采用统一格式，但保留类型细节；ToolRunCenter 活动卡片由 `projectToolRunCard` 统一投影，scheduled tool 的 completed/failed outcome 则已按 ADR 0393 复用 ToolRun completion outbox 与 Agent 的 ToolRunResult/X12 投影路径。创建 scheduled ToolRun 的服务动词统一为 `ToolRunService::schedule`，避免通用 `set` 与配置更新/操作名混淆。
 admission cleanup 曾移除 Running row，导致 Agent terminal callback 找不到内存 entry；ADR 0353 已将清理条件限定为
 terminal scheduled entry，并通过 completion、cancel、no-consumer recovery 和 restart 回归固定边界。Waiting/Running
 entry 保持原路径；durable Waiting schedule 仍在启动时恢复，遗留 durable Running row 仍标为 failed 且不重放。

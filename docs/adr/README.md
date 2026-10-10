@@ -878,3 +878,4 @@
 - [0896：隔离 App 的 Skill 执行与 live-output 能力](0896-isolate-app-skill-and-live-output-capabilities.md)
 - [0897：通过生命周期 port 隔离受管资产注册表](0897-expose-managed-asset-lifecycle-port.md)
 - [0898：隐藏 SkillRunner 与 LiveOutputHub 实现](0898-hide-skill-and-live-output-implementations.md)
+- [0899：通过按消费者划分的 capability ports 隐藏 ToolRunService](0899-hide-tool-run-service-behind-capabilities.md)
