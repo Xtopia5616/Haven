@@ -10,8 +10,10 @@ use haven_memory::Session as DbSession;
 use haven_memory::{Database, ToolRunStore};
 use haven_memory::{SessionAuthorizationGrant, SessionStore};
 #[cfg(test)]
+use haven_tools::ToolRunService;
+#[cfg(test)]
 use haven_tools::ToolsFacade;
-use haven_tools::{AuthorizationDecision, ToolResult, ToolRunService, is_silent_tool_call};
+use haven_tools::{AuthorizationDecision, ToolResult, is_silent_tool_call};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::future::Future;
@@ -347,7 +349,9 @@ pub struct SessionSupervisor {
     tool_catalog: Arc<dyn crate::react::ToolCatalogPort>,
     /// ToolCall lifecycle capability used for session-owned cancellation and
     /// terminal ToolRun reconciliation.
-    tool_runs: Arc<ToolRunService>,
+    tool_runs: Arc<dyn tool_ports::AgentToolRunPort>,
+    #[cfg(test)]
+    test_tool_runs: Option<Arc<ToolRunService>>,
     /// Agent-owned boundary for restoring and clearing per-session tool
     /// registrations. Live loading remains owned by the tool execution path.
     session_tool_overlay_port: Arc<dyn SessionToolOverlayPort>,
@@ -444,8 +448,8 @@ mod tool_runner;
 pub(crate) use dispatcher::DirectSessionRunLease;
 pub use tool_ports::SessionToolPorts;
 pub use tool_ports::{
-    ManagedAssetLeasePort, SessionToolOverlayPort, ToolAuthorizationPort, ToolExecutionContext,
-    ToolExecutionPort, ToolObservationPort,
+    AgentToolRunPort, ManagedAssetLeasePort, SessionToolOverlayPort, ToolAuthorizationPort,
+    ToolExecutionContext, ToolExecutionPort, ToolObservationPort, ToolRunCompletionReceiverPort,
 };
 pub(crate) use tool_runner::{ToolStepMetadata, ToolStepPersistenceError};
 
@@ -462,6 +466,8 @@ impl SessionSupervisor {
             authorization,
             catalog: _catalog,
             tool_runs,
+            #[cfg(test)]
+            test_tool_runs,
             session_tool_overlay,
             managed_asset_leases,
             observations,
@@ -476,6 +482,8 @@ impl SessionSupervisor {
             tool_catalog: _catalog,
             authorization,
             tool_runs,
+            #[cfg(test)]
+            test_tool_runs,
             session_tool_overlay_port: session_tool_overlay,
             observation_port: observations,
             managed_asset_lease_port: managed_asset_leases,

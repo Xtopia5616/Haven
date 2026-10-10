@@ -873,3 +873,4 @@
 - [0891：将 Memory 查询缓存实现限制在 Memory 内部](0891-keep-memory-query-cache-private.md)
 - [0892：在 Memory 内部打开数据库并装配 typed stores](0892-compose-memory-stores-inside-memory.md)
 - [0893：通过授权 port 隐藏 AuthorizationEngine](0893-hide-authorization-engine-behind-port.md)
+- [0894：通过 Agent-owned port 隔离 ToolRun 生命周期调用](0894-hide-tool-run-service-behind-agent-port.md)

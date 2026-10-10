@@ -1977,12 +1977,11 @@ mod scheduled_authorization_tests {
         session_id: Option<&str>,
         tool_name: &str,
     ) -> String {
-        let _receiver = supervisor
-            .tool_runs
+        let tool_runs = supervisor.tool_run_service();
+        let _receiver = tool_runs
             .take_tool_run_receiver()
             .expect("scheduled receiver");
-        let tool_run_id = supervisor
-            .tool_runs
+        let tool_run_id = tool_runs
             .set(haven_tools::ScheduledToolRunSpec {
                 due_at: Some((chrono::Utc::now() + chrono::Duration::seconds(3)).to_rfc3339()),
                 delay_secs: None,
@@ -1999,11 +1998,7 @@ mod scheduled_authorization_tests {
             .unwrap();
         tokio::time::timeout(std::time::Duration::from_secs(6), async {
             loop {
-                if supervisor
-                    .tool_runs
-                    .status_view(&tool_run_id)
-                    .await
-                    .status()
+                if tool_runs.status_view(&tool_run_id).await.status()
                     == Some(haven_common::ToolRunStatus::Running)
                 {
                     break;
@@ -2584,7 +2579,7 @@ mod scheduled_authorization_tests {
             tool_run_id: tool_run_id.clone(),
         };
 
-        assert!(supervisor.tool_runs.cancel(&tool_run_id).await);
+        assert!(supervisor.tool_run_service().cancel(&tool_run_id).await);
         assert!(
             supervisor
                 .resolve_confirmation_with_session_grant_for_owner(

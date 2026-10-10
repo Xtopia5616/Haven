@@ -95,10 +95,10 @@ impl ReActEngine {
         // cleanup can clear the actor queue immediately afterwards. The
         // durable outbox is acknowledged only after the transcript event and
         // message projection commit.
-        let tool_run_service = self.executor.tool_run_service();
+        let tool_run_port = self.executor.tool_run_port();
         for tool_run_result_id in tool_run_result_ids {
-            tool_run_service
-                .acknowledge_tool_run_completion(&tool_run_result_id)
+            tool_run_port
+                .acknowledge_completion(&tool_run_result_id)
                 .await;
         }
 

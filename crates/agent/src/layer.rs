@@ -504,14 +504,14 @@ impl AgentLayer {
         //   without a session id is an error (no fallback). Its outcome uses
         //   the same ToolRun-completion notification path.
         let agent = self.clone();
-        let tool_run_service = self.executor.tool_run_service();
-        if let Some(mut rx) = tool_run_service.take_tool_run_receiver() {
+        let tool_run_port = self.executor.tool_run_port();
+        if let Some(mut rx) = tool_run_port.take_completion_receiver() {
             let cancellation = cancellation.clone();
             tokio::spawn(async move {
                 loop {
                     let Some(event) = (tokio::select! {
                         _ = cancellation.cancelled() => return,
-                        event = rx.recv_scheduled_with_recovery(tool_run_service.as_ref()) => event,
+                        event = rx.recv_scheduled_with_recovery() => event,
                     }) else {
                         return;
                     };
@@ -560,7 +560,7 @@ impl AgentLayer {
                                                 "定时任务未执行：缺少要调用的工具。",
                                             )
                                             .await;
-                                        if let Err(error) = tool_run_service
+                                        if let Err(error) = tool_run_port
                                             .fail_scheduled(&fired.tool_run_id, "缺少要调用的工具")
                                             .await
                                         {
@@ -616,7 +616,7 @@ impl AgentLayer {
                                         }
                                     }
                                     haven_tools::AuthorizationDecision::AutoApproved => {
-                                        let execution_claim = tool_run_service
+                                        let execution_claim = tool_run_port
                                             .claim_scheduled_execution(
                                                 &fired.tool_run_id,
                                                 &fired.tool_run_id,
@@ -698,7 +698,7 @@ impl AgentLayer {
                                             "定时任务未执行：继续会话缺少 prompt。",
                                         )
                                         .await;
-                                    if let Err(error) = tool_run_service
+                                    if let Err(error) = tool_run_port
                                         .fail_scheduled(&fired.tool_run_id, "继续会话缺少 prompt")
                                         .await
                                     {
@@ -721,7 +721,7 @@ impl AgentLayer {
                                             "定时任务无法继续：未关联会话。",
                                         )
                                         .await;
-                                    if let Err(error) = tool_run_service
+                                    if let Err(error) = tool_run_port
                                         .fail_scheduled(&fired.tool_run_id, "未关联会话")
                                         .await
                                     {
@@ -744,7 +744,7 @@ impl AgentLayer {
                                     .await;
                                 Err("关联会话已结束或不存在".into())
                             } else {
-                                let execution_claim = tool_run_service
+                                let execution_claim = tool_run_port
                                     .claim_scheduled_execution(
                                         &fired.tool_run_id,
                                         &fired.tool_run_id,
@@ -815,13 +815,11 @@ impl AgentLayer {
                     if !deferred {
                         let result = if outcome.is_ok() {
                             if let Some(result) = result_summary.as_deref() {
-                                tool_run_service
+                                tool_run_port
                                     .complete_scheduled_with_result(&fired.tool_run_id, result)
                                     .await
                             } else {
-                                tool_run_service
-                                    .complete_scheduled(&fired.tool_run_id)
-                                    .await
+                                tool_run_port.complete_scheduled(&fired.tool_run_id).await
                             }
                         } else {
                             let failure_reason = outcome
@@ -834,7 +832,7 @@ impl AgentLayer {
                                     )
                                 })
                                 .unwrap_or_else(|| "scheduled ToolRun failed".to_string());
-                            tool_run_service
+                            tool_run_port
                                 .fail_scheduled(&fired.tool_run_id, &failure_reason)
                                 .await
                         };
@@ -851,7 +849,7 @@ impl AgentLayer {
         // spawned above delivers the overdue fires. Also clean up ToolRun rows a
         // previous run left `running` (their child processes died with the
         // app), so persisted ToolRun history never shows stale live work.
-        let tool_runs = self.executor.tool_run_service();
+        let tool_runs = self.executor.tool_run_port();
         let cancellation = cancellation.clone();
         tokio::spawn(async move {
             let restore_summary = tokio::select! {

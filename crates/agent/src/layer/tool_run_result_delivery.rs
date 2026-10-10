@@ -60,13 +60,13 @@ pub(super) fn spawn(agent: Arc<AgentLayer>, cancellation: CancellationToken) {
     // NOT woken: resuming it would let the agent continue (and run tools)
     // based on subprocess output before the user has answered. The result
     // is still buffered and delivered as context once the user resumes.
-    let tool_run_service = agent.executor.tool_run_service();
-    if let Some(mut rx) = tool_run_service.take_tool_run_receiver() {
+    let tool_run_port = agent.executor.tool_run_port();
+    if let Some(mut rx) = tool_run_port.take_completion_receiver() {
         tokio::spawn(async move {
             loop {
                 let Some(event) = (tokio::select! {
                     _ = cancellation.cancelled() => return,
-                    event = rx.recv_tool_run_result_with_recovery(tool_run_service.as_ref()) => event,
+                    event = rx.recv_result_with_recovery() => event,
                 }) else {
                     return;
                 };
@@ -98,8 +98,8 @@ pub(super) fn spawn(agent: Arc<AgentLayer>, cancellation: CancellationToken) {
                 };
                 // Cancellation has no ToolRun-result transcript by contract.
                 if status == haven_common::ToolRunStatus::Cancelled {
-                    tool_run_service
-                        .acknowledge_tool_run_completion(&tool_run_result_id)
+                    tool_run_port
+                        .acknowledge_completion(&tool_run_result_id)
                         .await;
                     continue;
                 }
@@ -110,8 +110,8 @@ pub(super) fn spawn(agent: Arc<AgentLayer>, cancellation: CancellationToken) {
                         tool_run_id = %tool_run_id,
                         "acknowledging ToolRun result without an owning session"
                     );
-                    tool_run_service
-                        .acknowledge_unowned_tool_run_completion(&tool_run_result_id)
+                    tool_run_port
+                        .acknowledge_unowned_completion(&tool_run_result_id)
                         .await;
                     continue;
                 };
@@ -180,8 +180,8 @@ pub(super) fn spawn(agent: Arc<AgentLayer>, cancellation: CancellationToken) {
                             .await
                         {
                             Ok(_persisted) => {
-                                tool_run_service
-                                    .acknowledge_tool_run_completion(&tool_run_result_id)
+                                tool_run_port
+                                    .acknowledge_completion(&tool_run_result_id)
                                     .await;
                                 break;
                             }
@@ -204,8 +204,8 @@ pub(super) fn spawn(agent: Arc<AgentLayer>, cancellation: CancellationToken) {
                             tool_run_id = %tool_run_id,
                             "dropping ToolRun-result delivery for deleted session"
                         );
-                        tool_run_service
-                            .acknowledge_tool_run_completion(&tool_run_result_id)
+                        tool_run_port
+                            .acknowledge_completion(&tool_run_result_id)
                             .await;
                         break;
                     } else {

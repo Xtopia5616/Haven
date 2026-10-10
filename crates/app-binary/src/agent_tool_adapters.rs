@@ -4,15 +4,16 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use haven_agent::{
-    AgentToolPorts, ManagedAssetLeasePort, PromptCatalogContent, PromptCatalogVersions,
-    PromptRuntimeContext, PromptToolPort, SessionToolOverlayPort, SessionToolPorts,
-    ToolAuthorizationPort, ToolCatalogPort, ToolExecutionContext, ToolExecutionPort,
-    ToolObservationPort,
+    AgentToolPorts, AgentToolRunPort, ManagedAssetLeasePort, PromptCatalogContent,
+    PromptCatalogVersions, PromptRuntimeContext, PromptToolPort, SessionToolOverlayPort,
+    SessionToolPorts, ToolAuthorizationPort, ToolCatalogPort, ToolExecutionContext,
+    ToolExecutionPort, ToolObservationPort, ToolRunCompletionReceiverPort,
 };
 use haven_common::types::{MessageAttachment, RiskLevel};
 use haven_tools::{
     AuthorizationDecision, AuthorizationPort, AuthorizationRequest, ConfirmationReceipt,
-    ToolCatalogSnapshot, ToolRegistration, ToolResult, ToolsFacade,
+    ToolCatalogSnapshot, ToolRegistration, ToolResult, ToolRunCompletion,
+    ToolRunCompletionReceiver, ToolRunListView, ToolRunRestoreSummary, ToolRunService, ToolsFacade,
 };
 use serde_json::Value;
 
@@ -24,6 +25,7 @@ pub(crate) fn agent_tool_ports_from_facade(tools: Arc<ToolsFacade>) -> AgentTool
     let adapter = Arc::new(ToolsFacadeAgentAdapter {
         tools: Arc::clone(&tools),
         authorization: Arc::clone(&services.authorization),
+        tool_runs: Arc::clone(&services.tool_runs),
     });
 
     let prompt: Arc<dyn PromptToolPort> = adapter.clone();
@@ -32,7 +34,7 @@ pub(crate) fn agent_tool_ports_from_facade(tools: Arc<ToolsFacade>) -> AgentTool
         adapter.clone(),
         adapter.clone(),
         Arc::clone(&catalog),
-        services.tool_runs,
+        adapter.clone(),
         adapter.clone(),
         adapter.clone(),
         adapter,
@@ -44,6 +46,7 @@ pub(crate) fn agent_tool_ports_from_facade(tools: Arc<ToolsFacade>) -> AgentTool
 struct ToolsFacadeAgentAdapter {
     tools: Arc<ToolsFacade>,
     authorization: Arc<dyn AuthorizationPort>,
+    tool_runs: Arc<ToolRunService>,
 }
 
 #[async_trait]
@@ -195,6 +198,111 @@ impl ToolAuthorizationPort for ToolsFacadeAgentAdapter {
 
     async fn prompt_summary(&self) -> String {
         self.authorization.prompt_summary().await
+    }
+}
+
+#[async_trait]
+impl AgentToolRunPort for ToolsFacadeAgentAdapter {
+    async fn attach_session(&self, tool_run_id: &str, session_id: &str) {
+        self.tool_runs.attach_session(tool_run_id, session_id).await;
+    }
+
+    async fn claim_scheduled_execution(
+        &self,
+        tool_run_id: &str,
+        claim_id: &str,
+    ) -> anyhow::Result<bool> {
+        self.tool_runs
+            .claim_scheduled_execution(tool_run_id, claim_id)
+            .await
+    }
+
+    async fn release_scheduled_execution_claim(
+        &self,
+        tool_run_id: &str,
+        claim_id: &str,
+    ) -> anyhow::Result<bool> {
+        self.tool_runs
+            .release_scheduled_execution_claim(tool_run_id, claim_id)
+            .await
+    }
+
+    async fn cancel_owned_by_session_checked(&self, session_id: &str) -> anyhow::Result<()> {
+        self.tool_runs
+            .cancel_owned_by_session_checked(session_id)
+            .await
+    }
+
+    async fn cancel_owned_background_by_session(&self, session_id: &str) {
+        self.tool_runs
+            .cancel_owned_background_by_session(session_id)
+            .await;
+    }
+
+    async fn list_for_session_views(&self, session_id: &str) -> Vec<ToolRunListView> {
+        self.tool_runs.list_for_session_views(session_id).await
+    }
+
+    async fn complete_scheduled(&self, tool_run_id: &str) -> anyhow::Result<bool> {
+        self.tool_runs.complete_scheduled(tool_run_id).await
+    }
+
+    async fn complete_scheduled_with_result(
+        &self,
+        tool_run_id: &str,
+        result: &str,
+    ) -> anyhow::Result<bool> {
+        self.tool_runs
+            .complete_scheduled_with_result(tool_run_id, result)
+            .await
+    }
+
+    async fn fail_scheduled(&self, tool_run_id: &str, reason: &str) -> anyhow::Result<bool> {
+        self.tool_runs.fail_scheduled(tool_run_id, reason).await
+    }
+
+    async fn restore(&self) -> ToolRunRestoreSummary {
+        self.tool_runs.restore().await
+    }
+
+    async fn acknowledge_completion(&self, tool_run_result_id: &str) {
+        self.tool_runs
+            .acknowledge_tool_run_completion(tool_run_result_id)
+            .await;
+    }
+
+    async fn acknowledge_unowned_completion(&self, tool_run_result_id: &str) {
+        self.tool_runs
+            .acknowledge_unowned_tool_run_completion(tool_run_result_id)
+            .await;
+    }
+
+    fn take_completion_receiver(&self) -> Option<Box<dyn ToolRunCompletionReceiverPort>> {
+        let receiver = self.tool_runs.take_tool_run_receiver()?;
+        Some(Box::new(ToolsFacadeToolRunCompletionAdapter {
+            receiver,
+            tool_runs: Arc::clone(&self.tool_runs),
+        }))
+    }
+}
+
+struct ToolsFacadeToolRunCompletionAdapter {
+    receiver: ToolRunCompletionReceiver,
+    tool_runs: Arc<ToolRunService>,
+}
+
+#[async_trait]
+impl ToolRunCompletionReceiverPort for ToolsFacadeToolRunCompletionAdapter {
+    async fn recv_scheduled_with_recovery(&mut self) -> Option<ToolRunCompletion> {
+        self.receiver
+            .recv_scheduled_with_recovery(&self.tool_runs)
+            .await
+    }
+
+    async fn recv_result_with_recovery(&mut self) -> Option<ToolRunCompletion> {
+        self.receiver
+            .recv_tool_run_result_with_recovery(&self.tool_runs)
+            .await
     }
 }
 
@@ -417,9 +525,11 @@ mod tests {
                 .await
                 .is_some()
         );
+        let services = tools.share_services();
         let adapter = ToolsFacadeAgentAdapter {
             tools: Arc::clone(&tools),
-            authorization: Arc::clone(&tools.share_services().authorization),
+            authorization: Arc::clone(&services.authorization),
+            tool_runs: Arc::clone(&services.tool_runs),
         };
 
         let content = adapter.catalog_content().await;
@@ -444,9 +554,11 @@ mod tests {
     #[tokio::test]
     async fn catalog_and_observation_adapters_preserve_session_and_output_contracts() {
         let tools = Arc::new(ToolsFacade::new());
+        let services = tools.share_services();
         let adapter = ToolsFacadeAgentAdapter {
             tools: Arc::clone(&tools),
-            authorization: Arc::clone(&tools.share_services().authorization),
+            authorization: Arc::clone(&services.authorization),
+            tool_runs: Arc::clone(&services.tool_runs),
         };
         let session_id = "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
         let tool: ToolHandle = Arc::new(ExecutionContextProbe);

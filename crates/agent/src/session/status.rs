@@ -1234,10 +1234,17 @@ impl SessionSupervisor {
         self.store.clone()
     }
 
-    /// Return the live ToolRun capability needed by Agent background
-    /// consumers. This is intentionally narrower than exposing ToolServices.
-    pub(crate) fn tool_run_service(&self) -> Arc<ToolRunService> {
+    /// Return the Agent-owned ToolRun capability needed by runtime consumers.
+    pub(crate) fn tool_run_port(&self) -> Arc<dyn AgentToolRunPort> {
         self.tool_runs.clone()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn tool_run_service(&self) -> Arc<ToolRunService> {
+        self.test_tool_runs
+            .as_ref()
+            .expect("test session uses the Tools facade adapter")
+            .clone()
     }
 
     #[cfg(test)]
