@@ -565,7 +565,7 @@ impl<'db> FactGraph<'db> {
                 write.predicate.clone(),
                 write.object.clone(),
             ));
-            let is_single_valued_update = write.is_single_valued_predicate
+            let is_single_valued_update = is_single_valued_predicate(&write.predicate)
                 && existing_pairs.contains(&(write.subject.clone(), write.predicate.clone()));
             if is_new_fact
                 && !is_single_valued_update

@@ -214,7 +214,7 @@ pub(crate) fn is_volatile_predicate(predicate: &str) -> bool {
 /// old inferred values are demoted instead of coexisting (a new project path
 /// supersedes the old one; a user can like both Rust and Go and use several
 /// tools at once though). Canonical names only (P2-11).
-pub fn is_single_valued_predicate(predicate: &str) -> bool {
+pub(crate) fn is_single_valued_predicate(predicate: &str) -> bool {
     let p = predicate.to_ascii_lowercase();
     IDENTITY_PREDICATES.iter().any(|x| *x == p)
         || SINGLE_VALUED_NON_IDENTITY.iter().any(|x| *x == p)

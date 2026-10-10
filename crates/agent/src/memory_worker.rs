@@ -16,8 +16,7 @@ use haven_llm::LlmRouter;
 #[cfg(test)]
 use haven_memory::Database;
 use haven_memory::{
-    FactSourceRef, is_sensitive_object, is_sensitive_predicate, is_single_valued_predicate,
-    normalize_predicate,
+    FactSourceRef, is_sensitive_object, is_sensitive_predicate, normalize_predicate,
 };
 use haven_memory::{
     MemoryFactExtractionStore, MemoryFactStore, MemoryFactWrite, MemoryMaintenanceStore,
@@ -682,7 +681,6 @@ impl MemoryWorker {
             let tags = sanitize_tags(&fact.tags);
             writes.push(MemoryFactWrite {
                 subject,
-                is_single_valued_predicate: is_single_valued_predicate(&predicate),
                 predicate,
                 object,
                 confidence,

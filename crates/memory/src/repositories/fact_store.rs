@@ -17,10 +17,6 @@ pub struct MemoryFactWrite {
     pub tags: Vec<String>,
     pub source_ref: Option<FactSourceRef>,
     pub durability: f64,
-    /// The caller's canonical predicate policy, used only to decide whether
-    /// an existing `(subject, predicate)` pair qualifies as an update below
-    /// the new-fact confidence floor.
-    pub is_single_valued_predicate: bool,
 }
 
 /// Async application-facing boundary for durable memory-fact operations.
@@ -312,7 +308,6 @@ mod tests {
             tags: Vec::new(),
             source_ref: None,
             durability: 0.6,
-            is_single_valued_predicate: false,
         }
     }
 
@@ -375,6 +370,38 @@ mod tests {
             "I use Rust at work."
         );
         assert!(facts.iter().any(|fact| fact.object == "SQLite"));
+    }
+
+    #[tokio::test]
+    async fn inferred_batch_uses_memory_predicate_policy_for_low_confidence_updates() {
+        let (db, store) = store();
+        db.insert_fact("user", "works_at", "Old Company", "inferred", 0.8, &[])
+            .unwrap();
+        db.insert_fact("user", "likes", "Coffee", "inferred", 0.8, &[])
+            .unwrap();
+
+        let mut single_value_update = inferred_write("user", "works_at", "New Company");
+        single_value_update.confidence = 0.5;
+        let mut multi_value_fact = inferred_write("user", "likes", "Rust");
+        multi_value_fact.confidence = 0.5;
+
+        assert!(
+            store
+                .persist_inferred_batch_for_test(vec![single_value_update, multi_value_fact], 0.55)
+                .await
+                .unwrap()
+        );
+
+        let facts = db.list_facts_by_subject("user").unwrap();
+        assert!(
+            facts
+                .iter()
+                .any(|fact| { fact.predicate == "works_at" && fact.object == "New Company" })
+        );
+        assert!(facts.iter().any(|fact| {
+            fact.predicate == "works_at" && fact.object == "Old Company" && fact.confidence < 0.8
+        }));
+        assert!(!facts.iter().any(|fact| fact.object == "Rust"));
     }
 
     #[tokio::test]

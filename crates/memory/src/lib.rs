@@ -27,7 +27,7 @@ pub use repositories::facts::{
     CANONICAL_MERGE_TARGETS, ContradictionCandidate, ContradictionKind, Fact, FactSourceRef,
     UpsertOutcome, fact_effective_confidence, fact_within_demote_age, is_canonical_merge_target,
     is_identity_predicate, is_sensitive_object, is_sensitive_predicate, is_sensitive_text,
-    is_single_valued_predicate, is_visible_fact, normalize_predicate, pick_contradiction_keeper,
+    is_visible_fact, normalize_predicate, pick_contradiction_keeper,
 };
 pub use repositories::kv_store::{
     FactExtractionMarker, FactExtractionMarkerState, SummaryExtractionMarker,

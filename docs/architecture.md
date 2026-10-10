@@ -382,7 +382,10 @@ typed cursor、共享节流时间戳，以及 ordinary transcript projections（
 LLM 调用、候选解析/清洗和事实写入策略；生产 ordinary extraction 经
 `MemoryFactStore::commit_ordinary_extraction` 同事务写入事实与 transcript cursor，summary extraction 经
 `commit_summary_extraction` 同事务写入事实与 completion marker。调用方仍决定新事实置信度下限，写入失败时
-整批回滚；不带 cursor/marker 的 `persist_inferred_batch_for_test` 仅由 `test-support` 暴露供测试使用（ADR 0309、0912）。`MemoryMaintenanceStore` 还
+整批回滚；不带 cursor/marker 的 `persist_inferred_batch_for_test` 仅由 `test-support` 暴露供测试使用（ADR 0309、0912）。
+`MemoryFactWrite` 只承载 Agent 已规范化和清洗的候选字段；canonical predicate 的单值/多值语义由
+Memory `FactGraph` 按规范谓词判断。调用方只传新事实置信度下限，不构造或覆盖单值策略标记；该 Memory
+policy 不从 crate 根导出，Agent 不重复计算（ADR 0919）。`MemoryMaintenanceStore` 还
 提供 LLM 维护的 typed persistence ports：矛盾候选读取、门控后按 id demote、predicate count DTO
 读取和逐 predicate rewrite（ADR 0311）。Agent 保留模型配置门禁、提示词/上下文、serde 解析、
 候选过滤、安全 gate、日志和降级策略；列表读取失败仍跳过对应 LLM pass，矛盾 demote 失败仍
