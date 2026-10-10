@@ -5,7 +5,6 @@ mod recall;
 mod repositories;
 mod schema;
 
-pub use cache::CacheGeneration;
 pub use db::Database;
 pub use embeddings::EmbeddedText;
 pub use recall::{

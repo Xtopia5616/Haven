@@ -419,7 +419,7 @@ impl Database {
         }
     }
 
-    pub fn cache_get_messages(
+    pub(crate) fn cache_get_messages(
         &self,
         session_id: &str,
     ) -> Option<Vec<crate::repositories::messages::Message>> {
@@ -429,11 +429,11 @@ impl Database {
     /// Returns the current cache generation for a key. Callers capture this
     /// before querying the DB and pass it to the corresponding `cache_put_*`
     /// to guard against stale-overwrite after a concurrent invalidation.
-    pub fn cache_generation(&self, key: &str) -> CacheGeneration {
+    pub(crate) fn cache_generation(&self, key: &str) -> CacheGeneration {
         self.cache.generation(key)
     }
 
-    pub fn cache_put_messages(
+    pub(crate) fn cache_put_messages(
         &self,
         session_id: &str,
         data: Vec<crate::repositories::messages::Message>,
@@ -444,13 +444,13 @@ impl Database {
             .put_messages(session_id, data, ttl_secs, expected_gen);
     }
 
-    pub fn cache_get_session_history_page(
+    pub(crate) fn cache_get_session_history_page(
         &self,
     ) -> Option<Vec<crate::repositories::sessions::Session>> {
         self.cache.get_session_history_page()
     }
 
-    pub fn cache_put_session_history_page(
+    pub(crate) fn cache_put_session_history_page(
         &self,
         data: Vec<crate::repositories::sessions::Session>,
         ttl_secs: u64,
@@ -460,11 +460,14 @@ impl Database {
             .put_session_history_page(data, ttl_secs, expected_gen);
     }
 
-    pub fn cache_get_facts(&self, subject: &str) -> Option<Vec<crate::repositories::facts::Fact>> {
+    pub(crate) fn cache_get_facts(
+        &self,
+        subject: &str,
+    ) -> Option<Vec<crate::repositories::facts::Fact>> {
         self.cache.get_facts(subject)
     }
 
-    pub fn cache_put_facts(
+    pub(crate) fn cache_put_facts(
         &self,
         subject: &str,
         data: Vec<crate::repositories::facts::Fact>,
@@ -474,7 +477,7 @@ impl Database {
         self.cache.put_facts(subject, data, ttl_secs, expected_gen);
     }
 
-    pub fn cache_invalidate_messages(&self, session_id: &str) {
+    pub(crate) fn cache_invalidate_messages(&self, session_id: &str) {
         self.cache.invalidate_messages(session_id);
     }
 
@@ -482,10 +485,18 @@ impl Database {
     /// retention cannot efficiently enumerate all cached session keys, so a
     /// global sweep is the only way to prevent deleted transcripts from being
     /// served by the read cache.
-    pub fn cache_invalidate_all_messages(&self) {
+    pub(crate) fn cache_invalidate_all_messages(&self) {
         self.cache.invalidate_all_messages();
     }
 
+    #[cfg(not(feature = "test-support"))]
+    pub(crate) fn cache_invalidate_session_history_page(&self) {
+        self.cache.invalidate_session_history_page();
+    }
+
+    /// Fixture-only escape hatch for tests that alter the sessions table with
+    /// raw SQL. Production consumers must go through `SessionStore` writes.
+    #[cfg(feature = "test-support")]
     pub fn cache_invalidate_session_history_page(&self) {
         self.cache.invalidate_session_history_page();
     }
@@ -494,11 +505,11 @@ impl Database {
     /// from the per-subject cache. Invalidated together with the subject
     /// cache on any fact mutation, so the global list cannot drift from the
     /// subject views.
-    pub fn cache_get_facts_all(&self) -> Option<Vec<crate::repositories::facts::Fact>> {
+    pub(crate) fn cache_get_facts_all(&self) -> Option<Vec<crate::repositories::facts::Fact>> {
         self.cache.get_facts_all()
     }
 
-    pub fn cache_put_facts_all(
+    pub(crate) fn cache_put_facts_all(
         &self,
         data: Vec<crate::repositories::facts::Fact>,
         ttl_secs: u64,
@@ -507,14 +518,14 @@ impl Database {
         self.cache.put_facts_all(data, ttl_secs, expected_gen);
     }
 
-    pub fn cache_invalidate_facts(&self, subject: &str) {
+    pub(crate) fn cache_invalidate_facts(&self, subject: &str) {
         self.bump_memory_revision();
         self.cache.invalidate_facts(subject);
     }
 
     /// Bump every facts cache entry (subject views + `_facts_all`). Used by
     /// bulk maintenance that may touch arbitrary subjects (P1-6).
-    pub fn cache_invalidate_all_facts(&self) {
+    pub(crate) fn cache_invalidate_all_facts(&self) {
         self.bump_memory_revision();
         self.cache.invalidate_all_facts();
     }
@@ -522,14 +533,14 @@ impl Database {
     /// Cached copy of one memory domain's embedding list (`list_embeddings`).
     /// Keyed by entity_type so vector recall skips the full-table read + blob
     /// decode on every query; invalidated on any embedding write.
-    pub fn cache_get_embeddings(
+    pub(crate) fn cache_get_embeddings(
         &self,
         entity_type: &str,
     ) -> Option<Vec<crate::embeddings::EmbeddedText>> {
         self.cache.get_embeddings(entity_type)
     }
 
-    pub fn cache_put_embeddings(
+    pub(crate) fn cache_put_embeddings(
         &self,
         entity_type: &str,
         data: Vec<crate::embeddings::EmbeddedText>,
@@ -547,7 +558,7 @@ impl Database {
     /// surface text) for the whole TTL. Deliberately NOT called on plain fact
     /// INSERTs — those fire no trigger and leave the embedding rows
     /// untouched, so invalidating would only thrash the cache.
-    pub fn cache_invalidate_embeddings(&self, entity_type: &str) {
+    pub(crate) fn cache_invalidate_embeddings(&self, entity_type: &str) {
         self.bump_memory_revision();
         self.cache.invalidate_embeddings(entity_type);
     }
@@ -555,7 +566,7 @@ impl Database {
     /// Invalidate all memory-derived caches after a session deletion or
     /// retention pass. Episodes are owned by sessions, so deleting a session
     /// changes the readable memory set even though no fact row changed.
-    pub fn cache_invalidate_memory(&self) {
+    pub(crate) fn cache_invalidate_memory(&self) {
         self.bump_memory_revision();
         self.cache.invalidate_memory();
     }
@@ -563,7 +574,7 @@ impl Database {
     /// Current process-local revision of memory-readable state. Any fact,
     /// episode, or embedding mutation advances it, allowing prompt recall
     /// caches to remain valid across unrelated dirty notifications.
-    pub fn memory_revision(&self) -> u64 {
+    pub(crate) fn memory_revision(&self) -> u64 {
         self.memory_revision.load(Ordering::Acquire)
     }
 

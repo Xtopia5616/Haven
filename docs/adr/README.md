@@ -870,3 +870,4 @@
 - [0888：将 MCP client 状态、生命周期与调用收口在 McpManager](0888-encapsulate-mcp-client-behind-manager.md)
 - [0889：隐藏 Memory 的原始 SQLite 访问入口](0889-hide-memory-sqlite-access-behind-test-support.md)
 - [0890：通过 Memory crate 根 facade 暴露跨 crate 契约](0890-expose-memory-contract-from-crate-root.md)
+- [0891：将 Memory 查询缓存实现限制在 Memory 内部](0891-keep-memory-query-cache-private.md)

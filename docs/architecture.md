@@ -358,6 +358,7 @@ embedding 生命周期读写和 LSH 维护，`memory_index.rs` 保留模型路�
 AgentLayer 从同一 service 派生 stores、共享的 `MemoryWorker` 与 `SystemPromptBuilder`；
 `MemoryStartup` 持有唯一 `MemoryRuntime`，并由 ApplicationRuntime 接管长期所有权。Prompt-memory
 cache、embedding index 与 worker memory capability 仍属于同一服务实例（ADR 0364、0367）。
+Memory 的查询缓存、缓存 generation 与数据 revision 仅供 crate 内 repository 协作；下游通过 typed stores 消费记忆能力，不接触缓存维护 API（ADR 0891）。
 `SystemPromptBuilder::with_memory_service`
 是唯一公开 builder 构造入口；它不从 Database 创建额外的 MemoryService，因此不产生独立的
 prompt-memory cache 或 embedding index（ADR 0365）。`MemoryService` 构造并持有共享的

@@ -32,7 +32,7 @@ struct CacheEntry<T: Clone> {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct CacheGeneration {
+pub(crate) struct CacheGeneration {
     domain: u64,
     key: u64,
 }
