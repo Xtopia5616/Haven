@@ -211,7 +211,7 @@ pub(super) fn spawn(agent: Arc<AgentLayer>, cancellation: CancellationToken) {
                     } else {
                         match agent
                             .executor
-                            .add_tool_run_completion_with_id(&tid, tool_run_result_id.clone(), &msg)
+                            .enqueue_tool_run_result(&tid, tool_run_result_id.clone(), &msg)
                             .await
                         {
                             Ok(()) => break,

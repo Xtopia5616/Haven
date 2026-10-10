@@ -2978,7 +2978,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn add_and_drain_follow_ups() {
+    async fn drain_react_context_returns_queued_follow_ups() {
         let db = temp_db();
         let tools = Arc::new(ToolsFacade::new());
         let exec = Arc::new(SessionSupervisor::new_for_test(db, tools, 3));
@@ -2990,13 +2990,19 @@ mod tests {
             .await
             .unwrap();
         let drained: Vec<String> = exec
-            .drain_follow_ups(&session.id)
+            .drain_react_context(&session.id)
             .await
+            .follow_ups
             .into_iter()
             .map(|s| s.text)
             .collect();
         assert_eq!(drained, vec!["extra context 1", "extra context 2"]);
-        assert!(exec.drain_follow_ups(&session.id).await.is_empty());
+        assert!(
+            exec.drain_react_context(&session.id)
+                .await
+                .follow_ups
+                .is_empty()
+        );
     }
 
     #[tokio::test]
@@ -3011,7 +3017,7 @@ mod tests {
         exec.add_follow_up(&session.id, "plain context")
             .await
             .unwrap();
-        let drained = exec.drain_follow_ups(&session.id).await;
+        let drained = exec.drain_react_context(&session.id).await.follow_ups;
         assert_eq!(drained.len(), 2);
         assert!(drained[0].is_answer, "first message is an ask reply");
         assert_eq!(drained[0].text, "the answer");
@@ -3028,11 +3034,16 @@ mod tests {
         exec.add_follow_up_with_attachments(&session.id, "看图", std::slice::from_ref(&att), None)
             .await
             .unwrap();
-        let drained = exec.drain_follow_ups(&session.id).await;
+        let drained = exec.drain_react_context(&session.id).await.follow_ups;
         assert_eq!(drained.len(), 1);
         assert_eq!(drained[0].text, "看图");
         assert_eq!(drained[0].attachments, vec![att]);
-        assert!(exec.drain_follow_ups(&session.id).await.is_empty());
+        assert!(
+            exec.drain_react_context(&session.id)
+                .await
+                .follow_ups
+                .is_empty()
+        );
     }
 
     #[tokio::test]
@@ -3045,15 +3056,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn add_and_drain_steering() {
+    async fn drain_react_context_returns_queued_steering() {
         let db = temp_db();
         let tools = Arc::new(ToolsFacade::new());
         let exec = Arc::new(SessionSupervisor::new_for_test(db, tools, 3));
         let session = exec.create_session("test").await.unwrap();
         exec.add_steering(&session.id, "steer 1").await.unwrap();
         let drained: Vec<String> = exec
-            .drain_steering(&session.id)
+            .drain_react_context(&session.id)
             .await
+            .steering
             .into_iter()
             .map(|s| s.text)
             .collect();
@@ -4696,30 +4708,41 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn tool_run_completions_buffered_and_drained() {
+    async fn drain_react_context_returns_tool_run_results_with_stable_ids() {
         let db = temp_db();
         let tools = Arc::new(ToolsFacade::new());
         let exec = Arc::new(SessionSupervisor::new_for_test(db, tools, 3));
         let session = exec.create_session("background ToolRun").await.unwrap();
 
         assert!(
-            exec.drain_tool_run_completions(&session.id)
+            exec.drain_react_context(&session.id)
                 .await
+                .tool_run_results
                 .is_empty()
         );
 
         let _ = exec
-            .add_tool_run_completion(&session.id, "toolrun-1", "toolrun-1 done")
+            .enqueue_tool_run_result(&session.id, "toolrun-1".to_string(), "toolrun-1 done")
             .await;
         let _ = exec
-            .add_tool_run_completion(&session.id, "toolrun-2", "toolrun-2 failed")
+            .enqueue_tool_run_result(&session.id, "toolrun-2".to_string(), "toolrun-2 failed")
             .await;
 
-        let drained = exec.drain_tool_run_completions(&session.id).await;
-        assert_eq!(drained, vec!["toolrun-1 done", "toolrun-2 failed"]);
+        let drained = exec.drain_react_context(&session.id).await.tool_run_results;
+        assert_eq!(
+            drained
+                .iter()
+                .map(|item| (item.tool_run_result_id.as_str(), item.text.as_str()))
+                .collect::<Vec<_>>(),
+            vec![
+                ("toolrun-1", "toolrun-1 done"),
+                ("toolrun-2", "toolrun-2 failed")
+            ]
+        );
         assert!(
-            exec.drain_tool_run_completions(&session.id)
+            exec.drain_react_context(&session.id)
                 .await
+                .tool_run_results
                 .is_empty()
         );
     }
@@ -4752,7 +4775,16 @@ mod tests {
         }
         assert_eq!(accepted, crate::session::actor::CONTEXT_QUEUE_MAX_ITEMS);
         assert_eq!(rejected, 16);
-        assert_eq!(exec.drain_steering(&session.id).await.len(), accepted);
+        let mut drained = 0;
+        loop {
+            let batch = exec.drain_react_context(&session.id).await;
+            let count = batch.steering.len();
+            drained += count;
+            if count == 0 {
+                break;
+            }
+        }
+        assert_eq!(drained, accepted);
     }
 
     #[tokio::test]
@@ -4765,7 +4797,7 @@ mod tests {
         exec.add_follow_up(&session.id, "follow-up").await.unwrap();
         exec.add_steering(&session.id, "steering").await.unwrap();
         let _ = exec
-            .add_tool_run_completion(&session.id, "toolrun-result", "ToolRun result")
+            .enqueue_tool_run_result(&session.id, "toolrun-result".to_string(), "ToolRun result")
             .await;
 
         let batch = exec.drain_react_context(&session.id).await;
@@ -4817,7 +4849,7 @@ mod tests {
             .await
             .unwrap();
 
-        let follow_ups = exec.drain_follow_ups(&session.id).await;
+        let follow_ups = exec.drain_react_context(&session.id).await.follow_ups;
         assert_eq!(follow_ups.len(), 1, "duplicate message_id must be skipped");
         assert_eq!(follow_ups[0].text, "one");
     }
@@ -4835,7 +4867,7 @@ mod tests {
             .await
             .unwrap();
 
-        let steering = exec.drain_steering(&session.id).await;
+        let steering = exec.drain_react_context(&session.id).await.steering;
         assert_eq!(steering.len(), 1);
         assert_eq!(steering[0].text, "first");
     }
@@ -4850,7 +4882,7 @@ mod tests {
             .await
             .unwrap();
         let _ = exec
-            .add_tool_run_completion(&session.id, "toolrun-stranded", "stranded")
+            .enqueue_tool_run_result(&session.id, "toolrun-stranded".to_string(), "stranded")
             .await;
         let rx = exec.subscribe_status(&session.id).await;
         let _ = rx; // a subscriber must not keep the session alive after removal
@@ -4858,8 +4890,9 @@ mod tests {
         exec.remove_session(&session.id).await.unwrap();
         assert_eq!(exec.get_active_session_status(&session.id).await, None);
         assert!(
-            exec.drain_tool_run_completions(&session.id)
+            exec.drain_react_context(&session.id)
                 .await
+                .tool_run_results
                 .is_empty()
         );
     }

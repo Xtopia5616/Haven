@@ -1,6 +1,6 @@
 # Haven 命名规范
 
-> 版本: v1.158 | 日期: 2026-10-10
+> 版本: v1.159 | 日期: 2026-10-10
 
 本文档统一 Haven 项目各层的命名规则（变量名、函数名、文件名、crate 名、缩写大小写、跨层边界）。规范以现有代码中的事实模式为基础，新代码必须遵循；存量代码若与规范冲突，逐步迁移对齐。
 
@@ -20,6 +20,7 @@
 - **熔断状态标明 owner**：`ToolCircuitState` / `ToolCircuitBreaker` 属于按工具隔离、阈值和冷却可配置的工具执行保护；`EndpointCircuitState` / `EndpointCircuitBreaker` 是模型 endpoint 的唯一准入与失败状态 owner，过滤打开熔断前请求的迟到完成并支持手动重试重置。`LlmRouter.endpoint_circuits` 按配置模型 ID 索引熔断器，不另存一份健康计数（ADR 0673、0690）。
 - **手动重试方法标明请求范围**：`LlmRouter.prepare_manual_retry(RequestKind)` 可重置指定请求路线；`ReactEngine.prepare_manual_chat_retry()` 仅为 session Continue 准备 Chat 重试。上层绑定固定 route 时不得沿用下层的通用方法名（ADR 0875）。
 - **跨层同名动作区分编排与局部状态转移**：`SessionDispatcher.begin_direct_session_run(session_id)` 完成 admission、持久状态转换、Actor 标记与 lease 管理；`SessionActor.try_mark_direct_run_active()` 只在 Actor mailbox 中设置进程内运行位并重置运行取消 token。Actor 方法不冒用 Dispatcher 的完整 admission 动词（ADR 0876）。
+- **所有待处理 context 由 ReAct 批次出队**：SessionSupervisor 与 SessionActor 均只通过 `drain_react_context()` 读取 follow-up、steering 和带稳定 ID 的 ToolRun result；删除只 drain 单类队列的 façade/Actor 命令，避免绕过优先级、预算和字段完整性（ADR 0877）。入队使用 `add_follow_up`、`add_steering` 与 `enqueue_tool_run_result` 等能辨明来源和对象的动作名。
 - **Session 运行态与持久历史分名**：`list_runtime_sessions` / `RuntimeSessionListResponse` 只表示当前进程中驻留且未终结的会话；`list_session_history`、搜索、计数和导出命令表示持久会话历史。跨层的历史查询、结果缓存都带 `session_history` 作用域；全量持久删除叫 `delete_all_sessions`，supervisor 内部运行态清理用 `clear_session_runtime_state_locked`，关闭入口用 `clear_session_runtime_state_for_shutdown`（ADR 0679）。
 - **Session IPC 包装模块按实体命名**：前端 `sessionCommands.ts` 集中封装 Session 的运行态列表、历史读取、恢复、生命周期与标题命令；单个函数仍按操作阶段使用 `listRuntimeSessions`、`listSessionHistory`、`getSessionForResume`、`deleteSession` 等领域动词，不因模块收纳在同一个文件而抹去状态范围（ADR 0679）。
 - **工具清单明确来源**：`list_builtin_tool_manifests` 只返回内置工具的 manifest，不包含 Skill 或 MCP manifest；命令与响应类型分别标出 `builtin_tool_manifests` 和 `BuiltinToolManifestListResponse`。Tools 与 Skills 的 App 命令按 domain 分模块（ADR 0680）。

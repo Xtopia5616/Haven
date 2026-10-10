@@ -51,13 +51,6 @@ impl SessionSupervisor {
             .await
     }
 
-    pub async fn drain_follow_ups(&self, session_id: &str) -> Vec<FollowUp> {
-        match self.actor_for(session_id).await {
-            Some(actor) => actor.drain_follow_ups().await,
-            None => Vec::new(),
-        }
-    }
-
     pub async fn add_steering(&self, session_id: &str, text: &str) -> anyhow::Result<()> {
         self.add_steering_with_attachments(session_id, text, &[], None)
             .await
@@ -77,24 +70,7 @@ impl SessionSupervisor {
         actor.queue_steering(text, attachments, message_id).await
     }
 
-    pub async fn drain_steering(&self, session_id: &str) -> Vec<FollowUp> {
-        match self.actor_for(session_id).await {
-            Some(actor) => actor.drain_steering().await,
-            None => Vec::new(),
-        }
-    }
-
-    pub async fn add_tool_run_completion(
-        &self,
-        session_id: &str,
-        tool_run_result_id: &str,
-        text: &str,
-    ) -> anyhow::Result<()> {
-        self.add_tool_run_completion_with_id(session_id, tool_run_result_id.to_string(), text)
-            .await
-    }
-
-    pub async fn add_tool_run_completion_with_id(
+    pub async fn enqueue_tool_run_result(
         &self,
         session_id: &str,
         tool_run_result_id: String,
@@ -105,25 +81,13 @@ impl SessionSupervisor {
             .await
             .ok_or_else(|| anyhow::anyhow!("session '{}' not found", session_id))?;
         actor
-            .add_tool_run_completion(tool_run_result_id, text.to_string())
+            .enqueue_tool_run_result(tool_run_result_id, text.to_string())
             .await
-    }
-
-    pub async fn drain_tool_run_completions(&self, session_id: &str) -> Vec<String> {
-        match self.actor_for(session_id).await {
-            Some(actor) => actor
-                .drain_tool_run_completions()
-                .await
-                .into_iter()
-                .map(|item| item.text)
-                .collect(),
-            None => Vec::new(),
-        }
     }
 
     pub(crate) async fn drain_react_context(&self, session_id: &str) -> ReActContextBatch {
         match self.actor_for(session_id).await {
-            Some(actor) => actor.drain_context().await,
+            Some(actor) => actor.drain_react_context().await,
             None => ReActContextBatch::default(),
         }
     }

@@ -165,6 +165,8 @@ Rust 调用图发现 `LlmRouter::prepare_manual_retry(RequestKind)` 可处理任
 
 同一调用图中 `SessionDispatcher::begin_direct_session_run` 负责 admission、持久状态转移与 lease 生命周期，`SessionActor` 同名方法只设置 actor 内的运行位及取消 token；已将底层操作改名 `try_mark_direct_run_active`，保留各自状态 owner，不把 Dispatcher 编排下沉至 Actor（ADR 0876）。
 
+Session 队列审查发现 ToolRun result 入队存在无 ID convenience overload，Actor 与 Supervisor 各自暴露 dequeue，后者还丢弃稳定 result ID；follow-up、steering 也保留了仅在测试中使用的单队列 drain 命令。已删除这些重复出队入口，统一由 `drain_react_context` 按优先级和预算一次性读取；入队统一为 `enqueue_tool_run_result` 并保留稳定 ID。原 `BackgroundResult` 命令同步改为 `EnqueueToolRunResult`，因为 Agent 收到的结果也包括 scheduled ToolRun（ADR 0877）。
+
 #### 当前审计覆盖与剩余范围
 
 | 范围                                                      | 已核对的当前基线                                                                                                                                                                                                                                                                 | 尚待核对                                                                                                                                                            |

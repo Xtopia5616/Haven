@@ -142,7 +142,7 @@ pub(crate) enum SessionCommand {
     Cancel {
         reply: oneshot::Sender<anyhow::Result<()>>,
     },
-    BackgroundResult {
+    EnqueueToolRunResult {
         tool_run_result_id: String,
         text: String,
         reply: oneshot::Sender<anyhow::Result<()>>,
@@ -210,13 +210,7 @@ pub(crate) enum ActorCommand {
         title: Option<String>,
     },
     ClearMessaging,
-    DrainFollowUps {
-        reply: oneshot::Sender<Vec<FollowUp>>,
-    },
-    DrainSteering {
-        reply: oneshot::Sender<Vec<FollowUp>>,
-    },
-    DrainContext {
+    DrainReActContext {
         reply: oneshot::Sender<ReActContextBatch>,
     },
     HasPendingContext {
@@ -226,9 +220,6 @@ pub(crate) enum ActorCommand {
         reply: oneshot::Sender<ContextQueueStats>,
     },
     MarkQueuesAsAnswer,
-    DrainToolRunCompletions {
-        reply: oneshot::Sender<Vec<ToolRunResult>>,
-    },
     RequestInteraction {
         request: Box<InteractionRequest>,
         reply: oneshot::Sender<anyhow::Result<()>>,
@@ -502,18 +493,6 @@ impl SessionActorHandle {
             .map_err(|_| anyhow::anyhow!("session actor '{}' dropped follow-up", self.id))?
     }
 
-    pub(crate) async fn drain_follow_ups(&self) -> Vec<FollowUp> {
-        let (reply, rx) = oneshot::channel();
-        if self
-            .send(ActorCommand::DrainFollowUps { reply })
-            .await
-            .is_err()
-        {
-            return Vec::new();
-        }
-        rx.await.unwrap_or_default()
-    }
-
     pub(crate) async fn queue_steering(
         &self,
         text: &str,
@@ -532,22 +511,10 @@ impl SessionActorHandle {
             .map_err(|_| anyhow::anyhow!("session actor '{}' dropped steering", self.id))?
     }
 
-    pub(crate) async fn drain_steering(&self) -> Vec<FollowUp> {
+    pub(crate) async fn drain_react_context(&self) -> ReActContextBatch {
         let (reply, rx) = oneshot::channel();
         if self
-            .send(ActorCommand::DrainSteering { reply })
-            .await
-            .is_err()
-        {
-            return Vec::new();
-        }
-        rx.await.unwrap_or_default()
-    }
-
-    pub(crate) async fn drain_context(&self) -> ReActContextBatch {
-        let (reply, rx) = oneshot::channel();
-        if self
-            .send(ActorCommand::DrainContext { reply })
+            .send(ActorCommand::DrainReActContext { reply })
             .await
             .is_err()
         {
@@ -584,32 +551,22 @@ impl SessionActorHandle {
         let _ = self.send(ActorCommand::MarkQueuesAsAnswer).await;
     }
 
-    pub(crate) async fn add_tool_run_completion(
+    pub(crate) async fn enqueue_tool_run_result(
         &self,
         tool_run_result_id: String,
         text: String,
     ) -> anyhow::Result<()> {
         let (reply, rx) = oneshot::channel();
-        self.send(ActorCommand::Session(SessionCommand::BackgroundResult {
-            tool_run_result_id,
-            text,
-            reply,
-        }))
+        self.send(ActorCommand::Session(
+            SessionCommand::EnqueueToolRunResult {
+                tool_run_result_id,
+                text,
+                reply,
+            },
+        ))
         .await?;
         rx.await
             .map_err(|_| anyhow::anyhow!("session actor '{}' dropped ToolRun result", self.id))?
-    }
-
-    pub(crate) async fn drain_tool_run_completions(&self) -> Vec<ToolRunResult> {
-        let (reply, rx) = oneshot::channel();
-        if self
-            .send(ActorCommand::DrainToolRunCompletions { reply })
-            .await
-            .is_err()
-        {
-            return Vec::new();
-        }
-        rx.await.unwrap_or_default()
     }
 
     pub(crate) async fn request_interaction(
@@ -893,8 +850,8 @@ impl SessionActorHandle {
 /// makes admission and lifecycle coordination independent from turn state.
 pub(crate) struct SessionState {
     info: SessionInfo,
-    tool_run_completions: Vec<ToolRunResult>,
-    tool_run_completion_chars: usize,
+    tool_run_results: Vec<ToolRunResult>,
+    tool_run_result_chars: usize,
     interactions: Vec<InteractionRequest>,
     follow_up_queue: Vec<FollowUp>,
     follow_up_chars: usize,
@@ -990,8 +947,8 @@ pub(crate) fn spawn(
         let mut current_run_cancellation = initial_run_cancellation;
         let mut state = SessionState {
             info,
-            tool_run_completions: Vec::new(),
-            tool_run_completion_chars: 0,
+            tool_run_results: Vec::new(),
+            tool_run_result_chars: 0,
             interactions,
             follow_up_queue: Vec::new(),
             follow_up_chars: 0,
@@ -1193,8 +1150,8 @@ pub(crate) fn spawn(
                             .await
                         };
                         if result.is_ok() {
-                            state.tool_run_completions.clear();
-                            state.tool_run_completion_chars = 0;
+                            state.tool_run_results.clear();
+                            state.tool_run_result_chars = 0;
                             state.follow_up_queue.clear();
                             state.follow_up_chars = 0;
                             state.follow_up_attachment_bytes = 0;
@@ -1206,14 +1163,14 @@ pub(crate) fn spawn(
                         }
                         let _ = reply.send(result);
                     }
-                    SessionCommand::BackgroundResult {
+                    SessionCommand::EnqueueToolRunResult {
                         tool_run_result_id,
                         text,
                         reply,
                     } => {
-                        let result = queue_tool_run_completion(
-                            &mut state.tool_run_completions,
-                            &mut state.tool_run_completion_chars,
+                        let result = enqueue_tool_run_result(
+                            &mut state.tool_run_results,
+                            &mut state.tool_run_result_chars,
                             tool_run_result_id,
                             text,
                         );
@@ -1349,17 +1306,7 @@ pub(crate) fn spawn(
                     let running = matches!(&state.react_run, Some(ActiveReActRun::Running { .. }));
                     let _ = reply.send(running);
                 }
-                ActorCommand::DrainFollowUps { reply } => {
-                    state.follow_up_chars = 0;
-                    state.follow_up_attachment_bytes = 0;
-                    let _ = reply.send(std::mem::take(&mut state.follow_up_queue));
-                }
-                ActorCommand::DrainSteering { reply } => {
-                    state.steering_chars = 0;
-                    state.steering_attachment_bytes = 0;
-                    let _ = reply.send(std::mem::take(&mut state.steering_queue));
-                }
-                ActorCommand::DrainContext { reply } => {
+                ActorCommand::DrainReActContext { reply } => {
                     let mut budget = ContextBatchBudget::default();
                     let had_steering = !state.steering_queue.is_empty();
                     let steering = take_follow_ups(
@@ -1383,8 +1330,8 @@ pub(crate) fn spawn(
                         Vec::new()
                     };
                     let tool_run_results = take_tool_run_results(
-                        &mut state.tool_run_completions,
-                        &mut state.tool_run_completion_chars,
+                        &mut state.tool_run_results,
+                        &mut state.tool_run_result_chars,
                         &mut budget,
                     );
                     let _ = reply.send(ReActContextBatch {
@@ -1397,14 +1344,14 @@ pub(crate) fn spawn(
                     let _ = reply.send(
                         !state.follow_up_queue.is_empty()
                             || !state.steering_queue.is_empty()
-                            || !state.tool_run_completions.is_empty(),
+                            || !state.tool_run_results.is_empty(),
                     );
                 }
                 ActorCommand::ContextQueueStats { reply } => {
                     let _ = reply.send(ContextQueueStats {
                         steering_items: state.steering_queue.len(),
                         follow_up_items: state.follow_up_queue.len(),
-                        tool_run_result_items: state.tool_run_completions.len(),
+                        tool_run_result_items: state.tool_run_results.len(),
                     });
                 }
                 ActorCommand::MarkQueuesAsAnswer => {
@@ -1414,10 +1361,6 @@ pub(crate) fn spawn(
                     for item in &mut state.steering_queue {
                         item.is_answer = true;
                     }
-                }
-                ActorCommand::DrainToolRunCompletions { reply } => {
-                    state.tool_run_completion_chars = 0;
-                    let _ = reply.send(std::mem::take(&mut state.tool_run_completions));
                 }
                 ActorCommand::RequestInteraction { request, reply } => {
                     let request = *request;
@@ -1589,8 +1532,8 @@ pub(crate) fn spawn(
                     clear_messaging(&mut state);
                 }
                 ActorCommand::ClearRuntime => {
-                    state.tool_run_completions.clear();
-                    state.tool_run_completion_chars = 0;
+                    state.tool_run_results.clear();
+                    state.tool_run_result_chars = 0;
                     state.follow_up_queue.clear();
                     state.follow_up_chars = 0;
                     state.follow_up_attachment_bytes = 0;
@@ -1897,7 +1840,7 @@ fn queue_steering(
     Ok(())
 }
 
-fn queue_tool_run_completion(
+fn enqueue_tool_run_result(
     queue: &mut Vec<ToolRunResult>,
     queue_chars: &mut usize,
     tool_run_result_id: String,
@@ -2168,8 +2111,8 @@ mod queue_tests {
                 created_at: String::new(),
                 updated_at: String::new(),
             },
-            tool_run_completions: Vec::new(),
-            tool_run_completion_chars: 0,
+            tool_run_results: Vec::new(),
+            tool_run_result_chars: 0,
             interactions: Vec::new(),
             follow_up_queue: Vec::new(),
             follow_up_chars: 0,

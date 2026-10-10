@@ -465,7 +465,7 @@ async fn queued_tool_run_result_is_reconciled_after_session_becomes_terminal() {
     // the session terminal cleanup that clears the actor queue before a turn
     // can project it. The durable outbox must remain the recovery authority.
     executor
-        .add_tool_run_completion_with_id(
+        .enqueue_tool_run_result(
             &session.id,
             tool_run_id.to_string(),
             "[Background tool run result]\ntool_run_id: toolrun-terminal-race\nstatus: completed\n\nrace output",
@@ -738,7 +738,13 @@ async fn process_input_does_not_resurrect_ended_session() {
     assert!(matches!(result, ProcessResult::Supplemented { .. }));
     // Session is not reloaded into the working set and never becomes Pending.
     assert_eq!(executor.get_active_session_status(&session.id).await, None);
-    assert!(executor.drain_follow_ups(&session.id).await.is_empty());
+    assert!(
+        executor
+            .drain_react_context(&session.id)
+            .await
+            .follow_ups
+            .is_empty()
+    );
 }
 
 #[tokio::test]
@@ -844,8 +850,9 @@ async fn process_input_reactivates_paused_session() {
         Some(SessionStatus::Pending)
     );
     let supps: Vec<String> = executor
-        .drain_follow_ups(&session.id)
+        .drain_react_context(&session.id)
         .await
+        .follow_ups
         .into_iter()
         .map(|s| s.text)
         .collect();
@@ -885,7 +892,7 @@ async fn process_input_reserves_one_ask_answer_until_user_inject() {
         executor.get_active_session_status(&session.id).await,
         Some(SessionStatus::Pending)
     );
-    let supps = executor.drain_follow_ups(&session.id).await;
+    let supps = executor.drain_react_context(&session.id).await.follow_ups;
     assert_eq!(supps.len(), 2);
     assert!(
         supps[0].is_answer,
@@ -937,7 +944,7 @@ async fn process_input_paused_without_ask_is_plain_supplement() {
         .await
         .unwrap();
     assert!(matches!(result, ProcessResult::Supplemented { .. }));
-    let supps = executor.drain_follow_ups(&session.id).await;
+    let supps = executor.drain_react_context(&session.id).await.follow_ups;
     assert_eq!(supps.len(), 1);
     assert!(
         !supps[0].is_answer,
@@ -972,7 +979,7 @@ async fn process_input_with_attachments_queues_and_persists_attachments() {
         executor.get_active_session_status(&session.id).await,
         Some(SessionStatus::Pending)
     );
-    let supps = executor.drain_follow_ups(&session.id).await;
+    let supps = executor.drain_react_context(&session.id).await.follow_ups;
     assert_eq!(supps.len(), 1);
     assert_eq!(supps[0].text, "看图");
     assert_eq!(supps[0].attachments, vec![att]);
