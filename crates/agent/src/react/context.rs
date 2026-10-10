@@ -240,7 +240,7 @@ impl ContextSource {
         let title = match tick.title {
             crate::session::MessagingTitle::Cached(title) => title,
             crate::session::MessagingTitle::Missing => {
-                let title = match self.store.session_title(session_id).await {
+                let title = match self.store.get_session_title(session_id).await {
                     Ok(title) => title,
                     Err(error) => {
                         tracing::warn!(

@@ -1,6 +1,6 @@
 # Haven 命名规范
 
-> 版本: v1.152 | 日期: 2026-10-09
+> 版本: v1.153 | 日期: 2026-10-10
 
 本文档统一 Haven 项目各层的命名规则（变量名、函数名、文件名、crate 名、缩写大小写、跨层边界）。规范以现有代码中的事实模式为基础，新代码必须遵循；存量代码若与规范冲突，逐步迁移对齐。
 
@@ -281,6 +281,8 @@ Input capture 内部的 engine owner 和命令分别使用 `CaptureEngine`、`Ca
 Common 媒体探测 helper 和变量以 `mime_type` 表示 MIME 字符串，探测/扩展名映射函数使用 `*_mime_type`；`MediaProbe` 的 Rust 与 Serde 字段统一为 `media_kind`，MIME 字符串为 `mime_type`，不为旧 `media_type` key 保留别名。此规则仅针对探测结果；消息附件、受管媒体资产及 provider wire 中表示 MIME 字符串的 `media_type` 按各自现行契约保留。`DetectedMediaKind` 是 bytes/extension/MIME 推出的粗分类（含 `Unknown`）。能力规划的 `MediaModality` 没有 `Unknown`，继续表示模型能力合同，不与检测失败分类合并。
 
 数据库或领域查询即使按 session、subject、tag 等条件筛选，只要结果是零到多条实体，也使用 `list_*`（条件检索可使用 `find_*` / `search_*`）；`get_*` 留给单实体读取。缓存接口按稳定 cache key 读写一个缓存槽时仍可使用 `get_*`，即使槽内缓存的是集合。
+
+Session title 读取 API 必须在名字中表达字段投影：`SessionStore::get_session_title` 只返回显式持久标题，未命名或不存在时为 `None`；`get_session_title_or_input` 返回显式标题或原始 `input_text`，只有 session 不存在时为 `None`。App 的 `session_display_title` 是通知展示解析器，另有非空缓存、非空持久标题、非空输入和 session ID 的回退顺序；它不是通用持久化读取 API。不要把这几种不同 fallback 契约统称为 `display_title`（ADR 0869）。
 
 当前进程驻留集合与持久历史必须明确区分：运行态使用 `list_runtime_sessions`；从数据库读取的会话记录使用 `list_persisted_sessions` 或 `list_session_history`。缓存名跟随缓存的查询结果（`session_history_page`），不可复用运行态会话集合的名称。批量持久删除使用 `delete_all_sessions`；Supervisor 内部对驻留 actors、队列和授权状态的清理使用 `clear_session_runtime_state_locked`。
 

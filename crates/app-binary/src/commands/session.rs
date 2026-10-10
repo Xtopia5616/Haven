@@ -199,7 +199,7 @@ async fn end_session_display_title(
         return session.title.unwrap_or(session.input);
     }
 
-    match session_store.session_display_title(session_id).await {
+    match session_store.get_session_title_or_input(session_id).await {
         Ok(title) => title.unwrap_or_default(),
         Err(error) => {
             tracing::warn!(

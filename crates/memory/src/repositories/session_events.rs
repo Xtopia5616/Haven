@@ -937,7 +937,7 @@ impl SessionStore {
     /// Read only the title needed by the messaging heartbeat projection.
     /// Keeping this narrow avoids exposing the raw Database to Agent context
     /// assembly merely for a presentation field.
-    pub async fn session_title(&self, session_id: &str) -> anyhow::Result<Option<String>> {
+    pub async fn get_session_title(&self, session_id: &str) -> anyhow::Result<Option<String>> {
         let session_id = session_id.to_owned();
         self.db
             .run_blocking(move |db| Ok(db.get_session(&session_id)?.and_then(|s| s.title)))
@@ -948,7 +948,10 @@ impl SessionStore {
     /// text when no title has been assigned. Missing sessions remain `None`.
     /// SQLite work runs on the blocking pool; dropping this future cannot
     /// interrupt a query that has already started.
-    pub async fn session_display_title(&self, session_id: &str) -> anyhow::Result<Option<String>> {
+    pub async fn get_session_title_or_input(
+        &self,
+        session_id: &str,
+    ) -> anyhow::Result<Option<String>> {
         let session_id = session_id.to_owned();
         self.db
             .run_blocking(move |db| {
@@ -3794,19 +3797,23 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn session_store_reads_only_the_session_title_for_context_assembly() {
+    async fn session_store_gets_only_the_session_title_for_context_assembly() {
         let (db, store, session_id) = store();
         db.update_session_title(&session_id, "Context title")
             .unwrap();
 
         assert_eq!(
-            store.session_title(&session_id).await.unwrap().as_deref(),
+            store
+                .get_session_title(&session_id)
+                .await
+                .unwrap()
+                .as_deref(),
             Some("Context title")
         );
         let missing_session_id = haven_common::types::new_id("ses");
         assert!(
             store
-                .session_title(&missing_session_id)
+                .get_session_title(&missing_session_id)
                 .await
                 .unwrap()
                 .is_none()
@@ -3814,33 +3821,33 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn session_store_reads_display_title_with_input_text_fallback() {
+    async fn session_store_gets_title_or_input_text_for_end_session() {
         let (db, store, session_id) = store();
 
         assert_eq!(
             store
-                .session_display_title(&session_id)
+                .get_session_title_or_input(&session_id)
                 .await
                 .unwrap()
                 .as_deref(),
             Some("input")
         );
 
-        db.update_session_title(&session_id, "Display title")
+        db.update_session_title(&session_id, "Stored title")
             .unwrap();
         assert_eq!(
             store
-                .session_display_title(&session_id)
+                .get_session_title_or_input(&session_id)
                 .await
                 .unwrap()
                 .as_deref(),
-            Some("Display title")
+            Some("Stored title")
         );
 
         let missing_session_id = haven_common::types::new_id("ses");
         assert!(
             store
-                .session_display_title(&missing_session_id)
+                .get_session_title_or_input(&missing_session_id)
                 .await
                 .unwrap()
                 .is_none()
