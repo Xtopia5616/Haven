@@ -155,6 +155,8 @@ Session、ScheduledToolRun 与 AppCommand 确认均由各自 owner 和稳定 req
 
 当前先检查 Rust crate 的可达 API 与实际调用图。Messaging、MCP 和 Memory 已将普通生产路径收敛为领域 facade/store，具体 transport、client、repository 和数据库装配由各自 owner 持有；跨 crate 测试注入使用非默认 `test-support`（ADR 0887–0892）。Memory 数据库由 `MemoryPersistence` 打开并装配 typed stores。以上仅代表已核对边界，不代表全仓审查完成。
 
+SessionStore event replay 的固定页容量已收回 Memory typed store，Agent runtime 只传 session、cursor 与 cancellation，不再依赖 Memory 的页大小常量（ADR 0911）。
+
 #### 当前审计覆盖与剩余范围
 
 | 范围 | 已核对的当前基线 | 尚待核对 |

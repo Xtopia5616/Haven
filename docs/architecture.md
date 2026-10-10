@@ -362,7 +362,7 @@ embedding 生命周期读写和 LSH 维护，`memory_index.rs` 保留模型路�
 `MemoryService`，再将该 service 注入 `AgentLayer::build`；该构造返回
 `AgentStartup { agent, memory_startup }`。
 SQLite 投影行 `EmbeddedText` 只用于 Memory 内部索引实现，并仅在 `test-support` 下随 raw `Database` 暴露；生产 recall 使用 `MemoryHit`，不泄漏 embedding 表行。
-Outbox 与 session recovery 的 keyset page 上限由 Memory typed store 固定并持有；Agent runtime 只推进 high-water/cursor，不传入数据库页容量。
+Outbox、session enumeration 与 session-event replay 的 page capacity 均由 Memory typed store 固定并持有；Agent runtime 只推进 high-water/cursor，不传入数据库页容量（ADR 0907、0911）。
 仅供 raw `Database` 测试使用的 `PartialMessageCheckpoint` 不进入默认生产 API；生产 checkpoint 生命周期经 Agent `PartialStore` 与 Memory `SessionStore` 收口。
 `SessionStore` 的 SQLite 同步原语留在 Memory 内部，生产调用经 typed async/cancellable 操作进入 blocking pool；跨 crate fixture 所需的同步 append、replay、marker 与 cursor-bootstrap probes 仅由 `test-support` 暴露（ADR 0909）。
 AgentLayer 从同一 service 派生 stores、共享的 `MemoryWorker` 与 `SystemPromptBuilder`；

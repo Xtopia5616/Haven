@@ -7,10 +7,7 @@ use std::time::Duration;
 
 use anyhow::Context as _;
 use haven_common::retry::BackoffPolicy;
-use haven_memory::{
-    CURRENT_EVENT_VERSION, MAX_SESSION_EVENT_REPLAY_PAGE_SIZE, MEMORY_TRIGGER_EVENT_TYPE,
-    SessionEvent, SessionStore,
-};
+use haven_memory::{CURRENT_EVENT_VERSION, MEMORY_TRIGGER_EVENT_TYPE, SessionEvent, SessionStore};
 use tokio::sync::broadcast;
 use tokio::time::{Instant, sleep, sleep_until};
 use tokio_util::sync::CancellationToken;
@@ -171,7 +168,7 @@ impl MemoryRuntime {
     }
 
     /// Recover one session through its current durable high-water mark using
-    /// pages no larger than `MAX_SESSION_EVENT_REPLAY_PAGE_SIZE`.
+    /// bounded pages owned by `SessionStore`.
     async fn recover_session(
         &self,
         session_id: &str,
@@ -210,12 +207,7 @@ impl MemoryRuntime {
             );
             let page = self
                 .session_store
-                .replay_page_cancellable(
-                    session_id,
-                    cursor,
-                    MAX_SESSION_EVENT_REPLAY_PAGE_SIZE,
-                    cancellation.clone(),
-                )
+                .replay_page_cancellable(session_id, cursor, cancellation.clone())
                 .await
                 .context("read bounded memory event replay page")?;
             let mut advanced = false;

@@ -120,7 +120,7 @@ pub struct SessionEventPage {
 }
 
 /// Maximum number of durable events returned by a single replay page.
-pub const MAX_SESSION_EVENT_REPLAY_PAGE_SIZE: usize = 256;
+const MAX_SESSION_EVENT_REPLAY_PAGE_SIZE: usize = 256;
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct SessionEventInput {
@@ -2785,8 +2785,8 @@ impl SessionStore {
     }
 
     /// Read one bounded page of durable events strictly after
-    /// `after_sequence`. Rows are ordered by ascending sequence. The page
-    /// limit must be between one and [`MAX_SESSION_EVENT_REPLAY_PAGE_SIZE`].
+    /// `after_sequence`. Rows are ordered by ascending sequence. The store
+    /// owns the fixed page capacity.
     fn replay_page_sync(
         &self,
         session_id: &str,
@@ -2851,14 +2851,17 @@ impl SessionStore {
         &self,
         session_id: &str,
         after_sequence: i64,
-        limit: usize,
         cancel: CancellationToken,
     ) -> anyhow::Result<SessionEventPage> {
         let store = self.clone();
         let session_id = session_id.to_owned();
         self.db
             .run_blocking_cancellable(cancel, move |_| {
-                store.replay_page_sync(&session_id, after_sequence, limit)
+                store.replay_page_sync(
+                    &session_id,
+                    after_sequence,
+                    MAX_SESSION_EVENT_REPLAY_PAGE_SIZE,
+                )
             })
             .await
     }
