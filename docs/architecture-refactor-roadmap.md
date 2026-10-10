@@ -159,7 +159,7 @@ Session、ScheduledToolRun 与 AppCommand 确认均由各自 owner 和稳定 req
 
 | 范围 | 已核对的当前基线 | 尚待核对 |
 | --- | --- | --- |
-| Rust 类型与架构角色 | 主要 owner 词汇、跨 crate ID 校验、Skills 测试构造入口、Messaging transport、MCP client、Memory 数据库/store、授权引擎对外边界，以及 Agent/App 对 ToolRun 的消费端端口已有收敛（ADR 0533、0554、0615–0676、0880–0895）。 | 逐 crate 清点 `pub mod`、`pub use`、公开构造器、返回具体实现的 getter 和同一概念的多种名称；继续核对 AppServices 和 Tools 的其余具体服务字段、可变 ToolRegistry getter，以及 Memory repository 是否仍有重复权威路径。 |
+| Rust 类型与架构角色 | 主要 owner 词汇、跨 crate ID 校验、Skills 测试构造入口、Messaging transport、MCP client、Memory 数据库/store、授权引擎对外边界，以及 Agent/App 的 ToolRun、App Skill execution 和 live-output 消费端端口已有收敛（ADR 0533、0554、0615–0676、0880–0896）。McpManager 与 SkillRegistry 作为领域 owner handles 保留。 | 逐 crate 清点 `pub mod`、`pub use`、公开构造器、返回具体实现的 getter 和同一概念的多种名称；继续核对 AppServices/ToolServices 的资产及其他具体字段、可变 ToolRegistry getter，以及 Memory repository 是否仍有重复权威路径。 |
 | Rust 调用与函数动词 | Input、Tools、Memory、Agent、LLM 和 App 的调用动词、副作用 owner 与共享纯函数已完成多轮审查（ADR 0570–0698、0861–0879）。 | 继续核对私有与 `pub(crate)` 函数、参数/返回值、trait 方法及调用链；只在职责或权威状态重复时合并，并按可观察行为统一动词。 |
 | UI components、stores、controllers、handlers 与 contracts | 部分 controller 生命周期、生成类型复用、无消费者 alias、Tool result 输出校验和 Session 状态投影已审查（ADR 0595、0665–0670、0698、0745、0841–0846、0860）。MCP/Skill renderer 保留明确的扩展型动态边界。 | 逐组件和数据流检查 owner、props、事件、contracts、route 局部副本及无行为转发；核对持久实体 ID 是否执行规范前缀/UUID32 校验，并区分 provider 外部 ID。 |
 | Tauri IPC 与事件 | 命令静态 request/response 有 Rust DTO 生成来源，事件 channel 有 Rust 登记和 UI mapper；若干枚举、目标命名、字段和 App 命令 ID 入参已收敛（ADR 0613、0699、0730–0745、0883）。 | 逐命令和事件核对领域名称、snake_case/camelCase 边界、payload owner、顺序/幂等、失败语义和运行时校验；复核 replay、store 与持久化写路径的 ID 约束。 |
@@ -167,7 +167,7 @@ Session、ScheduledToolRun 与 AppCommand 确认均由各自 owner 和稳定 req
 
 #### 执行顺序与完成条件
 
-Active 子域先继续 Rust crate 边界审计：Messaging 与 MCP 的跨 crate 实现边界已收口；Memory 默认生产构建隐藏 `Database` 和 store 数据库构造器，App 通过 `MemoryPersistence` 获取 typed stores。Agent 和 App 对 ToolRun 分别通过 `AgentToolRunPort` 与 `AppToolRunPort` 消费会话运行和应用 IPC 能力；具体服务留在组合 adapter。下一步逐项审查 `AppServices`/`ToolServices` 中 MCP、Skills、SkillRunner、资产与 live-output 的真实消费者和 owner，再审查可变 ToolRegistry 与 Memory repository 的跨 crate 使用，之后推进其它 crate 的公开 API、构造器、getter 与调用链，最后覆盖 UI、IPC/event、配置/持久字段和文档引用。只有证据显示职责重叠或 owner 不清才实现合并/改名/封装切片；不以行数、文件数或 crate 数为完成标准。
+Active 子域先继续 Rust crate 边界审计：Messaging 与 MCP 的跨 crate 实现边界已收口；Memory 默认生产构建隐藏 `Database` 和 store 数据库构造器，App 通过 `MemoryPersistence` 获取 typed stores。Agent 和 App 对 ToolRun 分别通过 `AgentToolRunPort` 与 `AppToolRunPort` 消费会话运行和应用 IPC 能力；App 的 Skill 子进程与 live-output 接线也改由消费端 ports 进入 Tools adapter。下一步逐项审查 `AppServices`/`ToolServices` 中资产的所有权、ToolServices 公共 API、`ToolsFacade` 剩余 getter 与 ToolRegistry 可变入口，再检查 Memory repository 的跨 crate 使用；之后推进其它 crate 的公开 API、构造器、getter 与调用链，最后覆盖 UI、IPC/event、配置/持久字段和文档引用。只有证据显示职责重叠或 owner 不清才实现合并/改名/封装切片；不以行数、文件数或 crate 数为完成标准。
 
 每个候选都要说明真实消费者、权威状态 owner、作用域与生命周期、失败/恢复语义，以及是否改变 IPC、持久化或安全契约。结论必须是合并、改名、拆分、保留并解释，或有证据的暂缓。全仓通过条件是主要生产概念有唯一规范词和可定位 owner；重复职责已合并，或相邻 owner 的区别能从代码和文档解释；当前源码、契约与路线图不再使用退役名称描述现状。历史决定仍可在 ADR 中按原名检索。
 

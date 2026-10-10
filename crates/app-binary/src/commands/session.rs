@@ -685,9 +685,7 @@ async fn execute_ui_confirmation_action(
             state
                 .runtime
                 .services
-                .skill_runner
-                .read()
-                .await
+                .skill_execution
                 .execute(&skill, params, tokio_util::sync::CancellationToken::new())
                 .await
                 .map_err(|error| log_err("resolve_ui_confirmation skill", error))?;

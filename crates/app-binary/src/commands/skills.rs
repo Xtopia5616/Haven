@@ -216,9 +216,7 @@ pub async fn execute_skill(
     let result = state
         .runtime
         .services
-        .skill_runner
-        .read()
-        .await
+        .skill_execution
         .execute(&skill, &params, cancel)
         .await
         .map_err(|e| log_err("execute_skill", e))?;

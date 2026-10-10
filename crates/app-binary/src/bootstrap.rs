@@ -340,8 +340,8 @@ pub(crate) fn run() {
             state
                 .runtime
                 .services
-                .live_outputs
-                .set_live_output_event_sink(Arc::new(
+                .live_output
+                .set_event_sink(Arc::new(
                     move |event: String, payload: serde_json::Value| {
                         if event != AGENT_TOOL_OUTPUT_EVENT {
                             tracing::warn!(event, "dropping unknown live tool-output event");

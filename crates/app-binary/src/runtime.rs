@@ -6,16 +6,17 @@
 //! application gives them one cancellation boundary and tears them down in a
 //! deterministic order.
 
-use crate::agent_tool_adapters::{AppToolRunPort, app_tool_run_port_from_facade};
+use crate::agent_tool_adapters::{
+    AppLiveOutputPort, AppSkillExecutionPort, AppToolRunPort, app_live_output_port_from_facade,
+    app_skill_execution_port_from_facade, app_tool_run_port_from_facade,
+};
 use crate::config_runtime::RuntimeConfigCoordinator;
 use crate::desktop::DesktopShell;
 use haven_agent::{AgentLayer, MemoryStartup, PendingSessionRecovery, SessionSupervisor};
 use haven_common::config::ConfigService;
 use haven_input::InputPipeline;
 use haven_memory::{MemoryFactStore, SessionStore};
-use haven_tools::{
-    AuthorizationPort, LiveOutputHub, McpManager, SkillRegistry, SkillRunner, ToolsFacade,
-};
+use haven_tools::{AuthorizationPort, McpManager, SkillRegistry, ToolsFacade};
 use std::future::Future;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -74,10 +75,10 @@ pub(crate) struct RuntimeServices {
 pub(crate) struct AppServices {
     pub(crate) mcp: McpManager,
     pub(crate) skills: SkillRegistry,
-    pub(crate) skill_runner: Arc<tokio::sync::RwLock<SkillRunner>>,
+    pub(crate) skill_execution: Arc<dyn AppSkillExecutionPort>,
     pub(crate) authorization: Arc<dyn AuthorizationPort>,
     pub(crate) tool_runs: Arc<dyn AppToolRunPort>,
-    pub(crate) live_outputs: Arc<LiveOutputHub>,
+    pub(crate) live_output: Arc<dyn AppLiveOutputPort>,
 }
 
 impl ApplicationRuntime {
@@ -86,10 +87,12 @@ impl ApplicationRuntime {
         let services = AppServices {
             mcp: tool_services.mcp,
             skills: tool_services.skills,
-            skill_runner: tool_services.skill_runner,
+            skill_execution: app_skill_execution_port_from_facade(Arc::clone(
+                &runtime_services.tools,
+            )),
             authorization: tool_services.authorization,
             tool_runs: app_tool_run_port_from_facade(Arc::clone(&runtime_services.tools)),
-            live_outputs: tool_services.live_outputs,
+            live_output: app_live_output_port_from_facade(Arc::clone(&runtime_services.tools)),
         };
         let config_apply_gate = runtime_services.config_apply_gate;
         Self {

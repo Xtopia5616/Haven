@@ -15,9 +15,9 @@ use haven_memory::ToolRunRow;
 use haven_tools::ScheduledToolRunSpec;
 use haven_tools::{
     AuthorizationDecision, AuthorizationPort, AuthorizationRequest, ConfirmationReceipt,
-    ToolCatalogSnapshot, ToolRegistration, ToolResult, ToolRunCompletion,
-    ToolRunCompletionReceiver, ToolRunLifecycleEventSink, ToolRunListView, ToolRunRestoreSummary,
-    ToolRunService, ToolRunView, ToolsFacade,
+    LiveOutputHub, Skill, SkillRunner, ToolCatalogSnapshot, ToolRegistration, ToolResult,
+    ToolRunCompletion, ToolRunCompletionReceiver, ToolRunLifecycleEventSink, ToolRunListView,
+    ToolRunRestoreSummary, ToolRunService, ToolRunView, ToolsFacade,
 };
 use serde_json::Value;
 
@@ -132,6 +132,68 @@ impl AppToolRunPort for ToolsFacadeAppToolRunAdapter {
     #[cfg(test)]
     async fn schedule(&self, spec: ScheduledToolRunSpec) -> anyhow::Result<String> {
         self.tool_runs.set(spec).await
+    }
+}
+
+#[async_trait]
+pub(crate) trait AppSkillExecutionPort: Send + Sync {
+    async fn execute(
+        &self,
+        skill: &Skill,
+        params: &Value,
+        cancel: tokio_util::sync::CancellationToken,
+    ) -> anyhow::Result<ToolResult>;
+}
+
+pub(crate) fn app_skill_execution_port_from_facade(
+    tools: Arc<ToolsFacade>,
+) -> Arc<dyn AppSkillExecutionPort> {
+    let services = tools.share_services();
+    Arc::new(ToolsFacadeSkillExecutionAdapter {
+        skill_runner: Arc::clone(&services.skill_runner),
+    })
+}
+
+struct ToolsFacadeSkillExecutionAdapter {
+    skill_runner: Arc<tokio::sync::RwLock<SkillRunner>>,
+}
+
+#[async_trait]
+impl AppSkillExecutionPort for ToolsFacadeSkillExecutionAdapter {
+    async fn execute(
+        &self,
+        skill: &Skill,
+        params: &Value,
+        cancel: tokio_util::sync::CancellationToken,
+    ) -> anyhow::Result<ToolResult> {
+        self.skill_runner
+            .read()
+            .await
+            .execute(skill, params, cancel)
+            .await
+    }
+}
+
+pub(crate) trait AppLiveOutputPort: Send + Sync {
+    fn set_event_sink(&self, sink: Arc<dyn Fn(String, Value) + Send + Sync>);
+}
+
+pub(crate) fn app_live_output_port_from_facade(
+    tools: Arc<ToolsFacade>,
+) -> Arc<dyn AppLiveOutputPort> {
+    let services = tools.share_services();
+    Arc::new(ToolsFacadeLiveOutputAdapter {
+        live_outputs: Arc::clone(&services.live_outputs),
+    })
+}
+
+struct ToolsFacadeLiveOutputAdapter {
+    live_outputs: Arc<LiveOutputHub>,
+}
+
+impl AppLiveOutputPort for ToolsFacadeLiveOutputAdapter {
+    fn set_event_sink(&self, sink: Arc<dyn Fn(String, Value) + Send + Sync>) {
+        self.live_outputs.set_live_output_event_sink(sink);
     }
 }
 
