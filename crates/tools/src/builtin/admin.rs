@@ -3258,7 +3258,7 @@ mod tests {
             context,
             manager.share_services().skills.clone(),
             Arc::new(manager.share_services().mcp.clone()),
-            manager.share_services().mcp_configs.clone(),
+            manager.coordinator.builtins.mcp_server_configs.clone(),
             manager.registry().clone(),
             256 * 1024,
             512 * 1024,

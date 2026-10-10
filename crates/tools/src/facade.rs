@@ -1,34 +1,84 @@
 use super::*;
 
+/// Capability for running a validated Skill in its isolated subprocess.
+#[async_trait::async_trait]
+pub trait SkillExecutionPort: Send + Sync {
+    async fn execute(
+        &self,
+        skill: &crate::Skill,
+        params: &Value,
+        cancel: tokio_util::sync::CancellationToken,
+    ) -> anyhow::Result<ToolResult>;
+}
+
+/// Capability for installing the sink used by live foreground tool previews.
+pub trait LiveOutputSinkPort: Send + Sync {
+    fn set_event_sink(&self, sink: Arc<dyn Fn(String, Value) + Send + Sync>);
+}
+
+struct SharedSkillExecutionPort {
+    runner: Arc<RwLock<SkillRunner>>,
+}
+
+#[async_trait::async_trait]
+impl SkillExecutionPort for SharedSkillExecutionPort {
+    async fn execute(
+        &self,
+        skill: &crate::Skill,
+        params: &Value,
+        cancel: tokio_util::sync::CancellationToken,
+    ) -> anyhow::Result<ToolResult> {
+        self.runner
+            .read()
+            .await
+            .execute(skill, params, cancel)
+            .await
+    }
+}
+
+struct SharedLiveOutputSinkPort {
+    hub: Arc<LiveOutputHub>,
+}
+
+impl LiveOutputSinkPort for SharedLiveOutputSinkPort {
+    fn set_event_sink(&self, sink: Arc<dyn Fn(String, Value) + Send + Sync>) {
+        self.hub.set_live_output_event_sink(sink);
+    }
+}
+
 /// Process services shared outside the execution facade.
 ///
 /// MCP and skill registries are domain owner handles. Managed assets and
-/// authorization are exposed as capability ports; remaining implementation
-/// handles in this bundle are still under the §5.7 API review.
+/// authorization, Skill execution and live-output sink installation are
+/// exposed as capability ports. ToolRun still needs a typed owner port.
 #[derive(Clone)]
 pub struct ToolServices {
     pub mcp: McpManager,
-    pub mcp_configs: Arc<RwLock<HashMap<String, McpServerConfig>>>,
     pub skills: SkillRegistry,
-    pub skill_runner: Arc<RwLock<SkillRunner>>,
+    pub skill_execution: Arc<dyn SkillExecutionPort>,
     pub authorization: Arc<dyn AuthorizationPort>,
     pub managed_assets: Arc<dyn ManagedAssetLifecyclePort>,
     pub tool_runs: Arc<ToolRunService>,
-    pub live_outputs: Arc<LiveOutputHub>,
+    pub live_output: Arc<dyn LiveOutputSinkPort>,
 }
 
 impl ToolServices {
     fn from_parts(coordinator: &coordinator::ToolRuntimeCoordinator) -> Self {
         let authorization: Arc<dyn AuthorizationPort> = coordinator.core.authorization.clone();
+        let skill_runner = Arc::clone(&coordinator.builtins.skill_runner);
+        let live_outputs = Arc::clone(&coordinator.runtime.live_outputs);
         Self {
             mcp: coordinator.builtins.mcp_manager.clone(),
-            mcp_configs: coordinator.builtins.mcp_server_configs.clone(),
             skills: coordinator.builtins.skill_registry.clone(),
-            skill_runner: coordinator.builtins.skill_runner.clone(),
+            skill_execution: Arc::new(SharedSkillExecutionPort {
+                runner: Arc::clone(&skill_runner),
+            }),
             authorization,
             managed_assets: Arc::new(coordinator.runtime.managed_assets.clone()),
             tool_runs: Arc::clone(&coordinator.runtime.tool_run_service),
-            live_outputs: Arc::clone(&coordinator.runtime.live_outputs),
+            live_output: Arc::new(SharedLiveOutputSinkPort {
+                hub: Arc::clone(&live_outputs),
+            }),
         }
     }
 }

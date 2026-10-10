@@ -877,3 +877,4 @@
 - [0895：通过 App-owned port 调用 ToolRun 生命周期](0895-route-app-tool-run-operations-through-port.md)
 - [0896：隔离 App 的 Skill 执行与 live-output 能力](0896-isolate-app-skill-and-live-output-capabilities.md)
 - [0897：通过生命周期 port 隔离受管资产注册表](0897-expose-managed-asset-lifecycle-port.md)
+- [0898：隐藏 SkillRunner 与 LiveOutputHub 实现](0898-hide-skill-and-live-output-implementations.md)

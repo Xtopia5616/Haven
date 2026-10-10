@@ -101,7 +101,7 @@ PlatformRuntime 发布、MCP discovery config/index 更新和 builtin catalog re
 messaging 与 memory recall 是进程服务，在 `wire_startup` 里绑定一次，不放进这份快照；
 `admin_surfaces` 随成功的 catalog rebuild 写入 `BuiltinCatalog`。`tool_builtins.rs` 组合 MCP/Skills
 与具体 builtin provider。MCP、skills、授权、媒体资产、ToolRun 与 live output 由构造时交出的
-`ToolServices` 提供；授权与受管资产生命周期通过 capability ports 暴露，ToolRun、Skill 子进程和 live-output 也由消费端 ports 进入 Tools adapter（ADR 0895–0897）。MCP manager 与 SkillRegistry 作为各自领域 owner 的调用面保留；ToolServices 其余公开字段仍属于 §5.7 按消费者继续审查的 API 面。组合根仍是 `ApplicationRuntime`，
+`ToolServices` 提供；授权、受管资产生命周期、Skill 执行和 live-output sink 通过 capability ports 暴露；Agent/App 的 ToolRun 操作通过消费端 ports 调用，App 的 Skill 与 live-output 调用则经消费端 ports 进入对应 Tools capability ports（ADR 0895–0898）。MCP manager 与 SkillRegistry 作为各自领域 owner 的调用面保留；ToolRunService 是 `ToolServices` 中尚待收口的具体实现字段。组合根仍是 `ApplicationRuntime`，
 不另建 `AppRuntime`。`ToolsFacade` 是对外 façade，保留执行与授权入口、session overlay/asset
 lease 操作、目录投影、runtime capability 请求和录音转写入口；启动及 runtime/catalog 更新转发给 coordinator。
 能力判断由 tools crate 唯一构造的 crate-private `ToolCapabilitySnapshot` 收口：prompt runtime、

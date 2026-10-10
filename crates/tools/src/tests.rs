@@ -1404,7 +1404,7 @@ async fn test_list_schemas_for_session_includes_per_session_tools() {
     let root = tempfile::tempdir().unwrap();
     let skill =
         crate::test_support::discover_skill_fixture(root.path(), "demo", "demo skill", None).await;
-    let runner = mgr.share_services().skill_runner.read().await.clone();
+    let runner = mgr.coordinator.builtins.skill_runner.read().await.clone();
     let adapter = SkillToolAdapter::new(Arc::new(skill), runner);
     mgr.register_for_session("ses-a", Arc::new(adapter)).await;
 
@@ -1744,7 +1744,8 @@ async fn private_live_output_ids_are_stripped_and_reinjected() {
     mgr.rebuild_catalog().await.unwrap();
     let hits: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
     let hits2 = hits.clone();
-    mgr.share_services()
+    mgr.coordinator
+        .runtime
         .live_outputs
         .set_live_output_event_sink(Arc::new(move |_event, payload| {
             if let Some(sid) = payload["step_id"].as_str() {

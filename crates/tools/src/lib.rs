@@ -408,4 +408,4 @@ fn retryable_result(result: &ToolResult) -> bool {
     result.retryability == crate::ToolRetryability::Retryable
 }
 
-pub use facade::{ToolServices, ToolsFacade};
+pub use facade::{LiveOutputSinkPort, SkillExecutionPort, ToolServices, ToolsFacade};
