@@ -1,12 +1,12 @@
 use std::collections::HashMap;
 
 use haven_common::prompts::COMPACTED_SUMMARY_PREFIX;
-use haven_memory::repositories::facts::{
+use haven_memory::SessionStep;
+use haven_memory::{
     ContradictionCandidate, ContradictionKind, Fact, fact_within_demote_age,
     is_canonical_merge_target, is_identity_predicate, is_sensitive_text, normalize_predicate,
     pick_contradiction_keeper,
 };
-use haven_memory::repositories::session_steps::SessionStep;
 use serde::Deserialize;
 
 use crate::fact_extraction::coerce_to_string;
@@ -25,12 +25,12 @@ pub(crate) const EXTRACTION_TOOL_CONTENT_CHARS: usize = 300;
 /// X12: reads the `messages` / `session_steps` projections (not the events
 /// blob). Cursor stays on the last processed **user** message id.
 pub(crate) struct ExtractionWindow {
-    pub(crate) messages: Vec<haven_memory::repositories::messages::Message>,
+    pub(crate) messages: Vec<haven_memory::Message>,
     pub(crate) cursor_last: Option<String>,
 }
 
 pub(crate) fn build_extraction_window(
-    all: &[haven_memory::repositories::messages::Message],
+    all: &[haven_memory::Message],
     cursor: Option<&str>,
     steps: &[SessionStep],
 ) -> ExtractionWindow {
@@ -77,7 +77,7 @@ pub(crate) fn build_extraction_window(
     }
 }
 
-fn is_extraction_assistant(m: &haven_memory::repositories::messages::Message) -> bool {
+fn is_extraction_assistant(m: &haven_memory::Message) -> bool {
     if m.role != haven_common::types::CanonicalRole::Assistant {
         return false;
     }
@@ -96,7 +96,7 @@ fn is_extraction_assistant(m: &haven_memory::repositories::messages::Message) ->
 /// Low-trust user rows that must never seed durable facts: peer spawn kickoff
 /// (`message_type=peer_kickoff`). Cross-session mail is inject-only (not
 /// persisted as user rows), so it is not filtered here.
-fn is_low_trust_extraction_user(m: &haven_memory::repositories::messages::Message) -> bool {
+fn is_low_trust_extraction_user(m: &haven_memory::Message) -> bool {
     m.role == haven_common::types::CanonicalRole::User
         && m.message_type == Some(haven_common::types::TranscriptMessageKind::PeerKickoff)
 }
@@ -107,13 +107,13 @@ fn is_low_trust_extraction_user(m: &haven_memory::repositories::messages::Messag
 /// recent `session_steps` observations between the previous and current user
 /// timestamps are synthesized as `tool(name): …` lines (M4).
 fn push_turn_context(
-    out: &mut Vec<haven_memory::repositories::messages::Message>,
-    turn_slice: &[haven_memory::repositories::messages::Message],
-    user: &haven_memory::repositories::messages::Message,
+    out: &mut Vec<haven_memory::Message>,
+    turn_slice: &[haven_memory::Message],
+    user: &haven_memory::Message,
     after_ts: Option<&str>,
     steps: &[SessionStep],
 ) {
-    let mut assistants: Vec<&haven_memory::repositories::messages::Message> = turn_slice
+    let mut assistants: Vec<&haven_memory::Message> = turn_slice
         .iter()
         .filter(|m| is_extraction_assistant(m))
         .collect();
@@ -124,7 +124,7 @@ fn push_turn_context(
         out.push(m.clone());
     }
 
-    let mut tools: Vec<haven_memory::repositories::messages::Message> = turn_slice
+    let mut tools: Vec<haven_memory::Message> = turn_slice
         .iter()
         .filter(|m| m.role == haven_common::types::CanonicalRole::Tool)
         .cloned()
@@ -162,7 +162,7 @@ fn push_turn_context(
             if body.trim().is_empty() {
                 continue;
             }
-            tools.push(haven_memory::repositories::messages::Message {
+            tools.push(haven_memory::Message {
                 id: step.id.clone(),
                 session_id: step.session_id.clone(),
                 role: haven_common::types::CanonicalRole::Tool,
@@ -355,9 +355,9 @@ pub(crate) fn gate_predicate_merge(p: &PredicateMergeProposal) -> Option<(String
 
 /// Prefer the user line in an assistant+user pair for `source_ref` (M1).
 pub(crate) fn resolve_source_message(
-    messages: &[haven_memory::repositories::messages::Message],
+    messages: &[haven_memory::Message],
     idx: usize,
-) -> Option<&haven_memory::repositories::messages::Message> {
+) -> Option<&haven_memory::Message> {
     let m = messages.get(idx)?;
     if m.role == haven_common::types::CanonicalRole::User {
         return Some(m);
@@ -371,7 +371,7 @@ pub(crate) fn resolve_source_message(
 /// priority. Each line is `[N] role: content` — numbering stays absolute in
 /// the input slice so `message_index` maps straight back.
 pub(crate) fn build_numbered_transcript(
-    messages: &[haven_memory::repositories::messages::Message],
+    messages: &[haven_memory::Message],
     max_chars: usize,
 ) -> String {
     let mut lines: Vec<String> = Vec::new();

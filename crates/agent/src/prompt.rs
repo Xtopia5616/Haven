@@ -620,7 +620,7 @@ impl SystemPromptBuilder {
         // candidates in one hydration query. This builder owns ranking,
         // deduplication, and character-budget packing; PromptRenderer only
         // renders the prepared sections and applies the final token budget.
-        use haven_memory::repositories::facts::fact_effective_confidence;
+        use haven_memory::fact_effective_confidence;
         use std::collections::BTreeMap;
 
         // Cross-session episodic recall first so we only reserve budget when
@@ -647,9 +647,9 @@ impl SystemPromptBuilder {
             // plus a bonus for every session keyword found in the fact. Facts
             // matching the session win even at lower raw confidence; unrelated
             // facts fall back to confidence-only ordering.
-            let mut scored: Vec<(f64, &haven_memory::repositories::facts::Fact)> = Vec::new();
+            let mut scored: Vec<(f64, &haven_memory::Fact)> = Vec::new();
             for fact in all_facts.iter() {
-                if !haven_memory::repositories::facts::is_visible_fact(fact) {
+                if !haven_memory::is_visible_fact(fact) {
                     continue;
                 }
                 let mut score = fact_effective_confidence(fact) * 10.0;
@@ -683,7 +683,7 @@ impl SystemPromptBuilder {
             // Select by score, then re-order stably so mid-run M2 patches do
             // not reshuffle lines when relative scores jitter.
             let mut seen: HashSet<(String, String)> = HashSet::new();
-            let mut selected: Vec<&haven_memory::repositories::facts::Fact> = Vec::new();
+            let mut selected: Vec<&haven_memory::Fact> = Vec::new();
             for (_, fact) in scored {
                 if selected.len() >= MAX_FACTS_IN_PROMPT {
                     break;
@@ -1013,7 +1013,7 @@ fn extract_additional_context_lines(system_prompt: &str) -> Vec<String> {
 
 /// Raw confidence in 5% buckets for MEMORY display. Ignores recency decay so
 /// mid-run fence patches do not churn percentages when the fact set is stable.
-fn display_confidence_pct(fact: &haven_memory::repositories::facts::Fact) -> u32 {
+fn display_confidence_pct(fact: &haven_memory::Fact) -> u32 {
     let pct = (fact.confidence * 100.0).clamp(0.0, 100.0);
     ((pct / 5.0).round() as u32) * 5
 }
@@ -1734,7 +1734,7 @@ mod tests {
 
     #[test]
     fn display_confidence_pct_uses_raw_five_percent_buckets() {
-        let mut fact = haven_memory::repositories::facts::Fact {
+        let mut fact = haven_memory::Fact {
             id: "fact-1".into(),
             subject: "user".into(),
             predicate: "likes".into(),

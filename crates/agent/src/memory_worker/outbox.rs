@@ -3,9 +3,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use haven_memory::MemoryStore;
-use haven_memory::repositories::kv_store::{
-    FactExtractionMarker, MAX_MEMORY_OUTBOX_PAGE_SIZE, SummaryExtractionMarker,
-};
+use haven_memory::{FactExtractionMarker, MAX_MEMORY_OUTBOX_PAGE_SIZE, SummaryExtractionMarker};
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 
@@ -448,7 +446,7 @@ impl MemoryOutbox {
     async fn process_fact_marker(
         &self,
         marker: FactExtractionMarker,
-        state: haven_memory::repositories::kv_store::FactExtractionMarkerState,
+        state: haven_memory::FactExtractionMarkerState,
         cancellation: &CancellationToken,
         handler: &dyn MemoryExtractionHandler,
     ) -> anyhow::Result<bool> {
@@ -528,7 +526,7 @@ impl MemoryOutbox {
     async fn process_summary_marker(
         &self,
         marker: SummaryExtractionMarker,
-        state: haven_memory::repositories::kv_store::SummaryExtractionMarkerState,
+        state: haven_memory::SummaryExtractionMarkerState,
         cancellation: &CancellationToken,
         handler: &dyn MemoryExtractionHandler,
     ) -> anyhow::Result<bool> {
@@ -629,7 +627,7 @@ impl MemoryOutbox {
     async fn defer_summary_marker(
         &self,
         marker: &SummaryExtractionMarker,
-        state: &haven_memory::repositories::kv_store::SummaryExtractionMarkerState,
+        state: &haven_memory::SummaryExtractionMarkerState,
         requested_wait_secs: u64,
         cancellation: &CancellationToken,
     ) -> anyhow::Result<()> {

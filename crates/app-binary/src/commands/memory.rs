@@ -1,7 +1,7 @@
 use crate::app_state::AppState;
 use crate::commands::contracts::{MemoryFactResponse, MemoryFactSource, MemoryRecallItem};
 use crate::commands::{log_err, validate_command_id};
-use haven_memory::recall::{MemoryEntityKind, MemoryQuery};
+use haven_memory::{MemoryEntityKind, MemoryQuery};
 use std::sync::Arc;
 use tauri::State;
 
@@ -80,7 +80,7 @@ fn validate_add_fact_input(
     object: String,
     tags: Option<Vec<String>>,
 ) -> Result<AddFactInput, String> {
-    use haven_memory::repositories::facts::{is_sensitive_object, is_sensitive_predicate};
+    use haven_memory::{is_sensitive_object, is_sensitive_predicate};
 
     let subject = subject.trim().to_string();
     let predicate = predicate.trim().to_string();

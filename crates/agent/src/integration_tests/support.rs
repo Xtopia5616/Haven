@@ -821,7 +821,7 @@ impl Tool for TimingTool {
 pub(super) async fn seed_hello_snapshot(
     agent: &AgentLayer,
     session_id: &str,
-) -> Vec<haven_memory::repositories::messages::Message> {
+) -> Vec<haven_memory::Message> {
     agent
         .db
         .add_message(

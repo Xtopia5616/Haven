@@ -12,8 +12,8 @@ use haven_common::config::{ModelEndpoint, RequestKind};
 use haven_llm::LlmRouter;
 use haven_llm::adapters::api_style_for;
 use haven_llm::types::EmbeddingRequest;
-use haven_memory::recall::{MemoryHit, MemoryQuery};
 use haven_memory::{MemoryEmbeddingStore, MemoryEmbeddingVector, MemoryRecallStore};
+use haven_memory::{MemoryHit, MemoryQuery};
 use sha2::{Digest, Sha256};
 use tokio::sync::Mutex;
 
@@ -474,7 +474,7 @@ mod tests {
             .insert_fact("user", "likes", "Rust", "inferred", 0.8, &[])
             .unwrap();
         db.save_embedding(
-            haven_memory::embeddings::entity_kind::FACT,
+            haven_memory::MemoryEntityKind::Fact.entity_type(),
             &fact.id,
             "previous-vector-space",
             &[1.0, 0.0],

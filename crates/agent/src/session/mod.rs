@@ -5,7 +5,7 @@ pub use haven_common::lifecycle::SessionWaitingReason;
 use haven_common::types::{
     CapabilityScope, MessageAttachment, PermissionEffect, PermissionTarget, RiskLevel,
 };
-use haven_memory::repositories::sessions::Session as DbSession;
+use haven_memory::Session as DbSession;
 #[cfg(test)]
 use haven_memory::{Database, ToolRunStore};
 use haven_memory::{SessionAuthorizationGrant, SessionStore};

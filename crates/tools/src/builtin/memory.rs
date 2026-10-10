@@ -1,13 +1,11 @@
 use async_trait::async_trait;
 use haven_common::types::RiskLevel;
 use haven_memory::MemoryFactStore;
-use haven_memory::recall::{
+use haven_memory::{
     MAX_MEMORY_QUERY_CHARS, MAX_RECALL_LIMIT, MemoryEntityKind, MemoryQuery, MemoryRecall,
     MemoryRecallEmptyReason, normalize_memory_query,
 };
-use haven_memory::repositories::facts::{
-    fact_effective_confidence, is_sensitive_object, is_sensitive_predicate,
-};
+use haven_memory::{fact_effective_confidence, is_sensitive_object, is_sensitive_predicate};
 use serde_json::{Value, json};
 use tokio_util::sync::CancellationToken;
 
@@ -112,7 +110,7 @@ impl MemoryTool {
             .to_string()
     }
 
-    fn to_output_rows(facts: &[haven_memory::repositories::facts::Fact]) -> Value {
+    fn to_output_rows(facts: &[haven_memory::Fact]) -> Value {
         let rows: Vec<Value> = facts
             .iter()
             .map(|f| {
@@ -674,7 +672,7 @@ mod tests {
     #[tokio::test]
     async fn test_source_snippet_skips_sensitive_text() {
         let (tool, db, _dir) = test_tool();
-        let source = haven_memory::repositories::facts::FactSourceRef {
+        let source = haven_memory::FactSourceRef {
             message_id: "msg-1".into(),
             snippet: "sk-abc123secret".into(),
         };

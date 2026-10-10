@@ -15,7 +15,7 @@ use haven_common::prompts::{COMPACTED_SUMMARY_PREFIX, FACT_EXTRACTION_SYSTEM_PRO
 use haven_llm::LlmRouter;
 #[cfg(test)]
 use haven_memory::Database;
-use haven_memory::repositories::facts::{
+use haven_memory::{
     FactSourceRef, is_sensitive_object, is_sensitive_predicate, is_single_valued_predicate,
     normalize_predicate,
 };
@@ -39,7 +39,7 @@ use crate::memory_inference::MemoryInferencePort;
 use crate::memory_inference::RouterMemoryInferencePort;
 use crate::memory_service::MemoryService;
 #[cfg(test)]
-use haven_memory::repositories::facts::Fact;
+use haven_memory::Fact;
 
 const PERSIST_CONFIDENCE_FLOOR: f64 = 0.55;
 
@@ -646,7 +646,7 @@ impl MemoryWorker {
     fn prepare_fact_writes(
         &self,
         facts: Vec<LlmFact>,
-        messages: &[haven_memory::repositories::messages::Message],
+        messages: &[haven_memory::Message],
     ) -> Vec<MemoryFactWrite> {
         let candidates = facts.into_iter().map(|fact| {
             let source_ref = fact
@@ -718,7 +718,7 @@ impl MemoryWorker {
     /// emitting brand-new facts.
     async fn infer_facts_with_llm(
         &self,
-        user_messages: &[haven_memory::repositories::messages::Message],
+        user_messages: &[haven_memory::Message],
     ) -> anyhow::Result<Vec<LlmFact>> {
         let transcript = build_numbered_transcript(user_messages, self.max_transcript_chars);
         let known_facts = self.load_known_facts().await;
@@ -792,7 +792,7 @@ impl MemoryWorker {
                 subject,
                 sanitize_fact_field(&fact.predicate, self.sanitize_max_chars),
                 sanitize_fact_field(&fact.object, self.sanitize_max_chars),
-                haven_memory::repositories::facts::fact_effective_confidence(fact) * 100.0
+                haven_memory::fact_effective_confidence(fact) * 100.0
             ));
         }
         lines.join("\n")
@@ -853,7 +853,7 @@ impl MemoryWorker {
         if summary.len() < 24 {
             return SummaryExtractOutcome::Done;
         }
-        if haven_memory::repositories::facts::is_sensitive_text(summary) {
+        if haven_memory::is_sensitive_text(summary) {
             tracing::debug!(
                 session_id,
                 episode_id,
@@ -924,7 +924,7 @@ impl MemoryWorker {
             }
         }
 
-        let synthetic = haven_memory::repositories::messages::Message {
+        let synthetic = haven_memory::Message {
             id: episode_id.to_string(),
             session_id: session_id.to_string(),
             role: haven_common::types::CanonicalRole::User,
@@ -1041,11 +1041,9 @@ mod tests {
     use haven_common::types::CanonicalMessage;
     use haven_llm::client::LlmClient;
     use haven_llm::types::{FinishReason, LlmError, LlmResponse, StreamChunk};
-    use haven_memory::repositories::facts::{
-        ContradictionCandidate, ContradictionKind, FactSourceRef,
-    };
-    use haven_memory::repositories::messages::Message;
-    use haven_memory::repositories::session_steps::SessionStep;
+    use haven_memory::Message;
+    use haven_memory::SessionStep;
+    use haven_memory::{ContradictionCandidate, ContradictionKind, FactSourceRef};
     use std::collections::VecDeque;
     use std::pin::Pin;
     use std::sync::atomic::AtomicUsize;

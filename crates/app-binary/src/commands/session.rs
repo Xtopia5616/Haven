@@ -8,9 +8,9 @@ use crate::events::{
 };
 use haven_agent::InteractionStatus;
 use haven_common::error::sanitize_error_text;
-use haven_memory::repositories::messages::Message;
-use haven_memory::repositories::session_steps::SessionStep;
-use haven_memory::repositories::sessions::{Session, SessionOrigin};
+use haven_memory::Message;
+use haven_memory::SessionStep;
+use haven_memory::{Session, SessionOrigin};
 use serde::Serialize;
 use std::sync::Arc;
 use tauri::AppHandle;
@@ -857,10 +857,10 @@ pub struct SessionResumeResponse {
     pub steps: Vec<SessionStep>,
     /// Persisted cumulative token/cost counters for the session, so a resumed
     /// or auto-restored session can restore the token-stats display.
-    pub usage: Option<haven_memory::repositories::usage::SessionUsage>,
+    pub usage: Option<haven_memory::SessionUsage>,
     /// Per-LLM-call usage detail (one row per model response: step, role,
     /// model, tokens, cost, duration), oldest first.
-    pub llm_usage: Vec<haven_memory::repositories::usage::LlmUsageRecord>,
+    pub llm_usage: Vec<haven_memory::LlmUsageRecord>,
     /// Renderer-safe projections of the persisted interaction registry.
     pub interactions: Vec<InteractionRequestedEvent>,
 }

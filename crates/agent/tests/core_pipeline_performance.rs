@@ -82,7 +82,7 @@ async fn first_fact_page(
     store: &MemoryStore,
     high_water: String,
     cancellation: &CancellationToken,
-) -> Vec<haven_memory::repositories::kv_store::FactExtractionMarker> {
+) -> Vec<haven_memory::FactExtractionMarker> {
     store
         .pending_fact_extractions_page_cancellable(
             None,

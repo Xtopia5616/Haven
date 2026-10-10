@@ -16,7 +16,7 @@ use super::tool_batch_policy::ToolRetryBudget;
 use super::*;
 use crate::types::{ToolCall, TranscriptRecord};
 use futures_util::StreamExt;
-use haven_memory::repositories::session_steps::ToolStepOutcome;
+use haven_memory::ToolStepOutcome;
 use haven_tools::{ToolConcurrency, ToolExecutionOutcome};
 use std::collections::HashMap;
 use std::future::Future;

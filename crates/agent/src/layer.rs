@@ -194,7 +194,7 @@ impl AgentLayer {
         message_type: Option<haven_common::types::TranscriptMessageKind>,
         attachments: &[haven_common::types::MessageAttachment],
         voice: bool,
-    ) -> anyhow::Result<haven_memory::repositories::messages::Message> {
+    ) -> anyhow::Result<haven_memory::Message> {
         let _lifecycle = self.executor.lifecycle_guard().await;
         self.db.add_message_full(
             session_id,
@@ -330,7 +330,7 @@ impl AgentLayer {
     /// Forward a fully-scoped memory query through the agent boundary.
     pub async fn recall_memory_query(
         &self,
-        query: haven_memory::recall::MemoryQuery,
+        query: haven_memory::MemoryQuery,
     ) -> anyhow::Result<haven_memory::MemoryRecall> {
         self.memory.recall(query).await
     }
@@ -1423,8 +1423,8 @@ impl haven_messaging::MessagingRuntime for AgentLayer {
 impl haven_tools::MemoryRecallPort for AgentLayer {
     async fn recall(
         &self,
-        query: haven_memory::recall::MemoryQuery,
-    ) -> anyhow::Result<haven_memory::recall::MemoryRecall> {
+        query: haven_memory::MemoryQuery,
+    ) -> anyhow::Result<haven_memory::MemoryRecall> {
         self.recall_memory_query(query).await
     }
 }

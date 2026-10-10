@@ -5,7 +5,7 @@
 //! use [`SessionSupervisor::request_scheduled_confirm`].
 
 use super::*;
-use haven_memory::repositories::session_steps::{ToolStepOutcome, ToolStepWrite};
+use haven_memory::{ToolStepOutcome, ToolStepWrite};
 use tracing::Instrument;
 
 pub(super) fn confirmation_expiry_delay(expires_at: Option<&str>) -> Option<std::time::Duration> {

@@ -4,7 +4,7 @@ use crate::commands::session::SessionRecordDto;
 use std::sync::Arc;
 use tauri::State;
 
-type StoredSession = haven_memory::repositories::sessions::Session;
+type StoredSession = haven_memory::Session;
 
 fn session_record_rows(sessions: Vec<StoredSession>) -> Vec<SessionRecordDto> {
     sessions.into_iter().map(SessionRecordDto::from).collect()

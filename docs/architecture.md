@@ -346,7 +346,7 @@ scratch；完整 `events`、interaction、usage、run budget 和多套 cursor �
 
 Agent 的 `memory_service.rs` 是 prompt/worker 共用的 typed memory 边界：它集中管理
 有界候选、recall、embedding/index 句柄和 prompt-memory cache；向量行的 scope、敏感
-过滤、规范化与 keyword 融合仍由 `haven_memory::recall::MemoryRetriever` 统一负责；
+过滤、规范化与 keyword 融合仍由 Memory 内部 `MemoryRetriever` 统一负责；
 `MemoryRecallStore` 调度 recall SQL 并返回 typed domain results。`MemoryEntityKind`
 由 Memory 持有 `fact` / `episode` 的闭合词汇并生成到 `recall_memory` IPC；renderer 的
 `all` 是 UI 筛选项，只展开为两次独立查询，不进入后端 domain enum（ADR 0732）。Agent 保留 prompt

@@ -230,7 +230,7 @@ impl ReActEngine {
         &self,
         session_id: &str,
         content: &str,
-        kind: haven_memory::repositories::session_events::RecoveryPartialKind,
+        kind: haven_memory::RecoveryPartialKind,
         message_id: &str,
     ) -> anyhow::Result<()> {
         self.executor
@@ -710,7 +710,7 @@ impl ReActEngine {
                 .persist_recovery_partial(
                     &ctx.session_id,
                     reasoning_text.trim(),
-                    haven_memory::repositories::session_events::RecoveryPartialKind::Reasoning,
+                    haven_memory::RecoveryPartialKind::Reasoning,
                     &message_id,
                 )
                 .await
@@ -736,7 +736,7 @@ impl ReActEngine {
                 .persist_recovery_partial(
                     &ctx.session_id,
                     text,
-                    haven_memory::repositories::session_events::RecoveryPartialKind::Thought,
+                    haven_memory::RecoveryPartialKind::Thought,
                     &message_id,
                 )
                 .await

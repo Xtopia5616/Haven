@@ -13,7 +13,7 @@ use haven_common::config::RequestKind;
 use haven_llm::LlmRouter;
 #[cfg(test)]
 use haven_memory::Database;
-use haven_memory::recall::{
+use haven_memory::{
     MAX_MEMORY_QUERY_CHARS, MAX_RECALL_LIMIT, MemoryEntityKind, MemoryQuery, MemoryRecall,
 };
 use haven_memory::{
@@ -35,7 +35,7 @@ pub(crate) struct PromptMemoryCandidates {
     pub(crate) vector_fact_hits: Vec<haven_memory::MemoryHit>,
     pub(crate) vector_episode_hits: Vec<haven_memory::MemoryHit>,
     pub(crate) keyword_episode_hits: Vec<haven_memory::MemoryHit>,
-    pub(crate) all_facts: Vec<haven_memory::repositories::facts::Fact>,
+    pub(crate) all_facts: Vec<haven_memory::Fact>,
 }
 
 #[derive(Clone, PartialEq, Eq, Hash)]
@@ -237,7 +237,7 @@ impl MemoryService {
         }
 
         let (vector, cacheable) = if embedding_model.is_empty()
-            || haven_memory::repositories::facts::is_sensitive_text(&query_text)
+            || haven_memory::is_sensitive_text(&query_text)
         {
             (None, true)
         } else if let Some(router) = &self.router {

@@ -142,7 +142,7 @@ Keep only facts likely to matter weeks later, such as stable identity, ongoing p
 /// predicate spellings with row counts; output is a JSON array of merge
 /// proposals so maintenance can collapse split keys onto canonical ones.
 /// Canonical key list is injected from
-/// `haven_memory::repositories::facts::CANONICAL_MERGE_TARGETS` via
+/// `haven_memory::CANONICAL_MERGE_TARGETS` via
 /// [`predicate_merge_system_prompt`] so the gate and prompt cannot drift.
 pub fn predicate_merge_system_prompt(canonical_keys: &[&str]) -> String {
     format!(

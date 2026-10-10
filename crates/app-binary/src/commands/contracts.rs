@@ -519,10 +519,10 @@ pub struct MemoryFactResponse {
     pub durability: f64,
 }
 
-impl TryFrom<haven_memory::repositories::facts::Fact> for MemoryFactResponse {
+impl TryFrom<haven_memory::Fact> for MemoryFactResponse {
     type Error = String;
 
-    fn try_from(fact: haven_memory::repositories::facts::Fact) -> Result<Self, Self::Error> {
+    fn try_from(fact: haven_memory::Fact) -> Result<Self, Self::Error> {
         let source =
             MemoryFactSource::try_from(fact.source.as_str()).map_err(|error| error.to_string())?;
 
@@ -549,8 +549,8 @@ pub struct MemoryFactSourceRef {
     pub snippet: String,
 }
 
-impl From<haven_memory::repositories::facts::FactSourceRef> for MemoryFactSourceRef {
-    fn from(source: haven_memory::repositories::facts::FactSourceRef) -> Self {
+impl From<haven_memory::FactSourceRef> for MemoryFactSourceRef {
+    fn from(source: haven_memory::FactSourceRef) -> Self {
         Self {
             message_id: source.message_id,
             snippet: source.snippet,
@@ -598,7 +598,7 @@ mod tests {
 
     #[test]
     fn memory_fact_response_exposes_only_its_explicit_wire_projection() {
-        let mut fact = haven_memory::repositories::facts::Fact {
+        let mut fact = haven_memory::Fact {
             id: "fact-0123456789abcdef0123456789abcdef".into(),
             subject: "user".into(),
             predicate: "likes".into(),
@@ -609,7 +609,7 @@ mod tests {
             created_at: "2026-10-06T00:00:00Z".into(),
             mention_count: 2,
             last_seen_at: Some("2026-10-06T00:00:00Z".into()),
-            source_ref: Some(haven_memory::repositories::facts::FactSourceRef {
+            source_ref: Some(haven_memory::FactSourceRef {
                 message_id: "msg-0123456789abcdef0123456789abcdef".into(),
                 snippet: "I like Rust.".into(),
             }),

@@ -50,8 +50,8 @@ pub(crate) struct CumulativeUsage {
     pub(crate) has_cost: bool,
 }
 
-impl From<haven_memory::repositories::usage::SessionUsage> for CumulativeUsage {
-    fn from(usage: haven_memory::repositories::usage::SessionUsage) -> Self {
+impl From<haven_memory::SessionUsage> for CumulativeUsage {
+    fn from(usage: haven_memory::SessionUsage) -> Self {
         Self {
             prompt_tokens: usage.prompt_tokens,
             completion_tokens: usage.completion_tokens,
