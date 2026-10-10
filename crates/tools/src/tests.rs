@@ -1392,8 +1392,6 @@ fn retryable_tool_results_require_known_transient_failure() {
 
 #[tokio::test]
 async fn test_list_schemas_for_session_includes_per_session_tools() {
-    use haven_skills::SkillManifest;
-
     let mgr = ToolsFacade::new();
     mgr.rebuild_catalog().await.unwrap();
 
@@ -1403,14 +1401,9 @@ async fn test_list_schemas_for_session_includes_per_session_tools() {
     let base_count = base_schemas.len();
 
     // Register a fake per-session tool.
-    let manifest = SkillManifest {
-        name: "demo".into(),
-        description: "demo skill".into(),
-        version: None,
-        language: haven_skills::Language::Python,
-        instructions: "do stuff".into(),
-    };
-    let skill = Skill::from_manifest_unchecked(manifest, std::path::PathBuf::from("."), true);
+    let root = tempfile::tempdir().unwrap();
+    let skill =
+        crate::test_support::discover_skill_fixture(root.path(), "demo", "demo skill", None).await;
     let runner = mgr.share_services().skill_runner.read().await.clone();
     let adapter = SkillToolAdapter::new(Arc::new(skill), runner);
     mgr.register_for_session("ses-a", Arc::new(adapter)).await;

@@ -376,8 +376,7 @@ mod tests {
     use crate::skill_runner::SkillRunner;
     use haven_common::config::SkillsExecConfig;
     use haven_mcp::McpClient;
-    use haven_skills::{Language, SkillManifest, VenvManager};
-    use std::path::PathBuf;
+    use haven_skills::VenvManager;
 
     /// A test MCP tool adapter backed by a mock client.
     fn mcp_adapter(schema: serde_json::Value) -> McpToolAdapter {
@@ -412,18 +411,11 @@ mod tests {
 
     #[tokio::test]
     async fn skill_adapter_qualified_name() {
-        let manifest = SkillManifest {
-            name: "echo".into(),
-            description: "Echoes input".into(),
-            version: None,
-            language: Language::Python,
-            instructions: "".into(),
-        };
-        let skill = Arc::new(Skill::from_manifest_unchecked(
-            manifest,
-            PathBuf::from("examples/skills/echo"),
-            true,
-        ));
+        let root = tempfile::tempdir().unwrap();
+        let skill = Arc::new(
+            crate::test_support::discover_skill_fixture(root.path(), "echo", "Echoes input", None)
+                .await,
+        );
         let config = SkillsExecConfig::default();
         let runner = SkillRunner::new(VenvManager::new(config.venv_root.clone()), config);
         let adapter = SkillToolAdapter::new(skill, runner);
@@ -451,18 +443,10 @@ mod tests {
 
     #[tokio::test]
     async fn skill_adapter_input_schema() {
-        let manifest = SkillManifest {
-            name: "test".into(),
-            description: "desc".into(),
-            version: None,
-            language: Language::Python,
-            instructions: "".into(),
-        };
-        let skill = Arc::new(Skill::from_manifest_unchecked(
-            manifest,
-            PathBuf::from("."),
-            true,
-        ));
+        let root = tempfile::tempdir().unwrap();
+        let skill = Arc::new(
+            crate::test_support::discover_skill_fixture(root.path(), "test", "desc", None).await,
+        );
         let config = SkillsExecConfig::default();
         let runner = SkillRunner::new(VenvManager::new(config.venv_root.clone()), config);
         let adapter = SkillToolAdapter::new(skill, runner);

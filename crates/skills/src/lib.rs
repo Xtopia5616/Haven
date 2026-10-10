@@ -34,7 +34,7 @@ pub enum Language {
 
 impl Language {
     /// Parse a metadata `language` value into a typed enum.
-    pub fn parse(raw: &str) -> Self {
+    fn parse(raw: &str) -> Self {
         match raw.trim().to_lowercase().as_str() {
             "" | "python" => Self::Python,
             other => Self::Unsupported(other.to_string()),
@@ -50,16 +50,16 @@ impl Language {
     }
 }
 
-/// Structured metadata parsed from `SKILL.md` (搂4.6.3).
+/// Structured metadata parsed from `SKILL.md`.
 #[derive(Debug, Clone)]
-pub struct SkillManifest {
-    pub name: String,
-    pub description: String,
-    pub version: Option<String>,
-    pub language: Language,
+struct SkillManifest {
+    name: String,
+    description: String,
+    version: Option<String>,
+    language: Language,
     /// Full text of the `## Instructions` section, verbatim
     /// (`{{param}}` placeholders preserved for later render phases).
-    pub instructions: String,
+    instructions: String,
 }
 
 /// A discovered Skill on disk.
@@ -111,18 +111,6 @@ impl Skill {
             (resolved.starts_with(&root) && resolved.is_file()).then_some(resolved)
         };
         resolve_inside_root(&main).or_else(|| resolve_inside_root(&named))
-    }
-
-    /// Construct a Skill without going through the normal scan/parse path.
-    /// Used by tests (including downstream crates' tests) to create inline
-    /// skills without touching the filesystem.
-    #[doc(hidden)]
-    pub fn from_manifest_unchecked(manifest: SkillManifest, root: PathBuf, enabled: bool) -> Self {
-        Self {
-            manifest,
-            root,
-            enabled,
-        }
     }
 }
 
@@ -321,7 +309,7 @@ fn skip_case_insensitive_directory_collisions(
 /// **Safety:** The parser enforces a maximum line count and a maximum per-line
 /// length (from `context_limits`) to prevent unbounded memory accumulation
 /// from crafted/oversized input.
-pub fn parse_skill_md(
+fn parse_skill_md(
     input: &str,
     max_parse_lines: usize,
     max_line_len: usize,
@@ -1073,18 +1061,16 @@ mod tests {
         assert_eq!(directories.len(), 1);
         assert_eq!(directories[0].0, "single");
 
-        let make_skill = |name: &str| {
-            Skill::from_manifest_unchecked(
-                SkillManifest {
-                    name: name.to_string(),
-                    description: String::new(),
-                    version: None,
-                    language: Language::Python,
-                    instructions: String::new(),
-                },
-                PathBuf::new(),
-                true,
-            )
+        let make_skill = |name: &str| Skill {
+            manifest: SkillManifest {
+                name: name.to_string(),
+                description: String::new(),
+                version: None,
+                language: Language::Python,
+                instructions: String::new(),
+            },
+            root: PathBuf::new(),
+            enabled: true,
         };
         let filtered = skip_case_insensitive_skill_collisions(vec![
             make_skill("Echo"),

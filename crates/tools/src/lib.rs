@@ -22,6 +22,8 @@ mod shell_runtime;
 pub mod simulate;
 pub mod skill_runner;
 #[cfg(test)]
+mod test_support;
+#[cfg(test)]
 mod tests;
 mod tool_builtins;
 pub(crate) mod tool_contract;
@@ -135,7 +137,7 @@ pub use haven_mcp::{
     McpClient, McpClientStatus, McpManager, McpServerSnapshot, McpStatusChangeEvent, McpToolInfo,
 };
 pub use haven_skills::{
-    Language, Skill, SkillFileFingerprint, SkillInfo, SkillManifest, SkillRegistry, VenvManager,
+    Language, Skill, SkillFileFingerprint, SkillInfo, SkillRegistry, VenvManager,
 };
 pub use live_output::LiveOutputHub;
 pub use output::{

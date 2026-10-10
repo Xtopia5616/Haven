@@ -300,33 +300,23 @@ impl SkillRunner {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use haven_skills::{Language, Skill, SkillManifest};
+    use haven_skills::Skill;
     use std::path::Path;
 
-    fn scripted_skill(root: &Path, script: &str) -> Skill {
-        let scripts = root.join("scripts");
-        std::fs::create_dir_all(&scripts).unwrap();
-        std::fs::write(scripts.join("main.py"), script).unwrap();
-        Skill::from_manifest_unchecked(
-            SkillManifest {
-                name: "test-skill".into(),
-                description: "Temporary runner test".into(),
-                version: None,
-                language: Language::Python,
-                instructions: "".into(),
-            },
-            root.to_path_buf(),
-            true,
+    async fn scripted_skill(skills_root: &Path, script: &str) -> Skill {
+        crate::test_support::discover_skill_fixture(
+            skills_root,
+            "test-skill",
+            "Temporary runner test",
+            Some(script),
         )
+        .await
     }
 
     #[tokio::test]
     async fn runner_timeout_returns_timed_out() {
         let temp = tempfile::tempdir().unwrap();
-        let skill = scripted_skill(
-            &temp.path().join("skill"),
-            "import time\ntime.sleep(10)\nprint('{}')\n",
-        );
+        let skill = scripted_skill(temp.path(), "import time\ntime.sleep(10)\nprint('{}')\n").await;
 
         let config = SkillsExecConfig {
             timeout_secs: 1,
@@ -351,7 +341,7 @@ mod tests {
     async fn runner_drains_both_pipes_and_rejects_bounded_output_overflow() {
         let temp = tempfile::tempdir().unwrap();
         let skill = scripted_skill(
-            &temp.path().join("skill"),
+            temp.path(),
             concat!(
                 "import sys, threading\n",
                 "payload = b'x' * (9 * 1024 * 1024)\n",
@@ -359,7 +349,8 @@ mod tests {
                 "err = threading.Thread(target=lambda: sys.stderr.buffer.write(payload))\n",
                 "out.start(); err.start(); out.join(); err.join()\n",
             ),
-        );
+        )
+        .await;
         let config = SkillsExecConfig {
             timeout_secs: 15,
             max_output_lines: 5000,

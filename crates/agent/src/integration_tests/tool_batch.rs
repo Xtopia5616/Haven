@@ -554,17 +554,28 @@ async fn run_session_contains_real_mcp_and_skill_adapter_panics() {
         .await
         .unwrap();
 
-    let skill = Arc::new(haven_tools::Skill::from_manifest_unchecked(
-        haven_tools::SkillManifest {
-            name: "panic-skill".into(),
-            description: "panics for adapter-boundary testing".into(),
-            version: None,
-            language: haven_tools::Language::Python,
-            instructions: String::new(),
-        },
-        std::path::PathBuf::from("."),
-        true,
-    ));
+    let skill_root = tempfile::tempdir().unwrap();
+    let skill_dir = skill_root.path().join("panic-skill");
+    std::fs::create_dir_all(&skill_dir).unwrap();
+    std::fs::write(
+        skill_dir.join("SKILL.md"),
+        "# Skill: panic-skill\n\n## Metadata\n- description: panics for adapter-boundary testing\n- language: python\n\n## Instructions\nTest fixture.\n",
+    )
+    .unwrap();
+    let skill_registry = tools.share_services().skills;
+    skill_registry
+        .set_config(
+            Some(skill_root.path().to_path_buf()),
+            Some(vec!["panic-skill".into()]),
+        )
+        .await
+        .unwrap();
+    let skill = Arc::new(
+        skill_registry
+            .get_skill("panic-skill")
+            .await
+            .expect("discover valid skill test fixture"),
+    );
     let skill_config = haven_common::config::SkillsExecConfig::default();
     let skill_runner = haven_tools::SkillRunner::new(
         haven_tools::VenvManager::new(skill_config.venv_root.clone()),
