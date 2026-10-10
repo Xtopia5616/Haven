@@ -1,5 +1,5 @@
 use crate::db::Database;
-use crate::recall::{MemoryQuery, MemoryRecall, MemoryRetriever, normalize_memory_query};
+use crate::recall::normalize_memory_query;
 use crate::repositories::fact_graph::FactGraph;
 use crate::repositories::facts::{Fact, FactSourceRef};
 use chrono::Utc;
@@ -269,15 +269,6 @@ impl MemoryFactStore {
             })
             .await
     }
-
-    /// Keyword-only recall fallback. Embedding-aware callers should use their
-    /// configured `MemoryRecallPort`; this method intentionally supplies no
-    /// vector candidates.
-    pub async fn recall_keyword(&self, query: MemoryQuery) -> anyhow::Result<MemoryRecall> {
-        self.db
-            .run_blocking(move |db| MemoryRetriever::new(db).retrieve(&query, None))
-            .await
-    }
 }
 
 fn summary_extraction_done_key(session_id: &str, episode_id: &str) -> anyhow::Result<String> {
@@ -303,7 +294,6 @@ fn set_kv_on_connection(conn: &Connection, key: &str, value: &str) -> anyhow::Re
 mod tests {
     use super::{MemoryFactStore, MemoryFactWrite};
     use crate::Database;
-    use crate::recall::MemoryQuery;
     use crate::repositories::facts::FactSourceRef;
     use std::sync::Arc;
 
@@ -640,37 +630,5 @@ mod tests {
             1
         );
         assert_eq!(store.list_recent_visible_facts().await.unwrap().len(), 1);
-    }
-
-    #[tokio::test]
-    async fn keyword_recall_fallback_returns_facts_and_actionable_empty_result() {
-        let (db, store) = store();
-        db.insert_fact("alice", "uses", "Rust", "inferred", 0.9, &[])
-            .unwrap();
-
-        let recall = store
-            .recall_keyword(
-                MemoryQuery::new("Rust", crate::recall::MemoryEntityKind::Fact, 5).unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(recall.hits.len(), 1);
-        assert!(recall.hits[0].text.contains("Rust"));
-
-        let empty = store
-            .recall_keyword(
-                MemoryQuery::new("not present", crate::recall::MemoryEntityKind::Fact, 5).unwrap(),
-            )
-            .await
-            .unwrap();
-        assert!(empty.hits.is_empty());
-        assert_eq!(
-            empty.empty_reason,
-            Some(crate::recall::MemoryRecallEmptyReason::NoHits)
-        );
-        assert_eq!(
-            empty.diagnostics.unwrap().vector,
-            crate::recall::MemoryRecallSourceStatus::NotConfigured
-        );
     }
 }

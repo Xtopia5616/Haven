@@ -248,12 +248,10 @@ impl MemoryTool {
         Ok(ToolResult::ok(json!({ "deleted": deleted })))
     }
 
-    /// Unified recall: prefer the desktop-wired History/`MemoryWorker`
-    /// callback; fall back to keyword/FTS when unset (tests/headless).
+    /// Unified recall through the desktop-wired Agent memory capability.
     async fn execute_recall(
         &self,
         params: &MemoryParams,
-        facts: &MemoryFactStore,
         session_id: Option<&str>,
     ) -> anyhow::Result<ToolResult> {
         let query = params
@@ -277,13 +275,11 @@ impl MemoryTool {
             .with_excluded_session(session_id)
             .with_fact_subject(params.subject.as_deref());
 
-        if let Some(recall) = self.recall.get() {
-            let recall = recall.recall(query).await?;
-            return Ok(ToolResult::ok(recall_output(kind, recall)));
-        }
-
-        let recall = facts.recall_keyword(query).await?;
-
+        let recall_port = self
+            .recall
+            .get()
+            .ok_or_else(|| anyhow::anyhow!("memory recall capability is not configured"))?;
+        let recall = recall_port.recall(query).await?;
         Ok(ToolResult::ok(recall_output(kind, recall)))
     }
 
@@ -308,10 +304,7 @@ impl MemoryTool {
             MemoryOperation::List => Self::execute_list(&params, facts).await,
             MemoryOperation::Remember => Self::execute_remember(&params, facts).await,
             MemoryOperation::Forget => Self::execute_forget(&params, facts).await,
-            MemoryOperation::Recall => {
-                self.execute_recall(&params, facts, session_id.as_deref())
-                    .await
-            }
+            MemoryOperation::Recall => self.execute_recall(&params, session_id.as_deref()).await,
         }?;
         if let Some(object) = result.output.as_object_mut() {
             object.insert(
@@ -852,7 +845,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn bound_recall_port_takes_precedence_over_keyword_fallback() {
+    async fn bound_recall_port_supplies_recall_results() {
         let (tool, _db, _dir) = db_with_facts();
         let slot = tool.recall.clone();
         bind_recall(&slot, |_query| async move {
@@ -878,6 +871,24 @@ mod tests {
             .unwrap();
         assert_eq!(result.output["mode"], "hybrid");
         assert_eq!(result.output["hits"][0]["entity_id"], "slot-hit");
+    }
+
+    #[tokio::test]
+    async fn recall_without_bound_capability_fails_explicitly() {
+        let (tool, _db, _dir) = db_with_facts();
+        let error = tool
+            .execute(
+                json!({"operation": "recall", "query": "Rust", "kind": "fact"}),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("memory recall capability is not configured")
+        );
     }
 
     #[tokio::test]
@@ -1049,8 +1060,24 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_recall_facts_keyword() {
+    async fn test_recall_uses_shared_port_for_facts() {
         let (tool, _db, _dir) = db_with_facts();
+        let slot = tool.recall.clone();
+        bind_recall(&slot, |query| async move {
+            assert_eq!(query.kind, MemoryEntityKind::Fact);
+            assert_eq!(query.text, "Rust");
+            Ok(MemoryRecall {
+                hits: vec![MemoryHit {
+                    entity_id: "fact-rust".into(),
+                    text: "user likes Rust".into(),
+                    score: 0.9,
+                    model: "keyword".into(),
+                }],
+                mode: haven_memory::MemoryRecallMode::Keyword,
+                empty_reason: None,
+                diagnostics: None,
+            })
+        });
         let result = tool
             .execute(
                 json!({"operation": "recall", "query": "Rust", "kind": "fact"}),
@@ -1068,6 +1095,20 @@ mod tests {
     #[tokio::test]
     async fn test_recall_empty_exposes_reason() {
         let (tool, _db, _dir) = test_tool();
+        let slot = tool.recall.clone();
+        bind_recall(&slot, |query| async move {
+            assert_eq!(query.text, "not stored anywhere");
+            Ok(MemoryRecall {
+                hits: Vec::new(),
+                mode: haven_memory::MemoryRecallMode::Keyword,
+                empty_reason: Some(MemoryRecallEmptyReason::NoHits),
+                diagnostics: Some(haven_memory::MemoryRecallDiagnostics {
+                    keyword: haven_memory::MemoryRecallSourceStatus::NoHits,
+                    vector: haven_memory::MemoryRecallSourceStatus::NotConfigured,
+                    suggestions: vec![haven_memory::MemoryRecallSuggestion::BroadenQuery],
+                }),
+            })
+        });
         let result = tool
             .execute(
                 json!({"operation": "recall", "query": "not stored anywhere", "kind": "fact"}),
@@ -1089,11 +1130,25 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_recall_episodes_keyword() {
-        let (tool, db, _dir) = test_tool();
-        let session = db.create_session("t").unwrap();
-        db.add_episode(&session.id, "User prefers a dark theme for the IDE")
-            .unwrap();
+    async fn test_recall_forwards_episode_kind_and_renders_hits() {
+        let (tool, _db, _dir) = test_tool();
+        let slot = tool.recall.clone();
+        bind_recall(&slot, |query| async move {
+            assert_eq!(query.kind, MemoryEntityKind::Episode);
+            assert_eq!(query.text, "dark theme");
+            assert_eq!(query.limit, 5);
+            Ok(MemoryRecall {
+                hits: vec![MemoryHit {
+                    entity_id: "msg-episode".into(),
+                    text: "User prefers a dark theme for the IDE".into(),
+                    score: 0.8,
+                    model: "keyword".into(),
+                }],
+                mode: haven_memory::MemoryRecallMode::Keyword,
+                empty_reason: None,
+                diagnostics: None,
+            })
+        });
         let result = tool
             .execute(
                 json!({

@@ -906,3 +906,4 @@
 - [0915：隐藏 SessionCommitted 的存储投影集合](0915-encapsulate-session-commit-projections.md)
 - [0916：统一 Agent Interaction crate 根导出路径](0916-hide-agent-interaction-module-path.md)
 - [0917：收回 Agent 未消费的运行时 API 并统一生产 run 入口](0917-restrict-agent-runtime-to-consumed-contracts.md)
+- [0918：统一 MemoryTool Recall capability 并移除 fact-store fallback](0918-unify-memory-tool-recall-capability.md)
