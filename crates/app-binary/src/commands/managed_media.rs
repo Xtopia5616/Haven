@@ -292,10 +292,10 @@ fn cleanup_unreferenced_upload_batches_sync(
         let batch_path = entry.path();
         let has_message_reference = referenced_paths
             .iter()
-            .any(|path| path_is_equal_or_child(&batch_path, path));
+            .any(|path| haven_common::path::path_is_equal_or_child(&batch_path, path));
         let has_live_lease = leased_paths
             .iter()
-            .any(|path| path_is_equal_or_child(&batch_path, path));
+            .any(|path| haven_common::path::path_is_equal_or_child(&batch_path, path));
         if has_message_reference || has_live_lease {
             tracing::debug!(batch = %name, "保留仍被消息引用或持有活动租约的上传批次");
             continue;
@@ -420,13 +420,13 @@ fn cleanup_unreferenced_generated_media_sync(
         }
         let path_is_referenced = referenced_paths
             .iter()
-            .any(|candidate| path_is_equal(candidate, &path));
+            .any(|candidate| haven_common::path::path_is_equal(candidate, &path));
         let has_live_lease = leased_paths
             .iter()
-            .any(|candidate| path_is_equal(candidate, &path));
+            .any(|candidate| haven_common::path::path_is_equal(candidate, &path));
         let has_transient_ttl = transient_paths
             .iter()
-            .any(|candidate| path_is_equal(candidate, &path));
+            .any(|candidate| haven_common::path::path_is_equal(candidate, &path));
         if path_is_referenced || has_live_lease || has_transient_ttl {
             tracing::debug!(file = %name, "保留仍被会话、租约或临时资产 TTL 引用的生成媒体");
             continue;
@@ -701,32 +701,6 @@ fn upload_tree_size(path: &std::path::Path) -> Result<u64, String> {
         total = total.saturating_add(upload_tree_size(&entry.path())?);
     }
     Ok(total)
-}
-
-fn path_is_equal_or_child(root: &std::path::Path, candidate: &std::path::Path) -> bool {
-    #[cfg(windows)]
-    {
-        let root = root.to_string_lossy().to_lowercase();
-        let candidate = candidate.to_string_lossy().to_lowercase();
-        candidate == root
-            || candidate.starts_with(&format!("{root}\\"))
-            || candidate.starts_with(&format!("{root}/"))
-    }
-    #[cfg(not(windows))]
-    {
-        candidate == root || candidate.strip_prefix(root).is_ok()
-    }
-}
-
-fn path_is_equal(left: &std::path::Path, right: &std::path::Path) -> bool {
-    #[cfg(windows)]
-    {
-        left.to_string_lossy().to_lowercase() == right.to_string_lossy().to_lowercase()
-    }
-    #[cfg(not(windows))]
-    {
-        left == right
-    }
 }
 
 #[cfg(test)]

@@ -524,7 +524,8 @@ impl ManagedAssetRegistry {
         let removed: HashSet<String> = assets
             .iter()
             .filter_map(|(asset_id, asset)| {
-                path_is_equal_or_child(root, &asset.path).then_some(asset_id.clone())
+                haven_common::path::path_is_equal_or_child(root, &asset.path)
+                    .then_some(asset_id.clone())
             })
             .collect();
         assets.retain(|asset_id, _| !removed.contains(asset_id));
@@ -564,7 +565,7 @@ impl ManagedAssetRegistry {
             leased_ids.contains(asset_id)
                 || referenced_paths
                     .iter()
-                    .any(|path| path_is_equal(path, &asset.path))
+                    .any(|path| haven_common::path::path_is_equal(path, &asset.path))
         });
         before.saturating_sub(assets.len())
     }
@@ -617,32 +618,6 @@ fn is_safe_managed_file(root: &Path, path: &Path) -> bool {
         }
     }
     true
-}
-
-fn path_is_equal_or_child(root: &Path, candidate: &Path) -> bool {
-    #[cfg(windows)]
-    {
-        let root = root.to_string_lossy().to_lowercase();
-        let candidate = candidate.to_string_lossy().to_lowercase();
-        candidate == root
-            || candidate.starts_with(&format!("{root}\\"))
-            || candidate.starts_with(&format!("{root}/"))
-    }
-    #[cfg(not(windows))]
-    {
-        candidate == root || candidate.strip_prefix(root).is_ok()
-    }
-}
-
-fn path_is_equal(left: &Path, right: &Path) -> bool {
-    #[cfg(windows)]
-    {
-        left.to_string_lossy().to_lowercase() == right.to_string_lossy().to_lowercase()
-    }
-    #[cfg(not(windows))]
-    {
-        left == right
-    }
 }
 
 #[cfg(test)]
@@ -794,7 +769,7 @@ mod tests {
             cleaner_registry
                 .leased_paths()
                 .iter()
-                .any(|leased_path| path_is_equal(leased_path, &cleaner_path))
+                .any(|leased_path| haven_common::path::path_is_equal(leased_path, &cleaner_path))
         });
         started_rx.await.unwrap();
         assert!(

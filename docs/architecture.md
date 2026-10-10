@@ -58,8 +58,9 @@ haven-skills ──► haven-common, haven-platform
 状态创建进程、先分配 Job 再恢复唯一初始线程；其他平台保持原有 no-op 行为。平台 crate 拥有该
 操作系统顺序和 FFI，adapter 仍拥有命令配置、管道、取消、等待与工具生命周期（ADR 0513、0515）。
 `haven-platform::filesystem::is_link_or_reparse_point` 统一检查单个 metadata 是否为 symlink 或 Windows
-reparse point；它不解析路径或制定允许根目录。App 上传/清理、Tools 资产登记和 Tools 安全沙箱继续各自
-拥有路径遍历、canonicalization、根目录策略及 fail-closed 处理（ADR 0858）。
+reparse point；它不解析路径或制定允许根目录。`haven-common::path` 统一提供纯 lexical path equality 与
+equal-or-child 比较，不访问文件系统或 canonicalize 路径（ADR 0863）。App 上传/清理、Tools 资产登记和
+Tools 安全沙箱继续各自拥有路径遍历、canonicalization、根目录策略及 fail-closed 处理（ADR 0858、0863）。
 
 `haven-common::usage` 是跨层用量值的唯一契约 owner：`CacheAccounting`、`LlmCallKind` 与
 `CacheDiagnostics` 由 LLM adapter 填充，Agent 原样透传，App event 使用同一 Rust 类型，Memory 只在 SQLite
@@ -193,6 +194,7 @@ CI 以 `scripts/check-crate-dependencies.ps1` 对此表执行内部 crate 依赖
 - `retry.rs`：纯恢复策略模型。调用方提供错误分类、尝试次数和当前单调时钟，获得继续/停止决策与退避时间；不执行 sleep、取消、队列、持久化或任务生命周期。
 - `encoding.rs` / `text.rs`：编码解码（UTF-8 → GBK 回退）、文本工具。
 - `json.rs`：递归对象键 canonicalization 与 `canonical_json_bytes`，保留数组顺序；Tools 确认 hash 和 LLM schema/cache identity 共用此编码（ADR 0862）。
+- `path.rs`：Windows case-insensitive 与其它平台组件语义下的纯 path equality/ancestor predicates；不解析链接、不 canonicalize 或制定根目录策略（ADR 0863）。
 
 **判定标准**：凡被 ≥2 个 crate 共享、且不依赖任何业务逻辑的纯数据/纯函数，放这里。
 OS 句柄和进程生命周期适配不属于该共享契约面，统一归 `haven-platform`。

@@ -8,6 +8,7 @@ pub mod lifecycle;
 pub mod log_file;
 pub mod media;
 pub mod media_detection;
+pub mod path;
 pub mod prompts;
 pub mod retry;
 pub mod text;
