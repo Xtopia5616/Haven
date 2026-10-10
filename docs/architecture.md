@@ -197,6 +197,7 @@ CI 以 `scripts/check-crate-dependencies.ps1` 对此表执行内部 crate 依赖
 - `prompts.rs`：系统提示词与各专用 prompt 常量（含 `STT_SYSTEM_PROMPT`）。
 - `retry.rs`：纯恢复策略模型。调用方提供错误分类、尝试次数和当前单调时钟，获得继续/停止决策与退避时间；不执行 sleep、取消、队列、持久化或任务生命周期。
 - `error.rs`：跨边界错误文本的控制字符/空白归一、敏感字段与路径脱敏、长度限制；App `logging.rs` 组合 `log_err` 与 tracing 上下文但直接复用该 sanitizer（ADR 0867）。
+- 错误摘要的 `truncate_with_ellipsis` 添加省略号；Agent `prompt.rs::take_prefix_chars` 只截取字符前缀以遵守 prompt 布局预算。二者输出形状不同，保持各自 owner（ADR 0868）。
 - `encoding.rs` / `text.rs`：编码解码（UTF-8 → GBK 回退）、XML entity unescape 与文本工具；CLIXML 消息和 Task Scheduler XML 共用 `xml_unescape`（ADR 0864）。
 - `json.rs`：递归对象键 canonicalization 与 `canonical_json_bytes`，保留数组顺序；Tools 确认 hash 和 LLM schema/cache identity 共用此编码（ADR 0862）。
 - `path.rs`：Windows case-insensitive 与其它平台组件语义下的纯 path equality/ancestor predicates；不解析链接、不 canonicalize 或制定根目录策略（ADR 0863）。
@@ -414,6 +415,7 @@ Compaction summary episode 与首个 pending marker 只由 `MemoryStore::persist
 - `canonical.rs`：发送前 `sanitize_canonical` 闸门。
 - `memory_worker.rs` / `memory_service.rs` / `memory_index.rs` / `prompt_context.rs` / `prompt_renderer.rs` / `prompt.rs` / `compactor.rs` / `rollback.rs` / `rollback_support.rs` / `title.rs` / `event.rs` / `partial.rs`；`memory_service` 统一 typed memory/embedding/cache 边界，`prompt_context` 取得 bounded turn snapshot，`prompt_renderer` 纯渲染 bounded MEMORY fence；`rollback.rs` 编排生命周期与 DB 双时钟，`rollback_support` 只操作 events 和 branch cursor。
 - `token_budget.rs`：Agent 的 tokenizer 初始化、provider-visible message/tool/request 估算与前缀/后缀文本 token 截断唯一 owner。`ReActState` 只持有版本作用域的增量 canonical token estimate cache；`compactor.rs` 保留 compaction 专属的区间前缀和、范围选择与 summary 编排，`prompt_renderer.rs` 保留按完整行选择与 MEMORY fence 布局（ADR 0856）。
+- `prompt.rs` 对 memory fact 文本使用 `sanitize_fact_prompt_field` 应用固定 256 字符领域预算；底层控制字符替换与长度截取复用 Common `sanitize_prompt_field(input, max_chars)`（ADR 0868）。
 - Memory outbox retry 与 `MemoryRuntime` 恢复退避复用 common 纯策略/退避计算；worker 仍拥有 marker、cursor、等待、取消与恢复时序（ADR 0268、0447）。
 - `fact_extraction.rs`：事实抽取 DTO、LLM 字段 coercion、标签清洗、prompt 字段清洗和
   JSON array 提取；规范事实谓词由 `haven-memory::repositories::facts::normalize_predicate`

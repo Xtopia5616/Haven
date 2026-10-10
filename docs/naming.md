@@ -180,6 +180,8 @@ Tools builtin 的多个名称列表使用 `ordered_unique_non_empty_names` 保�
 
 跨 crate 错误文本清洗只调用 `haven_common::error::sanitize_error_text`。App `logging.rs` 拥有 `log_err` 和 tracing 上下文，不再重导出清洗函数；通知、事件、命令与日志调用方直接引用 Common（ADR 0867）。
 
+文本截断按可观察输出命名：Common 错误摘要使用 `truncate_with_ellipsis` 添加省略号；Agent prompt 布局使用 `take_prefix_chars` 只取字符前缀。Agent memory fact 的固定 256 字符清洗叫 `sanitize_fact_prompt_field`，Common `sanitize_prompt_field` 只接受显式长度，不暗含领域默认值（ADR 0868）。
+
 Tools 对结构化输出中 Ask 与通知 side-channel 的解析结果分别使用 `AskSignal` 和 `NotificationSignal`；前者保留可选 question 与选项列表，后者以 `Option<NotificationSignal>` 表示是否请求通知。汇总传递给 Agent 的 `ToolSignals` 形状继续由其独立的 side-channel 契约拥有。
 
 跨端枚举的允许值以 generated IPC contract 为单一来源；UI 可以为这些值维护展示标签，但选项数组应从生成值派生，并让边界/事件 contract 直接引用生成类型，不另手写相同 union。

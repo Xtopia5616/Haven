@@ -846,3 +846,4 @@
 - [0865：共用有序非空名称列表去重](0865-share-ordered-name-list-deduplication.md)
 - [0866：由 Memory 独占事实谓词规范化](0866-own-fact-predicate-normalization-in-memory.md)
 - [0867：直接使用 Common 错误文本清洗器](0867-use-common-error-sanitizer-directly.md)
+- [0868：按文本截断输出形状命名 helper](0868-name-text-truncation-by-output-shape.md)

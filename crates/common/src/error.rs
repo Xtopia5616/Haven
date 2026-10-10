@@ -16,7 +16,7 @@ pub fn sanitize_error_text(raw: &str) -> String {
     let normalized = redact_key_value_segments(&normalized);
     let normalized = redact_prefixed_tokens(&normalized);
     let normalized = redact_windows_paths(&normalized);
-    truncate_chars(&normalized, MAX_PUBLIC_ERROR_LENGTH)
+    truncate_with_ellipsis(&normalized, MAX_PUBLIC_ERROR_LENGTH)
 }
 
 fn collapse_whitespace(value: &str) -> String {
@@ -36,7 +36,7 @@ fn collapse_whitespace(value: &str) -> String {
     out.trim().to_string()
 }
 
-fn truncate_chars(value: &str, max_chars: usize) -> String {
+fn truncate_with_ellipsis(value: &str, max_chars: usize) -> String {
     if value.chars().count() <= max_chars {
         return value.to_string();
     }

@@ -103,7 +103,7 @@ fn environment_value(names: &[&str]) -> String {
         .map(runtime_value)
         .unwrap_or_else(|| "unknown".into())
 }
-fn truncate_chars(text: &str, max_chars: usize) -> String {
+fn take_prefix_chars(text: &str, max_chars: usize) -> String {
     text.chars().take(max_chars).collect()
 }
 
@@ -161,7 +161,7 @@ fn render_recent_context_with_budget(
             available_chars,
         );
         let safe_message = truncate_prefix_to_token_budget(&safe_message, available_tokens);
-        selected.push(truncate_chars(
+        selected.push(take_prefix_chars(
             &format!("  {safe_message}\n"),
             available_chars,
         ));
@@ -194,7 +194,7 @@ struct ToolIndexGroup {
 
 fn compact_index_text(value: &str, max_chars: usize) -> String {
     let sanitized = haven_common::text::sanitize_prompt_field(value.trim(), max_chars);
-    truncate_chars(&sanitized, max_chars)
+    take_prefix_chars(&sanitized, max_chars)
 }
 
 const BUILTIN_INDEX_CHAR_BUDGET: usize = 4096;
@@ -210,7 +210,7 @@ fn cap_capability_index(value: String, budget: usize, hint: &str) -> String {
     }
     let suffix = format!("\n… {hint}");
     let head_budget = budget.saturating_sub(suffix.chars().count());
-    let candidate = truncate_chars(value.trim_end(), head_budget);
+    let candidate = take_prefix_chars(value.trim_end(), head_budget);
     let head = if candidate.ends_with('\n') {
         candidate.trim_end().to_string()
     } else {
@@ -722,17 +722,17 @@ impl SystemPromptBuilder {
                 let subject = if fact.subject == "user" {
                     String::new()
                 } else {
-                    format!("{} | ", sanitize_prompt_field(&fact.subject))
+                    format!("{} | ", sanitize_fact_prompt_field(&fact.subject))
                 };
                 let tag = fact.tags.first().map(|s| s.as_str()).unwrap_or("other");
                 let tag_header_cost = if groups.contains_key(tag) {
                     0
                 } else {
                     // Approximate "  [tag]:\n" once per new group.
-                    6 + sanitize_prompt_field(tag).chars().count()
+                    6 + sanitize_fact_prompt_field(tag).chars().count()
                 };
                 let overhead = subject.chars().count()
-                    + sanitize_prompt_field(&fact.predicate).chars().count()
+                    + sanitize_fact_prompt_field(&fact.predicate).chars().count()
                     + src.len()
                     + tag_header_cost
                     + 16; // " = ( , NNN%)" framing
@@ -744,7 +744,7 @@ impl SystemPromptBuilder {
                 let line = format!(
                     " {}{}={} ({}, {}%)",
                     subject,
-                    sanitize_prompt_field(&fact.predicate),
+                    sanitize_fact_prompt_field(&fact.predicate),
                     haven_common::text::sanitize_prompt_field(&fact.object, obj_cap),
                     src,
                     display_confidence_pct(fact)
@@ -761,7 +761,7 @@ impl SystemPromptBuilder {
             if included > 0 {
                 let mut body = String::from(USER_FACTS_START);
                 for (tag, group) in &groups {
-                    body.push_str(&format!("  [{}]:", sanitize_prompt_field(tag)));
+                    body.push_str(&format!("  [{}]:", sanitize_fact_prompt_field(tag)));
                     for line in group {
                         body.push_str(line);
                     }
@@ -1024,7 +1024,7 @@ fn display_confidence_pct(fact: &haven_memory::repositories::facts::Fact) -> u32
 /// be used for indirect prompt injection, and caps the length. Shared
 /// implementation lives in `haven_common::text` so the policy cannot drift
 /// from fact extraction / tool index sanitization.
-fn sanitize_prompt_field(s: &str) -> String {
+fn sanitize_fact_prompt_field(s: &str) -> String {
     haven_common::text::sanitize_prompt_field(s, 256)
 }
 
@@ -1038,13 +1038,13 @@ mod tests {
 
     #[test]
     fn sanitize_control_chars() {
-        let out = sanitize_prompt_field("a\nb\tc");
+        let out = sanitize_fact_prompt_field("a\nb\tc");
         assert_eq!(out, "a b c");
     }
 
     #[test]
     fn sanitize_caps_length() {
-        let out = sanitize_prompt_field(&"x".repeat(300));
+        let out = sanitize_fact_prompt_field(&"x".repeat(300));
         assert_eq!(out.len(), 256);
     }
 
