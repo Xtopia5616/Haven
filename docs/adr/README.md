@@ -863,3 +863,4 @@
 - [0881：将 LLM mock router API 限定到测试依赖](0881-isolate-llm-test-router-support.md)
 - [0882：将注入式模型路由设施限定到测试依赖](0882-gate-injected-model-routing-to-tests.md)
 - [0883：在输入边界统一校验 Haven 实体 ID](0883-validate-entity-ids-at-ingress.md)
+- [0884：在 Tools 入口校验模型提供的实体 ID](0884-validate-tool-entity-ids-at-ingress.md)

@@ -217,6 +217,32 @@ async fn inspect_returns_compact_media_reference_without_host_path() {
 }
 
 #[tokio::test]
+async fn media_rejects_noncanonical_asset_id_before_registry_lookup() {
+    let tool = MediaTool::new(None, ManagedAssetRegistry::default(), 1024, 10, 2_000);
+    let error = tool
+        .run(
+            MediaParams {
+                operation: MediaOperation::Inspect,
+                asset_id: Some("asset-invalid".into()),
+                focus: None,
+                prompt: None,
+                page_index: None,
+                file_path: None,
+                text: None,
+                duration: None,
+                volume: None,
+                muted: None,
+                session_id: None,
+            },
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap_err();
+
+    assert!(error.to_string().contains("canonical asset- prefixed id"));
+}
+
+#[tokio::test]
 async fn inspect_supports_video_assets_and_uses_typed_representation() {
     let root = TempDir::new().unwrap();
     let (registry, asset_id) = registered_asset(root.path(), "clip.mts", "video/mp2t");

@@ -6,6 +6,7 @@
 //! creation, trigger delivery, and execution.
 
 use chrono::{DateTime, Utc};
+use haven_common::types::is_canonical_id;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ScheduledTrigger {
@@ -34,9 +35,11 @@ impl ScheduledTriggerRequest {
         delay_secs: Option<u64>,
         watch_tool_run_id: Option<String>,
     ) -> anyhow::Result<Self> {
-        let watch_tool_run_id = watch_tool_run_id
-            .map(|value| value.trim().to_string())
-            .filter(|value| !value.is_empty());
+        if let Some(value) = watch_tool_run_id.as_deref()
+            && !is_canonical_id(value, "toolrun")
+        {
+            anyhow::bail!("watch_tool_run_id must be a canonical toolrun- prefixed id");
+        }
         if watch_tool_run_id.is_some() && (due_at.is_some() || delay_secs.is_some()) {
             anyhow::bail!("watch_tool_run_id cannot be combined with due_at or delay_secs");
         }
@@ -201,18 +204,32 @@ mod tests {
     }
 
     #[test]
-    fn resolves_trimmed_tool_run_dependency_without_a_timer() {
-        let candidate = ScheduledTriggerRequest::new(None, None, Some("  toolrun-abc  ".into()))
-            .unwrap()
-            .resolve(fixed_now())
-            .unwrap();
+    fn resolves_canonical_tool_run_dependency_without_a_timer() {
+        let candidate = ScheduledTriggerRequest::new(
+            None,
+            None,
+            Some("toolrun-00000000000000000000000000000001".into()),
+        )
+        .unwrap()
+        .resolve(fixed_now())
+        .unwrap();
 
         assert!(!candidate.needs_due_horizon_check());
         assert_eq!(
             candidate.into_trigger(),
             ScheduledTrigger::AfterToolRun {
-                tool_run_id: "toolrun-abc".into(),
+                tool_run_id: "toolrun-00000000000000000000000000000001".into(),
             }
+        );
+    }
+
+    #[test]
+    fn rejects_noncanonical_tool_run_dependency() {
+        let error =
+            ScheduledTriggerRequest::new(None, None, Some("toolrun-abc".into())).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "watch_tool_run_id must be a canonical toolrun- prefixed id"
         );
     }
 
@@ -265,19 +282,10 @@ mod tests {
             .unwrap_err();
         assert_eq!(error.to_string(), "delay_secs must be between 1 and 86400");
 
-        let error = ScheduledTriggerRequest::new(None, None, Some("  ".into()))
-            .unwrap()
-            .resolve(now)
-            .unwrap_err();
-        assert_eq!(
-            error.to_string(),
-            "either due_at, delay_secs or watch_tool_run_id is required"
-        );
-
         let error = ScheduledTriggerRequest::new(
             Some("2030-01-02T03:04:06Z".into()),
             None,
-            Some("toolrun-abc".into()),
+            Some("toolrun-00000000000000000000000000000001".into()),
         )
         .unwrap_err();
         assert_eq!(

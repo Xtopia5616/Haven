@@ -3,11 +3,21 @@ pub use haven_common::tools::{
     ToolConcurrencyMode, ToolErrorClass, ToolExecutionOutcome, ToolOperationScope,
     ToolResultEnvelope, ToolRetryability,
 };
-use haven_common::types::{CapabilityScope, RiskLevel, permission_key};
+use haven_common::types::{CapabilityScope, RiskLevel, is_canonical_id, permission_key};
 use serde_json::{Map, Value};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
+
+/// Validate a Haven-owned entity ID at a Tools boundary using the canonical
+/// format owner in `haven_common`.
+pub(crate) fn validate_entity_id(id: &str, field_name: &str, prefix: &str) -> anyhow::Result<()> {
+    if is_canonical_id(id, prefix) {
+        Ok(())
+    } else {
+        anyhow::bail!("{field_name} must be a canonical {prefix}- prefixed id")
+    }
+}
 
 pub use haven_common::tools::{
     ToolAvailability, ToolCatalogGroup, ToolDef, ToolIdentity, ToolManifest, ToolModel, ToolPolicy,

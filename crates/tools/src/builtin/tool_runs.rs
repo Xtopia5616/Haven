@@ -58,12 +58,14 @@ impl ToolRunsTool {
             .session_id
             .ok_or_else(|| anyhow::anyhow!("tool_runs requires a session context"))?;
 
+        if let Some(tool_run_id) = params.tool_run_id.as_deref() {
+            crate::tool_contract::validate_entity_id(tool_run_id, "tool_run_id", "toolrun")?;
+        }
+
         if matches!(params.operation, Some(ToolRunsOperation::Cancel)) {
             let tool_run_id = params
                 .tool_run_id
                 .as_deref()
-                .map(str::trim)
-                .filter(|id| !id.is_empty())
                 .ok_or_else(|| anyhow::anyhow!("tool_run_id is required for cancel"))?;
             let cancelled = self
                 .tool_runs
@@ -76,12 +78,7 @@ impl ToolRunsTool {
             })));
         }
 
-        if let Some(tool_run_id) = params
-            .tool_run_id
-            .as_ref()
-            .map(|s| s.trim())
-            .filter(|s| !s.is_empty())
-        {
+        if let Some(tool_run_id) = params.tool_run_id.as_deref() {
             let status = self
                 .tool_runs
                 .status_for_session_view(tool_run_id, &session_id)
@@ -167,7 +164,7 @@ impl Tool for ToolRunsTool {
             "properties": {
                 "tool_run_id": {
                     "type": "string",
-                    "minLength": 1,
+                    "pattern": "^toolrun-[0-9a-f]{32}$",
                     "description": "Inspect this single background or scheduled task instead of listing"
                 },
                 "operation": {
@@ -185,7 +182,7 @@ impl Tool for ToolRunsTool {
                 {
                     "type": "object",
                     "additionalProperties": false,
-                    "properties": { "tool_run_id": { "type": "string", "minLength": 1 } },
+                    "properties": { "tool_run_id": { "type": "string", "pattern": "^toolrun-[0-9a-f]{32}$" } },
                     "required": ["tool_run_id"]
                 },
                 {
@@ -193,7 +190,7 @@ impl Tool for ToolRunsTool {
                     "additionalProperties": false,
                     "properties": {
                         "operation": { "const": "cancel" },
-                        "tool_run_id": { "type": "string", "minLength": 1 }
+                        "tool_run_id": { "type": "string", "pattern": "^toolrun-[0-9a-f]{32}$" }
                     },
                     "required": ["operation", "tool_run_id"]
                 },
@@ -286,7 +283,7 @@ mod tests {
         };
         let result = tool
             .execute(
-                json!({"tool_run_id": "toolrun-nope", "_session_id": "ses-x"}),
+                json!({"tool_run_id": "toolrun-00000000000000000000000000000001", "_session_id": "ses-x"}),
                 CancellationToken::new(),
             )
             .await
@@ -335,7 +332,7 @@ mod tests {
             .execute(
                 json!({
                     "operation": "cancel",
-                    "tool_run_id": "toolrun-nope",
+                    "tool_run_id": "toolrun-00000000000000000000000000000001",
                     "_session_id": "ses-x"
                 }),
                 CancellationToken::new(),
@@ -344,5 +341,26 @@ mod tests {
             .unwrap();
         assert_eq!(result.output["operation"], "cancel");
         assert_eq!(result.output["cancelled"], false);
+    }
+
+    #[tokio::test]
+    async fn test_tool_runs_rejects_noncanonical_tool_run_id_before_lookup() {
+        let tool = ToolRunsTool {
+            tool_runs: Arc::new(ToolRunService::new()),
+        };
+        let error = tool
+            .run(
+                ToolRunsParams {
+                    session_id: Some("ses-x".into()),
+                    tool_run_id: Some("toolrun-nope".into()),
+                    operation: None,
+                    status: None,
+                },
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap_err();
+
+        assert!(error.to_string().contains("canonical toolrun- prefixed id"));
     }
 }

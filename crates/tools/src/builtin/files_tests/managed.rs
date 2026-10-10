@@ -7,18 +7,23 @@ use super::*;
         tokio::fs::write(&file, "managed content").await.unwrap();
         let path_str = file.to_string_lossy().to_string();
         let registry = ManagedAssetRegistry::default();
-        registry.register_for_test("asset-test", file, Some("report.txt".into()), "text/plain");
+        registry.register_for_test(
+            "asset-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            file,
+            Some("report.txt".into()),
+            "text/plain",
+        );
         let tool = files_tool_with_registry(registry);
 
         let result = tool
             .execute(
-                json!({"operation": "read", "asset_id": "asset-test"}),
+                json!({"operation": "read", "asset_id": "asset-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}),
                 CancellationToken::new(),
             )
             .await
             .unwrap();
         assert_eq!(result.output["content"], "managed content");
-        assert_eq!(result.output["asset_id"], "asset-test");
+        assert_eq!(result.output["asset_id"], "asset-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
         assert_eq!(result.output["filename"], "report.txt");
         assert!(result.output["notes"]
             .as_str()
@@ -36,12 +41,28 @@ use super::*;
 
         let mutation = tool
             .execute(
-                json!({"operation": "write", "asset_id": "asset-test", "content": "nope"}),
+                json!({"operation": "write", "asset_id": "asset-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "content": "nope"}),
                 CancellationToken::new(),
             )
             .await;
         assert!(mutation.is_err(), "managed assets are read-only");
     }
+
+#[tokio::test]
+async fn rejects_noncanonical_asset_id_before_registry_lookup() {
+    let tool = files_tool_with_registry(ManagedAssetRegistry::default());
+    let params = serde_json::from_value(json!({
+        "operation": "read",
+        "asset_id": "asset-invalid"
+    }))
+    .unwrap();
+
+    let error = tool
+        .run(params, CancellationToken::new())
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("canonical asset- prefixed id"));
+}
 
     #[tokio::test]
     async fn test_managed_asset_revalidates_before_read() {
@@ -51,7 +72,7 @@ use super::*;
         let registry = ManagedAssetRegistry::default();
         assert!(registry.register_under_root(
             tmp.path(),
-            "asset-race",
+            "asset-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
             file.clone(),
             Some("report.txt".into()),
             "text/plain",
@@ -61,7 +82,7 @@ use super::*;
 
         let result = tool
             .execute(
-                json!({"operation": "read", "asset_id": "asset-race"}),
+                json!({"operation": "read", "asset_id": "asset-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}),
                 CancellationToken::new(),
             )
             .await;
@@ -87,7 +108,7 @@ use super::*;
         let path_str = file.to_string_lossy().to_string();
         let registry = ManagedAssetRegistry::default();
         registry.register_for_test(
-            "asset-pdf",
+            "asset-cccccccccccccccccccccccccccccccc",
             file,
             Some("report.pdf".into()),
             "application/pdf",
@@ -96,7 +117,7 @@ use super::*;
 
         let result = tool
             .execute(
-                json!({"operation": "read", "asset_id": "asset-pdf"}),
+                json!({"operation": "read", "asset_id": "asset-cccccccccccccccccccccccccccccccc"}),
                 CancellationToken::new(),
             )
             .await

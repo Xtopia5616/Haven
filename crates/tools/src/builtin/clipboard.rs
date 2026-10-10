@@ -465,6 +465,10 @@ fn validate_write_params(params: &ClipboardParams) -> anyhow::Result<ClipboardFo
     let has_files = params.files.is_some();
     let has_limit = params.limit.is_some();
 
+    if let Some(asset_id) = params.asset_id.as_deref() {
+        crate::tool_contract::validate_entity_id(asset_id, "asset_id", "asset")?;
+    }
+
     match format {
         ClipboardFormat::Text
             if has_text && !has_html && !has_asset && !has_files && !has_limit =>
@@ -1261,5 +1265,26 @@ mod tests {
             .unwrap();
         let entries = result.output["entries"].as_array().unwrap();
         assert_eq!(entries[0]["content"], "native");
+    }
+
+    #[tokio::test]
+    async fn test_clipboard_rejects_noncanonical_asset_id_before_write() {
+        let error = test_tool()
+            .run(
+                ClipboardParams {
+                    operation: Some(ClipboardOperation::Write),
+                    limit: None,
+                    format: Some(ClipboardFormat::Image),
+                    text: None,
+                    html: None,
+                    asset_id: Some("asset-invalid".into()),
+                    files: None,
+                },
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap_err();
+
+        assert!(error.to_string().contains("canonical asset- prefixed id"));
     }
 }

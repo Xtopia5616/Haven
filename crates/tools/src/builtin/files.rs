@@ -220,6 +220,7 @@ impl FilesTool {
             .map(resolve_workspace_path)
             .transpose()?;
         let mut managed_asset = if let Some(asset_id) = params.asset_id.as_deref() {
+            crate::tool_contract::validate_entity_id(asset_id, "asset_id", "asset")?;
             if params.path.is_some() {
                 anyhow::bail!("provide either asset_id or path, not both");
             }

@@ -369,6 +369,7 @@ impl MediaTool {
         if asset_id.is_empty() {
             anyhow::bail!("asset_id is required");
         }
+        crate::tool_contract::validate_entity_id(asset_id, "asset_id", "asset")?;
         let asset = self
             .managed_assets
             .resolve(asset_id)

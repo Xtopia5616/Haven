@@ -95,10 +95,14 @@ impl ScheduleTool {
                 let delay = params.delay_secs;
                 let due_at = params.due_at;
                 let watch_tool_run_id = params.watch_tool_run_id;
-                let watch = watch_tool_run_id
-                    .as_deref()
-                    .map(str::trim)
-                    .filter(|w| !w.is_empty());
+                if let Some(watch_tool_run_id) = watch_tool_run_id.as_deref() {
+                    crate::tool_contract::validate_entity_id(
+                        watch_tool_run_id,
+                        "watch_tool_run_id",
+                        "toolrun",
+                    )?;
+                }
+                let watch = watch_tool_run_id.as_deref();
                 if watch.is_some() && (delay.is_some() || due_at.is_some()) {
                     anyhow::bail!("watch_tool_run_id cannot be combined with delay_secs or due_at");
                 }
@@ -277,6 +281,7 @@ impl ScheduleTool {
                 let id = params
                     .tool_run_id
                     .ok_or_else(|| anyhow::anyhow!("tool_run_id is required for cancel"))?;
+                crate::tool_contract::validate_entity_id(&id, "tool_run_id", "toolrun")?;
                 if self.service.cancel_for_session(&id, session_id).await {
                     Ok(ToolResult::ok(
                         serde_json::json!({ "operation": "cancel", "tool_run_id": id }),
@@ -328,14 +333,14 @@ impl Tool for ScheduleTool {
                 "operation": { "type": "string", "enum": ["set", "list", "cancel"], "description": "Schedule future work, list schedules, or cancel one" },
                 "delay_secs": { "type": "integer", "minimum": 1, "maximum": 86400, "description": "Fire after this many seconds; choose this or due_at, not both" },
                 "due_at": { "type": "string", "minLength": 1, "description": "Absolute fire time as an ISO 8601 timestamp with timezone; choose this or delay_secs, not both" },
-                "watch_tool_run_id": { "type": "string", "minLength": 1, "description": "Schedule continuation when this background task reaches a terminal state; requires mode=continue" },
+                "watch_tool_run_id": { "type": "string", "pattern": "^toolrun-[0-9a-f]{32}$", "description": "Schedule continuation when this background task reaches a terminal state; requires mode=continue" },
                 "mode": { "type": "string", "enum": ["tool", "continue"], "default": "tool", "description": "At fire time, call tool_name (default) or resume this session with prompt" },
                 "title": { "type": "string", "minLength": 1, "description": "Short title shown for the scheduled task; defaults to Haven" },
                 "body": { "type": "string", "minLength": 1, "description": "Required message shown when the schedule fires" },
                 "tool_name": { "type": "string", "minLength": 1, "description": "Available built-in tool to call when mode=tool" },
                 "tool_args": { "type": "object", "description": "Arguments for tool_name when mode=tool; omit or use an empty object for no arguments" },
                 "prompt": { "type": "string", "minLength": 1, "description": "Instruction delivered to this session when mode=continue" },
-                "tool_run_id": { "type": "string", "minLength": 1, "description": "Scheduled task id returned by schedule.set; required for cancel" }
+                "tool_run_id": { "type": "string", "pattern": "^toolrun-[0-9a-f]{32}$", "description": "Scheduled task id returned by schedule.set; required for cancel" }
             },
             "required": ["operation"],
             "oneOf": [
@@ -348,7 +353,7 @@ impl Tool for ScheduleTool {
                 {
                     "type": "object",
                     "additionalProperties": false,
-                    "properties": { "operation": { "const": "cancel" }, "tool_run_id": { "type": "string", "minLength": 1, "description": "Scheduled task id returned by schedule.set" } },
+                    "properties": { "operation": { "const": "cancel" }, "tool_run_id": { "type": "string", "pattern": "^toolrun-[0-9a-f]{32}$", "description": "Scheduled task id returned by schedule.set" } },
                     "required": ["operation", "tool_run_id"]
                 },
                 {
@@ -393,7 +398,7 @@ impl Tool for ScheduleTool {
                     "additionalProperties": false,
                     "properties": {
                         "operation": { "const": "set" },
-                        "watch_tool_run_id": { "type": "string", "minLength": 1, "description": "Fire when this background task completes, fails, or is cancelled" },
+                        "watch_tool_run_id": { "type": "string", "pattern": "^toolrun-[0-9a-f]{32}$", "description": "Fire when this background task completes, fails, or is cancelled" },
                         "mode": { "const": "continue" },
                         "title": { "type": "string", "minLength": 1, "description": "Short task title; defaults to Haven" },
                         "body": { "type": "string", "minLength": 1, "description": "Required message shown when the background task finishes" },
@@ -546,6 +551,55 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_schedule_rejects_noncanonical_tool_run_ids_before_service_calls() {
+        let tool = make_tool();
+        let error = tool
+            .run(
+                ScheduleParams {
+                    operation: ScheduleOperation::Set,
+                    delay_secs: None,
+                    due_at: None,
+                    watch_tool_run_id: Some("toolrun-nope".into()),
+                    mode: Some(ScheduleMode::Continue),
+                    title: None,
+                    body: Some("body".into()),
+                    tool_name: None,
+                    tool_args: None,
+                    prompt: Some("continue".into()),
+                    tool_run_id: None,
+                    session_id: Some("ses-1".into()),
+                },
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("canonical toolrun- prefixed id"));
+        assert!(tool.service.list().await.is_empty());
+
+        let error = tool
+            .run(
+                ScheduleParams {
+                    operation: ScheduleOperation::Cancel,
+                    delay_secs: None,
+                    due_at: None,
+                    watch_tool_run_id: None,
+                    mode: None,
+                    title: None,
+                    body: None,
+                    tool_name: None,
+                    tool_args: None,
+                    prompt: None,
+                    tool_run_id: Some("toolrun-nope".into()),
+                    session_id: Some("ses-1".into()),
+                },
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("canonical toolrun- prefixed id"));
+    }
+
+    #[tokio::test]
     async fn test_native_set_rejects_negative_delay_before_cast() {
         let err = make_tool()
             .run(
@@ -663,7 +717,7 @@ mod tests {
                 json!({
                     "operation": "set",
                     "delay_secs": 60,
-                    "watch_tool_run_id": "toolrun-1",
+                    "watch_tool_run_id": "toolrun-00000000000000000000000000000001",
                     "body": "x",
                     "mode": "continue"
                 }),
@@ -681,7 +735,7 @@ mod tests {
                 json!({
                     "operation": "set",
                     "due_at": (chrono::Utc::now() + chrono::Duration::seconds(120)).to_rfc3339(),
-                    "watch_tool_run_id": "toolrun-1",
+                    "watch_tool_run_id": "toolrun-00000000000000000000000000000001",
                     "body": "x",
                     "mode": "continue"
                 }),
@@ -698,7 +752,7 @@ mod tests {
             .execute(
                 json!({
                     "operation": "set",
-                    "watch_tool_run_id": "toolrun-1",
+                    "watch_tool_run_id": "toolrun-00000000000000000000000000000001",
                     "body": "x",
                     "mode": "tool",
                     "tool_name": "notify"
@@ -724,7 +778,7 @@ mod tests {
             .set(ScheduledToolRunSpec {
                 due_at: None,
                 delay_secs: None,
-                watch_tool_run_id: Some("toolrun-1".into()),
+                watch_tool_run_id: Some("toolrun-00000000000000000000000000000001".into()),
                 title: "T".into(),
                 body: "B".into(),
                 mode: ScheduleMode::Continue,
@@ -735,7 +789,10 @@ mod tests {
             })
             .await
             .expect("unified service accepts a ToolRun dependency");
-        assert_eq!(center.list().await[0]["watch_tool_run_id"], "toolrun-1");
+        assert_eq!(
+            center.list().await[0]["watch_tool_run_id"],
+            "toolrun-00000000000000000000000000000001"
+        );
         assert!(id.starts_with("toolrun-"));
     }
 
@@ -797,7 +854,7 @@ mod tests {
             .set(ScheduledToolRunSpec {
                 due_at: None,
                 delay_secs: None,
-                watch_tool_run_id: Some("toolrun-nope".into()),
+                watch_tool_run_id: Some("toolrun-00000000000000000000000000000002".into()),
                 title: "T".into(),
                 body: "B".into(),
                 mode: ScheduleMode::Continue,
@@ -812,7 +869,10 @@ mod tests {
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].tool_run_id, id);
         assert!(rows[0].due_at.is_empty());
-        assert_eq!(rows[0].watch_tool_run_id.as_deref(), Some("toolrun-nope"));
+        assert_eq!(
+            rows[0].watch_tool_run_id.as_deref(),
+            Some("toolrun-00000000000000000000000000000002")
+        );
     }
     /// Minimal tool stub for registry-backed validation tests.
     struct DummyTool {
