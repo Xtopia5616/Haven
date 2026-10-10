@@ -8,7 +8,7 @@ mod event;
 mod fact_extraction;
 mod fact_inference;
 mod ingress;
-pub mod interaction;
+mod interaction;
 mod lifecycle;
 mod memory_index;
 mod memory_inference;

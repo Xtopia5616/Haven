@@ -329,7 +329,7 @@ pub async fn resolve_confirmation(
         return Ok(ConfirmationResolutionResult::Stale);
     };
 
-    let expired = resolution.status == haven_agent::interaction::InteractionStatus::Expired;
+    let expired = resolution.status == InteractionStatus::Expired;
     tracing::info!(
         interaction_id = %confirmation_id,
         outcome = if expired { "expired" } else if confirmed { "approved" } else { "denied" },

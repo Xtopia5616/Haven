@@ -904,3 +904,4 @@
 - [0913：完成 SessionStore 生产读取的异步边界](0913-finish-session-store-async-read-boundary.md)
 - [0914：按 ToolRun 持久化域命名 Memory 底层模块](0914-name-memory-tool-run-persistence-module.md)
 - [0915：隐藏 SessionCommitted 的存储投影集合](0915-encapsulate-session-commit-projections.md)
+- [0916：统一 Agent Interaction crate 根导出路径](0916-hide-agent-interaction-module-path.md)
