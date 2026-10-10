@@ -858,3 +858,4 @@
 - [0876：区分 Session admission 与 Actor 运行态标记](0876-name-actor-run-state-transition.md)
 - [0877：统一 Session context 队列出入口](0877-unify-session-context-queue-api.md)
 - [0878：正交化 Skill 目录诊断与可执行状态](0878-normalize-skill-catalog-status.md)
+- [0879：删除丢弃目录诊断的公开 Skill 扫描器](0879-remove-lossy-public-skill-scanner.md)

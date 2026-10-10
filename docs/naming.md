@@ -1,6 +1,6 @@
 # Haven 命名规范
 
-> 版本: v1.160 | 日期: 2026-10-10
+> 版本: v1.161 | 日期: 2026-10-10
 
 本文档统一 Haven 项目各层的命名规则（变量名、函数名、文件名、crate 名、缩写大小写、跨层边界）。规范以现有代码中的事实模式为基础，新代码必须遵循；存量代码若与规范冲突，逐步迁移对齐。
 
@@ -22,6 +22,7 @@
 - **跨层同名动作区分编排与局部状态转移**：`SessionDispatcher.begin_direct_session_run(session_id)` 完成 admission、持久状态转换、Actor 标记与 lease 管理；`SessionActor.try_mark_direct_run_active()` 只在 Actor mailbox 中设置进程内运行位并重置运行取消 token。Actor 方法不冒用 Dispatcher 的完整 admission 动词（ADR 0876）。
 - **所有待处理 context 由 ReAct 批次出队**：SessionSupervisor 与 SessionActor 均只通过 `drain_react_context()` 读取 follow-up、steering 和带稳定 ID 的 ToolRun result；删除只 drain 单类队列的 façade/Actor 命令，避免绕过优先级、预算和字段完整性（ADR 0877）。入队使用 `add_follow_up`、`add_steering` 与 `enqueue_tool_run_result` 等能辨明来源和对象的动作名。
 - **Skill 配置、可执行状态与清单错误分名**：`SkillInfo.enabled` 与运行时 `Skill.enabled` 一样表示配置 allowlist；`SkillInfo.executable` 表示当前可执行性（启用且存在入口脚本），Agent prompt 与 `execute_skill` 按此门控。`has_script` 是有效清单中的脚本存在事实，`manifest_error` 是清单解析诊断，`unavailable_reason` 解释有效清单为何不可执行。无效清单不填不可用原因，且 UI 不把未知脚本状态伪报为缺少入口脚本（ADR 0878）。
+- **Skill 目录扫描保留完整诊断结果**：生产刷新只调用 `scan_skill_directory`，同时消费已解析目录项与无效清单诊断；不导出只返回 `Vec<Skill>` 并丢弃诊断的 `scan_dir`。仅测试可见的 `scan_parsed_skill_entries` 不属于生产 API（ADR 0879）。
 - **Session 运行态与持久历史分名**：`list_runtime_sessions` / `RuntimeSessionListResponse` 只表示当前进程中驻留且未终结的会话；`list_session_history`、搜索、计数和导出命令表示持久会话历史。跨层的历史查询、结果缓存都带 `session_history` 作用域；全量持久删除叫 `delete_all_sessions`，supervisor 内部运行态清理用 `clear_session_runtime_state_locked`，关闭入口用 `clear_session_runtime_state_for_shutdown`（ADR 0679）。
 - **Session IPC 包装模块按实体命名**：前端 `sessionCommands.ts` 集中封装 Session 的运行态列表、历史读取、恢复、生命周期与标题命令；单个函数仍按操作阶段使用 `listRuntimeSessions`、`listSessionHistory`、`getSessionForResume`、`deleteSession` 等领域动词，不因模块收纳在同一个文件而抹去状态范围（ADR 0679）。
 - **工具清单明确来源**：`list_builtin_tool_manifests` 只返回内置工具的 manifest，不包含 Skill 或 MCP manifest；命令与响应类型分别标出 `builtin_tool_manifests` 和 `BuiltinToolManifestListResponse`。Tools 与 Skills 的 App 命令按 domain 分模块（ADR 0680）。

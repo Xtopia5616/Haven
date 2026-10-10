@@ -423,27 +423,15 @@ pub fn parse_skill_md(
 // Directory scanning
 // ---------------------------------------------------------------------------
 
-/// Scan `<root>/<skill-name>/SKILL.md` for all skills under `root`.
-///
-/// `enabled_skill_allowlist` semantics:
-/// - `None` → all skills are enabled.
-/// - `Some(list)` → only skills whose names are in `list` are enabled (empty
-///   `Some([])` disables everything).
-///
-/// Invalid SKILL.md files produce a `warn!` and are skipped (non-fatal).
-/// Directory names and parsed Skill names that collide case-insensitively are
-/// skipped as a group to avoid Windows path and tool identity ambiguity.
-///
-/// **Safety:** The scan canonicalises both `root` and each entry, plus every
-/// manifest target, to guard against symlink/junction traversal outside the
-/// skills directory. Files larger than `limits.skills_max_md_bytes` are
-/// skipped with a warning.
-pub fn scan_dir(
+/// Project successfully parsed registry entries for scanner unit tests.
+/// Production refresh must consume the complete `scan_skill_directory` result.
+#[cfg(test)]
+fn scan_parsed_skill_entries(
     root: &Path,
     enabled_skill_allowlist: Option<&[String]>,
     limits: &haven_common::config::ContextLimitsConfig,
 ) -> anyhow::Result<Vec<Skill>> {
-    Ok(scan_dir_with_diagnostics(root, enabled_skill_allowlist, limits)?.skills)
+    Ok(scan_skill_directory(root, enabled_skill_allowlist, limits)?.skills)
 }
 
 struct SkillScanResult {
@@ -451,7 +439,7 @@ struct SkillScanResult {
     diagnostics: Vec<SkillInfo>,
 }
 
-fn scan_dir_with_diagnostics(
+fn scan_skill_directory(
     root: &Path,
     enabled_skill_allowlist: Option<&[String]>,
     limits: &haven_common::config::ContextLimitsConfig,
@@ -687,7 +675,7 @@ impl SkillRegistry {
         };
         let effective = Self::resolve_root(root.as_deref());
         let scanned =
-            scan_dir_with_diagnostics(&effective, enabled_skill_allowlist.as_deref(), &limits)?;
+            scan_skill_directory(&effective, enabled_skill_allowlist.as_deref(), &limits)?;
         let mut g = self.inner.write().await;
         g.skills.clear();
         for s in scanned.skills {
@@ -967,11 +955,11 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // scan_dir
+    // Skill directory scanning
     // -----------------------------------------------------------------------
 
     #[test]
-    fn scan_dir_picks_valid_skips_invalid() {
+    fn skill_directory_scan_picks_valid_skips_invalid() {
         let dir = tmp_dir();
         std::fs::create_dir_all(&dir).unwrap();
         write_skill(
@@ -997,7 +985,7 @@ mod tests {
         // not-a-dir SKILL.md-less
         std::fs::create_dir_all(dir.join("no-skill-md")).unwrap();
 
-        let skills = scan_dir(&dir, None, &Default::default()).unwrap();
+        let skills = scan_parsed_skill_entries(&dir, None, &Default::default()).unwrap();
         let names: Vec<&str> = skills.iter().map(|s| s.name()).collect();
         assert_eq!(names, vec!["good-a", "good-b"]);
         assert!(
@@ -1018,7 +1006,7 @@ mod tests {
     }
 
     #[test]
-    fn scan_dir_skips_all_case_insensitive_directory_and_manifest_collisions() {
+    fn skill_directory_scan_skips_all_case_insensitive_directory_and_manifest_collisions() {
         let dir = tmp_dir();
         std::fs::create_dir_all(&dir).unwrap();
         let upper_dir = write_skill(
@@ -1060,7 +1048,7 @@ mod tests {
             false,
         );
 
-        let skills = scan_dir(&dir, None, &Default::default()).unwrap();
+        let skills = scan_parsed_skill_entries(&dir, None, &Default::default()).unwrap();
         let names: Vec<&str> = skills.iter().map(Skill::name).collect();
         assert_eq!(names, ["unique"]);
         let _ = std::fs::remove_dir_all(&dir);
@@ -1110,7 +1098,7 @@ mod tests {
     }
 
     #[test]
-    fn scan_dir_enabled_skill_allowlist() {
+    fn skill_directory_scan_applies_enabled_skill_allowlist() {
         let dir = tmp_dir();
         std::fs::create_dir_all(&dir).unwrap();
         write_skill(
@@ -1125,7 +1113,9 @@ mod tests {
             "# Skill: two\n## Metadata\n- description: t\n## Instructions\ni\n",
             false,
         );
-        let skills = scan_dir(&dir, Some(&["two".to_string()]), &Default::default()).unwrap();
+        let skills =
+            scan_parsed_skill_entries(&dir, Some(&["two".to_string()]), &Default::default())
+                .unwrap();
         let enabled: Vec<bool> = skills.iter().map(|s| s.enabled()).collect();
         assert_eq!(enabled, vec![false, true]);
         let _ = std::fs::remove_dir_all(&dir);
@@ -1165,7 +1155,7 @@ mod tests {
     }
 
     #[test]
-    fn scan_dir_none_all_enabled() {
+    fn skill_directory_scan_without_allowlist_enables_all() {
         let dir = tmp_dir();
         std::fs::create_dir_all(&dir).unwrap();
         write_skill(
@@ -1174,13 +1164,13 @@ mod tests {
             "# Skill: a\n## Metadata\n- description: a\n## Instructions\ni\n",
             false,
         );
-        let skills = scan_dir(&dir, None, &Default::default()).unwrap();
+        let skills = scan_parsed_skill_entries(&dir, None, &Default::default()).unwrap();
         assert!(skills.iter().all(|s| s.enabled()));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
-    fn scan_dir_empty_some_disables_all() {
+    fn skill_directory_scan_empty_allowlist_disables_all() {
         let dir = tmp_dir();
         std::fs::create_dir_all(&dir).unwrap();
         write_skill(
@@ -1189,13 +1179,14 @@ mod tests {
             "# Skill: a\n## Metadata\n- description: a\n## Instructions\ni\n",
             false,
         );
-        let skills = scan_dir(&dir, Some(&[] as &[String]), &Default::default()).unwrap();
+        let skills =
+            scan_parsed_skill_entries(&dir, Some(&[] as &[String]), &Default::default()).unwrap();
         assert!(!skills[0].enabled());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
-    fn scan_dir_skips_oversized_file() {
+    fn skill_directory_scan_skips_oversized_file() {
         let dir = tmp_dir();
         std::fs::create_dir_all(&dir).unwrap();
         write_skill(
@@ -1213,14 +1204,14 @@ mod tests {
         );
         std::fs::write(big.join("SKILL.md"), &big_content).unwrap();
 
-        let skills = scan_dir(&dir, None, &Default::default()).unwrap();
+        let skills = scan_parsed_skill_entries(&dir, None, &Default::default()).unwrap();
         let names: Vec<&str> = skills.iter().map(|s| s.name()).collect();
         assert_eq!(names, vec!["small"], "oversized entry should be skipped");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
-    fn scan_dir_rejects_skill_manifest_symlink_outside_skill_root() {
+    fn skill_directory_scan_rejects_manifest_symlink_outside_skill_root() {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("skills");
         let skill_dir = root.join("external-manifest");
@@ -1238,7 +1229,7 @@ mod tests {
             return;
         }
 
-        let skills = scan_dir(&root, None, &Default::default()).unwrap();
+        let skills = scan_parsed_skill_entries(&root, None, &Default::default()).unwrap();
         assert!(skills.is_empty());
     }
 
@@ -1259,7 +1250,7 @@ mod tests {
             return;
         }
 
-        let skill = scan_dir(&root, None, &Default::default())
+        let skill = scan_parsed_skill_entries(&root, None, &Default::default())
             .unwrap()
             .into_iter()
             .next()
