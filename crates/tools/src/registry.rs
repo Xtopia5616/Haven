@@ -15,14 +15,12 @@ struct RegistrySnapshot {
     name_index: HashMap<String, ToolHandle>,
 }
 
-#[derive(Default)]
-pub struct ToolRegistry {
+#[derive(Default, Clone)]
+pub(crate) struct ToolRegistry {
     snapshot: Arc<RwLock<RegistrySnapshot>>,
-    /// Monotonically incremented on every mutation (register/rebuild).
-    /// Consumers (e.g. SystemPromptBuilder) compare this against a cached
-    /// value to decide whether the schema snapshot is stale, which is more
-    /// robust than comparing tool counts: a rebuild that swaps tools while
-    /// keeping the same count still bumps the version.
+    /// Test instrumentation only; production catalog invalidation uses
+    /// `ToolCatalogVersion` and has no second registry clock.
+    #[cfg(test)]
     version: Arc<AtomicU64>,
 }
 
@@ -30,11 +28,12 @@ pub struct ToolRegistry {
 /// the default provider-facing catalog. Loaders move selected entries into a
 /// session catalog only after the model asks for them.
 #[derive(Clone, Default)]
-pub struct DeferredToolCatalog {
+pub(crate) struct DeferredToolCatalog {
     tools: Arc<RwLock<HashMap<String, ToolHandle>>>,
 }
 
 impl DeferredToolCatalog {
+    #[cfg(test)]
     pub fn new() -> Self {
         Self::default()
     }
@@ -66,24 +65,13 @@ impl DeferredToolCatalog {
     }
 }
 
-impl Clone for ToolRegistry {
-    fn clone(&self) -> Self {
-        Self {
-            snapshot: self.snapshot.clone(),
-            version: self.version.clone(),
-        }
-    }
-}
-
 impl ToolRegistry {
+    #[cfg(test)]
     pub fn new() -> Self {
-        Self {
-            snapshot: Arc::new(RwLock::new(RegistrySnapshot::default())),
-            version: Arc::new(AtomicU64::new(0)),
-        }
+        Self::default()
     }
 
-    /// Current registry version. Bumps on every successful `register`/`rebuild`.
+    #[cfg(test)]
     pub fn version(&self) -> u64 {
         self.version.load(Ordering::SeqCst)
     }
@@ -92,6 +80,7 @@ impl ToolRegistry {
     /// callers that intentionally replace an implementation must use
     /// [`Self::replace`] so an accidental duplicate cannot leave a stale tool
     /// in the ordered list.
+    #[cfg(any(test, feature = "test-support"))]
     pub async fn register(&self, tool: ToolHandle) -> anyhow::Result<()> {
         let name = tool.name();
         let mut snap = self.snapshot.write().await;
@@ -100,6 +89,7 @@ impl ToolRegistry {
         }
         snap.tools.push(tool.clone());
         snap.name_index.insert(name, tool);
+        #[cfg(test)]
         self.version.fetch_add(1, Ordering::SeqCst);
         Ok(())
     }
@@ -142,7 +132,7 @@ impl ToolRegistry {
         let mut snap = self.snapshot.write().await;
         snap.tools = new_tools;
         snap.name_index = index;
-        drop(snap);
+        #[cfg(test)]
         self.version.fetch_add(1, Ordering::SeqCst);
         Ok(())
     }
@@ -162,7 +152,7 @@ impl ToolRegistry {
 /// The overlay owns its registrations and version clock so progressive MCP
 /// loading cannot invalidate unrelated sessions or expand the global registry.
 #[derive(Clone)]
-pub struct SessionToolOverlay {
+pub(crate) struct SessionToolOverlay {
     registrations: Arc<RwLock<HashMap<String, HashMap<String, ToolHandle>>>>,
     versions: Arc<RwLock<HashMap<String, u64>>>,
     global_version: Arc<AtomicU64>,
@@ -179,6 +169,25 @@ pub struct ToolCatalogVersion {
     pub session_overlay_version: u64,
 }
 
+/// Counts used to explain whether a proposed session catalog fits the
+/// provider's per-request tool limit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ToolRegistrationBudget {
+    pub(crate) max: usize,
+    pub(crate) global_count: usize,
+    pub(crate) session_count: usize,
+    pub(crate) net_new: usize,
+}
+
+impl ToolRegistrationBudget {
+    pub(crate) fn exceeds_limit(self) -> bool {
+        self.global_count
+            .saturating_add(self.session_count)
+            .saturating_add(self.net_new)
+            > self.max
+    }
+}
+
 impl Default for SessionToolOverlay {
     fn default() -> Self {
         Self::new()
@@ -192,16 +201,6 @@ impl SessionToolOverlay {
             versions: Arc::new(RwLock::new(HashMap::new())),
             global_version: Arc::new(AtomicU64::new(0)),
         }
-    }
-
-    /// Shared registration handle used by progressive builtin adapters.
-    pub fn registrations(&self) -> Arc<RwLock<HashMap<String, HashMap<String, ToolHandle>>>> {
-        self.registrations.clone()
-    }
-
-    /// Shared session-version handle used by progressive builtin adapters.
-    pub fn versions(&self) -> Arc<RwLock<HashMap<String, u64>>> {
-        self.versions.clone()
     }
 
     /// Monotonic version of the global catalog plus a session's overlay.
@@ -227,6 +226,32 @@ impl SessionToolOverlay {
         self.global_version.fetch_add(1, Ordering::Relaxed);
     }
 
+    /// Preview a proposed registration without exposing the mutable overlay.
+    pub async fn preview_registration_budget(
+        &self,
+        session_id: &str,
+        global_count: usize,
+        max: usize,
+        proposed_names: &[String],
+    ) -> ToolRegistrationBudget {
+        let registrations = self.registrations.read().await;
+        let current = registrations.get(session_id);
+        let session_count = current.map_or(0, HashMap::len);
+        let net_new = proposed_names
+            .iter()
+            .collect::<std::collections::HashSet<_>>()
+            .into_iter()
+            .filter(|name| current.is_none_or(|tools| !tools.contains_key(*name)))
+            .count();
+        ToolRegistrationBudget {
+            max: max.max(1),
+            global_count,
+            session_count,
+            net_new,
+        }
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
     pub async fn register(&self, session_id: &str, tool: ToolHandle) {
         self.registrations
             .write()
@@ -246,15 +271,24 @@ impl SessionToolOverlay {
         global_count: usize,
         max: usize,
         tools: Vec<ToolHandle>,
-    ) -> Result<Vec<String>, usize> {
+    ) -> Result<Vec<String>, ToolRegistrationBudget> {
         let mut registrations = self.registrations.write().await;
         let entry = registrations.entry(session_id.to_string()).or_default();
         let net_new = tools
             .iter()
-            .filter(|tool| !entry.contains_key(&tool.name()))
+            .map(|tool| tool.name())
+            .collect::<std::collections::HashSet<_>>()
+            .into_iter()
+            .filter(|name| !entry.contains_key(name))
             .count();
-        if Self::tool_budget_would_exceed(max, global_count, entry.len(), net_new) {
-            return Err(net_new);
+        let budget = ToolRegistrationBudget {
+            max: max.max(1),
+            global_count,
+            session_count: entry.len(),
+            net_new,
+        };
+        if budget.exceeds_limit() {
+            return Err(budget);
         }
 
         let mut loaded = Vec::with_capacity(net_new);
@@ -308,7 +342,7 @@ impl SessionToolOverlay {
         defs
     }
 
-    pub async fn bump_session_version(&self, session_id: &str) {
+    async fn bump_session_version(&self, session_id: &str) {
         let mut versions = self.versions.write().await;
         let next = versions
             .get(session_id)
@@ -316,23 +350,6 @@ impl SessionToolOverlay {
             .unwrap_or(0)
             .saturating_add(1);
         versions.insert(session_id.to_string(), next);
-    }
-
-    /// Whether adding `net_new` unique session tools would exceed the
-    /// per-request provider ceiling.
-    pub fn tool_budget_would_exceed(
-        max: usize,
-        global_count: usize,
-        session_count: usize,
-        net_new: usize,
-    ) -> bool {
-        if net_new == 0 {
-            return false;
-        }
-        global_count
-            .saturating_add(session_count)
-            .saturating_add(net_new)
-            > max.max(1)
     }
 }
 
@@ -421,7 +438,7 @@ impl ToolCatalogSnapshot {
 /// the registry — the snapshot is mutated in place by `rebuild`, so the weak
 /// handle always observes the current state. `find` returns `None` for
 /// unknown names or when the registry was dropped.
-pub struct RegistryProbe {
+pub(crate) struct RegistryProbe {
     snapshot: std::sync::Weak<RwLock<RegistrySnapshot>>,
 }
 
@@ -443,7 +460,7 @@ impl RegistryProbe {
 /// The installed registry is the host catalog. Deferred operations stay out
 /// of the provider surface until a loader moves them into a session overlay.
 #[derive(Clone, Default)]
-pub struct OperationRegistry {
+pub(crate) struct OperationRegistry {
     pub(crate) installed: ToolRegistry,
     pub(crate) deferred: DeferredToolCatalog,
     pub(crate) session_tool_overlay: SessionToolOverlay,
@@ -454,16 +471,14 @@ impl OperationRegistry {
         Self::default()
     }
 
+    #[cfg(test)]
     pub fn installed(&self) -> &ToolRegistry {
         &self.installed
     }
 
+    #[cfg(test)]
     pub fn deferred(&self) -> &DeferredToolCatalog {
         &self.deferred
-    }
-
-    pub fn session_tool_overlay(&self) -> &SessionToolOverlay {
-        &self.session_tool_overlay
     }
 }
 

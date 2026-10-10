@@ -52,7 +52,8 @@ impl ToolsFacade {
 
     /// Register a tool for a specific session (per-session skill overlay).
     /// Does NOT modify the global registry.
-    pub async fn register_for_session(&self, session_id: &str, tool: ToolHandle) {
+    #[cfg(test)]
+    pub(crate) async fn register_for_session(&self, session_id: &str, tool: ToolHandle) {
         self.coordinator
             .core
             .operations
@@ -235,49 +236,34 @@ impl ToolsFacade {
             .list()
             .await
             .len();
-        let registrations = self
+        let adapters = tools
+            .into_iter()
+            .map(|info| {
+                Arc::new(McpToolAdapter::new(
+                    self.coordinator.builtins.mcp_manager.clone(),
+                    server_name,
+                    info,
+                )) as ToolHandle
+            })
+            .collect();
+        if let Err(budget) = self
             .coordinator
             .core
             .operations
             .session_tool_overlay
-            .registrations();
-        let mut reg = registrations.write().await;
-        let entry = reg.entry(session_id.to_string()).or_default();
-        let session_count = entry.len();
-        let net_new = tools
-            .iter()
-            .filter(|info| {
-                let name = McpToolAdapter::qualified_name_of(server_name, &info.name);
-                !entry.contains_key(&name)
-            })
-            .count();
-        if SessionToolOverlay::tool_budget_would_exceed(max, global_count, session_count, net_new) {
+            .register_many_if_within_budget(session_id, global_count, max, adapters)
+            .await
+        {
             tracing::warn!(
                 session_id,
                 server_name,
-                net_new,
-                max,
-                global_count,
-                session_count,
+                net_new = budget.net_new,
+                max = budget.max,
+                global_count = budget.global_count,
+                session_count = budget.session_count,
                 "register_mcp_for_session: refusing server over max_tools_per_request"
             );
-            return true;
         }
-        for info in tools {
-            let adapter = McpToolAdapter::new(
-                self.coordinator.builtins.mcp_manager.clone(),
-                server_name,
-                info,
-            );
-            entry.insert(adapter.name(), Arc::new(adapter));
-        }
-        drop(reg);
-        self.coordinator
-            .core
-            .operations
-            .session_tool_overlay
-            .bump_session_version(session_id)
-            .await;
         true
     }
 

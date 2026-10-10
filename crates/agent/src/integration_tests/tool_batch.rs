@@ -46,8 +46,9 @@ async fn mixed_confirmation_batch_pauses_only_real_gates_and_resumes_all_tools()
         ("batch_gated", RiskLevel::High, gated_executions.clone()),
     ] {
         tools
-            .registry()
-            .register(Arc::new(ConfirmationBatchCounterTool {
+            .share_services()
+            .tool_catalog_test_support
+            .register_installed_tool(Arc::new(ConfirmationBatchCounterTool {
                 tool_name,
                 risk,
                 executions,
@@ -210,13 +211,15 @@ async fn run_session_parallel_tool_execution() {
     let tools = Arc::new(ToolsFacade::new());
     let timing = Arc::new(TimingState::new());
     tools
-        .registry()
-        .register(Arc::new(TimingTool::new("delay_a", timing.clone())) as ToolHandle)
+        .share_services()
+        .tool_catalog_test_support
+        .register_installed_tool(Arc::new(TimingTool::new("delay_a", timing.clone())) as ToolHandle)
         .await
         .unwrap();
     tools
-        .registry()
-        .register(Arc::new(TimingTool::new("delay_b", timing.clone())) as ToolHandle)
+        .share_services()
+        .tool_catalog_test_support
+        .register_installed_tool(Arc::new(TimingTool::new("delay_b", timing.clone())) as ToolHandle)
         .await
         .unwrap();
     let mock = Arc::new(ScriptedMock::new(vec![
@@ -293,8 +296,9 @@ async fn parallel_tool_result_is_published_before_a_slow_sibling_finishes() {
     let tools = Arc::new(ToolsFacade::new());
     let timing = Arc::new(TimingState::new());
     tools
-        .registry()
-        .register(Arc::new(TimingTool::with_delay(
+        .share_services()
+        .tool_catalog_test_support
+        .register_installed_tool(Arc::new(TimingTool::with_delay(
             "delay_fast",
             timing.clone(),
             std::time::Duration::from_millis(10),
@@ -302,8 +306,9 @@ async fn parallel_tool_result_is_published_before_a_slow_sibling_finishes() {
         .await
         .unwrap();
     tools
-        .registry()
-        .register(Arc::new(TimingTool::with_delay(
+        .share_services()
+        .tool_catalog_test_support
+        .register_installed_tool(Arc::new(TimingTool::with_delay(
             "delay_slow",
             timing,
             std::time::Duration::from_secs(3),
@@ -435,8 +440,9 @@ async fn run_session_contains_custom_extension_panic() {
     let tools = Arc::new(ToolsFacade::new());
     for name in names {
         tools
-            .registry()
-            .register(Arc::new(PanicTool {
+            .share_services()
+            .tool_catalog_test_support
+            .register_installed_tool(Arc::new(PanicTool {
                 tool_name: name.into(),
             }) as ToolHandle)
             .await
@@ -542,8 +548,9 @@ async fn run_session_contains_real_mcp_and_skill_adapter_panics() {
         },
     );
     tools
-        .registry()
-        .register(Arc::new(mcp_adapter) as ToolHandle)
+        .share_services()
+        .tool_catalog_test_support
+        .register_installed_tool(Arc::new(mcp_adapter) as ToolHandle)
         .await
         .unwrap();
 
@@ -576,8 +583,9 @@ async fn run_session_contains_real_mcp_and_skill_adapter_panics() {
     );
     let skill_adapter = haven_tools::SkillToolAdapter::new_panicking_for_test(skill, skill_runner);
     tools
-        .registry()
-        .register(Arc::new(skill_adapter) as ToolHandle)
+        .share_services()
+        .tool_catalog_test_support
+        .register_installed_tool(Arc::new(skill_adapter) as ToolHandle)
         .await
         .unwrap();
 
@@ -683,13 +691,15 @@ async fn run_session_cancelled_mid_batch_surfaces_interrupted_tools() {
     let tools = Arc::new(ToolsFacade::new());
     let timing = Arc::new(TimingState::new());
     tools
-        .registry()
-        .register(Arc::new(TimingTool::new("delay_a", timing.clone())) as ToolHandle)
+        .share_services()
+        .tool_catalog_test_support
+        .register_installed_tool(Arc::new(TimingTool::new("delay_a", timing.clone())) as ToolHandle)
         .await
         .unwrap();
     tools
-        .registry()
-        .register(Arc::new(TimingTool::new("delay_b", timing.clone())) as ToolHandle)
+        .share_services()
+        .tool_catalog_test_support
+        .register_installed_tool(Arc::new(TimingTool::new("delay_b", timing.clone())) as ToolHandle)
         .await
         .unwrap();
     let mock = Arc::new(ScriptedMock::new(vec![ScriptedResponse::Chunk(

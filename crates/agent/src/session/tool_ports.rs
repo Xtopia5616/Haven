@@ -691,7 +691,11 @@ mod tests {
 
     async fn register_overlay_tool(tools: &ToolsFacade, session_id: &str) {
         let tool: ToolHandle = Arc::new(OverlayProbeTool("overlay.probe"));
-        tools.register_for_session(session_id, tool).await;
+        tools
+            .share_services()
+            .tool_catalog_test_support
+            .register_session_tool(session_id, tool)
+            .await;
     }
 
     struct ExecutionContextProbe;
@@ -743,7 +747,9 @@ mod tests {
         let tools = Arc::new(ToolsFacade::new());
         let session_id = "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
         tools
-            .register_for_session(session_id, Arc::new(ExecutionContextProbe))
+            .share_services()
+            .tool_catalog_test_support
+            .register_session_tool(session_id, Arc::new(ExecutionContextProbe))
             .await;
         let adapter = ToolsFacadeToolExecutionAdapter::new(tools);
         let cancel = CancellationToken::new();
@@ -781,7 +787,9 @@ mod tests {
         let tools = Arc::new(ToolsFacade::new());
         let session_id = "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
         tools
-            .register_for_session(session_id, Arc::new(ExecutionContextProbe))
+            .share_services()
+            .tool_catalog_test_support
+            .register_session_tool(session_id, Arc::new(ExecutionContextProbe))
             .await;
         let adapter = ToolsFacadeToolExecutionAdapter::new(tools);
         let cancel = CancellationToken::new();

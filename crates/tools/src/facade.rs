@@ -1,4 +1,6 @@
 use super::*;
+#[cfg(test)]
+use crate::registry::OperationRegistry;
 
 /// Capability for running a validated Skill in its isolated subprocess.
 #[async_trait::async_trait]
@@ -112,6 +114,40 @@ pub trait ToolRunTestSupportPort: Send + Sync {
     async fn delete_terminal(&self, tool_run_id: &str) -> anyhow::Result<bool>;
 }
 
+/// Test-only controls for arranging and inspecting tool catalog fixtures.
+/// Production consumers receive published catalog snapshots instead.
+#[cfg(feature = "test-support")]
+#[async_trait::async_trait]
+pub trait ToolCatalogTestSupportPort: Send + Sync {
+    async fn register_installed_tool(&self, tool: ToolHandle) -> anyhow::Result<()>;
+
+    async fn contains_installed_tool(&self, name: &str) -> bool;
+
+    async fn register_session_tool(&self, session_id: &str, tool: ToolHandle);
+}
+
+#[cfg(feature = "test-support")]
+struct SharedToolCatalogTestSupportPort {
+    installed_registry: crate::registry::ToolRegistry,
+    session_overlay: crate::registry::SessionToolOverlay,
+}
+
+#[cfg(feature = "test-support")]
+#[async_trait::async_trait]
+impl ToolCatalogTestSupportPort for SharedToolCatalogTestSupportPort {
+    async fn register_installed_tool(&self, tool: ToolHandle) -> anyhow::Result<()> {
+        self.installed_registry.register(tool).await
+    }
+
+    async fn contains_installed_tool(&self, name: &str) -> bool {
+        self.installed_registry.get(name).await.is_some()
+    }
+
+    async fn register_session_tool(&self, session_id: &str, tool: ToolHandle) {
+        self.session_overlay.register(session_id, tool).await;
+    }
+}
+
 struct SharedSkillExecutionPort {
     runner: Arc<RwLock<SkillRunner>>,
 }
@@ -158,6 +194,8 @@ pub struct ToolServices {
     pub tool_run_management: Arc<dyn ToolRunManagementCapability>,
     #[cfg(feature = "test-support")]
     pub tool_run_test_support: Arc<dyn ToolRunTestSupportPort>,
+    #[cfg(feature = "test-support")]
+    pub tool_catalog_test_support: Arc<dyn ToolCatalogTestSupportPort>,
     pub live_output: Arc<dyn LiveOutputSinkPort>,
 }
 
@@ -183,6 +221,11 @@ impl ToolServices {
             tool_run_test_support: crate::tool_run_capabilities::test_support_port(Arc::clone(
                 &tool_run_service,
             )),
+            #[cfg(feature = "test-support")]
+            tool_catalog_test_support: Arc::new(SharedToolCatalogTestSupportPort {
+                installed_registry: coordinator.core.operations.installed.clone(),
+                session_overlay: coordinator.core.operations.session_tool_overlay.clone(),
+            }),
             live_output: Arc::new(SharedLiveOutputSinkPort {
                 hub: Arc::clone(&live_outputs),
             }),
@@ -227,13 +270,14 @@ impl ToolsFacade {
         Arc::new(ToolControlHandle(Arc::downgrade(self)))
     }
 
-    /// Core catalog view. These accessors expose domain boundaries without
-    /// exposing `ToolsFacade`'s composition fields.
-    pub fn operations(&self) -> &OperationRegistry {
+    /// Test-only white-box access for assertions owned by the Tools crate.
+    #[cfg(test)]
+    pub(crate) fn operations(&self) -> &OperationRegistry {
         &self.coordinator.core.operations
     }
 
-    pub fn registry(&self) -> &ToolRegistry {
+    #[cfg(test)]
+    pub(crate) fn registry(&self) -> &ToolRegistry {
         self.operations().installed()
     }
 

@@ -138,7 +138,7 @@ pub use builtin::{
 pub use catalog::McpServerIndexEntry;
 pub use circuit::ToolCircuitRegistry;
 #[cfg(feature = "test-support")]
-pub use facade::ToolRunTestSupportPort;
+pub use facade::{ToolCatalogTestSupportPort, ToolRunTestSupportPort};
 pub use facade::{
     ToolRunAgentCapability, ToolRunCompletionCapability, ToolRunManagementCapability,
 };
@@ -156,10 +156,8 @@ pub use output::{
     sanitize_shell_output, summarize_error,
 };
 pub(crate) use process::read_stream_text_capped;
-pub use registry::{
-    DeferredToolCatalog, OperationRegistry, RegistryProbe, SessionToolOverlay, ToolCatalogSnapshot,
-    ToolCatalogVersion, ToolRegistry,
-};
+pub(crate) use registry::ToolRegistry;
+pub use registry::{ToolCatalogSnapshot, ToolCatalogVersion};
 #[cfg(test)]
 pub(crate) use security::AuthorizationEngine;
 pub use security::{

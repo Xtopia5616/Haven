@@ -11,7 +11,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::adapters::McpToolAdapter;
 use crate::registry::SessionToolOverlay;
-use crate::{Tool, ToolRegistry, ToolResult};
+use crate::{Tool, ToolHandle, ToolRegistry, ToolResult};
 use haven_mcp::McpManager;
 
 pub struct LoadMcpTool {
@@ -105,44 +105,33 @@ impl LoadMcpTool {
         if tool_names.is_none() {
             let max = self.max_tools_per_request.max(1);
             let global_count = self.registry.list().await.len();
-            let (session_count, net_new) = {
-                let registrations = self.session_tool_overlay.registrations();
-                let reg = registrations.read().await;
-                let entry = reg.get(&session_id);
-                let session_count = entry.map(|m| m.len()).unwrap_or(0);
-                let net_new = selected_tools
-                    .iter()
-                    .filter(|info| {
-                        let name = McpToolAdapter::qualified_name_of(&server_name, &info.name);
-                        entry.is_none_or(|e| !e.contains_key(&name))
-                    })
-                    .count();
-                (session_count, net_new)
-            };
-            if crate::registry::SessionToolOverlay::tool_budget_would_exceed(
-                max,
-                global_count,
-                session_count,
-                net_new,
-            ) {
-                let current = global_count.saturating_add(session_count);
-                let remaining = max.saturating_sub(current);
+            let proposed_names: Vec<_> = selected_tools
+                .iter()
+                .map(|info| McpToolAdapter::qualified_name_of(&server_name, &info.name))
+                .collect();
+            let budget = self
+                .session_tool_overlay
+                .preview_registration_budget(&session_id, global_count, max, &proposed_names)
+                .await;
+            if budget.exceeds_limit() {
+                let current = budget.global_count.saturating_add(budget.session_count);
+                let remaining = budget.max.saturating_sub(current);
                 return Ok(ToolResult::ok(serde_json::json!({
                     "status": "needs_selection",
                     "server_name": server_name,
                     "reason": format!(
                         "Server exposes {} tools; loading all would exceed the per-request limit of {} (currently {} tools: {} builtin + {} session). Call load_mcp again with tool_names set to at most {} tools you need.",
                         all_tools.len(),
-                        max,
+                        budget.max,
                         current,
-                        global_count,
-                        session_count,
+                        budget.global_count,
+                        budget.session_count,
                         remaining
                     ),
                     "available_tools": catalog_entries(&all_tools),
                     "tool_count": all_tools.len(),
                     "remaining_budget": remaining,
-                    "max_tools_per_request": max,
+                    "max_tools_per_request": budget.max,
                 })));
             }
         } else if selected_tools.is_empty() {
@@ -239,34 +228,9 @@ impl LoadMcpTool {
         manager: McpManager,
         tools: Vec<haven_mcp::McpToolInfo>,
     ) -> anyhow::Result<ActivateOutcome> {
-        let max = self.max_tools_per_request.max(1);
         let global_count = self.registry.list().await.len();
-        let registrations = self.session_tool_overlay.registrations();
-        let mut map = registrations.write().await;
-        let entry = map.entry(session_id.to_string()).or_default();
-        let session_count = entry.len();
-        let net_new = tools
-            .iter()
-            .filter(|info| {
-                let name = McpToolAdapter::qualified_name_of(server_name, &info.name);
-                !entry.contains_key(&name)
-            })
-            .count();
-        if crate::registry::SessionToolOverlay::tool_budget_would_exceed(
-            max,
-            global_count,
-            session_count,
-            net_new,
-        ) {
-            return Ok(ActivateOutcome::BudgetExceeded {
-                net_new,
-                max,
-                global_count,
-                session_count,
-            });
-        }
-
         let mut tool_schemas = Vec::with_capacity(tools.len());
+        let mut adapters = Vec::with_capacity(tools.len());
         for info in tools {
             let tool_name = info.name.clone();
             let description = crate::adapters::sanitize_external_description(&info.description);
@@ -278,13 +242,26 @@ impl LoadMcpTool {
                 "name": tool_name,
                 "description": description,
             }));
-            entry.insert(adapter.name(), Arc::new(adapter));
+            adapters.push(Arc::new(adapter) as ToolHandle);
         }
-        drop(map);
-        self.session_tool_overlay
-            .bump_session_version(session_id)
-            .await;
-        Ok(ActivateOutcome::Loaded(tool_schemas))
+        match self
+            .session_tool_overlay
+            .register_many_if_within_budget(
+                session_id,
+                global_count,
+                self.max_tools_per_request,
+                adapters,
+            )
+            .await
+        {
+            Ok(_) => Ok(ActivateOutcome::Loaded(tool_schemas)),
+            Err(budget) => Ok(ActivateOutcome::BudgetExceeded {
+                net_new: budget.net_new,
+                max: budget.max,
+                global_count: budget.global_count,
+                session_count: budget.session_count,
+            }),
+        }
     }
 }
 
@@ -603,56 +580,67 @@ mod tests {
 
     #[tokio::test]
     async fn test_activate_refuses_oversized_add() {
-        let registry = ToolRegistry::new();
         let session_tool_overlay = SessionToolOverlay::new();
-        let registrations = session_tool_overlay.registrations();
-        {
-            let mut map = registrations.write().await;
-            let entry = map.entry("ses-x".into()).or_default();
-            for i in 0..5 {
-                entry.insert(
-                    format!("pad_{i}"),
-                    Arc::new(crate::builtin::notify::NotifyTool) as ToolHandle,
-                );
-            }
-        }
-        let tool = LoadMcpTool {
-            mcp_manager: Arc::new(McpManager::new()),
-            server_configs: Arc::new(RwLock::new(HashMap::new())),
-            registry,
-            session_tool_overlay: session_tool_overlay.clone(),
-            max_tools_per_request: 6,
-        };
-        assert!(crate::registry::SessionToolOverlay::tool_budget_would_exceed(6, 0, 5, 3));
-        assert!(!crate::registry::SessionToolOverlay::tool_budget_would_exceed(6, 0, 5, 0));
-        let _ = tool;
-        let map = registrations.read().await;
-        assert_eq!(map.get("ses-x").map(|m| m.len()), Some(5));
+        let padding_tools = (0..5)
+            .map(|index| {
+                Arc::new(crate::tool_contract::tests::MockTool::new(&format!(
+                    "pad_{index}"
+                ))) as ToolHandle
+            })
+            .collect();
+        session_tool_overlay
+            .register_many_if_within_budget("ses-x", 0, 6, padding_tools)
+            .await
+            .unwrap();
+
+        let proposed_names = vec!["new_a".into(), "new_b".into(), "new_c".into()];
+        let budget = session_tool_overlay
+            .preview_registration_budget("ses-x", 0, 6, &proposed_names)
+            .await;
+        assert!(budget.exceeds_limit());
+        assert_eq!(budget.session_count, 5);
+        assert_eq!(budget.net_new, 3);
+
+        let attempt = session_tool_overlay
+            .register_many_if_within_budget(
+                "ses-x",
+                0,
+                6,
+                proposed_names
+                    .iter()
+                    .map(|name| {
+                        Arc::new(crate::tool_contract::tests::MockTool::new(name)) as ToolHandle
+                    })
+                    .collect(),
+            )
+            .await;
+        assert_eq!(attempt.unwrap_err(), budget);
+        assert_eq!(session_tool_overlay.list("ses-x").await.len(), 5);
     }
 
     #[tokio::test]
-    async fn test_activate_server_tools_registers_under_budget() {
+    async fn session_overlay_registration_owns_version_updates() {
         let session_tool_overlay = SessionToolOverlay::new();
-        let registrations = session_tool_overlay.registrations();
-        let tool = LoadMcpTool {
-            mcp_manager: Arc::new(McpManager::new()),
-            server_configs: Arc::new(RwLock::new(HashMap::new())),
-            registry: ToolRegistry::new(),
-            session_tool_overlay: session_tool_overlay.clone(),
-            max_tools_per_request: 10,
-        };
-        let name = McpToolAdapter::qualified_name_of("srv", "only");
-        {
-            let mut map = registrations.write().await;
-            map.entry("ses-x".into()).or_default().insert(
-                name.clone(),
-                Arc::new(crate::builtin::notify::NotifyTool) as ToolHandle,
-            );
-        }
-        assert!(!crate::registry::SessionToolOverlay::tool_budget_would_exceed(1, 0, 1, 0));
-        assert!(session_tool_overlay.versions().read().await.is_empty());
-        let _ = tool;
-        let _ = name;
+        let before = session_tool_overlay
+            .catalog_version_for_session("ses-x")
+            .await
+            .session_overlay_version;
+        let registered = session_tool_overlay
+            .register_many_if_within_budget(
+                "ses-x",
+                0,
+                10,
+                vec![Arc::new(crate::builtin::notify::NotifyTool) as ToolHandle],
+            )
+            .await
+            .unwrap();
+        let after = session_tool_overlay
+            .catalog_version_for_session("ses-x")
+            .await
+            .session_overlay_version;
+
+        assert_eq!(registered, vec!["notify"]);
+        assert_eq!(after, before + 1);
     }
 
     #[test]

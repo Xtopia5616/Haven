@@ -94,18 +94,15 @@ impl LoadSkillTool {
                 }
                 Ok(ToolResult::ok(output))
             }
-            Err(net_new) => {
-                let session_count = self
-                    .session_tool_overlay
-                    .list_tool_definitions(&session_id)
-                    .await
-                    .len();
-                let remaining = max.saturating_sub(global_count.saturating_add(session_count));
+            Err(budget) => {
+                let remaining = budget
+                    .max
+                    .saturating_sub(budget.global_count.saturating_add(budget.session_count));
                 Ok(ToolResult::ok(serde_json::json!({
                     "status": "needs_selection",
                     "reason": format!(
                         "Loading these {} Skills would exceed the per-request limit of {}. Choose at most {} Skill(s).",
-                        net_new, max, remaining
+                        budget.net_new, budget.max, remaining
                     ),
                     "available_skills": selected
                         .iter()
@@ -117,7 +114,7 @@ impl LoadSkillTool {
                         })
                         .collect::<Vec<_>>(),
                     "remaining_budget": remaining,
-                    "max_tools_per_request": max,
+                    "max_tools_per_request": budget.max,
                 })))
             }
         }

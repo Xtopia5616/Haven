@@ -1032,8 +1032,9 @@ async fn run_session_from_id_trims_dangling_tool_call_before_resume() {
     // which would reject it with a 400 error.
     let tools = Arc::new(ToolsFacade::new());
     tools
-        .registry()
-        .register(Arc::new(EchoTool) as ToolHandle)
+        .share_services()
+        .tool_catalog_test_support
+        .register_installed_tool(Arc::new(EchoTool) as ToolHandle)
         .await
         .unwrap();
     let mock = Arc::new(ScriptedMock::new(vec![ScriptedResponse::Chunk(

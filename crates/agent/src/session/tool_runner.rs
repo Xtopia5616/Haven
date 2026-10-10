@@ -2019,7 +2019,9 @@ mod scheduled_authorization_tests {
         let tool_name = "scheduled.critical";
         let input = json!({"target": "recording"});
         tools
-            .register_for_session(
+            .share_services()
+            .tool_catalog_test_support
+            .register_session_tool(
                 session_id,
                 Arc::new(PolicyTestTool {
                     name: tool_name.into(),
@@ -2054,7 +2056,9 @@ mod scheduled_authorization_tests {
 
         let safe_tool_name = "scheduled.safe";
         tools
-            .register_for_session(
+            .share_services()
+            .tool_catalog_test_support
+            .register_session_tool(
                 session_id,
                 Arc::new(PolicyTestTool {
                     name: safe_tool_name.into(),
@@ -2104,7 +2108,9 @@ mod scheduled_authorization_tests {
         )
         .unwrap();
         tools
-            .register_for_session(
+            .share_services()
+            .tool_catalog_test_support
+            .register_session_tool(
                 &session_id,
                 Arc::new(PolicyTestTool {
                     name: tool_name.into(),
@@ -2313,7 +2319,9 @@ mod scheduled_authorization_tests {
         let tool_name = "files.write";
         let input = json!({"path": "notes.txt"});
         tools
-            .register_for_session(
+            .share_services()
+            .tool_catalog_test_support
+            .register_session_tool(
                 &session.id,
                 Arc::new(PolicyTestTool {
                     name: tool_name.into(),
@@ -2541,7 +2549,9 @@ mod scheduled_authorization_tests {
         let tool_executed = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let executed = Arc::clone(&tool_executed);
         tools
-            .register_for_session(
+            .share_services()
+            .tool_catalog_test_support
+            .register_session_tool(
                 &session.id,
                 Arc::new(PolicyTestTool {
                     name: tool_name.into(),

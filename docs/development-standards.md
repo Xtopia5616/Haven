@@ -32,6 +32,7 @@
 - `haven-agent` 只编排会话与 ReAct；`haven-tools` 只定义和执行能力；`haven-app-binary` 只装配和适配 Tauri。
 - 新增依赖前必须说明为什么不能通过已有下层接口解决；不得引入反向依赖、循环依赖或“临时”跨层调用。
 - 每个领域 crate 应有明确的跨 crate facade/port；存储、transport、provider 等具体实现和实现模块默认保持私有，业务调用方不能绕开领域 facade 直接操作实现。只有组合根负责选择并装配具体实现；确有跨 crate 注入需求的抽象 port 必须表达领域职责。测试专用构造器、实现替身与注入入口放在非默认 `test-support` feature，不进入普通生产 API。审查时逐项核对 `pub mod`、`pub use`、公开构造器及返回具体实现的 getter。
+- **消费方按能力调用 owner，不拉取 owner 的实现对象。** 禁止通过 `registry()`、`service()`、`manager()` 等宽泛 getter 将可变注册表、状态机或具体 service 交给调用方，再由调用方自由选择操作。跨 crate 接口应由 owner 提供有名的领域操作，或按消费者权限拆分窄 capability port；只读跨边界数据使用明确的 snapshot/DTO。领域 owner 本身是稳定领域 API（如 McpManager、SkillRegistry）时可保留 owner handle，但必须保证它不能暴露内部实现入口。测试确需调整内部状态时使用限于 `test-support` 的测试端口，生产构建不得带入该能力。
 - 任一文件达到约 800 行，或同时拥有超过两个独立职责时，必须在同一任务中说明保留理由或拆分计划。800 行是职责复核触发器，不是拆分目标；审查时区分生产逻辑与同文件测试。拆分必须由稳定 owner/接口支撑，crate 拆分还须证明存在独立依赖边界和实际消费者收益。
 
 ## 4. 数据、配置与兼容性

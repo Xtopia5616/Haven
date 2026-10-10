@@ -5,8 +5,9 @@ use super::*;
 async fn invalid_tool_inputs_are_reported_without_repairing_arguments() {
     let tools = Arc::new(ToolsFacade::new());
     tools
-        .registry()
-        .register(Arc::new(ActionRequiredTool) as ToolHandle)
+        .share_services()
+        .tool_catalog_test_support
+        .register_installed_tool(Arc::new(ActionRequiredTool) as ToolHandle)
         .await
         .unwrap();
     let client = Arc::new(FinalAnswerMock) as Arc<dyn LlmClient>;
@@ -35,8 +36,9 @@ async fn invalid_tool_inputs_are_reported_without_repairing_arguments() {
 async fn valid_tool_inputs_and_final_tool_calls_have_no_validation_failures() {
     let tools = Arc::new(ToolsFacade::new());
     tools
-        .registry()
-        .register(Arc::new(ActionRequiredTool) as ToolHandle)
+        .share_services()
+        .tool_catalog_test_support
+        .register_installed_tool(Arc::new(ActionRequiredTool) as ToolHandle)
         .await
         .unwrap();
     let client = Arc::new(FinalAnswerMock) as Arc<dyn LlmClient>;
@@ -77,8 +79,9 @@ async fn null_tool_input_is_reported_without_repairing_arguments() {
     // malformed input instead of shipping a guessed object to the tool.
     let tools = Arc::new(ToolsFacade::new());
     tools
-        .registry()
-        .register(Arc::new(ActionRequiredTool) as ToolHandle)
+        .share_services()
+        .tool_catalog_test_support
+        .register_installed_tool(Arc::new(ActionRequiredTool) as ToolHandle)
         .await
         .unwrap();
     let client = Arc::new(FinalAnswerMock) as Arc<dyn LlmClient>;
@@ -106,8 +109,9 @@ async fn null_valued_tool_fields_are_reported_without_repairing_arguments() {
     // missing one: the validator rejects null for typed fields.
     let tools = Arc::new(ToolsFacade::new());
     tools
-        .registry()
-        .register(Arc::new(ActionRequiredTool) as ToolHandle)
+        .share_services()
+        .tool_catalog_test_support
+        .register_installed_tool(Arc::new(ActionRequiredTool) as ToolHandle)
         .await
         .unwrap();
     let client = Arc::new(FinalAnswerMock) as Arc<dyn LlmClient>;
@@ -135,8 +139,9 @@ async fn null_valued_tool_fields_are_reported_without_repairing_arguments() {
 async fn missing_enum_field_is_reported_without_guessing_a_value() {
     let tools = Arc::new(ToolsFacade::new());
     tools
-        .registry()
-        .register(Arc::new(EnumRequiredTool) as ToolHandle)
+        .share_services()
+        .tool_catalog_test_support
+        .register_installed_tool(Arc::new(EnumRequiredTool) as ToolHandle)
         .await
         .unwrap();
     let client = Arc::new(FinalAnswerMock) as Arc<dyn LlmClient>;
@@ -168,8 +173,9 @@ async fn invalid_enum_value_is_reported_without_repairing_arguments() {
     // discriminator.
     let tools = Arc::new(ToolsFacade::new());
     tools
-        .registry()
-        .register(Arc::new(ActionRequiredTool) as ToolHandle)
+        .share_services()
+        .tool_catalog_test_support
+        .register_installed_tool(Arc::new(ActionRequiredTool) as ToolHandle)
         .await
         .unwrap();
     let client = Arc::new(FinalAnswerMock) as Arc<dyn LlmClient>;
@@ -199,8 +205,9 @@ async fn wrong_type_tool_value_is_reported_without_repairing_arguments() {
     // (e.g. a number where the schema declares a string enum).
     let tools = Arc::new(ToolsFacade::new());
     tools
-        .registry()
-        .register(Arc::new(ActionRequiredTool) as ToolHandle)
+        .share_services()
+        .tool_catalog_test_support
+        .register_installed_tool(Arc::new(ActionRequiredTool) as ToolHandle)
         .await
         .unwrap();
     let client = Arc::new(FinalAnswerMock) as Arc<dyn LlmClient>;
@@ -230,8 +237,9 @@ async fn valid_enum_values_have_no_validation_failures() {
     // must NOT be repaired.
     let tools = Arc::new(ToolsFacade::new());
     tools
-        .registry()
-        .register(Arc::new(ActionRequiredTool) as ToolHandle)
+        .share_services()
+        .tool_catalog_test_support
+        .register_installed_tool(Arc::new(ActionRequiredTool) as ToolHandle)
         .await
         .unwrap();
     let client = Arc::new(FinalAnswerMock) as Arc<dyn LlmClient>;
@@ -259,8 +267,9 @@ async fn invalid_optional_field_is_reported_without_repairing_arguments() {
     // whole), so it is reported too.
     let tools = Arc::new(ToolsFacade::new());
     tools
-        .registry()
-        .register(Arc::new(EnumWithOptionalTool) as ToolHandle)
+        .share_services()
+        .tool_catalog_test_support
+        .register_installed_tool(Arc::new(EnumWithOptionalTool) as ToolHandle)
         .await
         .unwrap();
     let client = Arc::new(FinalAnswerMock) as Arc<dyn LlmClient>;

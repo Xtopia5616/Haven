@@ -589,7 +589,11 @@ mod tests {
         let tools = Arc::new(ToolsFacade::new());
         let session_id = "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
         let tool: ToolHandle = Arc::new(ExecutionContextProbe);
-        tools.register_for_session(session_id, tool).await;
+        tools
+            .share_services()
+            .tool_catalog_test_support
+            .register_session_tool(session_id, tool)
+            .await;
         let ports = agent_tool_ports_from_facade(Arc::clone(&tools));
         let supervisor = SessionSupervisor::new(
             SessionStore::new(Arc::new(Database::open_in_memory().unwrap())),
@@ -632,7 +636,11 @@ mod tests {
         let tools = Arc::new(ToolsFacade::new());
         let session_id = "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
         let tool: ToolHandle = Arc::new(ExecutionContextProbe);
-        tools.register_for_session(session_id, tool).await;
+        tools
+            .share_services()
+            .tool_catalog_test_support
+            .register_session_tool(session_id, tool)
+            .await;
         let ports = agent_tool_ports_from_facade(tools);
         let supervisor = SessionSupervisor::new(
             SessionStore::new(Arc::new(Database::open_in_memory().unwrap())),
@@ -663,14 +671,25 @@ mod tests {
     #[tokio::test]
     async fn prompt_adapter_uses_only_the_published_builtin_catalog() {
         let tools = Arc::new(ToolsFacade::new());
+        let catalog_version_before_registration = tools.catalog_version();
         let tool: ToolHandle = Arc::new(ExecutionContextProbe);
-        tools.registry().register(tool).await.unwrap();
+        tools
+            .share_services()
+            .tool_catalog_test_support
+            .register_installed_tool(tool)
+            .await
+            .unwrap();
         assert!(
             tools
-                .registry()
-                .get("execution.context_probe")
+                .share_services()
+                .tool_catalog_test_support
+                .contains_installed_tool("execution.context_probe")
                 .await
-                .is_some()
+        );
+        assert_eq!(
+            tools.catalog_version(),
+            catalog_version_before_registration,
+            "test registry entries do not publish a provider catalog generation"
         );
         let services = tools.share_services();
         let adapter = ToolsFacadeAgentAdapter {
@@ -692,10 +711,6 @@ mod tests {
             adapter.catalog_versions().global_catalog_version,
             tools.catalog_version()
         );
-        assert_ne!(
-            adapter.catalog_versions().global_catalog_version,
-            tools.registry().version()
-        );
     }
 
     #[tokio::test]
@@ -709,7 +724,11 @@ mod tests {
         };
         let session_id = "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
         let tool: ToolHandle = Arc::new(ExecutionContextProbe);
-        tools.register_for_session(session_id, tool).await;
+        tools
+            .share_services()
+            .tool_catalog_test_support
+            .register_session_tool(session_id, tool)
+            .await;
 
         let snapshot = adapter.catalog_snapshot(session_id).await;
         assert!(snapshot.get("execution.context_probe").is_some());
