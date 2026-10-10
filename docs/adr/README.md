@@ -854,3 +854,4 @@
 - [0873：明确命名应用运行时临时根](0873-name-runtime-temp-root-explicitly.md)
 - [0874：按 root 角色命名生成媒体路径](0874-name-generated-media-root-by-role.md)
 - [0875：区分通用与 Chat 手动重试准备](0875-name-chat-scoped-manual-retry.md)
+- [0876：区分 Session admission 与 Actor 运行态标记](0876-name-actor-run-state-transition.md)

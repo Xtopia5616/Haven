@@ -625,7 +625,7 @@ impl SessionSupervisor {
                 unreachable!("terminal direct-run status was rejected before creating its lease")
             }
         }
-        if actor.begin_direct_session_run().await {
+        if actor.try_mark_direct_run_active().await {
             Some(lease)
         } else {
             None

@@ -189,7 +189,7 @@ pub(crate) enum ActorCommand {
     ClaimSessionRun {
         reply: oneshot::Sender<anyhow::Result<SessionRunClaim>>,
     },
-    BeginDirectSessionRun {
+    TryMarkDirectRunActive {
         reply: oneshot::Sender<bool>,
     },
     FinishRun {
@@ -421,10 +421,10 @@ impl SessionActorHandle {
             .map_err(|_| anyhow::anyhow!("session actor '{}' dropped run claim", self.id))?
     }
 
-    pub(crate) async fn begin_direct_session_run(&self) -> bool {
+    pub(crate) async fn try_mark_direct_run_active(&self) -> bool {
         let (reply, rx) = oneshot::channel();
         if self
-            .send(ActorCommand::BeginDirectSessionRun { reply })
+            .send(ActorCommand::TryMarkDirectRunActive { reply })
             .await
             .is_err()
         {
@@ -1322,7 +1322,7 @@ pub(crate) fn spawn(
                     }
                     let _ = reply.send(result);
                 }
-                ActorCommand::BeginDirectSessionRun { reply } => {
+                ActorCommand::TryMarkDirectRunActive { reply } => {
                     let accepted = !state.running && !state.info.status.is_terminal();
                     if accepted {
                         current_run_cancellation = actor_lifetime.child_token();
@@ -2239,7 +2239,7 @@ mod queue_tests {
         let store = SessionStore::new(db);
         let info = empty_state().info;
         let actor = spawn(store, info, Vec::new());
-        assert!(actor.begin_direct_session_run().await);
+        assert!(actor.try_mark_direct_run_active().await);
 
         let (started_tx, mut started_rx) = watch::channel(false);
         let cancellation = actor.run_cancellation_token();
@@ -2301,7 +2301,7 @@ mod queue_tests {
                 .expect("temporary database"),
         );
         let actor = spawn(SessionStore::new(db), empty_state().info, Vec::new());
-        assert!(actor.begin_direct_session_run().await);
+        assert!(actor.try_mark_direct_run_active().await);
 
         for index in 0..ACTOR_MAILBOX_CAPACITY {
             actor
@@ -2399,7 +2399,7 @@ mod queue_tests {
         );
         let actor = spawn(SessionStore::new(db), empty_state().info, Vec::new());
         let mut run_state = actor.run_state();
-        assert!(actor.begin_direct_session_run().await);
+        assert!(actor.try_mark_direct_run_active().await);
         assert!(*run_state.borrow());
 
         for index in 0..ACTOR_MAILBOX_CAPACITY {
@@ -2575,7 +2575,7 @@ mod queue_tests {
             }
         };
 
-        assert!(actor.begin_direct_session_run().await);
+        assert!(actor.try_mark_direct_run_active().await);
         let first = run_loop(1).await.expect("first ReAct loop");
         assert_eq!(
             first.exit,
@@ -2597,7 +2597,7 @@ mod queue_tests {
         );
 
         actor.finish_run().await.expect("finish first run");
-        assert!(actor.begin_direct_session_run().await);
+        assert!(actor.try_mark_direct_run_active().await);
         let second = run_loop(2).await.expect("next ReAct loop");
         assert_eq!(
             second.exit,

@@ -1208,7 +1208,7 @@ mod tests {
         exec.update_session_status(&session.id, SessionStatus::Running)
             .await
             .unwrap();
-        assert!(actor.begin_direct_session_run().await);
+        assert!(actor.try_mark_direct_run_active().await);
 
         // ReAct marks the failed run terminal before the dispatcher clears
         // the actor's running bit. A Continue can commit after that bit clears

@@ -163,6 +163,8 @@ Rust/Common 名称审查发现 `default_work_dir()` 实际表示应用共享运�
 
 Rust 调用图发现 `LlmRouter::prepare_manual_retry(RequestKind)` 可处理任意请求路线，而 `ReactEngine` 的同名方法固定为 Chat 并只用于 Continue；Agent wrapper 已改名 `prepare_manual_chat_retry`，路由熔断状态与重置策略仍只由 LLM 持有（ADR 0875）。
 
+同一调用图中 `SessionDispatcher::begin_direct_session_run` 负责 admission、持久状态转移与 lease 生命周期，`SessionActor` 同名方法只设置 actor 内的运行位及取消 token；已将底层操作改名 `try_mark_direct_run_active`，保留各自状态 owner，不把 Dispatcher 编排下沉至 Actor（ADR 0876）。
+
 #### 当前审计覆盖与剩余范围
 
 | 范围                                                      | 已核对的当前基线                                                                                                                                                                                                                                                                 | 尚待核对                                                                                                                                                            |
