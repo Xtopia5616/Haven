@@ -4,7 +4,7 @@ use crate::app_state::AppState;
 use crate::desktop::{self, RecordingStartContext, RecordingStopContext, TrayStatus};
 use crate::events;
 use crate::events::*;
-use crate::logging::sanitize_error_text;
+use haven_common::error::sanitize_error_text;
 use haven_common::types::RecordingId;
 use std::sync::Arc;
 use tauri::{Emitter, Manager};

@@ -196,6 +196,7 @@ CI 以 `scripts/check-crate-dependencies.ps1` 对此表执行内部 crate 依赖
   `media_detection` 为唯一权威实现。
 - `prompts.rs`：系统提示词与各专用 prompt 常量（含 `STT_SYSTEM_PROMPT`）。
 - `retry.rs`：纯恢复策略模型。调用方提供错误分类、尝试次数和当前单调时钟，获得继续/停止决策与退避时间；不执行 sleep、取消、队列、持久化或任务生命周期。
+- `error.rs`：跨边界错误文本的控制字符/空白归一、敏感字段与路径脱敏、长度限制；App `logging.rs` 组合 `log_err` 与 tracing 上下文但直接复用该 sanitizer（ADR 0867）。
 - `encoding.rs` / `text.rs`：编码解码（UTF-8 → GBK 回退）、XML entity unescape 与文本工具；CLIXML 消息和 Task Scheduler XML 共用 `xml_unescape`（ADR 0864）。
 - `json.rs`：递归对象键 canonicalization 与 `canonical_json_bytes`，保留数组顺序；Tools 确认 hash 和 LLM schema/cache identity 共用此编码（ADR 0862）。
 - `path.rs`：Windows case-insensitive 与其它平台组件语义下的纯 path equality/ancestor predicates；不解析链接、不 canonicalize 或制定根目录策略（ADR 0863）。

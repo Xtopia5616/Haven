@@ -450,13 +450,13 @@ async fn execute_settings_apply_phase(
                             if pressed && let Some(window) = app_h.get_webview_window("main") {
                                 if let Err(error) = window.show() {
                                     tracing::debug!(
-                                        error = %crate::logging::sanitize_error_text(&error.to_string()),
+                                        error = %haven_common::error::sanitize_error_text(&error.to_string()),
                                         "failed to show main window for global hotkey"
                                     );
                                 }
                                 if let Err(error) = window.set_focus() {
                                     tracing::debug!(
-                                        error = %crate::logging::sanitize_error_text(&error.to_string()),
+                                        error = %haven_common::error::sanitize_error_text(&error.to_string()),
                                         "failed to focus main window for global hotkey"
                                     );
                                 }

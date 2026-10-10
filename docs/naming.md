@@ -178,6 +178,8 @@ Tools builtin 的多个名称列表使用 `ordered_unique_non_empty_names` 保�
 
 事实谓词的 trim、小写和 alias 映射由 `haven-memory::repositories::facts::normalize_predicate` 独占；Agent extraction、predicate merge maintenance 和 Memory 写入直接复用它。Agent 的 `fact_extraction` 只拥有 LLM fact shape、字段 coercion/sanitization 与数组提取，不声明转发式 predicate normalizer（ADR 0866）。
 
+跨 crate 错误文本清洗只调用 `haven_common::error::sanitize_error_text`。App `logging.rs` 拥有 `log_err` 和 tracing 上下文，不再重导出清洗函数；通知、事件、命令与日志调用方直接引用 Common（ADR 0867）。
+
 Tools 对结构化输出中 Ask 与通知 side-channel 的解析结果分别使用 `AskSignal` 和 `NotificationSignal`；前者保留可选 question 与选项列表，后者以 `Option<NotificationSignal>` 表示是否请求通知。汇总传递给 Agent 的 `ToolSignals` 形状继续由其独立的 side-channel 契约拥有。
 
 跨端枚举的允许值以 generated IPC contract 为单一来源；UI 可以为这些值维护展示标签，但选项数组应从生成值派生，并让边界/事件 contract 直接引用生成类型，不另手写相同 union。

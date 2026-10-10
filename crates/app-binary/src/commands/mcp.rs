@@ -1,8 +1,8 @@
 use crate::app_state::AppState;
 use crate::commands::log_err;
 use crate::events::{MCP_STATUS_CHANGED_EVENT, McpStatusChangedEvent};
-use crate::logging::sanitize_error_text;
 use haven_common::McpServerConfig;
+use haven_common::error::sanitize_error_text;
 use haven_tools::{McpClientStatus, McpServerSnapshot};
 use std::collections::HashMap;
 use std::sync::Arc;

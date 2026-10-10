@@ -78,7 +78,7 @@ pub fn read_log_tail(
 /// persistent log verbatim.
 #[tauri::command]
 pub fn log_frontend_error(message: String) -> Result<(), String> {
-    let safe = crate::logging::sanitize_error_text(&message);
+    let safe = haven_common::error::sanitize_error_text(&message);
     tracing::error!(
         source = "frontend_notification",
         "frontend error notification: {}",

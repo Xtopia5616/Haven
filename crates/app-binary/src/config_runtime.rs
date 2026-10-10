@@ -496,7 +496,7 @@ impl SettingsRuntimeApplyObservation {
         error: &dyn std::fmt::Display,
         failure_kind: Option<SettingsRuntimeApplyFailureKind>,
     ) {
-        let safe_error = crate::logging::sanitize_error_text(&error.to_string());
+        let safe_error = haven_common::error::sanitize_error_text(&error.to_string());
         if let Some(failure_kind) = failure_kind {
             tracing::error!(
                 command,

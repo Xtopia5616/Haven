@@ -3,6 +3,7 @@
 //! See `docs/conventions.md` §1.
 
 use haven_common::config::LogConfig;
+use haven_common::error::sanitize_error_text;
 use std::sync::Arc;
 use tracing_subscriber::Registry;
 use tracing_subscriber::filter::EnvFilter;
@@ -76,14 +77,6 @@ pub(crate) fn init_tracing(
 
     let log_config = Arc::new(std::sync::Mutex::new(log_cfg.clone()));
     (handles, log_config)
-}
-
-/// Convert an error into a bounded, single-line message safe for a UI/event
-/// boundary. This is deliberately conservative because many callers pass
-/// `anyhow`, `reqwest`, or provider errors whose Display implementation may
-/// include URLs, local paths, credentials, or an entire response body.
-pub(crate) fn sanitize_error_text(raw: &str) -> String {
-    haven_common::error::sanitize_error_text(raw)
 }
 
 /// Convert any displayable error into a frontend-facing string while logging
@@ -160,24 +153,5 @@ mod tests {
     fn log_err_preserves_safe_message() {
         let msg = log_err("demo_cmd", "boom");
         assert_eq!(msg, "boom");
-    }
-
-    #[test]
-    fn sanitize_error_text_delegates_to_common() {
-        let value = sanitize_error_text(
-            "request failed https://example.test/?api_key=sk-secret&client_secret=topsecret at C:\\Users\\olive\\haven.db",
-        );
-        assert!(!value.contains("sk-secret"));
-        assert!(!value.contains("topsecret"));
-        assert!(!value.contains("C:\\Users"));
-        assert!(value.contains("[REDACTED]"));
-        assert!(value.contains("[PATH]"));
-    }
-
-    #[test]
-    fn sanitize_error_text_keeps_utf8_boundaries() {
-        let value = sanitize_error_text(&"错误".repeat(200));
-        assert!(value.chars().count() <= 240);
-        assert!(value.ends_with('…'));
     }
 }

@@ -5,8 +5,8 @@ use crate::events::{
     INTERACTION_REQUESTED_EVENT, InteractionRequestedEvent, NOTIFICATION_SHOW_EVENT,
     SESSION_LIFECYCLE_EVENT, SessionLifecycleEvent,
 };
-use crate::logging::sanitize_error_text;
 use haven_agent::InteractionStatus;
+use haven_common::error::sanitize_error_text;
 use haven_memory::repositories::messages::Message;
 use haven_memory::repositories::session_steps::SessionStep;
 use haven_memory::repositories::sessions::{Session, SessionOrigin};

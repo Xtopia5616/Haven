@@ -26,7 +26,7 @@ pub mod tools;
 
 use crate::app_state::{AppState, UiConfirmationAction, UiConfirmationPending};
 use crate::events::{INTERACTION_REQUESTED_EVENT, LLM_CONFIG_CHANGED_EVENT};
-use crate::logging::sanitize_error_text;
+use haven_common::error::sanitize_error_text;
 use serde::Serialize;
 use std::future::Future;
 use tauri::AppHandle;

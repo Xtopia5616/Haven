@@ -6,11 +6,11 @@
 //! See `docs/conventions.md` §2.
 
 use crate::app_state::AppState;
-use crate::logging::sanitize_error_text;
 use haven_agent::{
     AgentEvent, InteractionKind, InteractionOwner, InteractionRequest, InteractionStatus,
 };
 use haven_common::config::NotificationConfig;
+use haven_common::error::sanitize_error_text;
 use haven_memory::SessionStore;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, MutexGuard};

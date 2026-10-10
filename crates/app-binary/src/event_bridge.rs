@@ -1,9 +1,9 @@
 //! Agent event to Tauri IPC bridge.
 
 use crate::events::*;
-use crate::logging::sanitize_error_text;
 use crate::notification::DesktopNotifications;
 use haven_agent::{AgentEvent, AgentEventEmitter};
+use haven_common::error::sanitize_error_text;
 use haven_tools::ToolRunLifecycleEvent;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};

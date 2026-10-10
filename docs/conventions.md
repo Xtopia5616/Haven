@@ -9,6 +9,7 @@
 | 域 | 路径 |
 |---|---|
 | 后端 tracing 初始化 / 命令错误日志 | `crates/app-binary/src/logging.rs`（`init_tracing`、`log_err`） |
+| 跨边界错误文本归一与脱敏 | `crates/common/src/error.rs`（`sanitize_error_text`） |
 | 事件发射（channel / payload） | `crates/app-binary/src/event_bridge.rs`（`TauriEmitter`） |
 | Windows 桌面通知 | `crates/app-binary/src/notification.rs`（`DesktopNotifications`） |
 | 通知配置 | `crates/common/src/config/misc.rs`（`NotificationConfig` / `NotifyChannels`） |
@@ -95,10 +96,10 @@ SQLite 等待，但不伪装成 SQLite 内部 lock wait；队列长度与 UI fra
 
 - 事件消息优先 `模块::方法: 描述`（与 `TauriEmitter::trace_event` 一致）。
 - 上下文优先用 **tracing 结构化字段**（`session_id = %id`），便于 grep；存量文本内联 ID（`session {}`）保留，新增/修改优先结构化字段。
-- 不记录用户输入、模型正文、通知正文、凭据、本机路径或完整工具输出；错误文本经 `sanitize_error_text` 后再写日志。需要观测内容时只记长度、计数、分类或稳定实体 ID。
+- 不记录用户输入、模型正文、通知正文、凭据、本机路径或完整工具输出；错误文本直接经 `haven_common::error::sanitize_error_text` 后再写日志。需要观测内容时只记长度、计数、分类或稳定实体 ID。
 - 禁止为打日志而改变函数签名；拿不到 ID 时依赖所在并发边界的 span。
 
-**命令错误日志**：Tauri 命令失败必须走 `log_err(ctx, e)`（`logging.rs`，经 `commands` 再导出），固定输出两行。`{safe_message}` 是单行、限长、已脱敏的公开/日志摘要；原始 `Display` 字符串不得进入日志、事件或命令返回值：
+**命令错误日志**：Tauri 命令失败必须走 `log_err(ctx, e)`（`logging.rs`，经 `commands` 再导出）；`log_err` 直接调用 Common 的 `sanitize_error_text`，并固定输出两行。`{safe_message}` 是单行、限长、已脱敏的公开/日志摘要；原始 `Display` 字符串不得进入日志、事件或命令返回值：
 
 ```text
 command `{ctx}` failed
