@@ -1202,8 +1202,19 @@ impl SessionStore {
         after_sequence: i64,
     ) -> anyhow::Result<SessionEventSubscription> {
         let live = self.subscribe();
-        let replay = self.read_from(session_id, after_sequence)?;
+        let replay = self.read_from_sync(session_id, after_sequence)?;
         Ok(SessionEventSubscription { replay, live })
+    }
+
+    /// Initialize a memory-event cursor synchronously for fixtures and tests.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn initialize_memory_event_cursor_if_absent(
+        &self,
+        session_id: &str,
+        sequence: i64,
+    ) -> anyhow::Result<bool> {
+        self.db
+            .initialize_memory_event_cursor_if_absent(session_id, sequence)
     }
 
     /// Read the durable memory event cursor. This clock is independent from
@@ -1236,21 +1247,6 @@ impl SessionStore {
         self.db
             .run_blocking_cancellable(cancel, move |db| {
                 db.memory_event_cursor_optional(&session_id)
-            })
-            .await
-    }
-
-    /// Set a startup baseline only if no cursor key has ever been written.
-    pub async fn initialize_memory_event_cursor_if_absent_cancellable(
-        &self,
-        session_id: &str,
-        sequence: i64,
-        cancel: CancellationToken,
-    ) -> anyhow::Result<bool> {
-        let session_id = session_id.to_owned();
-        self.db
-            .run_blocking_cancellable(cancel, move |db| {
-                db.initialize_memory_event_cursor_if_absent(&session_id, sequence)
             })
             .await
     }
@@ -1293,7 +1289,8 @@ impl SessionStore {
     }
 
     /// Clear one session's durable memory event cursor.
-    pub fn clear_memory_event_cursor(&self, session_id: &str) -> anyhow::Result<()> {
+    #[cfg(test)]
+    fn clear_memory_event_cursor(&self, session_id: &str) -> anyhow::Result<()> {
         self.db.clear_memory_event_cursor(session_id)
     }
 
@@ -1398,10 +1395,7 @@ impl SessionStore {
     /// Load the active transcript, branch points and all projection clocks
     /// from one SQLite read boundary. This is the only recovery read surface
     /// exposed to Agent resume/rollback code.
-    pub fn load_replay_state(
-        &self,
-        session_id: &str,
-    ) -> anyhow::Result<Option<SessionReplayState>> {
+    fn load_replay_state(&self, session_id: &str) -> anyhow::Result<Option<SessionReplayState>> {
         let conn = self.db.conn();
         conn.execute_batch("BEGIN")?;
         let result = (|| -> anyhow::Result<Option<SessionReplayState>> {
@@ -1490,7 +1484,7 @@ impl SessionStore {
                 if db.get_session(&session_id)?.is_none() {
                     return Ok(());
                 }
-                store.append_recovery_persistence(
+                store.append_recovery_persistence_sync(
                     &session_id,
                     run_id,
                     step_number,
@@ -1528,7 +1522,7 @@ impl SessionStore {
             .await
     }
 
-    pub fn append(
+    fn append_sync(
         &self,
         session_id: &str,
         event_type: &str,
@@ -1544,6 +1538,20 @@ impl SessionStore {
         };
         self.append_batch(session_id, std::slice::from_ref(&input))
             .map(|mut events| events.remove(0))
+    }
+
+    /// Synchronous raw event append for fixtures and unit tests. Production
+    /// callers use the typed async event APIs.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn append(
+        &self,
+        session_id: &str,
+        event_type: &str,
+        payload: &str,
+        run_id: Option<u64>,
+        step_number: Option<u32>,
+    ) -> anyhow::Result<SessionEvent> {
+        self.append_sync(session_id, event_type, payload, run_id, step_number)
     }
 
     /// Append a non-transcript domain event through the session persistence
@@ -1563,7 +1571,9 @@ impl SessionStore {
         let event_type = event_type.to_owned();
         let payload = payload.to_owned();
         self.db
-            .run_blocking(move |_| store.append(&session_id, &event_type, &payload, None, None))
+            .run_blocking(move |_| {
+                store.append_sync(&session_id, &event_type, &payload, None, None)
+            })
             .await
     }
 
@@ -1651,7 +1661,7 @@ impl SessionStore {
     /// Append a batch in one SQLite transaction.  Sequence allocation happens
     /// under `BEGIN IMMEDIATE`, so concurrent sessions and concurrent writers
     /// cannot produce duplicate per-session cursors.
-    pub fn append_batch(
+    pub(super) fn append_batch(
         &self,
         session_id: &str,
         events: &[SessionEventInput],
@@ -1692,7 +1702,7 @@ impl SessionStore {
     ) -> anyhow::Result<SessionCommitResult> {
         let store = self.clone();
         let session_id = session_id.to_owned();
-        let write = move |_db: &Database| store.commit_transcript(&session_id, &committed);
+        let write = move |_db: &Database| store.commit_transcript_sync(&session_id, &committed);
 
         match cancel {
             Some(cancel) => self.db.run_blocking_cancellable(cancel, write).await,
@@ -1705,7 +1715,7 @@ impl SessionStore {
     /// intents are applied; projection failure rolls the whole commit back.
     /// Live broadcasts happen only after COMMIT, so subscribers never observe
     /// an event that was rolled back.
-    pub fn commit_transcript(
+    fn commit_transcript_sync(
         &self,
         session_id: &str,
         committed: &SessionCommitted,
@@ -1771,6 +1781,18 @@ impl SessionStore {
                 Err(error)
             }
         }
+    }
+
+    /// Synchronous commit access for fixture and unit tests. Production
+    /// callers use `commit_transcript_cancellable` so SQLite work stays on
+    /// the blocking boundary.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn commit_transcript(
+        &self,
+        session_id: &str,
+        committed: &SessionCommitted,
+    ) -> anyhow::Result<SessionCommitResult> {
+        self.commit_transcript_sync(session_id, committed)
     }
 
     fn validate_inputs(events: &[SessionEventInput]) -> anyhow::Result<()> {
@@ -1921,6 +1943,25 @@ impl SessionStore {
         })
     }
 
+    fn append_transcript_sync(
+        &self,
+        session_id: &str,
+        payload: &str,
+        run_id: u64,
+        step_number: u32,
+    ) -> anyhow::Result<SessionEvent> {
+        self.append_sync(
+            session_id,
+            TRANSCRIPT_EVENT_TYPE,
+            payload,
+            Some(run_id),
+            Some(step_number),
+        )
+    }
+
+    /// Synchronous append access for fixture and unit tests. Production
+    /// callers use `append_transcript_async`.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn append_transcript(
         &self,
         session_id: &str,
@@ -1928,13 +1969,7 @@ impl SessionStore {
         run_id: u64,
         step_number: u32,
     ) -> anyhow::Result<SessionEvent> {
-        self.append(
-            session_id,
-            TRANSCRIPT_EVENT_TYPE,
-            payload,
-            Some(run_id),
-            Some(step_number),
-        )
+        self.append_transcript_sync(session_id, payload, run_id, step_number)
     }
 
     /// Append one transcript event on SQLite's blocking pool and return its
@@ -1953,7 +1988,7 @@ impl SessionStore {
         self.db
             .run_blocking(move |_| {
                 Ok(store
-                    .append_transcript(&session_id, &payload, run_id, step_number)?
+                    .append_transcript_sync(&session_id, &payload, run_id, step_number)?
                     .sequence)
             })
             .await
@@ -1965,7 +2000,8 @@ impl SessionStore {
     /// active cursor and updates projections in the same transaction. This
     /// narrow primitive remains available for importing an already-materialized
     /// historical marker without pretending that it also repairs projections.
-    pub fn append_rollback(
+    #[cfg(test)]
+    fn append_rollback(
         &self,
         session_id: &str,
         to_sequence: i64,
@@ -2021,7 +2057,7 @@ impl SessionStore {
     /// active transcript. The projection boundary is resolved from the same
     /// transaction snapshot.
     /// Discarded event history is retained for audit.
-    pub fn rollback_to(
+    fn rollback_to(
         &self,
         session_id: &str,
         request: &RollbackRequest,
@@ -2186,7 +2222,8 @@ impl SessionStore {
     /// The active branch point and its projection cutoff are resolved inside
     /// the same immediate transaction as the projection deletion. A missing
     /// branch point or timestamp is a safe no-op.
-    pub fn truncate_projection_after_step(
+    #[cfg(test)]
+    fn truncate_projection_after_step(
         &self,
         session_id: &str,
         step_number: u32,
@@ -2218,7 +2255,7 @@ impl SessionStore {
     /// active branch-point resolution, projection deletion, usage
     /// compensation, and aggregate rebuilding share one write transaction.
     /// A marker outside the active replay still participates in the decision.
-    pub fn truncate_projection_after_latest_committed_recovery(
+    fn truncate_projection_after_latest_committed_recovery(
         &self,
         session_id: &str,
     ) -> anyhow::Result<()> {
@@ -2392,7 +2429,7 @@ impl SessionStore {
             .ok_or_else(|| anyhow::anyhow!("usage append returned no record"))
     }
 
-    pub fn append_usage_batch(
+    fn append_usage_batch(
         &self,
         session_id: &str,
         inputs: &[LlmUsageRecordInput],
@@ -2480,7 +2517,7 @@ impl SessionStore {
     /// Record a compensating domain event when an in-flight usage write loses
     /// a rollback epoch race. Deleting only the projection would leave the
     /// usage event active and allow a later event replay to resurrect it.
-    pub fn discard_usage(&self, session_id: &str, usage_id: &str) -> anyhow::Result<()> {
+    fn discard_usage(&self, session_id: &str, usage_id: &str) -> anyhow::Result<()> {
         let payload = serde_json::json!({ "usage_id": usage_id }).to_string();
         let input = SessionEventInput::new(USAGE_DISCARDED_EVENT_TYPE, payload);
         let conn = self.db.conn();
@@ -2528,7 +2565,8 @@ impl SessionStore {
         }
     }
 
-    pub fn append_branch_point(
+    #[cfg(any(test, feature = "test-support"))]
+    fn append_branch_point_sync(
         &self,
         session_id: &str,
         event_cursor: usize,
@@ -2541,7 +2579,7 @@ impl SessionStore {
             "step_number": step_number,
             "last_msg_at": last_msg_at,
         });
-        self.append(
+        self.append_sync(
             session_id,
             BRANCH_POINT_EVENT_TYPE,
             &payload.to_string(),
@@ -2550,10 +2588,23 @@ impl SessionStore {
         )
     }
 
+    /// Synchronous branch-point append for fixtures and unit tests.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn append_branch_point(
+        &self,
+        session_id: &str,
+        event_cursor: usize,
+        step_number: u32,
+        last_msg_at: Option<&str>,
+        run_id: Option<u64>,
+    ) -> anyhow::Result<SessionEvent> {
+        self.append_branch_point_sync(session_id, event_cursor, step_number, last_msg_at, run_id)
+    }
+
     /// Append a branch point using the projection clocks observed under the
     /// same SQLite write transaction. ReAct callers receive the clocks as
     /// data; they never read `messages` or derive an event cursor locally.
-    pub fn append_branch_point_from_projection(
+    fn append_branch_point_from_projection(
         &self,
         session_id: &str,
         step_number: u32,
@@ -2596,7 +2647,7 @@ impl SessionStore {
     /// Record one phase of the recovery-only persistence protocol. The
     /// marker is not part of transcript replay; it only makes a partially
     /// completed repair durable and auditable.
-    pub fn append_recovery_persistence(
+    fn append_recovery_persistence_sync(
         &self,
         session_id: &str,
         run_id: u64,
@@ -2611,7 +2662,7 @@ impl SessionStore {
             "projection": status.projection,
             "event_boundary": status.event_boundary,
         });
-        self.append(
+        self.append_sync(
             session_id,
             RECOVERY_PERSISTENCE_EVENT_TYPE,
             &payload.to_string(),
@@ -2620,15 +2671,38 @@ impl SessionStore {
         )
     }
 
+    /// Synchronous recovery-marker append for fixtures and unit tests.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn append_recovery_persistence(
+        &self,
+        session_id: &str,
+        run_id: u64,
+        step_number: u32,
+        phase: &str,
+        status: RecoveryPersistenceStatus,
+    ) -> anyhow::Result<SessionEvent> {
+        self.append_recovery_persistence_sync(session_id, run_id, step_number, phase, status)
+    }
+
     /// Return the latest recovery protocol marker, including failed markers
     /// outside the active timeline. Resume diagnostics must not lose this
     /// state merely because a later rollback moved the active cursor.
-    pub fn latest_recovery_persistence(
+    #[cfg(any(test, feature = "test-support"))]
+    fn latest_recovery_persistence_sync(
         &self,
         session_id: &str,
     ) -> anyhow::Result<Option<SessionEvent>> {
         let conn = self.db.conn();
         Self::latest_recovery_persistence_in_connection(&conn, session_id)
+    }
+
+    /// Synchronous recovery-marker lookup for fixtures and unit tests.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn latest_recovery_persistence(
+        &self,
+        session_id: &str,
+    ) -> anyhow::Result<Option<SessionEvent>> {
+        self.latest_recovery_persistence_sync(session_id)
     }
 
     fn latest_recovery_persistence_in_connection(
@@ -2663,12 +2737,18 @@ impl SessionStore {
         .map_err(Into::into)
     }
 
-    pub fn latest_sequence(&self, session_id: &str) -> anyhow::Result<i64> {
+    fn latest_sequence_sync(&self, session_id: &str) -> anyhow::Result<i64> {
         Ok(self.db.conn().query_row(
             "SELECT COALESCE(MAX(sequence), 0) FROM session_events WHERE session_id = ?1",
             rusqlite::params![session_id],
             |row| row.get(0),
         )?)
+    }
+
+    /// Synchronous sequence inspection for fixtures and unit tests.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn latest_sequence(&self, session_id: &str) -> anyhow::Result<i64> {
+        self.latest_sequence_sync(session_id)
     }
 
     /// Read the latest durable event sequence on SQLite's blocking pool.
@@ -2680,15 +2760,22 @@ impl SessionStore {
         let store = self.clone();
         let session_id = session_id.to_owned();
         self.db
-            .run_blocking_cancellable(cancel, move |_| store.latest_sequence(&session_id))
+            .run_blocking_cancellable(cancel, move |_| store.latest_sequence_sync(&session_id))
             .await
     }
 
-    pub fn read_all(&self, session_id: &str) -> anyhow::Result<Vec<SessionEvent>> {
-        self.read_from(session_id, 0)
+    #[cfg(any(test, feature = "test-support"))]
+    fn read_all_sync(&self, session_id: &str) -> anyhow::Result<Vec<SessionEvent>> {
+        self.read_from_sync(session_id, 0)
     }
 
-    pub fn read_from(
+    /// Read the complete append-only stream synchronously in fixtures/tests.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn read_all(&self, session_id: &str) -> anyhow::Result<Vec<SessionEvent>> {
+        self.read_all_sync(session_id)
+    }
+
+    fn read_from_sync(
         &self,
         session_id: &str,
         after_sequence: i64,
@@ -2700,7 +2787,7 @@ impl SessionStore {
     /// Read one bounded page of durable events strictly after
     /// `after_sequence`. Rows are ordered by ascending sequence. The page
     /// limit must be between one and [`MAX_SESSION_EVENT_REPLAY_PAGE_SIZE`].
-    pub fn replay_page(
+    fn replay_page_sync(
         &self,
         session_id: &str,
         after_sequence: i64,
@@ -2771,7 +2858,7 @@ impl SessionStore {
         let session_id = session_id.to_owned();
         self.db
             .run_blocking_cancellable(cancel, move |_| {
-                store.replay_page(&session_id, after_sequence, limit)
+                store.replay_page_sync(&session_id, after_sequence, limit)
             })
             .await
     }
@@ -2810,7 +2897,7 @@ impl SessionStore {
     /// Replay the current timeline. Rollback markers only move the active
     /// cursor; the underlying append-only rows remain available for audit and
     /// future branch tooling.
-    pub fn read_active(&self, session_id: &str) -> anyhow::Result<Vec<SessionEvent>> {
+    fn read_active(&self, session_id: &str) -> anyhow::Result<Vec<SessionEvent>> {
         let conn = self.db.conn();
         Self::read_active_in_connection(&conn, session_id)
     }
@@ -2918,6 +3005,7 @@ impl SessionStore {
         Ok(root.saturating_sub(1))
     }
 
+    #[cfg(any(test, feature = "test-support"))]
     pub fn read_active_transcript(&self, session_id: &str) -> anyhow::Result<Vec<SessionEvent>> {
         Ok(self
             .read_active(session_id)?
@@ -2929,12 +3017,21 @@ impl SessionStore {
     /// Return active non-transcript domain events for the session.  ReAct
     /// recovery uses this for interaction state; messages and steps are never
     /// consulted to reconstruct the actor.
-    pub fn read_active_domain_events(&self, session_id: &str) -> anyhow::Result<Vec<SessionEvent>> {
+    fn read_active_domain_events_inner(
+        &self,
+        session_id: &str,
+    ) -> anyhow::Result<Vec<SessionEvent>> {
         Ok(self
             .read_active(session_id)?
             .into_iter()
             .filter(|event| event.event_type != TRANSCRIPT_EVENT_TYPE)
             .collect())
+    }
+
+    /// Synchronous active-event projection for fixture and unit tests.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn read_active_domain_events(&self, session_id: &str) -> anyhow::Result<Vec<SessionEvent>> {
+        self.read_active_domain_events_inner(session_id)
     }
 
     /// Read active non-transcript domain events through the session
@@ -2946,7 +3043,7 @@ impl SessionStore {
         let store = self.clone();
         let session_id = session_id.to_owned();
         self.db
-            .run_blocking(move |_| store.read_active_domain_events(&session_id))
+            .run_blocking(move |_| store.read_active_domain_events_inner(&session_id))
             .await
     }
 
@@ -2954,7 +3051,7 @@ impl SessionStore {
     /// control events and are intentionally kept separate from transcript
     /// replay, but they share the same rollback cursor and audit log.
     #[cfg(test)]
-    pub fn read_active_branch_points(
+    fn read_active_branch_points(
         &self,
         session_id: &str,
     ) -> anyhow::Result<Vec<ActiveBranchPoint>> {
@@ -3028,7 +3125,7 @@ impl SessionStore {
 
     /// Seed an event stream exactly once from the initial transcript. A
     /// non-empty stream is never rewritten, even if a stale seed is passed.
-    pub fn seed_if_empty(
+    fn seed_if_empty(
         &self,
         session_id: &str,
         events: &[SessionEventInput],
@@ -4665,7 +4762,7 @@ mod tests {
             .unwrap();
         assert_eq!(first.sequence, 1);
         assert_eq!(second.sequence, 2);
-        assert_eq!(store.read_from(&session_id, 1).unwrap(), vec![second]);
+        assert_eq!(store.read_from_sync(&session_id, 1).unwrap(), vec![second]);
     }
 
     #[test]
@@ -4715,7 +4812,7 @@ mod tests {
             5
         );
 
-        let first = store.replay_page(&session_id, 0, 2).unwrap();
+        let first = store.replay_page_sync(&session_id, 0, 2).unwrap();
         assert_eq!(
             first
                 .events
@@ -4728,7 +4825,7 @@ mod tests {
         assert_eq!(first.next_cursor, 2);
 
         let second = store
-            .replay_page(&session_id, first.next_cursor, 2)
+            .replay_page_sync(&session_id, first.next_cursor, 2)
             .unwrap();
         assert_eq!(
             second
@@ -4742,7 +4839,7 @@ mod tests {
         assert_eq!(second.next_cursor, 4);
 
         let third = store
-            .replay_page(&session_id, second.next_cursor, 2)
+            .replay_page_sync(&session_id, second.next_cursor, 2)
             .unwrap();
         assert_eq!(
             third
@@ -4755,25 +4852,25 @@ mod tests {
         assert!(!third.has_more);
         assert_eq!(third.next_cursor, 5);
 
-        let empty = store.replay_page(&session_id, 12, 2).unwrap();
+        let empty = store.replay_page_sync(&session_id, 12, 2).unwrap();
         assert!(empty.events.is_empty());
         assert!(!empty.has_more);
         assert_eq!(empty.next_cursor, 12);
         assert_eq!(
             store
-                .replay_page(&other_session.id, 0, 2)
+                .replay_page_sync(&other_session.id, 0, 2)
                 .unwrap()
                 .events
                 .len(),
             1
         );
-        assert!(store.replay_page(&session_id, 0, 0).is_err());
+        assert!(store.replay_page_sync(&session_id, 0, 0).is_err());
         assert!(
             store
-                .replay_page(&session_id, 0, MAX_SESSION_EVENT_REPLAY_PAGE_SIZE + 1)
+                .replay_page_sync(&session_id, 0, MAX_SESSION_EVENT_REPLAY_PAGE_SIZE + 1)
                 .is_err()
         );
-        assert!(store.replay_page(&session_id, -1, 2).is_err());
+        assert!(store.replay_page_sync(&session_id, -1, 2).is_err());
     }
 
     #[test]

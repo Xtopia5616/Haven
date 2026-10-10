@@ -897,3 +897,4 @@
 - [0906：将 SQLite embedding row 限制在 Memory 与测试 API 内](0906-hide-embedded-text-from-memory-production-api.md)
 - [0907：由 Memory store 持有持久化分页上限](0907-keep-persistence-page-bounds-inside-memory-store.md)
 - [0908：收回 Memory 内部策略与测试投影 API](0908-hide-memory-internal-policy-and-test-projection-api.md)
+- [0909：将 SessionStore 同步 SQLite 操作限制在 Memory 与测试边界内](0909-restrict-session-store-sync-operations.md)

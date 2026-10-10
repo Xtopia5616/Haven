@@ -229,7 +229,8 @@ impl Database {
     /// Initialize the memory event cursor only when no durable key exists.
     /// Returns true when this call installed `sequence`; an existing zero is
     /// preserved just like any other checkpoint.
-    pub fn initialize_memory_event_cursor_if_absent(
+    #[cfg(any(test, feature = "test-support"))]
+    pub(crate) fn initialize_memory_event_cursor_if_absent(
         &self,
         session_id: &str,
         sequence: i64,
@@ -304,7 +305,8 @@ impl Database {
     }
 
     /// Remove one session's memory event checkpoint.
-    pub fn clear_memory_event_cursor(&self, session_id: &str) -> anyhow::Result<()> {
+    #[cfg(test)]
+    pub(crate) fn clear_memory_event_cursor(&self, session_id: &str) -> anyhow::Result<()> {
         let key = memory_event_cursor_key(session_id)?;
         self.conn().execute(
             "DELETE FROM kv_store WHERE key = ?1",

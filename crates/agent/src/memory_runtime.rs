@@ -828,7 +828,9 @@ mod tests {
             let session = db
                 .create_session(&format!("recovery page {index}"))
                 .unwrap();
-            db.initialize_memory_event_cursor_if_absent(&session.id, 0)
+            runtime
+                .session_store
+                .initialize_memory_event_cursor_if_absent(&session.id, 0)
                 .unwrap();
             runtime
                 .session_store
