@@ -401,12 +401,16 @@ mod tests {
 
     #[test]
     fn embedding_index_model_partitions_same_label_across_endpoints() {
-        let mut first = ModelEndpoint::default();
-        first.provider = "openai".into();
-        first.model_name = "text-embedding-3-small".into();
-        first.base_url = "https://gateway-a.example/v1/".into();
-        let mut second = first.clone();
-        second.base_url = "https://gateway-b.example/v1".into();
+        let first = ModelEndpoint {
+            provider: "openai".into(),
+            model_name: "text-embedding-3-small".into(),
+            base_url: "https://gateway-a.example/v1/".into(),
+            ..ModelEndpoint::default()
+        };
+        let second = ModelEndpoint {
+            base_url: "https://gateway-b.example/v1".into(),
+            ..first.clone()
+        };
 
         assert_ne!(
             embedding_index_model(&first),

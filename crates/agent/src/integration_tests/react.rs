@@ -381,8 +381,10 @@ async fn turn_deadline_cancels_provider_retry_before_second_attempt() {
     let mock = Arc::new(ScriptedMock::new(vec![ScriptedResponse::Err(
         LlmError::Timeout("transient provider timeout".into()),
     )]));
-    let mut limits = ContextLimitsConfig::default();
-    limits.turn_deadline_secs = 1;
+    let limits = ContextLimitsConfig {
+        turn_deadline_secs: 1,
+        ..ContextLimitsConfig::default()
+    };
     let (agent, executor) =
         make_test_agent_with_limits(mock.clone(), Arc::new(ToolsFacade::new()), limits);
     agent.set_emitter(make_recording_emitter());
@@ -436,8 +438,10 @@ async fn turn_deadline_stops_after_non_cooperative_blocking_tool() {
             thinking_blocks: Vec::new(),
         },
     )]));
-    let mut limits = ContextLimitsConfig::default();
-    limits.turn_deadline_secs = 1;
+    let limits = ContextLimitsConfig {
+        turn_deadline_secs: 1,
+        ..ContextLimitsConfig::default()
+    };
     let (agent, executor) = make_test_agent_with_limits(mock.clone(), tools, limits);
     agent.set_emitter(make_recording_emitter());
     let session = executor.create_session("stop the slow tool").await.unwrap();

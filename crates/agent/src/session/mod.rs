@@ -1103,8 +1103,10 @@ mod tests {
         // Security settings apply invalidates in-memory trust first, then the
         // supervisor restores the durable per-session set without widening it
         // to a global grant.
-        let mut changed_security = haven_common::config::SecurityConfig::default();
-        changed_security.network_policy = haven_common::types::NetworkPolicy::Open;
+        let changed_security = haven_common::config::SecurityConfig {
+            network_policy: haven_common::types::NetworkPolicy::Open,
+            ..haven_common::config::SecurityConfig::default()
+        };
         first.authorization.apply_security(&changed_security).await;
         first.restore_session_authorization_grants().await.unwrap();
         assert!(matches!(

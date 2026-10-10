@@ -996,7 +996,6 @@ mod tests {
             request_policies: vec![RequestPolicy {
                 request: RequestKind::Chat,
                 primary: "default_model".into(),
-                ..Default::default()
             }],
             ..Default::default()
         };
@@ -1026,7 +1025,6 @@ mod tests {
             request_policies: vec![RequestPolicy {
                 request: RequestKind::Chat,
                 primary: "default_model".into(),
-                ..Default::default()
             }],
             ..Default::default()
         };
@@ -1058,7 +1056,6 @@ mod tests {
             request_policies: vec![RequestPolicy {
                 request: RequestKind::Chat,
                 primary: "default_model".into(),
-                ..Default::default()
             }],
             ..Default::default()
         };
@@ -1177,12 +1174,10 @@ mod tests {
                 RequestPolicy {
                     request: RequestKind::Chat,
                     primary: "shared-model".into(),
-                    ..Default::default()
                 },
                 RequestPolicy {
                     request: RequestKind::Vision,
                     primary: "shared-model".into(),
-                    ..Default::default()
                 },
             ],
             ..Default::default()

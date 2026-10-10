@@ -540,7 +540,7 @@ mod tests {
                 let marker_path: PathBuf = std::env::var_os(DESCENDANT_MARKER)
                     .expect("descendant marker path")
                     .into();
-                let child = std::process::Command::new(
+                let mut child = std::process::Command::new(
                     std::env::current_exe().expect("test executable path"),
                 )
                 .args([
@@ -556,9 +556,7 @@ mod tests {
                 .expect("spawn contained descendant");
                 std::fs::write(ready_path, child.id().to_string())
                     .expect("record contained descendant pid");
-                loop {
-                    std::thread::sleep(std::time::Duration::from_secs(1));
-                }
+                let _ = child.wait();
             }
             _ => {}
         }

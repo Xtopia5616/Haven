@@ -1105,8 +1105,10 @@ mod tests {
         );
         assert!(unsupported.projections.is_empty());
 
-        let mut supported_profile = CapabilityProfile::default();
-        supported_profile.video = CapabilitySupport::Supported;
+        let supported_profile = CapabilityProfile {
+            video: CapabilitySupport::Supported,
+            ..CapabilityProfile::default()
+        };
         let supported = build_media_plan(
             &[video],
             &supported_profile,
@@ -1124,8 +1126,10 @@ mod tests {
             asset("image/png", 2),
             vec![raw(MediaRepresentationKind::RawImage, "image/png")],
         );
-        let mut profile = CapabilityProfile::default();
-        profile.image = CapabilitySupport::Supported;
+        let mut profile = CapabilityProfile {
+            image: CapabilitySupport::Supported,
+            ..CapabilityProfile::default()
+        };
         let plan = build_media_plan(&[image], &profile, MediaInputStrategy::Auto);
         assert_eq!(plan.projections[0].mode, MediaProjectionMode::Raw);
 
@@ -1182,7 +1186,7 @@ mod tests {
         );
         let profile = CapabilityProfile::default();
         let preferred = build_media_plan(
-            &[derived_input.clone()],
+            std::slice::from_ref(&derived_input),
             &profile,
             MediaInputStrategy::ExtractedPreferred,
         );
@@ -1195,8 +1199,10 @@ mod tests {
             asset("image/png", 2),
             vec![raw(MediaRepresentationKind::RawImage, "image/png")],
         );
-        let mut profile = CapabilityProfile::default();
-        profile.image = CapabilitySupport::Supported;
+        let profile = CapabilityProfile {
+            image: CapabilitySupport::Supported,
+            ..CapabilityProfile::default()
+        };
         let fallback = build_media_plan(
             &[raw_only],
             &profile,
@@ -1219,13 +1225,15 @@ mod tests {
             )],
         );
         let unknown = build_media_plan(
-            &[input.clone()],
+            std::slice::from_ref(&input),
             &CapabilityProfile::default(),
             MediaInputStrategy::Auto,
         );
         assert!(unknown.is_empty());
-        let mut profile = CapabilityProfile::default();
-        profile.tools = CapabilitySupport::Supported;
+        let profile = CapabilityProfile {
+            tools: CapabilitySupport::Supported,
+            ..CapabilityProfile::default()
+        };
         let plan = build_media_plan(&[input], &profile, MediaInputStrategy::Auto);
         assert_eq!(
             plan.projections[0].mode,
@@ -1243,11 +1251,13 @@ mod tests {
             asset("image/jpeg", 8),
             vec![raw(MediaRepresentationKind::RawImage, "image/jpeg")],
         );
-        let mut profile = CapabilityProfile::default();
-        profile.image = CapabilitySupport::Supported;
-        profile.accepted_mime_types = vec!["image/png".into()];
-        profile.max_input_parts = Some(1);
-        profile.max_input_bytes = Some(10);
+        let mut profile = CapabilityProfile {
+            image: CapabilitySupport::Supported,
+            accepted_mime_types: vec!["image/png".into()],
+            max_input_parts: Some(1),
+            max_input_bytes: Some(10),
+            ..CapabilityProfile::default()
+        };
         let plan = build_media_plan(&[first, second], &profile, MediaInputStrategy::Auto);
         assert_eq!(plan.projections.len(), 1);
         assert!(

@@ -332,12 +332,14 @@ mod tests {
         Pending,
     }
 
+    type GuidanceObservation = (usize, usize, String, Option<u32>);
+
     struct ExecutorProbe {
         mode: ProbeMode,
         attempts: AtomicUsize,
         started: Arc<Notify>,
         seen: StdMutex<Vec<(usize, usize, Option<u32>)>>,
-        guidance_seen: StdMutex<Vec<(usize, usize, String, Option<u32>)>>,
+        guidance_seen: StdMutex<Vec<GuidanceObservation>>,
     }
 
     impl ExecutorProbe {

@@ -3503,7 +3503,8 @@ mod tests {
 
     #[tokio::test]
     async fn complete_preserves_chat_tool_branch_output_cap_and_usage() {
-        struct ChatPathProbe(Arc<StdMutex<Vec<(bool, Option<u32>, usize)>>>);
+        type ChatPathProbeState = Arc<StdMutex<Vec<(bool, Option<u32>, usize)>>>;
+        struct ChatPathProbe(ChatPathProbeState);
 
         fn response() -> LlmResponse {
             LlmResponse {

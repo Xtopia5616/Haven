@@ -1031,7 +1031,9 @@ mod tests {
 
     #[test]
     fn runtime_tool_call_limit_is_bounded() {
-        assert!(MAX_RUNTIME_TOOL_CALLS_PER_BATCH > 0);
-        assert!(MAX_RUNTIME_TOOL_CALLS_PER_BATCH < usize::MAX);
+        const {
+            assert!(MAX_RUNTIME_TOOL_CALLS_PER_BATCH > 0);
+            assert!(MAX_RUNTIME_TOOL_CALLS_PER_BATCH < usize::MAX);
+        }
     }
 }

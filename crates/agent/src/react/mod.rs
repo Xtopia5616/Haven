@@ -1786,8 +1786,10 @@ mod tests {
 
     #[tokio::test]
     async fn choose_agent_request_falls_back_when_specialized_mime_is_unsupported() {
-        let mut default_profile = CapabilityProfile::default();
-        default_profile.image = CapabilitySupport::Supported;
+        let default_profile = CapabilityProfile {
+            image: CapabilitySupport::Supported,
+            ..CapabilityProfile::default()
+        };
         let mut image_profile = default_profile.clone();
         image_profile.accepted_mime_types = vec!["image/jpeg".into()];
         let router =
@@ -1806,8 +1808,10 @@ mod tests {
 
     #[tokio::test]
     async fn choose_agent_request_falls_back_when_specialized_size_is_exceeded() {
-        let mut default_profile = CapabilityProfile::default();
-        default_profile.image = CapabilitySupport::Supported;
+        let default_profile = CapabilityProfile {
+            image: CapabilitySupport::Supported,
+            ..CapabilityProfile::default()
+        };
         let mut image_profile = default_profile.clone();
         image_profile.max_input_bytes = Some(4);
         let router =

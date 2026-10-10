@@ -415,6 +415,123 @@ mod imp {
     }
 }
 
+impl MediaTool {
+    pub(crate) fn capture_error_result(
+        &self,
+        asset: &ManagedAsset,
+        duration_ms: u64,
+        error: impl Into<String>,
+    ) -> ToolResult {
+        let mut result = self.failed_media_result(MediaOperation::Record, asset, error);
+        result.output["operation"] = json!("record");
+        result.output["duration_ms"] = json!(duration_ms);
+        result.output["reason_code"] = json!("capture_failed");
+        result.output["capture_error"] = json!(true);
+        result
+    }
+
+    pub(super) async fn run_audio(
+        &self,
+        params: MediaParams,
+        cancel: CancellationToken,
+    ) -> anyhow::Result<ToolResult> {
+        if cancel.is_cancelled() {
+            anyhow::bail!("cancelled");
+        }
+        if params.operation == MediaOperation::Record && !self.capability_available("record") {
+            return Ok(self.unavailable_operation_result(
+                MediaOperation::Record,
+                "Microphone capture is not configured.",
+            ));
+        }
+        if params.operation == MediaOperation::Speak && !self.capability_available("speak") {
+            return Ok(self.unavailable_operation_result(
+                MediaOperation::Speak,
+                "No text-to-speech provider is configured.",
+            ));
+        }
+        match params.operation {
+            MediaOperation::Record => {
+                let recorded = self
+                    .audio_runtime
+                    .record_asset(&params, cancel.clone())
+                    .await?;
+                if let Some(error) = recorded.capture_error {
+                    return Ok(self.capture_error_result(
+                        &recorded.asset,
+                        recorded.duration_ms,
+                        error,
+                    ));
+                }
+                let mut result = self.transcribe_asset(recorded.asset, cancel).await?;
+                result.output["operation"] = json!("record");
+                result.output["duration_ms"] = json!(recorded.duration_ms);
+                Ok(result)
+            }
+            MediaOperation::Play => {
+                let _path = params
+                    .file_path
+                    .clone()
+                    .ok_or_else(|| anyhow::anyhow!("file_path (.wav) is required for play"))?;
+                self.audio_runtime.play(&params).await?;
+                let mut output = self.media_result_output(MediaOperation::Play, None, None, None);
+                output["played"] = json!(true);
+                output["format"] = json!("wav");
+                Ok(ToolResult::ok(output))
+            }
+            MediaOperation::Speak => {
+                let characters = self.audio_runtime.speak(&params, cancel).await?;
+                let mut output = self.media_result_output(MediaOperation::Speak, None, None, None);
+                output["spoken"] = json!(true);
+                output["characters"] = json!(characters);
+                output["format"] = json!("wav");
+                output["delivered_to"] = json!(["speakers"]);
+                Ok(ToolResult::ok(output))
+            }
+            MediaOperation::VolumeGet => {
+                let volume = self.audio_runtime.volume_get().await?;
+                let mut output =
+                    self.media_result_output(MediaOperation::VolumeGet, None, None, None);
+                output["volume"] = json!(volume);
+                Ok(ToolResult::ok(output))
+            }
+            MediaOperation::VolumeSet => {
+                let volume = params
+                    .volume
+                    .ok_or_else(|| anyhow::anyhow!("volume is required for volume_set"))?;
+                if !(0.0..=1.0).contains(&volume) {
+                    anyhow::bail!("volume must be between 0 and 1");
+                }
+                let volume = self.audio_runtime.volume_set(volume).await?;
+                let mut output =
+                    self.media_result_output(MediaOperation::VolumeSet, None, None, None);
+                output["volume"] = json!(volume);
+                output["set"] = json!(true);
+                Ok(ToolResult::ok(output))
+            }
+            MediaOperation::MuteGet => {
+                let muted = self.audio_runtime.mute_get().await?;
+                let mut output =
+                    self.media_result_output(MediaOperation::MuteGet, None, None, None);
+                output["muted"] = json!(muted);
+                Ok(ToolResult::ok(output))
+            }
+            MediaOperation::MuteSet => {
+                let muted = params
+                    .muted
+                    .ok_or_else(|| anyhow::anyhow!("muted is required for mute_set"))?;
+                self.audio_runtime.mute_set(muted).await?;
+                let mut output =
+                    self.media_result_output(MediaOperation::MuteSet, None, None, None);
+                output["muted"] = json!(muted);
+                output["set"] = json!(true);
+                Ok(ToolResult::ok(output))
+            }
+            _ => unreachable!("non-audio operation passed to run_audio"),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -537,123 +654,6 @@ mod tests {
             assert!(data.starts_with(b"RIFF"));
             self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             Ok(())
-        }
-    }
-}
-
-impl MediaTool {
-    pub(crate) fn capture_error_result(
-        &self,
-        asset: &ManagedAsset,
-        duration_ms: u64,
-        error: impl Into<String>,
-    ) -> ToolResult {
-        let mut result = self.failed_media_result(MediaOperation::Record, asset, error);
-        result.output["operation"] = json!("record");
-        result.output["duration_ms"] = json!(duration_ms);
-        result.output["reason_code"] = json!("capture_failed");
-        result.output["capture_error"] = json!(true);
-        result
-    }
-
-    pub(super) async fn run_audio(
-        &self,
-        params: MediaParams,
-        cancel: CancellationToken,
-    ) -> anyhow::Result<ToolResult> {
-        if cancel.is_cancelled() {
-            anyhow::bail!("cancelled");
-        }
-        if params.operation == MediaOperation::Record && !self.capability_available("record") {
-            return Ok(self.unavailable_operation_result(
-                MediaOperation::Record,
-                "Microphone capture is not configured.",
-            ));
-        }
-        if params.operation == MediaOperation::Speak && !self.capability_available("speak") {
-            return Ok(self.unavailable_operation_result(
-                MediaOperation::Speak,
-                "No text-to-speech provider is configured.",
-            ));
-        }
-        match params.operation {
-            MediaOperation::Record => {
-                let recorded = self
-                    .audio_runtime
-                    .record_asset(&params, cancel.clone())
-                    .await?;
-                if let Some(error) = recorded.capture_error {
-                    return Ok(self.capture_error_result(
-                        &recorded.asset,
-                        recorded.duration_ms,
-                        error,
-                    ));
-                }
-                let mut result = self.transcribe_asset(recorded.asset, cancel).await?;
-                result.output["operation"] = json!("record");
-                result.output["duration_ms"] = json!(recorded.duration_ms);
-                Ok(result)
-            }
-            MediaOperation::Play => {
-                let _path = params
-                    .file_path
-                    .clone()
-                    .ok_or_else(|| anyhow::anyhow!("file_path (.wav) is required for play"))?;
-                self.audio_runtime.play(&params).await?;
-                let mut output = self.media_result_output(MediaOperation::Play, None, None, None);
-                output["played"] = json!(true);
-                output["format"] = json!("wav");
-                Ok(ToolResult::ok(output))
-            }
-            MediaOperation::Speak => {
-                let characters = self.audio_runtime.speak(&params, cancel).await?;
-                let mut output = self.media_result_output(MediaOperation::Speak, None, None, None);
-                output["spoken"] = json!(true);
-                output["characters"] = json!(characters);
-                output["format"] = json!("wav");
-                output["delivered_to"] = json!(["speakers"]);
-                Ok(ToolResult::ok(output))
-            }
-            MediaOperation::VolumeGet => {
-                let volume = self.audio_runtime.volume_get().await?;
-                let mut output =
-                    self.media_result_output(MediaOperation::VolumeGet, None, None, None);
-                output["volume"] = json!(volume);
-                Ok(ToolResult::ok(output))
-            }
-            MediaOperation::VolumeSet => {
-                let volume = params
-                    .volume
-                    .ok_or_else(|| anyhow::anyhow!("volume is required for volume_set"))?;
-                if !(0.0..=1.0).contains(&volume) {
-                    anyhow::bail!("volume must be between 0 and 1");
-                }
-                let volume = self.audio_runtime.volume_set(volume).await?;
-                let mut output =
-                    self.media_result_output(MediaOperation::VolumeSet, None, None, None);
-                output["volume"] = json!(volume);
-                output["set"] = json!(true);
-                Ok(ToolResult::ok(output))
-            }
-            MediaOperation::MuteGet => {
-                let muted = self.audio_runtime.mute_get().await?;
-                let mut output =
-                    self.media_result_output(MediaOperation::MuteGet, None, None, None);
-                output["muted"] = json!(muted);
-                Ok(ToolResult::ok(output))
-            }
-            MediaOperation::MuteSet => {
-                let muted = params
-                    .muted
-                    .ok_or_else(|| anyhow::anyhow!("muted is required for mute_set"))?;
-                self.audio_runtime.mute_set(muted).await?;
-                let mut output =
-                    self.media_result_output(MediaOperation::MuteSet, None, None, None);
-                output["muted"] = json!(muted);
-                output["set"] = json!(true);
-                Ok(ToolResult::ok(output))
-            }
-            _ => unreachable!("non-audio operation passed to run_audio"),
         }
     }
 }

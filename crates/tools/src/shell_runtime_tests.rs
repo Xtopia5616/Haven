@@ -15,8 +15,10 @@ fn test_encode_utf16le_base64_roundtrips_unicode() {
         .decode(&encoded)
         .expect("valid base64");
     let units: Vec<u16> = raw
-        .chunks_exact(2)
-        .map(|c| u16::from_le_bytes([c[0], c[1]]))
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|chunk| u16::from_le_bytes(*chunk))
         .collect();
     assert_eq!(
         String::from_utf16(&units).expect("valid UTF-16"),
@@ -48,8 +50,10 @@ fn test_build_shell_command_powershell_uses_encoded_command() {
         .decode(&args[3])
         .expect("valid base64");
     let units: Vec<u16> = raw
-        .chunks_exact(2)
-        .map(|c| u16::from_le_bytes([c[0], c[1]]))
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|chunk| u16::from_le_bytes(*chunk))
         .collect();
     let payload = String::from_utf16(&units).expect("valid UTF-16");
     assert!(

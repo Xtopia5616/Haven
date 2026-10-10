@@ -876,7 +876,7 @@ async fn run_session_cancelled_mid_batch_surfaces_interrupted_tools() {
         "interrupted tools must be persisted in session_steps for UI rebuild (got {:?})",
         db_steps
             .iter()
-            .map(|s| (s.tool_name.clone(), s.status.clone(), s.observation.clone()))
+            .map(|s| (s.tool_name.clone(), s.status, s.observation.clone()))
             .collect::<Vec<_>>()
     );
 }

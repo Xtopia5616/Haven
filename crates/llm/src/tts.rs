@@ -441,9 +441,7 @@ mod tests {
             provider: "claude".into(),
             ..Default::default()
         };
-        let err = resolve_tts_config(&cfg, &providers)
-            .err()
-            .expect("expected error");
+        let err = resolve_tts_config(&cfg, &providers).expect_err("expected error");
         assert!(err.to_string().contains("does not support TTS"));
     }
 

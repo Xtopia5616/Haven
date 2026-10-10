@@ -237,7 +237,7 @@ mod tests {
         );
         let sample = memory_recall_term_sample(&terms, 6);
         assert!(
-            sample.iter().any(|t| *t == "喝咖啡"),
+            sample.contains(&"喝咖啡"),
             "search sample of 6 must still include tail 喝咖啡, got {:?}",
             sample
         );

@@ -12,8 +12,10 @@ use super::*;
         let tmp = TempDir::new().unwrap();
         let file = tmp.path().join("bounded.txt");
         tokio::fs::write(&file, "abcdefghij").await.unwrap();
-        let mut tool = FilesTool::default();
-        tool.max_output_chars = 4;
+        let tool = FilesTool {
+            max_output_chars: 4,
+            ..FilesTool::default()
+        };
 
         let result = tool
             .execute(

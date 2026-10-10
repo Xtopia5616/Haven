@@ -776,7 +776,6 @@ mod tests {
             model: String::new(),
             timeout_secs: 30,
             min_confidence: 0.7,
-            ..Default::default()
         };
         let ep = endpoint_from_resolved_stt_config(&cfg);
         assert_eq!(ep.base_url, "https://gateway.example/v1");
@@ -791,7 +790,6 @@ mod tests {
             base_url: String::new(),
             timeout_secs: 30,
             min_confidence: 0.7,
-            ..Default::default()
         });
         assert_eq!(groq.base_url, "https://api.groq.com/openai/v1");
         assert!(groq.model_name.contains("whisper"));
@@ -804,7 +802,6 @@ mod tests {
             base_url: String::new(),
             timeout_secs: 30,
             min_confidence: 0.7,
-            ..Default::default()
         });
         assert_eq!(
             gemini.base_url,
@@ -821,7 +818,6 @@ mod tests {
             base_url: String::new(),
             timeout_secs: 30,
             min_confidence: 0.7,
-            ..Default::default()
         });
         assert_eq!(deepgram.api_style.as_deref(), Some("deepgram"));
         assert_eq!(deepgram.model_name, "nova-3");
@@ -834,7 +830,6 @@ mod tests {
             base_url: "https://api.eu.assemblyai.com".into(),
             timeout_secs: 30,
             min_confidence: 0.7,
-            ..Default::default()
         });
         assert_eq!(assembly.base_url, "https://api.eu.assemblyai.com");
         assert_eq!(assembly.model_name, "universal-2");

@@ -501,7 +501,7 @@ mod tests {
             return;
         };
         let exe = std::env::current_exe().expect("test executable path");
-        let descendant = Command::new(exe)
+        let mut descendant = Command::new(exe)
             .args([
                 "--exact",
                 "process_containment::tests::long_lived_descendant_helper",
@@ -513,9 +513,7 @@ mod tests {
             .spawn()
             .expect("spawn long-lived descendant");
         fs::write(pid_file, descendant.id().to_string()).expect("write descendant pid");
-        loop {
-            thread::sleep(Duration::from_secs(60));
-        }
+        let _ = descendant.wait();
     }
 
     #[test]

@@ -104,8 +104,10 @@ use super::*;
         router
             .force_request_configured(RequestKind::FastChat, true)
             .await;
-        let mut tool = FilesTool::default();
-        tool.summarizer = Some(router);
+        let tool = FilesTool {
+            summarizer: Some(router),
+            ..FilesTool::default()
+        };
 
         let result = tool
             .execute(
@@ -146,8 +148,10 @@ use super::*;
         router
             .force_request_configured(RequestKind::Chat, true)
             .await;
-        let mut tool = FilesTool::default();
-        tool.summarizer = Some(router);
+        let tool = FilesTool {
+            summarizer: Some(router),
+            ..FilesTool::default()
+        };
 
         let result = tool
             .execute(

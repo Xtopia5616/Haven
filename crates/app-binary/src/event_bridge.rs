@@ -59,186 +59,6 @@ pub(crate) fn project_tool_run_event(event: ToolRunLifecycleEvent) -> ToolRunEve
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use haven_agent::{ToolRunCompletionStatus, ToolRunNotificationSource};
-
-    #[test]
-    fn tool_run_output_event_projects_only_the_bounded_preview_fields() {
-        let event = ToolRunLifecycleEvent::Output(haven_tools::ToolRunOutputPayload {
-            tool_run_id: "toolrun-output-preview".into(),
-            source_step_id: Some("step-output-preview".into()),
-            output: "bounded tail snapshot".into(),
-        });
-        let projection = project_tool_run_event(event);
-        assert_eq!(projection.channel, TOOL_RUN_OUTPUT_EVENT);
-        let wire = serde_json::to_value(projection.payload).unwrap();
-        assert_eq!(
-            wire,
-            serde_json::json!({
-                "tool_run_id": "toolrun-output-preview",
-                "kind": "background",
-                "status": "running",
-                "source_step_id": "step-output-preview",
-                "output": "bounded tail snapshot",
-            })
-        );
-        let serialized = wire.to_string();
-        assert!(!serialized.contains("tool_args"));
-        assert!(!serialized.contains("log_path"));
-    }
-
-    #[test]
-    fn tool_run_completion_notification_is_tagged_without_changing_generic_wire() {
-        let generic = AgentEvent::Notification {
-            session_id: Some("ses-generic".into()),
-            title: "Notice".into(),
-            body: "Generic notice".into(),
-        };
-        assert_eq!(TauriEmitter::channel(&generic), NOTIFICATION_SHOW_EVENT);
-        assert_eq!(
-            TauriEmitter::payload(&generic, None),
-            serde_json::json!({
-                "session_id": "ses-generic",
-                "title": "Notice",
-                "body": "Generic notice",
-            })
-        );
-
-        let tool_run_completion = AgentEvent::ToolRunCompletionNotification {
-            tool_run_kind: ToolRunNotificationSource::Scheduled,
-            tool_run_id: "toolrun-scheduled".into(),
-            session_id: None,
-            tool_run_status: None,
-            title: "任务完成".into(),
-            body: "结果".into(),
-        };
-        assert_eq!(
-            TauriEmitter::channel(&tool_run_completion),
-            NOTIFICATION_SHOW_EVENT
-        );
-        assert_eq!(
-            TauriEmitter::payload(&tool_run_completion, None),
-            serde_json::json!({
-                "title": "任务完成",
-                "body": "结果",
-                "notification_kind": "tool_run_completion",
-                "tool_run_kind": "scheduled",
-                "tool_run_id": "toolrun-scheduled",
-            })
-        );
-
-        let background_completion = AgentEvent::ToolRunCompletionNotification {
-            tool_run_kind: ToolRunNotificationSource::Background,
-            tool_run_id: "toolrun-background".into(),
-            session_id: Some("ses-owner".into()),
-            tool_run_status: Some(ToolRunCompletionStatus::Failed),
-            title: "后台任务失败".into(),
-            body: "错误摘要".into(),
-        };
-        assert_eq!(
-            TauriEmitter::payload(&background_completion, None),
-            serde_json::json!({
-                "session_id": "ses-owner",
-                "title": "后台任务失败",
-                "body": "错误摘要",
-                "notification_kind": "tool_run_completion",
-                "tool_run_kind": "background",
-                "tool_run_id": "toolrun-background",
-                "tool_run_status": "failed",
-            })
-        );
-
-        let completed_completion = AgentEvent::ToolRunCompletionNotification {
-            tool_run_kind: ToolRunNotificationSource::Background,
-            tool_run_id: "toolrun-completed".into(),
-            session_id: Some("ses-owner".into()),
-            tool_run_status: Some(ToolRunCompletionStatus::Completed),
-            title: "后台任务已完成".into(),
-            body: "完成".into(),
-        };
-        assert_eq!(
-            TauriEmitter::payload(&completed_completion, None)["tool_run_status"],
-            "completed"
-        );
-    }
-
-    #[test]
-    fn agent_observation_uses_the_result_envelope_as_its_only_outcome_source() {
-        let event = AgentEvent::Observation {
-            session_id: "ses-1".into(),
-            observation: "operation result".into(),
-            tool_name: "files.read".into(),
-            step_number: 1,
-            run_id: 1,
-            silent: false,
-            tool_call_id: Some("call-1".into()),
-            tool_index: 0,
-            ask_options: Vec::new(),
-            step_id: "step-1".into(),
-            idempotency: haven_common::tools::OperationIdempotency::Idempotent,
-            operation_scope: haven_common::tools::ToolOperationScope::Session,
-            renderer: "files".into(),
-            result: haven_tools::ToolResultEnvelope::default(),
-            event_seq: Some(1),
-        };
-
-        let payload = TauriEmitter::payload(&event, None);
-        assert_eq!(payload["result"]["outcome"], "failed");
-        assert!(payload.get("outcome").is_none());
-    }
-
-    #[test]
-    fn session_lifecycle_variants_share_one_channel_and_keep_terminal_details_typed() {
-        let completed = AgentEvent::SessionCompleted {
-            session_id: "ses-completed".into(),
-            title: "研究".into(),
-            reason: "用户主动结束会话".into(),
-        };
-        assert_eq!(TauriEmitter::channel(&completed), SESSION_LIFECYCLE_EVENT);
-        assert_eq!(
-            TauriEmitter::payload(&completed, None),
-            serde_json::json!({
-                "type": "completed",
-                "session_id": "ses-completed",
-                "title": "研究",
-                "reason": "用户主动结束会话",
-            })
-        );
-
-        let failed = AgentEvent::SessionError {
-            session_id: "ses-error".into(),
-            error: "网络请求超时".into(),
-        };
-        assert_eq!(TauriEmitter::channel(&failed), SESSION_LIFECYCLE_EVENT);
-        assert_eq!(
-            TauriEmitter::payload(&failed, None),
-            serde_json::json!({
-                "type": "error",
-                "session_id": "ses-error",
-                "title": "ses-error",
-                "error": "网络请求超时",
-            })
-        );
-
-        let single = AgentEvent::SessionDeleted {
-            session_id: Some("ses-deleted".into()),
-        };
-        assert_eq!(TauriEmitter::channel(&single), SESSION_LIFECYCLE_EVENT);
-        assert_eq!(
-            TauriEmitter::payload(&single, None),
-            serde_json::json!({ "type": "deleted", "session_id": "ses-deleted" })
-        );
-
-        let all = AgentEvent::SessionDeleted { session_id: None };
-        assert_eq!(
-            TauriEmitter::payload(&all, None),
-            serde_json::json!({ "type": "deleted", "session_id": null })
-        );
-    }
-}
-
 #[async_trait::async_trait]
 impl AgentEventEmitter for TauriEmitter {
     async fn emit(&self, event: AgentEvent) {
@@ -863,5 +683,185 @@ impl TauriEmitter {
             }
             _ => {}
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use haven_agent::{ToolRunCompletionStatus, ToolRunNotificationSource};
+
+    #[test]
+    fn tool_run_output_event_projects_only_the_bounded_preview_fields() {
+        let event = ToolRunLifecycleEvent::Output(haven_tools::ToolRunOutputPayload {
+            tool_run_id: "toolrun-output-preview".into(),
+            source_step_id: Some("step-output-preview".into()),
+            output: "bounded tail snapshot".into(),
+        });
+        let projection = project_tool_run_event(event);
+        assert_eq!(projection.channel, TOOL_RUN_OUTPUT_EVENT);
+        let wire = serde_json::to_value(projection.payload).unwrap();
+        assert_eq!(
+            wire,
+            serde_json::json!({
+                "tool_run_id": "toolrun-output-preview",
+                "kind": "background",
+                "status": "running",
+                "source_step_id": "step-output-preview",
+                "output": "bounded tail snapshot",
+            })
+        );
+        let serialized = wire.to_string();
+        assert!(!serialized.contains("tool_args"));
+        assert!(!serialized.contains("log_path"));
+    }
+
+    #[test]
+    fn tool_run_completion_notification_is_tagged_without_changing_generic_wire() {
+        let generic = AgentEvent::Notification {
+            session_id: Some("ses-generic".into()),
+            title: "Notice".into(),
+            body: "Generic notice".into(),
+        };
+        assert_eq!(TauriEmitter::channel(&generic), NOTIFICATION_SHOW_EVENT);
+        assert_eq!(
+            TauriEmitter::payload(&generic, None),
+            serde_json::json!({
+                "session_id": "ses-generic",
+                "title": "Notice",
+                "body": "Generic notice",
+            })
+        );
+
+        let tool_run_completion = AgentEvent::ToolRunCompletionNotification {
+            tool_run_kind: ToolRunNotificationSource::Scheduled,
+            tool_run_id: "toolrun-scheduled".into(),
+            session_id: None,
+            tool_run_status: None,
+            title: "任务完成".into(),
+            body: "结果".into(),
+        };
+        assert_eq!(
+            TauriEmitter::channel(&tool_run_completion),
+            NOTIFICATION_SHOW_EVENT
+        );
+        assert_eq!(
+            TauriEmitter::payload(&tool_run_completion, None),
+            serde_json::json!({
+                "title": "任务完成",
+                "body": "结果",
+                "notification_kind": "tool_run_completion",
+                "tool_run_kind": "scheduled",
+                "tool_run_id": "toolrun-scheduled",
+            })
+        );
+
+        let background_completion = AgentEvent::ToolRunCompletionNotification {
+            tool_run_kind: ToolRunNotificationSource::Background,
+            tool_run_id: "toolrun-background".into(),
+            session_id: Some("ses-owner".into()),
+            tool_run_status: Some(ToolRunCompletionStatus::Failed),
+            title: "后台任务失败".into(),
+            body: "错误摘要".into(),
+        };
+        assert_eq!(
+            TauriEmitter::payload(&background_completion, None),
+            serde_json::json!({
+                "session_id": "ses-owner",
+                "title": "后台任务失败",
+                "body": "错误摘要",
+                "notification_kind": "tool_run_completion",
+                "tool_run_kind": "background",
+                "tool_run_id": "toolrun-background",
+                "tool_run_status": "failed",
+            })
+        );
+
+        let completed_completion = AgentEvent::ToolRunCompletionNotification {
+            tool_run_kind: ToolRunNotificationSource::Background,
+            tool_run_id: "toolrun-completed".into(),
+            session_id: Some("ses-owner".into()),
+            tool_run_status: Some(ToolRunCompletionStatus::Completed),
+            title: "后台任务已完成".into(),
+            body: "完成".into(),
+        };
+        assert_eq!(
+            TauriEmitter::payload(&completed_completion, None)["tool_run_status"],
+            "completed"
+        );
+    }
+
+    #[test]
+    fn agent_observation_uses_the_result_envelope_as_its_only_outcome_source() {
+        let event = AgentEvent::Observation {
+            session_id: "ses-1".into(),
+            observation: "operation result".into(),
+            tool_name: "files.read".into(),
+            step_number: 1,
+            run_id: 1,
+            silent: false,
+            tool_call_id: Some("call-1".into()),
+            tool_index: 0,
+            ask_options: Vec::new(),
+            step_id: "step-1".into(),
+            idempotency: haven_common::tools::OperationIdempotency::Idempotent,
+            operation_scope: haven_common::tools::ToolOperationScope::Session,
+            renderer: "files".into(),
+            result: haven_tools::ToolResultEnvelope::default(),
+            event_seq: Some(1),
+        };
+
+        let payload = TauriEmitter::payload(&event, None);
+        assert_eq!(payload["result"]["outcome"], "failed");
+        assert!(payload.get("outcome").is_none());
+    }
+
+    #[test]
+    fn session_lifecycle_variants_share_one_channel_and_keep_terminal_details_typed() {
+        let completed = AgentEvent::SessionCompleted {
+            session_id: "ses-completed".into(),
+            title: "研究".into(),
+            reason: "用户主动结束会话".into(),
+        };
+        assert_eq!(TauriEmitter::channel(&completed), SESSION_LIFECYCLE_EVENT);
+        assert_eq!(
+            TauriEmitter::payload(&completed, None),
+            serde_json::json!({
+                "type": "completed",
+                "session_id": "ses-completed",
+                "title": "研究",
+                "reason": "用户主动结束会话",
+            })
+        );
+
+        let failed = AgentEvent::SessionError {
+            session_id: "ses-error".into(),
+            error: "网络请求超时".into(),
+        };
+        assert_eq!(TauriEmitter::channel(&failed), SESSION_LIFECYCLE_EVENT);
+        assert_eq!(
+            TauriEmitter::payload(&failed, None),
+            serde_json::json!({
+                "type": "error",
+                "session_id": "ses-error",
+                "title": "ses-error",
+                "error": "网络请求超时",
+            })
+        );
+
+        let single = AgentEvent::SessionDeleted {
+            session_id: Some("ses-deleted".into()),
+        };
+        assert_eq!(TauriEmitter::channel(&single), SESSION_LIFECYCLE_EVENT);
+        assert_eq!(
+            TauriEmitter::payload(&single, None),
+            serde_json::json!({ "type": "deleted", "session_id": "ses-deleted" })
+        );
+
+        let all = AgentEvent::SessionDeleted { session_id: None };
+        assert_eq!(
+            TauriEmitter::payload(&all, None),
+            serde_json::json!({ "type": "deleted", "session_id": null })
+        );
     }
 }

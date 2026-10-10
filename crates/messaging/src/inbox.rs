@@ -1816,7 +1816,7 @@ mod tests {
         let (_dir, bus) = test_bus();
         bus.register("ses-b", &[]).unwrap();
         let good = env_from("ses-a", "ses-b", "ok");
-        write_mailbox(&bus, "ses-b", &[good.clone()]);
+        write_mailbox(&bus, "ses-b", std::slice::from_ref(&good));
         let mut f = OpenOptions::new()
             .append(true)
             .open(bus.mailbox("ses-b"))
@@ -1839,7 +1839,7 @@ mod tests {
         let (_dir, bus) = test_bus();
         bus.register("ses-b", &[]).unwrap();
         let env = env_from("ses-a", "ses-b", "crash 前写的");
-        write_mailbox(&bus, "ses-b", &[env.clone()]);
+        write_mailbox(&bus, "ses-b", std::slice::from_ref(&env));
         // Simulate a crash after the mailbox → .processing rename.
         std::fs::rename(bus.mailbox("ses-b"), bus.processing("ses-b")).unwrap();
         let msgs = claim_and_ack(&bus, "ses-b");
@@ -1854,7 +1854,7 @@ mod tests {
         let (_dir, bus) = test_bus();
         bus.register("ses-b", &[]).unwrap();
         let first = env_from("ses-a", "ses-b", "第一次");
-        write_mailbox(&bus, "ses-b", &[first.clone()]);
+        write_mailbox(&bus, "ses-b", std::slice::from_ref(&first));
         std::fs::rename(bus.mailbox("ses-b"), bus.processing("ses-b")).unwrap();
         // New writes land in the fresh mailbox after the crash.
         write_mailbox(&bus, "ses-b", &[env_from("ses-a", "ses-b", "第二次")]);
@@ -1872,14 +1872,14 @@ mod tests {
         let (_dir, bus) = test_bus();
         bus.register("ses-b", &[]).unwrap();
         let env = env_from("ses-a", "ses-b", "同一封");
-        write_mailbox(&bus, "ses-b", &[env.clone()]);
+        write_mailbox(&bus, "ses-b", std::slice::from_ref(&env));
         std::fs::rename(bus.mailbox("ses-b"), bus.processing("ses-b")).unwrap();
         // Crash AFTER archiving but BEFORE deleting .processing: the message
         // is already in the archive. Re-reading must not duplicate it — in
         // the archive NOR in what is returned to the agent.
         let msgs = claim_and_ack(&bus, "ses-b");
         assert_eq!(msgs.len(), 1, "first drain returns the message");
-        write_mailbox(&bus, "ses-b", &[env.clone()]);
+        write_mailbox(&bus, "ses-b", std::slice::from_ref(&env));
         std::fs::rename(bus.mailbox("ses-b"), bus.processing("ses-b")).unwrap();
         let msgs = claim_and_ack(&bus, "ses-b");
         assert!(
@@ -1952,13 +1952,13 @@ mod tests {
         bus.register("ses-b", &[]).unwrap();
         // Archive history: an old message from ses-a.
         let old = env_from("ses-a", "ses-b", "旧消息");
-        write_mailbox(&bus, "ses-b", &[old.clone()]);
+        write_mailbox(&bus, "ses-b", std::slice::from_ref(&old));
         std::fs::rename(bus.mailbox("ses-b"), bus.processing("ses-b")).unwrap();
         claim_and_ack(&bus, "ses-b");
         // New unread message from ses-c with a custom reply_address.
         let mut fresh = env_from("ses-c", "ses-b", "新消息");
         fresh.reply_address = Some("ses-cc".into());
-        write_mailbox(&bus, "ses-b", &[fresh.clone()]);
+        write_mailbox(&bus, "ses-b", std::slice::from_ref(&fresh));
 
         let last = bus.last_received("ses-b").unwrap().unwrap();
         assert_eq!(last.id, fresh.id, "unread mailbox wins over archive");
@@ -1987,11 +1987,11 @@ mod tests {
         let (_dir, bus) = test_bus();
         bus.register("ses-b", &[]).unwrap();
         let archived = env_from("ses-a", "ses-b", "已读");
-        write_mailbox(&bus, "ses-b", &[archived.clone()]);
+        write_mailbox(&bus, "ses-b", std::slice::from_ref(&archived));
         std::fs::rename(bus.mailbox("ses-b"), bus.processing("ses-b")).unwrap();
         claim_and_ack(&bus, "ses-b");
         let fresh = env_from("ses-a", "ses-b", "未读");
-        write_mailbox(&bus, "ses-b", &[fresh.clone()]);
+        write_mailbox(&bus, "ses-b", std::slice::from_ref(&fresh));
 
         let found = bus.find_message("ses-b", &fresh.id).unwrap().unwrap();
         assert_eq!(found.id, fresh.id);
@@ -2338,11 +2338,11 @@ mod tests {
         let (_dir, bus) = test_bus();
         bus.register("ses-b", &[]).unwrap();
         let old = env_from("ses-a", "ses-b", "已读的旧消息");
-        write_mailbox(&bus, "ses-b", &[old.clone()]);
+        write_mailbox(&bus, "ses-b", std::slice::from_ref(&old));
         std::fs::rename(bus.mailbox("ses-b"), bus.processing("ses-b")).unwrap();
         claim_and_ack(&bus, "ses-b");
         let fresh = env_from("ses-a", "ses-b", "未读的新消息");
-        write_mailbox(&bus, "ses-b", &[fresh.clone()]);
+        write_mailbox(&bus, "ses-b", std::slice::from_ref(&fresh));
 
         let history = bus.history("ses-b", 10).unwrap();
         assert_eq!(history.len(), 2);

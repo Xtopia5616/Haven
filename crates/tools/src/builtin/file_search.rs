@@ -1046,7 +1046,6 @@ mod tests {
         let held = engine.search_slots.clone().acquire_owned().await.unwrap();
         let cancel = CancellationToken::new();
         let task = tokio::spawn({
-            let engine = engine;
             let cancel = cancel.clone();
             async move {
                 engine

@@ -319,31 +319,6 @@ impl OpenAiAdapter {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn checked_tool_call_index_rejects_negative_values() {
-        assert!(matches!(
-            checked_tool_call_index(Some(-1)),
-            Err(LlmError::InvalidResponse(message)) if message.contains("non-negative")
-        ));
-    }
-
-    #[test]
-    fn checked_tool_call_index_enforces_the_response_limit() {
-        assert_eq!(
-            checked_tool_call_index(Some((MAX_STREAM_TOOL_CALLS - 1) as i32)).unwrap(),
-            MAX_STREAM_TOOL_CALLS - 1
-        );
-        assert!(matches!(
-            checked_tool_call_index(Some(MAX_STREAM_TOOL_CALLS as i32)),
-            Err(LlmError::InvalidResponse(message)) if message.contains("tool-call limit")
-        ));
-        assert_eq!(checked_tool_call_index(None).unwrap(), 0);
-    }
-}
 pub(super) fn append_stream_text(accumulated: &mut String, content: &str) -> Option<String> {
     let delta = if content.starts_with(accumulated.as_str()) {
         &content[accumulated.len()..]
@@ -375,5 +350,31 @@ pub(super) fn stream_content(choice: &OpenAiChoice) -> Option<String> {
         (Some(delta), _) => Some(delta.to_string()),
         (None, Some(message)) => Some(message.to_string()),
         (None, None) => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn checked_tool_call_index_rejects_negative_values() {
+        assert!(matches!(
+            checked_tool_call_index(Some(-1)),
+            Err(LlmError::InvalidResponse(message)) if message.contains("non-negative")
+        ));
+    }
+
+    #[test]
+    fn checked_tool_call_index_enforces_the_response_limit() {
+        assert_eq!(
+            checked_tool_call_index(Some((MAX_STREAM_TOOL_CALLS - 1) as i32)).unwrap(),
+            MAX_STREAM_TOOL_CALLS - 1
+        );
+        assert!(matches!(
+            checked_tool_call_index(Some(MAX_STREAM_TOOL_CALLS as i32)),
+            Err(LlmError::InvalidResponse(message)) if message.contains("tool-call limit")
+        ));
+        assert_eq!(checked_tool_call_index(None).unwrap(), 0);
     }
 }

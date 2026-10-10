@@ -889,9 +889,11 @@ mod tests {
         let (finished_tx, mut finished_rx) = oneshot::channel();
         let (next_recording_tx, next_recording_rx) = oneshot::channel();
 
-        let mut result = RecordingResult::default();
-        result.reason = RecordingReason::Silence;
-        result.duration_ms = 37;
+        let result = RecordingResult {
+            reason: RecordingReason::Silence,
+            duration_ms: 37,
+            ..RecordingResult::default()
+        };
 
         tokio::time::timeout(
             std::time::Duration::from_secs(5),
@@ -978,8 +980,10 @@ mod tests {
         let recording_id = owner.begin(&lifecycle);
         owner.finish(&lifecycle);
 
-        let mut result = RecordingResult::default();
-        result.reason = RecordingReason::Manual;
+        let result = RecordingResult {
+            reason: RecordingReason::Manual,
+            ..RecordingResult::default()
+        };
         finish_recording_stop(
             &shell,
             RecordingStopCompletion {
@@ -1011,8 +1015,10 @@ mod tests {
         let lifecycle = owner.lock().await;
         let recording_id = owner.begin(&lifecycle);
         owner.finish(&lifecycle);
-        let mut result = RecordingResult::default();
-        result.reason = RecordingReason::Cancel;
+        let result = RecordingResult {
+            reason: RecordingReason::Cancel,
+            ..RecordingResult::default()
+        };
         let schedule_called = Arc::new(std::sync::atomic::AtomicBool::new(false));
 
         finish_recording_stop(
@@ -1059,8 +1065,10 @@ mod tests {
         let lifecycle = owner.lock().await;
         let recording_id = owner.begin(&lifecycle);
         owner.finish(&lifecycle);
-        let mut result = RecordingResult::default();
-        result.reason = RecordingReason::Silence;
+        let result = RecordingResult {
+            reason: RecordingReason::Silence,
+            ..RecordingResult::default()
+        };
         let stopped_recording_id = recording_id.clone();
 
         finish_recording_stop(

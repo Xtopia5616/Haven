@@ -234,13 +234,14 @@ mod tests {
             .expect("second stream establishment succeeds");
 
         assert_eq!(client.attempts.load(Ordering::SeqCst), 2);
-        let messages = client.messages.lock().unwrap();
-        assert_eq!(messages.len(), 2);
-        assert_eq!(
-            messages[0], messages[1],
-            "each attempt gets the same message clone"
-        );
-        drop(messages);
+        {
+            let messages = client.messages.lock().unwrap();
+            assert_eq!(messages.len(), 2);
+            assert_eq!(
+                messages[0], messages[1],
+                "each attempt gets the same message clone"
+            );
+        }
         assert_eq!(
             *outcomes.lock().unwrap(),
             vec![("stream-model".into(), RequestOutcome::Success)]

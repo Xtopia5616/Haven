@@ -672,7 +672,14 @@ fn test_make_tray_icon_uses_opaque_background_and_status_colors() {
         255,
         "desktop tray icon should use an opaque brand tile"
     );
-    assert!(images[0].rgba().chunks_exact(4).any(|pixel| pixel[3] > 0));
+    assert!(
+        images[0]
+            .rgba()
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .any(|pixel| pixel[3] > 0)
+    );
     let expected_border_red = [44, 240, 169, 255];
     let border_offset = ((TRAY_ICON_SIZE / 16) * TRAY_ICON_SIZE + TRAY_ICON_SIZE / 2) * 4;
     for (index, image) in images.iter().enumerate() {

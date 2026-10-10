@@ -526,7 +526,9 @@ mod tests {
         );
         let confirmation_id = confirmation.id.clone();
 
-        let durable = ConfirmationBatchPlan::from_plan(7, &plan, &[confirmation.clone()]).unwrap();
+        let durable =
+            ConfirmationBatchPlan::from_plan(7, &plan, std::slice::from_ref(&confirmation))
+                .unwrap();
         durable.validate_requests(&[confirmation]).unwrap();
         let encoded = serde_json::to_string(&durable).unwrap();
         assert!(!encoded.contains("tool_input"));
@@ -579,7 +581,8 @@ mod tests {
             haven_common::types::RiskLevel::High,
             None,
         );
-        let durable = ConfirmationBatchPlan::from_plan(2, &plan, &[request.clone()]).unwrap();
+        let durable =
+            ConfirmationBatchPlan::from_plan(2, &plan, std::slice::from_ref(&request)).unwrap();
         let event = |sequence, event_type: &str, payload: String| haven_memory::SessionEvent {
             session_id: "ses-test".into(),
             sequence,
@@ -607,7 +610,7 @@ mod tests {
         );
 
         assert!(
-            ConfirmationBatchPlan::replay(&[planned.clone()])
+            ConfirmationBatchPlan::replay(std::slice::from_ref(&planned))
                 .unwrap()
                 .is_some()
         );

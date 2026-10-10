@@ -1488,7 +1488,7 @@ mod tests {
 
     enum ProbeResponse {
         Error(LlmError),
-        Chunk(StreamChunk),
+        Chunk(Box<StreamChunk>),
     }
 
     struct ProbeClient {
@@ -1545,7 +1545,7 @@ mod tests {
             self.stream_calls.fetch_add(1, Ordering::Relaxed);
             match self.stream_responses.lock().unwrap().pop_front() {
                 Some(ProbeResponse::Error(error)) => Err(error),
-                Some(ProbeResponse::Chunk(chunk)) => Ok(Box::pin(stream::iter(vec![Ok(chunk)]))),
+                Some(ProbeResponse::Chunk(chunk)) => Ok(Box::pin(stream::iter(vec![Ok(*chunk)]))),
                 None => Err(LlmError::Unknown("probe responses exhausted".into())),
             }
         }
@@ -1562,7 +1562,7 @@ mod tests {
             self.stream_calls.fetch_add(1, Ordering::Relaxed);
             match self.stream_responses.lock().unwrap().pop_front() {
                 Some(ProbeResponse::Error(error)) => Err(error),
-                Some(ProbeResponse::Chunk(chunk)) => Ok(Box::pin(stream::iter(vec![Ok(chunk)]))),
+                Some(ProbeResponse::Chunk(chunk)) => Ok(Box::pin(stream::iter(vec![Ok(*chunk)]))),
                 None => Err(LlmError::Unknown("probe responses exhausted".into())),
             }
         }
@@ -1626,8 +1626,8 @@ mod tests {
         ));
         let session = db.create_session("role probe").unwrap();
         let default_client = Arc::new(ProbeClient::new(vec![
-            ProbeResponse::Chunk(chunk("I will finish", FinishReason::Length)),
-            ProbeResponse::Chunk(chunk("Finished.", FinishReason::Stop)),
+            ProbeResponse::Chunk(Box::new(chunk("I will finish", FinishReason::Length))),
+            ProbeResponse::Chunk(Box::new(chunk("Finished.", FinishReason::Stop))),
         ]));
         let image_client = Arc::new(ProbeClient::new(vec![ProbeResponse::Error(
             LlmError::ContextLengthExceeded,

@@ -185,41 +185,6 @@ impl desktop::ShellHandler for HavenShellHandler {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::sync::atomic::{AtomicUsize, Ordering};
-
-    #[tokio::test]
-    async fn unowned_capture_does_not_invoke_stop_capture() {
-        let stop_calls = Arc::new(AtomicUsize::new(0));
-        let capture_state = Arc::new(std::sync::Mutex::new(
-            haven_input::RecordingState::Recording,
-        ));
-        let stop_calls_in_closure = stop_calls.clone();
-        let capture_in_closure = capture_state.clone();
-
-        let outcome = stop_capture_for_owned_recording(None::<RecordingId>, move || async move {
-            stop_calls_in_closure.fetch_add(1, Ordering::SeqCst);
-            *capture_in_closure
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner()) =
-                haven_input::RecordingState::Pending;
-            Ok::<(), &'static str>(())
-        })
-        .await;
-
-        assert!(matches!(outcome, Ok(None)));
-        assert_eq!(stop_calls.load(Ordering::SeqCst), 0);
-        assert_eq!(
-            *capture_state
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner()),
-            haven_input::RecordingState::Recording
-        );
-    }
-}
-
 /// Concrete `InputEventHandler` wiring VAD status + auto-stop to the Tauri app
 /// handle and the desktop shell. Replaces the former separate
 /// `set_vad_status_callback` + `set_on_auto_stop` bindings on `InputPipeline`.
@@ -353,4 +318,39 @@ fn triangle_contains(x: f32, y: f32, a: (f32, f32), b: (f32, f32), c: (f32, f32)
     let has_negative = d1 < 0.0 || d2 < 0.0 || d3 < 0.0;
     let has_positive = d1 > 0.0 || d2 > 0.0 || d3 > 0.0;
     !(has_negative && has_positive)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[tokio::test]
+    async fn unowned_capture_does_not_invoke_stop_capture() {
+        let stop_calls = Arc::new(AtomicUsize::new(0));
+        let capture_state = Arc::new(std::sync::Mutex::new(
+            haven_input::RecordingState::Recording,
+        ));
+        let stop_calls_in_closure = stop_calls.clone();
+        let capture_in_closure = capture_state.clone();
+
+        let outcome = stop_capture_for_owned_recording(None::<RecordingId>, move || async move {
+            stop_calls_in_closure.fetch_add(1, Ordering::SeqCst);
+            *capture_in_closure
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()) =
+                haven_input::RecordingState::Pending;
+            Ok::<(), &'static str>(())
+        })
+        .await;
+
+        assert!(matches!(outcome, Ok(None)));
+        assert_eq!(stop_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            *capture_state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()),
+            haven_input::RecordingState::Recording
+        );
+    }
 }

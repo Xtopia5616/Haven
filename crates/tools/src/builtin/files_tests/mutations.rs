@@ -314,8 +314,10 @@ use super::*;
         assert!(result.is_err());
         assert_eq!(tokio::fs::read_to_string(&file).await.unwrap(), original);
 
-        let mut tool = FilesTool::default();
-        tool.max_read_chars = 10;
+        let tool = FilesTool {
+            max_read_chars: 10,
+            ..FilesTool::default()
+        };
         let result = tool
             .execute(
                 json!({
@@ -538,8 +540,10 @@ use super::*;
             .await
             .unwrap();
 
-        let mut tool = FilesTool::default();
-        tool.max_list_entries = 1;
+        let tool = FilesTool {
+            max_list_entries: 1,
+            ..FilesTool::default()
+        };
         let result = tool
             .execute(
                 json!({"operation": "list", "path": tmp.path().to_string_lossy()}),
