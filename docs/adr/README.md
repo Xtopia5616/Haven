@@ -893,3 +893,4 @@
 - [0902：从单一 MemoryStores 装配共享 typed capabilities](0902-share-memory-store-bundle-capabilities.md)
 - [0903：将 MCP 与 Skills 具体 owner 留在 Tools 内](0903-keep-mcp-and-skill-implementations-inside-tools.md)
 - [0904：通过 AdminOperationPort 隔离 AdminOperationSet](0904-hide-admin-operation-set-behind-port.md)
+- [0905：收回 Tools 实现模块并通过 facade 重置工具熔断器](0905-hide-tools-implementation-modules-and-circuit-registry.md)

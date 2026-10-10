@@ -86,12 +86,9 @@ impl ToolCircuitBreaker {
         }
     }
 
+    #[cfg(test)]
     pub fn is_open(&self) -> bool {
         self.state == ToolCircuitState::Open
-    }
-
-    pub fn consecutive_failures(&self) -> u32 {
-        self.consecutive_failures
     }
 }
 
@@ -141,11 +138,13 @@ impl ToolCircuitRegistry {
         breaker.record_failure()
     }
 
+    #[cfg(test)]
     pub fn is_open(&self, tool_name: &str) -> bool {
         let breakers = lock_breakers(&self.breakers);
         breakers.get(tool_name).is_some_and(|b| b.is_open())
     }
 
+    #[cfg(test)]
     pub fn reset(&self, tool_name: &str) {
         let mut breakers = lock_breakers(&self.breakers);
         if let Some(b) = breakers.get_mut(tool_name) {

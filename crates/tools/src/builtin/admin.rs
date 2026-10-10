@@ -91,14 +91,6 @@ pub enum AdminCapability {
 }
 
 impl AdminCapability {
-    pub const ALL: [Self; 5] = [
-        Self::Diagnostics,
-        Self::Config,
-        Self::Skills,
-        Self::Tools,
-        Self::Mcp,
-    ];
-
     pub(crate) fn tool_name(self) -> &'static str {
         match self {
             Self::Diagnostics => "haven_diagnostics",

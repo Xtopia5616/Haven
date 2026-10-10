@@ -330,15 +330,6 @@ impl MemoryTool {
         }
         Ok(result)
     }
-
-    pub async fn run(
-        &self,
-        params: MemoryParams,
-        session_id: Option<String>,
-        cancel: CancellationToken,
-    ) -> anyhow::Result<ToolResult> {
-        self.run_with_session(params, session_id, cancel).await
-    }
 }
 
 #[async_trait]
@@ -1036,7 +1027,7 @@ mod tests {
     async fn test_native_entry_lands_in_run() {
         let (tool, _db, _dir) = db_with_facts();
         let result = tool
-            .run(
+            .run_with_session(
                 MemoryParams {
                     operation: Some(MemoryOperation::Search),
                     query: Some("Rust".into()),

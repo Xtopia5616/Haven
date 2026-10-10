@@ -38,6 +38,6 @@ pub async fn set_tool_enabled(
 /// callable again without waiting for the cooldown window.
 #[tauri::command]
 pub async fn reset_tool_circuits(state: State<'_, Arc<AppState>>) -> Result<(), String> {
-    state.runtime.tools.tool_circuits().reset_all();
+    state.runtime.tools.reset_tool_circuits();
     Ok(())
 }

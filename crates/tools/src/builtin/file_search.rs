@@ -105,6 +105,7 @@ pub struct SearchOptions {
 }
 
 impl SearchRequest {
+    #[cfg(test)]
     pub fn from_value(
         input: Value,
         max_results_cap: usize,
@@ -217,6 +218,7 @@ impl FileSearchEngine {
         }
     }
 
+    #[cfg(test)]
     pub async fn search(
         &self,
         input: Value,

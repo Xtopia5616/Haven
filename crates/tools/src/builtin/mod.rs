@@ -51,17 +51,15 @@ use haven_common::types::RiskLevel;
 use haven_mcp::McpManager;
 use haven_skills::SkillRegistry;
 
-pub use crate::tool_runtime::{MemoryRecallPort, MemoryRecallSlot, new_memory_recall_slot};
+use crate::tool_runtime::MemoryRecallSlot;
 pub(crate) use admin::AdminOperationSet;
 pub use admin::{
-    AdminCapability, AdminContext, AdminOperationError, AdminRequest, ConfigOperationArgs,
-    ConfigOperationError, ConfigOperationOutput, ConfigViewOutput, DiagnosticsOperationArgs,
-    LogLevelOutput, McpOperationArgs, McpRefreshAction, McpRefreshPlan, McpRefreshTarget,
-    NativeMcpOperationArgs, SkillsOperationArgs, ToolsOperationArgs,
+    AdminContext, AdminOperationError, AdminRequest, ConfigOperationArgs, ConfigOperationError,
+    ConfigOperationOutput, ConfigViewOutput, DiagnosticsOperationArgs, LogLevelOutput,
+    McpOperationArgs, McpRefreshAction, McpRefreshPlan, McpRefreshTarget, NativeMcpOperationArgs,
+    SkillsOperationArgs, ToolsOperationArgs,
 };
 pub use media::{MediaTranscriptionResult, MediaTranscriptionStatus};
-pub use memory::MemoryTool;
-pub use messaging::AgentTool;
 
 /// Effective output cap for a tool: the per-tool `tool_settings` override
 /// when set, else the global observation budget

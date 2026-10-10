@@ -1,4 +1,6 @@
 use super::*;
+#[cfg(test)]
+use crate::circuit::ToolCircuitRegistry;
 use haven_common::retry::{
     BackoffPolicy, RecoveryDecision, RecoveryPolicy, RecoverySignal, RetryJitter,
 };
@@ -44,8 +46,15 @@ impl ToolsFacade {
             .await
     }
 
-    pub fn tool_circuits(&self) -> &ToolCircuitRegistry {
+    #[cfg(test)]
+    pub(crate) fn tool_circuits(&self) -> &ToolCircuitRegistry {
         &self.coordinator.core.tool_circuits
+    }
+
+    /// Reset per-tool failure gates through the execution owner without
+    /// exposing the circuit registry or its synchronization policy.
+    pub fn reset_tool_circuits(&self) {
+        self.coordinator.core.tool_circuits.reset_all();
     }
 
     pub async fn get_tool(&self, name: &str) -> Option<ToolHandle> {

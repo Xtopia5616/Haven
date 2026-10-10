@@ -30,6 +30,7 @@ pub fn scroll(delta: i64) -> anyhow::Result<usize> {
 }
 
 /// Every key name [`press_key`] accepts (for UIs, hotkey parsing, tests).
+#[cfg(test)]
 pub fn accepted_key_names() -> impl Iterator<Item = &'static str> {
     imp::accepted_key_names()
 }
@@ -98,6 +99,7 @@ pub(crate) mod imp {
         vk_map().get(name.as_str()).copied()
     }
 
+    #[cfg(test)]
     pub(crate) fn accepted_key_names() -> impl Iterator<Item = &'static str> {
         vk_map().keys().copied()
     }
@@ -290,6 +292,7 @@ mod imp {
         Err(anyhow!("input simulation requires Windows"))
     }
 
+    #[cfg(test)]
     pub fn accepted_key_names() -> impl Iterator<Item = &'static str> {
         std::iter::empty()
     }

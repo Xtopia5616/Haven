@@ -290,7 +290,7 @@ pub(crate) fn operation_attributes_for_input(
         .unwrap_or_else(|| operation_attributes(name, concurrency))
 }
 
-/// Policy for a tool that has no [crate::operation_view::OperationSpec].
+/// Policy for a tool that has no [`crate::OperationSpec`].
 ///
 /// Confirmation stays on the historical risk-only table (the read-only
 /// effect flag is false). Operation views and root tools store confirmation
@@ -1180,8 +1180,8 @@ pub trait Tool: Send + Sync {
         None
     }
 
-    /// Canonical policy for the concrete invocation. Tools with an
-    /// [crate::operation_view::OperationSpec] return that spec's policy.
+    /// Canonical policy for the concrete invocation. Tools with a
+    /// [`crate::OperationSpec`] return that spec's policy.
     /// Other tools synthesize one confirmation table from risk only.
     fn operation_policy(&self, input: &Value) -> OperationPolicy {
         if let Some(spec) = self.operation_spec() {

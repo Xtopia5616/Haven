@@ -70,6 +70,7 @@ impl ClipboardHistory {
         self.entries.lock().unwrap_or_else(|p| p.into_inner()).len()
     }
 
+    #[cfg(test)]
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }

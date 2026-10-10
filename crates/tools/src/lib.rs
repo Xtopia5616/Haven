@@ -1,18 +1,20 @@
 mod adapters;
 mod asset_registry;
 mod authorization_policy;
+#[cfg(feature = "test-support")]
 pub mod builtin;
+#[cfg(not(feature = "test-support"))]
+mod builtin;
 mod cancellable_reader;
 mod catalog;
-pub mod circuit;
+mod circuit;
 mod coordinator;
 mod document;
 mod execution;
 mod facade;
-pub mod live_output;
+mod live_output;
 mod mcp_server_config;
-#[doc(hidden)]
-pub mod operation_view;
+mod operation_view;
 mod output;
 mod process;
 mod prompts;
@@ -20,8 +22,8 @@ pub(crate) mod registry;
 mod runtime_capabilities;
 pub(crate) mod security;
 mod shell_runtime;
-pub mod simulate;
-pub mod skill_runner;
+mod simulate;
+mod skill_runner;
 #[cfg(test)]
 mod test_support;
 #[cfg(test)]
@@ -38,9 +40,9 @@ mod tool_run_retry_policy;
 mod tool_run_service;
 mod tool_run_terminal;
 mod tool_run_trigger_policy;
-pub mod tool_run_types;
+mod tool_run_types;
 mod tool_runtime;
-pub mod util;
+mod util;
 
 use haven_common::config::{
     ContextLimitsConfig, McpServerConfig, SecurityConfig, SkillsExecConfig, ToolConfig,
@@ -130,14 +132,12 @@ pub use asset_registry::{
     GeneratedMediaCleanupGuard, ManagedAsset, ManagedAssetLifecyclePort, ManagedAssetRegistry,
 };
 pub use builtin::{
-    AdminCapability, AdminContext, AdminOperationError, AdminRequest, AgentTool,
-    ConfigOperationArgs, ConfigOperationError, ConfigOperationOutput, ConfigViewOutput,
-    DiagnosticsOperationArgs, LogLevelOutput, McpOperationArgs, McpRefreshAction, McpRefreshPlan,
-    McpRefreshTarget, MediaTranscriptionResult, MediaTranscriptionStatus, NativeMcpOperationArgs,
-    SkillsOperationArgs, ToolsOperationArgs,
+    AdminContext, AdminOperationError, AdminRequest, ConfigOperationArgs, ConfigOperationError,
+    ConfigOperationOutput, ConfigViewOutput, DiagnosticsOperationArgs, LogLevelOutput,
+    McpOperationArgs, McpRefreshAction, McpRefreshPlan, McpRefreshTarget, MediaTranscriptionResult,
+    MediaTranscriptionStatus, NativeMcpOperationArgs, SkillsOperationArgs, ToolsOperationArgs,
 };
 pub use catalog::McpServerIndexEntry;
-pub use circuit::ToolCircuitRegistry;
 pub use facade::{
     AdminOperationPort, McpRuntimePort, McpStatusEventReceiver, SkillCatalogPort,
     ToolRunAgentCapability, ToolRunCompletionCapability, ToolRunManagementCapability,
@@ -152,8 +152,9 @@ pub use haven_mcp::{
     McpToolInfo,
 };
 pub use haven_skills::{Language, Skill, SkillFileFingerprint, SkillInfo, VenvManager};
-pub use live_output::LiveOutputHub;
 pub(crate) use mcp_server_config::McpServerConfigSource;
+#[doc(hidden)]
+pub use operation_view::OperationSpec;
 pub use output::{
     CappedText, OutputBudget, ToolOutput, append_windows_diagnostics, is_progress_clixml,
     sanitize_shell_output, summarize_error,
@@ -174,6 +175,7 @@ pub use shell_runtime::{
     build_shell_command, build_shell_command_silent, collect_byte_cap, output_log_dir,
     proxy_env_vars, write_output_log,
 };
+#[cfg(feature = "test-support")]
 pub use skill_runner::SkillRunner;
 pub use tool_contract::{
     AskSignal, ConfirmationRequirement, DataSensitivity, NetworkAccess, NotificationSignal,

@@ -36,14 +36,6 @@ impl SkillRunner {
         Self { venv, config }
     }
 
-    pub fn venv(&self) -> &VenvManager {
-        &self.venv
-    }
-
-    pub fn config(&self) -> &SkillsExecConfig {
-        &self.config
-    }
-
     /// The subprocess wall-clock timeout. Tool adapters use this to set an
     /// outer timeout with a small cleanup margin instead of racing the same
     /// deadline at two layers.

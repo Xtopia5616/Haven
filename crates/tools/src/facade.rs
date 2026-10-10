@@ -1,6 +1,8 @@
 use super::*;
+use crate::live_output::LiveOutputHub;
 #[cfg(test)]
 use crate::registry::OperationRegistry;
+use crate::skill_runner::SkillRunner;
 use haven_mcp::McpManager;
 use haven_skills::SkillRegistry;
 use std::path::PathBuf;
