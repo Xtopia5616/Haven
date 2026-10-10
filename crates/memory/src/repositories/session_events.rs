@@ -36,7 +36,7 @@ pub const TRANSCRIPT_EVENT_TYPE: &str = "transcript";
 /// Agent-owned durable signal for memory work. Memory stores the event
 /// without depending on Agent payload types.
 pub const MEMORY_TRIGGER_EVENT_TYPE: &str = "memory_trigger";
-pub const BRANCH_POINT_EVENT_TYPE: &str = "branch_point";
+const BRANCH_POINT_EVENT_TYPE: &str = "branch_point";
 pub const TIMELINE_ROLLBACK_EVENT_TYPE: &str = "timeline_rollback";
 /// Durable usage domain events. Their payload is the complete
 /// [`LlmUsageRecord`] value; `llm_usage` and `session_usage` are projections.
@@ -55,13 +55,13 @@ pub const CONFIRMATION_BATCH_PLANNED_EVENT_TYPE: &str = "confirmation_batch_plan
 /// Two-phase marker for recovery-only partial persistence. It is deliberately
 /// an append-only control event so an interrupted repair remains observable
 /// even when materialized projection rows are incomplete.
-pub const RECOVERY_PERSISTENCE_EVENT_TYPE: &str = "recovery_persistence";
+const RECOVERY_PERSISTENCE_EVENT_TYPE: &str = "recovery_persistence";
 pub const CURRENT_EVENT_VERSION: i64 = 1;
 /// Hard ceiling for one live transcript transaction. ReAct context/tool
 /// batches are smaller; this protects the persistence boundary if a future
 /// caller constructs a batch without going through those planners.
-pub const MAX_TRANSCRIPT_BATCH_EVENTS: usize = 128;
-pub const MAX_TRANSCRIPT_BATCH_PROJECTION_ROWS: usize = 256;
+pub(crate) const MAX_TRANSCRIPT_BATCH_EVENTS: usize = 128;
+pub(crate) const MAX_TRANSCRIPT_BATCH_PROJECTION_ROWS: usize = 256;
 /// Hard ceiling for the total variable-width payload persisted by one live
 /// transcript transaction. This includes event JSON and projection text so a
 /// bounded row count cannot be bypassed with one oversized tool input.
@@ -161,7 +161,7 @@ pub struct SessionReplayState {
 /// user-message rollback (the selected message is removed) and false for a
 /// failed/agent step rollback (the branch-point message is retained).
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ProjectionCutoff {
+struct ProjectionCutoff {
     pub created_at: String,
     pub inclusive: bool,
 }
@@ -2323,7 +2323,8 @@ impl SessionStore {
         Self::append_batch_in_transaction(conn, session_id, &discard_inputs).map(Some)
     }
 
-    pub fn truncate_projection_after(
+    #[cfg(test)]
+    fn truncate_projection_after(
         &self,
         session_id: &str,
         cutoff: &ProjectionCutoff,

@@ -18,12 +18,12 @@ use super::facts::{
 
 /// Live-floor for maintenance contradiction scans (X5). Below this, upsert
 /// demotion / flush already treat the fact as inactive in the prompt.
-pub const CONTRADICTION_LIVE_FLOOR: f64 = 0.4;
+pub(crate) const CONTRADICTION_LIVE_FLOOR: f64 = 0.4;
 
 /// Rule-engine demotion age cap (X5). Older losers are not mutated so a
 /// maintenance pass cannot push historical edges under the flush floor or
 /// rewrite unbounded ancient conflicts on first upgrade.
-pub const CONTRADICTION_DEMOTE_MAX_AGE_DAYS: i64 = 2;
+pub(crate) const CONTRADICTION_DEMOTE_MAX_AGE_DAYS: i64 = 2;
 
 /// Kind of contradiction a maintenance candidate group represents (X5).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]

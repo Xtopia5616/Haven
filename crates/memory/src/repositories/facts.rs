@@ -3,8 +3,7 @@ use crate::db::Database;
 use super::fact_graph::FactGraph;
 use super::fact_maintenance::FactMaintenance;
 pub use super::fact_maintenance::{
-    CONTRADICTION_DEMOTE_MAX_AGE_DAYS, CONTRADICTION_LIVE_FLOOR, ContradictionCandidate,
-    ContradictionKind, fact_within_demote_age, pick_contradiction_keeper,
+    ContradictionCandidate, ContradictionKind, fact_within_demote_age, pick_contradiction_keeper,
 };
 pub use super::fact_query::fact_effective_confidence;
 pub use super::fact_security::{is_sensitive_object, is_sensitive_predicate, is_sensitive_text};
@@ -78,7 +77,7 @@ pub fn is_visible_fact(fact: &Fact) -> bool {
 
 /// Filter facts through the shared visibility rule and redact sensitive
 /// provenance snippets on otherwise visible rows.
-pub fn filter_visible_facts(facts: impl IntoIterator<Item = Fact>) -> Vec<Fact> {
+pub(crate) fn filter_visible_facts(facts: impl IntoIterator<Item = Fact>) -> Vec<Fact> {
     facts
         .into_iter()
         .filter_map(|mut fact| {
@@ -203,7 +202,7 @@ pub fn normalize_predicate(predicate: &str) -> String {
 /// fastest so stale values drop out of the prompt once they are no longer
 /// confirmed. Entries are **canonical** names only — aliases are rewritten by
 /// [`normalize_predicate`] before these checks run (P2-11).
-pub fn is_volatile_predicate(predicate: &str) -> bool {
+pub(crate) fn is_volatile_predicate(predicate: &str) -> bool {
     matches!(
         predicate.to_ascii_lowercase().as_str(),
         "project_path" | "works_at" | "uses"
@@ -456,7 +455,7 @@ impl Database {
 
 /// Opposite polarity predicate (`likes` ↔ `dislikes`), shared by upsert and
 /// the maintenance scanner so the pair cannot drift.
-pub fn polarity_opposite(predicate: &str) -> Option<&'static str> {
+pub(crate) fn polarity_opposite(predicate: &str) -> Option<&'static str> {
     match predicate {
         "likes" => Some("dislikes"),
         "dislikes" => Some("likes"),
