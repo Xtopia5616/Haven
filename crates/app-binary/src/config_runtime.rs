@@ -1338,7 +1338,7 @@ mod tests {
 
         assert!(rendered.contains("request failed"));
         assert!(!rendered.contains("never-log-this-secret"));
-        assert!(logs.contains("config_version=23"));
+        assert!(logs.contains("config_version=23"), "captured logs: {logs}");
         assert!(logs.contains("phase=\"skills\""));
         assert!(logs.contains("failure_kind=\"runtime_owner\""));
         assert!(logs.contains("router_published=true"));
