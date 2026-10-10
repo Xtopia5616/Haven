@@ -79,6 +79,19 @@ pub struct RuntimeSessionListResponse {
 pub(crate) use crate::logging::log_err;
 pub(crate) use crate::logging::log_storage_err;
 
+/// Reject non-canonical Haven entity IDs at the Tauri boundary before they
+/// reach stores, actors, or side effects. The shared Common helper owns the
+/// format; callers supply the entity prefix without its separator.
+pub(crate) fn validate_command_id(id: &str, field_name: &str, prefix: &str) -> Result<(), String> {
+    if haven_common::types::is_canonical_id(id, prefix) {
+        Ok(())
+    } else {
+        Err(format!(
+            "{field_name} must be a canonical {prefix}-{{uuid32}} ID"
+        ))
+    }
+}
+
 /// Execute one native admin request through the typed operation that owns its
 /// capability. This helper is intentionally separate from authorization so a
 /// queued UI confirmation can resume the exact same request.
@@ -491,7 +504,7 @@ fn redact_mcp_admin_confirmation_input(
 mod tests {
     use super::{
         app_command_authorization_request, dispatch_authorized_admin_request,
-        parse_mcp_refresh_failed_names, redact_mcp_admin_confirmation_input,
+        parse_mcp_refresh_failed_names, redact_mcp_admin_confirmation_input, validate_command_id,
     };
     use haven_common::types::{
         CapabilityScope, PermissionEffect, PermissionScope, RiskLevel, new_id,
@@ -504,6 +517,22 @@ mod tests {
     use serde_json::json;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[test]
+    fn command_id_validation_uses_the_canonical_entity_format() {
+        assert!(
+            validate_command_id("ses-0123456789abcdef0123456789abcdef", "session_id", "ses")
+                .is_ok()
+        );
+        assert_eq!(
+            validate_command_id("ses-0123", "session_id", "ses"),
+            Err("session_id must be a canonical ses-{uuid32} ID".into())
+        );
+        assert_eq!(
+            validate_command_id("ses-0123456789ABCDEF0123456789abcdef", "session_id", "ses"),
+            Err("session_id must be a canonical ses-{uuid32} ID".into())
+        );
+    }
 
     fn receipt() -> ConfirmationReceipt {
         ConfirmationReceipt {

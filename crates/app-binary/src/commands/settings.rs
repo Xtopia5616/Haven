@@ -1,5 +1,5 @@
 use crate::app_state::{AppState, BootstrapStatus};
-use crate::commands::log_err;
+use crate::commands::{log_err, validate_command_id};
 use crate::config_runtime::{
     PreparedRouterRuntime, RouterRuntimePublishError, SettingsRuntimeApplyCoordinator,
     SettingsRuntimeApplyOutcome, SettingsRuntimeApplyPhase, apply_log_level_to_handles,
@@ -741,15 +741,10 @@ pub async fn revoke_session_permission(
     session_id: String,
     capability: String,
 ) -> Result<(), String> {
+    validate_command_id(&session_id, "session_id", "ses")
+        .map_err(|error| log_err("revoke_session_permission", error))?;
     let _config_apply_guard = state.runtime.config_runtime_coordinator.lock().await;
-    let session_id = session_id.trim().to_string();
     let capability = capability.trim().to_string();
-    if session_id.is_empty() {
-        return Err(log_err(
-            "revoke_session_permission",
-            "session id cannot be empty",
-        ));
-    }
     if capability.is_empty() {
         return Err(log_err(
             "revoke_session_permission",

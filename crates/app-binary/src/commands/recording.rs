@@ -1,5 +1,5 @@
 use crate::app_state::{AppState, RecordingLifecycleGuard};
-use crate::commands::{emit_event_logged, log_err, log_storage_err};
+use crate::commands::{emit_event_logged, log_err, log_storage_err, validate_command_id};
 use crate::desktop::{DesktopShell, RecordingStopContext};
 use crate::events::{
     RECORDING_ERROR_EVENT, RECORDING_STARTED_EVENT, RECORDING_STOPPED_EVENT, RecordingErrorEvent,
@@ -606,6 +606,14 @@ pub async fn process_transcript(
     voice: Option<bool>,
     recording_id: Option<String>,
 ) -> Result<haven_agent::ProcessResult, String> {
+    if let Some(session_id) = active_session_id.as_deref() {
+        validate_command_id(session_id, "active_session_id", "ses")
+            .map_err(|error| log_err("process_transcript", error))?;
+    }
+    if let Some(recording_id) = recording_id.as_deref() {
+        validate_command_id(recording_id, "recording_id", "rec")
+            .map_err(|error| log_err("process_transcript", error))?;
+    }
     let limits = state
         .runtime
         .config_service

@@ -1,6 +1,7 @@
 use crate::app_state::{AppState, UiConfirmationAction, UiConfirmationPending};
-use crate::commands::log_err;
-use crate::commands::{RuntimeSessionListResponse, emit_event_logged};
+use crate::commands::{
+    RuntimeSessionListResponse, emit_event_logged, log_err, validate_command_id,
+};
 use crate::events::{
     INTERACTION_REQUESTED_EVENT, InteractionRequestedEvent, NOTIFICATION_SHOW_EVENT,
     SESSION_LIFECYCLE_EVENT, SessionLifecycleEvent,
@@ -59,6 +60,8 @@ pub async fn reopen_session(
     state: State<'_, Arc<AppState>>,
     session_id: String,
 ) -> Result<(), String> {
+    validate_command_id(&session_id, "session_id", "ses")
+        .map_err(|error| log_err("reopen_session", error))?;
     tracing::debug!("reopen_session called: session_id={}", session_id);
     state
         .runtime
@@ -141,6 +144,8 @@ pub async fn get_session_lineage(
     state: State<'_, Arc<AppState>>,
     session_id: String,
 ) -> Result<SessionLineageResponse, String> {
+    validate_command_id(&session_id, "session_id", "ses")
+        .map_err(|error| log_err("get_session_lineage", error))?;
     session_lineage_from_store(&state.runtime.session_store, &session_id)
         .await
         .map_err(|error| log_err("get_session_lineage", error))
@@ -152,6 +157,8 @@ pub async fn end_session(
     session_id: String,
     _app: tauri::AppHandle,
 ) -> Result<(), String> {
+    validate_command_id(&session_id, "session_id", "ses")
+        .map_err(|error| log_err("end_session", error))?;
     // L3: capture the title BEFORE end_session removes the session from the
     // in-memory list; reading afterwards would fall back to the DB and lose
     // the generated title (end_session clears the working set).
@@ -218,6 +225,8 @@ pub async fn interrupt_session(
     state: State<'_, Arc<AppState>>,
     session_id: String,
 ) -> Result<(), String> {
+    validate_command_id(&session_id, "session_id", "ses")
+        .map_err(|error| log_err("interrupt_session", error))?;
     state
         .runtime
         .agent
@@ -242,6 +251,19 @@ pub async fn resolve_confirmation(
     scope: haven_common::types::PermissionScope,
     target: haven_common::types::PermissionTarget,
 ) -> Result<ConfirmationResolutionResult, String> {
+    validate_command_id(&request_id, "request_id", "conf")
+        .map_err(|error| log_err("resolve_confirmation", error))?;
+    match &owner {
+        haven_agent::InteractionOwner::Session { session_id } => {
+            validate_command_id(session_id, "owner.session_id", "ses")
+                .map_err(|error| log_err("resolve_confirmation", error))?;
+        }
+        haven_agent::InteractionOwner::ScheduledToolRun { tool_run_id } => {
+            validate_command_id(tool_run_id, "owner.tool_run_id", "toolrun")
+                .map_err(|error| log_err("resolve_confirmation", error))?;
+        }
+        haven_agent::InteractionOwner::AppCommand => {}
+    }
     let perm_effect = effect;
     let perm_scope = scope;
     let perm_target = target;
@@ -718,6 +740,8 @@ pub async fn update_session_title(
     session_id: String,
     title: String,
 ) -> Result<(), String> {
+    validate_command_id(&session_id, "session_id", "ses")
+        .map_err(|error| log_err("update_session_title", error))?;
     let title = title.trim().to_string();
     if title.is_empty() {
         return Err(log_err("update_session_title", "Title cannot be empty"));
@@ -747,6 +771,8 @@ pub async fn delete_session(
     state: State<'_, Arc<AppState>>,
     session_id: String,
 ) -> Result<(), String> {
+    validate_command_id(&session_id, "session_id", "ses")
+        .map_err(|error| log_err("delete_session", error))?;
     state
         .runtime
         .agent
@@ -787,6 +813,12 @@ pub async fn rollback_session(
     pause: Option<bool>,
     target_message_id: Option<String>,
 ) -> Result<(), String> {
+    validate_command_id(&session_id, "session_id", "ses")
+        .map_err(|error| log_err("rollback_session", error))?;
+    if let Some(message_id) = target_message_id.as_deref() {
+        validate_command_id(message_id, "target_message_id", "msg")
+            .map_err(|error| log_err("rollback_session", error))?;
+    }
     state
         .runtime
         .agent
@@ -808,6 +840,8 @@ pub async fn continue_session(
     state: State<'_, Arc<AppState>>,
     session_id: String,
 ) -> Result<(), String> {
+    validate_command_id(&session_id, "session_id", "ses")
+        .map_err(|error| log_err("continue_session", error))?;
     state
         .runtime
         .agent
@@ -901,6 +935,8 @@ pub async fn get_session_for_resume(
     state: State<'_, Arc<AppState>>,
     session_id: String,
 ) -> Result<SessionResumeResponse, String> {
+    validate_command_id(&session_id, "session_id", "ses")
+        .map_err(|error| log_err("get_session_for_resume", error))?;
     resume_session_from_store(state.runtime.session_store.clone(), &session_id).await
 }
 

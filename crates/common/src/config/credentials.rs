@@ -6,7 +6,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
 
 use super::{AppConfig, McpEnvironmentCredentialRef, McpServerConfig, OcrConfig};
-use crate::types::new_id;
+use crate::types::{is_canonical_id, new_id};
 
 /// Opaque references are persisted in config; secret values stay behind this
 /// interface and are hydrated only into the backend runtime snapshot.
@@ -40,14 +40,7 @@ impl CredentialStore for UnavailableCredentialStore {
 /// Validate the stable reference format before using it as an OS credential
 /// target. References are identifiers, never secret values.
 pub fn validate_credential_reference(reference: &str) -> anyhow::Result<()> {
-    let Some(suffix) = reference.strip_prefix("cred-") else {
-        anyhow::bail!("invalid credential reference");
-    };
-    if suffix.len() != 32
-        || !suffix
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-    {
+    if !is_canonical_id(reference, "cred") {
         anyhow::bail!("invalid credential reference");
     }
     Ok(())
@@ -716,5 +709,17 @@ mod tests {
         let error =
             hydrate_from_store(&mut config, &InMemoryCredentialStore::default()).unwrap_err();
         assert!(error.to_string().contains("invalid credential reference"));
+    }
+
+    #[test]
+    fn credential_references_use_the_shared_canonical_id_rule() {
+        assert!(validate_credential_reference("cred-0123456789abcdef0123456789abcdef").is_ok());
+        for invalid in [
+            "credential-0123456789abcdef0123456789abcdef",
+            "cred-0123",
+            "cred-0123456789ABCDEF0123456789abcdef",
+        ] {
+            assert!(validate_credential_reference(invalid).is_err(), "{invalid}");
+        }
     }
 }

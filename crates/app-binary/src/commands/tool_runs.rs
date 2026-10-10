@@ -1,5 +1,5 @@
 use crate::app_state::AppState;
-use crate::commands::log_err;
+use crate::commands::{log_err, validate_command_id};
 use crate::events::{ToolRunEvent, ToolRunKindDto};
 use haven_common::ToolRunStatus;
 use haven_memory::ToolRunRow;
@@ -65,6 +65,8 @@ pub async fn cancel_tool_run(
     tool_run_id: String,
     kind: ToolRunKindDto,
 ) -> Result<bool, String> {
+    validate_command_id(&tool_run_id, "tool_run_id", "toolrun")
+        .map_err(|error| log_err("cancel_tool_run", error))?;
     let cancelled = state
         .runtime
         .services
@@ -92,6 +94,10 @@ pub async fn list_tool_run_history(
     limit: Option<usize>,
     session_id: Option<String>,
 ) -> Result<Vec<ToolRunEvent>, String> {
+    if let Some(session_id) = session_id.as_deref() {
+        validate_command_id(session_id, "session_id", "ses")
+            .map_err(|error| log_err("list_tool_run_history", error))?;
+    }
     let limit = limit.unwrap_or(50).min(200);
     let rows = match session_id.as_deref() {
         Some(session_id) => {
@@ -287,6 +293,8 @@ pub async fn delete_tool_run(
     state: State<'_, Arc<AppState>>,
     tool_run_id: String,
 ) -> Result<bool, String> {
+    validate_command_id(&tool_run_id, "tool_run_id", "toolrun")
+        .map_err(|error| log_err("delete_tool_run", error))?;
     state
         .runtime
         .services

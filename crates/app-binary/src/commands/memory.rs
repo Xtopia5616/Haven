@@ -1,6 +1,6 @@
 use crate::app_state::AppState;
 use crate::commands::contracts::{MemoryFactResponse, MemoryFactSource, MemoryRecallItem};
-use crate::commands::log_err;
+use crate::commands::{log_err, validate_command_id};
 use haven_memory::recall::{MemoryEntityKind, MemoryQuery};
 use std::sync::Arc;
 use tauri::State;
@@ -130,6 +130,8 @@ pub async fn add_fact(
 
 #[tauri::command]
 pub async fn delete_fact(state: State<'_, Arc<AppState>>, fact_id: String) -> Result<(), String> {
+    validate_command_id(&fact_id, "fact_id", "fact")
+        .map_err(|error| log_err("delete_fact", error))?;
     state
         .runtime
         .memory_fact_store
