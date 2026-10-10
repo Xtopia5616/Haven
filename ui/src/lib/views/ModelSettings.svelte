@@ -9,7 +9,11 @@
 	import StatusBadge from '$lib/StatusBadge.svelte';
 	import SettingsSection from '$lib/SettingsSection.svelte';
 	import SettingsField from '$lib/SettingsField.svelte';
-	import { createModelDiscovery, type DiscoveredModelMetadataFill } from '$lib/modelDiscovery.ts';
+	import {
+		createModelDiscovery,
+		isSameModelDiscoveryTarget,
+		type DiscoveredModelMetadataFill,
+	} from '$lib/modelDiscovery.ts';
 	import { emptyModel, capabilityOptions, requestPolicyOptions } from '$lib/modelRoles.ts';
 	import { withNumberValue, withStringValue } from '$lib/typedCallbacks.ts';
 	import type {
@@ -24,7 +28,7 @@
 		SttConfigInput,
 		TtsConfigInput,
 	} from '$lib/contracts/generatedCommands.ts';
-	import type { DiscoveredModelMap } from '$lib/contracts/model.ts';
+	import type { DiscoveredModelsByProviderName } from '$lib/contracts/model.ts';
 	import type {
 		ModelDraft,
 		ModelOverrideField,
@@ -208,12 +212,13 @@
 		return displayApiStyle(provider);
 	}
 
-	let modelsByProvider = $state<DiscoveredModelMap>({});
+	let modelsByProvider = $state<DiscoveredModelsByProviderName>({});
 	let modelFetching = $state<Record<string, boolean>>({});
 	let refreshingAll = $state(false);
 	const discovery = createModelDiscovery({
 		getProviders: () => llmConfig.providers || [],
 		getModels: () => llmConfig.models || [],
+		isProviderConfigured: isProviderKeyConfigured,
 		getDiscoveredModels: () => modelsByProvider,
 		setModels: (models) => (modelsByProvider = models),
 		isProviderFetching: (providerName) => !!modelFetching[providerName],
@@ -329,29 +334,25 @@
 			default_timeout_streaming_secs: previous?.default_timeout_streaming_secs ?? null,
 			default_web_search: previous?.default_web_search ?? null,
 		};
+		if (previous && !isSameModelDiscoveryTarget(previous, provider)) {
+			discovery.invalidateProviderCatalog(previous.name);
+		}
 		if (idx === null) {
 			llmConfig.providers.push(provider);
-			if (provider.api_key || isKeylessProvider(provider))
-				keyConfiguredProviders[name] = true;
+			if (isProviderKeyConfigured(provider)) keyConfiguredProviders[name] = true;
 			providerDialog = { idx: null, form: null };
 
-			const hasCredential = !!provider.api_key || isKeylessProvider(provider);
-			const fetched = hasCredential
-				? await discovery.refreshProviderModels(
-						name,
-						{
-							authHeaderName: provider.auth_header_name,
-							authHeaderPrefix: provider.auth_header_prefix,
-							skipAuth: isKeylessProvider(provider),
-						},
-						false,
-					)
-				: false;
-			if (fetched && !isSttOnlyStyle(provider.api_style)) {
-				const count = modelsByProvider[name]?.length || 0;
+			const discoveryOutcome = await discovery.refreshProviderModels(name, {
+				notifyOnError: false,
+			});
+			if (discoveryOutcome.status === 'discovered' && !isSttOnlyStyle(provider.api_style)) {
+				const count = discoveryOutcome.models.length;
 				addNotification(`Provider 已添加并获取 ${count} 个模型`, 'success', 2500);
 			} else {
-				onProviderDiscoveryFailure?.(name, fetched && isSttOnlyStyle(provider.api_style));
+				onProviderDiscoveryFailure?.(
+					name,
+					discoveryOutcome.status === 'discovered' && isSttOnlyStyle(provider.api_style),
+				);
 			}
 			return;
 		} else {
@@ -369,7 +370,7 @@
 				}
 			}
 		}
-		if (provider.api_key || isKeylessProvider(provider)) keyConfiguredProviders[name] = true;
+		if (isProviderKeyConfigured(provider)) keyConfiguredProviders[name] = true;
 		providerDialog = { idx: null, form: null };
 		addNotification('Provider 已保存', 'success', 2000);
 		discovery.refreshAllModels(true);
@@ -389,6 +390,7 @@
 		if (tts?.provider === provider.name) tts.provider = 'none';
 		if (imageGen?.provider === provider.name) imageGen.provider = 'none';
 		llmConfig.providers.splice(idx, 1);
+		delete keyConfiguredProviders[provider.name];
 		const nextModels = { ...modelsByProvider };
 		delete nextModels[provider.name];
 		modelsByProvider = nextModels;

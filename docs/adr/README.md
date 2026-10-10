@@ -850,3 +850,4 @@
 - [0869：按 fallback 语义命名 Session 标题读取](0869-name-session-title-projections-by-fallback.md)
 - [0870：共用有界文件逐行读取](0870-share-bounded-file-line-reader.md)
 - [0871：统一 ToolRun 终态交付 payload](0871-unify-tool-run-completion-payload.md)
+- [0872：统一模型目录发现命令](0872-unify-model-discovery-command.md)

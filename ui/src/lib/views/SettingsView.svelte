@@ -83,7 +83,6 @@
 		SessionPermissionGrant,
 		StoredPermission,
 	} from '$lib/contracts/generatedCommands.ts';
-	import type { DiscoveredModelMap } from '$lib/contracts/model.ts';
 	import {
 		settingsLlmInputFromState,
 		settingsLlmStateFromConfig,

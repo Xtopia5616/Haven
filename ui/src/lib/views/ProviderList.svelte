@@ -6,7 +6,7 @@
 	import RefreshButton from '$lib/RefreshButton.svelte';
 	import StatusBadge from '$lib/StatusBadge.svelte';
 	import type { CapabilityInput } from '$lib/contracts/generatedCommands.ts';
-	import type { DiscoveredModelMap } from '$lib/contracts/model.ts';
+	import type { DiscoveredModelsByProviderName } from '$lib/contracts/model.ts';
 	import type { SelectOption } from '$lib/selectOption.ts';
 	import type { ModelDraft, ModelOverrideField, ProviderDraft } from '$lib/settingsModelTypes.ts';
 	import ModelConfigCard from './ModelConfigCard.svelte';
@@ -14,7 +14,7 @@
 	interface Props {
 		providers?: ProviderDraft[];
 		models?: ModelDraft[];
-		modelsByProvider?: DiscoveredModelMap;
+		modelsByProvider?: DiscoveredModelsByProviderName;
 		modelFetching?: Record<string, boolean>;
 		refreshingAll?: boolean;
 		modelOptions: (providerName: string) => SelectOption[];

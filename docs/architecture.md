@@ -790,7 +790,8 @@ mapper 或绕过 owner 的 UI caller，IPC script 对照 Rust handler 参数、T
 投影模块；`streamAggregator.ts` 只负责排队后 dispatch chunk action
 （ADR 0160、0313、0315、0320、0322）。阶段 8 的命令 contract 生成与聊天编排范围已完成（ADR 0394）；尚未逐域审计的事件运行时校验、授权策略与页面局部状态仍由各自领域按变更和风险持续审查，不是待完成的跨域 codegen/总 controller 阶段，也不据此机械拆页。
 `ModelSettings.svelte` 仍拥有命名模型和 Provider CRUD 编排；活跃 discovery command 现统一经过
-`modelDiscoveryCommands.ts`（ADR 0368），页面仍负责缓存数据的 settings 投影与刷新交互。ToolsView 的
+`modelDiscoveryCommands.ts`（ADR 0368），页面拥有成功目录缓存、各连接并行发现与结果汇总。单一的
+`discover_models` handler 为每个连接使用当前设置草稿的 endpoint/auth/proxy；存储凭据只在连接名和配置 Base URL 匹配时读取，不再另有重复的批量发现 handler。有效空目录仍是成功，失败由 promise rejection 表达（ADR 0872）。ToolsView 的
 catalog、MCP/Skills 管理、连接和 refresh 命令均通过 `toolsCommands.ts`；命名 request/response DTO 保持
 Rust wire snake_case，MCP config 对齐固定 `McpServerConfig`，动态 schema 仍只在 `ToolSchema = unknown` 边界。
 ToolsView 继续拥有 optimistic state、通知、失败显示和 snapshot/event refresh 编排；Rust handler 继续拥有

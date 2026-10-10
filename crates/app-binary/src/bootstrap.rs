@@ -667,7 +667,6 @@ pub(crate) fn run() {
             commands::model::check_llm_connection,
             commands::settings::get_bootstrap_status,
             commands::model::discover_models,
-            commands::model::discover_all_models,
             commands::model::switch_model,
             commands::model::set_reasoning_effort,
             commands::model::set_web_search,

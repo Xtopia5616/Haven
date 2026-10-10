@@ -355,7 +355,6 @@ export interface TauriCommandMap {
 	delete_tool_run: { request: { toolRunId: string }; response: boolean };
 	disable_autostart: { request: undefined; response: void };
 	discard_staged_credentials: { request: undefined; response: void };
-	discover_all_models: { request: undefined; response: Record<string, ModelInfo[]> };
 	discover_models: { request: { baseUrl: string; apiKey: string; providerName?: string | null; requestKind?: RequestKindInput | null; authHeaderName?: string | null; authHeaderPrefix?: string | null; skipAuth?: boolean | null; proxyUrl?: string | null; noProxy?: string | null }; response: ModelInfo[] };
 	enable_autostart: { request: undefined; response: void };
 	end_session: { request: { sessionId: string }; response: void };

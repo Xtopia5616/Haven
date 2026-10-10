@@ -207,11 +207,6 @@ pub const COMMAND_CONTRACTS: &[CommandContract] = &[
         security: "http(s) endpoint; typed auth scheme for an explicitly entered key; stored keys require a matching configured endpoint",
     },
     CommandContract {
-        name: "discover_all_models",
-        boundary: CommandBoundary::Execute,
-        security: "only configured providers are queried",
-    },
-    CommandContract {
         name: "switch_model",
         boundary: CommandBoundary::Mutate,
         security: "requestKind selects the route; modelConfigId is an assigned, capability-compatible Haven ModelConfig identity, not a Provider service model ID",
