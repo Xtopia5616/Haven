@@ -5,6 +5,7 @@ use serde_json::Value;
 use std::collections::HashSet;
 use tokio_util::sync::CancellationToken;
 
+use super::name_list::ordered_unique_non_empty_names;
 use crate::registry::{DeferredToolCatalog, SessionToolOverlay};
 use crate::{Tool, ToolRegistry, ToolResult};
 
@@ -38,7 +39,7 @@ impl LoadSkillTool {
             .session_id
             .filter(|value| !value.is_empty())
             .ok_or_else(|| anyhow::anyhow!("session context required to load Skills"))?;
-        let names = normalize_names(params.skill_names);
+        let names = normalize_skill_names(params.skill_names);
         if names.is_empty() {
             anyhow::bail!("skill_names must contain at least one Skill name");
         }
@@ -184,16 +185,12 @@ impl Tool for LoadSkillTool {
     }
 }
 
-fn normalize_names(values: Vec<String>) -> Vec<String> {
-    let mut names = Vec::new();
-    let mut seen = HashSet::new();
-    for value in values {
-        let value = value.trim().trim_start_matches("skill__");
-        if !value.is_empty() && seen.insert(value.to_string()) {
-            names.push(value.to_string());
-        }
-    }
-    names
+fn normalize_skill_names(values: Vec<String>) -> Vec<String> {
+    ordered_unique_non_empty_names(
+        values
+            .into_iter()
+            .map(|value| value.trim().trim_start_matches("skill__").to_string()),
+    )
 }
 
 fn qualified_name(name: &str) -> String {
@@ -254,7 +251,7 @@ mod tests {
     #[test]
     fn normalize_accepts_display_and_provider_skill_names() {
         assert_eq!(
-            normalize_names(vec!["echo".into(), "skill__echo".into()]),
+            normalize_skill_names(vec!["echo".into(), "skill__echo".into()]),
             ["echo"]
         );
         assert_eq!(qualified_name("echo"), "skill__echo");

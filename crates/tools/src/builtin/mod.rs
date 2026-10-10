@@ -14,6 +14,7 @@ pub mod media;
 mod media_audio;
 pub mod memory;
 pub mod messaging;
+mod name_list;
 pub mod notify;
 mod operation_contract;
 mod power;

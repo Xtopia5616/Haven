@@ -1,3 +1,4 @@
+use super::name_list::ordered_unique_non_empty_names;
 use crate::registry::{DeferredToolCatalog, SessionToolOverlay};
 use crate::{McpToolAdapter, Tool, ToolHandle, ToolRegistry, ToolResult};
 use haven_common::tools::{ToolCatalogGroup, ToolDef, ToolSource};
@@ -249,8 +250,8 @@ impl ToolCatalogTool {
         if cancel.is_cancelled() {
             return Ok(ToolResult::cancelled("cancelled"));
         }
-        let operations = normalize_names(operations);
-        let roots = normalize_names(roots);
+        let operations = normalize_requested_names(operations);
+        let roots = normalize_requested_names(roots);
         if operations.is_empty() && roots.is_empty() {
             anyhow::bail!("provide at least one operation or root to load built-in tools");
         }
@@ -850,16 +851,13 @@ fn source_for_def(def: &ToolDef) -> CatalogSource {
     }
 }
 
-fn normalize_names(values: Option<Vec<String>>) -> Vec<String> {
-    let mut names = Vec::new();
-    let mut seen = HashSet::new();
-    for value in values.into_iter().flatten() {
-        let value = value.trim();
-        if !value.is_empty() && seen.insert(value.to_string()) {
-            names.push(value.to_string());
-        }
-    }
-    names
+fn normalize_requested_names(values: Option<Vec<String>>) -> Vec<String> {
+    ordered_unique_non_empty_names(
+        values
+            .into_iter()
+            .flatten()
+            .map(|value| value.trim().to_string()),
+    )
 }
 
 fn is_builtin(def: &ToolDef) -> bool {

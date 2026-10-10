@@ -843,3 +843,4 @@
 - [0862：跨 crate 共用 canonical JSON 编码](0862-share-canonical-json-across-crates.md)
 - [0863：共用 managed path 比较原语](0863-share-managed-path-comparison.md)
 - [0864：直接使用 Common XML entity decoder](0864-use-shared-xml-unescape-directly.md)
+- [0865：共用有序非空名称列表去重](0865-share-ordered-name-list-deduplication.md)
