@@ -361,6 +361,7 @@ embedding 生命周期读写和 LSH 维护，`memory_index.rs` 保留模型路�
 `MemoryPersistence` 另行构造同一 typed store。在 Router 和 `ContextLimitsConfig` 确定后，将 `MemoryStores`、Router 和配置中的 `embedding_chunk_size` 注入唯一
 `MemoryService`，再将该 service 注入 `AgentLayer::build`；该构造返回
 `AgentStartup { agent, memory_startup }`。
+SQLite 投影行 `EmbeddedText` 只用于 Memory 内部索引实现，并仅在 `test-support` 下随 raw `Database` 暴露；生产 recall 使用 `MemoryHit`，不泄漏 embedding 表行。
 AgentLayer 从同一 service 派生 stores、共享的 `MemoryWorker` 与 `SystemPromptBuilder`；
 `MemoryStartup` 持有唯一 `MemoryRuntime`，并由 ApplicationRuntime 接管长期所有权。Prompt-memory
 cache、embedding index 与 worker memory capability 仍属于同一服务实例（ADR 0364、0367）。

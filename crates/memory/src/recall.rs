@@ -91,7 +91,7 @@ pub struct MemoryHit {
 }
 
 impl MemoryHit {
-    pub fn from_embedding(embedding: EmbeddedText, score: f64) -> Self {
+    pub(crate) fn from_embedding(embedding: EmbeddedText, score: f64) -> Self {
         Self {
             entity_id: embedding.entity_id,
             text: embedding.text,

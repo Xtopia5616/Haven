@@ -10,6 +10,7 @@ mod schema;
 pub(crate) use db::Database;
 #[cfg(feature = "test-support")]
 pub use db::Database;
+#[cfg(feature = "test-support")]
 pub use embeddings::EmbeddedText;
 pub use persistence::{MemoryPersistence, MemoryStores};
 pub use recall::{
