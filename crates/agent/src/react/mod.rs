@@ -562,7 +562,7 @@ impl ReActEngine {
 
     /// Allow the chat request launched by an explicit Continue action to try
     /// again immediately after an endpoint circuit has opened.
-    pub(crate) async fn prepare_manual_retry(&self) {
+    pub(crate) async fn prepare_manual_chat_retry(&self) {
         self.router().prepare_manual_retry(RequestKind::Chat).await;
     }
 

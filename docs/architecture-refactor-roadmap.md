@@ -161,6 +161,8 @@ Rust/Common 名称审查发现 `default_work_dir()` 实际表示应用共享运�
 
 同一审查也发现 Common 的 `default_generated_media_dir()` 返回值被所有调用方当作生成媒体存储 root，已统一改名为 `default_generated_media_root()`；扫描和清理仍由 App、资产访问仍由 Tools、附件读取校验仍由 Memory 各自拥有（ADR 0874）。
 
+Rust 调用图发现 `LlmRouter::prepare_manual_retry(RequestKind)` 可处理任意请求路线，而 `ReactEngine` 的同名方法固定为 Chat 并只用于 Continue；Agent wrapper 已改名 `prepare_manual_chat_retry`，路由熔断状态与重置策略仍只由 LLM 持有（ADR 0875）。
+
 #### 当前审计覆盖与剩余范围
 
 | 范围                                                      | 已核对的当前基线                                                                                                                                                                                                                                                                 | 尚待核对                                                                                                                                                            |
