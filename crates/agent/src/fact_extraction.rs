@@ -1,8 +1,9 @@
 //! Shared fact-extraction wire parsing and sanitization.
 //!
 //! The memory worker owns scheduling, prompts and persistence orchestration.
-//! This module owns only the model-facing fact shape and the normalization
-//! rules that protect extracted values before they enter prompts or storage.
+//! This module owns only the model-facing fact shape, field coercion and
+//! sanitization before values enter prompts or storage. Canonical predicate
+//! naming is owned by Memory because every fact write path shares that policy.
 
 use serde::Deserialize;
 
@@ -82,13 +83,6 @@ pub(crate) fn sanitize_tags(tags: &[String]) -> Vec<String> {
         .filter(|tag| ALLOWED_FACT_TAGS.contains(&tag.as_str()))
         .take(4)
         .collect()
-}
-
-/// Normalize a predicate to its canonical form (trim + lowercase + alias
-/// mapping). Delegates to the memory layer so the worker path and the
-/// repository write paths share ONE normalization policy.
-pub(crate) fn normalize_predicate(predicate: &str) -> String {
-    haven_memory::repositories::facts::normalize_predicate(predicate)
 }
 
 /// Sanitize a fact field before it is stored and later interpolated into the

@@ -844,3 +844,4 @@
 - [0863：共用 managed path 比较原语](0863-share-managed-path-comparison.md)
 - [0864：直接使用 Common XML entity decoder](0864-use-shared-xml-unescape-directly.md)
 - [0865：共用有序非空名称列表去重](0865-share-ordered-name-list-deduplication.md)
+- [0866：由 Memory 独占事实谓词规范化](0866-own-fact-predicate-normalization-in-memory.md)

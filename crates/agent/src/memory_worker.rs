@@ -18,6 +18,7 @@ use haven_memory::Database;
 use haven_memory::recall::MemoryRetriever;
 use haven_memory::repositories::facts::{
     FactSourceRef, is_sensitive_object, is_sensitive_predicate, is_single_valued_predicate,
+    normalize_predicate,
 };
 use haven_memory::{
     MemoryFactExtractionStore, MemoryFactStore, MemoryFactWrite, MemoryMaintenanceStore,
@@ -25,9 +26,7 @@ use haven_memory::{
 use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
 
-use crate::fact_extraction::{
-    LlmFact, extract_json_array, normalize_predicate, sanitize_fact_field, sanitize_tags,
-};
+use crate::fact_extraction::{LlmFact, extract_json_array, sanitize_fact_field, sanitize_tags};
 #[cfg(test)]
 use crate::fact_inference::{
     ContradictionDemoteProposal, PredicateMergeProposal, gate_contradiction_demote,

@@ -3,12 +3,13 @@ use std::collections::HashMap;
 use haven_common::prompts::COMPACTED_SUMMARY_PREFIX;
 use haven_memory::repositories::facts::{
     ContradictionCandidate, ContradictionKind, Fact, fact_within_demote_age,
-    is_canonical_merge_target, is_identity_predicate, is_sensitive_text, pick_contradiction_keeper,
+    is_canonical_merge_target, is_identity_predicate, is_sensitive_text, normalize_predicate,
+    pick_contradiction_keeper,
 };
 use haven_memory::repositories::session_steps::SessionStep;
 use serde::Deserialize;
 
-use crate::fact_extraction::{coerce_to_string, normalize_predicate};
+use crate::fact_extraction::coerce_to_string;
 
 /// Max preceding assistant text turns kept per new user (M4). Closest first.
 const EXTRACTION_MAX_ASSISTANTS_PER_TURN: usize = 2;

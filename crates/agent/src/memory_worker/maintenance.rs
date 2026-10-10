@@ -3,11 +3,13 @@ use std::collections::HashMap;
 use haven_common::prompts::{CONTRADICTION_ARBITRATE_SYSTEM_PROMPT, predicate_merge_system_prompt};
 use haven_memory::MemoryMaintenanceStore;
 use haven_memory::recall::MemoryRetriever;
-use haven_memory::repositories::facts::{CANONICAL_MERGE_TARGETS, Fact, is_canonical_merge_target};
+use haven_memory::repositories::facts::{
+    CANONICAL_MERGE_TARGETS, Fact, is_canonical_merge_target, normalize_predicate,
+};
 use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
 
-use crate::fact_extraction::{extract_json_array, normalize_predicate};
+use crate::fact_extraction::extract_json_array;
 use crate::fact_inference::{
     ContradictionDemoteProposal, PredicateMergeProposal, format_contradiction_groups,
     gate_contradiction_demote, gate_predicate_merge,
