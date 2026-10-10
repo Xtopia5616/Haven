@@ -27,7 +27,9 @@ use crate::resume_support::{
     decode_builtin_tool_selection, infer_resume_step, load_mcp_tool_names, load_skill_names,
 };
 
-use crate::session::{DirectSessionRunLease, SessionStatus};
+#[cfg(test)]
+use crate::session::DirectSessionRunLease;
+use crate::session::SessionStatus;
 use crate::types::{
     ReActRound, TranscriptRecord, project_transcript_with_strategy, seed_events_from_canonical,
 };
@@ -37,14 +39,17 @@ use std::sync::Arc;
 
 #[derive(Clone, Copy)]
 enum TerminalErrorEventOwner {
+    #[cfg(test)]
     AgentEventBus,
     SessionSupervisor,
 }
 
+#[cfg(test)]
 struct DirectSessionRunGuard {
     lease: Option<DirectSessionRunLease>,
 }
 
+#[cfg(test)]
 impl DirectSessionRunGuard {
     async fn finish(&mut self) {
         if let Some(lease) = self.lease.as_mut() {
@@ -66,11 +71,13 @@ impl AgentEventEmitter for SuppressSessionErrorEmitter {
     }
 }
 
+#[cfg(test)]
 struct SuppressLifecycleCancelledSessionErrorEmitter {
     inner: Arc<dyn AgentEventEmitter>,
     executor: Arc<crate::session::SessionSupervisor>,
 }
 
+#[cfg(test)]
 #[async_trait::async_trait]
 impl AgentEventEmitter for SuppressLifecycleCancelledSessionErrorEmitter {
     async fn emit(&self, event: AgentEvent) {
@@ -229,7 +236,11 @@ impl AgentLayer {
     /// Run a session directly by id. ReAct terminal errors are published on
     /// the Agent event bus; dispatcher callers use
     /// [`Self::run_session_from_dispatcher`] so the supervisor owns that event.
-    pub async fn run_session_from_id(&self, session_id: &str) -> anyhow::Result<Vec<ReActRound>> {
+    #[cfg(test)]
+    pub(crate) async fn run_session_from_id(
+        &self,
+        session_id: &str,
+    ) -> anyhow::Result<Vec<ReActRound>> {
         self.run_session_from_id_with_error_owner(
             session_id,
             TerminalErrorEventOwner::AgentEventBus,
@@ -262,10 +273,11 @@ impl AgentLayer {
                 anyhow::anyhow!("session '{}' not found by dispatcher", session_id)
             })?;
 
-        // Dispatcher calls already own the run slot. A public direct call must
-        // acquire its own lease before changing status or doing any work; a
-        // rejected lease means the session is closing or another run owns it.
+        // Dispatcher calls already own the run slot. Test-only direct calls
+        // acquire their own lease before changing status or doing any work.
+        #[cfg(test)]
         let direct_lease = match terminal_error_owner {
+            #[cfg(test)]
             TerminalErrorEventOwner::AgentEventBus => Some(
                 self.executor
                     .begin_direct_session_run(session_id)
@@ -276,6 +288,7 @@ impl AgentLayer {
             ),
             TerminalErrorEventOwner::SessionSupervisor => None,
         };
+        #[cfg(test)]
         let _direct_guard = DirectSessionRunGuard {
             lease: direct_lease,
         };
@@ -438,8 +451,11 @@ impl AgentLayer {
         }
         }
         .await;
-        let mut direct_guard = _direct_guard;
-        direct_guard.finish().await;
+        #[cfg(test)]
+        {
+            let mut direct_guard = _direct_guard;
+            direct_guard.finish().await;
+        }
         result
     }
 
@@ -742,6 +758,7 @@ impl AgentLayer {
     ) -> Option<Arc<dyn AgentEventEmitter>> {
         let emitter = self.events.emitter_arc()?;
         match terminal_error_owner {
+            #[cfg(test)]
             TerminalErrorEventOwner::AgentEventBus => {
                 Some(Arc::new(SuppressLifecycleCancelledSessionErrorEmitter {
                     inner: emitter,

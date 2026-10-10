@@ -1,14 +1,17 @@
 use crate::is_dangling_boundary;
+#[cfg(test)]
+use crate::token_budget::estimate_tool_tokens;
 use crate::token_budget::{
     PROVIDER_REQUEST_OVERHEAD_TOKENS, estimate_message_token_cost, estimate_message_tokens,
     estimate_provider_request_tokens, estimate_provider_request_tokens_with_estimates,
-    estimate_tokens, estimate_tool_tokens, truncate_prefix_to_token_budget,
-    truncate_suffix_to_token_budget,
+    estimate_tokens, truncate_prefix_to_token_budget, truncate_suffix_to_token_budget,
 };
 use haven_common::config::RequestKind;
 use haven_common::prompts::SESSION_COMPACTION_SUMMARY_PROMPT;
 use haven_common::types::{CanonicalMessage, ContentPart};
-use haven_llm::{LlmError, LlmRouter, LlmToolDefinition};
+#[cfg(test)]
+use haven_llm::LlmToolDefinition;
+use haven_llm::{LlmError, LlmRouter};
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
@@ -82,9 +85,9 @@ pub struct CompactionResult {
 ///
 /// NOTE: production construction goes through
 /// `ReActEngine::context_compactor`, which passes `context_limits` values
-/// from `[context_limits]` in config.toml; these `new`/`with_ratio` defaults
-/// must stay in sync with `ContextLimitsConfig` for tests and direct users.
-pub struct ContextCompactor {
+/// from `[context_limits]` in config.toml; the test-only `new` default stays
+/// in sync with `ContextLimitsConfig`.
+pub(crate) struct ContextCompactor {
     /// Soft limit: total context window in tokens (from model config).
     pub context_window: u32,
     /// Tokens to reserve for the response.
@@ -95,7 +98,8 @@ pub struct ContextCompactor {
 }
 
 impl ContextCompactor {
-    pub fn new(context_window: u32, reserve_tokens: u32) -> Self {
+    #[cfg(test)]
+    fn new(context_window: u32, reserve_tokens: u32) -> Self {
         Self {
             context_window,
             reserve_tokens,
@@ -133,7 +137,8 @@ impl ContextCompactor {
     /// Whichever is smaller triggers compaction first. This preserves the
     /// original "leave room for response" guarantee while compacting
     /// earlier when the model has plenty of headroom.
-    pub fn needs_compaction(&self, messages: &[CanonicalMessage]) -> bool {
+    #[cfg(test)]
+    fn needs_compaction(&self, messages: &[CanonicalMessage]) -> bool {
         estimate_message_tokens(messages) > self.threshold_tokens()
     }
 
@@ -432,7 +437,8 @@ impl ContextCompactor {
     ///
     /// Returns `None` when compaction fails (e.g. LLM call fails) or there is
     /// no complete turn/tool round to compact (fewer than 3 messages).
-    pub async fn compact(
+    #[cfg(test)]
+    async fn compact(
         &self,
         messages: &[CanonicalMessage],
         tools: &[LlmToolDefinition],

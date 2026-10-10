@@ -444,11 +444,6 @@ impl AgentLayer {
                                 .emit_session_updated(&session_id, SessionStatus::Pending)
                                 .await;
                         }
-                        SessionSupervisorEvent::SessionRunPaused { session_id } => {
-                            events
-                                .emit_session_updated(&session_id, SessionStatus::Paused)
-                                .await;
-                        }
                         SessionSupervisorEvent::SessionEndPaused { session_id } => {
                             let reason = "结束未完成，会话已暂停，可重试";
                             if let Err(error) = executor

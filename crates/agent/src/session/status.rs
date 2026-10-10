@@ -84,6 +84,7 @@ impl SessionSupervisor {
             .ok_or_else(|| anyhow::anyhow!("session '{}' not found", session_id))?;
         match status {
             SessionStatus::Running => {
+                #[cfg(test)]
                 self.cancel_direct_session_run_admission_waiters(session_id)
                     .await;
                 let cancel = self.cancellation_token(session_id).await;
@@ -159,6 +160,7 @@ impl SessionSupervisor {
             self.finish_ended_session(session_id, cascade).await;
             return Ok(SessionStatus::Completed);
         };
+        #[cfg(test)]
         self.cancel_direct_session_run_admission_waiters(session_id)
             .await;
         let status = actor
@@ -227,6 +229,7 @@ impl SessionSupervisor {
                 "session '{}' lost its end closing marker",
                 session_id
             );
+            #[cfg(test)]
             self.cancel_direct_session_run_admission_waiters(session_id)
                 .await;
             self.dequeue_pending(session_id).await;
@@ -367,6 +370,7 @@ impl SessionSupervisor {
     /// Cancel and join a run without holding the registry gate. A live ReAct
     /// handler may need that gate to finish a child-session operation.
     async fn quiesce_session(&self, session_id: &str) -> anyhow::Result<()> {
+        #[cfg(test)]
         self.cancel_direct_session_run_admission_waiters(session_id)
             .await;
         if let Some(actor) = self.actor_for(session_id).await {
@@ -457,6 +461,7 @@ impl SessionSupervisor {
             .cloned()
             .collect::<Vec<_>>();
         for actor in &actors {
+            #[cfg(test)]
             self.cancel_direct_session_run_admission_waiters(&actor.id)
                 .await;
             actor.cancel_actor();
@@ -492,6 +497,7 @@ impl SessionSupervisor {
             .clear();
         self.pending_queue.lock().await.clear();
         self.scheduled_confirms.lock().await.clear();
+        #[cfg(test)]
         self.direct_session_run_admission_waiters
             .lock()
             .await
@@ -651,6 +657,7 @@ impl SessionSupervisor {
             retry_queue: self.terminal_cleanup_retry_queue.clone(),
             session_id: session_id.to_string(),
         };
+        #[cfg(test)]
         self.cancel_direct_session_run_admission_waiters(session_id)
             .await;
         Ok(closing)
@@ -737,9 +744,10 @@ impl SessionSupervisor {
         Ok(is_error)
     }
 
-    /// Commit a direct-run error only while a run is still active. The caller
+    /// Test-only: commit a direct-run error only while a run is still active. The caller
     /// holds the lifecycle gate through event publication so end cannot
     /// publish a later pause before the matching Agent event.
+    #[cfg(test)]
     pub(crate) async fn mark_run_failed_if_active(&self, session_id: &str) -> anyhow::Result<bool> {
         self.update_session_status_if(session_id, SessionStatus::Running, SessionStatus::Error)
             .await
@@ -779,6 +787,7 @@ impl SessionSupervisor {
             return Ok(false);
         }
         if transition.terminal {
+            #[cfg(test)]
             self.cancel_direct_session_run_admission_waiters(session_id)
                 .await;
             self.dequeue_pending(session_id).await;

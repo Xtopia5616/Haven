@@ -5,12 +5,12 @@ use super::SessionRunHandler;
 /// Executes one complete ReAct run.  The supervisor owns admission and
 /// lifecycle; this type owns only the run implementation boundary.
 #[derive(Clone)]
-pub struct SessionRunEngine {
+pub(crate) struct SessionRunEngine {
     handler: SessionRunHandler,
 }
 
 impl SessionRunEngine {
-    pub fn new(handler: SessionRunHandler) -> Self {
+    pub(crate) fn new(handler: SessionRunHandler) -> Self {
         Self { handler }
     }
 

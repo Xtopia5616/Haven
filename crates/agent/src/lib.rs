@@ -36,7 +36,6 @@ mod types;
 pub(crate) use canonical::{is_dangling_boundary, sanitize_canonical};
 
 pub use agent_tool_ports::AgentToolPorts;
-pub use compactor::ContextCompactor;
 pub use event::{
     AgentEvent, AgentEventEmitter, BufferedEmitter, EventBus, EventDispatcher,
     ToolRunCompletionStatus, ToolRunNotificationSource,
@@ -47,33 +46,30 @@ pub use interaction::{
 };
 pub use layer::{AgentStartup, PendingSessionRecovery};
 pub use memory_runtime::{
-    MemoryEventProcessOutcome, MemoryLiveConsumerHandoff, MemoryReady, MemoryStartup,
-    PreparedMemoryRuntime,
+    MemoryLiveConsumerHandoff, MemoryReady, MemoryStartup, PreparedMemoryRuntime,
 };
 pub use memory_service::MemoryService;
-pub use memory_worker::MemoryWorker;
-pub use prompt::SystemPromptBuilder;
+pub(crate) use memory_worker::MemoryWorker;
+pub(crate) use prompt::SystemPromptBuilder;
 pub use prompt_context::{
-    PromptCatalogContent, PromptCatalogVersions, PromptContextProvider, PromptRuntimeContext,
-    PromptToolPort,
+    PromptCatalogContent, PromptCatalogVersions, PromptRuntimeContext, PromptToolPort,
 };
-pub use prompt_renderer::{MemorySections, PromptRenderer};
-pub use react::{
-    LoopExit, MetricsSnapshot, ParsedAgentResponse, PauseReason, ReActEngine, ToolCatalogPort,
-    UiMetricsSnapshot,
-};
+pub(crate) use react::ReActEngine;
+pub use react::{MetricsSnapshot, ToolCatalogPort, UiMetricsSnapshot};
 pub use session::{
-    AgentToolRunPort, ConfirmResolution, ManagedAssetLeasePort, SessionInfo, SessionRunEngine,
-    SessionRunHandler, SessionStatus, SessionSupervisor, SessionSupervisorEvent,
-    SessionToolOverlayPort, SessionToolPorts, SessionWaitingReason, StepInfo,
-    ToolAuthorizationPort, ToolExecution, ToolExecutionContext, ToolExecutionPort,
-    ToolObservationPort, ToolRunCompletionReceiverPort,
+    AgentToolRunPort, ConfirmResolution, ManagedAssetLeasePort, SessionInfo, SessionRunHandler,
+    SessionStatus, SessionSupervisor, SessionSupervisorEvent, SessionToolOverlayPort,
+    SessionToolPorts, SessionWaitingReason, StepInfo, ToolAuthorizationPort, ToolExecution,
+    ToolExecutionContext, ToolExecutionPort, ToolObservationPort, ToolRunCompletionReceiverPort,
 };
 pub use storage_error::sqlite_storage_failure_message;
 
-pub use types::{
-    BranchPoint, ProcessResult, ReActRound, ToolCall, ToolRecord, TranscriptProjection,
-    TranscriptRecord, project_transcript, project_transcript_with_strategy,
+#[cfg(test)]
+pub(crate) use react::ParsedAgentResponse;
+pub use types::ProcessResult;
+#[cfg(test)]
+pub(crate) use types::{
+    BranchPoint, ReActRound, ToolCall, ToolRecord, TranscriptRecord, project_transcript,
     seed_events_from_canonical,
 };
 // The store owns SQLite ordering/persistence in `haven-memory`; these

@@ -541,7 +541,6 @@ pub(crate) fn run() {
                                         ..
                                     }
                                     | haven_agent::SessionSupervisorEvent::SessionResumed { .. }
-                                    | haven_agent::SessionSupervisorEvent::SessionRunPaused { .. }
                                     | haven_agent::SessionSupervisorEvent::SessionEndPaused { .. }
                                     | haven_agent::SessionSupervisorEvent::SessionCleanup { .. }
                                     | haven_agent::SessionSupervisorEvent::CascadeCompleted { .. } => {}

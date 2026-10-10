@@ -44,11 +44,13 @@ pub type SessionRunHandler =
 
 /// A direct SessionRun blocked on admission capacity. The id unregisters only
 /// this waiter; lifecycle operations cancel its token to wake the capacity wait.
+#[cfg(test)]
 struct DirectSessionRunAdmissionWaiter {
     waiter_id: usize,
     cancellation: CancellationToken,
 }
 
+#[cfg(test)]
 type DirectSessionRunAdmissionWaiters = HashMap<String, Vec<DirectSessionRunAdmissionWaiter>>;
 
 /// Process-local history-purge admission block with cancellation-safe cleanup.
@@ -302,11 +304,6 @@ pub enum SessionSupervisorEvent {
     SessionResumed {
         session_id: String,
     },
-    /// A direct run was cancelled with its caller and has been reconciled to
-    /// a retryable paused state.
-    SessionRunPaused {
-        session_id: String,
-    },
     /// An explicit end attempt failed after durably pausing a retryable
     /// session. The UI keeps the session visible and can retry the end.
     SessionEndPaused {
@@ -377,8 +374,8 @@ pub struct SessionSupervisor {
     /// the durable purge has completed.
     lifecycle_blocked: Arc<std::sync::atomic::AtomicBool>,
     /// Session-scoped closing markers close the gap between quiescing one
-    /// session and taking the registry gate. Direct resumes and dispatch
-    /// claims must not start after a delete has linearized its close request.
+    /// session and taking the registry gate. Dispatcher claims must not start
+    /// after a delete has linearized its close request.
     closing_sessions: Arc<StdMutex<HashMap<String, SessionClosingMode>>>,
     /// Run-exit and status transitions share one terminal cleanup owner. The
     /// marker also closes resume/rollback admission while that owner performs
@@ -389,14 +386,18 @@ pub struct SessionSupervisor {
     terminal_cleanup_cascade_overrides: Arc<StdMutex<HashMap<String, bool>>>,
     terminal_cleanup_retry_queue: Arc<TerminalCleanupRetryQueue>,
     terminal_cleanup_retry_rx: StdMutex<Option<mpsc::UnboundedReceiver<String>>>,
-    /// Direct SessionRun admissions waiting for a run slot can be cancelled by
-    /// delete/clear instead of waiting for unrelated work to release capacity.
+    /// Test-only direct SessionRun admissions can be cancelled by lifecycle
+    /// operations instead of waiting for unrelated work to release capacity.
+    #[cfg(test)]
     direct_session_run_admission_waiters: Arc<Mutex<DirectSessionRunAdmissionWaiters>>,
+    #[cfg(test)]
     direct_session_run_admission_waiter_id: AtomicUsize,
-    /// A direct-run owner remains reserved until its exit reconciliation has
-    /// completed. Actor `running` may clear slightly earlier, so this marker
-    /// prevents same-session re-admission during that cleanup handoff.
+    /// Test-only direct-run owner retained until exit reconciliation completes.
+    /// Actor `running` may clear earlier, so this marker prevents same-session
+    /// re-admission during that cleanup handoff.
+    #[cfg(test)]
     direct_session_run_leases: StdMutex<HashMap<String, usize>>,
+    #[cfg(test)]
     direct_session_run_lease_id: AtomicUsize,
     /// The supervisor owns exactly one dispatcher. Duplicate starts would
     /// create competing lifecycle consumers and make recovery nondeterministic.
@@ -446,6 +447,7 @@ mod run_engine;
 mod status;
 mod tool_ports;
 mod tool_runner;
+#[cfg(test)]
 pub(crate) use dispatcher::DirectSessionRunLease;
 pub use tool_ports::SessionToolPorts;
 pub use tool_ports::{
@@ -458,7 +460,7 @@ pub(crate) use actor::{
     CONTEXT_BATCH_MAX_CHARS, CONTEXT_BATCH_MAX_ITEMS, MessagingTitle, ReActContextBatch,
 };
 pub(crate) use queues::PendingInteractionGates;
-pub use run_engine::SessionRunEngine;
+pub(crate) use run_engine::SessionRunEngine;
 
 impl SessionSupervisor {
     pub fn new(store: SessionStore, ports: SessionToolPorts, max_concurrent: usize) -> Self {
@@ -500,9 +502,13 @@ impl SessionSupervisor {
                 sender: retry_tx,
             }),
             terminal_cleanup_retry_rx: StdMutex::new(Some(retry_rx)),
+            #[cfg(test)]
             direct_session_run_admission_waiters: Arc::new(Mutex::new(HashMap::new())),
+            #[cfg(test)]
             direct_session_run_admission_waiter_id: AtomicUsize::new(0),
+            #[cfg(test)]
             direct_session_run_leases: StdMutex::new(HashMap::new()),
+            #[cfg(test)]
             direct_session_run_lease_id: AtomicUsize::new(0),
             dispatcher_started: std::sync::atomic::AtomicBool::new(false),
             pending_queue: Arc::new(Mutex::new(VecDeque::new())),
@@ -784,6 +790,7 @@ impl SessionSupervisor {
         }
     }
 
+    #[cfg(test)]
     pub(crate) async fn register_direct_session_run_admission_waiter(
         &self,
         session_id: &str,
@@ -805,6 +812,7 @@ impl SessionSupervisor {
         waiter_id
     }
 
+    #[cfg(test)]
     pub(crate) async fn unregister_direct_session_run_admission_waiter(
         &self,
         session_id: &str,
@@ -820,6 +828,7 @@ impl SessionSupervisor {
         }
     }
 
+    #[cfg(test)]
     pub(crate) async fn cancel_direct_session_run_admission_waiters(&self, session_id: &str) {
         let waiters = self
             .direct_session_run_admission_waiters

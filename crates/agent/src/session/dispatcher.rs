@@ -117,6 +117,7 @@ impl Drop for SessionRunPermit {
 /// A direct (non-dispatcher) run owns an admission permit for its lifetime.
 /// Dispatcher-owned runs never create this value because their actor is
 /// already marked running.
+#[cfg(test)]
 pub(crate) struct DirectSessionRunLease {
     pub(crate) actor: actor::SessionActorHandle,
     executor: Arc<super::SessionSupervisor>,
@@ -126,6 +127,7 @@ pub(crate) struct DirectSessionRunLease {
     finished: bool,
 }
 
+#[cfg(test)]
 impl DirectSessionRunLease {
     pub(crate) async fn finish(&mut self) {
         if self.finished {
@@ -141,6 +143,7 @@ impl DirectSessionRunLease {
     }
 }
 
+#[cfg(test)]
 impl Drop for DirectSessionRunLease {
     fn drop(&mut self) {
         if self.finished {
@@ -163,12 +166,14 @@ impl Drop for DirectSessionRunLease {
     }
 }
 
+#[cfg(test)]
 struct DirectSessionRunAdmissionWaiterGuard {
     executor: Arc<super::SessionSupervisor>,
     session_id: String,
     waiter_id: Option<usize>,
 }
 
+#[cfg(test)]
 impl DirectSessionRunAdmissionWaiterGuard {
     async fn unregister(&mut self) {
         if let Some(waiter_id) = self.waiter_id {
@@ -180,6 +185,7 @@ impl DirectSessionRunAdmissionWaiterGuard {
     }
 }
 
+#[cfg(test)]
 impl Drop for DirectSessionRunAdmissionWaiterGuard {
     fn drop(&mut self) {
         let Some(waiter_id) = self.waiter_id.take() else {
@@ -200,6 +206,7 @@ impl SessionSupervisor {
         self.dispatch_tx.send_modify(|counter| *counter += 1);
     }
 
+    #[cfg(test)]
     fn direct_session_run_lease_active(&self, session_id: &str) -> bool {
         self.direct_session_run_leases
             .lock()
@@ -207,6 +214,7 @@ impl SessionSupervisor {
             .contains_key(session_id)
     }
 
+    #[cfg(test)]
     fn reserve_direct_session_run_lease(&self, session_id: &str) -> Option<usize> {
         let mut leases = self
             .direct_session_run_leases
@@ -222,6 +230,7 @@ impl SessionSupervisor {
         Some(lease_id)
     }
 
+    #[cfg(test)]
     fn release_direct_session_run_lease(&self, session_id: &str, lease_id: usize) {
         let released = {
             let mut leases = self
@@ -431,9 +440,7 @@ impl SessionSupervisor {
         // Claiming is a lifecycle admission, not just a queue operation. Keep
         // the registry gate across the queue scan + closing check + actor
         // claim so delete/clear cannot remove an actor between its check and
-        // run-bit transition. A direct-run lease may outlive the actor's run
-        // bit while exit reconciliation finishes, so rotate those entries to
-        // the back instead of blocking other sessions that could run now.
+        // run-bit transition.
         let _lifecycle = self.lifecycle_guard().await;
         if self.ensure_lifecycle_open().is_err() {
             return None;
@@ -444,6 +451,7 @@ impl SessionSupervisor {
             if self.is_session_closing(&session_id) {
                 continue;
             }
+            #[cfg(test)]
             if self.direct_session_run_lease_active(&session_id) {
                 self.enqueue_pending(&session_id).await;
                 continue;
@@ -519,6 +527,7 @@ impl SessionSupervisor {
         }
     }
 
+    #[cfg(test)]
     pub(crate) async fn begin_direct_session_run(
         self: &Arc<Self>,
         session_id: &str,
@@ -577,10 +586,9 @@ impl SessionSupervisor {
             drop(permit);
             return None;
         }
-        // Public direct runs can intentionally resume a paused actor, but the
-        // run must become Running before it starts. That gives error handling
-        // one unambiguous expected state and keeps an end racing this admission
-        // serialized by the lifecycle gate above.
+        // The test-only direct-run helper exercises resuming a paused actor.
+        // Promote it before execution so its error handling sees one expected
+        // state and an end racing this admission stays serialized by the gate.
         let status = actor.snapshot().await?.status;
         if matches!(status, SessionStatus::Completed | SessionStatus::Error) {
             drop(permit);
@@ -632,6 +640,7 @@ impl SessionSupervisor {
         }
     }
 
+    #[cfg(test)]
     pub(crate) async fn end_direct_session_run(
         &self,
         session_id: &str,
@@ -651,6 +660,7 @@ impl SessionSupervisor {
         }
     }
 
+    #[cfg(test)]
     async fn end_cancelled_direct_session_run(
         &self,
         session_id: &str,
@@ -671,7 +681,7 @@ impl SessionSupervisor {
                 .await
                 .is_some_and(|snapshot| snapshot.status == SessionStatus::Running)
             {
-                match self
+                if let Err(error) = self
                     .update_session_status_if(
                         session_id,
                         SessionStatus::Running,
@@ -679,15 +689,11 @@ impl SessionSupervisor {
                     )
                     .await
                 {
-                    Ok(true) => self.emit_event(SessionSupervisorEvent::SessionRunPaused {
-                        session_id: session_id.to_string(),
-                    }),
-                    Ok(false) => {}
-                    Err(error) => tracing::warn!(
+                    tracing::warn!(
                         session_id,
                         %error,
                         "failed to pause a cancelled direct run"
-                    ),
+                    );
                 }
             }
             finished

@@ -59,7 +59,7 @@ impl LifecycleWindow {
     /// Classify from session status + whether the dispatcher still holds the run slot.
     ///
     /// `SessionStatus::Running` counts as in-flight even without a dispatcher
-    /// slot (direct `run_session_from_id` / tests) so rollback still cancels.
+    /// slot (test-only direct runs) so rollback still cancels.
     pub fn classify(status: Option<&SessionStatus>, run_in_flight: bool) -> Self {
         if run_in_flight || matches!(status, Some(SessionStatus::Running)) {
             return Self::RunInFlight;
@@ -224,7 +224,7 @@ mod tests {
             LifecycleWindow::classify(Some(&SessionStatus::Paused), false),
             LifecycleWindow::Idle
         );
-        // Direct run_session_from_id: Running without dispatcher slot.
+        // Test-only direct run: Running without a dispatcher slot.
         assert_eq!(
             LifecycleWindow::classify(Some(&SessionStatus::Running), false),
             LifecycleWindow::RunInFlight

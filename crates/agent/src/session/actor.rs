@@ -34,6 +34,7 @@ use tokio::sync::{mpsc, oneshot, watch};
 use tokio_util::sync::CancellationToken;
 
 const ACTOR_MAILBOX_CAPACITY: usize = 128;
+#[cfg(test)]
 const ACTOR_RELEASE_CAPACITY: usize = 1;
 
 /// Hard limits for process-local context queues.  The ingress path persists a
@@ -189,6 +190,7 @@ pub(crate) enum ActorCommand {
     ClaimSessionRun {
         reply: oneshot::Sender<anyhow::Result<SessionRunClaim>>,
     },
+    #[cfg(test)]
     TryMarkDirectRunActive {
         reply: oneshot::Sender<bool>,
     },
@@ -198,6 +200,7 @@ pub(crate) enum ActorCommand {
     IsRunning {
         reply: oneshot::Sender<bool>,
     },
+    #[cfg(test)]
     ReActLoopBarrier {
         reply: oneshot::Sender<bool>,
     },
@@ -290,7 +293,9 @@ pub(crate) struct SessionActorHandle {
     run_cancellation: watch::Receiver<CancellationToken>,
     status: watch::Sender<SessionStatus>,
     run_state: watch::Sender<bool>,
+    #[cfg(test)]
     react_run_state: watch::Receiver<bool>,
+    #[cfg(test)]
     release_run: mpsc::Sender<()>,
 }
 
@@ -307,6 +312,7 @@ impl SessionActorHandle {
         self.run_state.subscribe()
     }
 
+    #[cfg(test)]
     pub(crate) async fn await_react_loop_finished(&self) {
         // First place a barrier behind any ReAct command already submitted by
         // the caller. Reading the watch channel alone can observe `false`
@@ -412,6 +418,7 @@ impl SessionActorHandle {
             .map_err(|_| anyhow::anyhow!("session actor '{}' dropped run claim", self.id))?
     }
 
+    #[cfg(test)]
     pub(crate) async fn try_mark_direct_run_active(&self) -> bool {
         let (reply, rx) = oneshot::channel();
         if self
@@ -430,6 +437,7 @@ impl SessionActorHandle {
         rx.await.ok()
     }
 
+    #[cfg(test)]
     pub(crate) fn release_run_now(&self) {
         // Releasing is idempotent. A one-slot side channel coalesces repeated
         // synchronous guard drops without consuming mailbox capacity or
@@ -926,10 +934,18 @@ pub(crate) fn spawn(
     interactions: Vec<InteractionRequest>,
 ) -> SessionActorHandle {
     let (tx, mut rx) = mpsc::channel(ACTOR_MAILBOX_CAPACITY);
-    let (release_run, mut release_run_rx) = mpsc::channel(ACTOR_RELEASE_CAPACITY);
+    #[cfg(test)]
+    let (release_run, release_run_receiver) = mpsc::channel(ACTOR_RELEASE_CAPACITY);
+    #[cfg(test)]
+    let mut release_run_rx = Some(release_run_receiver);
+    #[cfg(not(test))]
+    let mut release_run_rx: Option<mpsc::Receiver<()>> = None;
     let (status, _) = watch::channel(info.status);
     let (run_state, _) = watch::channel(false);
+    #[cfg(test)]
     let (react_run_state, react_run_state_rx) = watch::channel(false);
+    #[cfg(not(test))]
+    let (react_run_state, _) = watch::channel(false);
     let actor_lifetime = CancellationToken::new();
     let initial_run_cancellation = actor_lifetime.child_token();
     let (run_cancellation, run_cancellation_rx) = watch::channel(initial_run_cancellation.clone());
@@ -940,7 +956,9 @@ pub(crate) fn spawn(
         run_cancellation: run_cancellation_rx,
         status: status.clone(),
         run_state: run_state.clone(),
+        #[cfg(test)]
         react_run_state: react_run_state_rx,
+        #[cfg(test)]
         release_run,
     };
     tokio::spawn(async move {
@@ -979,7 +997,12 @@ pub(crate) fn spawn(
             }
             let wake = tokio::select! {
                 command = rx.recv() => Wake::Command(command),
-                released = release_run_rx.recv(), if release_run_open => Wake::ReleaseRun(released),
+                released = async {
+                    match release_run_rx.as_mut() {
+                        Some(receiver) => receiver.recv().await,
+                        None => std::future::pending().await,
+                    }
+                }, if release_run_open => Wake::ReleaseRun(released),
                 result = async {
                     match active_run.as_mut() {
                         Some(run) => run.as_mut().await,
@@ -994,14 +1017,17 @@ pub(crate) fn spawn(
                     }
                 } => Wake::ReActLoop(result),
             };
-            // If both channels are ready, apply a queued release before a
-            // later mailbox command such as FinishRun can make the slot
-            // available for another direct run.
+            // If both channels are ready in tests, apply a queued direct-run
+            // release before FinishRun can expose the actor to another run.
+            #[cfg(test)]
             let release_requested = match &wake {
                 Wake::ReleaseRun(Some(())) => true,
                 Wake::ReleaseRun(None) => false,
-                _ => release_run_rx.try_recv().is_ok(),
+                _ => release_run_rx
+                    .as_mut()
+                    .is_some_and(|receiver| receiver.try_recv().is_ok()),
             };
+            #[cfg(test)]
             if release_requested {
                 release_direct_session_run(&mut state, &run_state);
             }
@@ -1279,6 +1305,7 @@ pub(crate) fn spawn(
                     }
                     let _ = reply.send(result);
                 }
+                #[cfg(test)]
                 ActorCommand::TryMarkDirectRunActive { reply } => {
                     let accepted = !state.running && !state.info.status.is_terminal();
                     if accepted {
@@ -1302,6 +1329,7 @@ pub(crate) fn spawn(
                 ActorCommand::IsRunning { reply } => {
                     let _ = reply.send(state.running);
                 }
+                #[cfg(test)]
                 ActorCommand::ReActLoopBarrier { reply } => {
                     let running = matches!(&state.react_run, Some(ActiveReActRun::Running { .. }));
                     let _ = reply.send(running);
@@ -1636,6 +1664,7 @@ pub(crate) fn spawn(
     handle
 }
 
+#[cfg(test)]
 fn release_direct_session_run(state: &mut SessionState, run_state: &watch::Sender<bool>) {
     state.running = false;
     match state.react_run.as_mut() {

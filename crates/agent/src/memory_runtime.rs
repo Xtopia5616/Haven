@@ -21,7 +21,7 @@ const MEMORY_MAINTENANCE_INTERVAL: Duration = Duration::from_secs(6 * 60 * 60);
 
 /// Result of processing one committed event for a target session.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MemoryEventProcessOutcome {
+enum MemoryEventProcessOutcome {
     /// The event belongs to another session and had no effect.
     IgnoredOtherSession,
     /// The event was already covered by the durable memory event cursor.

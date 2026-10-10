@@ -28,13 +28,13 @@ use crate::token_budget::{estimate_tokens, truncate_prefix_to_token_budget};
 /// `tool_catalog`, `load_skill`, or `load_mcp` updates the session
 /// tool surface; the next provider request receives exact definitions from an
 /// immutable session catalog snapshot. Loading a tool does not rewrite the
-/// prompt. On resume, [`Self::rebuild_canonical_system`] refreshes the index
-/// from global catalogs. Mid-run memory refresh stays fence-only via
-/// [`Self::patch_canonical_memory_fence`] (M2). `tool_catalog describe` exposes
+/// prompt. On resume, [`Self::rebuild_canonical_system_without_memory`]
+/// refreshes the index from global catalogs. Mid-run memory refresh stays
+/// fence-only via [`Self::patch_canonical_memory_fence`] (M2). `tool_catalog describe` exposes
 /// schemas on demand, and loaded schemas enter the per-request API `tools[]`
 /// list (`ReActEngine::build_tool_definitions_for_session`); the prompt index
 /// only helps the model discover capability families.
-pub struct SystemPromptBuilder {
+pub(crate) struct SystemPromptBuilder {
     context_provider: Arc<PromptContextProvider>,
 }
 
@@ -395,16 +395,16 @@ impl SystemPromptBuilder {
     /// - Facts / episodes recalled here are **cross-session** only —
     ///   pass `exclude_session_id` so the current session is not restated
     ///   under "Past conversation excerpts". Both live inside the MEMORY
-    ///   fence (`{facts}`); mid-run refreshes that fence via
-    ///   [`Self::build_memory_sections`] + [`Self::patch_system_memory`];
-    ///   resume rebuilds the whole system via [`Self::rebuild_canonical_system`].
+    ///   fence (`{facts}`); production startup/resume initially renders the
+    ///   capability shell, then patches memory after prefetch completes.
     /// - `session_prompt_history` supplies Additional context for the system prompt;
     ///   callers must not re-inject the first user turn already placed in
     ///   canonical (see `layer::run_session`).
     /// - Do **not** inject `ReActRound` / "Steps so far" into the system
     ///   prompt — that dual channel was removed (X7); rounds stay projection-
     ///   only for UI / debug outside the LLM prompt.
-    pub async fn build(
+    #[cfg(test)]
+    pub(crate) async fn build(
         &self,
         session_description: &str,
         session_prompt_history: &[String],
@@ -491,7 +491,8 @@ impl SystemPromptBuilder {
     }
 
     /// Like [`Self::build`], excluding episodes belonging to `exclude_session_id` (S2).
-    pub async fn build_for_session(
+    #[cfg(test)]
+    pub(crate) async fn build_for_session(
         &self,
         session_description: &str,
         session_prompt_history: &[String],
@@ -583,7 +584,7 @@ impl SystemPromptBuilder {
 
     /// Recall + render facts / episodes only. Does **not** touch `schema_cache`
     /// or tools / skills / MCP sections.
-    pub async fn build_memory_sections(
+    pub(crate) async fn build_memory_sections(
         &self,
         session_description: &str,
         exclude_session_id: Option<&str>,
@@ -804,7 +805,7 @@ impl SystemPromptBuilder {
     }
 
     /// Wrap facts + episodes in the MEMORY fence used by fresh build and resume patch.
-    pub fn render_memory_block(sections: &MemorySections) -> String {
+    pub(crate) fn render_memory_block(sections: &MemorySections) -> String {
         PromptRenderer::render_memory_block(sections)
     }
 
@@ -815,7 +816,8 @@ impl SystemPromptBuilder {
     /// patches only mutate the prompt suffix (prompt-cache friendly). Decoy
     /// fences inside tool/skill text sit before the closer and are ignored.
     ///
-    pub fn patch_system_memory(system_prompt: &str, new_memory_block: &str) -> String {
+    #[cfg(test)]
+    pub(crate) fn patch_system_memory(system_prompt: &str, new_memory_block: &str) -> String {
         PromptRenderer::patch_system_memory(system_prompt, new_memory_block)
     }
 
@@ -839,7 +841,8 @@ impl SystemPromptBuilder {
     /// Preserves existing Additional context lines (canonical already holds
     /// the transcript; DB history is not re-loaded). Mid-run `load_mcp` still
     /// does **not** call this — only resume does.
-    pub async fn rebuild_canonical_system(
+    #[cfg(test)]
+    pub(crate) async fn rebuild_canonical_system(
         &self,
         session_id: &str,
         description: &str,

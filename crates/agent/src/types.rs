@@ -6,7 +6,7 @@ use serde_json::Value;
 
 /// One tool invocation within a [`ReActRound`] (parallel tools are siblings).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct ToolRecord {
+pub(crate) struct ToolRecord {
     pub tool_call: ToolCall,
     pub observation: Option<String>,
     pub tool_index: u32,
@@ -16,7 +16,7 @@ pub struct ToolRecord {
 /// One LLM step; parallel tools share `step_number` as siblings in `tools`
 /// (no fake step inflation — Phase 8 / B2).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct ReActRound {
+pub(crate) struct ReActRound {
     pub step_number: u32,
     pub thought: Option<String>,
     pub tools: Vec<ToolRecord>,
@@ -26,7 +26,7 @@ pub struct ReActRound {
 /// Projected to canonical + [`ReActRound`] via [`project_transcript`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
-pub enum TranscriptRecord {
+pub(crate) enum TranscriptRecord {
     Thought {
         step_number: u32,
         text: String,
@@ -109,7 +109,7 @@ pub enum TranscriptRecord {
 /// `events` — no Arc Vec copies.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct BranchPoint {
+pub(crate) struct BranchPoint {
     /// Index into the active transcript cache — restored state is
     /// `events[..event_cursor]`. The durable rollback cursor is the corresponding
     /// `session_events.sequence` stored by the event store marker.
@@ -122,21 +122,22 @@ pub struct BranchPoint {
 
 /// Read-only views derived together from the durable transcript event log.
 #[derive(Debug, Clone)]
-pub struct TranscriptProjection {
+pub(crate) struct TranscriptProjection {
     /// Provider-neutral conversation passed to the model.
     pub canonical_messages: Vec<CanonicalMessage>,
     /// Agent step history used by resume and per-session tool restoration.
     pub react_rounds: Vec<ReActRound>,
 }
 
-pub fn project_transcript(events: &[TranscriptRecord]) -> TranscriptProjection {
+#[cfg(test)]
+pub(crate) fn project_transcript(events: &[TranscriptRecord]) -> TranscriptProjection {
     project_transcript_with_strategy(events, MediaInputStrategy::Auto)
 }
 
 /// Project an append-only event log using an explicit media input policy.
 /// This remains pure so resume and live apply share the same attachment
 /// selection semantics.
-pub fn project_transcript_with_strategy(
+pub(crate) fn project_transcript_with_strategy(
     events: &[TranscriptRecord],
     strategy: MediaInputStrategy,
 ) -> TranscriptProjection {
@@ -488,7 +489,9 @@ pub(crate) fn media_inputs_from_events(events: &[TranscriptRecord]) -> Vec<Media
 
 /// Test/helper: wrap a pre-built canonical list as a single CompactSummary
 /// seed event so snapshots can be constructed without replaying applies.
-pub fn seed_events_from_canonical(canonical: Vec<CanonicalMessage>) -> Vec<TranscriptRecord> {
+pub(crate) fn seed_events_from_canonical(
+    canonical: Vec<CanonicalMessage>,
+) -> Vec<TranscriptRecord> {
     vec![TranscriptRecord::CompactSummary {
         step_number: 1,
         compacted: canonical,

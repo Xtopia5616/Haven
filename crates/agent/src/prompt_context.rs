@@ -14,7 +14,7 @@ use haven_tools::{McpServerIndexEntry, RuntimeCapabilities, SkillInfo};
 
 use crate::memory_service::MemoryService;
 
-pub struct PromptContextProvider {
+pub(crate) struct PromptContextProvider {
     tools: Arc<dyn PromptToolPort>,
     memory: Arc<MemoryService>,
     schema_cache: RwLock<Option<crate::prompt::SchemaCache>>,
@@ -86,7 +86,7 @@ impl PromptToolPort for ToolsFacade {
 }
 
 impl PromptContextProvider {
-    pub fn new(tools: Arc<dyn PromptToolPort>, memory: Arc<MemoryService>) -> Self {
+    pub(crate) fn new(tools: Arc<dyn PromptToolPort>, memory: Arc<MemoryService>) -> Self {
         Self {
             tools,
             memory,

@@ -57,7 +57,7 @@ struct MemoryFactCandidate {
 
 /// Background memory worker: fact extraction, maintenance, outbox draining,
 /// and embedding catch-up. Prompt assembly does not depend on this type.
-pub struct MemoryWorker {
+pub(crate) struct MemoryWorker {
     memory: Arc<MemoryService>,
     outbox: Arc<MemoryOutbox>,
     fact_store: MemoryFactStore,
@@ -397,19 +397,10 @@ impl MemoryWorker {
     /// session returns early WITHOUT touching the cursor, so the pending
     /// messages are still processed by the next allowed run (and by the
     /// maintenance pass regardless).
-    pub async fn infer_facts(&self, session_id: &str) -> bool {
+    #[cfg(test)]
+    pub(crate) async fn infer_facts(&self, session_id: &str) -> bool {
         matches!(
             self.infer_facts_inner(session_id, false).await,
-            FactInferenceOutcome::Done
-        )
-    }
-
-    /// Pause-path extraction: bypasses the time throttle so a same-step
-    /// interval infer cannot starve the post-pause pass that has the
-    /// fresher transcript (Phase 3 / G2).
-    pub async fn infer_facts_on_pause(&self, session_id: &str) -> bool {
-        matches!(
-            self.infer_facts_inner(session_id, true).await,
             FactInferenceOutcome::Done
         )
     }
@@ -802,26 +793,10 @@ impl MemoryWorker {
     /// a **bounded** embedding batch for newly written rows. Does **not** run
     /// full-table dedup / sensitive / flush — that stays on the scheduler via
     /// [`Self::run_memory_maintenance`].
-    pub async fn infer_session(&self, session_id: &str) -> bool {
-        matches!(
-            self.infer_session_outcome(session_id).await,
-            FactInferenceOutcome::Done
-        )
-    }
-
     async fn infer_session_outcome(&self, session_id: &str) -> FactInferenceOutcome {
         let outcome = self.infer_facts_inner(session_id, false).await;
         self.memory.embed_new_memory().await;
         outcome
-    }
-
-    /// Pause-path variant: bypasses the extraction time throttle so a
-    /// same-step interval infer cannot starve the fresher post-pause pass.
-    pub async fn infer_session_on_pause(&self, session_id: &str) -> bool {
-        matches!(
-            self.infer_session_on_pause_outcome(session_id).await,
-            FactInferenceOutcome::Done
-        )
     }
 
     async fn infer_session_on_pause_outcome(&self, session_id: &str) -> FactInferenceOutcome {

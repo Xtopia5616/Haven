@@ -56,7 +56,7 @@ use context::ContextSource;
 pub(crate) use context::tool_run_result_message_id;
 use hooks::{LoopHooksHandle, default_hooks};
 pub(crate) use hooks::{MemoryPatchHandle, default_hooks_with_patch};
-pub use r#loop::{LoopExit, PauseReason};
+pub(crate) use r#loop::{LoopExit, PauseReason};
 pub(crate) use r#loop::{ReActRunInput, ReActRunReplay};
 use metrics::{Counter as MetricsCounter, Phase as MetricsPhase, ReActMetrics};
 pub use metrics::{MetricsSnapshot, UiMetricsSnapshot};
@@ -350,12 +350,12 @@ impl ToolInputValidationFailure {
 
 /// Agent-level interpretation of a provider response for one ReAct step.
 #[derive(Debug, Clone, PartialEq)]
-pub struct ParsedAgentResponse {
+pub(crate) struct ParsedAgentResponse {
     pub thought: Option<String>,
     pub tool_calls: Vec<ToolCall>,
 }
 
-pub struct ReActEngine {
+pub(crate) struct ReActEngine {
     router: Arc<RwLock<Arc<LlmRouter>>>,
     executor: Arc<SessionSupervisor>,
     /// Agent-owned read boundary for immutable per-session tool catalogs.

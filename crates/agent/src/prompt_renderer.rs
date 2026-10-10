@@ -9,12 +9,12 @@ use haven_common::types::{CanonicalMessage, CanonicalRole, ContentPart};
 
 use crate::token_budget::{estimate_tokens, truncate_prefix_to_token_budget};
 
-pub const MEMORY_START: &str = haven_common::prompts::MEMORY_FENCE_START;
-pub const MEMORY_END: &str = haven_common::prompts::MEMORY_FENCE_END;
+pub(crate) const MEMORY_START: &str = haven_common::prompts::MEMORY_FENCE_START;
+pub(crate) const MEMORY_END: &str = haven_common::prompts::MEMORY_FENCE_END;
 
 /// Facts + episodes rendered for system-prompt injection.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct MemorySections {
+pub(crate) struct MemorySections {
     pub facts: String,
     pub episodes: String,
 }
@@ -22,7 +22,7 @@ pub struct MemorySections {
 /// Immutable prompt renderer. Constructing one never touches application
 /// state; all methods are deterministic for their arguments.
 #[derive(Debug, Clone, Copy, Default)]
-pub struct PromptRenderer;
+pub(crate) struct PromptRenderer;
 
 impl PromptRenderer {
     pub fn render_system(

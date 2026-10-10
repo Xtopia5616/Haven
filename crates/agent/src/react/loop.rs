@@ -21,7 +21,7 @@ use tracing::Instrument;
 
 /// Why a ReAct run stopped at a cooperative boundary.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PauseReason {
+pub(crate) enum PauseReason {
     /// The model produced an answer and no context was queued behind it.
     TurnEnd,
     /// An `ask` tool is waiting for user input.
@@ -38,7 +38,7 @@ pub enum PauseReason {
 /// variants are normal lifecycle outcomes and let the dispatcher release its
 /// slot without guessing from a session status string.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum LoopExit {
+pub(crate) enum LoopExit {
     Paused { reason: PauseReason },
     Cancelled,
     Completed,
