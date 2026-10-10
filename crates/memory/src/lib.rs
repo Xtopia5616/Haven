@@ -44,9 +44,6 @@ pub use repositories::memory_recall_store::MemoryRecallStore;
 pub use repositories::messages::{Message, PendingInputDisposition, PendingSessionInput};
 #[cfg(feature = "test-support")]
 pub use repositories::partials::PartialMessageCheckpoint;
-pub use repositories::scheduled_tool_runs::{
-    ScheduledToolRunRow, ToolRunDependencyRow, ToolRunRow,
-};
 pub use repositories::session_authorization::{
     SessionAuthorizationGrant, StoredSessionAuthorizationGrant,
 };
@@ -66,4 +63,5 @@ pub use repositories::session_steps::{SessionStep, ToolStepOutcome, ToolStepWrit
 pub use repositories::sessions::{Session, SessionOrigin};
 pub use repositories::tool_run_completion_outbox::ToolRunCompletionOutboxRow;
 pub use repositories::tool_run_store::ToolRunStore;
+pub use repositories::tool_runs::{ScheduledToolRunRow, ToolRunDependencyRow, ToolRunRow};
 pub use repositories::usage::{LlmUsageRecord, LlmUsageRecordInput, SessionUsage};

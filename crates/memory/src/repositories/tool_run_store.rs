@@ -8,10 +8,8 @@
 use std::sync::Arc;
 
 use crate::Database;
-use crate::repositories::scheduled_tool_runs::{
-    ScheduledToolRunRow, ToolRunDependencyRow, ToolRunRow,
-};
 use crate::repositories::tool_run_completion_outbox::ToolRunCompletionOutboxRow;
+use crate::repositories::tool_runs::{ScheduledToolRunRow, ToolRunDependencyRow, ToolRunRow};
 use haven_common::{ToolRunCompletionPayload, ToolRunStatus};
 
 #[derive(Clone)]

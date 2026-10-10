@@ -14,7 +14,6 @@ pub mod memory_recall_store;
 pub mod messages;
 pub mod nodes;
 pub mod partials;
-pub mod scheduled_tool_runs;
 pub mod session_authorization;
 #[cfg(test)]
 mod session_event_capacity_tests;
@@ -23,4 +22,5 @@ pub mod session_steps;
 pub mod sessions;
 pub mod tool_run_completion_outbox;
 pub mod tool_run_store;
+pub mod tool_runs;
 pub mod usage;
