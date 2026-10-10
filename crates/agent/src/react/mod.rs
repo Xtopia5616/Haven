@@ -1038,22 +1038,19 @@ impl ReActEngine {
             let usage_cache_accounting = usage.cache_accounting;
             let cache_diagnostics = usage.cache_diagnostics.clone();
             let cache_diagnostics_for_event = usage.cache_diagnostics.clone();
-            let store = self.event_store.clone();
-            let session_id_for_persist = session_id.to_string();
-            let call_kind_for_persist = call_kind;
-            let model_for_persist = model.clone();
             let call_cost = step_cost.unwrap_or(0.0);
             let call_has_cost = step_cost.is_some();
             let duration_ms = tool_usage.duration_ms;
             let usage_context_tokens = usage.context_tokens();
-            let persist = tokio::task::spawn_blocking(move || {
-                store.append_usage(
-                    &session_id_for_persist,
-                    &haven_memory::LlmUsageRecordInput {
+            match self
+                .event_store
+                .append_usage_batch_cancellable(
+                    session_id,
+                    vec![haven_memory::LlmUsageRecordInput {
                         step_number,
                         request_kind: request,
-                        call_kind: call_kind_for_persist,
-                        model: model_for_persist,
+                        call_kind,
+                        model: model.clone(),
                         prompt_tokens: usage_prompt,
                         completion_tokens: usage_completion,
                         total_tokens: usage_total,
@@ -1067,20 +1064,14 @@ impl ReActEngine {
                         duration_ms,
                         context_tokens: usage_context_tokens,
                         context_window: None,
-                    },
+                    }],
+                    None,
                 )
-            });
-            match persist.await {
-                Ok(Ok(_)) => {}
-                Ok(Err(error)) => tracing::warn!(
-                    "ReAct: failed to persist {} usage for session {} step {:?}: {}",
-                    call_kind.as_str(),
-                    session_id,
-                    step_number,
-                    error
-                ),
+                .await
+            {
+                Ok(_) => {}
                 Err(error) => tracing::warn!(
-                    "ReAct: {} usage persistence task failed for session {} step {:?}: {}",
+                    "ReAct: failed to persist {} usage for session {} step {:?}: {}",
                     call_kind.as_str(),
                     session_id,
                     step_number,

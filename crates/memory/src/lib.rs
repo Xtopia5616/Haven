@@ -56,9 +56,9 @@ pub use repositories::session_events::{
     INTERACTION_RESOLVED_EVENT_TYPE, MEMORY_TRIGGER_EVENT_TYPE, RecoveryPartialKind,
     RecoveryPersistenceStatus, RollbackProjectionBoundary, RollbackRequest, RollbackResult,
     SessionCommitResult, SessionCommitted, SessionCommittedEvent, SessionCursor, SessionEvent,
-    SessionEventInput, SessionEventPage, SessionEventSubscription, SessionHistoryFilter,
-    SessionHistoryStatusFilter, SessionMessageText, SessionProjectionIntent, SessionReplayState,
-    SessionResumeMedia, SessionResumeProjection, SessionStore, SessionTitleGenerationContext,
+    SessionEventInput, SessionEventPage, SessionHistoryFilter, SessionHistoryStatusFilter,
+    SessionMessageText, SessionProjectionIntent, SessionReplayState, SessionResumeMedia,
+    SessionResumeProjection, SessionStore, SessionTitleGenerationContext,
     SqliteStorageWriteFailure, TIMELINE_ROLLBACK_EVENT_TYPE, TRANSCRIPT_EVENT_TYPE,
     USAGE_DISCARDED_EVENT_TYPE, USAGE_RECORDED_EVENT_TYPE,
 };

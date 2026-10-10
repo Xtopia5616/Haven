@@ -463,17 +463,6 @@ fn commit_sqlite_transaction(
     Ok(())
 }
 
-/// A race-safe handoff from durable replay to live events.
-///
-/// The receiver is subscribed before the database replay starts. Events
-/// committed during that replay may therefore occur in both collections; a
-/// consumer must advance by `(session_id, sequence)` and ignore duplicates.
-#[derive(Debug)]
-pub struct SessionEventSubscription {
-    pub replay: Vec<SessionEvent>,
-    pub live: tokio::sync::broadcast::Receiver<SessionEvent>,
-}
-
 impl SessionStore {
     #[cfg(feature = "test-support")]
     pub fn new(db: Arc<Database>) -> Self {
@@ -920,14 +909,6 @@ impl SessionStore {
             .await
     }
 
-    /// Read a persisted session record by id for actor installation.
-    ///
-    /// A missing record remains `Ok(None)` so lifecycle callers can preserve
-    /// their existing not-found behavior.
-    pub fn session_record(&self, session_id: &str) -> anyhow::Result<Option<Session>> {
-        self.db.get_session(session_id)
-    }
-
     /// Pause all running sessions during the synchronous application exit
     /// callback. This delegates to the existing repository operation so its
     /// status transition, update count, and crash recovery behavior stay the
@@ -937,10 +918,8 @@ impl SessionStore {
     }
 
     /// Read a persisted session record by id on SQLite's blocking pool.
-    ///
-    /// The synchronous `session_record` remains available to Agent lifecycle
-    /// callers that require a synchronous lookup. Missing records remain
-    /// `Ok(None)` for either API.
+    /// Missing records remain `Ok(None)` so lifecycle callers can preserve
+    /// their existing not-found behavior.
     pub async fn load_session_record(&self, session_id: &str) -> anyhow::Result<Option<Session>> {
         let session_id = session_id.to_owned();
         self.db
@@ -969,9 +948,12 @@ impl SessionStore {
         let session_id = session_id.to_owned();
         self.db
             .run_blocking(move |db| {
-                Ok(db
-                    .get_session(&session_id)?
-                    .map(|session| session.title.unwrap_or(session.input_text)))
+                Ok(db.get_session(&session_id)?.map(|session| {
+                    session
+                        .title
+                        .filter(|title| !title.is_empty())
+                        .unwrap_or(session.input_text)
+                }))
             })
             .await
     }
@@ -1154,20 +1136,33 @@ impl SessionStore {
             .await
     }
 
-    /// Read every pending session for dispatcher recovery, newest first.
+    /// Read every pending session for dispatcher recovery, newest first, on
+    /// SQLite's blocking pool. Cancellation interrupts a query already
+    /// waiting on a SQLite connection.
     ///
     /// This is the semantic equivalent of the unbounded pending-session query:
     /// no text/date filters, `limit = -1`, and `offset = 0`. The generic search
     /// surface remains an implementation detail of the Database repository.
-    pub fn pending_session_records(&self) -> anyhow::Result<Vec<Session>> {
-        self.db.search_sessions_filtered(
-            None,
-            Some(SessionStatus::Pending.as_str()),
-            None,
-            None,
-            -1,
-            0,
-        )
+    pub async fn pending_session_records_cancellable(
+        &self,
+        cancel: CancellationToken,
+    ) -> anyhow::Result<Vec<Session>> {
+        anyhow::ensure!(
+            !cancel.is_cancelled(),
+            "pending session read cancelled before start"
+        );
+        self.db
+            .run_blocking_cancellable(cancel, |db| {
+                db.search_sessions_filtered(
+                    None,
+                    Some(SessionStatus::Pending.as_str()),
+                    None,
+                    None,
+                    -1,
+                    0,
+                )
+            })
+            .await
     }
 
     /// Mark pending/running action steps for a failed session as `unknown`.
@@ -1186,24 +1181,12 @@ impl SessionStore {
             .await
     }
 
-    /// Subscribe to events committed through this store. Use
-    /// [`Self::subscribe_from`] when a consumer needs a replay without a gap.
-    /// A lagged receiver must perform the same replay again.
+    /// Subscribe to events committed through this store. A consumer that also
+    /// reads durable history must subscribe first, then replay and deduplicate
+    /// overlapping `(session_id, sequence)` values. A lagged receiver must
+    /// perform the same replay again.
     pub fn subscribe(&self) -> tokio::sync::broadcast::Receiver<SessionEvent> {
         self.live_tx.subscribe()
-    }
-
-    /// Subscribe before replaying the requested cursor so commits cannot fall
-    /// between the replay and subscription steps. The replay and live stream
-    /// can overlap at the boundary; consumers deduplicate by sequence.
-    pub fn subscribe_from(
-        &self,
-        session_id: &str,
-        after_sequence: i64,
-    ) -> anyhow::Result<SessionEventSubscription> {
-        let live = self.subscribe();
-        let replay = self.read_from_sync(session_id, after_sequence)?;
-        Ok(SessionEventSubscription { replay, live })
     }
 
     /// Initialize a memory-event cursor synchronously for fixtures and tests.
@@ -1219,7 +1202,7 @@ impl SessionStore {
 
     /// Read the durable memory event cursor. This clock is independent from
     /// the fact-extraction message-id cursor and projection cursors.
-    pub fn memory_event_cursor(&self, session_id: &str) -> anyhow::Result<i64> {
+    fn memory_event_cursor(&self, session_id: &str) -> anyhow::Result<i64> {
         self.db.memory_event_cursor(session_id)
     }
 
@@ -1263,7 +1246,7 @@ impl SessionStore {
     }
 
     /// Advance the durable memory event cursor monotonically.
-    pub fn checkpoint_memory_event_cursor(
+    fn checkpoint_memory_event_cursor(
         &self,
         session_id: &str,
         sequence: i64,
@@ -1294,12 +1277,9 @@ impl SessionStore {
         self.db.clear_memory_event_cursor(session_id)
     }
 
-    /// Read all durable session clocks through one persistence boundary.
-    ///
-    /// This is intentionally the only Agent-facing API for `event_cursor`,
-    /// `message_ingress_seq`, `step_seq` and `last_msg_at`.  The values are
-    /// projection metadata, never a source for reconstructing the transcript.
-    pub fn cursor(&self, session_id: &str) -> anyhow::Result<SessionCursor> {
+    /// Synchronous clock inspection for Memory unit tests.
+    #[cfg(test)]
+    pub(super) fn cursor(&self, session_id: &str) -> anyhow::Result<SessionCursor> {
         let conn = self.db.conn();
         Self::cursor_in_connection(&conn, session_id)
     }
@@ -2417,7 +2397,10 @@ impl SessionStore {
 
     /// Append usage domain events and project them into the usage tables in
     /// the same transaction. This is the only live usage write boundary for
-    /// Agent-owned, tool-owned and media-owned model calls.
+    /// Agent-owned, tool-owned and media-owned model calls. The synchronous
+    /// form exists only for fixtures; production uses
+    /// `append_usage_batch_cancellable`.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn append_usage(
         &self,
         session_id: &str,
@@ -2775,6 +2758,7 @@ impl SessionStore {
         self.read_all_sync(session_id)
     }
 
+    #[cfg(any(test, feature = "test-support"))]
     fn read_from_sync(
         &self,
         session_id: &str,
@@ -3730,19 +3714,6 @@ mod tests {
     }
 
     #[test]
-    fn session_store_reads_session_records_and_preserves_missing_as_none() {
-        let (_db, store, session_id) = store();
-        assert_eq!(
-            store.session_record(&session_id).unwrap().unwrap().id,
-            session_id
-        );
-
-        let missing_session_id = haven_common::types::new_id("ses");
-
-        assert!(store.session_record(&missing_session_id).unwrap().is_none());
-    }
-
-    #[test]
     fn session_store_pauses_running_sessions_and_returns_updated_count() {
         let (db, store, first_running_id) = store();
         db.update_session_status(&first_running_id, SessionStatus::Running)
@@ -3894,11 +3865,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn session_store_async_session_record_preserves_existing_and_missing_results() {
+    async fn session_store_loads_session_records_and_preserves_missing_as_none() {
         let (_db, store, session_id) = store();
         assert_eq!(
-            serde_json::to_value(store.load_session_record(&session_id).await.unwrap()).unwrap(),
-            serde_json::to_value(store.session_record(&session_id).unwrap()).unwrap()
+            store
+                .load_session_record(&session_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .id,
+            session_id
         );
 
         let missing_session_id = haven_common::types::new_id("ses");
@@ -3957,6 +3933,16 @@ mod tests {
                 .unwrap()
                 .as_deref(),
             Some("Stored title")
+        );
+
+        db.update_session_title(&session_id, "").unwrap();
+        assert_eq!(
+            store
+                .get_session_title_or_input(&session_id)
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("input")
         );
 
         let missing_session_id = haven_common::types::new_id("ses");
@@ -4062,7 +4048,13 @@ mod tests {
         assert_eq!(session.input_text, "created through store");
         assert_eq!(session.status, SessionStatus::Pending);
         assert_eq!(session.origin, SessionOrigin::User);
-        assert!(store.session_record(&session.id).unwrap().is_some());
+        assert!(
+            store
+                .load_session_record(&session.id)
+                .await
+                .unwrap()
+                .is_some()
+        );
         assert_eq!(store.latest_sequence(&session.id).unwrap(), 0);
     }
 
@@ -4118,8 +4110,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn session_store_lists_all_pending_records_newest_first_and_filters_other_states() {
+    #[tokio::test]
+    async fn session_store_lists_all_pending_records_newest_first_and_filters_other_states() {
         let (db, store, oldest_id) = store();
         let middle = db.create_session("middle").unwrap();
         let newest = db.create_session("newest").unwrap();
@@ -4142,7 +4134,10 @@ mod tests {
         }
         drop(conn);
 
-        let pending = store.pending_session_records().unwrap();
+        let pending = store
+            .pending_session_records_cancellable(CancellationToken::new())
+            .await
+            .unwrap();
         assert_eq!(
             pending
                 .iter()
@@ -4154,6 +4149,15 @@ mod tests {
             pending
                 .iter()
                 .all(|session| session.status == SessionStatus::Pending)
+        );
+
+        let cancelled = CancellationToken::new();
+        cancelled.cancel();
+        assert!(
+            store
+                .pending_session_records_cancellable(cancelled)
+                .await
+                .is_err()
         );
     }
 
@@ -4786,8 +4790,8 @@ mod tests {
         assert_eq!(store.memory_event_cursor(&session_id).unwrap(), 0);
     }
 
-    #[test]
-    fn replay_page_is_bounded_ordered_and_returns_next_cursor() {
+    #[tokio::test]
+    async fn replay_page_is_bounded_ordered_and_returns_next_cursor() {
         let (db, store, session_id) = store();
         let other_session = db.create_session("other").unwrap();
         for index in 1..=5 {
@@ -4810,11 +4814,6 @@ mod tests {
                 None,
             )
             .unwrap();
-        assert_eq!(
-            store.subscribe_from(&session_id, 0).unwrap().replay.len(),
-            5
-        );
-
         let first = store.replay_page_sync(&session_id, 0, 2).unwrap();
         assert_eq!(
             first
@@ -6276,21 +6275,6 @@ mod tests {
             .unwrap_err();
         assert!(error.to_string().contains("128 events"));
         assert!(store.read_all(&session_id).unwrap().is_empty());
-    }
-
-    #[test]
-    fn subscribe_from_replays_and_keeps_the_live_receiver_open() {
-        let (_db, store, session_id) = store();
-        let first = store
-            .append_transcript(&session_id, r#"{"type":"first"}"#, 1, 1)
-            .unwrap();
-        let mut subscription = store.subscribe_from(&session_id, 0).unwrap();
-        assert_eq!(subscription.replay, vec![first]);
-
-        let second = store
-            .append_transcript(&session_id, r#"{"type":"second"}"#, 1, 2)
-            .unwrap();
-        assert_eq!(subscription.live.try_recv().unwrap(), second);
     }
 
     #[test]

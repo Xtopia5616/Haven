@@ -26,10 +26,9 @@ pub(crate) struct DesktopNotifications {
     /// Pending permission request IDs grouped by lifecycle owner, so a batch
     /// produces one desktop reminder and terminal transitions release it.
     pending_permission_requests: Mutex<HashMap<InteractionOwner, HashSet<String>>>,
-    /// Cached display titles so `SessionUpdated` / toast paths do not sync
-    /// `SessionStore::session_record` on every status churn. Seeded from
-    /// `SessionCreated` / `TitleUpdated` / `SessionCompleted`; SessionStore is
-    /// a miss-only fallback.
+    /// Cached display titles so `SessionUpdated` / toast paths avoid repeated
+    /// reads. Seeded from lifecycle events; an async SessionStore read handles
+    /// cache misses on the ordered Tauri event consumer.
     session_titles: Mutex<HashMap<String, String>>,
 }
 
@@ -102,19 +101,24 @@ impl DesktopNotifications {
         })
     }
 
-    /// 会话展示名：cache → persisted title → input_text → session_id（绝不把 raw input
-    /// 当默认首选给 `SessionCreated`；该路径只用 title||id）。
-    pub(crate) fn session_display_title(&self, session_id: &str) -> String {
-        let mut titles = self.lock_session_titles();
-        if let Some(title) = titles.get(session_id)
-            && !title.is_empty()
+    /// Resolve the display title through cache → non-empty persisted title →
+    /// input text → session id. `SessionCreated` notifications still use only
+    /// the event title or id, so a peer brief is never shown as its creation
+    /// toast.
+    pub(crate) async fn session_display_title(&self, session_id: &str) -> String {
         {
-            return title.clone();
+            let titles = self.lock_session_titles();
+            if let Some(title) = titles.get(session_id)
+                && !title.is_empty()
+            {
+                return title.clone();
+            }
         }
         let state = self.handle.state::<Arc<AppState>>();
         let resolved =
-            resolve_session_display_title_from_store(&state.runtime.session_store, session_id);
-        titles.insert(session_id.to_string(), resolved.clone());
+            resolve_session_display_title_from_store(&state.runtime.session_store, session_id)
+                .await;
+        self.cache_title(session_id, resolved.clone());
         resolved
     }
 
@@ -123,12 +127,9 @@ impl DesktopNotifications {
             AgentEvent::SessionCreated(session) => {
                 self.lock_session_statuses()
                     .insert(session.id.clone(), session.status.as_str().to_string());
-                let display = session
-                    .title
-                    .as_deref()
-                    .filter(|s| !s.is_empty())
-                    .unwrap_or(session.id.as_str());
-                self.cache_title(&session.id, display.to_string());
+                if let Some(title) = session.title.as_deref().filter(|title| !title.is_empty()) {
+                    self.cache_title(&session.id, title.to_string());
+                }
             }
             AgentEvent::SessionUpdated {
                 session_id, status, ..
@@ -143,14 +144,20 @@ impl DesktopNotifications {
                     .insert(session_id.clone(), "completed".into());
                 if !title.is_empty() {
                     self.cache_title(session_id, title.clone());
+                } else {
+                    self.lock_session_titles().remove(session_id);
                 }
             }
             AgentEvent::SessionError { session_id, .. } => {
                 self.lock_session_statuses()
                     .insert(session_id.clone(), "error".into());
             }
-            AgentEvent::TitleUpdated { session_id, title } if !title.is_empty() => {
-                self.cache_title(session_id, title.clone());
+            AgentEvent::TitleUpdated { session_id, title } => {
+                if title.is_empty() {
+                    self.lock_session_titles().remove(session_id);
+                } else {
+                    self.cache_title(session_id, title.clone());
+                }
             }
             AgentEvent::SessionDeleted { session_id } => {
                 let mut statuses = self.lock_session_statuses();
@@ -167,7 +174,7 @@ impl DesktopNotifications {
 
     /// 会话生命周期与 agent `notify` 的 Windows 桌面通知（其余变体直接返回）。
     /// 文案与应用内 toast 对齐，使用中文。
-    pub(crate) fn maybe_show_toast(&self, event: &AgentEvent) {
+    pub(crate) async fn maybe_show_toast(&self, event: &AgentEvent) {
         match event {
             AgentEvent::SessionCreated(session) => {
                 if !self.windows_enabled(|n| n.session_created.windows, false) {
@@ -225,7 +232,7 @@ impl DesktopNotifications {
                 if !self.windows_enabled(|n| n.session_paused.windows, false) {
                     return;
                 }
-                let display = self.session_display_title(session_id);
+                let display = self.session_display_title(session_id).await;
                 self.show_windows_toast("Haven", format!("会话已暂停: {}", display));
             }
             AgentEvent::SessionUpdated {
@@ -240,7 +247,7 @@ impl DesktopNotifications {
                 if !self.windows_enabled(|n| n.session_resumed.windows, false) {
                     return;
                 }
-                let display = self.session_display_title(session_id);
+                let display = self.session_display_title(session_id).await;
                 self.show_windows_toast("Haven", format!("会话已恢复: {}", display));
             }
             AgentEvent::Notification {
@@ -332,29 +339,22 @@ fn tool_run_completion_windows_enabled(config: &NotificationConfig) -> bool {
     config.tool_run_completed.windows
 }
 
-fn resolve_session_display_title_from_store(
+async fn resolve_session_display_title_from_store(
     session_store: &SessionStore,
     session_id: &str,
 ) -> String {
-    let session = match session_store.session_record(session_id) {
-        Ok(session) => session,
+    match session_store.get_session_title_or_input(session_id).await {
+        Ok(Some(title)) if !title.is_empty() => title,
+        Ok(_) => session_id.to_string(),
         Err(error) => {
             tracing::warn!(
                 session_id,
                 error = %sanitize_error_text(&error.to_string()),
                 "failed to resolve session title for notification"
             );
-            None
+            session_id.to_string()
         }
-    };
-    session
-        .and_then(|session| {
-            session
-                .title
-                .filter(|title| !title.is_empty())
-                .or_else(|| (!session.input_text.is_empty()).then_some(session.input_text))
-        })
-        .unwrap_or_else(|| session_id.to_string())
+    }
 }
 
 #[cfg(test)]
@@ -368,8 +368,8 @@ mod tests {
     use haven_memory::{Database, SessionStore};
     use std::sync::Arc;
 
-    #[test]
-    fn notification_title_uses_session_store_and_preserves_fallbacks() {
+    #[tokio::test]
+    async fn notification_title_uses_session_store_and_preserves_fallbacks() {
         let db = Arc::new(Database::open_in_memory().unwrap());
         let session_store = SessionStore::new(db.clone());
 
@@ -377,33 +377,33 @@ mod tests {
         db.update_session_title(&titled.id, "Persisted title")
             .unwrap();
         assert_eq!(
-            resolve_session_display_title_from_store(&session_store, &titled.id),
+            resolve_session_display_title_from_store(&session_store, &titled.id).await,
             "Persisted title"
         );
 
         let untitled = db.create_session("input fallback").unwrap();
         assert_eq!(
-            resolve_session_display_title_from_store(&session_store, &untitled.id),
+            resolve_session_display_title_from_store(&session_store, &untitled.id).await,
             "input fallback"
         );
 
         let empty_title = db.create_session("empty title fallback").unwrap();
         db.update_session_title(&empty_title.id, "").unwrap();
         assert_eq!(
-            resolve_session_display_title_from_store(&session_store, &empty_title.id),
+            resolve_session_display_title_from_store(&session_store, &empty_title.id).await,
             "empty title fallback"
         );
 
         let missing_id = new_id("ses");
         assert_eq!(
-            resolve_session_display_title_from_store(&session_store, &missing_id),
+            resolve_session_display_title_from_store(&session_store, &missing_id).await,
             missing_id
         );
 
         db.conn().execute_batch("DROP TABLE sessions").unwrap();
         let query_error_id = new_id("ses");
         assert_eq!(
-            resolve_session_display_title_from_store(&session_store, &query_error_id),
+            resolve_session_display_title_from_store(&session_store, &query_error_id).await,
             query_error_id
         );
     }

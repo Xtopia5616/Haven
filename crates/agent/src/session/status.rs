@@ -127,7 +127,7 @@ impl SessionSupervisor {
             // Preserve the established idempotent no-op behavior for unknown
             // sessions. Existing callers may end a stale selection while its
             // durable row has already been removed.
-            let record = self.store.session_record(session_id)?;
+            let record = self.store.load_session_record(session_id).await?;
             if record.as_ref().is_some_and(|record| {
                 record.status != SessionStatus::Paused && record.status != SessionStatus::Completed
             }) {
@@ -1095,7 +1095,8 @@ impl SessionSupervisor {
         }
         let record = self
             .store
-            .session_record(session_id)?
+            .load_session_record(session_id)
+            .await?
             .ok_or_else(|| anyhow::anyhow!("session '{}' not found in database", session_id))?;
         self.install_actor(SessionInfo::from_db_record(&record))
             .await?;
@@ -1133,8 +1134,9 @@ impl SessionSupervisor {
                 return None;
             }
 
-            match self.load_pending_sessions().await {
+            match self.load_pending_sessions_cancellable(cancellation).await {
                 Ok(loaded) => return Some(loaded),
+                Err(_) if cancellation.is_cancelled() => return None,
                 Err(error) => {
                     completed_failures = completed_failures.saturating_add(1);
                     let next_delay = backoff.delay_after(completed_failures, None, 0);
@@ -1150,8 +1152,23 @@ impl SessionSupervisor {
     }
 
     pub async fn load_pending_sessions(self: &Arc<Self>) -> anyhow::Result<usize> {
-        let _lifecycle = self.lifecycle_guard().await;
+        self.load_pending_sessions_cancellable(&CancellationToken::new())
+            .await
+    }
+
+    async fn load_pending_sessions_cancellable(
+        self: &Arc<Self>,
+        cancellation: &CancellationToken,
+    ) -> anyhow::Result<usize> {
+        let _lifecycle = tokio::select! {
+            _ = cancellation.cancelled() => anyhow::bail!("pending session recovery cancelled"),
+            guard = self.lifecycle_guard() => guard,
+        };
         self.ensure_lifecycle_open()?;
+        anyhow::ensure!(
+            !cancellation.is_cancelled(),
+            "pending session recovery cancelled"
+        );
 
         #[cfg(test)]
         {
@@ -1168,10 +1185,17 @@ impl SessionSupervisor {
             }
         }
 
-        let pending = self.store.pending_session_records()?;
+        let pending = self
+            .store
+            .pending_session_records_cancellable(cancellation.clone())
+            .await?;
         let mut loaded = 0;
         let mut found_pending_actor = false;
         for record in pending {
+            anyhow::ensure!(
+                !cancellation.is_cancelled(),
+                "pending session recovery cancelled"
+            );
             if self.is_session_closing(&record.id) {
                 continue;
             }

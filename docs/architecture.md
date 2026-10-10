@@ -364,7 +364,7 @@ embedding 生命周期读写和 LSH 维护，`memory_index.rs` 保留模型路�
 SQLite 投影行 `EmbeddedText` 只用于 Memory 内部索引实现，并仅在 `test-support` 下随 raw `Database` 暴露；生产 recall 使用 `MemoryHit`，不泄漏 embedding 表行。
 Outbox、session enumeration 与 session-event replay 的 page capacity 均由 Memory typed store 固定并持有；Agent runtime 只推进 high-water/cursor，不传入数据库页容量（ADR 0907、0911）。
 仅供 raw `Database` 测试使用的 `PartialMessageCheckpoint` 不进入默认生产 API；生产 checkpoint 生命周期经 Agent `PartialStore` 与 Memory `SessionStore` 收口。
-`SessionStore` 的 SQLite 同步原语留在 Memory 内部，生产调用经 typed async/cancellable 操作进入 blocking pool；跨 crate fixture 所需的同步 append、replay、marker 与 cursor-bootstrap probes 仅由 `test-support` 暴露（ADR 0909）。
+`SessionStore` 的普通生产读取与写入经 typed async/cancellable 操作进入 SQLite blocking pool；同步读写 helper 留在 Memory 内部，测试探针仅由 `test-support` 暴露。唯一同步生产例外是 Tauri `RunEvent::Exit` 必须先于 blocking teardown 完成的 `pause_running_sessions`。App 通知标题 cache miss 使用 `get_session_title_or_input` 异步读取，`TauriEmitter` 的单消费者 FIFO 保持事件投影顺序（ADR 0909、0913；退出顺序见 ADR 0287）。
 AgentLayer 从同一 service 派生 stores、共享的 `MemoryWorker` 与 `SystemPromptBuilder`；
 `MemoryStartup` 持有唯一 `MemoryRuntime`，并由 ApplicationRuntime 接管长期所有权。Prompt-memory
 cache、embedding index 与 worker memory capability 仍属于同一服务实例（ADR 0364、0367）。

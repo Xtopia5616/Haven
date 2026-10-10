@@ -1439,7 +1439,8 @@ mod tests {
         let actor = exec.actor_for(&session.id).await.unwrap();
         let durable_before = exec
             .store
-            .session_record(&session.id)
+            .load_session_record(&session.id)
+            .await
             .unwrap()
             .unwrap()
             .status;
@@ -1456,7 +1457,8 @@ mod tests {
         );
         assert_eq!(
             exec.store
-                .session_record(&session.id)
+                .load_session_record(&session.id)
+                .await
                 .unwrap()
                 .unwrap()
                 .status,

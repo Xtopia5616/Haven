@@ -77,7 +77,7 @@ impl AgentEventEmitter for TauriEmitter {
         let display_title = match &event {
             AgentEvent::SessionUpdated { session_id, .. }
             | AgentEvent::SessionError { session_id, .. } => {
-                Some(self.notifications.session_display_title(session_id))
+                Some(self.notifications.session_display_title(session_id).await)
             }
             _ => None,
         };
@@ -89,7 +89,7 @@ impl AgentEventEmitter for TauriEmitter {
                 "failed to emit agent event"
             );
         }
-        self.notifications.maybe_show_toast(&event);
+        self.notifications.maybe_show_toast(&event).await;
     }
 }
 

@@ -135,20 +135,6 @@ impl AgentLayer {
         self.react_engine.metrics_snapshot()
     }
 
-    /// Subscribe to the durable session timeline with a race-free initial
-    /// replay. The returned replay and live receiver are the same source used
-    /// by resume and rollback; consumers must deduplicate overlapping sequence
-    /// values and replay again after a lagged receiver error.
-    pub fn subscribe_session_events_from(
-        &self,
-        session_id: &str,
-        after_sequence: i64,
-    ) -> anyhow::Result<haven_memory::SessionEventSubscription> {
-        self.react_engine
-            .event_store
-            .subscribe_from(session_id, after_sequence)
-    }
-
     /// Persist usage from media work performed before a ReAct step exists.
     /// The caller supplies the already-resolved durable session, while the
     /// event dispatcher is optional for headless/test embeddings.
