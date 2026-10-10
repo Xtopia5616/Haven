@@ -1108,7 +1108,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn scriptless_skills_are_projected_disabled_and_cannot_be_enabled() {
+    async fn scriptless_skills_remain_allowlisted_but_cannot_become_executable() {
         let dir = tmp_dir();
         std::fs::create_dir_all(&dir).unwrap();
         write_skill(
@@ -1123,7 +1123,8 @@ mod tests {
         let listed = registry.list_skill_infos().await;
         assert_eq!(listed.len(), 1);
         assert!(!listed[0].has_script);
-        assert!(!listed[0].enabled);
+        assert!(listed[0].enabled);
+        assert!(!listed[0].executable);
 
         let error = registry
             .set_enabled("instruction-only", true)
