@@ -4,7 +4,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 #[cfg(test)]
 use haven_memory::MAX_MEMORY_OUTBOX_PAGE_SIZE;
-use haven_memory::MemoryStore;
+use haven_memory::MemoryOutboxStore;
 use haven_memory::{FactExtractionMarker, SummaryExtractionMarker};
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
@@ -74,7 +74,7 @@ pub(super) trait MemoryExtractionHandler: Send + Sync {
 }
 
 pub(super) struct MemoryOutbox {
-    memory_store: MemoryStore,
+    outbox_store: MemoryOutboxStore,
     #[cfg(test)]
     outbox: Mutex<std::collections::HashMap<String, FactExtractionJob>>,
     #[cfg(test)]
@@ -88,9 +88,9 @@ pub(super) struct MemoryOutbox {
 }
 
 impl MemoryOutbox {
-    pub(super) fn new(memory_store: MemoryStore, shutdown_token: CancellationToken) -> Self {
+    pub(super) fn new(outbox_store: MemoryOutboxStore, shutdown_token: CancellationToken) -> Self {
         Self {
-            memory_store,
+            outbox_store,
             #[cfg(test)]
             outbox: Mutex::new(std::collections::HashMap::new()),
             #[cfg(test)]
@@ -113,7 +113,7 @@ impl MemoryOutbox {
         handler: Arc<dyn MemoryExtractionHandler>,
     ) -> anyhow::Result<()> {
         anyhow::ensure!(!session_id.trim().is_empty(), "session id is required");
-        self.memory_store
+        self.outbox_store
             .enqueue_fact_extraction_cancellable(
                 session_id,
                 bypass_throttle,
@@ -254,12 +254,12 @@ impl MemoryOutbox {
         cancellation: &CancellationToken,
     ) -> anyhow::Result<()> {
         if let Some(high_water) = self
-            .memory_store
+            .outbox_store
             .fact_extraction_high_water_cancellable(cancellation)
             .await?
         {
             let page = self
-                .memory_store
+                .outbox_store
                 .pending_fact_extractions_page_cancellable(None, high_water, cancellation)
                 .await?;
             for marker in page {
@@ -282,12 +282,12 @@ impl MemoryOutbox {
             }
         }
         if let Some(high_water) = self
-            .memory_store
+            .outbox_store
             .summary_extraction_high_water_cancellable(cancellation)
             .await?
         {
             let page = self
-                .memory_store
+                .outbox_store
                 .pending_summary_extractions_page_cancellable(None, high_water, cancellation)
                 .await?;
             for marker in page {
@@ -306,11 +306,11 @@ impl MemoryOutbox {
         handler: &dyn MemoryExtractionHandler,
     ) -> anyhow::Result<OutboxPassResult> {
         let fact_high_water = self
-            .memory_store
+            .outbox_store
             .fact_extraction_high_water_cancellable(cancellation)
             .await?;
         let summary_high_water = self
-            .memory_store
+            .outbox_store
             .summary_extraction_high_water_cancellable(cancellation)
             .await?;
         let mut fact_after = None;
@@ -321,7 +321,7 @@ impl MemoryOutbox {
             anyhow::ensure!(!cancellation.is_cancelled(), "memory outbox scan cancelled");
             let fact_page = match fact_high_water.as_ref() {
                 Some(high_water) => {
-                    self.memory_store
+                    self.outbox_store
                         .pending_fact_extractions_page_cancellable(
                             fact_after.clone(),
                             high_water.clone(),
@@ -333,7 +333,7 @@ impl MemoryOutbox {
             };
             let summary_page = match summary_high_water.as_ref() {
                 Some(high_water) => {
-                    self.memory_store
+                    self.outbox_store
                         .pending_summary_extractions_page_cancellable(
                             summary_after.clone(),
                             high_water.clone(),
@@ -397,7 +397,7 @@ impl MemoryOutbox {
                         }
                         Err(error) => {
                             match self
-                                .memory_store
+                                .outbox_store
                                 .repair_summary_extraction_marker_if_current_cancellable(
                                     marker.key.clone(),
                                     marker.value.clone(),
@@ -459,7 +459,7 @@ impl MemoryOutbox {
         }
         if matches!(outcome, FactInferenceOutcome::Done) {
             match self
-                .memory_store
+                .outbox_store
                 .clear_fact_extraction_marker_if_current_cancellable(
                     marker.key.clone(),
                     marker.value.clone(),
@@ -500,7 +500,7 @@ impl MemoryOutbox {
             }
         };
         let due = retry_due_after_secs(wait_secs);
-        self.memory_store
+        self.outbox_store
             .update_fact_extraction_retry_if_current_cancellable(
                 marker.key,
                 marker.value,
@@ -521,14 +521,14 @@ impl MemoryOutbox {
         handler: &dyn MemoryExtractionHandler,
     ) -> anyhow::Result<bool> {
         let summary = match self
-            .memory_store
+            .outbox_store
             .episode_text_cancellable(&marker.episode_id, cancellation)
             .await
         {
             Ok(Some(summary)) => summary,
             Ok(None) => {
                 let acknowledged = self
-                    .memory_store
+                    .outbox_store
                     .clear_summary_extraction_if_current_cancellable(
                         marker.key.clone(),
                         marker.value.clone(),
@@ -576,7 +576,7 @@ impl MemoryOutbox {
         match outcome {
             SummaryExtractOutcome::Done => {
                 match self
-                    .memory_store
+                    .outbox_store
                     .clear_summary_extraction_if_current_cancellable(
                         marker.key.clone(),
                         marker.value.clone(),
@@ -624,7 +624,7 @@ impl MemoryOutbox {
         let mut attempt = state.attempt;
         let wait_secs = next_outbox_retry_secs(&mut attempt, requested_wait_secs);
         let due = retry_due_after_secs(wait_secs);
-        self.memory_store
+        self.outbox_store
             .update_summary_extraction_retry_if_current_cancellable(
                 marker.key.clone(),
                 marker.value.clone(),

@@ -16,7 +16,7 @@ use haven_common::usage::LlmCallKind;
 use haven_llm::{FinishReason, LlmResponse, LlmRouter, LlmToolDefinition};
 #[cfg(test)]
 use haven_memory::Database;
-use haven_memory::{MemoryStore, SessionStore};
+use haven_memory::{MemoryOutboxStore, SessionStore};
 
 use crate::compactor::ContextCompactor;
 use crate::event::{AgentEvent, AgentEventEmitter, EventDispatcher, UsagePayload};
@@ -361,7 +361,7 @@ pub struct ReActEngine {
     /// Agent-owned read boundary for immutable per-session tool catalogs.
     tool_catalog: Arc<dyn ToolCatalogPort>,
     /// Durable episode-summary writes are owned by Memory's narrow store port.
-    memory_store: MemoryStore,
+    outbox_store: MemoryOutboxStore,
     /// Durable transcript/event boundary. All new transcript records are
     /// appended here before entering the in-memory projection; checkpoint
     /// metadata is written through the same store.
@@ -431,7 +431,7 @@ impl ReActEngine {
         router: Arc<LlmRouter>,
         tool_catalog: Arc<dyn ToolCatalogPort>,
         executor: Arc<SessionSupervisor>,
-        memory_store: MemoryStore,
+        outbox_store: MemoryOutboxStore,
         max_steps_per_run: u32,
         context_limits: ContextLimitsConfig,
     ) -> Self {
@@ -444,7 +444,7 @@ impl ReActEngine {
             router: Arc::new(RwLock::new(router)),
             executor,
             tool_catalog,
-            memory_store,
+            outbox_store,
             event_store,
             usage_runtime,
             max_steps_per_run: Mutex::new(max_steps_per_run),

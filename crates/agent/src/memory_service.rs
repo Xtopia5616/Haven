@@ -17,8 +17,8 @@ use haven_memory::{
     MAX_MEMORY_QUERY_CHARS, MAX_RECALL_LIMIT, MemoryEntityKind, MemoryQuery, MemoryRecall,
 };
 use haven_memory::{
-    MemoryFactExtractionStore, MemoryFactStore, MemoryMaintenanceStore, MemoryRecallStore,
-    MemoryStore, MemoryStores,
+    MemoryFactExtractionStore, MemoryFactStore, MemoryMaintenanceStore, MemoryOutboxStore,
+    MemoryRecallStore, MemoryStores,
 };
 
 use crate::memory_index::MemoryEmbeddingIndex;
@@ -92,7 +92,7 @@ pub struct MemoryService {
     fact_store: MemoryFactStore,
     fact_extraction_store: MemoryFactExtractionStore,
     maintenance_store: MemoryMaintenanceStore,
-    memory_store: MemoryStore,
+    outbox_store: MemoryOutboxStore,
     recall_store: MemoryRecallStore,
     router: Option<Arc<LlmRouter>>,
     embedding_index: Option<MemoryEmbeddingIndex>,
@@ -108,15 +108,12 @@ impl MemoryService {
         let stores = stores.into();
         #[cfg(test)]
         let test_database = stores.database_handle_for_test();
-        let MemoryStores {
-            memory,
-            facts: fact_store,
-            fact_extraction: fact_extraction_store,
-            maintenance: maintenance_store,
-            recall: recall_store,
-            embeddings,
-            ..
-        } = stores;
+        let outbox_store = stores.outbox_store();
+        let fact_store = stores.fact_store();
+        let fact_extraction_store = stores.fact_extraction_store();
+        let maintenance_store = stores.maintenance_store();
+        let recall_store = stores.recall_store();
+        let embeddings = stores.embedding_store();
         let embedding_index = router.as_ref().map(|router| {
             MemoryEmbeddingIndex::new(
                 embeddings,
@@ -131,7 +128,7 @@ impl MemoryService {
             fact_store,
             fact_extraction_store,
             maintenance_store,
-            memory_store: memory,
+            outbox_store,
             recall_store,
             router,
             embedding_index,
@@ -149,8 +146,8 @@ impl MemoryService {
 
     /// Return the shared store used for memory-owned durable episode and
     /// outbox persistence, backed by the service's shared database.
-    pub(crate) fn memory_store(&self) -> MemoryStore {
-        self.memory_store.clone()
+    pub(crate) fn outbox_store(&self) -> MemoryOutboxStore {
+        self.outbox_store.clone()
     }
 
     /// Return the shared typed fact capability used by the memory worker.

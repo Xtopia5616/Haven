@@ -19,7 +19,7 @@ fn test_engine(db: Arc<Database>, worker: Arc<crate::MemoryWorker>) -> ReActEngi
         router,
         test_tool_catalog_port(&executor),
         executor,
-        MemoryStore::new(db),
+        MemoryOutboxStore::new(db),
         10,
         ContextLimitsConfig::default(),
     )

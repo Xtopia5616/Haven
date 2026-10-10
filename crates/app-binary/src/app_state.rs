@@ -307,7 +307,7 @@ impl AppState {
         // command/read store, as it was before the constructor accepted stores.
         let supervisor_session_store = memory_persistence.session_store();
         let memory_stores = memory_persistence.memory_stores();
-        let memory_fact_store = memory_stores.facts.clone();
+        let memory_fact_store = memory_stores.fact_store();
         tracing::debug!(
             "AppState::new phase=db elapsed={}ms",
             t0.elapsed().as_millis()

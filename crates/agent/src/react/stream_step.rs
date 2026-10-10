@@ -1643,7 +1643,7 @@ mod tests {
             router.clone(),
             crate::react::test_tool_catalog_port(&executor),
             executor,
-            haven_memory::MemoryStore::new(db.clone()),
+            haven_memory::MemoryOutboxStore::new(db.clone()),
             8,
             ContextLimitsConfig::default(),
         );
@@ -1745,7 +1745,7 @@ mod tests {
             router,
             crate::react::test_tool_catalog_port(&executor),
             executor,
-            haven_memory::MemoryStore::new(db.clone()),
+            haven_memory::MemoryOutboxStore::new(db.clone()),
             8,
             ContextLimitsConfig::default(),
         );

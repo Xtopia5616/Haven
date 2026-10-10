@@ -3,7 +3,7 @@ use std::time::Instant;
 
 use haven_common::types::new_id;
 use haven_common::{ToolRunCompletionPayload, ToolRunStatus};
-use haven_memory::{Database, MAX_MEMORY_OUTBOX_PAGE_SIZE, MemoryStore, ToolRunStore};
+use haven_memory::{Database, MAX_MEMORY_OUTBOX_PAGE_SIZE, MemoryOutboxStore, ToolRunStore};
 use tokio_util::sync::CancellationToken;
 
 const SAMPLE_COUNT: usize = 257;
@@ -49,7 +49,7 @@ fn pending_tool_run_count(db: &Database) -> i64 {
         .expect("query ToolRun outbox depth")
 }
 
-async fn pending_fact_count(store: &MemoryStore, cancellation: &CancellationToken) -> usize {
+async fn pending_fact_count(store: &MemoryOutboxStore, cancellation: &CancellationToken) -> usize {
     let Some(high_water) = store
         .fact_extraction_high_water_cancellable(cancellation)
         .await
@@ -78,7 +78,7 @@ async fn pending_fact_count(store: &MemoryStore, cancellation: &CancellationToke
 }
 
 async fn first_fact_page(
-    store: &MemoryStore,
+    store: &MemoryOutboxStore,
     high_water: String,
     cancellation: &CancellationToken,
 ) -> Vec<haven_memory::FactExtractionMarker> {
@@ -203,7 +203,7 @@ async fn memory_fact_outbox_latency_depth_and_throughput_profile() {
         Database::open(&directory.path().join("memory-outbox-profile.db"))
             .expect("temporary disk database"),
     );
-    let store = MemoryStore::new(db.clone());
+    let store = MemoryOutboxStore::new(db.clone());
     let cancellation = CancellationToken::new();
 
     let warmup_id = db

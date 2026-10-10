@@ -256,7 +256,7 @@ mod tests {
             router.clone(),
             crate::react::test_tool_catalog_port(&executor),
             executor.clone(),
-            haven_memory::MemoryStore::new(db.clone()),
+            haven_memory::MemoryOutboxStore::new(db.clone()),
             10,
             limits.clone(),
         )
@@ -290,7 +290,7 @@ mod tests {
             router,
             crate::react::test_tool_catalog_port(&executor),
             executor,
-            haven_memory::MemoryStore::new(db.clone()),
+            haven_memory::MemoryOutboxStore::new(db.clone()),
             10,
             limits,
         )
@@ -445,7 +445,7 @@ mod tests {
                 router,
                 crate::react::test_tool_catalog_port(&executor),
                 executor,
-                haven_memory::MemoryStore::new(db.clone()),
+                haven_memory::MemoryOutboxStore::new(db.clone()),
                 10,
                 limits,
             );

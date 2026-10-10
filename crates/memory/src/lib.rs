@@ -39,8 +39,8 @@ pub use repositories::memory_fact_extraction_store::{
     FactExtractionTranscript, MemoryFactExtractionStore,
 };
 pub use repositories::memory_maintenance_store::{MemoryMaintenanceStore, PredicateCount};
+pub use repositories::memory_outbox_store::MemoryOutboxStore;
 pub use repositories::memory_recall_store::MemoryRecallStore;
-pub use repositories::memory_store::MemoryStore;
 pub use repositories::messages::{Message, PendingInputDisposition, PendingSessionInput};
 #[cfg(feature = "test-support")]
 pub use repositories::partials::PartialMessageCheckpoint;

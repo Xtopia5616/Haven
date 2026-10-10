@@ -13,8 +13,8 @@ use crate::repositories::embedding_store::MemoryEmbeddingStore;
 use crate::repositories::fact_store::MemoryFactStore;
 use crate::repositories::memory_fact_extraction_store::MemoryFactExtractionStore;
 use crate::repositories::memory_maintenance_store::MemoryMaintenanceStore;
+use crate::repositories::memory_outbox_store::MemoryOutboxStore;
 use crate::repositories::memory_recall_store::MemoryRecallStore;
-use crate::repositories::memory_store::MemoryStore;
 use crate::repositories::session_events::SessionStore;
 use crate::repositories::tool_run_store::ToolRunStore;
 
@@ -29,12 +29,12 @@ pub struct MemoryPersistence {
 
 /// Store capabilities shared with Agent and App composition.
 pub struct MemoryStores {
-    pub memory: MemoryStore,
-    pub facts: MemoryFactStore,
-    pub fact_extraction: MemoryFactExtractionStore,
-    pub maintenance: MemoryMaintenanceStore,
-    pub recall: MemoryRecallStore,
-    pub embeddings: MemoryEmbeddingStore,
+    outbox: MemoryOutboxStore,
+    facts: MemoryFactStore,
+    fact_extraction: MemoryFactExtractionStore,
+    maintenance: MemoryMaintenanceStore,
+    recall: MemoryRecallStore,
+    embeddings: MemoryEmbeddingStore,
     #[cfg(feature = "test-support")]
     test_database: Option<Arc<Database>>,
 }
@@ -67,7 +67,7 @@ impl MemoryPersistence {
 impl MemoryStores {
     fn new(db: Arc<Database>) -> Self {
         Self {
-            memory: MemoryStore::new(db.clone()),
+            outbox: MemoryOutboxStore::new(db.clone()),
             facts: MemoryFactStore::new(db.clone()),
             fact_extraction: MemoryFactExtractionStore::new(db.clone()),
             maintenance: MemoryMaintenanceStore::new(db.clone()),
@@ -76,6 +76,36 @@ impl MemoryStores {
             #[cfg(feature = "test-support")]
             test_database: None,
         }
+    }
+
+    /// Return the store that commits compaction episodes with extraction markers.
+    pub fn outbox_store(&self) -> MemoryOutboxStore {
+        self.outbox.clone()
+    }
+
+    /// Return the shared fact persistence capability.
+    pub fn fact_store(&self) -> MemoryFactStore {
+        self.facts.clone()
+    }
+
+    /// Return ordinary and summary extraction cursor/transcript persistence.
+    pub fn fact_extraction_store(&self) -> MemoryFactExtractionStore {
+        self.fact_extraction.clone()
+    }
+
+    /// Return deterministic memory maintenance operations.
+    pub fn maintenance_store(&self) -> MemoryMaintenanceStore {
+        self.maintenance.clone()
+    }
+
+    /// Return typed keyword and vector recall operations.
+    pub fn recall_store(&self) -> MemoryRecallStore {
+        self.recall.clone()
+    }
+
+    /// Return embedding index persistence operations.
+    pub fn embedding_store(&self) -> MemoryEmbeddingStore {
+        self.embeddings.clone()
     }
 
     #[cfg(feature = "test-support")]

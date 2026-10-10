@@ -1021,7 +1021,7 @@ mod direct_session_run_guard_tests {
             router,
             crate::react::test_tool_catalog_port(&executor),
             executor.clone(),
-            haven_memory::MemoryStore::new(db),
+            haven_memory::MemoryOutboxStore::new(db),
             4,
             ContextLimitsConfig::default(),
         ));

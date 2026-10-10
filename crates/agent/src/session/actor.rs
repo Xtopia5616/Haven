@@ -2478,7 +2478,7 @@ mod queue_tests {
             )),
             crate::react::test_tool_catalog_port(&executor),
             executor,
-            haven_memory::MemoryStore::new(db.clone()),
+            haven_memory::MemoryOutboxStore::new(db.clone()),
             1,
             haven_common::config::ContextLimitsConfig::default(),
         ));

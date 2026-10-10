@@ -240,7 +240,7 @@ mod pending_context_tests {
             )),
             crate::react::test_tool_catalog_port(&executor),
             executor,
-            haven_memory::MemoryStore::new(db.clone()),
+            haven_memory::MemoryOutboxStore::new(db.clone()),
             4,
             haven_common::config::ContextLimitsConfig::default(),
         );
@@ -315,7 +315,7 @@ mod pending_context_tests {
             )),
             crate::react::test_tool_catalog_port(&executor),
             executor,
-            haven_memory::MemoryStore::new(db.clone()),
+            haven_memory::MemoryOutboxStore::new(db.clone()),
             4,
             haven_common::config::ContextLimitsConfig::default(),
         );

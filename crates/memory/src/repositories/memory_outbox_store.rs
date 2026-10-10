@@ -11,11 +11,11 @@ use tokio_util::sync::CancellationToken;
 /// Agent decides which jobs to schedule. This store invokes the existing
 /// database operations on SQLite's blocking pool without owning job policy.
 #[derive(Clone)]
-pub struct MemoryStore {
+pub struct MemoryOutboxStore {
     db: Arc<Database>,
 }
 
-impl MemoryStore {
+impl MemoryOutboxStore {
     #[cfg(feature = "test-support")]
     pub fn new(db: Arc<Database>) -> Self {
         Self::from_database(db)
@@ -268,7 +268,7 @@ mod tests {
     use haven_common::types::new_id;
 
     async fn pending_fact_rows(
-        store: &MemoryStore,
+        store: &MemoryOutboxStore,
         cancellation: &CancellationToken,
     ) -> anyhow::Result<Vec<(String, bool, i64)>> {
         let Some(high_water) = store
@@ -306,7 +306,7 @@ mod tests {
     }
 
     async fn pending_summary_rows(
-        store: &MemoryStore,
+        store: &MemoryOutboxStore,
         cancellation: &CancellationToken,
     ) -> anyhow::Result<Vec<(String, String)>> {
         let Some(high_water) = store
@@ -343,7 +343,7 @@ mod tests {
     async fn persist_compaction_summary_commits_episode_and_pending_marker_idempotently() {
         let db = Arc::new(Database::open_in_memory().unwrap());
         let session = db.create_session("memory store summary").unwrap();
-        let store = MemoryStore::new(db.clone());
+        let store = MemoryOutboxStore::new(db.clone());
         let episode_id = haven_common::types::new_id("msg");
         let summary = "A durable compaction summary that should be extracted.";
 
@@ -391,7 +391,7 @@ mod tests {
     async fn persist_compaction_summary_without_enqueue_keeps_episode_and_rolls_back_conflict() {
         let db = Arc::new(Database::open_in_memory().unwrap());
         let session = db.create_session("memory store conflict").unwrap();
-        let store = MemoryStore::new(db.clone());
+        let store = MemoryOutboxStore::new(db.clone());
         let episode_id = haven_common::types::new_id("msg");
         let original = "A persisted summary without extraction.";
 
@@ -442,7 +442,7 @@ mod tests {
     async fn fact_outbox_ports_preserve_generation_and_conditional_ack() {
         let db = Arc::new(Database::open_in_memory().unwrap());
         let session = db.create_session("memory store fact outbox").unwrap();
-        let store = MemoryStore::new(db.clone());
+        let store = MemoryOutboxStore::new(db.clone());
         let cancellation = CancellationToken::new();
 
         store
@@ -504,7 +504,7 @@ mod tests {
     async fn pending_outbox_ports_return_rows_and_propagate_database_errors() {
         let db = Arc::new(Database::open_in_memory().unwrap());
         let session = db.create_session("memory store pending rows").unwrap();
-        let store = MemoryStore::new(db.clone());
+        let store = MemoryOutboxStore::new(db.clone());
         let cancellation = CancellationToken::new();
         let episode_id = new_id("msg");
         db.enqueue_fact_extraction(&session.id, true, 3).unwrap();
@@ -549,12 +549,12 @@ mod tests {
         let episode_id = "msg-summary-store-port".to_owned();
         db.add_episode_with_pending_extraction(
             &session.id,
-            "A durable summary whose text is read through MemoryStore.",
+            "A durable summary whose text is read through MemoryOutboxStore.",
             &episode_id,
             true,
         )
         .unwrap();
-        let store = MemoryStore::new(db.clone());
+        let store = MemoryOutboxStore::new(db.clone());
         let cancellation = CancellationToken::new();
 
         assert_eq!(
@@ -563,7 +563,7 @@ mod tests {
                 .await
                 .unwrap()
                 .as_deref(),
-            Some("A durable summary whose text is read through MemoryStore.")
+            Some("A durable summary whose text is read through MemoryOutboxStore.")
         );
         assert_eq!(
             store
@@ -613,7 +613,7 @@ mod tests {
         let db = Arc::new(Database::open(&path).unwrap());
         let session = db.create_session("memory store cancellation").unwrap();
         db.enqueue_fact_extraction(&session.id, false, 1).unwrap();
-        let store = MemoryStore::new(db.clone());
+        let store = MemoryOutboxStore::new(db.clone());
         let cancellation = CancellationToken::new();
 
         let lock = db.conn();

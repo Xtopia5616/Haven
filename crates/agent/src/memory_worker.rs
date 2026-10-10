@@ -145,7 +145,7 @@ impl MemoryWorker {
     ) -> Self {
         let shutdown_token = CancellationToken::new();
         let outbox = Arc::new(MemoryOutbox::new(
-            memory.memory_store(),
+            memory.outbox_store(),
             shutdown_token.clone(),
         ));
         let fact_extraction_store = memory.memory_fact_extraction_store();

@@ -357,7 +357,7 @@ Agent 的 `memory_service.rs` 是 prompt/worker 共用的 typed memory 边界：
 embedding 生命周期读写和 LSH 维护，`memory_index.rs` 保留模型路由、provider 校验、
 批处理和维护门控（ADR 0021、0303、0304）。组合根 `AppState` 通过 Memory 的
 `MemoryPersistence::open` 打开数据库，并分别取得拥有独立 live-event channel 的 SessionStore、ToolRunStore
-与单一 typed `MemoryStores` bundle。App 与 `MemoryService` 共用该 bundle 中克隆的 `facts` handle；不再从
+与单一 typed `MemoryStores` bundle。bundle 的 store 字段保持私有，App/Agent 通过具名 getter 获取共享 handle，不能拼接不同数据库 owner 的 store；App 与 `MemoryService` 共用由 `fact_store()` 克隆的能力（ADR 0910）。不再从
 `MemoryPersistence` 另行构造同一 typed store。在 Router 和 `ContextLimitsConfig` 确定后，将 `MemoryStores`、Router 和配置中的 `embedding_chunk_size` 注入唯一
 `MemoryService`，再将该 service 注入 `AgentLayer::build`；该构造返回
 `AgentStartup { agent, memory_startup }`。
@@ -399,7 +399,7 @@ message 与 MEMORY fence，不访问 DB、router 或 cache。事实抽取 outbox
 marker 持久化，不把 provider 网络调用下沉到 Memory；事实维护的 SQL 清理与矛盾候选
 读取由 `fact_maintenance.rs` 负责，`MemoryMaintenanceStore` 提供确定性与 LLM 维护 persistence
 操作的异步 typed 边界；maintenance pass 步骤编排、LLM 仲裁、提案门禁与并发控制仍属于 Agent（ADR 0022、0063、0169、0310、0311）。
-Compaction summary episode 与首个 pending marker 只由 `MemoryStore::persist_compaction_summary` 在同一事务写入；提交成功后 Agent 调用 `MemoryWorker::wake_summary_extract` 更新 live outbox。Worker 只恢复、消费和 ack durable marker，不另行创建 summary marker，避免与 episode 分开提交（ADR 0266、0299、0481）。
+Compaction summary episode 与首个 pending marker 只由 `MemoryOutboxStore::persist_compaction_summary` 在同一事务写入；提交成功后 Agent 调用 `MemoryWorker::wake_summary_extract` 更新 live outbox。MemoryOutboxStore 执行 durable marker 持久化操作；Agent `MemoryOutbox` 拥有 scanner、调度、retry/ack 决策和生命周期，Worker 不另行创建 summary marker，避免与 episode 分开提交（ADR 0266、0299、0481、0910）。
 `fact_security.rs` 将敏感 predicate 关键词、object 前缀和 marker 作为唯一规则源，并生成精确的批量删除 predicate；现有 `facts.rs` detector façade 和 `fact_maintenance.rs` 的单条 DELETE 共用这些规则，避免 SQL 通配符扩大永久删除范围（ADR 0475）。
 `MemoryRuntime` 负责 startup cursor/replay、committed-event live consumer 和六小时维护 schedule policy（ADR 0263、0267）。`AgentLayer::build` 仅在组合过程中创建它，并通过 `AgentStartup` 将唯一 `MemoryStartup` 交给 ApplicationRuntime；AgentLayer 只保留同一个 `MemoryWorker` capability。AppRuntime 注册 prepare/startup、live consumer 与 maintenance tasks 并负责 cancel/join。`PreparedMemoryRuntime` 按值消费 prepared receiver；`MemoryStartup::prepare_live_consumer` 产生 `MemoryLiveConsumerHandoff`，AppRuntime 只有在 handoff 注册成功后才将 `MemoryReady` 交给 `AgentLayer::start_after_memory_ready`。prepare/replay 失败或取消时 dispatcher 不启动（ADR 0367、0636）。
 

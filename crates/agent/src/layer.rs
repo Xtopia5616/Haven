@@ -59,7 +59,7 @@ impl AgentLayer {
         context_limits: ContextLimitsConfig,
     ) -> AgentStartup {
         let events = Arc::new(EventDispatcher::new());
-        let memory_store = memory_service.memory_store();
+        let outbox_store = memory_service.outbox_store();
         let prompt_builder = Arc::new(SystemPromptBuilder::with_memory_service(
             tools.prompt_port(),
             memory_service.clone(),
@@ -86,7 +86,7 @@ impl AgentLayer {
                 router.clone(),
                 tool_catalog,
                 executor.clone(),
-                memory_store,
+                outbox_store,
                 max_steps_per_run,
                 context_limits.clone(),
             )

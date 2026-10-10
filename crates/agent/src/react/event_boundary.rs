@@ -259,7 +259,7 @@ impl ReActEngine {
         let episode_id = episode_id.to_string();
         let enqueue_extraction = summary.len() >= 24;
         if let Err(e) = self
-            .memory_store
+            .outbox_store
             .persist_compaction_summary(&session_id, summary, &episode_id, enqueue_extraction)
             .await
         {
