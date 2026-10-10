@@ -265,6 +265,7 @@ function validAdminData(data: JsonRecord): boolean {
 			...booleanFields('saved', 'enabled', 'created', 'removed'),
 			connected: (value) => isBoolean(value) || Array.isArray(value),
 		}) &&
+		hasValidOptionalArrayField(data, 'lines', isStringArray) &&
 		hasValidRecordArray(data, 'servers', (row) =>
 			hasValidOptionalFields(row, {
 				name: isString,
