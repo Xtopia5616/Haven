@@ -295,8 +295,8 @@ fn render_tool_index(defs: &[ToolDef]) -> String {
 }
 
 fn render_skill_index(skills: &[haven_tools::SkillInfo]) -> String {
-    let enabled: Vec<_> = skills.iter().filter(|skill| skill.enabled).collect();
-    if enabled.is_empty() {
+    let executable: Vec<_> = skills.iter().filter(|skill| skill.executable).collect();
+    if executable.is_empty() {
         return String::new();
     }
 
@@ -308,12 +308,12 @@ fn render_skill_index(skills: &[haven_tools::SkillInfo]) -> String {
 
     let header = format!(
         "\nUser-configured Skills ({}; load with `load_skill`):\n",
-        enabled.len()
+        executable.len()
     );
     let available = SKILL_INDEX_CHAR_BUDGET.saturating_sub(header.chars().count());
     let min_line_chars = LINE_OVERHEAD + MIN_NAME_CHARS + MIN_DESCRIPTION_CHARS;
-    let mut visible_count = enabled.len().min(available / min_line_chars);
-    let mut omitted = omitted_skills_note(enabled.len().saturating_sub(visible_count));
+    let mut visible_count = executable.len().min(available / min_line_chars);
+    let mut omitted = omitted_skills_note(executable.len().saturating_sub(visible_count));
 
     while visible_count > 0 {
         let entry_budget = available.saturating_sub(omitted.chars().count()) / visible_count;
@@ -321,7 +321,7 @@ fn render_skill_index(skills: &[haven_tools::SkillInfo]) -> String {
             break;
         }
         visible_count -= 1;
-        omitted = omitted_skills_note(enabled.len().saturating_sub(visible_count));
+        omitted = omitted_skills_note(executable.len().saturating_sub(visible_count));
     }
 
     let mut rendered = header;
@@ -337,7 +337,7 @@ fn render_skill_index(skills: &[haven_tools::SkillInfo]) -> String {
             .saturating_sub(name_budget)
             .min(MAX_DESCRIPTION_CHARS);
 
-        for skill in enabled.iter().take(visible_count) {
+        for skill in executable.iter().take(visible_count) {
             let name = compact_index_text(&skill.name, name_budget);
             let description = compact_index_text(&skill.description, description_budget);
             rendered.push_str(&format!("- {name}: {description}\n"));
@@ -1096,10 +1096,11 @@ mod tests {
             version: None,
             language: "en".into(),
             enabled: true,
+            executable: true,
             root: String::new(),
             has_script: true,
-            disabled_reason: None,
-            load_error: None,
+            unavailable_reason: None,
+            manifest_error: None,
         }
     }
 
@@ -1253,10 +1254,11 @@ mod tests {
                 version: None,
                 language: "en".into(),
                 enabled: true,
+                executable: true,
                 root: String::new(),
                 has_script: true,
-                disabled_reason: None,
-                load_error: None,
+                unavailable_reason: None,
+                manifest_error: None,
             }],
         });
         let builder = SystemPromptBuilder::with_memory_service(

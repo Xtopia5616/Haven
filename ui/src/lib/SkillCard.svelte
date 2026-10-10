@@ -37,7 +37,7 @@
 			icon: 'copy',
 			action: () => copyText(skill.description || '', '描述'),
 		},
-		...(skill.has_script
+		...(!skill.manifest_error && (skill.enabled || skill.has_script)
 			? [
 					skill.enabled
 						? {
@@ -105,10 +105,18 @@
 			{/if}
 			<span class="meta-badge lang">{skill.language}</span>
 			<StatusBadge
-				label={skill.enabled ? '已启用' : '已停用'}
-				tone={skill.enabled ? 'success' : 'error'}
+				label={skill.manifest_error
+					? '清单无效'
+					: skill.executable
+						? '已启用'
+						: skill.enabled
+							? '配置已启用，当前不可执行'
+							: '已停用'}
+				tone={skill.executable ? 'success' : 'error'}
 			/>
-			{#if skill.has_script}
+			{#if skill.manifest_error}
+				<span class="script-badge script-badge--missing">清单无法解析</span>
+			{:else if skill.has_script}
 				<span class="script-badge">含脚本</span>
 			{:else}
 				<span class="script-badge script-badge--missing">缺少入口脚本，无法执行</span>
@@ -119,12 +127,17 @@
 		<MaterialSwitch
 			checked={skill.enabled}
 			ariaLabel={`切换技能 ${skill.name}`}
-			disabled={!skill.has_script}
+			disabled={Boolean(skill.manifest_error) || (!skill.has_script && !skill.enabled)}
 			onChange={handleToggle}
 		/>
 	{/snippet}
 	{#snippet children()}
 		<p class="expandable-context-card-description">{skill.description || '暂无描述'}</p>
+		{#if skill.manifest_error}
+			<p class="skill-unavailable-reason" role="status">{skill.manifest_error}</p>
+		{:else if skill.has_script && skill.unavailable_reason}
+			<p class="skill-unavailable-reason" role="status">{skill.unavailable_reason}</p>
+		{/if}
 
 		<h4>技能路径</h4>
 		<code class="path">{skill.root}</code>
@@ -189,6 +202,13 @@
 		line-height: var(--md-sys-typescale-label-small-line-height);
 		color: var(--md-sys-color-on-surface-variant);
 		word-break: break-all;
+	}
+	.skill-unavailable-reason {
+		color: var(--md-sys-color-error);
+		font-size: var(--md-sys-typescale-body-small-size);
+		margin: var(--md-sys-space-sm) 0;
+		white-space: pre-wrap;
+		word-break: break-word;
 	}
 	.preview-row {
 		display: flex;

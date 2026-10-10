@@ -2455,6 +2455,7 @@ mod tests {
                 "skills": [{
                     "name": "sample",
                     "enabled": true,
+                    "executable": true,
                     "description": "safe description",
                     "root": skill_dir.to_string_lossy(),
                 }]

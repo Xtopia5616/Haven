@@ -810,6 +810,7 @@
 - [0819：明确区分模型配置 ID 与 Provider 服务模型 ID](0819-name-model-identities-explicitly.md)
 - [0820：将默认工具请求预算提高到 256](0820-raise-default-tool-budget.md)
 - [0821：保留重复暂停更新中的运行结束原因](0821-preserve-paused-run-end-notice.md)
+- [0824：让无效 Skill 清单在目录中可诊断](0824-surface-invalid-skill-manifest-diagnostics.md)
 - [0832：完善内置工具指引并删除重复的 Agent 等待入口](0832-polish-builtin-tool-guidance-and-remove-agent-join-alias.md)
 - [0833：通过领域命令适配器调用设置与 Skill 执行命令](0833-route-settings-commands-through-domain-adapters.md)
 - [0834：统一工具目录的分组摘要来源](0834-single-source-tool-catalog-group-summaries.md)
@@ -856,3 +857,4 @@
 - [0875：区分通用与 Chat 手动重试准备](0875-name-chat-scoped-manual-retry.md)
 - [0876：区分 Session admission 与 Actor 运行态标记](0876-name-actor-run-state-transition.md)
 - [0877：统一 Session context 队列出入口](0877-unify-session-context-queue-api.md)
+- [0878：正交化 Skill 目录诊断与可执行状态](0878-normalize-skill-catalog-status.md)

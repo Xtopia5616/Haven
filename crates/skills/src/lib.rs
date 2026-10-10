@@ -137,24 +137,65 @@ pub struct SkillInfo {
     pub description: String,
     pub version: Option<String>,
     pub language: String,
+    /// Whether the skill is enabled by the configured allowlist.
     pub enabled: bool,
+    /// Whether the skill is currently executable (enabled and has an entry script).
+    pub executable: bool,
     /// Absolute path (UTF-8 lossy) to the skill directory.
     pub root: String,
+    /// Whether a valid manifest resolves to an entry script. For an invalid
+    /// manifest this is unknown; inspect `manifest_error` before interpreting it.
     pub has_script: bool,
+    /// Why a valid skill cannot currently be executed.
+    pub unavailable_reason: Option<String>,
+    /// A SKILL.md parsing error. Invalid manifests remain visible in the
+    /// catalog for diagnosis, but never enter the executable registry.
+    pub manifest_error: Option<String>,
 }
 
 impl From<&Skill> for SkillInfo {
     fn from(s: &Skill) -> Self {
+        let has_script = s.has_script();
+        let enabled = s.enabled();
+        let executable = enabled && has_script;
         Self {
             name: s.name().to_string(),
             description: s.description().to_string(),
             version: s.version().map(str::to_string),
             language: s.language().as_str().to_string(),
-            // A configured skill without an executable entry point cannot be
-            // loaded as a tool, so project it as disabled to the UI.
-            enabled: s.enabled() && s.has_script(),
+            // A configured skill without an executable entry point remains
+            // enabled in policy, but cannot enter the executable tool catalog.
+            enabled,
+            executable,
             root: s.root().to_string_lossy().to_string(),
-            has_script: s.has_script(),
+            has_script,
+            unavailable_reason: if !has_script {
+                Some(
+                    "No entry script found (expected scripts/main.py or scripts/<name>.py).".into(),
+                )
+            } else if !s.enabled() {
+                Some("Disabled by the configured skills allowlist.".into())
+            } else {
+                None
+            },
+            manifest_error: None,
+        }
+    }
+}
+
+impl SkillInfo {
+    fn invalid_manifest(name: String, root: &Path, error: String) -> Self {
+        Self {
+            name,
+            description: String::new(),
+            version: None,
+            language: "unknown".into(),
+            enabled: false,
+            executable: false,
+            root: root.to_string_lossy().to_string(),
+            has_script: false,
+            unavailable_reason: None,
+            manifest_error: Some(error),
         }
     }
 }
@@ -293,7 +334,7 @@ pub fn parse_skill_md(
     let mut language = Language::Python;
 
     let mut current_section: Option<String> = None;
-    let mut metadata_lines: Vec<String> = Vec::new();
+    let mut metadata_lines: Vec<(usize, String)> = Vec::new();
     let mut instruction_lines: Vec<String> = Vec::new();
 
     for (i, line) in input.lines().enumerate() {
@@ -322,22 +363,31 @@ pub fn parse_skill_md(
             continue;
         }
         match current_section.as_deref() {
-            Some("metadata") => metadata_lines.push(trimmed.to_string()),
+            Some("metadata") => metadata_lines.push((i + 1, trimmed.to_string())),
             Some("instructions") => instruction_lines.push(trimmed.to_string()),
             _ => {}
         }
     }
 
-    for ml in &metadata_lines {
-        let line = ml.trim_start_matches('-').trim();
-        if line.is_empty() {
-            continue;
-        }
+    for (line_number, ml) in &metadata_lines {
+        let entry = ml.trim_start();
+        let Some(line) = entry.strip_prefix("- ") else {
+            anyhow::bail!(
+                "invalid SKILL.md metadata entry on line {line_number}: expected '- key: value'"
+            );
+        };
         let (key, val) = match line.split_once(':') {
             Some(pair) => pair,
-            None => anyhow::bail!("invalid SKILL.md metadata entry: {line}"),
+            None => anyhow::bail!(
+                "invalid SKILL.md metadata entry on line {line_number}: expected '- key: value'"
+            ),
         };
         let key = key.trim().to_lowercase();
+        if key.is_empty() {
+            anyhow::bail!(
+                "invalid SKILL.md metadata entry on line {line_number}: metadata key is empty"
+            );
+        }
         let val = val.trim().to_string();
         match key.as_str() {
             "name" => name = Some(val),
@@ -393,9 +443,26 @@ pub fn scan_dir(
     enabled_skill_allowlist: Option<&[String]>,
     limits: &haven_common::config::ContextLimitsConfig,
 ) -> anyhow::Result<Vec<Skill>> {
+    Ok(scan_dir_with_diagnostics(root, enabled_skill_allowlist, limits)?.skills)
+}
+
+struct SkillScanResult {
+    skills: Vec<Skill>,
+    diagnostics: Vec<SkillInfo>,
+}
+
+fn scan_dir_with_diagnostics(
+    root: &Path,
+    enabled_skill_allowlist: Option<&[String]>,
+    limits: &haven_common::config::ContextLimitsConfig,
+) -> anyhow::Result<SkillScanResult> {
     let mut out = Vec::new();
+    let mut diagnostics = Vec::new();
     if !root.exists() {
-        return Ok(out);
+        return Ok(SkillScanResult {
+            skills: out,
+            diagnostics,
+        });
     }
 
     let root_canon = root
@@ -445,7 +512,7 @@ pub fn scan_dir(
     let skill_dirs = skip_case_insensitive_directory_collisions(skill_dirs);
 
     let mut candidates = Vec::new();
-    for (_directory_name, p, p_canon) in skill_dirs {
+    for (directory_name, p, p_canon) in skill_dirs {
         let skill_md = p.join("SKILL.md");
         let skill_md = match skill_md.canonicalize() {
             Ok(canonical) if canonical.starts_with(&p_canon) => canonical,
@@ -502,15 +569,27 @@ pub fn scan_dir(
                     enabled,
                 });
             }
-            Err(e) => tracing::warn!(
-                error = %haven_common::error::sanitize_error_text(&e.to_string()),
-                "skipping invalid SKILL.md"
-            ),
+            Err(e) => {
+                let error = format!("Invalid SKILL.md: {}", e);
+                tracing::warn!(
+                    error = %haven_common::error::sanitize_error_text(&error),
+                    "skill manifest could not be loaded"
+                );
+                diagnostics.push(SkillInfo::invalid_manifest(
+                    directory_name,
+                    &p,
+                    haven_common::error::sanitize_error_text(&error),
+                ));
+            }
         }
     }
 
     out.extend(skip_case_insensitive_skill_collisions(candidates));
-    Ok(out)
+    diagnostics.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok(SkillScanResult {
+        skills: out,
+        diagnostics,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -522,6 +601,9 @@ struct Inner {
     /// `None` = all enabled, `Some(list)` = exhaustive allowlist.
     enabled_skill_allowlist: Option<Vec<String>>,
     skills: HashMap<String, Skill>,
+    /// Invalid manifests shown in the catalog for diagnosis but never eligible
+    /// for execution.
+    skill_diagnostics: Vec<SkillInfo>,
     /// Unified context limits (SKILL.md size / parse caps).
     limits: haven_common::config::ContextLimitsConfig,
 }
@@ -548,6 +630,7 @@ impl SkillRegistry {
                 root: None,
                 enabled_skill_allowlist: None,
                 skills: HashMap::new(),
+                skill_diagnostics: Vec::new(),
                 limits: haven_common::config::ContextLimitsConfig::default(),
             })),
             catalog_version: Arc::new(AtomicU64::new(0)),
@@ -603,12 +686,14 @@ impl SkillRegistry {
             )
         };
         let effective = Self::resolve_root(root.as_deref());
-        let scanned = scan_dir(&effective, enabled_skill_allowlist.as_deref(), &limits)?;
+        let scanned =
+            scan_dir_with_diagnostics(&effective, enabled_skill_allowlist.as_deref(), &limits)?;
         let mut g = self.inner.write().await;
         g.skills.clear();
-        for s in scanned {
+        for s in scanned.skills {
             g.skills.insert(s.name().to_string(), s);
         }
+        g.skill_diagnostics = scanned.diagnostics;
         self.catalog_version.fetch_add(1, Ordering::Relaxed);
         Ok(())
     }
@@ -616,10 +701,11 @@ impl SkillRegistry {
     pub async fn list_skill_infos(&self) -> Vec<SkillInfo> {
         let g = self.inner.read().await;
         let mut skills: Vec<_> = g.skills.values().map(SkillInfo::from).collect();
+        skills.extend(g.skill_diagnostics.iter().cloned());
         // The short skill index is part of the cacheable system-prompt prefix.
         // Never let HashMap iteration order create a semantically identical but
         // byte-different prompt after a refresh or restart.
-        skills.sort_by(|a, b| a.name.cmp(&b.name));
+        skills.sort_by(|a, b| a.name.cmp(&b.name).then_with(|| a.root.cmp(&b.root)));
         skills
     }
 

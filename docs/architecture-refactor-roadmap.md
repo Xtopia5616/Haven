@@ -167,6 +167,8 @@ Rust 调用图发现 `LlmRouter::prepare_manual_retry(RequestKind)` 可处理任
 
 Session 队列审查发现 ToolRun result 入队存在无 ID convenience overload，Actor 与 Supervisor 各自暴露 dequeue，后者还丢弃稳定 result ID；follow-up、steering 也保留了仅在测试中使用的单队列 drain 命令。已删除这些重复出队入口，统一由 `drain_react_context` 按优先级和预算一次性读取；入队统一为 `enqueue_tool_run_result` 并保留稳定 ID。原 `BackgroundResult` 命令同步改为 `EnqueueToolRunResult`，因为 Agent 收到的结果也包括 scheduled ToolRun（ADR 0877）。
 
+Skill 目录契约审查发现无效 `SKILL.md` 将同一解析错误重复写入 `load_error` 与 `disabled_reason`，且 `has_script: false` 导致 UI 把清单无效误报为缺少入口脚本；`SkillInfo.enabled` 还混合了 allowlist 状态与当前可执行状态。现统一将 `load_error` 改名为 `manifest_error`、将 `disabled_reason` 改名为 `unavailable_reason`，使 `enabled` 表示配置状态、`executable` 表示当前可执行性；Agent prompt、执行命令、工具列表和 UI 分别使用正确轴，无效目录项不进入执行 registry，且不提供兼容 alias（ADR 0878）。
+
 #### 当前审计覆盖与剩余范围
 
 | 范围                                                      | 已核对的当前基线                                                                                                                                                                                                                                                                 | 尚待核对                                                                                                                                                            |

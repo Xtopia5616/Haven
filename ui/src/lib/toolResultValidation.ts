@@ -274,7 +274,13 @@ function validAdminData(data: JsonRecord): boolean {
 			}),
 		) &&
 		hasValidRecordArray(data, 'skills', (row) =>
-			hasValidOptionalFields(row, { name: isString, enabled: isBoolean }),
+			hasValidOptionalFields(row, {
+				name: isString,
+				enabled: isBoolean,
+				executable: isBoolean,
+				unavailable_reason: isString,
+				manifest_error: isString,
+			}),
 		) &&
 		hasValidRecordArray(data, 'sessions', validAdminActivityRow) &&
 		hasValidRecordArray(data, 'errors', validAdminActivityRow)

@@ -164,10 +164,10 @@ pub async fn execute_skill(
         .await
         .ok_or_else(|| log_err("execute_skill", format!("skill '{}' not found", name)))?;
 
-    if !skill_info.enabled {
+    if !skill_info.executable {
         return Err(log_err(
             "execute_skill",
-            format!("skill '{}' is not enabled", name),
+            format!("skill '{}' is not executable", name),
         ));
     }
 

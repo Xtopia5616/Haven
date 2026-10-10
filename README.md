@@ -75,6 +75,7 @@ Rust 测试应使用内存数据库或唯一临时目录，不能读写真实用
 - [命名规范](docs/naming.md)
 - [日志、通知与错误处理](docs/conventions.md)
 - [UI 设计与编码规范](docs/ui.md)
+- [Skills 清单格式与诊断](docs/skills.md)
 - [架构降复杂度路线图](docs/architecture-refactor-roadmap.md)
 - [跨层输出契约清单](docs/architecture-output-contract-inventory.md)
 - [Tauri IPC 契约](docs/ipc-contracts.md)

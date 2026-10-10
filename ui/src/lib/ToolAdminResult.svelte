@@ -12,6 +12,9 @@
 	interface AdminSkillRow extends Record<string, unknown> {
 		name?: string | null;
 		enabled?: boolean | null;
+		executable?: boolean | null;
+		unavailable_reason?: string | null;
+		manifest_error?: string | null;
 	}
 
 	interface AdminActivityRow extends Record<string, unknown> {
@@ -70,10 +73,19 @@
 				{#each visibleSkills as skill, index (skill.name ?? index)}
 					<div class="admin-row">
 						<span class="admin-name">{skill.name || '未命名技能'}</span>
-						<span class:admin-ok={skill.enabled} class="admin-state"
-							>{skill.enabled ? '已启用' : '已停用'}</span
+						<span class:admin-ok={skill.executable} class="admin-state"
+							>{skill.manifest_error
+								? '清单无效'
+								: skill.executable
+									? '已启用'
+									: skill.enabled
+										? '配置已启用，当前不可执行'
+										: '已停用'}</span
 						>
 					</div>
+					{#if skill.manifest_error || skill.unavailable_reason}
+						<p class="tool-result-message tool-result-message--compact">{skill.manifest_error ?? skill.unavailable_reason}</p>
+					{/if}
 				{/each}
 			</div>
 		{/snippet}

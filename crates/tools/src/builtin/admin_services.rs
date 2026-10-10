@@ -23,7 +23,7 @@ use std::time::Duration;
 use tokio::sync::RwLock;
 
 use haven_mcp::McpManager;
-use haven_skills::SkillRegistry;
+use haven_skills::{SkillInfo, SkillRegistry};
 
 const DIAGNOSTIC_MODEL_HEALTH_CHECK_TIMEOUT: Duration = Duration::from_secs(7);
 
@@ -64,7 +64,7 @@ pub(crate) struct DiagnosticsStatus {
     pub(crate) mcp: Option<Vec<McpStatusOutput>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) mcp_error: Option<String>,
-    pub(crate) skills: Vec<DiagnosticSkillOutput>,
+    pub(crate) skills: Vec<SkillCatalogStatusOutput>,
     pub(crate) sessions: DiagnosticSessionsOutput,
     pub(crate) log: DiagnosticLogOutput,
 }
@@ -90,10 +90,28 @@ pub(crate) struct DiagnosticToolsStatus {
 }
 
 #[derive(Debug, Clone, Serialize)]
-pub(crate) struct DiagnosticSkillOutput {
+pub(crate) struct SkillCatalogStatusOutput {
     pub(crate) name: String,
     pub(crate) enabled: bool,
+    pub(crate) executable: bool,
     pub(crate) description: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) unavailable_reason: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) manifest_error: Option<String>,
+}
+
+impl From<SkillInfo> for SkillCatalogStatusOutput {
+    fn from(skill: SkillInfo) -> Self {
+        Self {
+            name: skill.name,
+            enabled: skill.enabled,
+            executable: skill.executable,
+            description: skill.description,
+            unavailable_reason: skill.unavailable_reason,
+            manifest_error: skill.manifest_error,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -166,9 +184,8 @@ pub(crate) struct SkillsListOutput {
 
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct SkillSummaryOutput {
-    pub(crate) name: String,
-    pub(crate) enabled: bool,
-    pub(crate) description: String,
+    #[serde(flatten)]
+    pub(crate) status: SkillCatalogStatusOutput,
     pub(crate) root: String,
 }
 
@@ -443,16 +460,12 @@ impl AdminServices {
             Err(error) => (None, Some(sanitize_diagnostic(&error.to_string()))),
         };
 
-        let skills: Vec<DiagnosticSkillOutput> = self
+        let skills: Vec<SkillCatalogStatusOutput> = self
             .skill_registry
             .list_skill_infos()
             .await
             .into_iter()
-            .map(|skill| DiagnosticSkillOutput {
-                name: skill.name,
-                enabled: skill.enabled,
-                description: skill.description,
-            })
+            .map(SkillCatalogStatusOutput::from)
             .collect();
 
         let sessions = if let Some(session_store) = &self.context.session_store {
@@ -612,11 +625,12 @@ impl AdminServices {
             .list_skill_infos()
             .await
             .into_iter()
-            .map(|skill| SkillSummaryOutput {
-                name: skill.name,
-                enabled: skill.enabled,
-                description: skill.description,
-                root: skill.root,
+            .map(|skill| {
+                let root = skill.root.clone();
+                SkillSummaryOutput {
+                    status: skill.into(),
+                    root,
+                }
             })
             .collect();
         Ok(SkillsListOutput { skills })
