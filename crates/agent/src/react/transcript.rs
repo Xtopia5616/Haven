@@ -306,12 +306,11 @@ impl ReActEngine {
     )> {
         let event = normalize_transcript_event(event)?;
         let record = event.to_record(ctx.step_num);
-        let mut committed = self.build_session_commit(ctx, &event, &record).await?;
-        if let Some(ui) = committed_ui_for(&event)
-            && let Some(first) = committed.events.first_mut()
-        {
-            first.payload = encode_transcript_payload(&record, Some(&ui))?;
-        }
+        let payload = match committed_ui_for(&event) {
+            Some(ui) => encode_transcript_payload(&record, Some(&ui))?,
+            None => serde_json::to_string(&record)?,
+        };
+        let mut committed = self.build_session_commit(ctx, &event, payload);
         let media_record = match &event {
             TranscriptEvent::UserInject { attachments, .. } => {
                 media_record_for_inject(ctx.step_num, attachments, self.media_strategy())
@@ -328,14 +327,13 @@ impl ReActEngine {
         Ok((event, record, media_record, committed))
     }
 
-    async fn build_session_commit(
+    fn build_session_commit(
         &self,
         ctx: &StepCtx,
         event: &TranscriptEvent,
-        record: &TranscriptRecord,
-    ) -> anyhow::Result<SessionCommitted> {
-        let mut committed =
-            SessionCommitted::transcript(serde_json::to_string(record)?, ctx.run_id, ctx.step_num);
+        payload: String,
+    ) -> SessionCommitted {
+        let mut committed = SessionCommitted::transcript(payload, ctx.run_id, ctx.step_num);
         match event {
             TranscriptEvent::Thought { text, message_id } => {
                 committed.project_thought_step(message_id.clone(), ctx.step_num);
@@ -417,7 +415,7 @@ impl ReActEngine {
             }
             TranscriptEvent::CompactSummary { .. } => {}
         }
-        Ok(committed)
+        committed
     }
 
     /// Commit the durable row, publish its sequenced UI cards, then project canonical state.
@@ -541,8 +539,7 @@ impl ReActEngine {
         for event in events {
             let (event, record, media_record, item_commit) =
                 self.build_transcript_item(ctx, event).await?;
-            committed.events.extend(item_commit.events);
-            committed.projections.extend(item_commit.projections);
+            committed.append_commit(item_commit);
             projected.push((event, record, media_record));
         }
         let write_result = {

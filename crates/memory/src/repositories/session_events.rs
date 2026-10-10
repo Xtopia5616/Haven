@@ -200,14 +200,14 @@ pub struct RollbackResult {
 /// model belongs to ReAct. The store fixes the event type and owns sequence
 /// allocation, transaction boundaries, and materialized projections.
 #[derive(Debug, Clone, serde::Serialize)]
-pub struct SessionCommittedEvent {
-    pub payload: String,
-    pub run_id: u64,
-    pub step_number: u32,
+struct SessionCommittedEvent {
+    payload: String,
+    run_id: u64,
+    step_number: u32,
 }
 
 impl SessionCommittedEvent {
-    pub fn new(payload: impl Into<String>, run_id: u64, step_number: u32) -> Self {
+    fn new(payload: impl Into<String>, run_id: u64, step_number: u32) -> Self {
         Self {
             payload: payload.into(),
             run_id,
@@ -224,7 +224,7 @@ impl SessionCommittedEvent {
 /// `session_steps` rows.
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
-pub enum SessionProjectionIntent {
+enum SessionProjectionIntent {
     AcknowledgePendingUserInput {
         message_id: String,
     },
@@ -254,14 +254,21 @@ pub enum SessionProjectionIntent {
 /// Events are appended first inside the same SQLite transaction that
 /// materializes projection intents. A failed projection rolls back the event
 /// too, so no committed UI sequence can refer to an uncommitted fact.
-#[derive(Debug, Clone, Default, serde::Serialize)]
+#[derive(Debug, Clone, Default)]
 pub struct SessionCommitted {
-    pub events: Vec<SessionCommittedEvent>,
-    pub projections: Vec<SessionProjectionIntent>,
+    events: Vec<SessionCommittedEvent>,
+    projections: Vec<SessionProjectionIntent>,
     /// Domain control events appended after transcript events in the same
     /// transaction. Used when a transcript result also closes a lifecycle
     /// gate, so recovery cannot observe one without the other.
-    pub trailing_events: Vec<SessionEventInput>,
+    trailing_events: Vec<SessionEventInput>,
+}
+
+#[derive(serde::Serialize)]
+struct SessionCommittedPayload<'a> {
+    events: &'a [SessionCommittedEvent],
+    projections: &'a [SessionProjectionIntent],
+    trailing_events: &'a [SessionEventInput],
 }
 
 impl SessionCommitted {
@@ -276,6 +283,14 @@ impl SessionCommitted {
     pub fn push_transcript(&mut self, payload: impl Into<String>, run_id: u64, step_number: u32) {
         self.events
             .push(SessionCommittedEvent::new(payload, run_id, step_number));
+    }
+
+    /// Combine another staged commit into this batch while preserving order
+    /// within each component. Store internals remain hidden from callers.
+    pub fn append_commit(&mut self, commit: Self) {
+        self.events.extend(commit.events);
+        self.projections.extend(commit.projections);
+        self.trailing_events.extend(commit.trailing_events);
     }
 
     /// Append a domain event after this commit's transcript events, atomically
@@ -1820,8 +1835,15 @@ impl SessionStore {
         // than a hand-maintained sum of selected string fields. This accounts
         // for object/array keys, separators, numeric/boolean fields and JSON
         // escaping, which are all part of the variable-width persistence
-        // payload at this boundary.
-        Ok(serde_json::to_vec(committed)?.len())
+        // payload at this boundary. Keep the staging object itself
+        // non-serializable to callers; this private view preserves its exact
+        // field order and representation for byte accounting.
+        let payload = SessionCommittedPayload {
+            events: &committed.events,
+            projections: &committed.projections,
+            trailing_events: &committed.trailing_events,
+        };
+        Ok(serde_json::to_vec(&payload)?.len())
     }
 
     fn append_batch_in_transaction(
@@ -6105,7 +6127,9 @@ mod tests {
             1,
         );
         assert!(committed.events[0].payload.len() < MAX_TRANSCRIPT_BATCH_PAYLOAD_BYTES);
-        assert!(serde_json::to_vec(&committed).unwrap().len() > MAX_TRANSCRIPT_BATCH_PAYLOAD_BYTES);
+        assert!(
+            SessionStore::payload_bytes(&committed).unwrap() > MAX_TRANSCRIPT_BATCH_PAYLOAD_BYTES
+        );
 
         let error = store
             .commit_transcript(&session_id, &committed)
@@ -6191,6 +6215,45 @@ mod tests {
                 .map(|event| event.sequence)
                 .collect::<Vec<_>>(),
             (1..=64).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn session_committed_append_preserves_event_projection_and_trailing_event_order() {
+        let mut first = SessionCommitted::transcript("first", 3, 1);
+        first.project_thought_step("step-first", 1);
+        let mut second = SessionCommitted::transcript("second", 3, 2);
+        second.project_assistant_message(
+            "step-second",
+            "second thought",
+            Some(TranscriptMessageKind::Text),
+        );
+        second.push_trailing_event(INTERACTION_CLEARED_EVENT_TYPE, r#"{"ids":[]}"#);
+
+        first.append_commit(second);
+
+        assert_eq!(
+            first
+                .events
+                .iter()
+                .map(|event| event.payload.as_str())
+                .collect::<Vec<_>>(),
+            ["first", "second"]
+        );
+        assert!(matches!(
+            first.projections.as_slice(),
+            [
+                SessionProjectionIntent::ThoughtStep { message_id, .. },
+                SessionProjectionIntent::AssistantMessage { message_id: assistant_id, .. }
+            ] if message_id == "step-first" && assistant_id == "step-second"
+        ));
+        assert_eq!(
+            first
+                .trailing_events
+                .iter()
+                .map(|event| event.event_type.as_str())
+                .collect::<Vec<_>>(),
+            [INTERACTION_CLEARED_EVENT_TYPE]
         );
     }
 

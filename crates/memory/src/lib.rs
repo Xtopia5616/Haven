@@ -52,12 +52,11 @@ pub use repositories::session_events::{
     INTERACTION_CLEARED_EVENT_TYPE, INTERACTION_REQUESTED_EVENT_TYPE,
     INTERACTION_RESOLVED_EVENT_TYPE, MEMORY_TRIGGER_EVENT_TYPE, RecoveryPartialKind,
     RecoveryPersistenceStatus, RollbackProjectionBoundary, RollbackRequest, RollbackResult,
-    SessionCommitResult, SessionCommitted, SessionCommittedEvent, SessionCursor, SessionEvent,
-    SessionEventInput, SessionEventPage, SessionHistoryFilter, SessionHistoryStatusFilter,
-    SessionMessageText, SessionProjectionIntent, SessionReplayState, SessionResumeMedia,
-    SessionResumeProjection, SessionStore, SessionTitleGenerationContext,
-    SqliteStorageWriteFailure, TIMELINE_ROLLBACK_EVENT_TYPE, TRANSCRIPT_EVENT_TYPE,
-    USAGE_DISCARDED_EVENT_TYPE, USAGE_RECORDED_EVENT_TYPE,
+    SessionCommitResult, SessionCommitted, SessionCursor, SessionEvent, SessionEventInput,
+    SessionEventPage, SessionHistoryFilter, SessionHistoryStatusFilter, SessionMessageText,
+    SessionReplayState, SessionResumeMedia, SessionResumeProjection, SessionStore,
+    SessionTitleGenerationContext, SqliteStorageWriteFailure, TIMELINE_ROLLBACK_EVENT_TYPE,
+    TRANSCRIPT_EVENT_TYPE, USAGE_DISCARDED_EVENT_TYPE, USAGE_RECORDED_EVENT_TYPE,
 };
 pub use repositories::session_steps::{SessionStep, ToolStepOutcome, ToolStepWrite};
 pub use repositories::sessions::{Session, SessionOrigin};
