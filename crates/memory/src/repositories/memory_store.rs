@@ -90,13 +90,15 @@ impl MemoryStore {
         &self,
         after_key: Option<String>,
         high_water: String,
-        limit: usize,
         cancellation: &CancellationToken,
     ) -> anyhow::Result<Vec<FactExtractionMarker>> {
-        anyhow::ensure!(limit <= MAX_MEMORY_OUTBOX_PAGE_SIZE);
         self.db
             .run_blocking_cancellable(cancellation.clone(), move |db| {
-                db.pending_fact_extractions_page(after_key.as_deref(), &high_water, limit)
+                db.pending_fact_extractions_page(
+                    after_key.as_deref(),
+                    &high_water,
+                    MAX_MEMORY_OUTBOX_PAGE_SIZE,
+                )
             })
             .await
     }
@@ -116,13 +118,15 @@ impl MemoryStore {
         &self,
         after_key: Option<String>,
         high_water: String,
-        limit: usize,
         cancellation: &CancellationToken,
     ) -> anyhow::Result<Vec<SummaryExtractionMarker>> {
-        anyhow::ensure!(limit <= MAX_MEMORY_OUTBOX_PAGE_SIZE);
         self.db
             .run_blocking_cancellable(cancellation.clone(), move |db| {
-                db.pending_summary_extractions_page(after_key.as_deref(), &high_water, limit)
+                db.pending_summary_extractions_page(
+                    after_key.as_deref(),
+                    &high_water,
+                    MAX_MEMORY_OUTBOX_PAGE_SIZE,
+                )
             })
             .await
     }
@@ -280,7 +284,6 @@ mod tests {
                 .pending_fact_extractions_page_cancellable(
                     after_key.clone(),
                     high_water.clone(),
-                    MAX_MEMORY_OUTBOX_PAGE_SIZE,
                     cancellation,
                 )
                 .await?;
@@ -319,7 +322,6 @@ mod tests {
                 .pending_summary_extractions_page_cancellable(
                     after_key.clone(),
                     high_water.clone(),
-                    MAX_MEMORY_OUTBOX_PAGE_SIZE,
                     cancellation,
                 )
                 .await?;

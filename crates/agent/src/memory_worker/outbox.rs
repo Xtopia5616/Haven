@@ -2,16 +2,18 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+#[cfg(test)]
+use haven_memory::MAX_MEMORY_OUTBOX_PAGE_SIZE;
 use haven_memory::MemoryStore;
-use haven_memory::{FactExtractionMarker, MAX_MEMORY_OUTBOX_PAGE_SIZE, SummaryExtractionMarker};
+use haven_memory::{FactExtractionMarker, SummaryExtractionMarker};
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 
 use super::{FactInferenceOutcome, SummaryExtractOutcome};
 
 const OUTBOX_RETRY_MAX_SECS: u64 = 30;
+#[cfg(test)]
 pub(super) const OUTBOX_PAGE_SIZE: usize = MAX_MEMORY_OUTBOX_PAGE_SIZE;
-
 #[cfg(test)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct FactExtractionJob {
@@ -258,12 +260,7 @@ impl MemoryOutbox {
         {
             let page = self
                 .memory_store
-                .pending_fact_extractions_page_cancellable(
-                    None,
-                    high_water,
-                    OUTBOX_PAGE_SIZE,
-                    cancellation,
-                )
+                .pending_fact_extractions_page_cancellable(None, high_water, cancellation)
                 .await?;
             for marker in page {
                 if let Ok(state) = marker.state {
@@ -291,12 +288,7 @@ impl MemoryOutbox {
         {
             let page = self
                 .memory_store
-                .pending_summary_extractions_page_cancellable(
-                    None,
-                    high_water,
-                    OUTBOX_PAGE_SIZE,
-                    cancellation,
-                )
+                .pending_summary_extractions_page_cancellable(None, high_water, cancellation)
                 .await?;
             for marker in page {
                 self.summary_outbox
@@ -333,7 +325,6 @@ impl MemoryOutbox {
                         .pending_fact_extractions_page_cancellable(
                             fact_after.clone(),
                             high_water.clone(),
-                            OUTBOX_PAGE_SIZE,
                             cancellation,
                         )
                         .await?
@@ -346,7 +337,6 @@ impl MemoryOutbox {
                         .pending_summary_extractions_page_cancellable(
                             summary_after.clone(),
                             high_water.clone(),
-                            OUTBOX_PAGE_SIZE,
                             cancellation,
                         )
                         .await?

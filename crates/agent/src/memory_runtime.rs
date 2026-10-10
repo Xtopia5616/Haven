@@ -270,7 +270,6 @@ impl MemoryRuntime {
                 .session_ids_page_cancellable(
                     after_id.clone(),
                     high_water.clone(),
-                    haven_memory::MAX_MEMORY_SESSION_ID_PAGE_SIZE,
                     cancellation.clone(),
                 )
                 .await

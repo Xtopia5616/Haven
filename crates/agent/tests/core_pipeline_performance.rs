@@ -64,7 +64,6 @@ async fn pending_fact_count(store: &MemoryStore, cancellation: &CancellationToke
             .pending_fact_extractions_page_cancellable(
                 after_key.clone(),
                 high_water.clone(),
-                MAX_MEMORY_OUTBOX_PAGE_SIZE,
                 cancellation,
             )
             .await
@@ -84,12 +83,7 @@ async fn first_fact_page(
     cancellation: &CancellationToken,
 ) -> Vec<haven_memory::FactExtractionMarker> {
     store
-        .pending_fact_extractions_page_cancellable(
-            None,
-            high_water,
-            MAX_MEMORY_OUTBOX_PAGE_SIZE,
-            cancellation,
-        )
+        .pending_fact_extractions_page_cancellable(None, high_water, cancellation)
         .await
         .expect("read first bounded fact marker page")
 }

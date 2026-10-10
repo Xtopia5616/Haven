@@ -895,3 +895,4 @@
 - [0904：通过 AdminOperationPort 隔离 AdminOperationSet](0904-hide-admin-operation-set-behind-port.md)
 - [0905：收回 Tools 实现模块并通过 facade 重置工具熔断器](0905-hide-tools-implementation-modules-and-circuit-registry.md)
 - [0906：将 SQLite embedding row 限制在 Memory 与测试 API 内](0906-hide-embedded-text-from-memory-production-api.md)
+- [0907：由 Memory store 持有持久化分页上限](0907-keep-persistence-page-bounds-inside-memory-store.md)

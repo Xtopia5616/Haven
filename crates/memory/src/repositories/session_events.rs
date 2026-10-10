@@ -7,6 +7,7 @@
 //! timeline from the complete log.
 
 use crate::Database;
+use crate::repositories::kv_store::MAX_MEMORY_SESSION_ID_PAGE_SIZE;
 use crate::repositories::messages::{
     Message, PendingInputDisposition, PendingSessionInput, now_rfc3339_millis,
 };
@@ -808,12 +809,15 @@ impl SessionStore {
         &self,
         after_id: Option<String>,
         high_water: String,
-        limit: usize,
         cancel: CancellationToken,
     ) -> anyhow::Result<Vec<String>> {
         self.db
             .run_blocking_cancellable(cancel, move |db| {
-                db.session_ids_page(after_id.as_deref(), &high_water, limit)
+                db.session_ids_page(
+                    after_id.as_deref(),
+                    &high_water,
+                    MAX_MEMORY_SESSION_ID_PAGE_SIZE,
+                )
             })
             .await
     }

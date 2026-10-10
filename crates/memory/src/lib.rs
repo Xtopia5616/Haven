@@ -32,9 +32,11 @@ pub use repositories::facts::{
     normalize_predicate, pick_contradiction_keeper, polarity_opposite,
 };
 pub use repositories::kv_store::{
-    FactExtractionMarker, FactExtractionMarkerState, MAX_MEMORY_OUTBOX_PAGE_SIZE,
-    MAX_MEMORY_SESSION_ID_PAGE_SIZE, SummaryExtractionMarker, SummaryExtractionMarkerState,
+    FactExtractionMarker, FactExtractionMarkerState, SummaryExtractionMarker,
+    SummaryExtractionMarkerState,
 };
+#[cfg(feature = "test-support")]
+pub use repositories::kv_store::{MAX_MEMORY_OUTBOX_PAGE_SIZE, MAX_MEMORY_SESSION_ID_PAGE_SIZE};
 pub use repositories::memory_fact_extraction_store::{
     FactExtractionTranscript, MemoryFactExtractionStore,
 };
