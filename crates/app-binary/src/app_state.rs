@@ -306,7 +306,8 @@ impl AppState {
         // Keep the supervisor's live event channel separate from the app's
         // command/read store, as it was before the constructor accepted stores.
         let supervisor_session_store = memory_persistence.session_store();
-        let memory_fact_store = memory_persistence.memory_fact_store();
+        let memory_stores = memory_persistence.memory_stores();
+        let memory_fact_store = memory_stores.facts.clone();
         tracing::debug!(
             "AppState::new phase=db elapsed={}ms",
             t0.elapsed().as_millis()
@@ -340,7 +341,7 @@ impl AppState {
         ));
 
         let memory_service = Arc::new(MemoryService::new(
-            memory_persistence.memory_stores(),
+            memory_stores,
             Some(router.clone()),
             context_limits.embedding_chunk_size,
         ));

@@ -53,11 +53,6 @@ impl MemoryPersistence {
         SessionStore::new(self.db.clone())
     }
 
-    /// Create the typed fact capability shared by App commands and Agent.
-    pub fn memory_fact_store(&self) -> MemoryFactStore {
-        MemoryFactStore::new(self.db.clone())
-    }
-
     /// Create the store bundle consumed by `MemoryService`.
     pub fn memory_stores(&self) -> MemoryStores {
         MemoryStores::new(self.db.clone())

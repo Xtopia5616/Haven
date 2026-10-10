@@ -881,3 +881,4 @@
 - [0899：通过按消费者划分的 capability ports 隐藏 ToolRunService](0899-hide-tool-run-service-behind-capabilities.md)
 - [0900：将 ToolRegistry 与 OperationRegistry 隐藏在 Tools owner 内](0900-hide-tool-registry-behind-owner-boundary.md)
 - [0901：让 MCP profile 只由 ConfigService 持有](0901-read-mcp-server-config-from-config-service.md)
+- [0902：从单一 MemoryStores 装配共享 typed capabilities](0902-share-memory-store-bundle-capabilities.md)
