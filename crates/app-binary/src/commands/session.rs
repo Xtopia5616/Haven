@@ -28,7 +28,7 @@ pub enum ConfirmationResolutionResult {
 /// A failed reference query must leave every file untouched.
 async fn cleanup_unreferenced_session_media(state: &AppState, context: &str) {
     let cleanup = crate::commands::managed_media::cleanup_unreferenced_managed_media(
-        haven_common::default_work_dir().join("uploads"),
+        haven_common::default_runtime_temp_root().join("uploads"),
         haven_common::config::default_generated_media_dir(),
         state.runtime.tools.share_services().assets,
         &state.runtime.session_store,

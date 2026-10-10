@@ -157,6 +157,8 @@ Session、ScheduledToolRun 与 AppCommand 确认均由各自 owner 和稳定 req
 
 本轮继续核对模型发现命令与 Settings 刷新路径，确认 `discover_all_models` 与单连接 handler 重复拥有 provider 请求循环；已删除 batch command/handler，Settings 统一经 `discover_models` 并行 fan-out，使用当前草稿的 endpoint/auth/proxy。resolve（含空目录）与 reject 不再由模型数混淆，stored credential 仍受连接名和 Base URL 匹配约束；同一配置目标下失败保留成功缓存，目标编辑先失效目录，进行中的旧响应丢弃后最多按新配置重试一次（ADR 0872）。Bootstrap enum 已由 ADR 0722 收口；Provider map 不再列作未决 DTO。全仓 IPC 语义与 Rust 私有调用图仍在 Active 审查范围内。
 
+Rust/Common 名称审查发现 `default_work_dir()` 实际表示应用共享运行时临时根，而 `SkillsExecConfig.work_dir` 表示 Skill 脚本执行 cwd；已将 helper 统一改名为 `default_runtime_temp_root()`，并区分两者文档语义，路径和各自 owner 保持不变（ADR 0873）。
+
 #### 当前审计覆盖与剩余范围
 
 | 范围                                                      | 已核对的当前基线                                                                                                                                                                                                                                                                 | 尚待核对                                                                                                                                                            |

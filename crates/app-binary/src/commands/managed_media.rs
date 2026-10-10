@@ -13,7 +13,7 @@ pub(crate) struct ManagedMediaCleanupCounts {
 /// working directory so the file tool can read uploads with the same access
 /// the agent already has for its own scripts.
 fn uploads_root() -> std::path::PathBuf {
-    haven_common::default_work_dir().join("uploads")
+    haven_common::default_runtime_temp_root().join("uploads")
 }
 
 /// Replace characters that are illegal in Windows file names (and path

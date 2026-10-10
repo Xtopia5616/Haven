@@ -16,7 +16,7 @@ fn venv_creation_command(venv: &Path) -> Command {
         .arg("-m")
         .arg("venv")
         .arg(venv)
-        .current_dir(haven_common::default_work_dir());
+        .current_dir(haven_common::default_runtime_temp_root());
     command
 }
 
@@ -28,7 +28,7 @@ fn pip_install_command(python: &Path, requirements_path: &Path) -> Command {
         .arg("install")
         .arg("-r")
         .arg(requirements_path)
-        .current_dir(haven_common::default_work_dir());
+        .current_dir(haven_common::default_runtime_temp_root());
     command
 }
 
@@ -317,7 +317,7 @@ mod tests {
 
     #[test]
     fn setup_commands_keep_the_existing_arguments_and_working_directory() {
-        let work_dir = haven_common::default_work_dir();
+        let runtime_temp_root = haven_common::default_runtime_temp_root();
         let venv = PathBuf::from("skill-venvs/example");
         let create = venv_creation_command(&venv);
         assert_eq!(create.as_std().get_program(), "python");
@@ -329,7 +329,10 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["-m", "venv", venv.to_string_lossy().as_ref()]
         );
-        assert_eq!(create.as_std().get_current_dir(), Some(work_dir.as_path()));
+        assert_eq!(
+            create.as_std().get_current_dir(),
+            Some(runtime_temp_root.as_path())
+        );
 
         let python = PathBuf::from("skill-venvs/example/Scripts/python.exe");
         let requirements = PathBuf::from("skills/example/requirements.txt");
@@ -349,7 +352,10 @@ mod tests {
                 requirements.to_string_lossy().as_ref()
             ]
         );
-        assert_eq!(install.as_std().get_current_dir(), Some(work_dir.as_path()));
+        assert_eq!(
+            install.as_std().get_current_dir(),
+            Some(runtime_temp_root.as_path())
+        );
     }
 
     #[tokio::test]

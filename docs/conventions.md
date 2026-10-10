@@ -365,7 +365,7 @@ try {
 | 通知默认标题（`notify` / `schedule` 工具） | `Haven` | `tool_contract.rs` / `notify.rs` / `scheduled_tool_run.rs` 默认 title |
 | 前端 UI 文案（欢迎页、气泡标签、设置页） | `Haven` | `+page.svelte`、`ChatBubble.svelte`、`Logo.svelte` |
 | Windows 计划任务名（Action Scheduler 中展示） | `Haven` | `app-binary/src/autostart.rs` `ACTION_NAME` |
-| 数据目录 / 临时工作目录 / 日志文件名 | `haven` | `ConfigLoader::data_dir()`、`default_work_dir()`、`haven.log` |
+| 数据目录 / 运行时临时根 / 日志文件名 | `haven` | `ConfigLoader::data_dir()`、`default_runtime_temp_root()`、`haven.log` |
 | 进程名 / crate / 包名 / Tauri identifier | `haven` | `haven-app-binary`、`haven-ui`、`com.haven.app` |
 | localStorage / kv 键 | `haven` | `haven.theme`、`haven.accent`、`haven.no_auto_restore` |
 | MCP `clientInfo.name` 等协议标识 | `haven` | `crates/tools/src/mcp/mod.rs` |

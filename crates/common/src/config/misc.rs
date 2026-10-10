@@ -387,8 +387,8 @@ pub struct SkillsExecConfig {
     /// Root directory for per-skill virtual environments.
     pub venv_root: PathBuf,
     /// Working directory for script execution (isolated from skill source).
-    /// Defaults to a subfolder of the system Temp directory (see
-    /// [`default_work_dir`]).
+    /// Defaults to a subfolder of the Haven runtime Temp root (see
+    /// [`default_runtime_temp_root`]).
     pub work_dir: PathBuf,
     /// Maximum wall-clock seconds before a script is killed.
     pub timeout_secs: u64,
@@ -405,7 +405,7 @@ impl Default for SkillsExecConfig {
         let data_dir = ConfigLoader::data_dir();
         Self {
             venv_root: data_dir.join("venvs"),
-            work_dir: default_work_dir().join("skills_work"),
+            work_dir: default_runtime_temp_root().join("skills_work"),
             timeout_secs: 30,
             max_output_lines: 5000,
             cpu_time_secs: None,
@@ -414,20 +414,21 @@ impl Default for SkillsExecConfig {
     }
 }
 
-/// Default working directory for agent-executed commands. A dedicated
-/// subfolder of the system Temp directory so the agent never runs in the
-/// app's own working directory. Single source of truth for shell, process,
-/// venv and skill execution; tools that want a different directory can
-/// override with `.current_dir(...)` before spawning.
+/// Root for Haven's runtime temporary files and default tool working directory.
+/// This is a dedicated subfolder of the system Temp directory, so tools do not
+/// run in the app's own working directory. It also contains shared scratch
+/// areas such as uploads and tool output logs; Skills script execution uses
+/// its separate configurable `SkillsExecConfig::work_dir` below this root by
+/// default. Callers can choose a different working directory before spawning.
 ///
 /// The directory is created on first use so spawned commands never fail with
 /// "current directory does not exist".
-pub fn default_work_dir() -> PathBuf {
+pub fn default_runtime_temp_root() -> PathBuf {
     let dir = std::env::temp_dir().join("haven");
     if let Err(error) = std::fs::create_dir_all(&dir) {
         tracing::warn!(
             error = %crate::error::sanitize_error_text(&error.to_string()),
-            "failed to create default tool working directory"
+            "failed to create Haven runtime temp root"
         );
     }
     dir

@@ -169,7 +169,7 @@ async fn resume_restores_tool_overlay_cleanly_in_round_order_and_best_effort() {
 }
 
 fn managed_test_image() -> (haven_common::types::MessageAttachment, std::path::PathBuf) {
-    let dir = haven_common::default_work_dir()
+    let dir = haven_common::default_runtime_temp_root()
         .join("uploads")
         .join(format!("test-{}", uuid::Uuid::new_v4().simple()));
     std::fs::create_dir_all(&dir).unwrap();

@@ -76,10 +76,10 @@ pub fn build_shell_command_silent(shell: &str, command: &str) -> std::process::C
     };
     std_cmd.stdout(std::process::Stdio::piped());
     std_cmd.stderr(std::process::Stdio::piped());
-    // Default to the shared Temp working directory so the agent never executes
+    // Default to Haven's shared runtime Temp directory so the agent never executes
     // commands in the app's own working directory. Callers may override with
     // `.current_dir(...)` before spawning.
-    std_cmd.current_dir(haven_common::default_work_dir());
+    std_cmd.current_dir(haven_common::default_runtime_temp_root());
     // Route git/npm/curl through a locally detected proxy so network-heavy
     // commands (clone/install) don't stall on ECONNRESET when the user runs a
     // local proxy (e.g. 127.0.0.1:10808). The probe is cached; env vars the
@@ -177,9 +177,9 @@ pub fn proxy_env_vars() -> Vec<(String, String)> {
 }
 
 /// Directory for per-command output logs (background ToolRuns and failed
-/// foreground commands), under the shared Temp working directory.
+/// foreground commands), under Haven's shared runtime Temp directory.
 pub fn output_log_dir(kind: &str) -> std::path::PathBuf {
-    haven_common::default_work_dir().join(kind)
+    haven_common::default_runtime_temp_root().join(kind)
 }
 
 /// Write a command's full (sanitized) output to a log file so a condensed

@@ -427,11 +427,11 @@ impl SystemPromptBuilder {
         let workspace_root = haven_common::discover_workspace_root(Path::new(&process_cwd))
             .map(|path| path.to_string_lossy().into_owned())
             .unwrap_or_else(|| "unknown".into());
-        let sandbox_cwd = haven_common::default_work_dir()
+        let tool_sandbox_cwd = haven_common::default_runtime_temp_root()
             .to_string_lossy()
             .into_owned();
         let tool_cwd = if workspace_root == "unknown" {
-            sandbox_cwd.clone()
+            tool_sandbox_cwd.clone()
         } else {
             workspace_root.clone()
         };
@@ -459,7 +459,7 @@ impl SystemPromptBuilder {
             runtime_value(process_cwd),
             runtime_value(workspace_root),
             runtime_value(tool_cwd),
-            runtime_value(sandbox_cwd),
+            runtime_value(tool_sandbox_cwd),
             runtime_value(runtime.default_shell),
             web_search_availability_prompt_value(runtime.capabilities.web_search),
             if runtime.capabilities.vision {

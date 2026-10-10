@@ -142,7 +142,7 @@ struct CleanupRoots {
 impl CleanupRoots {
     fn production() -> Self {
         Self {
-            uploads: haven_common::default_work_dir().join("uploads"),
+            uploads: haven_common::default_runtime_temp_root().join("uploads"),
             generated_media: haven_common::config::default_generated_media_dir(),
         }
     }

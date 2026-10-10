@@ -22,7 +22,7 @@ pub mod workspace;
 
 pub use config::{
     AppConfig, ConfigLoader, LogConfig, LogLevel, McpDiscoveryConfig, McpServerConfig, Settings,
-    SkillsExecConfig, default_work_dir,
+    SkillsExecConfig, default_runtime_temp_root,
 };
 pub use types::McpTransportType;
 pub use workspace::discover_workspace_root;

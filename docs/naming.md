@@ -1,6 +1,6 @@
 # Haven 命名规范
 
-> 版本: v1.154 | 日期: 2026-10-10
+> 版本: v1.155 | 日期: 2026-10-10
 
 本文档统一 Haven 项目各层的命名规则（变量名、函数名、文件名、crate 名、缩写大小写、跨层边界）。规范以现有代码中的事实模式为基础，新代码必须遵循；存量代码若与规范冲突，逐步迁移对齐。
 
@@ -95,6 +95,7 @@
 - **Session prompt-history 配置由 Session 拥有**：首次 system prompt 的历史消息条数位于 `SessionConfig.prompt_history_limit` / `[session].prompt_history_limit`；Memory 配置只管理 Memory 功能，不保留已移出的 `session_window_size` 旧字段或 alias（ADR 0652）。
 - **Memory fact write candidate 使用具名字段并共享策略转换**：从 `LlmFact` 解析出的来源引用与事实字段进入 `MemoryFactCandidate`，生产与测试都经过 `prepare_fact_candidates` 做同一套清洗、敏感值过滤和范围归一；不以 test-only 元组 alias 或第二份写入策略表达该阶段（ADR 0654）。
 - **运行上下文按角色命名**：一起解析出的执行程序与工作目录使用 `ResolvedShellContext { shell, working_directory }`，解析动作命名为 `resolve_shell_context`，避免把两个不同含义的值作为位置 tuple 传给前后台执行路径（ADR 0628）。
+- **应用临时根与配置工作目录分名**：`default_runtime_temp_root()` 表示 Haven 在系统 Temp 下的共享运行时根目录；`SkillsExecConfig.work_dir` 表示可配置的 Skill 脚本执行目录。前者也存放 uploads 和工具输出等子目录，不用泛名 `default_work_dir()` 表示共享根（ADR 0873）。
 - **Composer 是唯一聊天输入组件 owner**：路由直接使用 `Composer.svelte`，它持有草稿、附件暂存、输入控件与工具栏，并在同一组件内响应 DOM 事件；不再以 `InputRouter` 内层组件加纯转发 wrapper 表达同一个边界（ADR 0844）。
 - **跨组件提交输入共享类型 owner**：同一 chat submission attachment 在 Composer、页面、session controller 和 submit coordinator 之间复用 `chatAttachmentTypes.ts` 中的 `ChatAttachmentPayload` / `ChatFileAttachment`；通用 `media_type` + `data` 结构不命名为 image，只有待提交 `images` 字段和压缩入口施加图像语义。`ChatAttachmentPayload` 直接选取 generated `MessageAttachmentInput` 字段；仅用于预览的文件大小留在 Composer 的 `PendingChatFileAttachment`，并在 Composer 提交边界投影掉，历史消息 renderer 的宽松 `ChatBubbleAttachment` 继续独立（ADR 0629、0843、0845）。
 - **结果类型由领域 owner 定义**：同一业务结果从数据库仓储传到异步 service/store 时，复用领域类型并只在边界调度执行；不要让中间层把具名对象拆回 tuple 再重建。
