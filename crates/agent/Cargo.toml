@@ -24,4 +24,5 @@ sha2.workspace = true
 tiktoken-rs = "0.12"
 
 [dev-dependencies]
+haven-llm = { path = "../llm", features = ["test-support"] }
 tempfile.workspace = true

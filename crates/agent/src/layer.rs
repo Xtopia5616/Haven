@@ -1481,7 +1481,7 @@ mod tests {
             1,
         ));
         let client = Arc::new(UnusedClient);
-        let router = Arc::new(LlmRouter::new_with_clients(
+        let router = Arc::new(LlmRouter::new_with_test_clients(
             client.clone(),
             client.clone(),
             client.clone(),
@@ -1689,7 +1689,7 @@ mod tests {
             1,
         ));
         let client = Arc::new(UnusedClient);
-        let router = Arc::new(LlmRouter::new_with_clients(
+        let router = Arc::new(LlmRouter::new_with_test_clients(
             client.clone(),
             client.clone(),
             client.clone(),
@@ -1732,7 +1732,7 @@ mod tests {
             1,
         ));
         let client = Arc::new(UnusedClient);
-        let router = Arc::new(LlmRouter::new_with_clients(
+        let router = Arc::new(LlmRouter::new_with_test_clients(
             client.clone(),
             client.clone(),
             client.clone(),
@@ -1784,7 +1784,7 @@ mod tests {
             1,
         ));
         let client = Arc::new(UnusedClient);
-        let router = Arc::new(LlmRouter::new_with_clients(
+        let router = Arc::new(LlmRouter::new_with_test_clients(
             client.clone(),
             client.clone(),
             client.clone(),

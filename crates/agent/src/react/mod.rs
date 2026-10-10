@@ -1462,7 +1462,7 @@ mod tests {
         let client: Arc<dyn LlmClient> = Arc::new(MockLlm {
             profile: CapabilityProfile::default(),
         });
-        LlmRouter::new_with_clients(client.clone(), client.clone(), client.clone(), client)
+        LlmRouter::new_with_test_clients(client.clone(), client.clone(), client.clone(), client)
     }
 
     fn mock_router_with_profiles(
@@ -1482,7 +1482,7 @@ mod tests {
         let audio: Arc<dyn LlmClient> = Arc::new(MockLlm {
             profile: audio_profile,
         });
-        LlmRouter::new_with_clients(small, default, image, audio)
+        LlmRouter::new_with_test_clients(small, default, image, audio)
     }
 
     // ── structured failure classes & retry nudge ──────────────────────────
@@ -1742,7 +1742,7 @@ mod tests {
     async fn choose_agent_request_vision_when_configured() {
         let router = mock_router();
         router
-            .force_request_configured(RequestKind::Vision, true)
+            .set_request_configured_for_test(RequestKind::Vision, true)
             .await;
         let messages = [image_msg(CanonicalRole::User)];
         let context = request_context(messages.into());
@@ -1756,10 +1756,10 @@ mod tests {
     async fn choose_agent_request_default_when_vision_routing_disabled() {
         let router = mock_router();
         router
-            .force_request_configured(RequestKind::Vision, true)
+            .set_request_configured_for_test(RequestKind::Vision, true)
             .await;
         router
-            .force_request_primary_for_test(RequestKind::Vision, "default_model")
+            .set_request_primary_for_test(RequestKind::Vision, "default_model")
             .await
             .unwrap();
         let messages = [image_msg(CanonicalRole::User)];
@@ -1774,7 +1774,7 @@ mod tests {
     async fn choose_agent_request_audio_when_configured() {
         let router = mock_router();
         router
-            .force_request_configured(RequestKind::AudioChat, true)
+            .set_request_configured_for_test(RequestKind::AudioChat, true)
             .await;
         let messages = [audio_msg(CanonicalRole::User)];
         let context = request_context(messages.into());
@@ -1795,7 +1795,7 @@ mod tests {
         let router =
             mock_router_with_profiles(default_profile, image_profile, CapabilityProfile::default());
         router
-            .force_request_configured(RequestKind::Vision, true)
+            .set_request_configured_for_test(RequestKind::Vision, true)
             .await;
         let context =
             media_request_context(image_msg(CanonicalRole::User), "image/png", "aGVsbG8=");
@@ -1817,7 +1817,7 @@ mod tests {
         let router =
             mock_router_with_profiles(default_profile, image_profile, CapabilityProfile::default());
         router
-            .force_request_configured(RequestKind::Vision, true)
+            .set_request_configured_for_test(RequestKind::Vision, true)
             .await;
         let context =
             media_request_context(image_msg(CanonicalRole::User), "image/png", "aGVsbG8=");

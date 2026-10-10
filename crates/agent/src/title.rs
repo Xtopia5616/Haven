@@ -141,7 +141,7 @@ mod tests {
         let audio_client: Arc<dyn LlmClient> = Arc::new(
             OpenAiAdapter::try_new(haven_common::config::ModelEndpoint::default()).unwrap(),
         );
-        let router = Arc::new(LlmRouter::new_with_clients(
+        let router = Arc::new(LlmRouter::new_with_test_clients(
             mock.clone(),
             default_client,
             image_client,
@@ -150,7 +150,7 @@ mod tests {
         // Simulate a configured small_model so generate() passes the
         // request-configuration guard and reaches the recording mock.
         router
-            .force_request_configured(RequestKind::FastChat, true)
+            .set_request_configured_for_test(RequestKind::FastChat, true)
             .await;
         TestRouter { router, mock }
     }
@@ -176,7 +176,7 @@ mod tests {
         let tr = test_router(ok_response("ignored")).await;
         // The default (empty-key) config simulates an unconfigured small_model.
         tr.router
-            .force_request_configured(RequestKind::FastChat, false)
+            .set_request_configured_for_test(RequestKind::FastChat, false)
             .await;
         let generator = TitleGenerator::new(tr.router);
         assert!(generator.generate(&["hi".into()]).await.is_none());

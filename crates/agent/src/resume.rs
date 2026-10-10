@@ -1011,7 +1011,7 @@ mod direct_session_run_guard_tests {
         let client = Arc::new(BlockingStreamClient {
             started: started.clone(),
         });
-        let router = Arc::new(haven_llm::LlmRouter::new_with_clients(
+        let router = Arc::new(haven_llm::LlmRouter::new_with_test_clients(
             client.clone(),
             client.clone(),
             client.clone(),

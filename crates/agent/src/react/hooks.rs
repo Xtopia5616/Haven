@@ -245,7 +245,7 @@ mod tests {
         let tools = Arc::new(ToolsFacade::new());
         let executor = Arc::new(SessionSupervisor::new_for_test(db.clone(), tools, 1));
         let client = Arc::new(SilentLlm) as Arc<dyn LlmClient>;
-        let router = Arc::new(LlmRouter::new_with_clients(
+        let router = Arc::new(LlmRouter::new_with_test_clients(
             client.clone(),
             client.clone(),
             client.clone(),
@@ -434,7 +434,7 @@ mod tests {
             let tools = Arc::new(ToolsFacade::new());
             let executor = Arc::new(SessionSupervisor::new_for_test(db.clone(), tools, 1));
             let client = Arc::new(SilentLlm) as Arc<dyn LlmClient>;
-            let router = Arc::new(LlmRouter::new_with_clients(
+            let router = Arc::new(LlmRouter::new_with_test_clients(
                 client.clone(),
                 client.clone(),
                 client.clone(),

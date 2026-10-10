@@ -41,6 +41,7 @@ image = { version = "0.25", default-features = false, features = ["png"] }
 encoding_rs.workspace = true
 
 [dev-dependencies]
+haven-llm = { path = "../llm", features = ["test-support"] }
 tempfile.workspace = true
 
 [target.'cfg(windows)'.dependencies]

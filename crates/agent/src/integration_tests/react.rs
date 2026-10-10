@@ -723,7 +723,7 @@ async fn media_tool_usage_flows_to_event_and_database() {
     ));
 
     let vision_client = Arc::new(VisionUsageMock) as Arc<dyn LlmClient>;
-    let vision_router = Arc::new(LlmRouter::new_with_clients(
+    let vision_router = Arc::new(LlmRouter::new_with_test_clients(
         vision_client.clone(),
         vision_client.clone(),
         vision_client.clone(),
@@ -1689,7 +1689,7 @@ async fn pause_snapshot_and_resume_keep_own_final_answer_in_canonical() {
         }),
     ]));
     let client: Arc<dyn LlmClient> = mock.clone();
-    let router = Arc::new(LlmRouter::new_with_clients(
+    let router = Arc::new(LlmRouter::new_with_test_clients(
         client.clone(),
         client.clone(),
         client.clone(),

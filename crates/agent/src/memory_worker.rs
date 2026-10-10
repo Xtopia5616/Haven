@@ -1184,7 +1184,7 @@ mod tests {
         let client: Arc<dyn LlmClient> = Arc::new(FakeLlm {
             reply: reply.to_string(),
         });
-        Arc::new(LlmRouter::new_with_clients_full(
+        Arc::new(LlmRouter::new_with_test_clients_and_embedding(
             client.clone(),
             client.clone(),
             client.clone(),

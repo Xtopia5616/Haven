@@ -3,6 +3,10 @@ name = "haven-llm"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+# Mock router construction and route mutation for downstream test targets.
+test-support = []
+
 [dependencies]
 serde.workspace = true
 serde_json.workspace = true

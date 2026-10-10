@@ -95,14 +95,14 @@ use super::*;
             .await
             .unwrap();
         let client = Arc::new(SummaryUsageMock);
-        let router = Arc::new(LlmRouter::new_with_clients(
+        let router = Arc::new(LlmRouter::new_with_test_clients(
             client.clone(),
             client.clone(),
             client.clone(),
             client,
         ));
         router
-            .force_request_configured(RequestKind::FastChat, true)
+            .set_request_configured_for_test(RequestKind::FastChat, true)
             .await;
         let tool = FilesTool {
             summarizer: Some(router),
@@ -136,17 +136,17 @@ use super::*;
             .await
             .unwrap();
         let client = Arc::new(SummaryUsageMock);
-        let router = Arc::new(LlmRouter::new_with_clients(
+        let router = Arc::new(LlmRouter::new_with_test_clients(
             client.clone(),
             client.clone(),
             client.clone(),
             client,
         ));
         router
-            .force_request_configured(RequestKind::FastChat, false)
+            .set_request_configured_for_test(RequestKind::FastChat, false)
             .await;
         router
-            .force_request_configured(RequestKind::Chat, true)
+            .set_request_configured_for_test(RequestKind::Chat, true)
             .await;
         let tool = FilesTool {
             summarizer: Some(router),

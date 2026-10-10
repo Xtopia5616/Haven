@@ -829,7 +829,7 @@ mod tests {
             make_msg(CanonicalRole::Assistant, "latest answer"),
         ];
         let failing: Arc<dyn LlmClient> = Arc::new(FailingSummaryClient);
-        let router = Arc::new(haven_llm::LlmRouter::new_with_clients(
+        let router = Arc::new(haven_llm::LlmRouter::new_with_test_clients(
             failing.clone(),
             failing.clone(),
             failing.clone(),

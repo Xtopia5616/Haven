@@ -160,8 +160,12 @@ mod tests {
     #[tokio::test]
     async fn rejects_non_image_before_dispatch() {
         let client = Arc::new(MockImageClient);
-        let router =
-            LlmRouter::new_with_clients(client.clone(), client.clone(), client.clone(), client);
+        let router = LlmRouter::new_with_test_clients(
+            client.clone(),
+            client.clone(),
+            client.clone(),
+            client,
+        );
         let error = analyze_image(&router, b"bytes", "text/plain", "inspect", None)
             .await
             .unwrap_err();
@@ -171,8 +175,12 @@ mod tests {
     #[tokio::test]
     async fn plans_and_dispatches_image_through_vision_request() {
         let client = Arc::new(MockImageClient);
-        let router =
-            LlmRouter::new_with_clients(client.clone(), client.clone(), client.clone(), client);
+        let router = LlmRouter::new_with_test_clients(
+            client.clone(),
+            client.clone(),
+            client.clone(),
+            client,
+        );
         let response = analyze_image(
             &router,
             b"encoded image bytes",

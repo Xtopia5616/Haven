@@ -192,7 +192,7 @@ fn agent_build_constructor_works() {
         1,
     ));
     let client = Arc::new(FinalAnswerMock) as Arc<dyn LlmClient>;
-    let router = Arc::new(LlmRouter::new_with_clients(
+    let router = Arc::new(LlmRouter::new_with_test_clients(
         client.clone(),
         client.clone(),
         client.clone(),
@@ -251,7 +251,7 @@ async fn replace_router_and_router_work() {
         1,
     ));
     let client_a = Arc::new(FinalAnswerMock) as Arc<dyn LlmClient>;
-    let router_a = Arc::new(LlmRouter::new_with_clients(
+    let router_a = Arc::new(LlmRouter::new_with_test_clients(
         client_a.clone(),
         client_a.clone(),
         client_a.clone(),
@@ -273,7 +273,7 @@ async fn replace_router_and_router_work() {
     );
     // Create a new router via the same mock client factory
     let client_b = Arc::new(FinalAnswerMock) as Arc<dyn LlmClient>;
-    let router_b = Arc::new(LlmRouter::new_with_clients(
+    let router_b = Arc::new(LlmRouter::new_with_test_clients(
         client_b.clone(),
         client_b.clone(),
         client_b.clone(),

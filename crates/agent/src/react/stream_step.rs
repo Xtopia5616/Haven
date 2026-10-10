@@ -1633,7 +1633,7 @@ mod tests {
             LlmError::ContextLengthExceeded,
         )]));
         let auxiliary_client = Arc::new(ProbeClient::new(Vec::new()));
-        let router = Arc::new(LlmRouter::new_with_clients(
+        let router = Arc::new(LlmRouter::new_with_test_clients(
             auxiliary_client.clone(),
             default_client.clone(),
             image_client.clone(),

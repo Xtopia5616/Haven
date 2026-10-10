@@ -91,7 +91,7 @@ async fn resume_restores_tool_overlay_cleanly_in_round_order_and_best_effort() {
         overlay.clone(),
     ));
     let client = Arc::new(FinalAnswerMock) as Arc<dyn LlmClient>;
-    let router = Arc::new(LlmRouter::new_with_clients(
+    let router = Arc::new(LlmRouter::new_with_test_clients(
         client.clone(),
         client.clone(),
         client.clone(),
@@ -220,7 +220,7 @@ async fn enabled_skills_are_global_and_resume_does_not_rebuild_skill_sessions() 
         1,
     ));
     let client = Arc::new(FinalAnswerMock) as Arc<dyn LlmClient>;
-    let router = Arc::new(LlmRouter::new_with_clients(
+    let router = Arc::new(LlmRouter::new_with_test_clients(
         client.clone(),
         client.clone(),
         client.clone(),

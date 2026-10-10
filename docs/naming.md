@@ -1,6 +1,6 @@
 # Haven 命名规范
 
-> 版本: v1.162 | 日期: 2026-10-10
+> 版本: v1.163 | 日期: 2026-10-10
 
 本文档统一 Haven 项目各层的命名规则（变量名、函数名、文件名、crate 名、缩写大小写、跨层边界）。规范以现有代码中的事实模式为基础，新代码必须遵循；存量代码若与规范冲突，逐步迁移对齐。
 
@@ -24,6 +24,7 @@
 - **Skill 配置、可执行状态与清单错误分名**：`SkillInfo.enabled` 与运行时 `Skill.enabled` 一样表示配置 allowlist；`SkillInfo.executable` 表示当前可执行性（启用且存在入口脚本），Agent prompt 与 `execute_skill` 按此门控。`has_script` 是有效清单中的脚本存在事实，`manifest_error` 是清单解析诊断，`unavailable_reason` 解释有效清单为何不可执行。无效清单不填不可用原因，且 UI 不把未知脚本状态伪报为缺少入口脚本（ADR 0878）。
 - **Skill 目录扫描保留完整诊断结果**：生产刷新只调用 `scan_skill_directory`，同时消费已解析目录项与无效清单诊断；不导出只返回 `Vec<Skill>` 并丢弃诊断的 `scan_dir`。仅测试可见的 `scan_parsed_skill_entries` 不属于生产 API（ADR 0879）。
 - **Skill 只由校验后的目录发现构造**：`SkillManifest` 与 `parse_skill_md` 是 Skills 内部解析实现，不导出供调用者绕过目录校验；删除仍会编进生产库的 `Skill::from_manifest_unchecked`，测试从临时 `SKILL.md` 目录通过 `SkillRegistry` 获取对象。`Language::parse` 是 parser 私有动作；`Language::as_str()` 保留，因为 Tools runner 需要报告不支持的语言值（ADR 0880）。
+- **LLM mock router API 只用于测试目标**：注入 mock client 的构造器命名为 `new_with_test_clients` / `new_with_test_clients_and_embedding`，路由状态改写使用 `set_request_configured_for_test` / `set_request_primary_for_test`；这些 API 由非默认 `test-support` feature 暴露，只有 Agent 与 Tools 的测试依赖启用，正常生产依赖图不包含它们（ADR 0881）。
 - **Session 运行态与持久历史分名**：`list_runtime_sessions` / `RuntimeSessionListResponse` 只表示当前进程中驻留且未终结的会话；`list_session_history`、搜索、计数和导出命令表示持久会话历史。跨层的历史查询、结果缓存都带 `session_history` 作用域；全量持久删除叫 `delete_all_sessions`，supervisor 内部运行态清理用 `clear_session_runtime_state_locked`，关闭入口用 `clear_session_runtime_state_for_shutdown`（ADR 0679）。
 - **Session IPC 包装模块按实体命名**：前端 `sessionCommands.ts` 集中封装 Session 的运行态列表、历史读取、恢复、生命周期与标题命令；单个函数仍按操作阶段使用 `listRuntimeSessions`、`listSessionHistory`、`getSessionForResume`、`deleteSession` 等领域动词，不因模块收纳在同一个文件而抹去状态范围（ADR 0679）。
 - **工具清单明确来源**：`list_builtin_tool_manifests` 只返回内置工具的 manifest，不包含 Skill 或 MCP manifest；命令与响应类型分别标出 `builtin_tool_manifests` 和 `BuiltinToolManifestListResponse`。Tools 与 Skills 的 App 命令按 domain 分模块（ADR 0680）。

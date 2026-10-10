@@ -315,13 +315,14 @@ impl LlmRouter {
         self.rate_limited.read().await.get(model_id).copied()
     }
 
-    pub fn new_with_clients(
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn new_with_test_clients(
         small_model: Arc<dyn LlmClient>,
         default_model: Arc<dyn LlmClient>,
         image_model: Arc<dyn LlmClient>,
         audio_model: Arc<dyn LlmClient>,
     ) -> Self {
-        Self::new_with_clients_full(
+        Self::new_with_test_clients_and_embedding(
             small_model,
             default_model,
             image_model,
@@ -330,16 +331,17 @@ impl LlmRouter {
         )
     }
 
-    /// Like [`Self::new_with_clients`] but with an explicit embedding endpoint
+    /// Like [`Self::new_with_test_clients`] but with an explicit embedding client
     /// (tests that exercise the embeddings path pass a mock here).
-    pub fn new_with_clients_full(
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn new_with_test_clients_and_embedding(
         small_model: Arc<dyn LlmClient>,
         default_model: Arc<dyn LlmClient>,
         image_model: Arc<dyn LlmClient>,
         audio_model: Arc<dyn LlmClient>,
         embedding_model: Arc<dyn LlmClient>,
     ) -> Self {
-        let config = Self::test_config();
+        let config = Self::injected_client_test_config();
         // Injected test clients intentionally do not carry credentials. Keep
         // the test constructor's explicit primary assignments routable while
         // production construction remains credential-gated.
@@ -375,7 +377,8 @@ impl LlmRouter {
         }
     }
 
-    fn test_config() -> RouterConfig {
+    #[cfg(any(test, feature = "test-support"))]
+    fn injected_client_test_config() -> RouterConfig {
         let models = [
             ("small_model", vec![Capability::FastChat]),
             (
@@ -476,12 +479,13 @@ impl LlmRouter {
         self.model_directory.is_request_configured(&config, request)
     }
 
-    /// Test utility: force the configured state of a request (empty vs non-empty
-    /// api_key). `new_with_clients` builds with a default config where all
+    /// Test utility: set the configured state of a request (empty vs non-empty
+    /// api_key). `new_with_test_clients` builds with a default config where all
     /// keys are empty; cross-crate tests that exercise `is_request_configured`
     /// guards use this to simulate a configured endpoint.
     #[doc(hidden)]
-    pub async fn force_request_configured(&self, request: RequestKind, configured: bool) {
+    #[cfg(any(test, feature = "test-support"))]
+    pub async fn set_request_configured_for_test(&self, request: RequestKind, configured: bool) {
         let mut cfg = self.config.write().await;
         if let Some(id) = cfg.policy(request).map(|policy| policy.primary.clone())
             && let Some(model) = cfg.model_mut(&id)
@@ -504,7 +508,8 @@ impl LlmRouter {
     /// Test utility for cross-crate tests: assign one request kind to a
     /// configured injected model and rebuild the route table from that policy.
     #[doc(hidden)]
-    pub async fn force_request_primary_for_test(
+    #[cfg(any(test, feature = "test-support"))]
+    pub async fn set_request_primary_for_test(
         &self,
         request: RequestKind,
         model_id: &str,
@@ -1380,7 +1385,7 @@ mod tests {
             seen: chat_seen.clone(),
             rate_limited: false,
         });
-        let router = LlmRouter::new_with_clients(
+        let router = LlmRouter::new_with_test_clients(
             fast_client,
             chat_client.clone(),
             chat_client.clone(),
@@ -1414,7 +1419,7 @@ mod tests {
             seen: chat_seen.clone(),
             rate_limited: false,
         });
-        let router = LlmRouter::new_with_clients(
+        let router = LlmRouter::new_with_test_clients(
             fast_client,
             chat_client.clone(),
             chat_client.clone(),
@@ -1479,7 +1484,7 @@ mod tests {
             seen: chat_seen.clone(),
             rate_limited: true,
         });
-        let router = LlmRouter::new_with_clients(
+        let router = LlmRouter::new_with_test_clients(
             fast_client,
             chat_client.clone(),
             chat_client.clone(),
@@ -1804,7 +1809,7 @@ mod tests {
         });
         let ordinary_client: Arc<dyn LlmClient> = ordinary_probe.clone();
         let tool_client: Arc<dyn LlmClient> = tool_probe.clone();
-        let router = LlmRouter::new_with_clients(
+        let router = LlmRouter::new_with_test_clients(
             ordinary_client.clone(),
             ordinary_client.clone(),
             tool_client,
@@ -1892,7 +1897,7 @@ mod tests {
             chunks: Vec::new(),
             fail_chat: false,
         });
-        let router = LlmRouter::new_with_clients_full(
+        let router = LlmRouter::new_with_test_clients_and_embedding(
             healthy.clone(),
             failing,
             healthy.clone(),
@@ -1922,7 +1927,7 @@ mod tests {
             chunks: Vec::new(),
             fail_chat: false,
         });
-        let router = LlmRouter::new_with_clients_full(
+        let router = LlmRouter::new_with_test_clients_and_embedding(
             healthy.clone(),
             failing,
             healthy.clone(),
@@ -1978,7 +1983,7 @@ mod tests {
             })],
             fail_chat: false,
         });
-        let router = LlmRouter::new_with_clients_full(
+        let router = LlmRouter::new_with_test_clients_and_embedding(
             healthy.clone(),
             failing,
             healthy.clone(),
@@ -2000,7 +2005,7 @@ mod tests {
 
     #[tokio::test]
     async fn is_request_configured_reports_api_key_state() {
-        let mut cfg = LlmRouter::test_config();
+        let mut cfg = LlmRouter::injected_client_test_config();
         cfg.model_mut("small_model").unwrap().endpoint.api_key = "sk-test".into();
         cfg.model_mut("default_model").unwrap().endpoint.api_key = String::new();
         cfg.model_mut("image_model").unwrap().endpoint.api_key = "sk-mm".into();
@@ -2066,8 +2071,13 @@ mod tests {
         });
         let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
         let emb: Arc<dyn LlmClient> = Arc::new(MockEmbedClient { seen: seen.clone() });
-        let router =
-            LlmRouter::new_with_clients_full(chat.clone(), chat.clone(), chat.clone(), chat, emb);
+        let router = LlmRouter::new_with_test_clients_and_embedding(
+            chat.clone(),
+            chat.clone(),
+            chat.clone(),
+            chat,
+            emb,
+        );
         let input = vec!["a".into(), " b ".into(), "a".into()];
         let result = router
             .embed(EmbeddingRequest {
@@ -2107,7 +2117,7 @@ mod tests {
             chunks: Vec::new(),
             fail_chat: false,
         });
-        let router = LlmRouter::new_with_clients_full(
+        let router = LlmRouter::new_with_test_clients_and_embedding(
             chat.clone(),
             chat.clone(),
             chat.clone(),
@@ -2203,8 +2213,12 @@ mod tests {
             chunks,
             fail_chat: false,
         }) as Arc<dyn LlmClient>;
-        let router =
-            LlmRouter::new_with_clients(client.clone(), client.clone(), client.clone(), client);
+        let router = LlmRouter::new_with_test_clients(
+            client.clone(),
+            client.clone(),
+            client.clone(),
+            client,
+        );
 
         use std::sync::Arc as StdArc;
         use std::sync::Mutex as StdMutex;
@@ -2461,8 +2475,12 @@ mod tests {
             chunks,
             fail_chat: false,
         }) as Arc<dyn LlmClient>;
-        let router =
-            LlmRouter::new_with_clients(client.clone(), client.clone(), client.clone(), client);
+        let router = LlmRouter::new_with_test_clients(
+            client.clone(),
+            client.clone(),
+            client.clone(),
+            client,
+        );
 
         use std::sync::Arc as StdArc;
         use std::sync::Mutex as StdMutex;
@@ -2501,7 +2519,7 @@ mod tests {
             chunks: Vec::new(),
             fail_chat: true,
         }) as Arc<dyn LlmClient>;
-        let router = LlmRouter::new_with_clients(
+        let router = LlmRouter::new_with_test_clients(
             small,
             default,
             Arc::new(MockStreamClient {
@@ -2543,7 +2561,8 @@ mod tests {
             fail_chat: false,
         }) as Arc<dyn LlmClient>;
 
-        let router = LlmRouter::new_with_clients(failing.clone(), failing.clone(), ok.clone(), ok);
+        let router =
+            LlmRouter::new_with_test_clients(failing.clone(), failing.clone(), ok.clone(), ok);
 
         // First 3 calls should fail and trigger circuit breaker
         for _ in 0..3 {
@@ -2721,8 +2740,12 @@ mod tests {
             chunks: vec![],
             fail_chat: false,
         }) as Arc<dyn LlmClient>;
-        let router =
-            LlmRouter::new_with_clients(client.clone(), client.clone(), client.clone(), client);
+        let router = LlmRouter::new_with_test_clients(
+            client.clone(),
+            client.clone(),
+            client.clone(),
+            client,
+        );
         let result = router
             .health_check(HealthCheckRequest {
                 request: RequestKind::Chat,
@@ -2749,7 +2772,7 @@ mod tests {
     async fn open_circuit_probe_is_classified_and_manual_retry_can_probe_again() {
         let probe = Arc::new(RouterRequestProbe::default());
         let client: Arc<dyn LlmClient> = probe.clone();
-        let router = LlmRouter::new_with_clients_full(
+        let router = LlmRouter::new_with_test_clients_and_embedding(
             client.clone(),
             client.clone(),
             client.clone(),
@@ -2757,7 +2780,7 @@ mod tests {
             client,
         );
         router
-            .force_request_configured(RequestKind::Chat, true)
+            .set_request_configured_for_test(RequestKind::Chat, true)
             .await;
         {
             let mut circuits = router.endpoint_circuits.write().await;
@@ -2793,7 +2816,7 @@ mod tests {
     async fn health_and_native_transcription_share_the_transcription_capability_route() {
         let probe = Arc::new(RouterRequestProbe::default());
         let client: Arc<dyn LlmClient> = probe.clone();
-        let router = LlmRouter::new_with_clients_full(
+        let router = LlmRouter::new_with_test_clients_and_embedding(
             client.clone(),
             client.clone(),
             client.clone(),
@@ -2801,7 +2824,7 @@ mod tests {
             client,
         );
         router
-            .force_request_configured(RequestKind::Transcription, true)
+            .set_request_configured_for_test(RequestKind::Transcription, true)
             .await;
 
         router
@@ -2879,7 +2902,7 @@ mod tests {
     async fn metadata_helpers_do_not_call_providers_or_project_circuit_state_or_usage() {
         let probe = Arc::new(RouterRequestProbe::default());
         let client: Arc<dyn LlmClient> = probe.clone();
-        let router = LlmRouter::new_with_clients_full(
+        let router = LlmRouter::new_with_test_clients_and_embedding(
             client.clone(),
             client.clone(),
             client.clone(),
@@ -2887,7 +2910,7 @@ mod tests {
             client,
         );
         router
-            .force_request_configured(RequestKind::Chat, true)
+            .set_request_configured_for_test(RequestKind::Chat, true)
             .await;
         {
             let mut config = router.config.write().await;
@@ -2973,8 +2996,12 @@ mod tests {
             chunks: vec![],
             fail_chat: false,
         }) as Arc<dyn LlmClient>;
-        let router =
-            LlmRouter::new_with_clients(client.clone(), client.clone(), client.clone(), client);
+        let router = LlmRouter::new_with_test_clients(
+            client.clone(),
+            client.clone(),
+            client.clone(),
+            client,
+        );
         let rule = StreamRule::new(
             "forbidden",
             r"secret_key",
@@ -2998,8 +3025,12 @@ mod tests {
             chunks: vec![],
             fail_chat: false,
         }) as Arc<dyn LlmClient>;
-        let router =
-            LlmRouter::new_with_clients(client.clone(), client.clone(), client.clone(), client);
+        let router = LlmRouter::new_with_test_clients(
+            client.clone(),
+            client.clone(),
+            client.clone(),
+            client,
+        );
         let resp = router
             .chat_stream_with_tools_aggregated(RequestKind::Chat, &[], &[], |_| {})
             .await
@@ -3025,8 +3056,12 @@ mod tests {
             })],
             fail_chat: false,
         }) as Arc<dyn LlmClient>;
-        let router =
-            LlmRouter::new_with_clients(client.clone(), client.clone(), client.clone(), client);
+        let router = LlmRouter::new_with_test_clients(
+            client.clone(),
+            client.clone(),
+            client.clone(),
+            client,
+        );
         let result = router.chat_stream(RequestKind::Chat, vec![]).await;
         assert!(result.is_ok());
     }
@@ -3060,7 +3095,7 @@ mod tests {
             }
         }
 
-        let router = LlmRouter::new_with_clients(
+        let router = LlmRouter::new_with_test_clients(
             Arc::new(NamedStreamClient("fast-chat route")),
             Arc::new(NamedStreamClient("chat route")),
             Arc::new(NamedStreamClient("vision route")),
@@ -3137,7 +3172,7 @@ mod tests {
             max_seen: max_seen.clone(),
         });
         let router =
-            LlmRouter::new_with_clients(probe.clone(), probe.clone(), probe.clone(), probe);
+            LlmRouter::new_with_test_clients(probe.clone(), probe.clone(), probe.clone(), probe);
         // Cap the default test model at 1 in-flight request.
         router.set_request_limit_for_test(1);
 
@@ -3244,7 +3279,7 @@ mod tests {
         let first_chunk_gate = probe.first_chunk_gate.clone();
         let stream_calls = probe.stream_calls.clone();
         let client: Arc<dyn LlmClient> = probe.clone();
-        let router = Arc::new(LlmRouter::new_with_clients(
+        let router = Arc::new(LlmRouter::new_with_test_clients(
             client.clone(),
             client.clone(),
             client.clone(),
@@ -3341,8 +3376,12 @@ mod tests {
     #[tokio::test]
     async fn raw_chat_stream_projects_rate_limit_once_to_router_state() {
         let client: Arc<dyn LlmClient> = Arc::new(AlwaysRateLimited);
-        let router =
-            LlmRouter::new_with_clients(client.clone(), client.clone(), client.clone(), client);
+        let router = LlmRouter::new_with_test_clients(
+            client.clone(),
+            client.clone(),
+            client.clone(),
+            client,
+        );
         {
             let mut config = router.config.write().await;
             config.retry_max_retries = 0;
@@ -3368,8 +3407,12 @@ mod tests {
     #[tokio::test]
     async fn aggregated_stream_projects_rate_limit_once_to_router_state() {
         let client: Arc<dyn LlmClient> = Arc::new(AlwaysRateLimited);
-        let router =
-            LlmRouter::new_with_clients(client.clone(), client.clone(), client.clone(), client);
+        let router = LlmRouter::new_with_test_clients(
+            client.clone(),
+            client.clone(),
+            client.clone(),
+            client,
+        );
         router.config.write().await.retry_max_retries = 0;
 
         let error = router
@@ -3394,7 +3437,7 @@ mod tests {
     #[tokio::test]
     async fn rate_limit_sets_shared_cooldown_for_model() {
         let client: Arc<dyn LlmClient> = Arc::new(AlwaysRateLimited);
-        let router = Arc::new(LlmRouter::new_with_clients(
+        let router = Arc::new(LlmRouter::new_with_test_clients(
             client.clone(),
             client.clone(),
             client.clone(),
@@ -3456,7 +3499,7 @@ mod tests {
         // A huge response-cap floor (e.g. the 128k default) must not be sent
         // raw to providers with smaller output budgets: Anthropic/OpenAI/Gemini
         // reject max_tokens above the model limit with HTTP 400.
-        let mut cfg = LlmRouter::test_config();
+        let mut cfg = LlmRouter::injected_client_test_config();
         let default_model = cfg.model_mut("default_model").unwrap();
         default_model.endpoint.model_name = "gpt-4o-mini".into(); // catalog: 128k
         default_model.endpoint.max_tokens = 1_000_000; // absurd cap floor
@@ -3472,7 +3515,7 @@ mod tests {
 
     #[tokio::test]
     async fn effective_output_tokens_leaves_request_safety_margin() {
-        let mut cfg = LlmRouter::test_config();
+        let mut cfg = LlmRouter::injected_client_test_config();
         cfg.model_mut("default_model")
             .unwrap()
             .endpoint
@@ -3569,8 +3612,12 @@ mod tests {
 
         let seen = Arc::new(StdMutex::new(Vec::new()));
         let client: Arc<dyn LlmClient> = Arc::new(ChatPathProbe(seen.clone()));
-        let router =
-            LlmRouter::new_with_clients(client.clone(), client.clone(), client.clone(), client);
+        let router = LlmRouter::new_with_test_clients(
+            client.clone(),
+            client.clone(),
+            client.clone(),
+            client,
+        );
         let ordinary = router
             .complete(
                 CompleteRequest::new(RequestKind::Chat, Vec::new()).with_max_output_tokens(37),
@@ -3619,7 +3666,7 @@ mod tests {
 
     #[tokio::test]
     async fn complete_rejects_request_without_required_capability() {
-        let mut config = LlmRouter::test_config();
+        let mut config = LlmRouter::injected_client_test_config();
         config
             .model_mut("image_model")
             .unwrap()
@@ -3690,7 +3737,7 @@ mod tests {
         let client: Arc<dyn LlmClient> = Arc::new(PendingClient {
             stream_started: stream_started.clone(),
         });
-        let router = Arc::new(LlmRouter::new_with_clients(
+        let router = Arc::new(LlmRouter::new_with_test_clients(
             client.clone(),
             client.clone(),
             client.clone(),
@@ -3754,7 +3801,7 @@ mod tests {
             chunks: Vec::new(),
             fail_chat: false,
         }) as Arc<dyn LlmClient>;
-        let ready_router = LlmRouter::new_with_clients(
+        let ready_router = LlmRouter::new_with_test_clients(
             ready_client.clone(),
             ready_client.clone(),
             ready_client.clone(),
@@ -3780,7 +3827,7 @@ mod tests {
         let immediate: Arc<dyn LlmClient> = Arc::new(RequestProfileClient {
             service_delay: Duration::ZERO,
         });
-        let router = LlmRouter::new_with_clients(
+        let router = LlmRouter::new_with_test_clients(
             immediate.clone(),
             immediate.clone(),
             immediate.clone(),
@@ -3814,7 +3861,7 @@ mod tests {
         let delayed: Arc<dyn LlmClient> = Arc::new(RequestProfileClient {
             service_delay: Duration::from_millis(2),
         });
-        let queued_router = Arc::new(LlmRouter::new_with_clients(
+        let queued_router = Arc::new(LlmRouter::new_with_test_clients(
             delayed.clone(),
             delayed.clone(),
             delayed.clone(),

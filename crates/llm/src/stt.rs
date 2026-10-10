@@ -499,7 +499,7 @@ mod tests {
             calls: AtomicU64::new(0),
             audio_support,
         });
-        Arc::new(LlmRouter::new_with_clients(
+        Arc::new(LlmRouter::new_with_test_clients(
             client.clone(),
             client.clone(),
             client.clone(),
@@ -515,7 +515,7 @@ mod tests {
     async fn test_transcribe_audio_via_router() {
         let router = mock_router("你好世界");
         router
-            .force_request_configured(RequestKind::AudioChat, true)
+            .set_request_configured_for_test(RequestKind::AudioChat, true)
             .await;
         let result = router.transcribe_audio(&[0u8; 44]).await.unwrap();
         assert_eq!(result.text, "你好世界");
@@ -536,7 +536,7 @@ mod tests {
             haven_common::media::CapabilitySupport::Unknown,
         );
         router
-            .force_request_configured(RequestKind::AudioChat, true)
+            .set_request_configured_for_test(RequestKind::AudioChat, true)
             .await;
 
         let err = router.transcribe_audio(&[0u8; 44]).await.unwrap_err();
@@ -547,11 +547,11 @@ mod tests {
     async fn test_transcribe_audio_uses_default_model_when_routing_disabled() {
         let router = mock_router("走默认模型的转写");
         router
-            .force_request_primary_for_test(RequestKind::Transcription, "default_model")
+            .set_request_primary_for_test(RequestKind::Transcription, "default_model")
             .await
             .unwrap();
         router
-            .force_request_configured(RequestKind::Transcription, true)
+            .set_request_configured_for_test(RequestKind::Transcription, true)
             .await;
         let result = router.transcribe_audio(&[0u8; 44]).await.unwrap();
         assert_eq!(result.text, "走默认模型的转写");
@@ -608,14 +608,14 @@ mod tests {
         let client: Arc<dyn LlmClient> = Arc::new(MockLlmErr {
             err: LlmError::RequestFailed(err_body.into()),
         });
-        let router = Arc::new(LlmRouter::new_with_clients(
+        let router = Arc::new(LlmRouter::new_with_test_clients(
             client.clone(),
             client.clone(),
             client.clone(),
             client,
         ));
         router
-            .force_request_configured(RequestKind::AudioChat, true)
+            .set_request_configured_for_test(RequestKind::AudioChat, true)
             .await;
         let err = router
             .transcribe_audio(&[0u8; 44])

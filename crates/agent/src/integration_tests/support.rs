@@ -165,7 +165,7 @@ pub(super) fn make_test_agent_with_db_and_startup(
         tools.clone(),
         1,
     ));
-    let router = Arc::new(LlmRouter::new_with_clients(
+    let router = Arc::new(LlmRouter::new_with_test_clients(
         client.clone(),
         client.clone(),
         client.clone(),

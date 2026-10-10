@@ -860,3 +860,4 @@
 - [0878：正交化 Skill 目录诊断与可执行状态](0878-normalize-skill-catalog-status.md)
 - [0879：删除丢弃目录诊断的公开 Skill 扫描器](0879-remove-lossy-public-skill-scanner.md)
 - [0880：收回 Skill manifest 解析与未校验构造 API](0880-restrict-skill-manifest-construction.md)
+- [0881：将 LLM mock router API 限定到测试依赖](0881-isolate-llm-test-router-support.md)
