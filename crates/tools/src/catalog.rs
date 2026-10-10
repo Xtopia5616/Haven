@@ -88,7 +88,7 @@ impl ToolsFacade {
                 .max_tools_per_request
                 .max(1),
             mcp_manager: Arc::new(self.coordinator.builtins.mcp_manager.clone()),
-            server_configs: self.coordinator.builtins.mcp_server_configs.clone(),
+            mcp_server_config_source: self.coordinator.builtins.mcp_server_config_source.clone(),
         };
         match catalog
             .run(
@@ -297,6 +297,36 @@ impl ToolsFacade {
         self.coordinator.build_mcp_index().await
     }
 
+    #[cfg(test)]
+    pub(crate) async fn upsert_mcp_server_config(&self, config: McpServerConfig) {
+        self.coordinator
+            .builtins
+            .mcp_server_config_source
+            .upsert_fixture(config)
+            .await;
+        self.coordinator.builtins.mcp_manager.invalidate_catalog();
+        self.coordinator
+            .core
+            .operations
+            .session_tool_overlay
+            .bump_global_version();
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn remove_mcp_server_config(&self, name: &str) {
+        self.coordinator
+            .builtins
+            .mcp_server_config_source
+            .remove_fixture(name)
+            .await;
+        self.coordinator.builtins.mcp_manager.invalidate_catalog();
+        self.coordinator
+            .core
+            .operations
+            .session_tool_overlay
+            .bump_global_version();
+    }
+
     /// Structured tool definitions for a session: the eager core registry
     /// merged with per-session registered builtin/Skill/MCP adapters. Deferred
     /// builtin and Skill implementations are intentionally absent until a
@@ -323,30 +353,6 @@ impl ToolsFacade {
         self.operation_catalog()
             .list_schemas_for_session(session_id)
             .await
-    }
-
-    /// Insert or replace a single MCP server config in the in-memory map.
-    /// Used by bridge commands (add/update/toggle) to keep `server_configs`
-    /// in sync without reconnecting all servers.
-    pub async fn upsert_mcp_server_config(&self, config: McpServerConfig) {
-        self.coordinator.upsert_mcp_server_config(config).await;
-    }
-
-    /// Remove a single MCP server config from the in-memory map.
-    pub async fn remove_mcp_server_config(&self, name: &str) {
-        self.coordinator.remove_mcp_server_config(name).await;
-    }
-
-    /// List all known MCP server configs (enabled and disabled).
-    pub async fn list_mcp_server_configs(&self) -> Vec<McpServerConfig> {
-        self.coordinator
-            .builtins
-            .mcp_server_configs
-            .read()
-            .await
-            .values()
-            .cloned()
-            .collect()
     }
 
     /// Whether a tool is enabled per `tool_settings`. Tools without a

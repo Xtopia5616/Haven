@@ -10,6 +10,7 @@ mod document;
 mod execution;
 mod facade;
 pub mod live_output;
+mod mcp_server_config;
 #[doc(hidden)]
 pub mod operation_view;
 mod output;
@@ -151,6 +152,7 @@ pub use haven_skills::{
     Language, Skill, SkillFileFingerprint, SkillInfo, SkillRegistry, VenvManager,
 };
 pub use live_output::LiveOutputHub;
+pub(crate) use mcp_server_config::McpServerConfigSource;
 pub use output::{
     CappedText, OutputBudget, ToolOutput, append_windows_diagnostics, is_progress_clixml,
     sanitize_shell_output, summarize_error,

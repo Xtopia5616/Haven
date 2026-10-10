@@ -105,6 +105,7 @@ messaging 与 memory recall 是进程服务，在 `wire_startup` 里绑定一次
 不另建 `AppRuntime`。`ToolsFacade` 是对外 façade，保留执行与授权入口、session overlay/asset
 lease 操作、目录投影、runtime capability 请求和录音转写入口；启动及 runtime/catalog 更新转发给 coordinator。
 可变 `ToolRegistry`、承载 installed/deferred/session overlay 的 `OperationRegistry` 和按需加载器属于 Tools 内部实现；跨 crate 调用方只消费已发布的 `ToolCatalogSnapshot`，测试夹具通过非默认 `ToolCatalogTestSupportPort` 准备 installed/session 工具。生产 `ToolsFacade` 不公开任意 session-tool 注册；`SessionToolOverlay` 自己持有 map 锁、预算准入和版本递增，loader 与 resume 不接触其内部 map（ADR 0900）。
+MCP profile 的唯一配置 owner 是 Common 的 `ConfigService`。Tools 的 loader、MCP/tool catalog 与 AdminServices 通过 `McpServerConfigSource` 读取它的当前快照；App 命令直接读取同一 owner。Tools 不再维护需由 startup、reload 和每次配置写入手工同步的 profile map；`McpManager` 仍拥有活动连接、client profile 比较和发现结果，这些是运行时状态，不是配置副本（ADR 0901）。
 能力判断由 tools crate 唯一构造的 crate-private `ToolCapabilitySnapshot` 收口：prompt runtime、
 媒体 operation catalog、TTS/STT 与录音 gate 使用同一 typed 能力值，搜索优先级由它统一投影。
 给 Agent prompt 与 builtin registration 使用的 `RuntimeCapabilities` 是从该快照派生的窄投影；

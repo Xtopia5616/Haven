@@ -1,5 +1,6 @@
 use super::name_list::ordered_unique_non_empty_names;
 use crate::adapters::McpToolAdapter;
+use crate::mcp_server_config::McpServerConfigSource;
 use crate::registry::{DeferredToolCatalog, SessionToolOverlay};
 use crate::{Tool, ToolHandle, ToolRegistry, ToolResult};
 use haven_common::tools::{ToolCatalogGroup, ToolDef, ToolSource};
@@ -8,7 +9,6 @@ use haven_mcp::{McpManager, McpToolInfo};
 use serde_json::Value;
 use std::collections::HashSet;
 use std::sync::Arc;
-use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 
 const DEFAULT_PAGE_SIZE: usize = 32;
@@ -24,8 +24,7 @@ pub struct ToolCatalogTool {
     pub session_tool_overlay: SessionToolOverlay,
     pub max_tools_per_request: usize,
     pub mcp_manager: Arc<McpManager>,
-    pub server_configs:
-        Arc<RwLock<std::collections::HashMap<String, haven_common::McpServerConfig>>>,
+    pub mcp_server_config_source: McpServerConfigSource,
 }
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
@@ -361,9 +360,9 @@ impl ToolCatalogTool {
             limit,
         } = request;
         let mut items = match level {
-            CatalogLevel::Families => self.family_items(session_id, source).await,
-            CatalogLevel::Tools => self.root_items(session_id, source, root).await,
-            CatalogLevel::Operations => self.catalog_items(session_id, source).await,
+            CatalogLevel::Families => self.family_items(session_id, source).await?,
+            CatalogLevel::Tools => self.root_items(session_id, source, root).await?,
+            CatalogLevel::Operations => self.catalog_items(session_id, source).await?,
         };
         if level == CatalogLevel::Operations {
             items.retain(|item| item.kind == "tool");
@@ -445,10 +444,10 @@ impl ToolCatalogTool {
         }
 
         if source.accepts(CatalogSource::Mcp) {
-            if let Some(server) = self.describe_mcp_server(name).await {
+            if let Some(server) = self.describe_mcp_server(name).await? {
                 return Ok(ToolResult::ok(server));
             }
-            if let Some((server_name, tool)) = self.describe_mcp_tool(name).await {
+            if let Some((server_name, tool)) = self.describe_mcp_tool(name).await? {
                 let loaded = self
                     .session_tool_overlay
                     .get(session_id, name)
@@ -460,7 +459,7 @@ impl ToolCatalogTool {
 
         if let Some(root) = self
             .root_items(session_id, source, Some(name))
-            .await
+            .await?
             .into_iter()
             .find(|item| item.name == name)
         {
@@ -476,7 +475,11 @@ impl ToolCatalogTool {
         })))
     }
 
-    async fn catalog_items(&self, session_id: &str, source: CatalogSource) -> Vec<CatalogItem> {
+    async fn catalog_items(
+        &self,
+        session_id: &str,
+        source: CatalogSource,
+    ) -> anyhow::Result<Vec<CatalogItem>> {
         let global_defs = self.registry.list_tool_definitions().await;
         let session_defs = self
             .session_tool_overlay
@@ -503,8 +506,8 @@ impl ToolCatalogTool {
         }
 
         if source.accepts(CatalogSource::Mcp) {
-            let configs = self.server_configs.read().await.clone();
-            for config in configs.values().filter(|config| config.enabled) {
+            let configs = self.mcp_server_config_source.list().await?;
+            for config in configs.iter().filter(|config| config.enabled) {
                 let infos = self
                     .mcp_manager
                     .cached_tools(&config.name)
@@ -537,7 +540,7 @@ impl ToolCatalogTool {
                 .then_with(|| left.kind.cmp(right.kind))
                 .then_with(|| left.name.cmp(&right.name))
         });
-        items
+        Ok(items)
     }
 
     /// Layer 2: return tool roots such as `window` or `files`. When a root is
@@ -548,8 +551,8 @@ impl ToolCatalogTool {
         session_id: &str,
         source: CatalogSource,
         requested_root: Option<&str>,
-    ) -> Vec<CatalogItem> {
-        let operations = self.catalog_items(session_id, source).await;
+    ) -> anyhow::Result<Vec<CatalogItem>> {
+        let operations = self.catalog_items(session_id, source).await?;
         let requested_root = requested_root
             .map(str::trim)
             .filter(|value| !value.is_empty());
@@ -573,7 +576,7 @@ impl ToolCatalogTool {
             }
         }
 
-        roots
+        Ok(roots
             .into_iter()
             .map(|((item_source, root), mut group)| {
                 group
@@ -608,12 +611,16 @@ impl ToolCatalogTool {
                     metadata,
                 }
             })
-            .collect()
+            .collect())
     }
 
     /// Layer 1: return only the top-level capability families and their roots.
-    async fn family_items(&self, session_id: &str, source: CatalogSource) -> Vec<CatalogItem> {
-        let operations = self.catalog_items(session_id, source).await;
+    async fn family_items(
+        &self,
+        session_id: &str,
+        source: CatalogSource,
+    ) -> anyhow::Result<Vec<CatalogItem>> {
+        let operations = self.catalog_items(session_id, source).await?;
         let mut families = std::collections::BTreeMap::<String, Vec<CatalogItem>>::new();
         for item in operations {
             let family = item.metadata["family"]
@@ -623,7 +630,7 @@ impl ToolCatalogTool {
             families.entry(family).or_default().push(item);
         }
 
-        families
+        Ok(families
             .into_iter()
             .map(|(family, items)| {
                 let mut roots = items
@@ -649,22 +656,23 @@ impl ToolCatalogTool {
                     }),
                 }
             })
-            .collect()
+            .collect())
     }
 
-    async fn describe_mcp_server(&self, name: &str) -> Option<Value> {
-        let config = self
-            .server_configs
-            .read()
-            .await
+    async fn describe_mcp_server(&self, name: &str) -> anyhow::Result<Option<Value>> {
+        let Some(config) = self
+            .mcp_server_config_source
             .get(name)
+            .await?
             .filter(|config| config.enabled)
-            .cloned()?;
+        else {
+            return Ok(None);
+        };
         let names = match self.mcp_manager.cached_tools(&config.name).await {
             Some(tools) => tools.into_iter().map(|info| info.name).collect::<Vec<_>>(),
             None => Vec::new(),
         };
-        Some(serde_json::json!({
+        Ok(Some(serde_json::json!({
             "status": "ok",
             "action": "describe",
             "kind": "server",
@@ -673,22 +681,22 @@ impl ToolCatalogTool {
             "description": "Configured MCP capability provider",
             "tool_names": names,
             "hint": "Call load_mcp with this server_name and optional raw tool_names to activate selected tools.",
-        }))
+        })))
     }
 
-    async fn describe_mcp_tool(&self, name: &str) -> Option<(String, McpToolInfo)> {
-        let configs = self.server_configs.read().await.clone();
-        for config in configs.values().filter(|config| config.enabled) {
+    async fn describe_mcp_tool(&self, name: &str) -> anyhow::Result<Option<(String, McpToolInfo)>> {
+        let configs = self.mcp_server_config_source.list().await?;
+        for config in configs.iter().filter(|config| config.enabled) {
             let Some(tools) = self.mcp_manager.cached_tools(&config.name).await else {
                 continue;
             };
             for info in tools {
                 if McpToolAdapter::qualified_name_of(&config.name, &info.name) == name {
-                    return Some((config.name.clone(), info));
+                    return Ok(Some((config.name.clone(), info)));
                 }
             }
         }
-        None
+        Ok(None)
     }
 }
 

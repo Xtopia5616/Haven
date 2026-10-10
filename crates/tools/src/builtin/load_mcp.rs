@@ -1,22 +1,21 @@
 use async_trait::async_trait;
-use haven_common::config::McpServerConfig;
 use haven_common::tools::ToolCatalogGroup;
 use haven_common::types::RiskLevel;
 use serde_json::Value;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 
 use crate::adapters::McpToolAdapter;
+use crate::mcp_server_config::McpServerConfigSource;
 use crate::registry::SessionToolOverlay;
 use crate::{Tool, ToolHandle, ToolRegistry, ToolResult};
 use haven_mcp::McpManager;
 
 pub struct LoadMcpTool {
     pub mcp_manager: Arc<McpManager>,
-    pub server_configs: Arc<RwLock<HashMap<String, McpServerConfig>>>,
+    pub mcp_server_config_source: McpServerConfigSource,
     /// Global registry (builtins) — used with session overlays for the
     /// per-request tool budget check.
     pub registry: ToolRegistry,
@@ -66,12 +65,15 @@ impl LoadMcpTool {
         })?;
         let tool_names = normalize_tool_names(params.tool_names).map_err(|e| anyhow::anyhow!(e))?;
 
-        // Read config and the available-server list under one lock.
-        let (config, available) = {
-            let configs = self.server_configs.read().await;
-            let available = configs.keys().cloned().collect::<Vec<_>>().join(", ");
-            (configs.get(&server_name).cloned(), available)
-        };
+        let configs = self.mcp_server_config_source.list().await?;
+        let available = configs
+            .iter()
+            .map(|config| config.name.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let config = configs
+            .into_iter()
+            .find(|config| config.name == server_name);
         let config = config.ok_or_else(|| {
             anyhow::anyhow!(
                 "MCP server '{}' not found in config. Available servers: {}",
@@ -428,7 +430,7 @@ mod tests {
     fn tool_for_tests() -> LoadMcpTool {
         LoadMcpTool {
             mcp_manager: Arc::new(McpManager::new()),
-            server_configs: Arc::new(RwLock::new(HashMap::new())),
+            mcp_server_config_source: McpServerConfigSource::default(),
             registry: ToolRegistry::new(),
             session_tool_overlay: SessionToolOverlay::new(),
             max_tools_per_request: 128,
@@ -523,17 +525,17 @@ mod tests {
 
     #[tokio::test]
     async fn test_load_mcp_rejects_disabled() {
-        let configs = Arc::new(RwLock::new(HashMap::from([(
-            "srv".to_string(),
-            McpServerConfig {
+        let mcp_server_config_source = McpServerConfigSource::default();
+        mcp_server_config_source
+            .upsert_fixture(McpServerConfig {
                 name: "srv".into(),
                 enabled: false,
                 ..Default::default()
-            },
-        )])));
+            })
+            .await;
         let tool = LoadMcpTool {
             mcp_manager: Arc::new(McpManager::new()),
-            server_configs: configs,
+            mcp_server_config_source,
             registry: ToolRegistry::new(),
             session_tool_overlay: SessionToolOverlay::new(),
             max_tools_per_request: 128,

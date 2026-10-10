@@ -26,7 +26,14 @@ pub async fn list_mcp_servers(
 
     // Include configured-but-disabled servers (no live client) so the UI can
     // show their state and re-enable them without re-adding.
-    for config in state.runtime.tools.list_mcp_server_configs().await {
+    let configured_servers = state
+        .runtime
+        .config_service
+        .snapshot()
+        .map_err(|error| log_err("list_mcp_servers", error))?
+        .config
+        .mcp_servers;
+    for config in configured_servers {
         let entry = snapshots
             .entry(config.name.clone())
             .or_insert_with(|| McpServerSnapshot {

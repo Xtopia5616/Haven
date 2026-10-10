@@ -5,20 +5,20 @@
 //! second service locator for MCP and Skills.
 
 use crate::builtin::{BuiltinContext, MediaDeps, ToolRunDeps};
+use crate::mcp_server_config::McpServerConfigSource;
 use crate::runtime_capabilities::ToolCapabilitySnapshot;
 use crate::skill_runner::SkillRunner;
 use crate::tool_core::ToolCore;
 use crate::tool_runtime::{PlatformRuntime, ToolRuntime};
-use haven_common::config::{McpServerConfig, SkillsExecConfig};
+use haven_common::config::SkillsExecConfig;
 use haven_mcp::McpManager;
 use haven_skills::{SkillRegistry, VenvManager};
-use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
 pub(crate) struct ToolBuiltins {
     pub(crate) mcp_manager: McpManager,
-    pub(crate) mcp_server_configs: Arc<RwLock<HashMap<String, McpServerConfig>>>,
+    pub(crate) mcp_server_config_source: McpServerConfigSource,
     pub(crate) skill_registry: SkillRegistry,
     pub(crate) skill_runner: Arc<RwLock<SkillRunner>>,
 }
@@ -27,7 +27,7 @@ impl ToolBuiltins {
     pub(crate) fn new(exec_config: SkillsExecConfig) -> Self {
         Self {
             mcp_manager: McpManager::new(),
-            mcp_server_configs: Arc::new(RwLock::new(HashMap::new())),
+            mcp_server_config_source: McpServerConfigSource::default(),
             skill_registry: SkillRegistry::new(),
             skill_runner: Arc::new(RwLock::new(SkillRunner::new(
                 VenvManager::new(exec_config.venv_root.clone()),
@@ -61,7 +61,7 @@ impl ToolBuiltins {
             skill_registry: self.skill_registry.clone(),
             skill_runner: self.skill_runner.clone(),
             mcp_manager: Arc::new(self.mcp_manager.clone()),
-            server_configs: self.mcp_server_configs.clone(),
+            mcp_server_config_source: self.mcp_server_config_source.clone(),
             registry: core.operations.installed.clone(),
             session_tool_overlay: core.operations.session_tool_overlay.clone(),
             deferred_catalog: core.operations.deferred.clone(),

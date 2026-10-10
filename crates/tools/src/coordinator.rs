@@ -82,6 +82,9 @@ impl ToolRuntimeCoordinator {
             .await;
         self.core.authorization.apply_security(&security).await;
         self.builtins
+            .mcp_server_config_source
+            .bind_config_service(admin_context.config_service.clone())?;
+        self.builtins
             .mcp_manager
             .set_network_policy(security.network_policy)
             .await;
@@ -239,13 +242,6 @@ impl ToolRuntimeCoordinator {
     }
 
     pub(crate) async fn load_mcp_from_config(&self, servers: &[McpServerConfig]) {
-        let mut configs = self.builtins.mcp_server_configs.write().await;
-        configs.clear();
-        for server in servers {
-            configs.insert(server.name.clone(), server.clone());
-        }
-        drop(configs);
-
         // Configuration changes alter discovery before clients connect.
         self.core
             .operations
@@ -259,13 +255,6 @@ impl ToolRuntimeCoordinator {
         servers: &[McpServerConfig],
         config: &haven_common::McpDiscoveryConfig,
     ) {
-        {
-            let mut configs = self.builtins.mcp_server_configs.write().await;
-            configs.clear();
-            for server in servers {
-                configs.insert(server.name.clone(), server.clone());
-            }
-        }
         self.core
             .operations
             .session_tool_overlay
@@ -274,28 +263,6 @@ impl ToolRuntimeCoordinator {
             .mcp_manager
             .discover_all(servers, config)
             .await;
-    }
-
-    pub(crate) async fn upsert_mcp_server_config(&self, config: McpServerConfig) {
-        self.builtins
-            .mcp_server_configs
-            .write()
-            .await
-            .insert(config.name.clone(), config);
-        self.builtins.mcp_manager.invalidate_catalog();
-        self.core
-            .operations
-            .session_tool_overlay
-            .bump_global_version();
-    }
-
-    pub(crate) async fn remove_mcp_server_config(&self, name: &str) {
-        self.builtins.mcp_server_configs.write().await.remove(name);
-        self.builtins.mcp_manager.invalidate_catalog();
-        self.core
-            .operations
-            .session_tool_overlay
-            .bump_global_version();
     }
 
     pub(crate) async fn rebuild_catalog(
@@ -366,9 +333,18 @@ impl ToolRuntimeCoordinator {
     }
 
     pub(crate) async fn build_mcp_index(&self) -> Vec<catalog::McpServerIndexEntry> {
-        let configs = self.builtins.mcp_server_configs.read().await;
+        let configs = match self.builtins.mcp_server_config_source.list().await {
+            Ok(configs) => configs,
+            Err(error) => {
+                tracing::error!(
+                    error = %haven_common::error::sanitize_error_text(&error.to_string()),
+                    "failed to read MCP configuration while building capability index"
+                );
+                return Vec::new();
+            }
+        };
         let mut entries = Vec::new();
-        for server in configs.values().filter(|server| server.enabled) {
+        for server in configs.iter().filter(|server| server.enabled) {
             let tool_names: Vec<String> = self
                 .builtins
                 .mcp_manager
@@ -567,7 +543,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn mcp_config_refresh_precedes_catalog_rebuild_invalidation() {
+    async fn mcp_refresh_invalidates_catalog_without_owning_config_state() {
         let coordinator = ToolRuntimeCoordinator::new(SkillsExecConfig::default());
         let disabled = McpServerConfig {
             name: "disabled-test-server".into(),
@@ -580,14 +556,25 @@ mod tests {
             .session_tool_overlay
             .global_version();
         let initial_mcp = coordinator.builtins.mcp_manager.catalog_version();
+        coordinator
+            .builtins
+            .mcp_server_config_source
+            .upsert_fixture(disabled.clone())
+            .await;
 
         coordinator
             .load_mcp_from_config(std::slice::from_ref(&disabled))
             .await;
 
-        let stored = coordinator.builtins.mcp_server_configs.read().await;
-        assert_eq!(stored.get(&disabled.name), Some(&disabled));
-        drop(stored);
+        assert_eq!(
+            coordinator
+                .builtins
+                .mcp_server_config_source
+                .get(&disabled.name)
+                .await
+                .unwrap(),
+            Some(disabled.clone())
+        );
         assert!(
             coordinator
                 .core

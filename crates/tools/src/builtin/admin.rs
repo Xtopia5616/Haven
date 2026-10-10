@@ -19,7 +19,9 @@ use crate::{
     ToolRegistry, ToolResult, TypedToolAdapter, TypedToolOperation,
 };
 use async_trait::async_trait;
-use haven_common::config::{ConfigService, ConfigVersion, LogLevel, McpServerConfig};
+#[cfg(test)]
+use haven_common::config::McpServerConfig;
+use haven_common::config::{ConfigService, ConfigVersion, LogLevel};
 use haven_common::types::{McpTransportType, RiskLevel};
 use haven_llm::LlmRouter;
 use haven_mcp::{McpManager, McpReconcile};
@@ -27,11 +29,9 @@ use haven_memory::{MemoryFactStore, SessionStore};
 use haven_skills::SkillRegistry;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
-use std::collections::HashMap;
 use std::fmt::{Display, Formatter};
 use std::path::PathBuf;
 use std::sync::Arc;
-use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 
 pub(crate) use admin_services::sanitize_diagnostic;
@@ -1453,7 +1453,7 @@ impl AdminSurfaces {
         context: AdminContext,
         skill_registry: SkillRegistry,
         mcp_manager: Arc<McpManager>,
-        server_configs: Arc<RwLock<HashMap<String, McpServerConfig>>>,
+        mcp_server_config_source: crate::McpServerConfigSource,
         registry: ToolRegistry,
         max_instructions_bytes: usize,
         max_script_bytes: usize,
@@ -1462,7 +1462,7 @@ impl AdminSurfaces {
             context,
             skill_registry,
             mcp_manager,
-            server_configs,
+            mcp_server_config_source,
             registry,
             max_instructions_bytes,
             max_script_bytes,
@@ -1836,7 +1836,7 @@ mod tests {
                 context,
                 SkillRegistry::new(),
                 Arc::new(McpManager::new()),
-                Arc::new(RwLock::new(HashMap::new())),
+                crate::McpServerConfigSource::default(),
                 ToolRegistry::new(),
                 256 * 1024,
                 512 * 1024,
@@ -1864,7 +1864,7 @@ mod tests {
             context,
             SkillRegistry::new(),
             Arc::new(McpManager::new()),
-            Arc::new(RwLock::new(HashMap::new())),
+            crate::McpServerConfigSource::default(),
             ToolRegistry::new(),
             0,
             0,
@@ -2377,9 +2377,11 @@ mod tests {
             .await
             .unwrap();
 
-        surfaces.mcp.services.server_configs.write().await.insert(
-            "private-server".into(),
-            McpServerConfig {
+        surfaces
+            .mcp
+            .services
+            .mcp_server_config_source
+            .upsert_fixture(McpServerConfig {
                 name: "private-server".into(),
                 transport: McpTransportType::Stdio,
                 command: "hidden-command".into(),
@@ -2389,8 +2391,8 @@ mod tests {
                 cwd: None,
                 url: String::new(),
                 enabled: true,
-            },
-        );
+            })
+            .await;
 
         let session_wire = surfaces
             .execute(
@@ -3258,7 +3260,11 @@ mod tests {
             context,
             manager.share_services().skills.clone(),
             Arc::new(manager.share_services().mcp.clone()),
-            manager.coordinator.builtins.mcp_server_configs.clone(),
+            manager
+                .coordinator
+                .builtins
+                .mcp_server_config_source
+                .clone(),
             manager.registry().clone(),
             256 * 1024,
             512 * 1024,
@@ -3726,7 +3732,7 @@ mod tests {
             context,
             SkillRegistry::new(),
             Arc::new(McpManager::new()),
-            Arc::new(RwLock::new(HashMap::new())),
+            crate::McpServerConfigSource::default(),
             ToolRegistry::new(),
             256 * 1024,
             512 * 1024,

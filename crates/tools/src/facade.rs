@@ -124,12 +124,18 @@ pub trait ToolCatalogTestSupportPort: Send + Sync {
     async fn contains_installed_tool(&self, name: &str) -> bool;
 
     async fn register_session_tool(&self, session_id: &str, tool: ToolHandle);
+
+    async fn upsert_mcp_server_config(&self, config: McpServerConfig);
+
+    async fn remove_mcp_server_config(&self, name: &str);
 }
 
 #[cfg(feature = "test-support")]
 struct SharedToolCatalogTestSupportPort {
     installed_registry: crate::registry::ToolRegistry,
     session_overlay: crate::registry::SessionToolOverlay,
+    mcp_server_config_source: crate::McpServerConfigSource,
+    mcp_manager: crate::McpManager,
 }
 
 #[cfg(feature = "test-support")]
@@ -145,6 +151,18 @@ impl ToolCatalogTestSupportPort for SharedToolCatalogTestSupportPort {
 
     async fn register_session_tool(&self, session_id: &str, tool: ToolHandle) {
         self.session_overlay.register(session_id, tool).await;
+    }
+
+    async fn upsert_mcp_server_config(&self, config: McpServerConfig) {
+        self.mcp_server_config_source.upsert_fixture(config).await;
+        self.mcp_manager.invalidate_catalog();
+        self.session_overlay.bump_global_version();
+    }
+
+    async fn remove_mcp_server_config(&self, name: &str) {
+        self.mcp_server_config_source.remove_fixture(name).await;
+        self.mcp_manager.invalidate_catalog();
+        self.session_overlay.bump_global_version();
     }
 }
 
@@ -225,6 +243,8 @@ impl ToolServices {
             tool_catalog_test_support: Arc::new(SharedToolCatalogTestSupportPort {
                 installed_registry: coordinator.core.operations.installed.clone(),
                 session_overlay: coordinator.core.operations.session_tool_overlay.clone(),
+                mcp_server_config_source: coordinator.builtins.mcp_server_config_source.clone(),
+                mcp_manager: coordinator.builtins.mcp_manager.clone(),
             }),
             live_output: Arc::new(SharedLiveOutputSinkPort {
                 hub: Arc::clone(&live_outputs),

@@ -15,12 +15,11 @@ use haven_common::types::McpTransportType;
 use haven_mcp::McpClientStatus;
 use serde::Serialize;
 use serde_json::Value;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 use std::future::Future;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::RwLock;
 
 use haven_mcp::McpManager;
 use haven_skills::{SkillInfo, SkillRegistry};
@@ -282,7 +281,7 @@ pub(crate) struct AdminServices {
     pub(crate) context: AdminContext,
     pub(crate) skill_registry: SkillRegistry,
     pub(crate) mcp_manager: Arc<McpManager>,
-    pub(crate) server_configs: Arc<RwLock<HashMap<String, McpServerConfig>>>,
+    pub(crate) mcp_server_config_source: crate::McpServerConfigSource,
     pub(crate) registry: ToolRegistry,
     pub(crate) max_instructions_bytes: usize,
     pub(crate) max_script_bytes: usize,
@@ -293,7 +292,7 @@ impl AdminServices {
         context: AdminContext,
         skill_registry: SkillRegistry,
         mcp_manager: Arc<McpManager>,
-        server_configs: Arc<RwLock<HashMap<String, McpServerConfig>>>,
+        mcp_server_config_source: crate::McpServerConfigSource,
         registry: ToolRegistry,
         max_instructions_bytes: usize,
         max_script_bytes: usize,
@@ -302,7 +301,7 @@ impl AdminServices {
             context,
             skill_registry,
             mcp_manager,
-            server_configs,
+            mcp_server_config_source,
             registry,
             max_instructions_bytes,
             max_script_bytes,
@@ -782,14 +781,7 @@ impl AdminServices {
     }
 
     pub(crate) async fn mcp_status(&self) -> Result<Vec<McpStatusOutput>> {
-        let servers: Vec<McpServerConfig> = {
-            let configs = self.server_configs.read().await;
-            if !configs.is_empty() {
-                configs.values().cloned().collect()
-            } else {
-                self.read_config()?.mcp_servers.clone()
-            }
-        };
+        let servers = self.mcp_server_config_source.list().await?;
         let mut out = Vec::with_capacity(servers.len());
         for config in &servers {
             let snapshot = self.mcp_manager.client_snapshot(&config.name).await;
@@ -838,11 +830,9 @@ impl AdminServices {
     pub(crate) async fn mcp_connect(&self, name: &str) -> Result<McpConnectionOutput> {
         let _config_apply_guard = self.lock_config_apply().await;
         let config = self
-            .server_configs
-            .read()
-            .await
+            .mcp_server_config_source
             .get(name)
-            .cloned()
+            .await?
             .ok_or_else(|| anyhow::anyhow!("MCP server '{}' not found in config", name))?;
         if !config.enabled {
             anyhow::bail!("MCP server '{}' is disabled", name);
@@ -910,10 +900,6 @@ impl AdminServices {
         servers.push(config.clone());
         self.config_service()?
             .apply_patch(ConfigPatch::McpServers(servers))?;
-        self.server_configs
-            .write()
-            .await
-            .insert(config.name.clone(), config.clone());
         self.mcp_manager.invalidate_catalog();
 
         let (connected, warning) = if config.enabled && fields.auto_connect {
@@ -1008,7 +994,6 @@ impl AdminServices {
         self.config_service()?
             .apply_patch(ConfigPatch::McpServers(servers))?;
         self.mcp_manager.remove_client(name).await;
-        self.server_configs.write().await.remove(name);
         self.mcp_manager.invalidate_catalog();
         self.rebuild_catalog().await?;
         Ok(McpRemoveOutput {
@@ -1021,12 +1006,6 @@ impl AdminServices {
     pub(crate) async fn mcp_reload(&self) -> Result<McpReloadOutput> {
         let _config_apply_guard = self.lock_config_apply().await;
         let servers = self.read_config()?.mcp_servers.clone();
-        let mut map = self.server_configs.write().await;
-        map.clear();
-        for server in &servers {
-            map.insert(server.name.clone(), server.clone());
-        }
-        drop(map);
         self.mcp_manager.invalidate_catalog();
         for name in self.mcp_manager.list_clients().await {
             self.mcp_manager.remove_client(&name).await;
@@ -1143,16 +1122,6 @@ impl AdminServices {
             ));
         }
 
-        // Keep the in-memory config index aligned even when the authorized
-        // diff contains no connection changes.
-        {
-            let mut map = self.server_configs.write().await;
-            map.clear();
-            for server in &servers {
-                map.insert(server.name.clone(), server.clone());
-            }
-        }
-
         // Remove stale generations first, then connect new and changed
         // servers in the same order as the prior renderer refresh path.
         let changed = reconcile.to_connect_changed;
@@ -1257,10 +1226,6 @@ impl AdminServices {
             }
             return Err(error);
         }
-        self.server_configs
-            .write()
-            .await
-            .insert(name.clone(), new_config.clone());
         self.mcp_manager.invalidate_catalog();
         self.rebuild_catalog().await?;
         Ok(McpConfigUpdateOutput {

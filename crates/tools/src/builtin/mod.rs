@@ -108,7 +108,7 @@ pub(crate) struct BuiltinContext {
     pub skill_registry: SkillRegistry,
     pub skill_runner: Arc<RwLock<SkillRunner>>,
     pub mcp_manager: Arc<McpManager>,
-    pub server_configs: Arc<RwLock<HashMap<String, haven_common::McpServerConfig>>>,
+    pub mcp_server_config_source: crate::McpServerConfigSource,
     pub registry: ToolRegistry,
     pub session_tool_overlay: SessionToolOverlay,
     pub deferred_catalog: DeferredToolCatalog,
@@ -132,7 +132,7 @@ pub(crate) async fn register_builtin_tools(
         skill_registry,
         skill_runner,
         mcp_manager,
-        server_configs,
+        mcp_server_config_source,
         registry,
         session_tool_overlay,
         deferred_catalog,
@@ -175,7 +175,7 @@ pub(crate) async fn register_builtin_tools(
         session_tool_overlay: session_tool_overlay.clone(),
         max_tools_per_request: limits.max_tools_per_request.max(1),
         mcp_manager: mcp_manager.clone(),
-        server_configs: server_configs.clone(),
+        mcp_server_config_source: mcp_server_config_source.clone(),
     }));
     // One media runtime serves every producer/consumer boundary. `files` and
     // `window` only create assets; interpretation and generation always land
@@ -323,7 +323,7 @@ pub(crate) async fn register_builtin_tools(
     }));
     tools.push(Arc::new(load_mcp::LoadMcpTool {
         mcp_manager: mcp_manager.clone(),
-        server_configs: server_configs.clone(),
+        mcp_server_config_source: mcp_server_config_source.clone(),
         registry: registry.clone(),
         session_tool_overlay,
         max_tools_per_request: max_tools,
@@ -339,7 +339,7 @@ pub(crate) async fn register_builtin_tools(
             ctx,
             skill_registry.clone(),
             mcp_manager.clone(),
-            server_configs.clone(),
+            mcp_server_config_source.clone(),
             registry.clone(),
             limits.self_tool_max_instructions_bytes,
             limits.self_tool_max_script_bytes,

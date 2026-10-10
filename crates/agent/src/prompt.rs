@@ -1897,6 +1897,8 @@ mod tests {
         assert!(!before.contains("configured-without-client"));
 
         tools
+            .share_services()
+            .tool_catalog_test_support
             .upsert_mcp_server_config(haven_common::McpServerConfig {
                 name: "configured-without-client".into(),
                 enabled: true,
