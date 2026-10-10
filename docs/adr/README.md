@@ -867,3 +867,4 @@
 - [0885：校验 Agent 工具中的 session、message 与 claim ID](0885-validate-messaging-tool-entity-ids.md)
 - [0886：在 Messaging 存储边界统一 session 与 message 身份契约](0886-enforce-messaging-identity-contract-at-storage.md)
 - [0887：将 Messaging transport 收口在领域 facade 后](0887-encapsulate-messaging-transport.md)
+- [0888：将 MCP client 状态、生命周期与调用收口在 McpManager](0888-encapsulate-mcp-client-behind-manager.md)

@@ -9,8 +9,9 @@ use std::time::Duration;
 use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 
+use crate::adapters::McpToolAdapter;
 use crate::registry::SessionToolOverlay;
-use crate::{McpToolAdapter, Tool, ToolRegistry, ToolResult};
+use crate::{Tool, ToolRegistry, ToolResult};
 use haven_mcp::McpManager;
 
 pub struct LoadMcpTool {
@@ -83,13 +84,13 @@ impl LoadMcpTool {
         }
 
         // Connect if not already connected
-        if self.mcp_manager.get_client(&server_name).await.is_none() {
+        if !self.mcp_manager.has_client(&server_name).await {
             self.mcp_manager.connect_server(&config).await?;
         }
 
-        let client = self
+        let all_tools = self
             .mcp_manager
-            .get_client(&server_name)
+            .wait_for_tools(&server_name, Duration::from_secs(3))
             .await
             .ok_or_else(|| {
                 anyhow::anyhow!("MCP server '{}' not available after connect", server_name)
@@ -97,7 +98,6 @@ impl LoadMcpTool {
 
         // Same wait as resume registration so budget and schemas see the
         // populated tools/list, not an empty in-flight cache.
-        let all_tools = client.wait_for_tools(Duration::from_secs(3)).await;
         let selection = select_tools(&all_tools, tool_names.as_deref());
         let selected_tools = selection.selected_tools;
         let missing_tool_names = selection.missing_tool_names;
@@ -158,7 +158,12 @@ impl LoadMcpTool {
         }
 
         match self
-            .activate_server_tools(&session_id, &server_name, client.clone(), selected_tools)
+            .activate_server_tools(
+                &session_id,
+                &server_name,
+                self.mcp_manager.as_ref().clone(),
+                selected_tools,
+            )
             .await?
         {
             ActivateOutcome::Loaded(tool_schemas) => {
@@ -180,7 +185,11 @@ impl LoadMcpTool {
                 // incompatibility, not an empty server: surface the handshake
                 // diagnostic so the model can distinguish the two.
                 if tool_schemas.is_empty()
-                    && let Some(diagnostic) = client.diagnostic().await
+                    && let Some(diagnostic) = self
+                        .mcp_manager
+                        .client_snapshot(&server_name)
+                        .await
+                        .and_then(|snapshot| snapshot.diagnostic)
                 {
                     result["diagnostic"] = serde_json::json!(diagnostic);
                 }
@@ -227,7 +236,7 @@ impl LoadMcpTool {
         &self,
         session_id: &str,
         server_name: &str,
-        client: Arc<haven_mcp::McpClient>,
+        manager: McpManager,
         tools: Vec<haven_mcp::McpToolInfo>,
     ) -> anyhow::Result<ActivateOutcome> {
         let max = self.max_tools_per_request.max(1);
@@ -261,7 +270,7 @@ impl LoadMcpTool {
         for info in tools {
             let tool_name = info.name.clone();
             let description = crate::adapters::sanitize_external_description(&info.description);
-            let adapter = McpToolAdapter::new(client.clone(), server_name, info);
+            let adapter = McpToolAdapter::new(manager.clone(), server_name, info);
             // The next provider request receives the full schema through
             // `tools[]`; returning it here would duplicate the schema inside
             // the conversation transcript and inflate every later request.

@@ -1,5 +1,7 @@
 use crate::client::McpClient;
-use crate::protocol::{McpCallOutput, McpClientStatus, McpServerSnapshot, McpStatusChangeEvent};
+use crate::protocol::{
+    McpCallOutput, McpClientStatus, McpServerSnapshot, McpStatusChangeEvent, McpToolInfo,
+};
 use haven_llm::{McpToolCaller, McpToolOutcome};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
@@ -31,7 +33,8 @@ pub struct McpReconcile {
 }
 
 pub struct McpManager {
-    pub(crate) clients: Arc<Mutex<HashMap<String, Arc<McpClient>>>>,
+    clients: Arc<Mutex<HashMap<String, Arc<McpClient>>>>,
+    monitors: Arc<Mutex<HashMap<String, tokio::task::JoinHandle<()>>>>,
     status_tx: tokio::sync::broadcast::Sender<McpStatusChangeEvent>,
     discovery_config: Arc<tokio::sync::RwLock<haven_common::config::McpDiscoveryConfig>>,
     limits: Arc<tokio::sync::RwLock<haven_common::config::ContextLimitsConfig>>,
@@ -46,6 +49,7 @@ impl Clone for McpManager {
     fn clone(&self) -> Self {
         Self {
             clients: self.clients.clone(),
+            monitors: self.monitors.clone(),
             status_tx: self.status_tx.clone(),
             discovery_config: self.discovery_config.clone(),
             limits: self.limits.clone(),
@@ -67,6 +71,7 @@ impl McpManager {
         let (status_tx, _) = tokio::sync::broadcast::channel(256);
         Self {
             clients: Arc::new(Mutex::new(HashMap::new())),
+            monitors: Arc::new(Mutex::new(HashMap::new())),
             status_tx,
             discovery_config: Arc::new(tokio::sync::RwLock::new(
                 haven_common::config::McpDiscoveryConfig::default(),
@@ -144,15 +149,11 @@ impl McpManager {
         *self.network_policy.read().await
     }
 
-    pub fn status_tx(&self) -> tokio::sync::broadcast::Sender<McpStatusChangeEvent> {
-        self.status_tx.clone()
-    }
-
     pub fn subscribe(&self) -> tokio::sync::broadcast::Receiver<McpStatusChangeEvent> {
         self.status_tx.subscribe()
     }
 
-    pub async fn add_client(&self, client: Arc<McpClient>) {
+    pub(crate) async fn add_client(&self, client: Arc<McpClient>) {
         self.clients
             .lock()
             .await
@@ -161,9 +162,9 @@ impl McpManager {
     }
 
     pub async fn remove_client(&self, name: &str) {
-        let mut clients = self.clients.lock().await;
-        if let Some(client) = clients.remove(name) {
-            client.cancel_token.lock().await.cancel();
+        self.stop_monitor(name).await;
+        let client = self.clients.lock().await.remove(name);
+        if let Some(client) = client {
             if let Err(error) = client.shutdown().await {
                 tracing::warn!(
                     "MCP server '{}' shutdown reported an error: {}",
@@ -172,11 +173,96 @@ impl McpManager {
                 );
             }
             self.bump_catalog_version();
+            let _ = self.status_tx.send(McpStatusChangeEvent {
+                name: name.to_string(),
+                status: McpClientStatus::Disconnected,
+            });
         }
     }
 
-    pub async fn get_client(&self, name: &str) -> Option<Arc<McpClient>> {
+    async fn client(&self, name: &str) -> Option<Arc<McpClient>> {
         self.clients.lock().await.get(name).cloned()
+    }
+
+    /// Whether this manager currently owns a client generation for `name`.
+    /// This reports presence; use [`Self::client_status`] for connection state.
+    pub async fn has_client(&self, name: &str) -> bool {
+        self.clients.lock().await.contains_key(name)
+    }
+
+    /// Read a client status through the manager boundary. Missing clients are
+    /// reported as disconnected, matching the public runtime state vocabulary.
+    pub async fn client_status(&self, name: &str) -> McpClientStatus {
+        match self.client(name).await {
+            Some(client) => client.status().await,
+            None => McpClientStatus::Disconnected,
+        }
+    }
+
+    /// Return the public connection snapshot for one managed server.
+    pub async fn client_snapshot(&self, name: &str) -> Option<McpServerSnapshot> {
+        let client = self.client(name).await?;
+        Some(client.snapshot().await)
+    }
+
+    /// Cached tool count. `None` means no tools/list result is available yet;
+    /// `Some(0)` means discovery completed and returned an empty list.
+    pub async fn cached_tool_count(&self, name: &str) -> Option<usize> {
+        let client = self.client(name).await?;
+        client.cached_tools_count().await
+    }
+
+    /// Read the completed tools/list cache. `None` means the client is absent
+    /// or discovery has not completed; `Some(vec![])` is a known empty list.
+    pub async fn cached_tools(&self, name: &str) -> Option<Vec<McpToolInfo>> {
+        let client = self.client(name).await?;
+        client.cached_tools().await
+    }
+
+    /// Wait for tools/list discovery without exposing the concrete client.
+    pub async fn wait_for_tools(&self, name: &str, timeout: Duration) -> Option<Vec<McpToolInfo>> {
+        let client = self.client(name).await?;
+        Some(client.wait_for_tools(timeout).await)
+    }
+
+    /// Compare the managed client generation with the currently authorized
+    /// configuration without returning the client implementation.
+    pub async fn client_matches_config(
+        &self,
+        name: &str,
+        config: &haven_common::McpServerConfig,
+    ) -> bool {
+        self.client(name)
+            .await
+            .is_some_and(|client| client.matches_config(config))
+    }
+
+    async fn install_monitor(
+        &self,
+        client: Arc<McpClient>,
+        config: &haven_common::config::McpDiscoveryConfig,
+    ) {
+        let name = client.name().to_string();
+        let mut monitors = self.monitors.lock().await;
+        if let Some(previous) = monitors.remove(&name) {
+            previous.abort();
+            let _ = previous.await;
+        }
+        let handle = client.spawn_monitor_task(
+            Duration::from_secs(config.health_interval_secs),
+            Duration::from_millis(config.reconnect_initial_ms),
+            Duration::from_millis(config.reconnect_max_ms),
+            config.reconnect_max_retries,
+            self.status_tx.clone(),
+        );
+        monitors.insert(name, handle);
+    }
+
+    async fn stop_monitor(&self, name: &str) {
+        if let Some(monitor) = self.monitors.lock().await.remove(name) {
+            monitor.abort();
+            let _ = monitor.await;
+        }
     }
 
     pub async fn list_clients(&self) -> Vec<String> {
@@ -231,10 +317,6 @@ impl McpManager {
         for name in reconcile.to_remove {
             tracing::info!("MCP server '{}' removed/disabled, shutting down", name);
             self.remove_client(&name).await;
-            let _ = self.status_tx.send(McpStatusChangeEvent {
-                name,
-                status: McpClientStatus::Disconnected,
-            });
         }
 
         if matches!(
@@ -253,12 +335,9 @@ impl McpManager {
             .chain(reconcile.to_connect_changed)
         {
             let name = server.name.clone();
-            {
-                let mut clients = self.clients.lock().await;
-                if clients.contains_key(&name) {
-                    tracing::info!("MCP server '{}' config changed, reconnecting", name);
-                    clients.remove(&name);
-                }
+            if self.has_client(&name).await {
+                tracing::info!("MCP server '{}' config changed, reconnecting", name);
+                self.remove_client(&name).await;
             }
             let connect_t0 = std::time::Instant::now();
             let limits = self.limits.read().await.clone();
@@ -366,31 +445,26 @@ impl McpManager {
 
         let _notification_listener = self.start_catalog_listener(client.clone());
 
-        client
-            .connect()
-            .await
-            .map_err(|e| anyhow::anyhow!("failed to connect MCP server '{}': {}", name, e))?;
+        if let Err(error) = client.connect().await {
+            let safe_error = haven_common::error::sanitize_error_text(&error.to_string());
+            tracing::warn!(
+                server = %name,
+                error = %safe_error,
+                "MCP server connection failed"
+            );
+            return Err(anyhow::anyhow!(
+                "failed to connect MCP server '{}': {}",
+                name,
+                safe_error
+            ));
+        }
+
+        // Register before starting the manager-owned health monitor.
+        self.add_client(client.clone()).await;
 
         // Start health monitor + auto-reconnect using the stored discovery config.
         let dc = self.discovery_config.read().await.clone();
-        let health_interval = Duration::from_secs(dc.health_interval_secs);
-        let initial_backoff = Duration::from_millis(dc.reconnect_initial_ms);
-        let max_backoff = Duration::from_millis(dc.reconnect_max_ms);
-        let max_retries = dc.reconnect_max_retries;
-        let status_tx = self.status_tx.clone();
-        client.clone().spawn_monitor(
-            health_interval,
-            initial_backoff,
-            max_backoff,
-            max_retries,
-            status_tx,
-        );
-
-        // Keep the progressive-load path on the same mutation boundary as
-        // startup/reconcile. `add_client` advances the MCP catalog clock so
-        // other sessions invalidate outstanding capability cursors as soon as
-        // this server becomes discoverable.
-        self.add_client(client).await;
+        self.install_monitor(client, &dc).await;
         let _ = self.status_tx.send(McpStatusChangeEvent {
             name: name.clone(),
             status: McpClientStatus::Connected,
@@ -409,22 +483,15 @@ impl McpManager {
         ) {
             return;
         }
-        let health_interval = Duration::from_secs(config.health_interval_secs);
-        let initial_backoff = Duration::from_millis(config.reconnect_initial_ms);
-        let max_backoff = Duration::from_millis(config.reconnect_max_ms);
-        let max_retries = config.reconnect_max_retries;
-
-        let clients = self.clients.lock().await;
-        for client in clients.values() {
-            let client = client.clone();
-            let status_tx = self.status_tx.clone();
-            client.spawn_monitor(
-                health_interval,
-                initial_backoff,
-                max_backoff,
-                max_retries,
-                status_tx,
-            );
+        let clients = self
+            .clients
+            .lock()
+            .await
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        for client in clients {
+            self.install_monitor(client, config).await;
         }
     }
 
@@ -440,9 +507,27 @@ impl McpManager {
 
     /// Shut down all clients and cancel their monitor sessions.
     pub async fn shutdown_all(&self) {
-        let clients = self.clients.lock().await;
-        for (name, client) in clients.iter() {
-            client.cancel_token.lock().await.cancel();
+        let monitors = self
+            .monitors
+            .lock()
+            .await
+            .drain()
+            .map(|(_, monitor)| monitor)
+            .collect::<Vec<_>>();
+        for monitor in &monitors {
+            monitor.abort();
+        }
+        for monitor in monitors {
+            let _ = monitor.await;
+        }
+        let clients = self
+            .clients
+            .lock()
+            .await
+            .iter()
+            .map(|(name, client)| (name.clone(), client.clone()))
+            .collect::<Vec<_>>();
+        for (name, client) in clients {
             if let Err(e) = client.shutdown().await {
                 tracing::warn!("Error shutting down MCP client '{}': {}", name, e);
             }
@@ -451,17 +536,18 @@ impl McpManager {
 
     /// Return a snapshot of every known client (including disconnected ones).
     pub async fn snapshot(&self) -> Vec<McpServerSnapshot> {
-        let clients = self.clients.lock().await;
-        let mut snapshots = Vec::new();
-        for client in clients.values() {
-            snapshots.push(client.snapshot().await);
-        }
-        snapshots
+        let clients = self
+            .clients
+            .lock()
+            .await
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        futures_util::future::join_all(clients.iter().map(|client| client.snapshot())).await
     }
 
     /// Manually trigger a reconnect for a client, bypassing the retry-limit.
-    /// After a successful reconnect the caller should restart the health
-    /// monitor (see `start_monitors`).
+    /// A successful reconnect also installs the manager-owned health monitor.
     pub async fn reconnect(&self, name: &str) -> anyhow::Result<()> {
         if matches!(
             self.network_policy().await,
@@ -469,25 +555,29 @@ impl McpManager {
         ) {
             anyhow::bail!("MCP reconnect blocked by network policy")
         }
-        let clients = self.clients.lock().await;
-        match clients.get(name) {
-            Some(client) => {
-                let result = client.reconnect().await;
-                if result.is_ok() {
-                    self.bump_catalog_version();
-                }
-                result
-            }
-            None => anyhow::bail!("MCP client '{}' not found", name),
-        }
+        let client = self
+            .client(name)
+            .await
+            .ok_or_else(|| anyhow::anyhow!("MCP client '{}' not found", name))?;
+        self.stop_monitor(name).await;
+        client.reconnect().await?;
+        let config = self.discovery_config.read().await.clone();
+        self.install_monitor(client, &config).await;
+        self.bump_catalog_version();
+        Ok(())
     }
 
     /// Refresh all tools caches in parallel for connected clients.
     pub async fn refresh_all_tools(&self) {
-        let clients = self.clients.lock().await;
+        let clients = self
+            .clients
+            .lock()
+            .await
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
         let mut handles = Vec::new();
-        for client in clients.values() {
-            let client = client.clone();
+        for client in clients {
             let name = client.name().to_string();
             handles.push(tokio::spawn(async move {
                 match client.list_tools().await {
@@ -519,11 +609,11 @@ impl McpManager {
         input: Value,
         cancel: CancellationToken,
     ) -> anyhow::Result<McpCallOutput> {
-        let clients = self.clients.lock().await;
-        match clients.get(client_name) {
-            Some(client) => client.call_tool(tool_name, input, cancel).await,
-            None => anyhow::bail!("MCP client '{}' not found", client_name),
-        }
+        let client = self
+            .client(client_name)
+            .await
+            .ok_or_else(|| anyhow::anyhow!("MCP client '{}' not found", client_name))?;
+        client.call_tool(tool_name, input, cancel).await
     }
 }
 

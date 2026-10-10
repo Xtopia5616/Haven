@@ -1,4 +1,4 @@
-pub mod adapters;
+mod adapters;
 mod asset_registry;
 mod authorization_policy;
 pub mod builtin;
@@ -121,6 +121,8 @@ impl CatalogRebuildScope {
     }
 }
 
+pub use adapters::skill_tool_name;
+#[cfg(any(test, feature = "test-support"))]
 pub use adapters::{McpToolAdapter, SkillToolAdapter};
 pub use asset_registry::{GeneratedMediaCleanupGuard, ManagedAsset, ManagedAssetRegistry};
 pub use builtin::{
@@ -134,7 +136,8 @@ pub use catalog::McpServerIndexEntry;
 pub use circuit::ToolCircuitRegistry;
 pub use haven_common::types::CapabilityScope;
 pub use haven_mcp::{
-    McpClient, McpClientStatus, McpManager, McpServerSnapshot, McpStatusChangeEvent, McpToolInfo,
+    MCP_TOOLS_NOT_DISCOVERED_DIAGNOSTIC, McpClientStatus, McpManager, McpServerSnapshot,
+    McpStatusChangeEvent, McpToolInfo,
 };
 pub use haven_skills::{
     Language, Skill, SkillFileFingerprint, SkillInfo, SkillRegistry, VenvManager,

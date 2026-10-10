@@ -531,16 +531,9 @@ async fn run_session_contains_real_mcp_and_skill_adapter_panics() {
             haven_common::types::NetworkPolicy::Open,
         )
         .await;
-    let mcp_client = Arc::new(haven_tools::McpClient::new(
-        &haven_common::McpServerConfig {
-            name: "panic-server".into(),
-            ..Default::default()
-        },
-        2 * 1024 * 1024,
-        2 * 1024 * 1024,
-    ));
+    let mcp_manager = haven_tools::McpManager::new();
     let mcp_adapter = haven_tools::McpToolAdapter::new_panicking_for_test(
-        mcp_client,
+        mcp_manager,
         "panic-server",
         haven_tools::McpToolInfo {
             name: "panic_tool".into(),

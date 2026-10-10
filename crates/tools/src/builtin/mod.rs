@@ -307,7 +307,7 @@ pub async fn register_builtin_tools(
         .into_iter()
         .filter(|skill| skill.enabled() && skill.has_script())
     {
-        tools.push(Arc::new(crate::SkillToolAdapter::new(
+        tools.push(Arc::new(crate::adapters::SkillToolAdapter::new(
             Arc::new(skill),
             skill_runner.clone(),
         )));

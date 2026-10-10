@@ -258,6 +258,7 @@ impl McpClient {
         *self.network_policy.write().await = policy;
     }
 
+    #[cfg(any(test, feature = "test-support"))]
     pub async fn network_policy(&self) -> NetworkPolicy {
         *self.network_policy.read().await
     }
@@ -281,8 +282,19 @@ impl McpClient {
         self.status.lock().await.clone()
     }
 
+    #[cfg(any(test, feature = "test-support"))]
     pub async fn tools_cache(&self) -> Vec<McpToolInfo> {
         self.tools_cache.lock().await.clone().unwrap_or_default()
+    }
+
+    pub(crate) async fn cached_tools(&self) -> Option<Vec<McpToolInfo>> {
+        self.tools_cache.lock().await.clone()
+    }
+
+    /// Number of tools in a completed tools/list response. `None` means no
+    /// response has been received for the current client yet.
+    pub async fn cached_tools_count(&self) -> Option<usize> {
+        self.cached_tools().await.map(|tools| tools.len())
     }
 
     /// Wait up to `timeout` for the server to finish connecting and populate
@@ -309,20 +321,9 @@ impl McpClient {
         }
     }
 
-    pub async fn last_error(&self) -> Option<String> {
-        self.last_error.lock().await.clone()
-    }
-
     /// Handshake/tool-discovery diagnostics (protocol mismatch, connected
     /// with zero tools, failed tools/list). `None` when everything is clean.
-    pub async fn diagnostic(&self) -> Option<String> {
-        self.last_diagnostic.lock().await.clone()
-    }
-
-    pub async fn last_seen_at(&self) -> Option<i64> {
-        *self.last_seen_at.lock().await
-    }
-
+    #[cfg(any(test, feature = "test-support"))]
     pub async fn cancel_token(&self) -> CancellationToken {
         self.cancel_token.lock().await.clone()
     }
@@ -668,6 +669,7 @@ impl McpClient {
     }
 
     /// Set calls-per-second rate limit for this client (refine §4.5).
+    #[cfg(any(test, feature = "test-support"))]
     pub async fn set_rate_limit(&self, calls_per_second: f64) {
         let mut rl = self.rate_limiter.lock().await;
         rl.capacity = calls_per_second.max(1.0);
@@ -904,32 +906,8 @@ impl McpClient {
         Ok(())
     }
 
-    /// Spawn a background health-monitor + auto-reconnect session.
-    ///
-    /// Every `health_interval` the session calls `is_alive()`. If the process is
-    /// dead it enters the reconnect loop (exponential backoff). The loop stops
-    /// when the client's cancel token is cancelled (e.g. via `shutdown_all`).
-    /// After `max_retries` consecutive failures the client remains `Offline`
-    /// and waits for a manual `reconnect()` call.
-    ///
-    /// The session terminates when the cancel token fires.
-    pub fn spawn_monitor(
-        self: Arc<McpClient>,
-        health_interval: Duration,
-        initial_backoff: Duration,
-        max_backoff: Duration,
-        max_retries: u32,
-        status_tx: tokio::sync::broadcast::Sender<McpStatusChangeEvent>,
-    ) {
-        let _handle = self.spawn_monitor_task(
-            health_interval,
-            initial_backoff,
-            max_backoff,
-            max_retries,
-            status_tx,
-        );
-    }
-
+    /// The manager owns monitor handles and the client implementation stays
+    /// private to the MCP crate.
     pub(crate) fn spawn_monitor_task(
         self: Arc<McpClient>,
         health_interval: Duration,

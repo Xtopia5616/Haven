@@ -135,7 +135,7 @@ pub async fn reconnect_mcp_server(
         .mcp_servers
         .iter()
         .any(|server| server.name == name && server.enabled)
-        || state.runtime.services.mcp.get_client(&name).await.is_none()
+        || !state.runtime.services.mcp.has_client(&name).await
     {
         return Err(log_err(
             "reconnect_mcp_server",
@@ -242,13 +242,7 @@ pub async fn add_mcp_server(
 
     // McpManager::connect_server starts the monitor; the admin service already
     // rebuilt the catalog while holding the shared config apply gate.
-    let connected = state
-        .runtime
-        .services
-        .mcp
-        .get_client(&config.name)
-        .await
-        .is_some();
+    let connected = state.runtime.services.mcp.has_client(&config.name).await;
     emit_mcp_status(
         &app,
         config.name,
@@ -305,7 +299,7 @@ pub async fn update_mcp_server(
 
     // McpManager::connect_server starts the monitor; the admin service already
     // rebuilt the catalog while holding the shared config apply gate.
-    let connected = state.runtime.services.mcp.get_client(&name).await.is_some();
+    let connected = state.runtime.services.mcp.has_client(&name).await;
     emit_mcp_status(
         &app,
         name,
@@ -372,7 +366,7 @@ pub async fn toggle_mcp_server(
 
     // McpManager::connect_server starts the monitor; the admin service already
     // rebuilt the catalog while holding the shared config apply gate.
-    let connected = state.runtime.services.mcp.get_client(&name).await.is_some();
+    let connected = state.runtime.services.mcp.has_client(&name).await;
     emit_mcp_status(
         &app,
         name,

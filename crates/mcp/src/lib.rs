@@ -8,8 +8,10 @@ mod transport;
 #[cfg(test)]
 mod tests;
 
+#[cfg(feature = "test-support")]
 pub use client::McpClient;
 pub use manager::{McpManager, McpReconcile};
 pub use protocol::{
-    McpCallOutput, McpClientStatus, McpServerSnapshot, McpStatusChangeEvent, McpToolInfo,
+    MCP_TOOLS_NOT_DISCOVERED_DIAGNOSTIC, McpCallOutput, McpClientStatus, McpServerSnapshot,
+    McpStatusChangeEvent, McpToolInfo,
 };

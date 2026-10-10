@@ -3,6 +3,9 @@ name = "haven-tools"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+test-support = []
+
 [dependencies]
 serde.workspace = true
 serde_json.workspace = true
@@ -43,6 +46,7 @@ encoding_rs.workspace = true
 [dev-dependencies]
 haven-llm = { path = "../llm", features = ["test-support"] }
 haven-messaging = { path = "../messaging", features = ["test-support"] }
+haven-mcp = { path = "../mcp", features = ["test-support"] }
 tempfile.workspace = true
 
 [target.'cfg(windows)'.dependencies]

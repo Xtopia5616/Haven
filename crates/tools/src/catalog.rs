@@ -1,4 +1,5 @@
 use super::*;
+use crate::adapters::McpToolAdapter;
 
 /// Stable summary of an enabled MCP server for the model-facing prompt.
 /// Full tool schemas are loaded separately and remain dynamic JSON.
@@ -191,16 +192,22 @@ impl ToolsFacade {
         server_name: &str,
         tool_names: Option<&[String]>,
     ) -> bool {
-        let Some(client) = self
+        if !self
             .coordinator
             .builtins
             .mcp_manager
-            .get_client(server_name)
+            .has_client(server_name)
             .await
-        else {
+        {
             return false;
-        };
-        let all_tools = client.wait_for_tools(Duration::from_secs(3)).await;
+        }
+        let all_tools = self
+            .coordinator
+            .builtins
+            .mcp_manager
+            .wait_for_tools(server_name, Duration::from_secs(3))
+            .await
+            .unwrap_or_default();
         let tools = match tool_names {
             None => all_tools,
             Some(names) => {
@@ -257,7 +264,11 @@ impl ToolsFacade {
             return true;
         }
         for info in tools {
-            let adapter = McpToolAdapter::new(client.clone(), server_name, info);
+            let adapter = McpToolAdapter::new(
+                self.coordinator.builtins.mcp_manager.clone(),
+                server_name,
+                info,
+            );
             entry.insert(adapter.name(), Arc::new(adapter));
         }
         drop(reg);

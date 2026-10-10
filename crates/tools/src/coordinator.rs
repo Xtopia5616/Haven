@@ -369,16 +369,15 @@ impl ToolRuntimeCoordinator {
         let configs = self.builtins.mcp_server_configs.read().await;
         let mut entries = Vec::new();
         for server in configs.values().filter(|server| server.enabled) {
-            let tool_names: Vec<String> =
-                match self.builtins.mcp_manager.get_client(&server.name).await {
-                    Some(client) => client
-                        .tools_cache()
-                        .await
-                        .into_iter()
-                        .map(|tool| tool.name)
-                        .collect(),
-                    None => Vec::new(),
-                };
+            let tool_names: Vec<String> = self
+                .builtins
+                .mcp_manager
+                .cached_tools(&server.name)
+                .await
+                .unwrap_or_default()
+                .into_iter()
+                .map(|tool| tool.name)
+                .collect();
             entries.push(catalog::McpServerIndexEntry::from_raw(
                 &server.name,
                 tool_names,

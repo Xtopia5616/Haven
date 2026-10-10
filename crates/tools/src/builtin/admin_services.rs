@@ -12,7 +12,7 @@ use haven_common::config::{
     RequestKind, RouterConfig, Settings, endpoint_credentials_ready,
 };
 use haven_common::types::McpTransportType;
-use haven_mcp::{McpClientStatus, McpStatusChangeEvent};
+use haven_mcp::McpClientStatus;
 use serde::Serialize;
 use serde_json::Value;
 use std::collections::{BTreeMap, HashMap};
@@ -210,7 +210,7 @@ pub(crate) struct McpStatusOutput {
     pub(crate) name: String,
     pub(crate) enabled: bool,
     pub(crate) connected: bool,
-    pub(crate) tools: usize,
+    pub(crate) tools: Option<usize>,
     pub(crate) last_error: String,
     /// This field intentionally serializes as `null` when no diagnostic exists.
     pub(crate) diagnostic: Option<String>,
@@ -792,26 +792,36 @@ impl AdminServices {
         };
         let mut out = Vec::with_capacity(servers.len());
         for config in &servers {
-            let client = self.mcp_manager.get_client(&config.name).await;
-            let (connected, tool_count, last_error, diagnostic) = match &client {
-                Some(client) => {
-                    let status = client.status().await;
-                    let connected = matches!(status, McpClientStatus::Connected);
+            let snapshot = self.mcp_manager.client_snapshot(&config.name).await;
+            let (connected, tool_count, last_error, diagnostic) = match snapshot {
+                Some(snapshot) => {
+                    let status = snapshot.status;
+                    let connected = matches!(&status, McpClientStatus::Connected);
                     let error = match status {
                         McpClientStatus::Offline { error } => error,
-                        _ => client.last_error().await.unwrap_or_default(),
+                        _ => snapshot.last_error.unwrap_or_default(),
                     };
                     (
                         connected,
-                        client.tools_cache().await.len(),
+                        self.mcp_manager.cached_tool_count(&config.name).await,
                         sanitize_diagnostic(&error),
-                        client
-                            .diagnostic()
-                            .await
-                            .map(|text| sanitize_diagnostic(&text)),
+                        snapshot
+                            .diagnostic
+                            .map(|text| sanitize_diagnostic(&text))
+                            .or_else(|| {
+                                (config.enabled && !connected)
+                                    .then(|| haven_mcp::MCP_TOOLS_NOT_DISCOVERED_DIAGNOSTIC.into())
+                            }),
                     )
                 }
-                None => (false, 0, String::new(), None),
+                None => (
+                    false,
+                    None,
+                    String::new(),
+                    config
+                        .enabled
+                        .then(|| haven_mcp::MCP_TOOLS_NOT_DISCOVERED_DIAGNOSTIC.to_string()),
+                ),
             };
             out.push(McpStatusOutput {
                 name: config.name.clone(),
@@ -1076,17 +1086,21 @@ impl AdminServices {
                     name
                 ))
             })?;
-        let Some(client) = self.mcp_manager.get_client(name).await else {
+        if !self.mcp_manager.has_client(name).await {
             return Err(NativeMcpServiceError::Preflight(format!(
                 "MCP client '{}' is no longer connected",
                 name
             )));
-        };
+        }
 
         // Confirm that the live client still represents this configured
         // server before reconnecting it. The config version check above also
         // invalidates any pending confirmation after an edit.
-        if !client.matches_config(configured) {
+        if !self
+            .mcp_manager
+            .client_matches_config(name, configured)
+            .await
+        {
             return Err(NativeMcpServiceError::Preflight(format!(
                 "MCP server '{}' changed after authorization",
                 name
@@ -1097,14 +1111,6 @@ impl AdminServices {
             .await
             .map_err(NativeMcpServiceError::SideEffect)?;
 
-        let discovery = snapshot.config.mcp_discovery;
-        client.spawn_monitor(
-            std::time::Duration::from_secs(discovery.health_interval_secs),
-            std::time::Duration::from_millis(discovery.reconnect_initial_ms),
-            std::time::Duration::from_millis(discovery.reconnect_max_ms),
-            discovery.reconnect_max_retries,
-            self.mcp_manager.status_tx(),
-        );
         Ok(McpConnectionOutput {
             name: name.to_string(),
             connected: true,
@@ -1154,10 +1160,6 @@ impl AdminServices {
         for server in &changed {
             tracing::info!(server = %server.name, "MCP config changed; reconnecting authorized target");
             self.mcp_manager.remove_client(&server.name).await;
-            let _ = self.mcp_manager.status_tx().send(McpStatusChangeEvent {
-                name: server.name.clone(),
-                status: McpClientStatus::Disconnected,
-            });
             updated.push(server.name.clone());
         }
 
@@ -1184,10 +1186,6 @@ impl AdminServices {
         let mut removed = Vec::new();
         for name in reconcile.to_remove {
             self.mcp_manager.remove_client(&name).await;
-            let _ = self.mcp_manager.status_tx().send(McpStatusChangeEvent {
-                name: name.clone(),
-                status: McpClientStatus::Disconnected,
-            });
             removed.push(name);
         }
         self.rebuild_catalog()
@@ -1269,7 +1267,7 @@ impl AdminServices {
             name: name.clone(),
             enabled: new_config.enabled,
             saved: true,
-            connected: self.mcp_manager.get_client(&name).await.is_some(),
+            connected: self.mcp_manager.has_client(&name).await,
         })
     }
 }

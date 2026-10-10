@@ -3065,7 +3065,7 @@ mod tests {
     async fn test_adapter_authorization_is_shared_but_session_scoped() {
         let gw = ThresholdFixture::new(RiskLevel::Medium);
         let mcp_name = crate::McpToolAdapter::qualified_name_of("calendar", "create_event");
-        let skill_name = crate::SkillToolAdapter::qualified_name_of("calendar");
+        let skill_name = crate::skill_tool_name("calendar");
 
         gw.grant(
             None,

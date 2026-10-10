@@ -11,7 +11,7 @@ use tokio_util::sync::CancellationToken;
 use crate::operation_view::{OperationIdentity, OperationSpec};
 use crate::skill_runner::SkillRunner;
 use crate::{OperationPolicy, StructuredToolError, Tool, ToolErrorMetadata, ToolResult};
-use haven_mcp::{McpClient, McpToolInfo};
+use haven_mcp::{McpManager, McpToolInfo};
 use haven_skills::Skill;
 
 /// External capability metadata is data, not an instruction channel. Keep
@@ -157,16 +157,16 @@ fn skill_operation_spec(name: &str, description: &str, schema: Value) -> Operati
 }
 
 pub struct McpToolAdapter {
-    client: Arc<McpClient>,
+    manager: McpManager,
     info: McpToolInfo,
     server_name: String,
     spec: OperationSpec,
-    #[cfg(debug_assertions)]
+    #[cfg(all(debug_assertions, any(test, feature = "test-support")))]
     panic_on_execute: bool,
 }
 
 impl McpToolAdapter {
-    pub fn new(client: Arc<McpClient>, server_name: &str, info: McpToolInfo) -> Self {
+    pub fn new(manager: McpManager, server_name: &str, info: McpToolInfo) -> Self {
         let server_name = server_name.to_string();
         let name = Self::qualified_name_of(&server_name, &info.name);
         let description = sanitize_external_description(&info.description);
@@ -174,11 +174,11 @@ impl McpToolAdapter {
         let schema = sanitize_external_schema(&info.input_schema);
         let spec = mcp_operation_spec(&name, &description, &server_name, &operation, schema);
         Self {
-            client,
+            manager,
             info,
             server_name,
             spec,
-            #[cfg(debug_assertions)]
+            #[cfg(all(debug_assertions, any(test, feature = "test-support")))]
             panic_on_execute: false,
         }
     }
@@ -186,14 +186,14 @@ impl McpToolAdapter {
     /// Construct a real MCP adapter that panics when executed. This is only
     /// available in debug builds so the agent integration suite can exercise
     /// the extension panic boundary without adding a production behavior.
-    #[cfg(debug_assertions)]
+    #[cfg(all(debug_assertions, any(test, feature = "test-support")))]
     #[doc(hidden)]
     pub fn new_panicking_for_test(
-        client: Arc<McpClient>,
+        manager: McpManager,
         server_name: &str,
         info: McpToolInfo,
     ) -> Self {
-        let mut adapter = Self::new(client, server_name, info);
+        let mut adapter = Self::new(manager, server_name, info);
         adapter.panic_on_execute = true;
         adapter
     }
@@ -238,13 +238,13 @@ impl Tool for McpToolAdapter {
     }
 
     async fn execute(&self, input: Value, cancel: CancellationToken) -> anyhow::Result<ToolResult> {
-        #[cfg(debug_assertions)]
+        #[cfg(all(debug_assertions, any(test, feature = "test-support")))]
         if self.panic_on_execute {
             panic!("simulated MCP adapter panic");
         }
         let out = self
-            .client
-            .call_tool(&self.info.name, input, cancel)
+            .manager
+            .call_tool(&self.server_name, &self.info.name, input, cancel)
             .await
             .map_err(|error| {
                 anyhow::Error::new(StructuredToolError::new(
@@ -273,27 +273,27 @@ pub struct SkillToolAdapter {
     skill: Arc<Skill>,
     runner: SkillRunner,
     spec: OperationSpec,
-    #[cfg(debug_assertions)]
+    #[cfg(all(debug_assertions, any(test, feature = "test-support")))]
     panic_on_execute: bool,
 }
 
 impl SkillToolAdapter {
     pub fn new(skill: Arc<Skill>, runner: SkillRunner) -> Self {
-        let name = Self::qualified_name_of(skill.name());
+        let name = skill_tool_name(skill.name());
         let description = sanitize_external_description(skill.description());
         let spec = skill_operation_spec(&name, &description, skill_input_schema());
         Self {
             skill,
             runner,
             spec,
-            #[cfg(debug_assertions)]
+            #[cfg(all(debug_assertions, any(test, feature = "test-support")))]
             panic_on_execute: false,
         }
     }
 
     /// Construct a real Skill adapter that panics when executed. This is only
     /// available in debug builds for the agent's extension-boundary tests.
-    #[cfg(debug_assertions)]
+    #[cfg(all(debug_assertions, any(test, feature = "test-support")))]
     #[doc(hidden)]
     pub fn new_panicking_for_test(skill: Arc<Skill>, runner: SkillRunner) -> Self {
         let mut adapter = Self::new(skill, runner);
@@ -304,13 +304,17 @@ impl SkillToolAdapter {
     /// Canonical qualified tool name (`skill::<name>`) after LLM name
     /// sanitization. The same deterministic name is used for catalog
     /// registration and execution lookup.
-    pub fn qualified_name_of(skill_name: &str) -> String {
-        crate::llm_tool_name(&format!("skill::{}", skill_name))
-    }
-
     fn qualified_name(&self) -> String {
-        Self::qualified_name_of(self.skill.name())
+        skill_tool_name(self.skill.name())
     }
+}
+
+/// Return the canonical qualified tool name for an executable skill.
+///
+/// App authorization and Tools registration must use the same key so UI
+/// preview permissions apply to the skill tool invocation.
+pub fn skill_tool_name(skill_name: &str) -> String {
+    crate::llm_tool_name(&format!("skill::{}", skill_name))
 }
 
 #[async_trait]
@@ -348,7 +352,7 @@ impl Tool for SkillToolAdapter {
     }
 
     async fn execute(&self, input: Value, cancel: CancellationToken) -> anyhow::Result<ToolResult> {
-        #[cfg(debug_assertions)]
+        #[cfg(all(debug_assertions, any(test, feature = "test-support")))]
         if self.panic_on_execute {
             panic!("simulated Skill adapter panic");
         }
@@ -375,7 +379,7 @@ mod tests {
     use super::*;
     use crate::skill_runner::SkillRunner;
     use haven_common::config::SkillsExecConfig;
-    use haven_mcp::McpClient;
+    use haven_mcp::McpManager;
     use haven_skills::VenvManager;
 
     /// A test MCP tool adapter backed by a mock client.
@@ -384,21 +388,13 @@ mod tests {
     }
 
     fn mcp_adapter_for(server_name: &str, schema: serde_json::Value) -> McpToolAdapter {
-        let client = McpClient::new(
-            &haven_common::McpServerConfig {
-                name: server_name.into(),
-                command: "echo".into(),
-                ..Default::default()
-            },
-            2 * 1024 * 1024,
-            2 * 1024 * 1024,
-        );
+        let manager = McpManager::new();
         let info = McpToolInfo {
             name: "greet".into(),
             description: "Greets the user".into(),
             input_schema: schema,
         };
-        McpToolAdapter::new(Arc::new(client), server_name, info)
+        McpToolAdapter::new(manager, server_name, info)
     }
 
     #[tokio::test]

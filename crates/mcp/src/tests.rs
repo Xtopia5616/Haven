@@ -202,15 +202,13 @@ async fn mcp_manager_new() {
         mgr.network_policy().await,
         haven_common::types::NetworkPolicy::Ask
     );
-    let clients = mgr.clients.lock().await;
-    assert!(clients.is_empty());
+    assert!(mgr.list_clients().await.is_empty());
 }
 
 #[tokio::test]
 async fn mcp_manager_default() {
     let mgr = McpManager::default();
-    let clients = mgr.clients.lock().await;
-    assert!(clients.is_empty());
+    assert!(mgr.list_clients().await.is_empty());
 }
 
 #[tokio::test]
@@ -235,6 +233,38 @@ async fn mcp_manager_add_client_invalidates_catalog_revision() {
             .await
             .contains(&"progressive".to_string())
     );
+    assert!(mgr.has_client("progressive").await);
+    assert!(matches!(
+        mgr.client_status("progressive").await,
+        McpClientStatus::Disconnected
+    ));
+    let snapshot = mgr.client_snapshot("progressive").await.unwrap();
+    assert!(matches!(snapshot.status, McpClientStatus::Disconnected));
+    assert_eq!(mgr.cached_tool_count("progressive").await, None);
+    assert!(mgr.cached_tools("progressive").await.is_none());
+}
+
+#[tokio::test]
+async fn mcp_manager_remove_client_publishes_disconnect_after_removal() {
+    let mgr = McpManager::new();
+    let client = Arc::new(McpClient::new(
+        &McpServerConfig {
+            name: "remove-me".into(),
+            command: "echo".into(),
+            ..Default::default()
+        },
+        2 * 1024 * 1024,
+        2 * 1024 * 1024,
+    ));
+    mgr.add_client(client).await;
+    let mut status_events = mgr.subscribe();
+
+    mgr.remove_client("remove-me").await;
+
+    assert!(!mgr.has_client("remove-me").await);
+    let event = status_events.recv().await.unwrap();
+    assert_eq!(event.name, "remove-me");
+    assert!(matches!(event.status, McpClientStatus::Disconnected));
 }
 
 #[tokio::test]

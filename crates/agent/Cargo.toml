@@ -26,4 +26,5 @@ tiktoken-rs = "0.12"
 [dev-dependencies]
 haven-llm = { path = "../llm", features = ["test-support"] }
 haven-messaging = { path = "../messaging", features = ["test-support"] }
+haven-tools = { path = "../tools", features = ["test-support"] }
 tempfile.workspace = true

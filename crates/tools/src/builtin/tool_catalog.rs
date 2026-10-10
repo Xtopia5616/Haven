@@ -1,6 +1,7 @@
 use super::name_list::ordered_unique_non_empty_names;
+use crate::adapters::McpToolAdapter;
 use crate::registry::{DeferredToolCatalog, SessionToolOverlay};
-use crate::{McpToolAdapter, Tool, ToolHandle, ToolRegistry, ToolResult};
+use crate::{Tool, ToolHandle, ToolRegistry, ToolResult};
 use haven_common::tools::{ToolCatalogGroup, ToolDef, ToolSource};
 use haven_common::types::RiskLevel;
 use haven_mcp::{McpManager, McpToolInfo};
@@ -507,16 +508,17 @@ impl ToolCatalogTool {
         if source.accepts(CatalogSource::Mcp) {
             let configs = self.server_configs.read().await.clone();
             for config in configs.values().filter(|config| config.enabled) {
-                let Some(client) = self.mcp_manager.get_client(&config.name).await else {
-                    items.push(mcp_server_item(&config.name, &[], false));
-                    continue;
-                };
-                let infos = client.tools_cache().await;
+                let infos = self
+                    .mcp_manager
+                    .cached_tools(&config.name)
+                    .await
+                    .unwrap_or_default();
+                let connected = self.mcp_manager.has_client(&config.name).await;
                 let names = infos
                     .iter()
                     .map(|info| info.name.clone())
                     .collect::<Vec<_>>();
-                items.push(mcp_server_item(&config.name, &names, true));
+                items.push(mcp_server_item(&config.name, &names, connected));
                 for info in infos {
                     let qualified = McpToolAdapter::qualified_name_of(&config.name, &info.name);
                     if seen.insert(qualified.clone()) {
@@ -661,13 +663,8 @@ impl ToolCatalogTool {
             .get(name)
             .filter(|config| config.enabled)
             .cloned()?;
-        let names = match self.mcp_manager.get_client(&config.name).await {
-            Some(client) => client
-                .tools_cache()
-                .await
-                .into_iter()
-                .map(|info| info.name)
-                .collect::<Vec<_>>(),
+        let names = match self.mcp_manager.cached_tools(&config.name).await {
+            Some(tools) => tools.into_iter().map(|info| info.name).collect::<Vec<_>>(),
             None => Vec::new(),
         };
         Some(serde_json::json!({
@@ -685,10 +682,10 @@ impl ToolCatalogTool {
     async fn describe_mcp_tool(&self, name: &str) -> Option<(String, McpToolInfo)> {
         let configs = self.server_configs.read().await.clone();
         for config in configs.values().filter(|config| config.enabled) {
-            let Some(client) = self.mcp_manager.get_client(&config.name).await else {
+            let Some(tools) = self.mcp_manager.cached_tools(&config.name).await else {
                 continue;
             };
-            for info in client.tools_cache().await {
+            for info in tools {
                 if McpToolAdapter::qualified_name_of(&config.name, &info.name) == name {
                     return Some((config.name.clone(), info));
                 }

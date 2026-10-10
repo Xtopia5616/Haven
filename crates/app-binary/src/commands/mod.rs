@@ -245,7 +245,7 @@ pub(crate) async fn finalize_admin_ui_operation(
             | McpOperationArgs::McpConnect { .. },
         ) => {
             if let Some(name) = request.server_name() {
-                let connected = state.runtime.services.mcp.get_client(name).await.is_some();
+                let connected = state.runtime.services.mcp.has_client(name).await;
                 crate::commands::mcp::emit_mcp_status(
                     app,
                     name.to_string(),
@@ -274,10 +274,7 @@ pub(crate) async fn finalize_admin_ui_operation(
         haven_tools::AdminRequest::NativeMcp(NativeMcpOperationArgs::McpReconnect {
             name, ..
         }) => {
-            let status = match state.runtime.services.mcp.get_client(name).await {
-                Some(client) => client.status().await,
-                None => haven_tools::McpClientStatus::Disconnected,
-            };
+            let status = state.runtime.services.mcp.client_status(name).await;
             crate::commands::mcp::emit_mcp_status(
                 app,
                 name.clone(),

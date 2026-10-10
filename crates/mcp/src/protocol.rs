@@ -287,6 +287,10 @@ pub struct McpServerSnapshot {
     pub last_seen_at: Option<i64>,
 }
 
+/// Explain why a configured server without a live client has no tool schema
+/// snapshot. The count is unknown until a connection completes tools/list.
+pub const MCP_TOOLS_NOT_DISCOVERED_DIAGNOSTIC: &str = "Not connected; the MCP tool list has not been discovered, so the tool count is unknown. Connect or load the server to inspect its tools.";
+
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct McpStatusChangeEvent {
     pub name: String,
