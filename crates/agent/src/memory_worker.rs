@@ -15,7 +15,6 @@ use haven_common::prompts::{COMPACTED_SUMMARY_PREFIX, FACT_EXTRACTION_SYSTEM_PRO
 use haven_llm::LlmRouter;
 #[cfg(test)]
 use haven_memory::Database;
-use haven_memory::recall::MemoryRetriever;
 use haven_memory::repositories::facts::{
     FactSourceRef, is_sensitive_object, is_sensitive_predicate, is_single_valued_predicate,
     normalize_predicate,
@@ -854,7 +853,7 @@ impl MemoryWorker {
         if summary.len() < 24 {
             return SummaryExtractOutcome::Done;
         }
-        if !MemoryRetriever::visible_text(summary) {
+        if haven_memory::repositories::facts::is_sensitive_text(summary) {
             tracing::debug!(
                 session_id,
                 episode_id,
@@ -3570,7 +3569,7 @@ mod tests {
             .unwrap();
 
         let pending = db
-            .run_blocking(crate::test_support::list_pending_fact_extraction_rows)
+            .run_blocking_for_test(crate::test_support::list_pending_fact_extraction_rows)
             .await
             .unwrap();
         let in_memory = engine.pending_outbox_value_for_test(&session.id);

@@ -152,7 +152,7 @@ impl MemoryFactStore {
                     Some(source) => db.list_facts_by_source(source)?,
                     None => db.list_facts()?,
                 };
-                Ok(MemoryRetriever::filter_visible_facts(facts))
+                Ok(crate::repositories::facts::filter_visible_facts(facts))
             })
             .await
     }
@@ -200,7 +200,7 @@ impl MemoryFactStore {
             .run_blocking(move |db| {
                 let query = normalize_memory_query(&query)?;
                 let facts = db.search_facts_scoped(&query, subject.as_deref())?;
-                Ok(MemoryRetriever::filter_visible_facts(facts))
+                Ok(crate::repositories::facts::filter_visible_facts(facts))
             })
             .await
     }
@@ -213,7 +213,7 @@ impl MemoryFactStore {
         self.db
             .run_blocking(move |db| {
                 let facts = db.list_facts_by_subject(&subject)?;
-                Ok(MemoryRetriever::filter_visible_facts(facts))
+                Ok(crate::repositories::facts::filter_visible_facts(facts))
             })
             .await
     }
@@ -224,7 +224,7 @@ impl MemoryFactStore {
         self.db
             .run_blocking(|db| {
                 let facts = db.list_facts()?;
-                Ok(MemoryRetriever::filter_visible_facts(facts))
+                Ok(crate::repositories::facts::filter_visible_facts(facts))
             })
             .await
     }
@@ -239,7 +239,7 @@ impl MemoryFactStore {
         self.db
             .run_blocking(move |db| {
                 let facts = db.list_facts()?;
-                Ok(MemoryRetriever::filter_visible_facts(facts)
+                Ok(crate::repositories::facts::filter_visible_facts(facts)
                     .into_iter()
                     .take(limit)
                     .collect())
@@ -514,7 +514,7 @@ mod tests {
             .search_facts_scoped("green tea", None)
             .unwrap()
             .into_iter()
-            .filter(crate::recall::MemoryRetriever::visible_fact)
+            .filter(crate::repositories::facts::is_visible_fact)
             .map(|fact| fact.id)
             .collect::<Vec<_>>();
         assert_eq!(
@@ -603,7 +603,7 @@ mod tests {
         assert!(
             facts
                 .iter()
-                .all(crate::recall::MemoryRetriever::visible_fact)
+                .all(crate::repositories::facts::is_visible_fact)
         );
     }
 

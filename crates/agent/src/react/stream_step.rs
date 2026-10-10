@@ -1418,7 +1418,7 @@ mod tests {
 
         let session_id = session.id;
         let partial = db
-            .run_blocking(move |db| Ok(db.get_partial_message(&session_id)))
+            .run_blocking_for_test(move |db| Ok(db.get_partial_message(&session_id)))
             .await
             .unwrap();
         assert_eq!(

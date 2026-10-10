@@ -2,7 +2,6 @@ use std::sync::Arc;
 
 use crate::Database;
 use crate::embeddings::MemoryEntityKind;
-use crate::recall::MemoryRetriever;
 
 /// One visible row that is missing an embedding for the requested model.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -82,7 +81,7 @@ impl MemoryEmbeddingStore {
                             MemoryEntityKind::Episode => db.episode_text(&entity_id)?,
                         };
                         if let Some(text) = text {
-                            if MemoryRetriever::visible_text(&text) {
+                            if !crate::repositories::facts::is_sensitive_text(&text) {
                                 pending.push(PendingMemoryEmbedding {
                                     entity,
                                     entity_id,

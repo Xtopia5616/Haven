@@ -8,7 +8,7 @@
 use crate::Database;
 use crate::embeddings::EmbeddedText;
 use crate::repositories::facts::{
-    Fact, fact_effective_confidence, is_sensitive_object, is_sensitive_predicate, is_sensitive_text,
+    Fact, fact_effective_confidence, filter_visible_facts, is_sensitive_text, is_visible_fact,
 };
 use std::collections::HashMap;
 
@@ -173,54 +173,19 @@ impl Default for MemoryRecall {
 /// Read/retrieve facade over the database. It deliberately has no embedding
 /// provider dependency: callers acquire a vector through their configured
 /// router, then hand the vector to this common persistence/ranking boundary.
-pub struct MemoryRetriever<'db> {
+pub(crate) struct MemoryRetriever<'db> {
     db: &'db Database,
 }
 
 impl<'db> MemoryRetriever<'db> {
-    pub fn new(db: &'db Database) -> Self {
+    pub(crate) fn new(db: &'db Database) -> Self {
         Self { db }
-    }
-
-    /// Defense-in-depth visibility policy shared by CRUD search, prompt
-    /// recall, and vector recall. Stored credential-like rows are never
-    /// returned to a model even if a database was modified outside the write
-    /// boundary.
-    pub fn visible_fact(fact: &Fact) -> bool {
-        !is_sensitive_text(&fact.subject)
-            && !is_sensitive_predicate(&fact.predicate)
-            && !is_sensitive_object(&fact.object)
-    }
-
-    pub fn filter_visible_facts(facts: impl IntoIterator<Item = Fact>) -> Vec<Fact> {
-        facts
-            .into_iter()
-            .filter_map(|mut fact| {
-                if !Self::visible_fact(&fact) {
-                    return None;
-                }
-                if let Some(source_ref) = fact.source_ref.as_mut()
-                    && !Self::visible_text(&source_ref.snippet)
-                {
-                    // A safe SPO row can still carry a credential-like
-                    // provenance snippet. Redact at the shared boundary so
-                    // IPC, tool output, prompt recall, and future callers do
-                    // not need separate source-ref policies.
-                    source_ref.snippet = "[redacted]".to_string();
-                }
-                Some(fact)
-            })
-            .collect()
-    }
-
-    pub fn visible_text(text: &str) -> bool {
-        !crate::repositories::facts::is_sensitive_text(text)
     }
 
     /// Read keyword candidates only. This is intentionally separate from
     /// vector retrieval so prompt rendering can merge both candidate pools
     /// without repeating SQL or embedding work.
-    pub fn keyword(&self, query: &MemoryQuery) -> anyhow::Result<Vec<MemoryHit>> {
+    pub(crate) fn keyword(&self, query: &MemoryQuery) -> anyhow::Result<Vec<MemoryHit>> {
         let hits = match query.kind {
             MemoryEntityKind::Fact => {
                 let terms = haven_common::text::memory_recall_terms(&query.text);
@@ -230,7 +195,7 @@ impl<'db> MemoryRetriever<'db> {
                     query.limit.saturating_mul(4),
                     query.fact_subject.as_deref(),
                 )?;
-                let mut facts = Self::filter_visible_facts(facts);
+                let mut facts = filter_visible_facts(facts);
                 facts.truncate(query.limit);
                 facts
                     .into_iter()
@@ -256,7 +221,7 @@ impl<'db> MemoryRetriever<'db> {
                     query.exclude_session_id.as_deref(),
                 )?
                 .into_iter()
-                .filter(|hit| Self::visible_text(&hit.text))
+                .filter(|hit| !is_sensitive_text(&hit.text))
                 .map(|hit| MemoryHit {
                     entity_id: hit.entity_id,
                     text: hit.text,
@@ -275,7 +240,7 @@ impl<'db> MemoryRetriever<'db> {
     /// The model is mandatory so mixed embedding spaces cannot leak into a
     /// result set. Fact rows are rehydrated before filtering to protect
     /// against sensitive rows whose embedding text is incomplete.
-    pub fn vector(
+    pub(crate) fn vector(
         &self,
         query: &MemoryQuery,
         vector: &[f32],
@@ -308,7 +273,7 @@ impl<'db> MemoryRetriever<'db> {
                 raw.into_iter()
                     .filter_map(|(embedding, score)| {
                         let fact = facts_by_id.get(&embedding.entity_id)?;
-                        Self::visible_fact(fact).then(|| MemoryHit {
+                        is_visible_fact(fact).then(|| MemoryHit {
                             entity_id: fact.id.clone(),
                             text: format!("{}={}", fact.predicate, fact.object),
                             score,
@@ -319,7 +284,7 @@ impl<'db> MemoryRetriever<'db> {
             }
             MemoryEntityKind::Episode => raw
                 .into_iter()
-                .filter(|(embedding, _)| Self::visible_text(&embedding.text))
+                .filter(|(embedding, _)| !is_sensitive_text(&embedding.text))
                 .map(|(embedding, score)| MemoryHit::from_embedding(embedding, score))
                 .collect(),
         };
@@ -338,7 +303,7 @@ impl<'db> MemoryRetriever<'db> {
     /// Keyword and vector scores live in different spaces, so comparing their
     /// raw floating-point values is invalid. RRF keeps each source's ranking,
     /// rewards agreement, and remains deterministic across providers.
-    pub fn merge(
+    pub(crate) fn merge(
         &self,
         query: &MemoryQuery,
         keyword_hits: Vec<MemoryHit>,
@@ -429,7 +394,7 @@ impl<'db> MemoryRetriever<'db> {
     /// Full shared retrieval. Vector acquisition is optional and failures are
     /// represented by an empty vector candidate pool, so keyword recall is a
     /// reliable degradation path.
-    pub fn retrieve(
+    pub(crate) fn retrieve(
         &self,
         query: &MemoryQuery,
         vector_hits: Option<Vec<MemoryHit>>,
@@ -691,7 +656,7 @@ mod tests {
         )
         .unwrap();
 
-        let facts = MemoryRetriever::filter_visible_facts(db.list_facts().unwrap());
+        let facts = filter_visible_facts(db.list_facts().unwrap());
         assert_eq!(facts.len(), 1);
         assert_eq!(facts[0].source_ref.as_ref().unwrap().snippet, "[redacted]");
     }

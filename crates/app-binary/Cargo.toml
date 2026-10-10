@@ -20,6 +20,7 @@ ipc-codegen = ["dep:syn", "dep:quote", "dep:proc-macro2"]
 tauri-build = { version = "2", features = [] }
 
 [dev-dependencies]
+haven-memory = { path = "../memory", features = ["test-support"] }
 tempfile.workspace = true
 
 [dependencies]

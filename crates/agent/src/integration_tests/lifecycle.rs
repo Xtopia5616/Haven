@@ -70,7 +70,7 @@ async fn assert_dispatcher_waits_for_memory_runtime(recover_pending: bool) {
     agent
         .db
         .clone()
-        .run_blocking(|db| {
+        .run_blocking_for_test(|db| {
             db.conn()
                 .execute_batch("DROP TRIGGER block_memory_runtime_cursor")?;
             Ok(())

@@ -317,7 +317,7 @@ mod tests {
             .unwrap();
         let tid = session_id.clone();
         let row = db
-            .run_blocking(move |db| Ok(db.get_partial_message(&tid)))
+            .run_blocking_for_test(move |db| Ok(db.get_partial_message(&tid)))
             .await
             .unwrap();
         assert!(row.is_none(), "stale checkpoint must not re-create the row");
@@ -345,7 +345,7 @@ mod tests {
 
         let tid = session_id;
         let row = db
-            .run_blocking(move |db| Ok(db.get_partial_message(&tid)))
+            .run_blocking_for_test(move |db| Ok(db.get_partial_message(&tid)))
             .await
             .unwrap()
             .expect("new attempt should remain checkpointed");
@@ -369,13 +369,13 @@ mod tests {
             .unwrap();
         let tid = session_id.clone();
         let msgs = db
-            .run_blocking(move |db| db.list_session_messages(&tid))
+            .run_blocking_for_test(move |db| db.list_session_messages(&tid))
             .await
             .unwrap();
         assert_eq!(msgs.len(), 1, "promoted message must not be duplicated");
         let tid2 = session_id;
         let row = db
-            .run_blocking(move |db| Ok(db.get_partial_message(&tid2)))
+            .run_blocking_for_test(move |db| Ok(db.get_partial_message(&tid2)))
             .await
             .unwrap();
         assert!(
@@ -421,7 +421,7 @@ mod tests {
 
         let tid = session_id.clone();
         let row = db
-            .run_blocking(move |db| Ok(db.get_partial_message(&tid)))
+            .run_blocking_for_test(move |db| Ok(db.get_partial_message(&tid)))
             .await
             .unwrap();
         assert!(

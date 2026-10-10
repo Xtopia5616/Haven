@@ -944,7 +944,7 @@ pub(super) async fn seed_event_projection(
     let session_id = session_id.to_string();
     agent
         .db
-        .run_blocking(move |_| {
+        .run_blocking_for_test(move |_| {
             for branch in branches {
                 store.append_branch_point(
                     &session_id,

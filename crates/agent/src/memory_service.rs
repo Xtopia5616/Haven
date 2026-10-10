@@ -15,7 +15,6 @@ use haven_llm::LlmRouter;
 use haven_memory::Database;
 use haven_memory::recall::{
     MAX_MEMORY_QUERY_CHARS, MAX_RECALL_LIMIT, MemoryEntityKind, MemoryQuery, MemoryRecall,
-    MemoryRetriever,
 };
 use haven_memory::{
     MemoryEmbeddingStore, MemoryFactExtractionStore, MemoryFactStore, MemoryMaintenanceStore,
@@ -238,7 +237,7 @@ impl MemoryService {
         }
 
         let (vector, cacheable) = if embedding_model.is_empty()
-            || !MemoryRetriever::visible_text(&query_text)
+            || haven_memory::repositories::facts::is_sensitive_text(&query_text)
         {
             (None, true)
         } else if let Some(router) = &self.router {

@@ -2010,7 +2010,7 @@ async fn continue_session_resumes_errored_session() {
     let sid = session.id.clone();
     agent
         .db
-        .run_blocking(move |_| {
+        .run_blocking_for_test(move |_| {
             store.append_branch_point(&sid, 1, 1, Some(&cutoff), None)?;
             store.append_recovery_persistence(
                 &sid,

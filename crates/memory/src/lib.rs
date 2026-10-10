@@ -1,16 +1,15 @@
 mod cache;
-pub mod db;
+mod db;
 pub mod embeddings;
 pub mod recall;
 pub mod repositories;
-pub mod schema;
+mod schema;
 
 pub use cache::CacheGeneration;
 pub use db::Database;
 pub use recall::{
     MemoryEntityKind, MemoryHit, MemoryQuery, MemoryRecall, MemoryRecallDiagnostics,
     MemoryRecallEmptyReason, MemoryRecallMode, MemoryRecallSourceStatus, MemoryRecallSuggestion,
-    MemoryRetriever,
 };
 pub use repositories::embedding_store::{
     MemoryEmbeddingSaveFailure, MemoryEmbeddingSaveReport, MemoryEmbeddingStore,

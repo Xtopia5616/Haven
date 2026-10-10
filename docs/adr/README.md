@@ -868,3 +868,4 @@
 - [0886：在 Messaging 存储边界统一 session 与 message 身份契约](0886-enforce-messaging-identity-contract-at-storage.md)
 - [0887：将 Messaging transport 收口在领域 facade 后](0887-encapsulate-messaging-transport.md)
 - [0888：将 MCP client 状态、生命周期与调用收口在 McpManager](0888-encapsulate-mcp-client-behind-manager.md)
+- [0889：隐藏 Memory 的原始 SQLite 访问入口](0889-hide-memory-sqlite-access-behind-test-support.md)

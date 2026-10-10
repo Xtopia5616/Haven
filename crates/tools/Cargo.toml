@@ -44,6 +44,7 @@ image = { version = "0.25", default-features = false, features = ["png"] }
 encoding_rs.workspace = true
 
 [dev-dependencies]
+haven-memory = { path = "../memory", features = ["test-support"] }
 haven-llm = { path = "../llm", features = ["test-support"] }
 haven-messaging = { path = "../messaging", features = ["test-support"] }
 haven-mcp = { path = "../mcp", features = ["test-support"] }

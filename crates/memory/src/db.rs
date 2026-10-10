@@ -269,8 +269,11 @@ impl Database {
         })
     }
 
-    /// Open an isolated shared-cache in-memory database. The pool is limited
-    /// to one connection because SQLite serializes writers in this mode.
+    /// Open an isolated shared-cache in-memory database for tests. Its pool is
+    /// limited to one connection because SQLite serializes writers in this
+    /// mode. This constructor is available only to this crate's unit tests or
+    /// downstream `test-support` builds.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn open_in_memory() -> anyhow::Result<Self> {
         tracing::debug!("opening in-memory database");
         // Shared-cache URI so every pooled connection sees the SAME in-memory
@@ -314,7 +317,17 @@ impl Database {
         })
     }
 
+    #[cfg(feature = "test-support")]
     pub fn conn(&self) -> PooledConnection<'_> {
+        self.checkout_connection()
+    }
+
+    #[cfg(not(feature = "test-support"))]
+    pub(crate) fn conn(&self) -> PooledConnection<'_> {
+        self.checkout_connection()
+    }
+
+    fn checkout_connection(&self) -> PooledConnection<'_> {
         self.pool
             .get()
             .expect("database connection checkout failed")
@@ -339,13 +352,24 @@ impl Database {
     /// so a slow write cannot stall unrelated async sessions that don't touch
     /// the DB. The closure borrows `&Database`; owned arguments must be
     /// cloned into the closure by the caller (it is `'static`).
-    pub async fn run_blocking<T, F>(self: &Arc<Self>, f: F) -> anyhow::Result<T>
+    pub(crate) async fn run_blocking<T, F>(self: &Arc<Self>, f: F) -> anyhow::Result<T>
     where
         T: Send + 'static,
         F: FnOnce(&Database) -> anyhow::Result<T> + Send + 'static,
     {
         let db = self.clone();
         tokio::task::spawn_blocking(move || f(&db)).await?
+    }
+
+    /// Run a raw database closure on a blocking worker for cross-crate test
+    /// fixtures. Production code must use a typed Memory store instead.
+    #[cfg(feature = "test-support")]
+    pub async fn run_blocking_for_test<T, F>(self: &Arc<Self>, f: F) -> anyhow::Result<T>
+    where
+        T: Send + 'static,
+        F: FnOnce(&Database) -> anyhow::Result<T> + Send + 'static,
+    {
+        self.run_blocking(f).await
     }
 
     /// Run a blocking SQLite closure with cooperative cancellation that also
@@ -356,7 +380,7 @@ impl Database {
     /// The bounded join keeps a broken pool/extension from holding the async
     /// caller forever. In that exceptional case the worker remains detached,
     /// but the caller receives an explicit failure instead of a false success.
-    pub async fn run_blocking_cancellable<T, F>(
+    pub(crate) async fn run_blocking_cancellable<T, F>(
         self: &Arc<Self>,
         cancel: CancellationToken,
         f: F,

@@ -5,7 +5,6 @@ use std::sync::Arc;
 use haven_common::prompts::SESSION_CONTEXT_FENCE_START;
 use haven_common::tools::{ToolCatalogGroup, ToolDef};
 use haven_common::types::{CanonicalMessage, CanonicalRole, ContentPart};
-use haven_memory::recall::MemoryRetriever;
 #[cfg(test)]
 use haven_tools::ToolsFacade;
 use haven_tools::{McpServerIndexEntry, WebSearchAvailability};
@@ -650,7 +649,7 @@ impl SystemPromptBuilder {
             // facts fall back to confidence-only ordering.
             let mut scored: Vec<(f64, &haven_memory::repositories::facts::Fact)> = Vec::new();
             for fact in all_facts.iter() {
-                if !MemoryRetriever::visible_fact(fact) {
+                if !haven_memory::repositories::facts::is_visible_fact(fact) {
                     continue;
                 }
                 let mut score = fact_effective_confidence(fact) * 10.0;

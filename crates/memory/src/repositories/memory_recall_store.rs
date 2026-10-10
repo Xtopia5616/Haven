@@ -53,7 +53,7 @@ impl MemoryRecallStore {
         self.db
             .run_blocking(move |db| {
                 let facts = db.list_facts_by_subject_limited("user", limit)?;
-                Ok(MemoryRetriever::filter_visible_facts(facts))
+                Ok(crate::repositories::facts::filter_visible_facts(facts))
             })
             .await
     }
@@ -64,7 +64,7 @@ impl MemoryRecallStore {
         self.db
             .run_blocking(move |db| {
                 let facts = db.list_facts_by_ids(&ids)?;
-                Ok(MemoryRetriever::filter_visible_facts(facts))
+                Ok(crate::repositories::facts::filter_visible_facts(facts))
             })
             .await
     }

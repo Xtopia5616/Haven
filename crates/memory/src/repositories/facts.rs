@@ -67,6 +67,34 @@ impl FactSourceRef {
     }
 }
 
+/// Whether a fact is safe to expose to model-facing or user-facing readers.
+/// Kept beside the canonical fact shape so every retrieval path applies the
+/// same defense-in-depth policy.
+pub fn is_visible_fact(fact: &Fact) -> bool {
+    !is_sensitive_text(&fact.subject)
+        && !is_sensitive_predicate(&fact.predicate)
+        && !is_sensitive_object(&fact.object)
+}
+
+/// Filter facts through the shared visibility rule and redact sensitive
+/// provenance snippets on otherwise visible rows.
+pub fn filter_visible_facts(facts: impl IntoIterator<Item = Fact>) -> Vec<Fact> {
+    facts
+        .into_iter()
+        .filter_map(|mut fact| {
+            if !is_visible_fact(&fact) {
+                return None;
+            }
+            if let Some(source_ref) = fact.source_ref.as_mut()
+                && is_sensitive_text(&source_ref.snippet)
+            {
+                source_ref.snippet = "[redacted]".to_string();
+            }
+            Some(fact)
+        })
+        .collect()
+}
+
 /// What `upsert_fact` did with an extracted fact.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UpsertOutcome {

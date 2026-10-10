@@ -673,14 +673,14 @@ mod tests {
     async fn cursor(db: &Arc<Database>, session_id: &str) -> i64 {
         let session_id = session_id.to_owned();
         db.clone()
-            .run_blocking(move |db| db.memory_event_cursor(&session_id))
+            .run_blocking_for_test(move |db| db.memory_event_cursor(&session_id))
             .await
             .unwrap()
     }
 
     async fn pending(db: &Arc<Database>) -> Vec<(String, bool)> {
         db.clone()
-            .run_blocking(crate::test_support::list_pending_fact_extraction_rows)
+            .run_blocking_for_test(crate::test_support::list_pending_fact_extraction_rows)
             .await
             .unwrap()
             .into_iter()
@@ -690,7 +690,7 @@ mod tests {
 
     async fn pending_generations(db: &Arc<Database>) -> Vec<(String, bool, i64)> {
         db.clone()
-            .run_blocking(crate::test_support::list_pending_fact_extraction_rows)
+            .run_blocking_for_test(crate::test_support::list_pending_fact_extraction_rows)
             .await
             .unwrap()
     }
@@ -1055,7 +1055,7 @@ mod tests {
              BEGIN SELECT RAISE(ABORT, 'duplicate enqueue'); END;"
         );
         db.clone()
-            .run_blocking(move |db| {
+            .run_blocking_for_test(move |db| {
                 db.conn().execute_batch(&trigger_sql)?;
                 Ok(())
             })
@@ -1126,7 +1126,7 @@ mod tests {
             vec![(session_id.clone(), true, 2)]
         );
         let database = db.clone();
-        let stale_ack = database.run_blocking({
+        let stale_ack = database.run_blocking_for_test({
             let session_id = session_id.clone();
             move |db| db.clear_pending_fact_extraction_if_current(&session_id, 1, true)
         });
@@ -1178,7 +1178,7 @@ mod tests {
              BEGIN SELECT RAISE(ABORT, 'outbox unavailable'); END;"
         );
         db.clone()
-            .run_blocking(move |db| {
+            .run_blocking_for_test(move |db| {
                 db.conn().execute_batch(&trigger_sql)?;
                 Ok(())
             })
@@ -1216,7 +1216,7 @@ mod tests {
              BEGIN SELECT RAISE(ABORT, 'checkpoint unavailable'); END;"
         );
         db.clone()
-            .run_blocking(move |db| {
+            .run_blocking_for_test(move |db| {
                 db.conn().execute_batch(&trigger_sql)?;
                 Ok(())
             })

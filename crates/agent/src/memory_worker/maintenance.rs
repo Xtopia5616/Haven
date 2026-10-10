@@ -2,9 +2,8 @@ use std::collections::HashMap;
 
 use haven_common::prompts::{CONTRADICTION_ARBITRATE_SYSTEM_PROMPT, predicate_merge_system_prompt};
 use haven_memory::MemoryMaintenanceStore;
-use haven_memory::recall::MemoryRetriever;
 use haven_memory::repositories::facts::{
-    CANONICAL_MERGE_TARGETS, Fact, is_canonical_merge_target, normalize_predicate,
+    CANONICAL_MERGE_TARGETS, Fact, is_canonical_merge_target, is_visible_fact, normalize_predicate,
 };
 use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
@@ -247,7 +246,7 @@ impl<'a> MemoryMaintenancePass<'a> {
         let groups: Vec<_> = groups
             .into_iter()
             .filter_map(|mut group| {
-                group.facts.retain(MemoryRetriever::visible_fact);
+                group.facts.retain(is_visible_fact);
                 (!group.facts.is_empty()).then_some(group)
             })
             .collect();
