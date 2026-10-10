@@ -1,6 +1,5 @@
 use super::*;
 use haven_common::{CapabilityProfile, CapabilitySupport};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 impl OpenAiResponsesAdapter {
     pub(super) fn wire_capability_profile() -> CapabilityProfile {
@@ -27,11 +26,8 @@ impl OpenAiResponsesAdapter {
             return None;
         }
 
-        if self.prompt_cache_key_state.load(Ordering::Relaxed) == PROMPT_CACHE_KEY_UNSUPPORTED {
-            let retry_at = self.prompt_cache_key_retry_at.load(Ordering::Relaxed);
-            if retry_at == 0 || current_epoch_seconds() < retry_at {
-                return None;
-            }
+        if !self.prompt_cache_key_support.should_attach() {
+            return None;
         }
 
         let system = messages
@@ -97,27 +93,6 @@ impl OpenAiResponsesAdapter {
         Some(format!("haven-v1-{fingerprint}"))
     }
 
-    pub(super) fn prompt_cache_key_rejected(error: &LlmError) -> bool {
-        let LlmError::RequestFailed(message) = error else {
-            return false;
-        };
-        let message = message.to_ascii_lowercase();
-        message.contains("prompt_cache_key")
-            && [
-                "unknown",
-                "unsupported",
-                "unrecognized",
-                "extra field",
-                "extra fields",
-                "additional propert",
-                "not allowed",
-                "unexpected",
-                "invalid parameter",
-            ]
-            .iter()
-            .any(|hint| message.contains(hint))
-    }
-
     pub(super) fn cache_diagnostics(
         messages: &[CanonicalMessage],
         key_requested: bool,
@@ -129,21 +104,6 @@ impl OpenAiResponsesAdapter {
                 })
         });
         CacheDiagnostics::for_request(key_requested, system_split)
-    }
-
-    pub(super) fn remember_prompt_cache_key_rejection(&self) {
-        self.prompt_cache_key_state
-            .store(PROMPT_CACHE_KEY_UNSUPPORTED, Ordering::Relaxed);
-        self.prompt_cache_key_retry_at.store(
-            current_epoch_seconds().saturating_add(PROMPT_CACHE_KEY_REPROBE_SECS),
-            Ordering::Relaxed,
-        );
-    }
-
-    pub(super) fn remember_prompt_cache_key_success(&self) {
-        self.prompt_cache_key_retry_at.store(0, Ordering::Relaxed);
-        self.prompt_cache_key_state
-            .store(PROMPT_CACHE_KEY_ENABLED, Ordering::Relaxed);
     }
 
     pub(super) fn developer_input_rejected(error: &LlmError) -> bool {
@@ -167,11 +127,4 @@ impl OpenAiResponsesAdapter {
     pub(super) fn requires_reasoning_echo(&self) -> bool {
         requires_reasoning_echo(&self.endpoint)
     }
-}
-
-fn current_epoch_seconds() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
 }

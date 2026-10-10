@@ -1,4 +1,5 @@
 use super::*;
+use crate::adapters::openai::prompt_cache_key::is_unsupported_prompt_cache_key_error;
 
 impl OpenAiResponsesAdapter {
     pub(super) fn tool_name_map(
@@ -187,15 +188,15 @@ impl OpenAiResponsesAdapter {
             match self.send_request_once(url, body, stream).await {
                 Ok(response) => {
                     if body.prompt_cache_key.is_some() {
-                        self.remember_prompt_cache_key_success();
+                        self.prompt_cache_key_support.remember_success();
                     }
                     return Ok(response);
                 }
                 Err(error)
                     if body.prompt_cache_key.is_some()
-                        && Self::prompt_cache_key_rejected(&error) =>
+                        && is_unsupported_prompt_cache_key_error(&error) =>
                 {
-                    self.remember_prompt_cache_key_rejection();
+                    self.prompt_cache_key_support.remember_rejection();
                     body.prompt_cache_key = None;
                     body.cache_diagnostics.key_requested = false;
                     body.cache_diagnostics.downgraded = true;

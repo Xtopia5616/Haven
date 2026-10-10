@@ -33,6 +33,15 @@ use haven_common::config::ModelEndpoint;
 use haven_common::media::{CapabilityProfile, CapabilitySupport};
 use haven_common::prompts::COMPACTED_SUMMARY_PREFIX;
 use haven_common::types::{ContentPart, InjectSource};
+use std::time::{SystemTime, UNIX_EPOCH};
+
+/// Current Unix time in whole seconds for adapter-local expiry and retry windows.
+pub(in crate::adapters) fn current_epoch_seconds() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
 
 pub(crate) use crate::tool_names::{ToolNameMap, ToolNamePolicy};
 

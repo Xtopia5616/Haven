@@ -1,6 +1,6 @@
 # Haven 架构与 crate 职责
 
-> 版本: v1.20 | 日期: 2026-10-10
+> 版本: v1.21 | 日期: 2026-10-10
 > 范围: `crates/` (Rust 后端, Tauri 2)
 > 原则: **依赖单向、叶子优先**。上层 crate 只依赖下层，绝不反向依赖；共享数据与类型放叶子（`haven-common`），
 > 组件职责按「谁拥有实现、谁只消费接口」划分。
@@ -206,6 +206,9 @@ OS 句柄和进程生命周期适配不属于该共享契约面，统一归 `hav
   - `deepgram` / `assemblyai` → STT only
 - `adapters/tool_arguments.rs`：adapter 私有的工具参数 wire 序列化与完成流解析；Common 中的
   `CanonicalToolCall` 不负责 provider JSON 字符串或流截断修复。
+- `adapters/openai/prompt_cache_key.rs`：OpenAI Chat 与 Responses 共用 per-adapter prompt cache key
+  支持状态、重探测期限和拒绝错误分类；key 生成与 wire 降级仍由各协议 adapter 拥有。
+  `adapters::current_epoch_seconds` 统一提供当前 Unix 秒读取，不合并各 provider 的期限策略（ADR 0861）。
 - `FinishReason` 是 provider-neutral 结束分类；各 adapter 单独处理协议专有值，共用标签通过
   `FinishReason::parse_provider_value` 归一化。
 - `Usage.cache_miss_tokens` 是 adapter 写入的归一化字段；调用方用

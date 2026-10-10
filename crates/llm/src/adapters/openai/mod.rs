@@ -6,7 +6,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 use std::time::Duration;
 
 use sha2::{Digest, Sha256};
@@ -38,6 +37,7 @@ use haven_common::config::ModelEndpoint;
 
 mod features;
 mod mapping;
+pub(super) mod prompt_cache_key;
 mod request;
 mod response;
 mod stream;
@@ -54,6 +54,8 @@ pub(super) use stream::*;
 #[allow(unused_imports)]
 pub(super) use wire::*;
 
+use prompt_cache_key::PromptCacheKeySupport;
+
 /// OpenAI-compatible chat adapter: the common wire format spoken by OpenAI,
 /// Ollama, vLLM, DeepSeek, llama.cpp, xAI Grok, and most third-party gateways.
 ///
@@ -66,18 +68,9 @@ pub struct OpenAiAdapter {
     /// Reported `LlmClient::style()` — `"openai-chat"` (default) or `"xai"`.
     style: &'static str,
     web_search_mode: WebSearchMode,
-    /// Whether the official OpenAI Chat endpoint accepts its optional
-    /// `prompt_cache_key`. A provider rejection is remembered so we only pay
-    /// one compatibility retry instead of failing every request. The negative
-    /// result expires so support can be rediscovered without rebuilding.
-    prompt_cache_key_state: AtomicU8,
-    prompt_cache_key_retry_at: AtomicU64,
+    /// Per-adapter compatibility state for the optional OpenAI `prompt_cache_key`.
+    prompt_cache_key_support: PromptCacheKeySupport,
 }
-
-const PROMPT_CACHE_KEY_UNKNOWN: u8 = 0;
-const PROMPT_CACHE_KEY_ENABLED: u8 = 1;
-const PROMPT_CACHE_KEY_UNSUPPORTED: u8 = 2;
-const PROMPT_CACHE_KEY_REPROBE_SECS: u64 = 300;
 
 impl OpenAiAdapter {
     pub fn try_new(endpoint: ModelEndpoint) -> Result<Self, LlmError> {
@@ -95,8 +88,7 @@ impl OpenAiAdapter {
             client,
             style,
             web_search_mode,
-            prompt_cache_key_state: AtomicU8::new(PROMPT_CACHE_KEY_UNKNOWN),
-            prompt_cache_key_retry_at: AtomicU64::new(0),
+            prompt_cache_key_support: PromptCacheKeySupport::new(),
         })
     }
 

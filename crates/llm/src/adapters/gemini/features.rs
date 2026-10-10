@@ -1,7 +1,6 @@
 use super::*;
 use haven_common::{CapabilityProfile, CapabilitySupport};
 use sha2::{Digest, Sha256};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 impl GeminiAdapter {
     pub(super) fn wire_capability_profile() -> CapabilityProfile {
@@ -59,11 +58,4 @@ impl GeminiAdapter {
             .iter()
             .any(|hint| message.contains(hint))
     }
-}
-
-pub(super) fn current_epoch_seconds() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
 }

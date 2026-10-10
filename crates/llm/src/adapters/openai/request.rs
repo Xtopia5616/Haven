@@ -1,3 +1,4 @@
+use super::prompt_cache_key::is_unsupported_prompt_cache_key_error;
 use super::*;
 
 impl OpenAiAdapter {
@@ -173,14 +174,15 @@ impl OpenAiAdapter {
         match self.send_chat_request_once(url, body, stream).await {
             Ok(response) => {
                 if body.prompt_cache_key.is_some() {
-                    self.remember_prompt_cache_key_success();
+                    self.prompt_cache_key_support.remember_success();
                 }
                 Ok(response)
             }
             Err(error)
-                if body.prompt_cache_key.is_some() && Self::prompt_cache_key_rejected(&error) =>
+                if body.prompt_cache_key.is_some()
+                    && is_unsupported_prompt_cache_key_error(&error) =>
             {
-                self.remember_prompt_cache_key_rejection();
+                self.prompt_cache_key_support.remember_rejection();
                 body.prompt_cache_key = None;
                 body.cache_diagnostics.key_requested = false;
                 body.cache_diagnostics.downgraded = true;

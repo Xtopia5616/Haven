@@ -1,4 +1,5 @@
 use super::*;
+use crate::adapters::current_epoch_seconds;
 
 impl GeminiAdapter {
     pub(super) fn api_base(&self) -> String {

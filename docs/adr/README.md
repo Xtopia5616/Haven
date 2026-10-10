@@ -839,3 +839,4 @@
 - [0858：集中 filesystem reparse metadata 检查](0858-centralize-filesystem-reparse-metadata-check.md)
 - [0859：集中工具 root name 投影](0859-centralize-tool-root-name-projection.md)
 - [0860：集中 UI 运行时值校验原子谓词](0860-centralize-ui-runtime-value-guards.md)
+- [0861：共享 OpenAI prompt cache key 支持状态](0861-share-openai-prompt-cache-key-state.md)

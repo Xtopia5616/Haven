@@ -166,6 +166,8 @@ Memory summary extraction marker 的序列化值解码为 `DecodedSummaryExtract
 
 LLM `ModelDirectory::resolve_client` 对执行请求返回 `ResolvedModelClient { model_id, client }`：model identity 用于并发/限流/健康状态关联，`LlmClient` 是实际执行请求的 adapter。非执行目录缺失时使用默认 adapter 的 `select_client` 保持独立语义。
 
+OpenAI Chat 与 Responses adapter 各自持有独立的 `PromptCacheKeySupport` 实例，共享 `adapters/openai/prompt_cache_key.rs` 的支持/拒绝状态机和错误分类；请求 key 的 wire 投影仍属于各协议 adapter。LLM 内 Unix 秒读取统一叫 `current_epoch_seconds`，过期时长与重试状态仍由具体 provider owner 决定（ADR 0861）。
+
 Tools 对结构化输出中 Ask 与通知 side-channel 的解析结果分别使用 `AskSignal` 和 `NotificationSignal`；前者保留可选 question 与选项列表，后者以 `Option<NotificationSignal>` 表示是否请求通知。汇总传递给 Agent 的 `ToolSignals` 形状继续由其独立的 side-channel 契约拥有。
 
 跨端枚举的允许值以 generated IPC contract 为单一来源；UI 可以为这些值维护展示标签，但选项数组应从生成值派生，并让边界/事件 contract 直接引用生成类型，不另手写相同 union。

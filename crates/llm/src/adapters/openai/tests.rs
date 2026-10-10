@@ -609,8 +609,8 @@ fn prompt_cache_key_changes_when_tools_change_or_is_unsupported() {
     assert_ne!(first, changed);
 
     client
-        .prompt_cache_key_state
-        .store(PROMPT_CACHE_KEY_UNSUPPORTED, Ordering::Relaxed);
+        .prompt_cache_key_support
+        .force_unsupported_for_test(0);
     assert!(
         client
             .build_request_body(vec![system, user], Vec::new(), false)
@@ -713,20 +713,26 @@ fn prompt_cache_key_tracks_raw_media_surface_without_hashing_media_bytes() {
 
 #[test]
 fn prompt_cache_key_rejection_detection_is_specific() {
-    assert!(OpenAiAdapter::prompt_cache_key_rejected(
-        &LlmError::RequestFailed("400: Unknown parameter: prompt_cache_key".into())
-    ));
-    assert!(OpenAiAdapter::prompt_cache_key_rejected(
-        &LlmError::RequestFailed("invalid parameter 'prompt_cache_key'".into())
-    ));
-    assert!(OpenAiAdapter::prompt_cache_key_rejected(
-        &LlmError::RequestFailed(
+    assert!(
+        super::prompt_cache_key::is_unsupported_prompt_cache_key_error(&LlmError::RequestFailed(
+            "400: Unknown parameter: prompt_cache_key".into()
+        ))
+    );
+    assert!(
+        super::prompt_cache_key::is_unsupported_prompt_cache_key_error(&LlmError::RequestFailed(
+            "invalid parameter 'prompt_cache_key'".into()
+        ))
+    );
+    assert!(
+        super::prompt_cache_key::is_unsupported_prompt_cache_key_error(&LlmError::RequestFailed(
             "Additional properties are not allowed ('prompt_cache_key' was unexpected)".into()
-        )
-    ));
-    assert!(!OpenAiAdapter::prompt_cache_key_rejected(
-        &LlmError::RequestFailed("400: maximum context length exceeded".into())
-    ));
+        ))
+    );
+    assert!(
+        !super::prompt_cache_key::is_unsupported_prompt_cache_key_error(&LlmError::RequestFailed(
+            "400: maximum context length exceeded".into()
+        ))
+    );
 }
 
 #[tokio::test]
@@ -855,9 +861,8 @@ async fn stream_eof_without_finish_reason_rejects_complete_tool_call() {
 fn rejected_prompt_cache_key_is_reprobed_after_cooldown() {
     let client = OpenAiAdapter::new(ModelEndpoint::default());
     client
-        .prompt_cache_key_state
-        .store(PROMPT_CACHE_KEY_UNSUPPORTED, Ordering::Relaxed);
-    client.prompt_cache_key_retry_at.store(1, Ordering::Relaxed);
+        .prompt_cache_key_support
+        .force_unsupported_for_test(1);
 
     let key = client.prompt_cache_key(
         &[CanonicalMessage::system(vec![ContentPart::text(
