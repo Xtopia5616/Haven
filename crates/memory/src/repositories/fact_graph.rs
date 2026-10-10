@@ -115,6 +115,7 @@ impl<'db> FactGraph<'db> {
         Self { db }
     }
 
+    #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn insert(
         &self,
         subject: &str,
@@ -132,6 +133,7 @@ impl<'db> FactGraph<'db> {
     /// Insert a fact with an optional reference to the message it came from
     /// and an explicit durability rating (0..1).
     #[allow(clippy::too_many_arguments)]
+    #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn insert_with_source_ref(
         &self,
         subject: &str,
@@ -423,6 +425,7 @@ impl<'db> FactGraph<'db> {
         Ok(deleted as u64)
     }
 
+    #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn ensure(
         &self,
         subject: &str,
@@ -452,6 +455,7 @@ impl<'db> FactGraph<'db> {
     /// Insert, reinforce or correct an inferred fact while enforcing user
     /// authority, single-valued predicates and polarity demotion.
     #[allow(clippy::too_many_arguments)]
+    #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn upsert(
         &self,
         subject: &str,

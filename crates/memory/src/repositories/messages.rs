@@ -179,6 +179,7 @@ pub struct PendingSessionInput {
 }
 
 impl Database {
+    #[cfg(any(test, feature = "test-support"))]
     pub fn add_message(
         &self,
         session_id: &str,
@@ -634,6 +635,7 @@ impl Database {
     }
 
     /// Return the highest durable ingress cursor for a session.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn get_last_message_ingress_seq(&self, session_id: &str) -> i64 {
         let conn = self.conn();
         conn.query_row(
@@ -664,6 +666,7 @@ impl Database {
     /// before the text they interrupted. The ReAct loop calls this when it
     /// actually injects the message, moving the row to its logical position
     /// (after the interrupted thought, before the answer to it).
+    #[cfg(any(test, feature = "test-support"))]
     pub fn update_message_created_at(
         &self,
         session_id: &str,
@@ -682,6 +685,7 @@ impl Database {
     /// Delete every message in a session whose `created_at` is strictly after
     /// the given timestamp. Used by rollback to discard messages persisted
     /// after the branch point.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn delete_messages_after(&self, session_id: &str, created_at: &str) -> anyhow::Result<()> {
         let conn = self.conn();
         conn.execute(
@@ -695,6 +699,7 @@ impl Database {
     /// Delete every message in a session whose `created_at` is at or after
     /// the given timestamp (inclusive). Used by user-message rollback to also
     /// remove the rolled-back user message itself.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn delete_messages_from(&self, session_id: &str, created_at: &str) -> anyhow::Result<()> {
         let conn = self.conn();
         conn.execute(
@@ -714,6 +719,7 @@ impl Database {
     /// `created_at` is RFC3339 like messages), so discarded steps leave no
     /// orphaned usage history behind. `session_usage` is then rebuilt from
     /// the remaining detail rows so cumulative token stats stay accurate.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn truncate_session_after(
         &self,
         session_id: &str,

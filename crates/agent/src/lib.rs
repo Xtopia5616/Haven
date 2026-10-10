@@ -50,7 +50,7 @@ pub use memory_runtime::{
     MemoryEventProcessOutcome, MemoryLiveConsumerHandoff, MemoryReady, MemoryStartup,
     PreparedMemoryRuntime,
 };
-pub use memory_service::{MemoryService, MemoryServiceStores};
+pub use memory_service::MemoryService;
 pub use memory_worker::MemoryWorker;
 pub use prompt::SystemPromptBuilder;
 pub use prompt_context::{

@@ -482,6 +482,7 @@ impl Database {
     /// later finalized by [`Database::finish_tool_run`]; terminal rows stay in the
     /// table as history. Scheduled-only columns remain NULL for background ToolRuns
     /// because each kind owns its own payload fields.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn save_tool_run(
         &self,
         tool_run_id: &str,

@@ -37,6 +37,7 @@ impl Database {
     }
 
     /// Return the in-flight text checkpoint for a session, if any.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn get_partial_message(&self, session_id: &str) -> Option<PartialMessageCheckpoint> {
         let conn = self.conn();
         conn.query_row(

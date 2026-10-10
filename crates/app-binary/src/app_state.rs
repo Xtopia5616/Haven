@@ -4,15 +4,14 @@ use crate::events::AppBootstrapEvent;
 use crate::router_media_builder::build_router_media;
 use crate::runtime::{ApplicationRuntime, RuntimeServices};
 use haven_agent::SessionSupervisor;
-use haven_agent::{AgentLayer, MemoryService, MemoryServiceStores, PendingSessionRecovery};
+use haven_agent::{AgentLayer, MemoryService, PendingSessionRecovery};
 #[cfg(test)]
 use haven_common::config::InMemoryCredentialStore;
 use haven_common::config::{ConfigLoader, ConfigService, CredentialStore, LogLevel};
 use haven_input::InputPipeline;
-use haven_memory::{
-    Database, MemoryEmbeddingStore, MemoryFactExtractionStore, MemoryFactStore,
-    MemoryMaintenanceStore, MemoryRecallStore, MemoryStore, SessionStore, ToolRunStore,
-};
+#[cfg(test)]
+use haven_memory::Database;
+use haven_memory::{MemoryPersistence, SessionStore};
 use haven_platform::credentials::PlatformCredentialStore;
 use haven_tools::ToolsFacade;
 use std::collections::HashMap;
@@ -302,12 +301,12 @@ impl AppState {
         credential_store: Arc<dyn CredentialStore>,
     ) -> anyhow::Result<Self> {
         let t0 = std::time::Instant::now();
-        let db = Arc::new(Database::open(db_path)?);
-        let session_store = SessionStore::new(db.clone());
+        let memory_persistence = MemoryPersistence::open(db_path)?;
+        let session_store = memory_persistence.session_store();
         // Keep the supervisor's live event channel separate from the app's
         // command/read store, as it was before the constructor accepted stores.
-        let supervisor_session_store = SessionStore::new(db.clone());
-        let memory_fact_store = MemoryFactStore::new(db.clone());
+        let supervisor_session_store = memory_persistence.session_store();
+        let memory_fact_store = memory_persistence.memory_fact_store();
         tracing::debug!(
             "AppState::new phase=db elapsed={}ms",
             t0.elapsed().as_millis()
@@ -340,16 +339,8 @@ impl AppState {
             cfg.session.max_concurrent.max(1),
         ));
 
-        let memory_service_stores = MemoryServiceStores {
-            memory: MemoryStore::new(db.clone()),
-            facts: memory_fact_store.clone(),
-            fact_extraction: MemoryFactExtractionStore::new(db.clone()),
-            maintenance: MemoryMaintenanceStore::new(db.clone()),
-            recall: MemoryRecallStore::new(db.clone()),
-            embeddings: MemoryEmbeddingStore::new(db.clone()),
-        };
         let memory_service = Arc::new(MemoryService::new(
-            memory_service_stores,
+            memory_persistence.memory_stores(),
             Some(router.clone()),
             context_limits.embedding_chunk_size,
         ));
@@ -554,7 +545,7 @@ impl AppState {
         // setter rebuilt the catalog and delayed window creation.
         tools
             .wire_startup(haven_tools::StartupWiring {
-                tool_run_store: Some(ToolRunStore::new(db.clone())),
+                tool_run_store: Some(memory_persistence.tool_run_store()),
                 tool_settings: cfg.tool_settings.clone(),
                 default_shell: cfg.default_shell,
                 context_limits: context_limits_clone,

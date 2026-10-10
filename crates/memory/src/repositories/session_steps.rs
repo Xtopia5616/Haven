@@ -130,6 +130,7 @@ impl Database {
         Ok(now)
     }
 
+    #[cfg(any(test, feature = "test-support"))]
     fn tool_step_from_fields(fields: ToolStepFields<'_>, created_at: String) -> SessionStep {
         SessionStep {
             id: fields.id.into(),
@@ -242,6 +243,7 @@ impl Database {
     /// (`None` mints a fresh one); passing the same id lets execute_step
     /// persist the row the frontend's streamed card references.
     #[allow(clippy::too_many_arguments)]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn create_tool_step(
         &self,
         session_id: &str,
@@ -306,6 +308,7 @@ impl Database {
     }
 
     /// Complete an action step by recording its observation.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn complete_tool_step(
         &self,
         id: &str,
@@ -443,6 +446,7 @@ impl Database {
     /// Used by retry/rollback: the re-run OVERWRITES the previous attempt's
     /// recorded steps instead of appending to them, so the resume history
     /// stays linear — only branching creates separate timelines.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn delete_session_steps_after(
         &self,
         session_id: &str,

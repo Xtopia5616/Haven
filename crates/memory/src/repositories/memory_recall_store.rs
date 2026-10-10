@@ -15,7 +15,17 @@ pub struct MemoryRecallStore {
 }
 
 impl MemoryRecallStore {
+    #[cfg(feature = "test-support")]
     pub fn new(db: Arc<Database>) -> Self {
+        Self::from_database(db)
+    }
+
+    #[cfg(not(feature = "test-support"))]
+    pub(crate) fn new(db: Arc<Database>) -> Self {
+        Self::from_database(db)
+    }
+
+    fn from_database(db: Arc<Database>) -> Self {
         Self { db }
     }
 

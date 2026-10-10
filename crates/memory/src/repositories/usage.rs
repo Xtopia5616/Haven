@@ -737,6 +737,7 @@ impl Database {
     /// (zeros when none remain). Called after rollback/truncate so discarded
     /// steps do not leave inflated totals, and resume does not fall back to
     /// estimate_session_usage.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn rebuild_session_usage_from_calls(&self, session_id: &str) -> anyhow::Result<()> {
         let conn = self.conn();
         Self::rebuild_session_usage_from_calls_conn(&conn, session_id)
@@ -744,6 +745,7 @@ impl Database {
 
     /// Delete `llm_usage` rows at-or-after `ts` (inclusive), matching
     /// user-message rollback's `delete_messages_from` cutoff.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn delete_llm_usage_from(&self, session_id: &str, created_at: &str) -> anyhow::Result<()> {
         let conn = self.conn();
         conn.execute(
@@ -755,6 +757,7 @@ impl Database {
 
     /// Remove one detail row by id (used when a detached persist lands after
     /// its session epoch was invalidated by rollback).
+    #[cfg(any(test, feature = "test-support"))]
     pub fn delete_llm_usage_by_id(&self, id: &str) -> anyhow::Result<()> {
         let conn = self.conn();
         conn.execute("DELETE FROM llm_usage WHERE id = ?1", rusqlite::params![id])?;

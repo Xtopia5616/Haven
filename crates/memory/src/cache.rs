@@ -362,6 +362,7 @@ impl QueryResultCache {
         result
     }
 
+    #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn put_embeddings(
         &self,
         entity_type: &str,

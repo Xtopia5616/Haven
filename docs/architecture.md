@@ -352,9 +352,11 @@ Agent 的 `memory_service.rs` 是 prompt/worker 共用的 typed memory 边界：
 `all` 是 UI 筛选项，只展开为两次独立查询，不进入后端 domain enum（ADR 0732）。Agent 保留 prompt
 查询归一化、embedding provider 调用、候选合并与预算；`MemoryEmbeddingStore` 负责
 embedding 生命周期读写和 LSH 维护，`memory_index.rs` 保留模型路由、provider 校验、
-批处理和维护门控（ADR 0021、0303、0304）。组合根 `AppState` 在已有 Database、Router
-和 `ContextLimitsConfig` 后创建唯一 `MemoryService`，按配置中的 `embedding_chunk_size`
-初始化并注入 `AgentLayer::build`；该构造返回 `AgentStartup { agent, memory_startup }`。
+批处理和维护门控（ADR 0021、0303、0304）。组合根 `AppState` 通过 Memory 的
+`MemoryPersistence::open` 打开数据库并获取 SessionStore 与 typed stores；在 Router 和
+`ContextLimitsConfig` 确定后，将 `MemoryStores`、Router 和配置中的 `embedding_chunk_size` 注入唯一
+`MemoryService`，再将该 service 注入 `AgentLayer::build`；该构造返回
+`AgentStartup { agent, memory_startup }`。
 AgentLayer 从同一 service 派生 stores、共享的 `MemoryWorker` 与 `SystemPromptBuilder`；
 `MemoryStartup` 持有唯一 `MemoryRuntime`，并由 ApplicationRuntime 接管长期所有权。Prompt-memory
 cache、embedding index 与 worker memory capability 仍属于同一服务实例（ADR 0364、0367）。

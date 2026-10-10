@@ -7,6 +7,7 @@ impl Database {
     /// Items live in the same id space as messages (`msg-{uuid32}`): the
     /// `episode` embedding domain covers these summaries, and a single shared
     /// prefix keeps `entity_id` values unambiguous without a separate prefix.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn add_episode(&self, session_id: &str, summary: &str) -> anyhow::Result<String> {
         let id = haven_common::types::new_id("msg");
         self.add_episode_with_id(session_id, summary, &id)?;
@@ -16,6 +17,7 @@ impl Database {
     /// Persist a compaction summary under a caller-minted `msg-*` id so the
     /// canonical summary bubble and `memory_items` row share one identity.
     /// `id` must already be a `msg-*` value from `new_id("msg")`.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn add_episode_with_id(
         &self,
         session_id: &str,
@@ -95,6 +97,7 @@ impl Database {
 
     /// Like [`Self::add_episode_with_id`], with optional topic/entity tags.
     /// Stored as JSON string arrays for FTS + future filters.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn add_episode_structured(
         &self,
         session_id: &str,

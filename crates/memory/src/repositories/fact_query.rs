@@ -133,6 +133,7 @@ fn sort_facts_effective(facts: &mut [Fact]) {
 impl Database {
     /// Fetch a single fact by id. Used by the prompt builder to resolve vector
     /// recall hits back into full facts for ranking and rendering.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn get_fact_by_id(&self, id: &str) -> anyhow::Result<Option<Fact>> {
         let conn = self.conn();
         let mut stmt = conn.prepare(&format!("SELECT {FACT_COLS} FROM facts WHERE id = ?1"))?;
@@ -406,6 +407,7 @@ impl Database {
     /// Full-text search across subject, predicate, object and tags. FTS5
     /// trigram handles normal terms; escaped LIKE supplements terms shorter
     /// than three characters, which trigram intentionally does not index.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn search_facts(&self, query: &str) -> anyhow::Result<Vec<Fact>> {
         self.search_facts_scoped(query, None)
     }
@@ -434,6 +436,7 @@ impl Database {
 
     /// Multi-term prompt recall: one FTS OR query with SQL LIMIT, unioned with
     /// short-term LIKE hits when trigram cannot index them.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn search_facts_any(&self, terms: &[&str], limit: usize) -> anyhow::Result<Vec<Fact>> {
         self.search_facts_any_scoped(terms, limit, None)
     }
@@ -465,6 +468,7 @@ impl Database {
 
     /// Return all facts that carry the given tag using exact JSON-array
     /// membership rather than a substring scan.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn list_facts_by_tag(&self, tag: &str) -> anyhow::Result<Vec<Fact>> {
         let conn = self.conn();
         let mut stmt = conn.prepare(&format!(

@@ -407,6 +407,7 @@ impl Database {
         Ok(n as usize)
     }
 
+    #[cfg(any(test, feature = "test-support"))]
     pub fn get_embedding(
         &self,
         entity_type: &str,
@@ -417,6 +418,7 @@ impl Database {
 
     /// Like [`Self::get_embedding`], optionally restricted to one model
     /// (P2-13). Pass `Some(model)` so mixed-model rows cannot be returned.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn get_embedding_for_model(
         &self,
         entity_type: &str,
@@ -453,6 +455,7 @@ impl Database {
     /// All stored embeddings of one domain, newest first. Cached per domain
     /// (the vector index is small and read far more often than written), so
     /// brute-force recall does not re-read + decode the whole table per query.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn list_embeddings(&self, entity_type: &str) -> anyhow::Result<Vec<EmbeddedText>> {
         validate_entity_type(entity_type)?;
         if let Some(cached) = self.cache_get_embeddings(entity_type) {
@@ -590,6 +593,7 @@ impl Database {
     /// is known (P1-4). Always filters by `model` (P2-13); empty model is
     /// fail-closed (no hits). Unfiltered calls score at most
     /// [`EMBEDDING_SEARCH_SCAN_CAP`] newest rows of that model.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn search_embeddings(
         &self,
         entity_type: &str,

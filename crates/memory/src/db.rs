@@ -540,6 +540,7 @@ impl Database {
         self.cache.get_embeddings(entity_type)
     }
 
+    #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn cache_put_embeddings(
         &self,
         entity_type: &str,

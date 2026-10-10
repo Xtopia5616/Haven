@@ -110,6 +110,7 @@ impl SessionOrigin {
 }
 
 impl Database {
+    #[cfg(any(test, feature = "test-support"))]
     pub fn create_session(&self, input_text: &str) -> anyhow::Result<Session> {
         self.create_session_with_origin(input_text, SessionOrigin::User)
     }

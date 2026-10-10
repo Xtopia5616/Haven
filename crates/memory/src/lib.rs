@@ -1,12 +1,17 @@
 mod cache;
 mod db;
 mod embeddings;
+mod persistence;
 mod recall;
 mod repositories;
 mod schema;
 
+#[cfg(not(feature = "test-support"))]
+pub(crate) use db::Database;
+#[cfg(feature = "test-support")]
 pub use db::Database;
 pub use embeddings::EmbeddedText;
+pub use persistence::{MemoryPersistence, MemoryStores};
 pub use recall::{
     MAX_MEMORY_QUERY_CHARS, MAX_RECALL_LIMIT, MemoryEntityKind, MemoryHit, MemoryQuery,
     MemoryRecall, MemoryRecallDiagnostics, MemoryRecallEmptyReason, MemoryRecallMode,

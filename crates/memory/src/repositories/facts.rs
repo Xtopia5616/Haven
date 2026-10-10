@@ -231,6 +231,7 @@ pub(crate) fn all_single_valued_predicates() -> impl Iterator<Item = &'static st
 }
 
 impl Database {
+    #[cfg(any(test, feature = "test-support"))]
     pub fn insert_fact(
         &self,
         subject: &str,
@@ -248,6 +249,7 @@ impl Database {
     /// Insert a fact with an optional message reference and durability rating.
     /// The predicate is normalized before it reaches the graph writer.
     #[allow(clippy::too_many_arguments)]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn insert_fact_with_source_ref(
         &self,
         subject: &str,
@@ -295,6 +297,7 @@ impl Database {
     /// Insert a fact only if the same (subject, predicate, object) triple
     /// does not already exist. Returns the existing fact when present, so
     /// repeated startup seeding never accumulates duplicates.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn ensure_fact(
         &self,
         subject: &str,
@@ -326,6 +329,7 @@ impl Database {
     /// durability variant additionally records the incoming 0..1 durability
     /// rating (reinforcement keeps the higher of the two).
     #[allow(clippy::too_many_arguments)]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn upsert_fact(
         &self,
         subject: &str,
@@ -344,6 +348,7 @@ impl Database {
     }
 
     #[allow(clippy::too_many_arguments)]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn upsert_fact_with_durability(
         &self,
         subject: &str,

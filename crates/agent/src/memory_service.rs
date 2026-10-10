@@ -17,8 +17,8 @@ use haven_memory::{
     MAX_MEMORY_QUERY_CHARS, MAX_RECALL_LIMIT, MemoryEntityKind, MemoryQuery, MemoryRecall,
 };
 use haven_memory::{
-    MemoryEmbeddingStore, MemoryFactExtractionStore, MemoryFactStore, MemoryMaintenanceStore,
-    MemoryRecallStore, MemoryStore,
+    MemoryFactExtractionStore, MemoryFactStore, MemoryMaintenanceStore, MemoryRecallStore,
+    MemoryStore, MemoryStores,
 };
 
 use crate::memory_index::MemoryEmbeddingIndex;
@@ -84,34 +84,8 @@ impl PromptMemoryCache {
 }
 
 /// Memory capability boundary shared by prompt context, tools, and the
-/// background memory worker. The composition root supplies only typed store
-/// capabilities; this service never receives or retains a raw Database.
-pub struct MemoryServiceStores {
-    pub memory: MemoryStore,
-    pub facts: MemoryFactStore,
-    pub fact_extraction: MemoryFactExtractionStore,
-    pub maintenance: MemoryMaintenanceStore,
-    pub recall: MemoryRecallStore,
-    pub embeddings: MemoryEmbeddingStore,
-    #[cfg(test)]
-    test_database: Option<Arc<Database>>,
-}
-
-#[cfg(test)]
-impl From<Arc<Database>> for MemoryServiceStores {
-    fn from(db: Arc<Database>) -> Self {
-        Self {
-            memory: MemoryStore::new(db.clone()),
-            facts: MemoryFactStore::new(db.clone()),
-            fact_extraction: MemoryFactExtractionStore::new(db.clone()),
-            maintenance: MemoryMaintenanceStore::new(db.clone()),
-            recall: MemoryRecallStore::new(db.clone()),
-            embeddings: MemoryEmbeddingStore::new(db.clone()),
-            test_database: Some(db),
-        }
-    }
-}
-
+/// background memory worker. The service accepts the Memory-owned typed store
+/// bundle and never receives or retains a raw Database in production.
 pub struct MemoryService {
     #[cfg(test)]
     test_database: Option<Arc<Database>>,
@@ -127,22 +101,21 @@ pub struct MemoryService {
 
 impl MemoryService {
     pub fn new(
-        stores: impl Into<MemoryServiceStores>,
+        stores: impl Into<MemoryStores>,
         router: Option<Arc<LlmRouter>>,
         embed_chunk_size: usize,
     ) -> Self {
         let stores = stores.into();
         #[cfg(test)]
-        let test_database = stores.test_database.clone();
-        let MemoryServiceStores {
+        let test_database = stores.database_handle_for_test();
+        let MemoryStores {
             memory,
             facts: fact_store,
             fact_extraction: fact_extraction_store,
             maintenance: maintenance_store,
             recall: recall_store,
             embeddings,
-            #[cfg(test)]
-                test_database: _,
+            ..
         } = stores;
         let embedding_index = router.as_ref().map(|router| {
             MemoryEmbeddingIndex::new(
