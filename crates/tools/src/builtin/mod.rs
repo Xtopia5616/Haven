@@ -1369,7 +1369,7 @@ mod tests {
     async fn diagnostics_status_confirms_network_access_but_errors_does_not() {
         use haven_common::types::PermissionMode;
 
-        let authorization = crate::AuthorizationEngine::new();
+        let authorization = crate::security::AuthorizationEngine::new();
         authorization
             .set_permission_mode(PermissionMode::Default)
             .await;
@@ -1446,7 +1446,7 @@ mod tests {
                 network_access: attributes.network_access,
             },
         );
-        let engine = crate::AuthorizationEngine::new();
+        let engine = crate::security::AuthorizationEngine::new();
         for network_policy in [
             haven_common::types::NetworkPolicy::Deny,
             haven_common::types::NetworkPolicy::Restricted,
@@ -1541,7 +1541,7 @@ mod tests {
             ),
         ];
 
-        let engine = crate::AuthorizationEngine::new();
+        let engine = crate::security::AuthorizationEngine::new();
         engine
             .set_boundaries(
                 SandboxMode::FullAccess,

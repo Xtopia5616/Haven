@@ -11,9 +11,7 @@ use haven_memory::{Database, ToolRunStore};
 use haven_memory::{SessionAuthorizationGrant, SessionStore};
 #[cfg(test)]
 use haven_tools::ToolsFacade;
-use haven_tools::{
-    AuthorizationDecision, AuthorizationEngine, ToolResult, ToolRunService, is_silent_tool_call,
-};
+use haven_tools::{AuthorizationDecision, ToolResult, ToolRunService, is_silent_tool_call};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::future::Future;
@@ -344,13 +342,9 @@ pub struct SessionSupervisor {
     /// broadcast observe interaction/control events, not just transcript rows.
     store: SessionStore,
     execution: Arc<dyn tool_ports::ToolExecutionPort>,
-    tool_authorization: Arc<dyn tool_ports::ToolAuthorizationPort>,
+    authorization: Arc<dyn tool_ports::ToolAuthorizationPort>,
     #[cfg(test)]
     tool_catalog: Arc<dyn crate::react::ToolCatalogPort>,
-    /// Live authorization capability shared with the ToolsFacade execution
-    /// boundary. Session lifecycle code accesses this narrow capability
-    /// directly instead of exposing a process-service bundle.
-    authorization: Arc<AuthorizationEngine>,
     /// ToolCall lifecycle capability used for session-owned cancellation and
     /// terminal ToolRun reconciliation.
     tool_runs: Arc<ToolRunService>,
@@ -465,9 +459,8 @@ impl SessionSupervisor {
     pub fn new(store: SessionStore, ports: SessionToolPorts, max_concurrent: usize) -> Self {
         let SessionToolPorts {
             execution,
-            tool_authorization,
-            catalog: _catalog,
             authorization,
+            catalog: _catalog,
             tool_runs,
             session_tool_overlay,
             managed_asset_leases,
@@ -479,7 +472,6 @@ impl SessionSupervisor {
             partials: Arc::new(crate::partial::PartialStore::new(store.clone())),
             store,
             execution,
-            tool_authorization,
             #[cfg(test)]
             tool_catalog: _catalog,
             authorization,

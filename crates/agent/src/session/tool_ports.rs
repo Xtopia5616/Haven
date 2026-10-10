@@ -1,11 +1,16 @@
 //! Agent-owned ports for tool observations.
 
 use async_trait::async_trait;
-use haven_common::types::{MessageAttachment, RiskLevel};
+use haven_common::config::{SecurityConfig, StoredPermission};
+use haven_common::types::{
+    CapabilityScope, MessageAttachment, NetworkPolicy, PermissionEffect, PermissionMode,
+    PermissionScope, RiskLevel, SandboxMode,
+};
 #[cfg(test)]
 use haven_tools::ToolsFacade;
 use haven_tools::{
-    AuthorizationEngine, AuthorizationRequest, ToolRegistration, ToolResult, ToolRunService,
+    AuthorizationDecision, AuthorizationRequest, ConfirmationReceipt, ToolRegistration, ToolResult,
+    ToolRunService,
 };
 use serde_json::Value;
 use std::sync::Arc;
@@ -37,8 +42,10 @@ pub trait ToolExecutionPort: Send + Sync {
     ) -> Vec<ToolRegistration>;
 }
 
-/// Prepares authorization requests from live policy or a turn's catalog view.
-/// Decisions and confirmation receipts remain owned by `AuthorizationEngine`.
+/// The session runtime's complete authorization boundary.
+///
+/// Request preparation, decisions, receipts and grants cross this port as
+/// typed values. The concrete policy engine remains owned by Tools.
 #[async_trait]
 pub trait ToolAuthorizationPort: Send + Sync {
     async fn risk_level(
@@ -62,6 +69,47 @@ pub trait ToolAuthorizationPort: Send + Sync {
         tool_name: &str,
         input: &Value,
     ) -> AuthorizationRequest;
+
+    async fn authorize(&self, request: &AuthorizationRequest) -> AuthorizationDecision;
+
+    async fn verify_receipt(
+        &self,
+        request: &AuthorizationRequest,
+        receipt: &ConfirmationReceipt,
+    ) -> Result<(), String>;
+
+    async fn grant(
+        &self,
+        session_id: Option<&str>,
+        capability: CapabilityScope,
+        effect: PermissionEffect,
+        scope: PermissionScope,
+    );
+
+    async fn apply_security(&self, security: &SecurityConfig);
+
+    async fn set_permission_mode(&self, mode: PermissionMode);
+
+    async fn set_boundaries(
+        &self,
+        sandbox_mode: SandboxMode,
+        writable_roots: Vec<std::path::PathBuf>,
+        network_policy: NetworkPolicy,
+    );
+
+    async fn list_permanent(&self) -> Vec<StoredPermission>;
+
+    async fn revoke_permanent(&self, capability: &str) -> bool;
+
+    async fn revoke_session_grant(&self, session_id: &str, capability: &CapabilityScope) -> bool;
+
+    async fn clear_permanent(&self) -> usize;
+
+    async fn clear_session_trust(&self, session_id: &str);
+
+    async fn clear_all_trust(&self);
+
+    async fn prompt_summary(&self) -> String;
 }
 
 /// Test adapter mirrors the app composition adapter's execution calls.
@@ -106,16 +154,21 @@ impl ToolExecutionPort for ToolsFacadeToolExecutionAdapter {
     }
 }
 
-/// Test adapter for live authorization request preparation.
+/// Test adapter for the Tools-owned authorization contract.
 #[cfg(test)]
 pub(crate) struct ToolsFacadeToolAuthorizationAdapter {
     tools: Arc<ToolsFacade>,
+    authorization: Arc<dyn haven_tools::AuthorizationPort>,
 }
 
 #[cfg(test)]
 impl ToolsFacadeToolAuthorizationAdapter {
     pub(crate) fn new(tools: Arc<ToolsFacade>) -> Self {
-        Self { tools }
+        let authorization = tools.share_services().authorization;
+        Self {
+            tools,
+            authorization,
+        }
     }
 }
 
@@ -154,15 +207,87 @@ impl ToolAuthorizationPort for ToolsFacadeToolAuthorizationAdapter {
         self.tools
             .resolve_authorization_request_from_snapshot(catalog, session_id, tool_name, input)
     }
+
+    async fn authorize(&self, request: &AuthorizationRequest) -> AuthorizationDecision {
+        self.authorization.authorize(request).await
+    }
+
+    async fn verify_receipt(
+        &self,
+        request: &AuthorizationRequest,
+        receipt: &ConfirmationReceipt,
+    ) -> Result<(), String> {
+        self.authorization.verify_receipt(request, receipt).await
+    }
+
+    async fn grant(
+        &self,
+        session_id: Option<&str>,
+        capability: CapabilityScope,
+        effect: PermissionEffect,
+        scope: PermissionScope,
+    ) {
+        self.authorization
+            .grant(session_id, capability, effect, scope)
+            .await;
+    }
+
+    async fn apply_security(&self, security: &SecurityConfig) {
+        self.authorization.apply_security(security).await;
+    }
+
+    async fn set_permission_mode(&self, mode: PermissionMode) {
+        self.authorization.set_permission_mode(mode).await;
+    }
+
+    async fn set_boundaries(
+        &self,
+        sandbox_mode: SandboxMode,
+        writable_roots: Vec<std::path::PathBuf>,
+        network_policy: NetworkPolicy,
+    ) {
+        self.authorization
+            .set_boundaries(sandbox_mode, writable_roots, network_policy)
+            .await;
+    }
+
+    async fn list_permanent(&self) -> Vec<StoredPermission> {
+        self.authorization.list_permanent().await
+    }
+
+    async fn revoke_permanent(&self, capability: &str) -> bool {
+        self.authorization.revoke_permanent(capability).await
+    }
+
+    async fn revoke_session_grant(&self, session_id: &str, capability: &CapabilityScope) -> bool {
+        self.authorization
+            .revoke_session_grant(session_id, capability)
+            .await
+    }
+
+    async fn clear_permanent(&self) -> usize {
+        self.authorization.clear_permanent().await
+    }
+
+    async fn clear_session_trust(&self, session_id: &str) {
+        self.authorization.clear_session_trust(session_id).await;
+    }
+
+    async fn clear_all_trust(&self) {
+        self.authorization.clear_all_trust().await;
+    }
+
+    async fn prompt_summary(&self) -> String {
+        self.authorization.prompt_summary().await
+    }
 }
 
 /// Explicit capabilities needed by one session supervisor.
 #[derive(Clone)]
 pub struct SessionToolPorts {
     pub(super) execution: Arc<dyn ToolExecutionPort>,
-    pub(super) tool_authorization: Arc<dyn ToolAuthorizationPort>,
+    pub(super) authorization: Arc<dyn ToolAuthorizationPort>,
     pub(super) catalog: Arc<dyn crate::ToolCatalogPort>,
-    pub(super) authorization: Arc<AuthorizationEngine>,
     pub(super) tool_runs: Arc<ToolRunService>,
     pub(super) session_tool_overlay: Arc<dyn SessionToolOverlayPort>,
     pub(super) managed_asset_leases: Arc<dyn ManagedAssetLeasePort>,
@@ -174,9 +299,8 @@ impl SessionToolPorts {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         execution: Arc<dyn ToolExecutionPort>,
-        tool_authorization: Arc<dyn ToolAuthorizationPort>,
+        authorization: Arc<dyn ToolAuthorizationPort>,
         catalog: Arc<dyn crate::ToolCatalogPort>,
-        authorization: Arc<AuthorizationEngine>,
         tool_runs: Arc<ToolRunService>,
         session_tool_overlay: Arc<dyn SessionToolOverlayPort>,
         managed_asset_leases: Arc<dyn ManagedAssetLeasePort>,
@@ -184,9 +308,8 @@ impl SessionToolPorts {
     ) -> Self {
         Self {
             execution,
-            tool_authorization,
-            catalog,
             authorization,
+            catalog,
             tool_runs,
             session_tool_overlay,
             managed_asset_leases,
@@ -204,7 +327,6 @@ impl SessionToolPorts {
             Arc::new(ToolsFacadeToolExecutionAdapter::new(Arc::clone(&tools))),
             Arc::new(ToolsFacadeToolAuthorizationAdapter::new(Arc::clone(&tools))),
             catalog,
-            services.authorization,
             services.tool_runs,
             Arc::new(ToolsFacadeSessionToolOverlayAdapter::new(Arc::clone(
                 &tools,

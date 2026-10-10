@@ -357,6 +357,55 @@ pub struct AuthorizationRequest {
     pub policy: OperationPolicy,
 }
 
+/// Stable capability boundary for authorization consumers outside `haven-tools`.
+///
+/// The policy engine is deliberately kept private to this crate. Callers can
+/// request a decision or manage grants through this contract without gaining
+/// access to the mutable policy implementation.
+#[async_trait::async_trait]
+pub trait AuthorizationPort: Send + Sync {
+    async fn apply_security(&self, security: &SecurityConfig);
+
+    async fn set_permission_mode(&self, mode: PermissionMode);
+
+    async fn set_boundaries(
+        &self,
+        sandbox_mode: SandboxMode,
+        writable_roots: Vec<PathBuf>,
+        network_policy: NetworkPolicy,
+    );
+
+    async fn authorize(&self, request: &AuthorizationRequest) -> AuthorizationDecision;
+
+    async fn verify_receipt(
+        &self,
+        request: &AuthorizationRequest,
+        receipt: &ConfirmationReceipt,
+    ) -> Result<(), String>;
+
+    async fn grant(
+        &self,
+        session_id: Option<&str>,
+        capability: CapabilityScope,
+        effect: PermissionEffect,
+        scope: PermissionScope,
+    );
+
+    async fn list_permanent(&self) -> Vec<StoredPermission>;
+
+    async fn revoke_permanent(&self, capability: &str) -> bool;
+
+    async fn revoke_session_grant(&self, session_id: &str, capability: &CapabilityScope) -> bool;
+
+    async fn clear_permanent(&self) -> usize;
+
+    async fn clear_session_trust(&self, session_id: &str);
+
+    async fn clear_all_trust(&self);
+
+    async fn prompt_summary(&self) -> String;
+}
+
 impl AuthorizationRequest {
     pub fn new(
         session_id: Option<&str>,
@@ -846,6 +895,77 @@ impl AuthorizationEngine {
             cfg.session_grants.clear();
             bump_policy_revision(&mut cfg);
         }
+    }
+}
+
+#[async_trait::async_trait]
+impl AuthorizationPort for AuthorizationEngine {
+    async fn apply_security(&self, security: &SecurityConfig) {
+        AuthorizationEngine::apply_security(self, security).await;
+    }
+
+    async fn set_permission_mode(&self, mode: PermissionMode) {
+        AuthorizationEngine::set_permission_mode(self, mode).await;
+    }
+
+    async fn set_boundaries(
+        &self,
+        sandbox_mode: SandboxMode,
+        writable_roots: Vec<PathBuf>,
+        network_policy: NetworkPolicy,
+    ) {
+        AuthorizationEngine::set_boundaries(self, sandbox_mode, writable_roots, network_policy)
+            .await;
+    }
+
+    async fn authorize(&self, request: &AuthorizationRequest) -> AuthorizationDecision {
+        AuthorizationEngine::authorize(self, request).await
+    }
+
+    async fn verify_receipt(
+        &self,
+        request: &AuthorizationRequest,
+        receipt: &ConfirmationReceipt,
+    ) -> Result<(), String> {
+        AuthorizationEngine::verify_receipt(self, request, receipt).await
+    }
+
+    async fn grant(
+        &self,
+        session_id: Option<&str>,
+        capability: CapabilityScope,
+        effect: PermissionEffect,
+        scope: PermissionScope,
+    ) {
+        AuthorizationEngine::grant(self, session_id, capability, effect, scope).await;
+    }
+
+    async fn list_permanent(&self) -> Vec<StoredPermission> {
+        AuthorizationEngine::list_permanent(self).await
+    }
+
+    async fn revoke_permanent(&self, capability: &str) -> bool {
+        AuthorizationEngine::revoke_permanent(self, capability).await
+    }
+
+    async fn revoke_session_grant(&self, session_id: &str, capability: &CapabilityScope) -> bool {
+        AuthorizationEngine::revoke_session_grant(self, session_id, capability).await
+    }
+
+    async fn clear_permanent(&self) -> usize {
+        AuthorizationEngine::clear_permanent(self).await
+    }
+
+    async fn clear_session_trust(&self, session_id: &str) {
+        AuthorizationEngine::clear_session_trust(self, session_id).await;
+    }
+
+    async fn clear_all_trust(&self) {
+        AuthorizationEngine::clear_all_trust(self).await;
+    }
+
+    async fn prompt_summary(&self) -> String {
+        AuthorizationEngine::prompt_summary(self).await
     }
 }
 

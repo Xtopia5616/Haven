@@ -171,7 +171,7 @@ pub async fn execute_skill(
         ));
     }
 
-    // Always run AuthorizationEngine — UI input must not bypass permanent deny /
+    // Always run the authorization port — UI input must not bypass permanent deny /
     // path/op blocks. Use the same qualified name as SkillToolAdapter so
     // Always grants from agent confirms apply to UI preview.
     let tool_key = haven_tools::skill_tool_name(&name);

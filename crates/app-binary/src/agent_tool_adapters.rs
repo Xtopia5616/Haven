@@ -11,7 +11,8 @@ use haven_agent::{
 };
 use haven_common::types::{MessageAttachment, RiskLevel};
 use haven_tools::{
-    AuthorizationRequest, ToolCatalogSnapshot, ToolRegistration, ToolResult, ToolsFacade,
+    AuthorizationDecision, AuthorizationPort, AuthorizationRequest, ConfirmationReceipt,
+    ToolCatalogSnapshot, ToolRegistration, ToolResult, ToolsFacade,
 };
 use serde_json::Value;
 
@@ -19,10 +20,11 @@ use serde_json::Value;
 /// by Agent runtime owners. The adapter stays in app-binary so haven-agent
 /// depends on ports and tool DTOs, never on the Tools facade.
 pub(crate) fn agent_tool_ports_from_facade(tools: Arc<ToolsFacade>) -> AgentToolPorts {
+    let services = tools.share_services();
     let adapter = Arc::new(ToolsFacadeAgentAdapter {
         tools: Arc::clone(&tools),
+        authorization: Arc::clone(&services.authorization),
     });
-    let services = tools.share_services();
 
     let prompt: Arc<dyn PromptToolPort> = adapter.clone();
     let catalog: Arc<dyn ToolCatalogPort> = adapter.clone();
@@ -30,7 +32,6 @@ pub(crate) fn agent_tool_ports_from_facade(tools: Arc<ToolsFacade>) -> AgentTool
         adapter.clone(),
         adapter.clone(),
         Arc::clone(&catalog),
-        services.authorization,
         services.tool_runs,
         adapter.clone(),
         adapter.clone(),
@@ -42,6 +43,7 @@ pub(crate) fn agent_tool_ports_from_facade(tools: Arc<ToolsFacade>) -> AgentTool
 
 struct ToolsFacadeAgentAdapter {
     tools: Arc<ToolsFacade>,
+    authorization: Arc<dyn AuthorizationPort>,
 }
 
 #[async_trait]
@@ -65,10 +67,9 @@ impl PromptToolPort for ToolsFacadeAgentAdapter {
     }
 
     async fn runtime_context(&self) -> PromptRuntimeContext {
-        let services = self.tools.share_services();
         let default_shell = self.tools.default_shell_name().await;
         let capabilities = self.tools.runtime_capabilities().await;
-        let permission_summary = services.authorization.prompt_summary().await;
+        let permission_summary = self.authorization.prompt_summary().await;
         PromptRuntimeContext {
             default_shell,
             capabilities,
@@ -117,6 +118,83 @@ impl ToolAuthorizationPort for ToolsFacadeAgentAdapter {
     ) -> AuthorizationRequest {
         self.tools
             .resolve_authorization_request_from_snapshot(catalog, session_id, tool_name, input)
+    }
+
+    async fn authorize(&self, request: &AuthorizationRequest) -> AuthorizationDecision {
+        self.authorization.authorize(request).await
+    }
+
+    async fn verify_receipt(
+        &self,
+        request: &AuthorizationRequest,
+        receipt: &ConfirmationReceipt,
+    ) -> Result<(), String> {
+        self.authorization.verify_receipt(request, receipt).await
+    }
+
+    async fn grant(
+        &self,
+        session_id: Option<&str>,
+        capability: haven_common::types::CapabilityScope,
+        effect: haven_common::types::PermissionEffect,
+        scope: haven_common::types::PermissionScope,
+    ) {
+        self.authorization
+            .grant(session_id, capability, effect, scope)
+            .await;
+    }
+
+    async fn apply_security(&self, security: &haven_common::config::SecurityConfig) {
+        self.authorization.apply_security(security).await;
+    }
+
+    async fn set_permission_mode(&self, mode: haven_common::types::PermissionMode) {
+        self.authorization.set_permission_mode(mode).await;
+    }
+
+    async fn set_boundaries(
+        &self,
+        sandbox_mode: haven_common::types::SandboxMode,
+        writable_roots: Vec<std::path::PathBuf>,
+        network_policy: haven_common::types::NetworkPolicy,
+    ) {
+        self.authorization
+            .set_boundaries(sandbox_mode, writable_roots, network_policy)
+            .await;
+    }
+
+    async fn list_permanent(&self) -> Vec<haven_common::config::StoredPermission> {
+        self.authorization.list_permanent().await
+    }
+
+    async fn revoke_permanent(&self, capability: &str) -> bool {
+        self.authorization.revoke_permanent(capability).await
+    }
+
+    async fn revoke_session_grant(
+        &self,
+        session_id: &str,
+        capability: &haven_common::types::CapabilityScope,
+    ) -> bool {
+        self.authorization
+            .revoke_session_grant(session_id, capability)
+            .await
+    }
+
+    async fn clear_permanent(&self) -> usize {
+        self.authorization.clear_permanent().await
+    }
+
+    async fn clear_session_trust(&self, session_id: &str) {
+        self.authorization.clear_session_trust(session_id).await;
+    }
+
+    async fn clear_all_trust(&self) {
+        self.authorization.clear_all_trust().await;
+    }
+
+    async fn prompt_summary(&self) -> String {
+        self.authorization.prompt_summary().await
     }
 }
 
@@ -341,6 +419,7 @@ mod tests {
         );
         let adapter = ToolsFacadeAgentAdapter {
             tools: Arc::clone(&tools),
+            authorization: Arc::clone(&tools.share_services().authorization),
         };
 
         let content = adapter.catalog_content().await;
@@ -367,6 +446,7 @@ mod tests {
         let tools = Arc::new(ToolsFacade::new());
         let adapter = ToolsFacadeAgentAdapter {
             tools: Arc::clone(&tools),
+            authorization: Arc::clone(&tools.share_services().authorization),
         };
         let session_id = "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
         let tool: ToolHandle = Arc::new(ExecutionContextProbe);

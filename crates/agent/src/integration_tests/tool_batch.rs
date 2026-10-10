@@ -595,7 +595,7 @@ async fn run_session_contains_real_mcp_and_skill_adapter_panics() {
             .authorization
             .grant(
                 None,
-                policy.capability.to_string(),
+                policy.capability,
                 haven_common::types::PermissionEffect::Allow,
                 haven_common::types::PermissionScope::Always,
             )

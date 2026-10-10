@@ -180,7 +180,7 @@ impl ToolStepContext {
 impl SessionSupervisor {
     async fn tool_step_context(&self, request: ToolStepRequest<'_>) -> ToolStepContext {
         let risk_level = self
-            .tool_authorization
+            .authorization
             .risk_level(Some(request.session_id), request.tool_name, request.input)
             .await;
         ToolStepContext::new(request, risk_level)
@@ -903,11 +903,11 @@ impl SessionSupervisor {
         step_id: Option<&str>,
     ) -> anyhow::Result<ToolExecution> {
         let risk_level = self
-            .tool_authorization
+            .authorization
             .risk_level(session_id, tool_name, &input)
             .await;
         let authorization_request = self
-            .tool_authorization
+            .authorization
             .authorization_request(session_id, tool_name, &input)
             .await;
         let mut confirmed: Option<bool> = None;
@@ -1025,7 +1025,7 @@ impl SessionSupervisor {
         tool_name: &str,
         input: &Value,
     ) -> haven_tools::AuthorizationRequest {
-        self.tool_authorization
+        self.authorization
             .authorization_request(session_id, tool_name, input)
             .await
     }
@@ -1183,7 +1183,7 @@ impl SessionSupervisor {
                 } else {
                     let session_id = request.session_id.as_deref()?;
                     Some(
-                        self.tool_authorization
+                        self.authorization
                             .authorization_request(Some(session_id), tool_name, tool_input)
                             .await
                             .policy
@@ -1309,7 +1309,7 @@ impl SessionSupervisor {
             .ok_or_else(|| anyhow::anyhow!("session scope requires an owning session"))?;
 
         let authorization_request = self
-            .tool_authorization
+            .authorization
             .authorization_request(Some(session_id), tool_name, tool_input)
             .await;
         let capability = receipt
@@ -1822,7 +1822,7 @@ impl SessionSupervisor {
         input: &Value,
         catalog: &haven_tools::ToolCatalogSnapshot,
     ) -> haven_tools::AuthorizationDecision {
-        let authorization_request = self.tool_authorization.authorization_request_from_catalog(
+        let authorization_request = self.authorization.authorization_request_from_catalog(
             catalog,
             Some(session_id),
             tool_name,

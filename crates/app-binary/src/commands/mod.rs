@@ -507,9 +507,8 @@ mod tests {
         CapabilityScope, PermissionEffect, PermissionScope, RiskLevel, new_id,
     };
     use haven_tools::{
-        AuthorizationDecision, AuthorizationEngine, AuthorizationReasonCode, ConfirmationReceipt,
-        McpRefreshAction, McpRefreshPlan, McpRefreshTarget, NetworkAccess, OperationPolicy,
-        ToolResult,
+        AuthorizationDecision, AuthorizationReasonCode, ConfirmationReceipt, McpRefreshAction,
+        McpRefreshPlan, McpRefreshTarget, NetworkAccess, OperationPolicy, ToolResult, ToolsFacade,
     };
     use serde_json::json;
     use std::sync::Arc;
@@ -558,7 +557,7 @@ mod tests {
         );
         assert_eq!(request.session_id, None);
 
-        let authorization = AuthorizationEngine::new();
+        let authorization = ToolsFacade::new().share_services().authorization;
         authorization
             .grant(
                 Some("ui"),

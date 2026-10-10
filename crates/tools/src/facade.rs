@@ -11,7 +11,7 @@ pub struct ToolServices {
     pub mcp_configs: Arc<RwLock<HashMap<String, McpServerConfig>>>,
     pub skills: SkillRegistry,
     pub skill_runner: Arc<RwLock<SkillRunner>>,
-    pub authorization: Arc<AuthorizationEngine>,
+    pub authorization: Arc<dyn AuthorizationPort>,
     pub assets: ManagedAssetRegistry,
     pub tool_runs: Arc<ToolRunService>,
     pub live_outputs: Arc<LiveOutputHub>,
@@ -19,12 +19,13 @@ pub struct ToolServices {
 
 impl ToolServices {
     fn from_parts(coordinator: &coordinator::ToolRuntimeCoordinator) -> Self {
+        let authorization: Arc<dyn AuthorizationPort> = coordinator.core.authorization.clone();
         Self {
             mcp: coordinator.builtins.mcp_manager.clone(),
             mcp_configs: coordinator.builtins.mcp_server_configs.clone(),
             skills: coordinator.builtins.skill_registry.clone(),
             skill_runner: coordinator.builtins.skill_runner.clone(),
-            authorization: Arc::clone(&coordinator.core.authorization),
+            authorization,
             assets: coordinator.runtime.managed_assets.clone(),
             tool_runs: Arc::clone(&coordinator.runtime.tool_run_service),
             live_outputs: Arc::clone(&coordinator.runtime.live_outputs),

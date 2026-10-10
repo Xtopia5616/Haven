@@ -132,32 +132,32 @@ pub const COMMAND_CONTRACTS: &[CommandContract] = &[
     CommandContract {
         name: "reconnect_mcp_server",
         boundary: CommandBoundary::Execute,
-        security: "AuthorizationEngine; typed native operation reconnects one existing configured server after final version check",
+        security: "AuthorizationPort; typed native operation reconnects one existing configured server after final version check",
     },
     CommandContract {
         name: "refresh_mcp_servers",
         boundary: CommandBoundary::Execute,
-        security: "AuthorizationEngine; one batch over persisted config diff and its affected targets; no renderer process arguments",
+        security: "AuthorizationPort; one batch over persisted config diff and its affected targets; no renderer process arguments",
     },
     CommandContract {
         name: "add_mcp_server",
         boundary: CommandBoundary::Execute,
-        security: "AuthorizationEngine; typed native admin operation validates and persists config",
+        security: "AuthorizationPort; typed native admin operation validates and persists config",
     },
     CommandContract {
         name: "update_mcp_server",
         boundary: CommandBoundary::Execute,
-        security: "AuthorizationEngine; typed native admin operation validates and reconnects safely",
+        security: "AuthorizationPort; typed native admin operation validates and reconnects safely",
     },
     CommandContract {
         name: "remove_mcp_server",
         boundary: CommandBoundary::Execute,
-        security: "AuthorizationEngine; typed native admin operation removes client and config",
+        security: "AuthorizationPort; typed native admin operation removes client and config",
     },
     CommandContract {
         name: "toggle_mcp_server",
         boundary: CommandBoundary::Execute,
-        security: "AuthorizationEngine; typed native admin operation connects before enabling",
+        security: "AuthorizationPort; typed native admin operation connects before enabling",
     },
     // memory
     CommandContract {
@@ -413,7 +413,7 @@ pub const COMMAND_CONTRACTS: &[CommandContract] = &[
     CommandContract {
         name: "set_skill_enabled",
         boundary: CommandBoundary::Mutate,
-        security: "AuthorizationEngine; typed native admin operation persists the toggle",
+        security: "AuthorizationPort; typed native admin operation persists the toggle",
     },
     CommandContract {
         name: "open_skills_dir",
@@ -423,7 +423,7 @@ pub const COMMAND_CONTRACTS: &[CommandContract] = &[
     CommandContract {
         name: "execute_skill",
         boundary: CommandBoundary::Execute,
-        security: "AuthorizationEngine; confirmation queues direct calls and errors are renderer-safe",
+        security: "AuthorizationPort; confirmation queues direct calls and errors are renderer-safe",
     },
     // tools
     CommandContract {
@@ -434,7 +434,7 @@ pub const COMMAND_CONTRACTS: &[CommandContract] = &[
     CommandContract {
         name: "set_tool_enabled",
         boundary: CommandBoundary::Mutate,
-        security: "AuthorizationEngine; typed native admin operation persists the toggle",
+        security: "AuthorizationPort; typed native admin operation persists the toggle",
     },
     CommandContract {
         name: "reset_tool_circuits",

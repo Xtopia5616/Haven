@@ -688,7 +688,7 @@ pub async fn revoke_permission(state: State<'_, Arc<AppState>>, key: String) -> 
                 .authorization
                 .grant(
                     None,
-                    permission.key,
+                    permission.key.into(),
                     permission.effect,
                     haven_common::types::PermissionScope::Always,
                 )
@@ -724,7 +724,7 @@ pub async fn reset_permissions(state: State<'_, Arc<AppState>>) -> Result<(), St
                 .authorization
                 .grant(
                     None,
-                    permission.key,
+                    permission.key.into(),
                     permission.effect,
                     haven_common::types::PermissionScope::Always,
                 )

@@ -83,13 +83,13 @@ Common 不拥有网络 I/O 或这些传输生命周期（ADR 0855）。
 
 `haven-tools` 的工具核心按稳定边界分为 `tool_contract.rs`（Tool、ToolResult、typed
 operation 与执行策略）、`registry.rs`（全局注册表、SessionToolOverlay、版本快照与 probe）和
-`security.rs`（AuthorizationEngine、权限继承、disabled operation、路径沙箱与本机安全矩阵）。
+`security.rs`（内部 AuthorizationEngine、跨 crate `AuthorizationPort`、权限继承、disabled operation、路径沙箱与本机安全矩阵）。
 在这组稳定模块之上，`OperationRegistry` 持有已安装、deferred 与 session operation；
 `OperationCatalog` 是模型可见投影；`AuthorizedExecutor` 做熔断、启用检查、校验、执行和结果分类，
 并把经幂等性与 retryability 筛选的工具失败交给 `haven-common::retry::RecoveryPolicy` 决定退避与 attempt budget（ADR 0447）。
 crate-private `ToolAuthorizationRequestResolver` 负责从 live session lookup 或 turn snapshot 生成同一 typed
 `AuthorizationRequest`；未命中工具的保守 fallback 也只有一份。它不作 allow/deny/confirm 决定，
-该决定仍由调用方在 `execute_tool` 之前交给唯一的 `AuthorizationEngine`，不在工具 future 里阻塞。
+该决定仍由调用方在 `execute_tool` 之前交给唯一的授权 owner，不在工具 future 里阻塞；跨 crate 调用只依赖 `AuthorizationPort`，具体 `AuthorizationEngine` 不进入默认生产 API（ADR 0893）。
 `OperationSpec` 是运行时
 策略和 manifest 的唯一定义，覆盖 builtin operation view、root tool，以及 MCP/Skill adapter；spec 没有
 handler。`policy_for` 是一次调用的 `OperationPolicy`，`catalog_policy` 是目录上界。`ToolManifest`、
@@ -101,7 +101,7 @@ PlatformRuntime 发布、MCP discovery config/index 更新和 builtin catalog re
 messaging 与 memory recall 是进程服务，在 `wire_startup` 里绑定一次，不放进这份快照；
 `admin_surfaces` 随成功的 catalog rebuild 写入 `BuiltinCatalog`。`tool_builtins.rs` 组合 MCP/Skills
 与具体 builtin provider。MCP、skills、授权、媒体资产、ToolRun 与 live output 由构造时交出的
-`ToolServices` 提供，调用方不再向 `ToolsFacade` 逐个取服务。组合根仍是 `ApplicationRuntime`，
+`ToolServices` 提供；其中授权只以 `AuthorizationPort` 暴露，其他服务字段仍有具体类型，属于 §5.7 按消费者继续审查的 API 面。组合根仍是 `ApplicationRuntime`，
 不另建 `AppRuntime`。`ToolsFacade` 是对外 façade，保留执行与授权入口、session overlay/asset
 lease 操作、目录投影、runtime capability 请求和录音转写入口；启动及 runtime/catalog 更新转发给 coordinator。
 能力判断由 tools crate 唯一构造的 crate-private `ToolCapabilitySnapshot` 收口：prompt runtime、
@@ -415,7 +415,7 @@ Compaction summary episode 与首个 pending marker 只由 `MemoryStore::persist
 - **X12 持久化契约**：ReAct 将 live transcript 作为 `SessionCommitted` domain intent 提交给 `SessionStore`；Agent 负责 ReAct 事件 payload 与消息/步骤语义，Memory 将 intent 翻译为物化行。Store 在同一 SQLite 事务中先追加 `session_events`，再写入 intent 指定的 `messages` / `session_steps` 投影；投影失败时整笔回滚，事务提交后才使 cache 失效并广播事件。Agent 随后由 `CommittedUiPublisher` 按 `session_events.sequence` 发布 Thought、ToolCall、Observation、Supplement、ingress MediaPlan 与 Compaction，再更新进程内 canonical。assistant Thought 消息行与 durable event 同事务提交；共享 `step-*` 的 Thought 执行步骤作为可修复的后置 Store 投影写入，失败不会撤销已提交事件或重复发布。流式分片只用 `chunk_seq`；WebSearch、Usage，以及请求准备阶段的 MediaPlan（`event_seq` 为空）不占用这条 durable 序号。同一 sequence 的并行工具卡按 `(eventSeq, stepId)` 去重。交互请求由 `SessionActor` 命令追加为 domain event，Agent 从活动 `session_events` replay 交互状态；若 Ask `tool_result` 已提交而独立 `interaction_requested` 尚未提交，replay 以稳定 `step_id` 恢复 pending Ask，后续 `UserInject(source=answer)` 或 clear event 关闭它（ADR 0440）。resume、rollback 和实时重放均从 event sequence 读取，事件流本身承载恢复游标。rollback 的 event cursor 用于 active transcript 投影，event sequence 用于 append-only timeline；`last_msg_at` 只用于截断物化消息投影，三者由 `SessionStore` 封装且不得互相推导或作为 transcript 真源。多模态输入在 ingress 接受 `MessageAttachment`，但事件/数据库 canonical 投影使用 `MediaAsset → MediaRepresentation → MediaPlan`，事件不保存 inline bytes；OCR/STT 成功追加派生表示且保留 raw asset。合法旁路限于语义受限的 ingress user seed、recovery partial 与终态 ToolRun-result 三个 `SessionStore` 写端口；seed 消息类型由持久化的 session origin 决定。interaction lifecycle event 只承载请求状态和引用 ID，Ask 正文只在 canonical transcript 出现一次。
 - **工具调用身份契约**：同一 assistant tool batch 内，`tool_index` 是 provider 调用数组的零基稳定位置，`step_id` 是该调用的持久执行行/卡片身份，`tool_call_id` 是 provider 调用身份；`session_steps` 与 ReAct events 同步保存三者。确认恢复必须按完整身份关联，禁止按工具名、参数或 observation 文本猜测；缺失事件流不再从步骤投影重建 ReAct transcript，旧数据按 reset 边界处理。并行工具的每项结果在完成后单独提交并按 durable sequence 发布 UI；canonical history 与 event replay 按 `step_number + tool_index` 排序（ADR 0433）。
 - **工具参数验证契约**：执行前只验证，不用 schema default、首个 enum 或类型占位符改写输入；无效参数以包含 `tool_index`、工具名和验证明细的失败 observation 返回给模型，避免改变副作用语义。
-- `session/`：`SessionSupervisor` 只负责 registry、并发 admission 和生命周期；其生产构造接收组合根创建的 `SessionStore` 与 `SessionToolPorts`，不暴露 raw `Database` 或 `ToolsFacade`。`AgentLayer::build` 接收 `AgentToolPorts`；`haven-app-binary` composition root 用唯一共享的 `ToolsFacade` 创建 prompt/catalog/execution/authorization/observation/overlay/asset adapters，Agent runtime owners 只持有窄 ports 与既有 AuthorizationEngine/ToolRunService capability（ADR 0384、0388）。session runner 通过 `ToolExecutionContext` 传递 session、tool、input、cancel 与 step identity；live authorization 仍在执行前判断。`SessionActor` 独占会话级可变状态，并在自己的 loop 中 select 外部 mailbox 命令与 `SessionState::react_run` active future。`SessionState` 持有会话元数据、交互与 ingress/tool-run/messaging 队列；active future 独占 run-local `ReActState`，不会跨 session 共享，也不借用整份 `SessionState`。usage 由 `ReActEngine::UsageRuntime` 聚合和写入，stream identity 与 token estimate 由 run-local `ReActState` 持有。inbox 通知游标、轮询节拍和标题缓存已在 `SessionState`；进程级 heartbeat 合并仍留在 `MessagingPoller`；`SessionRunEngine` 是完整 ReAct run 的执行边界；ReAct loop 管 run budget、lifecycle 与 EffectBatch 应用，`TurnEngine` 推进单次 turn 并产出 EffectBatch；`dispatcher` / `queues` / `status` / `tool_runner` 只提供各层协作能力。普通用户创建与 `agent.spawn` peer 继续共用同一 Session、SessionActor 与 ReAct 流程；`SessionStore` 持久化并按 parent 查询 typed `SessionOrigin`，Messaging registry 仍负责角色、能力、mailbox 与在线状态（ADR 0442）。
+- `session/`：`SessionSupervisor` 只负责 registry、并发 admission 和生命周期；其生产构造接收组合根创建的 `SessionStore` 与 `SessionToolPorts`，不暴露 raw `Database` 或 `ToolsFacade`。`AgentLayer::build` 接收 `AgentToolPorts`；`haven-app-binary` composition root 用唯一共享的 `ToolsFacade` 创建 prompt/catalog/execution/authorization/observation/overlay/asset adapters，Agent runtime owners 持有消费端 ports；授权经 Agent-owned ToolAuthorizationPort，ToolRunService 仍是待审查的具体依赖（ADR 0384、0388、0893）。session runner 通过 `ToolExecutionContext` 传递 session、tool、input、cancel 与 step identity；live authorization 仍在执行前判断。`SessionActor` 独占会话级可变状态，并在自己的 loop 中 select 外部 mailbox 命令与 `SessionState::react_run` active future。`SessionState` 持有会话元数据、交互与 ingress/tool-run/messaging 队列；active future 独占 run-local `ReActState`，不会跨 session 共享，也不借用整份 `SessionState`。usage 由 `ReActEngine::UsageRuntime` 聚合和写入，stream identity 与 token estimate 由 run-local `ReActState` 持有。inbox 通知游标、轮询节拍和标题缓存已在 `SessionState`；进程级 heartbeat 合并仍留在 `MessagingPoller`；`SessionRunEngine` 是完整 ReAct run 的执行边界；ReAct loop 管 run budget、lifecycle 与 EffectBatch 应用，`TurnEngine` 推进单次 turn 并产出 EffectBatch；`dispatcher` / `queues` / `status` / `tool_runner` 只提供各层协作能力。普通用户创建与 `agent.spawn` peer 继续共用同一 Session、SessionActor 与 ReAct 流程；`SessionStore` 持久化并按 parent 查询 typed `SessionOrigin`，Messaging registry 仍负责角色、能力、mailbox 与在线状态（ADR 0442）。
 - `layer.rs` + `ingress.rs` / `resume.rs` / `resume_support.rs`：对外入口与 resume 恢复；`resume_support` 只提供确定性的候选合并、悬空工具调用修复和运行时工具选择恢复。
 - `canonical.rs`：发送前 `sanitize_canonical` 闸门。
 - `memory_worker.rs` / `memory_service.rs` / `memory_index.rs` / `prompt_context.rs` / `prompt_renderer.rs` / `prompt.rs` / `compactor.rs` / `rollback.rs` / `rollback_support.rs` / `title.rs` / `event.rs` / `partial.rs`；`memory_service` 统一 typed memory/embedding/cache 边界，`prompt_context` 取得 bounded turn snapshot，`prompt_renderer` 纯渲染 bounded MEMORY fence；`rollback.rs` 编排生命周期与 DB 双时钟，`rollback_support` 只操作 events 和 branch cursor。
@@ -589,7 +589,7 @@ Clipboard 的文本、HTML、图片和文件列表都从 `clipboard` 根工具�
 
 实现依赖：`sysinfo` + Windows `windows-sys`（Gdi / Globalization / Power）。电源寿命字段为秒（Win32 `SYSTEM_POWER_STATUS`）。
 
-### 2.5.3 权限 / 确认（AuthorizationEngine）
+### 2.5.3 权限 / 确认（AuthorizationPort；内部实现 AuthorizationEngine）
 
 决策顺序（fail-closed）：
 

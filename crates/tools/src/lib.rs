@@ -152,8 +152,10 @@ pub use registry::{
     DeferredToolCatalog, OperationRegistry, RegistryProbe, SessionToolOverlay, ToolCatalogSnapshot,
     ToolCatalogVersion, ToolRegistry,
 };
+#[cfg(test)]
+pub(crate) use security::AuthorizationEngine;
 pub use security::{
-    AuthorizationDecision, AuthorizationEngine, AuthorizationReasonCode, AuthorizationRequest,
+    AuthorizationDecision, AuthorizationPort, AuthorizationReasonCode, AuthorizationRequest,
     ConfirmationReceipt, LOCAL_TOOL_SECURITY_MATRIX, LocalToolSecurityCase, is_safe_local_path,
     permission_prompt_summary,
 };
