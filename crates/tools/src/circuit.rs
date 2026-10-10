@@ -10,8 +10,8 @@ enum ToolCircuitState {
 }
 
 /// Circuit breaker protecting a single tool from being called repeatedly
-/// while it is failing. Mirrors the LLM-level `EndpointCircuitBreaker` pattern
-/// but operates per tool-name.
+/// while it is failing. It owns per-tool counters and configurable thresholds;
+/// LLM endpoint health has a separate breaker contract (ADR 0673).
 ///
 /// State machine:
 /// - **Closed**: normal operation. Consecutive failures increment the counter.
