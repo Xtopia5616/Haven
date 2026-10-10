@@ -874,3 +874,4 @@
 - [0892：在 Memory 内部打开数据库并装配 typed stores](0892-compose-memory-stores-inside-memory.md)
 - [0893：通过授权 port 隐藏 AuthorizationEngine](0893-hide-authorization-engine-behind-port.md)
 - [0894：通过 Agent-owned port 隔离 ToolRun 生命周期调用](0894-hide-tool-run-service-behind-agent-port.md)
+- [0895：通过 App-owned port 调用 ToolRun 生命周期](0895-route-app-tool-run-operations-through-port.md)

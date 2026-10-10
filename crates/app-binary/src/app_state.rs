@@ -1062,7 +1062,7 @@ mod tests {
             .runtime
             .services
             .tool_runs
-            .set(haven_tools::ScheduledToolRunSpec {
+            .schedule(haven_tools::ScheduledToolRunSpec {
                 due_at: None,
                 delay_secs: Some(3600),
                 watch_tool_run_id: None,

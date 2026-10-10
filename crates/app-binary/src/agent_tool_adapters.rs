@@ -10,10 +10,14 @@ use haven_agent::{
     ToolExecutionPort, ToolObservationPort, ToolRunCompletionReceiverPort,
 };
 use haven_common::types::{MessageAttachment, RiskLevel};
+use haven_memory::ToolRunRow;
+#[cfg(test)]
+use haven_tools::ScheduledToolRunSpec;
 use haven_tools::{
     AuthorizationDecision, AuthorizationPort, AuthorizationRequest, ConfirmationReceipt,
     ToolCatalogSnapshot, ToolRegistration, ToolResult, ToolRunCompletion,
-    ToolRunCompletionReceiver, ToolRunListView, ToolRunRestoreSummary, ToolRunService, ToolsFacade,
+    ToolRunCompletionReceiver, ToolRunLifecycleEventSink, ToolRunListView, ToolRunRestoreSummary,
+    ToolRunService, ToolRunView, ToolsFacade,
 };
 use serde_json::Value;
 
@@ -41,6 +45,94 @@ pub(crate) fn agent_tool_ports_from_facade(tools: Arc<ToolsFacade>) -> AgentTool
     );
 
     AgentToolPorts::new(prompt, catalog, session)
+}
+
+/// App-owned contract for ToolRun IPC and application lifecycle operations.
+#[async_trait]
+pub(crate) trait AppToolRunPort: Send + Sync {
+    fn set_lifecycle_event_sink(&self, sink: ToolRunLifecycleEventSink);
+
+    async fn shutdown(&self);
+
+    async fn board(&self) -> Vec<ToolRunView>;
+
+    async fn list_persisted_tool_runs(&self, kind: Option<&str>)
+    -> anyhow::Result<Vec<ToolRunRow>>;
+
+    async fn list_persisted_tool_runs_for_session(
+        &self,
+        session_id: &str,
+        kind: Option<&str>,
+    ) -> anyhow::Result<Vec<ToolRunRow>>;
+
+    async fn cancel_for_kind(&self, tool_run_id: &str, kind: &str) -> bool;
+
+    async fn delete_terminal(&self, tool_run_id: &str) -> anyhow::Result<bool>;
+
+    async fn clear_terminal_history(&self) -> anyhow::Result<u64>;
+
+    #[cfg(test)]
+    async fn schedule(&self, spec: ScheduledToolRunSpec) -> anyhow::Result<String>;
+}
+
+pub(crate) fn app_tool_run_port_from_facade(tools: Arc<ToolsFacade>) -> Arc<dyn AppToolRunPort> {
+    let services = tools.share_services();
+    Arc::new(ToolsFacadeAppToolRunAdapter {
+        tool_runs: Arc::clone(&services.tool_runs),
+    })
+}
+
+struct ToolsFacadeAppToolRunAdapter {
+    tool_runs: Arc<ToolRunService>,
+}
+
+#[async_trait]
+impl AppToolRunPort for ToolsFacadeAppToolRunAdapter {
+    fn set_lifecycle_event_sink(&self, sink: ToolRunLifecycleEventSink) {
+        self.tool_runs.set_lifecycle_event_sink(sink);
+    }
+
+    async fn shutdown(&self) {
+        self.tool_runs.shutdown().await;
+    }
+
+    async fn board(&self) -> Vec<ToolRunView> {
+        self.tool_runs.board().await
+    }
+
+    async fn list_persisted_tool_runs(
+        &self,
+        kind: Option<&str>,
+    ) -> anyhow::Result<Vec<ToolRunRow>> {
+        self.tool_runs.list_persisted_tool_runs(kind).await
+    }
+
+    async fn list_persisted_tool_runs_for_session(
+        &self,
+        session_id: &str,
+        kind: Option<&str>,
+    ) -> anyhow::Result<Vec<ToolRunRow>> {
+        self.tool_runs
+            .list_persisted_tool_runs_for_session(session_id, kind)
+            .await
+    }
+
+    async fn cancel_for_kind(&self, tool_run_id: &str, kind: &str) -> bool {
+        self.tool_runs.cancel_for_kind(tool_run_id, kind).await
+    }
+
+    async fn delete_terminal(&self, tool_run_id: &str) -> anyhow::Result<bool> {
+        self.tool_runs.delete_terminal(tool_run_id).await
+    }
+
+    async fn clear_terminal_history(&self) -> anyhow::Result<u64> {
+        self.tool_runs.clear_terminal_history().await
+    }
+
+    #[cfg(test)]
+    async fn schedule(&self, spec: ScheduledToolRunSpec) -> anyhow::Result<String> {
+        self.tool_runs.set(spec).await
+    }
 }
 
 struct ToolsFacadeAgentAdapter {

@@ -6,13 +6,16 @@
 //! application gives them one cancellation boundary and tears them down in a
 //! deterministic order.
 
+use crate::agent_tool_adapters::{AppToolRunPort, app_tool_run_port_from_facade};
 use crate::config_runtime::RuntimeConfigCoordinator;
 use crate::desktop::DesktopShell;
 use haven_agent::{AgentLayer, MemoryStartup, PendingSessionRecovery, SessionSupervisor};
 use haven_common::config::ConfigService;
 use haven_input::InputPipeline;
 use haven_memory::{MemoryFactStore, SessionStore};
-use haven_tools::{ToolServices, ToolsFacade};
+use haven_tools::{
+    AuthorizationPort, LiveOutputHub, McpManager, SkillRegistry, SkillRunner, ToolsFacade,
+};
 use std::future::Future;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -33,9 +36,8 @@ pub struct ApplicationRuntime {
     pub(crate) session_store: SessionStore,
     pub(crate) memory_fact_store: MemoryFactStore,
     pub(crate) tools: Arc<ToolsFacade>,
-    /// Process services captured with the Tools facade. Command handlers use this
-    /// bundle instead of asking ToolsFacade for each service.
-    pub(crate) services: ToolServices,
+    /// App-facing domain capabilities adapted from the Tools composition root.
+    pub(crate) services: AppServices,
     pub(crate) executor: Arc<SessionSupervisor>,
     pub(crate) agent: Arc<AgentLayer>,
     pub(crate) memory_startup: MemoryStartup,
@@ -69,9 +71,26 @@ pub(crate) struct RuntimeServices {
     pub(crate) config_apply_gate: Arc<tokio::sync::Mutex<()>>,
 }
 
+pub(crate) struct AppServices {
+    pub(crate) mcp: McpManager,
+    pub(crate) skills: SkillRegistry,
+    pub(crate) skill_runner: Arc<tokio::sync::RwLock<SkillRunner>>,
+    pub(crate) authorization: Arc<dyn AuthorizationPort>,
+    pub(crate) tool_runs: Arc<dyn AppToolRunPort>,
+    pub(crate) live_outputs: Arc<LiveOutputHub>,
+}
+
 impl ApplicationRuntime {
     pub(crate) fn new(runtime_services: RuntimeServices) -> Self {
-        let services = runtime_services.tools.share_services();
+        let tool_services = runtime_services.tools.share_services();
+        let services = AppServices {
+            mcp: tool_services.mcp,
+            skills: tool_services.skills,
+            skill_runner: tool_services.skill_runner,
+            authorization: tool_services.authorization,
+            tool_runs: app_tool_run_port_from_facade(Arc::clone(&runtime_services.tools)),
+            live_outputs: tool_services.live_outputs,
+        };
         let config_apply_gate = runtime_services.config_apply_gate;
         Self {
             session_store: runtime_services.session_store,
@@ -96,7 +115,7 @@ impl ApplicationRuntime {
         }
     }
 
-    pub(crate) fn services(&self) -> &ToolServices {
+    pub(crate) fn services(&self) -> &AppServices {
         &self.services
     }
 
