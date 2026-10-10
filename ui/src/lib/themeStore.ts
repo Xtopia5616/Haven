@@ -1,4 +1,5 @@
 import { get, writable } from 'svelte/store';
+import { isOneOf } from './contracts/valueGuards.ts';
 
 const VALID_THEMES = ['light', 'dark'] as const;
 export type ThemeMode = (typeof VALID_THEMES)[number];
@@ -40,7 +41,7 @@ function writeStorage(key: string, value: string) {
 }
 
 function isThemeMode(value: unknown): value is ThemeMode {
-	return typeof value === 'string' && VALID_THEMES.some((theme) => theme === value);
+	return isOneOf(value, VALID_THEMES);
 }
 
 function detectInitialTheme(): ThemeMode {

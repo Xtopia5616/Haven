@@ -4,6 +4,13 @@ import {
 	type InteractionRequest,
 } from '../contracts/app.ts';
 import { isRecord } from '../contracts/objectGuards.ts';
+import {
+	isFiniteNumber,
+	isNonEmptyString,
+	isOneOf,
+	isString,
+	isStringArray,
+} from '../contracts/valueGuards.ts';
 import type { InteractionKind } from '../contracts/generatedCommands.ts';
 import {
 	INTERACTION_KIND_VALUES,
@@ -31,7 +38,9 @@ export function reduceInteraction(
 	switch (action.type) {
 		case 'sessions/cleared': {
 			const interactions = Object.fromEntries(
-				Object.entries(state.interactions).filter(([, request]) => request.owner.kind !== 'session'),
+				Object.entries(state.interactions).filter(
+					([, request]) => request.owner.kind !== 'session',
+				),
 			);
 			return { ...state, interactions };
 		}
@@ -87,7 +96,8 @@ export function reduceInteraction(
 				interactions: Object.fromEntries(
 					Object.entries(state.interactions).filter(
 						([, request]) =>
-							!isSessionInteractionFor(request, action.sessionId) || request.kind !== 'ask',
+							!isSessionInteractionFor(request, action.sessionId) ||
+							request.kind !== 'ask',
 					),
 				),
 			};
@@ -165,24 +175,21 @@ function hasValidOwnerContext(request: InteractionRequest): boolean {
 function normalizeInteraction(raw: unknown): InteractionRequest | null {
 	if (!isRecord(raw)) return null;
 	const value = raw;
-	const id = typeof value.id === 'string' ? value.id : '';
+	const id = isString(value.id) ? value.id : '';
 	const sessionId = value.session_id;
-	const owner = mapInteractionOwner(value.owner, typeof sessionId === 'string' ? sessionId : undefined);
+	const owner = mapInteractionOwner(value.owner, isString(sessionId) ? sessionId : undefined);
 	const kind = value.kind;
 	const status = value.status;
 	const options = value.options;
 	const createdAt = value.created_at;
 	if (
 		!id ||
-		(sessionId !== undefined && (typeof sessionId !== 'string' || !sessionId)) ||
+		(sessionId !== undefined && !isNonEmptyString(sessionId)) ||
 		!owner ||
-		typeof kind !== 'string' ||
-		!INTERACTION_KIND_VALUES.includes(kind as (typeof INTERACTION_KIND_VALUES)[number]) ||
-		typeof status !== 'string' ||
-		!INTERACTION_STATUS_VALUES.includes(status as (typeof INTERACTION_STATUS_VALUES)[number]) ||
-		!Array.isArray(options) ||
-		!options.every((option) => typeof option === 'string') ||
-		typeof createdAt !== 'string'
+		!isOneOf(kind, INTERACTION_KIND_VALUES) ||
+		!isOneOf(status, INTERACTION_STATUS_VALUES) ||
+		!isStringArray(options) ||
+		!isString(createdAt)
 	)
 		return null;
 	const interactionKind = kind as InteractionRequest['kind'];
@@ -190,7 +197,7 @@ function normalizeInteraction(raw: unknown): InteractionRequest | null {
 	if (
 		status === 'pending' &&
 		kind !== 'ask' &&
-		(typeof value.expires_at !== 'string' || !Number.isFinite(Date.parse(value.expires_at)))
+		(!isString(value.expires_at) || !isFiniteNumber(Date.parse(value.expires_at)))
 	)
 		return null;
 	const toolName = value.tool_name;
@@ -205,18 +212,17 @@ function normalizeInteraction(raw: unknown): InteractionRequest | null {
 		id,
 		status: status as InteractionRequest['status'],
 		options,
-		...(typeof toolName === 'string' ? { toolName } : {}),
-		...(typeof riskLevel === 'string' &&
-		RISK_LEVEL_VALUES.includes(riskLevel as (typeof RISK_LEVEL_VALUES)[number])
+		...(isString(toolName) ? { toolName } : {}),
+		...(isOneOf(riskLevel, RISK_LEVEL_VALUES)
 			? { riskLevel: riskLevel as InteractionRequest['riskLevel'] }
 			: {}),
-		...(typeof summary === 'string' ? { summary } : {}),
-		...(typeof permissionKey === 'string' ? { permissionKey } : {}),
-		...(typeof invocationStepId === 'string' ? { invocationStepId } : {}),
-		...(typeof toolIndex === 'number' && Number.isFinite(toolIndex) ? { toolIndex } : {}),
-		...(typeof toolCallId === 'string' ? { toolCallId } : {}),
+		...(isString(summary) ? { summary } : {}),
+		...(isString(permissionKey) ? { permissionKey } : {}),
+		...(isString(invocationStepId) ? { invocationStepId } : {}),
+		...(isFiniteNumber(toolIndex) ? { toolIndex } : {}),
+		...(isString(toolCallId) ? { toolCallId } : {}),
 		createdAt,
-		...(typeof expiresAt === 'string' ? { expiresAt } : {}),
+		...(isString(expiresAt) ? { expiresAt } : {}),
 	};
 	if (owner.kind === 'session') {
 		if (sessionId !== owner.sessionId) return null;

@@ -1,6 +1,6 @@
 # Haven 架构与 crate 职责
 
-> 版本: v1.19 | 日期: 2026-10-10
+> 版本: v1.20 | 日期: 2026-10-10
 > 范围: `crates/` (Rust 后端, Tauri 2)
 > 原则: **依赖单向、叶子优先**。上层 crate 只依赖下层，绝不反向依赖；共享数据与类型放叶子（`haven-common`），
 > 组件职责按「谁拥有实现、谁只消费接口」划分。
@@ -747,6 +747,9 @@ agent event contract 已完成对应 mapper/validator 或边界审计（ADR 0330
 0348、0350、0376）；live interaction event 与 resume snake_case DTO 保持各自 mapper。命令 request/response
 的静态 TypeScript contract 由 Rust handler/Serde DTO 生成至 `generatedCommands.ts`，不在多份手写定义间
 同步字段（ADR 0394）；生成类型不替代运行时校验，event mappers 与动态扩展 payload 仍按各 domain 手工维护。
+前端运行时 contract 的纯值谓词由 `ui/src/lib/contracts/valueGuards.ts` 唯一拥有；wire record 字段存在性与
+字符串读取由 `wireGuards.ts` 唯一拥有。Agent、App、Session、ToolRun、Memory、录音、settings response、工具结果 JSON、manifest 与
+UI reducer 继续拥有各自字段的必填、空值、缺省和动态 shape 策略；共享 guard 不替代 domain mapper（ADR 0860）。
 Settings update payload 仍由 SettingsView 的单一 builder 构造。ToolRun board 的
 `list_tool_runs`、`list_tool_run_history`、`clear_tool_run_history` 与 `cancel_tool_run` 经
 `toolRunCommands.ts`；list rows 复用 `mapToolRunPayload`，cancel request/result 使用命名 TS contract，

@@ -146,6 +146,8 @@ Session reducer 中的 `waitingReason` state/action 字段引用 generated `Sess
 
 Tauri listener 的通用 `TauriEvent<T>` envelope 由 `contracts/tauriEvent.ts` 唯一声明；Session、ToolRun、Agent、App 和录音 contracts 只定义各自 payload 与转换，不重复定义同形 envelope。
 
+UI 运行时 contract 共用的原子值谓词归 `contracts/valueGuards.ts`（`isString`、`isBoolean`、`isNumber`、`isFiniteNumber`、`isStringArray`、`isOneOf` 等）；wire record 的字段访问归 `contracts/wireGuards.ts`（`hasOwnWireField`、`readStringField`、`nonEmptyStringField`）。`isNumber` 接受非有限 JS number；`isFiniteNumber` 用于必须有限的值。`readStringField` 只校验类型，不暗含非空；`nonEmptyStringField` 只拒绝空值，不暗含实体 ID 前缀校验。领域 mapper 继续决定字段是否必需、缺省与显式 `null` 如何区分、未知枚举是否拒绝及错误/默认语义；不要为相同原子谓词在领域文件内另造实现（ADR 0860）。
+
 Memory `partial_messages` 中尚未提交到 canonical transcript 的流式文本称为 `PartialMessageCheckpoint`；读取结果以 `content` 与 `updated_at` 字段表达，不把草稿文本冒充为已持久化 `Message`。
 
 Agent 从权威 `TranscriptRecord` event log 得到的派生视图统一由 `TranscriptProjection` 表达：`canonical_messages` 是发给模型的 provider-neutral transcript，`react_rounds` 是 Agent 步骤/工具恢复视图。二者同源并可同次计算，但有不同消费者与约束，不互相替代，也不合并成一种消息 shape。

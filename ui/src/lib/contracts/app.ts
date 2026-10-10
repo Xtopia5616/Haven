@@ -4,6 +4,15 @@ import type { TauriEvent } from './tauriEvent.ts';
 import { isMcpClientStatus } from './mcpClientStatus.ts';
 import { isRecord } from './objectGuards.ts';
 import {
+	isBoolean,
+	isFiniteNumber,
+	isNonEmptyString,
+	isOneOf,
+	isString,
+	isStringArray,
+} from './valueGuards.ts';
+import { optionalStringFieldIsValid, readStringField, type WireRecord } from './wireGuards.ts';
+import {
 	APP_EVENT_NAMES,
 	BOOTSTRAP_STATUS_VALUES,
 	INTERACTION_KIND_VALUES,
@@ -90,8 +99,7 @@ export type InteractionRequest =
 
 /** Normalized renderer view for a resolved Ask interaction's response. */
 export type AskResponseView =
-	| { answer: string; ignored?: false }
-	| { ignored: true; answer?: never };
+	{ answer: string; ignored?: false } | { ignored: true; answer?: never };
 
 /** Runtime producer/owner combinations used by the interaction event and resume projections. */
 export function isValidInteractionKindOwnerPair(
@@ -130,22 +138,7 @@ export interface AppEventPayloadMap {
 	'llm:config_changed': null;
 }
 
-type WireRecord = Record<string, unknown>;
-
 const APP_EVENT_NAME_SET = new Set<string>(APP_EVENT_NAMES);
-
-function finiteNumber(value: unknown): value is number {
-	return typeof value === 'number' && Number.isFinite(value);
-}
-
-function requiredString(record: WireRecord, field: string): string | null {
-	return typeof record[field] === 'string' ? (record[field] as string) : null;
-}
-
-function optionalStringIsValid(record: WireRecord, field: string): boolean {
-	const value = record[field];
-	return value === undefined || typeof value === 'string';
-}
 
 function validPendingPermissionDeadline(
 	kind: unknown,
@@ -153,18 +146,7 @@ function validPendingPermissionDeadline(
 	expiresAt: unknown,
 ): boolean {
 	if (status !== 'pending' || kind === 'ask') return true;
-	return typeof expiresAt === 'string' && Number.isFinite(Date.parse(expiresAt));
-}
-
-function stringArray(value: unknown): value is string[] {
-	return Array.isArray(value) && value.every((item) => typeof item === 'string');
-}
-
-function isOneOf<const Values extends readonly string[]>(
-	value: unknown,
-	values: Values,
-): value is Values[number] {
-	return typeof value === 'string' && values.includes(value);
+	return isString(expiresAt) && isFiniteNumber(Date.parse(expiresAt));
 }
 
 function optionalOneOfIsValid<const Values extends readonly string[]>(
@@ -180,23 +162,18 @@ export function mapInteractionOwner(
 	value: unknown,
 	sessionId: string | undefined,
 ): InteractionOwnerView | null {
-	if (!isRecord(value) || typeof value.kind !== 'string') return null;
+	if (!isRecord(value) || !isString(value.kind)) return null;
 	switch (value.kind) {
 		case 'session':
 			if (
 				Object.keys(value).length !== 2 ||
-				typeof value.session_id !== 'string' ||
-				!value.session_id ||
+				!isNonEmptyString(value.session_id) ||
 				sessionId !== value.session_id
 			)
 				return null;
 			return { kind: 'session', sessionId: value.session_id };
 		case 'scheduled_tool_run':
-			if (
-				Object.keys(value).length !== 2 ||
-				typeof value.tool_run_id !== 'string' ||
-				!value.tool_run_id
-			)
+			if (Object.keys(value).length !== 2 || !isNonEmptyString(value.tool_run_id))
 				return null;
 			return { kind: 'scheduled_tool_run', toolRunId: value.tool_run_id };
 		case 'app_command':
@@ -215,9 +192,9 @@ export function mapAppEvent(event: unknown): TauriEvent<AppEventPayloadMap[AppEv
 export function mapAppEvent(event: unknown): TauriEvent<AppEventPayloadMap[AppEventName]> | null {
 	if (
 		!isRecord(event) ||
-		typeof event.event !== 'string' ||
+		!isString(event.event) ||
 		!APP_EVENT_NAME_SET.has(event.event) ||
-		!finiteNumber(event.id)
+		!isFiniteNumber(event.id)
 	) {
 		return null;
 	}
@@ -238,17 +215,17 @@ export function mapAppEvent(event: unknown): TauriEvent<AppEventPayloadMap[AppEv
 				payload: p as unknown as AppEventPayloadMap['app:bootstrap'],
 			};
 		case 'tray:status_changed':
-			if (!isOneOf(p.status, TRAY_STATUS_EVENT_VALUE_VALUES) || typeof p.tooltip !== 'string')
+			if (!isOneOf(p.status, TRAY_STATUS_EVENT_VALUE_VALUES) || !isString(p.tooltip))
 				return null;
 			return {
 				...tauriEvent,
 				payload: p as unknown as AppEventPayloadMap['tray:status_changed'],
 			};
 		case 'mute:changed':
-			if (typeof p.muted !== 'boolean') return null;
+			if (!isBoolean(p.muted)) return null;
 			return { ...tauriEvent, payload: p as unknown as AppEventPayloadMap['mute:changed'] };
 		case 'mcp:status_change':
-			if (typeof p.name !== 'string' || !isMcpClientStatus(p.status)) return null;
+			if (!isString(p.name) || !isMcpClientStatus(p.status)) return null;
 			return { ...tauriEvent, payload: { name: p.name, status: p.status } };
 		case 'skills:status_change':
 			if (!isOneOf(p.op, SKILLS_STATUS_OPERATION_VALUES)) return null;
@@ -257,30 +234,30 @@ export function mapAppEvent(event: unknown): TauriEvent<AppEventPayloadMap[AppEv
 				payload: p as unknown as AppEventPayloadMap['skills:status_change'],
 			};
 		case 'interaction:requested': {
-			const id = requiredString(p, 'id');
+			const id = readStringField(p, 'id');
 			const sessionId = p.session_id;
 			const kind = p.kind;
 			const status = p.status;
-			const createdAt = requiredString(p, 'created_at');
+			const createdAt = readStringField(p, 'created_at');
 			const options = p.options === undefined ? [] : p.options;
 			const toolIndex = p.tool_index;
 			if (
 				id === null ||
-				(sessionId !== undefined && (typeof sessionId !== 'string' || !sessionId)) ||
+				(sessionId !== undefined && !isNonEmptyString(sessionId)) ||
 				!isOneOf(kind, INTERACTION_KIND_VALUES) ||
 				!isOneOf(status, INTERACTION_STATUS_VALUES) ||
 				createdAt === null ||
-				!stringArray(options) ||
-				!optionalStringIsValid(p, 'tool_name') ||
+				!isStringArray(options) ||
+				!optionalStringFieldIsValid(p, 'tool_name') ||
 				!optionalOneOfIsValid(p, 'risk_level', RISK_LEVEL_VALUES) ||
-				!optionalStringIsValid(p, 'summary') ||
-				!optionalStringIsValid(p, 'permission_key') ||
-				!optionalStringIsValid(p, 'invocation_step_id') ||
-				!optionalStringIsValid(p, 'tool_call_id') ||
-				!optionalStringIsValid(p, 'expires_at') ||
+				!optionalStringFieldIsValid(p, 'summary') ||
+				!optionalStringFieldIsValid(p, 'permission_key') ||
+				!optionalStringFieldIsValid(p, 'invocation_step_id') ||
+				!optionalStringFieldIsValid(p, 'tool_call_id') ||
+				!optionalStringFieldIsValid(p, 'expires_at') ||
 				!validPendingPermissionDeadline(kind, status, p.expires_at) ||
 				(toolIndex !== undefined &&
-					(!finiteNumber(toolIndex) ||
+					(!isFiniteNumber(toolIndex) ||
 						!Number.isInteger(toolIndex) ||
 						toolIndex < 0 ||
 						toolIndex > 4_294_967_295))
@@ -291,35 +268,33 @@ export function mapAppEvent(event: unknown): TauriEvent<AppEventPayloadMap[AppEv
 
 			const wire = p as unknown as GeneratedInteractionRequestedEvent;
 			const payload = {
-					id,
-					...(sessionId === undefined ? {} : { sessionId }),
-					owner,
-					kind,
-					status,
-					options,
-					...(wire.tool_name ? { toolName: wire.tool_name } : {}),
-					...(wire.risk_level ? { riskLevel: wire.risk_level } : {}),
-					...(wire.summary ? { summary: wire.summary } : {}),
-					...(wire.permission_key ? { permissionKey: wire.permission_key } : {}),
-					...(wire.invocation_step_id
-						? { invocationStepId: wire.invocation_step_id }
-						: {}),
-					...(wire.tool_index != null ? { toolIndex: wire.tool_index } : {}),
-					...(wire.tool_call_id ? { toolCallId: wire.tool_call_id } : {}),
-					createdAt,
-					...(wire.expires_at ? { expiresAt: wire.expires_at } : {}),
+				id,
+				...(sessionId === undefined ? {} : { sessionId }),
+				owner,
+				kind,
+				status,
+				options,
+				...(wire.tool_name ? { toolName: wire.tool_name } : {}),
+				...(wire.risk_level ? { riskLevel: wire.risk_level } : {}),
+				...(wire.summary ? { summary: wire.summary } : {}),
+				...(wire.permission_key ? { permissionKey: wire.permission_key } : {}),
+				...(wire.invocation_step_id ? { invocationStepId: wire.invocation_step_id } : {}),
+				...(wire.tool_index != null ? { toolIndex: wire.tool_index } : {}),
+				...(wire.tool_call_id ? { toolCallId: wire.tool_call_id } : {}),
+				createdAt,
+				...(wire.expires_at ? { expiresAt: wire.expires_at } : {}),
 			};
 			return { ...tauriEvent, payload: payload as InteractionRequest };
 		}
 		case 'hotkey:conflict': {
-			const binding = requiredString(p, 'binding');
-			const error = requiredString(p, 'error');
+			const binding = readStringField(p, 'binding');
+			const error = readStringField(p, 'error');
 			if (binding === null || error === null) return null;
 			return { ...tauriEvent, payload: { binding, error } };
 		}
 		case 'hotkey:rebind': {
-			const oldBinding = requiredString(p, 'old_binding');
-			const newBinding = requiredString(p, 'new_binding');
+			const oldBinding = readStringField(p, 'old_binding');
+			const newBinding = readStringField(p, 'new_binding');
 			if (oldBinding === null || newBinding === null) return null;
 			return { ...tauriEvent, payload: { oldBinding, newBinding } };
 		}

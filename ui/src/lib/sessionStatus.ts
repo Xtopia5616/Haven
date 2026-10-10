@@ -12,6 +12,7 @@ import {
 	type SessionStatus,
 	type SessionWaitingReason,
 } from './contracts/generatedCommands.ts';
+import { isOneOf } from './contracts/valueGuards.ts';
 
 const WAITING_REASON_LABELS: Record<SessionWaitingReason, string> = {
 	user_input: '等待操作',
@@ -57,7 +58,7 @@ export function isPausedStatus(status: string | undefined | null): boolean {
 }
 
 function isSessionWaitingReason(value: unknown): value is SessionWaitingReason {
-	return (SESSION_WAITING_REASON_VALUES as readonly unknown[]).includes(value);
+	return isOneOf(value, SESSION_WAITING_REASON_VALUES);
 }
 
 export function waitingReasonLabel(reason: unknown): string | null {

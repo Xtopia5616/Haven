@@ -1,4 +1,5 @@
 import { isRecord } from './contracts/objectGuards.ts';
+import { isBoolean, isFiniteNumber, isString, isStringArray } from './contracts/valueGuards.ts';
 import { isMediaRepresentationKind } from './contracts/media.ts';
 import { isSessionStatus } from './contracts/session.ts';
 import { isToolRunStatus } from './contracts/toolRun.ts';
@@ -31,12 +32,7 @@ import {
 type JsonRecord = Record<string, unknown>;
 type FieldGuard = (value: unknown) => boolean;
 
-const isString = (value: unknown): value is string => typeof value === 'string';
-const isBoolean = (value: unknown): value is boolean => typeof value === 'boolean';
-const isFiniteNumber = (value: unknown): value is number =>
-	typeof value === 'number' && Number.isFinite(value);
 const isStringOrNumber = (value: unknown): boolean => isString(value) || isFiniteNumber(value);
-const isStringArray = (value: unknown): boolean => Array.isArray(value) && value.every(isString);
 const isMediaRepresentationArray = (value: unknown): boolean =>
 	Array.isArray(value) && value.every(isMediaRepresentationKind);
 

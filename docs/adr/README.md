@@ -838,3 +838,4 @@
 - [0857：集中规范实体 ID 校验](0857-centralize-canonical-id-validation.md)
 - [0858：集中 filesystem reparse metadata 检查](0858-centralize-filesystem-reparse-metadata-check.md)
 - [0859：集中工具 root name 投影](0859-centralize-tool-root-name-projection.md)
+- [0860：集中 UI 运行时值校验原子谓词](0860-centralize-ui-runtime-value-guards.md)

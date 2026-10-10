@@ -15,6 +15,7 @@ import type {
 	MemoryEntityKindInput,
 	MemoryFactSourceInput,
 } from './generatedCommands.ts';
+import { isOneOf } from './valueGuards.ts';
 
 export type Fact = GeneratedMemoryFactResponse;
 export type MemoryRecallItem = GeneratedMemoryRecallItem;
@@ -27,11 +28,11 @@ export const MEMORY_RECALL_FILTER_VALUES = [
 export type MemoryRecallFilter = (typeof MEMORY_RECALL_FILTER_VALUES)[number];
 
 export function isMemoryFactSourceInput(value: string): value is MemoryFactSourceInput {
-	return (MEMORY_FACT_SOURCE_INPUT_VALUES as readonly string[]).includes(value);
+	return isOneOf(value, MEMORY_FACT_SOURCE_INPUT_VALUES);
 }
 
 export function isMemoryRecallFilter(value: string): value is MemoryRecallFilter {
-	return (MEMORY_RECALL_FILTER_VALUES as readonly string[]).includes(value);
+	return isOneOf(value, MEMORY_RECALL_FILTER_VALUES);
 }
 
 /** Recall item with the requested kind attached by the existing UI projection. */

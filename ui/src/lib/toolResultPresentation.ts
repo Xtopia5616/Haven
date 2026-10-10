@@ -1,5 +1,6 @@
 import { isToolRunStatus, type ToolRunStatus } from './contracts/toolRun.ts';
 import type { ScheduleMode as GeneratedScheduleMode } from './contracts/generatedCommands.ts';
+import { isOneOf } from './contracts/valueGuards.ts';
 
 export { isScheduleMode as isToolScheduleMode } from './contracts/toolRun.ts';
 
@@ -8,7 +9,7 @@ export const toolAgentPresenceStatuses = ['online', 'offline'] as const;
 export type ToolAgentPresenceStatus = (typeof toolAgentPresenceStatuses)[number];
 
 export function isToolAgentPresenceStatus(value: unknown): value is ToolAgentPresenceStatus {
-	return toolAgentPresenceStatuses.some((status) => status === value);
+	return isOneOf(value, toolAgentPresenceStatuses);
 }
 
 export const toolExecutionModes = ['foreground', 'background'] as const;
@@ -16,7 +17,7 @@ export const toolExecutionModes = ['foreground', 'background'] as const;
 export type ToolExecutionMode = (typeof toolExecutionModes)[number];
 
 export function isToolExecutionMode(value: unknown): value is ToolExecutionMode {
-	return toolExecutionModes.some((mode) => mode === value);
+	return isOneOf(value, toolExecutionModes);
 }
 
 export const toolFileOperations = [
@@ -40,7 +41,7 @@ export const toolFileOperations = [
 export type ToolFileOperation = (typeof toolFileOperations)[number];
 
 export function isToolFileOperation(value: unknown): value is ToolFileOperation {
-	return toolFileOperations.some((operation) => operation === value);
+	return isOneOf(value, toolFileOperations);
 }
 
 export const toolFileSymbolKinds = [
@@ -59,7 +60,7 @@ export const toolFileSymbolKinds = [
 export type ToolFileSymbolKind = (typeof toolFileSymbolKinds)[number];
 
 export function isToolFileSymbolKind(value: unknown): value is ToolFileSymbolKind {
-	return toolFileSymbolKinds.some((kind) => kind === value);
+	return isOneOf(value, toolFileSymbolKinds);
 }
 
 export const toolInputOperations = [
@@ -75,7 +76,7 @@ export const toolInputOperations = [
 export type ToolInputOperation = (typeof toolInputOperations)[number];
 
 export function isToolInputOperation(value: unknown): value is ToolInputOperation {
-	return toolInputOperations.some((operation) => operation === value);
+	return isOneOf(value, toolInputOperations);
 }
 
 export const toolInputButtons = ['left', 'right', 'middle'] as const;
@@ -83,7 +84,7 @@ export const toolInputButtons = ['left', 'right', 'middle'] as const;
 export type ToolInputButton = (typeof toolInputButtons)[number];
 
 export function isToolInputButton(value: unknown): value is ToolInputButton {
-	return toolInputButtons.some((button) => button === value);
+	return isOneOf(value, toolInputButtons);
 }
 
 export const toolMediaOperations = [
@@ -108,7 +109,7 @@ export const toolMediaOperations = [
 export type ToolMediaOperation = (typeof toolMediaOperations)[number];
 
 export function isToolMediaOperation(value: unknown): value is ToolMediaOperation {
-	return toolMediaOperations.some((operation) => operation === value);
+	return isOneOf(value, toolMediaOperations);
 }
 
 export const toolWindowOperations = [
@@ -130,7 +131,7 @@ export const toolWindowOperations = [
 export type ToolWindowOperation = (typeof toolWindowOperations)[number];
 
 export function isToolWindowOperation(value: unknown): value is ToolWindowOperation {
-	return toolWindowOperations.some((operation) => operation === value);
+	return isOneOf(value, toolWindowOperations);
 }
 
 export const toolWindowWaitConditions = [
@@ -142,7 +143,7 @@ export const toolWindowWaitConditions = [
 export type ToolWindowWaitCondition = (typeof toolWindowWaitConditions)[number];
 
 export function isToolWindowWaitCondition(value: unknown): value is ToolWindowWaitCondition {
-	return toolWindowWaitConditions.some((condition) => condition === value);
+	return isOneOf(value, toolWindowWaitConditions);
 }
 
 export const toolWindowFormats = ['png'] as const;
@@ -150,7 +151,7 @@ export const toolWindowFormats = ['png'] as const;
 export type ToolWindowFormat = (typeof toolWindowFormats)[number];
 
 export function isToolWindowFormat(value: unknown): value is ToolWindowFormat {
-	return toolWindowFormats.some((format) => format === value);
+	return isOneOf(value, toolWindowFormats);
 }
 
 export const toolWindowControlTypes = [
@@ -199,7 +200,7 @@ export const toolWindowControlTypes = [
 export type ToolWindowControlType = (typeof toolWindowControlTypes)[number];
 
 export function isToolWindowControlType(value: unknown): value is ToolWindowControlType {
-	return toolWindowControlTypes.some((controlType) => controlType === value);
+	return isOneOf(value, toolWindowControlTypes);
 }
 
 export type ToolScheduleMode = GeneratedScheduleMode;
@@ -209,7 +210,7 @@ export const toolFileSearchModes = ['filename', 'content'] as const;
 export type ToolFileSearchMode = (typeof toolFileSearchModes)[number];
 
 export function isToolFileSearchMode(value: unknown): value is ToolFileSearchMode {
-	return toolFileSearchModes.some((mode) => mode === value);
+	return isOneOf(value, toolFileSearchModes);
 }
 
 export const toolMemoryOperations = ['search', 'list', 'remember', 'forget', 'recall'] as const;
@@ -217,7 +218,7 @@ export const toolMemoryOperations = ['search', 'list', 'remember', 'forget', 're
 export type ToolMemoryOperation = (typeof toolMemoryOperations)[number];
 
 export function isToolMemoryOperation(value: unknown): value is ToolMemoryOperation {
-	return toolMemoryOperations.some((operation) => operation === value);
+	return isOneOf(value, toolMemoryOperations);
 }
 
 export const toolSystemScopes = [
@@ -233,7 +234,7 @@ export const toolSystemScopes = [
 export type ToolSystemScope = (typeof toolSystemScopes)[number];
 
 export function isToolSystemScope(value: unknown): value is ToolSystemScope {
-	return toolSystemScopes.some((scope) => scope === value);
+	return isOneOf(value, toolSystemScopes);
 }
 
 export const toolMemoryRecallModes = ['keyword', 'hybrid'] as const;
@@ -241,7 +242,7 @@ export const toolMemoryRecallModes = ['keyword', 'hybrid'] as const;
 export type ToolMemoryRecallMode = (typeof toolMemoryRecallModes)[number];
 
 export function isToolMemoryRecallMode(value: unknown): value is ToolMemoryRecallMode {
-	return toolMemoryRecallModes.some((mode) => mode === value);
+	return isOneOf(value, toolMemoryRecallModes);
 }
 
 export type ToolRunResultStatus = ToolRunStatus | 'not_found';
@@ -266,7 +267,7 @@ export type ToolRunsResultOperation = (typeof toolRunsResultOperations)[number];
 export type ToolRunsOperation = 'list' | 'inspect' | 'cancel' | 'result_injected';
 
 export function isToolRunsResultOperation(value: unknown): value is ToolRunsResultOperation {
-	return toolRunsResultOperations.some((operation) => operation === value);
+	return isOneOf(value, toolRunsResultOperations);
 }
 
 export function normalizeToolRunsOperation(
@@ -302,7 +303,7 @@ export type ToolScheduleOperation = 'set' | 'list' | 'cancel';
 export function isToolScheduleResultOperation(
 	value: unknown,
 ): value is ToolScheduleResultOperation {
-	return toolScheduleResultOperations.some((operation) => operation === value);
+	return isOneOf(value, toolScheduleResultOperations);
 }
 
 export function normalizeToolScheduleOperation(
@@ -325,7 +326,7 @@ export const toolAcPowerStates = ['offline', 'online', 'unknown'] as const;
 export type ToolAcPowerState = (typeof toolAcPowerStates)[number];
 
 export function isToolAcPowerState(value: unknown): value is ToolAcPowerState {
-	return toolAcPowerStates.some((state) => state === value);
+	return isOneOf(value, toolAcPowerStates);
 }
 
 export const toolBatteryStates = ['high', 'low', 'critical', 'charging', 'unknown'] as const;
@@ -333,7 +334,7 @@ export const toolBatteryStates = ['high', 'low', 'critical', 'charging', 'unknow
 export type ToolBatteryState = (typeof toolBatteryStates)[number];
 
 export function isToolBatteryState(value: unknown): value is ToolBatteryState {
-	return toolBatteryStates.some((state) => state === value);
+	return isOneOf(value, toolBatteryStates);
 }
 
 export const toolMediaModalities = [
@@ -348,7 +349,7 @@ export const toolMediaModalities = [
 export type ToolMediaModality = (typeof toolMediaModalities)[number];
 
 export function isToolMediaModality(value: unknown): value is ToolMediaModality {
-	return toolMediaModalities.some((modality) => modality === value);
+	return isOneOf(value, toolMediaModalities);
 }
 
 export const toolMediaFileKinds = [
@@ -363,5 +364,5 @@ export const toolMediaFileKinds = [
 export type ToolMediaFileKind = (typeof toolMediaFileKinds)[number];
 
 export function isToolMediaFileKind(value: unknown): value is ToolMediaFileKind {
-	return toolMediaFileKinds.some((fileKind) => fileKind === value);
+	return isOneOf(value, toolMediaFileKinds);
 }

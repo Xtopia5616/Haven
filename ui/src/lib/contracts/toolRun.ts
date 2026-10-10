@@ -11,6 +11,8 @@ import {
 } from './generatedCommands.ts';
 import type { TauriEvent } from './tauriEvent.ts';
 import { isRecord } from './objectGuards.ts';
+import { isFiniteNumber, isNumber, isOneOf, isString } from './valueGuards.ts';
+import { nonEmptyStringField, optionalStringFieldIsValid, type WireRecord } from './wireGuards.ts';
 
 /**
  * ToolRun IPC contract at the frontend boundary.
@@ -45,8 +47,6 @@ export interface ToolRunPayload {
 	preview?: string;
 }
 
-type WireRecord = Record<string, unknown>;
-
 const OPTIONAL_STRING_FIELDS = [
 	'session_id',
 	'source_step_id',
@@ -63,15 +63,15 @@ const OPTIONAL_STRING_FIELDS = [
 ] as const;
 
 function isToolRunKind(value: unknown): value is ToolRunKind {
-	return (TOOL_RUN_KIND_DTO_VALUES as readonly unknown[]).includes(value);
+	return isOneOf(value, TOOL_RUN_KIND_DTO_VALUES);
 }
 
 export function isToolRunStatus(value: unknown): value is ToolRunStatus {
-	return (TOOL_RUN_STATUS_VALUES as readonly unknown[]).includes(value);
+	return isOneOf(value, TOOL_RUN_STATUS_VALUES);
 }
 
 export function isScheduleMode(value: unknown): value is ScheduleMode {
-	return (SCHEDULE_MODE_VALUES as readonly unknown[]).includes(value);
+	return isOneOf(value, SCHEDULE_MODE_VALUES);
 }
 
 function hasValidOptionalFields(payload: WireRecord): boolean {
@@ -83,17 +83,14 @@ function hasValidOptionalFields(payload: WireRecord): boolean {
 	}
 	if (
 		payload.exit_code !== undefined &&
-		(typeof payload.exit_code !== 'number' ||
+		(!isNumber(payload.exit_code) ||
 			!Number.isInteger(payload.exit_code) ||
 			payload.exit_code < -2_147_483_648 ||
 			payload.exit_code > 2_147_483_647)
 	) {
 		return false;
 	}
-	return OPTIONAL_STRING_FIELDS.every((field) => {
-		const value = payload[field];
-		return value === undefined || typeof value === 'string';
-	});
+	return OPTIONAL_STRING_FIELDS.every((field) => optionalStringFieldIsValid(payload, field));
 }
 
 /**
@@ -103,26 +100,27 @@ function hasValidOptionalFields(payload: WireRecord): boolean {
  */
 export function mapToolRunPayload(payload: unknown): ToolRunPayload | null {
 	if (!isRecord(payload)) return null;
-	if (typeof payload.tool_run_id !== 'string' || payload.tool_run_id.length === 0) return null;
+	const toolRunId = nonEmptyStringField(payload, 'tool_run_id');
+	if (toolRunId === null) return null;
 	if (!isToolRunKind(payload.kind)) return null;
 	if (!hasValidOptionalFields(payload)) return null;
 
-	const mapped: ToolRunPayload = { toolRunId: payload.tool_run_id, kind: payload.kind };
+	const mapped: ToolRunPayload = { toolRunId, kind: payload.kind };
 	if (isToolRunStatus(payload.status)) mapped.status = payload.status;
-	if (typeof payload.session_id === 'string') mapped.sessionId = payload.session_id;
-	if (typeof payload.source_step_id === 'string') mapped.sourceStepId = payload.source_step_id;
-	if (typeof payload.started_at === 'string') mapped.startedAt = payload.started_at;
-	if (typeof payload.finished_at === 'string') mapped.finishedAt = payload.finished_at;
-	if (typeof payload.due_at === 'string') mapped.dueAt = payload.due_at;
-	if (typeof payload.title === 'string') mapped.title = payload.title;
-	if (typeof payload.body === 'string') mapped.body = payload.body;
+	if (isString(payload.session_id)) mapped.sessionId = payload.session_id;
+	if (isString(payload.source_step_id)) mapped.sourceStepId = payload.source_step_id;
+	if (isString(payload.started_at)) mapped.startedAt = payload.started_at;
+	if (isString(payload.finished_at)) mapped.finishedAt = payload.finished_at;
+	if (isString(payload.due_at)) mapped.dueAt = payload.due_at;
+	if (isString(payload.title)) mapped.title = payload.title;
+	if (isString(payload.body)) mapped.body = payload.body;
 	if (isScheduleMode(payload.mode)) mapped.mode = payload.mode;
-	if (typeof payload.command === 'string') mapped.command = payload.command;
-	if (typeof payload.output === 'string') mapped.output = payload.output;
-	if (typeof payload.error === 'string') mapped.error = payload.error;
-	if (typeof payload.error_reason === 'string') mapped.errorReason = payload.error_reason;
-	if (typeof payload.exit_code === 'number') mapped.exitCode = payload.exit_code;
-	if (typeof payload.preview === 'string') mapped.preview = payload.preview;
+	if (isString(payload.command)) mapped.command = payload.command;
+	if (isString(payload.output)) mapped.output = payload.output;
+	if (isString(payload.error)) mapped.error = payload.error;
+	if (isString(payload.error_reason)) mapped.errorReason = payload.error_reason;
+	if (isNumber(payload.exit_code)) mapped.exitCode = payload.exit_code;
+	if (isString(payload.preview)) mapped.preview = payload.preview;
 	return mapped;
 }
 
@@ -130,10 +128,8 @@ export function mapToolRunPayload(payload: unknown): ToolRunPayload | null {
 export function mapToolRunEvent(event: TauriEvent<unknown>): TauriEvent<ToolRunPayload> | null {
 	if (
 		!isRecord(event) ||
-		typeof event.event !== 'string' ||
-		!(TOOL_RUN_EVENT_NAMES as readonly string[]).includes(event.event) ||
-		typeof event.id !== 'number' ||
-		!Number.isFinite(event.id)
+		!isOneOf(event.event, TOOL_RUN_EVENT_NAMES) ||
+		!isFiniteNumber(event.id)
 	) {
 		return null;
 	}

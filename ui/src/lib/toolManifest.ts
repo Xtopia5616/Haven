@@ -23,6 +23,7 @@ import {
 	type ToolSource,
 } from './contracts/generatedCommands.ts';
 import { isRecord } from './contracts/objectGuards.ts';
+import { isBoolean, isNonEmptyString, isOneOf, isString } from './contracts/valueGuards.ts';
 
 export type ToolManifestView = {
 	identity: {
@@ -102,7 +103,7 @@ export function parseToolManifest(value: unknown): ToolManifestView | null {
 		return null;
 	if (!('input_schema' in model)) return null;
 	const operation = identity.operation;
-	if (operation !== null && typeof operation !== 'string') return null;
+	if (operation !== null && !isString(operation)) return null;
 	const riskLevel = generatedEnumValue(RISK_LEVEL_VALUES, policy.risk_level);
 	const permissionKey = requiredString(policy.permission_key);
 	const confirmation = generatedEnumValue(CONFIRMATION_REQUIREMENT_VALUES, policy.confirmation);
@@ -139,7 +140,7 @@ export function parseToolManifest(value: unknown): ToolManifestView | null {
 		!whenToUse ||
 		!whenNotToUse ||
 		!Array.isArray(keyOperations) ||
-		!keyOperations.every((item) => typeof item === 'string')
+		!keyOperations.every(isString)
 	) {
 		return null;
 	}
@@ -159,7 +160,7 @@ export function parseToolManifest(value: unknown): ToolManifestView | null {
 	if (
 		availabilityReason !== undefined &&
 		availabilityReason !== null &&
-		typeof availabilityReason !== 'string'
+		!isString(availabilityReason)
 	) {
 		return null;
 	}
@@ -218,18 +219,18 @@ export function parseToolManifest(value: unknown): ToolManifestView | null {
 }
 
 function requiredString(value: unknown): string | null {
-	return typeof value === 'string' && value.length > 0 ? value : null;
+	return isNonEmptyString(value) ? value : null;
 }
 
 function generatedEnumValue<const Values extends readonly string[]>(
 	values: Values,
 	value: unknown,
 ): Values[number] | null {
-	return (values as readonly unknown[]).includes(value) ? (value as Values[number]) : null;
+	return isOneOf(value, values) ? value : null;
 }
 
 function booleanValue(value: unknown): boolean | null {
-	return typeof value === 'boolean' ? value : null;
+	return isBoolean(value) ? value : null;
 }
 
 /** Replace the live catalog snapshot received from the backend. */

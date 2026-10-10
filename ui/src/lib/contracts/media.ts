@@ -2,7 +2,8 @@ import {
 	MEDIA_REPRESENTATION_KIND_VALUES,
 	type MediaRepresentationKind,
 } from './generatedCommands.ts';
+import { isOneOf } from './valueGuards.ts';
 
 export function isMediaRepresentationKind(value: unknown): value is MediaRepresentationKind {
-	return (MEDIA_REPRESENTATION_KIND_VALUES as readonly unknown[]).includes(value);
+	return isOneOf(value, MEDIA_REPRESENTATION_KIND_VALUES);
 }

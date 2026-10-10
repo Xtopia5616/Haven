@@ -7,6 +7,7 @@ import {
 	type RecordingStopReasonDto,
 	type VadStatusEvent as GeneratedVadStatusEvent,
 } from './generatedCommands.ts';
+import { isNumber, isOneOf, isString } from './valueGuards.ts';
 
 export type RecordingEventName = (typeof RECORDING_EVENT_NAMES)[number];
 
@@ -18,10 +19,7 @@ export interface RecordingPayload {
 export type VadStatusPayload = GeneratedVadStatusEvent;
 
 function isRecordingStopReason(value: unknown): value is RecordingStopReasonDto {
-	return (
-		typeof value === 'string' &&
-		RECORDING_STOP_REASON_DTO_VALUES.includes(value as RecordingStopReasonDto)
-	);
+	return isOneOf(value, RECORDING_STOP_REASON_DTO_VALUES);
 }
 export interface TranscriptionStartedPayload {
 	recordingId: string;
@@ -61,7 +59,7 @@ export function mapRecordingEvent<K extends RecordingEventName>(
 			return {
 				...event,
 				payload: {
-					...(typeof payload.recording_id === 'string'
+					...(isString(payload.recording_id)
 						? { recordingId: payload.recording_id }
 						: {}),
 					...(isRecordingStopReason(payload.reason) ? { reason: payload.reason } : {}),
@@ -71,8 +69,8 @@ export function mapRecordingEvent<K extends RecordingEventName>(
 			return {
 				...event,
 				payload: {
-					signal: typeof payload.signal === 'string' ? payload.signal : 'none',
-					state: typeof payload.state === 'string' ? payload.state : 'silent',
+					signal: isString(payload.signal) ? payload.signal : 'none',
+					state: isString(payload.state) ? payload.state : 'silent',
 				},
 			} as unknown as TauriEvent<RecordingEventPayloadMap[K]>;
 		case 'recording:error':
@@ -80,27 +78,24 @@ export function mapRecordingEvent<K extends RecordingEventName>(
 			return {
 				...event,
 				payload: {
-					recordingId:
-						typeof payload.recording_id === 'string' ? payload.recording_id : '',
-					error: typeof payload.error === 'string' ? payload.error : '',
+					recordingId: isString(payload.recording_id) ? payload.recording_id : '',
+					error: isString(payload.error) ? payload.error : '',
 				},
 			} as unknown as TauriEvent<RecordingEventPayloadMap[K]>;
 		case 'transcription:started':
 			return {
 				...event,
 				payload: {
-					recordingId:
-						typeof payload.recording_id === 'string' ? payload.recording_id : '',
+					recordingId: isString(payload.recording_id) ? payload.recording_id : '',
 				},
 			} as unknown as TauriEvent<RecordingEventPayloadMap[K]>;
 		case 'transcription:result':
 			return {
 				...event,
 				payload: {
-					recordingId:
-						typeof payload.recording_id === 'string' ? payload.recording_id : '',
-					text: typeof payload.text === 'string' ? payload.text : '',
-					durationMs: typeof payload.duration_ms === 'number' ? payload.duration_ms : 0,
+					recordingId: isString(payload.recording_id) ? payload.recording_id : '',
+					text: isString(payload.text) ? payload.text : '',
+					durationMs: isNumber(payload.duration_ms) ? payload.duration_ms : 0,
 				},
 			} as unknown as TauriEvent<RecordingEventPayloadMap[K]>;
 	}

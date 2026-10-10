@@ -17,6 +17,13 @@ import {
 } from './generatedCommands.ts';
 import { isRecord } from './objectGuards.ts';
 import type { TauriEvent } from './tauriEvent.ts';
+import { isFiniteNumber, isOneOf, isString } from './valueGuards.ts';
+import {
+	hasOwnWireField,
+	nonEmptyStringField,
+	readStringField,
+	type WireRecord,
+} from './wireGuards.ts';
 
 /** Compile-time guard: Rust lifecycle variants and the renderer mapper stay aligned. */
 export const SESSION_LIFECYCLE_KINDS = {
@@ -49,31 +56,28 @@ export type SessionLifecyclePayload =
 	| { type: 'title_updated'; sessionId: string; title: string }
 	| { type: 'deleted'; sessionId: string | null };
 
-type SessionWireRecord = Record<string, unknown>;
-
 /** Reject malformed lifecycle payloads before any consumer sees them. */
 export function mapSessionEvent(
 	event: TauriEvent<unknown>,
 ): TauriEvent<SessionLifecyclePayload> | null {
 	if (
 		event.event !== SESSION_EVENT_NAMES[0] ||
-		typeof event.id !== 'number' ||
-		!Number.isFinite(event.id) ||
+		!isFiniteNumber(event.id) ||
 		!isRecord(event.payload)
 	) {
 		return null;
 	}
 
 	const payload = event.payload;
-	const type = requiredString(payload, 'type') as GeneratedSessionLifecycleEvent['type'] | null;
+	const type = readStringField(payload, 'type') as GeneratedSessionLifecycleEvent['type'] | null;
 	if (type === null) return null;
 
 	switch (type) {
 		case 'created': {
-			const sessionId = requiredSessionId(payload);
+			const sessionId = nonEmptyStringField(payload, 'session_id');
 			const status = mapSessionStatus(payload.status);
 			const waitingReason = mapWaitingReason(payload.waiting_reason);
-			const title = nullableString(payload, 'title');
+			const title = requiredNullableStringField(payload, 'title');
 			if (
 				sessionId === null ||
 				status === null ||
@@ -88,11 +92,11 @@ export function mapSessionEvent(
 			};
 		}
 		case 'updated': {
-			const sessionId = requiredSessionId(payload);
+			const sessionId = nonEmptyStringField(payload, 'session_id');
 			const status = mapUpdateStatus(payload.status);
 			const waitingReason = mapWaitingReason(payload.waiting_reason);
-			const title = requiredString(payload, 'title');
-			const reason = optionalString(payload, 'reason');
+			const title = readStringField(payload, 'title');
+			const reason = optionalStringField(payload, 'reason');
 			if (
 				sessionId === null ||
 				status === null ||
@@ -108,27 +112,27 @@ export function mapSessionEvent(
 			};
 		}
 		case 'completed': {
-			const sessionId = requiredSessionId(payload);
-			const title = requiredString(payload, 'title');
-			const reason = requiredString(payload, 'reason');
+			const sessionId = nonEmptyStringField(payload, 'session_id');
+			const title = readStringField(payload, 'title');
+			const reason = readStringField(payload, 'reason');
 			if (sessionId === null || title === null || reason === null) return null;
 			return { ...event, payload: { type, sessionId, title, reason } };
 		}
 		case 'error': {
-			const sessionId = requiredSessionId(payload);
-			const title = requiredString(payload, 'title');
-			const error = requiredString(payload, 'error');
+			const sessionId = nonEmptyStringField(payload, 'session_id');
+			const title = readStringField(payload, 'title');
+			const error = readStringField(payload, 'error');
 			if (sessionId === null || title === null || error === null) return null;
 			return { ...event, payload: { type, sessionId, title, error } };
 		}
 		case 'title_updated': {
-			const sessionId = requiredSessionId(payload);
-			const title = requiredString(payload, 'title');
+			const sessionId = nonEmptyStringField(payload, 'session_id');
+			const title = readStringField(payload, 'title');
 			if (sessionId === null || title === null) return null;
 			return { ...event, payload: { type, sessionId, title } };
 		}
 		case 'deleted': {
-			const sessionId = nullableString(payload, 'session_id');
+			const sessionId = requiredNullableStringField(payload, 'session_id');
 			if (sessionId === undefined || sessionId === '') return null;
 			return { ...event, payload: { type, sessionId } };
 		}
@@ -142,39 +146,28 @@ function mapSessionStatus(value: unknown): SessionStatus | null {
 }
 
 export function isSessionStatus(value: unknown): value is SessionStatus {
-	return (SESSION_STATUS_VALUES as readonly unknown[]).includes(value);
+	return isOneOf(value, SESSION_STATUS_VALUES);
 }
 
 function mapUpdateStatus(value: unknown): SessionUpdateStatus | null {
-	return (SESSION_UPDATE_STATUS_VALUES as readonly unknown[]).includes(value)
-		? (value as SessionUpdateStatus)
-		: null;
+	return isOneOf(value, SESSION_UPDATE_STATUS_VALUES) ? value : null;
 }
 
 function mapWaitingReason(value: unknown): SessionWaitingReason | null | undefined {
 	if (value === undefined) return null;
-	return (SESSION_WAITING_REASON_VALUES as readonly unknown[]).includes(value)
-		? (value as SessionWaitingReason)
-		: undefined;
+	return isOneOf(value, SESSION_WAITING_REASON_VALUES) ? value : undefined;
 }
 
-function requiredSessionId(payload: SessionWireRecord): string | null {
-	const value = payload.session_id;
-	return typeof value === 'string' && value.length > 0 ? value : null;
-}
-
-function requiredString(payload: SessionWireRecord, field: string): string | null {
+function requiredNullableStringField(
+	payload: WireRecord,
+	field: string,
+): string | null | undefined {
+	if (!hasOwnWireField(payload, field)) return undefined;
 	const value = payload[field];
-	return typeof value === 'string' ? value : null;
+	return value === null || isString(value) ? value : undefined;
 }
 
-function nullableString(payload: SessionWireRecord, field: string): string | null | undefined {
-	if (!Object.prototype.hasOwnProperty.call(payload, field)) return undefined;
-	const value = payload[field];
-	return value === null || typeof value === 'string' ? value : undefined;
-}
-
-function optionalString(payload: SessionWireRecord, field: string): string | null | undefined {
-	if (!Object.prototype.hasOwnProperty.call(payload, field)) return null;
-	return typeof payload[field] === 'string' ? payload[field] : undefined;
+function optionalStringField(payload: WireRecord, field: string): string | null | undefined {
+	if (!hasOwnWireField(payload, field)) return null;
+	return isString(payload[field]) ? payload[field] : undefined;
 }
