@@ -937,3 +937,4 @@
 - [0946：在 Session command response 边界校验持久实体 ID](0946-validate-session-command-response-identities.md)
 - [0947：在 Memory command response 边界校验实体 ID](0947-validate-memory-command-response-identities.md)
 - [0948：校验 process_transcript 返回的 session 与 message 身份](0948-validate-process-transcript-result-identities.md)
+- [0949：校验 Session permission grant 的会话身份](0949-validate-session-permission-grant-identities.md)

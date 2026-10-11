@@ -6,21 +6,35 @@ import type {
 	LogTail as GeneratedLogTail,
 	ShellAvailability as GeneratedShellAvailability,
 	Settings as GeneratedSettings,
+	SessionPermissionGrant as GeneratedSessionPermissionGrant,
 	TauriCommandRequest,
 } from './generatedCommands.ts';
 import { isRecord } from './objectGuards.ts';
 import { isBoolean, isString } from './valueGuards.ts';
+import { isCanonicalEntityId } from './wireGuards.ts';
 
 export type LogInfo = GeneratedLogInfo;
 export type LogTail = GeneratedLogTail;
 export type ShellAvailability = GeneratedShellAvailability;
 export type ApiKeyStatus = GeneratedApiKeyStatus;
+export type SessionPermissionGrant = GeneratedSessionPermissionGrant;
 
 /** Exact Rust-owned config shape from the generated IPC contract. */
 export type SettingsPayload = GeneratedSettings;
 
 /** Rust-owned settings input shape, including Serde defaults for omitted fields. */
 export type SettingsUpdatePayload = TauriCommandRequest<'update_settings'>['settings'];
+
+/** Validate persisted session identities before Settings consumes permission grants. */
+export function parseSessionPermissionGrantResponses(value: unknown): SessionPermissionGrant[] {
+	if (
+		!Array.isArray(value) ||
+		!value.every((grant) => isRecord(grant) && isCanonicalEntityId(grant.session_id, 'ses'))
+	) {
+		throw new Error('Invalid session permission grant identity');
+	}
+	return value as unknown as SessionPermissionGrant[];
+}
 
 /**
  * The full Settings shape is owned by haven_common::config::Settings. Keep the

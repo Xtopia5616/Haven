@@ -1,5 +1,10 @@
-import { parseSettingsPayload, type SettingsPayload } from '$lib/contracts/settings.ts';
-import type { SessionPermissionGrant, TauriCommandRequest } from './contracts/generatedCommands.ts';
+import {
+	parseSessionPermissionGrantResponses,
+	parseSettingsPayload,
+	type SessionPermissionGrant,
+	type SettingsPayload,
+} from '$lib/contracts/settings.ts';
+import type { TauriCommandRequest } from './contracts/generatedCommands.ts';
 import { invoke } from '$lib/tauri.ts';
 
 /** Load Settings through the single runtime boundary used by renderer callers. */
@@ -14,7 +19,7 @@ export function discardStagedCredentials(): Promise<void> {
 
 /** Read the durable per-session permission grants shown by Settings. */
 export function listSessionPermissions(): Promise<SessionPermissionGrant[]> {
-	return invoke('list_session_permissions');
+	return invoke('list_session_permissions').then(parseSessionPermissionGrantResponses);
 }
 
 /** Read the current managed autostart state. */

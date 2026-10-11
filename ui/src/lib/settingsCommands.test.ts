@@ -136,4 +136,20 @@ describe('Settings commands', () => {
 			stageProviderCredential({ providerName: 'provider', apiKey: 'secret' }),
 		).rejects.toBe(failure);
 	});
+
+	it('rejects session permission grants with non-canonical session identities', async () => {
+		invokeMock.mockResolvedValueOnce([
+			{ session_id: 'session-0123456789abcdef0123456789abcdef' },
+		] as never);
+		await expect(listSessionPermissions()).rejects.toThrow(
+			'Invalid session permission grant identity',
+		);
+
+		invokeMock.mockResolvedValueOnce({
+			session_id: 'ses-0123456789abcdef0123456789abcdef',
+		} as never);
+		await expect(listSessionPermissions()).rejects.toThrow(
+			'Invalid session permission grant identity',
+		);
+	});
 });
