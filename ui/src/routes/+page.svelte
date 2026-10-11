@@ -198,16 +198,16 @@
 				if (request.kind === 'ask') {
 					const question = sessionReducer
 						.getMessages(request.owner.sessionId)
-						.find((message) => message.id === request.id)?.content;
+						.find((message) => message.id === request.requestId)?.content;
 					return {
-						id: request.id,
+						id: request.requestId,
 						kind: request.kind,
 						title: `待回答 · ${sessionTitle}`,
 						detail: question || 'Haven 正在等待你的回答',
 					};
 				}
 				return {
-					id: request.id,
+					id: request.requestId,
 					kind: request.kind,
 					title: `权限确认 · ${sessionTitle}`,
 					detail: request.summary || request.toolName || '等待你的许可',
@@ -892,7 +892,8 @@
 		clearPersistedFreshSessionIntent: () => {
 			if (browser) localStorage.removeItem(NEW_SESSION_INTENT_STORAGE_KEY);
 		},
-		getPendingInteractionIds: (sessionId) => pendingInteractionIdsForSession(sessionId),
+		getPendingInteractionRequestIds: (sessionId) =>
+			pendingInteractionRequestIdsForSession(sessionId),
 		evictTerminalSessionMemory,
 		setInitialLoading: (loading) => (initialLoading = loading),
 		deferResumeTargetClear: () => setTimeout(() => sessionResumeTargetStore.set(null), 0),
@@ -945,8 +946,8 @@
 		});
 	}
 
-	function pendingInteractionIdsForSession(sessionId: string) {
-		return chatSessionController.pendingInteractionIdsForSession(sessionId);
+	function pendingInteractionRequestIdsForSession(sessionId: string) {
+		return chatSessionController.pendingInteractionRequestIdsForSession(sessionId);
 	}
 
 	async function switchToSession(sessionId: string) {
@@ -1011,7 +1012,7 @@
 		const request = interactionDict[id];
 		if (!request || request.status !== 'pending') return;
 		if (request.kind !== 'ask') {
-			requestConfirmationOpen(request.id);
+			requestConfirmationOpen(request.requestId);
 			return;
 		}
 		if (request.owner.kind !== 'session') return;

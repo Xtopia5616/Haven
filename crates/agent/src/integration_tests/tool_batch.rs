@@ -182,7 +182,7 @@ async fn mixed_confirmation_batch_pauses_only_real_gates_and_resumes_all_tools()
     executor
         .resolve_interaction(
             &session.session_id,
-            &confirmations[0].id,
+            &confirmations[0].request_id,
             serde_json::Value::Bool(true),
             false,
         )

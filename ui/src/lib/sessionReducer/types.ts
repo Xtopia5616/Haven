@@ -157,7 +157,7 @@ export type SessionAction =
 			type: 'session/asks-settled';
 			sessionId: string;
 			asks: Array<{
-				id: string;
+				requestId: string;
 				resolved?: AskResponseView | null;
 			}>;
 	  }
@@ -167,7 +167,7 @@ export type SessionAction =
 			messages: SessionMessage[];
 			interactions?: InteractionRequest[];
 			/** Pending live requests that must survive a possibly stale resume snapshot. */
-			preserveInteractionIds?: string[];
+			preserveRequestIds?: string[];
 			usage?: ResumeUsage | null;
 			llmUsage?: SessionLlmUsage[];
 			preserveStreamingOnly?: boolean;
@@ -183,14 +183,14 @@ export type SessionAction =
 			type: 'session/interactions-hydrated';
 			sessionId: string;
 			requests: InteractionRequest[];
-			preserveInteractionIds?: string[];
+			preserveRequestIds?: string[];
 	  }
 	| { type: 'session/interactions-cleared'; sessionId: string; kind?: InteractionKind }
-	| { type: 'session/ask-resolved'; id: string; response: AskResponseView }
+	| { type: 'session/ask-resolved'; requestId: string; response: AskResponseView }
 	| { type: 'session/scheduled-tool-run-cancelled'; toolRunId: string }
 	| {
 			type: 'session/interaction-resolution-result';
-			id: string;
+			requestId: string;
 			result: ConfirmationResolutionResult;
 	  }
 	| { type: 'agent/chunks'; chunks: AgentChunkBatchItem[] }

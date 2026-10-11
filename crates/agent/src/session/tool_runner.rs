@@ -41,7 +41,7 @@ fn scheduled_request_matches_route(
     tool_run_id: &str,
     request_id: &haven_common::types::ConfirmId,
 ) -> bool {
-    request.id == request_id.as_str()
+    request.request_id == request_id.as_str()
         && request.status == crate::interaction::InteractionStatus::Pending
         && matches!(
             &request.details,
@@ -1244,7 +1244,7 @@ impl SessionSupervisor {
             .interactions(Some(crate::interaction::InteractionKind::Confirm), true)
             .await
             .into_iter()
-            .find(|request| request.id == step_id.as_str())
+            .find(|request| request.request_id == step_id.as_str())
     }
 
     /// Persist an explicit session grant before resolving a pending
@@ -2349,9 +2349,10 @@ mod scheduled_authorization_tests {
             .request_interaction(other_request.clone())
             .await
             .unwrap();
-        let request_id = haven_common::types::ConfirmId::try_from(request.id.clone()).unwrap();
+        let request_id =
+            haven_common::types::ConfirmId::try_from(request.request_id.clone()).unwrap();
         let other_request_id =
-            haven_common::types::ConfirmId::try_from(other_request.id.clone()).unwrap();
+            haven_common::types::ConfirmId::try_from(other_request.request_id.clone()).unwrap();
         let wrong_owner = crate::interaction::InteractionOwner::Session {
             session_id: other_session.session_id.clone(),
         };

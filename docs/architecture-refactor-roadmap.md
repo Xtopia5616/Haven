@@ -74,7 +74,7 @@
 
 | 状态 | 当前项 |
 |---|---|
-| **Active / Next** | **Active：全项目领域术语与架构角色命名收敛**，见 §5.7；继续审查 Rust crate 可达 API、构造入口与函数调用图，并覆盖剩余 UI command response、配置和文档引用。近期 Chat 输入 owner 与提交边界已收敛（ADR 0843–0846），Memory 持久 owner ID 与 Session transcript response adapter 已收敛（ADR 0967–0968），派生集合命名已按实体统一（ADR 0969），配置与 Settings 共用语义验证并匹配 Rust 数值域（ADR 0988）；全仓审查仍未完成。暂无后续 Next。 |
+| **Active / Next** | **Active：全项目领域术语与架构角色命名收敛**，见 §5.7；继续审查 Rust crate 可达 API、构造入口与函数调用图，并覆盖剩余 UI command response、配置和文档引用。近期 Chat 输入 owner 与提交边界已收敛（ADR 0843–0846），Memory 持久 owner ID 与 Session transcript response adapter 已收敛（ADR 0967–0968），派生集合命名已按实体统一（ADR 0969），配置与 Settings 共用语义验证并匹配 Rust 数值域（ADR 0988）；本轮继续收敛 Session、Fact、Step、runtime Session/Step 与 LLM usage 的响应身份字段（ADR 0991–0995），并统一异构交互请求身份与 durable clear 列表字段（ADR 0996）。全仓审查仍未完成。暂无后续 Next。 |
 | **Gate** | Windows 发布验收 Open，见 §5.1。 |
 
 ### 5.1 Windows 发布验收（Gate / Open）
@@ -233,7 +233,7 @@ Memory resume projection `SessionStep` 以 `step_id` 表示执行行身份；UI 
 
 Agent runtime list 使用 `SessionInfo.session_id` / `StepInfo.step_id`，UI `SessionSummary` 使用 `sessionId`；parser 与消费者拒绝旧泛名 `id`，App lifecycle event projection 保持 `session_id`（ADR 0994）。
 
-持久用量记录及 resume DTO 使用 `LlmUsageRecord.usage_id`；UI parser 拒绝旧泛名，Memory 只为历史 durable event payload 保留反序列化 alias，新事件只写 `usage_id`，数据库列 `llm_usage.id` 不变（ADR 0995）。剩余实体身份审计聚焦 heterogeneous interaction request identity 与其余 command DTO。
+持久用量记录及 resume DTO 使用 `LlmUsageRecord.usage_id`；UI parser 拒绝旧泛名，Memory 只为历史 durable event payload 保留反序列化 alias，新事件只写 `usage_id`，数据库列 `llm_usage.id` 不变（ADR 0995）。交互请求统一使用 `request_id` / `requestId`，Ask 仍复用 `step-*`，确认仍使用 `conf-*`；清除事件改写 `request_ids`，durable replay 兼容历史 `id` / `ids`，UI 新契约拒绝旧 `id`（ADR 0996）。后续实体身份审计转向其余 command DTO、配置字段、Rust crate 可达 API 与当前文档引用。
 
 Compaction、memory embedding maintenance、App 启动/恢复、clipboard history 和 managed-media cleanup 的错误日志现统一清洗；上传批次与生成媒体目录项日志移除 basename，避免暴露用户文件名（ADR 0981）。
 

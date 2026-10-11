@@ -117,8 +117,8 @@ function hasResumeInteractionIdentity(
 		return false;
 	}
 	const expectedIdPrefix = value.kind === 'ask' ? 'step' : 'conf';
-	if (!isCanonicalEntityId(value.id, expectedIdPrefix)) return false;
-	if (value.kind === 'ask' && !stepIds.has(value.id)) return false;
+	if (!isCanonicalEntityId(value.request_id, expectedIdPrefix)) return false;
+	if (value.kind === 'ask' && !stepIds.has(value.request_id)) return false;
 	if (value.session_id !== undefined && value.session_id !== sessionId) return false;
 	if (value.session_id !== undefined && !isCanonicalEntityId(value.session_id, 'ses')) {
 		return false;

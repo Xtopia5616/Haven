@@ -1135,10 +1135,10 @@ pub(crate) fn spawn(
                                 };
                                 match persisted {
                                     Ok(()) => {
-                                        if let Some(request) = state
-                                            .interactions
-                                            .iter_mut()
-                                            .find(|request| request.id == decision.request.id)
+                                        if let Some(request) =
+                                            state.interactions.iter_mut().find(|request| {
+                                                request.request_id == decision.request.request_id
+                                            })
                                         {
                                             *request = decision.request.clone();
                                         }
@@ -1161,12 +1161,12 @@ pub(crate) fn spawn(
                         let ids = state
                             .interactions
                             .iter()
-                            .map(|request| request.id.clone())
+                            .map(|request| request.request_id.clone())
                             .collect::<Vec<_>>();
                         let result = if ids.is_empty() {
                             Ok(())
                         } else {
-                            let payload = serde_json::json!({ "ids": ids });
+                            let payload = serde_json::json!({ "request_ids": ids });
                             append_interaction_event(
                                 &store,
                                 &state.info.session_id,
@@ -1413,7 +1413,7 @@ pub(crate) fn spawn(
                     if result.is_ok() {
                         state
                             .interactions
-                            .retain(|existing| existing.id != request.id);
+                            .retain(|existing| existing.request_id != request.request_id);
                         state.interactions.push(request);
                     }
                     let _ = reply.send(result);
@@ -1439,9 +1439,9 @@ pub(crate) fn spawn(
                                 &state.info.session_id,
                             )?;
                             anyhow::ensure!(
-                                ids.insert(request.id.clone()),
+                                ids.insert(request.request_id.clone()),
                                 "interaction batch contains duplicate request id '{}'",
-                                request.id
+                                request.request_id
                             );
                             events.push(SessionEventInput::new(
                                 INTERACTION_REQUESTED_EVENT_TYPE,
@@ -1473,7 +1473,7 @@ pub(crate) fn spawn(
                         status.send_replace(SessionStatus::Paused);
                         state
                             .interactions
-                            .retain(|existing| !ids.contains(&existing.id));
+                            .retain(|existing| !ids.contains(&existing.request_id));
                         state.interactions.extend(requests);
                         Ok(())
                     }
@@ -1501,12 +1501,12 @@ pub(crate) fn spawn(
                         .interactions
                         .iter()
                         .filter(|request| kind.is_none_or(|wanted| request.kind == wanted))
-                        .map(|request| request.id.clone())
+                        .map(|request| request.request_id.clone())
                         .collect::<Vec<_>>();
                     let result = if ids.is_empty() {
                         Ok(())
                     } else {
-                        let payload = serde_json::json!({ "ids": ids });
+                        let payload = serde_json::json!({ "request_ids": ids });
                         match serde_json::to_string(&payload) {
                             Ok(payload) => {
                                 append_interaction_event(
@@ -1531,7 +1531,7 @@ pub(crate) fn spawn(
                     let ids = ids.into_iter().collect::<HashSet<_>>();
                     state
                         .interactions
-                        .retain(|request| !ids.contains(&request.id));
+                        .retain(|request| !ids.contains(&request.request_id));
                     let _ = reply.send(());
                 }
                 ActorCommand::RecordStep { step } => {
@@ -2037,7 +2037,7 @@ fn resolve_interaction(
     let request = state
         .interactions
         .iter()
-        .find(|request| request.id == request_id)?;
+        .find(|request| request.request_id == request_id)?;
     let mut resolved = request.clone();
     if resolved.status != InteractionStatus::Pending || resolved.kind != InteractionKind::Confirm {
         return None;
@@ -2054,7 +2054,9 @@ fn resolve_interaction(
         .interactions
         .iter()
         .filter(|entry| entry.kind == InteractionKind::Confirm)
-        .all(|entry| entry.id == resolved.id || entry.status != InteractionStatus::Pending)
+        .all(|entry| {
+            entry.request_id == resolved.request_id || entry.status != InteractionStatus::Pending
+        })
         && state.info.status == SessionStatus::Paused;
     Some(ConfirmDecision {
         request: resolved,
@@ -2201,7 +2203,7 @@ mod queue_tests {
         let persisted: crate::interaction::InteractionRequest =
             serde_json::from_str(&events[0].payload).expect("decode durable interaction");
         assert_eq!(persisted.session_id.as_deref(), Some(session.id.as_str()));
-        assert_eq!(persisted.id, "step-valid");
+        assert_eq!(persisted.request_id, "step-valid");
     }
 
     #[tokio::test]

@@ -95,10 +95,10 @@ function createHarness(options: {
 		clearPersistedFreshSessionIntent: () => {
 			persistedIntent = false;
 		},
-		getPendingInteractionIds: (sessionId) =>
+		getPendingInteractionRequestIds: (sessionId) =>
 			Object.values(reducer.snapshot().interactions)
 				.filter((request) => request.sessionId === sessionId && request.status === 'pending')
-				.map((request) => request.id),
+				.map((request) => request.requestId),
 		evictTerminalSessionMemory: (sessionId) => evicted.push(sessionId),
 		setInitialLoading: (loading) => initialLoadingChanges.push(loading),
 		deferResumeTargetClear: () => deferredTargetClears.push(0),
@@ -160,12 +160,12 @@ describe('createChatSessionStartup', () => {
 			listRuntimeSessions: () => sessionsResponse.promise,
 			getLatestSessionForResume,
 		});
-		const pendingIds = ['conf-live'];
+		const pendingIds = ['step-live'];
 		// A reducer-owned pending request must survive a possibly stale resume snapshot.
 		harness.reducer.dispatch({
 			type: 'session/interaction-upserted',
 			request: {
-				id: pendingIds[0],
+				requestId: pendingIds[0],
 				sessionId: SESSION_ID,
 				owner: { kind: 'session' as const, sessionId: SESSION_ID },
 				kind: 'ask',
@@ -190,7 +190,7 @@ describe('createChatSessionStartup', () => {
 			'session/retained-error',
 			'sessions/loaded',
 		]);
-		expect(harness.actions[1]).toMatchObject({ preserveInteractionIds: ['conf-live'] });
+		expect(harness.actions[1]).toMatchObject({ preserveRequestIds: ['step-live'] });
 		expect(harness.actions[3]).toMatchObject({
 			type: 'session/run-ended',
 			status: 'error',

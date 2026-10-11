@@ -489,7 +489,7 @@ impl ReActEngine {
         if let Some(ids) = clear_confirmation_ids {
             committed.push_trailing_event(
                 haven_memory::INTERACTION_CLEARED_EVENT_TYPE,
-                serde_json::json!({ "ids": ids }).to_string(),
+                serde_json::json!({ "request_ids": ids }).to_string(),
             );
         }
         let write_result = {

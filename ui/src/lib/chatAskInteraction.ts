@@ -59,7 +59,7 @@ export function createAskInteractionController({
 		if (awaiting.length === 0) return false;
 		const byMessage = askSelections.get(sessionId);
 		if (!byMessage) return false;
-		return awaiting.every((request) => (byMessage.get(request.id) || []).length > 0);
+		return awaiting.every((request) => (byMessage.get(request.requestId) || []).length > 0);
 	}
 
 	function refreshSelectionsReady() {
@@ -94,7 +94,7 @@ export function createAskInteractionController({
 					request.status === 'resolved'
 						? request.response
 						: undefined;
-				return { id: message.id, resolved: response || null };
+				return { requestId: message.id, resolved: response || null };
 			});
 		reducer.dispatch({ type: 'session/asks-settled', sessionId, asks });
 		// A resume/end invalidates quick-reply answers for the pending batch.
@@ -176,7 +176,7 @@ export function createAskInteractionController({
 		const response: AskResponseView = resolved.ignored
 			? { ignored: true }
 			: { answer: resolved.answer || '' };
-		reducer.dispatch({ type: 'session/ask-resolved', id: messageId, response });
+		reducer.dispatch({ type: 'session/ask-resolved', requestId: messageId, response });
 		ids.add(messageId);
 		resolvedAskIds.set(sessionId, ids);
 		const byMessage = askSelections.get(sessionId);
@@ -203,11 +203,15 @@ export function createAskInteractionController({
 		if (awaiting.length === 0) return false;
 		const byMessage = askSelections.get(sessionId);
 		if (!byMessage) return false;
-		if (!awaiting.every((message) => (byMessage.get(message.id) || []).length > 0))
+		if (!awaiting.every((request) => (byMessage.get(request.requestId) || []).length > 0))
 			return false;
 		for (const request of awaiting) {
-			const selectedOptions = byMessage.get(request.id) || [];
-			resolveAsk(request.id, { answer: selectedOptions.join(' ') }, { deferSubmit: true });
+			const selectedOptions = byMessage.get(request.requestId) || [];
+			resolveAsk(
+				request.requestId,
+				{ answer: selectedOptions.join(' ') },
+				{ deferSubmit: true },
+			);
 		}
 		const submitted = resolvedAskIds.get(sessionId);
 		clearAskSelections(sessionId);

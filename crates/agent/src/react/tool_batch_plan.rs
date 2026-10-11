@@ -105,16 +105,16 @@ impl ConfirmationBatchPlan {
                 );
                 if let Some(request) = request {
                     anyhow::ensure!(
-                        matched_requests.insert(request.id.clone()),
+                        matched_requests.insert(request.request_id.clone()),
                         "confirmation request '{}' maps to more than one tool",
-                        request.id
+                        request.request_id
                     );
                 }
                 Ok(ConfirmationBatchTool {
                     step_id: planned.step_id.clone(),
                     tool_index: planned.tool_index,
                     tool_call_id: planned.tool_call.tool_call_id.clone(),
-                    confirmation_request_id: request.map(|request| request.id.clone()),
+                    confirmation_request_id: request.map(|request| request.request_id.clone()),
                 })
             })
             .collect::<anyhow::Result<Vec<_>>>()?;
@@ -139,7 +139,7 @@ impl ConfirmationBatchPlan {
             };
             let request = requests
                 .iter()
-                .find(|request| request.id == request_id)
+                .find(|request| request.request_id == request_id)
                 .ok_or_else(|| {
                     anyhow::anyhow!(
                         "confirmation request '{}' is missing from its ordered plan",
@@ -194,7 +194,7 @@ impl ConfirmationBatchPlan {
                     step_id: planned.step_id.clone(),
                     tool_index: planned.tool_index,
                     tool_call_id: planned.tool_call.tool_call_id.clone(),
-                    confirmation_request_id: Some(request.id.clone()),
+                    confirmation_request_id: Some(request.request_id.clone()),
                 })
                 .collect(),
         }
@@ -233,12 +233,13 @@ impl ConfirmationBatchPlan {
                                     event.sequence
                                 )
                             })?;
-                        let ids = payload
-                            .get("ids")
+                        let request_ids = payload
+                            .get("request_ids")
+                            .or_else(|| payload.get("ids"))
                             .and_then(serde_json::Value::as_array)
                             .ok_or_else(|| {
                                 anyhow::anyhow!(
-                                    "interaction clear event at sequence {} has no ids",
+                                    "interaction clear event at sequence {} has no request_ids",
                                     event.sequence
                                 )
                             })?;
@@ -249,7 +250,9 @@ impl ConfirmationBatchPlan {
                             .collect::<Vec<_>>();
                         if !gated_ids.is_empty()
                             && gated_ids.iter().all(|request_id| {
-                                ids.iter().any(|id| id.as_str() == Some(*request_id))
+                                request_ids
+                                    .iter()
+                                    .any(|id| id.as_str() == Some(*request_id))
                             })
                         {
                             plan = None;
@@ -524,7 +527,7 @@ mod tests {
             haven_common::types::RiskLevel::High,
             None,
         );
-        let confirmation_id = confirmation.id.clone();
+        let confirmation_id = confirmation.request_id.clone();
 
         let durable =
             ConfirmationBatchPlan::from_plan(7, &plan, std::slice::from_ref(&confirmation))
@@ -606,7 +609,7 @@ mod tests {
         let completed_clear = event(
             3,
             haven_memory::INTERACTION_CLEARED_EVENT_TYPE,
-            serde_json::json!({ "ids": [request.id] }).to_string(),
+            serde_json::json!({ "request_ids": [request.request_id] }).to_string(),
         );
 
         assert!(

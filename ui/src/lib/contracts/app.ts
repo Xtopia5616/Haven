@@ -49,7 +49,7 @@ export function interactionOwnerToWire(owner: InteractionOwnerView): Interaction
 	}
 }
 interface InteractionRequestBase {
-	id: string;
+	requestId: string;
 	status: InteractionStatus;
 	options: string[];
 	toolName?: string;
@@ -236,15 +236,15 @@ export function mapAppEvent(event: unknown): TauriEvent<AppEventPayloadMap[AppEv
 				payload: p as unknown as AppEventPayloadMap['skills:status_change'],
 			};
 		case 'interaction:requested': {
-			const id = readStringField(p, 'id');
+			const requestId = readStringField(p, 'request_id');
 			const sessionId = p.session_id;
 			const kind = p.kind;
 			const status = p.status;
 			const createdAt = readStringField(p, 'created_at');
 			const options = p.options === undefined ? [] : p.options;
 			const toolIndex = p.tool_index;
-			if (id === null || !isOneOf(kind, INTERACTION_KIND_VALUES)) return null;
-			if (!isCanonicalEntityId(id, kind === 'ask' ? 'step' : 'conf')) return null;
+			if (requestId === null || !isOneOf(kind, INTERACTION_KIND_VALUES)) return null;
+			if (!isCanonicalEntityId(requestId, kind === 'ask' ? 'step' : 'conf')) return null;
 			if (sessionId !== undefined && !isCanonicalEntityId(sessionId, 'ses')) return null;
 			if (
 				!isOneOf(status, INTERACTION_STATUS_VALUES) ||
@@ -270,7 +270,7 @@ export function mapAppEvent(event: unknown): TauriEvent<AppEventPayloadMap[AppEv
 
 			const wire = p as unknown as GeneratedInteractionRequestedEvent;
 			const payload = {
-				id,
+				requestId,
 				...(sessionId === undefined ? {} : { sessionId }),
 				owner,
 				kind,

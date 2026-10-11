@@ -203,19 +203,20 @@ impl SessionSupervisor {
             .unwrap_or_default();
         if request.pending_permission_deadline().is_err() {
             tracing::warn!(
-                request_id = %request.id,
+                request_id = %request.request_id,
                 "replayed confirmation has no valid owner deadline; expiring immediately"
             );
         }
         let Some(session_id) = request.session_id.clone() else {
-            tracing::error!(request_id = %request.id, "session confirmation has no owner session id");
+            tracing::error!(request_id = %request.request_id, "session confirmation has no owner session id");
             return;
         };
         let executor = Arc::clone(self);
-        let timeout_id = match haven_common::types::ConfirmId::try_from(request.id.clone()) {
+        let timeout_id = match haven_common::types::ConfirmId::try_from(request.request_id.clone())
+        {
             Ok(timeout_id) => timeout_id,
             Err(error) => {
-                tracing::warn!(request_id = %request.id, %error, "invalid confirmation ID; expiry was not scheduled");
+                tracing::warn!(request_id = %request.request_id, %error, "invalid confirmation ID; expiry was not scheduled");
                 return;
             }
         };

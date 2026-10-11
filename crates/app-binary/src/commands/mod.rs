@@ -378,7 +378,7 @@ pub(crate) async fn queue_ui_confirmation(
             "permission confirmation deadline has already elapsed",
         ));
     }
-    let request_id = request.id.clone();
+    let request_id = request.request_id.clone();
     state.ui_confirmations.lock().await.insert(
         request_id.to_string(),
         UiConfirmationPending {
@@ -401,7 +401,7 @@ pub(crate) async fn queue_ui_confirmation(
     }
     tracing::info!(
         session_id = ?request.session_id,
-        interaction_id = %request.id,
+        request_id = %request.request_id,
         interaction_kind = ?request.kind,
         status = ?request.status,
         "renderer permission request queued"
@@ -429,7 +429,7 @@ pub(crate) async fn queue_ui_confirmation(
         };
         tracing::info!(
             session_id = ?expired_request.session_id,
-            interaction_id = %expired_request.id,
+            request_id = %expired_request.request_id,
             interaction_kind = ?expired_request.kind,
             status = ?expired_request.status,
             "renderer permission request expired"
@@ -451,7 +451,7 @@ pub(crate) async fn queue_ui_confirmation(
         );
     }) {
         tracing::warn!(
-            interaction_id = %request.id,
+            request_id = %request.request_id,
             "could not schedule renderer permission expiry because application is shutting down"
         );
     }

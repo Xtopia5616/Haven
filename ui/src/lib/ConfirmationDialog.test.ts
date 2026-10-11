@@ -12,7 +12,7 @@ describe('ConfirmationDialog', () => {
 		const onConfirm = vi.fn();
 		const { container } = render(ConfirmationDialog as any, {
 			...deadlineProps(),
-			stepId: 'step-test',
+			requestId: 'conf-test',
 			toolName: 'files.write',
 			sessionId: 'ses-test',
 			sessionTitle: '测试会话',
@@ -57,7 +57,7 @@ describe('ConfirmationDialog', () => {
 
 		await fireEvent.click(onceButton);
 		expect(onConfirm).toHaveBeenCalledWith({
-			stepId: 'step-test',
+			requestId: 'conf-test',
 			approved: true,
 			effect: 'allow',
 			scope: 'once',
@@ -72,20 +72,20 @@ describe('ConfirmationDialog', () => {
 		const { rerender } = render(ConfirmationDialog as any, {
 			...deadline,
 			open: true,
-			stepId: 'step-close',
+			requestId: 'conf-close',
 			toolName: 'files.write',
 			onDismiss,
 			onConfirm,
 		});
 
 		await fireEvent.click(screen.getByRole('button', { name: '关闭权限确认' }));
-		expect(onDismiss).toHaveBeenCalledWith('step-close');
+		expect(onDismiss).toHaveBeenCalledWith('conf-close');
 		expect(onConfirm).not.toHaveBeenCalled();
 
 		await rerender({
 			...deadline,
 			open: false,
-			stepId: 'step-close',
+			requestId: 'conf-close',
 			toolName: 'files.write',
 			onDismiss,
 			onConfirm,
@@ -95,7 +95,7 @@ describe('ConfirmationDialog', () => {
 		await rerender({
 			...deadline,
 			open: true,
-			stepId: 'step-close',
+			requestId: 'conf-close',
 			toolName: 'files.write',
 			onDismiss,
 			onConfirm,
@@ -110,7 +110,7 @@ describe('ConfirmationDialog', () => {
 			const onConfirm = vi.fn();
 			render(ConfirmationDialog as any, {
 				...deadlineProps(1000),
-				stepId: 'step-timeout',
+				requestId: 'conf-timeout',
 				toolName: 'files.write',
 				sessionId: 'ses-test',
 				summary: '写入文件',
@@ -129,7 +129,7 @@ describe('ConfirmationDialog', () => {
 	it('does not offer session grants to confirmations without a persisted session', async () => {
 		render(ConfirmationDialog as any, {
 			...deadlineProps(),
-			stepId: 'conf-ui-only',
+			requestId: 'conf-ui-only',
 			toolName: 'mcp__server__write',
 			permissionKey: 'mcp.server.write',
 			onConfirm: vi.fn(),
@@ -147,7 +147,7 @@ describe('ConfirmationDialog', () => {
 		const onConfirm = vi.fn().mockResolvedValueOnce(false).mockResolvedValueOnce(true);
 		render(ConfirmationDialog as any, {
 			...deadlineProps(),
-			stepId: 'conf-retry',
+			requestId: 'conf-retry',
 			toolName: 'mcp__server__write',
 			onConfirm,
 		});

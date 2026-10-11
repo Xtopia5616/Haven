@@ -71,8 +71,8 @@ export class ChatSessionController {
 	}
 
 	/** Read the pending interaction ids before applying a possibly stale snapshot. */
-	pendingInteractionIdsForSession(sessionId: string): string[] {
-		return this.dependencies.reducer.getPendingInteractionIds(sessionId);
+	pendingInteractionRequestIdsForSession(sessionId: string): string[] {
+		return this.dependencies.reducer.getPendingInteractionRequestIds(sessionId);
 	}
 
 	evictTerminalSessionMemory(sessionId: string | null): void {
@@ -273,7 +273,7 @@ export class ChatSessionController {
 			sessionId,
 			messages: buildResumeMessages(result),
 			interactions: resumeInteractionsFromProjection(result),
-			preserveInteractionIds: this.pendingInteractionIdsForSession(sessionId),
+			preserveRequestIds: this.pendingInteractionRequestIdsForSession(sessionId),
 			usage: result.usage,
 			llmUsage: result.llm_usage,
 			...(options.preserveStreamingOnly ? { preserveStreamingOnly: true } : {}),

@@ -27,7 +27,7 @@ const askInteraction = (
 	options: string[],
 	response?: AskResponseView,
 ): InteractionRequest => ({
-	id,
+	requestId: id,
 	sessionId: 'ses-1',
 	owner: { kind: 'session', sessionId: 'ses-1' },
 	kind: 'ask',

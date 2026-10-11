@@ -296,7 +296,7 @@ pub async fn resolve_confirmation(
     let perm_scope = scope;
     let perm_target = target;
     let confirmed = matches!(perm_effect, haven_common::types::PermissionEffect::Allow);
-    let confirmation_id = haven_common::types::ConfirmId::try_from(request_id.clone())
+    let confirm_id = haven_common::types::ConfirmId::try_from(request_id.clone())
         .map_err(|error| log_err("resolve_confirmation", error))?;
     if owner == haven_agent::InteractionOwner::AppCommand {
         return resolve_app_confirmation(
@@ -313,7 +313,7 @@ pub async fn resolve_confirmation(
     if let Some(capability) = state
         .runtime
         .executor
-        .pending_confirmation_capability_for_owner(&owner, &confirmation_id)
+        .pending_confirmation_capability_for_owner(&owner, &confirm_id)
         .await
     {
         capability
@@ -336,7 +336,7 @@ pub async fn resolve_confirmation(
             .executor
             .resolve_confirmation_with_session_grant_for_owner(
                 &owner,
-                &confirmation_id,
+                &confirm_id,
                 perm_target,
                 perm_effect,
             )
@@ -345,7 +345,7 @@ pub async fn resolve_confirmation(
         state
             .runtime
             .executor
-            .resolve_confirmation_for_owner(&owner, &confirmation_id, confirmed)
+            .resolve_confirmation_for_owner(&owner, &confirm_id, confirmed)
             .await
     }
     .map_err(|e| log_err("resolve_confirmation", e))?;
@@ -360,7 +360,7 @@ pub async fn resolve_confirmation(
 
     let expired = resolution.status == InteractionStatus::Expired;
     tracing::info!(
-        interaction_id = %confirmation_id,
+        request_id = %request_id,
         outcome = if expired { "expired" } else if confirmed { "approved" } else { "denied" },
         "permission request resolved"
     );
@@ -476,7 +476,7 @@ async fn resolve_app_confirmation(
 
     let confirmed = matches!(perm_effect, haven_common::types::PermissionEffect::Allow);
     let session_id = pending.request.session_id.clone();
-    let interaction_id = pending.request.id.clone();
+    let request_id = pending.request.request_id.clone();
     let decision = if confirmed { "approved" } else { "denied" };
     app.state::<Arc<crate::notification::DesktopNotifications>>()
         .maybe_show_interaction_request(
@@ -494,7 +494,7 @@ async fn resolve_app_confirmation(
     );
     tracing::info!(
         session_id = ?session_id,
-        interaction_id = %interaction_id,
+        request_id = %request_id,
         decision,
         status = "accepted",
         "renderer permission decision accepted"
@@ -503,14 +503,14 @@ async fn resolve_app_confirmation(
         let task_app = (*app).clone();
         let task_state = state.clone();
         let spawn_state = task_state.clone();
-        let interaction_id = interaction_id.clone();
+        let request_id = request_id.clone();
         let task = async move {
             let result = execute_ui_confirmation_action(&task_state, &task_app, pending).await;
             let (title, body) = match result {
                 Ok(()) => ("操作已完成", "已授权的操作已经完成。"),
                 Err(error) => {
                     tracing::error!(
-                        interaction_id,
+                        request_id,
                         error = %sanitize_error_text(&error),
                         "renderer permission continuation failed"
                     );
@@ -579,7 +579,7 @@ async fn arbitrate_app_confirmation(
     let Some(pending) = pending_registry.get_mut(request_id) else {
         return Ok(AppConfirmationResolution::Stale);
     };
-    if pending.request.id != request_id
+    if pending.request.request_id != request_id
         || pending.receipt.confirmation_id.to_string() != request_id
         || pending.request.session_id.is_some()
         || pending.request.kind != haven_agent::InteractionKind::Confirm
@@ -639,7 +639,7 @@ async fn accept_ui_confirmation(
         })
         .map_err(|error| log_err("resolve_ui_confirmation", error))?;
     tracing::debug!(
-        interaction_id = %pending.request.id,
+        request_id = %pending.request.request_id,
         session_id = ?pending.request.session_id,
         interaction_kind = ?pending.request.kind,
         tool = %pending.authorization_request.tool_name,
@@ -1013,7 +1013,7 @@ mod tests {
         };
         let request =
             InteractionRequest::ui_confirm(tool_name.into(), tool_input.clone(), receipt.clone());
-        let request_id = request.id.clone();
+        let request_id = request.request_id.clone();
         state.ui_confirmations.lock().await.insert(
             request_id.clone(),
             UiConfirmationPending {
@@ -1234,7 +1234,7 @@ mod tests {
         );
         assert_eq!(response.interactions.len(), 1);
         let interaction = serde_json::to_value(&response.interactions[0]).unwrap();
-        assert_eq!(interaction["id"], step_id);
+        assert_eq!(interaction["request_id"], step_id);
         assert_eq!(interaction["kind"], "ask");
         assert_eq!(interaction["status"], "pending");
         assert_eq!(interaction["options"], serde_json::json!(["A", "B"]));

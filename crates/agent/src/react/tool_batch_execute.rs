@@ -885,11 +885,11 @@ impl ReActEngine {
             .validate_indexed_tool_inputs_from_catalog(catalog.as_ref(), plan.indexed_tool_calls());
         let requests_by_id = pending
             .iter()
-            .map(|request| (request.id.as_str(), request))
+            .map(|request| (request.request_id.as_str(), request))
             .collect::<HashMap<_, _>>();
         let confirmation_ids = pending
             .iter()
-            .map(|request| request.id.clone())
+            .map(|request| request.request_id.clone())
             .collect::<Vec<_>>();
         batch_state.set_confirmation_completion(
             confirmation_ids,

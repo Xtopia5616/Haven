@@ -1,6 +1,6 @@
 # Haven 命名规范
 
-> 版本: v1.184 | 日期: 2026-10-12
+> 版本: v1.185 | 日期: 2026-10-12
 
 本文档统一 Haven 项目各层的命名规则（变量名、函数名、文件名、crate 名、缩写大小写、跨层边界）。规范以现有代码中的事实模式为基础，新代码必须遵循；存量代码若与规范冲突，逐步迁移对齐。
 
@@ -11,7 +11,7 @@
 - **跨层数字校验匹配 Rust primitive**：UI wire mapper 对 Rust `u32` 校验非负整数及 32 位上限；Rust `u64` 以 JSON number 表达时只接受 JavaScript 安全整数范围。浮点字段只执行有限数值校验（ADR 0980）。
 - **一眼可辨**：命名应能区分「类型」「值」「常量」「组件」「模块」，见各层细则。
 - **边界语义不撞名**：不同 crate/边界中的类型即使位于不同命名空间，也要能从类型名看出领域或 wire 角色；同名但不同状态空间时用领域限定词，不要求合并状态 owner。例如 Memory durable `SessionEvent` 与 Agent process-local `SessionSupervisorEvent` 各自保留 owner。
-- **Serde alias 只表示 wire 名称差异**：字段默认 Serde 名已等于 alias 时删除重复 alias；只保留外部协议确实发送的其它字段拼法，例如 Gemini 的 `finishReason`。Haven 自有配置或 payload 的旧名不作为隐式兼容入口（ADR 0662）。
+- **Serde alias 只表示明确的 wire 名称差异**：字段默认 Serde 名已等于 alias 时删除重复 alias；只保留外部协议确实发送的其它字段拼法，例如 Gemini 的 `finishReason`。Haven 自有配置或 UI payload 不隐式接受旧名；append-only durable event 的 replay-only alias 必须由 ADR 点名旧字段、保留仅反序列化兼容，并确保新写入只发 canonical 字段（ADR 0662、0995、0996）。
 - **同域不同形状标明角色**：同一领域中的完整 runtime state、稀疏 view 输入或 wire projection 即使字段重叠，也使用能标出约束/角色的不同类型名，不用可选字段数量来猜其含义。
 - **闭合契约与开放扩展点分开**：Rust/IPC 已声明的闭合枚举在 UI 直接复用 generated 类型，边界拒绝未知成员；不要为了未来值或旧值映射把它扩成任意字符串。只有协议或扩展点本身定义为开放字符串、且消费者必须保留原值时，才把 raw wire value 与内部归一分类分名。Tool manifest 的 source/group/risk 是闭合 generated enum；`presentation.renderer` 是开放扩展 discriminator，未知 renderer 使用通用 JSON renderer（ADR 0669）。
 - **多值结果具名**：若多个返回值各有稳定领域含义，使用具名结构体字段，不用位置元组让调用者记住各索引的语义；例如 `CreatedSession` 保存首条持久用户消息 ID，`ModelPricing` 区分 input/output 价格，`FactProvenanceColumns` 对应不同持久列，`StreamedLlmCall` 区分响应和耗时，`ToolRunEventProjection` 区分 channel 和 payload，`ParsedAgentResponse` 区分解析出的 thought 和 tool calls，`CappedText` 命名限长文本与截断状态，`ChatThinkingExtras` 区分 chat wire 的 thinking object 与 reasoning effort 字段，Anthropic request projection 分别区分 wire messages/system prompt 与 `thinking`/`output_config`，`GeminiContentConversion` 区分 provider content 与 system instruction，`ResponsesInputConversion` 区分 Responses input items 与 instructions，Tools process reader 用 `CappedStreamText` 和 `CappedStreamRead` 区分 decoded text 与 retained bytes/read error，`SkillProcessOutput` 则按 stdout/stderr 命名 Skill 进程结果，Agent 的 `CapabilityProjectedRequest` 区分 media-capability 处理后的 request context 与向 UI 发布的 `MediaPlan`，Common 的 `TruncatedOutput` 则把带省略标记的文本与截断状态放在同一结果中。
@@ -148,7 +148,7 @@ ToolRun completion lease 的 token 标识被 claim 的 ToolRun 或 completion re
 | 持久会话事件（`SessionEvent`） | `session_events` 中 append-only 的恢复与回滚权威记录 | Memory 持有 event row、sequence 与存储；`TranscriptRecord` 是其版本化 payload，不是第二条日志 |
 | 会话消息（`Message`） | 从已提交 transcript 投影出的持久消息行，不是恢复来源 | UI reducer 的 `SessionMessage` 是独立 renderer shape；`TranscriptProjection` 是从事件流派生的读取视图，含 `canonical_messages` 与 `react_rounds` |
 | 运行事件（`AgentEvent` / `SessionSupervisorEvent`） | 进程内的 Agent 输出或 Supervisor 生命周期通知，不作为 durable transcript | durable 写入仍使用 `SessionEvent`；UI `session:lifecycle` 是 App 投影契约 |
-| 交互请求（`InteractionRequest`） | Agent 内用于 Ask/Confirm/ScheduledConfirm 的状态与继续执行数据；可包含不应发送到 UI 的工具输入和授权 receipt | `InteractionOwner` 只负责进程内 owner routing；生成的 `InteractionRequestedEvent` 是 App wire projection，前端 `InteractionRequest` 是经过校验的 camelCase view |
+| 交互请求（`InteractionRequest`） | Agent 内用于 Ask/Confirm/ScheduledConfirm 的状态与继续执行数据；统一用 `request_id`，Ask 复用 `step-*`，确认请求使用 `conf-*`；可包含不应发送到 UI 的工具输入和授权 receipt | `InteractionOwner` 只负责进程内 owner routing；durable event 与生成的 `InteractionRequestedEvent` 使用 `request_id`，清除事件使用 `request_ids`；前端映射为 `requestId` 并拒绝旧 UI 字段 `id`。durable replay 为读取历史 payload 接受 `id` / `ids`，新事件只写 canonical 字段（ADR 0996） |
 | 工具实现、定义与清单 | `ToolHandle` 是单个共享可执行实现；Common `ToolDef` 是 provider-neutral 的模型调用定义；LLM `LlmToolDefinition` 是转换后的 `{type, function}` 请求中间形状；`ToolManifest` 是 Tauri/UI 的 identity、policy 与 presentation projection | `ToolDef → LlmToolDefinition → provider adapter wire`；`ToolRegistry` 持有可执行实现；`ToolCatalogSnapshot` / `OperationCatalog` 是模型可见目录投影；`OperationRegistry` 管已安装、deferred 与 session operations。目录可见不等同于授权 |
 
 Session UI reducer 的 `SessionSummary.status` 与创建 action 使用 generated `SessionStatus`，lifecycle update action 使用 generated `SessionUpdateStatus`；run-end notice 再通过 `SessionRunEndStatus` 提取其终态子集。只处理不可信动态文本的状态 helper 可以继续接收 `string` 并提供未知值 fallback（ADR 0765）。
@@ -362,6 +362,8 @@ Memory `SessionStep` 的恢复投影以 `step_id` 标识执行行；UI 只接受
 Agent runtime list 使用 `SessionInfo.session_id` 与 `StepInfo.step_id`；UI runtime parser 拒绝旧泛名 `id`，renderer `SessionSummary` 使用 camelCase `sessionId`，生命周期事件仍由 App bridge 投影 `session_id`（ADR 0994）。
 
 持久用量明细 `LlmUsageRecord` 使用 `usage_id`，UI resume parser 只接受该实体字段；SQLite `llm_usage.id` 继续作为物理列。Serde 仅在读取历史 `usage_recorded` payload 时接受 `id`，新写 payload 始终序列化为 `usage_id`（ADR 0995）。
+
+交互生命周期的 Rust `InteractionRequest`、durable interaction event 与 Tauri projection 使用 `request_id`；Ask 复用对应 `step-*`，确认使用 `conf-*`。UI 内部映射为 `requestId`。新 `interaction_cleared` event 使用 `request_ids`；Agent replay 仅为历史 durable payload 接受 `id` / `ids`，新写始终使用明确字段（ADR 0996）。
 
 运行时实体 ID newtype（目前为 `ConfirmId`、`RecordingId`）通过 `new()` 调用 Common generator 生成；字符串输入用 `TryFrom` 校验类型固定前缀，Serde 反序列化执行同一校验。tuple 形状按项目 contract 保持公开字符串序列化，并标记 `#[non_exhaustive]` 阻止其他 crate 绕过验证直接构造；不保留无验证 `From<String>`。
 

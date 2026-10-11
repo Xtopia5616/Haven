@@ -46,12 +46,12 @@ export function reduceInteraction(
 		}
 		case 'session/interaction-upserted': {
 			const request = action.request;
-			if (!request.id || !hasValidOwnerContext(request)) return state;
-			const previous = state.interactions[request.id];
+			if (!request.requestId || !hasValidOwnerContext(request)) return state;
+			const previous = state.interactions[request.requestId];
 			if (previous && JSON.stringify(previous) === JSON.stringify(request)) return state;
 			return {
 				...state,
-				interactions: { ...state.interactions, [request.id]: request },
+				interactions: { ...state.interactions, [request.requestId]: request },
 			};
 		}
 		case 'session/interactions-hydrated': {
@@ -61,13 +61,13 @@ export function reduceInteraction(
 				),
 			);
 			for (const request of action.requests)
-				if (request.id && isSessionInteractionFor(request, action.sessionId))
-					interactions[request.id] = request;
+				if (request.requestId && isSessionInteractionFor(request, action.sessionId))
+					interactions[request.requestId] = request;
 			// Resume is a snapshot read, not an event acknowledgement. Keep pending
 			// requests that are still live in the renderer when the snapshot omitted
 			// them (for example, an interaction event raced the SQLite checkpoint).
 			// An incoming row always wins, including a resolved/expired row.
-			const preserveIds = new Set(action.preserveInteractionIds || []);
+			const preserveIds = new Set(action.preserveRequestIds || []);
 			for (const [id, request] of Object.entries(state.interactions)) {
 				if (
 					preserveIds.has(id) &&
@@ -102,7 +102,7 @@ export function reduceInteraction(
 				),
 			};
 		case 'session/ask-resolved': {
-			const request = state.interactions[action.id];
+			const request = state.interactions[action.requestId];
 			if (
 				!request ||
 				request.kind !== 'ask' ||
@@ -114,7 +114,7 @@ export function reduceInteraction(
 				...state,
 				interactions: {
 					...state.interactions,
-					[action.id]: {
+					[action.requestId]: {
 						...request,
 						status: 'resolved',
 						response: action.response,
@@ -123,18 +123,18 @@ export function reduceInteraction(
 			};
 		}
 		case 'session/interaction-resolution-result': {
-			const request = state.interactions[action.id];
+			const request = state.interactions[action.requestId];
 			if (!request || request.status !== 'pending') return state;
 			if (action.result === 'stale') {
 				const interactions = { ...state.interactions };
-				delete interactions[action.id];
+				delete interactions[action.requestId];
 				return { ...state, interactions };
 			}
 			return {
 				...state,
 				interactions: {
 					...state.interactions,
-					[action.id]: {
+					[action.requestId]: {
 						...request,
 						status: action.result,
 					},
@@ -175,7 +175,7 @@ function hasValidOwnerContext(request: InteractionRequest): boolean {
 function normalizeInteraction(raw: unknown): InteractionRequest | null {
 	if (!isRecord(raw)) return null;
 	const value = raw;
-	const id = isString(value.id) ? value.id : '';
+	const requestId = isString(value.request_id) ? value.request_id : '';
 	const sessionId = value.session_id;
 	const owner = mapInteractionOwner(value.owner, isString(sessionId) ? sessionId : undefined);
 	const kind = value.kind;
@@ -183,7 +183,7 @@ function normalizeInteraction(raw: unknown): InteractionRequest | null {
 	const options = value.options;
 	const createdAt = value.created_at;
 	if (
-		!id ||
+		!requestId ||
 		(sessionId !== undefined && !isNonEmptyString(sessionId)) ||
 		!owner ||
 		!isOneOf(kind, INTERACTION_KIND_VALUES) ||
@@ -209,7 +209,7 @@ function normalizeInteraction(raw: unknown): InteractionRequest | null {
 	const toolCallId = value.tool_call_id;
 	const expiresAt = value.expires_at;
 	const normalized = {
-		id,
+		requestId,
 		status: status as InteractionRequest['status'],
 		options,
 		...(isString(toolName) ? { toolName } : {}),

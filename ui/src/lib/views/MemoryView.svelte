@@ -358,7 +358,7 @@
 				sessionId: session.session_id,
 				messages: buildResumeMessages(result),
 				interactions: resumeInteractions(result),
-				preserveInteractionIds: appSessionReducer.getPendingInteractionIds(
+				preserveRequestIds: appSessionReducer.getPendingInteractionRequestIds(
 					session.session_id,
 				),
 				usage: result.usage,

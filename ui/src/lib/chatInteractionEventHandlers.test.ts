@@ -8,7 +8,7 @@ describe('createChatInteractionEventHandlers', () => {
 		'places %s requests in the reducer',
 		(kind) => {
 			const base = {
-				id: `${kind}-1`,
+				requestId: `${kind}-1`,
 				status: 'pending' as const,
 				options: [],
 				createdAt: '2026-09-14T00:00:00Z',

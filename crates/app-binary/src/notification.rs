@@ -301,13 +301,13 @@ impl DesktopNotifications {
             match request.status {
                 InteractionStatus::Pending => {
                     let requests = pending.entry(owner.clone()).or_default();
-                    requests.insert(request.id.clone()) && requests.len() == 1
+                    requests.insert(request.request_id.clone()) && requests.len() == 1
                 }
                 InteractionStatus::Resolved
                 | InteractionStatus::Expired
                 | InteractionStatus::Cancelled => {
                     if let Some(requests) = pending.get_mut(owner) {
-                        requests.remove(&request.id);
+                        requests.remove(&request.request_id);
                         if requests.is_empty() {
                             pending.remove(owner);
                         }

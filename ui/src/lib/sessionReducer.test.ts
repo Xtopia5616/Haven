@@ -24,7 +24,7 @@ describe('resume interaction normalization', () => {
 		const requests = resumeInteractions({
 			interactions: [
 				{
-					id: 'conf-9b2abfc29cc47494c87171177c2af369',
+					request_id: 'conf-9b2abfc29cc47494c87171177c2af369',
 					session_id: 'ses-9b2abfc29cc47494c87171177c2af369',
 					owner: { kind: 'session', session_id: 'ses-9b2abfc29cc47494c87171177c2af369' },
 					kind: 'confirm',
@@ -47,7 +47,7 @@ describe('resume interaction normalization', () => {
 					createdAt: '2026-09-25T00:02:00Z',
 				},
 				{
-					id: 'step-ac1b56f05325da81cb2a5d291d608ad1',
+					request_id: 'step-ac1b56f05325da81cb2a5d291d608ad1',
 					session_id: 'ses-ac1b56f05325da81cb2a5d291d608ad1',
 					owner: { kind: 'session', session_id: 'ses-ac1b56f05325da81cb2a5d291d608ad1' },
 					kind: 'ask',
@@ -56,7 +56,7 @@ describe('resume interaction normalization', () => {
 					created_at: '2026-09-25T00:02:00Z',
 				},
 				{
-					id: 'conf-41b3c317318c01a181144c5b80b77e1c',
+					request_id: 'conf-41b3c317318c01a181144c5b80b77e1c',
 					session_id: 'ses-543ae65d6fcc5903c89349742cf3eb0d',
 					owner: {
 						kind: 'scheduled_tool_run',
@@ -124,7 +124,7 @@ describe('resume interaction normalization', () => {
 
 		expect(requests).toEqual([
 			{
-				id: 'conf-9b2abfc29cc47494c87171177c2af369',
+				requestId: 'conf-9b2abfc29cc47494c87171177c2af369',
 				sessionId: 'ses-9b2abfc29cc47494c87171177c2af369',
 				owner: { kind: 'session', sessionId: 'ses-9b2abfc29cc47494c87171177c2af369' },
 				kind: 'confirm',
@@ -139,7 +139,7 @@ describe('resume interaction normalization', () => {
 				expiresAt: '2026-09-25T00:01:00Z',
 			},
 			{
-				id: 'step-ac1b56f05325da81cb2a5d291d608ad1',
+				requestId: 'step-ac1b56f05325da81cb2a5d291d608ad1',
 				sessionId: 'ses-ac1b56f05325da81cb2a5d291d608ad1',
 				owner: { kind: 'session', sessionId: 'ses-ac1b56f05325da81cb2a5d291d608ad1' },
 				kind: 'ask',
@@ -148,7 +148,7 @@ describe('resume interaction normalization', () => {
 				createdAt: '2026-09-25T00:02:00Z',
 			},
 			{
-				id: 'conf-41b3c317318c01a181144c5b80b77e1c',
+				requestId: 'conf-41b3c317318c01a181144c5b80b77e1c',
 				sessionId: 'ses-543ae65d6fcc5903c89349742cf3eb0d',
 				owner: {
 					kind: 'scheduled_tool_run',
@@ -172,7 +172,7 @@ describe('resume interaction normalization', () => {
 describe('SessionReducer', () => {
 	it('does not resolve a confirmation through the Ask-only reducer action', () => {
 		const pending = {
-			id: 'conf-not-an-ask',
+			requestId: 'conf-not-an-ask',
 			sessionId: 'ses-a',
 			owner: { kind: 'session' as const, sessionId: 'ses-a' },
 			kind: 'confirm' as const,
@@ -180,11 +180,11 @@ describe('SessionReducer', () => {
 			options: [],
 			createdAt: '2026-09-25T00:00:00Z',
 		};
-		const initial = stateWith({ interactions: { [pending.id]: pending } });
+		const initial = stateWith({ interactions: { [pending.requestId]: pending } });
 
 		const unchanged = reduceSession(initial, {
 			type: 'session/ask-resolved',
-			id: pending.id,
+			requestId: pending.requestId,
 			response: { answer: 'approve' },
 		});
 
@@ -193,33 +193,33 @@ describe('SessionReducer', () => {
 
 	it('keeps explicit confirmation outcomes distinct and removes stale requests', () => {
 		const pending = {
-			id: 'conf-terminal',
+			requestId: 'conf-terminal',
 			owner: { kind: 'app_command' as const },
 			kind: 'confirm' as const,
 			status: 'pending' as const,
 			options: [],
 			createdAt: '2026-09-25T00:00:00Z',
 		};
-		const initial = stateWith({ interactions: { [pending.id]: pending } });
+		const initial = stateWith({ interactions: { [pending.requestId]: pending } });
 
 		const expired = reduceSession(initial, {
 			type: 'session/interaction-resolution-result',
-			id: pending.id,
+			requestId: pending.requestId,
 			result: 'expired',
 		});
-		expect(expired.interactions[pending.id]?.status).toBe('expired');
+		expect(expired.interactions[pending.requestId]?.status).toBe('expired');
 
 		const stale = reduceSession(initial, {
 			type: 'session/interaction-resolution-result',
-			id: pending.id,
+			requestId: pending.requestId,
 			result: 'stale',
 		});
-		expect(stale.interactions[pending.id]).toBeUndefined();
+		expect(stale.interactions[pending.requestId]).toBeUndefined();
 	});
 
 	it('clears pending confirmations owned by a cancelled scheduled ToolRun only', () => {
 		const scheduled = {
-			id: 'conf-scheduled',
+			requestId: 'conf-scheduled',
 			sessionId: 'ses-a',
 			owner: { kind: 'scheduled_tool_run' as const, toolRunId: 'toolrun-cancelled' },
 			kind: 'scheduled_confirm' as const,
@@ -229,11 +229,11 @@ describe('SessionReducer', () => {
 		};
 		const otherScheduled = {
 			...scheduled,
-			id: 'conf-other-tool-run',
+			requestId: 'conf-other-tool-run',
 			owner: { kind: 'scheduled_tool_run' as const, toolRunId: 'toolrun-other' },
 		};
 		const sessionRequest = {
-			id: 'conf-session',
+			requestId: 'conf-session',
 			sessionId: 'ses-a',
 			owner: { kind: 'session' as const, sessionId: 'ses-a' },
 			kind: 'confirm' as const,
@@ -243,9 +243,9 @@ describe('SessionReducer', () => {
 		};
 		const initial = stateWith({
 			interactions: {
-				[scheduled.id]: scheduled,
-				[otherScheduled.id]: otherScheduled,
-				[sessionRequest.id]: sessionRequest,
+				[scheduled.requestId]: scheduled,
+				[otherScheduled.requestId]: otherScheduled,
+				[sessionRequest.requestId]: sessionRequest,
 			},
 		});
 
@@ -254,15 +254,15 @@ describe('SessionReducer', () => {
 			toolRunId: 'toolrun-cancelled',
 		});
 
-		expect(next.interactions[scheduled.id]).toBeUndefined();
-		expect(next.interactions[otherScheduled.id]).toEqual(otherScheduled);
-		expect(next.interactions[sessionRequest.id]).toEqual(sessionRequest);
+		expect(next.interactions[scheduled.requestId]).toBeUndefined();
+		expect(next.interactions[otherScheduled.requestId]).toEqual(otherScheduled);
+		expect(next.interactions[sessionRequest.requestId]).toEqual(sessionRequest);
 	});
 
 	it('reads pending interaction ids by session for stale resume protection', () => {
 		const reducer = new SessionReducer();
-		const request = (id: string, sessionId: string, status: 'pending' | 'resolved') => ({
-			id,
+		const request = (requestId: string, sessionId: string, status: 'pending' | 'resolved') => ({
+			requestId,
 			sessionId,
 			owner: { kind: 'session' as const, sessionId },
 			kind: 'ask' as const,
@@ -283,13 +283,13 @@ describe('SessionReducer', () => {
 			request: request('ask-other', 'ses-b', 'pending'),
 		});
 
-		expect(reducer.getPendingInteractionIds('ses-a')).toEqual(['ask-live']);
+		expect(reducer.getPendingInteractionRequestIds('ses-a')).toEqual(['ask-live']);
 	});
 
 	it('hydrates and clears only requests owned by that session', () => {
 		const reducer = new SessionReducer();
 		const sessionRequest = {
-			id: 'ask-session',
+			requestId: 'ask-session',
 			sessionId: 'ses-a',
 			owner: { kind: 'session' as const, sessionId: 'ses-a' },
 			kind: 'ask' as const,
@@ -298,7 +298,7 @@ describe('SessionReducer', () => {
 			createdAt: '',
 		};
 		const scheduledRequest = {
-			id: 'conf-scheduled',
+			requestId: 'conf-scheduled',
 			sessionId: 'ses-a',
 			owner: { kind: 'scheduled_tool_run' as const, toolRunId: 'toolrun-1' },
 			kind: 'scheduled_confirm' as const,
@@ -307,7 +307,7 @@ describe('SessionReducer', () => {
 			createdAt: '',
 		};
 		const appRequest = {
-			id: 'conf-app',
+			requestId: 'conf-app',
 			owner: { kind: 'app_command' as const },
 			kind: 'confirm' as const,
 			status: 'pending' as const,
@@ -323,14 +323,14 @@ describe('SessionReducer', () => {
 			requests: [],
 		});
 		expect(reducer.snapshot().interactions).toEqual({
-			[scheduledRequest.id]: scheduledRequest,
-			[appRequest.id]: appRequest,
+			[scheduledRequest.requestId]: scheduledRequest,
+			[appRequest.requestId]: appRequest,
 		});
 
 		reducer.dispatch({ type: 'sessions/cleared' });
 		expect(reducer.snapshot().interactions).toEqual({
-			[scheduledRequest.id]: scheduledRequest,
-			[appRequest.id]: appRequest,
+			[scheduledRequest.requestId]: scheduledRequest,
+			[appRequest.requestId]: appRequest,
 		});
 	});
 
@@ -685,7 +685,7 @@ describe('SessionReducer', () => {
 
 	it('does not drop a live confirmation when resume snapshot is behind the event', () => {
 		const pending = {
-			id: 'conf-live',
+			requestId: 'conf-live',
 			sessionId: 'ses-live',
 			owner: { kind: 'session' as const, sessionId: 'ses-live' },
 			kind: 'confirm' as const,
@@ -693,31 +693,31 @@ describe('SessionReducer', () => {
 			options: [],
 			createdAt: '2026-09-20T00:00:00Z',
 		};
-		const state = { ...initialSessionState, interactions: { [pending.id]: pending } };
+		const state = { ...initialSessionState, interactions: { [pending.requestId]: pending } };
 
 		const kept = reduceSession(state, {
 			type: 'session/messages/resume-loaded',
 			sessionId: pending.sessionId,
 			messages: [],
 			interactions: [],
-			preserveInteractionIds: [pending.id],
+			preserveRequestIds: [pending.requestId],
 		});
 
-		expect(kept.interactions?.[pending.id]).toEqual(pending);
+		expect(kept.interactions?.[pending.requestId]).toEqual(pending);
 
 		const resolved = reduceSession(state, {
 			type: 'session/messages/resume-loaded',
 			sessionId: pending.sessionId,
 			messages: [],
 			interactions: [{ ...pending, status: 'resolved' }],
-			preserveInteractionIds: [pending.id],
+			preserveRequestIds: [pending.requestId],
 		});
-		expect(resolved.interactions?.[pending.id]?.status).toBe('resolved');
+		expect(resolved.interactions?.[pending.requestId]?.status).toBe('resolved');
 	});
 
 	it('composes resume interaction preservation with restored and live usage', () => {
 		const pending = {
-			id: 'conf-resume-live',
+			requestId: 'conf-resume-live',
 			sessionId: 'ses-resume-live',
 			owner: { kind: 'session' as const, sessionId: 'ses-resume-live' },
 			kind: 'confirm' as const,
@@ -725,14 +725,14 @@ describe('SessionReducer', () => {
 			options: [],
 			createdAt: '2026-09-20T00:00:00Z',
 		};
-		const state = { ...initialSessionState, interactions: { [pending.id]: pending } };
+		const state = { ...initialSessionState, interactions: { [pending.requestId]: pending } };
 
 		const resumed = reduceSession(state, {
 			type: 'session/messages/resume-loaded',
 			sessionId: pending.sessionId,
 			messages: [{ id: 'msg-resumed', role: 'assistant' as const, content: '已恢复' }],
 			interactions: [],
-			preserveInteractionIds: [pending.id],
+			preserveRequestIds: [pending.requestId],
 			usage: {
 				prompt_tokens: 13,
 				completion_tokens: 5,
@@ -749,7 +749,7 @@ describe('SessionReducer', () => {
 		expect(resumed.messages[pending.sessionId]).toEqual([
 			{ id: 'msg-resumed', role: 'assistant' as const, content: '已恢复' },
 		]);
-		expect(resumed.interactions[pending.id]).toEqual(pending);
+		expect(resumed.interactions[pending.requestId]).toEqual(pending);
 		expect(resumed.tokenStats[pending.sessionId]).toMatchObject({
 			cumulativeTotalTokens: 18,
 			restored: true,

@@ -76,7 +76,7 @@ function resumeSession(
 			type: 'session/interactions-hydrated',
 			sessionId: action.sessionId,
 			requests: action.interactions,
-			preserveInteractionIds: action.preserveInteractionIds,
+			preserveRequestIds: action.preserveRequestIds,
 		});
 	}
 	if (action.usage || action.llmUsage) {
@@ -191,7 +191,7 @@ export class SessionReducer {
 		return messagesOf(this.state, sessionId);
 	}
 
-	getPendingInteractionIds(sessionId: string): string[] {
+	getPendingInteractionRequestIds(sessionId: string): string[] {
 		return Object.values(this.state.interactions || {})
 			.filter(
 				(request) =>
@@ -199,7 +199,7 @@ export class SessionReducer {
 					request.owner.sessionId === sessionId &&
 					request.status === 'pending',
 			)
-			.map((request) => request.id);
+			.map((request) => request.requestId);
 	}
 
 	getSessionErrorReason(sessionId: string): string {

@@ -43,8 +43,9 @@ pub const TIMELINE_ROLLBACK_EVENT_TYPE: &str = "timeline_rollback";
 pub const USAGE_RECORDED_EVENT_TYPE: &str = "usage_recorded";
 pub const USAGE_DISCARDED_EVENT_TYPE: &str = "usage_discarded";
 /// Session-local interaction lifecycle events. The payload is an Agent-owned
-/// `InteractionRequest` or a small `{ "ids": [...] }` object; Memory only
-/// orders and durably stores the event.
+/// `InteractionRequest` or a small `{ "request_ids": [...] }` object; Memory
+/// only orders and durably stores the event. Agent replay owns compatibility
+/// with historical `{ "ids": [...] }` payloads.
 pub const INTERACTION_REQUESTED_EVENT_TYPE: &str = "interaction_requested";
 pub const INTERACTION_RESOLVED_EVENT_TYPE: &str = "interaction_resolved";
 pub const INTERACTION_CLEARED_EVENT_TYPE: &str = "interaction_cleared";
@@ -4285,8 +4286,8 @@ mod tests {
     async fn session_store_async_domain_event_ports_preserve_append_and_live_replay() {
         let (_db, store, session_id) = store();
         let mut live = store.subscribe();
-        let interaction_id = haven_common::types::new_id("step");
-        let payload = format!(r#"{{"id":"{interaction_id}","status":"pending"}}"#);
+        let request_id = haven_common::types::new_id("step");
+        let payload = format!(r#"{{"request_id":"{request_id}","status":"pending"}}"#);
 
         let appended = store
             .append_domain_event(&session_id, INTERACTION_REQUESTED_EVENT_TYPE, &payload)
@@ -6757,7 +6758,7 @@ mod tests {
             "second thought",
             Some(TranscriptMessageKind::Text),
         );
-        second.push_trailing_event(INTERACTION_CLEARED_EVENT_TYPE, r#"{"ids":[]}"#);
+        second.push_trailing_event(INTERACTION_CLEARED_EVENT_TYPE, r#"{"request_ids":[]}"#);
 
         first.append_commit(second);
 
@@ -6798,7 +6799,10 @@ mod tests {
             )
             .unwrap();
         let mut committed = SessionCommitted::transcript(r#"{"type":"tool_result"}"#, 1, 2);
-        committed.push_trailing_event(INTERACTION_CLEARED_EVENT_TYPE, r#"{"ids":["conf-test"]}"#);
+        committed.push_trailing_event(
+            INTERACTION_CLEARED_EVENT_TYPE,
+            r#"{"request_ids":["conf-test"]}"#,
+        );
 
         let error = store
             .commit_transcript(&session_id, &committed)

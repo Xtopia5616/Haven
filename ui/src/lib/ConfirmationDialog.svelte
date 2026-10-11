@@ -16,7 +16,7 @@
 
 	interface Props {
 		open?: boolean;
-		stepId?: string | null;
+		requestId?: string | null;
 		toolName?: string;
 		sessionId?: string;
 		allowSessionScope?: boolean;
@@ -26,7 +26,7 @@
 		permissionKey?: string;
 		createdAt: string;
 		deadlineAt: number;
-		onDismiss?: (stepId: string) => void;
+		onDismiss?: (requestId: string) => void;
 		onConfirm?: (decision: ConfirmationDecision) => void | boolean | Promise<void | boolean>;
 	}
 
@@ -40,7 +40,7 @@
 
 	let {
 		open = true,
-		stepId,
+		requestId,
 		toolName,
 		sessionId,
 		allowSessionScope = Boolean(sessionId),
@@ -58,7 +58,7 @@
 	let showDenyMenu = $state(false);
 	let showAllowMenu = $state(false);
 	let pendingPersistentTarget = $state<PermissionTargetInput | null>(null);
-	let submittedStepId = $state<string | null>(null);
+	let submittedRequestId = $state<string | null>(null);
 	let dialogEl = $state<HTMLDivElement | null>(null);
 
 	let normalizedRisk = $derived(String(riskLevel || 'medium').toLowerCase());
@@ -109,9 +109,9 @@
 	);
 
 	$effect(() => {
-		const sid = stepId;
-		if (!sid) {
-			submittedStepId = null;
+		const activeRequestId = requestId;
+		if (!activeRequestId) {
+			submittedRequestId = null;
 			return;
 		}
 		showDenyMenu = false;
@@ -152,23 +152,23 @@
 		scope: PermissionScopeInput,
 		target: PermissionTargetInput = 'operation',
 	) {
-		const sid = stepId;
-		if (!sid || submittedStepId === sid) return;
-		submittedStepId = sid;
+		const activeRequestId = requestId;
+		if (!activeRequestId || submittedRequestId === activeRequestId) return;
+		submittedRequestId = activeRequestId;
 		showDenyMenu = false;
 		showAllowMenu = false;
 		pendingPersistentTarget = null;
 		try {
 			const accepted = await onConfirm?.({
-				stepId: sid,
+				requestId: activeRequestId,
 				approved: effect === 'allow',
 				effect,
 				scope,
 				target,
 			});
-			if (accepted === false && stepId === sid) submittedStepId = null;
+			if (accepted === false && requestId === activeRequestId) submittedRequestId = null;
 		} catch {
-			if (stepId === sid) submittedStepId = null;
+			if (requestId === activeRequestId) submittedRequestId = null;
 		}
 	}
 
@@ -187,16 +187,16 @@
 	}
 
 	function dismiss() {
-		if (!stepId) return;
+		if (!requestId) return;
 		showDenyMenu = false;
 		showAllowMenu = false;
 		pendingPersistentTarget = null;
-		onDismiss?.(stepId);
+		onDismiss?.(requestId);
 	}
 </script>
 
 <MaterialDialog
-	open={open && Boolean(stepId)}
+open={open && Boolean(requestId)}
 	onClose={dismiss}
 	dialogClass="permission-confirmation-dialog"
 	overlayClass="permission-confirmation-overlay"

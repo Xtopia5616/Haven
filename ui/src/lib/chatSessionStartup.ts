@@ -20,7 +20,7 @@ export interface ChatSessionStartupDependencies {
 	setFreshSessionIntent: (value: boolean) => void;
 	hasPersistedFreshSessionIntent: () => boolean;
 	clearPersistedFreshSessionIntent: () => void;
-	getPendingInteractionIds: (sessionId: string) => string[];
+	getPendingInteractionRequestIds: (sessionId: string) => string[];
 	evictTerminalSessionMemory: (sessionId: string) => void;
 	setInitialLoading: (loading: boolean) => void;
 	deferResumeTargetClear: () => void;
@@ -223,7 +223,7 @@ export function createChatSessionStartup(dependencies: ChatSessionStartupDepende
 			sessionId: latestSession.session.session_id,
 			messages: buildResumeMessages(latestSession),
 			interactions: resumeInteractions(latestSession),
-			preserveInteractionIds: dependencies.getPendingInteractionIds(
+			preserveRequestIds: dependencies.getPendingInteractionRequestIds(
 				latestSession.session.session_id,
 			),
 			usage: latestSession.usage,

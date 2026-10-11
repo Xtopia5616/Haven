@@ -15,7 +15,7 @@ function createRequest(
 		question,
 		messageOptions,
 		request: {
-			id,
+			requestId: id,
 			sessionId: SESSION_ID,
 			owner: { kind: 'session' as const, sessionId: SESSION_ID },
 			kind: 'ask' as const,
@@ -51,7 +51,7 @@ describe('createAskInteractionController', () => {
 			type: 'session/messages/resume-loaded',
 			sessionId: SESSION_ID,
 			messages: requests.map(({ question, messageOptions, request }) => ({
-				id: request.id,
+				id: request.requestId,
 				type: 'ask',
 				content: question,
 				options: messageOptions,
@@ -143,7 +143,7 @@ describe('createAskInteractionController', () => {
 			sessionId: SESSION_ID,
 			messages: [
 				{ id: 'ask-history', type: 'ask', content: '历史问题', awaiting: false },
-				{ id: current.request.id, type: 'ask', content: current.question, awaiting: true },
+				{ id: current.request.requestId, type: 'ask', content: current.question, awaiting: true },
 			],
 			interactions: [oldResolved!, current.request],
 		});
@@ -221,7 +221,7 @@ describe('createAskInteractionController', () => {
 
 		for (const request of [
 			{
-				id: 'confirm-same',
+				requestId: 'confirm-same',
 				sessionId: SESSION_ID,
 				owner: { kind: 'session' as const, sessionId: SESSION_ID },
 				kind: 'confirm' as const,
@@ -230,7 +230,7 @@ describe('createAskInteractionController', () => {
 				createdAt: '',
 			},
 			{
-				id: 'scheduled-same',
+				requestId: 'scheduled-same',
 				sessionId: SESSION_ID,
 				owner: { kind: 'scheduled_tool_run' as const, toolRunId: 'toolrun-scheduled' },
 				kind: 'scheduled_confirm' as const,
@@ -239,7 +239,7 @@ describe('createAskInteractionController', () => {
 				createdAt: '',
 			},
 			{
-				id: 'ask-other',
+				requestId: 'ask-other',
 				sessionId: 'ses-other',
 				owner: { kind: 'session' as const, sessionId: 'ses-other' },
 				kind: 'ask' as const,

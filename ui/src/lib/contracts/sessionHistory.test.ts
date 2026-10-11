@@ -32,7 +32,7 @@ type ResumeFixture = {
 	steps: Array<{ step_id: string; session_id: string }>;
 	llm_usage: Array<{ usage_id: string; session_id: string }>;
 	interactions: Array<{
-		id: string;
+		request_id: string;
 		kind: 'ask' | 'confirm';
 		session_id: string;
 		owner: { kind: 'session'; session_id: string };
@@ -65,13 +65,13 @@ function resumeResponse(): ResumeFixture {
 		],
 		interactions: [
 			{
-				id: stepId,
+				request_id: stepId,
 				kind: 'ask',
 				session_id: sessionId,
 				owner: { kind: 'session', session_id: sessionId },
 			},
 			{
-				id: 'conf-00000000000000000000000000000005',
+				request_id: 'conf-00000000000000000000000000000005',
 				kind: 'confirm',
 				session_id: sessionId,
 				owner: { kind: 'session', session_id: sessionId },
@@ -278,7 +278,7 @@ describe('session history and resume identity contracts', () => {
 		);
 
 		const badInteraction = resumeResponse();
-		badInteraction.interactions[1].id = 'step-00000000000000000000000000000005';
+		badInteraction.interactions[1].request_id = 'step-00000000000000000000000000000005';
 		expect(() => parseSessionResumeResponse(badInteraction)).toThrow(
 			'Invalid resumed interaction identity',
 		);

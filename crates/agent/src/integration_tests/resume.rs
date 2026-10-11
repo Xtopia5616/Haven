@@ -489,7 +489,7 @@ async fn reopen_preserves_follow_up_route_after_confirm_resolves_while_ask_stays
     executor
         .resolve_interaction(
             &session.session_id,
-            &confirm.id,
+            &confirm.request_id,
             serde_json::json!(true),
             false,
         )

@@ -41,7 +41,7 @@ pub(crate) fn project_interaction(
     owner: haven_agent::InteractionOwner,
 ) -> InteractionRequestedEvent {
     let mut event = InteractionRequestedEvent {
-        id: request.id.clone(),
+        request_id: request.request_id.clone(),
         session_id: request.session_id.clone(),
         owner,
         kind: request.kind,
@@ -507,7 +507,7 @@ pub(crate) fn run() {
                                         let haven_agent::InteractionEnvelope { owner, request } = *envelope;
                                         tracing::info!(
                                             session_id = ?request.session_id,
-                                            interaction_id = %request.id,
+                                            request_id = %request.request_id,
                                             interaction_kind = ?request.kind,
                                             status = ?request.status,
                                             "interaction request lifecycle changed"

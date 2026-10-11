@@ -2297,9 +2297,17 @@ async fn continue_from_error_clears_stale_confirmation_requests() {
         event.event_type == haven_memory::INTERACTION_CLEARED_EVENT_TYPE
             && serde_json::from_str::<serde_json::Value>(&event.payload)
                 .ok()
-                .and_then(|payload| payload.get("ids").cloned())
+                .and_then(|payload| {
+                    payload
+                        .get("request_ids")
+                        .or_else(|| payload.get("ids"))
+                        .cloned()
+                })
                 .and_then(|ids| ids.as_array().cloned())
-                .is_some_and(|ids| ids.iter().any(|id| id.as_str() == Some(&request.id)))
+                .is_some_and(|ids| {
+                    ids.iter()
+                        .any(|id| id.as_str() == Some(&request.request_id))
+                })
     }));
 }
 

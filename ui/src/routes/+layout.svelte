@@ -58,7 +58,7 @@
 	import { formatAgentCompactionToast, formatAgentMediaPlanToast } from '$lib/agentEventToast.ts';
 	import {
 		clearRequestedConfirmation,
-		requestedConfirmationIdStore,
+		requestedConfirmationRequestIdStore,
 	} from '$lib/interactionPresentationStore.ts';
 	import {
 		formatLlmConnectionFailure,
@@ -623,19 +623,24 @@
 				(request.kind === 'confirm' || request.kind === 'scheduled_confirm'),
 		),
 	);
-	let dismissedConfirmationIds = $state(new Set<string>());
-	let requestedConfirmationId = $state<string | null>(null);
-	$effect(() => syncStore(requestedConfirmationIdStore, (id) => (requestedConfirmationId = id)));
+	let dismissedConfirmationRequestIds = $state(new Set<string>());
+	let requestedConfirmationRequestId = $state<string | null>(null);
+	$effect(() =>
+		syncStore(
+			requestedConfirmationRequestIdStore,
+			(requestId) => (requestedConfirmationRequestId = requestId),
+		),
+	);
 	const activeConfirmRequest = $derived.by(() => {
-		if (requestedConfirmationId) {
+		if (requestedConfirmationRequestId) {
 			const requested = pendingConfirmInteractions.find(
-				(request) => request.id === requestedConfirmationId,
+				(request) => request.requestId === requestedConfirmationRequestId,
 			);
 			if (requested) return requested;
 		}
 		return (
 			pendingConfirmInteractions.find(
-				(request) => !dismissedConfirmationIds.has(request.id),
+				(request) => !dismissedConfirmationRequestIds.has(request.requestId),
 			) ||
 			pendingConfirmInteractions[0] ||
 			null
@@ -643,12 +648,12 @@
 	});
 	const activeConfirmOpen = $derived(
 		!!activeConfirmRequest &&
-			(requestedConfirmationId === activeConfirmRequest.id ||
-				!dismissedConfirmationIds.has(activeConfirmRequest.id)),
+			(requestedConfirmationRequestId === activeConfirmRequest.requestId ||
+				!dismissedConfirmationRequestIds.has(activeConfirmRequest.requestId)),
 	);
-	function dismissConfirmation(id: string) {
-		dismissedConfirmationIds = new Set(dismissedConfirmationIds).add(id);
-		if (requestedConfirmationId === id) clearRequestedConfirmation();
+	function dismissConfirmation(requestId: string) {
+		dismissedConfirmationRequestIds = new Set(dismissedConfirmationRequestIds).add(requestId);
+		if (requestedConfirmationRequestId === requestId) clearRequestedConfirmation();
 	}
 	const activeConfirmSessionTitle = $derived(
 		activeConfirmRequest
@@ -673,23 +678,22 @@
 	const confirmationRequestsInFlight = new Set<string>();
 
 	async function handleConfirm({
-		stepId,
+		requestId,
 		approved,
 		effect,
 		scope,
 		target,
 	}: ConfirmationDecision) {
-		const resolvedStep = stepId;
-		if (!resolvedStep || confirmationRequestsInFlight.has(resolvedStep)) return false;
-		const currentRequest = appSessionReducer.snapshot().interactions[resolvedStep];
+		if (!requestId || confirmationRequestsInFlight.has(requestId)) return false;
+		const currentRequest = appSessionReducer.snapshot().interactions[requestId];
 		if (!currentRequest || currentRequest.status !== 'pending') return false;
-		confirmationRequestsInFlight.add(resolvedStep);
+		confirmationRequestsInFlight.add(requestId);
 		const resolvedEffect = effect || (approved ? 'allow' : 'deny');
 		const resolvedScope = scope || 'once';
 		const resolvedTarget = target || 'operation';
 		/** @type {import('$lib/contracts/commands.ts').ResolveConfirmationRequest} */
 		const confirmationRequest = {
-			requestId: resolvedStep,
+			requestId,
 			owner: interactionOwnerToWire(currentRequest.owner),
 			effect: resolvedEffect,
 			scope: resolvedScope,
@@ -699,7 +703,7 @@
 			const resolution = await invoke('resolve_confirmation', confirmationRequest);
 			appSessionReducer.dispatch({
 				type: 'session/interaction-resolution-result',
-				id: resolvedStep,
+				requestId,
 				result: resolution,
 			});
 			if (resolution === 'expired')
@@ -716,7 +720,7 @@
 			// accepted terminal transition (or the request becomes stale).
 			return false;
 		} finally {
-			confirmationRequestsInFlight.delete(resolvedStep);
+			confirmationRequestsInFlight.delete(requestId);
 		}
 	}
 
@@ -1361,7 +1365,7 @@
 		{/each}
 		<ConfirmationDialog
 			open={activeConfirmOpen}
-			stepId={activeConfirmRequest?.id || null}
+			requestId={activeConfirmRequest?.requestId || null}
 			toolName={activeConfirmRequest?.toolName || ''}
 			sessionId={activeConfirmRequest?.sessionId}
 			allowSessionScope={Boolean(activeConfirmRequest?.sessionId)}

@@ -4117,7 +4117,7 @@ mod tests {
         let resolved = reloaded
             .resolve_interaction(
                 &session.session_id,
-                &confirm.id,
+                &confirm.request_id,
                 serde_json::json!(true),
                 false,
             )
@@ -4238,7 +4238,7 @@ mod tests {
         let first = exec
             .resolve_interaction(
                 &session.session_id,
-                &requests[0].id,
+                &requests[0].request_id,
                 serde_json::json!(true),
                 false,
             )
@@ -4253,7 +4253,7 @@ mod tests {
         assert!(matches!(
             first_event,
             SessionSupervisorEvent::InteractionRequested { ref envelope }
-                if envelope.request.id == requests[0].id
+                if envelope.request.request_id == requests[0].request_id
         ));
         assert_eq!(
             exec.get_active_session_status(&session.session_id).await,
@@ -4272,7 +4272,7 @@ mod tests {
         let error = exec
             .resolve_interaction(
                 &session.session_id,
-                &requests[1].id,
+                &requests[1].request_id,
                 serde_json::json!(true),
                 false,
             )
@@ -4294,7 +4294,7 @@ mod tests {
             )
             .await;
         assert_eq!(pending.len(), 1);
-        assert_eq!(pending[0].id, requests[1].id);
+        assert_eq!(pending[0].request_id, requests[1].request_id);
         let failed_events = exec
             .store
             .read_active_domain_events_async(&session.session_id)
@@ -4317,7 +4317,7 @@ mod tests {
         let retried = exec
             .resolve_interaction(
                 &session.session_id,
-                &requests[1].id,
+                &requests[1].request_id,
                 serde_json::json!(true),
                 false,
             )
@@ -4344,7 +4344,7 @@ mod tests {
         assert!(matches!(
             resolved_event,
             SessionSupervisorEvent::InteractionRequested { ref envelope }
-                if envelope.request.id == requests[1].id
+                if envelope.request.request_id == requests[1].request_id
         ));
         tokio::time::timeout(std::time::Duration::from_secs(1), dispatch_wake.changed())
             .await
@@ -4411,7 +4411,7 @@ mod tests {
         let expired = exec
             .resolve_interaction(
                 &session.session_id,
-                &confirmation.id,
+                &confirmation.request_id,
                 serde_json::Value::Null,
                 true,
             )
@@ -4437,7 +4437,7 @@ mod tests {
         assert!(matches!(
             runtime_events.recv().await.unwrap(),
             SessionSupervisorEvent::InteractionRequested { ref envelope }
-                if envelope.request.id == confirmation.id
+                if envelope.request.request_id == confirmation.request_id
                     && envelope.request.status == crate::interaction::InteractionStatus::Expired
         ));
         tokio::time::timeout(std::time::Duration::from_secs(1), dispatch_wake.changed())
@@ -4617,7 +4617,7 @@ mod tests {
                 step_id: step_id.into(),
                 tool_index: 2,
                 tool_call_id: Some("call-confirmation-plan".into()),
-                confirmation_request_id: Some(request.id.clone()),
+                confirmation_request_id: Some(request.request_id.clone()),
             }],
         };
 

@@ -6,7 +6,7 @@ import type {
 } from '$lib/contracts/generatedCommands.ts';
 
 export interface ConfirmationDecision {
-	stepId: string;
+	requestId: string;
 	approved: boolean;
 	effect?: PermissionEffectInput;
 	scope?: PermissionScopeInput;

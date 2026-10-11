@@ -24,7 +24,7 @@ describe('app-shell IPC contract', () => {
 			event: 'interaction:requested',
 			id: 1,
 			payload: {
-				id: 'conf-6b86b273ff34fce19d6b804eff5a3f57',
+				request_id: 'conf-6b86b273ff34fce19d6b804eff5a3f57',
 				session_id: 'ses-6b86b273ff34fce19d6b804eff5a3f57',
 				owner: { kind: 'session', session_id: 'ses-6b86b273ff34fce19d6b804eff5a3f57' },
 				kind: 'confirm',
@@ -44,7 +44,7 @@ describe('app-shell IPC contract', () => {
 		});
 
 		expect(event?.payload).toEqual({
-			id: 'conf-6b86b273ff34fce19d6b804eff5a3f57',
+			requestId: 'conf-6b86b273ff34fce19d6b804eff5a3f57',
 			sessionId: 'ses-6b86b273ff34fce19d6b804eff5a3f57',
 			owner: { kind: 'session', sessionId: 'ses-6b86b273ff34fce19d6b804eff5a3f57' },
 			kind: 'confirm',
@@ -69,7 +69,7 @@ describe('app-shell IPC contract', () => {
 			event: 'interaction:requested',
 			id: 24,
 			payload: {
-				id: 'step-e7f729190d36bf14aed6c9c2ed7f5fe7',
+				request_id: 'step-e7f729190d36bf14aed6c9c2ed7f5fe7',
 				session_id: 'ses-e7f729190d36bf14aed6c9c2ed7f5fe7',
 				owner: { kind: 'session', session_id: 'ses-e7f729190d36bf14aed6c9c2ed7f5fe7' },
 				kind: 'ask',
@@ -80,15 +80,34 @@ describe('app-shell IPC contract', () => {
 		});
 
 		expect(event?.payload).toMatchObject({
-			id: 'step-e7f729190d36bf14aed6c9c2ed7f5fe7',
+			requestId: 'step-e7f729190d36bf14aed6c9c2ed7f5fe7',
 			kind: 'ask',
 			owner: { kind: 'session', sessionId: 'ses-e7f729190d36bf14aed6c9c2ed7f5fe7' },
 		});
 	});
 
+	it('rejects the retired generic interaction id field', () => {
+		const event = mapAppEvent({
+			event: 'interaction:requested',
+			id: 25,
+			payload: {
+				id: 'conf-6b86b273ff34fce19d6b804eff5a3f57',
+				session_id: 'ses-6b86b273ff34fce19d6b804eff5a3f57',
+				owner: { kind: 'session', session_id: 'ses-6b86b273ff34fce19d6b804eff5a3f57' },
+				kind: 'confirm',
+				status: 'pending',
+				options: [],
+				created_at: '2026-01-01T00:00:00Z',
+				expires_at: '2026-01-01T00:05:00Z',
+			},
+		});
+
+		expect(event).toBeNull();
+	});
+
 	it('rejects interaction identities that do not match their entity type', () => {
 		const confirmation = {
-			id: 'conf-0123456789abcdef0123456789abcdef',
+			request_id: 'conf-0123456789abcdef0123456789abcdef',
 			session_id: 'ses-0123456789abcdef0123456789abcdef',
 			owner: { kind: 'session', session_id: 'ses-0123456789abcdef0123456789abcdef' },
 			kind: 'confirm',
@@ -97,7 +116,7 @@ describe('app-shell IPC contract', () => {
 			expires_at: '2026-01-01T00:05:00Z',
 		};
 		for (const payload of [
-			{ ...confirmation, id: 'step-0123456789abcdef0123456789abcdef' },
+			{ ...confirmation, request_id: 'step-0123456789abcdef0123456789abcdef' },
 			{ ...confirmation, session_id: 'msg-0123456789abcdef0123456789abcdef' },
 			{ ...confirmation, invocation_step_id: 'msg-0123456789abcdef0123456789abcdef' },
 			{
@@ -106,7 +125,7 @@ describe('app-shell IPC contract', () => {
 			},
 			{
 				...confirmation,
-				id: 'conf-short',
+				request_id: 'conf-short',
 			},
 			{
 				...confirmation,
@@ -122,7 +141,7 @@ describe('app-shell IPC contract', () => {
 			event: 'interaction:requested',
 			id: 2,
 			payload: {
-				id: 'interaction-1',
+				request_id: 'interaction-1',
 				session_id: 'ses-6b86b273ff34fce19d6b804eff5a3f57',
 				owner: { kind: 'session', session_id: 'ses-6b86b273ff34fce19d6b804eff5a3f57' },
 				kind: 'future_kind',
@@ -171,7 +190,7 @@ describe('app-shell IPC contract', () => {
 				event: 'interaction:requested',
 				id: 20,
 				payload: {
-					id: 'conf-4c1029697ee358715d3a14a2add817c4',
+					request_id: 'conf-4c1029697ee358715d3a14a2add817c4',
 					...(session_id ? { session_id } : {}),
 					owner,
 					kind,
@@ -182,7 +201,7 @@ describe('app-shell IPC contract', () => {
 			});
 
 			expect(event?.payload).toMatchObject({
-				id: 'conf-4c1029697ee358715d3a14a2add817c4',
+				requestId: 'conf-4c1029697ee358715d3a14a2add817c4',
 				owner: expectedOwner,
 				kind,
 			});
@@ -213,7 +232,7 @@ describe('app-shell IPC contract', () => {
 				event: 'interaction:requested',
 				id: 23,
 				payload: {
-					id: 'interaction-owner-kind-mismatch',
+					request_id: 'interaction-owner-kind-mismatch',
 					...(session_id ? { session_id } : {}),
 					owner,
 					kind,
@@ -234,7 +253,7 @@ describe('app-shell IPC contract', () => {
 				event: 'interaction:requested',
 				id: 22,
 				payload: {
-					id: 'conf-1fd4027863da5bf37b5f51f9be35d18c',
+					request_id: 'conf-1fd4027863da5bf37b5f51f9be35d18c',
 					session_id: 'ses-6b86b273ff34fce19d6b804eff5a3f57',
 					owner: { kind: 'session', session_id: 'ses-6b86b273ff34fce19d6b804eff5a3f57' },
 					kind: 'confirm',
@@ -268,7 +287,7 @@ describe('app-shell IPC contract', () => {
 			event: 'interaction:requested',
 			id: 21,
 			payload: {
-				id: 'conf-55839c1aeb493986bcea56970d1e88e9',
+				request_id: 'conf-55839c1aeb493986bcea56970d1e88e9',
 				...(session_id ? { session_id } : {}),
 				owner,
 				kind: 'confirm',
@@ -347,7 +366,7 @@ describe('app-shell IPC contract', () => {
 		{
 			event: 'interaction:requested',
 			payload: {
-				id: 'conf-6b86b273ff34fce19d6b804eff5a3f57',
+				request_id: 'conf-6b86b273ff34fce19d6b804eff5a3f57',
 				session_id: 'ses-6b86b273ff34fce19d6b804eff5a3f57',
 				owner: { kind: 'session', session_id: 'ses-6b86b273ff34fce19d6b804eff5a3f57' },
 				kind: 'confirm',
@@ -359,7 +378,7 @@ describe('app-shell IPC contract', () => {
 		{
 			event: 'interaction:requested',
 			payload: {
-				id: 'conf-6b86b273ff34fce19d6b804eff5a3f57',
+				request_id: 'conf-6b86b273ff34fce19d6b804eff5a3f57',
 				session_id: 'ses-6b86b273ff34fce19d6b804eff5a3f57',
 				owner: { kind: 'session', session_id: 'ses-6b86b273ff34fce19d6b804eff5a3f57' },
 				kind: 'confirm',
@@ -371,7 +390,7 @@ describe('app-shell IPC contract', () => {
 		{
 			event: 'interaction:requested',
 			payload: {
-				id: 'conf-6b86b273ff34fce19d6b804eff5a3f57',
+				request_id: 'conf-6b86b273ff34fce19d6b804eff5a3f57',
 				session_id: 'ses-6b86b273ff34fce19d6b804eff5a3f57',
 				owner: { kind: 'session', session_id: 'ses-6b86b273ff34fce19d6b804eff5a3f57' },
 				kind: 'confirm',
@@ -383,7 +402,7 @@ describe('app-shell IPC contract', () => {
 		{
 			event: 'interaction:requested',
 			payload: {
-				id: 'conf-6b86b273ff34fce19d6b804eff5a3f57',
+				request_id: 'conf-6b86b273ff34fce19d6b804eff5a3f57',
 				session_id: 'ses-6b86b273ff34fce19d6b804eff5a3f57',
 				owner: { kind: 'session', session_id: 'ses-6b86b273ff34fce19d6b804eff5a3f57' },
 				kind: 'confirm',

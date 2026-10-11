@@ -87,7 +87,10 @@ pub struct InteractionEnvelope {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct InteractionRequest {
-    pub id: String,
+    /// Identity of this interaction request. Ask requests reuse their step ID;
+    /// confirmation requests use a `conf-*` ID.
+    #[serde(alias = "id")]
+    pub request_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
     pub kind: InteractionKind,
@@ -155,7 +158,7 @@ impl InteractionRequest {
             .cloned()
             .unwrap_or_else(|| haven_common::types::new_id("step"));
         Self {
-            id: step_id,
+            request_id: step_id,
             session_id: Some(session_id.to_string()),
             kind: InteractionKind::Ask,
             status: InteractionStatus::Pending,
@@ -183,12 +186,12 @@ impl InteractionRequest {
         receipt: Option<haven_tools::ConfirmationReceipt>,
     ) -> Self {
         let expires_at = receipt.as_ref().and_then(confirmation_expires_at);
-        let id = receipt
+        let request_id = receipt
             .as_ref()
             .map(|receipt| receipt.confirmation_id.to_string())
             .unwrap_or_else(|| haven_common::types::new_id("conf").to_string());
         Self {
-            id,
+            request_id,
             session_id: Some(session_id.to_string()),
             kind: InteractionKind::Confirm,
             status: InteractionStatus::Pending,
@@ -223,7 +226,7 @@ impl InteractionRequest {
         let confirmation_id = receipt.confirmation_id.to_string();
         let expires_at = confirmation_expires_at(&receipt);
         Self {
-            id: confirmation_id.clone(),
+            request_id: confirmation_id.clone(),
             session_id: None,
             kind: InteractionKind::Confirm,
             status: InteractionStatus::Pending,
@@ -254,7 +257,7 @@ impl InteractionRequest {
     ) -> Self {
         let expires_at = confirmation_expires_at(&receipt);
         Self {
-            id: receipt.confirmation_id.to_string(),
+            request_id: receipt.confirmation_id.to_string(),
             session_id: session_id.map(str::to_owned),
             kind: InteractionKind::ScheduledConfirm,
             status: InteractionStatus::Pending,
@@ -356,7 +359,7 @@ pub fn replay_session_interactions(
                     let mut request =
                         InteractionRequest::ask(session_id, options, vec![step_id.to_string()]);
                     request.created_at = event.created_at.clone();
-                    interactions.retain(|existing| existing.id != request.id);
+                    interactions.retain(|existing| existing.request_id != request.request_id);
                     interactions.push(request);
                 }
                 Some("user_inject")
@@ -387,16 +390,16 @@ pub fn replay_session_interactions(
                     },
                 )?;
                 if request.kind == InteractionKind::Ask {
-                    let covered_ids = std::iter::once(request.id.as_str())
+                    let covered_ids = std::iter::once(request.request_id.as_str())
                         .chain(request.correlation_ids.iter().map(String::as_str))
                         .collect::<std::collections::HashSet<_>>();
                     interactions.retain(|existing| {
-                        existing.id != request.id
+                        existing.request_id != request.request_id
                             && (existing.kind != InteractionKind::Ask
-                                || !covered_ids.contains(existing.id.as_str()))
+                                || !covered_ids.contains(existing.request_id.as_str()))
                     });
                 } else {
-                    interactions.retain(|existing| existing.id != request.id);
+                    interactions.retain(|existing| existing.request_id != request.request_id);
                 }
                 if request.status == InteractionStatus::Pending
                     || request.kind == InteractionKind::Confirm
@@ -412,17 +415,18 @@ pub fn replay_session_interactions(
                     )
                 })?;
                 let ids = payload
-                    .get("ids")
+                    .get("request_ids")
+                    .or_else(|| payload.get("ids"))
                     .and_then(Value::as_array)
                     .ok_or_else(|| {
                         anyhow::anyhow!(
-                            "interaction clear event at sequence {} has no ids",
+                            "interaction clear event at sequence {} has no request_ids",
                             event.sequence
                         )
                     })?;
                 interactions.retain(|request| {
                     !ids.iter()
-                        .any(|id| id.as_str() == Some(request.id.as_str()))
+                        .any(|id| id.as_str() == Some(request.request_id.as_str()))
                 });
             }
             _ => {}
@@ -492,7 +496,7 @@ mod tests {
             Vec::new(),
             vec!["step-0123456789abcdef0123456789abcdef".into()],
         );
-        assert!(request.id.starts_with("step-"));
+        assert!(request.request_id.starts_with("step-"));
         assert_eq!(request.status, InteractionStatus::Pending);
         assert_eq!(request.session_id.as_deref(), Some(SESSION_ID));
         assert!(request.resolve(Value::String("notes.md".into())));
@@ -502,10 +506,24 @@ mod tests {
 
         let encoded = serde_json::to_string(&request).unwrap();
         let wire: Value = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(wire["request_id"], request.request_id);
+        assert!(wire.get("id").is_none());
         assert_eq!(wire["session_id"], SESSION_ID);
         assert!(wire.get("owner").is_none());
         let decoded: InteractionRequest = serde_json::from_str(&encoded).unwrap();
         assert_eq!(decoded, request);
+
+        let mut legacy_wire = wire;
+        let request_id = legacy_wire
+            .as_object_mut()
+            .unwrap()
+            .remove("request_id")
+            .unwrap();
+        legacy_wire["id"] = request_id;
+        assert_eq!(
+            serde_json::from_value::<InteractionRequest>(legacy_wire).unwrap(),
+            request
+        );
         assert!(!request.clone().cancel());
     }
 
@@ -574,7 +592,7 @@ mod tests {
             receipt.clone(),
         );
 
-        assert_eq!(request.id, receipt.confirmation_id.to_string());
+        assert_eq!(request.request_id, receipt.confirmation_id.to_string());
         assert_eq!(request.session_id, None);
         assert_eq!(request.kind, InteractionKind::Confirm);
         assert!(matches!(
@@ -593,7 +611,7 @@ mod tests {
         let replayed = replay_session_interactions(SESSION_ID, &[ask_result(1, step_id)]).unwrap();
 
         assert_eq!(replayed.len(), 1);
-        assert_eq!(replayed[0].id, step_id);
+        assert_eq!(replayed[0].request_id, step_id);
         assert_eq!(replayed[0].session_id.as_deref(), Some(SESSION_ID));
         assert_eq!(replayed[0].kind, InteractionKind::Ask);
         assert_eq!(replayed[0].status, InteractionStatus::Pending);
@@ -675,10 +693,21 @@ mod tests {
         let cleared = event(
             3,
             INTERACTION_CLEARED_EVENT_TYPE,
-            serde_json::json!({"ids": [first_step]}),
+            serde_json::json!({"request_ids": [first_step]}),
         );
         assert!(
             replay_session_interactions(SESSION_ID, &[asks[0].clone(), cleared])
+                .unwrap()
+                .is_empty()
+        );
+
+        let legacy_cleared = event(
+            3,
+            INTERACTION_CLEARED_EVENT_TYPE,
+            serde_json::json!({"ids": [first_step]}),
+        );
+        assert!(
+            replay_session_interactions(SESSION_ID, &[asks[0].clone(), legacy_cleared])
                 .unwrap()
                 .is_empty()
         );

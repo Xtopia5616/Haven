@@ -462,10 +462,10 @@ pub(crate) struct AgentObservationEvent {
 /// Renderer-safe projection of every human decision request. Internal
 /// `InteractionRequest` values may carry raw tool input and receipts; this
 /// DTO deliberately contains only the information needed to render a card
-/// and resolve it by id.
+/// and resolve it by request ID.
 #[derive(Clone, Serialize)]
 pub(crate) struct InteractionRequestedEvent {
-    pub id: String,
+    pub request_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
     pub owner: haven_agent::InteractionOwner,

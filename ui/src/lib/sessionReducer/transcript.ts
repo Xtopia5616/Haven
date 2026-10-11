@@ -142,7 +142,7 @@ export function reduceTranscript(
 		case 'session/messages/adopt-draft':
 			return moveMessages(state, DRAFT_SESSION_ID, action.sessionId);
 		case 'session/asks-settled': {
-			const askById = new Map(action.asks.map((ask) => [ask.id, ask]));
+			const askById = new Map(action.asks.map((ask) => [ask.requestId, ask]));
 			if (askById.size === 0) return state;
 			return withMessages(state, action.sessionId, (messages) => {
 				let changed = false;
