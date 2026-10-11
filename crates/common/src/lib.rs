@@ -17,7 +17,7 @@ mod tool_run_lease;
 pub mod tools;
 pub mod types;
 pub mod usage;
-pub mod workspace;
+mod workspace;
 
 pub use types::McpTransportType;
 pub use workspace::discover_workspace_root;
