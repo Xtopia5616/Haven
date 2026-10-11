@@ -77,7 +77,7 @@ impl OpenAiAdapter {
             thinking_blocks: Vec::new(),
         };
         tracing::trace!(
-            "parse_openai_response: text={} chars, tool_calls={}, reasoning={}, usage p/c/t={}/{}/{}",
+            "parse_openai_response: text={} bytes, tool_calls={}, reasoning={}, usage p/c/t={}/{}/{}",
             response.text.len(),
             response.tool_calls.len(),
             response.reasoning.is_some(),

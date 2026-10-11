@@ -18,7 +18,10 @@ pub(crate) fn estimate_tokens(text: &str) -> u32 {
         Ok(tokenizer) => tokenizer.encode_with_special_tokens(text).len() as u32,
         Err(error) => {
             TOKENIZER_WARNING_LOGGED.get_or_init(|| {
-                tracing::error!(error = %error, "failed to initialize tokenizer; using conservative character estimate");
+                tracing::error!(
+                    error = %haven_common::error::sanitize_error_text(&error.to_string()),
+                    "failed to initialize tokenizer; using conservative character estimate"
+                );
             });
             text.chars().count().div_ceil(4) as u32
         }

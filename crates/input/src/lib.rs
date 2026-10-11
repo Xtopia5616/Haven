@@ -188,14 +188,17 @@ impl InputPipeline {
                         *guard = Some(h);
                         tracing::debug!("audio capture engine prewarmed");
                     }
-                    Err(e) => {
-                        tracing::warn!("audio capture engine prewarm failed: {e}");
+                    Err(_error) => {
+                        tracing::warn!(
+                            failure_kind = "audio_capture_prewarm",
+                            "audio capture engine prewarm failed"
+                        );
                     }
                 }
             }
         }
-        if let Err(error) = self.ensure_vad_worker() {
-            tracing::error!(error = %error, "VAD prewarm failed");
+        if self.ensure_vad_worker().is_err() {
+            tracing::error!(failure_kind = "vad_worker_prewarm", "VAD prewarm failed");
         }
     }
 
@@ -488,7 +491,10 @@ impl InputPipeline {
                         let speech_probability = match probability_result {
                             Ok(probability) => probability,
                             Err(error) => {
-                                tracing::error!(error = %error, "VAD worker failed; stopping recording");
+                                tracing::error!(
+                                    failure_kind = "vad_worker",
+                                    "VAD worker failed; stopping recording"
+                                );
                                 let elapsed = start.elapsed();
                                 return RecordingResult {
                                     pcm: accumulated_pcm,
@@ -740,7 +746,10 @@ fn vad_worker_loop(
         Ok(e) => (Some(e), None),
         Err(err) => {
             let message = format!("VAD engine initialization failed: {err}");
-            tracing::error!(error = %err, "{message}");
+            tracing::error!(
+                failure_kind = "vad_engine_initialization",
+                "VAD engine initialization failed"
+            );
             (None, Some(message))
         }
     };
@@ -760,8 +769,8 @@ fn vad_worker_loop(
                         .clone()
                         .unwrap_or_else(|| "VAD engine is unavailable".to_string())),
                 };
-                if let Err(error) = &result {
-                    tracing::error!(error = %error, "VAD inference failed");
+                if result.is_err() {
+                    tracing::error!(failure_kind = "vad_inference", "VAD inference failed");
                 }
                 if speech_probability_tx.send((seq, result)).is_err() {
                     break;
@@ -769,9 +778,12 @@ fn vad_worker_loop(
             }
             VadCmd::Reset => {
                 if let Some(e) = engine.as_mut()
-                    && let Err(error) = e.reset()
+                    && e.reset().is_err()
                 {
-                    tracing::error!(error = %error, "VAD reset failed; disabling VAD worker");
+                    tracing::error!(
+                        failure_kind = "vad_reset",
+                        "VAD reset failed; disabling VAD worker"
+                    );
                     engine = None;
                 }
             }

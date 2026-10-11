@@ -260,7 +260,7 @@ impl SessionSupervisor {
         {
             tracing::warn!(
                 session_id,
-                error = %error,
+                error = %haven_common::error::sanitize_error_text(&error.to_string()),
                 "failed to mark paused session as awaiting end retry"
             );
         }
@@ -301,7 +301,11 @@ impl SessionSupervisor {
             })
             .await;
             if let Ok(Err(error)) = result {
-                tracing::debug!(session_id = %log_id, error = %error, "messaging registry cleanup failed");
+                tracing::debug!(
+                    session_id = %log_id,
+                    error = %haven_common::error::sanitize_error_text(&error.to_string()),
+                    "messaging registry cleanup failed"
+                );
             }
         });
     }
@@ -327,11 +331,19 @@ impl SessionSupervisor {
         {
             Ok(Ok(children)) => children,
             Ok(Err(error)) => {
-                tracing::error!(parent_session_id = %parent, error = %error, "failed to enumerate descendants");
+                tracing::error!(
+                    parent_session_id = %parent,
+                    error = %haven_common::error::sanitize_error_text(&error.to_string()),
+                    "failed to enumerate descendants"
+                );
                 return;
             }
             Err(error) => {
-                tracing::error!(parent_session_id = %parent, error = %error, "descendant enumeration worker failed");
+                tracing::error!(
+                    parent_session_id = %parent,
+                    error = %haven_common::error::sanitize_error_text(&error.to_string()),
+                    "descendant enumeration worker failed"
+                );
                 return;
             }
         };
@@ -379,7 +391,11 @@ impl SessionSupervisor {
             actor.cancel_actor();
             self.dequeue_pending(session_id).await;
             if let Err(error) = self.cancel_session_tool_runs_checked(session_id).await {
-                tracing::warn!(session_id = %session_id, "initial session ToolRun cleanup failed while quiescing; retrying after run exit: {error}");
+                tracing::warn!(
+                    session_id = %session_id,
+                    error = %haven_common::error::sanitize_error_text(&error.to_string()),
+                    "initial session ToolRun cleanup failed while quiescing; retrying after run exit"
+                );
             }
             self.await_run_finished(session_id).await?;
             // Join closes ToolRun admission from the actor run, so this final
@@ -734,7 +750,7 @@ impl SessionSupervisor {
             {
                 tracing::error!(
                     session_id,
-                    error = %error,
+                    error = %haven_common::error::sanitize_error_text(&error.to_string()),
                     "failed to persist session run-end reason"
                 );
             }
@@ -868,7 +884,11 @@ impl SessionSupervisor {
     ) {
         self.dequeue_pending(session_id).await;
         if let Err(error) = self.partials.promote(session_id).await {
-            tracing::warn!(session_id, error = %error, "failed to promote session partial");
+            tracing::warn!(
+                session_id,
+                error = %haven_common::error::sanitize_error_text(&error.to_string()),
+                "failed to promote session partial"
+            );
         }
         self.cleanup_session_maps(session_id).await;
         self.finish_ended_session(session_id, cascade).await;
@@ -1152,7 +1172,7 @@ impl SessionSupervisor {
                     completed_failures = completed_failures.saturating_add(1);
                     let next_delay = backoff.delay_after(completed_failures, None, 0);
                     tracing::warn!(
-                        %error,
+                        error = %haven_common::error::sanitize_error_text(&error.to_string()),
                         attempt = completed_failures,
                         retry_delay = ?next_delay,
                         "pending session batch recovery failed; retry scheduled"
@@ -1223,7 +1243,7 @@ impl SessionSupervisor {
                     Err(error) => {
                         tracing::warn!(
                             session_id = %record.id,
-                            %error,
+                            error = %haven_common::error::sanitize_error_text(&error.to_string()),
                             "failed to restore pending session; retry requires a later load attempt"
                         );
                         continue;
@@ -1293,7 +1313,11 @@ impl SessionSupervisor {
             .cancel_owned_by_session_checked(session_id)
             .await
         {
-            tracing::warn!(session_id = %session_id, "failed to completely cancel session-owned tool_runs: {error}");
+            tracing::warn!(
+                session_id = %session_id,
+                error = %haven_common::error::sanitize_error_text(&error.to_string()),
+                "failed to completely cancel session-owned tool_runs"
+            );
         }
     }
 

@@ -756,9 +756,9 @@ impl ReActEngine {
             .await
         {
             tracing::warn!(
-                "ReAct: failed to mark session {} Error after a fatal step failure: {}",
-                session_id,
-                e
+                session_id = %session_id,
+                error = %haven_common::error::sanitize_error_text(&e.to_string()),
+                "ReAct: failed to mark session Error after a fatal step failure"
             );
         }
     }
@@ -825,7 +825,11 @@ impl ReActEngine {
         {
             Ok(totals) => totals,
             Err(error) => {
-                tracing::warn!(session_id, %error, "failed to record session usage");
+                tracing::warn!(
+                    session_id,
+                    error = %haven_common::error::sanitize_error_text(&error.to_string()),
+                    "failed to record session usage"
+                );
                 return;
             }
         };
@@ -983,10 +987,10 @@ impl ReActEngine {
         match persisted {
             Ok(_) => {}
             Err(error) => tracing::warn!(
-                "ReAct: failed to persist tool usage batch for session {} step {}: {}",
-                session_id,
+                session_id = %session_id,
                 step_number,
-                error
+                error = %haven_common::error::sanitize_error_text(&error.to_string()),
+                "ReAct: failed to persist tool usage batch"
             ),
         }
 
@@ -1071,11 +1075,11 @@ impl ReActEngine {
             {
                 Ok(_) => {}
                 Err(error) => tracing::warn!(
-                    "ReAct: failed to persist {} usage for session {} step {:?}: {}",
-                    call_kind.as_str(),
-                    session_id,
-                    step_number,
-                    error
+                    call_kind = call_kind.as_str(),
+                    session_id = %session_id,
+                    step_number = ?step_number,
+                    error = %haven_common::error::sanitize_error_text(&error.to_string()),
+                    "ReAct: failed to persist usage"
                 ),
             }
 
@@ -1282,7 +1286,8 @@ impl ReActEngine {
             Err(error) => {
                 tracing::warn!(
                     session_id = %ctx.session_id,
-                    "compaction cancelled or unavailable: {error}"
+                    failure_reason = error.connection_failure_reason().as_str(),
+                    "compaction cancelled or unavailable"
                 );
                 Ok(false)
             }
@@ -1298,7 +1303,7 @@ impl ReActEngine {
     ) {
         tracing::error!(
             session_id = %session_id,
-            error = %haven_common::error::sanitize_error_text(error),
+            error_bytes = error.len(),
             "ReAct session failed"
         );
         EventDispatcher::emit_session_error_from(emitter, session_id, error).await;

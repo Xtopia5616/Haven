@@ -77,6 +77,7 @@ pub struct RuntimeSessionListResponse {
 
 /// Re-export: command error logging lives in `crate::logging` (conventions §1).
 pub(crate) use crate::logging::log_err;
+pub(crate) use crate::logging::log_external_err;
 pub(crate) use crate::logging::log_storage_err;
 
 /// Reject non-canonical Haven entity IDs at the Tauri boundary before they
@@ -153,8 +154,12 @@ pub(crate) async fn authorize_admin_request(
         .authorization
         .authorize(&authorization_request)
         .await;
+    if let haven_tools::AuthorizationDecision::Blocked { reason, .. } = &decision {
+        return Err(log_blocked_admin_request(ctx, reason));
+    }
     let execute_request = request.clone();
     dispatch_authorized_admin_request(
+        ctx,
         decision,
         || execute_admin_operation(state, ctx, execute_request),
         |receipt| async move {
@@ -173,6 +178,13 @@ pub(crate) async fn authorize_admin_request(
     .await
 }
 
+fn log_blocked_admin_request(ctx: &str, reason: &str) -> String {
+    log_err(
+        ctx,
+        format!("native admin operation blocked by security policy ({reason})"),
+    )
+}
+
 /// Build an authorization request for a direct app command. These operations
 /// have no owning session, so they must not read session-scoped grants.
 pub(crate) fn app_command_authorization_request(
@@ -184,6 +196,7 @@ pub(crate) fn app_command_authorization_request(
 }
 
 async fn dispatch_authorized_admin_request<E, EFut, Q, QFut>(
+    ctx: &str,
     decision: haven_tools::AuthorizationDecision,
     execute: E,
     queue_confirmation: Q,
@@ -199,9 +212,9 @@ where
         haven_tools::AuthorizationDecision::RequiresConfirmation { receipt, .. } => {
             Err(queue_confirmation(receipt).await?)
         }
-        haven_tools::AuthorizationDecision::Blocked { reason, .. } => Err(format!(
-            "native admin operation blocked by security policy ({reason})"
-        )),
+        haven_tools::AuthorizationDecision::Blocked { reason, .. } => {
+            Err(log_blocked_admin_request(ctx, &reason))
+        }
     }
 }
 
@@ -498,7 +511,8 @@ fn redact_mcp_admin_confirmation_input(
 mod tests {
     use super::{
         app_command_authorization_request, dispatch_authorized_admin_request,
-        parse_mcp_refresh_failed_names, redact_mcp_admin_confirmation_input, validate_command_id,
+        log_blocked_admin_request, parse_mcp_refresh_failed_names,
+        redact_mcp_admin_confirmation_input, validate_command_id,
     };
     use haven_common::types::{CapabilityScope, PermissionEffect, PermissionScope, RiskLevel};
     use haven_tools::{
@@ -662,6 +676,7 @@ mod tests {
             let executions_in_task = executions.clone();
             let queues_in_task = queues.clone();
             let result = dispatch_authorized_admin_request(
+                "test_admin",
                 decision,
                 move || async move {
                     executions_in_task.fetch_add(1, Ordering::SeqCst);
@@ -682,5 +697,15 @@ mod tests {
                 assert_eq!(queues.load(Ordering::SeqCst), 0);
             }
         }
+    }
+
+    #[test]
+    fn blocked_admin_command_errors_use_the_sanitized_command_boundary() {
+        let message = log_blocked_admin_request(
+            "mcp_command",
+            "network policy denied request; api_key=secret-value",
+        );
+        assert!(message.contains("network policy denied request"));
+        assert!(!message.contains("secret-value"));
     }
 }

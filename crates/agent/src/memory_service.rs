@@ -206,24 +206,24 @@ impl MemoryService {
             return Ok(candidates);
         }
 
-        let (vector, cacheable) = if embedding_model.is_empty()
-            || haven_memory::is_sensitive_text(&query_text)
-        {
-            (None, true)
-        } else if let Some(router) = &self.router {
-            match router.embed_text(&query_text).await {
-                Ok(vector) if !vector.is_empty() => (Some(vector), true),
-                Ok(_) => (None, true),
-                Err(error) => {
-                    tracing::debug!(
-                        "prompt memory embedding failed; skipping memory cache for this pass: {error}"
-                    );
-                    (None, false)
+        let (vector, cacheable) =
+            if embedding_model.is_empty() || haven_memory::is_sensitive_text(&query_text) {
+                (None, true)
+            } else if let Some(router) = &self.router {
+                match router.embed_text(&query_text).await {
+                    Ok(vector) if !vector.is_empty() => (Some(vector), true),
+                    Ok(_) => (None, true),
+                    Err(error) => {
+                        tracing::debug!(
+                            error = %haven_common::error::sanitize_error_text(&error.to_string()),
+                            "prompt memory embedding failed; skipping memory cache for this pass"
+                        );
+                        (None, false)
+                    }
                 }
-            }
-        } else {
-            (None, true)
-        };
+            } else {
+                (None, true)
+            };
 
         let candidates = async {
             let keyword_fact_hits = if query_text.trim().is_empty() {

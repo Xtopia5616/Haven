@@ -112,7 +112,11 @@ impl ToolsFacade {
         {
             Ok(result) => result.success,
             Err(error) => {
-                tracing::warn!(session_id, error = %error, "failed to restore built-in tool selection");
+                tracing::warn!(
+                    session_id,
+                    error = %haven_common::error::sanitize_error_text(&error.to_string()),
+                    "failed to restore built-in tool selection"
+                );
                 false
             }
         }
@@ -152,7 +156,11 @@ impl ToolsFacade {
         {
             Ok(result) => result.success,
             Err(error) => {
-                tracing::warn!(session_id, error = %error, "failed to restore Skill selection");
+                tracing::warn!(
+                    session_id,
+                    error = %haven_common::error::sanitize_error_text(&error.to_string()),
+                    "failed to restore Skill selection"
+                );
                 false
             }
         }
@@ -256,12 +264,11 @@ impl ToolsFacade {
         {
             tracing::warn!(
                 session_id,
-                server_name,
                 net_new = budget.net_new,
                 max = budget.max,
                 global_count = budget.global_count,
                 session_count = budget.session_count,
-                "register_mcp_for_session: refusing server over max_tools_per_request"
+                "register_mcp_for_session: refusing server because max_tools_per_request was reached"
             );
         }
         true
@@ -387,14 +394,20 @@ impl ToolsFacade {
                 result = skill_registry.refresh_if_changed() => match result {
                     Ok(changed) => changed,
                     Err(error) => {
-                        tracing::warn!(error = %error, "skills auto-refresh failed");
+                        tracing::warn!(
+                            error = %haven_common::error::sanitize_error_text(&error.to_string()),
+                            "skills auto-refresh failed"
+                        );
                         false
                     }
                 },
             };
             if changed {
                 if let Err(error) = self.rebuild_catalog().await {
-                    tracing::warn!(error = %error, "skills changed but tool catalog rebuild failed");
+                    tracing::warn!(
+                        error = %haven_common::error::sanitize_error_text(&error.to_string()),
+                        "skills changed but tool catalog rebuild failed"
+                    );
                 }
                 on_change();
             }
@@ -525,7 +538,6 @@ impl OperationCatalog<'_> {
         let total = global_len + session_defs.len();
         let selection = select_tool_definitions_for_budget(global_defs, session_defs, max);
         if !selection.omitted.is_empty() {
-            let omitted_tools = selection.omitted.join(", ");
             tracing::warn!(
                 session_id,
                 total,
@@ -534,7 +546,6 @@ impl OperationCatalog<'_> {
                 selected = selection.selected_tools.len(),
                 omitted = selection.omitted.len(),
                 omitted_core = selection.omitted_core,
-                omitted_tools = %omitted_tools,
                 "list_tool_definitions_for_session: omitted tools from max_tools_per_request budget; core builtins are selected before optional sources"
             );
         }

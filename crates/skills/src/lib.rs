@@ -256,10 +256,10 @@ fn case_insensitive_collisions<'a>(names: impl IntoIterator<Item = &'a str>) -> 
 
 fn skip_case_insensitive_skill_collisions(candidates: Vec<Skill>) -> Vec<Skill> {
     let ambiguous_names = case_insensitive_collisions(candidates.iter().map(Skill::name));
-    for name in &ambiguous_names {
+    if !ambiguous_names.is_empty() {
         tracing::warn!(
-            name = %name,
-            "skipping all Skills with Windows case-insensitive name collision"
+            collision_count = ambiguous_names.len(),
+            "skipping Skills with Windows case-insensitive name collision"
         );
     }
     candidates
@@ -273,10 +273,10 @@ fn skip_case_insensitive_directory_collisions(
 ) -> Vec<(String, PathBuf, PathBuf)> {
     let ambiguous_names =
         case_insensitive_collisions(directories.iter().map(|(name, _, _)| name.as_str()));
-    for name in &ambiguous_names {
+    if !ambiguous_names.is_empty() {
         tracing::warn!(
-            name = %name,
-            "skipping all Skill directories with Windows case-insensitive name collision"
+            collision_count = ambiguous_names.len(),
+            "skipping Skill directories with Windows case-insensitive name collision"
         );
     }
     directories
@@ -499,11 +499,8 @@ fn scan_skill_directory(
         // File size cap (M4-01 review).
         let md_len = match std::fs::metadata(&skill_md) {
             Ok(m) => m.len(),
-            Err(e) => {
-                tracing::warn!(
-                    error = %haven_common::error::sanitize_error_text(&e.to_string()),
-                    "cannot stat SKILL.md"
-                );
+            Err(_) => {
+                tracing::warn!("cannot stat SKILL.md");
                 continue;
             }
         };
@@ -518,11 +515,8 @@ fn scan_skill_directory(
 
         let content = match std::fs::read(&skill_md) {
             Ok(bytes) => haven_common::encoding::decode_lossy(&bytes),
-            Err(e) => {
-                tracing::warn!(
-                    error = %haven_common::error::sanitize_error_text(&e.to_string()),
-                    "skipping unreadable SKILL.md"
-                );
+            Err(_) => {
+                tracing::warn!("skipping unreadable SKILL.md");
                 continue;
             }
         };
@@ -541,10 +535,7 @@ fn scan_skill_directory(
             }
             Err(e) => {
                 let error = format!("Invalid SKILL.md: {}", e);
-                tracing::warn!(
-                    error = %haven_common::error::sanitize_error_text(&error),
-                    "skill manifest could not be loaded"
-                );
+                tracing::warn!("skill manifest could not be loaded");
                 diagnostics.push(SkillInfo::invalid_manifest(
                     directory_name,
                     &p,

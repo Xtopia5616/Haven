@@ -110,7 +110,7 @@ impl ReActEngine {
                             tracing::warn!(
                                 session_id = %ctx.session_id,
                                 step_number = ctx.step_number,
-                                error = %error,
+                                failure_reason = error.connection_failure_reason().as_str(),
                                 "incomplete-tool-arguments retry failed"
                             );
                             let reason = format!(
@@ -138,7 +138,7 @@ impl ReActEngine {
             tracing::error!(
                 session_id = %ctx.session_id,
                 step_number = ctx.step_number,
-                reason,
+                reason_bytes = reason.len(),
                 ?recovery,
                 "response error also failed recovery persistence"
             );

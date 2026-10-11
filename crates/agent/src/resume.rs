@@ -101,7 +101,7 @@ impl AgentEventEmitter for SuppressLifecycleCancelledSessionErrorEmitter {
                     {
                         tracing::error!(
                             session_id,
-                            error = %persist_error,
+                            error = %haven_common::error::sanitize_error_text(&persist_error.to_string()),
                             "failed to persist session run-end reason"
                         );
                     }
@@ -116,7 +116,7 @@ impl AgentEventEmitter for SuppressLifecycleCancelledSessionErrorEmitter {
                 Err(error) => {
                     tracing::error!(
                         session_id,
-                        error = %error,
+                        error = %haven_common::error::sanitize_error_text(&error.to_string()),
                         "failed to commit direct-run error status; suppressing stale event"
                     );
                     return;
@@ -198,10 +198,10 @@ impl AgentLayer {
                     restored += 1;
                 }
                 Err(error) => tracing::warn!(
-                    "failed to re-queue pending input {} for session {}: {}",
-                    message.id,
+                    message_id = %message.id,
                     session_id,
-                    error
+                    error = %haven_common::error::sanitize_error_text(&error.to_string()),
+                    "failed to re-queue pending input"
                 ),
             }
         }
@@ -306,7 +306,7 @@ impl AgentLayer {
         {
             tracing::warn!(
                 session_id,
-                error = %error,
+                error = %haven_common::error::sanitize_error_text(&error.to_string()),
                 "failed to persist session running status before resume"
             );
         }
@@ -646,9 +646,9 @@ impl AgentLayer {
         self.executor
             .register_managed_assets_for_session(session_id, initial.attachments);
         tracing::debug!(
-            "run_session start: session_id={:?} context={:?} attachments={}",
+            "run_session start: session_id={:?} context_bytes={} attachments={}",
             session_id,
-            context,
+            context.len(),
             initial.attachments.len()
         );
         // S1: do not restate the initial user turn inside system Additional
@@ -677,7 +677,7 @@ impl AgentLayer {
             .prompt_builder
             .build_for_session_without_memory(description, &history_lines)
             .await;
-        tracing::debug!("run_session: system_prompt {} chars", system_prompt.len());
+        tracing::debug!("run_session: system_prompt_bytes={}", system_prompt.len());
 
         let mut initial_content = vec![ContentPart::text(context.to_string())];
         let media_strategy = self.react_engine.media_strategy();

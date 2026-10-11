@@ -327,7 +327,10 @@ impl UsageRuntime {
 async fn stop_session_usage_entry(entry: SessionUsageEntry) {
     let _ = entry.handle.tx.send(UsageOperation::Shutdown).await;
     if let Err(error) = entry.worker.await {
-        tracing::warn!(error = %error, "usage session worker failed while stopping");
+        tracing::warn!(
+            error = %haven_common::error::sanitize_error_text(&error.to_string()),
+            "usage session worker failed while stopping"
+        );
     }
 }
 

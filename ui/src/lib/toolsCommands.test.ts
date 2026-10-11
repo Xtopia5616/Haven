@@ -139,7 +139,7 @@ describe('ToolsView command boundary', () => {
 		expect(invoke.mock.calls[5][1]).toBe(updateRequest);
 	});
 
-	it('passes MCP refresh response extensions through and preserves invoke failures', async () => {
+	it('passes MCP refresh response extensions through and keeps the Skills path inside the backend', async () => {
 		const response = {
 			added: ['new-server'],
 			removed: [],
@@ -151,8 +151,8 @@ describe('ToolsView command boundary', () => {
 
 		expect(await refreshMcpServers()).toBe(response);
 		expect(invoke).toHaveBeenCalledWith('refresh_mcp_servers');
-		invoke.mockResolvedValueOnce('C:\\Users\\test\\skills');
-		expect(await openSkillsDir()).toBe('C:\\Users\\test\\skills');
+		invoke.mockResolvedValueOnce(undefined);
+		expect(await openSkillsDir()).toBeUndefined();
 		expect(invoke).toHaveBeenLastCalledWith('open_skills_dir');
 
 		const failure = new Error('admin command rejected');

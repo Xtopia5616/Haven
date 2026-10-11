@@ -27,10 +27,10 @@ describe('errorHandling', () => {
 			{ msg: '保存设置失败: backend failed', type: 'error' },
 		]);
 		expect(spy).toHaveBeenCalledTimes(1);
-		expect(spy.mock.calls[0][0]).toContain('[ERROR][SettingsView] 保存设置失败 failed');
+		expect(spy.mock.calls[0][0]).toContain('[ERROR][SettingsView] operation failed');
 		expect(invoke).toHaveBeenCalledTimes(1);
 		expect(invoke).toHaveBeenCalledWith('log_frontend_error', {
-			message: '保存设置失败: backend failed',
+			failureKind: 'operation_failure',
 		});
 		spy.mockRestore();
 	});
@@ -43,13 +43,11 @@ describe('errorHandling', () => {
 
 		expect(get(notificationStore)[0].msg).toBe('加载失败: already logged');
 		expect(spy).not.toHaveBeenCalled();
-		expect(invoke).toHaveBeenCalledWith('log_frontend_error', {
-			message: '加载失败: already logged',
-		});
+		expect(invoke).not.toHaveBeenCalled();
 		spy.mockRestore();
 	});
 
-	it('can keep technical details in logs and show a generic toast', () => {
+	it('keeps technical details out of logs while showing a generic toast', () => {
 		const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
 
 		reportError(new Error('backend detail'), {
@@ -57,12 +55,13 @@ describe('errorHandling', () => {
 			message: 'Unhandled UI error',
 			includeDetail: false,
 			notificationMessage: '应用发生未处理错误，请重试',
+			failureKind: 'unhandled_ui_error',
 		});
 
 		expect(get(notificationStore)[0].msg).toBe('应用发生未处理错误，请重试');
-		expect(spy.mock.calls[0]).toContain('backend detail');
+		expect(spy.mock.calls[0]).not.toContain('backend detail');
 		expect(invoke).toHaveBeenCalledWith('log_frontend_error', {
-			message: '应用发生未处理错误，请重试',
+			failureKind: 'unhandled_ui_error',
 		});
 		spy.mockRestore();
 	});

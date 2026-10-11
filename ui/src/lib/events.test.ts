@@ -67,8 +67,7 @@ describe('registerListeners', () => {
 
 		expect(mocks.error).toHaveBeenCalledWith(
 			'+page',
-			expect.stringContaining('session:lifecycle'),
-			expect.any(Error),
+			"Failed to register listener for 'session:lifecycle'",
 		);
 		// dispose after a failed registration is a no-op, not a throw.
 		expect(() => regs.dispose()).not.toThrow();

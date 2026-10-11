@@ -291,11 +291,11 @@ pub(super) fn agent_events_from_committed(event: &SessionEvent) -> Vec<AgentEven
     }
     let value: Value = match serde_json::from_str(&event.payload) {
         Ok(value) => value,
-        Err(error) => {
+        Err(_) => {
             tracing::warn!(
                 session_id = %event.session_id,
                 sequence = event.sequence,
-                %error,
+                failure_kind = "invalid_transcript_json",
                 "committed transcript payload is not JSON; skipping UI publish"
             );
             return Vec::new();
@@ -303,21 +303,21 @@ pub(super) fn agent_events_from_committed(event: &SessionEvent) -> Vec<AgentEven
     };
     let record: TranscriptRecord = match serde_json::from_value(value.clone()) {
         Ok(record) => record,
-        Err(error) => {
+        Err(_) => {
             tracing::warn!(
                 session_id = %event.session_id,
                 sequence = event.sequence,
-                %error,
+                failure_kind = "invalid_transcript_record",
                 "committed transcript payload does not decode; skipping UI publish"
             );
             return Vec::new();
         }
     };
-    if let Err(error) = record.validate_identity() {
+    if record.validate_identity().is_err() {
         tracing::warn!(
             session_id = %event.session_id,
             sequence = event.sequence,
-            %error,
+            failure_kind = "invalid_transcript_identity",
             "committed transcript identity is invalid; skipping UI publish"
         );
         return Vec::new();
@@ -325,22 +325,22 @@ pub(super) fn agent_events_from_committed(event: &SessionEvent) -> Vec<AgentEven
     let ui = match value.get("ui").cloned() {
         Some(ui_value) => match serde_json::from_value::<CommittedUi>(ui_value) {
             Ok(ui) => {
-                if let Err(error) = ui.validate_for_record(&record) {
+                if ui.validate_for_record(&record).is_err() {
                     tracing::warn!(
                         session_id = %event.session_id,
                         sequence = event.sequence,
-                        %error,
+                        failure_kind = "invalid_transcript_ui_identity",
                         "committed transcript UI identity is invalid; skipping UI publish"
                     );
                     return Vec::new();
                 }
                 Some(ui)
             }
-            Err(error) => {
+            Err(_) => {
                 tracing::warn!(
                     session_id = %event.session_id,
                     sequence = event.sequence,
-                    %error,
+                    failure_kind = "invalid_transcript_ui_annotation",
                     "committed transcript UI annotation does not decode"
                 );
                 None

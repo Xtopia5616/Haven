@@ -186,7 +186,12 @@ impl SessionSupervisor {
         {
             Ok(risk_level) => risk_level,
             Err(error) => {
-                tracing::warn!(tool = %request.tool_name, %error, "could not resolve tool risk for step metadata; recording as critical");
+                tracing::warn!(
+                    session_id = %request.session_id,
+                    step_id = %request.step_id,
+                    error = %haven_common::error::sanitize_error_text(&error.to_string()),
+                    "could not resolve tool risk for step metadata; recording as critical"
+                );
                 RiskLevel::Critical
             }
         };
@@ -252,7 +257,11 @@ impl SessionSupervisor {
             .ensure_tool_step(context.into_write(), None)
             .await
             .map_err(|e| {
-                tracing::error!("begin_tool_step failed for step {}: {}", step_id_for_log, e);
+                tracing::error!(
+                    step_id = %step_id_for_log,
+                    error = %haven_common::error::sanitize_error_text(&e.to_string()),
+                    "begin_tool_step failed"
+                );
                 anyhow::anyhow!("failed to persist pending tool intent {step_id_for_log}: {e}")
             })
     }
@@ -361,9 +370,9 @@ impl SessionSupervisor {
             .await
         {
             tracing::warn!(
-                "finish_step_with_outcome failed for step {}: {}",
-                step_id_for_log,
-                e
+                step_id = %step_id_for_log,
+                error = %haven_common::error::sanitize_error_text(&e.to_string()),
+                "finish_step_with_outcome failed"
             );
         }
     }
@@ -480,7 +489,11 @@ impl SessionSupervisor {
             .ensure_and_start_tool_step(context.into_write(), None)
             .await
             .map_err(|e| {
-                tracing::error!("start_tool_step failed for step {}: {}", step_id_for_log, e);
+                tracing::error!(
+                    step_id = %step_id_for_log,
+                    error = %haven_common::error::sanitize_error_text(&e.to_string()),
+                    "start_tool_step failed"
+                );
                 anyhow::anyhow!("failed to mark tool intent running {step_id_for_log}: {e}")
             })?;
         anyhow::ensure!(
@@ -667,15 +680,16 @@ impl SessionSupervisor {
         cancel_override: Option<tokio_util::sync::CancellationToken>,
     ) -> anyhow::Result<ToolResult> {
         let tool_call_id = tool_call_id.map(str::to_string);
+        let input_bytes = serde_json::to_vec(&input)
+            .map(|serialized| serialized.len())
+            .unwrap_or(0);
         tracing::debug!(
-            "execute_step: session={} tool={} input_fields={} input_chars={} receipt={}",
-            session_id,
-            tool_name,
-            input.as_object().map(|object| object.len()).unwrap_or(0),
-            serde_json::to_string(&input)
-                .map(|serialized| serialized.len())
-                .unwrap_or(0),
-            receipt.is_some(),
+            session_id = %session_id,
+            step_number,
+            input_field_count = input.as_object().map_or(0, |object| object.len()),
+            input_bytes,
+            receipt_present = receipt.is_some(),
+            "execute_step"
         );
         {
             let actor = self.actor_for(session_id).await;
@@ -814,7 +828,8 @@ impl SessionSupervisor {
             confirmed,
         } = gated;
         tracing::info!(
-            tool = %tool_name,
+            session_id = %session_id,
+            step_number,
             success = result.success,
             attempts = result.attempts,
             outcome = ?result.outcome,
@@ -950,9 +965,8 @@ impl SessionSupervisor {
                 .await
         {
             tracing::warn!(
-                tool = %tool_name,
                 session_id = ?session_id,
-                reason_len = reason.chars().count(),
+                reason_bytes = reason.len(),
                 "confirmation receipt rejected; refusing to execute"
             );
             return Ok(ToolExecution {
@@ -1007,7 +1021,6 @@ impl SessionSupervisor {
                     }
                     None => {
                         tracing::warn!(
-                            tool = %tool_name,
                             session_id = ?session_id,
                             "execute_gated RequiresConfirmation without a receipt; rejecting (R2 fail-closed)"
                         );
@@ -1109,8 +1122,13 @@ impl SessionSupervisor {
             receipt,
             title.to_string(),
         );
-        if let Err(error) = request.validate_new_pending_permission() {
-            tracing::warn!(%tool_run_id, request_id = %step_id, %error, "scheduled confirmation has no valid future deadline");
+        if request.validate_new_pending_permission().is_err() {
+            tracing::warn!(
+                %tool_run_id,
+                request_id = %step_id,
+                failure_kind = "invalid_confirmation_request",
+                "scheduled confirmation has no valid future deadline"
+            );
             return None;
         }
         let Some(expiry_delay) = confirmation_expiry_delay(request.expires_at.as_deref()) else {
@@ -1162,7 +1180,7 @@ impl SessionSupervisor {
                             tracing::warn!(
                                 tool_run_id = %tool_run_id,
                                 request_id = %timeout_id,
-                                error = %error,
+                                error = %haven_common::error::sanitize_error_text(&error.to_string()),
                                 "failed to expire scheduled confirmation; retrying"
                             );
                             tokio::time::sleep(retry_delay).await;
@@ -1425,7 +1443,7 @@ impl SessionSupervisor {
                 tracing::warn!(
                     %tool_run_id,
                     request_id = %step_id,
-                    error = %release_error,
+                    error = %haven_common::error::sanitize_error_text(&release_error.to_string()),
                     "failed to release scheduled confirmation claim after grant persistence failed"
                 );
             }

@@ -50,7 +50,7 @@ impl TitleGenerator {
             }
             Err(e) => {
                 tracing::warn!(
-                    error = %haven_common::error::sanitize_error_text(&e.to_string()),
+                    failure_reason = e.connection_failure_reason().as_str(),
                     "title generation failed"
                 );
                 None

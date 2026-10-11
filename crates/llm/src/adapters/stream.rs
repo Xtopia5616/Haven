@@ -87,7 +87,7 @@ async fn forward_line(line: &[u8], tx: &mpsc::Sender<LinePayload>, mode: LineMod
         return true;
     }
 
-    tracing::trace!("stream payload: {} chars", payload.len());
+    tracing::trace!("stream payload: {} bytes", payload.len());
     tx.send(Ok(payload.to_string())).await.is_ok()
 }
 
@@ -146,11 +146,8 @@ pub(crate) fn spawn_line_reader<S>(
         })
         .catch_unwind()
         .await;
-        if let Err(panic) = result {
-            tracing::error!(
-                "byte stream reader panicked: {:?}",
-                panic.downcast_ref::<String>().unwrap_or(&"unknown".into())
-            );
+        if result.is_err() {
+            tracing::error!("byte stream reader panicked");
             let _ = panic_tx
                 .send(Err(LlmError::Unknown("byte stream reader panicked".into())))
                 .await;

@@ -232,7 +232,8 @@ impl MemoryWorker {
                 }
                 Err(error) => tracing::debug!(
                     session_id = %session_id,
-                    "initial prompt memory prefetch failed: {error}"
+                    error = %haven_common::error::sanitize_error_text(&error.to_string()),
+                    "initial prompt memory prefetch failed"
                 ),
             }
         });
@@ -427,9 +428,9 @@ impl MemoryWorker {
                 Ok(value) => value,
                 Err(error) => {
                     tracing::warn!(
-                        "fact inference throttle read failed for session {}: {}",
-                        session_id,
-                        error
+                        session_id = %session_id,
+                        error = %haven_common::error::sanitize_error_text(&error.to_string()),
+                        "fact inference throttle read failed"
                     );
                     return FactInferenceOutcome::Retryable;
                 }
@@ -464,9 +465,9 @@ impl MemoryWorker {
             Ok(transcript) => transcript,
             Err(error) => {
                 tracing::warn!(
-                    "fact inference: failed to load transcript for session {}: {}",
-                    session_id,
-                    error
+                    session_id = %session_id,
+                    error = %haven_common::error::sanitize_error_text(&error.to_string()),
+                    "fact inference: failed to load transcript"
                 );
                 return FactInferenceOutcome::Retryable;
             }
@@ -489,9 +490,9 @@ impl MemoryWorker {
             Ok(value) => value,
             Err(error) => {
                 tracing::warn!(
-                    "fact inference cursor read failed for session {}: {}",
-                    session_id,
-                    error
+                    session_id = %session_id,
+                    error = %haven_common::error::sanitize_error_text(&error.to_string()),
+                    "fact inference cursor read failed"
                 );
                 return FactInferenceOutcome::Retryable;
             }
@@ -513,9 +514,9 @@ impl MemoryWorker {
                     .await
             {
                 tracing::warn!(
-                    "fact inference cursor commit failed for session {}: {}",
-                    session_id,
-                    error
+                    session_id = %session_id,
+                    error = %haven_common::error::sanitize_error_text(&error.to_string()),
+                    "fact inference cursor commit failed"
                 );
                 return FactInferenceOutcome::Retryable;
             }
@@ -534,9 +535,9 @@ impl MemoryWorker {
                 .await
             {
                 tracing::warn!(
-                    "fact inference throttle stamp failed for session {}; skipping LLM call: {}",
-                    session_id,
-                    error
+                    session_id = %session_id,
+                    error = %haven_common::error::sanitize_error_text(&error.to_string()),
+                    "fact inference throttle stamp failed; skipping LLM call"
                 );
                 return FactInferenceOutcome::Retryable;
             }
@@ -574,10 +575,10 @@ impl MemoryWorker {
                     }
                 }
             }
-            Err(error) => {
+            Err(_) => {
                 tracing::warn!(
                     session_id = %session_id,
-                    error = %haven_common::error::sanitize_error_text(&error.to_string()),
+                    failure_kind = "fact_extraction_failed",
                     "LLM fact extraction failed; keeping extraction cursor unchanged"
                 );
                 return FactInferenceOutcome::Retryable;
@@ -762,7 +763,10 @@ impl MemoryWorker {
         {
             Ok(v) => v,
             Err(e) => {
-                tracing::warn!("load_known_facts: list_facts failed: {}", e);
+                tracing::warn!(
+                    error = %haven_common::error::sanitize_error_text(&e.to_string()),
+                    "load_known_facts: list_facts failed"
+                );
                 Vec::new()
             }
         };
@@ -842,10 +846,10 @@ impl MemoryWorker {
             Ok(value) => value,
             Err(error) => {
                 tracing::warn!(
-                    "summary fact extraction completion read failed for session {} episode {}: {}",
-                    session_id,
-                    episode_id,
-                    error
+                    session_id = %session_id,
+                    episode_id = %episode_id,
+                    error = %haven_common::error::sanitize_error_text(&error.to_string()),
+                    "summary fact extraction completion read failed"
                 );
                 return SummaryExtractOutcome::Retryable { wait_secs: 1 };
             }
@@ -864,9 +868,9 @@ impl MemoryWorker {
                 Ok(value) => value,
                 Err(error) => {
                     tracing::warn!(
-                        "summary fact extraction throttle read failed for session {}: {}",
-                        session_id,
-                        error
+                        session_id = %session_id,
+                        error = %haven_common::error::sanitize_error_text(&error.to_string()),
+                        "summary fact extraction throttle read failed"
                     );
                     return SummaryExtractOutcome::Retryable { wait_secs: 1 };
                 }
@@ -889,9 +893,9 @@ impl MemoryWorker {
                 .await
             {
                 tracing::warn!(
-                    "summary fact extraction throttle stamp failed for session {}: {}",
-                    session_id,
-                    error
+                    session_id = %session_id,
+                    error = %haven_common::error::sanitize_error_text(&error.to_string()),
+                    "summary fact extraction throttle stamp failed"
                 );
                 return SummaryExtractOutcome::Retryable { wait_secs: 1 };
             }
@@ -951,7 +955,7 @@ impl MemoryWorker {
                 tracing::warn!(
                     session_id = %session_id,
                     episode_id = %episode_id,
-                    error = %error,
+                    error = %haven_common::error::sanitize_error_text(&error.to_string()),
                     "summary fact extraction commit failed; leaving episode retryable"
                 );
                 return SummaryExtractOutcome::Retryable { wait_secs: 1 };

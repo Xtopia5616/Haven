@@ -193,8 +193,8 @@
 			.sort((left, right) => left.createdAt.localeCompare(right.createdAt))
 			.map((request) => {
 				const sessionTitle =
-					sessions.find((session) => session.sessionId === request.owner.sessionId)?.title ||
-					request.owner.sessionId;
+					sessions.find((session) => session.sessionId === request.owner.sessionId)
+						?.title || request.owner.sessionId;
 				if (request.kind === 'ask') {
 					const question = sessionReducer
 						.getMessages(request.owner.sessionId)
@@ -395,9 +395,7 @@
 	let mediaPlansBySession = $state<Record<string, AgentMediaPlanPayload[]>>({});
 	$effect(() => syncStore(mediaPlanStore, (v) => (mediaPlansBySession = v || {})));
 	const activeSessionStatus = $derived(
-		activeSessionId
-			? sessions.find((t) => t.sessionId === activeSessionId)?.status
-			: undefined,
+		activeSessionId ? sessions.find((t) => t.sessionId === activeSessionId)?.status : undefined,
 	);
 	/** The backend's derived reason is authoritative; toolRuns only provide the count. */
 	const awaitingBackground = $derived.by(() => {
@@ -897,7 +895,7 @@
 		evictTerminalSessionMemory,
 		setInitialLoading: (loading) => (initialLoading = loading),
 		deferResumeTargetClear: () => setTimeout(() => sessionResumeTargetStore.set(null), 0),
-		warn: (message, error) => logger.warn('+page', message, error),
+		warn: (message) => logger.warn('+page', message),
 		reportError,
 	});
 	const { loadSessions, scheduleLoadSessions } = sessionStartup;
@@ -926,7 +924,13 @@
 		},
 		setRollbackLoading: (loading) => (rollbackLoading = loading),
 		closeRollbackDialog: () => {
-			rollbackDialog = { open: false, stepNumber: null, role: null, content: '', messageId: '' };
+			rollbackDialog = {
+				open: false,
+				stepNumber: null,
+				role: null,
+				content: '',
+				messageId: '',
+			};
 		},
 		closeSessionMenu: () => (sessionMenuOpen = false),
 		setContinuePending: (pending) => (continuePending = pending),
@@ -1091,9 +1095,7 @@
 	});
 
 	const activeSession = $derived(
-		activeSessionId
-			? sessions.find((session) => session.sessionId === activeSessionId)
-			: null,
+		activeSessionId ? sessions.find((session) => session.sessionId === activeSessionId) : null,
 	);
 	const sessionHeaderTitle = $derived(
 		String(activeSession?.title || activeSession?.input || '新会话'),

@@ -66,7 +66,7 @@ impl OpenAiAdapter {
             self.endpoint.base_url.trim_end_matches('/')
         );
         tracing::debug!(
-            endpoint = %crate::client::endpoint_log_location(&url),
+            endpoint = %crate::client::endpoint_host(&url),
             model = %self.endpoint.model_name,
             request_kind = "chat_stream",
             timeout_secs = self.endpoint.timeout_secs,
@@ -74,7 +74,7 @@ impl OpenAiAdapter {
             "POST provider endpoint"
         );
         tracing::trace!(
-            "provider request body: {} chars",
+            "provider request body: {} bytes",
             serde_json::to_string(&body).map(|s| s.len()).unwrap_or(0)
         );
         let resp = self

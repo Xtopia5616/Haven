@@ -78,8 +78,8 @@ export function refreshSkills(): Promise<void> {
 	return invoke('refresh_skills');
 }
 
-/** Open the configured Skills root; the backend returns the resolved path. */
-export function openSkillsDir(): Promise<string> {
+/** Open the configured Skills root without exposing its filesystem path. */
+export function openSkillsDir(): Promise<void> {
 	return invoke('open_skills_dir');
 }
 

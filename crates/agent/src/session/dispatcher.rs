@@ -394,7 +394,7 @@ impl SessionSupervisor {
                             Err(status_error) => {
                                 tracing::error!(
                                     session_id = %session_id,
-                                    error = %status_error,
+                                    error = %haven_common::error::sanitize_error_text(&status_error.to_string()),
                                     "failed to persist session error status"
                                 );
                                 false
@@ -412,7 +412,7 @@ impl SessionSupervisor {
                             } else {
                                 tracing::error!(
                                     session_id = %session_id,
-                                    error = %reason,
+                                    error_bytes = reason.len(),
                                     "session run failed"
                                 );
                             }
@@ -463,7 +463,11 @@ impl SessionSupervisor {
                 Ok(claim) if claim.accepted => return Some(session_id),
                 Ok(_) => continue,
                 Err(error) => {
-                    tracing::error!(session_id = %session_id, %error, "failed to claim session");
+                    tracing::error!(
+                        session_id = %session_id,
+                        error = %haven_common::error::sanitize_error_text(&error.to_string()),
+                        "failed to claim session"
+                    );
                     self.enqueue_pending(&session_id).await;
                     return None;
                 }
@@ -622,7 +626,7 @@ impl SessionSupervisor {
                     Err(error) => {
                         tracing::warn!(
                             session_id,
-                            %error,
+                            error = %haven_common::error::sanitize_error_text(&error.to_string()),
                             "failed to persist direct-run admission status"
                         );
                         return None;
@@ -691,7 +695,7 @@ impl SessionSupervisor {
                 {
                     tracing::warn!(
                         session_id,
-                        %error,
+                        error = %haven_common::error::sanitize_error_text(&error.to_string()),
                         "failed to pause a cancelled direct run"
                     );
                 }

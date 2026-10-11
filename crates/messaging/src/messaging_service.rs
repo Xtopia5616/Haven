@@ -451,7 +451,10 @@ impl MessagingService {
         match self.send(envelope) {
             Ok(_) => Ok(()),
             Err(error) => {
-                tracing::debug!(to, %error, "system notice skipped");
+                tracing::debug!(
+                    error = %haven_common::error::sanitize_error_text(&error.to_string()),
+                    "system notice skipped"
+                );
                 Ok(())
             }
         }
@@ -727,13 +730,18 @@ impl MessagingService {
 
     fn send_receipts(&self, recipient: &str, read: &[Envelope]) -> Vec<SendOutcome> {
         read.iter()
-            .filter(|envelope| envelope.r#type != MessageType::Receipt && envelope.from != recipient)
+            .filter(|envelope| {
+                envelope.r#type != MessageType::Receipt && envelope.from != recipient
+            })
             .filter_map(|envelope| {
                 let to = envelope.reply_target().to_string();
                 match self.receipt(recipient, &to, &envelope.id) {
                     Ok(sent) => Some(sent.outcome),
                     Err(error) => {
-                        tracing::debug!(from = %recipient, to = %to, %error, "read receipt delivery skipped");
+                        tracing::debug!(
+                            error = %haven_common::error::sanitize_error_text(&error.to_string()),
+                            "read receipt delivery skipped"
+                        );
                         None
                     }
                 }

@@ -218,15 +218,15 @@ impl GeminiAdapter {
         self.prepare_cached_content(&mut body).await;
         let url = self.generate_url();
         tracing::debug!(
-            endpoint = %crate::client::endpoint_log_location(&url),
+            endpoint = %crate::client::endpoint_host(&url),
             model = %self.endpoint.model_name,
             request_kind = "chat",
             "POST provider endpoint ({} content items)",
             body.contents.len()
         );
         tracing::debug!(
-            endpoint = %crate::client::endpoint_log_location(&url),
-            "POST provider request body: {} chars",
+            endpoint = %crate::client::endpoint_host(&url),
+            "POST provider request body: {} bytes",
             serde_json::to_string(&body).map(|s| s.len()).unwrap_or(0)
         );
         let resp = self
@@ -235,7 +235,7 @@ impl GeminiAdapter {
         let cache_diagnostics = body.cache_diagnostics.clone();
 
         let txt = read_text_bounded(resp, MAX_JSON_RESPONSE_BYTES).await?;
-        tracing::trace!("provider response body: {} chars", txt.len());
+        tracing::trace!("provider response body: {} bytes", txt.len());
         let raw: Value =
             serde_json::from_str(&txt).map_err(|e| LlmError::InvalidResponse(e.to_string()))?;
         let web_search_calls = Self::web_search_calls_from_grounding(&raw);
@@ -363,7 +363,7 @@ impl LlmClient for GeminiAdapter {
         let body = json!({ "requests": requests });
         let url = self.embed_url();
         tracing::debug!(
-            endpoint = %crate::client::endpoint_log_location(&url),
+            endpoint = %crate::client::endpoint_host(&url),
             model = %self.endpoint.model_name,
             request_kind = "embedding",
             "POST provider endpoint"
@@ -397,7 +397,7 @@ impl LlmClient for GeminiAdapter {
         });
         let url = self.generate_url();
         tracing::debug!(
-            endpoint = %crate::client::endpoint_log_location(&url),
+            endpoint = %crate::client::endpoint_host(&url),
             model = %self.endpoint.model_name,
             request_kind = "transcription",
             "POST provider endpoint"

@@ -62,7 +62,10 @@ impl<'a> MemoryMaintenancePass<'a> {
         match dedup {
             Ok(count) => cleaned += count,
             Err(error) => {
-                tracing::warn!("memory maintenance: dedup_facts failed: {}", error);
+                tracing::warn!(
+                    error = %haven_common::error::sanitize_error_text(&error.to_string()),
+                    "memory maintenance: dedup_facts failed"
+                );
                 failures.push(format!("dedup_facts: {error}"));
             }
         }
@@ -76,8 +79,8 @@ impl<'a> MemoryMaintenancePass<'a> {
             Ok(count) => cleaned += count,
             Err(error) => {
                 tracing::error!(
-                    "memory maintenance: delete_sensitive_facts failed: {}",
-                    error
+                    error = %haven_common::error::sanitize_error_text(&error.to_string()),
+                    "memory maintenance: delete_sensitive_facts failed"
                 );
                 failures.push(format!("delete_sensitive_facts: {error}"));
             }
@@ -103,8 +106,8 @@ impl<'a> MemoryMaintenancePass<'a> {
             }
             Err(error) => {
                 tracing::warn!(
-                    "memory maintenance: resolve_contradictions failed: {}",
-                    error
+                    error = %haven_common::error::sanitize_error_text(&error.to_string()),
+                    "memory maintenance: resolve_contradictions failed"
                 );
                 failures.push(format!("resolve_contradictions: {error}"));
             }
@@ -118,7 +121,10 @@ impl<'a> MemoryMaintenancePass<'a> {
         match low_confidence {
             Ok(count) => cleaned += count,
             Err(error) => {
-                tracing::warn!("memory maintenance: flush_low_confidence failed: {}", error);
+                tracing::warn!(
+                    error = %haven_common::error::sanitize_error_text(&error.to_string()),
+                    "memory maintenance: flush_low_confidence failed"
+                );
                 failures.push(format!("flush_low_confidence: {error}"));
             }
         }
@@ -132,8 +138,8 @@ impl<'a> MemoryMaintenancePass<'a> {
             Ok(count) => cleaned += count,
             Err(error) => {
                 tracing::warn!(
-                    "memory maintenance: prune_orphaned_embeddings failed: {}",
-                    error
+                    error = %haven_common::error::sanitize_error_text(&error.to_string()),
+                    "memory maintenance: prune_orphaned_embeddings failed"
                 );
                 failures.push(format!("prune_orphaned_embeddings: {error}"));
             }
@@ -146,8 +152,8 @@ impl<'a> MemoryMaintenancePass<'a> {
         ensure_memory_maintenance_active(cancellation)?;
         if let Err(error) = orphan_cursors {
             tracing::warn!(
-                "memory maintenance: cleanup_orphan_extraction_cursors failed: {}",
-                error
+                error = %haven_common::error::sanitize_error_text(&error.to_string()),
+                "memory maintenance: cleanup_orphan_extraction_cursors failed"
             );
             failures.push(format!("cleanup_orphan_extraction_cursors: {error}"));
         }
@@ -164,8 +170,8 @@ impl<'a> MemoryMaintenancePass<'a> {
             Ok(count) => cleaned += count,
             Err(error) => {
                 tracing::warn!(
-                    "memory maintenance: cleanup_orphan_source_refs failed: {}",
-                    error
+                    error = %haven_common::error::sanitize_error_text(&error.to_string()),
+                    "memory maintenance: cleanup_orphan_source_refs failed"
                 );
                 failures.push(format!("cleanup_orphan_source_refs: {error}"));
             }
@@ -197,8 +203,8 @@ impl<'a> MemoryMaintenancePass<'a> {
                 }
                 Err(error) => {
                     tracing::warn!(
-                        "memory maintenance: post-merge resolve_contradictions failed: {}",
-                        error
+                        error = %haven_common::error::sanitize_error_text(&error.to_string()),
+                        "memory maintenance: post-merge resolve_contradictions failed"
                     );
                     0
                 }
@@ -237,8 +243,8 @@ impl<'a> MemoryMaintenancePass<'a> {
             Ok(v) => v,
             Err(e) => {
                 tracing::warn!(
-                    "memory maintenance: list_ambiguous_contradictions failed: {}",
-                    e
+                    error = %haven_common::error::sanitize_error_text(&e.to_string()),
+                    "memory maintenance: list_ambiguous_contradictions failed"
                 );
                 return 0;
             }
@@ -268,11 +274,8 @@ impl<'a> MemoryMaintenancePass<'a> {
             .await
         {
             Ok(text) => text,
-            Err(e) => {
-                tracing::warn!(
-                    "memory maintenance: contradiction arbitrate LLM failed: {}",
-                    e
-                );
+            Err(_) => {
+                tracing::warn!("memory maintenance: contradiction arbitrate LLM request failed");
                 return 0;
             }
         };
@@ -282,11 +285,8 @@ impl<'a> MemoryMaintenancePass<'a> {
         let json_str = extract_json_array(&response);
         let proposals: Vec<ContradictionDemoteProposal> = match serde_json::from_str(&json_str) {
             Ok(v) => v,
-            Err(e) => {
-                tracing::warn!(
-                    "memory maintenance: failed to parse contradiction demote JSON: {}",
-                    e
-                );
+            Err(_) => {
+                tracing::warn!("memory maintenance: failed to parse contradiction demote JSON");
                 return 0;
             }
         };
@@ -330,7 +330,10 @@ impl<'a> MemoryMaintenancePass<'a> {
         let counts = match self.maintenance_store.list_predicate_counts().await {
             Ok(v) => v,
             Err(e) => {
-                tracing::warn!("memory maintenance: list_predicate_counts failed: {}", e);
+                tracing::warn!(
+                    error = %haven_common::error::sanitize_error_text(&e.to_string()),
+                    "memory maintenance: list_predicate_counts failed"
+                );
                 return 0;
             }
         };
@@ -360,8 +363,8 @@ impl<'a> MemoryMaintenancePass<'a> {
         let merge_prompt = predicate_merge_system_prompt(CANONICAL_MERGE_TARGETS);
         let response = match self.inference.fast_chat(&merge_prompt, &user_content).await {
             Ok(text) => text,
-            Err(e) => {
-                tracing::warn!("memory maintenance: predicate merge LLM failed: {}", e);
+            Err(_) => {
+                tracing::warn!("memory maintenance: predicate merge LLM request failed");
                 return 0;
             }
         };
@@ -371,11 +374,8 @@ impl<'a> MemoryMaintenancePass<'a> {
         let json_str = extract_json_array(&response);
         let proposals: Vec<PredicateMergeProposal> = match serde_json::from_str(&json_str) {
             Ok(v) => v,
-            Err(e) => {
-                tracing::warn!(
-                    "memory maintenance: failed to parse predicate merge JSON: {}",
-                    e
-                );
+            Err(_) => {
+                tracing::warn!("memory maintenance: failed to parse predicate merge JSON");
                 return 0;
             }
         };
@@ -395,19 +395,19 @@ impl<'a> MemoryMaintenancePass<'a> {
                 Ok(count) => {
                     if count > 0 {
                         tracing::info!(
-                            "memory maintenance: rewrote predicate '{}' → '{}' ({} rows)",
-                            from,
-                            to,
-                            count
+                            source_predicate_bytes = from.len(),
+                            target_predicate_bytes = to.len(),
+                            rows = count,
+                            "memory maintenance: rewrote predicate"
                         );
                         total += count;
                     }
                 }
                 Err(error) => tracing::warn!(
-                    "memory maintenance: rewrite_predicate {}→{} failed: {}",
-                    from,
-                    to,
-                    error
+                    source_predicate_bytes = from.len(),
+                    target_predicate_bytes = to.len(),
+                    error = %haven_common::error::sanitize_error_text(&error.to_string()),
+                    "memory maintenance: rewrite_predicate failed"
                 ),
             }
         }

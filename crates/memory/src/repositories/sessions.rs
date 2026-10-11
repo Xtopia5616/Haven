@@ -551,9 +551,9 @@ impl Database {
         for id in ids {
             if let Err(e) = self.promote_partial_message(&id) {
                 tracing::warn!(
-                    "finalize_orphaned_running_sessions: failed to promote partial for session {}: {}",
-                    id,
-                    e
+                    session_id = %id,
+                    error = %haven_common::error::sanitize_error_text(&e.to_string()),
+                    "failed to promote partial message while finalizing orphaned session"
                 );
             }
         }

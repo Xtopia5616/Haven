@@ -599,7 +599,10 @@ impl SystemPromptBuilder {
         {
             Ok(candidates) => candidates,
             Err(error) => {
-                tracing::warn!("prompt memory recall failed; using an empty memory block: {error}");
+                tracing::warn!(
+                    error = %haven_common::error::sanitize_error_text(&error.to_string()),
+                    "prompt memory recall failed; using an empty memory block"
+                );
                 return MemorySections::default();
             }
         };

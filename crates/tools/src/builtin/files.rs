@@ -488,7 +488,10 @@ impl FilesTool {
         let mut result = match operation_result {
             Ok(result) => result,
             Err(error) if managed_asset.is_some() => {
-                tracing::debug!(error = %error, "managed asset operation failed");
+                tracing::debug!(
+                    error = %haven_common::error::sanitize_error_text(&error.to_string()),
+                    "managed asset operation failed"
+                );
                 anyhow::bail!("managed asset operation failed")
             }
             Err(error) => return Err(error),

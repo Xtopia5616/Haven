@@ -59,7 +59,10 @@ impl desktop::ShellHandler for HavenShellHandler {
                     .await;
                 return;
             }
-            tracing::warn!("input pipeline start_capture failed: {e}");
+            tracing::warn!(
+                error = %sanitize_error_text(&e.to_string()),
+                "input pipeline start_capture failed"
+            );
             self.shell_arc
                 .sync_recording_if_revision(false, context.recording_revision)
                 .await;
@@ -92,7 +95,10 @@ impl desktop::ShellHandler for HavenShellHandler {
                 return;
             }
             Err((recording_id, error)) => {
-                tracing::warn!("pipeline stop_capture failed: {error}");
+                tracing::warn!(
+                    error = %sanitize_error_text(&error.to_string()),
+                    "pipeline stop_capture failed"
+                );
                 self.shell_arc.refresh_tray().await;
                 let detached = state.recording_lifecycle.finish(&lifecycle);
                 if let Some(recording_id) =

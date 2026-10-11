@@ -529,7 +529,7 @@ impl ContextCompactor {
                 Err(LlmError::Cancelled) => return Err(LlmError::Cancelled),
                 Err(error) => {
                     tracing::warn!(
-                        error = %haven_common::error::sanitize_error_text(&error.to_string()),
+                        failure_reason = error.connection_failure_reason().as_str(),
                         "compaction summary request failed; degrading"
                     );
                     None

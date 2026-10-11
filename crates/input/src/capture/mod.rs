@@ -270,7 +270,10 @@ impl CaptureEngine {
                 let _ = reply.send(Ok(()));
             }
             Err(e) => {
-                tracing::error!("cpal capture start failed: {e:#}");
+                tracing::error!(
+                    error = %haven_common::error::sanitize_error_text(&format!("{e:#}")),
+                    "cpal capture start failed"
+                );
                 self.recording = false;
                 let _ = reply.send(Err(e));
             }

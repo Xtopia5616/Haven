@@ -24,7 +24,7 @@ export interface ChatSessionStartupDependencies {
 	evictTerminalSessionMemory: (sessionId: string) => void;
 	setInitialLoading: (loading: boolean) => void;
 	deferResumeTargetClear: () => void;
-	warn: (message: string, error: unknown) => void;
+	warn: (message: string) => void;
 	reportError: (
 		error: unknown,
 		options: { context: string; message: string; log: boolean },
@@ -140,7 +140,9 @@ export function createChatSessionStartup(dependencies: ChatSessionStartupDepende
 				const after = dependencies.reducer.snapshot();
 				if (
 					after.activeSessionId &&
-					!after.sessions.some((session) => session.sessionId === after.activeSessionId) &&
+					!after.sessions.some(
+						(session) => session.sessionId === after.activeSessionId,
+					) &&
 					!after.runEndNotice
 				) {
 					dependencies.dispatch({ type: 'session/cleared' });
@@ -199,9 +201,9 @@ export function createChatSessionStartup(dependencies: ChatSessionStartupDepende
 		let latestSession: SessionResumeResponse | null;
 		try {
 			latestSession = await dependencies.getLatestSessionForResume();
-		} catch (error) {
+		} catch {
 			if (!isCurrentGeneration(requestGeneration)) return;
-			dependencies.warn('auto-resume session error', error);
+			dependencies.warn('auto-resume session error');
 			return;
 		}
 		if (!isCurrentGeneration(requestGeneration)) return;
@@ -255,9 +257,9 @@ export function createChatSessionStartup(dependencies: ChatSessionStartupDepende
 			if (!wasError) {
 				await dependencies.reopenSession({ sessionId: latestSession.session.session_id });
 			}
-		} catch (error) {
+		} catch {
 			if (!isCurrentGeneration(requestGeneration)) return;
-			dependencies.warn('reopen_session error', error);
+			dependencies.warn('reopen_session error');
 		}
 		if (!isCurrentGeneration(requestGeneration)) return;
 		await loadSessions();

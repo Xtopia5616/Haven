@@ -342,9 +342,9 @@ impl AppState {
         let stt_client: Option<std::sync::Arc<dyn haven_llm::SttClient>> =
             match router_media_build.stt_client {
                 Ok(client) => client,
-                Err(e) => {
+                Err(_) => {
                     tracing::warn!(
-                        error = %haven_common::error::sanitize_error_text(&e.to_string()),
+                        failure_kind = "stt_client_build",
                         "STT client build failed, transcription disabled"
                     );
                     None
@@ -357,9 +357,9 @@ impl AppState {
         let tts: Option<std::sync::Arc<dyn haven_llm::TtsClient>> =
             match router_media_build.tts_client {
                 Ok(client) => client,
-                Err(e) => {
+                Err(_) => {
                     tracing::warn!(
-                        error = %haven_common::error::sanitize_error_text(&e.to_string()),
+                        failure_kind = "tts_client_build",
                         "TTS client build failed, TTS disabled"
                     );
                     None
@@ -372,9 +372,9 @@ impl AppState {
         let ocr_client: Option<std::sync::Arc<dyn haven_llm::OcrClient>> =
             match router_media_build.ocr_client {
                 Ok(client) => client,
-                Err(e) => {
+                Err(_) => {
                     tracing::warn!(
-                        error = %haven_common::error::sanitize_error_text(&e.to_string()),
+                        failure_kind = "ocr_client_build",
                         "OCR client build failed, OCR disabled"
                     );
                     None
@@ -383,9 +383,9 @@ impl AppState {
         let image_gen_client: Option<std::sync::Arc<dyn haven_llm::ImageGenClient>> =
             match router_media_build.image_gen_client {
                 Ok(client) => client,
-                Err(e) => {
+                Err(_) => {
                     tracing::warn!(
-                        error = %haven_common::error::sanitize_error_text(&e.to_string()),
+                        failure_kind = "image_gen_client_build",
                         "image generation client build failed, image generation disabled"
                     );
                     None
@@ -620,18 +620,19 @@ impl AppState {
                     std::time::Duration::from_secs(10),
                     async {
                         tools.discover_all(&mcp_servers, &mcp_discovery).await;
-                        if let Err(e) = skills_catalog
+                        if skills_catalog
                             .set_config(skills_cfg_root, skills_cfg_enabled)
                             .await
+                            .is_err()
                         {
                             tracing::warn!(
-                                error = %haven_common::error::sanitize_error_text(&e.to_string()),
+                                failure_kind = "skill_registry_initial_scan",
                                 "skill registry initial scan failed"
                             );
                         }
-                        if let Err(error) = tools.rebuild_catalog().await {
+                        if tools.rebuild_catalog().await.is_err() {
                             tracing::warn!(
-                                error = %haven_common::error::sanitize_error_text(&error.to_string()),
+                                failure_kind = "tool_catalog_rebuild",
                                 "initial tool catalog rebuild failed"
                             );
                         }

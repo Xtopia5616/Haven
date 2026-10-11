@@ -279,11 +279,7 @@ impl SkillRunner {
         } else {
             let output: Value = serde_json::from_str(&out_text).map_err(|error| {
                 let safe_error = sanitize_error_text(&error.to_string());
-                tracing::error!(
-                    skill = %pid_label,
-                    error = %safe_error,
-                    "skill returned invalid JSON on stdout"
-                );
+                tracing::error!("skill returned invalid JSON on stdout");
                 anyhow::anyhow!(
                     "skill '{}' returned invalid JSON: {}",
                     pid_label,

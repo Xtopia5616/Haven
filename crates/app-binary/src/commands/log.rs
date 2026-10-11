@@ -5,6 +5,24 @@ use haven_common::log_file::{read_tail, resolve_current_log_file};
 use std::sync::Arc;
 use tauri::State;
 
+#[derive(Debug, Clone, Copy, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FrontendFailureKind {
+    OperationFailure,
+    UnhandledUiError,
+    UnhandledRejection,
+}
+
+impl FrontendFailureKind {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::OperationFailure => "operation_failure",
+            Self::UnhandledUiError => "unhandled_ui_error",
+            Self::UnhandledRejection => "unhandled_rejection",
+        }
+    }
+}
+
 #[derive(serde::Serialize)]
 pub struct LogTail {
     pub path: String,
@@ -72,17 +90,13 @@ pub fn read_log_tail(
     })
 }
 
-/// Mirror a user-visible renderer error into the backend log. The renderer
-/// already normalized the text for the toast; sanitize again at this trust
-/// boundary so provider-controlled paths, URLs, and secrets never enter the
-/// persistent log verbatim.
+/// Mirror a renderer failure category into the backend log without forwarding
+/// the user-visible error text, which may contain provider output or payloads.
 #[tauri::command]
-pub fn log_frontend_error(message: String) -> Result<(), String> {
-    let safe = haven_common::error::sanitize_error_text(&message);
+pub fn log_frontend_error(failure_kind: FrontendFailureKind) -> Result<(), String> {
     tracing::error!(
-        source = "frontend_notification",
-        "frontend error notification: {}",
-        safe
+        failure_kind = failure_kind.as_str(),
+        "frontend operation failed"
     );
     Ok(())
 }

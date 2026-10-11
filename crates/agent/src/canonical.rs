@@ -101,8 +101,8 @@ pub(crate) fn sanitize_canonical(canonical: &mut Vec<CanonicalMessage>) -> usize
             CanonicalRole::Tool => {
                 if pending_calls.is_empty() {
                     tracing::warn!(
-                        "dropping orphaned tool message (tool_call_id={:?}) with no preceding assistant tool_calls",
-                        m.tool_call_id
+                        tool_call_id_present = m.tool_call_id.is_some(),
+                        "dropping orphaned tool message with no preceding assistant tool_calls"
                     );
                     continue;
                 }

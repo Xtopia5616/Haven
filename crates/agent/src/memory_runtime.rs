@@ -85,7 +85,10 @@ impl MemoryRuntime {
                     return Err(error).context("memory runtime startup cancelled");
                 }
                 Err(error) => {
-                    tracing::warn!("memory runtime atomic cursor baseline failed: {}", error);
+                    tracing::warn!(
+                        error = %haven_common::error::sanitize_error_text(&error.to_string()),
+                        "memory runtime atomic cursor baseline failed"
+                    );
                     if !wait_for_retry(cancellation, retry_backoff).await {
                         anyhow::bail!("memory runtime startup cancelled");
                     }
@@ -105,8 +108,8 @@ impl MemoryRuntime {
                 }
                 Err(error) => {
                     tracing::warn!(
-                        "memory runtime durable outbox scanner start failed: {}",
-                        error
+                        error = %haven_common::error::sanitize_error_text(&error.to_string()),
+                        "memory runtime durable outbox scanner start failed"
                     );
                     if !wait_for_retry(cancellation, retry_backoff).await {
                         anyhow::bail!("memory runtime startup cancelled");
@@ -129,7 +132,10 @@ impl MemoryRuntime {
                     return Err(error).context("memory runtime startup cancelled");
                 }
                 Err(error) => {
-                    tracing::warn!("memory runtime startup replay failed: {}", error);
+                    tracing::warn!(
+                        error = %haven_common::error::sanitize_error_text(&error.to_string()),
+                        "memory runtime startup replay failed"
+                    );
                     if !wait_for_retry(cancellation, retry_backoff).await {
                         anyhow::bail!("memory runtime startup cancelled");
                     }
@@ -295,7 +301,10 @@ impl MemoryRuntime {
                     if let Err(error) = self.memory_worker.run_memory_maintenance_cancellable(cancellation).await
                         && !cancellation.is_cancelled()
                     {
-                        tracing::warn!("periodic memory maintenance failed: {}", error);
+                        tracing::warn!(
+                            error = %haven_common::error::sanitize_error_text(&error.to_string()),
+                            "periodic memory maintenance failed"
+                        );
                     }
                 }
             }
@@ -328,7 +337,10 @@ impl MemoryRuntime {
                         Ok(()) => retry_backoff = INITIAL_RETRY_BACKOFF,
                         Err(_error) if cancellation.is_cancelled() => return,
                         Err(error) => {
-                            tracing::warn!("memory runtime recovery failed: {}", error);
+                            tracing::warn!(
+                                error = %haven_common::error::sanitize_error_text(&error.to_string()),
+                                "memory runtime recovery failed"
+                            );
                             recovery_deadline = Some(Instant::now() + retry_backoff);
                             retry_backoff = next_retry_backoff(retry_backoff);
                         }
@@ -344,10 +356,10 @@ impl MemoryRuntime {
                                 return;
                             }
                             tracing::warn!(
-                                "memory runtime event processing failed for session {} sequence {}: {}",
-                                event.session_id,
-                                event.sequence,
-                                error
+                                session_id = %event.session_id,
+                                sequence = event.sequence,
+                                error = %haven_common::error::sanitize_error_text(&error.to_string()),
+                                "memory runtime event processing failed"
                             );
                             if recovery_deadline.is_none() {
                                 recovery_deadline = Some(Instant::now() + retry_backoff);
@@ -366,7 +378,10 @@ impl MemoryRuntime {
                             }
                             Err(_error) if cancellation.is_cancelled() => return,
                             Err(error) => {
-                                tracing::warn!("memory runtime lag recovery failed: {}", error);
+                                tracing::warn!(
+                                    error = %haven_common::error::sanitize_error_text(&error.to_string()),
+                                    "memory runtime lag recovery failed"
+                                );
                                 recovery_deadline = Some(Instant::now() + retry_backoff);
                                 retry_backoff = next_retry_backoff(retry_backoff);
                             }

@@ -1192,11 +1192,12 @@ impl EventDispatcher {
         reason: Option<&str>,
     ) {
         tracing::debug!(
-            "emit_session_updated event: session={} status={} waiting_reason={:?} reason={:?}",
-            session_id,
-            status.as_str(),
-            waiting_reason,
-            reason
+            session_id = %session_id,
+            status = status.as_str(),
+            waiting_reason = ?waiting_reason,
+            reason_present = reason.is_some(),
+            reason_bytes = reason.map_or(0, str::len),
+            "emit_session_updated event"
         );
         let emitter = lock_or_recover(&self.emitter, "event_emitter").clone();
         if let Some(emitter) = emitter {

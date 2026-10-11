@@ -239,7 +239,7 @@ impl LlmClient for OpenAiAdapter {
             self.endpoint.base_url.trim_end_matches('/')
         );
         tracing::debug!(
-            endpoint = %crate::client::endpoint_log_location(&url),
+            endpoint = %crate::client::endpoint_host(&url),
             model = %self.endpoint.model_name,
             request_kind = "transcription",
             "POST provider endpoint"

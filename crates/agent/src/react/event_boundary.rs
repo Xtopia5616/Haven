@@ -271,9 +271,9 @@ impl ReActEngine {
             .await
         {
             tracing::warn!(
-                "ReAct: failed to persist compaction summary for session {}: {}",
-                session_id,
-                e
+                session_id = %session_id,
+                error = %haven_common::error::sanitize_error_text(&e.to_string()),
+                "ReAct failed to persist compaction summary"
             );
             return;
         }
@@ -625,7 +625,11 @@ impl ReActEngine {
                 true
             }
             Err(error) => {
-                tracing::warn!("checkpoint failed for session {}: {}", session_id, error);
+                tracing::warn!(
+                    session_id = %session_id,
+                    error = %haven_common::error::sanitize_error_text(&error.to_string()),
+                    "checkpoint failed"
+                );
                 false
             }
         }
@@ -726,7 +730,7 @@ impl ReActEngine {
                 tracing::error!(
                     session_id = %ctx.session_id,
                     step_number = ctx.step_number,
-                    error = %error,
+                    error = %haven_common::error::sanitize_error_text(&error.to_string()),
                     "failed to persist recovery reasoning partial; retaining scratch partial"
                 );
             } else {
@@ -752,7 +756,7 @@ impl ReActEngine {
                 tracing::error!(
                     session_id = %ctx.session_id,
                     step_number = ctx.step_number,
-                    error = %error,
+                    error = %haven_common::error::sanitize_error_text(&error.to_string()),
                     "failed to persist recovery thought partial; retaining scratch partial"
                 );
             } else {
@@ -773,7 +777,7 @@ impl ReActEngine {
                 tracing::error!(
                     session_id = %ctx.session_id,
                     step_number = ctx.step_number,
-                    error = %error,
+                    error = %haven_common::error::sanitize_error_text(&error.to_string()),
                     "failed to project recovery thought step"
                 );
             }
@@ -884,7 +888,7 @@ impl ReActEngine {
                     session_id,
                     step_number = step_number,
                     phase,
-                    error = %error,
+                    error = %haven_common::error::sanitize_error_text(&error.to_string()),
                     "failed to persist recovery protocol marker"
                 );
                 false
@@ -909,15 +913,14 @@ impl ReActEngine {
             .event_store
             .append_branch_point_from_projection_for_existing_session(session_id, step_number, None)
             .await
-            .map_err(|error| {
+            .inspect_err(|error| {
                 tracing::warn!(
                     session_id,
                     step_number = step_number,
-                    error = %error,
+                    error = %haven_common::error::sanitize_error_text(&error.to_string()),
                     "failed to append durable branch point"
                 );
                 self.metrics.increment(MetricsCounter::BranchPointFailures);
-                error
             })?;
 
         let branch_point = BranchPoint {

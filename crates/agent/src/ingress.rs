@@ -218,11 +218,11 @@ impl AgentLayer {
                                 .await
                             {
                                 tracing::warn!(
-                                    "process_input: failed to remove ghost user message {} for session {}: {}",
-                                    message_id,
-                                    tid,
-                                    e
-                                );
+                                message_id = %message_id,
+                                session_id = %tid,
+                                error = %haven_common::error::sanitize_error_text(&e.to_string()),
+                                "process_input: failed to remove ghost user message"
+                                    );
                                 if let Err(marker_error) = self
                                     .executor
                                     .session_store()
@@ -230,10 +230,10 @@ impl AgentLayer {
                                     .await
                                 {
                                     tracing::warn!(
-                                        "process_input: failed to clear recovery marker for rejected user message {} in session {}: {}",
-                                        message_id,
-                                        tid,
-                                        marker_error
+                                    message_id = %message_id,
+                                    session_id = %tid,
+                                    error = %haven_common::error::sanitize_error_text(&marker_error.to_string()),
+                                    "process_input: failed to clear recovery marker for rejected user message"
                                     );
                                 }
                             }

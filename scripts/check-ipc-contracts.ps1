@@ -125,7 +125,7 @@ $sessionCommands = Get-Source 'ui/src/lib/sessionCommands.ts'
 Assert-Contains $sessionCommands "invoke\('process_transcript',\s*request\)" 'session command adapter owns transcript processing'
 Assert-Contains $sessionCommands 'parseProcessResult\(value,\s*request\.activeSessionId\)' 'process transcript response identity is validated against the active session request'
 $errorHandling = Get-Source 'ui/src/lib/errorHandling.ts'
-Assert-Contains $errorHandling "invoke\('log_frontend_error',\s*\{\s*message:\s*notificationMessage\s*\}\)" 'error handling owns frontend error logging'
+Assert-Contains $errorHandling "invoke\('log_frontend_error',\s*\{\s*failureKind:\s*options\.failureKind\s*\?\?\s*'operation_failure',?\s*\}\)" 'error handling sends only a stable frontend failure category'
 $externalRef = Get-Source 'ui/src/lib/externalRef.ts'
 Assert-Contains $externalRef "invoke\('open_external',\s*\{\s*target:\s*value\s*\}\)" 'external reference policy owns external opening'
 foreach ($file in $uiFiles) {

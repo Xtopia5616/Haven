@@ -192,7 +192,7 @@ impl OpenAiAdapter {
                     haven_common::usage::PromptCacheStrategy::Off
                 };
                 tracing::warn!(
-                    endpoint = %crate::client::endpoint_log_location(url),
+                    endpoint = %crate::client::endpoint_host(url),
                     "endpoint rejected prompt_cache_key; disabled cache routing hint for this adapter"
                 );
                 self.send_chat_request_once(url, body, stream).await
@@ -265,20 +265,20 @@ impl OpenAiAdapter {
         );
 
         tracing::debug!(
-            endpoint = %crate::client::endpoint_log_location(&url),
+            endpoint = %crate::client::endpoint_host(&url),
             model = %body.model,
             request_kind = "chat",
             "POST provider endpoint"
         );
         tracing::debug!(
-            endpoint = %crate::client::endpoint_log_location(&url),
-            "POST provider request body: {} chars",
+            endpoint = %crate::client::endpoint_host(&url),
+            "POST provider request body: {} bytes",
             serde_json::to_string(&body).map(|s| s.len()).unwrap_or(0)
         );
         let resp = self.send_chat_request(&url, &mut body, stream).await?;
 
         let txt = read_text_bounded(resp, MAX_JSON_RESPONSE_BYTES).await?;
-        tracing::trace!("provider response body: {} chars", txt.len());
+        tracing::trace!("provider response body: {} bytes", txt.len());
         let json: OpenAiResponse =
             serde_json::from_str(&txt).map_err(|e| LlmError::InvalidResponse(e.to_string()))?;
         let model = json.model.clone();

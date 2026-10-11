@@ -673,8 +673,8 @@ impl StreamForwarder {
                     step_number,
                     run_id,
                 };
-                if let Err(e) = chunk_tx_c.try_send(marker) {
-                    tracing::debug!("stream reset waiting for chunk queue capacity: {}", e);
+                if chunk_tx_c.try_send(marker).is_err() {
+                    tracing::debug!("stream reset waiting for chunk queue capacity");
                     false
                 } else {
                     reset_pending_c.store(false, std::sync::atomic::Ordering::Release);
@@ -704,17 +704,19 @@ impl StreamForwarder {
                     }
                 };
                 if stream_ready
-                    && let Err(e) = chunk_tx_c.try_send(crate::event::ChunkItem::Delta {
-                        session_id: session_id_c.clone(),
-                        message_id: thought_mid.clone(),
-                        delta: t.to_string(),
-                        step_number,
-                        run_id,
-                        reasoning: false,
-                    })
+                    && chunk_tx_c
+                        .try_send(crate::event::ChunkItem::Delta {
+                            session_id: session_id_c.clone(),
+                            message_id: thought_mid.clone(),
+                            delta: t.to_string(),
+                            step_number,
+                            run_id,
+                            reasoning: false,
+                        })
+                        .is_err()
                 {
                     metrics_c.increment(MetricsCounter::ChunkDrops);
-                    tracing::warn!("thought chunk channel full, dropping: {}", e);
+                    tracing::warn!("thought chunk channel full, dropping chunk");
                 }
                 if let Some(snapshot) = checkpoint_snapshot {
                     // Generation captured BEFORE the write is spawned: if a
@@ -732,17 +734,19 @@ impl StreamForwarder {
             if let Some(r) = &c.reasoning {
                 pr.lock().unwrap().push_str(r);
                 if stream_ready
-                    && let Err(e) = chunk_tx_c.try_send(crate::event::ChunkItem::Delta {
-                        session_id: session_id_c.clone(),
-                        message_id: reasoning_mid.clone(),
-                        delta: r.clone(),
-                        step_number,
-                        run_id,
-                        reasoning: true,
-                    })
+                    && chunk_tx_c
+                        .try_send(crate::event::ChunkItem::Delta {
+                            session_id: session_id_c.clone(),
+                            message_id: reasoning_mid.clone(),
+                            delta: r.clone(),
+                            step_number,
+                            run_id,
+                            reasoning: true,
+                        })
+                        .is_err()
                 {
                     metrics_c.increment(MetricsCounter::ChunkDrops);
-                    tracing::warn!("reasoning chunk channel full, dropping: {}", e);
+                    tracing::warn!("reasoning chunk channel full, dropping chunk");
                 }
                 last_chunk_c.store(now_millis(), std::sync::atomic::Ordering::Relaxed);
             }
@@ -761,9 +765,9 @@ impl StreamForwarder {
                     stream_ready,
                     false,
                 );
-                if let Some(error) = item.and_then(|item| chunk_tx_c.try_send(item).err()) {
+                if item.is_some_and(|item| chunk_tx_c.try_send(item).is_err()) {
                     metrics_c.increment(MetricsCounter::ChunkDrops);
-                    tracing::warn!(error, "tool-call preview chunk channel closed");
+                    tracing::warn!("tool-call preview chunk channel closed");
                 }
                 last_chunk_c.store(now_millis(), std::sync::atomic::Ordering::Relaxed);
             }
@@ -783,9 +787,9 @@ impl StreamForwarder {
                     stream_ready,
                     true,
                 );
-                if let Some(error) = item.and_then(|item| chunk_tx_c.try_send(item).err()) {
+                if item.is_some_and(|item| chunk_tx_c.try_send(item).is_err()) {
                     metrics_c.increment(MetricsCounter::ChunkDrops);
-                    tracing::warn!(error, "final tool-call preview chunk channel closed");
+                    tracing::warn!("final tool-call preview chunk channel closed");
                 }
             }
             if let Some(ws) = &c.web_search {
@@ -878,8 +882,8 @@ impl StreamForwarder {
             // A structural replacement retry still needs to clear the previous
             // bubble. The coalescing sender retains this control marker even
             // when the bounded fast-path queue is full.
-            if let Err(error) = self.chunk_tx.try_send(self.reset_marker.clone()) {
-                tracing::debug!(error, "stream reset consumer closed before flush");
+            if self.chunk_tx.try_send(self.reset_marker.clone()).is_err() {
+                tracing::debug!("stream reset consumer closed before flush");
             }
         }
         for item in drain_pending_tool_call_previews(
@@ -888,8 +892,8 @@ impl StreamForwarder {
             self.preview_step_number,
             self.preview_run_id,
         ) {
-            if let Err(error) = self.chunk_tx.try_send(item) {
-                tracing::debug!(error, "tool-call preview consumer closed before flush");
+            if self.chunk_tx.try_send(item).is_err() {
+                tracing::debug!("tool-call preview consumer closed before flush");
             }
         }
         drop(self.chunk_tx);
@@ -913,7 +917,10 @@ impl StreamForwarder {
         // could make end-session promotion duplicate a response already
         // persisted as a real message.
         if let Err(error) = self.checkpoint_writer.finish().await {
-            tracing::error!(error = %error, "stream checkpoint task failed");
+            tracing::error!(
+                error = %haven_common::error::sanitize_error_text(&error.to_string()),
+                "stream checkpoint task failed"
+            );
             join_error.get_or_insert(error);
         }
         join_error.map_or(Ok(()), Err)
@@ -1009,7 +1016,7 @@ impl ReActEngine {
             tracing::error!(
                 session_id = %ctx.session_id,
                 step_number = ctx.step_number,
-                error = %error,
+                error = %haven_common::error::sanitize_error_text(&error.to_string()),
                 "stream forwarding task failed while draining provider output"
             );
             return Err(haven_llm::LlmError::Unknown(error.to_string()));
@@ -1037,7 +1044,7 @@ impl ReActEngine {
                     request_kind = request.as_str(),
                     model = resp.model.as_deref().or(usage.model_name.as_deref()).unwrap_or("unknown"),
                     duration_ms,
-                    response_text_chars = resp.text.len(),
+                    response_text_bytes = resp.text.len(),
                     response_tool_calls = resp.tool_calls.len(),
                     estimated_input_tokens,
                     context_message_count = request_context.messages().len(),
@@ -1179,7 +1186,7 @@ impl ReActEngine {
                             tracing::error!(
                                 session_id = %ctx.session_id,
                                 step_number = ctx.step_number,
-                                error = %error,
+                                error = %haven_common::error::sanitize_error_text(&error.to_string()),
                                 "ReAct step cannot continue after compaction projection failure"
                             );
                             let recovery = self
@@ -1263,10 +1270,10 @@ impl ReActEngine {
                             Err(e2) => {
                                 let err_msg = format!("Compaction retry also failed: {}", e2);
                                 tracing::error!(
-                                    "ReAct step {} session {} fatal: {}",
-                                    ctx.step_number,
-                                    ctx.session_id,
-                                    err_msg
+                                    step_number = ctx.step_number,
+                                    session_id = %ctx.session_id,
+                                    failure_reason = e2.connection_failure_reason().as_str(),
+                                    "ReAct compaction retry failed"
                                 );
                                 let recovery = self
                                     .persist_partial_on_error(
@@ -1294,10 +1301,9 @@ impl ReActEngine {
                     Ok(None) | Err(haven_llm::LlmError::RequestFailed(_)) => {
                         let err_msg = "context length exceeded but compaction failed".to_string();
                         tracing::error!(
-                            "ReAct step {} session {} fatal: {}",
-                            ctx.step_number,
-                            ctx.session_id,
-                            err_msg
+                            step_number = ctx.step_number,
+                            session_id = %ctx.session_id,
+                            "ReAct compaction failed after context length exceeded"
                         );
                         let recovery = self
                             .persist_partial_on_error(
@@ -1329,10 +1335,10 @@ impl ReActEngine {
                         let err_msg =
                             format!("context length exceeded and compaction failed: {error}");
                         tracing::error!(
-                            "ReAct step {} session {} fatal: {}",
-                            ctx.step_number,
-                            ctx.session_id,
-                            err_msg
+                            step_number = ctx.step_number,
+                            session_id = %ctx.session_id,
+                            failure_reason = error.connection_failure_reason().as_str(),
+                            "ReAct compaction failed after context length exceeded"
                         );
                         let recovery = self
                             .persist_partial_on_error(
@@ -1365,10 +1371,10 @@ impl ReActEngine {
             Err(e) => {
                 let err_msg = format!("Model request failed: {}", e);
                 tracing::error!(
-                    "ReAct step {} session {} fatal: {}",
-                    ctx.step_number,
-                    ctx.session_id,
-                    err_msg
+                    step_number = ctx.step_number,
+                    session_id = %ctx.session_id,
+                    failure_reason = e.connection_failure_reason().as_str(),
+                    "ReAct model request failed"
                 );
                 let recovery = self
                     .persist_partial_on_error(ctx, state, partial_thought, partial_reasoning)

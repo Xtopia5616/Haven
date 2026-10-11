@@ -78,7 +78,7 @@ pub async fn set_skill_enabled(
 }
 
 #[tauri::command]
-pub async fn open_skills_dir(state: State<'_, Arc<AppState>>) -> Result<String, String> {
+pub async fn open_skills_dir(state: State<'_, Arc<AppState>>) -> Result<(), String> {
     let root = state.runtime.services.skills.resolved_root().await;
     if !haven_tools::is_safe_local_path(&root) {
         return Err(log_err(
@@ -148,7 +148,7 @@ pub async fn open_skills_dir(state: State<'_, Arc<AppState>>) -> Result<String, 
             .spawn()
             .map_err(|e| log_err("open_skills_dir", e))?;
     }
-    Ok(root.to_string_lossy().to_string())
+    Ok(())
 }
 
 #[tauri::command]

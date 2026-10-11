@@ -157,7 +157,11 @@ impl SessionStatus {
             "completed" => Self::Completed,
             "error" => Self::Error,
             other => {
-                tracing::warn!(status = other, "unknown session status; mapping to error");
+                tracing::warn!(
+                    status = "unknown",
+                    status_bytes = other.len(),
+                    "unknown session status; mapping to error"
+                );
                 Self::Error
             }
         }
@@ -248,7 +252,11 @@ impl ToolRunStatus {
             "failed" => Self::Failed,
             "cancelled" => Self::Cancelled,
             other => {
-                tracing::warn!(status = other, "unknown ToolRun status; mapping to failed");
+                tracing::warn!(
+                    status = "unknown",
+                    status_bytes = other.len(),
+                    "unknown ToolRun status; mapping to failed"
+                );
                 Self::Failed
             }
         }

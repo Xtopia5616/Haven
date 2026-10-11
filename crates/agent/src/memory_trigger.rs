@@ -116,10 +116,18 @@ pub(crate) async fn append_memory_trigger_nonfatal(
         ),
         Ok(None) => {}
         Err(error) if cancellation.is_cancelled() => {
-            tracing::debug!(session_id, "memory trigger append cancelled: {error}");
+            tracing::debug!(
+                session_id,
+                error = %haven_common::error::sanitize_error_text(&error.to_string()),
+                "memory trigger append cancelled"
+            );
         }
         Err(error) => {
-            tracing::warn!(session_id, "memory trigger append failed: {error}");
+            tracing::warn!(
+                session_id,
+                error = %haven_common::error::sanitize_error_text(&error.to_string()),
+                "memory trigger append failed"
+            );
         }
     }
 }

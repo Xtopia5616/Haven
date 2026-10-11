@@ -41,11 +41,11 @@ type AppListenerMap = Partial<{
 /** Keep malformed payloads and listener exceptions isolated from the event bus. */
 function protectEventCallback(eventName: string, callback: () => unknown): void {
 	try {
-		void Promise.resolve(callback()).catch((error) => {
-			logger.error('events', `Event handler failed for '${eventName}'`, error);
+		void Promise.resolve(callback()).catch(() => {
+			logger.error('events', `Event handler failed for '${eventName}'`);
 		});
-	} catch (error) {
-		logger.error('events', `Event mapping failed for '${eventName}'`, error);
+	} catch {
+		logger.error('events', `Event mapping failed for '${eventName}'`);
 	}
 }
 
@@ -123,8 +123,8 @@ export function registerListeners(
 				} else {
 					unlisteners.push(unsub);
 				}
-			} catch (e) {
-				logger.error(tag, `Failed to register listener for '${event}'`, e);
+			} catch {
+				logger.error(tag, `Failed to register listener for '${event}'`);
 			}
 		}),
 	).then(() => {});
@@ -261,8 +261,8 @@ export async function registerOne(
 				}
 			},
 		};
-	} catch (e) {
-		logger.error(tag, `Failed to register listener for '${event}'`, e);
+	} catch {
+		logger.error(tag, `Failed to register listener for '${event}'`);
 		return { dispose() {} };
 	}
 }

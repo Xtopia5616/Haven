@@ -545,13 +545,19 @@ impl AdminServices {
                     }
                 }
                 Err(error) => {
-                    tracing::warn!(error = %error, "admin diagnostics list_session_history failed")
+                    tracing::warn!(
+                        error = %haven_common::error::sanitize_error_text(&error.to_string()),
+                        "admin diagnostics list_session_history failed"
+                    )
                 }
             }
             let total = match session_store.count_session_history().await {
                 Ok(total) => total,
                 Err(error) => {
-                    tracing::warn!(error = %error, "admin diagnostics count_sessions failed");
+                    tracing::warn!(
+                        error = %haven_common::error::sanitize_error_text(&error.to_string()),
+                        "admin diagnostics count_sessions failed"
+                    );
                     0
                 }
             };
@@ -724,7 +730,6 @@ impl AdminServices {
         }) {
             if let Err(rollback) = self.skill_registry.set_enabled(name, !enabled).await {
                 tracing::error!(
-                    skill = name,
                     error = %haven_common::error::sanitize_error_text(&rollback.to_string()),
                     "skill enable rollback failed after config persistence error"
                 );
@@ -1220,7 +1225,7 @@ impl AdminServices {
         let changed = reconcile.to_connect_changed;
         let mut updated = Vec::new();
         for server in &changed {
-            tracing::info!(server = %server.name, "MCP config changed; reconnecting authorized target");
+            tracing::info!("MCP config changed; reconnecting authorized target");
             self.mcp_manager.remove_client(&server.name).await;
             updated.push(server.name.clone());
         }
@@ -1234,12 +1239,8 @@ impl AdminServices {
                         added.push(server.name.clone());
                     }
                 }
-                Err(error) => {
-                    tracing::warn!(
-                        server = %server.name,
-                        error = %sanitize_diagnostic(&error.to_string()),
-                        "authorized MCP refresh target failed to connect"
-                    );
+                Err(_error) => {
+                    tracing::warn!("authorized MCP refresh target failed to connect");
                     failed.push(server.name.clone());
                 }
             }
@@ -1277,14 +1278,9 @@ impl AdminServices {
         if new_config.enabled && connect_if_enabled && (will_enable || config_changed) {
             self.mcp_manager.remove_client(&name).await;
             if let Err(error) = self.mcp_manager.connect_server(new_config).await {
-                if old_config.enabled
-                    && let Err(rollback) = self.mcp_manager.connect_server(old_config).await
+                if old_config.enabled && self.mcp_manager.connect_server(old_config).await.is_err()
                 {
-                    tracing::error!(
-                        server = name,
-                        error = %haven_common::error::sanitize_error_text(&rollback.to_string()),
-                        "MCP reconnect rollback failed after config update failure"
-                    );
+                    tracing::error!("MCP reconnect rollback failed after config update failure");
                 }
                 anyhow::bail!(
                     "MCP server '{}' not connected; config left unchanged: {}",
@@ -1308,14 +1304,8 @@ impl AdminServices {
         })();
         if let Err(error) = persist_result {
             self.mcp_manager.remove_client(&name).await;
-            if old_config.enabled
-                && let Err(rollback) = self.mcp_manager.connect_server(old_config).await
-            {
-                tracing::error!(
-                    server = name,
-                    error = %haven_common::error::sanitize_error_text(&rollback.to_string()),
-                    "MCP reconnect rollback failed after config persistence error"
-                );
+            if old_config.enabled && self.mcp_manager.connect_server(old_config).await.is_err() {
+                tracing::error!("MCP reconnect rollback failed after config persistence error");
             }
             return Err(error);
         }

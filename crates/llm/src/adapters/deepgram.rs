@@ -117,7 +117,7 @@ impl LlmClient for DeepgramAdapter {
         let model = Self::encode_query_component(self.model());
         let url = format!("{base}/v1/listen?model={model}&smart_format=true");
         tracing::debug!(
-            endpoint = %crate::client::endpoint_log_location(&url),
+            endpoint = %crate::client::endpoint_host(&url),
             model = %self.model(),
             request_kind = "transcription",
             "POST provider endpoint"

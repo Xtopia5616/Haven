@@ -303,8 +303,8 @@
 
 	async function openFolder() {
 		try {
-			const path = await openSkillsDir();
-			addNotification(`已打开: ${path}`, 'info', 3000);
+			await openSkillsDir();
+			addNotification('已打开技能文件夹', 'info', 3000);
 		} catch (e) {
 			reportError(e, { context: 'ToolsView', message: '打开技能文件夹失败', log: false });
 		}

@@ -190,12 +190,12 @@ pub(crate) fn run() {
                 && let Err(error) = crate::window_resize::install(&window)
             {
                 tracing::error!(
-                    error = %error,
+                    error = %sanitize_error_text(&error.to_string()),
                     "failed to install the window aspect-ratio constraint; disabling manual resizing"
                 );
                 if let Err(fallback_error) = window.set_resizable(false) {
                     tracing::error!(
-                        error = %fallback_error,
+                        error = %sanitize_error_text(&fallback_error.to_string()),
                         "failed to disable window resizing after constraint installation failed"
                     );
                 }
@@ -354,8 +354,12 @@ pub(crate) fn run() {
                                     tool_output_handle.emit(AGENT_TOOL_OUTPUT_EVENT, projected)
                                 );
                             }
-                            Err(error) => {
-                                tracing::warn!("dropping malformed live tool-output event: {error}");
+                            Err(_error) => {
+                                tracing::warn!(
+                                    event,
+                                    failure_kind = "tool_output_decode",
+                                    "dropping malformed live tool-output event"
+                                );
                             }
                         }
                     },
@@ -618,7 +622,11 @@ pub(crate) fn run() {
                     tracing::info!("Hotkey registered: {}", key_binding);
                 }
                 Err(e) => {
-                    tracing::warn!("Hotkey conflict detected: {} - {}", key_binding, e);
+                    tracing::warn!(
+                        binding = %key_binding,
+                        error = %sanitize_error_text(&e.to_string()),
+                        "Hotkey conflict detected"
+                    );
                     log_ignored_result!(
                         "event.hotkey_conflict",
                         handle.emit(

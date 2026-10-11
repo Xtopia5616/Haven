@@ -2,6 +2,7 @@ import { addNotification, NOTIFICATION_DURATIONS } from './notificationStore.ts'
 import { formatError } from './formatError.ts';
 import logger from './logger.ts';
 import { invoke } from './tauri.ts';
+import type { FrontendFailureKindInput } from './contracts/generatedCommands.ts';
 
 const LOGGED_ERROR = Symbol('haven.loggedError');
 
@@ -16,10 +17,12 @@ export type ErrorReportOptions = {
 	log?: boolean;
 	/** Suppress the toast for background/diagnostic failures. */
 	notify?: boolean;
-	/** Hide technical details from the toast while retaining them in the log. */
+	/** Hide technical details from the toast; logs never include error details. */
 	includeDetail?: boolean;
 	/** Exact user-facing toast text for global errors. */
 	notificationMessage?: string;
+	/** Stable category mirrored to Rust; never contains error or payload text. */
+	failureKind?: FrontendFailureKindInput;
 };
 
 function markLogged(error: unknown) {
@@ -36,10 +39,10 @@ function wasLogged(error: unknown): boolean {
 	return !!(error && typeof error === 'object' && (error as LoggableError)[LOGGED_ERROR]);
 }
 
-/** Log an error once at the UI boundary using the shared context format. */
-export function logError(context: string, message: string, error: unknown): void {
+/** Log one fixed error summary per object at the UI boundary. */
+export function logError(context: string, error: unknown): void {
 	if (wasLogged(error)) return;
-	logger.error(context, formatError(message), formatError(error));
+	logger.error(context, 'operation failed');
 	markLogged(error);
 }
 
@@ -57,12 +60,14 @@ export function reportError(error: unknown, options: ErrorReportOptions): string
 			: `${safeMessage}: ${detail}`,
 	);
 	const notificationMessage = formatError(options.notificationMessage ?? message);
-	if (options.log !== false) logError(options.context, `${safeMessage} failed`, error);
+	if (options.log !== false) {
+		logError(options.context, error);
+		void invoke('log_frontend_error', {
+			failureKind: options.failureKind ?? 'operation_failure',
+		}).catch(() => {});
+	}
 	if (options.notify !== false) {
 		addNotification(notificationMessage, 'error', NOTIFICATION_DURATIONS.error);
-		// Keep the renderer log and persistent Rust log correlated to this same
-		// reported failure. The message is already normalized and bounded.
-		void invoke('log_frontend_error', { message: notificationMessage }).catch(() => {});
 	}
 	return notificationMessage;
 }
@@ -75,6 +80,7 @@ export function installGlobalErrorHandlers() {
 			context: 'global',
 			message: 'Unhandled UI error',
 			includeDetail: false,
+			failureKind: 'unhandled_ui_error',
 			notificationMessage: '应用发生未处理错误，请重试',
 		});
 	};
@@ -83,6 +89,7 @@ export function installGlobalErrorHandlers() {
 			context: 'global',
 			message: 'Unhandled promise rejection',
 			includeDetail: false,
+			failureKind: 'unhandled_rejection',
 			notificationMessage: '应用操作未完成，请重试',
 		});
 	};

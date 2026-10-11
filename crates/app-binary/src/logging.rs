@@ -93,6 +93,22 @@ pub(crate) fn log_err<E: std::fmt::Display>(ctx: &str, e: E) -> String {
     safe
 }
 
+/// Log an external-service failure without persisting its provider-controlled
+/// message, while returning the same sanitized detail to the command caller.
+pub(crate) fn log_external_err<E: std::fmt::Display>(
+    ctx: &str,
+    failure_kind: &'static str,
+    error: E,
+) -> String {
+    let safe = sanitize_error_text(&error.to_string());
+    tracing::error!(
+        command = ctx,
+        failure_kind,
+        "external service command failed"
+    );
+    safe
+}
+
 /// Format SQLite capacity/I/O failures with recovery guidance at the user
 /// input boundary. Other failures retain the standard sanitized command path.
 pub(crate) fn log_storage_err(ctx: &str, error: anyhow::Error) -> String {
@@ -153,5 +169,11 @@ mod tests {
     fn log_err_preserves_safe_message() {
         let msg = log_err("demo_cmd", "boom");
         assert_eq!(msg, "boom");
+    }
+
+    #[test]
+    fn log_external_err_returns_sanitized_detail() {
+        let msg = log_external_err("demo_cmd", "provider_network", "api_key=secret-value");
+        assert_eq!(msg, "api_key=[REDACTED]");
     }
 }

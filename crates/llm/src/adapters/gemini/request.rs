@@ -183,7 +183,7 @@ impl GeminiAdapter {
                     current_epoch_seconds().saturating_add(GEMINI_CACHE_RETRY_SECS),
                 );
                 tracing::debug!(
-                    endpoint = %crate::client::endpoint_log_location(&self.cached_contents_url()),
+                    endpoint = %crate::client::endpoint_host(&self.cached_contents_url()),
                     reason = error.connection_failure_reason().as_str(),
                     "Gemini explicit context cache unavailable; using direct prompt"
                 );
@@ -251,7 +251,7 @@ impl GeminiAdapter {
                     haven_common::usage::PromptCacheStrategy::Implicit
                 };
                 tracing::debug!(
-                    endpoint = %crate::client::endpoint_log_location(url),
+                    endpoint = %crate::client::endpoint_host(url),
                     "Gemini cachedContent was rejected; retried with direct prompt"
                 );
                 self.send_generate_request_once(url, body, stream).await

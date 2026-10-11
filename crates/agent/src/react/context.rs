@@ -78,11 +78,17 @@ impl InboxClaim {
         match result {
             Ok(Ok(())) => true,
             Ok(Err(error)) => {
-                tracing::warn!("messaging inbox claim acknowledgement failed: {error}");
+                tracing::warn!(
+                    error = %haven_common::error::sanitize_error_text(&error.to_string()),
+                    "messaging inbox claim acknowledgement failed"
+                );
                 false
             }
             Err(error) => {
-                tracing::warn!("messaging inbox claim acknowledgement task failed: {error}");
+                tracing::warn!(
+                    error = %haven_common::error::sanitize_error_text(&error.to_string()),
+                    "messaging inbox claim acknowledgement task failed"
+                );
                 false
             }
         }
@@ -244,7 +250,9 @@ impl ContextSource {
                     Ok(title) => title,
                     Err(error) => {
                         tracing::warn!(
-                            "failed to load title for messaging heartbeat {session_id}: {error}"
+                            session_id = %session_id,
+                            error = %haven_common::error::sanitize_error_text(&error.to_string()),
+                            "failed to load title for messaging heartbeat"
                         );
                         None
                     }
@@ -289,11 +297,18 @@ impl ContextSource {
                     return PendingContextBatch::default();
                 }
                 Ok(Err(error)) => {
-                    tracing::debug!("messaging inbox poll failed for {session_id}: {error}");
+                    tracing::debug!(
+                        session_id = %session_id,
+                        error = %haven_common::error::sanitize_error_text(&error.to_string()),
+                        "messaging inbox poll failed"
+                    );
                     return PendingContextBatch::default();
                 }
                 Err(error) => {
-                    tracing::debug!("messaging inbox poll join failed: {error}");
+                    tracing::debug!(
+                        error = %haven_common::error::sanitize_error_text(&error.to_string()),
+                        "messaging inbox poll join failed"
+                    );
                     return PendingContextBatch::default();
                 }
             };

@@ -29,7 +29,7 @@
 | `export_session_history` | read | `status` 使用生成的 `SessionHistoryStatusFilterInput`；`null` 表示不过滤；导出日期/状态筛选后的持久会话记录 |
 | `get_log_info` | read | 不返回环境详情 |
 | `read_log_tail` | read | 尾部长度受限 |
-| `log_frontend_error` | mutate | 脱敏后写入后端日志 |
+| `log_frontend_error` | mutate | 只接收 `operation_failure` / `unhandled_ui_error` / `unhandled_rejection`；错误正文、通知正文和 payload 不进入后端日志 |
 | `get_performance_metrics` | read | 仅返回有界、无内容的后端与渲染器计数 |
 | `list_mcp_servers` | read | 返回服务器配置/状态/工具清单快照，不执行工具，env 值统一遮蔽 |
 | `reconnect_mcp_server` | execute | 只重连一个已启用且当前连接的服务器；连接前经过 AuthorizationEngine |
@@ -167,7 +167,7 @@ wire 身份字段为 `tool_run_id`；contracts mapper 在边界将其映射为�
 |---|---|---|
 | `get_log_info` | read | 日志状态与路径信息 |
 | `read_log_tail` | read | 有界日志尾部 |
-| `log_frontend_error` | mutate | 记录已净化的前端错误 |
+| `log_frontend_error` | mutate | 记录 `operation_failure` / `unhandled_ui_error` / `unhandled_rejection` 与固定描述，不镜像错误详情 |
 | `check_shell_available` | read | `shell` 使用 generated `ShellChoiceInput` 查询已配置 shell 是否可用 |
 
 上述命令的 Rust 响应均为命名 DTO，前端由 `ui/src/lib/contracts/settings.ts` 在消费前校验。

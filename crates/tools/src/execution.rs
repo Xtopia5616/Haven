@@ -96,7 +96,7 @@ impl AuthorizedExecutor<'_> {
             .tool_circuits
             .allow_request(tool_name)
         {
-            tracing::warn!("tool '{}' circuit breaker open — fast-failing", tool_name);
+            tracing::warn!("tool circuit breaker open; fast-failing");
             return Err(anyhow::Error::new(StructuredToolError::new(
                 format!(
                     "tool '{}' is temporarily unavailable (circuit breaker open)",
@@ -107,7 +107,7 @@ impl AuthorizedExecutor<'_> {
         }
 
         if !self.tools.tool_enabled(tool_name).await {
-            tracing::warn!("tool '{}' is disabled", tool_name);
+            tracing::warn!("tool is disabled");
             return Err(anyhow::Error::new(StructuredToolError::new(
                 format!("tool '{}' is disabled", tool_name),
                 ToolErrorMetadata {
@@ -204,7 +204,6 @@ impl AuthorizedExecutor<'_> {
         for attempt in 0..max_attempts {
             if let Some(delay) = retry_delay.take() {
                 tracing::debug!(
-                    tool = %tool_name,
                     attempt,
                     delay_ms = delay.as_millis() as u64,
                     "waiting before idempotent tool retry"
@@ -271,7 +270,6 @@ impl AuthorizedExecutor<'_> {
                 Self::tool_retry_jitter_sample(tool_name, attempt + 1),
             ) {
                 tracing::warn!(
-                    tool = %tool_name,
                     attempt = result.attempts,
                     max_attempts,
                     outcome = ?result.outcome,

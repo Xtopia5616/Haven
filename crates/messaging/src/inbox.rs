@@ -964,7 +964,7 @@ impl InboxBus {
             let line_bytes = line.len() as u64 + 1;
             if line_bytes > MAX_ARCHIVE_BYTES {
                 tracing::warn!(
-                    agent = name,
+                    session_id = name,
                     bytes = line_bytes,
                     "inbox archive record exceeds archive byte budget; dropping record from audit tail"
                 );
@@ -1148,9 +1148,11 @@ fn parse_envelopes(session_id: &str, content: &str) -> Vec<Envelope> {
             }
             match parse_envelope(session_id, line) {
                 Ok(envelope) => Some(envelope),
-                Err(error) => {
+                Err(_error) => {
                     tracing::warn!(
-                        "inbox: skipping invalid line in mailbox '{session_id}': {error}"
+                        session_id,
+                        line_bytes = line.len(),
+                        "inbox: skipping invalid message envelope"
                     );
                     None
                 }
@@ -1292,8 +1294,7 @@ impl LockGuard {
                     if let Err(error) = writeln!(f, "pid={pid}") {
                         if let Err(cleanup) = remove_lock_file(&path) {
                             tracing::error!(
-                                path = ?path,
-                                error = %cleanup,
+                                error = %haven_common::error::sanitize_error_text(&cleanup.to_string()),
                                 "failed to clean up inbox lock after write failure"
                             );
                         }
@@ -1302,8 +1303,7 @@ impl LockGuard {
                     if let Err(error) = f.sync_all() {
                         if let Err(cleanup) = remove_lock_file(&path) {
                             tracing::error!(
-                                path = ?path,
-                                error = %cleanup,
+                                error = %haven_common::error::sanitize_error_text(&cleanup.to_string()),
                                 "failed to clean up inbox lock after sync failure"
                             );
                         }

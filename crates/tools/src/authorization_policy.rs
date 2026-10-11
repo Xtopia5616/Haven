@@ -38,8 +38,8 @@ impl<'a> ToolAuthorizationRequestResolver<'a> {
         tool_name: &str,
         input: &Value,
     ) -> OperationPolicy {
-        Self::operation_policy_for(tool, tool_name, input).unwrap_or_else(|error| {
-            tracing::warn!(tool = %tool_name, %error, "invalid operation policy; using restrictive catalog projection");
+        Self::operation_policy_for(tool, tool_name, input).unwrap_or_else(|_error| {
+            tracing::warn!("invalid operation policy; using restrictive catalog projection");
             crate::tool_contract::restrictive_catalog_policy()
         })
     }

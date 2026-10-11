@@ -174,7 +174,11 @@ impl ToolRunService {
             let (gate, result) = persisted;
             spawn_gate = gate;
             if let Err(error) = result {
-                tracing::warn!(tool_run_id = %id, "failed to persist ToolRun spawn: {error}");
+                tracing::warn!(
+                    tool_run_id = %id,
+                    error = %haven_common::error::sanitize_error_text(&error.to_string()),
+                    "failed to persist ToolRun spawn"
+                );
                 return Err(error);
             }
         }
@@ -411,7 +415,8 @@ impl ToolRunService {
         {
             tracing::warn!(
                 tool_run_id,
-                "failed to persist ToolRun session binding: {e}"
+                error = %haven_common::error::sanitize_error_text(&e.to_string()),
+                "failed to persist ToolRun session binding"
             );
             return;
         }
@@ -538,7 +543,7 @@ impl ToolRunService {
             }
             Err(error) => tracing::warn!(
                 session_id,
-                %error,
+                error = %haven_common::error::sanitize_error_text(&error.to_string()),
                 "failed to reconcile durable session-owned background tool_runs"
             ),
         }
@@ -609,7 +614,11 @@ impl ToolRunService {
         match self.try_commit_background_terminal(id, &state, false).await {
             Ok(_) => {}
             Err(error) => {
-                tracing::warn!(tool_run_id = %id, "failed to persist ToolRun result: {error}");
+                tracing::warn!(
+                    tool_run_id = %id,
+                    error = %haven_common::error::sanitize_error_text(&error.to_string()),
+                    "failed to persist ToolRun result"
+                );
                 self.retry_background_terminal_persistence(id, state, false)
                     .await;
             }
@@ -635,7 +644,11 @@ impl ToolRunService {
         match self.try_commit_background_terminal(id, &state, false).await {
             Ok(_) => {}
             Err(error) => {
-                tracing::warn!(tool_run_id = %id, "failed to persist ToolRun cancellation: {error}");
+                tracing::warn!(
+                    tool_run_id = %id,
+                    error = %haven_common::error::sanitize_error_text(&error.to_string()),
+                    "failed to persist ToolRun cancellation"
+                );
                 self.retry_background_terminal_persistence(id, state, false)
                     .await;
             }
@@ -682,7 +695,8 @@ impl ToolRunService {
         if let Err(error) = self.try_commit_background_terminal(id, &state, true).await {
             tracing::warn!(
                 tool_run_id = %id,
-                "failed to persist session cleanup cancellation: {error}"
+                error = %haven_common::error::sanitize_error_text(&error.to_string()),
+                "failed to persist session cleanup cancellation"
             );
             self.retry_background_terminal_persistence(id, state, true)
                 .await;

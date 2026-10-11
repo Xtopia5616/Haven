@@ -119,20 +119,20 @@ pub(crate) async fn openai_compatible_embed(
         input,
     };
     tracing::debug!(
-        endpoint = %crate::client::endpoint_log_location(url),
+        endpoint = %crate::client::endpoint_host(url),
         model = %model,
         request_kind = "embedding",
         "POST provider endpoint"
     );
     tracing::debug!(
-        "POST provider request body: {} chars",
+        "POST provider request body: {} bytes",
         serde_json::to_string(&body).map(|s| s.len()).unwrap_or(0)
     );
     let mut req = client.post(url).headers(headers).json(&body);
     req = req.timeout(Duration::from_secs(timeout_secs));
     let resp = send_request(req, None).await?;
     let txt = read_text_bounded(resp, MAX_JSON_RESPONSE_BYTES).await?;
-    tracing::trace!("provider response body: {} chars", txt.len());
+    tracing::trace!("provider response body: {} bytes", txt.len());
     parse_openai_embed_response(&txt, requested, model)
 }
 

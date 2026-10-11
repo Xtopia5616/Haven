@@ -1,5 +1,5 @@
 use crate::app_state::AppState;
-use crate::commands::log_err;
+use crate::commands::{log_err, log_external_err};
 use haven_common::config::{
     AppConfig, LlmConfig, ModelConfig, ProviderConfig, RequestKind, provider_config_wire_style,
 };
@@ -470,7 +470,6 @@ pub async fn discover_models(
     let mut reg = ModelRegistry::new();
     tracing::info!(
         endpoint_host = %haven_llm::endpoint_host(&base_url),
-        provider_name = provider_name.as_deref().unwrap_or("unknown"),
         "discovering models"
     );
     let models = reg
@@ -483,18 +482,14 @@ pub async fn discover_models(
         )
         .await
         .map_err(|e| {
-            tracing::warn!(
-                endpoint_host = %haven_llm::endpoint_host(&base_url),
-                provider_name = provider_name.as_deref().unwrap_or("unknown"),
-                reason = e.connection_failure_reason().as_str(),
-                error = %haven_common::error::sanitize_error_text(&e.to_string()),
-                "model discovery failed"
-            );
-            log_err("discover_models", &e)
+            log_external_err(
+                "discover_models",
+                e.connection_failure_reason().as_str(),
+                &e,
+            )
         })?;
     tracing::info!(
         endpoint_host = %haven_llm::endpoint_host(&base_url),
-        provider_name = provider_name.as_deref().unwrap_or("unknown"),
         model_count = models.len(),
         "model discovery completed"
     );

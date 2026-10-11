@@ -31,15 +31,15 @@ async function init() {
 		const mod = await import('@tauri-apps/api/core');
 		_tauriInvoke = (command, args) =>
 			mod.invoke<unknown>(command, args as Record<string, unknown> | undefined);
-	} catch (e) {
-		logger.warn('tauri', '@tauri-apps/api/core import failed', e);
+	} catch {
+		logger.warn('tauri', '@tauri-apps/api/core import failed');
 		return;
 	}
 	try {
 		const mod = await import('@tauri-apps/api/event');
 		_tauriListen = mod.listen;
-	} catch (e) {
-		logger.warn('tauri', '@tauri-apps/api/event import failed', e);
+	} catch {
+		logger.warn('tauri', '@tauri-apps/api/event import failed');
 		return;
 	}
 	_initialized = true;
@@ -61,7 +61,7 @@ async function invokeUnknown(cmd: string, args?: unknown): Promise<unknown> {
 	await init();
 	if (!isTauri() || !_tauriInvoke) {
 		const error = new Error(`Tauri not available, cannot invoke '${cmd}'`);
-		logError('invoke', `command '${cmd}' failed`, error);
+		logError('invoke', error);
 		throw error;
 	}
 	try {
@@ -71,9 +71,9 @@ async function invokeUnknown(cmd: string, args?: unknown): Promise<unknown> {
 			// The confirmation request is already represented by the interaction
 			// event; this rejected invoke is only a control-flow signal.
 		} else if (formatError(error) === 'Confirmation request is stale or already resolved') {
-			logger.warn('invoke', `command '${cmd}' ended with a stale confirmation`, error);
+			logger.warn('invoke', 'command ended with a stale confirmation');
 		} else {
-			logError('invoke', `command '${cmd}' failed`, error);
+			logError('invoke', error);
 		}
 		throw error;
 	}
@@ -94,16 +94,16 @@ export async function listen(
 				try {
 					const result = unlisten();
 					if (result && typeof (result as Promise<unknown>).catch === 'function') {
-						(result as Promise<unknown>).catch((error) =>
-							logger.warn('tauri', `unlisten '${event}' failed`, formatError(error)),
+						(result as Promise<unknown>).catch(() =>
+							logger.warn('tauri', 'event listener cleanup failed'),
 						);
 					}
-				} catch (error) {
-					logger.warn('tauri', `unlisten '${event}' failed`, formatError(error));
+				} catch {
+					logger.warn('tauri', 'event listener cleanup failed');
 				}
 			};
 		} catch (error) {
-			logError('listen', `event '${event}' registration failed`, error);
+			logError('listen', error);
 			throw error;
 		}
 	}

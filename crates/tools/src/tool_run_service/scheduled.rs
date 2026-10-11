@@ -274,7 +274,11 @@ impl ToolRunService {
                     return;
                 }
                 Err(error) => {
-                    tracing::warn!(tool_run_id = %id, "failed to persist scheduled ToolRun trigger: {error}");
+                    tracing::warn!(
+                        tool_run_id = %id,
+                        error = %haven_common::error::sanitize_error_text(&error.to_string()),
+                        "failed to persist scheduled ToolRun trigger"
+                    );
                     // The one-shot timer has already exited. Keep the in-memory
                     // ToolRun waiting and mount a fresh worker so a transient DB
                     // outage cannot permanently lose the schedule.
@@ -356,7 +360,11 @@ impl ToolRunService {
                 }
                 if let Some(error) = last_error {
                     requeued = false;
-                    tracing::warn!(tool_run_id = %id, "failed to requeue undelivered scheduled ToolRun: {error}");
+                    tracing::warn!(
+                        tool_run_id = %id,
+                        error = %haven_common::error::sanitize_error_text(&error.to_string()),
+                        "failed to requeue undelivered scheduled ToolRun"
+                    );
                 }
             }
             if !requeued {
@@ -389,7 +397,8 @@ impl ToolRunService {
                     tracing::warn!(
                         tool_run_id = %id,
                         watch_tool_run_id = %watched_id,
-                        "failed to read dependency status; watcher will retry: {error}"
+                        error = %haven_common::error::sanitize_error_text(&error.to_string()),
+                        "failed to read dependency status; watcher will retry"
                     );
                     continue;
                 }
@@ -442,8 +451,8 @@ impl ToolRunService {
 
         let remaining = match chrono::DateTime::parse_from_rfc3339(&schedule.due_at) {
             Ok(due) => (due.with_timezone(&chrono::Utc) - chrono::Utc::now()).num_seconds(),
-            Err(error) => {
-                tracing::warn!(tool_run_id = %id, "cannot re-arm scheduled ToolRun with invalid due_at: {error}");
+            Err(_error) => {
+                tracing::warn!(tool_run_id = %id, "cannot re-arm scheduled ToolRun with invalid due_at");
                 return;
             }
         };
@@ -534,7 +543,7 @@ impl ToolRunService {
         {
             tracing::debug!(
                 tool_run_id = %tool_run_id,
-                error = %error,
+                error = %haven_common::error::sanitize_error_text(&error.to_string()),
                 "no ToolRun result subscriber is currently attached"
             );
         }
@@ -662,7 +671,8 @@ impl ToolRunService {
                     Err(error) => {
                         tracing::warn!(
                             tool_run_id = %tool_run_id,
-                            "scheduled terminal persistence retry failed: {error}"
+                            error = %haven_common::error::sanitize_error_text(&error.to_string()),
+                            "scheduled terminal persistence retry failed"
                         );
                         completed_attempts = next_attempt;
                         signal = RetrySignal::Failure { retryable: true };
@@ -756,7 +766,11 @@ impl ToolRunService {
         match self.cancel_scheduled_locked(id, owner).await {
             Ok(cancelled) => cancelled,
             Err(error) => {
-                tracing::warn!(tool_run_id = %id, "failed to persist scheduled ToolRun cancellation after retries: {error}");
+                tracing::warn!(
+                    tool_run_id = %id,
+                    error = %haven_common::error::sanitize_error_text(&error.to_string()),
+                    "failed to persist scheduled ToolRun cancellation after retries"
+                );
                 false
             }
         }

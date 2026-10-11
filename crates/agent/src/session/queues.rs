@@ -215,8 +215,11 @@ impl SessionSupervisor {
         let timeout_id = match haven_common::types::ConfirmId::try_from(request.request_id.clone())
         {
             Ok(timeout_id) => timeout_id,
-            Err(error) => {
-                tracing::warn!(request_id = %request.request_id, %error, "invalid confirmation ID; expiry was not scheduled");
+            Err(_) => {
+                tracing::warn!(
+                    request_id = %request.request_id,
+                    "invalid confirmation ID; expiry was not scheduled"
+                );
                 return;
             }
         };
@@ -233,7 +236,7 @@ impl SessionSupervisor {
                     Err(error) => {
                         tracing::warn!(
                             request_id = %timeout_id,
-                            error = %error,
+                            error = %haven_common::error::sanitize_error_text(&error.to_string()),
                             "failed to persist session confirmation expiry; retrying"
                         );
                         tokio::time::sleep(retry_delay).await;

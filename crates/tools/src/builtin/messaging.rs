@@ -662,7 +662,10 @@ impl AgentTool {
                     env.expires_at = expires_at.clone();
                     match service.send(env) {
                         Ok(sent) => outcomes.push(sent.outcome),
-                        Err(e) => tracing::warn!("broadcast to '{r}' failed: {e}"),
+                        Err(error) => tracing::warn!(
+                            error = %haven_common::error::sanitize_error_text(&error.to_string()),
+                            "message broadcast delivery failed"
+                        ),
                     }
                 }
                 Ok(outcomes)

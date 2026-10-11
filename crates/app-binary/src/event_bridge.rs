@@ -23,10 +23,11 @@ pub(crate) struct ToolRunEventProjection {
 /// Adapt a typed Tools lifecycle event to the App-owned Tauri contract.
 pub(crate) fn emit_tool_run_event(handle: &tauri::AppHandle, event: ToolRunLifecycleEvent) {
     let projection = project_tool_run_event(event);
-    if let Err(error) = handle.emit(projection.channel, projection.payload) {
+    if let Err(_error) = handle.emit(projection.channel, projection.payload) {
         tracing::warn!(
             event = projection.channel,
-            "failed to emit ToolRun lifecycle event: {error}"
+            failure_kind = "tool_run_lifecycle_emit",
+            "failed to emit ToolRun lifecycle event"
         );
     }
 }

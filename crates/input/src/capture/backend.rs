@@ -156,7 +156,10 @@ impl CpalBackend {
         if let Some(stream) = self.stream.take()
             && let Err(error) = stream.pause()
         {
-            tracing::warn!(error = %error, "failed to pause cpal capture stream during stop");
+            tracing::warn!(
+                error = %haven_common::error::sanitize_error_text(&error.to_string()),
+                "failed to pause cpal capture stream during stop"
+            );
         }
         self.running = false;
         tracing::debug!("cpal capture stopped");
@@ -252,8 +255,8 @@ where
                 &mut diag,
             );
         },
-        move |err| {
-            tracing::error!("capture stream error: {err}");
+        move |_err| {
+            tracing::error!(failure_kind = "capture_stream", "capture stream failed");
             err_signals.stream_failed.store(true, Ordering::SeqCst);
         },
         None,

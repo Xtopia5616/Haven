@@ -55,13 +55,13 @@ impl OpenAiResponsesAdapter {
         }
         let url = self.responses_url();
         tracing::debug!(
-            endpoint = %crate::client::endpoint_log_location(&url),
+            endpoint = %crate::client::endpoint_host(&url),
             model = %self.endpoint.model_name,
             request_kind = "chat_stream",
             "POST provider endpoint"
         );
         tracing::trace!(
-            "provider request body: {} chars",
+            "provider request body: {} bytes",
             serde_json::to_string(&body).map(|s| s.len()).unwrap_or(0)
         );
 
@@ -534,8 +534,8 @@ pub(super) fn append_completed_output(
         return None;
     }
     tracing::warn!(
-        streamed_chars = accumulated.len(),
-        completed_chars = full.len(),
+        streamed_bytes = accumulated.len(),
+        completed_bytes = full.len(),
         "Responses completed output diverges from streamed text"
     );
     None

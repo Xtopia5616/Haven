@@ -190,7 +190,7 @@ pub(super) fn spawn(agent: Arc<AgentLayer>, cancellation: CancellationToken) {
                                 tracing::warn!(
                                     session_id = %tid,
                                     tool_run_id = %tool_run_id,
-                                    error = %error,
+                                    error = %haven_common::error::sanitize_error_text(&error.to_string()),
                                     "retrying terminal ToolRun-result projection"
                                 );
                             }
@@ -220,7 +220,7 @@ pub(super) fn spawn(agent: Arc<AgentLayer>, cancellation: CancellationToken) {
                                 tracing::warn!(
                                     session_id = %tid,
                                     tool_run_id = %tool_run_id,
-                                    error = %error,
+                                    error = %haven_common::error::sanitize_error_text(&error.to_string()),
                                     "retrying background ToolRun result after queue rejection"
                                 );
                             }
@@ -255,7 +255,11 @@ pub(super) fn spawn(agent: Arc<AgentLayer>, cancellation: CancellationToken) {
                         .set_session_status_if(&tid, SessionStatus::Paused, SessionStatus::Pending)
                         .await
                 {
-                    tracing::warn!("ToolRun-completion wake session {} failed: {}", tid, e);
+                    tracing::warn!(
+                        session_id = %tid,
+                        error = %haven_common::error::sanitize_error_text(&e.to_string()),
+                        "ToolRun-completion wake session failed"
+                    );
                     continue;
                 }
                 // X12 exception: terminal/missing session has no live loop

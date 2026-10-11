@@ -74,13 +74,13 @@ impl AnthropicAdapter {
         let cache_diagnostics = body.cache_diagnostics.clone();
         let url = self.messages_url();
         tracing::debug!(
-            endpoint = %crate::client::endpoint_log_location(&url),
+            endpoint = %crate::client::endpoint_host(&url),
             model = %self.endpoint.model_name,
             request_kind = "chat_stream",
             "POST provider endpoint"
         );
         tracing::trace!(
-            "provider request body: {} chars",
+            "provider request body: {} bytes",
             serde_json::to_string(&body).map(|s| s.len()).unwrap_or(0)
         );
 

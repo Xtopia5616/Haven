@@ -1,6 +1,6 @@
 # Haven 架构降复杂度重构路线图
 
-> 状态：阶段 0–8 已完成；唯一结构 Active 为 §5.7 全项目领域术语与架构角色命名收敛。Memory 持久身份边界、transcript command adapter 归属、派生集合命名和配置/Settings 语义校验已实现；Session history/lineage/resume command DTO、resume message 与 `SessionStep`、runtime `SessionInfo`/`StepInfo`、持久 `LlmUsageRecord`、交互请求、CompactSummary 与 prompt-history 的消息身份字段已收敛（ADR 0991、0993–0999）；Settings 数值字段类型与空值边界、模型配置完整性已对照生成 contract 并统一；其余 crate API、DTO 身份字段、配置与文档引用审查继续推进；暂无 Next。Windows 发布验收为独立 Open Gate（§5.1）。
+> 状态：阶段 0–8 已完成；唯一结构 Active 为 §5.7 全项目领域术语与架构角色命名收敛。Memory 持久身份边界、transcript command adapter 归属、派生集合命名和配置/Settings 语义校验已实现；Session history/lineage/resume command DTO、resume message 与 `SessionStep`、runtime `SessionInfo`/`StepInfo`、持久 `LlmUsageRecord`、交互请求、CompactSummary 与 prompt-history 的消息身份字段已收敛（ADR 0991、0993–0999）；Settings 数值字段类型与空值边界、模型配置完整性已对照生成 contract 并统一；本轮继续统一运维日志的错误/内容/路径边界，并让 Skills 目录命令只返回成功状态（ADR 1000）；其余 crate API、DTO 身份字段、配置与文档引用审查继续推进；暂无 Next。Windows 发布验收为独立 Open Gate（§5.1）。
 > 更新日期：2026-10-12
 > 范围：Agent/Session、Memory、Tools、LLM、App IPC 与 UI
 
@@ -224,6 +224,8 @@ Settings 的 64 位整数统一限制为 JavaScript 安全整数；Common 校验
 日志复扫移除了 ingress transcript、stream rule 名称与 match、工具/provider 错误、事实谓词和 MCP warning 原文，并从 Skills/MCP 启动日志移除本机路径及可执行命令；日志只保留阶段、类别和字节计数（ADR 0987）。
 
 LLM Provider 的重试、连接探测、adapter/stream 初始化以及 MCP 的连接、工具刷新、shutdown、子进程清理和 SSE 解析日志统一移除外部错误文本，改记稳定错误类别、固定事件描述或字节数；返回错误和状态事件保持原有语义（ADR 0989）。
+
+录音/VAD、Agent、Tools、Messaging 与应用启动/收尾日志继续按来源区分错误处理：外部 Provider/MCP 和不可信内容只记稳定类别、描述、计数或长度；本地错误摘要先清洗。LLM endpoint 日志只记 host，长度单位统一为 UTF-8 bytes；`open_skills_dir` 成功响应不再包含本机路径（ADR 1000）。
 
 Agent 内部步骤计数及 tracing 字段统一为 `step_number`，Rust/UI 的消息身份内部引用统一为 `message_id` / `messageId`；现有事件、数据库及 IPC wire shape 保持（ADR 0990）。
 

@@ -251,7 +251,7 @@ impl AgentLayer {
             {
                 tracing::error!(
                     session_id,
-                    error = %error,
+                    error = %haven_common::error::sanitize_error_text(&error.to_string()),
                     "failed to persist session run-end reason"
                 );
             }
@@ -299,7 +299,10 @@ impl AgentLayer {
                 .await
             {
                 Ok(()) => tracing::info!("LLM connection pre-warmed after router swap"),
-                Err(e) => tracing::warn!("LLM pre-warm after swap failed: {}", e),
+                Err(error) => tracing::warn!(
+                    failure_reason = error.connection_failure_reason().as_str(),
+                    "LLM pre-warm after swap failed"
+                ),
             }
         });
         Ok(())
@@ -452,7 +455,7 @@ impl AgentLayer {
                             {
                                 tracing::error!(
                                     session_id,
-                                    error = %error,
+                                    error = %haven_common::error::sanitize_error_text(&error.to_string()),
                                     "failed to persist session run-end reason"
                                 );
                             }
@@ -545,7 +548,11 @@ impl AgentLayer {
                                             .fail_scheduled(&fired.tool_run_id, "缺少要调用的工具")
                                             .await
                                         {
-                                            tracing::warn!(tool_run_id = %fired.tool_run_id, "failed to persist scheduled ToolRun failure: {error}");
+                                            tracing::warn!(
+                                                tool_run_id = %fired.tool_run_id,
+                                                error = %haven_common::error::sanitize_error_text(&error.to_string()),
+                                                "failed to persist scheduled ToolRun failure"
+                                            );
                                         }
                                         continue;
                                     }
@@ -683,7 +690,11 @@ impl AgentLayer {
                                         .fail_scheduled(&fired.tool_run_id, "继续会话缺少 prompt")
                                         .await
                                     {
-                                        tracing::warn!(tool_run_id = %fired.tool_run_id, "failed to persist scheduled ToolRun failure: {error}");
+                                        tracing::warn!(
+                                            tool_run_id = %fired.tool_run_id,
+                                            error = %haven_common::error::sanitize_error_text(&error.to_string()),
+                                            "failed to persist scheduled ToolRun failure"
+                                        );
                                     }
                                     continue;
                                 }
@@ -706,7 +717,11 @@ impl AgentLayer {
                                         .fail_scheduled(&fired.tool_run_id, "未关联会话")
                                         .await
                                     {
-                                        tracing::warn!(tool_run_id = %fired.tool_run_id, "failed to persist scheduled ToolRun failure: {error}");
+                                        tracing::warn!(
+                                            tool_run_id = %fired.tool_run_id,
+                                            error = %haven_common::error::sanitize_error_text(&error.to_string()),
+                                            "failed to persist scheduled ToolRun failure"
+                                        );
                                     }
                                     continue;
                                 }
@@ -771,9 +786,9 @@ impl AgentLayer {
                                         Err(error) => {
                                             let reason = error.to_string();
                                             tracing::warn!(
-                                                "scheduled ToolRun {} failed to resume session: {}",
-                                                fired.tool_run_id,
-                                                reason
+                                                tool_run_id = %fired.tool_run_id,
+                                                error_bytes = reason.len(),
+                                                "scheduled ToolRun failed to resume session"
                                             );
                                             agent
                                                 .events
@@ -818,7 +833,11 @@ impl AgentLayer {
                                 .await
                         };
                         if let Err(error) = result {
-                            tracing::warn!(tool_run_id = %fired.tool_run_id, "failed to persist scheduled ToolRun terminal state: {error}");
+                            tracing::warn!(
+                                tool_run_id = %fired.tool_run_id,
+                                error = %haven_common::error::sanitize_error_text(&error.to_string()),
+                                "failed to persist scheduled ToolRun terminal state"
+                            );
                         }
                     }
                 }
@@ -860,7 +879,7 @@ impl AgentLayer {
         {
             tracing::error!(
                 session_id,
-                error = %error,
+                    error = %haven_common::error::sanitize_error_text(&error.to_string()),
                 "failed to persist session run-end reason"
             );
         }
@@ -954,7 +973,7 @@ impl AgentLayer {
                 tracing::warn!(
                     "title generation: failed to load context (session={}): {}",
                     session_id,
-                    error
+                    haven_common::error::sanitize_error_text(&error.to_string())
                 );
                 return;
             }
@@ -967,7 +986,10 @@ impl AgentLayer {
             None => return,
         };
         if let Err(e) = store.update_session_title(&session_id, &title).await {
-            tracing::warn!("failed to save generated title: {}", e);
+            tracing::warn!(
+                error = %haven_common::error::sanitize_error_text(&e.to_string()),
+                "failed to save generated title"
+            );
             return;
         }
         // Update in-memory SessionInfo in executor
@@ -1294,7 +1316,8 @@ impl AgentLayer {
             {
                 tracing::warn!(
                     session_id = %session.session_id,
-                    "spawn_peer_session: failed to set title: {e}"
+                    error = %haven_common::error::sanitize_error_text(&e.to_string()),
+                    "spawn_peer_session: failed to set title"
                 );
             } else {
                 self.executor
@@ -1321,7 +1344,8 @@ impl AgentLayer {
             {
                 tracing::warn!(
                     session_id = %session.session_id,
-                    "spawn_peer_session: failed to set fallback title: {e}"
+                    error = %haven_common::error::sanitize_error_text(&e.to_string()),
+                    "spawn_peer_session: failed to set fallback title"
                 );
             } else {
                 self.executor
@@ -1350,7 +1374,8 @@ impl AgentLayer {
             Ok(Err(e)) => {
                 tracing::warn!(
                     session_id = %session.session_id,
-                    "spawn_peer_session: inbox register failed: {e}"
+                    error = %haven_common::error::sanitize_error_text(&e.to_string()),
+                    "spawn_peer_session: inbox register failed"
                 );
                 let _ = self.executor.delete_session(&session.session_id).await;
                 return Err(e);
@@ -1358,7 +1383,8 @@ impl AgentLayer {
             Err(e) => {
                 tracing::warn!(
                     session_id = %session.session_id,
-                    "spawn_peer_session: inbox register join failed: {e}"
+                    error = %haven_common::error::sanitize_error_text(&e.to_string()),
+                    "spawn_peer_session: inbox register join failed"
                 );
                 let _ = self.executor.delete_session(&session.session_id).await;
                 return Err(anyhow::anyhow!("inbox register join failed: {e}"));

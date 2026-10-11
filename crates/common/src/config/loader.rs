@@ -168,7 +168,7 @@ fn prune_timestamped_backups(config_path: &Path) {
     }
 }
 
-fn backup_unparsable_config(path: &Path, err: &str) {
+fn backup_unparsable_config(path: &Path, failure_kind: &'static str) {
     // Never silently start with defaults: the next save() would overwrite the
     // user's config (MCP servers, API keys, skills) with defaults. Back up the
     // unparsable file so it can be recovered, then continue with defaults.
@@ -177,12 +177,12 @@ fn backup_unparsable_config(path: &Path, err: &str) {
         Ok(_) => {
             prune_timestamped_backups(path);
             tracing::error!(
-                error = %crate::error::sanitize_error_text(err),
+                failure_kind,
                 "config parse failed; original config backup created"
             )
         }
         Err(backup_error) => tracing::error!(
-            error = %crate::error::sanitize_error_text(err),
+            failure_kind,
             backup_error = %crate::error::sanitize_error_text(&backup_error.to_string()),
             "config parse failed and backup could not be created"
         ),
@@ -268,15 +268,15 @@ impl ConfigLoader {
         let source_fingerprint = Some(fingerprint_config_file(content.as_bytes()));
         let config = match toml::from_str::<AppConfig>(&content) {
             Ok(config) => {
-                if let Some(entry) = invalid_config_entry(&config) {
-                    backup_unparsable_config(path, entry);
+                if invalid_config_entry(&config).is_some() {
+                    backup_unparsable_config(path, "semantic_validation");
                     AppConfig::default()
                 } else {
                     config
                 }
             }
-            Err(error) => {
-                backup_unparsable_config(path, &error.to_string());
+            Err(_) => {
+                backup_unparsable_config(path, "toml_parse");
                 AppConfig::default()
             }
         };

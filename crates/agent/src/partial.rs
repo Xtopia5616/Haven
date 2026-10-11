@@ -205,7 +205,11 @@ impl PartialStore {
         let tid = session_id.to_string();
         let result = self.store.discard_partial_stream(&tid).await;
         if let Err(e) = result {
-            tracing::warn!("delete_partial_message failed for session {}: {}", tid, e);
+            tracing::warn!(
+                session_id = %tid,
+                error = %haven_common::error::sanitize_error_text(&e.to_string()),
+                "delete_partial_message failed"
+            );
         } else {
             self.mark_known_empty(session_id);
         }
@@ -222,7 +226,7 @@ impl PartialStore {
         if !already_empty && let Err(error) = self.store.discard_partial_stream(session_id).await {
             tracing::warn!(
                 session_id,
-                error = %error,
+                error = %haven_common::error::sanitize_error_text(&error.to_string()),
                 "failed to discard partial stream while forgetting session"
             );
         }

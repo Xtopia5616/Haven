@@ -222,8 +222,8 @@
 				media_type: 'image/jpeg',
 				data: comma >= 0 ? dataUrl.slice(comma + 1) : dataUrl,
 			};
-		} catch (e) {
-			logger.warn('Composer', 'image compression failed, using original', e);
+		} catch {
+			logger.warn('Composer', 'image compression failed, using original');
 			return null;
 		}
 	}

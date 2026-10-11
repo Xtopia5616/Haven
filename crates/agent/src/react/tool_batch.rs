@@ -453,23 +453,20 @@ pub(super) async fn execute_tool_call(request: ToolCallRequest) -> CompletedTool
     let tool_name = tool_call.tool_name.clone();
     let tool_input = tool_call.tool_input.clone();
     let tool_step_metadata = tool_step_metadata(catalog.as_ref(), &tool_name, &tool_input);
+    let tool_input_bytes = serde_json::to_vec(&tool_input)
+        .map(|input| input.len())
+        .unwrap_or(0);
+    let tool_input_key_count = tool_input.as_object().map_or(0, |object| object.len());
     tracing::debug!(
-        "executing tool '{}' at step {} (input keys: {:?})",
-        tool_name,
         step_number,
-        tool_input
-            .as_object()
-            .map(|o| o.keys().collect::<Vec<_>>())
-            .unwrap_or_default()
+        input_key_count = tool_input_key_count,
+        input_bytes = tool_input_bytes,
+        "executing tool call"
     );
     tracing::trace!(
-        "tool '{}' at step {} input size: {} chars",
-        tool_name,
         step_number,
-        tool_input
-            .as_object()
-            .map(|o| serde_json::to_string(o).map(|s| s.len()).unwrap_or(0))
-            .unwrap_or(0)
+        input_bytes = tool_input_bytes,
+        "tool input size"
     );
 
     // A custom/MCP/skill implementation is an extension boundary. Convert a
@@ -539,18 +536,12 @@ pub(super) async fn execute_tool_call(request: ToolCallRequest) -> CompletedTool
                 .map(|text| text.len())
                 .unwrap_or(0);
             tracing::debug!(
-                "tool '{}' at step {} completed: success={}, {} chars",
-                tool_name,
                 step_number,
-                result.success,
-                output_len
+                success = result.success,
+                output_bytes = output_len,
+                "tool call completed"
             );
-            tracing::trace!(
-                "tool '{}' at step {} full output: {} chars",
-                tool_name,
-                step_number,
-                output_len
-            );
+            tracing::trace!(step_number, output_bytes = output_len, "tool output size");
             let step_result = executor.observation_text(&tool_name, &result).await;
             (
                 step_result,
@@ -567,7 +558,7 @@ pub(super) async fn execute_tool_call(request: ToolCallRequest) -> CompletedTool
             )
         }
         Err(error) => {
-            tracing::debug!("tool '{}' at step {} failed", tool_name, step_number);
+            tracing::debug!(step_number, "tool call failed");
             let metadata = error
                 .downcast_ref::<haven_tools::StructuredToolError>()
                 .map(haven_tools::StructuredToolError::metadata);

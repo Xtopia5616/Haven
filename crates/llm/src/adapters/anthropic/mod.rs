@@ -125,14 +125,14 @@ impl AnthropicAdapter {
         );
         let url = self.messages_url();
         tracing::debug!(
-            endpoint = %crate::client::endpoint_log_location(&url),
+            endpoint = %crate::client::endpoint_host(&url),
             model = %body.model,
             request_kind = "chat",
             "POST provider endpoint"
         );
         tracing::debug!(
-            endpoint = %crate::client::endpoint_log_location(&url),
-            "POST provider request body: {} chars",
+            endpoint = %crate::client::endpoint_host(&url),
+            "POST provider request body: {} bytes",
             serde_json::to_string(&body).map(|s| s.len()).unwrap_or(0)
         );
         let mut req = self
@@ -145,7 +145,7 @@ impl AnthropicAdapter {
         let resp = send_request(req, None).await?;
 
         let txt = read_text_bounded(resp, MAX_JSON_RESPONSE_BYTES).await?;
-        tracing::trace!("provider response body: {} chars", txt.len());
+        tracing::trace!("provider response body: {} bytes", txt.len());
         let json: AnthropicResponse =
             serde_json::from_str(&txt).map_err(|e| LlmError::InvalidResponse(e.to_string()))?;
         let model = json.model.clone();

@@ -5,7 +5,7 @@ function normalizeContext(context: string): string {
 	return context.trim().replace(/\s+/g, '_') || 'unknown';
 }
 
-function write(level: string, context: string, msg: string, args: unknown[]) {
+function write(level: string, context: string, msg: string) {
 	const prefix = `[${level.toUpperCase()}][${normalizeContext(context)}]`;
 	const method =
 		level === 'debug'
@@ -15,7 +15,7 @@ function write(level: string, context: string, msg: string, args: unknown[]) {
 				: level === 'warn'
 					? console.warn
 					: console.error;
-	method(`${prefix} ${msg}`, ...args);
+	method(`${prefix} ${msg}`);
 }
 
 function shouldLog(level: string) {
@@ -23,24 +23,24 @@ function shouldLog(level: string) {
 }
 
 const logger = {
-	debug(context: string, msg: string, ...args: unknown[]) {
+	debug(context: string, msg: string) {
 		if (shouldLog('debug')) {
-			write('debug', context, msg, args);
+			write('debug', context, msg);
 		}
 	},
-	info(context: string, msg: string, ...args: unknown[]) {
+	info(context: string, msg: string) {
 		if (shouldLog('info')) {
-			write('info', context, msg, args);
+			write('info', context, msg);
 		}
 	},
-	warn(context: string, msg: string, ...args: unknown[]) {
+	warn(context: string, msg: string) {
 		if (shouldLog('warn')) {
-			write('warn', context, msg, args);
+			write('warn', context, msg);
 		}
 	},
-	error(context: string, msg: string, ...args: unknown[]) {
+	error(context: string, msg: string) {
 		if (shouldLog('error')) {
-			write('error', context, msg, args);
+			write('error', context, msg);
 		}
 	},
 };

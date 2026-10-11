@@ -177,7 +177,7 @@ impl MemoryEmbeddingIndex {
                 Ok(embedding) => embedding,
                 Err(error) => {
                     tracing::warn!(
-                        error = %haven_common::error::sanitize_error_text(&error.to_string()),
+                        failure_reason = error.connection_failure_reason().as_str(),
                         "memory embedding batch failed"
                     );
                     return;
@@ -337,8 +337,8 @@ impl MemoryEmbeddingIndex {
             Ok(vector) => vector,
             Err(error) => {
                 tracing::warn!(
-                    "memory vector recall unavailable; using keyword fallback: {}",
-                    error
+                    failure_reason = error.connection_failure_reason().as_str(),
+                    "memory vector recall unavailable; using keyword fallback"
                 );
                 return Ok(None);
             }

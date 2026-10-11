@@ -178,10 +178,7 @@ impl VenvManager {
         let python = self.python_path(skill_name);
 
         if !python.exists() {
-            tracing::info!(
-                skill = %skill_name,
-                "creating venv for skill"
-            );
+            tracing::info!("creating venv for skill");
             tokio::fs::create_dir_all(&venv).await?;
             let output = run_contained_output(
                 venv_creation_command(&venv),
@@ -216,7 +213,7 @@ impl VenvManager {
         };
         if requirements_file {
             self.ensure_requirements_with(skill_name, &req_path, || async {
-                tracing::info!("Installing requirements for skill '{}'", skill_name);
+                tracing::info!("installing requirements for skill");
                 let output = run_contained_output(
                     pip_install_command(&python, &req_path),
                     skill_name,

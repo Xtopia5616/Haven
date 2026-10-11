@@ -218,12 +218,8 @@ fn terminal_entry_stale(entry: &ToolRunEntry, ttl: Duration) -> bool {
     };
     let finished_ts = match chrono::DateTime::parse_from_rfc3339(finished) {
         Ok(t) => t.with_timezone(&chrono::Utc),
-        Err(e) => {
-            tracing::warn!(
-                "terminal_entry_stale: unparseable finished_at '{}': {}",
-                finished,
-                e
-            );
+        Err(_e) => {
+            tracing::warn!("terminal ToolRun has an invalid completion timestamp");
             return false;
         }
     };
@@ -372,17 +368,16 @@ impl ToolRunService {
                     },
                 )),
                 _ => {
-                    tracing::warn!(
-                        tool_run_id,
-                        kind,
-                        "ignoring ToolRun result with unknown kind"
-                    );
+                    tracing::warn!(tool_run_id, "ignoring ToolRun result with unknown kind");
                     None
                 }
             },
             Ok(None) => None,
             Err(error) => {
-                tracing::debug!("ToolRun completion outbox reconcile failed: {error}");
+                tracing::debug!(
+                    error = %haven_common::error::sanitize_error_text(&error.to_string()),
+                    "ToolRun completion outbox reconcile failed"
+                );
                 None
             }
         }
@@ -401,7 +396,8 @@ impl ToolRunService {
         if let Err(error) = store.acknowledge_completion(tool_run_result_id).await {
             tracing::warn!(
                 tool_run_result_id = %tool_run_result_id_for_log,
-                "failed to acknowledge durable ToolRun completion: {error}"
+                error = %haven_common::error::sanitize_error_text(&error.to_string()),
+                "failed to acknowledge durable ToolRun completion"
             );
         }
     }
@@ -419,7 +415,8 @@ impl ToolRunService {
         {
             tracing::warn!(
                 tool_run_result_id = %tool_run_result_id,
-                "failed to acknowledge unowned durable ToolRun completion: {error}"
+                error = %haven_common::error::sanitize_error_text(&error.to_string()),
+                "failed to acknowledge unowned durable ToolRun completion"
             );
         }
     }
@@ -549,7 +546,8 @@ impl ToolRunService {
             Err(error) => {
                 tracing::warn!(
                     tool_run_id = %id,
-                    "failed to quarantine malformed scheduled ToolRun; scheduling retry: {error}"
+                    error = %haven_common::error::sanitize_error_text(&error.to_string()),
+                    "failed to quarantine malformed scheduled ToolRun; scheduling retry"
                 );
             }
         }
@@ -589,7 +587,8 @@ impl ToolRunService {
                     Err(error) => {
                         tracing::warn!(
                             tool_run_id = %tool_run_id,
-                            "malformed scheduled ToolRun quarantine retry failed: {error}"
+                            error = %haven_common::error::sanitize_error_text(&error.to_string()),
+                            "malformed scheduled ToolRun quarantine retry failed"
                         );
                     }
                 }
@@ -674,8 +673,8 @@ impl ToolRunService {
         if let Some(error) = fallback_error {
             tracing::warn!(
                 tool_run_id,
-                delete_error = ?delete_error,
-                fallback_error = %error,
+                delete_failed = delete_error.is_some(),
+                fallback_error = %haven_common::error::sanitize_error_text(&error.to_string()),
                 "failed to compensate background ToolRun registration rollback"
             );
         }
@@ -754,7 +753,10 @@ impl ToolRunService {
             .mark_interrupted_tool_runs()
             .await
             .unwrap_or_else(|e| {
-                tracing::warn!("restore_after_restart: failed to mark interrupted tool_runs: {e}");
+                tracing::warn!(
+                    error = %haven_common::error::sanitize_error_text(&e.to_string()),
+                    "restore_after_restart: failed to mark interrupted tool_runs"
+                );
                 0
             })
     }
@@ -870,7 +872,8 @@ impl ToolRunService {
             Err(error) => {
                 tracing::warn!(
                     tool_run_id,
-                    "failed to read ToolRun after losing terminal CAS: {error}"
+                    error = %haven_common::error::sanitize_error_text(&error.to_string()),
+                    "failed to read ToolRun after losing terminal CAS"
                 );
                 return;
             }
@@ -956,7 +959,8 @@ impl ToolRunService {
                     Err(error) => {
                         tracing::warn!(
                             tool_run_id = %tool_run_id,
-                            "background terminal persistence retry failed: {error}"
+                            error = %haven_common::error::sanitize_error_text(&error.to_string()),
+                            "background terminal persistence retry failed"
                         );
                         completed_attempts = next_attempt;
                         signal = RetrySignal::Failure { retryable: true };
@@ -1040,7 +1044,7 @@ impl ToolRunService {
         {
             tracing::debug!(
                 tool_run_id = %tool_run_id,
-                error = %error,
+                error = %haven_common::error::sanitize_error_text(&error.to_string()),
                 "no ToolRun completion subscriber is currently attached"
             );
         }
@@ -1552,7 +1556,10 @@ impl ToolRunService {
         let rows = match store.list_pending_scheduled_tool_runs().await {
             Ok(rows) => rows,
             Err(error) => {
-                tracing::warn!("restore_pending: failed to load scheduled tool_runs: {error}");
+                tracing::warn!(
+                    error = %haven_common::error::sanitize_error_text(&error.to_string()),
+                    "restore_pending: failed to load scheduled tool_runs"
+                );
                 return 0;
             }
         };
@@ -1591,8 +1598,8 @@ impl ToolRunService {
             } else {
                 match chrono::DateTime::parse_from_rfc3339(&row.due_at) {
                     Ok(value) => Some(value.with_timezone(&chrono::Utc)),
-                    Err(error) => {
-                        tracing::warn!(tool_run_id = %row.tool_run_id, "skipping scheduled ToolRun with invalid due_at: {error}");
+                    Err(_error) => {
+                        tracing::warn!(tool_run_id = %row.tool_run_id, "skipping scheduled ToolRun with invalid due_at");
                         self.quarantine_invalid_scheduled_row(
                             &row.tool_run_id,
                             "定时任务 due_at 无效，已隔离为失败",
@@ -1614,8 +1621,8 @@ impl ToolRunService {
             let tool_args = match row.tool_args.as_deref() {
                 Some(value) => match serde_json::from_str(value) {
                     Ok(value) => Some(value),
-                    Err(error) => {
-                        tracing::warn!(tool_run_id = %row.tool_run_id, "skipping scheduled ToolRun with invalid tool_args: {error}");
+                    Err(_error) => {
+                        tracing::warn!(tool_run_id = %row.tool_run_id, "skipping scheduled ToolRun with invalid tool_args");
                         self.quarantine_invalid_scheduled_row(
                             &row.tool_run_id,
                             "定时任务 tool_args 无效，已隔离为失败",
@@ -1648,7 +1655,6 @@ impl ToolRunService {
             if !valid_payload {
                 tracing::warn!(
                     tool_run_id = %row.tool_run_id,
-                    mode = %row.mode,
                     "skipping scheduled ToolRun with missing mode-specific payload"
                 );
                 self.quarantine_invalid_scheduled_row(

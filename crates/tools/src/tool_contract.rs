@@ -1227,8 +1227,8 @@ pub trait Tool: Send + Sync {
     /// Non-authorization policy projection for catalog metadata. Authorization
     /// callers must use `try_operation_policy` and handle invalid input.
     fn operation_policy(&self, input: &Value) -> OperationPolicy {
-        self.try_operation_policy(input).unwrap_or_else(|error| {
-            tracing::warn!(tool = %self.name(), %error, "invalid operation policy; using restrictive catalog projection");
+        self.try_operation_policy(input).unwrap_or_else(|_error| {
+            tracing::warn!("invalid operation policy; using restrictive catalog projection");
             restrictive_catalog_policy()
         })
     }
@@ -1496,7 +1496,6 @@ pub trait Tool: Send + Sync {
                 execution_cancel.cancel();
                 let outcome = self.timeout_outcome();
                 tracing::warn!(
-                    tool = %self.name(),
                     timeout_secs,
                     outcome = ?outcome,
                     "tool execution timed out"

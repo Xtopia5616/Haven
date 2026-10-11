@@ -75,8 +75,8 @@ pub(crate) fn configure_proxy(
 }
 
 /// Return only the host (and optional port) from an endpoint URL for
-/// diagnostics. Provider base URLs may contain paths or query parameters, so
-/// logging the raw URL would unnecessarily widen the sensitive-data surface.
+/// diagnostics. Endpoint paths and query parameters can contain identifiers or
+/// credentials, so logs retain the network authority only.
 pub fn endpoint_host(raw: &str) -> String {
     url::Url::parse(raw)
         .ok()
@@ -87,23 +87,6 @@ pub fn endpoint_host(raw: &str) -> String {
             })
         })
         .unwrap_or_else(|| "[invalid endpoint]".to_string())
-}
-
-/// Return a log-safe endpoint identity. Query parameters are deliberately
-/// discarded because providers such as Gemini may carry API keys there.
-pub fn endpoint_log_location(raw: &str) -> String {
-    match url::Url::parse(raw) {
-        Ok(url) => format!(
-            "{}{}",
-            endpoint_host(raw),
-            if url.path().is_empty() {
-                "/"
-            } else {
-                url.path()
-            }
-        ),
-        Err(_) => "[invalid endpoint]".to_string(),
-    }
 }
 
 /// Unified interface implemented by every provider adapter. Adapters convert
@@ -457,12 +440,12 @@ mod tests {
     }
 
     #[test]
-    fn endpoint_log_location_drops_query_parameters() {
+    fn endpoint_host_drops_path_and_query_parameters() {
         assert_eq!(
-            endpoint_log_location("https://generativelanguage.googleapis.com/v1beta?key=secret"),
-            "generativelanguage.googleapis.com/v1beta"
+            endpoint_host("https://generativelanguage.googleapis.com/v1beta?key=secret"),
+            "generativelanguage.googleapis.com"
         );
-        assert_eq!(endpoint_log_location("not a url"), "[invalid endpoint]");
+        assert_eq!(endpoint_host("not a url"), "[invalid endpoint]");
     }
 
     #[test]

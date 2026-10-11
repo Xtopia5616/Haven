@@ -115,7 +115,7 @@ pub const COMMAND_CONTRACTS: &[CommandContract] = &[
     CommandContract {
         name: "log_frontend_error",
         boundary: CommandBoundary::Mutate,
-        security: "sanitized user-visible error mirrored into the backend log",
+        security: "fixed renderer failure category only; error text and payload are not mirrored",
     },
     // diagnostics
     CommandContract {

@@ -375,7 +375,7 @@ impl MemoryOutbox {
                         }
                         Err(error) => tracing::warn!(
                             key = %marker.key,
-                            error = %error,
+                            error = %haven_common::error::sanitize_error_text(&error.to_string()),
                             "skipping malformed fact extraction marker"
                         ),
                     }
@@ -409,19 +409,19 @@ impl MemoryOutbox {
                                     result.made_progress = true;
                                     tracing::warn!(
                                         key = %marker.key,
-                                        error = %error,
+                                        error = %haven_common::error::sanitize_error_text(&error.to_string()),
                                         "quarantined malformed summary marker and requeued its episode"
                                     );
                                 }
                                 Ok(false) => tracing::warn!(
                                     key = %marker.key,
-                                    error = %error,
+                                    error = %haven_common::error::sanitize_error_text(&error.to_string()),
                                     "skipping malformed summary extraction marker"
                                 ),
                                 Err(repair_error) => tracing::warn!(
                                     key = %marker.key,
-                                    error = %error,
-                                    repair_error = %repair_error,
+                                    error = %haven_common::error::sanitize_error_text(&error.to_string()),
+                                    repair_error = %haven_common::error::sanitize_error_text(&repair_error.to_string()),
                                     "failed to repair malformed summary extraction marker"
                                 ),
                             }
@@ -480,7 +480,7 @@ impl MemoryOutbox {
                 Err(error) => {
                     tracing::warn!(
                         session = %marker.session_id,
-                        error = %error,
+                        error = %haven_common::error::sanitize_error_text(&error.to_string()),
                         "fact extraction durable acknowledgement failed"
                     );
                     outcome = FactInferenceOutcome::Retryable;
@@ -549,7 +549,7 @@ impl MemoryOutbox {
                 tracing::warn!(
                     session = %marker.session_id,
                     episode = %marker.episode_id,
-                    error = %error,
+                    error = %haven_common::error::sanitize_error_text(&error.to_string()),
                     "summary extraction episode read failed"
                 );
                 self.defer_summary_marker(&marker, &state, 0, cancellation)
@@ -597,7 +597,7 @@ impl MemoryOutbox {
                         tracing::warn!(
                             session = %marker.session_id,
                             episode = %marker.episode_id,
-                            error = %error,
+                            error = %haven_common::error::sanitize_error_text(&error.to_string()),
                             "summary extraction durable acknowledgement failed"
                         );
                         self.defer_summary_marker(&marker, &state, 0, cancellation)
@@ -700,11 +700,17 @@ impl MemoryOutbox {
                         }
                     }
                     Err(error) if cancellation.is_cancelled() => {
-                        tracing::debug!(error = %error, "memory outbox scan stopped during cancellation");
+                        tracing::debug!(
+                            error = %haven_common::error::sanitize_error_text(&error.to_string()),
+                            "memory outbox scan stopped during cancellation"
+                        );
                         return;
                     }
                     Err(error) => {
-                        tracing::warn!(error = %error, "memory outbox page scan failed");
+                        tracing::warn!(
+                            error = %haven_common::error::sanitize_error_text(&error.to_string()),
+                            "memory outbox page scan failed"
+                        );
                         tokio::select! {
                             biased;
                             _ = cancellation.cancelled() => return,

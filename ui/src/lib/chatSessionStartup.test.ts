@@ -1,6 +1,12 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { createChatSessionStartup, type ChatSessionStartupDependencies } from './chatSessionStartup.ts';
-import type { RuntimeSessionListResponse, SessionResumeResponse } from './contracts/sessionHistory.ts';
+import {
+	createChatSessionStartup,
+	type ChatSessionStartupDependencies,
+} from './chatSessionStartup.ts';
+import type {
+	RuntimeSessionListResponse,
+	SessionResumeResponse,
+} from './contracts/sessionHistory.ts';
 import { SessionReducer, type SessionAction } from './sessionReducer.ts';
 import type { SessionResumeTarget } from './sessionIntentStore.ts';
 
@@ -33,7 +39,9 @@ function list(...ids: string[]): RuntimeSessionListResponse {
 	};
 }
 
-function resume(status: SessionResumeResponse['session']['status'] = 'paused'): SessionResumeResponse {
+function resume(
+	status: SessionResumeResponse['session']['status'] = 'paused',
+): SessionResumeResponse {
 	return {
 		session: {
 			session_id: SESSION_ID,
@@ -51,14 +59,16 @@ function resume(status: SessionResumeResponse['session']['status'] = 'paused'): 
 	};
 }
 
-function createHarness(options: {
-	listRuntimeSessions?: () => Promise<RuntimeSessionListResponse>;
-	getLatestSessionForResume?: () => Promise<SessionResumeResponse | null>;
-	reopenSession?: (request: { sessionId: string }) => Promise<void>;
-} = {}) {
+function createHarness(
+	options: {
+		listRuntimeSessions?: () => Promise<RuntimeSessionListResponse>;
+		getLatestSessionForResume?: () => Promise<SessionResumeResponse | null>;
+		reopenSession?: (request: { sessionId: string }) => Promise<void>;
+	} = {},
+) {
 	const reducer = new SessionReducer();
 	const actions: SessionAction[] = [];
-	const warnings: Array<{ message: string; error: unknown }> = [];
+	const warnings: string[] = [];
 	const errors: Array<{ error: unknown; message: string }> = [];
 	const reopened: string[] = [];
 	const evicted: string[] = [];
@@ -97,13 +107,18 @@ function createHarness(options: {
 		},
 		getPendingInteractionRequestIds: (sessionId) =>
 			Object.values(reducer.snapshot().interactions)
-				.filter((request) => request.sessionId === sessionId && request.status === 'pending')
+				.filter(
+					(request) => request.sessionId === sessionId && request.status === 'pending',
+				)
 				.map((request) => request.requestId),
 		evictTerminalSessionMemory: (sessionId) => evicted.push(sessionId),
 		setInitialLoading: (loading) => initialLoadingChanges.push(loading),
 		deferResumeTargetClear: () => deferredTargetClears.push(0),
-		warn: (message, error) => warnings.push({ message, error }),
-		reportError: (error, reportOptions) => errors.push({ error, message: reportOptions.message }),
+		warn: (message) => {
+			warnings.push(message);
+		},
+		reportError: (error, reportOptions) =>
+			errors.push({ error, message: reportOptions.message }),
 	};
 
 	return {
@@ -285,7 +300,9 @@ describe('createChatSessionStartup', () => {
 		await initialLoad;
 
 		expect(harness.reducer.snapshot().activeSessionId).toBe(OTHER_SESSION_ID);
-		expect(harness.actions.some((action) => action.type === 'session/messages/resume-loaded')).toBe(false);
+		expect(
+			harness.actions.some((action) => action.type === 'session/messages/resume-loaded'),
+		).toBe(false);
 		expect(harness.reopened).toEqual([]);
 	});
 

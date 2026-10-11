@@ -290,7 +290,7 @@ impl ReActEngine {
                         tracing::error!(
                             session_id,
                             step_number = step_number,
-                            error = %error,
+                            error_bytes = error.to_string().len(),
                             "failed to verify ReAct event boundary after turn error"
                         );
                     }

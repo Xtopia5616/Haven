@@ -81,6 +81,8 @@ export type MemoryFactSource = (typeof MEMORY_FACT_SOURCE_VALUES)[number];
 export interface MemoryFactSourceRef { message_id: string; snippet: string }
 export interface MemoryRecallItem { entity_id: string; text: string; score: number; model: string }
 export interface SkillExecutionResponse { success: boolean; output: unknown; error: string | null }
+export const FRONTEND_FAILURE_KIND_INPUT_VALUES = ['operation_failure', 'unhandled_ui_error', 'unhandled_rejection'] as const;
+export type FrontendFailureKindInput = (typeof FRONTEND_FAILURE_KIND_INPUT_VALUES)[number];
 export interface LogInfo { enabled: boolean; level: string; path: string | null }
 export interface LogTail { path: string; content: string }
 export interface McpRefreshResult { added: string[]; removed: string[]; updated: string[]; failed: string[] }
@@ -382,9 +384,9 @@ export interface TauriCommandMap {
 	list_skills: { request: undefined; response: SkillInfo[] };
 	list_tool_run_history: { request: { kind?: ToolRunKindDtoInput | null; limit?: number | null; sessionId?: string | null }; response: ToolRunEvent[] };
 	list_tool_runs: { request: undefined; response: ToolRunEvent[] };
-	log_frontend_error: { request: { message: string }; response: void };
+	log_frontend_error: { request: { failureKind: FrontendFailureKindInput }; response: void };
 	open_external: { request: { target: string }; response: void };
-	open_skills_dir: { request: undefined; response: string };
+	open_skills_dir: { request: undefined; response: void };
 	process_transcript: { request: { transcript: string; activeSessionId?: string | null; attachments?: MessageAttachmentInput[] | null; voice?: boolean | null; recordingId?: string | null }; response: ProcessResult };
 	read_log_tail: { request: { maxLines?: number | null }; response: LogTail };
 	recall_memory: { request: { query: string; kind?: MemoryEntityKindInput | null; limit?: number | null }; response: MemoryRecallItem[] };

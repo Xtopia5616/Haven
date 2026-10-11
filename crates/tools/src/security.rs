@@ -495,11 +495,11 @@ impl AuthorizationEngine {
                 Ok(capability) => {
                     cfg.permanent.insert(capability, p.effect);
                 }
-                Err(error) => {
+                Err(_error) => {
                     // Keep runtime policy fail-closed if a caller constructs
                     // SecurityConfig in memory or a future wire boundary
                     // bypasses the loader.
-                    tracing::warn!(key = %p.key, %error, "ignoring invalid persisted capability rule");
+                    tracing::warn!("ignoring invalid persisted capability rule");
                 }
             }
         }

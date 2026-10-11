@@ -14,6 +14,7 @@ use crate::config_runtime::RuntimeConfigCoordinator;
 use crate::desktop::DesktopShell;
 use haven_agent::{AgentLayer, MemoryStartup, PendingSessionRecovery, SessionSupervisor};
 use haven_common::config::ConfigService;
+use haven_common::error::sanitize_error_text;
 use haven_input::InputPipeline;
 use haven_memory::{MemoryFactStore, SessionStore};
 use haven_tools::{
@@ -262,13 +263,13 @@ impl ApplicationRuntime {
             move |cancellation| async move {
                 let prepared = match runtime.memory_startup.prepare_start(&cancellation).await {
                     Ok(prepared) => prepared,
-                    Err(error) if cancellation.is_cancelled() => {
-                        tracing::debug!(%error, "memory runtime startup stopped by cancellation");
+                    Err(_error) if cancellation.is_cancelled() => {
+                        tracing::debug!("memory runtime startup stopped by cancellation");
                         return;
                     }
                     Err(error) => {
                         tracing::error!(
-                            %error,
+                            error = %sanitize_error_text(&error.to_string()),
                             "memory runtime failed to prepare; session dispatcher startup aborted"
                         );
                         return;
@@ -323,14 +324,20 @@ impl ApplicationRuntime {
         // this prevents a final recording or session run from starting while
         // its backing process/network resources are being torn down.
         if let Err(error) = self.input_pipeline.shutdown().await {
-            tracing::warn!(error = %error, "input pipeline shutdown failed");
+            tracing::warn!(
+                error = %sanitize_error_text(&error.to_string()),
+                "input pipeline shutdown failed"
+            );
         }
         if let Err(error) = self
             .executor
             .clear_session_runtime_state_for_shutdown()
             .await
         {
-            tracing::warn!(error = %error, "session shutdown did not quiesce every run");
+            tracing::warn!(
+                error = %sanitize_error_text(&error.to_string()),
+                "session shutdown did not quiesce every run"
+            );
         }
         self.services().tool_runs.shutdown().await;
         self.services().mcp.shutdown().await;
@@ -347,7 +354,10 @@ impl ApplicationRuntime {
                 Ok(Ok(())) => {}
                 Ok(Err(error)) if error.is_cancelled() => {}
                 Ok(Err(error)) => {
-                    tracing::warn!(error = %error, "application task join failed during shutdown");
+                    tracing::warn!(
+                        error = %sanitize_error_text(&error.to_string()),
+                        "application task join failed during shutdown"
+                    );
                 }
                 Err(_) => {
                     tracing::warn!(
