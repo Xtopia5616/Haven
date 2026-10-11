@@ -4221,7 +4221,7 @@ mod tests {
         );
         assert_eq!(projection.messages[0].id, message.id);
         assert_eq!(projection.steps[0].step_id, step.step_id);
-        assert_eq!(projection.llm_usage[0].id, usage.id);
+        assert_eq!(projection.llm_usage[0].usage_id, usage.usage_id);
         assert!(
             projection
                 .active_domain_events
@@ -5166,8 +5166,11 @@ mod tests {
             .into_iter()
             .find(|event| event.event_type == USAGE_RECORDED_EVENT_TYPE)
             .unwrap();
+        let wire: serde_json::Value = serde_json::from_str(&active_usage_event.payload).unwrap();
+        assert_eq!(wire["usage_id"], first_usage.usage_id);
+        assert!(wire.get("id").is_none());
         let payload: LlmUsageRecord = serde_json::from_str(&active_usage_event.payload).unwrap();
-        assert_eq!(payload.id, first_usage.id);
+        assert_eq!(payload.usage_id, first_usage.usage_id);
 
         let expected_event_sequence = store
             .load_replay_state(&session_id)
@@ -5193,7 +5196,7 @@ mod tests {
         assert_eq!(db.list_session_steps(&session_id).unwrap().len(), 1);
         let usage = db.list_session_llm_usage(&session_id).unwrap();
         assert_eq!(usage.len(), 1);
-        assert_eq!(usage[0].id, first_usage.id);
+        assert_eq!(usage[0].usage_id, first_usage.usage_id);
         assert_eq!(
             db.get_session_usage(&session_id)
                 .unwrap()
@@ -5340,8 +5343,11 @@ mod tests {
 
         let usage = db.list_session_llm_usage(&session_id).unwrap();
         assert_eq!(
-            usage.iter().map(|record| &record.id).collect::<Vec<_>>(),
-            [&first.id]
+            usage
+                .iter()
+                .map(|record| &record.usage_id)
+                .collect::<Vec<_>>(),
+            [&first.usage_id]
         );
         let discard = store
             .read_active_domain_events(&session_id)
@@ -5354,7 +5360,7 @@ mod tests {
                 .unwrap()
                 .get("usage_id")
                 .and_then(serde_json::Value::as_str),
-            Some(second.id.as_str())
+            Some(second.usage_id.as_str())
         );
     }
 
@@ -5395,7 +5401,7 @@ mod tests {
         );
         assert!(
             store
-                .discard_usage_cancellable(malformed_session_id, &usage.id, None)
+                .discard_usage_cancellable(malformed_session_id, &usage.usage_id, None)
                 .await
                 .is_err()
         );
@@ -5406,9 +5412,9 @@ mod tests {
             db.list_session_llm_usage(&session_id)
                 .unwrap()
                 .iter()
-                .map(|record| record.id.as_str())
+                .map(|record| record.usage_id.as_str())
                 .collect::<Vec<_>>(),
-            [usage.id.as_str()]
+            [usage.usage_id.as_str()]
         );
     }
 
@@ -5726,8 +5732,11 @@ mod tests {
         assert_eq!(steps[0].step_id, kept_step.step_id);
         let usage = db.list_session_llm_usage(&session_id).unwrap();
         assert_eq!(
-            usage.iter().map(|record| &record.id).collect::<Vec<_>>(),
-            [&kept_usage.id]
+            usage
+                .iter()
+                .map(|record| &record.usage_id)
+                .collect::<Vec<_>>(),
+            [&kept_usage.usage_id]
         );
         assert_eq!(
             db.get_session_usage(&session_id)
@@ -5749,7 +5758,7 @@ mod tests {
                 .unwrap()
                 .get("usage_id")
                 .and_then(serde_json::Value::as_str),
-            Some(discarded_usage.id.as_str())
+            Some(discarded_usage.usage_id.as_str())
         );
         let published = live.try_recv().unwrap();
         assert_eq!(published, discarded[0]);
@@ -5798,7 +5807,7 @@ mod tests {
                 .list_session_llm_usage(session_id)
                 .unwrap()
                 .into_iter()
-                .map(|record| record.id)
+                .map(|record| record.usage_id)
                 .collect::<Vec<_>>();
 
             store.truncate_projection_after_step(session_id, 1).unwrap();
@@ -5823,7 +5832,7 @@ mod tests {
                 db.list_session_llm_usage(session_id)
                     .unwrap()
                     .into_iter()
-                    .map(|record| record.id)
+                    .map(|record| record.usage_id)
                     .collect::<Vec<_>>(),
                 usage_ids
             );
@@ -5889,8 +5898,11 @@ mod tests {
         assert_eq!(steps[0].step_id, kept_step.step_id);
         let usage = db.list_session_llm_usage(&session_id).unwrap();
         assert_eq!(
-            usage.iter().map(|record| &record.id).collect::<Vec<_>>(),
-            [&kept_usage.id]
+            usage
+                .iter()
+                .map(|record| &record.usage_id)
+                .collect::<Vec<_>>(),
+            [&kept_usage.usage_id]
         );
         assert_eq!(
             db.get_session_usage(&session_id)
@@ -5907,7 +5919,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             serde_json::from_str::<serde_json::Value>(&discard.payload).unwrap()["usage_id"],
-            discarded_usage.id
+            discarded_usage.usage_id
         );
         assert_eq!(live.try_recv().unwrap(), discard);
         assert!(live.try_recv().is_err());
@@ -6012,8 +6024,16 @@ mod tests {
         );
         let usage = db.list_session_llm_usage(&session_id).unwrap();
         assert_eq!(usage.len(), 2);
-        assert!(usage.iter().any(|record| record.id == kept_usage.id));
-        assert!(usage.iter().any(|record| record.id == discarded_usage.id));
+        assert!(
+            usage
+                .iter()
+                .any(|record| record.usage_id == kept_usage.usage_id)
+        );
+        assert!(
+            usage
+                .iter()
+                .any(|record| record.usage_id == discarded_usage.usage_id)
+        );
         assert_eq!(
             db.get_session_usage(&session_id)
                 .unwrap()
@@ -6117,7 +6137,7 @@ mod tests {
             db.list_session_llm_usage(&session_id)
                 .unwrap()
                 .iter()
-                .any(|record| record.id == later_usage.id)
+                .any(|record| record.usage_id == later_usage.usage_id)
         );
         assert!(
             store
@@ -6193,7 +6213,7 @@ mod tests {
                 .list_session_llm_usage(session_id)
                 .unwrap()
                 .into_iter()
-                .map(|record| record.id)
+                .map(|record| record.usage_id)
                 .collect::<Vec<_>>();
 
             store
@@ -6220,7 +6240,7 @@ mod tests {
                 db.list_session_llm_usage(session_id)
                     .unwrap()
                     .into_iter()
-                    .map(|record| record.id)
+                    .map(|record| record.usage_id)
                     .collect::<Vec<_>>(),
                 usage_ids
             );

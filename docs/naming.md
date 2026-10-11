@@ -1,6 +1,6 @@
 # Haven 命名规范
 
-> 版本: v1.183 | 日期: 2026-10-12
+> 版本: v1.184 | 日期: 2026-10-12
 
 本文档统一 Haven 项目各层的命名规则（变量名、函数名、文件名、crate 名、缩写大小写、跨层边界）。规范以现有代码中的事实模式为基础，新代码必须遵循；存量代码若与规范冲突，逐步迁移对齐。
 
@@ -360,6 +360,8 @@ App 的 Memory fact command response 使用 `fact_id` 标识事实；repository 
 Memory `SessionStep` 的恢复投影以 `step_id` 标识执行行；UI 只接受该字段，并允许 `step-*` 或按 supplement 规则复用的 `msg-*`。SQLite `session_steps.id` 保持物理列名称，Agent runtime `StepInfo.step_id` 属于独立运行态列表 contract（ADR 0993、0994）。
 
 Agent runtime list 使用 `SessionInfo.session_id` 与 `StepInfo.step_id`；UI runtime parser 拒绝旧泛名 `id`，renderer `SessionSummary` 使用 camelCase `sessionId`，生命周期事件仍由 App bridge 投影 `session_id`（ADR 0994）。
+
+持久用量明细 `LlmUsageRecord` 使用 `usage_id`，UI resume parser 只接受该实体字段；SQLite `llm_usage.id` 继续作为物理列。Serde 仅在读取历史 `usage_recorded` payload 时接受 `id`，新写 payload 始终序列化为 `usage_id`（ADR 0995）。
 
 运行时实体 ID newtype（目前为 `ConfirmId`、`RecordingId`）通过 `new()` 调用 Common generator 生成；字符串输入用 `TryFrom` 校验类型固定前缀，Serde 反序列化执行同一校验。tuple 形状按项目 contract 保持公开字符串序列化，并标记 `#[non_exhaustive]` 阻止其他 crate 绕过验证直接构造；不保留无验证 `From<String>`。
 

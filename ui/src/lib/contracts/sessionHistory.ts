@@ -245,7 +245,7 @@ export function parseSessionResumeResponse(
 				isRecord(row) &&
 				isCanonicalEntityId(row.session_id, 'ses') &&
 				row.session_id === sessionId &&
-				isCanonicalEntityId(row.id, 'usage'),
+				isCanonicalEntityId(row.usage_id, 'usage'),
 		)
 	) {
 		throw new Error('Invalid resumed usage identity');

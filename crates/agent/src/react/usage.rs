@@ -445,7 +445,7 @@ async fn record_usage(
             .ok_or_else(|| anyhow::anyhow!("usage append returned no record"))?;
         if epoch_now() != persist_epoch {
             store
-                .discard_usage_cancellable(&persist_session_id, &record.id, None)
+                .discard_usage_cancellable(&persist_session_id, &record.usage_id, None)
                 .await?;
         }
     }

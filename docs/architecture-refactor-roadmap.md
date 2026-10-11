@@ -1,6 +1,6 @@
 # Haven 架构降复杂度重构路线图
 
-> 状态：阶段 0–8 已完成；唯一结构 Active 为 §5.7 全项目领域术语与架构角色命名收敛。Memory 持久身份边界、transcript command adapter 归属、派生集合命名和配置/Settings 语义校验已实现；Session history/lineage/resume command DTO、resume `SessionStep` 与 runtime `SessionInfo`/`StepInfo` 的实体身份字段已收敛（ADR 0991、0993、0994）；其余 crate API、DTO 身份字段、配置与文档引用审查继续推进；暂无 Next。Windows 发布验收为独立 Open Gate（§5.1）。
+> 状态：阶段 0–8 已完成；唯一结构 Active 为 §5.7 全项目领域术语与架构角色命名收敛。Memory 持久身份边界、transcript command adapter 归属、派生集合命名和配置/Settings 语义校验已实现；Session history/lineage/resume command DTO、resume `SessionStep`、runtime `SessionInfo`/`StepInfo` 与持久 `LlmUsageRecord` 的实体身份字段已收敛（ADR 0991、0993–0995）；其余 crate API、DTO 身份字段、配置与文档引用审查继续推进；暂无 Next。Windows 发布验收为独立 Open Gate（§5.1）。
 > 更新日期：2026-10-12
 > 范围：Agent/Session、Memory、Tools、LLM、App IPC 与 UI
 
@@ -231,7 +231,9 @@ App `MemoryFactResponse` 以 `fact_id` 表示事实身份；UI command parser �
 
 Memory resume projection `SessionStep` 以 `step_id` 表示执行行身份；UI parser 与 transcript identity join 拒绝旧 `id`，保留 supplement 行复用 `msg-*` 的既有规则，数据库物理列 `session_steps.id` 与 durable event payload 不变（ADR 0993）。
 
-Agent runtime list 使用 `SessionInfo.session_id` / `StepInfo.step_id`，UI `SessionSummary` 使用 `sessionId`；parser 与消费者拒绝旧泛名 `id`，App lifecycle event projection 保持 `session_id`（ADR 0994）。剩余实体身份审计聚焦 durable `LlmUsageRecord` replay、heterogeneous interaction request identity 与其余 command DTO。
+Agent runtime list 使用 `SessionInfo.session_id` / `StepInfo.step_id`，UI `SessionSummary` 使用 `sessionId`；parser 与消费者拒绝旧泛名 `id`，App lifecycle event projection 保持 `session_id`（ADR 0994）。
+
+持久用量记录及 resume DTO 使用 `LlmUsageRecord.usage_id`；UI parser 拒绝旧泛名，Memory 只为历史 durable event payload 保留反序列化 alias，新事件只写 `usage_id`，数据库列 `llm_usage.id` 不变（ADR 0995）。剩余实体身份审计聚焦 heterogeneous interaction request identity 与其余 command DTO。
 
 Compaction、memory embedding maintenance、App 启动/恢复、clipboard history 和 managed-media cleanup 的错误日志现统一清洗；上传批次与生成媒体目录项日志移除 basename，避免暴露用户文件名（ADR 0981）。
 

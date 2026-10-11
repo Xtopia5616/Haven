@@ -2213,7 +2213,7 @@ async fn continue_session_resumes_errored_session() {
         .list_session_llm_usage(&session.session_id)
         .unwrap();
     assert_eq!(usage.len(), 1);
-    assert_eq!(usage[0].id, kept_usage.id);
+    assert_eq!(usage[0].usage_id, kept_usage.usage_id);
     assert_eq!(
         agent
             .db
@@ -2237,7 +2237,7 @@ async fn continue_session_resumes_errored_session() {
             .unwrap()
             .get("usage_id")
             .and_then(serde_json::Value::as_str),
-        Some(discarded_usage.id.as_str())
+        Some(discarded_usage.usage_id.as_str())
     );
 }
 

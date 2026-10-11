@@ -128,7 +128,9 @@ impl Database {
 /// totals), so a session keeps a granular history of every call.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct LlmUsageRecord {
-    pub id: String,
+    /// Canonical identity of this persisted usage record.
+    #[serde(alias = "id")]
+    pub usage_id: String,
     pub session_id: String,
     /// ReAct step number the call served (NULL when not attributable).
     pub step_number: Option<i32>,
@@ -195,13 +197,13 @@ pub struct LlmUsageRecordInput {
 
 impl LlmUsageRecord {
     pub(crate) fn from_input(
-        id: String,
+        usage_id: String,
         session_id: &str,
         input: &LlmUsageRecordInput,
         created_at: String,
     ) -> Self {
         Self {
-            id,
+            usage_id,
             session_id: session_id.into(),
             step_number: input.step_number,
             role: input.request_kind,
@@ -370,12 +372,12 @@ impl Database {
         has_cost: bool,
         duration_ms: Option<u64>,
     ) -> anyhow::Result<LlmUsageRecord> {
-        let id = haven_common::types::new_id("usage");
+        let usage_id = haven_common::types::new_id("usage");
         let created_at = now_rfc3339_millis();
         let conn = self.conn();
         Self::insert_llm_call_usage_conn(
             &conn,
-            &id,
+            &usage_id,
             session_id,
             step_number,
             request_kind,
@@ -397,7 +399,7 @@ impl Database {
             &created_at,
         )?;
         Ok(LlmUsageRecord {
-            id,
+            usage_id,
             session_id: session_id.into(),
             step_number,
             role: request_kind,
@@ -571,14 +573,14 @@ impl Database {
         context_tokens: u32,
         context_window: Option<u32>,
     ) -> anyhow::Result<LlmUsageRecord> {
-        let id = haven_common::types::new_id("usage");
+        let usage_id = haven_common::types::new_id("usage");
         let created_at = now_rfc3339_millis();
         let conn = self.conn();
         conn.execute_batch("BEGIN IMMEDIATE")?;
         let result = (|| -> anyhow::Result<LlmUsageRecord> {
             Self::insert_llm_call_usage_conn(
                 &conn,
-                &id,
+                &usage_id,
                 session_id,
                 step_number,
                 request_kind,
@@ -617,7 +619,7 @@ impl Database {
             );
             Self::apply_session_usage_delta_conn(&conn, session_id, &delta)?;
             Ok(LlmUsageRecord {
-                id: id.clone(),
+                usage_id: usage_id.clone(),
                 session_id: session_id.into(),
                 step_number,
                 role: request_kind,
@@ -759,9 +761,12 @@ impl Database {
     /// Remove one detail row by id (used when a detached persist lands after
     /// its session epoch was invalidated by rollback).
     #[cfg(any(test, feature = "test-support"))]
-    pub fn delete_llm_usage_by_id(&self, id: &str) -> anyhow::Result<()> {
+    pub fn delete_llm_usage_by_id(&self, usage_id: &str) -> anyhow::Result<()> {
         let conn = self.conn();
-        conn.execute("DELETE FROM llm_usage WHERE id = ?1", rusqlite::params![id])?;
+        conn.execute(
+            "DELETE FROM llm_usage WHERE id = ?1",
+            rusqlite::params![usage_id],
+        )?;
         Ok(())
     }
 
@@ -773,7 +778,7 @@ impl Database {
         let cache_diagnostics = serialize_cache_diagnostics(record.cache_diagnostics.as_ref())?;
         Self::insert_llm_call_usage_conn(
             conn,
-            &record.id,
+            &record.usage_id,
             &record.session_id,
             record.step_number,
             record.role,
@@ -816,7 +821,7 @@ impl Database {
     #[allow(clippy::too_many_arguments)]
     fn insert_llm_call_usage_conn(
         conn: &rusqlite::Connection,
-        id: &str,
+        usage_id: &str,
         session_id: &str,
         step_number: Option<i32>,
         request_kind: RequestKind,
@@ -852,7 +857,7 @@ impl Database {
                    cache_diagnostics, context_tokens, context_window, cost_usd, has_cost, duration_ms, created_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)",
             rusqlite::params![
-                id,
+                usage_id,
                 session_id,
                 step_number,
                 request_kind.as_str(),
@@ -1054,8 +1059,8 @@ impl Database {
              FROM llm_usage WHERE session_id = ?1 ORDER BY created_at ASC, rowid ASC",
         )?;
         let rows = stmt.query_map(rusqlite::params![session_id], |row| {
-            let id: String = row.get(0)?;
-            if !is_canonical_id(&id, "usage") {
+            let usage_id: String = row.get(0)?;
+            if !is_canonical_id(&usage_id, "usage") {
                 return Err(rusqlite::Error::FromSqlConversionFailure(
                     0,
                     Type::Text,
@@ -1087,7 +1092,7 @@ impl Database {
                 )
             })?;
             Ok(LlmUsageRecord {
-                id,
+                usage_id,
                 session_id: record_session_id,
                 step_number: row.get(2)?,
                 role,
@@ -1124,8 +1129,8 @@ impl Database {
 #[cfg(test)]
 mod tests {
     use super::SessionUsageDelta;
-    use crate::LlmUsageRecordInput;
     use crate::db::Database;
+    use crate::{LlmUsageRecord, LlmUsageRecordInput};
     use haven_common::config::RequestKind;
     use haven_common::usage::{CacheAccounting, LlmCallKind};
 
@@ -1189,7 +1194,7 @@ mod tests {
         db.conn()
             .execute(
                 "UPDATE llm_usage SET id = 'usage-short' WHERE id = ?1",
-                [&record.id],
+                [&record.usage_id],
             )
             .unwrap();
         assert!(db.list_session_llm_usage(&session.id).is_err());
@@ -1429,7 +1434,16 @@ mod tests {
                 Some(1234),
             )
             .unwrap();
-        assert!(rec.id.starts_with("usage-"));
+        assert!(rec.usage_id.starts_with("usage-"));
+        let wire = serde_json::to_value(&rec).unwrap();
+        assert_eq!(wire["usage_id"], rec.usage_id);
+        assert!(wire.get("id").is_none());
+        let mut historic_wire = wire.clone();
+        let object = historic_wire.as_object_mut().unwrap();
+        let usage_id = object.remove("usage_id").unwrap();
+        object.insert("id".to_owned(), usage_id);
+        let historic: LlmUsageRecord = serde_json::from_value(historic_wire).unwrap();
+        assert_eq!(historic.usage_id, rec.usage_id);
         assert_eq!(rec.step_number, Some(1));
         assert_eq!(rec.model.as_deref(), Some("gpt-5"));
         let usage = db.list_session_llm_usage(&session.id).unwrap();
@@ -1960,9 +1974,9 @@ mod tests {
                 None,
             )
             .unwrap();
-        db.delete_llm_usage_by_id(&a.id).unwrap();
+        db.delete_llm_usage_by_id(&a.usage_id).unwrap();
         let usage = db.list_session_llm_usage(&session.id).unwrap();
         assert_eq!(usage.len(), 1);
-        assert_eq!(usage[0].id, b.id);
+        assert_eq!(usage[0].usage_id, b.usage_id);
     }
 }

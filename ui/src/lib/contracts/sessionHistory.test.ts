@@ -30,7 +30,7 @@ type ResumeFixture = {
 	session: { session_id: string };
 	messages: ResumeMessageFixture[];
 	steps: Array<{ step_id: string; session_id: string }>;
-	llm_usage: Array<{ id: string; session_id: string }>;
+	llm_usage: Array<{ usage_id: string; session_id: string }>;
 	interactions: Array<{
 		id: string;
 		kind: 'ask' | 'confirm';
@@ -59,7 +59,7 @@ function resumeResponse(): ResumeFixture {
 		steps: [{ step_id: stepId, session_id: sessionId }],
 		llm_usage: [
 			{
-				id: 'usage-00000000000000000000000000000004',
+				usage_id: 'usage-00000000000000000000000000000004',
 				session_id: sessionId,
 			},
 		],
@@ -272,7 +272,7 @@ describe('session history and resume identity contracts', () => {
 
 	it('rejects non-canonical usage and interaction identities', () => {
 		const badUsage = resumeResponse();
-		badUsage.llm_usage[0].id = 'usage-short';
+		badUsage.llm_usage[0].usage_id = 'usage-short';
 		expect(() => parseSessionResumeResponse(badUsage)).toThrow(
 			'Invalid resumed usage identity',
 		);
@@ -281,6 +281,17 @@ describe('session history and resume identity contracts', () => {
 		badInteraction.interactions[1].id = 'step-00000000000000000000000000000005';
 		expect(() => parseSessionResumeResponse(badInteraction)).toThrow(
 			'Invalid resumed interaction identity',
+		);
+	});
+
+	it('rejects the retired generic usage identity field', () => {
+		const response = resumeResponse();
+		const usage = response.llm_usage[0] as Record<string, unknown>;
+		usage.id = usage.usage_id;
+		delete usage.usage_id;
+
+		expect(() => parseSessionResumeResponse(response)).toThrow(
+			'Invalid resumed usage identity',
 		);
 	});
 
