@@ -3,10 +3,45 @@ import {
 	parseApiKeyStatus,
 	parseLogInfo,
 	parseLogTail,
+	parseSettingsPayload,
 	parseShellAvailability,
 } from './settings.ts';
 
 describe('settings command contracts', () => {
+	it('validates credential references in the Settings response', () => {
+		const payload = {
+			llm: {
+				providers: [{ api_key_ref: 'cred-11111111111111111111111111111111' }],
+			},
+			media: {
+				ocr: {
+					api_key_ref: null,
+					api_secret_ref: 'cred-22222222222222222222222222222222',
+				},
+			},
+			mcp_servers: [
+				{
+					env_refs: [{ credential_ref: 'cred-33333333333333333333333333333333' }],
+				},
+			],
+			future_settings_field: true,
+		};
+
+		expect(parseSettingsPayload(payload)).toBe(payload);
+	});
+
+	it('rejects malformed credential references wherever Settings persists them', () => {
+		for (const invalid of [
+			{ llm: { providers: [{ api_key_ref: 'cred-short' }] } },
+			{ media: { ocr: { api_secret_ref: 'cred-short' } } },
+			{ mcp_servers: [{ env_refs: [{ credential_ref: 'plain-reference' }] }] },
+		]) {
+			expect(() => parseSettingsPayload(invalid)).toThrow(
+				'Invalid Settings credential reference',
+			);
+		}
+	});
+
 	it('accepts the log info response shape', () => {
 		expect(
 			parseLogInfo({ enabled: true, level: 'debug', path: 'C:/logs/haven.2026-08-26' }),

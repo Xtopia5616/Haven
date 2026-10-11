@@ -11,7 +11,7 @@ import type {
 } from './generatedCommands.ts';
 import { isRecord } from './objectGuards.ts';
 import { isBoolean, isString } from './valueGuards.ts';
-import { isCanonicalEntityId } from './wireGuards.ts';
+import { hasOwnWireField, isCanonicalEntityId } from './wireGuards.ts';
 
 export type LogInfo = GeneratedLogInfo;
 export type LogTail = GeneratedLogTail;
@@ -24,6 +24,43 @@ export type SettingsPayload = GeneratedSettings;
 
 /** Rust-owned settings input shape, including Serde defaults for omitted fields. */
 export type SettingsUpdatePayload = TauriCommandRequest<'update_settings'>['settings'];
+
+function hasValidCredentialReference(value: unknown): boolean {
+	return value === undefined || value === null || isCanonicalEntityId(value, 'cred');
+}
+
+function hasValidCredentialReferenceField(owner: unknown, field: string): boolean {
+	return (
+		!isRecord(owner) ||
+		!hasOwnWireField(owner, field) ||
+		hasValidCredentialReference(owner[field])
+	);
+}
+
+function hasValidSettingsCredentialReferences(value: Record<string, unknown>): boolean {
+	const llm = isRecord(value.llm) ? value.llm : null;
+	const providers = llm && Array.isArray(llm.providers) ? llm.providers : [];
+	if (!providers.every((provider) => hasValidCredentialReferenceField(provider, 'api_key_ref'))) {
+		return false;
+	}
+
+	const media = isRecord(value.media) ? value.media : null;
+	const ocr = media && isRecord(media.ocr) ? media.ocr : null;
+	if (
+		!hasValidCredentialReferenceField(ocr, 'api_key_ref') ||
+		!hasValidCredentialReferenceField(ocr, 'api_secret_ref')
+	) {
+		return false;
+	}
+
+	const servers = Array.isArray(value.mcp_servers) ? value.mcp_servers : [];
+	return servers.every((server) => {
+		if (!isRecord(server) || !Array.isArray(server.env_refs)) return true;
+		return server.env_refs.every((reference) =>
+			hasValidCredentialReferenceField(reference, 'credential_ref'),
+		);
+	});
+}
 
 /** Validate persisted session identities before Settings consumes permission grants. */
 export function parseSessionPermissionGrantResponses(value: unknown): SessionPermissionGrant[] {
@@ -50,7 +87,11 @@ export function parseStagedCredentialReference(value: unknown): string {
  * values keep the existing no-op behavior.
  */
 export function parseSettingsPayload(value: unknown): SettingsPayload | null {
-	return isRecord(value) ? (value as unknown as SettingsPayload) : null;
+	if (!isRecord(value)) return null;
+	if (!hasValidSettingsCredentialReferences(value)) {
+		throw new Error('Invalid Settings credential reference');
+	}
+	return value as unknown as SettingsPayload;
 }
 
 export function parseLogInfo(value: unknown): LogInfo {
