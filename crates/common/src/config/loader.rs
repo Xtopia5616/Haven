@@ -485,7 +485,7 @@ mod tests {
         assert_eq!(cfg.context_limits.compaction_ratio, 0.65);
         assert_eq!(cfg.context_limits.compaction_reserve_tokens, 8192);
         assert_eq!(cfg.context_limits.default_context_window, 64_000);
-        assert_eq!(cfg.context_limits.max_response_tokens, 32_000);
+        assert_eq!(cfg.context_limits.response_token_floor, 32_000);
         assert_eq!(cfg.context_limits.incomplete_tool_args_retries, 2);
         assert_eq!(cfg.context_limits.stream_stall_warn_delay_ms, 10_000);
         assert_eq!(cfg.context_limits.reasoning_echo_max_chars, 1200);
@@ -1026,9 +1026,11 @@ mod tests {
         let path = dir.join("config.toml");
         let mut cfg = AppConfig::default();
         cfg.media.audio.sample_rate = 44100;
+        cfg.context_limits.response_token_floor = 48_000;
         std::fs::write(&path, toml::to_string_pretty(&cfg).unwrap()).unwrap();
         let loader = ConfigLoader::load_from(&path).unwrap();
         assert_eq!(loader.config().media.audio.sample_rate, 44100);
+        assert_eq!(loader.config().context_limits.response_token_floor, 48_000);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1079,6 +1081,10 @@ base_url = "https://api.deepseek.com"
             (
                 "old model provider reference field",
                 "[[llm.models]]\nid = \"assistant\"\nprovider = \"primary\"\nmodel = \"gpt-test\"\n",
+            ),
+            (
+                "legacy response token field name",
+                "[context_limits]\nmax_response_tokens = 48000\n",
             ),
             (
                 "plaintext provider credential",

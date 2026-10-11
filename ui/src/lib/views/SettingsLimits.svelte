@@ -50,7 +50,7 @@
 					hint: '角色未填写 Context 且 Provider /models 未返回上下文长度时的回退窗口（单位 K = 1000 tokens，如 64 = 64K）。调高会增大每次请求的成本与溢出风险。',
 				},
 				{
-					key: 'max_response_tokens',
+					key: 'response_token_floor',
 					label: '回复输出 token 下限',
 					unit: 'tokens',
 					danger: false,

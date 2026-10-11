@@ -129,14 +129,11 @@ impl LlmRouter {
         mut config: RouterConfig,
         default_context_window: u32,
     ) -> Self {
-        // The per-response cap floor (`with_response_cap`) can push
-        // `max_tokens` far above a provider's per-model output limit; sending
-        // the raw value (e.g. the 1M default floor) makes Anthropic/OpenAI/
-        // Gemini reject the request with HTTP 400. Clamp each endpoint's
-        // effective `max_tokens` to its resolved context window here so the
-        // floor can never exceed what the provider will accept, while small
-        // configured caps are lifted so long outputs are not
-        // truncated mid-stream.
+        // The response token floor can raise `max_tokens` above the model's
+        // context window. Clamp each endpoint to its resolved context window
+        // before adapter construction so the requested output budget cannot
+        // exceed that window; small configured floors are applied so long
+        // outputs are not truncated mid-stream.
         let fallback = if default_context_window > 0 {
             default_context_window
         } else {
@@ -3499,13 +3496,12 @@ mod tests {
 
     #[test]
     fn router_clamps_max_tokens_to_context_window() {
-        // A huge response-cap floor (e.g. the 128k default) must not be sent
-        // raw to providers with smaller output budgets: Anthropic/OpenAI/Gemini
-        // reject max_tokens above the model limit with HTTP 400.
+        // A huge response-token floor must be clamped to the resolved model
+        // context window before adapter construction.
         let mut cfg = LlmRouter::injected_client_test_config();
         let default_model = cfg.model_mut("default_model").unwrap();
         default_model.endpoint.model_name = "gpt-4o-mini".into(); // catalog: 128k
-        default_model.endpoint.max_tokens = 1_000_000; // absurd cap floor
+        default_model.endpoint.max_tokens = 1_000_000; // absurd token floor
         let router = LlmRouter::new(cfg);
         let built = router.config.try_read().expect("router config readable");
         let default_model = built.model("default_model").unwrap();

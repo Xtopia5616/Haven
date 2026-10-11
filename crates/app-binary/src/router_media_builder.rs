@@ -24,7 +24,7 @@ pub(crate) fn build_router_media(
 ) -> RouterMediaBuild {
     let router = Arc::new(LlmRouter::with_default_context_window(
         config.llm.materialize(
-            Some(config.context_limits.max_response_tokens),
+            Some(config.context_limits.response_token_floor),
             Some(config.context_limits.reasoning_echo_max_chars),
         ),
         config.context_limits.default_context_window,

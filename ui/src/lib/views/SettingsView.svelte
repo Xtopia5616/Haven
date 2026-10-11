@@ -185,7 +185,7 @@
 		compaction_ratio: 0.65,
 		compaction_reserve_tokens: 8192,
 		default_context_window: 64000,
-		max_response_tokens: 32000,
+		response_token_floor: 32000,
 		max_observation_chars: 16000,
 		max_transcript_chars: 4000,
 		max_attachment_images: 4,

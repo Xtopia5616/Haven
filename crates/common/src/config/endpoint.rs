@@ -725,16 +725,15 @@ impl LlmConfig {
 
     /// Build the fully materialized router configuration: a dynamic model
     /// registry plus request policies and every router-level tuning knob. Called whenever the router is
-    /// constructed or hot-swapped. `response_cap` / `reasoning_echo_cap`
-    /// mirror the `with_response_cap` / `with_reasoning_echo_cap` transforms
-    /// (applied to the materialized endpoints so hand-edited
-    /// per-model overrides are still respected).
+    /// constructed or hot-swapped. The response-token floor and reasoning
+    /// echo cap apply after model materialization, so hand-edited per-model
+    /// values above the floor and explicit echo overrides remain respected.
     pub fn materialize(
         &self,
-        response_cap: Option<u32>,
+        response_token_floor: Option<u32>,
         reasoning_echo_cap: Option<usize>,
     ) -> RouterConfig {
-        let mut cap = RouterConfig {
+        let mut router_config = RouterConfig {
             models: self
                 .models
                 .iter()
@@ -750,8 +749,8 @@ impl LlmConfig {
             retry_jitter: self.retry_jitter,
             max_concurrent_requests: self.max_concurrent_requests,
         };
-        cap.apply_caps(response_cap, reasoning_echo_cap);
-        cap
+        router_config.apply_caps(response_token_floor, reasoning_echo_cap);
+        router_config
     }
 }
 
@@ -925,22 +924,25 @@ impl RouterConfig {
         self.models.iter_mut().map(|model| &mut model.endpoint)
     }
 
-    /// Apply the global per-response output-cap floor and the global
-    /// reasoning-echo cap to every model endpoint. The response-cap floor
-    /// raises small `max_tokens` values so long outputs are never
-    /// truncated mid-stream (per-endpoint values above the floor are
-    /// preserved); the reasoning-echo cap fills `reasoning_echo_max_chars`
+    /// Apply the global response-token floor and reasoning-echo cap to every
+    /// model endpoint. The floor raises small `max_tokens` values so long
+    /// outputs are never truncated mid-stream (per-endpoint values above the
+    /// floor are preserved); the reasoning-echo cap fills `reasoning_echo_max_chars`
     /// only where the endpoint does not set its own override.
-    pub fn apply_caps(&mut self, response_cap: Option<u32>, reasoning_echo_cap: Option<usize>) {
-        if let Some(cap) = response_cap {
+    pub fn apply_caps(
+        &mut self,
+        response_token_floor: Option<u32>,
+        reasoning_echo_cap: Option<usize>,
+    ) {
+        if let Some(floor) = response_token_floor {
             for ep in self.endpoints_mut() {
-                ep.max_tokens = ep.max_tokens.max(cap);
+                ep.max_tokens = ep.max_tokens.max(floor);
             }
         }
-        if let Some(cap) = reasoning_echo_cap {
+        if let Some(echo_cap) = reasoning_echo_cap {
             for ep in self.endpoints_mut() {
                 if ep.reasoning_echo_max_chars.is_none() {
-                    ep.reasoning_echo_max_chars = Some(cap);
+                    ep.reasoning_echo_max_chars = Some(echo_cap);
                 }
             }
         }

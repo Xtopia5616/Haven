@@ -74,13 +74,13 @@ pub struct ContextLimitsConfig {
     /// Context window in tokens used when an endpoint has no explicit
     /// `context_window` (e.g. provider `/models` did not report one).
     pub default_context_window: u32,
-    /// Per-response output cap floor (tokens) applied to every role endpoint
+    /// Per-response output token floor applied to every model endpoint
     /// when the router is built: the effective `max_tokens` sent to the
-    /// provider is `max(endpoint.max_tokens, max_response_tokens)`. The
+    /// provider is `max(endpoint.max_tokens, response_token_floor)`. The
     /// default leaves room for a useful answer while avoiding an unnecessarily
     /// large reasoning/output budget on the main model; users can raise it from
     /// the "限制" settings tab when a workload needs longer generations.
-    pub max_response_tokens: u32,
+    pub response_token_floor: u32,
     /// Maximum characters of a tool observation fed back into the
     /// conversation. Also the default cap (in chars) builtin tools apply to
     /// their own output — the observation budget is the only limit, so tools
@@ -241,7 +241,7 @@ impl Default for ContextLimitsConfig {
             default_context_window: 64_000,
             // Keep the default generation/reasoning budget bounded. Explicit
             // per-model values above this floor remain untouched.
-            max_response_tokens: 32_000,
+            response_token_floor: 32_000,
             // File/code observations need enough room for a useful window;
             // the loop still applies this as a hard upper bound.
             max_observation_chars: 16_000,

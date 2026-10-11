@@ -960,3 +960,4 @@
 - [0969：派生集合使用明确的实体复数名称](0969-use-entity-names-for-derived-collections.md)
 - [0970：命令响应身份绑定其请求 owner](0970-bind-command-response-identities-to-request-owners.md)
 - [0971：区分媒体配置的连接引用与供应商身份](0971-name-media-provider-connection-references.md)
+- [0972：用 floor 表达响应 token 下界](0972-name-response-token-floor.md)

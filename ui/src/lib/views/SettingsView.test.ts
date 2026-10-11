@@ -329,6 +329,7 @@ describe('SettingsView diagnostics export', () => {
 				max_upload_total_bytes: 512 * 1024 * 1024,
 				max_attachment_image_dim_px: 1568,
 				attachment_image_jpeg_quality: 0.85,
+				response_token_floor: 64_000,
 			},
 			memory: { fact_inference_enabled: false },
 			security: {
@@ -412,6 +413,7 @@ describe('SettingsView diagnostics export', () => {
 		expect(saved.media.tts.provider_name).toBe('speech-connection');
 		expect(saved.media.image_gen.provider_name).toBe('image-connection');
 		expect(saved.context_limits).toMatchObject({
+			response_token_floor: 64_000,
 			tool_run_result_context_chars: 4321,
 			fact_extraction_min_interval_secs: 77,
 			turn_deadline_secs: 901,
