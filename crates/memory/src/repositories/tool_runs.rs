@@ -669,6 +669,7 @@ impl Database {
     /// All persisted tool_runs, optionally filtered by kind (`"background"` /
     /// `"scheduled"`), newest first. Waiting rows are returned for board
     /// hydration; terminal rows remain available as history.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn list_tool_runs(&self, kind: Option<&str>) -> anyhow::Result<Vec<ToolRunRow>> {
         self.list_tool_runs_for_session(kind, None)
     }

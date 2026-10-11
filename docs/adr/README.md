@@ -965,3 +965,4 @@
 - [0974：用 Base64 字节表达 MCP 二进制内容限额](0974-name-mcp-binary-base64-byte-limit.md)
 - [0975：用字节命名 SKILL.md 单行上限](0975-name-skill-line-limit-in-bytes.md)
 - [0976：按受限状态命名 ToolRun 数量上限](0976-name-toolrun-limits-by-bounded-state.md)
+- [0977：删除无界 ToolRun 原始行列表接口](0977-remove-unbounded-toolrun-row-list.md)

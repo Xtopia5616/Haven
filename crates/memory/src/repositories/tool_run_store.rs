@@ -134,17 +134,6 @@ impl ToolRunStore {
             .await
     }
 
-    /// Read persisted tool_runs, newest first, optionally filtered by kind.
-    pub async fn list_tool_runs(&self, kind: Option<String>) -> anyhow::Result<Vec<ToolRunRow>> {
-        self.db
-            .run_blocking(move |db| {
-                let rows = db.list_tool_runs(kind.as_deref())?;
-                validate_tool_run_rows(&rows)?;
-                Ok(rows)
-            })
-            .await
-    }
-
     /// Read persisted tool_runs owned by one session, newest first, optionally
     /// filtered by kind.
     pub async fn list_tool_runs_for_session(
@@ -880,8 +869,6 @@ mod tests {
                 .await
                 .is_err()
         );
-        assert!(store.list_tool_runs(None).await.unwrap().is_empty());
-
         assert!(
             store
                 .save_scheduled_tool_run(
