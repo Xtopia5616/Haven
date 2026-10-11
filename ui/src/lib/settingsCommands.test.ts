@@ -73,9 +73,9 @@ describe('Settings commands', () => {
 			.mockResolvedValueOnce(undefined)
 			.mockResolvedValueOnce(2)
 			.mockResolvedValueOnce(undefined)
-			.mockResolvedValueOnce('cred-provider')
-			.mockResolvedValueOnce('cred-ocr-key')
-			.mockResolvedValueOnce('cred-ocr-secret')
+			.mockResolvedValueOnce('cred-11111111111111111111111111111111')
+			.mockResolvedValueOnce('cred-22222222222222222222222222222222')
+			.mockResolvedValueOnce('cred-33333333333333333333333333333333')
 			.mockResolvedValueOnce(undefined)
 			.mockResolvedValueOnce(undefined)
 			.mockResolvedValueOnce(undefined);
@@ -93,11 +93,13 @@ describe('Settings commands', () => {
 		expect(await resetSessionPermissions()).toBe(2);
 		await setHotkeyCaptureActive(true);
 		expect(await stageProviderCredential({ providerName: 'provider', apiKey: 'secret' })).toBe(
-			'cred-provider',
+			'cred-11111111111111111111111111111111',
 		);
-		expect(await stageOcrCredential({ apiSecret: false, value: 'key' })).toBe('cred-ocr-key');
+		expect(await stageOcrCredential({ apiSecret: false, value: 'key' })).toBe(
+			'cred-22222222222222222222222222222222',
+		);
 		expect(await stageOcrCredential({ apiSecret: true, value: 'secret' })).toBe(
-			'cred-ocr-secret',
+			'cred-33333333333333333333333333333333',
 		);
 		await updateSettings(settingsRequest);
 		await enableAutostart();
@@ -150,6 +152,18 @@ describe('Settings commands', () => {
 		} as never);
 		await expect(listSessionPermissions()).rejects.toThrow(
 			'Invalid session permission grant identity',
+		);
+	});
+
+	it('rejects malformed opaque credential references from staging commands', async () => {
+		invokeMock.mockResolvedValueOnce('cred-short' as never);
+		await expect(
+			stageProviderCredential({ providerName: 'provider', apiKey: 'secret' }),
+		).rejects.toThrow('Invalid staged credential reference');
+
+		invokeMock.mockResolvedValueOnce('plain-reference' as never);
+		await expect(stageOcrCredential({ apiSecret: false, value: 'secret' })).rejects.toThrow(
+			'Invalid staged credential reference',
 		);
 	});
 });

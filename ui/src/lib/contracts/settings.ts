@@ -36,6 +36,14 @@ export function parseSessionPermissionGrantResponses(value: unknown): SessionPer
 	return value as unknown as SessionPermissionGrant[];
 }
 
+/** Validate an opaque credential reference before Settings stores it in its draft. */
+export function parseStagedCredentialReference(value: unknown): string {
+	if (!isCanonicalEntityId(value, 'cred')) {
+		throw new Error('Invalid staged credential reference');
+	}
+	return value;
+}
+
 /**
  * The full Settings shape is owned by haven_common::config::Settings. Keep the
  * renderer shape tied to the generated Rust contract, while malformed root

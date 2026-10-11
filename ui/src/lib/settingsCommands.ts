@@ -1,6 +1,7 @@
 import {
 	parseSessionPermissionGrantResponses,
 	parseSettingsPayload,
+	parseStagedCredentialReference,
 	type SessionPermissionGrant,
 	type SettingsPayload,
 } from '$lib/contracts/settings.ts';
@@ -63,14 +64,14 @@ export function setHotkeyCaptureActive(active: boolean): Promise<void> {
 export function stageProviderCredential(
 	request: TauriCommandRequest<'stage_provider_credential'>,
 ): Promise<string> {
-	return invoke('stage_provider_credential', request);
+	return invoke('stage_provider_credential', request).then(parseStagedCredentialReference);
 }
 
 /** Stage an OCR key or secret in secure storage and return its opaque reference. */
 export function stageOcrCredential(
 	request: TauriCommandRequest<'stage_ocr_credential'>,
 ): Promise<string> {
-	return invoke('stage_ocr_credential', request);
+	return invoke('stage_ocr_credential', request).then(parseStagedCredentialReference);
 }
 
 /** Persist a complete Settings update through the generated command contract. */
