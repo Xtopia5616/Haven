@@ -1,6 +1,6 @@
 # Haven 命名规范
 
-> 版本: v1.178 | 日期: 2026-10-11
+> 版本: v1.179 | 日期: 2026-10-12
 
 本文档统一 Haven 项目各层的命名规则（变量名、函数名、文件名、crate 名、缩写大小写、跨层边界）。规范以现有代码中的事实模式为基础，新代码必须遵循；存量代码若与规范冲突，逐步迁移对齐。
 
@@ -403,6 +403,7 @@ Common transcript contracts（`CanonicalMessage`、`CanonicalRole`、`CanonicalT
 | 实体 ID | `{prefix}-{uuid32}`（统一） | 原样透传 |
 
 - **前端只在边界转换**（invoke 调用 / 事件监听处），内部统一 camelCase。
+- **Rust-owned Settings snapshot 是边界例外**：`get_settings` / `update_settings` 透传同一全量 `Settings` shape，UI 的 Settings parser、编辑态和保存 payload 保留 Rust-owned snake_case 字段；不为局部 camelCase 改名而重建或复制完整配置结构。只有 Rust 与 UI 同时迁移到新的显式 DTO/mapper 后，才可更改此契约（ADR 0341）。
 - **Reactive / 数据字段**（如 DB 行字段、测试 fixture）允许保留后端 snake_case，不强行改前端内部就 camelCase 化。
 - 不要在调用链深处出现重复的手工 snake↔camel 转换；将来集中收敛到命令/事件封装层。
 - **会话恢复统一叫 `resume`**：从历史打开会话、崩溃恢复、DB→气泡重建均用 `resume`（如 `get_session_for_resume`、`get_latest_session_for_resume`、`sessionResumeTargetStore`、`buildResumeMessages`、`SessionResumeResponse`）。会话恢复目标的类型带 `Session` 作用域前缀；禁止再用 `review` 指代该流程（`preview` 预览、code review 注释、工具 capability `"review"` 除外）。
