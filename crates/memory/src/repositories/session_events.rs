@@ -19,7 +19,7 @@ use crate::repositories::sessions::{Session, SessionOrigin};
 use crate::repositories::usage::{LlmUsageRecord, LlmUsageRecordInput, SessionUsage};
 use chrono::{SecondsFormat, Utc};
 use haven_common::lifecycle::SessionStatus;
-use haven_common::types::{MessageAttachment, TranscriptMessageKind};
+use haven_common::types::{MessageAttachment, TranscriptMessageKind, is_canonical_id};
 use rusqlite::OptionalExtension;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -2442,6 +2442,10 @@ impl SessionStore {
         if inputs.is_empty() {
             return Ok(Vec::new());
         }
+        anyhow::ensure!(
+            is_canonical_id(session_id, "ses"),
+            "session_id must be canonical"
+        );
         let records = inputs
             .iter()
             .map(|input| {
@@ -2523,6 +2527,14 @@ impl SessionStore {
     /// a rollback epoch race. Deleting only the projection would leave the
     /// usage event active and allow a later event replay to resurrect it.
     fn discard_usage(&self, session_id: &str, usage_id: &str) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            is_canonical_id(session_id, "ses"),
+            "session_id must be canonical"
+        );
+        anyhow::ensure!(
+            is_canonical_id(usage_id, "usage"),
+            "usage_id must be canonical"
+        );
         let payload = serde_json::json!({ "usage_id": usage_id }).to_string();
         let input = SessionEventInput::new(USAGE_DISCARDED_EVENT_TYPE, payload);
         let conn = self.db.conn();
@@ -5189,6 +5201,64 @@ mod tests {
                 .get("usage_id")
                 .and_then(serde_json::Value::as_str),
             Some(second.id.as_str())
+        );
+    }
+
+    #[tokio::test]
+    async fn usage_writes_reject_noncanonical_ids_before_appending_events() {
+        let (db, store, session_id) = store();
+        let usage = store
+            .append_usage(&session_id, &usage_input(1, 10))
+            .unwrap();
+        let canonical_events = store.read_all(&session_id).unwrap();
+
+        let malformed_session_id = "ses-invalid";
+        db.conn()
+            .execute(
+                "INSERT INTO sessions (id, input_text) VALUES (?1, 'fixture')",
+                rusqlite::params![malformed_session_id],
+            )
+            .unwrap();
+
+        assert!(
+            store
+                .append_usage_batch_cancellable(
+                    malformed_session_id,
+                    vec![usage_input(2, 20)],
+                    None,
+                )
+                .await
+                .is_err()
+        );
+        assert!(store.read_all(malformed_session_id).unwrap().is_empty());
+        assert!(
+            db.list_session_llm_usage(malformed_session_id)
+                .unwrap()
+                .is_empty()
+        );
+
+        assert!(
+            store
+                .discard_usage_cancellable(&session_id, "usage-invalid", None)
+                .await
+                .is_err()
+        );
+        assert!(
+            store
+                .discard_usage_cancellable(malformed_session_id, &usage.id, None)
+                .await
+                .is_err()
+        );
+
+        assert_eq!(store.read_all(&session_id).unwrap(), canonical_events);
+        assert!(store.read_all(malformed_session_id).unwrap().is_empty());
+        assert_eq!(
+            db.list_session_llm_usage(&session_id)
+                .unwrap()
+                .iter()
+                .map(|record| record.id.as_str())
+                .collect::<Vec<_>>(),
+            [usage.id.as_str()]
         );
     }
 
