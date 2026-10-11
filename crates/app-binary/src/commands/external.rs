@@ -1,6 +1,6 @@
 use crate::app_state::AppState;
 use crate::commands::log_err;
-use haven_common::types::{RiskLevel, permission_key};
+use haven_common::types::{CapabilityScope, RiskLevel, permission_key};
 use haven_tools::{AuthorizationDecision, AuthorizationRequest, NetworkAccess, OperationPolicy};
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
@@ -28,12 +28,10 @@ pub async fn open_external(state: State<'_, Arc<AppState>>, target: String) -> R
     } else {
         NetworkAccess::None
     };
-    let policy = OperationPolicy::native(
-        "open_external",
-        permission_key("open_external", &params).into(),
-        RiskLevel::Low,
-        network_access,
-    );
+    let capability = CapabilityScope::try_new(permission_key("open_external", &params))
+        .map_err(|error| log_err("open_external", error))?;
+    let policy =
+        OperationPolicy::native("open_external", capability, RiskLevel::Low, network_access);
     let authorization_request =
         AuthorizationRequest::new(None, "open_external", params.clone(), policy);
     match state

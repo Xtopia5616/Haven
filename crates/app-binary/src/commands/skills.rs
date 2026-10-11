@@ -5,7 +5,7 @@ use crate::commands::{
     app_command_authorization_request, emit_event_logged, queue_ui_confirmation,
 };
 use crate::events::{SKILLS_STATUS_CHANGED_EVENT, SkillsStatusChangedEvent, SkillsStatusOperation};
-use haven_common::types::{RiskLevel, permission_key};
+use haven_common::types::{CapabilityScope, RiskLevel, permission_key};
 use haven_tools::{
     AuthorizationDecision, AuthorizationRequest, NetworkAccess, OperationPolicy, SkillInfo,
 };
@@ -87,9 +87,11 @@ pub async fn open_skills_dir(state: State<'_, Arc<AppState>>) -> Result<String, 
         ));
     }
     let params = serde_json::json!({"target": root});
+    let capability = CapabilityScope::try_new(permission_key("open_skills_dir", &params))
+        .map_err(|error| log_err("open_skills_dir", error))?;
     let policy = OperationPolicy::native(
         "open_skills_dir",
-        permission_key("open_skills_dir", &params).into(),
+        capability,
         RiskLevel::Low,
         NetworkAccess::None,
     );
@@ -175,7 +177,9 @@ pub async fn execute_skill(
     // path/op blocks. Use the same qualified name as SkillToolAdapter so
     // Always grants from agent confirms apply to UI preview.
     let tool_key = haven_tools::skill_tool_name(&name);
-    let policy = OperationPolicy::external(tool_key.clone(), RiskLevel::High);
+    let capability =
+        CapabilityScope::try_new(&tool_key).map_err(|error| log_err("execute_skill", error))?;
+    let policy = OperationPolicy::external(capability, RiskLevel::High);
     let authorization_request =
         app_command_authorization_request(&tool_key, params.clone(), policy);
     match state

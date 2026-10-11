@@ -531,7 +531,7 @@ mod tests {
 
         let receipt = haven_tools::ConfirmationReceipt {
             confirmation_id: haven_common::types::ConfirmId::new(),
-            capability: haven_common::types::CapabilityScope::new("admin.test"),
+            capability: haven_common::types::CapabilityScope::try_new("admin.test").unwrap(),
             canonical_input_hash: "hash".into(),
             effective_risk: haven_common::types::RiskLevel::Medium,
             policy_revision: 1,
@@ -562,7 +562,7 @@ mod tests {
     fn direct_ui_confirmation_uses_the_canonical_confirm_shape() {
         let receipt = haven_tools::ConfirmationReceipt {
             confirmation_id: haven_common::types::ConfirmId::new(),
-            capability: haven_common::types::CapabilityScope::new("admin.test"),
+            capability: haven_common::types::CapabilityScope::try_new("admin.test").unwrap(),
             canonical_input_hash: "hash".into(),
             effective_risk: haven_common::types::RiskLevel::Medium,
             policy_revision: 1,

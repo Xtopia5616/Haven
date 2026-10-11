@@ -389,7 +389,8 @@ pub async fn resolve_confirmation(
             &resolution.tool_name,
             &resolution.tool_input,
         )
-        .await;
+        .await
+        .map_err(|error| log_err("resolve_confirmation", error))?;
     let key = authorization_request
         .policy
         .capability
@@ -999,7 +1000,8 @@ mod tests {
             .runtime
             .tools
             .resolve_authorization_request(None, tool_name, &tool_input)
-            .await;
+            .await
+            .unwrap();
         let receipt = ConfirmationReceipt {
             confirmation_id: haven_common::types::ConfirmId::new(),
             capability: authorization_request.policy.capability.clone(),
@@ -1310,7 +1312,8 @@ mod tests {
             .runtime
             .tools
             .resolve_authorization_request(None, tool_name, &tool_input)
-            .await;
+            .await
+            .unwrap();
         let receipt = ConfirmationReceipt {
             confirmation_id: haven_common::types::ConfirmId::new(),
             capability: authorization_request.policy.capability.clone(),

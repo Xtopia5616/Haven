@@ -687,7 +687,8 @@ pub async fn revoke_permission(state: State<'_, Arc<AppState>>, key: String) -> 
                 .authorization
                 .grant(
                     None,
-                    permission.key.into(),
+                    haven_common::types::CapabilityScope::try_new(&permission.key)
+                        .map_err(|error| log_err("revoke_permission", error))?,
                     permission.effect,
                     haven_common::types::PermissionScope::Always,
                 )
@@ -723,7 +724,13 @@ pub async fn reset_permissions(state: State<'_, Arc<AppState>>) -> Result<(), St
                 .authorization
                 .grant(
                     None,
-                    permission.key.into(),
+                    if let Ok(capability) =
+                        haven_common::types::CapabilityScope::try_new(&permission.key)
+                    {
+                        capability
+                    } else {
+                        continue;
+                    },
                     permission.effect,
                     haven_common::types::PermissionScope::Always,
                 )
@@ -744,12 +751,6 @@ pub async fn revoke_session_permission(
         .map_err(|error| log_err("revoke_session_permission", error))?;
     let _config_apply_guard = state.runtime.config_runtime_coordinator.lock().await;
     let capability = capability.trim().to_string();
-    if capability.is_empty() {
-        return Err(log_err(
-            "revoke_session_permission",
-            "permission capability cannot be empty",
-        ));
-    }
     let capability = haven_common::types::CapabilityScope::try_new(capability)
         .map_err(|error| log_err("revoke_session_permission", error))?;
     let existing = state

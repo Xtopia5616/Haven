@@ -307,9 +307,7 @@ impl PermissionTarget {
 pub struct CapabilityScope(String);
 
 impl CapabilityScope {
-    pub fn new(value: impl Into<String>) -> Self {
-        let value = value.into();
-        debug_assert!(!value.trim().is_empty(), "capability scope cannot be empty");
+    fn from_validated(value: String) -> Self {
         Self(value)
     }
 
@@ -342,16 +340,12 @@ impl CapabilityScope {
         &self.0
     }
 
-    pub fn is_empty(&self) -> bool {
-        self.0.is_empty()
-    }
-
     /// Return this capability and all of its intentional parent scopes.
     pub fn candidates(&self) -> Vec<Self> {
         let mut candidates = Vec::new();
         let mut end = self.0.len();
         loop {
-            candidates.push(Self::new(self.0[..end].to_owned()));
+            candidates.push(Self::from_validated(self.0[..end].to_owned()));
             match self.0[..end].rfind('.') {
                 Some(index) => end = index,
                 None => break,
@@ -369,7 +363,7 @@ impl CapabilityScope {
             PermissionTarget::Group => self.candidates().into_iter().nth(1),
             PermissionTarget::Tool => {
                 let root = permission_tool_root(self.as_str());
-                (root != self.as_str()).then(|| Self::new(root))
+                (root != self.as_str()).then(|| Self::from_validated(root.to_string()))
             }
         }
     }
@@ -391,27 +385,9 @@ impl<'de> Deserialize<'de> for CapabilityScope {
     }
 }
 
-impl From<&str> for CapabilityScope {
-    fn from(value: &str) -> Self {
-        Self::new(value)
-    }
-}
-
-impl From<String> for CapabilityScope {
-    fn from(value: String) -> Self {
-        Self::new(value)
-    }
-}
-
 impl From<CapabilityScope> for String {
     fn from(value: CapabilityScope) -> Self {
         value.0
-    }
-}
-
-impl From<&String> for CapabilityScope {
-    fn from(value: &String) -> Self {
-        Self::new(value.clone())
     }
 }
 
@@ -1460,19 +1436,19 @@ mod tests {
 
     #[test]
     fn capability_scope_is_typed_and_preserves_hierarchical_matching() {
-        let scope = CapabilityScope::from("system.power.lock");
+        let scope = CapabilityScope::try_new("system.power.lock").unwrap();
         assert_eq!(scope.as_str(), "system.power.lock");
         assert_eq!(
             scope.candidates(),
             vec![
-                CapabilityScope::from("system.power.lock"),
-                CapabilityScope::from("system.power"),
-                CapabilityScope::from("system"),
+                CapabilityScope::try_new("system.power.lock").unwrap(),
+                CapabilityScope::try_new("system.power").unwrap(),
+                CapabilityScope::try_new("system").unwrap(),
             ]
         );
         assert_eq!(
-            CapabilityScope::from("shell").candidates(),
-            vec![CapabilityScope::from("shell")]
+            CapabilityScope::try_new("shell").unwrap().candidates(),
+            vec![CapabilityScope::try_new("shell").unwrap()]
         );
         assert_eq!(
             serde_json::to_string(&scope).unwrap(),
@@ -1505,7 +1481,7 @@ mod tests {
 
     #[test]
     fn permission_targets_only_select_capability_ancestors() {
-        let capability = CapabilityScope::new("system.power.lock");
+        let capability = CapabilityScope::try_new("system.power.lock").unwrap();
         assert_eq!(
             capability
                 .target(PermissionTarget::Operation)
@@ -1525,12 +1501,14 @@ mod tests {
             Some("system".to_string())
         );
         assert!(
-            CapabilityScope::new("files.read")
+            CapabilityScope::try_new("files.read")
+                .unwrap()
                 .target(PermissionTarget::Group)
                 .is_some()
         );
         assert!(
-            CapabilityScope::new("files")
+            CapabilityScope::try_new("files")
+                .unwrap()
                 .target(PermissionTarget::Tool)
                 .is_none()
         );

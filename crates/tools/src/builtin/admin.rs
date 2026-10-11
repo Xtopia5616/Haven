@@ -2143,7 +2143,8 @@ mod tests {
                 request.input(),
                 crate::OperationPolicy::native(
                     tool_name,
-                    tool_name.into(),
+                    haven_common::types::CapabilityScope::try_new(tool_name)
+                        .expect("admin operation name is a valid capability"),
                     metadata.risk_level,
                     request.network_access(),
                 ),

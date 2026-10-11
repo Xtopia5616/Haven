@@ -55,14 +55,14 @@ pub trait ToolAuthorizationPort: Send + Sync {
         session_id: Option<&str>,
         tool_name: &str,
         input: &Value,
-    ) -> RiskLevel;
+    ) -> Result<RiskLevel, String>;
 
     async fn authorization_request(
         &self,
         session_id: Option<&str>,
         tool_name: &str,
         input: &Value,
-    ) -> AuthorizationRequest;
+    ) -> Result<AuthorizationRequest, String>;
 
     fn authorization_request_from_catalog(
         &self,
@@ -70,7 +70,7 @@ pub trait ToolAuthorizationPort: Send + Sync {
         session_id: Option<&str>,
         tool_name: &str,
         input: &Value,
-    ) -> AuthorizationRequest;
+    ) -> Result<AuthorizationRequest, String>;
 
     async fn authorize(&self, request: &AuthorizationRequest) -> AuthorizationDecision;
 
@@ -235,7 +235,7 @@ impl ToolAuthorizationPort for ToolsFacadeToolAuthorizationAdapter {
         session_id: Option<&str>,
         tool_name: &str,
         input: &Value,
-    ) -> RiskLevel {
+    ) -> Result<RiskLevel, String> {
         self.tools
             .resolve_risk_level(session_id, tool_name, input)
             .await
@@ -246,7 +246,7 @@ impl ToolAuthorizationPort for ToolsFacadeToolAuthorizationAdapter {
         session_id: Option<&str>,
         tool_name: &str,
         input: &Value,
-    ) -> AuthorizationRequest {
+    ) -> Result<AuthorizationRequest, String> {
         self.tools
             .resolve_authorization_request(session_id, tool_name, input)
             .await
@@ -258,7 +258,7 @@ impl ToolAuthorizationPort for ToolsFacadeToolAuthorizationAdapter {
         session_id: Option<&str>,
         tool_name: &str,
         input: &Value,
-    ) -> AuthorizationRequest {
+    ) -> Result<AuthorizationRequest, String> {
         self.tools
             .resolve_authorization_request_from_snapshot(catalog, session_id, tool_name, input)
     }

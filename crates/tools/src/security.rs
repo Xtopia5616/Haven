@@ -778,12 +778,11 @@ impl AuthorizationEngine {
     pub async fn grant(
         &self,
         session_id: Option<&str>,
-        capability: impl Into<CapabilityScope>,
+        capability: CapabilityScope,
         effect: PermissionEffect,
         scope: PermissionScope,
     ) {
-        let capability = capability.into();
-        if matches!(scope, PermissionScope::Once) || capability.is_empty() {
+        if matches!(scope, PermissionScope::Once) {
             return;
         }
         let mut cfg = self.config.write().await;
@@ -833,8 +832,10 @@ impl AuthorizationEngine {
     /// Remove one permanent grant. Session grants have independent lifetimes
     /// and are removed only by their owning session-level controls.
     pub async fn revoke_permanent(&self, key: &str) -> bool {
+        let Ok(capability) = CapabilityScope::try_new(key) else {
+            return false;
+        };
         let mut cfg = self.config.write().await;
-        let capability = CapabilityScope::from(key);
         let removed_permanent = cfg.permanent.remove(&capability).is_some();
         if removed_permanent {
             bump_policy_revision(&mut cfg);
@@ -1341,6 +1342,12 @@ mod tests {
     use std::collections::{HashMap, HashSet};
     use tokio_util::sync::CancellationToken;
 
+    macro_rules! capability_scope {
+        ($value:expr) => {
+            CapabilityScope::try_new($value).expect("test capability scope is valid")
+        };
+    }
+
     fn test_config_service(
         loader: haven_common::config::ConfigLoader,
     ) -> haven_common::config::ConfigService {
@@ -1354,6 +1361,12 @@ mod tests {
     type ConfirmationResult = AuthorizationDecision;
 
     fn fixture_policy(tool_name: &str, params: &Value, risk_level: RiskLevel) -> OperationPolicy {
+        let capability_key = permission_key(tool_name, params);
+        let capability_key = if tool_name.starts_with("mcp::") || tool_name.starts_with("skill::") {
+            crate::llm_tool_name(&capability_key)
+        } else {
+            capability_key
+        };
         let network_access = match tool_name {
             "http" => NetworkAccess::Public,
             name if name.starts_with("mcp::")
@@ -1368,7 +1381,7 @@ mod tests {
         };
         OperationPolicy {
             risk_level,
-            capability: permission_key(tool_name, params).into(),
+            capability: CapabilityScope::try_new(capability_key).unwrap(),
             confirmation: if risk_level >= RiskLevel::Critical {
                 ConfirmationRequirement::Required
             } else if risk_level == RiskLevel::Safe {
@@ -1556,7 +1569,7 @@ mod tests {
         let gateway = ThresholdFixture::new(RiskLevel::Safe);
         let read_policy = OperationPolicy {
             risk_level: RiskLevel::Low,
-            capability: "files.read".into(),
+            capability: capability_scope!("files.read"),
             confirmation: ConfirmationRequirement::None,
             idempotency: crate::OperationIdempotency::Idempotent,
             scope: crate::ToolOperationScope::Session,
@@ -1573,7 +1586,7 @@ mod tests {
         gateway.set_permission_mode(PermissionMode::Plan).await;
         let write_policy = OperationPolicy {
             risk_level: RiskLevel::Medium,
-            capability: "files.write".into(),
+            capability: capability_scope!("files.write"),
             confirmation: ConfirmationRequirement::SecurityPolicy,
             idempotency: crate::OperationIdempotency::NonIdempotent,
             scope: crate::ToolOperationScope::Session,
@@ -1599,7 +1612,7 @@ mod tests {
         let gateway = ThresholdFixture::new(RiskLevel::Safe);
         let write_policy = OperationPolicy {
             risk_level: RiskLevel::Medium,
-            capability: "files.write".into(),
+            capability: capability_scope!("files.write"),
             confirmation: ConfirmationRequirement::SecurityPolicy,
             idempotency: crate::OperationIdempotency::NonIdempotent,
             scope: crate::ToolOperationScope::Session,
@@ -1611,7 +1624,7 @@ mod tests {
         gateway
             .grant(
                 None,
-                "files.write",
+                capability_scope!("files.write"),
                 PermissionEffect::Allow,
                 PermissionScope::Always,
             )
@@ -1628,7 +1641,7 @@ mod tests {
         let gateway = ThresholdFixture::new(RiskLevel::Safe);
         let sensitive_policy = OperationPolicy {
             risk_level: RiskLevel::Low,
-            capability: "system.env.get".into(),
+            capability: capability_scope!("system.env.get"),
             confirmation: ConfirmationRequirement::None,
             idempotency: crate::OperationIdempotency::Idempotent,
             scope: crate::ToolOperationScope::Global,
@@ -1650,7 +1663,7 @@ mod tests {
         ));
 
         let network_policy = OperationPolicy {
-            capability: "http".into(),
+            capability: capability_scope!("http"),
             network_access: NetworkAccess::Public,
             ..sensitive_policy.clone()
         };
@@ -1707,7 +1720,7 @@ mod tests {
         ] {
             let policy = OperationPolicy {
                 risk_level: RiskLevel::Medium,
-                capability: tool_name.into(),
+                capability: capability_scope!(tool_name),
                 confirmation: ConfirmationRequirement::SecurityPolicy,
                 idempotency: crate::OperationIdempotency::Unknown,
                 scope: crate::ToolOperationScope::Session,
@@ -1735,7 +1748,7 @@ mod tests {
             .await;
         let policy = OperationPolicy::native(
             "shell",
-            "shell".into(),
+            capability_scope!("shell"),
             RiskLevel::High,
             NetworkAccess::Opaque,
         );
@@ -1850,7 +1863,7 @@ mod tests {
             .await;
         let write_policy = OperationPolicy {
             risk_level: RiskLevel::Medium,
-            capability: "files.write".into(),
+            capability: capability_scope!("files.write"),
             confirmation: ConfirmationRequirement::SecurityPolicy,
             idempotency: crate::OperationIdempotency::NonIdempotent,
             scope: crate::ToolOperationScope::Session,
@@ -1976,7 +1989,7 @@ mod tests {
             "shell",
             json!({"command": "echo safe"}),
             OperationPolicy {
-                capability: "system.info".into(),
+                capability: capability_scope!("system.info"),
                 ..request.policy.clone()
             },
         );
@@ -2023,7 +2036,7 @@ mod tests {
         let gw = ThresholdFixture::new(RiskLevel::Medium);
         gw.grant(
             Some("ses-8042867cb780e3dfc14959c1fe8d87e1"),
-            "tool1",
+            capability_scope!("tool1"),
             PermissionEffect::Allow,
             PermissionScope::Session,
         )
@@ -2044,7 +2057,7 @@ mod tests {
         let gw = ThresholdFixture::new(RiskLevel::Medium);
         gw.grant(
             Some("ses-8042867cb780e3dfc14959c1fe8d87e1"),
-            "tool1",
+            capability_scope!("tool1"),
             PermissionEffect::Allow,
             PermissionScope::Session,
         )
@@ -2090,7 +2103,7 @@ mod tests {
         let gw = ThresholdFixture::new(RiskLevel::Medium);
         gw.grant(
             None,
-            "shell",
+            capability_scope!("shell"),
             PermissionEffect::Deny,
             PermissionScope::Always,
         )
@@ -2100,11 +2113,26 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn revoke_permanent_rejects_invalid_capability_without_mutating_rules() {
+        let gw = ThresholdFixture::new(RiskLevel::Medium);
+        gw.grant(
+            None,
+            capability_scope!("files.read"),
+            PermissionEffect::Allow,
+            PermissionScope::Always,
+        )
+        .await;
+
+        assert!(!gw.revoke_permanent("files:read").await);
+        assert_eq!(gw.list_permanent().await.len(), 1);
+    }
+
+    #[tokio::test]
     async fn test_authorization_parent_key_matches_operation() {
         let gw = ThresholdFixture::new(RiskLevel::Medium);
         gw.grant(
             Some("ses-8042867cb780e3dfc14959c1fe8d87e1"),
-            "files",
+            capability_scope!("files"),
             PermissionEffect::Allow,
             PermissionScope::Session,
         )
@@ -2125,7 +2153,7 @@ mod tests {
         let gw = ThresholdFixture::new(RiskLevel::Medium);
         gw.grant(
             Some("ses-8042867cb780e3dfc14959c1fe8d87e1"),
-            "tool1",
+            capability_scope!("tool1"),
             PermissionEffect::Allow,
             PermissionScope::Session,
         )
@@ -2160,14 +2188,14 @@ mod tests {
         let gw = ThresholdFixture::new(RiskLevel::Medium);
         gw.grant(
             Some("ses-8042867cb780e3dfc14959c1fe8d87e1"),
-            "tool1",
+            capability_scope!("tool1"),
             PermissionEffect::Allow,
             PermissionScope::Session,
         )
         .await;
         gw.grant(
             Some("ses-f54924ed1bcde71cb1d3e0e9d437e3e4"),
-            "tool1",
+            capability_scope!("tool1"),
             PermissionEffect::Deny,
             PermissionScope::Session,
         )
@@ -2197,7 +2225,7 @@ mod tests {
         assert!(
             gw.revoke_session_grant(
                 "ses-8042867cb780e3dfc14959c1fe8d87e1",
-                &CapabilityScope::from("tool1")
+                &CapabilityScope::try_new("tool1").unwrap()
             )
             .await
         );
@@ -2228,14 +2256,14 @@ mod tests {
         let gw = ThresholdFixture::new(RiskLevel::Safe);
         gw.grant(
             None,
-            "shell",
+            capability_scope!("shell"),
             PermissionEffect::Allow,
             PermissionScope::Always,
         )
         .await;
         gw.grant(
             Some("ses-8042867cb780e3dfc14959c1fe8d87e1"),
-            "files",
+            capability_scope!("files"),
             PermissionEffect::Allow,
             PermissionScope::Session,
         )
@@ -2256,7 +2284,7 @@ mod tests {
         assert!(
             gw.revoke_session_grant(
                 "ses-8042867cb780e3dfc14959c1fe8d87e1",
-                &CapabilityScope::from("files")
+                &CapabilityScope::try_new("files").unwrap()
             )
             .await
         );
@@ -2277,7 +2305,7 @@ mod tests {
         let gw = ThresholdFixture::new(RiskLevel::Safe);
         gw.grant(
             None,
-            "system.hibernate",
+            capability_scope!("system.hibernate"),
             PermissionEffect::Allow,
             PermissionScope::Always,
         )
@@ -2294,7 +2322,7 @@ mod tests {
         let gw = ThresholdFixture::new(RiskLevel::Low);
         gw.grant(
             Some("ses-8042867cb780e3dfc14959c1fe8d87e1"),
-            "tool1",
+            capability_scope!("tool1"),
             PermissionEffect::Allow,
             PermissionScope::Session,
         )
@@ -2475,14 +2503,14 @@ mod tests {
         let gw = ThresholdFixture::new(RiskLevel::Medium);
         gw.grant(
             None,
-            "files",
+            capability_scope!("files"),
             PermissionEffect::Allow,
             PermissionScope::Always,
         )
         .await;
         gw.grant(
             Some("ses-8042867cb780e3dfc14959c1fe8d87e1"),
-            "files",
+            capability_scope!("files"),
             PermissionEffect::Deny,
             PermissionScope::Session,
         )
@@ -2504,14 +2532,14 @@ mod tests {
         let gw = ThresholdFixture::new(RiskLevel::Medium);
         gw.grant(
             None,
-            "files",
+            capability_scope!("files"),
             PermissionEffect::Deny,
             PermissionScope::Always,
         )
         .await;
         gw.grant(
             None,
-            "files.read",
+            capability_scope!("files.read"),
             PermissionEffect::Allow,
             PermissionScope::Always,
         )
@@ -2529,14 +2557,14 @@ mod tests {
         let gw = ThresholdFixture::new(RiskLevel::Medium);
         gw.grant(
             None,
-            "files",
+            capability_scope!("files"),
             PermissionEffect::Allow,
             PermissionScope::Always,
         )
         .await;
         gw.grant(
             None,
-            "files.delete",
+            capability_scope!("files.delete"),
             PermissionEffect::Deny,
             PermissionScope::Always,
         )
@@ -2559,14 +2587,14 @@ mod tests {
         let gw = ThresholdFixture::new(RiskLevel::Medium);
         gw.grant(
             Some("ses-8042867cb780e3dfc14959c1fe8d87e1"),
-            "system.power",
+            capability_scope!("system.power"),
             PermissionEffect::Deny,
             PermissionScope::Session,
         )
         .await;
         gw.grant(
             Some("ses-8042867cb780e3dfc14959c1fe8d87e1"),
-            "system.power.lock",
+            capability_scope!("system.power.lock"),
             PermissionEffect::Allow,
             PermissionScope::Session,
         )
@@ -2589,14 +2617,14 @@ mod tests {
         let gw = ThresholdFixture::new(RiskLevel::Medium);
         gw.grant(
             None,
-            "shell",
+            capability_scope!("shell"),
             PermissionEffect::Deny,
             PermissionScope::Always,
         )
         .await;
         gw.grant(
             Some("ses-8042867cb780e3dfc14959c1fe8d87e1"),
-            "shell",
+            capability_scope!("shell"),
             PermissionEffect::Allow,
             PermissionScope::Session,
         )
@@ -2646,8 +2674,13 @@ mod tests {
         for case in LOCAL_TOOL_SECURITY_MATRIX {
             let input = matrix_input(case);
             let key = permission_key(case.tool_name, &input);
-            gw.grant(None, &key, PermissionEffect::Deny, PermissionScope::Always)
-                .await;
+            gw.grant(
+                None,
+                capability_scope!(&key),
+                PermissionEffect::Deny,
+                PermissionScope::Always,
+            )
+            .await;
             assert!(
                 matches!(
                     gw.check(None, case.tool_name, &input, case.risk_level)
@@ -3276,14 +3309,14 @@ mod tests {
 
         gw.grant(
             None,
-            &mcp_name,
+            capability_scope!(&mcp_name),
             PermissionEffect::Allow,
             PermissionScope::Always,
         )
         .await;
         gw.grant(
             Some("ses-8042867cb780e3dfc14959c1fe8d87e1"),
-            &skill_name,
+            capability_scope!(&skill_name),
             PermissionEffect::Allow,
             PermissionScope::Session,
         )

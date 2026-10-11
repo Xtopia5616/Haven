@@ -109,7 +109,8 @@ async fn mixed_confirmation_batch_pauses_only_real_gates_and_resumes_all_tools()
             "batch_gated",
             &serde_json::json!({}),
         )
-        .await;
+        .await
+        .unwrap();
     assert_eq!(gated_authorization.policy.risk_level, RiskLevel::High);
     assert!(matches!(
         tools
@@ -599,7 +600,8 @@ async fn run_session_contains_real_mcp_and_skill_adapter_panics() {
     ] {
         let policy = tools
             .resolve_operation_policy(None, tool_name, &input)
-            .await;
+            .await
+            .unwrap();
         tools
             .share_services()
             .authorization

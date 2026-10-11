@@ -54,10 +54,6 @@ impl Database {
             grant.scope == PermissionScope::Session,
             "session authorization grant must use session scope"
         );
-        anyhow::ensure!(
-            !grant.capability.is_empty(),
-            "session authorization grant capability cannot be empty"
-        );
         let conn = self.conn();
         conn.execute(
             "INSERT INTO session_authorization_grants

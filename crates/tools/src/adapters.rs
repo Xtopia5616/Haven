@@ -3,7 +3,7 @@ use haven_common::tools::{
     ToolAvailability, ToolCatalogGroup, ToolPresentation, ToolPrompt, ToolRootPresentation,
     ToolSource,
 };
-use haven_common::types::RiskLevel;
+use haven_common::types::{CapabilityScope, RiskLevel};
 use serde_json::Value;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
@@ -76,7 +76,10 @@ fn mcp_operation_spec(
         description: description.to_string().into(),
         fixed: Vec::new(),
         schema,
-        policy: OperationPolicy::external(name.to_string(), RiskLevel::High),
+        policy: OperationPolicy::external(
+            CapabilityScope::try_new(name).expect("provider-safe MCP tool name is a valid scope"),
+            RiskLevel::High,
+        ),
         policy_rule: None,
         catalog_group: ToolCatalogGroup::Mcp,
         presentation: ToolPresentation {
@@ -132,7 +135,10 @@ fn skill_operation_spec(name: &str, description: &str, schema: Value) -> Operati
         description: description.to_string().into(),
         fixed: Vec::new(),
         schema,
-        policy: OperationPolicy::external(name.to_string(), RiskLevel::High),
+        policy: OperationPolicy::external(
+            CapabilityScope::try_new(name).expect("provider-safe Skill name is a valid scope"),
+            RiskLevel::High,
+        ),
         policy_rule: None,
         catalog_group: ToolCatalogGroup::Skills,
         presentation: ToolPresentation {

@@ -229,7 +229,7 @@ Common shared contract 路径复核发现 Tools 根额外 re-export 了 Common �
 
 进一步核对 Common transcript API 时发现九个类型/常量同时由 `types` 模块和 Common 根导出，而所有仓内消费者均使用定义模块。现删除根 aliases，统一通过 `haven_common::types` 引用；transcript 语义与 wire contract 未改变（ADR 0938）。
 
-`CapabilityScope` 构造边界复核：配置与 SQLite grant 读取通过 `try_new` 拒绝非规范 key；JSON `Deserialize` 也改为走 `try_new`（ADR 0944）。模型工具参数在 Agent catalog admission 前按 schema 校验，失败调用不会进入授权 hook；因此 `permission_key(tool_name, params)` 的动态 `scope` / `operation` 输入只有通过 schema 的值，不需要 panic 或宽泛父级 fallback。可信 runtime policy builder 继续使用 `new` / `From`；若未来收紧为单一 fallible constructor，须同步让 policy resolver 表达构造失败，并保持 authorization 不执行。
+`CapabilityScope` 构造边界现只公开 fallible `try_new`；移除 `new` 与绕过校验的 `From`，层级候选只从已验证 scope 内部派生。授权 grant 与外部 Tool policy builder 只接收 typed capability；永久 grant 撤销也先解析并在无效输入时保持规则不变。运行时策略 resolver 与授权端口表达策略构造错误，Agent 在调用授权引擎和执行工具前失败关闭；定时调用与确认恢复同样适用。模型工具参数先经过 Agent catalog schema admission，但 resolver 仍独立验证 capability 边界（ADR 0944、0978）。
 
 进一步的 composition 调用图发现 AppState、Agent adapter factory 与 ApplicationRuntime 曾分别调用 `share_services()`。现由 AppState 在唯一 App composition root 取得一次 `ToolServices`，将 Agent 所需项作为显式构造参数传给 adapter，并把同一 bundle 交给 ApplicationRuntime 适配 App services；运行时和 adapter factory 不再另行读取 facade bundle（ADR 0924）。
 

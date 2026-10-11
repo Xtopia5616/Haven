@@ -142,12 +142,10 @@ pub(crate) async fn authorize_admin_request(
     let risk_level = admin_operations.risk_level(&request);
     let input = request.input();
     let network_access = request.network_access();
-    let policy = haven_tools::OperationPolicy::native(
-        &tool_name,
-        tool_name.clone().into(),
-        risk_level,
-        network_access,
-    );
+    let capability = haven_common::types::CapabilityScope::try_new(&tool_name)
+        .map_err(|error| log_err(ctx, error))?;
+    let policy =
+        haven_tools::OperationPolicy::native(&tool_name, capability, risk_level, network_access);
     let authorization_request = app_command_authorization_request(&tool_name, input, policy);
     let decision = state
         .runtime

@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use haven_common::types::RiskLevel;
+use haven_common::types::{CapabilityScope, RiskLevel};
 use serde_json::{Map, Value};
 use std::borrow::Cow;
 use std::sync::Arc;
@@ -181,7 +181,7 @@ pub(crate) fn root_policy(
     let attributes = crate::tool_contract::operation_attributes(name, concurrency.clone());
     OperationPolicy {
         risk_level,
-        capability: name.into(),
+        capability: CapabilityScope::try_new(name).expect("builtin operation name is canonical"),
         confirmation: crate::tool_contract::confirmation_for(
             risk_level,
             matches!(attributes.effect, crate::OperationEffect::ReadOnly),
@@ -605,7 +605,7 @@ mod tests {
                 schema: projected_schema,
                 policy: OperationPolicy {
                     risk_level: RiskLevel::Low,
-                    capability: "files.read".into(),
+                    capability: CapabilityScope::try_new("files.read").unwrap(),
                     confirmation: ConfirmationRequirement::SecurityPolicy,
                     idempotency: OperationIdempotency::Idempotent,
                     scope: ToolOperationScope::Session,

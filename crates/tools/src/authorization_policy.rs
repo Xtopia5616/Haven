@@ -8,7 +8,7 @@ use crate::tool_contract::{
     OperationPolicy, ToolConcurrency, ToolHandle, ToolOperationScope,
 };
 use crate::{AuthorizationRequest, RiskLevel, ToolsFacade};
-use haven_common::types::permission_key;
+use haven_common::types::CapabilityScope;
 use serde_json::Value;
 
 /// Resolves the operation contract and canonical input used by authorization.
@@ -26,9 +26,22 @@ impl<'a> ToolAuthorizationRequestResolver<'a> {
         tool: Option<&ToolHandle>,
         tool_name: &str,
         input: &Value,
+    ) -> Result<OperationPolicy, String> {
+        match tool {
+            Some(tool) => tool.try_operation_policy(input),
+            None => unknown_operation_policy(tool_name),
+        }
+    }
+
+    pub(crate) fn catalog_operation_policy_for(
+        tool: Option<&ToolHandle>,
+        tool_name: &str,
+        input: &Value,
     ) -> OperationPolicy {
-        tool.map(|tool| tool.operation_policy(input))
-            .unwrap_or_else(|| unknown_operation_policy(tool_name, input))
+        Self::operation_policy_for(tool, tool_name, input).unwrap_or_else(|error| {
+            tracing::warn!(tool = %tool_name, %error, "invalid operation policy; using restrictive catalog projection");
+            crate::tool_contract::restrictive_catalog_policy()
+        })
     }
 
     fn authorization_input_for(tool: Option<&ToolHandle>, input: &Value) -> Value {
@@ -41,7 +54,7 @@ impl<'a> ToolAuthorizationRequestResolver<'a> {
         session_id: Option<&str>,
         tool_name: &str,
         input: &Value,
-    ) -> OperationPolicy {
+    ) -> Result<OperationPolicy, String> {
         let tool = self.tools.get_tool_for_session(session_id, tool_name).await;
         Self::operation_policy_for(tool.as_ref(), tool_name, input)
     }
@@ -61,17 +74,18 @@ impl<'a> ToolAuthorizationRequestResolver<'a> {
         session_id: Option<&str>,
         tool_name: &str,
         input: &Value,
-    ) -> RiskLevel {
+    ) -> Result<RiskLevel, String> {
         let reported = self
             .operation_policy(session_id, tool_name, input)
-            .await
+            .await?
             .risk_level;
-        self.tools
+        Ok(self
+            .tools
             .coordinator
             .core
             .authorization
             .effective_risk(tool_name, reported)
-            .await
+            .await)
     }
 
     async fn authorization_request(
@@ -79,12 +93,17 @@ impl<'a> ToolAuthorizationRequestResolver<'a> {
         session_id: Option<&str>,
         tool_name: &str,
         input: &Value,
-    ) -> AuthorizationRequest {
+    ) -> Result<AuthorizationRequest, String> {
         // Keep the existing live lookup order: the operation contract and
         // canonical input are each resolved through the session-first lookup.
-        let policy = self.operation_policy(session_id, tool_name, input).await;
+        let policy = self.operation_policy(session_id, tool_name, input).await?;
         let authorization_input = self.authorization_input(session_id, tool_name, input).await;
-        AuthorizationRequest::new(session_id, tool_name, authorization_input, policy)
+        Ok(AuthorizationRequest::new(
+            session_id,
+            tool_name,
+            authorization_input,
+            policy,
+        ))
     }
 
     fn authorization_request_from_snapshot(
@@ -92,18 +111,24 @@ impl<'a> ToolAuthorizationRequestResolver<'a> {
         session_id: Option<&str>,
         tool_name: &str,
         input: &Value,
-    ) -> AuthorizationRequest {
+    ) -> Result<AuthorizationRequest, String> {
         let tool = catalog.get(tool_name);
         let authorization_input = Self::authorization_input_for(tool, input);
-        let policy = Self::operation_policy_for(tool, tool_name, input);
-        AuthorizationRequest::new(session_id, tool_name, authorization_input, policy)
+        let policy = Self::operation_policy_for(tool, tool_name, input)?;
+        Ok(AuthorizationRequest::new(
+            session_id,
+            tool_name,
+            authorization_input,
+            policy,
+        ))
     }
 }
 
-fn unknown_operation_policy(tool_name: &str, input: &Value) -> OperationPolicy {
-    OperationPolicy {
+fn unknown_operation_policy(tool_name: &str) -> Result<OperationPolicy, String> {
+    Ok(OperationPolicy {
         risk_level: RiskLevel::Safe,
-        capability: permission_key(tool_name, input).into(),
+        capability: CapabilityScope::try_new(crate::llm_tool_name(tool_name))
+            .map_err(|error| format!("invalid capability for unknown tool: {error}"))?,
         confirmation: ConfirmationRequirement::None,
         idempotency: OperationIdempotency::Unknown,
         scope: ToolOperationScope::Session,
@@ -111,7 +136,7 @@ fn unknown_operation_policy(tool_name: &str, input: &Value) -> OperationPolicy {
         effect: OperationEffect::ExternalEffect,
         data_sensitivity: DataSensitivity::None,
         network_access: NetworkAccess::None,
-    }
+    })
 }
 
 impl ToolsFacade {
@@ -120,7 +145,7 @@ impl ToolsFacade {
         session_id: Option<&str>,
         tool_name: &str,
         input: &Value,
-    ) -> RiskLevel {
+    ) -> Result<RiskLevel, String> {
         ToolAuthorizationRequestResolver::new(self)
             .risk_level(session_id, tool_name, input)
             .await
@@ -133,7 +158,7 @@ impl ToolsFacade {
         session_id: Option<&str>,
         tool_name: &str,
         input: &Value,
-    ) -> OperationPolicy {
+    ) -> Result<OperationPolicy, String> {
         ToolAuthorizationRequestResolver::new(self)
             .operation_policy(session_id, tool_name, input)
             .await
@@ -145,7 +170,7 @@ impl ToolsFacade {
         session_id: Option<&str>,
         tool_name: &str,
         input: &Value,
-    ) -> AuthorizationRequest {
+    ) -> Result<AuthorizationRequest, String> {
         ToolAuthorizationRequestResolver::new(self)
             .authorization_request(session_id, tool_name, input)
             .await
@@ -159,7 +184,7 @@ impl ToolsFacade {
         session_id: Option<&str>,
         tool_name: &str,
         input: &Value,
-    ) -> AuthorizationRequest {
+    ) -> Result<AuthorizationRequest, String> {
         ToolAuthorizationRequestResolver::authorization_request_from_snapshot(
             catalog, session_id, tool_name, input,
         )

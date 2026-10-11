@@ -453,7 +453,8 @@ fn operation_spec(
     let attributes = operation_policy_attributes(&metadata, concurrency.clone());
     let policy = OperationPolicy {
         risk_level,
-        capability: name.into(),
+        capability: haven_common::types::CapabilityScope::try_new(name)
+            .expect("builtin tool name is a valid capability"),
         confirmation: crate::tool_contract::confirmation_for(
             risk_level,
             matches!(attributes.effect, crate::OperationEffect::ReadOnly),
@@ -521,7 +522,7 @@ fn operation_specs(max_results: usize) -> Vec<OperationSpec> {
             schema: files_read_text_schema(),
             policy: OperationPolicy {
                 risk_level: RiskLevel::Low,
-                capability: "files.read".into(),
+                capability: haven_common::types::CapabilityScope::try_new("files.read").unwrap(),
                 confirmation: ConfirmationRequirement::None,
                 idempotency: OperationIdempotency::Idempotent,
                 scope: ToolOperationScope::Session,
@@ -556,7 +557,7 @@ fn operation_specs(max_results: usize) -> Vec<OperationSpec> {
             schema: files_outline_schema(),
             policy: OperationPolicy {
                 risk_level: RiskLevel::Low,
-                capability: "files.outline".into(),
+                capability: haven_common::types::CapabilityScope::try_new("files.outline").unwrap(),
                 confirmation: ConfirmationRequirement::None,
                 idempotency: OperationIdempotency::Idempotent,
                 scope: ToolOperationScope::Session,
@@ -591,7 +592,7 @@ fn operation_specs(max_results: usize) -> Vec<OperationSpec> {
             schema: files_summary_schema(),
             policy: OperationPolicy {
                 risk_level: RiskLevel::Low,
-                capability: "files.summary".into(),
+                capability: haven_common::types::CapabilityScope::try_new("files.summary").unwrap(),
                 confirmation: ConfirmationRequirement::None,
                 idempotency: OperationIdempotency::Idempotent,
                 scope: ToolOperationScope::Session,
@@ -626,7 +627,7 @@ fn operation_specs(max_results: usize) -> Vec<OperationSpec> {
             schema: files_search_schema(max_results),
             policy: OperationPolicy {
                 risk_level: RiskLevel::Low,
-                capability: "files.search".into(),
+                capability: haven_common::types::CapabilityScope::try_new("files.search").unwrap(),
                 confirmation: ConfirmationRequirement::None,
                 idempotency: OperationIdempotency::Idempotent,
                 scope: ToolOperationScope::Session,
@@ -661,7 +662,7 @@ fn operation_specs(max_results: usize) -> Vec<OperationSpec> {
             schema: system_info_schema(),
             policy: OperationPolicy {
                 risk_level: RiskLevel::Safe,
-                capability: "system.info".into(),
+                capability: haven_common::types::CapabilityScope::try_new("system.info").unwrap(),
                 confirmation: ConfirmationRequirement::None,
                 idempotency: OperationIdempotency::Idempotent,
                 scope: ToolOperationScope::Global,
@@ -1315,7 +1316,6 @@ mod tests {
         for contract in contracts {
             assert!(contract.schema.is_object(), "{} schema", contract.name);
             assert_eq!(contract.schema["additionalProperties"], json!(false));
-            assert!(!contract.policy.capability.is_empty());
             assert!(!contract.presentation.renderer.is_empty());
             assert!(!contract.presentation.icon.is_empty());
             assert!(!contract.prompt.when_to_use.is_empty());
@@ -1385,7 +1385,7 @@ mod tests {
             let attributes = operation_policy_attributes(&contract, concurrency.clone());
             let policy = OperationPolicy {
                 risk_level: RiskLevel::Low,
-                capability: name.into(),
+                capability: haven_common::types::CapabilityScope::try_new(name).unwrap(),
                 confirmation: crate::tool_contract::confirmation_for(
                     RiskLevel::Low,
                     matches!(attributes.effect, crate::OperationEffect::ReadOnly),
@@ -1431,7 +1431,7 @@ mod tests {
             json!({ "operation": "mcp_connect", "name": "server-a" }),
             OperationPolicy {
                 risk_level: contract.risk_override.unwrap_or(RiskLevel::Medium),
-                capability: name.into(),
+                capability: haven_common::types::CapabilityScope::try_new(name).unwrap(),
                 confirmation: crate::tool_contract::confirmation_for(
                     contract.risk_override.unwrap_or(RiskLevel::Medium),
                     matches!(attributes.effect, crate::OperationEffect::ReadOnly),
@@ -1569,7 +1569,7 @@ mod tests {
                 input,
                 OperationPolicy {
                     risk_level,
-                    capability: name.into(),
+                    capability: haven_common::types::CapabilityScope::try_new(name).unwrap(),
                     confirmation: crate::tool_contract::confirmation_for(
                         risk_level,
                         matches!(attributes.effect, crate::OperationEffect::ReadOnly),

@@ -754,7 +754,7 @@ async fn media_tool_usage_flows_to_event_and_database() {
         .authorization
         .grant(
             None,
-            "media.describe".into(),
+            haven_common::types::CapabilityScope::try_new("media.describe").unwrap(),
             haven_common::types::PermissionEffect::Allow,
             haven_common::types::PermissionScope::Always,
         )

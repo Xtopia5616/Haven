@@ -179,10 +179,17 @@ impl ToolStepContext {
 
 impl SessionSupervisor {
     async fn tool_step_context(&self, request: ToolStepRequest<'_>) -> ToolStepContext {
-        let risk_level = self
+        let risk_level = match self
             .authorization
             .risk_level(Some(request.session_id), request.tool_name, request.input)
-            .await;
+            .await
+        {
+            Ok(risk_level) => risk_level,
+            Err(error) => {
+                tracing::warn!(tool = %request.tool_name, %error, "could not resolve tool risk for step metadata; recording as critical");
+                RiskLevel::Critical
+            }
+        };
         ToolStepContext::new(request, risk_level)
     }
 
@@ -902,14 +909,16 @@ impl SessionSupervisor {
         receipt: Option<haven_tools::ConfirmationReceipt>,
         step_id: Option<&str>,
     ) -> anyhow::Result<ToolExecution> {
-        let risk_level = self
-            .authorization
-            .risk_level(session_id, tool_name, &input)
-            .await;
         let authorization_request = self
             .authorization
             .authorization_request(session_id, tool_name, &input)
-            .await;
+            .await
+            .map_err(anyhow::Error::msg)?;
+        let risk_level = self
+            .authorization
+            .risk_level(session_id, tool_name, &input)
+            .await
+            .map_err(anyhow::Error::msg)?;
         let mut confirmed: Option<bool> = None;
         if let Some(receipt) = receipt.as_ref()
             && let Err(reason) = self
@@ -1024,7 +1033,7 @@ impl SessionSupervisor {
         session_id: Option<&str>,
         tool_name: &str,
         input: &Value,
-    ) -> haven_tools::AuthorizationRequest {
+    ) -> Result<haven_tools::AuthorizationRequest, String> {
         self.authorization
             .authorization_request(session_id, tool_name, input)
             .await
@@ -1042,6 +1051,15 @@ impl SessionSupervisor {
         let request = self
             .scheduled_authorization_request(session_id, tool_name, input)
             .await;
+        let request = match request {
+            Ok(request) => request,
+            Err(reason) => {
+                return haven_tools::AuthorizationDecision::Blocked {
+                    reason: format!("operation policy could not be resolved: {reason}"),
+                    reason_code: haven_tools::AuthorizationReasonCode::DisabledOperation,
+                };
+            }
+        };
         self.authorization.authorize(&request).await
     }
 
@@ -1182,13 +1200,11 @@ impl SessionSupervisor {
                     Some(receipt.capability.clone())
                 } else {
                     let session_id = request.session_id.as_deref()?;
-                    Some(
-                        self.authorization
-                            .authorization_request(Some(session_id), tool_name, tool_input)
-                            .await
-                            .policy
-                            .capability,
-                    )
+                    self.authorization
+                        .authorization_request(Some(session_id), tool_name, tool_input)
+                        .await
+                        .ok()
+                        .map(|request| request.policy.capability)
                 }
             }
             crate::interaction::InteractionDetails::Ask { .. } => None,
@@ -1311,7 +1327,8 @@ impl SessionSupervisor {
         let authorization_request = self
             .authorization
             .authorization_request(Some(session_id), tool_name, tool_input)
-            .await;
+            .await
+            .map_err(anyhow::Error::msg)?;
         let capability = receipt
             .map(|receipt| receipt.capability.clone())
             .unwrap_or_else(|| authorization_request.policy.capability.clone());
@@ -1822,12 +1839,20 @@ impl SessionSupervisor {
         input: &Value,
         catalog: &haven_tools::ToolCatalogSnapshot,
     ) -> haven_tools::AuthorizationDecision {
-        let authorization_request = self.authorization.authorization_request_from_catalog(
+        let authorization_request = match self.authorization.authorization_request_from_catalog(
             catalog,
             Some(session_id),
             tool_name,
             input,
-        );
+        ) {
+            Ok(request) => request,
+            Err(reason) => {
+                return haven_tools::AuthorizationDecision::Blocked {
+                    reason: format!("operation policy could not be resolved: {reason}"),
+                    reason_code: haven_tools::AuthorizationReasonCode::DisabledOperation,
+                };
+            }
+        };
         self.authorization.authorize(&authorization_request).await
     }
 
@@ -1932,6 +1957,46 @@ mod scheduled_authorization_tests {
         (supervisor, tools, database, directory)
     }
 
+    #[tokio::test]
+    async fn invalid_capability_policy_fails_before_tool_execution() {
+        let (supervisor, tools, _database, _directory) = test_supervisor();
+        let session_id = "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        let executed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let executed_by_tool = executed.clone();
+        tools
+            .share_services()
+            .tool_catalog_test_support
+            .register_session_tool(
+                session_id,
+                Arc::new(PolicyTestTool {
+                    name: "files".into(),
+                    risk_level: RiskLevel::High,
+                    on_execute: Some(Arc::new(move || {
+                        executed_by_tool.store(true, std::sync::atomic::Ordering::SeqCst);
+                    })),
+                }),
+            )
+            .await;
+
+        let result = supervisor
+            .execute_gated(
+                Some(session_id),
+                "files",
+                json!({"scope": "bad scope", "operation": "read"}),
+                CancellationToken::new(),
+                None,
+                None,
+            )
+            .await;
+        let error = match result {
+            Err(error) => error,
+            Ok(_) => panic!("invalid capability policy unexpectedly reached execution"),
+        };
+
+        assert!(error.to_string().contains("invalid capability scope"));
+        assert!(!executed.load(std::sync::atomic::Ordering::SeqCst));
+    }
+
     fn future_receipt(
         confirmation_id: haven_common::types::ConfirmId,
         capability: &str,
@@ -2033,7 +2098,8 @@ mod scheduled_authorization_tests {
 
         let request = supervisor
             .scheduled_authorization_request(Some(session_id), tool_name, &input)
-            .await;
+            .await
+            .unwrap();
         assert_eq!(request.session_id.as_deref(), Some(session_id));
         assert_eq!(request.tool_name, tool_name);
         assert_eq!(request.input, input);
@@ -2133,7 +2199,8 @@ mod scheduled_authorization_tests {
 
         let authorization_request = supervisor
             .scheduled_authorization_request(Some(&session_id), tool_name, &input)
-            .await;
+            .await
+            .unwrap();
         let receipt = match supervisor
             .authorization
             .authorize(&authorization_request)
@@ -2334,7 +2401,8 @@ mod scheduled_authorization_tests {
 
         let authorization_request = supervisor
             .scheduled_authorization_request(Some(&session.id), tool_name, &input)
-            .await;
+            .await
+            .unwrap();
         let receipt = match supervisor
             .authorization
             .authorize(&authorization_request)
@@ -2564,7 +2632,8 @@ mod scheduled_authorization_tests {
             .await;
         let authorization_request = supervisor
             .scheduled_authorization_request(Some(&session.id), tool_name, &input)
-            .await;
+            .await
+            .unwrap();
         let receipt = match supervisor
             .authorization
             .authorize(&authorization_request)

@@ -425,7 +425,7 @@ impl ToolCatalogSnapshot {
     }
 
     pub fn operation_policy(&self, name: &str, input: &serde_json::Value) -> OperationPolicy {
-        ToolAuthorizationRequestResolver::operation_policy_for(self.get(name), name, input)
+        ToolAuthorizationRequestResolver::catalog_operation_policy_for(self.get(name), name, input)
     }
 
     pub fn manifest(&self, name: &str) -> Option<ToolManifest> {

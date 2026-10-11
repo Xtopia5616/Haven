@@ -260,13 +260,11 @@ async fn authorization_policy_matches_live_and_snapshot_session_overlay() {
     let catalog = mgr.tool_catalog_snapshot(session_id).await;
     let live = mgr
         .resolve_authorization_request(Some(session_id), tool_name, &input)
-        .await;
-    let snapshot = mgr.resolve_authorization_request_from_snapshot(
-        &catalog,
-        Some(session_id),
-        tool_name,
-        &input,
-    );
+        .await
+        .unwrap();
+    let snapshot = mgr
+        .resolve_authorization_request_from_snapshot(&catalog, Some(session_id), tool_name, &input)
+        .unwrap();
 
     assert_eq!(live.session_id.as_deref(), Some(session_id));
     assert_eq!(live.tool_name, tool_name);
@@ -283,13 +281,16 @@ async fn authorization_policy_matches_live_and_snapshot_session_overlay() {
     let missing_name = "mcp__missing__invoke";
     let live_unknown = mgr
         .resolve_authorization_request(Some(session_id), missing_name, &input)
-        .await;
-    let snapshot_unknown = mgr.resolve_authorization_request_from_snapshot(
-        &catalog,
-        Some(session_id),
-        missing_name,
-        &input,
-    );
+        .await
+        .unwrap();
+    let snapshot_unknown = mgr
+        .resolve_authorization_request_from_snapshot(
+            &catalog,
+            Some(session_id),
+            missing_name,
+            &input,
+        )
+        .unwrap();
     assert_eq!(snapshot_unknown.session_id, live_unknown.session_id);
     assert_eq!(snapshot_unknown.tool_name, live_unknown.tool_name);
     assert_eq!(snapshot_unknown.input, live_unknown.input);
@@ -1029,8 +1030,65 @@ async fn test_tools_facade_resolve_risk_level_unknown() {
     let mgr = ToolsFacade::new();
     let risk = mgr
         .resolve_risk_level(None, "nonexistent", &json!({}))
-        .await;
+        .await
+        .unwrap();
     assert_eq!(risk, RiskLevel::Safe);
+}
+
+#[tokio::test]
+async fn authorization_policy_rejects_schema_valid_noncanonical_routing_scope() {
+    struct RoutedTool;
+
+    #[async_trait::async_trait]
+    impl Tool for RoutedTool {
+        fn name(&self) -> String {
+            "files".into()
+        }
+
+        fn description(&self) -> String {
+            "routing policy validation probe".into()
+        }
+
+        fn risk_level(&self, _: &Value) -> RiskLevel {
+            RiskLevel::High
+        }
+
+        fn input_schema(&self) -> Value {
+            json!({
+                "type": "object",
+                "properties": {
+                    "scope": {"type": "string"},
+                    "operation": {"type": "string"}
+                },
+                "required": ["scope", "operation"],
+                "additionalProperties": false
+            })
+        }
+
+        async fn execute(&self, _: Value, _: CancellationToken) -> anyhow::Result<ToolResult> {
+            Ok(ToolResult::ok(json!({"executed": true})))
+        }
+    }
+
+    let mgr = ToolsFacade::new();
+    mgr.register_for_session("ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Arc::new(RoutedTool))
+        .await;
+    let input = json!({"scope": "bad scope", "operation": "read"});
+    let tool = mgr
+        .get_tool_for_session(Some("ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"), "files")
+        .await
+        .unwrap();
+    assert!(tool.validate_input(&input).is_ok());
+
+    let error = mgr
+        .resolve_authorization_request(
+            Some("ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+            "files",
+            &input,
+        )
+        .await
+        .unwrap_err();
+    assert!(error.contains("invalid capability scope"));
 }
 
 /// End-to-end: execute_tool fast-fails once the per-tool circuit opens

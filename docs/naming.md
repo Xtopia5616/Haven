@@ -353,7 +353,7 @@ Session title 读取 API 必须在名字中表达字段投影：`SessionStore::g
 
 运行时实体 ID newtype（目前为 `ConfirmId`、`RecordingId`）通过 `new()` 调用 Common generator 生成；字符串输入用 `TryFrom` 校验类型固定前缀，Serde 反序列化执行同一校验。tuple 形状按项目 contract 保持公开字符串序列化，并标记 `#[non_exhaustive]` 阻止其他 crate 绕过验证直接构造；不保留无验证 `From<String>`。
 
-共享授权身份 `CapabilityScope` 由 Common 定义；所有 Rust 调用方统一从 `haven_common::types::CapabilityScope` 导入，不经 Tools 根 alias。
+共享授权身份 `CapabilityScope` 由 Common 定义；所有 Rust 调用方统一从 `haven_common::types::CapabilityScope` 导入，不经 Tools 根 alias。新值只通过 fallible `CapabilityScope::try_new` 构造，禁止无校验 `new` / `From` 转换；Serde 反序列化执行相同校验。每次调用的 policy resolver 返回 `Result`，构造失败必须在授权与执行前失败关闭。
 
 Common transcript contracts（`CanonicalMessage`、`CanonicalRole`、`CanonicalToolCall`、`ContentPart`、`FollowUp`、`InjectSource`、`MessageAttachment`、`TranscriptMessageKind`）统一从 `haven_common::types` 导入；不使用 Common crate root aliases。
 

@@ -162,10 +162,10 @@ impl OperationPolicy {
     /// inspectable by Haven. External capabilities intentionally remain
     /// `Opaque` even when the adapter happens to be used for a read request;
     /// the network/sandbox policy must not infer trust from a tool name.
-    pub fn external(capability: impl Into<CapabilityScope>, risk_level: RiskLevel) -> Self {
+    pub fn external(capability: CapabilityScope, risk_level: RiskLevel) -> Self {
         Self {
             risk_level,
-            capability: capability.into(),
+            capability,
             confirmation: if risk_level >= RiskLevel::Critical {
                 ConfirmationRequirement::Required
             } else {
@@ -315,6 +315,27 @@ pub(crate) fn synthesize_operation_policy(
         effect: attributes.effect,
         data_sensitivity: attributes.data_sensitivity,
         network_access: attributes.network_access,
+    }
+}
+
+pub(crate) fn restrictive_catalog_policy() -> OperationPolicy {
+    static CAPABILITY: std::sync::OnceLock<CapabilityScope> = std::sync::OnceLock::new();
+    let capability = CAPABILITY
+        .get_or_init(|| {
+            CapabilityScope::try_new("haven.invalid_operation")
+                .expect("internal catalog fallback capability is canonical")
+        })
+        .clone();
+    OperationPolicy {
+        risk_level: RiskLevel::Critical,
+        capability,
+        confirmation: ConfirmationRequirement::Required,
+        idempotency: OperationIdempotency::Unknown,
+        scope: ToolOperationScope::Session,
+        concurrency: ToolConcurrency::Exclusive,
+        effect: OperationEffect::ExternalEffect,
+        data_sensitivity: DataSensitivity::Sensitive,
+        network_access: NetworkAccess::Opaque,
     }
 }
 
@@ -1181,24 +1202,35 @@ pub trait Tool: Send + Sync {
         None
     }
 
-    /// Canonical policy for the concrete invocation. Tools with a
-    /// [`crate::OperationSpec`] return that spec's policy.
-    /// Other tools synthesize one confirmation table from risk only.
-    fn operation_policy(&self, input: &Value) -> OperationPolicy {
+    /// Resolve the canonical policy for the concrete invocation. This path is
+    /// fallible because routing fields may contribute to the capability key.
+    fn try_operation_policy(&self, input: &Value) -> Result<OperationPolicy, String> {
         if let Some(spec) = self.operation_spec() {
-            return spec.policy_for(input);
+            return Ok(spec.policy_for(input));
         }
         let name = self.name();
         let concurrency = self.concurrency(input);
-        synthesize_operation_policy(
+        let capability =
+            CapabilityScope::try_new(permission_key(&name, &self.authorization_input(input)))
+                .map_err(|error| format!("invalid capability scope for tool '{name}': {error}"))?;
+        Ok(synthesize_operation_policy(
             &name,
             input,
             self.risk_level(input),
-            permission_key(&name, &self.authorization_input(input)).into(),
+            capability,
             self.idempotency(input),
             self.operation_scope(input),
             concurrency,
-        )
+        ))
+    }
+
+    /// Non-authorization policy projection for catalog metadata. Authorization
+    /// callers must use `try_operation_policy` and handle invalid input.
+    fn operation_policy(&self, input: &Value) -> OperationPolicy {
+        self.try_operation_policy(input).unwrap_or_else(|error| {
+            tracing::warn!(tool = %self.name(), %error, "invalid operation policy; using restrictive catalog projection");
+            restrictive_catalog_policy()
+        })
     }
 
     /// Backend-owned metadata for prompt/UI/catalog consumers. It is not
@@ -1562,21 +1594,24 @@ where
             .unwrap_or(self.catalog_group)
     }
 
-    fn operation_policy(&self, input: &Value) -> OperationPolicy {
+    fn try_operation_policy(&self, input: &Value) -> Result<OperationPolicy, String> {
         if let Some(policy) = typed_spec_policy(self, input) {
-            return policy;
+            return Ok(policy);
         }
         let name = self.name();
         let concurrency = self.concurrency(input);
-        synthesize_operation_policy(
+        let capability =
+            CapabilityScope::try_new(permission_key(&name, &self.authorization_input(input)))
+                .map_err(|error| format!("invalid capability scope for tool '{name}': {error}"))?;
+        Ok(synthesize_operation_policy(
             &name,
             input,
             self.risk_level(input),
-            permission_key(&name, &self.authorization_input(input)).into(),
+            capability,
             self.idempotency(input),
             self.operation_scope(input),
             concurrency,
-        )
+        ))
     }
 
     fn risk_level(&self, input: &Value) -> RiskLevel {
