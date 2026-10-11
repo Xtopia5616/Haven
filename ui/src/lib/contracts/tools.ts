@@ -1,17 +1,14 @@
-/**
- * ToolsView command types derived from generated Rust wire DTOs.
- * MCP wire validation and renderer projections live in contracts/mcp.ts.
- */
+/** Tools command types; Skills/MCP response projections live in their domain contracts. */
 import type {
 	McpServerConfig as GeneratedMcpServerConfig,
-	SkillInfo as GeneratedSkillInfo,
-	SkillExecutionResponse as GeneratedSkillExecutionResponse,
 	BuiltinToolManifestListResponse as GeneratedBuiltinToolManifestListResponse,
+	SkillExecutionResponse as GeneratedSkillExecutionResponse,
 	TauriCommandRequest,
 } from './generatedCommands.ts';
+import type { SkillInfoView } from './skills.ts';
 
 export type BuiltinToolManifestListResponse = GeneratedBuiltinToolManifestListResponse;
-export type SkillInfo = GeneratedSkillInfo;
+export type SkillInfo = SkillInfoView;
 export type SkillExecutionResponse = GeneratedSkillExecutionResponse;
 export type McpServerConfig = GeneratedMcpServerConfig;
 export type McpServerConfigInput = TauriCommandRequest<'add_mcp_server'>['config'];

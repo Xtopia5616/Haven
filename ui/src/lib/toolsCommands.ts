@@ -1,6 +1,7 @@
 import { invoke } from '$lib/tauri.ts';
 import { parseMcpRefreshResult, parseMcpServerSnapshots } from './contracts/mcp.ts';
 import type { McpRefreshResultView, McpServerSnapshotView } from './contracts/mcp.ts';
+import { parseSkillExecutionResponse, parseSkillInfoList } from './contracts/skills.ts';
 import type {
 	ReconnectMcpServerRequest,
 	RemoveMcpServerRequest,
@@ -28,7 +29,7 @@ export function listMcpServers(): Promise<McpServerSnapshotView[]> {
 
 /** Read the current Skill metadata projection. */
 export function listSkills(): Promise<SkillInfo[]> {
-	return invoke('list_skills');
+	return invoke('list_skills').then((value: unknown) => parseSkillInfoList(value));
 }
 
 /** Clear local tool circuit state. */
@@ -48,7 +49,9 @@ export function setSkillEnabled(request: SetSkillEnabledRequest): Promise<void> 
 
 /** Execute a Skill through the same backend authorization path used by Agent calls. */
 export function executeSkill(request: ExecuteSkillRequest): Promise<SkillExecutionResponse> {
-	return invoke('execute_skill', request);
+	return invoke('execute_skill', request).then((value: unknown) =>
+		parseSkillExecutionResponse(value),
+	);
 }
 
 /** Re-scan the configured skills directory and rebuild the tool catalog. */

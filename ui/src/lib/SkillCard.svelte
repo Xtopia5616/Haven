@@ -37,7 +37,7 @@
 			icon: 'copy',
 			action: () => copyText(skill.description || '', '描述'),
 		},
-		...(!skill.manifest_error && (skill.enabled || skill.has_script)
+		...(!skill.manifestError && (skill.enabled || skill.hasScript)
 			? [
 					skill.enabled
 						? {
@@ -105,7 +105,7 @@
 			{/if}
 			<span class="meta-badge lang">{skill.language}</span>
 			<StatusBadge
-				label={skill.manifest_error
+				label={skill.manifestError
 					? '清单无效'
 					: skill.executable
 						? '已启用'
@@ -114,9 +114,9 @@
 							: '已停用'}
 				tone={skill.executable ? 'success' : 'error'}
 			/>
-			{#if skill.manifest_error}
+			{#if skill.manifestError}
 				<span class="script-badge script-badge--missing">清单无法解析</span>
-			{:else if skill.has_script}
+			{:else if skill.hasScript}
 				<span class="script-badge">含脚本</span>
 			{:else}
 				<span class="script-badge script-badge--missing">缺少入口脚本，无法执行</span>
@@ -127,22 +127,22 @@
 		<MaterialSwitch
 			checked={skill.enabled}
 			ariaLabel={`切换技能 ${skill.name}`}
-			disabled={Boolean(skill.manifest_error) || (!skill.has_script && !skill.enabled)}
+			disabled={Boolean(skill.manifestError) || (!skill.hasScript && !skill.enabled)}
 			onChange={handleToggle}
 		/>
 	{/snippet}
 	{#snippet children()}
 		<p class="expandable-context-card-description">{skill.description || '暂无描述'}</p>
-		{#if skill.manifest_error}
-			<p class="skill-unavailable-reason" role="status">{skill.manifest_error}</p>
-		{:else if skill.has_script && skill.unavailable_reason}
-			<p class="skill-unavailable-reason" role="status">{skill.unavailable_reason}</p>
+		{#if skill.manifestError}
+			<p class="skill-unavailable-reason" role="status">{skill.manifestError}</p>
+		{:else if skill.hasScript && skill.unavailableReason}
+			<p class="skill-unavailable-reason" role="status">{skill.unavailableReason}</p>
 		{/if}
 
 		<h4>技能路径</h4>
-		<code class="path">{skill.root}</code>
+		<code class="path">{skill.rootPath}</code>
 
-		{#if skill.has_script}
+		{#if skill.hasScript}
 			<h4>执行预览</h4>
 			<div class="preview-row">
 				<textarea

@@ -81,6 +81,21 @@ function mcpServer(name: string, status: string) {
 	};
 }
 
+function skillInfo(name: string) {
+	return {
+		name,
+		description: `${name} skill`,
+		version: null,
+		language: 'markdown',
+		enabled: false,
+		executable: false,
+		root: `C:\\skills\\${name}`,
+		has_script: false,
+		unavailable_reason: null,
+		manifest_error: null,
+	};
+}
+
 describe('ToolsView toolbar actions', () => {
 	beforeEach(() => {
 		registerAppListener.mockClear();
@@ -90,7 +105,7 @@ describe('ToolsView toolbar actions', () => {
 			if (command === 'list_builtin_tool_manifests') return { tools: [] };
 			if (command === 'list_mcp_servers') return [];
 			if (command === 'list_skills') {
-				return [{ name: 'docs', enabled: false, language: 'markdown', has_script: false }];
+				return [skillInfo('docs')];
 			}
 			return undefined;
 		});
@@ -151,10 +166,7 @@ describe('ToolsView toolbar actions', () => {
 				return [mcpServer('docs-server', 'Disconnected')];
 			}
 			if (command === 'list_skills') {
-				return [
-					{ name: 'docs', enabled: false, language: 'markdown', has_script: false },
-					{ name: 'research', enabled: false, language: 'markdown', has_script: false },
-				];
+				return [skillInfo('docs'), skillInfo('research')];
 			}
 			return undefined;
 		});

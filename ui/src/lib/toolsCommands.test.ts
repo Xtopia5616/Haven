@@ -46,6 +46,22 @@ function makeMcpServerSnapshot(overrides: Record<string, unknown> = {}) {
 	};
 }
 
+function makeSkillInfo(overrides: Record<string, unknown> = {}) {
+	return {
+		name: 'meeting-notes',
+		description: 'Capture meeting notes',
+		version: '1.0.0',
+		language: 'python',
+		enabled: true,
+		executable: true,
+		root: 'C:\\skills\\meeting-notes',
+		has_script: true,
+		unavailable_reason: null,
+		manifest_error: null,
+		...overrides,
+	};
+}
+
 describe('ToolsView command boundary', () => {
 	beforeEach(() => {
 		invoke.mockReset();
@@ -102,7 +118,27 @@ describe('ToolsView command boundary', () => {
 			},
 		]);
 		expect(servers[0]).not.toHaveProperty('last_error');
-		expect(skills).toBe(emptySkills);
+		expect(skills).toEqual(emptySkills);
+	});
+
+	it('maps Skills list responses to the renderer view', async () => {
+		invoke.mockResolvedValueOnce([makeSkillInfo()]);
+
+		expect(await listSkills()).toEqual([
+			{
+				name: 'meeting-notes',
+				description: 'Capture meeting notes',
+				version: '1.0.0',
+				language: 'python',
+				enabled: true,
+				executable: true,
+				rootPath: 'C:\\skills\\meeting-notes',
+				hasScript: true,
+				unavailableReason: null,
+				manifestError: null,
+			},
+		]);
+		expect(invoke).toHaveBeenCalledWith('list_skills');
 	});
 
 	it('rejects MCP server snapshots with a status outside the current Rust enum', async () => {
@@ -275,7 +311,7 @@ describe('ToolsView command boundary', () => {
 		const response = { success: true, output: { summary: 'ready' }, error: null };
 		invoke.mockResolvedValueOnce(response);
 
-		expect(await executeSkill(request)).toBe(response);
+		expect(await executeSkill(request)).toEqual(response);
 		expect(invoke).toHaveBeenCalledWith('execute_skill', request);
 
 		const confirmationError = new Error('{"requires_confirmation":true}');

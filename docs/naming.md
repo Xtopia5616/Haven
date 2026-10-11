@@ -223,6 +223,8 @@ Tools manifest 的 generated `ToolManifest` 是 Rust snake_case wire DTO；rende
 
 MCP 列表命令的 generated `McpServerSnapshot` 保持 Rust snake_case wire shape；`contracts/mcp.ts` 校验完整快照、profile name 唯一性和动态 JSON Schema，再映射为 camelCase `McpServerSnapshotView` / `McpToolInfoView`。刷新结果以 profile name 表示，四个分类数组逐项校验精确身份与组内唯一性；`updated` 与 `failed` 可重叠，因为前者记录已尝试重连、后者记录重连失败（ADR 1002）。
 
+Skills 列表的 generated `SkillInfo` 保持 Rust snake_case wire shape；`contracts/skills.ts` 校验完整行和列表内 name 唯一性，再映射为 camelCase `SkillInfoView`，将 `root` 表达为 `rootPath`。`execute_skill` 在 adapter 校验固定 `success` / `output` / `error` envelope，动态 JSON `output` 保持开放并复用 generated `SkillExecutionResponse`（ADR 1003）。
+
 严格生成的 IPC `LlmConnectionReport` 与容忍缺失可选显示信息的 `LlmConnectionReportView` 分属 wire 与 renderer 视图；共享的 status/reason 枚举直接引用生成契约，归一化函数负责将不可信返回值投影为 view。
 
 交互的 generated `InteractionOwner` 保持 snake_case wire shape；App contract 映射出的 camelCase `InteractionOwnerView` 供 reducer 路由和用户操作使用，回发命令时再由 `interactionOwnerToWire` 转回 generated wire 类型。
