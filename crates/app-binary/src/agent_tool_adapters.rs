@@ -12,10 +12,10 @@ use haven_agent::{
 use haven_common::types::{MessageAttachment, RiskLevel};
 use haven_tools::{
     AuthorizationDecision, AuthorizationPort, AuthorizationRequest, ConfirmationReceipt,
-    LiveOutputSinkPort, Skill, SkillCatalogPort, SkillExecutionPort, ToolCatalogSnapshot,
-    ToolRegistration, ToolResult, ToolRunAgentCapability, ToolRunCompletion,
-    ToolRunCompletionCapability, ToolRunHistoryQuery, ToolRunLifecycleEventSink, ToolRunListView,
-    ToolRunManagementCapability, ToolRunRestoreSummary, ToolRunView, ToolsFacade,
+    LiveOutputSinkPort, SkillCatalogPort, ToolCatalogSnapshot, ToolRegistration, ToolResult,
+    ToolRunAgentCapability, ToolRunCompletion, ToolRunCompletionCapability, ToolRunHistoryQuery,
+    ToolRunLifecycleEventSink, ToolRunListView, ToolRunManagementCapability, ToolRunRestoreSummary,
+    ToolRunView, ToolsFacade,
 };
 #[cfg(test)]
 use haven_tools::{ScheduledToolRunSpec, ToolRunTestSupportPort};
@@ -140,38 +140,6 @@ impl AppToolRunPort for ToolsFacadeAppToolRunAdapter {
     #[cfg(test)]
     async fn schedule(&self, spec: ScheduledToolRunSpec) -> anyhow::Result<String> {
         self.test_support.schedule(spec).await
-    }
-}
-
-#[async_trait]
-pub(crate) trait AppSkillExecutionPort: Send + Sync {
-    async fn execute(
-        &self,
-        skill: &Skill,
-        params: &Value,
-        cancel: tokio_util::sync::CancellationToken,
-    ) -> anyhow::Result<ToolResult>;
-}
-
-pub(crate) fn app_skill_execution_port(
-    skill_execution: Arc<dyn SkillExecutionPort>,
-) -> Arc<dyn AppSkillExecutionPort> {
-    Arc::new(ToolsFacadeSkillExecutionAdapter { skill_execution })
-}
-
-struct ToolsFacadeSkillExecutionAdapter {
-    skill_execution: Arc<dyn SkillExecutionPort>,
-}
-
-#[async_trait]
-impl AppSkillExecutionPort for ToolsFacadeSkillExecutionAdapter {
-    async fn execute(
-        &self,
-        skill: &Skill,
-        params: &Value,
-        cancel: tokio_util::sync::CancellationToken,
-    ) -> anyhow::Result<ToolResult> {
-        self.skill_execution.execute(skill, params, cancel).await
     }
 }
 

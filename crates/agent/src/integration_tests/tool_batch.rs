@@ -562,7 +562,8 @@ async fn run_session_contains_real_mcp_and_skill_adapter_panics() {
         "# Skill: panic-skill\n\n## Metadata\n- description: panics for adapter-boundary testing\n- language: python\n\n## Instructions\nTest fixture.\n",
     )
     .unwrap();
-    let skill_registry = tools.share_services().skills;
+    let tool_services = tools.share_services();
+    let skill_registry = Arc::clone(&tool_services.skills);
     skill_registry
         .set_config(
             Some(skill_root.path().to_path_buf()),
@@ -571,8 +572,9 @@ async fn run_session_contains_real_mcp_and_skill_adapter_panics() {
         .await
         .unwrap();
     let skill = Arc::new(
-        skill_registry
-            .get_skill("panic-skill")
+        tool_services
+            .tool_catalog_test_support
+            .get_skill_fixture("panic-skill")
             .await
             .expect("discover valid skill test fixture"),
     );

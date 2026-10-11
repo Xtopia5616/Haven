@@ -8,8 +8,7 @@
 //! deterministic order.
 
 use crate::agent_tool_adapters::{
-    AppLiveOutputPort, AppSkillExecutionPort, AppToolRunPort, app_live_output_port,
-    app_skill_execution_port, app_tool_run_port,
+    AppLiveOutputPort, AppToolRunPort, app_live_output_port, app_tool_run_port,
 };
 use crate::config_runtime::RuntimeConfigCoordinator;
 use crate::desktop::DesktopShell;
@@ -18,8 +17,8 @@ use haven_common::config::ConfigService;
 use haven_input::InputPipeline;
 use haven_memory::{MemoryFactStore, SessionStore};
 use haven_tools::{
-    AuthorizationPort, ManagedAssetLifecyclePort, McpRuntimePort, SkillCatalogPort, ToolServices,
-    ToolsFacade,
+    AuthorizationPort, ManagedAssetLifecyclePort, McpRuntimePort, SkillCatalogPort,
+    SkillExecutionPort, ToolServices, ToolsFacade,
 };
 use std::future::Future;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -81,7 +80,7 @@ pub(crate) struct AppServices {
     pub(crate) mcp: Arc<dyn McpRuntimePort>,
     pub(crate) mcp_tool_caller: Arc<dyn haven_llm::McpToolCaller>,
     pub(crate) skills: Arc<dyn SkillCatalogPort>,
-    pub(crate) skill_execution: Arc<dyn AppSkillExecutionPort>,
+    pub(crate) skill_execution: Arc<dyn SkillExecutionPort>,
     pub(crate) authorization: Arc<dyn AuthorizationPort>,
     pub(crate) tool_runs: Arc<dyn AppToolRunPort>,
     pub(crate) live_output: Arc<dyn AppLiveOutputPort>,
@@ -91,7 +90,6 @@ pub(crate) struct AppServices {
 impl ApplicationRuntime {
     pub(crate) fn new(runtime_services: RuntimeServices) -> Self {
         let tool_services = runtime_services.tool_services;
-        let skill_execution = app_skill_execution_port(tool_services.skill_execution);
         let tool_runs = app_tool_run_port(
             tool_services.tool_run_management,
             #[cfg(test)]
@@ -102,7 +100,7 @@ impl ApplicationRuntime {
             mcp: tool_services.mcp,
             mcp_tool_caller: tool_services.mcp_tool_caller,
             skills: tool_services.skills,
-            skill_execution,
+            skill_execution: tool_services.skill_execution,
             authorization: tool_services.authorization,
             tool_runs,
             live_output,

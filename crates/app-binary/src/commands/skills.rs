@@ -204,20 +204,12 @@ pub async fn execute_skill(
         }
     }
 
-    let skill = state
-        .runtime
-        .services
-        .skills
-        .get_skill(&name)
-        .await
-        .ok_or_else(|| log_err("execute_skill", format!("skill '{}' not found", name)))?;
-
     let cancel = tokio_util::sync::CancellationToken::new();
     let result = state
         .runtime
         .services
         .skill_execution
-        .execute(&skill, &params, cancel)
+        .execute_skill(&name, &params, cancel)
         .await
         .map_err(|e| log_err("execute_skill", e))?;
 

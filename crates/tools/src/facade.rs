@@ -4,16 +4,18 @@ use crate::live_output::LiveOutputHub;
 use crate::registry::OperationRegistry;
 use crate::skill_runner::SkillRunner;
 use haven_mcp::McpManager;
+#[cfg(feature = "test-support")]
+use haven_skills::Skill;
 use haven_skills::SkillRegistry;
 use std::path::PathBuf;
 use tokio_util::sync::CancellationToken;
 
-/// Capability for running a validated Skill in its isolated subprocess.
+/// Capability for resolving and running a named Skill inside the Tools owner.
 #[async_trait::async_trait]
 pub trait SkillExecutionPort: Send + Sync {
-    async fn execute(
+    async fn execute_skill(
         &self,
-        skill: &crate::Skill,
+        skill_name: &str,
         params: &Value,
         cancel: tokio_util::sync::CancellationToken,
     ) -> anyhow::Result<ToolResult>;
@@ -131,8 +133,6 @@ pub trait SkillCatalogPort: Send + Sync {
 
     async fn get_skill_info(&self, name: &str) -> Option<SkillInfo>;
 
-    async fn get_skill(&self, name: &str) -> Option<Skill>;
-
     async fn resolved_root(&self) -> PathBuf;
 }
 
@@ -196,10 +196,6 @@ impl SkillCatalogPort for SharedSkillCatalogPort {
 
     async fn get_skill_info(&self, name: &str) -> Option<SkillInfo> {
         self.registry.get_skill_info(name).await
-    }
-
-    async fn get_skill(&self, name: &str) -> Option<Skill> {
-        self.registry.get_skill(name).await
     }
 
     async fn resolved_root(&self) -> PathBuf {
@@ -310,6 +306,8 @@ pub trait ToolCatalogTestSupportPort: Send + Sync {
     async fn upsert_mcp_server_config(&self, config: McpServerConfig);
 
     async fn remove_mcp_server_config(&self, name: &str);
+
+    async fn get_skill_fixture(&self, name: &str) -> Option<Skill>;
 }
 
 #[cfg(feature = "test-support")]
@@ -318,6 +316,7 @@ struct SharedToolCatalogTestSupportPort {
     session_overlay: crate::registry::SessionToolOverlay,
     mcp_server_config_source: crate::McpServerConfigSource,
     mcp_manager: McpManager,
+    skill_registry: SkillRegistry,
 }
 
 #[cfg(feature = "test-support")]
@@ -346,24 +345,34 @@ impl ToolCatalogTestSupportPort for SharedToolCatalogTestSupportPort {
         self.mcp_manager.invalidate_catalog();
         self.session_overlay.bump_global_version();
     }
+
+    async fn get_skill_fixture(&self, name: &str) -> Option<Skill> {
+        self.skill_registry.get_skill(name).await
+    }
 }
 
 struct SharedSkillExecutionPort {
+    registry: SkillRegistry,
     runner: Arc<RwLock<SkillRunner>>,
 }
 
 #[async_trait::async_trait]
 impl SkillExecutionPort for SharedSkillExecutionPort {
-    async fn execute(
+    async fn execute_skill(
         &self,
-        skill: &crate::Skill,
+        skill_name: &str,
         params: &Value,
         cancel: tokio_util::sync::CancellationToken,
     ) -> anyhow::Result<ToolResult> {
+        let skill = self
+            .registry
+            .get_skill(skill_name)
+            .await
+            .ok_or_else(|| anyhow::anyhow!("skill '{}' not found", skill_name))?;
         self.runner
             .read()
             .await
-            .execute(skill, params, cancel)
+            .execute(&skill, params, cancel)
             .await
     }
 }
@@ -416,6 +425,7 @@ impl ToolServices {
                 registry: coordinator.builtins.skill_registry.clone(),
             }),
             skill_execution: Arc::new(SharedSkillExecutionPort {
+                registry: coordinator.builtins.skill_registry.clone(),
                 runner: Arc::clone(&skill_runner),
             }),
             authorization,
@@ -434,6 +444,7 @@ impl ToolServices {
                 session_overlay: coordinator.core.operations.session_tool_overlay.clone(),
                 mcp_server_config_source: coordinator.builtins.mcp_server_config_source.clone(),
                 mcp_manager: coordinator.builtins.mcp_manager.clone(),
+                skill_registry: coordinator.builtins.skill_registry.clone(),
             }),
             live_output: Arc::new(SharedLiveOutputSinkPort {
                 hub: Arc::clone(&live_outputs),
@@ -1092,5 +1103,22 @@ mod capability_tests {
         for reader in readers {
             reader.await.expect("capability reader must not panic");
         }
+    }
+
+    #[tokio::test]
+    async fn skill_execution_resolves_skills_inside_tools() {
+        let tools = ToolsFacade::new();
+        let services = tools.share_services();
+        let error = services
+            .skill_execution
+            .execute_skill(
+                "missing-skill",
+                &serde_json::json!({}),
+                CancellationToken::new(),
+            )
+            .await
+            .expect_err("unknown skills must not reach the runner");
+
+        assert_eq!(error.to_string(), "skill 'missing-skill' not found");
     }
 }

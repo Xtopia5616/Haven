@@ -671,23 +671,11 @@ async fn execute_ui_confirmation_action(
 ) -> Result<(), String> {
     match &pending.action {
         UiConfirmationAction::Skill { name, params } => {
-            let skill = state
-                .runtime
-                .services
-                .skills
-                .get_skill(name)
-                .await
-                .ok_or_else(|| {
-                    log_err(
-                        "resolve_ui_confirmation skill",
-                        format!("skill '{}' not found", name),
-                    )
-                })?;
             state
                 .runtime
                 .services
                 .skill_execution
-                .execute(&skill, params, tokio_util::sync::CancellationToken::new())
+                .execute_skill(name, params, tokio_util::sync::CancellationToken::new())
                 .await
                 .map_err(|error| log_err("resolve_ui_confirmation skill", error))?;
         }
