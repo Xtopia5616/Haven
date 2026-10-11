@@ -16,7 +16,7 @@ fn venv_creation_command(venv: &Path) -> Command {
         .arg("-m")
         .arg("venv")
         .arg(venv)
-        .current_dir(haven_common::default_runtime_temp_root());
+        .current_dir(haven_common::config::default_runtime_temp_root());
     command
 }
 
@@ -28,7 +28,7 @@ fn pip_install_command(python: &Path, requirements_path: &Path) -> Command {
         .arg("install")
         .arg("-r")
         .arg(requirements_path)
-        .current_dir(haven_common::default_runtime_temp_root());
+        .current_dir(haven_common::config::default_runtime_temp_root());
     command
 }
 
@@ -313,7 +313,7 @@ mod tests {
 
     #[test]
     fn setup_commands_keep_the_existing_arguments_and_working_directory() {
-        let runtime_temp_root = haven_common::default_runtime_temp_root();
+        let runtime_temp_root = haven_common::config::default_runtime_temp_root();
         let venv = PathBuf::from("skill-venvs/example");
         let create = venv_creation_command(&venv);
         assert_eq!(create.as_std().get_program(), "python");

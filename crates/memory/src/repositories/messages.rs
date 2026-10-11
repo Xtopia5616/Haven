@@ -759,7 +759,7 @@ impl Database {
 fn read_host_media(path: &str) -> Option<Vec<u8>> {
     let path = std::path::Path::new(path);
     let roots = [
-        haven_common::default_runtime_temp_root().join("uploads"),
+        haven_common::config::default_runtime_temp_root().join("uploads"),
         haven_common::config::default_generated_media_root(),
     ];
     let canonical_path = std::fs::canonicalize(path).ok()?;
@@ -1174,7 +1174,7 @@ mod tests {
     {
         let db = test_db();
         let tid = test_session(&db);
-        let dir = haven_common::default_runtime_temp_root()
+        let dir = haven_common::config::default_runtime_temp_root()
             .join("uploads")
             .join(format!("message-test-{}", uuid::Uuid::new_v4().simple()));
         std::fs::create_dir_all(&dir).unwrap();

@@ -22,10 +22,10 @@ use tokio_util::sync::CancellationToken;
 #[derive(Debug, Default)]
 pub struct McpReconcile {
     /// Enabled servers with no live client yet.
-    pub to_connect_new: Vec<haven_common::McpServerConfig>,
+    pub to_connect_new: Vec<haven_common::config::McpServerConfig>,
     /// Enabled servers whose live client was spawned from a different
     /// config (command / args / env / url changed) and must be recreated.
-    pub to_connect_changed: Vec<haven_common::McpServerConfig>,
+    pub to_connect_changed: Vec<haven_common::config::McpServerConfig>,
     /// Live clients whose server was removed from config or disabled.
     pub to_remove: Vec<String>,
     /// Enabled servers already loaded from the identical config (kept).
@@ -230,7 +230,7 @@ impl McpManager {
     pub async fn client_matches_config(
         &self,
         name: &str,
-        config: &haven_common::McpServerConfig,
+        config: &haven_common::config::McpServerConfig,
     ) -> bool {
         self.client(name)
             .await
@@ -276,7 +276,7 @@ impl McpManager {
     /// clients whose server is gone or disabled are flagged for shutdown.
     pub async fn reconcile_servers(
         &self,
-        servers: &[haven_common::McpServerConfig],
+        servers: &[haven_common::config::McpServerConfig],
     ) -> McpReconcile {
         let mut out = McpReconcile::default();
         let enabled: HashSet<String> = servers
@@ -309,7 +309,7 @@ impl McpManager {
     /// clients whose server was removed or disabled are shut down.
     /// Does NOT start health monitors — call `start_monitors` separately
     /// or use `discover_all` for the combined operation.
-    pub async fn load_from_config(&self, servers: &[haven_common::McpServerConfig]) {
+    pub async fn load_from_config(&self, servers: &[haven_common::config::McpServerConfig]) {
         self.bump_catalog_version();
         let t0 = std::time::Instant::now();
         let reconcile = self.reconcile_servers(servers).await;
@@ -419,7 +419,7 @@ impl McpManager {
     /// Starts a health monitor + auto-reconnect loop using the stored discovery config.
     pub async fn connect_server(
         &self,
-        config: &haven_common::McpServerConfig,
+        config: &haven_common::config::McpServerConfig,
     ) -> anyhow::Result<()> {
         let name = &config.name;
         if matches!(
@@ -498,8 +498,8 @@ impl McpManager {
     /// Combined: load config + connect + start health monitors.
     pub async fn discover_all(
         &self,
-        servers: &[haven_common::McpServerConfig],
-        config: &haven_common::McpDiscoveryConfig,
+        servers: &[haven_common::config::McpServerConfig],
+        config: &haven_common::config::McpDiscoveryConfig,
     ) {
         self.load_from_config(servers).await;
         self.start_monitors(config).await;

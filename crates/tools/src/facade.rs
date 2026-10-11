@@ -29,7 +29,7 @@ pub trait LiveOutputSinkPort: Send + Sync {
 /// event capabilities.
 #[async_trait::async_trait]
 pub trait McpRuntimePort: Send + Sync {
-    async fn start_monitors(&self, config: &haven_common::McpDiscoveryConfig);
+    async fn start_monitors(&self, config: &haven_common::config::McpDiscoveryConfig);
 
     async fn shutdown(&self);
 
@@ -61,7 +61,7 @@ struct SharedMcpRuntimePort {
 
 #[async_trait::async_trait]
 impl McpRuntimePort for SharedMcpRuntimePort {
-    async fn start_monitors(&self, config: &haven_common::McpDiscoveryConfig) {
+    async fn start_monitors(&self, config: &haven_common::config::McpDiscoveryConfig) {
         self.manager.start_monitors(config).await;
     }
 
@@ -498,7 +498,7 @@ impl ToolsFacade {
         session_id: &str,
         attachments: &[MessageAttachment],
     ) {
-        let uploads_root = haven_common::default_runtime_temp_root().join("uploads");
+        let uploads_root = haven_common::config::default_runtime_temp_root().join("uploads");
         let generated_root = haven_common::config::default_generated_media_root();
         for attachment in attachments {
             let (Some(asset_id), Some(path)) = (&attachment.asset_id, &attachment.path) else {

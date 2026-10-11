@@ -253,7 +253,7 @@ impl ToolRuntimeCoordinator {
     pub(crate) async fn discover_all(
         &self,
         servers: &[McpServerConfig],
-        config: &haven_common::McpDiscoveryConfig,
+        config: &haven_common::config::McpDiscoveryConfig,
     ) {
         self.core
             .operations
@@ -595,7 +595,7 @@ mod tests {
         coordinator
             .discover_all(
                 std::slice::from_ref(&disabled),
-                &haven_common::McpDiscoveryConfig::default(),
+                &haven_common::config::McpDiscoveryConfig::default(),
             )
             .await;
         assert!(

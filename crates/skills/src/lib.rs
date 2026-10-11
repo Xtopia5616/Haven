@@ -6,7 +6,7 @@
 //! bridges skills into the tool-execution result types).
 
 use anyhow::Context;
-use haven_common::ConfigLoader;
+use haven_common::config::ConfigLoader;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};

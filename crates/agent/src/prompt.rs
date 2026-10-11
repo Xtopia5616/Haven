@@ -426,7 +426,7 @@ impl SystemPromptBuilder {
         let workspace_root = haven_common::discover_workspace_root(Path::new(&process_cwd))
             .map(|path| path.to_string_lossy().into_owned())
             .unwrap_or_else(|| "unknown".into());
-        let tool_sandbox_cwd = haven_common::default_runtime_temp_root()
+        let tool_sandbox_cwd = haven_common::config::default_runtime_temp_root()
             .to_string_lossy()
             .into_owned();
         let tool_cwd = if workspace_root == "unknown" {
@@ -1902,7 +1902,7 @@ mod tests {
         tools
             .share_services()
             .tool_catalog_test_support
-            .upsert_mcp_server_config(haven_common::McpServerConfig {
+            .upsert_mcp_server_config(haven_common::config::McpServerConfig {
                 name: "configured-without-client".into(),
                 enabled: true,
                 ..Default::default()

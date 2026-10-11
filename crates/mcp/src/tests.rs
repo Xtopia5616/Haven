@@ -5,7 +5,7 @@ use crate::protocol::{
     jsonrpc_notification, jsonrpc_request,
 };
 use base64::Engine;
-use haven_common::McpServerConfig;
+use haven_common::config::McpServerConfig;
 use serde_json::json;
 use std::sync::Arc;
 use std::time::{Duration, Instant};

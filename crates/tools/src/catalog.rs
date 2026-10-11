@@ -25,14 +25,14 @@ impl McpServerIndexEntry {
 }
 
 impl ToolsFacade {
-    pub async fn load_mcp_from_config(&self, servers: &[haven_common::McpServerConfig]) {
+    pub async fn load_mcp_from_config(&self, servers: &[haven_common::config::McpServerConfig]) {
         self.coordinator.load_mcp_from_config(servers).await;
     }
 
     pub async fn discover_all(
         &self,
-        servers: &[haven_common::McpServerConfig],
-        config: &haven_common::McpDiscoveryConfig,
+        servers: &[haven_common::config::McpServerConfig],
+        config: &haven_common::config::McpDiscoveryConfig,
     ) {
         self.coordinator.discover_all(servers, config).await;
     }

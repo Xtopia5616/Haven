@@ -1,4 +1,4 @@
-use haven_common::{McpServerConfig, McpTransportType};
+use haven_common::{McpTransportType, config::McpServerConfig};
 use haven_mcp::McpClient;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};

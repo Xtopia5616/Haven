@@ -214,7 +214,7 @@ fn windows_spawn_hint(_command: &str, _e: &std::io::Error) -> String {
 
 impl McpClient {
     pub fn new(
-        config: &haven_common::McpServerConfig,
+        config: &haven_common::config::McpServerConfig,
         max_binary_payload: usize,
         max_sse_buffer: usize,
     ) -> Self {
@@ -268,7 +268,7 @@ impl McpClient {
     /// can be kept as-is or must be torn down and reconnected (a changed
     /// command / args / env / url means the running child carries stale
     /// credentials or an outdated invocation).
-    pub fn matches_config(&self, cfg: &haven_common::McpServerConfig) -> bool {
+    pub fn matches_config(&self, cfg: &haven_common::config::McpServerConfig) -> bool {
         self.transport == cfg.transport
             && self.command == cfg.command
             && self.args == cfg.args
