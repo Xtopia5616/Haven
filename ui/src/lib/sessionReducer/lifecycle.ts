@@ -43,13 +43,13 @@ export function reduceLifecycle(
 					: null;
 			if (
 				activeRunEndNotice &&
-				!sessions.some((session) => session.id === activeRunEndNotice.sessionId)
+				!sessions.some((session) => session.sessionId === activeRunEndNotice.sessionId)
 			) {
 				const previous = state.sessions.find(
-					(session) => session.id === activeRunEndNotice.sessionId,
+					(session) => session.sessionId === activeRunEndNotice.sessionId,
 				);
 				sessions.push({
-					...(previous || { id: activeRunEndNotice.sessionId }),
+					...(previous || { sessionId: activeRunEndNotice.sessionId }),
 					status: activeRunEndNotice.status,
 				});
 			}
@@ -57,9 +57,9 @@ export function reduceLifecycle(
 				const firstActive = sessions.find(
 					(session) =>
 						(isBusyStatus(session.status) || session.status === 'paused') &&
-						messagesOf(state, session.id).length > 0,
+						messagesOf(state, session.sessionId).length > 0,
 				);
-				return { ...state, sessions, activeSessionId: firstActive?.id || null };
+				return { ...state, sessions, activeSessionId: firstActive?.sessionId || null };
 			}
 			return { ...state, sessions };
 		}
@@ -73,9 +73,9 @@ export function reduceLifecycle(
 			};
 		}
 		case 'session/created': {
-			const sessions = state.sessions.some((session) => session.id === action.sessionId)
+			const sessions = state.sessions.some((session) => session.sessionId === action.sessionId)
 				? state.sessions.map((session) =>
-						session.id === action.sessionId
+						session.sessionId === action.sessionId
 							? {
 									...session,
 									...(action.status ? { status: action.status } : {}),
@@ -86,7 +86,7 @@ export function reduceLifecycle(
 				: [
 						...state.sessions,
 						{
-							id: action.sessionId,
+							sessionId: action.sessionId,
 							status: action.status || 'pending',
 							title: action.title || null,
 						},
@@ -116,7 +116,7 @@ export function reduceLifecycle(
 				action.status === 'running'
 					? state
 					: clearToolCallPreviews(state, action.sessionId);
-			const current = base.sessions.find((session) => session.id === action.sessionId);
+			const current = base.sessions.find((session) => session.sessionId === action.sessionId);
 			if (!current) return base;
 			const waitingReason =
 				action.waitingReason !== undefined ? action.waitingReason : current.waitingReason;
@@ -136,7 +136,7 @@ export function reduceLifecycle(
 			if (!sessionChanged && !runEndNoticeInvalidated) return base;
 			const sessions = sessionChanged
 				? base.sessions.map((session) =>
-						session.id === action.sessionId
+					session.sessionId === action.sessionId
 							? {
 									...session,
 									status: action.status,
@@ -179,7 +179,7 @@ export function reduceLifecycle(
 		}
 		case 'session/run-ended': {
 			const base = clearToolCallPreviews(state, action.sessionId);
-			const current = base.sessions.find((session) => session.id === action.sessionId);
+			const current = base.sessions.find((session) => session.sessionId === action.sessionId);
 			const isActive = base.activeSessionId === action.sessionId;
 			const waitingReason =
 				action.waitingReason !== undefined ? action.waitingReason : current?.waitingReason;
@@ -197,7 +197,7 @@ export function reduceLifecycle(
 			if (!sessionChanged && !noticeChanged) return base;
 			const sessions = sessionChanged
 				? base.sessions.map((session) =>
-						session.id === action.sessionId
+					session.sessionId === action.sessionId
 							? {
 									...session,
 									status: action.status,
@@ -224,11 +224,13 @@ export function reduceLifecycle(
 			};
 		}
 		case 'session/retained-error': {
-			const base = clearToolCallPreviews(state, action.session.id);
+			const base = clearToolCallPreviews(state, action.session.sessionId);
 			const errorSession: SessionSummary = { ...action.session, status: 'error' };
-			const sessions = base.sessions.some((session) => session.id === action.session.id)
+			const sessions = base.sessions.some(
+				(session) => session.sessionId === action.session.sessionId,
+			)
 				? base.sessions.map((session) =>
-						session.id === action.session.id
+						session.sessionId === action.session.sessionId
 							? { ...session, ...errorSession }
 							: session,
 					)
@@ -239,7 +241,7 @@ export function reduceLifecycle(
 			return {
 				...state,
 				sessions: state.sessions.map((session) =>
-					session.id === action.sessionId ? { ...session, title: action.title } : session,
+					session.sessionId === action.sessionId ? { ...session, title: action.title } : session,
 				),
 			};
 		case 'session/deleted': {
@@ -248,7 +250,7 @@ export function reduceLifecycle(
 			delete sessionErrorReasons[action.sessionId];
 			return {
 				...state,
-				sessions: state.sessions.filter((session) => session.id !== action.sessionId),
+				sessions: state.sessions.filter((session) => session.sessionId !== action.sessionId),
 				sessionErrorReasons,
 				activeSessionId:
 					state.activeSessionId === action.sessionId ? null : state.activeSessionId,

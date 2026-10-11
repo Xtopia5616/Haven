@@ -183,7 +183,7 @@ impl AgentLayer {
                             .emit_session_created(&created_session.session)
                             .await;
                         return Ok(ProcessResult::session_created(
-                            created_session.session.id,
+                            created_session.session.session_id,
                             Some(created_session.first_user_message_id),
                         ));
                     }
@@ -310,13 +310,13 @@ impl AgentLayer {
                 .await?;
             tracing::info!(
                 "process_input created session: id={:?}",
-                created_session.session.id
+                created_session.session.session_id
             );
             self.events
                 .emit_session_created(&created_session.session)
                 .await;
             Ok(ProcessResult::session_created(
-                created_session.session.id,
+                created_session.session.session_id,
                 Some(created_session.first_user_message_id),
             ))
         }

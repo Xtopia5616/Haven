@@ -123,12 +123,17 @@ describe('session history and resume identity contracts', () => {
 	it('validates runtime session and step IDs', () => {
 		expect(
 			parseRuntimeSessionListResponse({
-				sessions: [{ id: sessionId, steps: [{ id: stepId }] }],
+				sessions: [{ session_id: sessionId, steps: [{ step_id: stepId }] }],
 			}).sessions,
 		).toHaveLength(1);
 		expect(() =>
 			parseRuntimeSessionListResponse({
-				sessions: [{ id: sessionId, steps: [{ id: 'step-short' }] }],
+				sessions: [{ session_id: sessionId, steps: [{ step_id: 'step-short' }] }],
+			}),
+		).toThrow('Invalid runtime session identity');
+		expect(() =>
+			parseRuntimeSessionListResponse({
+				sessions: [{ id: sessionId, steps: [{ id: stepId }] }],
 			}),
 		).toThrow('Invalid runtime session identity');
 	});

@@ -1153,7 +1153,7 @@ impl AgentLayer {
     ) -> anyhow::Result<haven_messaging::AgentControlResult> {
         if let Some(session) = self.executor.get_session(session_id).await {
             return Ok(haven_messaging::AgentControlResult {
-                session_id: session.id,
+                session_id: session.session_id,
                 status: session.status.as_str().into(),
                 terminal: session.status.is_terminal(),
                 timed_out: false,
@@ -1285,7 +1285,7 @@ impl AgentLayer {
             .await?
             .session;
         if let Some(title) = req.title.as_deref().filter(|t| !t.is_empty()) {
-            let session_id = session.id.clone();
+            let session_id = session.session_id.clone();
             if let Err(e) = self
                 .executor
                 .session_store()
@@ -1293,19 +1293,26 @@ impl AgentLayer {
                 .await
             {
                 tracing::warn!(
-                    session_id = %session.id,
+                    session_id = %session.session_id,
                     "spawn_peer_session: failed to set title: {e}"
                 );
             } else {
-                self.executor.update_session_title(&session.id, title).await;
+                self.executor
+                    .update_session_title(&session.session_id, title)
+                    .await;
                 session.title = Some(title.to_string());
-                self.events.emit_title_updated(&session.id, title).await;
+                self.events
+                    .emit_title_updated(&session.session_id, title)
+                    .await;
             }
         } else if session.title.is_none() {
             // Notification-safe fallback so SessionCreated never surfaces the
             // full delegated brief via Windows toast (title||id only).
-            let fallback = format!("peer:{}", &session.id[session.id.len().saturating_sub(8)..]);
-            let session_id = session.id.clone();
+            let fallback = format!(
+                "peer:{}",
+                &session.session_id[session.session_id.len().saturating_sub(8)..]
+            );
+            let session_id = session.session_id.clone();
             if let Err(e) = self
                 .executor
                 .session_store()
@@ -1313,17 +1320,17 @@ impl AgentLayer {
                 .await
             {
                 tracing::warn!(
-                    session_id = %session.id,
+                    session_id = %session.session_id,
                     "spawn_peer_session: failed to set fallback title: {e}"
                 );
             } else {
                 self.executor
-                    .update_session_title(&session.id, &fallback)
+                    .update_session_title(&session.session_id, &fallback)
                     .await;
                 session.title = Some(fallback);
             }
         }
-        let child_id = session.id.clone();
+        let child_id = session.session_id.clone();
         let title = session.title.clone();
         let role = req.role.clone();
         let caps = req.capabilities.clone();
@@ -1342,18 +1349,18 @@ impl AgentLayer {
             Ok(Ok(())) => {}
             Ok(Err(e)) => {
                 tracing::warn!(
-                    session_id = %session.id,
+                    session_id = %session.session_id,
                     "spawn_peer_session: inbox register failed: {e}"
                 );
-                let _ = self.executor.delete_session(&session.id).await;
+                let _ = self.executor.delete_session(&session.session_id).await;
                 return Err(e);
             }
             Err(e) => {
                 tracing::warn!(
-                    session_id = %session.id,
+                    session_id = %session.session_id,
                     "spawn_peer_session: inbox register join failed: {e}"
                 );
-                let _ = self.executor.delete_session(&session.id).await;
+                let _ = self.executor.delete_session(&session.session_id).await;
                 return Err(anyhow::anyhow!("inbox register join failed: {e}"));
             }
         }
@@ -1362,12 +1369,12 @@ impl AgentLayer {
             .mark_has_children(&req.parent_session_id)
             .await;
         self.executor
-            .update_session_status(&session.id, SessionStatus::Pending)
+            .update_session_status(&session.session_id, SessionStatus::Pending)
             .await?;
         // Emit after title is on the SessionInfo so toast/wire never use the brief.
         self.events.emit_session_created(&session).await;
         Ok(haven_messaging::AgentSpawnResult {
-            session_id: session.id,
+            session_id: session.session_id,
             title: session.title,
             role: req.role,
             queued,
@@ -1542,7 +1549,7 @@ mod tests {
             set_title_write_failure(&db, fail_write);
             let result = agent
                 .spawn_peer_session_with_messaging(
-                    peer_request(&parent.id, task, title),
+                    peer_request(&parent.session_id, task, title),
                     messaging.clone(),
                 )
                 .await
@@ -1576,7 +1583,7 @@ mod tests {
             assert_eq!(
                 stored_peer.origin,
                 haven_memory::SessionOrigin::AgentSpawn {
-                    parent_session_id: parent.id.clone(),
+                    parent_session_id: parent.session_id.clone(),
                 }
             );
             if let Some(title) = title.filter(|_| !fail_write) {
@@ -1587,7 +1594,7 @@ mod tests {
         }
         let mut durable_child_ids: Vec<_> = executor
             .session_store()
-            .load_session_children(&parent.id, 50, 0)
+            .load_session_children(&parent.session_id, 50, 0)
             .await
             .unwrap()
             .into_iter()
@@ -1618,7 +1625,7 @@ mod tests {
             .iter()
             .filter_map(|event| match event {
                 AgentEvent::SessionCreated(session) => {
-                    Some((session.id.clone(), session.title.clone()))
+                    Some((session.session_id.clone(), session.title.clone()))
                 }
                 _ => None,
             })
@@ -1812,15 +1819,22 @@ mod tests {
         assert_eq!(error.to_string(), format!("session '{missing}' not found"));
 
         let active = executor.create_session("executor session").await.unwrap();
-        db.update_session_title(&active.id, "database title")
+        db.update_session_title(&active.session_id, "database title")
             .unwrap();
-        db.update_session_status(&active.id, SessionStatus::Completed)
+        db.update_session_status(&active.session_id, SessionStatus::Completed)
             .unwrap();
         assert_eq!(
-            tool_run_result_delivery::tool_run_completion_session_status(&agent, &active.id).await,
+            tool_run_result_delivery::tool_run_completion_session_status(
+                &agent,
+                &active.session_id
+            )
+            .await,
             Some(SessionStatus::Pending)
         );
-        let peer = agent.inspect_peer_session(&active.id).await.unwrap();
+        let peer = agent
+            .inspect_peer_session(&active.session_id)
+            .await
+            .unwrap();
         assert_eq!(peer.status, SessionStatus::Pending.as_str());
         assert!(!peer.terminal);
         assert_eq!(peer.title, None);

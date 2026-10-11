@@ -8,8 +8,8 @@ describe('SessionToolbar', () => {
 		render(SessionToolbar, {
 			showSessionMenu: true,
 			menuSessions: [
-				{ id: 'ses-1', status: 'running', title: '当前会话' },
-				{ id: 'ses-2', status: 'paused', title: '另一个会话' },
+				{ sessionId: 'ses-1', status: 'running', title: '当前会话' },
+				{ sessionId: 'ses-2', status: 'paused', title: '另一个会话' },
 			],
 			onToggleSessionMenu,
 		});
@@ -199,7 +199,7 @@ describe('SessionToolbar', () => {
 		render(SessionToolbar, {
 			showSessionMenu: true,
 			sessionMenuOpen: true,
-			menuSessions: [{ id: 'ses-old', status: 'completed', title: '旧绘画会话' }],
+			menuSessions: [{ sessionId: 'ses-old', status: 'completed', title: '旧绘画会话' }],
 			onSwitchSession,
 		});
 
@@ -216,14 +216,14 @@ describe('SessionToolbar', () => {
 			menuSessions: [],
 			sessionLineage: {
 				parent: {
-					id: 'ses-parent',
+					sessionId: 'ses-parent',
 					status: 'paused',
 					title: '父会话',
 					inputText: '父会话',
 				},
 				children: [
 					{
-						id: 'ses-child',
+						sessionId: 'ses-child',
 						status: 'completed',
 						title: 'Agent 调研',
 						inputText: 'Agent 调研',

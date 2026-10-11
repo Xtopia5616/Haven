@@ -221,7 +221,7 @@ impl TauriEmitter {
                 event_seq: *durable_event_seq,
             }),
             AgentEvent::SessionCreated(session) => serialize(SessionLifecycleEvent::Created {
-                session_id: session.id.clone(),
+                session_id: session.session_id.clone(),
                 status: session.status,
                 waiting_reason: session.waiting_reason,
                 title: session.title.clone(),
@@ -614,7 +614,7 @@ impl TauriEmitter {
             }
             AgentEvent::SessionCreated(session) => {
                 tracing::info!(
-                    session_id = %session.id,
+                    session_id = %session.session_id,
                     status = %session.status.as_str(),
                     "TauriEmitter::on_session_created"
                 );

@@ -6,7 +6,7 @@ import type { SessionSummary } from './sessionReducer/types.ts';
 describe('buildSessionSwitcherOptions', () => {
 	it('keeps completed history switchable and prefers live summaries for duplicates', () => {
 		const live: SessionSummary[] = [
-			{ id: 'ses-current', status: 'running', title: '正在绘画' },
+			{ sessionId: 'ses-current', status: 'running', title: '正在绘画' },
 		];
 		const history = [
 			{
@@ -25,10 +25,10 @@ describe('buildSessionSwitcherOptions', () => {
 
 		const options = buildSessionSwitcherOptions(live, history);
 
-		expect(options.map((session) => session.id)).toEqual(['ses-current', 'ses-old']);
-		expect(options[0]).toMatchObject({ id: 'ses-current', status: 'running' });
+		expect(options.map((session) => session.sessionId)).toEqual(['ses-current', 'ses-old']);
+		expect(options[0]).toMatchObject({ sessionId: 'ses-current', status: 'running' });
 		expect(options[1]).toMatchObject({
-			id: 'ses-old',
+			sessionId: 'ses-old',
 			status: 'completed',
 			title: '旧绘画会话',
 			inputText: '旧绘画会话',

@@ -21,7 +21,7 @@ function isMidTurnSubmit(sessionId: string, reducer: SessionReducer): boolean {
 		if (m.role === 'user' && !m.received) return true;
 	}
 	// This session's own status — never borrow another session's busy chip.
-	const st = reducer.snapshot().sessions.find((t) => t.id === sessionId)?.status;
+	const st = reducer.snapshot().sessions.find((t) => t.sessionId === sessionId)?.status;
 	if (isBusyStatus(st) || isPausedStatus(st)) return true;
 	// Global execution phase only applies to the active session.
 	if (reducer.snapshot().activeSessionId === sessionId) {

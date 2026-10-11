@@ -41,11 +41,11 @@ describe('session selector stores', () => {
 
 		reducer.dispatch({
 			type: 'sessions/loaded',
-			sessions: [{ id: 'ses-1', status: 'paused' }],
+			sessions: [{ sessionId: 'ses-1', status: 'paused' }],
 		});
 
 		expect(listener).toHaveBeenCalledTimes(2);
-		expect(listener).toHaveBeenLastCalledWith([{ id: 'ses-1', status: 'paused' }]);
+		expect(listener).toHaveBeenLastCalledWith([{ sessionId: 'ses-1', status: 'paused' }]);
 		unsubscribe();
 	});
 

@@ -25,7 +25,7 @@ export const DRAFT_SESSION_ID = '_draft';
 
 /** The session summary fields used by the chat shell. */
 export interface SessionSummary {
-	id: string;
+	sessionId: string;
 	status: SessionStatus;
 	waitingReason?: SessionWaitingReason | null;
 	title?: string | null;

@@ -140,7 +140,7 @@ export class ChatSessionController {
 			if (previousSessionId && previousSessionId !== sessionId) {
 				const previousSession = this.dependencies
 					.getSessionSnapshot()
-					.find((session) => session.id === previousSessionId);
+					.find((session) => session.sessionId === previousSessionId);
 				if (
 					!previousSession ||
 					previousSession.status === 'completed' ||
@@ -152,7 +152,7 @@ export class ChatSessionController {
 
 			const session = this.dependencies
 				.getSessionSnapshot()
-				.find((item) => item.id === sessionId);
+					.find((item) => item.sessionId === sessionId);
 			this.dependencies.notify(`已切换到：${session?.title || '会话'}`, 'info', 1500);
 		} catch (error) {
 			this.report(error, '切换会话失败');

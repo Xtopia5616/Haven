@@ -872,7 +872,7 @@ mod tests {
             .unwrap();
         runtime
             .session_store
-            .append(&session.id, "usage_recorded", "{}", None, None)
+            .append(&session.session_id, "usage_recorded", "{}", None, None)
             .unwrap();
 
         // The UI maintenance command still calls the Agent's single-pass
@@ -888,7 +888,7 @@ mod tests {
             let cursor = runtime
                 .session_store
                 .memory_event_cursor_optional_cancellable(
-                    &session.id,
+                    &session.session_id,
                     tokio_util::sync::CancellationToken::new(),
                 )
                 .await
@@ -994,7 +994,7 @@ mod tests {
                 title: "Keep after exit".into(),
                 body: "restore me".into(),
                 mode: haven_tools::ScheduleMode::Continue,
-                session_id: Some(session.id.clone()),
+                session_id: Some(session.session_id.clone()),
                 tool_name: None,
                 tool_args: None,
                 prompt: Some("continue later".into()),

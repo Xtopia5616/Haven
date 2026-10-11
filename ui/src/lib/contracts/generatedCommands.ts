@@ -66,8 +66,8 @@ export interface MetricsSnapshot { phases: PhaseSnapshot[]; counters: CounterSna
 export interface PhaseSnapshot { count: number; total_ms: number; p50_ms: number; p95_ms: number }
 export interface UiMetricsSnapshotInput { frames: number; chunks: number; drops: number }
 export interface UiMetricsSnapshot { frames: number; chunks: number; drops: number }
-export interface SessionInfo { id: string; input: string; summary: string; title: string | null; status: SessionStatus; waiting_reason?: SessionWaitingReason; steps: StepInfo[]; created_at: string; updated_at: string }
-export interface StepInfo { id: string; step_number: number; tool_name: string; input: unknown; output: unknown | null; status: SessionStepStatus; risk_level: RiskLevel; confirmed: boolean | null }
+export interface SessionInfo { session_id: string; input: string; summary: string; title: string | null; status: SessionStatus; waiting_reason?: SessionWaitingReason; steps: StepInfo[]; created_at: string; updated_at: string }
+export interface StepInfo { step_id: string; step_number: number; tool_name: string; input: unknown; output: unknown | null; status: SessionStepStatus; risk_level: RiskLevel; confirmed: boolean | null }
 export type ProcessResult = { 'SessionCreated': { session_id: string; message_id?: string | null } } | { 'Supplemented': { session_id: string; message_id?: string | null } };
 export const BOOTSTRAP_STATUS_VALUES = ['loading', 'ready'] as const;
 export type BootstrapStatus = (typeof BOOTSTRAP_STATUS_VALUES)[number];

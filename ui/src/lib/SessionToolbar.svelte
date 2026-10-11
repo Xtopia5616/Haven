@@ -146,10 +146,10 @@
 				{#each menuSessions as session}
 					<MenuItem
 						className="session-menu-item"
-						selected={session.id === activeSessionId}
-						ariaChecked={session.id === activeSessionId}
+						selected={session.sessionId === activeSessionId}
+						ariaChecked={session.sessionId === activeSessionId}
 						role="menuitemradio"
-						onSelect={() => onSwitchSession(session.id)}
+						onSelect={() => onSwitchSession(session.sessionId)}
 					>
 						{#snippet children()}
 							<span
@@ -166,7 +166,7 @@
 									>{sessionStatusLabel(session)}</span
 								>
 							</span>
-							{#if session.id === activeSessionId}
+							{#if session.sessionId === activeSessionId}
 								<Icon
 									name="check"
 									size={16}
@@ -191,7 +191,7 @@
 							<MenuItem
 								className="session-menu-item session-lineage-item"
 								role="menuitem"
-								onSelect={() => onSwitchSession(parentSession.id)}
+							onSelect={() => onSwitchSession(parentSession.sessionId)}
 							>
 								{#snippet children()}
 									<Icon name="chevronLeft" size={16} />
@@ -206,11 +206,11 @@
 								{/snippet}
 							</MenuItem>
 						{/if}
-						{#each sessionLineage.children as child (child.id)}
+						{#each sessionLineage.children as child (child.sessionId)}
 							<MenuItem
 								className="session-menu-item session-lineage-item"
 								role="menuitem"
-								onSelect={() => onSwitchSession(child.id)}
+							onSelect={() => onSwitchSession(child.sessionId)}
 							>
 								{#snippet children()}
 									<Icon name="chevronRight" size={16} />

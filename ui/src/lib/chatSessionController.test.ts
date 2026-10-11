@@ -40,8 +40,8 @@ function makeHarness(
 	reducer.dispatch({
 		type: 'sessions/loaded',
 		sessions: [
-			{ id: SESSION_ID, status: 'error', title: '旧会话' },
-			{ id: OTHER_SESSION_ID, status: 'paused', title: '目标会话' },
+			{ sessionId: SESSION_ID, status: 'error', title: '旧会话' },
+			{ sessionId: OTHER_SESSION_ID, status: 'paused', title: '目标会话' },
 		],
 	});
 	reducer.dispatch({ type: 'session/selected', sessionId: SESSION_ID });

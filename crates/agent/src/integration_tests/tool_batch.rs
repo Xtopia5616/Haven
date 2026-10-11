@@ -127,12 +127,18 @@ async fn mixed_confirmation_batch_pauses_only_real_gates_and_resumes_all_tools()
     let collector = Arc::new(EventCollector::new());
     agent.set_emitter(collector.clone());
 
-    let first_history = agent.run_session_from_id(&session.id).await.unwrap();
+    let first_history = agent
+        .run_session_from_id(&session.session_id)
+        .await
+        .unwrap();
 
     let confirmations = tokio::time::timeout(std::time::Duration::from_secs(2), async {
         loop {
             let requests = executor
-                .pending_interactions(&session.id, crate::interaction::InteractionKind::Confirm)
+                .pending_interactions(
+                    &session.session_id,
+                    crate::interaction::InteractionKind::Confirm,
+                )
                 .await;
             if !requests.is_empty() {
                 break requests;
@@ -142,11 +148,13 @@ async fn mixed_confirmation_batch_pauses_only_real_gates_and_resumes_all_tools()
     })
     .await
     .expect("the real gated operation should register a pending confirmation");
-    let status = executor.get_active_session_status(&session.id).await;
+    let status = executor
+        .get_active_session_status(&session.session_id)
+        .await;
     let event_types = agent
         .react_engine
         .event_store
-        .read_active_domain_events(&session.id)
+        .read_active_domain_events(&session.session_id)
         .unwrap()
         .into_iter()
         .map(|event| event.event_type)
@@ -173,7 +181,7 @@ async fn mixed_confirmation_batch_pauses_only_real_gates_and_resumes_all_tools()
     );
     executor
         .resolve_interaction(
-            &session.id,
+            &session.session_id,
             &confirmations[0].id,
             serde_json::Value::Bool(true),
             false,
@@ -182,18 +190,26 @@ async fn mixed_confirmation_batch_pauses_only_real_gates_and_resumes_all_tools()
         .unwrap()
         .expect("the real confirmation request should resolve");
 
-    agent.run_session_from_id(&session.id).await.unwrap();
+    agent
+        .run_session_from_id(&session.session_id)
+        .await
+        .unwrap();
 
     assert_eq!(safe_executions.load(std::sync::atomic::Ordering::SeqCst), 1);
     assert_eq!(
         gated_executions.load(std::sync::atomic::Ordering::SeqCst),
         1
     );
-    assert!(executor.interaction_requests(&session.id).await.is_empty());
+    assert!(
+        executor
+            .interaction_requests(&session.session_id)
+            .await
+            .is_empty()
+    );
     let events = agent
         .react_engine
         .event_store
-        .read_active_domain_events(&session.id)
+        .read_active_domain_events(&session.session_id)
         .unwrap();
     assert!(
         events
@@ -268,7 +284,10 @@ async fn run_session_parallel_tool_execution() {
     let collector = Arc::new(EventCollector::new());
     agent.set_emitter(collector.clone());
     let session = executor.create_session("run parallel").await.unwrap();
-    let history = agent.run_session_from_id(&session.id).await.unwrap();
+    let history = agent
+        .run_session_from_id(&session.session_id)
+        .await
+        .unwrap();
     assert!(!history.is_empty());
     assert!(collector.has_tool_call("delay_a"));
     assert!(collector.has_tool_call("delay_b"));
@@ -366,7 +385,7 @@ async fn parallel_tool_result_is_published_before_a_slow_sibling_finishes() {
         .unwrap();
     let run = {
         let agent = agent.clone();
-        let session_id = session.id.clone();
+        let session_id = session.session_id.clone();
         tokio::spawn(async move { agent.run_session_from_id(&session_id).await })
     };
 
@@ -499,7 +518,7 @@ async fn run_session_contains_custom_extension_panic() {
 
     let history = tokio::time::timeout(
         std::time::Duration::from_secs(5),
-        agent.run_session_from_id(&session.id),
+        agent.run_session_from_id(&session.session_id),
     )
     .await
     .expect("extension panic session must not hang")
@@ -664,7 +683,7 @@ async fn run_session_contains_real_mcp_and_skill_adapter_panics() {
 
     let history = tokio::time::timeout(
         std::time::Duration::from_secs(5),
-        agent.run_session_from_id(&session.id),
+        agent.run_session_from_id(&session.session_id),
     )
     .await
     .expect("real adapter panic session must not hang")
@@ -738,7 +757,7 @@ async fn run_session_cancelled_mid_batch_surfaces_interrupted_tools() {
 
     let run = tokio::spawn({
         let agent = agent.clone();
-        let session_id = session.id.clone();
+        let session_id = session.session_id.clone();
         async move { agent.run_session_from_id(&session_id).await }
     });
     // Wait until both ToolCall events and both tool executions are visible,
@@ -764,7 +783,7 @@ async fn run_session_cancelled_mid_batch_surfaces_interrupted_tools() {
     // end_session registers a real cancellation token (entry().or_insert) and
     // cancels it — the same path the frontend's "end session" button uses —
     // so the in-flight tool batch observes the cancellation mid-drain.
-    executor.end_session(&session.id).await.unwrap();
+    executor.end_session(&session.session_id).await.unwrap();
     let history = run.await.unwrap().unwrap();
 
     // Every in-flight tool got an "Interrupted" observation emitted to
@@ -814,7 +833,7 @@ async fn run_session_cancelled_mid_batch_surfaces_interrupted_tools() {
     // The saved snapshot canonical stays a valid assistant/tool chain: no
     // dangling assistant tool_calls without a following result (which
     // providers would reject as a 400 on resume).
-    let snapshot = load_event_projection(&agent, &session.id).await;
+    let snapshot = load_event_projection(&agent, &session.session_id).await;
     let mut pending: Vec<String> = Vec::new();
     let mut interrupted_with_fields = 0;
     let canonical = snapshot.project().canonical_messages;
@@ -867,7 +886,7 @@ async fn run_session_cancelled_mid_batch_surfaces_interrupted_tools() {
     // Pending step rows created at ToolCall emit must be completed with the
     // Interrupted observation so resume rebuilds the tool cards
     // from session_steps (not live-only UI state).
-    let db_steps = agent.db.list_session_steps(&session.id).unwrap();
+    let db_steps = agent.db.list_session_steps(&session.session_id).unwrap();
     let interrupted_db = db_steps
         .iter()
         .filter(|s| {

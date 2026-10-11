@@ -10,7 +10,7 @@ async fn rollback_rejects_closing_session_before_cancelling_owned_tool_runs() {
         .unwrap();
     seed_event_projection(
         &agent,
-        &session.id,
+        &session.session_id,
         &EventProjection {
             events: seed_events_from_canonical(vec![CanonicalMessage {
                 role: CanonicalRole::System,
@@ -39,7 +39,7 @@ async fn rollback_rejects_closing_session_before_cancelling_owned_tool_runs() {
             "Rollback closing",
             "must remain untouched",
             "tool",
-            Some(&session.id),
+            Some(&session.session_id),
             Some("notify"),
             None,
             None,
@@ -50,19 +50,22 @@ async fn rollback_rejects_closing_session_before_cancelling_owned_tool_runs() {
         .tool_run_test_support()
         .set_store(Some(haven_memory::ToolRunStore::new(agent.db.clone())))
         .await;
-    let before = load_event_projection(&agent, &session.id).await;
+    let before = load_event_projection(&agent, &session.session_id).await;
     let _closing = executor
-        .begin_session_closing(&session.id, crate::session::SessionClosingMode::Destructive)
+        .begin_session_closing(
+            &session.session_id,
+            crate::session::SessionClosingMode::Destructive,
+        )
         .await
         .expect("close marker");
 
     let error = agent
-        .rollback_session(&session.id, 1, false, None)
+        .rollback_session(&session.session_id, 1, false, None)
         .await
         .expect_err("rollback must reject an end-owned session");
 
     assert!(format!("{error:#}").contains("closing"));
-    let after = load_event_projection(&agent, &session.id).await;
+    let after = load_event_projection(&agent, &session.session_id).await;
     assert_eq!(before.events.len(), after.events.len());
     assert_eq!(
         agent.db.get_tool_run(tool_run_id).unwrap().unwrap().status,
@@ -92,11 +95,11 @@ async fn rollback_with_snapshot_no_branch_point_uses_snapshot() {
         branch_points: HashMap::new(),
         interactions: Vec::new(),
     };
-    seed_event_projection(&agent, &session.id, &snapshot).await;
+    seed_event_projection(&agent, &session.session_id, &snapshot).await;
     agent
         .db
         .add_message(
-            &session.id,
+            &session.session_id,
             haven_common::types::CanonicalRole::User,
             "hello",
             Some(haven_common::types::TranscriptMessageKind::Text),
@@ -109,7 +112,7 @@ async fn rollback_with_snapshot_no_branch_point_uses_snapshot() {
     agent
         .db
         .add_message(
-            &session.id,
+            &session.session_id,
             haven_common::types::CanonicalRole::Assistant,
             "partial",
             Some(haven_common::types::TranscriptMessageKind::Text),
@@ -119,15 +122,17 @@ async fn rollback_with_snapshot_no_branch_point_uses_snapshot() {
 
     // Rollback to step 1 with pause=false (agent rollback).
     agent
-        .rollback_session(&session.id, 1, false, None)
+        .rollback_session(&session.session_id, 1, false, None)
         .await
         .unwrap();
     assert_eq!(
-        executor.get_active_session_status(&session.id).await,
+        executor
+            .get_active_session_status(&session.session_id)
+            .await,
         Some(SessionStatus::Pending)
     );
     // The partial assistant message should be deleted, user message kept.
-    let msgs = agent.db.list_session_messages(&session.id).unwrap();
+    let msgs = agent.db.list_session_messages(&session.session_id).unwrap();
     assert_eq!(msgs.len(), 1);
     assert_eq!(msgs[0].content, "hello");
 }
@@ -139,7 +144,7 @@ async fn rollback_pause_true_removes_user_message_from_session() {
     agent
         .db
         .add_message(
-            &session.id,
+            &session.session_id,
             haven_common::types::CanonicalRole::User,
             "hello",
             Some(haven_common::types::TranscriptMessageKind::Text),
@@ -149,7 +154,7 @@ async fn rollback_pause_true_removes_user_message_from_session() {
     agent
         .db
         .add_message(
-            &session.id,
+            &session.session_id,
             haven_common::types::CanonicalRole::Assistant,
             "thinking",
             Some(haven_common::types::TranscriptMessageKind::Text),
@@ -159,7 +164,7 @@ async fn rollback_pause_true_removes_user_message_from_session() {
     // Branch point at step 1: canonical ends at the user message, but
     // last_msg_at points at the thought that was persisted AFTER it (the
     // realistic shape saved by save_branch_point).
-    let msgs = agent.db.list_session_messages(&session.id).unwrap();
+    let msgs = agent.db.list_session_messages(&session.session_id).unwrap();
     let hello_id = msgs
         .iter()
         .find(|m| m.content == "hello")
@@ -211,20 +216,22 @@ async fn rollback_pause_true_removes_user_message_from_session() {
         branch_points,
         interactions: Vec::new(),
     };
-    seed_event_projection(&agent, &session.id, &snapshot).await;
+    seed_event_projection(&agent, &session.session_id, &snapshot).await;
 
     // User-message rollback: the user message itself must be removed from
     // the session (its text returns to the composer for editing) ??not
     // left behind to reappear on the next resume rebuild.
     agent
-        .rollback_session(&session.id, 1, true, Some(&hello_id))
+        .rollback_session(&session.session_id, 1, true, Some(&hello_id))
         .await
         .unwrap();
     assert_eq!(
-        executor.get_active_session_status(&session.id).await,
+        executor
+            .get_active_session_status(&session.session_id)
+            .await,
         Some(SessionStatus::Paused)
     );
-    let msgs = agent.db.list_session_messages(&session.id).unwrap();
+    let msgs = agent.db.list_session_messages(&session.session_id).unwrap();
     assert!(
         msgs.is_empty(),
         "user message should be deleted from the session, got {:?}",
@@ -248,7 +255,7 @@ async fn rollback_fallback_no_branch_point_pause_true_deletes_from_last_user_mes
     agent
         .db
         .add_message(
-            &session.id,
+            &session.session_id,
             haven_common::types::CanonicalRole::User,
             "first",
             Some(haven_common::types::TranscriptMessageKind::Text),
@@ -258,7 +265,7 @@ async fn rollback_fallback_no_branch_point_pause_true_deletes_from_last_user_mes
     agent
         .db
         .add_message(
-            &session.id,
+            &session.session_id,
             haven_common::types::CanonicalRole::Assistant,
             "reply1",
             Some(haven_common::types::TranscriptMessageKind::Text),
@@ -268,7 +275,7 @@ async fn rollback_fallback_no_branch_point_pause_true_deletes_from_last_user_mes
     agent
         .db
         .add_message(
-            &session.id,
+            &session.session_id,
             haven_common::types::CanonicalRole::User,
             "second",
             Some(haven_common::types::TranscriptMessageKind::Text),
@@ -278,14 +285,14 @@ async fn rollback_fallback_no_branch_point_pause_true_deletes_from_last_user_mes
     agent
         .db
         .add_message(
-            &session.id,
+            &session.session_id,
             haven_common::types::CanonicalRole::Assistant,
             "reply2",
             Some(haven_common::types::TranscriptMessageKind::Text),
             None,
         )
         .unwrap();
-    let msgs = agent.db.list_session_messages(&session.id).unwrap();
+    let msgs = agent.db.list_session_messages(&session.session_id).unwrap();
     let reply1_ts = msgs
         .iter()
         .find(|m| m.role == haven_common::types::CanonicalRole::Assistant && m.content == "reply1")
@@ -326,19 +333,21 @@ async fn rollback_fallback_no_branch_point_pause_true_deletes_from_last_user_mes
         branch_points,
         interactions: Vec::new(),
     };
-    seed_event_projection(&agent, &session.id, &snapshot).await;
+    seed_event_projection(&agent, &session.session_id, &snapshot).await;
 
     // The user clicked "second" (the newest user message, whose id
     // resolves to a persisted row).
     agent
-        .rollback_session(&session.id, 2, true, Some(&second_id))
+        .rollback_session(&session.session_id, 2, true, Some(&second_id))
         .await
         .unwrap();
     assert_eq!(
-        executor.get_active_session_status(&session.id).await,
+        executor
+            .get_active_session_status(&session.session_id)
+            .await,
         Some(SessionStatus::Paused)
     );
-    let msgs = agent.db.list_session_messages(&session.id).unwrap();
+    let msgs = agent.db.list_session_messages(&session.session_id).unwrap();
     let contents: Vec<&str> = msgs.iter().map(|m| m.content.as_str()).collect();
     assert_eq!(
         contents,
@@ -360,7 +369,7 @@ async fn rollback_errors_when_target_message_id_does_not_match() {
     agent
         .db
         .add_message(
-            &session.id,
+            &session.session_id,
             haven_common::types::CanonicalRole::User,
             "first question",
             Some(haven_common::types::TranscriptMessageKind::Text),
@@ -370,7 +379,7 @@ async fn rollback_errors_when_target_message_id_does_not_match() {
     agent
         .db
         .add_message(
-            &session.id,
+            &session.session_id,
             haven_common::types::CanonicalRole::Assistant,
             "reply A",
             Some(haven_common::types::TranscriptMessageKind::Text),
@@ -380,7 +389,7 @@ async fn rollback_errors_when_target_message_id_does_not_match() {
     agent
         .db
         .add_message(
-            &session.id,
+            &session.session_id,
             haven_common::types::CanonicalRole::User,
             "second question",
             Some(haven_common::types::TranscriptMessageKind::Text),
@@ -390,14 +399,14 @@ async fn rollback_errors_when_target_message_id_does_not_match() {
     agent
         .db
         .add_message(
-            &session.id,
+            &session.session_id,
             haven_common::types::CanonicalRole::Assistant,
             "reply B",
             Some(haven_common::types::TranscriptMessageKind::Text),
             None,
         )
         .unwrap();
-    let msgs = agent.db.list_session_messages(&session.id).unwrap();
+    let msgs = agent.db.list_session_messages(&session.session_id).unwrap();
     let reply_a_ts = msgs
         .iter()
         .find(|m| m.role == haven_common::types::CanonicalRole::Assistant && m.content == "reply A")
@@ -431,12 +440,12 @@ async fn rollback_errors_when_target_message_id_does_not_match() {
         branch_points,
         interactions: Vec::new(),
     };
-    seed_event_projection(&agent, &session.id, &snapshot).await;
+    seed_event_projection(&agent, &session.session_id, &snapshot).await;
 
     // A canonical but absent id has no DB row; rollback errors and deletes nothing.
     let missing_message_id = haven_common::types::new_id("msg");
     let err = agent
-        .rollback_session(&session.id, 1, true, Some(&missing_message_id))
+        .rollback_session(&session.session_id, 1, true, Some(&missing_message_id))
         .await
         .unwrap_err();
     assert!(
@@ -444,7 +453,7 @@ async fn rollback_errors_when_target_message_id_does_not_match() {
         "unexpected error: {}",
         err
     );
-    let msgs = agent.db.list_session_messages(&session.id).unwrap();
+    let msgs = agent.db.list_session_messages(&session.session_id).unwrap();
     assert_eq!(msgs.len(), 4, "no message may be deleted on error");
 }
 
@@ -452,7 +461,7 @@ async fn rollback_errors_when_target_message_id_does_not_match() {
 async fn rollback_orphan_after_processed_turn_preserves_earlier_history() {
     let (agent, executor) = make_test_agent();
     let session = executor.create_session("orphan rollback").await.unwrap();
-    let msgs = seed_hello_snapshot(&agent, &session.id).await;
+    let msgs = seed_hello_snapshot(&agent, &session.session_id).await;
 
     // Roll back the interrupted message: only it must be discarded; the
     // earlier exchange ("hello" / "thinking") survives.
@@ -463,14 +472,16 @@ async fn rollback_orphan_after_processed_turn_preserves_earlier_history() {
         .id
         .clone();
     agent
-        .rollback_session(&session.id, 1, true, Some(&interrupt_id))
+        .rollback_session(&session.session_id, 1, true, Some(&interrupt_id))
         .await
         .unwrap();
     assert_eq!(
-        executor.get_active_session_status(&session.id).await,
+        executor
+            .get_active_session_status(&session.session_id)
+            .await,
         Some(SessionStatus::Paused)
     );
-    let msgs = agent.db.list_session_messages(&session.id).unwrap();
+    let msgs = agent.db.list_session_messages(&session.session_id).unwrap();
     let contents: Vec<&str> = msgs.iter().map(|m| m.content.as_str()).collect();
     assert_eq!(
         contents,
@@ -480,7 +491,7 @@ async fn rollback_orphan_after_processed_turn_preserves_earlier_history() {
     );
     // The canonical must NOT be truncated: "hello" is a legitimately
     // processed message and stays in the restored context.
-    let restored = load_event_projection(&agent, &session.id).await;
+    let restored = load_event_projection(&agent, &session.session_id).await;
     let restored_canonical = restored.project().canonical_messages;
     assert!(
         restored_canonical
@@ -499,7 +510,7 @@ async fn rollback_processed_user_message_with_later_orphan_wipes_target_timeline
     // discarded timeline), and the canonical IS truncated.
     let (agent, executor) = make_test_agent();
     let session = executor.create_session("processed rollback").await.unwrap();
-    let msgs = seed_hello_snapshot(&agent, &session.id).await;
+    let msgs = seed_hello_snapshot(&agent, &session.session_id).await;
 
     let hello_id = msgs
         .iter()
@@ -508,20 +519,22 @@ async fn rollback_processed_user_message_with_later_orphan_wipes_target_timeline
         .id
         .clone();
     agent
-        .rollback_session(&session.id, 1, true, Some(&hello_id))
+        .rollback_session(&session.session_id, 1, true, Some(&hello_id))
         .await
         .unwrap();
     assert_eq!(
-        executor.get_active_session_status(&session.id).await,
+        executor
+            .get_active_session_status(&session.session_id)
+            .await,
         Some(SessionStatus::Paused)
     );
-    let msgs = agent.db.list_session_messages(&session.id).unwrap();
+    let msgs = agent.db.list_session_messages(&session.session_id).unwrap();
     assert!(
         msgs.is_empty(),
         "rollback of the processed message must wipe the orphan too, got {:?}",
         msgs.iter().map(|m| &m.content).collect::<Vec<_>>()
     );
-    let restored = load_event_projection(&agent, &session.id).await;
+    let restored = load_event_projection(&agent, &session.session_id).await;
     let restored_canonical = restored.project().canonical_messages;
     assert!(
         !restored_canonical
@@ -541,7 +554,7 @@ async fn rollback_pause_uses_target_message_ts_not_latest_user() {
     agent
         .db
         .add_message(
-            &session.id,
+            &session.session_id,
             haven_common::types::CanonicalRole::User,
             "hello",
             Some(haven_common::types::TranscriptMessageKind::Text),
@@ -551,7 +564,7 @@ async fn rollback_pause_uses_target_message_ts_not_latest_user() {
     agent
         .db
         .add_message(
-            &session.id,
+            &session.session_id,
             haven_common::types::CanonicalRole::Assistant,
             "thinking",
             Some(haven_common::types::TranscriptMessageKind::Text),
@@ -564,14 +577,14 @@ async fn rollback_pause_uses_target_message_ts_not_latest_user() {
     agent
         .db
         .add_message(
-            &session.id,
+            &session.session_id,
             haven_common::types::CanonicalRole::User,
             "also check the time",
             Some(haven_common::types::TranscriptMessageKind::Text),
             None,
         )
         .unwrap();
-    let msgs = agent.db.list_session_messages(&session.id).unwrap();
+    let msgs = agent.db.list_session_messages(&session.session_id).unwrap();
     let hello_id = msgs
         .iter()
         .find(|m| m.content == "hello")
@@ -623,25 +636,27 @@ async fn rollback_pause_uses_target_message_ts_not_latest_user() {
         branch_points,
         interactions: Vec::new(),
     };
-    seed_event_projection(&agent, &session.id, &snapshot).await;
+    seed_event_projection(&agent, &session.session_id, &snapshot).await;
 
     // Roll back "hello" specifically —the steering interjection must
     // NOT keep "hello" alive.
     agent
-        .rollback_session(&session.id, 1, true, Some(&hello_id))
+        .rollback_session(&session.session_id, 1, true, Some(&hello_id))
         .await
         .unwrap();
     assert_eq!(
-        executor.get_active_session_status(&session.id).await,
+        executor
+            .get_active_session_status(&session.session_id)
+            .await,
         Some(SessionStatus::Paused)
     );
-    let msgs = agent.db.list_session_messages(&session.id).unwrap();
+    let msgs = agent.db.list_session_messages(&session.session_id).unwrap();
     assert!(
         msgs.is_empty(),
         "rolling back 'hello' must delete it (and the interjection), got {:?}",
         msgs.iter().map(|m| &m.content).collect::<Vec<_>>()
     );
-    let restored = load_event_projection(&agent, &session.id).await;
+    let restored = load_event_projection(&agent, &session.session_id).await;
     let restored_canonical = restored.project().canonical_messages;
     assert!(
         !restored_canonical
@@ -660,7 +675,7 @@ async fn rollback_pause_matches_compacted_message_id() {
     agent
         .db
         .add_message(
-            &session.id,
+            &session.session_id,
             haven_common::types::CanonicalRole::User,
             "do it",
             Some(haven_common::types::TranscriptMessageKind::Text),
@@ -672,7 +687,7 @@ async fn rollback_pause_matches_compacted_message_id() {
     agent
         .db
         .add_message(
-            &session.id,
+            &session.session_id,
             haven_common::types::CanonicalRole::User,
             "use French",
             Some(haven_common::types::TranscriptMessageKind::Text),
@@ -682,14 +697,14 @@ async fn rollback_pause_matches_compacted_message_id() {
     agent
         .db
         .add_message(
-            &session.id,
+            &session.session_id,
             haven_common::types::CanonicalRole::Assistant,
             "thinking",
             Some(haven_common::types::TranscriptMessageKind::Text),
             None,
         )
         .unwrap();
-    let msgs = agent.db.list_session_messages(&session.id).unwrap();
+    let msgs = agent.db.list_session_messages(&session.session_id).unwrap();
     let steering_id = msgs
         .iter()
         .find(|m| m.content == "use French")
@@ -760,17 +775,19 @@ async fn rollback_pause_matches_compacted_message_id() {
         branch_points,
         interactions: Vec::new(),
     };
-    seed_event_projection(&agent, &session.id, &snapshot).await;
+    seed_event_projection(&agent, &session.session_id, &snapshot).await;
 
     agent
-        .rollback_session(&session.id, 2, true, Some(&steering_id))
+        .rollback_session(&session.session_id, 2, true, Some(&steering_id))
         .await
         .unwrap();
     assert_eq!(
-        executor.get_active_session_status(&session.id).await,
+        executor
+            .get_active_session_status(&session.session_id)
+            .await,
         Some(SessionStatus::Paused)
     );
-    let msgs = agent.db.list_session_messages(&session.id).unwrap();
+    let msgs = agent.db.list_session_messages(&session.session_id).unwrap();
     assert_eq!(
         msgs.len(),
         1,
@@ -778,7 +795,7 @@ async fn rollback_pause_matches_compacted_message_id() {
         msgs.iter().map(|m| &m.content).collect::<Vec<_>>()
     );
     assert_eq!(msgs[0].content, "do it");
-    let restored = load_event_projection(&agent, &session.id).await;
+    let restored = load_event_projection(&agent, &session.session_id).await;
     let restored_canonical = restored.project().canonical_messages;
     assert!(
         !restored_canonical
@@ -834,22 +851,30 @@ async fn rollback_while_ask_wait_clears_interaction_gate() {
     let collector = Arc::new(EventCollector::new());
     agent.set_emitter(collector);
     let session = executor.create_session("ask then rollback").await.unwrap();
-    agent.run_session_from_id(&session.id).await.unwrap();
+    agent
+        .run_session_from_id(&session.session_id)
+        .await
+        .unwrap();
     assert_eq!(
-        executor.get_active_session_status(&session.id).await,
+        executor
+            .get_active_session_status(&session.session_id)
+            .await,
         Some(SessionStatus::Paused)
     );
     assert!(
         executor
-            .has_pending_interaction(&session.id, crate::interaction::InteractionKind::Ask)
+            .has_pending_interaction(
+                &session.session_id,
+                crate::interaction::InteractionKind::Ask
+            )
             .await,
         "ask gate must be set before rollback"
     );
 
-    let snap = load_event_projection(&agent, &session.id).await;
+    let snap = load_event_projection(&agent, &session.session_id).await;
     assert!(
         executor
-            .interaction_requests(&session.id)
+            .interaction_requests(&session.session_id)
             .await
             .iter()
             .any(|request| {
@@ -860,23 +885,28 @@ async fn rollback_while_ask_wait_clears_interaction_gate() {
     let target_step = snap.step_number.max(1);
 
     agent
-        .rollback_session(&session.id, target_step, false, None)
+        .rollback_session(&session.session_id, target_step, false, None)
         .await
         .unwrap();
 
     assert_eq!(
-        executor.get_active_session_status(&session.id).await,
+        executor
+            .get_active_session_status(&session.session_id)
+            .await,
         Some(SessionStatus::Pending)
     );
     assert!(
         !executor
-            .has_pending_interaction(&session.id, crate::interaction::InteractionKind::Ask)
+            .has_pending_interaction(
+                &session.session_id,
+                crate::interaction::InteractionKind::Ask
+            )
             .await,
         "ask gate must be cleared after rollback"
     );
     assert!(
         executor
-            .interaction_requests(&session.id)
+            .interaction_requests(&session.session_id)
             .await
             .iter()
             .all(|request| request.status != crate::interaction::InteractionStatus::Pending)
@@ -949,7 +979,7 @@ async fn rollback_mid_tool_batch_joins_and_restores() {
 
     let run = tokio::spawn({
         let agent = agent.clone();
-        let session_id = session.id.clone();
+        let session_id = session.session_id.clone();
         async move { agent.run_session_from_id(&session_id).await }
     });
     for _ in 0..50 {
@@ -964,20 +994,22 @@ async fn rollback_mid_tool_batch_joins_and_restores() {
     );
 
     agent
-        .rollback_session(&session.id, 1, false, None)
+        .rollback_session(&session.session_id, 1, false, None)
         .await
         .unwrap();
     let _ = run.await;
 
     assert_eq!(
-        executor.get_active_session_status(&session.id).await,
+        executor
+            .get_active_session_status(&session.session_id)
+            .await,
         Some(SessionStatus::Pending)
     );
     assert!(
-        !executor.is_run_in_flight(&session.id).await,
+        !executor.is_run_in_flight(&session.session_id).await,
         "run slot must be released after rollback join"
     );
-    let restored = load_event_projection(&agent, &session.id).await;
+    let restored = load_event_projection(&agent, &session.session_id).await;
     let canonical = restored.project().canonical_messages;
     let dangling = canonical.iter().any(|m| {
         m.role == CanonicalRole::Assistant
@@ -1030,23 +1062,28 @@ async fn rollback_ask_wait_pause_true_leaves_plain_paused() {
     let user = agent
         .db
         .add_message(
-            &session.id,
+            &session.session_id,
             haven_common::types::CanonicalRole::User,
             "ask then user-edit rollback",
             Some(haven_common::types::TranscriptMessageKind::Text),
             None,
         )
         .unwrap();
-    agent.run_session_from_id(&session.id).await.unwrap();
+    agent
+        .run_session_from_id(&session.session_id)
+        .await
+        .unwrap();
     assert_eq!(
-        executor.get_active_session_status(&session.id).await,
+        executor
+            .get_active_session_status(&session.session_id)
+            .await,
         Some(SessionStatus::Paused)
     );
-    let snap = load_event_projection(&agent, &session.id).await;
+    let snap = load_event_projection(&agent, &session.session_id).await;
     let target_step = snap.step_number.max(1);
     let err = agent
         .rollback_session(
-            &session.id,
+            &session.session_id,
             target_step,
             true,
             Some(&haven_common::types::new_id("msg")),
@@ -1055,32 +1092,36 @@ async fn rollback_ask_wait_pause_true_leaves_plain_paused() {
         .unwrap_err();
     assert!(err.to_string().contains("not found in session messages"));
     assert_eq!(
-        executor.get_active_session_status(&session.id).await,
+        executor
+            .get_active_session_status(&session.session_id)
+            .await,
         Some(SessionStatus::Paused),
         "invalid target must leave the session status unchanged"
     );
     assert!(
-        executor.is_ask_gated(&session.id).await,
+        executor.is_ask_gated(&session.session_id).await,
         "invalid target must leave the ask gate intact"
     );
     assert!(
         executor
-            .has_pending_interaction(&session.id, InteractionKind::Ask)
+            .has_pending_interaction(&session.session_id, InteractionKind::Ask)
             .await,
         "invalid target must leave the pending ask interaction intact"
     );
 
     agent
-        .rollback_session(&session.id, target_step, true, Some(&user.id))
+        .rollback_session(&session.session_id, target_step, true, Some(&user.id))
         .await
         .unwrap();
     assert_eq!(
-        executor.get_active_session_status(&session.id).await,
+        executor
+            .get_active_session_status(&session.session_id)
+            .await,
         Some(SessionStatus::Paused),
         "user-edit rollback must leave plain Paused"
     );
     assert!(
-        !executor.is_ask_gated(&session.id).await,
+        !executor.is_ask_gated(&session.session_id).await,
         "ask gate must be fully clear after user-edit rollback"
     );
 }
@@ -1094,20 +1135,22 @@ async fn rollback_transaction_failure_keeps_agent_status_and_projections_unchang
         .unwrap();
     agent
         .db
-        .update_session_status(&session.id, SessionStatus::Paused)
+        .update_session_status(&session.session_id, SessionStatus::Paused)
         .unwrap();
     executor
-        .update_session_status(&session.id, SessionStatus::Paused)
+        .update_session_status(&session.session_id, SessionStatus::Paused)
         .await
         .unwrap();
     assert_eq!(
-        executor.get_active_session_status(&session.id).await,
+        executor
+            .get_active_session_status(&session.session_id)
+            .await,
         Some(SessionStatus::Paused)
     );
     agent
         .db
         .add_message(
-            &session.id,
+            &session.session_id,
             haven_common::types::CanonicalRole::User,
             "kept",
             Some(haven_common::types::TranscriptMessageKind::Text),
@@ -1118,7 +1161,7 @@ async fn rollback_transaction_failure_keeps_agent_status_and_projections_unchang
     agent
         .db
         .add_message(
-            &session.id,
+            &session.session_id,
             haven_common::types::CanonicalRole::Assistant,
             "would be truncated",
             Some(haven_common::types::TranscriptMessageKind::Text),
@@ -1127,7 +1170,7 @@ async fn rollback_transaction_failure_keeps_agent_status_and_projections_unchang
         .unwrap();
     seed_event_projection(
         &agent,
-        &session.id,
+        &session.session_id,
         &EventProjection {
             events: seed_events_from_canonical(vec![CanonicalMessage::user_text("kept")]),
             step_number: 1,
@@ -1137,9 +1180,9 @@ async fn rollback_transaction_failure_keeps_agent_status_and_projections_unchang
     )
     .await;
 
-    let before_messages = agent.db.list_session_messages(&session.id).unwrap();
+    let before_messages = agent.db.list_session_messages(&session.session_id).unwrap();
     let event_store = agent.react_engine.event_store.clone();
-    let before_events = event_store.read_all(&session.id).unwrap();
+    let before_events = event_store.read_all(&session.session_id).unwrap();
     agent
         .db
         .conn()
@@ -1154,7 +1197,7 @@ async fn rollback_transaction_failure_keeps_agent_status_and_projections_unchang
         .unwrap();
 
     let error = agent
-        .rollback_session(&session.id, 1, false, None)
+        .rollback_session(&session.session_id, 1, false, None)
         .await
         .unwrap_err();
 
@@ -1164,18 +1207,32 @@ async fn rollback_transaction_failure_keeps_agent_status_and_projections_unchang
             .contains("forced rollback transaction failure")
     );
     assert_eq!(
-        executor.get_active_session_status(&session.id).await,
+        executor
+            .get_active_session_status(&session.session_id)
+            .await,
         Some(SessionStatus::Paused),
         "status changes only after the rollback transaction commits"
     );
     assert_eq!(
-        agent.db.get_session(&session.id).unwrap().unwrap().status,
+        agent
+            .db
+            .get_session(&session.session_id)
+            .unwrap()
+            .unwrap()
+            .status,
         SessionStatus::Paused
     );
     assert_eq!(
-        agent.db.list_session_messages(&session.id).unwrap().len(),
+        agent
+            .db
+            .list_session_messages(&session.session_id)
+            .unwrap()
+            .len(),
         before_messages.len(),
         "the transaction must restore projection rows when marker append fails"
     );
-    assert_eq!(event_store.read_all(&session.id).unwrap(), before_events);
+    assert_eq!(
+        event_store.read_all(&session.session_id).unwrap(),
+        before_events
+    );
 }

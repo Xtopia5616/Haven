@@ -24,7 +24,7 @@ async fn invalid_tool_inputs_are_reported_without_repairing_arguments() {
     }];
     let repaired = agent
         .react_engine
-        .validate_tool_inputs(&session.id, &tool_calls)
+        .validate_tool_inputs(&session.session_id, &tool_calls)
         .await;
     assert_eq!(repaired.len(), 1);
     let input = &tool_calls[0].tool_input;
@@ -54,7 +54,7 @@ async fn valid_tool_inputs_and_final_tool_calls_have_no_validation_failures() {
     }];
     let repaired = agent
         .react_engine
-        .validate_tool_inputs(&session.id, &tool_calls)
+        .validate_tool_inputs(&session.session_id, &tool_calls)
         .await;
     assert_eq!(repaired.len(), 0);
 
@@ -67,7 +67,7 @@ async fn valid_tool_inputs_and_final_tool_calls_have_no_validation_failures() {
     }];
     let repaired = agent
         .react_engine
-        .validate_tool_inputs(&session.id, &tool_calls)
+        .validate_tool_inputs(&session.session_id, &tool_calls)
         .await;
     assert_eq!(repaired.len(), 0);
 }
@@ -96,7 +96,7 @@ async fn null_tool_input_is_reported_without_repairing_arguments() {
     }];
     let repaired = agent
         .react_engine
-        .validate_tool_inputs(&session.id, &tool_calls)
+        .validate_tool_inputs(&session.session_id, &tool_calls)
         .await;
     assert_eq!(repaired.len(), 1);
     assert_eq!(tool_calls[0].tool_input, serde_json::Value::Null);
@@ -126,7 +126,7 @@ async fn null_valued_tool_fields_are_reported_without_repairing_arguments() {
     }];
     let repaired = agent
         .react_engine
-        .validate_tool_inputs(&session.id, &tool_calls)
+        .validate_tool_inputs(&session.session_id, &tool_calls)
         .await;
     assert_eq!(repaired.len(), 1);
     assert_eq!(
@@ -156,7 +156,7 @@ async fn missing_enum_field_is_reported_without_guessing_a_value() {
     }];
     let repaired = agent
         .react_engine
-        .validate_tool_inputs(&session.id, &tool_calls)
+        .validate_tool_inputs(&session.session_id, &tool_calls)
         .await;
     assert_eq!(repaired.len(), 1);
     assert_eq!(tool_calls[0].tool_input, serde_json::json!({}));
@@ -190,7 +190,7 @@ async fn invalid_enum_value_is_reported_without_repairing_arguments() {
     }];
     let repaired = agent
         .react_engine
-        .validate_tool_inputs(&session.id, &tool_calls)
+        .validate_tool_inputs(&session.session_id, &tool_calls)
         .await;
     assert_eq!(repaired.len(), 1);
     assert_eq!(
@@ -222,7 +222,7 @@ async fn wrong_type_tool_value_is_reported_without_repairing_arguments() {
     }];
     let repaired = agent
         .react_engine
-        .validate_tool_inputs(&session.id, &tool_calls)
+        .validate_tool_inputs(&session.session_id, &tool_calls)
         .await;
     assert_eq!(repaired.len(), 1);
     assert_eq!(
@@ -254,7 +254,7 @@ async fn valid_enum_values_have_no_validation_failures() {
     }];
     let repaired = agent
         .react_engine
-        .validate_tool_inputs(&session.id, &tool_calls)
+        .validate_tool_inputs(&session.session_id, &tool_calls)
         .await;
     assert_eq!(repaired.len(), 0);
     assert_eq!(tool_calls[0].tool_input["action"], "stop");
@@ -284,7 +284,7 @@ async fn invalid_optional_field_is_reported_without_repairing_arguments() {
     }];
     let repaired = agent
         .react_engine
-        .validate_tool_inputs(&session.id, &tool_calls)
+        .validate_tool_inputs(&session.session_id, &tool_calls)
         .await;
     assert_eq!(repaired.len(), 1);
     assert_eq!(tool_calls[0].tool_input["operation"], "type");
@@ -299,7 +299,7 @@ async fn confirmation_recovery_matches_the_full_invocation_identity() {
     let session = executor.create_session("confirm").await.unwrap();
     for (call_id, tool_index, decision) in [("call-a", 0, true), ("call-b", 1, false)] {
         let mut request = crate::interaction::InteractionRequest::confirm(
-            &session.id,
+            &session.session_id,
             3,
             "run_command".into(),
             serde_json::json!({"command":"same"}),
@@ -315,19 +315,19 @@ async fn confirmation_recovery_matches_the_full_invocation_identity() {
 
     assert_eq!(
         executor
-            .confirm_decision_for(&session.id, "step-3", 0, Some("call-a"))
+            .confirm_decision_for(&session.session_id, "step-3", 0, Some("call-a"))
             .await,
         Some((true, None))
     );
     assert_eq!(
         executor
-            .confirm_decision_for(&session.id, "step-3", 1, Some("call-b"))
+            .confirm_decision_for(&session.session_id, "step-3", 1, Some("call-b"))
             .await,
         Some((false, None))
     );
     assert_eq!(
         executor
-            .confirm_decision_for(&session.id, "step-3", 0, Some("call-b"))
+            .confirm_decision_for(&session.session_id, "step-3", 0, Some("call-b"))
             .await,
         None,
         "same tool name and args must not associate the wrong call"

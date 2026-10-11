@@ -879,12 +879,12 @@ impl SessionSupervisor {
         let step_outcome = tool_step_outcome(&result);
         let persist_step_id = step_id.to_string();
         let tool_name_owned = tool_name.to_string();
-        // The in-memory StepInfo reuses the persisted step row's id so the
+        // The in-memory StepInfo reuses the persisted step row's step_id so the
         // live session state and the resume history reference the same step.
         if let Some(actor) = self.actor_for(session_id).await {
             actor
                 .record_step(StepInfo {
-                    id: persist_step_id.clone(),
+                    step_id: persist_step_id.clone(),
                     step_number: persisted_step_number,
                     tool_name: tool_name_owned.clone(),
                     input: input.clone(),
@@ -2190,7 +2190,7 @@ mod scheduled_authorization_tests {
         let observed_durable_grant = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let observed = observed_durable_grant.clone();
         let db = database.clone();
-        let session_id = session.id.clone();
+        let session_id = session.session_id.clone();
         let observed_session_id = session_id.clone();
         let expected_capability = haven_common::types::CapabilityScope::try_new(
             haven_common::types::permission_key(tool_name, &input),
@@ -2314,7 +2314,7 @@ mod scheduled_authorization_tests {
             .await
             .unwrap();
         let request = crate::interaction::InteractionRequest::confirm(
-            &session.id,
+            &session.session_id,
             1,
             "files.write".into(),
             json!({"path": "notes.txt"}),
@@ -2332,7 +2332,7 @@ mod scheduled_authorization_tests {
             .await
             .unwrap();
         let other_request = crate::interaction::InteractionRequest::confirm(
-            &other_session.id,
+            &other_session.session_id,
             1,
             "files.write".into(),
             json!({"path": "other-notes.txt"}),
@@ -2353,7 +2353,7 @@ mod scheduled_authorization_tests {
         let other_request_id =
             haven_common::types::ConfirmId::try_from(other_request.id.clone()).unwrap();
         let wrong_owner = crate::interaction::InteractionOwner::Session {
-            session_id: other_session.id.clone(),
+            session_id: other_session.session_id.clone(),
         };
 
         assert!(
@@ -2365,35 +2365,38 @@ mod scheduled_authorization_tests {
         );
         assert!(
             supervisor
-                .pending_session_confirmation_request(&session.id, &request_id)
+                .pending_session_confirmation_request(&session.session_id, &request_id)
                 .await
                 .is_some()
         );
         assert!(
             supervisor
-                .pending_session_confirmation_request(&other_session.id, &other_request_id)
+                .pending_session_confirmation_request(&other_session.session_id, &other_request_id)
                 .await
                 .is_some()
         );
 
         let owner = crate::interaction::InteractionOwner::Session {
-            session_id: session.id.clone(),
+            session_id: session.session_id.clone(),
         };
         let resolved = supervisor
             .resolve_confirmation_for_owner(&owner, &request_id, false)
             .await
             .unwrap()
             .expect("the request must resolve through its owning actor");
-        assert_eq!(resolved.session_id.as_deref(), Some(session.id.as_str()));
+        assert_eq!(
+            resolved.session_id.as_deref(),
+            Some(session.session_id.as_str())
+        );
         assert!(
             supervisor
-                .pending_session_confirmation_request(&session.id, &request_id)
+                .pending_session_confirmation_request(&session.session_id, &request_id)
                 .await
                 .is_none()
         );
         assert!(
             supervisor
-                .pending_session_confirmation_request(&other_session.id, &other_request_id)
+                .pending_session_confirmation_request(&other_session.session_id, &other_request_id)
                 .await
                 .is_some(),
             "resolving one actor must not consume another actor's confirmation"
@@ -2413,7 +2416,7 @@ mod scheduled_authorization_tests {
             .share_services()
             .tool_catalog_test_support
             .register_session_tool(
-                &session.id,
+                &session.session_id,
                 Arc::new(PolicyTestTool {
                     name: tool_name.into(),
                     risk_level: RiskLevel::High,
@@ -2423,7 +2426,7 @@ mod scheduled_authorization_tests {
             .await;
 
         let authorization_request = supervisor
-            .scheduled_authorization_request(Some(&session.id), tool_name, &input)
+            .scheduled_authorization_request(Some(&session.session_id), tool_name, &input)
             .await
             .unwrap();
         let receipt = match supervisor
@@ -2436,7 +2439,7 @@ mod scheduled_authorization_tests {
         };
         let request_id = receipt.confirmation_id.clone();
         let request = crate::interaction::InteractionRequest::confirm(
-            &session.id,
+            &session.session_id,
             1,
             tool_name.into(),
             input,
@@ -2447,11 +2450,13 @@ mod scheduled_authorization_tests {
             Some(receipt),
         );
         supervisor
-            .request_confirm_batch(&session.id, vec![request])
+            .request_confirm_batch(&session.session_id, vec![request])
             .await
             .unwrap();
         assert_eq!(
-            supervisor.get_active_session_status(&session.id).await,
+            supervisor
+                .get_active_session_status(&session.session_id)
+                .await,
             Some(haven_common::lifecycle::SessionStatus::Paused)
         );
 
@@ -2465,7 +2470,7 @@ mod scheduled_authorization_tests {
             )
             .unwrap();
         let owner = crate::interaction::InteractionOwner::Session {
-            session_id: session.id.clone(),
+            session_id: session.session_id.clone(),
         };
         let error = supervisor
             .resolve_confirmation_with_session_grant_for_owner(
@@ -2478,7 +2483,9 @@ mod scheduled_authorization_tests {
             .expect_err("a failed durable decision append must be retryable");
         assert!(format!("{error:#}").contains("test confirmation resolve append failure"));
 
-        let grants = database.session_authorization_grants(&session.id).unwrap();
+        let grants = database
+            .session_authorization_grants(&session.session_id)
+            .unwrap();
         assert_eq!(grants.len(), 1, "the approved grant remains durable");
         assert_eq!(grants[0].effect, PermissionEffect::Allow);
         assert!(matches!(
@@ -2490,19 +2497,21 @@ mod scheduled_authorization_tests {
         ));
         assert!(
             supervisor
-                .pending_session_confirmation_request(&session.id, &request_id)
+                .pending_session_confirmation_request(&session.session_id, &request_id)
                 .await
                 .is_some(),
             "the original actor must retain the pending request after append failure"
         );
         assert_eq!(
-            supervisor.get_active_session_status(&session.id).await,
+            supervisor
+                .get_active_session_status(&session.session_id)
+                .await,
             Some(haven_common::lifecycle::SessionStatus::Paused),
             "append failure must not wake the paused session"
         );
         let events = supervisor
             .store
-            .read_active_domain_events_async(&session.id)
+            .read_active_domain_events_async(&session.session_id)
             .await
             .unwrap();
         assert_eq!(
@@ -2538,17 +2547,19 @@ mod scheduled_authorization_tests {
         );
         assert!(
             supervisor
-                .pending_session_confirmation_request(&session.id, &request_id)
+                .pending_session_confirmation_request(&session.session_id, &request_id)
                 .await
                 .is_none()
         );
         assert_eq!(
-            supervisor.get_active_session_status(&session.id).await,
+            supervisor
+                .get_active_session_status(&session.session_id)
+                .await,
             Some(haven_common::lifecycle::SessionStatus::Pending)
         );
         assert_eq!(
             database
-                .session_authorization_grants(&session.id)
+                .session_authorization_grants(&session.session_id)
                 .unwrap()
                 .len(),
             1,
@@ -2556,7 +2567,7 @@ mod scheduled_authorization_tests {
         );
         let events = supervisor
             .store
-            .read_active_domain_events_async(&session.id)
+            .read_active_domain_events_async(&session.session_id)
             .await
             .unwrap();
         assert_eq!(
@@ -2643,7 +2654,7 @@ mod scheduled_authorization_tests {
             .share_services()
             .tool_catalog_test_support
             .register_session_tool(
-                &session.id,
+                &session.session_id,
                 Arc::new(PolicyTestTool {
                     name: tool_name.into(),
                     risk_level: RiskLevel::High,
@@ -2654,7 +2665,7 @@ mod scheduled_authorization_tests {
             )
             .await;
         let authorization_request = supervisor
-            .scheduled_authorization_request(Some(&session.id), tool_name, &input)
+            .scheduled_authorization_request(Some(&session.session_id), tool_name, &input)
             .await
             .unwrap();
         let receipt = match supervisor
@@ -2666,11 +2677,11 @@ mod scheduled_authorization_tests {
             decision => panic!("expected confirmation, got {decision:?}"),
         };
         let tool_run_id =
-            running_scheduled_tool_run(&supervisor, Some(&session.id), tool_name).await;
+            running_scheduled_tool_run(&supervisor, Some(&session.session_id), tool_name).await;
         let confirmation_id = supervisor
             .request_scheduled_confirm(
                 &tool_run_id,
-                Some(&session.id),
+                Some(&session.session_id),
                 tool_name,
                 input,
                 receipt,
@@ -2702,7 +2713,7 @@ mod scheduled_authorization_tests {
         );
         assert!(
             database
-                .session_authorization_grants(&session.id)
+                .session_authorization_grants(&session.session_id)
                 .unwrap()
                 .is_empty()
         );
@@ -2726,7 +2737,7 @@ mod scheduled_authorization_tests {
         supervisor
             .request_scheduled_confirm(
                 "toolrun-00000000000000000000000000000002",
-                Some(&session.id),
+                Some(&session.session_id),
                 "files.write",
                 json!({"path": "notes.txt"}),
                 future_receipt(confirmation_id.clone(), "files.write"),
@@ -2778,7 +2789,7 @@ mod scheduled_authorization_tests {
         assert!(session_grant.await.unwrap().unwrap().is_none());
         assert!(
             database
-                .session_authorization_grants(&session.id)
+                .session_authorization_grants(&session.session_id)
                 .unwrap()
                 .is_empty()
         );
@@ -2808,7 +2819,7 @@ mod tool_step_persistence_tests {
 
         supervisor
             .begin_tool_step_with_identity(
-                &session.id,
+                &session.session_id,
                 "files.read",
                 &input,
                 5,
@@ -2819,7 +2830,7 @@ mod tool_step_persistence_tests {
             .await
             .unwrap();
 
-        let pending = db.list_session_steps(&session.id).unwrap();
+        let pending = db.list_session_steps(&session.session_id).unwrap();
         assert_eq!(pending.len(), 1);
         assert_eq!(pending[0].step_id, step_id);
         assert_eq!(pending[0].step_number, 5);
@@ -2835,7 +2846,7 @@ mod tool_step_persistence_tests {
 
         supervisor
             .start_tool_step_with_identity(
-                &session.id,
+                &session.session_id,
                 "files.read",
                 &input,
                 5,
@@ -2847,7 +2858,7 @@ mod tool_step_persistence_tests {
             .unwrap();
         supervisor
             .finish_step_with_outcome(
-                &session.id,
+                &session.session_id,
                 "files.read",
                 &input,
                 5,
@@ -2859,7 +2870,7 @@ mod tool_step_persistence_tests {
             )
             .await;
 
-        let finished = db.list_session_steps(&session.id).unwrap();
+        let finished = db.list_session_steps(&session.session_id).unwrap();
         assert_eq!(finished.len(), 1);
         assert_eq!(
             finished[0].status,
@@ -2874,7 +2885,7 @@ mod tool_step_persistence_tests {
 
         let replay = supervisor
             .start_tool_step_with_identity(
-                &session.id,
+                &session.session_id,
                 "files.read",
                 &input,
                 5,

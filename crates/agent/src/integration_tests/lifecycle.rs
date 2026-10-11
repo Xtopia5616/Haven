@@ -54,14 +54,14 @@ async fn assert_dispatcher_waits_for_memory_runtime(recover_pending: bool) {
     // already queued, so no typed readiness handoff exists until it succeeds.
     tokio::time::sleep(std::time::Duration::from_millis(350)).await;
     assert_eq!(
-        executor.get_session_status(&session.id).await,
+        executor.get_session_status(&session.session_id).await,
         Some(SessionStatus::Pending),
         "dispatcher ran before memory runtime preparation completed"
     );
     assert_eq!(
         agent
             .db
-            .get_kv(&format!("memory_event_cursor.{}", session.id))
+            .get_kv(&format!("memory_event_cursor.{}", session.session_id))
             .unwrap(),
         None,
         "injected failure unexpectedly installed the startup cursor"
@@ -85,7 +85,7 @@ async fn assert_dispatcher_waits_for_memory_runtime(recover_pending: bool) {
         .unwrap();
 
     assert_eq!(
-        executor.get_session_status(&session.id).await,
+        executor.get_session_status(&session.session_id).await,
         Some(SessionStatus::Pending),
         "dispatcher opened before the app registered the prepared live consumer"
     );
@@ -112,7 +112,7 @@ async fn assert_dispatcher_waits_for_memory_runtime(recover_pending: bool) {
 
     let status = tokio::time::timeout(std::time::Duration::from_secs(3), async {
         loop {
-            let status = executor.get_session_status(&session.id).await;
+            let status = executor.get_session_status(&session.session_id).await;
             if status != Some(SessionStatus::Pending) {
                 break status;
             }
@@ -174,7 +174,7 @@ async fn cancelling_memory_preparation_does_not_open_dispatcher() {
     };
     assert!(error.to_string().contains("cancelled"));
     assert_eq!(
-        executor.get_session_status(&session.id).await,
+        executor.get_session_status(&session.session_id).await,
         Some(SessionStatus::Pending),
         "dispatcher must remain closed after cancelled memory preparation"
     );
@@ -297,7 +297,10 @@ async fn set_max_steps_per_run_updates_field() {
     agent.set_emitter(recorder.clone());
 
     let session = executor.create_session("test").await.unwrap();
-    let history = agent.run_session_from_id(&session.id).await.unwrap();
+    let history = agent
+        .run_session_from_id(&session.session_id)
+        .await
+        .unwrap();
     assert!(!history.is_empty());
 }
 
@@ -390,7 +393,7 @@ async fn terminal_tool_run_result_projection_is_idempotent() {
         .await
         .unwrap();
     executor
-        .update_session_status(&session.id, SessionStatus::Completed)
+        .update_session_status(&session.session_id, SessionStatus::Completed)
         .await
         .unwrap();
 
@@ -400,13 +403,13 @@ async fn terminal_tool_run_result_projection_is_idempotent() {
     let first = agent
         .executor
         .session_store()
-        .persist_terminal_tool_run_result(&session.id, content, &message_id)
+        .persist_terminal_tool_run_result(&session.session_id, content, &message_id)
         .await
         .unwrap();
     let second = agent
         .executor
         .session_store()
-        .persist_terminal_tool_run_result(&session.id, content, &message_id)
+        .persist_terminal_tool_run_result(&session.session_id, content, &message_id)
         .await
         .unwrap();
 
@@ -415,7 +418,7 @@ async fn terminal_tool_run_result_projection_is_idempotent() {
     assert_eq!(
         agent
             .db
-            .list_session_messages(&session.id)
+            .list_session_messages(&session.session_id)
             .unwrap()
             .iter()
             .filter(|message| message.id == message_id)
@@ -437,7 +440,7 @@ async fn queued_tool_run_result_is_reconciled_after_session_becomes_terminal() {
         .await
         .unwrap();
     executor
-        .update_session_status(&session.id, SessionStatus::Paused)
+        .update_session_status(&session.session_id, SessionStatus::Paused)
         .await
         .unwrap();
 
@@ -446,7 +449,7 @@ async fn queued_tool_run_result_is_reconciled_after_session_becomes_terminal() {
         .db
         .save_tool_run(
             tool_run_id,
-            Some(&session.id),
+            Some(&session.session_id),
             "echo race",
             "2026-09-24T10:00:00Z",
         )
@@ -470,14 +473,14 @@ async fn queued_tool_run_result_is_reconciled_after_session_becomes_terminal() {
     // can project it. The durable outbox must remain the recovery authority.
     executor
         .enqueue_tool_run_result(
-            &session.id,
+            &session.session_id,
             tool_run_id.to_string(),
             "[Background tool run result]\ntool_run_id: toolrun-00000000000000000000000000000002\nstatus: completed\n\nrace output",
         )
         .await
         .unwrap();
     executor
-        .update_session_status(&session.id, SessionStatus::Completed)
+        .update_session_status(&session.session_id, SessionStatus::Completed)
         .await
         .unwrap();
 
@@ -503,7 +506,7 @@ async fn queued_tool_run_result_is_reconciled_after_session_becomes_terminal() {
     loop {
         let has_message = agent
             .db
-            .list_session_messages(&session.id)
+            .list_session_messages(&session.session_id)
             .unwrap()
             .iter()
             .any(|message| message.id == message_id);
@@ -736,20 +739,30 @@ fn parse_default_model_response_final_answer_tool_call() {
 async fn process_input_does_not_resurrect_ended_session() {
     let (agent, executor) = make_test_agent();
     let session = executor.create_session("original").await.unwrap();
-    executor.end_session(&session.id).await.unwrap();
+    executor.end_session(&session.session_id).await.unwrap();
     // end_session removes the session from the working set entirely.
-    assert_eq!(executor.get_active_session_status(&session.id).await, None);
+    assert_eq!(
+        executor
+            .get_active_session_status(&session.session_id)
+            .await,
+        None
+    );
 
     let result = agent
-        .process_input("more context", Some(session.id.clone()))
+        .process_input("more context", Some(session.session_id.clone()))
         .await
         .unwrap();
     assert!(matches!(result, ProcessResult::Supplemented { .. }));
     // Session is not reloaded into the working set and never becomes Pending.
-    assert_eq!(executor.get_active_session_status(&session.id).await, None);
+    assert_eq!(
+        executor
+            .get_active_session_status(&session.session_id)
+            .await,
+        None
+    );
     assert!(
         executor
-            .drain_react_context(&session.id)
+            .drain_react_context(&session.session_id)
             .await
             .follow_ups
             .is_empty()
@@ -760,8 +773,8 @@ async fn process_input_does_not_resurrect_ended_session() {
 async fn process_input_deletes_terminal_ghost_message_through_session_store() {
     let (agent, executor, db) = make_in_memory_agent();
     let session = executor.create_session("original").await.unwrap();
-    executor.end_session(&session.id).await.unwrap();
-    let terminal_status = db.get_session(&session.id).unwrap().unwrap().status;
+    executor.end_session(&session.session_id).await.unwrap();
+    let terminal_status = db.get_session(&session.session_id).unwrap().unwrap().status;
     assert!(terminal_status.is_terminal());
 
     let bus = agent.events.install_bus();
@@ -770,26 +783,30 @@ async fn process_input_deletes_terminal_ghost_message_through_session_store() {
         .await;
 
     let result = agent
-        .process_input("more context", Some(session.id.clone()))
+        .process_input("more context", Some(session.session_id.clone()))
         .await
         .unwrap();
 
     assert_eq!(
         result,
         ProcessResult::Supplemented {
-            session_id: session.id.clone(),
+            session_id: session.session_id.clone(),
             message_id: None,
         }
     );
-    assert!(db.list_session_messages(&session.id).unwrap().is_empty());
+    assert!(
+        db.list_session_messages(&session.session_id)
+            .unwrap()
+            .is_empty()
+    );
     assert_eq!(
-        db.get_session(&session.id).unwrap().unwrap().status,
+        db.get_session(&session.session_id).unwrap().unwrap().status,
         terminal_status
     );
-    assert_eq!(executor.get_session_status(&session.id).await, None);
+    assert_eq!(executor.get_session_status(&session.session_id).await, None);
     assert_eq!(
         *updates.0.lock().unwrap(),
-        vec![(session.id, terminal_status)]
+        vec![(session.session_id, terminal_status)]
     );
 }
 
@@ -797,8 +814,8 @@ async fn process_input_deletes_terminal_ghost_message_through_session_store() {
 async fn process_input_continues_when_terminal_ghost_delete_fails() {
     let (agent, executor, db) = make_in_memory_agent();
     let session = executor.create_session("original").await.unwrap();
-    executor.end_session(&session.id).await.unwrap();
-    let terminal_status = db.get_session(&session.id).unwrap().unwrap().status;
+    executor.end_session(&session.session_id).await.unwrap();
+    let terminal_status = db.get_session(&session.session_id).unwrap().unwrap().status;
     assert!(terminal_status.is_terminal());
     db.conn()
         .execute_batch(
@@ -817,18 +834,18 @@ async fn process_input_continues_when_terminal_ghost_delete_fails() {
         .await;
 
     let result = agent
-        .process_input("more context", Some(session.id.clone()))
+        .process_input("more context", Some(session.session_id.clone()))
         .await
         .unwrap();
 
     assert_eq!(
         result,
         ProcessResult::Supplemented {
-            session_id: session.id.clone(),
+            session_id: session.session_id.clone(),
             message_id: None,
         }
     );
-    let messages = db.list_session_messages(&session.id).unwrap();
+    let messages = db.list_session_messages(&session.session_id).unwrap();
     assert_eq!(messages.len(), 1);
     assert_eq!(messages[0].role, haven_common::types::CanonicalRole::User);
     assert_eq!(messages[0].content, "more context");
@@ -836,19 +853,19 @@ async fn process_input_continues_when_terminal_ghost_delete_fails() {
         agent
             .react_engine
             .event_store
-            .pending_session_inputs(&session.id)
+            .pending_session_inputs(&session.session_id)
             .await
             .unwrap()
             .is_empty()
     );
     assert_eq!(
-        db.get_session(&session.id).unwrap().unwrap().status,
+        db.get_session(&session.session_id).unwrap().unwrap().status,
         terminal_status
     );
-    assert_eq!(executor.get_session_status(&session.id).await, None);
+    assert_eq!(executor.get_session_status(&session.session_id).await, None);
     assert_eq!(
         *updates.0.lock().unwrap(),
-        vec![(session.id, terminal_status)]
+        vec![(session.session_id, terminal_status)]
     );
 }
 
@@ -857,21 +874,23 @@ async fn process_input_reactivates_paused_session() {
     let (agent, executor) = make_test_agent();
     let session = executor.create_session("original").await.unwrap();
     executor
-        .update_session_status(&session.id, SessionStatus::Paused)
+        .update_session_status(&session.session_id, SessionStatus::Paused)
         .await
         .unwrap();
 
     let result = agent
-        .process_input("more context", Some(session.id.clone()))
+        .process_input("more context", Some(session.session_id.clone()))
         .await
         .unwrap();
     assert!(matches!(result, ProcessResult::Supplemented { .. }));
     assert_eq!(
-        executor.get_active_session_status(&session.id).await,
+        executor
+            .get_active_session_status(&session.session_id)
+            .await,
         Some(SessionStatus::Pending)
     );
     let supps: Vec<String> = executor
-        .drain_react_context(&session.id)
+        .drain_react_context(&session.session_id)
         .await
         .follow_ups
         .into_iter()
@@ -885,19 +904,19 @@ async fn process_input_reserves_one_ask_answer_until_user_inject() {
     let (agent, executor) = make_test_agent();
     let session = executor.create_session("original").await.unwrap();
     executor
-        .update_session_status(&session.id, SessionStatus::Paused)
+        .update_session_status(&session.session_id, SessionStatus::Paused)
         .await
         .unwrap();
     executor
         .request_interaction(crate::interaction::InteractionRequest::ask(
-            &session.id,
+            &session.session_id,
             Vec::new(),
             vec!["step-0123456789abcdef0123456789abcdef".into()],
         ))
         .await
         .unwrap();
     let result = agent
-        .process_input("the answer", Some(session.id.clone()))
+        .process_input("the answer", Some(session.session_id.clone()))
         .await
         .unwrap();
     assert!(matches!(result, ProcessResult::Supplemented { .. }));
@@ -906,14 +925,19 @@ async fn process_input_reserves_one_ask_answer_until_user_inject() {
     // received before that acknowledgement is a follow-up, even though the
     // interaction registry still contains the Ask.
     agent
-        .process_input("later input", Some(session.id.clone()))
+        .process_input("later input", Some(session.session_id.clone()))
         .await
         .unwrap();
     assert_eq!(
-        executor.get_active_session_status(&session.id).await,
+        executor
+            .get_active_session_status(&session.session_id)
+            .await,
         Some(SessionStatus::Pending)
     );
-    let supps = executor.drain_react_context(&session.id).await.follow_ups;
+    let supps = executor
+        .drain_react_context(&session.session_id)
+        .await
+        .follow_ups;
     assert_eq!(supps.len(), 2);
     assert!(
         supps[0].is_answer,
@@ -929,7 +953,7 @@ async fn process_input_reserves_one_ask_answer_until_user_inject() {
     let pending = agent
         .react_engine
         .event_store
-        .pending_session_inputs(&session.id)
+        .pending_session_inputs(&session.session_id)
         .await
         .unwrap();
     assert_eq!(pending.len(), 2);
@@ -943,7 +967,10 @@ async fn process_input_reserves_one_ask_answer_until_user_inject() {
     );
     assert!(
         executor
-            .pending_interactions(&session.id, crate::interaction::InteractionKind::Ask)
+            .pending_interactions(
+                &session.session_id,
+                crate::interaction::InteractionKind::Ask
+            )
             .await
             .len()
             == 1,
@@ -956,16 +983,19 @@ async fn process_input_paused_without_ask_is_plain_supplement() {
     let (agent, executor) = make_test_agent();
     let session = executor.create_session("original").await.unwrap();
     executor
-        .update_session_status(&session.id, SessionStatus::Paused)
+        .update_session_status(&session.session_id, SessionStatus::Paused)
         .await
         .unwrap();
 
     let result = agent
-        .process_input("follow up", Some(session.id.clone()))
+        .process_input("follow up", Some(session.session_id.clone()))
         .await
         .unwrap();
     assert!(matches!(result, ProcessResult::Supplemented { .. }));
-    let supps = executor.drain_react_context(&session.id).await.follow_ups;
+    let supps = executor
+        .drain_react_context(&session.session_id)
+        .await
+        .follow_ups;
     assert_eq!(supps.len(), 1);
     assert!(
         !supps[0].is_answer,
@@ -981,7 +1011,7 @@ async fn process_input_with_attachments_queues_and_persists_attachments() {
         .await
         .unwrap();
     executor
-        .update_session_status(&session.id, SessionStatus::Paused)
+        .update_session_status(&session.session_id, SessionStatus::Paused)
         .await
         .unwrap();
 
@@ -989,7 +1019,7 @@ async fn process_input_with_attachments_queues_and_persists_attachments() {
     let result = agent
         .process_input_with_attachments(
             "看图",
-            Some(session.id.clone()),
+            Some(session.session_id.clone()),
             std::slice::from_ref(&att),
             false,
         )
@@ -997,16 +1027,21 @@ async fn process_input_with_attachments_queues_and_persists_attachments() {
         .unwrap();
     assert!(matches!(result, ProcessResult::Supplemented { .. }));
     assert_eq!(
-        executor.get_active_session_status(&session.id).await,
+        executor
+            .get_active_session_status(&session.session_id)
+            .await,
         Some(SessionStatus::Pending)
     );
-    let supps = executor.drain_react_context(&session.id).await.follow_ups;
+    let supps = executor
+        .drain_react_context(&session.session_id)
+        .await
+        .follow_ups;
     assert_eq!(supps.len(), 1);
     assert_eq!(supps[0].text, "看图");
     assert_eq!(supps[0].attachments, vec![att]);
 
     // Persisted with attachments in the session's message stream.
-    let msgs = agent.db.list_session_messages(&session.id).unwrap();
+    let msgs = agent.db.list_session_messages(&session.session_id).unwrap();
     let user_msg = msgs
         .iter()
         .find(|m| m.role == haven_common::types::CanonicalRole::User && m.content == "看图")
@@ -1016,7 +1051,7 @@ async fn process_input_with_attachments_queues_and_persists_attachments() {
     let pending = agent
         .react_engine
         .event_store
-        .pending_session_inputs(&session.id)
+        .pending_session_inputs(&session.session_id)
         .await
         .unwrap();
     assert_eq!(pending.len(), 1);
@@ -1050,6 +1085,6 @@ async fn process_input_creates_new_session() {
 async fn run_fact_inference_does_not_panic() {
     let (agent, executor) = make_test_agent();
     let session = executor.create_session("test").await.unwrap();
-    executor.end_session(&session.id).await.unwrap();
-    agent.memory_worker.infer_facts(&session.id).await;
+    executor.end_session(&session.session_id).await.unwrap();
+    agent.memory_worker.infer_facts(&session.session_id).await;
 }

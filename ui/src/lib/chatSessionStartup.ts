@@ -53,7 +53,7 @@ export function createChatSessionStartup(dependencies: ChatSessionStartupDepende
 		dependencies.dispatch({
 			type: 'session/retained-error',
 			session: {
-				id: resumeTarget.sessionId,
+				sessionId: resumeTarget.sessionId,
 				input: resumeTarget.summary || '',
 				inputText: resumeTarget.summary || '',
 				title: resumeTarget.title || null,
@@ -79,7 +79,7 @@ export function createChatSessionStartup(dependencies: ChatSessionStartupDepende
 			if (prevActive && prevActive !== resumeTarget.sessionId) {
 				const prevSession = dependencies.reducer
 					.snapshot()
-					.sessions.find((session) => session.id === prevActive);
+					.sessions.find((session) => session.sessionId === prevActive);
 				if (
 					!prevSession ||
 					prevSession.status === 'completed' ||
@@ -129,7 +129,7 @@ export function createChatSessionStartup(dependencies: ChatSessionStartupDepende
 				dependencies.dispatch({
 					type: 'sessions/loaded',
 					sessions: result.sessions.map((session) => ({
-						id: session.id,
+						sessionId: session.session_id,
 						status: session.status,
 						input: session.input,
 						title: session.title,
@@ -140,7 +140,7 @@ export function createChatSessionStartup(dependencies: ChatSessionStartupDepende
 				const after = dependencies.reducer.snapshot();
 				if (
 					after.activeSessionId &&
-					!after.sessions.some((session) => session.id === after.activeSessionId) &&
+					!after.sessions.some((session) => session.sessionId === after.activeSessionId) &&
 					!after.runEndNotice
 				) {
 					dependencies.dispatch({ type: 'session/cleared' });
@@ -190,7 +190,7 @@ export function createChatSessionStartup(dependencies: ChatSessionStartupDepende
 		const current = dependencies.reducer.snapshot();
 		if (
 			current.activeSessionId &&
-			!current.sessions.some((session) => session.id === current.activeSessionId)
+			!current.sessions.some((session) => session.sessionId === current.activeSessionId)
 		) {
 			dependencies.dispatch({ type: 'session/cleared' });
 		}

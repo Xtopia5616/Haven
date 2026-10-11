@@ -193,7 +193,7 @@
 			.sort((left, right) => left.createdAt.localeCompare(right.createdAt))
 			.map((request) => {
 				const sessionTitle =
-					sessions.find((session) => session.id === request.owner.sessionId)?.title ||
+					sessions.find((session) => session.sessionId === request.owner.sessionId)?.title ||
 					request.owner.sessionId;
 				if (request.kind === 'ask') {
 					const question = sessionReducer
@@ -298,7 +298,7 @@
 	);
 	const sessionRunning = $derived(
 		!!activeSessionId &&
-			sessions.some((t) => t.id === activeSessionId && isBusyStatus(t.status)),
+			sessions.some((t) => t.sessionId === activeSessionId && isBusyStatus(t.status)),
 	);
 	// Tooltip for the token widget. While the active session is still running
 	// (streaming, tool-calling, or queued) more `agent:usage` events are
@@ -329,7 +329,7 @@
 		session: NonNullable<SessionLineageResponse['parent']>,
 	): SessionSummary {
 		return {
-			id: session.session_id,
+			sessionId: session.session_id,
 			status: session.status,
 			title: session.title || session.input_text,
 			inputText: session.input_text,
@@ -395,12 +395,14 @@
 	let mediaPlansBySession = $state<Record<string, AgentMediaPlanPayload[]>>({});
 	$effect(() => syncStore(mediaPlanStore, (v) => (mediaPlansBySession = v || {})));
 	const activeSessionStatus = $derived(
-		activeSessionId ? sessions.find((t) => t.id === activeSessionId)?.status : undefined,
+		activeSessionId
+			? sessions.find((t) => t.sessionId === activeSessionId)?.status
+			: undefined,
 	);
 	/** The backend's derived reason is authoritative; toolRuns only provide the count. */
 	const awaitingBackground = $derived.by(() => {
 		if (!activeSessionId || activeSessionStatus !== 'paused') return false;
-		const session = sessions.find((item) => item.id === activeSessionId);
+		const session = sessions.find((item) => item.sessionId === activeSessionId);
 		return sessionWaitingReason(session) === 'background_task';
 	});
 	const awaitingBackgroundCount = $derived.by(() => {
@@ -783,7 +785,7 @@
 			clearStepBlockIds,
 			flushChunksNow,
 			updateSessionTitle: (sessionId, title) => {
-				const index = sessions.findIndex((session) => session.id === sessionId);
+				const index = sessions.findIndex((session) => session.sessionId === sessionId);
 				if (index >= 0) {
 					dispatchSession({ type: 'session/title-updated', sessionId, title });
 					// Keep the shell's task/status view in sync with the chat header
@@ -950,7 +952,7 @@
 	async function switchToSession(sessionId: string) {
 		const alreadyLoaded = sessionReducer
 			.snapshot()
-			.sessions.some((session) => session.id === sessionId);
+			.sessions.some((session) => session.sessionId === sessionId);
 		const historical = recentHistorySessions.find(
 			(session) => session.session_id === sessionId,
 		);
@@ -959,7 +961,7 @@
 				dispatchSession({
 					type: 'session/retained-error',
 					session: {
-						id: historical.session_id,
+						sessionId: historical.session_id,
 						input: historical.input_text,
 						inputText: historical.input_text,
 						title: historical.title,
@@ -1088,7 +1090,9 @@
 	});
 
 	const activeSession = $derived(
-		activeSessionId ? sessions.find((session) => session.id === activeSessionId) : null,
+		activeSessionId
+			? sessions.find((session) => session.sessionId === activeSessionId)
+			: null,
 	);
 	const sessionHeaderTitle = $derived(
 		String(activeSession?.title || activeSession?.input || '新会话'),

@@ -271,7 +271,7 @@ async fn reopen_session_requeues_undelivered_inputs_stays_paused() {
     // directly and never carries a step anchor.
     agent
         .persist_message_parts(
-            &session.id,
+            &session.session_id,
             haven_common::types::CanonicalRole::User,
             "input text",
             Some(haven_common::types::TranscriptMessageKind::Text),
@@ -283,7 +283,7 @@ async fn reopen_session_requeues_undelivered_inputs_stays_paused() {
     // An ordinary historical user row has no pending recovery marker.
     agent
         .persist_message_parts(
-            &session.id,
+            &session.session_id,
             haven_common::types::CanonicalRole::User,
             "steering delivered",
             Some(haven_common::types::TranscriptMessageKind::Text),
@@ -297,7 +297,7 @@ async fn reopen_session_requeues_undelivered_inputs_stays_paused() {
         .react_engine
         .event_store
         .persist_pending_user_input(
-            &session.id,
+            &session.session_id,
             "steering lost",
             Some(haven_common::types::TranscriptMessageKind::Text),
             &[],
@@ -311,20 +311,30 @@ async fn reopen_session_requeues_undelivered_inputs_stays_paused() {
     // Terminal state: the session leaves the working set (an error/cancel
     // dropped the in-memory queues along with the lost steering).
     executor
-        .update_session_status(&session.id, SessionStatus::Completed)
+        .update_session_status(&session.session_id, SessionStatus::Completed)
         .await
         .unwrap();
-    assert_eq!(executor.get_active_session_status(&session.id).await, None);
+    assert_eq!(
+        executor
+            .get_active_session_status(&session.session_id)
+            .await,
+        None
+    );
 
-    agent.reopen_session(&session.id).await.unwrap();
+    agent.reopen_session(&session.session_id).await.unwrap();
 
     // Re-queued for a later Continue / follow-up, but resume stays Paused
     // so opening history never auto-runs ReAct on old chats.
     assert_eq!(
-        executor.get_active_session_status(&session.id).await,
+        executor
+            .get_active_session_status(&session.session_id)
+            .await,
         Some(SessionStatus::Paused)
     );
-    let supps = executor.drain_react_context(&session.id).await.follow_ups;
+    let supps = executor
+        .drain_react_context(&session.session_id)
+        .await
+        .follow_ups;
     assert_eq!(supps.len(), 1, "only the never-injected input is re-queued");
     assert_eq!(supps[0].text, "steering lost");
 }
@@ -337,7 +347,7 @@ async fn reopen_session_marks_only_first_recovered_input_as_ask_answer() {
     // normal transcript shape so both later inputs are pending candidates.
     agent
         .persist_message_parts(
-            &session.id,
+            &session.session_id,
             haven_common::types::CanonicalRole::User,
             "input text",
             Some(haven_common::types::TranscriptMessageKind::Text),
@@ -350,7 +360,7 @@ async fn reopen_session_marks_only_first_recovered_input_as_ask_answer() {
         .react_engine
         .event_store
         .persist_pending_user_input(
-            &session.id,
+            &session.session_id,
             "answer",
             Some(haven_common::types::TranscriptMessageKind::Text),
             &[],
@@ -365,7 +375,7 @@ async fn reopen_session_marks_only_first_recovered_input_as_ask_answer() {
         .react_engine
         .event_store
         .persist_pending_user_input(
-            &session.id,
+            &session.session_id,
             "follow-up",
             Some(haven_common::types::TranscriptMessageKind::Text),
             &[],
@@ -377,21 +387,24 @@ async fn reopen_session_marks_only_first_recovered_input_as_ask_answer() {
         .await
         .unwrap();
     executor
-        .update_session_status(&session.id, SessionStatus::Paused)
+        .update_session_status(&session.session_id, SessionStatus::Paused)
         .await
         .unwrap();
     executor
         .request_interaction(crate::interaction::InteractionRequest::ask(
-            &session.id,
+            &session.session_id,
             Vec::new(),
             vec!["step-0123456789abcdef0123456789abcdef".into()],
         ))
         .await
         .unwrap();
 
-    agent.reopen_session(&session.id).await.unwrap();
+    agent.reopen_session(&session.session_id).await.unwrap();
 
-    let recovered = executor.drain_react_context(&session.id).await.follow_ups;
+    let recovered = executor
+        .drain_react_context(&session.session_id)
+        .await
+        .follow_ups;
     assert_eq!(recovered.len(), 2);
     assert!(recovered[0].is_answer);
     assert!(!recovered[1].is_answer);
@@ -409,7 +422,7 @@ async fn reopen_preserves_follow_up_route_after_confirm_resolves_while_ask_stays
     let session = executor.create_session("input text").await.unwrap();
     agent
         .persist_message_parts(
-            &session.id,
+            &session.session_id,
             haven_common::types::CanonicalRole::User,
             "input text",
             Some(haven_common::types::TranscriptMessageKind::Text),
@@ -419,19 +432,19 @@ async fn reopen_preserves_follow_up_route_after_confirm_resolves_while_ask_stays
         .await
         .unwrap();
     executor
-        .update_session_status(&session.id, SessionStatus::Paused)
+        .update_session_status(&session.session_id, SessionStatus::Paused)
         .await
         .unwrap();
     executor
         .request_interaction(crate::interaction::InteractionRequest::ask(
-            &session.id,
+            &session.session_id,
             Vec::new(),
             vec!["step-0123456789abcdef0123456789abcdef".into()],
         ))
         .await
         .unwrap();
     let confirm = crate::interaction::InteractionRequest::confirm(
-        &session.id,
+        &session.session_id,
         1,
         "haven.test".into(),
         serde_json::Value::Null,
@@ -453,13 +466,16 @@ async fn reopen_preserves_follow_up_route_after_confirm_resolves_while_ask_stays
     // Confirm has precedence when ingress freezes this route, so it is a
     // FollowUp even though an Ask is also pending.
     agent
-        .process_input("accepted during confirmation", Some(session.id.clone()))
+        .process_input(
+            "accepted during confirmation",
+            Some(session.session_id.clone()),
+        )
         .await
         .unwrap();
     let pending_before_restart = agent
         .react_engine
         .event_store
-        .pending_session_inputs(&session.id)
+        .pending_session_inputs(&session.session_id)
         .await
         .unwrap();
     assert_eq!(pending_before_restart.len(), 1);
@@ -471,19 +487,27 @@ async fn reopen_preserves_follow_up_route_after_confirm_resolves_while_ask_stays
     // Resolve Confirm but leave Ask pending. Reopen through a fresh executor
     // to model a process restart after the pending marker was persisted.
     executor
-        .resolve_interaction(&session.id, &confirm.id, serde_json::json!(true), false)
+        .resolve_interaction(
+            &session.session_id,
+            &confirm.id,
+            serde_json::json!(true),
+            false,
+        )
         .await
         .unwrap()
         .expect("Confirm should resolve");
     assert_eq!(
         executor
-            .pending_interactions(&session.id, crate::interaction::InteractionKind::Ask)
+            .pending_interactions(
+                &session.session_id,
+                crate::interaction::InteractionKind::Ask
+            )
             .await
             .len(),
         1
     );
     executor
-        .update_session_status(&session.id, SessionStatus::Completed)
+        .update_session_status(&session.session_id, SessionStatus::Completed)
         .await
         .unwrap();
 
@@ -493,10 +517,13 @@ async fn reopen_preserves_follow_up_route_after_confirm_resolves_while_ask_stays
         Arc::new(ToolsFacade::new()),
         ContextLimitsConfig::default(),
     );
-    reopened_agent.reopen_session(&session.id).await.unwrap();
+    reopened_agent
+        .reopen_session(&session.session_id)
+        .await
+        .unwrap();
 
     let restored = reopened_executor
-        .drain_react_context(&session.id)
+        .drain_react_context(&session.session_id)
         .await
         .follow_ups;
     assert_eq!(restored.len(), 1);
@@ -507,7 +534,10 @@ async fn reopen_preserves_follow_up_route_after_confirm_resolves_while_ask_stays
     );
     assert_eq!(
         reopened_executor
-            .pending_interactions(&session.id, crate::interaction::InteractionKind::Ask)
+            .pending_interactions(
+                &session.session_id,
+                crate::interaction::InteractionKind::Ask
+            )
             .await
             .len(),
         1,
@@ -521,7 +551,7 @@ async fn reopen_session_without_pending_inputs_stays_paused() {
     let session = executor.create_session("input text").await.unwrap();
     agent
         .persist_message_parts(
-            &session.id,
+            &session.session_id,
             haven_common::types::CanonicalRole::User,
             "input text",
             Some(haven_common::types::TranscriptMessageKind::Text),
@@ -531,20 +561,22 @@ async fn reopen_session_without_pending_inputs_stays_paused() {
         .await
         .unwrap();
     executor
-        .update_session_status(&session.id, SessionStatus::Completed)
+        .update_session_status(&session.session_id, SessionStatus::Completed)
         .await
         .unwrap();
 
-    agent.reopen_session(&session.id).await.unwrap();
+    agent.reopen_session(&session.session_id).await.unwrap();
 
     // No lost inputs: the session reopens as Paused (resume-only).
     assert_eq!(
-        executor.get_active_session_status(&session.id).await,
+        executor
+            .get_active_session_status(&session.session_id)
+            .await,
         Some(SessionStatus::Paused)
     );
     assert!(
         executor
-            .drain_react_context(&session.id)
+            .drain_react_context(&session.session_id)
             .await
             .follow_ups
             .is_empty()
@@ -563,7 +595,7 @@ async fn resume_dedups_supplement_inputs_against_prefixed_canonical() {
     // DB stores the RAW user text (this is what process_input persists).
     agent
         .persist_message_parts(
-            &session.id,
+            &session.session_id,
             haven_common::types::CanonicalRole::User,
             "please be brief",
             Some(haven_common::types::TranscriptMessageKind::Text),
@@ -585,10 +617,13 @@ async fn resume_dedups_supplement_inputs_against_prefixed_canonical() {
         branch_points: HashMap::new(),
         interactions: Vec::new(),
     };
-    seed_event_projection(&agent, &session.id, &snapshot).await;
-    agent.run_session_from_id(&session.id).await.unwrap();
+    seed_event_projection(&agent, &session.session_id, &snapshot).await;
+    agent
+        .run_session_from_id(&session.session_id)
+        .await
+        .unwrap();
 
-    let saved = load_event_projection(&agent, &session.id).await;
+    let saved = load_event_projection(&agent, &session.session_id).await;
     let canonical = saved.project().canonical_messages;
     let user_texts: Vec<String> = canonical
         .iter()
@@ -622,7 +657,7 @@ async fn resume_keeps_repeated_same_text_turns() {
     let session = executor.create_session("hello").await.unwrap();
     agent
         .persist_message_parts(
-            &session.id,
+            &session.session_id,
             haven_common::types::CanonicalRole::User,
             "好的",
             Some(haven_common::types::TranscriptMessageKind::Text),
@@ -633,7 +668,7 @@ async fn resume_keeps_repeated_same_text_turns() {
         .unwrap();
     agent
         .persist_message_parts(
-            &session.id,
+            &session.session_id,
             haven_common::types::CanonicalRole::Assistant,
             "好的",
             Some(haven_common::types::TranscriptMessageKind::Text),
@@ -661,14 +696,14 @@ async fn resume_keeps_repeated_same_text_turns() {
         branch_points: HashMap::new(),
         interactions: Vec::new(),
     };
-    seed_event_projection(&agent, &session.id, &snapshot).await;
+    seed_event_projection(&agent, &session.session_id, &snapshot).await;
     // The second identical user turn remains explicitly pending after the
     // snapshot, even though its text matches the earlier turn.
     agent
         .react_engine
         .event_store
         .persist_pending_user_input(
-            &session.id,
+            &session.session_id,
             "好的",
             Some(haven_common::types::TranscriptMessageKind::Text),
             &[],
@@ -680,18 +715,21 @@ async fn resume_keeps_repeated_same_text_turns() {
         .await
         .unwrap();
 
-    agent.run_session_from_id(&session.id).await.unwrap();
+    agent
+        .run_session_from_id(&session.session_id)
+        .await
+        .unwrap();
     assert!(
         agent
             .react_engine
             .event_store
-            .pending_session_inputs(&session.id)
+            .pending_session_inputs(&session.session_id)
             .await
             .unwrap()
             .is_empty()
     );
 
-    let saved = load_event_projection(&agent, &session.id).await;
+    let saved = load_event_projection(&agent, &session.session_id).await;
     let canonical = saved.project().canonical_messages;
     let user_texts: Vec<String> = canonical
         .iter()
@@ -737,7 +775,7 @@ async fn resume_does_not_recover_unmarked_historical_user_messages() {
     let session = executor.create_session("hello").await.unwrap();
     agent
         .persist_message_parts(
-            &session.id,
+            &session.session_id,
             haven_common::types::CanonicalRole::User,
             "hello",
             Some(haven_common::types::TranscriptMessageKind::Text),
@@ -763,11 +801,11 @@ async fn resume_does_not_recover_unmarked_historical_user_messages() {
         branch_points: HashMap::new(),
         interactions: Vec::new(),
     };
-    seed_event_projection(&agent, &session.id, &snapshot).await;
+    seed_event_projection(&agent, &session.session_id, &snapshot).await;
     // Assistant rows are not pending inputs and are never recovered.
     agent
         .persist_message_parts(
-            &session.id,
+            &session.session_id,
             haven_common::types::CanonicalRole::Assistant,
             "hi there",
             Some(haven_common::types::TranscriptMessageKind::Text),
@@ -777,9 +815,12 @@ async fn resume_does_not_recover_unmarked_historical_user_messages() {
         .await
         .unwrap();
 
-    agent.run_session_from_id(&session.id).await.unwrap();
+    agent
+        .run_session_from_id(&session.session_id)
+        .await
+        .unwrap();
 
-    let saved = load_event_projection(&agent, &session.id).await;
+    let saved = load_event_projection(&agent, &session.session_id).await;
     let canonical = saved.project().canonical_messages;
     let user_texts: Vec<String> = canonical
         .iter()
@@ -817,7 +858,7 @@ async fn resume_skips_conversation_reseed_when_canonical_is_compacted() {
     let session = executor.create_session("hello").await.unwrap();
     agent
         .persist_message_parts(
-            &session.id,
+            &session.session_id,
             haven_common::types::CanonicalRole::User,
             "hello",
             Some(haven_common::types::TranscriptMessageKind::Text),
@@ -828,7 +869,7 @@ async fn resume_skips_conversation_reseed_when_canonical_is_compacted() {
         .unwrap();
     agent
         .persist_message_parts(
-            &session.id,
+            &session.session_id,
             haven_common::types::CanonicalRole::Assistant,
             "long ago answer",
             Some(haven_common::types::TranscriptMessageKind::Text),
@@ -855,11 +896,14 @@ async fn resume_skips_conversation_reseed_when_canonical_is_compacted() {
         branch_points: HashMap::new(),
         interactions: Vec::new(),
     };
-    seed_event_projection(&agent, &session.id, &snapshot).await;
+    seed_event_projection(&agent, &session.session_id, &snapshot).await;
 
-    agent.run_session_from_id(&session.id).await.unwrap();
+    agent
+        .run_session_from_id(&session.session_id)
+        .await
+        .unwrap();
 
-    let saved = load_event_projection(&agent, &session.id).await;
+    let saved = load_event_projection(&agent, &session.session_id).await;
     let canonical = saved.project().canonical_messages;
     let user_texts: Vec<String> = canonical
         .iter()
@@ -889,7 +933,7 @@ async fn run_session_from_id_keeps_first_user_media_out_of_snapshot_bytes() {
     let (att, asset_dir) = managed_test_image();
     agent
         .persist_message_parts(
-            &session.id,
+            &session.session_id,
             haven_common::types::CanonicalRole::User,
             "看图",
             Some(haven_common::types::TranscriptMessageKind::Text),
@@ -898,8 +942,11 @@ async fn run_session_from_id_keeps_first_user_media_out_of_snapshot_bytes() {
         )
         .await
         .unwrap();
-    agent.run_session_from_id(&session.id).await.unwrap();
-    let snapshot = load_event_projection(&agent, &session.id).await;
+    agent
+        .run_session_from_id(&session.session_id)
+        .await
+        .unwrap();
+    let snapshot = load_event_projection(&agent, &session.session_id).await;
     let canonical = snapshot.project().canonical_messages;
     let user_msg = canonical
         .iter()
@@ -922,7 +969,7 @@ async fn run_session_from_id_recovers_pending_input_without_event_log() {
         .unwrap();
     agent
         .persist_message_parts(
-            &session.id,
+            &session.session_id,
             haven_common::types::CanonicalRole::User,
             "initial",
             Some(haven_common::types::TranscriptMessageKind::Text),
@@ -935,7 +982,7 @@ async fn run_session_from_id_recovers_pending_input_without_event_log() {
         .react_engine
         .event_store
         .persist_pending_user_input(
-            &session.id,
+            &session.session_id,
             "accepted before first run",
             Some(haven_common::types::TranscriptMessageKind::Text),
             &[],
@@ -949,18 +996,21 @@ async fn run_session_from_id_recovers_pending_input_without_event_log() {
 
     // No event log exists yet, so startup takes the fresh-run path. The
     // durable marker must still restore the accepted supplement.
-    agent.run_session_from_id(&session.id).await.unwrap();
+    agent
+        .run_session_from_id(&session.session_id)
+        .await
+        .unwrap();
 
     assert!(
         agent
             .react_engine
             .event_store
-            .pending_session_inputs(&session.id)
+            .pending_session_inputs(&session.session_id)
             .await
             .unwrap()
             .is_empty()
     );
-    let saved = load_event_projection(&agent, &session.id).await;
+    let saved = load_event_projection(&agent, &session.session_id).await;
     let canonical = saved.project().canonical_messages;
     assert!(canonical.iter().any(|message| {
         message.role == CanonicalRole::User
@@ -981,7 +1031,7 @@ async fn run_session_from_id_keeps_later_media_as_managed_reference() {
         .unwrap();
     agent
         .persist_message_parts(
-            &session.id,
+            &session.session_id,
             haven_common::types::CanonicalRole::User,
             "plain session",
             Some(haven_common::types::TranscriptMessageKind::Text),
@@ -994,11 +1044,14 @@ async fn run_session_from_id_keeps_later_media_as_managed_reference() {
     // attached to the initial user turn.
     let (att, asset_dir) = managed_test_image();
     agent
-        .process_input_with_attachments("补充看图", Some(session.id.clone()), &[att], false)
+        .process_input_with_attachments("补充看图", Some(session.session_id.clone()), &[att], false)
         .await
         .unwrap();
-    agent.run_session_from_id(&session.id).await.unwrap();
-    let snapshot = load_event_projection(&agent, &session.id).await;
+    agent
+        .run_session_from_id(&session.session_id)
+        .await
+        .unwrap();
+    let snapshot = load_event_projection(&agent, &session.session_id).await;
     let canonical = snapshot.project().canonical_messages;
     let first_user = canonical
         .iter()
@@ -1115,9 +1168,12 @@ async fn run_session_from_id_trims_dangling_tool_call_before_resume() {
         branch_points: HashMap::new(),
         interactions: Vec::new(),
     };
-    seed_event_projection(&agent, &session.id, &snapshot).await;
+    seed_event_projection(&agent, &session.session_id, &snapshot).await;
 
-    let result = agent.run_session_from_id(&session.id).await.unwrap();
+    let result = agent
+        .run_session_from_id(&session.session_id)
+        .await
+        .unwrap();
 
     // No batch sent to the LLM may end with a dangling assistant tool_call.
     {
@@ -1134,7 +1190,9 @@ async fn run_session_from_id_trims_dangling_tool_call_before_resume() {
     }
     assert!(!result.is_empty(), "resumed loop should produce history");
     assert_eq!(
-        executor.get_active_session_status(&session.id).await,
+        executor
+            .get_active_session_status(&session.session_id)
+            .await,
         Some(SessionStatus::Paused),
         "final_answer should complete the resumed session"
     );

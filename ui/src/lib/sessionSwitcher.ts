@@ -10,13 +10,13 @@ export function buildSessionSwitcherOptions(
 	const liveSessions = sessions.filter(
 		(session) => isBusyStatus(session.status) || isPausedStatus(session.status),
 	);
-	const liveIds = new Set(liveSessions.map((session) => session.id));
+	const liveIds = new Set(liveSessions.map((session) => session.sessionId));
 	return [
 		...liveSessions,
 		...history
 			.filter((session) => !liveIds.has(session.session_id))
 			.map((session) => ({
-				id: session.session_id,
+				sessionId: session.session_id,
 				status: session.status,
 				title: session.title || session.input_text,
 				inputText: session.input_text,

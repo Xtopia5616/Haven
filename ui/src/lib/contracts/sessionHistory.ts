@@ -44,9 +44,11 @@ function hasCanonicalSessionId(
 function isRuntimeSession(value: unknown): boolean {
 	return (
 		isRecord(value) &&
-		isCanonicalEntityId(value.id, 'ses') &&
+		isCanonicalEntityId(value.session_id, 'ses') &&
 		Array.isArray(value.steps) &&
-		value.steps.every((step: unknown) => isRecord(step) && isCanonicalEntityId(step.id, 'step'))
+		value.steps.every(
+			(step: unknown) => isRecord(step) && isCanonicalEntityId(step.step_id, 'step'),
+		)
 	);
 }
 

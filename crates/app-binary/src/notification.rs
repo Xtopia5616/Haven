@@ -125,10 +125,12 @@ impl DesktopNotifications {
     pub(crate) fn remember_session_status(&self, event: &AgentEvent) {
         match event {
             AgentEvent::SessionCreated(session) => {
-                self.lock_session_statuses()
-                    .insert(session.id.clone(), session.status.as_str().to_string());
+                self.lock_session_statuses().insert(
+                    session.session_id.clone(),
+                    session.status.as_str().to_string(),
+                );
                 if let Some(title) = session.title.as_deref().filter(|title| !title.is_empty()) {
-                    self.cache_title(&session.id, title.to_string());
+                    self.cache_title(&session.session_id, title.to_string());
                 }
             }
             AgentEvent::SessionUpdated {
@@ -186,7 +188,7 @@ impl DesktopNotifications {
                     .title
                     .as_deref()
                     .filter(|s| !s.is_empty())
-                    .unwrap_or(session.id.as_str());
+                    .unwrap_or(session.session_id.as_str());
                 self.show_windows_toast("Haven", format!("新会话: {}", display));
             }
             AgentEvent::SessionCompleted {

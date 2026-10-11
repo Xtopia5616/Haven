@@ -928,27 +928,30 @@ mod tests {
         let removed = supervisor.create_session("removed overlay").await.unwrap();
         let neighbor = supervisor.create_session("neighbor overlay").await.unwrap();
 
-        for session_id in [&ended.id, &removed.id, &neighbor.id] {
+        for session_id in [&ended.session_id, &removed.session_id, &neighbor.session_id] {
             register_overlay_tool(&tools, session_id).await;
         }
 
         supervisor
-            .update_session_status(&ended.id, haven_common::lifecycle::SessionStatus::Paused)
+            .update_session_status(
+                &ended.session_id,
+                haven_common::lifecycle::SessionStatus::Paused,
+            )
             .await
             .unwrap();
         assert!(
             tools
-                .list_schemas_for_session(&ended.id)
+                .list_schemas_for_session(&ended.session_id)
                 .await
                 .iter()
                 .any(|schema| schema["name"] == "overlay.probe"),
             "pausing must leave the per-session overlay registered"
         );
 
-        supervisor.end_session(&ended.id).await.unwrap();
+        supervisor.end_session(&ended.session_id).await.unwrap();
         assert!(
             !tools
-                .list_schemas_for_session(&ended.id)
+                .list_schemas_for_session(&ended.session_id)
                 .await
                 .iter()
                 .any(|schema| schema["name"] == "overlay.probe"),
@@ -956,13 +959,19 @@ mod tests {
         );
 
         supervisor
-            .update_session_status(&removed.id, haven_common::lifecycle::SessionStatus::Paused)
+            .update_session_status(
+                &removed.session_id,
+                haven_common::lifecycle::SessionStatus::Paused,
+            )
             .await
             .unwrap();
-        supervisor.remove_session(&removed.id).await.unwrap();
+        supervisor
+            .remove_session(&removed.session_id)
+            .await
+            .unwrap();
         assert!(
             !tools
-                .list_schemas_for_session(&removed.id)
+                .list_schemas_for_session(&removed.session_id)
                 .await
                 .iter()
                 .any(|schema| schema["name"] == "overlay.probe"),
@@ -970,7 +979,7 @@ mod tests {
         );
         assert!(
             tools
-                .list_schemas_for_session(&neighbor.id)
+                .list_schemas_for_session(&neighbor.session_id)
                 .await
                 .iter()
                 .any(|schema| schema["name"] == "overlay.probe"),

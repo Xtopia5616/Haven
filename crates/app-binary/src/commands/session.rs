@@ -976,7 +976,7 @@ mod tests {
     };
     use crate::app_state::{AppState, UiConfirmationAction, UiConfirmationPending};
     use crate::commands::RuntimeSessionListResponse;
-    use haven_agent::{InteractionOwner, InteractionRequest};
+    use haven_agent::{InteractionOwner, InteractionRequest, SessionInfo, SessionStatus, StepInfo};
     use haven_common::types::{PermissionEffect, PermissionScope, PermissionTarget, RiskLevel};
     use haven_tools::ConfirmationReceipt;
 
@@ -1054,6 +1054,45 @@ mod tests {
         let resp = RuntimeSessionListResponse { sessions: vec![] };
         let json = serde_json::to_string(&resp).unwrap();
         assert_eq!(json, r#"{"sessions":[]}"#);
+    }
+
+    #[test]
+    fn runtime_session_list_serializes_entity_identity_fields() {
+        let response = RuntimeSessionListResponse {
+            sessions: vec![SessionInfo {
+                session_id: "ses-00000000000000000000000000000001".into(),
+                input: "input".into(),
+                summary: "summary".into(),
+                title: None,
+                status: SessionStatus::Running,
+                waiting_reason: None,
+                steps: vec![StepInfo {
+                    step_id: "step-00000000000000000000000000000002".into(),
+                    step_number: 1,
+                    tool_name: "shell".into(),
+                    input: serde_json::json!({}),
+                    output: None,
+                    status: haven_common::lifecycle::SessionStepStatus::Completed,
+                    risk_level: RiskLevel::Low,
+                    confirmed: None,
+                }],
+                created_at: "2026-01-01T00:00:00Z".into(),
+                updated_at: "2026-01-01T00:00:00Z".into(),
+            }],
+        };
+
+        let value = serde_json::to_value(response).unwrap();
+        let session = &value["sessions"][0];
+        assert_eq!(
+            session["session_id"],
+            "ses-00000000000000000000000000000001"
+        );
+        assert!(session.get("id").is_none());
+        assert_eq!(
+            session["steps"][0]["step_id"],
+            "step-00000000000000000000000000000002"
+        );
+        assert!(session["steps"][0].get("id").is_none());
     }
 
     #[test]

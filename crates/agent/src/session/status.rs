@@ -23,7 +23,7 @@ impl SessionSupervisor {
         let mut info = SessionInfo::from_db_record(&record);
         info.summary = summary.to_string();
         self.install_actor(info.clone()).await?;
-        self.enqueue_pending(&info.id).await;
+        self.enqueue_pending(&info.session_id).await;
         self.wake_dispatcher();
         Ok(info)
     }
@@ -430,7 +430,7 @@ impl SessionSupervisor {
             if let Some(mut session) = actor.snapshot().await
                 && !session.status.is_terminal()
             {
-                session.waiting_reason = self.waiting_reason(&session.id).await;
+                session.waiting_reason = self.waiting_reason(&session.session_id).await;
                 sessions.push(session);
             }
         }

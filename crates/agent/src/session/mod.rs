@@ -231,7 +231,7 @@ impl TerminalCleanupRetryQueue {
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct SessionInfo {
-    pub id: String,
+    pub session_id: String,
     pub input: String,
     /// LLM-produced one-line summary used as the ReAct session description
     /// when the dispatcher runs the session. Defaults to `input` when no
@@ -257,7 +257,7 @@ impl SessionInfo {
     /// (e.g. `load_pending_sessions`) can mutate it after construction.
     pub fn from_db_record(record: &DbSession) -> Self {
         Self {
-            id: record.id.clone(),
+            session_id: record.id.clone(),
             input: record.input_text.clone(),
             summary: record.input_text.clone(),
             title: record.title.clone(),
@@ -272,7 +272,7 @@ impl SessionInfo {
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct StepInfo {
-    pub id: String,
+    pub step_id: String,
     pub step_number: i32,
     pub tool_name: String,
     pub input: Value,
@@ -849,11 +849,19 @@ impl SessionSupervisor {
         // Interaction state is authoritative in the active durable event
         // stream. Do not apply this session's grants or register an actor
         // until that state has been reconstructed successfully.
-        let interactions = actor::load_interactions(&self.store, &info.id).await?;
-        let grants = self.store.session_authorization_grants(&info.id).await?;
+        let interactions = actor::load_interactions(&self.store, &info.session_id).await?;
+        let grants = self
+            .store
+            .session_authorization_grants(&info.session_id)
+            .await?;
         for grant in grants {
             self.authorization
-                .grant(Some(&info.id), grant.capability, grant.effect, grant.scope)
+                .grant(
+                    Some(&info.session_id),
+                    grant.capability,
+                    grant.effect,
+                    grant.scope,
+                )
                 .await;
         }
         let handle = actor::spawn(self.store.clone(), info, interactions.clone());
@@ -1044,12 +1052,12 @@ mod tests {
 
         let session = exec.create_session("typed constructor").await.unwrap();
         let persisted = store
-            .load_session_record(&session.id)
+            .load_session_record(&session.session_id)
             .await
             .unwrap()
             .unwrap();
 
-        assert_eq!(persisted.id, session.id);
+        assert_eq!(persisted.id, session.session_id);
         assert_eq!(persisted.input_text, "typed constructor");
     }
 
@@ -1210,8 +1218,8 @@ mod tests {
     async fn run_exit_rechecks_status_after_continue_wins_the_idle_window() {
         let exec = make_executor(1);
         let session = exec.create_session("continue wins run exit").await.unwrap();
-        let actor = exec.actor_for(&session.id).await.unwrap();
-        exec.update_session_status(&session.id, SessionStatus::Running)
+        let actor = exec.actor_for(&session.session_id).await.unwrap();
+        exec.update_session_status(&session.session_id, SessionStatus::Running)
             .await
             .unwrap();
         assert!(actor.try_mark_direct_run_active().await);
@@ -1219,35 +1227,35 @@ mod tests {
         // ReAct marks the failed run terminal before the dispatcher clears
         // the actor's running bit. A Continue can commit after that bit clears
         // but before the run-exit continuation is scheduled.
-        exec.update_session_status(&session.id, SessionStatus::Error)
+        exec.update_session_status(&session.session_id, SessionStatus::Error)
             .await
             .unwrap();
         assert!(actor.finish_run().await.is_some());
         {
             let _lifecycle = exec.lifecycle_guard().await;
-            assert!(!exec.is_session_closing(&session.id));
+            assert!(!exec.is_session_closing(&session.session_id));
             let transition = actor
                 .transition_if(SessionStatus::Error, SessionStatus::Pending, true)
                 .await
                 .unwrap();
             assert!(transition.changed);
-            exec.enqueue_pending(&session.id).await;
+            exec.enqueue_pending(&session.session_id).await;
         }
 
-        exec.reconcile_run_exit(&session.id, &actor).await;
+        exec.reconcile_run_exit(&session.session_id, &actor).await;
 
         assert_eq!(
-            exec.get_active_session_status(&session.id).await,
+            exec.get_active_session_status(&session.session_id).await,
             Some(SessionStatus::Pending)
         );
-        let current = exec.actor_for(&session.id).await.unwrap();
+        let current = exec.actor_for(&session.session_id).await.unwrap();
         assert!(actor.same_instance(&current));
         assert!(
             exec.pending_queue
                 .lock()
                 .await
                 .iter()
-                .any(|id| id == &session.id)
+                .any(|id| id == &session.session_id)
         );
     }
 
@@ -1255,41 +1263,43 @@ mod tests {
     async fn terminal_cleanup_lease_blocks_reopen_and_new_closing_owner() {
         let exec = make_executor(1);
         let session = exec.create_session("cleanup lease").await.unwrap();
-        exec.update_session_status(&session.id, SessionStatus::Error)
+        exec.update_session_status(&session.session_id, SessionStatus::Error)
             .await
             .unwrap();
         let cleanup = {
             let _lifecycle = exec.lifecycle_guard().await;
-            exec.begin_terminal_cleanup_locked(&session.id)
+            exec.begin_terminal_cleanup_locked(&session.session_id)
                 .expect("idle terminal cleanup should be claimable")
         };
 
         let reopen_error = exec
-            .ensure_session_loaded(&session.id)
+            .ensure_session_loaded(&session.session_id)
             .await
             .expect_err("reopen must wait for the cleanup owner");
         assert!(reopen_error.to_string().contains("closing"));
         assert!(
-            exec.begin_session_closing(&session.id, SessionClosingMode::Destructive)
+            exec.begin_session_closing(&session.session_id, SessionClosingMode::Destructive)
                 .await
                 .is_err()
         );
         drop(cleanup);
-        exec.ensure_session_loaded(&session.id).await.unwrap();
+        exec.ensure_session_loaded(&session.session_id)
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
     async fn run_exit_only_takes_over_after_end_commit_and_not_during_delete() {
         let exec = make_executor(1);
         let ending = exec.create_session("end cleanup handoff").await.unwrap();
-        let ending_actor = exec.actor_for(&ending.id).await.unwrap();
+        let ending_actor = exec.actor_for(&ending.session_id).await.unwrap();
         ending_actor
             .transition(SessionStatus::Error, true)
             .await
             .unwrap();
         let ending_marker = exec
             .begin_session_closing(
-                &ending.id,
+                &ending.session_id,
                 SessionClosingMode::EndPreparing { cascade: false },
             )
             .await
@@ -1297,14 +1307,15 @@ mod tests {
 
         // A run-exit racing the initial End snapshot/Paused write must leave
         // the Actor and durable state to the End owner.
-        exec.reconcile_run_exit(&ending.id, &ending_actor).await;
-        assert!(exec.actor_for(&ending.id).await.is_some());
+        exec.reconcile_run_exit(&ending.session_id, &ending_actor)
+            .await;
+        assert!(exec.actor_for(&ending.session_id).await.is_some());
         assert!(
             !exec
                 .terminal_cleanup_sessions
                 .lock()
                 .unwrap()
-                .contains(&ending.id)
+                .contains(&ending.session_id)
         );
 
         {
@@ -1319,34 +1330,37 @@ mod tests {
                 .unwrap();
             assert!(ending_marker.mark_end_committed());
         }
-        exec.reconcile_run_exit(&ending.id, &ending_actor).await;
-        assert!(exec.actor_for(&ending.id).await.is_none());
+        exec.reconcile_run_exit(&ending.session_id, &ending_actor)
+            .await;
+        assert!(exec.actor_for(&ending.session_id).await.is_none());
 
         let deleting = exec
             .create_session("delete cleanup ownership")
             .await
             .unwrap();
-        let deleting_actor = exec.actor_for(&deleting.id).await.unwrap();
+        let deleting_actor = exec.actor_for(&deleting.session_id).await.unwrap();
         deleting_actor
             .transition(SessionStatus::Error, true)
             .await
             .unwrap();
         let delete_marker = exec
-            .begin_session_closing(&deleting.id, SessionClosingMode::Destructive)
+            .begin_session_closing(&deleting.session_id, SessionClosingMode::Destructive)
             .await
             .unwrap();
-        exec.reconcile_run_exit(&deleting.id, &deleting_actor).await;
-        assert!(exec.actor_for(&deleting.id).await.is_some());
+        exec.reconcile_run_exit(&deleting.session_id, &deleting_actor)
+            .await;
+        assert!(exec.actor_for(&deleting.session_id).await.is_some());
         assert!(
             !exec
                 .terminal_cleanup_sessions
                 .lock()
                 .unwrap()
-                .contains(&deleting.id)
+                .contains(&deleting.session_id)
         );
         drop(delete_marker);
-        exec.reconcile_run_exit(&deleting.id, &deleting_actor).await;
-        assert!(exec.actor_for(&deleting.id).await.is_none());
+        exec.reconcile_run_exit(&deleting.session_id, &deleting_actor)
+            .await;
+        assert!(exec.actor_for(&deleting.session_id).await.is_none());
     }
 
     #[tokio::test]
@@ -1356,11 +1370,11 @@ mod tests {
             .create_session("terminal cleanup retry worker")
             .await
             .unwrap();
-        let actor = exec.actor_for(&session.id).await.unwrap();
+        let actor = exec.actor_for(&session.session_id).await.unwrap();
         actor.transition(SessionStatus::Error, true).await.unwrap();
         let mut cleanup = {
             let _lifecycle = exec.lifecycle_guard().await;
-            exec.begin_terminal_cleanup_locked(&session.id)
+            exec.begin_terminal_cleanup_locked(&session.session_id)
                 .expect("terminal cleanup should be claimable")
         };
         cleanup.set_retry_policy(TerminalCleanupRetry {
@@ -1377,7 +1391,7 @@ mod tests {
             .start_dispatcher_without_recovery_with_cancellation(handler, cancellation.clone());
 
         tokio::time::timeout(std::time::Duration::from_secs(1), async {
-            while exec.actor_for(&session.id).await.is_some() {
+            while exec.actor_for(&session.session_id).await.is_some() {
                 tokio::task::yield_now().await;
             }
         })
@@ -1393,10 +1407,10 @@ mod tests {
             .create_session("end marker retry worker")
             .await
             .unwrap();
-        let actor = exec.actor_for(&session.id).await.unwrap();
+        let actor = exec.actor_for(&session.session_id).await.unwrap();
         let closing = exec
             .begin_session_closing(
-                &session.id,
+                &session.session_id,
                 SessionClosingMode::EndPreparing { cascade: false },
             )
             .await
@@ -1416,7 +1430,7 @@ mod tests {
                 .queued
                 .lock()
                 .unwrap()
-                .get(&session.id),
+                .get(&session.session_id),
             Some(&TerminalCleanupRetry {
                 cascade: Some(false),
                 remove_error_actor: true,
@@ -1429,7 +1443,7 @@ mod tests {
         exec.clone()
             .start_dispatcher_without_recovery_with_cancellation(handler, cancellation.clone());
         tokio::time::timeout(std::time::Duration::from_secs(1), async {
-            while exec.actor_for(&session.id).await.is_some() {
+            while exec.actor_for(&session.session_id).await.is_some() {
                 tokio::task::yield_now().await;
             }
         })
@@ -1445,28 +1459,28 @@ mod tests {
             .create_session("memory only terminal guard")
             .await
             .unwrap();
-        let actor = exec.actor_for(&session.id).await.unwrap();
+        let actor = exec.actor_for(&session.session_id).await.unwrap();
         let durable_before = exec
             .store
-            .load_session_record(&session.id)
+            .load_session_record(&session.session_id)
             .await
             .unwrap()
             .unwrap()
             .status;
 
         let error = exec
-            .update_session_status_memory_only(&session.id, SessionStatus::Completed)
+            .update_session_status_memory_only(&session.session_id, SessionStatus::Completed)
             .await
             .expect_err("terminal status must have a durable commit before cleanup");
         assert!(error.to_string().contains("memory-only"));
-        assert!(actor.same_instance(&exec.actor_for(&session.id).await.unwrap()));
+        assert!(actor.same_instance(&exec.actor_for(&session.session_id).await.unwrap()));
         assert_eq!(
-            exec.get_active_session_status(&session.id).await,
+            exec.get_active_session_status(&session.session_id).await,
             Some(SessionStatus::Pending)
         );
         assert_eq!(
             exec.store
-                .load_session_record(&session.id)
+                .load_session_record(&session.session_id)
                 .await
                 .unwrap()
                 .unwrap()
@@ -1498,7 +1512,7 @@ mod tests {
         let mut db_status = SessionStatus::Pending;
         for _ in 0..100 {
             db_status = db
-                .get_session(&session.id)
+                .get_session(&session.session_id)
                 .unwrap()
                 .map(|t| t.status)
                 .unwrap_or(SessionStatus::Error);
@@ -1519,8 +1533,11 @@ mod tests {
         // immediately (this test flaked under `cargo test --workspace`).
         let mut released = false;
         for _ in 0..100 {
-            if !exec.is_run_in_flight(&session.id).await
-                && exec.get_active_session_status(&session.id).await.is_none()
+            if !exec.is_run_in_flight(&session.session_id).await
+                && exec
+                    .get_active_session_status(&session.session_id)
+                    .await
+                    .is_none()
             {
                 released = true;
                 break;
@@ -1540,7 +1557,7 @@ mod tests {
             }
         }
         let (seen_id, seen_reason) = seen.expect("session error event must fire");
-        assert_eq!(seen_id, session.id);
+        assert_eq!(seen_id, session.session_id);
         assert!(seen_reason.contains("panicked"), "reason: {seen_reason}");
     }
 
@@ -1580,7 +1597,9 @@ mod tests {
 
         let mut seen = false;
         for _ in 0..100 {
-            if in_handler.load(Ordering::SeqCst) == 1 && exec.is_run_in_flight(&session.id).await {
+            if in_handler.load(Ordering::SeqCst) == 1
+                && exec.is_run_in_flight(&session.session_id).await
+            {
                 seen = true;
                 break;
             }
@@ -1589,7 +1608,7 @@ mod tests {
         assert!(seen, "handler should be running and hold the slot");
 
         let exec_wait = exec.clone();
-        let sid = session.id.clone();
+        let sid = session.session_id.clone();
         let wait_task = tokio::spawn(async move {
             let _ = exec_wait.await_run_finished(&sid).await;
         });
@@ -1608,7 +1627,7 @@ mod tests {
             .expect("await_run_finished should resolve after handler exit")
             .expect("wait task join");
         assert_eq!(exited.load(Ordering::SeqCst), 1);
-        assert!(!exec.is_run_in_flight(&session.id).await);
+        assert!(!exec.is_run_in_flight(&session.session_id).await);
     }
 
     /// `await_run_finished` is a no-op when the session was never claimed.
@@ -1619,7 +1638,7 @@ mod tests {
         // Do not start a dispatcher — session stays Pending, no run_exit gate.
         let _ = tokio::time::timeout(
             std::time::Duration::from_millis(200),
-            exec.await_run_finished(&session.id),
+            exec.await_run_finished(&session.session_id),
         )
         .await
         .expect("must return immediately when no run is in flight");
@@ -1688,13 +1707,13 @@ mod tests {
         let session = exec.create_session("t1").await.unwrap();
 
         let claimed = exec.try_claim_pending().await;
-        assert_eq!(claimed.as_deref(), Some(session.id.as_str()));
+        assert_eq!(claimed.as_deref(), Some(session.session_id.as_str()));
 
-        let state = exec.get_active_session_status(&session.id).await;
+        let state = exec.get_active_session_status(&session.session_id).await;
         assert_eq!(state, Some(SessionStatus::Running));
-        assert!(exec.is_run_in_flight(&session.id).await);
+        assert!(exec.is_run_in_flight(&session.session_id).await);
         let db_status = db
-            .get_session(&session.id)
+            .get_session(&session.session_id)
             .unwrap()
             .map(|t| t.status)
             .unwrap_or(SessionStatus::Error);
@@ -1711,22 +1730,23 @@ mod tests {
         let session = exec.create_session("t1").await.unwrap();
         assert_eq!(
             exec.try_claim_pending().await.as_deref(),
-            Some(session.id.as_str())
+            Some(session.session_id.as_str())
         );
-        assert!(exec.is_run_in_flight(&session.id).await);
-        exec.update_session_status(&session.id, SessionStatus::Paused)
+        assert!(exec.is_run_in_flight(&session.session_id).await);
+        exec.update_session_status(&session.session_id, SessionStatus::Paused)
             .await
             .unwrap();
-        exec.update_session_status(&session.id, SessionStatus::Pending)
+        exec.update_session_status(&session.session_id, SessionStatus::Pending)
             .await
             .unwrap();
-        let actor = exec.actor_for(&session.id).await.unwrap();
-        exec.end_direct_session_run(&session.id, &actor).await;
-        exec.enqueue_pending(&session.id).await;
+        let actor = exec.actor_for(&session.session_id).await.unwrap();
+        exec.end_direct_session_run(&session.session_id, &actor)
+            .await;
+        exec.enqueue_pending(&session.session_id).await;
         let claimed = exec.try_claim_pending().await;
-        assert_eq!(claimed.as_deref(), Some(session.id.as_str()));
+        assert_eq!(claimed.as_deref(), Some(session.session_id.as_str()));
         assert_eq!(
-            exec.get_active_session_status(&session.id).await,
+            exec.get_active_session_status(&session.session_id).await,
             Some(SessionStatus::Running)
         );
     }
@@ -1743,9 +1763,9 @@ mod tests {
         let c1 = exec.try_claim_pending().await;
         let c2 = exec.try_claim_pending().await;
         let c3 = exec.try_claim_pending().await;
-        assert_eq!(c1.as_deref(), Some(t1.id.as_str()));
-        assert_eq!(c2.as_deref(), Some(t2.id.as_str()));
-        assert_eq!(c3.as_deref(), Some(t3.id.as_str()));
+        assert_eq!(c1.as_deref(), Some(t1.session_id.as_str()));
+        assert_eq!(c2.as_deref(), Some(t2.session_id.as_str()));
+        assert_eq!(c3.as_deref(), Some(t3.session_id.as_str()));
         assert!(exec.try_claim_pending().await.is_none());
     }
 
@@ -1814,7 +1834,7 @@ mod tests {
         let (exec, db) = make_executor_with_db(1);
         let session = exec.create_session("delete atomically").await.unwrap();
         db.add_message(
-            &session.id,
+            &session.session_id,
             haven_common::types::CanonicalRole::User,
             "delete with session",
             Some(haven_common::types::TranscriptMessageKind::Text),
@@ -1822,25 +1842,29 @@ mod tests {
         )
         .unwrap();
         db.set_kv(
-            &format!("fact_extraction_pending.{}", session.id),
+            &format!("fact_extraction_pending.{}", session.session_id),
             "0:1:0:0",
         )
         .unwrap();
 
-        exec.delete_session(&session.id).await.unwrap();
+        exec.delete_session(&session.session_id).await.unwrap();
 
-        assert!(exec.actor_for(&session.id).await.is_none());
-        assert!(db.get_session(&session.id).unwrap().is_none());
-        assert!(db.list_session_messages(&session.id).unwrap().is_empty());
+        assert!(exec.actor_for(&session.session_id).await.is_none());
+        assert!(db.get_session(&session.session_id).unwrap().is_none());
         assert!(
-            db.get_kv(&format!("fact_extraction_pending.{}", session.id))
+            db.list_session_messages(&session.session_id)
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            db.get_kv(&format!("fact_extraction_pending.{}", session.session_id))
                 .unwrap()
                 .is_none()
         );
-        let error = exec.delete_session(&session.id).await.unwrap_err();
+        let error = exec.delete_session(&session.session_id).await.unwrap_err();
         assert_eq!(
             error.to_string(),
-            format!("session '{}' not found in database", session.id)
+            format!("session '{}' not found in database", session.session_id)
         );
     }
 
@@ -1861,7 +1885,7 @@ mod tests {
         let deleted_asset_id = haven_common::types::new_id("asset");
         std::fs::write(&deleted_path, b"deleted").unwrap();
         assert!(registry.register_under_root_for_session(
-            &deleted.id,
+            &deleted.session_id,
             assets_root.path(),
             &deleted_asset_id,
             deleted_path,
@@ -1870,7 +1894,7 @@ mod tests {
         ));
         assert_eq!(registry.leased_paths().len(), 1);
 
-        exec.delete_session(&deleted.id).await.unwrap();
+        exec.delete_session(&deleted.session_id).await.unwrap();
         assert!(registry.leased_paths().is_empty());
 
         let cleared = exec
@@ -1881,7 +1905,7 @@ mod tests {
         let cleared_asset_id = haven_common::types::new_id("asset");
         std::fs::write(&cleared_path, b"cleared").unwrap();
         assert!(registry.register_under_root_for_session(
-            &cleared.id,
+            &cleared.session_id,
             assets_root.path(),
             &cleared_asset_id,
             cleared_path,
@@ -1905,7 +1929,7 @@ mod tests {
             .await
             .unwrap();
         exec.grant_session_permission(
-            &session.id,
+            &session.session_id,
             CapabilityScope::try_new("files.write").unwrap(),
             PermissionTarget::Operation,
             PermissionEffect::Allow,
@@ -1918,7 +1942,7 @@ mod tests {
         let asset_id = haven_common::types::new_id("asset");
         std::fs::write(&asset_path, b"expired").unwrap();
         assert!(registry.register_under_root_for_session(
-            &session.id,
+            &session.session_id,
             assets_root.path(),
             &asset_id,
             asset_path,
@@ -1929,19 +1953,19 @@ mod tests {
         let conn = db.conn();
         conn.execute(
             "UPDATE sessions SET created_at = '2000-01-01T00:00:00Z' WHERE id = ?1",
-            [&session.id],
+            [&session.session_id],
         )
         .unwrap();
         drop(conn);
 
         assert_eq!(exec.delete_old_sessions(1).await.unwrap(), 1);
-        assert!(db.get_session(&session.id).unwrap().is_none());
+        assert!(db.get_session(&session.session_id).unwrap().is_none());
         assert!(
-            db.session_authorization_grants(&session.id)
+            db.session_authorization_grants(&session.session_id)
                 .unwrap()
                 .is_empty()
         );
-        assert!(exec.actor_for(&session.id).await.is_none());
+        assert!(exec.actor_for(&session.session_id).await.is_none());
         assert!(registry.leased_paths().is_empty());
     }
 
@@ -1951,7 +1975,7 @@ mod tests {
         let first = exec.create_session("first to clear").await.unwrap();
         let second = exec.create_session("second to clear").await.unwrap();
         db.add_message(
-            &first.id,
+            &first.session_id,
             haven_common::types::CanonicalRole::User,
             "first message",
             Some(haven_common::types::TranscriptMessageKind::Text),
@@ -1959,20 +1983,20 @@ mod tests {
         )
         .unwrap();
         db.add_message(
-            &second.id,
+            &second.session_id,
             haven_common::types::CanonicalRole::User,
             "second message",
             Some(haven_common::types::TranscriptMessageKind::Text),
             None,
         )
         .unwrap();
-        let kv_key = format!("fact_extraction_pending.{}", first.id);
+        let kv_key = format!("fact_extraction_pending.{}", first.session_id);
         db.set_kv(&kv_key, "1").unwrap();
 
         let deleted = exec.delete_all_sessions().await.unwrap();
         assert_eq!(deleted.len(), 2);
-        assert!(deleted.contains(&first.id));
-        assert!(deleted.contains(&second.id));
+        assert!(deleted.contains(&first.session_id));
+        assert!(deleted.contains(&second.session_id));
 
         assert!(exec.actors.lock().await.is_empty());
         assert!(exec.pending_queue.lock().await.is_empty());
@@ -1983,10 +2007,18 @@ mod tests {
                 .is_empty()
         );
         assert_eq!(db.count_sessions().unwrap(), 0);
-        assert!(db.get_session(&first.id).unwrap().is_none());
-        assert!(db.get_session(&second.id).unwrap().is_none());
-        assert!(db.list_session_messages(&first.id).unwrap().is_empty());
-        assert!(db.list_session_messages(&second.id).unwrap().is_empty());
+        assert!(db.get_session(&first.session_id).unwrap().is_none());
+        assert!(db.get_session(&second.session_id).unwrap().is_none());
+        assert!(
+            db.list_session_messages(&first.session_id)
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            db.list_session_messages(&second.session_id)
+                .unwrap()
+                .is_empty()
+        );
         assert!(db.get_kv(&kv_key).unwrap().is_none());
         assert!(exec.delete_all_sessions().await.unwrap().is_empty());
     }
@@ -2040,7 +2072,7 @@ mod tests {
             .try_acquire()
             .expect("test run occupies the only slot");
         let exec_for_resume = exec.clone();
-        let session_id = session.id.clone();
+        let session_id = session.session_id.clone();
         let resume =
             tokio::spawn(
                 async move { exec_for_resume.begin_direct_session_run(&session_id).await },
@@ -2051,7 +2083,7 @@ mod tests {
                 .direct_session_run_admission_waiters
                 .lock()
                 .await
-                .contains_key(&session.id)
+                .contains_key(&session.session_id)
             {
                 break;
             }
@@ -2061,11 +2093,11 @@ mod tests {
             exec.direct_session_run_admission_waiters
                 .lock()
                 .await
-                .contains_key(&session.id),
+                .contains_key(&session.session_id),
             "direct resume should register its cancellable admission wait"
         );
 
-        exec.delete_session(&session.id).await.unwrap();
+        exec.delete_session(&session.session_id).await.unwrap();
         let result = tokio::time::timeout(std::time::Duration::from_secs(1), resume)
             .await
             .expect("delete must wake a direct resume waiting for capacity")
@@ -2078,25 +2110,25 @@ mod tests {
     async fn direct_session_run_admission_promotes_paused_session_before_execution() {
         let exec = make_executor(1);
         let session = exec.create_session("direct run from paused").await.unwrap();
-        exec.update_session_status(&session.id, SessionStatus::Paused)
+        exec.update_session_status(&session.session_id, SessionStatus::Paused)
             .await
             .unwrap();
         assert_eq!(
-            exec.get_active_session_status(&session.id).await,
+            exec.get_active_session_status(&session.session_id).await,
             Some(SessionStatus::Paused)
         );
         assert!(
-            !exec.is_session_closing(&session.id),
+            !exec.is_session_closing(&session.session_id),
             "a paused idle session should not retain a closing or cleanup lease"
         );
-        assert!(!exec.is_run_in_flight(&session.id).await);
+        assert!(!exec.is_run_in_flight(&session.session_id).await);
 
         let mut lease = exec
-            .begin_direct_session_run(&session.id)
+            .begin_direct_session_run(&session.session_id)
             .await
             .expect("paused direct run should acquire an explicit run lease");
         assert_eq!(
-            exec.get_active_session_status(&session.id).await,
+            exec.get_active_session_status(&session.session_id).await,
             Some(SessionStatus::Running),
             "the actor must persist Running before a direct run can emit errors"
         );
@@ -2112,12 +2144,12 @@ mod tests {
             .await
             .unwrap();
         let mut occupying_lease = exec
-            .begin_direct_session_run(&occupying.id)
+            .begin_direct_session_run(&occupying.session_id)
             .await
             .expect("first direct run should acquire the only permit");
 
         let waiting_exec = exec.clone();
-        let waiting_id = waiting.id.clone();
+        let waiting_id = waiting.session_id.clone();
         let admission =
             tokio::spawn(async move { waiting_exec.begin_direct_session_run(&waiting_id).await });
         tokio::time::timeout(std::time::Duration::from_secs(1), async {
@@ -2126,7 +2158,7 @@ mod tests {
                     .direct_session_run_admission_waiters
                     .lock()
                     .await
-                    .contains_key(&waiting.id)
+                    .contains_key(&waiting.session_id)
                 {
                     break;
                 }
@@ -2148,7 +2180,7 @@ mod tests {
                     .direct_session_run_admission_waiters
                     .lock()
                     .await
-                    .contains_key(&waiting.id)
+                    .contains_key(&waiting.session_id)
                 {
                     break;
                 }
@@ -2158,7 +2190,7 @@ mod tests {
         .await
         .expect("cancelled admission should unregister its waiter");
 
-        exec.update_session_status(&occupying.id, SessionStatus::Paused)
+        exec.update_session_status(&occupying.session_id, SessionStatus::Paused)
             .await
             .unwrap();
         occupying_lease.finish().await;
@@ -2170,7 +2202,7 @@ mod tests {
         let exec = make_executor(1);
         let session = exec.create_session("stale direct run owner").await.unwrap();
         let old_lease = exec
-            .begin_direct_session_run(&session.id)
+            .begin_direct_session_run(&session.session_id)
             .await
             .expect("first actor should admit a direct run");
         let old_actor = old_lease.actor.clone();
@@ -2178,12 +2210,12 @@ mod tests {
         // Remove and reload the session while the old caller still retains its
         // lease handle. The old run exits before its delayed guard cleanup, as
         // it would when deletion quiesces an in-flight direct caller.
-        exec.update_session_status(&session.id, SessionStatus::Paused)
+        exec.update_session_status(&session.session_id, SessionStatus::Paused)
             .await
             .unwrap();
         old_actor.release_run_now();
-        exec.remove_session(&session.id).await.unwrap();
-        assert!(exec.actor_for(&session.id).await.is_none());
+        exec.remove_session(&session.session_id).await.unwrap();
+        assert!(exec.actor_for(&session.session_id).await.is_none());
         drop(old_lease);
         tokio::time::timeout(std::time::Duration::from_secs(1), async {
             loop {
@@ -2191,7 +2223,7 @@ mod tests {
                     .direct_session_run_leases
                     .lock()
                     .unwrap_or_else(|poisoned| poisoned.into_inner())
-                    .contains_key(&session.id);
+                    .contains_key(&session.session_id);
                 if !active {
                     break;
                 }
@@ -2201,16 +2233,19 @@ mod tests {
         .await
         .expect("stale actor cleanup should release its same-session reservation");
 
-        exec.ensure_session_loaded(&session.id).await.unwrap();
+        exec.ensure_session_loaded(&session.session_id)
+            .await
+            .unwrap();
         let mut new_lease = exec
-            .begin_direct_session_run(&session.id)
+            .begin_direct_session_run(&session.session_id)
             .await
             .expect("reloaded actor should admit a new direct run");
-        let new_actor = exec.actor_for(&session.id).await.unwrap();
+        let new_actor = exec.actor_for(&session.session_id).await.unwrap();
         assert!(!new_actor.same_instance(&old_actor));
         assert!(new_actor.is_running().await);
 
-        exec.end_direct_session_run(&session.id, &old_actor).await;
+        exec.end_direct_session_run(&session.session_id, &old_actor)
+            .await;
 
         assert!(
             new_actor.is_running().await,
@@ -2224,7 +2259,7 @@ mod tests {
         let exec = make_executor(1);
         let session = exec.create_session("cancelled delete").await.unwrap();
         let exec_for_delete = exec.clone();
-        let session_id = session.id.clone();
+        let session_id = session.session_id.clone();
         let delete = tokio::spawn(async move {
             let _closing = exec_for_delete
                 .begin_session_closing(&session_id, SessionClosingMode::Destructive)
@@ -2234,15 +2269,15 @@ mod tests {
         });
 
         for _ in 0..100 {
-            if exec.is_session_closing(&session.id) {
+            if exec.is_session_closing(&session.session_id) {
                 break;
             }
             tokio::task::yield_now().await;
         }
-        assert!(exec.is_session_closing(&session.id));
+        assert!(exec.is_session_closing(&session.session_id));
         delete.abort();
         let _ = delete.await;
-        assert!(!exec.is_session_closing(&session.id));
+        assert!(!exec.is_session_closing(&session.session_id));
     }
 
     #[tokio::test]
@@ -2251,19 +2286,19 @@ mod tests {
         let session = exec.create_session("duplicate close").await.unwrap();
         let first = exec
             .begin_session_closing(
-                &session.id,
+                &session.session_id,
                 SessionClosingMode::EndPreparing { cascade: false },
             )
             .await
             .unwrap();
         let second = exec
-            .begin_session_closing(&session.id, SessionClosingMode::Destructive)
+            .begin_session_closing(&session.session_id, SessionClosingMode::Destructive)
             .await;
         assert!(second.is_err());
         {
             let _lifecycle = exec.lifecycle_guard().await;
             assert_eq!(
-                exec.terminal_cleanup_cascade_locked(&session.id),
+                exec.terminal_cleanup_cascade_locked(&session.session_id),
                 None,
                 "a duplicate close attempt must not replace the current End owner"
             );
@@ -2271,7 +2306,7 @@ mod tests {
                 exec.closing_sessions
                     .lock()
                     .unwrap()
-                    .get(&session.id)
+                    .get(&session.session_id)
                     .is_some_and(|mode| matches!(
                         mode,
                         SessionClosingMode::EndPreparing { cascade: false }
@@ -2279,7 +2314,7 @@ mod tests {
             );
         }
         drop(first);
-        assert!(!exec.is_session_closing(&session.id));
+        assert!(!exec.is_session_closing(&session.session_id));
     }
 
     #[tokio::test]
@@ -2309,7 +2344,7 @@ mod tests {
         let session = exec.create_session("gated terminal removal").await.unwrap();
         let lifecycle = exec.lifecycle_guard().await;
         let exec_for_transition = exec.clone();
-        let session_id = session.id.clone();
+        let session_id = session.session_id.clone();
         let transition = tokio::spawn(async move {
             exec_for_transition
                 .update_session_status(&session_id, SessionStatus::Completed)
@@ -2319,7 +2354,7 @@ mod tests {
 
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         assert!(
-            exec.actor_for(&session.id).await.is_some(),
+            exec.actor_for(&session.session_id).await.is_some(),
             "terminal cleanup must not remove an actor outside the lifecycle gate"
         );
         drop(lifecycle);
@@ -2327,7 +2362,7 @@ mod tests {
             .await
             .expect("terminal status transition should finish")
             .unwrap();
-        assert!(exec.actor_for(&session.id).await.is_none());
+        assert!(exec.actor_for(&session.session_id).await.is_none());
     }
 
     /// A session terminated by end_session between the old find/mark window must
@@ -2337,11 +2372,11 @@ mod tests {
         let exec = make_executor(2);
         let session = exec.create_session("t1").await.unwrap();
 
-        let status = exec.end_session(&session.id).await.unwrap();
+        let status = exec.end_session(&session.session_id).await.unwrap();
         assert_eq!(status, SessionStatus::Completed);
 
         assert!(exec.try_claim_pending().await.is_none());
-        assert!(!exec.is_run_in_flight(&session.id).await);
+        assert!(!exec.is_run_in_flight(&session.session_id).await);
     }
 
     // ─── Data-layer tests (no dispatcher required) ───
@@ -2363,8 +2398,8 @@ mod tests {
 
         let request = {
             let service = service.clone();
-            let from = sender.id.clone();
-            let to = receiver.id.clone();
+            let from = sender.session_id.clone();
+            let to = receiver.session_id.clone();
             tokio::task::spawn_blocking(move || {
                 service
                     .request(&from, &to, "请处理", None, None, None)
@@ -2376,7 +2411,7 @@ mod tests {
 
         let first_claim = {
             let service = service.clone();
-            let recipient = receiver.id.clone();
+            let recipient = receiver.session_id.clone();
             tokio::task::spawn_blocking(move || service.claim(&recipient).unwrap())
                 .await
                 .unwrap()
@@ -2389,7 +2424,7 @@ mod tests {
 
         let second_claim = {
             let service = service.clone();
-            let recipient = receiver.id.clone();
+            let recipient = receiver.session_id.clone();
             tokio::task::spawn_blocking(move || service.claim(&recipient).unwrap())
                 .await
                 .unwrap()
@@ -2401,7 +2436,7 @@ mod tests {
 
         let receipt_claim = {
             let service = service.clone();
-            let recipient = sender.id.clone();
+            let recipient = sender.session_id.clone();
             tokio::task::spawn_blocking(move || service.claim(&recipient).unwrap())
                 .await
                 .unwrap()
@@ -2414,8 +2449,8 @@ mod tests {
 
         let reply_service = service.clone();
         let reply_to = request.envelope.id.clone();
-        let from = receiver.id.clone();
-        let to = sender.id.clone();
+        let from = receiver.session_id.clone();
+        let to = sender.session_id.clone();
         let reply_task = tokio::spawn(async move {
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
             tokio::task::spawn_blocking(move || {
@@ -2428,9 +2463,9 @@ mod tests {
         });
         let reply = service
             .wait_for_reply(
-                &sender.id,
+                &sender.session_id,
                 &request.envelope.id,
-                &receiver.id,
+                &receiver.session_id,
                 std::time::Duration::from_secs(1),
                 &tokio_util::sync::CancellationToken::new(),
             )
@@ -2442,7 +2477,7 @@ mod tests {
 
         let reply_receipt = {
             let service = service.clone();
-            let recipient = receiver.id.clone();
+            let recipient = receiver.session_id.clone();
             tokio::task::spawn_blocking(move || service.claim(&recipient).unwrap())
                 .await
                 .unwrap()
@@ -2453,7 +2488,8 @@ mod tests {
             .await
             .unwrap();
 
-        let mut expired = haven_messaging::Envelope::new(&sender.id, &receiver.id, "过期");
+        let mut expired =
+            haven_messaging::Envelope::new(&sender.session_id, &receiver.session_id, "过期");
         expired.expires_at = Some("2000-01-01T00:00:00Z".into());
         let expired_id = expired.id.clone();
         {
@@ -2464,7 +2500,7 @@ mod tests {
         }
         let expired_claim = {
             let service = service.clone();
-            let recipient = receiver.id.clone();
+            let recipient = receiver.session_id.clone();
             tokio::task::spawn_blocking(move || service.claim(&recipient).unwrap())
                 .await
                 .unwrap()
@@ -2472,7 +2508,7 @@ mod tests {
         assert!(expired_claim.is_empty());
         let history = {
             let service = service.clone();
-            let recipient = receiver.id.clone();
+            let recipient = receiver.session_id.clone();
             tokio::task::spawn_blocking(move || service.history(&recipient, 20).unwrap())
                 .await
                 .unwrap()
@@ -2501,7 +2537,7 @@ mod tests {
         let session = exec.create_session("hello world").await.unwrap();
         assert_eq!(session.status, SessionStatus::Pending);
         assert_eq!(session.input, "hello world");
-        assert!(!session.id.is_empty());
+        assert!(!session.session_id.is_empty());
         assert!(!session.created_at.is_empty());
     }
 
@@ -2525,23 +2561,26 @@ mod tests {
         let exec = Arc::new(SessionSupervisor::new_for_test(db, tools, 3));
         let session = exec.create_session("test").await.unwrap();
         // Set to Running so end_session also cancels the loop token.
-        exec.update_session_status(&session.id, SessionStatus::Running)
+        exec.update_session_status(&session.session_id, SessionStatus::Running)
             .await
             .unwrap();
-        let real_token = exec.cancellation_token(&session.id).await;
+        let real_token = exec.cancellation_token(&session.session_id).await;
         assert!(!real_token.is_cancelled());
-        let status = exec.end_session(&session.id).await.unwrap();
+        let status = exec.end_session(&session.session_id).await.unwrap();
         assert_eq!(status, SessionStatus::Completed);
         assert!(real_token.is_cancelled());
         // end_session removes the session from the working set entirely.
-        assert_eq!(exec.get_active_session_status(&session.id).await, None);
+        assert_eq!(
+            exec.get_active_session_status(&session.session_id).await,
+            None
+        );
     }
 
     #[tokio::test]
     async fn repeated_end_reclaims_cleanup_for_an_idle_completed_actor() {
         let exec = make_executor(1);
         let session = exec.create_session("retry terminal cleanup").await.unwrap();
-        let actor = exec.actor_for(&session.id).await.unwrap();
+        let actor = exec.actor_for(&session.session_id).await.unwrap();
 
         // Simulate cancellation after Completed committed but before the
         // original cleanup owner removed the actor.
@@ -2549,13 +2588,13 @@ mod tests {
             .transition(SessionStatus::Completed, true)
             .await
             .unwrap();
-        assert!(exec.actor_for(&session.id).await.is_some());
+        assert!(exec.actor_for(&session.session_id).await.is_some());
 
         assert_eq!(
-            exec.end_session(&session.id).await.unwrap(),
+            exec.end_session(&session.session_id).await.unwrap(),
             SessionStatus::Completed
         );
-        assert!(exec.actor_for(&session.id).await.is_none());
+        assert!(exec.actor_for(&session.session_id).await.is_none());
     }
 
     #[tokio::test]
@@ -2593,20 +2632,22 @@ mod tests {
         exec.clone().start_dispatcher(handler);
 
         for _ in 0..100 {
-            if started.load(Ordering::SeqCst) == 1 && exec.is_run_in_flight(&session.id).await {
+            if started.load(Ordering::SeqCst) == 1
+                && exec.is_run_in_flight(&session.session_id).await
+            {
                 break;
             }
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
         assert_eq!(started.load(Ordering::SeqCst), 1, "handler should start");
         assert!(
-            exec.is_run_in_flight(&session.id).await,
+            exec.is_run_in_flight(&session.session_id).await,
             "run should be active"
         );
 
         let end = {
             let exec = exec.clone();
-            let session_id = session.id.clone();
+            let session_id = session.session_id.clone();
             tokio::spawn(async move { exec.end_session(&session_id).await })
         };
 
@@ -2629,21 +2670,24 @@ mod tests {
         assert_eq!(result, SessionStatus::Completed);
         assert_eq!(exited.load(Ordering::SeqCst), 0);
         assert_eq!(
-            exec.get_session_status(&session.id).await,
+            exec.get_session_status(&session.session_id).await,
             Some(SessionStatus::Completed)
         );
-        assert!(exec.is_run_in_flight(&session.id).await);
+        assert!(exec.is_run_in_flight(&session.session_id).await);
 
         allow_exit.store(1, Ordering::SeqCst);
         tokio::time::timeout(std::time::Duration::from_secs(2), async {
-            while exec.actor_for(&session.id).await.is_some() {
+            while exec.actor_for(&session.session_id).await.is_some() {
                 tokio::time::sleep(std::time::Duration::from_millis(10)).await;
             }
         })
         .await
         .expect("terminal cleanup should finish after the run exits");
         assert_eq!(exited.load(Ordering::SeqCst), 1);
-        assert_eq!(exec.get_active_session_status(&session.id).await, None);
+        assert_eq!(
+            exec.get_active_session_status(&session.session_id).await,
+            None
+        );
     }
 
     #[tokio::test]
@@ -2664,7 +2708,7 @@ mod tests {
             "Stuck end retry",
             "must be cancelled on retry",
             "tool",
-            Some(&session.id),
+            Some(&session.session_id),
             Some("notify"),
             None,
             None,
@@ -2710,7 +2754,9 @@ mod tests {
         exec.clone().start_dispatcher(handler);
 
         tokio::time::timeout(std::time::Duration::from_secs(2), async {
-            while started.load(Ordering::SeqCst) == 0 || !exec.is_run_in_flight(&session.id).await {
+            while started.load(Ordering::SeqCst) == 0
+                || !exec.is_run_in_flight(&session.session_id).await
+            {
                 tokio::time::sleep(std::time::Duration::from_millis(10)).await;
             }
         })
@@ -2719,7 +2765,7 @@ mod tests {
 
         let end = {
             let exec = exec.clone();
-            let session_id = session.id.clone();
+            let session_id = session.session_id.clone();
             tokio::spawn(async move { exec.end_session(&session_id).await })
         };
         tokio::time::timeout(std::time::Duration::from_secs(2), async {
@@ -2736,10 +2782,10 @@ mod tests {
             .expect_err("durable cleanup failure must be reported");
         assert!(format!("{error:#}").contains("injected stuck cancellation failure"));
         assert_eq!(
-            exec.get_session_status(&session.id).await,
+            exec.get_session_status(&session.session_id).await,
             Some(SessionStatus::Paused)
         );
-        assert!(exec.is_run_in_flight(&session.id).await);
+        assert!(exec.is_run_in_flight(&session.session_id).await);
         assert_eq!(
             db.get_tool_run(tool_run_id).unwrap().unwrap().status,
             haven_common::lifecycle::ToolRunStatus::Waiting
@@ -2747,7 +2793,7 @@ mod tests {
 
         allow_exit.store(1, Ordering::SeqCst);
         tokio::time::timeout(std::time::Duration::from_secs(2), async {
-            while exec.is_run_in_flight(&session.id).await {
+            while exec.is_run_in_flight(&session.session_id).await {
                 tokio::time::sleep(std::time::Duration::from_millis(10)).await;
             }
         })
@@ -2755,7 +2801,7 @@ mod tests {
         .expect("late run error should release its slot");
         assert_eq!(exited.load(Ordering::SeqCst), 1);
         assert_eq!(
-            exec.get_session_status(&session.id).await,
+            exec.get_session_status(&session.session_id).await,
             Some(SessionStatus::Paused),
             "a cancelled run error must not overwrite the accepted pause"
         );
@@ -2769,11 +2815,11 @@ mod tests {
             .execute_batch("DROP TRIGGER block_stuck_end_cancel")
             .unwrap();
         assert_eq!(
-            exec.end_session(&session.id).await.unwrap(),
+            exec.end_session(&session.session_id).await.unwrap(),
             SessionStatus::Completed
         );
         assert_eq!(
-            db.get_session(&session.id).unwrap().unwrap().status,
+            db.get_session(&session.session_id).unwrap().unwrap().status,
             SessionStatus::Completed
         );
     }
@@ -2812,7 +2858,9 @@ mod tests {
         exec.clone().start_dispatcher(handler);
 
         tokio::time::timeout(std::time::Duration::from_secs(2), async {
-            while started.load(Ordering::SeqCst) == 0 || !exec.is_run_in_flight(&session.id).await {
+            while started.load(Ordering::SeqCst) == 0
+                || !exec.is_run_in_flight(&session.session_id).await
+            {
                 tokio::time::sleep(std::time::Duration::from_millis(10)).await;
             }
         })
@@ -2821,7 +2869,7 @@ mod tests {
 
         let mut delete = {
             let exec = exec.clone();
-            let session_id = session.id.clone();
+            let session_id = session.session_id.clone();
             tokio::spawn(async move { exec.delete_session(&session_id).await })
         };
 
@@ -2833,8 +2881,8 @@ mod tests {
         .await
         .expect("delete should cancel the active run");
 
-        assert!(exec.is_run_in_flight(&session.id).await);
-        assert!(db.get_session(&session.id).unwrap().is_some());
+        assert!(exec.is_run_in_flight(&session.session_id).await);
+        assert!(db.get_session(&session.session_id).unwrap().is_some());
         assert!(
             tokio::time::timeout(std::time::Duration::from_millis(50), &mut delete,)
                 .await
@@ -2851,9 +2899,9 @@ mod tests {
             .expect("delete should succeed");
 
         assert_eq!(exited.load(Ordering::SeqCst), 1);
-        assert!(!exec.is_run_in_flight(&session.id).await);
-        assert!(exec.actor_for(&session.id).await.is_none());
-        assert!(db.get_session(&session.id).unwrap().is_none());
+        assert!(!exec.is_run_in_flight(&session.session_id).await);
+        assert!(exec.actor_for(&session.session_id).await.is_none());
+        assert!(db.get_session(&session.session_id).unwrap().is_none());
     }
 
     #[tokio::test]
@@ -2862,20 +2910,20 @@ mod tests {
         let tools = Arc::new(ToolsFacade::new());
         let exec = Arc::new(SessionSupervisor::new_for_test(db, tools, 3));
         let session = exec.create_session("test").await.unwrap();
-        exec.update_session_status(&session.id, SessionStatus::Running)
+        exec.update_session_status(&session.session_id, SessionStatus::Running)
             .await
             .unwrap();
 
-        let real_token = exec.cancellation_token(&session.id).await;
+        let real_token = exec.cancellation_token(&session.session_id).await;
 
-        assert!(exec.interrupt_session(&session.id).await.unwrap());
+        assert!(exec.interrupt_session(&session.session_id).await.unwrap());
         assert!(real_token.is_cancelled());
         assert_eq!(
-            exec.get_active_session_status(&session.id).await,
+            exec.get_active_session_status(&session.session_id).await,
             Some(SessionStatus::Paused)
         );
-        assert!(exec.get_session(&session.id).await.is_some());
-        assert!(!exec.interrupt_session(&session.id).await.unwrap());
+        assert!(exec.get_session(&session.session_id).await.is_some());
+        assert!(!exec.interrupt_session(&session.session_id).await.unwrap());
     }
 
     #[tokio::test]
@@ -2913,20 +2961,22 @@ mod tests {
         exec.clone().start_dispatcher(handler);
 
         for _ in 0..100 {
-            if started.load(Ordering::SeqCst) == 1 && exec.is_run_in_flight(&session.id).await {
+            if started.load(Ordering::SeqCst) == 1
+                && exec.is_run_in_flight(&session.session_id).await
+            {
                 break;
             }
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
         assert_eq!(started.load(Ordering::SeqCst), 1, "handler should start");
         assert!(
-            exec.is_run_in_flight(&session.id).await,
+            exec.is_run_in_flight(&session.session_id).await,
             "run should be active"
         );
 
         let interrupt = {
             let exec = exec.clone();
-            let session_id = session.id.clone();
+            let session_id = session.session_id.clone();
             tokio::spawn(async move { exec.interrupt_session(&session_id).await })
         };
 
@@ -2949,14 +2999,14 @@ mod tests {
         assert!(paused);
         assert_eq!(exited.load(Ordering::SeqCst), 0);
         assert_eq!(
-            exec.get_active_session_status(&session.id).await,
+            exec.get_active_session_status(&session.session_id).await,
             Some(SessionStatus::Paused)
         );
-        assert!(exec.is_run_in_flight(&session.id).await);
+        assert!(exec.is_run_in_flight(&session.session_id).await);
 
         allow_exit.store(1, Ordering::SeqCst);
         tokio::time::timeout(std::time::Duration::from_secs(2), async {
-            while exec.is_run_in_flight(&session.id).await {
+            while exec.is_run_in_flight(&session.session_id).await {
                 tokio::time::sleep(std::time::Duration::from_millis(10)).await;
             }
         })
@@ -2983,10 +3033,10 @@ mod tests {
         let tools = Arc::new(ToolsFacade::new());
         let exec = Arc::new(SessionSupervisor::new_for_test(db, tools, 3));
         let session = exec.create_session("test").await.unwrap();
-        exec.update_session_status(&session.id, SessionStatus::Paused)
+        exec.update_session_status(&session.session_id, SessionStatus::Paused)
             .await
             .unwrap();
-        let status = exec.end_session(&session.id).await.unwrap();
+        let status = exec.end_session(&session.session_id).await.unwrap();
         assert_eq!(status, SessionStatus::Completed);
     }
 
@@ -2996,14 +3046,14 @@ mod tests {
         let tools = Arc::new(ToolsFacade::new());
         let exec = Arc::new(SessionSupervisor::new_for_test(db, tools, 3));
         let session = exec.create_session("test").await.unwrap();
-        exec.add_follow_up(&session.id, "extra context 1")
+        exec.add_follow_up(&session.session_id, "extra context 1")
             .await
             .unwrap();
-        exec.add_follow_up(&session.id, "extra context 2")
+        exec.add_follow_up(&session.session_id, "extra context 2")
             .await
             .unwrap();
         let drained: Vec<String> = exec
-            .drain_react_context(&session.id)
+            .drain_react_context(&session.session_id)
             .await
             .follow_ups
             .into_iter()
@@ -3011,7 +3061,7 @@ mod tests {
             .collect();
         assert_eq!(drained, vec!["extra context 1", "extra context 2"]);
         assert!(
-            exec.drain_react_context(&session.id)
+            exec.drain_react_context(&session.session_id)
                 .await
                 .follow_ups
                 .is_empty()
@@ -3024,13 +3074,16 @@ mod tests {
         let tools = Arc::new(ToolsFacade::new());
         let exec = Arc::new(SessionSupervisor::new_for_test(db, tools, 3));
         let session = exec.create_session("test").await.unwrap();
-        exec.add_answer_with_attachments(&session.id, "the answer", &[], None)
+        exec.add_answer_with_attachments(&session.session_id, "the answer", &[], None)
             .await
             .unwrap();
-        exec.add_follow_up(&session.id, "plain context")
+        exec.add_follow_up(&session.session_id, "plain context")
             .await
             .unwrap();
-        let drained = exec.drain_react_context(&session.id).await.follow_ups;
+        let drained = exec
+            .drain_react_context(&session.session_id)
+            .await
+            .follow_ups;
         assert_eq!(drained.len(), 2);
         assert!(drained[0].is_answer, "first message is an ask reply");
         assert_eq!(drained[0].text, "the answer");
@@ -3044,15 +3097,23 @@ mod tests {
         let exec = Arc::new(SessionSupervisor::new_for_test(db, tools, 3));
         let session = exec.create_session("test").await.unwrap();
         let att = MessageAttachment::new("image/png", "aGVsbG8=");
-        exec.add_follow_up_with_attachments(&session.id, "看图", std::slice::from_ref(&att), None)
+        exec.add_follow_up_with_attachments(
+            &session.session_id,
+            "看图",
+            std::slice::from_ref(&att),
+            None,
+        )
+        .await
+        .unwrap();
+        let drained = exec
+            .drain_react_context(&session.session_id)
             .await
-            .unwrap();
-        let drained = exec.drain_react_context(&session.id).await.follow_ups;
+            .follow_ups;
         assert_eq!(drained.len(), 1);
         assert_eq!(drained[0].text, "看图");
         assert_eq!(drained[0].attachments, vec![att]);
         assert!(
-            exec.drain_react_context(&session.id)
+            exec.drain_react_context(&session.session_id)
                 .await
                 .follow_ups
                 .is_empty()
@@ -3076,9 +3137,11 @@ mod tests {
         let tools = Arc::new(ToolsFacade::new());
         let exec = Arc::new(SessionSupervisor::new_for_test(db, tools, 3));
         let session = exec.create_session("test").await.unwrap();
-        exec.add_steering(&session.id, "steer 1").await.unwrap();
+        exec.add_steering(&session.session_id, "steer 1")
+            .await
+            .unwrap();
         let drained: Vec<String> = exec
-            .drain_react_context(&session.id)
+            .drain_react_context(&session.session_id)
             .await
             .steering
             .into_iter()
@@ -3108,7 +3171,7 @@ mod tests {
         let exec = Arc::new(SessionSupervisor::new_for_test(db, tools, 3));
         let session = exec.create_session("test").await.unwrap();
         assert_eq!(
-            exec.get_active_session_status(&session.id).await,
+            exec.get_active_session_status(&session.session_id).await,
             Some(SessionStatus::Pending)
         );
     }
@@ -3156,9 +3219,9 @@ mod tests {
         assert_eq!(loaded, 1);
 
         let claimed = exec2.try_claim_pending().await;
-        assert_eq!(claimed.as_deref(), Some(session.id.as_str()));
+        assert_eq!(claimed.as_deref(), Some(session.session_id.as_str()));
         assert_eq!(
-            exec2.get_active_session_status(&session.id).await,
+            exec2.get_active_session_status(&session.session_id).await,
             Some(SessionStatus::Running)
         );
     }
@@ -3225,7 +3288,7 @@ mod tests {
             .create_session("pending actor recovery retry")
             .await
             .unwrap();
-        exec.dequeue_pending(&session.id).await;
+        exec.dequeue_pending(&session.session_id).await;
         let mut wake = exec.subscribe_dispatch();
 
         assert_eq!(exec.load_pending_sessions().await.unwrap(), 0);
@@ -3235,7 +3298,7 @@ mod tests {
             .expect("dispatcher wake channel should remain open");
         assert_eq!(
             exec.try_claim_pending().await.as_deref(),
-            Some(session.id.as_str()),
+            Some(session.session_id.as_str()),
             "an already-installed Pending actor must be requeued by recovery"
         );
     }
@@ -3287,7 +3350,7 @@ mod tests {
         .expect("dispatcher should dispatch the pending session after recovery");
         tokio::time::timeout(std::time::Duration::from_secs(3), async {
             while db
-                .get_session(&session.id)
+                .get_session(&session.session_id)
                 .unwrap()
                 .map(|record| record.status)
                 != Some(SessionStatus::Completed)
@@ -3307,7 +3370,7 @@ mod tests {
             "one injected batch failure should be followed by one successful batch read"
         );
         assert_eq!(
-            db.get_session(&session.id)
+            db.get_session(&session.session_id)
                 .unwrap()
                 .map(|record| record.status),
             Some(SessionStatus::Completed)
@@ -3393,7 +3456,7 @@ mod tests {
         assert_eq!(handled.load(Ordering::SeqCst), 0);
         assert!(exec2.list_runtime_sessions().await.is_empty());
         assert_eq!(
-            db.get_session(&session.id)
+            db.get_session(&session.session_id)
                 .unwrap()
                 .map(|record| record.status),
             Some(SessionStatus::Pending)
@@ -3408,7 +3471,11 @@ mod tests {
         .await
         .expect("deferred recovery should dispatch after loading pending sessions");
         tokio::time::timeout(std::time::Duration::from_secs(2), async {
-            while exec2.get_active_session_status(&session.id).await.is_some() {
+            while exec2
+                .get_active_session_status(&session.session_id)
+                .await
+                .is_some()
+            {
                 tokio::task::yield_now().await;
             }
         })
@@ -3426,9 +3493,9 @@ mod tests {
             3,
         ));
         let done = exec.create_session("done").await.unwrap();
-        exec.end_session(&done.id).await.unwrap();
+        exec.end_session(&done.session_id).await.unwrap();
         let paused = exec.create_session("paused").await.unwrap();
-        exec.update_session_status(&paused.id, SessionStatus::Paused)
+        exec.update_session_status(&paused.session_id, SessionStatus::Paused)
             .await
             .unwrap();
 
@@ -3445,13 +3512,16 @@ mod tests {
         let tools = Arc::new(ToolsFacade::new());
         let exec = Arc::new(SessionSupervisor::new_for_test(db.clone(), tools, 3));
         let session = exec.create_session("test").await.unwrap();
-        exec.update_session_status(&session.id, SessionStatus::Completed)
+        exec.update_session_status(&session.session_id, SessionStatus::Completed)
             .await
             .unwrap();
         // Terminal status removes the session from the in-memory working set.
-        assert_eq!(exec.get_active_session_status(&session.id).await, None);
         assert_eq!(
-            db.get_session(&session.id).unwrap().unwrap().status,
+            exec.get_active_session_status(&session.session_id).await,
+            None
+        );
+        assert_eq!(
+            db.get_session(&session.session_id).unwrap().unwrap().status,
             SessionStatus::Completed
         );
     }
@@ -3479,17 +3549,17 @@ mod tests {
             .unwrap();
 
         let error = exec
-            .update_session_status(&session.id, SessionStatus::Running)
+            .update_session_status(&session.session_id, SessionStatus::Running)
             .await
             .expect_err("a failed durable write must reject the transition");
         assert!(format!("{error:#}").contains("forced status write failure"));
         assert_eq!(
-            exec.get_session_status(&session.id).await,
+            exec.get_session_status(&session.session_id).await,
             Some(SessionStatus::Pending),
             "the actor state must not change before persistence succeeds"
         );
         assert_eq!(
-            db.get_session(&session.id).unwrap().unwrap().status,
+            db.get_session(&session.session_id).unwrap().unwrap().status,
             SessionStatus::Pending
         );
         let attempts: i64 = db
@@ -3628,7 +3698,7 @@ mod tests {
                 "Resident end retry",
                 "partial cleanup must converge",
                 "tool",
-                Some(&session.id),
+                Some(&session.session_id),
                 Some("notify"),
                 None,
                 None,
@@ -3646,16 +3716,16 @@ mod tests {
             .unwrap();
 
         let error = exec
-            .end_session(&session.id)
+            .end_session(&session.session_id)
             .await
             .expect_err("partial durable cleanup must leave end retryable");
         assert!(format!("{error:#}").contains("injected resident cancellation failure"));
         assert_eq!(
-            exec.get_session_status(&session.id).await,
+            exec.get_session_status(&session.session_id).await,
             Some(SessionStatus::Paused)
         );
         assert_eq!(
-            exec.waiting_reason(&session.id).await,
+            exec.waiting_reason(&session.session_id).await,
             Some(SessionWaitingReason::EndIncomplete)
         );
         assert_eq!(
@@ -3671,10 +3741,10 @@ mod tests {
             .execute_batch("DROP TRIGGER block_resident_end_cancel")
             .unwrap();
         assert_eq!(
-            exec.end_session(&session.id).await.unwrap(),
+            exec.end_session(&session.session_id).await.unwrap(),
             SessionStatus::Completed
         );
-        assert!(exec.actor_for(&session.id).await.is_none());
+        assert!(exec.actor_for(&session.session_id).await.is_none());
         assert_eq!(
             db.get_tool_run(blocked_id).unwrap().unwrap().status,
             haven_common::lifecycle::ToolRunStatus::Cancelled
@@ -3696,7 +3766,7 @@ mod tests {
             "End status write retry",
             "must not be cancelled before pause commits",
             "tool",
-            Some(&session.id),
+            Some(&session.session_id),
             Some("notify"),
             None,
             None,
@@ -3710,15 +3780,15 @@ mod tests {
                  BEGIN SELECT RAISE(ABORT, 'injected pause persistence failure'); END;",
             )
             .unwrap();
-        let run_token = exec.cancellation_token(&session.id).await;
+        let run_token = exec.cancellation_token(&session.session_id).await;
 
         let error = exec
-            .end_session(&session.id)
+            .end_session(&session.session_id)
             .await
             .expect_err("end must fail before cancelling when Paused is not durable");
         assert!(format!("{error:#}").contains("injected pause persistence failure"));
         assert_eq!(
-            exec.get_session_status(&session.id).await,
+            exec.get_session_status(&session.session_id).await,
             Some(SessionStatus::Pending)
         );
         assert!(!run_token.is_cancelled());
@@ -3731,7 +3801,7 @@ mod tests {
             .execute_batch("DROP TRIGGER reject_end_pause")
             .unwrap();
         assert_eq!(
-            exec.end_session(&session.id).await.unwrap(),
+            exec.end_session(&session.session_id).await.unwrap(),
             SessionStatus::Completed
         );
     }
@@ -3837,11 +3907,15 @@ mod tests {
         let tools = Arc::new(ToolsFacade::new());
         let exec = Arc::new(SessionSupervisor::new_for_test(db, tools, 3));
         let session = exec.create_session("test").await.unwrap();
-        exec.update_session_status(&session.id, SessionStatus::Completed)
+        exec.update_session_status(&session.session_id, SessionStatus::Completed)
             .await
             .unwrap();
-        assert!(!exec.is_run_in_flight(&session.id).await);
-        assert!(exec.get_active_session_status(&session.id).await.is_none());
+        assert!(!exec.is_run_in_flight(&session.session_id).await);
+        assert!(
+            exec.get_active_session_status(&session.session_id)
+                .await
+                .is_none()
+        );
     }
 
     #[tokio::test]
@@ -3852,7 +3926,7 @@ mod tests {
         let session = exec.create_session("test").await.unwrap();
         let result = exec
             .execute_step(
-                &session.id,
+                &session.session_id,
                 "nonexistent_tool",
                 serde_json::json!({}),
                 1,
@@ -3868,12 +3942,12 @@ mod tests {
         let tools = Arc::new(ToolsFacade::new());
         let exec = Arc::new(SessionSupervisor::new_for_test(db, tools, 3));
         let session = exec.create_session("paused tool").await.unwrap();
-        exec.update_session_status(&session.id, SessionStatus::Paused)
+        exec.update_session_status(&session.session_id, SessionStatus::Paused)
             .await
             .unwrap();
         let result = exec
             .execute_step(
-                &session.id,
+                &session.session_id,
                 "nonexistent_tool",
                 serde_json::json!({}),
                 1,
@@ -3883,7 +3957,7 @@ mod tests {
         assert!(result.is_err());
         // Must not have forced memory back to Running.
         assert_eq!(
-            exec.get_active_session_status(&session.id).await,
+            exec.get_active_session_status(&session.session_id).await,
             Some(SessionStatus::Paused)
         );
     }
@@ -3895,12 +3969,12 @@ mod tests {
         let exec = Arc::new(SessionSupervisor::new_for_test(db, tools, 3));
         let session = exec.create_session("pending tool").await.unwrap();
         assert_eq!(
-            exec.get_active_session_status(&session.id).await,
+            exec.get_active_session_status(&session.session_id).await,
             Some(SessionStatus::Pending)
         );
         let result = exec
             .execute_step(
-                &session.id,
+                &session.session_id,
                 "nonexistent_tool",
                 serde_json::json!({}),
                 1,
@@ -3909,7 +3983,7 @@ mod tests {
             .await;
         assert!(result.is_err());
         assert_eq!(
-            exec.get_active_session_status(&session.id).await,
+            exec.get_active_session_status(&session.session_id).await,
             Some(SessionStatus::Pending)
         );
     }
@@ -3947,11 +4021,11 @@ mod tests {
         ));
         let session = exec.create_session("ask me").await.unwrap();
 
-        exec.update_session_status(&session.id, SessionStatus::Paused)
+        exec.update_session_status(&session.session_id, SessionStatus::Paused)
             .await
             .unwrap();
         let request = crate::interaction::InteractionRequest::ask(
-            &session.id,
+            &session.session_id,
             vec!["README.md".into()],
             vec!["step-0123456789abcdef0123456789abcdef".into()],
         );
@@ -3964,18 +4038,18 @@ mod tests {
         assert_eq!(
             envelope.owner,
             crate::interaction::InteractionOwner::Session {
-                session_id: session.id.clone(),
+                session_id: session.session_id.clone(),
             }
         );
         assert_eq!(envelope.request, request);
         assert_eq!(
-            exec.get_active_session_status(&session.id).await,
+            exec.get_active_session_status(&session.session_id).await,
             Some(SessionStatus::Paused)
         );
 
         let events = exec
             .store
-            .read_active_domain_events_async(&session.id)
+            .read_active_domain_events_async(&session.session_id)
             .await
             .unwrap();
         assert_eq!(events.len(), 1);
@@ -3986,7 +4060,7 @@ mod tests {
         assert_eq!(events[0].run_id, None);
         assert_eq!(events[0].step_number, None);
         let persisted_payload: Value = serde_json::from_str(&events[0].payload).unwrap();
-        assert_eq!(persisted_payload["session_id"], session.id);
+        assert_eq!(persisted_payload["session_id"], session.session_id);
         assert!(persisted_payload.get("owner").is_none());
         assert_eq!(
             serde_json::from_str::<crate::interaction::InteractionRequest>(&events[0].payload)
@@ -4001,18 +4075,27 @@ mod tests {
             tools.clone(),
             3,
         ));
-        reloaded.ensure_session_loaded(&session.id).await.unwrap();
+        reloaded
+            .ensure_session_loaded(&session.session_id)
+            .await
+            .unwrap();
         let pending = reloaded
-            .pending_interactions(&session.id, crate::interaction::InteractionKind::Ask)
+            .pending_interactions(
+                &session.session_id,
+                crate::interaction::InteractionKind::Ask,
+            )
             .await;
         assert_eq!(pending.len(), 1);
 
         reloaded
-            .clear_interactions(&session.id, Some(crate::interaction::InteractionKind::Ask))
+            .clear_interactions(
+                &session.session_id,
+                Some(crate::interaction::InteractionKind::Ask),
+            )
             .await
             .unwrap();
         let confirm = crate::interaction::InteractionRequest::confirm(
-            &session.id,
+            &session.session_id,
             1,
             "test.operation".into(),
             serde_json::json!({}),
@@ -4032,7 +4115,12 @@ mod tests {
         );
         reloaded.request_interaction(confirm.clone()).await.unwrap();
         let resolved = reloaded
-            .resolve_interaction(&session.id, &confirm.id, serde_json::json!(true), false)
+            .resolve_interaction(
+                &session.session_id,
+                &confirm.id,
+                serde_json::json!(true),
+                false,
+            )
             .await
             .unwrap()
             .expect("confirmation should resolve");
@@ -4043,7 +4131,7 @@ mod tests {
 
         let events = reloaded
             .store
-            .read_active_domain_events_async(&session.id)
+            .read_active_domain_events_async(&session.session_id)
             .await
             .unwrap();
         assert_eq!(events.len(), 4);
@@ -4069,25 +4157,33 @@ mod tests {
         // A subsequent actor reload observes the resolved request as cleared.
         let final_reload = Arc::new(SessionSupervisor::new_for_test(db, tools, 3));
         final_reload
-            .ensure_session_loaded(&session.id)
+            .ensure_session_loaded(&session.session_id)
             .await
             .unwrap();
         assert!(
             final_reload
-                .pending_interactions(&session.id, crate::interaction::InteractionKind::Ask)
+                .pending_interactions(
+                    &session.session_id,
+                    crate::interaction::InteractionKind::Ask
+                )
                 .await
                 .is_empty()
         );
         assert!(
             final_reload
-                .pending_interactions(&session.id, crate::interaction::InteractionKind::Confirm)
+                .pending_interactions(
+                    &session.session_id,
+                    crate::interaction::InteractionKind::Confirm
+                )
                 .await
                 .is_empty()
         );
 
         // Resolving the last pending confirmation reactivates the session.
         assert_eq!(
-            reloaded.get_active_session_status(&session.id).await,
+            reloaded
+                .get_active_session_status(&session.session_id)
+                .await,
             Some(SessionStatus::Pending)
         );
     }
@@ -4106,7 +4202,7 @@ mod tests {
             .unwrap();
         let make_request = |step_id: &str| {
             crate::interaction::InteractionRequest::confirm(
-                &session.id,
+                &session.session_id,
                 1,
                 "test.operation".into(),
                 serde_json::json!({}),
@@ -4129,7 +4225,7 @@ mod tests {
             make_request("step-atomic-first"),
             make_request("step-atomic-last"),
         ];
-        exec.request_confirm_batch(&session.id, requests.clone())
+        exec.request_confirm_batch(&session.session_id, requests.clone())
             .await
             .unwrap();
 
@@ -4140,7 +4236,12 @@ mod tests {
         // Resolving a non-final confirmation persists only that decision and
         // leaves the batch gated in Paused without waking the dispatcher.
         let first = exec
-            .resolve_interaction(&session.id, &requests[0].id, serde_json::json!(true), false)
+            .resolve_interaction(
+                &session.session_id,
+                &requests[0].id,
+                serde_json::json!(true),
+                false,
+            )
             .await
             .unwrap()
             .unwrap();
@@ -4155,7 +4256,7 @@ mod tests {
                 if envelope.request.id == requests[0].id
         ));
         assert_eq!(
-            exec.get_active_session_status(&session.id).await,
+            exec.get_active_session_status(&session.session_id).await,
             Some(SessionStatus::Paused)
         );
         assert!(!dispatch_wake.has_changed().unwrap());
@@ -4169,26 +4270,34 @@ mod tests {
             )
             .unwrap();
         let error = exec
-            .resolve_interaction(&session.id, &requests[1].id, serde_json::json!(true), false)
+            .resolve_interaction(
+                &session.session_id,
+                &requests[1].id,
+                serde_json::json!(true),
+                false,
+            )
             .await
             .expect_err("failed status CAS must reject the final decision commit");
         assert!(format!("{error:#}").contains("forced confirmation resume status failure"));
         assert_eq!(
-            db.get_session(&session.id).unwrap().unwrap().status,
+            db.get_session(&session.session_id).unwrap().unwrap().status,
             SessionStatus::Paused
         );
         assert_eq!(
-            exec.get_active_session_status(&session.id).await,
+            exec.get_active_session_status(&session.session_id).await,
             Some(SessionStatus::Paused)
         );
         let pending = exec
-            .pending_interactions(&session.id, crate::interaction::InteractionKind::Confirm)
+            .pending_interactions(
+                &session.session_id,
+                crate::interaction::InteractionKind::Confirm,
+            )
             .await;
         assert_eq!(pending.len(), 1);
         assert_eq!(pending[0].id, requests[1].id);
         let failed_events = exec
             .store
-            .read_active_domain_events_async(&session.id)
+            .read_active_domain_events_async(&session.session_id)
             .await
             .unwrap();
         assert_eq!(
@@ -4206,7 +4315,12 @@ mod tests {
             .execute_batch("DROP TRIGGER fail_confirmation_resume_status;")
             .unwrap();
         let retried = exec
-            .resolve_interaction(&session.id, &requests[1].id, serde_json::json!(true), false)
+            .resolve_interaction(
+                &session.session_id,
+                &requests[1].id,
+                serde_json::json!(true),
+                false,
+            )
             .await
             .unwrap()
             .unwrap();
@@ -4215,16 +4329,16 @@ mod tests {
             crate::interaction::InteractionStatus::Resolved
         );
         assert_eq!(
-            db.get_session(&session.id).unwrap().unwrap().status,
+            db.get_session(&session.session_id).unwrap().unwrap().status,
             SessionStatus::Pending
         );
         assert_eq!(
-            exec.get_active_session_status(&session.id).await,
+            exec.get_active_session_status(&session.session_id).await,
             Some(SessionStatus::Pending)
         );
         let resumed = runtime_events.recv().await.unwrap();
         assert!(
-            matches!(resumed, SessionSupervisorEvent::SessionResumed { ref session_id } if session_id == &session.id)
+            matches!(resumed, SessionSupervisorEvent::SessionResumed { ref session_id } if session_id == &session.session_id)
         );
         let resolved_event = runtime_events.recv().await.unwrap();
         assert!(matches!(
@@ -4239,12 +4353,12 @@ mod tests {
         assert_eq!(*dispatch_wake.borrow(), wake_before + 1);
         assert_eq!(
             exec.try_claim_pending().await.as_deref(),
-            Some(session.id.as_str())
+            Some(session.session_id.as_str())
         );
         assert!(exec.try_claim_pending().await.is_none());
         let committed_events = exec
             .store
-            .read_active_domain_events_async(&session.id)
+            .read_active_domain_events_async(&session.session_id)
             .await
             .unwrap();
         assert_eq!(
@@ -4269,7 +4383,7 @@ mod tests {
             .await
             .unwrap();
         let confirmation = crate::interaction::InteractionRequest::confirm(
-            &session.id,
+            &session.session_id,
             1,
             "test.operation".into(),
             serde_json::json!({}),
@@ -4287,7 +4401,7 @@ mod tests {
                 expires_at: chrono::Utc::now().timestamp().max(0) as u64 + 300,
             }),
         );
-        exec.request_confirm_batch(&session.id, vec![confirmation.clone()])
+        exec.request_confirm_batch(&session.session_id, vec![confirmation.clone()])
             .await
             .unwrap();
 
@@ -4295,7 +4409,12 @@ mod tests {
         let mut dispatch_wake = exec.subscribe_dispatch();
         let wake_before = *dispatch_wake.borrow_and_update();
         let expired = exec
-            .resolve_interaction(&session.id, &confirmation.id, serde_json::Value::Null, true)
+            .resolve_interaction(
+                &session.session_id,
+                &confirmation.id,
+                serde_json::Value::Null,
+                true,
+            )
             .await
             .unwrap()
             .expect("final confirmation expiry should commit");
@@ -4304,16 +4423,16 @@ mod tests {
             crate::interaction::InteractionStatus::Expired
         );
         assert_eq!(
-            db.get_session(&session.id).unwrap().unwrap().status,
+            db.get_session(&session.session_id).unwrap().unwrap().status,
             SessionStatus::Pending
         );
         assert_eq!(
-            exec.get_active_session_status(&session.id).await,
+            exec.get_active_session_status(&session.session_id).await,
             Some(SessionStatus::Pending)
         );
         assert!(matches!(
             runtime_events.recv().await.unwrap(),
-            SessionSupervisorEvent::SessionResumed { ref session_id } if session_id == &session.id
+            SessionSupervisorEvent::SessionResumed { ref session_id } if session_id == &session.session_id
         ));
         assert!(matches!(
             runtime_events.recv().await.unwrap(),
@@ -4328,7 +4447,7 @@ mod tests {
         assert_eq!(*dispatch_wake.borrow(), wake_before + 1);
         assert_eq!(
             exec.try_claim_pending().await.as_deref(),
-            Some(session.id.as_str())
+            Some(session.session_id.as_str())
         );
         assert!(exec.try_claim_pending().await.is_none());
     }
@@ -4345,7 +4464,7 @@ mod tests {
 
         let make_request = |step_id: &str, receipt: Option<haven_tools::ConfirmationReceipt>| {
             crate::interaction::InteractionRequest::confirm(
-                &session.id,
+                &session.session_id,
                 1,
                 "test.operation".into(),
                 serde_json::json!({}),
@@ -4368,23 +4487,26 @@ mod tests {
         let valid = make_request("step-batch-valid", Some(receipt()));
         let invalid = make_request("step-batch-invalid", None);
         assert!(
-            exec.request_confirm_batch(&session.id, vec![valid, invalid])
+            exec.request_confirm_batch(&session.session_id, vec![valid, invalid])
                 .await
                 .is_err()
         );
         assert_eq!(
-            exec.get_active_session_status(&session.id).await,
+            exec.get_active_session_status(&session.session_id).await,
             Some(SessionStatus::Pending),
             "an invalid member must be rejected before the session is paused"
         );
         assert!(
-            exec.pending_interactions(&session.id, crate::interaction::InteractionKind::Confirm)
-                .await
-                .is_empty()
+            exec.pending_interactions(
+                &session.session_id,
+                crate::interaction::InteractionKind::Confirm
+            )
+            .await
+            .is_empty()
         );
         assert!(
             exec.store
-                .read_active_domain_events_async(&session.id)
+                .read_active_domain_events_async(&session.session_id)
                 .await
                 .unwrap()
                 .is_empty()
@@ -4400,7 +4522,7 @@ mod tests {
             .unwrap();
         assert!(
             exec.request_confirm_batch(
-                &session.id,
+                &session.session_id,
                 vec![
                     make_request("step-batch-failed-first", Some(receipt())),
                     make_request("step-batch-failed-second", Some(receipt())),
@@ -4413,25 +4535,28 @@ mod tests {
             .execute_batch("DROP TRIGGER reject_confirmation_batch_event;")
             .unwrap();
         assert_eq!(
-            exec.get_active_session_status(&session.id).await,
+            exec.get_active_session_status(&session.session_id).await,
             Some(SessionStatus::Pending),
             "status and interaction events must roll back together on append failure"
         );
         assert!(
-            exec.pending_interactions(&session.id, crate::interaction::InteractionKind::Confirm)
-                .await
-                .is_empty()
+            exec.pending_interactions(
+                &session.session_id,
+                crate::interaction::InteractionKind::Confirm
+            )
+            .await
+            .is_empty()
         );
         assert!(
             exec.store
-                .read_active_domain_events_async(&session.id)
+                .read_active_domain_events_async(&session.session_id)
                 .await
                 .unwrap()
                 .is_empty()
         );
 
         exec.request_confirm_batch(
-            &session.id,
+            &session.session_id,
             vec![
                 make_request("step-batch-first", Some(receipt())),
                 make_request("step-batch-second", Some(receipt())),
@@ -4441,7 +4566,7 @@ mod tests {
         .unwrap();
         let persisted = exec
             .store
-            .read_active_domain_events_async(&session.id)
+            .read_active_domain_events_async(&session.session_id)
             .await
             .unwrap();
         assert_eq!(
@@ -4469,7 +4594,7 @@ mod tests {
         let input = serde_json::json!({"path": "notes.txt"});
         let step_id = "step-confirmation-plan";
         let request = crate::interaction::InteractionRequest::confirm(
-            &session.id,
+            &session.session_id,
             4,
             "files.write".into(),
             input.clone(),
@@ -4505,18 +4630,26 @@ mod tests {
             )
             .unwrap();
         assert!(
-            exec.request_confirm_batch_with_plan(&session.id, vec![request.clone()], plan.clone())
-                .await
-                .is_err()
+            exec.request_confirm_batch_with_plan(
+                &session.session_id,
+                vec![request.clone()],
+                plan.clone()
+            )
+            .await
+            .is_err()
         );
         assert_eq!(
-            exec.get_active_session_status(&session.id).await,
+            exec.get_active_session_status(&session.session_id).await,
             Some(SessionStatus::Pending)
         );
-        assert!(exec.interaction_requests(&session.id).await.is_empty());
+        assert!(
+            exec.interaction_requests(&session.session_id)
+                .await
+                .is_empty()
+        );
         assert!(
             exec.store
-                .read_active_domain_events_async(&session.id)
+                .read_active_domain_events_async(&session.session_id)
                 .await
                 .unwrap()
                 .is_empty()
@@ -4525,16 +4658,16 @@ mod tests {
         db.conn()
             .execute_batch("DROP TRIGGER reject_confirmation_plan;")
             .unwrap();
-        exec.request_confirm_batch_with_plan(&session.id, vec![request.clone()], plan)
+        exec.request_confirm_batch_with_plan(&session.session_id, vec![request.clone()], plan)
             .await
             .unwrap();
         assert_eq!(
-            exec.get_active_session_status(&session.id).await,
+            exec.get_active_session_status(&session.session_id).await,
             Some(SessionStatus::Paused)
         );
         let events = exec
             .store
-            .read_active_domain_events_async(&session.id)
+            .read_active_domain_events_async(&session.session_id)
             .await
             .unwrap();
         assert_eq!(events.len(), 2);
@@ -4554,15 +4687,21 @@ mod tests {
         let tools = Arc::new(ToolsFacade::new());
         let exec = Arc::new(SessionSupervisor::new_for_test(db, tools, 3));
         let session = exec.create_session("pause me").await.unwrap();
-        exec.update_session_status(&session.id, SessionStatus::Paused)
+        exec.update_session_status(&session.session_id, SessionStatus::Paused)
             .await
             .unwrap();
-        let state = exec.get_active_session_status(&session.id).await.unwrap();
+        let state = exec
+            .get_active_session_status(&session.session_id)
+            .await
+            .unwrap();
         assert!(state.is_paused());
         assert!(
-            exec.pending_interactions(&session.id, crate::interaction::InteractionKind::Ask)
-                .await
-                .is_empty()
+            exec.pending_interactions(
+                &session.session_id,
+                crate::interaction::InteractionKind::Ask
+            )
+            .await
+            .is_empty()
         );
         assert_eq!(state.as_str(), "paused");
     }
@@ -4573,32 +4712,37 @@ mod tests {
         let tools = Arc::new(ToolsFacade::new());
         let exec = Arc::new(SessionSupervisor::new_for_test(db, tools, 3));
         let session = exec.create_session("t").await.unwrap();
-        exec.update_session_status(&session.id, SessionStatus::Completed)
+        exec.update_session_status(&session.session_id, SessionStatus::Completed)
             .await
             .unwrap();
         // The terminal session was removed from the working set; any later
         // update on the absent entry is a silent no-op, not a resurrection.
-        exec.update_session_status(&session.id, SessionStatus::Pending)
-            .await
-            .unwrap();
-        assert_eq!(exec.get_active_session_status(&session.id).await, None);
-        // In-memory resurrection is only possible through the explicit
-        // reopen path (Completed → Paused) after ensure_session_loaded.
-        exec.ensure_session_loaded(&session.id).await.unwrap();
-        exec.update_session_status(&session.id, SessionStatus::Paused)
+        exec.update_session_status(&session.session_id, SessionStatus::Pending)
             .await
             .unwrap();
         assert_eq!(
-            exec.get_active_session_status(&session.id).await,
+            exec.get_active_session_status(&session.session_id).await,
+            None
+        );
+        // In-memory resurrection is only possible through the explicit
+        // reopen path (Completed → Paused) after ensure_session_loaded.
+        exec.ensure_session_loaded(&session.session_id)
+            .await
+            .unwrap();
+        exec.update_session_status(&session.session_id, SessionStatus::Paused)
+            .await
+            .unwrap();
+        assert_eq!(
+            exec.get_active_session_status(&session.session_id).await,
             Some(SessionStatus::Paused)
         );
         // And from Paused the session resumes via the normal Paused → Pending
         // path (e.g. process_input / continue flow).
-        exec.update_session_status(&session.id, SessionStatus::Pending)
+        exec.update_session_status(&session.session_id, SessionStatus::Pending)
             .await
             .unwrap();
         assert_eq!(
-            exec.get_active_session_status(&session.id).await,
+            exec.get_active_session_status(&session.session_id).await,
             Some(SessionStatus::Pending)
         );
     }
@@ -4609,14 +4753,14 @@ mod tests {
         let tools = Arc::new(ToolsFacade::new());
         let exec = Arc::new(SessionSupervisor::new_for_test(db, tools, 3));
         let session = exec.create_session("wait").await.unwrap();
-        exec.update_session_status(&session.id, SessionStatus::Running)
+        exec.update_session_status(&session.session_id, SessionStatus::Running)
             .await
             .unwrap();
-        exec.update_session_status(&session.id, SessionStatus::Paused)
+        exec.update_session_status(&session.session_id, SessionStatus::Paused)
             .await
             .unwrap();
 
-        let late_subscriber = exec.subscribe_status(&session.id).await;
+        let late_subscriber = exec.subscribe_status(&session.session_id).await;
         assert_eq!(
             *late_subscriber.borrow(),
             SessionStatus::Paused,
@@ -4626,7 +4770,7 @@ mod tests {
         // Waiter subscribes AFTER the pause (the level-triggered value must
         // still be visible) and wakes on the resume transition.
         let exec2 = exec.clone();
-        let tid = session.id.clone();
+        let tid = session.session_id.clone();
         let (done_tx, done_rx) = tokio::sync::oneshot::channel();
         tokio::spawn(async move {
             let mut rx = exec2.subscribe_status(&tid).await;
@@ -4636,7 +4780,7 @@ mod tests {
 
         // Give the waiter a moment to register, then transition.
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        exec.update_session_status(&session.id, SessionStatus::Pending)
+        exec.update_session_status(&session.session_id, SessionStatus::Pending)
             .await
             .unwrap();
 
@@ -4651,7 +4795,7 @@ mod tests {
     async fn conditional_wake_does_not_rewind_a_claimed_run() {
         let exec = make_executor(1);
         let session = exec.create_session("conditional wake").await.unwrap();
-        exec.update_session_status(&session.id, SessionStatus::Running)
+        exec.update_session_status(&session.session_id, SessionStatus::Running)
             .await
             .unwrap();
 
@@ -4659,13 +4803,17 @@ mod tests {
         // into Pending. This is the transition that used to trip the
         // run_react_loop entry assertion after resume/ToolRun wake-up.
         let changed = exec
-            .update_session_status_if(&session.id, SessionStatus::Paused, SessionStatus::Pending)
+            .update_session_status_if(
+                &session.session_id,
+                SessionStatus::Paused,
+                SessionStatus::Pending,
+            )
             .await
             .unwrap();
 
         assert!(!changed);
         assert_eq!(
-            exec.get_active_session_status(&session.id).await,
+            exec.get_active_session_status(&session.session_id).await,
             Some(SessionStatus::Running)
         );
     }
@@ -4682,7 +4830,7 @@ mod tests {
         // though the status did not change.
         let mut rx = exec.subscribe_dispatch();
         let before = *rx.borrow();
-        exec.update_session_status(&session.id, SessionStatus::Pending)
+        exec.update_session_status(&session.session_id, SessionStatus::Pending)
             .await
             .unwrap();
         tokio::time::timeout(std::time::Duration::from_secs(1), async {
@@ -4697,17 +4845,17 @@ mod tests {
     async fn illegal_terminal_transition_is_rejected_without_mutating_session() {
         let exec = make_executor(1);
         let session = exec.create_session("illegal transition").await.unwrap();
-        exec.update_session_status(&session.id, SessionStatus::Error)
+        exec.update_session_status(&session.session_id, SessionStatus::Error)
             .await
             .unwrap();
 
         let error = exec
-            .update_session_status(&session.id, SessionStatus::Completed)
+            .update_session_status(&session.session_id, SessionStatus::Completed)
             .await
             .expect_err("Error -> Completed must not be reported as success");
         assert!(error.to_string().contains("illegal session transition"));
         assert_eq!(
-            exec.get_session_status(&session.id).await,
+            exec.get_session_status(&session.session_id).await,
             Some(SessionStatus::Error)
         );
     }
@@ -4736,7 +4884,7 @@ mod tests {
         let session = exec.create_session("background ToolRun").await.unwrap();
 
         assert!(
-            exec.drain_react_context(&session.id)
+            exec.drain_react_context(&session.session_id)
                 .await
                 .tool_run_results
                 .is_empty()
@@ -4744,20 +4892,23 @@ mod tests {
 
         let _ = exec
             .enqueue_tool_run_result(
-                &session.id,
+                &session.session_id,
                 "toolrun-00000000000000000000000000000014".to_string(),
                 "toolrun-00000000000000000000000000000014 done",
             )
             .await;
         let _ = exec
             .enqueue_tool_run_result(
-                &session.id,
+                &session.session_id,
                 "toolrun-00000000000000000000000000000015".to_string(),
                 "toolrun-00000000000000000000000000000015 failed",
             )
             .await;
 
-        let drained = exec.drain_react_context(&session.id).await.tool_run_results;
+        let drained = exec
+            .drain_react_context(&session.session_id)
+            .await
+            .tool_run_results;
         assert_eq!(
             drained
                 .iter()
@@ -4775,7 +4926,7 @@ mod tests {
             ]
         );
         assert!(
-            exec.drain_react_context(&session.id)
+            exec.drain_react_context(&session.session_id)
                 .await
                 .tool_run_results
                 .is_empty()
@@ -4791,7 +4942,7 @@ mod tests {
         let mut tasks = tokio::task::JoinSet::new();
         for index in 0..(crate::session::actor::CONTEXT_QUEUE_MAX_ITEMS + 16) {
             let exec = exec.clone();
-            let session_id = session.id.clone();
+            let session_id = session.session_id.clone();
             tasks.spawn(async move {
                 exec.add_steering(&session_id, &format!("steering-{index}"))
                     .await
@@ -4812,7 +4963,7 @@ mod tests {
         assert_eq!(rejected, 16);
         let mut drained = 0;
         loop {
-            let batch = exec.drain_react_context(&session.id).await;
+            let batch = exec.drain_react_context(&session.session_id).await;
             let count = batch.steering.len();
             drained += count;
             if count == 0 {
@@ -4829,17 +4980,21 @@ mod tests {
         let exec = Arc::new(SessionSupervisor::new_for_test(db, tools, 3));
         let session = exec.create_session("context priority").await.unwrap();
 
-        exec.add_follow_up(&session.id, "follow-up").await.unwrap();
-        exec.add_steering(&session.id, "steering").await.unwrap();
+        exec.add_follow_up(&session.session_id, "follow-up")
+            .await
+            .unwrap();
+        exec.add_steering(&session.session_id, "steering")
+            .await
+            .unwrap();
         let _ = exec
             .enqueue_tool_run_result(
-                &session.id,
+                &session.session_id,
                 "toolrun-00000000000000000000000000000012".to_string(),
                 "ToolRun result",
             )
             .await;
 
-        let batch = exec.drain_react_context(&session.id).await;
+        let batch = exec.drain_react_context(&session.session_id).await;
         assert!(batch.follow_ups.is_empty());
         assert_eq!(
             batch
@@ -4858,7 +5013,7 @@ mod tests {
             vec!["ToolRun result"]
         );
 
-        let batch = exec.drain_react_context(&session.id).await;
+        let batch = exec.drain_react_context(&session.session_id).await;
         assert_eq!(
             batch
                 .follow_ups
@@ -4878,17 +5033,20 @@ mod tests {
         let session = exec.create_session("dedup").await.unwrap();
         let mid = "msg-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string();
 
-        exec.add_follow_up_with_attachments(&session.id, "one", &[], Some(mid.clone()))
+        exec.add_follow_up_with_attachments(&session.session_id, "one", &[], Some(mid.clone()))
             .await
             .unwrap();
-        exec.add_follow_up_with_attachments(&session.id, "two", &[], Some(mid.clone()))
+        exec.add_follow_up_with_attachments(&session.session_id, "two", &[], Some(mid.clone()))
             .await
             .unwrap();
-        exec.add_answer_with_attachments(&session.id, "answer", &[], Some(mid))
+        exec.add_answer_with_attachments(&session.session_id, "answer", &[], Some(mid))
             .await
             .unwrap();
 
-        let follow_ups = exec.drain_react_context(&session.id).await.follow_ups;
+        let follow_ups = exec
+            .drain_react_context(&session.session_id)
+            .await
+            .follow_ups;
         assert_eq!(follow_ups.len(), 1, "duplicate message_id must be skipped");
         assert_eq!(follow_ups[0].text, "one");
     }
@@ -4899,14 +5057,14 @@ mod tests {
         let session = exec.create_session("steer-dedup").await.unwrap();
         let mid = "msg-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".to_string();
 
-        exec.add_steering_with_attachments(&session.id, "first", &[], Some(mid.clone()))
+        exec.add_steering_with_attachments(&session.session_id, "first", &[], Some(mid.clone()))
             .await
             .unwrap();
-        exec.add_steering_with_attachments(&session.id, "second", &[], Some(mid))
+        exec.add_steering_with_attachments(&session.session_id, "second", &[], Some(mid))
             .await
             .unwrap();
 
-        let steering = exec.drain_react_context(&session.id).await.steering;
+        let steering = exec.drain_react_context(&session.session_id).await.steering;
         assert_eq!(steering.len(), 1);
         assert_eq!(steering[0].text, "first");
     }
@@ -4917,23 +5075,26 @@ mod tests {
         let tools = Arc::new(ToolsFacade::new());
         let exec = Arc::new(SessionSupervisor::new_for_test(db, tools, 3));
         let session = exec.create_session("cleanup").await.unwrap();
-        exec.update_session_status(&session.id, SessionStatus::Paused)
+        exec.update_session_status(&session.session_id, SessionStatus::Paused)
             .await
             .unwrap();
         let _ = exec
             .enqueue_tool_run_result(
-                &session.id,
+                &session.session_id,
                 "toolrun-00000000000000000000000000000011".to_string(),
                 "stranded",
             )
             .await;
-        let rx = exec.subscribe_status(&session.id).await;
+        let rx = exec.subscribe_status(&session.session_id).await;
         let _ = rx; // a subscriber must not keep the session alive after removal
 
-        exec.remove_session(&session.id).await.unwrap();
-        assert_eq!(exec.get_active_session_status(&session.id).await, None);
+        exec.remove_session(&session.session_id).await.unwrap();
+        assert_eq!(
+            exec.get_active_session_status(&session.session_id).await,
+            None
+        );
         assert!(
-            exec.drain_react_context(&session.id)
+            exec.drain_react_context(&session.session_id)
                 .await
                 .tool_run_results
                 .is_empty()

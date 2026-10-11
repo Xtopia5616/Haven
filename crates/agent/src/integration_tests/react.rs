@@ -44,18 +44,23 @@ async fn run_session_emits_supplement_when_additional_context_queued() {
         .await
         .unwrap();
     executor
-        .add_follow_up(&session.id, "extra: remember path X")
+        .add_follow_up(&session.session_id, "extra: remember path X")
         .await
         .unwrap();
 
-    let history = agent.run_session_from_id(&session.id).await.unwrap();
+    let history = agent
+        .run_session_from_id(&session.session_id)
+        .await
+        .unwrap();
     assert!(!history.is_empty());
 
     let sups = recorder.supplements.lock().unwrap().clone();
     assert_eq!(sups.len(), 1, "exactly one supplement event expected");
     assert_eq!(sups[0], "extra: remember path X");
     // With supplements, session pauses instead of completing (conversation mode)
-    let state = executor.get_active_session_status(&session.id).await;
+    let state = executor
+        .get_active_session_status(&session.session_id)
+        .await;
     assert_eq!(
         state,
         Some(SessionStatus::Paused),
@@ -105,7 +110,10 @@ async fn empty_response_stops_with_continue_instead_of_auto_retry() {
     agent.set_emitter(emitter.clone());
     let session = executor.create_session("empty response").await.unwrap();
 
-    let error = agent.run_session_from_id(&session.id).await.unwrap_err();
+    let error = agent
+        .run_session_from_id(&session.session_id)
+        .await
+        .unwrap_err();
     assert!(error.to_string().contains("空响应"));
     let terminal_error_session_ids = emitter.terminal_error_session_ids.lock().unwrap();
     assert_eq!(
@@ -113,9 +121,14 @@ async fn empty_response_stops_with_continue_instead_of_auto_retry() {
         1,
         "direct session runs keep publishing one Agent terminal error"
     );
-    assert_eq!(terminal_error_session_ids[0], session.id);
+    assert_eq!(terminal_error_session_ids[0], session.session_id);
     assert_eq!(
-        agent.db.get_session(&session.id).unwrap().unwrap().status,
+        agent
+            .db
+            .get_session(&session.session_id)
+            .unwrap()
+            .unwrap()
+            .status,
         SessionStatus::Error
     );
     assert_eq!(
@@ -168,8 +181,11 @@ async fn dispatcher_react_failure_has_one_terminal_event_owner() {
     })
     .await
     .expect("dispatcher must publish the ReAct failure");
-    assert_eq!(error_session_id, session.id);
-    executor.await_run_finished(&session.id).await.unwrap();
+    assert_eq!(error_session_id, session.session_id);
+    executor
+        .await_run_finished(&session.session_id)
+        .await
+        .unwrap();
 
     assert!(
         emitter
@@ -182,7 +198,7 @@ async fn dispatcher_react_failure_has_one_terminal_event_owner() {
     loop {
         match events.try_recv() {
             Ok(SessionSupervisorEvent::SessionError { session_id, .. })
-                if session_id == session.id =>
+                if session_id == session.session_id =>
             {
                 panic!("a ReAct fatal run must publish only one supervisor terminal event");
             }
@@ -265,14 +281,17 @@ async fn incomplete_tool_args_retry_before_dispatching_the_rebuilt_call() {
         .await
         .unwrap();
 
-    agent.run_session_from_id(&session.id).await.unwrap();
+    agent
+        .run_session_from_id(&session.session_id)
+        .await
+        .unwrap();
 
     let requests = mock.seen.lock().unwrap();
     assert_eq!(requests.len(), 3);
     let retry_request = serde_json::to_string(&requests[1]).unwrap();
     assert!(retry_request.contains("incomplete JSON arguments"));
     drop(requests);
-    let steps = agent.db.list_session_steps(&session.id).unwrap();
+    let steps = agent.db.list_session_steps(&session.session_id).unwrap();
     assert_eq!(
         steps
             .iter()
@@ -312,20 +331,20 @@ async fn interrupt_then_continue_on_same_actor_uses_a_fresh_run_token() {
         .await
         .unwrap();
     let original_actor = executor
-        .actor_for(&session.id)
+        .actor_for(&session.session_id)
         .await
         .expect("session actor should be installed");
 
     let first_run = tokio::spawn({
         let agent = agent.clone();
-        let session_id = session.id.clone();
+        let session_id = session.session_id.clone();
         async move { agent.run_session_from_id(&session_id).await }
     });
     let request_deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
     while mock.seen.lock().unwrap().is_empty() {
         if std::time::Instant::now() >= request_deadline {
-            let status = executor.get_session_status(&session.id).await;
-            let in_flight = executor.is_run_in_flight(&session.id).await;
+            let status = executor.get_session_status(&session.session_id).await;
+            let in_flight = executor.is_run_in_flight(&session.session_id).await;
             let result = first_run.await;
             panic!(
                 "first provider request never started (status: {status:?}, in_flight: {in_flight}, run: {result:?})"
@@ -333,9 +352,9 @@ async fn interrupt_then_continue_on_same_actor_uses_a_fresh_run_token() {
         }
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     }
-    let interrupted_token = executor.cancellation_token(&session.id).await;
+    let interrupted_token = executor.cancellation_token(&session.session_id).await;
 
-    agent.interrupt_session(&session.id).await.unwrap();
+    agent.interrupt_session(&session.session_id).await.unwrap();
     tokio::time::timeout(std::time::Duration::from_secs(2), first_run)
         .await
         .expect("interrupted run should stop promptly")
@@ -343,9 +362,9 @@ async fn interrupt_then_continue_on_same_actor_uses_a_fresh_run_token() {
         .expect("interruption is a normal run exit");
     assert!(interrupted_token.is_cancelled());
 
-    agent.continue_session(&session.id).await.unwrap();
+    agent.continue_session(&session.session_id).await.unwrap();
     let continued_actor = executor
-        .actor_for(&session.id)
+        .actor_for(&session.session_id)
         .await
         .expect("paused session should retain its actor for Continue");
     assert!(
@@ -354,13 +373,13 @@ async fn interrupt_then_continue_on_same_actor_uses_a_fresh_run_token() {
     );
     assert_eq!(
         executor.try_claim_pending().await.as_deref(),
-        Some(session.id.as_str()),
+        Some(session.session_id.as_str()),
         "dispatcher should claim the continued session"
     );
 
     let history = tokio::time::timeout(
         std::time::Duration::from_secs(2),
-        agent.run_session_from_dispatcher(&session.id),
+        agent.run_session_from_dispatcher(&session.session_id),
     )
     .await
     .expect("continued run should not inherit the previous cancellation")
@@ -372,7 +391,9 @@ async fn interrupt_then_continue_on_same_actor_uses_a_fresh_run_token() {
         .expect("finish dispatched continued run");
     assert_eq!(mock.seen.lock().unwrap().len(), 2);
     assert_eq!(
-        executor.get_active_session_status(&session.id).await,
+        executor
+            .get_active_session_status(&session.session_id)
+            .await,
         Some(SessionStatus::Paused)
     );
 }
@@ -397,7 +418,7 @@ async fn turn_deadline_cancels_provider_retry_before_second_attempt() {
     let started = Instant::now();
     let result = tokio::time::timeout(
         std::time::Duration::from_secs(3),
-        agent.run_session_from_id(&session.id),
+        agent.run_session_from_id(&session.session_id),
     )
     .await
     .expect("provider retry must observe the turn cancellation")
@@ -451,7 +472,7 @@ async fn turn_deadline_stops_after_non_cooperative_blocking_tool() {
     let started = Instant::now();
     let result = tokio::time::timeout(
         std::time::Duration::from_secs(2),
-        agent.run_session_from_id(&session.id),
+        agent.run_session_from_id(&session.session_id),
     )
     .await
     .expect("deadline must stop the turn before native work finishes")
@@ -513,22 +534,30 @@ async fn loop_pauses_on_pending_ask_instead_of_heuristic_final() {
         step_number: 1,
         branch_points: HashMap::new(),
         interactions: vec![crate::interaction::InteractionRequest::ask(
-            &session.id,
+            &session.session_id,
             Vec::new(),
             vec!["step-ask".into()],
         )],
     };
-    seed_event_projection(&agent, &session.id, &snapshot).await;
-    agent.run_session_from_id(&session.id).await.unwrap();
+    seed_event_projection(&agent, &session.session_id, &snapshot).await;
+    agent
+        .run_session_from_id(&session.session_id)
+        .await
+        .unwrap();
 
     assert_eq!(
-        executor.get_active_session_status(&session.id).await,
+        executor
+            .get_active_session_status(&session.session_id)
+            .await,
         Some(SessionStatus::Paused),
         "session must pause for the pending question instead of completing"
     );
     assert_eq!(
         executor
-            .pending_interactions(&session.id, crate::interaction::InteractionKind::Ask)
+            .pending_interactions(
+                &session.session_id,
+                crate::interaction::InteractionKind::Ask
+            )
             .await
             .len(),
         1,
@@ -563,15 +592,20 @@ async fn budget_exhaustion_pauses_with_notification_and_no_chat_message() {
     let recorder = make_recording_emitter();
     agent.set_emitter(recorder.clone());
     let session = executor.create_session("session").await.unwrap();
-    agent.run_session_from_id(&session.id).await.unwrap();
+    agent
+        .run_session_from_id(&session.session_id)
+        .await
+        .unwrap();
 
     assert_eq!(
-        executor.get_active_session_status(&session.id).await,
+        executor
+            .get_active_session_status(&session.session_id)
+            .await,
         Some(SessionStatus::Paused),
         "budget exhaustion must pause the session as a checkpoint"
     );
     // The notice must NOT be persisted as an assistant chat message.
-    let msgs = agent.db.list_session_messages(&session.id).unwrap();
+    let msgs = agent.db.list_session_messages(&session.session_id).unwrap();
     assert!(
         msgs.iter()
             .all(|m| !m.content.contains("任务步骤上限已用尽")),
@@ -590,7 +624,7 @@ async fn budget_exhaustion_pauses_with_notification_and_no_chat_message() {
     let pause_triggers = agent
         .react_engine
         .event_store
-        .read_active_domain_events(&session.id)
+        .read_active_domain_events(&session.session_id)
         .unwrap()
         .into_iter()
         .filter(|event| event.event_type == haven_memory::MEMORY_TRIGGER_EVENT_TYPE)
@@ -635,15 +669,23 @@ async fn abnormal_text_finish_preserves_partial_and_waits_for_continue() {
     let (agent, executor) = make_test_agent_with(client, Arc::new(ToolsFacade::new()));
     agent.set_emitter(make_recording_emitter());
     let session = executor.create_session("session").await.unwrap();
-    let error = agent.run_session_from_id(&session.id).await.unwrap_err();
+    let error = agent
+        .run_session_from_id(&session.session_id)
+        .await
+        .unwrap_err();
     assert!(error.to_string().contains("finish_reason=length"));
 
     assert_eq!(
-        agent.db.get_session(&session.id).unwrap().unwrap().status,
+        agent
+            .db
+            .get_session(&session.session_id)
+            .unwrap()
+            .unwrap()
+            .status,
         SessionStatus::Error,
         "a non-normal model finish must expose the continue action instead of auto-retrying"
     );
-    let msgs = agent.db.list_session_messages(&session.id).unwrap();
+    let msgs = agent.db.list_session_messages(&session.session_id).unwrap();
     assert_eq!(
         msgs.last().unwrap().content,
         "Here is the partial answer",
@@ -698,12 +740,17 @@ async fn run_session_executes_tool_then_final_answer() {
     let collector = Arc::new(EventCollector::new());
     agent.set_emitter(collector.clone());
     let session = executor.create_session("echo hello").await.unwrap();
-    let history = agent.run_session_from_id(&session.id).await.unwrap();
+    let history = agent
+        .run_session_from_id(&session.session_id)
+        .await
+        .unwrap();
     assert!(history.len() >= 2, "should have at least 2 steps");
     assert!(collector.has_tool_call("echo"));
     assert!(collector.has_observation("echo"));
     assert_eq!(
-        executor.get_active_session_status(&session.id).await,
+        executor
+            .get_active_session_status(&session.session_id)
+            .await,
         Some(SessionStatus::Paused)
     );
 }
@@ -807,9 +854,15 @@ async fn media_tool_usage_flows_to_event_and_database() {
     agent.set_emitter(collector.clone());
     let session = executor.create_session("describe the image").await.unwrap();
 
-    agent.run_session_from_id(&session.id).await.unwrap();
+    agent
+        .run_session_from_id(&session.session_id)
+        .await
+        .unwrap();
 
-    let calls = agent.db.list_session_llm_usage(&session.id).unwrap();
+    let calls = agent
+        .db
+        .list_session_llm_usage(&session.session_id)
+        .unwrap();
     assert_eq!(calls.len(), 1, "only the media client reports usage");
     assert_eq!(calls[0].call_kind, haven_common::usage::LlmCallKind::Media);
     assert_eq!(calls[0].step_number, Some(1));
@@ -831,7 +884,7 @@ async fn media_tool_usage_flows_to_event_and_database() {
                 completion_tokens: 7,
                 total_tokens: 18,
                 ..
-            } if session_id == &session.id && *call_kind == haven_common::usage::LlmCallKind::Media
+            } if session_id == &session.session_id && *call_kind == haven_common::usage::LlmCallKind::Media
         )
     }));
 }
@@ -888,11 +941,14 @@ async fn run_session_empty_tool_call_id_stays_consistent_in_canonical() {
     let collector = Arc::new(EventCollector::new());
     agent.set_emitter(collector.clone());
     let session = executor.create_session("echo hello").await.unwrap();
-    agent.run_session_from_id(&session.id).await.unwrap();
+    agent
+        .run_session_from_id(&session.session_id)
+        .await
+        .unwrap();
 
     // Inspect the saved snapshot's canonical: the assistant declaration
     // and the tool result must share the same (non-empty) id.
-    let saved = load_event_projection(&agent, &session.id).await;
+    let saved = load_event_projection(&agent, &session.session_id).await;
     let mut declared: Option<String> = None;
     let canonical = saved.project().canonical_messages;
     for m in &canonical {
@@ -994,7 +1050,7 @@ async fn run_session_injects_mid_turn_steering_before_final_content() {
 
     let run = tokio::spawn({
         let agent = agent.clone();
-        let session_id = session.id.clone();
+        let session_id = session.session_id.clone();
         async move { agent.run_session_from_id(&session_id).await }
     });
     // The second LLM call is `ChunkDelayed` (300 ms) specifically so the
@@ -1015,7 +1071,7 @@ async fn run_session_injects_mid_turn_steering_before_final_content() {
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     }
     executor
-        .add_steering(&session.id, "stop and use French")
+        .add_steering(&session.session_id, "stop and use French")
         .await
         .unwrap();
     let history = run.await.unwrap().unwrap();
@@ -1040,7 +1096,9 @@ async fn run_session_injects_mid_turn_steering_before_final_content() {
         "should have re-run after steering injection"
     );
     assert_eq!(
-        executor.get_active_session_status(&session.id).await,
+        executor
+            .get_active_session_status(&session.session_id)
+            .await,
         Some(SessionStatus::Paused)
     );
 }
@@ -1099,13 +1157,13 @@ async fn run_session_injects_steering_between_tool_calls() {
 
     let run = tokio::spawn({
         let agent = agent.clone();
-        let session_id = session.id.clone();
+        let session_id = session.session_id.clone();
         async move { agent.run_session_from_id(&session_id).await }
     });
     // Deliver the message while delay_a (200ms) is still executing.
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     executor
-        .add_steering(&session.id, "add more detail")
+        .add_steering(&session.session_id, "add more detail")
         .await
         .unwrap();
     let _ = run.await.unwrap().unwrap();
@@ -1129,7 +1187,9 @@ async fn run_session_injects_steering_between_tool_calls() {
         );
     }
     assert_eq!(
-        executor.get_active_session_status(&session.id).await,
+        executor
+            .get_active_session_status(&session.session_id)
+            .await,
         Some(SessionStatus::Paused)
     );
 }
@@ -1187,11 +1247,16 @@ async fn run_session_ask_tool_pauses_and_surfaces_question() {
     let collector = Arc::new(EventCollector::new());
     agent.set_emitter(collector.clone());
     let session = executor.create_session("decide a path").await.unwrap();
-    agent.run_session_from_id(&session.id).await.unwrap();
+    agent
+        .run_session_from_id(&session.session_id)
+        .await
+        .unwrap();
 
     // Session must be paused, awaiting the user's answer.
     assert_eq!(
-        executor.get_active_session_status(&session.id).await,
+        executor
+            .get_active_session_status(&session.session_id)
+            .await,
         Some(SessionStatus::Paused),
         "ask should pause the session"
     );
@@ -1199,7 +1264,7 @@ async fn run_session_ask_tool_pauses_and_surfaces_question() {
     assert!(collector.has_observation("ask"));
 
     // The question must be persisted so the user can see and answer it.
-    let msgs = agent.db.list_session_messages(&session.id).unwrap();
+    let msgs = agent.db.list_session_messages(&session.session_id).unwrap();
     let found = msgs.iter().any(|m| {
         m.role == haven_common::types::CanonicalRole::Assistant
             && m.content.contains("Which path should I take")
@@ -1209,7 +1274,7 @@ async fn run_session_ask_tool_pauses_and_surfaces_question() {
     let pause_triggers = agent
         .react_engine
         .event_store
-        .read_active_domain_events(&session.id)
+        .read_active_domain_events(&session.session_id)
         .unwrap()
         .into_iter()
         .filter(|event| event.event_type == haven_memory::MEMORY_TRIGGER_EVENT_TYPE)
@@ -1255,9 +1320,15 @@ async fn ask_interaction_survives_executor_restart_from_durable_snapshot() {
         make_test_agent_with_db(db.clone(), mock, tools, ContextLimitsConfig::default());
     agent.set_emitter(make_recording_emitter());
     let session = executor.create_session("restart me").await.unwrap();
-    agent.run_session_from_id(&session.id).await.unwrap();
+    agent
+        .run_session_from_id(&session.session_id)
+        .await
+        .unwrap();
     let recovered_pending = executor
-        .pending_interactions(&session.id, crate::interaction::InteractionKind::Ask)
+        .pending_interactions(
+            &session.session_id,
+            crate::interaction::InteractionKind::Ask,
+        )
         .await;
     assert_eq!(recovered_pending.len(), 1);
 
@@ -1282,16 +1353,19 @@ async fn ask_interaction_survives_executor_restart_from_durable_snapshot() {
     );
     restarted_agent.set_emitter(make_recording_emitter());
     restarted_executor
-        .ensure_session_loaded(&session.id)
+        .ensure_session_loaded(&session.session_id)
         .await
         .unwrap();
     restarted_agent
-        .run_session_from_id(&session.id)
+        .run_session_from_id(&session.session_id)
         .await
         .unwrap();
 
     let pending = restarted_executor
-        .pending_interactions(&session.id, crate::interaction::InteractionKind::Ask)
+        .pending_interactions(
+            &session.session_id,
+            crate::interaction::InteractionKind::Ask,
+        )
         .await;
     assert_eq!(
         pending.len(),
@@ -1351,31 +1425,41 @@ async fn run_session_ask_resumes_after_user_answer() {
     let collector = Arc::new(EventCollector::new());
     agent.set_emitter(collector.clone());
     let session = executor.create_session("pick a path").await.unwrap();
-    agent.run_session_from_id(&session.id).await.unwrap();
+    agent
+        .run_session_from_id(&session.session_id)
+        .await
+        .unwrap();
     assert_eq!(
-        executor.get_active_session_status(&session.id).await,
+        executor
+            .get_active_session_status(&session.session_id)
+            .await,
         Some(SessionStatus::Paused),
         "ask should pause"
     );
 
     // User answers; the supplement flips the session back to Pending.
     executor
-        .add_follow_up(&session.id, "Use option A.")
+        .add_follow_up(&session.session_id, "Use option A.")
         .await
         .unwrap();
     executor
-        .update_session_status(&session.id, SessionStatus::Pending)
+        .update_session_status(&session.session_id, SessionStatus::Pending)
         .await
         .unwrap();
-    agent.run_session_from_id(&session.id).await.unwrap();
+    agent
+        .run_session_from_id(&session.session_id)
+        .await
+        .unwrap();
     assert_eq!(
-        executor.get_active_session_status(&session.id).await,
+        executor
+            .get_active_session_status(&session.session_id)
+            .await,
         Some(SessionStatus::Paused),
         "session should pause again after final answer"
     );
     // The final answer text should be persisted, proving the loop resumed
     // past the `ask` step and reached final_answer.
-    let msgs = agent.db.list_session_messages(&session.id).unwrap();
+    let msgs = agent.db.list_session_messages(&session.session_id).unwrap();
     let answered = msgs.iter().any(|m| {
         m.role == haven_common::types::CanonicalRole::Assistant
             && m.content.contains("Going with A")
@@ -1452,37 +1536,60 @@ async fn retry_after_ask_answer_error_retains_failed_recovery_projection() {
     let session = executor.create_session("ask retry").await.unwrap();
 
     // Turn 1: the ask pauses the session.
-    agent.run_session_from_id(&session.id).await.unwrap();
+    agent
+        .run_session_from_id(&session.session_id)
+        .await
+        .unwrap();
     assert_eq!(
-        executor.get_active_session_status(&session.id).await,
+        executor
+            .get_active_session_status(&session.session_id)
+            .await,
         Some(SessionStatus::Paused)
     );
 
     // Turn 2: the user answers; the resumed step fails mid-stream.
-    executor.add_follow_up(&session.id, "Yes").await.unwrap();
     executor
-        .update_session_status(&session.id, SessionStatus::Pending)
+        .add_follow_up(&session.session_id, "Yes")
         .await
         .unwrap();
-    assert!(agent.run_session_from_id(&session.id).await.is_err());
+    executor
+        .update_session_status(&session.session_id, SessionStatus::Pending)
+        .await
+        .unwrap();
+    assert!(
+        agent
+            .run_session_from_id(&session.session_id)
+            .await
+            .is_err()
+    );
     // The failed run ended in Error; terminal cleanup removed the session
     // from the working set.
-    assert_eq!(executor.get_active_session_status(&session.id).await, None);
+    assert_eq!(
+        executor
+            .get_active_session_status(&session.session_id)
+            .await,
+        None
+    );
     assert!(
-        !executor.is_session_closing(&session.id),
+        !executor.is_session_closing(&session.session_id),
         "run-exit cleanup must release its lifecycle admission lease before Continue"
     );
 
     // Turn 3: retry via continue_session ??Pending ??re-run.
-    agent.continue_session(&session.id).await.unwrap();
+    agent.continue_session(&session.session_id).await.unwrap();
     assert_eq!(
-        executor.get_active_session_status(&session.id).await,
+        executor
+            .get_active_session_status(&session.session_id)
+            .await,
         Some(SessionStatus::Pending)
     );
-    agent.run_session_from_id(&session.id).await.unwrap();
+    agent
+        .run_session_from_id(&session.session_id)
+        .await
+        .unwrap();
 
-    let msgs = agent.db.list_session_messages(&session.id).unwrap();
-    let steps = agent.db.list_session_steps(&session.id).unwrap();
+    let msgs = agent.db.list_session_messages(&session.session_id).unwrap();
+    let steps = agent.db.list_session_steps(&session.session_id).unwrap();
 
     // The failed attempt's partial remains visible because its newest
     // recovery marker is `failed`, so it cannot authorize truncation.
@@ -1577,7 +1684,10 @@ async fn run_session_notify_tool_emits_notification_without_pausing() {
     let collector = Arc::new(EventCollector::new());
     agent.set_emitter(collector.clone());
     let session = executor.create_session("build and notify").await.unwrap();
-    let history = agent.run_session_from_id(&session.id).await.unwrap();
+    let history = agent
+        .run_session_from_id(&session.session_id)
+        .await
+        .unwrap();
     assert!(history.len() >= 2, "should have at least 2 steps");
 
     // The Notification event must carry the tool's title/body.
@@ -1594,7 +1704,9 @@ async fn run_session_notify_tool_emits_notification_without_pausing() {
     // continued past the notify step (history has 2 steps) and reached the
     // normal end state (Paused = conversation mode, waiting for follow-up).
     assert_eq!(
-        executor.get_active_session_status(&session.id).await,
+        executor
+            .get_active_session_status(&session.session_id)
+            .await,
         Some(SessionStatus::Paused)
     );
 }
@@ -1639,13 +1751,18 @@ async fn run_session_multiple_asks_surface_all_questions() {
     let collector = Arc::new(EventCollector::new());
     agent.set_emitter(collector.clone());
     let session = executor.create_session("two questions").await.unwrap();
-    agent.run_session_from_id(&session.id).await.unwrap();
+    agent
+        .run_session_from_id(&session.session_id)
+        .await
+        .unwrap();
     assert_eq!(
-        executor.get_active_session_status(&session.id).await,
+        executor
+            .get_active_session_status(&session.session_id)
+            .await,
         Some(SessionStatus::Paused),
         "ask should pause"
     );
-    let msgs = agent.db.list_session_messages(&session.id).unwrap();
+    let msgs = agent.db.list_session_messages(&session.session_id).unwrap();
     let persisted: String = msgs
         .iter()
         .filter(|m| m.role == haven_common::types::CanonicalRole::Assistant)
@@ -1728,13 +1845,18 @@ async fn pause_snapshot_and_resume_keep_own_final_answer_in_canonical() {
     agent.set_emitter(collector.clone());
     let session = executor.create_session("question one").await.unwrap();
 
-    agent.run_session_from_id(&session.id).await.unwrap();
+    agent
+        .run_session_from_id(&session.session_id)
+        .await
+        .unwrap();
     assert_eq!(
-        executor.get_active_session_status(&session.id).await,
+        executor
+            .get_active_session_status(&session.session_id)
+            .await,
         Some(SessionStatus::Paused)
     );
 
-    let snapshot = load_event_projection(&agent, &session.id).await;
+    let snapshot = load_event_projection(&agent, &session.session_id).await;
     let canonical = snapshot.project().canonical_messages;
     let last = canonical.last().expect("canonical not empty");
     assert_eq!(
@@ -1759,14 +1881,17 @@ async fn pause_snapshot_and_resume_keep_own_final_answer_in_canonical() {
     // own completed answer BEFORE the injected follow-up, so the model
     // answers with knowledge of what it already said.
     executor
-        .add_follow_up(&session.id, "next question")
+        .add_follow_up(&session.session_id, "next question")
         .await
         .unwrap();
     executor
-        .update_session_status(&session.id, SessionStatus::Pending)
+        .update_session_status(&session.session_id, SessionStatus::Pending)
         .await
         .unwrap();
-    agent.run_session_from_id(&session.id).await.unwrap();
+    agent
+        .run_session_from_id(&session.session_id)
+        .await
+        .unwrap();
 
     let seen = mock.seen.lock().unwrap();
     assert!(
@@ -1850,14 +1975,19 @@ async fn run_session_compaction_retry_on_context_exceeded() {
     let collector = Arc::new(EventCollector::new());
     agent.set_emitter(collector.clone());
     let session = executor.create_session("test compaction").await.unwrap();
-    let history = agent.run_session_from_id(&session.id).await.unwrap();
+    let history = agent
+        .run_session_from_id(&session.session_id)
+        .await
+        .unwrap();
     assert!(!history.is_empty());
     assert!(
         collector.has_compaction(),
         "Compaction event should be emitted"
     );
     assert_eq!(
-        executor.get_active_session_status(&session.id).await,
+        executor
+            .get_active_session_status(&session.session_id)
+            .await,
         Some(SessionStatus::Paused)
     );
 }
@@ -1872,10 +2002,15 @@ async fn run_session_context_exceeded_compaction_fails() {
     let collector = Arc::new(EventCollector::new());
     agent.set_emitter(collector.clone());
     let session = executor.create_session("compaction fail").await.unwrap();
-    let result = agent.run_session_from_id(&session.id).await;
+    let result = agent.run_session_from_id(&session.session_id).await;
     assert!(result.is_err(), "should error when compaction fails");
     // Terminal cleanup removed the session from the working set.
-    assert_eq!(executor.get_active_session_status(&session.id).await, None);
+    assert_eq!(
+        executor
+            .get_active_session_status(&session.session_id)
+            .await,
+        None
+    );
 }
 
 #[tokio::test]
@@ -1886,10 +2021,10 @@ async fn continue_session_resumes_errored_session() {
     // Simulate an errored session with a saved snapshot.
     agent
         .db
-        .update_session_status(&session.id, SessionStatus::Error)
+        .update_session_status(&session.session_id, SessionStatus::Error)
         .unwrap();
     executor
-        .update_session_status(&session.id, SessionStatus::Error)
+        .update_session_status(&session.session_id, SessionStatus::Error)
         .await
         .unwrap();
     let router = agent.react_engine.router();
@@ -1934,7 +2069,7 @@ async fn continue_session_resumes_errored_session() {
     agent
         .db
         .add_message(
-            &session.id,
+            &session.session_id,
             haven_common::types::CanonicalRole::User,
             "hello",
             Some(haven_common::types::TranscriptMessageKind::Text),
@@ -1944,7 +2079,7 @@ async fn continue_session_resumes_errored_session() {
     let completed = agent
         .db
         .add_message(
-            &session.id,
+            &session.session_id,
             haven_common::types::CanonicalRole::Assistant,
             "completed before failure",
             Some(haven_common::types::TranscriptMessageKind::Text),
@@ -1954,13 +2089,13 @@ async fn continue_session_resumes_errored_session() {
     let kept_step_id = haven_common::types::new_id("step");
     let kept_step = agent
         .db
-        .create_thought_step(&session.id, 1, &kept_step_id)
+        .create_thought_step(&session.session_id, 1, &kept_step_id)
         .unwrap();
-    seed_event_projection(&agent, &session.id, &snapshot).await;
+    seed_event_projection(&agent, &session.session_id, &snapshot).await;
     let store = agent.react_engine.event_store.clone();
     let kept_usage = store
         .append_usage(
-            &session.id,
+            &session.session_id,
             &haven_memory::LlmUsageRecordInput {
                 step_number: Some(1),
                 request_kind: haven_common::config::RequestKind::Chat,
@@ -1986,7 +2121,7 @@ async fn continue_session_resumes_errored_session() {
     let partial = agent
         .db
         .add_message(
-            &session.id,
+            &session.session_id,
             haven_common::types::CanonicalRole::Assistant,
             "partial output",
             Some(haven_common::types::TranscriptMessageKind::Text),
@@ -1996,11 +2131,11 @@ async fn continue_session_resumes_errored_session() {
     let discarded_step_id = haven_common::types::new_id("step");
     agent
         .db
-        .create_thought_step(&session.id, 2, &discarded_step_id)
+        .create_thought_step(&session.session_id, 2, &discarded_step_id)
         .unwrap();
     let discarded_usage = store
         .append_usage(
-            &session.id,
+            &session.session_id,
             &haven_memory::LlmUsageRecordInput {
                 step_number: Some(2),
                 request_kind: haven_common::config::RequestKind::Chat,
@@ -2023,7 +2158,7 @@ async fn continue_session_resumes_errored_session() {
         )
         .unwrap();
     let cutoff = kept_usage.created_at.clone();
-    let sid = session.id.clone();
+    let sid = session.session_id.clone();
     agent
         .db
         .run_blocking_for_test(move |_| {
@@ -2044,7 +2179,7 @@ async fn continue_session_resumes_errored_session() {
         })
         .await
         .unwrap();
-    agent.continue_session(&session.id).await.unwrap();
+    agent.continue_session(&session.session_id).await.unwrap();
     let after_continue = router
         .chat_stream_with_tools_aggregated(
             haven_common::config::RequestKind::Chat,
@@ -2058,26 +2193,31 @@ async fn continue_session_resumes_errored_session() {
         "Continue must clear the open circuit so the provider request can run: {after_continue:?}"
     );
     assert_eq!(
-        executor.get_active_session_status(&session.id).await,
+        executor
+            .get_active_session_status(&session.session_id)
+            .await,
         Some(SessionStatus::Pending)
     );
     // The committed recovery marker authorizes removal strictly after the
     // branch-point cutoff, including execution and usage projections.
-    let msgs = agent.db.list_session_messages(&session.id).unwrap();
+    let msgs = agent.db.list_session_messages(&session.session_id).unwrap();
     assert_eq!(msgs.len(), 2);
     assert_eq!(msgs[0].content, "hello");
     assert_eq!(msgs[1].id, completed.id);
     assert!(!msgs.iter().any(|message| message.id == partial.id));
-    let steps = agent.db.list_session_steps(&session.id).unwrap();
+    let steps = agent.db.list_session_steps(&session.session_id).unwrap();
     assert_eq!(steps.len(), 1);
     assert_eq!(steps[0].step_id, kept_step.step_id);
-    let usage = agent.db.list_session_llm_usage(&session.id).unwrap();
+    let usage = agent
+        .db
+        .list_session_llm_usage(&session.session_id)
+        .unwrap();
     assert_eq!(usage.len(), 1);
     assert_eq!(usage[0].id, kept_usage.id);
     assert_eq!(
         agent
             .db
-            .get_session_usage(&session.id)
+            .get_session_usage(&session.session_id)
             .unwrap()
             .unwrap()
             .total_tokens,
@@ -2086,7 +2226,7 @@ async fn continue_session_resumes_errored_session() {
     let discarded_events = agent
         .react_engine
         .event_store
-        .read_active_domain_events(&session.id)
+        .read_active_domain_events(&session.session_id)
         .unwrap()
         .into_iter()
         .filter(|event| event.event_type == haven_memory::USAGE_DISCARDED_EVENT_TYPE)
@@ -2109,7 +2249,7 @@ async fn continue_from_error_clears_stale_confirmation_requests() {
         .await
         .unwrap();
     let request = crate::interaction::InteractionRequest::confirm(
-        &session.id,
+        &session.session_id,
         1,
         "test.operation".into(),
         serde_json::json!({"value": "safe-test-input"}),
@@ -2127,28 +2267,31 @@ async fn continue_from_error_clears_stale_confirmation_requests() {
         }),
     );
     executor
-        .request_confirm_batch(&session.id, vec![request.clone()])
+        .request_confirm_batch(&session.session_id, vec![request.clone()])
         .await
         .unwrap();
     agent
         .db
-        .update_session_status(&session.id, SessionStatus::Error)
+        .update_session_status(&session.session_id, SessionStatus::Error)
         .unwrap();
     executor
-        .update_session_status(&session.id, SessionStatus::Error)
+        .update_session_status(&session.session_id, SessionStatus::Error)
         .await
         .unwrap();
 
-    agent.continue_session(&session.id).await.unwrap();
+    agent.continue_session(&session.session_id).await.unwrap();
 
     assert!(
-        executor.interaction_requests(&session.id).await.is_empty(),
+        executor
+            .interaction_requests(&session.session_id)
+            .await
+            .is_empty(),
         "Continue from Error must cancel old confirmation requests"
     );
     let active_events = agent
         .react_engine
         .event_store
-        .read_active_domain_events(&session.id)
+        .read_active_domain_events(&session.session_id)
         .unwrap();
     assert!(active_events.iter().any(|event| {
         event.event_type == haven_memory::INTERACTION_CLEARED_EVENT_TYPE
@@ -2172,17 +2315,17 @@ async fn continue_session_preserves_history_without_an_error_partial_marker() {
         .unwrap();
     agent
         .db
-        .update_session_status(&session.id, SessionStatus::Error)
+        .update_session_status(&session.session_id, SessionStatus::Error)
         .unwrap();
     executor
-        .update_session_status(&session.id, SessionStatus::Error)
+        .update_session_status(&session.session_id, SessionStatus::Error)
         .await
         .unwrap();
 
     let opening = agent
         .db
         .add_message(
-            &session.id,
+            &session.session_id,
             haven_common::types::CanonicalRole::User,
             "opening",
             Some(haven_common::types::TranscriptMessageKind::Text),
@@ -2192,7 +2335,7 @@ async fn continue_session_preserves_history_without_an_error_partial_marker() {
     let completed = agent
         .db
         .add_message(
-            &session.id,
+            &session.session_id,
             haven_common::types::CanonicalRole::Assistant,
             "completed before the interruption",
             Some(haven_common::types::TranscriptMessageKind::Text),
@@ -2202,7 +2345,7 @@ async fn continue_session_preserves_history_without_an_error_partial_marker() {
     let visible_partial = agent
         .db
         .add_message(
-            &session.id,
+            &session.session_id,
             haven_common::types::CanonicalRole::Assistant,
             "text flushed before the app closed",
             Some(haven_common::types::TranscriptMessageKind::Text),
@@ -2224,12 +2367,12 @@ async fn continue_session_preserves_history_without_an_error_partial_marker() {
         branch_points,
         interactions: Vec::new(),
     };
-    seed_event_projection(&agent, &session.id, &snapshot).await;
-    agent.continue_session(&session.id).await.unwrap();
+    seed_event_projection(&agent, &session.session_id, &snapshot).await;
+    agent.continue_session(&session.session_id).await.unwrap();
 
     let ids: Vec<String> = agent
         .db
-        .list_session_messages(&session.id)
+        .list_session_messages(&session.session_id)
         .unwrap()
         .into_iter()
         .map(|m| m.id)
@@ -2242,6 +2385,6 @@ async fn continue_session_non_error_fails() {
     let (agent, executor) = make_test_agent();
     let session = executor.create_session("not error").await.unwrap();
     // Session is Pending, not Error ??should refuse.
-    let result = agent.continue_session(&session.id).await;
+    let result = agent.continue_session(&session.session_id).await;
     assert!(result.is_err());
 }

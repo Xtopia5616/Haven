@@ -20,7 +20,7 @@ function deferred<T>() {
 function list(...ids: string[]): RuntimeSessionListResponse {
 	return {
 		sessions: ids.map((id) => ({
-			id,
+			session_id: id,
 			input: '',
 			summary: '',
 			title: null,
@@ -139,7 +139,7 @@ describe('createChatSessionStartup', () => {
 
 		expect(harness.reducer.snapshot().sessions).toEqual([
 			{
-				id: SESSION_ID,
+				sessionId: SESSION_ID,
 				status: 'paused',
 				input: '',
 				title: null,
@@ -245,7 +245,7 @@ describe('createChatSessionStartup', () => {
 		const harness = createHarness();
 		harness.reducer.dispatch({
 			type: 'sessions/loaded',
-			sessions: [{ id: SESSION_ID, status: 'completed' }],
+			sessions: [{ sessionId: SESSION_ID, status: 'completed' }],
 		});
 		harness.reducer.dispatch({ type: 'session/selected', sessionId: SESSION_ID });
 		harness.setPersistedIntent(true);
@@ -266,7 +266,7 @@ describe('createChatSessionStartup', () => {
 			reason: '已停止',
 		});
 		expect(harness.reducer.snapshot().sessions).toContainEqual(
-			expect.objectContaining({ id: OTHER_SESSION_ID, status: 'error' }),
+			expect.objectContaining({ sessionId: OTHER_SESSION_ID, status: 'error' }),
 		);
 		expect(harness.deferredTargetClears).toEqual([0]);
 	});

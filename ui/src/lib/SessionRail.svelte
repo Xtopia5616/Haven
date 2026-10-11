@@ -61,15 +61,15 @@
 	<div class="session-rail__scroll">
 		{#if switchableSessions.length > 0}
 			<ul class="session-rail__list">
-				{#each switchableSessions as session (session.id)}
+				{#each switchableSessions as session (session.sessionId)}
 					<li>
 						<button
 							type="button"
 							class="session-rail__item"
-							class:selected={activeSessionId === session.id}
-							aria-current={activeSessionId === session.id ? 'page' : undefined}
+						class:selected={activeSessionId === session.sessionId}
+						aria-current={activeSessionId === session.sessionId ? 'page' : undefined}
 							title={sessionTitle(session)}
-							onclick={() => onSelect?.(session.id)}
+						onclick={() => onSelect?.(session.sessionId)}
 						>
 							<span
 								class="session-rail__item-mark"

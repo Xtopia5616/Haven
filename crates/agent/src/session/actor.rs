@@ -950,7 +950,7 @@ pub(crate) fn spawn(
     let initial_run_cancellation = actor_lifetime.child_token();
     let (run_cancellation, run_cancellation_rx) = watch::channel(initial_run_cancellation.clone());
     let handle = SessionActorHandle {
-        id: info.id.clone(),
+        id: info.session_id.clone(),
         tx,
         actor_lifetime: actor_lifetime.clone(),
         run_cancellation: run_cancellation_rx,
@@ -1117,7 +1117,7 @@ pub(crate) fn spawn(
                                     );
                                     store
                                         .append_domain_event_batch_with_session_status(
-                                            &state.info.id,
+                                            &state.info.session_id,
                                             SessionStatus::Paused,
                                             SessionStatus::Pending,
                                             &[event],
@@ -1127,7 +1127,7 @@ pub(crate) fn spawn(
                                 } else {
                                     append_interaction_event(
                                         &store,
-                                        &state.info.id,
+                                        &state.info.session_id,
                                         INTERACTION_RESOLVED_EVENT_TYPE,
                                         payload,
                                     )
@@ -1169,7 +1169,7 @@ pub(crate) fn spawn(
                             let payload = serde_json::json!({ "ids": ids });
                             append_interaction_event(
                                 &store,
-                                &state.info.id,
+                                &state.info.session_id,
                                 INTERACTION_CLEARED_EVENT_TYPE,
                                 payload.to_string(),
                             )
@@ -1207,11 +1207,11 @@ pub(crate) fn spawn(
                     if active_run.is_some() || !state.running {
                         let _ = reply.send(Err(anyhow::anyhow!(
                             "session actor '{}' cannot start a run in its current state",
-                            state.info.id
+                            state.info.session_id
                         )));
                         continue;
                     }
-                    let session_id = state.info.id.clone();
+                    let session_id = state.info.session_id.clone();
                     active_run = Some(Box::pin(async move {
                         match AssertUnwindSafe(engine.run(session_id))
                             .catch_unwind()
@@ -1239,7 +1239,7 @@ pub(crate) fn spawn(
                     if !state.running || state.react_run.is_some() {
                         let _ = reply.send(Err(anyhow::anyhow!(
                             "session actor '{}' cannot start another ReAct loop",
-                            state.info.id
+                            state.info.session_id
                         )));
                         continue;
                     }
@@ -1394,14 +1394,14 @@ pub(crate) fn spawn(
                     let request = *request;
                     let result = match crate::interaction::validate_session_association(
                         request.session_id.as_deref(),
-                        &state.info.id,
+                        &state.info.session_id,
                     ) {
                         Err(error) => Err(error),
                         Ok(()) => match serde_json::to_string(&request) {
                             Ok(payload) => {
                                 append_interaction_event(
                                     &store,
-                                    &state.info.id,
+                                    &state.info.session_id,
                                     INTERACTION_REQUESTED_EVENT_TYPE,
                                     payload,
                                 )
@@ -1436,7 +1436,7 @@ pub(crate) fn spawn(
                             request.validate_new_pending_permission()?;
                             crate::interaction::validate_session_association(
                                 request.session_id.as_deref(),
-                                &state.info.id,
+                                &state.info.session_id,
                             )?;
                             anyhow::ensure!(
                                 ids.insert(request.id.clone()),
@@ -1462,7 +1462,7 @@ pub(crate) fn spawn(
                         );
                         store
                             .append_domain_event_batch_with_session_status(
-                                &state.info.id,
+                                &state.info.session_id,
                                 state.info.status,
                                 SessionStatus::Paused,
                                 &events,
@@ -1511,7 +1511,7 @@ pub(crate) fn spawn(
                             Ok(payload) => {
                                 append_interaction_event(
                                     &store,
-                                    &state.info.id,
+                                    &state.info.session_id,
                                     INTERACTION_CLEARED_EVENT_TYPE,
                                     payload,
                                 )
@@ -1754,7 +1754,7 @@ async fn transition(
     }
     if !old.can_transition_to(next) {
         tracing::warn!(
-            session_id = %state.info.id,
+            session_id = %state.info.session_id,
             from = old.as_str(),
             to = next.as_str(),
             "rejected illegal session transition"
@@ -1766,7 +1766,7 @@ async fn transition(
         );
     }
     if persist {
-        super::SessionSupervisor::persist_status(store, &state.info.id, next).await?;
+        super::SessionSupervisor::persist_status(store, &state.info.session_id, next).await?;
     }
     state.info.status = next;
     if next != SessionStatus::Paused {
@@ -1790,7 +1790,8 @@ async fn claim_session_run(
     if state.info.status != SessionStatus::Pending || state.running {
         return Ok(SessionRunClaim { accepted: false });
     }
-    super::SessionSupervisor::persist_status(store, &state.info.id, SessionStatus::Running).await?;
+    super::SessionSupervisor::persist_status(store, &state.info.session_id, SessionStatus::Running)
+        .await?;
     state.info.status = SessionStatus::Running;
     state.info.waiting_reason = None;
     state.info.updated_at = chrono::Utc::now().to_rfc3339();
@@ -2130,7 +2131,7 @@ mod queue_tests {
     fn empty_state() -> SessionState {
         SessionState {
             info: SessionInfo {
-                id: "ses-queue".into(),
+                session_id: "ses-queue".into(),
                 input: "queue".into(),
                 summary: "queue".into(),
                 title: None,
@@ -2170,7 +2171,7 @@ mod queue_tests {
         );
         let session = db.create_session("interaction owner").expect("session");
         let mut info = empty_state().info;
-        info.id = session.id.clone();
+        info.session_id = session.id.clone();
         let actor = spawn(SessionStore::new(db.clone()), info, Vec::new());
 
         actor

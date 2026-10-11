@@ -37,7 +37,7 @@ describe('chat session lifecycle handler', () => {
 		const clearAskAwaiting = vi.fn();
 		const reducer = new SessionReducer({
 			...initialSessionState,
-			sessions: [{ id: 'ses-paused', status: 'running' }],
+			sessions: [{ sessionId: 'ses-paused', status: 'running' }],
 			activeSessionId: 'ses-paused',
 			messages: {
 				['ses-paused']: [
@@ -133,7 +133,7 @@ describe('chat session lifecycle handler', () => {
 		const scheduleLoadSessions = vi.fn();
 		const reducer = new SessionReducer({
 			...initialSessionState,
-			sessions: [{ id: sessionId, status: 'running', title: '旧标题' }],
+			sessions: [{ sessionId, status: 'running', title: '旧标题' }],
 			activeSessionId: sessionId,
 			messages: {
 				[sessionId]: [
@@ -162,7 +162,7 @@ describe('chat session lifecycle handler', () => {
 		} as never);
 
 		expect(reducer.snapshot().sessions[0]).toMatchObject({
-			id: sessionId,
+			sessionId,
 			status: 'completed',
 			title: '研究',
 		});
@@ -187,7 +187,7 @@ describe('chat session lifecycle handler', () => {
 		const flushChunksNow = vi.fn();
 		const reducer = new SessionReducer({
 			...initialSessionState,
-			sessions: [{ id: sessionId, status: 'running', title: '旧标题' }],
+			sessions: [{ sessionId, status: 'running', title: '旧标题' }],
 			activeSessionId: sessionId,
 		});
 		const onLifecycle = handler({
@@ -294,7 +294,7 @@ describe('chat session lifecycle handler', () => {
 		const scheduleLoadSessions = vi.fn();
 		const reducer = new SessionReducer({
 			...initialSessionState,
-			sessions: [{ id: sessionId, status: 'paused', title: '删除目标' }],
+			sessions: [{ sessionId, status: 'paused', title: '删除目标' }],
 			activeSessionId: sessionId,
 			messages: { [sessionId]: [{ id: 'msg-1', role: 'user' as const, content: '问题' }] },
 		});

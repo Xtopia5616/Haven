@@ -16,7 +16,7 @@ fn parse_shortcut(binding: &str) -> Option<tauri_plugin_global_shortcut::Shortcu
 
 fn test_session_info() -> SessionInfo {
     SessionInfo {
-        id: "ses-1".into(),
+        session_id: "ses-1".into(),
         input: "my input".into(),
         summary: "my summary".into(),
         title: Some("My Title".into()),
@@ -443,7 +443,10 @@ fn payload_projects_session_created_without_leaking_internal_fields() {
             "title": "My Title",
         })
     );
-    assert!(payload.get("id").is_none(), "must not leak SessionInfo.id");
+    assert!(
+        payload.get("id").is_none(),
+        "must not leak SessionInfo.session_id"
+    );
     assert!(
         payload.get("input").is_none(),
         "must not leak SessionInfo.input"

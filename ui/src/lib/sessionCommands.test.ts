@@ -80,7 +80,7 @@ describe('session history command boundary', () => {
 		const response = {
 			sessions: [
 				{
-					id: 'ses-00000000000000000000000000000001',
+					session_id: 'ses-00000000000000000000000000000001',
 					steps: [],
 					waiting_reason: 'interaction',
 					future_field: true,
@@ -191,7 +191,7 @@ describe('session history command boundary', () => {
 	});
 
 	it('rejects command responses with non-canonical session identities', async () => {
-		invokeMock.mockResolvedValueOnce({ sessions: [{ id: 'ses-short', steps: [] }] } as never);
+		invokeMock.mockResolvedValueOnce({ sessions: [{ session_id: 'ses-short', steps: [] }] } as never);
 		await expect(listRuntimeSessions()).rejects.toThrow('Invalid runtime session identity');
 
 		invokeMock.mockResolvedValueOnce({

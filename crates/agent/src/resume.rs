@@ -435,7 +435,7 @@ impl AgentLayer {
                     );
                 }
                 self.run_session(
-                    &session.id,
+                    &session.session_id,
                     &description,
                     &context,
                     &session_prompt_history,
@@ -847,11 +847,11 @@ mod direct_session_run_guard_tests {
             .unwrap();
         let waiting_session = executor.create_session("waiting direct run").await.unwrap();
         let lease = executor
-            .begin_direct_session_run(&session.id)
+            .begin_direct_session_run(&session.session_id)
             .await
             .expect("direct run should acquire a lease");
         executor
-            .update_session_status(&session.id, SessionStatus::Completed)
+            .update_session_status(&session.session_id, SessionStatus::Completed)
             .await
             .unwrap();
         let actor = lease.actor.clone();
@@ -871,7 +871,7 @@ mod direct_session_run_guard_tests {
         assert!(finish.await.unwrap_err().is_cancelled());
 
         let waiting_executor = executor.clone();
-        let waiting_id = waiting_session.id.clone();
+        let waiting_id = waiting_session.session_id.clone();
         let mut waiting_admission =
             tokio::spawn(
                 async move { waiting_executor.begin_direct_session_run(&waiting_id).await },
@@ -891,7 +891,7 @@ mod direct_session_run_guard_tests {
             .unwrap()
             .expect("the waiting session should acquire the released permit");
         tokio::time::timeout(Duration::from_secs(1), async {
-            while executor.actor_for(&session.id).await.is_some() {
+            while executor.actor_for(&session.session_id).await.is_some() {
                 tokio::task::yield_now().await;
             }
         })
@@ -899,7 +899,7 @@ mod direct_session_run_guard_tests {
         .expect("Drop fallback must retry cleanup after finish is cancelled");
 
         executor
-            .update_session_status(&waiting_session.id, SessionStatus::Completed)
+            .update_session_status(&waiting_session.session_id, SessionStatus::Completed)
             .await
             .unwrap();
         let mut waiting_lease = waiting_lease;
@@ -920,12 +920,12 @@ mod direct_session_run_guard_tests {
             .await
             .unwrap();
         let mut lease = executor
-            .begin_direct_session_run(&session.id)
+            .begin_direct_session_run(&session.session_id)
             .await
             .expect("direct run should acquire a lease");
         let actor = lease.actor.clone();
         executor
-            .update_session_status(&session.id, SessionStatus::Paused)
+            .update_session_status(&session.session_id, SessionStatus::Paused)
             .await
             .unwrap();
 
@@ -954,7 +954,7 @@ mod direct_session_run_guard_tests {
         assert!(!actor.is_running().await);
 
         let waiting_executor = executor.clone();
-        let waiting_id = session.id.clone();
+        let waiting_id = session.session_id.clone();
         let mut waiting_admission =
             tokio::spawn(
                 async move { waiting_executor.begin_direct_session_run(&waiting_id).await },
@@ -988,7 +988,7 @@ mod direct_session_run_guard_tests {
 
         let released_lease = tokio::time::timeout(Duration::from_secs(2), async {
             loop {
-                if let Some(lease) = executor.begin_direct_session_run(&session.id).await {
+                if let Some(lease) = executor.begin_direct_session_run(&session.session_id).await {
                     break lease;
                 }
                 tokio::task::yield_now().await;
@@ -1018,7 +1018,7 @@ mod direct_session_run_guard_tests {
             .await
             .unwrap();
         let lease = executor
-            .begin_direct_session_run(&session.id)
+            .begin_direct_session_run(&session.session_id)
             .await
             .expect("direct run should acquire a lease");
         let actor = lease.actor.clone();
@@ -1043,7 +1043,7 @@ mod direct_session_run_guard_tests {
             ContextLimitsConfig::default(),
         ));
 
-        let session_id = session.id.clone();
+        let session_id = session.session_id.clone();
         let react_task = tokio::spawn(async move {
             let _guard = DirectSessionRunGuard { lease: Some(lease) };
             loop_actor
@@ -1068,7 +1068,7 @@ mod direct_session_run_guard_tests {
             .await
             .expect("actor-owned loop should start the blocking provider stream");
         let waiting_executor = executor.clone();
-        let waiting_id = waiting_session.id.clone();
+        let waiting_id = waiting_session.session_id.clone();
         let mut waiting_admission =
             tokio::spawn(
                 async move { waiting_executor.begin_direct_session_run(&waiting_id).await },
@@ -1097,13 +1097,15 @@ mod direct_session_run_guard_tests {
             "cancelled actor loop cleanup must clear the actor run bit"
         );
         assert_eq!(
-            executor.get_active_session_status(&session.id).await,
+            executor
+                .get_active_session_status(&session.session_id)
+                .await,
             Some(SessionStatus::Paused),
             "cancelled direct runs should return to Paused"
         );
 
         executor
-            .update_session_status(&waiting_session.id, SessionStatus::Completed)
+            .update_session_status(&waiting_session.session_id, SessionStatus::Completed)
             .await
             .unwrap();
         let mut waiting_lease = waiting_lease;

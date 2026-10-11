@@ -596,7 +596,7 @@
 	$effect(() => syncStore(activeSessionIdStore, (v) => (activeSessionId = v)));
 	$effect(() => syncStore(interactionsStore, (v) => (interactionDict = v)));
 	const activeSessionStatusLabel = $derived(
-		sessionStatusLabel(sessions.find((session) => session.id === activeSessionId)),
+		sessionStatusLabel(sessions.find((session) => session.sessionId === activeSessionId)),
 	);
 	// Session lifecycle events expose the derived pause reason directly. The
 	// ToolRun registry remains available for the task panel and counts, but it
@@ -605,7 +605,7 @@
 	// the selected session supplies the titlebar's "等待任务" state.
 	const awaitingBackgroundActive = $derived.by(() => {
 		if (!activeSessionId) return false;
-		const session = sessions.find((t) => t.id === activeSessionId);
+		const session = sessions.find((t) => t.sessionId === activeSessionId);
 		return sessionWaitingReason(session) === 'background_task';
 	});
 
@@ -657,7 +657,7 @@
 				: activeConfirmRequest.sessionId
 					? String(
 							sessions.find(
-								(session) => session.id === activeConfirmRequest.sessionId,
+								(session) => session.sessionId === activeConfirmRequest.sessionId,
 							)?.title || activeConfirmRequest.sessionId,
 						)
 					: '定时任务'
@@ -735,7 +735,7 @@
 
 	function sessionTitleFor(toolRun: Pick<ToolRunPayload, 'sessionId'>) {
 		if (!toolRun.sessionId) return '';
-		const t = sessions.find((x) => x.id === toolRun.sessionId);
+		const t = sessions.find((x) => x.sessionId === toolRun.sessionId);
 		const title = t?.title || t?.input;
 		return typeof title === 'string' ? title : toolRun.sessionId;
 	}

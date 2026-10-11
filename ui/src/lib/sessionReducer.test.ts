@@ -10,7 +10,10 @@ import {
 } from './sessionReducer.ts';
 import type { SessionStatus } from './contracts/generatedCommands.ts';
 
-const session = (id: string, status: SessionStatus = 'pending'): SessionSummary => ({ id, status });
+const session = (sessionId: string, status: SessionStatus = 'pending'): SessionSummary => ({
+	sessionId,
+	status,
+});
 const stateWith = (partial: Partial<SessionReducerState>): SessionReducerState => ({
 	...initialSessionState,
 	...partial,
