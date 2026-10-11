@@ -64,25 +64,21 @@ pub use session::{
 };
 pub use storage_error::sqlite_storage_failure_message;
 
-#[cfg(test)]
-pub(crate) use react::ParsedAgentResponse;
-pub use types::ProcessResult;
-#[cfg(test)]
-pub(crate) use types::{
-    BranchPoint, ReActRound, ToolCall, ToolRecord, TranscriptRecord, project_transcript,
-    seed_events_from_canonical,
-};
-// The store owns SQLite ordering/persistence in `haven-memory`; these
-// re-exports keep the Agent's durable session boundary discoverable to callers.
-pub use haven_memory::{SessionEvent, SessionEventInput, SessionStore};
-
 use haven_common::config::ContextLimitsConfig;
 use haven_common::types::MessageAttachment;
 use haven_llm::LlmRouter;
 #[cfg(test)]
 use haven_memory::Database;
 use haven_tools::ScheduleMode;
+#[cfg(test)]
+pub(crate) use react::ParsedAgentResponse;
 use tokio::sync::Mutex;
+pub use types::ProcessResult;
+#[cfg(test)]
+pub(crate) use types::{
+    BranchPoint, ReActRound, ToolCall, ToolRecord, TranscriptRecord, project_transcript,
+    seed_events_from_canonical,
+};
 
 use crate::title::TitleGenerator;
 

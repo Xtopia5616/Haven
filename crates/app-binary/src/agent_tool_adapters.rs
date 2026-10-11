@@ -532,10 +532,10 @@ impl SessionToolOverlayPort for ToolsFacadeAgentAdapter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use haven_agent::{SessionStore, SessionSupervisor};
+    use haven_agent::SessionSupervisor;
     use haven_common::config::ToolConfig;
     use haven_common::types::RiskLevel;
-    use haven_memory::Database;
+    use haven_memory::{Database, SessionStore};
     use haven_tools::{Tool, ToolHandle};
     use serde_json::json;
     use std::collections::HashMap;

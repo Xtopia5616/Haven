@@ -927,3 +927,4 @@
 - [0936：校验运行时实体 ID newtype 的构造入口](0936-validate-runtime-id-newtype-construction.md)
 - [0937：统一 CapabilityScope 的 Common 导入路径](0937-use-common-capability-scope-path.md)
 - [0938：移除 transcript types 的 Common 根 aliases](0938-remove-common-transcript-type-root-aliases.md)
+- [0939：移除 Agent crate 对 Memory 类型的重复导出](0939-remove-agent-reexports-of-memory-types.md)
