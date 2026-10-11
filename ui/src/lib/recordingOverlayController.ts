@@ -1,7 +1,8 @@
 import { get, writable, type Readable } from 'svelte/store';
 import type {
 	RecordingErrorPayload,
-	RecordingPayload,
+	RecordingStartedPayload,
+	RecordingStoppedPayload,
 	VadStatusPayload,
 } from './contracts/recording.ts';
 import type { TauriCommandName } from './contracts/generatedCommands.ts';
@@ -38,8 +39,8 @@ export interface RecordingOverlayController {
 	stopFromToolbar: () => Promise<void>;
 	toggleFromToolbar: () => Promise<void>;
 	cancel: () => Promise<void>;
-	onRecordingStarted: (event: RecordingPayload) => void;
-	onRecordingStopped: (event: RecordingPayload) => void;
+	onRecordingStarted: (event: RecordingStartedPayload) => void;
+	onRecordingStopped: (event: RecordingStoppedPayload) => void;
 	onVadStatus: (event: VadStatusPayload) => void;
 	onRecordingError: (event: RecordingErrorPayload) => void;
 	onTranscriptionStarted: (recordingId: string) => void;
@@ -174,7 +175,7 @@ export function createRecordingOverlayController(
 		}
 	}
 
-	function onRecordingStarted(event: RecordingPayload) {
+	function onRecordingStarted(event: RecordingStartedPayload) {
 		const recordingId = event.recordingId ?? null;
 		if (
 			recordingId &&
@@ -206,7 +207,7 @@ export function createRecordingOverlayController(
 		startTimer(true);
 	}
 
-	function onRecordingStopped(event: RecordingPayload) {
+	function onRecordingStopped(event: RecordingStoppedPayload) {
 		const recordingId = event.recordingId ?? null;
 		remember(stoppedRecordingIds, recordingId);
 		if (!recordingId || get(overlayStore).recordingId !== recordingId) return;

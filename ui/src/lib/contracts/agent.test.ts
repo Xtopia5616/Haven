@@ -303,6 +303,40 @@ describe('agent IPC contract', () => {
 			nextAction: 'inspect',
 			assets: ['asset-6b86b273ff34fce19d6b804eff5a3f57'],
 		});
+
+		for (const assets of [
+			['asset-short'],
+			['ses-6b86b273ff34fce19d6b804eff5a3f57'],
+			['asset-6b86b273ff34fce19d6b804eff5a3f5Z'],
+		]) {
+			expect(
+				mapAgentEventContract({
+					event: 'agent:observation',
+					id: 6,
+					payload: {
+						session_id: 'ses-6b86b273ff34fce19d6b804eff5a3f57',
+						observation: 'timeout',
+						tool_name: 'messaging',
+						step_number: 3,
+						run_id: 2,
+						silent: false,
+						tool_call_id: 'call-1',
+						tool_index: 0,
+						ask_options: [],
+						step_id: 'step-6b86b273ff34fce19d6b804eff5a3f57',
+						idempotency: 'unknown',
+						operation_scope: 'global',
+						renderer: 'messaging',
+						result: {
+							outcome: 'timed_out_unknown',
+							retry_safety: 'non_idempotent',
+							retryability: 'unknown',
+							assets,
+						},
+					},
+				}),
+			).toBeNull();
+		}
 	});
 
 	it('requires nullable tool_call_id and the observation result envelope', () => {

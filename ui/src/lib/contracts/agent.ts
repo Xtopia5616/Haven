@@ -275,6 +275,10 @@ function nullableNumberIsValid(value: unknown): boolean {
 	return value === null || isFiniteNumber(value);
 }
 
+function isCanonicalAssetIdArray(value: unknown): value is string[] {
+	return Array.isArray(value) && value.every((assetId) => isCanonicalEntityId(assetId, 'asset'));
+}
+
 function mapToolResult(value: unknown): AgentToolResultEnvelope | null {
 	if (!isRecord(value)) return null;
 	const outcome = readStringField(value, 'outcome');
@@ -288,7 +292,7 @@ function mapToolResult(value: unknown): AgentToolResultEnvelope | null {
 		(errorClass !== undefined &&
 			errorClass !== null &&
 			!isOneOf(errorClass, TOOL_ERROR_CLASS_VALUES)) ||
-		!isStringArray(value.assets) ||
+		!isCanonicalAssetIdArray(value.assets) ||
 		!['verification_hint', 'next_action'].every(
 			(field) => value[field] === undefined || nullableStringIsValid(value[field]),
 		)

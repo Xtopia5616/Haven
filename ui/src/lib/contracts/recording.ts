@@ -12,9 +12,14 @@ import { canonicalIdField } from './wireGuards.ts';
 
 export type RecordingEventName = (typeof RECORDING_EVENT_NAMES)[number];
 
-export interface RecordingPayload {
+export interface RecordingStartedPayload {
 	recordingId: string;
 	reason?: RecordingStopReasonDto;
+}
+
+export interface RecordingStoppedPayload {
+	recordingId: string;
+	reason: RecordingStopReasonDto;
 }
 
 export type VadStatusPayload = GeneratedVadStatusEvent;
@@ -40,8 +45,8 @@ export interface TranscriptionErrorPayload {
 }
 
 export interface RecordingEventPayloadMap {
-	'recording:started': RecordingPayload;
-	'recording:stopped': RecordingPayload;
+	'recording:started': RecordingStartedPayload;
+	'recording:stopped': RecordingStoppedPayload;
 	'recording:vad_status': VadStatusPayload;
 	'recording:error': RecordingErrorPayload;
 	'transcription:started': TranscriptionStartedPayload;
@@ -55,16 +60,27 @@ export function mapRecordingEvent<K extends RecordingEventName>(
 ): TauriEvent<RecordingEventPayloadMap[K]> | null {
 	const payload = event.payload;
 	switch (event.event) {
-		case 'recording:started':
-		case 'recording:stopped': {
+		case 'recording:started': {
 			const recordingId = canonicalIdField(payload, 'recording_id', 'rec');
 			if (recordingId === null) return null;
+			const reason = payload.reason;
+			if (reason !== undefined && reason !== null && !isRecordingStopReason(reason))
+				return null;
 			return {
 				...event,
 				payload: {
 					recordingId,
-					...(isRecordingStopReason(payload.reason) ? { reason: payload.reason } : {}),
+					...(isRecordingStopReason(reason) ? { reason } : {}),
 				},
+			} as unknown as TauriEvent<RecordingEventPayloadMap[K]>;
+		}
+		case 'recording:stopped': {
+			const recordingId = canonicalIdField(payload, 'recording_id', 'rec');
+			const reason = payload.reason;
+			if (recordingId === null || !isRecordingStopReason(reason)) return null;
+			return {
+				...event,
+				payload: { recordingId, reason },
 			} as unknown as TauriEvent<RecordingEventPayloadMap[K]>;
 		}
 		case 'recording:vad_status':
@@ -78,12 +94,12 @@ export function mapRecordingEvent<K extends RecordingEventName>(
 		case 'recording:error':
 		case 'transcription:error': {
 			const recordingId = canonicalIdField(payload, 'recording_id', 'rec');
-			if (recordingId === null) return null;
+			if (recordingId === null || !isString(payload.error)) return null;
 			return {
 				...event,
 				payload: {
 					recordingId,
-					error: isString(payload.error) ? payload.error : '',
+					error: payload.error,
 				},
 			} as unknown as TauriEvent<RecordingEventPayloadMap[K]>;
 		}
@@ -97,13 +113,21 @@ export function mapRecordingEvent<K extends RecordingEventName>(
 		}
 		case 'transcription:result': {
 			const recordingId = canonicalIdField(payload, 'recording_id', 'rec');
-			if (recordingId === null) return null;
+			const durationMs = payload.duration_ms;
+			if (
+				recordingId === null ||
+				!isString(payload.text) ||
+				!isNumber(durationMs) ||
+				!Number.isSafeInteger(durationMs) ||
+				durationMs < 0
+			)
+				return null;
 			return {
 				...event,
 				payload: {
 					recordingId,
-					text: isString(payload.text) ? payload.text : '',
-					durationMs: isNumber(payload.duration_ms) ? payload.duration_ms : 0,
+					text: payload.text,
+					durationMs,
 				},
 			} as unknown as TauriEvent<RecordingEventPayloadMap[K]>;
 		}

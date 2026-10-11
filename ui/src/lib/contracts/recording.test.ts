@@ -167,7 +167,7 @@ describe('recording IPC contract', () => {
 		expect(event?.payload).toEqual({ recordingId: 'rec-4fc82b26aecb47d2868c4efbe3581732' });
 	});
 
-	it('omits a stop reason outside the generated closed vocabulary', () => {
+	it('rejects a stop reason outside the generated closed vocabulary', () => {
 		const event = mapRecordingEvent({
 			event: 'recording:stopped',
 			id: 10,
@@ -177,7 +177,67 @@ describe('recording IPC contract', () => {
 				reason: 'future_reason',
 			},
 		});
-		expect(event?.payload).toEqual({ recordingId: 'rec-c49fea7425fa7f8699897a97c159c669' });
+		expect(event).toBeNull();
+	});
+
+	it.each([undefined, null, 'future_reason'])(
+		'rejects a stopped event without a valid reason: %s',
+		(reason) => {
+			expect(
+				mapRecordingEvent({
+					event: 'recording:stopped',
+					id: 10,
+					payload: {
+						recording_id: 'rec-c49fea7425fa7f8699897a97c159c669',
+						...(reason !== undefined ? { reason } : {}),
+					},
+				}),
+			).toBeNull();
+		},
+	);
+
+	it('drops recording/transcription errors without a string error field', () => {
+		for (const eventName of ['recording:error', 'transcription:error'] as const) {
+			expect(
+				mapRecordingEvent({
+					event: eventName,
+					id: 8,
+					payload: { recording_id: 'rec-c49fea7425fa7f8699897a97c159c669' },
+				}),
+			).toBeNull();
+			expect(
+				mapRecordingEvent({
+					event: eventName,
+					id: 8,
+					payload: {
+						recording_id: 'rec-c49fea7425fa7f8699897a97c159c669',
+						error: null,
+					},
+				}),
+			).toBeNull();
+		}
+	});
+
+	it('requires string transcript text and a nonnegative integer duration', () => {
+		const recordingId = 'rec-c49fea7425fa7f8699897a97c159c669';
+		for (const payload of [
+			{ recording_id: recordingId, duration_ms: 0 },
+			{ recording_id: recordingId, text: null, duration_ms: 0 },
+			{ recording_id: recordingId, text: 'hello' },
+			{ recording_id: recordingId, text: 'hello', duration_ms: -1 },
+			{ recording_id: recordingId, text: 'hello', duration_ms: 0.5 },
+			{ recording_id: recordingId, text: 'hello', duration_ms: Number.MAX_SAFE_INTEGER + 1 },
+		]) {
+			expect(mapRecordingEvent({ event: 'transcription:result', id: 9, payload })).toBeNull();
+		}
+
+		expect(
+			mapRecordingEvent({
+				event: 'transcription:result',
+				id: 9,
+				payload: { recording_id: recordingId, text: '', duration_ms: 0 },
+			})?.payload,
+		).toEqual({ recordingId, text: '', durationMs: 0 });
 	});
 
 	it('does not project unconsumed transcription confidence', () => {

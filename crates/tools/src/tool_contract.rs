@@ -807,6 +807,7 @@ fn collect_asset_ids(value: &Value, assets: &mut Vec<String>) {
     match value {
         Value::Object(object) => {
             if let Some(asset_id) = object.get("asset_id").and_then(Value::as_str)
+                && is_canonical_id(asset_id, "asset")
                 && !assets.iter().any(|existing| existing == asset_id)
             {
                 assets.push(asset_id.into());
@@ -1796,6 +1797,12 @@ pub(crate) mod tests {
             "verification_hint": "Check the generated file.",
             "next_action": "Use media.inspect with the asset_id.",
             "media": {"asset_id": "asset-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},
+            "assets": [
+                {"asset_id": "asset-cccccccccccccccccccccccccccccccc"},
+                {"asset_id": "asset-short"},
+                {"asset_id": "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},
+                {"asset_id": "asset-BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB"}
+            ],
         }));
         let envelope = result.envelope(OperationIdempotency::Idempotent);
         assert_eq!(envelope.outcome, ToolExecutionOutcome::Succeeded);
@@ -1808,7 +1815,14 @@ pub(crate) mod tests {
             envelope.next_action.as_deref(),
             Some("Use media.inspect with the asset_id.")
         );
-        assert_eq!(envelope.assets.len(), 2);
+        assert_eq!(
+            envelope.assets,
+            [
+                "asset-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "asset-cccccccccccccccccccccccccccccccc",
+                "asset-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            ]
+        );
     }
 
     #[test]

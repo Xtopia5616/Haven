@@ -3,6 +3,7 @@ import { isBoolean, isFiniteNumber, isString, isStringArray } from './contracts/
 import { isMediaRepresentationKind } from './contracts/media.ts';
 import { isSessionStatus } from './contracts/session.ts';
 import { isToolRunStatus } from './contracts/toolRun.ts';
+import { isCanonicalEntityId } from './contracts/wireGuards.ts';
 import {
 	isToolAgentPresenceStatus,
 	isToolAcPowerState,
@@ -33,6 +34,7 @@ type JsonRecord = Record<string, unknown>;
 type FieldGuard = (value: unknown) => boolean;
 
 const isStringOrNumber = (value: unknown): boolean => isString(value) || isFiniteNumber(value);
+const isCanonicalAssetId = (value: unknown): boolean => isCanonicalEntityId(value, 'asset');
 const isMediaRepresentationArray = (value: unknown): boolean =>
 	Array.isArray(value) && value.every(isMediaRepresentationKind);
 
@@ -201,7 +203,8 @@ function validWindowData(data: JsonRecord): boolean {
 			operation: isToolWindowOperation,
 			format: isToolWindowFormat,
 			condition: isToolWindowWaitCondition,
-			...stringFields('note', 'title', 'focused', 'closed', 'reason', 'text', 'asset_id'),
+			...stringFields('note', 'title', 'focused', 'closed', 'reason', 'text'),
+			asset_id: isCanonicalAssetId,
 			...numberFields('count', 'pid', 'width', 'height'),
 			...booleanFields(
 				'available',
@@ -213,7 +216,7 @@ function validWindowData(data: JsonRecord): boolean {
 			),
 		}) &&
 		hasValidObjectFields(data, {
-			media: { asset_id: isString },
+			media: { asset_id: isCanonicalAssetId },
 			foreground_window: {
 				window_id: isString,
 				hwnd: isStringOrNumber,
@@ -241,7 +244,8 @@ function validMediaData(data: JsonRecord): boolean {
 	return (
 		hasValidOptionalFields(data, {
 			operation: isToolMediaOperation,
-			...stringFields('asset_id', 'reason', 'error', 'transcript'),
+			...stringFields('reason', 'error', 'transcript'),
+			asset_id: isCanonicalAssetId,
 			...numberFields('duration_ms', 'characters', 'volume'),
 			...booleanFields('available', 'played', 'muted', 'capture_error'),
 			representation: isMediaRepresentationKind,
@@ -250,7 +254,7 @@ function validMediaData(data: JsonRecord): boolean {
 		}) &&
 		hasValidObjectFields(data, {
 			media: {
-				asset_id: isString,
+				asset_id: isCanonicalAssetId,
 				filename: isString,
 				representation: isMediaRepresentationKind,
 				recommended_next: isString,

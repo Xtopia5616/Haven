@@ -199,11 +199,11 @@ Rust DTO 定义在 `crates/app-binary/src/events.rs`，前端唯一转换边界�
 | 事件 | Rust DTO（wire） | 生产者 | 消费者 | 顺序、幂等与敏感字段 |
 |---|---|---|---|---|
 | `recording:started` | `RecordingEvent { is_recording, recording_id }` | 按钮、热键 | 根布局录音浮层 | 每段录音最多一次；先于 stopped/transcription。仅携带 `rec-*`。 |
-| `recording:stopped` | `RecordingEvent { is_recording, recording_id, reason?, duration_ms? }` | 输入管线 | 根布局录音浮层 | 在采集停止后；可由取消结束，不保证随后有转写。 |
+| `recording:stopped` | `RecordingEvent { is_recording, recording_id, reason?, duration_ms? }` | 输入管线 | 根布局录音浮层 | Producer 必须带闭集 `reason`；UI mapper 缺失或未知时丢弃事件。在采集停止后；可由取消结束，不保证随后有转写。 |
 | `recording:vad_status` | `VadStatusEvent { signal, state }` | 输入管线 | 根布局录音浮层 | 高频、可丢失；消费者只保留最后状态。 |
 | `recording:error` | `RecordingErrorEvent { recording_id, error }` | 录音命令/热键 | 根布局 | 终态；错误为已净化用户文案，不含设备路径或 provider 原始响应。 |
 | `transcription:started` | `TranscriptionStartedEvent { recording_id }` | 输入管线 | 根布局 | 在网络转写前，和对应 `rec-*` 关联。 |
-| `transcription:result` | `TranscriptionResultEvent { recording_id, text, duration_ms, confidence? }` | 输入管线 | 根布局→会话输入 | 每段录音一个终态结果；空 `text` 表示静音/过短录音。文本仅交给会话输入，不写日志或其它状态。 |
+| `transcription:result` | `TranscriptionResultEvent { recording_id, text, duration_ms, confidence? }` | 输入管线 | 根布局→会话输入 | `text` 与非负整数 `duration_ms` 必填，mapper 遇到错误类型丢弃事件；空 `text` / 零时长表示静音或过短录音。文本仅交给会话输入，不写日志或其它状态。 |
 | `transcription:error` | `TranscriptionErrorEvent { recording_id, error }` | 输入管线 | 根布局 | 终态；和 result 互斥，错误不得含凭据或原始响应。 |
 
 ## 应用壳层与 Agent 事件（v1）

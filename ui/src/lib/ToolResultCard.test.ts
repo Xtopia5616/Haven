@@ -144,7 +144,11 @@ describe('canRenderToolResult', () => {
 		expect(
 			canRenderToolResult(
 				'media',
-				JSON.stringify({ operation: 'inspect', asset_id: 'asset-1', media: {} }),
+				JSON.stringify({
+					operation: 'inspect',
+					asset_id: 'asset-0123456789abcdef0123456789abcdef',
+					media: {},
+				}),
 			),
 		).toBe(true);
 		expect(
@@ -200,6 +204,14 @@ describe('operation view UI contract', () => {
 			{ renderer: 'files', data: { symbols: [{ kind: 'macro' }] } },
 			{ renderer: 'files', data: { symbols: [{ name: 42 }] } },
 			{ renderer: 'files', data: { media: [] } },
+			{
+				renderer: 'media',
+				data: { operation: 'inspect', asset_id: 'asset-1', media: {} },
+			},
+			{
+				renderer: 'media',
+				data: { operation: 'inspect', media: { asset_id: 'asset-1' } },
+			},
 			{ renderer: 'media', data: { media: { available_representations: [null] } } },
 			{ renderer: 'media', data: { media: { filename: 42 } } },
 			{ renderer: 'media', data: { representation: 'unknown_representation' } },
@@ -223,6 +235,11 @@ describe('operation view UI contract', () => {
 			{ renderer: 'window', data: { elements: [null] } },
 			{ renderer: 'window', data: { windows: [{ title: 42 }] } },
 			{ renderer: 'window', data: { operation: 'restart' } },
+			{ renderer: 'window', data: { operation: 'screenshot', asset_id: 'asset-1' } },
+			{
+				renderer: 'window',
+				data: { operation: 'ocr', media: { asset_id: 'asset-1' } },
+			},
 			{ renderer: 'window', data: { operation: 'wait', condition: 'visible' } },
 			{ renderer: 'window', data: { operation: 'screenshot', format: 'jpeg' } },
 			{ renderer: 'window', data: { elements: [{ control_type: 'FutureControl' }] } },
@@ -569,7 +586,13 @@ describe('operation view UI contract', () => {
 			getToolResultRenderer(
 				'custom',
 				'files',
-				{ operation: 'read', media: { asset_id: 'asset-1', content: 'plain text' } },
+				{
+					operation: 'read',
+					media: {
+						asset_id: 'asset-0123456789abcdef0123456789abcdef',
+						content: 'plain text',
+					},
+				},
 				'files',
 			),
 		).toBe(ToolMediaResult);
