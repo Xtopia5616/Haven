@@ -188,6 +188,8 @@ MemoryTool fact read 调用图确认 search/list 原由 Tools 获取宽结果后
 
 Tools capability 调用图确认 AppRuntime 已取得 `ToolServices` 后又把 `ToolsFacade` 传给三个 adapter factory 重新读取整包；Agent prompt adapter 还在每次 catalog 查询时读取整包。现 adapter 构造器只接收自身所需的窄 port，App background bootstrap 复用 `AppServices.skills`，`share_services()` 保留为 composition handoff（ADR 0922）。
 
+Messaging transport 复核确认 `InboxBus` 已是 `haven-messaging` 的私有实现，生产消费者只使用 `MessagingService`；`impl MessageTransport for InboxBus` 中同名方法转发是私有 transport adapter，不是跨层绕过 facade。该 trait 同时承载隔离测试 transport 注入，因此当前保留；继续按此区分审查其他模块的真实 consumer 直连、组合根 wiring 与必要 adapter 转发。App composition 另有明确的模块归属问题：录音生命周期锁、`rec-*` identity owner 和并发测试从 `app_state.rs` 移到专属 `recording_lifecycle.rs`，AppState 仍负责唯一实例的装配与共享（ADR 0923）。
+
 每个候选都要说明真实消费者、权威状态 owner、作用域与生命周期、失败/恢复语义，以及是否改变 IPC、持久化或安全契约。结论必须是合并、改名、拆分、保留并解释，或有证据的暂缓。全仓通过条件是主要生产概念有唯一规范词和可定位 owner；重复职责已合并，或相邻 owner 的区别能从代码和文档解释；当前源码、契约与路线图不再使用退役名称描述现状。历史决定仍可在 ADR 中按原名检索。
 
 ## 6. 更新规则

@@ -1,6 +1,7 @@
 use crate::config_runtime::apply_log_level_to_handles;
 use crate::desktop::DesktopShell;
 use crate::events::AppBootstrapEvent;
+use crate::recording_lifecycle::RecordingLifecycleOwner;
 use crate::router_media_builder::build_router_media;
 use crate::runtime::{ApplicationRuntime, RuntimeServices};
 use haven_agent::SessionSupervisor;
@@ -49,65 +50,6 @@ impl haven_tools::LogLevelPort for ReloadLogLevelPort {
 pub enum BootstrapStatus {
     Loading,
     Ready,
-}
-
-/// Serializes the app's user-facing recording controls and owns their current
-/// `rec-*` correlation identity. The input pipeline also serves timed tool
-/// captures; those captures have no app recording identity and must not
-/// be claimed or stopped by the app voice controls.
-#[derive(Default)]
-pub(crate) struct RecordingLifecycleOwner {
-    transition: tokio::sync::Mutex<()>,
-    current_recording_id: std::sync::Mutex<Option<haven_common::types::RecordingId>>,
-}
-
-pub(crate) struct RecordingLifecycleGuard<'a> {
-    _guard: tokio::sync::MutexGuard<'a, ()>,
-}
-
-impl RecordingLifecycleOwner {
-    pub(crate) async fn lock(&self) -> RecordingLifecycleGuard<'_> {
-        RecordingLifecycleGuard {
-            _guard: self.transition.lock().await,
-        }
-    }
-
-    /// Get the ID assigned to the currently active app-owned capture, minting
-    /// one only after a start path has established that capture.
-    pub(crate) fn begin(
-        &self,
-        _guard: &RecordingLifecycleGuard<'_>,
-    ) -> haven_common::types::RecordingId {
-        let mut current = self
-            .current_recording_id
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        current
-            .get_or_insert_with(|| haven_common::types::new_id("rec").into())
-            .clone()
-    }
-
-    pub(crate) fn current(
-        &self,
-        _guard: &RecordingLifecycleGuard<'_>,
-    ) -> Option<haven_common::types::RecordingId> {
-        self.current_recording_id
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .clone()
-    }
-
-    /// Detach the ID while the transition guard is held, before another
-    /// start can observe the pipeline's already-Pending state.
-    pub(crate) fn finish(
-        &self,
-        _guard: &RecordingLifecycleGuard<'_>,
-    ) -> Option<haven_common::types::RecordingId> {
-        self.current_recording_id
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .take()
-    }
 }
 
 /// A renderer-triggered Skill invocation waiting in the same confirmation queue
@@ -800,53 +742,6 @@ mod tests {
     use super::*;
     use haven_common::config::McpServerConfig;
     use tempfile::tempdir;
-
-    #[tokio::test]
-    async fn recording_lifecycle_handoff_serializes_the_next_start() {
-        let owner = Arc::new(RecordingLifecycleOwner::default());
-        let lifecycle = owner.lock().await;
-        let first_id = owner.begin(&lifecycle);
-
-        let next_owner = owner.clone();
-        let (attempting_tx, attempting_rx) = tokio::sync::oneshot::channel();
-        let next_start = tokio::spawn(async move {
-            attempting_tx.send(()).unwrap();
-            let lifecycle = next_owner.lock().await;
-            next_owner.begin(&lifecycle)
-        });
-
-        attempting_rx.await.unwrap();
-        tokio::task::yield_now().await;
-        assert_eq!(owner.finish(&lifecycle), Some(first_id.clone()));
-        drop(lifecycle);
-
-        let next_id = tokio::time::timeout(std::time::Duration::from_secs(1), next_start)
-            .await
-            .expect("the next start should acquire the lifecycle guard")
-            .unwrap();
-        assert_ne!(next_id, first_id);
-        assert!(next_id.as_str().starts_with("rec-"));
-    }
-
-    #[tokio::test]
-    async fn concurrent_recording_stops_can_detach_an_identity_only_once() {
-        let owner = Arc::new(RecordingLifecycleOwner::default());
-        let lifecycle = owner.lock().await;
-        let recording_id = owner.begin(&lifecycle);
-        drop(lifecycle);
-
-        let stop = |owner: Arc<RecordingLifecycleOwner>| async move {
-            let lifecycle = owner.lock().await;
-            owner.finish(&lifecycle)
-        };
-        let (first, second) = tokio::join!(stop(owner.clone()), stop(owner));
-
-        assert_eq!(
-            usize::from(first.is_some()) + usize::from(second.is_some()),
-            1
-        );
-        assert_eq!(first.or(second), Some(recording_id));
-    }
 
     #[tokio::test]
     async fn daily_cleanup_interval_delays_first_tick_by_one_period() {

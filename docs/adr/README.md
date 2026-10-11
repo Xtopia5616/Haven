@@ -911,3 +911,4 @@
 - [0920：在 Tools 内投影与分页 ToolRun history](0920-project-tool-run-history-inside-tools.md)
 - [0921：由 Memory 限制模型工具的事实查询结果](0921-bound-model-facing-memory-fact-queries.md)
 - [0922：在 Tools composition adapter 中固定窄 capability](0922-inject-narrow-tools-capabilities-into-adapters.md)
+- [0923：将 App 录音生命周期协调器归入独立模块](0923-own-app-recording-lifecycle-in-dedicated-module.md)

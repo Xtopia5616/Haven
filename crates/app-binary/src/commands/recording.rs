@@ -1,4 +1,4 @@
-use crate::app_state::{AppState, RecordingLifecycleGuard};
+use crate::app_state::AppState;
 use crate::commands::{emit_event_logged, log_err, log_storage_err, validate_command_id};
 use crate::desktop::{DesktopShell, RecordingStopContext};
 use crate::events::{
@@ -7,6 +7,7 @@ use crate::events::{
     TRANSCRIPTION_STARTED_EVENT, TranscriptionErrorEvent, TranscriptionResultEvent,
     TranscriptionStartedEvent,
 };
+use crate::recording_lifecycle::RecordingLifecycleGuard;
 use haven_common::error::sanitize_error_text;
 use haven_input::{RecordingReason, RecordingResult};
 use haven_tools::MediaTranscriptionStatus;
@@ -726,8 +727,8 @@ pub async fn process_transcript(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app_state::RecordingLifecycleOwner;
     use crate::desktop::{ShellHandler, TrayStatus};
+    use crate::recording_lifecycle::RecordingLifecycleOwner;
     use std::sync::Mutex as StdMutex;
     use std::sync::atomic::Ordering;
     use tokio::sync::oneshot;

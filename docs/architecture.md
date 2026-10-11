@@ -1,6 +1,6 @@
 # Haven 架构与 crate 职责
 
-> 版本: v1.24 | 日期: 2026-10-11
+> 版本: v1.25 | 日期: 2026-10-11
 > 范围: `crates/` (Rust 后端, Tauri 2)
 > 原则: **依赖单向、叶子优先**。上层 crate 只依赖下层，绝不反向依赖；共享数据与类型放叶子（`haven-common`），
 > 组件职责按「谁拥有实现、谁只消费接口」划分。
@@ -665,10 +665,12 @@ limit、创建时间倒序和 errors 的 status 过滤顺序保持原样。组�
   live consumer 与周期 maintenance task；prepare/replay 完成且 live task 注册后才获得 typed
   `MemoryReady` 并开放 dispatcher。周期策略仍归 MemoryRuntime，手动 maintenance 命令仍调用
   Agent 的单次 worker pass，shutdown 先停 worker、后按既有顺序 join app tasks（ADR 0367）。
-- `app_state.rs`：装配 `AppState`（runtime / `RecordingLifecycleOwner` / bootstrap 状态 / UI
+- `app_state.rs`：装配 `AppState`（runtime / 录音生命周期协调器 / bootstrap 状态 / UI
   confirmation）；命令通过 runtime 稳定句柄消费 db / router / tools / executor /
   agent / pipeline / shell / `config_service` / media clients / stt_client；在组合根创建
   supervisor 专属 `SessionStore` 与唯一 `MemoryService` 并注入 AgentLayer（ADR 0363、0364）。
+  录音生命周期实现位于 `recording_lifecycle.rs`，只协调 App voice controls 的 `rec-*` identity
+  与 start/stop/cancel 互斥；不接管共享 InputPipeline 上的 timed `media.record`。
   `spawn_background_init` 编排音频预热、MCP/Skills catalog 初始化、延迟 session recovery 与
   readiness；任务由 `ApplicationRuntime` 注册并负责取消/join。
   启动、保留期、上传引用和每日媒体清理 task 只捕获 `SessionStore` typed port，不把 raw
@@ -676,7 +678,7 @@ limit、创建时间倒序和 errors 的 status 过滤顺序保持原样。组�
 - `config_runtime.rs`：根据 `ConfigChanged` 生成 runtime apply plan，区分 live consumer 和
   `restart_required` consumer；运行时编排留在组合根，不下沉到 `haven-common`。
 - `commands/recording.rs`：拥有录音/转写 Tauri 命令与事件状态机；App 录音 command 和
-  Shell handler 共用 `RecordingLifecycleOwner` 串行 start/stop/cancel，stop/cancel 在下一次
+  Shell handler 共用 `RecordingLifecycleOwner`（实现位于 `recording_lifecycle.rs`）串行 start/stop/cancel，stop/cancel 在下一次
   start 前分离 `rec-*` 并把 `RecordingId` 显式交给转写 finalizer。timed `media.record` 不拥有 UI
   recording ID；voice 命令不会接管没有 app-owned ID 的工具采集。transcript 附件落盘委托给
   `commands/managed_media.rs`，不在录音命令内维护文件清理规则。
