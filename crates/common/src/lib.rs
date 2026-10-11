@@ -53,7 +53,3 @@ pub use types::{
     CanonicalMessage, CanonicalRole, CanonicalToolCall, ContentPart, FollowUp, InjectSource,
     MessageAttachment, PEER_KICKOFF_PREFIX, TranscriptMessageKind,
 };
-pub use usage::{
-    CacheAccounting, CacheDiagnosticOutcome, CacheDiagnostics, CacheUsageSource, LlmCallKind,
-    PromptCacheStrategy,
-};
