@@ -197,6 +197,8 @@ Common shared contract 路径复核发现 Tools 根额外 re-export 了 Common �
 
 进一步核对 Common transcript API 时发现九个类型/常量同时由 `types` 模块和 Common 根导出，而所有仓内消费者均使用定义模块。现删除根 aliases，统一通过 `haven_common::types` 引用；transcript 语义与 wire contract 未改变（ADR 0938）。
 
+`CapabilityScope` 构造审查仍未关闭：持久化 permission rule 由 `try_new` 严格验证；运行时 operation policy 则由 `permission_key(tool_name, params)` 按工具名及动态 `scope/operation` 生成层级 identity，目前再通过 `From`/`new` 包装。两类输入的失败语义不同；替换成统一严格构造前，需先确定模型提供非法动态字段时授权边界如何 fail-closed，不能用 panic 或可能继承宽泛 parent grant 的 fallback 代替。该项留在当前 §5.7 边界审查中，暂不改运行行为。
+
 进一步的 composition 调用图发现 AppState、Agent adapter factory 与 ApplicationRuntime 曾分别调用 `share_services()`。现由 AppState 在唯一 App composition root 取得一次 `ToolServices`，将 Agent 所需项作为显式构造参数传给 adapter，并把同一 bundle 交给 ApplicationRuntime 适配 App services；运行时和 adapter factory 不再另行读取 facade bundle（ADR 0924）。
 
 LLM 导入路径审查发现 router、client、types、media、registry、STT 与 adapter 查询同时经 crate root re-export 和 `pub mod` 实现路径可达，Agent/Tools/App 生产代码与测试混用两套拼法。现将稳定 consumer DTO/操作集中从 LLM crate root 导出，隐藏实现模块并统一仓内调用路径；provider adapter 细节只由 LLM 内部寻址（ADR 0925）。
