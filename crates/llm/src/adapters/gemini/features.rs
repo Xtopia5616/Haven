@@ -1,5 +1,5 @@
 use super::*;
-use haven_common::{CapabilityProfile, CapabilitySupport};
+use haven_common::media::{CapabilityProfile, CapabilitySupport};
 use sha2::{Digest, Sha256};
 
 impl GeminiAdapter {

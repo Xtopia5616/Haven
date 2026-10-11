@@ -20,9 +20,9 @@ use crate::adapters::{
     xai_search_mode,
 };
 use crate::client::LlmClient;
-use haven_common::CapabilityProfile;
+use haven_common::media::CapabilityProfile;
 #[cfg(test)]
-use haven_common::CapabilitySupport;
+use haven_common::media::CapabilitySupport;
 use haven_common::prompts::split_system_prompt_cache_sections;
 #[cfg(test)]
 use haven_common::prompts::{MEMORY_FENCE_START, SESSION_CONTEXT_FENCE_START};

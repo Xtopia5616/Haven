@@ -1,5 +1,5 @@
 use super::*;
-use haven_common::{CapabilityProfile, CapabilitySupport};
+use haven_common::media::{CapabilityProfile, CapabilitySupport};
 
 impl OpenAiAdapter {
     pub(super) fn wire_capability_profile() -> CapabilityProfile {

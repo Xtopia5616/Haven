@@ -16,9 +16,9 @@ use crate::adapters::{
     stream_header_timeout,
 };
 use crate::client::LlmClient;
-use haven_common::CapabilityProfile;
+use haven_common::media::CapabilityProfile;
 #[cfg(test)]
-use haven_common::CapabilitySupport;
+use haven_common::media::CapabilitySupport;
 use haven_common::prompts::split_system_prompt_cache_sections;
 use haven_common::types::{CanonicalMessage, CanonicalRole, CanonicalToolCall, ContentPart};
 use haven_common::usage::{CacheAccounting, CacheDiagnostics};

@@ -22,20 +22,6 @@ pub mod workspace;
 pub use types::McpTransportType;
 pub use workspace::discover_workspace_root;
 
-pub use media::{
-    CapabilityProfile, CapabilitySupport, MediaAsset, MediaAssetLifecycle, MediaAssetSource,
-    MediaDerivation, MediaInput, MediaInputStrategy, MediaModality, MediaPlan, MediaPlanNotice,
-    MediaPlanNoticeCode, MediaProjection, MediaProjectionMode, MediaProvenance, MediaReference,
-    MediaRepresentation, MediaRepresentationAvailability, MediaRepresentationCost,
-    MediaRepresentationKind, MediaRepresentationPayload, MediaResult, build_media_plan,
-    message_attachment_to_media_input,
-};
-pub use media_detection::{
-    DetectedMediaKind, MediaProbe, detect_media_kind, detect_mime_type,
-    detect_mime_type_with_filename, extension_for_mime_type, media_kind_from_mime_type,
-    mime_type_from_extension, probe_media, probe_media_with_hint,
-};
-
 pub use lifecycle::{SessionStatus, SessionStepStatus, SessionWaitingReason, ToolRunStatus};
 pub use tool_run_completion::ToolRunCompletionPayload;
 pub use tool_run_lease::ToolRunLease;

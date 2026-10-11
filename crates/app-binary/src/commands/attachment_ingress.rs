@@ -2,6 +2,7 @@
 
 use base64::Engine as _;
 use haven_common::config::ContextLimitsConfig;
+use haven_common::media_detection::{DetectedMediaKind, probe_media_with_hint};
 use haven_common::types::MessageAttachment;
 
 /// Validate the browser payload at the host boundary. Content signatures and
@@ -26,12 +27,9 @@ pub(super) fn validate_attachments(
             .decode(&attachment.data)
             .map_err(|_| "附件数据不是有效的 base64".to_string())?;
         let filename = attachment.filename.as_deref().unwrap_or_default();
-        let detected = haven_common::probe_media_with_hint(
-            &bytes,
-            filename,
-            Some(attachment.media_type.as_str()),
-        );
-        if detected.media_kind != haven_common::DetectedMediaKind::Unknown {
+        let detected =
+            probe_media_with_hint(&bytes, filename, Some(attachment.media_type.as_str()));
+        if detected.media_kind != DetectedMediaKind::Unknown {
             attachment.media_type = detected.mime_type;
         }
     }
