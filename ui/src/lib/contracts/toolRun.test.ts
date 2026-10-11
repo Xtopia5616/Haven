@@ -140,6 +140,18 @@ describe('tool run IPC contract', () => {
 		).toBeNull();
 	});
 
+	it('rejects invalid Tauri envelope ids consistently', () => {
+		for (const id of [Number.NaN, -1, 1.5, Number.MAX_SAFE_INTEGER + 1]) {
+			expect(
+				mapToolRunEvent({
+					event: 'tool_run:finished',
+					id,
+					payload: { tool_run_id: 'toolrun-7902699be42c8a8e46fbbb4501726517' },
+				}),
+			).toBeNull();
+		}
+	});
+
 	it('rejects non-canonical ToolRun, session, and source-step identities', () => {
 		const validToolRunId = 'toolrun-0123456789abcdef0123456789abcdef';
 		for (const tool_run_id of [

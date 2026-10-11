@@ -1,6 +1,6 @@
 /** App-shell IPC event contract at the frontend boundary. */
 
-import type { TauriEvent } from './tauriEvent.ts';
+import { isValidTauriEventId, type TauriEvent } from './tauriEvent.ts';
 import { isMcpClientStatus } from './mcpClientStatus.ts';
 import { isRecord } from './objectGuards.ts';
 import { isBoolean, isFiniteNumber, isOneOf, isString, isStringArray } from './valueGuards.ts';
@@ -196,7 +196,7 @@ export function mapAppEvent(event: unknown): TauriEvent<AppEventPayloadMap[AppEv
 		!isRecord(event) ||
 		!isString(event.event) ||
 		!APP_EVENT_NAME_SET.has(event.event) ||
-		!isFiniteNumber(event.id)
+		!isValidTauriEventId(event.id)
 	) {
 		return null;
 	}

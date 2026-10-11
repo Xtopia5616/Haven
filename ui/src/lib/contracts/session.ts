@@ -16,8 +16,8 @@ import {
 	type SessionWaitingReason,
 } from './generatedCommands.ts';
 import { isRecord } from './objectGuards.ts';
-import type { TauriEvent } from './tauriEvent.ts';
-import { isFiniteNumber, isOneOf, isString } from './valueGuards.ts';
+import { isValidTauriEventId, type TauriEvent } from './tauriEvent.ts';
+import { isOneOf, isString } from './valueGuards.ts';
 import {
 	canonicalIdField,
 	hasOwnWireField,
@@ -63,7 +63,7 @@ export function mapSessionEvent(
 ): TauriEvent<SessionLifecyclePayload> | null {
 	if (
 		event.event !== SESSION_EVENT_NAMES[0] ||
-		!isFiniteNumber(event.id) ||
+		!isValidTauriEventId(event.id) ||
 		!isRecord(event.payload)
 	) {
 		return null;

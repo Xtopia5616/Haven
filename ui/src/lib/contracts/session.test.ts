@@ -111,6 +111,23 @@ describe('mapSessionEvent', () => {
 		}
 	});
 
+	it('rejects invalid Tauri envelope ids consistently', () => {
+		for (const id of [Number.NaN, -1, 1.5, Number.MAX_SAFE_INTEGER + 1]) {
+			expect(
+				mapSessionEvent({
+					event: 'session:lifecycle',
+					id,
+					payload: {
+						type: 'updated',
+						session_id: 'ses-6b86b273ff34fce19d6b804eff5a3f57',
+						status: 'paused',
+						title: '',
+					},
+				}),
+			).toBeNull();
+		}
+	});
+
 	it.each([
 		{ type: 'completed', session_id: 'ses-6b86b273ff34fce19d6b804eff5a3f57', title: 'Done' },
 		{ type: 'error', session_id: 'ses-6b86b273ff34fce19d6b804eff5a3f57', title: 'Failed' },

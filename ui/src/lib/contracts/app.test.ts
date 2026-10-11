@@ -403,7 +403,9 @@ describe('app-shell IPC contract', () => {
 	});
 
 	it('drops malformed Tauri app event envelopes', () => {
-		expect(mapAppEvent({ event: 'hotkey:rebind', id: Number.NaN, payload: {} })).toBeNull();
+		for (const id of [Number.NaN, -1, 1.5, Number.MAX_SAFE_INTEGER + 1]) {
+			expect(mapAppEvent({ event: 'hotkey:rebind', id, payload: {} })).toBeNull();
+		}
 		expect(mapAppEvent({ event: 'unknown:event', id: 1, payload: {} })).toBeNull();
 		expect(mapAppEvent({ event: 'hotkey:rebind', id: 1, payload: null })).toBeNull();
 	});

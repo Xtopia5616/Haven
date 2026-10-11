@@ -211,6 +211,8 @@ ToolRunStore 的生命周期时间、completion 时间和计时触发 `due_at` �
 
 Rust→TypeScript IPC 生成器拒绝把 `i128/u128` 映射为 JavaScript `number`；未来契约需选择十进制字符串或有明确值域的窄整数，不改变当前生成 DTO（ADR 0983）。
 
+Agent、App、Session、ToolRun event mapper 现共用 `isValidTauriEventId`，统一要求 renderer-local envelope id 为非负安全整数；payload 继续按领域边界校验（ADR 0984）。
+
 Compaction、memory embedding maintenance、App 启动/恢复、clipboard history 和 managed-media cleanup 的错误日志现统一清洗；上传批次与生成媒体目录项日志移除 basename，避免暴露用户文件名（ADR 0981）。
 
 Agent compaction 与 media-plan toast 现由 `+layout` 统一持有；chat controller 保留 media-plan session 状态投影，chat usage handler 不再写通知 store（ADR 0982）。

@@ -972,3 +972,4 @@
 - [0981：运维错误日志统一清洗并移除文件名](0981-sanitize-operational-error-logs.md)
 - [0982：Agent 事件 toast 由应用布局集中处理](0982-centralize-agent-event-toasts.md)
 - [0983：拒绝将 128 位整数映射为 IPC `number`](0983-reject-128-bit-ipc-integers.md)
+- [0984：统一校验 Tauri event envelope id](0984-validate-tauri-event-sequence-id-consistently.md)

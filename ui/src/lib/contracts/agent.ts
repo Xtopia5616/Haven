@@ -39,7 +39,7 @@ import {
 	TOOL_RUN_COMPLETION_STATUS_DTO_VALUES,
 	TOOL_RUN_KIND_DTO_VALUES,
 } from './generatedCommands.ts';
-import type { TauriEvent } from './tauriEvent.ts';
+import { isValidTauriEventId, type TauriEvent } from './tauriEvent.ts';
 import { isRecord } from './objectGuards.ts';
 import {
 	isBoolean,
@@ -372,7 +372,7 @@ export function mapAgentEvent(
 		!isRecord(event) ||
 		!isString(event.event) ||
 		!AGENT_EVENT_NAME_SET.has(event.event) ||
-		!isSafeUnsignedInteger(event.id) ||
+		!isValidTauriEventId(event.id) ||
 		!isRecord(event.payload)
 	) {
 		return null;

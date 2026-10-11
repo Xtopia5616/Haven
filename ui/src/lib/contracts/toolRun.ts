@@ -9,9 +9,9 @@ import {
 	TOOL_RUN_KIND_DTO_VALUES,
 	TOOL_RUN_STATUS_VALUES,
 } from './generatedCommands.ts';
-import type { TauriEvent } from './tauriEvent.ts';
+import { isValidTauriEventId, type TauriEvent } from './tauriEvent.ts';
 import { isRecord } from './objectGuards.ts';
-import { isFiniteNumber, isNumber, isOneOf, isString } from './valueGuards.ts';
+import { isNumber, isOneOf, isString } from './valueGuards.ts';
 import {
 	canonicalIdField,
 	isCanonicalEntityId,
@@ -150,7 +150,7 @@ export function mapToolRunEvent(event: TauriEvent<unknown>): TauriEvent<ToolRunP
 	if (
 		!isRecord(event) ||
 		!isOneOf(event.event, TOOL_RUN_EVENT_NAMES) ||
-		!isFiniteNumber(event.id)
+		!isValidTauriEventId(event.id)
 	) {
 		return null;
 	}
