@@ -916,3 +916,4 @@
 - [0925：统一 LLM crate 的跨层 API 导入路径](0925-unify-llm-crate-root-api-paths.md)
 - [0926：收回 Input 实现模块与无效构造入口](0926-restrict-input-implementation-and-construction-api.md)
 - [0927：由 Skills owner 封装目录变更检测](0927-encapsulate-skill-directory-change-detection.md)
+- [0928：统一 Common ToolRun contract 根路径](0928-unify-common-tool-run-contract-paths.md)

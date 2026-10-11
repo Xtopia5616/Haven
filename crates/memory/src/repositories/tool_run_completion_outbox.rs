@@ -7,8 +7,7 @@
 //! delivery contract; scheduled firing and execution remain owned separately.
 
 use crate::db::Database;
-use haven_common::tool_run_lease::ToolRunLease;
-use haven_common::{ToolRunCompletionPayload, ToolRunStatus};
+use haven_common::{ToolRunCompletionPayload, ToolRunLease, ToolRunStatus};
 
 const CLAIM_LEASE_SECS: i64 = 30;
 

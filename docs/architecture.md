@@ -512,7 +512,7 @@ shell 进程、定时器和 ToolRun dependency 共享一个 ToolRun map、一个
 completion bus。统一状态为 `waiting → running → completed | failed | cancelled`；定时任务的
 `kind` 只表示任务类型，不再作为状态值。model-facing `tool_runs.*` 和 app ToolRun board 都
 直接读取规范化 task row。background completion outbox 与 scheduled fire recovery 共用纯
-`haven_common::tool_run_lease::ToolRunLease<T>` claim core：outbox 在 `BEGIN IMMEDIATE` 事务中以
+`haven_common::ToolRunLease<T>` claim core：outbox 在 `BEGIN IMMEDIATE` 事务中以
 稳定 `tool_run_result_id` 和 SQLite UTC deadline 判断 30 秒 claim，随后仍由原 SQL/CAS 写入；
 scheduled fire recovery 以 `tool_run_id` 和单调时钟使用 15 分钟进程内 lease。现有契约没有独立
 的 claimant owner token，也没有 lease renewal 操作。scheduled 终态和无 consumer 回滚会清除
