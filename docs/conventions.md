@@ -368,7 +368,7 @@ try {
 | 数据目录 / 运行时临时根 / 媒体存储根 / 日志文件名 | `haven` | `ConfigLoader::data_dir()`、`default_runtime_temp_root()`、`default_generated_media_root()`、`haven.log` |
 | 进程名 / crate / 包名 / Tauri identifier | `haven` | `haven-app-binary`、`haven-ui`、`com.haven.app` |
 | localStorage / kv 键 | `haven` | `haven.theme`、`haven.accent`、`haven.no_auto_restore` |
-| MCP `clientInfo.name` 等协议标识 | `haven` | `crates/tools/src/mcp/mod.rs` |
+| MCP `clientInfo.name` 等协议标识 | `haven` | `crates/mcp/src/client.rs` |
 | 测试 fixture 中的实体数据（subject 等） | `haven` | `memory_worker.rs` / `prompt.rs` 测试 |
 
 判别方法：**会显示给用户看 → `Haven`；会被机器比较 / 拼接成路径 / 写入存储 → `haven`。**
