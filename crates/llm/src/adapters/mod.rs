@@ -13,13 +13,11 @@ mod tool_schema;
 mod transport;
 mod web_search;
 
-pub use anthropic::AnthropicAdapter;
 pub use capabilities::{
     WebSearchMode, is_known_api_style, is_openai_family_wire_style, is_stt_only_style,
     is_tts_only_style, normalize_api_style, parse_web_search_mode, resolve_web_search_mode,
     supports_builtin_web_search, xai_search_mode,
 };
-pub use openai::OpenAiAdapter;
 pub(crate) use tool_arguments::{parse_completed_tool_arguments, serialize_tool_arguments};
 
 /// Bound provider-controlled tool-call indices before streaming aggregation.

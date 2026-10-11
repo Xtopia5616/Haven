@@ -100,14 +100,14 @@ pub(crate) struct ResponsePolicyInput<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use haven_llm::types::FinishReason;
+    use haven_llm::FinishReason;
 
     fn resp(text: &str, finish: Option<FinishReason>) -> LlmResponse {
         LlmResponse {
             text: text.to_string(),
             tool_calls: Vec::new(),
             finish_reason: finish,
-            usage: haven_llm::types::Usage::default(),
+            usage: haven_llm::Usage::default(),
             model: None,
             reasoning: None,
             web_search_calls: Vec::new(),

@@ -65,9 +65,8 @@ mod tests {
     use async_trait::async_trait;
     use futures_util::Stream;
     use haven_common::types::{CanonicalMessage, CanonicalRole};
-    use haven_llm::OpenAiAdapter;
-    use haven_llm::client::LlmClient;
-    use haven_llm::types::{LlmError, LlmResponse};
+    use haven_llm::LlmClient;
+    use haven_llm::{LlmError, LlmResponse};
     use std::pin::Pin;
     use std::sync::Mutex;
 
@@ -95,7 +94,7 @@ mod tests {
             &self,
             _messages: Vec<CanonicalMessage>,
         ) -> Result<
-            Pin<Box<dyn Stream<Item = Result<haven_llm::types::StreamChunk, LlmError>> + Send>>,
+            Pin<Box<dyn Stream<Item = Result<haven_llm::StreamChunk, LlmError>> + Send>>,
             LlmError,
         > {
             Ok(Box::pin(futures_util::stream::empty()))
@@ -104,10 +103,10 @@ mod tests {
         async fn chat_stream_with_tools_output_cap_shared(
             &self,
             _messages: std::sync::Arc<[CanonicalMessage]>,
-            _tools: std::sync::Arc<[haven_llm::types::LlmToolDefinition]>,
+            _tools: std::sync::Arc<[haven_llm::LlmToolDefinition]>,
             _max_output_tokens: Option<u32>,
         ) -> Result<
-            Pin<Box<dyn Stream<Item = Result<haven_llm::types::StreamChunk, LlmError>> + Send>>,
+            Pin<Box<dyn Stream<Item = Result<haven_llm::StreamChunk, LlmError>> + Send>>,
             LlmError,
         > {
             Ok(Box::pin(futures_util::stream::empty()))
@@ -130,17 +129,11 @@ mod tests {
             result: Mutex::new(result),
             calls: Mutex::new(Vec::new()),
         });
-        // Real OpenAiAdapter instances fill the other role slots so the
-        // router can dispatch them if a test exercises those paths.
-        let default_client: Arc<dyn LlmClient> = Arc::new(
-            OpenAiAdapter::try_new(haven_common::config::ModelEndpoint::default()).unwrap(),
-        );
-        let image_client: Arc<dyn LlmClient> = Arc::new(
-            OpenAiAdapter::try_new(haven_common::config::ModelEndpoint::default()).unwrap(),
-        );
-        let audio_client: Arc<dyn LlmClient> = Arc::new(
-            OpenAiAdapter::try_new(haven_common::config::ModelEndpoint::default()).unwrap(),
-        );
+        // All role slots use the same mock. These tests configure FastChat
+        // only and do not depend on any provider adapter implementation.
+        let default_client: Arc<dyn LlmClient> = mock.clone();
+        let image_client = Arc::clone(&default_client);
+        let audio_client = Arc::clone(&default_client);
         let router = Arc::new(LlmRouter::new_with_test_clients(
             mock.clone(),
             default_client,

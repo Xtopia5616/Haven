@@ -1469,7 +1469,7 @@ mod tests {
     use async_trait::async_trait;
     use futures_util::stream;
     use haven_common::config::RouterConfig;
-    use haven_llm::client::LlmClient;
+    use haven_llm::LlmClient;
     use haven_llm::{FinishReason, LlmError, StreamChunk, Usage};
     use haven_memory::Database;
     use haven_tools::ToolsFacade;

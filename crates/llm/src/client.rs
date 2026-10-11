@@ -393,24 +393,6 @@ where
     }
 }
 
-/// Compute a bounded exponential retry delay. Provider supplied `Retry-After`
-/// is preserved at sub-second precision and always wins over the local delay.
-/// Jitter is symmetric so concurrent callers do not all retry later together.
-pub fn retry_delay(
-    base_secs: u64,
-    factor: u32,
-    max_secs: u64,
-    jitter: f32,
-    attempt: u32,
-    retry_after: Option<Duration>,
-) -> Duration {
-    retry_backoff_policy(base_secs, factor, max_secs, jitter).delay_after(
-        attempt.saturating_add(1),
-        retry_after,
-        retry_jitter_sample(),
-    )
-}
-
 pub(crate) fn retry_backoff_policy(
     base_secs: u64,
     factor: u32,
@@ -710,21 +692,20 @@ mod tests {
     }
 
     #[test]
-    fn retry_delay_preserves_retry_after_and_clamps_jitter() {
+    fn retry_backoff_preserves_retry_after_and_clamps_jitter() {
         let retry_after = Duration::from_millis(750);
-        let without_jitter = retry_delay(0, 2, 5, 0.0, 0, Some(retry_after));
+        let without_jitter =
+            retry_backoff_policy(0, 2, 5, 0.0).delay_after(1, Some(retry_after), 0);
         assert_eq!(without_jitter, retry_after);
         assert_eq!(
-            retry_delay(0, 2, 0, 0.0, 0, Some(retry_after)),
+            retry_backoff_policy(0, 2, 0, 0.0).delay_after(1, Some(retry_after), 0),
             retry_after,
             "provider Retry-After must not be clamped by the local backoff cap"
         );
 
-        for _ in 0..10 {
-            let delay = retry_delay(2, 2, 5, 1.0, 1, Some(retry_after));
-            assert!(delay >= retry_after);
-            assert!(delay <= Duration::from_secs(5));
-        }
+        let delay = retry_backoff_policy(2, 2, 5, 1.0).delay_after(2, Some(retry_after), 1);
+        assert!(delay >= retry_after);
+        assert!(delay <= Duration::from_secs(5));
     }
 
     #[test]

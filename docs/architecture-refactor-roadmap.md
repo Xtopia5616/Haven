@@ -192,6 +192,8 @@ Messaging transport 复核确认 `InboxBus` 已是 `haven-messaging` 的私有�
 
 进一步的 composition 调用图发现 AppState、Agent adapter factory 与 ApplicationRuntime 曾分别调用 `share_services()`。现由 AppState 在唯一 App composition root 取得一次 `ToolServices`，将 Agent 所需项作为显式构造参数传给 adapter，并把同一 bundle 交给 ApplicationRuntime 适配 App services；运行时和 adapter factory 不再另行读取 facade bundle（ADR 0924）。
 
+LLM 导入路径审查发现 router、client、types、media、registry、STT 与 adapter 查询同时经 crate root re-export 和 `pub mod` 实现路径可达，Agent/Tools/App 生产代码与测试混用两套拼法。现将稳定 consumer DTO/操作集中从 LLM crate root 导出，隐藏实现模块并统一仓内调用路径；provider adapter 细节只由 LLM 内部寻址（ADR 0925）。
+
 每个候选都要说明真实消费者、权威状态 owner、作用域与生命周期、失败/恢复语义，以及是否改变 IPC、持久化或安全契约。结论必须是合并、改名、拆分、保留并解释，或有证据的暂缓。全仓通过条件是主要生产概念有唯一规范词和可定位 owner；重复职责已合并，或相邻 owner 的区别能从代码和文档解释；当前源码、契约与路线图不再使用退役名称描述现状。历史决定仍可在 ADR 中按原名检索。
 
 ## 6. 更新规则

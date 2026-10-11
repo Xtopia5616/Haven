@@ -104,7 +104,7 @@ pub(crate) fn media_input_to_content_part_with_strategy(
 ) -> ContentPart {
     let capabilities = media_capabilities_for_input(input);
     let plan = build_media_plan(std::slice::from_ref(input), &capabilities, strategy);
-    if let Ok(mut parts) = haven_llm::media::project_media_plan(&plan, std::slice::from_ref(input))
+    if let Ok(mut parts) = haven_llm::project_media_plan(&plan, std::slice::from_ref(input))
         && let Some(part) = parts.pop()
     {
         return part;
@@ -1158,7 +1158,7 @@ impl ReActEngine {
         request: RequestKind,
     ) -> Option<u32> {
         cfg.route(request)
-            .and_then(|model| haven_llm::registry::context_window_for(&model.endpoint))
+            .and_then(|model| haven_llm::context_window_for(&model.endpoint))
     }
 
     /// Resolve the model's true context window for `request` using a per-router
@@ -1348,8 +1348,8 @@ mod tests {
         assert_ne!(LoopExit::Cancelled, LoopExit::Completed);
         assert!(matches!(LoopExit::Error("x".into()), LoopExit::Error(_)));
     }
-    use haven_llm::client::LlmClient;
-    use haven_llm::types::{FinishReason, LlmError, LlmResponse, StreamChunk};
+    use haven_llm::LlmClient;
+    use haven_llm::{FinishReason, LlmError, LlmResponse, StreamChunk};
     use std::pin::Pin;
 
     #[tokio::test]
@@ -1828,7 +1828,7 @@ mod tests {
             text: text.to_string(),
             tool_calls,
             finish_reason: finish,
-            usage: haven_llm::types::Usage::default(),
+            usage: haven_llm::Usage::default(),
             model: None,
             reasoning: None,
             web_search_calls: Vec::new(),

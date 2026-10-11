@@ -491,7 +491,7 @@ impl AdminServices {
                     let router = Arc::clone(&health_router);
                     async move {
                         router
-                            .health_check(haven_llm::types::HealthCheckRequest { request })
+                            .health_check(haven_llm::HealthCheckRequest { request })
                             .await
                             .map_err(|error| sanitize_diagnostic(&error.to_string()))
                     }

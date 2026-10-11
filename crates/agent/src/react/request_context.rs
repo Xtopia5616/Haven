@@ -159,7 +159,7 @@ impl RequestContext {
         }
 
         let plan = build_media_plan(&planned_inputs, capabilities, strategy);
-        let projected = haven_llm::media::project_media_plan(&plan, &planned_inputs).ok();
+        let projected = haven_llm::project_media_plan(&plan, &planned_inputs).ok();
         // Raw projections are already represented by the current canonical
         // parts. In the common case capability selection is therefore just an
         // Arc clone instead of a second deep copy of the full transcript.
@@ -283,8 +283,7 @@ impl RequestContext {
         {
             return false;
         }
-        haven_llm::media::project_media_plan(&plan, &inputs)
-            .is_ok_and(|parts| parts.len() == inputs.len())
+        haven_llm::project_media_plan(&plan, &inputs).is_ok_and(|parts| parts.len() == inputs.len())
     }
 
     pub(super) fn repairs(&self) -> usize {

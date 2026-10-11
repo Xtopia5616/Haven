@@ -33,11 +33,6 @@ impl AssemblyAiAdapter {
         })
     }
 
-    #[cfg(test)]
-    pub fn new(endpoint: ModelEndpoint) -> Self {
-        Self::try_new(endpoint).expect("valid test endpoint")
-    }
-
     fn base_url(&self) -> String {
         if self.endpoint.base_url.trim().is_empty() {
             "https://api.assemblyai.com".to_string()

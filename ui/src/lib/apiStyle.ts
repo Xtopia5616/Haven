@@ -1,6 +1,6 @@
 /**
  * Wire-protocol (`api_style`) helpers mirrored from
- * `haven_llm::adapters::capabilities`, plus a vendor preset catalog for the
+ * the LLM crate's provider capability API, plus a vendor preset catalog for the
  * settings Provider dialog. Chat 「联网搜索」 stays off|auto|always;
  * unsupported styles should grey out / ignore the control.
  */

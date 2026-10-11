@@ -6,7 +6,7 @@
 
 use haven_common::config::{AppConfig, MediaConfig};
 use haven_llm::LlmRouter;
-use haven_llm::stt::build_stt_client;
+use haven_llm::build_stt_client;
 use std::sync::Arc;
 
 pub(crate) struct RouterMediaBuild {

@@ -1,6 +1,6 @@
 # Haven 架构与 crate 职责
 
-> 版本: v1.26 | 日期: 2026-10-11
+> 版本: v1.27 | 日期: 2026-10-11
 > 范围: `crates/` (Rust 后端, Tauri 2)
 > 原则: **依赖单向、叶子优先**。上层 crate 只依赖下层，绝不反向依赖；共享数据与类型放叶子（`haven-common`），
 > 组件职责按「谁拥有实现、谁只消费接口」划分。
@@ -213,6 +213,7 @@ OS 句柄和进程生命周期适配不属于该共享契约面，统一归 `hav
 
 ### 2.2 `haven-llm` —— 模型与媒体能力的唯一实现方
 
+- `haven_llm` crate root 是唯一跨 crate API 路径：稳定 router/client traits、请求 DTO、registry 与媒体投影操作从根导出；`adapters`、`client`、`router`、`types` 等源码模块不直接对下游开放。provider 和协议细节继续留在 LLM 内部。
 - `adapters/`：按 **`api_style`（线协议）** 分发的 provider 适配与统一 `LlmClient` +
   `with_retry`。LLM error 分类留在 `haven-llm`，attempt/backoff/stop 决策复用
   `haven-common::retry::RecoveryPolicy`（ADR 0447）。能力矩阵见 `adapters/capabilities.rs`：

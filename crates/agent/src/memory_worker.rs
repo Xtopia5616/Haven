@@ -1012,8 +1012,8 @@ mod tests {
     use crate::memory_index::embedding_batch_size;
     use async_trait::async_trait;
     use haven_common::types::CanonicalMessage;
-    use haven_llm::client::LlmClient;
-    use haven_llm::types::{FinishReason, LlmError, LlmResponse, StreamChunk};
+    use haven_llm::LlmClient;
+    use haven_llm::{FinishReason, LlmError, LlmResponse, StreamChunk};
     use haven_memory::Message;
     use haven_memory::SessionStep;
     use haven_memory::{ContradictionCandidate, ContradictionKind, FactSourceRef};
@@ -1111,7 +1111,7 @@ mod tests {
                 text: self.reply.clone(),
                 tool_calls: Vec::new(),
                 finish_reason: Some(FinishReason::Stop),
-                usage: haven_llm::types::Usage::default(),
+                usage: haven_llm::Usage::default(),
                 model: None,
                 reasoning: None,
                 web_search_calls: Vec::new(),
@@ -1137,7 +1137,7 @@ mod tests {
         async fn chat_stream_with_tools_output_cap_shared(
             &self,
             _messages: std::sync::Arc<[CanonicalMessage]>,
-            _tools: std::sync::Arc<[haven_llm::types::LlmToolDefinition]>,
+            _tools: std::sync::Arc<[haven_llm::LlmToolDefinition]>,
             _max_output_tokens: Option<u32>,
         ) -> Result<
             Pin<Box<dyn futures_util::Stream<Item = Result<StreamChunk, LlmError>> + Send>>,

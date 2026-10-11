@@ -479,7 +479,7 @@ impl From<haven_common::tools::ToolDef> for LlmToolDefinition {
 /// - Keywords that must be boolean|object (`additionalProperties`,
 ///   `additionalItems`, `items`, `not`, `if`/`then`/`else`, …) drop `null`
 ///   (or coerce `additionalProperties`/`additionalItems` null → `false`).
-pub fn sanitize_tool_parameters(schema: Value) -> Value {
+pub(crate) fn sanitize_tool_parameters(schema: Value) -> Value {
     match schema {
         Value::Object(mut map) => {
             sanitize_schema_object(&mut map);

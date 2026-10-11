@@ -155,7 +155,7 @@ pub(crate) type LoopHooksHandle = Arc<dyn LoopHooks>;
 mod tests {
     use super::*;
     use haven_common::types::CanonicalMessage;
-    use haven_llm::types::LlmResponse;
+    use haven_llm::LlmResponse;
 
     #[test]
     fn noop_and_default_are_object_safe() {
@@ -178,9 +178,9 @@ mod tests {
         use crate::event::AgentEventEmitter;
         use crate::session::SessionSupervisor;
         use async_trait::async_trait;
-        use haven_llm::client::LlmClient;
-        use haven_llm::router::LlmRouter;
-        use haven_llm::types::{LlmError, LlmResponse, LlmToolDefinition, StreamChunk};
+        use haven_llm::LlmClient;
+        use haven_llm::LlmRouter;
+        use haven_llm::{LlmError, LlmResponse, LlmToolDefinition, StreamChunk};
         use haven_memory::Database;
         use haven_tools::ToolsFacade;
         use std::pin::Pin;
@@ -344,13 +344,13 @@ mod tests {
 
     #[tokio::test]
     async fn default_after_llm_uses_response_policy() {
-        use haven_llm::types::FinishReason;
+        use haven_llm::FinishReason;
 
         let response = LlmResponse {
             text: "partial text".into(),
             tool_calls: Vec::new(),
             finish_reason: Some(FinishReason::Length),
-            usage: haven_llm::types::Usage::default(),
+            usage: haven_llm::Usage::default(),
             model: None,
             reasoning: None,
             web_search_calls: Vec::new(),
@@ -368,9 +368,9 @@ mod tests {
             use crate::event::AgentEventEmitter;
             use crate::session::SessionSupervisor;
             use async_trait::async_trait;
-            use haven_llm::client::LlmClient;
-            use haven_llm::router::LlmRouter;
-            use haven_llm::types::{LlmError, LlmToolDefinition, StreamChunk};
+            use haven_llm::LlmClient;
+            use haven_llm::LlmRouter;
+            use haven_llm::{LlmError, LlmToolDefinition, StreamChunk};
             use haven_memory::Database;
             use haven_tools::ToolsFacade;
             use std::pin::Pin;

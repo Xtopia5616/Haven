@@ -293,7 +293,7 @@ impl AgentLayer {
         let warm = new_router.clone();
         tokio::spawn(async move {
             match warm
-                .health_check(haven_llm::types::HealthCheckRequest {
+                .health_check(haven_llm::HealthCheckRequest {
                     request: haven_common::config::RequestKind::Chat,
                 })
                 .await

@@ -91,11 +91,11 @@ async fn resolve_backend_media_capabilities(
             let config = router.config().await;
             config
                 .route(RequestKind::Transcription)
-                .map(|model| haven_llm::adapters::api_style_for(&model.endpoint))
+                .map(|model| haven_llm::api_style_for(&model.endpoint))
                 .unwrap_or("openai-chat")
         };
         let unknown_custom_route = profile.audio == haven_common::media::CapabilitySupport::Unknown
-            && !haven_llm::adapters::is_known_api_style(style);
+            && !haven_llm::is_known_api_style(style);
         configured
             && (profile.audio.is_supported()
                 || haven_llm::is_stt_only_style(style)
@@ -124,8 +124,8 @@ fn provider_search_available(chat_endpoint: Option<&ModelEndpoint>) -> bool {
         // A default endpoint is not evidence that a Chat route is configured.
         return false;
     };
-    let style = haven_llm::adapters::api_style_for(endpoint);
-    let mode = haven_llm::adapters::resolve_web_search_mode(endpoint);
+    let style = haven_llm::api_style_for(endpoint);
+    let mode = haven_llm::resolve_web_search_mode(endpoint);
     !matches!(mode, haven_llm::WebSearchMode::Off) && haven_llm::supports_builtin_web_search(style)
 }
 

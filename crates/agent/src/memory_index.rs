@@ -9,9 +9,9 @@
 use std::sync::Arc;
 
 use haven_common::config::{ModelEndpoint, RequestKind};
+use haven_llm::EmbeddingRequest;
 use haven_llm::LlmRouter;
-use haven_llm::adapters::api_style_for;
-use haven_llm::types::EmbeddingRequest;
+use haven_llm::api_style_for;
 use haven_memory::{MemoryEmbeddingStore, MemoryEmbeddingVector, MemoryRecallStore};
 use haven_memory::{MemoryHit, MemoryQuery};
 use sha2::{Digest, Sha256};
