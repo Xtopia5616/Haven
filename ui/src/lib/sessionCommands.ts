@@ -18,43 +18,55 @@ import type {
 	RuntimeSessionListResponse,
 	SessionResumeResponse,
 } from './contracts/sessionHistory.ts';
+import {
+	parseRuntimeSessionListResponse,
+	parseSessionHistoryRows,
+	parseSessionLineageResponse,
+	parseSessionResumeResponse,
+} from './contracts/sessionHistory.ts';
 
 /** List the current in-memory session summaries for the chat shell. */
-export function listRuntimeSessions(): Promise<RuntimeSessionListResponse> {
-	return invoke('list_runtime_sessions');
+export async function listRuntimeSessions(): Promise<RuntimeSessionListResponse> {
+	const value: unknown = await invoke('list_runtime_sessions');
+	return parseRuntimeSessionListResponse(value);
 }
 
 /** Load the parent and direct child sessions shown in the active session menu. */
-export function getSessionLineage(
+export async function getSessionLineage(
 	request: GetSessionLineageRequest,
 ): Promise<SessionLineageResponse> {
-	return invoke('get_session_lineage', request);
+	const value: unknown = await invoke('get_session_lineage', request);
+	return parseSessionLineageResponse(value);
 }
 
 /** Load a recent persisted history page for the compact chat session switcher. */
-export function listSessionHistory(
+export async function listSessionHistory(
 	request: SessionHistoryPageRequest,
 ): Promise<SessionHistoryRow[]> {
-	return invoke('list_session_history', request);
+	const value: unknown = await invoke('list_session_history', request);
+	return parseSessionHistoryRows(value);
 }
 
 /** Load the persisted history page using the existing flat Tauri arguments. */
-export function searchSessionHistoryFiltered(
+export async function searchSessionHistoryFiltered(
 	request: SessionHistoryFilterRequest,
 ): Promise<SessionHistoryRow[]> {
-	return invoke('search_session_history_filtered', request);
+	const value: unknown = await invoke('search_session_history_filtered', request);
+	return parseSessionHistoryRows(value);
 }
 
 /** Load the durable projection used by session resume and transcript reload. */
-export function getSessionForResume(
+export async function getSessionForResume(
 	request: GetSessionForResumeRequest,
 ): Promise<SessionResumeResponse> {
-	return invoke('get_session_for_resume', request);
+	const value: unknown = await invoke('get_session_for_resume', request);
+	return parseSessionResumeResponse(value);
 }
 
 /** Load the most recent persisted session projection for startup resume. */
-export function getLatestSessionForResume(): Promise<SessionResumeResponse | null> {
-	return invoke('get_latest_session_for_resume');
+export async function getLatestSessionForResume(): Promise<SessionResumeResponse | null> {
+	const value: unknown = await invoke('get_latest_session_for_resume');
+	return value === null ? null : parseSessionResumeResponse(value);
 }
 
 /** Reopen one persisted session for follow-up input. */
