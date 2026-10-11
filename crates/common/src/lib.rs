@@ -24,7 +24,3 @@ pub use workspace::discover_workspace_root;
 
 pub use tool_run_completion::ToolRunCompletionPayload;
 pub use tool_run_lease::ToolRunLease;
-pub use types::{
-    CanonicalMessage, CanonicalRole, CanonicalToolCall, ContentPart, FollowUp, InjectSource,
-    MessageAttachment, PEER_KICKOFF_PREFIX, TranscriptMessageKind,
-};

@@ -195,6 +195,8 @@ Messaging transport 复核确认 `InboxBus` 已是 `haven-messaging` 的私有�
 
 Common shared contract 路径复核发现 Tools 根额外 re-export 了 Common 所有的 `CapabilityScope`，仓内只有测试使用该第二入口。现移除 Tools alias，统一通过 `haven_common::types::CapabilityScope` 命名；Tools 公开策略 DTO 仍引用同一 Common 类型（ADR 0937）。
 
+进一步核对 Common transcript API 时发现九个类型/常量同时由 `types` 模块和 Common 根导出，而所有仓内消费者均使用定义模块。现删除根 aliases，统一通过 `haven_common::types` 引用；transcript 语义与 wire contract 未改变（ADR 0938）。
+
 进一步的 composition 调用图发现 AppState、Agent adapter factory 与 ApplicationRuntime 曾分别调用 `share_services()`。现由 AppState 在唯一 App composition root 取得一次 `ToolServices`，将 Agent 所需项作为显式构造参数传给 adapter，并把同一 bundle 交给 ApplicationRuntime 适配 App services；运行时和 adapter factory 不再另行读取 facade bundle（ADR 0924）。
 
 LLM 导入路径审查发现 router、client、types、media、registry、STT 与 adapter 查询同时经 crate root re-export 和 `pub mod` 实现路径可达，Agent/Tools/App 生产代码与测试混用两套拼法。现将稳定 consumer DTO/操作集中从 LLM crate root 导出，隐藏实现模块并统一仓内调用路径；provider adapter 细节只由 LLM 内部寻址（ADR 0925）。

@@ -1,6 +1,6 @@
 # Haven 命名规范
 
-> 版本: v1.176 | 日期: 2026-10-11
+> 版本: v1.177 | 日期: 2026-10-11
 
 本文档统一 Haven 项目各层的命名规则（变量名、函数名、文件名、crate 名、缩写大小写、跨层边界）。规范以现有代码中的事实模式为基础，新代码必须遵循；存量代码若与规范冲突，逐步迁移对齐。
 
@@ -353,6 +353,8 @@ Session title 读取 API 必须在名字中表达字段投影：`SessionStore::g
 运行时实体 ID newtype（目前为 `ConfirmId`、`RecordingId`）通过 `new()` 调用 Common generator 生成；字符串输入用 `TryFrom` 校验类型固定前缀，Serde 反序列化执行同一校验。tuple 形状按项目 contract 保持公开字符串序列化，并标记 `#[non_exhaustive]` 阻止其他 crate 绕过验证直接构造；不保留无验证 `From<String>`。
 
 共享授权身份 `CapabilityScope` 由 Common 定义；所有 Rust 调用方统一从 `haven_common::types::CapabilityScope` 导入，不经 Tools 根 alias。
+
+Common transcript contracts（`CanonicalMessage`、`CanonicalRole`、`CanonicalToolCall`、`ContentPart`、`FollowUp`、`InjectSource`、`MessageAttachment`、`TranscriptMessageKind`）统一从 `haven_common::types` 导入；不使用 Common crate root aliases。
 
 - ToolRun 身份字段在 Rust 类型、事件与 JSON 结果中统一命名 `tool_run_id`；前端 IPC/view DTO 只在边界映射为 `toolRunId`，不再接受或输出泛名 `id` 别名。数据库物理列 `tool_runs.id` 保持不变，Repository 行字段命名 `tool_run_id`。Tauri event envelope 的数值 `event.id` 是另一实体，继续保留原名。
 
