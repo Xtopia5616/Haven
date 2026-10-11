@@ -919,3 +919,4 @@
 - [0928：统一 Common ToolRun contract 根路径](0928-unify-common-tool-run-contract-paths.md)
 - [0929：让用量 contract 只经 Common usage 子域导出](0929-use-common-usage-subdomain-as-canonical-api.md)
 - [0930：统一 Common config 子域 API 入口](0930-use-common-config-subdomain-as-canonical-api.md)
+- [0931：让工具 contracts 只经 Common tools 子域导出](0931-use-common-tools-subdomain-as-canonical-api.md)
