@@ -10,10 +10,10 @@ const invokeMock = vi.mocked(invoke);
 describe('memory command boundary', () => {
 	beforeEach(() => invokeMock.mockReset());
 
-	it('passes fact list request and response through without changing wire fields', async () => {
+	it('validates fact identity and passes the response fields through unchanged', async () => {
 		const response = [
 			{
-				id: 'fact-1',
+				id: 'fact-00000000000000000000000000000001',
 				subject: 'user',
 				predicate: 'likes',
 				object: 'tea',
@@ -35,13 +35,29 @@ describe('memory command boundary', () => {
 	});
 
 	it('passes add and delete request fields unchanged', async () => {
-		invokeMock.mockResolvedValueOnce(undefined);
-		await addFact({
+		const addedFact = {
+			id: 'fact-00000000000000000000000000000002',
 			subject: 'user',
 			predicate: 'likes',
 			object: 'tea',
-			tags: null,
-		});
+			source: 'user',
+			confidence: 1,
+			tags: [],
+			created_at: '2026-09-26T00:00:00Z',
+			mention_count: 0,
+			last_seen_at: null,
+			source_ref: null,
+			durability: 1,
+		};
+		invokeMock.mockResolvedValueOnce(addedFact as never);
+		await expect(
+			addFact({
+				subject: 'user',
+				predicate: 'likes',
+				object: 'tea',
+				tags: null,
+			}),
+		).resolves.toBe(addedFact);
 		expect(invokeMock).toHaveBeenNthCalledWith(1, 'add_fact', {
 			subject: 'user',
 			predicate: 'likes',
@@ -50,13 +66,20 @@ describe('memory command boundary', () => {
 		});
 
 		invokeMock.mockResolvedValueOnce(undefined);
-		await deleteFact({ factId: 'fact-1' });
-		expect(invokeMock).toHaveBeenNthCalledWith(2, 'delete_fact', { factId: 'fact-1' });
+		const factId = 'fact-00000000000000000000000000000008';
+		await deleteFact({ factId });
+		expect(invokeMock).toHaveBeenNthCalledWith(2, 'delete_fact', { factId });
 	});
 
-	it('passes recall fields and additive response data through unchanged', async () => {
+	it('validates recall entity IDs and preserves additive response fields', async () => {
 		const response = [
-			{ entity_id: 'fact-1', text: 'likes tea', score: 0.9, model: 'embed-v1', extra: true },
+			{
+				entity_id: 'fact-00000000000000000000000000000003',
+				text: 'likes tea',
+				score: 0.9,
+				model: 'embed-v1',
+				extra: true,
+			},
 		];
 		invokeMock.mockResolvedValue(response);
 
@@ -68,5 +91,40 @@ describe('memory command boundary', () => {
 			kind: 'fact',
 			limit: 10,
 		});
+	});
+
+	it('rejects invalid fact and source-message IDs from Memory commands', async () => {
+		invokeMock.mockResolvedValueOnce([{ id: 'fact-short', source_ref: null }] as never);
+		await expect(listFacts({ source: null })).rejects.toThrow('Invalid memory fact identity');
+
+		invokeMock.mockResolvedValueOnce([
+			{
+				id: 'fact-00000000000000000000000000000004',
+				source_ref: { message_id: 'ses-00000000000000000000000000000005' },
+			},
+		] as never);
+		await expect(listFacts({ source: null })).rejects.toThrow('Invalid memory fact identity');
+	});
+
+	it('uses the requested kind and fact as the omitted-kind default for recall IDs', async () => {
+		invokeMock.mockResolvedValueOnce([
+			{ entity_id: 'msg-00000000000000000000000000000006' },
+		] as never);
+		await expect(recallMemory({ query: 'tea', kind: 'fact', limit: 5 })).rejects.toThrow(
+			'Invalid memory recall identity',
+		);
+
+		invokeMock.mockResolvedValueOnce([
+			{ entity_id: 'msg-00000000000000000000000000000007' },
+		] as never);
+		await expect(recallMemory({ query: 'tea', limit: 5 })).rejects.toThrow(
+			'Invalid memory recall identity',
+		);
+
+		const episodeId = 'msg-00000000000000000000000000000009';
+		invokeMock.mockResolvedValueOnce([{ entity_id: episodeId }] as never);
+		await expect(recallMemory({ query: 'tea', kind: 'episode', limit: 5 })).resolves.toEqual([
+			{ entity_id: episodeId },
+		]);
 	});
 });

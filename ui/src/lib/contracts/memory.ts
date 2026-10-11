@@ -15,7 +15,9 @@ import type {
 	MemoryEntityKindInput,
 	MemoryFactSourceInput,
 } from './generatedCommands.ts';
+import { isRecord } from './objectGuards.ts';
 import { isOneOf } from './valueGuards.ts';
+import { isCanonicalEntityId } from './wireGuards.ts';
 
 export type Fact = GeneratedMemoryFactResponse;
 export type MemoryRecallItem = GeneratedMemoryRecallItem;
@@ -44,4 +46,42 @@ export interface MemoryRecallState {
 	results: MemoryRecallResult[];
 	loading: boolean;
 	searched: boolean;
+}
+
+function hasFactIdentity(value: unknown): boolean {
+	return (
+		isRecord(value) &&
+		isCanonicalEntityId(value.id, 'fact') &&
+		(value.source_ref === null ||
+			(isRecord(value.source_ref) && isCanonicalEntityId(value.source_ref.message_id, 'msg')))
+	);
+}
+
+/** Validate a fact row and its optional source-message identity. */
+export function parseFactResponse(value: unknown): Fact {
+	if (!hasFactIdentity(value)) throw new Error('Invalid memory fact identity');
+	return value as unknown as Fact;
+}
+
+/** Validate fact identities before listing the persisted fact catalog. */
+export function parseFactResponses(value: unknown): Fact[] {
+	if (!Array.isArray(value) || !value.every(hasFactIdentity)) {
+		throw new Error('Invalid memory fact identity');
+	}
+	return value as unknown as Fact[];
+}
+
+/** Validate recall entity IDs against the exact kind requested from Rust. */
+export function parseMemoryRecallResponses(
+	value: unknown,
+	kind: MemoryRecallKind | null | undefined,
+): MemoryRecallItem[] {
+	const prefix = kind === 'episode' ? 'msg' : 'fact';
+	if (
+		!Array.isArray(value) ||
+		!value.every((item) => isRecord(item) && isCanonicalEntityId(item.entity_id, prefix))
+	) {
+		throw new Error('Invalid memory recall identity');
+	}
+	return value as unknown as MemoryRecallItem[];
 }

@@ -5,16 +5,24 @@ import type {
 	ListFactsRequest,
 	RecallMemoryRequest,
 } from './contracts/commands.ts';
-import type { Fact, MemoryRecallItem } from './contracts/memory.ts';
+import {
+	parseFactResponse,
+	parseFactResponses,
+	parseMemoryRecallResponses,
+	type Fact,
+	type MemoryRecallItem,
+} from './contracts/memory.ts';
 
 /** List facts through the named memory command boundary. */
-export function listFacts(request: ListFactsRequest): Promise<Fact[]> {
-	return invoke('list_facts', request);
+export async function listFacts(request: ListFactsRequest): Promise<Fact[]> {
+	const value: unknown = await invoke('list_facts', request);
+	return parseFactResponses(value);
 }
 
 /** Store a user-managed fact through the named memory command boundary. */
-export function addFact(request: AddFactRequest): Promise<Fact> {
-	return invoke('add_fact', request);
+export async function addFact(request: AddFactRequest): Promise<Fact> {
+	const value: unknown = await invoke('add_fact', request);
+	return parseFactResponse(value);
 }
 
 /** Delete one fact through the named memory command boundary. */
@@ -28,6 +36,7 @@ export function clearFacts(): Promise<number> {
 }
 
 /** Recall facts or episodes through the named memory command boundary. */
-export function recallMemory(request: RecallMemoryRequest): Promise<MemoryRecallItem[]> {
-	return invoke('recall_memory', request);
+export async function recallMemory(request: RecallMemoryRequest): Promise<MemoryRecallItem[]> {
+	const value: unknown = await invoke('recall_memory', request);
+	return parseMemoryRecallResponses(value, request.kind);
 }
