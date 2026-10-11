@@ -86,7 +86,7 @@ impl ToolBatchState {
         engine
             .record_tool_usage(
                 &ctx.session_id,
-                ctx.step_num as i32,
+                ctx.step_number as i32,
                 &self.tool_usages,
                 &ctx.emitter,
                 state.turn_cancel.clone(),
@@ -431,7 +431,7 @@ pub(super) struct ToolCallRequest {
     pub catalog: Arc<haven_tools::ToolCatalogSnapshot>,
     pub session_id: String,
     pub tool_call: ToolCall,
-    pub step_num: u32,
+    pub step_number: u32,
     pub tool_index: u32,
     pub step_id: String,
     pub receipt: Option<haven_tools::ConfirmationReceipt>,
@@ -444,7 +444,7 @@ pub(super) async fn execute_tool_call(request: ToolCallRequest) -> CompletedTool
         catalog,
         session_id,
         tool_call,
-        step_num,
+        step_number,
         tool_index,
         step_id,
         receipt,
@@ -456,7 +456,7 @@ pub(super) async fn execute_tool_call(request: ToolCallRequest) -> CompletedTool
     tracing::debug!(
         "executing tool '{}' at step {} (input keys: {:?})",
         tool_name,
-        step_num,
+        step_number,
         tool_input
             .as_object()
             .map(|o| o.keys().collect::<Vec<_>>())
@@ -465,7 +465,7 @@ pub(super) async fn execute_tool_call(request: ToolCallRequest) -> CompletedTool
     tracing::trace!(
         "tool '{}' at step {} input size: {} chars",
         tool_name,
-        step_num,
+        step_number,
         tool_input
             .as_object()
             .map(|o| serde_json::to_string(o).map(|s| s.len()).unwrap_or(0))
@@ -483,7 +483,7 @@ pub(super) async fn execute_tool_call(request: ToolCallRequest) -> CompletedTool
                     &session_id,
                     &tool_name,
                     tool_input,
-                    step_num,
+                    step_number,
                     tool_index,
                     tool_call.tool_call_id.as_deref(),
                     &step_id,
@@ -498,7 +498,7 @@ pub(super) async fn execute_tool_call(request: ToolCallRequest) -> CompletedTool
                     &session_id,
                     &tool_name,
                     tool_input,
-                    step_num,
+                    step_number,
                     tool_index,
                     tool_call.tool_call_id.as_deref(),
                     &step_id,
@@ -541,14 +541,14 @@ pub(super) async fn execute_tool_call(request: ToolCallRequest) -> CompletedTool
             tracing::debug!(
                 "tool '{}' at step {} completed: success={}, {} chars",
                 tool_name,
-                step_num,
+                step_number,
                 result.success,
                 output_len
             );
             tracing::trace!(
                 "tool '{}' at step {} full output: {} chars",
                 tool_name,
-                step_num,
+                step_number,
                 output_len
             );
             let step_result = executor.observation_text(&tool_name, &result).await;
@@ -567,7 +567,7 @@ pub(super) async fn execute_tool_call(request: ToolCallRequest) -> CompletedTool
             )
         }
         Err(error) => {
-            tracing::debug!("tool '{}' at step {} failed", tool_name, step_num);
+            tracing::debug!("tool '{}' at step {} failed", tool_name, step_number);
             let metadata = error
                 .downcast_ref::<haven_tools::StructuredToolError>()
                 .map(haven_tools::StructuredToolError::metadata);
@@ -691,7 +691,7 @@ impl ReActEngine {
         &self,
         session_id: &str,
         state: &mut ReActState,
-        step_num: u32,
+        step_number: u32,
         emitter: &Arc<dyn AgentEventEmitter>,
         run_id: u64,
         pending: crate::interaction::InteractionRequest,
@@ -710,13 +710,13 @@ impl ReActEngine {
         };
         let ctx = StepCtx {
             session_id: session_id.to_string(),
-            step_num,
+            step_number,
             run_id,
             emitter: emitter.clone(),
         };
         let mut effects = super::effects::EffectBatch::continue_batch();
         effects.pause(
-            step_num + 1,
+            step_number + 1,
             status,
             Some(haven_common::lifecycle::SessionWaitingReason::Ask),
             None,

@@ -601,7 +601,7 @@ impl StreamForwarder {
                 em_ws.emit(event).await;
             }
         });
-        let step_num = ctx.step_num;
+        let step_number = ctx.step_number;
         let run_id = ctx.run_id;
         let last_chunk_ms = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
         let last_chunk_c = last_chunk_ms.clone();
@@ -670,7 +670,7 @@ impl StreamForwarder {
                     session_id: reset_session_id_c.clone(),
                     thought_message_id: reset_thought_mid_c.clone(),
                     reasoning_message_id: reset_reasoning_mid_c.clone(),
-                    step_number: step_num,
+                    step_number,
                     run_id,
                 };
                 if let Err(e) = chunk_tx_c.try_send(marker) {
@@ -708,7 +708,7 @@ impl StreamForwarder {
                         session_id: session_id_c.clone(),
                         message_id: thought_mid.clone(),
                         delta: t.to_string(),
-                        step_number: step_num,
+                        step_number,
                         run_id,
                         reasoning: false,
                     })
@@ -736,7 +736,7 @@ impl StreamForwarder {
                         session_id: session_id_c.clone(),
                         message_id: reasoning_mid.clone(),
                         delta: r.clone(),
-                        step_number: step_num,
+                        step_number,
                         run_id,
                         reasoning: true,
                     })
@@ -750,7 +750,7 @@ impl StreamForwarder {
                 let item = update_tool_call_preview(
                     &tool_call_previews_chunk,
                     &session_id_c,
-                    step_num,
+                    step_number,
                     run_id,
                     ToolCallPreviewUpdate {
                         tool_index: update.index,
@@ -772,7 +772,7 @@ impl StreamForwarder {
                 let item = update_tool_call_preview(
                     &tool_call_previews_chunk,
                     &session_id_c,
-                    step_num,
+                    step_number,
                     run_id,
                     ToolCallPreviewUpdate {
                         tool_index: tool_index as u32,
@@ -792,7 +792,7 @@ impl StreamForwarder {
                 let event = AgentEvent::WebSearch {
                     session_id: session_id_c.to_string(),
                     phase: ws.phase.as_str().to_string(),
-                    step_number: step_num,
+                    step_number,
                     run_id,
                     call_id: ws.call_id.clone(),
                     action: ws.action.clone(),
@@ -843,12 +843,12 @@ impl StreamForwarder {
                     session_id: reset_marker_session,
                     thought_message_id: reset_marker_thought,
                     reasoning_message_id: reset_marker_reasoning,
-                    step_number: step_num,
+                    step_number,
                     run_id,
                 },
                 tool_call_previews,
                 preview_session_id,
-                preview_step_number: step_num,
+                preview_step_number: step_number,
                 preview_run_id: run_id,
                 chunk_consumer_task,
                 checkpoint_writer,
@@ -957,10 +957,11 @@ impl ReActEngine {
         }
         // Mint the block ids this call's chunks accumulate into. Reused by
         // the chunk events, the snap and the final persistence of this step.
-        let thought_msg_id = identity_map
-            .ensure_stream_block_message_id(StreamBlockIdentity::thought(ctx.step_num, ctx.run_id));
+        let thought_msg_id = identity_map.ensure_stream_block_message_id(
+            StreamBlockIdentity::thought(ctx.step_number, ctx.run_id),
+        );
         let reasoning_msg_id = identity_map.ensure_stream_block_message_id(
-            StreamBlockIdentity::reasoning(ctx.step_num, ctx.run_id),
+            StreamBlockIdentity::reasoning(ctx.step_number, ctx.run_id),
         );
         let limits = self.limits();
         let (forwarder, on_chunk, on_attempt_start) = StreamForwarder::new(
@@ -1007,7 +1008,7 @@ impl ReActEngine {
         if let Err(error) = forwarder.flush().await {
             tracing::error!(
                 session_id = %ctx.session_id,
-                step = ctx.step_num,
+                step_number = ctx.step_number,
                 error = %error,
                 "stream forwarding task failed while draining provider output"
             );
@@ -1032,7 +1033,7 @@ impl ReActEngine {
                 tracing::info!(
                     session_id = %ctx.session_id,
                     run_id = ctx.run_id,
-                    step_number = ctx.step_num,
+                    step_number = ctx.step_number,
                     request_kind = request.as_str(),
                     model = resp.model.as_deref().or(usage.model_name.as_deref()).unwrap_or("unknown"),
                     duration_ms,
@@ -1079,7 +1080,7 @@ impl ReActEngine {
             &ctx.session_id,
             request,
             response,
-            ctx.step_num as i32,
+            ctx.step_number as i32,
             Some(duration_ms),
             &ctx.emitter,
             Some(cancel),
@@ -1177,7 +1178,7 @@ impl ReActEngine {
                             let err_msg = format!("Failed to persist context compaction: {error}");
                             tracing::error!(
                                 session_id = %ctx.session_id,
-                                step = ctx.step_num,
+                                step_number = ctx.step_number,
                                 error = %error,
                                 "ReAct step cannot continue after compaction projection failure"
                             );
@@ -1192,7 +1193,7 @@ impl ReActEngine {
                             if !recovery.should_discard() {
                                 tracing::error!(
                                     session_id = %ctx.session_id,
-                                    step = ctx.step_num,
+                                    step_number = ctx.step_number,
                                     ?recovery,
                                     "compaction projection failure also failed recovery persistence"
                                 );
@@ -1225,7 +1226,7 @@ impl ReActEngine {
                         super::emit_media_plan(
                             &ctx.emitter,
                             &ctx.session_id,
-                            ctx.step_num,
+                            ctx.step_number,
                             ctx.run_id,
                             retry_request,
                             projection.media_plan,
@@ -1263,7 +1264,7 @@ impl ReActEngine {
                                 let err_msg = format!("Compaction retry also failed: {}", e2);
                                 tracing::error!(
                                     "ReAct step {} session {} fatal: {}",
-                                    ctx.step_num,
+                                    ctx.step_number,
                                     ctx.session_id,
                                     err_msg
                                 );
@@ -1278,7 +1279,7 @@ impl ReActEngine {
                                 if !recovery.should_discard() {
                                     tracing::error!(
                                         session_id = %ctx.session_id,
-                                        step = ctx.step_num,
+                                        step_number = ctx.step_number,
                                         ?recovery,
                                         "compaction retry failure also failed recovery persistence"
                                     );
@@ -1294,7 +1295,7 @@ impl ReActEngine {
                         let err_msg = "context length exceeded but compaction failed".to_string();
                         tracing::error!(
                             "ReAct step {} session {} fatal: {}",
-                            ctx.step_num,
+                            ctx.step_number,
                             ctx.session_id,
                             err_msg
                         );
@@ -1309,7 +1310,7 @@ impl ReActEngine {
                         if !recovery.should_discard() {
                             tracing::error!(
                                 session_id = %ctx.session_id,
-                                step = ctx.step_num,
+                                step_number = ctx.step_number,
                                 ?recovery,
                                 "compaction failure also failed recovery persistence"
                             );
@@ -1329,7 +1330,7 @@ impl ReActEngine {
                             format!("context length exceeded and compaction failed: {error}");
                         tracing::error!(
                             "ReAct step {} session {} fatal: {}",
-                            ctx.step_num,
+                            ctx.step_number,
                             ctx.session_id,
                             err_msg
                         );
@@ -1344,7 +1345,7 @@ impl ReActEngine {
                         if !recovery.should_discard() {
                             tracing::error!(
                                 session_id = %ctx.session_id,
-                                step = ctx.step_num,
+                                step_number = ctx.step_number,
                                 ?recovery,
                                 "compaction failure also failed recovery persistence"
                             );
@@ -1365,7 +1366,7 @@ impl ReActEngine {
                 let err_msg = format!("Model request failed: {}", e);
                 tracing::error!(
                     "ReAct step {} session {} fatal: {}",
-                    ctx.step_num,
+                    ctx.step_number,
                     ctx.session_id,
                     err_msg
                 );
@@ -1375,7 +1376,7 @@ impl ReActEngine {
                 if !recovery.should_discard() {
                     tracing::error!(
                         session_id = %ctx.session_id,
-                        step = ctx.step_num,
+                        step_number = ctx.step_number,
                         ?recovery,
                         "model request failure also failed recovery persistence"
                     );
@@ -1650,7 +1651,7 @@ mod tests {
         let emitter: Arc<dyn AgentEventEmitter> = Arc::new(NoopEmitter);
         let ctx = StepCtx {
             session_id: session.id,
-            step_num: 2,
+            step_number: 2,
             run_id: 1,
             emitter,
         };
@@ -1682,11 +1683,14 @@ mod tests {
         assert!(matches!(outcome, StepCallOutcome::Response(_)));
         let thought_id = state
             .identity_map
-            .peek_stream_block_message_id(StreamBlockIdentity::thought(ctx.step_num, ctx.run_id))
+            .peek_stream_block_message_id(StreamBlockIdentity::thought(ctx.step_number, ctx.run_id))
             .expect("primary stream minted thought id");
         let reasoning_id = state
             .identity_map
-            .peek_stream_block_message_id(StreamBlockIdentity::reasoning(ctx.step_num, ctx.run_id))
+            .peek_stream_block_message_id(StreamBlockIdentity::reasoning(
+                ctx.step_number,
+                ctx.run_id,
+            ))
             .expect("primary stream minted reasoning id");
 
         let retry_context = RequestContext::from_state(&state, None);
@@ -1696,7 +1700,7 @@ mod tests {
             state
                 .identity_map
                 .peek_stream_block_message_id(StreamBlockIdentity::thought(
-                    ctx.step_num,
+                    ctx.step_number,
                     ctx.run_id,
                 )),
             Some(thought_id),
@@ -1706,7 +1710,7 @@ mod tests {
             state
                 .identity_map
                 .peek_stream_block_message_id(StreamBlockIdentity::reasoning(
-                    ctx.step_num,
+                    ctx.step_number,
                     ctx.run_id,
                 )),
             Some(reasoning_id),
@@ -1751,7 +1755,7 @@ mod tests {
         );
         let ctx = StepCtx {
             session_id: session.id.clone(),
-            step_num: 2,
+            step_number: 2,
             run_id: 1,
             emitter: Arc::new(NoopEmitter),
         };

@@ -305,7 +305,7 @@ impl ReActEngine {
         SessionCommitted,
     )> {
         let event = normalize_transcript_event(event)?;
-        let record = event.to_record(ctx.step_num);
+        let record = event.to_record(ctx.step_number);
         let payload = match committed_ui_for(&event) {
             Some(ui) => encode_transcript_payload(&record, Some(&ui))?,
             None => record.to_payload()?,
@@ -313,12 +313,12 @@ impl ReActEngine {
         let mut committed = self.build_session_commit(ctx, &event, payload);
         let media_record = match &event {
             TranscriptEvent::UserInject { attachments, .. } => {
-                media_record_for_inject(ctx.step_num, attachments, self.media_strategy())
+                media_record_for_inject(ctx.step_number, attachments, self.media_strategy())
             }
             _ => None,
         };
         if let Some(media_record) = &media_record {
-            committed.push_transcript(media_record.to_payload()?, ctx.run_id, ctx.step_num);
+            committed.push_transcript(media_record.to_payload()?, ctx.run_id, ctx.step_number);
         }
         Ok((event, record, media_record, committed))
     }
@@ -329,10 +329,10 @@ impl ReActEngine {
         event: &TranscriptEvent,
         payload: String,
     ) -> SessionCommitted {
-        let mut committed = SessionCommitted::transcript(payload, ctx.run_id, ctx.step_num);
+        let mut committed = SessionCommitted::transcript(payload, ctx.run_id, ctx.step_number);
         match event {
             TranscriptEvent::Thought { text, message_id } => {
-                committed.project_thought_step(message_id.clone(), ctx.step_num);
+                committed.project_thought_step(message_id.clone(), ctx.step_number);
                 if !text.trim().is_empty() {
                     committed.project_assistant_message(
                         message_id.clone(),
@@ -368,7 +368,7 @@ impl ReActEngine {
                 for card in tool_call_cards {
                     committed.project_tool_call_step(
                         card.step_id.clone(),
-                        ctx.step_num,
+                        ctx.step_number,
                         card.tool_index,
                         card.tool_name.clone(),
                         card.tool_input.to_string(),
@@ -405,7 +405,7 @@ impl ReActEngine {
                         message_id
                             .clone()
                             .unwrap_or_else(|| haven_common::types::new_id("step")),
-                        ctx.step_num,
+                        ctx.step_number,
                     );
                 }
             }
@@ -436,7 +436,7 @@ impl ReActEngine {
                 MetricsPhase::EventAppend,
                 &ctx.session_id,
                 ctx.run_id,
-                ctx.step_num,
+                ctx.step_number,
             );
             self.event_store
                 .commit_transcript_cancellable(
@@ -497,7 +497,7 @@ impl ReActEngine {
                 MetricsPhase::EventAppend,
                 &ctx.session_id,
                 ctx.run_id,
-                ctx.step_num,
+                ctx.step_number,
             );
             self.event_store
                 .commit_transcript_cancellable(
@@ -543,7 +543,7 @@ impl ReActEngine {
                 MetricsPhase::EventAppend,
                 &ctx.session_id,
                 ctx.run_id,
-                ctx.step_num,
+                ctx.step_number,
             );
             self.event_store
                 .commit_transcript_cancellable(
@@ -595,7 +595,7 @@ impl ReActEngine {
             MetricsPhase::Projection,
             &ctx.session_id,
             ctx.run_id,
-            ctx.step_num,
+            ctx.step_number,
         );
         match event {
             TranscriptEvent::Thought { .. } => {
@@ -660,7 +660,7 @@ impl ReActEngine {
                 let media_was_persisted = persisted_media_record.is_some();
                 let media_record = match persisted_media_record {
                     Some(record) => Some(record),
-                    None => media_record_for_inject(ctx.step_num, &attachments, strategy),
+                    None => media_record_for_inject(ctx.step_number, &attachments, strategy),
                 };
                 if let Some(media_record) = media_record {
                     if !media_was_persisted {
@@ -672,7 +672,7 @@ impl ReActEngine {
                                 &ctx.session_id,
                                 &media_record,
                                 ctx.run_id,
-                                ctx.step_num,
+                                ctx.step_number,
                             )
                             .await?;
                         if sequence > 0 {
@@ -684,7 +684,7 @@ impl ReActEngine {
                                 payload: serde_json::to_string(&media_record)?,
                                 created_at: String::new(),
                                 run_id: Some(ctx.run_id),
-                                step_number: Some(ctx.step_num),
+                                step_number: Some(ctx.step_number),
                             };
                             self.committed_ui
                                 .publish(&ctx.emitter, std::slice::from_ref(&committed))
@@ -772,7 +772,7 @@ mod tests {
     fn step_ctx(session_id: &str) -> StepCtx {
         StepCtx {
             session_id: session_id.to_string(),
-            step_num: 1,
+            step_number: 1,
             run_id: 1,
             emitter: Arc::new(NoopEmitter),
         }
@@ -1244,7 +1244,7 @@ mod tests {
         let engine = test_engine(db);
         let ctx = StepCtx {
             session_id: session.id.clone(),
-            step_num: 2,
+            step_number: 2,
             run_id: 1,
             emitter: Arc::new(RecordingEmitter {
                 events: ui_events.clone(),
@@ -1350,7 +1350,7 @@ mod tests {
         let engine = test_engine(db);
         let ctx = StepCtx {
             session_id: session.id.clone(),
-            step_num: 3,
+            step_number: 3,
             run_id: 7,
             emitter: Arc::new(RecordingEmitter {
                 events: ui_events.clone(),
@@ -1431,7 +1431,7 @@ mod tests {
         let engine = test_engine(db);
         let ctx = StepCtx {
             session_id: session.id.clone(),
-            step_num: 4,
+            step_number: 4,
             run_id: 2,
             emitter: Arc::new(RecordingEmitter {
                 events: ui_events.clone(),
@@ -1709,7 +1709,7 @@ mod tests {
         engine.start_committed_ui_bridge(dispatcher, rx);
         let ctx = StepCtx {
             session_id: session.id.clone(),
-            step_num: 2,
+            step_number: 2,
             run_id: 3,
             emitter,
         };

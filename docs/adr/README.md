@@ -978,3 +978,4 @@
 - [0987：运维日志只记录内容分类与大小](0987-remove-content-and-path-from-logs.md)
 - [0988：统一配置与 Settings 的语义校验](0988-unify-settings-semantic-validation.md)
 - [0989：Provider 与 MCP 日志只记录稳定错误类别](0989-classify-provider-and-mcp-logs.md)
+- [0990：统一步骤计数与消息身份名称](0990-normalize-step-and-message-identity-names.md)

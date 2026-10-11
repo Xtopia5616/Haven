@@ -210,28 +210,28 @@ impl AgentLayer {
                         // frontend is told to drop its copy below).
                         if let Some(msg) = persisted_msg.take() {
                             let tid = session_id.clone();
-                            let msg_id = msg.id.clone();
+                            let message_id = msg.id.clone();
                             if let Err(e) = self
                                 .executor
                                 .session_store()
-                                .delete_message_by_id(&tid, &msg_id)
+                                .delete_message_by_id(&tid, &message_id)
                                 .await
                             {
                                 tracing::warn!(
                                     "process_input: failed to remove ghost user message {} for session {}: {}",
-                                    msg_id,
+                                    message_id,
                                     tid,
                                     e
                                 );
                                 if let Err(marker_error) = self
                                     .executor
                                     .session_store()
-                                    .discard_pending_user_input(&tid, &msg_id)
+                                    .discard_pending_user_input(&tid, &message_id)
                                     .await
                                 {
                                     tracing::warn!(
                                         "process_input: failed to clear recovery marker for rejected user message {} in session {}: {}",
-                                        msg_id,
+                                        message_id,
                                         tid,
                                         marker_error
                                     );

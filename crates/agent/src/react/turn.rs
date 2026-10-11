@@ -63,7 +63,7 @@ impl ReActEngine {
     /// whose search calls are only visible in the aggregate response.
     fn web_search_return_effects(
         session_id: &str,
-        step_num: u32,
+        step_number: u32,
         run_id: u64,
         web_search_calls: &[serde_json::Value],
     ) -> Vec<crate::event::AgentEvent> {
@@ -75,7 +75,7 @@ impl ReActEngine {
             events.push(crate::event::AgentEvent::WebSearch {
                 session_id: session_id.to_string(),
                 phase: "completed".into(),
-                step_number: step_num,
+                step_number,
                 run_id,
                 call_id: item
                     .get("id")
@@ -143,7 +143,7 @@ impl ReActEngine {
             tool_call_cards: Vec::new(),
             persist_text_id: (synthesized_final && thought.is_none()).then(|| {
                 state.stream_block_message_id_or_new(StreamBlockIdentity::thought(
-                    ctx.step_num,
+                    ctx.step_number,
                     ctx.run_id,
                 ))
             }),
@@ -153,11 +153,11 @@ impl ReActEngine {
             // Search round: no answer yet — keep the turn open and re-request
             // with the search context in the next input.
             effects.push(TurnEffect::SaveBranchPoint {
-                step_number: ctx.step_num,
+                step_number: ctx.step_number,
             });
             tracing::debug!(
                 "ReAct step {} session {} server-side search round ({} item(s)); continuing",
-                ctx.step_num,
+                ctx.step_number,
                 ctx.session_id,
                 response.web_search_calls.len()
             );
@@ -182,7 +182,7 @@ impl ReActEngine {
             incomplete_tool_args_retries,
         } = input;
         let session_id = &ctx.session_id;
-        let step_num = ctx.step_num;
+        let step_number = ctx.step_number;
         deadline.ensure_remaining("turn start")?;
         self.metrics.increment(MetricsCounter::TurnStarts);
 
@@ -194,10 +194,10 @@ impl ReActEngine {
                 MetricsPhase::ContextInject,
                 session_id,
                 ctx.run_id,
-                step_num,
+                step_number,
             );
             self.inject_turn_start_context(&ctx, state)
-                .instrument(tracing::info_span!("inject", session_id, step_num))
+                .instrument(tracing::info_span!("inject", session_id, step_number))
                 .await?;
             deadline.ensure_remaining("context injection")?;
         }
@@ -205,7 +205,7 @@ impl ReActEngine {
         let before_step = self
             .hooks
             .before_step(self, &ctx, state, cancel.clone())
-            .instrument(tracing::info_span!("before_step", session_id, step_num))
+            .instrument(tracing::info_span!("before_step", session_id, step_number))
             .await?;
         deadline.ensure_remaining("before-step hooks")?;
 
@@ -227,7 +227,7 @@ impl ReActEngine {
                 MetricsPhase::TokenEstimate,
                 session_id,
                 ctx.run_id,
-                step_num,
+                step_number,
             );
             state.estimate_canonical_tokens()
         };
@@ -236,7 +236,7 @@ impl ReActEngine {
                 MetricsPhase::RequestContext,
                 session_id,
                 ctx.run_id,
-                step_num,
+                step_number,
             );
             RequestContext::from_state_with_estimate(
                 state,
@@ -247,7 +247,7 @@ impl ReActEngine {
         if request_context.repairs() > 0 {
             tracing::warn!(
                 session_id,
-                step_num,
+                step_number,
                 repairs = request_context.repairs(),
                 "sanitize_canonical repaired dangling tool calls before LLM"
             );
@@ -280,7 +280,7 @@ impl ReActEngine {
         super::emit_media_plan(
             &ctx.emitter,
             session_id,
-            step_num,
+            step_number,
             ctx.run_id,
             request,
             projection.media_plan,
@@ -293,7 +293,7 @@ impl ReActEngine {
         tracing::debug!(
             "ReAct turn: session={} step={} messages={} tools={}",
             session_id,
-            step_num,
+            step_number,
             projection.request_context.messages().len(),
             tools.len()
         );
@@ -313,10 +313,10 @@ impl ReActEngine {
         let response = {
             let _timer =
                 self.metrics
-                    .start(MetricsPhase::LlmStream, session_id, ctx.run_id, step_num);
+                    .start(MetricsPhase::LlmStream, session_id, ctx.run_id, step_number);
             match stream
                 .run(state, &request_context, retry_nudge.as_ref())
-                .instrument(tracing::info_span!("llm", session_id, step_num))
+                .instrument(tracing::info_span!("llm", session_id, step_number))
                 .await
             {
                 StepCallOutcome::Response(response) => *response,
@@ -345,7 +345,7 @@ impl ReActEngine {
             tracing::info!(
                 "ReAct turn cancelled while the model response was in flight: session={} step={}",
                 session_id,
-                step_num
+                step_number
             );
             return Ok(effects.with_exit(LoopExit::Cancelled));
         }
@@ -354,7 +354,7 @@ impl ReActEngine {
         // failed/empty candidate is only visible as streamed scratch output;
         // the accepted response below is the first response that may become
         // durable assistant state.
-        let parsed_response = Self::parse_default_model_response(&response, step_num);
+        let parsed_response = Self::parse_default_model_response(&response, step_number);
         let thought = parsed_response.thought;
         let tool_calls = parsed_response.tool_calls;
         deadline.ensure_remaining("response parsing")?;
@@ -406,7 +406,7 @@ impl ReActEngine {
 
         if let Some(reasoning) = response.reasoning.clone() {
             let reasoning_id = state.stream_block_message_id_or_new(
-                StreamBlockIdentity::reasoning(step_num, ctx.run_id),
+                StreamBlockIdentity::reasoning(step_number, ctx.run_id),
             );
             effects.transcript(TranscriptEvent::Reasoning {
                 text: reasoning.clone(),
@@ -417,7 +417,7 @@ impl ReActEngine {
                 crate::event::AgentEvent::ReasoningChunk {
                     session_id: session_id.clone(),
                     delta: reasoning,
-                    step_number: step_num,
+                    step_number,
                     run_id: ctx.run_id,
                     message_id: reasoning_id,
                 },
@@ -437,7 +437,7 @@ impl ReActEngine {
 
         for event in Self::web_search_return_effects(
             session_id,
-            step_num,
+            step_number,
             ctx.run_id,
             &response.web_search_calls,
         ) {
@@ -445,8 +445,10 @@ impl ReActEngine {
         }
 
         if let Some(text) = thought.clone() {
-            let message_id = state
-                .stream_block_message_id_or_new(StreamBlockIdentity::thought(step_num, ctx.run_id));
+            let message_id = state.stream_block_message_id_or_new(StreamBlockIdentity::thought(
+                step_number,
+                ctx.run_id,
+            ));
             effects.transcript(TranscriptEvent::Thought { text, message_id });
         }
 
@@ -469,7 +471,7 @@ impl ReActEngine {
                 matches!(
                     event,
                     crate::types::TranscriptRecord::Thought { step_number, .. }
-                        if *step_number == step_num
+                        if *step_number == ctx.step_number
                 )
             });
 
@@ -484,7 +486,7 @@ impl ReActEngine {
                     .is_some();
                 anyhow::ensure!(has_pending_ask, "ask state changed before resume");
                 effects.pause(
-                    step_num + 1,
+                    step_number + 1,
                     SessionStatus::Paused,
                     Some(haven_common::lifecycle::SessionWaitingReason::Ask),
                     None,
@@ -566,7 +568,7 @@ mod search_context_tests {
     fn synthesized_search_final_is_projected_by_its_tool_call_commit() {
         let ctx = StepCtx {
             session_id: "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
-            step_num: 7,
+            step_number: 7,
             run_id: 3,
             emitter: Arc::new(NoopEmitter),
         };

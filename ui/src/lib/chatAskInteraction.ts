@@ -103,26 +103,26 @@ export function createAskInteractionController({
 	}
 
 	function handleAskSelectionChange(
-		msgId: string,
+		messageId: string,
 		selectedOptions: string[] | null | undefined,
 	) {
 		const sessionId = getActiveSessionId();
-		if (!sessionId || !msgId) return;
+		if (!sessionId || !messageId) return;
 		const byMessage = askSelections.get(sessionId) || new Map<string, string[]>();
-		if (!selectedOptions || selectedOptions.length === 0) byMessage.delete(msgId);
-		else byMessage.set(msgId, [...selectedOptions]);
+		if (!selectedOptions || selectedOptions.length === 0) byMessage.delete(messageId);
+		else byMessage.set(messageId, [...selectedOptions]);
 		if (byMessage.size === 0) askSelections.delete(sessionId);
 		else askSelections.set(sessionId, byMessage);
 		refreshSelectionsReady();
 	}
 
-	function getAskSelection(msgId: string) {
+	function getAskSelection(messageId: string) {
 		const sessionId = getActiveSessionId();
-		return sessionId ? [...(askSelections.get(sessionId)?.get(msgId) || [])] : [];
+		return sessionId ? [...(askSelections.get(sessionId)?.get(messageId) || [])] : [];
 	}
 
-	function resolvedResponseFor(sessionId: string, msgId: string) {
-		const request = reducer.snapshot().interactions[msgId];
+	function resolvedResponseFor(sessionId: string, messageId: string) {
+		const request = reducer.snapshot().interactions[messageId];
 		if (
 			request?.owner.kind !== 'session' ||
 			request.owner.sessionId !== sessionId ||
@@ -164,24 +164,24 @@ export function createAskInteractionController({
 	}
 
 	function resolveAsk(
-		msgId: string,
+		messageId: string,
 		resolved: AskResponseView,
 		opts: ResolveAskOptions = {},
 	) {
 		const sessionId = getActiveSessionId();
-		if (!sessionId || !msgId) return;
+		if (!sessionId || !messageId) return;
 		const ids = resolvedAskIds.get(sessionId) || new Set<string>();
 		// A double-click must not compose and submit the same answer twice.
-		if (ids.has(msgId)) return;
+		if (ids.has(messageId)) return;
 		const response: AskResponseView = resolved.ignored
 			? { ignored: true }
 			: { answer: resolved.answer || '' };
-		reducer.dispatch({ type: 'session/ask-resolved', id: msgId, response });
-		ids.add(msgId);
+		reducer.dispatch({ type: 'session/ask-resolved', id: messageId, response });
+		ids.add(messageId);
 		resolvedAskIds.set(sessionId, ids);
 		const byMessage = askSelections.get(sessionId);
 		if (byMessage) {
-			byMessage.delete(msgId);
+			byMessage.delete(messageId);
 			if (byMessage.size === 0) askSelections.delete(sessionId);
 		}
 		refreshSelectionsReady();
@@ -230,9 +230,9 @@ export function createAskInteractionController({
 		submitMessage(text, images, files);
 	}
 
-	function handleIgnoreAsk(msgId: string) {
+	function handleIgnoreAsk(messageId: string) {
 		if (!getActiveSessionId()) return;
-		resolveAsk(msgId, { ignored: true });
+		resolveAsk(messageId, { ignored: true });
 	}
 
 	return {

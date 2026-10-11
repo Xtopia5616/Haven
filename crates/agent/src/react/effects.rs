@@ -172,7 +172,7 @@ impl EffectBatch {
                         .execute_tool_batch(
                             &ctx.session_id,
                             state,
-                            ctx.step_num,
+                            ctx.step_number,
                             &ctx.emitter,
                             ctx.run_id,
                             &tool_calls,
@@ -280,7 +280,7 @@ async fn apply_projection_effect(
         }
         TurnEffect::ExitAtBoundary { exit } => {
             let exit = engine
-                .exit_at_boundary(&ctx.session_id, state, ctx.step_num, exit)
+                .exit_at_boundary(&ctx.session_id, state, ctx.step_number, exit)
                 .await;
             return Ok(ProjectionProgress::Stop(TurnControl::Done(exit)));
         }

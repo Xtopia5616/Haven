@@ -194,7 +194,7 @@ describe('ChatSessionController rollback', () => {
 			stepNumber: 4,
 			role: 'user' as const,
 			content: '重新编辑这段',
-			msgId: USER_MESSAGE_ID,
+			messageId: USER_MESSAGE_ID,
 		});
 
 		expect(harness.commandCalls[0]).toEqual({
@@ -225,7 +225,7 @@ describe('ChatSessionController rollback', () => {
 			stepNumber: 7,
 			role: 'assistant' as const,
 			content: '',
-			msgId: 'step-00000000000000000000000000000007',
+			messageId: 'step-00000000000000000000000000000007',
 		});
 
 		expect(harness.commandCalls[0]?.args).toEqual({
@@ -244,7 +244,7 @@ describe('ChatSessionController rollback', () => {
 			stepNumber: 8,
 			role: 'user' as const,
 			content: '正在保存',
-			msgId: 'step-00000000000000000000000000000008',
+			messageId: 'step-00000000000000000000000000000008',
 		});
 
 		expect(harness.commandCalls).toEqual([]);
@@ -376,7 +376,7 @@ describe('ChatSessionController continue', () => {
 			stepNumber: 7,
 			role: 'assistant' as const,
 			content: '',
-			msgId: 'step-00000000000000000000000000000007',
+			messageId: 'step-00000000000000000000000000000007',
 		};
 
 		const first = harness.controller.confirmRollbackAction(request);

@@ -2309,7 +2309,7 @@ mod tests {
             )
             .await
             .unwrap();
-        let msg_id = sent.output["message_id"].as_str().unwrap().to_string();
+        let message_id = sent.output["message_id"].as_str().unwrap().to_string();
 
         // B reads → a receipt lands in A's mailbox automatically.
         let result = tool
@@ -2338,7 +2338,7 @@ mod tests {
         let ack = &result.output["messages"][0];
         assert_eq!(ack["type"], "receipt");
         assert_eq!(ack["from"], "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
-        assert_eq!(ack["in_reply_to"], msg_id);
+        assert_eq!(ack["in_reply_to"], message_id);
 
         // Reading the receipt produces no further acks (no loops).
         tool.execute(

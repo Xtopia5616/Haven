@@ -223,13 +223,13 @@
 		stepNumber: number | null;
 		role: SessionMessageContextMenuRequest['role'] | null;
 		content: string;
-		msgId: string;
+		messageId: string;
 	}>({
 		open: false,
 		stepNumber: null,
 		role: null,
 		content: '',
-		msgId: '',
+		messageId: '',
 	});
 	let rollbackLoading = $state(false);
 
@@ -441,13 +441,13 @@
 		stepNumber: number | null;
 		content: string;
 		role: SessionMessageContextMenuRequest['role'] | null;
-		msgId: string;
+		messageId: string;
 		selectedContent: string;
 	}>({
 		stepNumber: null,
 		content: '',
 		role: null,
-		msgId: '',
+		messageId: '',
 		selectedContent: '',
 	});
 
@@ -456,7 +456,7 @@
 			stepNumber: ev.stepNumber,
 			content: ev.content,
 			role: ev.role,
-			msgId: ev.messageId,
+			messageId: ev.messageId,
 			selectedContent: ev.selectedContent || '',
 		};
 		ctxMenu = next;
@@ -476,8 +476,8 @@
 		if (ctxMenu.stepNumber != null) return ctxMenu.stepNumber;
 		// For user messages, look forward in the message list to the next
 		// assistant message that carries a stepNumber.
-		if (ctxMenu.role === 'user' && ctxMenu.msgId) {
-			const idx = messages.findIndex((m) => m.id === ctxMenu.msgId);
+		if (ctxMenu.role === 'user' && ctxMenu.messageId) {
+			const idx = messages.findIndex((m) => m.id === ctxMenu.messageId);
 			if (idx >= 0) {
 				const next = messages.slice(idx + 1).find((m) => m.stepNumber != null);
 				if (next) return next.stepNumber;
@@ -508,7 +508,7 @@
 			stepNumber: step,
 			role: ctxMenu.role,
 			content: ctxMenu.content,
-			msgId: ctxMenu.msgId,
+			messageId: ctxMenu.messageId,
 		};
 		closeCtxMenu();
 	}
@@ -531,7 +531,7 @@
 			stepNumber: null,
 			content: '',
 			role: null,
-			msgId: '',
+			messageId: '',
 			selectedContent: '',
 		};
 		closeGlobalContextMenu();
@@ -923,7 +923,7 @@
 		},
 		setRollbackLoading: (loading) => (rollbackLoading = loading),
 		closeRollbackDialog: () => {
-			rollbackDialog = { open: false, stepNumber: null, role: null, content: '', msgId: '' };
+			rollbackDialog = { open: false, stepNumber: null, role: null, content: '', messageId: '' };
 		},
 		closeSessionMenu: () => (sessionMenuOpen = false),
 		setContinuePending: (pending) => (continuePending = pending),
@@ -939,7 +939,7 @@
 			stepNumber,
 			role,
 			content: rollbackDialog.content,
-			msgId: rollbackDialog.msgId,
+			messageId: rollbackDialog.messageId,
 		});
 	}
 
@@ -1110,7 +1110,7 @@
 					stepNumber: null,
 					role: null,
 					content: '',
-					msgId: '',
+					messageId: '',
 				};
 		}}
 	/>

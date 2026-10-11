@@ -342,7 +342,7 @@ impl ReActEngine {
             }
             let ctx = StepCtx {
                 session_id: session_id.to_string(),
-                step_num: boundary_step,
+                step_number: boundary_step,
                 run_id,
                 emitter: emitter.clone(),
             };
@@ -415,7 +415,7 @@ impl ReActEngine {
                 .await;
             let ctx = StepCtx {
                 session_id: session_id.to_string(),
-                step_num: boundary_step,
+                step_number: boundary_step,
                 run_id,
                 emitter: emitter.clone(),
             };
@@ -515,7 +515,7 @@ impl ReActEngine {
         }
         let ctx = StepCtx {
             session_id: session_id.to_string(),
-            step_num: step_number,
+            step_number,
             run_id,
             emitter: emitter.clone(),
         };
@@ -648,7 +648,7 @@ impl ReActEngine {
             .append_recovery_marker(
                 &ctx.session_id,
                 ctx.run_id,
-                ctx.step_num,
+                ctx.step_number,
                 "started",
                 RecoveryPersistenceStatus {
                     branch_point: false,
@@ -663,7 +663,7 @@ impl ReActEngine {
                 .append_recovery_marker(
                     &ctx.session_id,
                     ctx.run_id,
-                    ctx.step_num,
+                    ctx.step_number,
                     "failed",
                     RecoveryPersistenceStatus {
                         branch_point: false,
@@ -682,7 +682,7 @@ impl ReActEngine {
             };
             tracing::error!(
                 session_id = %ctx.session_id,
-                step = ctx.step_num,
+                step_number = ctx.step_number,
                 ?result,
                 "recovery persistence protocol could not start; retaining scratch partial"
             );
@@ -699,7 +699,7 @@ impl ReActEngine {
         // point in the durable event timeline; a throttled (stale) row would silently
         // skip their message truncation.
         let branch_point = self
-            .save_branch_point(&ctx.session_id, state, ctx.step_num, true)
+            .save_branch_point(&ctx.session_id, state, ctx.step_number, true)
             .await
             .is_ok();
 
@@ -710,7 +710,7 @@ impl ReActEngine {
         let mut projection = true;
         if !reasoning_text.trim().is_empty() {
             let message_id = state.stream_block_message_id_or_new(StreamBlockIdentity::reasoning(
-                ctx.step_num,
+                ctx.step_number,
                 ctx.run_id,
             ));
             if let Err(error) = self
@@ -725,7 +725,7 @@ impl ReActEngine {
                 partial_messages = false;
                 tracing::error!(
                     session_id = %ctx.session_id,
-                    step = ctx.step_num,
+                    step_number = ctx.step_number,
                     error = %error,
                     "failed to persist recovery reasoning partial; retaining scratch partial"
                 );
@@ -736,7 +736,7 @@ impl ReActEngine {
         if !thought_text.trim().is_empty() {
             let text = thought_text.trim();
             let message_id = state.stream_block_message_id_or_new(StreamBlockIdentity::thought(
-                ctx.step_num,
+                ctx.step_number,
                 ctx.run_id,
             ));
             if let Err(error) = self
@@ -751,7 +751,7 @@ impl ReActEngine {
                 partial_messages = false;
                 tracing::error!(
                     session_id = %ctx.session_id,
-                    step = ctx.step_num,
+                    step_number = ctx.step_number,
                     error = %error,
                     "failed to persist recovery thought partial; retaining scratch partial"
                 );
@@ -762,7 +762,7 @@ impl ReActEngine {
                 &ctx.emitter,
                 &ctx.session_id,
                 text,
-                ctx.step_num,
+                ctx.step_number,
                 ctx.run_id,
                 &message_id,
                 &self.event_store,
@@ -772,7 +772,7 @@ impl ReActEngine {
                 projection = false;
                 tracing::error!(
                     session_id = %ctx.session_id,
-                    step = ctx.step_num,
+                    step_number = ctx.step_number,
                     error = %error,
                     "failed to project recovery thought step"
                 );
@@ -786,7 +786,7 @@ impl ReActEngine {
             .ensure_event_boundary_with_error_partials(
                 &ctx.session_id,
                 state,
-                ctx.step_num,
+                ctx.step_number,
                 Some(&error_partial_message_ids),
             )
             .await;
@@ -805,7 +805,7 @@ impl ReActEngine {
             .append_recovery_marker(
                 &ctx.session_id,
                 ctx.run_id,
-                ctx.step_num,
+                ctx.step_number,
                 marker_phase,
                 RecoveryPersistenceStatus {
                     branch_point,
@@ -830,7 +830,7 @@ impl ReActEngine {
                     self.append_recovery_marker(
                         &ctx.session_id,
                         ctx.run_id,
-                        ctx.step_num,
+                        ctx.step_number,
                         "failed",
                         RecoveryPersistenceStatus {
                             branch_point,
@@ -850,7 +850,7 @@ impl ReActEngine {
         } else {
             tracing::error!(
                 session_id = %ctx.session_id,
-                step = ctx.step_num,
+                step_number = ctx.step_number,
                 ?result,
                 "recovery persistence failed; retaining scratch partial for retry"
             );
@@ -882,7 +882,7 @@ impl ReActEngine {
             Err(error) => {
                 tracing::error!(
                     session_id,
-                    step = step_number,
+                    step_number = step_number,
                     phase,
                     error = %error,
                     "failed to persist recovery protocol marker"
@@ -912,7 +912,7 @@ impl ReActEngine {
             .map_err(|error| {
                 tracing::warn!(
                     session_id,
-                    step = step_number,
+                    step_number = step_number,
                     error = %error,
                     "failed to append durable branch point"
                 );

@@ -94,13 +94,13 @@ impl LoopHooks for DefaultHooks {
             .instrument(tracing::info_span!(
                 "compact",
                 session_id = %ctx.session_id,
-                step_num = ctx.step_num
+                step_number = ctx.step_number
             ))
             .await?;
         let interval = engine.limits().fact_infer_interval_steps;
         let memory_trigger =
-            (ctx.step_num > 0 && interval > 0 && ctx.step_num.is_multiple_of(interval))
-                .then(|| MemoryTriggerPayload::step_interval(ctx.run_id, ctx.step_num));
+            (ctx.step_number > 0 && interval > 0 && ctx.step_number.is_multiple_of(interval))
+                .then(|| MemoryTriggerPayload::step_interval(ctx.run_id, ctx.step_number));
         Ok(BeforeStepOutput {
             tool_definitions: Some(prepared_tools.definitions),
             tool_token_estimate: Some(prepared_tools.token_estimate),
@@ -187,7 +187,7 @@ impl LoopHooks for DefaultHooks {
         };
         Some(MemoryTriggerPayload::pause(
             ctx.run_id,
-            ctx.step_num,
+            ctx.step_number,
             pause_reason,
         ))
     }

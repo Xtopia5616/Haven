@@ -66,7 +66,7 @@ impl ReActEngine {
         } else {
             Some(
                 state.stream_block_message_id_or_new(StreamBlockIdentity::thought(
-                    ctx.step_num,
+                    ctx.step_number,
                     ctx.run_id,
                 )),
             )
@@ -90,14 +90,14 @@ impl ReActEngine {
         // claimed once by the turn-start assembly. A successful inject
         // suppresses the pause below and continues the run.
         effects.push(TurnEffect::InjectTurnEnd {
-            step_number: ctx.step_num,
+            step_number: ctx.step_number,
         });
 
         effects.pause(
-            ctx.step_num + 1,
+            ctx.step_number + 1,
             SessionStatus::Paused,
             None,
-            Some(ctx.step_num),
+            Some(ctx.step_number),
             PauseReason::TurnEnd,
         );
         effects = EffectBatch::with_effects(

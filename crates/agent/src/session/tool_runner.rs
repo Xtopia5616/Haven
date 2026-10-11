@@ -121,7 +121,7 @@ struct ToolStepRequest<'a> {
     session_id: &'a str,
     tool_name: &'a str,
     input: &'a Value,
-    step_num: u32,
+    step_number: u32,
     tool_index: u32,
     tool_call_id: Option<&'a str>,
     step_id: &'a str,
@@ -151,7 +151,7 @@ impl ToolStepContext {
     fn new_with_metadata(request: ToolStepRequest<'_>, metadata: ToolStepMetadata) -> Self {
         Self {
             session_id: request.session_id.into(),
-            step_number: request.step_num as i32,
+            step_number: request.step_number as i32,
             tool_index: request.tool_index as i32,
             tool_name: request.tool_name.into(),
             tool_input: request.input.to_string(),
@@ -203,11 +203,19 @@ impl SessionSupervisor {
         session_id: &str,
         tool_name: &str,
         input: &Value,
-        step_num: u32,
+        step_number: u32,
         step_id: &str,
     ) -> anyhow::Result<()> {
-        self.begin_tool_step_with_identity(session_id, tool_name, input, step_num, 0, None, step_id)
-            .await
+        self.begin_tool_step_with_identity(
+            session_id,
+            tool_name,
+            input,
+            step_number,
+            0,
+            None,
+            step_id,
+        )
+        .await
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -216,7 +224,7 @@ impl SessionSupervisor {
         session_id: &str,
         tool_name: &str,
         input: &Value,
-        step_num: u32,
+        step_number: u32,
         tool_index: u32,
         tool_call_id: Option<&str>,
         step_id: &str,
@@ -226,7 +234,7 @@ impl SessionSupervisor {
                 session_id,
                 tool_name,
                 input,
-                step_num,
+                step_number,
                 tool_index,
                 tool_call_id,
                 step_id,
@@ -257,7 +265,7 @@ impl SessionSupervisor {
         session_id: &str,
         tool_name: &str,
         input: &Value,
-        step_num: u32,
+        step_number: u32,
         step_id: &str,
         observation: &str,
     ) {
@@ -265,7 +273,7 @@ impl SessionSupervisor {
             session_id,
             tool_name,
             input,
-            step_num,
+            step_number,
             0,
             None,
             step_id,
@@ -284,7 +292,7 @@ impl SessionSupervisor {
         session_id: &str,
         tool_name: &str,
         input: &Value,
-        step_num: u32,
+        step_number: u32,
         tool_index: u32,
         tool_call_id: Option<&str>,
         step_id: &str,
@@ -296,7 +304,7 @@ impl SessionSupervisor {
                 session_id,
                 tool_name,
                 input,
-                step_num,
+                step_number,
                 tool_index,
                 tool_call_id,
                 step_id,
@@ -315,7 +323,7 @@ impl SessionSupervisor {
         session_id: &str,
         tool_name: &str,
         input: &Value,
-        step_num: u32,
+        step_number: u32,
         tool_index: u32,
         tool_call_id: Option<&str>,
         step_id: &str,
@@ -328,7 +336,7 @@ impl SessionSupervisor {
                 session_id,
                 tool_name,
                 input,
-                step_num,
+                step_number,
                 tool_index,
                 tool_call_id,
                 step_id,
@@ -366,7 +374,7 @@ impl SessionSupervisor {
         session_id: &str,
         tool_name: &str,
         input: &Value,
-        step_num: u32,
+        step_number: u32,
         tool_index: u32,
         tool_call_id: Option<&str>,
         step_id: &str,
@@ -376,7 +384,7 @@ impl SessionSupervisor {
             session_id,
             tool_name,
             input,
-            step_num,
+            step_number,
             tool_index,
             tool_call_id,
             step_id,
@@ -392,7 +400,7 @@ impl SessionSupervisor {
         session_id: &str,
         tool_name: &str,
         input: &Value,
-        step_num: u32,
+        step_number: u32,
         tool_index: u32,
         tool_call_id: Option<&str>,
         step_id: &str,
@@ -403,7 +411,7 @@ impl SessionSupervisor {
             session_id,
             tool_name,
             input,
-            step_num,
+            step_number,
             tool_index,
             tool_call_id,
             step_id,
@@ -422,11 +430,19 @@ impl SessionSupervisor {
         session_id: &str,
         tool_name: &str,
         input: &Value,
-        step_num: u32,
+        step_number: u32,
         step_id: &str,
     ) -> anyhow::Result<()> {
-        self.start_tool_step_with_identity(session_id, tool_name, input, step_num, 0, None, step_id)
-            .await
+        self.start_tool_step_with_identity(
+            session_id,
+            tool_name,
+            input,
+            step_number,
+            0,
+            None,
+            step_id,
+        )
+        .await
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -435,7 +451,7 @@ impl SessionSupervisor {
         session_id: &str,
         tool_name: &str,
         input: &Value,
-        step_num: u32,
+        step_number: u32,
         tool_index: u32,
         tool_call_id: Option<&str>,
         step_id: &str,
@@ -445,7 +461,7 @@ impl SessionSupervisor {
                 session_id,
                 tool_name,
                 input,
-                step_num,
+                step_number,
                 tool_index,
                 tool_call_id,
                 step_id,
@@ -491,10 +507,10 @@ impl SessionSupervisor {
         session_id: &str,
         tool_name: &str,
         input: Value,
-        step_num: u32,
+        step_number: u32,
         step_id: &str,
     ) -> anyhow::Result<ToolResult> {
-        self.execute_step_with_identity(session_id, tool_name, input, step_num, 0, None, step_id)
+        self.execute_step_with_identity(session_id, tool_name, input, step_number, 0, None, step_id)
             .await
     }
 
@@ -504,7 +520,7 @@ impl SessionSupervisor {
         session_id: &str,
         tool_name: &str,
         input: Value,
-        step_num: u32,
+        step_number: u32,
         tool_index: u32,
         tool_call_id: Option<&str>,
         step_id: &str,
@@ -513,7 +529,7 @@ impl SessionSupervisor {
             session_id,
             tool_name,
             input,
-            step_num,
+            step_number,
             tool_index,
             tool_call_id,
             step_id,
@@ -533,7 +549,7 @@ impl SessionSupervisor {
         session_id: &str,
         tool_name: &str,
         input: Value,
-        step_num: u32,
+        step_number: u32,
         tool_index: u32,
         tool_call_id: Option<&str>,
         step_id: &str,
@@ -544,7 +560,7 @@ impl SessionSupervisor {
             session_id,
             tool_name,
             input,
-            step_num,
+            step_number,
             tool_index,
             tool_call_id,
             step_id,
@@ -563,12 +579,19 @@ impl SessionSupervisor {
         session_id: &str,
         tool_name: &str,
         input: Value,
-        step_num: u32,
+        step_number: u32,
         step_id: &str,
         receipt: haven_tools::ConfirmationReceipt,
     ) -> anyhow::Result<ToolResult> {
         self.execute_step_preconfirmed_with_identity(
-            session_id, tool_name, input, step_num, 0, None, step_id, receipt,
+            session_id,
+            tool_name,
+            input,
+            step_number,
+            0,
+            None,
+            step_id,
+            receipt,
         )
         .await
     }
@@ -579,7 +602,7 @@ impl SessionSupervisor {
         session_id: &str,
         tool_name: &str,
         input: Value,
-        step_num: u32,
+        step_number: u32,
         tool_index: u32,
         tool_call_id: Option<&str>,
         step_id: &str,
@@ -589,7 +612,7 @@ impl SessionSupervisor {
             session_id,
             tool_name,
             input,
-            step_num,
+            step_number,
             tool_index,
             tool_call_id,
             step_id,
@@ -606,7 +629,7 @@ impl SessionSupervisor {
         session_id: &str,
         tool_name: &str,
         input: Value,
-        step_num: u32,
+        step_number: u32,
         tool_index: u32,
         tool_call_id: Option<&str>,
         step_id: &str,
@@ -618,7 +641,7 @@ impl SessionSupervisor {
             session_id,
             tool_name,
             input,
-            step_num,
+            step_number,
             tool_index,
             tool_call_id,
             step_id,
@@ -635,7 +658,7 @@ impl SessionSupervisor {
         session_id: &str,
         tool_name: &str,
         input: Value,
-        step_num: u32,
+        step_number: u32,
         tool_index: u32,
         tool_call_id: Option<&str>,
         step_id: &str,
@@ -690,7 +713,7 @@ impl SessionSupervisor {
                         session_id,
                         tool_name,
                         &input,
-                        step_num,
+                        step_number,
                         tool_index,
                         tool_call_id.as_deref(),
                         step_id,
@@ -703,7 +726,7 @@ impl SessionSupervisor {
                         session_id,
                         tool_name,
                         &input,
-                        step_num,
+                        step_number,
                         tool_index,
                         tool_call_id.as_deref(),
                         step_id,
@@ -723,7 +746,7 @@ impl SessionSupervisor {
             session_id,
             tool_name,
             input: &input,
-            step_num,
+            step_number,
             tool_index,
             tool_call_id: tool_call_id.as_deref(),
             step_id,
@@ -759,7 +782,7 @@ impl SessionSupervisor {
                         session_id,
                         tool_name,
                         &input,
-                        step_num,
+                        step_number,
                         tool_index,
                         tool_call_id.as_deref(),
                         step_id,
@@ -773,7 +796,7 @@ impl SessionSupervisor {
                         session_id,
                         tool_name,
                         &input,
-                        step_num,
+                        step_number,
                         tool_index,
                         tool_call_id.as_deref(),
                         step_id,
@@ -814,7 +837,7 @@ impl SessionSupervisor {
         } else {
             Vec::new()
         };
-        let step_number = step_num as i32;
+        let persisted_step_number = step_number as i32;
         // Guard against rollback/cancel: if the session has been removed from the
         // running set while the tool was executing (e.g. rollback_session marked
         // it Error and restored a snapshot), skip persisting step records that
@@ -862,7 +885,7 @@ impl SessionSupervisor {
             actor
                 .record_step(StepInfo {
                     id: persist_step_id.clone(),
-                    step_number,
+                    step_number: persisted_step_number,
                     tool_name: tool_name_owned.clone(),
                     input: input.clone(),
                     output: Some(result.output.clone()),
@@ -879,7 +902,7 @@ impl SessionSupervisor {
                 session_id,
                 tool_name,
                 input: &input,
-                step_num,
+                step_number,
                 tool_index,
                 tool_call_id: tool_call_id.as_deref(),
                 step_id,

@@ -19,7 +19,7 @@ export interface RollbackRequest {
 	stepNumber: number;
 	role: CanonicalRole;
 	content: string;
-	msgId: string;
+	messageId: string;
 }
 
 export interface ChatSessionControllerDependencies {
@@ -93,7 +93,7 @@ export class ChatSessionController {
 	async confirmRollbackAction(request: RollbackRequest): Promise<void> {
 		const sessionId = this.dependencies.getActiveSessionId();
 		if (!sessionId || this.rollbackInFlight) return;
-		if (request.role === 'user' && !isCanonicalEntityId(request.msgId, 'msg')) {
+		if (request.role === 'user' && !isCanonicalEntityId(request.messageId, 'msg')) {
 			this.dependencies.notify('消息仍在保存，请稍后再试', 'info', 2000);
 			return;
 		}
@@ -105,7 +105,7 @@ export class ChatSessionController {
 				sessionId,
 				targetStep: request.stepNumber,
 				pause: request.role === 'user',
-				targetMessageId: request.role === 'user' ? request.msgId : null,
+				targetMessageId: request.role === 'user' ? request.messageId : null,
 			});
 			this.dependencies.dispatch({ type: 'session/replay-reset', sessionId });
 			this.dependencies.clearStepBlockIds(sessionId);

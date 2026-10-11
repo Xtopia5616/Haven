@@ -402,6 +402,8 @@ Common transcript contracts（`CanonicalMessage`、`CanonicalRole`、`CanonicalT
 | Tauri 命令 | snake_case（`get_log_info`） | invoke 时转换 |
 | 实体 ID | `{prefix}-{uuid32}`（统一） | 原样透传 |
 
+- 步骤计数在 Rust 内部、tracing 字段、事件与数据库列统一叫 `step_number`，前端叫 `stepNumber`；禁止在内部缩写成 `step_num`。
+- 消息实体引用在 Rust 内部叫 `message_id`，前端叫 `messageId`；禁止缩写成 `msg_id` / `msgId`。
 - **前端只在边界转换**（invoke 调用 / 事件监听处），内部统一 camelCase。
 - **Rust-owned Settings snapshot 是边界例外**：`get_settings` / `update_settings` 透传同一全量 `Settings` shape，UI 的 Settings parser、编辑态和保存 payload 保留 Rust-owned snake_case 字段；不为局部 camelCase 改名而重建或复制完整配置结构。只有 Rust 与 UI 同时迁移到新的显式 DTO/mapper 后，才可更改此契约（ADR 0341）。
 - **Reactive / 数据字段**（如 DB 行字段、测试 fixture）允许保留后端 snake_case，不强行改前端内部就 camelCase 化。

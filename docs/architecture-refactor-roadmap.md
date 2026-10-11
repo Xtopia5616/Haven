@@ -223,6 +223,8 @@ Settings 的 64 位整数统一限制为 JavaScript 安全整数；Common 校验
 
 LLM Provider 的重试、连接探测、adapter/stream 初始化以及 MCP 的连接、工具刷新、shutdown、子进程清理和 SSE 解析日志统一移除外部错误文本，改记稳定错误类别、固定事件描述或字节数；返回错误和状态事件保持原有语义（ADR 0989）。
 
+Agent 内部步骤计数及 tracing 字段统一为 `step_number`，Rust/UI 的消息身份内部引用统一为 `message_id` / `messageId`；现有事件、数据库及 IPC wire shape 保持（ADR 0990）。
+
 Compaction、memory embedding maintenance、App 启动/恢复、clipboard history 和 managed-media cleanup 的错误日志现统一清洗；上传批次与生成媒体目录项日志移除 basename，避免暴露用户文件名（ADR 0981）。
 
 Agent compaction 与 media-plan toast 现由 `+layout` 统一持有；chat controller 保留 media-plan session 状态投影，chat usage handler 不再写通知 store（ADR 0982）。

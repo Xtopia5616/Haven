@@ -213,15 +213,15 @@ impl ReActEngine {
         let mut incomplete_tool_args_retries = 0u32;
         let mut tool_retry_budget = ToolRetryBudget::default();
         let mut last_step = start_step.saturating_sub(1);
-        for step_num in budget.start_step..=budget.max_allowed_step_number {
-            last_step = step_num;
+        for step_number in budget.start_step..=budget.max_allowed_step_number {
+            last_step = step_number;
             let parent_cancel = self.executor.cancellation_token(session_id).await;
             if parent_cancel.is_cancelled() {
-                return Ok(self.exit_cancelled(session_id, state, step_num).await);
+                return Ok(self.exit_cancelled(session_id, state, step_number).await);
             }
 
             match self
-                .run_state_boundary(session_id, state, step_num, &emitter, run_id)
+                .run_state_boundary(session_id, state, step_number, &emitter, run_id)
                 .await
             {
                 ReActRunBoundary::Run => {}
@@ -243,7 +243,7 @@ impl ReActEngine {
                     .run(TurnInput {
                         ctx: StepCtx {
                             session_id: session_id.to_string(),
-                            step_num,
+                            step_number,
                             run_id,
                             emitter: emitter.clone(),
                         },
@@ -253,18 +253,18 @@ impl ReActEngine {
                         // The turn receives the policy result, not the budget
                         // representation. This keeps tool execution independent
                         // from run accounting and fixes resumed-run boundaries.
-                        allow_tool_retry: budget.allows_tool_retry(step_num),
+                        allow_tool_retry: budget.allows_tool_retry(step_number),
                         tool_retry_budget: &mut tool_retry_budget,
                         incomplete_tool_args_retries: &mut incomplete_tool_args_retries,
                     })
-                    .instrument(tracing::info_span!("turn", session_id, step_num))
+                    .instrument(tracing::info_span!("turn", session_id, step_number))
                     .await?;
                 // Tool execution is one effect of the batch, so it shares this
                 // absolute deadline and cancellation token with provider work.
                 self.apply_effect_batch(
                     &StepCtx {
                         session_id: session_id.to_string(),
-                        step_num,
+                        step_number,
                         run_id,
                         emitter: emitter.clone(),
                     },
@@ -284,12 +284,12 @@ impl ReActEngine {
                 Ok(Ok(outcome)) => outcome,
                 Ok(Err(error)) => {
                     if !self
-                        .ensure_event_boundary(session_id, state, step_num)
+                        .ensure_event_boundary(session_id, state, step_number)
                         .await
                     {
                         tracing::error!(
                             session_id,
-                            step = step_num,
+                            step_number = step_number,
                             error = %error,
                             "failed to verify ReAct event boundary after turn error"
                         );
@@ -301,15 +301,15 @@ impl ReActEngine {
                     let error = anyhow::anyhow!(
                         "turn deadline exceeded at session '{}' step {}",
                         session_id,
-                        step_num
+                        step_number
                     );
                     if !self
-                        .ensure_event_boundary(session_id, state, step_num)
+                        .ensure_event_boundary(session_id, state, step_number)
                         .await
                     {
                         tracing::error!(
                             session_id,
-                            step = step_num,
+                            step_number = step_number,
                             "failed to verify event boundary after turn deadline"
                         );
                     }
@@ -334,13 +334,13 @@ impl ReActEngine {
         &self,
         session_id: &str,
         state: &ReActState,
-        step_num: u32,
+        step_number: u32,
         emitter: &Arc<dyn AgentEventEmitter>,
         run_id: u64,
     ) -> ReActRunBoundary {
         match self.executor.get_active_session_status(session_id).await {
             None | Some(SessionStatus::Completed) => ReActRunBoundary::Exit(
-                self.exit_at_boundary(session_id, state, step_num, LoopExit::Completed)
+                self.exit_at_boundary(session_id, state, step_number, LoopExit::Completed)
                     .await,
             ),
             Some(SessionStatus::Error) => {
@@ -350,14 +350,14 @@ impl ReActEngine {
                     self.exit_at_boundary(
                         session_id,
                         state,
-                        step_num,
+                        step_number,
                         LoopExit::Error("session interrupted".into()),
                     )
                     .await,
                 )
             }
             Some(status) if status.is_paused() => ReActRunBoundary::Exit(
-                self.exit_external_pause(session_id, state, step_num, emitter, run_id)
+                self.exit_external_pause(session_id, state, step_number, emitter, run_id)
                     .await,
             ),
             _ => ReActRunBoundary::Run,

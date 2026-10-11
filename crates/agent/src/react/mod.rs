@@ -404,7 +404,7 @@ pub(crate) struct ReActEngine {
 #[derive(Clone)]
 pub(super) struct StepCtx {
     pub(super) session_id: String,
-    pub(super) step_num: u32,
+    pub(super) step_number: u32,
     pub(super) run_id: u64,
     pub(super) emitter: Arc<dyn AgentEventEmitter>,
 }

@@ -79,7 +79,7 @@ struct ToolBatchExecution {
 
 struct AdmittedToolExecutionRequest<'a> {
     session_id: &'a str,
-    step_num: u32,
+    step_number: u32,
     ctx: &'a StepCtx,
     plan: &'a ToolBatchPlan,
     catalog: Arc<haven_tools::ToolCatalogSnapshot>,
@@ -121,7 +121,7 @@ impl ReActEngine {
     async fn admit_tool_batch(
         &self,
         session_id: &str,
-        step_num: u32,
+        step_number: u32,
         gate_ctx: &StepCtx,
         catalog: &haven_tools::ToolCatalogSnapshot,
         plan: &ToolBatchPlan,
@@ -219,7 +219,7 @@ impl ReActEngine {
                         .need_confirm
                         .push(crate::interaction::InteractionRequest::confirm(
                             session_id,
-                            step_num,
+                            step_number,
                             planned.tool_call.tool_name.clone(),
                             planned.tool_call.tool_input.clone(),
                             planned.tool_call.tool_call_id.clone().unwrap_or_default(),
@@ -241,7 +241,7 @@ impl ReActEngine {
                     failure.plan_index,
                     self.failed_admission_tool(
                         session_id,
-                        step_num,
+                        step_number,
                         planned,
                         catalog,
                         failure.error,
@@ -264,7 +264,7 @@ impl ReActEngine {
     async fn failed_admission_tool(
         &self,
         session_id: &str,
-        step_num: u32,
+        step_number: u32,
         planned: &super::tool_batch_plan::PlannedTool,
         catalog: &haven_tools::ToolCatalogSnapshot,
         error: String,
@@ -274,7 +274,7 @@ impl ReActEngine {
                 session_id,
                 &planned.tool_call.tool_name,
                 &planned.tool_call.tool_input,
-                step_num,
+                step_number,
                 planned.tool_index,
                 planned.tool_call.tool_call_id.as_deref(),
                 &planned.step_id,
@@ -304,7 +304,7 @@ impl ReActEngine {
     ) -> anyhow::Result<ToolBatchExecution> {
         let AdmittedToolExecutionRequest {
             session_id,
-            step_num,
+            step_number,
             ctx,
             plan,
             catalog,
@@ -357,14 +357,14 @@ impl ReActEngine {
                         MetricsPhase::ToolExecution,
                         &metric_session_id,
                         run_id,
-                        step_num,
+                        step_number,
                     );
                     let result = execute_tool_call(ToolCallRequest {
                         executor,
                         catalog,
                         session_id,
                         tool_call,
-                        step_num,
+                        step_number,
                         tool_index,
                         step_id,
                         receipt: admitted.receipt,
@@ -380,10 +380,10 @@ impl ReActEngine {
             tokio::select! {
                 biased;
                 _ = cancel_res.cancelled() => {
-                    tracing::info!("ReAct loop cancelled during tool batch at step {}", step_num);
+                    tracing::info!("ReAct loop cancelled during tool batch at step {}", step_number);
                     self.repair_cancelled_results(
                         session_id,
-                        step_num,
+                        step_number,
                         plan,
                         catalog.as_ref(),
                         &started,
@@ -409,7 +409,7 @@ impl ReActEngine {
         if cancel_res.is_cancelled() {
             self.repair_cancelled_results(
                 session_id,
-                step_num,
+                step_number,
                 plan,
                 catalog.as_ref(),
                 &started,
@@ -458,7 +458,7 @@ impl ReActEngine {
     async fn repair_cancelled_results(
         &self,
         session_id: &str,
-        step_num: u32,
+        step_number: u32,
         plan: &ToolBatchPlan,
         catalog: &haven_tools::ToolCatalogSnapshot,
         started: &[AtomicBool],
@@ -480,7 +480,7 @@ impl ReActEngine {
                     session_id,
                     &planned.tool_call.tool_name,
                     &planned.tool_call.tool_input,
-                    step_num,
+                    step_number,
                     planned.tool_index,
                     planned.tool_call.tool_call_id.as_deref(),
                     &planned.step_id,
@@ -518,7 +518,7 @@ impl ReActEngine {
         &self,
         session_id: &str,
         state: &mut ReActState,
-        step_num: u32,
+        step_number: u32,
         emitter: &Arc<dyn AgentEventEmitter>,
         run_id: u64,
         tool_calls: &[ToolCall],
@@ -541,14 +541,14 @@ impl ReActEngine {
         if !validation_failures.is_empty() {
             tracing::warn!(
                 "ReAct step {} session {} rejected {} invalid tool call(s)",
-                step_num,
+                step_number,
                 session_id,
                 validation_failures.len()
             );
         }
         let step_ctx = StepCtx {
             session_id: session_id.to_string(),
-            step_num,
+            step_number,
             run_id,
             emitter: emitter.clone(),
         };
@@ -588,9 +588,7 @@ impl ReActEngine {
                 persist_text_id: None,
             });
         }
-        commit.push(super::effects::TurnEffect::SaveBranchPoint {
-            step_number: step_num,
-        });
+        commit.push(super::effects::TurnEffect::SaveBranchPoint { step_number });
         self.apply_committed_batch(&step_ctx, state, commit).await?;
 
         // Phase 5 / E3: pre-check every planned tool_call before spawning.
@@ -599,10 +597,10 @@ impl ReActEngine {
         let admission = {
             let _timer =
                 self.metrics
-                    .start(MetricsPhase::ToolAdmission, session_id, run_id, step_num);
+                    .start(MetricsPhase::ToolAdmission, session_id, run_id, step_number);
             self.admit_tool_batch(
                 session_id,
-                step_num,
+                step_number,
                 &step_ctx,
                 catalog.as_ref(),
                 &plan,
@@ -620,7 +618,7 @@ impl ReActEngine {
         let execution = self
             .execute_admitted_tools(AdmittedToolExecutionRequest {
                 session_id,
-                step_num,
+                step_number,
                 ctx: &step_ctx,
                 plan: &plan,
                 catalog: catalog.clone(),
@@ -640,7 +638,7 @@ impl ReActEngine {
         if execution.cancelled || need_confirm.is_empty() {
             let _timer =
                 self.metrics
-                    .start(MetricsPhase::OrderedCommit, session_id, run_id, step_num);
+                    .start(MetricsPhase::OrderedCommit, session_id, run_id, step_number);
             batch_state
                 .project_ordered_results(self, &step_ctx, execution.results, state)
                 .await?;
@@ -651,7 +649,7 @@ impl ReActEngine {
             // pre-batch branch point (the response and partial tool results
             // are discarded by the exit).
             return Ok(ToolBatchOutcome::Done(
-                self.exit_cancelled(session_id, state, step_num).await,
+                self.exit_cancelled(session_id, state, step_number).await,
             ));
         }
 
@@ -706,13 +704,13 @@ impl ReActEngine {
         if need_confirm.is_empty()
             && batch_state.asked_questions.is_empty()
             && !self
-                .ensure_event_boundary_after_tool_results(session_id, state, step_num + 1)
+                .ensure_event_boundary_after_tool_results(session_id, state, step_number + 1)
                 .await
         {
             anyhow::bail!(
                 "failed to durably checkpoint tool results for session '{}' at step {}",
                 session_id,
-                step_num
+                step_number
             );
         }
 
@@ -723,7 +721,7 @@ impl ReActEngine {
         // next turn still surfaces the question.
         if !need_confirm.is_empty() {
             let confirmation_plan = super::tool_batch_plan::ConfirmationBatchPlan::from_plan(
-                step_num,
+                step_number,
                 &plan,
                 &need_confirm,
             )?;
@@ -751,7 +749,7 @@ impl ReActEngine {
                 .await?;
             let mut pause = super::effects::EffectBatch::continue_batch();
             pause.pause(
-                step_num + 1,
+                step_number + 1,
                 SessionStatus::Paused,
                 Some(haven_common::lifecycle::SessionWaitingReason::Confirmation),
                 None,
@@ -772,7 +770,7 @@ impl ReActEngine {
                 .pause_for_ask(
                     session_id,
                     state,
-                    step_num,
+                    step_number,
                     emitter,
                     run_id,
                     crate::interaction::InteractionRequest::ask(
@@ -788,7 +786,7 @@ impl ReActEngine {
         match session_state {
             Some(s) if s.is_paused() => {
                 return Ok(ToolBatchOutcome::Done(
-                    self.exit_external_pause(session_id, state, step_num, emitter, run_id)
+                    self.exit_external_pause(session_id, state, step_number, emitter, run_id)
                         .await,
                 ));
             }
@@ -797,7 +795,7 @@ impl ReActEngine {
                     self.exit_at_boundary(
                         session_id,
                         state,
-                        step_num,
+                        step_number,
                         LoopExit::Error("session interrupted".into()),
                     )
                     .await,
@@ -806,7 +804,7 @@ impl ReActEngine {
             // Session gone (end_session/terminal cleanup) or completed: exit.
             None | Some(SessionStatus::Completed) => {
                 return Ok(ToolBatchOutcome::Done(
-                    self.exit_at_boundary(session_id, state, step_num, LoopExit::Completed)
+                    self.exit_at_boundary(session_id, state, step_number, LoopExit::Completed)
                         .await,
                 ));
             }
@@ -848,7 +846,7 @@ impl ReActEngine {
                 super::tool_batch_plan::ConfirmationBatchPlan::from_confirm_requests(&pending)
             });
         continuation.validate_requests(&pending)?;
-        let step_num = continuation.step_number;
+        let step_number = continuation.step_number;
         let canonical_calls = state
             .events
             .iter()
@@ -858,25 +856,25 @@ impl ReActEngine {
                     step_number,
                     tool_calls,
                     ..
-                } if *step_number == step_num => Some(tool_calls.as_slice()),
+                } if *step_number == continuation.step_number => Some(tool_calls.as_slice()),
                 _ => None,
             })
             .ok_or_else(|| {
                 anyhow::anyhow!(
                     "confirmation batch at step {} has no durable ToolCall transcript",
-                    step_num
+                    step_number
                 )
             })?;
         let plan = ToolBatchPlan::from_confirmation_batch(&continuation, canonical_calls)?;
         anyhow::ensure!(
-            super::tool_batch_plan::ConfirmationBatchPlan::from_plan(step_num, &plan, &pending,)?
+            super::tool_batch_plan::ConfirmationBatchPlan::from_plan(step_number, &plan, &pending,)?
                 == continuation,
             "confirmation batch plan does not match its durable ToolCall transcript"
         );
         let catalog = self.tool_catalog.catalog_snapshot(session_id).await;
         let proj_ctx = StepCtx {
             session_id: session_id.to_string(),
-            step_num,
+            step_number,
             run_id,
             emitter: emitter.clone(),
         };
@@ -917,7 +915,7 @@ impl ReActEngine {
                 let Some(decision) = pending_request.decision() else {
                     tracing::warn!(
                         session_id,
-                        step_num,
+                        step_number,
                         plan_index,
                         "confirm batch resumed before every decision was recorded"
                     );
@@ -935,7 +933,7 @@ impl ReActEngine {
                     plan_index,
                     self.failed_admission_tool(
                         session_id,
-                        step_num,
+                        step_number,
                         planned,
                         catalog.as_ref(),
                         error,
@@ -952,7 +950,7 @@ impl ReActEngine {
                     plan_index,
                     self.failed_admission_tool(
                         session_id,
-                        step_num,
+                        step_number,
                         planned,
                         catalog.as_ref(),
                         failure.render(),
@@ -994,7 +992,7 @@ impl ReActEngine {
                         session_id,
                         &planned.tool_call.tool_name,
                         &planned.tool_call.tool_input,
-                        step_num,
+                        step_number,
                         planned.tool_index,
                         planned.tool_call.tool_call_id.as_deref(),
                         &planned.step_id,
@@ -1023,7 +1021,7 @@ impl ReActEngine {
         let execution = self
             .execute_admitted_tools(AdmittedToolExecutionRequest {
                 session_id,
-                step_num,
+                step_number,
                 ctx: &proj_ctx,
                 plan: &plan,
                 catalog,
@@ -1043,18 +1041,18 @@ impl ReActEngine {
 
         if execution.cancelled {
             return Ok(ToolBatchOutcome::Done(
-                self.exit_cancelled(session_id, state, step_num).await,
+                self.exit_cancelled(session_id, state, step_number).await,
             ));
         }
 
         if !self
-            .ensure_event_boundary_after_confirm_results(session_id, state, step_num + 1)
+            .ensure_event_boundary_after_confirm_results(session_id, state, step_number + 1)
             .await
         {
             anyhow::bail!(
                 "failed to durably checkpoint confirmed tool results for session '{}' at step {}",
                 session_id,
-                step_num
+                step_number
             );
         }
         let pending_ask = if !batch_state.asked_questions.is_empty() {
@@ -1074,7 +1072,7 @@ impl ReActEngine {
         };
         if let Some(pending) = pending_ask {
             return self
-                .pause_for_ask(session_id, state, step_num, emitter, run_id, pending)
+                .pause_for_ask(session_id, state, step_number, emitter, run_id, pending)
                 .await;
         }
 

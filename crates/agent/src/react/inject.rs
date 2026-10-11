@@ -117,7 +117,7 @@ impl ReActEngine {
 
         if let Some(claim) = inbox_claim {
             if self
-                .ensure_event_boundary(&ctx.session_id, state, ctx.step_num)
+                .ensure_event_boundary(&ctx.session_id, state, ctx.step_number)
                 .await
             {
                 if !claim.complete().await {
@@ -252,7 +252,7 @@ mod pending_context_tests {
         let (engine, session_id) = test_engine();
         let ctx = StepCtx {
             session_id: session_id.clone(),
-            step_num: 1,
+            step_number: 1,
             run_id: 1,
             emitter: std::sync::Arc::new(NoopEmitter),
         };
@@ -321,7 +321,7 @@ mod pending_context_tests {
         );
         let ctx = StepCtx {
             session_id: session.id.clone(),
-            step_num: 1,
+            step_number: 1,
             run_id: 1,
             emitter: std::sync::Arc::new(NoopEmitter),
         };

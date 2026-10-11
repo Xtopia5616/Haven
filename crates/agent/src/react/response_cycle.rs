@@ -89,7 +89,7 @@ impl ReActEngine {
                         Ok(retry_call) => {
                             let parsed_response = ReActEngine::parse_default_model_response(
                                 &retry_call.response,
-                                ctx.step_num,
+                                ctx.step_number,
                             );
                             self.record_step_usage(
                                 ctx,
@@ -109,7 +109,7 @@ impl ReActEngine {
                         Err(error) => {
                             tracing::warn!(
                                 session_id = %ctx.session_id,
-                                step_number = ctx.step_num,
+                                step_number = ctx.step_number,
                                 error = %error,
                                 "incomplete-tool-arguments retry failed"
                             );
@@ -137,7 +137,7 @@ impl ReActEngine {
         if !recovery.should_discard() {
             tracing::error!(
                 session_id = %ctx.session_id,
-                step = ctx.step_num,
+                step_number = ctx.step_number,
                 reason,
                 ?recovery,
                 "response error also failed recovery persistence"
