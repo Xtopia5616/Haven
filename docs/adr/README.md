@@ -930,3 +930,4 @@
 - [0939：移除 Agent crate 对 Memory 类型的重复导出](0939-remove-agent-reexports-of-memory-types.md)
 - [0940：将 ManagedAssetRegistry 限制为 Tools 内部实现](0940-hide-managed-asset-registry.md)
 - [0941：移除 Input 对 Common AudioConfig 的重复导出](0941-remove-input-audio-config-reexport.md)
+- [0942：将 shell runtime helpers 限制在 Tools 内部](0942-restrict-shell-runtime-helpers-to-tools.md)

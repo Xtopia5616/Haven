@@ -1,19 +1,19 @@
 /// Windows `CREATE_NO_WINDOW` process creation flag. The contained-spawn owner
 /// combines it with the suspended-process flag before spawning.
 #[cfg(windows)]
-pub const CREATE_NO_WINDOW: u32 = 0x08000000;
+pub(crate) const CREATE_NO_WINDOW: u32 = 0x08000000;
 
 /// Build the platform command used to run `command` in the requested
 /// interpreter (cmd or powershell), with stdout/stderr piped. The process
 /// owner supplies `CREATE_NO_WINDOW` when appropriate and combines it with
 /// the suspended-process containment flag.
-pub fn build_shell_command(shell: &str, command: &str) -> std::process::Command {
+pub(crate) fn build_shell_command(shell: &str, command: &str) -> std::process::Command {
     build_shell_command_silent(shell, command)
 }
 
 /// Interpreter selection + piped stdio WITHOUT the `CREATE_NO_WINDOW` flag.
 /// Callers decide whether to suppress the console window.
-pub fn build_shell_command_silent(shell: &str, command: &str) -> std::process::Command {
+pub(crate) fn build_shell_command_silent(shell: &str, command: &str) -> std::process::Command {
     #[cfg(windows)]
     let mut std_cmd = match shell {
         // `powershell` (Windows built-in PS 5.1) and `pwsh` (PowerShell 7+)
@@ -116,7 +116,7 @@ fn encode_utf16le_base64(text: &str) -> String {
 /// environment (user-configured proxy) short-circuit the probe entirely —
 /// a detected local proxy must never override an explicit configuration.
 #[cfg(windows)]
-pub fn proxy_env_vars() -> Vec<(String, String)> {
+pub(crate) fn proxy_env_vars() -> Vec<(String, String)> {
     use std::net::{SocketAddr, TcpStream};
     use std::sync::OnceLock;
     use std::time::{Duration, Instant};
@@ -172,20 +172,20 @@ pub fn proxy_env_vars() -> Vec<(String, String)> {
 }
 
 #[cfg(not(windows))]
-pub fn proxy_env_vars() -> Vec<(String, String)> {
+pub(crate) fn proxy_env_vars() -> Vec<(String, String)> {
     Vec::new()
 }
 
 /// Directory for per-command output logs (background ToolRuns and failed
 /// foreground commands), under Haven's shared runtime Temp directory.
-pub fn output_log_dir(kind: &str) -> std::path::PathBuf {
+fn output_log_dir(kind: &str) -> std::path::PathBuf {
     haven_common::config::default_runtime_temp_root().join(kind)
 }
 
 /// Write a command's full (sanitized) output to a log file so a condensed
 /// failure summary never hides the root cause (e.g. an npm install failure
 /// whose real error sits mid-log). Returns the log file path.
-pub fn write_output_log(kind: &str, id: &str, text: &str) -> std::path::PathBuf {
+pub(crate) fn write_output_log(kind: &str, id: &str, text: &str) -> std::path::PathBuf {
     let dir = output_log_dir(kind);
     let path = dir.join(format!("{id}.log"));
     if let Err(e) = std::fs::create_dir_all(&dir) {
@@ -209,7 +209,7 @@ pub fn write_output_log(kind: &str, id: &str, text: &str) -> std::path::PathBuf 
 /// Byte budget for collecting a command's combined stdout/stderr, derived
 /// from the configured character cap (4 bytes/char worst case for UTF-8,
 /// floored at 8 KiB). Shared by the foreground and background shell paths.
-pub fn collect_byte_cap(max_chars: usize) -> usize {
+pub(crate) fn collect_byte_cap(max_chars: usize) -> usize {
     max_chars.saturating_mul(4).max(8192)
 }
 

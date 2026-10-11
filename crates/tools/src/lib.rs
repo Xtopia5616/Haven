@@ -173,10 +173,9 @@ pub use security::{
     permission_prompt_summary,
 };
 #[cfg(windows)]
-pub use shell_runtime::CREATE_NO_WINDOW;
-pub use shell_runtime::{
-    build_shell_command, build_shell_command_silent, collect_byte_cap, output_log_dir,
-    proxy_env_vars, write_output_log,
+pub(crate) use shell_runtime::CREATE_NO_WINDOW;
+pub(crate) use shell_runtime::{
+    build_shell_command_silent, collect_byte_cap, proxy_env_vars, write_output_log,
 };
 #[cfg(feature = "test-support")]
 pub use skill_runner::SkillRunner;
