@@ -19,14 +19,15 @@ use serde::{Deserialize, Serialize};
 //   - External ids (LLM `tool_call_id`, provider model ids, MCP session ids)
 //     keep their provider formats; `run_id`/`gen_id` are in-process u64
 //     run/generation counters, not persisted entity ids.
-//   - Generate ids with `new_id(prefix)` — never build them by hand.
+//   - Generate string IDs with `new_id(prefix)` — never build them by hand.
+//     Runtime `ConfirmId` and `RecordingId` use their type-specific `new()`.
 //   - Rust/DB/event fields use snake_case `xxx_id`; the frontend maps to
 //     camelCase `xxxId` at the boundary.
 
 /// Generate an ID in the canonical `{prefix}-{uuid32}` format.
-/// Persisted entity IDs must come from here (see the module docs above), then
-/// be converted into their newtype with `.into()`; process-local entity ids
-/// also use it and are never persisted.
+/// Persisted entity IDs and untyped process-local IDs must come from here (see
+/// the module docs above). Runtime `ConfirmId` and `RecordingId` use their
+/// type-specific constructors, which call this function with a fixed prefix.
 pub fn new_id(prefix: &str) -> String {
     format!("{prefix}-{}", uuid::Uuid::new_v4().simple())
 }
@@ -58,18 +59,18 @@ pub fn is_canonical_id(id: &str, prefix: &str) -> bool {
 /// `{prefix}-{uuid32}` form. `non_exhaustive` preserves the documented public
 /// tuple shape while preventing downstream crates from bypassing validation.
 macro_rules! id_newtype {
-	($(#[$attr:meta])* $name:ident, $prefix:literal) => {
+    ($(#[$attr:meta])* $name:ident, $prefix:literal) => {
         $(#[$attr])*
         #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-		#[serde(try_from = "String")]
-		#[non_exhaustive]
-		pub struct $name(pub String);
+        #[serde(try_from = "String")]
+        #[non_exhaustive]
+        pub struct $name(pub String);
 
         impl $name {
-			#[allow(clippy::new_without_default)] // Identity minting must stay explicit.
-			pub fn new() -> Self {
-				Self(new_id($prefix))
-			}
+            #[allow(clippy::new_without_default)] // Identity minting must stay explicit.
+            pub fn new() -> Self {
+                Self(new_id($prefix))
+            }
 
             pub fn as_str(&self) -> &str {
                 &self.0
@@ -88,23 +89,23 @@ macro_rules! id_newtype {
             }
         }
 
-		impl TryFrom<String> for $name {
-			type Error = String;
+        impl TryFrom<String> for $name {
+            type Error = String;
 
-			fn try_from(value: String) -> Result<Self, Self::Error> {
-				if is_canonical_id(&value, $prefix) {
-					Ok(Self(value))
-				} else {
-					Err(format!("expected canonical {}-<uuid32> ID", $prefix))
-				}
+            fn try_from(value: String) -> Result<Self, Self::Error> {
+                if is_canonical_id(&value, $prefix) {
+                    Ok(Self(value))
+                } else {
+                    Err(format!("expected canonical {}-<uuid32> ID", $prefix))
+                }
             }
         }
 
-		impl TryFrom<&str> for $name {
-			type Error = String;
+        impl TryFrom<&str> for $name {
+            type Error = String;
 
-			fn try_from(value: &str) -> Result<Self, Self::Error> {
-				Self::try_from(value.to_owned())
+            fn try_from(value: &str) -> Result<Self, Self::Error> {
+                Self::try_from(value.to_owned())
             }
         }
 
