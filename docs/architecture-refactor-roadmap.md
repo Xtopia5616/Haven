@@ -209,6 +209,8 @@ Memory 的 SessionStore、FactGraph、facts、nodes、embeddings、usage、autho
 
 ToolRunStore 的生命周期时间、completion 时间和计时触发 `due_at` 在写入时验证 RFC3339 并归一 UTC，保证 `due_at` 文本排序与时间一致；依赖触发仍以空字符串表示。typed read projection 统一输出 RFC3339，兼容并转换 SQLite 生成的旧 UTC `created_at` / interrupted `finished_at`；无效 waiting `due_at` 保留给 ToolRunService quarantine。schema 不变（ADR 0979）。Agent event UI mapper 的整数字段也按 Rust `u32` 上限或 JSON 可精确表示的 `u64` 安全整数范围校验，浮点用量继续执行有限数值检查（ADR 0980）。
 
+Rust→TypeScript IPC 生成器拒绝把 `i128/u128` 映射为 JavaScript `number`；未来契约需选择十进制字符串或有明确值域的窄整数，不改变当前生成 DTO（ADR 0983）。
+
 Compaction、memory embedding maintenance、App 启动/恢复、clipboard history 和 managed-media cleanup 的错误日志现统一清洗；上传批次与生成媒体目录项日志移除 basename，避免暴露用户文件名（ADR 0981）。
 
 Agent compaction 与 media-plan toast 现由 `+layout` 统一持有；chat controller 保留 media-plan session 状态投影，chat usage handler 不再写通知 store（ADR 0982）。

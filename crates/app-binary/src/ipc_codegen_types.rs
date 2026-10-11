@@ -190,8 +190,14 @@ impl RustTypeGraph {
                         ts: "boolean".into(),
                         optional: false,
                     }),
-                    "i8" | "i16" | "i32" | "i64" | "i128" | "isize" | "u8" | "u16" | "u32"
-                    | "u64" | "u128" | "usize" | "f32" | "f64" => Ok(MappedType {
+                    // JSON numbers become JavaScript binary64 values. Rust
+                    // 128-bit integers cannot be represented exactly there,
+                    // so require an explicit string or bounded wire DTO.
+                    "i128" | "u128" => Err(format!(
+                        "Rust IPC integer `{name}` cannot map to JavaScript number without precision loss"
+                    )),
+                    "i8" | "i16" | "i32" | "i64" | "isize" | "u8" | "u16" | "u32" | "u64"
+                    | "usize" | "f32" | "f64" => Ok(MappedType {
                         ts: "number".into(),
                         optional: false,
                     }),
@@ -1720,6 +1726,33 @@ mod tests {
                 .unwrap_err()
                 .contains("unsupported/unmapped Rust DTO type")
         );
+    }
+
+    #[test]
+    fn ipc_number_mapping_rejects_128_bit_integers() {
+        let context = RustTypeGraph::test_context();
+        let mut graph = RustTypeGraph::default();
+
+        for rust_type in [
+            "i8", "i16", "i32", "i64", "isize", "u8", "u16", "u32", "u64", "usize", "f32", "f64",
+        ] {
+            let ty = syn::parse_str::<Type>(rust_type).unwrap();
+            assert_eq!(
+                graph.map_type(&ty, TypeUse::Response, &context).unwrap().ts,
+                "number",
+                "unexpected mapping for {rust_type}"
+            );
+        }
+
+        for rust_type in ["i128", "u128"] {
+            let ty = syn::parse_str::<Type>(rust_type).unwrap();
+            assert!(
+                graph
+                    .map_type(&ty, TypeUse::Response, &context)
+                    .unwrap_err()
+                    .contains("cannot map to JavaScript number without precision loss")
+            );
+        }
     }
 
     #[test]

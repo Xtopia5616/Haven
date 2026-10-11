@@ -971,3 +971,4 @@
 - [0980：Agent 事件数值边界匹配 Rust wire 类型](0980-match-agent-event-numbers-to-rust-wire-types.md)
 - [0981：运维错误日志统一清洗并移除文件名](0981-sanitize-operational-error-logs.md)
 - [0982：Agent 事件 toast 由应用布局集中处理](0982-centralize-agent-event-toasts.md)
+- [0983：拒绝将 128 位整数映射为 IPC `number`](0983-reject-128-bit-ipc-integers.md)
