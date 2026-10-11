@@ -269,7 +269,46 @@ describe('SettingsView diagnostics export', () => {
 		invoke.mockClear();
 		const settings = {
 			default_shell: 'powershell',
-			llm: { providers: [], models: [], request_policies: [], max_concurrent_requests: 2 },
+			llm: {
+				providers: [
+					{
+						name: 'deepgram-voice',
+						provider: 'deepgram',
+						api_style: 'deepgram',
+						base_url: 'https://api.deepgram.com',
+						api_key_ref: null,
+						auth_header_name: 'Authorization',
+						auth_header_prefix: 'Token',
+						proxy_url: null,
+						no_proxy: null,
+					},
+					{
+						name: 'speech-connection',
+						provider: 'openai',
+						api_style: 'openai-chat',
+						base_url: 'https://speech.example/v1',
+						api_key_ref: null,
+						auth_header_name: 'Authorization',
+						auth_header_prefix: 'Bearer',
+						proxy_url: null,
+						no_proxy: null,
+					},
+					{
+						name: 'image-connection',
+						provider: 'openai',
+						api_style: 'openai-chat',
+						base_url: 'https://image.example/v1',
+						api_key_ref: null,
+						auth_header_name: 'Authorization',
+						auth_header_prefix: 'Bearer',
+						proxy_url: null,
+						no_proxy: null,
+					},
+				],
+				models: [],
+				request_policies: [],
+				max_concurrent_requests: 2,
+			},
 			hotkey: { mode: 'toggle', key_binding: 'Ctrl+Shift+Space', mute_hotkey: 'Ctrl+M' },
 			session: {
 				max_concurrent: 3,
@@ -299,7 +338,12 @@ describe('SettingsView diagnostics export', () => {
 				writable_roots: [],
 				permissions: [],
 			},
-			media: {},
+			media: {
+				stt: { provider_name: 'deepgram-voice', model: 'nova-3' },
+				ocr: { provider: 'azure' },
+				tts: { provider_name: 'speech-connection', model: 'tts-1' },
+				image_gen: { provider_name: 'image-connection', model: 'gpt-image-1' },
+			},
 			notification: {
 				session_created: { in_app: true, windows: false },
 				session_completed: { in_app: true, windows: true },
@@ -363,6 +407,10 @@ describe('SettingsView diagnostics export', () => {
 		expect(saved.memory.fact_inference_enabled).toBe(false);
 		expect(saved.hotkey.mute_hotkey).toBe('Ctrl+M');
 		expect(saved.log.file_path).toBe('C:\\Haven\\logs\\custom.log');
+		expect(saved.media.stt.provider_name).toBe('deepgram-voice');
+		expect(saved.media.ocr.provider).toBe('azure');
+		expect(saved.media.tts.provider_name).toBe('speech-connection');
+		expect(saved.media.image_gen.provider_name).toBe('image-connection');
 		expect(saved.context_limits).toMatchObject({
 			tool_run_result_context_chars: 4321,
 			fact_extraction_min_interval_secs: 77,

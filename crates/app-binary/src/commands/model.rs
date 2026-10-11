@@ -258,7 +258,7 @@ fn provider_is_configured(p: &ProviderConfig) -> bool {
 
 /// STT key status is derived only from the selected named provider.
 fn stt_key_configured(stt: &haven_common::config::SttConfig, providers: &[ProviderConfig]) -> bool {
-    let name = stt.provider.trim();
+    let name = stt.provider_name.trim();
     if name.is_empty() || name.eq_ignore_ascii_case("none") || name == "llm" || name == "mcp" {
         return false;
     }
@@ -414,7 +414,7 @@ pub async fn discover_models(
             let scheme_name = provider_name
                 .as_deref()
                 .filter(|n| !n.is_empty())
-                .unwrap_or(stt.provider.as_str());
+                .unwrap_or(stt.provider_name.as_str());
             let backend = cfg
                 .llm
                 .provider_config_by_name(scheme_name)
@@ -427,7 +427,7 @@ pub async fn discover_models(
         } else if let Some(name) = provider_name
             .as_deref()
             .filter(|n| !n.is_empty())
-            .or(Some(stt.provider.as_str()))
+            .or(Some(stt.provider_name.as_str()))
             .filter(|n| {
                 !matches!(
                     *n,

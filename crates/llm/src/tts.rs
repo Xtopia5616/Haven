@@ -1,7 +1,7 @@
 //! Text-to-speech (TTS) capability.
 //!
 //! Unified dispatch entry point: [`build_tts_client`] maps a `TtsConfig`
-//! provider id to a concrete client. `provider` is either:
+//! provider connection name to a concrete client. `provider_name` is either:
 //! - `none` / empty: no client
 //! - a name from `llm.providers`: credentials (base URL + API key) and the
 //!   OpenAI-compatible vs ElevenLabs backend are taken from that provider
@@ -55,13 +55,13 @@ pub struct ResolvedTtsConfig {
 }
 
 /// Resolve TTS config against named LLM providers. Returns `None` when TTS
-/// is disabled (`none` / empty). Rewrites a provider-name reference into a
+/// is disabled (`none` / empty). Rewrites a provider connection name into a
 /// concrete backend (`openai` / `elevenlabs`) with that provider's URL + key.
 pub fn resolve_tts_config(
     cfg: &TtsConfig,
     providers: &[ProviderConfig],
 ) -> Result<Option<ResolvedTtsConfig>> {
-    let name = cfg.provider.trim();
+    let name = cfg.provider_name.trim();
     if name.is_empty() || name.eq_ignore_ascii_case("none") {
         return Ok(None);
     }
@@ -343,7 +343,7 @@ mod tests {
     #[test]
     fn tts_unknown_provider_errors() {
         let cfg = TtsConfig {
-            provider: "nope".into(),
+            provider_name: "nope".into(),
             ..Default::default()
         };
         let err = build_tts_client(&cfg, &[]).err().expect("expected error");
@@ -353,7 +353,7 @@ mod tests {
     #[test]
     fn tts_rejects_unconfigured_provider_name() {
         let cfg = TtsConfig {
-            provider: "openai".into(),
+            provider_name: "openai".into(),
             ..Default::default()
         };
         let err = resolve_tts_config(&cfg, &[]).unwrap_err();
@@ -364,7 +364,7 @@ mod tests {
     fn tts_dispatch_known_providers() {
         for provider in ["openai", "elevenlabs"] {
             let cfg = TtsConfig {
-                provider: provider.into(),
+                provider_name: provider.into(),
                 voice: "v".into(),
                 ..Default::default()
             };
@@ -391,7 +391,7 @@ mod tests {
             ..Default::default()
         }];
         let cfg = TtsConfig {
-            provider: "my-openai".into(),
+            provider_name: "my-openai".into(),
             model: "tts-1-hd".into(),
             voice: "nova".into(),
             ..Default::default()
@@ -417,7 +417,7 @@ mod tests {
             ..Default::default()
         }];
         let cfg = TtsConfig {
-            provider: "openai".into(),
+            provider_name: "openai".into(),
             ..Default::default()
         };
         let resolved = resolve_tts_config(&cfg, &providers)
@@ -438,7 +438,7 @@ mod tests {
             ..Default::default()
         }];
         let cfg = TtsConfig {
-            provider: "claude".into(),
+            provider_name: "claude".into(),
             ..Default::default()
         };
         let err = resolve_tts_config(&cfg, &providers).expect_err("expected error");

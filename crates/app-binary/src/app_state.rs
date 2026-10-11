@@ -787,7 +787,7 @@ mod tests {
         // The default config is loaded and accessible via the mutex.
         let cfg = state.runtime.config_service.snapshot().unwrap().config;
         assert!(cfg.session.max_steps_per_run > 0);
-        assert_eq!(cfg.media.stt.provider, "llm");
+        assert_eq!(cfg.media.stt.provider_name, "llm");
         assert_eq!(state.bootstrap_status(), BootstrapStatus::Loading);
     }
 

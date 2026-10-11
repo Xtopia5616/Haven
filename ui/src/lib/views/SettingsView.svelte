@@ -80,6 +80,11 @@
 	import type { SessionTokenStatsView } from '$lib/sessionUsagePresentation.ts';
 	import type { SessionLlmUsage } from '$lib/contracts/sessionHistory.ts';
 	import type {
+		ImageGenConfigDraft,
+		SttConfigDraft,
+		TtsConfigDraft,
+	} from '$lib/mediaConfigDraft.ts';
+	import type {
 		SessionPermissionGrant,
 		StoredPermission,
 	} from '$lib/contracts/generatedCommands.ts';
@@ -252,8 +257,8 @@
 		permissions: [],
 	});
 	let sessionPermissions = $state<SessionPermissionGrant[]>([]);
-	let stt = $state<Required<SttConfigInput>>({
-		provider: 'llm',
+	let stt = $state<SttConfigDraft>({
+		providerName: 'llm',
 		mcp_server: '',
 		model: '',
 		timeout_secs: 30,
@@ -269,14 +274,14 @@
 		timeout_secs: 20,
 		min_confidence: 0.7,
 	});
-	let tts = $state<Required<TtsConfigInput>>({
-		provider: 'none',
+	let tts = $state<TtsConfigDraft>({
+		providerName: 'none',
 		model: '',
 		voice: '',
 		timeout_secs: 60,
 	});
-	let imageGen = $state<Required<ImageGenConfigInput>>({
-		provider: 'none',
+	let imageGen = $state<ImageGenConfigDraft>({
+		providerName: 'none',
 		model: '',
 		timeout_secs: 120,
 	});
@@ -464,7 +469,7 @@
 					vad_threshold: asNumber(audio.vad_threshold),
 				},
 				stt: {
-					provider: stt.provider,
+					provider_name: stt.providerName,
 					mcp_server: stt.mcp_server || null,
 					model: stt.model,
 					timeout_secs: asNumber(stt.timeout_secs),
@@ -476,13 +481,13 @@
 					min_confidence: asNumber(ocr.min_confidence),
 				},
 				tts: {
-					provider: tts.provider,
+					provider_name: tts.providerName,
 					model: tts.model,
 					voice: tts.voice,
 					timeout_secs: asNumber(tts.timeout_secs),
 				},
 				image_gen: {
-					provider: imageGen.provider,
+					provider_name: imageGen.providerName,
 					model: imageGen.model,
 					timeout_secs: asNumber(imageGen.timeout_secs),
 				},
@@ -750,7 +755,7 @@
 			if (snapshot.media?.input_strategy) mediaInputStrategy = snapshot.media.input_strategy;
 			if (snapshot.media?.stt)
 				stt = {
-					provider: snapshot.media.stt.provider || 'llm',
+					providerName: snapshot.media.stt.provider_name || 'llm',
 					mcp_server: snapshot.media.stt.mcp_server || '',
 					model: snapshot.media.stt.model || '',
 					timeout_secs: snapshot.media.stt.timeout_secs || 30,
@@ -759,14 +764,14 @@
 			if (snapshot.media?.ocr) ocr = { ...ocr, ...snapshot.media.ocr };
 			if (snapshot.media?.tts)
 				tts = {
-					provider: snapshot.media.tts.provider || 'none',
+					providerName: snapshot.media.tts.provider_name || 'none',
 					model: snapshot.media.tts.model || '',
 					voice: snapshot.media.tts.voice || '',
 					timeout_secs: snapshot.media.tts.timeout_secs || 60,
 				};
 			if (snapshot.media?.image_gen)
 				imageGen = {
-					provider: snapshot.media.image_gen.provider || 'none',
+					providerName: snapshot.media.image_gen.provider_name || 'none',
 					model: snapshot.media.image_gen.model || '',
 					timeout_secs: snapshot.media.image_gen.timeout_secs || 120,
 				};
@@ -893,7 +898,7 @@
 				mediaInputStrategy = media.input_strategy || 'auto';
 				audio = media.audio || audio;
 				stt = {
-					provider: media.stt?.provider || 'llm',
+					providerName: media.stt?.provider_name || 'llm',
 					mcp_server: media.stt?.mcp_server || '',
 					model: media.stt?.model || '',
 					timeout_secs: media.stt?.timeout_secs || 30,
@@ -910,13 +915,13 @@
 					min_confidence: media.ocr?.min_confidence ?? 0.7,
 				};
 				tts = {
-					provider: media.tts?.provider || 'none',
+					providerName: media.tts?.provider_name || 'none',
 					model: media.tts?.model || '',
 					voice: media.tts?.voice || '',
 					timeout_secs: media.tts?.timeout_secs || 60,
 				};
 				imageGen = {
-					provider: media.image_gen?.provider || 'none',
+					providerName: media.image_gen?.provider_name || 'none',
 					model: media.image_gen?.model || '',
 					timeout_secs: media.image_gen?.timeout_secs || 120,
 				};
@@ -1154,7 +1159,7 @@
 								vad_threshold: audio.vad_threshold,
 							},
 							stt: {
-								provider: stt.provider,
+								provider_name: stt.providerName,
 								mcp_server: stt.mcp_server || null,
 								model: stt.model,
 								timeout_secs: stt.timeout_secs,
@@ -1169,13 +1174,13 @@
 								min_confidence: ocr.min_confidence,
 							},
 							tts: {
-								provider: tts.provider,
+								provider_name: tts.providerName,
 								model: tts.model,
 								voice: tts.voice,
 								timeout_secs: tts.timeout_secs,
 							},
 							image_gen: {
-								provider: imageGen.provider,
+								provider_name: imageGen.providerName,
 								model: imageGen.model,
 								timeout_secs: imageGen.timeout_secs,
 							},
@@ -1442,9 +1447,7 @@
 			</div>
 		</WorkspaceSurface>
 	</div>
-	<div
-		class="settings-save-bar-slot"
-	>
+	<div class="settings-save-bar-slot">
 		<SettingsSaveBar
 			visible={saveBarVisible}
 			dirty={settingsDirty}

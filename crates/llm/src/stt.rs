@@ -76,15 +76,15 @@ pub trait McpToolCaller: Send + Sync {
     ) -> anyhow::Result<McpToolOutcome>;
 }
 
-/// Resolve STT config against named LLM providers. Rewrites a provider-name
-/// reference into a concrete backend (`openai` / `groq` / …) with that
+/// Resolve STT config against named LLM providers. Rewrites a provider
+/// connection name into a concrete backend (`openai` / `groq` / …) with that
 /// provider's URL + key. `none`, `llm`, and `mcp` remain local control modes;
 /// every cloud provider must be named in `llm.providers`.
 pub fn resolve_stt_config(
     cfg: &SttConfig,
     providers: &[ProviderConfig],
 ) -> Result<ResolvedSttConfig> {
-    let name = cfg.provider.trim();
+    let name = cfg.provider_name.trim();
     if name.is_empty() || name.eq_ignore_ascii_case("none") || name == "llm" || name == "mcp" {
         return Ok(ResolvedSttConfig {
             provider: name.to_string(),
@@ -653,7 +653,7 @@ mod tests {
 
     fn test_stt_cfg(provider: &str) -> SttConfig {
         SttConfig {
-            provider: provider.into(),
+            provider_name: provider.into(),
             ..Default::default()
         }
     }
@@ -661,7 +661,7 @@ mod tests {
     #[tokio::test]
     async fn build_stt_client_dispaches_by_provider() {
         let cfg = SttConfig {
-            provider: "none".into(),
+            provider_name: "none".into(),
             ..Default::default()
         };
         let mcp: Arc<dyn McpToolCaller> = Arc::new(NoopMcpCaller);
@@ -669,7 +669,7 @@ mod tests {
         assert!(client.is_none());
 
         let cfg = SttConfig {
-            provider: "llm".into(),
+            provider_name: "llm".into(),
             ..Default::default()
         };
         let client = build_stt_client(Some(mcp.clone()), &cfg, &[]).unwrap();
@@ -682,7 +682,7 @@ mod tests {
         assert!(err.to_string().contains("mcp_server"));
 
         let cfg = SttConfig {
-            provider: "mcp".into(),
+            provider_name: "mcp".into(),
             mcp_server: Some("svc".into()),
             ..Default::default()
         };
@@ -693,7 +693,7 @@ mod tests {
 
         for provider in ["openai", "groq", "gemini", "deepgram", "assemblyai"] {
             let cfg = SttConfig {
-                provider: provider.into(),
+                provider_name: provider.into(),
                 ..Default::default()
             };
             let providers = vec![ProviderConfig {
@@ -736,7 +736,7 @@ mod tests {
             ..Default::default()
         }];
         let cfg = SttConfig {
-            provider: "whisper-gw".into(),
+            provider_name: "whisper-gw".into(),
             model: "whisper-1".into(),
             ..Default::default()
         };
@@ -758,7 +758,7 @@ mod tests {
             ..Default::default()
         }];
         let cfg = SttConfig {
-            provider: "openai".into(),
+            provider_name: "openai".into(),
             ..Default::default()
         };
         let resolved = resolve_stt_config(&cfg, &providers).unwrap();

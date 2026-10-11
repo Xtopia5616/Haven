@@ -38,13 +38,13 @@ impl Default for AudioConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default, deny_unknown_fields)]
 pub struct SttConfig {
-    /// Speech-to-text provider. Prefer a name from `llm.providers` (reuses
-    /// that provider's base URL + API key). Also accepts:
+    /// Configured provider connection name from `llm.providers` (reuses that
+    /// connection's base URL + API key). Also accepts these STT control modes:
     /// - `llm`: transcribe via the configured `transcription` request policy
     /// - `mcp`: route through an MCP server exposing `stt.transcribe`
     /// - `none`: no transcription
-    pub provider: String,
-    /// MCP server name when `provider == "mcp"`.
+    pub provider_name: String,
+    /// MCP server name when `provider_name == "mcp"`.
     pub mcp_server: Option<String>,
     /// Model id for providers that require one (e.g. `whisper-1`,
     /// `nova-2`, `whisper-large-v3-turbo`).
@@ -62,7 +62,7 @@ pub struct SttConfig {
 impl Default for SttConfig {
     fn default() -> Self {
         Self {
-            provider: "llm".into(),
+            provider_name: "llm".into(),
             mcp_server: None,
             model: String::new(),
             timeout_secs: 30,
@@ -145,10 +145,10 @@ impl Default for OcrConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default, deny_unknown_fields)]
 pub struct TtsConfig {
-    /// TTS provider. Prefer a name from `llm.providers` (reuses that
-    /// provider's base URL + API key). Also accepts:
+    /// Configured provider connection name from `llm.providers` (reuses that
+    /// connection's base URL + API key). Also accepts:
     /// - `none` / empty: no TTS client
-    pub provider: String,
+    pub provider_name: String,
     /// Model id for providers that require one (e.g. `tts-1`,
     /// `gpt-4o-mini-tts`).
     pub model: String,
@@ -162,7 +162,7 @@ pub struct TtsConfig {
 impl Default for TtsConfig {
     fn default() -> Self {
         Self {
-            provider: "none".into(),
+            provider_name: "none".into(),
             model: String::new(),
             voice: String::new(),
             timeout_secs: 60,
@@ -174,9 +174,9 @@ impl Default for TtsConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default, deny_unknown_fields)]
 pub struct ImageGenConfig {
-    /// Image generation provider. A name from `llm.providers` reuses that
-    /// provider's base URL and API key. `none` / empty disables the client.
-    pub provider: String,
+    /// Configured provider connection name from `llm.providers` reuses that
+    /// connection's base URL and API key. `none` / empty disables the client.
+    pub provider_name: String,
     /// Model id for providers that require one (e.g. `gpt-image-1`,
     /// `gemini-2.5-flash-image`).
     pub model: String,
@@ -187,7 +187,7 @@ pub struct ImageGenConfig {
 impl Default for ImageGenConfig {
     fn default() -> Self {
         Self {
-            provider: "none".into(),
+            provider_name: "none".into(),
             model: String::new(),
             timeout_secs: 120,
         }

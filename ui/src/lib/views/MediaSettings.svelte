@@ -23,15 +23,17 @@
 		ApiKeyStatus,
 		AudioConfig,
 		ContextLimitsConfigInput,
-		ImageGenConfigInput,
 		LlmConfigInput,
 		MediaInputStrategyInput,
 		OcrConfigInput,
 		ProviderConfigInput,
-		SttConfigInput,
-		TtsConfigInput,
 	} from '$lib/contracts/generatedCommands.ts';
 	import type { ModelInfo } from '$lib/contracts/model.ts';
+	import type {
+		ImageGenConfigDraft,
+		SttConfigDraft,
+		TtsConfigDraft,
+	} from '$lib/mediaConfigDraft.ts';
 
 	type NamedProvider = Pick<
 		ProviderConfigInput,
@@ -41,10 +43,10 @@
 	interface Props {
 		llmConfig: LlmConfigInput & { providers: ProviderConfigInput[] };
 		audio: AudioConfig;
-		stt: Required<SttConfigInput>;
+		stt: SttConfigDraft;
 		ocr: Required<OcrConfigInput>;
-		tts: Required<TtsConfigInput>;
-		imageGen: Required<ImageGenConfigInput>;
+		tts: TtsConfigDraft;
+		imageGen: ImageGenConfigDraft;
 		mediaInputStrategy: MediaInputStrategyInput;
 		contextLimits: Partial<ContextLimitsConfigInput>;
 		keyConfigured: ApiKeyStatus;
@@ -93,9 +95,7 @@
 		return llmConfig.providers.find((provider) => provider.name === name);
 	}
 	function mediaProviderOptions(current: string): SelectOption[] {
-		const options: SelectOption[] = [
-			{ value: 'none', label: '未配置' },
-		];
+		const options: SelectOption[] = [{ value: 'none', label: '未配置' }];
 		for (const provider of llmConfig.providers)
 			if (provider?.name) options.push({ value: provider.name, label: provider.name });
 		if (current && current !== 'none' && !options.some((option) => option.value === current))
@@ -116,13 +116,13 @@
 		for (const provider of llmConfig.providers)
 			if (provider?.name) options.push({ value: provider.name, label: provider.name });
 		if (
-			stt.provider &&
-			!STT_SPECIAL.has(stt.provider) &&
-			!options.some((option) => option.value === stt.provider)
+			stt.providerName &&
+			!STT_SPECIAL.has(stt.providerName) &&
+			!options.some((option) => option.value === stt.providerName)
 		)
 			options.push({
-				value: stt.provider,
-				label: `${stt.provider}（需重选「模型」页 Provider）`,
+				value: stt.providerName,
+				label: `${stt.providerName}（需重选「模型」页 Provider）`,
 			});
 		return options;
 	}
@@ -165,7 +165,7 @@
 		}));
 	}
 	async function fetchSttModels() {
-		const name = stt.provider;
+		const name = stt.providerName;
 		if (!isNamedSttProvider(name)) return;
 		const kind = sttBackendKind(name);
 		if (!kind || kind === 'deepgram' || kind === 'assemblyai') return;
@@ -214,7 +214,7 @@
 		keyDlg = { open: false, model: '', label: '' };
 	}
 	function setSttProvider(value: string) {
-		stt.provider = value;
+		stt.providerName = value;
 		if (!isNamedSttProvider(value)) sttModels = [];
 	}
 	onDestroy(() => clearTimeout(sttFetchTimer));
@@ -339,12 +339,12 @@
 							<div class="model-field settings-field-layout">
 								<span class="field-label">转写服务</span><MaterialSelect
 									id="voice-stt-provider"
-									value={stt.provider}
+									value={stt.providerName}
 									options={sttProviderOptions()}
 									onChange={setSttProvider}
 								/>
 							</div>
-							{#if stt.provider === 'mcp'}
+							{#if stt.providerName === 'mcp'}
 								<div class="model-field settings-field-layout">
 									<span class="field-label">MCP 服务器</span><MaterialAutocomplete
 										id="voice-stt-mcp"
@@ -360,16 +360,18 @@
 										})}
 									/>
 								</div>
-							{:else if isNamedSttProvider(stt.provider)}
-								{#if sttBackendKind(stt.provider)}
+							{:else if isNamedSttProvider(stt.providerName)}
+								{#if sttBackendKind(stt.providerName)}
 									<div class="model-field settings-field-layout">
 										<span class="field-label">模型 ID</span
 										><MaterialAutocomplete
 											id="voice-stt-model"
 											value={stt.model}
-											options={sttModelOptions(sttBackendKind(stt.provider))}
+											options={sttModelOptions(
+												sttBackendKind(stt.providerName),
+											)}
 											placeholder={sttModelPlaceholder(
-												sttBackendKind(stt.provider),
+												sttBackendKind(stt.providerName),
 											)}
 											loading={sttFetching}
 											onChange={withStringValue((v) => {
@@ -383,7 +385,7 @@
 										AssemblyAI）。
 									</p>{/if}
 							{/if}
-							{#if stt.provider !== 'none'}
+							{#if stt.providerName !== 'none'}
 								<div class="model-field settings-field-layout">
 									<span class="field-label">超时时间（秒）</span
 									><MaterialNumberField
@@ -432,15 +434,15 @@
 							<div class="model-field settings-field-layout">
 								<span class="field-label">语音合成服务</span><MaterialSelect
 									id="tts-provider"
-									value={tts.provider}
-									options={mediaProviderOptions(tts.provider)}
+									value={tts.providerName}
+									options={mediaProviderOptions(tts.providerName)}
 									onChange={withStringValue((v) => {
-										tts.provider = v;
+										tts.providerName = v;
 									})}
 								/>
 							</div>
-							{#if tts.provider !== 'none'}
-								{#if mediaProviderKind(tts.provider, 'tts') === 'elevenlabs'}<div
+							{#if tts.providerName !== 'none'}
+								{#if mediaProviderKind(tts.providerName, 'tts') === 'elevenlabs'}<div
 										class="model-field settings-field-layout"
 									>
 										<span class="field-label">音色 ID</span><input
@@ -452,7 +454,7 @@
 											autocomplete="off"
 										/>
 									</div>
-								{:else if mediaProviderKind(tts.provider, 'tts') === 'openai'}<div
+								{:else if mediaProviderKind(tts.providerName, 'tts') === 'openai'}<div
 										class="model-field settings-field-layout"
 									>
 										<span class="field-label">模型 ID</span><input
@@ -599,7 +601,9 @@
 										onEdit={() => openKeyDialog('ocr_secret', 'OCR Secret Key')}
 									/>
 								</div>{/if}
-							{#if ocr.provider === 'azure'}<div class="model-field settings-field-layout">
+							{#if ocr.provider === 'azure'}<div
+									class="model-field settings-field-layout"
+								>
 									<span class="field-label">服务地址</span><input
 										id="img-ocr-base-url"
 										type="text"
@@ -609,7 +613,9 @@
 										autocomplete="off"
 									/>
 								</div>{/if}
-							{#if ocr.provider !== 'none'}<div class="model-field settings-field-layout">
+							{#if ocr.provider !== 'none'}<div
+									class="model-field settings-field-layout"
+								>
 									<span class="field-label">超时时间（秒）</span
 									><MaterialNumberField
 										id="img-ocr-timeout"
@@ -652,14 +658,14 @@
 							<div class="model-field settings-field-layout">
 								<span class="field-label">图像生成服务</span><MaterialSelect
 									id="ig-provider"
-									value={imageGen.provider}
-									options={mediaProviderOptions(imageGen.provider)}
+									value={imageGen.providerName}
+									options={mediaProviderOptions(imageGen.providerName)}
 									onChange={withStringValue((v) => {
-										imageGen.provider = v;
+										imageGen.providerName = v;
 									})}
 								/>
 							</div>
-							{#if imageGen.provider !== 'none'}{#if mediaProviderKind(imageGen.provider, 'image_gen')}<div
+							{#if imageGen.providerName !== 'none'}{#if mediaProviderKind(imageGen.providerName, 'image_gen')}<div
 										class="model-field settings-field-layout"
 									>
 										<span class="field-label">模型 ID</span><input
@@ -668,7 +674,7 @@
 											class="md-input"
 											bind:value={imageGen.model}
 											placeholder={mediaProviderKind(
-												imageGen.provider,
+												imageGen.providerName,
 												'image_gen',
 											) === 'gemini'
 												? 'gemini-2.5-flash-image'

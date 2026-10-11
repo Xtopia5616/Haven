@@ -219,17 +219,20 @@ fn invalid_config_entry(config: &AppConfig) -> Option<&'static str> {
             .iter()
             .any(|provider| provider.name == name)
     };
-    if !matches!(config.media.stt.provider.as_str(), "llm" | "mcp" | "none")
-        && !has_provider(&config.media.stt.provider)
+    if !matches!(
+        config.media.stt.provider_name.as_str(),
+        "llm" | "mcp" | "none"
+    ) && !has_provider(&config.media.stt.provider_name)
     {
-        return Some("unknown media.stt provider reference");
+        return Some("unknown media.stt provider_name reference");
     }
-    if config.media.tts.provider != "none" && !has_provider(&config.media.tts.provider) {
-        return Some("unknown media.tts provider reference");
+    if config.media.tts.provider_name != "none" && !has_provider(&config.media.tts.provider_name) {
+        return Some("unknown media.tts provider_name reference");
     }
-    if config.media.image_gen.provider != "none" && !has_provider(&config.media.image_gen.provider)
+    if config.media.image_gen.provider_name != "none"
+        && !has_provider(&config.media.image_gen.provider_name)
     {
-        return Some("unknown media.image_gen provider reference");
+        return Some("unknown media.image_gen provider_name reference");
     }
     None
 }
@@ -524,7 +527,7 @@ mod tests {
         assert_eq!(cfg.session.history_retention_days, 90);
         assert!(cfg.security.encrypt_sensitive);
         assert!(cfg.mcp_servers.is_empty());
-        assert_eq!(cfg.media.stt.provider, "llm");
+        assert_eq!(cfg.media.stt.provider_name, "llm");
         assert_eq!(cfg.media.stt.timeout_secs, 30);
         assert!(cfg.media.stt.mcp_server.is_none());
         assert!(cfg.media.stt.model.is_empty());
@@ -534,10 +537,10 @@ mod tests {
         assert!(cfg.media.ocr.api_secret.is_empty());
         assert_eq!(cfg.media.ocr.timeout_secs, 20);
         assert_eq!(cfg.media.ocr.min_confidence, 0.7);
-        assert_eq!(cfg.media.tts.provider, "none");
+        assert_eq!(cfg.media.tts.provider_name, "none");
         assert!(cfg.media.tts.voice.is_empty());
         assert_eq!(cfg.media.tts.timeout_secs, 60);
-        assert_eq!(cfg.media.image_gen.provider, "none");
+        assert_eq!(cfg.media.image_gen.provider_name, "none");
         assert_eq!(cfg.media.image_gen.timeout_secs, 120);
         assert_eq!(cfg.llm.max_concurrent_requests, 2);
         assert!(cfg.llm.providers.is_empty());
@@ -1164,12 +1167,12 @@ confirmation_mode = "always"
             &path,
             r#"
 [media.stt]
-provider = "openai"
+provider_name = "openai"
 api_key = "old-secret"
 base_url = "https://old.example/v1"
 
 [media.tts]
-provider = "openai"
+provider_name = "openai"
 api_key = "old-secret"
 "#,
         )
@@ -1191,6 +1194,34 @@ api_key = "old-secret"
     }
 
     #[test]
+    fn load_backs_up_legacy_media_provider_keys() {
+        for legacy_config in [
+            "[media.stt]\nprovider = \"llm\"\n",
+            "[media.tts]\nprovider = \"none\"\n",
+            "[media.image_gen]\nprovider = \"none\"\n",
+        ] {
+            let dir = std::env::temp_dir().join(format!("haven_test_{}", uuid::Uuid::new_v4()));
+            std::fs::create_dir_all(&dir).unwrap();
+            let path = dir.join("config.toml");
+            std::fs::write(&path, legacy_config).unwrap();
+
+            let loader = ConfigLoader::load_from(&path).unwrap();
+            assert_eq!(loader.config(), &AppConfig::default());
+            let backups = dir
+                .read_dir()
+                .unwrap()
+                .filter_map(Result::ok)
+                .filter(|entry| {
+                    let name = entry.file_name().into_string().unwrap();
+                    name.starts_with("config.toml.") && name.ends_with(".bak")
+                })
+                .count();
+            assert_eq!(backups, 1, "legacy media provider key must be backed up");
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+
+    #[test]
     fn load_backs_up_unknown_media_provider_reference() {
         let dir = std::env::temp_dir().join(format!("haven_test_{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -1199,7 +1230,7 @@ api_key = "old-secret"
             &path,
             r#"
 [media.stt]
-provider = "deepgram"
+provider_name = "deepgram"
 model = "nova-3"
 "#,
         )
@@ -1224,7 +1255,7 @@ model = "nova-3"
     }
 
     #[test]
-    fn load_accepts_named_provider_that_uses_a_backend_name() {
+    fn load_accepts_media_provider_connection_name_distinct_from_vendor() {
         let dir = std::env::temp_dir().join(format!("haven_test_{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("config.toml");
@@ -1232,25 +1263,50 @@ model = "nova-3"
             &path,
             r#"
 [media.stt]
-provider = "deepgram"
+provider_name = "deepgram-voice"
+
+[media.tts]
+provider_name = "speech-connection"
+
+[media.image_gen]
+provider_name = "image-connection"
 
 [[llm.providers]]
-name = "deepgram"
+name = "deepgram-voice"
 provider = "deepgram"
 base_url = "https://api.deepgram.com"
 
+[[llm.providers]]
+name = "speech-connection"
+provider = "openai"
+base_url = "https://speech.example/v1"
+
+[[llm.providers]]
+name = "image-connection"
+provider = "openai"
+base_url = "https://image.example/v1"
+
 [[llm.models]]
 id = "transcription-model"
-provider_name = "deepgram"
+provider_name = "deepgram-voice"
 model = "nova-3"
 "#,
         )
         .unwrap();
 
         let loader = ConfigLoader::load_from(&path).unwrap();
-        assert_eq!(loader.config().media.stt.provider, "deepgram");
-        assert_eq!(loader.config().llm.providers[0].name, "deepgram");
-        assert_eq!(loader.config().llm.models[0].provider_name, "deepgram");
+        assert_eq!(loader.config().media.stt.provider_name, "deepgram-voice");
+        assert_eq!(loader.config().media.tts.provider_name, "speech-connection");
+        assert_eq!(
+            loader.config().media.image_gen.provider_name,
+            "image-connection"
+        );
+        assert_eq!(loader.config().llm.providers[0].name, "deepgram-voice");
+        assert_eq!(loader.config().llm.providers[0].provider, "deepgram");
+        assert_eq!(
+            loader.config().llm.models[0].provider_name,
+            "deepgram-voice"
+        );
         let backups = dir
             .read_dir()
             .unwrap()

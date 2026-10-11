@@ -846,7 +846,7 @@ native admin authorization、连接副作用和 status event。`refresh_mcp_serv
 
 用户语音入口和工具资产入口共享同一个 `MediaTranscriber` 策略，不再各自实现转写：应用通过
 `ToolsFacade::transcribe_recording` 把采集到的 WAV 交给工具边界。云端 STT（Whisper / Groq /
-Gemini / Deepgram / AssemblyAI）与 chat 共用 `adapter_for` 分发；`provider = "llm"` 走
+Gemini / Deepgram / AssemblyAI）与 chat 共用 `adapter_for` 分发；`provider_name = "llm"` 走
 `LlmRouter::transcribe_audio`（原生 `transcribe`，否则 multimodal chat 回退）。
 MCP STT 仍走独立 `McpSttClient`（依赖 `McpToolCaller`）。两条录音路径的生命周期仍显式
 不同：UI 麦克风是 `voice input`，只提交转写文本并用 `rec-*` 关联事件；`media.record` 是

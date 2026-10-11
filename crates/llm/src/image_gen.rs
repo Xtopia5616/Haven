@@ -1,7 +1,8 @@
 //! Text-to-image generation capability.
 //!
 //! Unified dispatch entry point: [`build_image_gen_client`] maps an
-//! `ImageGenConfig` provider id to a concrete client. `provider` is either:
+//! `ImageGenConfig` provider connection name to a concrete client.
+//! `provider_name` is either:
 //! - `none` / empty: no client
 //! - a name from `llm.providers`: credentials and OpenAI vs Gemini backend
 //!   are taken from that provider
@@ -46,13 +47,13 @@ pub trait ImageGenClient: Send + Sync {
 }
 
 /// Resolve image-gen config against named LLM providers. Returns `None` when
-/// disabled. Rewrites a provider-name reference into `openai` / `gemini` with
+/// disabled. Rewrites a provider connection name into `openai` / `gemini` with
 /// that provider's URL + key.
 pub fn resolve_image_gen_config(
     cfg: &ImageGenConfig,
     providers: &[ProviderConfig],
 ) -> Result<Option<ResolvedImageGenConfig>> {
-    let name = cfg.provider.trim();
+    let name = cfg.provider_name.trim();
     if name.is_empty() || name.eq_ignore_ascii_case("none") {
         return Ok(None);
     }
@@ -410,7 +411,7 @@ mod tests {
     #[test]
     fn imagegen_unknown_provider_errors() {
         let cfg = ImageGenConfig {
-            provider: "nope".into(),
+            provider_name: "nope".into(),
             ..Default::default()
         };
         let err = build_image_gen_client(&cfg, &[])
@@ -422,7 +423,7 @@ mod tests {
     #[test]
     fn imagegen_rejects_unconfigured_provider_name() {
         let cfg = ImageGenConfig {
-            provider: "openai".into(),
+            provider_name: "openai".into(),
             ..Default::default()
         };
         let err = resolve_image_gen_config(&cfg, &[]).unwrap_err();
@@ -433,7 +434,7 @@ mod tests {
     fn imagegen_dispatch_known_providers() {
         for provider in ["openai", "gemini"] {
             let cfg = ImageGenConfig {
-                provider: provider.into(),
+                provider_name: provider.into(),
                 ..Default::default()
             };
             let providers = vec![ProviderConfig {
@@ -459,7 +460,7 @@ mod tests {
             ..Default::default()
         }];
         let cfg = ImageGenConfig {
-            provider: "oai".into(),
+            provider_name: "oai".into(),
             model: "gpt-image-1".into(),
             ..Default::default()
         };
@@ -482,7 +483,7 @@ mod tests {
             ..Default::default()
         }];
         let cfg = ImageGenConfig {
-            provider: "g".into(),
+            provider_name: "g".into(),
             ..Default::default()
         };
         let resolved = resolve_image_gen_config(&cfg, &providers)

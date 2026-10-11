@@ -21,14 +21,16 @@
 		AudioConfig,
 		CapabilityInput,
 		ContextLimitsConfigInput,
-		ImageGenConfigInput,
 		MediaInputStrategyInput,
 		OcrConfigInput,
 		RequestKindInput,
-		SttConfigInput,
-		TtsConfigInput,
 	} from '$lib/contracts/generatedCommands.ts';
 	import type { DiscoveredModelsByProviderName } from '$lib/contracts/model.ts';
+	import type {
+		ImageGenConfigDraft,
+		SttConfigDraft,
+		TtsConfigDraft,
+	} from '$lib/mediaConfigDraft.ts';
 	import type {
 		ModelDraft,
 		ModelOverrideField,
@@ -44,10 +46,10 @@
 		active?: boolean;
 		llmConfig: SettingsLlmState;
 		audio: AudioConfig;
-		stt: Required<SttConfigInput>;
+		stt: SttConfigDraft;
 		ocr: Required<OcrConfigInput>;
-		tts: Required<TtsConfigInput>;
-		imageGen: Required<ImageGenConfigInput>;
+		tts: TtsConfigDraft;
+		imageGen: ImageGenConfigDraft;
 		mediaInputStrategy: MediaInputStrategyInput;
 		contextLimits: Partial<ContextLimitsConfigInput>;
 		keyConfigured: ApiKeyStatus;
@@ -361,9 +363,9 @@
 			if (oldName !== name) {
 				for (const model of llmConfig.models)
 					if (model.providerName === oldName) model.providerName = name;
-				if (stt?.provider === oldName) stt.provider = name;
-				if (tts?.provider === oldName) tts.provider = name;
-				if (imageGen?.provider === oldName) imageGen.provider = name;
+				if (stt?.providerName === oldName) stt.providerName = name;
+				if (tts?.providerName === oldName) tts.providerName = name;
+				if (imageGen?.providerName === oldName) imageGen.providerName = name;
 				if (keyConfiguredProviders[oldName]) {
 					delete keyConfiguredProviders[oldName];
 					keyConfiguredProviders[name] = true;
@@ -386,9 +388,9 @@
 			);
 			return;
 		}
-		if (stt?.provider === provider.name) stt.provider = 'llm';
-		if (tts?.provider === provider.name) tts.provider = 'none';
-		if (imageGen?.provider === provider.name) imageGen.provider = 'none';
+		if (stt?.providerName === provider.name) stt.providerName = 'llm';
+		if (tts?.providerName === provider.name) tts.providerName = 'none';
+		if (imageGen?.providerName === provider.name) imageGen.providerName = 'none';
 		llmConfig.providers.splice(idx, 1);
 		delete keyConfiguredProviders[provider.name];
 		const nextModels = { ...modelsByProvider };
