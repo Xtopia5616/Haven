@@ -150,8 +150,8 @@ impl TranscriptRecord {
             } => {
                 ensure_canonical_id(episode_id, "msg", "episode_id")?;
                 for message in compacted {
-                    if let Some(message_id) = &message.id {
-                        ensure_canonical_id(message_id, "msg", "compacted[].id")?;
+                    if let Some(message_id) = &message.message_id {
+                        ensure_canonical_id(message_id, "msg", "compacted[].message_id")?;
                     }
                 }
                 validate_media_inputs(media_inputs)
@@ -822,9 +822,27 @@ mod tests {
         assert!(bad_episode.validate_identity().is_err());
 
         let mut message = CanonicalMessage::user_text("recent");
-        message.id = Some("msg-invalid".into());
+        message.message_id = Some("msg-invalid".into());
         let bad_message_id = compact_summary(MESSAGE_ID, vec![message]);
         assert!(bad_message_id.validate_identity().is_err());
+    }
+
+    #[test]
+    fn compact_summary_writes_message_id_and_replays_legacy_id() {
+        let mut message = CanonicalMessage::user_text("summary");
+        message.message_id = Some(MESSAGE_ID.into());
+        let record = compact_summary(MESSAGE_ID, vec![message]);
+        let value = serde_json::to_value(&record).unwrap();
+        let compacted = value["compacted"][0].as_object().unwrap();
+        assert_eq!(compacted.get("message_id").unwrap(), MESSAGE_ID);
+        assert!(!compacted.contains_key("id"));
+
+        let mut legacy_value = value;
+        let compacted = legacy_value["compacted"][0].as_object_mut().unwrap();
+        let message_id = compacted.remove("message_id").unwrap();
+        compacted.insert("id".into(), message_id);
+        let legacy_record: TranscriptRecord = serde_json::from_value(legacy_value).unwrap();
+        legacy_record.validate_identity().unwrap();
     }
 
     #[test]
@@ -993,7 +1011,7 @@ mod tests {
             web_search_calls: Vec::new(),
             thinking_blocks: Vec::new(),
             source: None,
-            id: None,
+            message_id: None,
         }]);
         let json = serde_json::to_string(&events).unwrap();
 
@@ -1021,7 +1039,7 @@ mod tests {
             web_search_calls: Vec::new(),
             thinking_blocks: Vec::new(),
             source: None,
-            id: None,
+            message_id: None,
         }];
         let snapshot = canonical_for_snapshot_with_media_inputs(&messages, &[input]);
         let marker = match &snapshot[0].content[0] {

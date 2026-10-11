@@ -1123,7 +1123,7 @@ async fn run_session_from_id_trims_dangling_tool_call_before_resume() {
             web_search_calls: Vec::new(),
             thinking_blocks: Vec::new(),
             source: None,
-            id: None,
+            message_id: None,
         },
         CanonicalMessage {
             role: CanonicalRole::User,
@@ -1134,7 +1134,7 @@ async fn run_session_from_id_trims_dangling_tool_call_before_resume() {
             web_search_calls: Vec::new(),
             thinking_blocks: Vec::new(),
             source: None,
-            id: None,
+            message_id: None,
         },
         CanonicalMessage {
             role: CanonicalRole::Assistant,
@@ -1149,7 +1149,7 @@ async fn run_session_from_id_trims_dangling_tool_call_before_resume() {
             web_search_calls: Vec::new(),
             thinking_blocks: Vec::new(),
             source: None,
-            id: None,
+            message_id: None,
         },
     ];
     // Thought-only round for the dangling assistant tool_call (no ToolResult yet).

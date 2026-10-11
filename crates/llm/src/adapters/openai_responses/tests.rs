@@ -67,7 +67,7 @@ fn convert_input_extracts_instructions() {
             web_search_calls: Vec::new(),
             thinking_blocks: Vec::new(),
             source: None,
-            id: None,
+            message_id: None,
         },
         CanonicalMessage {
             role: CanonicalRole::User,
@@ -78,7 +78,7 @@ fn convert_input_extracts_instructions() {
             web_search_calls: Vec::new(),
             thinking_blocks: Vec::new(),
             source: None,
-            id: None,
+            message_id: None,
         },
     ];
     let ResponsesInputConversion {
@@ -112,7 +112,7 @@ fn convert_input_function_call_and_output() {
             web_search_calls: Vec::new(),
             thinking_blocks: Vec::new(),
             source: None,
-            id: None,
+            message_id: None,
         },
         CanonicalMessage {
             role: CanonicalRole::Tool,
@@ -123,7 +123,7 @@ fn convert_input_function_call_and_output() {
             web_search_calls: Vec::new(),
             thinking_blocks: Vec::new(),
             source: None,
-            id: None,
+            message_id: None,
         },
     ];
     let ResponsesInputConversion { input: items, .. } = OpenAiResponsesAdapter::convert_input(
@@ -163,7 +163,7 @@ fn convert_input_echoes_reasoning_for_thinking_mode() {
             web_search_calls: Vec::new(),
             thinking_blocks: Vec::new(),
             source: None,
-            id: None,
+            message_id: None,
         },
         CanonicalMessage {
             role: CanonicalRole::Tool,
@@ -174,7 +174,7 @@ fn convert_input_echoes_reasoning_for_thinking_mode() {
             web_search_calls: Vec::new(),
             thinking_blocks: Vec::new(),
             source: None,
-            id: None,
+            message_id: None,
         },
     ];
     let ResponsesInputConversion { input: items, .. } = OpenAiResponsesAdapter::convert_input(
@@ -232,7 +232,7 @@ fn convert_input_synthesizes_empty_reasoning_for_tool_turns_when_echo_required()
             web_search_calls: Vec::new(),
             thinking_blocks: Vec::new(),
             source: None,
-            id: None,
+            message_id: None,
         },
         CanonicalMessage {
             role: CanonicalRole::Tool,
@@ -243,7 +243,7 @@ fn convert_input_synthesizes_empty_reasoning_for_tool_turns_when_echo_required()
             web_search_calls: Vec::new(),
             thinking_blocks: Vec::new(),
             source: None,
-            id: None,
+            message_id: None,
         },
     ];
     let ResponsesInputConversion {
@@ -289,7 +289,7 @@ fn convert_input_truncates_oversized_reasoning_to_tail() {
         web_search_calls: Vec::new(),
         thinking_blocks: Vec::new(),
         source: None,
-        id: None,
+        message_id: None,
     }];
     let ResponsesInputConversion { input: items, .. } = OpenAiResponsesAdapter::convert_input(
         msgs,
@@ -324,7 +324,7 @@ fn convert_input_skips_blank_reasoning() {
         web_search_calls: Vec::new(),
         thinking_blocks: Vec::new(),
         source: None,
-        id: None,
+        message_id: None,
     }];
     let ResponsesInputConversion { input: items, .. } = OpenAiResponsesAdapter::convert_input(
         msgs,
@@ -357,7 +357,7 @@ fn convert_input_image_and_audio() {
         web_search_calls: Vec::new(),
         thinking_blocks: Vec::new(),
         source: None,
-        id: None,
+        message_id: None,
     }];
     let ResponsesInputConversion { input: items, .. } = OpenAiResponsesAdapter::convert_input(
         msgs,
@@ -412,7 +412,7 @@ fn capability_profile_image_reaches_responses_wire_payload() {
         web_search_calls: Vec::new(),
         thinking_blocks: Vec::new(),
         source: None,
-        id: None,
+        message_id: None,
     }];
     let wire =
         serde_json::to_value(client.build_request_body(messages, Vec::new(), false)).unwrap();
@@ -444,7 +444,7 @@ fn build_request_body_fields() {
             web_search_calls: Vec::new(),
             thinking_blocks: Vec::new(),
             source: None,
-            id: None,
+            message_id: None,
         }],
         Vec::new(),
         true,
@@ -668,7 +668,7 @@ fn convert_input_supplies_missing_web_search_call_action() {
         })],
         thinking_blocks: Vec::new(),
         source: None,
-        id: None,
+        message_id: None,
     }];
     let ResponsesInputConversion { input: items, .. } = OpenAiResponsesAdapter::convert_input(
         msgs,
@@ -708,7 +708,7 @@ fn convert_input_round_trips_complete_web_search_call_verbatim() {
         web_search_calls: vec![ws.clone()],
         thinking_blocks: Vec::new(),
         source: None,
-        id: None,
+        message_id: None,
     }];
     let ResponsesInputConversion { input: items, .. } = OpenAiResponsesAdapter::convert_input(
         msgs,
@@ -1264,7 +1264,7 @@ fn prompt_cache_key_restarts_after_compaction_and_stays_stable_afterward() {
         Vec::new(),
         Vec::new(),
     );
-    summary.id = Some("msg-compaction-1".into());
+    summary.message_id = Some("msg-compaction-1".into());
     let after = client
         .build_request_body(
             vec![system.clone(), anchor.clone(), summary.clone()],
@@ -1304,7 +1304,7 @@ fn prompt_cache_key_tracks_raw_media_surface_without_hashing_media_bytes() {
         web_search_calls: Vec::new(),
         thinking_blocks: Vec::new(),
         source: None,
-        id: None,
+        message_id: None,
     };
     let raw_image = client
         .build_request_body(vec![system.clone(), image.clone()], Vec::new(), false)

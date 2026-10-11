@@ -152,7 +152,7 @@ fn convert_messages_extracts_system_and_maps_roles() {
             web_search_calls: Vec::new(),
             thinking_blocks: Vec::new(),
             source: None,
-            id: None,
+            message_id: None,
         },
         CanonicalMessage {
             role: CanonicalRole::User,
@@ -163,7 +163,7 @@ fn convert_messages_extracts_system_and_maps_roles() {
             web_search_calls: Vec::new(),
             thinking_blocks: Vec::new(),
             source: None,
-            id: None,
+            message_id: None,
         },
     ];
     let AnthropicMessageConversion {
@@ -202,7 +202,7 @@ fn convert_messages_multiple_system_messages_joined() {
             web_search_calls: Vec::new(),
             thinking_blocks: Vec::new(),
             source: None,
-            id: None,
+            message_id: None,
         },
         CanonicalMessage {
             role: CanonicalRole::System,
@@ -213,7 +213,7 @@ fn convert_messages_multiple_system_messages_joined() {
             web_search_calls: Vec::new(),
             thinking_blocks: Vec::new(),
             source: None,
-            id: None,
+            message_id: None,
         },
         CanonicalMessage {
             role: CanonicalRole::User,
@@ -224,7 +224,7 @@ fn convert_messages_multiple_system_messages_joined() {
             web_search_calls: Vec::new(),
             thinking_blocks: Vec::new(),
             source: None,
-            id: None,
+            message_id: None,
         },
     ];
     let AnthropicMessageConversion { system, .. } = AnthropicAdapter::convert_messages(msgs);
@@ -242,7 +242,7 @@ fn convert_messages_tool_result_block() {
         web_search_calls: Vec::new(),
         thinking_blocks: Vec::new(),
         source: None,
-        id: None,
+        message_id: None,
     }];
     let AnthropicMessageConversion { messages: out, .. } = AnthropicAdapter::convert_messages(msgs);
     assert_eq!(out.len(), 1);
@@ -267,7 +267,7 @@ fn convert_messages_assistant_tool_use_blocks() {
         web_search_calls: Vec::new(),
         thinking_blocks: Vec::new(),
         source: None,
-        id: None,
+        message_id: None,
     }];
     let AnthropicMessageConversion { messages: out, .. } = AnthropicAdapter::convert_messages(msgs);
     assert_eq!(out.len(), 1);
@@ -300,7 +300,7 @@ fn convert_messages_echoes_thinking_blocks_verbatim() {
         web_search_calls: Vec::new(),
         thinking_blocks: vec![thinking.clone()],
         source: None,
-        id: None,
+        message_id: None,
     }];
     let AnthropicMessageConversion { messages: out, .. } = AnthropicAdapter::convert_messages(msgs);
     assert_eq!(out.len(), 1);
@@ -520,7 +520,7 @@ fn convert_messages_echo_uses_front_loaded_order_for_inconsistent_layout() {
             json!({"__layout": [[0, 0, 0], [0, 1, 0]]}),
         ],
         source: None,
-        id: None,
+        message_id: None,
     }];
     let AnthropicMessageConversion { messages: out, .. } = AnthropicAdapter::convert_messages(msgs);
     let content = out[0].content.as_array().unwrap();
@@ -549,7 +549,7 @@ fn convert_messages_echo_falls_back_when_layout_text_before_exceeds_text() {
         web_search_calls: Vec::new(),
         thinking_blocks: vec![thinking.clone(), json!({"__layout": [[0, 0, 10]]})],
         source: None,
-        id: None,
+        message_id: None,
     }];
     let AnthropicMessageConversion { messages: out, .. } = AnthropicAdapter::convert_messages(msgs);
     let content = out[0].content.as_array().unwrap();
@@ -574,7 +574,7 @@ fn convert_messages_image_part_becomes_base64_source() {
         web_search_calls: Vec::new(),
         thinking_blocks: Vec::new(),
         source: None,
-        id: None,
+        message_id: None,
     }];
     let AnthropicMessageConversion { messages: out, .. } = AnthropicAdapter::convert_messages(msgs);
     let content = out[0].content.as_array().unwrap();
@@ -621,7 +621,7 @@ fn capability_profile_image_reaches_anthropic_wire_payload() {
         web_search_calls: Vec::new(),
         thinking_blocks: Vec::new(),
         source: None,
-        id: None,
+        message_id: None,
     }];
     let wire =
         serde_json::to_value(client.build_request_body(messages, Vec::new(), false)).unwrap();
@@ -647,7 +647,7 @@ fn convert_messages_empty_user_content_skipped() {
         web_search_calls: Vec::new(),
         thinking_blocks: Vec::new(),
         source: None,
-        id: None,
+        message_id: None,
     }];
     let AnthropicMessageConversion { messages: out, .. } = AnthropicAdapter::convert_messages(msgs);
     assert!(out.is_empty());
@@ -672,7 +672,7 @@ fn build_request_body_fields() {
             web_search_calls: Vec::new(),
             thinking_blocks: Vec::new(),
             source: None,
-            id: None,
+            message_id: None,
         }],
         Vec::new(),
         true,
@@ -827,7 +827,7 @@ fn serialized_request_preserves_all_cache_breakpoints() {
                 web_search_calls: Vec::new(),
                 thinking_blocks: Vec::new(),
                 source: None,
-                id: None,
+                message_id: None,
             },
             CanonicalMessage {
                 role: CanonicalRole::User,
@@ -838,7 +838,7 @@ fn serialized_request_preserves_all_cache_breakpoints() {
                 web_search_calls: Vec::new(),
                 thinking_blocks: Vec::new(),
                 source: None,
-                id: None,
+                message_id: None,
             },
             CanonicalMessage::assistant(
                 vec![ContentPart::text("old answer")],
@@ -856,7 +856,7 @@ fn serialized_request_preserves_all_cache_breakpoints() {
                 web_search_calls: Vec::new(),
                 thinking_blocks: Vec::new(),
                 source: None,
-                id: None,
+                message_id: None,
             },
         ],
         vec![LlmToolDefinition {

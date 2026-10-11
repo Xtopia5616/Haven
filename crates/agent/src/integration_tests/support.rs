@@ -203,7 +203,7 @@ pub(super) fn make_canonical(role: CanonicalRole, text: &str) -> CanonicalMessag
         web_search_calls: Vec::new(),
         thinking_blocks: Vec::new(),
         source: None,
-        id: None,
+        message_id: None,
     }
 }
 
@@ -869,7 +869,7 @@ pub(super) async fn seed_hello_snapshot(
             web_search_calls: Vec::new(),
             thinking_blocks: Vec::new(),
             source: None,
-            id: None,
+            message_id: None,
         },
         CanonicalMessage {
             role: CanonicalRole::User,
@@ -880,7 +880,7 @@ pub(super) async fn seed_hello_snapshot(
             web_search_calls: Vec::new(),
             thinking_blocks: Vec::new(),
             source: None,
-            id: Some(
+            message_id: Some(
                 msgs.iter()
                     .find(|message| {
                         message.role == haven_common::types::CanonicalRole::User

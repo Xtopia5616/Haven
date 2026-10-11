@@ -22,7 +22,7 @@ async fn error_classifies_correctly() {
             web_search_calls: Vec::new(),
             thinking_blocks: Vec::new(),
             source: None,
-            id: None,
+            message_id: None,
         }])
         .await
         .unwrap_err();
@@ -131,7 +131,7 @@ fn convert_messages_echoes_web_search_calls_verbatim() {
         web_search_calls: vec![ws.clone()],
         thinking_blocks: Vec::new(),
         source: None,
-        id: None,
+        message_id: None,
     }];
     let ep = ModelEndpoint::default();
     let client = OpenAiAdapter::new(ep);
@@ -162,7 +162,7 @@ fn convert_messages_derives_reasoning_from_thinking_blocks() {
             serde_json::json!({"type": "redacted_thinking", "data": "redacted"}),
         ],
         source: None,
-        id: None,
+        message_id: None,
     }];
     let ep = ModelEndpoint {
         provider: "deepseek".into(),
@@ -197,7 +197,7 @@ fn convert_messages_truncates_oversized_reasoning_to_tail() {
         web_search_calls: Vec::new(),
         thinking_blocks: Vec::new(),
         source: None,
-        id: None,
+        message_id: None,
     }];
     let ep = ModelEndpoint::default();
     let client = OpenAiAdapter::new(ep);
@@ -226,7 +226,7 @@ fn convert_messages_truncates_oversized_reasoning_to_tail() {
         web_search_calls: Vec::new(),
         thinking_blocks: Vec::new(),
         source: None,
-        id: None,
+        message_id: None,
     }];
     let ep = ModelEndpoint {
         reasoning_echo_max_chars: Some(64),
@@ -257,7 +257,7 @@ fn convert_messages_supplies_missing_web_search_call_action() {
         web_search_calls: vec![ws.clone()],
         thinking_blocks: Vec::new(),
         source: None,
-        id: None,
+        message_id: None,
     }];
     let ep = ModelEndpoint::default();
     let client = OpenAiAdapter::new(ep);
@@ -654,7 +654,7 @@ fn prompt_cache_key_restarts_after_compaction_and_stays_stable_afterward() {
         Vec::new(),
         Vec::new(),
     );
-    summary.id = Some("msg-compaction-1".into());
+    summary.message_id = Some("msg-compaction-1".into());
     let after = client
         .build_request_body(
             vec![system.clone(), anchor.clone(), summary.clone()],
@@ -694,7 +694,7 @@ fn prompt_cache_key_tracks_raw_media_surface_without_hashing_media_bytes() {
         web_search_calls: Vec::new(),
         thinking_blocks: Vec::new(),
         source: None,
-        id: None,
+        message_id: None,
     };
     let raw_image = client
         .build_request_body(vec![system.clone(), image.clone()], Vec::new(), false)
@@ -1157,7 +1157,7 @@ fn convert_messages_image_content_part() {
         web_search_calls: Vec::new(),
         thinking_blocks: Vec::new(),
         source: None,
-        id: None,
+        message_id: None,
     };
     let client = OpenAiAdapter::new(ModelEndpoint::default());
     let asset = haven_common::media::MediaAsset::new(
@@ -1216,7 +1216,7 @@ fn convert_messages_empty_content() {
         web_search_calls: Vec::new(),
         thinking_blocks: Vec::new(),
         source: None,
-        id: None,
+        message_id: None,
     };
     let openai_msgs =
         OpenAiAdapter::convert_messages(vec![msg], false, OpenAiAdapter::MAX_REASONING_ECHO_CHARS);
@@ -1235,7 +1235,7 @@ fn convert_messages_system_role_maps_to_system_string() {
         web_search_calls: Vec::new(),
         thinking_blocks: Vec::new(),
         source: None,
-        id: None,
+        message_id: None,
     };
     let openai_msgs =
         OpenAiAdapter::convert_messages(vec![msg], false, OpenAiAdapter::MAX_REASONING_ECHO_CHARS);
@@ -1253,7 +1253,7 @@ fn convert_messages_assistant_role_maps_to_assistant_string() {
         web_search_calls: Vec::new(),
         thinking_blocks: Vec::new(),
         source: None,
-        id: None,
+        message_id: None,
     };
     let openai_msgs =
         OpenAiAdapter::convert_messages(vec![msg], false, OpenAiAdapter::MAX_REASONING_ECHO_CHARS);
@@ -1271,7 +1271,7 @@ fn convert_messages_tool_role_maps_to_tool_string() {
         web_search_calls: Vec::new(),
         thinking_blocks: Vec::new(),
         source: None,
-        id: None,
+        message_id: None,
     };
     let openai_msgs =
         OpenAiAdapter::convert_messages(vec![msg], false, OpenAiAdapter::MAX_REASONING_ECHO_CHARS);
@@ -1290,7 +1290,7 @@ fn convert_messages_single_text_part_becomes_json_string() {
         web_search_calls: Vec::new(),
         thinking_blocks: Vec::new(),
         source: None,
-        id: None,
+        message_id: None,
     };
     let openai_msgs =
         OpenAiAdapter::convert_messages(vec![msg], false, OpenAiAdapter::MAX_REASONING_ECHO_CHARS);
@@ -1314,7 +1314,7 @@ fn convert_messages_single_audio_part_nested_input_audio() {
         web_search_calls: Vec::new(),
         thinking_blocks: Vec::new(),
         source: None,
-        id: None,
+        message_id: None,
     };
     let openai_msgs =
         OpenAiAdapter::convert_messages(vec![msg], false, OpenAiAdapter::MAX_REASONING_ECHO_CHARS);
@@ -1341,7 +1341,7 @@ fn convert_messages_single_image_part_nested_image_url() {
         web_search_calls: Vec::new(),
         thinking_blocks: Vec::new(),
         source: None,
-        id: None,
+        message_id: None,
     };
     let openai_msgs =
         OpenAiAdapter::convert_messages(vec![msg], false, OpenAiAdapter::MAX_REASONING_ECHO_CHARS);

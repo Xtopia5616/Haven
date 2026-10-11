@@ -53,7 +53,7 @@ pub struct SessionHistoryFilter {
 /// Agent keeps ownership of its `SessionPromptMessage` input type.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionMessageText {
-    pub id: String,
+    pub message_id: String,
     pub role: CanonicalRole,
     pub content: String,
 }
@@ -101,7 +101,7 @@ impl SessionStore {
                     .list_recent_session_messages(&session_id, limit)?
                     .into_iter()
                     .map(|message| SessionMessageText {
-                        id: message.id,
+                        message_id: message.id,
                         role: message.role,
                         content: message.content,
                     })

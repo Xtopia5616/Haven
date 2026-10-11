@@ -2060,7 +2060,7 @@ async fn continue_session_resumes_errored_session() {
             web_search_calls: Vec::new(),
             thinking_blocks: Vec::new(),
             source: None,
-            id: None,
+            message_id: None,
         }]),
         step_number: 1,
         branch_points: HashMap::new(),

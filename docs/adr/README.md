@@ -986,3 +986,4 @@
 - [0995：统一持久用量记录身份字段](0995-name-persisted-usage-identity.md)
 - [0996：统一交互请求身份字段](0996-name-interaction-request-identity.md)
 - [0997：统一会话恢复消息身份字段](0997-name-session-resume-message-identity.md)
+- [0998：统一持久摘要与 prompt-history 消息身份字段](0998-name-transcript-and-prompt-message-identities.md)

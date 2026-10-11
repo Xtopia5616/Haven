@@ -71,7 +71,7 @@ pub(crate) fn truncate_at_user_message(
         if let TranscriptRecord::CompactSummary { compacted, .. } = &mut events[index]
             && let Some(position) = compacted
                 .iter()
-                .rposition(|message| message.id.as_deref() == Some(target_message_id))
+                .rposition(|message| message.message_id.as_deref() == Some(target_message_id))
         {
             compacted.truncate(position);
             events.truncate(index + 1);

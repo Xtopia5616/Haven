@@ -166,12 +166,12 @@ async fn session_store_lists_latest_prompt_messages_in_chronological_order() {
         window,
         vec![
             SessionMessageText {
-                id: middle.id,
+                message_id: middle.id,
                 role: haven_common::types::CanonicalRole::Assistant,
                 content: "middle".into(),
             },
             SessionMessageText {
-                id: latest.id,
+                message_id: latest.id,
                 role: haven_common::types::CanonicalRole::User,
                 content: "latest".into(),
             },

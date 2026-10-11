@@ -135,7 +135,7 @@ impl AgentEventEmitter for SuppressLifecycleCancelledSessionErrorEmitter {
 /// durable message identity, not by content comparison.
 #[derive(Debug, Clone)]
 pub(crate) struct SessionPromptMessage {
-    id: String,
+    message_id: String,
     role: haven_common::types::CanonicalRole,
     content: String,
 }
@@ -224,7 +224,7 @@ impl AgentLayer {
                 messages
                     .into_iter()
                     .map(|message| SessionPromptMessage {
-                        id: message.id,
+                        message_id: message.message_id,
                         role: message.role,
                         content: message.content,
                     })
@@ -660,7 +660,7 @@ impl AgentLayer {
                 !(m.role == haven_common::types::CanonicalRole::User
                     && initial
                         .message_id
-                        .is_some_and(|message_id| m.id.as_str() == message_id))
+                        .is_some_and(|message_id| m.message_id.as_str() == message_id))
             })
             .map(|m| format!("[{}] {}", m.role, m.content))
             .collect();
@@ -701,7 +701,7 @@ impl AgentLayer {
         }
 
         let mut initial_user = CanonicalMessage::user(initial_content);
-        initial_user.id = initial.message_id.map(str::to_owned);
+        initial_user.message_id = initial.message_id.map(str::to_owned);
         let canonical: Vec<CanonicalMessage> = vec![
             CanonicalMessage::system(vec![ContentPart::text(system_prompt)]),
             initial_user,

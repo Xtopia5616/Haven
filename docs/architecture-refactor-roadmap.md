@@ -1,6 +1,6 @@
 # Haven 架构降复杂度重构路线图
 
-> 状态：阶段 0–8 已完成；唯一结构 Active 为 §5.7 全项目领域术语与架构角色命名收敛。Memory 持久身份边界、transcript command adapter 归属、派生集合命名和配置/Settings 语义校验已实现；Session history/lineage/resume command DTO、resume message 与 `SessionStep`、runtime `SessionInfo`/`StepInfo`、持久 `LlmUsageRecord` 及交互请求的实体身份字段已收敛（ADR 0991、0993–0997）；其余 crate API、DTO 身份字段、配置与文档引用审查继续推进；暂无 Next。Windows 发布验收为独立 Open Gate（§5.1）。
+> 状态：阶段 0–8 已完成；唯一结构 Active 为 §5.7 全项目领域术语与架构角色命名收敛。Memory 持久身份边界、transcript command adapter 归属、派生集合命名和配置/Settings 语义校验已实现；Session history/lineage/resume command DTO、resume message 与 `SessionStep`、runtime `SessionInfo`/`StepInfo`、持久 `LlmUsageRecord`、交互请求、CompactSummary 与 prompt-history 的消息身份字段已收敛（ADR 0991、0993–0998）；其余 crate API、DTO 身份字段、配置与文档引用审查继续推进；暂无 Next。Windows 发布验收为独立 Open Gate（§5.1）。
 > 更新日期：2026-10-12
 > 范围：Agent/Session、Memory、Tools、LLM、App IPC 与 UI
 
@@ -154,6 +154,8 @@ Session、ScheduledToolRun 与 AppCommand 确认均由各自 owner 和稳定 req
 范围覆盖所有 Rust crate、Svelte/TypeScript、Tauri IPC/事件，以及对应架构、命名和契约文档。职责以 `docs/architecture.md` 为准，术语与角色动词以 `docs/naming.md` 为准；已完成决定和实现细节只保存在对应 ADR，不在路线图复制实施日志。
 
 当前先检查 Rust crate 的可达 API 与实际调用图。Messaging、MCP 和 Memory 已将普通生产路径收敛为领域 facade/store，具体 transport、client、repository 和数据库装配由各自 owner 持有；跨 crate 测试注入使用非默认 `test-support`（ADR 0887–0892）。Memory 数据库由 `MemoryPersistence` 打开并装配 typed stores。以上仅代表已核对边界，不代表全仓审查完成。
+
+Common `CanonicalMessage`、Memory `SessionMessageText` 与 Agent `SessionPromptMessage` 统一使用 `message_id`；CompactSummary replay 只为历史 event 的 `id` 提供反序列化兼容，新事件写明确字段。ToolRun completion 派生的 `msg-*` identity 作为 delivery 幂等规则写入 ID 规范（ADR 0998）。
 
 SessionStore event replay 的固定页容量已收回 Memory typed store，Agent runtime 只传 session、cursor 与 cancellation，不再依赖 Memory 的页大小常量（ADR 0911）。
 

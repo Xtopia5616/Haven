@@ -564,7 +564,7 @@ impl ContextCompactor {
             Vec::new(),
             Vec::new(),
         );
-        summary_msg.id = Some(episode_id.clone());
+        summary_msg.message_id = Some(episode_id.clone());
         compacted.push(summary_msg);
         compacted.extend_from_slice(suffix);
 
@@ -644,7 +644,7 @@ mod tests {
             web_search_calls: Vec::new(),
             thinking_blocks: Vec::new(),
             source: None,
-            id: None,
+            message_id: None,
         }
     }
 
@@ -775,7 +775,7 @@ mod tests {
             web_search_calls: Vec::new(),
             thinking_blocks: Vec::new(),
             source: None,
-            id: None,
+            message_id: None,
         };
         let prompt = ContextCompactor::build_summary_prompt(&[result, image.clone()]);
         assert!(prompt.contains("tool result id=call-42"));
@@ -799,7 +799,7 @@ mod tests {
             web_search_calls: Vec::new(),
             thinking_blocks: Vec::new(),
             source: None,
-            id: None,
+            message_id: None,
         }
     }
 

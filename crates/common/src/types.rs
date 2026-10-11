@@ -670,9 +670,14 @@ pub struct CanonicalMessage {
     pub source: Option<InjectSource>,
     /// Stable `msg-*` identity shared with `memory_items` for compaction
     /// summary bubbles (L1). Adapters ignore this and ordinary messages do not
-    /// carry one.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub id: Option<String>,
+    /// carry one. Historical durable snapshots used the generic `id` field.
+    #[serde(
+        default,
+        rename = "message_id",
+        alias = "id",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub message_id: Option<String>,
 }
 
 impl CanonicalMessage {
@@ -686,7 +691,7 @@ impl CanonicalMessage {
             web_search_calls: Vec::new(),
             thinking_blocks: Vec::new(),
             source: None,
-            id: None,
+            message_id: None,
         }
     }
 
@@ -700,7 +705,7 @@ impl CanonicalMessage {
             web_search_calls: Vec::new(),
             thinking_blocks: Vec::new(),
             source: None,
-            id: None,
+            message_id: None,
         }
     }
 
@@ -732,7 +737,7 @@ impl CanonicalMessage {
             web_search_calls,
             thinking_blocks,
             source: None,
-            id: None,
+            message_id: None,
         }
     }
 
@@ -746,7 +751,7 @@ impl CanonicalMessage {
             web_search_calls: Vec::new(),
             thinking_blocks: Vec::new(),
             source: None,
-            id: None,
+            message_id: None,
         }
     }
 }
@@ -1127,7 +1132,7 @@ mod tests {
             web_search_calls: Vec::new(),
             thinking_blocks: Vec::new(),
             source: None,
-            id: None,
+            message_id: None,
         };
 
         assert_eq!(msg.role, CanonicalRole::System);
@@ -1147,7 +1152,7 @@ mod tests {
             web_search_calls: Vec::new(),
             thinking_blocks: Vec::new(),
             source: None,
-            id: None,
+            message_id: None,
         };
         assert!(msg.tool_call_id.is_some());
     }
@@ -1167,7 +1172,7 @@ mod tests {
             web_search_calls: Vec::new(),
             thinking_blocks: Vec::new(),
             source: None,
-            id: None,
+            message_id: None,
         };
 
         assert_eq!(msg.tool_calls.unwrap().len(), 1);
@@ -1184,7 +1189,7 @@ mod tests {
             web_search_calls: Vec::new(),
             thinking_blocks: Vec::new(),
             source: None,
-            id: None,
+            message_id: None,
         };
 
         assert_eq!(msg.role, CanonicalRole::Tool);
@@ -1570,13 +1575,24 @@ mod tests {
             web_search_calls: Vec::new(),
             thinking_blocks: Vec::new(),
             source: None,
-            id: None,
+            message_id: Some("msg-00000000000000000000000000000001".into()),
         };
 
-        let json = serde_json::to_string(&msg).unwrap();
+        let value = serde_json::to_value(&msg).unwrap();
+        assert_eq!(value["message_id"], "msg-00000000000000000000000000000001");
+        assert!(value.get("id").is_none());
+        let json = serde_json::to_string(&value).unwrap();
         let decoded: CanonicalMessage = serde_json::from_str(&json).unwrap();
         assert_eq!(decoded.role, CanonicalRole::User);
         assert_eq!(decoded.content.len(), 1);
+        assert_eq!(decoded.message_id, msg.message_id);
+
+        let mut legacy = value;
+        let legacy_object = legacy.as_object_mut().unwrap();
+        let message_id = legacy_object.remove("message_id").unwrap();
+        legacy_object.insert("id".into(), message_id);
+        let decoded_legacy: CanonicalMessage = serde_json::from_value(legacy).unwrap();
+        assert_eq!(decoded_legacy.message_id, msg.message_id);
     }
 
     #[test]
@@ -1594,7 +1610,7 @@ mod tests {
             web_search_calls: Vec::new(),
             thinking_blocks: Vec::new(),
             source: None,
-            id: None,
+            message_id: None,
         };
 
         let json = serde_json::to_string(&msg).unwrap();

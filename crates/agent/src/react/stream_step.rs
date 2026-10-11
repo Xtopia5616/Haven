@@ -1583,7 +1583,7 @@ mod tests {
             web_search_calls: Vec::new(),
             thinking_blocks: Vec::new(),
             source: None,
-            id: None,
+            message_id: None,
         }
     }
 
@@ -1601,7 +1601,7 @@ mod tests {
             web_search_calls: Vec::new(),
             thinking_blocks: Vec::new(),
             source: None,
-            id: None,
+            message_id: None,
         }
     }
 

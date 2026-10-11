@@ -21,7 +21,7 @@ async fn rollback_rejects_closing_session_before_cancelling_owned_tool_runs() {
                 web_search_calls: Vec::new(),
                 thinking_blocks: Vec::new(),
                 source: None,
-                id: None,
+                message_id: None,
             }]),
             step_number: 1,
             branch_points: HashMap::new(),
@@ -87,7 +87,7 @@ async fn rollback_with_snapshot_no_branch_point_uses_snapshot() {
         web_search_calls: Vec::new(),
         thinking_blocks: Vec::new(),
         source: None,
-        id: None,
+        message_id: None,
     }];
     let snapshot = EventProjection {
         events: seed_events_from_canonical(canonical.clone()),
@@ -187,7 +187,7 @@ async fn rollback_pause_true_removes_user_message_from_session() {
             web_search_calls: Vec::new(),
             thinking_blocks: Vec::new(),
             source: None,
-            id: None,
+            message_id: None,
         },
         CanonicalMessage {
             role: CanonicalRole::User,
@@ -198,7 +198,7 @@ async fn rollback_pause_true_removes_user_message_from_session() {
             web_search_calls: Vec::new(),
             thinking_blocks: Vec::new(),
             source: None,
-            id: Some(hello_id.clone()),
+            message_id: Some(hello_id.clone()),
         },
     ];
     let mut branch_points = HashMap::new();
@@ -316,7 +316,7 @@ async fn rollback_fallback_no_branch_point_pause_true_deletes_from_last_user_mes
         web_search_calls: Vec::new(),
         thinking_blocks: Vec::new(),
         source: None,
-        id: None,
+        message_id: None,
     }];
     let mut branch_points = HashMap::new();
     branch_points.insert(
@@ -423,7 +423,7 @@ async fn rollback_errors_when_target_message_id_does_not_match() {
         web_search_calls: Vec::new(),
         thinking_blocks: Vec::new(),
         source: None,
-        id: None,
+        message_id: None,
     }];
     let mut branch_points = HashMap::new();
     branch_points.insert(
@@ -607,7 +607,7 @@ async fn rollback_pause_uses_target_message_ts_not_latest_user() {
             web_search_calls: Vec::new(),
             thinking_blocks: Vec::new(),
             source: None,
-            id: None,
+            message_id: None,
         },
         CanonicalMessage {
             role: CanonicalRole::User,
@@ -618,7 +618,7 @@ async fn rollback_pause_uses_target_message_ts_not_latest_user() {
             web_search_calls: Vec::new(),
             thinking_blocks: Vec::new(),
             source: None,
-            id: Some(hello_id.clone()),
+            message_id: Some(hello_id.clone()),
         },
     ];
     let mut branch_points = HashMap::new();
@@ -733,7 +733,7 @@ async fn rollback_pause_matches_compacted_message_id() {
             web_search_calls: Vec::new(),
             thinking_blocks: Vec::new(),
             source: None,
-            id: None,
+            message_id: None,
         },
         CanonicalMessage {
             role: CanonicalRole::User,
@@ -744,7 +744,7 @@ async fn rollback_pause_matches_compacted_message_id() {
             web_search_calls: Vec::new(),
             thinking_blocks: Vec::new(),
             source: None,
-            id: Some(initial_id),
+            message_id: Some(initial_id),
         },
         // The steering is represented in provider-facing text, but retains
         // the same durable id as the DB message.
@@ -757,7 +757,7 @@ async fn rollback_pause_matches_compacted_message_id() {
             web_search_calls: Vec::new(),
             thinking_blocks: Vec::new(),
             source: None,
-            id: Some(steering_id.clone()),
+            message_id: Some(steering_id.clone()),
         },
     ];
     let mut branch_points = HashMap::new();

@@ -217,7 +217,7 @@ impl AgentLayer {
                         event,
                         TranscriptRecord::CompactSummary { compacted, .. }
                             if compacted.iter().any(|message| {
-                                message.id.as_deref() == Some(target.id.as_str())
+                                message.message_id.as_deref() == Some(target.id.as_str())
                             })
                     )
                 })

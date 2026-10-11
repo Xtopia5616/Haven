@@ -125,7 +125,7 @@ fn convert_contents_extracts_system_instruction() {
             web_search_calls: Vec::new(),
             thinking_blocks: Vec::new(),
             source: None,
-            id: None,
+            message_id: None,
         },
         CanonicalMessage {
             role: CanonicalRole::User,
@@ -136,7 +136,7 @@ fn convert_contents_extracts_system_instruction() {
             web_search_calls: Vec::new(),
             thinking_blocks: Vec::new(),
             source: None,
-            id: None,
+            message_id: None,
         },
     ];
     let GeminiContentConversion {
@@ -183,7 +183,7 @@ fn convert_contents_tool_result_function_response() {
         web_search_calls: Vec::new(),
         thinking_blocks: Vec::new(),
         source: None,
-        id: None,
+        message_id: None,
     }];
     let GeminiContentConversion { contents, .. } = GeminiAdapter::convert_contents(msgs);
     assert_eq!(contents.len(), 1);
@@ -213,7 +213,7 @@ fn convert_contents_tool_result_uses_function_name_of_matching_call() {
             web_search_calls: Vec::new(),
             thinking_blocks: Vec::new(),
             source: None,
-            id: None,
+            message_id: None,
         },
         CanonicalMessage {
             role: CanonicalRole::Tool,
@@ -224,7 +224,7 @@ fn convert_contents_tool_result_uses_function_name_of_matching_call() {
             web_search_calls: Vec::new(),
             thinking_blocks: Vec::new(),
             source: None,
-            id: None,
+            message_id: None,
         },
     ];
     let GeminiContentConversion { contents, .. } = GeminiAdapter::convert_contents(msgs);
@@ -264,7 +264,7 @@ fn convert_contents_parallel_same_tool_results_follow_declaration_order() {
             web_search_calls: Vec::new(),
             thinking_blocks: Vec::new(),
             source: None,
-            id: None,
+            message_id: None,
         },
         CanonicalMessage {
             role: CanonicalRole::Tool,
@@ -275,7 +275,7 @@ fn convert_contents_parallel_same_tool_results_follow_declaration_order() {
             web_search_calls: Vec::new(),
             thinking_blocks: Vec::new(),
             source: None,
-            id: None,
+            message_id: None,
         },
         CanonicalMessage {
             role: CanonicalRole::Tool,
@@ -286,7 +286,7 @@ fn convert_contents_parallel_same_tool_results_follow_declaration_order() {
             web_search_calls: Vec::new(),
             thinking_blocks: Vec::new(),
             source: None,
-            id: None,
+            message_id: None,
         },
     ];
     let GeminiContentConversion { contents, .. } = GeminiAdapter::convert_contents(msgs);
@@ -323,7 +323,7 @@ fn convert_contents_multiple_tool_results_map_their_own_call_names() {
             web_search_calls: Vec::new(),
             thinking_blocks: Vec::new(),
             source: None,
-            id: None,
+            message_id: None,
         },
         CanonicalMessage {
             role: CanonicalRole::Tool,
@@ -334,7 +334,7 @@ fn convert_contents_multiple_tool_results_map_their_own_call_names() {
             web_search_calls: Vec::new(),
             thinking_blocks: Vec::new(),
             source: None,
-            id: None,
+            message_id: None,
         },
         CanonicalMessage {
             role: CanonicalRole::Tool,
@@ -345,7 +345,7 @@ fn convert_contents_multiple_tool_results_map_their_own_call_names() {
             web_search_calls: Vec::new(),
             thinking_blocks: Vec::new(),
             source: None,
-            id: None,
+            message_id: None,
         },
     ];
     let GeminiContentConversion { contents, .. } = GeminiAdapter::convert_contents(msgs);
@@ -370,7 +370,7 @@ fn convert_contents_assistant_function_call() {
         web_search_calls: Vec::new(),
         thinking_blocks: Vec::new(),
         source: None,
-        id: None,
+        message_id: None,
     }];
     let GeminiContentConversion { contents, .. } = GeminiAdapter::convert_contents(msgs);
     assert_eq!(contents.len(), 1);
@@ -400,7 +400,7 @@ fn convert_contents_echoes_function_call_thought_signature() {
             "signature": "sig_1"
         })],
         source: None,
-        id: None,
+        message_id: None,
     }];
     let GeminiContentConversion { contents, .. } = GeminiAdapter::convert_contents(msgs);
     let wire = serde_json::to_value(&contents[0]).unwrap();
@@ -430,7 +430,7 @@ fn convert_contents_image_and_audio_inline_data() {
         web_search_calls: Vec::new(),
         thinking_blocks: Vec::new(),
         source: None,
-        id: None,
+        message_id: None,
     }];
     let GeminiContentConversion { contents, .. } = GeminiAdapter::convert_contents(msgs);
     let inline = contents[0].parts[0].inline_data.as_ref().unwrap();
@@ -478,7 +478,7 @@ fn capability_profile_image_reaches_gemini_wire_payload() {
         web_search_calls: Vec::new(),
         thinking_blocks: Vec::new(),
         source: None,
-        id: None,
+        message_id: None,
     }];
     let wire =
         serde_json::to_value(client.build_request_body(messages, Vec::new(), false)).unwrap();

@@ -142,7 +142,7 @@ impl OpenAiAdapter {
             return None;
         }
 
-        if let Some(message_id) = &first_user.id {
+        if let Some(message_id) = &first_user.message_id {
             hasher.update(b"initial-user-id\0");
             hasher.update(message_id.as_bytes());
             hasher.update([0]);

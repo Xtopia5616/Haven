@@ -213,7 +213,7 @@ Tools 对结构化输出中 Ask 与通知 side-channel 的解析结果分别使�
 
 Tauri command 名与 request/response 类型由 `generatedCommands.ts` 从 Rust handler 生成；`contracts/commands.ts` 只追加 reviewed boundary/security metadata，并用 `Record<TauriCommandName, CommandContract>` 保证每个生成 command 恰有对应审阅项。
 
-跨 crate 的同字段 DTO 先按 owner 和用途判断是否合并：Memory `SessionMessageText` 是存储查询返回的纯文本消息行；Agent 私有 `SessionPromptMessage` 是组装首次 session prompt 的输入。它们通过显式转换跨边界，不应让 Memory 依赖 Agent，也不应让 Agent 的 prompt 类型成为 Memory 的规范类型。
+跨 crate 的同字段 DTO 先按 owner 和用途判断是否合并：Memory `SessionMessageText` 是存储查询返回的纯文本消息行；Agent 私有 `SessionPromptMessage` 是组装首次 session prompt 的输入。两者都用 `message_id` 表示消息身份，通过显式字段映射跨边界；不应让 Memory 依赖 Agent，也不应让 Agent 的 prompt 类型成为 Memory 的规范类型（ADR 0998）。
 
 同一领域类型跨 runtime 与 wire 边界时，只有序列化格式、字段策略或演进 owner 确实不同才保留两个类型，并在名称中标出边界角色。当前 Tools `ToolRunKind` 是执行运行时分类；App `ToolRunKindDto` 是 IPC/event DTO 枚举，二者值相同但 owner、Serde 与向前演进责任不同。
 
@@ -355,6 +355,8 @@ Session title 读取 API 必须在名字中表达字段投影：`SessionStore::g
 
 Rust/DB/event 领域字段与 Tauri DTO 中，实体身份字段使用实体名限定的 `xxx_id`（如 `session_id`、`step_id`、`message_id`、`tool_run_id`）；UI 自有模型可在边界映射为 `xxxId`。数据库既有物理主键列（如 `sessions.id`）保持原名，由 Repository 映射为领域字段。尚未迁移的存量 DTO 按实体归属逐步收敛，不以结构体上下文作为省略实体名的理由；外部 provider 标识和 Tauri event envelope 序号 `id` 按各自协议保留。
 
+ToolRun completion 消息身份是可重试投递的派生身份：`tool_run_result_id` 经 SHA-256 确定性映射到 `msg-*`，同一 completion 在 outbox 重投、进程恢复和 queue 重试中必须得到同一个 `message_id`，以保持 transcript/outbox 幂等。它不是新实体的随机 ID 生成；不得替换为每次调用 `new_id("msg")`（ADR 0998）。
+
 App 的 Memory fact command response 使用 `fact_id` 标识事实；repository 仍映射既有 `facts.id`，UI 使用生成 DTO 字段并在命令边界校验 `fact-*`，不接受泛名 `id`（ADR 0992）。
 
 Memory `SessionStep` 的恢复投影以 `step_id` 标识执行行；UI 只接受该字段，并允许 `step-*` 或按 supplement 规则复用的 `msg-*`。SQLite `session_steps.id` 保持物理列名称，Agent runtime `StepInfo.step_id` 属于独立运行态列表 contract（ADR 0993、0994）。
@@ -371,7 +373,7 @@ Session resume 的 App-owned `SessionResumeMessageDto` 使用 `message_id`，从
 
 共享授权身份 `CapabilityScope` 由 Common 定义；所有 Rust 调用方统一从 `haven_common::types::CapabilityScope` 导入，不经 Tools 根 alias。新值只通过 fallible `CapabilityScope::try_new` 构造，禁止无校验 `new` / `From` 转换；Serde 反序列化执行相同校验。每次调用的 policy resolver 返回 `Result`，构造失败必须在授权与执行前失败关闭。
 
-Common transcript contracts（`CanonicalMessage`、`CanonicalRole`、`CanonicalToolCall`、`ContentPart`、`FollowUp`、`InjectSource`、`MessageAttachment`、`TranscriptMessageKind`）统一从 `haven_common::types` 导入；不使用 Common crate root aliases。
+Common transcript contracts（`CanonicalMessage`、`CanonicalRole`、`CanonicalToolCall`、`ContentPart`、`FollowUp`、`InjectSource`、`MessageAttachment`、`TranscriptMessageKind`）统一从 `haven_common::types` 导入；`CanonicalMessage` 的可选 compaction 摘要身份使用 `message_id`，新 durable payload 序列化该字段，Agent 仅在 replay 中兼容历史 `id`（ADR 0998）。不使用 Common crate root aliases。
 
 - ToolRun 身份字段在 Rust 类型、事件与 JSON 结果中统一命名 `tool_run_id`；前端 IPC/view DTO 只在边界映射为 `toolRunId`，不再接受或输出泛名 `id` 别名。数据库物理列 `tool_runs.id` 保持不变，Repository 行字段命名 `tool_run_id`。Tauri event envelope 的数值 `event.id` 是另一实体，继续保留原名。
 - ToolRun 持久化边界的 `started_at`、`finished_at`、定时 `due_at` 与 `created_at` 投影统一为 UTC RFC3339；写入时校验并归一 offset，读取兼容 SQLite 生成的旧 UTC 时间。定时 watch trigger 的 `due_at` 使用空字符串，损坏的 waiting `due_at` 保留给 service quarantine（ADR 0979）。
