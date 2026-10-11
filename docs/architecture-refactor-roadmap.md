@@ -170,6 +170,7 @@ SessionStore 的普通生产读取现统一经过 async/cancellable typed API �
 | Memory fact-write policy | `MemoryFactWrite` 不再携带调用方计算的 single-valued 标记；FactGraph 在 Memory 内按规范谓词决策，`is_single_valued_predicate` 也不再是跨 crate 根 API（ADR 0919）。 | 继续核对跨层输入 DTO 是否携带了实际属于持久化 owner 的策略快照或重复判断结果。 |
 | ToolRun history boundary | App 不再接收 Memory `ToolRunRow`；Tools 复用 `ToolRunView` 为 board/history 提供 typed safe projection，终态过滤和 history limit 下推到 SQLite query（ADR 0920）。 | 继续核查其它管理能力是否把存储行或 owner 策略泄漏给 App/UI。 |
 | Memory model-facing fact reads | MemoryTool 的 search/list 端口都要求显式 limit，由 Memory 在可见性过滤后截断；全局列表按有效置信度排序，删除会误称时间顺序的 `recent` API（ADR 0921）。 | 继续检查模型工具与 App 查询是否把无界数据或 owner 自身的排序/过滤责任推给调用方。 |
+| Tools capability handoff | App/Agent adapter 在 composition 阶段取得窄 capability 并缓存；运行期不再重取完整 `ToolServices` bundle，App bootstrap 复用已装配 Skills port（ADR 0922）。 | 继续核对其它 facade/bundle 是否进入运行期调用链，及 adapter 构造器是否只接收所需能力。 |
 | Rust 调用与函数动词 | Input、Tools、Memory、Agent、LLM 和 App 的调用动词、副作用 owner 与共享纯函数已完成多轮审查（ADR 0570–0698、0861–0879）。 | 继续核对私有与 `pub(crate)` 函数、参数/返回值、trait 方法及调用链；只在职责或权威状态重复时合并，并按可观察行为统一动词。 |
 | UI components、stores、controllers、handlers 与 contracts | 部分 controller 生命周期、生成类型复用、无消费者 alias、Tool result 输出校验和 Session 状态投影已审查（ADR 0595、0665–0670、0698、0745、0841–0846、0860）。MCP/Skill renderer 保留明确的扩展型动态边界。 | 逐组件和数据流检查 owner、props、事件、contracts、route 局部副本及无行为转发；核对持久实体 ID 是否执行规范前缀/UUID32 校验，并区分 provider 外部 ID。 |
 | Tauri IPC 与事件 | 命令静态 request/response 有 Rust DTO 生成来源，事件 channel 有 Rust 登记和 UI mapper；若干枚举、目标命名、字段和 App 命令 ID 入参已收敛（ADR 0613、0699、0730–0745、0883）。 | 逐命令和事件核对领域名称、snake_case/camelCase 边界、payload owner、顺序/幂等、失败语义和运行时校验；复核 replay、store 与持久化写路径的 ID 约束。 |
@@ -184,6 +185,8 @@ Active 子域继续 Rust crate 边界审计：Messaging 与 MCP 的跨 crate 实
 ToolRun history 调用图确认 App management capability 原先把 Memory `ToolRunRow` 原样暴露给 App，history 在装载全部记录后才由 App 过滤和分页。现由 Tools owner 用同一 `ToolRunView` 投影 live 与 persisted board/history 数据；Memory 终态查询可在 SQLite 执行过滤与限页，App 仅组装 IPC 结果（ADR 0920）。
 
 MemoryTool fact read 调用图确认 search/list 原由 Tools 获取宽结果后截断，其中 search 可将未限页 FTS 候选跨 crate 返回；全局 list 的 `recent` 名称也与有效置信度排序不符。现由 `MemoryFactStore` 的显式限量 search/list capability 在敏感过滤后截断，Tools 不再重复归一查询或接收宽结果；数据库读排序和结果保持不变（ADR 0921）。
+
+Tools capability 调用图确认 AppRuntime 已取得 `ToolServices` 后又把 `ToolsFacade` 传给三个 adapter factory 重新读取整包；Agent prompt adapter 还在每次 catalog 查询时读取整包。现 adapter 构造器只接收自身所需的窄 port，App background bootstrap 复用 `AppServices.skills`，`share_services()` 保留为 composition handoff（ADR 0922）。
 
 每个候选都要说明真实消费者、权威状态 owner、作用域与生命周期、失败/恢复语义，以及是否改变 IPC、持久化或安全契约。结论必须是合并、改名、拆分、保留并解释，或有证据的暂缓。全仓通过条件是主要生产概念有唯一规范词和可定位 owner；重复职责已合并，或相邻 owner 的区别能从代码和文档解释；当前源码、契约与路线图不再使用退役名称描述现状。历史决定仍可在 ADR 中按原名检索。
 

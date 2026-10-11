@@ -7,8 +7,8 @@
 //! deterministic order.
 
 use crate::agent_tool_adapters::{
-    AppLiveOutputPort, AppSkillExecutionPort, AppToolRunPort, app_live_output_port_from_facade,
-    app_skill_execution_port_from_facade, app_tool_run_port_from_facade,
+    AppLiveOutputPort, AppSkillExecutionPort, AppToolRunPort, app_live_output_port,
+    app_skill_execution_port, app_tool_run_port,
 };
 use crate::config_runtime::RuntimeConfigCoordinator;
 use crate::desktop::DesktopShell;
@@ -88,16 +88,21 @@ pub(crate) struct AppServices {
 impl ApplicationRuntime {
     pub(crate) fn new(runtime_services: RuntimeServices) -> Self {
         let tool_services = runtime_services.tools.share_services();
+        let skill_execution = app_skill_execution_port(tool_services.skill_execution);
+        let tool_runs = app_tool_run_port(
+            tool_services.tool_run_management,
+            #[cfg(test)]
+            tool_services.tool_run_test_support,
+        );
+        let live_output = app_live_output_port(tool_services.live_output);
         let services = AppServices {
             mcp: tool_services.mcp,
             mcp_tool_caller: tool_services.mcp_tool_caller,
             skills: tool_services.skills,
-            skill_execution: app_skill_execution_port_from_facade(Arc::clone(
-                &runtime_services.tools,
-            )),
+            skill_execution,
             authorization: tool_services.authorization,
-            tool_runs: app_tool_run_port_from_facade(Arc::clone(&runtime_services.tools)),
-            live_output: app_live_output_port_from_facade(Arc::clone(&runtime_services.tools)),
+            tool_runs,
+            live_output,
             managed_assets: tool_services.managed_assets,
         };
         let config_apply_gate = runtime_services.config_apply_gate;

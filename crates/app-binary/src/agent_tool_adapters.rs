@@ -12,10 +12,10 @@ use haven_agent::{
 use haven_common::types::{MessageAttachment, RiskLevel};
 use haven_tools::{
     AuthorizationDecision, AuthorizationPort, AuthorizationRequest, ConfirmationReceipt,
-    LiveOutputSinkPort, Skill, SkillExecutionPort, ToolCatalogSnapshot, ToolRegistration,
-    ToolResult, ToolRunAgentCapability, ToolRunCompletion, ToolRunCompletionCapability,
-    ToolRunHistoryQuery, ToolRunLifecycleEventSink, ToolRunListView, ToolRunManagementCapability,
-    ToolRunRestoreSummary, ToolRunView, ToolsFacade,
+    LiveOutputSinkPort, Skill, SkillCatalogPort, SkillExecutionPort, ToolCatalogSnapshot,
+    ToolRegistration, ToolResult, ToolRunAgentCapability, ToolRunCompletion,
+    ToolRunCompletionCapability, ToolRunHistoryQuery, ToolRunLifecycleEventSink, ToolRunListView,
+    ToolRunManagementCapability, ToolRunRestoreSummary, ToolRunView, ToolsFacade,
 };
 #[cfg(test)]
 use haven_tools::{ScheduledToolRunSpec, ToolRunTestSupportPort};
@@ -29,6 +29,7 @@ pub(crate) fn agent_tool_ports_from_facade(tools: Arc<ToolsFacade>) -> AgentTool
     let adapter = Arc::new(ToolsFacadeAgentAdapter {
         tools: Arc::clone(&tools),
         authorization: Arc::clone(&services.authorization),
+        skills: Arc::clone(&services.skills),
         tool_runs: Arc::clone(&services.tool_run_agent),
     });
 
@@ -70,12 +71,14 @@ pub(crate) trait AppToolRunPort: Send + Sync {
     async fn schedule(&self, spec: ScheduledToolRunSpec) -> anyhow::Result<String>;
 }
 
-pub(crate) fn app_tool_run_port_from_facade(tools: Arc<ToolsFacade>) -> Arc<dyn AppToolRunPort> {
-    let services = tools.share_services();
+pub(crate) fn app_tool_run_port(
+    tool_runs: Arc<dyn ToolRunManagementCapability>,
+    #[cfg(test)] test_support: Arc<dyn ToolRunTestSupportPort>,
+) -> Arc<dyn AppToolRunPort> {
     Arc::new(ToolsFacadeAppToolRunAdapter {
-        tool_runs: Arc::clone(&services.tool_run_management),
+        tool_runs,
         #[cfg(test)]
-        test_support: Arc::clone(&services.tool_run_test_support),
+        test_support,
     })
 }
 
@@ -135,13 +138,10 @@ pub(crate) trait AppSkillExecutionPort: Send + Sync {
     ) -> anyhow::Result<ToolResult>;
 }
 
-pub(crate) fn app_skill_execution_port_from_facade(
-    tools: Arc<ToolsFacade>,
+pub(crate) fn app_skill_execution_port(
+    skill_execution: Arc<dyn SkillExecutionPort>,
 ) -> Arc<dyn AppSkillExecutionPort> {
-    let services = tools.share_services();
-    Arc::new(ToolsFacadeSkillExecutionAdapter {
-        skill_execution: Arc::clone(&services.skill_execution),
-    })
+    Arc::new(ToolsFacadeSkillExecutionAdapter { skill_execution })
 }
 
 struct ToolsFacadeSkillExecutionAdapter {
@@ -164,13 +164,10 @@ pub(crate) trait AppLiveOutputPort: Send + Sync {
     fn set_event_sink(&self, sink: Arc<dyn Fn(String, Value) + Send + Sync>);
 }
 
-pub(crate) fn app_live_output_port_from_facade(
-    tools: Arc<ToolsFacade>,
+pub(crate) fn app_live_output_port(
+    live_output: Arc<dyn LiveOutputSinkPort>,
 ) -> Arc<dyn AppLiveOutputPort> {
-    let services = tools.share_services();
-    Arc::new(ToolsFacadeLiveOutputAdapter {
-        live_output: Arc::clone(&services.live_output),
-    })
+    Arc::new(ToolsFacadeLiveOutputAdapter { live_output })
 }
 
 struct ToolsFacadeLiveOutputAdapter {
@@ -186,17 +183,17 @@ impl AppLiveOutputPort for ToolsFacadeLiveOutputAdapter {
 struct ToolsFacadeAgentAdapter {
     tools: Arc<ToolsFacade>,
     authorization: Arc<dyn AuthorizationPort>,
+    skills: Arc<dyn SkillCatalogPort>,
     tool_runs: Arc<dyn ToolRunAgentCapability>,
 }
 
 #[async_trait]
 impl PromptToolPort for ToolsFacadeAgentAdapter {
     fn catalog_versions(&self) -> PromptCatalogVersions {
-        let services = self.tools.share_services();
         PromptCatalogVersions {
             global_catalog_version: self.tools.catalog_version(),
             mcp_catalog_version: self.tools.mcp_catalog_version(),
-            skills_catalog_version: services.skills.catalog_version(),
+            skills_catalog_version: self.skills.catalog_version(),
         }
     }
 
@@ -205,7 +202,7 @@ impl PromptToolPort for ToolsFacadeAgentAdapter {
         PromptCatalogContent {
             builtin_tool_definitions,
             mcp_index: self.tools.build_mcp_index().await,
-            skills: self.tools.share_services().skills.list_skill_infos().await,
+            skills: self.skills.list_skill_infos().await,
         }
     }
 
@@ -680,6 +677,7 @@ mod tests {
         let adapter = ToolsFacadeAgentAdapter {
             tools: Arc::clone(&tools),
             authorization: Arc::clone(&services.authorization),
+            skills: Arc::clone(&services.skills),
             tool_runs: Arc::clone(&services.tool_run_agent),
         };
 
@@ -705,6 +703,7 @@ mod tests {
         let adapter = ToolsFacadeAgentAdapter {
             tools: Arc::clone(&tools),
             authorization: Arc::clone(&services.authorization),
+            skills: Arc::clone(&services.skills),
             tool_runs: Arc::clone(&services.tool_run_agent),
         };
         let session_id = "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";

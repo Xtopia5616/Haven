@@ -626,6 +626,7 @@ impl AppState {
         let mcp_discovery = cfg.mcp_discovery.clone();
         let skills_cfg_root = cfg.skills.root.clone();
         let skills_cfg_enabled = cfg.skills.enabled.clone();
+        let skills_catalog = Arc::clone(&runtime.services.skills);
 
         emit(AppBootstrapEvent {
             status: BootstrapStatus::Loading,
@@ -655,7 +656,7 @@ impl AppState {
                     std::time::Duration::from_secs(10),
                     async {
                         tools.discover_all(&mcp_servers, &mcp_discovery).await;
-                        if let Err(e) = tools.share_services().skills
+                        if let Err(e) = skills_catalog
                             .set_config(skills_cfg_root, skills_cfg_enabled)
                             .await
                         {
