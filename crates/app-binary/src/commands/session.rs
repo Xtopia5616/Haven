@@ -83,7 +83,7 @@ pub async fn list_runtime_sessions(
 
 #[derive(Serialize)]
 pub struct SessionRecordDto {
-    pub id: String,
+    pub session_id: String,
     pub input_text: String,
     pub title: Option<String>,
     pub status: haven_common::lifecycle::SessionStatus,
@@ -96,7 +96,7 @@ pub struct SessionRecordDto {
 impl From<Session> for SessionRecordDto {
     fn from(session: Session) -> Self {
         Self {
-            id: session.id,
+            session_id: session.id,
             input_text: session.input_text,
             title: session.title,
             status: session.status,
@@ -969,9 +969,10 @@ pub async fn get_latest_session_for_resume(
 mod tests {
     use super::{
         AppConfirmationResolution, ConfirmationResolutionResult, ExecutorSessionDisplay,
-        InteractionStatus, SessionOrigin, accept_ui_confirmation, arbitrate_app_confirmation,
-        end_session_display_title, latest_session_for_resume_from_store,
-        resume_response_for_session, resume_session_from_store, session_lineage_from_store,
+        InteractionStatus, SessionOrigin, SessionRecordDto, accept_ui_confirmation,
+        arbitrate_app_confirmation, end_session_display_title,
+        latest_session_for_resume_from_store, resume_response_for_session,
+        resume_session_from_store, session_lineage_from_store,
     };
     use crate::app_state::{AppState, UiConfirmationAction, UiConfirmationPending};
     use crate::commands::RuntimeSessionListResponse;
@@ -1055,6 +1056,16 @@ mod tests {
         assert_eq!(json, r#"{"sessions":[]}"#);
     }
 
+    #[test]
+    fn session_record_wire_identity_uses_session_id() {
+        let db = haven_memory::Database::open_in_memory().unwrap();
+        let session = db.create_session("session record wire identity").unwrap();
+        let value = serde_json::to_value(SessionRecordDto::from(session)).unwrap();
+
+        assert!(value.get("session_id").is_some());
+        assert!(value.get("id").is_none());
+    }
+
     #[tokio::test]
     async fn resume_response_keeps_existing_ipc_field_names() {
         let db = std::sync::Arc::new(haven_memory::Database::open_in_memory().unwrap());
@@ -1111,7 +1122,7 @@ mod tests {
             parent_lineage
                 .children
                 .iter()
-                .map(|child| child.session.id.as_str())
+                .map(|child| child.session.session_id.as_str())
                 .collect::<std::collections::HashSet<_>>(),
             [sibling.id.as_str(), child.id.as_str()]
                 .into_iter()
@@ -1133,7 +1144,7 @@ mod tests {
         assert!(child_wire["parent"].get("origin").is_none());
         assert_eq!(child_lineage.session_id, child.id);
         assert_eq!(child_lineage.parent_session_id, Some(parent.id.clone()));
-        assert_eq!(child_lineage.parent.unwrap().id, parent.id);
+        assert_eq!(child_lineage.parent.unwrap().session_id, parent.id);
         assert!(child_lineage.children.is_empty());
 
         db.delete_session(&parent.id).unwrap();
@@ -1226,7 +1237,7 @@ mod tests {
             .unwrap()
             .expect("a persisted session must be returned");
 
-        assert_eq!(response.session.id, session.id);
+        assert_eq!(response.session.session_id, session.id);
     }
 
     #[tokio::test]

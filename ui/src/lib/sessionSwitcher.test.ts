@@ -10,13 +10,13 @@ describe('buildSessionSwitcherOptions', () => {
 		];
 		const history = [
 			{
-				id: 'ses-old',
+				session_id: 'ses-old',
 				input_text: '旧绘画会话',
 				title: null,
 				status: 'completed',
 			},
 			{
-				id: 'ses-current',
+				session_id: 'ses-current',
 				input_text: '已完成的旧快照',
 				title: null,
 				status: 'completed',

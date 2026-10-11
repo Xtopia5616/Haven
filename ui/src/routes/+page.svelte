@@ -329,7 +329,7 @@
 		session: NonNullable<SessionLineageResponse['parent']>,
 	): SessionSummary {
 		return {
-			id: session.id,
+			id: session.session_id,
 			status: session.status,
 			title: session.title || session.input_text,
 			inputText: session.input_text,
@@ -951,13 +951,15 @@
 		const alreadyLoaded = sessionReducer
 			.snapshot()
 			.sessions.some((session) => session.id === sessionId);
-		const historical = recentHistorySessions.find((session) => session.id === sessionId);
+		const historical = recentHistorySessions.find(
+			(session) => session.session_id === sessionId,
+		);
 		if (!alreadyLoaded && historical) {
 			if (isErrorStatus(historical.status)) {
 				dispatchSession({
 					type: 'session/retained-error',
 					session: {
-						id: historical.id,
+						id: historical.session_id,
 						input: historical.input_text,
 						inputText: historical.input_text,
 						title: historical.title,

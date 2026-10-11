@@ -92,7 +92,7 @@ export const CONFIRMATION_RESOLUTION_RESULT_VALUES = ['resolved', 'expired', 'st
 export type ConfirmationResolutionResult = (typeof CONFIRMATION_RESOLUTION_RESULT_VALUES)[number];
 export interface SessionLineageChildDto { session: SessionRecordDto; parent_session_id: string }
 export interface SessionLineageResponse { session_id: string; parent_session_id: string | null; parent: SessionRecordDto | null; children: SessionLineageChildDto[] }
-export interface SessionRecordDto { id: string; input_text: string; title: string | null; status: SessionStatus; run_end_reason?: string; created_at: string; updated_at: string }
+export interface SessionRecordDto { session_id: string; input_text: string; title: string | null; status: SessionStatus; run_end_reason?: string; created_at: string; updated_at: string }
 export interface SessionResumeResponse { session: SessionRecordDto; messages: Message[]; steps: SessionStep[]; usage: SessionUsage | null; llm_usage: LlmUsageRecord[]; interactions: InteractionRequestedEvent[] }
 export interface SessionPermissionGrant { session_id: string; session_title: string | null; capability: string; target: PermissionTarget; effect: PermissionEffect }
 export interface ShellAvailability { available: boolean }

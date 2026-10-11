@@ -979,3 +979,4 @@
 - [0988：统一配置与 Settings 的语义校验](0988-unify-settings-semantic-validation.md)
 - [0989：Provider 与 MCP 日志只记录稳定错误类别](0989-classify-provider-and-mcp-logs.md)
 - [0990：统一步骤计数与消息身份名称](0990-normalize-step-and-message-identity-names.md)
+- [0991：统一 Session command DTO 的会话身份字段](0991-name-session-command-dto-identity.md)

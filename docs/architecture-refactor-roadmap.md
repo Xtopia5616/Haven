@@ -1,6 +1,6 @@
 # Haven 架构降复杂度重构路线图
 
-> 状态：阶段 0–8 已完成；唯一结构 Active 为 §5.7 全项目领域术语与架构角色命名收敛。Memory 持久身份边界、transcript command adapter 归属、派生集合命名和配置/Settings 语义校验已实现；其余 crate API、command response、配置与文档引用审查继续推进；暂无 Next。Windows 发布验收为独立 Open Gate（§5.1）。
+> 状态：阶段 0–8 已完成；唯一结构 Active 为 §5.7 全项目领域术语与架构角色命名收敛。Memory 持久身份边界、transcript command adapter 归属、派生集合命名和配置/Settings 语义校验已实现；Session history/lineage/resume 命令投影的会话身份已统一为 `session_id`（ADR 0991）；其余 crate API、DTO 身份字段、配置与文档引用审查继续推进；暂无 Next。Windows 发布验收为独立 Open Gate（§5.1）。
 > 更新日期：2026-10-12
 > 范围：Agent/Session、Memory、Tools、LLM、App IPC 与 UI
 
@@ -224,6 +224,8 @@ Settings 的 64 位整数统一限制为 JavaScript 安全整数；Common 校验
 LLM Provider 的重试、连接探测、adapter/stream 初始化以及 MCP 的连接、工具刷新、shutdown、子进程清理和 SSE 解析日志统一移除外部错误文本，改记稳定错误类别、固定事件描述或字节数；返回错误和状态事件保持原有语义（ADR 0989）。
 
 Agent 内部步骤计数及 tracing 字段统一为 `step_number`，Rust/UI 的消息身份内部引用统一为 `message_id` / `messageId`；现有事件、数据库及 IPC wire shape 保持（ADR 0990）。
+
+Session history、lineage 与 resume 响应中的 `SessionRecordDto` 统一以 `session_id` 表示会话身份；UI parser 和消费者拒绝旧泛名 `id`，数据库主键列 `sessions.id` 不变。实体字段命名审计仍需覆盖 Agent runtime `SessionInfo`/`StepInfo`、Memory `SessionStep`、fact/usage DTO 与 interaction request，并逐项确认持久事件回放兼容性（ADR 0991）。
 
 Compaction、memory embedding maintenance、App 启动/恢复、clipboard history 和 managed-media cleanup 的错误日志现统一清洗；上传批次与生成媒体目录项日志移除 basename，避免暴露用户文件名（ADR 0981）。
 

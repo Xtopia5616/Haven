@@ -169,7 +169,7 @@
 			({ payload }) => {
 				if (payload.type === 'title_updated') {
 					sessions = sessions.map((session) =>
-						session.id === payload.sessionId
+						session.session_id === payload.sessionId
 							? { ...session, title: payload.title }
 							: session,
 					);
@@ -351,19 +351,21 @@
 			// to change the in-memory status to Paused before the chat could render,
 			// which hid the actual failure state. Continue/retry performs the
 			// explicit transition when the user asks for it.
-			if (!wasError) await reopenSessionCommand({ sessionId: session.id });
-			const result = await getSessionForResume({ sessionId: session.id });
+			if (!wasError) await reopenSessionCommand({ sessionId: session.session_id });
+			const result = await getSessionForResume({ sessionId: session.session_id });
 			appSessionReducer.dispatch({
 				type: 'session/messages/resume-loaded',
-				sessionId: session.id,
+				sessionId: session.session_id,
 				messages: buildResumeMessages(result),
 				interactions: resumeInteractions(result),
-				preserveInteractionIds: appSessionReducer.getPendingInteractionIds(session.id),
+				preserveInteractionIds: appSessionReducer.getPendingInteractionIds(
+					session.session_id,
+				),
 				usage: result.usage,
 				llmUsage: result.llm_usage,
 			});
 			sessionResumeTargetStore.set({
-				sessionId: session.id,
+				sessionId: session.session_id,
 				summary: session.input_text,
 				title: session.title,
 				runEndStatus,
@@ -371,7 +373,7 @@
 				wasError,
 				errorReason: wasError
 					? result.session.run_end_reason ||
-						appSessionReducer.getSessionErrorReason(session.id)
+						appSessionReducer.getSessionErrorReason(session.session_id)
 					: '',
 			});
 			await goto('/');
@@ -382,7 +384,7 @@
 	async function deleteSession(sessionId: string) {
 		try {
 			await deleteSessionCommand({ sessionId });
-			sessions = sessions.filter((session) => session.id !== sessionId);
+			sessions = sessions.filter((session) => session.session_id !== sessionId);
 			totalCount = sessions.length;
 			clearMediaPlans(sessionId);
 			clearToolOutputPreviewsForSession(sessionId);
@@ -449,7 +451,7 @@
 		return (match ? match[0].trim() : text.trim()) || '未命名会话';
 	}
 	function startEdit(session: SessionHistoryRow) {
-		editingTitle = session.id;
+		editingTitle = session.session_id;
 		const text = session.input_text || '';
 		const match = text.match(/^[^。！？\n.!?]+[。！？.!?]?/);
 		renameValue = session.title || (match ? match[0].trim() : text.trim());
@@ -466,7 +468,7 @@
 		}
 		try {
 			await updateSessionTitleCommand({ sessionId, title: value });
-			const session = sessions.find((item) => item.id === sessionId);
+			const session = sessions.find((item) => item.session_id === sessionId);
 			if (session) session.title = value;
 		} catch (e) {
 			reportError(e, { context: 'MemoryView', message: '重命名失败', log: false });
@@ -791,7 +793,7 @@
 			variant="danger"
 			label="删除"
 			onclick={() => {
-				if (deleteTarget) deleteSession(deleteTarget.id);
+				if (deleteTarget) deleteSession(deleteTarget.session_id);
 			}}
 		/>
 	{/snippet}

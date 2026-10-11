@@ -27,7 +27,7 @@ type ResumeMessageFixture = {
 	}>;
 };
 type ResumeFixture = {
-	session: { id: string };
+	session: { session_id: string };
 	messages: ResumeMessageFixture[];
 	steps: Array<{ id: string; session_id: string }>;
 	llm_usage: Array<{ id: string; session_id: string }>;
@@ -41,7 +41,7 @@ type ResumeFixture = {
 
 function resumeResponse(): ResumeFixture {
 	return {
-		session: { id: sessionId },
+		session: { session_id: sessionId },
 		messages: [
 			{
 				id: messageId,
@@ -134,9 +134,12 @@ describe('session history and resume identity contracts', () => {
 	});
 
 	it('validates persisted session IDs for history and lineage', () => {
-		expect(parseSessionHistoryRows([{ id: sessionId }])).toHaveLength(1);
+		expect(parseSessionHistoryRows([{ session_id: sessionId }])).toHaveLength(1);
+		expect(() => parseSessionHistoryRows([{ id: sessionId }])).toThrow(
+			'Invalid session history identity',
+		);
 		expect(() =>
-			parseSessionHistoryRows([{ id: 'msg-00000000000000000000000000000002' }]),
+			parseSessionHistoryRows([{ session_id: 'msg-00000000000000000000000000000002' }]),
 		).toThrow('Invalid session history identity');
 		expect(
 			parseSessionLineageResponse(
@@ -146,7 +149,7 @@ describe('session history and resume identity contracts', () => {
 					parent: null,
 					children: [
 						{
-							session: { id: 'ses-00000000000000000000000000000006' },
+							session: { session_id: 'ses-00000000000000000000000000000006' },
 							parent_session_id: sessionId,
 						},
 					],
@@ -186,7 +189,7 @@ describe('session history and resume identity contracts', () => {
 				{
 					session_id: sessionId,
 					parent_session_id: 'ses-00000000000000000000000000000040',
-					parent: { id: 'ses-00000000000000000000000000000041' },
+				parent: { session_id: 'ses-00000000000000000000000000000041' },
 					children: [],
 				},
 				sessionId,
@@ -201,7 +204,7 @@ describe('session history and resume identity contracts', () => {
 					parent: null,
 					children: [
 						{
-							session: { id: 'ses-00000000000000000000000000000042' },
+							session: { session_id: 'ses-00000000000000000000000000000042' },
 							parent_session_id: 'ses-00000000000000000000000000000043',
 						},
 					],

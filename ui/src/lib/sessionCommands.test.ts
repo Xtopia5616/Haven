@@ -99,7 +99,7 @@ describe('session history command boundary', () => {
 		const response = {
 			session_id: request.sessionId,
 			parent_session_id: 'ses-00000000000000000000000000000002',
-			parent: { id: 'ses-00000000000000000000000000000002' },
+			parent: { session_id: 'ses-00000000000000000000000000000002' },
 			children: [],
 		};
 		invokeMock.mockResolvedValue(response as never);
@@ -124,7 +124,9 @@ describe('session history command boundary', () => {
 
 	it('lists a persisted history page through the list command', async () => {
 		const request = { limit: 50, offset: 0 };
-		const response = [{ id: 'ses-00000000000000000000000000000003', input_text: 'hello' }];
+		const response = [
+			{ session_id: 'ses-00000000000000000000000000000003', input_text: 'hello' },
+		];
 		invokeMock.mockResolvedValue(response as never);
 
 		await expect(listSessionHistory(request)).resolves.toBe(response);
@@ -143,7 +145,7 @@ describe('session history command boundary', () => {
 		};
 		const response = [
 			{
-				id: 'ses-00000000000000000000000000000003',
+				session_id: 'ses-00000000000000000000000000000003',
 				input_text: 'hello',
 				future_field: 'kept',
 			},
@@ -158,7 +160,7 @@ describe('session history command boundary', () => {
 	it('binds resume identity to the request and accepts an empty latest-session result', async () => {
 		const request = { sessionId: 'ses-00000000000000000000000000000003' };
 		const resume = {
-			session: { id: request.sessionId },
+			session: { session_id: request.sessionId },
 			messages: [],
 			steps: [],
 			llm_usage: [],
@@ -177,7 +179,7 @@ describe('session history command boundary', () => {
 
 	it('rejects a canonical resume response owned by another requested session', async () => {
 		invokeMock.mockResolvedValueOnce({
-			session: { id: 'ses-00000000000000000000000000000024' },
+			session: { session_id: 'ses-00000000000000000000000000000024' },
 			messages: [],
 			steps: [],
 			llm_usage: [],
@@ -193,7 +195,7 @@ describe('session history command boundary', () => {
 		await expect(listRuntimeSessions()).rejects.toThrow('Invalid runtime session identity');
 
 		invokeMock.mockResolvedValueOnce({
-			session: { id: 'ses-00000000000000000000000000000005' },
+			session: { session_id: 'ses-00000000000000000000000000000005' },
 			messages: [
 				{
 					id: 'msg-00000000000000000000000000000006',
@@ -213,7 +215,7 @@ describe('session history command boundary', () => {
 		const sessionId = 'ses-00000000000000000000000000000008';
 		const stepId = 'step-00000000000000000000000000000009';
 		const response = {
-			session: { id: sessionId },
+			session: { session_id: sessionId },
 			messages: [{ id: stepId, session_id: sessionId, attachments: [] }],
 			steps: [{ id: stepId, session_id: sessionId }],
 			llm_usage: [],
@@ -270,7 +272,7 @@ describe('session history command boundary', () => {
 
 	it('resolves the generated command result after identity validation', async () => {
 		const response = {
-			session: { id: 'ses-00000000000000000000000000000007' },
+			session: { session_id: 'ses-00000000000000000000000000000007' },
 			messages: [],
 			steps: [],
 			llm_usage: [],

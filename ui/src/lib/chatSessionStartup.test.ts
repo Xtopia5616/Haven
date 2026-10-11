@@ -36,7 +36,7 @@ function list(...ids: string[]): RuntimeSessionListResponse {
 function resume(status: SessionResumeResponse['session']['status'] = 'paused'): SessionResumeResponse {
 	return {
 		session: {
-			id: SESSION_ID,
+			session_id: SESSION_ID,
 			input_text: '旧会话摘要',
 			title: '恢复会话',
 			status,

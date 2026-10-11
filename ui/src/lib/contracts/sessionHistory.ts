@@ -29,8 +29,10 @@ export type SessionLlmUsage = Omit<Partial<GeneratedLlmUsageRecord>, 'cost_usd'>
 /** Complete successful response from get_session_for_resume/get_latest_session_for_resume. */
 export type SessionResumeResponse = GeneratedSessionResumeResponse;
 
-function isSessionRecord(value: unknown): value is Record<string, unknown> & { id: string } {
-	return isRecord(value) && isCanonicalEntityId(value.id, 'ses');
+function isSessionRecord(
+	value: unknown,
+): value is Record<string, unknown> & { session_id: string } {
+	return isRecord(value) && isCanonicalEntityId(value.session_id, 'ses');
 }
 
 function hasCanonicalSessionId(
@@ -82,7 +84,8 @@ export function parseSessionLineageResponse(
 		) ||
 		!(
 			value.parent === null ||
-			(isSessionRecord(value.parent) && value.parent.id === value.parent_session_id)
+			(isSessionRecord(value.parent) &&
+				value.parent.session_id === value.parent_session_id)
 		) ||
 		!Array.isArray(value.children) ||
 		!value.children.every(
@@ -91,7 +94,7 @@ export function parseSessionLineageResponse(
 				isSessionRecord(child.session) &&
 				isCanonicalEntityId(child.parent_session_id, 'ses') &&
 				child.parent_session_id === expectedSessionId &&
-				child.session.id !== expectedSessionId,
+				child.session.session_id !== expectedSessionId,
 		)
 	) {
 		throw new Error('Invalid session lineage identity');
@@ -178,7 +181,7 @@ export function parseSessionResumeResponse(
 	if (!isRecord(value) || !isSessionRecord(value.session)) {
 		throw new Error('Invalid resumed session identity');
 	}
-	const sessionId = value.session.id;
+	const sessionId = value.session.session_id;
 	if (expectedSessionId !== undefined && expectedSessionId !== sessionId) {
 		throw new Error('Invalid resumed session identity');
 	}

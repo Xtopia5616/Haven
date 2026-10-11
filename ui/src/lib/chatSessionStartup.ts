@@ -220,27 +220,32 @@ export function createChatSessionStartup(dependencies: ChatSessionStartupDepende
 			latestSession.session.status === 'paused' ? 'paused' : wasError ? 'error' : undefined;
 		dependencies.dispatch({
 			type: 'session/messages/resume-loaded',
-			sessionId: latestSession.session.id,
+			sessionId: latestSession.session.session_id,
 			messages: buildResumeMessages(latestSession),
 			interactions: resumeInteractions(latestSession),
-			preserveInteractionIds: dependencies.getPendingInteractionIds(latestSession.session.id),
+			preserveInteractionIds: dependencies.getPendingInteractionIds(
+				latestSession.session.session_id,
+			),
 			usage: latestSession.usage,
 			llmUsage: latestSession.llm_usage,
 		});
-		dependencies.dispatch({ type: 'session/selected', sessionId: latestSession.session.id });
+		dependencies.dispatch({
+			type: 'session/selected',
+			sessionId: latestSession.session.session_id,
+		});
 		if (runEndStatus) {
 			dependencies.dispatch({
 				type: 'session/run-ended',
-				sessionId: latestSession.session.id,
+				sessionId: latestSession.session.session_id,
 				status: runEndStatus,
 				reason:
 					latestSession.session.run_end_reason ||
-					dependencies.reducer.getSessionErrorReason(latestSession.session.id) ||
+					dependencies.reducer.getSessionErrorReason(latestSession.session.session_id) ||
 					(runEndStatus === 'error' ? '本次会话因错误停止，暂未收到更具体的原因。' : ''),
 			});
 			if (runEndStatus === 'error') {
 				retainErroredSession({
-					sessionId: latestSession.session.id,
+					sessionId: latestSession.session.session_id,
 					summary: latestSession.session.input_text,
 					title: latestSession.session.title,
 				});
@@ -248,7 +253,7 @@ export function createChatSessionStartup(dependencies: ChatSessionStartupDepende
 		}
 		try {
 			if (!wasError) {
-				await dependencies.reopenSession({ sessionId: latestSession.session.id });
+				await dependencies.reopenSession({ sessionId: latestSession.session.session_id });
 			}
 		} catch (error) {
 			if (!isCurrentGeneration(requestGeneration)) return;
