@@ -302,7 +302,7 @@ impl PermissionTarget {
 /// identity in a newtype prevents authorization code from accidentally
 /// treating arbitrary input text as a permission key while retaining the
 /// string representation required by the config and IPC boundaries.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
 #[serde(transparent)]
 pub struct CapabilityScope(String);
 
@@ -378,6 +378,16 @@ impl CapabilityScope {
 impl std::fmt::Display for CapabilityScope {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter.write_str(&self.0)
+    }
+}
+
+impl<'de> Deserialize<'de> for CapabilityScope {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        Self::try_new(value).map_err(serde::de::Error::custom)
     }
 }
 
@@ -1477,6 +1487,20 @@ mod tests {
         assert!(CapabilityScope::try_new(" files.read").is_err());
         assert!(CapabilityScope::try_new("files..read").is_err());
         assert!(CapabilityScope::try_new("").is_err());
+    }
+
+    #[test]
+    fn capability_scope_deserialization_reuses_external_key_validation() {
+        let valid: CapabilityScope = serde_json::from_str("\"system.power.lock\"").unwrap();
+        assert_eq!(valid.as_str(), "system.power.lock");
+
+        for invalid in ["files:read", "files..delete", " files.read", ""] {
+            let serialized = serde_json::to_string(invalid).unwrap();
+            assert!(
+                serde_json::from_str::<CapabilityScope>(&serialized).is_err(),
+                "invalid capability {invalid:?} must not deserialize"
+            );
+        }
     }
 
     #[test]

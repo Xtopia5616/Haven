@@ -932,3 +932,4 @@
 - [0941：移除 Input 对 Common AudioConfig 的重复导出](0941-remove-input-audio-config-reexport.md)
 - [0942：将 shell runtime helpers 限制在 Tools 内部](0942-restrict-shell-runtime-helpers-to-tools.md)
 - [0943：将 Skills 查找与执行收回 Tools owner](0943-restrict-tools-foreign-type-reexports.md)
+- [0944：反序列化时校验 CapabilityScope](0944-validate-capability-scope-deserialization.md)
