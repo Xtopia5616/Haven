@@ -528,7 +528,10 @@ impl ContextCompactor {
                 }
                 Err(LlmError::Cancelled) => return Err(LlmError::Cancelled),
                 Err(error) => {
-                    tracing::warn!("compaction summary request failed; degrading: {error}");
+                    tracing::warn!(
+                        error = %haven_common::error::sanitize_error_text(&error.to_string()),
+                        "compaction summary request failed; degrading"
+                    );
                     None
                 }
             }

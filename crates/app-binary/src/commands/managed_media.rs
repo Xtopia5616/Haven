@@ -272,14 +272,20 @@ fn cleanup_unreferenced_upload_batches_sync(
         let entry = match entry {
             Ok(entry) => entry,
             Err(error) => {
-                tracing::debug!(error = %error, "跳过不可读取的上传目录项");
+                tracing::debug!(
+                    error = %haven_common::error::sanitize_error_text(&error.to_string()),
+                    "跳过不可读取的上传目录项"
+                );
                 continue;
             }
         };
         let metadata = match std::fs::symlink_metadata(entry.path()) {
             Ok(metadata) => metadata,
             Err(error) => {
-                tracing::debug!(error = %error, "跳过无法判断类型的上传目录项");
+                tracing::debug!(
+                    error = %haven_common::error::sanitize_error_text(&error.to_string()),
+                    "跳过无法判断类型的上传目录项"
+                );
                 continue;
             }
         };
@@ -298,7 +304,7 @@ fn cleanup_unreferenced_upload_batches_sync(
             .iter()
             .any(|path| haven_common::path::path_is_equal_or_child(&batch_path, path));
         if has_message_reference || has_live_lease {
-            tracing::debug!(batch = %name, "保留仍被消息引用或持有活动租约的上传批次");
+            tracing::debug!("保留仍被消息引用或持有活动租约的上传批次");
             continue;
         }
         match std::fs::remove_dir_all(&batch_path) {
@@ -306,7 +312,10 @@ fn cleanup_unreferenced_upload_batches_sync(
                 removed += 1;
                 registry.prune_paths_under(&batch_path);
             }
-            Err(error) => tracing::debug!(batch = %name, error = %error, "上传批次清理失败"),
+            Err(error) => tracing::debug!(
+                error = %haven_common::error::sanitize_error_text(&error.to_string()),
+                "上传批次清理失败"
+            ),
         }
     }
     registry.prune_missing();
@@ -335,14 +344,20 @@ fn cleanup_stale_upload_staging_sync(
         let entry = match entry {
             Ok(entry) => entry,
             Err(error) => {
-                tracing::debug!(error = %error, "跳过不可读取的上传暂存目录项");
+                tracing::debug!(
+                    error = %haven_common::error::sanitize_error_text(&error.to_string()),
+                    "跳过不可读取的上传暂存目录项"
+                );
                 continue;
             }
         };
         let metadata = match std::fs::symlink_metadata(entry.path()) {
             Ok(metadata) => metadata,
             Err(error) => {
-                tracing::debug!(error = %error, "跳过无法判断类型的上传暂存目录项");
+                tracing::debug!(
+                    error = %haven_common::error::sanitize_error_text(&error.to_string()),
+                    "跳过无法判断类型的上传暂存目录项"
+                );
                 continue;
             }
         };
@@ -356,7 +371,10 @@ fn cleanup_stale_upload_staging_sync(
         let modified = match metadata.modified() {
             Ok(modified) => modified,
             Err(error) => {
-                tracing::debug!(staging = %name, error = %error, "跳过没有修改时间的上传暂存目录");
+                tracing::debug!(
+                    error = %haven_common::error::sanitize_error_text(&error.to_string()),
+                    "跳过没有修改时间的上传暂存目录"
+                );
                 continue;
             }
         };
@@ -366,7 +384,10 @@ fn cleanup_stale_upload_staging_sync(
         match std::fs::remove_dir_all(entry.path()) {
             Ok(()) => removed += 1,
             Err(error) => {
-                tracing::debug!(staging = %name, error = %error, "上传暂存目录清理失败")
+                tracing::debug!(
+                    error = %haven_common::error::sanitize_error_text(&error.to_string()),
+                    "上传暂存目录清理失败"
+                )
             }
         }
     }
@@ -400,7 +421,10 @@ fn cleanup_unreferenced_generated_media_sync(
         let entry = match entry {
             Ok(entry) => entry,
             Err(error) => {
-                tracing::debug!(error = %error, "跳过不可读取的生成媒体目录项");
+                tracing::debug!(
+                    error = %haven_common::error::sanitize_error_text(&error.to_string()),
+                    "跳过不可读取的生成媒体目录项"
+                );
                 continue;
             }
         };
@@ -408,7 +432,10 @@ fn cleanup_unreferenced_generated_media_sync(
         let metadata = match std::fs::symlink_metadata(&path) {
             Ok(metadata) => metadata,
             Err(error) => {
-                tracing::debug!(error = %error, "跳过无法判断类型的生成媒体目录项");
+                tracing::debug!(
+                    error = %haven_common::error::sanitize_error_text(&error.to_string()),
+                    "跳过无法判断类型的生成媒体目录项"
+                );
                 continue;
             }
         };
@@ -429,12 +456,15 @@ fn cleanup_unreferenced_generated_media_sync(
             .iter()
             .any(|candidate| haven_common::path::path_is_equal(candidate, &path));
         if path_is_referenced || has_live_lease || has_transient_ttl {
-            tracing::debug!(file = %name, "保留仍被会话、租约或临时资产 TTL 引用的生成媒体");
+            tracing::debug!("保留仍被会话、租约或临时资产 TTL 引用的生成媒体");
             continue;
         }
         match std::fs::remove_file(&path) {
             Ok(()) => removed += 1,
-            Err(error) => tracing::debug!(file = %name, error = %error, "生成媒体清理失败"),
+            Err(error) => tracing::debug!(
+                error = %haven_common::error::sanitize_error_text(&error.to_string()),
+                "生成媒体清理失败"
+            ),
         }
     }
     registry.prune_missing();

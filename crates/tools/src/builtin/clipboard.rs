@@ -417,13 +417,13 @@ impl ClipboardTool {
                     Ok(Ok(text)) => history.record(text),
                     Ok(Err(error)) => {
                         tracing::debug!(
-                            error = %error,
+                            error = %haven_common::error::sanitize_error_text(&error.to_string()),
                             "Could not sample current clipboard text for history"
                         );
                     }
                     Err(error) => {
                         tracing::debug!(
-                            error = %error,
+                            error = %haven_common::error::sanitize_error_text(&error.to_string()),
                             "Clipboard history snapshot task failed"
                         );
                     }

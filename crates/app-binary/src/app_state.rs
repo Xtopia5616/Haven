@@ -343,7 +343,10 @@ impl AppState {
             match router_media_build.stt_client {
                 Ok(client) => client,
                 Err(e) => {
-                    tracing::warn!("STT client build failed, transcription disabled: {e}");
+                    tracing::warn!(
+                        error = %haven_common::error::sanitize_error_text(&e.to_string()),
+                        "STT client build failed, transcription disabled"
+                    );
                     None
                 }
             };
@@ -355,7 +358,10 @@ impl AppState {
             match router_media_build.tts_client {
                 Ok(client) => client,
                 Err(e) => {
-                    tracing::warn!("TTS client build failed, TTS disabled: {e}");
+                    tracing::warn!(
+                        error = %haven_common::error::sanitize_error_text(&e.to_string()),
+                        "TTS client build failed, TTS disabled"
+                    );
                     None
                 }
             };
@@ -367,7 +373,10 @@ impl AppState {
             match router_media_build.ocr_client {
                 Ok(client) => client,
                 Err(e) => {
-                    tracing::warn!("OCR client build failed, OCR disabled: {e}");
+                    tracing::warn!(
+                        error = %haven_common::error::sanitize_error_text(&e.to_string()),
+                        "OCR client build failed, OCR disabled"
+                    );
                     None
                 }
             };
@@ -376,7 +385,8 @@ impl AppState {
                 Ok(client) => client,
                 Err(e) => {
                     tracing::warn!(
-                        "image generation client build failed, image generation disabled: {e}"
+                        error = %haven_common::error::sanitize_error_text(&e.to_string()),
+                        "image generation client build failed, image generation disabled"
                     );
                     None
                 }
@@ -398,7 +408,10 @@ impl AppState {
                     }
                     Ok(_) => {}
                     Err(error) => {
-                        tracing::error!(error = %error, "failed to finalize orphaned running sessions");
+                        tracing::error!(
+                            error = %haven_common::error::sanitize_error_text(&error.to_string()),
+                            "failed to finalize orphaned running sessions"
+                        );
                     }
                 }
             });
@@ -566,7 +579,10 @@ impl AppState {
         let cfg = match self.runtime.config_service.snapshot() {
             Ok(snapshot) => snapshot.config,
             Err(error) => {
-                tracing::error!("cannot read config for background init: {error}");
+                tracing::error!(
+                    error = %haven_common::error::sanitize_error_text(&error.to_string()),
+                    "cannot read config for background init"
+                );
                 return;
             }
         };
@@ -608,10 +624,16 @@ impl AppState {
                             .set_config(skills_cfg_root, skills_cfg_enabled)
                             .await
                         {
-                            tracing::warn!("skill registry initial scan failed: {e}");
+                            tracing::warn!(
+                                error = %haven_common::error::sanitize_error_text(&e.to_string()),
+                                "skill registry initial scan failed"
+                            );
                         }
                         if let Err(error) = tools.rebuild_catalog().await {
-                            tracing::warn!(error = %error, "initial tool catalog rebuild failed");
+                            tracing::warn!(
+                                error = %haven_common::error::sanitize_error_text(&error.to_string()),
+                                "initial tool catalog rebuild failed"
+                            );
                         }
                     }
                 ) => {
@@ -667,7 +689,7 @@ impl AppState {
                     Ok(Ok(_)) => {}
                     Ok(Err(error)) => {
                         tracing::error!(
-                            error = %error,
+                            error = %haven_common::error::sanitize_error_text(&error.to_string()),
                             "deferred dispatcher recovery failed; scheduling a cancellable retry"
                         );
                         let scheduled = schedule_pending_session_recovery_retry(
@@ -682,7 +704,7 @@ impl AppState {
                     }
                     Err(error) => {
                         tracing::error!(
-                            %error,
+                            error = %haven_common::error::sanitize_error_text(&error.to_string()),
                             "initial pending session recovery task ended without a result; scheduling a retry"
                         );
                         let scheduled = schedule_pending_session_recovery_retry(

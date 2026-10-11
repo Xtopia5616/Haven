@@ -969,3 +969,4 @@
 - [0978：让 CapabilityScope 只通过校验构造](0978-require-validated-capability-scope.md)
 - [0979：统一 ToolRun 持久化时间戳](0979-canonicalize-toolrun-timestamps.md)
 - [0980：Agent 事件数值边界匹配 Rust wire 类型](0980-match-agent-event-numbers-to-rust-wire-types.md)
+- [0981：运维错误日志统一清洗并移除文件名](0981-sanitize-operational-error-logs.md)

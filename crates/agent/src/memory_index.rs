@@ -137,15 +137,15 @@ impl MemoryEmbeddingIndex {
                     "memory embedding model changed: cleared vector index for rebuild"
                 ),
                 Err(error) => tracing::error!(
-                    "memory embedding model changed: failed to clear vector index: {}",
-                    error
+                    error = %haven_common::error::sanitize_error_text(&error.to_string()),
+                    "memory embedding model changed: failed to clear vector index"
                 ),
             },
             Ok(false) => {}
             Err(error) => {
                 tracing::warn!(
-                    "memory embedding model check failed; keeping existing index: {}",
-                    error
+                    error = %haven_common::error::sanitize_error_text(&error.to_string()),
+                    "memory embedding model check failed; keeping existing index"
                 );
                 return;
             }
@@ -159,8 +159,8 @@ impl MemoryEmbeddingIndex {
             Ok(pending) => pending,
             Err(error) => {
                 tracing::warn!(
-                    "memory embedding: failed to collect pending items: {}",
-                    error
+                    error = %haven_common::error::sanitize_error_text(&error.to_string()),
+                    "memory embedding: failed to collect pending items"
                 );
                 return;
             }
@@ -176,7 +176,10 @@ impl MemoryEmbeddingIndex {
             let embedding = match self.router.embed(EmbeddingRequest { input: texts }).await {
                 Ok(embedding) => embedding,
                 Err(error) => {
-                    tracing::warn!("memory embedding batch failed: {}", error);
+                    tracing::warn!(
+                        error = %haven_common::error::sanitize_error_text(&error.to_string()),
+                        "memory embedding batch failed"
+                    );
                     return;
                 }
             };
@@ -223,8 +226,8 @@ impl MemoryEmbeddingIndex {
                 Ok(dimensions) => dimensions,
                 Err(error) => {
                     tracing::warn!(
-                        "memory embedding: failed to inspect stored dimensions: {}",
-                        error
+                        error = %haven_common::error::sanitize_error_text(&error.to_string()),
+                        "memory embedding: failed to inspect stored dimensions"
                     );
                     return;
                 }
@@ -241,8 +244,8 @@ impl MemoryEmbeddingIndex {
                     ),
                     Err(error) => {
                         tracing::error!(
-                            "memory embedding dimension changed: failed to clear vector index: {}",
-                            error
+                            error = %haven_common::error::sanitize_error_text(&error.to_string()),
+                            "memory embedding dimension changed: failed to clear vector index"
                         );
                         return;
                     }
@@ -268,10 +271,10 @@ impl MemoryEmbeddingIndex {
                 Ok(report) => {
                     for failure in report.failures.iter().take(3) {
                         tracing::warn!(
-                            "save_embedding failed for {} {}: {}",
-                            failure.entity.entity_type(),
-                            failure.entity_id,
-                            failure.error
+                            entity_type = failure.entity.entity_type(),
+                            entity_id = %failure.entity_id,
+                            error = %haven_common::error::sanitize_error_text(&failure.error),
+                            "save_embedding failed"
                         );
                     }
                     if !report.failures.is_empty() {
@@ -283,7 +286,10 @@ impl MemoryEmbeddingIndex {
                     }
                 }
                 Err(error) => {
-                    tracing::warn!("memory embedding batch persistence failed: {}", error);
+                    tracing::warn!(
+                        error = %haven_common::error::sanitize_error_text(&error.to_string()),
+                        "memory embedding batch persistence failed"
+                    );
                 }
             }
         }
@@ -302,7 +308,10 @@ impl MemoryEmbeddingIndex {
             .rebuild_lsh_if_lagging(identity.storage_model)
             .await
         {
-            tracing::warn!("memory embedding LSH rebuild failed: {}", error);
+            tracing::warn!(
+                error = %haven_common::error::sanitize_error_text(&error.to_string()),
+                "memory embedding LSH rebuild failed"
+            );
         }
     }
 
