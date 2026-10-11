@@ -1,6 +1,6 @@
 # Haven 命名规范
 
-> 版本: v1.167 | 日期: 2026-10-11
+> 版本: v1.168 | 日期: 2026-10-11
 
 本文档统一 Haven 项目各层的命名规则（变量名、函数名、文件名、crate 名、缩写大小写、跨层边界）。规范以现有代码中的事实模式为基础，新代码必须遵循；存量代码若与规范冲突，逐步迁移对齐。
 
@@ -339,7 +339,7 @@ Session title 读取 API 必须在名字中表达字段投影：`SessionStore::g
 | `Service` | 组合多个 owner 完成应用或领域用例 | `ConfigService`、`MemoryService`、`MessagingService`、`ToolRunService` |
 | `Facade` | 组合窄接口提供统一调用入口，不取得被组合 owner 的生命周期 | `ToolsFacade` |
 
-同一子系统可以合理同时包含多个后缀角色：`McpManager` 管连接，`McpClient` 管单个连接的协议交互；`SkillRegistry` 提供发现结果，而 `VenvManager` 管执行环境。上述区别属于资源 owner 和生命周期差异，不需为了词形一致合并。
+同一子系统可以合理同时包含多个后缀角色：`McpManager` 管连接，`McpClient` 管单个连接的协议交互；`SkillRegistry` 提供发现结果，而 `VenvManager` 管执行环境。上述区别属于资源 owner 和生命周期差异，不需为了词形一致合并。Skills watcher 的文件 fingerprint 与比较状态属于 `SkillRegistry` 私有实现；跨 crate 调用表达 `refresh_if_changed` 语义，不传递路径/时间戳明细。具体执行模块（如 `haven_skills::venv`）保持私有，只通过 crate root 暴露真实跨 crate 契约。
 
 ### 缩写大小写规则
 - **类型名**中缩写用 PascalCase：`SttProvider`、`OcrEngine`、`TtsProvider`。

@@ -151,7 +151,9 @@ pub use haven_mcp::{
     MCP_TOOLS_NOT_DISCOVERED_DIAGNOSTIC, McpClientStatus, McpServerSnapshot, McpStatusChangeEvent,
     McpToolInfo,
 };
-pub use haven_skills::{Language, Skill, SkillFileFingerprint, SkillInfo, VenvManager};
+#[cfg(feature = "test-support")]
+pub use haven_skills::VenvManager;
+pub use haven_skills::{Language, Skill, SkillInfo};
 pub(crate) use mcp_server_config::McpServerConfigSource;
 #[doc(hidden)]
 pub use operation_view::OperationSpec;

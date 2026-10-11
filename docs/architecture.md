@@ -37,7 +37,7 @@ haven-skills ──► haven-common, haven-platform
 | `haven-platform` | `haven-common` | CredentialStore 端口、共享 filesystem metadata 安全检查；Windows 凭据管理器和子进程适配 |
 | `haven-llm` | `haven-common` | 只依赖共享层，不依赖任何业务 crate |
 | `haven-memory` | `haven-common` | 持久化（当前 SQLite schema、历史迁移、仓库） |
-| `haven-skills` | `haven-common`, `haven-platform` | 技能目录解析与 venv 子进程 containment |
+| `haven-skills` | `haven-common`, `haven-platform` | 技能目录解析、变更检测与 venv 子进程 containment；Skills root API 拥有目录变更判断，`venv` 是私有实现模块 |
 | `haven-messaging` | `haven-common` | 消息服务与 inbox transport |
 | `haven-mcp` | `haven-common`, `haven-llm`, `haven-platform` | MCP 客户端 / 传输（媒体能力复用 LLM 协议） |
 | `haven-input` | `haven-common` | 录音 / VAD / PCM/WAV 采集（不实现 provider 或转写） |

@@ -13,13 +13,13 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::SystemTime;
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex, RwLock};
 
 // ---------------------------------------------------------------------------
 // Manifest types
 // ---------------------------------------------------------------------------
 
-pub mod venv;
+mod venv;
 
 pub use venv::VenvManager;
 
@@ -591,6 +591,7 @@ struct Inner {
 pub struct SkillRegistry {
     inner: Arc<RwLock<Inner>>,
     catalog_version: Arc<AtomicU64>,
+    last_watcher_fingerprints: Arc<Mutex<Option<Vec<SkillFileFingerprint>>>>,
 }
 
 impl Default for SkillRegistry {
@@ -610,6 +611,7 @@ impl SkillRegistry {
                 limits: haven_common::config::ContextLimitsConfig::default(),
             })),
             catalog_version: Arc::new(AtomicU64::new(0)),
+            last_watcher_fingerprints: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -672,6 +674,23 @@ impl SkillRegistry {
         g.skill_diagnostics = scanned.diagnostics;
         self.catalog_version.fetch_add(1, Ordering::Relaxed);
         Ok(())
+    }
+
+    /// Refresh the catalog when the configured skill files have changed.
+    ///
+    /// The watcher owns polling cadence and notifications; this registry owns
+    /// filesystem change detection so its fingerprint representation never
+    /// crosses the Skills boundary.
+    pub async fn refresh_if_changed(&self) -> anyhow::Result<bool> {
+        let mut last_fingerprints = self.last_watcher_fingerprints.lock().await;
+        let fingerprints = self.current_file_fingerprints().await;
+        if last_fingerprints.as_ref() == Some(&fingerprints) {
+            return Ok(false);
+        }
+
+        self.refresh_from_disk().await?;
+        *last_fingerprints = Some(fingerprints);
+        Ok(true)
     }
 
     pub async fn list_skill_infos(&self) -> Vec<SkillInfo> {
@@ -765,10 +784,9 @@ impl SkillRegistry {
         Self::resolve_root(g.root.as_deref())
     }
 
-    /// Cheap fingerprints for every `<root>/<skill>/SKILL.md`. Detects added,
-    /// removed, or modified skills without reading file contents. Used by the
-    /// auto-refresh watcher to know when a rescan is worth doing.
-    pub async fn list_skill_file_fingerprints(&self) -> Vec<SkillFileFingerprint> {
+    /// Cheap private fingerprints for every `<root>/<skill>/SKILL.md`.
+    /// Detects added, removed, or modified skills without reading contents.
+    async fn current_file_fingerprints(&self) -> Vec<SkillFileFingerprint> {
         let root = self.resolved_root().await;
         let mut fingerprints = Vec::new();
         let Ok(root_canon) = root.canonicalize() else {
@@ -806,9 +824,9 @@ impl SkillRegistry {
     }
 }
 
-/// Filesystem metadata used by the skill-directory watcher to detect changes.
+/// Private filesystem metadata used to detect skill-directory changes.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub struct SkillFileFingerprint {
+struct SkillFileFingerprint {
     pub path: PathBuf,
     pub modified_at: SystemTime,
     pub byte_length: u64,
@@ -1251,14 +1269,15 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[tokio::test]
-    async fn registry_file_fingerprints_track_changes() {
+    async fn registry_watcher_refreshes_only_when_skill_files_change() {
         let dir = tmp_dir();
         std::fs::create_dir_all(&dir).unwrap();
         let registry = SkillRegistry::new();
         registry.set_config(Some(dir.clone()), None).await.unwrap();
 
-        // Empty folder → no file fingerprints.
-        assert!(registry.list_skill_file_fingerprints().await.is_empty());
+        // The first watcher pass refreshes even when the directory is empty.
+        assert!(registry.refresh_if_changed().await.unwrap());
+        assert!(!registry.refresh_if_changed().await.unwrap());
 
         write_skill(
             &dir,
@@ -1266,21 +1285,19 @@ mod tests {
             "# Skill: a\n## Metadata\n- description: a\n## Instructions\ni\n",
             false,
         );
-        let fingerprints_before_edit = registry.list_skill_file_fingerprints().await;
-        assert_eq!(fingerprints_before_edit.len(), 1);
-        assert!(fingerprints_before_edit[0].path.ends_with("SKILL.md"));
-        let original_byte_length = fingerprints_before_edit[0].byte_length;
+        assert!(registry.refresh_if_changed().await.unwrap());
+        assert_eq!(registry.list_skill_infos().await.len(), 1);
 
-        // Modified SKILL.md (different length) → its fingerprint changes.
+        // Modified SKILL.md (different length) → the registry refreshes its snapshot.
         write_skill(
             &dir,
             "a",
             "# Skill: a\n## Metadata\n- description: a much longer description\n## Instructions\ni\n",
             false,
         );
-        let fingerprints_after_edit = registry.list_skill_file_fingerprints().await;
-        assert_ne!(fingerprints_before_edit, fingerprints_after_edit);
-        assert!(fingerprints_after_edit[0].byte_length > original_byte_length);
+        assert!(registry.refresh_if_changed().await.unwrap());
+        let edited_skill = registry.get_skill_info("a").await.unwrap();
+        assert_eq!(edited_skill.description, "a much longer description");
 
         // Added skill → fingerprint list gains an entry.
         write_skill(
@@ -1289,13 +1306,14 @@ mod tests {
             "# Skill: b\n## Metadata\n- description: b\n## Instructions\ni\n",
             false,
         );
-        let fingerprints_after_add = registry.list_skill_file_fingerprints().await;
-        assert_eq!(fingerprints_after_add.len(), 2);
+        assert!(registry.refresh_if_changed().await.unwrap());
+        assert_eq!(registry.list_skill_infos().await.len(), 2);
 
         // Removed skill → fingerprint list loses the entry.
         std::fs::remove_dir_all(dir.join("a")).unwrap();
-        let fingerprints_after_remove = registry.list_skill_file_fingerprints().await;
-        assert_eq!(fingerprints_after_remove.len(), 1);
+        assert!(registry.refresh_if_changed().await.unwrap());
+        assert_eq!(registry.list_skill_infos().await.len(), 1);
+        assert!(!registry.refresh_if_changed().await.unwrap());
 
         let _ = std::fs::remove_dir_all(&dir);
     }

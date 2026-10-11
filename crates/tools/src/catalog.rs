@@ -381,34 +381,22 @@ impl ToolsFacade {
         on_change: impl Fn() + Send + Sync + 'static,
     ) {
         let skill_registry = self.coordinator.builtins.skill_registry.clone();
-        let mut last_fingerprints: Option<Vec<haven_skills::SkillFileFingerprint>> = None;
         loop {
-            let fingerprints = tokio::select! {
+            let changed = tokio::select! {
                 _ = cancellation.cancelled() => return,
-                fingerprints = skill_registry.list_skill_file_fingerprints() => fingerprints,
+                result = skill_registry.refresh_if_changed() => match result {
+                    Ok(changed) => changed,
+                    Err(error) => {
+                        tracing::warn!(error = %error, "skills auto-refresh failed");
+                        false
+                    }
+                },
             };
-            let changed =
-                last_fingerprints.is_none() || last_fingerprints.as_ref() != Some(&fingerprints);
             if changed {
-                match tokio::select! {
-                    _ = cancellation.cancelled() => return,
-                    result = skill_registry.refresh_from_disk() => result,
-                } {
-                    Ok(()) => {
-                        // Commit the fingerprints only after a successful
-                        // refresh: on error the old fingerprints are kept so
-                        // the next poll retries instead of treating the
-                        // failed change as already seen.
-                        last_fingerprints = Some(fingerprints);
-                        if let Err(error) = self.rebuild_catalog().await {
-                            tracing::warn!(error = %error, "skills changed but tool catalog rebuild failed");
-                        }
-                        on_change();
-                    }
-                    Err(e) => {
-                        tracing::warn!("skills auto-refresh failed: {e}");
-                    }
+                if let Err(error) = self.rebuild_catalog().await {
+                    tracing::warn!(error = %error, "skills changed but tool catalog rebuild failed");
                 }
+                on_change();
             }
             tokio::select! {
                 _ = cancellation.cancelled() => return,

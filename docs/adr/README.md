@@ -915,3 +915,4 @@
 - [0924：在唯一 App composition root 装配 Tools capabilities](0924-assemble-tools-capabilities-once-at-app-root.md)
 - [0925：统一 LLM crate 的跨层 API 导入路径](0925-unify-llm-crate-root-api-paths.md)
 - [0926：收回 Input 实现模块与无效构造入口](0926-restrict-input-implementation-and-construction-api.md)
+- [0927：由 Skills owner 封装目录变更检测](0927-encapsulate-skill-directory-change-detection.md)

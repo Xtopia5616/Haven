@@ -235,10 +235,6 @@ impl VenvManager {
 
         Ok(python)
     }
-
-    pub fn root(&self) -> &Path {
-        &self.root
-    }
 }
 
 #[cfg(test)]
