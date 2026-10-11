@@ -19,7 +19,7 @@
 	}
 
 	interface AdminActivityRow extends Record<string, unknown> {
-		id?: string | null;
+		session_id: string;
 		title?: string | null;
 		status?: SessionStatus;
 	}
@@ -67,7 +67,9 @@
 							>{/if}
 					</div>
 					{#if server.diagnostic}
-						<p class="tool-result-message tool-result-message--compact">{server.diagnostic}</p>
+						<p class="tool-result-message tool-result-message--compact">
+							{server.diagnostic}
+						</p>
 					{/if}
 				{/each}
 			</div>
@@ -92,7 +94,9 @@
 						>
 					</div>
 					{#if skill.manifest_error || skill.unavailable_reason}
-						<p class="tool-result-message tool-result-message--compact">{skill.manifest_error ?? skill.unavailable_reason}</p>
+						<p class="tool-result-message tool-result-message--compact">
+							{skill.manifest_error ?? skill.unavailable_reason}
+						</p>
 					{/if}
 				{/each}
 			</div>
@@ -104,7 +108,9 @@
 	{#if data.lines.length > 0}
 		<pre class="tool-result-preview">{data.lines.join('\n')}</pre>
 	{:else}
-		<p class="tool-result-message tool-result-message--compact">日志文件存在，但没有可显示的日志行。</p>
+		<p class="tool-result-message tool-result-message--compact">
+			日志文件存在，但没有可显示的日志行。
+		</p>
 	{/if}
 {:else if data.path && data.error}
 	<div class="tool-result-label">日志不可用</div>
@@ -119,9 +125,10 @@
 	<ToolResultList items={rows}>
 		{#snippet children(visibleRows: Array<Record<string, unknown>>)}
 			<div class="admin-list tool-result-scroll-area">
-				{#each visibleRows as row, index (row.id ?? index)}
+				{#each visibleRows as row (row.session_id)}
 					<div class="admin-row">
-						<span class="admin-name">{row.title || row.id || '未命名会话'}</span>
+						<span class="admin-name">{row.title || row.session_id || '未命名会话'}</span
+						>
 						{#if row.status}<span class="admin-state">{row.status}</span>{/if}
 					</div>
 				{/each}

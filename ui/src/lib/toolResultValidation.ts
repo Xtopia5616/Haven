@@ -270,7 +270,8 @@ function validMediaData(data: JsonRecord): boolean {
 
 function validAdminActivityRow(row: JsonRecord): boolean {
 	return (
-		hasValidOptionalFields(row, stringFields('id', 'title')) &&
+		isCanonicalEntityId(row.session_id, 'ses') &&
+		hasValidOptionalFields(row, stringFields('title')) &&
 		(!('status' in row) || isSessionStatus(row.status))
 	);
 }

@@ -293,8 +293,21 @@ describe('operation view UI contract', () => {
 			{ renderer: 'haven_mcp', data: { servers: [null] } },
 			{
 				renderer: 'haven_diagnostics',
-				data: { sessions: [{ id: 'ses-1', status: 'future' }] },
+				data: {
+					sessions: [
+						{ session_id: 'ses-0123456789abcdef0123456789abcdef', status: 'future' },
+					],
+				},
 			},
+			{
+				renderer: 'haven_diagnostics',
+				data: { sessions: [{ session_id: 'ses-1', status: 'running' }] },
+			},
+			{
+				renderer: 'haven_diagnostics',
+				data: { errors: [{ session_id: 'toolrun-0123456789abcdef0123456789abcdef' }] },
+			},
+			{ renderer: 'haven_diagnostics', data: { sessions: [{ title: 'missing id' }] } },
 			{ renderer: 'http', data: { status: '200' } },
 			{ renderer: 'http', data: {} },
 			{ renderer: 'http', data: { status: null } },
@@ -696,7 +709,11 @@ describe('operation view UI contract', () => {
 			getToolResultRenderer(
 				'custom',
 				'haven_diagnostics',
-				{ sessions: [{ id: 'ses-1', status: 'running' }] },
+				{
+					sessions: [
+						{ session_id: 'ses-0123456789abcdef0123456789abcdef', status: 'running' },
+					],
+				},
 				'haven_diagnostics',
 			),
 		).not.toBe(ToolJsonResult);

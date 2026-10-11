@@ -220,7 +220,7 @@ pub(crate) enum SessionsOutput {
 
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct SessionSummaryOutput {
-    pub(crate) id: String,
+    pub(crate) session_id: String,
     pub(crate) status: haven_common::lifecycle::SessionStatus,
     pub(crate) title: Option<String>,
     pub(crate) input_chars: usize,
@@ -237,7 +237,7 @@ pub(crate) enum ErrorsOutput {
 
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct SessionErrorOutput {
-    pub(crate) id: String,
+    pub(crate) session_id: String,
     pub(crate) title: Option<String>,
     pub(crate) input_chars: usize,
     pub(crate) created_at: String,
@@ -654,7 +654,7 @@ impl AdminServices {
         let rows: Vec<SessionSummaryOutput> = sessions
             .into_iter()
             .map(|session| SessionSummaryOutput {
-                id: session.id,
+                session_id: session.id,
                 status: session.status,
                 title: session.title,
                 input_chars: session.input_text.chars().count(),
@@ -676,7 +676,7 @@ impl AdminServices {
             .into_iter()
             .filter(|session| session.status == haven_common::lifecycle::SessionStatus::Error)
             .map(|session| SessionErrorOutput {
-                id: session.id,
+                session_id: session.id,
                 title: session.title,
                 input_chars: session.input_text.chars().count(),
                 created_at: session.created_at,

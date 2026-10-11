@@ -952,3 +952,4 @@
 - [0961：校验 Memory fact extraction 的持久身份](0961-validate-memory-extraction-identities.md)
 - [0962：对 ToolResult 资产与录音事件进行失败关闭校验](0962-fail-closed-on-tool-assets-and-recording-events.md)
 - [0963：在 Memory 持久边界校验 transcript identity](0963-validate-memory-transcript-identities.md)
+- [0964：统一 Admin 会话结果身份字段](0964-name-and-validate-admin-session-identity.md)

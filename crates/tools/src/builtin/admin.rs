@@ -2335,8 +2335,8 @@ mod tests {
             .unwrap()
             .output;
         assert_eq!(sessions["sessions"].as_array().unwrap().len(), 2);
-        assert_eq!(sessions["sessions"][0]["id"], newest_error.id);
-        assert_eq!(sessions["sessions"][1]["id"], recent_completed.id);
+        assert_eq!(sessions["sessions"][0]["session_id"], newest_error.id);
+        assert_eq!(sessions["sessions"][1]["session_id"], recent_completed.id);
         assert_eq!(sessions["sessions"][0]["input_chars"], 3);
 
         let clamped_sessions = surfaces
@@ -2348,7 +2348,10 @@ mod tests {
             .unwrap()
             .output;
         assert_eq!(clamped_sessions["sessions"].as_array().unwrap().len(), 1);
-        assert_eq!(clamped_sessions["sessions"][0]["id"], newest_error.id);
+        assert_eq!(
+            clamped_sessions["sessions"][0]["session_id"],
+            newest_error.id
+        );
 
         let errors = surfaces
             .execute(
@@ -2359,7 +2362,7 @@ mod tests {
             .unwrap()
             .output;
         assert_eq!(errors["errors"].as_array().unwrap().len(), 1);
-        assert_eq!(errors["errors"][0]["id"], newest_error.id);
+        assert_eq!(errors["errors"][0]["session_id"], newest_error.id);
     }
 
     #[tokio::test]
@@ -2425,7 +2428,7 @@ mod tests {
             session_wire,
             json!({
                 "sessions": [{
-                    "id": session.id,
+                    "session_id": session.id,
                     "status": "error",
                     "title": "safe title",
                     "input_chars": transcript.chars().count(),
@@ -2449,7 +2452,7 @@ mod tests {
             errors_wire,
             json!({
                 "errors": [{
-                    "id": session.id,
+                    "session_id": session.id,
                     "title": "safe title",
                     "input_chars": transcript.chars().count(),
                     "created_at": "2024-01-02T03:04:05Z",
