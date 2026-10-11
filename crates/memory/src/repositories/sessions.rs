@@ -2,6 +2,7 @@ use crate::db::Database;
 use crate::repositories::kv_store::MAX_MEMORY_SESSION_ID_PAGE_SIZE;
 use chrono::{Local, NaiveDate, TimeZone, Utc};
 use haven_common::lifecycle::SessionStatus;
+use haven_common::types::is_canonical_id;
 
 /// WHERE clause shared by every session search query (list, count, paginated).
 /// Kept as one constant so search semantics cannot drift between queries.
@@ -96,15 +97,22 @@ impl SessionOrigin {
     fn from_storage(origin: String, parent_session_id: Option<String>) -> rusqlite::Result<Self> {
         match (origin.as_str(), parent_session_id) {
             ("user", None) => Ok(Self::User),
-            ("agent_spawn", Some(parent_session_id)) => Ok(Self::AgentSpawn { parent_session_id }),
-            _ => Err(rusqlite::Error::FromSqlConversionFailure(
-                6,
-                rusqlite::types::Type::Text,
-                Box::new(std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    "invalid persisted session origin metadata",
-                )),
-            )),
+            ("agent_spawn", Some(parent_session_id))
+                if is_canonical_id(&parent_session_id, "ses") =>
+            {
+                Ok(Self::AgentSpawn { parent_session_id })
+            }
+            _ => {
+                let invalid_column = if origin == "agent_spawn" { 7 } else { 6 };
+                Err(rusqlite::Error::FromSqlConversionFailure(
+                    invalid_column,
+                    rusqlite::types::Type::Text,
+                    Box::new(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "invalid persisted session origin metadata",
+                    )),
+                ))
+            }
         }
     }
 }
@@ -115,17 +123,23 @@ impl Database {
         self.create_session_with_origin(input_text, SessionOrigin::User)
     }
 
-    /// Create a durable peer session and validate that its parent is present.
-    /// The parent id is provenance, not a foreign key: deleting a parent must
-    /// not rewrite the historical origin of a surviving child session.
+    /// Create a durable peer session and validate that its parent identity is
+    /// canonical and present. The parent id is provenance, not a foreign key:
+    /// deleting a parent must not rewrite a surviving child's origin.
     pub fn create_session_with_origin(
         &self,
         input_text: &str,
         origin: SessionOrigin,
     ) -> anyhow::Result<Session> {
+        let (origin_kind, parent_session_id) = origin.storage_parts();
+        if let Some(parent_session_id) = parent_session_id {
+            anyhow::ensure!(
+                is_canonical_id(parent_session_id, "ses"),
+                "invalid parent session id"
+            );
+        }
         let id = haven_common::types::new_id("ses");
         let now = Utc::now().to_rfc3339();
-        let (origin_kind, parent_session_id) = origin.storage_parts();
         let conn = self.conn();
         conn.execute_batch("BEGIN IMMEDIATE")?;
         let write_result = (|| -> anyhow::Result<()> {
@@ -783,6 +797,50 @@ mod tests {
 
         assert!(error.to_string().contains("parent session"));
         assert_eq!(db.count_sessions().unwrap(), 0);
+    }
+
+    #[test]
+    fn peer_session_origin_rejects_noncanonical_parent_before_write() {
+        let db = create_db();
+        let error = db
+            .create_session_with_origin(
+                "invalid parent kickoff",
+                SessionOrigin::AgentSpawn {
+                    parent_session_id: "session-invalid".into(),
+                },
+            )
+            .unwrap_err();
+
+        assert!(error.to_string().contains("invalid parent session id"));
+        assert_eq!(db.count_sessions().unwrap(), 0);
+    }
+
+    #[test]
+    fn persisted_peer_session_origin_rejects_noncanonical_parent_identity() {
+        let db = create_db();
+        let parent = db.create_session("parent").unwrap();
+        let child = db
+            .create_session_with_origin(
+                "delegated kickoff",
+                SessionOrigin::AgentSpawn {
+                    parent_session_id: parent.id,
+                },
+            )
+            .unwrap();
+
+        db.conn()
+            .execute(
+                "UPDATE sessions SET parent_session_id = 'session-invalid' WHERE id = ?1",
+                [&child.id],
+            )
+            .unwrap();
+
+        let error = db.get_session(&child.id).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("invalid persisted session origin metadata")
+        );
     }
 
     #[test]

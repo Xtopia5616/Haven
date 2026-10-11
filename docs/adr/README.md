@@ -946,3 +946,4 @@
 - [0955：将 MemoryTool recall slot 留在 Tools 内部](0955-hide-memory-recall-slot.md)
 - [0956：限制 MCP refresh plan 的下游构造](0956-restrict-mcp-refresh-plan-construction.md)
 - [0957：校验 ManagedAssetRegistry 的实体身份](0957-validate-managed-asset-identities.md)
+- [0958：校验 SessionOrigin 的父会话身份](0958-validate-session-origin-parent-identity.md)
