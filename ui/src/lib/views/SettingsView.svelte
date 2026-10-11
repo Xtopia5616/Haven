@@ -20,6 +20,7 @@
 	import MaterialTabs from '$lib/MaterialTabs.svelte';
 	import { addNotification } from '$lib/notificationStore.ts';
 	import { setToolRunCompletionNotificationChannels } from '$lib/toolRunCompletionNotificationSettings.ts';
+	import { validateSettingsModelDrafts } from '$lib/settingsModelValidation.ts';
 	import { formatError } from '$lib/formatError.ts';
 	import {
 		isPartialConfigApplyError,
@@ -1100,14 +1101,7 @@
 
 	/** @returns {void} */
 	function validateModelProviderBindings() {
-		const providerNames = new Set((llmConfig.providers || []).map((provider) => provider.name));
-		const invalidModels = (llmConfig.models || []).filter(
-			(model) => !model.providerName || !providerNames.has(model.providerName),
-		);
-		if (invalidModels.length) {
-			const modelIds = invalidModels.map((model) => model.id).join('、');
-			throw new Error(`每个模型都必须绑定已配置的 Provider。请重新创建：${modelIds}`);
-		}
+		validateSettingsModelDrafts(llmConfig.models, llmConfig.providers);
 	}
 
 	/** @returns {Promise<boolean>} */

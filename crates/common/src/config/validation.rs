@@ -4,6 +4,7 @@ use super::{AppConfig, Settings};
 use anyhow::{Context, Result};
 use serde::Serialize;
 use serde_json::Value;
+use std::collections::HashSet;
 
 const JS_MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
 /// The capture ring stores mono 16 kHz `f32` samples; this cap bounds its
@@ -100,7 +101,17 @@ pub fn validate_settings_contract(settings: &Settings) -> Result<()> {
     {
         anyhow::bail!("MCP environment values must be changed through the MCP settings commands");
     }
-    for model in &config.llm.models {
+    let mut model_ids = HashSet::with_capacity(config.llm.models.len());
+    for (index, model) in config.llm.models.iter().enumerate() {
+        if model.id.trim().is_empty() {
+            anyhow::bail!("llm.models[{index}].id must not be empty");
+        }
+        if !model_ids.insert(model.id.as_str()) {
+            anyhow::bail!("llm.models[{index}].id must be unique");
+        }
+        if model.model.trim().is_empty() {
+            anyhow::bail!("llm.models[{index}].model must not be empty");
+        }
         if model.provider_name.trim().is_empty()
             || !config
                 .llm
@@ -108,7 +119,7 @@ pub fn validate_settings_contract(settings: &Settings) -> Result<()> {
                 .iter()
                 .any(|provider| provider.name == model.provider_name)
         {
-            anyhow::bail!("every configured model must reference a configured Provider");
+            anyhow::bail!("llm.models[{index}].provider_name must reference a configured Provider");
         }
     }
     Ok(())
@@ -356,5 +367,47 @@ mod tests {
         config.media.tts.provider_name = "missing".into();
         assert!(validate_app_config(&config).is_err());
         assert!(validate_settings_contract(&Settings::from(&config)).is_err());
+    }
+
+    #[test]
+    fn settings_reject_models_that_would_be_dropped_or_ambiguously_routed() {
+        let mut config = AppConfig::default();
+        config.llm.providers.push(ProviderConfig {
+            name: "primary".into(),
+            ..Default::default()
+        });
+        config.llm.models.push(crate::config::ModelConfig {
+            id: "chat-slot".into(),
+            provider_name: "primary".into(),
+            model: "gpt-test".into(),
+            ..Default::default()
+        });
+
+        let mut settings = Settings::from(&config);
+        settings.llm.models[0].id = "  ".into();
+        assert!(
+            validate_settings_contract(&settings)
+                .unwrap_err()
+                .to_string()
+                .contains("llm.models[0].id")
+        );
+
+        let mut settings = Settings::from(&config);
+        settings.llm.models[0].model = "  ".into();
+        assert!(
+            validate_settings_contract(&settings)
+                .unwrap_err()
+                .to_string()
+                .contains("llm.models[0].model")
+        );
+
+        let mut settings = Settings::from(&config);
+        settings.llm.models.push(settings.llm.models[0].clone());
+        assert!(
+            validate_settings_contract(&settings)
+                .unwrap_err()
+                .to_string()
+                .contains("llm.models[1].id must be unique")
+        );
     }
 }

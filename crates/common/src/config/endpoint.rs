@@ -493,7 +493,7 @@ impl ModelConfig {
     }
 
     pub fn is_assigned(&self) -> bool {
-        !self.provider_name.is_empty() && !self.model.is_empty()
+        !self.provider_name.trim().is_empty() && !self.model.trim().is_empty()
     }
 }
 

@@ -987,3 +987,4 @@
 - [0996：统一交互请求身份字段](0996-name-interaction-request-identity.md)
 - [0997：统一会话恢复消息身份字段](0997-name-session-resume-message-identity.md)
 - [0998：统一持久摘要与 prompt-history 消息身份字段](0998-name-transcript-and-prompt-message-identities.md)
+- [0999：统一 Settings 数值类型与模型配置完整性校验](0999-normalize-settings-numeric-and-model-validation.md)

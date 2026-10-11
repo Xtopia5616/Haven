@@ -1014,7 +1014,7 @@ mod tests {
                 validate_settings_payload(&settings)
                     .unwrap_err()
                     .to_string(),
-                "every configured model must reference a configured Provider"
+                "llm.models[0].provider_name must reference a configured Provider"
             );
         }
 

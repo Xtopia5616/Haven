@@ -37,7 +37,6 @@ const U32_FIELDS = new Set([
 	'retry_factor',
 	'retry_max_retries',
 	'sample_rate',
-	'top_k',
 	'compaction_reserve_tokens',
 ]);
 
@@ -58,6 +57,134 @@ const FLOAT_NONNEGATIVE_FIELDS = new Set([
 	'cost_per_1k_cache_write_tokens',
 	'cost_per_1k_input_tokens',
 	'cost_per_1k_output_tokens',
+]);
+
+// Keep this list aligned with the numeric properties in generated Settings
+// and SettingsInput. Checking by key catches strings/objects that Rust's typed
+// IPC decoder would reject only after the renderer has invoked the command.
+const NUMERIC_FIELDS = new Set([
+	'attachment_image_jpeg_quality',
+	'background_tool_run_output_emit_interval_ms',
+	'background_tool_run_tail_max_chars',
+	'bits_per_sample',
+	'channels',
+	'clipboard_entry_max_chars',
+	'clipboard_history_entries',
+	'clipboard_history_max_entries',
+	'compaction_ratio',
+	'compaction_reserve_tokens',
+	'context_window',
+	'cost_per_1k_cache_read_tokens',
+	'cost_per_1k_cache_write_tokens',
+	'cost_per_1k_input_tokens',
+	'cost_per_1k_output_tokens',
+	'cpu_time_secs',
+	'default_context_window',
+	'default_max_tokens',
+	'default_temperature',
+	'default_timeout_secs',
+	'default_timeout_streaming_secs',
+	'embedding_chunk_size',
+	'event_chunk_batch_max_bytes',
+	'fact_extraction_min_interval_secs',
+	'fact_infer_interval_steps',
+	'file_byte_read_max_bytes',
+	'file_line_max_bytes',
+	'file_line_span',
+	'file_max_full_file_bytes',
+	'file_max_list_entries',
+	'file_summary_input_chars',
+	'file_summary_timeout_secs',
+	'file_vision_max_bytes',
+	'file_write_max_bytes',
+	'history_retention_days',
+	'health_interval_secs',
+	'incomplete_tool_args_retries',
+	'input_ring_buffer_secs',
+	'max_attachment_file_bytes',
+	'max_attachment_files',
+	'max_attachment_image_bytes',
+	'max_attachment_image_dim_px',
+	'max_attachment_images',
+	'max_concurrent',
+	'max_concurrent_requests',
+	'max_duration_secs',
+	'max_known_facts',
+	'max_memory_mb',
+	'max_observation_chars',
+	'max_output_chars',
+	'max_output_lines',
+	'max_pending_scheduled_tool_runs',
+	'max_retries',
+	'max_running_background_tool_runs',
+	'max_steps_per_run',
+	'max_steps_per_session',
+	'max_tokens',
+	'max_tools_per_request',
+	'max_total_duration_secs',
+	'max_transcript_chars',
+	'max_upload_total_bytes',
+	'mcp_max_binary_base64_bytes',
+	'mcp_max_sse_buffer_bytes',
+	'min_confidence',
+	'network_backoff_base_secs',
+	'network_max_body_bytes',
+	'network_max_retries',
+	'notification_summary_chars',
+	'partial_checkpoint_interval_secs',
+	'partial_checkpoint_min_chars',
+	'prompt_history_limit',
+	'reasoning_echo_max_chars',
+	'reconnect_initial_ms',
+	'reconnect_max_ms',
+	'reconnect_max_retries',
+	'response_token_floor',
+	'retry_backoff_secs',
+	'retry_base_secs',
+	'retry_factor',
+	'retry_jitter',
+	'retry_max_retries',
+	'retry_max_secs',
+	'sample_rate',
+	'sanitize_field_max_chars',
+	'scheduled_tool_runs_due_horizon_secs',
+	'search_max_file_size_bytes',
+	'search_max_results',
+	'search_snippet_chars',
+	'search_window_bytes',
+	'self_tool_max_instructions_bytes',
+	'self_tool_max_script_bytes',
+	'silence_timeout_ms',
+	'skills_max_line_bytes',
+	'skills_max_md_bytes',
+	'skills_max_parse_lines',
+	'stream_idle_timeout_secs',
+	'stream_stall_warn_delay_ms',
+	'temperature',
+	'timeout_secs',
+	'tool_run_result_context_chars',
+	'tool_run_terminal_ttl_secs',
+	'turn_deadline_secs',
+	'vad_threshold',
+]);
+
+const NULLABLE_NUMERIC_FIELDS = new Set([
+	'cpu_time_secs',
+	'context_window',
+	'cost_per_1k_cache_read_tokens',
+	'cost_per_1k_cache_write_tokens',
+	'cost_per_1k_input_tokens',
+	'cost_per_1k_output_tokens',
+	'default_max_tokens',
+	'default_temperature',
+	'default_timeout_secs',
+	'default_timeout_streaming_secs',
+	'max_memory_mb',
+	'max_steps_per_session',
+	'max_tokens',
+	'max_output_chars',
+	'max_retries',
+	'retry_backoff_secs',
 ]);
 
 const MAX_INPUT_RING_BUFFER_SECS = 120;
@@ -111,63 +238,92 @@ function hasValidSettingsCredentialReferences(value: Record<string, unknown>): b
 	});
 }
 
-function hasValidSettingsNumbers(value: unknown, field?: string): boolean {
+function findInvalidSettingsNumber(
+	value: unknown,
+	field?: string,
+	path = 'settings',
+): string | null {
+	if (value === undefined) return null;
+	if (value === null) {
+		return field !== undefined &&
+			NUMERIC_FIELDS.has(field) &&
+			!isNullableNumericField(field, path)
+			? path
+			: null;
+	}
+	if (field !== undefined && NUMERIC_FIELDS.has(field) && typeof value !== 'number') return path;
 	if (typeof value === 'number') {
 		const floatRange = field === undefined ? undefined : FLOAT_RANGES.get(field);
 		if (floatRange) {
-			return isFiniteNumber(value) && value >= floatRange[0] && value <= floatRange[1];
+			return isFiniteNumber(value) && value >= floatRange[0] && value <= floatRange[1]
+				? null
+				: path;
 		}
 		if (field !== undefined && FLOAT_NONNEGATIVE_FIELDS.has(field)) {
-			return isFiniteNumber(value) && value >= 0;
+			return isFiniteNumber(value) && value >= 0 ? null : path;
 		}
-		if (field !== undefined && U32_FIELDS.has(field)) return isU32(value);
-		if (!isSafeUnsignedInteger(value)) return false;
-		if (field !== undefined && U16_FIELDS.has(field) && value > 0xffff) return false;
-		if (field === 'input_ring_buffer_secs' && value > MAX_INPUT_RING_BUFFER_SECS) return false;
-		return true;
+		if (field !== undefined && U32_FIELDS.has(field)) return isU32(value) ? null : path;
+		if (!isSafeUnsignedInteger(value)) return path;
+		if (field !== undefined && U16_FIELDS.has(field) && value > 0xffff) return path;
+		if (field === 'input_ring_buffer_secs' && value > MAX_INPUT_RING_BUFFER_SECS) return path;
+		return null;
 	}
 	if (Array.isArray(value)) {
-		return value.every((item) => hasValidSettingsNumbers(item, field));
+		for (const [index, item] of value.entries()) {
+			const invalidPath = findInvalidSettingsNumber(item, field, `${path}[${index}]`);
+			if (invalidPath) return invalidPath;
+		}
+		return null;
 	}
 	if (isRecord(value)) {
-		return Object.entries(value).every(([key, item]) => hasValidSettingsNumbers(item, key));
+		for (const [key, item] of Object.entries(value)) {
+			const invalidPath = findInvalidSettingsNumber(item, key, `${path}.${key}`);
+			if (invalidPath) return invalidPath;
+		}
 	}
-	return true;
+	return null;
 }
 
-function hasValidMcpIntervals(value: unknown): boolean {
-	if (!isRecord(value) || !isRecord(value.mcp_discovery)) return true;
+function isNullableNumericField(field: string, path: string): boolean {
+	if (NULLABLE_NUMERIC_FIELDS.has(field)) return true;
+	if (field === 'temperature') return path.startsWith('settings.llm.models[');
+	if (field === 'reasoning_echo_max_chars') return path.startsWith('settings.llm.models[');
+	if (field === 'timeout_secs') return path.startsWith('settings.tool_settings.');
+	return false;
+}
+
+function findInvalidMcpInterval(value: unknown): string | null {
+	if (!isRecord(value) || !isRecord(value.mcp_discovery)) return null;
 	const mcp = value.mcp_discovery;
 	if (
 		mcp.health_interval_secs !== undefined &&
 		(!isSafeUnsignedInteger(mcp.health_interval_secs) || mcp.health_interval_secs === 0)
 	) {
-		return false;
+		return 'settings.mcp_discovery.health_interval_secs';
 	}
 	if (
 		mcp.reconnect_initial_ms !== undefined &&
 		(!isSafeUnsignedInteger(mcp.reconnect_initial_ms) || mcp.reconnect_initial_ms === 0)
 	) {
-		return false;
+		return 'settings.mcp_discovery.reconnect_initial_ms';
 	}
 	if (
 		mcp.reconnect_max_ms !== undefined &&
 		(!isSafeUnsignedInteger(mcp.reconnect_max_ms) || mcp.reconnect_max_ms === 0)
 	) {
-		return false;
+		return 'settings.mcp_discovery.reconnect_max_ms';
 	}
-	return !(
-		isSafeUnsignedInteger(mcp.reconnect_initial_ms) &&
+	return isSafeUnsignedInteger(mcp.reconnect_initial_ms) &&
 		isSafeUnsignedInteger(mcp.reconnect_max_ms) &&
 		mcp.reconnect_max_ms < mcp.reconnect_initial_ms
-	);
+		? 'settings.mcp_discovery.reconnect_max_ms'
+		: null;
 }
 
 /** Reject Settings numbers outside their Rust field domains or JavaScript-safe range. */
 export function validateSettingsNumbers(value: unknown): void {
-	if (!hasValidSettingsNumbers(value) || !hasValidMcpIntervals(value)) {
-		throw new Error('Invalid Settings numeric value');
-	}
+	const invalidPath = findInvalidSettingsNumber(value) ?? findInvalidMcpInterval(value);
+	if (invalidPath) throw new Error(`Invalid Settings numeric value at ${invalidPath}`);
 }
 
 /** Validate persisted session identities before Settings consumes permission grants. */

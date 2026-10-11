@@ -68,6 +68,26 @@ describe('settings command contracts', () => {
 		}
 	});
 
+	it('rejects malformed Settings number types before IPC while preserving nullable fields', () => {
+		for (const invalid of [
+			{ session: { max_steps_per_run: '12' } },
+			{ llm: { retry_jitter: '0.5' } },
+			{ media: { audio: { channels: null } } },
+			{ media: { stt: { timeout_secs: null } } },
+			{ context_limits: { reasoning_echo_max_chars: null } },
+		]) {
+			expect(() => parseSettingsPayload(invalid)).toThrow('Invalid Settings numeric value');
+		}
+
+		const nullable = {
+			llm: { models: [{ temperature: null, reasoning_echo_max_chars: null }] },
+			session: { max_steps_per_session: null },
+			skills_exec: { cpu_time_secs: null, max_memory_mb: null },
+			tool_settings: { shell: { timeout_secs: null, max_output_chars: null } },
+		};
+		expect(parseSettingsPayload(nullable)).toBe(nullable);
+	});
+
 	it('rejects MCP intervals that can spin or exceed the reconnect cap', () => {
 		for (const mcp_discovery of [
 			{ health_interval_secs: 0 },
