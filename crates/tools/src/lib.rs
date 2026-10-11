@@ -206,7 +206,9 @@ pub use tool_run_service::{
     ToolRunStateView, ToolRunStatusView, ToolRunView,
 };
 pub(crate) use tool_run_service::{ToolRunCompletionReceiver, ToolRunService};
-pub use tool_run_types::{ScheduleMode, ScheduledToolRunFired, ScheduledToolRunSpec};
+#[cfg(feature = "test-support")]
+pub use tool_run_types::ScheduledToolRunSpec;
+pub use tool_run_types::{ScheduleMode, ScheduledToolRunFired};
 pub(crate) use tool_runtime::MemoryRecallSlot;
 pub use tool_runtime::{
     LogLevelPort, MemoryRecallPort, RuntimeCapabilities, StartupWiring, ToolControlPort,

@@ -948,3 +948,4 @@
 - [0957：校验 ManagedAssetRegistry 的实体身份](0957-validate-managed-asset-identities.md)
 - [0958：校验 SessionOrigin 的父会话身份](0958-validate-session-origin-parent-identity.md)
 - [0959：为无消息身份的 committed supplement 使用规范 ID](0959-use-canonical-id-for-legacy-supplement.md)
+- [0960：将 ScheduledToolRunSpec 限制到测试 API](0960-restrict-scheduled-tool-run-spec-to-test-support.md)
