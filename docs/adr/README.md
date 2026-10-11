@@ -928,3 +928,4 @@
 - [0937：统一 CapabilityScope 的 Common 导入路径](0937-use-common-capability-scope-path.md)
 - [0938：移除 transcript types 的 Common 根 aliases](0938-remove-common-transcript-type-root-aliases.md)
 - [0939：移除 Agent crate 对 Memory 类型的重复导出](0939-remove-agent-reexports-of-memory-types.md)
+- [0940：将 ManagedAssetRegistry 限制为 Tools 内部实现](0940-hide-managed-asset-registry.md)

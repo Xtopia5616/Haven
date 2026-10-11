@@ -478,6 +478,7 @@ impl ManagedAssetRegistry {
     }
 
     /// Return a snapshot of paths currently protected from retention cleanup.
+    #[cfg(feature = "test-support")]
     pub fn protected_paths(&self) -> Vec<PathBuf> {
         self.assets
             .read()

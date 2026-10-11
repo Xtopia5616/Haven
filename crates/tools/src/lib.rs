@@ -128,9 +128,11 @@ impl CatalogRebuildScope {
 pub use adapters::skill_tool_name;
 #[cfg(any(test, feature = "test-support"))]
 pub use adapters::{McpToolAdapter, SkillToolAdapter};
-pub use asset_registry::{
-    GeneratedMediaCleanupGuard, ManagedAsset, ManagedAssetLifecyclePort, ManagedAssetRegistry,
-};
+pub use asset_registry::{GeneratedMediaCleanupGuard, ManagedAssetLifecyclePort};
+#[cfg(feature = "test-support")]
+pub use asset_registry::{ManagedAsset, ManagedAssetRegistry};
+#[cfg(not(feature = "test-support"))]
+pub(crate) use asset_registry::{ManagedAsset, ManagedAssetRegistry};
 pub use builtin::{
     AdminContext, AdminOperationError, AdminRequest, ConfigOperationArgs, ConfigOperationError,
     ConfigOperationOutput, ConfigViewOutput, DiagnosticsOperationArgs, LogLevelOutput,
