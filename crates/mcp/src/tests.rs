@@ -510,11 +510,14 @@ fn extract_mcp_content_image_and_audio() {
     assert_eq!(images[0]["type"], "image");
     assert_eq!(images[0]["mimeType"], "image/png");
     assert_eq!(images[0]["data"], "aGVsbG8=");
+    assert_eq!(images[0]["base64_bytes"], 8);
+    assert_eq!(output["content"][1]["base64_bytes"], 8);
 
     let audio_blocks = output["audio"].as_array().unwrap();
     assert_eq!(audio_blocks.len(), 1);
     assert_eq!(audio_blocks[0]["mimeType"], "audio/wav");
     assert_eq!(audio_blocks[0]["data"], "d29ybGQ=");
+    assert_eq!(audio_blocks[0]["base64_bytes"], 8);
 
     assert_eq!(output["content"].as_array().unwrap().len(), 3);
     assert_eq!(output["content"][1]["type"], "image");
@@ -571,6 +574,7 @@ fn extract_mcp_content_blob_resource() {
     assert_eq!(resources.len(), 1);
     assert_eq!(resources[0]["uri"], "result.bin");
     assert_eq!(resources[0]["bytes"], 4);
+    assert_eq!(resources[0]["base64_bytes"], 8);
 }
 
 #[test]
@@ -629,7 +633,7 @@ fn extract_mcp_content_oversized_image_capped() {
     assert_eq!(images.len(), 1);
     assert_eq!(images[0]["oversized"], true);
     assert_eq!(images[0]["data"], "");
-    assert_eq!(images[0]["bytes"], (2 * 1024 * 1024) + 1);
+    assert_eq!(images[0]["base64_bytes"], (2 * 1024 * 1024) + 1);
 }
 
 #[test]

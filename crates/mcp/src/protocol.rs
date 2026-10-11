@@ -72,7 +72,8 @@ fn base64_decoded_len(s: &str) -> usize {
 /// text-resources fold into the plain-text summary. Binary media (`image`,
 /// `audio`, embedded resource blobs) is surfaced once under `output.images` /
 /// `output.audio` / `output.resources` (base64 + mimeType, capped at
-/// `max_binary_payload` base64 chars) for downstream rendering, while
+/// `max_binary_base64_bytes` bytes of the Base64 representation) for downstream
+/// rendering, while
 /// `output.content` keeps a metadata-only list of every block (no raw payload)
 /// for UI fidelity. Unknown or malformed block types are preserved rather than
 /// silently dropped.
@@ -83,7 +84,7 @@ pub(crate) struct McpContentExtraction {
 
 pub(crate) fn extract_mcp_content(
     content: &[Value],
-    max_binary_payload: usize,
+    max_binary_base64_bytes: usize,
 ) -> McpContentExtraction {
     let mut text_parts: Vec<String> = Vec::new();
     let mut images: Vec<Value> = Vec::new();
@@ -126,11 +127,13 @@ pub(crate) fn extract_mcp_content(
             }
             "image" | "audio" => {
                 let data = item["data"].as_str().unwrap_or("");
-                let entry = if data.len() <= max_binary_payload {
+                let base64_bytes = data.len();
+                let entry = if base64_bytes <= max_binary_base64_bytes {
                     serde_json::json!({
                         "type": kind,
                         "mimeType": mime_type,
                         "data": data,
+                        "base64_bytes": base64_bytes,
                     })
                 } else {
                     // Oversized payload: keep only metadata so the observation
@@ -140,7 +143,7 @@ pub(crate) fn extract_mcp_content(
                         "mimeType": mime_type,
                         "data": "",
                         "oversized": true,
-                        "bytes": data.len(),
+                        "base64_bytes": base64_bytes,
                     })
                 };
                 if kind == "image" {
@@ -148,14 +151,14 @@ pub(crate) fn extract_mcp_content(
                 } else {
                     audio.push(entry);
                 }
-                block.insert("data_len".into(), Value::from(data.len()));
+                block.insert("base64_bytes".into(), Value::from(base64_bytes));
                 // Marker so the text-only agent loop knows binary content exists.
                 text_parts.push(format!(
                     "[{} block returned: {} ({} base64 chars{})]",
                     kind,
                     mime_type,
                     data.len(),
-                    if data.len() > max_binary_payload {
+                    if base64_bytes > max_binary_base64_bytes {
                         ", oversized"
                     } else {
                         ""
@@ -171,12 +174,14 @@ pub(crate) fn extract_mcp_content(
                     let uri = res["uri"].as_str().unwrap_or("");
                     // Compute the decoded size without allocating the buffer.
                     let decoded_len = base64_decoded_len(blob);
-                    let entry = if blob.len() <= max_binary_payload {
+                    let base64_bytes = blob.len();
+                    let entry = if base64_bytes <= max_binary_base64_bytes {
                         serde_json::json!({
                             "uri": uri,
                             "mimeType": res["mimeType"].as_str().unwrap_or(mime_type),
                             "blob": blob,
                             "bytes": decoded_len,
+                            "base64_bytes": base64_bytes,
                         })
                     } else {
                         serde_json::json!({
@@ -185,16 +190,18 @@ pub(crate) fn extract_mcp_content(
                             "blob": "",
                             "oversized": true,
                             "bytes": decoded_len,
+                            "base64_bytes": base64_bytes,
                         })
                     };
                     resources.push(entry);
                     block.insert("bytes".into(), Value::from(decoded_len));
+                    block.insert("base64_bytes".into(), Value::from(base64_bytes));
                     text_parts.push(format!(
                         "[resource block returned: {} ({} base64 chars, ~{} decoded bytes{})]",
                         if uri.is_empty() { mime_type } else { uri },
                         blob.len(),
                         decoded_len,
-                        if blob.len() > max_binary_payload {
+                        if base64_bytes > max_binary_base64_bytes {
                             ", oversized"
                         } else {
                             ""

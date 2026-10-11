@@ -236,12 +236,12 @@
 			hint: '外部输入与扩展（MCP、技能、脚本、网络）的防护上限。调大直接扩大攻击面，请谨慎。',
 			fields: [
 				{
-					key: 'mcp_max_binary_payload_bytes',
-					label: 'MCP 二进制内容上限',
-					unit: 'MB',
+					key: 'mcp_max_binary_base64_bytes',
+					label: 'MCP Base64 内容上限',
+					unit: 'MiB',
 					mb: true,
 					danger: true,
-					hint: 'MCP image/audio/resource 内容保留在观察中的 base64 上限，超出替换为 oversized 标记。',
+					hint: 'MCP image/audio/resource 的 Base64 表示按 UTF-8 字节数计限，超出替换为 oversized 标记。',
 				},
 				{
 					key: 'mcp_max_sse_buffer_bytes',

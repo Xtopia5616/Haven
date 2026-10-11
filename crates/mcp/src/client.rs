@@ -43,9 +43,9 @@ pub struct McpClient {
     pub(crate) rate_limiter: Arc<Mutex<RateLimiter>>,
     pub(crate) notification_rx: Arc<Mutex<Option<tokio::sync::mpsc::Receiver<Value>>>>,
     pub(crate) tools_list_changed: Arc<ToolsListChangedSignal>,
-    /// Binary content (image/audio/resource blob) kept in observations (base64
-    /// chars) before being replaced by an `oversized` marker.
-    pub(crate) max_binary_payload: usize,
+    /// Maximum bytes of an image/audio/resource Base64 representation kept in
+    /// observations before being replaced by an `oversized` marker.
+    pub(crate) max_binary_base64_bytes: usize,
     /// Single buffered (incomplete) SSE line/event cap for the HTTP transport.
     pub(crate) max_sse_buffer: usize,
     /// Runtime network boundary. Direct clients fail closed at construction;
@@ -215,7 +215,7 @@ fn windows_spawn_hint(_command: &str, _e: &std::io::Error) -> String {
 impl McpClient {
     pub fn new(
         config: &haven_common::config::McpServerConfig,
-        max_binary_payload: usize,
+        max_binary_base64_bytes: usize,
         max_sse_buffer: usize,
     ) -> Self {
         Self {
@@ -240,7 +240,7 @@ impl McpClient {
             rate_limiter: Arc::new(Mutex::new(RateLimiter::new(10.0))),
             notification_rx: Arc::new(Mutex::new(None)),
             tools_list_changed: Arc::new(ToolsListChangedSignal::new()),
-            max_binary_payload,
+            max_binary_base64_bytes,
             max_sse_buffer,
             network_policy: Arc::new(RwLock::new(NetworkPolicy::Ask)),
         }
@@ -844,7 +844,7 @@ impl McpClient {
         };
 
         let content = result["content"].as_array().cloned().unwrap_or_default();
-        let extracted = extract_mcp_content(&content, self.max_binary_payload);
+        let extracted = extract_mcp_content(&content, self.max_binary_base64_bytes);
 
         let is_error = result
             .get("isError")

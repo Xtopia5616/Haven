@@ -962,3 +962,4 @@
 - [0971：区分媒体配置的连接引用与供应商身份](0971-name-media-provider-connection-references.md)
 - [0972：用 floor 表达响应 token 下界](0972-name-response-token-floor.md)
 - [0973：统一文件工具字节限额与读写上限](0973-normalize-file-tool-byte-limits.md)
+- [0974：用 Base64 字节表达 MCP 二进制内容限额](0974-name-mcp-binary-base64-byte-limit.md)

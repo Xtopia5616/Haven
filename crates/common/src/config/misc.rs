@@ -186,9 +186,9 @@ pub struct ContextLimitsConfig {
     /// the next spawn.
     pub tool_run_terminal_ttl_secs: u64,
     // —— safety boundaries (raising these widens the attack surface) ——
-    /// MCP binary content (image/audio/resource blob) kept in observations
-    /// before being replaced by an `oversized` marker (base64 chars).
-    pub mcp_max_binary_payload_bytes: usize,
+    /// MCP image/audio/resource Base64 representation bytes kept in
+    /// observations before being replaced by an `oversized` marker.
+    pub mcp_max_binary_base64_bytes: usize,
     /// Single buffered (incomplete) SSE line/event cap for MCP HTTP transport.
     pub mcp_max_sse_buffer_bytes: usize,
     /// Max size of a single SKILL.md file; larger files are skipped.
@@ -284,7 +284,7 @@ impl Default for ContextLimitsConfig {
             background_tool_run_tail_max_chars: 2000,
             background_tool_run_output_emit_interval_ms: 1500,
             tool_run_terminal_ttl_secs: 600,
-            mcp_max_binary_payload_bytes: 2 * 1024 * 1024,
+            mcp_max_binary_base64_bytes: 2 * 1024 * 1024,
             mcp_max_sse_buffer_bytes: 2 * 1024 * 1024,
             skills_max_md_bytes: 256 * 1024,
             skills_max_parse_lines: 5_000,

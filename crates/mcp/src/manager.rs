@@ -343,7 +343,7 @@ impl McpManager {
             let limits = self.limits.read().await.clone();
             let client = Arc::new(McpClient::new(
                 &server,
-                limits.mcp_max_binary_payload_bytes,
+                limits.mcp_max_binary_base64_bytes,
                 limits.mcp_max_sse_buffer_bytes,
             ));
             client.set_network_policy(self.network_policy().await).await;
@@ -438,7 +438,7 @@ impl McpManager {
         let limits = self.limits.read().await.clone();
         let client = Arc::new(McpClient::new(
             config,
-            limits.mcp_max_binary_payload_bytes,
+            limits.mcp_max_binary_base64_bytes,
             limits.mcp_max_sse_buffer_bytes,
         ));
         client.set_network_policy(self.network_policy().await).await;

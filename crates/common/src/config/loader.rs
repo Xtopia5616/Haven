@@ -512,7 +512,7 @@ mod tests {
         );
         assert_eq!(cfg.context_limits.file_write_max_bytes, 16 * 1024 * 1024);
         assert_eq!(
-            cfg.context_limits.mcp_max_binary_payload_bytes,
+            cfg.context_limits.mcp_max_binary_base64_bytes,
             2 * 1024 * 1024
         );
         assert_eq!(cfg.context_limits.mcp_max_sse_buffer_bytes, 2 * 1024 * 1024);
@@ -596,6 +596,24 @@ mod tests {
             2 * 1024 * 1024
         );
         assert_eq!(parsed.context_limits.file_write_max_bytes, 4 * 1024 * 1024);
+    }
+
+    #[test]
+    fn mcp_binary_cap_names_the_base64_representation_it_measures() {
+        let old = toml::from_str::<AppConfig>(
+            "[context_limits]\nmcp_max_binary_payload_bytes = 2097152\n",
+        );
+        assert!(
+            old.is_err(),
+            "the ambiguous payload key must not be accepted"
+        );
+
+        let parsed: AppConfig =
+            toml::from_str("[context_limits]\nmcp_max_binary_base64_bytes = 1048576\n").unwrap();
+        assert_eq!(
+            parsed.context_limits.mcp_max_binary_base64_bytes,
+            1024 * 1024
+        );
     }
 
     #[test]
