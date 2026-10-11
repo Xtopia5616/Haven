@@ -348,8 +348,8 @@
 			hint: '并发与内存资源保护。调大可能造成 CPU/内存/进程占用失控。',
 			fields: [
 				{
-					key: 'background_max_tool_runs',
-					label: '后台任务并发上限',
+					key: 'max_running_background_tool_runs',
+					label: '运行中后台任务数量上限',
 					unit: 'count',
 					danger: true,
 					hint: '同时运行的 background shell 任务数。调大 = 子进程失控风险。',
@@ -375,10 +375,11 @@
 					hint: '已完成任务在面板保留多久后被回收（历史仍存数据库）。',
 				},
 				{
-					key: 'scheduled_tool_runs_max',
-					label: '定时任务数量上限',
+					key: 'max_pending_scheduled_tool_runs',
+					label: '等待中定时任务数量上限',
 					unit: 'count',
 					danger: true,
+					hint: '尚未触发的定时任务数量上限；运行完成的历史记录不计入。',
 				},
 				{
 					key: 'scheduled_tool_runs_due_horizon_secs',

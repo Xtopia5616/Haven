@@ -336,6 +336,8 @@ describe('SettingsView diagnostics export', () => {
 				file_byte_read_max_bytes: 8 * 1024 * 1024,
 				file_write_max_bytes: 32 * 1024 * 1024,
 				mcp_max_binary_base64_bytes: 1024 * 1024,
+				max_pending_scheduled_tool_runs: 17,
+				max_running_background_tool_runs: 29,
 			},
 			memory: { fact_inference_enabled: false },
 			security: {
@@ -426,6 +428,8 @@ describe('SettingsView diagnostics export', () => {
 			file_byte_read_max_bytes: 8 * 1024 * 1024,
 			file_write_max_bytes: 32 * 1024 * 1024,
 			mcp_max_binary_base64_bytes: 1024 * 1024,
+			max_pending_scheduled_tool_runs: 17,
+			max_running_background_tool_runs: 29,
 			tool_run_result_context_chars: 4321,
 			fact_extraction_min_interval_secs: 77,
 			turn_deadline_secs: 901,

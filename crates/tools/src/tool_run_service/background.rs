@@ -104,7 +104,7 @@ impl ToolRunService {
         let tail = self.output_port.new_tail().await;
         let emit_interval = *self.tool_run_output_emit_interval.read().await;
         let terminal_ttl = *self.tool_run_terminal_ttl.read().await;
-        let max_tool_runs = *self.max_tool_runs.read().await;
+        let max_running_background_tool_runs = *self.max_running_background_tool_runs.read().await;
         let mut spawn_gate = tokio::select! {
             biased;
             _ = cancel.cancelled() => {
@@ -132,10 +132,10 @@ impl ToolRunService {
                 .values()
                 .filter(|e| matches!(e.state, ToolRunState::Running { .. }))
                 .count();
-            if running >= max_tool_runs {
+            if running >= max_running_background_tool_runs {
                 anyhow::bail!(
                     "too many running background tool_runs (limit {})",
-                    max_tool_runs
+                    max_running_background_tool_runs
                 );
             }
         }

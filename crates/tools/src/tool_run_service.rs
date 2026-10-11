@@ -272,8 +272,8 @@ pub struct ToolRunService {
     background_terminal_retries: RwLock<HashSet<String>>,
     /// At most one quarantine retry task is allowed per malformed ToolRun row.
     quarantine_persistence_retries: RwLock<HashSet<String>>,
-    /// Max concurrent *running* tool_runs (from `context_limits.background_max_tool_runs`).
-    max_tool_runs: RwLock<usize>,
+    /// Maximum background ToolRuns in the running state.
+    max_running_background_tool_runs: RwLock<usize>,
     /// Unique owner of bounded ToolRun-output tail policy for lifecycle and
     /// foreground tool-card previews.
     output_port: ToolRunOutputPort,
@@ -283,8 +283,8 @@ pub struct ToolRunService {
     /// Terminal ToolRuns stay on the board this long, then are reaped (from
     /// `context_limits.tool_run_terminal_ttl_secs`).
     tool_run_terminal_ttl: RwLock<Duration>,
-    /// Max pending timer/dependency tool_runs.
-    max_scheduled_tool_runs: RwLock<usize>,
+    /// Maximum scheduled ToolRuns whose trigger is still waiting.
+    max_pending_scheduled_tool_runs: RwLock<usize>,
     /// Upper bound for absolute timer schedules.
     max_due_horizon_secs: RwLock<i64>,
     /// Optional UI sink for ToolRun lifecycle events. Wired by the desktop
@@ -318,11 +318,11 @@ impl ToolRunService {
             terminal_persistence_retries: RwLock::new(HashSet::new()),
             background_terminal_retries: RwLock::new(HashSet::new()),
             quarantine_persistence_retries: RwLock::new(HashSet::new()),
-            max_tool_runs: RwLock::new(64),
+            max_running_background_tool_runs: RwLock::new(64),
             output_port: ToolRunOutputPort::new(),
             tool_run_output_emit_interval: RwLock::new(Duration::from_millis(1500)),
             tool_run_terminal_ttl: RwLock::new(Duration::from_secs(600)),
-            max_scheduled_tool_runs: RwLock::new(32),
+            max_pending_scheduled_tool_runs: RwLock::new(32),
             max_due_horizon_secs: RwLock::new(365 * 24 * 3600),
             lifecycle_events: ToolRunLifecycle::default(),
             tool_run_store: RwLock::new(None),
@@ -437,7 +437,8 @@ impl ToolRunService {
     /// Replace the unified context limits (background ToolRun concurrency cap,
     /// live-output tail size, output-event cadence, terminal ToolRun TTL).
     pub async fn set_limits(&self, limits: &haven_common::config::ContextLimitsConfig) {
-        *self.max_tool_runs.write().await = limits.background_max_tool_runs;
+        *self.max_running_background_tool_runs.write().await =
+            limits.max_running_background_tool_runs;
         self.output_port
             .set_tail_max_chars(limits.background_tool_run_tail_max_chars)
             .await;
@@ -445,7 +446,8 @@ impl ToolRunService {
             Duration::from_millis(limits.background_tool_run_output_emit_interval_ms);
         *self.tool_run_terminal_ttl.write().await =
             Duration::from_secs(limits.tool_run_terminal_ttl_secs);
-        *self.max_scheduled_tool_runs.write().await = limits.scheduled_tool_runs_max;
+        *self.max_pending_scheduled_tool_runs.write().await =
+            limits.max_pending_scheduled_tool_runs;
         *self.max_due_horizon_secs.write().await = limits.scheduled_tool_runs_due_horizon_secs;
     }
 

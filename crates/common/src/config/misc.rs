@@ -214,12 +214,12 @@ pub struct ContextLimitsConfig {
     pub clipboard_history_max_entries: usize,
     /// Per-entry content truncation for clipboard history dumps.
     pub clipboard_entry_max_chars: usize,
-    /// Max concurrent scheduled_tool_runs.
-    pub scheduled_tool_runs_max: usize,
+    /// Maximum number of scheduled ToolRuns whose trigger is still waiting.
+    pub max_pending_scheduled_tool_runs: usize,
     /// Max scheduled ToolRun due horizon (secs ahead).
     pub scheduled_tool_runs_due_horizon_secs: i64,
-    /// Max concurrent background shell tool_runs.
-    pub background_max_tool_runs: usize,
+    /// Maximum number of background ToolRuns in the running state.
+    pub max_running_background_tool_runs: usize,
     /// Max bytes batched into one `agent:chunk` event.
     pub event_chunk_batch_max_bytes: usize,
     /// Audio ring buffer size in seconds (capture latency).
@@ -297,9 +297,9 @@ impl Default for ContextLimitsConfig {
             clipboard_history_entries: 10,
             clipboard_history_max_entries: 100,
             clipboard_entry_max_chars: 2_000,
-            scheduled_tool_runs_max: 32,
+            max_pending_scheduled_tool_runs: 32,
             scheduled_tool_runs_due_horizon_secs: 365 * 24 * 3600,
-            background_max_tool_runs: 64,
+            max_running_background_tool_runs: 64,
             event_chunk_batch_max_bytes: 8 * 1024,
             input_ring_buffer_secs: 20,
             embedding_chunk_size: 10,

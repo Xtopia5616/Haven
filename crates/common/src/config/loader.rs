@@ -523,8 +523,8 @@ mod tests {
         assert_eq!(cfg.context_limits.network_max_retries, 2);
         assert_eq!(cfg.context_limits.network_max_body_bytes, 1024 * 1024);
         assert_eq!(cfg.context_limits.clipboard_history_max_entries, 100);
-        assert_eq!(cfg.context_limits.scheduled_tool_runs_max, 32);
-        assert_eq!(cfg.context_limits.background_max_tool_runs, 64);
+        assert_eq!(cfg.context_limits.max_pending_scheduled_tool_runs, 32);
+        assert_eq!(cfg.context_limits.max_running_background_tool_runs, 64);
         assert_eq!(cfg.context_limits.event_chunk_batch_max_bytes, 8 * 1024);
         assert_eq!(cfg.context_limits.input_ring_buffer_secs, 20);
         assert_eq!(cfg.context_limits.embedding_chunk_size, 10);
@@ -648,6 +648,24 @@ mod tests {
             old_key.is_err(),
             "the retired character-length key must not be accepted as an alias"
         );
+    }
+
+    #[test]
+    fn tool_run_limits_name_the_states_they_bound() {
+        let parsed = toml::from_str::<AppConfig>(
+            "[context_limits]\nmax_pending_scheduled_tool_runs = 17\nmax_running_background_tool_runs = 29\n",
+        )
+        .unwrap();
+        assert_eq!(parsed.context_limits.max_pending_scheduled_tool_runs, 17);
+        assert_eq!(parsed.context_limits.max_running_background_tool_runs, 29);
+
+        for old_key in ["scheduled_tool_runs_max", "background_max_tool_runs"] {
+            let old_config = format!("[context_limits]\n{old_key} = 12\n");
+            assert!(
+                toml::from_str::<AppConfig>(&old_config).is_err(),
+                "retired ToolRun limit key {old_key} must not be accepted as an alias"
+            );
+        }
     }
 
     #[test]

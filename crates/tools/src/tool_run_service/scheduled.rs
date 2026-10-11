@@ -71,7 +71,7 @@ impl ToolRunService {
         if self.shutting_down.load(Ordering::Acquire) {
             anyhow::bail!("ToolRun service is shutting down");
         }
-        let max_pending = *self.max_scheduled_tool_runs.read().await;
+        let max_pending_scheduled_tool_runs = *self.max_pending_scheduled_tool_runs.read().await;
         let mut tool_runs = self.tool_runs.write().await;
         // Terminal schedules are already durable history and must not consume
         // the in-memory pending budget. Reap them at the next admission just
@@ -84,10 +84,10 @@ impl ToolRunService {
             .filter(|entry| entry.kind == ToolRunKind::Scheduled && entry.state.is_waiting())
             .count();
         drop(tool_runs);
-        if pending >= max_pending {
+        if pending >= max_pending_scheduled_tool_runs {
             anyhow::bail!(
                 "too many pending scheduled tasks (limit {}); cancel some first",
-                max_pending
+                max_pending_scheduled_tool_runs
             );
         }
 
