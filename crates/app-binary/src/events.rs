@@ -792,14 +792,14 @@ mod tests {
     fn tool_run_event_projects_background_status_to_the_stable_wire_shape() {
         let mut payload = ToolRunLifecyclePayload::new_for_test(
             haven_tools::ToolRunKind::Background,
-            "toolrun-1",
+            "toolrun-11111111111111111111111111111111",
             haven_tools::ToolRunLifecycleState::Completed {
                 started_at: "2026-09-23T10:00:00Z".into(),
                 finished_at: "2026-09-23T10:00:01Z".into(),
             },
         );
-        payload.session_id = Some("ses-1".into());
-        payload.source_step_id = Some("step-1".into());
+        payload.session_id = Some("ses-11111111111111111111111111111111".into());
+        payload.source_step_id = Some("step-11111111111111111111111111111111".into());
         payload.output = Some("done".into());
         payload.exit_code = Some(0);
         let event = ToolRunEvent::from_lifecycle_payload(payload);
@@ -807,13 +807,13 @@ mod tests {
         assert_eq!(
             serde_json::to_value(event).unwrap(),
             serde_json::json!({
-                "tool_run_id": "toolrun-1",
+                "tool_run_id": "toolrun-11111111111111111111111111111111",
                 "kind": "background",
                 "status": "completed",
                 "started_at": "2026-09-23T10:00:00Z",
                 "finished_at": "2026-09-23T10:00:01Z",
-                "session_id": "ses-1",
-                "source_step_id": "step-1",
+                "session_id": "ses-11111111111111111111111111111111",
+                "source_step_id": "step-11111111111111111111111111111111",
                 "output": "done",
                 "exit_code": 0,
             })
@@ -824,7 +824,7 @@ mod tests {
     fn tool_run_event_hides_scheduled_execution_details() {
         let mut payload = ToolRunLifecyclePayload::new_for_test(
             haven_tools::ToolRunKind::Scheduled,
-            "toolrun-2",
+            "toolrun-44444444444444444444444444444444",
             haven_tools::ToolRunLifecycleState::Waiting,
         );
         payload.title = Some("Reminder".into());
@@ -833,7 +833,10 @@ mod tests {
         let event = ToolRunEvent::from_lifecycle_payload(payload);
         let wire = serde_json::to_value(event).unwrap();
 
-        assert_eq!(wire["tool_run_id"], "toolrun-2");
+        assert_eq!(
+            wire["tool_run_id"],
+            "toolrun-44444444444444444444444444444444"
+        );
         assert_eq!(wire["kind"], "scheduled");
         assert_eq!(wire["status"], "waiting");
         assert!(wire.get("tool_name").is_none());

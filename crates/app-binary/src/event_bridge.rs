@@ -695,21 +695,21 @@ mod tests {
 
     #[test]
     fn tool_run_output_event_projects_only_the_bounded_preview_fields() {
-        let event = ToolRunLifecycleEvent::Output(haven_tools::ToolRunOutputPayload {
-            tool_run_id: "toolrun-output-preview".into(),
-            source_step_id: Some("step-output-preview".into()),
-            output: "bounded tail snapshot".into(),
-        });
+        let event = ToolRunLifecycleEvent::Output(haven_tools::ToolRunOutputPayload::new_for_test(
+            "toolrun-55555555555555555555555555555555",
+            Some("step-55555555555555555555555555555555".into()),
+            "bounded tail snapshot",
+        ));
         let projection = project_tool_run_event(event);
         assert_eq!(projection.channel, TOOL_RUN_OUTPUT_EVENT);
         let wire = serde_json::to_value(projection.payload).unwrap();
         assert_eq!(
             wire,
             serde_json::json!({
-                "tool_run_id": "toolrun-output-preview",
+                "tool_run_id": "toolrun-55555555555555555555555555555555",
                 "kind": "background",
                 "status": "running",
-                "source_step_id": "step-output-preview",
+                "source_step_id": "step-55555555555555555555555555555555",
                 "output": "bounded tail snapshot",
             })
         );

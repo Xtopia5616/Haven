@@ -135,18 +135,54 @@ impl ToolRunLifecyclePayload {
 
 /// A metadata-only background ToolRun update emitted after session binding.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct ToolRunSessionAttachedPayload {
     pub tool_run_id: String,
     pub session_id: String,
     pub source_step_id: Option<String>,
 }
 
+impl ToolRunSessionAttachedPayload {
+    /// Construct a session-attachment event fixture for App projection tests.
+    #[cfg(feature = "test-support")]
+    #[doc(hidden)]
+    pub fn new_for_test(
+        tool_run_id: impl Into<String>,
+        session_id: impl Into<String>,
+        source_step_id: Option<String>,
+    ) -> Self {
+        Self {
+            tool_run_id: tool_run_id.into(),
+            session_id: session_id.into(),
+            source_step_id,
+        }
+    }
+}
+
 /// Bounded preview event for a running background ToolRun.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct ToolRunOutputPayload {
     pub tool_run_id: String,
     pub source_step_id: Option<String>,
     pub output: String,
+}
+
+impl ToolRunOutputPayload {
+    /// Construct a live-output event fixture for App projection tests.
+    #[cfg(feature = "test-support")]
+    #[doc(hidden)]
+    pub fn new_for_test(
+        tool_run_id: impl Into<String>,
+        source_step_id: Option<String>,
+        output: impl Into<String>,
+    ) -> Self {
+        Self {
+            tool_run_id: tool_run_id.into(),
+            source_step_id,
+            output: output.into(),
+        }
+    }
 }
 
 impl ToolRunLifecycleEvent {

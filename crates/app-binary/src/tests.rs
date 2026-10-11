@@ -509,7 +509,7 @@ fn payload_preserves_session_lifecycle_and_error_wire_shapes() {
 fn tool_run_projection_maps_scheduled_progress_to_the_public_contract() {
     let mut payload = haven_tools::ToolRunLifecyclePayload::new_for_test(
         haven_tools::ToolRunKind::Scheduled,
-        "toolrun-1",
+        "toolrun-11111111111111111111111111111111",
         haven_tools::ToolRunLifecycleState::Running {
             started_at: "2026-10-06T12:00:00Z".into(),
         },
@@ -534,11 +534,11 @@ fn tool_run_projection_maps_scheduled_progress_to_the_public_contract() {
 fn tool_run_projection_maps_session_attachment_as_a_metadata_update() {
     let event = haven_tools::ToolRunLifecycleEvent::Updated(
         haven_tools::ToolRunLifecycleUpdate::SessionAttached(
-            haven_tools::ToolRunSessionAttachedPayload {
-                tool_run_id: "toolrun-attached".into(),
-                session_id: "ses-owner".into(),
-                source_step_id: Some("step-origin".into()),
-            },
+            haven_tools::ToolRunSessionAttachedPayload::new_for_test(
+                "toolrun-22222222222222222222222222222222",
+                "ses-22222222222222222222222222222222",
+                Some("step-22222222222222222222222222222222".into()),
+            ),
         ),
     );
     let projection = project_tool_run_event(event);
@@ -547,27 +547,32 @@ fn tool_run_projection_maps_session_attachment_as_a_metadata_update() {
     assert_eq!(
         serde_json::to_value(projection.payload).unwrap(),
         serde_json::json!({
-            "tool_run_id": "toolrun-attached",
+            "tool_run_id": "toolrun-22222222222222222222222222222222",
             "kind": "background",
-            "session_id": "ses-owner",
-            "source_step_id": "step-origin",
+            "session_id": "ses-22222222222222222222222222222222",
+            "source_step_id": "step-22222222222222222222222222222222",
         })
     );
 }
 
 #[test]
 fn tool_run_output_projection_uses_only_typed_preview_fields() {
-    let event = haven_tools::ToolRunLifecycleEvent::Output(haven_tools::ToolRunOutputPayload {
-        tool_run_id: "toolrun-output".into(),
-        source_step_id: Some("step-output".into()),
-        output: "preview".into(),
-    });
+    let event = haven_tools::ToolRunLifecycleEvent::Output(
+        haven_tools::ToolRunOutputPayload::new_for_test(
+            "toolrun-33333333333333333333333333333333",
+            Some("step-33333333333333333333333333333333".into()),
+            "preview",
+        ),
+    );
     let projection = project_tool_run_event(event);
     assert_eq!(projection.channel, TOOL_RUN_OUTPUT_EVENT);
-    assert_eq!(projection.payload.tool_run_id, "toolrun-output");
+    assert_eq!(
+        projection.payload.tool_run_id,
+        "toolrun-33333333333333333333333333333333"
+    );
     assert_eq!(
         projection.payload.source_step_id.as_deref(),
-        Some("step-output")
+        Some("step-33333333333333333333333333333333")
     );
     assert_eq!(projection.payload.output.as_deref(), Some("preview"));
 }

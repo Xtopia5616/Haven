@@ -941,3 +941,4 @@
 - [0950：校验 Settings 返回的 staged credential reference](0950-validate-staged-credential-references.md)
 - [0951：校验 Settings response 中的 credential references](0951-validate-settings-credential-references.md)
 - [0952：限制 ToolRun lifecycle payload 的跨 crate 构造](0952-restrict-toolrun-lifecycle-payload-construction.md)
+- [0953：限制 ToolRun sidecar event payload 的下游构造](0953-restrict-toolrun-sidecar-payload-construction.md)
