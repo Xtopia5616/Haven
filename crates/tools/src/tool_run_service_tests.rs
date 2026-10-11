@@ -541,7 +541,7 @@ async fn persisted_tool_run_query_requires_a_bound_store() {
     let service = ToolRunService::new();
 
     let error = service
-        .list_persisted_tool_runs(Some("background"))
+        .list_history(ToolRunHistoryQuery::new(None, None, 20))
         .await
         .expect_err("an unbound service must not report empty history");
 
@@ -598,68 +598,125 @@ async fn missing_store_keeps_background_tool_runs_memory_only() {
 }
 
 #[tokio::test]
-async fn persisted_tool_run_query_uses_bound_database_kind_filter_and_order() {
-    let dir = tempfile::TempDir::new().unwrap();
-    let db = Arc::new(Database::open(&dir.path().join("tool_runs.db")).unwrap());
-    db.save_tool_run(
-        "toolrun-00000000000000000000000000000001",
-        None,
-        "echo older",
-        "2026-09-24T10:00:00Z",
-    )
-    .unwrap();
-    db.save_tool_run(
-        "toolrun-00000000000000000000000000000002",
-        None,
-        "echo newer",
-        "2026-09-24T11:00:00Z",
-    )
-    .unwrap();
-    db.save_scheduled_tool_run(
-        "toolrun-00000000000000000000000000000003",
-        "2026-09-25T10:00:00Z",
-        "Scheduled",
-        "body",
-        "tool",
-        None,
-        Some("notify"),
-        None,
-        None,
-        None,
-    )
-    .unwrap();
+async fn history_query_filters_terminal_rows_and_applies_limit_in_store() {
+    let db = Arc::new(Database::open_in_memory().unwrap());
+    let store = ToolRunStore::new(db);
+    let session_id = haven_common::types::new_id("ses");
+    let other_session_id = haven_common::types::new_id("ses");
+    let older_id = haven_common::types::new_id("toolrun");
+    let newer_id = haven_common::types::new_id("toolrun");
+    let outside_id = haven_common::types::new_id("toolrun");
+    let running_id = haven_common::types::new_id("toolrun");
+    let scheduled_id = haven_common::types::new_id("toolrun");
+
+    for (id, owner, started_at, output) in [
+        (&older_id, &session_id, "2026-09-24T10:00:00Z", "older"),
+        (&newer_id, &session_id, "2026-09-24T11:00:00Z", "newer"),
+        (
+            &outside_id,
+            &other_session_id,
+            "2026-09-24T12:00:00Z",
+            "outside",
+        ),
+    ] {
+        store
+            .save_background_tool_run(
+                id.clone(),
+                Some(owner.clone()),
+                format!("echo {output}"),
+                started_at.to_owned(),
+            )
+            .await
+            .unwrap();
+        store
+            .finish_background_tool_run(
+                id.clone(),
+                ToolRunStatus::Completed,
+                Some(output.to_owned()),
+                None,
+                None,
+                None,
+                Some(0),
+                format!("{started_at}-finished"),
+            )
+            .await
+            .unwrap();
+    }
+    store
+        .save_background_tool_run(
+            running_id,
+            Some(session_id.clone()),
+            "echo live".into(),
+            "2026-09-24T13:00:00Z".into(),
+        )
+        .await
+        .unwrap();
+    store
+        .save_scheduled_tool_run(
+            scheduled_id.clone(),
+            "2026-09-25T10:00:00Z".into(),
+            "Scheduled".into(),
+            "body".into(),
+            "tool".into(),
+            Some(session_id.clone()),
+            Some("notify".into()),
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    store
+        .start_scheduled_tool_run(scheduled_id.clone(), "2026-09-25T10:00:00Z".into())
+        .await
+        .unwrap();
+    store
+        .finish_scheduled_tool_run(
+            scheduled_id.clone(),
+            ToolRunStatus::Completed,
+            Some("scheduled result".into()),
+            None,
+            "2026-09-25T10:01:00Z".into(),
+        )
+        .await
+        .unwrap();
+
     let service = ToolRunService::new();
-    service
-        .set_tool_run_store(Some(ToolRunStore::new(db)))
-        .await;
+    service.set_tool_run_store(Some(store)).await;
 
-    let all = service.list_persisted_tool_runs(None).await.unwrap();
+    let all = service
+        .list_history(ToolRunHistoryQuery::new(None, Some(session_id.clone()), 20))
+        .await
+        .unwrap();
     assert_eq!(all.len(), 3);
+    assert_eq!(all[0].kind, ToolRunKind::Scheduled);
+    assert_eq!(all[0].tool_run_id, scheduled_id);
+    assert_eq!(all[1].tool_run_id, newer_id);
+    assert_eq!(all[2].tool_run_id, older_id);
 
-    let background = service
-        .list_persisted_tool_runs(Some("background"))
+    let background_page = service
+        .list_history(ToolRunHistoryQuery::new(
+            Some(ToolRunKind::Background),
+            Some(session_id),
+            1,
+        ))
         .await
         .unwrap();
     assert_eq!(
-        background
+        background_page
             .iter()
-            .map(|row| row.tool_run_id.as_str())
+            .map(|view| view.tool_run_id.as_str())
             .collect::<Vec<_>>(),
-        [
-            "toolrun-00000000000000000000000000000002",
-            "toolrun-00000000000000000000000000000001"
-        ]
+        [newer_id.as_str()]
     );
-
-    let scheduled = service
-        .list_persisted_tool_runs(Some("scheduled"))
-        .await
-        .unwrap();
-    assert_eq!(scheduled.len(), 1);
-    assert_eq!(
-        scheduled[0].tool_run_id,
-        "toolrun-00000000000000000000000000000003"
+    let board_history = service.list_board_history().await.unwrap();
+    assert_eq!(board_history.len(), 3);
+    assert!(
+        board_history
+            .iter()
+            .all(|view| view.kind == ToolRunKind::Background)
     );
+    assert!(board_history.iter().all(|view| view.preview.is_some()));
 }
 
 /// Spawn the two fixture echo ToolRuns (`tool-run-a` / `tool-run-b`) and attach them to

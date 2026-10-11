@@ -534,6 +534,7 @@ ToolRunService 仍是唯一状态 owner；实现按职责放在 `tool_run_servic
 `tool_run_service/scheduled.rs`（timer/dependency admission、fire、终态与恢复）和
 `tool_run_service/views.rs`（task board/status typed projection 与 JSON 序列化）。这些模块只实现同一个
 `ToolRunService`，共享 ToolRun map、terminal arbitration、completion bus 和 restore coordinator，不增加执行器或状态副本。
+App board/history 都通过同一个 `ToolRunView` 投影；Memory 只把原始 `ToolRunRow` 交给 Tools，Tools 负责终态过滤、受限 history 查询和敏感字段裁剪，App 只映射 IPC DTO。history limit 在 SQLite 查询前应用，避免 App 收到持久化字段或为分页装载全部历史（ADR 0920）。
 完整 lifecycle 审计没有发现需要迁移到另一个纯 transition policy 的重复判断：status graph 与 terminal claim 已由
 `ToolRunStatus::can_transition_to` / `tool_run_terminal::can_claim_terminal` 单点定义；background admission 直接进入
 `running`，`waiting → running` 只属于 scheduled fire。提交前后的重复检查跨越 durable CAS 与内存投影/回滚边界，保留为竞态校验。

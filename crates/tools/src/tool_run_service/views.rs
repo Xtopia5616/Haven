@@ -1,11 +1,30 @@
 use super::*;
 use haven_common::ToolRunCompletionPayload;
+use haven_memory::ToolRunRow;
 
-/// Safe, typed projection of one in-memory task board row.
+/// A bounded request for terminal ToolRun history.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ToolRunHistoryQuery {
+    pub(super) kind: Option<ToolRunKind>,
+    pub(super) session_id: Option<String>,
+    pub(super) limit: usize,
+}
+
+impl ToolRunHistoryQuery {
+    pub fn new(kind: Option<ToolRunKind>, session_id: Option<String>, limit: usize) -> Self {
+        Self {
+            kind,
+            session_id,
+            limit,
+        }
+    }
+}
+
+/// Safe, typed projection of a ToolRun for the application task panel.
 ///
 /// This contains only fields used by the task panel. Execution internals such
 /// as shell metadata, log paths, scheduled tool arguments, continuation
-/// prompts, and dependency watch ids deliberately stay in `ToolRunEntry`.
+/// prompts, and dependency watch ids stay inside Tools and Memory.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ToolRunView {
     pub tool_run_id: String,
@@ -25,6 +44,62 @@ pub struct ToolRunView {
     pub error_reason: Option<String>,
     pub exit_code: Option<i32>,
     pub preview: Option<String>,
+}
+
+pub(super) fn project_persisted_tool_run(row: ToolRunRow) -> anyhow::Result<ToolRunView> {
+    let kind = match row.kind.as_str() {
+        "background" => ToolRunKind::Background,
+        "scheduled" => ToolRunKind::Scheduled,
+        other => anyhow::bail!("unknown persisted ToolRun kind '{other}'"),
+    };
+    let mode = if kind == ToolRunKind::Scheduled {
+        row.mode.as_deref().and_then(ScheduleMode::parse)
+    } else {
+        None
+    };
+    Ok(ToolRunView {
+        tool_run_id: row.tool_run_id,
+        kind,
+        status: row.status,
+        session_id: row.session_id,
+        source_step_id: row.source_step_id,
+        started_at: row.started_at,
+        finished_at: row.finished_at,
+        due_at: row.due_at,
+        title: (!row.title.is_empty()).then_some(row.title),
+        body: row.body,
+        mode,
+        command: row.command,
+        output: row.output,
+        error: row.error,
+        error_reason: row.error_reason,
+        exit_code: row.exit_code,
+        preview: None,
+    })
+}
+
+pub(super) fn project_persisted_background_board_row(
+    row: ToolRunRow,
+) -> anyhow::Result<ToolRunView> {
+    let mut view = project_persisted_tool_run(row)?;
+    anyhow::ensure!(
+        view.kind == ToolRunKind::Background,
+        "board history query returned a non-background ToolRun"
+    );
+    view.due_at = None;
+    view.title = None;
+    view.body = None;
+    view.mode = None;
+    view.preview = Some(
+        view.output
+            .as_deref()
+            .or(view.error.as_deref())
+            .unwrap_or_default()
+            .chars()
+            .take(200)
+            .collect(),
+    );
+    Ok(view)
 }
 
 /// Typed model-facing projection of a ToolRun status.
@@ -659,6 +734,67 @@ pub(super) fn project_background_completion_payload(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn persisted_row(kind: &str) -> ToolRunRow {
+        ToolRunRow {
+            tool_run_id: "toolrun-00000000000000000000000000000001".into(),
+            kind: kind.into(),
+            due_at: Some("2026-09-27T10:00:00Z".into()),
+            title: "Reminder".into(),
+            body: Some("reminder body".into()),
+            mode: Some("continue".into()),
+            session_id: Some("ses-00000000000000000000000000000001".into()),
+            source_step_id: Some("step-00000000000000000000000000000001".into()),
+            tool_name: Some("notify".into()),
+            tool_args: Some(r#"{"token":"internal-args"}"#.into()),
+            prompt: Some("internal prompt".into()),
+            status: ToolRunStatus::Completed,
+            command: Some("echo safe".into()),
+            output: Some("result".into()),
+            error: None,
+            error_reason: None,
+            log_path: Some("C:/private/tool-run.log".into()),
+            exit_code: Some(0),
+            started_at: Some("started".into()),
+            finished_at: Some("finished".into()),
+            created_at: "created".into(),
+        }
+    }
+
+    #[test]
+    fn persisted_history_projection_is_typed_and_hides_execution_internals() {
+        let view = project_persisted_tool_run(persisted_row("scheduled")).unwrap();
+
+        assert_eq!(view.kind, ToolRunKind::Scheduled);
+        assert_eq!(view.mode, Some(ScheduleMode::Continue));
+        assert_eq!(view.title.as_deref(), Some("Reminder"));
+        assert_eq!(view.output.as_deref(), Some("result"));
+        assert_eq!(view.preview, None);
+    }
+
+    #[test]
+    fn background_board_history_omits_schedule_fields_and_caps_preview() {
+        let mut row = persisted_row("background");
+        row.title.clear();
+        row.output = Some("x".repeat(201));
+
+        let view = project_persisted_background_board_row(row).unwrap();
+
+        assert_eq!(view.kind, ToolRunKind::Background);
+        assert_eq!(view.title, None);
+        assert_eq!(view.body, None);
+        assert_eq!(view.mode, None);
+        assert_eq!(view.preview.as_deref().map(str::len), Some(200));
+    }
+
+    #[test]
+    fn persisted_history_rejects_unknown_kind_and_keeps_requested_limit() {
+        let error = project_persisted_tool_run(persisted_row("future_kind")).unwrap_err();
+        assert!(error.to_string().contains("unknown persisted ToolRun kind"));
+
+        let query = ToolRunHistoryQuery::new(None, None, usize::MAX);
+        assert_eq!(query.limit, usize::MAX);
+    }
 
     #[test]
     fn completion_payload_keeps_terminal_status_fields_and_background_source() {

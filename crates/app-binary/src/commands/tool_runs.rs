@@ -1,9 +1,7 @@
 use crate::app_state::AppState;
 use crate::commands::{log_err, validate_command_id};
 use crate::events::{ToolRunEvent, ToolRunKindDto};
-use haven_common::ToolRunStatus;
-use haven_memory::ToolRunRow;
-use haven_tools::ScheduleMode;
+use haven_tools::{ToolRunHistoryQuery, ToolRunKind};
 use std::sync::Arc;
 use tauri::State;
 
@@ -31,27 +29,14 @@ pub async fn list_tool_runs(state: State<'_, Arc<AppState>>) -> Result<Vec<ToolR
         .runtime
         .services
         .tool_runs
-        .list_persisted_tool_runs(Some("background"))
+        .list_board_history()
         .await
         .map_err(|e| log_err("list_tool_runs history", e))?;
     for tool_run in history {
         if live_ids.contains(&tool_run.tool_run_id) {
             continue;
         }
-        let preview = tool_run
-            .output
-            .as_deref()
-            .or(tool_run.error.as_deref())
-            .unwrap_or("")
-            .chars()
-            .take(200)
-            .collect::<String>();
-        rows.push(tool_run_event_from_row(
-            tool_run,
-            ToolRunKindDto::Background,
-            PersistedToolRunProjection::BoardHistory,
-            Some(preview),
-        ));
+        rows.push(ToolRunEvent::from(tool_run));
     }
     Ok(rows)
 }
@@ -82,11 +67,9 @@ pub async fn cancel_tool_run(
     Ok(cancelled)
 }
 
-/// Completed-scheduled ToolRun history (and terminal ToolRun history past the in-memory TTL)
-/// from the persisted `tool_runs` table, newest first, for the ToolRun panel's
-/// history tab. Rows carry `kind` plus the full stored payload; scheduled ToolRun rows
-/// are limited to `limit` entries (default 50) so the panel cannot grow
-/// unboundedly.
+/// Terminal ToolRun history (including scheduled history and background rows
+/// past the in-memory TTL), newest first, for the ToolRun panel's history tab.
+/// Tools owns the terminal filter, safe projection, and maximum page size.
 #[tauri::command]
 pub async fn list_tool_run_history(
     state: State<'_, Arc<AppState>>,
@@ -98,192 +81,19 @@ pub async fn list_tool_run_history(
         validate_command_id(session_id, "session_id", "ses")
             .map_err(|error| log_err("list_tool_run_history", error))?;
     }
-    let limit = limit.unwrap_or(50).min(200);
-    let rows = match session_id.as_deref() {
-        Some(session_id) => {
-            state
-                .runtime
-                .services
-                .tool_runs
-                .list_persisted_tool_runs_for_session(session_id, kind.map(ToolRunKindDto::as_str))
-                .await
-        }
-        None => {
-            state
-                .runtime
-                .services
-                .tool_runs
-                .list_persisted_tool_runs(kind.map(ToolRunKindDto::as_str))
-                .await
-        }
-    }
-    .map_err(|e| log_err("list_tool_run_history", e))?;
-    let mut out = Vec::new();
-    // Waiting scheduled ToolRuns are already exposed by `list_tool_runs`; history
-    // contains only terminal rows. Keep this filter at the app boundary so
-    // the repository can remain a neutral persistence query.
-    for a in rows
-        .into_iter()
-        .filter(|row| is_history_row(row.status))
-        .take(limit)
-    {
-        let kind = match a.kind.as_str() {
-            "background" => ToolRunKindDto::Background,
-            "scheduled" => ToolRunKindDto::Scheduled,
-            other => {
-                return Err(log_err(
-                    "list_tool_run_history",
-                    format!("unknown ToolRun kind '{other}'"),
-                ));
-            }
-        };
-        out.push(tool_run_event_from_row(
-            a,
-            kind,
-            PersistedToolRunProjection::History,
-            None,
-        ));
-    }
-    Ok(out)
-}
-
-#[derive(Clone, Copy)]
-enum PersistedToolRunProjection {
-    BoardHistory,
-    History,
-}
-
-fn tool_run_event_from_row(
-    row: ToolRunRow,
-    kind: ToolRunKindDto,
-    projection: PersistedToolRunProjection,
-    preview: Option<String>,
-) -> ToolRunEvent {
-    let (due_at, title, body, mode) = match projection {
-        PersistedToolRunProjection::BoardHistory => (None, None, None, None),
-        PersistedToolRunProjection::History => (
-            row.due_at,
-            (!row.title.is_empty()).then_some(row.title),
-            row.body,
-            row.mode.as_deref().and_then(ScheduleMode::parse),
-        ),
-    };
-    ToolRunEvent {
-        tool_run_id: row.tool_run_id,
-        kind,
-        status: Some(row.status),
-        session_id: row.session_id,
-        source_step_id: row.source_step_id,
-        started_at: row.started_at,
-        finished_at: row.finished_at,
-        due_at,
-        title,
-        body,
-        mode,
-        command: row.command,
-        output: row.output,
-        error: row.error,
-        error_reason: row.error_reason,
-        exit_code: row.exit_code,
-        preview,
-    }
-}
-
-fn is_history_row(status: ToolRunStatus) -> bool {
-    status.is_terminal()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{is_history_row, tool_run_event_from_row};
-    use haven_common::ToolRunStatus;
-    use haven_memory::ToolRunRow;
-
-    #[test]
-    fn pending_scheduled_rows_are_not_history() {
-        assert!(!is_history_row(ToolRunStatus::Waiting));
-        assert!(is_history_row(ToolRunStatus::Completed));
-    }
-
-    #[test]
-    fn persisted_tool_run_projection_uses_one_safe_row_mapper() {
-        let row = ToolRunRow {
-            tool_run_id: "toolrun-history".into(),
-            kind: "scheduled".into(),
-            due_at: Some("2026-09-27T10:00:00Z".into()),
-            title: String::new(),
-            body: Some("reminder body".into()),
-            mode: Some("continue".into()),
-            session_id: Some("ses-owner".into()),
-            source_step_id: None,
-            tool_name: Some("notify".into()),
-            tool_args: Some(r#"{"token":"internal-args"}"#.into()),
-            prompt: Some("internal prompt".into()),
-            status: ToolRunStatus::Completed,
-            command: None,
-            output: Some("result".into()),
-            error: None,
-            error_reason: None,
-            log_path: Some("C:/private/tool-run.log".into()),
-            exit_code: Some(0),
-            started_at: Some("started".into()),
-            finished_at: Some("finished".into()),
-            created_at: "created".into(),
-        };
-        let event = tool_run_event_from_row(
-            row.clone(),
-            crate::events::ToolRunKindDto::Scheduled,
-            super::PersistedToolRunProjection::BoardHistory,
-            Some("result".into()),
-        );
-
-        assert_eq!(event.tool_run_id, "toolrun-history");
-        assert_eq!(event.kind, crate::events::ToolRunKindDto::Scheduled);
-        assert_eq!(event.status, Some(ToolRunStatus::Completed));
-        assert_eq!(event.due_at, None);
-        assert_eq!(event.title, None);
-        assert_eq!(event.body, None);
-        assert_eq!(event.mode, None);
-        assert_eq!(event.preview.as_deref(), Some("result"));
-        let serialized = serde_json::to_string(&event).unwrap();
-        for internal_value in ["internal-args", "internal prompt", "private/tool-run.log"] {
-            assert!(!serialized.contains(internal_value));
-        }
-
-        let mut invalid_mode_row = row.clone();
-        let event = tool_run_event_from_row(
-            row,
-            crate::events::ToolRunKindDto::Scheduled,
-            super::PersistedToolRunProjection::History,
-            None,
-        );
-        assert_eq!(event.tool_run_id, "toolrun-history");
-        assert_eq!(event.kind, crate::events::ToolRunKindDto::Scheduled);
-        assert_eq!(event.status, Some(ToolRunStatus::Completed));
-        assert_eq!(event.due_at.as_deref(), Some("2026-09-27T10:00:00Z"));
-        assert_eq!(event.title, None);
-        assert_eq!(event.mode, Some(haven_tools::ScheduleMode::Continue));
-        assert_eq!(event.preview, None);
-        let serialized = serde_json::to_string(&event).unwrap();
-        for internal_value in ["internal-args", "internal prompt", "private/tool-run.log"] {
-            assert!(!serialized.contains(internal_value));
-        }
-
-        invalid_mode_row.mode = Some("future_mode".into());
-        let event = tool_run_event_from_row(
-            invalid_mode_row,
-            crate::events::ToolRunKindDto::Scheduled,
-            super::PersistedToolRunProjection::History,
-            None,
-        );
-        assert_eq!(event.mode, None);
-    }
-
-    #[test]
-    fn background_rows_are_history_by_terminal_status() {
-        assert!(is_history_row(ToolRunStatus::Failed));
-        assert!(is_history_row(ToolRunStatus::Cancelled));
-    }
+    let limit = limit.unwrap_or(50);
+    let kind = kind.map(|kind| match kind {
+        ToolRunKindDto::Background => ToolRunKind::Background,
+        ToolRunKindDto::Scheduled => ToolRunKind::Scheduled,
+    });
+    state
+        .runtime
+        .services
+        .tool_runs
+        .list_history(ToolRunHistoryQuery::new(kind, session_id, limit))
+        .await
+        .map(|rows| rows.into_iter().map(ToolRunEvent::from).collect())
+        .map_err(|e| log_err("list_tool_run_history", e))
 }
 
 /// Remove a persisted ToolRun row (terminal scheduled ToolRun or terminal ToolRun history)

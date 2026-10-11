@@ -908,3 +908,4 @@
 - [0917：收回 Agent 未消费的运行时 API 并统一生产 run 入口](0917-restrict-agent-runtime-to-consumed-contracts.md)
 - [0918：统一 MemoryTool Recall capability 并移除 fact-store fallback](0918-unify-memory-tool-recall-capability.md)
 - [0919：由 Memory 决定单值谓词的事实更新策略](0919-own-single-valued-fact-policy-in-memory.md)
+- [0920：在 Tools 内投影与分页 ToolRun history](0920-project-tool-run-history-inside-tools.md)

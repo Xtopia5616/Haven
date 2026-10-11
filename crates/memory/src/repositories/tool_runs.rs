@@ -695,6 +695,36 @@ impl Database {
         Ok(out)
     }
 
+    /// Read terminal ToolRun history for application projections. Filtering and
+    /// limiting stay beside the persisted status/query semantics so callers do
+    /// not load live work or an unbounded history just to build a page.
+    pub(crate) fn list_terminal_tool_runs(
+        &self,
+        kind: Option<&str>,
+        session_id: Option<&str>,
+        limit: Option<usize>,
+    ) -> anyhow::Result<Vec<ToolRunRow>> {
+        let limit = limit
+            .map(i64::try_from)
+            .transpose()
+            .map_err(|_| anyhow::anyhow!("ToolRun history limit exceeds SQLite range"))?;
+        let conn = self.conn();
+        let mut stmt = conn.prepare(&format!(
+            "SELECT {TOOL_RUN_COLUMNS} FROM tool_runs
+             WHERE status IN ('completed', 'failed', 'cancelled')
+               AND (?1 IS NULL OR kind = ?1)
+               AND (?2 IS NULL OR session_id = ?2)
+             ORDER BY started_at DESC, created_at DESC
+             LIMIT COALESCE(?3, -1)"
+        ))?;
+        let rows = stmt.query_map((kind, session_id, limit), row_to_tool_run)?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row?);
+        }
+        Ok(out)
+    }
+
     /// One persisted ToolRun by `tool_run_id` (either kind).
     pub fn get_tool_run(&self, tool_run_id: &str) -> anyhow::Result<Option<ToolRunRow>> {
         let conn = self.conn();

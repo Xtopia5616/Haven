@@ -30,7 +30,7 @@ use crate::{
     ToolRunLifecycle, ToolRunLifecycleEvent, ToolRunLifecyclePayload, ToolRunLifecycleState,
     ToolRunLifecycleUpdate, ToolRunOutputPayload, ToolRunSessionAttachedPayload,
 };
-use haven_memory::{ToolRunCompletionOutboxRow, ToolRunRow, ToolRunStore};
+use haven_memory::{ToolRunCompletionOutboxRow, ToolRunStore};
 
 use crate::output::{append_windows_diagnostics, sanitize_shell_output, summarize_error};
 use crate::process::{kill_process_tree, read_stream_text_capped};
@@ -45,12 +45,13 @@ pub(crate) use background::BackgroundShellRequest;
 #[cfg(test)]
 use scheduled::tool_run_finished_prompt;
 pub use views::{
-    ScheduledToolRunView, ToolRunListView, ToolRunStateView, ToolRunStatusView, ToolRunView,
+    ScheduledToolRunView, ToolRunHistoryQuery, ToolRunListView, ToolRunStateView,
+    ToolRunStatusView, ToolRunView,
 };
 use views::{
     list_view_started_at, project_background_completion_payload, project_board_tool_run,
-    project_completion_payload, scheduled_lifecycle_payload, scheduled_tool_run_view,
-    tool_run_lifecycle_state,
+    project_completion_payload, project_persisted_background_board_row, project_persisted_tool_run,
+    scheduled_lifecycle_payload, scheduled_tool_run_view, tool_run_lifecycle_state,
 };
 
 /// Optional typed sink for the closed ToolRun lifecycle event contract.
@@ -60,6 +61,15 @@ pub use crate::tool_run_lifecycle::ToolRunLifecycleEventSink;
 pub enum ToolRunKind {
     Background,
     Scheduled,
+}
+
+impl ToolRunKind {
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::Background => "background",
+            Self::Scheduled => "scheduled",
+        }
+    }
 }
 
 /// Counts produced by restoring process-local ToolRun state after startup.
@@ -443,29 +453,9 @@ impl ToolRunService {
         *self.tool_run_store.write().await = tool_run_store;
     }
 
-    /// List persisted ToolRun rows through the configured ToolRun store. Callers
-    /// must treat a missing binding as a configuration error rather than empty
-    /// history.
-    pub async fn list_persisted_tool_runs(
-        &self,
-        kind: Option<&str>,
-    ) -> anyhow::Result<Vec<ToolRunRow>> {
-        let store = self
-            .tool_run_store
-            .read()
-            .await
-            .clone()
-            .ok_or_else(|| anyhow::anyhow!("ToolRunService ToolRun store is not configured"))?;
-        store.list_tool_runs(kind.map(str::to_owned)).await
-    }
-
-    /// List persisted ToolRuns owned by one session for its timeline
-    /// timeline. This remains a read-only projection through the ToolRun store.
-    pub async fn list_persisted_tool_runs_for_session(
-        &self,
-        session_id: &str,
-        kind: Option<&str>,
-    ) -> anyhow::Result<Vec<ToolRunRow>> {
+    /// Load terminal background history for board hydration and project it into
+    /// the safe application-facing ToolRun view.
+    pub async fn list_board_history(&self) -> anyhow::Result<Vec<ToolRunView>> {
         let store = self
             .tool_run_store
             .read()
@@ -473,8 +463,35 @@ impl ToolRunService {
             .clone()
             .ok_or_else(|| anyhow::anyhow!("ToolRunService ToolRun store is not configured"))?;
         store
-            .list_tool_runs_for_session(session_id.to_string(), kind.map(str::to_owned))
+            .list_all_terminal_background_tool_runs()
+            .await?
+            .into_iter()
+            .map(project_persisted_background_board_row)
+            .collect()
+    }
+
+    /// Query terminal history through the configured store and return only the
+    /// safe fields required by App's IPC projection. The query owns its page cap.
+    pub async fn list_history(
+        &self,
+        query: ToolRunHistoryQuery,
+    ) -> anyhow::Result<Vec<ToolRunView>> {
+        let store = self
+            .tool_run_store
+            .read()
             .await
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("ToolRunService ToolRun store is not configured"))?;
+        store
+            .list_terminal_tool_runs(
+                query.kind.map(ToolRunKind::as_str).map(str::to_owned),
+                query.session_id,
+                query.limit,
+            )
+            .await?
+            .into_iter()
+            .map(project_persisted_tool_run)
+            .collect()
     }
 
     /// Try to move a malformed persisted waiting row to terminal history.

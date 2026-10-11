@@ -148,21 +148,15 @@ impl ToolRunManagementCapability for SharedToolRunManagementCapability {
         self.service.board().await
     }
 
-    async fn list_persisted_tool_runs(
-        &self,
-        kind: Option<&str>,
-    ) -> anyhow::Result<Vec<haven_memory::ToolRunRow>> {
-        self.service.list_persisted_tool_runs(kind).await
+    async fn list_board_history(&self) -> anyhow::Result<Vec<ToolRunView>> {
+        self.service.list_board_history().await
     }
 
-    async fn list_persisted_tool_runs_for_session(
+    async fn list_history(
         &self,
-        session_id: &str,
-        kind: Option<&str>,
-    ) -> anyhow::Result<Vec<haven_memory::ToolRunRow>> {
-        self.service
-            .list_persisted_tool_runs_for_session(session_id, kind)
-            .await
+        query: crate::ToolRunHistoryQuery,
+    ) -> anyhow::Result<Vec<ToolRunView>> {
+        self.service.list_history(query).await
     }
 
     async fn cancel_for_kind(&self, tool_run_id: &str, kind: &str) -> bool {

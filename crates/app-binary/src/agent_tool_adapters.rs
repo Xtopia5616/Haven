@@ -10,13 +10,12 @@ use haven_agent::{
     ToolExecutionPort, ToolObservationPort, ToolRunCompletionReceiverPort,
 };
 use haven_common::types::{MessageAttachment, RiskLevel};
-use haven_memory::ToolRunRow;
 use haven_tools::{
     AuthorizationDecision, AuthorizationPort, AuthorizationRequest, ConfirmationReceipt,
     LiveOutputSinkPort, Skill, SkillExecutionPort, ToolCatalogSnapshot, ToolRegistration,
     ToolResult, ToolRunAgentCapability, ToolRunCompletion, ToolRunCompletionCapability,
-    ToolRunLifecycleEventSink, ToolRunListView, ToolRunManagementCapability, ToolRunRestoreSummary,
-    ToolRunView, ToolsFacade,
+    ToolRunHistoryQuery, ToolRunLifecycleEventSink, ToolRunListView, ToolRunManagementCapability,
+    ToolRunRestoreSummary, ToolRunView, ToolsFacade,
 };
 #[cfg(test)]
 use haven_tools::{ScheduledToolRunSpec, ToolRunTestSupportPort};
@@ -57,14 +56,9 @@ pub(crate) trait AppToolRunPort: Send + Sync {
 
     async fn board(&self) -> Vec<ToolRunView>;
 
-    async fn list_persisted_tool_runs(&self, kind: Option<&str>)
-    -> anyhow::Result<Vec<ToolRunRow>>;
+    async fn list_board_history(&self) -> anyhow::Result<Vec<ToolRunView>>;
 
-    async fn list_persisted_tool_runs_for_session(
-        &self,
-        session_id: &str,
-        kind: Option<&str>,
-    ) -> anyhow::Result<Vec<ToolRunRow>>;
+    async fn list_history(&self, query: ToolRunHistoryQuery) -> anyhow::Result<Vec<ToolRunView>>;
 
     async fn cancel_for_kind(&self, tool_run_id: &str, kind: &str) -> bool;
 
@@ -105,21 +99,12 @@ impl AppToolRunPort for ToolsFacadeAppToolRunAdapter {
         self.tool_runs.board().await
     }
 
-    async fn list_persisted_tool_runs(
-        &self,
-        kind: Option<&str>,
-    ) -> anyhow::Result<Vec<ToolRunRow>> {
-        self.tool_runs.list_persisted_tool_runs(kind).await
+    async fn list_board_history(&self) -> anyhow::Result<Vec<ToolRunView>> {
+        self.tool_runs.list_board_history().await
     }
 
-    async fn list_persisted_tool_runs_for_session(
-        &self,
-        session_id: &str,
-        kind: Option<&str>,
-    ) -> anyhow::Result<Vec<ToolRunRow>> {
-        self.tool_runs
-            .list_persisted_tool_runs_for_session(session_id, kind)
-            .await
+    async fn list_history(&self, query: ToolRunHistoryQuery) -> anyhow::Result<Vec<ToolRunView>> {
+        self.tool_runs.list_history(query).await
     }
 
     async fn cancel_for_kind(&self, tool_run_id: &str, kind: &str) -> bool {

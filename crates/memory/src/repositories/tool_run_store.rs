@@ -12,6 +12,8 @@ use crate::repositories::tool_run_completion_outbox::ToolRunCompletionOutboxRow;
 use crate::repositories::tool_runs::{ScheduledToolRunRow, ToolRunDependencyRow, ToolRunRow};
 use haven_common::{ToolRunCompletionPayload, ToolRunStatus};
 
+const MAX_TOOL_RUN_HISTORY_PAGE_SIZE: usize = 200;
+
 #[derive(Clone)]
 pub struct ToolRunStore {
     db: Arc<Database>,
@@ -78,6 +80,31 @@ impl ToolRunStore {
             .run_blocking(move |db| {
                 db.list_tool_runs_for_session(kind.as_deref(), Some(session_id.as_str()))
             })
+            .await
+    }
+
+    /// Read terminal ToolRun history, optionally filtered by kind and session.
+    /// A missing limit is reserved for board hydration; user-requested history
+    /// pages should always provide the bounded value chosen by their owner.
+    pub async fn list_terminal_tool_runs(
+        &self,
+        kind: Option<String>,
+        session_id: Option<String>,
+        limit: usize,
+    ) -> anyhow::Result<Vec<ToolRunRow>> {
+        let limit = limit.min(MAX_TOOL_RUN_HISTORY_PAGE_SIZE);
+        self.db
+            .run_blocking(move |db| {
+                db.list_terminal_tool_runs(kind.as_deref(), session_id.as_deref(), Some(limit))
+            })
+            .await
+    }
+
+    /// Read all terminal background ToolRuns for board hydration. This explicit
+    /// query is intentionally separate from bounded history pages.
+    pub async fn list_all_terminal_background_tool_runs(&self) -> anyhow::Result<Vec<ToolRunRow>> {
+        self.db
+            .run_blocking(|db| db.list_terminal_tool_runs(Some("background"), None, None))
             .await
     }
 
@@ -430,6 +457,35 @@ mod tests {
 
         let row = store.get_tool_run(tool_run_id).await.unwrap().unwrap();
         assert_eq!(row.source_step_id.as_deref(), Some(source_step_id.as_str()));
+    }
+
+    #[tokio::test]
+    async fn terminal_history_page_size_is_bounded_by_memory_store() {
+        let (db, store) = store();
+        for index in 0..(MAX_TOOL_RUN_HISTORY_PAGE_SIZE + 5) {
+            let tool_run_id = new_id("toolrun");
+            let started_at = format!("2026-09-24T10:{:02}:00Z", index % 60);
+            db.save_tool_run(&tool_run_id, None, "echo history", &started_at)
+                .unwrap();
+            db.finish_tool_run(
+                &tool_run_id,
+                ToolRunStatus::Completed,
+                Some("done"),
+                None,
+                None,
+                None,
+                Some(0),
+                "2026-09-24T11:00:00Z",
+            )
+            .unwrap();
+        }
+
+        let rows = store
+            .list_terminal_tool_runs(None, None, usize::MAX)
+            .await
+            .unwrap();
+
+        assert_eq!(rows.len(), MAX_TOOL_RUN_HISTORY_PAGE_SIZE);
     }
 
     #[tokio::test]

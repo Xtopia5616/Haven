@@ -270,16 +270,9 @@ pub trait ToolRunManagementCapability: Send + Sync {
 
     async fn board(&self) -> Vec<ToolRunView>;
 
-    async fn list_persisted_tool_runs(
-        &self,
-        kind: Option<&str>,
-    ) -> anyhow::Result<Vec<haven_memory::ToolRunRow>>;
+    async fn list_board_history(&self) -> anyhow::Result<Vec<ToolRunView>>;
 
-    async fn list_persisted_tool_runs_for_session(
-        &self,
-        session_id: &str,
-        kind: Option<&str>,
-    ) -> anyhow::Result<Vec<haven_memory::ToolRunRow>>;
+    async fn list_history(&self, query: ToolRunHistoryQuery) -> anyhow::Result<Vec<ToolRunView>>;
 
     async fn cancel_for_kind(&self, tool_run_id: &str, kind: &str) -> bool;
 

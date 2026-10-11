@@ -199,8 +199,8 @@ pub use tool_run_service::{
     ToolRunLifecycleEventSink,
 };
 pub use tool_run_service::{
-    ScheduledToolRunView, ToolRunKind, ToolRunListView, ToolRunRestoreSummary, ToolRunStateView,
-    ToolRunStatusView, ToolRunView,
+    ScheduledToolRunView, ToolRunHistoryQuery, ToolRunKind, ToolRunListView, ToolRunRestoreSummary,
+    ToolRunStateView, ToolRunStatusView, ToolRunView,
 };
 pub(crate) use tool_run_service::{ToolRunCompletionReceiver, ToolRunService};
 pub use tool_run_types::{ScheduleMode, ScheduledToolRunFired, ScheduledToolRunSpec};
