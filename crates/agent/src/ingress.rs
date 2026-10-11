@@ -33,11 +33,11 @@ impl AgentLayer {
         voice: bool,
     ) -> anyhow::Result<ProcessResult> {
         tracing::debug!(
-            "process_input: text={:?} active_session_id={:?} attachments={} voice={}",
-            transcript,
-            active_session_id,
-            attachments.len(),
-            voice
+            active_session_id = ?active_session_id,
+            transcript_bytes = transcript.len(),
+            attachments = attachments.len(),
+            voice,
+            "process_input"
         );
 
         // For an existing session, keep the lifecycle gate for the whole

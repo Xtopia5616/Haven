@@ -278,11 +278,10 @@ pub(crate) async fn aggregate_stream_with_retry_before_output(
             return Err(err);
         };
         tracing::debug!(
-            "stream attempt {}/{} failed before output, retrying after {:?}: {}",
+            "stream attempt {}/{} failed before output, retrying after {:?}",
             completed_attempts,
             retry.max_retries.saturating_add(1),
-            delay,
-            err
+            delay
         );
         tokio::select! {
             _ = tokio::time::sleep(delay) => {}

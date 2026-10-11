@@ -587,9 +587,9 @@ impl<'db> FactGraph<'db> {
                 && write.confidence < new_fact_confidence_floor
             {
                 tracing::debug!(
-                    "fact inference: dropping low-confidence fact '{}' (confidence {})",
-                    write.predicate,
-                    write.confidence
+                    predicate_bytes = write.predicate.len(),
+                    confidence = write.confidence,
+                    "fact inference: dropping low-confidence fact"
                 );
                 continue;
             }

@@ -455,8 +455,8 @@ fn scan_skill_directory(
     for entry in entries {
         let entry = match entry {
             Ok(e) => e,
-            Err(e) => {
-                tracing::warn!("skipping unreadable skill entry: {e}");
+            Err(_) => {
+                tracing::warn!("skipping unreadable skill entry");
                 continue;
             }
         };
@@ -465,19 +465,13 @@ fn scan_skill_directory(
         // Canonicalise to catch symlink/junction traversal (M4-01 review).
         let p_canon = match p.canonicalize() {
             Ok(c) => c,
-            Err(e) => {
-                tracing::warn!(
-                    "skipping skill entry {} (cannot canonicalise: {e})",
-                    p.display()
-                );
+            Err(_) => {
+                tracing::warn!("skipping skill entry that cannot be canonicalised");
                 continue;
             }
         };
         if !p_canon.starts_with(&root_canon) {
-            tracing::warn!(
-                "skipping skill entry outside skills root: {}",
-                p_canon.display()
-            );
+            tracing::warn!("skipping skill entry outside skills root");
             continue;
         }
 
@@ -495,11 +489,8 @@ fn scan_skill_directory(
         let skill_md = p.join("SKILL.md");
         let skill_md = match skill_md.canonicalize() {
             Ok(canonical) if canonical.starts_with(&p_canon) => canonical,
-            Ok(canonical) => {
-                tracing::warn!(
-                    "skipping SKILL.md outside skill root: {}",
-                    canonical.display()
-                );
+            Ok(_) => {
+                tracing::warn!("skipping SKILL.md outside skill root");
                 continue;
             }
             Err(_) => continue,

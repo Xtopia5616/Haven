@@ -567,12 +567,7 @@ pub(super) async fn execute_tool_call(request: ToolCallRequest) -> CompletedTool
             )
         }
         Err(error) => {
-            tracing::debug!(
-                "tool '{}' at step {} failed: {}",
-                tool_name,
-                step_num,
-                error
-            );
+            tracing::debug!("tool '{}' at step {} failed", tool_name, step_num);
             let metadata = error
                 .downcast_ref::<haven_tools::StructuredToolError>()
                 .map(haven_tools::StructuredToolError::metadata);

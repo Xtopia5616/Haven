@@ -179,9 +179,8 @@ impl VenvManager {
 
         if !python.exists() {
             tracing::info!(
-                "Creating venv for skill '{}' at {}",
-                skill_name,
-                venv.display()
+                skill = %skill_name,
+                "creating venv for skill"
             );
             tokio::fs::create_dir_all(&venv).await?;
             let output = run_contained_output(

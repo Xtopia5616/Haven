@@ -295,14 +295,16 @@ pub(crate) async fn aggregate_stream_cancellable_shared_with_guidance(
                                     match match_result.mode {
                                         StreamRuleMode::Warn => {
                                             tracing::warn!(
-                                                "stream rule '{}' triggered (warn): matched '{}'",
-                                                match_result.rule_name, match_result.matched_text
+                                                rule_name_bytes = match_result.rule_name.len(),
+                                                matched_bytes = match_result.matched_text.len(),
+                                                "stream rule triggered (warn)"
                                             );
                                         }
                                         StreamRuleMode::Abort => {
                                             tracing::warn!(
-                                                "stream rule '{}' triggered (abort): matched '{}'",
-                                                match_result.rule_name, match_result.matched_text
+                                                rule_name_bytes = match_result.rule_name.len(),
+                                                matched_bytes = match_result.matched_text.len(),
+                                                "stream rule triggered (abort)"
                                             );
                                             return Err(LlmError::StreamAborted(
                                                 match_result.rule_name,

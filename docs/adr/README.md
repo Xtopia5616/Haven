@@ -975,3 +975,4 @@
 - [0984：统一校验 Tauri event envelope id](0984-validate-tauri-event-sequence-id-consistently.md)
 - [0985：统一 MCP profile 名称校验](0985-centralize-mcp-profile-name-validation.md)
 - [0986：统一设置数值的 wire 与领域边界校验](0986-validate-settings-numeric-wire-range.md)
+- [0987：运维日志只记录内容分类与大小](0987-remove-content-and-path-from-logs.md)

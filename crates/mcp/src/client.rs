@@ -139,10 +139,8 @@ fn spawn_mcp_child(
                     let variant = format!("{command}.cmd");
                     if let Ok(child) = spawn(&variant, args) {
                         tracing::warn!(
-                            "MCP server '{}': '{}' not found on PATH, spawned via '{}'",
-                            name,
-                            command,
-                            variant
+                            server = %name,
+                            "MCP command resolved through .cmd wrapper"
                         );
                         return contain_mcp_child(child, containment);
                     }
@@ -160,9 +158,8 @@ fn spawn_mcp_child(
                     ps_args.extend(args.iter().cloned());
                     if let Ok(child) = spawn("powershell", &ps_args) {
                         tracing::warn!(
-                            "MCP server '{}': spawned '{}' via powershell -ExecutionPolicy Bypass",
-                            name,
-                            command
+                            server = %name,
+                            "MCP command resolved through PowerShell script fallback"
                         );
                         return contain_mcp_child(child, containment);
                     }
@@ -536,14 +533,17 @@ impl McpClient {
         let server_version = result["serverInfo"]["version"].as_str().unwrap_or("?");
         let server_protocol = result["protocolVersion"].as_str().unwrap_or("?");
         if let Some(warning) = result["warning"].as_str() {
-            tracing::warn!("MCP server '{}' warning: {}", self.name, warning);
+            tracing::warn!(
+                server = %self.name,
+                warning_bytes = warning.len(),
+                "MCP server returned a warning"
+            );
         }
         if server_protocol != PROTOCOL_VERSION {
             tracing::warn!(
-                "MCP server '{}' negotiated protocol version '{}' (client supports '{}')",
-                self.name,
-                server_protocol,
-                PROTOCOL_VERSION
+                server = %self.name,
+                negotiated_protocol_bytes = server_protocol.len(),
+                "MCP server protocol version mismatch"
             );
             *self.last_diagnostic.lock().await = Some(format!(
                 "protocol version mismatch: server negotiated '{}', client supports '{}' — tool discovery may be limited or fail",
@@ -551,12 +551,9 @@ impl McpClient {
             ));
         }
         tracing::info!(
-            "MCP server '{}' connected ({}): {} v{} (protocol {})",
-            self.name,
-            self.transport.as_str(),
-            server_name,
-            server_version,
-            server_protocol
+            server = %self.name,
+            transport = self.transport.as_str(),
+            "MCP server connected"
         );
 
         // Send initialized notification
@@ -899,8 +896,11 @@ impl McpClient {
         *self.reconnect_retries.lock().await = 0;
         *self.status.lock().await = McpClientStatus::Connecting;
 
-        if let Err(e) = self.shutdown_inner(false).await {
-            tracing::warn!("MCP reconnect: shutdown of previous session failed: {}", e);
+        if self.shutdown_inner(false).await.is_err() {
+            tracing::warn!(
+                server = %self.name,
+                "MCP reconnect: shutdown of previous session failed"
+            );
         }
         self.connect().await?;
 
@@ -976,8 +976,11 @@ impl McpClient {
                         });
 
                         let shutdown_ok = self.shutdown_inner(false).await;
-                        if let Err(e) = &shutdown_ok {
-                            tracing::warn!("reconnect shutdown cleanup: {e}");
+                        if shutdown_ok.is_err() {
+                            tracing::warn!(
+                                server = %self.name,
+                                "reconnect shutdown cleanup failed"
+                            );
                         }
 
                         match self.connect().await {
