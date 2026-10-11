@@ -104,13 +104,13 @@ export function createAskInteractionController({
 
 	function handleAskSelectionChange(
 		msgId: string,
-		selectedOptionIds: string[] | null | undefined,
+		selectedOptions: string[] | null | undefined,
 	) {
 		const sessionId = getActiveSessionId();
 		if (!sessionId || !msgId) return;
 		const byMessage = askSelections.get(sessionId) || new Map<string, string[]>();
-		if (!selectedOptionIds || selectedOptionIds.length === 0) byMessage.delete(msgId);
-		else byMessage.set(msgId, [...selectedOptionIds]);
+		if (!selectedOptions || selectedOptions.length === 0) byMessage.delete(msgId);
+		else byMessage.set(msgId, [...selectedOptions]);
 		if (byMessage.size === 0) askSelections.delete(sessionId);
 		else askSelections.set(sessionId, byMessage);
 		refreshSelectionsReady();
@@ -206,8 +206,8 @@ export function createAskInteractionController({
 		if (!awaiting.every((message) => (byMessage.get(message.id) || []).length > 0))
 			return false;
 		for (const request of awaiting) {
-			const selectedOptionIds = byMessage.get(request.id) || [];
-			resolveAsk(request.id, { answer: selectedOptionIds.join(' ') }, { deferSubmit: true });
+			const selectedOptions = byMessage.get(request.id) || [];
+			resolveAsk(request.id, { answer: selectedOptions.join(' ') }, { deferSubmit: true });
 		}
 		const submitted = resolvedAskIds.get(sessionId);
 		clearAskSelections(sessionId);

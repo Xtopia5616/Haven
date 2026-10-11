@@ -12,7 +12,7 @@
 
 - 派生集合使用实体复数名，例如 `selected_tools`、`filtered_embeddings`、`remaining_envelopes`、`kept_server_names`；单值或数量仍按其真实含义命名，不机械添加复数后缀。
 - 将 UI context-menu store 模块及其导入统一命名为 `contextMenuStore.ts`。
-- 对由 UI 用户选择的 option ID 集合使用 `selectedOptionIds`，使参数名表达实际内容。
+- 对由 UI 用户选择的 ask option 字符串集合使用 `selectedOptions`；这些值是回答文本，不是独立 ID。
 
 ## 影响
 

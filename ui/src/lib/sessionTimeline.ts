@@ -20,7 +20,7 @@ export interface SessionMessageContextMenuRequest {
 
 export type AskSelectionChangeHandler = (
 	messageId: string,
-	selected: string[] | null | undefined,
+	selectedOptions: string[] | null | undefined,
 ) => void;
 export type AskMessageHandler = (messageId: string) => void;
 export type AskSelectionGetter = (messageId: string) => string[];

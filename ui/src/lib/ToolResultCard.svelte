@@ -50,7 +50,7 @@
 		awaiting?: boolean;
 		messageId?: string;
 		selectedAskOptions?: string[];
-		onAskSelectionChange?: ((messageId: string, selected: string[]) => void) | null;
+		onAskSelectionChange?: ((messageId: string, selectedOptions: string[]) => void) | null;
 		onIgnore?: ((messageId: string) => void) | null;
 		onAskSubmit?: ((messageId: string) => void) | null;
 		onAskDismiss?: ((messageId: string) => void) | null;
