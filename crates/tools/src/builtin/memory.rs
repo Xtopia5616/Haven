@@ -37,7 +37,7 @@ fn recall_output(kind: MemoryEntityKind, recall: MemoryRecall) -> Value {
 /// - `recall` — unified retrieval for `kind=fact|episode` (vector when
 ///   embedding_model is configured, else keyword/FTS). Aligns with
 ///   History `recall_memory`.
-pub struct MemoryTool {
+pub(super) struct MemoryTool {
     facts: Option<MemoryFactStore>,
     /// Prefer this over a local vector path so agent and History stay aligned.
     recall: MemoryRecallSlot,
@@ -87,7 +87,7 @@ pub struct MemoryParams {
 }
 
 impl MemoryTool {
-    pub fn new(facts: Option<MemoryFactStore>, recall: MemoryRecallSlot) -> Self {
+    pub(super) fn new(facts: Option<MemoryFactStore>, recall: MemoryRecallSlot) -> Self {
         Self { facts, recall }
     }
 

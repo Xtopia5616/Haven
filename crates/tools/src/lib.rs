@@ -207,9 +207,10 @@ pub use tool_run_service::{
 };
 pub(crate) use tool_run_service::{ToolRunCompletionReceiver, ToolRunService};
 pub use tool_run_types::{ScheduleMode, ScheduledToolRunFired, ScheduledToolRunSpec};
+pub(crate) use tool_runtime::MemoryRecallSlot;
 pub use tool_runtime::{
-    LogLevelPort, MemoryRecallPort, MemoryRecallSlot, RuntimeCapabilities, StartupWiring,
-    ToolControlPort, WebSearchAvailability,
+    LogLevelPort, MemoryRecallPort, RuntimeCapabilities, StartupWiring, ToolControlPort,
+    WebSearchAvailability,
 };
 
 /// Convert an internal qualified tool name (`mcp::server::tool`, `skill::name`)

@@ -943,3 +943,4 @@
 - [0952：限制 ToolRun lifecycle payload 的跨 crate 构造](0952-restrict-toolrun-lifecycle-payload-construction.md)
 - [0953：限制 ToolRun sidecar event payload 的下游构造](0953-restrict-toolrun-sidecar-payload-construction.md)
 - [0954：限制 ToolRun completion/fire DTO 的下游构造](0954-restrict-tool-run-completion-construction.md)
+- [0955：将 MemoryTool recall slot 留在 Tools 内部](0955-hide-memory-recall-slot.md)

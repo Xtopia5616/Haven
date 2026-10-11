@@ -43,9 +43,9 @@ pub trait LogLevelPort: Send + Sync {
     fn set_level(&self, level: &haven_common::config::LogLevel) -> anyhow::Result<()>;
 }
 
-pub type MemoryRecallSlot = Arc<OnceLock<Arc<dyn MemoryRecallPort>>>;
+pub(crate) type MemoryRecallSlot = Arc<OnceLock<Arc<dyn MemoryRecallPort>>>;
 
-pub fn new_memory_recall_slot() -> MemoryRecallSlot {
+pub(crate) fn new_memory_recall_slot() -> MemoryRecallSlot {
     Arc::new(OnceLock::new())
 }
 
