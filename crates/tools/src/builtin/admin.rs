@@ -235,12 +235,17 @@ pub enum NativeMcpOperationArgs {
 /// The backend-derived set of connection changes shown to the user before a
 /// renderer-triggered diff refresh. It contains no commands, URLs, arguments,
 /// environment values, or other connection configuration.
+///
+/// Tools derives this plan from the current MCP reconciliation. Consumers may
+/// inspect it, but should not create refresh plans in production code.
+#[non_exhaustive]
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct McpRefreshPlan {
     pub config_version: ConfigVersion,
     pub targets: Vec<McpRefreshTarget>,
 }
 
+#[non_exhaustive]
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct McpRefreshTarget {
     pub name: String,
@@ -256,7 +261,7 @@ pub enum McpRefreshAction {
 }
 
 impl McpRefreshPlan {
-    pub fn from_reconcile(config_version: ConfigVersion, reconcile: &McpReconcile) -> Self {
+    pub(crate) fn from_reconcile(config_version: ConfigVersion, reconcile: &McpReconcile) -> Self {
         let mut targets = Vec::new();
         targets.extend(
             reconcile
@@ -288,6 +293,22 @@ impl McpRefreshPlan {
         Self {
             config_version,
             targets,
+        }
+    }
+
+    /// Construct a refresh-plan fixture for downstream projection tests.
+    #[cfg(feature = "test-support")]
+    #[doc(hidden)]
+    pub fn new_for_test(
+        config_version: ConfigVersion,
+        targets: Vec<(String, McpRefreshAction)>,
+    ) -> Self {
+        Self {
+            config_version,
+            targets: targets
+                .into_iter()
+                .map(|(name, action)| McpRefreshTarget { name, action })
+                .collect(),
         }
     }
 

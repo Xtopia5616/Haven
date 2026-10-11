@@ -505,7 +505,7 @@ mod tests {
     use haven_common::types::{CapabilityScope, PermissionEffect, PermissionScope, RiskLevel};
     use haven_tools::{
         AuthorizationDecision, AuthorizationReasonCode, ConfirmationReceipt, McpRefreshAction,
-        McpRefreshPlan, McpRefreshTarget, NetworkAccess, OperationPolicy, ToolResult, ToolsFacade,
+        McpRefreshPlan, NetworkAccess, OperationPolicy, ToolResult, ToolsFacade,
     };
     use serde_json::json;
     use std::sync::Arc;
@@ -570,23 +570,14 @@ mod tests {
     }
 
     fn refresh_plan() -> McpRefreshPlan {
-        McpRefreshPlan {
-            config_version: 3,
-            targets: vec![
-                McpRefreshTarget {
-                    name: "new-server".into(),
-                    action: McpRefreshAction::Connect,
-                },
-                McpRefreshTarget {
-                    name: "changed-server".into(),
-                    action: McpRefreshAction::Reconnect,
-                },
-                McpRefreshTarget {
-                    name: "removed-server".into(),
-                    action: McpRefreshAction::Disconnect,
-                },
+        McpRefreshPlan::new_for_test(
+            3,
+            vec![
+                ("new-server".into(), McpRefreshAction::Connect),
+                ("changed-server".into(), McpRefreshAction::Reconnect),
+                ("removed-server".into(), McpRefreshAction::Disconnect),
             ],
-        }
+        )
     }
 
     #[test]
