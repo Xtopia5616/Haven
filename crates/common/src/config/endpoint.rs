@@ -55,7 +55,10 @@ pub struct ModelEndpoint {
     pub auth_header_name: String,
     #[serde(default = "default_auth_header_prefix")]
     pub auth_header_prefix: String,
-    // §2.9: streaming timeout (None = no timeout until SSE ends)
+    /// Optional total HTTP request deadline for a streamed response (seconds).
+    /// It covers connecting through completion of the response body; `None`
+    /// leaves the body deadline to the router's total and per-chunk idle
+    /// timeouts, while the adapter still bounds the response-header wait.
     pub timeout_streaming_secs: Option<u64>,
     // §2.8: provider-facing reasoning / thinking override. The chat toolbar
     // writes its common low/medium/high/off choices; config may also hold
@@ -255,11 +258,14 @@ pub struct ProviderConfig {
     /// Default sampling temperature for models on this provider.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_temperature: Option<f32>,
-    /// Default first-response timeout (secs) for models on this provider.
+    /// Default total HTTP request timeout (secs) for non-streaming requests.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_timeout_secs: Option<u64>,
-    /// Default streaming idle timeout (secs); `None` = no per-provider
-    /// override (the router's global `stream_idle_timeout_secs` applies).
+    /// Default total HTTP request timeout (secs) for streamed responses.
+    /// It covers connecting through completion of the response body and is
+    /// independent of the router's total and per-chunk idle timeouts. `None`
+    /// leaves those router deadlines and the adapter header-wait bound in
+    /// effect without a provider-specific total HTTP request deadline.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_timeout_streaming_secs: Option<u64>,
     /// Default provider built-in web search mode (`off`/`auto`/`always`).

@@ -214,7 +214,10 @@ impl OpenAiAdapter {
         req = req.json(body);
         if stream {
             if let Some(timeout) = self.endpoint.timeout_streaming_secs {
-                tracing::trace!("chat_stream_inner: {}s streaming timeout", timeout);
+                tracing::trace!(
+                    "chat_stream_inner: {}s total streaming request timeout",
+                    timeout
+                );
                 req = req.timeout(Duration::from_secs(timeout));
             }
         } else {

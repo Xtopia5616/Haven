@@ -89,12 +89,12 @@ impl AnthropicAdapter {
             .post(&url)
             .headers(self.build_headers()?)
             .json(&body);
-        // For streaming, only apply an HTTP-level timeout when explicitly configured.
-        // When timeout_streaming_secs is None, `stream_header_timeout` bounds the
-        // response-header wait (a provider that accepts the connection but never
-        // responds would otherwise stall silently until the router-level
-        // max_total_duration_secs) while leaving the body stream to the router's
-        // per-chunk idle timeouts.
+        // For streaming, the configured HTTP timeout covers the request from
+        // connect through response-body completion. When it is None,
+        // `stream_header_timeout` bounds the response-header wait (a provider
+        // that accepts the connection but never responds would otherwise stall
+        // until the router-level total timeout), while the router owns body
+        // total and per-chunk idle timeouts.
         if let Some(timeout) = self.endpoint.timeout_streaming_secs {
             req = req.timeout(Duration::from_secs(timeout));
         }

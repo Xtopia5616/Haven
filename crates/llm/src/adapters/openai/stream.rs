@@ -70,7 +70,7 @@ impl OpenAiAdapter {
             model = %self.endpoint.model_name,
             request_kind = "chat_stream",
             timeout_secs = self.endpoint.timeout_secs,
-            timeout_streaming = ?self.endpoint.timeout_streaming_secs,
+            stream_request_timeout_secs = ?self.endpoint.timeout_streaming_secs,
             "POST provider endpoint"
         );
         tracing::trace!(
