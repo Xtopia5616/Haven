@@ -924,3 +924,4 @@
 - [0933：让生命周期状态只经 Common lifecycle 子域导出](0933-use-common-lifecycle-subdomain-as-canonical-api.md)
 - [0934：让 workspace 探测 helper 保持 Common 根 API](0934-keep-common-workspace-helper-at-crate-root.md)
 - [0935：统一 MCP server transport 命名与契约 owner](0935-name-and-scope-mcp-server-transport-contract.md)
+- [0936：校验运行时实体 ID newtype 的构造入口](0936-validate-runtime-id-newtype-construction.md)

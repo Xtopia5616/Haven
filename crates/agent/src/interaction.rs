@@ -448,7 +448,7 @@ mod tests {
             0,
             haven_common::types::RiskLevel::Safe,
             Some(haven_tools::ConfirmationReceipt {
-                confirmation_id: haven_common::types::new_id("conf").into(),
+                confirmation_id: haven_common::types::ConfirmId::new(),
                 capability: haven_tools::CapabilityScope::try_new("haven.test").unwrap(),
                 canonical_input_hash: String::new(),
                 effective_risk: haven_common::types::RiskLevel::Safe,
@@ -530,7 +530,7 @@ mod tests {
         );
 
         let receipt = haven_tools::ConfirmationReceipt {
-            confirmation_id: haven_common::types::new_id("conf").into(),
+            confirmation_id: haven_common::types::ConfirmId::new(),
             capability: haven_tools::CapabilityScope::new("admin.test"),
             canonical_input_hash: "hash".into(),
             effective_risk: haven_common::types::RiskLevel::Medium,
@@ -561,7 +561,7 @@ mod tests {
     #[test]
     fn direct_ui_confirmation_uses_the_canonical_confirm_shape() {
         let receipt = haven_tools::ConfirmationReceipt {
-            confirmation_id: haven_common::types::new_id("conf").into(),
+            confirmation_id: haven_common::types::ConfirmId::new(),
             capability: haven_tools::CapabilityScope::new("admin.test"),
             canonical_input_hash: "hash".into(),
             effective_risk: haven_common::types::RiskLevel::Medium,

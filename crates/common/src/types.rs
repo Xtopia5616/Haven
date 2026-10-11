@@ -53,17 +53,24 @@ pub fn is_canonical_id(id: &str, prefix: &str) -> bool {
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
-/// Defines an entity-id newtype: `pub struct $name(pub String)` with the
-/// standard derives plus the conversions/accessors the rest of the codebase
-/// relies on. Serializes as the plain `{prefix}-{uuid32}` string on the wire,
-/// so the frontend and the DB (which store ids as text) are unaffected.
+/// Defines a prefix-checked entity-id newtype. New IDs use the shared
+/// generator, and string conversion/deserialization validate the canonical
+/// `{prefix}-{uuid32}` form. `non_exhaustive` preserves the documented public
+/// tuple shape while preventing downstream crates from bypassing validation.
 macro_rules! id_newtype {
-    ($(#[$attr:meta])* $name:ident) => {
+	($(#[$attr:meta])* $name:ident, $prefix:literal) => {
         $(#[$attr])*
         #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-        pub struct $name(pub String);
+		#[serde(try_from = "String")]
+		#[non_exhaustive]
+		pub struct $name(pub String);
 
         impl $name {
+			#[allow(clippy::new_without_default)] // Identity minting must stay explicit.
+			pub fn new() -> Self {
+				Self(new_id($prefix))
+			}
+
             pub fn as_str(&self) -> &str {
                 &self.0
             }
@@ -81,15 +88,23 @@ macro_rules! id_newtype {
             }
         }
 
-        impl From<String> for $name {
-            fn from(s: String) -> Self {
-                Self(s)
+		impl TryFrom<String> for $name {
+			type Error = String;
+
+			fn try_from(value: String) -> Result<Self, Self::Error> {
+				if is_canonical_id(&value, $prefix) {
+					Ok(Self(value))
+				} else {
+					Err(format!("expected canonical {}-<uuid32> ID", $prefix))
+				}
             }
         }
 
-        impl From<&str> for $name {
-            fn from(s: &str) -> Self {
-                Self(s.to_string())
+		impl TryFrom<&str> for $name {
+			type Error = String;
+
+			fn try_from(value: &str) -> Result<Self, Self::Error> {
+				Self::try_from(value.to_owned())
             }
         }
 
@@ -105,7 +120,7 @@ id_newtype! {
     /// Unique identifier for a safety-gateway confirmation request
     /// (`conf-{uuid32}`). Ephemeral: lives only in the `interaction:requested`
     /// event payload and the executor's pending-wait map.
-    ConfirmId
+    ConfirmId, "conf"
 }
 
 id_newtype! {
@@ -113,7 +128,7 @@ id_newtype! {
     /// Ephemeral: one id per recording, generated at `recording:started` and
     /// shared by the `recording:stopped` and `transcription:*` events of the
     /// same recording (owned and handed off by the app recording lifecycle).
-    RecordingId
+    RecordingId, "rec"
 }
 
 /// Hotkey activation mode.
@@ -1290,23 +1305,26 @@ mod tests {
 
     #[test]
     fn id_newtype_conversions() {
-        let confirm: ConfirmId = new_id("conf").into();
+        let confirm = ConfirmId::new();
         assert!(confirm.as_str().starts_with("conf-"));
-        assert_eq!(confirm.to_string(), confirm.0);
+        assert_eq!(confirm.to_string(), confirm.as_str());
         assert_eq!(AsRef::<str>::as_ref(&confirm), confirm.as_str());
         let restored: String = confirm.clone().into();
-        assert_eq!(restored, confirm.0);
-        let from_str: RecordingId = "rec-abc".into();
-        assert_eq!(from_str.0, "rec-abc");
+        assert_eq!(restored, confirm.as_str());
+
+        let recording = RecordingId::new();
+        assert!(recording.as_str().starts_with("rec-"));
+        assert!(RecordingId::try_from("rec-abc").is_err());
     }
 
     #[test]
     fn id_newtype_serde_roundtrip() {
-        let id: ConfirmId = "conf-1234".into();
+        let id = ConfirmId::new();
         let json = serde_json::to_string(&id).unwrap();
-        assert_eq!(json, "\"conf-1234\"");
+        assert_eq!(json, format!("\"{}\"", id.as_str()));
         let decoded: ConfirmId = serde_json::from_str(&json).unwrap();
         assert_eq!(decoded, id);
+        assert!(serde_json::from_str::<ConfirmId>("\"conf-1234\"").is_err());
     }
 
     #[test]

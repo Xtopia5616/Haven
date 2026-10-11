@@ -693,7 +693,7 @@ impl AuthorizationEngine {
         };
 
         let receipt = ConfirmationReceipt {
-            confirmation_id: haven_common::types::new_id("conf").into(),
+            confirmation_id: haven_common::types::ConfirmId::new(),
             capability: key.clone(),
             canonical_input_hash: canonical_input_hash(params),
             effective_risk: risk,

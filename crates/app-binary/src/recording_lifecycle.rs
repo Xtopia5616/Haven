@@ -33,7 +33,7 @@ impl RecordingLifecycleOwner {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         current
-            .get_or_insert_with(|| haven_common::types::new_id("rec").into())
+            .get_or_insert_with(haven_common::types::RecordingId::new)
             .clone()
     }
 

@@ -502,9 +502,7 @@ mod tests {
         app_command_authorization_request, dispatch_authorized_admin_request,
         parse_mcp_refresh_failed_names, redact_mcp_admin_confirmation_input, validate_command_id,
     };
-    use haven_common::types::{
-        CapabilityScope, PermissionEffect, PermissionScope, RiskLevel, new_id,
-    };
+    use haven_common::types::{CapabilityScope, PermissionEffect, PermissionScope, RiskLevel};
     use haven_tools::{
         AuthorizationDecision, AuthorizationReasonCode, ConfirmationReceipt, McpRefreshAction,
         McpRefreshPlan, McpRefreshTarget, NetworkAccess, OperationPolicy, ToolResult, ToolsFacade,
@@ -531,7 +529,7 @@ mod tests {
 
     fn receipt() -> ConfirmationReceipt {
         ConfirmationReceipt {
-            confirmation_id: new_id("conf").into(),
+            confirmation_id: haven_common::types::ConfirmId::new(),
             capability: CapabilityScope::try_new("haven.mcp.mcp_refresh").unwrap(),
             canonical_input_hash: "test-hash".into(),
             effective_risk: RiskLevel::Medium,

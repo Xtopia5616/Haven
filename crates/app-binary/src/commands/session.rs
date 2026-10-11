@@ -268,7 +268,8 @@ pub async fn resolve_confirmation(
     let perm_scope = scope;
     let perm_target = target;
     let confirmed = matches!(perm_effect, haven_common::types::PermissionEffect::Allow);
-    let confirmation_id: haven_common::types::ConfirmId = request_id.clone().into();
+    let confirmation_id = haven_common::types::ConfirmId::try_from(request_id.clone())
+        .map_err(|error| log_err("resolve_confirmation", error))?;
     if owner == haven_agent::InteractionOwner::AppCommand {
         return resolve_app_confirmation(
             state.inner(),
@@ -984,7 +985,7 @@ mod tests {
             .resolve_authorization_request(None, tool_name, &tool_input)
             .await;
         let receipt = ConfirmationReceipt {
-            confirmation_id: haven_common::types::new_id("conf").into(),
+            confirmation_id: haven_common::types::ConfirmId::new(),
             capability: authorization_request.policy.capability.clone(),
             canonical_input_hash: String::new(),
             effective_risk: RiskLevel::Medium,
@@ -1284,7 +1285,7 @@ mod tests {
             .resolve_authorization_request(None, tool_name, &tool_input)
             .await;
         let receipt = ConfirmationReceipt {
-            confirmation_id: haven_common::types::new_id("conf").into(),
+            confirmation_id: haven_common::types::ConfirmId::new(),
             capability: authorization_request.policy.capability.clone(),
             canonical_input_hash: String::new(),
             effective_risk: RiskLevel::Medium,

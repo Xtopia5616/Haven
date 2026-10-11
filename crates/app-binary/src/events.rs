@@ -663,6 +663,10 @@ pub(crate) struct AgentToolOutputEvent {
 mod tests {
     use super::*;
 
+    fn recording_id() -> haven_common::types::RecordingId {
+        haven_common::types::RecordingId::new()
+    }
+
     #[test]
     fn app_shell_status_dtos_keep_their_lowercase_wire_values() {
         assert_eq!(
@@ -710,15 +714,16 @@ mod tests {
 
     #[test]
     fn test_recording_event_serde() {
+        let recording_id = recording_id();
         let ev = RecordingEvent {
             is_recording: true,
-            recording_id: Some("rec-1".into()),
+            recording_id: Some(recording_id.clone()),
             reason: Some(RecordingStopReasonDto::Manual),
             duration_ms: Some(1000),
         };
         let json = serde_json::to_string(&ev).unwrap();
         assert!(json.contains("\"is_recording\":true"));
-        assert!(json.contains("\"recording_id\":\"rec-1\""));
+        assert!(json.contains(&format!("\"recording_id\":\"{recording_id}\"")));
         assert!(!json.contains("session_id"));
         assert!(json.contains("\"reason\":\"manual\""));
     }
@@ -951,13 +956,13 @@ mod tests {
     #[test]
     fn test_transcription_result_event_serde() {
         let ev = TranscriptionResultEvent {
-            recording_id: "rec-1".into(),
+            recording_id: recording_id(),
             text: "hello".into(),
             duration_ms: 500,
             confidence: Some(0.95),
         };
         let json = serde_json::to_string(&ev).unwrap();
-        assert!(json.contains("\"recording_id\":\"rec-1\""));
+        assert!(json.contains("\"recording_id\":\"rec-"));
         assert!(!json.contains("session_id"));
         assert!(json.contains("\"confidence\":0.95"));
     }
@@ -965,16 +970,16 @@ mod tests {
     #[test]
     fn test_transcription_started_event_serde() {
         let ev = TranscriptionStartedEvent {
-            recording_id: "rec-abc".into(),
+            recording_id: recording_id(),
         };
         let json = serde_json::to_string(&ev).unwrap();
-        assert!(json.contains("\"recording_id\":\"rec-abc\""));
+        assert!(json.contains("\"recording_id\":\"rec-"));
     }
 
     #[test]
     fn test_transcription_error_event_serde() {
         let ev = TranscriptionErrorEvent {
-            recording_id: "rec-1".into(),
+            recording_id: recording_id(),
             error: "timeout".into(),
         };
         let json = serde_json::to_string(&ev).unwrap();
@@ -983,13 +988,14 @@ mod tests {
 
     #[test]
     fn recording_error_event_has_the_stable_wire_shape() {
+        let recording_id = recording_id();
         let event = RecordingErrorEvent {
-            recording_id: "rec-1".into(),
+            recording_id: recording_id.clone(),
             error: "microphone unavailable".into(),
         };
         assert_eq!(
             serde_json::to_value(event).unwrap(),
-            serde_json::json!({ "recording_id": "rec-1", "error": "microphone unavailable" })
+            serde_json::json!({ "recording_id": recording_id, "error": "microphone unavailable" })
         );
     }
 

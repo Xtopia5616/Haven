@@ -4008,7 +4008,7 @@ mod tests {
             0,
             haven_common::types::RiskLevel::Safe,
             Some(haven_tools::ConfirmationReceipt {
-                confirmation_id: haven_common::types::new_id("conf").into(),
+                confirmation_id: haven_common::types::ConfirmId::new(),
                 capability: haven_common::types::CapabilityScope::try_new("test.operation")
                     .unwrap(),
                 canonical_input_hash: String::new(),
@@ -4102,7 +4102,7 @@ mod tests {
                 0,
                 haven_common::types::RiskLevel::High,
                 Some(haven_tools::ConfirmationReceipt {
-                    confirmation_id: haven_common::types::new_id("conf").into(),
+                    confirmation_id: haven_common::types::ConfirmId::new(),
                     capability: haven_common::types::CapabilityScope::try_new("test.operation")
                         .unwrap(),
                     canonical_input_hash: String::new(),
@@ -4265,7 +4265,7 @@ mod tests {
             0,
             haven_common::types::RiskLevel::High,
             Some(haven_tools::ConfirmationReceipt {
-                confirmation_id: haven_common::types::new_id("conf").into(),
+                confirmation_id: haven_common::types::ConfirmId::new(),
                 capability: haven_common::types::CapabilityScope::try_new("test.operation")
                     .unwrap(),
                 canonical_input_hash: String::new(),
@@ -4344,7 +4344,7 @@ mod tests {
             )
         };
         let receipt = || haven_tools::ConfirmationReceipt {
-            confirmation_id: haven_common::types::new_id("conf").into(),
+            confirmation_id: haven_common::types::ConfirmId::new(),
             capability: haven_tools::CapabilityScope::try_new("test.operation").unwrap(),
             canonical_input_hash: String::new(),
             effective_risk: haven_common::types::RiskLevel::Safe,
@@ -4465,7 +4465,7 @@ mod tests {
             2,
             haven_common::types::RiskLevel::High,
             Some(haven_tools::ConfirmationReceipt {
-                confirmation_id: haven_common::types::new_id("conf").into(),
+                confirmation_id: haven_common::types::ConfirmId::new(),
                 capability: haven_common::types::CapabilityScope::try_new("files.write").unwrap(),
                 canonical_input_hash: String::new(),
                 effective_risk: haven_common::types::RiskLevel::High,

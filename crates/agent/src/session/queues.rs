@@ -212,7 +212,13 @@ impl SessionSupervisor {
             return;
         };
         let executor = Arc::clone(self);
-        let timeout_id: haven_common::types::ConfirmId = request.id.clone().into();
+        let timeout_id = match haven_common::types::ConfirmId::try_from(request.id.clone()) {
+            Ok(timeout_id) => timeout_id,
+            Err(error) => {
+                tracing::warn!(request_id = %request.id, %error, "invalid confirmation ID; expiry was not scheduled");
+                return;
+            }
+        };
         let owner = crate::interaction::InteractionOwner::Session { session_id };
         tokio::spawn(async move {
             tokio::time::sleep(delay).await;

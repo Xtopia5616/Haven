@@ -1953,7 +1953,7 @@ mod scheduled_authorization_tests {
             None,
             "files.write".into(),
             json!({}),
-            future_receipt(haven_common::types::new_id("conf").into(), "files.write"),
+            future_receipt(haven_common::types::ConfirmId::new(), "files.write"),
             "scheduled".into(),
         );
         request.expires_at = Some((chrono::Utc::now() - chrono::Duration::seconds(1)).to_rfc3339());
@@ -2175,7 +2175,7 @@ mod scheduled_authorization_tests {
                 .is_some()
         );
         let wrong_request_id: haven_common::types::ConfirmId =
-            haven_common::types::new_id("conf").into();
+            haven_common::types::ConfirmId::new();
         assert!(
             supervisor
                 .resolve_confirmation_for_owner(&owner, &wrong_request_id, true)
@@ -2233,7 +2233,7 @@ mod scheduled_authorization_tests {
             0,
             RiskLevel::High,
             Some(future_receipt(
-                haven_common::types::new_id("conf").into(),
+                haven_common::types::ConfirmId::new(),
                 "files.write",
             )),
         );
@@ -2251,7 +2251,7 @@ mod scheduled_authorization_tests {
             0,
             RiskLevel::High,
             Some(future_receipt(
-                haven_common::types::new_id("conf").into(),
+                haven_common::types::ConfirmId::new(),
                 "files.write",
             )),
         );
@@ -2259,8 +2259,9 @@ mod scheduled_authorization_tests {
             .request_interaction(other_request.clone())
             .await
             .unwrap();
-        let request_id: haven_common::types::ConfirmId = request.id.clone().into();
-        let other_request_id: haven_common::types::ConfirmId = other_request.id.clone().into();
+        let request_id = haven_common::types::ConfirmId::try_from(request.id.clone()).unwrap();
+        let other_request_id =
+            haven_common::types::ConfirmId::try_from(other_request.id.clone()).unwrap();
         let wrong_owner = crate::interaction::InteractionOwner::Session {
             session_id: other_session.id.clone(),
         };
@@ -2481,8 +2482,7 @@ mod scheduled_authorization_tests {
     async fn scheduled_resolve_and_expiry_share_a_single_terminal_claim() {
         let (supervisor, _tools, _database, _directory) = test_supervisor();
         let tool_run_id = running_scheduled_tool_run(&supervisor, None, "files.write").await;
-        let confirmation_id: haven_common::types::ConfirmId =
-            haven_common::types::new_id("conf").into();
+        let confirmation_id: haven_common::types::ConfirmId = haven_common::types::ConfirmId::new();
         supervisor
             .request_scheduled_confirm(
                 &tool_run_id,
@@ -2630,8 +2630,7 @@ mod scheduled_authorization_tests {
             .create_session("serialized confirmation decisions")
             .await
             .unwrap();
-        let confirmation_id: haven_common::types::ConfirmId =
-            haven_common::types::new_id("conf").into();
+        let confirmation_id: haven_common::types::ConfirmId = haven_common::types::ConfirmId::new();
         supervisor
             .request_scheduled_confirm(
                 "toolrun-00000000000000000000000000000002",
@@ -2804,7 +2803,7 @@ mod interaction_owner_route_tests {
 
     fn future_receipt(capability: &str) -> haven_tools::ConfirmationReceipt {
         haven_tools::ConfirmationReceipt {
-            confirmation_id: haven_common::types::new_id("conf").into(),
+            confirmation_id: haven_common::types::ConfirmId::new(),
             capability: haven_common::types::CapabilityScope::try_new(capability).unwrap(),
             canonical_input_hash: String::new(),
             effective_risk: haven_common::types::RiskLevel::High,

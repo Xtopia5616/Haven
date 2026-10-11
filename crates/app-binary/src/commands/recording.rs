@@ -120,7 +120,7 @@ pub(crate) fn emit_recording_error(
         app,
         RECORDING_ERROR_EVENT,
         RecordingErrorEvent {
-            recording_id: recording_id.unwrap_or_else(|| haven_common::types::new_id("rec").into()),
+            recording_id: recording_id.unwrap_or_else(haven_common::types::RecordingId::new),
             error,
         },
         "recording_error",
@@ -846,7 +846,7 @@ mod tests {
         );
         assert_eq!(
             stop_error_event_recording_id(
-                Some(haven_common::types::new_id("rec").into()),
+                Some(haven_common::types::RecordingId::new()),
                 &recording_id
             ),
             None
