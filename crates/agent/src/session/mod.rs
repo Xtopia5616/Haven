@@ -1858,11 +1858,12 @@ mod tests {
             .await
             .unwrap();
         let deleted_path = assets_root.path().join("deleted.pdf");
+        let deleted_asset_id = haven_common::types::new_id("asset");
         std::fs::write(&deleted_path, b"deleted").unwrap();
         assert!(registry.register_under_root_for_session(
             &deleted.id,
             assets_root.path(),
-            "asset-deleted",
+            &deleted_asset_id,
             deleted_path,
             Some("deleted.pdf".into()),
             "application/pdf",
@@ -1877,11 +1878,12 @@ mod tests {
             .await
             .unwrap();
         let cleared_path = assets_root.path().join("cleared.pdf");
+        let cleared_asset_id = haven_common::types::new_id("asset");
         std::fs::write(&cleared_path, b"cleared").unwrap();
         assert!(registry.register_under_root_for_session(
             &cleared.id,
             assets_root.path(),
-            "asset-cleared",
+            &cleared_asset_id,
             cleared_path,
             Some("cleared.pdf".into()),
             "application/pdf",
@@ -1913,11 +1915,12 @@ mod tests {
 
         let assets_root = tempfile::TempDir::new().unwrap();
         let asset_path = assets_root.path().join("expired.pdf");
+        let asset_id = haven_common::types::new_id("asset");
         std::fs::write(&asset_path, b"expired").unwrap();
         assert!(registry.register_under_root_for_session(
             &session.id,
             assets_root.path(),
-            "asset-expired",
+            &asset_id,
             asset_path,
             Some("expired.pdf".into()),
             "application/pdf",

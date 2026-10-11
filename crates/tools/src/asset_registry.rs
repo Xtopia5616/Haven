@@ -9,6 +9,7 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, RwLock};
 
 use chrono::{DateTime, Utc};
+use haven_common::types::is_canonical_id;
 use haven_platform::filesystem::is_link_or_reparse_point;
 
 /// Host-owned metadata needed to resolve a managed attachment.
@@ -157,7 +158,7 @@ impl ManagedAssetRegistry {
         size_bytes: Option<u64>,
         expires_at: Option<DateTime<Utc>>,
     ) -> bool {
-        if asset_id.trim().is_empty()
+        if !is_canonical_id(&asset_id, "asset")
             || path.as_os_str().is_empty()
             || !is_safe_managed_file(root, &path)
         {
@@ -192,10 +193,10 @@ impl ManagedAssetRegistry {
         filename: Option<String>,
         media_type: impl Into<String>,
     ) -> bool {
-        if session_id.trim().is_empty() {
+        let asset_id = asset_id.into();
+        if !is_canonical_id(session_id, "ses") || !is_canonical_id(&asset_id, "asset") {
             return false;
         }
-        let asset_id = asset_id.into();
         self.pending_assets
             .write()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -233,10 +234,10 @@ impl ManagedAssetRegistry {
         size_bytes: Option<u64>,
         _expires_at: Option<DateTime<Utc>>,
     ) -> bool {
-        if session_id.trim().is_empty() {
+        let asset_id = asset_id.into();
+        if !is_canonical_id(session_id, "ses") || !is_canonical_id(&asset_id, "asset") {
             return false;
         }
-        let asset_id = asset_id.into();
         self.pending_assets
             .write()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -271,6 +272,9 @@ impl ManagedAssetRegistry {
         media_type: impl Into<String>,
     ) -> bool {
         let asset_id = asset_id.into();
+        if !is_canonical_id(&asset_id, "asset") {
+            return false;
+        }
         self.pending_assets
             .write()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -284,7 +288,10 @@ impl ManagedAssetRegistry {
 
     /// Associate an already registered asset with a live session.
     pub fn lease_for_session(&self, session_id: &str, asset_id: &str) -> bool {
-        if session_id.trim().is_empty() || asset_id.trim().is_empty() || !self.contains(asset_id) {
+        if !is_canonical_id(session_id, "ses")
+            || !is_canonical_id(asset_id, "asset")
+            || !self.contains(asset_id)
+        {
             return false;
         }
         self.session_leases
@@ -316,9 +323,9 @@ impl ManagedAssetRegistry {
         to_session_id: &str,
         asset_id: &str,
     ) -> bool {
-        if from_session_id.trim().is_empty()
-            || to_session_id.trim().is_empty()
-            || asset_id.trim().is_empty()
+        if !is_canonical_id(from_session_id, "ses")
+            || !is_canonical_id(to_session_id, "ses")
+            || !is_canonical_id(asset_id, "asset")
             || !self.contains(asset_id)
         {
             return false;
@@ -348,6 +355,9 @@ impl ManagedAssetRegistry {
 
     /// Release a pending ingress lease after session creation failed.
     pub fn release_pending(&self, asset_id: &str) -> bool {
+        if !is_canonical_id(asset_id, "asset") {
+            return false;
+        }
         self.pending_assets
             .write()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -356,6 +366,9 @@ impl ManagedAssetRegistry {
 
     /// Release every asset lease owned by a terminal session.
     pub fn release_session(&self, session_id: &str) -> usize {
+        if !is_canonical_id(session_id, "ses") {
+            return 0;
+        }
         self.session_leases
             .write()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -419,7 +432,7 @@ impl ManagedAssetRegistry {
         media_type: impl Into<String>,
     ) {
         let asset_id = asset_id.into();
-        if asset_id.trim().is_empty() || path.as_os_str().is_empty() {
+        if !is_canonical_id(&asset_id, "asset") || path.as_os_str().is_empty() {
             return;
         }
         let managed_root = path
@@ -445,6 +458,9 @@ impl ManagedAssetRegistry {
     }
 
     pub fn resolve(&self, asset_id: &str) -> Option<ManagedAsset> {
+        if !is_canonical_id(asset_id, "asset") {
+            return None;
+        }
         let asset = self
             .assets
             .read()
@@ -471,6 +487,9 @@ impl ManagedAssetRegistry {
     }
 
     pub fn contains(&self, asset_id: &str) -> bool {
+        if !is_canonical_id(asset_id, "asset") {
+            return false;
+        }
         self.assets
             .read()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -739,21 +758,82 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
 
+    fn test_id(prefix: &str) -> String {
+        haven_common::types::new_id(prefix)
+    }
+
     #[test]
     fn registry_roundtrips_host_metadata_without_normalizing_the_id() {
         let registry = ManagedAssetRegistry::default();
+        let asset_id = test_id("asset");
         registry.register_for_test(
-            "asset-test",
+            asset_id.clone(),
             PathBuf::from(r"C:\uploads\report.pdf"),
             Some("report.pdf".into()),
             "application/pdf",
         );
 
-        let asset = registry.resolve("asset-test").expect("registered asset");
+        let asset = registry.resolve(&asset_id).expect("registered asset");
         assert_eq!(asset.path, PathBuf::from(r"C:\uploads\report.pdf"));
         assert_eq!(asset.filename.as_deref(), Some("report.pdf"));
-        assert!(registry.contains("asset-test"));
-        assert!(!registry.contains("asset-other"));
+        assert!(registry.contains(&asset_id));
+        assert!(!registry.contains(&test_id("asset")));
+    }
+
+    #[test]
+    fn rejects_noncanonical_asset_and_session_ids_without_mutating_registry() {
+        let root = TempDir::new().unwrap();
+        let path = root.path().join("asset.txt");
+        std::fs::write(&path, "asset").unwrap();
+        let registry = ManagedAssetRegistry::default();
+        let asset_id = test_id("asset");
+        let session_id = test_id("ses");
+
+        assert!(!registry.register_under_root(
+            root.path(),
+            "asset-invalid",
+            path.clone(),
+            Some("asset.txt".into()),
+            "text/plain",
+        ));
+        assert!(!registry.register_under_root_for_session(
+            "session-invalid",
+            root.path(),
+            asset_id.clone(),
+            path.clone(),
+            Some("asset.txt".into()),
+            "text/plain",
+        ));
+        assert!(!registry.register_under_root_pending(
+            root.path(),
+            "asset-invalid",
+            path.clone(),
+            Some("asset.txt".into()),
+            "text/plain",
+        ));
+        assert!(!registry.contains(&asset_id));
+        assert!(registry.leased_or_pending_paths().is_empty());
+
+        assert!(registry.register_under_root(
+            root.path(),
+            asset_id.clone(),
+            path.clone(),
+            Some("asset.txt".into()),
+            "text/plain",
+        ));
+        assert!(!registry.lease_for_session("session-invalid", &asset_id));
+        assert!(!registry.transfer_session_lease("session-invalid", &session_id, &asset_id,));
+        assert!(registry.resolve("asset-invalid").is_none());
+        assert!(!registry.contains("asset-invalid"));
+        assert!(!registry.release_pending("asset-invalid"));
+        assert_eq!(registry.release_session("session-invalid"), 0);
+        assert!(registry.leased_paths().is_empty());
+
+        assert!(registry.lease_for_session(&session_id, &asset_id));
+        assert!(!registry.transfer_session_lease(&session_id, "session-invalid", &asset_id,));
+        assert_eq!(registry.release_session("session-invalid"), 0);
+        assert_eq!(registry.leased_paths(), vec![path]);
+        assert_eq!(registry.release_session(&session_id), 1);
     }
 
     #[test]
@@ -763,15 +843,16 @@ mod tests {
         let path = outside.path().join("secret.txt");
         std::fs::write(&path, "secret").unwrap();
         let registry = ManagedAssetRegistry::default();
+        let asset_id = test_id("asset");
 
         assert!(!registry.register_under_root(
             root.path(),
-            "asset-outside",
+            asset_id.clone(),
             path,
             Some("secret.txt".into()),
             "text/plain",
         ));
-        assert!(!registry.contains("asset-outside"));
+        assert!(!registry.contains(&asset_id));
     }
 
     #[test]
@@ -780,9 +861,10 @@ mod tests {
         let path = root.path().join("gone.txt");
         std::fs::write(&path, "gone").unwrap();
         let registry = ManagedAssetRegistry::default();
+        let asset_id = test_id("asset");
         assert!(registry.register_under_root(
             root.path(),
-            "asset-gone",
+            asset_id.clone(),
             path.clone(),
             Some("gone.txt".into()),
             "text/plain",
@@ -790,7 +872,7 @@ mod tests {
         std::fs::remove_file(path).unwrap();
 
         assert_eq!(registry.prune_missing(), 1);
-        assert!(!registry.contains("asset-gone"));
+        assert!(!registry.contains(&asset_id));
     }
 
     #[test]
@@ -801,24 +883,26 @@ mod tests {
         std::fs::write(&keep, "keep").unwrap();
         std::fs::write(&old, "old").unwrap();
         let registry = ManagedAssetRegistry::default();
+        let keep_id = test_id("asset");
+        let old_id = test_id("asset");
         assert!(registry.register_under_root(
             root.path(),
-            "asset-keep",
+            keep_id.clone(),
             keep.clone(),
             Some("keep.txt".into()),
             "text/plain",
         ));
         assert!(registry.register_under_root(
             root.path(),
-            "asset-old",
+            old_id.clone(),
             old,
             Some("old.txt".into()),
             "text/plain",
         ));
 
         assert_eq!(registry.prune_unreferenced(&[keep]), 1);
-        assert!(registry.contains("asset-keep"));
-        assert!(!registry.contains("asset-old"));
+        assert!(registry.contains(&keep_id));
+        assert!(!registry.contains(&old_id));
     }
 
     #[test]
@@ -827,11 +911,13 @@ mod tests {
         let path = root.path().join("active.txt");
         std::fs::write(&path, "active").unwrap();
         let registry = ManagedAssetRegistry::default();
+        let session_id = test_id("ses");
+        let asset_id = test_id("asset");
 
         assert!(registry.register_under_root_for_session(
-            "ses-active",
+            &session_id,
             root.path(),
-            "asset-active",
+            asset_id.clone(),
             path.clone(),
             Some("active.txt".into()),
             "text/plain",
@@ -839,9 +925,9 @@ mod tests {
         assert_eq!(registry.prune_unreferenced(&[]), 0);
         assert_eq!(registry.leased_paths(), vec![path.clone()]);
 
-        assert_eq!(registry.release_session("ses-active"), 1);
+        assert_eq!(registry.release_session(&session_id), 1);
         assert_eq!(registry.prune_unreferenced(&[]), 1);
-        assert!(!registry.contains("asset-active"));
+        assert!(!registry.contains(&asset_id));
     }
 
     #[test]
@@ -852,18 +938,20 @@ mod tests {
         std::fs::create_dir_all(&batch).unwrap();
         std::fs::write(&path, "active").unwrap();
         let registry = ManagedAssetRegistry::default();
+        let session_id = test_id("ses");
+        let asset_id = test_id("asset");
 
         assert!(registry.register_under_root_for_session(
-            "ses-active",
+            &session_id,
             root.path(),
-            "asset-active",
+            asset_id,
             path,
             Some("active.txt".into()),
             "text/plain",
         ));
         assert_eq!(registry.prune_paths_under(&batch), 1);
         assert!(registry.leased_paths().is_empty());
-        assert_eq!(registry.release_session("ses-active"), 0);
+        assert_eq!(registry.release_session(&session_id), 0);
     }
 
     #[tokio::test]
@@ -871,6 +959,8 @@ mod tests {
         let root = TempDir::new().unwrap();
         let path = root.path().join("file-generated.png");
         let registry = ManagedAssetRegistry::default();
+        let session_id = test_id("ses");
+        let asset_id = test_id("asset");
         let write_guard = registry.lock_generated_media_write().await;
         std::fs::write(&path, b"complete image").unwrap();
 
@@ -892,9 +982,9 @@ mod tests {
         );
 
         assert!(registry.register_under_root_for_session(
-            "ses-generated",
+            &session_id,
             root.path(),
-            "asset-generated",
+            asset_id,
             path.clone(),
             Some("generated.png".into()),
             "image/png",
@@ -915,6 +1005,9 @@ mod tests {
         let worker_registry = producer_registry.clone();
         let worker_root = root.path().to_path_buf();
         let worker_path = path.clone();
+        let session_id = test_id("ses");
+        let asset_id = test_id("asset");
+        let assert_asset_id = asset_id.clone();
         let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
         let (release_tx, release_rx) = std::sync::mpsc::channel();
         let producer = tokio::spawn(async move {
@@ -931,9 +1024,9 @@ mod tests {
                 file.write_all(b" complete").unwrap();
                 drop(file);
                 assert!(worker_registry.register_under_root_for_session(
-                    "ses-cancelled-producer",
+                    &session_id,
                     &worker_root,
-                    "asset-cancelled-producer",
+                    asset_id.clone(),
                     worker_path.clone(),
                     Some("generated.png".into()),
                     "image/png",
@@ -962,7 +1055,7 @@ mod tests {
         release_tx.send(()).unwrap();
         cleaner.await.unwrap();
         assert_eq!(std::fs::read(&path).unwrap(), b"partial complete");
-        assert!(producer_registry.contains("asset-cancelled-producer"));
+        assert!(producer_registry.contains(&assert_asset_id));
     }
 
     #[tokio::test]
@@ -996,6 +1089,8 @@ mod tests {
         let producer_registry = registry.clone();
         let producer_root = root.path().to_path_buf();
         let fresh_path_for_producer = fresh_path.clone();
+        let session_id = test_id("ses");
+        let asset_id = test_id("asset");
         let (producer_started_tx, producer_started_rx) = tokio::sync::oneshot::channel();
         let producer = tokio::spawn(async move {
             producer_started_tx.send(()).unwrap();
@@ -1003,9 +1098,9 @@ mod tests {
             let mut file = std::fs::File::create(&fresh_path_for_producer).unwrap();
             file.write_all(b"fresh").unwrap();
             assert!(producer_registry.register_under_root_for_session(
-                "ses-after-gc",
+                &session_id,
                 &producer_root,
-                "asset-after-gc",
+                asset_id,
                 fresh_path_for_producer.clone(),
                 Some("fresh.png".into()),
                 "image/png",

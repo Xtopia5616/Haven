@@ -1036,10 +1036,12 @@ mod tests {
             .join("file-0123456789abcdef0123456789abcdef.png");
         tokio::fs::write(&file, b"png-bytes").await.unwrap();
         let registry = haven_tools::ManagedAssetRegistry::default();
+        let session_id = haven_common::types::new_id("ses");
+        let asset_id = haven_common::types::new_id("asset");
         assert!(registry.register_under_root_for_session_with_metadata(
-            "ses-active",
+            &session_id,
             generated_root.path(),
-            "asset-generated",
+            &asset_id,
             file.clone(),
             Some("generated.png".into()),
             "image/png",
@@ -1047,14 +1049,8 @@ mod tests {
             Some(9),
             Some(chrono::Utc::now() - chrono::Duration::seconds(1)),
         ));
-        assert!(registry.resolve("asset-generated").is_some());
-        assert!(
-            registry
-                .resolve("asset-generated")
-                .unwrap()
-                .expires_at
-                .is_none()
-        );
+        assert!(registry.resolve(&asset_id).is_some());
+        assert!(registry.resolve(&asset_id).unwrap().expires_at.is_none());
 
         assert_eq!(
             cleanup_unreferenced_managed_media_with_references(
@@ -1069,7 +1065,7 @@ mod tests {
         );
         assert!(file.exists());
 
-        registry.release_session("ses-active");
+        registry.release_session(&session_id);
         assert_eq!(
             cleanup_unreferenced_managed_media_with_references(
                 upload_root.path().to_path_buf(),
@@ -1113,9 +1109,10 @@ mod tests {
         tokio::fs::write(&transient, b"transient").await.unwrap();
         tokio::fs::write(&orphan, b"orphan").await.unwrap();
         let registry = haven_tools::ManagedAssetRegistry::default();
+        let asset_id = haven_common::types::new_id("asset");
         assert!(registry.register_under_root_with_metadata(
             generated_root.path(),
-            "asset-transient".to_string(),
+            asset_id,
             transient.clone(),
             Some("transient.png".into()),
             "image/png".to_string(),
@@ -1395,9 +1392,10 @@ mod tests {
         tokio::fs::create_dir_all(&batch).await.unwrap();
         tokio::fs::write(&file, "keep").await.unwrap();
         let registry = haven_tools::ManagedAssetRegistry::default();
+        let asset_id = haven_common::types::new_id("asset");
         assert!(registry.register_under_root(
             root.path(),
-            "asset-live",
+            asset_id.clone(),
             file.clone(),
             Some("keep.txt".into()),
             "text/plain",
@@ -1412,11 +1410,11 @@ mod tests {
         .unwrap();
         assert_eq!(removed, 0);
         assert!(file.exists());
-        assert!(registry.contains("asset-live"));
+        assert!(registry.contains(&asset_id));
 
         tokio::fs::remove_dir_all(&batch).await.unwrap();
         assert_eq!(registry.prune_missing(), 1);
-        assert!(!registry.contains("asset-live"));
+        assert!(!registry.contains(&asset_id));
     }
 
     #[tokio::test]
@@ -1429,10 +1427,12 @@ mod tests {
         tokio::fs::create_dir_all(&batch).await.unwrap();
         tokio::fs::write(&file, "active").await.unwrap();
         let registry = haven_tools::ManagedAssetRegistry::default();
+        let session_id = haven_common::types::new_id("ses");
+        let asset_id = haven_common::types::new_id("asset");
         assert!(registry.register_under_root_for_session(
-            "ses-active",
+            &session_id,
             root.path(),
-            "asset-live",
+            asset_id,
             file.clone(),
             Some("active.txt".into()),
             "text/plain",
@@ -1448,7 +1448,7 @@ mod tests {
         assert_eq!(removed, 0);
         assert!(file.exists());
 
-        registry.release_session("ses-active");
+        registry.release_session(&session_id);
         let removed =
             cleanup_unreferenced_upload_batches(root.path().to_path_buf(), registry, Vec::new())
                 .await
@@ -1472,16 +1472,18 @@ mod tests {
         tokio::fs::write(&old_file, "old").await.unwrap();
 
         let registry = haven_tools::ManagedAssetRegistry::default();
+        let keep_asset_id = haven_common::types::new_id("asset");
+        let old_asset_id = haven_common::types::new_id("asset");
         assert!(registry.register_under_root(
             root.path(),
-            "asset-keep",
+            keep_asset_id.clone(),
             keep_file.clone(),
             Some("keep.txt".into()),
             "text/plain",
         ));
         assert!(registry.register_under_root(
             root.path(),
-            "asset-old",
+            old_asset_id.clone(),
             old_file,
             Some("old.txt".into()),
             "text/plain",
@@ -1498,8 +1500,8 @@ mod tests {
         assert_eq!(removed, 1);
         assert!(keep_batch.exists());
         assert!(!old_batch.exists());
-        assert!(registry.contains("asset-keep"));
-        assert!(!registry.contains("asset-old"));
+        assert!(registry.contains(&keep_asset_id));
+        assert!(!registry.contains(&old_asset_id));
     }
 
     #[cfg(windows)]
