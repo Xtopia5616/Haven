@@ -8,6 +8,8 @@ import { isBusyStatus, isPausedStatus } from './sessionStatus.ts';
 import { invoke } from './tauri.ts';
 import type { ChatAttachmentPayload, ChatFileAttachment } from './chatAttachmentTypes.ts';
 import type { ProcessResult } from './contracts/generatedCommands.ts';
+import { parseProcessResult } from './contracts/processResult.ts';
+import { isCanonicalEntityId } from './contracts/wireGuards.ts';
 
 /** True when a send should be treated as mid-turn steering (keep agent UI above it). */
 function isMidTurnSubmit(sessionId: string, reducer: SessionReducer): boolean {
@@ -308,7 +310,8 @@ async function doSubmit({
 			voice,
 			...(recordingId ? { recordingId } : {}),
 		};
-		const result = await invoke('process_transcript', request);
+		const response: unknown = await invoke('process_transcript', request);
+		const result = parseProcessResult(response);
 		const createdId = processResultSessionId(result);
 		const dbMsgId = processResultMessageId(result);
 		// Prefer the destination session after a SessionCreated migrate so the
@@ -358,14 +361,20 @@ async function doSubmit({
 export function processResultSessionId(result: ProcessResult | null | undefined): string | null {
 	if (typeof result !== 'object' || result === null || !('SessionCreated' in result)) return null;
 	const sessionId = result.SessionCreated.session_id;
-	if (typeof sessionId === 'string') return sessionId;
+	if (isCanonicalEntityId(sessionId, 'ses')) return sessionId;
 	return null;
 }
 
 /** Persisted user-message id from either ProcessResult variant. */
 export function processResultMessageId(result: ProcessResult | null | undefined): string | null {
 	if (typeof result !== 'object' || result === null) return null;
-	if ('SessionCreated' in result) return result.SessionCreated.message_id ?? null;
-	if ('Supplemented' in result) return result.Supplemented.message_id ?? null;
+	if ('SessionCreated' in result) {
+		const messageId = result.SessionCreated.message_id;
+		return isCanonicalEntityId(messageId, 'msg') ? messageId : null;
+	}
+	if ('Supplemented' in result) {
+		const messageId = result.Supplemented.message_id;
+		return isCanonicalEntityId(messageId, 'msg') ? messageId : null;
+	}
 	return null;
 }
