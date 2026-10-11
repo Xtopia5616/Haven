@@ -17,7 +17,7 @@
 
 ## 影响与验证
 
-- ingress 只记 transcript 字节数；stream rule、事实过滤、工具失败、provider retry 和远端 warning 只记分类/大小。
+- ingress 只记 transcript 字节数；stream rule（包括引导重试）、事实过滤、工具失败、provider retry 和远端 warning 只记分类/大小，不记规则名或命中内容。
 - MCP handshake 和 reconnect 日志不记录 server 提供的协议版本、server metadata 或原始错误文本；Skills 目录扫描日志不记录文件系统错误原文。
 - Skills 与 MCP fallback 日志不含绝对路径或可执行命令。
 - 已对受影响 crate 运行 workspace 测试与严格 Clippy，并复核相关日志字段。

@@ -217,7 +217,7 @@ MCP server profile 名称在 Common 配置加载/写入边界统一校验，并�
 
 Settings 的 64 位整数统一限制为 JavaScript 安全整数；Common 校验配置载入、保存和 IPC 更新，UI 对读写 payload 做同界检查，浮点配置按各自声明范围拒绝非有限或越界值；默认上下文窗口的 K-token 控件上限匹配 Rust `u32`（ADR 0986）。
 
-日志复扫移除了 ingress transcript、stream rule match、工具/provider 错误、事实谓词和 MCP warning 原文，并从 Skills/MCP 启动日志移除本机路径及可执行命令；日志只保留阶段、类别和字节计数（ADR 0987）。
+日志复扫移除了 ingress transcript、stream rule 名称与 match、工具/provider 错误、事实谓词和 MCP warning 原文，并从 Skills/MCP 启动日志移除本机路径及可执行命令；日志只保留阶段、类别和字节计数（ADR 0987）。
 
 Compaction、memory embedding maintenance、App 启动/恢复、clipboard history 和 managed-media cleanup 的错误日志现统一清洗；上传批次与生成媒体目录项日志移除 basename，避免暴露用户文件名（ADR 0981）。
 

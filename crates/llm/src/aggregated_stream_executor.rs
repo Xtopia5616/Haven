@@ -184,8 +184,8 @@ impl<'a> AggregatedStreamExecutor<'a> {
             return Err(error);
         };
         tracing::warn!(
-            "stream aborted by rule '{}', injecting guidance and retrying with primary",
-            rule_name
+            rule_name_bytes = rule_name.len(),
+            "stream abort rule triggered; injecting guidance and retrying with primary"
         );
         hooks.notify_attempt_start(StreamAttemptOutputDisposition::ReplaceExisting);
         // Keep this fresh read at the retry boundary: an in-flight guidance
