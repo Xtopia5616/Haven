@@ -64,6 +64,10 @@ pub struct ScheduledToolRunSpec {
 /// Typed payload published when a scheduled ToolRun enters its fire transition.
 /// The agent acknowledges the actual work with `complete_scheduled` or
 /// `fail_scheduled`.
+///
+/// Tools owns this event's lifecycle and constructs it when the fire
+/// transition is published. Consumers should treat it as a received contract.
+#[non_exhaustive]
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct ScheduledToolRunFired {
     pub tool_run_id: String,

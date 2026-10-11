@@ -21,6 +21,10 @@ const TOOL_RUN_COMPLETION_CHANNEL_CAPACITY: usize = 256;
 
 /// A background ToolRun that has reached a terminal state, surfaced to a
 /// consumer so the owning session receives it without status polling.
+///
+/// Construction and publication belong to the Tools owner. Consumers should
+/// treat this as a received completion contract.
+#[non_exhaustive]
 #[derive(Clone, Debug)]
 pub struct BackgroundToolRunCompletion {
     pub tool_run_id: String,
@@ -38,6 +42,10 @@ pub struct BackgroundToolRunCompletion {
 /// A scheduled tool ToolRun that has reached a completed or failed state.
 /// Scheduled firing/execution stays on its own owner path; only the terminal
 /// result delivery is shared with background ToolRun results.
+///
+/// Construction and publication belong to the Tools owner. Consumers should
+/// treat this as a received completion contract.
+#[non_exhaustive]
 #[derive(Clone, Debug)]
 pub struct ScheduledToolRunResultCompletion {
     pub tool_run_id: String,
