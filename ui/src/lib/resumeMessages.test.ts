@@ -36,7 +36,7 @@ describe('buildResumeMessages', () => {
 			session: sampleSession,
 			messages: [
 				{
-					id: 'm1',
+					message_id: 'm1',
 					role: 'user' as const,
 					content: '打开记事本',
 					message_type: 'text',
@@ -44,7 +44,7 @@ describe('buildResumeMessages', () => {
 					attachments: [],
 				},
 				{
-					id: 'm2',
+					message_id: 'm2',
 					role: 'assistant' as const,
 					content: '已打开',
 					message_type: 'text',
@@ -70,7 +70,7 @@ describe('buildResumeMessages', () => {
 			session: sampleSession,
 			messages: [
 				{
-					id: 'mv',
+					message_id: 'mv',
 					role: 'user' as const,
 					content: '打开计算器',
 					message_type: 'text',
@@ -79,7 +79,7 @@ describe('buildResumeMessages', () => {
 					voice: true,
 				},
 				{
-					id: 'mt',
+					message_id: 'mt',
 					role: 'user' as const,
 					content: '打开记事本',
 					message_type: 'text',
@@ -98,7 +98,7 @@ describe('buildResumeMessages', () => {
 			session: sampleSession,
 			messages: [
 				{
-					id: 'thought',
+					message_id: 'thought',
 					role: 'assistant',
 					content: 'thinking',
 					message_type: 'thought',
@@ -106,7 +106,7 @@ describe('buildResumeMessages', () => {
 					attachments: [],
 				},
 				{
-					id: 'tool-call',
+					message_id: 'tool-call',
 					role: 'assistant',
 					content: 'calling',
 					message_type: 'tool_call',
@@ -114,7 +114,7 @@ describe('buildResumeMessages', () => {
 					attachments: [],
 				},
 				{
-					id: 'reasoning',
+					message_id: 'reasoning',
 					role: 'assistant',
 					content: 'reasoning',
 					message_type: 'reasoning',
@@ -122,7 +122,7 @@ describe('buildResumeMessages', () => {
 					attachments: [],
 				},
 				{
-					id: 'peer-kickoff',
+					message_id: 'peer-kickoff',
 					role: 'user',
 					content: 'delegate',
 					message_type: 'peer_kickoff',
@@ -146,7 +146,7 @@ describe('buildResumeMessages', () => {
 			session: sampleSession,
 			messages: [
 				{
-					id: 'm1',
+					message_id: 'm1',
 					role: 'user' as const,
 					content: 'hi',
 					message_type: 'text',
@@ -179,7 +179,7 @@ describe('buildResumeMessages', () => {
 			session: sampleSession,
 			messages: [
 				{
-					id: 'm1',
+					message_id: 'm1',
 					role: 'user' as const,
 					content: '读取文件',
 					message_type: 'text',
@@ -187,7 +187,7 @@ describe('buildResumeMessages', () => {
 					attachments: [],
 				},
 				{
-					id: 'm-thought',
+					message_id: 'm-thought',
 					role: 'assistant' as const,
 					content: '检查目标文件',
 					message_type: 'text',
@@ -259,7 +259,7 @@ describe('buildResumeMessages', () => {
 			session: sampleSession,
 			messages: [
 				{
-					id: 'm1',
+					message_id: 'm1',
 					role: 'user' as const,
 					content: '检查',
 					message_type: 'text',
@@ -267,7 +267,7 @@ describe('buildResumeMessages', () => {
 					attachments: [],
 				},
 				{
-					id: 'step-s1',
+					message_id: 'step-s1',
 					role: 'tool' as const,
 					content: '{"output":"ok"}',
 					message_type: 'observation',
@@ -301,7 +301,7 @@ describe('buildResumeMessages', () => {
 			session: sampleSession,
 			messages: [
 				{
-					id: 'm1',
+					message_id: 'm1',
 					role: 'user' as const,
 					content: 'hi',
 					message_type: 'text',
@@ -337,7 +337,7 @@ describe('buildResumeMessages', () => {
 			session: sampleSession,
 			messages: [
 				{
-					id: 'm1',
+					message_id: 'm1',
 					role: 'user' as const,
 					content: 'hi',
 					message_type: 'text',
@@ -345,7 +345,7 @@ describe('buildResumeMessages', () => {
 					attachments: [],
 				},
 				{
-					id: 'm2',
+					message_id: 'm2',
 					role: 'assistant' as const,
 					content: '稍等',
 					message_type: 'text',
@@ -382,7 +382,7 @@ describe('buildResumeMessages', () => {
 			session: sampleSession,
 			messages: [
 				{
-					id: 'm1',
+					message_id: 'm1',
 					role: 'user' as const,
 					content: 'hi',
 					message_type: 'text',
@@ -390,7 +390,7 @@ describe('buildResumeMessages', () => {
 					attachments: [],
 				},
 				{
-					id: 'm2',
+					message_id: 'm2',
 					role: 'assistant' as const,
 					content: '稍等，我检查一下',
 					message_type: 'text',
@@ -398,7 +398,7 @@ describe('buildResumeMessages', () => {
 					attachments: [],
 				},
 				{
-					id: 'm3',
+					message_id: 'm3',
 					role: 'assistant' as const,
 					content: '完成了',
 					message_type: 'text',
@@ -440,7 +440,7 @@ describe('buildResumeMessages', () => {
 			session: sampleSession,
 			messages: [
 				{
-					id: 'late',
+					message_id: 'late',
 					role: 'assistant' as const,
 					content: 'later',
 					message_type: 'text',
@@ -448,7 +448,7 @@ describe('buildResumeMessages', () => {
 					attachments: [],
 				},
 				{
-					id: 'early',
+					message_id: 'early',
 					role: 'user' as const,
 					content: 'first',
 					message_type: 'text',
@@ -472,7 +472,7 @@ describe('buildResumeMessages', () => {
 			session: sampleSession,
 			messages: [
 				{
-					id: 'm1',
+					message_id: 'm1',
 					role: 'user' as const,
 					content: 'hi',
 					message_type: 'text',
@@ -480,7 +480,7 @@ describe('buildResumeMessages', () => {
 					attachments: [],
 				},
 				{
-					id: 'm2',
+					message_id: 'm2',
 					role: 'assistant' as const,
 					content: '稍等，我查一下',
 					message_type: 'text',
@@ -488,7 +488,7 @@ describe('buildResumeMessages', () => {
 					attachments: [],
 				},
 				{
-					id: 'm3',
+					message_id: 'm3',
 					role: 'assistant' as const,
 					content: '完成了',
 					message_type: 'text',
@@ -520,7 +520,7 @@ describe('buildResumeMessages', () => {
 			session: sampleSession,
 			messages: [
 				{
-					id: 'm1',
+					message_id: 'm1',
 					role: 'user' as const,
 					content: 'hi',
 					message_type: 'text',
@@ -528,7 +528,7 @@ describe('buildResumeMessages', () => {
 					attachments: [],
 				},
 				{
-					id: 'm2',
+					message_id: 'm2',
 					role: 'assistant' as const,
 					content: '稍等',
 					message_type: 'text',
@@ -536,7 +536,7 @@ describe('buildResumeMessages', () => {
 					attachments: [],
 				},
 				{
-					id: 'm3',
+					message_id: 'm3',
 					role: 'assistant' as const,
 					content: '完成了',
 					message_type: 'text',
@@ -566,7 +566,7 @@ describe('buildResumeMessages', () => {
 			session: sampleSession,
 			messages: [
 				{
-					id: 'm1',
+					message_id: 'm1',
 					role: 'user' as const,
 					content: 'hi',
 					message_type: 'text',
@@ -574,7 +574,7 @@ describe('buildResumeMessages', () => {
 					attachments: [],
 				},
 				{
-					id: 'm2',
+					message_id: 'm2',
 					role: 'assistant' as const,
 					content: '稍等',
 					message_type: 'text',
@@ -606,7 +606,7 @@ describe('buildResumeMessages', () => {
 			session: sampleSession,
 			messages: [
 				{
-					id: 'm1',
+					message_id: 'm1',
 					role: 'user' as const,
 					content: 'do it',
 					message_type: 'text',
@@ -614,7 +614,7 @@ describe('buildResumeMessages', () => {
 					attachments: [],
 				},
 				{
-					id: 'step-s1',
+					message_id: 'step-s1',
 					role: 'assistant' as const,
 					content: '你想要怎么处理？A 还是 B？',
 					message_type: 'text',
@@ -654,7 +654,7 @@ describe('buildResumeMessages', () => {
 			session: sampleSession,
 			messages: [
 				{
-					id: 'm1',
+					message_id: 'm1',
 					role: 'user' as const,
 					content: 'do it',
 					message_type: 'text',
@@ -662,7 +662,7 @@ describe('buildResumeMessages', () => {
 					attachments: [],
 				},
 				{
-					id: 'step-s1',
+					message_id: 'step-s1',
 					role: 'assistant' as const,
 					content: '继续吗？',
 					message_type: 'text',
@@ -703,7 +703,7 @@ describe('buildResumeMessages', () => {
 			session: sampleSession,
 			messages: [
 				{
-					id: 'm1',
+					message_id: 'm1',
 					role: 'user' as const,
 					content: 'go',
 					message_type: 'text',
@@ -711,7 +711,7 @@ describe('buildResumeMessages', () => {
 					attachments: [],
 				},
 				{
-					id: 'step-s1',
+					message_id: 'step-s1',
 					role: 'assistant' as const,
 					content: 'Q1？',
 					message_type: 'text',
@@ -719,7 +719,7 @@ describe('buildResumeMessages', () => {
 					attachments: [],
 				},
 				{
-					id: 'step-s2',
+					message_id: 'step-s2',
 					role: 'assistant' as const,
 					content: 'Q2？',
 					message_type: 'text',
@@ -761,7 +761,7 @@ describe('buildResumeMessages', () => {
 			session: sampleSession,
 			messages: [
 				{
-					id: 'm1',
+					message_id: 'm1',
 					role: 'user' as const,
 					content: 'hi',
 					message_type: 'text',
@@ -769,7 +769,7 @@ describe('buildResumeMessages', () => {
 					attachments: [],
 				},
 				{
-					id: 'step-t1',
+					message_id: 'step-t1',
 					role: 'assistant' as const,
 					content: '稍等，我检查一下',
 					message_type: 'text',
@@ -800,7 +800,7 @@ describe('buildResumeMessages', () => {
 			session: sampleSession,
 			messages: [
 				{
-					id: 'm1',
+					message_id: 'm1',
 					role: 'user' as const,
 					content: '打开记事本',
 					message_type: 'text',
@@ -808,7 +808,7 @@ describe('buildResumeMessages', () => {
 					attachments: [],
 				},
 				{
-					id: 'm3',
+					message_id: 'm3',
 					role: 'user' as const,
 					content: '网络不好就让我帮忙',
 					message_type: 'text',
@@ -839,7 +839,7 @@ describe('buildResumeMessages', () => {
 			session: sampleSession,
 			messages: [
 				{
-					id: 'm1',
+					message_id: 'm1',
 					role: 'user' as const,
 					content: '打开记事本',
 					message_type: 'text',
@@ -847,7 +847,7 @@ describe('buildResumeMessages', () => {
 					attachments: [],
 				},
 				{
-					id: 'm3',
+					message_id: 'm3',
 					role: 'user' as const,
 					content: '网络不好就让我帮忙',
 					message_type: 'text',
@@ -875,7 +875,7 @@ describe('buildResumeMessages', () => {
 			session: { ...sampleSession, status: 'paused' },
 			messages: [
 				{
-					id: 'm1',
+					message_id: 'm1',
 					role: 'user' as const,
 					content: 'go',
 					message_type: 'text',
@@ -883,7 +883,7 @@ describe('buildResumeMessages', () => {
 					attachments: [],
 				},
 				{
-					id: 'step-s1',
+					message_id: 'step-s1',
 					role: 'assistant' as const,
 					content: '继续吗？',
 					message_type: 'text',
@@ -920,7 +920,7 @@ describe('buildResumeMessages', () => {
 			session: { ...sampleSession, status: 'completed' },
 			messages: [
 				{
-					id: 'm1',
+					message_id: 'm1',
 					role: 'user' as const,
 					content: 'go',
 					message_type: 'text',
@@ -928,7 +928,7 @@ describe('buildResumeMessages', () => {
 					attachments: [],
 				},
 				{
-					id: 'step-s1',
+					message_id: 'step-s1',
 					role: 'assistant' as const,
 					content: '继续吗？',
 					message_type: 'text',

@@ -1,7 +1,7 @@
 /** Session history and resume command DTOs in their Rust/Tauri wire shape. */
 import type {
 	LlmUsageRecord as GeneratedLlmUsageRecord,
-	Message as GeneratedMessage,
+	SessionResumeMessageDto as GeneratedSessionResumeMessage,
 	RuntimeSessionListResponse as GeneratedSessionListResponse,
 	SessionResumeResponse as GeneratedSessionResumeResponse,
 	SessionStep as GeneratedSessionStep,
@@ -17,7 +17,7 @@ import { isCanonicalEntityId } from './wireGuards.ts';
 export type SessionHistoryRow = TauriCommandResponse<'list_session_history'>[number];
 export type RuntimeSessionListResponse = GeneratedSessionListResponse;
 export type SessionLineageResponse = TauriCommandResponse<'get_session_lineage'>;
-export type SessionResumeMessage = GeneratedMessage;
+export type SessionResumeMessage = GeneratedSessionResumeMessage;
 export type SessionResumeStep = GeneratedSessionStep;
 export type SessionResumeUsage = GeneratedSessionUsage;
 
@@ -221,19 +221,19 @@ export function parseSessionResumeResponse(
 	);
 	const validResumeMessage = (
 		message: unknown,
-	): message is Record<string, unknown> & { id: string } =>
+	): message is Record<string, unknown> & { message_id: string } =>
 		isRecord(message) &&
 		isCanonicalEntityId(message.session_id, 'ses') &&
 		message.session_id === sessionId &&
-		(isCanonicalEntityId(message.id, 'msg') ||
-			(isCanonicalEntityId(message.id, 'step') && stepIds.has(message.id))) &&
+		(isCanonicalEntityId(message.message_id, 'msg') ||
+			(isCanonicalEntityId(message.message_id, 'step') && stepIds.has(message.message_id))) &&
 		hasValidMessageAssetIdentities(message);
 	const messages = value.messages;
 	if (
 		!Array.isArray(messages) ||
 		!messages.every(validResumeMessage) ||
 		![...supplementStepMessageIds].every((id) =>
-			messages.some((message: unknown) => isRecord(message) && message.id === id),
+			messages.some((message: unknown) => isRecord(message) && message.message_id === id),
 		)
 	) {
 		throw new Error('Invalid resumed message identity');

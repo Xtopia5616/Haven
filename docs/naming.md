@@ -365,6 +365,8 @@ Agent runtime list 使用 `SessionInfo.session_id` 与 `StepInfo.step_id`；UI r
 
 交互生命周期的 Rust `InteractionRequest`、durable interaction event 与 Tauri projection 使用 `request_id`；Ask 复用对应 `step-*`，确认使用 `conf-*`。UI 内部映射为 `requestId`。新 `interaction_cleared` event 使用 `request_ids`；Agent replay 仅为历史 durable payload 接受 `id` / `ids`，新写始终使用明确字段（ADR 0996）。
 
+Session resume 的 App-owned `SessionResumeMessageDto` 使用 `message_id`，从 Memory `Message.id` 显式投影；UI parser 与 identity join 只读该字段，renderer 消息在边界映射回其展示模型的 `id`。恢复消息身份允许 `msg-*`，以及由对应步骤锚定的 `step-*`；SQLite `messages.id` 与 Memory `Message.id` 保持 owner 内部形状（ADR 0997）。
+
 运行时实体 ID newtype（目前为 `ConfirmId`、`RecordingId`）通过 `new()` 调用 Common generator 生成；字符串输入用 `TryFrom` 校验类型固定前缀，Serde 反序列化执行同一校验。tuple 形状按项目 contract 保持公开字符串序列化，并标记 `#[non_exhaustive]` 阻止其他 crate 绕过验证直接构造；不保留无验证 `From<String>`。
 
 共享授权身份 `CapabilityScope` 由 Common 定义；所有 Rust 调用方统一从 `haven_common::types::CapabilityScope` 导入，不经 Tools 根 alias。新值只通过 fallible `CapabilityScope::try_new` 构造，禁止无校验 `new` / `From` 转换；Serde 反序列化执行相同校验。每次调用的 policy resolver 返回 `Result`，构造失败必须在授权与执行前失败关闭。

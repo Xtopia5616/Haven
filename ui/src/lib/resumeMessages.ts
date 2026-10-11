@@ -15,9 +15,9 @@ type PersistedToolOutcome = Extract<SessionStepStatus, 'failed' | 'cancelled' | 
 
 type ResumeMessageProjectionRow = Pick<
 	SessionResumeMessage,
-	'id' | 'role' | 'content' | 'created_at'
+	'message_id' | 'role' | 'content' | 'created_at'
 > &
-	Partial<Omit<SessionResumeMessage, 'id' | 'role' | 'content' | 'created_at'>>;
+	Partial<Omit<SessionResumeMessage, 'message_id' | 'role' | 'content' | 'created_at'>>;
 type ResumeStepProjectionRow = Pick<
 	SessionResumeStep,
 	'step_id' | 'step_number' | 'created_at'
@@ -226,22 +226,22 @@ export function buildResumeMessages<T extends ResumeTranscriptProjectionInput>(
 	// Message rows persisted under a step row's step_id (ask questions on new
 	// records, thought/follow-up content on new records) are the content
 	// view of that step. Stable ids are the only identity link.
-	const msgById = new Map(msgs.map((m) => [m.id, m]));
+	const msgById = new Map(msgs.map((message) => [message.message_id, message]));
 	const askStepIds = new Set(
 		(data.steps || []).filter((s) => s.tool_name === 'ask').map((s) => s.step_id),
 	);
 
 	const msgIds = new Set();
 	for (const msg of msgs) {
-		msgIds.add(msg.id);
+		msgIds.add(msg.message_id);
 		// Ask question messages are persisted under the ask step row's id:
 		// skip them here (the ask CARD below renders them).
-		if (askStepIds.has(msg.id)) continue;
-		const step = stepById.get(msg.id);
+		if (askStepIds.has(msg.message_id)) continue;
+		const step = stepById.get(msg.message_id);
 		const isToolObservation = msg.role === 'tool' || msg.message_type === 'observation';
 		const persistedToolName = step?.tool_name;
 		items.push({
-			id: msg.id,
+			id: msg.message_id,
 			// Tool observations are rendered as assistant-side cards in chat, even
 			// though the persisted transcript uses the OpenAI `tool` role.
 			role: isToolObservation ? 'assistant' : msg.role,

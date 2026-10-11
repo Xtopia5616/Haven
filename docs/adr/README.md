@@ -985,3 +985,4 @@
 - [0994：统一 runtime Session 与 Step 身份字段](0994-name-runtime-session-identities.md)
 - [0995：统一持久用量记录身份字段](0995-name-persisted-usage-identity.md)
 - [0996：统一交互请求身份字段](0996-name-interaction-request-identity.md)
+- [0997：统一会话恢复消息身份字段](0997-name-session-resume-message-identity.md)

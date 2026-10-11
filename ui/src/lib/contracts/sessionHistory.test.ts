@@ -14,7 +14,7 @@ type ResumeMediaRepresentationFixture = {
 	payload: { kind: string; value?: Record<string, unknown> };
 };
 type ResumeMessageFixture = {
-	id: string;
+	message_id: string;
 	session_id: string;
 	tool_call_id?: string;
 	attachments: Array<{
@@ -44,13 +44,13 @@ function resumeResponse(): ResumeFixture {
 		session: { session_id: sessionId },
 		messages: [
 			{
-				id: messageId,
+				message_id: messageId,
 				session_id: sessionId,
 				tool_call_id: 'provider-call/opaque',
 				attachments: [],
 			},
 			{
-				id: stepId,
+				message_id: stepId,
 				session_id: sessionId,
 				tool_call_id: 'another-external-id',
 				attachments: [],
@@ -85,7 +85,7 @@ function resumeResponseWithAssets(): ResumeFixture {
 	response.steps.push({ step_id: messageId, session_id: sessionId });
 	response.messages = [
 		{
-			id: messageId,
+			message_id: messageId,
 			session_id: sessionId,
 			tool_call_id: 'provider-call/opaque',
 			attachments: [
@@ -167,6 +167,17 @@ describe('session history and resume identity contracts', () => {
 	it('accepts resume IDs with canonical row linkage and opaque provider IDs', () => {
 		const response = resumeResponse();
 		expect(parseSessionResumeResponse(response)).toBe(response);
+	});
+
+	it('rejects the retired generic message identity field', () => {
+		const response = resumeResponse();
+		const message = response.messages[0] as unknown as Record<string, unknown>;
+		message.id = message.message_id;
+		delete message.message_id;
+
+		expect(() => parseSessionResumeResponse(response)).toThrow(
+			'Invalid resumed message identity',
+		);
 	});
 
 	it('requires resume step rows to use step_id', () => {

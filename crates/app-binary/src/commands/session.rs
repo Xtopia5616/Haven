@@ -8,7 +8,6 @@ use crate::events::{
 };
 use haven_agent::InteractionStatus;
 use haven_common::error::sanitize_error_text;
-use haven_memory::Message;
 use haven_memory::SessionStep;
 use haven_memory::{Session, SessionOrigin};
 use serde::Serialize;
@@ -867,9 +866,41 @@ pub async fn continue_session(
 }
 
 #[derive(Serialize)]
+pub struct SessionResumeMessageDto {
+    pub message_id: String,
+    pub session_id: String,
+    pub role: haven_common::types::CanonicalRole,
+    pub content: String,
+    pub message_type: Option<haven_common::types::TranscriptMessageKind>,
+    pub created_at: String,
+    pub tool_call_id: Option<String>,
+    pub attachments: Vec<haven_common::types::MessageAttachment>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub media_inputs: Vec<haven_common::media::MediaInput>,
+    pub voice: bool,
+}
+
+impl From<haven_memory::Message> for SessionResumeMessageDto {
+    fn from(message: haven_memory::Message) -> Self {
+        Self {
+            message_id: message.id,
+            session_id: message.session_id,
+            role: message.role,
+            content: message.content,
+            message_type: message.message_type,
+            created_at: message.created_at,
+            tool_call_id: message.tool_call_id,
+            attachments: message.attachments,
+            media_inputs: message.media_inputs,
+            voice: message.voice,
+        }
+    }
+}
+
+#[derive(Serialize)]
 pub struct SessionResumeResponse {
     pub session: SessionRecordDto,
-    pub messages: Vec<Message>,
+    pub messages: Vec<SessionResumeMessageDto>,
     pub steps: Vec<SessionStep>,
     /// Persisted cumulative token/cost counters for the session, so a resumed
     /// or auto-restored session can restore the token-stats display.
@@ -911,7 +942,7 @@ async fn resume_response_for_session(
         .collect();
     Ok(SessionResumeResponse {
         session: SessionRecordDto::from(session),
-        messages: projection.messages,
+        messages: projection.messages.into_iter().map(Into::into).collect(),
         steps: projection.steps,
         usage: projection.usage,
         llm_usage: projection.llm_usage,
@@ -969,8 +1000,8 @@ pub async fn get_latest_session_for_resume(
 mod tests {
     use super::{
         AppConfirmationResolution, ConfirmationResolutionResult, ExecutorSessionDisplay,
-        InteractionStatus, SessionOrigin, SessionRecordDto, accept_ui_confirmation,
-        arbitrate_app_confirmation, end_session_display_title,
+        InteractionStatus, SessionOrigin, SessionRecordDto, SessionResumeMessageDto,
+        accept_ui_confirmation, arbitrate_app_confirmation, end_session_display_title,
         latest_session_for_resume_from_store, resume_response_for_session,
         resume_session_from_store, session_lineage_from_store,
     };
@@ -1103,6 +1134,28 @@ mod tests {
 
         assert!(value.get("session_id").is_some());
         assert!(value.get("id").is_none());
+    }
+
+    #[test]
+    fn session_resume_message_wire_identity_uses_message_id() {
+        let message = haven_memory::Message {
+            id: "msg-00000000000000000000000000000001".into(),
+            session_id: "ses-00000000000000000000000000000002".into(),
+            role: haven_common::types::CanonicalRole::User,
+            content: "hello".into(),
+            message_type: None,
+            created_at: "2026-01-01T00:00:00Z".into(),
+            tool_call_id: None,
+            attachments: Vec::new(),
+            media_inputs: Vec::new(),
+            voice: false,
+            ingress_seq: 42,
+        };
+
+        let value = serde_json::to_value(SessionResumeMessageDto::from(message)).unwrap();
+        assert_eq!(value["message_id"], "msg-00000000000000000000000000000001");
+        assert!(value.get("id").is_none());
+        assert!(value.get("ingress_seq").is_none());
     }
 
     #[tokio::test]
