@@ -21,24 +21,48 @@ const { invoke } = vi.hoisted(() => ({ invoke: vi.fn() }));
 
 vi.mock('$lib/tauri.ts', () => ({ invoke }));
 
+function makeMcpServerSnapshot(overrides: Record<string, unknown> = {}) {
+	return {
+		name: 'future-server',
+		transport: 'stdio',
+		command: 'server.exe',
+		args: ['--quiet'],
+		env: ['TOKEN=<redacted>'],
+		cwd: null,
+		url: '',
+		enabled: true,
+		status: 'Disconnected',
+		tools: [
+			{
+				name: 'future-tool',
+				description: 'A future MCP tool',
+				input_schema: { type: 'object', extra: true },
+			},
+		],
+		last_error: null,
+		diagnostic: null,
+		last_seen_at: 12345,
+		...overrides,
+	};
+}
+
 describe('ToolsView command boundary', () => {
 	beforeEach(() => {
 		invoke.mockReset();
 	});
 
-	it('forwards tool manifests, empty catalog lists, and additive MCP fields unchanged', async () => {
+	it('maps MCP snapshots to camelCase views while preserving dynamic schemas', async () => {
 		const manifestResponse = {
 			tools: [{ identity: { stable_name: 'files.read', extension: { source: 'future' } } }],
 			extension_response: true,
 		};
 		const mcpResponse = [
-			{
-				name: 'future-server',
-				transport: 'stdio',
+			makeMcpServerSnapshot({
 				status: { Offline: { error: 'server unavailable' } },
-				tools: [{ name: 'future-tool', input_schema: { type: 'object', extra: true } }],
-				future_field: ['retained'],
-			},
+				last_error: 'connection refused',
+				diagnostic: 'server did not respond',
+				future_field: ['ignored'],
+			}),
 		];
 		const emptySkills: unknown[] = [];
 		invoke
@@ -54,38 +78,83 @@ describe('ToolsView command boundary', () => {
 		expect(invoke).toHaveBeenNthCalledWith(2, 'list_mcp_servers');
 		expect(invoke).toHaveBeenNthCalledWith(3, 'list_skills');
 		expect(manifests).toBe(manifestResponse);
-		expect(servers).toBe(mcpResponse);
-		expect(servers[0].status).toEqual({ Offline: { error: 'server unavailable' } });
-		expect((servers[0] as unknown as Record<string, unknown>).future_field).toEqual([
-			'retained',
+		expect(servers).toEqual([
+			{
+				name: 'future-server',
+				transport: 'stdio',
+				command: 'server.exe',
+				args: ['--quiet'],
+				env: ['TOKEN=<redacted>'],
+				cwd: null,
+				url: '',
+				enabled: true,
+				status: { Offline: { error: 'server unavailable' } },
+				tools: [
+					{
+						name: 'future-tool',
+						description: 'A future MCP tool',
+						inputSchema: { type: 'object', extra: true },
+					},
+				],
+				lastError: 'connection refused',
+				diagnostic: 'server did not respond',
+				lastSeenAt: 12345,
+			},
 		]);
-		expect(servers[0].tools[0].input_schema).toEqual({ type: 'object', extra: true });
+		expect(servers[0]).not.toHaveProperty('last_error');
 		expect(skills).toBe(emptySkills);
 	});
 
 	it('rejects MCP server snapshots with a status outside the current Rust enum', async () => {
 		invoke.mockResolvedValueOnce([
-			{
-				name: 'future-server',
-				transport: 'stdio',
-				status: { FutureStatus: { note: 'unsupported' } },
-			},
+			makeMcpServerSnapshot({ status: { FutureStatus: { note: 'unsupported' } } }),
 		]);
 
-		await expect(listMcpServers()).rejects.toThrow('Invalid MCP server snapshot status');
+		await expect(listMcpServers()).rejects.toThrow('Invalid MCP server snapshot');
 		expect(invoke).toHaveBeenCalledWith('list_mcp_servers');
 	});
 
 	it('rejects MCP server snapshots with an unknown transport', async () => {
-		invoke.mockResolvedValueOnce([
-			{
-				name: 'future-server',
-				transport: 'future-transport',
-				status: 'Connected',
-			},
-		]);
+		invoke.mockResolvedValueOnce([makeMcpServerSnapshot({ transport: 'future-transport' })]);
 
-		await expect(listMcpServers()).rejects.toThrow('Invalid MCP server snapshot transport');
+		await expect(listMcpServers()).rejects.toThrow('Invalid MCP server snapshot');
+	});
+
+	it.each([
+		['profile name', { name: 'invalid profile name' }],
+		['command', { command: null }],
+		['arguments', { args: ['--ok', 3] }],
+		['environment', { env: [null] }],
+		['working directory', { cwd: 1 }],
+		['URL', { url: false }],
+		['enabled state', { enabled: 'true' }],
+		['tool schema', { tools: [{ name: 'tool', description: 'Tool', input_schema: null }] }],
+		['last error', { last_error: 1 }],
+		['diagnostic', { diagnostic: false }],
+		['last-seen timestamp', { last_seen_at: 1.5 }],
+	])('rejects MCP snapshots with invalid %s data', async (_field, override) => {
+		invoke.mockResolvedValueOnce([makeMcpServerSnapshot(override)]);
+
+		await expect(listMcpServers()).rejects.toThrow('Invalid MCP server snapshot');
+	});
+
+	it('rejects duplicate MCP profile identities in one list response', async () => {
+		invoke.mockResolvedValueOnce([makeMcpServerSnapshot(), makeMcpServerSnapshot()]);
+
+		await expect(listMcpServers()).rejects.toThrow('Duplicate MCP server name');
+	});
+
+	it('accepts an empty MCP list and null optional snapshot fields', async () => {
+		invoke.mockResolvedValueOnce([]);
+		expect(await listMcpServers()).toEqual([]);
+
+		invoke.mockResolvedValueOnce([
+			makeMcpServerSnapshot({ last_error: null, diagnostic: null, last_seen_at: null }),
+		]);
+		const [server] = await listMcpServers();
+		expect(server.lastError).toBeNull();
+		expect(server.diagnostic).toBeNull();
+		expect(server.lastSeenAt).toBeNull();
 	});
 
 	it('keeps circuit reset as a void command and propagates its rejection', async () => {
@@ -110,6 +179,7 @@ describe('ToolsView command boundary', () => {
 		const nameRequest = { name: 'local-server' };
 		const enabledRequest = { name: 'files.read', enabled: false };
 		const updateRequest = { name: 'local-server', config };
+		invoke.mockResolvedValueOnce({ added: [], removed: [], updated: [], failed: [] });
 		invoke.mockResolvedValue(undefined);
 
 		await refreshMcpServers();
@@ -139,7 +209,7 @@ describe('ToolsView command boundary', () => {
 		expect(invoke.mock.calls[5][1]).toBe(updateRequest);
 	});
 
-	it('passes MCP refresh response extensions through and keeps the Skills path inside the backend', async () => {
+	it('validates MCP refresh profile identities and keeps the Skills path inside the backend', async () => {
 		const response = {
 			added: ['new-server'],
 			removed: [],
@@ -149,7 +219,12 @@ describe('ToolsView command boundary', () => {
 		};
 		invoke.mockResolvedValueOnce(response);
 
-		expect(await refreshMcpServers()).toBe(response);
+		expect(await refreshMcpServers()).toEqual({
+			added: ['new-server'],
+			removed: [],
+			updated: ['changed-server'],
+			failed: ['offline-server'],
+		});
 		expect(invoke).toHaveBeenCalledWith('refresh_mcp_servers');
 		invoke.mockResolvedValueOnce(undefined);
 		expect(await openSkillsDir()).toBeUndefined();
@@ -162,6 +237,36 @@ describe('ToolsView command boundary', () => {
 		expect(invoke).toHaveBeenCalledWith('set_tool_enabled', {
 			name: 'files.read',
 			enabled: true,
+		});
+	});
+
+	it.each([
+		['missing category', { added: [], removed: [], updated: [] }],
+		['invalid profile name', { added: ['invalid name'], removed: [], updated: [], failed: [] }],
+		[
+			'duplicate profile name',
+			{ added: ['same', 'same'], removed: [], updated: [], failed: [] },
+		],
+		['non-string category entry', { added: [1], removed: [], updated: [], failed: [] }],
+	])('rejects MCP refresh results with invalid %s data', async (_reason, result) => {
+		invoke.mockResolvedValueOnce(result);
+
+		await expect(refreshMcpServers()).rejects.toThrow('Invalid MCP refresh response');
+	});
+
+	it('allows a changed MCP profile to be both updated and failed', async () => {
+		invoke.mockResolvedValueOnce({
+			added: [],
+			removed: [],
+			updated: ['changed-server'],
+			failed: ['changed-server'],
+		});
+
+		expect(await refreshMcpServers()).toEqual({
+			added: [],
+			removed: [],
+			updated: ['changed-server'],
+			failed: ['changed-server'],
 		});
 	});
 

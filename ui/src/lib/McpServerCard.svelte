@@ -7,13 +7,13 @@
 	import StatusBadge from '$lib/StatusBadge.svelte';
 	import { copyText } from '$lib/clipboard.ts';
 	import type { McpClientStatus } from '$lib/contracts/generatedCommands.ts';
-	import type { McpServerSnapshot } from '$lib/contracts/tools.ts';
+	import type { McpServerSnapshotView } from '$lib/contracts/mcp.ts';
 	import type { ContextMenuItem } from '$lib/contextMenuStore.ts';
 
 	interface Props {
-		server: McpServerSnapshot;
+		server: McpServerSnapshotView;
 		onToggle?: (name: string, enabled: boolean) => void | Promise<void>;
-		onEdit?: (server: McpServerSnapshot) => void | Promise<void>;
+		onEdit?: (server: McpServerSnapshotView) => void | Promise<void>;
 		onRemove?: (name: string) => void | Promise<void>;
 		onReconnect?: (name: string) => void | Promise<void>;
 	}
@@ -107,7 +107,7 @@
 		<div class="card-name">
 			<span class="card-name-text">{server.name}</span>
 			<span class="tool-count">
-				{#if server.tools && server.tools.length > 0 || isConnected()}
+				{#if (server.tools && server.tools.length > 0) || isConnected()}
 					{server.tools?.length || 0} 个工具
 				{:else}
 					工具未探测
@@ -125,14 +125,14 @@
 				className="enabled-badge"
 			/>
 			<StatusBadge label={statusLabel(server.status)} tone={statusTone()} />
-			{#if server.last_seen_at}
+			{#if server.lastSeenAt}
 				<span class="last-seen"
-					>最近连接：{new Date(server.last_seen_at * 1000).toLocaleTimeString()}</span
+					>最近连接：{new Date(server.lastSeenAt * 1000).toLocaleTimeString()}</span
 				>
 			{/if}
 		</div>
-		{#if server.last_error}
-			<div class="error-msg">{server.last_error}</div>
+		{#if server.lastError}
+			<div class="error-msg">{server.lastError}</div>
 		{/if}
 	{/snippet}
 	{#snippet actions()}
@@ -171,13 +171,13 @@
 					<div class="tool-item">
 						<div class="tool-item-name">{tool.name}</div>
 						<div class="tool-item-desc">{tool.description || '暂无描述'}</div>
-						{#if tool.input_schema && Object.keys(tool.input_schema).length > 0}
+						{#if tool.inputSchema && Object.keys(tool.inputSchema).length > 0}
 							<div class="schema-details">
 								<MaterialCollapsible>
 									{#snippet header()}
 										<span class="schema-label">输入 Schema</span>
 									{/snippet}
-									<pre>{JSON.stringify(tool.input_schema, null, 2)}</pre>
+									<pre>{JSON.stringify(tool.inputSchema, null, 2)}</pre>
 								</MaterialCollapsible>
 							</div>
 						{/if}

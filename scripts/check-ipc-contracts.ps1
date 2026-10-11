@@ -100,8 +100,13 @@ Assert-Contains $settingsCommands 'invoke\(''get_settings''\)\.then\(parseSettin
 Assert-Contains (Get-Source 'ui/src/lib/contracts/settings.ts') 'function parseSettingsPayload\(value:\s*unknown\):\s*SettingsPayload\s*\|\s*null' 'settings parser accepts unknown'
 
 $toolsCommands = Get-Source 'ui/src/lib/toolsCommands.ts'
-Assert-Contains $toolsCommands 'invoke\(''list_mcp_servers''\)\.then\(\(value:\s*unknown\)\s*=>\s*validateMcpServerSnapshots\(value\)\)' 'MCP server list response uses its runtime validator'
-Assert-Contains $toolsCommands 'export function listMcpServers\(\):\s*Promise<McpServerSnapshot\[\]>' 'MCP snapshot wrapper names the returned entity'
+$mcpContract = Get-Source 'ui/src/lib/contracts/mcp.ts'
+Assert-Contains $toolsCommands 'invoke\(''list_mcp_servers''\)\.then\(\(value:\s*unknown\)\s*=>\s*parseMcpServerSnapshots\(value\)\)' 'MCP server list response uses its runtime validator and renderer mapper'
+Assert-Contains $toolsCommands 'export function listMcpServers\(\):\s*Promise<McpServerSnapshotView\[\]>' 'MCP snapshot wrapper names the renderer view'
+Assert-Contains $toolsCommands 'invoke\(''refresh_mcp_servers''\)\.then\(\(value:\s*unknown\)\s*=>\s*parseMcpRefreshResult\(value\)\)' 'MCP refresh result uses its runtime validator'
+Assert-Contains $mcpContract 'function isMcpServerSnapshot\(value:\s*unknown\):\s*value is ValidatedMcpServerSnapshot' 'MCP list parser validates complete generated rows'
+Assert-Contains $mcpContract 'lastError:\s*snapshot\.last_error' 'MCP list parser maps snake_case diagnostics to renderer camelCase'
+Assert-Contains $mcpContract 'function isUniqueMcpServerNameList\(value:\s*unknown\):\s*value is string\[\]' 'MCP refresh parser validates profile identity arrays'
 Assert-NotContains $toolsCommands '\blistMcpTools\b|\blist_mcp_tools\b' 'retired MCP tool-list command and wrapper are not retained as aliases'
 Assert-Contains (Get-Source 'ui/src/lib/toolManifest.ts') 'function parseToolManifest\(value:\s*unknown\):\s*ToolManifestView\s*\|\s*null' 'tool manifest parser accepts unknown and returns its renderer view'
 

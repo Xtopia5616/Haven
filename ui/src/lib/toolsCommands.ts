@@ -1,15 +1,11 @@
 import { invoke } from '$lib/tauri.ts';
-import { isMcpClientStatus } from './contracts/mcpClientStatus.ts';
-import { isRecord } from './contracts/objectGuards.ts';
-import { isOneOf } from './contracts/valueGuards.ts';
-import { MCP_SERVER_TRANSPORT_VALUES } from './contracts/generatedCommands.ts';
+import { parseMcpRefreshResult, parseMcpServerSnapshots } from './contracts/mcp.ts';
+import type { McpRefreshResultView, McpServerSnapshotView } from './contracts/mcp.ts';
 import type {
 	ReconnectMcpServerRequest,
 	RemoveMcpServerRequest,
-	McpRefreshResult,
 	McpServerConfig,
 	McpServerConfigInput,
-	McpServerSnapshot,
 	SetSkillEnabledRequest,
 	SetToolEnabledRequest,
 	SkillInfo,
@@ -20,32 +16,14 @@ import type {
 	UpdateMcpServerRequest,
 } from './contracts/tools.ts';
 
-function validateMcpServerSnapshots(value: unknown): McpServerSnapshot[] {
-	if (
-		!Array.isArray(value) ||
-		!value.every((snapshot) => isRecord(snapshot) && isMcpClientStatus(snapshot.status))
-	) {
-		throw new Error('Invalid MCP server snapshot status');
-	}
-	if (
-		!value.every(
-			(snapshot) =>
-				isRecord(snapshot) && isOneOf(snapshot.transport, MCP_SERVER_TRANSPORT_VALUES),
-		)
-	) {
-		throw new Error('Invalid MCP server snapshot transport');
-	}
-	return value as McpServerSnapshot[];
-}
-
 /** List builtin tool manifests using their existing Rust wire shape. */
 export function listBuiltinToolManifests(): Promise<BuiltinToolManifestListResponse> {
 	return invoke('list_builtin_tool_manifests');
 }
 
 /** Read MCP catalog snapshots using the current Rust status variants. */
-export function listMcpServers(): Promise<McpServerSnapshot[]> {
-	return invoke('list_mcp_servers').then((value: unknown) => validateMcpServerSnapshots(value));
+export function listMcpServers(): Promise<McpServerSnapshotView[]> {
+	return invoke('list_mcp_servers').then((value: unknown) => parseMcpServerSnapshots(value));
 }
 
 /** Read the current Skill metadata projection. */
@@ -59,8 +37,8 @@ export function resetToolCircuits(): Promise<void> {
 }
 
 /** Reconcile live clients against the persisted MCP server configuration. */
-export function refreshMcpServers(): Promise<McpRefreshResult> {
-	return invoke('refresh_mcp_servers');
+export function refreshMcpServers(): Promise<McpRefreshResultView> {
+	return invoke('refresh_mcp_servers').then((value: unknown) => parseMcpRefreshResult(value));
 }
 
 /** Set the persisted and live Skill enabled state through the admin command. */

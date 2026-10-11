@@ -63,6 +63,24 @@ function manifest(name: string, root: string, label: string, enabled = true) {
 	};
 }
 
+function mcpServer(name: string, status: string) {
+	return {
+		name,
+		transport: 'stdio',
+		command: 'server.exe',
+		args: [],
+		env: [],
+		cwd: null,
+		url: '',
+		enabled: true,
+		status,
+		tools: [],
+		last_error: null,
+		diagnostic: null,
+		last_seen_at: null,
+	};
+}
+
 describe('ToolsView toolbar actions', () => {
 	beforeEach(() => {
 		registerAppListener.mockClear();
@@ -97,9 +115,9 @@ describe('ToolsView toolbar actions', () => {
 		);
 		await fireEvent.click(screen.getByRole('tab', { name: '技能' }));
 		expect(screen.getByRole('heading', { name: '技能' })).toBeTruthy();
-		expect((screen.getByRole('switch', { name: '切换技能 docs' }) as HTMLInputElement).disabled).toBe(
-			true,
-		);
+		expect(
+			(screen.getByRole('switch', { name: '切换技能 docs' }) as HTMLInputElement).disabled,
+		).toBe(true);
 		expect(screen.getByText('缺少入口脚本，无法执行')).toBeTruthy();
 		await fireEvent.click(screen.getByRole('tab', { name: 'MCP' }));
 		expect(screen.getByRole('heading', { name: 'MCP 服务器' })).toBeTruthy();
@@ -130,15 +148,7 @@ describe('ToolsView toolbar actions', () => {
 				};
 			}
 			if (command === 'list_mcp_servers') {
-				return [
-					{
-						name: 'docs-server',
-						transport: 'stdio',
-						enabled: true,
-						status: 'Disconnected',
-						tools: [],
-					},
-				];
+				return [mcpServer('docs-server', 'Disconnected')];
 			}
 			if (command === 'list_skills') {
 				return [
@@ -266,15 +276,7 @@ describe('ToolsView toolbar actions', () => {
 		invoke.mockImplementation(async (command: string) => {
 			if (command === 'list_builtin_tool_manifests') return { tools: [] };
 			if (command === 'list_mcp_servers') {
-				return [
-					{
-						name: 'docs-server',
-						transport: 'stdio',
-						enabled: true,
-						status: 'Connected',
-						tools: [],
-					},
-				];
+				return [mcpServer('docs-server', 'Connected')];
 			}
 			if (command === 'list_skills') return [];
 			if (command === 'reconnect_mcp_server') {

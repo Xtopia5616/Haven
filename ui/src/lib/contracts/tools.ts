@@ -1,12 +1,9 @@
 /**
- * ToolsView command response contracts derived from generated Rust wire DTOs.
- * Tool manifest projections and runtime MCP status validation remain at the renderer boundary.
+ * ToolsView command types derived from generated Rust wire DTOs.
+ * MCP wire validation and renderer projections live in contracts/mcp.ts.
  */
 import type {
-	McpRefreshResult as GeneratedMcpRefreshResult,
 	McpServerConfig as GeneratedMcpServerConfig,
-	McpServerSnapshot as GeneratedMcpServerSnapshot,
-	McpToolInfo as GeneratedMcpToolInfo,
 	SkillInfo as GeneratedSkillInfo,
 	SkillExecutionResponse as GeneratedSkillExecutionResponse,
 	BuiltinToolManifestListResponse as GeneratedBuiltinToolManifestListResponse,
@@ -16,11 +13,8 @@ import type {
 export type BuiltinToolManifestListResponse = GeneratedBuiltinToolManifestListResponse;
 export type SkillInfo = GeneratedSkillInfo;
 export type SkillExecutionResponse = GeneratedSkillExecutionResponse;
-export type McpToolInfo = GeneratedMcpToolInfo;
-export type McpServerSnapshot = GeneratedMcpServerSnapshot;
 export type McpServerConfig = GeneratedMcpServerConfig;
 export type McpServerConfigInput = TauriCommandRequest<'add_mcp_server'>['config'];
-export type McpRefreshResult = GeneratedMcpRefreshResult;
 export type ExecuteSkillRequest = TauriCommandRequest<'execute_skill'>;
 
 /** Flat command arguments are aliases of the generated Rust handler shapes. */

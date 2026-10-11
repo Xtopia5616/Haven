@@ -990,3 +990,4 @@
 - [0999：统一 Settings 数值类型与模型配置完整性校验](0999-normalize-settings-numeric-and-model-validation.md)
 - [1000：统一运维日志与本机路径响应边界](1000-normalize-operational-log-boundaries.md)
 - [1001：Agent 生命周期状态使用 Common 唯一入口](1001-use-common-lifecycle-path-in-agent.md)
+- [1002：收敛 MCP command response 校验与 renderer view](1002-normalize-mcp-command-response-boundary.md)

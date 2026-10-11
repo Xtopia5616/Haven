@@ -7,7 +7,7 @@
 	import { withStringValue } from '$lib/typedCallbacks.ts';
 	import type { McpServerTransportInput } from '$lib/contracts/generatedCommands.ts';
 	import type { McpServerConfigInput } from '$lib/contracts/tools.ts';
-	import type { McpServerSnapshot } from '$lib/contracts/tools.ts';
+	import type { McpServerSnapshotView } from '$lib/contracts/mcp.ts';
 
 	interface EditorConfig extends McpServerConfigInput {
 		name: string;
@@ -21,7 +21,7 @@
 	}
 
 	interface Props {
-		server?: McpServerSnapshot | null;
+		server?: McpServerSnapshotView | null;
 		onClose: () => void;
 		onSave: (config: EditorConfig) => Promise<void> | void;
 		existingNames?: string[];

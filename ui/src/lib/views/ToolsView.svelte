@@ -1,13 +1,13 @@
 <script lang="ts">
 	let { isVisible = true }: { isVisible?: boolean } = $props();
-	let mcpServers = $state<McpServerSnapshot[]>([]);
+	let mcpServers = $state<McpServerSnapshotView[]>([]);
 	let skills = $state<SkillInfo[]>([]);
 	let builtinTools = $state<BuiltinToolEntry[]>([]);
 	let activeTab = $state<ToolTabId>('builtin');
 	let searchQuery = $state('');
 	let enabledFilter = $state<'all' | 'enabled' | 'disabled'>('all');
 	let mcpDialogOpen = $state(false);
-	let mcpEditServer = $state<McpServerSnapshot | null>(null);
+	let mcpEditServer = $state<McpServerSnapshotView | null>(null);
 
 	import { onMount, onDestroy } from 'svelte';
 	import {
@@ -50,10 +50,8 @@
 	} from '$lib/builtinToolPresentation.ts';
 	import { setToolManifests } from '$lib/toolManifest.ts';
 	import type { BuiltinToolEntry } from '$lib/builtinToolPresentation.ts';
-	import type {
-		McpServerConfigInput,
-		McpServerSnapshot,
-	} from '$lib/contracts/generatedCommands.ts';
+	import type { McpServerConfigInput } from '$lib/contracts/generatedCommands.ts';
+	import type { McpServerSnapshotView } from '$lib/contracts/mcp.ts';
 	import type { SkillInfo } from '$lib/contracts/tools.ts';
 
 	interface ResourceFilterItem {
@@ -315,7 +313,7 @@
 		mcpDialogOpen = true;
 	}
 
-	function openEditDialog(server: McpServerSnapshot) {
+	function openEditDialog(server: McpServerSnapshotView) {
 		mcpEditServer = server;
 		mcpDialogOpen = true;
 	}
