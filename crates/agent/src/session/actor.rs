@@ -2514,7 +2514,7 @@ mod queue_tests {
         let events = vec![crate::types::TranscriptRecord::Thought {
             step_number: 1,
             text: "replayed thought".into(),
-            message_id: "step-actor-test".into(),
+            message_id: "step-00000000000000000000000000000001".into(),
         }];
         engine
             .seed_transcript_events(&session.id, &events, 1)

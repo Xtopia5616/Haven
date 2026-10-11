@@ -19,7 +19,7 @@ use serde_json::Value;
 use tokio::sync::broadcast;
 
 use crate::event::{AgentEvent, AgentEventEmitter, EventDispatcher};
-use crate::types::TranscriptRecord;
+use crate::types::{TranscriptRecord, ensure_canonical_id};
 
 const PUBLISHED_SEQUENCE_LIMIT: usize = 8192;
 
@@ -64,10 +64,56 @@ pub(super) enum CommittedUi {
     Supplement { supplement_id: String },
 }
 
+impl CommittedUi {
+    fn validate_for_record(&self, record: &TranscriptRecord) -> anyhow::Result<()> {
+        match self {
+            Self::ToolCalls { cards } => {
+                anyhow::ensure!(
+                    matches!(record, TranscriptRecord::ToolCall { .. }),
+                    "tool-call UI annotation must accompany a tool_call record"
+                );
+                for card in cards {
+                    ensure_canonical_id(&card.step_id, "step", "ui.tool_calls[].step_id")?;
+                }
+            }
+            Self::Observation { card } => {
+                let TranscriptRecord::ToolResult { step_id, .. } = record else {
+                    anyhow::bail!("observation UI annotation must accompany a tool_result record");
+                };
+                ensure_canonical_id(&card.step_id, "step", "ui.observation.step_id")?;
+                anyhow::ensure!(
+                    &card.step_id == step_id,
+                    "ui.observation.step_id must match tool_result.step_id"
+                );
+                for asset_id in &card.result.assets {
+                    ensure_canonical_id(asset_id, "asset", "ui.observation.result.assets[]")?;
+                }
+            }
+            Self::Supplement { supplement_id } => {
+                let TranscriptRecord::UserInject { message_id, .. } = record else {
+                    anyhow::bail!("supplement UI annotation must accompany a user_inject record");
+                };
+                ensure_canonical_id(supplement_id, "msg", "ui.supplement.supplement_id")?;
+                if let Some(message_id) = message_id {
+                    anyhow::ensure!(
+                        supplement_id == message_id,
+                        "ui.supplement.supplement_id must match user_inject.message_id"
+                    );
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
 pub(super) fn encode_transcript_payload(
     record: &TranscriptRecord,
     ui: Option<&CommittedUi>,
 ) -> anyhow::Result<String> {
+    record.validate_identity()?;
+    if let Some(ui) = ui {
+        ui.validate_for_record(record)?;
+    }
     let mut value = serde_json::to_value(record)?;
     if let Some(ui) = ui {
         let object = value
@@ -267,22 +313,41 @@ pub(super) fn agent_events_from_committed(event: &SessionEvent) -> Vec<AgentEven
             return Vec::new();
         }
     };
-    let ui =
-        value
-            .get("ui")
-            .cloned()
-            .and_then(|ui| match serde_json::from_value::<CommittedUi>(ui) {
-                Ok(ui) => Some(ui),
-                Err(error) => {
+    if let Err(error) = record.validate_identity() {
+        tracing::warn!(
+            session_id = %event.session_id,
+            sequence = event.sequence,
+            %error,
+            "committed transcript identity is invalid; skipping UI publish"
+        );
+        return Vec::new();
+    }
+    let ui = match value.get("ui").cloned() {
+        Some(ui_value) => match serde_json::from_value::<CommittedUi>(ui_value) {
+            Ok(ui) => {
+                if let Err(error) = ui.validate_for_record(&record) {
                     tracing::warn!(
                         session_id = %event.session_id,
                         sequence = event.sequence,
                         %error,
-                        "committed transcript UI annotation does not decode"
+                        "committed transcript UI identity is invalid; skipping UI publish"
                     );
-                    None
+                    return Vec::new();
                 }
-            });
+                Some(ui)
+            }
+            Err(error) => {
+                tracing::warn!(
+                    session_id = %event.session_id,
+                    sequence = event.sequence,
+                    %error,
+                    "committed transcript UI annotation does not decode"
+                );
+                None
+            }
+        },
+        None => None,
+    };
     let event_seq = u64::try_from(event.sequence).ok();
     let run_id = event.run_id.unwrap_or(0);
     let session_id = event.session_id.clone();
@@ -409,6 +474,10 @@ mod tests {
     use haven_memory::{Database, SessionStore};
     use std::sync::Mutex;
 
+    const STEP_ID_1: &str = "step-00000000000000000000000000000001";
+    const STEP_ID_2: &str = "step-00000000000000000000000000000002";
+    const MESSAGE_ID_1: &str = "msg-00000000000000000000000000000001";
+
     struct RecordingEmitter {
         events: Arc<Mutex<Vec<AgentEvent>>>,
     }
@@ -424,7 +493,7 @@ mod tests {
         let record = TranscriptRecord::Thought {
             step_number: 2,
             text: "keep".into(),
-            message_id: "step-keep".into(),
+            message_id: STEP_ID_1.into(),
         };
         SessionEvent {
             session_id: "ses-1".into(),
@@ -464,7 +533,7 @@ mod tests {
                     tool_name: "tool_a".into(),
                     tool_input: serde_json::json!({}),
                     tool_call_id: Some("call-a".into()),
-                    step_id: "step-a".into(),
+                    step_id: STEP_ID_1.into(),
                     tool_index: 0,
                     suppress_streamed_thought: false,
                 },
@@ -472,7 +541,7 @@ mod tests {
                     tool_name: "tool_b".into(),
                     tool_input: serde_json::json!({}),
                     tool_call_id: Some("call-b".into()),
-                    step_id: "step-b".into(),
+                    step_id: STEP_ID_2.into(),
                     tool_index: 1,
                     suppress_streamed_thought: false,
                 },
@@ -513,7 +582,7 @@ mod tests {
                 event_seq: Some(9),
                 message_id,
                 ..
-            } if thought == "keep" && message_id == "step-keep"
+            } if thought == "keep" && message_id == STEP_ID_1
         ));
     }
 
@@ -563,10 +632,10 @@ mod tests {
         assert!(seen.lock().unwrap().is_empty());
 
         publisher
-            .publish_tool_call(&emitter, "ses-1", "step-a")
+            .publish_tool_call(&emitter, "ses-1", STEP_ID_1)
             .await;
         publisher
-            .publish_tool_call(&emitter, "ses-1", "step-a")
+            .publish_tool_call(&emitter, "ses-1", STEP_ID_1)
             .await;
         let events = seen.lock().unwrap().clone();
         assert_eq!(events.len(), 1);
@@ -577,11 +646,11 @@ mod tests {
                 step_id,
                 event_seq: Some(10),
                 ..
-            } if tool_name == "tool_a" && step_id == "step-a"
+            } if tool_name == "tool_a" && step_id == STEP_ID_1
         ));
 
         publisher
-            .publish_tool_call(&emitter, "ses-1", "step-b")
+            .publish_tool_call(&emitter, "ses-1", STEP_ID_2)
             .await;
         let events = seen.lock().unwrap().clone();
         assert_eq!(events.len(), 2);
@@ -592,23 +661,25 @@ mod tests {
                 step_id,
                 event_seq: Some(10),
                 ..
-            } if tool_name == "tool_b" && step_id == "step-b"
+            } if tool_name == "tool_b" && step_id == STEP_ID_2
         ));
     }
 
     #[test]
     fn ui_annotation_does_not_break_transcript_decode() {
-        let record = TranscriptRecord::Thought {
+        let record = TranscriptRecord::UserInject {
             step_number: 1,
+            source: haven_common::types::InjectSource::FollowUp,
             text: "x".into(),
-            message_id: "step-x".into(),
+            media_inputs: Vec::new(),
+            message_id: Some(MESSAGE_ID_1.into()),
         };
         let ui = CommittedUi::Supplement {
-            supplement_id: "msg-1".into(),
+            supplement_id: MESSAGE_ID_1.into(),
         };
         let payload = encode_transcript_payload(&record, Some(&ui)).unwrap();
         let decoded: TranscriptRecord = serde_json::from_str(&payload).unwrap();
-        assert!(matches!(decoded, TranscriptRecord::Thought { text, .. } if text == "x"));
+        assert!(matches!(decoded, TranscriptRecord::UserInject { text, .. } if text == "x"));
     }
 
     #[tokio::test]
@@ -633,7 +704,7 @@ mod tests {
         let record = TranscriptRecord::Thought {
             step_number: 1,
             text: "from-store".into(),
-            message_id: "step-store".into(),
+            message_id: STEP_ID_1.into(),
         };
         let payload = encode_transcript_payload(&record, None).unwrap();
         let committed = store
@@ -663,5 +734,83 @@ mod tests {
                 ..
             } if thought == "from-store" && *sequence == committed.sequence as u64
         ));
+    }
+
+    #[test]
+    fn invalid_transcript_identity_is_not_published() {
+        let mut event = thought_event(20);
+        event.payload =
+            r#"{"type":"thought","step_number":2,"text":"bad","message_id":"step-invalid"}"#.into();
+        assert!(agent_events_from_committed(&event).is_empty());
+    }
+
+    #[test]
+    fn invalid_committed_ui_identity_is_not_published() {
+        let mut event = tool_call_event(21);
+        let mut payload: Value = serde_json::from_str(&event.payload).unwrap();
+        payload["ui"]["cards"][0]["step_id"] = Value::String("step-invalid".into());
+        event.payload = serde_json::to_string(&payload).unwrap();
+        assert!(agent_events_from_committed(&event).is_empty());
+    }
+
+    #[test]
+    fn transcript_writer_rejects_noncanonical_ids() {
+        let record = TranscriptRecord::Thought {
+            step_number: 1,
+            text: "bad".into(),
+            message_id: "msg-00000000000000000000000000000001".into(),
+        };
+        assert!(record.to_payload().is_err());
+    }
+
+    #[test]
+    fn observation_ui_reuses_tool_result_step_and_validates_assets() {
+        let record = TranscriptRecord::ToolResult {
+            step_number: 1,
+            tool_index: 0,
+            step_id: STEP_ID_1.into(),
+            canonical_observation: "done".into(),
+            history_observation: "done".into(),
+            tool_call_id: Some("provider/call-id".into()),
+            tool_call: crate::types::ToolCall {
+                tool_name: "media".into(),
+                tool_input: serde_json::json!({}),
+                is_final: false,
+                tool_call_id: Some("provider/call-id".into()),
+            },
+        };
+        let mut result = ToolResultEnvelope::default();
+        result
+            .assets
+            .push("asset-00000000000000000000000000000001".into());
+        let ui = CommittedUi::Observation {
+            card: Box::new(StoredObservationUi {
+                tool_name: "media".into(),
+                tool_call_id: Some("provider/call-id".into()),
+                step_id: STEP_ID_1.into(),
+                tool_index: 0,
+                silent: false,
+                ask_options: Vec::new(),
+                idempotency: OperationIdempotency::Unknown,
+                operation_scope: ToolOperationScope::Session,
+                renderer: "media".into(),
+                result,
+            }),
+        };
+        ui.validate_for_record(&record).unwrap();
+
+        let mut bad_step = ui.clone();
+        let CommittedUi::Observation { card } = &mut bad_step else {
+            unreachable!()
+        };
+        card.step_id = STEP_ID_2.into();
+        assert!(bad_step.validate_for_record(&record).is_err());
+
+        let mut bad_asset = ui;
+        let CommittedUi::Observation { card } = &mut bad_asset else {
+            unreachable!()
+        };
+        card.result.assets[0] = "asset-invalid".into();
+        assert!(bad_asset.validate_for_record(&record).is_err());
     }
 }

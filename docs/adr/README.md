@@ -954,3 +954,4 @@
 - [0963：在 Memory 持久边界校验 transcript identity](0963-validate-memory-transcript-identities.md)
 - [0964：统一 Admin 会话结果身份字段](0964-name-and-validate-admin-session-identity.md)
 - [0965：校验用量持久化补偿身份](0965-validate-usage-persistence-identities.md)
+- [0966：校验 Agent transcript 事件身份](0966-validate-agent-transcript-identities.md)

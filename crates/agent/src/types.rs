@@ -1,6 +1,8 @@
 use haven_common::media::{MediaAssetSource, MediaInput, MediaInputStrategy};
 use haven_common::text::sanitize_prompt_field;
-use haven_common::types::{CanonicalMessage, CanonicalToolCall, ContentPart, InjectSource};
+use haven_common::types::{
+    CanonicalMessage, CanonicalToolCall, ContentPart, InjectSource, is_canonical_id,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -100,6 +102,99 @@ pub(crate) enum TranscriptRecord {
         episode_id: String,
         degraded: bool,
     },
+}
+
+impl TranscriptRecord {
+    /// Validate Haven-owned identities in the durable transcript payload.
+    /// Provider-owned tool-call ids and provider JSON remain opaque.
+    pub(crate) fn validate_identity(&self) -> anyhow::Result<()> {
+        match self {
+            Self::Thought { message_id, .. } => {
+                ensure_canonical_id(message_id, "step", "message_id")
+            }
+            Self::Reasoning { message_id, .. } => {
+                ensure_canonical_id(message_id, "msg", "message_id")
+            }
+            Self::ToolCall { .. } => Ok(()),
+            Self::ToolResult { step_id, .. } => ensure_canonical_id(step_id, "step", "step_id"),
+            Self::UserInject {
+                media_inputs,
+                message_id,
+                ..
+            } => {
+                if let Some(message_id) = message_id {
+                    ensure_canonical_id(message_id, "msg", "message_id")?;
+                }
+                validate_media_inputs(media_inputs)
+            }
+            Self::MediaPlan {
+                media_inputs,
+                projections,
+                notices,
+                ..
+            } => {
+                validate_media_inputs(media_inputs)?;
+                for projection in projections {
+                    ensure_canonical_id(&projection.asset_id, "asset", "projections[].asset_id")?;
+                }
+                for notice in notices {
+                    ensure_canonical_id(&notice.asset_id, "asset", "notices[].asset_id")?;
+                }
+                Ok(())
+            }
+            Self::CompactSummary {
+                compacted,
+                media_inputs,
+                episode_id,
+                ..
+            } => {
+                ensure_canonical_id(episode_id, "msg", "episode_id")?;
+                for message in compacted {
+                    if let Some(message_id) = &message.id {
+                        ensure_canonical_id(message_id, "msg", "compacted[].id")?;
+                    }
+                }
+                validate_media_inputs(media_inputs)
+            }
+        }
+    }
+
+    pub(crate) fn to_payload(&self) -> anyhow::Result<String> {
+        self.validate_identity()?;
+        Ok(serde_json::to_string(self)?)
+    }
+}
+
+pub(crate) fn ensure_canonical_id(id: &str, prefix: &str, field: &str) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        is_canonical_id(id, prefix),
+        "invalid {field}: expected canonical {prefix}- identity"
+    );
+    Ok(())
+}
+
+fn validate_media_inputs(inputs: &[MediaInput]) -> anyhow::Result<()> {
+    use haven_common::media::MediaRepresentationPayload;
+
+    for input in inputs {
+        ensure_canonical_id(
+            &input.asset.asset_id,
+            "asset",
+            "media_inputs[].asset.asset_id",
+        )?;
+        for representation in &input.representations {
+            if let MediaRepresentationPayload::ManagedFileRef { asset_id, .. } =
+                &representation.payload
+            {
+                ensure_canonical_id(
+                    asset_id,
+                    "asset",
+                    "media_inputs[].representations[].asset_id",
+                )?;
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Rollback point saved before tool execution (§2 / Phase 8 F4).
@@ -554,11 +649,179 @@ mod tests {
     use super::*;
     use haven_common::media::message_attachment_to_media_input;
     use haven_common::media::{
-        MediaDerivation, MediaProvenance, MediaRepresentation, MediaRepresentationKind,
+        MediaDerivation, MediaInput, MediaPlanNotice, MediaPlanNoticeCode, MediaProjection,
+        MediaProjectionMode, MediaProvenance, MediaRepresentation, MediaRepresentationKind,
         MediaRepresentationPayload,
     };
     use haven_common::types::CanonicalRole;
     use haven_common::types::MessageAttachment;
+
+    const STEP_ID: &str = "step-00000000000000000000000000000001";
+    const MESSAGE_ID: &str = "msg-00000000000000000000000000000001";
+    const ASSET_ID: &str = "asset-00000000000000000000000000000001";
+
+    fn valid_media_input() -> MediaInput {
+        let mut attachment = MessageAttachment::new("image/png", "aGVsbG8=");
+        attachment.asset_id = Some(ASSET_ID.into());
+        message_attachment_to_media_input(&attachment).for_snapshot()
+    }
+
+    fn compact_summary(episode_id: &str, compacted: Vec<CanonicalMessage>) -> TranscriptRecord {
+        TranscriptRecord::CompactSummary {
+            step_number: 1,
+            compacted,
+            media_inputs: Vec::new(),
+            summary: "summary".into(),
+            tokens_before: 2,
+            tokens_after: 1,
+            episode_id: episode_id.into(),
+            degraded: false,
+        }
+    }
+
+    #[test]
+    fn transcript_records_validate_haven_ids_and_preserve_provider_ids() {
+        let mut records = vec![
+            TranscriptRecord::Thought {
+                step_number: 1,
+                text: "thought".into(),
+                message_id: STEP_ID.into(),
+            },
+            TranscriptRecord::Reasoning {
+                step_number: 1,
+                text: "reasoning".into(),
+                message_id: MESSAGE_ID.into(),
+            },
+            TranscriptRecord::ToolCall {
+                step_number: 1,
+                text: "call".into(),
+                tool_calls: vec![CanonicalToolCall {
+                    id: "provider/call-id".into(),
+                    name: "example".into(),
+                    arguments: serde_json::json!({}),
+                }],
+                reasoning: None,
+                web_search_calls: Vec::new(),
+                thinking_blocks: Vec::new(),
+            },
+            TranscriptRecord::ToolResult {
+                step_number: 1,
+                tool_index: 0,
+                step_id: STEP_ID.into(),
+                canonical_observation: "done".into(),
+                history_observation: "done".into(),
+                tool_call_id: Some("provider/call-id".into()),
+                tool_call: ToolCall {
+                    tool_name: "example".into(),
+                    tool_input: serde_json::json!({}),
+                    is_final: false,
+                    tool_call_id: Some("provider/call-id".into()),
+                },
+            },
+            TranscriptRecord::UserInject {
+                step_number: 1,
+                source: InjectSource::FollowUp,
+                text: "look".into(),
+                media_inputs: vec![valid_media_input()],
+                message_id: Some(MESSAGE_ID.into()),
+            },
+        ];
+        for record in &records {
+            record.validate_identity().unwrap();
+            record.to_payload().unwrap();
+        }
+
+        let TranscriptRecord::ToolCall { tool_calls, .. } = &records[2] else {
+            unreachable!()
+        };
+        assert_eq!(tool_calls[0].id, "provider/call-id");
+
+        let mut bad_reasoning = records[1].clone();
+        if let TranscriptRecord::Reasoning { message_id, .. } = &mut bad_reasoning {
+            *message_id = STEP_ID.into();
+        }
+        assert!(bad_reasoning.validate_identity().is_err());
+
+        let mut bad_tool_result = records[3].clone();
+        if let TranscriptRecord::ToolResult { step_id, .. } = &mut bad_tool_result {
+            *step_id = MESSAGE_ID.into();
+        }
+        assert!(bad_tool_result.validate_identity().is_err());
+
+        let mut bad_user_message_id = records[4].clone();
+        if let TranscriptRecord::UserInject { message_id, .. } = &mut bad_user_message_id {
+            *message_id = Some(STEP_ID.into());
+        }
+        assert!(bad_user_message_id.validate_identity().is_err());
+
+        if let TranscriptRecord::Thought { message_id, .. } = &mut records[0] {
+            *message_id = MESSAGE_ID.into();
+        }
+        assert!(records[0].validate_identity().is_err());
+
+        if let TranscriptRecord::UserInject { media_inputs, .. } = &mut records[4] {
+            media_inputs[0].asset.asset_id = "asset-invalid".into();
+        }
+        assert!(records[4].validate_identity().is_err());
+    }
+
+    #[test]
+    fn transcript_record_checks_nested_asset_references_and_summary_ids() {
+        let mut media_input = valid_media_input();
+        media_input.representations[0].payload = MediaRepresentationPayload::ManagedFileRef {
+            asset_id: "asset-invalid".into(),
+            filename: None,
+        };
+        let user_inject = TranscriptRecord::UserInject {
+            step_number: 1,
+            source: InjectSource::FollowUp,
+            text: "look".into(),
+            media_inputs: vec![media_input],
+            message_id: None,
+        };
+        assert!(user_inject.validate_identity().is_err());
+
+        let media_plan = TranscriptRecord::MediaPlan {
+            step_number: 1,
+            strategy: MediaInputStrategy::Auto,
+            media_inputs: vec![valid_media_input()],
+            projections: vec![MediaProjection {
+                asset_id: ASSET_ID.into(),
+                representation: MediaRepresentationKind::RawImage,
+                mode: MediaProjectionMode::Raw,
+                provenance: MediaProvenance::Original,
+            }],
+            notices: vec![MediaPlanNotice {
+                asset_id: ASSET_ID.into(),
+                code: MediaPlanNoticeCode::RawCapabilityUnsupported,
+            }],
+        };
+        media_plan.validate_identity().unwrap();
+
+        let mut bad_projection = media_plan.clone();
+        let TranscriptRecord::MediaPlan { projections, .. } = &mut bad_projection else {
+            unreachable!()
+        };
+        projections[0].asset_id = "asset-invalid".into();
+        assert!(bad_projection.validate_identity().is_err());
+
+        let mut bad_notice = media_plan.clone();
+        let TranscriptRecord::MediaPlan { notices, .. } = &mut bad_notice else {
+            unreachable!()
+        };
+        notices[0].asset_id = "asset-invalid".into();
+        assert!(bad_notice.validate_identity().is_err());
+
+        let summary = compact_summary(MESSAGE_ID, vec![CanonicalMessage::user_text("recent")]);
+        summary.validate_identity().unwrap();
+        let bad_episode = compact_summary("msg-invalid", Vec::new());
+        assert!(bad_episode.validate_identity().is_err());
+
+        let mut message = CanonicalMessage::user_text("recent");
+        message.id = Some("msg-invalid".into());
+        let bad_message_id = compact_summary(MESSAGE_ID, vec![message]);
+        assert!(bad_message_id.validate_identity().is_err());
+    }
 
     #[test]
     fn tool_call_serde_roundtrip() {

@@ -132,14 +132,24 @@ impl ReActEngine {
             .transcript
             .into_iter()
             .map(|event| {
-                serde_json::from_str::<TranscriptRecord>(&event.payload).map_err(|error| {
+                let record =
+                    serde_json::from_str::<TranscriptRecord>(&event.payload).map_err(|error| {
+                        anyhow::anyhow!(
+                            "invalid transcript event {} for session {}: {}",
+                            event.sequence,
+                            session_id,
+                            error
+                        )
+                    })?;
+                record.validate_identity().map_err(|error| {
                     anyhow::anyhow!(
                         "invalid transcript event {} for session {}: {}",
                         event.sequence,
                         session_id,
                         error
                     )
-                })
+                })?;
+                Ok(record)
             })
             .collect::<anyhow::Result<Vec<_>>>()?;
         let branch_points = replay
@@ -167,6 +177,7 @@ impl ReActEngine {
         event: &TranscriptRecord,
         run_id: u64,
     ) -> anyhow::Result<SessionEventInput> {
+        let payload = event.to_payload()?;
         let step_number = match event {
             TranscriptRecord::Thought { step_number, .. }
             | TranscriptRecord::Reasoning { step_number, .. }
@@ -176,11 +187,7 @@ impl ReActEngine {
             | TranscriptRecord::MediaPlan { step_number, .. } => *step_number,
             TranscriptRecord::CompactSummary { step_number, .. } => *step_number,
         };
-        Ok(SessionEventInput::transcript(
-            serde_json::to_string(event)?,
-            run_id,
-            step_number,
-        ))
+        Ok(SessionEventInput::transcript(payload, run_id, step_number))
     }
 
     /// Seed the durable event log for a fresh session before the first model
@@ -218,7 +225,7 @@ impl ReActEngine {
         let _timer = self
             .metrics
             .start(MetricsPhase::EventAppend, session_id, run_id, step_number);
-        let payload = serde_json::to_string(record)?;
+        let payload = record.to_payload()?;
         self.event_store
             .append_transcript_async(session_id, &payload, run_id, step_number)
             .await

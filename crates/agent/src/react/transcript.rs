@@ -308,7 +308,7 @@ impl ReActEngine {
         let record = event.to_record(ctx.step_num);
         let payload = match committed_ui_for(&event) {
             Some(ui) => encode_transcript_payload(&record, Some(&ui))?,
-            None => serde_json::to_string(&record)?,
+            None => record.to_payload()?,
         };
         let mut committed = self.build_session_commit(ctx, &event, payload);
         let media_record = match &event {
@@ -318,11 +318,7 @@ impl ReActEngine {
             _ => None,
         };
         if let Some(media_record) = &media_record {
-            committed.push_transcript(
-                serde_json::to_string(media_record)?,
-                ctx.run_id,
-                ctx.step_num,
-            );
+            committed.push_transcript(media_record.to_payload()?, ctx.run_id, ctx.step_num);
         }
         Ok((event, record, media_record, committed))
     }
@@ -944,6 +940,66 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn durable_event_replay_rejects_noncanonical_transcript_identity() {
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let session = db.create_session("invalid transcript identity").unwrap();
+        let engine = test_engine(db);
+        engine
+            .event_store
+            .append(
+                &session.id,
+                haven_memory::TRANSCRIPT_EVENT_TYPE,
+                r#"{"type":"thought","step_number":1,"text":"x","message_id":"step-invalid"}"#,
+                Some(1),
+                Some(1),
+            )
+            .unwrap();
+
+        let error = engine
+            .load_durable_event_state(&session.id)
+            .await
+            .unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("invalid message_id: expected canonical step- identity")
+        );
+    }
+
+    #[tokio::test]
+    async fn transcript_append_rejects_noncanonical_identity_before_event_write() {
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let session = db
+            .create_session("invalid transcript append identity")
+            .unwrap();
+        let engine = test_engine(db.clone());
+        let mut live = engine.event_store.subscribe();
+        let record = TranscriptRecord::Thought {
+            step_number: 1,
+            text: "x".into(),
+            message_id: "msg-00000000000000000000000000000001".into(),
+        };
+
+        let error = engine
+            .append_transcript_record(&session.id, &record, 1, 1)
+            .await
+            .unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("expected canonical step- identity")
+        );
+        assert!(engine.event_store.read_all(&session.id).unwrap().is_empty());
+        assert!(db.list_session_messages(&session.id).unwrap().is_empty());
+        assert!(matches!(
+            live.try_recv(),
+            Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+        ));
+    }
+
+    #[tokio::test]
     async fn compact_summary_event_requires_payload_step_number() {
         let db = Arc::new(Database::open_in_memory().unwrap());
         let session = db.create_session("compact summary missing step").unwrap();
@@ -1501,7 +1557,7 @@ mod tests {
                     tool_call_id: Some(id.into()),
                 },
                 tool_index: if id == "c1" { 0 } else { 1 },
-                step_id: format!("step-{id}"),
+                step_id: haven_common::types::new_id("step"),
                 observation_card: None,
             })
             .collect();
