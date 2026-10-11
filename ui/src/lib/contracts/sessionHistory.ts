@@ -197,20 +197,25 @@ export function parseSessionResumeResponse(
 		!value.steps.every(
 			(step: unknown) =>
 				isRecord(step) &&
-				(isCanonicalEntityId(step.id, 'step') || isCanonicalEntityId(step.id, 'msg')),
+				(isCanonicalEntityId(step.step_id, 'step') ||
+					isCanonicalEntityId(step.step_id, 'msg')),
 		)
 	) {
 		throw new Error('Invalid resumed step identity');
 	}
 	const stepIds = new Set<string>(
 		value.steps
-			.filter((step: unknown) => isRecord(step) && isCanonicalEntityId(step.id, 'step'))
-			.map((step: { id: string }) => step.id),
+			.filter(
+				(step: unknown) => isRecord(step) && isCanonicalEntityId(step.step_id, 'step'),
+			)
+			.map((step: { step_id: string }) => step.step_id),
 	);
 	const supplementStepMessageIds = new Set<string>(
 		value.steps
-			.filter((step: unknown) => isRecord(step) && isCanonicalEntityId(step.id, 'msg'))
-			.map((step: { id: string }) => step.id),
+			.filter(
+				(step: unknown) => isRecord(step) && isCanonicalEntityId(step.step_id, 'msg'),
+			)
+			.map((step: { step_id: string }) => step.step_id),
 	);
 	const validResumeMessage = (
 		message: unknown,

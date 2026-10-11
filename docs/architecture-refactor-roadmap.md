@@ -1,6 +1,6 @@
 # Haven 架构降复杂度重构路线图
 
-> 状态：阶段 0–8 已完成；唯一结构 Active 为 §5.7 全项目领域术语与架构角色命名收敛。Memory 持久身份边界、transcript command adapter 归属、派生集合命名和配置/Settings 语义校验已实现；Session history/lineage/resume 命令投影的会话身份已统一为 `session_id`（ADR 0991）；其余 crate API、DTO 身份字段、配置与文档引用审查继续推进；暂无 Next。Windows 发布验收为独立 Open Gate（§5.1）。
+> 状态：阶段 0–8 已完成；唯一结构 Active 为 §5.7 全项目领域术语与架构角色命名收敛。Memory 持久身份边界、transcript command adapter 归属、派生集合命名和配置/Settings 语义校验已实现；Session history/lineage/resume 命令投影的会话身份已统一为 `session_id`（ADR 0991），resume 中 `SessionStep` 投影身份已统一为 `step_id`（ADR 0993）；其余 crate API、DTO 身份字段、配置与文档引用审查继续推进；暂无 Next。Windows 发布验收为独立 Open Gate（§5.1）。
 > 更新日期：2026-10-12
 > 范围：Agent/Session、Memory、Tools、LLM、App IPC 与 UI
 
@@ -225,9 +225,11 @@ LLM Provider 的重试、连接探测、adapter/stream 初始化以及 MCP 的�
 
 Agent 内部步骤计数及 tracing 字段统一为 `step_number`，Rust/UI 的消息身份内部引用统一为 `message_id` / `messageId`；现有事件、数据库及 IPC wire shape 保持（ADR 0990）。
 
-Session history、lineage 与 resume 响应中的 `SessionRecordDto` 统一以 `session_id` 表示会话身份；UI parser 和消费者拒绝旧泛名 `id`，数据库主键列 `sessions.id` 不变。实体字段命名审计仍需覆盖 Agent runtime `SessionInfo`/`StepInfo`、Memory `SessionStep`、fact/usage DTO 与 interaction request，并逐项确认持久事件回放兼容性（ADR 0991）。
+Session history、lineage 与 resume 响应中的 `SessionRecordDto` 统一以 `session_id` 表示会话身份；UI parser 和消费者拒绝旧泛名 `id`，数据库主键列 `sessions.id` 不变（ADR 0991）。
 
-App `MemoryFactResponse` 以 `fact_id` 表示事实身份；UI command parser 不接收旧 `id`，数据库物理列 `facts.id` 与 Memory repository `Fact` 保持 owner 内部形状。剩余身份审计聚焦 Agent runtime DTO、Memory `SessionStep`、durable `LlmUsageRecord` replay 和 heterogeneous interaction request identity（ADR 0992）。
+App `MemoryFactResponse` 以 `fact_id` 表示事实身份；UI command parser 不接收旧 `id`，数据库物理列 `facts.id` 与 Memory repository `Fact` 保持 owner 内部形状（ADR 0992）。
+
+Memory resume projection `SessionStep` 以 `step_id` 表示执行行身份；UI parser 与 transcript identity join 拒绝旧 `id`，保留 supplement 行复用 `msg-*` 的既有规则，数据库物理列 `session_steps.id` 与 durable event payload 不变（ADR 0993）。剩余实体身份审计聚焦 Agent runtime `SessionInfo`/`StepInfo`、durable `LlmUsageRecord` replay、heterogeneous interaction request identity 与其余 command DTO。
 
 Compaction、memory embedding maintenance、App 启动/恢复、clipboard history 和 managed-media cleanup 的错误日志现统一清洗；上传批次与生成媒体目录项日志移除 basename，避免暴露用户文件名（ADR 0981）。
 

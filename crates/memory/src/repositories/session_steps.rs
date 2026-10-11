@@ -41,7 +41,7 @@ fn invalid_row_id(column: usize, value: &str, expected: &str) -> rusqlite::Error
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct SessionStep {
-    pub id: String,
+    pub step_id: String,
     pub session_id: String,
     pub step_number: i32,
     pub tool_index: i32,
@@ -172,7 +172,7 @@ impl Database {
     #[cfg(any(test, feature = "test-support"))]
     fn tool_step_from_fields(fields: ToolStepFields<'_>, created_at: String) -> SessionStep {
         SessionStep {
-            id: fields.id.into(),
+            step_id: fields.id.into(),
             session_id: fields.session_id.into(),
             step_number: fields.step_number,
             tool_index: fields.tool_index,
@@ -257,7 +257,7 @@ impl Database {
         )?;
         Self::bump_step_seq(&conn, session_id)?;
         Ok(SessionStep {
-            id: id.into(),
+            step_id: id.into(),
             session_id: session_id.into(),
             step_number,
             tool_index: 0,
@@ -476,7 +476,7 @@ impl Database {
                 )
             })?;
             Ok(SessionStep {
-                id,
+                step_id: id,
                 session_id: row_session_id,
                 step_number: row.get(2)?,
                 thought: row.get(7)?,
@@ -542,13 +542,25 @@ mod tests {
         let step = db.create_thought_step(&session_id, 0, &step_id).unwrap();
         // The id is pre-minted (shared with the content message row) and the
         // thought column stays empty: the text lives in `messages`.
-        assert_eq!(step.id, step_id);
+        assert_eq!(step.step_id, step_id);
         assert!(step.thought.is_none());
         assert!(step.tool_name.is_none());
         assert!(step.tool_input.is_none());
         let steps = db.list_session_steps(&session_id).unwrap();
         assert_eq!(steps.len(), 1);
-        assert_eq!(steps[0].id, step_id);
+        assert_eq!(steps[0].step_id, step_id);
+    }
+
+    #[test]
+    fn session_step_serializes_explicit_step_identity() {
+        let db = test_db();
+        let session_id = seed_session(&db);
+        let step_id = haven_common::types::new_id("step");
+        let step = db.create_thought_step(&session_id, 0, &step_id).unwrap();
+
+        let serialized = serde_json::to_value(step).unwrap();
+        assert_eq!(serialized["step_id"], step_id);
+        assert!(serialized.get("id").is_none());
     }
 
     #[test]
@@ -560,7 +572,7 @@ mod tests {
         db.create_thought_step(&session_id, 0, &message_id).unwrap();
 
         let steps = db.list_session_steps(&session_id).unwrap();
-        assert_eq!(steps[0].id, message_id);
+        assert_eq!(steps[0].step_id, message_id);
     }
 
     #[test]
@@ -650,7 +662,7 @@ mod tests {
         let step = db
             .create_tool_step(&session_id, 0, "read_file", "{}", false, false, None, None)
             .unwrap();
-        db.complete_tool_step(&step.id, "file content here", true)
+        db.complete_tool_step(&step.step_id, "file content here", true)
             .unwrap();
         let steps = db.list_session_steps(&session_id).unwrap();
         assert_eq!(steps[0].observation.as_deref(), Some("file content here"));
@@ -664,13 +676,13 @@ mod tests {
         let step = db
             .create_tool_step(&session_id, 0, "shell", "{}", false, false, None, None)
             .unwrap();
-        assert!(db.start_tool_step(&step.id).unwrap());
+        assert!(db.start_tool_step(&step.step_id).unwrap());
         let running = db.list_session_steps(&session_id).unwrap();
         assert_eq!(running[0].status, SessionStepStatus::Running);
         assert!(running[0].started_at.is_some());
         assert!(
             db.finish_tool_step(
-                &step.id,
+                &step.step_id,
                 "cancelled while in flight",
                 ToolStepOutcome::Unknown
             )
@@ -679,13 +691,13 @@ mod tests {
         let finished = db.list_session_steps(&session_id).unwrap();
         assert_eq!(finished[0].status, SessionStepStatus::Unknown);
         assert!(finished[0].completed_at.is_some());
-        assert!(!db.start_tool_step(&step.id).unwrap());
+        assert!(!db.start_tool_step(&step.step_id).unwrap());
 
         let cancelled = db
             .create_tool_step(&session_id, 1, "shell", "{}", false, false, None, None)
             .unwrap();
         db.finish_tool_step(
-            &cancelled.id,
+            &cancelled.step_id,
             "cancelled before execution",
             ToolStepOutcome::Cancelled,
         )
@@ -729,7 +741,7 @@ mod tests {
         .unwrap();
         let steps = db.list_session_steps(&session_id).unwrap();
         assert_eq!(steps.len(), 1);
-        assert_eq!(steps[0].id, step_id);
+        assert_eq!(steps[0].step_id, step_id);
         assert_eq!(steps[0].status, SessionStepStatus::Pending);
         assert_eq!(steps[0].confirmed, Some(true));
     }
@@ -755,19 +767,19 @@ mod tests {
         let done = db
             .create_tool_step(&session_id, 1, "shell", "{}", false, false, None, None)
             .unwrap();
-        db.complete_tool_step(&done.id, "ok", true).unwrap();
+        db.complete_tool_step(&done.step_id, "ok", true).unwrap();
         let n = db
             .fail_pending_tool_run_steps(&session_id, "Session ended before tool finished")
             .unwrap();
         assert_eq!(n, 1);
         let steps = db.list_session_steps(&session_id).unwrap();
-        let pending = steps.iter().find(|s| s.id == pending_step_id).unwrap();
+        let pending = steps.iter().find(|s| s.step_id == pending_step_id).unwrap();
         assert_eq!(pending.status, SessionStepStatus::Unknown);
         assert_eq!(
             pending.observation.as_deref(),
             Some("Session ended before tool finished")
         );
-        let completed = steps.iter().find(|s| s.id == done.id).unwrap();
+        let completed = steps.iter().find(|s| s.step_id == done.step_id).unwrap();
         assert_eq!(completed.status, SessionStepStatus::Completed);
         assert_eq!(completed.observation.as_deref(), Some("ok"));
     }
@@ -872,7 +884,7 @@ mod tests {
             1,
             "only the row created before the cutoff survives"
         );
-        assert_eq!(steps[0].id, first.id);
-        assert_ne!(steps[0].id, second.id);
+        assert_eq!(steps[0].step_id, first.step_id);
+        assert_ne!(steps[0].step_id, second.step_id);
     }
 }

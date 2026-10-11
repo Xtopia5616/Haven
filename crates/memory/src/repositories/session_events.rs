@@ -3833,7 +3833,7 @@ mod tests {
 
         let pending = db.list_session_steps(&session_id).unwrap();
         assert_eq!(pending.len(), 1);
-        assert_eq!(pending[0].id, write.step_id);
+        assert_eq!(pending[0].step_id, write.step_id);
         assert_eq!(pending[0].session_id, session_id);
         assert_eq!(pending[0].step_number, 7);
         assert_eq!(pending[0].tool_index, 2);
@@ -4220,7 +4220,7 @@ mod tests {
             serde_json::to_value(store.read_active_domain_events(&session_id).unwrap()).unwrap()
         );
         assert_eq!(projection.messages[0].id, message.id);
-        assert_eq!(projection.steps[0].id, step.id);
+        assert_eq!(projection.steps[0].step_id, step.step_id);
         assert_eq!(projection.llm_usage[0].id, usage.id);
         assert!(
             projection
@@ -4369,11 +4369,11 @@ mod tests {
         let running = db
             .create_tool_step(&session_id, 1, "shell", "{}", false, false, None, None)
             .unwrap();
-        assert!(db.start_tool_step(&running.id).unwrap());
+        assert!(db.start_tool_step(&running.step_id).unwrap());
         let completed = db
             .create_tool_step(&session_id, 2, "shell", "{}", false, false, None, None)
             .unwrap();
-        db.complete_tool_step(&completed.id, "already finished", true)
+        db.complete_tool_step(&completed.step_id, "already finished", true)
             .unwrap();
         let other_pending = db
             .create_tool_step(
@@ -4392,7 +4392,7 @@ mod tests {
             .list_session_steps(&session_id)
             .unwrap()
             .into_iter()
-            .find(|step| step.id == completed.id)
+            .find(|step| step.step_id == completed.step_id)
             .unwrap()
             .completed_at;
         assert!(completed_at_before.is_some());
@@ -4400,7 +4400,7 @@ mod tests {
             .list_session_steps(&other_session.id)
             .unwrap()
             .into_iter()
-            .find(|step| step.id == other_pending.id)
+            .find(|step| step.step_id == other_pending.step_id)
             .unwrap()
             .observation;
 
@@ -4411,10 +4411,10 @@ mod tests {
 
         assert_eq!(changed, 2);
         let target_steps = db.list_session_steps(&session_id).unwrap();
-        for step_id in [&pending.id, &running.id] {
+        for step_id in [&pending.step_id, &running.step_id] {
             let step = target_steps
                 .iter()
-                .find(|step| step.id == *step_id)
+                .find(|step| step.step_id == *step_id)
                 .unwrap();
             assert_eq!(
                 step.status,
@@ -4425,7 +4425,7 @@ mod tests {
         }
         let completed_after = target_steps
             .iter()
-            .find(|step| step.id == completed.id)
+            .find(|step| step.step_id == completed.step_id)
             .unwrap();
         assert_eq!(
             completed_after.status,
@@ -4440,7 +4440,7 @@ mod tests {
         let untouched = db.list_session_steps(&other_session.id).unwrap();
         let other_pending_after = untouched
             .iter()
-            .find(|step| step.id == other_pending.id)
+            .find(|step| step.step_id == other_pending.step_id)
             .unwrap();
         assert_eq!(
             other_pending_after.status,
@@ -5619,7 +5619,7 @@ mod tests {
             db.list_session_steps(&session_id)
                 .unwrap()
                 .iter()
-                .any(|step| step.id == message_id)
+                .any(|step| step.step_id == message_id)
         );
     }
 
@@ -5723,7 +5723,7 @@ mod tests {
         assert_eq!(messages[0].id, kept_message.id);
         let steps = db.list_session_steps(&session_id).unwrap();
         assert_eq!(steps.len(), 1);
-        assert_eq!(steps[0].id, kept_step.id);
+        assert_eq!(steps[0].step_id, kept_step.step_id);
         let usage = db.list_session_llm_usage(&session_id).unwrap();
         assert_eq!(
             usage.iter().map(|record| &record.id).collect::<Vec<_>>(),
@@ -5792,7 +5792,7 @@ mod tests {
                 .list_session_steps(session_id)
                 .unwrap()
                 .into_iter()
-                .map(|step| step.id)
+                .map(|step| step.step_id)
                 .collect::<Vec<_>>();
             let usage_ids = db
                 .list_session_llm_usage(session_id)
@@ -5815,7 +5815,7 @@ mod tests {
                 db.list_session_steps(session_id)
                     .unwrap()
                     .into_iter()
-                    .map(|step| step.id)
+                    .map(|step| step.step_id)
                     .collect::<Vec<_>>(),
                 step_ids
             );
@@ -5886,7 +5886,7 @@ mod tests {
         assert_ne!(messages[0].id, discarded_message.id);
         let steps = db.list_session_steps(&session_id).unwrap();
         assert_eq!(steps.len(), 1);
-        assert_eq!(steps[0].id, kept_step.id);
+        assert_eq!(steps[0].step_id, kept_step.step_id);
         let usage = db.list_session_llm_usage(&session_id).unwrap();
         assert_eq!(
             usage.iter().map(|record| &record.id).collect::<Vec<_>>(),
@@ -6004,8 +6004,12 @@ mod tests {
         );
         let steps = db.list_session_steps(&session_id).unwrap();
         assert_eq!(steps.len(), 2);
-        assert!(steps.iter().any(|step| step.id == kept_step.id));
-        assert!(steps.iter().any(|step| step.id == discarded_step.id));
+        assert!(steps.iter().any(|step| step.step_id == kept_step.step_id));
+        assert!(
+            steps
+                .iter()
+                .any(|step| step.step_id == discarded_step.step_id)
+        );
         let usage = db.list_session_llm_usage(&session_id).unwrap();
         assert_eq!(usage.len(), 2);
         assert!(usage.iter().any(|record| record.id == kept_usage.id));
@@ -6107,7 +6111,7 @@ mod tests {
             db.list_session_steps(&session_id)
                 .unwrap()
                 .iter()
-                .any(|step| step.id == later_step.id)
+                .any(|step| step.step_id == later_step.step_id)
         );
         assert!(
             db.list_session_llm_usage(&session_id)
@@ -6183,7 +6187,7 @@ mod tests {
                 .list_session_steps(session_id)
                 .unwrap()
                 .into_iter()
-                .map(|step| step.id)
+                .map(|step| step.step_id)
                 .collect::<Vec<_>>();
             let usage_ids = db
                 .list_session_llm_usage(session_id)
@@ -6208,7 +6212,7 @@ mod tests {
                 db.list_session_steps(session_id)
                     .unwrap()
                     .into_iter()
-                    .map(|step| step.id)
+                    .map(|step| step.step_id)
                     .collect::<Vec<_>>(),
                 step_ids
             );
@@ -6425,7 +6429,7 @@ mod tests {
             1
         );
         let steps = db.list_session_steps(&session_id).unwrap();
-        assert!(steps.iter().any(|step| step.id == tool_run_id));
+        assert!(steps.iter().any(|step| step.step_id == tool_run_id));
     }
 
     #[tokio::test]
@@ -6529,7 +6533,7 @@ mod tests {
         let messages = db.list_session_messages(&session_id).unwrap();
         let steps = db.list_session_steps(&session_id).unwrap();
         assert!(messages.iter().any(|message| message.id == message_id));
-        assert!(steps.iter().any(|step| step.id == message_id));
+        assert!(steps.iter().any(|step| step.step_id == message_id));
 
         let rollback = store
             .rollback_to_async(

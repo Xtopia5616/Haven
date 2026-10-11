@@ -147,7 +147,7 @@ mod tests {
                 None,
             )
             .unwrap();
-        db.complete_tool_step(&step.id, "C:/Workspace/Haven", true)
+        db.complete_tool_step(&step.step_id, "C:/Workspace/Haven", true)
             .unwrap();
 
         let transcript = MemoryFactExtractionStore::new(db)
@@ -159,7 +159,7 @@ mod tests {
         assert_eq!(transcript.messages[0].id, user.id);
         assert_eq!(transcript.messages[0].content, "Use the checked path");
         assert_eq!(transcript.steps.len(), 1);
-        assert_eq!(transcript.steps[0].id, step.id);
+        assert_eq!(transcript.steps[0].step_id, step.step_id);
         assert_eq!(
             transcript.steps[0].observation.as_deref(),
             Some("C:/Workspace/Haven")

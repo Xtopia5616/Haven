@@ -2821,7 +2821,7 @@ mod tool_step_persistence_tests {
 
         let pending = db.list_session_steps(&session.id).unwrap();
         assert_eq!(pending.len(), 1);
-        assert_eq!(pending[0].id, step_id);
+        assert_eq!(pending[0].step_id, step_id);
         assert_eq!(pending[0].step_number, 5);
         assert_eq!(pending[0].tool_index, 3);
         assert_eq!(pending[0].tool_name.as_deref(), Some("files.read"));

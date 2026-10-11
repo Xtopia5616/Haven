@@ -29,7 +29,7 @@ type ResumeMessageFixture = {
 type ResumeFixture = {
 	session: { session_id: string };
 	messages: ResumeMessageFixture[];
-	steps: Array<{ id: string; session_id: string }>;
+	steps: Array<{ step_id: string; session_id: string }>;
 	llm_usage: Array<{ id: string; session_id: string }>;
 	interactions: Array<{
 		id: string;
@@ -56,7 +56,7 @@ function resumeResponse(): ResumeFixture {
 				attachments: [],
 			},
 		],
-		steps: [{ id: stepId, session_id: sessionId }],
+		steps: [{ step_id: stepId, session_id: sessionId }],
 		llm_usage: [
 			{
 				id: 'usage-00000000000000000000000000000004',
@@ -82,7 +82,7 @@ function resumeResponse(): ResumeFixture {
 
 function resumeResponseWithAssets(): ResumeFixture {
 	const response = resumeResponse();
-	response.steps.push({ id: messageId, session_id: sessionId });
+	response.steps.push({ step_id: messageId, session_id: sessionId });
 	response.messages = [
 		{
 			id: messageId,
@@ -162,6 +162,14 @@ describe('session history and resume identity contracts', () => {
 	it('accepts resume IDs with canonical row linkage and opaque provider IDs', () => {
 		const response = resumeResponse();
 		expect(parseSessionResumeResponse(response)).toBe(response);
+	});
+
+	it('requires resume step rows to use step_id', () => {
+		const response = resumeResponse();
+		response.steps = [{ id: stepId, session_id: sessionId } as never];
+		expect(() => parseSessionResumeResponse(response)).toThrow(
+			'Invalid resumed step identity',
+		);
 	});
 
 	it('binds resume and lineage rows to the requested owner', () => {

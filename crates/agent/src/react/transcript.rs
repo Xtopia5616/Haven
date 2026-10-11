@@ -1182,7 +1182,7 @@ mod tests {
             db.list_session_steps(&session.id)
                 .unwrap()
                 .iter()
-                .any(|step| step.id == mid && step.tool_name.is_none()),
+                .any(|step| step.step_id == mid && step.tool_name.is_none()),
             "the thought message and execution step must share the committed id"
         );
     }

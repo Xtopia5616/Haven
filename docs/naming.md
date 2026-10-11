@@ -1,6 +1,6 @@
 # Haven 命名规范
 
-> 版本: v1.181 | 日期: 2026-10-12
+> 版本: v1.182 | 日期: 2026-10-12
 
 本文档统一 Haven 项目各层的命名规则（变量名、函数名、文件名、crate 名、缩写大小写、跨层边界）。规范以现有代码中的事实模式为基础，新代码必须遵循；存量代码若与规范冲突，逐步迁移对齐。
 
@@ -356,6 +356,8 @@ Session title 读取 API 必须在名字中表达字段投影：`SessionStore::g
 Rust/DB/event 领域字段与 Tauri DTO 中，实体身份字段使用实体名限定的 `xxx_id`（如 `session_id`、`step_id`、`message_id`、`tool_run_id`）；UI 自有模型可在边界映射为 `xxxId`。数据库既有物理主键列（如 `sessions.id`）保持原名，由 Repository 映射为领域字段。尚未迁移的存量 DTO 按实体归属逐步收敛，不以结构体上下文作为省略实体名的理由；外部 provider 标识和 Tauri event envelope 序号 `id` 按各自协议保留。
 
 App 的 Memory fact command response 使用 `fact_id` 标识事实；repository 仍映射既有 `facts.id`，UI 使用生成 DTO 字段并在命令边界校验 `fact-*`，不接受泛名 `id`（ADR 0992）。
+
+Memory `SessionStep` 的恢复投影以 `step_id` 标识执行行；UI 只接受该字段，并允许 `step-*` 或按 supplement 规则复用的 `msg-*`。SQLite `session_steps.id` 保持物理列名称，Agent runtime `StepInfo.id` 属于另一个列表 contract（ADR 0993）。
 
 运行时实体 ID newtype（目前为 `ConfirmId`、`RecordingId`）通过 `new()` 调用 Common generator 生成；字符串输入用 `TryFrom` 校验类型固定前缀，Serde 反序列化执行同一校验。tuple 形状按项目 contract 保持公开字符串序列化，并标记 `#[non_exhaustive]` 阻止其他 crate 绕过验证直接构造；不保留无验证 `From<String>`。
 

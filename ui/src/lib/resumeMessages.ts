@@ -18,8 +18,10 @@ type ResumeMessageProjectionRow = Pick<
 	'id' | 'role' | 'content' | 'created_at'
 > &
 	Partial<Omit<SessionResumeMessage, 'id' | 'role' | 'content' | 'created_at'>>;
-type ResumeStepProjectionRow = Pick<SessionResumeStep, 'id' | 'step_number' | 'created_at'> &
-	Partial<Omit<SessionResumeStep, 'id' | 'step_number' | 'created_at'>>;
+type ResumeStepProjectionRow = Pick<
+	SessionResumeStep,
+	'step_id' | 'step_number' | 'created_at'
+> & Partial<Omit<SessionResumeStep, 'step_id' | 'step_number' | 'created_at'>>;
 
 /** Tolerant transcript rows consumed by the resume-message projection. */
 export interface ResumeTranscriptProjectionInput {
@@ -219,14 +221,14 @@ export function buildResumeMessages<T extends ResumeTranscriptProjectionInput>(
 ): ResumeMessage[] {
 	const items: ResumeMessage[] = [];
 	const msgs = data.messages || [];
-	const stepById = new Map((data.steps || []).map((step) => [step.id, step]));
+	const stepById = new Map((data.steps || []).map((step) => [step.step_id, step]));
 
-	// Message rows persisted under a step row's id (ask questions on new
+	// Message rows persisted under a step row's step_id (ask questions on new
 	// records, thought/follow-up content on new records) are the content
 	// view of that step. Stable ids are the only identity link.
 	const msgById = new Map(msgs.map((m) => [m.id, m]));
 	const askStepIds = new Set(
-		(data.steps || []).filter((s) => s.tool_name === 'ask').map((s) => s.id),
+		(data.steps || []).filter((s) => s.tool_name === 'ask').map((s) => s.step_id),
 	);
 
 	const msgIds = new Set();
@@ -274,7 +276,7 @@ export function buildResumeMessages<T extends ResumeTranscriptProjectionInput>(
 		// one entity. New ask records ALSO persist their question message
 		// under this id — the card below renders that message, so it must
 		// not be deduped away.
-		const stepId = step.id;
+		const stepId = step.step_id;
 		if (!step.tool_name) continue;
 		if (msgIds.has(stepId) && step.tool_name !== 'ask') continue;
 		const toolName = step.tool_name;
@@ -355,10 +357,10 @@ export function buildResumeMessages<T extends ResumeTranscriptProjectionInput>(
 	// first LLM call) leave all messages without a stepNumber, breaking
 	// rollback. New records share the id between the thought/supplement
 	// message row and its step row, so the stepNumber resolves by id alone.
-	// The step id is the only identity link needed for the message projection.
+	// The step_id is the only identity link needed for the message projection.
 	for (const step of data.steps || []) {
 		if (step.tool_name) continue;
-		const byId = items.find((i) => i.id === step.id && i.stepNumber == null);
+		const byId = items.find((i) => i.id === step.step_id && i.stepNumber == null);
 		if (byId) {
 			byId.stepNumber = step.step_number;
 			continue;

@@ -217,7 +217,7 @@ describe('session history command boundary', () => {
 		const response = {
 			session: { session_id: sessionId },
 			messages: [{ id: stepId, session_id: sessionId, attachments: [] }],
-			steps: [{ id: stepId, session_id: sessionId }],
+			steps: [{ step_id: stepId, session_id: sessionId }],
 			llm_usage: [],
 			interactions: [],
 		};

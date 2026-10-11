@@ -981,3 +981,4 @@
 - [0990：统一步骤计数与消息身份名称](0990-normalize-step-and-message-identity-names.md)
 - [0991：统一 Session command DTO 的会话身份字段](0991-name-session-command-dto-identity.md)
 - [0992：统一 Memory fact command DTO 的事实身份字段](0992-name-memory-fact-command-identity.md)
+- [0993：统一 SessionStep 投影身份字段](0993-name-session-step-projection-identity.md)

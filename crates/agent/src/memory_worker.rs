@@ -1866,7 +1866,7 @@ mod tests {
         let mut user = make_role_message(haven_common::types::CanonicalRole::User, "yes keep it");
         user.created_at = "2026-01-01T00:00:02Z".into();
         let step = SessionStep {
-            id: "step-obs1".into(),
+            step_id: "step-obs1".into(),
             session_id: "t1".into(),
             step_number: 1,
             tool_index: 0,
@@ -1965,7 +1965,7 @@ mod tests {
                 Some(&step_id),
             )
             .unwrap();
-        db.complete_tool_step(&step.id, "C:/Workspace/Haven", true)
+        db.complete_tool_step(&step.step_id, "C:/Workspace/Haven", true)
             .unwrap();
         db.conn()
             .execute(
@@ -1976,7 +1976,7 @@ mod tests {
                     "2026-01-01T00:00:03.000Z",
                     "2026-01-01T00:00:03.000Z",
                     "2026-01-01T00:00:04.000Z",
-                    step.id.as_str(),
+                    step.step_id.as_str(),
                 ],
             )
             .unwrap();

@@ -2070,7 +2070,7 @@ async fn continue_session_resumes_errored_session() {
     assert!(!msgs.iter().any(|message| message.id == partial.id));
     let steps = agent.db.list_session_steps(&session.id).unwrap();
     assert_eq!(steps.len(), 1);
-    assert_eq!(steps[0].id, kept_step.id);
+    assert_eq!(steps[0].step_id, kept_step.step_id);
     let usage = agent.db.list_session_llm_usage(&session.id).unwrap();
     assert_eq!(usage.len(), 1);
     assert_eq!(usage[0].id, kept_usage.id);

@@ -16,7 +16,7 @@ describe('buildResumeMessages', () => {
 			messages: [],
 			steps: [
 				{
-					id: 'step-unknown',
+					step_id: 'step-unknown',
 					tool_name: 'write_file',
 					status: 'unknown',
 					observation: 'may have run',
@@ -156,7 +156,7 @@ describe('buildResumeMessages', () => {
 			],
 			steps: [
 				{
-					id: 'step-s1',
+					step_id: 'step-s1',
 					tool_name: 'files',
 					observation: '{"ok":true}',
 					thought: null,
@@ -197,7 +197,7 @@ describe('buildResumeMessages', () => {
 			],
 			steps: [
 				{
-					id: 'step-view',
+					step_id: 'step-view',
 					tool_name: 'files.read',
 					tool_input: '{"path":"notes.md"}',
 					observation: '{"operation":"read","path":"notes.md","content":"ok"}',
@@ -222,7 +222,7 @@ describe('buildResumeMessages', () => {
 			messages: [],
 			steps: [
 				{
-					id: 'step-file',
+					step_id: 'step-file',
 					tool_name: 'file',
 					observation: '{"content":"old"}',
 					thought: null,
@@ -230,7 +230,7 @@ describe('buildResumeMessages', () => {
 					created_at: '2026-08-01T10:01:00Z',
 				},
 				{
-					id: 'step-search',
+					step_id: 'step-search',
 					tool_name: 'file_search',
 					observation: '{"results":[]}',
 					thought: null,
@@ -238,7 +238,7 @@ describe('buildResumeMessages', () => {
 					created_at: '2026-08-01T10:02:00Z',
 				},
 				{
-					id: 'step-schedule',
+					step_id: 'step-schedule',
 					tool_name: 'scheduled_tool_run',
 					observation: '{"scheduled_tool_runs":[]}',
 					thought: null,
@@ -277,7 +277,7 @@ describe('buildResumeMessages', () => {
 			],
 			steps: [
 				{
-					id: 'step-s1',
+					step_id: 'step-s1',
 					tool_name: 'shell',
 					tool_input: '{"cmd":"dir"}',
 					observation: '{"output":"ok"}',
@@ -311,7 +311,7 @@ describe('buildResumeMessages', () => {
 			],
 			steps: [
 				{
-					id: 'step-s1',
+					step_id: 'step-s1',
 					tool_name: 'mcp__filesystem__read',
 					tool_input: '{"path":"a.rs"}',
 					observation: '{"ok":true}',
@@ -355,7 +355,7 @@ describe('buildResumeMessages', () => {
 			],
 			steps: [
 				{
-					id: 's1',
+					step_id: 's1',
 					tool_name: 'shell',
 					tool_input: '{"command":"echo hi","silent":true}',
 					observation: '{"silent":true,"ok":true}',
@@ -408,7 +408,7 @@ describe('buildResumeMessages', () => {
 			],
 			steps: [
 				{
-					id: 't1',
+					step_id: 't1',
 					tool_name: null,
 					thought: '稍等，我检查一下',
 					silent: false,
@@ -416,7 +416,7 @@ describe('buildResumeMessages', () => {
 					created_at: '2026-08-01T10:01:00Z',
 				},
 				{
-					id: 's1',
+					step_id: 's1',
 					tool_name: 'shell',
 					observation: 'ok',
 					thought: null,
@@ -498,7 +498,7 @@ describe('buildResumeMessages', () => {
 			],
 			steps: [
 				{
-					id: 'step-s1',
+					step_id: 'step-s1',
 					tool_name: 'shell',
 					observation: 'ok',
 					thought: null,
@@ -546,7 +546,7 @@ describe('buildResumeMessages', () => {
 			],
 			steps: [
 				{
-					id: 'step-s1',
+					step_id: 'step-s1',
 					tool_name: 'shell',
 					observation: 'ok',
 					thought: null,
@@ -584,7 +584,7 @@ describe('buildResumeMessages', () => {
 			],
 			steps: [
 				{
-					id: 'step-s1',
+					step_id: 'step-s1',
 					tool_name: 'shell',
 					observation: 'ok',
 					thought: null,
@@ -624,7 +624,7 @@ describe('buildResumeMessages', () => {
 			],
 			steps: [
 				{
-					id: 'step-s1',
+					step_id: 'step-s1',
 					tool_name: 'ask',
 					observation: JSON.stringify({ ask: true }),
 					thought: null,
@@ -672,7 +672,7 @@ describe('buildResumeMessages', () => {
 			],
 			steps: [
 				{
-					id: 'step-s1',
+					step_id: 'step-s1',
 					tool_name: 'ask',
 					observation: JSON.stringify({
 						ask: true,
@@ -729,7 +729,7 @@ describe('buildResumeMessages', () => {
 			],
 			steps: [
 				{
-					id: 'step-s1',
+					step_id: 'step-s1',
 					tool_name: 'ask',
 					observation: 'Q1？',
 					thought: null,
@@ -737,7 +737,7 @@ describe('buildResumeMessages', () => {
 					created_at: '2026-08-01T10:01:00Z',
 				},
 				{
-					id: 'step-s2',
+					step_id: 'step-s2',
 					tool_name: 'ask',
 					observation: 'Q2？',
 					thought: null,
@@ -779,7 +779,7 @@ describe('buildResumeMessages', () => {
 			],
 			steps: [
 				{
-					id: 'step-t1',
+					step_id: 'step-t1',
 					tool_name: null,
 					thought: null,
 					silent: false,
@@ -818,7 +818,7 @@ describe('buildResumeMessages', () => {
 			],
 			steps: [
 				{
-					id: 'm3',
+					step_id: 'm3',
 					tool_name: null,
 					thought: null,
 					step_number: 2,
@@ -857,7 +857,7 @@ describe('buildResumeMessages', () => {
 			],
 			steps: [
 				{
-					id: 'm3',
+					step_id: 'm3',
 					tool_name: null,
 					thought: null,
 					step_number: 2,
@@ -893,7 +893,7 @@ describe('buildResumeMessages', () => {
 			],
 			steps: [
 				{
-					id: 'step-s1',
+					step_id: 'step-s1',
 					tool_name: 'ask',
 					observation: JSON.stringify({
 						ask: true,
@@ -938,7 +938,7 @@ describe('buildResumeMessages', () => {
 			],
 			steps: [
 				{
-					id: 'step-s1',
+					step_id: 'step-s1',
 					tool_name: 'ask',
 					observation: JSON.stringify({
 						ask: true,

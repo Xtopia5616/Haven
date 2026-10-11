@@ -163,7 +163,7 @@ fn push_turn_context(
                 continue;
             }
             tools.push(haven_memory::Message {
-                id: step.id.clone(),
+                id: step.step_id.clone(),
                 session_id: step.session_id.clone(),
                 role: haven_common::types::CanonicalRole::Tool,
                 content: format!("tool({name}): {body}"),
