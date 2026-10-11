@@ -812,14 +812,15 @@ impl Database {
     /// restart is stale and must not surface as live work. Idempotent.
     pub fn mark_interrupted_tool_runs(&self) -> anyhow::Result<usize> {
         let conn = self.conn();
+        let finished_at = chrono::Utc::now().to_rfc3339();
         conn.execute_batch("BEGIN IMMEDIATE")?;
         let result = (|| -> anyhow::Result<usize> {
             let n = conn.execute(
                 "UPDATE tool_runs
                  SET status = 'failed', error_reason = 'App restarted while the ToolRun was running',
-                     finished_at = datetime('now')
+                     finished_at = ?1
                  WHERE kind IN ('background', 'scheduled') AND status = 'running'",
-                [],
+                [&finished_at],
             )?;
             // Scheduled confirmations and execution claims are process-local
             // work. Running rows are failed above rather than replayed, so no
@@ -1290,12 +1291,11 @@ mod tests {
         );
 
         assert_eq!(db.mark_interrupted_tool_runs().unwrap(), 1);
-        assert_eq!(
-            db.get_tool_run("toolrun-interrupted")
-                .unwrap()
-                .unwrap()
-                .status,
-            ToolRunStatus::Failed
+        let interrupted = db.get_tool_run("toolrun-interrupted").unwrap().unwrap();
+        assert_eq!(interrupted.status, ToolRunStatus::Failed);
+        assert!(
+            chrono::DateTime::parse_from_rfc3339(interrupted.finished_at.as_deref().unwrap())
+                .is_ok()
         );
         assert_eq!(
             db.get_kv("scheduled_execution_claim.toolrun-interrupted")

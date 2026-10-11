@@ -140,7 +140,7 @@ async fn background_terminal_race_publishes_only_the_database_cas_winner() {
         complete_service
             .mark_finished(
                 &complete_id,
-                "started",
+                "2026-09-24T10:00:00Z",
                 "test",
                 "echo terminal-test",
                 "completed output".into(),
@@ -156,7 +156,9 @@ async fn background_terminal_race_publishes_only_the_database_cas_winner() {
     let cancel_id = tool_run_id.clone();
     let cancel = tokio::spawn(async move {
         cancel_barrier.wait().await;
-        cancel_service.mark_cancelled(&cancel_id, "started").await;
+        cancel_service
+            .mark_cancelled(&cancel_id, "2026-09-24T10:00:00Z")
+            .await;
     });
 
     barrier.wait().await;
@@ -208,7 +210,7 @@ async fn background_terminal_cas_loser_reconciles_without_publishing() {
         log_path: None,
         exit_code: Some(0),
         started_at: None,
-        finished_at: Some("external finish".to_owned()),
+        finished_at: Some("2026-09-24T11:00:00Z".to_owned()),
         source_step_id: None,
         truncated: false,
     };
@@ -220,7 +222,7 @@ async fn background_terminal_cas_loser_reconciles_without_publishing() {
     service
         .mark_finished(
             &tool_run_id,
-            "started",
+            "2026-09-24T10:00:00Z",
             "test",
             "echo terminal-test",
             "local loser".into(),
@@ -263,7 +265,7 @@ async fn background_terminal_storage_error_stays_running_then_retries_once() {
     service
         .mark_finished(
             &tool_run_id,
-            "started",
+            "2026-09-24T10:00:00Z",
             "test",
             "echo terminal-test",
             "retry output".into(),
@@ -331,7 +333,9 @@ async fn background_cancel_storage_error_does_not_publish_before_retry_commit() 
         ))
         .unwrap();
 
-    service.mark_cancelled(&tool_run_id, "started").await;
+    service
+        .mark_cancelled(&tool_run_id, "2026-09-24T10:00:00Z")
+        .await;
     assert_eq!(
         service.status_view(&tool_run_id).await.to_json(true)["status"],
         "running"
@@ -375,7 +379,7 @@ async fn repeated_background_completion_is_idempotent_and_publishes_once() {
         service
             .mark_finished(
                 &tool_run_id,
-                "started",
+                "2026-09-24T10:00:00Z",
                 "test",
                 "echo terminal-test",
                 output.into(),
@@ -414,7 +418,7 @@ async fn persistent_late_attach_updates_outbox_without_republishing_completion()
     service
         .mark_finished(
             &tool_run_id,
-            "started",
+            "2026-09-24T10:00:00Z",
             "test",
             "echo terminal-test",
             "late owner output".into(),
@@ -446,7 +450,7 @@ async fn late_attach_reopens_completion_after_unowned_ack() {
     service
         .mark_finished(
             &tool_run_id,
-            "started",
+            "2026-09-24T10:00:00Z",
             "test",
             "echo terminal-test",
             "late owner output".into(),
@@ -570,7 +574,7 @@ async fn missing_store_keeps_background_tool_runs_memory_only() {
             session_id: Some(session_id.clone()),
             source_step_id: None,
             state: ToolRunState::Running {
-                started_at: "started".into(),
+                started_at: "2026-09-24T10:00:00Z".into(),
             },
             kill: None,
             tail: None,
@@ -583,7 +587,7 @@ async fn missing_store_keeps_background_tool_runs_memory_only() {
     service
         .mark_finished(
             &tool_run_id,
-            "started",
+            "2026-09-24T10:00:00Z",
             "test",
             "echo memory-only",
             "memory result".into(),
@@ -642,7 +646,11 @@ async fn history_query_filters_terminal_rows_and_applies_limit_in_store() {
                 None,
                 None,
                 Some(0),
-                format!("{started_at}-finished"),
+                (chrono::DateTime::parse_from_rfc3339(started_at)
+                    .unwrap()
+                    .with_timezone(&chrono::Utc)
+                    + chrono::Duration::hours(1))
+                .to_rfc3339(),
             )
             .await
             .unwrap();
@@ -1128,7 +1136,7 @@ async fn test_background_completion_reconciles_after_broadcast_loss() {
         "toolrun-0000000000000000000000000000000b",
         Some("ses-fe54dfaa28bbc2e34df6b1bb5b110224"),
         "echo durable",
-        "started",
+        "2026-09-24T10:00:00Z",
     )
     .unwrap();
     db.finish_tool_run(
@@ -1139,7 +1147,7 @@ async fn test_background_completion_reconciles_after_broadcast_loss() {
         None,
         None,
         Some(0),
-        "finished",
+        "2026-09-24T11:00:00Z",
     )
     .unwrap();
 
@@ -1225,7 +1233,7 @@ async fn terminal_history_delete_and_completion_ack_are_atomic() {
     service
         .mark_finished(
             &tool_run_id,
-            "started",
+            "2026-09-24T10:00:00Z",
             "test",
             "echo terminal-test",
             "race output".into(),
@@ -1447,7 +1455,7 @@ async fn terminal_projection_keeps_final_output_and_releases_live_tail() {
             session_id: Some("ses-44e40abbf954168db25d58ff3fc2b17f".into()),
             source_step_id: None,
             state: ToolRunState::Running {
-                started_at: "started".into(),
+                started_at: "2026-09-24T10:00:00Z".into(),
             },
             kill: None,
             tail: Some(tail),
@@ -1461,7 +1469,7 @@ async fn terminal_projection_keeps_final_output_and_releases_live_tail() {
     service
         .mark_finished(
             &tool_run_id,
-            "started",
+            "2026-09-24T10:00:00Z",
             "test",
             "echo terminal",
             final_output.into(),
@@ -1506,7 +1514,7 @@ async fn cancellation_drops_live_output_without_projecting_it_to_terminal_state(
             session_id: Some("ses-afa7085143df5a9c48ccc8eb8e9f02fc".into()),
             source_step_id: None,
             state: ToolRunState::Running {
-                started_at: "started".into(),
+                started_at: "2026-09-24T10:00:00Z".into(),
             },
             kill: None,
             tail: Some(tail),
@@ -1516,7 +1524,9 @@ async fn cancellation_drops_live_output_without_projecting_it_to_terminal_state(
         },
     );
 
-    service.mark_cancelled(&tool_run_id, "started").await;
+    service
+        .mark_cancelled(&tool_run_id, "2026-09-24T10:00:00Z")
+        .await;
 
     assert_eq!(
         service.status_view(&tool_run_id).await.to_json(true)["status"],
@@ -1599,7 +1609,7 @@ async fn background_status_wait_feedback_carries_durable_provenance() {
             session_id: Some("ses-8c9a571950f8b821954d297b0b911587".into()),
             source_step_id: Some("step-00000000000000000000000000000006".into()),
             state: ToolRunState::Running {
-                started_at: "started".into(),
+                started_at: "2026-09-24T10:00:00Z".into(),
             },
             kill: None,
             tail: None,
@@ -1634,7 +1644,7 @@ async fn committed_background_completion_keeps_source_step_identity() {
         "toolrun-00000000000000000000000000000005",
         Some("ses-a30354858b393b4ae5d0f5481880c3a3"),
         "echo committed",
-        "started",
+        "2026-09-24T10:00:00Z",
         Some("step-00000000000000000000000000000005"),
     )
     .unwrap();
@@ -1652,7 +1662,7 @@ async fn committed_background_completion_keeps_source_step_identity() {
             session_id: Some("ses-a30354858b393b4ae5d0f5481880c3a3".into()),
             source_step_id: Some("step-00000000000000000000000000000005".into()),
             state: ToolRunState::Running {
-                started_at: "started".into(),
+                started_at: "2026-09-24T10:00:00Z".into(),
             },
             kill: None,
             tail: None,
@@ -1665,7 +1675,7 @@ async fn committed_background_completion_keeps_source_step_identity() {
     service
         .mark_finished(
             "toolrun-00000000000000000000000000000005",
-            "started",
+            "2026-09-24T10:00:00Z",
             "test",
             "echo committed",
             "done".into(),
@@ -2081,13 +2091,14 @@ async fn owned_live_cancellation_selection_is_typed_sequential_and_non_short_cir
     let terminal = "toolrun-00000000000000000000000000000015";
     let other_owner = "toolrun-00000000000000000000000000000013";
     let scheduled = "toolrun-00000000000000000000000000000014";
-    let completed =
-        TerminalTimestamps::new("started", "finished").build(TerminalPayload::Completed {
+    let completed = TerminalTimestamps::new("2026-09-24T10:00:00Z", "2026-09-24T11:00:00Z").build(
+        TerminalPayload::Completed {
             output: "done".into(),
             exit_code: Some(0),
             truncated: false,
             log_path: None,
-        });
+        },
+    );
     let scheduled_entry = ScheduledToolRunEntry {
         title: "Scheduled".into(),
         body: "belongs to another kind".into(),
@@ -2107,7 +2118,7 @@ async fn owned_live_cancellation_selection_is_typed_sequential_and_non_short_cir
                     ToolRunKind::Background,
                     Some(owner),
                     ToolRunState::Running {
-                        started_at: "started".into(),
+                        started_at: "2026-09-24T10:00:00Z".into(),
                     },
                     None,
                     None,
@@ -2130,7 +2141,7 @@ async fn owned_live_cancellation_selection_is_typed_sequential_and_non_short_cir
                 ToolRunKind::Background,
                 Some("ses-7a68751e7938ac1a9a2c590cadb9cdee"),
                 ToolRunState::Running {
-                    started_at: "started".into(),
+                    started_at: "2026-09-24T10:00:00Z".into(),
                 },
                 None,
                 None,
@@ -2231,7 +2242,7 @@ async fn full_session_cleanup_cancels_background_before_scheduled() {
             ToolRunKind::Background,
             Some(session_id),
             ToolRunState::Running {
-                started_at: "started".into(),
+                started_at: "2026-09-24T10:00:00Z".into(),
             },
             Some(kill_tx),
             None,
@@ -2329,7 +2340,10 @@ async fn session_cleanup_preserves_a_durable_scheduled_execution_claim() {
         None,
     )
     .unwrap();
-    assert!(db.start_scheduled_tool_run(tool_run_id, "started").unwrap());
+    assert!(
+        db.start_scheduled_tool_run(tool_run_id, "2026-09-24T10:00:00Z")
+            .unwrap()
+    );
     assert!(
         db.claim_scheduled_tool_run_execution(tool_run_id, "req-claimed-unrestored")
             .unwrap()
@@ -2514,8 +2528,13 @@ async fn session_cleanup_leaves_non_owner_running_and_terminal_history_unchanged
         .await;
     let session_id = "ses-cf613f1e85e966dcae4e908f7754b2f9";
     let terminal_id = "toolrun-00000000000000000000000000000017";
-    db.save_tool_run(terminal_id, Some(session_id), "echo terminal", "started")
-        .unwrap();
+    db.save_tool_run(
+        terminal_id,
+        Some(session_id),
+        "echo terminal",
+        "2026-09-24T10:00:00Z",
+    )
+    .unwrap();
     db.finish_tool_run(
         terminal_id,
         ToolRunStatus::Completed,
@@ -2524,11 +2543,11 @@ async fn session_cleanup_leaves_non_owner_running_and_terminal_history_unchanged
         None,
         None,
         Some(0),
-        "finished",
+        "2026-09-24T11:00:00Z",
     )
     .unwrap();
-    let terminal_state =
-        TerminalTimestamps::new("started", "finished").build(TerminalPayload::Completed {
+    let terminal_state = TerminalTimestamps::new("2026-09-24T10:00:00Z", "2026-09-24T11:00:00Z")
+        .build(TerminalPayload::Completed {
             output: "completed".into(),
             exit_code: Some(0),
             truncated: false,
@@ -2550,7 +2569,7 @@ async fn session_cleanup_leaves_non_owner_running_and_terminal_history_unchanged
         non_owner_id,
         Some("ses-b94f7e9be86c8c5069c9e5dce8b0834b"),
         "echo other",
-        "started",
+        "2026-09-24T10:00:00Z",
     )
     .unwrap();
     let (non_owner_kill_tx, mut non_owner_kill_rx) = tokio::sync::oneshot::channel();
@@ -2560,7 +2579,7 @@ async fn session_cleanup_leaves_non_owner_running_and_terminal_history_unchanged
             ToolRunKind::Background,
             Some("ses-b94f7e9be86c8c5069c9e5dce8b0834b"),
             ToolRunState::Running {
-                started_at: "started".into(),
+                started_at: "2026-09-24T10:00:00Z".into(),
             },
             Some(non_owner_kill_tx),
             None,
@@ -2807,7 +2826,7 @@ async fn restored_dependency_uses_durable_producer_result_and_claims_once() {
         &producer_id,
         Some("ses-57f08cd44fe1328e8c8e771fe219c608"),
         "echo result",
-        "started",
+        "2026-09-24T10:00:00Z",
     )
     .unwrap();
     db.finish_tool_run(
@@ -2818,7 +2837,7 @@ async fn restored_dependency_uses_durable_producer_result_and_claims_once() {
         None,
         None,
         Some(0),
-        "finished",
+        "2026-09-24T11:00:00Z",
     )
     .unwrap();
 
@@ -2925,7 +2944,7 @@ async fn restart_fails_running_producer_before_recovering_dependency() {
         &producer_id,
         Some("ses-57f08cd44fe1328e8c8e771fe219c608"),
         "echo pending",
-        "started",
+        "2026-09-24T10:00:00Z",
     )
     .unwrap();
 

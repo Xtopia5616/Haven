@@ -358,6 +358,7 @@ Session title 读取 API 必须在名字中表达字段投影：`SessionStore::g
 Common transcript contracts（`CanonicalMessage`、`CanonicalRole`、`CanonicalToolCall`、`ContentPart`、`FollowUp`、`InjectSource`、`MessageAttachment`、`TranscriptMessageKind`）统一从 `haven_common::types` 导入；不使用 Common crate root aliases。
 
 - ToolRun 身份字段在 Rust 类型、事件与 JSON 结果中统一命名 `tool_run_id`；前端 IPC/view DTO 只在边界映射为 `toolRunId`，不再接受或输出泛名 `id` 别名。数据库物理列 `tool_runs.id` 保持不变，Repository 行字段命名 `tool_run_id`。Tauri event envelope 的数值 `event.id` 是另一实体，继续保留原名。
+- ToolRun 持久化边界的 `started_at`、`finished_at`、定时 `due_at` 与 `created_at` 投影统一为 UTC RFC3339；写入时校验并归一 offset，读取兼容 SQLite 生成的旧 UTC 时间。定时 watch trigger 的 `due_at` 使用空字符串，损坏的 waiting `due_at` 保留给 service quarantine（ADR 0979）。
 - Admin `sessions` 与 `errors` 工具结果中的会话实体字段统一使用 `session_id`；Rust 序列化输出和 UI 专用 renderer 都消费该字段，并校验 `ses-*` canonical identity，不使用泛名 `id`（ADR 0964）。
 
 ---

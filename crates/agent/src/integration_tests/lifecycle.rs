@@ -444,7 +444,12 @@ async fn queued_tool_run_result_is_reconciled_after_session_becomes_terminal() {
     let tool_run_id = "toolrun-00000000000000000000000000000002";
     agent
         .db
-        .save_tool_run(tool_run_id, Some(&session.id), "echo race", "started")
+        .save_tool_run(
+            tool_run_id,
+            Some(&session.id),
+            "echo race",
+            "2026-09-24T10:00:00Z",
+        )
         .unwrap();
     agent
         .db
@@ -456,7 +461,7 @@ async fn queued_tool_run_result_is_reconciled_after_session_becomes_terminal() {
             None,
             None,
             Some(0),
-            "finished",
+            "2026-09-24T11:00:00Z",
         )
         .unwrap();
 
@@ -539,7 +544,7 @@ async fn unowned_terminal_completion_is_acknowledged_for_history_cleanup() {
     let tool_run_id = "toolrun-00000000000000000000000000000003";
     agent
         .db
-        .save_tool_run(tool_run_id, None, "echo unowned", "started")
+        .save_tool_run(tool_run_id, None, "echo unowned", "2026-09-24T10:00:00Z")
         .unwrap();
     agent
         .db
@@ -551,7 +556,7 @@ async fn unowned_terminal_completion_is_acknowledged_for_history_cleanup() {
             None,
             None,
             Some(0),
-            "finished",
+            "2026-09-24T11:00:00Z",
         )
         .unwrap();
 
