@@ -24,9 +24,9 @@ where
     }
 }
 
+use crate::mcp::McpServerTransport;
 use crate::types::{
-    HotkeyMode, McpTransportType, NetworkPolicy, PermissionMode, RiskLevel, SandboxMode,
-    ShellChoice,
+    HotkeyMode, NetworkPolicy, PermissionMode, RiskLevel, SandboxMode, ShellChoice,
 };
 
 mod credentials;

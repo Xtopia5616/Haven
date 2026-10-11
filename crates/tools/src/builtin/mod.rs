@@ -1475,7 +1475,10 @@ mod tests {
     #[tokio::test]
     async fn model_mcp_operations_that_can_connect_are_blocked_by_restricted_policy() {
         use admin::{AdminRequest, McpOperationArgs};
-        use haven_common::types::{McpTransportType, NetworkPolicy, SandboxMode};
+        use haven_common::{
+            mcp::McpServerTransport,
+            types::{NetworkPolicy, SandboxMode},
+        };
 
         let cases = [
             (
@@ -1490,7 +1493,7 @@ mod tests {
                 }),
                 AdminRequest::Mcp(McpOperationArgs::McpAdd {
                     name: "server-a".into(),
-                    transport: McpTransportType::Http,
+                    transport: McpServerTransport::Http,
                     command: None,
                     url: Some("https://example.invalid/mcp".into()),
                     args: Vec::new(),
@@ -1511,7 +1514,7 @@ mod tests {
                 }),
                 AdminRequest::Mcp(McpOperationArgs::McpUpdate {
                     name: "server-a".into(),
-                    transport: Some(McpTransportType::Http),
+                    transport: Some(McpServerTransport::Http),
                     command: None,
                     url: Some("https://example.invalid/mcp".into()),
                     args: None,

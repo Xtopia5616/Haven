@@ -655,7 +655,7 @@ impl Default for NotificationConfig {
 #[serde(default, deny_unknown_fields)]
 pub struct McpServerConfig {
     pub name: String,
-    pub transport: McpTransportType,
+    pub transport: McpServerTransport,
     pub command: String,
     pub args: Vec<String>,
     /// Runtime-only `NAME=VALUE` entries supplied through MCP management IPC.
@@ -696,7 +696,7 @@ impl Default for McpServerConfig {
     fn default() -> Self {
         Self {
             name: String::new(),
-            transport: McpTransportType::Stdio,
+            transport: McpServerTransport::Stdio,
             command: String::new(),
             args: Vec::new(),
             env: Vec::new(),

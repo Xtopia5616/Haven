@@ -116,24 +116,6 @@ id_newtype! {
     RecordingId
 }
 
-/// MCP transport type.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum McpTransportType {
-    #[default]
-    Stdio,
-    Http,
-}
-
-impl McpTransportType {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            McpTransportType::Stdio => "stdio",
-            McpTransportType::Http => "http",
-        }
-    }
-}
-
 /// Hotkey activation mode.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "lowercase")]

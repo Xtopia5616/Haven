@@ -95,7 +95,7 @@ fn mcp_client_status_serialize() {
 fn mcp_server_snapshot_roundtrip() {
     let snap = McpServerSnapshot {
         name: "test".into(),
-        transport: haven_common::McpTransportType::Http,
+        transport: haven_common::mcp::McpServerTransport::Http,
         command: "".into(),
         args: vec![],
         env: vec!["AUTHORIZATION=Bearer x".into()],
@@ -178,7 +178,7 @@ async fn mcp_client_snapshot_initial() {
     );
     let snap = client.snapshot().await;
     assert_eq!(snap.name, "test");
-    assert_eq!(snap.transport, haven_common::McpTransportType::Stdio);
+    assert_eq!(snap.transport, haven_common::mcp::McpServerTransport::Stdio);
     assert!(snap.enabled);
     assert!(matches!(snap.status, McpClientStatus::Disconnected));
     assert!(snap.tools.is_empty());
@@ -421,7 +421,7 @@ async fn mcp_monitor_cancels_during_reconnect_backoff() {
     let client = Arc::new(McpClient::new(
         &McpServerConfig {
             name: "monitor-backoff".into(),
-            transport: haven_common::McpTransportType::Http,
+            transport: haven_common::mcp::McpServerTransport::Http,
             url: "http://127.0.0.1:9/mcp".into(),
             ..Default::default()
         },

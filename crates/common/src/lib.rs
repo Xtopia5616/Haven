@@ -6,6 +6,7 @@ pub mod hooks;
 pub mod json;
 pub mod lifecycle;
 pub mod log_file;
+pub mod mcp;
 pub mod media;
 pub mod media_detection;
 pub mod path;
@@ -19,7 +20,6 @@ pub mod types;
 pub mod usage;
 mod workspace;
 
-pub use types::McpTransportType;
 pub use workspace::discover_workspace_root;
 
 pub use tool_run_completion::ToolRunCompletionPayload;

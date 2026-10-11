@@ -4,13 +4,13 @@
 	import MaterialField from '$lib/MaterialField.svelte';
 	import MaterialSelect from '$lib/MaterialSelect.svelte';
 	import { withStringValue } from '$lib/typedCallbacks.ts';
-	import type { McpTransportTypeInput } from '$lib/contracts/generatedCommands.ts';
+	import type { McpServerTransportInput } from '$lib/contracts/generatedCommands.ts';
 	import type { McpServerConfigInput } from '$lib/contracts/tools.ts';
 	import type { McpServerSnapshot } from '$lib/contracts/tools.ts';
 
 	interface EditorConfig extends McpServerConfigInput {
 		name: string;
-		transport: McpTransportTypeInput;
+		transport: McpServerTransportInput;
 		command: string;
 		cwd: string | null;
 		args: string[];
@@ -30,7 +30,7 @@
 
 	let isEdit = $derived(server !== null);
 	let name = $state('');
-	let transport = $state<McpTransportTypeInput>('stdio');
+	let transport = $state<McpServerTransportInput>('stdio');
 	let command = $state('');
 	let cwd = $state('');
 	let argsText = $state('');

@@ -166,8 +166,8 @@ export interface McpDiscoveryConfigInput { health_interval_secs?: number; reconn
 export interface McpDiscoveryConfig { health_interval_secs: number; reconnect_initial_ms: number; reconnect_max_ms: number; reconnect_max_retries: number }
 export interface McpEnvironmentCredentialRefInput { name: string; credential_ref?: string | null; has_value?: boolean }
 export interface McpEnvironmentCredentialRef { name: string; credential_ref?: string; has_value: boolean }
-export interface McpServerConfigInput { name?: string; transport?: McpTransportTypeInput; command?: string; args?: string[]; env?: string[]; env_refs?: McpEnvironmentCredentialRefInput[]; cwd?: string | null; url?: string; enabled?: boolean }
-export interface McpServerConfig { name: string; transport: McpTransportType; command: string; args: string[]; env_refs?: McpEnvironmentCredentialRef[]; cwd: string | null; url: string; enabled: boolean }
+export interface McpServerConfigInput { name?: string; transport?: McpServerTransportInput; command?: string; args?: string[]; env?: string[]; env_refs?: McpEnvironmentCredentialRefInput[]; cwd?: string | null; url?: string; enabled?: boolean }
+export interface McpServerConfig { name: string; transport: McpServerTransport; command: string; args: string[]; env_refs?: McpEnvironmentCredentialRef[]; cwd: string | null; url: string; enabled: boolean }
 export interface MemoryConfigInput { fact_inference_enabled?: boolean }
 export interface MemoryConfig { fact_inference_enabled: boolean }
 export interface NotificationConfigInput { session_created?: NotifyChannelsInput; session_completed?: NotifyChannelsInput; session_paused?: NotifyChannelsInput; session_resumed?: NotifyChannelsInput; session_error?: NotifyChannelsInput; permission_requested?: NotifyChannelsInput; tool_run_completed?: NotifyChannelsInput }
@@ -194,6 +194,10 @@ export const SESSION_WAITING_REASON_VALUES = ['user_input', 'user_interrupt', 'a
 export type SessionWaitingReason = (typeof SESSION_WAITING_REASON_VALUES)[number];
 export const TOOL_RUN_STATUS_VALUES = ['waiting', 'running', 'completed', 'failed', 'cancelled'] as const;
 export type ToolRunStatus = (typeof TOOL_RUN_STATUS_VALUES)[number];
+export const MCP_SERVER_TRANSPORT_INPUT_VALUES = ['stdio', 'http'] as const;
+export type McpServerTransportInput = (typeof MCP_SERVER_TRANSPORT_INPUT_VALUES)[number];
+export const MCP_SERVER_TRANSPORT_VALUES = ['stdio', 'http'] as const;
+export type McpServerTransport = (typeof MCP_SERVER_TRANSPORT_VALUES)[number];
 export interface MediaAsset { asset_id: string; content_hash: string; media_type: string; size_bytes: number; filename?: string; source: MediaAssetSource; lifecycle: MediaAssetLifecycle; expires_at?: string }
 export const MEDIA_ASSET_LIFECYCLE_VALUES = ['request', 'session', 'managed', 'external'] as const;
 export type MediaAssetLifecycle = (typeof MEDIA_ASSET_LIFECYCLE_VALUES)[number];
@@ -264,10 +268,6 @@ export const HOTKEY_MODE_INPUT_VALUES = ['toggle', 'hold'] as const;
 export type HotkeyModeInput = (typeof HOTKEY_MODE_INPUT_VALUES)[number];
 export const HOTKEY_MODE_VALUES = ['toggle', 'hold'] as const;
 export type HotkeyMode = (typeof HOTKEY_MODE_VALUES)[number];
-export const MCP_TRANSPORT_TYPE_INPUT_VALUES = ['stdio', 'http'] as const;
-export type McpTransportTypeInput = (typeof MCP_TRANSPORT_TYPE_INPUT_VALUES)[number];
-export const MCP_TRANSPORT_TYPE_VALUES = ['stdio', 'http'] as const;
-export type McpTransportType = (typeof MCP_TRANSPORT_TYPE_VALUES)[number];
 export interface MessageAttachmentInput { asset_id?: string | null; media_type: string; data: string; filename?: string | null; path?: string | null; sha256?: string | null; size_bytes?: number | null; expires_at?: string | null; representations?: MediaRepresentationInput[]; preferred_representation?: MediaRepresentationKindInput | null }
 export interface MessageAttachment { asset_id?: string; media_type: string; data: string; filename?: string; path?: string; sha256?: string; size_bytes?: number; expires_at?: string; representations?: MediaRepresentation[]; preferred_representation?: MediaRepresentationKind }
 export const NETWORK_POLICY_INPUT_VALUES = ['deny', 'ask', 'restricted', 'open'] as const;
@@ -322,7 +322,7 @@ export interface LlmConnectionReport { status: LlmConnectionStatus; reason?: Llm
 export const LLM_CONNECTION_STATUS_VALUES = ['ready', 'disconnected', 'unconfigured'] as const;
 export type LlmConnectionStatus = (typeof LLM_CONNECTION_STATUS_VALUES)[number];
 export type McpClientStatus = 'Disconnected' | 'Connecting' | 'Connected' | { 'Offline': { error: string } };
-export interface McpServerSnapshot { name: string; transport: McpTransportType; command: string; args: string[]; env: string[]; cwd: string | null; url: string; enabled: boolean; status: McpClientStatus; tools: McpToolInfo[]; last_error: string | null; diagnostic: string | null; last_seen_at: number | null }
+export interface McpServerSnapshot { name: string; transport: McpServerTransport; command: string; args: string[]; env: string[]; cwd: string | null; url: string; enabled: boolean; status: McpClientStatus; tools: McpToolInfo[]; last_error: string | null; diagnostic: string | null; last_seen_at: number | null }
 export interface McpToolInfo { name: string; description: string; input_schema: unknown }
 export const MEMORY_ENTITY_KIND_INPUT_VALUES = ['fact', 'episode'] as const;
 export type MemoryEntityKindInput = (typeof MEMORY_ENTITY_KIND_INPUT_VALUES)[number];

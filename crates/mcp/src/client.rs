@@ -6,7 +6,7 @@ use crate::transport::{
     HttpInner, HttpShared, McpClientInner, NOTIFICATION_QUEUE_CAPACITY, StdioInner,
     ToolsListChangedSignal, http_is_alive, spawn_sse_listener,
 };
-use haven_common::{McpTransportType, types::NetworkPolicy};
+use haven_common::{mcp::McpServerTransport, types::NetworkPolicy};
 use serde_json::Value;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -18,7 +18,7 @@ use tokio_util::sync::CancellationToken;
 
 pub struct McpClient {
     pub(crate) name: String,
-    pub(crate) transport: McpTransportType,
+    pub(crate) transport: McpServerTransport,
     pub(crate) command: String,
     pub(crate) args: Vec<String>,
     pub(crate) env: Vec<String>,
@@ -463,7 +463,7 @@ impl McpClient {
     /// and server are incompatible".
     pub async fn connect(&self) -> anyhow::Result<()> {
         let network_policy = *self.network_policy.read().await;
-        if matches!(self.transport, McpTransportType::Stdio)
+        if matches!(self.transport, McpServerTransport::Stdio)
             && !matches!(network_policy, NetworkPolicy::Open)
         {
             let error = anyhow::anyhow!(
@@ -505,10 +505,10 @@ impl McpClient {
 
         let mut http_shared: Option<Arc<HttpShared>> = None;
         let mut inner = match self.transport {
-            McpTransportType::Stdio => {
+            McpServerTransport::Stdio => {
                 McpClientInner::Stdio(Box::new(self.spawn_stdio(notification_tx.clone()).await?))
             }
-            McpTransportType::Http => {
+            McpServerTransport::Http => {
                 let (shared, inner) = self.spawn_http(notification_tx.clone()).await?;
                 http_shared = Some(shared);
                 McpClientInner::Http(inner)
@@ -860,7 +860,7 @@ impl McpClient {
 
     pub async fn is_alive(&self) -> bool {
         match self.transport {
-            McpTransportType::Stdio => {
+            McpServerTransport::Stdio => {
                 let mut guard = self.inner.lock().await;
                 match guard.as_mut() {
                     Some(McpClientInner::Stdio(s)) => {
@@ -869,7 +869,7 @@ impl McpClient {
                     _ => false,
                 }
             }
-            McpTransportType::Http => {
+            McpServerTransport::Http => {
                 let shared = {
                     let guard = self.inner.lock().await;
                     match guard.as_ref() {

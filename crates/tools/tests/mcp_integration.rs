@@ -1,4 +1,4 @@
-use haven_common::{McpTransportType, config::McpServerConfig};
+use haven_common::{config::McpServerConfig, mcp::McpServerTransport};
 use haven_mcp::McpClient;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -257,7 +257,7 @@ async fn create_client() -> (Arc<McpClient>, TestMcpServer) {
     let client = Arc::new(McpClient::new(
         &McpServerConfig {
             name: "echo-http".into(),
-            transport: McpTransportType::Http,
+            transport: McpServerTransport::Http,
             url: server.url.clone(),
             ..Default::default()
         },
@@ -280,7 +280,7 @@ async fn initialize_handshake_and_tools_are_discovered() {
     ));
     assert_eq!(
         client.snapshot().await.transport,
-        haven_common::McpTransportType::Http
+        haven_common::mcp::McpServerTransport::Http
     );
     let tools = client.list_tools().await.unwrap();
     assert_eq!(tools.len(), 4);
@@ -391,7 +391,7 @@ async fn tools_list_changed_refreshes_cache_end_to_end() {
     let client = Arc::new(McpClient::new(
         &McpServerConfig {
             name: "notification-http".into(),
-            transport: McpTransportType::Http,
+            transport: McpServerTransport::Http,
             url,
             ..Default::default()
         },

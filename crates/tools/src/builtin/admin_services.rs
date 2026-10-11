@@ -11,7 +11,7 @@ use haven_common::config::{
     AppConfig, ConfigLoader, ConfigPatch, ConfigVersion, LogConfig, LogLevel, McpServerConfig,
     RequestKind, RouterConfig, Settings, endpoint_credentials_ready,
 };
-use haven_common::types::McpTransportType;
+use haven_common::mcp::McpServerTransport;
 use haven_mcp::McpClientStatus;
 use serde::Serialize;
 use serde_json::Value;
@@ -925,10 +925,10 @@ impl AdminServices {
         let command = fields.command.clone().filter(|value| !value.is_empty());
         let url = fields.url.clone().filter(|value| !value.is_empty());
         match fields.transport {
-            McpTransportType::Stdio if command.is_none() => {
+            McpServerTransport::Stdio if command.is_none() => {
                 anyhow::bail!("command is required (the binary to spawn) for stdio servers")
             }
-            McpTransportType::Http if url.is_none() => {
+            McpServerTransport::Http if url.is_none() => {
                 anyhow::bail!("url is required (the HTTP endpoint) for http servers")
             }
             _ => {}

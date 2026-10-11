@@ -396,7 +396,7 @@ mod tests {
     fn mcp_snapshot_redacts_environment_values() {
         let mut snapshot = McpServerSnapshot {
             name: "demo".into(),
-            transport: haven_common::McpTransportType::Stdio,
+            transport: haven_common::mcp::McpServerTransport::Stdio,
             command: "server".into(),
             args: vec![],
             env: vec!["API_KEY=secret".into(), "NO_VALUE".into()],

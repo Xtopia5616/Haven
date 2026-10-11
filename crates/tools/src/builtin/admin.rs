@@ -22,7 +22,7 @@ use async_trait::async_trait;
 #[cfg(test)]
 use haven_common::config::McpServerConfig;
 use haven_common::config::{ConfigService, ConfigVersion, LogLevel};
-use haven_common::types::{McpTransportType, RiskLevel};
+use haven_common::{mcp::McpServerTransport, types::RiskLevel};
 use haven_llm::LlmRouter;
 use haven_mcp::{McpManager, McpReconcile};
 use haven_memory::{MemoryFactStore, SessionStore};
@@ -174,7 +174,7 @@ pub enum McpOperationArgs {
     },
     McpAdd {
         name: String,
-        transport: McpTransportType,
+        transport: McpServerTransport,
         #[serde(default)]
         command: Option<String>,
         #[serde(default)]
@@ -193,7 +193,7 @@ pub enum McpOperationArgs {
     McpUpdate {
         name: String,
         #[serde(default)]
-        transport: Option<McpTransportType>,
+        transport: Option<McpServerTransport>,
         #[serde(default)]
         command: Option<String>,
         #[serde(default)]
@@ -320,7 +320,7 @@ pub enum ConfigOperationArgs {
 #[derive(Debug, Clone)]
 pub struct McpAddFields {
     pub name: String,
-    pub transport: McpTransportType,
+    pub transport: McpServerTransport,
     pub command: Option<String>,
     pub url: Option<String>,
     pub args: Vec<String>,
@@ -333,7 +333,7 @@ pub struct McpAddFields {
 #[derive(Debug, Clone)]
 pub struct McpUpdateFields {
     pub name: String,
-    pub transport: Option<McpTransportType>,
+    pub transport: Option<McpServerTransport>,
     pub command: Option<String>,
     pub url: Option<String>,
     pub args: Option<Vec<String>>,
@@ -2008,7 +2008,7 @@ mod tests {
         let mut reconcile = McpReconcile::default();
         reconcile.to_connect_new.push(McpServerConfig {
             name: "new-server".into(),
-            transport: McpTransportType::Stdio,
+            transport: McpServerTransport::Stdio,
             command: "private-command".into(),
             args: vec!["private-arg".into()],
             env: vec!["TOKEN=private-value".into()],
@@ -2019,7 +2019,7 @@ mod tests {
         });
         reconcile.to_connect_changed.push(McpServerConfig {
             name: "changed-server".into(),
-            transport: McpTransportType::Stdio,
+            transport: McpServerTransport::Stdio,
             command: "private-command".into(),
             args: vec![],
             env: vec![],
@@ -2381,7 +2381,7 @@ mod tests {
             .mcp_server_config_source
             .upsert_fixture(McpServerConfig {
                 name: "private-server".into(),
-                transport: McpTransportType::Stdio,
+                transport: McpServerTransport::Stdio,
                 command: "hidden-command".into(),
                 args: vec!["PRIVATE_ARG_MARKER".into()],
                 env: vec!["TOKEN=PRIVATE_ENV_MARKER".into()],
@@ -2653,7 +2653,7 @@ mod tests {
             .execute(
                 AdminRequest::Mcp(McpOperationArgs::McpAdd {
                     name: "duplicate-server".into(),
-                    transport: McpTransportType::Stdio,
+                    transport: McpServerTransport::Stdio,
                     command: Some("server-one".into()),
                     url: None,
                     args: vec!["PRIVATE_ARG_MARKER".into()],
@@ -2679,7 +2679,7 @@ mod tests {
             .execute(
                 AdminRequest::Mcp(McpOperationArgs::McpAdd {
                     name: "duplicate-server".into(),
-                    transport: McpTransportType::Stdio,
+                    transport: McpServerTransport::Stdio,
                     command: Some("server-two".into()),
                     url: None,
                     args: vec!["DUPLICATE_PRIVATE_ARG".into()],
@@ -2819,7 +2819,7 @@ mod tests {
             .execute(
                 AdminRequest::Mcp(McpOperationArgs::McpAdd {
                     name: "partial-server".into(),
-                    transport: McpTransportType::Stdio,
+                    transport: McpServerTransport::Stdio,
                     command: Some(missing_command.clone()),
                     url: None,
                     args: vec!["PARTIAL_PRIVATE_ARG".into()],
@@ -2935,7 +2935,7 @@ mod tests {
             .to_string();
         let server = McpServerConfig {
             name: "broken-server".into(),
-            transport: McpTransportType::Stdio,
+            transport: McpServerTransport::Stdio,
             command: command.clone(),
             args: vec!["PRIVATE_MCP_ARG_MARKER".into()],
             env: vec!["TOKEN=PRIVATE_MCP_ENV_MARKER".into()],
@@ -3204,7 +3204,7 @@ mod tests {
             .execute(
                 AdminRequest::Mcp(McpOperationArgs::McpAdd {
                     name: "demo".into(),
-                    transport: McpTransportType::Stdio,
+                    transport: McpServerTransport::Stdio,
                     command: Some("demo-mcp".into()),
                     url: None,
                     args: Vec::new(),
@@ -3285,7 +3285,7 @@ mod tests {
             .execute(
                 AdminRequest::Mcp(McpOperationArgs::McpAdd {
                     name: "disabled-server".into(),
-                    transport: McpTransportType::Stdio,
+                    transport: McpServerTransport::Stdio,
                     command: Some("not-started".into()),
                     url: None,
                     args: Vec::new(),

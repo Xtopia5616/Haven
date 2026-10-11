@@ -2,7 +2,7 @@ import { invoke } from '$lib/tauri.ts';
 import { isMcpClientStatus } from './contracts/mcpClientStatus.ts';
 import { isRecord } from './contracts/objectGuards.ts';
 import { isOneOf } from './contracts/valueGuards.ts';
-import { MCP_TRANSPORT_TYPE_VALUES } from './contracts/generatedCommands.ts';
+import { MCP_SERVER_TRANSPORT_VALUES } from './contracts/generatedCommands.ts';
 import type {
 	ReconnectMcpServerRequest,
 	RemoveMcpServerRequest,
@@ -30,7 +30,7 @@ function validateMcpServerSnapshots(value: unknown): McpServerSnapshot[] {
 	if (
 		!value.every(
 			(snapshot) =>
-				isRecord(snapshot) && isOneOf(snapshot.transport, MCP_TRANSPORT_TYPE_VALUES),
+				isRecord(snapshot) && isOneOf(snapshot.transport, MCP_SERVER_TRANSPORT_VALUES),
 		)
 	) {
 		throw new Error('Invalid MCP server snapshot transport');
