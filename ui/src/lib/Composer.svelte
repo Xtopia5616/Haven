@@ -8,11 +8,11 @@
 	import { mediaDataUrl } from '$lib/mediaData.ts';
 	import { reportError } from '$lib/errorHandling.ts';
 	import { syncStore } from '$lib/syncStore.ts';
-	import { openContextMenu } from '$lib/contextMenu.ts';
+	import { openContextMenu } from '$lib/contextMenuStore.ts';
 	import MaterialIconButton from '$lib/MaterialIconButton.svelte';
 	import Icon from '$lib/Icon.svelte';
 	import { copyText } from '$lib/clipboard.ts';
-	import type { ContextMenuItem } from '$lib/contextMenu.ts';
+	import type { ContextMenuItem } from '$lib/contextMenuStore.ts';
 	import type { ChatAttachmentPayload, ChatFileAttachment } from '$lib/chatAttachmentTypes.ts';
 	import { DRAFT_SESSION_ID } from '$lib/sessionReducer.ts';
 

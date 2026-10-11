@@ -319,12 +319,12 @@ fn select_tools(all: &[haven_mcp::McpToolInfo], tool_names: Option<&[String]>) -
         };
     };
     let want: HashSet<&str> = names.iter().map(|s| s.as_str()).collect();
-    let mut selected = Vec::new();
+    let mut selected_tools = Vec::new();
     let mut found = HashSet::new();
     for info in all {
         if want.contains(info.name.as_str()) {
             found.insert(info.name.as_str());
-            selected.push(info.clone());
+            selected_tools.push(info.clone());
         }
     }
     let missing_tool_names = names
@@ -333,7 +333,7 @@ fn select_tools(all: &[haven_mcp::McpToolInfo], tool_names: Option<&[String]>) -
         .cloned()
         .collect();
     McpToolSelection {
-        selected_tools: selected,
+        selected_tools,
         missing_tool_names,
     }
 }
@@ -542,7 +542,7 @@ mod tests {
         };
         let result = tool
             .execute(
-                serde_json::json!({"server_name": "srv", "_session_id": "ses-x"}),
+                serde_json::json!({"server_name": "srv", "_session_id": "ses-f6a1fdb2589b63c2ebaead556897b633"}),
                 CancellationToken::new(),
             )
             .await;
@@ -555,7 +555,7 @@ mod tests {
         let tool = tool_for_tests();
         let result = tool
             .execute(
-                serde_json::json!({"server_name": "nope", "_session_id": "ses-x"}),
+                serde_json::json!({"server_name": "nope", "_session_id": "ses-f6a1fdb2589b63c2ebaead556897b633"}),
                 CancellationToken::new(),
             )
             .await;
@@ -591,13 +591,23 @@ mod tests {
             })
             .collect();
         session_tool_overlay
-            .register_many_if_within_budget("ses-x", 0, 6, padding_tools)
+            .register_many_if_within_budget(
+                "ses-f6a1fdb2589b63c2ebaead556897b633",
+                0,
+                6,
+                padding_tools,
+            )
             .await
             .unwrap();
 
         let proposed_names = vec!["new_a".into(), "new_b".into(), "new_c".into()];
         let budget = session_tool_overlay
-            .preview_registration_budget("ses-x", 0, 6, &proposed_names)
+            .preview_registration_budget(
+                "ses-f6a1fdb2589b63c2ebaead556897b633",
+                0,
+                6,
+                &proposed_names,
+            )
             .await;
         assert!(budget.exceeds_limit());
         assert_eq!(budget.session_count, 5);
@@ -605,7 +615,7 @@ mod tests {
 
         let attempt = session_tool_overlay
             .register_many_if_within_budget(
-                "ses-x",
+                "ses-f6a1fdb2589b63c2ebaead556897b633",
                 0,
                 6,
                 proposed_names
@@ -617,19 +627,25 @@ mod tests {
             )
             .await;
         assert_eq!(attempt.unwrap_err(), budget);
-        assert_eq!(session_tool_overlay.list("ses-x").await.len(), 5);
+        assert_eq!(
+            session_tool_overlay
+                .list("ses-f6a1fdb2589b63c2ebaead556897b633")
+                .await
+                .len(),
+            5
+        );
     }
 
     #[tokio::test]
     async fn session_overlay_registration_owns_version_updates() {
         let session_tool_overlay = SessionToolOverlay::new();
         let before = session_tool_overlay
-            .catalog_version_for_session("ses-x")
+            .catalog_version_for_session("ses-f6a1fdb2589b63c2ebaead556897b633")
             .await
             .session_overlay_version;
         let registered = session_tool_overlay
             .register_many_if_within_budget(
-                "ses-x",
+                "ses-f6a1fdb2589b63c2ebaead556897b633",
                 0,
                 10,
                 vec![Arc::new(crate::builtin::notify::NotifyTool) as ToolHandle],
@@ -637,7 +653,7 @@ mod tests {
             .await
             .unwrap();
         let after = session_tool_overlay
-            .catalog_version_for_session("ses-x")
+            .catalog_version_for_session("ses-f6a1fdb2589b63c2ebaead556897b633")
             .await
             .session_overlay_version;
 

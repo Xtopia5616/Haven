@@ -2022,14 +2022,19 @@ mod tests {
     async fn test_authorization_session_allow_tool_key() {
         let gw = ThresholdFixture::new(RiskLevel::Medium);
         gw.grant(
-            Some("ses-a"),
+            Some("ses-8042867cb780e3dfc14959c1fe8d87e1"),
             "tool1",
             PermissionEffect::Allow,
             PermissionScope::Session,
         )
         .await;
         let result = gw
-            .check(Some("ses-a"), "tool1", &json!({}), RiskLevel::Medium)
+            .check(
+                Some("ses-8042867cb780e3dfc14959c1fe8d87e1"),
+                "tool1",
+                &json!({}),
+                RiskLevel::Medium,
+            )
             .await;
         assert!(matches!(result, ConfirmationResult::AutoApproved));
     }
@@ -2038,25 +2043,40 @@ mod tests {
     async fn test_authorization_session_allow_is_per_session_and_per_tool() {
         let gw = ThresholdFixture::new(RiskLevel::Medium);
         gw.grant(
-            Some("ses-a"),
+            Some("ses-8042867cb780e3dfc14959c1fe8d87e1"),
             "tool1",
             PermissionEffect::Allow,
             PermissionScope::Session,
         )
         .await;
         assert!(matches!(
-            gw.check(Some("ses-a"), "tool1", &json!({}), RiskLevel::Medium)
-                .await,
+            gw.check(
+                Some("ses-8042867cb780e3dfc14959c1fe8d87e1"),
+                "tool1",
+                &json!({}),
+                RiskLevel::Medium
+            )
+            .await,
             ConfirmationResult::AutoApproved
         ));
         assert!(matches!(
-            gw.check(Some("ses-b"), "tool1", &json!({}), RiskLevel::Medium)
-                .await,
+            gw.check(
+                Some("ses-f54924ed1bcde71cb1d3e0e9d437e3e4"),
+                "tool1",
+                &json!({}),
+                RiskLevel::Medium
+            )
+            .await,
             ConfirmationResult::RequiresConfirmation { .. }
         ));
         assert!(matches!(
-            gw.check(Some("ses-a"), "tool2", &json!({}), RiskLevel::Medium)
-                .await,
+            gw.check(
+                Some("ses-8042867cb780e3dfc14959c1fe8d87e1"),
+                "tool2",
+                &json!({}),
+                RiskLevel::Medium
+            )
+            .await,
             ConfirmationResult::RequiresConfirmation { .. }
         ));
         assert!(matches!(
@@ -2083,7 +2103,7 @@ mod tests {
     async fn test_authorization_parent_key_matches_operation() {
         let gw = ThresholdFixture::new(RiskLevel::Medium);
         gw.grant(
-            Some("ses-a"),
+            Some("ses-8042867cb780e3dfc14959c1fe8d87e1"),
             "files",
             PermissionEffect::Allow,
             PermissionScope::Session,
@@ -2091,7 +2111,7 @@ mod tests {
         .await;
         let result = gw
             .check(
-                Some("ses-a"),
+                Some("ses-8042867cb780e3dfc14959c1fe8d87e1"),
                 "files",
                 &json!({"operation": "delete"}),
                 RiskLevel::High,
@@ -2104,22 +2124,33 @@ mod tests {
     async fn test_authorization_clear_session_trust() {
         let gw = ThresholdFixture::new(RiskLevel::Medium);
         gw.grant(
-            Some("ses-a"),
+            Some("ses-8042867cb780e3dfc14959c1fe8d87e1"),
             "tool1",
             PermissionEffect::Allow,
             PermissionScope::Session,
         )
         .await;
         assert!(matches!(
-            gw.check(Some("ses-a"), "tool1", &json!({}), RiskLevel::Medium)
-                .await,
+            gw.check(
+                Some("ses-8042867cb780e3dfc14959c1fe8d87e1"),
+                "tool1",
+                &json!({}),
+                RiskLevel::Medium
+            )
+            .await,
             ConfirmationResult::AutoApproved
         ));
 
-        gw.clear_session_trust("ses-a").await;
+        gw.clear_session_trust("ses-8042867cb780e3dfc14959c1fe8d87e1")
+            .await;
         assert!(matches!(
-            gw.check(Some("ses-a"), "tool1", &json!({}), RiskLevel::Medium)
-                .await,
+            gw.check(
+                Some("ses-8042867cb780e3dfc14959c1fe8d87e1"),
+                "tool1",
+                &json!({}),
+                RiskLevel::Medium
+            )
+            .await,
             ConfirmationResult::RequiresConfirmation { .. }
         ));
     }
@@ -2128,43 +2159,66 @@ mod tests {
     async fn permanent_permission_revoke_preserves_session_capability() {
         let gw = ThresholdFixture::new(RiskLevel::Medium);
         gw.grant(
-            Some("ses-a"),
+            Some("ses-8042867cb780e3dfc14959c1fe8d87e1"),
             "tool1",
             PermissionEffect::Allow,
             PermissionScope::Session,
         )
         .await;
         gw.grant(
-            Some("ses-b"),
+            Some("ses-f54924ed1bcde71cb1d3e0e9d437e3e4"),
             "tool1",
             PermissionEffect::Deny,
             PermissionScope::Session,
         )
         .await;
         assert!(matches!(
-            gw.check(Some("ses-a"), "tool1", &json!({}), RiskLevel::Medium)
-                .await,
+            gw.check(
+                Some("ses-8042867cb780e3dfc14959c1fe8d87e1"),
+                "tool1",
+                &json!({}),
+                RiskLevel::Medium
+            )
+            .await,
             ConfirmationResult::AutoApproved
         ));
 
         assert!(!gw.revoke_permanent("tool1").await);
         assert!(matches!(
-            gw.check(Some("ses-a"), "tool1", &json!({}), RiskLevel::Medium)
-                .await,
+            gw.check(
+                Some("ses-8042867cb780e3dfc14959c1fe8d87e1"),
+                "tool1",
+                &json!({}),
+                RiskLevel::Medium
+            )
+            .await,
             ConfirmationResult::AutoApproved
         ));
         assert!(
-            gw.revoke_session_grant("ses-a", &CapabilityScope::from("tool1"))
-                .await
+            gw.revoke_session_grant(
+                "ses-8042867cb780e3dfc14959c1fe8d87e1",
+                &CapabilityScope::from("tool1")
+            )
+            .await
         );
         assert!(matches!(
-            gw.check(Some("ses-a"), "tool1", &json!({}), RiskLevel::Medium)
-                .await,
+            gw.check(
+                Some("ses-8042867cb780e3dfc14959c1fe8d87e1"),
+                "tool1",
+                &json!({}),
+                RiskLevel::Medium
+            )
+            .await,
             ConfirmationResult::RequiresConfirmation { .. }
         ));
         assert!(matches!(
-            gw.check(Some("ses-b"), "tool1", &json!({}), RiskLevel::Medium)
-                .await,
+            gw.check(
+                Some("ses-f54924ed1bcde71cb1d3e0e9d437e3e4"),
+                "tool1",
+                &json!({}),
+                RiskLevel::Medium
+            )
+            .await,
             ConfirmationResult::Blocked { .. }
         ));
     }
@@ -2180,7 +2234,7 @@ mod tests {
         )
         .await;
         gw.grant(
-            Some("ses-a"),
+            Some("ses-8042867cb780e3dfc14959c1fe8d87e1"),
             "files",
             PermissionEffect::Allow,
             PermissionScope::Session,
@@ -2190,17 +2244,30 @@ mod tests {
         assert_eq!(gw.clear_permanent().await, 1);
         assert!(gw.list_permanent().await.is_empty());
         assert!(matches!(
-            gw.check(Some("ses-a"), "files", &json!({}), RiskLevel::Medium)
-                .await,
+            gw.check(
+                Some("ses-8042867cb780e3dfc14959c1fe8d87e1"),
+                "files",
+                &json!({}),
+                RiskLevel::Medium
+            )
+            .await,
             ConfirmationResult::AutoApproved
         ));
         assert!(
-            gw.revoke_session_grant("ses-a", &CapabilityScope::from("files"))
-                .await
+            gw.revoke_session_grant(
+                "ses-8042867cb780e3dfc14959c1fe8d87e1",
+                &CapabilityScope::from("files")
+            )
+            .await
         );
         assert!(matches!(
-            gw.check(Some("ses-a"), "files", &json!({}), RiskLevel::Medium)
-                .await,
+            gw.check(
+                Some("ses-8042867cb780e3dfc14959c1fe8d87e1"),
+                "files",
+                &json!({}),
+                RiskLevel::Medium
+            )
+            .await,
             ConfirmationResult::RequiresConfirmation { .. }
         ));
     }
@@ -2226,27 +2293,42 @@ mod tests {
     async fn test_authorization_set_mode_clears_session_grants() {
         let gw = ThresholdFixture::new(RiskLevel::Low);
         gw.grant(
-            Some("ses-a"),
+            Some("ses-8042867cb780e3dfc14959c1fe8d87e1"),
             "tool1",
             PermissionEffect::Allow,
             PermissionScope::Session,
         )
         .await;
         assert!(matches!(
-            gw.check(Some("ses-a"), "tool1", &json!({}), RiskLevel::Medium)
-                .await,
+            gw.check(
+                Some("ses-8042867cb780e3dfc14959c1fe8d87e1"),
+                "tool1",
+                &json!({}),
+                RiskLevel::Medium
+            )
+            .await,
             ConfirmationResult::AutoApproved
         ));
 
         gw.set_permission_mode(PermissionMode::Default).await;
         assert!(matches!(
-            gw.check(Some("ses-a"), "tool1", &json!({}), RiskLevel::Medium)
-                .await,
+            gw.check(
+                Some("ses-8042867cb780e3dfc14959c1fe8d87e1"),
+                "tool1",
+                &json!({}),
+                RiskLevel::Medium
+            )
+            .await,
             ConfirmationResult::RequiresConfirmation { .. }
         ));
         assert!(matches!(
-            gw.check(Some("ses-a"), "tool1", &json!({}), RiskLevel::Low)
-                .await,
+            gw.check(
+                Some("ses-8042867cb780e3dfc14959c1fe8d87e1"),
+                "tool1",
+                &json!({}),
+                RiskLevel::Low
+            )
+            .await,
             ConfirmationResult::RequiresConfirmation { .. }
         ));
     }
@@ -2399,7 +2481,7 @@ mod tests {
         )
         .await;
         gw.grant(
-            Some("ses-a"),
+            Some("ses-8042867cb780e3dfc14959c1fe8d87e1"),
             "files",
             PermissionEffect::Deny,
             PermissionScope::Session,
@@ -2407,7 +2489,7 @@ mod tests {
         .await;
         assert!(matches!(
             gw.check(
-                Some("ses-a"),
+                Some("ses-8042867cb780e3dfc14959c1fe8d87e1"),
                 "files",
                 &json!({"operation": "delete"}),
                 RiskLevel::High
@@ -2476,14 +2558,14 @@ mod tests {
     async fn test_authorization_session_parent_deny_beats_session_child_allow() {
         let gw = ThresholdFixture::new(RiskLevel::Medium);
         gw.grant(
-            Some("ses-a"),
+            Some("ses-8042867cb780e3dfc14959c1fe8d87e1"),
             "system.power",
             PermissionEffect::Deny,
             PermissionScope::Session,
         )
         .await;
         gw.grant(
-            Some("ses-a"),
+            Some("ses-8042867cb780e3dfc14959c1fe8d87e1"),
             "system.power.lock",
             PermissionEffect::Allow,
             PermissionScope::Session,
@@ -2492,7 +2574,7 @@ mod tests {
 
         assert!(matches!(
             gw.check(
-                Some("ses-a"),
+                Some("ses-8042867cb780e3dfc14959c1fe8d87e1"),
                 "system",
                 &json!({"scope": "power", "operation": "lock"}),
                 RiskLevel::High,
@@ -2513,7 +2595,7 @@ mod tests {
         )
         .await;
         gw.grant(
-            Some("ses-a"),
+            Some("ses-8042867cb780e3dfc14959c1fe8d87e1"),
             "shell",
             PermissionEffect::Allow,
             PermissionScope::Session,
@@ -2521,8 +2603,13 @@ mod tests {
         .await;
 
         assert!(matches!(
-            gw.check(Some("ses-a"), "shell", &json!({}), RiskLevel::High)
-                .await,
+            gw.check(
+                Some("ses-8042867cb780e3dfc14959c1fe8d87e1"),
+                "shell",
+                &json!({}),
+                RiskLevel::High
+            )
+            .await,
             ConfirmationResult::Blocked { .. }
         ));
     }
@@ -3195,7 +3282,7 @@ mod tests {
         )
         .await;
         gw.grant(
-            Some("ses-a"),
+            Some("ses-8042867cb780e3dfc14959c1fe8d87e1"),
             &skill_name,
             PermissionEffect::Allow,
             PermissionScope::Session,
@@ -3207,8 +3294,13 @@ mod tests {
             ConfirmationResult::AutoApproved
         ));
         assert!(matches!(
-            gw.check(Some("ses-a"), &skill_name, &json!({}), RiskLevel::High)
-                .await,
+            gw.check(
+                Some("ses-8042867cb780e3dfc14959c1fe8d87e1"),
+                &skill_name,
+                &json!({}),
+                RiskLevel::High
+            )
+            .await,
             ConfirmationResult::AutoApproved
         ));
         assert!(matches!(

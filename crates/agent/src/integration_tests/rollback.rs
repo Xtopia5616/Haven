@@ -29,7 +29,7 @@ async fn rollback_rejects_closing_session_before_cancelling_owned_tool_runs() {
         },
     )
     .await;
-    let tool_run_id = "toolrun-rollback-closing";
+    let tool_run_id = "toolrun-00000000000000000000000000000004";
     let due_at = (chrono::Utc::now() + chrono::Duration::hours(1)).to_rfc3339();
     agent
         .db

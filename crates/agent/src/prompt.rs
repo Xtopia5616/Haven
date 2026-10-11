@@ -122,7 +122,7 @@ fn render_recent_context_with_budget(
 
     let mut used = HEADER.chars().count();
     let mut used_tokens = estimate_tokens(HEADER);
-    let mut selected = Vec::new();
+    let mut selected_lines = Vec::new();
     for message in session_prompt_history.iter().rev() {
         // History is user/model-produced data, not prompt instructions. Keep
         // each entry on one physical line so it cannot forge the surrounding
@@ -143,10 +143,10 @@ fn render_recent_context_with_budget(
         }
         used += line_chars;
         used_tokens = used_tokens.saturating_add(line_tokens);
-        selected.push(line);
+        selected_lines.push(line);
     }
 
-    if selected.is_empty() {
+    if selected_lines.is_empty() {
         // A single oversized newest entry is still more useful than silently
         // dropping the entire history block. The entry itself is the only
         // place where a character boundary may be introduced.
@@ -160,16 +160,16 @@ fn render_recent_context_with_budget(
             available_chars,
         );
         let safe_message = truncate_prefix_to_token_budget(&safe_message, available_tokens);
-        selected.push(take_prefix_chars(
+        selected_lines.push(take_prefix_chars(
             &format!("  {safe_message}\n"),
             available_chars,
         ));
     } else {
-        selected.reverse();
+        selected_lines.reverse();
     }
 
     let mut rendered = String::from(HEADER);
-    rendered.extend(selected);
+    rendered.extend(selected_lines);
     if rendered.chars().count() < max_chars {
         rendered.push('\n');
     }
@@ -684,17 +684,17 @@ impl SystemPromptBuilder {
             // Select by score, then re-order stably so mid-run M2 patches do
             // not reshuffle lines when relative scores jitter.
             let mut seen: HashSet<(String, String)> = HashSet::new();
-            let mut selected: Vec<&haven_memory::Fact> = Vec::new();
+            let mut selected_facts: Vec<&haven_memory::Fact> = Vec::new();
             for (_, fact) in scored {
-                if selected.len() >= MAX_FACTS_IN_PROMPT {
+                if selected_facts.len() >= MAX_FACTS_IN_PROMPT {
                     break;
                 }
                 if !seen.insert((fact.predicate.clone(), fact.object.clone())) {
                     continue;
                 }
-                selected.push(fact);
+                selected_facts.push(fact);
             }
-            selected.sort_by(|a, b| {
+            selected_facts.sort_by(|a, b| {
                 let tag_a = a.tags.first().map(|s| s.as_str()).unwrap_or("other");
                 let tag_b = b.tags.first().map(|s| s.as_str()).unwrap_or("other");
                 tag_a
@@ -710,7 +710,7 @@ impl SystemPromptBuilder {
             // Stop only when remaining budget cannot fit a minimal line.
             const MIN_FACT_LINE_CHARS: usize = 24;
 
-            for fact in selected {
+            for fact in selected_facts {
                 if facts_budget < MIN_FACT_LINE_CHARS {
                     break;
                 }

@@ -1,7 +1,9 @@
 //! Durable authorization decisions scoped to one persisted session.
 
 use crate::Database;
-use haven_common::types::{CapabilityScope, PermissionEffect, PermissionScope, PermissionTarget};
+use haven_common::types::{
+    CapabilityScope, PermissionEffect, PermissionScope, PermissionTarget, is_canonical_id,
+};
 
 /// A session-scoped authorization rule stored with its lifetime and the
 /// target selected in the confirmation UI. `capability` is the validated
@@ -47,6 +49,7 @@ impl Database {
         session_id: &str,
         grant: &SessionAuthorizationGrant,
     ) -> anyhow::Result<()> {
+        validate_session_id(session_id)?;
         anyhow::ensure!(
             grant.scope == PermissionScope::Session,
             "session authorization grant must use session scope"
@@ -81,6 +84,7 @@ impl Database {
         &self,
         session_id: &str,
     ) -> anyhow::Result<Vec<SessionAuthorizationGrant>> {
+        validate_session_id(session_id)?;
         let conn = self.conn();
         let mut statement = conn.prepare(
             "SELECT capability_key, permission_scope, permission_target, effect
@@ -125,6 +129,10 @@ impl Database {
         })?;
         rows.map(|row| {
             let (session_id, session_title, capability_key, scope, target, effect) = row?;
+            anyhow::ensure!(
+                is_canonical_id(&session_id, "ses"),
+                "stored session authorization session_id is not canonical"
+            );
             Ok(StoredSessionAuthorizationGrant {
                 session_id,
                 session_title,
@@ -140,6 +148,7 @@ impl Database {
         session_id: &str,
         capability: &CapabilityScope,
     ) -> anyhow::Result<usize> {
+        validate_session_id(session_id)?;
         let conn = self.conn();
         Ok(conn.execute(
             "DELETE FROM session_authorization_grants
@@ -153,6 +162,14 @@ impl Database {
         let conn = self.conn();
         Ok(conn.execute("DELETE FROM session_authorization_grants", [])?)
     }
+}
+
+fn validate_session_id(session_id: &str) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        is_canonical_id(session_id, "ses"),
+        "session_id must be a canonical ses-* ID"
+    );
+    Ok(())
 }
 
 fn parse_grant_row(
@@ -266,8 +283,9 @@ mod tests {
             PermissionEffect::Allow,
         );
         wrong_scope.scope = PermissionScope::Always;
+        let missing_session_id = haven_common::types::new_id("ses");
         assert!(
-            db.save_session_authorization_grant("ses-missing", &wrong_scope)
+            db.save_session_authorization_grant(&missing_session_id, &wrong_scope)
                 .is_err()
         );
 
@@ -277,7 +295,12 @@ mod tests {
             PermissionEffect::Allow,
         );
         assert!(
-            db.save_session_authorization_grant("ses-missing", &valid)
+            db.save_session_authorization_grant(&missing_session_id, &valid)
+                .is_err()
+        );
+        assert!(db.session_authorization_grants("bad-session-id").is_err());
+        assert!(
+            db.revoke_session_authorization_grant("bad-session-id", &valid.capability)
                 .is_err()
         );
     }
@@ -334,6 +357,42 @@ mod tests {
             db.session_authorization_grants(&reset.id)
                 .unwrap()
                 .is_empty()
+        );
+    }
+
+    #[test]
+    fn all_grants_rejects_noncanonical_stored_session_identity() {
+        let db = Database::open_in_memory().unwrap();
+        let session = db.create_session("corrupt authorization owner").unwrap();
+        db.save_session_authorization_grant(
+            &session.id,
+            &grant(
+                "files.read",
+                PermissionTarget::Operation,
+                PermissionEffect::Allow,
+            ),
+        )
+        .unwrap();
+
+        let conn = db.conn();
+        conn.execute_batch("PRAGMA foreign_keys = OFF;").unwrap();
+        conn.execute(
+            "UPDATE sessions SET id = ?1 WHERE id = ?2",
+            rusqlite::params!["ses-malformed", session.id],
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE session_authorization_grants SET session_id = ?1 WHERE session_id = ?2",
+            rusqlite::params!["ses-malformed", session.id],
+        )
+        .unwrap();
+        drop(conn);
+
+        assert!(
+            db.all_session_authorization_grants()
+                .unwrap_err()
+                .to_string()
+                .contains("canonical")
         );
     }
 }

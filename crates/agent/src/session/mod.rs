@@ -1995,7 +1995,7 @@ mod tests {
     async fn delete_all_sessions_cancels_tool_runs_for_unloaded_sessions() {
         let db = temp_db();
         let session = db.create_session("unloaded session to clear").unwrap();
-        let tool_run_id = "toolrun-unloaded-clear";
+        let tool_run_id = "toolrun-00000000000000000000000000000005";
         let due_at = (chrono::Utc::now() + chrono::Duration::hours(1)).to_rfc3339();
         db.save_scheduled_tool_run(
             tool_run_id,
@@ -2656,7 +2656,7 @@ mod tests {
         exec.tool_run_test_support()
             .set_store(Some(ToolRunStore::new(db.clone())))
             .await;
-        let tool_run_id = "toolrun-stuck-end-retry";
+        let tool_run_id = "toolrun-00000000000000000000000000000006";
         let due_at = (chrono::Utc::now() + chrono::Duration::hours(1)).to_rfc3339();
         db.save_scheduled_tool_run(
             tool_run_id,
@@ -2971,7 +2971,9 @@ mod tests {
         let tools = Arc::new(ToolsFacade::new());
         let exec = Arc::new(SessionSupervisor::new_for_test(db, tools, 3));
         // end_session on a nonexistent session updates DB directly.
-        let result = exec.end_session("nonexistent").await;
+        let result = exec
+            .end_session("ses-00000000000000000000000000000001")
+            .await;
         assert!(result.is_ok());
     }
 
@@ -3062,7 +3064,9 @@ mod tests {
         let db = temp_db();
         let tools = Arc::new(ToolsFacade::new());
         let exec = Arc::new(SessionSupervisor::new_for_test(db, tools, 3));
-        let result = exec.add_follow_up("nonexistent", "ctx").await;
+        let result = exec
+            .add_follow_up("ses-00000000000000000000000000000001", "ctx")
+            .await;
         assert!(result.is_err());
     }
 
@@ -3115,7 +3119,11 @@ mod tests {
         let tools = Arc::new(ToolsFacade::new());
         let exec = Arc::new(SessionSupervisor::new_for_test(db, tools, 3));
         // Absent means "not in the working set", NOT Error.
-        assert_eq!(exec.get_active_session_status("nonexistent").await, None);
+        assert_eq!(
+            exec.get_active_session_status("ses-00000000000000000000000000000001")
+                .await,
+            None
+        );
     }
 
     #[tokio::test]
@@ -3123,7 +3131,9 @@ mod tests {
         let db = temp_db();
         let tools = Arc::new(ToolsFacade::new());
         let exec = Arc::new(SessionSupervisor::new_for_test(db, tools, 3));
-        let token = exec.cancellation_token("nonexistent").await;
+        let token = exec
+            .cancellation_token("ses-00000000000000000000000000000001")
+            .await;
         assert!(!token.is_cancelled());
     }
 
@@ -3495,7 +3505,7 @@ mod tests {
     async fn end_session_persists_completed_when_actor_is_not_loaded() {
         let db = temp_db();
         let session = db.create_session("unloaded session").unwrap();
-        let tool_run_id = "toolrun-actorless-end";
+        let tool_run_id = "toolrun-00000000000000000000000000000008";
         let due_at = (chrono::Utc::now() + chrono::Duration::hours(1)).to_rfc3339();
         db.save_scheduled_tool_run(
             tool_run_id,
@@ -3537,7 +3547,7 @@ mod tests {
     async fn actorless_end_failure_pauses_and_retry_cancels_remaining_tool_run() {
         let db = temp_db();
         let session = db.create_session("actorless end retry").unwrap();
-        let tool_run_id = "toolrun-actorless-end-retry";
+        let tool_run_id = "toolrun-00000000000000000000000000000007";
         let due_at = (chrono::Utc::now() + chrono::Duration::hours(1)).to_rfc3339();
         db.save_scheduled_tool_run(
             tool_run_id,
@@ -3608,8 +3618,8 @@ mod tests {
         exec.tool_run_test_support()
             .set_store(Some(ToolRunStore::new(db.clone())))
             .await;
-        let blocked_id = "toolrun-resident-blocked";
-        let cancelled_id = "toolrun-resident-cancelled";
+        let blocked_id = "toolrun-00000000000000000000000000000009";
+        let cancelled_id = "toolrun-0000000000000000000000000000000a";
         let due_at = (chrono::Utc::now() + chrono::Duration::hours(1)).to_rfc3339();
         for tool_run_id in [blocked_id, cancelled_id] {
             db.save_scheduled_tool_run(
@@ -3678,7 +3688,7 @@ mod tests {
         exec.tool_run_test_support()
             .set_store(Some(ToolRunStore::new(db.clone())))
             .await;
-        let tool_run_id = "toolrun-end-status-write-retry";
+        let tool_run_id = "toolrun-0000000000000000000000000000000b";
         let due_at = (chrono::Utc::now() + chrono::Duration::hours(1)).to_rfc3339();
         db.save_scheduled_tool_run(
             tool_run_id,
@@ -3730,7 +3740,7 @@ mod tests {
     async fn actorless_delete_cancels_unrestored_scheduled_tool_run_before_deleting_session() {
         let db = temp_db();
         let session = db.create_session("unloaded delete session").unwrap();
-        let tool_run_id = "toolrun-actorless-delete";
+        let tool_run_id = "toolrun-0000000000000000000000000000000c";
         let due_at = (chrono::Utc::now() + chrono::Duration::hours(1)).to_rfc3339();
         db.save_scheduled_tool_run(
             tool_run_id,
@@ -3767,7 +3777,7 @@ mod tests {
     async fn session_delete_stays_open_when_durable_tool_run_cancellation_fails() {
         let db = temp_db();
         let session = db.create_session("delete fail closed").unwrap();
-        let tool_run_id = "toolrun-delete-fail-closed";
+        let tool_run_id = "toolrun-0000000000000000000000000000000d";
         let due_at = (chrono::Utc::now() + chrono::Duration::hours(1)).to_rfc3339();
         db.save_scheduled_tool_run(
             tool_run_id,
@@ -4733,10 +4743,18 @@ mod tests {
         );
 
         let _ = exec
-            .enqueue_tool_run_result(&session.id, "toolrun-1".to_string(), "toolrun-1 done")
+            .enqueue_tool_run_result(
+                &session.id,
+                "toolrun-00000000000000000000000000000014".to_string(),
+                "toolrun-00000000000000000000000000000014 done",
+            )
             .await;
         let _ = exec
-            .enqueue_tool_run_result(&session.id, "toolrun-2".to_string(), "toolrun-2 failed")
+            .enqueue_tool_run_result(
+                &session.id,
+                "toolrun-00000000000000000000000000000015".to_string(),
+                "toolrun-00000000000000000000000000000015 failed",
+            )
             .await;
 
         let drained = exec.drain_react_context(&session.id).await.tool_run_results;
@@ -4746,8 +4764,14 @@ mod tests {
                 .map(|item| (item.tool_run_result_id.as_str(), item.text.as_str()))
                 .collect::<Vec<_>>(),
             vec![
-                ("toolrun-1", "toolrun-1 done"),
-                ("toolrun-2", "toolrun-2 failed")
+                (
+                    "toolrun-00000000000000000000000000000014",
+                    "toolrun-00000000000000000000000000000014 done"
+                ),
+                (
+                    "toolrun-00000000000000000000000000000015",
+                    "toolrun-00000000000000000000000000000015 failed"
+                )
             ]
         );
         assert!(
@@ -4808,7 +4832,11 @@ mod tests {
         exec.add_follow_up(&session.id, "follow-up").await.unwrap();
         exec.add_steering(&session.id, "steering").await.unwrap();
         let _ = exec
-            .enqueue_tool_run_result(&session.id, "toolrun-result".to_string(), "ToolRun result")
+            .enqueue_tool_run_result(
+                &session.id,
+                "toolrun-00000000000000000000000000000012".to_string(),
+                "ToolRun result",
+            )
             .await;
 
         let batch = exec.drain_react_context(&session.id).await;
@@ -4893,7 +4921,11 @@ mod tests {
             .await
             .unwrap();
         let _ = exec
-            .enqueue_tool_run_result(&session.id, "toolrun-stranded".to_string(), "stranded")
+            .enqueue_tool_run_result(
+                &session.id,
+                "toolrun-00000000000000000000000000000011".to_string(),
+                "stranded",
+            )
             .await;
         let rx = exec.subscribe_status(&session.id).await;
         let _ = rx; // a subscriber must not keep the session alive after removal

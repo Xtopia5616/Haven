@@ -75,7 +75,7 @@
 	import {
 		closeContextMenu as closeGlobalContextMenu,
 		openContextMenuAt,
-	} from '$lib/contextMenu.ts';
+	} from '$lib/contextMenuStore.ts';
 	import SessionToolbar from '$lib/SessionToolbar.svelte';
 	import SessionRail from '$lib/SessionRail.svelte';
 	import ModelToolbar from '$lib/ModelToolbar.svelte';

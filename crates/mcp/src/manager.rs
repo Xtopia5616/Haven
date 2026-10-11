@@ -29,7 +29,7 @@ pub struct McpReconcile {
     /// Live clients whose server was removed from config or disabled.
     pub to_remove: Vec<String>,
     /// Enabled servers already loaded from the identical config (kept).
-    pub kept: Vec<String>,
+    pub kept_server_names: Vec<String>,
 }
 
 pub struct McpManager {
@@ -288,7 +288,7 @@ impl McpManager {
         for server in servers.iter().filter(|s| s.enabled) {
             match clients.get(&server.name) {
                 Some(existing) if existing.matches_config(server) => {
-                    out.kept.push(server.name.clone());
+                    out.kept_server_names.push(server.name.clone());
                 }
                 Some(_) => out.to_connect_changed.push(server.clone()),
                 None => out.to_connect_new.push(server.clone()),

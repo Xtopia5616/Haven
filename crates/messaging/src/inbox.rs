@@ -718,11 +718,11 @@ impl InboxBus {
         }
         let content = std::fs::read_to_string(&pending)?;
         let acknowledged: HashSet<&str> = ids.iter().map(String::as_str).collect();
-        let remaining: Vec<Envelope> = parse_envelopes(name, &content)
+        let remaining_envelopes: Vec<Envelope> = parse_envelopes(name, &content)
             .into_iter()
             .filter(|env| !acknowledged.contains(env.id.as_str()))
             .collect();
-        self.write_processing_unlocked(name, &remaining)?;
+        self.write_processing_unlocked(name, &remaining_envelopes)?;
         OpenOptions::new().create(true).append(true).open(mailbox)?;
         Ok(())
     }

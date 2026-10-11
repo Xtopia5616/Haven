@@ -2998,6 +2998,12 @@ mod tests {
         let db = Arc::new(Database::open_in_memory().unwrap());
         let session = db.create_session("summary completion duplicate").unwrap();
         let episode_id = haven_common::types::new_id("msg");
+        db.add_episode_with_id(
+            &session.id,
+            "The user prefers Rust for personal projects and tooling.",
+            &episode_id,
+        )
+        .unwrap();
         db.set_kv(
             &format!("fact_extraction_episode_done.{}.{episode_id}", session.id,),
             &session.id,
@@ -3046,6 +3052,8 @@ mod tests {
         let worker = make_engine_with_inference(db.clone(), inference.clone());
         let episode_id = haven_common::types::new_id("msg");
         let summary = "The user prefers Rust for personal projects and tooling.";
+        db.add_episode_with_id(&session.id, summary, &episode_id)
+            .unwrap();
 
         assert!(matches!(
             worker
@@ -3121,6 +3129,10 @@ mod tests {
         let summary = "The user prefers Rust for personal projects and tooling.";
         let newer_episode_id = haven_common::types::new_id("msg");
         let older_episode_id = haven_common::types::new_id("msg");
+        db.add_episode_with_id(&session.id, summary, &newer_episode_id)
+            .unwrap();
+        db.add_episode_with_id(&session.id, summary, &older_episode_id)
+            .unwrap();
 
         assert_eq!(
             worker
@@ -3172,6 +3184,8 @@ mod tests {
         let worker = make_engine_with_inference_and_interval(db.clone(), inference.clone(), 3_600);
         let episode_id = haven_common::types::new_id("msg");
         let summary = "The user prefers Rust for personal projects and tooling.";
+        db.add_episode_with_id(&session.id, summary, &episode_id)
+            .unwrap();
 
         assert!(matches!(
             worker

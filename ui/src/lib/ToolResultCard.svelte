@@ -3,7 +3,7 @@
 	import type { Snippet } from 'svelte';
 	import type { AskResponseView } from '$lib/contracts/app.ts';
 	import JsonView from '$lib/JsonView.svelte';
-	import { getSelectedTextWithin, openContextMenu } from '$lib/contextMenu.ts';
+	import { getSelectedTextWithin, openContextMenu } from '$lib/contextMenuStore.ts';
 	import MaterialCollapsible from '$lib/MaterialCollapsible.svelte';
 	import MaterialButton from '$lib/MaterialButton.svelte';
 	import MaterialIconButton from '$lib/MaterialIconButton.svelte';
@@ -27,7 +27,7 @@
 	import { toolIconName, toolRendererName, toolRootName } from '$lib/toolManifest.ts';
 	import type { AgentToolResultEnvelope } from '$lib/contracts/agent.ts';
 	import type { ToolRunPayload, ToolRunStatus } from '$lib/contracts/toolRun.ts';
-	import type { ContextMenuItem } from '$lib/contextMenu.ts';
+	import type { ContextMenuItem } from '$lib/contextMenuStore.ts';
 	import type { ToolResultPresentationOutcome } from '$lib/streaming.ts';
 
 	type TerminalToolRunStatus = Extract<ToolRunStatus, 'completed' | 'failed' | 'cancelled'>;

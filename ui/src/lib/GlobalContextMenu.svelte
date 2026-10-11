@@ -7,8 +7,8 @@
 		contextMenuStore,
 		getSelectedText,
 		openContextMenu,
-	} from '$lib/contextMenu.ts';
-	import type { ContextMenuState } from '$lib/contextMenu.ts';
+	} from '$lib/contextMenuStore.ts';
+	import type { ContextMenuState } from '$lib/contextMenuStore.ts';
 
 	// This is the single rendered menu host. Components submit domain-specific
 	// menu actions through contextMenuStore; the document-level handler below only

@@ -2,7 +2,7 @@
 	import StatusBadge from '$lib/StatusBadge.svelte';
 	import ExpandableContextCard from '$lib/ExpandableContextCard.svelte';
 	import { copyText } from '$lib/clipboard.ts';
-	import type { ContextMenuItem } from '$lib/contextMenu.ts';
+	import type { ContextMenuItem } from '$lib/contextMenuStore.ts';
 	import BuiltinToolRootCard from '$lib/BuiltinToolRootCard.svelte';
 	import type {
 		BuiltinToolCard as BuiltinToolCardModel,

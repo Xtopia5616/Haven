@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { render, fireEvent, waitFor } from '@testing-library/svelte';
 import ContextMenu from './ContextMenu.svelte';
-import type { ContextMenuItem } from './contextMenu.ts';
+import type { ContextMenuItem } from './contextMenuStore.ts';
 
 function baseItems(): ContextMenuItem[] {
 	return [

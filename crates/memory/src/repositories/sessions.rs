@@ -10,13 +10,35 @@ const SEARCH_WHERE: &str = "WHERE input_text LIKE ?1 OR title LIKE ?1
     OR EXISTS (SELECT 1 FROM messages
                WHERE messages.session_id = sessions.id AND messages.content LIKE ?1)";
 
+fn validate_session_id(id: &str) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        is_canonical_id(id, "ses"),
+        "invalid session_id: expected canonical ses- ID"
+    );
+    Ok(())
+}
+
+fn session_id_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<String> {
+    let id: String = row.get(0)?;
+    if is_canonical_id(&id, "ses") {
+        Ok(id)
+    } else {
+        Err(rusqlite::Error::FromSqlConversionFailure(
+            0,
+            rusqlite::types::Type::Text,
+            "invalid persisted session_id".into(),
+        ))
+    }
+}
+
 /// Map a row produced by a session-record query, including provenance and run-end reason.
 fn map_session_list_row(row: &rusqlite::Row) -> rusqlite::Result<Session> {
+    let id = session_id_from_row(row)?;
     let status = row.get::<_, String>(3)?;
     let origin =
         SessionOrigin::from_storage(row.get::<_, String>(6)?, row.get::<_, Option<String>>(7)?)?;
     Ok(Session {
-        id: row.get(0)?,
+        id,
         input_text: row.get(1)?,
         title: row.get(2)?,
         status: SessionStatus::from_status_str(&status),
@@ -186,6 +208,7 @@ impl Database {
     }
 
     pub fn get_session(&self, id: &str) -> anyhow::Result<Option<Session>> {
+        validate_session_id(id)?;
         let conn = self.conn();
         let mut stmt = conn.prepare(
             "SELECT id, input_text, title, status, created_at, updated_at,
@@ -207,14 +230,28 @@ impl Database {
     pub fn all_session_ids(&self) -> anyhow::Result<Vec<String>> {
         let conn = self.conn();
         let mut stmt = conn.prepare("SELECT id FROM sessions ORDER BY id ASC")?;
-        let rows = stmt.query_map([], |row| row.get(0))?;
+        let rows = stmt.query_map([], session_id_from_row)?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
     pub fn session_id_high_water(&self) -> anyhow::Result<Option<String>> {
         Ok(self
             .conn()
-            .query_row("SELECT MAX(id) FROM sessions", [], |row| row.get(0))?)
+            .query_row("SELECT MAX(id) FROM sessions", [], |row| {
+                row.get::<_, Option<String>>(0)?
+                    .map(|id| {
+                        if is_canonical_id(&id, "ses") {
+                            Ok(id)
+                        } else {
+                            Err(rusqlite::Error::FromSqlConversionFailure(
+                                0,
+                                rusqlite::types::Type::Text,
+                                "invalid persisted session_id high-water mark".into(),
+                            ))
+                        }
+                    })
+                    .transpose()
+            })?)
     }
 
     pub fn session_ids_page(
@@ -223,6 +260,10 @@ impl Database {
         high_water: &str,
         limit: usize,
     ) -> anyhow::Result<Vec<String>> {
+        if let Some(after_id) = after_id {
+            validate_session_id(after_id)?;
+        }
+        validate_session_id(high_water)?;
         anyhow::ensure!(
             (1..=MAX_MEMORY_SESSION_ID_PAGE_SIZE).contains(&limit),
             "session ID page limit must be between 1 and {MAX_MEMORY_SESSION_ID_PAGE_SIZE}"
@@ -237,12 +278,13 @@ impl Database {
         )?;
         let rows = stmt.query_map(
             rusqlite::params![after_id, high_water, limit as i64],
-            |row| row.get(0),
+            session_id_from_row,
         )?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
     pub fn update_session_status(&self, id: &str, status: SessionStatus) -> anyhow::Result<()> {
+        validate_session_id(id)?;
         let now = Utc::now().to_rfc3339();
         let conn = self.conn();
         conn.execute(
@@ -256,6 +298,7 @@ impl Database {
     }
 
     pub fn set_session_run_end_reason(&self, id: &str, reason: &str) -> anyhow::Result<()> {
+        validate_session_id(id)?;
         let reason = haven_common::error::sanitize_error_text(reason)
             .trim()
             .to_owned();
@@ -280,6 +323,7 @@ impl Database {
     }
 
     pub fn update_session_title(&self, id: &str, title: &str) -> anyhow::Result<()> {
+        validate_session_id(id)?;
         let now = Utc::now().to_rfc3339();
         let conn = self.conn();
         conn.execute(
@@ -381,6 +425,7 @@ impl Database {
         limit: i64,
         offset: i64,
     ) -> anyhow::Result<Vec<Session>> {
+        validate_session_id(parent_session_id)?;
         let conn = self.conn();
         let mut stmt = conn.prepare(
             "SELECT id, input_text, title, status, created_at, updated_at,
@@ -397,6 +442,7 @@ impl Database {
     }
 
     pub fn delete_session(&self, id: &str) -> anyhow::Result<()> {
+        validate_session_id(id)?;
         let conn = self.conn();
         let episode_ids: Vec<String> = {
             let mut stmt = conn.prepare("SELECT id FROM memory_items WHERE session_id = ?1")?;
@@ -498,7 +544,7 @@ impl Database {
         let ids: Vec<String> = {
             let conn = self.conn();
             conn.prepare("SELECT id FROM sessions WHERE status = 'running'")?
-                .query_map([], |r| r.get::<_, String>(0))?
+                .query_map([], session_id_from_row)?
                 .collect::<Result<_, _>>()?
         };
         let count = self.set_running_status(SessionStatus::Error, &now, None)?;
@@ -556,6 +602,8 @@ impl Database {
 
     pub fn delete_old_sessions(&self, retention_days: u32) -> anyhow::Result<usize> {
         let cutoff = (Utc::now() - chrono::Duration::days(retention_days as i64)).to_rfc3339();
+        // Validate IDs before the retention delete can cascade through session-owned data.
+        self.old_session_ids(retention_days)?;
         let conn = self.conn();
         let episode_ids: Vec<String> = {
             let mut stmt = conn.prepare(
@@ -595,7 +643,7 @@ impl Database {
         let conn = self.conn();
         let mut statement =
             conn.prepare("SELECT id FROM sessions WHERE created_at < ?1 ORDER BY created_at, id")?;
-        let rows = statement.query_map(rusqlite::params![cutoff], |row| row.get(0))?;
+        let rows = statement.query_map(rusqlite::params![cutoff], session_id_from_row)?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
@@ -919,7 +967,8 @@ mod tests {
     #[test]
     fn test_get_session_not_found() {
         let db = create_db();
-        let result = db.get_session("non-existent-id").unwrap();
+        let missing_id = haven_common::types::new_id("ses");
+        let result = db.get_session(&missing_id).unwrap();
         assert!(result.is_none());
     }
 
@@ -1061,7 +1110,8 @@ mod tests {
     #[test]
     fn test_delete_session_nonexistent() {
         let db = create_db();
-        let result = db.delete_session("non-existent");
+        let missing_id = haven_common::types::new_id("ses");
+        let result = db.delete_session(&missing_id);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("not found"));
     }
@@ -1340,5 +1390,34 @@ mod tests {
             .search_sessions_filtered(None, None, None, None, 50, 0)
             .unwrap();
         assert_eq!(third.len(), 3);
+    }
+
+    #[test]
+    fn session_identity_inputs_and_typed_reads_require_canonical_ids() {
+        let db = create_db();
+        let session = db.create_session("valid session").unwrap();
+        assert!(db.get_session("ses-short").is_err());
+        assert!(
+            db.update_session_status("ses-short", SessionStatus::Paused)
+                .is_err()
+        );
+        assert!(
+            db.set_session_run_end_reason("ses-short", "reason")
+                .is_err()
+        );
+        assert!(db.update_session_title("ses-short", "title").is_err());
+        assert!(db.delete_session("ses-short").is_err());
+
+        db.conn()
+            .execute(
+                "UPDATE sessions SET id = 'ses-short', created_at = '2000-01-01T00:00:00Z' WHERE id = ?1",
+                [&session.id],
+            )
+            .unwrap();
+        assert!(db.all_session_ids().is_err());
+        assert!(db.session_id_high_water().is_err());
+        assert!(db.list_persisted_sessions(50, 0).is_err());
+        assert!(db.old_session_ids(1).is_err());
+        assert!(db.delete_old_sessions(1).is_err());
     }
 }

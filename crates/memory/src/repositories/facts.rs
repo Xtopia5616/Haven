@@ -1,4 +1,5 @@
 use crate::db::Database;
+use haven_common::types::is_canonical_id;
 
 use super::fact_graph::FactGraph;
 use super::fact_maintenance::FactMaintenance;
@@ -367,6 +368,7 @@ impl Database {
     }
 
     pub fn delete_fact(&self, id: &str) -> anyhow::Result<()> {
+        anyhow::ensure!(is_canonical_id(id, "fact"), "fact id must be canonical");
         self.with_fact_write(|| FactGraph::new(self).delete_by_id(id))
     }
 
@@ -449,6 +451,10 @@ impl Database {
     /// the maintenance LLM arbitrator after gated proposals. Preserves SPO and
     /// provenance. Returns how many rows were updated.
     pub fn demote_fact_ids(&self, ids: Vec<String>) -> anyhow::Result<u64> {
+        anyhow::ensure!(
+            ids.iter().all(|id| is_canonical_id(id, "fact")),
+            "fact ids must be canonical"
+        );
         self.with_fact_write(|| FactMaintenance::new(self).demote_fact_ids(ids))
     }
 }
@@ -707,7 +713,8 @@ mod tests {
     #[test]
     fn test_delete_fact_non_existing() {
         let db = create_db();
-        let result = db.delete_fact("non-existent-id");
+        let missing_fact_id = haven_common::types::new_id("fact");
+        let result = db.delete_fact(&missing_fact_id);
         assert!(result.is_ok());
     }
 
@@ -1037,16 +1044,29 @@ mod tests {
     }
 
     #[test]
+    fn fact_mutations_reject_noncanonical_ids() {
+        let db = create_db();
+        assert!(db.delete_fact("fact-invalid").is_err());
+        assert!(db.demote_fact_ids(vec!["fact-invalid".into()]).is_err());
+        assert_eq!(db.demote_fact_ids(Vec::new()).unwrap(), 0);
+    }
+
+    #[test]
     fn test_list_predicate_counts_and_rewrite() {
         let db = create_db();
-        // Seed non-canonical rows directly to exercise M6 maintenance.
+        // Seed legacy predicate spellings directly to exercise M6 maintenance.
+        let fact_ids = [
+            haven_common::types::new_id("fact"),
+            haven_common::types::new_id("fact"),
+            haven_common::types::new_id("fact"),
+        ];
         let conn = db.conn();
         conn.execute(
             "INSERT INTO facts (id, subject, predicate, object, source, confidence, created_at)
-             VALUES ('fact-a', 'user', 'fav_lang', 'Rust', 'inferred', 0.8, '2026-01-01T00:00:00Z'),
-                    ('fact-b', 'user', 'language', 'Rust', 'inferred', 0.9, '2026-01-01T00:00:01Z'),
-                    ('fact-c', 'user', 'fav_lang', 'Go', 'inferred', 0.7, '2026-01-01T00:00:02Z')",
-            [],
+             VALUES (?1, 'user', 'fav_lang', 'Rust', 'inferred', 0.8, '2026-01-01T00:00:00Z'),
+                    (?2, 'user', 'language', 'Rust', 'inferred', 0.9, '2026-01-01T00:00:01Z'),
+                    (?3, 'user', 'fav_lang', 'Go', 'inferred', 0.7, '2026-01-01T00:00:02Z')",
+            rusqlite::params![fact_ids[0], fact_ids[1], fact_ids[2]],
         )
         .unwrap();
         drop(conn);

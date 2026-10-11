@@ -394,10 +394,9 @@ async fn terminal_tool_run_result_projection_is_idempotent() {
         .await
         .unwrap();
 
-    let tool_run_result_id = "toolrun-terminal-dedup";
+    let tool_run_result_id = "toolrun-00000000000000000000000000000001";
     let message_id = crate::react::tool_run_result_message_id(tool_run_result_id);
-    let content =
-        "[Background tool run result]\ntool_run_id: toolrun-terminal\nstatus: completed\n\nresult";
+    let content = "[Background tool run result]\ntool_run_id: toolrun-00000000000000000000000000000001\nstatus: completed\n\nresult";
     let first = agent
         .executor
         .session_store()
@@ -442,7 +441,7 @@ async fn queued_tool_run_result_is_reconciled_after_session_becomes_terminal() {
         .await
         .unwrap();
 
-    let tool_run_id = "toolrun-terminal-race";
+    let tool_run_id = "toolrun-00000000000000000000000000000002";
     agent
         .db
         .save_tool_run(tool_run_id, Some(&session.id), "echo race", "started")
@@ -468,7 +467,7 @@ async fn queued_tool_run_result_is_reconciled_after_session_becomes_terminal() {
         .enqueue_tool_run_result(
             &session.id,
             tool_run_id.to_string(),
-            "[Background tool run result]\ntool_run_id: toolrun-terminal-race\nstatus: completed\n\nrace output",
+            "[Background tool run result]\ntool_run_id: toolrun-00000000000000000000000000000002\nstatus: completed\n\nrace output",
         )
         .await
         .unwrap();
@@ -537,7 +536,7 @@ async fn unowned_terminal_completion_is_acknowledged_for_history_cleanup() {
         .set_store(Some(ToolRunStore::new(agent.db.clone())))
         .await;
 
-    let tool_run_id = "toolrun-unowned-terminal";
+    let tool_run_id = "toolrun-00000000000000000000000000000003";
     agent
         .db
         .save_tool_run(tool_run_id, None, "echo unowned", "started")

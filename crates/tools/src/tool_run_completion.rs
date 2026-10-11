@@ -366,7 +366,7 @@ mod tests {
         let bus = ToolRunCompletionBus::new();
         let mut first = bus.subscribe();
         let mut second = bus.subscribe();
-        let fired = scheduled_fire("toolrun-shared-claim");
+        let fired = scheduled_fire("toolrun-00000000000000000000000000000016");
         bus.retain_scheduled_fire(fired.clone()).await;
         bus.send(ToolRunCompletion::Scheduled(fired)).unwrap();
 
@@ -379,13 +379,16 @@ mod tests {
                 .await
                 .is_err()
         );
-        assert!(bus.has_scheduled_fire_claim("toolrun-shared-claim").await);
+        assert!(
+            bus.has_scheduled_fire_claim("toolrun-00000000000000000000000000000016")
+                .await
+        );
     }
 
     #[tokio::test]
     async fn expired_scheduled_fire_claim_can_be_reclaimed() {
         let bus = ToolRunCompletionBus::new();
-        let fired = scheduled_fire("toolrun-expired-claim");
+        let fired = scheduled_fire("toolrun-0000000000000000000000000000001c");
         bus.retain_scheduled_fire(fired.clone()).await;
 
         assert!(
@@ -418,7 +421,7 @@ mod tests {
     #[tokio::test]
     async fn scheduled_claim_release_checks_token_and_terminal_clear_invalidates_it() {
         let bus = ToolRunCompletionBus::new();
-        let fired = scheduled_fire("toolrun-release-claim");
+        let fired = scheduled_fire("toolrun-0000000000000000000000000000001d");
         bus.retain_scheduled_fire(fired.clone()).await;
         assert!(
             claim_scheduled_fire(
@@ -431,8 +434,11 @@ mod tests {
         );
 
         assert!(
-            !bus.release_tool_run_lease(&fired.tool_run_id, "toolrun-wrong-token")
-                .await
+            !bus.release_tool_run_lease(
+                &fired.tool_run_id,
+                "toolrun-0000000000000000000000000000001e"
+            )
+            .await
         );
         assert!(bus.has_tool_run_lease(&fired.tool_run_id).await);
 
@@ -449,11 +455,14 @@ mod tests {
         let bus = ToolRunCompletionBus::new();
         let mut receiver = bus.subscribe();
         let completion = BackgroundToolRunCompletion {
-            tool_run_id: "toolrun-background".into(),
-            tool_run_result_id: "toolrun-background".into(),
-            session_id: Some("ses-background".into()),
+            tool_run_id: "toolrun-0000000000000000000000000000001b".into(),
+            tool_run_result_id: "toolrun-0000000000000000000000000000001b".into(),
+            session_id: Some("ses-398c53dc8ec3bfbfc63c0db14f0e7dcd".into()),
             status: ToolRunStatus::Completed,
-            payload: completion_payload("toolrun-background", ToolRunStatus::Completed),
+            payload: completion_payload(
+                "toolrun-0000000000000000000000000000001b",
+                ToolRunStatus::Completed,
+            ),
         };
         bus.send(ToolRunCompletion::Background(completion.clone()))
             .unwrap();
@@ -472,12 +481,12 @@ mod tests {
         let mut receiver = bus.subscribe();
         for index in 0..=TOOL_RUN_COMPLETION_CHANNEL_CAPACITY {
             bus.send(ToolRunCompletion::Background(BackgroundToolRunCompletion {
-                tool_run_id: format!("toolrun-noise-{index}"),
-                tool_run_result_id: format!("toolrun-noise-{index}"),
+                tool_run_id: format!("toolrun-{:032x}", index),
+                tool_run_result_id: format!("toolrun-{:032x}", index),
                 session_id: None,
                 status: ToolRunStatus::Completed,
                 payload: completion_payload(
-                    &format!("toolrun-noise-{index}"),
+                    &format!("toolrun-{:032x}", index),
                     ToolRunStatus::Completed,
                 ),
             }))
@@ -488,7 +497,10 @@ mod tests {
         let ToolRunCompletion::Background(received) = received else {
             panic!("lag recovery should return a retained event");
         };
-        assert_eq!(received.tool_run_id, "toolrun-noise-1");
+        assert_eq!(
+            received.tool_run_id,
+            "toolrun-00000000000000000000000000000001"
+        );
 
         drop(bus);
         while receiver.recv().await.is_some() {}

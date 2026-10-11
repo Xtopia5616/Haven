@@ -1,6 +1,6 @@
 # Haven 架构降复杂度重构路线图
 
-> 状态：阶段 0–8 已完成；唯一结构 Active 为 §5.7 全项目领域术语与架构角色命名收敛，当前从 Rust crate 内部符号与函数调用图开始；暂无 Next。Windows 发布验收为独立 Open Gate（§5.1）。
+> 状态：阶段 0–8 已完成；唯一结构 Active 为 §5.7 全项目领域术语与架构角色命名收敛。Memory 持久身份边界、transcript command adapter 归属和本轮发现的派生集合命名已实现；其余 crate API、command response、配置与文档引用审查继续推进；暂无 Next。Windows 发布验收为独立 Open Gate（§5.1）。
 > 更新日期：2026-10-11
 > 范围：Agent/Session、Memory、Tools、LLM、App IPC 与 UI
 
@@ -74,7 +74,7 @@
 
 | 状态 | 当前项 |
 |---|---|
-| **Active / Next** | **Active：全项目领域术语与架构角色命名收敛**，见 §5.7；继续审查 Rust crate 可达 API、构造入口与函数调用图，并覆盖 UI command response 与持久身份边界。近期 Chat 输入 owner 与提交边界已收敛（ADR 0843–0846），全仓 Rust、Svelte/TypeScript、IPC、配置和文档审查仍未完成。暂无后续 Next。 |
+| **Active / Next** | **Active：全项目领域术语与架构角色命名收敛**，见 §5.7；继续审查 Rust crate 可达 API、构造入口与函数调用图，并覆盖剩余 UI command response、配置和文档引用。近期 Chat 输入 owner 与提交边界已收敛（ADR 0843–0846），Memory 持久 owner ID 与 Session transcript response adapter 已收敛（ADR 0967–0968），派生集合命名已按实体统一（ADR 0969）；全仓审查仍未完成。暂无后续 Next。 |
 | **Gate** | Windows 发布验收 Open，见 §5.1。 |
 
 ### 5.1 Windows 发布验收（Gate / Open）
@@ -172,8 +172,8 @@ SessionStore 的普通生产读取现统一经过 async/cancellable typed API �
 | Memory model-facing fact reads | MemoryTool 的 search/list 端口都要求显式 limit，由 Memory 在可见性过滤后截断；全局列表按有效置信度排序，删除会误称时间顺序的 `recent` API（ADR 0921）。 | 继续检查模型工具与 App 查询是否把无界数据或 owner 自身的排序/过滤责任推给调用方。 |
 | Tools capability handoff | App/Agent adapter 在 composition 阶段取得窄 capability 并缓存；运行期不再重取完整 `ToolServices` bundle，App bootstrap 复用已装配 Skills port（ADR 0922）。 | 继续核对其它 facade/bundle 是否进入运行期调用链，及 adapter 构造器是否只接收所需能力。 |
 | Rust 调用与函数动词 | Input、Tools、Memory、Agent、LLM 和 App 的调用动词、副作用 owner 与共享纯函数已完成多轮审查（ADR 0570–0698、0861–0879）。 | 继续核对私有与 `pub(crate)` 函数、参数/返回值、trait 方法及调用链；只在职责或权威状态重复时合并，并按可观察行为统一动词。 |
-| UI components、stores、controllers、handlers 与 contracts | 部分 controller 生命周期、生成类型复用、无消费者 alias、Tool result 输出校验和 Session 状态投影已审查（ADR 0595、0665–0670、0698、0745、0841–0846、0860）。MCP/Skill renderer 保留明确的扩展型动态边界。session、Agent、ToolRun、recording 与 interaction event mapper 按 entity 前缀和 UUID32 校验身份（ADR 0945）；Session command adapters 校验 history、lineage、runtime list 与 resume identities，并验证 message/step/session 关联（ADR 0946）；Memory commands 校验 fact、source message 与 kind-specific recall identities（ADR 0947）；`process_transcript` 的 session/message result 在 submit state transition 前校验（ADR 0948）；Settings command adapter 校验 Session permission grant 的所属 session identity（ADR 0949），credential staging result 与已持久化 Settings response 中的 credential references 均校验为 `cred-*`（ADR 0950–0951）。 | 逐组件和数据流检查 owner、props、事件、contracts、route 局部副本及无行为转发；继续核对其余 command response 与 persistence/replay ID 写入和恢复路径，并区分 provider 外部 ID。 |
-| Tauri IPC 与事件 | 命令静态 request/response 有 Rust DTO 生成来源，事件 channel 有 Rust 登记和 UI mapper；若干枚举、目标命名、字段和 App 命令 ID 入参已收敛（ADR 0613、0699、0730–0745、0883）。UI event mapper 校验 Haven identity；Session command response 校验 session、message、step、usage 与 interaction 身份；Memory command response 校验 fact/source/episode identity；`process_transcript` 校验 session/message result；Settings command adapter 校验 Session permission grant 的 session identity、staging 返回值与 persisted Settings 中的 `cred-*` 引用，provider 外部 ID 保持原格式（ADR 0945–0951）。 | 逐命令和事件核对领域名称、snake_case/camelCase 边界、payload owner、顺序/幂等、失败语义和运行时校验；继续复核其它 command response、store 与持久化写路径的 ID 约束。 |
+| UI components、stores、controllers、handlers 与 contracts | 部分 controller 生命周期、生成类型复用、无消费者 alias、Tool result 输出校验和 Session 状态投影已审查（ADR 0595、0665–0670、0698、0745、0841–0846、0860）。MCP/Skill renderer 保留明确的扩展型动态边界。session、Agent、ToolRun、recording 与 interaction event mapper 按 entity 前缀和 UUID32 校验身份（ADR 0945）；Session command adapters 校验 history、lineage、runtime list 与 resume identities，并验证 message/step/session 关联（ADR 0946）；Memory commands 校验 fact、source message 与 kind-specific recall identities（ADR 0947）；`process_transcript` response 在 Session command adapter 校验后才进入 submit state transition（ADR 0948、0968）；Settings command adapter 校验 Session permission grant 的所属 session identity（ADR 0949），credential staging result 与已持久化 Settings response 中的 credential references 均校验为 `cred-*`（ADR 0950–0951）。本轮同时按 store 角色统一 context-menu 模块名，并规范派生集合命名（ADR 0969）。 | 逐组件和数据流检查 owner、props、事件、contracts、route 局部副本及无行为转发；继续核对其余 command response 与 persistence/replay ID 写入和恢复路径，并区分 provider 外部 ID。 |
+| Tauri IPC 与事件 | 命令静态 request/response 有 Rust DTO 生成来源，事件 channel 有 Rust 登记和 UI mapper；若干枚举、目标命名、字段和 App 命令 ID 入参已收敛（ADR 0613、0699、0730–0745、0883）。UI event mapper 校验 Haven identity；Session command response 校验 session、message、step、usage 与 interaction 身份；Memory command response 校验 fact/source/episode identity；`process_transcript` 由 Session command adapter 校验 session/message result，IPC owner 检查同步约束实际调用位置；Settings command adapter 校验 Session permission grant 的 session identity、staging 返回值与 persisted Settings 中的 `cred-*` 引用，provider 外部 ID 保持原格式（ADR 0945–0951、0968）。 | 逐命令和事件核对领域名称、snake_case/camelCase 边界、payload owner、顺序/幂等、失败语义和运行时校验；继续复核其它 command response、store 与持久化写路径的 ID 约束。 |
 | 架构、配置、持久字段与文档引用 | 部分配置 owner、schema 拒绝规则、Serde alias、Provider 标识和架构文档交叉引用已审查（ADR 0632–0633）；外部协议名与 Haven 自有持久字段已区分。 | 对照源码、生成 contract、配置/SQLite 字段、用户文案和文档，清理当前描述中的退役名称；审查 Memory/SQLite 写路径、事件 replay 和 UI mapper 的实体 ID 生成/校验。 |
 | Input crate API | `capture`、`vad`、`hotkey` 实现模块不再外露；真实跨 crate 类型只从 `haven_input` crate root 使用，按键 modifier 是强类型，组合只能经 parser 构造。移除 raw-bitmask 构造器与会伪造空 Manual 录音的 `Default`，保留有效 idle pipeline 的 `Default`（ADR 0926）；Common 所有的 `AudioConfig` 只经 `haven_common::config` 导入，Input root alias 已移除（ADR 0941）。 | 继续核查其他 crate 的 root contract、构造入口和实现模块可达性；再覆盖 UI、IPC/event、配置/持久字段及文档引用。 |
 | Skills crate API | venv 实现模块私有；无消费者的 `VenvManager::root` 与 Tools 默认根导出收回。文件 fingerprint 与比较状态留在 `SkillRegistry`，Tools watcher 只调用 `refresh_if_changed` 并负责工具目录重建/通知；不再跨 crate 暴露 watcher DTO（ADR 0927）。 | 继续逐个审查其它 crate 的跨边界操作是否泄漏实现 DTO/状态，及构造入口是否允许无效状态。 |
@@ -204,6 +204,10 @@ Admin `sessions` / `errors` 工具结果将会话身份字段统一为 `session_
 Memory usage batch 写入在投影前校验 `ses-*`；usage discard 在追加补偿事件前校验 `ses-*` 与 `usage-*`，拒绝路径不改变事件或用量投影（ADR 0965）。
 
 Agent transcript 的 seed/append 与 resume/replay 使用同一身份校验：Thought/Reasoning、ToolResult、用户补充、compaction 和嵌套媒体引用按实体前缀校验；Committed UI 注释校验 step/message/asset ID 并关联所属 record。provider tool-call IDs 保持不透明；Memory 继续不解析 Agent payload（ADR 0966）。
+
+Memory 的 SessionStore、FactGraph、facts、nodes、embeddings、usage、authorization 与 ToolRun 持久 owner 统一校验各自规范 ID；summary episode 必须属于对应 session，畸形行读取失败关闭（ADR 0967）。
+
+`process_transcript` 的 command invocation 与 response parser 由 `sessionCommands` 持有，submit coordinator 只消费已验证结果；Rust 和 UI 派生集合按实体复数命名，context-menu store 文件明确标注 `Store` 角色（ADR 0968–0969）。
 
 #### 执行顺序与完成条件
 

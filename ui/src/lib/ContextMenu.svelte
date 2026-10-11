@@ -3,7 +3,7 @@
 	import MenuItem from './MenuItem.svelte';
 	import Icon from './Icon.svelte';
 	import { hasIcon } from './icons.ts';
-	import type { ContextMenuItem } from '$lib/contextMenu.ts';
+	import type { ContextMenuItem } from '$lib/contextMenuStore.ts';
 
 	interface Props {
 		open?: boolean;

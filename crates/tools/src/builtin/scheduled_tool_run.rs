@@ -559,7 +559,7 @@ mod tests {
                     operation: ScheduleOperation::Set,
                     delay_secs: None,
                     due_at: None,
-                    watch_tool_run_id: Some("toolrun-nope".into()),
+                    watch_tool_run_id: Some("toolrun-invalid".into()),
                     mode: Some(ScheduleMode::Continue),
                     title: None,
                     body: Some("body".into()),
@@ -567,7 +567,7 @@ mod tests {
                     tool_args: None,
                     prompt: Some("continue".into()),
                     tool_run_id: None,
-                    session_id: Some("ses-1".into()),
+                    session_id: Some("ses-09df36791e54c51f7be063867e10b9af".into()),
                 },
                 CancellationToken::new(),
             )
@@ -589,8 +589,8 @@ mod tests {
                     tool_name: None,
                     tool_args: None,
                     prompt: None,
-                    tool_run_id: Some("toolrun-nope".into()),
-                    session_id: Some("ses-1".into()),
+                    tool_run_id: Some("toolrun-invalid".into()),
+                    session_id: Some("ses-09df36791e54c51f7be063867e10b9af".into()),
                 },
                 CancellationToken::new(),
             )
@@ -782,7 +782,7 @@ mod tests {
                 title: "T".into(),
                 body: "B".into(),
                 mode: ScheduleMode::Continue,
-                session_id: Some("ses-1".into()),
+                session_id: Some("ses-09df36791e54c51f7be063867e10b9af".into()),
                 tool_name: None,
                 tool_args: None,
                 prompt: None,
@@ -814,7 +814,7 @@ mod tests {
                 title: "Watch".into(),
                 body: "ToolRun done".into(),
                 mode: ScheduleMode::Continue,
-                session_id: Some("ses-1".into()),
+                session_id: Some("ses-09df36791e54c51f7be063867e10b9af".into()),
                 tool_name: None,
                 tool_args: None,
                 prompt: None,
@@ -828,7 +828,10 @@ mod tests {
             .expect("timed out waiting for ToolRun-watch fire");
         assert_eq!(fired.tool_run_id, id);
         assert_eq!(fired.mode, ScheduleMode::Continue);
-        assert_eq!(fired.session_id.as_deref(), Some("ses-1"));
+        assert_eq!(
+            fired.session_id.as_deref(),
+            Some("ses-09df36791e54c51f7be063867e10b9af")
+        );
         let prompt = fired.prompt.expect("watch fire must carry the result");
         assert!(
             prompt.contains("tool-run-watch-result"),
@@ -858,7 +861,7 @@ mod tests {
                 title: "T".into(),
                 body: "B".into(),
                 mode: ScheduleMode::Continue,
-                session_id: Some("ses-1".into()),
+                session_id: Some("ses-09df36791e54c51f7be063867e10b9af".into()),
                 tool_name: None,
                 tool_args: None,
                 prompt: None,
@@ -1030,7 +1033,7 @@ mod tests {
                 title: "Wake".into(),
                 body: "body text".into(),
                 mode: ScheduleMode::Continue,
-                session_id: Some("ses-1".into()),
+                session_id: Some("ses-09df36791e54c51f7be063867e10b9af".into()),
                 tool_name: None,
                 tool_args: None,
                 prompt: Some("check the weather".into()),
@@ -1042,7 +1045,10 @@ mod tests {
         let pending = db.list_pending_scheduled_tool_runs().unwrap();
         assert_eq!(pending.len(), 1);
         assert_eq!(pending[0].mode, "continue");
-        assert_eq!(pending[0].session_id.as_deref(), Some("ses-1"));
+        assert_eq!(
+            pending[0].session_id.as_deref(),
+            Some("ses-09df36791e54c51f7be063867e10b9af")
+        );
         assert_eq!(pending[0].prompt.as_deref(), Some("check the weather"));
 
         // Fires with the payload attached.
@@ -1051,7 +1057,10 @@ mod tests {
             .expect("timed out waiting for scheduled_tool_run");
         assert_eq!(fired.tool_run_id, id);
         assert_eq!(fired.mode, ScheduleMode::Continue);
-        assert_eq!(fired.session_id.as_deref(), Some("ses-1"));
+        assert_eq!(
+            fired.session_id.as_deref(),
+            Some("ses-09df36791e54c51f7be063867e10b9af")
+        );
         assert_eq!(fired.prompt.as_deref(), Some("check the weather"));
         assert_eq!(fired.title, "Wake");
         assert_eq!(fired.body, "body text");
@@ -1074,7 +1083,7 @@ mod tests {
                 title: "Backup".into(),
                 body: "running backup".into(),
                 mode: ScheduleMode::Tool,
-                session_id: Some("ses-1".into()),
+                session_id: Some("ses-09df36791e54c51f7be063867e10b9af".into()),
                 tool_name: Some("files".into()),
                 tool_args: Some(json!({"operation": "read", "path": "C:/x"})),
                 prompt: None,
@@ -1095,7 +1104,10 @@ mod tests {
         assert_eq!(fired.tool_run_id, id);
         assert_eq!(fired.mode, ScheduleMode::Tool);
         assert_eq!(fired.tool_name.as_deref(), Some("files"));
-        assert_eq!(fired.session_id.as_deref(), Some("ses-1"));
+        assert_eq!(
+            fired.session_id.as_deref(),
+            Some("ses-09df36791e54c51f7be063867e10b9af")
+        );
         assert_eq!(fired.tool_args.as_ref().unwrap()["path"], "C:/x");
     }
 
@@ -1110,7 +1122,7 @@ mod tests {
                     "body": "x",
                     "mode": "continue",
                     "prompt": "summarize my notes",
-                    "_session_id": "ses-9"
+                    "_session_id": "ses-fcc019fd399ed8e2b583c1d466467be2"
                 }),
                 CancellationToken::new(),
             )
@@ -1148,7 +1160,7 @@ mod tests {
                     "body": "water",
                     "mode": "tool",
                     "tool_name": "notify",
-                    "_session_id": "ses-test"
+                    "_session_id": "ses-1872990a7c081158e9a352240d551918"
                 }),
                 CancellationToken::new(),
             )
@@ -1159,7 +1171,7 @@ mod tests {
 
         let list = tool
             .execute(
-                json!({"operation": "list", "_session_id": "ses-test"}),
+                json!({"operation": "list", "_session_id": "ses-1872990a7c081158e9a352240d551918"}),
                 CancellationToken::new(),
             )
             .await
@@ -1180,7 +1192,7 @@ mod tests {
 
         let cancelled = tool
             .execute(
-                json!({"operation": "cancel", "tool_run_id": id, "_session_id": "ses-test"}),
+                json!({"operation": "cancel", "tool_run_id": id, "_session_id": "ses-1872990a7c081158e9a352240d551918"}),
                 CancellationToken::new(),
             )
             .await
@@ -1191,7 +1203,7 @@ mod tests {
         // Cancelling again fails.
         let err = tool
             .execute(
-                json!({"operation": "cancel", "tool_run_id": id, "_session_id": "ses-test"}),
+                json!({"operation": "cancel", "tool_run_id": id, "_session_id": "ses-1872990a7c081158e9a352240d551918"}),
                 CancellationToken::new(),
             )
             .await;
@@ -1200,7 +1212,7 @@ mod tests {
         // List is empty after cancel.
         let list = tool
             .execute(
-                json!({"operation": "list", "_session_id": "ses-test"}),
+                json!({"operation": "list", "_session_id": "ses-1872990a7c081158e9a352240d551918"}),
                 CancellationToken::new(),
             )
             .await
@@ -1286,7 +1298,7 @@ mod tests {
             "Overdue",
             "should fire now",
             "continue",
-            Some("ses-1"),
+            Some("ses-09df36791e54c51f7be063867e10b9af"),
             None,
             None,
             Some("keep going"),
@@ -1315,7 +1327,10 @@ mod tests {
         assert_eq!(fired.tool_run_id, overdue_id);
         assert_eq!(fired.title, "Overdue");
         assert_eq!(fired.mode, ScheduleMode::Continue);
-        assert_eq!(fired.session_id.as_deref(), Some("ses-1"));
+        assert_eq!(
+            fired.session_id.as_deref(),
+            Some("ses-09df36791e54c51f7be063867e10b9af")
+        );
         assert_eq!(fired.prompt.as_deref(), Some("keep going"));
         restored.complete_scheduled(&overdue_id).await.unwrap();
 
@@ -1339,12 +1354,12 @@ mod tests {
             .await;
 
         db.save_scheduled_tool_run(
-            "toolrun-invalid-due",
+            "toolrun-00000000000000000000000000000001",
             "not-a-timestamp",
             "Bad due",
             "must not run",
             "continue",
-            Some("ses-1"),
+            Some("ses-09df36791e54c51f7be063867e10b9af"),
             None,
             None,
             Some("prompt"),
@@ -1352,7 +1367,7 @@ mod tests {
         )
         .unwrap();
         db.save_scheduled_tool_run(
-            "toolrun-invalid-mode",
+            "toolrun-00000000000000000000000000000002",
             &(chrono::Utc::now() + chrono::Duration::hours(1)).to_rfc3339(),
             "Bad mode",
             "must not run",
@@ -1365,7 +1380,7 @@ mod tests {
         )
         .unwrap();
         db.save_scheduled_tool_run(
-            "toolrun-invalid-args",
+            "toolrun-00000000000000000000000000000003",
             &(chrono::Utc::now() + chrono::Duration::hours(1)).to_rfc3339(),
             "Bad args",
             "must not run",
@@ -1382,9 +1397,9 @@ mod tests {
         assert!(center.list().await.is_empty());
         assert!(db.list_pending_scheduled_tool_runs().unwrap().is_empty());
         for id in [
-            "toolrun-invalid-due",
-            "toolrun-invalid-mode",
-            "toolrun-invalid-args",
+            "toolrun-00000000000000000000000000000001",
+            "toolrun-00000000000000000000000000000002",
+            "toolrun-00000000000000000000000000000003",
         ] {
             let row = db
                 .get_tool_run(id)

@@ -6,7 +6,7 @@
 	import MaterialIconButton from '$lib/MaterialIconButton.svelte';
 	import Icon from '$lib/Icon.svelte';
 	import { copyText } from '$lib/clipboard.ts';
-	import type { ContextMenuItem } from '$lib/contextMenu.ts';
+	import type { ContextMenuItem } from '$lib/contextMenuStore.ts';
 	import type {
 		BuiltinToolEntry,
 		BuiltinToolRootCard as BuiltinToolRootCardModel,

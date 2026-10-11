@@ -104,9 +104,12 @@ impl MemoryFactStore {
         episode_id: &str,
     ) -> anyhow::Result<bool> {
         let key = summary_extraction_done_key(session_id, episode_id)?;
+        let session_id = session_id.to_owned();
+        let episode_id = episode_id.to_owned();
         self.db
             .run_blocking(move |db| {
                 let conn = db.conn();
+                ensure_episode_summary_owner(&conn, &session_id, &episode_id)?;
                 Ok(conn
                     .query_row(
                         "SELECT 1 FROM kv_store WHERE key = ?1",
@@ -131,6 +134,7 @@ impl MemoryFactStore {
     ) -> anyhow::Result<bool> {
         let marker_key = summary_extraction_done_key(session_id, episode_id)?;
         let session_id = session_id.to_owned();
+        let episode_id = episode_id.to_owned();
         self.db
             .run_blocking(move |db| {
                 db.with_fact_write(|| {
@@ -138,6 +142,7 @@ impl MemoryFactStore {
                         &writes,
                         new_fact_confidence_floor,
                         |conn| {
+                            ensure_episode_summary_owner(conn, &session_id, &episode_id)?;
                             Ok(conn
                                 .query_row(
                                     "SELECT 1 FROM kv_store WHERE key = ?1",
@@ -280,6 +285,26 @@ impl MemoryFactStore {
             })
             .await
     }
+}
+
+fn ensure_episode_summary_owner(
+    conn: &Connection,
+    session_id: &str,
+    episode_id: &str,
+) -> anyhow::Result<()> {
+    let owner: Option<String> = conn
+        .query_row(
+            "SELECT session_id FROM memory_items
+             WHERE id = ?1 AND kind = 'episode_summary'",
+            rusqlite::params![episode_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    anyhow::ensure!(
+        owner.as_deref() == Some(session_id),
+        "episode_id does not identify an episode_summary owned by session_id"
+    );
+    Ok(())
 }
 
 fn summary_extraction_done_key(session_id: &str, episode_id: &str) -> anyhow::Result<String> {
@@ -429,6 +454,81 @@ mod tests {
             ))
             .unwrap()
             .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn summary_extraction_requires_episode_owner_to_match_session() {
+        let (db, store) = store();
+        let owner_session = db.create_session("summary owner").unwrap();
+        let other_session = db.create_session("different summary owner").unwrap();
+        let episode_id = new_id("msg");
+        db.add_episode_with_pending_extraction(
+            &owner_session.id,
+            "A persisted compaction summary with enough context.",
+            &episode_id,
+            false,
+        )
+        .unwrap();
+
+        db.set_kv(
+            &format!(
+                "fact_extraction_episode_done.{}.{}",
+                other_session.id, episode_id
+            ),
+            &other_session.id,
+        )
+        .unwrap();
+        assert!(
+            store
+                .summary_extraction_completed(&other_session.id, &episode_id)
+                .await
+                .is_err()
+        );
+        assert!(
+            !store
+                .summary_extraction_completed(&owner_session.id, &episode_id)
+                .await
+                .unwrap()
+        );
+
+        assert!(
+            store
+                .commit_summary_extraction(
+                    vec![inferred_write("user", "likes", "Rust")],
+                    0.55,
+                    &other_session.id,
+                    &episode_id,
+                )
+                .await
+                .is_err()
+        );
+        assert!(db.list_facts().unwrap().is_empty());
+        assert!(
+            db.get_kv(&format!(
+                "fact_extraction_episode_done.{}.{}",
+                other_session.id, episode_id
+            ))
+            .unwrap()
+            .is_some()
+        );
+
+        assert!(
+            store
+                .commit_summary_extraction(
+                    vec![inferred_write("user", "likes", "Rust")],
+                    0.55,
+                    &owner_session.id,
+                    &episode_id,
+                )
+                .await
+                .unwrap()
+        );
+        assert!(
+            store
+                .summary_extraction_completed(&owner_session.id, &episode_id)
+                .await
+                .unwrap()
         );
     }
 

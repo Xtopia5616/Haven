@@ -302,7 +302,7 @@ impl ContextSource {
             return PendingContextBatch::default();
         }
 
-        let mut selected = Vec::new();
+        let mut selected_context_items = Vec::new();
         let mut selected_chars: usize = 0;
         for envelope in messages {
             if envelope.text.chars().count() > MESSAGING_INJECT_CHARS {
@@ -323,16 +323,16 @@ impl ContextSource {
                 );
                 break;
             }
-            if selected.len() >= MESSAGING_INJECT_MAX_ITEMS
+            if selected_context_items.len() >= MESSAGING_INJECT_MAX_ITEMS
                 || selected_chars.saturating_add(chars) > MESSAGING_INJECT_MAX_CHARS
             {
                 break;
             }
             selected_chars += chars;
-            selected.push((envelope.id.clone(), text));
+            selected_context_items.push((envelope.id.clone(), text));
         }
 
-        if selected.is_empty() {
+        if selected_context_items.is_empty() {
             // Keep the claim alive until a future explicit repair/inspection
             // path can report the offending envelope. No ack is possible here.
             tracing::warn!(
@@ -350,7 +350,7 @@ impl ContextSource {
         }
 
         PendingContextBatch {
-            items: selected
+            items: selected_context_items
                 .iter()
                 .map(|(envelope_id, text)| PendingContext {
                     source: InjectSource::CrossSession,
@@ -362,7 +362,7 @@ impl ContextSource {
                 .collect(),
             clears_ask: false,
             inbox_claim: Some(InboxClaim {
-                ack_ids: selected
+                ack_ids: selected_context_items
                     .iter()
                     .map(|(envelope_id, _)| envelope_id.clone())
                     .collect(),
@@ -477,11 +477,17 @@ mod format_tests {
 
     #[test]
     fn tool_run_result_message_id_is_stable_and_well_formed() {
-        let first = tool_run_result_message_id("toolrun-result-1");
-        assert_eq!(first, tool_run_result_message_id("toolrun-result-1"));
+        let first = tool_run_result_message_id("toolrun-0000000000000000000000000000000f");
+        assert_eq!(
+            first,
+            tool_run_result_message_id("toolrun-0000000000000000000000000000000f")
+        );
         assert!(first.starts_with("msg-"));
         assert_eq!(first.len(), "msg-".len() + 32);
-        assert_ne!(first, tool_run_result_message_id("toolrun-result-2"));
+        assert_ne!(
+            first,
+            tool_run_result_message_id("toolrun-00000000000000000000000000000010")
+        );
     }
 }
 

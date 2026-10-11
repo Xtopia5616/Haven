@@ -10,7 +10,7 @@
 		SkillExecutionResponse,
 		SkillInfo,
 	} from '$lib/contracts/tools.ts';
-	import type { ContextMenuItem } from '$lib/contextMenu.ts';
+	import type { ContextMenuItem } from '$lib/contextMenuStore.ts';
 
 	interface Props {
 		skill: SkillInfo;

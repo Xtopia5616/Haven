@@ -821,11 +821,14 @@ mod tests {
             assert_eq!(query.kind, MemoryEntityKind::Episode);
             assert_eq!(query.text, "release notes");
             assert_eq!(query.limit, 3);
-            assert_eq!(query.exclude_session_id.as_deref(), Some("ses-current"));
+            assert_eq!(
+                query.exclude_session_id.as_deref(),
+                Some("ses-793a46bfb82ad5d58edaae8df367e7f4")
+            );
             assert_eq!(query.fact_subject, None);
             Ok(MemoryRecall {
                 hits: vec![MemoryHit {
-                    entity_id: "msg-episode".into(),
+                    entity_id: "msg-00000000000000000000000000000010".into(),
                     text: "release notes summary".into(),
                     score: 0.9,
                     model: "model-a".into(),
@@ -843,7 +846,7 @@ mod tests {
                     "query": "release notes",
                     "kind": "episode",
                     "limit": 3,
-                    "_session_id": "ses-current"
+                    "_session_id": "ses-793a46bfb82ad5d58edaae8df367e7f4"
                 }),
                 CancellationToken::new(),
             )
@@ -851,7 +854,10 @@ mod tests {
             .unwrap();
 
         assert_eq!(result.output["mode"], "hybrid");
-        assert_eq!(result.output["hits"][0]["entity_id"], "msg-episode");
+        assert_eq!(
+            result.output["hits"][0]["entity_id"],
+            "msg-00000000000000000000000000000010"
+        );
     }
 
     #[tokio::test]
@@ -908,7 +914,10 @@ mod tests {
         bind_recall(&slot, |query| async move {
             assert_eq!(query.kind, MemoryEntityKind::Fact);
             assert_eq!(query.fact_subject.as_deref(), Some("workspace"));
-            assert_eq!(query.exclude_session_id.as_deref(), Some("ses-current"));
+            assert_eq!(
+                query.exclude_session_id.as_deref(),
+                Some("ses-793a46bfb82ad5d58edaae8df367e7f4")
+            );
             Ok(MemoryRecall::default())
         });
 
@@ -918,7 +927,7 @@ mod tests {
                 "query": "path",
                 "kind": "fact",
                 "subject": "workspace",
-                "_session_id": "ses-current"
+                "_session_id": "ses-793a46bfb82ad5d58edaae8df367e7f4"
             }),
             CancellationToken::new(),
         )
@@ -1078,7 +1087,7 @@ mod tests {
             assert_eq!(query.text, "Rust");
             Ok(MemoryRecall {
                 hits: vec![MemoryHit {
-                    entity_id: "fact-rust".into(),
+                    entity_id: "fact-00000000000000000000000000000011".into(),
                     text: "user likes Rust".into(),
                     score: 0.9,
                     model: "keyword".into(),
@@ -1149,7 +1158,7 @@ mod tests {
             assert_eq!(query.limit, 5);
             Ok(MemoryRecall {
                 hits: vec![MemoryHit {
-                    entity_id: "msg-episode".into(),
+                    entity_id: "msg-00000000000000000000000000000010".into(),
                     text: "User prefers a dark theme for the IDE".into(),
                     score: 0.8,
                     model: "keyword".into(),

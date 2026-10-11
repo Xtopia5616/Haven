@@ -955,3 +955,6 @@
 - [0964：统一 Admin 会话结果身份字段](0964-name-and-validate-admin-session-identity.md)
 - [0965：校验用量持久化补偿身份](0965-validate-usage-persistence-identities.md)
 - [0966：校验 Agent transcript 事件身份](0966-validate-agent-transcript-identities.md)
+- [0967：统一校验 Memory 持久化 owner 的实体身份](0967-validate-memory-owner-identities.md)
+- [0968：由 Session command adapter 校验 transcript 处理结果](0968-normalize-session-command-response-ownership.md)
+- [0969：派生集合使用明确的实体复数名称](0969-use-entity-names-for-derived-collections.md)

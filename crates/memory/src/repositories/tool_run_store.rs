@@ -12,8 +12,71 @@ use crate::repositories::tool_run_completion_outbox::ToolRunCompletionOutboxRow;
 use crate::repositories::tool_runs::{ScheduledToolRunRow, ToolRunDependencyRow, ToolRunRow};
 use haven_common::ToolRunCompletionPayload;
 use haven_common::lifecycle::ToolRunStatus;
+use haven_common::types::is_canonical_id;
 
 const MAX_TOOL_RUN_HISTORY_PAGE_SIZE: usize = 200;
+
+fn validate_id(id: &str, prefix: &str, field: &str) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        is_canonical_id(id, prefix),
+        "invalid {field}: expected canonical {prefix}- ID"
+    );
+    Ok(())
+}
+
+fn validate_optional_id(id: Option<&str>, prefix: &str, field: &str) -> anyhow::Result<()> {
+    if let Some(id) = id {
+        validate_id(id, prefix, field)?;
+    }
+    Ok(())
+}
+
+fn validate_execution_claim_id(id: &str) -> anyhow::Result<()> {
+    validate_id(id, "conf", "request_id")
+}
+
+fn validate_tool_run_row(row: &ToolRunRow) -> anyhow::Result<()> {
+    validate_id(&row.tool_run_id, "toolrun", "tool_run_id")?;
+    validate_optional_id(row.session_id.as_deref(), "ses", "session_id")?;
+    validate_optional_id(row.source_step_id.as_deref(), "step", "source_step_id")
+}
+
+fn validate_tool_run_rows(rows: &[ToolRunRow]) -> anyhow::Result<()> {
+    for row in rows {
+        validate_tool_run_row(row)?;
+    }
+    Ok(())
+}
+
+fn validate_scheduled_tool_run_row(row: &ScheduledToolRunRow) -> anyhow::Result<()> {
+    validate_id(&row.tool_run_id, "toolrun", "tool_run_id")?;
+    validate_optional_id(row.session_id.as_deref(), "ses", "session_id")?;
+    validate_optional_id(
+        row.watch_tool_run_id.as_deref(),
+        "toolrun",
+        "watch_tool_run_id",
+    )
+}
+
+fn validate_completion_outbox_row(row: &ToolRunCompletionOutboxRow) -> anyhow::Result<()> {
+    validate_id(&row.tool_run_id, "toolrun", "tool_run_id")?;
+    validate_id(&row.tool_run_result_id, "toolrun", "tool_run_result_id")?;
+    anyhow::ensure!(
+        row.tool_run_result_id == row.tool_run_id,
+        "tool_run_result_id does not match tool_run_id"
+    );
+    validate_optional_id(row.session_id.as_deref(), "ses", "session_id")?;
+    validate_id(&row.payload.tool_run_id, "toolrun", "payload.tool_run_id")?;
+    anyhow::ensure!(
+        row.payload.tool_run_id == row.tool_run_id,
+        "payload.tool_run_id does not match tool_run_id"
+    );
+    validate_optional_id(
+        row.payload.source_step_id.as_deref(),
+        "step",
+        "payload.source_step_id",
+    )
+}
 
 #[derive(Clone)]
 pub struct ToolRunStore {
@@ -41,12 +104,19 @@ impl ToolRunStore {
         &self,
     ) -> anyhow::Result<Option<ToolRunCompletionOutboxRow>> {
         self.db
-            .run_blocking(|db| db.claim_tool_run_completion())
+            .run_blocking(|db| {
+                let row = db.claim_tool_run_completion()?;
+                if let Some(row) = &row {
+                    validate_completion_outbox_row(row)?;
+                }
+                Ok(row)
+            })
             .await
     }
 
     /// Acknowledge a completion after its transcript projection is durable.
     pub async fn acknowledge_completion(&self, tool_run_result_id: String) -> anyhow::Result<bool> {
+        validate_id(&tool_run_result_id, "toolrun", "tool_run_result_id")?;
         self.db
             .run_blocking(move |db| db.acknowledge_tool_run_completion(&tool_run_result_id))
             .await
@@ -58,6 +128,7 @@ impl ToolRunStore {
         &self,
         tool_run_result_id: String,
     ) -> anyhow::Result<bool> {
+        validate_id(&tool_run_result_id, "toolrun", "tool_run_result_id")?;
         self.db
             .run_blocking(move |db| db.acknowledge_unowned_tool_run_completion(&tool_run_result_id))
             .await
@@ -66,7 +137,11 @@ impl ToolRunStore {
     /// Read persisted tool_runs, newest first, optionally filtered by kind.
     pub async fn list_tool_runs(&self, kind: Option<String>) -> anyhow::Result<Vec<ToolRunRow>> {
         self.db
-            .run_blocking(move |db| db.list_tool_runs(kind.as_deref()))
+            .run_blocking(move |db| {
+                let rows = db.list_tool_runs(kind.as_deref())?;
+                validate_tool_run_rows(&rows)?;
+                Ok(rows)
+            })
             .await
     }
 
@@ -77,9 +152,13 @@ impl ToolRunStore {
         session_id: String,
         kind: Option<String>,
     ) -> anyhow::Result<Vec<ToolRunRow>> {
+        validate_id(&session_id, "ses", "session_id")?;
         self.db
             .run_blocking(move |db| {
-                db.list_tool_runs_for_session(kind.as_deref(), Some(session_id.as_str()))
+                let rows =
+                    db.list_tool_runs_for_session(kind.as_deref(), Some(session_id.as_str()))?;
+                validate_tool_run_rows(&rows)?;
+                Ok(rows)
             })
             .await
     }
@@ -93,10 +172,17 @@ impl ToolRunStore {
         session_id: Option<String>,
         limit: usize,
     ) -> anyhow::Result<Vec<ToolRunRow>> {
+        validate_optional_id(session_id.as_deref(), "ses", "session_id")?;
         let limit = limit.min(MAX_TOOL_RUN_HISTORY_PAGE_SIZE);
         self.db
             .run_blocking(move |db| {
-                db.list_terminal_tool_runs(kind.as_deref(), session_id.as_deref(), Some(limit))
+                let rows = db.list_terminal_tool_runs(
+                    kind.as_deref(),
+                    session_id.as_deref(),
+                    Some(limit),
+                )?;
+                validate_tool_run_rows(&rows)?;
+                Ok(rows)
             })
             .await
     }
@@ -105,14 +191,25 @@ impl ToolRunStore {
     /// query is intentionally separate from bounded history pages.
     pub async fn list_all_terminal_background_tool_runs(&self) -> anyhow::Result<Vec<ToolRunRow>> {
         self.db
-            .run_blocking(|db| db.list_terminal_tool_runs(Some("background"), None, None))
+            .run_blocking(|db| {
+                let rows = db.list_terminal_tool_runs(Some("background"), None, None)?;
+                validate_tool_run_rows(&rows)?;
+                Ok(rows)
+            })
             .await
     }
 
     /// Read one persisted ToolRun of either kind.
     pub async fn get_tool_run(&self, tool_run_id: String) -> anyhow::Result<Option<ToolRunRow>> {
+        validate_id(&tool_run_id, "toolrun", "tool_run_id")?;
         self.db
-            .run_blocking(move |db| db.get_tool_run(&tool_run_id))
+            .run_blocking(move |db| {
+                let row = db.get_tool_run(&tool_run_id)?;
+                if let Some(row) = &row {
+                    validate_tool_run_row(row)?;
+                }
+                Ok(row)
+            })
             .await
     }
 
@@ -122,6 +219,7 @@ impl ToolRunStore {
         &self,
         tool_run_id: String,
     ) -> anyhow::Result<Option<ToolRunDependencyRow>> {
+        validate_id(&tool_run_id, "toolrun", "tool_run_id")?;
         self.db
             .run_blocking(move |db| db.get_tool_run_dependency(&tool_run_id))
             .await
@@ -129,6 +227,7 @@ impl ToolRunStore {
 
     /// Remove a persisted ToolRun of either kind.
     pub async fn delete_tool_run(&self, tool_run_id: String) -> anyhow::Result<bool> {
+        validate_id(&tool_run_id, "toolrun", "tool_run_id")?;
         self.db
             .run_blocking(move |db| db.delete_tool_run(&tool_run_id))
             .await
@@ -138,7 +237,15 @@ impl ToolRunStore {
     /// work and undelivered completion results.
     pub async fn clear_terminal_tool_runs(&self) -> anyhow::Result<Vec<String>> {
         self.db
-            .run_blocking(|db| db.clear_terminal_tool_runs())
+            .run_blocking(|db| {
+                let rows = db.list_terminal_tool_runs(None, None, None)?;
+                validate_tool_run_rows(&rows)?;
+                let deleted = db.clear_terminal_tool_runs()?;
+                for tool_run_id in &deleted {
+                    validate_id(tool_run_id, "toolrun", "tool_run_id")?;
+                }
+                Ok(deleted)
+            })
             .await
     }
 
@@ -149,6 +256,7 @@ impl ToolRunStore {
         error_reason: String,
         finished_at: String,
     ) -> anyhow::Result<bool> {
+        validate_id(&tool_run_id, "toolrun", "tool_run_id")?;
         self.db
             .run_blocking(move |db| {
                 db.fail_waiting_scheduled_tool_run(&tool_run_id, &error_reason, &finished_at)
@@ -191,6 +299,9 @@ impl ToolRunStore {
         started_at: String,
         source_step_id: Option<String>,
     ) -> anyhow::Result<()> {
+        validate_id(&tool_run_id, "toolrun", "tool_run_id")?;
+        validate_optional_id(session_id.as_deref(), "ses", "session_id")?;
+        validate_optional_id(source_step_id.as_deref(), "step", "source_step_id")?;
         self.db
             .run_blocking(move |db| {
                 db.save_tool_run_with_source(
@@ -211,6 +322,8 @@ impl ToolRunStore {
         tool_run_id: String,
         session_id: String,
     ) -> anyhow::Result<()> {
+        validate_id(&tool_run_id, "toolrun", "tool_run_id")?;
+        validate_id(&session_id, "ses", "session_id")?;
         self.db
             .run_blocking(move |db| db.update_tool_run_session(&tool_run_id, &session_id))
             .await
@@ -231,6 +344,7 @@ impl ToolRunStore {
         exit_code: Option<i32>,
         finished_at: String,
     ) -> anyhow::Result<bool> {
+        validate_id(&tool_run_id, "toolrun", "tool_run_id")?;
         self.db
             .run_blocking(move |db| {
                 db.finish_tool_run(
@@ -253,6 +367,7 @@ impl ToolRunStore {
         tool_run_id: String,
         finished_at: String,
     ) -> anyhow::Result<bool> {
+        validate_id(&tool_run_id, "toolrun", "tool_run_id")?;
         self.db
             .run_blocking(move |db| db.cancel_background_tool_run(&tool_run_id, &finished_at))
             .await
@@ -265,6 +380,8 @@ impl ToolRunStore {
         &self,
         payload: ToolRunCompletionPayload,
     ) -> anyhow::Result<bool> {
+        validate_id(&payload.tool_run_id, "toolrun", "tool_run_id")?;
+        validate_optional_id(payload.source_step_id.as_deref(), "step", "source_step_id")?;
         self.db
             .run_blocking(move |db| db.finish_tool_run_with_completion(&payload))
             .await
@@ -286,6 +403,9 @@ impl ToolRunStore {
         prompt: Option<String>,
         watch_tool_run_id: Option<String>,
     ) -> anyhow::Result<()> {
+        validate_id(&tool_run_id, "toolrun", "tool_run_id")?;
+        validate_optional_id(session_id.as_deref(), "ses", "session_id")?;
+        validate_optional_id(watch_tool_run_id.as_deref(), "toolrun", "watch_tool_run_id")?;
         self.db
             .run_blocking(move |db| {
                 db.save_scheduled_tool_run(
@@ -309,7 +429,13 @@ impl ToolRunStore {
         &self,
     ) -> anyhow::Result<Vec<ScheduledToolRunRow>> {
         self.db
-            .run_blocking(|db| db.list_pending_scheduled_tool_runs())
+            .run_blocking(|db| {
+                let rows = db.list_pending_scheduled_tool_runs()?;
+                for row in &rows {
+                    validate_scheduled_tool_run_row(row)?;
+                }
+                Ok(rows)
+            })
             .await
     }
 
@@ -317,7 +443,13 @@ impl ToolRunStore {
     /// triggers already started by another ToolRunService instance.
     pub async fn list_live_scheduled_tool_runs(&self) -> anyhow::Result<Vec<ScheduledToolRunRow>> {
         self.db
-            .run_blocking(|db| db.list_live_scheduled_tool_runs())
+            .run_blocking(|db| {
+                let rows = db.list_live_scheduled_tool_runs()?;
+                for row in &rows {
+                    validate_scheduled_tool_run_row(row)?;
+                }
+                Ok(rows)
+            })
             .await
     }
 
@@ -327,6 +459,7 @@ impl ToolRunStore {
         tool_run_id: String,
         started_at: String,
     ) -> anyhow::Result<bool> {
+        validate_id(&tool_run_id, "toolrun", "tool_run_id")?;
         self.db
             .run_blocking(move |db| db.start_scheduled_tool_run(&tool_run_id, &started_at))
             .await
@@ -334,6 +467,7 @@ impl ToolRunStore {
 
     /// Return an undelivered scheduled fire to its waiting state.
     pub async fn requeue_scheduled_tool_run(&self, tool_run_id: String) -> anyhow::Result<bool> {
+        validate_id(&tool_run_id, "toolrun", "tool_run_id")?;
         self.db
             .run_blocking(move |db| db.requeue_scheduled_tool_run(&tool_run_id))
             .await
@@ -349,6 +483,7 @@ impl ToolRunStore {
         error_reason: Option<String>,
         finished_at: String,
     ) -> anyhow::Result<bool> {
+        validate_id(&tool_run_id, "toolrun", "tool_run_id")?;
         self.db
             .run_blocking(move |db| {
                 db.finish_scheduled_tool_run(
@@ -370,6 +505,8 @@ impl ToolRunStore {
         tool_run_id: String,
         request_id: String,
     ) -> anyhow::Result<bool> {
+        validate_id(&tool_run_id, "toolrun", "tool_run_id")?;
+        validate_execution_claim_id(&request_id)?;
         self.db
             .run_blocking(move |db| {
                 db.claim_scheduled_tool_run_execution(&tool_run_id, &request_id)
@@ -383,6 +520,8 @@ impl ToolRunStore {
         tool_run_id: String,
         request_id: String,
     ) -> anyhow::Result<bool> {
+        validate_id(&tool_run_id, "toolrun", "tool_run_id")?;
+        validate_execution_claim_id(&request_id)?;
         self.db
             .run_blocking(move |db| {
                 db.release_scheduled_tool_run_execution_claim(&tool_run_id, &request_id)
@@ -396,6 +535,7 @@ impl ToolRunStore {
         tool_run_id: String,
         finished_at: String,
     ) -> anyhow::Result<bool> {
+        validate_id(&tool_run_id, "toolrun", "tool_run_id")?;
         self.db
             .run_blocking(move |db| db.cancel_scheduled_tool_run(&tool_run_id, &finished_at))
             .await
@@ -710,5 +850,137 @@ mod tests {
                 .as_deref(),
             Some("invalid due_at")
         );
+    }
+
+    #[tokio::test]
+    async fn rejects_noncanonical_tool_run_write_ids_before_persistence() {
+        let (db, store) = store();
+        assert!(
+            store
+                .save_background_tool_run(
+                    "toolrun-short".into(),
+                    None,
+                    "echo invalid".into(),
+                    "started".into(),
+                )
+                .await
+                .is_err()
+        );
+
+        let tool_run_id = new_id("toolrun");
+        assert!(
+            store
+                .save_background_tool_run_with_source(
+                    tool_run_id.clone(),
+                    Some("ses-short".into()),
+                    "echo invalid".into(),
+                    "started".into(),
+                    Some("step-short".into()),
+                )
+                .await
+                .is_err()
+        );
+        assert!(store.list_tool_runs(None).await.unwrap().is_empty());
+
+        assert!(
+            store
+                .save_scheduled_tool_run(
+                    tool_run_id,
+                    "due".into(),
+                    "title".into(),
+                    "body".into(),
+                    "continue".into(),
+                    None,
+                    None,
+                    None,
+                    None,
+                    Some("toolrun-watch".into()),
+                )
+                .await
+                .is_err()
+        );
+        assert_eq!(db.list_tool_runs(None).unwrap().len(), 0);
+    }
+
+    #[tokio::test]
+    async fn rejects_invalid_claim_ids_and_malformed_read_rows() {
+        let (db, store) = store();
+        let tool_run_id = new_id("toolrun");
+        db.save_tool_run(&tool_run_id, Some("ses-short"), "echo", "started")
+            .unwrap();
+        assert!(store.get_tool_run(tool_run_id.clone()).await.is_err());
+
+        let scheduled_id = new_id("toolrun");
+        db.save_scheduled_tool_run(
+            &scheduled_id,
+            "",
+            "title",
+            "body",
+            "continue",
+            None,
+            None,
+            None,
+            Some("prompt"),
+            Some("toolrun-short"),
+        )
+        .unwrap();
+        assert!(store.list_pending_scheduled_tool_runs().await.is_err());
+
+        assert!(
+            store
+                .claim_scheduled_tool_run_execution(new_id("toolrun"), "claim-short".into())
+                .await
+                .is_err()
+        );
+        assert!(
+            store
+                .claim_scheduled_tool_run_execution(new_id("toolrun"), new_id("toolrun"))
+                .await
+                .is_err()
+        );
+        assert!(
+            !store
+                .claim_scheduled_tool_run_execution(new_id("toolrun"), new_id("conf"))
+                .await
+                .unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn rejects_completion_payload_identity_mismatch_before_delivery() {
+        let (db, store) = store();
+        let tool_run_id = new_id("toolrun");
+        db.save_tool_run(&tool_run_id, None, "echo", "started")
+            .unwrap();
+        assert!(
+            db.finish_tool_run_with_completion(&completion_payload(
+                &tool_run_id,
+                ToolRunStatus::Completed,
+                Some("done"),
+                None,
+                None,
+                Some(0),
+                "finished",
+            ))
+            .unwrap()
+        );
+        let mismatched_payload = serde_json::to_string(&completion_payload(
+            &new_id("toolrun"),
+            ToolRunStatus::Completed,
+            Some("done"),
+            None,
+            None,
+            Some(0),
+            "finished",
+        ))
+        .unwrap();
+        db.conn()
+            .execute(
+                "UPDATE tool_run_completion_outbox SET status_json = ?1 WHERE tool_run_id = ?2",
+                rusqlite::params![mismatched_payload, tool_run_id],
+            )
+            .unwrap();
+
+        assert!(store.claim_pending_completion().await.is_err());
     }
 }

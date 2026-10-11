@@ -132,24 +132,31 @@ mod tests {
         let last2 = last.clone();
         hub.set_live_output_event_sink(Arc::new(move |event, payload| {
             assert_eq!(event, "agent:tool_output");
-            assert_eq!(payload["session_id"], "ses-1");
-            assert_eq!(payload["step_id"], "step-1");
+            assert_eq!(
+                payload["session_id"],
+                "ses-09df36791e54c51f7be063867e10b9af"
+            );
+            assert_eq!(payload["step_id"], "step-00000000000000000000000000000001");
             assert_eq!(
                 payload,
                 json!({
-                    "session_id": "ses-1",
-                    "step_id": "step-1",
+                    "session_id": "ses-09df36791e54c51f7be063867e10b9af",
+                    "step_id": "step-00000000000000000000000000000001",
                     "output": "hello",
                 })
             );
             *last2.lock().unwrap() = payload["output"].as_str().unwrap().into();
             hits2.fetch_add(1, Ordering::SeqCst);
         }));
-        hub.emit_output("ses-1", "step-1", "hello");
+        hub.emit_output(
+            "ses-09df36791e54c51f7be063867e10b9af",
+            "step-00000000000000000000000000000001",
+            "hello",
+        );
         assert_eq!(hits.load(Ordering::SeqCst), 1);
         assert_eq!(last.lock().unwrap().as_str(), "hello");
         // Empty step id is a no-op.
-        hub.emit_output("ses-1", "", "ignored");
+        hub.emit_output("ses-09df36791e54c51f7be063867e10b9af", "", "ignored");
         assert_eq!(hits.load(Ordering::SeqCst), 1);
     }
 
@@ -160,14 +167,14 @@ mod tests {
         let hits2 = hits.clone();
         hub.set_live_output_event_sink(Arc::new(move |event, payload| {
             assert_eq!(event, "agent:tool_output");
-            assert_eq!(payload["step_id"], "step-live");
+            assert_eq!(payload["step_id"], "step-00000000000000000000000000000002");
             hits2.fetch_add(1, Ordering::SeqCst);
         }));
         let running = Arc::new(AtomicBool::new(true));
         let tail = hub.new_tail().await;
         hub.spawn_tail_emitter(
-            "ses-1".into(),
-            "step-live".into(),
+            "ses-09df36791e54c51f7be063867e10b9af".into(),
+            "step-00000000000000000000000000000002".into(),
             tail.clone(),
             running.clone(),
             Duration::from_millis(30),
@@ -204,8 +211,8 @@ mod tests {
         tail.append_text("already available");
         let running = Arc::new(AtomicBool::new(true));
         hub.spawn_tail_emitter(
-            "ses-1".into(),
-            "step-immediate".into(),
+            "ses-09df36791e54c51f7be063867e10b9af".into(),
+            "step-00000000000000000000000000000003".into(),
             tail,
             running.clone(),
             Duration::from_secs(1),
@@ -264,8 +271,8 @@ mod tests {
         let tail = hub.new_tail().await;
         let running = Arc::new(AtomicBool::new(true));
         hub.spawn_tail_emitter(
-            "ses-1".into(),
-            "step-slide".into(),
+            "ses-09df36791e54c51f7be063867e10b9af".into(),
+            "step-00000000000000000000000000000004".into(),
             tail.clone(),
             running.clone(),
             Duration::from_millis(30),

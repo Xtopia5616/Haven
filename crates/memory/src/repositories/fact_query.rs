@@ -7,6 +7,8 @@
 
 use crate::db::Database;
 use chrono::{DateTime, Utc};
+use haven_common::types::is_canonical_id;
+use rusqlite::types::Type;
 use std::collections::HashSet;
 
 use super::facts::{Fact, is_identity_predicate, is_volatile_predicate};
@@ -28,12 +30,13 @@ pub(crate) const FACT_COLS_ALIASED: &str = "f.id, f.subject, f.predicate, f.obje
 
 /// Map a rusqlite Row with the standard fact SELECT order to a Fact.
 pub(crate) fn fact_from_row(row: &rusqlite::Row) -> rusqlite::Result<Fact> {
+    let id = canonical_id_from_row(row, 0, "fact")?;
     let tags_str: String = row.get(6)?;
-    let provenance_item_id: Option<String> = row.get(10)?;
-    let provenance_record_id: Option<String> = row.get(11)?;
+    let provenance_item_id = optional_canonical_id_from_row(row, 10, "msg")?;
+    let provenance_record_id = optional_canonical_id_from_row(row, 11, "msg")?;
     let provenance_snippet: Option<String> = row.get(12)?;
     Ok(Fact {
-        id: row.get(0)?,
+        id,
         subject: row.get(1)?,
         predicate: row.get(2)?,
         object: row.get(3)?,
@@ -50,6 +53,43 @@ pub(crate) fn fact_from_row(row: &rusqlite::Row) -> rusqlite::Result<Fact> {
         ),
         durability: row.get(13)?,
     })
+}
+
+fn canonical_id_from_row(
+    row: &rusqlite::Row,
+    column: usize,
+    prefix: &str,
+) -> rusqlite::Result<String> {
+    let id: String = row.get(column)?;
+    if is_canonical_id(&id, prefix) {
+        Ok(id)
+    } else {
+        Err(rusqlite::Error::FromSqlConversionFailure(
+            column,
+            Type::Text,
+            format!("stored {prefix} identity is not canonical").into(),
+        ))
+    }
+}
+
+fn optional_canonical_id_from_row(
+    row: &rusqlite::Row,
+    column: usize,
+    prefix: &str,
+) -> rusqlite::Result<Option<String>> {
+    let id: Option<String> = row.get(column)?;
+    id.map(|id| {
+        if is_canonical_id(&id, prefix) {
+            Ok(id)
+        } else {
+            Err(rusqlite::Error::FromSqlConversionFailure(
+                column,
+                Type::Text,
+                format!("stored {prefix} reference is not canonical").into(),
+            ))
+        }
+    })
+    .transpose()
 }
 
 fn source_ref_from_provenance(
@@ -135,6 +175,7 @@ impl Database {
     /// recall hits back into full facts for ranking and rendering.
     #[cfg(any(test, feature = "test-support"))]
     pub fn get_fact_by_id(&self, id: &str) -> anyhow::Result<Option<Fact>> {
+        anyhow::ensure!(is_canonical_id(id, "fact"), "fact id must be canonical");
         let conn = self.conn();
         let mut stmt = conn.prepare(&format!("SELECT {FACT_COLS} FROM facts WHERE id = ?1"))?;
         let mut rows = stmt.query(rusqlite::params![id])?;
@@ -150,6 +191,10 @@ impl Database {
         if ids.is_empty() {
             return Ok(Vec::new());
         }
+        anyhow::ensure!(
+            ids.iter().all(|id| is_canonical_id(id, "fact")),
+            "fact ids must be canonical"
+        );
         let conn = self.conn();
         let placeholders: Vec<String> = (1..=ids.len()).map(|i| format!("?{i}")).collect();
         let sql = format!(
@@ -488,7 +533,9 @@ impl Database {
 #[cfg(test)]
 mod tests {
     use super::sort_facts_effective;
+    use crate::Database;
     use crate::repositories::facts::Fact;
+    use haven_common::types::new_id;
 
     fn fact(id: &str, last_seen_at: &str) -> Fact {
         Fact {
@@ -520,5 +567,52 @@ mod tests {
             facts.iter().map(|f| f.id.as_str()).collect::<Vec<_>>(),
             ["new", "old"]
         );
+    }
+
+    #[test]
+    fn fact_reads_reject_noncanonical_ids_and_provenance() {
+        let db = Database::open_in_memory().unwrap();
+        let invalid_fact_id = "fact-invalid";
+        db.conn()
+            .execute(
+                "INSERT INTO facts (id, subject, predicate, object, source, confidence, created_at)
+                 VALUES (?1, 'user', 'likes', 'Rust', 'user', 0.9, '2026-01-01T00:00:00Z')",
+                [invalid_fact_id],
+            )
+            .unwrap();
+        assert!(db.list_facts().is_err());
+        assert!(db.get_fact_by_id(invalid_fact_id).is_err());
+
+        for provenance_column in ["provenance_item_id", "provenance_record_id"] {
+            let db = Database::open_in_memory().unwrap();
+            db.conn()
+                .execute_batch("PRAGMA foreign_keys = OFF")
+                .unwrap();
+            let fact_id = new_id("fact");
+            db.conn()
+                .execute(
+                    &format!(
+                        "INSERT INTO facts (id, subject, predicate, object, source, confidence, created_at, {provenance_column})
+                         VALUES (?1, 'user', 'likes', 'Rust', 'user', 0.9, '2026-01-01T00:00:00Z', 'message-legacy')"
+                    ),
+                    [&fact_id],
+                )
+                .unwrap();
+            assert!(
+                db.get_fact_by_id(&fact_id)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("canonical"),
+                "{provenance_column} must be validated"
+            );
+        }
+    }
+
+    #[test]
+    fn fact_id_queries_reject_noncanonical_inputs() {
+        let db = Database::open_in_memory().unwrap();
+        assert!(db.get_fact_by_id("fact-invalid").is_err());
+        assert!(db.list_facts_by_ids(&["fact-invalid".into()]).is_err());
+        assert!(db.list_facts_by_ids(&[]).unwrap().is_empty());
     }
 }

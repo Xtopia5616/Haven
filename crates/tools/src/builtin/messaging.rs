@@ -787,14 +787,14 @@ impl AgentTool {
         let requested_for_io = requested.clone();
         let (acknowledged, receipts_sent) = blocking(service, move |service| {
             let claim = service.claim(&sid)?;
-            let selected: Vec<Envelope> = claim
+            let selected_envelopes: Vec<Envelope> = claim
                 .envelopes()
                 .iter()
                 .filter(|envelope| requested_for_io.iter().any(|id| id == &envelope.id))
                 .cloned()
                 .collect();
-            let acknowledged = selected.len();
-            if selected.is_empty() {
+            let acknowledged = selected_envelopes.len();
+            if selected_envelopes.is_empty() {
                 claim.retry();
                 return Ok((0usize, 0usize));
             }
@@ -1328,8 +1328,8 @@ mod tests {
     #[test]
     fn model_facing_session_and_message_ids_require_canonical_format() {
         assert!(session_of(Some("ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into())).is_ok());
-        assert!(session_of(Some("ses-a".into())).is_err());
-        assert!(check_target(Some("ses-b".into()), "").is_err());
+        assert!(session_of(Some("ses-invalid".into())).is_err());
+        assert!(check_target(Some("ses-invalid".into()), "").is_err());
         assert!(check_message_ids(Some(vec!["msg-invalid".into()])).is_err());
         assert!(
             check_message_ids(Some(vec!["msg-0123456789abcdef0123456789abcdef".into()])).is_ok()
@@ -2247,7 +2247,7 @@ mod tests {
         assert!(
             tool.validate_input(&json!({
                 "operation": "send",
-                "to": "ses-a",
+                "to": "ses-invalid",
                 "text": "hello"
             }))
             .is_err()

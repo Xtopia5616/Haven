@@ -10,6 +10,7 @@ import {
 	interruptSession,
 	listRuntimeSessions,
 	listSessionHistory,
+	processTranscript,
 	rollbackSession,
 	reopenSession,
 	searchSessionHistoryFiltered,
@@ -24,6 +25,31 @@ const invokeMock = vi.mocked(invoke);
 
 describe('session history command boundary', () => {
 	beforeEach(() => invokeMock.mockReset());
+
+	it('submits transcripts through the Session command adapter and validates identity', async () => {
+		const request = {
+			transcript: 'hello',
+			activeSessionId: null,
+			attachments: null,
+			voice: false,
+		};
+		const response = {
+			SessionCreated: {
+				session_id: 'ses-00000000000000000000000000000010',
+				message_id: 'msg-00000000000000000000000000000011',
+			},
+		};
+		invokeMock.mockResolvedValueOnce(response as never);
+
+		await expect(processTranscript(request)).resolves.toEqual(response);
+		expect(invokeMock).toHaveBeenCalledOnce();
+		expect(invokeMock).toHaveBeenCalledWith('process_transcript', request);
+
+		invokeMock.mockResolvedValueOnce({
+			SessionCreated: { session_id: 'ses-short' },
+		} as never);
+		await expect(processTranscript(request)).rejects.toThrow('Invalid process transcript identity');
+	});
 
 	it('keeps active-session list rows unchanged', async () => {
 		const response = {

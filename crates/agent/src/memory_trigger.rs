@@ -216,7 +216,7 @@ mod tests {
         assert!(
             append_memory_trigger(
                 store,
-                "ses-synthetic",
+                "ses-00000000000000000000000000000001",
                 MemoryTriggerPayload::step_interval(1, 25),
                 CancellationToken::new(),
             )

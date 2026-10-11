@@ -802,11 +802,11 @@ impl MessageClaim {
             recipient,
             envelopes,
         } = self;
-        let selected: Vec<Envelope> = envelopes
+        let selected_envelopes: Vec<Envelope> = envelopes
             .into_iter()
             .filter(|envelope| selected_ids.iter().any(|id| id == &envelope.id))
             .collect();
-        let ids: Vec<String> = selected
+        let ids: Vec<String> = selected_envelopes
             .iter()
             .map(|envelope| envelope.id.clone())
             .collect();
@@ -814,7 +814,7 @@ impl MessageClaim {
             return Ok(Vec::new());
         }
         service.ack(&recipient, &ids)?;
-        Ok(service.send_receipts(&recipient, &selected))
+        Ok(service.send_receipts(&recipient, &selected_envelopes))
     }
 
     /// Explicitly abandon the claim. This is equivalent to dropping it and

@@ -12,6 +12,7 @@ export type ResolveConfirmationRequest = TauriCommandRequest<'resolve_confirmati
 export type ContinueSessionRequest = TauriCommandRequest<'continue_session'>;
 export type DeleteSessionRequest = TauriCommandRequest<'delete_session'>;
 export type EndSessionRequest = TauriCommandRequest<'end_session'>;
+export type ProcessTranscriptRequest = TauriCommandRequest<'process_transcript'>;
 export type GetSessionForResumeRequest = TauriCommandRequest<'get_session_for_resume'>;
 export type GetSessionLineageRequest = TauriCommandRequest<'get_session_lineage'>;
 export type InterruptSessionRequest = TauriCommandRequest<'interrupt_session'>;

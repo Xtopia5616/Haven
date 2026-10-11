@@ -290,7 +290,7 @@ struct ToolBudgetCandidate {
 
 #[derive(Debug, Default, PartialEq, Eq)]
 struct ToolBudgetSelection {
-    selected: Vec<ToolDef>,
+    selected_tools: Vec<ToolDef>,
     omitted: Vec<String>,
     omitted_core: usize,
 }
@@ -365,14 +365,14 @@ fn select_tool_definitions_for_budget(
         .skip(selected_len)
         .map(|candidate| candidate.def.name.clone())
         .collect();
-    let selected = candidates
+    let selected_tools = candidates
         .into_iter()
         .take(selected_len)
         .map(|candidate| candidate.def)
         .collect();
 
     ToolBudgetSelection {
-        selected,
+        selected_tools,
         omitted,
         omitted_core,
     }

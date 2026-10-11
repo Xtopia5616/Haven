@@ -326,7 +326,8 @@ mod pending_context_tests {
             emitter: std::sync::Arc::new(NoopEmitter),
         };
         let mut state = ReActState::new(Vec::new(), Vec::new(), HashMap::new());
-        let message_id = super::context::tool_run_result_message_id("toolrun-active-dedup");
+        let message_id =
+            super::context::tool_run_result_message_id("toolrun-0000000000000000000000000000000e");
 
         let batch = || PendingContextBatch {
             items: vec![PendingContext {
@@ -334,7 +335,7 @@ mod pending_context_tests {
                 text: "background result".into(),
                 attachments: Vec::new(),
                 message_id: Some(message_id.clone()),
-                tool_run_result_id: Some("toolrun-active-dedup".into()),
+                tool_run_result_id: Some("toolrun-0000000000000000000000000000000e".into()),
             }],
             clears_ask: false,
             inbox_claim: None,

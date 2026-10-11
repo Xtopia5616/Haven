@@ -6,12 +6,15 @@ import type {
 	GetSessionForResumeRequest,
 	GetSessionLineageRequest,
 	InterruptSessionRequest,
+	ProcessTranscriptRequest,
 	RollbackSessionRequest,
 	ReopenSessionRequest,
 	SessionHistoryFilterRequest,
 	SessionHistoryPageRequest,
 	UpdateSessionTitleRequest,
 } from './contracts/commands.ts';
+import type { ProcessResult } from './contracts/generatedCommands.ts';
+import { parseProcessResult } from './contracts/processResult.ts';
 import type {
 	SessionHistoryRow,
 	SessionLineageResponse,
@@ -67,6 +70,12 @@ export async function getSessionForResume(
 export async function getLatestSessionForResume(): Promise<SessionResumeResponse | null> {
 	const value: unknown = await invoke('get_latest_session_for_resume');
 	return value === null ? null : parseSessionResumeResponse(value);
+}
+
+/** Submit transcript text and attachments through the canonical Session ingress. */
+export async function processTranscript(request: ProcessTranscriptRequest): Promise<ProcessResult> {
+	const value: unknown = await invoke('process_transcript', request);
+	return parseProcessResult(value);
 }
 
 /** Reopen one persisted session for follow-up input. */

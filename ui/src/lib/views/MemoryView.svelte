@@ -39,7 +39,7 @@
 	import RefreshButton from '$lib/RefreshButton.svelte';
 	import MaterialTabs from '$lib/MaterialTabs.svelte';
 	import MaterialDatePicker from '$lib/MaterialDatePicker.svelte';
-	import { openContextMenu } from '$lib/contextMenu.ts';
+	import { openContextMenu } from '$lib/contextMenuStore.ts';
 	import SessionHistory from './SessionHistory.svelte';
 	import MemoryCenter from './MemoryCenter.svelte';
 	import ToolRunCenter from '$lib/ToolRunCenter.svelte';
@@ -56,7 +56,7 @@
 	} from '$lib/contracts/memory.ts';
 	import type { ToolRunPayload } from '$lib/contracts/toolRun.ts';
 	import type { SessionHistoryRow } from '$lib/contracts/sessionHistory.ts';
-	import type { ContextMenuItem } from '$lib/contextMenu.ts';
+	import type { ContextMenuItem } from '$lib/contextMenuStore.ts';
 
 	const MEMORY_TAB_IDS = ['sessions', 'tasks', 'memory'] as const;
 	type MemoryTabId = (typeof MEMORY_TAB_IDS)[number];

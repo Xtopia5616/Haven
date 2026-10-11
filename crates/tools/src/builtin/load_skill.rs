@@ -52,18 +52,18 @@ impl LoadSkillTool {
             .into_iter()
             .filter(|tool| is_skill(&tool.tool_def()))
             .collect();
-        let selected: Vec<_> = available
+        let selected_tools: Vec<_> = available
             .iter()
             .filter(|tool| requested_names.contains(&tool.name()))
             .cloned()
             .collect();
-        let selected_names: HashSet<_> = selected.iter().map(|tool| tool.name()).collect();
+        let selected_names: HashSet<_> = selected_tools.iter().map(|tool| tool.name()).collect();
         let missing: Vec<_> = names
             .iter()
             .filter(|name| !selected_names.contains(&qualified_name(name)))
             .cloned()
             .collect();
-        if selected.is_empty() {
+        if selected_tools.is_empty() {
             anyhow::bail!(
                 "no matching enabled executable Skill; available Skills: {}",
                 available
@@ -78,7 +78,7 @@ impl LoadSkillTool {
         let max = self.max_tools_per_request.max(1);
         match self
             .session_tool_overlay
-            .register_many_if_within_budget(&session_id, global_count, max, selected.clone())
+            .register_many_if_within_budget(&session_id, global_count, max, selected_tools.clone())
             .await
         {
             Ok(loaded) => {
@@ -104,7 +104,7 @@ impl LoadSkillTool {
                         "Loading these {} Skills would exceed the per-request limit of {}. Choose at most {} Skill(s).",
                         budget.net_new, budget.max, remaining
                     ),
-                    "available_skills": selected
+                    "available_skills": selected_tools
                         .iter()
                         .map(|tool| {
                             serde_json::json!({
@@ -270,7 +270,7 @@ mod tests {
             .run(
                 LoadSkillParams {
                     skill_names: vec!["demo".into()],
-                    session_id: Some("ses-skill".into()),
+                    session_id: Some("ses-2e946a977a2c0524b9f157354337a7d8".into()),
                 },
                 CancellationToken::new(),
             )
@@ -283,7 +283,7 @@ mod tests {
         assert_eq!(
             loader
                 .session_tool_overlay
-                .list_tool_definitions("ses-skill")
+                .list_tool_definitions("ses-2e946a977a2c0524b9f157354337a7d8")
                 .await[0]
                 .name,
             "skill__demo"

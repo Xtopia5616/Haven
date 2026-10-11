@@ -83,12 +83,12 @@ fn tool_budget_selection_is_source_aware_and_deterministic() {
         4,
     );
 
-    let selected: Vec<_> = selection
-        .selected
+    let selected_tools: Vec<_> = selection
+        .selected_tools
         .iter()
         .map(|def| def.name.as_str())
         .collect();
-    assert_eq!(selected, ["core.a", "core.z", "mcp__a", "mcp__z"]);
+    assert_eq!(selected_tools, ["core.a", "core.z", "mcp__a", "mcp__z"]);
     assert_eq!(selection.omitted, ["skill__a", "skill__z"]);
     assert_eq!(selection.omitted_core, 0);
 }
@@ -106,12 +106,12 @@ fn tool_budget_selection_reports_core_omissions_when_core_exceeds_limit() {
         2,
     );
 
-    let selected: Vec<_> = selection
-        .selected
+    let selected_tools: Vec<_> = selection
+        .selected_tools
         .iter()
         .map(|def| def.name.as_str())
         .collect();
-    assert_eq!(selected, ["core.a", "core.b"]);
+    assert_eq!(selected_tools, ["core.a", "core.b"]);
     assert_eq!(selection.omitted, ["core.c", "skill__a"]);
     assert_eq!(selection.omitted_core, 1);
 }
@@ -194,7 +194,9 @@ async fn tool_catalog_snapshot_captures_lookup_policy_and_manifest() {
     let mgr = ToolsFacade::new();
     mgr.rebuild_catalog().await.unwrap();
 
-    let snapshot = mgr.tool_catalog_snapshot("ses-snapshot").await;
+    let snapshot = mgr
+        .tool_catalog_snapshot("ses-7d496d1fd2a974678388198ef1c7dd0a")
+        .await;
     let tool = snapshot
         .get("ask")
         .expect("core tool must be present in the session snapshot");
@@ -299,7 +301,9 @@ async fn authorization_policy_matches_live_and_snapshot_session_overlay() {
 async fn tool_catalog_snapshot_keeps_provider_surface_stable_after_drift() {
     let mgr = ToolsFacade::new();
     mgr.rebuild_catalog().await.unwrap();
-    let before = mgr.tool_catalog_snapshot("ses-drift").await;
+    let before = mgr
+        .tool_catalog_snapshot("ses-8c81e0e6d5e4b639d41be6f9e46e25c1")
+        .await;
     assert!(
         before
             .provider_definitions()
@@ -327,9 +331,11 @@ async fn tool_catalog_snapshot_keeps_provider_surface_stable_after_drift() {
         }
     }
 
-    mgr.register_for_session("ses-drift", Arc::new(DriftTool))
+    mgr.register_for_session("ses-8c81e0e6d5e4b639d41be6f9e46e25c1", Arc::new(DriftTool))
         .await;
-    let after = mgr.tool_catalog_snapshot("ses-drift").await;
+    let after = mgr
+        .tool_catalog_snapshot("ses-8c81e0e6d5e4b639d41be6f9e46e25c1")
+        .await;
     assert!(
         after
             .provider_definitions()
@@ -374,7 +380,9 @@ async fn catalog_drift_reaches_the_live_execution_boundary() {
         .register(Arc::new(DriftTool("prepared")))
         .await
         .unwrap();
-    let catalog = mgr.tool_catalog_snapshot("ses-drift-execution").await;
+    let catalog = mgr
+        .tool_catalog_snapshot("ses-d2cf2d2794bfc431c5fe04d19fbc2de8")
+        .await;
     assert_eq!(
         catalog.get("drift_execution").unwrap().description(),
         "catalog version prepared"
@@ -382,11 +390,14 @@ async fn catalog_drift_reaches_the_live_execution_boundary() {
 
     // The prepared provider surface remains immutable, but execution must
     // consult the current session overlay at the safety boundary.
-    mgr.register_for_session("ses-drift-execution", Arc::new(DriftTool("live")))
-        .await;
+    mgr.register_for_session(
+        "ses-d2cf2d2794bfc431c5fe04d19fbc2de8",
+        Arc::new(DriftTool("live")),
+    )
+    .await;
     let result = mgr
         .execute_tool(
-            Some("ses-drift-execution"),
+            Some("ses-d2cf2d2794bfc431c5fe04d19fbc2de8"),
             "drift_execution",
             json!({}),
             CancellationToken::new(),
@@ -1397,7 +1408,9 @@ async fn test_list_schemas_for_session_includes_per_session_tools() {
 
     // Before registering a per-session tool, schemas come only from the
     // global registry.
-    let base_schemas = mgr.list_schemas_for_session("ses-a").await;
+    let base_schemas = mgr
+        .list_schemas_for_session("ses-8042867cb780e3dfc14959c1fe8d87e1")
+        .await;
     let base_count = base_schemas.len();
 
     // Register a fake per-session tool.
@@ -1406,9 +1419,12 @@ async fn test_list_schemas_for_session_includes_per_session_tools() {
         crate::test_support::discover_skill_fixture(root.path(), "demo", "demo skill", None).await;
     let runner = mgr.coordinator.builtins.skill_runner.read().await.clone();
     let adapter = SkillToolAdapter::new(Arc::new(skill), runner);
-    mgr.register_for_session("ses-a", Arc::new(adapter)).await;
+    mgr.register_for_session("ses-8042867cb780e3dfc14959c1fe8d87e1", Arc::new(adapter))
+        .await;
 
-    let schemas = mgr.list_schemas_for_session("ses-a").await;
+    let schemas = mgr
+        .list_schemas_for_session("ses-8042867cb780e3dfc14959c1fe8d87e1")
+        .await;
     assert_eq!(
         schemas.len(),
         base_count + 1,
@@ -1417,7 +1433,9 @@ async fn test_list_schemas_for_session_includes_per_session_tools() {
     assert!(schemas.iter().any(|s| s["name"] == "skill__demo"));
 
     // Other sessions should NOT see this tool.
-    let other = mgr.list_schemas_for_session("ses-b").await;
+    let other = mgr
+        .list_schemas_for_session("ses-f54924ed1bcde71cb1d3e0e9d437e3e4")
+        .await;
     assert_eq!(other.len(), base_count);
     assert!(!other.iter().any(|s| s["name"] == "skill__demo"));
 }
@@ -1426,8 +1444,12 @@ async fn test_list_schemas_for_session_includes_per_session_tools() {
 async fn test_session_tool_overlay_version_does_not_invalidate_other_sessions() {
     let mgr = ToolsFacade::new();
     mgr.rebuild_catalog().await.unwrap();
-    let before_a = mgr.catalog_version_for_session("ses-a").await;
-    let before_b = mgr.catalog_version_for_session("ses-b").await;
+    let before_a = mgr
+        .catalog_version_for_session("ses-8042867cb780e3dfc14959c1fe8d87e1")
+        .await;
+    let before_b = mgr
+        .catalog_version_for_session("ses-f54924ed1bcde71cb1d3e0e9d437e3e4")
+        .await;
 
     struct NamedStub(&'static str);
     #[async_trait::async_trait]
@@ -1449,10 +1471,17 @@ async fn test_session_tool_overlay_version_does_not_invalidate_other_sessions() 
         }
     }
 
-    mgr.register_for_session("ses-a", Arc::new(NamedStub("session_only")))
+    mgr.register_for_session(
+        "ses-8042867cb780e3dfc14959c1fe8d87e1",
+        Arc::new(NamedStub("session_only")),
+    )
+    .await;
+    let after_a = mgr
+        .catalog_version_for_session("ses-8042867cb780e3dfc14959c1fe8d87e1")
         .await;
-    let after_a = mgr.catalog_version_for_session("ses-a").await;
-    let after_b = mgr.catalog_version_for_session("ses-b").await;
+    let after_b = mgr
+        .catalog_version_for_session("ses-f54924ed1bcde71cb1d3e0e9d437e3e4")
+        .await;
     assert_eq!(
         after_a.global_catalog_version,
         before_a.global_catalog_version
@@ -1464,8 +1493,12 @@ async fn test_session_tool_overlay_version_does_not_invalidate_other_sessions() 
     assert_eq!(after_b, before_b);
 
     mgr.rebuild_catalog().await.unwrap();
-    let after_global_a = mgr.catalog_version_for_session("ses-a").await;
-    let after_global_b = mgr.catalog_version_for_session("ses-b").await;
+    let after_global_a = mgr
+        .catalog_version_for_session("ses-8042867cb780e3dfc14959c1fe8d87e1")
+        .await;
+    let after_global_b = mgr
+        .catalog_version_for_session("ses-f54924ed1bcde71cb1d3e0e9d437e3e4")
+        .await;
     assert!(after_global_a.global_catalog_version > after_a.global_catalog_version);
     assert_eq!(
         after_global_a.session_overlay_version,
@@ -1513,7 +1546,7 @@ async fn live_output_tools_receive_session_without_step_id() {
         .unwrap();
 
     mgr.execute_tool_with_step(
-        Some("ses-live-output"),
+        Some("ses-0f0ffb58ed44958c450b5c9d0bbb91bc"),
         "capture_live_input",
         json!({"_session_id": "ses-forged", "_step_id": "step-forged"}),
         CancellationToken::new(),
@@ -1523,7 +1556,10 @@ async fn live_output_tools_receive_session_without_step_id() {
     .unwrap();
 
     let captured = captured.lock().unwrap().clone().unwrap();
-    assert_eq!(captured["_session_id"], "ses-live-output");
+    assert_eq!(
+        captured["_session_id"],
+        "ses-0f0ffb58ed44958c450b5c9d0bbb91bc"
+    );
     assert!(captured.get("_step_id").is_none());
 }
 
@@ -1645,7 +1681,7 @@ async fn test_builtin_loader_keeps_deferred_tools_out_of_provider_surface() {
     assert!(mgr.registry().get("shell").await.is_none());
     assert!(mgr.get_tool("shell").await.is_some());
     assert!(
-        mgr.list_tool_definitions_for_session("ses-lazy-builtin")
+        mgr.list_tool_definitions_for_session("ses-334aafdac2a2c6de43c6daf3805f41d5")
             .await
             .iter()
             .all(|def| def.name != "shell")
@@ -1653,7 +1689,7 @@ async fn test_builtin_loader_keeps_deferred_tools_out_of_provider_surface() {
 
     let result = mgr
         .execute_tool(
-            Some("ses-lazy-builtin"),
+            Some("ses-334aafdac2a2c6de43c6daf3805f41d5"),
             "tool_catalog",
             serde_json::json!({
                 "action": "load",
@@ -1669,7 +1705,7 @@ async fn test_builtin_loader_keeps_deferred_tools_out_of_provider_surface() {
     assert!(result.output.get("input_schema").is_none());
 
     let loaded = mgr
-        .list_tool_definitions_for_session("ses-lazy-builtin")
+        .list_tool_definitions_for_session("ses-334aafdac2a2c6de43c6daf3805f41d5")
         .await;
     assert!(loaded.iter().any(|def| def.name == "shell"));
 }
@@ -1718,11 +1754,16 @@ async fn test_list_tool_definitions_for_session_caps_at_max_tools() {
         }
     }
     for name in ["s_a", "s_b", "s_c", "s_d", "s_e"] {
-        mgr.register_for_session("ses-cap", Arc::new(NamedStub(name)))
-            .await;
+        mgr.register_for_session(
+            "ses-459099354ce5fa7f25d31bab931dba1e",
+            Arc::new(NamedStub(name)),
+        )
+        .await;
     }
 
-    let defs = mgr.list_tool_definitions_for_session("ses-cap").await;
+    let defs = mgr
+        .list_tool_definitions_for_session("ses-459099354ce5fa7f25d31bab931dba1e")
+        .await;
     assert_eq!(defs.len(), global + 2, "must truncate session overlays");
     let session_kept: Vec<_> = defs
         .iter()
@@ -1756,7 +1797,7 @@ async fn private_live_output_ids_are_stripped_and_reinjected() {
     // Forged private fields, no trusted step → no live emit.
     let _ = mgr
         .execute_tool(
-            Some("ses-1"),
+            Some("ses-09df36791e54c51f7be063867e10b9af"),
             "shell",
             json!({
                 "command": "echo forged",
@@ -1777,7 +1818,7 @@ async fn private_live_output_ids_are_stripped_and_reinjected() {
     hits.lock().unwrap().clear();
     let _ = mgr
         .execute_tool_with_step(
-            Some("ses-1"),
+            Some("ses-09df36791e54c51f7be063867e10b9af"),
             "shell",
             json!({
                 "command": "echo trusted",
@@ -1785,7 +1826,7 @@ async fn private_live_output_ids_are_stripped_and_reinjected() {
                 "_step_id": "step-forged",
             }),
             CancellationToken::new(),
-            Some("step-trusted"),
+            Some("step-00000000000000000000000000000009"),
         )
         .await;
     tokio::time::sleep(Duration::from_millis(200)).await;
@@ -1797,7 +1838,8 @@ async fn private_live_output_ids_are_stripped_and_reinjected() {
     // Live emit is best-effort (fast commands may finish before the first
     // tick); when anything is emitted it must be the trusted id.
     assert!(
-        seen.iter().all(|s| s == "step-trusted"),
+        seen.iter()
+            .all(|s| s == "step-00000000000000000000000000000009"),
         "only trusted step id may be emitted, got {seen:?}"
     );
 }

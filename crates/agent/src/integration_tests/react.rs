@@ -1384,11 +1384,10 @@ async fn run_session_ask_resumes_after_user_answer() {
 }
 
 #[tokio::test]
-async fn retry_after_ask_answer_error_keeps_single_history() {
-    // Reproduce the reported issue: the agent asks a question, the user
-    // answers, the resumed step fails, and the user retries. Every retry
-    // must OVERWRITE the previous attempt's persisted output — the resume
-    // history should show exactly one question, one answer, one response.
+async fn retry_after_ask_answer_error_retains_failed_recovery_projection() {
+    // A failed recovery marker does not authorize projection truncation
+    // (ADR 0217/0243). The retry adds one final answer while retaining the
+    // failed attempt's recovery-only partial and step rows.
     let tools = Arc::new(ToolsFacade::new());
     tools
         .share_services()
@@ -1465,7 +1464,7 @@ async fn retry_after_ask_answer_error_keeps_single_history() {
         .update_session_status(&session.id, SessionStatus::Pending)
         .await
         .unwrap();
-    let _ = agent.run_session_from_id(&session.id).await;
+    assert!(agent.run_session_from_id(&session.id).await.is_err());
     // The failed run ended in Error; terminal cleanup removed the session
     // from the working set.
     assert_eq!(executor.get_active_session_status(&session.id).await, None);
@@ -1485,7 +1484,8 @@ async fn retry_after_ask_answer_error_keeps_single_history() {
     let msgs = agent.db.list_session_messages(&session.id).unwrap();
     let steps = agent.db.list_session_steps(&session.id).unwrap();
 
-    // The failed attempt's partial text must be gone (overwritten).
+    // The failed attempt's partial remains visible because its newest
+    // recovery marker is `failed`, so it cannot authorize truncation.
     let partials: Vec<&str> = msgs
         .iter()
         .filter(|m| {
@@ -1495,8 +1495,8 @@ async fn retry_after_ask_answer_error_keeps_single_history() {
         .map(|m| m.content.as_str())
         .collect();
     assert!(
-        partials.is_empty(),
-        "partial output from the failed attempt should be deleted, got {:?}",
+        partials == ["Let me think..."],
+        "the failed recovery partial should be retained exactly once, got {:?}",
         partials
     );
     // Exactly one question and one final answer.
@@ -1517,15 +1517,12 @@ async fn retry_after_ask_answer_error_keeps_single_history() {
     assert_eq!(questions, 1, "ask question must appear exactly once");
     assert_eq!(finals, 1, "final answer must appear exactly once");
 
-    // Step rows from the failed attempt must be overwritten too — the
-    // resume history stays linear (only branching splits timelines).
-    // Thought rows carry no text anymore (the text lives in messages),
-    // so count by step number: the failed attempt's step-2 rows must be
-    // gone, leaving only the retried step.
+    // The failed attempt leaves two step-2 projections; the retry adds its
+    // final-answer step. Thought rows carry no text, so count step rows.
     let step2_rows = steps.iter().filter(|s| s.step_number == 2).count();
     assert_eq!(
-        step2_rows, 1,
-        "step rows from the failed attempt should be deleted, got {:?}",
+        step2_rows, 3,
+        "the failed recovery projection and retry step should all remain, got {:?}",
         steps
     );
 }

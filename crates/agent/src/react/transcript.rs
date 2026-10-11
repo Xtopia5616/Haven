@@ -1068,7 +1068,7 @@ mod tests {
         let engine = test_engine(db);
         let ctx = step_ctx(&session.id);
         let mut state = ReActState::new(Vec::new(), Vec::new(), std::collections::HashMap::new());
-        let body = "[Background tool run result]\ntool_run_id=toolrun-1\nok";
+        let body = "[Background tool run result]\ntool_run_id=toolrun-00000000000000000000000000000014\nok";
         engine
             .apply_transcript(
                 &ctx,
@@ -1076,7 +1076,9 @@ mod tests {
                     source: InjectSource::ToolRunResult,
                     text: body.into(),
                     attachments: vec![],
-                    message_id: Some(crate::react::tool_run_result_message_id("toolrun-1")),
+                    message_id: Some(crate::react::tool_run_result_message_id(
+                        "toolrun-00000000000000000000000000000014",
+                    )),
                 },
                 &mut state,
             )
@@ -1106,7 +1108,7 @@ mod tests {
             events: recorded.clone(),
         });
         let mut state = ReActState::new(Vec::new(), Vec::new(), std::collections::HashMap::new());
-        let body = "[Background tool run result]\ntool_run_id: toolrun-9\nstatus: completed\n\nok";
+        let body = "[Background tool run result]\ntool_run_id: toolrun-00000000000000000000000000000013\nstatus: completed\n\nok";
         engine
             .apply_transcript(
                 &ctx,
@@ -1114,7 +1116,9 @@ mod tests {
                     source: InjectSource::ToolRunResult,
                     text: body.into(),
                     attachments: vec![],
-                    message_id: Some(crate::react::tool_run_result_message_id("toolrun-9")),
+                    message_id: Some(crate::react::tool_run_result_message_id(
+                        "toolrun-00000000000000000000000000000013",
+                    )),
                 },
                 &mut state,
             )

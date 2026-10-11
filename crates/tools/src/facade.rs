@@ -1094,7 +1094,9 @@ mod capability_tests {
                     ));
                     let _ = tools.transcription_available().await;
                     let _ = tools.tts_configured().await;
-                    let _ = tools.tool_catalog_snapshot("ses-concurrent-reader").await;
+                    let _ = tools
+                        .tool_catalog_snapshot("ses-71f81a13c55a5cd3b6672293c3588959")
+                        .await;
                 }
             }));
         }

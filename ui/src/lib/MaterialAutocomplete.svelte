@@ -40,7 +40,7 @@
 		text = value;
 	});
 
-	let filtered = $derived(
+	let filteredOptions = $derived(
 		(text
 			? options.filter((o) => (o.label || o.value).toLowerCase().includes(text.toLowerCase()))
 			: options
@@ -104,8 +104,8 @@
 			role="listbox"
 			in:fly={{ y: -4, duration: 300, easing: cubicOut }}
 		>
-			{#if filtered.length > 0}
-				{#each filtered as opt}
+			{#if filteredOptions.length > 0}
+				{#each filteredOptions as opt}
 					<button
 						class="ma-option"
 						class:selected={opt.value === text}

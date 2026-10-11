@@ -1,7 +1,7 @@
 <script lang="ts">
 	import type { Snippet } from 'svelte';
-	import { openContextMenu } from '$lib/contextMenu.ts';
-	import type { ContextMenuItem } from '$lib/contextMenu.ts';
+	import { openContextMenu } from '$lib/contextMenuStore.ts';
+	import type { ContextMenuItem } from '$lib/contextMenuStore.ts';
 	import { slide } from 'svelte/transition';
 	import { cubicOut } from 'svelte/easing';
 

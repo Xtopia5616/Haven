@@ -484,7 +484,7 @@ impl OperationCatalog<'_> {
                 .max_tools_per_request
                 .max(1);
             let provider_definitions =
-                select_tool_definitions_for_budget(global_defs, session_defs, max).selected;
+                select_tool_definitions_for_budget(global_defs, session_defs, max).selected_tools;
             snapshot = Some((after, tools, provider_definitions));
             if before == after {
                 break;
@@ -531,14 +531,14 @@ impl OperationCatalog<'_> {
                 total,
                 max,
                 global = global_len,
-                selected = selection.selected.len(),
+                selected = selection.selected_tools.len(),
                 omitted = selection.omitted.len(),
                 omitted_core = selection.omitted_core,
                 omitted_tools = %omitted_tools,
                 "list_tool_definitions_for_session: omitted tools from max_tools_per_request budget; core builtins are selected before optional sources"
             );
         }
-        selection.selected
+        selection.selected_tools
     }
     pub async fn list_schemas_for_session(&self, session_id: &str) -> Vec<Value> {
         self.list_tool_definitions_for_session(session_id)

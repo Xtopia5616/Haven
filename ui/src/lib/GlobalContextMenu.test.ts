@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/svelte';
 import GlobalContextMenu from './GlobalContextMenu.svelte';
 import { copyText } from '$lib/clipboard.ts';
-import { openContextMenu } from './contextMenu.ts';
+import { openContextMenu } from './contextMenuStore.ts';
 
 vi.mock('$lib/clipboard.ts', () => ({
 	copyText: vi.fn().mockResolvedValue(true),

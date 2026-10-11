@@ -269,7 +269,10 @@ mod tests {
         let tool_runs = Arc::new(ToolRunService::new());
         let tool = ToolRunsTool { tool_runs };
         let result = tool
-            .execute(json!({"_session_id": "ses-x"}), CancellationToken::new())
+            .execute(
+                json!({"_session_id": "ses-f6a1fdb2589b63c2ebaead556897b633"}),
+                CancellationToken::new(),
+            )
             .await
             .unwrap();
         assert!(result.success);
@@ -283,7 +286,7 @@ mod tests {
         };
         let result = tool
             .execute(
-                json!({"tool_run_id": "toolrun-00000000000000000000000000000001", "_session_id": "ses-x"}),
+                json!({"tool_run_id": "toolrun-00000000000000000000000000000001", "_session_id": "ses-f6a1fdb2589b63c2ebaead556897b633"}),
                 CancellationToken::new(),
             )
             .await
@@ -299,7 +302,12 @@ mod tests {
         let tool = ToolRunsTool {
             tool_runs: Arc::new(ToolRunService::new()),
         };
-        let result = tool.execute(json!({"_session_id": "ses-x"}), cancel).await;
+        let result = tool
+            .execute(
+                json!({"_session_id": "ses-f6a1fdb2589b63c2ebaead556897b633"}),
+                cancel,
+            )
+            .await;
         assert!(result.is_err());
     }
 
@@ -311,7 +319,7 @@ mod tests {
         let result = tool
             .run(
                 ToolRunsParams {
-                    session_id: Some("ses-x".into()),
+                    session_id: Some("ses-f6a1fdb2589b63c2ebaead556897b633".into()),
                     tool_run_id: None,
                     operation: None,
                     status: None,
@@ -333,7 +341,7 @@ mod tests {
                 json!({
                     "operation": "cancel",
                     "tool_run_id": "toolrun-00000000000000000000000000000001",
-                    "_session_id": "ses-x"
+                    "_session_id": "ses-f6a1fdb2589b63c2ebaead556897b633"
                 }),
                 CancellationToken::new(),
             )
@@ -351,8 +359,8 @@ mod tests {
         let error = tool
             .run(
                 ToolRunsParams {
-                    session_id: Some("ses-x".into()),
-                    tool_run_id: Some("toolrun-nope".into()),
+                    session_id: Some("ses-f6a1fdb2589b63c2ebaead556897b633".into()),
+                    tool_run_id: Some("toolrun-invalid".into()),
                     operation: None,
                     status: None,
                 },

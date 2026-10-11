@@ -5,10 +5,9 @@ import { reactExecutionPhaseForSession, reactExecutionPhaseStore } from './sessi
 import { newMessage } from './messageFactory.ts';
 import { newSessionIntentStore, NEW_SESSION_INTENT_STORAGE_KEY } from './sessionIntentStore.ts';
 import { isBusyStatus, isPausedStatus } from './sessionStatus.ts';
-import { invoke } from './tauri.ts';
+import { processTranscript } from './sessionCommands.ts';
 import type { ChatAttachmentPayload, ChatFileAttachment } from './chatAttachmentTypes.ts';
 import type { ProcessResult } from './contracts/generatedCommands.ts';
-import { parseProcessResult } from './contracts/processResult.ts';
 import { isCanonicalEntityId } from './contracts/wireGuards.ts';
 
 /** True when a send should be treated as mid-turn steering (keep agent UI above it). */
@@ -310,8 +309,7 @@ async function doSubmit({
 			voice,
 			...(recordingId ? { recordingId } : {}),
 		};
-		const response: unknown = await invoke('process_transcript', request);
-		const result = parseProcessResult(response);
+		const result = await processTranscript(request);
 		const createdId = processResultSessionId(result);
 		const dbMsgId = processResultMessageId(result);
 		// Prefer the destination session after a SessionCreated migrate so the

@@ -807,7 +807,7 @@ mod tests {
             finished_at: "finished".into(),
         };
         let expected = json!({
-            "tool_run_id": "toolrun-result",
+            "tool_run_id": "toolrun-0000000000000000000000000000001f",
             "status": "completed",
             "output": "result",
             "started_at": "started",
@@ -818,25 +818,29 @@ mod tests {
         });
         let mut expected_background = expected.clone();
         expected_background["kind"] = json!("background");
-        expected_background["source_step_id"] = json!("step-source");
+        expected_background["source_step_id"] = json!("step-00000000000000000000000000000008");
 
         assert_eq!(
-            serde_json::to_value(project_completion_payload("toolrun-result", &state)).unwrap(),
+            serde_json::to_value(project_completion_payload(
+                "toolrun-0000000000000000000000000000001f",
+                &state
+            ))
+            .unwrap(),
             expected,
         );
         assert_eq!(
             serde_json::to_value(project_background_completion_payload(
-                "toolrun-result",
+                "toolrun-0000000000000000000000000000001f",
                 &state,
-                Some("step-source"),
+                Some("step-00000000000000000000000000000008"),
             ))
             .unwrap(),
             expected_background,
         );
         assert_eq!(
             ToolRunStatusView::Background {
-                tool_run_id: "toolrun-result".into(),
-                source_step_id: Some("step-source".into()),
+                tool_run_id: "toolrun-0000000000000000000000000000001f".into(),
+                source_step_id: Some("step-00000000000000000000000000000008".into()),
                 state: ToolRunStateView::from_runtime_state(&state),
             }
             .to_json(false),

@@ -2,6 +2,7 @@ use crate::db::Database;
 #[cfg(test)]
 use crate::repositories::messages::now_rfc3339_millis;
 use haven_common::config::RequestKind;
+use haven_common::types::is_canonical_id;
 use haven_common::usage::{CacheAccounting, CacheDiagnostics, LlmCallKind};
 use rusqlite::OptionalExtension;
 use rusqlite::types::Type;
@@ -1041,6 +1042,10 @@ impl Database {
     /// All usage-detail rows for a session, oldest first. `session_usage` carries
     /// the running totals; this is the per-call history behind them.
     pub fn list_session_llm_usage(&self, session_id: &str) -> anyhow::Result<Vec<LlmUsageRecord>> {
+        anyhow::ensure!(
+            is_canonical_id(session_id, "ses"),
+            "invalid session_id: expected canonical ses- ID"
+        );
         let conn = self.conn();
         let mut stmt = conn.prepare(
             "SELECT id, session_id, step_number, role, call_kind, model, prompt_tokens, completion_tokens,
@@ -1049,6 +1054,22 @@ impl Database {
              FROM llm_usage WHERE session_id = ?1 ORDER BY created_at ASC, rowid ASC",
         )?;
         let rows = stmt.query_map(rusqlite::params![session_id], |row| {
+            let id: String = row.get(0)?;
+            if !is_canonical_id(&id, "usage") {
+                return Err(rusqlite::Error::FromSqlConversionFailure(
+                    0,
+                    Type::Text,
+                    "invalid persisted llm_usage.id".into(),
+                ));
+            }
+            let record_session_id: String = row.get(1)?;
+            if !is_canonical_id(&record_session_id, "ses") || record_session_id != session_id {
+                return Err(rusqlite::Error::FromSqlConversionFailure(
+                    1,
+                    Type::Text,
+                    "invalid persisted llm_usage.session_id".into(),
+                ));
+            }
             let role_text: String = row.get(3)?;
             let role = RequestKind::from_str(&role_text).ok_or_else(|| {
                 rusqlite::Error::FromSqlConversionFailure(
@@ -1066,8 +1087,8 @@ impl Database {
                 )
             })?;
             Ok(LlmUsageRecord {
-                id: row.get(0)?,
-                session_id: row.get(1)?,
+                id,
+                session_id: record_session_id,
                 step_number: row.get(2)?,
                 role,
                 call_kind,
@@ -1140,6 +1161,38 @@ mod tests {
         assert_eq!(u.cache_creation_tokens, 5);
         assert_eq!(u.cost_usd, 0.25);
         assert!(u.has_cost);
+    }
+
+    #[test]
+    fn usage_history_rejects_noncanonical_identity_rows_and_queries() {
+        let db = test_db();
+        let session = db.create_session("usage identity").unwrap();
+        let record = db
+            .persist_llm_call_and_refresh_session_usage(
+                &session.id,
+                Some(1),
+                RequestKind::Chat,
+                Some("model-a"),
+                1,
+                1,
+                2,
+                0,
+                0,
+                0.0,
+                false,
+                None,
+            )
+            .unwrap();
+        assert_eq!(db.list_session_llm_usage(&session.id).unwrap().len(), 1);
+        assert!(db.list_session_llm_usage("ses-short").is_err());
+
+        db.conn()
+            .execute(
+                "UPDATE llm_usage SET id = 'usage-short' WHERE id = ?1",
+                [&record.id],
+            )
+            .unwrap();
+        assert!(db.list_session_llm_usage(&session.id).is_err());
     }
 
     #[test]
@@ -1438,8 +1491,9 @@ mod tests {
     #[test]
     fn llm_call_usage_unknown_session_is_empty() {
         let db = test_db();
+        let missing_session_id = haven_common::types::new_id("ses");
         assert!(
-            db.list_session_llm_usage("missing-session")
+            db.list_session_llm_usage(&missing_session_id)
                 .unwrap()
                 .is_empty()
         );

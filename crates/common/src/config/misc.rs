@@ -134,7 +134,7 @@ pub struct ContextLimitsConfig {
     /// Max chars in notification summary text.
     pub notification_summary_chars: usize,
     /// Max chars of a background ToolRun result injected into the owning session's
-    /// context when the action finishes (the full output stays in the log file,
+    /// context when the ToolRun finishes (the full output stays in the log file,
     /// whose path is appended so the model can read more on demand).
     pub tool_run_result_context_chars: usize,
     /// Min chars of partial output before an interim checkpoint is persisted.
@@ -177,7 +177,7 @@ pub struct ContextLimitsConfig {
     /// Bounded live-output tail (chars) kept per running ToolRun for `tool_run:output`
     /// preview events.
     pub background_tool_run_tail_max_chars: usize,
-    /// Cadence of `tool_run:output` events while a tool action produces output (ms).
+    /// Cadence of `tool_run:output` events while a ToolRun produces output (ms).
     pub background_tool_run_output_emit_interval_ms: u64,
     /// Terminal ToolRuns stay on the board this long (secs), then are reaped by
     /// the next spawn.

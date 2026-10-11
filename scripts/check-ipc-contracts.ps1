@@ -120,7 +120,10 @@ $recordingOverlayController = Get-Source 'ui/src/lib/recordingOverlayController.
 Assert-Contains $recordingOverlayController "type RecordingCommandName = Extract<\s*TauriCommandName,\s*'start_recording'\s*\|\s*'stop_recording'\s*\|\s*'cancel_recording'\s*>" 'recording controller narrows its dynamic invoke port to the recording lifecycle'
 Assert-Contains $recordingOverlayController 'invoke:\s*\(command:\s*RecordingCommandName\)\s*=>\s*invoke\(command\)' 'recording controller is the sole dynamic invoke owner'
 $submit = Get-Source 'ui/src/lib/submit.ts'
-Assert-Contains $submit "invoke\('process_transcript',\s*request\)" 'submit coordinator owns transcript processing'
+Assert-Contains $submit 'processTranscript\(request\)' 'submit coordinator uses the session command adapter'
+$sessionCommands = Get-Source 'ui/src/lib/sessionCommands.ts'
+Assert-Contains $sessionCommands "invoke\('process_transcript',\s*request\)" 'session command adapter owns transcript processing'
+Assert-Contains $sessionCommands 'parseProcessResult\(value\)' 'process transcript response identity is validated at the command boundary'
 $errorHandling = Get-Source 'ui/src/lib/errorHandling.ts'
 Assert-Contains $errorHandling "invoke\('log_frontend_error',\s*\{\s*message:\s*notificationMessage\s*\}\)" 'error handling owns frontend error logging'
 $externalRef = Get-Source 'ui/src/lib/externalRef.ts'
@@ -135,14 +138,13 @@ foreach ($file in $uiFiles) {
 # policy they already own.
 $ownedCommands = @{
     '+layout.svelte' = @('get_bootstrap_status', 'check_llm_connection', 'resolve_confirmation')
-    'submit.ts' = @('process_transcript')
     'errorHandling.ts' = @('log_frontend_error')
     'externalRef.ts' = @('open_external')
     'recordingOverlayController.ts' = @('start_recording', 'stop_recording', 'cancel_recording')
     'toolRunCommands.ts' = @('list_tool_runs', 'list_tool_run_history', 'clear_tool_run_history', 'cancel_tool_run')
     'toolsCommands.ts' = @('list_builtin_tool_manifests', 'list_mcp_servers', 'reset_tool_circuits', 'refresh_mcp_servers', 'set_skill_enabled', 'set_tool_enabled', 'refresh_skills', 'open_skills_dir', 'add_mcp_server', 'update_mcp_server', 'remove_mcp_server', 'reconnect_mcp_server', 'toggle_mcp_server', 'execute_skill')
     'memoryCommands.ts' = @('list_facts', 'add_fact', 'delete_fact', 'clear_facts', 'recall_memory')
-    'sessionCommands.ts' = @('list_runtime_sessions', 'get_session_lineage', 'list_session_history', 'search_session_history_filtered', 'get_session_for_resume', 'get_latest_session_for_resume', 'reopen_session', 'delete_session', 'delete_all_sessions', 'update_session_title', 'rollback_session', 'end_session', 'interrupt_session', 'continue_session')
+    'sessionCommands.ts' = @('list_runtime_sessions', 'get_session_lineage', 'list_session_history', 'search_session_history_filtered', 'get_session_for_resume', 'get_latest_session_for_resume', 'process_transcript', 'reopen_session', 'delete_session', 'delete_all_sessions', 'update_session_title', 'rollback_session', 'end_session', 'interrupt_session', 'continue_session')
     'modelDiscoveryCommands.ts' = @('discover_models')
     'diagnosticsCommands.ts' = @('get_log_info', 'read_log_tail', 'check_shell_available', 'get_api_key_status', 'get_performance_metrics')
     'settingsCommands.ts' = @('get_settings', 'discard_staged_credentials', 'list_session_permissions', 'is_autostart_enabled', 'run_memory_maintenance', 'revoke_permission', 'revoke_session_permission', 'reset_permissions', 'reset_session_permissions', 'set_hotkey_capture_active', 'stage_provider_credential', 'stage_ocr_credential', 'update_settings', 'enable_autostart', 'disable_autostart')

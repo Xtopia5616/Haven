@@ -1,6 +1,7 @@
 use crate::db::Database;
 use chrono::Utc;
-use rusqlite::Connection;
+use haven_common::types::is_canonical_id;
+use rusqlite::{Connection, OptionalExtension};
 
 impl Database {
     /// Upsert a memory node by `(kind, label)`. Returns the stable `node-*` id.
@@ -19,12 +20,15 @@ pub(crate) fn ensure_node_on_connection(
     let label = label.trim();
     anyhow::ensure!(!kind.is_empty(), "node kind must not be empty");
     anyhow::ensure!(!label.is_empty(), "node label must not be empty");
-    if let Ok(existing) = conn.query_row(
-        "SELECT id FROM memory_nodes WHERE kind = ?1 AND label = ?2",
-        rusqlite::params![kind, label],
-        |r| r.get::<_, String>(0),
-    ) {
-        return Ok(existing);
+    let existing: Option<String> = conn
+        .query_row(
+            "SELECT id FROM memory_nodes WHERE kind = ?1 AND label = ?2",
+            rusqlite::params![kind, label],
+            |r| r.get(0),
+        )
+        .optional()?;
+    if let Some(existing) = existing {
+        return validate_node_id(existing);
     }
     let id = haven_common::types::new_id("node");
     let now = Utc::now().to_rfc3339();
@@ -39,6 +43,14 @@ pub(crate) fn ensure_node_on_connection(
         rusqlite::params![kind, label],
         |r| r.get::<_, String>(0),
     )?;
+    validate_node_id(id)
+}
+
+fn validate_node_id(id: String) -> anyhow::Result<String> {
+    anyhow::ensure!(
+        is_canonical_id(&id, "node"),
+        "invalid persisted memory_nodes.id: expected canonical node-* ID"
+    );
     Ok(id)
 }
 
@@ -55,5 +67,19 @@ mod tests {
         assert!(a.starts_with("node-"));
         let c = db.ensure_node("concept", "Rust").unwrap();
         assert_ne!(a, c);
+    }
+
+    #[test]
+    fn ensure_node_rejects_noncanonical_persisted_identity() {
+        let db = Database::open_in_memory().unwrap();
+        db.conn()
+            .execute(
+                "INSERT INTO memory_nodes (id, kind, label, aliases, created_at, updated_at)
+                 VALUES ('node-short', 'concept', 'corrupt', '[]', 'now', 'now')",
+                [],
+            )
+            .unwrap();
+
+        assert!(db.ensure_node("concept", "corrupt").is_err());
     }
 }

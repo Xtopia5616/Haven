@@ -6,7 +6,7 @@
 	import { getMarkdownRenderer, renderMarkdown } from '$lib/markdownRenderer.ts';
 	import { handleExtRefEvent } from '$lib/externalRef.ts';
 	import { createDragScrollController } from '$lib/dragScroll.ts';
-	import { getSelectedTextWithin } from '$lib/contextMenu.ts';
+	import { getSelectedTextWithin } from '$lib/contextMenuStore.ts';
 	import { reportError } from '$lib/errorHandling.ts';
 	import ToolResultCard from '$lib/ToolResultCard.svelte';
 	import MaterialCollapsible from '$lib/MaterialCollapsible.svelte';

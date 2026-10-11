@@ -67,6 +67,63 @@ pub(crate) const MAX_TRANSCRIPT_BATCH_PROJECTION_ROWS: usize = 256;
 /// bounded row count cannot be bypassed with one oversized tool input.
 pub const MAX_TRANSCRIPT_BATCH_PAYLOAD_BYTES: usize = 4 * 1024 * 1024;
 
+fn ensure_session_id(session_id: &str) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        is_canonical_id(session_id, "ses"),
+        "session_id must be a canonical ses-* ID"
+    );
+    Ok(())
+}
+
+fn ensure_message_or_step_id(id: &str, field: &str) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        is_canonical_id(id, "msg") || is_canonical_id(id, "step"),
+        "{field} must be a canonical msg-* or step-* ID"
+    );
+    Ok(())
+}
+
+fn ensure_message_id(id: &str, field: &str) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        is_canonical_id(id, "msg"),
+        "{field} must be a canonical msg-* ID"
+    );
+    Ok(())
+}
+
+fn ensure_step_id(id: &str, field: &str) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        is_canonical_id(id, "step"),
+        "{field} must be a canonical step-* ID"
+    );
+    Ok(())
+}
+
+fn session_event_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<SessionEvent> {
+    let session_id: String = row.get(0)?;
+    if !is_canonical_id(&session_id, "ses") {
+        return Err(rusqlite::Error::FromSqlConversionFailure(
+            0,
+            rusqlite::types::Type::Text,
+            "invalid persisted session_events.session_id".into(),
+        ));
+    }
+    Ok(SessionEvent {
+        session_id,
+        sequence: row.get(1)?,
+        event_type: row.get(2)?,
+        event_version: row.get(3)?,
+        payload: row.get(4)?,
+        created_at: row.get(5)?,
+        run_id: row
+            .get::<_, Option<i64>>(6)?
+            .and_then(|value| u64::try_from(value).ok()),
+        step_number: row
+            .get::<_, Option<i64>>(7)?
+            .and_then(|value| u32::try_from(value).ok()),
+    })
+}
+
 /// Latest active rollback metadata for one session step.
 ///
 /// The durable branch-point event sequence, transcript cursor, step identity,
@@ -327,6 +384,8 @@ impl SessionCommitted {
             });
     }
 
+    /// Project the id shared by the source's transcript content and thought
+    /// step: assistant thought uses `step-*`, while a supplement uses `msg-*`.
     pub fn project_thought_step(&mut self, message_id: impl Into<String>, step_number: u32) {
         self.projections.push(SessionProjectionIntent::ThoughtStep {
             message_id: message_id.into(),
@@ -557,6 +616,7 @@ impl SessionStore {
         session_id: &str,
         status: SessionStatus,
     ) -> anyhow::Result<()> {
+        ensure_session_id(session_id)?;
         let session_id = session_id.to_owned();
         self.db
             .run_blocking(move |db| db.update_session_status(&session_id, status))
@@ -570,6 +630,7 @@ impl SessionStore {
         session_id: &str,
         reason: &str,
     ) -> anyhow::Result<()> {
+        ensure_session_id(session_id)?;
         let session_id = session_id.to_owned();
         let reason = reason.to_owned();
         self.db
@@ -584,6 +645,8 @@ impl SessionStore {
         write: ToolStepWrite,
         confirmed: Option<bool>,
     ) -> anyhow::Result<()> {
+        ensure_session_id(&write.session_id)?;
+        ensure_step_id(&write.step_id, "step_id")?;
         self.db
             .run_blocking(move |db| {
                 db.ensure_tool_step_with_identity(
@@ -610,6 +673,8 @@ impl SessionStore {
         write: ToolStepWrite,
         confirmed: Option<bool>,
     ) -> anyhow::Result<bool> {
+        ensure_session_id(&write.session_id)?;
+        ensure_step_id(&write.step_id, "step_id")?;
         self.db
             .run_blocking(move |db| {
                 db.ensure_tool_step_with_identity(
@@ -638,6 +703,8 @@ impl SessionStore {
         observation: String,
         outcome: ToolStepOutcome,
     ) -> anyhow::Result<bool> {
+        ensure_session_id(&write.session_id)?;
+        ensure_step_id(&write.step_id, "step_id")?;
         self.db
             .run_blocking(move |db| {
                 db.ensure_tool_step_with_identity(
@@ -663,6 +730,7 @@ impl SessionStore {
     /// session-scoped cleanup, and cache invalidation. Dropping this future
     /// cannot interrupt a write already running on Tokio's blocking pool.
     pub async fn delete_session(&self, session_id: &str) -> anyhow::Result<()> {
+        ensure_session_id(session_id)?;
         let session_id = session_id.to_owned();
         self.db
             .run_blocking(move |db| db.delete_session(&session_id))
@@ -677,6 +745,7 @@ impl SessionStore {
         session_id: &str,
         grant: SessionAuthorizationGrant,
     ) -> anyhow::Result<()> {
+        ensure_session_id(session_id)?;
         let session_id = session_id.to_owned();
         self.db
             .run_blocking(move |db| db.save_session_authorization_grant(&session_id, &grant))
@@ -690,6 +759,7 @@ impl SessionStore {
         &self,
         session_id: &str,
     ) -> anyhow::Result<Vec<SessionAuthorizationGrant>> {
+        ensure_session_id(session_id)?;
         let session_id = session_id.to_owned();
         self.db
             .run_blocking(move |db| db.session_authorization_grants(&session_id))
@@ -712,6 +782,7 @@ impl SessionStore {
         session_id: &str,
         capability: haven_common::types::CapabilityScope,
     ) -> anyhow::Result<usize> {
+        ensure_session_id(session_id)?;
         let session_id = session_id.to_owned();
         self.db
             .run_blocking(move |db| db.revoke_session_authorization_grant(&session_id, &capability))
@@ -735,6 +806,8 @@ impl SessionStore {
         session_id: &str,
         message_id: &str,
     ) -> anyhow::Result<()> {
+        ensure_session_id(session_id)?;
+        ensure_message_or_step_id(message_id, "message_id")?;
         let session_id = session_id.to_owned();
         let message_id = message_id.to_owned();
         self.db
@@ -764,6 +837,7 @@ impl SessionStore {
         &self,
         session_id: &str,
     ) -> anyhow::Result<SessionResumeProjection> {
+        ensure_session_id(session_id)?;
         let session_id = session_id.to_owned();
         let store = self.clone();
         self.db
@@ -795,18 +869,28 @@ impl SessionStore {
         &self,
         cancel: CancellationToken,
     ) -> anyhow::Result<Vec<String>> {
-        self.db
+        let ids = self
+            .db
             .run_blocking_cancellable(cancel, |db| db.all_session_ids())
-            .await
+            .await?;
+        for session_id in &ids {
+            ensure_session_id(session_id)?;
+        }
+        Ok(ids)
     }
 
     pub async fn session_id_high_water_cancellable(
         &self,
         cancel: CancellationToken,
     ) -> anyhow::Result<Option<String>> {
-        self.db
+        let session_id = self
+            .db
             .run_blocking_cancellable(cancel, |db| db.session_id_high_water())
-            .await
+            .await?;
+        if let Some(session_id) = &session_id {
+            ensure_session_id(session_id)?;
+        }
+        Ok(session_id)
     }
 
     pub async fn session_ids_page_cancellable(
@@ -815,7 +899,12 @@ impl SessionStore {
         high_water: String,
         cancel: CancellationToken,
     ) -> anyhow::Result<Vec<String>> {
-        self.db
+        if let Some(after_id) = &after_id {
+            ensure_session_id(after_id)?;
+        }
+        ensure_session_id(&high_water)?;
+        let ids = self
+            .db
             .run_blocking_cancellable(cancel, move |db| {
                 db.session_ids_page(
                     after_id.as_deref(),
@@ -823,7 +912,11 @@ impl SessionStore {
                     MAX_MEMORY_SESSION_ID_PAGE_SIZE,
                 )
             })
-            .await
+            .await?;
+        for session_id in &ids {
+            ensure_session_id(session_id)?;
+        }
+        Ok(ids)
     }
 
     /// Create a durable session record through the session persistence
@@ -842,10 +935,16 @@ impl SessionStore {
         input_text: &str,
         origin: SessionOrigin,
     ) -> anyhow::Result<Session> {
+        if let SessionOrigin::AgentSpawn { parent_session_id } = &origin {
+            ensure_session_id(parent_session_id)?;
+        }
         let input_text = input_text.to_owned();
-        self.db
+        let session = self
+            .db
             .run_blocking(move |db| db.create_session_with_origin(&input_text, origin))
-            .await
+            .await?;
+        ensure_session_id(&session.id)?;
+        Ok(session)
     }
 
     /// Read direct children from the durable session lineage projection.
@@ -857,6 +956,7 @@ impl SessionStore {
         limit: i64,
         offset: i64,
     ) -> anyhow::Result<Vec<Session>> {
+        ensure_session_id(parent_session_id)?;
         let parent_session_id = parent_session_id.to_owned();
         self.db
             .run_blocking(move |db| db.list_session_children(&parent_session_id, limit, offset))
@@ -871,6 +971,7 @@ impl SessionStore {
         session_id: &str,
         cancel: Option<CancellationToken>,
     ) -> anyhow::Result<Option<SessionUsage>> {
+        ensure_session_id(session_id)?;
         let session_id = session_id.to_owned();
         let read = move |db: &Database| db.get_session_usage(&session_id);
         match cancel {
@@ -888,6 +989,8 @@ impl SessionStore {
         step_number: u32,
         message_id: &str,
     ) -> anyhow::Result<()> {
+        ensure_session_id(session_id)?;
+        ensure_step_id(message_id, "thought message_id")?;
         let session_id = session_id.to_owned();
         let message_id = message_id.to_owned();
         self.db
@@ -907,6 +1010,7 @@ impl SessionStore {
         input: SessionEventInput,
         cancel: CancellationToken,
     ) -> anyhow::Result<Option<SessionEvent>> {
+        ensure_session_id(session_id)?;
         let session_id = session_id.to_owned();
         let store = self.clone();
         self.db
@@ -936,6 +1040,7 @@ impl SessionStore {
     /// Missing records remain `Ok(None)` so lifecycle callers can preserve
     /// their existing not-found behavior.
     pub async fn load_session_record(&self, session_id: &str) -> anyhow::Result<Option<Session>> {
+        ensure_session_id(session_id)?;
         let session_id = session_id.to_owned();
         self.db
             .run_blocking(move |db| db.get_session(&session_id))
@@ -946,6 +1051,7 @@ impl SessionStore {
     /// Keeping this narrow avoids exposing the raw Database to Agent context
     /// assembly merely for a presentation field.
     pub async fn get_session_title(&self, session_id: &str) -> anyhow::Result<Option<String>> {
+        ensure_session_id(session_id)?;
         let session_id = session_id.to_owned();
         self.db
             .run_blocking(move |db| Ok(db.get_session(&session_id)?.and_then(|s| s.title)))
@@ -960,6 +1066,7 @@ impl SessionStore {
         &self,
         session_id: &str,
     ) -> anyhow::Result<Option<String>> {
+        ensure_session_id(session_id)?;
         let session_id = session_id.to_owned();
         self.db
             .run_blocking(move |db| {
@@ -980,6 +1087,7 @@ impl SessionStore {
     /// future cannot interrupt a write already running on Tokio's blocking
     /// pool.
     pub async fn update_session_title(&self, session_id: &str, title: &str) -> anyhow::Result<()> {
+        ensure_session_id(session_id)?;
         let session_id = session_id.to_owned();
         let title = title.to_owned();
         self.db
@@ -997,6 +1105,7 @@ impl SessionStore {
         attachments: &[MessageAttachment],
         voice: bool,
     ) -> anyhow::Result<Message> {
+        ensure_session_id(session_id)?;
         let origin = self
             .load_session_record(session_id)
             .await?
@@ -1026,6 +1135,7 @@ impl SessionStore {
         kind: RecoveryPartialKind,
         message_id: &str,
     ) -> anyhow::Result<Message> {
+        ensure_message_id(message_id, "recovery partial message_id")?;
         self.persist_message_row(
             session_id,
             haven_common::types::CanonicalRole::Assistant,
@@ -1048,6 +1158,7 @@ impl SessionStore {
         content: &str,
         message_id: &str,
     ) -> anyhow::Result<Message> {
+        ensure_message_id(message_id, "terminal ToolRun result message_id")?;
         self.persist_message_row(
             session_id,
             haven_common::types::CanonicalRole::User,
@@ -1075,6 +1186,10 @@ impl SessionStore {
         tool_call_id: Option<&str>,
         cancel: Option<CancellationToken>,
     ) -> anyhow::Result<Message> {
+        ensure_session_id(session_id)?;
+        if let Some(message_id) = message_id {
+            ensure_message_or_step_id(message_id, "message_id")?;
+        }
         let session_id = session_id.to_owned();
         let content = content.to_owned();
         let attachments = attachments.to_vec();
@@ -1126,6 +1241,7 @@ impl SessionStore {
         session_id: &str,
         content: &str,
     ) -> anyhow::Result<()> {
+        ensure_session_id(session_id)?;
         let session_id = session_id.to_owned();
         let content = content.to_owned();
         self.db
@@ -1137,6 +1253,7 @@ impl SessionStore {
     /// stream into the session transcript using the existing Database
     /// operation.
     pub async fn promote_partial_stream(&self, session_id: &str) -> anyhow::Result<bool> {
+        ensure_session_id(session_id)?;
         let session_id = session_id.to_owned();
         self.db
             .run_blocking(move |db| db.promote_partial_message(&session_id))
@@ -1145,6 +1262,7 @@ impl SessionStore {
 
     /// Remove an unpromoted stream checkpoint. Missing rows remain a no-op.
     pub async fn discard_partial_stream(&self, session_id: &str) -> anyhow::Result<()> {
+        ensure_session_id(session_id)?;
         let session_id = session_id.to_owned();
         self.db
             .run_blocking(move |db| db.delete_partial_message(&session_id))
@@ -1189,6 +1307,7 @@ impl SessionStore {
         session_id: &str,
         observation: &str,
     ) -> anyhow::Result<usize> {
+        ensure_session_id(session_id)?;
         let session_id = session_id.to_owned();
         let observation = observation.to_owned();
         self.db
@@ -1211,6 +1330,7 @@ impl SessionStore {
         session_id: &str,
         sequence: i64,
     ) -> anyhow::Result<bool> {
+        ensure_session_id(session_id)?;
         self.db
             .initialize_memory_event_cursor_if_absent(session_id, sequence)
     }
@@ -1218,6 +1338,7 @@ impl SessionStore {
     /// Read the durable memory event cursor. This clock is independent from
     /// the fact-extraction message-id cursor and projection cursors.
     fn memory_event_cursor(&self, session_id: &str) -> anyhow::Result<i64> {
+        ensure_session_id(session_id)?;
         self.db.memory_event_cursor(session_id)
     }
 
@@ -1228,6 +1349,7 @@ impl SessionStore {
         session_id: &str,
         cancel: CancellationToken,
     ) -> anyhow::Result<i64> {
+        ensure_session_id(session_id)?;
         let store = self.clone();
         let session_id = session_id.to_owned();
         self.db
@@ -1241,6 +1363,7 @@ impl SessionStore {
         session_id: &str,
         cancel: CancellationToken,
     ) -> anyhow::Result<Option<i64>> {
+        ensure_session_id(session_id)?;
         let session_id = session_id.to_owned();
         self.db
             .run_blocking_cancellable(cancel, move |db| {
@@ -1266,6 +1389,7 @@ impl SessionStore {
         session_id: &str,
         sequence: i64,
     ) -> anyhow::Result<()> {
+        ensure_session_id(session_id)?;
         self.db.checkpoint_memory_event_cursor(session_id, sequence)
     }
 
@@ -1277,6 +1401,7 @@ impl SessionStore {
         sequence: i64,
         cancel: CancellationToken,
     ) -> anyhow::Result<()> {
+        ensure_session_id(session_id)?;
         let store = self.clone();
         let session_id = session_id.to_owned();
         self.db
@@ -1289,12 +1414,14 @@ impl SessionStore {
     /// Clear one session's durable memory event cursor.
     #[cfg(test)]
     fn clear_memory_event_cursor(&self, session_id: &str) -> anyhow::Result<()> {
+        ensure_session_id(session_id)?;
         self.db.clear_memory_event_cursor(session_id)
     }
 
     /// Synchronous clock inspection for Memory unit tests.
     #[cfg(test)]
     pub(super) fn cursor(&self, session_id: &str) -> anyhow::Result<SessionCursor> {
+        ensure_session_id(session_id)?;
         let conn = self.db.conn();
         Self::cursor_in_connection(&conn, session_id)
     }
@@ -1306,6 +1433,7 @@ impl SessionStore {
         &self,
         session_id: &str,
     ) -> anyhow::Result<Vec<PendingSessionInput>> {
+        ensure_session_id(session_id)?;
         let session_id = session_id.to_owned();
         self.db
             .run_blocking(move |db| db.list_pending_session_inputs(&session_id))
@@ -1320,6 +1448,8 @@ impl SessionStore {
         session_id: &str,
         message_id: &str,
     ) -> anyhow::Result<()> {
+        ensure_session_id(session_id)?;
+        ensure_message_id(message_id, "pending message_id")?;
         let session_id = session_id.to_owned();
         let message_id = message_id.to_owned();
         self.db
@@ -1345,6 +1475,10 @@ impl SessionStore {
         disposition: PendingInputDisposition,
         cancel: Option<CancellationToken>,
     ) -> anyhow::Result<PendingSessionInput> {
+        ensure_session_id(session_id)?;
+        if let Some(message_id) = message_id {
+            ensure_message_id(message_id, "pending message_id")?;
+        }
         let session_id = session_id.to_owned();
         let content = content.to_owned();
         let attachments = attachments.to_vec();
@@ -1391,6 +1525,7 @@ impl SessionStore {
     /// from one SQLite read boundary. This is the only recovery read surface
     /// exposed to Agent resume/rollback code.
     fn load_replay_state(&self, session_id: &str) -> anyhow::Result<Option<SessionReplayState>> {
+        ensure_session_id(session_id)?;
         let conn = self.db.conn();
         conn.execute_batch("BEGIN")?;
         let result = (|| -> anyhow::Result<Option<SessionReplayState>> {
@@ -1429,6 +1564,7 @@ impl SessionStore {
         &self,
         session_id: &str,
     ) -> anyhow::Result<Option<SessionReplayState>> {
+        ensure_session_id(session_id)?;
         let store = self.clone();
         let session_id = session_id.to_owned();
         self.db
@@ -1445,6 +1581,7 @@ impl SessionStore {
         session_id: &str,
         cancel: Option<CancellationToken>,
     ) -> anyhow::Result<SessionCursor> {
+        ensure_session_id(session_id)?;
         let store = self.clone();
         let session_id = session_id.to_owned();
         let read = move |_db: &Database| {
@@ -1471,6 +1608,7 @@ impl SessionStore {
         phase: &str,
         status: RecoveryPersistenceStatus,
     ) -> anyhow::Result<()> {
+        ensure_session_id(session_id)?;
         let store = self.clone();
         let session_id = session_id.to_owned();
         let phase = phase.to_owned();
@@ -1500,6 +1638,7 @@ impl SessionStore {
         step_number: u32,
         run_id: Option<u64>,
     ) -> anyhow::Result<SessionCursor> {
+        ensure_session_id(session_id)?;
         let store = self.clone();
         let session_id = session_id.to_owned();
         self.db
@@ -1561,6 +1700,7 @@ impl SessionStore {
         event_type: &str,
         payload: &str,
     ) -> anyhow::Result<SessionEvent> {
+        ensure_session_id(session_id)?;
         let store = self.clone();
         let session_id = session_id.to_owned();
         let event_type = event_type.to_owned();
@@ -1611,6 +1751,7 @@ impl SessionStore {
         next_status: SessionStatus,
         events: &[SessionEventInput],
     ) -> anyhow::Result<Vec<SessionEvent>> {
+        ensure_session_id(session_id)?;
         Self::validate_inputs(events)?;
         Self::validate_transcript_events(events)?;
         let now = Utc::now().to_rfc3339();
@@ -1661,6 +1802,7 @@ impl SessionStore {
         session_id: &str,
         events: &[SessionEventInput],
     ) -> anyhow::Result<Vec<SessionEvent>> {
+        ensure_session_id(session_id)?;
         Self::validate_inputs(events)?;
         Self::validate_transcript_events(events)?;
         if events.is_empty() {
@@ -1695,6 +1837,8 @@ impl SessionStore {
         committed: SessionCommitted,
         cancel: Option<CancellationToken>,
     ) -> anyhow::Result<SessionCommitResult> {
+        ensure_session_id(session_id)?;
+        Self::validate_projections(&committed.projections)?;
         let store = self.clone();
         let session_id = session_id.to_owned();
         let write = move |_db: &Database| store.commit_transcript_sync(&session_id, &committed);
@@ -1715,6 +1859,8 @@ impl SessionStore {
         session_id: &str,
         committed: &SessionCommitted,
     ) -> anyhow::Result<SessionCommitResult> {
+        ensure_session_id(session_id)?;
+        Self::validate_projections(&committed.projections)?;
         let events = committed.event_inputs();
         Self::validate_inputs(&events)?;
         anyhow::ensure!(
@@ -1804,6 +1950,26 @@ impl SessionStore {
         Ok(())
     }
 
+    fn validate_projections(projections: &[SessionProjectionIntent]) -> anyhow::Result<()> {
+        for projection in projections {
+            match projection {
+                SessionProjectionIntent::AcknowledgePendingUserInput { message_id } => {
+                    ensure_message_id(message_id, "pending message_id")?;
+                }
+                SessionProjectionIntent::AssistantMessage { message_id, .. } => {
+                    ensure_message_or_step_id(message_id, "message_id")?;
+                }
+                SessionProjectionIntent::ThoughtStep { message_id, .. } => {
+                    ensure_message_or_step_id(message_id, "thought message_id")?;
+                }
+                SessionProjectionIntent::ToolStep { step_id, .. } => {
+                    ensure_step_id(step_id, "step_id")?;
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Keep the generic append paths subject to the same hard ceiling as the
     /// projection-aware transcript writer. Control events remain on the
     /// generic path, but a batch containing transcript records must not be a
@@ -1851,6 +2017,7 @@ impl SessionStore {
         session_id: &str,
         events: &[SessionEventInput],
     ) -> anyhow::Result<Vec<SessionEvent>> {
+        ensure_session_id(session_id)?;
         let mut sequence: i64 = conn.query_row(
             "SELECT COALESCE(MAX(sequence), 0) FROM session_events WHERE session_id = ?1",
             rusqlite::params![session_id],
@@ -1901,6 +2068,7 @@ impl SessionStore {
         conn: &rusqlite::Connection,
         session_id: &str,
     ) -> anyhow::Result<SessionCursor> {
+        ensure_session_id(session_id)?;
         let event_sequence = conn.query_row(
             "SELECT COALESCE(MAX(sequence), 0) FROM session_events WHERE session_id = ?1",
             rusqlite::params![session_id],
@@ -1984,6 +2152,7 @@ impl SessionStore {
         run_id: u64,
         step_number: u32,
     ) -> anyhow::Result<i64> {
+        ensure_session_id(session_id)?;
         let store = self.clone();
         let session_id = session_id.to_owned();
         let payload = payload.to_owned();
@@ -2036,6 +2205,8 @@ impl SessionStore {
         session_id: &str,
         message_id: &str,
     ) -> anyhow::Result<Message> {
+        ensure_session_id(session_id)?;
+        ensure_message_id(message_id, "rollback target message_id")?;
         let session_id = session_id.to_owned();
         let message_id = message_id.to_owned();
         self.db
@@ -2066,6 +2237,11 @@ impl SessionStore {
         replacement_transcript: &[SessionEventInput],
         run_id: Option<u64>,
     ) -> anyhow::Result<RollbackResult> {
+        ensure_session_id(session_id)?;
+        if let RollbackProjectionBoundary::UserMessage { message_id } = &request.projection_boundary
+        {
+            ensure_message_id(message_id, "rollback target message_id")?;
+        }
         Self::validate_inputs(replacement_transcript)?;
         Self::validate_transcript_events(replacement_transcript)?;
         let conn = self.db.conn();
@@ -2261,6 +2437,7 @@ impl SessionStore {
         &self,
         session_id: &str,
     ) -> anyhow::Result<()> {
+        ensure_session_id(session_id)?;
         let conn = self.db.conn();
         conn.execute_batch("BEGIN IMMEDIATE")?;
         let result = (|| -> anyhow::Result<Option<Vec<SessionEvent>>> {
@@ -2309,6 +2486,7 @@ impl SessionStore {
         &self,
         session_id: &str,
     ) -> anyhow::Result<()> {
+        ensure_session_id(session_id)?;
         let store = self.clone();
         let session_id = session_id.to_owned();
         self.db
@@ -2323,6 +2501,7 @@ impl SessionStore {
         session_id: &str,
         step_number: u32,
     ) -> anyhow::Result<Option<Vec<SessionEvent>>> {
+        ensure_session_id(session_id)?;
         let cutoff = Self::read_active_branch_points_in_connection(conn, session_id)?
             .into_iter()
             .find(|point| point.step_number == step_number)
@@ -2368,6 +2547,7 @@ impl SessionStore {
         session_id: &str,
         cutoff: &ProjectionCutoff,
     ) -> anyhow::Result<()> {
+        ensure_session_id(session_id)?;
         let conn = self.db.conn();
         conn.execute_batch("BEGIN IMMEDIATE")?;
         let result = (|| -> anyhow::Result<Vec<SessionEvent>> {
@@ -2439,13 +2619,10 @@ impl SessionStore {
         session_id: &str,
         inputs: &[LlmUsageRecordInput],
     ) -> anyhow::Result<Vec<LlmUsageRecord>> {
+        ensure_session_id(session_id)?;
         if inputs.is_empty() {
             return Ok(Vec::new());
         }
-        anyhow::ensure!(
-            is_canonical_id(session_id, "ses"),
-            "session_id must be canonical"
-        );
         let records = inputs
             .iter()
             .map(|input| {
@@ -2514,6 +2691,7 @@ impl SessionStore {
         inputs: Vec<LlmUsageRecordInput>,
         cancel: Option<CancellationToken>,
     ) -> anyhow::Result<Vec<LlmUsageRecord>> {
+        ensure_session_id(session_id)?;
         let session_id = session_id.to_owned();
         let store = self.clone();
         let persist = move |_db: &Database| store.append_usage_batch(&session_id, &inputs);
@@ -2572,6 +2750,11 @@ impl SessionStore {
         usage_id: &str,
         cancel: Option<CancellationToken>,
     ) -> anyhow::Result<()> {
+        ensure_session_id(session_id)?;
+        anyhow::ensure!(
+            is_canonical_id(usage_id, "usage"),
+            "usage_id must be a canonical usage-* ID"
+        );
         let session_id = session_id.to_owned();
         let usage_id = usage_id.to_owned();
         let store = self.clone();
@@ -2627,6 +2810,7 @@ impl SessionStore {
         step_number: u32,
         run_id: Option<u64>,
     ) -> anyhow::Result<(SessionEvent, SessionCursor)> {
+        ensure_session_id(session_id)?;
         let conn = self.db.conn();
         conn.execute_batch("BEGIN IMMEDIATE")?;
         let result = (|| -> anyhow::Result<(SessionEvent, SessionCursor)> {
@@ -2672,6 +2856,7 @@ impl SessionStore {
         phase: &str,
         status: RecoveryPersistenceStatus,
     ) -> anyhow::Result<SessionEvent> {
+        ensure_session_id(session_id)?;
         let payload = serde_json::json!({
             "phase": phase,
             "branch_point": status.branch_point,
@@ -2726,6 +2911,7 @@ impl SessionStore {
         conn: &rusqlite::Connection,
         session_id: &str,
     ) -> anyhow::Result<Option<SessionEvent>> {
+        ensure_session_id(session_id)?;
         conn.query_row(
             "SELECT session_id, sequence, event_type, event_version, payload,
                     created_at, run_id, step_number
@@ -2733,28 +2919,14 @@ impl SessionStore {
              WHERE session_id = ?1 AND event_type = ?2
              ORDER BY sequence DESC LIMIT 1",
             rusqlite::params![session_id, RECOVERY_PERSISTENCE_EVENT_TYPE],
-            |row| {
-                Ok(SessionEvent {
-                    session_id: row.get(0)?,
-                    sequence: row.get(1)?,
-                    event_type: row.get(2)?,
-                    event_version: row.get(3)?,
-                    payload: row.get(4)?,
-                    created_at: row.get(5)?,
-                    run_id: row
-                        .get::<_, Option<i64>>(6)?
-                        .and_then(|value| u64::try_from(value).ok()),
-                    step_number: row
-                        .get::<_, Option<i64>>(7)?
-                        .and_then(|value| u32::try_from(value).ok()),
-                })
-            },
+            session_event_from_row,
         )
         .optional()
         .map_err(Into::into)
     }
 
     fn latest_sequence_sync(&self, session_id: &str) -> anyhow::Result<i64> {
+        ensure_session_id(session_id)?;
         Ok(self.db.conn().query_row(
             "SELECT COALESCE(MAX(sequence), 0) FROM session_events WHERE session_id = ?1",
             rusqlite::params![session_id],
@@ -2774,6 +2946,7 @@ impl SessionStore {
         session_id: &str,
         cancel: CancellationToken,
     ) -> anyhow::Result<i64> {
+        ensure_session_id(session_id)?;
         let store = self.clone();
         let session_id = session_id.to_owned();
         self.db
@@ -2811,6 +2984,7 @@ impl SessionStore {
         after_sequence: i64,
         limit: usize,
     ) -> anyhow::Result<SessionEventPage> {
+        ensure_session_id(session_id)?;
         anyhow::ensure!(
             after_sequence >= 0,
             "event replay cursor cannot be negative"
@@ -2831,22 +3005,7 @@ impl SessionStore {
         )?;
         let rows = stmt.query_map(
             rusqlite::params![session_id, after_sequence, (limit + 1) as i64],
-            |row| {
-                Ok(SessionEvent {
-                    session_id: row.get(0)?,
-                    sequence: row.get(1)?,
-                    event_type: row.get(2)?,
-                    event_version: row.get(3)?,
-                    payload: row.get(4)?,
-                    created_at: row.get(5)?,
-                    run_id: row
-                        .get::<_, Option<i64>>(6)?
-                        .and_then(|value| u64::try_from(value).ok()),
-                    step_number: row
-                        .get::<_, Option<i64>>(7)?
-                        .and_then(|value| u32::try_from(value).ok()),
-                })
-            },
+            session_event_from_row,
         )?;
         let mut events = rows.collect::<Result<Vec<_>, _>>()?;
         let has_more = events.len() > limit;
@@ -2871,6 +3030,7 @@ impl SessionStore {
         after_sequence: i64,
         cancel: CancellationToken,
     ) -> anyhow::Result<SessionEventPage> {
+        ensure_session_id(session_id)?;
         let store = self.clone();
         let session_id = session_id.to_owned();
         self.db
@@ -2889,6 +3049,7 @@ impl SessionStore {
         session_id: &str,
         after_sequence: i64,
     ) -> anyhow::Result<Vec<SessionEvent>> {
+        ensure_session_id(session_id)?;
         let mut stmt = conn.prepare(
             "SELECT session_id, sequence, event_type, event_version, payload,
                     created_at, run_id, step_number
@@ -2896,22 +3057,10 @@ impl SessionStore {
              WHERE session_id = ?1 AND sequence > ?2
              ORDER BY sequence ASC",
         )?;
-        let rows = stmt.query_map(rusqlite::params![session_id, after_sequence], |row| {
-            Ok(SessionEvent {
-                session_id: row.get(0)?,
-                sequence: row.get(1)?,
-                event_type: row.get(2)?,
-                event_version: row.get(3)?,
-                payload: row.get(4)?,
-                created_at: row.get(5)?,
-                run_id: row
-                    .get::<_, Option<i64>>(6)?
-                    .and_then(|value| u64::try_from(value).ok()),
-                step_number: row
-                    .get::<_, Option<i64>>(7)?
-                    .and_then(|value| u32::try_from(value).ok()),
-            })
-        })?;
+        let rows = stmt.query_map(
+            rusqlite::params![session_id, after_sequence],
+            session_event_from_row,
+        )?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
@@ -2930,6 +3079,7 @@ impl SessionStore {
         &self,
         session_id: &str,
     ) -> anyhow::Result<Vec<SessionEvent>> {
+        ensure_session_id(session_id)?;
         let store = self.clone();
         let session_id = session_id.to_owned();
         self.db
@@ -2941,6 +3091,7 @@ impl SessionStore {
         conn: &rusqlite::Connection,
         session_id: &str,
     ) -> anyhow::Result<Vec<SessionEvent>> {
+        ensure_session_id(session_id)?;
         let started = Instant::now();
         // A compact_summary is a durable active-root marker.  The audit log
         // before it remains readable through read_all, but normal recovery
@@ -3061,6 +3212,7 @@ impl SessionStore {
         &self,
         session_id: &str,
     ) -> anyhow::Result<Vec<SessionEvent>> {
+        ensure_session_id(session_id)?;
         let store = self.clone();
         let session_id = session_id.to_owned();
         self.db
@@ -3151,6 +3303,7 @@ impl SessionStore {
         session_id: &str,
         events: &[SessionEventInput],
     ) -> anyhow::Result<Vec<SessionEvent>> {
+        ensure_session_id(session_id)?;
         Self::validate_inputs(events)?;
         Self::validate_transcript_events(events)?;
         if events.is_empty() {
@@ -3198,6 +3351,7 @@ impl SessionStore {
         session_id: &str,
         events: Vec<SessionEventInput>,
     ) -> anyhow::Result<Vec<SessionEvent>> {
+        ensure_session_id(session_id)?;
         let store = self.clone();
         let session_id = session_id.to_owned();
         self.db
@@ -5230,12 +5384,8 @@ mod tests {
                 .await
                 .is_err()
         );
-        assert!(store.read_all(malformed_session_id).unwrap().is_empty());
-        assert!(
-            db.list_session_llm_usage(malformed_session_id)
-                .unwrap()
-                .is_empty()
-        );
+        assert!(store.read_all(malformed_session_id).is_err());
+        assert!(db.list_session_llm_usage(malformed_session_id).is_err());
 
         assert!(
             store
@@ -5251,7 +5401,7 @@ mod tests {
         );
 
         assert_eq!(store.read_all(&session_id).unwrap(), canonical_events);
-        assert!(store.read_all(malformed_session_id).unwrap().is_empty());
+        assert!(store.read_all(malformed_session_id).is_err());
         assert_eq!(
             db.list_session_llm_usage(&session_id)
                 .unwrap()
@@ -5260,6 +5410,268 @@ mod tests {
                 .collect::<Vec<_>>(),
             [usage.id.as_str()]
         );
+    }
+
+    #[tokio::test]
+    async fn session_event_ports_reject_noncanonical_session_ids_before_io() {
+        let (_db, store, session_id) = store();
+        let invalid_session_id = "ses-short";
+
+        assert!(
+            store
+                .update_session_status(invalid_session_id, SessionStatus::Paused)
+                .await
+                .is_err()
+        );
+        assert!(store.load_session_record(invalid_session_id).await.is_err());
+        assert!(store.get_session_title(invalid_session_id).await.is_err());
+        assert!(
+            store
+                .session_resume_projection(invalid_session_id)
+                .await
+                .is_err()
+        );
+        assert!(
+            store
+                .upsert_partial_stream(invalid_session_id, "partial")
+                .await
+                .is_err()
+        );
+        assert!(
+            store
+                .persist_pending_user_input(
+                    invalid_session_id,
+                    "pending",
+                    None,
+                    &[],
+                    false,
+                    Some("msg-short"),
+                    PendingInputDisposition::FollowUp,
+                    None,
+                )
+                .await
+                .is_err()
+        );
+        assert!(
+            store
+                .session_ids_page_cancellable(
+                    Some(invalid_session_id.to_owned()),
+                    session_id.clone(),
+                    CancellationToken::new(),
+                )
+                .await
+                .is_err()
+        );
+        assert!(
+            store
+                .session_ids_page_cancellable(
+                    None,
+                    invalid_session_id.to_owned(),
+                    CancellationToken::new(),
+                )
+                .await
+                .is_err()
+        );
+        assert!(
+            store
+                .ensure_tool_step(
+                    ToolStepWrite {
+                        session_id: session_id.clone(),
+                        step_number: 1,
+                        tool_index: 0,
+                        tool_name: "read".into(),
+                        tool_input: "{}".into(),
+                        tool_call_id: None,
+                        is_high_risk: false,
+                        silent: false,
+                        step_id: "step-short".into(),
+                    },
+                    None,
+                )
+                .await
+                .is_err()
+        );
+
+        assert!(
+            store
+                .append_domain_event(invalid_session_id, "memory_trigger", "{}")
+                .await
+                .is_err()
+        );
+        assert!(
+            store
+                .append_domain_event_batch_with_session_status(
+                    invalid_session_id,
+                    SessionStatus::Pending,
+                    SessionStatus::Paused,
+                    &[SessionEventInput::new("interaction_cleared", "{}")],
+                )
+                .await
+                .is_err()
+        );
+        assert!(
+            store
+                .commit_transcript_cancellable(
+                    invalid_session_id,
+                    SessionCommitted::default(),
+                    None,
+                )
+                .await
+                .is_err()
+        );
+        assert!(
+            store
+                .seed_if_empty_async(invalid_session_id, Vec::new())
+                .await
+                .is_err()
+        );
+        assert!(
+            store
+                .append_transcript_async(invalid_session_id, "{}", 1, 1)
+                .await
+                .is_err()
+        );
+        assert!(
+            store
+                .load_replay_state_async(invalid_session_id)
+                .await
+                .is_err()
+        );
+        assert!(
+            store
+                .event_boundary_cursor(invalid_session_id, None)
+                .await
+                .is_err()
+        );
+        assert!(
+            store
+                .latest_sequence_cancellable(invalid_session_id, CancellationToken::new())
+                .await
+                .is_err()
+        );
+        assert!(
+            store
+                .replay_page_cancellable(invalid_session_id, 0, CancellationToken::new())
+                .await
+                .is_err()
+        );
+        assert!(
+            store
+                .read_active_events_async(invalid_session_id)
+                .await
+                .is_err()
+        );
+        assert!(store.read_all(invalid_session_id).is_err());
+        assert!(store.read_all(&session_id).unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn commit_rejects_noncanonical_projection_ids_before_event_write() {
+        let (db, store, session_id) = store();
+        let mut assistant_message = SessionCommitted::transcript("{}", 1, 1);
+        assistant_message.project_assistant_message("msg-short", "assistant", None);
+        let mut thought_step = SessionCommitted::transcript("{}", 1, 1);
+        thought_step.project_thought_step("step-short", 1);
+        let mut wrong_prefix_thought = SessionCommitted::transcript("{}", 1, 1);
+        wrong_prefix_thought.project_thought_step("fact-00000000000000000000000000000001", 1);
+        let mut tool_step = SessionCommitted::transcript("{}", 1, 1);
+        tool_step.project_tool_call_step("step-short", 1, 0, "read", "{}", None, false, false);
+        let mut wrong_prefix_tool_step = SessionCommitted::transcript("{}", 1, 1);
+        wrong_prefix_tool_step.project_tool_call_step(
+            "msg-00000000000000000000000000000001",
+            1,
+            0,
+            "read",
+            "{}",
+            None,
+            false,
+            false,
+        );
+        let mut pending_input = SessionCommitted::transcript("{}", 1, 1);
+        pending_input.acknowledge_pending_user_input("msg-short");
+
+        for committed in [
+            assistant_message,
+            thought_step,
+            wrong_prefix_thought,
+            tool_step,
+            wrong_prefix_tool_step,
+            pending_input,
+        ] {
+            assert!(
+                store
+                    .commit_transcript_cancellable(&session_id, committed, None)
+                    .await
+                    .is_err()
+            );
+            assert!(store.read_all(&session_id).unwrap().is_empty());
+            assert!(db.list_session_messages(&session_id).unwrap().is_empty());
+            assert!(db.list_session_steps(&session_id).unwrap().is_empty());
+        }
+
+        let message_id = haven_common::types::new_id("msg");
+        let mut supplement_thought = SessionCommitted::transcript("{}", 1, 1);
+        supplement_thought.project_thought_step(message_id.clone(), 1);
+        store
+            .commit_transcript(&session_id, &supplement_thought)
+            .unwrap();
+        assert!(
+            db.list_session_steps(&session_id)
+                .unwrap()
+                .iter()
+                .any(|step| step.id == message_id)
+        );
+    }
+
+    #[tokio::test]
+    async fn rollback_rejects_noncanonical_user_message_id_before_mutation() {
+        let (_db, store, session_id) = store();
+        store
+            .append_transcript_async(&session_id, "{}", 1, 1)
+            .await
+            .unwrap();
+
+        let result = store
+            .rollback_to_async(
+                &session_id,
+                RollbackRequest {
+                    expected_event_sequence: 1,
+                    transcript_cursor: 1,
+                    target_step: 1,
+                    projection_boundary: RollbackProjectionBoundary::UserMessage {
+                        message_id: "step-00000000000000000000000000000001".into(),
+                    },
+                },
+                Vec::new(),
+                None,
+            )
+            .await;
+
+        assert!(result.is_err());
+        assert_eq!(store.read_all(&session_id).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn session_event_row_mapper_rejects_noncanonical_session_identity() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        let invalid = conn
+            .query_row(
+                "SELECT 'ses-short', 1, 'event', 1, '{}', 'now', NULL, NULL",
+                [],
+                session_event_from_row,
+            )
+            .unwrap_err();
+        assert!(invalid.to_string().contains("session_events.session_id"));
+
+        let session_id = haven_common::types::new_id("ses");
+        let event = conn
+            .query_row(
+                "SELECT ?1, 1, 'event', 1, '{}', 'now', NULL, NULL",
+                [&session_id],
+                session_event_from_row,
+            )
+            .unwrap();
+        assert_eq!(event.session_id, session_id);
     }
 
     #[test]

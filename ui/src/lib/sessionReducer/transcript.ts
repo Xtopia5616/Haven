@@ -34,7 +34,7 @@ function moveMessages(
 	const source = messagesOf(state, fromSessionId);
 	const moving = source.filter((message) => !messageIds || messageIds.has(message.id));
 	if (moving.length === 0) return state;
-	const remaining = source.filter((message) => !moving.includes(message));
+	const remainingMessages = source.filter((message) => !moving.includes(message));
 	const prepared = moving.map((message) =>
 		message.role === 'user' ? { ...message, received: true, steering: false } : message,
 	);
@@ -42,7 +42,7 @@ function moveMessages(
 		...state,
 		messages: {
 			...state.messages,
-			[fromSessionId]: remaining,
+			[fromSessionId]: remainingMessages,
 			[toSessionId]: [...prepared, ...messagesOf(state, toSessionId)],
 		},
 	};

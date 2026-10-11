@@ -193,11 +193,39 @@ fn lsh_probe_buckets(bucket: i64) -> Vec<i64> {
     out
 }
 
+fn canonical_embedding_identity(
+    entity_type: String,
+    entity_id: String,
+    entity_type_column: usize,
+    entity_id_column: usize,
+) -> rusqlite::Result<(String, String)> {
+    let expected_prefix = match entity_type.as_str() {
+        entity_kind::FACT => "fact",
+        entity_kind::EPISODE => "msg",
+        _ => {
+            return Err(rusqlite::Error::FromSqlConversionFailure(
+                entity_type_column,
+                rusqlite::types::Type::Text,
+                format!("invalid memory embedding entity_type: {entity_type}").into(),
+            ));
+        }
+    };
+    if !haven_common::types::is_canonical_id(&entity_id, expected_prefix) {
+        return Err(rusqlite::Error::FromSqlConversionFailure(
+            entity_id_column,
+            rusqlite::types::Type::Text,
+            format!("invalid memory embedding entity_id for {entity_type}").into(),
+        ));
+    }
+    Ok((entity_type, entity_id))
+}
+
 fn row_to_embedded(row: &rusqlite::Row) -> rusqlite::Result<EmbeddedText> {
+    let (entity_type, entity_id) = canonical_embedding_identity(row.get(0)?, row.get(1)?, 0, 1)?;
     let vector_blob: Vec<u8> = row.get(3)?;
     Ok(EmbeddedText {
-        entity_type: row.get(0)?,
-        entity_id: row.get(1)?,
+        entity_type,
+        entity_id,
         model: row.get(2)?,
         vector: decode_vector(&vector_blob),
         text: row.get(4)?,
@@ -212,6 +240,20 @@ fn validate_entity_type(entity_type: &str) -> anyhow::Result<()> {
     anyhow::ensure!(
         matches!(entity_type, entity_kind::FACT | entity_kind::EPISODE),
         "unsupported memory embedding domain '{entity_type}'"
+    );
+    Ok(())
+}
+
+fn validate_entity_id(entity_type: &str, entity_id: &str) -> anyhow::Result<()> {
+    validate_entity_type(entity_type)?;
+    let prefix = match entity_type {
+        entity_kind::FACT => "fact",
+        entity_kind::EPISODE => "msg",
+        _ => unreachable!("validated memory embedding domain"),
+    };
+    anyhow::ensure!(
+        haven_common::types::is_canonical_id(entity_id, prefix),
+        "invalid {entity_type} embedding entity_id"
     );
     Ok(())
 }
@@ -253,10 +295,7 @@ impl Database {
         text: &str,
     ) -> anyhow::Result<()> {
         validate_entity_type(entity_type)?;
-        anyhow::ensure!(
-            !entity_id.trim().is_empty(),
-            "embedding entity_id is required"
-        );
+        validate_entity_id(entity_type, entity_id)?;
         anyhow::ensure!(!model.trim().is_empty(), "embedding model is required");
         anyhow::ensure!(!text.trim().is_empty(), "embedding text is required");
         anyhow::ensure!(!vector.is_empty(), "embedding vector must not be empty");
@@ -425,7 +464,7 @@ impl Database {
         entity_id: &str,
         model: Option<&str>,
     ) -> anyhow::Result<Option<EmbeddedText>> {
-        validate_entity_type(entity_type)?;
+        validate_entity_id(entity_type, entity_id)?;
         let conn = self.conn();
         if let Some(model) = model.filter(|m| !m.is_empty()) {
             let mut stmt = conn.prepare(&format!(
@@ -553,6 +592,9 @@ impl Database {
         };
         drop(conn);
         for id in &ids {
+            validate_entity_id(entity_type, id)?;
+        }
+        for id in &ids {
             self.register_pending_embedding_model(entity_type, id, model);
         }
         Ok(ids)
@@ -560,6 +602,7 @@ impl Database {
 
     /// Embeddable surface text for a fact: `subject predicate object`.
     pub fn fact_text_by_id(&self, fact_id: &str) -> anyhow::Result<Option<String>> {
+        validate_entity_id(entity_kind::FACT, fact_id)?;
         let conn = self.conn();
         let text = match conn.query_row(
             "SELECT subject || ' ' || predicate || ' ' || object FROM facts WHERE id = ?1",
@@ -628,6 +671,12 @@ impl Database {
         exclude_session_id: Option<&str>,
     ) -> anyhow::Result<Vec<(EmbeddedText, f64)>> {
         validate_entity_type(entity_type)?;
+        if let Some(session_id) = exclude_session_id {
+            anyhow::ensure!(
+                haven_common::types::is_canonical_id(session_id, "ses"),
+                "invalid excluded session id"
+            );
+        }
         anyhow::ensure!(
             query_vec.iter().all(|value| value.is_finite()),
             "embedding query vector must contain only finite values"
@@ -837,11 +886,12 @@ impl Database {
             && exclude_session_id.is_none()
             && let Some(cached) = self.cache_get_embeddings(entity_type)
         {
-            let filtered: Vec<_> = cached.into_iter().filter(|e| e.model == model).collect();
-            if filtered.len() <= scan_cap {
-                return Ok(filtered);
+            let filtered_embeddings: Vec<_> =
+                cached.into_iter().filter(|e| e.model == model).collect();
+            if filtered_embeddings.len() <= scan_cap {
+                return Ok(filtered_embeddings);
             }
-            return Ok(filtered.into_iter().take(scan_cap).collect());
+            return Ok(filtered_embeddings.into_iter().take(scan_cap).collect());
         }
 
         let conn = self.conn();
@@ -1240,8 +1290,8 @@ impl Database {
             );
             let mut stmt = conn.prepare(&sql)?;
             let mapped = stmt.query_map(rusqlite::params![model], |row| {
-                let entity_type: String = row.get(0)?;
-                let entity_id: String = row.get(1)?;
+                let (entity_type, entity_id) =
+                    canonical_embedding_identity(row.get(0)?, row.get(1)?, 0, 1)?;
                 let blob: Vec<u8> = row.get(2)?;
                 Ok((entity_type, entity_id, decode_vector(&blob)))
             })?;
@@ -1281,6 +1331,13 @@ impl Database {
 mod tests {
     use super::*;
     use crate::Database;
+
+    const FACT_ID_1: &str = "fact-00000000000000000000000000000001";
+    const FACT_ID_2: &str = "fact-00000000000000000000000000000002";
+    const FACT_ID_3: &str = "fact-00000000000000000000000000000003";
+    const FACT_ID_4: &str = "fact-00000000000000000000000000000004";
+    const MISSING_FACT_ID: &str = "fact-00000000000000000000000000000005";
+    const MISSING_EPISODE_ID: &str = "msg-00000000000000000000000000000005";
 
     fn db() -> Database {
         Database::open_in_memory().unwrap()
@@ -1333,17 +1390,20 @@ mod tests {
     #[test]
     fn save_and_get_embedding() {
         let db = db();
-        insert_fact_with_id(&db, "f1");
+        insert_fact_with_id(&db, FACT_ID_1);
         db.save_embedding(
             entity_kind::FACT,
-            "f1",
+            FACT_ID_1,
             "test-emb",
             &[0.1, 0.2],
             "name: Alice",
         )
         .unwrap();
-        let got = db.get_embedding(entity_kind::FACT, "f1").unwrap().unwrap();
-        assert_eq!(got.entity_id, "f1");
+        let got = db
+            .get_embedding(entity_kind::FACT, FACT_ID_1)
+            .unwrap()
+            .unwrap();
+        assert_eq!(got.entity_id, FACT_ID_1);
         assert_eq!(got.vector, vec![0.1, 0.2]);
         assert_eq!(got.text, "name: Alice");
     }
@@ -1351,12 +1411,15 @@ mod tests {
     #[test]
     fn save_replaces_existing() {
         let db = db();
-        insert_fact_with_id(&db, "f1");
-        db.save_embedding(entity_kind::FACT, "f1", "m", &[1.0, 0.0], "a")
+        insert_fact_with_id(&db, FACT_ID_1);
+        db.save_embedding(entity_kind::FACT, FACT_ID_1, "m", &[1.0, 0.0], "a")
             .unwrap();
-        db.save_embedding(entity_kind::FACT, "f1", "m", &[2.0, 3.0], "b")
+        db.save_embedding(entity_kind::FACT, FACT_ID_1, "m", &[2.0, 3.0], "b")
             .unwrap();
-        let got = db.get_embedding(entity_kind::FACT, "f1").unwrap().unwrap();
+        let got = db
+            .get_embedding(entity_kind::FACT, FACT_ID_1)
+            .unwrap()
+            .unwrap();
         assert_eq!(got.vector, vec![2.0, 3.0]);
         assert_eq!(got.text, "b");
     }
@@ -1364,26 +1427,26 @@ mod tests {
     #[test]
     fn search_ranks_by_similarity() {
         let db = db();
-        insert_fact_with_id(&db, "f1");
-        insert_fact_with_id(&db, "f2");
-        db.save_embedding(entity_kind::FACT, "f1", "m", &[1.0, 0.0], "a")
+        insert_fact_with_id(&db, FACT_ID_1);
+        insert_fact_with_id(&db, FACT_ID_2);
+        db.save_embedding(entity_kind::FACT, FACT_ID_1, "m", &[1.0, 0.0], "a")
             .unwrap();
-        db.save_embedding(entity_kind::FACT, "f2", "m", &[0.0, 1.0], "b")
+        db.save_embedding(entity_kind::FACT, FACT_ID_2, "m", &[0.0, 1.0], "b")
             .unwrap();
         let hits = db
             .search_embeddings(entity_kind::FACT, &[1.0, 0.0], 10, "m")
             .unwrap();
         assert_eq!(hits.len(), 2);
-        assert_eq!(hits[0].0.entity_id, "f1");
+        assert_eq!(hits[0].0.entity_id, FACT_ID_1);
         assert!(hits[0].1 > hits[1].1);
     }
 
     #[test]
     fn search_respects_limit_and_domain() {
         let db = db();
-        insert_fact_with_id(&db, "f1");
+        insert_fact_with_id(&db, FACT_ID_1);
         let episode_id = insert_episode(&db);
-        db.save_embedding(entity_kind::FACT, "f1", "m", &[1.0, 0.0], "a")
+        db.save_embedding(entity_kind::FACT, FACT_ID_1, "m", &[1.0, 0.0], "a")
             .unwrap();
         db.save_embedding(entity_kind::EPISODE, &episode_id, "m", &[1.0, 0.0], "b")
             .unwrap();
@@ -1391,7 +1454,7 @@ mod tests {
             .search_embeddings(entity_kind::FACT, &[1.0, 0.0], 1, "m")
             .unwrap();
         assert_eq!(hits.len(), 1);
-        assert_eq!(hits[0].0.entity_id, "f1");
+        assert_eq!(hits[0].0.entity_id, FACT_ID_1);
     }
 
     #[test]
@@ -1442,17 +1505,17 @@ mod tests {
     #[test]
     fn search_embeddings_filters_by_model() {
         let db = db();
-        insert_fact_with_id(&db, "f1");
-        insert_fact_with_id(&db, "f2");
-        db.save_embedding(entity_kind::FACT, "f1", "old-m", &[1.0, 0.0], "a")
+        insert_fact_with_id(&db, FACT_ID_1);
+        insert_fact_with_id(&db, FACT_ID_2);
+        db.save_embedding(entity_kind::FACT, FACT_ID_1, "old-m", &[1.0, 0.0], "a")
             .unwrap();
-        db.save_embedding(entity_kind::FACT, "f2", "new-m", &[1.0, 0.0], "b")
+        db.save_embedding(entity_kind::FACT, FACT_ID_2, "new-m", &[1.0, 0.0], "b")
             .unwrap();
         let hits = db
             .search_embeddings(entity_kind::FACT, &[1.0, 0.0], 10, "new-m")
             .unwrap();
         assert_eq!(hits.len(), 1);
-        assert_eq!(hits[0].0.entity_id, "f2");
+        assert_eq!(hits[0].0.entity_id, FACT_ID_2);
         assert!(
             db.search_embeddings(entity_kind::FACT, &[1.0, 0.0], 10, "")
                 .unwrap()
@@ -1478,6 +1541,27 @@ mod tests {
             .missing_embedding_ids(entity_kind::FACT, "other")
             .unwrap();
         assert_eq!(missing_new.len(), 2);
+    }
+
+    #[test]
+    fn embedding_entity_ids_are_canonical_at_write_and_read_boundaries() {
+        let db = db();
+        assert!(
+            db.save_embedding(entity_kind::FACT, "fact-short", "m", &[1.0], "text")
+                .is_err()
+        );
+
+        insert_fact_with_id(&db, "fact-short");
+        assert!(db.missing_embedding_ids(entity_kind::FACT, "m").is_err());
+        db.conn()
+            .execute(
+                "INSERT INTO memory_embeddings (entity_type, entity_id, model, vector, text)
+                 VALUES ('fact', 'fact-short', 'm', X'0000803F', 'text')",
+                [],
+            )
+            .unwrap();
+        assert!(db.rebuild_embedding_lsh("m").is_err());
+        assert!(db.list_embeddings(entity_kind::FACT).is_err());
     }
 
     #[test]
@@ -1626,11 +1710,17 @@ mod tests {
         db.save_embedding(entity_kind::EPISODE, &ep, "m", &[1.0], "hello")
             .unwrap();
         assert!(
-            db.save_embedding(entity_kind::EPISODE, "ghost", "m", &[1.0], "gone")
-                .is_err()
+            db.save_embedding(
+                entity_kind::EPISODE,
+                MISSING_EPISODE_ID,
+                "m",
+                &[1.0],
+                "gone"
+            )
+            .is_err()
         );
         assert!(
-            db.save_embedding(entity_kind::FACT, "ghost-fact", "m", &[1.0], "gone")
+            db.save_embedding(entity_kind::FACT, MISSING_FACT_ID, "m", &[1.0], "gone")
                 .is_err()
         );
         let deleted = db.prune_orphaned_embeddings().unwrap();
@@ -1645,12 +1735,12 @@ mod tests {
     #[test]
     fn list_embedding_models_distinct() {
         let db = db();
-        insert_fact_with_id(&db, "f1");
-        insert_fact_with_id(&db, "f2");
+        insert_fact_with_id(&db, FACT_ID_1);
+        insert_fact_with_id(&db, FACT_ID_2);
         let episode_id = insert_episode(&db);
-        db.save_embedding(entity_kind::FACT, "f1", "model-a", &[1.0], "x")
+        db.save_embedding(entity_kind::FACT, FACT_ID_1, "model-a", &[1.0], "x")
             .unwrap();
-        db.save_embedding(entity_kind::FACT, "f2", "model-a", &[1.0], "y")
+        db.save_embedding(entity_kind::FACT, FACT_ID_2, "model-a", &[1.0], "y")
             .unwrap();
         db.save_embedding(entity_kind::EPISODE, &episode_id, "model-b", &[1.0], "z")
             .unwrap();
@@ -1663,12 +1753,12 @@ mod tests {
     #[test]
     fn save_embedding_rejects_mixed_dimensions_within_model() {
         let db = db();
-        insert_fact_with_id(&db, "f1");
-        insert_fact_with_id(&db, "f2");
-        db.save_embedding(entity_kind::FACT, "f1", "m", &[1.0, 0.0], "x")
+        insert_fact_with_id(&db, FACT_ID_1);
+        insert_fact_with_id(&db, FACT_ID_2);
+        db.save_embedding(entity_kind::FACT, FACT_ID_1, "m", &[1.0, 0.0], "x")
             .unwrap();
         assert!(
-            db.save_embedding(entity_kind::FACT, "f2", "m", &[1.0, 0.0, 0.0], "y")
+            db.save_embedding(entity_kind::FACT, FACT_ID_2, "m", &[1.0, 0.0, 0.0], "y")
                 .is_err()
         );
         assert_eq!(db.list_embedding_dimensions("m").unwrap(), vec![2]);
@@ -1677,9 +1767,9 @@ mod tests {
     #[test]
     fn clear_embeddings_drops_everything() {
         let db = db();
-        insert_fact_with_id(&db, "f1");
+        insert_fact_with_id(&db, FACT_ID_1);
         let episode_id = insert_episode(&db);
-        db.save_embedding(entity_kind::FACT, "f1", "m", &[1.0], "x")
+        db.save_embedding(entity_kind::FACT, FACT_ID_1, "m", &[1.0], "x")
             .unwrap();
         db.save_embedding(entity_kind::EPISODE, &episode_id, "m", &[1.0], "y")
             .unwrap();
@@ -1791,16 +1881,16 @@ mod tests {
     #[test]
     fn embedding_list_is_cached_and_invalidated_on_write() {
         let db = db();
-        insert_fact_with_id(&db, "f1");
+        insert_fact_with_id(&db, FACT_ID_1);
         assert!(db.list_embeddings(entity_kind::FACT).unwrap().is_empty());
         // First read caches; second read hits the cache (still correct).
         assert!(db.list_embeddings(entity_kind::FACT).unwrap().is_empty());
         // A write invalidates the cache so the next read sees the new row.
-        db.save_embedding(entity_kind::FACT, "f1", "m", &[1.0], "x")
+        db.save_embedding(entity_kind::FACT, FACT_ID_1, "m", &[1.0], "x")
             .unwrap();
         let all = db.list_embeddings(entity_kind::FACT).unwrap();
         assert_eq!(all.len(), 1);
-        assert_eq!(all[0].entity_id, "f1");
+        assert_eq!(all[0].entity_id, FACT_ID_1);
         // Bulk clear invalidates again.
         assert_eq!(db.clear_embeddings().unwrap(), 1);
         assert!(db.list_embeddings(entity_kind::FACT).unwrap().is_empty());
@@ -1909,14 +1999,14 @@ mod tests {
     #[test]
     fn save_embedding_writes_lsh_bucket() {
         let db = db();
-        insert_fact_with_id(&db, "f1");
-        db.save_embedding(entity_kind::FACT, "f1", "m", &[1.0, 0.0, 0.5], "a")
+        insert_fact_with_id(&db, FACT_ID_1);
+        db.save_embedding(entity_kind::FACT, FACT_ID_1, "m", &[1.0, 0.0, 0.5], "a")
             .unwrap();
         let bucket: i64 = db
             .conn()
             .query_row(
                 "SELECT bucket FROM embedding_lsh WHERE entity_type = ?1 AND entity_id = ?2 AND model = ?3",
-                rusqlite::params![entity_kind::FACT, "f1", "m"],
+                rusqlite::params![entity_kind::FACT, FACT_ID_1, "m"],
                 |r| r.get(0),
             )
             .unwrap();
@@ -1936,32 +2026,38 @@ mod tests {
     #[test]
     fn lsh_probe_path_returns_near_neighbors() {
         let db = db();
-        insert_fact_with_id(&db, "near");
-        insert_fact_with_id(&db, "far");
+        insert_fact_with_id(&db, FACT_ID_3);
+        insert_fact_with_id(&db, FACT_ID_4);
         let target = vec![1.0f32, 0.0, 0.0, 0.0];
-        db.save_embedding(entity_kind::FACT, "near", "m", &target, "near")
+        db.save_embedding(entity_kind::FACT, FACT_ID_3, "m", &target, "near")
             .unwrap();
-        db.save_embedding(entity_kind::FACT, "far", "m", &[-1.0, 0.0, 0.0, 0.0], "far")
-            .unwrap();
+        db.save_embedding(
+            entity_kind::FACT,
+            FACT_ID_4,
+            "m",
+            &[-1.0, 0.0, 0.0, 0.0],
+            "far",
+        )
+        .unwrap();
         // Force LSH path regardless of ANN_ACTIVATE_MIN.
         let candidates = db
             .list_embeddings_via_lsh(entity_kind::FACT, "m", &target, 16, None, None)
             .unwrap();
         assert!(
-            candidates.iter().any(|e| e.entity_id == "near"),
+            candidates.iter().any(|e| e.entity_id == FACT_ID_3),
             "LSH probe must include the identical vector"
         );
         let hits = db
             .search_embeddings_filtered(entity_kind::FACT, &target, 1, "m", None, None)
             .unwrap();
-        assert_eq!(hits[0].0.entity_id, "near");
+        assert_eq!(hits[0].0.entity_id, FACT_ID_3);
     }
 
     #[test]
     fn rebuild_embedding_lsh_refills_side_table() {
         let db = db();
-        insert_fact_with_id(&db, "f1");
-        db.save_embedding(entity_kind::FACT, "f1", "m", &[0.25, 0.75], "x")
+        insert_fact_with_id(&db, FACT_ID_1);
+        db.save_embedding(entity_kind::FACT, FACT_ID_1, "m", &[0.25, 0.75], "x")
             .unwrap();
         db.conn().execute("DELETE FROM embedding_lsh", []).unwrap();
         let n = db.rebuild_embedding_lsh("m").unwrap();
@@ -1969,8 +2065,8 @@ mod tests {
         let bucket: i64 = db
             .conn()
             .query_row(
-                "SELECT bucket FROM embedding_lsh WHERE entity_id = 'f1'",
-                [],
+                "SELECT bucket FROM embedding_lsh WHERE entity_id = ?1",
+                [FACT_ID_1],
                 |r| r.get(0),
             )
             .unwrap();
@@ -1980,8 +2076,8 @@ mod tests {
     #[test]
     fn lsh_lagging_ignores_orphan_side_rows() {
         let db = db();
-        insert_fact_with_id(&db, "f1");
-        db.save_embedding(entity_kind::FACT, "f1", "m", &[1.0, 0.0], "x")
+        insert_fact_with_id(&db, FACT_ID_1);
+        db.save_embedding(entity_kind::FACT, FACT_ID_1, "m", &[1.0, 0.0], "x")
             .unwrap();
         db.conn().execute("DELETE FROM embedding_lsh", []).unwrap();
         db.conn()
