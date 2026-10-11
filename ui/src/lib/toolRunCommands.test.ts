@@ -20,6 +20,7 @@ describe('ToolRun command contract boundary', () => {
 				future_wire_field: 'ignored',
 			},
 			{ tool_run_id: 'toolrun-d4735e3a265e16eee03f59718b9b5d03', kind: 'future-kind' },
+			{ tool_run_id: 'toolrun-4e07408562bedb8b60ce05c1decfe3ad', kind: 'scheduled' },
 		] as never);
 
 		await expect(listToolRunRows()).resolves.toEqual([
@@ -29,6 +30,7 @@ describe('ToolRun command contract boundary', () => {
 				status: 'running',
 				sessionId: 'ses-6b86b273ff34fce19d6b804eff5a3f57',
 			},
+			null,
 			null,
 		]);
 		expect(invokeMock).toHaveBeenCalledOnce();
@@ -47,16 +49,19 @@ describe('ToolRun command contract boundary', () => {
 			{
 				tool_run_id: 'toolrun-00000000000000000000000000000032',
 				kind: 'background',
+				status: 'completed',
 				session_id: sessionId,
 			},
 			{
 				tool_run_id: 'toolrun-00000000000000000000000000000033',
 				kind: 'scheduled',
+				status: 'completed',
 				session_id: 'ses-00000000000000000000000000000034',
 			},
 			{
 				tool_run_id: 'toolrun-00000000000000000000000000000035',
 				kind: 'scheduled',
+				status: 'completed',
 			},
 		] as never);
 
@@ -64,6 +69,7 @@ describe('ToolRun command contract boundary', () => {
 			{
 				toolRunId: 'toolrun-00000000000000000000000000000032',
 				kind: 'background',
+				status: 'completed',
 				sessionId,
 			},
 		]);

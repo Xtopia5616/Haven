@@ -90,10 +90,12 @@ Assert-NotContains $tauri 'Promise<any>|args\?:\s*any' 'invoke boundary must not
 # though compile-time request/response shapes are generated from Rust.
 $toolRunCommands = Get-Source 'ui/src/lib/toolRunCommands.ts'
 Assert-Contains $toolRunCommands 'const rows:\s*unknown\s*=\s*await invoke\(''list_tool_runs''\)' 'tool run rows enter as unknown'
-Assert-Contains $toolRunCommands 'rows\.map\(\s*\(\s*row\s*\)\s*=>\s*mapToolRunPayload\(row(?:,\s*sessionId)?\)\s*\)' 'tool run rows pass through the runtime mapper'
+Assert-Contains $toolRunCommands 'rows\.map\(\s*\(\s*row\s*\)\s*=>\s*mapToolRunCommandRow\(row(?:,\s*sessionId)?\)\s*\)' 'tool run command rows pass through the command-row mapper'
 
 $toolRunContract = Get-Source 'ui/src/lib/contracts/toolRun.ts'
 Assert-Contains $toolRunContract 'function mapToolRunPayload\s*\(\s*payload:\s*unknown(?:,\s*expectedSessionId\?:\s*string)?(?:,\s*)?\):\s*ToolRunPayload\s*\|\s*null' 'tool run mapper accepts unknown'
+Assert-Contains $toolRunContract 'export function mapToolRunCommandRow\([\s\S]*?\):\s*ToolRunCommandRow\s*\|\s*null' 'tool run command mapper returns the required-status row type'
+Assert-Contains $toolRunContract 'mapped\.status\s*===\s*undefined' 'tool run command rows require status'
 
 $settingsCommands = Get-Source 'ui/src/lib/settingsCommands.ts'
 Assert-Contains $settingsCommands 'invoke\(''get_settings''\)\.then\(parseSettingsPayload\)' 'settings response uses its runtime parser'

@@ -1,15 +1,19 @@
 import { invoke } from '$lib/tauri.ts';
 import type { CancelToolRunRequest } from './contracts/commands.ts';
-import { mapToolRunPayload, type ToolRunKind, type ToolRunPayload } from './contracts/toolRun.ts';
+import {
+	mapToolRunCommandRow,
+	type ToolRunCommandRow,
+	type ToolRunKind,
+} from './contracts/toolRun.ts';
 
 /**
  * Load and normalize the Rust ToolRunEvent rows returned by `list_tool_runs`.
  * A non-array response keeps the ToolRun store's existing no-op behavior;
  * malformed individual rows are left as null for the store's generic warning.
  */
-export async function listToolRunRows(): Promise<Array<ToolRunPayload | null> | null> {
+export async function listToolRunRows(): Promise<Array<ToolRunCommandRow | null> | null> {
 	const rows: unknown = await invoke('list_tool_runs');
-	return Array.isArray(rows) ? rows.map((row) => mapToolRunPayload(row)) : null;
+	return Array.isArray(rows) ? rows.map((row) => mapToolRunCommandRow(row)) : null;
 }
 
 /** Load terminal ToolRun records, optionally restricted to one session. */
@@ -17,7 +21,7 @@ export async function listToolRunHistory(
 	kind?: ToolRunKind,
 	limit = 50,
 	sessionId?: string,
-): Promise<ToolRunPayload[]> {
+): Promise<ToolRunCommandRow[]> {
 	const rows: unknown = await invoke('list_tool_run_history', {
 		kind: kind ?? null,
 		limit,
@@ -25,8 +29,8 @@ export async function listToolRunHistory(
 	});
 	return Array.isArray(rows)
 		? rows
-				.map((row) => mapToolRunPayload(row, sessionId))
-				.filter((row): row is ToolRunPayload => row !== null)
+				.map((row) => mapToolRunCommandRow(row, sessionId))
+				.filter((row): row is ToolRunCommandRow => row !== null)
 		: [];
 }
 

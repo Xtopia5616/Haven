@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { mapToolRunEvent, mapToolRunPayload } from './toolRun.ts';
+import { mapToolRunCommandRow, mapToolRunEvent, mapToolRunPayload } from './toolRun.ts';
 
 describe('tool run IPC contract', () => {
 	it('maps a normal Rust ToolRunEvent to the UI DTO', () => {
@@ -65,6 +65,22 @@ describe('tool run IPC contract', () => {
 				source_step_id: 42,
 			}),
 		).toBeNull();
+	});
+
+	it('requires status for command rows while keeping the shared payload projection sparse', () => {
+		const row = {
+			tool_run_id: 'toolrun-d4735e3a265e16eee03f59718b9b5d03',
+			kind: 'scheduled',
+		};
+
+		expect(mapToolRunPayload(row)).toEqual({ toolRunId: row.tool_run_id, kind: 'scheduled' });
+		expect(mapToolRunCommandRow(row)).toBeNull();
+		expect(mapToolRunCommandRow({ ...row, status: 'waiting' })).toEqual({
+			toolRunId: row.tool_run_id,
+			kind: 'scheduled',
+			status: 'waiting',
+		});
+		expect(mapToolRunCommandRow({ ...row, status: 'future-status' })).toBeNull();
 	});
 
 	it('uses generated ScheduleMode values for ToolRun lifecycle rows', () => {

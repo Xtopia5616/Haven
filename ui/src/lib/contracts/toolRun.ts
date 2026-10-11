@@ -53,6 +53,11 @@ export interface ToolRunPayload {
 	preview?: string;
 }
 
+/** Full command row projection; command list/history rows always carry status. */
+export interface ToolRunCommandRow extends ToolRunPayload {
+	status: ToolRunStatus;
+}
+
 const OPTIONAL_STRING_FIELDS = [
 	'started_at',
 	'finished_at',
@@ -143,6 +148,16 @@ export function mapToolRunPayload(
 	if (isNumber(payload.exit_code)) mapped.exitCode = payload.exit_code;
 	if (isString(payload.preview)) mapped.preview = payload.preview;
 	return mapped;
+}
+
+/** Validate a ToolRun board/history row, whose command projection always has status. */
+export function mapToolRunCommandRow(
+	payload: unknown,
+	expectedSessionId?: string,
+): ToolRunCommandRow | null {
+	const mapped = mapToolRunPayload(payload, expectedSessionId);
+	if (!mapped || mapped.status === undefined) return null;
+	return { ...mapped, status: mapped.status };
 }
 
 /** Validate the Tauri envelope and map a ToolRun lifecycle event. */
