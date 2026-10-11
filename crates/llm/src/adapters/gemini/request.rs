@@ -184,7 +184,7 @@ impl GeminiAdapter {
                 );
                 tracing::debug!(
                     endpoint = %crate::client::endpoint_log_location(&self.cached_contents_url()),
-                    error = %error,
+                    reason = error.connection_failure_reason().as_str(),
                     "Gemini explicit context cache unavailable; using direct prompt"
                 );
             }

@@ -165,11 +165,10 @@ impl McpManager {
         self.stop_monitor(name).await;
         let client = self.clients.lock().await.remove(name);
         if let Some(client) = client {
-            if let Err(error) = client.shutdown().await {
+            if client.shutdown().await.is_err() {
                 tracing::warn!(
-                    "MCP server '{}' shutdown reported an error: {}",
-                    name,
-                    haven_common::error::sanitize_error_text(&error.to_string())
+                    server = %name,
+                    "MCP server shutdown reported an error"
                 );
             }
             self.bump_catalog_version();
@@ -388,10 +387,9 @@ impl McpManager {
                 Ok((name, client, status_tx, Err(e), t0)) => {
                     let safe_error = haven_common::error::sanitize_error_text(&e.to_string());
                     tracing::warn!(
-                        "MCP server '{}' failed to connect after {:?}: {} (will retry later)",
-                        name,
-                        t0.elapsed(),
-                        safe_error
+                        server = %name,
+                        elapsed = ?t0.elapsed(),
+                        "MCP server connection failed; will retry later"
                     );
                     *client.last_error.lock().await =
                         Some(format!("initial connect failed: {safe_error}"));
@@ -402,8 +400,8 @@ impl McpManager {
                         },
                     });
                 }
-                Err(e) => {
-                    tracing::warn!("MCP connection session failed: {}", e);
+                Err(_) => {
+                    tracing::warn!("MCP connection task failed");
                 }
             }
         }
@@ -449,7 +447,6 @@ impl McpManager {
             let safe_error = haven_common::error::sanitize_error_text(&error.to_string());
             tracing::warn!(
                 server = %name,
-                error = %safe_error,
                 "MCP server connection failed"
             );
             return Err(anyhow::anyhow!(
@@ -528,8 +525,8 @@ impl McpManager {
             .map(|(name, client)| (name.clone(), client.clone()))
             .collect::<Vec<_>>();
         for (name, client) in clients {
-            if let Err(e) = client.shutdown().await {
-                tracing::warn!("Error shutting down MCP client '{}': {}", name, e);
+            if client.shutdown().await.is_err() {
+                tracing::warn!(server = %name, "MCP client shutdown failed");
             }
         }
     }
@@ -588,15 +585,15 @@ impl McpManager {
                         // Refreshing its discovery cache still invalidates
                         // the model-facing catalog.
                     }
-                    Err(e) => {
-                        tracing::warn!("Failed to refresh tools from '{}': {}", name, e);
+                    Err(_) => {
+                        tracing::warn!(server = %name, "MCP tools refresh failed");
                     }
                 }
             }));
         }
         for h in handles {
-            if let Err(error) = h.await {
-                tracing::warn!("MCP tools refresh task failed: {}", error);
+            if h.await.is_err() {
+                tracing::warn!("MCP tools refresh task failed");
             }
         }
         self.bump_catalog_version();

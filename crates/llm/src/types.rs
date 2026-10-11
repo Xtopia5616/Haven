@@ -169,10 +169,10 @@ impl LlmConnectionStatus {
     }
 }
 
-/// Non-sensitive classification for a failed connectivity probe. The raw
-/// provider error stays in the backend log after sanitization; only this
-/// stable category crosses the Tauri boundary so the UI can explain the
-/// failure without exposing request details or credentials.
+/// Non-sensitive classification for a failed connectivity probe. This stable
+/// category crosses the Tauri boundary and is also used in logs instead of raw
+/// provider error text, so the UI can explain failures without exposing request
+/// details or credentials.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum LlmConnectionFailureReason {
@@ -651,9 +651,7 @@ impl LlmError {
         )
     }
 
-    /// Map a provider error to the stable category exposed by the
-    /// connectivity probe. Request details remain available to backend
-    /// logging through `Display`, but never need to cross the UI boundary.
+    /// Map an error to a stable category for connectivity reports and logs.
     pub fn connection_failure_reason(&self) -> LlmConnectionFailureReason {
         match self {
             Self::Configuration(_) => LlmConnectionFailureReason::Configuration,

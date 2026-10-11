@@ -80,9 +80,11 @@ impl OpenAiAdapter {
         let resp = self
             .send_chat_request(&url, &mut body, true)
             .await
-            .map_err(|e| {
-                tracing::debug!("chat_stream_inner: send() error: {:?}", e);
-                e
+            .inspect_err(|e| {
+                tracing::debug!(
+                    reason = e.connection_failure_reason().as_str(),
+                    "OpenAI stream request could not be sent"
+                );
             })?;
         tracing::debug!("chat_stream_inner response status: {}", resp.status());
         let cache_diagnostics = body.cache_diagnostics;

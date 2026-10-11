@@ -326,12 +326,9 @@ impl McpClientInner {
 impl Drop for McpClientInner {
     fn drop(&mut self) {
         if let McpClientInner::Stdio(s) = self
-            && let Err(error) = s.child.start_kill()
+            && s.child.start_kill().is_err()
         {
-            tracing::debug!(
-                "MCP stdio child cleanup failed: {}",
-                haven_common::error::sanitize_error_text(&error.to_string())
-            );
+            tracing::debug!("MCP stdio child cleanup failed");
         }
     }
 }
@@ -481,11 +478,10 @@ pub(crate) fn spawn_sse_listener(
             .await
             {
                 Ok(()) => {}
-                Err(e) => {
+                Err(_) => {
                     tracing::debug!(
-                        "MCP HTTP SSE stream for '{}' closed: {} (will retry)",
-                        name,
-                        e
+                        server = %name,
+                        "MCP HTTP SSE stream closed; retrying"
                     );
                 }
             }

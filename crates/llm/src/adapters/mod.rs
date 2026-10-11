@@ -196,7 +196,11 @@ impl LlmClient for UnavailableLlmClient {
 }
 
 fn unavailable(style: &'static str, error: LlmError) -> Box<dyn LlmClient> {
-    tracing::error!(adapter = style, error = %error, "LLM adapter construction failed");
+    tracing::error!(
+        adapter = style,
+        reason = error.connection_failure_reason().as_str(),
+        "LLM adapter construction failed"
+    );
     Box::new(UnavailableLlmClient { style, error })
 }
 

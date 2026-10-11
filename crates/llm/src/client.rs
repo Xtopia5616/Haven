@@ -375,10 +375,10 @@ where
                     return Err(e);
                 };
                 tracing::debug!(
-                    "llm retry {} after {:?} (error: {})",
-                    completed_attempts,
-                    delay,
-                    haven_common::error::sanitize_error_text(&e.to_string())
+                    attempt = completed_attempts,
+                    retry_delay = ?delay,
+                    reason = e.connection_failure_reason().as_str(),
+                    "retrying LLM request after provider failure"
                 );
                 if let Some(cancel) = cancel {
                     tokio::select! {

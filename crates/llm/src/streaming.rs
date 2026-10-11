@@ -333,11 +333,8 @@ pub(crate) async fn aggregate_stream_cancellable_shared_with_guidance(
                                 if has_visible_content {
                                     inline_prefix_chunks = 0;
                                 }
-                            } else if let Err(e) = chunk_tx.try_send(chunk) {
-                                tracing::warn!(
-                                    "chunk consumer channel full, dropping chunk: {}",
-                                    e
-                                );
+                            } else if chunk_tx.try_send(chunk).is_err() {
+                                tracing::warn!("LLM stream consumer channel full; dropping chunk");
                             }
                         }
                         Some(Err(e)) => return Err(e),
@@ -365,8 +362,8 @@ pub(crate) async fn aggregate_stream_cancellable_shared_with_guidance(
     .await;
 
     drop(chunk_tx);
-    if let Err(e) = consumer.await {
-        tracing::warn!("stream chunk consumer action panicked: {}", e);
+    if consumer.await.is_err() {
+        tracing::warn!("LLM stream chunk consumer action panicked");
     }
     outcome
 }

@@ -1052,7 +1052,6 @@ impl LlmRouter {
                         model = %endpoint.model_name,
                         endpoint_host = %endpoint_host(&endpoint.base_url),
                         reason = reason.as_str(),
-                        error = %haven_common::error::sanitize_error_text(&e.to_string()),
                         "LLM connection probe failed"
                     );
                 }
@@ -1103,7 +1102,6 @@ impl LlmRouter {
                 Err(e) => tracing::warn!(
                     request = request.as_str(),
                     reason = e.connection_failure_reason().as_str(),
-                    error = %haven_common::error::sanitize_error_text(&e.to_string()),
                     "LLM pre-warm failed (will retry on first request)"
                 ),
             }

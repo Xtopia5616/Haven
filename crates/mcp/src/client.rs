@@ -625,29 +625,17 @@ impl McpClient {
         let mut guard = self.inner.lock().await;
         if let Some(McpClientInner::Stdio(s)) = guard.as_mut() {
             let id = self.next_id.fetch_add(1, Ordering::SeqCst);
-            if let Err(error) = s.request(id, "shutdown", None).await {
-                tracing::debug!(
-                    "MCP stdio shutdown request failed: {}",
-                    haven_common::error::sanitize_error_text(&error.to_string())
-                );
+            if s.request(id, "shutdown", None).await.is_err() {
+                tracing::debug!("MCP stdio shutdown request failed");
             }
-            if let Err(error) = s.notify("exit", None).await {
-                tracing::debug!(
-                    "MCP stdio exit notification failed: {}",
-                    haven_common::error::sanitize_error_text(&error.to_string())
-                );
+            if s.notify("exit", None).await.is_err() {
+                tracing::debug!("MCP stdio exit notification failed");
             }
-            if let Err(error) = s.child.start_kill() {
-                tracing::debug!(
-                    "MCP stdio child kill failed: {}",
-                    haven_common::error::sanitize_error_text(&error.to_string())
-                );
+            if s.child.start_kill().is_err() {
+                tracing::debug!("MCP stdio child kill failed");
             }
-            if let Err(error) = s.child.wait().await {
-                tracing::debug!(
-                    "MCP stdio child wait failed: {}",
-                    haven_common::error::sanitize_error_text(&error.to_string())
-                );
+            if s.child.wait().await.is_err() {
+                tracing::debug!("MCP stdio child wait failed");
             }
         }
         *guard = None;
@@ -744,12 +732,11 @@ impl McpClient {
                         on_tool_list_changed(&self.name);
                         match self.list_tools().await {
                             Ok(tools) => *self.tools_cache.lock().await = Some(tools),
-                            Err(error) => {
+                            Err(_) => {
                                 *self.tools_cache.lock().await = None;
                                 tracing::error!(
-                                    "MCP server '{}' tools/list refresh failed; cache cleared: {}",
-                                    self.name,
-                                    haven_common::error::sanitize_error_text(&error.to_string())
+                                    server = %self.name,
+                                    "MCP tools/list refresh failed; cache cleared"
                                 );
                             }
                         }

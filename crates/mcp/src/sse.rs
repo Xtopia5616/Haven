@@ -64,10 +64,10 @@ impl SseParser {
 
             let line = match std::str::from_utf8(line) {
                 Ok(line) => line,
-                Err(error) => {
+                Err(_) => {
                     tracing::warn!(
-                        "MCP SSE ignored an invalid UTF-8 line: {}",
-                        haven_common::error::sanitize_error_text(&error.to_string())
+                        line_bytes = line.len(),
+                        "MCP SSE ignored an invalid UTF-8 line"
                     );
                     ""
                 }
@@ -78,9 +78,9 @@ impl SseParser {
                     let data = data_lines.join("\n");
                     match serde_json::from_str(&data) {
                         Ok(value) => events.push(value),
-                        Err(error) => tracing::warn!(
-                            "MCP SSE ignored an invalid JSON event: {}",
-                            haven_common::error::sanitize_error_text(&error.to_string())
+                        Err(_) => tracing::warn!(
+                            data_bytes = data.len(),
+                            "MCP SSE ignored an invalid JSON event"
                         ),
                     }
                     data_lines.clear();
