@@ -1,7 +1,8 @@
 //! Application-wide service ownership and lifecycle control.
 //!
-//! `ApplicationRuntime` is the composition-root owner for long-lived service
-//! handles and app-scoped asynchronous work.  Components may still own their
+//! `ApplicationRuntime` is the lifecycle owner for long-lived service handles
+//! and app-scoped asynchronous work. `AppState::new` is the composition root
+//! that creates and injects those services. Components may still own their
 //! domain workers (for example an action process or an MCP monitor), but the
 //! application gives them one cancellation boundary and tears them down in a
 //! deterministic order.
@@ -17,7 +18,8 @@ use haven_common::config::ConfigService;
 use haven_input::InputPipeline;
 use haven_memory::{MemoryFactStore, SessionStore};
 use haven_tools::{
-    AuthorizationPort, ManagedAssetLifecyclePort, McpRuntimePort, SkillCatalogPort, ToolsFacade,
+    AuthorizationPort, ManagedAssetLifecyclePort, McpRuntimePort, SkillCatalogPort, ToolServices,
+    ToolsFacade,
 };
 use std::future::Future;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -29,7 +31,7 @@ use tracing_subscriber::Registry;
 use tracing_subscriber::filter::EnvFilter;
 use tracing_subscriber::reload;
 
-/// The application composition root.
+/// The application-wide lifecycle owner.
 ///
 /// The service fields are deliberately kept here rather than in several
 /// independent state containers. `AppState` retains only Tauri-specific
@@ -64,6 +66,7 @@ pub(crate) struct RuntimeServices {
     pub(crate) session_store: SessionStore,
     pub(crate) memory_fact_store: MemoryFactStore,
     pub(crate) tools: Arc<ToolsFacade>,
+    pub(crate) tool_services: ToolServices,
     pub(crate) executor: Arc<SessionSupervisor>,
     pub(crate) agent: Arc<AgentLayer>,
     pub(crate) memory_startup: MemoryStartup,
@@ -87,7 +90,7 @@ pub(crate) struct AppServices {
 
 impl ApplicationRuntime {
     pub(crate) fn new(runtime_services: RuntimeServices) -> Self {
-        let tool_services = runtime_services.tools.share_services();
+        let tool_services = runtime_services.tool_services;
         let skill_execution = app_skill_execution_port(tool_services.skill_execution);
         let tool_runs = app_tool_run_port(
             tool_services.tool_run_management,

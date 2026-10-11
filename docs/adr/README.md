@@ -912,3 +912,4 @@
 - [0921：由 Memory 限制模型工具的事实查询结果](0921-bound-model-facing-memory-fact-queries.md)
 - [0922：在 Tools composition adapter 中固定窄 capability](0922-inject-narrow-tools-capabilities-into-adapters.md)
 - [0923：将 App 录音生命周期协调器归入独立模块](0923-own-app-recording-lifecycle-in-dedicated-module.md)
+- [0924：在唯一 App composition root 装配 Tools capabilities](0924-assemble-tools-capabilities-once-at-app-root.md)

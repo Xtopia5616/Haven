@@ -1,6 +1,6 @@
 # Haven 架构与 crate 职责
 
-> 版本: v1.25 | 日期: 2026-10-11
+> 版本: v1.26 | 日期: 2026-10-11
 > 范围: `crates/` (Rust 后端, Tauri 2)
 > 原则: **依赖单向、叶子优先**。上层 crate 只依赖下层，绝不反向依赖；共享数据与类型放叶子（`haven-common`），
 > 组件职责按「谁拥有实现、谁只消费接口」划分。
@@ -104,7 +104,7 @@ messaging 与 memory recall 是进程服务，在 `wire_startup` 里绑定一次
 `ToolServices` 提供；授权、受管资产生命周期、Skill 执行、live-output sink、ToolRun、MCP runtime 状态和 Skills catalog/config 均通过窄 capability ports 暴露。MCP 工具调用另以 LLM 的 `McpToolCaller` 能力提供。Agent/App 的消费端 ports 映射 Tools owner ports；ToolRun 完成接收器在 Tools 内部绑定状态机与恢复协调器，调用方不接触具体 `ToolRunService`（ADR 0895–0899）。`McpManager` 与 `SkillRegistry` 只留在 Tools composition owner 内部（ADR 0903）。组合根仍是 `ApplicationRuntime`，
 不另建 `AppRuntime`。`ToolsFacade` 是对外 façade，保留执行与授权入口、session overlay/asset
 lease 操作、目录投影、runtime capability 请求和录音转写入口；启动及 runtime/catalog 更新转发给 coordinator。
-`ToolServices` 是 composition-time capability handoff；ApplicationRuntime 和 Agent adapter 在装配时各读取一次需要的能力，随后只把窄 port 保存到各自的 consumer adapter。运行期 catalog 查询和 App startup task 复用已保存的 Skills port，不再次通过 `share_services()` 取整包 bundle（ADR 0922）。
+AppState::new 是唯一 App composition root；ApplicationRuntime 集中持有 app-scoped service 与 task lifecycle，不再增加平行的 AppRuntime facade。`ToolServices` 是 composition-time capability handoff；AppState 在组合期读取一次，并把选定的 capability 显式交给 Agent adapter 和 ApplicationRuntime；两者只保存窄 consumer port，不重新通过 `ToolsFacade` 取整包（ADR 0922、0924）。运行期 catalog 查询和 App startup task 复用已保存的 Skills port。
 可变 `ToolRegistry`、承载 installed/deferred/session overlay 的 `OperationRegistry` 和按需加载器属于 Tools 内部实现；跨 crate 调用方只消费已发布的 `ToolCatalogSnapshot`，测试夹具通过非默认 `ToolCatalogTestSupportPort` 准备 installed/session 工具。生产 `ToolsFacade` 不公开任意 session-tool 注册；`SessionToolOverlay` 自己持有 map 锁、预算准入和版本递增，loader 与 resume 不接触其内部 map（ADR 0900）。
 Tools 的 builtin 实现、熔断器、live-output hub、桌面输入模拟、SkillRunner、ToolRun 类型实现模块和 JSON 列表预算 helper 都是 crate-private；builtin 模块和 SkillRunner 类型仅在非默认 `test-support` 构建中提供给跨 crate 测试。App 重置工具熔断器只调用 `ToolsFacade::reset_tool_circuits()`，不取得 registry 或调用其内部方法。`OperationSpec` 是公开 `Tool` trait 签名所需的不透明契约类型，从 crate 根隐藏导出；其 operation-view 实现模块保持私有（ADR 0905）。
 MCP profile 的唯一配置 owner 是 Common 的 `ConfigService`。Tools 的 loader、MCP/tool catalog 与 AdminServices 通过 `McpServerConfigSource` 读取它的当前快照；App 命令直接读取同一 owner。Tools 不再维护需由 startup、reload 和每次配置写入手工同步的 profile map；内部 `McpManager` 仍拥有活动连接、client profile 比较和发现结果，这些是运行时状态，不是配置副本（ADR 0901）。跨层只通过 `McpRuntimePort` 获取状态快照、refresh plan、status stream 与生命周期能力，不再把 manager handle 交给 App（ADR 0903）。

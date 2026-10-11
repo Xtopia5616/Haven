@@ -266,10 +266,15 @@ impl AppState {
         let context_limits = cfg.context_limits.clone();
         let context_limits_clone = context_limits.clone();
         let tools = Arc::new(ToolsFacade::new());
-        let agent_tool_ports =
-            crate::agent_tool_adapters::agent_tool_ports_from_facade(Arc::clone(&tools));
+        let tool_services = tools.share_services();
+        let agent_tool_ports = crate::agent_tool_adapters::agent_tool_ports_from_capabilities(
+            Arc::clone(&tools),
+            Arc::clone(&tool_services.authorization),
+            Arc::clone(&tool_services.skills),
+            Arc::clone(&tool_services.tool_run_agent),
+        );
         let mcp_caller: Arc<dyn haven_llm::McpToolCaller> =
-            Arc::clone(&tools.share_services().mcp_tool_caller);
+            Arc::clone(&tool_services.mcp_tool_caller);
         let router_media_build = build_router_media(&cfg, Some(mcp_caller));
         let router = Arc::clone(&router_media_build.router);
         let max_steps_per_run = cfg.session.max_steps_per_run;
@@ -309,6 +314,7 @@ impl AppState {
             session_store: session_store.clone(),
             memory_fact_store: memory_fact_store.clone(),
             tools: tools.clone(),
+            tool_services,
             executor: executor.clone(),
             agent: agent.clone(),
             memory_startup,

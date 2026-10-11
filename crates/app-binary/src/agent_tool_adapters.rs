@@ -24,13 +24,17 @@ use serde_json::Value;
 /// Assemble the one shared ToolsFacade into the narrow capabilities consumed
 /// by Agent runtime owners. The adapter stays in app-binary so haven-agent
 /// depends on ports and tool DTOs, never on the Tools facade.
-pub(crate) fn agent_tool_ports_from_facade(tools: Arc<ToolsFacade>) -> AgentToolPorts {
-    let services = tools.share_services();
+pub(crate) fn agent_tool_ports_from_capabilities(
+    tools: Arc<ToolsFacade>,
+    authorization: Arc<dyn AuthorizationPort>,
+    skills: Arc<dyn SkillCatalogPort>,
+    tool_runs: Arc<dyn ToolRunAgentCapability>,
+) -> AgentToolPorts {
     let adapter = Arc::new(ToolsFacadeAgentAdapter {
-        tools: Arc::clone(&tools),
-        authorization: Arc::clone(&services.authorization),
-        skills: Arc::clone(&services.skills),
-        tool_runs: Arc::clone(&services.tool_run_agent),
+        tools,
+        authorization,
+        skills,
+        tool_runs,
     });
 
     let prompt: Arc<dyn PromptToolPort> = adapter.clone();
@@ -46,6 +50,17 @@ pub(crate) fn agent_tool_ports_from_facade(tools: Arc<ToolsFacade>) -> AgentTool
     );
 
     AgentToolPorts::new(prompt, catalog, session)
+}
+
+#[cfg(test)]
+fn agent_tool_ports_from_facade(tools: Arc<ToolsFacade>) -> AgentToolPorts {
+    let services = tools.share_services();
+    agent_tool_ports_from_capabilities(
+        tools,
+        services.authorization,
+        services.skills,
+        services.tool_run_agent,
+    )
 }
 
 /// App-owned contract for ToolRun IPC and application lifecycle operations.
