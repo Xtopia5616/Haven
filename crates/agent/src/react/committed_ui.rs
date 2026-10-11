@@ -353,7 +353,7 @@ pub(super) fn agent_events_from_committed(event: &SessionEvent) -> Vec<AgentEven
                 Some(CommittedUi::Supplement { supplement_id }) => supplement_id,
                 _ => message_id
                     .clone()
-                    .unwrap_or_else(|| format!("msg-seq-{}", event.sequence)),
+                    .unwrap_or_else(|| haven_common::types::new_id("msg")),
             };
             vec![AgentEvent::Supplement {
                 session_id,
@@ -514,6 +514,37 @@ mod tests {
                 message_id,
                 ..
             } if thought == "keep" && message_id == "step-keep"
+        ));
+    }
+
+    #[test]
+    fn supplement_without_a_message_id_gets_a_canonical_fallback_identity() {
+        let record = TranscriptRecord::UserInject {
+            step_number: 3,
+            source: haven_common::types::InjectSource::Steering,
+            text: "steer the current turn".into(),
+            media_inputs: Vec::new(),
+            message_id: None,
+        };
+        let event = SessionEvent {
+            session_id: "ses-00000000000000000000000000000001".into(),
+            sequence: 17,
+            event_type: TRANSCRIPT_EVENT_TYPE.into(),
+            event_version: 1,
+            payload: encode_transcript_payload(&record, None).unwrap(),
+            created_at: "2026-01-01T00:00:00Z".into(),
+            run_id: Some(4),
+            step_number: Some(3),
+        };
+
+        let events = agent_events_from_committed(&event);
+        assert!(matches!(
+            events.as_slice(),
+            [AgentEvent::Supplement {
+                message_id: None,
+                supplement_id,
+                ..
+            }] if haven_common::types::is_canonical_id(supplement_id, "msg")
         ));
     }
 
