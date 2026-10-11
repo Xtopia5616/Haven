@@ -790,7 +790,7 @@ mod tests {
 
     #[test]
     fn tool_run_event_projects_background_status_to_the_stable_wire_shape() {
-        let mut payload = ToolRunLifecyclePayload::new(
+        let mut payload = ToolRunLifecyclePayload::new_for_test(
             haven_tools::ToolRunKind::Background,
             "toolrun-1",
             haven_tools::ToolRunLifecycleState::Completed {
@@ -822,7 +822,7 @@ mod tests {
 
     #[test]
     fn tool_run_event_hides_scheduled_execution_details() {
-        let mut payload = ToolRunLifecyclePayload::new(
+        let mut payload = ToolRunLifecyclePayload::new_for_test(
             haven_tools::ToolRunKind::Scheduled,
             "toolrun-2",
             haven_tools::ToolRunLifecycleState::Waiting,

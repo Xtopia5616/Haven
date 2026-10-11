@@ -507,7 +507,7 @@ fn payload_preserves_session_lifecycle_and_error_wire_shapes() {
 
 #[test]
 fn tool_run_projection_maps_scheduled_progress_to_the_public_contract() {
-    let mut payload = haven_tools::ToolRunLifecyclePayload::new(
+    let mut payload = haven_tools::ToolRunLifecyclePayload::new_for_test(
         haven_tools::ToolRunKind::Scheduled,
         "toolrun-1",
         haven_tools::ToolRunLifecycleState::Running {

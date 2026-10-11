@@ -81,6 +81,7 @@ impl ToolRunLifecycleState {
 /// Safe lifecycle fields shared by creation, update, and terminal events.
 /// Fields that do not apply to a particular kind or event remain `None`.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct ToolRunLifecyclePayload {
     pub kind: ToolRunKind,
     pub tool_run_id: String,
@@ -98,7 +99,7 @@ pub struct ToolRunLifecyclePayload {
 }
 
 impl ToolRunLifecyclePayload {
-    pub fn new(
+    pub(crate) fn new(
         kind: ToolRunKind,
         tool_run_id: impl Into<String>,
         state: ToolRunLifecycleState,
@@ -118,6 +119,17 @@ impl ToolRunLifecyclePayload {
             error_reason: None,
             exit_code: None,
         }
+    }
+
+    /// Construct a ToolRun event fixture for consumers that test App projection.
+    #[cfg(feature = "test-support")]
+    #[doc(hidden)]
+    pub fn new_for_test(
+        kind: ToolRunKind,
+        tool_run_id: impl Into<String>,
+        state: ToolRunLifecycleState,
+    ) -> Self {
+        Self::new(kind, tool_run_id, state)
     }
 }
 

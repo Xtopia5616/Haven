@@ -940,3 +940,4 @@
 - [0949：校验 Session permission grant 的会话身份](0949-validate-session-permission-grant-identities.md)
 - [0950：校验 Settings 返回的 staged credential reference](0950-validate-staged-credential-references.md)
 - [0951：校验 Settings response 中的 credential references](0951-validate-settings-credential-references.md)
+- [0952：限制 ToolRun lifecycle payload 的跨 crate 构造](0952-restrict-toolrun-lifecycle-payload-construction.md)
