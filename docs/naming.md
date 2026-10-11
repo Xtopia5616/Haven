@@ -1,6 +1,6 @@
 # Haven 命名规范
 
-> 版本: v1.164 | 日期: 2026-10-10
+> 版本: v1.165 | 日期: 2026-10-11
 
 本文档统一 Haven 项目各层的命名规则（变量名、函数名、文件名、crate 名、缩写大小写、跨层边界）。规范以现有代码中的事实模式为基础，新代码必须遵循；存量代码若与规范冲突，逐步迁移对齐。
 
@@ -47,6 +47,7 @@
 - **ToolRun inspect status 区分生命周期与查询结果**：renderer root status 使用生成 `ToolRunStatus` 加 `not_found`；未知动态值回退通用 JSON renderer，列表行继续只接受生命周期状态（ADR 0775）。
 - **Reasoning effort command 与 provider config 分开**：聊天工具栏的 setter 只接受 generated `ReasoningEffortSelectionInput`（`low` / `medium` / `high` / `off`），`null` 清除覆盖；`ModelConfig.reasoning_effort` 仍是 provider-specific 开放字符串，以支持 `max`、`xhigh`、`none`、`disabled` 等 adapter 输入和 provider 映射（ADR 0737）。
 - **Fact source 选择与输出共享闭合集合**：App `MemoryFactSource` 对应 SQLite `facts.source` 的 `user` / `inferred` 值域，生成前端 `MemoryFactSourceInput` 与 `MemoryFactSource`。`list_facts.source` 省略或 `null` 表示不筛选；repository `Fact.source` 在 App response mapper 中严格解析后输出（ADR 0738、0741）。
+- **MemoryTool 事实列表按排序含义命名**：跨 subject 列表按 effective confidence、last-seen、created-at 排序，不等同于按时间取最近事实；工具描述使用“最高排序事实”，Memory 端口使用 `top_visible_facts_by_effective_confidence(limit)`。面向模型的事实 search/list 必须在 Memory capability 内应用 visibility 后再 limit，不把无界结果返回 Tools 截断（ADR 0921）。
 - **Tool manifest 策略类别复用 Common enum**：`ToolPolicy` 的 confirmation、idempotency、scope、concurrency mode、effect、data sensitivity 与 network access 均使用生成的 closed enum；runtime concurrency resource key 不进入 manifest，动态 `permission_key` 保持字符串（ADR 0742）。
 - **Agent Observation 策略字段复用 Common enum**：durable UI annotation、Agent event 与 App wire DTO 的 `idempotency` / `operation_scope` 使用生成的 `OperationIdempotency` / `ToolOperationScope`；前端 mapper 从 Rust 生成值清单校验。历史 `retry_safety` result 字段保持独立（ADR 0743）。
 - **Tool result envelope 的重试 metadata 标明真实词汇与可信来源**：wire key `retry_safety` 使用 `OperationIdempotency` 的 `idempotent` / `non_idempotent` / `unknown`，由 operation policy 填充；Common `ToolRetrySafety` 的 `safe_to_retry` / `unsafe_to_retry` 属于另一词汇，不用于解释此字段。历史 durable payload 中其它 `retry_safety` 字符串读取为 `unknown`（ADR 0744）。

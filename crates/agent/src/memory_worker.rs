@@ -757,7 +757,7 @@ impl MemoryWorker {
     async fn load_known_facts(&self) -> String {
         let facts = match self
             .fact_store
-            .list_recent_visible_facts_limited(self.max_known_facts)
+            .top_visible_facts_by_effective_confidence(self.max_known_facts)
             .await
         {
             Ok(v) => v,

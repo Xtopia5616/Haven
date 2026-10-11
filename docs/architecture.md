@@ -1,6 +1,6 @@
 # Haven 架构与 crate 职责
 
-> 版本: v1.22 | 日期: 2026-10-10
+> 版本: v1.23 | 日期: 2026-10-11
 > 范围: `crates/` (Rust 后端, Tauri 2)
 > 原则: **依赖单向、叶子优先**。上层 crate 只依赖下层，绝不反向依赖；共享数据与类型放叶子（`haven-common`），
 > 组件职责按「谁拥有实现、谁只消费接口」划分。
@@ -377,6 +377,7 @@ prompt-memory cache 或 embedding index（ADR 0365）。`MemoryService` 构造�
 `MemoryFactStore`，`MemoryWorker::load_known_facts` 通过其有界读取端口取得抽取上下文；
 blocking 调度、事实有效置信度顺序、敏感事实过滤和 limit 属于 Memory，Agent 仍负责
 prompt 行格式、subject 前缀与字段清洗（ADR 0307）。
+MemoryTool 的 search/list 使用带显式 limit 的 `MemoryFactStore` 读端口；查询归一化、敏感事实过滤和截断都在该 owner 内完成，跨 subject 列表的顺序是有效置信度优先，而不是时间最近优先（ADR 0921）。
 `MemoryFactExtractionStore` 通过同一 `MemoryService` owner 提供 ordinary/summary extraction 的
 typed cursor、共享节流时间戳，以及 ordinary transcript projections（ADR 0308、0312）。Agent 负责窗口构造、
 LLM 调用、候选解析/清洗和事实写入策略；生产 ordinary extraction 经

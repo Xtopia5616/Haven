@@ -2,8 +2,7 @@ use async_trait::async_trait;
 use haven_common::types::RiskLevel;
 use haven_memory::MemoryFactStore;
 use haven_memory::{
-    MAX_MEMORY_QUERY_CHARS, MAX_RECALL_LIMIT, MemoryEntityKind, MemoryQuery, MemoryRecall,
-    MemoryRecallEmptyReason, normalize_memory_query,
+    MAX_RECALL_LIMIT, MemoryEntityKind, MemoryQuery, MemoryRecall, MemoryRecallEmptyReason,
 };
 use haven_memory::{fact_effective_confidence, is_sensitive_object, is_sensitive_predicate};
 use serde_json::{Value, json};
@@ -79,7 +78,7 @@ pub struct MemoryParams {
     #[serde(default)]
     pub tags: Option<Vec<String>>,
     /// Fact subject. Defaults to `"user"` for remember/forget. For list,
-    /// omit to return recent facts across all subjects.
+    /// omit to return the highest-ranked facts across all subjects.
     #[serde(default)]
     pub subject: Option<String>,
     /// Recall kind: `fact` (default) or `episode`.
@@ -146,11 +145,6 @@ impl MemoryTool {
             .map(str::trim)
             .filter(|s| !s.is_empty())
             .ok_or_else(|| anyhow::anyhow!("query is required for operation=search"))?;
-        let query = normalize_memory_query(query).map_err(|error| {
-            anyhow::anyhow!(
-                "invalid memory search query (max {MAX_MEMORY_QUERY_CHARS} characters): {error}"
-            )
-        })?;
         let limit = Self::parse_limit(params, 10);
         let subject = params
             .subject
@@ -158,8 +152,9 @@ impl MemoryTool {
             .map(str::trim)
             .filter(|s| !s.is_empty())
             .map(str::to_string);
-        let mut matched = facts.search_visible_facts(query, subject).await?;
-        matched.truncate(limit);
+        let matched = facts
+            .search_visible_facts_limited(query.to_string(), subject, limit)
+            .await?;
         Ok(ToolResult::ok(Self::to_output_rows(&matched)))
     }
 
@@ -173,12 +168,18 @@ impl MemoryTool {
             .as_deref()
             .map(str::trim)
             .filter(|s| !s.is_empty());
-        let mut listed = match subject {
-            Some(s) => facts.list_visible_facts_for_subject(s.to_string()).await?,
-            // Cross-subject recent N (already effective-confidence ordered).
-            None => facts.list_recent_visible_facts().await?,
+        let listed = match subject {
+            Some(s) => {
+                facts
+                    .list_visible_facts_for_subject_limited(s.to_string(), limit)
+                    .await?
+            }
+            None => {
+                facts
+                    .top_visible_facts_by_effective_confidence(limit)
+                    .await?
+            }
         };
-        listed.truncate(limit);
         Ok(ToolResult::ok(Self::to_output_rows(&listed)))
     }
 
@@ -384,7 +385,7 @@ impl Tool for MemoryTool {
                     "properties": {
                         "operation": { "const": "list" },
                         "limit": { "type": "integer", "minimum": 1, "maximum": 50, "description": "Maximum facts to return; defaults to 20" },
-                        "subject": { "type": "string", "minLength": 1, "description": "Optional exact owner filter; omit to list recent facts across owners" }
+                        "subject": { "type": "string", "minLength": 1, "description": "Optional exact owner filter; omit to list the highest-ranked facts across owners" }
                     },
                     "required": ["operation"]
                 },
@@ -626,6 +627,15 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(all_subjects.len(), 2);
         assert!(all_subjects.contains(&"alice") && all_subjects.contains(&"bob"));
+
+        let limited = tool
+            .execute(
+                json!({"operation": "search", "query": "green tea", "limit": 1}),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(limited.output["facts"].as_array().unwrap().len(), 1);
 
         let scoped = tool
             .execute(

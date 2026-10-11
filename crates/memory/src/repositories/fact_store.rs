@@ -191,55 +191,63 @@ impl MemoryFactStore {
         self.db.run_blocking(|db| db.clear_facts()).await
     }
 
-    /// Search facts with an optional exact subject scope. The caller may
-    /// normalize the query for its own validation contract; this port also
-    /// normalizes defensively and applies the shared visibility policy while
-    /// preserving the repository's ranked order.
-    pub async fn search_visible_facts(
+    /// Search facts with an optional exact subject scope and return at most
+    /// `limit` visible matches. Query normalization, visibility and result
+    /// bounding stay inside Memory; filtering precedes truncation so sensitive
+    /// rows never consume result slots.
+    pub async fn search_visible_facts_limited(
         &self,
         query: String,
         subject: Option<String>,
+        limit: usize,
     ) -> anyhow::Result<Vec<Fact>> {
+        let query = normalize_memory_query(&query)?;
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
         self.db
             .run_blocking(move |db| {
-                let query = normalize_memory_query(&query)?;
                 let facts = db.search_facts_scoped(&query, subject.as_deref())?;
-                Ok(crate::repositories::facts::filter_visible_facts(facts))
+                Ok(crate::repositories::facts::filter_visible_facts(facts)
+                    .into_iter()
+                    .take(limit)
+                    .collect())
             })
             .await
     }
 
-    /// List visible facts for one exact subject, retaining Database ordering.
-    pub async fn list_visible_facts_for_subject(
+    /// Return at most `limit` visible facts for one exact subject, retaining
+    /// Database ordering and applying visibility before truncation.
+    pub async fn list_visible_facts_for_subject_limited(
         &self,
         subject: String,
+        limit: usize,
     ) -> anyhow::Result<Vec<Fact>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
         self.db
             .run_blocking(move |db| {
                 let facts = db.list_facts_by_subject(&subject)?;
-                Ok(crate::repositories::facts::filter_visible_facts(facts))
+                Ok(crate::repositories::facts::filter_visible_facts(facts)
+                    .into_iter()
+                    .take(limit)
+                    .collect())
             })
             .await
     }
 
-    /// List visible facts across subjects in the existing recent/effective
-    /// confidence order returned by Database.
-    pub async fn list_recent_visible_facts(&self) -> anyhow::Result<Vec<Fact>> {
-        self.db
-            .run_blocking(|db| {
-                let facts = db.list_facts()?;
-                Ok(crate::repositories::facts::filter_visible_facts(facts))
-            })
-            .await
-    }
-
-    /// List at most `limit` visible facts across subjects, preserving the
-    /// effective-confidence order from `Database::list_facts`. Visibility is
-    /// applied before truncation so sensitive rows do not consume result slots.
-    pub async fn list_recent_visible_facts_limited(
+    /// Return at most `limit` visible facts across subjects, ordered by
+    /// effective confidence and then by last-seen and creation time. Visibility
+    /// is applied before truncation so sensitive rows do not consume result
+    /// slots.
+    pub async fn top_visible_facts_by_effective_confidence(
         &self,
         limit: usize,
     ) -> anyhow::Result<Vec<Fact>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
         self.db
             .run_blocking(move |db| {
                 let facts = db.list_facts()?;
@@ -532,7 +540,7 @@ mod tests {
             .unwrap();
 
         let all = store
-            .search_visible_facts(" green   tea ".into(), None)
+            .search_visible_facts_limited(" green   tea ".into(), None, usize::MAX)
             .await
             .unwrap();
         let expected_order = db
@@ -548,8 +556,22 @@ mod tests {
         );
         assert_eq!(all.len(), 2);
 
+        let first_match = store
+            .search_visible_facts_limited("green tea".into(), None, 1)
+            .await
+            .unwrap();
+        assert_eq!(first_match.len(), 1);
+        assert_eq!(first_match[0].id, expected_order[0]);
+        assert!(
+            store
+                .search_visible_facts_limited("   ".into(), None, 0)
+                .await
+                .is_err(),
+            "query validation must still run when the requested limit is zero"
+        );
+
         let scoped = store
-            .search_visible_facts("green tea".into(), Some("bob".into()))
+            .search_visible_facts_limited("green tea".into(), Some("bob".into()), 1)
             .await
             .unwrap();
         assert_eq!(scoped.len(), 1);
@@ -557,17 +579,19 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn subject_and_recent_lists_preserve_database_order() {
+    async fn subject_and_ranked_lists_preserve_database_order() {
         let (db, store) = store();
         db.insert_fact("alice", "likes", "lower", "inferred", 0.4, &[])
             .unwrap();
         db.insert_fact("alice", "likes", "higher", "inferred", 0.9, &[])
             .unwrap();
+        db.insert_fact("alice", "api_key", "hidden", "inferred", 1.0, &[])
+            .unwrap();
         db.insert_fact("bob", "likes", "middle", "inferred", 0.7, &[])
             .unwrap();
 
         let subject = store
-            .list_visible_facts_for_subject("alice".into())
+            .list_visible_facts_for_subject_limited("alice".into(), usize::MAX)
             .await
             .unwrap();
         assert_eq!(
@@ -577,19 +601,38 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["higher", "lower"]
         );
+        let top_subject = store
+            .list_visible_facts_for_subject_limited("alice".into(), 1)
+            .await
+            .unwrap();
+        assert_eq!(top_subject.len(), 1);
+        assert_eq!(top_subject[0].object, "higher");
+        assert!(
+            store
+                .list_visible_facts_for_subject_limited("alice".into(), 0)
+                .await
+                .unwrap()
+                .is_empty()
+        );
 
-        let recent = store.list_recent_visible_facts().await.unwrap();
+        let all_ranked = store
+            .top_visible_facts_by_effective_confidence(usize::MAX)
+            .await
+            .unwrap();
         assert_eq!(
-            recent
+            all_ranked
                 .iter()
                 .map(|fact| fact.object.as_str())
                 .collect::<Vec<_>>(),
             ["higher", "middle", "lower"]
         );
 
-        let limited = store.list_recent_visible_facts_limited(2).await.unwrap();
+        let top_ranked = store
+            .top_visible_facts_by_effective_confidence(2)
+            .await
+            .unwrap();
         assert_eq!(
-            limited
+            top_ranked
                 .iter()
                 .map(|fact| fact.object.as_str())
                 .collect::<Vec<_>>(),
@@ -597,7 +640,7 @@ mod tests {
         );
         assert!(
             store
-                .list_recent_visible_facts_limited(0)
+                .top_visible_facts_by_effective_confidence(0)
                 .await
                 .unwrap()
                 .is_empty()
@@ -605,7 +648,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn limited_recent_facts_filter_sensitive_rows_before_limit() {
+    async fn top_ranked_facts_filter_sensitive_rows_before_limit() {
         let (db, store) = store();
         db.insert_fact("user", "api_key", "hidden", "user", 1.0, &[])
             .unwrap();
@@ -616,7 +659,10 @@ mod tests {
         db.insert_fact("user", "likes", "SQLite", "user", 0.85, &[])
             .unwrap();
 
-        let facts = store.list_recent_visible_facts_limited(2).await.unwrap();
+        let facts = store
+            .top_visible_facts_by_effective_confidence(2)
+            .await
+            .unwrap();
 
         assert_eq!(
             facts
@@ -656,6 +702,13 @@ mod tests {
                 .unwrap(),
             1
         );
-        assert_eq!(store.list_recent_visible_facts().await.unwrap().len(), 1);
+        assert_eq!(
+            store
+                .top_visible_facts_by_effective_confidence(usize::MAX)
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
     }
 }
