@@ -68,12 +68,31 @@ export function parseSessionHistoryRows(value: unknown): SessionHistoryRow[] {
 	return value as unknown as SessionHistoryRow[];
 }
 
-export function parseSessionLineageResponse(value: unknown): SessionLineageResponse {
+export function parseSessionLineageResponse(
+	value: unknown,
+	expectedSessionId: string,
+): SessionLineageResponse {
 	if (
 		!isRecord(value) ||
-		!(value.parent === null || isSessionRecord(value.parent)) ||
+		!isCanonicalEntityId(expectedSessionId, 'ses') ||
+		!isCanonicalEntityId(value.session_id, 'ses') ||
+		value.session_id !== expectedSessionId ||
+		!(
+			value.parent_session_id === null || isCanonicalEntityId(value.parent_session_id, 'ses')
+		) ||
+		!(
+			value.parent === null ||
+			(isSessionRecord(value.parent) && value.parent.id === value.parent_session_id)
+		) ||
 		!Array.isArray(value.children) ||
-		!value.children.every(isSessionRecord)
+		!value.children.every(
+			(child: unknown) =>
+				isRecord(child) &&
+				isSessionRecord(child.session) &&
+				isCanonicalEntityId(child.parent_session_id, 'ses') &&
+				child.parent_session_id === expectedSessionId &&
+				child.session.id !== expectedSessionId,
+		)
 	) {
 		throw new Error('Invalid session lineage identity');
 	}
@@ -109,12 +128,60 @@ function hasResumeInteractionIdentity(
 	return value.owner.kind === 'session' && value.owner.session_id === sessionId;
 }
 
+function hasValidMediaRepresentationAssetIdentity(value: unknown): boolean {
+	if (!isRecord(value) || !isRecord(value.payload)) return false;
+	if (value.payload.kind !== 'managed_file_ref') return true;
+	return (
+		isRecord(value.payload.value) && isCanonicalEntityId(value.payload.value.asset_id, 'asset')
+	);
+}
+
+function hasValidOptionalRepresentations(value: unknown): boolean {
+	return (
+		value === undefined ||
+		(Array.isArray(value) && value.every(hasValidMediaRepresentationAssetIdentity))
+	);
+}
+
+function hasValidMessageAssetIdentities(message: Record<string, unknown>): boolean {
+	if (
+		!Array.isArray(message.attachments) ||
+		!message.attachments.every(
+			(attachment: unknown) =>
+				isRecord(attachment) &&
+				(attachment.asset_id === undefined ||
+					isCanonicalEntityId(attachment.asset_id, 'asset')) &&
+				hasValidOptionalRepresentations(attachment.representations),
+		)
+	) {
+		return false;
+	}
+	if (message.media_inputs === undefined) return true;
+	return (
+		Array.isArray(message.media_inputs) &&
+		message.media_inputs.every(
+			(input: unknown) =>
+				isRecord(input) &&
+				isRecord(input.asset) &&
+				isCanonicalEntityId(input.asset.asset_id, 'asset') &&
+				Array.isArray(input.representations) &&
+				input.representations.every(hasValidMediaRepresentationAssetIdentity),
+		)
+	);
+}
+
 /** Validate durable row identities before resume/replay data enters UI state. */
-export function parseSessionResumeResponse(value: unknown): SessionResumeResponse {
+export function parseSessionResumeResponse(
+	value: unknown,
+	expectedSessionId?: string,
+): SessionResumeResponse {
 	if (!isRecord(value) || !isSessionRecord(value.session)) {
 		throw new Error('Invalid resumed session identity');
 	}
 	const sessionId = value.session.id;
+	if (expectedSessionId !== undefined && expectedSessionId !== sessionId) {
+		throw new Error('Invalid resumed session identity');
+	}
 	if (
 		!Array.isArray(value.steps) ||
 		!value.steps.every(
@@ -125,25 +192,38 @@ export function parseSessionResumeResponse(value: unknown): SessionResumeRespons
 	}
 	if (
 		!value.steps.every(
-			(step: unknown) => isRecord(step) && isCanonicalEntityId(step.id, 'step'),
+			(step: unknown) =>
+				isRecord(step) &&
+				(isCanonicalEntityId(step.id, 'step') || isCanonicalEntityId(step.id, 'msg')),
 		)
 	) {
 		throw new Error('Invalid resumed step identity');
 	}
 	const stepIds = new Set<string>(
 		value.steps
-			.filter((step: unknown) => isRecord(step) && typeof step.id === 'string')
+			.filter((step: unknown) => isRecord(step) && isCanonicalEntityId(step.id, 'step'))
 			.map((step: { id: string }) => step.id),
 	);
+	const supplementStepMessageIds = new Set<string>(
+		value.steps
+			.filter((step: unknown) => isRecord(step) && isCanonicalEntityId(step.id, 'msg'))
+			.map((step: { id: string }) => step.id),
+	);
+	const validResumeMessage = (
+		message: unknown,
+	): message is Record<string, unknown> & { id: string } =>
+		isRecord(message) &&
+		isCanonicalEntityId(message.session_id, 'ses') &&
+		message.session_id === sessionId &&
+		(isCanonicalEntityId(message.id, 'msg') ||
+			(isCanonicalEntityId(message.id, 'step') && stepIds.has(message.id))) &&
+		hasValidMessageAssetIdentities(message);
+	const messages = value.messages;
 	if (
-		!Array.isArray(value.messages) ||
-		!value.messages.every(
-			(message: unknown) =>
-				isRecord(message) &&
-				isCanonicalEntityId(message.session_id, 'ses') &&
-				message.session_id === sessionId &&
-				(isCanonicalEntityId(message.id, 'msg') ||
-					(isCanonicalEntityId(message.id, 'step') && stepIds.has(message.id))),
+		!Array.isArray(messages) ||
+		!messages.every(validResumeMessage) ||
+		![...supplementStepMessageIds].every((id) =>
+			messages.some((message: unknown) => isRecord(message) && message.id === id),
 		)
 	) {
 		throw new Error('Invalid resumed message identity');

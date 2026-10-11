@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { cancelToolRunCommand, listToolRunRows } from './toolRunCommands.ts';
+import { cancelToolRunCommand, listToolRunHistory, listToolRunRows } from './toolRunCommands.ts';
 
 vi.mock('$lib/tauri.ts', () => ({ invoke: vi.fn() }));
 
@@ -39,6 +39,39 @@ describe('ToolRun command contract boundary', () => {
 		invokeMock.mockResolvedValue({ rows: [] } as never);
 
 		await expect(listToolRunRows()).resolves.toBeNull();
+	});
+
+	it('binds filtered ToolRun history rows to the requested session', async () => {
+		const sessionId = 'ses-00000000000000000000000000000031';
+		invokeMock.mockResolvedValueOnce([
+			{
+				tool_run_id: 'toolrun-00000000000000000000000000000032',
+				kind: 'background',
+				session_id: sessionId,
+			},
+			{
+				tool_run_id: 'toolrun-00000000000000000000000000000033',
+				kind: 'scheduled',
+				session_id: 'ses-00000000000000000000000000000034',
+			},
+			{
+				tool_run_id: 'toolrun-00000000000000000000000000000035',
+				kind: 'scheduled',
+			},
+		] as never);
+
+		await expect(listToolRunHistory(undefined, 50, sessionId)).resolves.toEqual([
+			{
+				toolRunId: 'toolrun-00000000000000000000000000000032',
+				kind: 'background',
+				sessionId,
+			},
+		]);
+		expect(invokeMock).toHaveBeenCalledWith('list_tool_run_history', {
+			kind: null,
+			limit: 50,
+			sessionId,
+		});
 	});
 
 	it('uses the named cancel request and preserves the boolean response', async () => {

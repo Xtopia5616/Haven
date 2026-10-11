@@ -249,7 +249,7 @@ impl AgentLayer {
                         // set — it was ended and should not be dispatchable.
                         drop(lifecycle);
                         self.executor.remove_session(session_id).await?;
-                        return Ok(ProcessResult::supplemented(None));
+                        return Ok(ProcessResult::supplemented(session_id.clone(), None));
                     } else {
                         if is_answer {
                             self.executor
@@ -285,7 +285,7 @@ impl AgentLayer {
                             .await?;
                         }
                     }
-                    return Ok(ProcessResult::supplemented(message_id));
+                    return Ok(ProcessResult::supplemented(session_id.clone(), message_id));
                 }
                 let confirm_blocked = self
                     .executor
@@ -301,6 +301,7 @@ impl AgentLayer {
                 }
             }
             Ok(ProcessResult::supplemented(
+                session_id.clone(),
                 persisted_msg.as_ref().map(|m| m.id.clone()),
             ))
         } else {

@@ -10,12 +10,51 @@ const sessionId = 'ses-00000000000000000000000000000001';
 const messageId = 'msg-00000000000000000000000000000002';
 const stepId = 'step-00000000000000000000000000000003';
 
-function resumeResponse() {
+type ResumeMediaRepresentationFixture = {
+	payload: { kind: string; value?: Record<string, unknown> };
+};
+type ResumeMessageFixture = {
+	id: string;
+	session_id: string;
+	tool_call_id?: string;
+	attachments: Array<{
+		asset_id?: string;
+		representations?: ResumeMediaRepresentationFixture[];
+	}>;
+	media_inputs?: Array<{
+		asset: { asset_id: string };
+		representations: ResumeMediaRepresentationFixture[];
+	}>;
+};
+type ResumeFixture = {
+	session: { id: string };
+	messages: ResumeMessageFixture[];
+	steps: Array<{ id: string; session_id: string }>;
+	llm_usage: Array<{ id: string; session_id: string }>;
+	interactions: Array<{
+		id: string;
+		kind: 'ask' | 'confirm';
+		session_id: string;
+		owner: { kind: 'session'; session_id: string };
+	}>;
+};
+
+function resumeResponse(): ResumeFixture {
 	return {
 		session: { id: sessionId },
 		messages: [
-			{ id: messageId, session_id: sessionId, tool_call_id: 'provider-call/opaque' },
-			{ id: stepId, session_id: sessionId, tool_call_id: 'another-external-id' },
+			{
+				id: messageId,
+				session_id: sessionId,
+				tool_call_id: 'provider-call/opaque',
+				attachments: [],
+			},
+			{
+				id: stepId,
+				session_id: sessionId,
+				tool_call_id: 'another-external-id',
+				attachments: [],
+			},
 		],
 		steps: [{ id: stepId, session_id: sessionId }],
 		llm_usage: [
@@ -41,6 +80,45 @@ function resumeResponse() {
 	};
 }
 
+function resumeResponseWithAssets(): ResumeFixture {
+	const response = resumeResponse();
+	response.steps.push({ id: messageId, session_id: sessionId });
+	response.messages = [
+		{
+			id: messageId,
+			session_id: sessionId,
+			tool_call_id: 'provider-call/opaque',
+			attachments: [
+				{
+					asset_id: 'asset-00000000000000000000000000000009',
+					representations: [
+						{
+							payload: {
+								kind: 'managed_file_ref',
+								value: { asset_id: 'asset-00000000000000000000000000000010' },
+							},
+						},
+					],
+				},
+			],
+			media_inputs: [
+				{
+					asset: { asset_id: 'asset-00000000000000000000000000000011' },
+					representations: [
+						{
+							payload: {
+								kind: 'managed_file_ref',
+								value: { asset_id: 'asset-00000000000000000000000000000012' },
+							},
+						},
+					],
+				},
+			],
+		},
+	];
+	return response;
+}
+
 describe('session history and resume identity contracts', () => {
 	it('validates runtime session and step IDs', () => {
 		expect(
@@ -61,13 +139,111 @@ describe('session history and resume identity contracts', () => {
 			parseSessionHistoryRows([{ id: 'msg-00000000000000000000000000000002' }]),
 		).toThrow('Invalid session history identity');
 		expect(
-			parseSessionLineageResponse({ parent: null, children: [{ id: sessionId }] }).children,
+			parseSessionLineageResponse(
+				{
+					session_id: sessionId,
+					parent_session_id: null,
+					parent: null,
+					children: [
+						{
+							session: { id: 'ses-00000000000000000000000000000006' },
+							parent_session_id: sessionId,
+						},
+					],
+				},
+				sessionId,
+			).children,
 		).toHaveLength(1);
 	});
 
 	it('accepts resume IDs with canonical row linkage and opaque provider IDs', () => {
 		const response = resumeResponse();
 		expect(parseSessionResumeResponse(response)).toBe(response);
+	});
+
+	it('binds resume and lineage rows to the requested owner', () => {
+		const response = resumeResponse();
+		expect(() =>
+			parseSessionResumeResponse(response, 'ses-00000000000000000000000000000007'),
+		).toThrow('Invalid resumed session identity');
+
+		expect(() =>
+			parseSessionLineageResponse(
+				{
+					session_id: 'ses-00000000000000000000000000000008',
+					parent_session_id: null,
+					parent: null,
+					children: [],
+				},
+				sessionId,
+			),
+		).toThrow('Invalid session lineage identity');
+	});
+
+	it('checks the parent and direct-child relationship anchors in lineage responses', () => {
+		expect(() =>
+			parseSessionLineageResponse(
+				{
+					session_id: sessionId,
+					parent_session_id: 'ses-00000000000000000000000000000040',
+					parent: { id: 'ses-00000000000000000000000000000041' },
+					children: [],
+				},
+				sessionId,
+			),
+		).toThrow('Invalid session lineage identity');
+
+		expect(() =>
+			parseSessionLineageResponse(
+				{
+					session_id: sessionId,
+					parent_session_id: null,
+					parent: null,
+					children: [
+						{
+							session: { id: 'ses-00000000000000000000000000000042' },
+							parent_session_id: 'ses-00000000000000000000000000000043',
+						},
+					],
+				},
+				sessionId,
+			),
+		).toThrow('Invalid session lineage identity');
+	});
+
+	it('allows supplement steps to reuse msg IDs and checks nested managed asset IDs', () => {
+		const response = resumeResponseWithAssets();
+		expect(parseSessionResumeResponse(response)).toBe(response);
+
+		const malformedAssetResponses = [
+			() => {
+				const bad = resumeResponseWithAssets();
+				bad.messages[0].attachments[0].asset_id = 'asset-short';
+				return bad;
+			},
+			() => {
+				const bad = resumeResponseWithAssets();
+				bad.messages[0].attachments[0].representations![0].payload.value!.asset_id =
+					'asset-short';
+				return bad;
+			},
+			() => {
+				const bad = resumeResponseWithAssets();
+				bad.messages[0].media_inputs![0].asset.asset_id = 'asset-short';
+				return bad;
+			},
+			() => {
+				const bad = resumeResponseWithAssets();
+				bad.messages[0].media_inputs![0].representations[0].payload.value!.asset_id =
+					'asset-short';
+				return bad;
+			},
+		];
+		for (const malformed of malformedAssetResponses) {
+			expect(() => parseSessionResumeResponse(malformed())).toThrow(
+				'Invalid resumed message identity',
+			);
+		}
 	});
 
 	it('rejects a message that refers to a step absent from the resumed step rows', () => {

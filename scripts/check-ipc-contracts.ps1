@@ -90,10 +90,10 @@ Assert-NotContains $tauri 'Promise<any>|args\?:\s*any' 'invoke boundary must not
 # though compile-time request/response shapes are generated from Rust.
 $toolRunCommands = Get-Source 'ui/src/lib/toolRunCommands.ts'
 Assert-Contains $toolRunCommands 'const rows:\s*unknown\s*=\s*await invoke\(''list_tool_runs''\)' 'tool run rows enter as unknown'
-Assert-Contains $toolRunCommands 'rows\.map\(mapToolRunPayload\)' 'tool run rows pass through the runtime mapper'
+Assert-Contains $toolRunCommands 'rows\.map\(\s*\(\s*row\s*\)\s*=>\s*mapToolRunPayload\(row(?:,\s*sessionId)?\)\s*\)' 'tool run rows pass through the runtime mapper'
 
 $toolRunContract = Get-Source 'ui/src/lib/contracts/toolRun.ts'
-Assert-Contains $toolRunContract 'function mapToolRunPayload\(payload:\s*unknown\):\s*ToolRunPayload\s*\|\s*null' 'tool run mapper accepts unknown'
+Assert-Contains $toolRunContract 'function mapToolRunPayload\s*\(\s*payload:\s*unknown(?:,\s*expectedSessionId\?:\s*string)?(?:,\s*)?\):\s*ToolRunPayload\s*\|\s*null' 'tool run mapper accepts unknown'
 
 $settingsCommands = Get-Source 'ui/src/lib/settingsCommands.ts'
 Assert-Contains $settingsCommands 'invoke\(''get_settings''\)\.then\(parseSettingsPayload\)' 'settings response uses its runtime parser'
@@ -123,7 +123,7 @@ $submit = Get-Source 'ui/src/lib/submit.ts'
 Assert-Contains $submit 'processTranscript\(request\)' 'submit coordinator uses the session command adapter'
 $sessionCommands = Get-Source 'ui/src/lib/sessionCommands.ts'
 Assert-Contains $sessionCommands "invoke\('process_transcript',\s*request\)" 'session command adapter owns transcript processing'
-Assert-Contains $sessionCommands 'parseProcessResult\(value\)' 'process transcript response identity is validated at the command boundary'
+Assert-Contains $sessionCommands 'parseProcessResult\(value,\s*request\.activeSessionId\)' 'process transcript response identity is validated against the active session request'
 $errorHandling = Get-Source 'ui/src/lib/errorHandling.ts'
 Assert-Contains $errorHandling "invoke\('log_frontend_error',\s*\{\s*message:\s*notificationMessage\s*\}\)" 'error handling owns frontend error logging'
 $externalRef = Get-Source 'ui/src/lib/externalRef.ts'

@@ -68,7 +68,7 @@ export interface UiMetricsSnapshotInput { frames: number; chunks: number; drops:
 export interface UiMetricsSnapshot { frames: number; chunks: number; drops: number }
 export interface SessionInfo { id: string; input: string; summary: string; title: string | null; status: SessionStatus; waiting_reason?: SessionWaitingReason; steps: StepInfo[]; created_at: string; updated_at: string }
 export interface StepInfo { id: string; step_number: number; tool_name: string; input: unknown; output: unknown | null; status: SessionStepStatus; risk_level: RiskLevel; confirmed: boolean | null }
-export type ProcessResult = { 'SessionCreated': { session_id: string; message_id?: string | null } } | { 'Supplemented': { message_id?: string | null } };
+export type ProcessResult = { 'SessionCreated': { session_id: string; message_id?: string | null } } | { 'Supplemented': { session_id: string; message_id?: string | null } };
 export const BOOTSTRAP_STATUS_VALUES = ['loading', 'ready'] as const;
 export type BootstrapStatus = (typeof BOOTSTRAP_STATUS_VALUES)[number];
 export interface RuntimeSessionListResponse { sessions: SessionInfo[] }
@@ -90,7 +90,8 @@ export type ReasoningEffortSelectionInput = (typeof REASONING_EFFORT_SELECTION_I
 export interface RecordingStatus { is_recording: boolean; is_toggle: boolean }
 export const CONFIRMATION_RESOLUTION_RESULT_VALUES = ['resolved', 'expired', 'stale'] as const;
 export type ConfirmationResolutionResult = (typeof CONFIRMATION_RESOLUTION_RESULT_VALUES)[number];
-export interface SessionLineageResponse { parent: SessionRecordDto | null; children: SessionRecordDto[] }
+export interface SessionLineageChildDto { session: SessionRecordDto; parent_session_id: string }
+export interface SessionLineageResponse { session_id: string; parent_session_id: string | null; parent: SessionRecordDto | null; children: SessionLineageChildDto[] }
 export interface SessionRecordDto { id: string; input_text: string; title: string | null; status: SessionStatus; run_end_reason?: string; created_at: string; updated_at: string }
 export interface SessionResumeResponse { session: SessionRecordDto; messages: Message[]; steps: SessionStep[]; usage: SessionUsage | null; llm_usage: LlmUsageRecord[]; interactions: InteractionRequestedEvent[] }
 export interface SessionPermissionGrant { session_id: string; session_title: string | null; capability: string; target: PermissionTarget; effect: PermissionEffect }

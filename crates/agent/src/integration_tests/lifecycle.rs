@@ -769,7 +769,13 @@ async fn process_input_deletes_terminal_ghost_message_through_session_store() {
         .await
         .unwrap();
 
-    assert_eq!(result, ProcessResult::Supplemented { message_id: None });
+    assert_eq!(
+        result,
+        ProcessResult::Supplemented {
+            session_id: session.id.clone(),
+            message_id: None,
+        }
+    );
     assert!(db.list_session_messages(&session.id).unwrap().is_empty());
     assert_eq!(
         db.get_session(&session.id).unwrap().unwrap().status,
@@ -810,7 +816,13 @@ async fn process_input_continues_when_terminal_ghost_delete_fails() {
         .await
         .unwrap();
 
-    assert_eq!(result, ProcessResult::Supplemented { message_id: None });
+    assert_eq!(
+        result,
+        ProcessResult::Supplemented {
+            session_id: session.id.clone(),
+            message_id: None,
+        }
+    );
     let messages = db.list_session_messages(&session.id).unwrap();
     assert_eq!(messages.len(), 1);
     assert_eq!(messages[0].role, haven_common::types::CanonicalRole::User);

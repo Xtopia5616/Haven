@@ -48,7 +48,32 @@ describe('session history command boundary', () => {
 		invokeMock.mockResolvedValueOnce({
 			SessionCreated: { session_id: 'ses-short' },
 		} as never);
-		await expect(processTranscript(request)).rejects.toThrow('Invalid process transcript identity');
+		await expect(processTranscript(request)).rejects.toThrow(
+			'Invalid process transcript identity',
+		);
+
+		const supplementRequest = {
+			...request,
+			activeSessionId: 'ses-00000000000000000000000000000012',
+		};
+		const supplementResponse = {
+			Supplemented: {
+				session_id: supplementRequest.activeSessionId,
+				message_id: 'msg-00000000000000000000000000000013',
+			},
+		};
+		invokeMock.mockResolvedValueOnce(supplementResponse as never);
+		await expect(processTranscript(supplementRequest)).resolves.toBe(supplementResponse);
+
+		invokeMock.mockResolvedValueOnce({
+			Supplemented: {
+				session_id: 'ses-00000000000000000000000000000014',
+				message_id: 'msg-00000000000000000000000000000015',
+			},
+		} as never);
+		await expect(processTranscript(supplementRequest)).rejects.toThrow(
+			'Invalid process transcript identity',
+		);
 	});
 
 	it('keeps active-session list rows unchanged', async () => {
@@ -70,8 +95,10 @@ describe('session history command boundary', () => {
 	});
 
 	it('loads the lineage for the selected session with a flat request', async () => {
-		const request = { sessionId: 'ses-child' };
+		const request = { sessionId: 'ses-00000000000000000000000000000001' };
 		const response = {
+			session_id: request.sessionId,
+			parent_session_id: 'ses-00000000000000000000000000000002',
 			parent: { id: 'ses-00000000000000000000000000000002' },
 			children: [],
 		};
@@ -80,6 +107,19 @@ describe('session history command boundary', () => {
 		await expect(getSessionLineage(request)).resolves.toBe(response);
 		expect(invokeMock).toHaveBeenCalledOnce();
 		expect(invokeMock).toHaveBeenCalledWith('get_session_lineage', request);
+	});
+
+	it('rejects lineage rows whose owner does not match the request', async () => {
+		const request = { sessionId: 'ses-00000000000000000000000000000021' };
+		invokeMock.mockResolvedValueOnce({
+			session_id: 'ses-00000000000000000000000000000022',
+			parent_session_id: null,
+			parent: null,
+			children: [],
+		} as never);
+		await expect(getSessionLineage(request)).rejects.toThrow(
+			'Invalid session lineage identity',
+		);
 	});
 
 	it('lists a persisted history page through the list command', async () => {
@@ -115,10 +155,10 @@ describe('session history command boundary', () => {
 		expect(invokeMock).toHaveBeenCalledWith('search_session_history_filtered', request);
 	});
 
-	it('validates resume identities and accepts an empty latest-session result', async () => {
-		const request = { sessionId: 'ses-3' };
+	it('binds resume identity to the request and accepts an empty latest-session result', async () => {
+		const request = { sessionId: 'ses-00000000000000000000000000000003' };
 		const resume = {
-			session: { id: 'ses-00000000000000000000000000000004' },
+			session: { id: request.sessionId },
 			messages: [],
 			steps: [],
 			llm_usage: [],
@@ -133,6 +173,19 @@ describe('session history command boundary', () => {
 			['get_session_for_resume', request],
 			['get_latest_session_for_resume'],
 		]);
+	});
+
+	it('rejects a canonical resume response owned by another requested session', async () => {
+		invokeMock.mockResolvedValueOnce({
+			session: { id: 'ses-00000000000000000000000000000024' },
+			messages: [],
+			steps: [],
+			llm_usage: [],
+			interactions: [],
+		} as never);
+		await expect(
+			getSessionForResume({ sessionId: 'ses-00000000000000000000000000000025' }),
+		).rejects.toThrow('Invalid resumed session identity');
 	});
 
 	it('rejects command responses with non-canonical session identities', async () => {
@@ -161,7 +214,7 @@ describe('session history command boundary', () => {
 		const stepId = 'step-00000000000000000000000000000009';
 		const response = {
 			session: { id: sessionId },
-			messages: [{ id: stepId, session_id: sessionId }],
+			messages: [{ id: stepId, session_id: sessionId, attachments: [] }],
 			steps: [{ id: stepId, session_id: sessionId }],
 			llm_usage: [],
 			interactions: [],
@@ -225,6 +278,8 @@ describe('session history command boundary', () => {
 		};
 		invokeMock.mockResolvedValue(response as never);
 
-		await expect(getSessionForResume({ sessionId: 'ses-5' })).resolves.toBe(response);
+		await expect(
+			getSessionForResume({ sessionId: 'ses-00000000000000000000000000000007' }),
+		).resolves.toBe(response);
 	});
 });

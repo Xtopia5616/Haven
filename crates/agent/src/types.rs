@@ -618,6 +618,7 @@ pub enum ProcessResult {
         message_id: Option<String>,
     },
     Supplemented {
+        session_id: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         message_id: Option<String>,
     },
@@ -631,13 +632,16 @@ impl ProcessResult {
         }
     }
 
-    pub fn supplemented(message_id: Option<String>) -> Self {
-        Self::Supplemented { message_id }
+    pub fn supplemented(session_id: impl Into<String>, message_id: Option<String>) -> Self {
+        Self::Supplemented {
+            session_id: session_id.into(),
+            message_id,
+        }
     }
 
     pub fn message_id(&self) -> Option<&str> {
         match self {
-            Self::SessionCreated { message_id, .. } | Self::Supplemented { message_id } => {
+            Self::SessionCreated { message_id, .. } | Self::Supplemented { message_id, .. } => {
                 message_id.as_deref()
             }
         }
@@ -1073,8 +1077,11 @@ mod tests {
         for result in [
             ProcessResult::session_created("ses-1", Some("msg-abc".into())),
             ProcessResult::session_created("ses-2", None),
-            ProcessResult::supplemented(Some("msg-def".into())),
-            ProcessResult::supplemented(None),
+            ProcessResult::supplemented(
+                "ses-00000000000000000000000000000001",
+                Some("msg-def".into()),
+            ),
+            ProcessResult::supplemented("ses-00000000000000000000000000000002", None),
         ] {
             let json = serde_json::to_string(&result).unwrap();
             let back: ProcessResult = serde_json::from_str(&json).unwrap();

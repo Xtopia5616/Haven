@@ -958,3 +958,4 @@
 - [0967：统一校验 Memory 持久化 owner 的实体身份](0967-validate-memory-owner-identities.md)
 - [0968：由 Session command adapter 校验 transcript 处理结果](0968-normalize-session-command-response-ownership.md)
 - [0969：派生集合使用明确的实体复数名称](0969-use-entity-names-for-derived-collections.md)
+- [0970：命令响应身份绑定其请求 owner](0970-bind-command-response-identities-to-request-owners.md)

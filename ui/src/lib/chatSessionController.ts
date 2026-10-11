@@ -11,6 +11,7 @@ import { isErrorStatus } from './sessionStatus.ts';
 import { processResultSessionId } from './submit.ts';
 import type { ChatAttachmentPayload, ChatFileAttachment } from './chatAttachmentTypes.ts';
 import type { ProcessResult, CanonicalRole } from './contracts/generatedCommands.ts';
+import { isCanonicalEntityId } from './contracts/wireGuards.ts';
 import { resumeInteractions as resumeInteractionsFromProjection } from './sessionReducer.ts';
 import type { SessionAction, SessionReducer, SessionSummary } from './sessionReducer.ts';
 
@@ -92,7 +93,7 @@ export class ChatSessionController {
 	async confirmRollbackAction(request: RollbackRequest): Promise<void> {
 		const sessionId = this.dependencies.getActiveSessionId();
 		if (!sessionId || this.rollbackInFlight) return;
-		if (request.role === 'user' && !/^msg-[0-9a-f]{32}$/.test(request.msgId)) {
+		if (request.role === 'user' && !isCanonicalEntityId(request.msgId, 'msg')) {
 			this.dependencies.notify('消息仍在保存，请稍后再试', 'info', 2000);
 			return;
 		}
@@ -104,7 +105,7 @@ export class ChatSessionController {
 				sessionId,
 				targetStep: request.stepNumber,
 				pause: request.role === 'user',
-				targetMessageId: request.msgId,
+				targetMessageId: request.role === 'user' ? request.msgId : null,
 			});
 			this.dependencies.dispatch({ type: 'session/replay-reset', sessionId });
 			this.dependencies.clearStepBlockIds(sessionId);

@@ -95,7 +95,9 @@ function makeHarness(
 		commands,
 		submitTranscript: async (text, args) => {
 			submitCalls.push({ text, args });
-			return options.submit ? await options.submit(text, args) : { Supplemented: {} };
+			return options.submit
+				? await options.submit(text, args)
+				: { Supplemented: { session_id: SESSION_ID } };
 		},
 		reducer,
 		dispatch: (action) => {
@@ -230,10 +232,23 @@ describe('ChatSessionController rollback', () => {
 			sessionId: SESSION_ID,
 			targetStep: 7,
 			pause: false,
-			targetMessageId: 'step-00000000000000000000000000000007',
+			targetMessageId: null,
 		});
 		expect(harness.inputDrafts).toEqual([]);
 		expect(harness.notifications[0]?.message).toBe('已回退到第 7 步');
+	});
+
+	it('does not send a timeline step identity as a rollback message target', async () => {
+		const harness = makeHarness();
+		await harness.controller.confirmRollbackAction({
+			stepNumber: 8,
+			role: 'user' as const,
+			content: '正在保存',
+			msgId: 'step-00000000000000000000000000000008',
+		});
+
+		expect(harness.commandCalls).toEqual([]);
+		expect(harness.notifications[0]?.message).toBe('消息仍在保存，请稍后再试');
 	});
 });
 
@@ -244,7 +259,7 @@ describe('ChatSessionController continue', () => {
 			harness.reducer,
 			{ id: USER_MESSAGE_ID, role: 'user' as const, content: '写一首诗' },
 			{
-				id: 'step-thought',
+				id: 'step-00000000000000000000000000000020',
 				role: 'assistant' as const,
 				content: '已有一段',
 				type: 'thought',
@@ -374,7 +389,7 @@ describe('ChatSessionController continue', () => {
 			sessionId: SESSION_ID,
 			targetStep: 7,
 			pause: false,
-			targetMessageId: request.msgId,
+			targetMessageId: null,
 		});
 		finishRollback?.();
 		await first;

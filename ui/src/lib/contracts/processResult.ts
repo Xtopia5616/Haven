@@ -10,7 +10,10 @@ function hasOptionalMessageId(record: Record<string, unknown>): boolean {
 }
 
 /** Reject malformed command results before they can select or re-key session state. */
-export function parseProcessResult(value: unknown): ProcessResult {
+export function parseProcessResult(
+	value: unknown,
+	expectedSessionId?: string | null,
+): ProcessResult {
 	if (!isRecord(value)) throw new Error('Invalid process transcript identity');
 	const hasCreated = Object.prototype.hasOwnProperty.call(value, 'SessionCreated');
 	const hasSupplemented = Object.prototype.hasOwnProperty.call(value, 'Supplemented');
@@ -27,7 +30,12 @@ export function parseProcessResult(value: unknown): ProcessResult {
 		}
 	} else {
 		const supplemented = value.Supplemented;
-		if (!isRecord(supplemented) || !hasOptionalMessageId(supplemented)) {
+		if (
+			!isRecord(supplemented) ||
+			!isCanonicalEntityId(supplemented.session_id, 'ses') ||
+			supplemented.session_id !== expectedSessionId ||
+			!hasOptionalMessageId(supplemented)
+		) {
 			throw new Error('Invalid process transcript identity');
 		}
 	}

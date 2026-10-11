@@ -108,9 +108,17 @@ impl From<Session> for SessionRecordDto {
 }
 
 #[derive(Serialize)]
+pub struct SessionLineageChildDto {
+    pub session: SessionRecordDto,
+    pub parent_session_id: String,
+}
+
+#[derive(Serialize)]
 pub struct SessionLineageResponse {
+    pub session_id: String,
+    pub parent_session_id: Option<String>,
     pub parent: Option<SessionRecordDto>,
-    pub children: Vec<SessionRecordDto>,
+    pub children: Vec<SessionLineageChildDto>,
 }
 
 async fn session_lineage_from_store(
@@ -121,20 +129,40 @@ async fn session_lineage_from_store(
         .load_session_record(session_id)
         .await?
         .ok_or_else(|| anyhow::anyhow!("session not found: {session_id}"))?;
-    let parent_id = match session.origin {
-        SessionOrigin::AgentSpawn { parent_session_id } => Some(parent_session_id),
+    let parent_session_id = match &session.origin {
+        SessionOrigin::AgentSpawn { parent_session_id } => Some(parent_session_id.clone()),
         SessionOrigin::User => None,
     };
-    let parent = match parent_id {
-        Some(parent_id) => session_store.load_session_record(&parent_id).await?,
+    let parent = match parent_session_id.as_deref() {
+        Some(parent_id) => session_store.load_session_record(parent_id).await?,
         None => None,
     };
     let children = session_store
         .load_session_children(session_id, 50, 0)
-        .await?;
+        .await?
+        .into_iter()
+        .map(|child| {
+            let child_parent_session_id = match &child.origin {
+                SessionOrigin::AgentSpawn { parent_session_id } => parent_session_id.clone(),
+                SessionOrigin::User => {
+                    anyhow::bail!("session lineage child has no parent session identity")
+                }
+            };
+            anyhow::ensure!(
+                child_parent_session_id == session_id,
+                "session lineage child belongs to a different parent"
+            );
+            Ok(SessionLineageChildDto {
+                session: SessionRecordDto::from(child),
+                parent_session_id: child_parent_session_id,
+            })
+        })
+        .collect::<anyhow::Result<Vec<_>>>()?;
     Ok(SessionLineageResponse {
+        session_id: session.id,
+        parent_session_id,
         parent: parent.map(SessionRecordDto::from),
-        children: children.into_iter().map(SessionRecordDto::from).collect(),
+        children,
     })
 }
 
@@ -1081,23 +1109,34 @@ mod tests {
             parent_lineage
                 .children
                 .iter()
-                .map(|session| session.id.as_str())
+                .map(|child| child.session.id.as_str())
                 .collect::<std::collections::HashSet<_>>(),
             [sibling.id.as_str(), child.id.as_str()]
                 .into_iter()
                 .collect::<std::collections::HashSet<_>>()
         );
+        assert!(
+            parent_lineage
+                .children
+                .iter()
+                .all(|child| { child.parent_session_id == parent_lineage.session_id })
+        );
+        assert_eq!(parent_lineage.session_id, parent.id);
+        assert_eq!(parent_lineage.parent_session_id, None);
         let parent_wire = serde_json::to_value(&parent_lineage).unwrap();
         assert!(parent_wire["children"][0].get("origin").is_none());
 
         let child_lineage = session_lineage_from_store(&store, &child.id).await.unwrap();
         let child_wire = serde_json::to_value(&child_lineage).unwrap();
         assert!(child_wire["parent"].get("origin").is_none());
+        assert_eq!(child_lineage.session_id, child.id);
+        assert_eq!(child_lineage.parent_session_id, Some(parent.id.clone()));
         assert_eq!(child_lineage.parent.unwrap().id, parent.id);
         assert!(child_lineage.children.is_empty());
 
         db.delete_session(&parent.id).unwrap();
         let orphan_lineage = session_lineage_from_store(&store, &child.id).await.unwrap();
+        assert_eq!(orphan_lineage.parent_session_id, Some(parent.id));
         assert!(orphan_lineage.parent.is_none());
         assert!(orphan_lineage.children.is_empty());
     }

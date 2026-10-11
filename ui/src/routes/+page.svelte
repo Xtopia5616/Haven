@@ -326,7 +326,7 @@
 	}
 
 	function mapLineageSession(
-		session: SessionLineageResponse['children'][number],
+		session: NonNullable<SessionLineageResponse['parent']>,
 	): SessionSummary {
 		return {
 			id: session.id,
@@ -352,7 +352,7 @@
 			if (dead || sequence !== sessionLineageSeq || activeSessionId !== sessionId) return;
 			sessionLineage = {
 				parent: lineage.parent ? mapLineageSession(lineage.parent) : null,
-				children: lineage.children.map(mapLineageSession),
+				children: lineage.children.map((child) => mapLineageSession(child.session)),
 			};
 		} catch (error) {
 			if (!dead && sequence === sessionLineageSeq) {

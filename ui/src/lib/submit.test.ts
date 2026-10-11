@@ -11,6 +11,21 @@ vi.mock('./tauri.ts', () => ({
 import { invoke } from './tauri.ts';
 import { submitTranscript as submitWithReducer } from './submit.ts';
 
+const SESSION_A = 'ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+const SESSION_B = 'ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
+const SESSION_IMG = 'ses-cccccccccccccccccccccccccccccccc';
+const SESSION_MIX = 'ses-dddddddddddddddddddddddddddddddd';
+const SESSION_EMPTY = 'ses-eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee';
+const SESSION_STALE = 'ses-ffffffffffffffffffffffffffffffff';
+const SESSION_FAIL = 'ses-11111111111111111111111111111111';
+const SESSION_DRAFT = 'ses-22222222222222222222222222222222';
+
+function supplemented(sessionId: string, messageId?: string) {
+	return {
+		Supplemented: { session_id: sessionId, ...(messageId ? { message_id: messageId } : {}) },
+	};
+}
+
 const invokeMock = invoke as any;
 let reducer: SessionReducer;
 
@@ -33,17 +48,17 @@ describe('submitTranscript', () => {
 	});
 
 	it('appends an optimistic user message under the active session id', async () => {
-		invokeMock.mockResolvedValue({ Supplemented: {} });
-		select('session-a');
+		invokeMock.mockResolvedValue(supplemented(SESSION_A));
+		select(SESSION_A);
 		await submitTranscript('hello', { voice: false });
 
 		expect(invoke).toHaveBeenCalledWith('process_transcript', {
 			transcript: 'hello',
-			activeSessionId: 'session-a',
+			activeSessionId: SESSION_A,
 			attachments: null,
 			voice: false,
 		});
-		const list = messagesFor('session-a');
+		const list = messagesFor(SESSION_A);
 		expect(list).toHaveLength(1);
 		expect(list[0].content).toBe('hello');
 		expect(list[0].role).toBe('user');
@@ -51,20 +66,31 @@ describe('submitTranscript', () => {
 	});
 
 	it('preserves the persisted transcript when submitting', async () => {
-		invokeMock.mockResolvedValue({ Supplemented: {} });
-		select('session-a');
-		loadMessages('session-a', [{ id: 'msg-1', role: 'user' as const, content: '第一条消息' }]);
+		invokeMock.mockResolvedValue(supplemented(SESSION_A));
+		select(SESSION_A);
+		loadMessages(SESSION_A, [
+			{
+				id: 'msg-00000000000000000000000000000020',
+				role: 'user' as const,
+				content: '第一条消息',
+			},
+		]);
 		await submitTranscript('第二条消息', { voice: false });
 
-		const list = messagesFor('session-a');
+		const list = messagesFor(SESSION_A);
 		expect(list).toHaveLength(2);
-		expect(list[0].id).toBe('msg-1');
+		expect(list[0].id).toBe('msg-00000000000000000000000000000020');
 		expect(list[1].content).toBe('第二条消息');
 	});
 
-	it('appends under _draft when there is no active session', async () => {
-		invokeMock.mockResolvedValue({ Supplemented: {} });
-		await submitTranscript('orphan', { voice: true });
+	it('moves a draft input to the session created by ingress', async () => {
+		let resolveInvoke!: (value: unknown) => void;
+		invokeMock.mockReturnValue(
+			new Promise((resolve) => {
+				resolveInvoke = resolve;
+			}),
+		);
+		const pending = submitTranscript('orphan', { voice: true });
 
 		expect(invoke).toHaveBeenCalledWith('process_transcript', {
 			transcript: 'orphan',
@@ -72,13 +98,25 @@ describe('submitTranscript', () => {
 			attachments: null,
 			voice: true,
 		});
-		const draft = messagesFor('_draft');
-		expect(draft).toHaveLength(1);
-		expect(draft[0].voice).toBe(true);
+		expect(messagesFor('_draft')).toHaveLength(1);
+		resolveInvoke!({
+			SessionCreated: {
+				session_id: SESSION_DRAFT,
+				message_id: 'msg-22222222222222222222222222222222',
+			},
+		});
+		await pending;
+		expect(messagesFor('_draft')).toEqual([]);
+		expect(messagesFor(SESSION_DRAFT)[0].voice).toBe(true);
 	});
 
 	it('passes the recording id so ingress STT usage can bind to the session', async () => {
-		invokeMock.mockResolvedValue({ Supplemented: {} });
+		invokeMock.mockResolvedValue({
+			SessionCreated: {
+				session_id: SESSION_DRAFT,
+				message_id: 'msg-33333333333333333333333333333333',
+			},
+		});
 		await submitTranscript('voice text', {
 			voice: true,
 			recordingId: 'rec-00000000000000000000000000000000',
@@ -94,49 +132,49 @@ describe('submitTranscript', () => {
 	});
 
 	it('passes images through to process_transcript and tags the optimistic bubble', async () => {
-		invokeMock.mockResolvedValue({ Supplemented: {} });
-		select('session-img');
+		invokeMock.mockResolvedValue(supplemented(SESSION_IMG));
+		select(SESSION_IMG);
 		const images = [{ media_type: 'image/png', data: 'abc' }];
 		await submitTranscript('see pic', { images });
 
 		expect(invoke).toHaveBeenCalledWith('process_transcript', {
 			transcript: 'see pic',
-			activeSessionId: 'session-img',
+			activeSessionId: SESSION_IMG,
 			attachments: images,
 			voice: false,
 		});
-		const list = messagesFor('session-img');
+		const list = messagesFor(SESSION_IMG);
 		expect(list[0].attachments).toEqual(images);
 		expect(list[0].id).toMatch(/-u-[a-z0-9]+$/);
 	});
 
 	it('combines images and files into one attachments payload', async () => {
-		invokeMock.mockResolvedValue({ Supplemented: {} });
-		select('session-mix');
+		invokeMock.mockResolvedValue(supplemented(SESSION_MIX));
+		select(SESSION_MIX);
 		const images = [{ media_type: 'image/png', data: 'abc' }];
 		const files = [{ media_type: 'application/pdf', data: 'cGVvcGxl', filename: 'doc.pdf' }];
 		await submitTranscript('read these', { images, files });
 
 		expect(invoke).toHaveBeenCalledWith('process_transcript', {
 			transcript: 'read these',
-			activeSessionId: 'session-mix',
+			activeSessionId: SESSION_MIX,
 			attachments: [...images, ...files],
 			voice: false,
 		});
-		const list = messagesFor('session-mix');
+		const list = messagesFor(SESSION_MIX);
 		expect(list[0].attachments).toEqual([...images, ...files]);
 	});
 
 	it('coerces an empty image array to null on the wire', async () => {
-		invokeMock.mockResolvedValue({ Supplemented: {} });
-		select('session-empty');
+		invokeMock.mockResolvedValue(supplemented(SESSION_EMPTY));
+		select(SESSION_EMPTY);
 		await submitTranscript('text only', { images: [] });
 
 		expect(invoke).toHaveBeenCalledWith(
 			'process_transcript',
 			expect.objectContaining({ attachments: null }),
 		);
-		const list = messagesFor('session-empty');
+		const list = messagesFor(SESSION_EMPTY);
 		expect(list[0].attachments).toEqual([]);
 	});
 
@@ -164,11 +202,11 @@ describe('submitTranscript', () => {
 				message_id: 'msg-00000000000000000000000000000002',
 			},
 		});
-		select('session-stale');
+		select(SESSION_STALE);
 		await submitTranscript('hi', { voice: false });
 
 		expect(reducer.snapshot().activeSessionId).toBe('ses-11111111111111111111111111111111');
-		expect(messagesFor('session-stale')).toEqual([]);
+		expect(messagesFor(SESSION_STALE)).toEqual([]);
 		const list = messagesFor('ses-11111111111111111111111111111111');
 		expect(list).toHaveLength(1);
 		expect(list[0].id).toBe('msg-00000000000000000000000000000002');
@@ -192,27 +230,43 @@ describe('submitTranscript', () => {
 
 	it('rewrites the optimistic bubble id from Supplemented.message_id', async () => {
 		invokeMock.mockResolvedValue({
-			Supplemented: { message_id: 'msg-00000000000000000000000000000004' },
+			Supplemented: {
+				session_id: SESSION_A,
+				message_id: 'msg-00000000000000000000000000000004',
+			},
 		});
-		select('session-a');
+		select(SESSION_A);
 		await submitTranscript('hello', { voice: false });
-		const list = messagesFor('session-a');
+		const list = messagesFor(SESSION_A);
 		expect(list).toHaveLength(1);
 		expect(list[0].id).toBe('msg-00000000000000000000000000000004');
 	});
 
 	it('marks a mid-turn send as steering so agent UI stays above it', async () => {
 		invokeMock.mockResolvedValue({
-			Supplemented: { message_id: 'msg-00000000000000000000000000000005' },
+			Supplemented: {
+				session_id: SESSION_A,
+				message_id: 'msg-00000000000000000000000000000005',
+			},
 		});
-		select('session-a');
-		loadMessages('session-a', [
-			{ id: 'msg-1', role: 'user' as const, content: 'hi', received: true },
-			{ id: 'msg-2', role: 'assistant' as const, content: '想', streaming: true },
+		select(SESSION_A);
+		loadMessages(SESSION_A, [
+			{
+				id: 'msg-00000000000000000000000000000020',
+				role: 'user' as const,
+				content: 'hi',
+				received: true,
+			},
+			{
+				id: 'msg-00000000000000000000000000000021',
+				role: 'assistant' as const,
+				content: '想',
+				streaming: true,
+			},
 		]);
-		reactExecutionPhaseStore.set({ sessionId: 'session-a', phase: 'generating' });
+		reactExecutionPhaseStore.set({ sessionId: SESSION_A, phase: 'generating' });
 		await submitTranscript('补充', { voice: false });
-		const list = messagesFor('session-a');
+		const list = messagesFor(SESSION_A);
 		expect(list).toHaveLength(3);
 		expect(list[2]).toMatchObject({
 			id: 'msg-00000000000000000000000000000005',
@@ -222,29 +276,44 @@ describe('submitTranscript', () => {
 	});
 
 	it('does not mark an idle new-turn send as steering', async () => {
-		invokeMock.mockResolvedValue({ Supplemented: {} });
-		select('session-a');
-		loadMessages('session-a', [
-			{ id: 'msg-1', role: 'user' as const, content: 'hi', received: true },
-			{ id: 'msg-2', role: 'assistant' as const, content: '好的', streaming: false },
+		invokeMock.mockResolvedValue(supplemented(SESSION_A));
+		select(SESSION_A);
+		loadMessages(SESSION_A, [
+			{
+				id: 'msg-00000000000000000000000000000020',
+				role: 'user' as const,
+				content: 'hi',
+				received: true,
+			},
+			{
+				id: 'msg-00000000000000000000000000000021',
+				role: 'assistant' as const,
+				content: '好的',
+				streaming: false,
+			},
 		]);
 		reactExecutionPhaseStore.set({ sessionId: null, phase: 'idle' });
 		await submitTranscript('下一题', { voice: false });
-		const list = messagesFor('session-a');
+		const list = messagesFor(SESSION_A);
 		expect(list[2].content).toBe('下一题');
 		expect(list[2].steering).toBeFalsy();
 	});
 
 	it('marks a follow-up as steering when the prior user is still awaiting agent UI', async () => {
 		invokeMock.mockResolvedValue({
-			Supplemented: { message_id: 'msg-00000000000000000000000000000006' },
+			Supplemented: {
+				session_id: SESSION_A,
+				message_id: 'msg-00000000000000000000000000000006',
+			},
 		});
-		select('session-a');
+		select(SESSION_A);
 		// First message accepted, execution phase not flipped yet, no assistant bubble.
-		loadMessages('session-a', [{ id: 'msg-1', role: 'user' as const, content: 'hi' }]);
+		loadMessages(SESSION_A, [
+			{ id: 'msg-00000000000000000000000000000020', role: 'user' as const, content: 'hi' },
+		]);
 		reactExecutionPhaseStore.set({ sessionId: null, phase: 'idle' });
 		await submitTranscript('再加一句', { voice: false });
-		const list = messagesFor('session-a');
+		const list = messagesFor(SESSION_A);
 		expect(list[1]).toMatchObject({
 			id: 'msg-00000000000000000000000000000006',
 			steering: true,
@@ -252,39 +321,49 @@ describe('submitTranscript', () => {
 	});
 
 	it('does not steal steering from a parallel busy session via the global execution phase', async () => {
-		invokeMock.mockResolvedValue({ Supplemented: {} });
+		invokeMock.mockResolvedValue(supplemented(SESSION_B));
 		// Active session B is idle; the global execution phase reflects busy session A.
-		select('session-b');
-		loadMessages('session-b', [
-			{ id: 'msg-b1', role: 'user' as const, content: 'hi', received: true },
-			{ id: 'msg-b2', role: 'assistant' as const, content: '好的', streaming: false },
+		select(SESSION_B);
+		loadMessages(SESSION_B, [
+			{
+				id: 'msg-00000000000000000000000000000022',
+				role: 'user' as const,
+				content: 'hi',
+				received: true,
+			},
+			{
+				id: 'msg-00000000000000000000000000000023',
+				role: 'assistant' as const,
+				content: '好的',
+				streaming: false,
+			},
 		]);
-		reactExecutionPhaseStore.set({ sessionId: 'session-a', phase: 'generating' });
+		reactExecutionPhaseStore.set({ sessionId: SESSION_A, phase: 'generating' });
 		await submitTranscript('下一题', { voice: false });
-		const list = messagesFor('session-b');
+		const list = messagesFor(SESSION_B);
 		expect(list[2].content).toBe('下一题');
 		expect(list[2].steering).toBeFalsy();
 	});
 
 	it('does not treat another session phase as steering for an empty active transcript', async () => {
-		invokeMock.mockResolvedValue({ Supplemented: {} });
-		select('session-b');
+		invokeMock.mockResolvedValue(supplemented(SESSION_B));
+		select(SESSION_B);
 		// A background session may update the shell's latest phase while the
 		// selected session has not loaded or produced any transcript yet.
-		reactExecutionPhaseStore.set({ sessionId: 'session-a', phase: 'generating' });
+		reactExecutionPhaseStore.set({ sessionId: SESSION_A, phase: 'generating' });
 
 		await submitTranscript('first message', { voice: false });
 
-		expect(messagesFor('session-b')).toHaveLength(1);
-		expect(messagesFor('session-b')[0].steering).toBeFalsy();
+		expect(messagesFor(SESSION_B)).toHaveLength(1);
+		expect(messagesFor(SESSION_B)[0].steering).toBeFalsy();
 	});
 
 	it('removes the optimistic bubble and rethrows when invoke rejects', async () => {
 		invokeMock.mockRejectedValue(new Error('boom'));
-		select('session-fail');
+		select(SESSION_FAIL);
 		await expect(submitTranscript('oops')).rejects.toThrow('boom');
 
-		expect(messagesFor('session-fail')).toEqual([]);
+		expect(messagesFor(SESSION_FAIL)).toEqual([]);
 	});
 
 	it('uses the active session id at submission time, not the eventual SessionCreated', async () => {
@@ -294,9 +373,9 @@ describe('submitTranscript', () => {
 				message_id: 'msg-00000000000000000000000000000007',
 			},
 		});
-		select('session-a');
+		select(SESSION_A);
 		await submitTranscript('hi');
-		expect(/** @type {any[]} */ invokeMock.mock.calls[0][1].activeSessionId).toBe('session-a');
+		expect(/** @type {any[]} */ invokeMock.mock.calls[0][1].activeSessionId).toBe(SESSION_A);
 	});
 
 	it('joins an in-flight submission only when callers share its request token', async () => {
@@ -306,24 +385,24 @@ describe('submitTranscript', () => {
 				resolveInvoke = resolve;
 			}),
 		);
-		select('session-a');
+		select(SESSION_A);
 
 		const first = submitTranscript('继续', {
 			voice: false,
-			submissionToken: 'continue:msg-1',
+			submissionToken: 'continue:msg-00000000000000000000000000000020',
 		});
 		const second = submitTranscript('继续', {
 			voice: false,
-			submissionToken: 'continue:msg-1',
+			submissionToken: 'continue:msg-00000000000000000000000000000020',
 		});
 		// Both callers share ONE in-flight promise: the invoke is called once.
 		expect(invokeMock).toHaveBeenCalledTimes(1);
 
-		resolveInvoke!({ Supplemented: {} });
+		resolveInvoke!(supplemented(SESSION_A));
 		await Promise.all([first, second]);
 
 		expect(invokeMock).toHaveBeenCalledTimes(1);
-		const list = messagesFor('session-a');
+		const list = messagesFor(SESSION_A);
 		expect(list).toHaveLength(1); // a concurrent duplicate must not add a second bubble
 	});
 
@@ -335,16 +414,16 @@ describe('submitTranscript', () => {
 					resolveFirst = resolve;
 				}),
 			)
-			.mockResolvedValueOnce({ Supplemented: {} });
-		select('session-a');
+			.mockResolvedValueOnce(supplemented(SESSION_B));
+		select(SESSION_A);
 		const first = submitTranscript('继续', { voice: false });
-		select('session-b');
+		select(SESSION_B);
 		const second = submitTranscript('继续', { voice: false });
 		// Different session lanes are independent; switching sessions must not
 		// make B wait for an unrelated in-flight request in A.
 		expect(invokeMock).toHaveBeenCalledTimes(2);
-		expect(/** @type {any[]} */ invokeMock.mock.calls[1][1].activeSessionId).toBe('session-b');
-		resolveFirst!({ Supplemented: {} });
+		expect(/** @type {any[]} */ invokeMock.mock.calls[1][1].activeSessionId).toBe(SESSION_B);
+		resolveFirst!(supplemented(SESSION_A));
 		await Promise.all([first, second]);
 		expect(invokeMock).toHaveBeenCalledTimes(2);
 	});
@@ -357,7 +436,7 @@ describe('submitTranscript', () => {
 					resolveFirst = resolve;
 				}),
 			)
-			.mockResolvedValueOnce({ Supplemented: {} });
+			.mockResolvedValueOnce(supplemented('ses-11111111111111111111111111111111'));
 		select(null);
 		const first = submitTranscript('第一条', { voice: false });
 		const second = submitTranscript('第二条', { voice: true });
@@ -385,7 +464,7 @@ describe('submitTranscript', () => {
 					resolveFirst = resolve;
 				}),
 			)
-			.mockResolvedValueOnce({ Supplemented: {} });
+			.mockResolvedValueOnce(supplemented('ses-33333333333333333333333333333333'));
 		select(null);
 		newSessionIntentStore.set(true);
 		const first = submitTranscript('新对话第一条', { voice: false });
@@ -413,20 +492,20 @@ describe('submitTranscript', () => {
 					resolveFirst = resolve;
 				}),
 			)
-			.mockResolvedValueOnce({ Supplemented: {} });
-		select('session-a');
+			.mockResolvedValueOnce(supplemented(SESSION_A));
+		select(SESSION_A);
 
 		const first = submitTranscript('相同内容', { voice: false });
 		const second = submitTranscript('相同内容', { voice: false });
 		// Only the first dispatched so far; the second is queued, not dropped.
 		expect(invokeMock).toHaveBeenCalledTimes(1);
 
-		resolveFirst!({ Supplemented: {} });
+		resolveFirst!(supplemented(SESSION_A));
 		const results = await Promise.all([first, second]);
 
 		expect(invokeMock).toHaveBeenCalledTimes(2);
-		expect(results[1]).toEqual({ Supplemented: {} });
-		const list = messagesFor('session-a');
+		expect(results[1]).toEqual(supplemented(SESSION_A));
+		const list = messagesFor(SESSION_A);
 		expect(list.map((x) => x.content)).toEqual(['相同内容', '相同内容']);
 	});
 
@@ -444,7 +523,7 @@ describe('submitTranscript', () => {
 					resolveSecond = resolve;
 				}),
 			)
-			.mockResolvedValueOnce({ Supplemented: {} });
+			.mockResolvedValueOnce(supplemented('ses-11111111111111111111111111111111'));
 		select(null);
 
 		const first = submitTranscript('创建会话', { voice: false });
@@ -467,7 +546,7 @@ describe('submitTranscript', () => {
 		expect(/** @type {any[]} */ invokeMock.mock.calls[1][1].activeSessionId).toBe(
 			'ses-11111111111111111111111111111111',
 		);
-		resolveSecond!({ Supplemented: {} });
+		resolveSecond!(supplemented('ses-11111111111111111111111111111111'));
 		await vi.waitFor(() => expect(invokeMock).toHaveBeenCalledTimes(3));
 		await Promise.all([first, second, third]);
 		expect(invokeMock).toHaveBeenCalledTimes(3);
@@ -486,20 +565,20 @@ describe('submitTranscript', () => {
 					resolveFirst = resolve;
 				}),
 			)
-			.mockResolvedValueOnce({ Supplemented: {} });
-		select('session-a');
+			.mockResolvedValueOnce(supplemented(SESSION_A));
+		select(SESSION_A);
 
 		const first = submitTranscript('给 A', { voice: false });
 		const second = submitTranscript('也给 A', { voice: false });
 		// Switch away while the second is still queued.
-		select('session-b');
-		resolveFirst!({ Supplemented: {} });
+		select(SESSION_B);
+		resolveFirst!(supplemented(SESSION_A));
 		await Promise.all([first, second]);
 
 		expect(invokeMock).toHaveBeenCalledTimes(2);
-		expect(/** @type {any[]} */ invokeMock.mock.calls[1][1].activeSessionId).toBe('session-a');
-		const listA = messagesFor('session-a');
-		const listB = messagesFor('session-b');
+		expect(/** @type {any[]} */ invokeMock.mock.calls[1][1].activeSessionId).toBe(SESSION_A);
+		const listA = messagesFor(SESSION_A);
+		const listB = messagesFor(SESSION_B);
 		expect(listA.map((x) => x.content)).toEqual(['给 A', '也给 A']);
 		expect(listB || []).toEqual([]);
 	});
@@ -507,13 +586,13 @@ describe('submitTranscript', () => {
 	it('releases the lock after a failed submission so a retry can submit again', async () => {
 		invokeMock
 			.mockRejectedValueOnce(new Error('boom'))
-			.mockResolvedValueOnce({ Supplemented: {} });
-		select('session-a');
+			.mockResolvedValueOnce(supplemented(SESSION_A));
+		select(SESSION_A);
 		await expect(submitTranscript('try 1')).rejects.toThrow('boom');
 		await submitTranscript('try 2');
 
 		expect(invokeMock).toHaveBeenCalledTimes(2);
-		const list = messagesFor('session-a');
+		const list = messagesFor(SESSION_A);
 		expect(list).toHaveLength(1);
 		expect(list[0].content).toBe('try 2');
 	});

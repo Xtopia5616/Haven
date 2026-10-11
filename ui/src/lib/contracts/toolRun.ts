@@ -108,12 +108,21 @@ function hasValidOptionalFields(payload: WireRecord): boolean {
  * Unknown additive fields are ignored. A missing or invalid required field,
  * including an unknown `kind` discriminator, drops the whole row.
  */
-export function mapToolRunPayload(payload: unknown): ToolRunPayload | null {
+export function mapToolRunPayload(
+	payload: unknown,
+	expectedSessionId?: string,
+): ToolRunPayload | null {
 	if (!isRecord(payload)) return null;
 	const toolRunId = canonicalIdField(payload, 'tool_run_id', 'toolrun');
 	if (toolRunId === null) return null;
 	if (!isToolRunKind(payload.kind)) return null;
 	if (!hasValidOptionalFields(payload)) return null;
+	if (
+		expectedSessionId !== undefined &&
+		(!isCanonicalEntityId(expectedSessionId, 'ses') || payload.session_id !== expectedSessionId)
+	) {
+		return null;
+	}
 
 	const mapped: ToolRunPayload = { toolRunId, kind: payload.kind };
 	if (isToolRunStatus(payload.status)) mapped.status = payload.status;

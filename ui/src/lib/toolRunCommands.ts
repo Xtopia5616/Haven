@@ -9,7 +9,7 @@ import { mapToolRunPayload, type ToolRunKind, type ToolRunPayload } from './cont
  */
 export async function listToolRunRows(): Promise<Array<ToolRunPayload | null> | null> {
 	const rows: unknown = await invoke('list_tool_runs');
-	return Array.isArray(rows) ? rows.map(mapToolRunPayload) : null;
+	return Array.isArray(rows) ? rows.map((row) => mapToolRunPayload(row)) : null;
 }
 
 /** Load terminal ToolRun records, optionally restricted to one session. */
@@ -24,7 +24,9 @@ export async function listToolRunHistory(
 		sessionId: sessionId ?? null,
 	});
 	return Array.isArray(rows)
-		? rows.map(mapToolRunPayload).filter((row): row is ToolRunPayload => row !== null)
+		? rows
+				.map((row) => mapToolRunPayload(row, sessionId))
+				.filter((row): row is ToolRunPayload => row !== null)
 		: [];
 }
 

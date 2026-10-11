@@ -39,7 +39,7 @@ export async function getSessionLineage(
 	request: GetSessionLineageRequest,
 ): Promise<SessionLineageResponse> {
 	const value: unknown = await invoke('get_session_lineage', request);
-	return parseSessionLineageResponse(value);
+	return parseSessionLineageResponse(value, request.sessionId);
 }
 
 /** Load a recent persisted history page for the compact chat session switcher. */
@@ -63,7 +63,7 @@ export async function getSessionForResume(
 	request: GetSessionForResumeRequest,
 ): Promise<SessionResumeResponse> {
 	const value: unknown = await invoke('get_session_for_resume', request);
-	return parseSessionResumeResponse(value);
+	return parseSessionResumeResponse(value, request.sessionId);
 }
 
 /** Load the most recent persisted session projection for startup resume. */
@@ -75,7 +75,7 @@ export async function getLatestSessionForResume(): Promise<SessionResumeResponse
 /** Submit transcript text and attachments through the canonical Session ingress. */
 export async function processTranscript(request: ProcessTranscriptRequest): Promise<ProcessResult> {
 	const value: unknown = await invoke('process_transcript', request);
-	return parseProcessResult(value);
+	return parseProcessResult(value, request.activeSessionId);
 }
 
 /** Reopen one persisted session for follow-up input. */
