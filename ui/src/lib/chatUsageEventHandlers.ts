@@ -1,11 +1,6 @@
-import type {
-	AgentCompactionPayload,
-	AgentMediaPlanPayload,
-	AgentUsagePayload,
-} from './contracts/agent.ts';
+import type { AgentMediaPlanPayload, AgentUsagePayload } from './contracts/agent.ts';
 import type { TauriEvent } from './contracts/tauriEvent.ts';
-import { addNotification } from './notificationStore.ts';
-import { coalesceTokenTotal, formatTokenCount } from './sessionUsage.ts';
+import { coalesceTokenTotal } from './sessionUsage.ts';
 import type { SessionAction, SessionTokenStats } from './sessionReducer.ts';
 import { rememberMediaPlan } from './mediaPlanStore.ts';
 import {
@@ -15,12 +10,11 @@ import {
 } from './mediaPlanPresentation.ts';
 
 type UsageEvent = TauriEvent<AgentUsagePayload>;
-type CompactionEvent = TauriEvent<AgentCompactionPayload>;
 type MediaPlanEvent = TauriEvent<AgentMediaPlanPayload>;
 
 /**
- * Build the usage-related Agent event handlers used by the chat route. Usage
- * state is reduced through SessionAction.
+ * Build usage and media-plan state handlers used by the chat route. Usage
+ * state is reduced through SessionAction; event-driven toast stays in +layout.
  */
 export function createChatUsageEventHandlers({
 	dispatchSession,
@@ -28,7 +22,6 @@ export function createChatUsageEventHandlers({
 	dispatchSession: (action: SessionAction) => void;
 }): {
 	'agent:usage': (event: UsageEvent) => void;
-	'agent:compaction': (event: CompactionEvent) => void;
 	'agent:media_plan': (event: MediaPlanEvent) => void;
 } {
 	return {
@@ -106,41 +99,8 @@ export function createChatUsageEventHandlers({
 				...(callKind !== 'agent' || d.stepNumber != null ? { call } : {}),
 			});
 		},
-		'agent:compaction': (event) => {
-			const d = event.payload;
-			const before = formatTokenCount(d.tokensBefore);
-			const after = formatTokenCount(d.tokensAfter);
-			if (d.degraded) {
-				addNotification(
-					`上下文空间不足，已降级压缩：${before} → ${after} tokens；较早内容已省略`,
-					'warning',
-					4000,
-				);
-			} else {
-				addNotification(`上下文压缩：${before} → ${after} tokens`, 'info', 2500);
-			}
-		},
 		'agent:media_plan': (event: MediaPlanEvent) => {
-			const d = event.payload;
-			rememberMediaPlan(d);
-			const projections = d.projections.map(mediaPlanProjectionLabel);
-			const reasons = d.notices
-				.map((notice) => mediaPlanNoticeLabel(notice.code))
-				.filter((label, index, all) => all.indexOf(label) === index);
-			const details = [
-				projections.length > 0
-					? `已使用 ${projections.join('、')}`
-					: '没有发送兼容的附件表示',
-				`策略：${mediaPlanStrategyLabel(d.strategy)}`,
-				...reasons.map((reason) => `原因：${reason}`),
-			];
-			if (details.length > 0) {
-				addNotification(
-					`附件表示（${d.role}）：${details.join('；')}`,
-					d.notices.length > 0 ? 'warning' : 'info',
-					5000,
-				);
-			}
+			rememberMediaPlan(event.payload);
 		},
 	};
 }

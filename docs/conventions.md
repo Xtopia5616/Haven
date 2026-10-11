@@ -168,6 +168,7 @@ AgentEvent / 其它后端事件
 | permission 请求（confirm / scheduled confirm） | `interaction:requested` → `+layout` + DesktopNotifications | 是（`permission_requested` 双通道） |
 | Agent 通用通知（`notify`、预算提示等） | `notification:show`，无 `notification_kind` | 否（始终 toast；Windows 亦始终开启） |
 | 后台任务/定时任务完成通知 | `notification:show`，`notification_kind=tool_run_completion` | 是（共享 `tool_run_completed.in_app`）；后台任务保留非当前会话且 completed/failed 才 toast |
+| Agent 上下文压缩、媒体表示说明 | `agent:compaction` / `agent:media_plan` → `+layout` | 否（始终显示应用内 toast）；页面 controller 只维护 session/media 投影状态 |
 | 录音 / 转写 / 静音 / 热键冲突 / MCP 状态 | `+layout` 事件 handler | 否（操作反馈，无独立配置项） |
 | 用户点击触发的命令结果 | 页面 / helper 直接 `addNotification` | 否 |
 

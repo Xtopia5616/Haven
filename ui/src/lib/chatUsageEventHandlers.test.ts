@@ -88,7 +88,6 @@ describe('createChatUsageEventHandlers', () => {
 				],
 			}),
 		]);
-		expect(get(notificationStore)[0].msg).toContain('转写文本');
-		expect(get(notificationStore)[0].msg).toContain('当前模型能力未知');
+		expect(get(notificationStore)).toEqual([]);
 	});
 });

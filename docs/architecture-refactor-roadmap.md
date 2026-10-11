@@ -211,6 +211,8 @@ ToolRunStore 的生命周期时间、completion 时间和计时触发 `due_at` �
 
 Compaction、memory embedding maintenance、App 启动/恢复、clipboard history 和 managed-media cleanup 的错误日志现统一清洗；上传批次与生成媒体目录项日志移除 basename，避免暴露用户文件名（ADR 0981）。
 
+Agent compaction 与 media-plan toast 现由 `+layout` 统一持有；chat controller 保留 media-plan session 状态投影，chat usage handler 不再写通知 store（ADR 0982）。
+
 `process_transcript` 的 command invocation 与 response parser 由 `sessionCommands` 持有，submit coordinator 只消费已验证结果；Rust 和 UI 派生集合按实体复数命名，context-menu store 文件明确标注 `Store` 角色（ADR 0968–0969）。
 
 Session、ToolRun、transcript supplement 与 lineage command response 现在将响应实体绑定到请求 owner；lineage DTO 显式携带父子关系锚点，resume 校验 `msg-*` supplement step 与全部嵌套 managed-asset 引用（ADR 0970）。

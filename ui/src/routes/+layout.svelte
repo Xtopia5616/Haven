@@ -55,6 +55,7 @@
 	import { setToolManifests } from '$lib/toolManifest.ts';
 	import { listBuiltinToolManifests } from '$lib/toolsCommands.ts';
 	import { createChatInteractionEventHandlers } from '$lib/chatInteractionEventHandlers.ts';
+	import { formatAgentCompactionToast, formatAgentMediaPlanToast } from '$lib/agentEventToast.ts';
 	import {
 		clearRequestedConfirmation,
 		requestedConfirmationIdStore,
@@ -1076,6 +1077,14 @@
 					},
 				}),
 				...agentEventListeners({
+					'agent:compaction': (event) => {
+						const toast = formatAgentCompactionToast(event.payload);
+						addNotification(toast.message, toast.type, toast.durationMs);
+					},
+					'agent:media_plan': (event) => {
+						const toast = formatAgentMediaPlanToast(event.payload);
+						addNotification(toast.message, toast.type, toast.durationMs);
+					},
 					'agent:stream_stalled': (event) => {
 						// Provider stream went silent while the step is still in flight
 						// (first-chunk wait or mid-step gap). Show the factual waiting

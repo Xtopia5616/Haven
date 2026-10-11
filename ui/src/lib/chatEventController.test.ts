@@ -80,7 +80,6 @@ describe('createChatEventController', () => {
 				'agent:tool_output',
 				'agent:observation',
 				'agent:usage',
-				'agent:compaction',
 				'agent:media_plan',
 			].sort(),
 		);
