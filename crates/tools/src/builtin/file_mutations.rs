@@ -168,18 +168,18 @@ pub(super) async fn patch(
     path: &str,
     edits: Option<&[FilesPatchEdit]>,
     expected_hash: Option<&str>,
-    max_read_chars: u64,
+    max_read_bytes: u64,
     max_write_bytes: u64,
     dry_run: bool,
     cancel: CancellationToken,
 ) -> anyhow::Result<ToolResult> {
     let edits = edits.ok_or_else(|| anyhow::anyhow!("'edits' is required for patch operation"))?;
     let meta = tokio::fs::metadata(path).await?;
-    if meta.len() > max_read_chars {
+    if meta.len() > max_read_bytes {
         anyhow::bail!(
             "file is {} bytes, above the {} byte patch limit. Locate the text with search(mode=content) and rewrite the file in smaller pieces.",
             meta.len(),
-            max_read_chars
+            max_read_bytes
         );
     }
     let bytes = tokio::fs::read(path).await?;
@@ -194,7 +194,7 @@ pub(super) async fn patch(
         );
     }
     let (result, summaries) =
-        apply_patch_edits(&decoded.text, edits, max_read_chars, cancel.clone())?;
+        apply_patch_edits(&decoded.text, edits, max_write_bytes, cancel.clone())?;
     if cancel.is_cancelled() {
         anyhow::bail!("cancelled");
     }

@@ -127,6 +127,27 @@ use super::*;
         assert!(ops.contains(&"outline"));
         assert!(ops.contains(&"search"));
         assert_eq!(schema["oneOf"].as_array().unwrap().len(), 11);
+
+        let branch = |operation: &str| {
+            schema["oneOf"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|branch| branch["properties"]["operation"]["const"] == operation)
+                .unwrap()
+        };
+        let write_content = &branch("write")["properties"]["content"];
+        assert!(write_content["maxLength"].is_null());
+        assert!(write_content["description"]
+            .as_str()
+            .unwrap()
+            .contains("UTF-8 bytes"));
+        let patch_edits = &branch("patch")["properties"]["edits"];
+        assert!(patch_edits["items"]["properties"]["old_string"]["maxLength"].is_null());
+        assert!(patch_edits["description"]
+            .as_str()
+            .unwrap()
+            .contains("UTF-8 bytes"));
     }
 
     #[test]

@@ -204,12 +204,12 @@ pub(crate) async fn register_builtin_tools(
         files::FilesTool::new(
             router.clone(),
             tool_output_cap(settings, "files", limits.max_observation_chars),
-            limits.file_read_max_chars,
+            limits.file_max_full_file_bytes,
             limits.file_line_span,
-            limits.file_max_line_chars,
+            limits.file_line_max_bytes,
             limits.file_summary_input_chars,
             limits.file_max_list_entries,
-            limits.file_max_byte_read,
+            limits.file_byte_read_max_bytes,
             limits.file_summary_timeout_secs,
             file_search::FileSearchEngine::new(
                 limits.search_snippet_chars,
@@ -219,7 +219,7 @@ pub(crate) async fn register_builtin_tools(
             ),
             managed_assets.clone(),
         )
-        .with_max_write_bytes(limits.file_max_byte_read)
+        .with_max_write_bytes(limits.file_write_max_bytes)
         .with_media_tool(media_tool.clone()),
     );
     for contract in operation_specs(limits.search_max_results) {

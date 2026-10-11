@@ -19,7 +19,7 @@ pub(crate) async fn outline(
     path: &str,
     start_line: u64,
     max_symbols: usize,
-    max_line_chars: usize,
+    max_line_bytes: usize,
     cancel: CancellationToken,
 ) -> anyhow::Result<ToolResult> {
     let file = tokio::fs::File::open(path).await?;
@@ -28,7 +28,7 @@ pub(crate) async fn outline(
     let mut line_buf = Vec::new();
     let mut line_number = 1_u64;
     let max_symbols = max_symbols.clamp(1, MAX_SYMBOLS);
-    let line_cap = max_line_chars.clamp(256, 128_000);
+    let line_cap = max_line_bytes.clamp(256, 128_000);
     let mut symbols = Vec::new();
     let mut truncated = false;
     let mut next_start_line = None;

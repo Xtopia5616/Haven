@@ -41,12 +41,12 @@ const MAX_INSPECT_HASH_BYTES: u64 = 64 * 1024 * 1024;
 pub struct FilesTool {
     summarizer: Option<Arc<LlmRouter>>,
     max_output_chars: usize,
-    max_read_chars: u64,
+    max_full_file_bytes: u64,
     line_span: u64,
-    max_line_chars: usize,
+    max_line_bytes: usize,
     summary_input_chars: usize,
     max_list_entries: usize,
-    max_byte_read: u64,
+    max_byte_read_bytes: u64,
     max_write_bytes: u64,
     summary_timeout_secs: u64,
     search: FileSearchEngine,
@@ -59,12 +59,12 @@ impl Default for FilesTool {
         Self {
             summarizer: None,
             max_output_chars: 20_000,
-            max_read_chars: 128_000,
+            max_full_file_bytes: 128_000,
             line_span: 100,
-            max_line_chars: 128_000,
+            max_line_bytes: 128_000,
             summary_input_chars: 60_000,
             max_list_entries: 1_000,
-            max_byte_read: 16 * 1024 * 1024,
+            max_byte_read_bytes: 16 * 1024 * 1024,
             max_write_bytes: 16 * 1024 * 1024,
             summary_timeout_secs: 120,
             search: FileSearchEngine::default(),
@@ -164,12 +164,12 @@ impl FilesTool {
     pub fn new(
         summarizer: Option<Arc<LlmRouter>>,
         max_output_chars: usize,
-        max_read_chars: u64,
+        max_full_file_bytes: u64,
         line_span: u64,
-        max_line_chars: usize,
+        max_line_bytes: usize,
         summary_input_chars: usize,
         max_list_entries: usize,
-        max_byte_read: u64,
+        max_byte_read_bytes: u64,
         summary_timeout_secs: u64,
         search: FileSearchEngine,
         managed_assets: ManagedAssetRegistry,
@@ -177,13 +177,13 @@ impl FilesTool {
         Self {
             summarizer,
             max_output_chars,
-            max_read_chars,
+            max_full_file_bytes,
             line_span,
-            max_line_chars,
+            max_line_bytes,
             summary_input_chars,
             max_list_entries,
-            max_byte_read,
-            max_write_bytes: max_byte_read,
+            max_byte_read_bytes,
+            max_write_bytes: 16 * 1024 * 1024,
             summary_timeout_secs,
             search,
             managed_assets,
@@ -335,36 +335,38 @@ impl FilesTool {
                         start_line,
                         end_line,
                         self.max_output_chars,
-                        self.max_line_chars,
+                        self.max_line_bytes,
                     )
                     .await
                 } else if has_byte_args {
                     let offset = params.offset.unwrap_or(0);
-                    let limit = params.limit.unwrap_or(self.max_read_chars);
+                    let limit = params.limit.unwrap_or(self.max_full_file_bytes);
                     read_bytes(
                         &path,
                         offset,
                         limit,
                         self.max_output_chars,
-                        self.max_byte_read,
+                        self.max_byte_read_bytes,
                     )
                     .await
                 } else {
                     read_full(
                         &path,
                         self.max_output_chars,
-                        self.max_read_chars,
+                        self.max_full_file_bytes,
                         cancel.clone(),
                     )
                     .await
                 }
             }
             FilesOperation::Inspect => {
-                inspect_file(Path::new(&path), true, self.max_byte_read).await
+                inspect_file(Path::new(&path), true, self.max_byte_read_bytes).await
             }
-            FilesOperation::Stat => inspect_file(Path::new(&path), false, self.max_byte_read).await,
+            FilesOperation::Stat => {
+                inspect_file(Path::new(&path), false, self.max_byte_read_bytes).await
+            }
             FilesOperation::Hash => {
-                let result = inspect_file(Path::new(&path), true, self.max_byte_read).await?;
+                let result = inspect_file(Path::new(&path), true, self.max_byte_read_bytes).await?;
                 let mut output = result.output;
                 if let Some(object) = output.as_object_mut() {
                     object.retain(|key, _| {
@@ -389,7 +391,7 @@ impl FilesTool {
                     &path,
                     start_line,
                     max_symbols,
-                    self.max_line_chars,
+                    self.max_line_bytes,
                     cancel.clone(),
                 )
                 .await
@@ -413,7 +415,7 @@ impl FilesTool {
                     params.new_string.unwrap_or_default().as_str(),
                     params.expected_hash.as_deref(),
                     file_mutations::MutationLimits {
-                        max_read_bytes: self.max_read_chars,
+                        max_read_bytes: self.max_full_file_bytes,
                         max_write_bytes: self.max_write_bytes,
                     },
                     params.dry_run.unwrap_or(false),
@@ -426,7 +428,7 @@ impl FilesTool {
                     &path,
                     params.edits.as_deref(),
                     params.expected_hash.as_deref(),
-                    self.max_read_chars,
+                    self.max_full_file_bytes,
                     self.max_write_bytes,
                     params.dry_run.unwrap_or(false),
                     cancel.clone(),
@@ -457,7 +459,7 @@ impl FilesTool {
                     params.end_line.unwrap_or(0),
                     params.focus.as_deref(),
                     input_budget,
-                    self.max_line_chars,
+                    self.max_line_bytes,
                     self.summarizer.clone(),
                     cancel.clone(),
                     self.summary_timeout_secs,

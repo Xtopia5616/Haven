@@ -330,6 +330,10 @@ describe('SettingsView diagnostics export', () => {
 				max_attachment_image_dim_px: 1568,
 				attachment_image_jpeg_quality: 0.85,
 				response_token_floor: 64_000,
+				file_max_full_file_bytes: 256_000,
+				file_line_max_bytes: 32_000,
+				file_byte_read_max_bytes: 8 * 1024 * 1024,
+				file_write_max_bytes: 32 * 1024 * 1024,
 			},
 			memory: { fact_inference_enabled: false },
 			security: {
@@ -414,6 +418,10 @@ describe('SettingsView diagnostics export', () => {
 		expect(saved.media.image_gen.provider_name).toBe('image-connection');
 		expect(saved.context_limits).toMatchObject({
 			response_token_floor: 64_000,
+			file_max_full_file_bytes: 256_000,
+			file_line_max_bytes: 32_000,
+			file_byte_read_max_bytes: 8 * 1024 * 1024,
+			file_write_max_bytes: 32 * 1024 * 1024,
 			tool_run_result_context_chars: 4321,
 			fact_extraction_min_interval_secs: 77,
 			turn_deadline_secs: 901,

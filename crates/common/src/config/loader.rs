@@ -504,6 +504,13 @@ mod tests {
         );
         assert_eq!(cfg.context_limits.max_attachment_image_dim_px, 1568);
         assert_eq!(cfg.context_limits.attachment_image_jpeg_quality, 0.85);
+        assert_eq!(cfg.context_limits.file_max_full_file_bytes, 128_000);
+        assert_eq!(cfg.context_limits.file_line_max_bytes, 128_000);
+        assert_eq!(
+            cfg.context_limits.file_byte_read_max_bytes,
+            16 * 1024 * 1024
+        );
+        assert_eq!(cfg.context_limits.file_write_max_bytes, 16 * 1024 * 1024);
         assert_eq!(
             cfg.context_limits.mcp_max_binary_payload_bytes,
             2 * 1024 * 1024
@@ -562,6 +569,33 @@ mod tests {
                 "removed setting must not be accepted: {field}"
             );
         }
+    }
+
+    #[test]
+    fn file_limits_use_byte_units_and_separate_read_and_write_caps() {
+        for field in [
+            "file_read_max_chars = 128000",
+            "file_max_line_chars = 128000",
+            "file_max_byte_read = 16777216",
+        ] {
+            let toml = format!("[context_limits]\n{field}\n");
+            assert!(
+                toml::from_str::<AppConfig>(&toml).is_err(),
+                "retired file limit key must not be accepted: {field}"
+            );
+        }
+
+        let parsed: AppConfig = toml::from_str(
+            "[context_limits]\nfile_max_full_file_bytes = 65536\nfile_line_max_bytes = 8192\nfile_byte_read_max_bytes = 2097152\nfile_write_max_bytes = 4194304\n",
+        )
+        .unwrap();
+        assert_eq!(parsed.context_limits.file_max_full_file_bytes, 65_536);
+        assert_eq!(parsed.context_limits.file_line_max_bytes, 8_192);
+        assert_eq!(
+            parsed.context_limits.file_byte_read_max_bytes,
+            2 * 1024 * 1024
+        );
+        assert_eq!(parsed.context_limits.file_write_max_bytes, 4 * 1024 * 1024);
     }
 
     #[test]
@@ -1027,10 +1061,27 @@ mod tests {
         let mut cfg = AppConfig::default();
         cfg.media.audio.sample_rate = 44100;
         cfg.context_limits.response_token_floor = 48_000;
+        cfg.context_limits.file_max_full_file_bytes = 256_000;
+        cfg.context_limits.file_line_max_bytes = 32_000;
+        cfg.context_limits.file_byte_read_max_bytes = 8 * 1024 * 1024;
+        cfg.context_limits.file_write_max_bytes = 32 * 1024 * 1024;
         std::fs::write(&path, toml::to_string_pretty(&cfg).unwrap()).unwrap();
         let loader = ConfigLoader::load_from(&path).unwrap();
         assert_eq!(loader.config().media.audio.sample_rate, 44100);
         assert_eq!(loader.config().context_limits.response_token_floor, 48_000);
+        assert_eq!(
+            loader.config().context_limits.file_max_full_file_bytes,
+            256_000
+        );
+        assert_eq!(loader.config().context_limits.file_line_max_bytes, 32_000);
+        assert_eq!(
+            loader.config().context_limits.file_byte_read_max_bytes,
+            8 * 1024 * 1024
+        );
+        assert_eq!(
+            loader.config().context_limits.file_write_max_bytes,
+            32 * 1024 * 1024
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -315,7 +315,7 @@ use super::*;
         assert_eq!(tokio::fs::read_to_string(&file).await.unwrap(), original);
 
         let tool = FilesTool {
-            max_read_chars: 10,
+            max_full_file_bytes: 2,
             ..FilesTool::default()
         };
         let result = tool
@@ -330,6 +330,58 @@ use super::*;
             .await;
         assert!(result.is_err());
         assert_eq!(tokio::fs::read_to_string(&file).await.unwrap(), original);
+    }
+
+    #[tokio::test]
+    async fn configured_file_read_caps_do_not_set_the_write_cap() {
+        let tmp = TempDir::new().unwrap();
+        let file = tmp.path().join("independent-write-cap.txt");
+        let path = file.to_string_lossy().to_string();
+        let tool = FilesTool {
+            max_full_file_bytes: 1,
+            max_byte_read_bytes: 1,
+            ..FilesTool::default()
+        };
+
+        let result = tool
+            .execute(
+                json!({"operation": "write", "path": path, "content": "ok"}),
+                CancellationToken::new(),
+            )
+            .await;
+        assert!(result.is_ok());
+        assert_eq!(tokio::fs::read_to_string(&file).await.unwrap(), "ok");
+
+        let limited_file = tmp.path().join("explicit-write-cap.txt");
+        let limited = FilesTool::default().with_max_write_bytes(1);
+        let result = limited
+            .execute(
+                json!({
+                    "operation": "write",
+                    "path": limited_file.to_string_lossy(),
+                    "content": "ok"
+                }),
+                CancellationToken::new(),
+            )
+            .await;
+        assert!(result.is_err());
+        assert!(!limited_file.exists());
+
+        let patch_limited_file = tmp.path().join("explicit-patch-write-cap.txt");
+        tokio::fs::write(&patch_limited_file, "a").await.unwrap();
+        let limited = FilesTool::default().with_max_write_bytes(1);
+        let result = limited
+            .execute(
+                json!({
+                    "operation": "patch",
+                    "path": patch_limited_file.to_string_lossy(),
+                    "edits": [{"old_string": "a", "new_string": "ok"}]
+                }),
+                CancellationToken::new(),
+            )
+            .await;
+        assert!(result.is_err());
+        assert_eq!(tokio::fs::read_to_string(&patch_limited_file).await.unwrap(), "a");
     }
 
     #[test]

@@ -8,12 +8,12 @@ use crate::builtin::file_line_reader::read_line_bounded;
 
 /// Read a text file in full. Multimodal path inputs are deliberately treated
 /// as binary; managed media must enter through the `media(asset_id)` tool.
-/// Refuses files larger than `max_read_chars` and reads only what the output
+/// Refuses files larger than `max_read_bytes` and reads only what the output
 /// budget can hold instead of pulling the whole file into memory first.
 pub(super) async fn read_full(
     path: &str,
     max_chars: usize,
-    max_read_chars: u64,
+    max_read_bytes: u64,
     cancel: CancellationToken,
 ) -> anyhow::Result<ToolResult> {
     if cancel.is_cancelled() {
@@ -30,7 +30,7 @@ pub(super) async fn read_full(
     ) {
         return Ok(binary_result(path, size));
     }
-    if size > max_read_chars {
+    if size > max_read_bytes {
         // Still return a bounded content prefix (budget-sized read, never the
         // whole file) so callers can see the head and reconstruct if needed.
         let to_read = ((max_chars as u64).saturating_mul(4)).min(size).max(1) as usize;
@@ -48,7 +48,7 @@ pub(super) async fn read_full(
             "encoding": decoded.encoding,
             "hint": format!(
                 "File is {} bytes, above the {} byte full-read limit. The head is included above; read specific ranges with offset/limit (bytes) or start_line/end_line (lines), or locate text with search(mode=content).",
-                size, max_read_chars
+                size, max_read_bytes
             ),
         });
         if output.truncated {
@@ -180,7 +180,7 @@ pub(super) async fn read_bytes(
     offset: u64,
     limit: u64,
     max_chars: usize,
-    max_byte_read: u64,
+    max_byte_read_bytes: u64,
 ) -> anyhow::Result<ToolResult> {
     let mut file = tokio::fs::File::open(path).await?;
     let total = file.metadata().await?.len();
@@ -197,7 +197,7 @@ pub(super) async fn read_bytes(
     // The output is truncated to max_chars anyway, and the caller-supplied
     // limit is untrusted: cap the allocation and the actual read.
     let effective_limit = limit
-        .clamp(1, max_byte_read)
+        .clamp(1, max_byte_read_bytes)
         .min((max_chars as u64).saturating_mul(4).max(1))
         .min(total - offset) as usize;
     file.seek(tokio::io::SeekFrom::Start(offset)).await?;
@@ -234,7 +234,7 @@ pub(super) async fn read_lines(
     start_line: u64,
     end_line: u64,
     max_chars: usize,
-    max_line_chars: usize,
+    max_line_bytes: usize,
 ) -> anyhow::Result<ToolResult> {
     let file = tokio::fs::File::open(path).await?;
     let total = file.metadata().await?.len();
@@ -248,7 +248,7 @@ pub(super) async fn read_lines(
 
     loop {
         let Some((n, exceeded)) =
-            read_line_bounded(&mut reader, &mut line_buf, max_line_chars).await?
+            read_line_bounded(&mut reader, &mut line_buf, max_line_bytes).await?
         else {
             break;
         };

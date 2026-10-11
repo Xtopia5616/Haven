@@ -106,19 +106,22 @@ pub struct ContextLimitsConfig {
     /// JPEG quality (0.0-1.0) used when the webview re-encodes an image.
     pub attachment_image_jpeg_quality: f32,
     // —— file tool ——
-    /// Full-read cap (chars): larger files need `offset`/`limit` or
-    /// `start_line`/`end_line`. Also the default byte-mode `limit`.
-    pub file_read_max_chars: u64,
+    /// Maximum bytes for whole-file operations that load the full content,
+    /// including read, edit, and patch. Also the default byte-mode `limit`.
+    pub file_max_full_file_bytes: u64,
     /// Default lines to read in line mode when only `start_line` is given.
     pub file_line_span: u64,
-    /// Single line too long to buffer safely (chars).
-    pub file_max_line_chars: usize,
+    /// Maximum bytes buffered for one line in line-oriented file operations.
+    pub file_line_max_bytes: usize,
     /// Default input budget (chars) sent to the summarizer model.
     pub file_summary_input_chars: usize,
     /// Cap on directory entries returned by the file `list` operation.
     pub file_max_list_entries: usize,
-    /// Absolute safety cap for byte-mode reads, regardless of caller `limit`.
-    pub file_max_byte_read: u64,
+    /// Absolute safety cap for byte-mode reads and inspect/hash reads,
+    /// regardless of caller `limit`.
+    pub file_byte_read_max_bytes: u64,
+    /// Maximum bytes written by a single file write, edit, or patch operation.
+    pub file_write_max_bytes: u64,
     /// Cap on image bytes sent to the vision model.
     pub file_vision_max_bytes: u64,
     // —— files tool: search operation ——
@@ -253,12 +256,13 @@ impl Default for ContextLimitsConfig {
             max_upload_total_bytes: 512 * 1024 * 1024,
             max_attachment_image_dim_px: 1568,
             attachment_image_jpeg_quality: 0.85,
-            file_read_max_chars: 128_000,
+            file_max_full_file_bytes: 128_000,
             file_line_span: 100,
-            file_max_line_chars: 128_000,
+            file_line_max_bytes: 128_000,
             file_summary_input_chars: 60_000,
             file_max_list_entries: 1_000,
-            file_max_byte_read: 16 * 1024 * 1024,
+            file_byte_read_max_bytes: 16 * 1024 * 1024,
+            file_write_max_bytes: 16 * 1024 * 1024,
             file_vision_max_bytes: 8 * 1024 * 1024,
             search_snippet_chars: 640,
             search_max_results: 1_000,

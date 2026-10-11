@@ -93,7 +93,7 @@ impl Tool for FilesTool {
                         "path": { "type": "string", "minLength": 1, "description": "Local file path to read" },
                         "asset_id": { "type": "string", "pattern": "^asset-[0-9a-f]{32}$", "description": "Managed attachment id returned by an earlier tool result" },
                         "offset": { "type": "integer", "minimum": 0, "default": 0, "description": "Zero-based byte offset; defaults to 0. Use byte arguments instead of line arguments" },
-                        "limit": { "type": "integer", "minimum": 1, "maximum": self.max_byte_read, "description": "Maximum bytes to read from offset; omit for the configured default span. Do not combine with line arguments" },
+                        "limit": { "type": "integer", "minimum": 1, "maximum": self.max_byte_read_bytes, "description": "Maximum bytes to read from offset; omit for the configured default span. Do not combine with line arguments" },
                         "start_line": { "type": "integer", "minimum": 1, "default": 1, "description": "1-based first line; defaults to 1. Use line arguments instead of byte arguments" },
                         "end_line": { "type": "integer", "minimum": 1, "description": format!("1-based inclusive last line; omit for up to {} lines", self.line_span) },
                         "focus": { "type": "string", "description": "Optional focus when reading an image" }
@@ -107,7 +107,7 @@ impl Tool for FilesTool {
                     "properties": {
                         "operation": { "const": "write" },
                         "path": { "type": "string", "minLength": 1, "description": "File path to replace or create" },
-                        "content": { "type": "string", "maxLength": self.max_write_bytes, "description": "Complete file content; an empty string is allowed" },
+                        "content": { "type": "string", "description": format!("Complete file content; maximum {} UTF-8 bytes. An empty string is allowed", self.max_write_bytes) },
                         "expected_hash": { "type": "string", "minLength": 1, "description": "Optional SHA-256 from files.inspect or files.hash; use 'missing' for a new path and reject if the current file differs" },
                         "dry_run": { "type": "boolean", "default": false, "description": "Validate and report the proposed write without changing the file; defaults to false" }
                     },
@@ -140,7 +140,7 @@ impl Tool for FilesTool {
                         "operation": { "const": "edit" },
                         "path": { "type": "string", "minLength": 1, "description": "Text file path to edit" },
                         "old_string": { "type": "string", "description": "Existing text to replace; must match exactly once" },
-                        "new_string": { "type": "string", "maxLength": self.max_write_bytes, "description": "Replacement text; an empty string deletes the match" },
+                        "new_string": { "type": "string", "description": format!("Replacement text; the resulting file must fit within {} UTF-8 bytes. An empty string deletes the match", self.max_write_bytes) },
                         "expected_hash": { "type": "string", "minLength": 1, "description": "Optional SHA-256 from files.inspect or files.hash; reject the edit if the current file differs" },
                         "dry_run": { "type": "boolean", "default": false, "description": "Validate and report the proposed edit without changing the file; defaults to false" }
                     },
@@ -156,13 +156,13 @@ impl Tool for FilesTool {
                             "type": "array",
                             "minItems": 1,
                             "maxItems": MAX_PATCH_EDITS,
-                            "description": "Exact replacements validated against the original file before one write",
+                            "description": format!("Exact replacements validated against the original file before one write; combined old/new text is limited to {} UTF-8 bytes", MAX_PATCH_INPUT_BYTES),
                             "items": {
                                 "type": "object",
                                 "additionalProperties": false,
                                 "properties": {
-                                    "old_string": { "type": "string", "minLength": 1, "maxLength": MAX_PATCH_INPUT_BYTES, "description": "Existing text; must match exactly once unless expected_matches is provided" },
-                                    "new_string": { "type": "string", "maxLength": MAX_PATCH_INPUT_BYTES, "description": "Replacement text; an empty string deletes the match" },
+                                    "old_string": { "type": "string", "minLength": 1, "description": "Existing text; must match exactly once unless expected_matches is provided" },
+                                    "new_string": { "type": "string", "description": "Replacement text; an empty string deletes the match" },
                                     "expected_matches": { "type": "integer", "minimum": 1, "description": "Expected non-overlapping match count; defaults to 1" }
                                 },
                                 "required": ["old_string", "new_string"]

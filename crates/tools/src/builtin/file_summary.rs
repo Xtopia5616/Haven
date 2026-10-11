@@ -22,7 +22,7 @@ pub(super) async fn summarize(
     end_line: u64,
     focus: Option<&str>,
     input_budget: usize,
-    max_line_chars: usize,
+    max_line_bytes: usize,
     summarizer: Option<Arc<LlmRouter>>,
     cancel: CancellationToken,
     summary_timeout_secs: u64,
@@ -55,7 +55,7 @@ pub(super) async fn summarize(
         start_line,
         end_line,
         input_budget,
-        max_line_chars,
+        max_line_bytes,
         cancel.clone(),
     )
     .await?;
@@ -163,14 +163,14 @@ async fn read_summary_source(
     start_line: u64,
     end_line: u64,
     input_budget: usize,
-    max_line_chars: usize,
+    max_line_bytes: usize,
     cancel: CancellationToken,
 ) -> anyhow::Result<SummaryInput> {
     if cancel.is_cancelled() {
         anyhow::bail!("cancelled");
     }
     let (content, actual_start, actual_end, size, truncated) =
-        read_for_summary(path, start_line, end_line, input_budget, max_line_chars).await?;
+        read_for_summary(path, start_line, end_line, input_budget, max_line_bytes).await?;
     Ok(SummaryInput {
         content,
         actual_start,
@@ -218,7 +218,7 @@ pub(super) async fn read_for_summary(
     start_line: u64,
     end_line: u64,
     max_chars: usize,
-    max_line_chars: usize,
+    max_line_bytes: usize,
 ) -> anyhow::Result<(String, u64, u64, u64, bool)> {
     let file = tokio::fs::File::open(path).await?;
     let size = file.metadata().await?.len();
@@ -232,7 +232,7 @@ pub(super) async fn read_for_summary(
 
     loop {
         let Some((_bytes_read, exceeded)) =
-            read_line_bounded(&mut reader, &mut line_buf, max_line_chars).await?
+            read_line_bounded(&mut reader, &mut line_buf, max_line_bytes).await?
         else {
             break;
         };
@@ -240,7 +240,7 @@ pub(super) async fn read_for_summary(
             anyhow::bail!(
                 "line {} exceeds the {} byte single-line limit; summarize a narrower range",
                 current,
-                max_line_chars
+                max_line_bytes
             );
         }
         if current >= start_line {
