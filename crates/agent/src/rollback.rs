@@ -11,8 +11,8 @@ use crate::lifecycle::{LifecycleOp, LifecycleWindow, decide};
 use crate::react::DurableEventState;
 use crate::resume_support::infer_resume_step;
 use crate::rollback_support::truncate_at_user_message;
-use crate::session::SessionStatus;
 use crate::types::{BranchPoint, TranscriptRecord, project_transcript_with_strategy};
+use haven_common::lifecycle::SessionStatus;
 use haven_memory::{RollbackProjectionBoundary, RollbackRequest};
 
 impl AgentLayer {

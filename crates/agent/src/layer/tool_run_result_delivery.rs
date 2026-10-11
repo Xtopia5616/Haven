@@ -1,4 +1,5 @@
 use super::*;
+use haven_common::lifecycle::SessionStatus;
 use tokio_util::sync::CancellationToken;
 
 pub(super) async fn tool_run_completion_session_status(

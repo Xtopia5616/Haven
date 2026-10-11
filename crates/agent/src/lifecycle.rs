@@ -17,7 +17,7 @@
 //!   (`Completed → Pending` illegal); reopen to Paused first.
 //! - Steering never cancels in-flight tools (R1 default; no `CancelToolsOnSteer`).
 
-use crate::session::SessionStatus;
+use haven_common::lifecycle::SessionStatus;
 
 /// External operation that must compose safely with session lifecycle windows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -5,7 +5,8 @@ use crate::desktop::TrayStatus;
 use crate::event_bridge::{TauriEmitter, project_tool_run_event};
 use crate::events::*;
 use crate::handlers::{TRAY_ICON_SIZE, make_tray_icon};
-use haven_agent::{AgentEvent, SessionInfo, SessionStatus};
+use haven_agent::{AgentEvent, SessionInfo};
+use haven_common::lifecycle::SessionStatus;
 use serde_json::json;
 
 /// Parse a binding through the unified `haven-input` hotkey parser and

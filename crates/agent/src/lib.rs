@@ -58,9 +58,9 @@ pub(crate) use react::ReActEngine;
 pub use react::{MetricsSnapshot, ToolCatalogPort, UiMetricsSnapshot};
 pub use session::{
     AgentToolRunPort, ConfirmResolution, ManagedAssetLeasePort, SessionInfo, SessionRunHandler,
-    SessionStatus, SessionSupervisor, SessionSupervisorEvent, SessionToolOverlayPort,
-    SessionToolPorts, SessionWaitingReason, StepInfo, ToolAuthorizationPort, ToolExecution,
-    ToolExecutionContext, ToolExecutionPort, ToolObservationPort, ToolRunCompletionReceiverPort,
+    SessionSupervisor, SessionSupervisorEvent, SessionToolOverlayPort, SessionToolPorts, StepInfo,
+    ToolAuthorizationPort, ToolExecution, ToolExecutionContext, ToolExecutionPort,
+    ToolObservationPort, ToolRunCompletionReceiverPort,
 };
 pub use storage_error::sqlite_storage_failure_message;
 

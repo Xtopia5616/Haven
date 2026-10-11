@@ -1,6 +1,7 @@
 use super::*;
 use async_trait::async_trait;
 use futures_util::stream;
+use haven_common::lifecycle::SessionStatus;
 use haven_common::types::{
     CanonicalMessage, CanonicalRole, CanonicalToolCall, ContentPart, InjectSource, RiskLevel,
 };

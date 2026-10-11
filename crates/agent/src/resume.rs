@@ -29,10 +29,10 @@ use crate::resume_support::{
 
 #[cfg(test)]
 use crate::session::DirectSessionRunLease;
-use crate::session::SessionStatus;
 use crate::types::{
     ReActRound, TranscriptRecord, project_transcript_with_strategy, seed_events_from_canonical,
 };
+use haven_common::lifecycle::SessionStatus;
 use haven_common::media::MediaInput;
 use haven_common::types::{CanonicalMessage, ContentPart};
 use std::sync::Arc;

@@ -5,8 +5,8 @@
 //! methods operate on the same fields via `impl AgentLayer` blocks.
 
 use crate::AgentLayer;
-use crate::session::SessionStatus;
 use crate::types::ProcessResult;
+use haven_common::lifecycle::SessionStatus;
 use haven_common::types::MessageAttachment;
 
 impl AgentLayer {

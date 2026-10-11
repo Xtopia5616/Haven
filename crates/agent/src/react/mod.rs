@@ -4,8 +4,9 @@ use std::sync::RwLock;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard};
 
-use crate::session::{SessionStatus, SessionSupervisor};
+use crate::session::SessionSupervisor;
 use haven_common::config::{ContextLimitsConfig, RequestKind};
+use haven_common::lifecycle::SessionStatus;
 use haven_common::media::{
     CapabilityProfile, CapabilitySupport, MediaInput, MediaInputStrategy, MediaPlan,
     MediaProjectionMode, build_media_plan, message_attachment_to_media_input,

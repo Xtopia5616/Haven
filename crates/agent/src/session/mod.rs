@@ -1,7 +1,7 @@
 use crate::interaction::{InteractionEnvelope, InteractionRequest};
-pub use haven_common::lifecycle::SessionStatus;
+use haven_common::lifecycle::SessionStatus;
 use haven_common::lifecycle::SessionStepStatus;
-pub use haven_common::lifecycle::SessionWaitingReason;
+use haven_common::lifecycle::SessionWaitingReason;
 use haven_common::types::{
     CapabilityScope, MessageAttachment, PermissionEffect, PermissionTarget, RiskLevel,
 };

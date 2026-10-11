@@ -11,10 +11,11 @@
 //! owner 管理。
 
 use super::SessionRunEngine;
-use super::{FollowUp, SessionInfo, SessionStatus, SessionWaitingReason, StepInfo};
+use super::{FollowUp, SessionInfo, StepInfo};
 use crate::interaction::{InteractionKind, InteractionRequest, InteractionStatus};
 use crate::react::{LoopExit, ReActEngine, ReActRunInput, ReActRunReplay, ReActState};
 use futures_util::FutureExt;
+use haven_common::lifecycle::{SessionStatus, SessionWaitingReason};
 use haven_common::types::MessageAttachment;
 #[cfg(test)]
 use haven_memory::Database;

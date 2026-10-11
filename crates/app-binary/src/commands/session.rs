@@ -1007,7 +1007,8 @@ mod tests {
     };
     use crate::app_state::{AppState, UiConfirmationAction, UiConfirmationPending};
     use crate::commands::RuntimeSessionListResponse;
-    use haven_agent::{InteractionOwner, InteractionRequest, SessionInfo, SessionStatus, StepInfo};
+    use haven_agent::{InteractionOwner, InteractionRequest, SessionInfo, StepInfo};
+    use haven_common::lifecycle::SessionStatus;
     use haven_common::types::{PermissionEffect, PermissionScope, PermissionTarget, RiskLevel};
     use haven_tools::ConfirmationReceipt;
 
