@@ -77,8 +77,8 @@ if (-not [regex]::IsMatch($sessionWire, '(?s)Completed\s*\{[^}]*reason:\s*String
     throw 'terminal detail fields must be required and ordinary lifecycle updates must use SessionUpdateStatus'
 }
 if (-not [regex]::IsMatch($toolRunContract, "(?s)import\s*\{[^}]*TOOL_RUN_KIND_DTO_VALUES[^}]*TOOL_RUN_STATUS_VALUES[^}]*\}\s*from\s*'\./generatedCommands\.ts'") -or
-    -not [regex]::IsMatch($toolRunContract, 'TOOL_RUN_KIND_DTO_VALUES\s+as\s+readonly\s+unknown\[\]\)\.includes\(value\)') -or
-    -not [regex]::IsMatch($toolRunContract, 'TOOL_RUN_STATUS_VALUES\s+as\s+readonly\s+unknown\[\]\)\.includes\(value\)')) {
+    -not [regex]::IsMatch($toolRunContract, 'isOneOf\(value,\s*TOOL_RUN_KIND_DTO_VALUES\)') -or
+    -not [regex]::IsMatch($toolRunContract, 'isOneOf\(value,\s*TOOL_RUN_STATUS_VALUES\)')) {
     throw 'ToolRun event validators must use the generated Rust enum vocabularies'
 }
 
@@ -121,7 +121,7 @@ if (-not [regex]::IsMatch($agentContract, '(?s)notificationKind\s*!==\s*undefine
 if (-not [regex]::IsMatch($agentContract, "(?s)notificationKind\s*===\s*'tool_run_completion'.*?optionalSessionId\(payload\).*?if\s*\(notificationKind\s*!==\s*undefined\).*?const\s+sessionId\s*=\s*optionalSessionId\(payload\)")) {
     throw 'generic and ToolRun completion notifications must accept an absent session association through the optional session mapper'
 }
-if (-not [regex]::IsMatch($agentContract, "(?s)function\s+optionalSessionId\([^)]*\)[^{]*\{[^}]*hasOwn\(record,\s*'session_id'\)[^}]*return\s+value\s*&&\s*value\.length\s*>\s*0\s*\?\s*value\s*:\s*null")) {
+if (-not [regex]::IsMatch($agentContract, "(?s)function\s+optionalSessionId\([^)]*\)[^{]*\{[^}]*hasOwnWireField\(record,\s*'session_id'\)[^}]*return\s+canonicalIdField\(record,\s*'session_id',\s*'ses'\)")) {
     throw 'optional notification session IDs must be omitted when absent and reject empty or malformed values'
 }
 if (-not [regex]::IsMatch($agentContract, '(?s)export interface AgentNotificationPayload\s*\{[^}]*sessionId\?:\s*string')) {
@@ -140,7 +140,8 @@ if (-not [regex]::IsMatch($agentContract, "(?s)import\s*\{[^}]*OPERATION_IDEMPOT
 }
 if (-not [regex]::IsMatch($agentWire, 'renderer:\s*String') -or
     -not [regex]::IsMatch($agentContract, '(?s)interface\s+AgentObservationPayload\s*\{[^}]*renderer:\s*string;') -or
-    -not [regex]::IsMatch($agentContract, "requiredString\(payload,\s*'renderer'\)")) {
+    -not [regex]::IsMatch($agentContract, "readStringField\(payload,\s*'renderer'\)") -or
+    -not [regex]::IsMatch($agentContract, 'renderer\s*===\s*null')) {
     throw 'agent observation renderer must be required by both Rust and the frontend event mapper'
 }
 if (-not [regex]::IsMatch($agentContract, '(?s)interface\s+AgentToolCallPayload\s*\{[^}]*toolCallId:\s*string\s*\|\s*null;') -or
