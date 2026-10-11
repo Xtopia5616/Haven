@@ -575,6 +575,10 @@ impl Database {
 
     /// Source text for an episode-domain entity: `memory_items.content`.
     pub fn episode_text(&self, entity_id: &str) -> anyhow::Result<Option<String>> {
+        anyhow::ensure!(
+            haven_common::types::is_canonical_id(entity_id, "msg"),
+            "invalid episode id"
+        );
         let conn = self.conn();
         let content = match conn.query_row(
             "SELECT content FROM memory_items WHERE id = ?1",
@@ -1292,10 +1296,12 @@ mod tests {
         .unwrap();
     }
 
-    fn insert_episode_with_id(db: &Database, id: &str) {
+    fn insert_episode(db: &Database) -> String {
         let session = db.create_session("embedding-test").unwrap();
-        db.add_episode_with_id(&session.id, "test episode", id)
+        let episode_id = haven_common::types::new_id("msg");
+        db.add_episode_with_id(&session.id, "test episode", &episode_id)
             .unwrap();
+        episode_id
     }
 
     #[test]
@@ -1376,10 +1382,10 @@ mod tests {
     fn search_respects_limit_and_domain() {
         let db = db();
         insert_fact_with_id(&db, "f1");
-        insert_episode_with_id(&db, "e1");
+        let episode_id = insert_episode(&db);
         db.save_embedding(entity_kind::FACT, "f1", "m", &[1.0, 0.0], "a")
             .unwrap();
-        db.save_embedding(entity_kind::EPISODE, "e1", "m", &[1.0, 0.0], "b")
+        db.save_embedding(entity_kind::EPISODE, &episode_id, "m", &[1.0, 0.0], "b")
             .unwrap();
         let hits = db
             .search_embeddings(entity_kind::FACT, &[1.0, 0.0], 1, "m")
@@ -1604,7 +1610,12 @@ mod tests {
         let session = db.create_session("t").unwrap();
         let ep = db.add_episode(&session.id, "remember this").unwrap();
         assert_eq!(db.episode_text(&ep).unwrap(), Some("remember this".into()));
-        assert_eq!(db.episode_text("nope").unwrap(), None);
+        assert_eq!(
+            db.episode_text(&haven_common::types::new_id("msg"))
+                .unwrap(),
+            None
+        );
+        assert!(db.episode_text("not-an-episode-id").is_err());
     }
 
     #[test]
@@ -1636,12 +1647,12 @@ mod tests {
         let db = db();
         insert_fact_with_id(&db, "f1");
         insert_fact_with_id(&db, "f2");
-        insert_episode_with_id(&db, "e1");
+        let episode_id = insert_episode(&db);
         db.save_embedding(entity_kind::FACT, "f1", "model-a", &[1.0], "x")
             .unwrap();
         db.save_embedding(entity_kind::FACT, "f2", "model-a", &[1.0], "y")
             .unwrap();
-        db.save_embedding(entity_kind::EPISODE, "e1", "model-b", &[1.0], "z")
+        db.save_embedding(entity_kind::EPISODE, &episode_id, "model-b", &[1.0], "z")
             .unwrap();
         let models = db.list_embedding_models().unwrap();
         assert_eq!(models.len(), 2);
@@ -1667,10 +1678,10 @@ mod tests {
     fn clear_embeddings_drops_everything() {
         let db = db();
         insert_fact_with_id(&db, "f1");
-        insert_episode_with_id(&db, "e1");
+        let episode_id = insert_episode(&db);
         db.save_embedding(entity_kind::FACT, "f1", "m", &[1.0], "x")
             .unwrap();
-        db.save_embedding(entity_kind::EPISODE, "e1", "m", &[1.0], "y")
+        db.save_embedding(entity_kind::EPISODE, &episode_id, "m", &[1.0], "y")
             .unwrap();
         let cleared = db.clear_embeddings().unwrap();
         assert_eq!(cleared, 2);

@@ -949,3 +949,4 @@
 - [0958：校验 SessionOrigin 的父会话身份](0958-validate-session-origin-parent-identity.md)
 - [0959：为无消息身份的 committed supplement 使用规范 ID](0959-use-canonical-id-for-legacy-supplement.md)
 - [0960：将 ScheduledToolRunSpec 限制到测试 API](0960-restrict-scheduled-tool-run-spec-to-test-support.md)
+- [0961：校验 Memory fact extraction 的持久身份](0961-validate-memory-extraction-identities.md)

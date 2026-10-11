@@ -1,4 +1,7 @@
 use crate::db::Database;
+#[cfg(any(test, feature = "test-support"))]
+use crate::repositories::kv_store::ensure_summary_extraction_identity;
+use crate::repositories::kv_store::summary_extraction_pending_key;
 
 impl Database {
     /// Persist a compaction summary as a memory item (`episode_summary`).
@@ -39,10 +42,10 @@ impl Database {
         id: &str,
         enqueue_extraction: bool,
     ) -> anyhow::Result<()> {
+        let marker_key = summary_extraction_pending_key(session_id, id)?;
         let now = chrono::Utc::now().to_rfc3339();
         let topics_json = "[]";
         let entities_json = "[]";
-        let marker_key = format!("fact_extraction_episode_pending.{session_id}.{id}");
         let conn = self.conn();
         conn.execute_batch("BEGIN IMMEDIATE")?;
         let result = (|| -> anyhow::Result<()> {
@@ -106,6 +109,7 @@ impl Database {
         topics: &[&str],
         entities: &[&str],
     ) -> anyhow::Result<()> {
+        ensure_summary_extraction_identity(session_id, id)?;
         let now = chrono::Utc::now().to_rfc3339();
         let topics_json = serde_json::to_string(topics).unwrap_or_else(|_| "[]".into());
         let entities_json = serde_json::to_string(entities).unwrap_or_else(|_| "[]".into());
@@ -185,6 +189,63 @@ mod tests {
             )
             .unwrap();
         assert_eq!(got, id);
+    }
+
+    #[test]
+    fn episode_writes_reject_noncanonical_ids_without_partial_rows_or_markers() {
+        let db = Database::open_in_memory().unwrap();
+        let session = db.create_session("episode identity").unwrap();
+        let invalid_session_id = haven_common::types::new_id("msg");
+        let invalid_episode_id = haven_common::types::new_id("ses");
+        let valid_episode_id = haven_common::types::new_id("msg");
+
+        assert!(
+            db.add_episode_with_pending_extraction(
+                &invalid_session_id,
+                "invalid session",
+                &valid_episode_id,
+                true,
+            )
+            .is_err()
+        );
+        assert!(
+            db.add_episode_with_pending_extraction(
+                &session.id,
+                "invalid episode",
+                &invalid_episode_id,
+                true,
+            )
+            .is_err()
+        );
+        assert!(
+            db.add_episode_structured(
+                &session.id,
+                "invalid structured episode",
+                &invalid_episode_id,
+                &[],
+                &[],
+            )
+            .is_err()
+        );
+
+        let item_count: i64 = db
+            .conn()
+            .query_row(
+                "SELECT COUNT(*) FROM memory_items WHERE kind = 'episode_summary'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let marker_count: i64 = db
+            .conn()
+            .query_row(
+                "SELECT COUNT(*) FROM kv_store WHERE key LIKE 'fact_extraction_episode_pending.%'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(item_count, 0);
+        assert_eq!(marker_count, 0);
     }
 
     #[test]

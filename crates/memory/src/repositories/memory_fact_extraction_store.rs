@@ -3,6 +3,7 @@ use std::sync::Arc;
 use crate::Database;
 use crate::repositories::messages::Message;
 use crate::repositories::session_steps::SessionStep;
+use haven_common::types::is_canonical_id;
 
 /// The persisted transcript projections used as input to ordinary session
 /// fact extraction. Window selection remains an Agent policy.
@@ -43,7 +44,7 @@ impl MemoryFactExtractionStore {
         &self,
         session_id: &str,
     ) -> anyhow::Result<Option<String>> {
-        let key = format!("fact_extraction_last_run.{session_id}");
+        let key = extraction_last_attempt_key(session_id)?;
         self.db.run_blocking(move |db| db.get_kv(&key)).await
     }
 
@@ -53,6 +54,7 @@ impl MemoryFactExtractionStore {
         &self,
         session_id: &str,
     ) -> anyhow::Result<FactExtractionTranscript> {
+        ensure_extraction_session_id(session_id)?;
         let session_id = session_id.to_owned();
         self.db
             .run_blocking(move |db| {
@@ -68,8 +70,19 @@ impl MemoryFactExtractionStore {
         &self,
         session_id: &str,
     ) -> anyhow::Result<Option<String>> {
-        let key = format!("fact_extraction.{session_id}");
-        self.db.run_blocking(move |db| db.get_kv(&key)).await
+        let key = ordinary_extraction_cursor_key(session_id)?;
+        self.db
+            .run_blocking(move |db| {
+                let cursor = db.get_kv(&key)?;
+                if let Some(message_id) = cursor.as_deref() {
+                    anyhow::ensure!(
+                        is_canonical_id(message_id, "msg"),
+                        "invalid message id in ordinary extraction cursor"
+                    );
+                }
+                Ok(cursor)
+            })
+            .await
     }
 
     /// Record an extraction attempt before the caller calls the model. The
@@ -79,12 +92,30 @@ impl MemoryFactExtractionStore {
         session_id: &str,
         timestamp: &str,
     ) -> anyhow::Result<()> {
-        let key = format!("fact_extraction_last_run.{session_id}");
+        let key = extraction_last_attempt_key(session_id)?;
         let timestamp = timestamp.to_owned();
         self.db
             .run_blocking(move |db| db.set_kv(&key, &timestamp))
             .await
     }
+}
+
+fn ensure_extraction_session_id(session_id: &str) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        is_canonical_id(session_id, "ses"),
+        "invalid session id for fact extraction"
+    );
+    Ok(())
+}
+
+fn extraction_last_attempt_key(session_id: &str) -> anyhow::Result<String> {
+    ensure_extraction_session_id(session_id)?;
+    Ok(format!("fact_extraction_last_run.{session_id}"))
+}
+
+fn ordinary_extraction_cursor_key(session_id: &str) -> anyhow::Result<String> {
+    ensure_extraction_session_id(session_id)?;
+    Ok(format!("fact_extraction.{session_id}"))
 }
 
 #[cfg(test)]
@@ -138,64 +169,114 @@ mod tests {
     #[tokio::test]
     async fn transcript_port_propagates_missing_projection_tables() {
         let messages_db = Arc::new(Database::open_in_memory().unwrap());
+        let messages_session = messages_db.create_session("missing messages").unwrap();
         messages_db
             .conn()
             .execute_batch("DROP TABLE messages")
             .unwrap();
         let error = MemoryFactExtractionStore::new(messages_db)
-            .load_ordinary_transcript("ses-missing-messages")
+            .load_ordinary_transcript(&messages_session.id)
             .await
             .unwrap_err();
         assert!(error.to_string().contains("no such table: messages"));
 
         let steps_db = Arc::new(Database::open_in_memory().unwrap());
+        let steps_session = steps_db.create_session("missing steps").unwrap();
         steps_db
             .conn()
             .execute_batch("DROP TABLE session_steps")
             .unwrap();
         let error = MemoryFactExtractionStore::new(steps_db)
-            .load_ordinary_transcript("ses-missing-steps")
+            .load_ordinary_transcript(&steps_session.id)
             .await
             .unwrap_err();
         assert!(error.to_string().contains("no such table: session_steps"));
     }
 
     #[tokio::test]
+    async fn extraction_store_rejects_noncanonical_session_and_message_ids() {
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let session = db.create_session("extraction identity").unwrap();
+        let store = MemoryFactExtractionStore::new(db.clone());
+        let invalid_session_id = haven_common::types::new_id("msg");
+        let invalid_message_id = haven_common::types::new_id("ses");
+
+        assert!(
+            store
+                .shared_extraction_last_attempt_timestamp(&invalid_session_id)
+                .await
+                .is_err()
+        );
+        assert!(
+            store
+                .load_ordinary_transcript(&invalid_session_id)
+                .await
+                .is_err()
+        );
+        assert!(
+            store
+                .ordinary_extraction_cursor(&invalid_session_id)
+                .await
+                .is_err()
+        );
+        assert!(
+            store
+                .stamp_shared_extraction_attempt(&invalid_session_id, "2026-09-25T10:00:00Z")
+                .await
+                .is_err()
+        );
+
+        db.set_kv(
+            &format!("fact_extraction.{}", session.id),
+            &invalid_message_id,
+        )
+        .unwrap();
+        assert!(store.ordinary_extraction_cursor(&session.id).await.is_err());
+        assert!(
+            db.get_kv(&format!("fact_extraction_last_run.{invalid_session_id}"))
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
     async fn ordinary_cursor_read_and_shared_attempt_timestamp_report_kv_errors() {
         let db = Arc::new(Database::open_in_memory().unwrap());
+        let session = db.create_session("fact extraction kv errors").unwrap();
+        let session_id = session.id.as_str();
         let store = MemoryFactExtractionStore::new(db.clone());
 
         assert_eq!(
-            store.ordinary_extraction_cursor("ses-state").await.unwrap(),
+            store.ordinary_extraction_cursor(session_id).await.unwrap(),
             None
         );
         assert_eq!(
             store
-                .shared_extraction_last_attempt_timestamp("ses-state")
+                .shared_extraction_last_attempt_timestamp(session_id)
                 .await
                 .unwrap(),
             None
         );
         store
-            .stamp_shared_extraction_attempt("ses-state", "2026-09-25T10:00:00Z")
+            .stamp_shared_extraction_attempt(session_id, "2026-09-25T10:00:00Z")
             .await
             .unwrap();
         assert_eq!(
             store
-                .shared_extraction_last_attempt_timestamp("ses-state")
+                .shared_extraction_last_attempt_timestamp(session_id)
                 .await
                 .unwrap(),
             Some("2026-09-25T10:00:00Z".into())
         );
         assert_eq!(
-            store.ordinary_extraction_cursor("ses-state").await.unwrap(),
+            store.ordinary_extraction_cursor(session_id).await.unwrap(),
             None
         );
 
         db.conn().execute_batch("DROP TABLE kv_store").unwrap();
         assert!(
             store
-                .shared_extraction_last_attempt_timestamp("ses-state")
+                .shared_extraction_last_attempt_timestamp(session_id)
                 .await
                 .unwrap_err()
                 .to_string()
@@ -203,7 +284,7 @@ mod tests {
         );
         assert!(
             store
-                .ordinary_extraction_cursor("ses-state")
+                .ordinary_extraction_cursor(session_id)
                 .await
                 .unwrap_err()
                 .to_string()
@@ -211,7 +292,7 @@ mod tests {
         );
         assert!(
             store
-                .stamp_shared_extraction_attempt("ses-state", "2026-09-25T10:01:00Z")
+                .stamp_shared_extraction_attempt(session_id, "2026-09-25T10:01:00Z")
                 .await
                 .unwrap_err()
                 .to_string()

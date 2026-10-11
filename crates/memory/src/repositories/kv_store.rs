@@ -1,5 +1,6 @@
 use crate::db::Database;
 use chrono::Utc;
+use haven_common::types::is_canonical_id;
 use rusqlite::OptionalExtension;
 
 pub const MAX_MEMORY_OUTBOX_PAGE_SIZE: usize = 64;
@@ -328,9 +329,8 @@ impl Database {
         bypass_throttle: bool,
         event_sequence: i64,
     ) -> anyhow::Result<()> {
-        anyhow::ensure!(!session_id.trim().is_empty(), "session id is required");
         anyhow::ensure!(event_sequence > 0, "event sequence must be positive");
-        let key = format!("fact_extraction_pending.{session_id}");
+        let key = fact_extraction_pending_key(session_id)?;
         let conn = self.conn();
         conn.execute_batch("BEGIN IMMEDIATE")?;
         let result = (|| -> anyhow::Result<()> {
@@ -504,9 +504,8 @@ impl Database {
         event_sequence: i64,
         bypass_throttle: bool,
     ) -> anyhow::Result<bool> {
-        anyhow::ensure!(!session_id.trim().is_empty(), "session id is required");
         anyhow::ensure!(event_sequence >= 0, "event sequence must not be negative");
-        let key = format!("fact_extraction_pending.{session_id}");
+        let key = fact_extraction_pending_key(session_id)?;
         let conn = self.conn();
         let current: Option<String> = conn
             .query_row("SELECT value FROM kv_store WHERE key = ?1", [&key], |row| {
@@ -571,8 +570,9 @@ impl Database {
                 .unwrap_or_default();
             let state = decode_summary_extraction_marker(&value)
                 .and_then(|marker| {
+                    ensure_summary_extraction_identity(&key_session_id, &episode_id)?;
                     anyhow::ensure!(
-                        marker.session_id == key_session_id && !episode_id.is_empty(),
+                        marker.session_id == key_session_id,
                         "summary marker key/value identity mismatch"
                     );
                     Ok(marker)
@@ -601,7 +601,12 @@ impl Database {
         next_attempt_at_ms: i64,
     ) -> anyhow::Result<bool> {
         anyhow::ensure!(next_attempt_at_ms >= 0, "retry deadline cannot be negative");
+        let (session_id, _) = summary_extraction_identity_from_key(key)?;
         let marker = decode_summary_extraction_marker(expected_value)?;
+        anyhow::ensure!(
+            marker.session_id == session_id,
+            "summary marker key/value identity mismatch"
+        );
         let changed = self.conn().execute(
             "UPDATE kv_store SET value = ?3, updated_at = ?4
              WHERE key = ?1 AND value = ?2",
@@ -620,6 +625,12 @@ impl Database {
         key: &str,
         expected_value: &str,
     ) -> anyhow::Result<bool> {
+        let (session_id, _) = summary_extraction_identity_from_key(key)?;
+        let marker = decode_summary_extraction_marker(expected_value)?;
+        anyhow::ensure!(
+            marker.session_id == session_id,
+            "summary marker key/value identity mismatch"
+        );
         let changed = self.conn().execute(
             "DELETE FROM kv_store WHERE key = ?1 AND value = ?2",
             rusqlite::params![key, expected_value],
@@ -635,15 +646,7 @@ impl Database {
         key: &str,
         expected_value: &str,
     ) -> anyhow::Result<bool> {
-        let Some(suffix) = key.strip_prefix("fact_extraction_episode_pending.") else {
-            return Ok(false);
-        };
-        let Some((session_id, episode_id)) = suffix.split_once('.') else {
-            return Ok(false);
-        };
-        if session_id.is_empty() || episode_id.is_empty() {
-            return Ok(false);
-        }
+        let (session_id, episode_id) = summary_extraction_identity_from_key(key)?;
 
         let conn = self.conn();
         conn.execute_batch("BEGIN IMMEDIATE")?;
@@ -656,7 +659,7 @@ impl Database {
                     |row| row.get(0),
                 )
                 .optional()?;
-            if owner.as_deref() != Some(session_id) {
+            if owner.as_deref() != Some(&session_id) {
                 return Ok(false);
             }
 
@@ -673,7 +676,7 @@ impl Database {
                      updated_at = excluded.updated_at",
                 rusqlite::params![
                     key,
-                    encode_summary_extraction_marker(session_id, 0, 0),
+                    encode_summary_extraction_marker(&session_id, 0, 0),
                     Utc::now().to_rfc3339()
                 ],
             )?;
@@ -702,13 +705,10 @@ impl Database {
         session_id: &str,
         episode_id: &str,
     ) -> anyhow::Result<()> {
-        anyhow::ensure!(!session_id.trim().is_empty(), "session id is required");
-        anyhow::ensure!(!episode_id.trim().is_empty(), "episode id is required");
+        let key = summary_extraction_pending_key(session_id, episode_id)?;
         self.conn().execute(
             "DELETE FROM kv_store WHERE key = ?1",
-            rusqlite::params![format!(
-                "fact_extraction_episode_pending.{session_id}.{episode_id}"
-            )],
+            rusqlite::params![key],
         )?;
         Ok(())
     }
@@ -769,8 +769,55 @@ pub(super) fn cleanup_orphan_session_scoped_state_on(
 }
 
 fn memory_event_cursor_key(session_id: &str) -> anyhow::Result<String> {
-    anyhow::ensure!(!session_id.trim().is_empty(), "session id is required");
+    anyhow::ensure!(
+        is_canonical_id(session_id, "ses"),
+        "invalid session id for memory event cursor"
+    );
     Ok(format!("memory_event_cursor.{session_id}"))
+}
+
+fn fact_extraction_pending_key(session_id: &str) -> anyhow::Result<String> {
+    anyhow::ensure!(
+        is_canonical_id(session_id, "ses"),
+        "invalid session id for fact extraction marker"
+    );
+    Ok(format!("fact_extraction_pending.{session_id}"))
+}
+
+pub(super) fn summary_extraction_pending_key(
+    session_id: &str,
+    episode_id: &str,
+) -> anyhow::Result<String> {
+    ensure_summary_extraction_identity(session_id, episode_id)?;
+    Ok(format!(
+        "fact_extraction_episode_pending.{session_id}.{episode_id}"
+    ))
+}
+
+pub(super) fn ensure_summary_extraction_identity(
+    session_id: &str,
+    episode_id: &str,
+) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        is_canonical_id(session_id, "ses"),
+        "invalid session id for summary extraction marker"
+    );
+    anyhow::ensure!(
+        is_canonical_id(episode_id, "msg"),
+        "invalid episode id for summary extraction marker"
+    );
+    Ok(())
+}
+
+fn summary_extraction_identity_from_key(key: &str) -> anyhow::Result<(String, String)> {
+    let suffix = key
+        .strip_prefix("fact_extraction_episode_pending.")
+        .ok_or_else(|| anyhow::anyhow!("invalid summary extraction marker key"))?;
+    let (session_id, episode_id) = suffix
+        .split_once('.')
+        .ok_or_else(|| anyhow::anyhow!("invalid summary extraction marker key"))?;
+    ensure_summary_extraction_identity(session_id, episode_id)?;
+    Ok((session_id.to_owned(), episode_id.to_owned()))
 }
 
 fn parse_memory_event_cursor(value: Option<&str>) -> anyhow::Result<i64> {
@@ -879,6 +926,40 @@ mod tests {
     }
 
     #[test]
+    fn extraction_markers_and_event_cursors_reject_noncanonical_session_ids() {
+        let db = test_db();
+        let invalid_session_id = new_id("msg");
+
+        assert!(
+            db.enqueue_fact_extraction(&invalid_session_id, false, 1)
+                .is_err()
+        );
+        assert!(
+            db.clear_pending_fact_extraction_if_current(&invalid_session_id, 1, false)
+                .is_err()
+        );
+        assert!(
+            db.memory_event_cursor_optional(&invalid_session_id)
+                .is_err()
+        );
+        assert!(
+            db.checkpoint_memory_event_cursor(&invalid_session_id, 1)
+                .is_err()
+        );
+
+        assert!(
+            db.get_kv(&format!("fact_extraction_pending.{invalid_session_id}"))
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            db.get_kv(&format!("memory_event_cursor.{invalid_session_id}"))
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
     fn memory_event_cursor_optional_rejects_invalid_stored_values() {
         let db = test_db();
         let session = db.create_session("cursor").unwrap();
@@ -946,6 +1027,46 @@ mod tests {
             pending_summary_extraction_rows(&db).unwrap(),
             vec![(session.id, second_episode_id)]
         );
+    }
+
+    #[test]
+    fn summary_extraction_outbox_rejects_noncanonical_key_identities() {
+        let db = test_db();
+        let session = db.create_session("summary marker identity").unwrap();
+        let episode_id = new_id("msg");
+        db.add_episode_with_pending_extraction(
+            &session.id,
+            "A durable summary with a canonical identity.",
+            &episode_id,
+            true,
+        )
+        .unwrap();
+
+        let invalid_key = "fact_extraction_episode_pending.not-a-session.not-a-message";
+        let valid_value = format!("{}:0:0", session.id);
+        db.set_kv(invalid_key, &valid_value).unwrap();
+        let high_water = db.pending_summary_extraction_high_water().unwrap().unwrap();
+        let markers = db
+            .pending_summary_extractions_page(None, &high_water, MAX_MEMORY_OUTBOX_PAGE_SIZE)
+            .unwrap();
+        let invalid_marker = markers
+            .iter()
+            .find(|marker| marker.key == invalid_key)
+            .unwrap();
+        assert!(invalid_marker.state.is_err());
+        assert!(
+            db.update_summary_extraction_retry_if_current(invalid_key, &valid_value, 1, 1)
+                .is_err()
+        );
+        assert!(
+            db.clear_summary_extraction_if_current(invalid_key, &valid_value)
+                .is_err()
+        );
+        assert!(
+            db.repair_summary_extraction_marker_if_current(invalid_key, &valid_value)
+                .is_err()
+        );
+        assert_eq!(db.get_kv(invalid_key).unwrap(), Some(valid_value));
     }
 
     #[test]

@@ -3,6 +3,7 @@ use crate::recall::normalize_memory_query;
 use crate::repositories::fact_graph::FactGraph;
 use crate::repositories::facts::{Fact, FactSourceRef};
 use chrono::Utc;
+use haven_common::types::is_canonical_id;
 use rusqlite::{Connection, OptionalExtension};
 use std::sync::Arc;
 
@@ -70,8 +71,14 @@ impl MemoryFactStore {
         session_id: &str,
         last_message_id: &str,
     ) -> anyhow::Result<bool> {
-        anyhow::ensure!(!session_id.trim().is_empty(), "session id is required");
-        anyhow::ensure!(!last_message_id.trim().is_empty(), "message id is required");
+        anyhow::ensure!(
+            is_canonical_id(session_id, "ses"),
+            "invalid session id for ordinary extraction"
+        );
+        anyhow::ensure!(
+            is_canonical_id(last_message_id, "msg"),
+            "invalid message id for ordinary extraction"
+        );
         let session_id = session_id.to_owned();
         let last_message_id = last_message_id.to_owned();
         self.db
@@ -276,8 +283,14 @@ impl MemoryFactStore {
 }
 
 fn summary_extraction_done_key(session_id: &str, episode_id: &str) -> anyhow::Result<String> {
-    anyhow::ensure!(!session_id.trim().is_empty(), "session id is required");
-    anyhow::ensure!(!episode_id.trim().is_empty(), "episode id is required");
+    anyhow::ensure!(
+        is_canonical_id(session_id, "ses"),
+        "invalid session id for summary extraction"
+    );
+    anyhow::ensure!(
+        is_canonical_id(episode_id, "msg"),
+        "invalid episode id for summary extraction"
+    );
     Ok(format!(
         "fact_extraction_episode_done.{session_id}.{episode_id}"
     ))
@@ -299,6 +312,7 @@ mod tests {
     use super::{MemoryFactStore, MemoryFactWrite};
     use crate::Database;
     use crate::repositories::facts::FactSourceRef;
+    use haven_common::types::new_id;
     use std::sync::Arc;
 
     fn store() -> (Arc<Database>, MemoryFactStore) {
@@ -317,6 +331,105 @@ mod tests {
             source_ref: None,
             durability: 0.6,
         }
+    }
+
+    #[tokio::test]
+    async fn ordinary_extraction_rejects_noncanonical_ids_without_writes() {
+        let (db, store) = store();
+        let session = db.create_session("ordinary extraction identity").unwrap();
+        let valid_message_id = new_id("msg");
+        let invalid_session_id = new_id("msg");
+        let invalid_message_id = new_id("ses");
+
+        assert!(
+            store
+                .commit_ordinary_extraction(
+                    vec![inferred_write("user", "likes", "Rust")],
+                    0.55,
+                    &invalid_session_id,
+                    &valid_message_id,
+                )
+                .await
+                .is_err()
+        );
+        assert!(
+            store
+                .commit_ordinary_extraction(
+                    vec![inferred_write("user", "likes", "Rust")],
+                    0.55,
+                    &session.id,
+                    &invalid_message_id,
+                )
+                .await
+                .is_err()
+        );
+
+        assert!(db.list_facts().unwrap().is_empty());
+        assert!(
+            db.get_kv(&format!("fact_extraction.{invalid_session_id}"))
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            db.get_kv(&format!("fact_extraction.{}", session.id))
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn summary_extraction_rejects_noncanonical_ids_without_writes() {
+        let (db, store) = store();
+        let session = db.create_session("summary extraction identity").unwrap();
+        let valid_episode_id = new_id("msg");
+        let invalid_session_id = new_id("msg");
+        let invalid_episode_id = new_id("ses");
+
+        assert!(
+            store
+                .commit_summary_extraction(
+                    vec![inferred_write("user", "likes", "Rust")],
+                    0.55,
+                    &invalid_session_id,
+                    &valid_episode_id,
+                )
+                .await
+                .is_err()
+        );
+        assert!(
+            store
+                .commit_summary_extraction(
+                    vec![inferred_write("user", "likes", "Rust")],
+                    0.55,
+                    &session.id,
+                    &invalid_episode_id,
+                )
+                .await
+                .is_err()
+        );
+        assert!(
+            store
+                .summary_extraction_completed(&session.id, &invalid_episode_id)
+                .await
+                .is_err()
+        );
+
+        assert!(db.list_facts().unwrap().is_empty());
+        assert!(
+            db.get_kv(&format!(
+                "fact_extraction_episode_done.{invalid_session_id}.{valid_episode_id}"
+            ))
+            .unwrap()
+            .is_none()
+        );
+        assert!(
+            db.get_kv(&format!(
+                "fact_extraction_episode_done.{}.{invalid_episode_id}",
+                session.id
+            ))
+            .unwrap()
+            .is_none()
+        );
     }
 
     #[tokio::test]

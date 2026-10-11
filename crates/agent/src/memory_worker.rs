@@ -1532,8 +1532,13 @@ mod tests {
                 [&fact.id],
             )
             .unwrap();
-        db.set_kv("fact_extraction.ses-deadbeef", "msg-deadbeef")
-            .unwrap();
+        let orphan_session_id = haven_common::types::new_id("ses");
+        let orphan_message_id = haven_common::types::new_id("msg");
+        db.set_kv(
+            &format!("fact_extraction.{orphan_session_id}"),
+            &orphan_message_id,
+        )
+        .unwrap();
         db.conn()
             .execute_batch("DROP TABLE memory_embeddings")
             .unwrap();
@@ -1547,7 +1552,8 @@ mod tests {
         assert!(!message.contains("cleanup_orphan_extraction_cursors"));
         assert!(!message.contains("cleanup_orphan_source_refs"));
         assert_eq!(
-            db.get_kv("fact_extraction.ses-deadbeef").unwrap(),
+            db.get_kv(&format!("fact_extraction.{orphan_session_id}"))
+                .unwrap(),
             None,
             "cursor cleanup after the failed prune must still run"
         );
@@ -2205,11 +2211,11 @@ mod tests {
     async fn restore_pending_summary_extraction_rehydrates_live_projection() {
         let db = temp_db();
         let session = db.create_session("summary restore").unwrap();
-        let episode_id = "msg-summary-restore";
+        let episode_id = haven_common::types::new_id("msg");
         db.add_episode_with_pending_extraction(
             &session.id,
             "A durable summary restored after process restart.",
-            episode_id,
+            &episode_id,
             true,
         )
         .unwrap();
@@ -2221,7 +2227,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(
-            worker.pending_summary_outbox_value_for_test(episode_id),
+            worker.pending_summary_outbox_value_for_test(&episode_id),
             Some(session.id.clone())
         );
     }
@@ -2386,7 +2392,7 @@ mod tests {
         db.add_episode_with_pending_extraction(
             &session.id,
             "A durable summary with enough text for the extraction path.",
-            "msg-summary-ack-success",
+            &haven_common::types::new_id("msg"),
             true,
         )
         .unwrap();
@@ -2592,11 +2598,11 @@ mod tests {
         let session = db.create_session("outbox summary retry").unwrap();
         db.insert_fact("user", "likes", "Rust", "inferred", 0.7, &[])
             .unwrap();
-        let episode_id = "msg-summary-ack-retry";
+        let episode_id = haven_common::types::new_id("msg");
         db.add_episode_with_pending_extraction(
             &session.id,
             "A durable summary with enough text for a successful empty extraction.",
-            episode_id,
+            &episode_id,
             true,
         )
         .unwrap();
@@ -2650,7 +2656,7 @@ mod tests {
                         .unwrap()
                         .is_empty()
                     && worker
-                        .pending_summary_outbox_value_for_test(episode_id)
+                        .pending_summary_outbox_value_for_test(&episode_id)
                         .is_none()
                 {
                     break;
@@ -2907,6 +2913,7 @@ mod tests {
         )
         .unwrap();
         let worker = MemoryWorker::new(db.clone(), mock_router("[]"), 4_000, 64, 40, 256, 0);
+        let source_message_id = haven_common::types::new_id("msg");
 
         let wrote = worker
             .persist_fact_batch(vec![
@@ -2917,7 +2924,7 @@ mod tests {
                     confidence: 0.4,
                     tags: vec!["Preference".into()],
                     source_ref: Some(FactSourceRef {
-                        message_id: "msg-reconfirmed-rust".into(),
+                        message_id: source_message_id.clone(),
                         snippet: "I still use Rust.".into(),
                     }),
                     durability: 0.8,
@@ -2964,7 +2971,7 @@ mod tests {
         assert_eq!(rust.tags, ["preference"]);
         assert_eq!(
             rust.source_ref.as_ref().unwrap().message_id,
-            "msg-reconfirmed-rust"
+            source_message_id
         );
         assert!(facts.iter().all(|fact| fact.object != "Coffee"));
         assert!(facts.iter().any(|fact| fact.object == "SQLite"));
@@ -2990,11 +2997,9 @@ mod tests {
     async fn summary_extraction_skips_an_episode_with_its_completion_marker() {
         let db = Arc::new(Database::open_in_memory().unwrap());
         let session = db.create_session("summary completion duplicate").unwrap();
+        let episode_id = haven_common::types::new_id("msg");
         db.set_kv(
-            &format!(
-                "fact_extraction_episode_done.{}.msg-summary-already-processed",
-                session.id
-            ),
+            &format!("fact_extraction_episode_done.{}.{episode_id}", session.id,),
             &session.id,
         )
         .unwrap();
@@ -3008,7 +3013,7 @@ mod tests {
         let outcome = worker
             .infer_facts_from_summary(
                 &session.id,
-                "msg-summary-already-processed",
+                &episode_id,
                 "The user prefers Rust for personal projects and tooling.",
             )
             .await;
@@ -3039,12 +3044,12 @@ mod tests {
             calls: AtomicUsize::new(0),
         });
         let worker = make_engine_with_inference(db.clone(), inference.clone());
-        let episode_id = "msg-summary-persist-after-success";
+        let episode_id = haven_common::types::new_id("msg");
         let summary = "The user prefers Rust for personal projects and tooling.";
 
         assert!(matches!(
             worker
-                .infer_facts_from_summary(&session.id, episode_id, summary)
+                .infer_facts_from_summary(&session.id, &episode_id, summary)
                 .await,
             SummaryExtractOutcome::Retryable { .. }
         ));
@@ -3067,7 +3072,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             worker
-                .infer_facts_from_summary(&session.id, episode_id, summary)
+                .infer_facts_from_summary(&session.id, &episode_id, summary)
                 .await,
             SummaryExtractOutcome::Done
         );
@@ -3090,7 +3095,7 @@ mod tests {
 
         assert_eq!(
             worker
-                .infer_facts_from_summary(&session.id, episode_id, summary)
+                .infer_facts_from_summary(&session.id, &episode_id, summary)
                 .await,
             SummaryExtractOutcome::Done
         );
@@ -3114,16 +3119,18 @@ mod tests {
         });
         let worker = make_engine_with_inference(db.clone(), inference.clone());
         let summary = "The user prefers Rust for personal projects and tooling.";
+        let newer_episode_id = haven_common::types::new_id("msg");
+        let older_episode_id = haven_common::types::new_id("msg");
 
         assert_eq!(
             worker
-                .infer_facts_from_summary(&session.id, "msg-newer-episode", summary)
+                .infer_facts_from_summary(&session.id, &newer_episode_id, summary)
                 .await,
             SummaryExtractOutcome::Done
         );
         assert_eq!(
             worker
-                .infer_facts_from_summary(&session.id, "msg-older-episode", summary)
+                .infer_facts_from_summary(&session.id, &older_episode_id, summary)
                 .await,
             SummaryExtractOutcome::Done
         );
@@ -3134,7 +3141,7 @@ mod tests {
 
         assert_eq!(
             worker
-                .infer_facts_from_summary(&session.id, "msg-older-episode", summary)
+                .infer_facts_from_summary(&session.id, &older_episode_id, summary)
                 .await,
             SummaryExtractOutcome::Done
         );
@@ -3163,12 +3170,12 @@ mod tests {
             calls: AtomicUsize::new(0),
         });
         let worker = make_engine_with_inference_and_interval(db.clone(), inference.clone(), 3_600);
-        let episode_id = "msg-summary-throttle-retry";
+        let episode_id = haven_common::types::new_id("msg");
         let summary = "The user prefers Rust for personal projects and tooling.";
 
         assert!(matches!(
             worker
-                .infer_facts_from_summary(&session.id, episode_id, summary)
+                .infer_facts_from_summary(&session.id, &episode_id, summary)
                 .await,
             SummaryExtractOutcome::Retryable { .. }
         ));
@@ -3187,7 +3194,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             worker
-                .infer_facts_from_summary(&session.id, episode_id, summary)
+                .infer_facts_from_summary(&session.id, &episode_id, summary)
                 .await,
             SummaryExtractOutcome::Done
         );

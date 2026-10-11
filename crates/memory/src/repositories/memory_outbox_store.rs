@@ -475,13 +475,19 @@ mod tests {
             .clear_pending_fact_extraction_if_current_cancellable("  ", 0, false, &cancellation)
             .await
             .unwrap_err();
-        assert_eq!(error.to_string(), "session id is required");
+        assert_eq!(
+            error.to_string(),
+            "invalid session id for fact extraction marker"
+        );
 
         let error = store
             .enqueue_fact_extraction_cancellable("  ", false, 1, &cancellation)
             .await
             .unwrap_err();
-        assert_eq!(error.to_string(), "session id is required");
+        assert_eq!(
+            error.to_string(),
+            "invalid session id for fact extraction marker"
+        );
     }
 
     #[tokio::test]
@@ -530,7 +536,7 @@ mod tests {
     async fn episode_read_reports_missing_rows_and_database_errors() {
         let db = Arc::new(Database::open_in_memory().unwrap());
         let session = db.create_session("memory store summary outbox").unwrap();
-        let episode_id = "msg-summary-store-port".to_owned();
+        let episode_id = new_id("msg");
         db.add_episode_with_pending_extraction(
             &session.id,
             "A durable summary whose text is read through MemoryOutboxStore.",
@@ -551,7 +557,7 @@ mod tests {
         );
         assert_eq!(
             store
-                .episode_text_cancellable("msg-missing", &cancellation)
+                .episode_text_cancellable(&new_id("msg"), &cancellation)
                 .await
                 .unwrap(),
             None
