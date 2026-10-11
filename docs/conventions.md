@@ -219,7 +219,7 @@ reportError(e, { context: 'SettingsView', message: '操作失败', log: false })
 ### 2.4 后端事件与桌面通知
 
 - **事件命名**：`domain:action`（`session:lifecycle`、`agent:thought`、`recording:error`、`notification:show` …）。`AgentEvent` → channel 的唯一事实来源是 `TauriEmitter::channel`；新增变体必须登记并补单测。
-- **ToolRun 生命周期事件**：后台任务与定时任务共用 `tool_run:created` / `tool_run:updated` / `tool_run:output` / `tool_run:finished`。定时任务严格遵循 `Waiting → Running → Completed | Failed | Cancelled`：触发不是终态，实际工作由 Agent 确认后才收口；前端必须保留 `running` 的展示和取消入口。`haven_tools` 只产生内部状态，app shell 在唯一投影点转换为 `ToolRunEvent { id, kind, ... }` 后再 emit；前端 `toolRunStore` 只消费 contracts 层的 camelCase DTO，并在任务页通过 `list_tool_runs` 做周期性 reconciliation，不能只依赖单次 `tool_run:finished`。完整字段、顺序与敏感字段限制见 `docs/ipc-contracts.md`。用户文案按 `kind` 显示“后台任务”或“定时任务”，代码内部使用 ToolRun，用户文案按 kind 显示“后台任务”或“定时任务”。
+- **ToolRun 生命周期事件**：后台任务与定时任务共用 `tool_run:created` / `tool_run:updated` / `tool_run:output` / `tool_run:finished`。定时任务严格遵循 `Waiting → Running → Completed | Failed | Cancelled`：触发不是终态，实际工作由 Agent 确认后才收口；前端必须保留 `running` 的展示和取消入口。`haven_tools` 只产生内部状态，app shell 在唯一投影点转换为 `ToolRunEvent { tool_run_id, kind, ... }` 后再 emit；前端 `toolRunStore` 只消费 contracts 层的 camelCase DTO，并在任务页通过 `list_tool_runs` 做周期性 reconciliation，不能只依赖单次 `tool_run:finished`。完整字段、顺序与敏感字段限制见 `docs/ipc-contracts.md`。代码内部使用 ToolRun，用户文案按 `kind` 显示“后台任务”或“定时任务”。
 - **wire 载荷**：统一 snake_case JSON；前端边界转 camelCase。敏感/内部字段不外泄（见 `payload` 对 `SessionCreated` 的投影）。
 - **桌面通知**：统一走 `DesktopNotifications::maybe_show_toast`（`notification.rs`，由 `TauriEmitter` 委托）。文案与应用内 toast 对齐（中文）：
 

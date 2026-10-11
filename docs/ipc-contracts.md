@@ -136,7 +136,7 @@ Agent 事件由 `TauriEmitter` 映射，命令直接发送的事件也必须使�
 | `list_tool_run_history` | read | 有界终态历史，可按 session 过滤 |
 | `delete_tool_run` | mutate | 删除指定历史任务 |
 
-`ToolRunEvent` 是任务面板的唯一公开记录：`{ id, kind, status?, session_id?, source_step_id?, started_at?,
+`ToolRunEvent` 是任务面板的唯一公开记录：`{ tool_run_id, kind, status?, session_id?, source_step_id?, started_at?,
 finished_at?, due_at?, title?, body?, mode?, command?, output?, error?, error_reason?,
 exit_code?, preview? }`。`source_step_id` 仅用于将由 Agent 工具调用启动的后台任务关联回来源步骤；定时任务、旧任务和无 session 的 shell 调用可以省略。`status` 只能是 `waiting`、`running`、`completed`、`failed`、
 `cancelled`；`kind` 才区分 `background` 与 `scheduled`。它不包含动态 `tool_args`、续接 `prompt`、`tool_name` 或本地
@@ -152,13 +152,14 @@ exit_code?, preview? }`。`source_step_id` 仅用于将由 Agent 工具调用启
 
 | 事件 | Rust DTO（wire） | 生产者 | 消费者 | 顺序、幂等与敏感字段 |
 |---|---|---|---|---|
-| `tool_run:created` | `ToolRunEvent` | 后台任务创建 / 定时任务建立 | 根布局 `toolRunStore` | 在任务对用户可见前发送；按 `id` 覆盖合并，重复安全。 |
-| `tool_run:updated` | `ToolRunEvent` | 后台任务关联会话 / 定时任务触发或回退 | 根布局 `toolRunStore` | 按 `id` 合并；定时任务用它表达 `waiting ↔ running` 的 live 状态，重复安全。 |
-| `tool_run:output` | `ToolRunEvent` | 后台任务输出尾部变化 | 根布局 `toolRunStore` | 仅后台任务；可丢失、可重复，按 `id` 最后写入。输出已受后端尾部上限约束。 |
-| `tool_run:finished` | `ToolRunEvent` | 后台任务终态 / 定时任务完成、失败或取消 | 根布局与聊天页 | 终态后不再期待同一任务的 `output`；后台按 `id` 合并，定时任务从 live 列表移除。事件丢失时由 `list_tool_runs` reconciliation 修复。 |
+| `tool_run:created` | `ToolRunEvent` | 后台任务创建 / 定时任务建立 | 根布局 `toolRunStore` | 在任务对用户可见前发送；按 `tool_run_id` 覆盖合并，重复安全。 |
+| `tool_run:updated` | `ToolRunEvent` | 后台任务关联会话 / 定时任务触发或回退 | 根布局 `toolRunStore` | 按 `tool_run_id` 合并；定时任务用它表达 `waiting ↔ running` 的 live 状态，重复安全。 |
+| `tool_run:output` | `ToolRunEvent` | 后台任务输出尾部变化 | 根布局 `toolRunStore` | 仅后台任务；可丢失、可重复，按 `tool_run_id` 最后写入。输出已受后端尾部上限约束。 |
+| `tool_run:finished` | `ToolRunEvent` | 后台任务终态 / 定时任务完成、失败或取消 | 根布局与聊天页 | 终态后不再期待同一任务的 `output`；后台按 `tool_run_id` 合并，定时任务从 live 列表移除。事件丢失时由 `list_tool_runs` reconciliation 修复。 |
 
-前端内部字段为 `sessionId`、`startedAt`、`errorReason` 等 camelCase；页面不得读取
-`tool_run_id` 或其它工具内部 JSON 字段。
+wire 身份字段为 `tool_run_id`；contracts mapper 在边界将其映射为页面 DTO 的 `toolRunId`。
+页面只读取 camelCase DTO，不直接读取 snake_case wire 字段。`tool_args`、续接 `prompt`、
+`tool_name` 和本地 `log_path` 等执行内部字段不属于此 payload，也不得进入 UI。
 
 ## 设置诊断命令（v1）
 
