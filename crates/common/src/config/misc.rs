@@ -65,8 +65,8 @@ impl Default for SessionConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default, deny_unknown_fields)]
 pub struct ContextLimitsConfig {
-    /// Fraction of the context window at which auto-compaction starts
-    /// (clamped to 0.1–0.95 at use sites). Lower = more aggressive.
+    /// Fraction of the context window at which auto-compaction starts,
+    /// constrained to 0.1–0.95. Lower = more aggressive.
     pub compaction_ratio: f32,
     /// Tokens reserved for the model's response when computing the
     /// compaction threshold (headroom floor).

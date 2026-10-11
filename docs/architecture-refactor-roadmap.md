@@ -215,6 +215,8 @@ Agent、App、Session、ToolRun event mapper 现共用 `isValidTauriEventId`，�
 
 MCP server profile 名称在 Common 配置加载/写入边界统一校验，并由 UI 编辑器复用同一规则形状；精确大小写身份、无效配置备份行为和 `mcp_add` upsert 语义保持（ADR 0985）。
 
+Settings 的 64 位整数统一限制为 JavaScript 安全整数；Common 校验配置载入、保存和 IPC 更新，UI 对读写 payload 做同界检查，浮点配置按各自声明范围拒绝非有限或越界值；默认上下文窗口的 K-token 控件上限匹配 Rust `u32`（ADR 0986）。
+
 Compaction、memory embedding maintenance、App 启动/恢复、clipboard history 和 managed-media cleanup 的错误日志现统一清洗；上传批次与生成媒体目录项日志移除 basename，避免暴露用户文件名（ADR 0981）。
 
 Agent compaction 与 media-plan toast 现由 `+layout` 统一持有；chat controller 保留 media-plan session 状态投影，chat usage handler 不再写通知 store（ADR 0982）。

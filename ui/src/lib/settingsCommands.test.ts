@@ -20,7 +20,7 @@ import {
 vi.mock('$lib/tauri.ts', () => ({ invoke: vi.fn() }));
 
 import { invoke } from '$lib/tauri.ts';
-import type { SessionPermissionGrant } from './contracts/generatedCommands.ts';
+import type { SessionPermissionGrant, TauriCommandRequest } from './contracts/generatedCommands.ts';
 
 const invokeMock = vi.mocked(invoke);
 
@@ -165,5 +165,16 @@ describe('Settings commands', () => {
 		await expect(stageOcrCredential({ apiSecret: false, value: 'secret' })).rejects.toThrow(
 			'Invalid staged credential reference',
 		);
+	});
+
+	it('rejects unsafe Settings numbers before invoking the command', () => {
+		expect(() =>
+			updateSettings({
+				settings: {
+					context_limits: { max_upload_total_bytes: Number.MAX_SAFE_INTEGER + 1 },
+				},
+			} as unknown as TauriCommandRequest<'update_settings'>),
+		).toThrow('Invalid Settings numeric value');
+		expect(invokeMock).not.toHaveBeenCalled();
 	});
 });

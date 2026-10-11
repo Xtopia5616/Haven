@@ -124,6 +124,7 @@ pub async fn discard_staged_credentials(state: State<'_, Arc<AppState>>) -> Resu
 }
 
 fn validate_settings_payload(settings: &haven_common::config::Settings) -> anyhow::Result<()> {
+    haven_common::config::validate_settings_numbers(settings)?;
     if settings
         .llm
         .providers
@@ -1014,6 +1015,17 @@ mod tests {
                 assert!(!error.to_string().contains(marker));
             }
         }
+    }
+
+    #[test]
+    fn settings_boundary_rejects_unsafe_and_invalid_numeric_values() {
+        let mut settings = Settings::default();
+        settings.context_limits.max_upload_total_bytes = 9_007_199_254_740_992;
+        assert!(validate_settings_payload(&settings).is_err());
+
+        settings.context_limits.max_upload_total_bytes = 512 * 1024 * 1024;
+        settings.media.audio.vad_threshold = f32::INFINITY;
+        assert!(validate_settings_payload(&settings).is_err());
     }
 
     #[test]

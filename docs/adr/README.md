@@ -974,3 +974,4 @@
 - [0983：拒绝将 128 位整数映射为 IPC `number`](0983-reject-128-bit-ipc-integers.md)
 - [0984：统一校验 Tauri event envelope id](0984-validate-tauri-event-sequence-id-consistently.md)
 - [0985：统一 MCP profile 名称校验](0985-centralize-mcp-profile-name-validation.md)
+- [0986：统一设置数值的 wire 与领域边界校验](0986-validate-settings-numeric-wire-range.md)

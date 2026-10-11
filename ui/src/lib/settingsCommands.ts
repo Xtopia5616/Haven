@@ -2,6 +2,7 @@ import {
 	parseSessionPermissionGrantResponses,
 	parseSettingsPayload,
 	parseStagedCredentialReference,
+	validateSettingsNumbers,
 	type SessionPermissionGrant,
 	type SettingsPayload,
 } from '$lib/contracts/settings.ts';
@@ -76,6 +77,7 @@ export function stageOcrCredential(
 
 /** Persist a complete Settings update through the generated command contract. */
 export function updateSettings(request: TauriCommandRequest<'update_settings'>): Promise<void> {
+	validateSettingsNumbers(request.settings);
 	return invoke('update_settings', request);
 }
 

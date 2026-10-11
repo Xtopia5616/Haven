@@ -167,7 +167,7 @@ Session reducer 中的 `waitingReason` state/action 字段引用 generated `Sess
 
 Tauri listener 的通用 `TauriEvent<T>` envelope 由 `contracts/tauriEvent.ts` 唯一声明；Session、ToolRun、Agent、App 和录音 contracts 只定义各自 payload 与转换，不重复定义同形 envelope。
 
-UI 运行时 contract 共用的原子值谓词归 `contracts/valueGuards.ts`（`isString`、`isBoolean`、`isNumber`、`isFiniteNumber`、`isStringArray`、`isOneOf` 等）；wire record 的字段访问归 `contracts/wireGuards.ts`（`hasOwnWireField`、`readStringField`、`nonEmptyStringField`）。`isNumber` 接受非有限 JS number；`isFiniteNumber` 用于必须有限的值。`readStringField` 只校验类型，不暗含非空；`nonEmptyStringField` 只拒绝空值，不暗含实体 ID 前缀校验。领域 mapper 继续决定字段是否必需、缺省与显式 `null` 如何区分、未知枚举是否拒绝及错误/默认语义；不要为相同原子谓词在领域文件内另造实现（ADR 0860）。
+UI 运行时 contract 共用的原子值谓词归 `contracts/valueGuards.ts`（`isString`、`isBoolean`、`isNumber`、`isFiniteNumber`、`isSafeInteger`、`isSafeUnsignedInteger`、`isStringArray`、`isOneOf` 等）；wire record 的字段访问归 `contracts/wireGuards.ts`（`hasOwnWireField`、`readStringField`、`nonEmptyStringField`）。`isNumber` 接受非有限 JS number；`isFiniteNumber` 用于必须有限的值；安全整数 guard 用于 Rust 整数 wire 边界。`readStringField` 只校验类型，不暗含非空；`nonEmptyStringField` 只拒绝空值，不暗含实体 ID 前缀校验。领域 mapper 继续决定字段是否必需、缺省与显式 `null` 如何区分、未知枚举是否拒绝及错误/默认语义；不要为相同原子谓词在领域文件内另造实现（ADR 0860、0986）。
 
 Memory `partial_messages` 中尚未提交到 canonical transcript 的流式文本称为 `PartialMessageCheckpoint`；它是 raw `Database` 测试支持的投影 DTO。生产流式文本只经 Agent `PartialStore` 与 Memory `SessionStore` 执行 checkpoint、promote、discard，不把草稿文本冒充为已持久化 `Message`（ADR 0908）。
 

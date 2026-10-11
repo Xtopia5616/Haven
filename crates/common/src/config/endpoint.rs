@@ -257,6 +257,7 @@ pub struct ProviderConfig {
     pub default_max_tokens: Option<u32>,
     /// Default sampling temperature for models on this provider.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Default sampling temperature, constrained to 0–2.
     pub default_temperature: Option<f32>,
     /// Default total HTTP request timeout (secs) for non-streaming requests.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -464,6 +465,7 @@ pub struct ModelConfig {
     #[serde(default)]
     pub capabilities: Vec<Capability>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Sampling temperature override, constrained to 0–2.
     pub temperature: Option<f32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_window: Option<u32>,
@@ -545,6 +547,7 @@ pub struct LlmConfig {
     pub retry_base_secs: u64,
     pub retry_factor: u32,
     pub retry_max_secs: u64,
+    /// Fraction of the retry delay used for jitter, constrained to 0–1.
     pub retry_jitter: f32,
     /// Per-model cap on concurrent LLM requests, applied by the router with a
     /// semaphore per routed model. Prevents N parallel sessions from

@@ -42,6 +42,19 @@ describe('settings command contracts', () => {
 		}
 	});
 
+	it('rejects Settings numbers that cannot be safely roundtripped through JavaScript', () => {
+		const safe = { context_limits: { max_upload_total_bytes: Number.MAX_SAFE_INTEGER } };
+		expect(parseSettingsPayload(safe)).toBe(safe);
+
+		for (const invalid of [
+			{ context_limits: { max_upload_total_bytes: Number.MAX_SAFE_INTEGER + 1 } },
+			{ llm: { retry_jitter: Number.NaN } },
+			{ llm: { retry_jitter: Number.POSITIVE_INFINITY } },
+		]) {
+			expect(() => parseSettingsPayload(invalid)).toThrow('Invalid Settings numeric value');
+		}
+	});
+
 	it('accepts the log info response shape', () => {
 		expect(
 			parseLogInfo({ enabled: true, level: 'debug', path: 'C:/logs/haven.2026-08-26' }),

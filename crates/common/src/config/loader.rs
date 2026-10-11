@@ -184,6 +184,9 @@ fn backup_unparsable_config(path: &Path, err: &str) {
 /// Provider API styles are persisted strings for the UI, but only current
 /// wire protocol ids are valid configuration values.
 fn invalid_config_entry(config: &AppConfig) -> Option<&'static str> {
+    if super::validate_app_config_numbers(config).is_err() {
+        return Some("invalid numeric configuration value");
+    }
     if super::validate_mcp_server_names(&config.mcp_servers).is_err() {
         return Some("invalid or duplicate MCP server name");
     }
@@ -322,6 +325,7 @@ impl ConfigLoader {
     /// A successful return confirms the replacement call succeeded; it does
     /// not guarantee survival across an OS crash or sudden power loss.
     pub fn save(&mut self) -> anyhow::Result<()> {
+        super::validate_app_config_numbers(&self.config)?;
         super::validate_mcp_server_names(&self.config.mcp_servers)?;
         super::credentials::validate_config_references(&self.config)?;
         let toml_str = toml::to_string_pretty(&self.config)?;
@@ -1210,6 +1214,14 @@ base_url = "https://api.deepseek.com"
             (
                 "duplicate MCP server name",
                 "[[mcp_servers]]\nname = \"server\"\n\n[[mcp_servers]]\nname = \"server\"\n",
+            ),
+            (
+                "integer outside JavaScript safe range",
+                "[context_limits]\nmax_upload_total_bytes = 9007199254740992\n",
+            ),
+            (
+                "context ratio outside its declared range",
+                "[context_limits]\ncompaction_ratio = 1.0\n",
             ),
             (
                 "removed media provider credential",

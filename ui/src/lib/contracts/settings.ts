@@ -10,7 +10,7 @@ import type {
 	TauriCommandRequest,
 } from './generatedCommands.ts';
 import { isRecord } from './objectGuards.ts';
-import { isBoolean, isString } from './valueGuards.ts';
+import { isBoolean, isFiniteNumber, isSafeInteger, isString } from './valueGuards.ts';
 import { hasOwnWireField, isCanonicalEntityId } from './wireGuards.ts';
 
 export type LogInfo = GeneratedLogInfo;
@@ -62,6 +62,22 @@ function hasValidSettingsCredentialReferences(value: Record<string, unknown>): b
 	});
 }
 
+function hasRoundtrippableSettingsNumbers(value: unknown): boolean {
+	if (typeof value === 'number') {
+		return isFiniteNumber(value) && (!Number.isInteger(value) || isSafeInteger(value));
+	}
+	if (Array.isArray(value)) return value.every(hasRoundtrippableSettingsNumbers);
+	if (isRecord(value)) return Object.values(value).every(hasRoundtrippableSettingsNumbers);
+	return true;
+}
+
+/** Reject numeric Settings values that JavaScript cannot preserve across a save. */
+export function validateSettingsNumbers(value: unknown): void {
+	if (!hasRoundtrippableSettingsNumbers(value)) {
+		throw new Error('Invalid Settings numeric value');
+	}
+}
+
 /** Validate persisted session identities before Settings consumes permission grants. */
 export function parseSessionPermissionGrantResponses(value: unknown): SessionPermissionGrant[] {
 	if (
@@ -91,6 +107,7 @@ export function parseSettingsPayload(value: unknown): SettingsPayload | null {
 	if (!hasValidSettingsCredentialReferences(value)) {
 		throw new Error('Invalid Settings credential reference');
 	}
+	validateSettingsNumbers(value);
 	return value as unknown as SettingsPayload;
 }
 

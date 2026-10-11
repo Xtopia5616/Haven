@@ -33,6 +33,7 @@
 	}
 
 	let { contextLimits }: Props = $props();
+	const MAX_CONTEXT_WINDOW_K_TOKENS = Math.floor(0xffff_ffff / 1000);
 
 	const LIMIT_GROUPS: LimitGroup[] = [
 		{
@@ -46,6 +47,7 @@
 					unit: 'K',
 					kTokens: true,
 					step: 1,
+					max: MAX_CONTEXT_WINDOW_K_TOKENS,
 					danger: true,
 					hint: '角色未填写 Context 且 Provider /models 未返回上下文长度时的回退窗口（单位 K = 1000 tokens，如 64 = 64K）。调高会增大每次请求的成本与溢出风险。',
 				},

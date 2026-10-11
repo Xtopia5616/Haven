@@ -179,6 +179,7 @@ impl ConfigService {
         credential_store: std::sync::Arc<dyn CredentialStore>,
     ) -> anyhow::Result<Self> {
         let mut config = loader.config().clone();
+        super::validate_app_config_numbers(&config)?;
         super::validate_mcp_server_names(&config.mcp_servers)?;
         hydrate_from_store(&mut config, credential_store.as_ref())?;
         *loader.config_mut() = config;
@@ -584,6 +585,21 @@ mod tests {
         assert!(
             service
                 .apply_patch(ConfigPatch::McpServers(invalid))
+                .is_err()
+        );
+        assert_eq!(service.snapshot().unwrap(), before);
+    }
+
+    #[test]
+    fn unsafe_numeric_settings_are_rejected_without_mutating_config() {
+        let (service, _dir) = service();
+        let before = service.snapshot().unwrap();
+        let mut settings = Settings::from(&before.config);
+        settings.context_limits.max_upload_total_bytes = 9_007_199_254_740_992;
+
+        assert!(
+            service
+                .apply_patch(ConfigPatch::Settings(Box::new(settings)))
                 .is_err()
         );
         assert_eq!(service.snapshot().unwrap(), before);
