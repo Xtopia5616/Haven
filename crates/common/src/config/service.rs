@@ -179,8 +179,7 @@ impl ConfigService {
         credential_store: std::sync::Arc<dyn CredentialStore>,
     ) -> anyhow::Result<Self> {
         let mut config = loader.config().clone();
-        super::validate_app_config_numbers(&config)?;
-        super::validate_mcp_server_names(&config.mcp_servers)?;
+        super::validate_app_config(&config)?;
         hydrate_from_store(&mut config, credential_store.as_ref())?;
         *loader.config_mut() = config;
         Ok(Self {
@@ -317,6 +316,10 @@ impl ConfigService {
                     return Err(error);
                 }
             };
+            if let Err(error) = super::validate_app_config(state.loader.config()) {
+                *state.loader.config_mut() = before;
+                return Err(error);
+            }
             let prepared = {
                 let ConfigState {
                     loader,

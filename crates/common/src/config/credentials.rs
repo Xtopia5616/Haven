@@ -124,7 +124,7 @@ pub(crate) fn hydrate_from_store(
     validate_config_references(config)?;
     Ok(())
 }
-fn validate_reference_syntax(config: &AppConfig) -> anyhow::Result<()> {
+pub(super) fn validate_reference_syntax(config: &AppConfig) -> anyhow::Result<()> {
     let mut references = HashSet::<String>::new();
     let mut insert = |reference: &str| -> anyhow::Result<()> {
         validate_credential_reference(reference)?;

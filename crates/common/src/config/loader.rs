@@ -30,6 +30,14 @@ macro_rules! settings_pair {
                 $settings
             }
         }
+
+        impl From<&Settings> for AppConfig {
+            fn from(settings: &Settings) -> Self {
+                Self {
+                    $( $field: settings.$field.clone(), )*
+                }
+            }
+        }
     };
 }
 
@@ -181,14 +189,10 @@ fn backup_unparsable_config(path: &Path, err: &str) {
     }
 }
 
-/// Provider API styles are persisted strings for the UI, but only current
-/// wire protocol ids are valid configuration values.
+/// Reject semantic config errors before accepting a parsed TOML value.
 fn invalid_config_entry(config: &AppConfig) -> Option<&'static str> {
-    if super::validate_app_config_numbers(config).is_err() {
-        return Some("invalid numeric configuration value");
-    }
-    if super::validate_mcp_server_names(&config.mcp_servers).is_err() {
-        return Some("invalid or duplicate MCP server name");
+    if super::validate_app_config(config).is_err() {
+        return Some("invalid application configuration contract");
     }
     if config
         .llm
@@ -207,38 +211,6 @@ fn invalid_config_entry(config: &AppConfig) -> Option<&'static str> {
         .any(|server| !server.env.is_empty())
     {
         return Some("plaintext MCP environment in config.toml");
-    }
-
-    if config.llm.providers.iter().any(|provider| {
-        provider
-            .api_style
-            .as_deref()
-            .is_some_and(|style| !style.trim().is_empty() && !is_known_api_style(style))
-    }) {
-        return Some("unsupported llm provider api_style");
-    }
-
-    let has_provider = |name: &str| {
-        config
-            .llm
-            .providers
-            .iter()
-            .any(|provider| provider.name == name)
-    };
-    if !matches!(
-        config.media.stt.provider_name.as_str(),
-        "llm" | "mcp" | "none"
-    ) && !has_provider(&config.media.stt.provider_name)
-    {
-        return Some("unknown media.stt provider_name reference");
-    }
-    if config.media.tts.provider_name != "none" && !has_provider(&config.media.tts.provider_name) {
-        return Some("unknown media.tts provider_name reference");
-    }
-    if config.media.image_gen.provider_name != "none"
-        && !has_provider(&config.media.image_gen.provider_name)
-    {
-        return Some("unknown media.image_gen provider_name reference");
     }
     None
 }
@@ -325,8 +297,7 @@ impl ConfigLoader {
     /// A successful return confirms the replacement call succeeded; it does
     /// not guarantee survival across an OS crash or sudden power loss.
     pub fn save(&mut self) -> anyhow::Result<()> {
-        super::validate_app_config_numbers(&self.config)?;
-        super::validate_mcp_server_names(&self.config.mcp_servers)?;
+        super::validate_app_config(&self.config)?;
         super::credentials::validate_config_references(&self.config)?;
         let toml_str = toml::to_string_pretty(&self.config)?;
         static SAVE_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -1523,6 +1494,23 @@ model = "nova-3"
         loader.save().unwrap();
         let reloaded = ConfigLoader::load_from(&path).unwrap();
         assert_eq!(reloaded.config().session.max_concurrent, 7);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn save_rejects_the_same_semantic_contract_as_load() {
+        let dir = std::env::temp_dir().join(format!("haven_test_{}", uuid::Uuid::new_v4()));
+        let path = dir.join("config.toml");
+        let mut loader = ConfigLoader::load_from(&path).unwrap();
+        let original = std::fs::read_to_string(&path).unwrap();
+        loader.config_mut().llm.providers.push(ProviderConfig {
+            name: "primary".into(),
+            api_style: Some("unknown-style".into()),
+            ..Default::default()
+        });
+
+        assert!(loader.save().is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -124,38 +124,7 @@ pub async fn discard_staged_credentials(state: State<'_, Arc<AppState>>) -> Resu
 }
 
 fn validate_settings_payload(settings: &haven_common::config::Settings) -> anyhow::Result<()> {
-    haven_common::config::validate_settings_numbers(settings)?;
-    if settings
-        .llm
-        .providers
-        .iter()
-        .any(|provider| !provider.api_key.is_empty())
-        || !settings.media.ocr.api_key.is_empty()
-        || !settings.media.ocr.api_secret.is_empty()
-    {
-        anyhow::bail!(
-            "credential values must be staged in secure storage before Settings can be saved"
-        );
-    }
-    if settings
-        .mcp_servers
-        .iter()
-        .any(|server| !server.env.is_empty())
-    {
-        anyhow::bail!("MCP environment values must be changed through the MCP settings commands");
-    }
-    for model in &settings.llm.models {
-        if model.provider_name.trim().is_empty()
-            || !settings
-                .llm
-                .providers
-                .iter()
-                .any(|provider| provider.name == model.provider_name)
-        {
-            anyhow::bail!("every configured model must reference a configured Provider");
-        }
-    }
-    Ok(())
+    haven_common::config::validate_settings_contract(settings)
 }
 
 /// Cold-start progress for the titlebar status chip (`loading` | `ready`).

@@ -222,7 +222,8 @@ pub struct ContextLimitsConfig {
     pub max_running_background_tool_runs: usize,
     /// Max bytes batched into one `agent:chunk` event.
     pub event_chunk_batch_max_bytes: usize,
-    /// Audio ring buffer size in seconds (capture latency).
+    /// Audio ring buffer size in seconds (capture latency), capped at 120 to
+    /// bound the mono 16 kHz `f32` allocation to roughly 7.7 MB.
     pub input_ring_buffer_secs: usize,
     /// Embedding requests chunk size (provider request limits).
     pub embedding_chunk_size: usize,

@@ -10,8 +10,57 @@ import type {
 	TauriCommandRequest,
 } from './generatedCommands.ts';
 import { isRecord } from './objectGuards.ts';
-import { isBoolean, isFiniteNumber, isSafeInteger, isString } from './valueGuards.ts';
+import {
+	isBoolean,
+	isFiniteNumber,
+	isSafeUnsignedInteger,
+	isString,
+	isU32,
+} from './valueGuards.ts';
 import { hasOwnWireField, isCanonicalEntityId } from './wireGuards.ts';
+
+const U32_FIELDS = new Set([
+	'context_window',
+	'default_max_tokens',
+	'default_context_window',
+	'fact_infer_interval_steps',
+	'history_retention_days',
+	'incomplete_tool_args_retries',
+	'max_attachment_image_dim_px',
+	'max_retries',
+	'max_steps_per_run',
+	'max_steps_per_session',
+	'max_tokens',
+	'network_max_retries',
+	'reconnect_max_retries',
+	'response_token_floor',
+	'retry_factor',
+	'retry_max_retries',
+	'sample_rate',
+	'top_k',
+	'compaction_reserve_tokens',
+]);
+
+const U16_FIELDS = new Set(['bits_per_sample', 'channels']);
+
+const FLOAT_RANGES = new Map<string, readonly [number, number]>([
+	['attachment_image_jpeg_quality', [0, 1]],
+	['compaction_ratio', [0.1, 0.95]],
+	['default_temperature', [0, 2]],
+	['min_confidence', [0, 1]],
+	['retry_jitter', [0, 1]],
+	['temperature', [0, 2]],
+	['vad_threshold', [0, 1]],
+]);
+
+const FLOAT_NONNEGATIVE_FIELDS = new Set([
+	'cost_per_1k_cache_read_tokens',
+	'cost_per_1k_cache_write_tokens',
+	'cost_per_1k_input_tokens',
+	'cost_per_1k_output_tokens',
+]);
+
+const MAX_INPUT_RING_BUFFER_SECS = 120;
 
 export type LogInfo = GeneratedLogInfo;
 export type LogTail = GeneratedLogTail;
@@ -62,18 +111,61 @@ function hasValidSettingsCredentialReferences(value: Record<string, unknown>): b
 	});
 }
 
-function hasRoundtrippableSettingsNumbers(value: unknown): boolean {
+function hasValidSettingsNumbers(value: unknown, field?: string): boolean {
 	if (typeof value === 'number') {
-		return isFiniteNumber(value) && (!Number.isInteger(value) || isSafeInteger(value));
+		const floatRange = field === undefined ? undefined : FLOAT_RANGES.get(field);
+		if (floatRange) {
+			return isFiniteNumber(value) && value >= floatRange[0] && value <= floatRange[1];
+		}
+		if (field !== undefined && FLOAT_NONNEGATIVE_FIELDS.has(field)) {
+			return isFiniteNumber(value) && value >= 0;
+		}
+		if (field !== undefined && U32_FIELDS.has(field)) return isU32(value);
+		if (!isSafeUnsignedInteger(value)) return false;
+		if (field !== undefined && U16_FIELDS.has(field) && value > 0xffff) return false;
+		if (field === 'input_ring_buffer_secs' && value > MAX_INPUT_RING_BUFFER_SECS) return false;
+		return true;
 	}
-	if (Array.isArray(value)) return value.every(hasRoundtrippableSettingsNumbers);
-	if (isRecord(value)) return Object.values(value).every(hasRoundtrippableSettingsNumbers);
+	if (Array.isArray(value)) {
+		return value.every((item) => hasValidSettingsNumbers(item, field));
+	}
+	if (isRecord(value)) {
+		return Object.entries(value).every(([key, item]) => hasValidSettingsNumbers(item, key));
+	}
 	return true;
 }
 
-/** Reject numeric Settings values that JavaScript cannot preserve across a save. */
+function hasValidMcpIntervals(value: unknown): boolean {
+	if (!isRecord(value) || !isRecord(value.mcp_discovery)) return true;
+	const mcp = value.mcp_discovery;
+	if (
+		mcp.health_interval_secs !== undefined &&
+		(!isSafeUnsignedInteger(mcp.health_interval_secs) || mcp.health_interval_secs === 0)
+	) {
+		return false;
+	}
+	if (
+		mcp.reconnect_initial_ms !== undefined &&
+		(!isSafeUnsignedInteger(mcp.reconnect_initial_ms) || mcp.reconnect_initial_ms === 0)
+	) {
+		return false;
+	}
+	if (
+		mcp.reconnect_max_ms !== undefined &&
+		(!isSafeUnsignedInteger(mcp.reconnect_max_ms) || mcp.reconnect_max_ms === 0)
+	) {
+		return false;
+	}
+	return !(
+		isSafeUnsignedInteger(mcp.reconnect_initial_ms) &&
+		isSafeUnsignedInteger(mcp.reconnect_max_ms) &&
+		mcp.reconnect_max_ms < mcp.reconnect_initial_ms
+	);
+}
+
+/** Reject Settings numbers outside their Rust field domains or JavaScript-safe range. */
 export function validateSettingsNumbers(value: unknown): void {
-	if (!hasRoundtrippableSettingsNumbers(value)) {
+	if (!hasValidSettingsNumbers(value) || !hasValidMcpIntervals(value)) {
 		throw new Error('Invalid Settings numeric value');
 	}
 }

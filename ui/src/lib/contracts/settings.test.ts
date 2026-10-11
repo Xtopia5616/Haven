@@ -43,15 +43,40 @@ describe('settings command contracts', () => {
 	});
 
 	it('rejects Settings numbers that cannot be safely roundtripped through JavaScript', () => {
-		const safe = { context_limits: { max_upload_total_bytes: Number.MAX_SAFE_INTEGER } };
+		const safe = {
+			context_limits: {
+				max_upload_total_bytes: Number.MAX_SAFE_INTEGER,
+				default_context_window: 0xffff_ffff,
+				input_ring_buffer_secs: 120,
+			},
+			media: { audio: { channels: 0xffff } },
+		};
 		expect(parseSettingsPayload(safe)).toBe(safe);
 
 		for (const invalid of [
 			{ context_limits: { max_upload_total_bytes: Number.MAX_SAFE_INTEGER + 1 } },
+			{ context_limits: { default_context_window: 1.5 } },
+			{ session: { max_steps_per_run: -1 } },
+			{ context_limits: { default_context_window: 0x1_0000_0000 } },
+			{ context_limits: { input_ring_buffer_secs: 121 } },
+			{ media: { audio: { channels: 0x1_0000 } } },
+			{ media: { stt: { min_confidence: 1.1 } } },
 			{ llm: { retry_jitter: Number.NaN } },
 			{ llm: { retry_jitter: Number.POSITIVE_INFINITY } },
 		]) {
 			expect(() => parseSettingsPayload(invalid)).toThrow('Invalid Settings numeric value');
+		}
+	});
+
+	it('rejects MCP intervals that can spin or exceed the reconnect cap', () => {
+		for (const mcp_discovery of [
+			{ health_interval_secs: 0 },
+			{ reconnect_initial_ms: 0 },
+			{ reconnect_initial_ms: 2_000, reconnect_max_ms: 1_000 },
+		]) {
+			expect(() => parseSettingsPayload({ mcp_discovery })).toThrow(
+				'Invalid Settings numeric value',
+			);
 		}
 	});
 

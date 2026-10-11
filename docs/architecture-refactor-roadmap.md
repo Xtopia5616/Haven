@@ -1,6 +1,6 @@
 # Haven 架构降复杂度重构路线图
 
-> 状态：阶段 0–8 已完成；唯一结构 Active 为 §5.7 全项目领域术语与架构角色命名收敛。Memory 持久身份边界、transcript command adapter 归属和本轮发现的派生集合命名已实现；其余 crate API、command response、配置与文档引用审查继续推进；暂无 Next。Windows 发布验收为独立 Open Gate（§5.1）。
+> 状态：阶段 0–8 已完成；唯一结构 Active 为 §5.7 全项目领域术语与架构角色命名收敛。Memory 持久身份边界、transcript command adapter 归属、派生集合命名和配置/Settings 语义校验已实现；其余 crate API、command response、配置与文档引用审查继续推进；暂无 Next。Windows 发布验收为独立 Open Gate（§5.1）。
 > 更新日期：2026-10-12
 > 范围：Agent/Session、Memory、Tools、LLM、App IPC 与 UI
 
@@ -74,7 +74,7 @@
 
 | 状态 | 当前项 |
 |---|---|
-| **Active / Next** | **Active：全项目领域术语与架构角色命名收敛**，见 §5.7；继续审查 Rust crate 可达 API、构造入口与函数调用图，并覆盖剩余 UI command response、配置和文档引用。近期 Chat 输入 owner 与提交边界已收敛（ADR 0843–0846），Memory 持久 owner ID 与 Session transcript response adapter 已收敛（ADR 0967–0968），派生集合命名已按实体统一（ADR 0969）；全仓审查仍未完成。暂无后续 Next。 |
+| **Active / Next** | **Active：全项目领域术语与架构角色命名收敛**，见 §5.7；继续审查 Rust crate 可达 API、构造入口与函数调用图，并覆盖剩余 UI command response、配置和文档引用。近期 Chat 输入 owner 与提交边界已收敛（ADR 0843–0846），Memory 持久 owner ID 与 Session transcript response adapter 已收敛（ADR 0967–0968），派生集合命名已按实体统一（ADR 0969），配置与 Settings 共用语义验证并匹配 Rust 数值域（ADR 0988）；全仓审查仍未完成。暂无后续 Next。 |
 | **Gate** | Windows 发布验收 Open，见 §5.1。 |
 
 ### 5.1 Windows 发布验收（Gate / Open）
@@ -216,6 +216,8 @@ Agent、App、Session、ToolRun event mapper 现共用 `isValidTauriEventId`，�
 MCP server profile 名称在 Common 配置加载/写入边界统一校验，并由 UI 编辑器复用同一规则形状；精确大小写身份、无效配置备份行为和 `mcp_add` upsert 语义保持（ADR 0985）。
 
 Settings 的 64 位整数统一限制为 JavaScript 安全整数；Common 校验配置载入、保存和 IPC 更新，UI 对读写 payload 做同界检查，浮点配置按各自声明范围拒绝非有限或越界值；默认上下文窗口的 K-token 控件上限匹配 Rust `u32`（ADR 0986）。
+
+配置读取、保存、ConfigService 编辑与 Settings IPC 复用 Common 的语义校验；前端对整数 Rust 宽度、浮点范围、MCP 非零轮询/重连间隔和录音缓冲上限做同界拒绝。设置字段与 Rust 类型、Provider 引用等契约仍需继续逐项对照生成 contract 和实际调用链（ADR 0988）。
 
 日志复扫移除了 ingress transcript、stream rule 名称与 match、工具/provider 错误、事实谓词和 MCP warning 原文，并从 Skills/MCP 启动日志移除本机路径及可执行命令；日志只保留阶段、类别和字节计数（ADR 0987）。
 
