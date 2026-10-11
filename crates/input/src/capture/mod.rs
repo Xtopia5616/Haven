@@ -35,14 +35,13 @@ use std::time::{Duration, Instant};
 use anyhow::{Result, anyhow};
 
 use backend::{CaptureSignals, CpalBackend};
+use ring::RingBuffer;
 
 mod backend;
 mod resample;
 mod ring;
 
-pub use backend::{SIGNAL_FLOOR, TARGET_SAMPLE_RATE};
-pub use resample::Resampler;
-pub use ring::RingBuffer;
+pub(super) use backend::TARGET_SAMPLE_RATE;
 
 /// Upper bound for a command round-trip. The engine answers in microseconds;
 /// the timeout only guards against a dead engine thread.

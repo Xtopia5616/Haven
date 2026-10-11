@@ -5,11 +5,30 @@
 
 use std::fmt;
 
-/// Modifier bit flags for [`KeyCombo::modifiers`].
-pub const CTRL: u8 = 1 << 0;
-pub const SHIFT: u8 = 1 << 1;
-pub const ALT: u8 = 1 << 2;
-pub const SUPER: u8 = 1 << 3;
+/// A modifier key that can be part of a [`KeyCombo`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum KeyModifier {
+    Control,
+    Shift,
+    Alt,
+    Super,
+}
+
+impl KeyModifier {
+    const fn bit(self) -> u8 {
+        match self {
+            Self::Control => 1 << 0,
+            Self::Shift => 1 << 1,
+            Self::Alt => 1 << 2,
+            Self::Super => 1 << 3,
+        }
+    }
+}
+
+const CTRL: u8 = KeyModifier::Control.bit();
+const SHIFT: u8 = KeyModifier::Shift.bit();
+const ALT: u8 = KeyModifier::Alt.bit();
+const SUPER: u8 = KeyModifier::Super.bit();
 
 /// The non-modifier key of a hotkey combo. The accepted names intentionally
 /// cover the same vocabulary as the desktop simulation key map
@@ -110,20 +129,12 @@ pub struct KeyCombo {
 }
 
 impl KeyCombo {
-    pub fn new(modifiers: u8, key: KeyCode) -> Self {
-        Self { modifiers, key }
-    }
-
-    pub fn modifiers(&self) -> u8 {
-        self.modifiers
-    }
-
     pub fn key(&self) -> KeyCode {
         self.key
     }
 
-    pub fn has_modifier(&self, modifier: u8) -> bool {
-        self.modifiers & modifier != 0
+    pub fn has_modifier(&self, modifier: KeyModifier) -> bool {
+        self.modifiers & modifier.bit() != 0
     }
 
     /// Parse a binding string like `Ctrl+Shift+Space`. Modifier names are
@@ -142,23 +153,26 @@ impl KeyCombo {
                 other => key = KeyCode::parse(other),
             }
         }
-        Some(Self::new(modifiers, key?))
+        Some(Self {
+            modifiers,
+            key: key?,
+        })
     }
 }
 
 impl fmt::Display for KeyCombo {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut parts: Vec<&str> = Vec::new();
-        if self.has_modifier(CTRL) {
+        if self.has_modifier(KeyModifier::Control) {
             parts.push("Ctrl");
         }
-        if self.has_modifier(SHIFT) {
+        if self.has_modifier(KeyModifier::Shift) {
             parts.push("Shift");
         }
-        if self.has_modifier(ALT) {
+        if self.has_modifier(KeyModifier::Alt) {
             parts.push("Alt");
         }
-        if self.has_modifier(SUPER) {
+        if self.has_modifier(KeyModifier::Super) {
             parts.push("Super");
         }
         write!(f, "{}", parts.join("+"))?;
@@ -176,10 +190,10 @@ mod tests {
     #[test]
     fn test_parse_modifiers_and_key() {
         let combo = KeyCombo::parse("Ctrl+Shift+Space").unwrap();
-        assert!(combo.has_modifier(CTRL));
-        assert!(combo.has_modifier(SHIFT));
-        assert!(!combo.has_modifier(ALT));
-        assert!(!combo.has_modifier(SUPER));
+        assert!(combo.has_modifier(KeyModifier::Control));
+        assert!(combo.has_modifier(KeyModifier::Shift));
+        assert!(!combo.has_modifier(KeyModifier::Alt));
+        assert!(!combo.has_modifier(KeyModifier::Super));
         assert_eq!(combo.key(), KeyCode::Space);
         assert_eq!(combo.to_string(), "Ctrl+Shift+Space");
     }
@@ -191,8 +205,8 @@ mod tests {
             KeyCode::Key(b't')
         );
         let combo = KeyCombo::parse("Control+Win+f5").unwrap();
-        assert!(combo.has_modifier(CTRL));
-        assert!(combo.has_modifier(SUPER));
+        assert!(combo.has_modifier(KeyModifier::Control));
+        assert!(combo.has_modifier(KeyModifier::Super));
         assert_eq!(combo.key(), KeyCode::F(5));
         assert_eq!(combo.to_string(), "Ctrl+Super+F5");
     }
@@ -213,10 +227,10 @@ mod tests {
     #[test]
     fn test_parse_tolerates_whitespace_around_plus() {
         let combo = KeyCombo::parse("Ctrl + Space").unwrap();
-        assert!(combo.has_modifier(CTRL));
+        assert!(combo.has_modifier(KeyModifier::Control));
         assert_eq!(combo.key(), KeyCode::Space);
         let combo = KeyCombo::parse(" Ctrl+Shift+Space ").unwrap();
-        assert!(combo.has_modifier(CTRL) && combo.has_modifier(SHIFT));
+        assert!(combo.has_modifier(KeyModifier::Control) && combo.has_modifier(KeyModifier::Shift));
         assert_eq!(combo.key(), KeyCode::Space);
     }
 
@@ -246,7 +260,10 @@ mod tests {
     #[test]
     fn test_parse_without_modifiers() {
         let combo = KeyCombo::parse("space").unwrap();
-        assert_eq!(combo.modifiers(), 0);
+        assert!(!combo.has_modifier(KeyModifier::Control));
+        assert!(!combo.has_modifier(KeyModifier::Shift));
+        assert!(!combo.has_modifier(KeyModifier::Alt));
+        assert!(!combo.has_modifier(KeyModifier::Super));
         assert_eq!(combo.key(), KeyCode::Space);
         assert_eq!(combo.to_string(), "Space");
     }

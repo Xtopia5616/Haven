@@ -3,14 +3,14 @@ use std::collections::VecDeque;
 /// Linear-interpolation sample-rate converter, always owned by exactly one
 /// capture backend and never shared across streams (each backend constructs
 /// its own instance from its negotiated source rate).
-pub struct Resampler {
+pub(super) struct Resampler {
     leftover: VecDeque<f32>,
     position: f64,
     ratio: f64,
 }
 
 impl Resampler {
-    pub fn new(src_sr: f64, target_sr: f64) -> Self {
+    pub(super) fn new(src_sr: f64, target_sr: f64) -> Self {
         Self {
             leftover: VecDeque::new(),
             position: 0.0,
@@ -22,7 +22,7 @@ impl Resampler {
     /// caller-provided `out` buffer (cleared first) so the real-time audio
     /// callback never heap-allocates. State is carried across calls so chunk
     /// boundaries never lose samples.
-    pub fn resample_into(&mut self, mono: &[f32], out: &mut Vec<f32>) {
+    pub(super) fn resample_into(&mut self, mono: &[f32], out: &mut Vec<f32>) {
         self.leftover.extend(mono);
         out.clear();
         while (self.position + self.ratio * 0.5) < self.leftover.len() as f64 {
@@ -42,16 +42,12 @@ impl Resampler {
         }
     }
 
-    /// Convenience wrapper for one-shot conversions (tests, warm-ups).
-    pub fn resample(&mut self, mono: &[f32]) -> Vec<f32> {
+    /// Convenience wrapper used by the one-shot unit tests.
+    #[cfg(test)]
+    fn resample(&mut self, mono: &[f32]) -> Vec<f32> {
         let mut out = Vec::new();
         self.resample_into(mono, &mut out);
         out
-    }
-
-    pub fn reset(&mut self) {
-        self.leftover.clear();
-        self.position = 0.0;
     }
 }
 

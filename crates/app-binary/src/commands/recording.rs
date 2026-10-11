@@ -899,9 +899,10 @@ mod tests {
         let (next_recording_tx, next_recording_rx) = oneshot::channel();
 
         let result = RecordingResult {
+            pcm: Vec::new(),
             reason: RecordingReason::Silence,
             duration_ms: 37,
-            ..RecordingResult::default()
+            capture_error: None,
         };
 
         tokio::time::timeout(
@@ -990,8 +991,10 @@ mod tests {
         owner.finish(&lifecycle);
 
         let result = RecordingResult {
+            pcm: Vec::new(),
             reason: RecordingReason::Manual,
-            ..RecordingResult::default()
+            duration_ms: 0,
+            capture_error: None,
         };
         finish_recording_stop(
             &shell,
@@ -1025,8 +1028,10 @@ mod tests {
         let recording_id = owner.begin(&lifecycle);
         owner.finish(&lifecycle);
         let result = RecordingResult {
+            pcm: Vec::new(),
             reason: RecordingReason::Cancel,
-            ..RecordingResult::default()
+            duration_ms: 0,
+            capture_error: None,
         };
         let schedule_called = Arc::new(std::sync::atomic::AtomicBool::new(false));
 
@@ -1075,8 +1080,10 @@ mod tests {
         let recording_id = owner.begin(&lifecycle);
         owner.finish(&lifecycle);
         let result = RecordingResult {
+            pcm: Vec::new(),
             reason: RecordingReason::Silence,
-            ..RecordingResult::default()
+            duration_ms: 0,
+            capture_error: None,
         };
         let stopped_recording_id = recording_id.clone();
 

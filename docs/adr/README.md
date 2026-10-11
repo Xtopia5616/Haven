@@ -914,3 +914,4 @@
 - [0923：将 App 录音生命周期协调器归入独立模块](0923-own-app-recording-lifecycle-in-dedicated-module.md)
 - [0924：在唯一 App composition root 装配 Tools capabilities](0924-assemble-tools-capabilities-once-at-app-root.md)
 - [0925：统一 LLM crate 的跨层 API 导入路径](0925-unify-llm-crate-root-api-paths.md)
+- [0926：收回 Input 实现模块与无效构造入口](0926-restrict-input-implementation-and-construction-api.md)

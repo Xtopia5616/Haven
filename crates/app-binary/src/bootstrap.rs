@@ -11,6 +11,7 @@ use crate::logging::init_tracing;
 use crate::notification::DesktopNotifications;
 use haven_common::config::LogConfig;
 use haven_common::error::sanitize_error_text;
+use haven_input::{KeyCode, KeyCombo, KeyModifier};
 use haven_memory::SessionStore;
 use haven_tools::ToolRunLifecycleEvent;
 use std::sync::Arc;
@@ -556,7 +557,7 @@ pub(crate) fn run() {
                 Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState,
             };
 
-            let shortcut = haven_input::hotkey::KeyCombo::parse(&key_binding)
+            let shortcut = KeyCombo::parse(&key_binding)
                 .and_then(|combo| to_tauri_shortcut(&combo))
                 .unwrap_or_else(|| {
                     Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::Space)
@@ -753,13 +754,12 @@ fn pause_running_sessions_on_exit(session_store: &SessionStore) {
     }
 }
 
-/// Convert a neutral [`haven_input::hotkey::KeyCombo`] into the Tauri
+/// Convert a neutral [`KeyCombo`] into the Tauri
 /// global-shortcut type. Parsing/validation already happened in
 /// `haven-input`; this is the only place Tauri shortcut types are built.
 pub(crate) fn to_tauri_shortcut(
-    combo: &haven_input::hotkey::KeyCombo,
+    combo: &KeyCombo,
 ) -> Option<tauri_plugin_global_shortcut::Shortcut> {
-    use haven_input::hotkey::{ALT, CTRL, KeyCode, SHIFT, SUPER};
     use tauri_plugin_global_shortcut::{Code, Modifiers, Shortcut};
 
     const LETTERS: [Code; 26] = [
@@ -806,16 +806,16 @@ pub(crate) fn to_tauri_shortcut(
     ];
 
     let mut modifiers = Modifiers::empty();
-    if combo.has_modifier(CTRL) {
+    if combo.has_modifier(KeyModifier::Control) {
         modifiers |= Modifiers::CONTROL;
     }
-    if combo.has_modifier(SHIFT) {
+    if combo.has_modifier(KeyModifier::Shift) {
         modifiers |= Modifiers::SHIFT;
     }
-    if combo.has_modifier(ALT) {
+    if combo.has_modifier(KeyModifier::Alt) {
         modifiers |= Modifiers::ALT;
     }
-    if combo.has_modifier(SUPER) {
+    if combo.has_modifier(KeyModifier::Super) {
         modifiers |= Modifiers::SUPER;
     }
     let code = match combo.key() {

@@ -195,21 +195,17 @@ pub(crate) struct HavenInputEventHandler {
 
 #[async_trait::async_trait]
 impl haven_input::InputEventHandler for HavenInputEventHandler {
-    fn on_vad_status(
-        &self,
-        signal: haven_input::vad::VadSignal,
-        state: haven_input::vad::VadState,
-    ) {
+    fn on_vad_status(&self, signal: haven_input::VadSignal, state: haven_input::VadState) {
         let signal_str = match signal {
-            haven_input::vad::VadSignal::None => "none",
-            haven_input::vad::VadSignal::SpeechStart => "speech_start",
-            haven_input::vad::VadSignal::SpeechEnd => "speech_end",
-            haven_input::vad::VadSignal::AutoStop => "auto_stop",
+            haven_input::VadSignal::None => "none",
+            haven_input::VadSignal::SpeechStart => "speech_start",
+            haven_input::VadSignal::SpeechEnd => "speech_end",
+            haven_input::VadSignal::AutoStop => "auto_stop",
         };
         let state_str = match state {
-            haven_input::vad::VadState::Silent => "silent",
-            haven_input::vad::VadState::Speech => "speech",
-            haven_input::vad::VadState::SilenceAfterSpeech { .. } => "silence_after_speech",
+            haven_input::VadState::Silent => "silent",
+            haven_input::VadState::Speech => "speech",
+            haven_input::VadState::SilenceAfterSpeech { .. } => "silence_after_speech",
         };
         if let Err(error) = self.app_h.emit(
             RECORDING_VAD_STATUS_EVENT,

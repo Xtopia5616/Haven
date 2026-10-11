@@ -22,10 +22,12 @@ use capture::{CaptureEngineHandle, TARGET_SAMPLE_RATE};
 use haven_common::hooks::OnceHandler;
 
 pub use haven_common::config::AudioConfig;
+pub use hotkey::{KeyCode, KeyCombo, KeyModifier};
+pub use vad::{VadSignal, VadState};
 
-pub mod capture;
-pub mod hotkey;
-pub mod vad;
+mod capture;
+mod hotkey;
+mod vad;
 mod wav;
 
 const VAD_THROTTLE_INTERVAL: Duration = Duration::from_millis(100);
@@ -64,7 +66,7 @@ fn lock_std_or_recover<'a, T>(
 pub trait InputEventHandler: Send + Sync {
     /// Fired (sync) on each VAD signal/state transition. May be throttled by
     /// the pipeline before delivery.
-    fn on_vad_status(&self, _signal: vad::VadSignal, _state: vad::VadState) {}
+    fn on_vad_status(&self, _signal: VadSignal, _state: VadState) {}
     /// Fired (async) when VAD detects end-of-speech or the max recording
     /// duration is reached, before the recording result is finalized.
     async fn on_auto_stop(&self) {}
@@ -111,17 +113,6 @@ impl RecordingResult {
     /// Encode this captured 16 kHz mono PCM as a 16-bit WAV.
     pub fn encode_wav(&self) -> Vec<u8> {
         wav::encode_wav_to_vec(&self.pcm, TARGET_SAMPLE_RATE, 1)
-    }
-}
-
-impl Default for RecordingResult {
-    fn default() -> Self {
-        Self {
-            pcm: Vec::new(),
-            reason: RecordingReason::Manual,
-            duration_ms: 0,
-            capture_error: None,
-        }
     }
 }
 
@@ -226,7 +217,7 @@ impl InputPipeline {
     }
 
     /// Current state of the speech-activity detector.
-    pub async fn vad_state(&self) -> vad::VadState {
+    pub async fn vad_state(&self) -> VadState {
         self.vad_detector.lock().await.state()
     }
 
@@ -825,8 +816,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_input_pipeline_default() {
-        let _pipeline = InputPipeline::default();
+    async fn test_input_pipeline_default_starts_pending() {
+        let pipeline = InputPipeline::default();
+        assert_eq!(pipeline.state().await, RecordingState::Pending);
     }
 
     #[tokio::test]
@@ -855,7 +847,9 @@ mod tests {
         let pcm = vec![0.0f32];
         let wav = RecordingResult {
             pcm,
-            ..RecordingResult::default()
+            reason: RecordingReason::Manual,
+            duration_ms: 0,
+            capture_error: None,
         }
         .encode_wav();
         let channels = u16::from_le_bytes([wav[22], wav[23]]);
@@ -880,7 +874,7 @@ mod tests {
     async fn test_vad_state_default() {
         let pipeline = InputPipeline::new();
         let state = pipeline.vad_state().await;
-        assert_eq!(state, vad::VadState::Silent);
+        assert_eq!(state, VadState::Silent);
     }
 
     // --- RecordingState / RecordingReason ---
@@ -940,7 +934,7 @@ mod tests {
     }
 
     #[test]
-    fn test_recording_result_defaults() {
+    fn test_recording_result_preserves_capture_metadata() {
         let result = RecordingResult {
             pcm: vec![0.1, -0.2],
             reason: RecordingReason::Manual,

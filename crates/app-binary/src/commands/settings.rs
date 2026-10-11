@@ -403,7 +403,7 @@ async fn execute_settings_apply_phase(
         }
         SettingsRuntimeApplyPhase::HotkeyUnregister => {
             use tauri_plugin_global_shortcut::GlobalShortcutExt;
-            if let Some(old_shortcut) = haven_input::hotkey::KeyCombo::parse(&old_hotkey)
+            if let Some(old_shortcut) = haven_input::KeyCombo::parse(&old_hotkey)
                 .and_then(|combo| crate::to_tauri_shortcut(&combo))
                 && let Err(error) = app.global_shortcut().unregister(old_shortcut)
             {
@@ -416,9 +416,8 @@ async fn execute_settings_apply_phase(
         }
         SettingsRuntimeApplyPhase::HotkeyRegister => {
             use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
-            if let Some(new_shortcut) =
-                haven_input::hotkey::KeyCombo::parse(&config.hotkey.key_binding)
-                    .and_then(|combo| crate::to_tauri_shortcut(&combo))
+            if let Some(new_shortcut) = haven_input::KeyCombo::parse(&config.hotkey.key_binding)
+                .and_then(|combo| crate::to_tauri_shortcut(&combo))
             {
                 match app.global_shortcut().on_shortcut(
                     new_shortcut,

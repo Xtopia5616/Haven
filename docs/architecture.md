@@ -1,6 +1,6 @@
 # Haven 架构与 crate 职责
 
-> 版本: v1.27 | 日期: 2026-10-11
+> 版本: v1.28 | 日期: 2026-10-11
 > 范围: `crates/` (Rust 后端, Tauri 2)
 > 原则: **依赖单向、叶子优先**。上层 crate 只依赖下层，绝不反向依赖；共享数据与类型放叶子（`haven-common`），
 > 组件职责按「谁拥有实现、谁只消费接口」划分。
@@ -414,13 +414,17 @@ Compaction summary episode 与首个 pending marker 只由 `MemoryOutboxStore::p
 
 ### 2.4 `haven-input` —— 输入采集与语音生命周期
 
-- `capture/`：CPAL 采集线程 + 环形缓冲 + 重采样。
-- `vad.rs`：tract ONNX 语音活动检测（含常驻 worker 线程）。
+- 内部 `capture/`：CPAL 采集线程 + 环形缓冲 + 重采样；`vad.rs`：tract ONNX
+  语音活动检测（含常驻 worker 线程）。两者是 pipeline 实现，不作为 crate 模块暴露。
 - `lib.rs` 的 `InputPipeline`：录音状态机（`start_capture` / `stop_capture` /
   `cancel_capture`）、固定时长 `capture_for`、VAD 判定与自动停止、PCM/WAV 序列化和采集侧错误。
   `update_audio_config` 替换音频参数；`set_ring_buffer_capacity_secs` 设置下一次 capture engine
   spawn 使用的容量，当前 engine 不在线 resize。
-- `hotkey.rs`：快捷键字符串解析为中性 `KeyCombo`（与平台解耦）。
+- 内部 `hotkey.rs`：快捷键字符串解析为中性 `KeyCombo`（与平台解耦）。按键与 VAD
+  类型跨 crate 只从根模块导出 `KeyCode`、`KeyCombo`、强类型 `KeyModifier` 和
+  `VadSignal` / `VadState`；
+  bit flags、engine、detector、ring 与 capture handle 不泄漏到消费者。`KeyCombo`
+  只能从格式化配置解析，调用方不能提供任意 modifier bitmask（ADR 0926）。
 
 **判定标准**：管「何时/怎么采」——录音生命周期、VAD 和音频产出；**不实现** provider
 调用、转写或 fallback。

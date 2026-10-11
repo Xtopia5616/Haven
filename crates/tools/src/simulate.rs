@@ -326,7 +326,7 @@ mod tests {
         // Input parsing treats these modifiers as flags rather than keys.
         const MODIFIER_EXCEPTIONS: &[&str] = &["shift", "ctrl", "control", "alt", "win", "lwin"];
 
-        use haven_input::hotkey::KeyCode;
+        use haven_input::KeyCode;
         let variants: Vec<KeyCode> = vec![
             KeyCode::Space,
             KeyCode::Enter,

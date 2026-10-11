@@ -26,12 +26,12 @@ use super::resample::Resampler;
 use super::ring::RingBuffer;
 
 /// Pipeline target format: mono 16 kHz f32.
-pub const TARGET_SAMPLE_RATE: u32 = 16000;
+pub(crate) const TARGET_SAMPLE_RATE: u32 = 16000;
 /// Anything above this amplitude counts as "the data path is alive". A
 /// stream whose samples never exceed this is treated as digital silence.
 /// Set below a quiet room's typical noise floor (≈ -60..-90 dBFS) so the
 /// silent-capture abort only fires on genuinely dead streams.
-pub const SIGNAL_FLOOR: f32 = 1e-5;
+const SIGNAL_FLOOR: f32 = 1e-5;
 /// Emit a debug-level amplitude report every N callbacks (~10 ms each).
 const DIAG_INTERVAL: u32 = 250;
 

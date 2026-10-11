@@ -11,7 +11,7 @@ use serde_json::json;
 /// Parse a binding through the unified `haven-input` hotkey parser and
 /// convert to the Tauri shortcut type (the production startup path).
 fn parse_shortcut(binding: &str) -> Option<tauri_plugin_global_shortcut::Shortcut> {
-    haven_input::hotkey::KeyCombo::parse(binding).and_then(|combo| to_tauri_shortcut(&combo))
+    haven_input::KeyCombo::parse(binding).and_then(|combo| to_tauri_shortcut(&combo))
 }
 
 fn test_session_info() -> SessionInfo {
