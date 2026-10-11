@@ -3,6 +3,7 @@
 	import MaterialButton from '$lib/MaterialButton.svelte';
 	import MaterialField from '$lib/MaterialField.svelte';
 	import MaterialSelect from '$lib/MaterialSelect.svelte';
+	import { isValidMcpServerName } from '$lib/mcpServerName.ts';
 	import { withStringValue } from '$lib/typedCallbacks.ts';
 	import type { McpServerTransportInput } from '$lib/contracts/generatedCommands.ts';
 	import type { McpServerConfigInput } from '$lib/contracts/tools.ts';
@@ -64,7 +65,7 @@
 		const trimmedName = name.trim();
 		if (!trimmedName) {
 			errors.name = 'Name is required';
-		} else if (!/^[A-Za-z0-9_-]{1,128}$/.test(trimmedName)) {
+		} else if (!isValidMcpServerName(trimmedName)) {
 			errors.name = 'Use 1-128 characters: A-Z, a-z, 0-9, - or _';
 		} else if (!isEdit && existingNames.includes(trimmedName)) {
 			errors.name = 'Name already exists';

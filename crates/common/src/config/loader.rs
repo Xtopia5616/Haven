@@ -184,6 +184,9 @@ fn backup_unparsable_config(path: &Path, err: &str) {
 /// Provider API styles are persisted strings for the UI, but only current
 /// wire protocol ids are valid configuration values.
 fn invalid_config_entry(config: &AppConfig) -> Option<&'static str> {
+    if super::validate_mcp_server_names(&config.mcp_servers).is_err() {
+        return Some("invalid or duplicate MCP server name");
+    }
     if config
         .llm
         .providers
@@ -319,6 +322,7 @@ impl ConfigLoader {
     /// A successful return confirms the replacement call succeeded; it does
     /// not guarantee survival across an OS crash or sudden power loss.
     pub fn save(&mut self) -> anyhow::Result<()> {
+        super::validate_mcp_server_names(&self.config.mcp_servers)?;
         super::credentials::validate_config_references(&self.config)?;
         let toml_str = toml::to_string_pretty(&self.config)?;
         static SAVE_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -1198,6 +1202,14 @@ base_url = "https://api.deepseek.com"
             (
                 "plaintext MCP environment",
                 "[[mcp_servers]]\nname = \"example\"\nenv = [\"TOKEN=old-secret\"]\n",
+            ),
+            (
+                "invalid MCP server name",
+                "[[mcp_servers]]\nname = \"server.name\"\n",
+            ),
+            (
+                "duplicate MCP server name",
+                "[[mcp_servers]]\nname = \"server\"\n\n[[mcp_servers]]\nname = \"server\"\n",
             ),
             (
                 "removed media provider credential",

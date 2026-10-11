@@ -712,6 +712,31 @@ impl Default for McpServerConfig {
     }
 }
 
+/// MCP server names are exact, case-sensitive profile identities shared by
+/// config, management IPC, and the provider-facing tool namespace.
+pub fn is_valid_mcp_server_name(name: &str) -> bool {
+    (1..=128).contains(&name.len())
+        && name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+}
+
+/// Validate profile names before configuration is loaded into runtime state
+/// or persisted. Duplicate detection intentionally preserves exact-case
+/// identity (`Foo` and `foo` are distinct names).
+pub fn validate_mcp_server_names(servers: &[McpServerConfig]) -> anyhow::Result<()> {
+    let mut names = std::collections::HashSet::with_capacity(servers.len());
+    for server in servers {
+        if !is_valid_mcp_server_name(&server.name) {
+            anyhow::bail!("MCP server names must use 1-128 ASCII letters, digits, '-' or '_'");
+        }
+        if !names.insert(server.name.as_str()) {
+            anyhow::bail!("MCP server names must be unique");
+        }
+    }
+    Ok(())
+}
+
 /// Persistent reference for one MCP environment variable. `has_value` keeps
 /// the distinction between an unset variable (`NAME`) and an explicitly empty
 /// value (`NAME=`) without putting values in TOML. Variables with values
@@ -743,6 +768,40 @@ mod credential_debug_tests {
         assert!(!serialized.contains("server-secret"));
         assert!(!debug.contains("server-secret"));
         assert!(debug.contains("[REDACTED]"));
+    }
+}
+
+#[cfg(test)]
+mod mcp_server_name_tests {
+    use super::{McpServerConfig, is_valid_mcp_server_name, validate_mcp_server_names};
+
+    #[test]
+    fn validates_name_shape_and_byte_length() {
+        assert!(is_valid_mcp_server_name("server_1-prod"));
+        assert!(is_valid_mcp_server_name(&"a".repeat(128)));
+        assert!(!is_valid_mcp_server_name(""));
+        assert!(!is_valid_mcp_server_name(&"a".repeat(129)));
+        assert!(!is_valid_mcp_server_name("server.name"));
+        assert!(!is_valid_mcp_server_name(" server"));
+        assert!(!is_valid_mcp_server_name("服务器"));
+    }
+
+    #[test]
+    fn rejects_exact_duplicate_names_but_keeps_case_sensitive_identity() {
+        let servers = [
+            McpServerConfig {
+                name: "Foo".into(),
+                ..Default::default()
+            },
+            McpServerConfig {
+                name: "foo".into(),
+                ..Default::default()
+            },
+        ];
+        assert!(validate_mcp_server_names(&servers).is_ok());
+
+        let duplicate = [servers[0].clone(), servers[0].clone()];
+        assert!(validate_mcp_server_names(&duplicate).is_err());
     }
 }
 

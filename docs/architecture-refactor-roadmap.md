@@ -1,7 +1,7 @@
 # Haven 架构降复杂度重构路线图
 
 > 状态：阶段 0–8 已完成；唯一结构 Active 为 §5.7 全项目领域术语与架构角色命名收敛。Memory 持久身份边界、transcript command adapter 归属和本轮发现的派生集合命名已实现；其余 crate API、command response、配置与文档引用审查继续推进；暂无 Next。Windows 发布验收为独立 Open Gate（§5.1）。
-> 更新日期：2026-10-11
+> 更新日期：2026-10-12
 > 范围：Agent/Session、Memory、Tools、LLM、App IPC 与 UI
 
 本文件只记录当前阶段、仍未完成的工作和验收条件。历史实现切片与决定见对应 ADR；提交历史用于追踪实现过程。
@@ -212,6 +212,8 @@ ToolRunStore 的生命周期时间、completion 时间和计时触发 `due_at` �
 Rust→TypeScript IPC 生成器拒绝把 `i128/u128` 映射为 JavaScript `number`；未来契约需选择十进制字符串或有明确值域的窄整数，不改变当前生成 DTO（ADR 0983）。
 
 Agent、App、Session、ToolRun event mapper 现共用 `isValidTauriEventId`，统一要求 renderer-local envelope id 为非负安全整数；payload 继续按领域边界校验（ADR 0984）。
+
+MCP server profile 名称在 Common 配置加载/写入边界统一校验，并由 UI 编辑器复用同一规则形状；精确大小写身份、无效配置备份行为和 `mcp_add` upsert 语义保持（ADR 0985）。
 
 Compaction、memory embedding maintenance、App 启动/恢复、clipboard history 和 managed-media cleanup 的错误日志现统一清洗；上传批次与生成媒体目录项日志移除 basename，避免暴露用户文件名（ADR 0981）。
 

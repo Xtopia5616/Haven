@@ -33,6 +33,7 @@
 - **工具清单明确来源**：`list_builtin_tool_manifests` 只返回内置工具的 manifest，不包含 Skill 或 MCP manifest；命令与响应类型分别标出 `builtin_tool_manifests` 和 `BuiltinToolManifestListResponse`。Tools 与 Skills 的 App 命令按 domain 分模块（ADR 0680）。
 - **MCP 服务器集合命令标明实体**：`list_mcp_servers` / `listMcpServers` 返回 `McpServerSnapshot[]`，其中同时包含配置、连接状态和该服务器的工具清单；不要因快照中含工具而命名为 `list_mcp_tools` / `listMcpTools`（ADR 0720）。
 - **MCP 单服务器动作标明目标实体**：单服务器重连命名为 `reconnect_mcp_server` / `reconnectMcpServer`，与作用于服务器集合的 `refresh_mcp_servers` 区分；不要省略被操作的 server 实体（ADR 0731）。
+- **MCP server profile 名称是精确身份**：Common 和 UI 共用 1–128 位 ASCII 字母、数字、`-`、`_` 的校验形状；列表内按大小写敏感值唯一，不 trim、不改写。该规则只约束 Haven profile，不改写 MCP peer 提供的 raw tool name（ADR 0985）。
 - **闭合 IPC 选择复用领域 enum**：`recall_memory.kind` 使用 Memory 拥有的 `MemoryEntityKind` / generated `MemoryEntityKindInput`，不再通过开放 `String` 在 handler 内解析。renderer-only 的 `all` 保留为 UI 筛选项并展开为 `fact` 与 `episode` 两次请求，不传成后端 domain 值（ADR 0732）。
 - **确认权限值复用生成 enum**：`resolve_confirmation` 的 `effect`、`scope`、`target` 分别使用 Common `PermissionEffect`、`PermissionScope`、`PermissionTarget` 及 generated input types；`ConfirmationDecision` 继续表示含步骤 ID 和批准语义的 UI callback，再由 shell 转成 request（ADR 0733）。
 - **联网搜索模式复用闭合 enum**：`set_web_search.mode` 使用 LLM `WebSearchMode` / generated `WebSearchModeInput`，UI 选择只提交 `off` / `auto` / `always`；可选 `null` 仍表示清除模型覆盖，并不等于显式 `off`（ADR 0734）。

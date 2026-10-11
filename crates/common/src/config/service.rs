@@ -179,6 +179,7 @@ impl ConfigService {
         credential_store: std::sync::Arc<dyn CredentialStore>,
     ) -> anyhow::Result<Self> {
         let mut config = loader.config().clone();
+        super::validate_mcp_server_names(&config.mcp_servers)?;
         hydrate_from_store(&mut config, credential_store.as_ref())?;
         *loader.config_mut() = config;
         Ok(Self {
@@ -569,6 +570,23 @@ mod tests {
         assert!(update.change.is_none());
         assert_eq!(update.snapshot.version, 0);
         assert!(receiver.try_recv().is_err());
+    }
+
+    #[test]
+    fn invalid_mcp_server_names_are_rejected_without_mutating_config() {
+        let (service, _dir) = service();
+        let before = service.snapshot().unwrap();
+        let invalid = vec![McpServerConfig {
+            name: "server.name".into(),
+            ..Default::default()
+        }];
+
+        assert!(
+            service
+                .apply_patch(ConfigPatch::McpServers(invalid))
+                .is_err()
+        );
+        assert_eq!(service.snapshot().unwrap(), before);
     }
 
     #[test]

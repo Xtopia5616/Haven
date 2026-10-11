@@ -973,3 +973,4 @@
 - [0982：Agent 事件 toast 由应用布局集中处理](0982-centralize-agent-event-toasts.md)
 - [0983：拒绝将 128 位整数映射为 IPC `number`](0983-reject-128-bit-ipc-integers.md)
 - [0984：统一校验 Tauri event envelope id](0984-validate-tauri-event-sequence-id-consistently.md)
+- [0985：统一 MCP profile 名称校验](0985-centralize-mcp-profile-name-validation.md)
