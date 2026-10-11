@@ -52,7 +52,117 @@ function makeUsagePayload(overrides: Record<string, unknown> = {}) {
 	};
 }
 
+function makeThoughtEvent(
+	payloadOverrides: Record<string, unknown> = {},
+	eventOverrides: Record<string, unknown> = {},
+) {
+	return {
+		event: 'agent:thought',
+		id: 1,
+		payload: {
+			session_id: 'ses-6b86b273ff34fce19d6b804eff5a3f57',
+			thought: 'thinking',
+			step_number: 1,
+			run_id: 2,
+			message_id: 'step-6b86b273ff34fce19d6b804eff5a3f57',
+			...payloadOverrides,
+		},
+		...eventOverrides,
+	};
+}
+
 describe('agent IPC contract', () => {
+	it('accepts exact unsigned integer boundaries for Rust event counters', () => {
+		const mapped = mapAgentEventContract(
+			makeThoughtEvent({ step_number: 0xffff_ffff, run_id: Number.MAX_SAFE_INTEGER }),
+		);
+
+		expect(mapped).not.toBeNull();
+		expect(
+			mapAgentEventContract(makeThoughtEvent({ event_seq: Number.MAX_SAFE_INTEGER })),
+		).not.toBeNull();
+	});
+
+	it('rejects invalid u32 and unsafe u64 values at the event boundary', () => {
+		const invalidThoughtPayloads = [
+			{ step_number: -1 },
+			{ step_number: 1.5 },
+			{ step_number: 0x1_0000_0000 },
+			{ run_id: -1 },
+			{ run_id: 1.5 },
+			{ run_id: Number.MAX_SAFE_INTEGER + 1 },
+			{ event_seq: -1 },
+			{ event_seq: 1.5 },
+			{ event_seq: Number.MAX_SAFE_INTEGER + 1 },
+		];
+		for (const overrides of invalidThoughtPayloads) {
+			expect(mapAgentEventContract(makeThoughtEvent(overrides))).toBeNull();
+		}
+
+		for (const id of [-1, 0.5, Number.MAX_SAFE_INTEGER + 1]) {
+			expect(mapAgentEventContract(makeThoughtEvent({}, { id }))).toBeNull();
+		}
+
+		const toolCall = (toolIndex: unknown) =>
+			mapAgentEventContract({
+				event: 'agent:tool_call',
+				id: 1,
+				payload: {
+					session_id: 'ses-6b86b273ff34fce19d6b804eff5a3f57',
+					tool_name: 'read_file',
+					input: {},
+					step_number: 0,
+					run_id: 0,
+					tool_call_id: null,
+					tool_index: toolIndex,
+					step_id: 'step-6b86b273ff34fce19d6b804eff5a3f57',
+					suppress_streamed_thought: false,
+					silent: false,
+				},
+			});
+		expect(toolCall(-1)).toBeNull();
+		expect(toolCall(0x1_0000_0000)).toBeNull();
+
+		const toolCallChunk = (seq: unknown) =>
+			mapAgentEventContract({
+				event: 'agent:tool_call_chunk',
+				id: 1,
+				payload: {
+					session_id: 'ses-6b86b273ff34fce19d6b804eff5a3f57',
+					preview_id: 'call-6b86b273ff34fce19d6b804eff5a3f57',
+					tool_name: 'read_file',
+					arguments: '{}',
+					arguments_truncated: false,
+					step_number: 0,
+					run_id: 0,
+					tool_index: 0,
+					seq,
+				},
+			});
+		expect(toolCallChunk(-1)).toBeNull();
+		expect(toolCallChunk(0.5)).toBeNull();
+		expect(toolCallChunk(Number.MAX_SAFE_INTEGER + 1)).toBeNull();
+	});
+
+	it('applies Rust integer ranges to usage counters and durations', () => {
+		for (const overrides of [
+			{ prompt_tokens: -1 },
+			{ completion_tokens: 0.5 },
+			{ context_window: 0x1_0000_0000 },
+			{ step_number: -1 },
+			{ duration_ms: 0.5 },
+			{ duration_ms: Number.MAX_SAFE_INTEGER + 1 },
+		]) {
+			expect(
+				mapAgentEventContract({
+					event: 'agent:usage',
+					id: 1,
+					payload: makeUsagePayload(overrides),
+				}),
+			).toBeNull();
+		}
+	});
+
 	it('maps execution identity fields to camelCase', () => {
 		const event = mapAgentEvent({
 			event: 'agent:tool_call',

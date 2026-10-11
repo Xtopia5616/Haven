@@ -8,6 +8,7 @@
 
 - **分层语气不同**：Rust 后端与 Svelte 前端各自遵循本语言生态的惯例，二者仅在跨层边界（Tauri 命令 / 事件 / 数据字段）约定转换规则。
 - **数值字段标明约束方向与单位**：`max_*` 表示硬上限；提高 endpoint `max_tokens` 下界的全局配置叫 `response_token_floor`。字节计量字段用 `_bytes`，字符计量字段用 `_chars`；描述 floor、cap、reserve 和单位时，字段名、文档与计算方向应一致（ADR 0972–0975）。
+- **跨层数字校验匹配 Rust primitive**：UI wire mapper 对 Rust `u32` 校验非负整数及 32 位上限；Rust `u64` 以 JSON number 表达时只接受 JavaScript 安全整数范围。浮点字段只执行有限数值校验（ADR 0980）。
 - **一眼可辨**：命名应能区分「类型」「值」「常量」「组件」「模块」，见各层细则。
 - **边界语义不撞名**：不同 crate/边界中的类型即使位于不同命名空间，也要能从类型名看出领域或 wire 角色；同名但不同状态空间时用领域限定词，不要求合并状态 owner。例如 Memory durable `SessionEvent` 与 Agent process-local `SessionSupervisorEvent` 各自保留 owner。
 - **Serde alias 只表示 wire 名称差异**：字段默认 Serde 名已等于 alias 时删除重复 alias；只保留外部协议确实发送的其它字段拼法，例如 Gemini 的 `finishReason`。Haven 自有配置或 payload 的旧名不作为隐式兼容入口（ADR 0662）。

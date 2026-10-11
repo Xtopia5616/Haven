@@ -207,7 +207,7 @@ Agent transcript 的 seed/append 与 resume/replay 使用同一身份校验：Th
 
 Memory 的 SessionStore、FactGraph、facts、nodes、embeddings、usage、authorization 与 ToolRun 持久 owner 统一校验各自规范 ID；summary episode 必须属于对应 session，畸形行读取失败关闭（ADR 0967）。
 
-ToolRunStore 的生命周期时间、completion 时间和计时触发 `due_at` 在写入时验证 RFC3339 并归一 UTC，保证 `due_at` 文本排序与时间一致；依赖触发仍以空字符串表示。typed read projection 统一输出 RFC3339，兼容并转换 SQLite 生成的旧 UTC `created_at` / interrupted `finished_at`；无效 waiting `due_at` 保留给 ToolRunService quarantine。schema 不变（ADR 0979）。
+ToolRunStore 的生命周期时间、completion 时间和计时触发 `due_at` 在写入时验证 RFC3339 并归一 UTC，保证 `due_at` 文本排序与时间一致；依赖触发仍以空字符串表示。typed read projection 统一输出 RFC3339，兼容并转换 SQLite 生成的旧 UTC `created_at` / interrupted `finished_at`；无效 waiting `due_at` 保留给 ToolRunService quarantine。schema 不变（ADR 0979）。Agent event UI mapper 的整数字段也按 Rust `u32` 上限或 JSON 可精确表示的 `u64` 安全整数范围校验，浮点用量继续执行有限数值检查（ADR 0980）。
 
 `process_transcript` 的 command invocation 与 response parser 由 `sessionCommands` 持有，submit coordinator 只消费已验证结果；Rust 和 UI 派生集合按实体复数命名，context-menu store 文件明确标注 `Store` 角色（ADR 0968–0969）。
 

@@ -21,6 +21,16 @@ export function isFiniteNumber(value: unknown): value is number {
 	return isNumber(value) && Number.isFinite(value);
 }
 
+/** Accept a non-negative integer that JavaScript can represent exactly. */
+export function isSafeUnsignedInteger(value: unknown): value is number {
+	return Number.isSafeInteger(value) && (value as number) >= 0;
+}
+
+/** Match Rust's u32 domain at a JSON boundary. */
+export function isU32(value: unknown): value is number {
+	return isSafeUnsignedInteger(value) && value <= 0xffff_ffff;
+}
+
 export function isStringArray(value: unknown): value is string[] {
 	return Array.isArray(value) && value.every(isString);
 }

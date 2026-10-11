@@ -41,7 +41,15 @@ import {
 } from './generatedCommands.ts';
 import type { TauriEvent } from './tauriEvent.ts';
 import { isRecord } from './objectGuards.ts';
-import { isBoolean, isFiniteNumber, isOneOf, isString, isStringArray } from './valueGuards.ts';
+import {
+	isBoolean,
+	isFiniteNumber,
+	isOneOf,
+	isSafeUnsignedInteger,
+	isString,
+	isStringArray,
+	isU32,
+} from './valueGuards.ts';
 import {
 	canonicalIdField,
 	hasOwnWireField,
@@ -255,16 +263,24 @@ function optionalSessionId(record: WireRecord): string | undefined | null {
 	return canonicalIdField(record, 'session_id', 'ses');
 }
 
-function requiredNumber(record: WireRecord, field: string): number | null {
-	return isFiniteNumber(record[field]) ? record[field] : null;
+function requiredU32(record: WireRecord, field: string): number | null {
+	return isU32(record[field]) ? record[field] : null;
+}
+
+function requiredSafeUnsignedInteger(record: WireRecord, field: string): number | null {
+	return isSafeUnsignedInteger(record[field]) ? record[field] : null;
 }
 
 function requiredBoolean(record: WireRecord, field: string): boolean | null {
 	return isBoolean(record[field]) ? record[field] : null;
 }
 
-function optionalNumberIsValid(record: WireRecord, field: string): boolean {
-	return record[field] === undefined || isFiniteNumber(record[field]);
+function optionalU32IsValid(record: WireRecord, field: string): boolean {
+	return record[field] === undefined || isU32(record[field]);
+}
+
+function optionalSafeUnsignedIntegerIsValid(record: WireRecord, field: string): boolean {
+	return record[field] === undefined || isSafeUnsignedInteger(record[field]);
 }
 
 function nullableStringIsValid(value: unknown): boolean {
@@ -273,6 +289,10 @@ function nullableStringIsValid(value: unknown): boolean {
 
 function nullableNumberIsValid(value: unknown): boolean {
 	return value === null || isFiniteNumber(value);
+}
+
+function nullableU32IsValid(value: unknown): boolean {
+	return value === null || isU32(value);
 }
 
 function isCanonicalAssetIdArray(value: unknown): value is string[] {
@@ -352,7 +372,7 @@ export function mapAgentEvent(
 		!isRecord(event) ||
 		!isString(event.event) ||
 		!AGENT_EVENT_NAME_SET.has(event.event) ||
-		!isFiniteNumber(event.id) ||
+		!isSafeUnsignedInteger(event.id) ||
 		!isRecord(event.payload)
 	) {
 		return null;
@@ -365,8 +385,8 @@ export function mapAgentEvent(
 		case 'agent:thought': {
 			const sessionId = canonicalIdField(payload, 'session_id', 'ses');
 			const thought = readStringField(payload, 'thought');
-			const stepNumber = requiredNumber(payload, 'step_number');
-			const runId = requiredNumber(payload, 'run_id');
+			const stepNumber = requiredU32(payload, 'step_number');
+			const runId = requiredSafeUnsignedInteger(payload, 'run_id');
 			const messageId = canonicalIdField(payload, 'message_id', 'step');
 			if (
 				sessionId === null ||
@@ -374,7 +394,7 @@ export function mapAgentEvent(
 				stepNumber === null ||
 				runId === null ||
 				messageId === null ||
-				!optionalNumberIsValid(payload, 'event_seq')
+				!optionalSafeUnsignedIntegerIsValid(payload, 'event_seq')
 			)
 				return null;
 			return {
@@ -394,9 +414,9 @@ export function mapAgentEvent(
 		case 'agent:tool_call': {
 			const sessionId = canonicalIdField(payload, 'session_id', 'ses');
 			const toolName = readStringField(payload, 'tool_name');
-			const stepNumber = requiredNumber(payload, 'step_number');
-			const runId = requiredNumber(payload, 'run_id');
-			const toolIndex = requiredNumber(payload, 'tool_index');
+			const stepNumber = requiredU32(payload, 'step_number');
+			const runId = requiredSafeUnsignedInteger(payload, 'run_id');
+			const toolIndex = requiredU32(payload, 'tool_index');
 			const stepId = canonicalIdField(payload, 'step_id', 'step');
 			const suppressStreamedThought = requiredBoolean(payload, 'suppress_streamed_thought');
 			const silent = requiredBoolean(payload, 'silent');
@@ -412,7 +432,7 @@ export function mapAgentEvent(
 				silent === null ||
 				!hasOwnWireField(payload, 'input') ||
 				(toolCallId !== null && !isString(toolCallId)) ||
-				!optionalNumberIsValid(payload, 'event_seq')
+				!optionalSafeUnsignedIntegerIsValid(payload, 'event_seq')
 			)
 				return null;
 			return {
@@ -438,10 +458,10 @@ export function mapAgentEvent(
 			const sessionId = canonicalIdField(payload, 'session_id', 'ses');
 			const observation = readStringField(payload, 'observation');
 			const toolName = readStringField(payload, 'tool_name');
-			const stepNumber = requiredNumber(payload, 'step_number');
-			const runId = requiredNumber(payload, 'run_id');
+			const stepNumber = requiredU32(payload, 'step_number');
+			const runId = requiredSafeUnsignedInteger(payload, 'run_id');
 			const silent = requiredBoolean(payload, 'silent');
-			const toolIndex = requiredNumber(payload, 'tool_index');
+			const toolIndex = requiredU32(payload, 'tool_index');
 			const askOptions = isStringArray(payload.ask_options) ? payload.ask_options : null;
 			const stepId = canonicalIdField(payload, 'step_id', 'step');
 			const idempotency = payload.idempotency;
@@ -464,7 +484,7 @@ export function mapAgentEvent(
 				!isOneOf(operationScope, TOOL_OPERATION_SCOPE_VALUES) ||
 				(toolCallId !== null && !isString(toolCallId)) ||
 				result === null ||
-				!optionalNumberIsValid(payload, 'event_seq')
+				!optionalSafeUnsignedIntegerIsValid(payload, 'event_seq')
 			)
 				return null;
 			return {
@@ -494,10 +514,10 @@ export function mapAgentEvent(
 		case 'agent:reasoning_chunk': {
 			const sessionId = canonicalIdField(payload, 'session_id', 'ses');
 			const delta = readStringField(payload, 'delta');
-			const stepNumber = requiredNumber(payload, 'step_number');
-			const runId = requiredNumber(payload, 'run_id');
+			const stepNumber = requiredU32(payload, 'step_number');
+			const runId = requiredSafeUnsignedInteger(payload, 'run_id');
 			const messageId = canonicalIdField(payload, 'message_id', 'step');
-			const seq = requiredNumber(payload, 'seq');
+			const seq = requiredSafeUnsignedInteger(payload, 'seq');
 			if (
 				sessionId === null ||
 				delta === null ||
@@ -518,10 +538,10 @@ export function mapAgentEvent(
 			const toolName = readStringField(payload, 'tool_name');
 			const argumentsText = readStringField(payload, 'arguments');
 			const argumentsTruncated = requiredBoolean(payload, 'arguments_truncated');
-			const stepNumber = requiredNumber(payload, 'step_number');
-			const runId = requiredNumber(payload, 'run_id');
-			const toolIndex = requiredNumber(payload, 'tool_index');
-			const seq = requiredNumber(payload, 'seq');
+			const stepNumber = requiredU32(payload, 'step_number');
+			const runId = requiredSafeUnsignedInteger(payload, 'run_id');
+			const toolIndex = requiredU32(payload, 'tool_index');
+			const seq = requiredSafeUnsignedInteger(payload, 'seq');
 			if (
 				sessionId === null ||
 				previewId === null ||
@@ -551,8 +571,8 @@ export function mapAgentEvent(
 		}
 		case 'agent:stream_reset': {
 			const sessionId = canonicalIdField(payload, 'session_id', 'ses');
-			const stepNumber = requiredNumber(payload, 'step_number');
-			const runId = requiredNumber(payload, 'run_id');
+			const stepNumber = requiredU32(payload, 'step_number');
+			const runId = requiredSafeUnsignedInteger(payload, 'run_id');
 			const thoughtMessageId = canonicalIdField(payload, 'thought_message_id', 'step');
 			const reasoningMessageId = canonicalIdField(payload, 'reasoning_message_id', 'step');
 			if (
@@ -571,8 +591,8 @@ export function mapAgentEvent(
 		case 'agent:web_search': {
 			const sessionId = canonicalIdField(payload, 'session_id', 'ses');
 			const phase = readStringField(payload, 'phase');
-			const stepNumber = requiredNumber(payload, 'step_number');
-			const runId = requiredNumber(payload, 'run_id');
+			const stepNumber = requiredU32(payload, 'step_number');
+			const runId = requiredSafeUnsignedInteger(payload, 'run_id');
 			if (
 				sessionId === null ||
 				phase === null ||
@@ -601,8 +621,8 @@ export function mapAgentEvent(
 		}
 		case 'agent:media_plan': {
 			const sessionId = canonicalIdField(payload, 'session_id', 'ses');
-			const stepNumber = requiredNumber(payload, 'step_number');
-			const runId = requiredNumber(payload, 'run_id');
+			const stepNumber = requiredU32(payload, 'step_number');
+			const runId = requiredSafeUnsignedInteger(payload, 'run_id');
 			const role = payload.role;
 			const strategy = payload.strategy;
 			const projections =
@@ -642,7 +662,7 @@ export function mapAgentEvent(
 				!isOneOf(strategy, MEDIA_INPUT_STRATEGY_VALUES) ||
 				projections === null ||
 				notices === null ||
-				!optionalNumberIsValid(payload, 'event_seq')
+				!optionalSafeUnsignedIntegerIsValid(payload, 'event_seq')
 			)
 				return null;
 			return {
@@ -664,8 +684,8 @@ export function mapAgentEvent(
 		case 'agent:supplement': {
 			const sessionId = canonicalIdField(payload, 'session_id', 'ses');
 			const additionalContext = readStringField(payload, 'additional_context');
-			const stepNumber = requiredNumber(payload, 'step_number');
-			const runId = requiredNumber(payload, 'run_id');
+			const stepNumber = requiredU32(payload, 'step_number');
+			const runId = requiredSafeUnsignedInteger(payload, 'run_id');
 			const supplementId = canonicalIdField(payload, 'supplement_id', 'msg');
 			if (
 				sessionId === null ||
@@ -675,7 +695,7 @@ export function mapAgentEvent(
 				supplementId === null ||
 				!optionalCanonicalIdFieldIsValid(payload, 'message_id', 'msg') ||
 				!optionalStringFieldIsValid(payload, 'inject_source') ||
-				!optionalNumberIsValid(payload, 'event_seq')
+				!optionalSafeUnsignedIntegerIsValid(payload, 'event_seq')
 			)
 				return null;
 			return {
@@ -701,8 +721,8 @@ export function mapAgentEvent(
 		case 'agent:compaction': {
 			const sessionId = canonicalIdField(payload, 'session_id', 'ses');
 			const summary = readStringField(payload, 'summary');
-			const tokensBefore = requiredNumber(payload, 'tokens_before');
-			const tokensAfter = requiredNumber(payload, 'tokens_after');
+			const tokensBefore = requiredU32(payload, 'tokens_before');
+			const tokensAfter = requiredU32(payload, 'tokens_after');
 			const degraded = requiredBoolean(payload, 'degraded');
 			if (
 				sessionId === null ||
@@ -711,7 +731,7 @@ export function mapAgentEvent(
 				tokensAfter === null ||
 				degraded === null ||
 				!optionalCanonicalIdFieldIsValid(payload, 'episode_id', 'msg') ||
-				!optionalNumberIsValid(payload, 'event_seq')
+				!optionalSafeUnsignedIntegerIsValid(payload, 'event_seq')
 			)
 				return null;
 			return {
@@ -758,15 +778,15 @@ export function mapAgentEvent(
 			if (
 				sessionId === null ||
 				(rawCacheDiagnostics !== undefined && cacheDiagnostics === null) ||
-				!numberFields.every((field) => isFiniteNumber(payload[field])) ||
+				!numberFields.every((field) => isU32(payload[field])) ||
 				!isBoolean(payload.cache_exclusive) ||
 				!isOneOf(cacheAccounting, CACHE_ACCOUNTING_VALUES) ||
 				!nullableNumberIsValid(payload.cost_usd) ||
 				!nullableStringIsValid(payload.model) ||
 				!nullableNumberIsValid(payload.cumulative_cost_usd) ||
-				!nullableNumberIsValid(payload.context_window) ||
-				!optionalNumberIsValid(payload, 'step_number') ||
-				!optionalNumberIsValid(payload, 'duration_ms') ||
+				!nullableU32IsValid(payload.context_window) ||
+				!optionalU32IsValid(payload, 'step_number') ||
+				!optionalSafeUnsignedIntegerIsValid(payload, 'duration_ms') ||
 				(role !== undefined && !isOneOf(role, REQUEST_KIND_VALUES)) ||
 				!isOneOf(payload.call_kind, LLM_CALL_KIND_VALUES) ||
 				!isBoolean(payload.has_cost)
