@@ -21,7 +21,7 @@ use tokio_util::sync::CancellationToken;
 use capture::{CaptureEngineHandle, TARGET_SAMPLE_RATE};
 use haven_common::hooks::OnceHandler;
 
-pub use haven_common::config::AudioConfig;
+use haven_common::config::AudioConfig;
 pub use hotkey::{KeyCode, KeyCombo, KeyModifier};
 pub use vad::{VadSignal, VadState};
 
