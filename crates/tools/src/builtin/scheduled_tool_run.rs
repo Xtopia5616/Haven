@@ -1390,7 +1390,7 @@ mod tests {
                 .get_tool_run(id)
                 .unwrap()
                 .expect("corrupt row is retained as history");
-            assert_eq!(row.status, haven_common::ToolRunStatus::Failed);
+            assert_eq!(row.status, haven_common::lifecycle::ToolRunStatus::Failed);
             assert!(row.error_reason.is_some());
         }
     }

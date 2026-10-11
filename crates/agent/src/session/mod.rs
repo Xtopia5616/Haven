@@ -1,6 +1,6 @@
 use crate::interaction::{InteractionEnvelope, InteractionRequest};
-use haven_common::SessionStepStatus;
 pub use haven_common::lifecycle::SessionStatus;
+use haven_common::lifecycle::SessionStepStatus;
 pub use haven_common::lifecycle::SessionWaitingReason;
 use haven_common::types::{
     CapabilityScope, MessageAttachment, PermissionEffect, PermissionTarget, RiskLevel,
@@ -2024,7 +2024,7 @@ mod tests {
         assert!(db.get_session(&session.id).unwrap().is_none());
         assert_eq!(
             db.get_tool_run(tool_run_id).unwrap().unwrap().status,
-            haven_common::ToolRunStatus::Cancelled
+            haven_common::lifecycle::ToolRunStatus::Cancelled
         );
     }
 
@@ -2739,7 +2739,7 @@ mod tests {
         assert!(exec.is_run_in_flight(&session.id).await);
         assert_eq!(
             db.get_tool_run(tool_run_id).unwrap().unwrap().status,
-            haven_common::ToolRunStatus::Waiting
+            haven_common::lifecycle::ToolRunStatus::Waiting
         );
 
         allow_exit.store(1, Ordering::SeqCst);
@@ -3526,7 +3526,7 @@ mod tests {
         );
         assert_eq!(
             db.get_tool_run(tool_run_id).unwrap().unwrap().status,
-            haven_common::ToolRunStatus::Cancelled
+            haven_common::lifecycle::ToolRunStatus::Cancelled
         );
     }
 
@@ -3578,7 +3578,7 @@ mod tests {
         );
         assert_eq!(
             db.get_tool_run(tool_run_id).unwrap().unwrap().status,
-            haven_common::ToolRunStatus::Waiting
+            haven_common::lifecycle::ToolRunStatus::Waiting
         );
         assert!(matches!(
             events.try_recv(),
@@ -3594,7 +3594,7 @@ mod tests {
         );
         assert_eq!(
             db.get_tool_run(tool_run_id).unwrap().unwrap().status,
-            haven_common::ToolRunStatus::Cancelled
+            haven_common::lifecycle::ToolRunStatus::Cancelled
         );
     }
 
@@ -3647,11 +3647,11 @@ mod tests {
         );
         assert_eq!(
             db.get_tool_run(blocked_id).unwrap().unwrap().status,
-            haven_common::ToolRunStatus::Waiting
+            haven_common::lifecycle::ToolRunStatus::Waiting
         );
         assert_eq!(
             db.get_tool_run(cancelled_id).unwrap().unwrap().status,
-            haven_common::ToolRunStatus::Cancelled
+            haven_common::lifecycle::ToolRunStatus::Cancelled
         );
 
         db.conn()
@@ -3664,7 +3664,7 @@ mod tests {
         assert!(exec.actor_for(&session.id).await.is_none());
         assert_eq!(
             db.get_tool_run(blocked_id).unwrap().unwrap().status,
-            haven_common::ToolRunStatus::Cancelled
+            haven_common::lifecycle::ToolRunStatus::Cancelled
         );
     }
 
@@ -3711,7 +3711,7 @@ mod tests {
         assert!(!run_token.is_cancelled());
         assert_eq!(
             db.get_tool_run(tool_run_id).unwrap().unwrap().status,
-            haven_common::ToolRunStatus::Waiting
+            haven_common::lifecycle::ToolRunStatus::Waiting
         );
 
         db.conn()
@@ -3756,7 +3756,7 @@ mod tests {
         assert!(db.get_session(&session.id).unwrap().is_none());
         assert_eq!(
             db.get_tool_run(tool_run_id).unwrap().unwrap().status,
-            haven_common::ToolRunStatus::Cancelled
+            haven_common::lifecycle::ToolRunStatus::Cancelled
         );
     }
 
@@ -3804,7 +3804,7 @@ mod tests {
         assert!(db.get_session(&session.id).unwrap().is_some());
         assert_eq!(
             db.get_tool_run(tool_run_id).unwrap().unwrap().status,
-            haven_common::ToolRunStatus::Waiting
+            haven_common::lifecycle::ToolRunStatus::Waiting
         );
 
         db.conn()
@@ -3814,7 +3814,7 @@ mod tests {
         assert!(db.get_session(&session.id).unwrap().is_none());
         assert_eq!(
             db.get_tool_run(tool_run_id).unwrap().unwrap().status,
-            haven_common::ToolRunStatus::Cancelled
+            haven_common::lifecycle::ToolRunStatus::Cancelled
         );
     }
 

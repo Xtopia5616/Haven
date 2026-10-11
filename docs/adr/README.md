@@ -921,3 +921,4 @@
 - [0930：统一 Common config 子域 API 入口](0930-use-common-config-subdomain-as-canonical-api.md)
 - [0931：让工具 contracts 只经 Common tools 子域导出](0931-use-common-tools-subdomain-as-canonical-api.md)
 - [0932：让媒体 contracts 只经 Common media 子域导出](0932-use-common-media-subdomains-as-canonical-api.md)
+- [0933：让生命周期状态只经 Common lifecycle 子域导出](0933-use-common-lifecycle-subdomain-as-canonical-api.md)

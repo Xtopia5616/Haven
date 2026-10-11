@@ -2000,7 +2000,7 @@ mod scheduled_authorization_tests {
         tokio::time::timeout(std::time::Duration::from_secs(6), async {
             loop {
                 if tool_runs.status_view(&tool_run_id).await.status()
-                    == Some(haven_common::ToolRunStatus::Running)
+                    == Some(haven_common::lifecycle::ToolRunStatus::Running)
                 {
                     break;
                 }
@@ -2360,7 +2360,7 @@ mod scheduled_authorization_tests {
             .unwrap();
         assert_eq!(
             supervisor.get_active_session_status(&session.id).await,
-            Some(haven_common::SessionStatus::Paused)
+            Some(haven_common::lifecycle::SessionStatus::Paused)
         );
 
         database
@@ -2405,7 +2405,7 @@ mod scheduled_authorization_tests {
         );
         assert_eq!(
             supervisor.get_active_session_status(&session.id).await,
-            Some(haven_common::SessionStatus::Paused),
+            Some(haven_common::lifecycle::SessionStatus::Paused),
             "append failure must not wake the paused session"
         );
         let events = supervisor
@@ -2452,7 +2452,7 @@ mod scheduled_authorization_tests {
         );
         assert_eq!(
             supervisor.get_active_session_status(&session.id).await,
-            Some(haven_common::SessionStatus::Pending)
+            Some(haven_common::lifecycle::SessionStatus::Pending)
         );
         assert_eq!(
             database
@@ -2737,7 +2737,10 @@ mod tool_step_persistence_tests {
         assert_eq!(pending[0].tool_call_id.as_deref(), Some("provider-call-5"));
         assert!(pending[0].silent);
         assert!(!pending[0].is_high_risk);
-        assert_eq!(pending[0].status, haven_common::SessionStepStatus::Pending);
+        assert_eq!(
+            pending[0].status,
+            haven_common::lifecycle::SessionStepStatus::Pending
+        );
 
         supervisor
             .start_tool_step_with_identity(
@@ -2769,7 +2772,7 @@ mod tool_step_persistence_tests {
         assert_eq!(finished.len(), 1);
         assert_eq!(
             finished[0].status,
-            haven_common::SessionStepStatus::Cancelled
+            haven_common::lifecycle::SessionStepStatus::Cancelled
         );
         assert_eq!(
             finished[0].observation.as_deref(),

@@ -753,7 +753,7 @@ impl ReActEngine {
             pause.pause(
                 step_num + 1,
                 SessionStatus::Paused,
-                Some(haven_common::SessionWaitingReason::Confirmation),
+                Some(haven_common::lifecycle::SessionWaitingReason::Confirmation),
                 None,
                 PauseReason::Confirm,
             );

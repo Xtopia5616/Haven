@@ -22,7 +22,6 @@ pub mod workspace;
 pub use types::McpTransportType;
 pub use workspace::discover_workspace_root;
 
-pub use lifecycle::{SessionStatus, SessionStepStatus, SessionWaitingReason, ToolRunStatus};
 pub use tool_run_completion::ToolRunCompletionPayload;
 pub use tool_run_lease::ToolRunLease;
 pub use types::{

@@ -4,8 +4,8 @@ use std::sync::{Mutex, MutexGuard};
 
 use crate::session::SessionInfo;
 use async_trait::async_trait;
-use haven_common::SessionStatus;
 use haven_common::config::RequestKind;
+use haven_common::lifecycle::SessionStatus;
 use haven_common::tools::{OperationIdempotency, ToolOperationScope, ToolResultEnvelope};
 use haven_common::usage::{CacheAccounting, CacheDiagnostics, LlmCallKind};
 use haven_memory::SessionStore;
@@ -212,7 +212,7 @@ pub enum AgentEvent {
         /// the coarse `SessionStatus::Paused`; this field is a runtime/UI
         /// projection and is absent for every other status.
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        waiting_reason: Option<haven_common::SessionWaitingReason>,
+        waiting_reason: Option<haven_common::lifecycle::SessionWaitingReason>,
         /// Optional user-visible explanation for a run-end transition. The
         /// same sanitized value is persisted in `sessions.run_end_reason` so
         /// history can restore the explanation after an app restart.
@@ -1188,7 +1188,7 @@ impl EventDispatcher {
         &self,
         session_id: &str,
         status: SessionStatus,
-        waiting_reason: Option<haven_common::SessionWaitingReason>,
+        waiting_reason: Option<haven_common::lifecycle::SessionWaitingReason>,
         reason: Option<&str>,
     ) {
         tracing::debug!(

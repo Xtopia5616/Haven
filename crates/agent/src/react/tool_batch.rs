@@ -723,7 +723,7 @@ impl ReActEngine {
         effects.pause(
             step_num + 1,
             status,
-            Some(haven_common::SessionWaitingReason::Ask),
+            Some(haven_common::lifecycle::SessionWaitingReason::Ask),
             None,
             PauseReason::Ask,
         );

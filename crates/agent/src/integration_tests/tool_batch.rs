@@ -152,7 +152,7 @@ async fn mixed_confirmation_batch_pauses_only_real_gates_and_resumes_all_tools()
         .collect::<Vec<_>>();
     assert_eq!(
         status,
-        Some(haven_common::SessionStatus::Paused),
+        Some(haven_common::lifecycle::SessionStatus::Paused),
         "the high risk sibling should hold the mixed batch at confirmation; rounds={}, ui_events={}, requests={}, safe_runs={}, gated_runs={}, events={event_types:?}",
         first_history.len(),
         collector.events.lock().unwrap().len(),

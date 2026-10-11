@@ -8,7 +8,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use haven_common::{ToolRunCompletionPayload, ToolRunLease, ToolRunStatus};
+use haven_common::lifecycle::ToolRunStatus;
+use haven_common::{ToolRunCompletionPayload, ToolRunLease};
 use tokio::sync::{RwLock, broadcast};
 
 use crate::tool_run_service::ToolRunService;

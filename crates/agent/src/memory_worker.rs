@@ -1869,7 +1869,7 @@ mod tests {
             tool_input: None,
             tool_call_id: None,
             observation: Some("C:/Workspace/Haven".into()),
-            status: haven_common::SessionStepStatus::Completed,
+            status: haven_common::lifecycle::SessionStepStatus::Completed,
             is_high_risk: false,
             confirmed: None,
             silent: false,

@@ -55,7 +55,7 @@ pub(super) struct PauseTurnInput<'a> {
     pub(super) boundary_step: u32,
     pub(super) emitter: &'a Arc<dyn AgentEventEmitter>,
     pub(super) status: SessionStatus,
-    pub(super) waiting_reason: Option<haven_common::SessionWaitingReason>,
+    pub(super) waiting_reason: Option<haven_common::lifecycle::SessionWaitingReason>,
     pub(super) branch_point_step: Option<u32>,
     pub(super) run_id: u64,
     pub(super) reason: PauseReason,
@@ -81,7 +81,7 @@ pub(crate) async fn set_status_and_emit_with_waiting_reason(
     emitter: &Arc<dyn AgentEventEmitter>,
     session_id: &str,
     status: SessionStatus,
-    explicit_reason: Option<haven_common::SessionWaitingReason>,
+    explicit_reason: Option<haven_common::lifecycle::SessionWaitingReason>,
 ) -> anyhow::Result<()> {
     tracing::debug!("session {} status -> {}", session_id, status.as_str());
     if executor.update_session_status(session_id, status).await? {
@@ -396,7 +396,7 @@ impl ReActEngine {
                 emitter,
                 session_id,
                 SessionStatus::Paused,
-                Some(haven_common::SessionWaitingReason::StepBudget),
+                Some(haven_common::lifecycle::SessionWaitingReason::StepBudget),
             )
             .await?;
             emitter

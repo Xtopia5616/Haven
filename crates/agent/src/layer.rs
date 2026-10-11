@@ -241,7 +241,7 @@ impl AgentLayer {
             self.executor
                 .set_waiting_reason(
                     session_id,
-                    Some(haven_common::SessionWaitingReason::UserInterrupt),
+                    Some(haven_common::lifecycle::SessionWaitingReason::UserInterrupt),
                 )
                 .await?;
             if let Err(error) = self
@@ -259,7 +259,7 @@ impl AgentLayer {
                 .emit_session_updated_with_reason_and_waiting_reason(
                     session_id,
                     SessionStatus::Paused,
-                    Some(haven_common::SessionWaitingReason::UserInterrupt),
+                    Some(haven_common::lifecycle::SessionWaitingReason::UserInterrupt),
                     Some("用户主动打断输出"),
                 )
                 .await;
@@ -460,7 +460,7 @@ impl AgentLayer {
                                 .emit_session_updated_with_reason_and_waiting_reason(
                                     &session_id,
                                     SessionStatus::Paused,
-                                    Some(haven_common::SessionWaitingReason::EndIncomplete),
+                                    Some(haven_common::lifecycle::SessionWaitingReason::EndIncomplete),
                                     Some(reason),
                                 )
                                 .await;

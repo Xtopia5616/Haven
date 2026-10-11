@@ -10,7 +10,8 @@ use std::sync::Arc;
 use crate::Database;
 use crate::repositories::tool_run_completion_outbox::ToolRunCompletionOutboxRow;
 use crate::repositories::tool_runs::{ScheduledToolRunRow, ToolRunDependencyRow, ToolRunRow};
-use haven_common::{ToolRunCompletionPayload, ToolRunStatus};
+use haven_common::ToolRunCompletionPayload;
+use haven_common::lifecycle::ToolRunStatus;
 
 const MAX_TOOL_RUN_HISTORY_PAGE_SIZE: usize = 200;
 

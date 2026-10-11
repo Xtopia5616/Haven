@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::ToolRunStatus;
+use crate::lifecycle::ToolRunStatus;
 
 /// Result fields shared by live ToolRun completion events and the durable
 /// completion outbox. This is an internal delivery contract, not the ToolRun

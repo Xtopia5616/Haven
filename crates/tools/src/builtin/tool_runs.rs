@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use haven_common::ToolRunStatus;
+use haven_common::lifecycle::ToolRunStatus;
 use haven_common::types::RiskLevel;
 use serde_json::Value;
 use std::sync::Arc;

@@ -897,7 +897,7 @@ fn init_app_state(
 #[cfg(test)]
 mod tests {
     use super::{pause_running_sessions_on_exit, project_interaction};
-    use haven_common::SessionStatus;
+    use haven_common::lifecycle::SessionStatus;
     use haven_memory::{Database, SessionStore};
     use std::sync::Arc;
 

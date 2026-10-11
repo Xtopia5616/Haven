@@ -22,7 +22,7 @@ fn format_tool_run_result_message(
     tool_run_id: &str,
     tool_run_kind: &str,
     source_step_id: Option<&str>,
-    status: haven_common::ToolRunStatus,
+    status: haven_common::lifecycle::ToolRunStatus,
     summary: &str,
     log_path: Option<&str>,
     max_chars: usize,
@@ -97,7 +97,7 @@ pub(super) fn spawn(agent: Arc<AgentLayer>, cancellation: CancellationToken) {
                     haven_tools::ToolRunCompletion::Scheduled(_) => continue,
                 };
                 // Cancellation has no ToolRun-result transcript by contract.
-                if status == haven_common::ToolRunStatus::Cancelled {
+                if status == haven_common::lifecycle::ToolRunStatus::Cancelled {
                     tool_run_port
                         .acknowledge_completion(&tool_run_result_id)
                         .await;
@@ -131,7 +131,7 @@ pub(super) fn spawn(agent: Arc<AgentLayer>, cancellation: CancellationToken) {
                 // see the real error, not a multi-KB progress dump. The
                 // injected context is capped either way: the model needs
                 // the reason, not the full transcript.
-                let reason = if status == haven_common::ToolRunStatus::Failed {
+                let reason = if status == haven_common::lifecycle::ToolRunStatus::Failed {
                     completion_payload
                         .error_reason
                         .as_deref()
@@ -271,18 +271,19 @@ pub(super) fn spawn(agent: Arc<AgentLayer>, cancellation: CancellationToken) {
                     continue;
                 }
                 let (title, status_label, notification_status) = match status {
-                    haven_common::ToolRunStatus::Completed => (
+                    haven_common::lifecycle::ToolRunStatus::Completed => (
                         "后台任务已完成".to_string(),
                         "已完成".to_string(),
                         ToolRunCompletionStatus::Completed,
                     ),
-                    haven_common::ToolRunStatus::Failed => (
+                    haven_common::lifecycle::ToolRunStatus::Failed => (
                         "后台任务失败".to_string(),
                         "失败".to_string(),
                         ToolRunCompletionStatus::Failed,
                     ),
-                    haven_common::ToolRunStatus::Cancelled => continue,
-                    haven_common::ToolRunStatus::Waiting | haven_common::ToolRunStatus::Running => {
+                    haven_common::lifecycle::ToolRunStatus::Cancelled => continue,
+                    haven_common::lifecycle::ToolRunStatus::Waiting
+                    | haven_common::lifecycle::ToolRunStatus::Running => {
                         tracing::warn!(tool_run_id = %tool_run_id, "received non-terminal ToolRun result");
                         continue;
                     }
@@ -322,7 +323,7 @@ mod tests {
             tool_run_id,
             "background",
             Some("step-origin"),
-            haven_common::ToolRunStatus::Failed,
+            haven_common::lifecycle::ToolRunStatus::Failed,
             summary,
             Some("C:\\tmp\\result<&>.log"),
             3,

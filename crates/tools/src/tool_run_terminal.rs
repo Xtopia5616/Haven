@@ -1,4 +1,4 @@
-use haven_common::ToolRunStatus;
+use haven_common::lifecycle::ToolRunStatus;
 use tokio::sync::{Mutex, MutexGuard};
 
 /// Runtime state shared by background and scheduled ToolRuns. Their admission
@@ -166,7 +166,7 @@ mod tests {
     use super::{
         TerminalPayload, TerminalSource, TerminalTimestamps, ToolRunState, can_claim_terminal,
     };
-    use haven_common::ToolRunStatus;
+    use haven_common::lifecycle::ToolRunStatus;
 
     #[test]
     fn completed_terminal_state_preserves_payload_and_timestamps() {

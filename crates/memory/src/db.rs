@@ -668,7 +668,7 @@ mod tests {
             id: id.into(),
             input_text: format!("input-{}", id),
             title: None,
-            status: haven_common::SessionStatus::Pending,
+            status: haven_common::lifecycle::SessionStatus::Pending,
             run_end_reason: None,
             created_at: "2026-01-01T00:00:00Z".into(),
             updated_at: "2026-01-01T00:00:00Z".into(),

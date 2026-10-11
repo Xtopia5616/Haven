@@ -18,7 +18,7 @@ use crate::repositories::session_steps::{SessionStep, ToolStepOutcome, ToolStepW
 use crate::repositories::sessions::{Session, SessionOrigin};
 use crate::repositories::usage::{LlmUsageRecord, LlmUsageRecordInput, SessionUsage};
 use chrono::{SecondsFormat, Utc};
-use haven_common::SessionStatus;
+use haven_common::lifecycle::SessionStatus;
 use haven_common::types::{MessageAttachment, TranscriptMessageKind};
 use rusqlite::OptionalExtension;
 use std::path::PathBuf;
@@ -3679,7 +3679,10 @@ mod tests {
         assert_eq!(pending[0].tool_call_id.as_deref(), Some("provider-call-7"));
         assert!(pending[0].is_high_risk);
         assert_eq!(pending[0].confirmed, Some(true));
-        assert_eq!(pending[0].status, haven_common::SessionStepStatus::Pending);
+        assert_eq!(
+            pending[0].status,
+            haven_common::lifecycle::SessionStepStatus::Pending
+        );
 
         assert!(
             store
@@ -3691,7 +3694,10 @@ mod tests {
 
         let running = db.list_session_steps(&session_id).unwrap();
         assert_eq!(running.len(), 1);
-        assert_eq!(running[0].status, haven_common::SessionStepStatus::Running);
+        assert_eq!(
+            running[0].status,
+            haven_common::lifecycle::SessionStepStatus::Running
+        );
         assert!(running[0].started_at.is_some());
         assert_eq!(running[0].confirmed, Some(true));
     }
@@ -3726,7 +3732,10 @@ mod tests {
 
         let steps = db.list_session_steps(&session_id).unwrap();
         assert_eq!(steps.len(), 1);
-        assert_eq!(steps[0].status, haven_common::SessionStepStatus::Unknown);
+        assert_eq!(
+            steps[0].status,
+            haven_common::lifecycle::SessionStepStatus::Unknown
+        );
         assert_eq!(steps[0].confirmed, Some(false));
         assert_eq!(
             steps[0].observation.as_deref(),
@@ -4240,7 +4249,10 @@ mod tests {
                 .iter()
                 .find(|step| step.id == *step_id)
                 .unwrap();
-            assert_eq!(step.status, haven_common::SessionStepStatus::Unknown);
+            assert_eq!(
+                step.status,
+                haven_common::lifecycle::SessionStepStatus::Unknown
+            );
             assert_eq!(step.observation.as_deref(), Some("session failed"));
             assert!(step.completed_at.is_some());
         }
@@ -4250,7 +4262,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             completed_after.status,
-            haven_common::SessionStepStatus::Completed
+            haven_common::lifecycle::SessionStepStatus::Completed
         );
         assert_eq!(
             completed_after.observation.as_deref(),
@@ -4265,7 +4277,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             other_pending_after.status,
-            haven_common::SessionStepStatus::Pending
+            haven_common::lifecycle::SessionStepStatus::Pending
         );
         assert_eq!(other_pending_after.observation, other_observation_before);
     }

@@ -1,5 +1,6 @@
 use crate::db::Database;
-use haven_common::{ToolRunCompletionPayload, ToolRunStatus};
+use haven_common::ToolRunCompletionPayload;
+use haven_common::lifecycle::ToolRunStatus;
 use rusqlite::OptionalExtension;
 
 const SCHEDULED_EXECUTION_CLAIM_PREFIX: &str = "scheduled_execution_claim.";
@@ -845,8 +846,9 @@ impl Database {
 #[cfg(test)]
 mod tests {
     use crate::db::Database;
+    use haven_common::ToolRunCompletionPayload;
+    use haven_common::lifecycle::ToolRunStatus;
     use haven_common::types::new_id;
-    use haven_common::{ToolRunCompletionPayload, ToolRunStatus};
 
     fn test_db() -> Database {
         Database::open_in_memory().expect("create in-memory db")

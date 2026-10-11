@@ -219,12 +219,12 @@ impl DesktopNotifications {
                 status,
                 waiting_reason,
                 ..
-            } if *status == haven_common::SessionStatus::Paused => {
+            } if *status == haven_common::lifecycle::SessionStatus::Paused => {
                 if matches!(
                     *waiting_reason,
                     Some(
-                        haven_common::SessionWaitingReason::Confirmation
-                            | haven_common::SessionWaitingReason::ScheduledConfirmation
+                        haven_common::lifecycle::SessionWaitingReason::Confirmation
+                            | haven_common::lifecycle::SessionWaitingReason::ScheduledConfirmation
                     )
                 ) {
                     return;
@@ -237,7 +237,7 @@ impl DesktopNotifications {
             }
             AgentEvent::SessionUpdated {
                 session_id, status, ..
-            } if *status == haven_common::SessionStatus::Pending => {
+            } if *status == haven_common::lifecycle::SessionStatus::Pending => {
                 // Only paused*/error → pending counts as resume. Running→Pending
                 // (ask answered in-turn) must not toast.
                 let prev = self.previous_session_status(session_id);

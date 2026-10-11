@@ -1569,8 +1569,8 @@ impl AdminOperationSet {
 mod tests {
     use super::*;
     use crate::{StructuredToolError, Tool, ToolsFacade};
-    use haven_common::SessionStatus;
     use haven_common::config::{ConfigLoader, ConfigPatch, ConfigService, InMemoryCredentialStore};
+    use haven_common::lifecycle::SessionStatus;
     use haven_memory::{Database, MemoryFactStore, SessionStore};
     use serde_json::json;
     use std::collections::BTreeSet;

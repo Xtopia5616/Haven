@@ -42,7 +42,7 @@ pub(super) enum TurnEffect {
     Pause {
         boundary_step: u32,
         status: SessionStatus,
-        waiting_reason: Option<haven_common::SessionWaitingReason>,
+        waiting_reason: Option<haven_common::lifecycle::SessionWaitingReason>,
         branch_point_step: Option<u32>,
         reason: PauseReason,
     },
@@ -113,7 +113,7 @@ impl EffectBatch {
         &mut self,
         boundary_step: u32,
         status: SessionStatus,
-        waiting_reason: Option<haven_common::SessionWaitingReason>,
+        waiting_reason: Option<haven_common::lifecycle::SessionWaitingReason>,
         branch_point_step: Option<u32>,
         reason: PauseReason,
     ) {

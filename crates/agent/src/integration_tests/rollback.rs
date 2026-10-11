@@ -66,7 +66,7 @@ async fn rollback_rejects_closing_session_before_cancelling_owned_tool_runs() {
     assert_eq!(before.events.len(), after.events.len());
     assert_eq!(
         agent.db.get_tool_run(tool_run_id).unwrap().unwrap().status,
-        haven_common::ToolRunStatus::Waiting
+        haven_common::lifecycle::ToolRunStatus::Waiting
     );
 }
 

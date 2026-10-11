@@ -243,7 +243,7 @@ impl TauriEmitter {
             } => {
                 let title = display_title.clone().unwrap_or_else(|| session_id.clone());
                 match status {
-                    haven_common::SessionStatus::Completed => {
+                    haven_common::lifecycle::SessionStatus::Completed => {
                         serialize(SessionLifecycleEvent::Completed {
                             session_id: session_id.clone(),
                             title,
@@ -253,15 +253,17 @@ impl TauriEmitter {
                                 .unwrap_or_else(|| "会话已完成。".to_string()),
                         })
                     }
-                    haven_common::SessionStatus::Error => serialize(SessionLifecycleEvent::Error {
-                        session_id: session_id.clone(),
-                        title,
-                        error: reason
-                            .as_deref()
-                            .map(sanitize_error_text)
-                            .unwrap_or_else(|| "会话已停止，但未收到错误详情。".to_string()),
-                    }),
-                    haven_common::SessionStatus::Pending => {
+                    haven_common::lifecycle::SessionStatus::Error => {
+                        serialize(SessionLifecycleEvent::Error {
+                            session_id: session_id.clone(),
+                            title,
+                            error: reason
+                                .as_deref()
+                                .map(sanitize_error_text)
+                                .unwrap_or_else(|| "会话已停止，但未收到错误详情。".to_string()),
+                        })
+                    }
+                    haven_common::lifecycle::SessionStatus::Pending => {
                         serialize(SessionLifecycleEvent::Updated {
                             session_id: session_id.clone(),
                             status: SessionUpdateStatus::Pending,
@@ -270,7 +272,7 @@ impl TauriEmitter {
                             reason: reason.as_deref().map(sanitize_error_text),
                         })
                     }
-                    haven_common::SessionStatus::Running => {
+                    haven_common::lifecycle::SessionStatus::Running => {
                         serialize(SessionLifecycleEvent::Updated {
                             session_id: session_id.clone(),
                             status: SessionUpdateStatus::Running,
@@ -279,7 +281,7 @@ impl TauriEmitter {
                             reason: reason.as_deref().map(sanitize_error_text),
                         })
                     }
-                    haven_common::SessionStatus::Paused => {
+                    haven_common::lifecycle::SessionStatus::Paused => {
                         serialize(SessionLifecycleEvent::Updated {
                             session_id: session_id.clone(),
                             status: SessionUpdateStatus::Paused,
@@ -643,7 +645,7 @@ impl TauriEmitter {
                     status = status.as_str(),
                     "TauriEmitter::on_session_updated"
                 );
-                if *status == haven_common::SessionStatus::Paused {
+                if *status == haven_common::lifecycle::SessionStatus::Paused {
                     tracing::warn!(
                         session_id = %session_id,
                         "TauriEmitter emitting session:lifecycle with paused status"

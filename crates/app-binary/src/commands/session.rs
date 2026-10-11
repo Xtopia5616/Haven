@@ -86,7 +86,7 @@ pub struct SessionRecordDto {
     pub id: String,
     pub input_text: String,
     pub title: Option<String>,
-    pub status: haven_common::SessionStatus,
+    pub status: haven_common::lifecycle::SessionStatus,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub run_end_reason: Option<String>,
     pub created_at: String,

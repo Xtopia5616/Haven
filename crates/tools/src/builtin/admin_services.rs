@@ -221,7 +221,7 @@ pub(crate) enum SessionsOutput {
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct SessionSummaryOutput {
     pub(crate) id: String,
-    pub(crate) status: haven_common::SessionStatus,
+    pub(crate) status: haven_common::lifecycle::SessionStatus,
     pub(crate) title: Option<String>,
     pub(crate) input_chars: usize,
     pub(crate) created_at: String,
@@ -674,7 +674,7 @@ impl AdminServices {
             .await?;
         let rows: Vec<SessionErrorOutput> = sessions
             .into_iter()
-            .filter(|session| session.status == haven_common::SessionStatus::Error)
+            .filter(|session| session.status == haven_common::lifecycle::SessionStatus::Error)
             .map(|session| SessionErrorOutput {
                 id: session.id,
                 title: session.title,

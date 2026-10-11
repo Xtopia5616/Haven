@@ -1,6 +1,6 @@
 # Haven 命名规范
 
-> 版本: v1.172 | 日期: 2026-10-11
+> 版本: v1.173 | 日期: 2026-10-11
 
 本文档统一 Haven 项目各层的命名规则（变量名、函数名、文件名、crate 名、缩写大小写、跨层边界）。规范以现有代码中的事实模式为基础，新代码必须遵循；存量代码若与规范冲突，逐步迁移对齐。
 
@@ -61,7 +61,7 @@
 - **Admin capability 唯一拥有管理工具名**：`AdminCapability::tool_name` 唯一映射 `haven_*` 工具名；model operation surface 先解析到同一 enum 再取工具名，不在 request helper 或 metadata 中另存重复字符串（ADR 0683）。
 - **Admin operation 统一从组合 owner 构造**：配置操作由 Tools 内部的 `AdminOperationSet` 通过共享 `AdminServices` 构造；App 只消费 `AdminOperationPort`，不持有实现对象；不保留无生产调用方的 `ConfigAdminContext`、`ConfigAdminTool` 或单独 builder 作为第二条装配路径（ADR 0684）。
 - **能力 facade 不返回可变实现对象**：跨 crate 命令只暴露领域操作（如 `ToolsFacade::reset_tool_circuits`），不把 registry、manager、runner、事件 hub 或桌面模拟模块作为公开入口；仅测试需要的具体 fixture 通过非默认 `test-support` 暴露。公开 trait 签名确需内部类型时，使用 crate 根的 doc-hidden 契约类型，隐藏其实现模块（ADR 0905）。
-- **crate 跨层导入只有一个规范入口**：领域 crate 的稳定 DTO、port 和操作从 crate root 导出；内部实现模块保持私有。消费者统一通过 `haven_llm::LlmRouter` 等根路径导入，不同时保留 `haven_llm::router::LlmRouter` 这类同一实体的第二入口。确有独立领域子语言时再开放命名模块，不因源文件布局公开实现路径；一旦该命名模块是规范入口，就不再把同一批类型重复 re-export 到 crate root（Common 配置统一走 `haven_common::config`，用量统一走 `haven_common::usage`，工具 contract 统一走 `haven_common::tools`，媒体领域统一走 `haven_common::media` 与 `haven_common::media_detection`）。
+- **crate 跨层导入只有一个规范入口**：领域 crate 的稳定 DTO、port 和操作从 crate root 导出；内部实现模块保持私有。消费者统一通过 `haven_llm::LlmRouter` 等根路径导入，不同时保留 `haven_llm::router::LlmRouter` 这类同一实体的第二入口。确有独立领域子语言时再开放命名模块，不因源文件布局公开实现路径；一旦该命名模块是规范入口，就不再把同一批类型重复 re-export 到 crate root（Common 配置统一走 `haven_common::config`，用量统一走 `haven_common::usage`，工具 contract 统一走 `haven_common::tools`，媒体领域统一走 `haven_common::media` 与 `haven_common::media_detection`，生命周期统一走 `haven_common::lifecycle`）。
 - **认证方案与凭据分阶段命名**：header policy 使用 `AuthHeaderScheme { header_name, prefix }`；将密钥应用到方案后得到 LLM registry 拥有的 `ModelDiscoveryAuthHeader { header_name, value }`，该类型直接跨 App→LLM API 传递；一次 model discovery 的输入由 `ResolvedDiscoveryAuth { api_key, auth_header }` 表达。含实际凭据的类型不自动派生 `Debug`，避免调试格式意外暴露密钥。
 - **模型配置引用与供应商身份分名**：`ModelConfig::provider_name` 指向 `ProviderConfig::name`（用户配置的连接名称）；`ProviderConfig::provider` 与 `ModelEndpoint::provider` 表示供应商身份。Serde/TOML/IPC 字段统一为 `provider_name`；设置编辑器内部使用 `providerName`，只在 generated IPC 边界转换命名风格。按连接名查找使用 `LlmConfig::provider_config_by_name`（ADR 0632）。
 - **模型目录发现只有一个命令 owner**：设置页对每个连接并行调用 `discover_models`，经 `modelDiscoveryCommands.ts`；不保留重复的 batch command/handler。promise resolve（包括空数组）表示成功，reject 表示失败，不按目录长度推断状态；UI 汇总各连接结果。`provider_name` 是配置连接名，`ModelInfo.provider` 是供应商身份（ADR 0872）。

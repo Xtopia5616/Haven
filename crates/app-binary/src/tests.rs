@@ -92,7 +92,7 @@ fn channel_maps_every_variant_to_expected_channel() {
         (
             AgentEvent::SessionUpdated {
                 session_id: "t".into(),
-                status: haven_common::SessionStatus::Paused,
+                status: haven_common::lifecycle::SessionStatus::Paused,
                 waiting_reason: None,
                 reason: None,
             },
@@ -474,7 +474,7 @@ fn payload_preserves_session_lifecycle_and_error_wire_shapes() {
 
     let updated = AgentEvent::SessionUpdated {
         session_id: "t".into(),
-        status: haven_common::SessionStatus::Paused,
+        status: haven_common::lifecycle::SessionStatus::Paused,
         waiting_reason: None,
         reason: Some("用户主动打断输出".into()),
     };
@@ -521,7 +521,7 @@ fn tool_run_projection_maps_scheduled_progress_to_the_public_contract() {
     assert_eq!(projection.channel, TOOL_RUN_UPDATED_EVENT);
     assert_eq!(
         projection.payload.status,
-        Some(haven_common::ToolRunStatus::Running)
+        Some(haven_common::lifecycle::ToolRunStatus::Running)
     );
     assert_eq!(
         projection.payload.started_at.as_deref(),

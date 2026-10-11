@@ -755,7 +755,10 @@ async fn test_completion_notified_on_finish() {
         .await
         .expect("completion received");
     assert_eq!(comp.tool_run_id, id);
-    assert_eq!(comp.status, haven_common::ToolRunStatus::Completed);
+    assert_eq!(
+        comp.status,
+        haven_common::lifecycle::ToolRunStatus::Completed
+    );
     assert_eq!(comp.session_id.as_deref(), Some("ses-A"));
     assert!(comp.payload.output.as_deref().unwrap().contains("done"));
 }
@@ -893,7 +896,10 @@ async fn cleanup_cancels_durable_background_admission_without_board_entry() {
         .unwrap();
 
     let row = db.get_tool_run(&tool_run_id).unwrap().unwrap();
-    assert_eq!(row.status, haven_common::ToolRunStatus::Cancelled);
+    assert_eq!(
+        row.status,
+        haven_common::lifecycle::ToolRunStatus::Cancelled
+    );
     assert!(service.tool_runs.read().await.is_empty());
 }
 
@@ -961,7 +967,7 @@ async fn session_cleanup_serializes_with_background_and_scheduled_admission() {
 
     assert_eq!(
         db.get_tool_run(scheduled_id).unwrap().unwrap().status,
-        haven_common::ToolRunStatus::Cancelled
+        haven_common::lifecycle::ToolRunStatus::Cancelled
     );
     let status = tokio::time::timeout(Duration::from_secs(5), async {
         loop {
@@ -970,7 +976,7 @@ async fn session_cleanup_serializes_with_background_and_scheduled_admission() {
                 .expect("background ToolRun lookup should succeed")
                 .expect("background ToolRun row should remain durable")
                 .status;
-            if status != haven_common::ToolRunStatus::Running {
+            if status != haven_common::lifecycle::ToolRunStatus::Running {
                 break status;
             }
             tokio::time::sleep(Duration::from_millis(20)).await;
@@ -978,7 +984,7 @@ async fn session_cleanup_serializes_with_background_and_scheduled_admission() {
     })
     .await
     .expect("background cancellation should finish promptly");
-    assert_eq!(status, haven_common::ToolRunStatus::Cancelled);
+    assert_eq!(status, haven_common::lifecycle::ToolRunStatus::Cancelled);
 }
 
 #[cfg(windows)]
@@ -1010,10 +1016,9 @@ async fn test_tool_run_result_persisted_to_db() {
     let deadline = std::time::Instant::now() + Duration::from_secs(5);
     let row = loop {
         let rows = db.list_tool_runs(Some("background")).unwrap();
-        if let Some(row) = rows
-            .iter()
-            .find(|r| r.tool_run_id == id && r.status == haven_common::ToolRunStatus::Completed)
-        {
+        if let Some(row) = rows.iter().find(|r| {
+            r.tool_run_id == id && r.status == haven_common::lifecycle::ToolRunStatus::Completed
+        }) {
             break row.clone();
         }
         assert!(
@@ -1023,7 +1028,10 @@ async fn test_tool_run_result_persisted_to_db() {
         tokio::time::sleep(Duration::from_millis(50)).await;
     };
     assert_eq!(row.kind, "background");
-    assert_eq!(row.status, haven_common::ToolRunStatus::Completed);
+    assert_eq!(
+        row.status,
+        haven_common::lifecycle::ToolRunStatus::Completed
+    );
     assert_eq!(row.session_id.as_deref(), Some("ses-DB"));
     assert!(row.output.as_deref().unwrap().contains("live-line"));
     assert_eq!(row.exit_code, Some(0));
@@ -1056,7 +1064,10 @@ async fn test_completion_refired_after_late_attach() {
         .await
         .expect("refired completion received");
     assert_eq!(comp.session_id.as_deref(), Some("ses-B"));
-    assert_eq!(comp.status, haven_common::ToolRunStatus::Completed);
+    assert_eq!(
+        comp.status,
+        haven_common::lifecycle::ToolRunStatus::Completed
+    );
 }
 
 #[tokio::test]
@@ -1087,7 +1098,7 @@ async fn test_background_completion_reconciles_after_broadcast_loss() {
     .unwrap();
     db.finish_tool_run(
         "toolrun-reconcile",
-        haven_common::ToolRunStatus::Completed,
+        haven_common::lifecycle::ToolRunStatus::Completed,
         Some("durable output"),
         None,
         None,
@@ -2681,7 +2692,7 @@ async fn restored_dependency_uses_durable_producer_result_and_claims_once() {
         .unwrap();
     db.finish_tool_run(
         &producer_id,
-        haven_common::ToolRunStatus::Completed,
+        haven_common::lifecycle::ToolRunStatus::Completed,
         Some(producer_result),
         None,
         None,
@@ -2755,7 +2766,7 @@ async fn restored_dependency_uses_durable_producer_result_and_claims_once() {
     assert!(prompt.contains("\\u003c/untrusted_tool_run_result>"));
     assert_eq!(
         db.get_tool_run(&admitted_id).unwrap().unwrap().status,
-        haven_common::ToolRunStatus::Running
+        haven_common::lifecycle::ToolRunStatus::Running
     );
 
     let duplicate = if winner == 0 {
@@ -2834,7 +2845,10 @@ async fn restart_fails_running_producer_before_recovering_dependency() {
         }
     );
     let producer = db.get_tool_run(&producer_id).unwrap().unwrap();
-    assert_eq!(producer.status, haven_common::ToolRunStatus::Failed);
+    assert_eq!(
+        producer.status,
+        haven_common::lifecycle::ToolRunStatus::Failed
+    );
     assert_eq!(
         producer.error_reason.as_deref(),
         Some("App restarted while the ToolRun was running")
@@ -3214,7 +3228,7 @@ async fn scheduled_admission_keeps_running_row_until_completion_then_reaps_termi
     );
     assert_eq!(
         db.get_tool_run(&id).unwrap().unwrap().status,
-        haven_common::ToolRunStatus::Running
+        haven_common::lifecycle::ToolRunStatus::Running
     );
     assert!(service.complete_scheduled(&id).await.unwrap());
     assert_eq!(
@@ -3244,7 +3258,7 @@ async fn scheduled_admission_keeps_running_row_until_completion_then_reaps_termi
     );
     assert_eq!(
         db.get_tool_run(&id).unwrap().unwrap().status,
-        haven_common::ToolRunStatus::Completed,
+        haven_common::lifecycle::ToolRunStatus::Completed,
         "terminal cleanup must retain durable scheduled history"
     );
 }
@@ -3308,7 +3322,7 @@ async fn scheduled_admission_keeps_running_row_available_for_cancellation() {
     );
     assert_eq!(
         db.get_tool_run(&id).unwrap().unwrap().status,
-        haven_common::ToolRunStatus::Cancelled
+        haven_common::lifecycle::ToolRunStatus::Cancelled
     );
 }
 
@@ -3346,7 +3360,7 @@ async fn scheduled_execution_claim_arbitrates_with_cancellation() {
     );
     assert_eq!(
         db.get_tool_run(&approved_id).unwrap().unwrap().status,
-        haven_common::ToolRunStatus::Running
+        haven_common::lifecycle::ToolRunStatus::Running
     );
     let request_id = haven_common::types::new_id("conf");
     assert!(
@@ -3400,7 +3414,7 @@ async fn scheduled_execution_claim_arbitrates_with_cancellation() {
     );
     assert_eq!(
         db.get_tool_run(&cancelled_id).unwrap().unwrap().status,
-        haven_common::ToolRunStatus::Cancelled
+        haven_common::lifecycle::ToolRunStatus::Cancelled
     );
 
     // A second service can terminalize the shared database while this
@@ -3431,7 +3445,7 @@ async fn scheduled_execution_claim_arbitrates_with_cancellation() {
     assert!(
         db.finish_scheduled_tool_run(
             &remotely_finished_id,
-            haven_common::ToolRunStatus::Completed,
+            haven_common::lifecycle::ToolRunStatus::Completed,
             Some("remote terminal transition"),
             None,
             "remote-finish",
@@ -3494,7 +3508,7 @@ async fn restore_marks_running_scheduled_tool_run_failed_without_replaying_it() 
         "not_found"
     );
     let row = db.get_tool_run(&id).unwrap().unwrap();
-    assert_eq!(row.status, haven_common::ToolRunStatus::Failed);
+    assert_eq!(row.status, haven_common::lifecycle::ToolRunStatus::Failed);
     assert_eq!(
         row.error_reason.as_deref(),
         Some("App restarted while the ToolRun was running")
@@ -3555,7 +3569,7 @@ async fn test_scheduled_fire_without_receiver_is_requeued_durably() {
             .find(|row| row.tool_run_id == id)
             .unwrap()
             .status,
-        haven_common::ToolRunStatus::Waiting
+        haven_common::lifecycle::ToolRunStatus::Waiting
     );
 
     // The first timer had no consumer. A receiver attached later must still
@@ -3646,7 +3660,7 @@ async fn test_scheduled_fire_recovery_survives_requeue_failure_for_late_receiver
     assert!(service.complete_scheduled(&id).await.unwrap());
     assert_eq!(
         db.get_tool_run(&id).unwrap().unwrap().status,
-        haven_common::ToolRunStatus::Completed
+        haven_common::lifecycle::ToolRunStatus::Completed
     );
 }
 
@@ -3679,10 +3693,10 @@ async fn test_scheduled_fire_recovers_after_completion_bus_lag() {
                 tool_run_id: format!("toolrun-noise-{index}"),
                 tool_run_result_id: format!("toolrun-noise-{index}"),
                 session_id: None,
-                status: haven_common::ToolRunStatus::Completed,
+                status: haven_common::lifecycle::ToolRunStatus::Completed,
                 payload: haven_common::ToolRunCompletionPayload {
                     tool_run_id: format!("toolrun-noise-{index}"),
-                    status: haven_common::ToolRunStatus::Completed,
+                    status: haven_common::lifecycle::ToolRunStatus::Completed,
                     status_projection_kind: None,
                     output: None,
                     error: None,
@@ -3817,7 +3831,7 @@ async fn test_scheduled_cancel_db_failure_keeps_live_state_until_retry() {
     );
     assert_eq!(
         db.get_tool_run(&id).unwrap().unwrap().status,
-        haven_common::ToolRunStatus::Waiting
+        haven_common::lifecycle::ToolRunStatus::Waiting
     );
 
     db.conn()
@@ -3830,7 +3844,7 @@ async fn test_scheduled_cancel_db_failure_keeps_live_state_until_retry() {
     );
     assert_eq!(
         db.get_tool_run(&id).unwrap().unwrap().status,
-        haven_common::ToolRunStatus::Cancelled
+        haven_common::lifecycle::ToolRunStatus::Cancelled
     );
 }
 
@@ -3881,7 +3895,7 @@ async fn test_scheduled_terminal_db_failure_retries_before_memory_transition() {
     );
     assert_eq!(
         db.get_tool_run(&id).unwrap().unwrap().status,
-        haven_common::ToolRunStatus::Running
+        haven_common::lifecycle::ToolRunStatus::Running
     );
 
     db.conn()
@@ -3901,7 +3915,7 @@ async fn test_scheduled_terminal_db_failure_retries_before_memory_transition() {
     );
     assert_eq!(
         db.get_tool_run(&id).unwrap().unwrap().status,
-        haven_common::ToolRunStatus::Completed
+        haven_common::lifecycle::ToolRunStatus::Completed
     );
 }
 
@@ -4032,7 +4046,7 @@ async fn test_corrupt_row_quarantine_retries_after_transient_db_failure() {
             .unwrap()
             .unwrap()
             .status,
-        haven_common::ToolRunStatus::Waiting
+        haven_common::lifecycle::ToolRunStatus::Waiting
     );
 
     db.conn()
@@ -4044,7 +4058,7 @@ async fn test_corrupt_row_quarantine_retries_after_transient_db_failure() {
             .get_tool_run("toolrun-quarantine-retry")
             .unwrap()
             .unwrap();
-        if row.status == haven_common::ToolRunStatus::Failed {
+        if row.status == haven_common::lifecycle::ToolRunStatus::Failed {
             assert!(db.list_pending_scheduled_tool_runs().unwrap().is_empty());
             break;
         }
@@ -4200,7 +4214,7 @@ async fn test_restore_quarantines_corrupt_waiting_scheduled_rows() {
         "not_found"
     );
     let row = db.get_tool_run("toolrun-corrupt").unwrap().unwrap();
-    assert_eq!(row.status, haven_common::ToolRunStatus::Failed);
+    assert_eq!(row.status, haven_common::lifecycle::ToolRunStatus::Failed);
     assert!(
         row.error_reason
             .as_deref()

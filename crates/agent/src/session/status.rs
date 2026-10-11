@@ -253,7 +253,9 @@ impl SessionSupervisor {
     ) {
         if let Some(actor) = actor
             && let Err(error) = actor
-                .set_waiting_reason(Some(haven_common::SessionWaitingReason::EndIncomplete))
+                .set_waiting_reason(Some(
+                    haven_common::lifecycle::SessionWaitingReason::EndIncomplete,
+                ))
                 .await
         {
             tracing::warn!(

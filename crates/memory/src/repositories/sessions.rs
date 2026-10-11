@@ -1,7 +1,7 @@
 use crate::db::Database;
 use crate::repositories::kv_store::MAX_MEMORY_SESSION_ID_PAGE_SIZE;
 use chrono::{Local, NaiveDate, TimeZone, Utc};
-use haven_common::SessionStatus;
+use haven_common::lifecycle::SessionStatus;
 
 /// WHERE clause shared by every session search query (list, count, paginated).
 /// Kept as one constant so search semantics cannot drift between queries.
@@ -696,7 +696,7 @@ mod tests {
     use super::SessionOrigin;
     use crate::Database;
     use chrono::{Local, Utc};
-    use haven_common::SessionStatus;
+    use haven_common::lifecycle::SessionStatus;
 
     fn create_db() -> Database {
         Database::open_in_memory().unwrap()

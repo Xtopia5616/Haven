@@ -1,6 +1,6 @@
 use crate::db::Database;
 use crate::repositories::messages::now_rfc3339_millis;
-use haven_common::SessionStepStatus;
+use haven_common::lifecycle::SessionStepStatus;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct SessionStep {

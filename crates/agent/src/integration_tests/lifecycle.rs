@@ -451,7 +451,7 @@ async fn queued_tool_run_result_is_reconciled_after_session_becomes_terminal() {
         .db
         .finish_tool_run(
             tool_run_id,
-            haven_common::ToolRunStatus::Completed,
+            haven_common::lifecycle::ToolRunStatus::Completed,
             Some("race output"),
             None,
             None,
@@ -546,7 +546,7 @@ async fn unowned_terminal_completion_is_acknowledged_for_history_cleanup() {
         .db
         .finish_tool_run(
             tool_run_id,
-            haven_common::ToolRunStatus::Completed,
+            haven_common::lifecycle::ToolRunStatus::Completed,
             Some("unowned output"),
             None,
             None,

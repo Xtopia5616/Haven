@@ -1,8 +1,9 @@
-//! Canonical lifecycle vocabularies shared by persistence, runtimes and IPC.
+//! Canonical lifecycle vocabulary shared by persistence, runtimes and IPC.
 //!
-//! The enums in this module are deliberately small.  They describe durable
-//! lifecycle state only; transient execution details such as a run slot,
-//! interaction reason or cancellation token belong to their owning runtime.
+//! Durable state enums describe persisted transitions. Derived projections,
+//! such as the reason a paused session is waiting, explain that state without
+//! creating another durable state machine. Transient execution details such as
+//! a run slot or cancellation token belong to their owning runtime.
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
