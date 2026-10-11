@@ -111,7 +111,7 @@ mod tests {
     async fn typed_recall_ports_preserve_visibility_scope_and_vector_ordering() {
         let (db, store) = store();
         let source_ref = crate::repositories::facts::FactSourceRef {
-            message_id: "msg-recall-source".into(),
+            message_id: haven_common::types::new_id("msg"),
             snippet: "password=hidden".into(),
         };
         let safe = db

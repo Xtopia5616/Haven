@@ -2711,7 +2711,7 @@ mod tool_step_persistence_tests {
             .create_session("action step store port")
             .await
             .unwrap();
-        let step_id = "step-tool-runner-port";
+        let step_id = haven_common::types::new_id("step");
         let input = json!({"path": "notes.txt", "silent": true});
 
         supervisor
@@ -2722,7 +2722,7 @@ mod tool_step_persistence_tests {
                 5,
                 3,
                 Some("provider-call-5"),
-                step_id,
+                &step_id,
             )
             .await
             .unwrap();
@@ -2749,7 +2749,7 @@ mod tool_step_persistence_tests {
                 5,
                 3,
                 Some("provider-call-5"),
-                step_id,
+                &step_id,
             )
             .await
             .unwrap();
@@ -2761,7 +2761,7 @@ mod tool_step_persistence_tests {
                 5,
                 3,
                 Some("provider-call-5"),
-                step_id,
+                &step_id,
                 "cancelled during execution",
                 ToolStepOutcome::Cancelled,
             )
@@ -2788,7 +2788,7 @@ mod tool_step_persistence_tests {
                 5,
                 3,
                 Some("provider-call-5"),
-                step_id,
+                &step_id,
             )
             .await
             .expect_err("a terminal tool step must not start its side effect again");

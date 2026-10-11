@@ -1733,7 +1733,8 @@ mod tests {
         let session = db.create_session("t").unwrap();
         let store = SessionStore::new(db);
         let bus_dyn: Arc<dyn AgentEventEmitter> = bus;
-        EventDispatcher::emit_thought_from(&bus_dyn, &session.id, "hello", 1, 1, "msg-t-1", &store)
+        let step_id = haven_common::types::new_id("step");
+        EventDispatcher::emit_thought_from(&bus_dyn, &session.id, "hello", 1, 1, &step_id, &store)
             .await
             .unwrap();
         assert_eq!(collector.events.lock().unwrap().len(), 1);

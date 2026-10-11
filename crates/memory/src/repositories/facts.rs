@@ -1406,8 +1406,9 @@ mod tests {
     #[test]
     fn test_upsert_fact_stores_and_updates_source_ref() {
         let db = create_db();
+        let first_message_id = haven_common::types::new_id("msg");
         let first = FactSourceRef {
-            message_id: "m1".into(),
+            message_id: first_message_id.clone(),
             snippet: "I like Rust".into(),
         };
         db.upsert_fact(
@@ -1422,13 +1423,14 @@ mod tests {
         .unwrap();
         let facts = db.list_facts_by_subject("user").unwrap();
         let stored = facts[0].source_ref.as_ref().expect("source_ref stored");
-        assert_eq!(stored.message_id, "m1");
+        assert_eq!(stored.message_id, first_message_id);
         assert_eq!(stored.snippet, "I like Rust");
 
         // Reinforcement replaces the reference with the latest supporting
         // message.
+        let second_message_id = haven_common::types::new_id("msg");
         let second = FactSourceRef {
-            message_id: "m2".into(),
+            message_id: second_message_id.clone(),
             snippet: "still like Rust".into(),
         };
         db.upsert_fact(
@@ -1444,7 +1446,7 @@ mod tests {
         let facts = db.list_facts_by_subject("user").unwrap();
         assert_eq!(facts.len(), 1);
         let updated = facts[0].source_ref.as_ref().unwrap();
-        assert_eq!(updated.message_id, "m2");
+        assert_eq!(updated.message_id, second_message_id);
         assert_eq!(facts[0].mention_count, 1);
     }
 
@@ -1452,7 +1454,7 @@ mod tests {
     fn test_source_ref_redacts_sensitive_snippet_before_persistence() {
         let db = create_db();
         let source_ref = FactSourceRef {
-            message_id: "m-secret".into(),
+            message_id: haven_common::types::new_id("msg"),
             snippet: "password=hunter2".into(),
         };
         db.insert_fact_with_source_ref(
@@ -1924,11 +1926,11 @@ mod tests {
         let db = create_db();
         // Bypass upsert demotion: insert_fact stores both sides raw (X5 catch-up).
         let like_ref = FactSourceRef {
-            message_id: "msg-like".into(),
+            message_id: haven_common::types::new_id("msg"),
             snippet: "I love Rust".into(),
         };
         let dislike_ref = FactSourceRef {
-            message_id: "msg-dislike".into(),
+            message_id: haven_common::types::new_id("msg"),
             snippet: "Rust is awful".into(),
         };
         db.insert_fact_with_source_ref(

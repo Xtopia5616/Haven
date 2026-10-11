@@ -2,7 +2,9 @@ use crate::db::Database;
 use base64::Engine as _;
 use chrono::{SecondsFormat, Utc};
 use haven_common::media::{MediaInput, message_attachment_to_media_input};
-use haven_common::types::{CanonicalRole, MessageAttachment, TranscriptMessageKind};
+use haven_common::types::{
+    CanonicalRole, MessageAttachment, TranscriptMessageKind, is_canonical_id,
+};
 use rusqlite::OptionalExtension;
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -14,10 +16,60 @@ pub(crate) fn now_rfc3339_millis() -> String {
     Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true)
 }
 
+fn ensure_session_id(session_id: &str) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        is_canonical_id(session_id, "ses"),
+        "session_id must be a canonical ses-* ID"
+    );
+    Ok(())
+}
+
+/// Transcript rows normally use `msg-*`; thought and ask message projections
+/// share their execution step's `step-*` identity by contract.
+fn is_message_row_id(message_id: &str) -> bool {
+    is_canonical_id(message_id, "msg") || is_canonical_id(message_id, "step")
+}
+
+fn ensure_message_row_id(message_id: &str) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        is_message_row_id(message_id),
+        "message_id must be a canonical msg-* or shared step-* ID"
+    );
+    Ok(())
+}
+
+fn ensure_pending_message_id(message_id: &str) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        is_canonical_id(message_id, "msg"),
+        "pending message_id must be a canonical msg-* ID"
+    );
+    Ok(())
+}
+
+fn invalid_row_id(column: usize, value: &str, expected: &str) -> rusqlite::Error {
+    rusqlite::Error::FromSqlConversionFailure(
+        column,
+        rusqlite::types::Type::Text,
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("invalid {expected} ID in messages: {value}"),
+        )
+        .into(),
+    )
+}
+
 /// Map a `messages` row (11 columns: id, session_id, role, content, message_type,
 /// created_at, tool_call_id, ui_metadata, voice, ingress_seq, media_inputs) into a `Message`. Shared by
 /// every read query so column order cannot drift between them.
 fn map_message_row(row: &rusqlite::Row) -> rusqlite::Result<Message> {
+    let id: String = row.get(0)?;
+    if !is_message_row_id(&id) {
+        return Err(invalid_row_id(0, &id, "message"));
+    }
+    let session_id: String = row.get(1)?;
+    if !is_canonical_id(&session_id, "ses") {
+        return Err(invalid_row_id(1, &session_id, "session"));
+    }
     let role_text: String = row.get(2)?;
     let role = CanonicalRole::parse(&role_text).ok_or_else(|| {
         rusqlite::Error::FromSqlConversionFailure(
@@ -41,8 +93,8 @@ fn map_message_row(row: &rusqlite::Row) -> rusqlite::Result<Message> {
         })
         .transpose()?;
     Ok(Message {
-        id: row.get(0)?,
-        session_id: row.get(1)?,
+        id,
+        session_id,
         role,
         content: row.get(3)?,
         message_type,
@@ -248,6 +300,10 @@ impl Database {
         id: Option<&str>,
         disposition: PendingInputDisposition,
     ) -> anyhow::Result<PendingSessionInput> {
+        ensure_session_id(session_id)?;
+        if let Some(id) = id {
+            ensure_pending_message_id(id)?;
+        }
         let media_inputs: Vec<MediaInput> = attachments
             .iter()
             .map(message_attachment_to_media_input)
@@ -286,9 +342,11 @@ impl Database {
         media_inputs: &[MediaInput],
         pending_disposition: Option<PendingInputDisposition>,
     ) -> anyhow::Result<(Message, Option<PendingInputDisposition>)> {
+        ensure_session_id(session_id)?;
         let id = id
             .map(String::from)
             .unwrap_or_else(|| haven_common::types::new_id("msg"));
+        ensure_message_row_id(&id)?;
         // Strictly monotonic per session: two writes landing within the same
         // millisecond (or a clock step backwards) must stay distinguishable —
         // rollback's `delete_messages_after` deletes with `created_at > ?`
@@ -456,6 +514,8 @@ impl Database {
         session_id: &str,
         message_id: &str,
     ) -> anyhow::Result<Option<Message>> {
+        ensure_session_id(session_id)?;
+        ensure_message_row_id(message_id)?;
         let conn = self.conn();
         conn.query_row(
             "SELECT id, session_id, role, content, message_type, created_at, tool_call_id,
@@ -469,6 +529,7 @@ impl Database {
     }
 
     pub fn list_session_messages(&self, session_id: &str) -> anyhow::Result<Vec<Message>> {
+        ensure_session_id(session_id)?;
         if let Some(cached) = self.cache_get_messages(session_id) {
             return Ok(cached);
         }
@@ -523,6 +584,7 @@ impl Database {
         session_id: &str,
         limit: usize,
     ) -> anyhow::Result<Vec<Message>> {
+        ensure_session_id(session_id)?;
         let conn = self.conn();
         let mut stmt = conn.prepare(
             "SELECT id, session_id, role, content, message_type, created_at, tool_call_id,
@@ -546,6 +608,7 @@ impl Database {
         &self,
         session_id: &str,
     ) -> anyhow::Result<Vec<PendingSessionInput>> {
+        ensure_session_id(session_id)?;
         let conn = self.conn();
         let mut stmt = conn.prepare(
             "SELECT m.id, m.session_id, m.role, m.content, m.message_type, m.created_at,
@@ -557,6 +620,10 @@ impl Database {
              ORDER BY m.ingress_seq ASC, m.rowid ASC",
         )?;
         let rows = stmt.query_map(rusqlite::params![session_id], |row| {
+            let message_id: String = row.get(0)?;
+            if !is_canonical_id(&message_id, "msg") {
+                return Err(invalid_row_id(0, &message_id, "pending message"));
+            }
             Ok(PendingSessionInput {
                 message: map_message_row(row)?,
                 disposition: PendingInputDisposition::from_db_value(&row.get::<_, String>(11)?)?,
@@ -574,6 +641,8 @@ impl Database {
         session_id: &str,
         message_id: &str,
     ) -> anyhow::Result<Option<PendingSessionInput>> {
+        ensure_session_id(session_id)?;
+        ensure_pending_message_id(message_id)?;
         let conn = self.conn();
         conn.query_row(
             "SELECT m.id, m.session_id, m.role, m.content, m.message_type, m.created_at,
@@ -584,6 +653,10 @@ impl Database {
              WHERE p.session_id = ?1 AND p.message_id = ?2",
             rusqlite::params![session_id, message_id],
             |row| {
+                let row_message_id: String = row.get(0)?;
+                if !is_canonical_id(&row_message_id, "msg") {
+                    return Err(invalid_row_id(0, &row_message_id, "pending message"));
+                }
                 Ok(PendingSessionInput {
                     message: map_message_row(row)?,
                     disposition: PendingInputDisposition::from_db_value(
@@ -602,6 +675,8 @@ impl Database {
         session_id: &str,
         message_id: &str,
     ) -> anyhow::Result<()> {
+        ensure_session_id(session_id)?;
+        ensure_pending_message_id(message_id)?;
         conn.execute(
             "DELETE FROM pending_session_inputs WHERE session_id = ?1 AND message_id = ?2",
             rusqlite::params![session_id, message_id],
@@ -624,6 +699,7 @@ impl Database {
         &self,
         session_id: &str,
     ) -> anyhow::Result<Option<String>> {
+        ensure_session_id(session_id)?;
         let conn = self.conn();
         Ok(conn
             .query_row(
@@ -637,6 +713,9 @@ impl Database {
     /// Return the highest durable ingress cursor for a session.
     #[cfg(any(test, feature = "test-support"))]
     pub fn get_last_message_ingress_seq(&self, session_id: &str) -> i64 {
+        if ensure_session_id(session_id).is_err() {
+            return 0;
+        }
         let conn = self.conn();
         conn.query_row(
             "SELECT COALESCE(last_ingress_seq, 0)
@@ -651,6 +730,8 @@ impl Database {
     /// message that was persisted before the backend discovered the session is
     /// terminal (no ghost rows in history).
     pub fn delete_message_by_id(&self, session_id: &str, message_id: &str) -> anyhow::Result<()> {
+        ensure_session_id(session_id)?;
+        ensure_message_row_id(message_id)?;
         let conn = self.conn();
         conn.execute(
             "DELETE FROM messages WHERE id = ?1 AND session_id = ?2",
@@ -673,6 +754,8 @@ impl Database {
         message_id: &str,
         created_at: &str,
     ) -> anyhow::Result<()> {
+        ensure_session_id(session_id)?;
+        ensure_message_row_id(message_id)?;
         let conn = self.conn();
         conn.execute(
             "UPDATE messages SET created_at = ?1 WHERE id = ?2 AND session_id = ?3",
@@ -687,6 +770,7 @@ impl Database {
     /// after the branch point.
     #[cfg(any(test, feature = "test-support"))]
     pub fn delete_messages_after(&self, session_id: &str, created_at: &str) -> anyhow::Result<()> {
+        ensure_session_id(session_id)?;
         let conn = self.conn();
         conn.execute(
             "DELETE FROM messages WHERE session_id = ?1 AND created_at > ?2",
@@ -701,6 +785,7 @@ impl Database {
     /// remove the rolled-back user message itself.
     #[cfg(any(test, feature = "test-support"))]
     pub fn delete_messages_from(&self, session_id: &str, created_at: &str) -> anyhow::Result<()> {
+        ensure_session_id(session_id)?;
         let conn = self.conn();
         conn.execute(
             "DELETE FROM messages WHERE session_id = ?1 AND created_at >= ?2",
@@ -726,6 +811,7 @@ impl Database {
         ts: &str,
         inclusive: bool,
     ) -> anyhow::Result<()> {
+        ensure_session_id(session_id)?;
         let conn = self.conn();
         let op = if inclusive { ">=" } else { ">" };
         let msgs_sql = format!("DELETE FROM messages WHERE session_id = ?1 AND created_at {op} ?2");
@@ -832,6 +918,106 @@ mod tests {
             error
                 .to_string()
                 .contains("invalid CanonicalRole in messages.role")
+        );
+    }
+
+    #[test]
+    fn add_message_rejects_noncanonical_identity_before_writing() {
+        let db = test_db();
+        let session_id = test_session(&db);
+        let invalid_session_result = db.add_message_full(
+            "ses-1",
+            CanonicalRole::User,
+            "hello",
+            None,
+            None,
+            &[],
+            false,
+            Some(&haven_common::types::new_id("msg")),
+        );
+        let result = db.add_message_full(
+            &session_id,
+            CanonicalRole::User,
+            "hello",
+            None,
+            None,
+            &[],
+            false,
+            Some("message-1"),
+        );
+        assert!(invalid_session_result.is_err());
+        assert!(result.is_err());
+        assert!(db.list_session_messages(&session_id).unwrap().is_empty());
+        assert_eq!(db.get_last_message_ingress_seq(&session_id), 0);
+    }
+
+    #[test]
+    fn pending_input_rejects_step_identity_before_writing() {
+        let db = test_db();
+        let session_id = test_session(&db);
+        let result = db.add_pending_user_input(
+            &session_id,
+            "hello",
+            None,
+            &[],
+            false,
+            Some(&haven_common::types::new_id("step")),
+            PendingInputDisposition::FollowUp,
+        );
+        assert!(result.is_err());
+        assert!(db.list_session_messages(&session_id).unwrap().is_empty());
+        assert!(
+            db.list_pending_session_inputs(&session_id)
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn list_session_messages_rejects_noncanonical_persisted_identity() {
+        let db = test_db();
+        let session_id = test_session(&db);
+        db.add_message(&session_id, CanonicalRole::User, "hello", None, None)
+            .unwrap();
+
+        {
+            let conn = db.conn();
+            conn.execute_batch("PRAGMA ignore_check_constraints = ON")
+                .unwrap();
+            conn.execute(
+                "UPDATE messages SET id = 'legacy-message' WHERE session_id = ?1",
+                [&session_id],
+            )
+            .unwrap();
+            conn.execute_batch("PRAGMA ignore_check_constraints = OFF")
+                .unwrap();
+        }
+
+        let error = db.list_session_messages(&session_id).unwrap_err();
+        assert!(error.to_string().contains("invalid message ID in messages"));
+    }
+
+    #[test]
+    fn message_projection_accepts_shared_thought_step_identity() {
+        let db = test_db();
+        let session_id = test_session(&db);
+        let step_id = haven_common::types::new_id("step");
+
+        db.add_message_full(
+            &session_id,
+            CanonicalRole::Assistant,
+            "thinking",
+            Some(TranscriptMessageKind::Text),
+            None,
+            &[],
+            false,
+            Some(&step_id),
+        )
+        .unwrap();
+
+        assert_eq!(
+            db.list_session_messages(&session_id).unwrap()[0].id,
+            step_id
         );
     }
 
@@ -1277,8 +1463,8 @@ mod tests {
     #[test]
     fn message_serde_roundtrip_with_attachments() {
         let msg = Message {
-            id: "m1".into(),
-            session_id: "t1".into(),
+            id: haven_common::types::new_id("msg"),
+            session_id: haven_common::types::new_id("ses"),
             role: CanonicalRole::User,
             content: "看图".into(),
             message_type: Some(haven_common::types::TranscriptMessageKind::Text),

@@ -461,8 +461,9 @@ mod tests {
         let mut reinforced = inferred_write("user", "likes", "Rust");
         reinforced.confidence = 0.7;
         reinforced.tags = vec!["workspace".into()];
+        let source_message_id = haven_common::types::new_id("msg");
         reinforced.source_ref = Some(FactSourceRef {
-            message_id: "msg-fact-batch-source".into(),
+            message_id: source_message_id.clone(),
             snippet: "I use Rust at work.".into(),
         });
         reinforced.durability = 0.8;
@@ -484,7 +485,7 @@ mod tests {
         assert_eq!(rust.tags, ["preference", "workspace"]);
         assert_eq!(
             rust.source_ref.as_ref().unwrap().message_id,
-            "msg-fact-batch-source"
+            source_message_id
         );
         assert_eq!(
             rust.source_ref.as_ref().unwrap().snippet,
@@ -582,7 +583,7 @@ mod tests {
             0.9,
             &[],
             Some(&FactSourceRef {
-                message_id: "msg-fact-source".into(),
+                message_id: haven_common::types::new_id("msg"),
                 snippet: "password=hidden".into(),
             }),
             1.0,

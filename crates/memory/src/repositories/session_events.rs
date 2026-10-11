@@ -3654,7 +3654,7 @@ mod tests {
     #[tokio::test]
     async fn session_store_tool_step_ports_preserve_identity_confirmation_and_start() {
         let (db, store, session_id) = store();
-        let write = tool_step_write(&session_id, "step-store-start");
+        let write = tool_step_write(&session_id, &haven_common::types::new_id("step"));
 
         store
             .ensure_tool_step(write.clone(), Some(false))
@@ -3705,7 +3705,7 @@ mod tests {
     #[tokio::test]
     async fn session_store_tool_step_finish_port_preserves_outcome_and_observation() {
         let (db, store, session_id) = store();
-        let write = tool_step_write(&session_id, "step-store-finish");
+        let write = tool_step_write(&session_id, &haven_common::types::new_id("step"));
 
         assert!(
             store
@@ -4119,10 +4119,11 @@ mod tests {
     async fn session_store_async_domain_event_ports_preserve_append_and_live_replay() {
         let (_db, store, session_id) = store();
         let mut live = store.subscribe();
-        let payload = r#"{"id":"step-interaction","status":"pending"}"#;
+        let interaction_id = haven_common::types::new_id("step");
+        let payload = format!(r#"{{"id":"{interaction_id}","status":"pending"}}"#);
 
         let appended = store
-            .append_domain_event(&session_id, INTERACTION_REQUESTED_EVENT_TYPE, payload)
+            .append_domain_event(&session_id, INTERACTION_REQUESTED_EVENT_TYPE, &payload)
             .await
             .unwrap();
 
@@ -4371,22 +4372,22 @@ mod tests {
         let (db, store, session_id) = store();
         for (message_id, kind, expected_type) in [
             (
-                "msg-recovery-thought",
+                haven_common::types::new_id("msg"),
                 RecoveryPartialKind::Thought,
                 TranscriptMessageKind::Text,
             ),
             (
-                "msg-recovery-reasoning",
+                haven_common::types::new_id("msg"),
                 RecoveryPartialKind::Reasoning,
                 TranscriptMessageKind::Reasoning,
             ),
         ] {
             let first = store
-                .persist_recovery_partial(&session_id, "partial", kind, message_id)
+                .persist_recovery_partial(&session_id, "partial", kind, &message_id)
                 .await
                 .unwrap();
             let retry = store
-                .persist_recovery_partial(&session_id, "partial", kind, message_id)
+                .persist_recovery_partial(&session_id, "partial", kind, &message_id)
                 .await
                 .unwrap();
 
@@ -4402,6 +4403,7 @@ mod tests {
     #[tokio::test]
     async fn session_store_private_message_row_returns_existing_for_same_id_and_content() {
         let (db, store, session_id) = store();
+        let message_id = haven_common::types::new_id("msg");
         let first = store
             .persist_message_row(
                 &session_id,
@@ -4410,7 +4412,7 @@ mod tests {
                 Some(haven_common::types::TranscriptMessageKind::Text),
                 &[],
                 false,
-                Some("msg-retry"),
+                Some(&message_id),
                 None,
                 None,
             )
@@ -4425,7 +4427,7 @@ mod tests {
                 Some(haven_common::types::TranscriptMessageKind::Text),
                 &[],
                 false,
-                Some("msg-retry"),
+                Some(&message_id),
                 None,
                 None,
             )
@@ -4440,6 +4442,7 @@ mod tests {
     #[tokio::test]
     async fn session_store_private_message_row_rejects_idempotency_conflict() {
         let (db, store, session_id) = store();
+        let message_id = haven_common::types::new_id("msg");
         store
             .persist_message_row(
                 &session_id,
@@ -4448,7 +4451,7 @@ mod tests {
                 None,
                 &[],
                 false,
-                Some("msg-conflict"),
+                Some(&message_id),
                 None,
                 None,
             )
@@ -4463,7 +4466,7 @@ mod tests {
                 None,
                 &[],
                 false,
-                Some("msg-conflict"),
+                Some(&message_id),
                 None,
                 None,
             )
@@ -4473,8 +4476,8 @@ mod tests {
         assert_eq!(
             error.to_string(),
             format!(
-                "message idempotency conflict for session {} message msg-conflict",
-                session_id
+                "message idempotency conflict for session {} message {}",
+                session_id, message_id
             )
         );
         assert_eq!(db.list_session_messages(&session_id).unwrap().len(), 1);
@@ -4664,7 +4667,8 @@ mod tests {
         assert_eq!(loaded.session_id, session_id);
         assert_eq!(loaded.role, haven_common::types::CanonicalRole::User);
 
-        for missing_id in [foreign.id.as_str(), "msg-missing"] {
+        let missing_message_id = haven_common::types::new_id("msg");
+        for missing_id in [foreign.id.as_str(), missing_message_id.as_str()] {
             let error = store
                 .load_rollback_target_message(&session_id, missing_id)
                 .await
@@ -4962,7 +4966,7 @@ mod tests {
             )
             .unwrap();
         let first_step = db
-            .create_thought_step(&session_id, 1, "step-first")
+            .create_thought_step(&session_id, 1, &haven_common::types::new_id("step"))
             .unwrap();
         let cutoff = first_message
             .created_at
@@ -4987,7 +4991,7 @@ mod tests {
             None,
         )
         .unwrap();
-        db.create_thought_step(&session_id, 2, "step-second")
+        db.create_thought_step(&session_id, 2, &haven_common::types::new_id("step"))
             .unwrap();
 
         let active_usage_event = store
@@ -5903,10 +5907,10 @@ mod tests {
     fn session_committed_commits_events_and_projection_intents_together() {
         let (db, store, session_id) = store();
         let mut receiver = store.subscribe();
-        let message_id = "step-batch-thought".to_string();
-        let tool_run_id = "step-batch-action".to_string();
+        let message_id = haven_common::types::new_id("step");
+        let tool_run_id = haven_common::types::new_id("step");
         let mut committed = SessionCommitted::transcript(
-            r#"{"type":"thought","message_id":"step-batch-thought"}"#,
+            format!(r#"{{"type":"thought","message_id":"{message_id}"}}"#),
             2,
             3,
         );
@@ -5945,9 +5949,10 @@ mod tests {
     #[tokio::test]
     async fn cancellable_session_commit_port_writes_with_existing_store_semantics() {
         let (db, store, session_id) = store();
+        let message_id = haven_common::types::new_id("step");
         let mut committed = SessionCommitted::transcript(r#"{"type":"port"}"#, 2, 3);
         committed.project_assistant_message(
-            "step-port-thought",
+            message_id,
             "port write",
             Some(haven_common::types::TranscriptMessageKind::Text),
         );
@@ -6020,20 +6025,22 @@ mod tests {
         );
         std::thread::sleep(std::time::Duration::from_millis(5));
 
-        let message_id = "step-committed-thought";
+        let message_id = haven_common::types::new_id("step");
         let mut committed = SessionCommitted::transcript(
-            r#"{"type":"thought","step_number":1,"text":"keep thought","message_id":"step-committed-thought"}"#,
+            format!(
+                r#"{{"type":"thought","step_number":1,"text":"keep thought","message_id":"{message_id}"}}"#
+            ),
             6,
             1,
         );
         committed.project_assistant_message(
-            message_id,
+            message_id.clone(),
             "keep thought",
             Some(haven_common::types::TranscriptMessageKind::Text),
         );
         let result = store.commit_transcript(&session_id, &committed).unwrap();
         store
-            .create_thought_step(&session_id, 1, message_id)
+            .create_thought_step(&session_id, 1, &message_id)
             .await
             .unwrap();
 
@@ -6070,16 +6077,17 @@ mod tests {
     fn session_commit_rolls_back_event_when_projection_fails() {
         let (db, store, session_id) = store();
         let mut live = store.subscribe();
+        let failed_message_id = haven_common::types::new_id("msg");
         let conn = db.conn();
-        conn.execute_batch(
+        conn.execute_batch(&format!(
             "CREATE TRIGGER fail_session_projection BEFORE INSERT ON messages
-             WHEN NEW.id = 'msg-projection-fail'
-             BEGIN SELECT RAISE(ABORT, 'projection failed'); END;",
-        )
+             WHEN NEW.id = '{failed_message_id}'
+             BEGIN SELECT RAISE(ABORT, 'projection failed'); END;"
+        ))
         .unwrap();
         drop(conn);
         let mut committed = SessionCommitted::transcript(r#"{"type":"rollback"}"#, 1, 1);
-        committed.project_assistant_message("msg-projection-fail", "must fail", None);
+        committed.project_assistant_message(&failed_message_id, "must fail", None);
 
         let error = store
             .commit_transcript(&session_id, &committed)
@@ -6109,13 +6117,14 @@ mod tests {
         )
         .unwrap();
         drop(conn);
+        let message_id = haven_common::types::new_id("step");
         let mut committed = SessionCommitted::transcript(
-            r#"{"type":"thought","message_id":"step-event-first"}"#,
+            format!(r#"{{"type":"thought","message_id":"{message_id}"}}"#),
             3,
             4,
         );
         committed.project_assistant_message(
-            "step-event-first",
+            &message_id,
             "persist after event",
             Some(haven_common::types::TranscriptMessageKind::Text),
         );
@@ -6125,7 +6134,7 @@ mod tests {
         assert_eq!(result.events[0].sequence, 1);
         assert_eq!(
             db.list_session_messages(&session_id).unwrap()[0].id,
-            "step-event-first"
+            message_id
         );
     }
 
@@ -6183,7 +6192,7 @@ mod tests {
 
         let mut oversized_projection = SessionCommitted::transcript(r#"{"type":"action"}"#, 1, 1);
         oversized_projection.project_tool_call_step(
-            "step-oversized",
+            haven_common::types::new_id("step"),
             1,
             0,
             "tool",
@@ -6232,11 +6241,13 @@ mod tests {
 
     #[test]
     fn session_committed_append_preserves_event_projection_and_trailing_event_order() {
+        let first_id = haven_common::types::new_id("step");
+        let second_id = haven_common::types::new_id("step");
         let mut first = SessionCommitted::transcript("first", 3, 1);
-        first.project_thought_step("step-first", 1);
+        first.project_thought_step(first_id.clone(), 1);
         let mut second = SessionCommitted::transcript("second", 3, 2);
         second.project_assistant_message(
-            "step-second",
+            second_id.clone(),
             "second thought",
             Some(TranscriptMessageKind::Text),
         );
@@ -6257,7 +6268,7 @@ mod tests {
             [
                 SessionProjectionIntent::ThoughtStep { message_id, .. },
                 SessionProjectionIntent::AssistantMessage { message_id: assistant_id, .. }
-            ] if message_id == "step-first" && assistant_id == "step-second"
+            ] if message_id == &first_id && assistant_id == &second_id
         ));
         assert_eq!(
             first

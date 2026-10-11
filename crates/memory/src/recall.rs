@@ -641,7 +641,7 @@ mod tests {
     fn visible_fact_redacts_sensitive_provenance_snippets() {
         let db = Database::open_in_memory().unwrap();
         let source_ref = crate::repositories::facts::FactSourceRef {
-            message_id: "msg-source".into(),
+            message_id: haven_common::types::new_id("msg"),
             snippet: "password=super-secret".into(),
         };
         db.insert_fact_with_source_ref(

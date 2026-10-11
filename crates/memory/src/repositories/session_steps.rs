@@ -1,6 +1,43 @@
 use crate::db::Database;
 use crate::repositories::messages::now_rfc3339_millis;
 use haven_common::lifecycle::SessionStepStatus;
+use haven_common::types::is_canonical_id;
+
+fn ensure_session_id(session_id: &str) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        is_canonical_id(session_id, "ses"),
+        "session_id must be a canonical ses-* ID"
+    );
+    Ok(())
+}
+
+fn ensure_step_id(step_id: &str) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        is_canonical_id(step_id, "step"),
+        "step_id must be a canonical step-* ID"
+    );
+    Ok(())
+}
+
+fn ensure_thought_id(id: &str) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        is_canonical_id(id, "step") || is_canonical_id(id, "msg"),
+        "thought identity must be a canonical step-* or shared msg-* ID"
+    );
+    Ok(())
+}
+
+fn invalid_row_id(column: usize, value: &str, expected: &str) -> rusqlite::Error {
+    rusqlite::Error::FromSqlConversionFailure(
+        column,
+        rusqlite::types::Type::Text,
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("invalid {expected} ID in session_steps: {value}"),
+        )
+        .into(),
+    )
+}
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct SessionStep {
@@ -98,6 +135,8 @@ impl Database {
         fields: ToolStepFields<'_>,
         ignore_existing: bool,
     ) -> anyhow::Result<String> {
+        ensure_session_id(fields.session_id)?;
+        ensure_step_id(fields.id)?;
         let now = now_rfc3339_millis();
         let conn = self.conn();
         let sql = if ignore_existing {
@@ -201,6 +240,8 @@ impl Database {
         step_number: i32,
         id: &str,
     ) -> anyhow::Result<SessionStep> {
+        ensure_session_id(session_id)?;
+        ensure_thought_id(id)?;
         let now = now_rfc3339_millis();
         let conn = self.conn();
         conn.execute(
@@ -330,6 +371,7 @@ impl Database {
     /// Mark a pending action as running. The update is idempotent for an
     /// already-running row and refuses to revive a terminal row.
     pub fn start_tool_step(&self, id: &str) -> anyhow::Result<bool> {
+        ensure_step_id(id)?;
         let now = now_rfc3339_millis();
         let conn = self.conn();
         let changed = conn.execute(
@@ -354,6 +396,7 @@ impl Database {
         observation: &str,
         outcome: ToolStepOutcome,
     ) -> anyhow::Result<bool> {
+        ensure_step_id(id)?;
         let now = now_rfc3339_millis();
         let conn = self.conn();
         let status = outcome.status();
@@ -380,6 +423,7 @@ impl Database {
         session_id: &str,
         observation: &str,
     ) -> anyhow::Result<usize> {
+        ensure_session_id(session_id)?;
         let now = now_rfc3339_millis();
         let conn = self.conn();
         let n = conn.execute(
@@ -398,6 +442,7 @@ impl Database {
     }
 
     pub fn list_session_steps(&self, session_id: &str) -> anyhow::Result<Vec<SessionStep>> {
+        ensure_session_id(session_id)?;
         let conn = self.conn();
         let mut stmt = conn.prepare(
             "SELECT id, session_id, step_number, tool_index, tool_name, input, output, thought, tool_call_name, tool_call_input, tool_call_id, observation,
@@ -405,6 +450,20 @@ impl Database {
              FROM session_steps WHERE session_id = ?1 ORDER BY step_number ASC, tool_index ASC, created_at ASC, id ASC",
         )?;
         let rows = stmt.query_map(rusqlite::params![session_id], |row| {
+            let id: String = row.get(0)?;
+            let row_session_id: String = row.get(1)?;
+            let persisted_tool_name: Option<String> = row.get(4)?;
+            let valid_step_id = if persisted_tool_name.as_deref() == Some("thought") {
+                is_canonical_id(&id, "step") || is_canonical_id(&id, "msg")
+            } else {
+                is_canonical_id(&id, "step")
+            };
+            if !valid_step_id {
+                return Err(invalid_row_id(0, &id, "step or thought message"));
+            }
+            if !is_canonical_id(&row_session_id, "ses") {
+                return Err(invalid_row_id(1, &row_session_id, "session"));
+            }
             let output: Option<String> = row.get(6)?;
             let obs: Option<String> = row.get(11)?;
             let status_text: String = row.get(12)?;
@@ -417,8 +476,8 @@ impl Database {
                 )
             })?;
             Ok(SessionStep {
-                id: row.get(0)?,
-                session_id: row.get(1)?,
+                id,
+                session_id: row_session_id,
                 step_number: row.get(2)?,
                 thought: row.get(7)?,
                 tool_index: row.get(3)?,
@@ -452,6 +511,7 @@ impl Database {
         session_id: &str,
         created_at: &str,
     ) -> anyhow::Result<()> {
+        ensure_session_id(session_id)?;
         let conn = self.conn();
         conn.execute(
             "DELETE FROM session_steps WHERE session_id = ?1 AND created_at > ?2",
@@ -470,41 +530,103 @@ mod tests {
         Database::open_in_memory().expect("create in-memory db")
     }
 
-    fn seed_session(db: &Database, session_id: &str) {
-        db.create_session("test").unwrap();
-        // Override the id to match test expectations
-        let conn = db.conn();
-        let _ = conn.execute(
-            "UPDATE sessions SET id = ?1 WHERE id IN (SELECT id FROM sessions ORDER BY created_at DESC LIMIT 1)",
-            rusqlite::params![session_id],
-        );
+    fn seed_session(db: &Database) -> String {
+        db.create_session("test").unwrap().id
     }
 
     #[test]
     fn create_and_get_thought_step() {
         let db = test_db();
-        seed_session(&db, "ses-1");
-        let step = db
-            .create_thought_step("ses-1", 0, "step-thought-1")
-            .unwrap();
+        let session_id = seed_session(&db);
+        let step_id = haven_common::types::new_id("step");
+        let step = db.create_thought_step(&session_id, 0, &step_id).unwrap();
         // The id is pre-minted (shared with the content message row) and the
         // thought column stays empty: the text lives in `messages`.
-        assert_eq!(step.id, "step-thought-1");
+        assert_eq!(step.id, step_id);
         assert!(step.thought.is_none());
         assert!(step.tool_name.is_none());
         assert!(step.tool_input.is_none());
-        let steps = db.list_session_steps("ses-1").unwrap();
+        let steps = db.list_session_steps(&session_id).unwrap();
         assert_eq!(steps.len(), 1);
-        assert_eq!(steps[0].id, "step-thought-1");
+        assert_eq!(steps[0].id, step_id);
+    }
+
+    #[test]
+    fn thought_step_accepts_shared_supplement_message_identity() {
+        let db = test_db();
+        let session_id = seed_session(&db);
+        let message_id = haven_common::types::new_id("msg");
+
+        db.create_thought_step(&session_id, 0, &message_id).unwrap();
+
+        let steps = db.list_session_steps(&session_id).unwrap();
+        assert_eq!(steps[0].id, message_id);
+    }
+
+    #[test]
+    fn step_writes_reject_noncanonical_identity_before_writing() {
+        let db = test_db();
+        let session_id = seed_session(&db);
+        let invalid_session = db.create_tool_step(
+            "ses-1",
+            0,
+            "shell",
+            "{}",
+            false,
+            false,
+            None,
+            Some(&haven_common::types::new_id("step")),
+        );
+        let result = db.create_tool_step(
+            &session_id,
+            0,
+            "shell",
+            "{}",
+            false,
+            false,
+            None,
+            Some("step-1"),
+        );
+
+        assert!(invalid_session.is_err());
+        assert!(result.is_err());
+        assert!(db.list_session_steps(&session_id).unwrap().is_empty());
+    }
+
+    #[test]
+    fn list_session_steps_rejects_noncanonical_persisted_identity() {
+        let db = test_db();
+        let session_id = seed_session(&db);
+        db.create_tool_step(&session_id, 0, "shell", "{}", false, false, None, None)
+            .unwrap();
+        {
+            let conn = db.conn();
+            conn.execute_batch("PRAGMA ignore_check_constraints = ON")
+                .unwrap();
+            conn.execute(
+                "UPDATE session_steps SET id = 'step-1' WHERE session_id = ?1",
+                [&session_id],
+            )
+            .unwrap();
+            conn.execute_batch("PRAGMA ignore_check_constraints = OFF")
+                .unwrap();
+        }
+
+        let error = db.list_session_steps(&session_id).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("invalid step or thought message ID")
+        );
     }
 
     #[test]
     fn create_and_get_tool_step() {
         let db = test_db();
-        seed_session(&db, "ses-1");
+        let session_id = seed_session(&db);
         let step = db
             .create_tool_step(
-                "ses-1",
+                &session_id,
                 0,
                 "read_file",
                 r#"{"path": "test.txt"}"#,
@@ -517,20 +639,20 @@ mod tests {
         assert_eq!(step.tool_name.as_deref(), Some("read_file"));
         assert_eq!(step.tool_input.as_deref(), Some(r#"{"path": "test.txt"}"#));
         assert!(step.thought.is_none());
-        let steps = db.list_session_steps("ses-1").unwrap();
+        let steps = db.list_session_steps(&session_id).unwrap();
         assert_eq!(steps.len(), 1);
     }
 
     #[test]
     fn complete_tool_step_sets_observation() {
         let db = test_db();
-        seed_session(&db, "ses-1");
+        let session_id = seed_session(&db);
         let step = db
-            .create_tool_step("ses-1", 0, "read_file", "{}", false, false, None, None)
+            .create_tool_step(&session_id, 0, "read_file", "{}", false, false, None, None)
             .unwrap();
         db.complete_tool_step(&step.id, "file content here", true)
             .unwrap();
-        let steps = db.list_session_steps("ses-1").unwrap();
+        let steps = db.list_session_steps(&session_id).unwrap();
         assert_eq!(steps[0].observation.as_deref(), Some("file content here"));
         assert_eq!(steps[0].status, SessionStepStatus::Completed);
     }
@@ -538,12 +660,12 @@ mod tests {
     #[test]
     fn tool_step_lifecycle_records_running_and_unknown() {
         let db = test_db();
-        seed_session(&db, "ses-1");
+        let session_id = seed_session(&db);
         let step = db
-            .create_tool_step("ses-1", 0, "shell", "{}", false, false, None, None)
+            .create_tool_step(&session_id, 0, "shell", "{}", false, false, None, None)
             .unwrap();
         assert!(db.start_tool_step(&step.id).unwrap());
-        let running = db.list_session_steps("ses-1").unwrap();
+        let running = db.list_session_steps(&session_id).unwrap();
         assert_eq!(running[0].status, SessionStepStatus::Running);
         assert!(running[0].started_at.is_some());
         assert!(
@@ -554,13 +676,13 @@ mod tests {
             )
             .unwrap()
         );
-        let finished = db.list_session_steps("ses-1").unwrap();
+        let finished = db.list_session_steps(&session_id).unwrap();
         assert_eq!(finished[0].status, SessionStepStatus::Unknown);
         assert!(finished[0].completed_at.is_some());
         assert!(!db.start_tool_step(&step.id).unwrap());
 
         let cancelled = db
-            .create_tool_step("ses-1", 1, "shell", "{}", false, false, None, None)
+            .create_tool_step(&session_id, 1, "shell", "{}", false, false, None, None)
             .unwrap();
         db.finish_tool_step(
             &cancelled.id,
@@ -569,7 +691,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            db.list_session_steps("ses-1").unwrap()[1].status,
+            db.list_session_steps(&session_id).unwrap()[1].status,
             SessionStepStatus::Cancelled
         );
     }
@@ -577,9 +699,10 @@ mod tests {
     #[test]
     fn ensure_tool_step_is_idempotent_and_updates_confirmed() {
         let db = test_db();
-        seed_session(&db, "ses-1");
+        let session_id = seed_session(&db);
+        let step_id = haven_common::types::new_id("step");
         db.ensure_tool_step_with_identity(
-            "ses-1",
+            &session_id,
             0,
             0,
             "shell",
@@ -588,11 +711,11 @@ mod tests {
             false,
             false,
             None,
-            "step-ensure-1",
+            &step_id,
         )
         .unwrap();
         db.ensure_tool_step_with_identity(
-            "ses-1",
+            &session_id,
             0,
             0,
             "shell",
@@ -601,12 +724,12 @@ mod tests {
             false,
             false,
             Some(true),
-            "step-ensure-1",
+            &step_id,
         )
         .unwrap();
-        let steps = db.list_session_steps("ses-1").unwrap();
+        let steps = db.list_session_steps(&session_id).unwrap();
         assert_eq!(steps.len(), 1);
-        assert_eq!(steps[0].id, "step-ensure-1");
+        assert_eq!(steps[0].id, step_id);
         assert_eq!(steps[0].status, SessionStepStatus::Pending);
         assert_eq!(steps[0].confirmed, Some(true));
     }
@@ -614,21 +737,31 @@ mod tests {
     #[test]
     fn fail_pending_tool_run_steps_finalizes_unfinished_only() {
         let db = test_db();
-        seed_session(&db, "ses-1");
+        let session_id = seed_session(&db);
+        let pending_step_id = haven_common::types::new_id("step");
         db.ensure_tool_step_with_identity(
-            "ses-1", 0, 0, "shell", "{}", None, false, false, None, "step-p1",
+            &session_id,
+            0,
+            0,
+            "shell",
+            "{}",
+            None,
+            false,
+            false,
+            None,
+            &pending_step_id,
         )
         .unwrap();
         let done = db
-            .create_tool_step("ses-1", 1, "shell", "{}", false, false, None, None)
+            .create_tool_step(&session_id, 1, "shell", "{}", false, false, None, None)
             .unwrap();
         db.complete_tool_step(&done.id, "ok", true).unwrap();
         let n = db
-            .fail_pending_tool_run_steps("ses-1", "Session ended before tool finished")
+            .fail_pending_tool_run_steps(&session_id, "Session ended before tool finished")
             .unwrap();
         assert_eq!(n, 1);
-        let steps = db.list_session_steps("ses-1").unwrap();
-        let pending = steps.iter().find(|s| s.id == "step-p1").unwrap();
+        let steps = db.list_session_steps(&session_id).unwrap();
+        let pending = steps.iter().find(|s| s.id == pending_step_id).unwrap();
         assert_eq!(pending.status, SessionStepStatus::Unknown);
         assert_eq!(
             pending.observation.as_deref(),
@@ -642,14 +775,14 @@ mod tests {
     #[test]
     fn create_tool_step_persists_silent_flag() {
         let db = test_db();
-        seed_session(&db, "ses-1");
+        let session_id = seed_session(&db);
         let visible = db
-            .create_tool_step("ses-1", 0, "shell", "{}", false, false, None, None)
+            .create_tool_step(&session_id, 0, "shell", "{}", false, false, None, None)
             .unwrap();
         assert!(!visible.silent);
         let silent = db
             .create_tool_step(
-                "ses-1",
+                &session_id,
                 1,
                 "shell",
                 r#"{"silent": true}"#,
@@ -660,7 +793,7 @@ mod tests {
             )
             .unwrap();
         assert!(silent.silent);
-        let steps = db.list_session_steps("ses-1").unwrap();
+        let steps = db.list_session_steps(&session_id).unwrap();
         assert_eq!(steps.len(), 2);
         assert!(!steps[0].silent);
         assert!(steps[1].silent);
@@ -669,15 +802,16 @@ mod tests {
     #[test]
     fn list_session_steps_returns_empty_for_unknown_session() {
         let db = test_db();
-        let steps = db.list_session_steps("missing-session").unwrap();
+        let missing_session_id = haven_common::types::new_id("ses");
+        let steps = db.list_session_steps(&missing_session_id).unwrap();
         assert!(steps.is_empty());
     }
 
     #[test]
     fn list_session_steps_rejects_unknown_status_from_storage() {
         let db = test_db();
-        seed_session(&db, "ses-1");
-        db.create_tool_step("ses-1", 0, "shell", "{}", false, false, None, None)
+        let session_id = seed_session(&db);
+        db.create_tool_step(&session_id, 0, "shell", "{}", false, false, None, None)
             .unwrap();
 
         {
@@ -686,14 +820,14 @@ mod tests {
                 .unwrap();
             conn.execute(
                 "UPDATE session_steps SET status = 'future' WHERE session_id = ?1",
-                ["ses-1"],
+                [&session_id],
             )
             .unwrap();
             conn.execute_batch("PRAGMA ignore_check_constraints = OFF")
                 .unwrap();
         }
 
-        let error = db.list_session_steps("ses-1").unwrap_err();
+        let error = db.list_session_steps(&session_id).unwrap_err();
         assert!(
             error
                 .to_string()
@@ -704,14 +838,14 @@ mod tests {
     #[test]
     fn list_session_steps_preserves_order_by_index() {
         let db = test_db();
-        seed_session(&db, "ses-1");
-        db.create_tool_step("ses-1", 2, "c", "{}", false, false, None, None)
+        let session_id = seed_session(&db);
+        db.create_tool_step(&session_id, 2, "c", "{}", false, false, None, None)
             .unwrap();
-        db.create_tool_step("ses-1", 0, "a", "{}", false, false, None, None)
+        db.create_tool_step(&session_id, 0, "a", "{}", false, false, None, None)
             .unwrap();
-        db.create_tool_step("ses-1", 1, "b", "{}", false, false, None, None)
+        db.create_tool_step(&session_id, 1, "b", "{}", false, false, None, None)
             .unwrap();
-        let steps = db.list_session_steps("ses-1").unwrap();
+        let steps = db.list_session_steps(&session_id).unwrap();
         assert_eq!(steps.len(), 3);
         assert_eq!(steps[0].step_number, 0);
         assert_eq!(steps[1].step_number, 1);
@@ -722,15 +856,17 @@ mod tests {
     #[test]
     fn delete_session_steps_after_removes_only_newer_rows() {
         let db = test_db();
-        seed_session(&db, "ses-1");
-        let first = db.create_thought_step("ses-1", 1, "step-first").unwrap();
+        let session_id = seed_session(&db);
+        let first_id = haven_common::types::new_id("step");
+        let first = db.create_thought_step(&session_id, 1, &first_id).unwrap();
         std::thread::sleep(std::time::Duration::from_millis(5));
         let cutoff = chrono::Utc::now().to_rfc3339();
         std::thread::sleep(std::time::Duration::from_millis(5));
-        let second = db.create_thought_step("ses-1", 2, "step-second").unwrap();
+        let second_id = haven_common::types::new_id("step");
+        let second = db.create_thought_step(&session_id, 2, &second_id).unwrap();
 
-        db.delete_session_steps_after("ses-1", &cutoff).unwrap();
-        let steps = db.list_session_steps("ses-1").unwrap();
+        db.delete_session_steps_after(&session_id, &cutoff).unwrap();
+        let steps = db.list_session_steps(&session_id).unwrap();
         assert_eq!(
             steps.len(),
             1,

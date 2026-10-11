@@ -14,6 +14,7 @@ use super::facts::{
 use crate::db::Database;
 use anyhow::Context as _;
 use chrono::Utc;
+use haven_common::types::is_canonical_id;
 use rusqlite::{Connection, OptionalExtension};
 use std::collections::HashSet;
 
@@ -101,6 +102,18 @@ fn validate_fact_fields(
     Ok(())
 }
 
+fn validate_source_ref(source_ref: Option<&FactSourceRef>) -> anyhow::Result<()> {
+    if let Some(source_ref) = source_ref
+        && !source_ref.message_id.is_empty()
+    {
+        anyhow::ensure!(
+            is_canonical_id(&source_ref.message_id, "msg"),
+            "fact source message_id must be a canonical msg-* ID"
+        );
+    }
+    Ok(())
+}
+
 /// Internal writer for the typed memory graph's fact edges.
 ///
 /// This is deliberately a small, non-`pub`-API facade. Callers continue to
@@ -166,6 +179,7 @@ impl<'db> FactGraph<'db> {
     ) -> anyhow::Result<Fact> {
         let predicate = normalize_predicate(predicate);
         validate_fact_fields(subject, &predicate, object, source, confidence, durability)?;
+        validate_source_ref(source_ref)?;
         let safe_source_ref = sanitize_source_ref(source_ref);
         let id = haven_common::types::new_id("fact");
         let now = Utc::now().to_rfc3339();
@@ -229,6 +243,7 @@ impl<'db> FactGraph<'db> {
         conn: &Connection,
         source_ref: Option<&FactSourceRef>,
     ) -> anyhow::Result<FactProvenanceColumns> {
+        validate_source_ref(source_ref)?;
         let sanitized = sanitize_source_ref(source_ref);
         let Some(refer) = sanitized.as_ref() else {
             return Ok(FactProvenanceColumns::default());
@@ -623,6 +638,7 @@ impl<'db> FactGraph<'db> {
     ) -> anyhow::Result<UpsertOutcome> {
         let predicate = normalize_predicate(predicate);
         validate_fact_fields(subject, &predicate, object, source, confidence, durability)?;
+        validate_source_ref(source_ref)?;
         let now = Utc::now().to_rfc3339();
         let mut corrected = false;
         let opposite = polarity_opposite(&predicate);
@@ -752,7 +768,7 @@ impl<'db> FactGraph<'db> {
 mod tests {
     use super::FactGraph;
     use crate::Database;
-    use crate::repositories::facts::UpsertOutcome;
+    use crate::repositories::facts::{FactSourceRef, UpsertOutcome};
 
     #[test]
     fn insert_links_both_labels_to_graph_nodes() {
@@ -771,6 +787,40 @@ mod tests {
             )
             .unwrap();
         assert_eq!(node_count, 2);
+    }
+
+    #[test]
+    fn invalid_source_message_identity_is_rejected_before_graph_writes() {
+        let db = Database::open_in_memory().unwrap();
+        let source_ref = FactSourceRef {
+            message_id: "msg-not-canonical".into(),
+            snippet: "a supporting message".into(),
+        };
+
+        let error = FactGraph::new(&db)
+            .insert_with_source_ref(
+                "user",
+                "likes",
+                "Rust",
+                "inferred",
+                0.8,
+                &[],
+                Some(&source_ref),
+                1.0,
+            )
+            .unwrap_err();
+
+        assert!(error.to_string().contains("canonical msg-* ID"));
+        let fact_count: i64 = db
+            .conn()
+            .query_row("SELECT COUNT(*) FROM facts", [], |row| row.get(0))
+            .unwrap();
+        let node_count: i64 = db
+            .conn()
+            .query_row("SELECT COUNT(*) FROM memory_nodes", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(fact_count, 0);
+        assert_eq!(node_count, 0);
     }
 
     #[test]

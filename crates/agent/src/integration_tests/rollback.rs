@@ -433,10 +433,10 @@ async fn rollback_errors_when_target_message_id_does_not_match() {
     };
     seed_event_projection(&agent, &session.id, &snapshot).await;
 
-    // The live-view id never matches a DB id and no content fallback
-    // exists anymore: rollback must error and delete nothing.
+    // A canonical but absent id has no DB row; rollback errors and deletes nothing.
+    let missing_message_id = haven_common::types::new_id("msg");
     let err = agent
-        .rollback_session(&session.id, 1, true, Some("live-view-local-id"))
+        .rollback_session(&session.id, 1, true, Some(&missing_message_id))
         .await
         .unwrap_err();
     assert!(
@@ -1045,7 +1045,12 @@ async fn rollback_ask_wait_pause_true_leaves_plain_paused() {
     let snap = load_event_projection(&agent, &session.id).await;
     let target_step = snap.step_number.max(1);
     let err = agent
-        .rollback_session(&session.id, target_step, true, Some("msg-not-in-session"))
+        .rollback_session(
+            &session.id,
+            target_step,
+            true,
+            Some(&haven_common::types::new_id("msg")),
+        )
         .await
         .unwrap_err();
     assert!(err.to_string().contains("not found in session messages"));

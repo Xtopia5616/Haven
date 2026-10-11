@@ -667,7 +667,7 @@ mod tests {
     async fn test_source_snippet_skips_sensitive_text() {
         let (tool, db, _dir) = test_tool();
         let source = haven_memory::FactSourceRef {
-            message_id: "msg-1".into(),
+            message_id: haven_common::types::new_id("msg"),
             snippet: "sk-abc123secret".into(),
         };
         db.insert_fact_with_source_ref(
