@@ -749,9 +749,10 @@ fail closed（ADR 0380）。mapper 不接触 ToolRunService completion outbox；
 `VadStatusEvent` 由 IPC 生成器显式导出，UI `VadStatusPayload` 直接引用该生成类型；
 `ui/src/lib/contracts/recording.ts` 只声明其它路由消费的 camelCase DTO，并由唯一的
 `mapRecordingEvent` 转换。没有第二份 snake_case wire interface，也没有布局内的字段映射；
-`recordingEventListeners` 是这组事件唯一进入该 mapper 的 listener 边界。转换保留既有可选字段
-省略、畸形值安全默认、未知附加字段忽略与 VAD 字符串透传行为，不拒绝未知 signal/state，
-因为 Rust DTO 将它们定义为字符串而非封闭枚举（ADR 0340、0694）。
+`recordingEventListeners` 是这组事件唯一进入该 mapper 的 listener 边界。转换保留既有可选字段省略与
+未知附加字段忽略；仅 VAD 的畸形 signal/state 使用安全默认，且不拒绝未知 signal/state，因为 Rust DTO
+将它们定义为字符串而非封闭枚举（ADR 0340、0694）。停止原因、错误文本和转写结果的必需字段按 ADR 0962
+失败关闭，不合成默认业务值。
 `recordingOverlayController.ts` 是共享 overlay state 与时长 timer 的唯一写 owner，并按 `rec-*`
 过滤 stop、error 和 transcription 对当前 overlay 的影响；`+layout.svelte` 仍拥有这些全局 listener、
 通知与 voice transcript submission，`Composer.svelte` 只调用 toolbar toggle，`AppShell` 和
@@ -759,8 +760,8 @@ fail closed（ADR 0380）。mapper 不接触 ToolRunService completion outbox；
 （ADR 0472）。
 Settings 的完整 wire shape 由 `haven_common::config::Settings` 所有；前端不再从多个页面直接读取
 `invoke('get_settings')` 的原始结果，所有读取经 `ui/src/lib/settingsCommands.ts::loadSettings` 和
-`ui/src/lib/contracts/settings.ts::parseSettingsPayload`。validator 只检查根对象，保留未知配置字段、
-未知枚举字符串和既有 snake_case 配置字段；null/非对象继续作为空结果，命令错误原样进入现有 catch。
+`ui/src/lib/contracts/settings.ts::parseSettingsPayload`。validator 对根对象 shape 保持宽容，并校验已知凭据引用字段为规范
+`cred-*`；未知配置字段、未知枚举字符串和既有 snake_case 配置字段继续保留。null/非对象继续作为空结果，命令错误原样进入现有 catch。
 Settings 表单状态仍由 `SettingsView` 持有，`settingsSaveAction` 与 `settingsGuard` 只负责纯 UI 状态，
 没有额外的 settings store 或第二个 update serializer。`update_settings` 的唯一 builder 复用开放式
 `SettingsPayload`，其 Rust 参数和直接调用 owner 由 IPC contract script 校验；前端不复制 Rust nested Settings schema
