@@ -925,3 +925,4 @@
 - [0934：让 workspace 探测 helper 保持 Common 根 API](0934-keep-common-workspace-helper-at-crate-root.md)
 - [0935：统一 MCP server transport 命名与契约 owner](0935-name-and-scope-mcp-server-transport-contract.md)
 - [0936：校验运行时实体 ID newtype 的构造入口](0936-validate-runtime-id-newtype-construction.md)
+- [0937：统一 CapabilityScope 的 Common 导入路径](0937-use-common-capability-scope-path.md)

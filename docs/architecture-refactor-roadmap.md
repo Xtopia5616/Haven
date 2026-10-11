@@ -193,6 +193,8 @@ Tools capability 调用图确认 AppRuntime 已取得 `ToolServices` 后又把 `
 
 Messaging transport 复核确认 `InboxBus` 已是 `haven-messaging` 的私有实现，生产消费者只使用 `MessagingService`；`impl MessageTransport for InboxBus` 中同名方法转发是私有 transport adapter，不是跨层绕过 facade。该 trait 同时承载隔离测试 transport 注入，因此当前保留；继续按此区分审查其他模块的真实 consumer 直连、组合根 wiring 与必要 adapter 转发。App composition 另有明确的模块归属问题：录音生命周期锁、`rec-*` identity owner 和并发测试从 `app_state.rs` 移到专属 `recording_lifecycle.rs`，AppState 仍负责唯一实例的装配与共享（ADR 0923）。
 
+Common shared contract 路径复核发现 Tools 根额外 re-export 了 Common 所有的 `CapabilityScope`，仓内只有测试使用该第二入口。现移除 Tools alias，统一通过 `haven_common::types::CapabilityScope` 命名；Tools 公开策略 DTO 仍引用同一 Common 类型（ADR 0937）。
+
 进一步的 composition 调用图发现 AppState、Agent adapter factory 与 ApplicationRuntime 曾分别调用 `share_services()`。现由 AppState 在唯一 App composition root 取得一次 `ToolServices`，将 Agent 所需项作为显式构造参数传给 adapter，并把同一 bundle 交给 ApplicationRuntime 适配 App services；运行时和 adapter factory 不再另行读取 facade bundle（ADR 0924）。
 
 LLM 导入路径审查发现 router、client、types、media、registry、STT 与 adapter 查询同时经 crate root re-export 和 `pub mod` 实现路径可达，Agent/Tools/App 生产代码与测试混用两套拼法。现将稳定 consumer DTO/操作集中从 LLM crate root 导出，隐藏实现模块并统一仓内调用路径；provider adapter 细节只由 LLM 内部寻址（ADR 0925）。

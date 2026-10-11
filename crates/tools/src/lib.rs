@@ -144,7 +144,6 @@ pub use facade::{
 };
 #[cfg(feature = "test-support")]
 pub use facade::{ToolCatalogTestSupportPort, ToolRunTestSupportPort};
-pub use haven_common::types::CapabilityScope;
 #[cfg(any(test, feature = "test-support"))]
 pub use haven_mcp::McpManager;
 pub use haven_mcp::{

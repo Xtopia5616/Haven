@@ -4345,7 +4345,7 @@ mod tests {
         };
         let receipt = || haven_tools::ConfirmationReceipt {
             confirmation_id: haven_common::types::ConfirmId::new(),
-            capability: haven_tools::CapabilityScope::try_new("test.operation").unwrap(),
+            capability: haven_common::types::CapabilityScope::try_new("test.operation").unwrap(),
             canonical_input_hash: String::new(),
             effective_risk: haven_common::types::RiskLevel::Safe,
             policy_revision: 1,

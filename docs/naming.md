@@ -1,6 +1,6 @@
 # Haven 命名规范
 
-> 版本: v1.175 | 日期: 2026-10-11
+> 版本: v1.176 | 日期: 2026-10-11
 
 本文档统一 Haven 项目各层的命名规则（变量名、函数名、文件名、crate 名、缩写大小写、跨层边界）。规范以现有代码中的事实模式为基础，新代码必须遵循；存量代码若与规范冲突，逐步迁移对齐。
 
@@ -351,6 +351,8 @@ Session title 读取 API 必须在名字中表达字段投影：`SessionStore::g
 实体 ID 统一 `{prefix}-{uuid32}`，一律用 `haven_common::types::new_id(prefix)` 生成，并用 `haven_common::types::is_canonical_id(id, prefix)` 校验；校验函数的 `prefix` 参数不带连字符，禁止各 crate 重复实现格式检查。Tauri 命令、模型可调用的 Tools 入口、Messaging service 与 JSONL transport 都在副作用或存储前校验 Haven 实体 ID；Tools 的轻量错误包装器仍委托 Common 校验器。Agent 工具的 session、message 与 claim 参数分别使用 `ses`、`msg`、`claim` ID 空间，广播标记 `*` 是唯一接收方例外。配置凭据引用复用同一校验器；provider ID、模型配置 ID 和运行代次等非实体标识按各自领域契约处理。进程内 `claim_token` 也列入前缀表，避免未登记的 ID 空间。完整前缀表见 `AGENTS.md`.
 
 运行时实体 ID newtype（目前为 `ConfirmId`、`RecordingId`）通过 `new()` 调用 Common generator 生成；字符串输入用 `TryFrom` 校验类型固定前缀，Serde 反序列化执行同一校验。tuple 形状按项目 contract 保持公开字符串序列化，并标记 `#[non_exhaustive]` 阻止其他 crate 绕过验证直接构造；不保留无验证 `From<String>`。
+
+共享授权身份 `CapabilityScope` 由 Common 定义；所有 Rust 调用方统一从 `haven_common::types::CapabilityScope` 导入，不经 Tools 根 alias。
 
 - ToolRun 身份字段在 Rust 类型、事件与 JSON 结果中统一命名 `tool_run_id`；前端 IPC/view DTO 只在边界映射为 `toolRunId`，不再接受或输出泛名 `id` 别名。数据库物理列 `tool_runs.id` 保持不变，Repository 行字段命名 `tool_run_id`。Tauri event envelope 的数值 `event.id` 是另一实体，继续保留原名。
 
