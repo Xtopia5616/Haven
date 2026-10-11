@@ -319,6 +319,7 @@ describe('SettingsView diagnostics export', () => {
 			},
 			context_limits: {
 				compaction_ratio: 0.65,
+				skills_max_line_bytes: 2048,
 				tool_run_result_context_chars: 4321,
 				fact_extraction_min_interval_secs: 77,
 				turn_deadline_secs: 901,
@@ -419,6 +420,7 @@ describe('SettingsView diagnostics export', () => {
 		expect(saved.media.image_gen.provider_name).toBe('image-connection');
 		expect(saved.context_limits).toMatchObject({
 			response_token_floor: 64_000,
+			skills_max_line_bytes: 2048,
 			file_max_full_file_bytes: 256_000,
 			file_line_max_bytes: 32_000,
 			file_byte_read_max_bytes: 8 * 1024 * 1024,

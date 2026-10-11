@@ -266,9 +266,9 @@
 					danger: true,
 				},
 				{
-					key: 'skills_max_line_len',
+					key: 'skills_max_line_bytes',
 					label: 'SKILL.md 单行长度',
-					unit: 'chars',
+					unit: 'bytes',
 					danger: true,
 				},
 				{

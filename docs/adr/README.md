@@ -963,3 +963,4 @@
 - [0972：用 floor 表达响应 token 下界](0972-name-response-token-floor.md)
 - [0973：统一文件工具字节限额与读写上限](0973-normalize-file-tool-byte-limits.md)
 - [0974：用 Base64 字节表达 MCP 二进制内容限额](0974-name-mcp-binary-base64-byte-limit.md)
+- [0975：用字节命名 SKILL.md 单行上限](0975-name-skill-line-limit-in-bytes.md)

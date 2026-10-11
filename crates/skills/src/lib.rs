@@ -306,13 +306,13 @@ fn skip_case_insensitive_directory_collisions(
 /// present) takes precedence —this lets a directory's `SKILL.md` carry a name
 /// differing from its folder name without surprising the registry.
 ///
-/// **Safety:** The parser enforces a maximum line count and a maximum per-line
-/// length (from `context_limits`) to prevent unbounded memory accumulation
-/// from crafted/oversized input.
+/// **Safety:** The parser enforces a maximum line count and a maximum UTF-8
+/// byte length per line (from `context_limits`) to prevent unbounded memory
+/// accumulation from crafted/oversized input.
 fn parse_skill_md(
     input: &str,
     max_parse_lines: usize,
-    max_line_len: usize,
+    max_line_bytes: usize,
 ) -> anyhow::Result<SkillManifest> {
     let input = input.strip_prefix('\u{FEFF}').unwrap_or(input);
 
@@ -329,8 +329,11 @@ fn parse_skill_md(
         if i >= max_parse_lines {
             anyhow::bail!("SKILL.md exceeds {max_parse_lines} lines");
         }
-        if line.len() > max_line_len {
-            anyhow::bail!("SKILL.md line {} exceeds {max_line_len} characters", i + 1);
+        if line.len() > max_line_bytes {
+            anyhow::bail!(
+                "SKILL.md line {} exceeds {max_line_bytes} UTF-8 bytes",
+                i + 1
+            );
         }
         let trimmed = line.trim_end();
         if trimmed.is_empty() {
@@ -533,8 +536,8 @@ fn scan_skill_directory(
             }
         };
         let max_parse_lines = limits.skills_max_parse_lines;
-        let max_line_len = limits.skills_max_line_len;
-        match parse_skill_md(&content, max_parse_lines, max_line_len) {
+        let max_line_bytes = limits.skills_max_line_bytes;
+        match parse_skill_md(&content, max_parse_lines, max_line_bytes) {
             Ok(manifest) => {
                 let enabled = enabled_skill_allowlist
                     .map(|allowlist| allowlist.contains(&manifest.name))
@@ -953,11 +956,23 @@ mod tests {
     }
 
     #[test]
-    fn parse_rejects_oversized_line() {
+    fn parse_rejects_ascii_line_over_byte_limit() {
         let long_line = "a".repeat(4096 + 1);
         let md =
             format!("# Skill: x\n## Metadata\n- description: {long_line}\n## Instructions\ni\n");
-        assert!(parse_skill_md(&md, 5000, 4096).is_err());
+        let error = parse_skill_md(&md, 5000, 4096).unwrap_err();
+        assert!(error.to_string().contains("UTF-8 bytes"));
+    }
+
+    #[test]
+    fn parse_rejects_multibyte_line_over_byte_limit_by_utf8_size() {
+        let long_line = format!("- description: {}", "界".repeat(1_366));
+        assert!(long_line.chars().count() < 4_096);
+        assert!(long_line.len() > 4_096);
+        let md = format!("# Skill: x\n## Metadata\n{long_line}\n## Instructions\ni\n");
+
+        let error = parse_skill_md(&md, 5_000, 4_096).unwrap_err();
+        assert!(error.to_string().contains("UTF-8 bytes"));
     }
 
     // -----------------------------------------------------------------------

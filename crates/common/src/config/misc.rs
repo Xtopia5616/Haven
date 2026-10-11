@@ -195,8 +195,8 @@ pub struct ContextLimitsConfig {
     pub skills_max_md_bytes: u64,
     /// Max lines the SKILL.md parser processes.
     pub skills_max_parse_lines: usize,
-    /// Max length of a single SKILL.md parser line.
-    pub skills_max_line_len: usize,
+    /// Max UTF-8 bytes in a single SKILL.md parser line.
+    pub skills_max_line_bytes: usize,
     /// Max bytes of skill `instructions` accepted by the typed skill admin operation.
     pub self_tool_max_instructions_bytes: usize,
     /// Max bytes of a skill script file accepted by the typed skill admin operation.
@@ -288,7 +288,7 @@ impl Default for ContextLimitsConfig {
             mcp_max_sse_buffer_bytes: 2 * 1024 * 1024,
             skills_max_md_bytes: 256 * 1024,
             skills_max_parse_lines: 5_000,
-            skills_max_line_len: 4_096,
+            skills_max_line_bytes: 4_096,
             self_tool_max_instructions_bytes: 256 * 1024,
             self_tool_max_script_bytes: 512 * 1024,
             network_max_retries: 2,

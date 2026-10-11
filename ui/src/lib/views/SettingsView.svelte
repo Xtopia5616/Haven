@@ -227,7 +227,7 @@
 		mcp_max_sse_buffer_bytes: 2 * 1024 * 1024,
 		skills_max_md_bytes: 256 * 1024,
 		skills_max_parse_lines: 5000,
-		skills_max_line_len: 4096,
+		skills_max_line_bytes: 4096,
 		self_tool_max_instructions_bytes: 256 * 1024,
 		self_tool_max_script_bytes: 512 * 1024,
 		network_max_retries: 2,

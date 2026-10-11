@@ -22,6 +22,8 @@ schema v39 仅接受事实提取 marker 的当前完整格式：旧 boolean、�
 
 MCP 二进制限额 `mcp_max_binary_payload_bytes` 改为 `mcp_max_binary_base64_bytes`，名称现在说明上限计量的是保留在观察中的 Base64 UTF-8 字节，而非解码后的媒体大小。旧 key 不接受；需保留配置时手动改名。数据库不受影响。
 
+SKILL.md 单行解析上限 `skills_max_line_len` 改为 `skills_max_line_bytes`，上限一直按 UTF-8 字节计量，UI 和解析错误现在也明确显示字节。旧 key 不接受；需保留配置时手动改名。数据库不受影响。
+
 运行中的 `ConfigService` 会在持久化前核对 `config.toml` 是否仍与加载时一致；若 Haven 外部编辑了配置，当前进程会拒绝覆盖并提示重启加载最新配置。外部修改无需删除配置或数据库。
 
 Session prompt 首次上下文条数目前配置在 `[session].prompt_history_limit`（默认 50）；旧 `[memory].session_window_size` 不再接受或自动搬迁。若要保留其它配置，手动将数值移到新 key 并删除旧 key；否则按“仅重建配置”删除 `config.toml` 后重新设置。遇到旧 key 时配置会整体解析失败、先备份原文件并在当前进程使用默认值；数据库不受影响。

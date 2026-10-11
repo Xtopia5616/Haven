@@ -518,7 +518,7 @@ mod tests {
         assert_eq!(cfg.context_limits.mcp_max_sse_buffer_bytes, 2 * 1024 * 1024);
         assert_eq!(cfg.context_limits.skills_max_md_bytes, 256 * 1024);
         assert_eq!(cfg.context_limits.skills_max_parse_lines, 5_000);
-        assert_eq!(cfg.context_limits.skills_max_line_len, 4_096);
+        assert_eq!(cfg.context_limits.skills_max_line_bytes, 4_096);
         assert_eq!(cfg.context_limits.self_tool_max_script_bytes, 512 * 1024);
         assert_eq!(cfg.context_limits.network_max_retries, 2);
         assert_eq!(cfg.context_limits.network_max_body_bytes, 1024 * 1024);
@@ -633,6 +633,20 @@ mod tests {
         assert!(
             parsed.is_err(),
             "the retired memory key must not be accepted as an alias"
+        );
+    }
+
+    #[test]
+    fn skill_line_byte_limit_uses_current_key_and_rejects_old_key() {
+        let parsed =
+            toml::from_str::<AppConfig>("[context_limits]\nskills_max_line_bytes = 2048\n")
+                .unwrap();
+        assert_eq!(parsed.context_limits.skills_max_line_bytes, 2048);
+
+        let old_key = toml::from_str::<AppConfig>("[context_limits]\nskills_max_line_len = 2048\n");
+        assert!(
+            old_key.is_err(),
+            "the retired character-length key must not be accepted as an alias"
         );
     }
 
