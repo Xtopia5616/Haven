@@ -19,8 +19,9 @@ import { isRecord } from './objectGuards.ts';
 import type { TauriEvent } from './tauriEvent.ts';
 import { isFiniteNumber, isOneOf, isString } from './valueGuards.ts';
 import {
+	canonicalIdField,
 	hasOwnWireField,
-	nonEmptyStringField,
+	isCanonicalEntityId,
 	readStringField,
 	type WireRecord,
 } from './wireGuards.ts';
@@ -74,7 +75,7 @@ export function mapSessionEvent(
 
 	switch (type) {
 		case 'created': {
-			const sessionId = nonEmptyStringField(payload, 'session_id');
+			const sessionId = canonicalIdField(payload, 'session_id', 'ses');
 			const status = mapSessionStatus(payload.status);
 			const waitingReason = mapWaitingReason(payload.waiting_reason);
 			const title = requiredNullableStringField(payload, 'title');
@@ -92,7 +93,7 @@ export function mapSessionEvent(
 			};
 		}
 		case 'updated': {
-			const sessionId = nonEmptyStringField(payload, 'session_id');
+			const sessionId = canonicalIdField(payload, 'session_id', 'ses');
 			const status = mapUpdateStatus(payload.status);
 			const waitingReason = mapWaitingReason(payload.waiting_reason);
 			const title = readStringField(payload, 'title');
@@ -112,28 +113,32 @@ export function mapSessionEvent(
 			};
 		}
 		case 'completed': {
-			const sessionId = nonEmptyStringField(payload, 'session_id');
+			const sessionId = canonicalIdField(payload, 'session_id', 'ses');
 			const title = readStringField(payload, 'title');
 			const reason = readStringField(payload, 'reason');
 			if (sessionId === null || title === null || reason === null) return null;
 			return { ...event, payload: { type, sessionId, title, reason } };
 		}
 		case 'error': {
-			const sessionId = nonEmptyStringField(payload, 'session_id');
+			const sessionId = canonicalIdField(payload, 'session_id', 'ses');
 			const title = readStringField(payload, 'title');
 			const error = readStringField(payload, 'error');
 			if (sessionId === null || title === null || error === null) return null;
 			return { ...event, payload: { type, sessionId, title, error } };
 		}
 		case 'title_updated': {
-			const sessionId = nonEmptyStringField(payload, 'session_id');
+			const sessionId = canonicalIdField(payload, 'session_id', 'ses');
 			const title = readStringField(payload, 'title');
 			if (sessionId === null || title === null) return null;
 			return { ...event, payload: { type, sessionId, title } };
 		}
 		case 'deleted': {
 			const sessionId = requiredNullableStringField(payload, 'session_id');
-			if (sessionId === undefined || sessionId === '') return null;
+			if (
+				sessionId === undefined ||
+				(sessionId !== null && !isCanonicalEntityId(sessionId, 'ses'))
+			)
+				return null;
 			return { ...event, payload: { type, sessionId } };
 		}
 		default:

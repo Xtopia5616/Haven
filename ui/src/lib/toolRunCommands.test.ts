@@ -13,17 +13,22 @@ describe('ToolRun command contract boundary', () => {
 	it('normalizes list_tool_runs rows through the shared ToolRunEvent mapper', async () => {
 		invokeMock.mockResolvedValue([
 			{
-				tool_run_id: 'toolrun-1',
+				tool_run_id: 'toolrun-6b86b273ff34fce19d6b804eff5a3f57',
 				kind: 'background',
 				status: 'running',
-				session_id: 'ses-1',
+				session_id: 'ses-6b86b273ff34fce19d6b804eff5a3f57',
 				future_wire_field: 'ignored',
 			},
-			{ tool_run_id: 'toolrun-2', kind: 'future-kind' },
+			{ tool_run_id: 'toolrun-d4735e3a265e16eee03f59718b9b5d03', kind: 'future-kind' },
 		] as never);
 
 		await expect(listToolRunRows()).resolves.toEqual([
-			{ toolRunId: 'toolrun-1', kind: 'background', status: 'running', sessionId: 'ses-1' },
+			{
+				toolRunId: 'toolrun-6b86b273ff34fce19d6b804eff5a3f57',
+				kind: 'background',
+				status: 'running',
+				sessionId: 'ses-6b86b273ff34fce19d6b804eff5a3f57',
+			},
 			null,
 		]);
 		expect(invokeMock).toHaveBeenCalledOnce();
@@ -38,7 +43,10 @@ describe('ToolRun command contract boundary', () => {
 
 	it('uses the named cancel request and preserves the boolean response', async () => {
 		invokeMock.mockResolvedValue(true);
-		const request = { toolRunId: 'toolrun-3', kind: 'scheduled' as const };
+		const request = {
+			toolRunId: 'toolrun-4e07408562bedb8b60ce05c1decfe3ad',
+			kind: 'scheduled' as const,
+		};
 
 		await expect(cancelToolRunCommand(request)).resolves.toBe(true);
 		expect(invokeMock).toHaveBeenCalledOnce();
@@ -49,6 +57,11 @@ describe('ToolRun command contract boundary', () => {
 		const result = Promise.resolve(true);
 		invokeMock.mockReturnValue(result);
 
-		expect(cancelToolRunCommand({ toolRunId: 'toolrun-4', kind: 'background' })).toBe(result);
+		expect(
+			cancelToolRunCommand({
+				toolRunId: 'toolrun-4b227777d4dd1fc61c6f884f48641d02',
+				kind: 'background',
+			}),
+		).toBe(result);
 	});
 });

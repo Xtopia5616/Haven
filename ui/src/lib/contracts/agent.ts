@@ -43,8 +43,10 @@ import type { TauriEvent } from './tauriEvent.ts';
 import { isRecord } from './objectGuards.ts';
 import { isBoolean, isFiniteNumber, isOneOf, isString, isStringArray } from './valueGuards.ts';
 import {
+	canonicalIdField,
 	hasOwnWireField,
-	nonEmptyStringField,
+	isCanonicalEntityId,
+	optionalCanonicalIdFieldIsValid,
 	optionalStringFieldIsValid,
 	readStringField,
 	type WireRecord,
@@ -250,7 +252,7 @@ const AGENT_EVENT_NAME_SET = new Set<string>(AGENT_EVENT_NAMES);
 
 function optionalSessionId(record: WireRecord): string | undefined | null {
 	if (!hasOwnWireField(record, 'session_id')) return undefined;
-	return nonEmptyStringField(record, 'session_id');
+	return canonicalIdField(record, 'session_id', 'ses');
 }
 
 function requiredNumber(record: WireRecord, field: string): number | null {
@@ -357,11 +359,11 @@ export function mapAgentEvent(
 	const payload = event.payload;
 	switch (eventName) {
 		case 'agent:thought': {
-			const sessionId = nonEmptyStringField(payload, 'session_id');
+			const sessionId = canonicalIdField(payload, 'session_id', 'ses');
 			const thought = readStringField(payload, 'thought');
 			const stepNumber = requiredNumber(payload, 'step_number');
 			const runId = requiredNumber(payload, 'run_id');
-			const messageId = readStringField(payload, 'message_id');
+			const messageId = canonicalIdField(payload, 'message_id', 'step');
 			if (
 				sessionId === null ||
 				thought === null ||
@@ -386,12 +388,12 @@ export function mapAgentEvent(
 			};
 		}
 		case 'agent:tool_call': {
-			const sessionId = nonEmptyStringField(payload, 'session_id');
+			const sessionId = canonicalIdField(payload, 'session_id', 'ses');
 			const toolName = readStringField(payload, 'tool_name');
 			const stepNumber = requiredNumber(payload, 'step_number');
 			const runId = requiredNumber(payload, 'run_id');
 			const toolIndex = requiredNumber(payload, 'tool_index');
-			const stepId = readStringField(payload, 'step_id');
+			const stepId = canonicalIdField(payload, 'step_id', 'step');
 			const suppressStreamedThought = requiredBoolean(payload, 'suppress_streamed_thought');
 			const silent = requiredBoolean(payload, 'silent');
 			const toolCallId = payload.tool_call_id;
@@ -429,7 +431,7 @@ export function mapAgentEvent(
 			};
 		}
 		case 'agent:observation': {
-			const sessionId = nonEmptyStringField(payload, 'session_id');
+			const sessionId = canonicalIdField(payload, 'session_id', 'ses');
 			const observation = readStringField(payload, 'observation');
 			const toolName = readStringField(payload, 'tool_name');
 			const stepNumber = requiredNumber(payload, 'step_number');
@@ -437,7 +439,7 @@ export function mapAgentEvent(
 			const silent = requiredBoolean(payload, 'silent');
 			const toolIndex = requiredNumber(payload, 'tool_index');
 			const askOptions = isStringArray(payload.ask_options) ? payload.ask_options : null;
-			const stepId = readStringField(payload, 'step_id');
+			const stepId = canonicalIdField(payload, 'step_id', 'step');
 			const idempotency = payload.idempotency;
 			const operationScope = payload.operation_scope;
 			const renderer = readStringField(payload, 'renderer');
@@ -486,11 +488,11 @@ export function mapAgentEvent(
 		}
 		case 'agent:thought_chunk':
 		case 'agent:reasoning_chunk': {
-			const sessionId = nonEmptyStringField(payload, 'session_id');
+			const sessionId = canonicalIdField(payload, 'session_id', 'ses');
 			const delta = readStringField(payload, 'delta');
 			const stepNumber = requiredNumber(payload, 'step_number');
 			const runId = requiredNumber(payload, 'run_id');
-			const messageId = readStringField(payload, 'message_id');
+			const messageId = canonicalIdField(payload, 'message_id', 'step');
 			const seq = requiredNumber(payload, 'seq');
 			if (
 				sessionId === null ||
@@ -507,8 +509,8 @@ export function mapAgentEvent(
 			};
 		}
 		case 'agent:tool_call_chunk': {
-			const sessionId = nonEmptyStringField(payload, 'session_id');
-			const previewId = readStringField(payload, 'preview_id');
+			const sessionId = canonicalIdField(payload, 'session_id', 'ses');
+			const previewId = canonicalIdField(payload, 'preview_id', 'call');
 			const toolName = readStringField(payload, 'tool_name');
 			const argumentsText = readStringField(payload, 'arguments');
 			const argumentsTruncated = requiredBoolean(payload, 'arguments_truncated');
@@ -544,11 +546,11 @@ export function mapAgentEvent(
 			};
 		}
 		case 'agent:stream_reset': {
-			const sessionId = nonEmptyStringField(payload, 'session_id');
+			const sessionId = canonicalIdField(payload, 'session_id', 'ses');
 			const stepNumber = requiredNumber(payload, 'step_number');
 			const runId = requiredNumber(payload, 'run_id');
-			const thoughtMessageId = readStringField(payload, 'thought_message_id');
-			const reasoningMessageId = readStringField(payload, 'reasoning_message_id');
+			const thoughtMessageId = canonicalIdField(payload, 'thought_message_id', 'step');
+			const reasoningMessageId = canonicalIdField(payload, 'reasoning_message_id', 'step');
 			if (
 				sessionId === null ||
 				stepNumber === null ||
@@ -563,7 +565,7 @@ export function mapAgentEvent(
 			};
 		}
 		case 'agent:web_search': {
-			const sessionId = nonEmptyStringField(payload, 'session_id');
+			const sessionId = canonicalIdField(payload, 'session_id', 'ses');
 			const phase = readStringField(payload, 'phase');
 			const stepNumber = requiredNumber(payload, 'step_number');
 			const runId = requiredNumber(payload, 'run_id');
@@ -590,11 +592,11 @@ export function mapAgentEvent(
 			};
 		}
 		case 'agent:stream_stalled': {
-			const sessionId = nonEmptyStringField(payload, 'session_id');
+			const sessionId = canonicalIdField(payload, 'session_id', 'ses');
 			return sessionId === null ? null : { ...tauriEvent, payload: { sessionId } };
 		}
 		case 'agent:media_plan': {
-			const sessionId = nonEmptyStringField(payload, 'session_id');
+			const sessionId = canonicalIdField(payload, 'session_id', 'ses');
 			const stepNumber = requiredNumber(payload, 'step_number');
 			const runId = requiredNumber(payload, 'run_id');
 			const role = payload.role;
@@ -604,7 +606,7 @@ export function mapAgentEvent(
 				payload.projections.every(
 					(item) =>
 						isRecord(item) &&
-						isString(item.asset_id) &&
+						isCanonicalEntityId(item.asset_id, 'asset') &&
 						isOneOf(item.representation, MEDIA_REPRESENTATION_KIND_VALUES) &&
 						isOneOf(item.mode, MEDIA_PROJECTION_MODE_VALUES),
 				)
@@ -620,7 +622,7 @@ export function mapAgentEvent(
 				payload.notices.every(
 					(item) =>
 						isRecord(item) &&
-						isString(item.asset_id) &&
+						isCanonicalEntityId(item.asset_id, 'asset') &&
 						isOneOf(item.code, MEDIA_PLAN_NOTICE_CODE_VALUES),
 				)
 					? payload.notices.map((item) => ({
@@ -656,18 +658,18 @@ export function mapAgentEvent(
 			};
 		}
 		case 'agent:supplement': {
-			const sessionId = nonEmptyStringField(payload, 'session_id');
+			const sessionId = canonicalIdField(payload, 'session_id', 'ses');
 			const additionalContext = readStringField(payload, 'additional_context');
 			const stepNumber = requiredNumber(payload, 'step_number');
 			const runId = requiredNumber(payload, 'run_id');
-			const supplementId = readStringField(payload, 'supplement_id');
+			const supplementId = canonicalIdField(payload, 'supplement_id', 'msg');
 			if (
 				sessionId === null ||
 				additionalContext === null ||
 				stepNumber === null ||
 				runId === null ||
 				supplementId === null ||
-				!optionalStringFieldIsValid(payload, 'message_id') ||
+				!optionalCanonicalIdFieldIsValid(payload, 'message_id', 'msg') ||
 				!optionalStringFieldIsValid(payload, 'inject_source') ||
 				!optionalNumberIsValid(payload, 'event_seq')
 			)
@@ -693,7 +695,7 @@ export function mapAgentEvent(
 			};
 		}
 		case 'agent:compaction': {
-			const sessionId = nonEmptyStringField(payload, 'session_id');
+			const sessionId = canonicalIdField(payload, 'session_id', 'ses');
 			const summary = readStringField(payload, 'summary');
 			const tokensBefore = requiredNumber(payload, 'tokens_before');
 			const tokensAfter = requiredNumber(payload, 'tokens_after');
@@ -704,7 +706,7 @@ export function mapAgentEvent(
 				tokensBefore === null ||
 				tokensAfter === null ||
 				degraded === null ||
-				!optionalStringFieldIsValid(payload, 'episode_id') ||
+				!optionalCanonicalIdFieldIsValid(payload, 'episode_id', 'msg') ||
 				!optionalNumberIsValid(payload, 'event_seq')
 			)
 				return null;
@@ -726,7 +728,7 @@ export function mapAgentEvent(
 			};
 		}
 		case 'agent:usage': {
-			const sessionId = nonEmptyStringField(payload, 'session_id');
+			const sessionId = canonicalIdField(payload, 'session_id', 'ses');
 			const cacheAccounting = payload.cache_accounting;
 			const rawCacheDiagnostics = payload.cache_diagnostics;
 			const cacheDiagnostics =
@@ -804,8 +806,8 @@ export function mapAgentEvent(
 			};
 		}
 		case 'agent:tool_output': {
-			const sessionId = nonEmptyStringField(payload, 'session_id');
-			const stepId = readStringField(payload, 'step_id');
+			const sessionId = canonicalIdField(payload, 'session_id', 'ses');
+			const stepId = canonicalIdField(payload, 'step_id', 'step');
 			const output = readStringField(payload, 'output');
 			return sessionId === null || stepId === null || output === null
 				? null
@@ -823,7 +825,7 @@ export function mapAgentEvent(
 				const title = readStringField(payload, 'title');
 				const body = readStringField(payload, 'body');
 				const toolRunKind = payload.tool_run_kind;
-				const toolRunId = readStringField(payload, 'tool_run_id');
+				const toolRunId = canonicalIdField(payload, 'tool_run_id', 'toolrun');
 				const toolRunStatus = payload.tool_run_status;
 				if (
 					toolRunStatus !== undefined &&
@@ -836,7 +838,6 @@ export function mapAgentEvent(
 					body === null ||
 					!isOneOf(toolRunKind, TOOL_RUN_KIND_DTO_VALUES) ||
 					toolRunId === null ||
-					toolRunId.length === 0 ||
 					(toolRunKind === 'background' &&
 						(sessionId === undefined || toolRunStatus === undefined)) ||
 					(toolRunKind === 'scheduled' && toolRunStatus !== undefined)

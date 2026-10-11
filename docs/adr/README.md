@@ -933,3 +933,4 @@
 - [0942：将 shell runtime helpers 限制在 Tools 内部](0942-restrict-shell-runtime-helpers-to-tools.md)
 - [0943：将 Skills 查找与执行收回 Tools owner](0943-restrict-tools-foreign-type-reexports.md)
 - [0944：反序列化时校验 CapabilityScope](0944-validate-capability-scope-deserialization.md)
+- [0945：在 UI event 边界校验实体 ID](0945-validate-entity-ids-at-ui-event-boundary.md)

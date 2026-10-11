@@ -3,15 +3,14 @@
 import type { TauriEvent } from './tauriEvent.ts';
 import { isMcpClientStatus } from './mcpClientStatus.ts';
 import { isRecord } from './objectGuards.ts';
+import { isBoolean, isFiniteNumber, isOneOf, isString, isStringArray } from './valueGuards.ts';
 import {
-	isBoolean,
-	isFiniteNumber,
-	isNonEmptyString,
-	isOneOf,
-	isString,
-	isStringArray,
-} from './valueGuards.ts';
-import { optionalStringFieldIsValid, readStringField, type WireRecord } from './wireGuards.ts';
+	isCanonicalEntityId,
+	optionalCanonicalIdFieldIsValid,
+	optionalStringFieldIsValid,
+	readStringField,
+	type WireRecord,
+} from './wireGuards.ts';
 import {
 	APP_EVENT_NAMES,
 	BOOTSTRAP_STATUS_VALUES,
@@ -167,13 +166,16 @@ export function mapInteractionOwner(
 		case 'session':
 			if (
 				Object.keys(value).length !== 2 ||
-				!isNonEmptyString(value.session_id) ||
+				!isCanonicalEntityId(value.session_id, 'ses') ||
 				sessionId !== value.session_id
 			)
 				return null;
 			return { kind: 'session', sessionId: value.session_id };
 		case 'scheduled_tool_run':
-			if (Object.keys(value).length !== 2 || !isNonEmptyString(value.tool_run_id))
+			if (
+				Object.keys(value).length !== 2 ||
+				!isCanonicalEntityId(value.tool_run_id, 'toolrun')
+			)
 				return null;
 			return { kind: 'scheduled_tool_run', toolRunId: value.tool_run_id };
 		case 'app_command':
@@ -241,10 +243,10 @@ export function mapAppEvent(event: unknown): TauriEvent<AppEventPayloadMap[AppEv
 			const createdAt = readStringField(p, 'created_at');
 			const options = p.options === undefined ? [] : p.options;
 			const toolIndex = p.tool_index;
+			if (id === null || !isOneOf(kind, INTERACTION_KIND_VALUES)) return null;
+			if (!isCanonicalEntityId(id, kind === 'ask' ? 'step' : 'conf')) return null;
+			if (sessionId !== undefined && !isCanonicalEntityId(sessionId, 'ses')) return null;
 			if (
-				id === null ||
-				(sessionId !== undefined && !isNonEmptyString(sessionId)) ||
-				!isOneOf(kind, INTERACTION_KIND_VALUES) ||
 				!isOneOf(status, INTERACTION_STATUS_VALUES) ||
 				createdAt === null ||
 				!isStringArray(options) ||
@@ -252,7 +254,7 @@ export function mapAppEvent(event: unknown): TauriEvent<AppEventPayloadMap[AppEv
 				!optionalOneOfIsValid(p, 'risk_level', RISK_LEVEL_VALUES) ||
 				!optionalStringFieldIsValid(p, 'summary') ||
 				!optionalStringFieldIsValid(p, 'permission_key') ||
-				!optionalStringFieldIsValid(p, 'invocation_step_id') ||
+				!optionalCanonicalIdFieldIsValid(p, 'invocation_step_id', 'step') ||
 				!optionalStringFieldIsValid(p, 'tool_call_id') ||
 				!optionalStringFieldIsValid(p, 'expires_at') ||
 				!validPendingPermissionDeadline(kind, status, p.expires_at) ||
@@ -263,7 +265,7 @@ export function mapAppEvent(event: unknown): TauriEvent<AppEventPayloadMap[AppEv
 						toolIndex > 4_294_967_295))
 			)
 				return null;
-			const owner = mapInteractionOwner(p.owner, sessionId as string | undefined);
+			const owner = mapInteractionOwner(p.owner, sessionId);
 			if (!owner || !isValidInteractionKindOwnerPair(kind, owner)) return null;
 
 			const wire = p as unknown as GeneratedInteractionRequestedEvent;

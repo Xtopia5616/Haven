@@ -12,7 +12,13 @@ import {
 import type { TauriEvent } from './tauriEvent.ts';
 import { isRecord } from './objectGuards.ts';
 import { isFiniteNumber, isNumber, isOneOf, isString } from './valueGuards.ts';
-import { nonEmptyStringField, optionalStringFieldIsValid, type WireRecord } from './wireGuards.ts';
+import {
+	canonicalIdField,
+	isCanonicalEntityId,
+	optionalCanonicalIdFieldIsValid,
+	optionalStringFieldIsValid,
+	type WireRecord,
+} from './wireGuards.ts';
 
 /**
  * ToolRun IPC contract at the frontend boundary.
@@ -48,8 +54,6 @@ export interface ToolRunPayload {
 }
 
 const OPTIONAL_STRING_FIELDS = [
-	'session_id',
-	'source_step_id',
 	'started_at',
 	'finished_at',
 	'due_at',
@@ -90,6 +94,12 @@ function hasValidOptionalFields(payload: WireRecord): boolean {
 	) {
 		return false;
 	}
+	if (
+		!optionalCanonicalIdFieldIsValid(payload, 'session_id', 'ses') ||
+		!optionalCanonicalIdFieldIsValid(payload, 'source_step_id', 'step')
+	) {
+		return false;
+	}
 	return OPTIONAL_STRING_FIELDS.every((field) => optionalStringFieldIsValid(payload, field));
 }
 
@@ -100,15 +110,17 @@ function hasValidOptionalFields(payload: WireRecord): boolean {
  */
 export function mapToolRunPayload(payload: unknown): ToolRunPayload | null {
 	if (!isRecord(payload)) return null;
-	const toolRunId = nonEmptyStringField(payload, 'tool_run_id');
+	const toolRunId = canonicalIdField(payload, 'tool_run_id', 'toolrun');
 	if (toolRunId === null) return null;
 	if (!isToolRunKind(payload.kind)) return null;
 	if (!hasValidOptionalFields(payload)) return null;
 
 	const mapped: ToolRunPayload = { toolRunId, kind: payload.kind };
 	if (isToolRunStatus(payload.status)) mapped.status = payload.status;
-	if (isString(payload.session_id)) mapped.sessionId = payload.session_id;
-	if (isString(payload.source_step_id)) mapped.sourceStepId = payload.source_step_id;
+	if (isCanonicalEntityId(payload.session_id, 'ses')) mapped.sessionId = payload.session_id;
+	if (isCanonicalEntityId(payload.source_step_id, 'step')) {
+		mapped.sourceStepId = payload.source_step_id;
+	}
 	if (isString(payload.started_at)) mapped.startedAt = payload.started_at;
 	if (isString(payload.finished_at)) mapped.finishedAt = payload.finished_at;
 	if (isString(payload.due_at)) mapped.dueAt = payload.due_at;

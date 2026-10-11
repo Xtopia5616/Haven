@@ -6,13 +6,13 @@ describe('mapSessionEvent', () => {
 		const values = [
 			{
 				type: 'created',
-				session_id: 'ses-created',
+				session_id: 'ses-406effb1e9c59672c66a598c2b21e331',
 				status: 'pending',
 				title: null,
 			},
 			{
 				type: 'updated',
-				session_id: 'ses-updated',
+				session_id: 'ses-27eb5e51506c911f6fc4bb345c0d9db6',
 				status: 'paused',
 				waiting_reason: 'ask',
 				title: 'A title',
@@ -20,17 +20,21 @@ describe('mapSessionEvent', () => {
 			},
 			{
 				type: 'completed',
-				session_id: 'ses-completed',
+				session_id: 'ses-4ddb3e96801a1ee2b77dc5247c0db478',
 				title: 'Finished',
 				reason: 'User ended the session',
 			},
 			{
 				type: 'error',
-				session_id: 'ses-error',
+				session_id: 'ses-ca00fccfb408989eddc401062c4d1219',
 				title: 'Failed',
 				error: 'Sanitized failure',
 			},
-			{ type: 'title_updated', session_id: 'ses-title', title: 'New title' },
+			{
+				type: 'title_updated',
+				session_id: 'ses-aaf2320646108059a87ab5017a86aee4',
+				title: 'New title',
+			},
 			{ type: 'deleted', session_id: null },
 		];
 
@@ -41,14 +45,14 @@ describe('mapSessionEvent', () => {
 		expect(mapped.map((event) => event?.payload)).toEqual([
 			{
 				type: 'created',
-				sessionId: 'ses-created',
+				sessionId: 'ses-406effb1e9c59672c66a598c2b21e331',
 				status: 'pending',
 				waitingReason: null,
 				title: null,
 			},
 			{
 				type: 'updated',
-				sessionId: 'ses-updated',
+				sessionId: 'ses-27eb5e51506c911f6fc4bb345c0d9db6',
 				status: 'paused',
 				waitingReason: 'ask',
 				title: 'A title',
@@ -56,17 +60,21 @@ describe('mapSessionEvent', () => {
 			},
 			{
 				type: 'completed',
-				sessionId: 'ses-completed',
+				sessionId: 'ses-4ddb3e96801a1ee2b77dc5247c0db478',
 				title: 'Finished',
 				reason: 'User ended the session',
 			},
 			{
 				type: 'error',
-				sessionId: 'ses-error',
+				sessionId: 'ses-ca00fccfb408989eddc401062c4d1219',
 				title: 'Failed',
 				error: 'Sanitized failure',
 			},
-			{ type: 'title_updated', sessionId: 'ses-title', title: 'New title' },
+			{
+				type: 'title_updated',
+				sessionId: 'ses-aaf2320646108059a87ab5017a86aee4',
+				title: 'New title',
+			},
 			{ type: 'deleted', sessionId: null },
 		]);
 	});
@@ -76,7 +84,12 @@ describe('mapSessionEvent', () => {
 			mapSessionEvent({
 				event: 'session:updated',
 				id: 1,
-				payload: { type: 'updated', session_id: 'ses-1', status: 'running', title: '' },
+				payload: {
+					type: 'updated',
+					session_id: 'ses-6b86b273ff34fce19d6b804eff5a3f57',
+					status: 'running',
+					title: '',
+				},
 			}),
 		).toBeNull();
 	});
@@ -87,28 +100,58 @@ describe('mapSessionEvent', () => {
 				mapSessionEvent({
 					event: 'session:lifecycle',
 					id: 2,
-					payload: { type: 'updated', session_id: 'ses-1', status, title: 'A title' },
+					payload: {
+						type: 'updated',
+						session_id: 'ses-6b86b273ff34fce19d6b804eff5a3f57',
+						status,
+						title: 'A title',
+					},
 				}),
 			).toBeNull();
 		}
 	});
 
 	it.each([
-		{ type: 'completed', session_id: 'ses-1', title: 'Done' },
-		{ type: 'error', session_id: 'ses-1', title: 'Failed' },
-		{ type: 'updated', session_id: 'ses-1', status: 'running', title: 7 },
+		{ type: 'completed', session_id: 'ses-6b86b273ff34fce19d6b804eff5a3f57', title: 'Done' },
+		{ type: 'error', session_id: 'ses-6b86b273ff34fce19d6b804eff5a3f57', title: 'Failed' },
+		{
+			type: 'updated',
+			session_id: 'ses-6b86b273ff34fce19d6b804eff5a3f57',
+			status: 'running',
+			title: 7,
+		},
 		{ type: 'deleted', session_id: '' },
 	])('rejects malformed lifecycle payloads: %o', (payload) => {
 		expect(mapSessionEvent({ event: 'session:lifecycle', id: 3, payload })).toBeNull();
 	});
 
+	it.each([
+		'ses-short',
+		'msg-0123456789abcdef0123456789abcdef',
+		'ses-01234567-89ab-cdef-0123-456789abcdef',
+		'ses-0123456789ABCDEF0123456789abcdef',
+	])('rejects a non-canonical session identity: %s', (session_id) => {
+		expect(
+			mapSessionEvent({
+				event: 'session:lifecycle',
+				id: 9,
+				payload: { type: 'updated', session_id, status: 'paused', title: '' },
+			}),
+		).toBeNull();
+	});
+
 	it('rejects unknown variants, statuses, and waiting reasons', () => {
 		for (const payload of [
-			{ type: 'future', session_id: 'ses-1' },
-			{ type: 'updated', session_id: 'ses-1', status: 'future', title: '' },
+			{ type: 'future', session_id: 'ses-6b86b273ff34fce19d6b804eff5a3f57' },
 			{
 				type: 'updated',
-				session_id: 'ses-1',
+				session_id: 'ses-6b86b273ff34fce19d6b804eff5a3f57',
+				status: 'future',
+				title: '',
+			},
+			{
+				type: 'updated',
+				session_id: 'ses-6b86b273ff34fce19d6b804eff5a3f57',
 				status: 'paused',
 				waiting_reason: 'future',
 				title: '',
@@ -124,7 +167,7 @@ describe('mapSessionEvent', () => {
 			id: 5,
 			payload: {
 				type: 'updated',
-				session_id: 'ses-1',
+				session_id: 'ses-6b86b273ff34fce19d6b804eff5a3f57',
 				status: 'paused',
 				title: '',
 				future_field: 'ignored',
@@ -133,7 +176,7 @@ describe('mapSessionEvent', () => {
 
 		expect(event?.payload).toEqual({
 			type: 'updated',
-			sessionId: 'ses-1',
+			sessionId: 'ses-6b86b273ff34fce19d6b804eff5a3f57',
 			status: 'paused',
 			waitingReason: null,
 			title: '',

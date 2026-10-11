@@ -14,7 +14,7 @@ function mapAgentEvent<K extends AgentEventName>(event: TauriEvent<unknown> & { 
 
 function makeUsagePayload(overrides: Record<string, unknown> = {}) {
 	return {
-		session_id: 'ses-1',
+		session_id: 'ses-6b86b273ff34fce19d6b804eff5a3f57',
 		prompt_tokens: 10,
 		completion_tokens: 4,
 		total_tokens: 14,
@@ -58,28 +58,28 @@ describe('agent IPC contract', () => {
 			event: 'agent:tool_call',
 			id: 1,
 			payload: {
-				session_id: 'ses-1',
+				session_id: 'ses-6b86b273ff34fce19d6b804eff5a3f57',
 				tool_name: 'read_file',
 				input: { path: 'C:/notes.txt' },
 				step_number: 3,
 				run_id: 2,
 				tool_call_id: 'call-1',
 				tool_index: 0,
-				step_id: 'step-1',
+				step_id: 'step-6b86b273ff34fce19d6b804eff5a3f57',
 				suppress_streamed_thought: false,
 				silent: true,
 			},
 		});
 
 		expect(event.payload).toEqual({
-			sessionId: 'ses-1',
+			sessionId: 'ses-6b86b273ff34fce19d6b804eff5a3f57',
 			toolName: 'read_file',
 			input: { path: 'C:/notes.txt' },
 			stepNumber: 3,
 			runId: 2,
 			toolCallId: 'call-1',
 			toolIndex: 0,
-			stepId: 'step-1',
+			stepId: 'step-6b86b273ff34fce19d6b804eff5a3f57',
 			suppressStreamedThought: false,
 			silent: true,
 		});
@@ -93,7 +93,7 @@ describe('agent IPC contract', () => {
 			payload: makeUsagePayload(),
 		});
 
-		expect(event.payload.sessionId).toBe('ses-1');
+		expect(event.payload.sessionId).toBe('ses-6b86b273ff34fce19d6b804eff5a3f57');
 		expect(event.payload.promptTokens).toBe(10);
 		expect(event.payload.cacheDiagnostics).toEqual({
 			strategy: 'key',
@@ -135,20 +135,20 @@ describe('agent IPC contract', () => {
 			event: 'agent:stream_reset',
 			id: 3,
 			payload: {
-				session_id: 'ses-1',
+				session_id: 'ses-6b86b273ff34fce19d6b804eff5a3f57',
 				step_number: 4,
 				run_id: 8,
-				thought_message_id: 'msg-thought',
-				reasoning_message_id: 'msg-reasoning',
+				thought_message_id: 'step-b8192353a3982b4fe7ac9a1f2b1a47cf',
+				reasoning_message_id: 'step-0c4d01e81bb3d1fd0dc4a0b422451895',
 			},
 		});
 
 		expect(event.payload).toEqual({
-			sessionId: 'ses-1',
+			sessionId: 'ses-6b86b273ff34fce19d6b804eff5a3f57',
 			stepNumber: 4,
 			runId: 8,
-			thoughtMessageId: 'msg-thought',
-			reasoningMessageId: 'msg-reasoning',
+			thoughtMessageId: 'step-b8192353a3982b4fe7ac9a1f2b1a47cf',
+			reasoningMessageId: 'step-0c4d01e81bb3d1fd0dc4a0b422451895',
 		});
 	});
 
@@ -157,55 +157,71 @@ describe('agent IPC contract', () => {
 			event: 'agent:media_plan',
 			id: 7,
 			payload: {
-				session_id: 'ses-1',
+				session_id: 'ses-6b86b273ff34fce19d6b804eff5a3f57',
 				step_number: 4,
 				run_id: 8,
 				role: 'vision',
 				strategy: 'auto',
 				projections: [
 					{
-						asset_id: 'asset-1',
+						asset_id: 'asset-6b86b273ff34fce19d6b804eff5a3f57',
 						representation: 'ocr_text',
 						mode: 'derived',
 					},
 				],
-				notices: [{ asset_id: 'asset-1', code: 'raw_capability_unknown' }],
+				notices: [
+					{
+						asset_id: 'asset-6b86b273ff34fce19d6b804eff5a3f57',
+						code: 'raw_capability_unknown',
+					},
+				],
 			},
 		});
 
 		expect(event.payload).toEqual({
-			sessionId: 'ses-1',
+			sessionId: 'ses-6b86b273ff34fce19d6b804eff5a3f57',
 			stepNumber: 4,
 			runId: 8,
 			role: 'vision',
 			strategy: 'auto',
 			projections: [
 				{
-					assetId: 'asset-1',
+					assetId: 'asset-6b86b273ff34fce19d6b804eff5a3f57',
 					representation: 'ocr_text',
 					mode: 'derived',
 				},
 			],
-			notices: [{ assetId: 'asset-1', code: 'raw_capability_unknown' }],
+			notices: [
+				{
+					assetId: 'asset-6b86b273ff34fce19d6b804eff5a3f57',
+					code: 'raw_capability_unknown',
+				},
+			],
 		});
 	});
 
 	it('rejects unknown closed media-plan enum values but ignores additive fields', () => {
 		const payload = {
-			session_id: 'ses-1',
+			session_id: 'ses-6b86b273ff34fce19d6b804eff5a3f57',
 			step_number: 4,
 			run_id: 8,
 			role: 'vision',
 			strategy: 'auto',
 			projections: [
 				{
-					asset_id: 'asset-1',
+					asset_id: 'asset-6b86b273ff34fce19d6b804eff5a3f57',
 					representation: 'ocr_text',
 					mode: 'derived',
 					provenance: 'added-wire-field',
 				},
 			],
-			notices: [{ asset_id: 'asset-1', code: 'raw_capability_unknown', added: true }],
+			notices: [
+				{
+					asset_id: 'asset-6b86b273ff34fce19d6b804eff5a3f57',
+					code: 'raw_capability_unknown',
+					added: true,
+				},
+			],
 			event_seq: 9,
 			added_wire_field: 'ignored',
 		};
@@ -248,7 +264,7 @@ describe('agent IPC contract', () => {
 			event: 'agent:observation',
 			id: 6,
 			payload: {
-				session_id: 'ses-1',
+				session_id: 'ses-6b86b273ff34fce19d6b804eff5a3f57',
 				observation: 'timeout',
 				tool_name: 'messaging',
 				step_number: 3,
@@ -257,7 +273,7 @@ describe('agent IPC contract', () => {
 				tool_call_id: 'call-1',
 				tool_index: 0,
 				ask_options: [],
-				step_id: 'step-1',
+				step_id: 'step-6b86b273ff34fce19d6b804eff5a3f57',
 				idempotency: 'unknown',
 				operation_scope: 'global',
 				renderer: 'messaging',
@@ -268,7 +284,7 @@ describe('agent IPC contract', () => {
 					retryability: 'unknown',
 					verification_hint: null,
 					next_action: 'inspect',
-					assets: ['asset-1'],
+					assets: ['asset-6b86b273ff34fce19d6b804eff5a3f57'],
 					added_wire_field: 'ignored',
 				},
 				event_seq: 17,
@@ -285,13 +301,13 @@ describe('agent IPC contract', () => {
 			retryability: 'unknown',
 			verificationHint: null,
 			nextAction: 'inspect',
-			assets: ['asset-1'],
+			assets: ['asset-6b86b273ff34fce19d6b804eff5a3f57'],
 		});
 	});
 
 	it('requires nullable tool_call_id and the observation result envelope', () => {
 		const payload: Record<string, unknown> = {
-			session_id: 'ses-1',
+			session_id: 'ses-6b86b273ff34fce19d6b804eff5a3f57',
 			observation: 'done',
 			tool_name: 'files.read',
 			step_number: 1,
@@ -300,7 +316,7 @@ describe('agent IPC contract', () => {
 			tool_call_id: null,
 			tool_index: 0,
 			ask_options: [],
-			step_id: 'step-1',
+			step_id: 'step-6b86b273ff34fce19d6b804eff5a3f57',
 			idempotency: 'idempotent',
 			operation_scope: 'session',
 			renderer: 'files',
@@ -328,13 +344,13 @@ describe('agent IPC contract', () => {
 		).toBeNull();
 
 		const toolRunPayload: Record<string, unknown> = {
-			session_id: 'ses-1',
+			session_id: 'ses-6b86b273ff34fce19d6b804eff5a3f57',
 			tool_name: 'files.read',
 			input: {},
 			step_number: 1,
 			run_id: 1,
 			tool_index: 0,
-			step_id: 'step-1',
+			step_id: 'step-6b86b273ff34fce19d6b804eff5a3f57',
 			suppress_streamed_thought: false,
 			silent: false,
 		};
@@ -349,7 +365,7 @@ describe('agent IPC contract', () => {
 
 	it('accepts observations without a duplicate outcome and rejects unknown result enums', () => {
 		const payload = {
-			session_id: 'ses-1',
+			session_id: 'ses-6b86b273ff34fce19d6b804eff5a3f57',
 			observation: 'result',
 			tool_name: 'files.read',
 			step_number: 1,
@@ -358,7 +374,7 @@ describe('agent IPC contract', () => {
 			tool_call_id: null,
 			tool_index: 0,
 			ask_options: [],
-			step_id: 'step-1',
+			step_id: 'step-6b86b273ff34fce19d6b804eff5a3f57',
 			idempotency: 'unknown',
 			operation_scope: 'session',
 			renderer: 'files',
@@ -410,7 +426,7 @@ describe('agent IPC contract', () => {
 			event: 'agent:compaction',
 			id: 4,
 			payload: {
-				session_id: 'ses-1',
+				session_id: 'ses-6b86b273ff34fce19d6b804eff5a3f57',
 				summary: '[older context omitted]',
 				tokens_before: 1000,
 				tokens_after: 400,
@@ -426,16 +442,16 @@ describe('agent IPC contract', () => {
 			event: 'agent:thought',
 			id: 7,
 			payload: {
-				session_id: 'ses-1',
+				session_id: 'ses-6b86b273ff34fce19d6b804eff5a3f57',
 				thought: 'keep',
 				step_number: 2,
 				run_id: 4,
-				message_id: 'step-keep',
+				message_id: 'step-6ca7ea2feefc88ecb5ed6356ed963f47',
 				event_seq: 9,
 			},
 		});
 
-		expect(event.payload.messageId).toBe('step-keep');
+		expect(event.payload.messageId).toBe('step-6ca7ea2feefc88ecb5ed6356ed963f47');
 		expect(event.payload.eventSeq).toBe(9);
 	});
 
@@ -445,11 +461,11 @@ describe('agent IPC contract', () => {
 				event: 'agent:thought',
 				id: 1,
 				payload: {
-					session_id: 'ses-1',
+					session_id: 'ses-6b86b273ff34fce19d6b804eff5a3f57',
 					thought: 17,
 					step_number: 2,
 					run_id: 4,
-					message_id: 'step-1',
+					message_id: 'step-6b86b273ff34fce19d6b804eff5a3f57',
 				},
 			}),
 		).toBeNull();
@@ -458,12 +474,12 @@ describe('agent IPC contract', () => {
 				event: 'agent:media_plan',
 				id: 1,
 				payload: {
-					session_id: 'ses-1',
+					session_id: 'ses-6b86b273ff34fce19d6b804eff5a3f57',
 					step_number: 2,
 					run_id: 4,
 					role: 'vision',
 					strategy: 'auto',
-					projections: [{ asset_id: 'asset-1' }],
+					projections: [{ asset_id: 'asset-6b86b273ff34fce19d6b804eff5a3f57' }],
 					notices: [],
 				},
 			}),
@@ -474,14 +490,35 @@ describe('agent IPC contract', () => {
 		).toBeNull();
 	});
 
+	it('rejects entity identities with a wrong prefix or non-canonical shape', () => {
+		const thought = {
+			session_id: 'ses-0123456789abcdef0123456789abcdef',
+			thought: 'keep',
+			step_number: 2,
+			run_id: 4,
+			message_id: 'step-0123456789abcdef0123456789abcdef',
+		};
+		for (const payload of [
+			{ ...thought, session_id: 'msg-0123456789abcdef0123456789abcdef' },
+			{ ...thought, message_id: 'msg-0123456789abcdef0123456789abcdef' },
+			{ ...thought, message_id: 'step-0123' },
+		]) {
+			expect(mapAgentEventContract({ event: 'agent:thought', id: 10, payload })).toBeNull();
+		}
+	});
+
 	it('preserves empty notification text for the existing UI fallback', () => {
 		const event = mapAgentEvent({
 			event: 'notification:show',
 			id: 11,
-			payload: { session_id: 'ses-1', title: '', body: '' },
+			payload: { session_id: 'ses-6b86b273ff34fce19d6b804eff5a3f57', title: '', body: '' },
 		});
 
-		expect(event.payload).toEqual({ sessionId: 'ses-1', title: '', body: '' });
+		expect(event.payload).toEqual({
+			sessionId: 'ses-6b86b273ff34fce19d6b804eff5a3f57',
+			title: '',
+			body: '',
+		});
 	});
 
 	it('maps app notifications without inventing a session association', () => {
@@ -503,7 +540,7 @@ describe('agent IPC contract', () => {
 				body: '结果',
 				notification_kind: 'tool_run_completion',
 				tool_run_kind: 'scheduled',
-				tool_run_id: 'toolrun-scheduled',
+				tool_run_id: 'toolrun-6aef76c6cb359f6ffaf9c6e9881c902b',
 			},
 		});
 		expect(scheduled.payload).toEqual({
@@ -511,38 +548,38 @@ describe('agent IPC contract', () => {
 			body: '结果',
 			notificationKind: 'tool_run_completion',
 			toolRunKind: 'scheduled',
-			toolRunId: 'toolrun-scheduled',
+			toolRunId: 'toolrun-6aef76c6cb359f6ffaf9c6e9881c902b',
 		});
 
 		const background = mapAgentEvent({
 			event: 'notification:show',
 			id: 13,
 			payload: {
-				session_id: 'ses-background',
+				session_id: 'ses-89b91df19d9d75d4cf36d9033d0789e7',
 				title: '后台任务失败',
 				body: '执行失败',
 				notification_kind: 'tool_run_completion',
 				tool_run_kind: 'background',
-				tool_run_id: 'toolrun-background',
+				tool_run_id: 'toolrun-89b91df19d9d75d4cf36d9033d0789e7',
 				tool_run_status: 'failed',
 			},
 		});
 		expect(background.payload).toMatchObject({
-			sessionId: 'ses-background',
+			sessionId: 'ses-89b91df19d9d75d4cf36d9033d0789e7',
 			toolRunKind: 'background',
-			toolRunId: 'toolrun-background',
+			toolRunId: 'toolrun-89b91df19d9d75d4cf36d9033d0789e7',
 			toolRunStatus: 'failed',
 		});
 		const completed = mapAgentEvent({
 			event: 'notification:show',
 			id: 15,
 			payload: {
-				session_id: 'ses-background',
+				session_id: 'ses-89b91df19d9d75d4cf36d9033d0789e7',
 				title: '后台任务已完成',
 				body: '完成',
 				notification_kind: 'tool_run_completion',
 				tool_run_kind: 'background',
-				tool_run_id: 'toolrun-completed',
+				tool_run_id: 'toolrun-4ddb3e96801a1ee2b77dc5247c0db478',
 				tool_run_status: 'completed',
 			},
 		});
@@ -551,7 +588,7 @@ describe('agent IPC contract', () => {
 		for (const payload of [
 			{ session_id: '', title: 'generic', body: 'body' },
 			{
-				session_id: 'ses-1',
+				session_id: 'ses-6b86b273ff34fce19d6b804eff5a3f57',
 				title: 'x',
 				body: 'y',
 				notification_kind: 'unknown',
@@ -562,34 +599,34 @@ describe('agent IPC contract', () => {
 				body: 'y',
 				notification_kind: 'tool_run_completion',
 				tool_run_kind: 'background',
-				tool_run_id: 'toolrun-1',
+				tool_run_id: 'toolrun-6b86b273ff34fce19d6b804eff5a3f57',
 				tool_run_status: 'failed',
 			},
 			{
-				session_id: 'ses-1',
+				session_id: 'ses-6b86b273ff34fce19d6b804eff5a3f57',
 				title: 'x',
 				body: 'y',
 				notification_kind: 'tool_run_completion',
 				tool_run_kind: 'scheduled',
-				tool_run_id: 'toolrun-1',
+				tool_run_id: 'toolrun-6b86b273ff34fce19d6b804eff5a3f57',
 				tool_run_status: 'failed',
 			},
 			{
-				session_id: 'ses-1',
+				session_id: 'ses-6b86b273ff34fce19d6b804eff5a3f57',
 				title: 'x',
 				body: 'y',
 				notification_kind: 'tool_run_completion',
 				tool_run_kind: 'foreground',
-				tool_run_id: 'toolrun-1',
+				tool_run_id: 'toolrun-6b86b273ff34fce19d6b804eff5a3f57',
 				tool_run_status: 'failed',
 			},
 			{
-				session_id: 'ses-1',
+				session_id: 'ses-6b86b273ff34fce19d6b804eff5a3f57',
 				title: 'x',
 				body: 'y',
 				notification_kind: 'tool_run_completion',
 				tool_run_kind: 'background',
-				tool_run_id: 'toolrun-1',
+				tool_run_id: 'toolrun-6b86b273ff34fce19d6b804eff5a3f57',
 				tool_run_status: 'cancelled',
 			},
 		]) {
@@ -603,45 +640,45 @@ describe('agent IPC contract', () => {
 		{
 			event: 'agent:thought_chunk',
 			wire: {
-				session_id: 'ses-1',
+				session_id: 'ses-6b86b273ff34fce19d6b804eff5a3f57',
 				delta: 't',
 				step_number: 1,
 				run_id: 2,
-				message_id: 'msg-1',
+				message_id: 'step-6b86b273ff34fce19d6b804eff5a3f57',
 				seq: 3,
 			},
 			expected: {
-				sessionId: 'ses-1',
+				sessionId: 'ses-6b86b273ff34fce19d6b804eff5a3f57',
 				delta: 't',
 				stepNumber: 1,
 				runId: 2,
-				messageId: 'msg-1',
+				messageId: 'step-6b86b273ff34fce19d6b804eff5a3f57',
 				seq: 3,
 			},
 		},
 		{
 			event: 'agent:reasoning_chunk',
 			wire: {
-				session_id: 'ses-1',
+				session_id: 'ses-6b86b273ff34fce19d6b804eff5a3f57',
 				delta: 'r',
 				step_number: 1,
 				run_id: 2,
-				message_id: 'msg-2',
+				message_id: 'step-d4735e3a265e16eee03f59718b9b5d03',
 				seq: 4,
 			},
 			expected: {
-				sessionId: 'ses-1',
+				sessionId: 'ses-6b86b273ff34fce19d6b804eff5a3f57',
 				delta: 'r',
 				stepNumber: 1,
 				runId: 2,
-				messageId: 'msg-2',
+				messageId: 'step-d4735e3a265e16eee03f59718b9b5d03',
 				seq: 4,
 			},
 		},
 		{
 			event: 'agent:web_search',
 			wire: {
-				session_id: 'ses-1',
+				session_id: 'ses-6b86b273ff34fce19d6b804eff5a3f57',
 				phase: 'started',
 				step_number: 2,
 				run_id: 3,
@@ -650,7 +687,7 @@ describe('agent IPC contract', () => {
 				result: { count: 1 },
 			},
 			expected: {
-				sessionId: 'ses-1',
+				sessionId: 'ses-6b86b273ff34fce19d6b804eff5a3f57',
 				phase: 'started',
 				stepNumber: 2,
 				runId: 3,
@@ -661,36 +698,44 @@ describe('agent IPC contract', () => {
 		},
 		{
 			event: 'agent:stream_stalled',
-			wire: { session_id: 'ses-1' },
-			expected: { sessionId: 'ses-1' },
+			wire: { session_id: 'ses-6b86b273ff34fce19d6b804eff5a3f57' },
+			expected: { sessionId: 'ses-6b86b273ff34fce19d6b804eff5a3f57' },
 		},
 		{
 			event: 'agent:supplement',
 			wire: {
-				session_id: 'ses-1',
+				session_id: 'ses-6b86b273ff34fce19d6b804eff5a3f57',
 				additional_context: 'continue',
 				step_number: 2,
 				run_id: 3,
-				message_id: 'msg-1',
-				supplement_id: 'msg-1',
+				message_id: 'msg-6b86b273ff34fce19d6b804eff5a3f57',
+				supplement_id: 'msg-6b86b273ff34fce19d6b804eff5a3f57',
 				inject_source: 'future_source',
 				event_seq: 9,
 			},
 			expected: {
-				sessionId: 'ses-1',
+				sessionId: 'ses-6b86b273ff34fce19d6b804eff5a3f57',
 				additionalContext: 'continue',
 				stepNumber: 2,
 				runId: 3,
-				messageId: 'msg-1',
-				supplementId: 'msg-1',
+				messageId: 'msg-6b86b273ff34fce19d6b804eff5a3f57',
+				supplementId: 'msg-6b86b273ff34fce19d6b804eff5a3f57',
 				injectSource: 'future_source',
 				eventSeq: 9,
 			},
 		},
 		{
 			event: 'agent:tool_output',
-			wire: { session_id: 'ses-1', step_id: 'step-1', output: 'partial output' },
-			expected: { sessionId: 'ses-1', stepId: 'step-1', output: 'partial output' },
+			wire: {
+				session_id: 'ses-6b86b273ff34fce19d6b804eff5a3f57',
+				step_id: 'step-6b86b273ff34fce19d6b804eff5a3f57',
+				output: 'partial output',
+			},
+			expected: {
+				sessionId: 'ses-6b86b273ff34fce19d6b804eff5a3f57',
+				stepId: 'step-6b86b273ff34fce19d6b804eff5a3f57',
+				output: 'partial output',
+			},
 		},
 	] as const)('maps $event payloads at the agent boundary', ({ event, wire, expected }) => {
 		const mapped = mapAgentEventContract({ event, id: 12, payload: wire });

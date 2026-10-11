@@ -106,7 +106,7 @@ describe('sessionEventListeners', () => {
 			id: 4,
 			payload: {
 				type: 'updated',
-				session_id: 'ses-1',
+				session_id: 'ses-6b86b273ff34fce19d6b804eff5a3f57',
 				status: 'paused',
 				title: 'A title',
 				waiting_reason: 'user_input',
@@ -119,7 +119,7 @@ describe('sessionEventListeners', () => {
 			id: 4,
 			payload: {
 				type: 'updated',
-				sessionId: 'ses-1',
+				sessionId: 'ses-6b86b273ff34fce19d6b804eff5a3f57',
 				status: 'paused',
 				waitingReason: 'user_input',
 				title: 'A title',
@@ -137,7 +137,7 @@ describe('sessionEventListeners', () => {
 			id: 10,
 			payload: {
 				type: 'completed',
-				session_id: 'ses-done',
+				session_id: 'ses-a4c3ed04a95a3da14a9d235c83d868be',
 				title: 'A title',
 				reason: 'Finished',
 			},
@@ -147,15 +147,25 @@ describe('sessionEventListeners', () => {
 			id: 11,
 			payload: {
 				type: 'error',
-				session_id: 'ses-error',
+				session_id: 'ses-ca00fccfb408989eddc401062c4d1219',
 				title: 'Build',
 				error: 'Request failed',
 			},
 		} as never);
 
 		expect(handler.mock.calls.map(([value]) => value.payload)).toEqual([
-			{ type: 'completed', sessionId: 'ses-done', title: 'A title', reason: 'Finished' },
-			{ type: 'error', sessionId: 'ses-error', title: 'Build', error: 'Request failed' },
+			{
+				type: 'completed',
+				sessionId: 'ses-a4c3ed04a95a3da14a9d235c83d868be',
+				title: 'A title',
+				reason: 'Finished',
+			},
+			{
+				type: 'error',
+				sessionId: 'ses-ca00fccfb408989eddc401062c4d1219',
+				title: 'Build',
+				error: 'Request failed',
+			},
 		]);
 	});
 
@@ -168,7 +178,7 @@ describe('sessionEventListeners', () => {
 			id: 5,
 			payload: {
 				type: 'updated',
-				session_id: 'ses-1',
+				session_id: 'ses-6b86b273ff34fce19d6b804eff5a3f57',
 				status: 'completed',
 				title: 'A title',
 			},
@@ -191,13 +201,21 @@ describe('sessionEventListeners', () => {
 		rawListener({
 			event: 'session:lifecycle',
 			id: 6,
-			payload: { type: 'title_updated', session_id: 'ses-1', title: 'A title' },
+			payload: {
+				type: 'title_updated',
+				session_id: 'ses-6b86b273ff34fce19d6b804eff5a3f57',
+				title: 'A title',
+			},
 		});
 
 		expect(handler).toHaveBeenCalledWith({
 			event: 'session:lifecycle',
 			id: 6,
-			payload: { type: 'title_updated', sessionId: 'ses-1', title: 'A title' },
+			payload: {
+				type: 'title_updated',
+				sessionId: 'ses-6b86b273ff34fce19d6b804eff5a3f57',
+				title: 'A title',
+			},
 		});
 	});
 });
@@ -346,7 +364,11 @@ describe('registerAppListener', () => {
 		rawListener({
 			event: 'interaction:requested',
 			id: 10,
-			payload: { id: 'conf-1', session_id: 'ses-1', kind: 'confirm' },
+			payload: {
+				id: 'conf-6b86b273ff34fce19d6b804eff5a3f57',
+				session_id: 'ses-6b86b273ff34fce19d6b804eff5a3f57',
+				kind: 'confirm',
+			},
 		});
 
 		expect(handler).not.toHaveBeenCalled();
@@ -370,9 +392,9 @@ describe('toolRunEventListeners', () => {
 			event: 'tool_run:finished',
 			id: 3,
 			payload: {
-				tool_run_id: 'toolrun-1',
+				tool_run_id: 'toolrun-6b86b273ff34fce19d6b804eff5a3f57',
 				kind: 'background',
-				session_id: 'ses-1',
+				session_id: 'ses-6b86b273ff34fce19d6b804eff5a3f57',
 				exit_code: 0,
 			},
 		} as never);
@@ -381,9 +403,9 @@ describe('toolRunEventListeners', () => {
 			event: 'tool_run:finished',
 			id: 3,
 			payload: {
-				toolRunId: 'toolrun-1',
+				toolRunId: 'toolrun-6b86b273ff34fce19d6b804eff5a3f57',
 				kind: 'background',
-				sessionId: 'ses-1',
+				sessionId: 'ses-6b86b273ff34fce19d6b804eff5a3f57',
 				exitCode: 0,
 			},
 		});
@@ -423,18 +445,18 @@ describe('agentEventListeners', () => {
 		});
 		const arrivals = [
 			{
-				session_id: 'ses-1',
+				session_id: 'ses-6b86b273ff34fce19d6b804eff5a3f57',
 				thought: 'first',
 				step_number: 1,
 				run_id: 1,
-				message_id: 'step-1',
+				message_id: 'step-6b86b273ff34fce19d6b804eff5a3f57',
 			},
 			{
-				session_id: 'ses-1',
+				session_id: 'ses-6b86b273ff34fce19d6b804eff5a3f57',
 				thought: 'second',
 				step_number: 2,
 				run_id: 1,
-				message_id: 'step-2',
+				message_id: 'step-d4735e3a265e16eee03f59718b9b5d03',
 			},
 		];
 
@@ -442,7 +464,10 @@ describe('agentEventListeners', () => {
 			listeners['agent:thought']({ event: 'agent:thought', id, payload } as never);
 		});
 
-		expect(received).toEqual(['ses-1:first', 'ses-1:second']);
+		expect(received).toEqual([
+			'ses-6b86b273ff34fce19d6b804eff5a3f57:first',
+			'ses-6b86b273ff34fce19d6b804eff5a3f57:second',
+		]);
 	});
 
 	it('drops malformed payloads with a generic warning that omits payload content', () => {
@@ -454,11 +479,11 @@ describe('agentEventListeners', () => {
 			event: 'agent:thought',
 			id: 4,
 			payload: {
-				session_id: 'ses-1',
+				session_id: 'ses-6b86b273ff34fce19d6b804eff5a3f57',
 				thought: privateValue,
 				step_number: 'bad',
 				run_id: 2,
-				message_id: 'step-1',
+				message_id: 'step-6b86b273ff34fce19d6b804eff5a3f57',
 			},
 		} as never);
 
@@ -492,16 +517,30 @@ describe('recordingEventListeners', () => {
 		const arrivals = [
 			{
 				event: 'recording:started',
-				payload: { is_recording: true, recording_id: 'rec-1' },
+				payload: {
+					is_recording: true,
+					recording_id: 'rec-6b86b273ff34fce19d6b804eff5a3f57',
+				},
 			},
 			{
 				event: 'recording:stopped',
-				payload: { is_recording: false, reason: 'silence' },
+				payload: {
+					is_recording: false,
+					recording_id: 'rec-6b86b273ff34fce19d6b804eff5a3f57',
+					reason: 'silence',
+				},
 			},
-			{ event: 'transcription:started', payload: { recording_id: 'rec-1' } },
+			{
+				event: 'transcription:started',
+				payload: { recording_id: 'rec-6b86b273ff34fce19d6b804eff5a3f57' },
+			},
 			{
 				event: 'transcription:result',
-				payload: { recording_id: 'rec-1', text: 'hello', duration_ms: 800 },
+				payload: {
+					recording_id: 'rec-6b86b273ff34fce19d6b804eff5a3f57',
+					text: 'hello',
+					duration_ms: 800,
+				},
 			},
 		] as const;
 
@@ -510,9 +549,9 @@ describe('recordingEventListeners', () => {
 		});
 
 		expect(received).toEqual([
-			'recording:started:rec-1',
+			'recording:started:rec-6b86b273ff34fce19d6b804eff5a3f57',
 			'recording:stopped:silence',
-			'transcription:started:rec-1',
+			'transcription:started:rec-6b86b273ff34fce19d6b804eff5a3f57',
 			'transcription:result:hello',
 		]);
 	});

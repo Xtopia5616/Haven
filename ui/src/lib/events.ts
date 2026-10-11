@@ -1,9 +1,6 @@
 import { listen } from './tauri.ts';
 import logger from './logger.ts';
-import {
-	mapSessionEvent,
-	type SessionLifecyclePayload,
-} from './contracts/session.ts';
+import { mapSessionEvent, type SessionLifecyclePayload } from './contracts/session.ts';
 import type { TauriEvent } from './contracts/tauriEvent.ts';
 import {
 	mapToolRunEvent,
@@ -195,7 +192,8 @@ export function recordingEventListeners(
 			eventName,
 			(event: TauriEvent<unknown>) => {
 				protectEventCallback(eventName, () => {
-					handler?.(mapRecordingEvent({ ...event, event: eventName } as never) as never);
+					const mapped = mapRecordingEvent({ ...event, event: eventName } as never);
+					if (mapped) handler?.(mapped as never);
 				});
 			},
 		]),

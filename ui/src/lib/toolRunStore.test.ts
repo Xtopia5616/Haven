@@ -26,35 +26,47 @@ describe('upsertToolRun', () => {
 
 	it('keeps the explicit background create payload', () => {
 		upsertToolRun({
-			toolRunId: 'toolrun-1',
+			toolRunId: 'toolrun-6b86b273ff34fce19d6b804eff5a3f57',
 			kind: 'background',
 			status: 'running',
 			startedAt: '2026-01-01T00:00:00Z',
 		});
-		const row = get(toolRunStore)['toolrun-1'];
+		const row = get(toolRunStore)['toolrun-6b86b273ff34fce19d6b804eff5a3f57'];
 		expect(row.status).toBe('running');
 		expect(row.kind).toBe('background');
-		expect(row.toolRunId).toBe('toolrun-1');
+		expect(row.toolRunId).toBe('toolrun-6b86b273ff34fce19d6b804eff5a3f57');
 	});
 
 	it('keeps a session binding update after an evicted row', () => {
-		upsertToolRun({ toolRunId: 'toolrun-ghost', kind: 'background', status: 'completed' });
-		removeToolRun('toolrun-ghost');
-		upsertToolRun({ toolRunId: 'toolrun-ghost', kind: 'background', sessionId: 'ses-1' });
-		const row = get(toolRunStore)['toolrun-ghost'];
+		upsertToolRun({
+			toolRunId: 'toolrun-ead6ef03d61ee60c533d6d450c50a1e5',
+			kind: 'background',
+			status: 'completed',
+		});
+		removeToolRun('toolrun-ead6ef03d61ee60c533d6d450c50a1e5');
+		upsertToolRun({
+			toolRunId: 'toolrun-ead6ef03d61ee60c533d6d450c50a1e5',
+			kind: 'background',
+			sessionId: 'ses-6b86b273ff34fce19d6b804eff5a3f57',
+		});
+		const row = get(toolRunStore)['toolrun-ead6ef03d61ee60c533d6d450c50a1e5'];
 		expect(row.status).toBeUndefined();
-		expect(row.sessionId).toBe('ses-1');
+		expect(row.sessionId).toBe('ses-6b86b273ff34fce19d6b804eff5a3f57');
 	});
 
 	it('keeps an explicit terminal status from tool_run:finished', () => {
-		upsertToolRun({ toolRunId: 'toolrun-2', kind: 'background', status: 'running' });
 		upsertToolRun({
-			toolRunId: 'toolrun-2',
+			toolRunId: 'toolrun-d4735e3a265e16eee03f59718b9b5d03',
+			kind: 'background',
+			status: 'running',
+		});
+		upsertToolRun({
+			toolRunId: 'toolrun-d4735e3a265e16eee03f59718b9b5d03',
 			kind: 'background',
 			status: 'completed',
 			output: 'done',
 		});
-		const row = get(toolRunStore)['toolrun-2'];
+		const row = get(toolRunStore)['toolrun-d4735e3a265e16eee03f59718b9b5d03'];
 		expect(row.status).toBe('completed');
 		expect(row.output).toBe('done');
 	});
@@ -67,16 +79,24 @@ describe('upsertToolRun', () => {
 				status: 'completed',
 			});
 		}
-		upsertToolRun({ toolRunId: 'toolrun-live', kind: 'background', status: 'running' });
+		upsertToolRun({
+			toolRunId: 'toolrun-247610f4dedd4ab7247d07dbda19c81c',
+			kind: 'background',
+			status: 'running',
+		});
 		const store = get(toolRunStore);
-		expect(store['toolrun-live']?.status).toBe('running');
+		expect(store['toolrun-247610f4dedd4ab7247d07dbda19c81c']?.status).toBe('running');
 		expect(Object.keys(store).length).toBeLessThanOrEqual(64);
 	});
 
 	it('removeToolRun drops the row', () => {
-		upsertToolRun({ toolRunId: 'toolrun-3', kind: 'background', status: 'running' });
-		removeToolRun('toolrun-3');
-		expect(get(toolRunStore)['toolrun-3']).toBeUndefined();
+		upsertToolRun({
+			toolRunId: 'toolrun-4e07408562bedb8b60ce05c1decfe3ad',
+			kind: 'background',
+			status: 'running',
+		});
+		removeToolRun('toolrun-4e07408562bedb8b60ce05c1decfe3ad');
+		expect(get(toolRunStore)['toolrun-4e07408562bedb8b60ce05c1decfe3ad']).toBeUndefined();
 	});
 
 	it('ignores an older ToolRun refresh response', async () => {
@@ -96,13 +116,27 @@ describe('upsertToolRun', () => {
 
 		const olderRefresh = refreshToolRuns();
 		const newerRefresh = refreshToolRuns();
-		resolveNewer([{ tool_run_id: 'toolrun-new', kind: 'scheduled', status: 'waiting' }]);
+		resolveNewer([
+			{
+				tool_run_id: 'toolrun-11507a0e2f5e69d5dfa40a62a1bd7b6e',
+				kind: 'scheduled',
+				status: 'waiting',
+			},
+		]);
 		await newerRefresh;
-		resolveOlder([{ tool_run_id: 'toolrun-old', kind: 'scheduled', status: 'waiting' }]);
+		resolveOlder([
+			{
+				tool_run_id: 'toolrun-cba06b5736faf67e54b07b561eae9439',
+				kind: 'scheduled',
+				status: 'waiting',
+			},
+		]);
 		await olderRefresh;
 
-		expect(get(toolRunStore)['toolrun-new']?.status).toBe('waiting');
-		expect(get(toolRunStore)['toolrun-old']).toBeUndefined();
+		expect(get(toolRunStore)['toolrun-11507a0e2f5e69d5dfa40a62a1bd7b6e']?.status).toBe(
+			'waiting',
+		);
+		expect(get(toolRunStore)['toolrun-cba06b5736faf67e54b07b561eae9439']).toBeUndefined();
 		vi.mocked(invoke).mockResolvedValue(undefined);
 	});
 
@@ -116,11 +150,23 @@ describe('upsertToolRun', () => {
 			.mockReturnValueOnce(refreshResponse as never);
 
 		const refresh = refreshToolRuns();
-		upsertToolRun({ toolRunId: 'toolrun-race', kind: 'scheduled', status: 'running' });
-		resolveRefresh([{ tool_run_id: 'toolrun-race', kind: 'scheduled', status: 'waiting' }]);
+		upsertToolRun({
+			toolRunId: 'toolrun-129ce50dd90bf244858763d3f10932a9',
+			kind: 'scheduled',
+			status: 'running',
+		});
+		resolveRefresh([
+			{
+				tool_run_id: 'toolrun-129ce50dd90bf244858763d3f10932a9',
+				kind: 'scheduled',
+				status: 'waiting',
+			},
+		]);
 		await refresh;
 
-		expect(get(toolRunStore)['toolrun-race']?.status).toBe('running');
+		expect(get(toolRunStore)['toolrun-129ce50dd90bf244858763d3f10932a9']?.status).toBe(
+			'running',
+		);
 		vi.mocked(invoke).mockResolvedValue(undefined);
 	});
 
@@ -129,23 +175,35 @@ describe('upsertToolRun', () => {
 		vi.mocked(invoke)
 			.mockReset()
 			.mockResolvedValue([
-				{ tool_run_id: 'toolrun-background-live', kind: 'background', status: 'running' },
 				{
-					tool_run_id: 'toolrun-background-history',
+					tool_run_id: 'toolrun-53f0f736e59579919b9fef0854b7d696',
+					kind: 'background',
+					status: 'running',
+				},
+				{
+					tool_run_id: 'toolrun-01e3c99eb1d506edf998a8190fcd2cd7',
 					kind: 'background',
 					status: 'completed',
 				},
-				{ tool_run_id: 'toolrun-scheduled-waiting', kind: 'scheduled', status: 'waiting' },
-				{ tool_run_id: 'toolrun-scheduled-running', kind: 'scheduled', status: 'running' },
+				{
+					tool_run_id: 'toolrun-bbe41c5af12743e88a4c2e7bb3ef17c4',
+					kind: 'scheduled',
+					status: 'waiting',
+				},
+				{
+					tool_run_id: 'toolrun-fa026afbc0da04f1e3a0bb550b62db4a',
+					kind: 'scheduled',
+					status: 'running',
+				},
 			]);
 
 		await refreshToolRuns();
 
 		const rows = get(toolRunStore);
-		expect(rows['toolrun-background-live']?.status).toBe('running');
-		expect(rows['toolrun-scheduled-waiting']?.status).toBe('waiting');
-		expect(rows['toolrun-scheduled-running']?.status).toBe('running');
-		expect(rows['toolrun-background-history']).toBeUndefined();
+		expect(rows['toolrun-53f0f736e59579919b9fef0854b7d696']?.status).toBe('running');
+		expect(rows['toolrun-bbe41c5af12743e88a4c2e7bb3ef17c4']?.status).toBe('waiting');
+		expect(rows['toolrun-fa026afbc0da04f1e3a0bb550b62db4a']?.status).toBe('running');
+		expect(rows['toolrun-01e3c99eb1d506edf998a8190fcd2cd7']).toBeUndefined();
 		vi.mocked(invoke).mockResolvedValue(undefined);
 	});
 
@@ -153,14 +211,14 @@ describe('upsertToolRun', () => {
 		appSessionReducer.dispatch({ type: 'sessions/cleared' });
 		appSessionReducer.dispatch({
 			type: 'session/messages/resume-loaded',
-			sessionId: 'ses-1',
+			sessionId: 'ses-6b86b273ff34fce19d6b804eff5a3f57',
 			messages: [
 				{
-					id: 'msg-1',
-					toolRunId: 'toolrun-fin',
+					id: 'msg-6b86b273ff34fce19d6b804eff5a3f57',
+					toolRunId: 'toolrun-a383bcb77c832a8ff52caace0f4efa8f',
 					content: JSON.stringify({
 						background: true,
-						tool_run_id: 'toolrun-fin',
+						tool_run_id: 'toolrun-a383bcb77c832a8ff52caace0f4efa8f',
 						status: 'running',
 					}),
 					streaming: true,
@@ -168,14 +226,16 @@ describe('upsertToolRun', () => {
 			],
 		});
 		finalizeBackgroundToolRunMessages({
-			toolRunId: 'toolrun-fin',
+			toolRunId: 'toolrun-a383bcb77c832a8ff52caace0f4efa8f',
 			kind: 'background',
 			status: 'cancelled',
 			output: 'stopped',
 		});
-		const msg = appSessionReducer.getMessages('ses-1')[0] as unknown as Record<string, unknown>;
+		const msg = appSessionReducer.getMessages(
+			'ses-6b86b273ff34fce19d6b804eff5a3f57',
+		)[0] as unknown as Record<string, unknown>;
 		expect(msg.toolRunId).toBeNull();
-		expect(msg.sourceToolRunId).toBe('toolrun-fin');
+		expect(msg.sourceToolRunId).toBe('toolrun-a383bcb77c832a8ff52caace0f4efa8f');
 		expect(msg.streaming).toBe(false);
 		const body = JSON.parse(String(msg.content));
 		expect(body.status).toBe('cancelled');
@@ -186,14 +246,14 @@ describe('upsertToolRun', () => {
 		appSessionReducer.dispatch({ type: 'sessions/cleared' });
 		appSessionReducer.dispatch({
 			type: 'session/messages/resume-loaded',
-			sessionId: 'ses-1',
+			sessionId: 'ses-6b86b273ff34fce19d6b804eff5a3f57',
 			messages: [
 				{
-					id: 'msg-2',
-					toolRunId: 'toolrun-scheduled-fin',
+					id: 'msg-d4735e3a265e16eee03f59718b9b5d03',
+					toolRunId: 'toolrun-18beb67f31f2536585c6a34c733848fd',
 					content: JSON.stringify({
 						background: true,
-						tool_run_id: 'toolrun-scheduled-fin',
+						tool_run_id: 'toolrun-18beb67f31f2536585c6a34c733848fd',
 						status: 'running',
 					}),
 					streaming: true,
@@ -202,13 +262,15 @@ describe('upsertToolRun', () => {
 		});
 
 		finalizeBackgroundToolRunMessages({
-			toolRunId: 'toolrun-scheduled-fin',
+			toolRunId: 'toolrun-18beb67f31f2536585c6a34c733848fd',
 			kind: 'scheduled',
 			status: 'completed',
 		});
 
-		const msg = appSessionReducer.getMessages('ses-1')[0] as unknown as Record<string, unknown>;
-		expect(msg.toolRunId).toBe('toolrun-scheduled-fin');
+		const msg = appSessionReducer.getMessages(
+			'ses-6b86b273ff34fce19d6b804eff5a3f57',
+		)[0] as unknown as Record<string, unknown>;
+		expect(msg.toolRunId).toBe('toolrun-18beb67f31f2536585c6a34c733848fd');
 		expect(msg.streaming).toBe(true);
 		expect(JSON.parse(String(msg.content))).toMatchObject({ status: 'running' });
 	});
@@ -224,32 +286,36 @@ describe('session ToolRun history hydration', () => {
 	it('loads terminal rows for the selected session after switching or restart', async () => {
 		vi.mocked(invoke).mockResolvedValue([
 			{
-				tool_run_id: 'toolrun-session-1',
+				tool_run_id: 'toolrun-84097828fc31a8c8d29210df48901a85',
 				kind: 'scheduled',
 				status: 'completed',
-				session_id: 'ses-1',
+				session_id: 'ses-6b86b273ff34fce19d6b804eff5a3f57',
 				title: 'Reminder',
 			},
 			{
-				tool_run_id: 'toolrun-other-session',
+				tool_run_id: 'toolrun-5f711b23ee4fecbbb8e053b872bbda82',
 				kind: 'background',
 				status: 'failed',
-				session_id: 'ses-2',
+				session_id: 'ses-d4735e3a265e16eee03f59718b9b5d03',
 			},
 		]);
 
-		await refreshSessionToolRuns('ses-1');
+		await refreshSessionToolRuns('ses-6b86b273ff34fce19d6b804eff5a3f57');
 
 		expect(invoke).toHaveBeenCalledWith('list_tool_run_history', {
 			kind: null,
 			limit: 200,
-			sessionId: 'ses-1',
+			sessionId: 'ses-6b86b273ff34fce19d6b804eff5a3f57',
 		});
-		expect(get(sessionToolRunStore)['ses-1']).toMatchObject({
-			'toolrun-session-1': { status: 'completed', kind: 'scheduled' },
+		expect(get(sessionToolRunStore)['ses-6b86b273ff34fce19d6b804eff5a3f57']).toMatchObject({
+			'toolrun-84097828fc31a8c8d29210df48901a85': { status: 'completed', kind: 'scheduled' },
 		});
-		expect(get(sessionToolRunStore)['ses-1']?.['toolrun-other-session']).toBeUndefined();
-		expect(get(sessionToolRunStore)['ses-2']).toBeUndefined();
+		expect(
+			get(sessionToolRunStore)['ses-6b86b273ff34fce19d6b804eff5a3f57']?.[
+				'toolrun-5f711b23ee4fecbbb8e053b872bbda82'
+			],
+		).toBeUndefined();
+		expect(get(sessionToolRunStore)['ses-d4735e3a265e16eee03f59718b9b5d03']).toBeUndefined();
 	});
 
 	it('keeps a newer lifecycle event received while history is loading', async () => {
@@ -259,26 +325,30 @@ describe('session ToolRun history hydration', () => {
 		});
 		vi.mocked(invoke).mockReturnValueOnce(history as never);
 
-		const refresh = refreshSessionToolRuns('ses-1');
+		const refresh = refreshSessionToolRuns('ses-6b86b273ff34fce19d6b804eff5a3f57');
 		upsertSessionToolRun({
-			toolRunId: 'toolrun-race',
+			toolRunId: 'toolrun-129ce50dd90bf244858763d3f10932a9',
 			kind: 'background',
 			status: 'failed',
-			sessionId: 'ses-1',
+			sessionId: 'ses-6b86b273ff34fce19d6b804eff5a3f57',
 			output: 'new event result',
 		});
 		resolveHistory([
 			{
-				tool_run_id: 'toolrun-race',
+				tool_run_id: 'toolrun-129ce50dd90bf244858763d3f10932a9',
 				kind: 'background',
 				status: 'completed',
-				session_id: 'ses-1',
+				session_id: 'ses-6b86b273ff34fce19d6b804eff5a3f57',
 				output: 'stale history result',
 			},
 		]);
 		await refresh;
 
-		expect(get(sessionToolRunStore)['ses-1']?.['toolrun-race']).toMatchObject({
+		expect(
+			get(sessionToolRunStore)['ses-6b86b273ff34fce19d6b804eff5a3f57']?.[
+				'toolrun-129ce50dd90bf244858763d3f10932a9'
+			],
+		).toMatchObject({
 			status: 'failed',
 			output: 'new event result',
 		});
@@ -290,12 +360,14 @@ describe('session ToolRun history hydration', () => {
 				toolRunId: `toolrun-cap-${index}`,
 				kind: 'scheduled',
 				status: 'completed',
-				sessionId: 'ses-capacity',
+				sessionId: 'ses-ec21b3b973a3a0e7050392031862848f',
 				finishedAt: new Date(1_700_000_000_000 + index * 1000).toISOString(),
 			});
 		}
-		setActiveSessionToolRun('ses-capacity');
-		expect(Object.keys(get(sessionToolRunStore)['ses-capacity'] || {})).toHaveLength(200);
+		setActiveSessionToolRun('ses-ec21b3b973a3a0e7050392031862848f');
+		expect(
+			Object.keys(get(sessionToolRunStore)['ses-ec21b3b973a3a0e7050392031862848f'] || {}),
+		).toHaveLength(200);
 		for (let index = 0; index < 17; index++) {
 			upsertSessionToolRun({
 				toolRunId: `toolrun-session-${index}`,
@@ -306,7 +378,7 @@ describe('session ToolRun history hydration', () => {
 
 		const store = get(sessionToolRunStore);
 		expect(Object.keys(store)).toHaveLength(16);
-		expect(Object.keys(store['ses-capacity'] || {})).toHaveLength(200);
+		expect(Object.keys(store['ses-ec21b3b973a3a0e7050392031862848f'] || {})).toHaveLength(200);
 		expect(Object.keys(store['ses-capacity-16'] || {})).toHaveLength(1);
 	});
 });

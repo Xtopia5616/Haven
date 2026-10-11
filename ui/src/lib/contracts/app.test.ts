@@ -4,12 +4,15 @@ import { interactionOwnerToWire, mapAppEvent } from './app.ts';
 describe('app-shell IPC contract', () => {
 	it.each([
 		[
-			{ kind: 'session', sessionId: 'ses-1' } as const,
-			{ kind: 'session', session_id: 'ses-1' },
+			{ kind: 'session', sessionId: 'ses-6b86b273ff34fce19d6b804eff5a3f57' } as const,
+			{ kind: 'session', session_id: 'ses-6b86b273ff34fce19d6b804eff5a3f57' },
 		],
 		[
-			{ kind: 'scheduled_tool_run', toolRunId: 'toolrun-1' } as const,
-			{ kind: 'scheduled_tool_run', tool_run_id: 'toolrun-1' },
+			{
+				kind: 'scheduled_tool_run',
+				toolRunId: 'toolrun-6b86b273ff34fce19d6b804eff5a3f57',
+			} as const,
+			{ kind: 'scheduled_tool_run', tool_run_id: 'toolrun-6b86b273ff34fce19d6b804eff5a3f57' },
 		],
 		[{ kind: 'app_command' } as const, { kind: 'app_command' }],
 	])('serializes the selected interaction owner for resolve IPC', (owner, wire) => {
@@ -21,13 +24,13 @@ describe('app-shell IPC contract', () => {
 			event: 'interaction:requested',
 			id: 1,
 			payload: {
-				id: 'conf-1',
-				session_id: 'ses-1',
-				owner: { kind: 'session', session_id: 'ses-1' },
+				id: 'conf-6b86b273ff34fce19d6b804eff5a3f57',
+				session_id: 'ses-6b86b273ff34fce19d6b804eff5a3f57',
+				owner: { kind: 'session', session_id: 'ses-6b86b273ff34fce19d6b804eff5a3f57' },
 				kind: 'confirm',
 				status: 'pending',
 				options: [],
-				invocation_step_id: 'step-1',
+				invocation_step_id: 'step-6b86b273ff34fce19d6b804eff5a3f57',
 				tool_index: 1,
 				tool_call_id: 'call-1',
 				tool_name: 'run_command',
@@ -41,13 +44,13 @@ describe('app-shell IPC contract', () => {
 		});
 
 		expect(event?.payload).toEqual({
-			id: 'conf-1',
-			sessionId: 'ses-1',
-			owner: { kind: 'session', sessionId: 'ses-1' },
+			id: 'conf-6b86b273ff34fce19d6b804eff5a3f57',
+			sessionId: 'ses-6b86b273ff34fce19d6b804eff5a3f57',
+			owner: { kind: 'session', sessionId: 'ses-6b86b273ff34fce19d6b804eff5a3f57' },
 			kind: 'confirm',
 			status: 'pending',
 			options: [],
-			invocationStepId: 'step-1',
+			invocationStepId: 'step-6b86b273ff34fce19d6b804eff5a3f57',
 			toolIndex: 1,
 			toolCallId: 'call-1',
 			toolName: 'run_command',
@@ -66,9 +69,9 @@ describe('app-shell IPC contract', () => {
 			event: 'interaction:requested',
 			id: 24,
 			payload: {
-				id: 'step-ask-event',
-				session_id: 'ses-ask-event',
-				owner: { kind: 'session', session_id: 'ses-ask-event' },
+				id: 'step-e7f729190d36bf14aed6c9c2ed7f5fe7',
+				session_id: 'ses-e7f729190d36bf14aed6c9c2ed7f5fe7',
+				owner: { kind: 'session', session_id: 'ses-e7f729190d36bf14aed6c9c2ed7f5fe7' },
 				kind: 'ask',
 				status: 'pending',
 				options: ['继续', '停止'],
@@ -77,10 +80,41 @@ describe('app-shell IPC contract', () => {
 		});
 
 		expect(event?.payload).toMatchObject({
-			id: 'step-ask-event',
+			id: 'step-e7f729190d36bf14aed6c9c2ed7f5fe7',
 			kind: 'ask',
-			owner: { kind: 'session', sessionId: 'ses-ask-event' },
+			owner: { kind: 'session', sessionId: 'ses-e7f729190d36bf14aed6c9c2ed7f5fe7' },
 		});
+	});
+
+	it('rejects interaction identities that do not match their entity type', () => {
+		const confirmation = {
+			id: 'conf-0123456789abcdef0123456789abcdef',
+			session_id: 'ses-0123456789abcdef0123456789abcdef',
+			owner: { kind: 'session', session_id: 'ses-0123456789abcdef0123456789abcdef' },
+			kind: 'confirm',
+			status: 'pending',
+			created_at: '2026-01-01T00:00:00Z',
+			expires_at: '2026-01-01T00:05:00Z',
+		};
+		for (const payload of [
+			{ ...confirmation, id: 'step-0123456789abcdef0123456789abcdef' },
+			{ ...confirmation, session_id: 'msg-0123456789abcdef0123456789abcdef' },
+			{ ...confirmation, invocation_step_id: 'msg-0123456789abcdef0123456789abcdef' },
+			{
+				...confirmation,
+				owner: { kind: 'session', session_id: 'toolrun-0123456789abcdef0123456789abcdef' },
+			},
+			{
+				...confirmation,
+				id: 'conf-short',
+			},
+			{
+				...confirmation,
+				kind: 'ask',
+			},
+		]) {
+			expect(mapAppEvent({ event: 'interaction:requested', id: 30, payload })).toBeNull();
+		}
 	});
 
 	it('rejects unknown interaction enum values while defaulting omitted options', () => {
@@ -89,8 +123,8 @@ describe('app-shell IPC contract', () => {
 			id: 2,
 			payload: {
 				id: 'interaction-1',
-				session_id: 'ses-1',
-				owner: { kind: 'session', session_id: 'ses-1' },
+				session_id: 'ses-6b86b273ff34fce19d6b804eff5a3f57',
+				owner: { kind: 'session', session_id: 'ses-6b86b273ff34fce19d6b804eff5a3f57' },
 				kind: 'future_kind',
 				status: 'future_status',
 				created_at: '2026-01-01T00:00:00Z',
@@ -108,14 +142,26 @@ describe('app-shell IPC contract', () => {
 			kind: 'confirm',
 		},
 		{
-			owner: { kind: 'scheduled_tool_run', tool_run_id: 'toolrun-1' },
-			expectedOwner: { kind: 'scheduled_tool_run', toolRunId: 'toolrun-1' },
+			owner: {
+				kind: 'scheduled_tool_run',
+				tool_run_id: 'toolrun-6b86b273ff34fce19d6b804eff5a3f57',
+			},
+			expectedOwner: {
+				kind: 'scheduled_tool_run',
+				toolRunId: 'toolrun-6b86b273ff34fce19d6b804eff5a3f57',
+			},
 			kind: 'scheduled_confirm',
 		},
 		{
-			owner: { kind: 'scheduled_tool_run', tool_run_id: 'toolrun-1' },
-			session_id: 'ses-context',
-			expectedOwner: { kind: 'scheduled_tool_run', toolRunId: 'toolrun-1' },
+			owner: {
+				kind: 'scheduled_tool_run',
+				tool_run_id: 'toolrun-6b86b273ff34fce19d6b804eff5a3f57',
+			},
+			session_id: 'ses-ea7792a26f405e2ae9c6f49ca93bbe60',
+			expectedOwner: {
+				kind: 'scheduled_tool_run',
+				toolRunId: 'toolrun-6b86b273ff34fce19d6b804eff5a3f57',
+			},
 			kind: 'scheduled_confirm',
 		},
 	])(
@@ -125,7 +171,7 @@ describe('app-shell IPC contract', () => {
 				event: 'interaction:requested',
 				id: 20,
 				payload: {
-					id: 'conf-owner',
+					id: 'conf-4c1029697ee358715d3a14a2add817c4',
 					...(session_id ? { session_id } : {}),
 					owner,
 					kind,
@@ -136,7 +182,7 @@ describe('app-shell IPC contract', () => {
 			});
 
 			expect(event?.payload).toMatchObject({
-				id: 'conf-owner',
+				id: 'conf-4c1029697ee358715d3a14a2add817c4',
 				owner: expectedOwner,
 				kind,
 			});
@@ -147,11 +193,17 @@ describe('app-shell IPC contract', () => {
 
 	it.each([
 		{ kind: 'ask', owner: { kind: 'app_command' } },
-		{ kind: 'confirm', owner: { kind: 'scheduled_tool_run', tool_run_id: 'toolrun-1' } },
+		{
+			kind: 'confirm',
+			owner: {
+				kind: 'scheduled_tool_run',
+				tool_run_id: 'toolrun-6b86b273ff34fce19d6b804eff5a3f57',
+			},
+		},
 		{
 			kind: 'scheduled_confirm',
-			owner: { kind: 'session', session_id: 'ses-1' },
-			session_id: 'ses-1',
+			owner: { kind: 'session', session_id: 'ses-6b86b273ff34fce19d6b804eff5a3f57' },
+			session_id: 'ses-6b86b273ff34fce19d6b804eff5a3f57',
 		},
 		{ kind: 'scheduled_confirm', owner: { kind: 'app_command' } },
 	])(
@@ -175,36 +227,48 @@ describe('app-shell IPC contract', () => {
 		},
 	);
 
-	it.each([undefined, 'not-a-deadline'])('rejects pending confirmations without a valid owner deadline', (expiresAt) => {
-		const event = mapAppEvent({
-			event: 'interaction:requested',
-			id: 22,
-			payload: {
-				id: 'conf-no-deadline',
-				session_id: 'ses-1',
-				owner: { kind: 'session', session_id: 'ses-1' },
-				kind: 'confirm',
-				status: 'pending',
-				created_at: '2026-01-01T00:00:00Z',
-				...(expiresAt === undefined ? {} : { expires_at: expiresAt }),
-			},
-		});
-		expect(event).toBeNull();
-	});
+	it.each([undefined, 'not-a-deadline'])(
+		'rejects pending confirmations without a valid owner deadline',
+		(expiresAt) => {
+			const event = mapAppEvent({
+				event: 'interaction:requested',
+				id: 22,
+				payload: {
+					id: 'conf-1fd4027863da5bf37b5f51f9be35d18c',
+					session_id: 'ses-6b86b273ff34fce19d6b804eff5a3f57',
+					owner: { kind: 'session', session_id: 'ses-6b86b273ff34fce19d6b804eff5a3f57' },
+					kind: 'confirm',
+					status: 'pending',
+					created_at: '2026-01-01T00:00:00Z',
+					...(expiresAt === undefined ? {} : { expires_at: expiresAt }),
+				},
+			});
+			expect(event).toBeNull();
+		},
+	);
 
 	it.each([
-		{ owner: undefined, session_id: 'ses-1' },
-		{ owner: { kind: 'session', session_id: 'ses-other' }, session_id: 'ses-1' },
-		{ owner: { kind: 'session' }, session_id: 'ses-1' },
+		{ owner: undefined, session_id: 'ses-6b86b273ff34fce19d6b804eff5a3f57' },
+		{
+			owner: { kind: 'session', session_id: 'ses-d9298a10d1b0735837dc4bd85dac641b' },
+			session_id: 'ses-6b86b273ff34fce19d6b804eff5a3f57',
+		},
+		{ owner: { kind: 'session' }, session_id: 'ses-6b86b273ff34fce19d6b804eff5a3f57' },
 		{ owner: { kind: 'scheduled_tool_run' }, session_id: undefined },
-		{ owner: { kind: 'app_command' }, session_id: 'ses-1' },
-		{ owner: { kind: 'future_owner', tool_run_id: 'toolrun-1' }, session_id: undefined },
+		{ owner: { kind: 'app_command' }, session_id: 'ses-6b86b273ff34fce19d6b804eff5a3f57' },
+		{
+			owner: {
+				kind: 'future_owner',
+				tool_run_id: 'toolrun-6b86b273ff34fce19d6b804eff5a3f57',
+			},
+			session_id: undefined,
+		},
 	])('rejects an invalid owner/context pair', ({ owner, session_id }) => {
 		const event = mapAppEvent({
 			event: 'interaction:requested',
 			id: 21,
 			payload: {
-				id: 'conf-invalid-owner',
+				id: 'conf-55839c1aeb493986bcea56970d1e88e9',
 				...(session_id ? { session_id } : {}),
 				owner,
 				kind: 'confirm',
@@ -283,9 +347,9 @@ describe('app-shell IPC contract', () => {
 		{
 			event: 'interaction:requested',
 			payload: {
-				id: 'conf-1',
-				session_id: 'ses-1',
-				owner: { kind: 'session', session_id: 'ses-1' },
+				id: 'conf-6b86b273ff34fce19d6b804eff5a3f57',
+				session_id: 'ses-6b86b273ff34fce19d6b804eff5a3f57',
+				owner: { kind: 'session', session_id: 'ses-6b86b273ff34fce19d6b804eff5a3f57' },
 				kind: 'confirm',
 				status: 'pending',
 				created_at: 'now',
@@ -295,9 +359,9 @@ describe('app-shell IPC contract', () => {
 		{
 			event: 'interaction:requested',
 			payload: {
-				id: 'conf-1',
-				session_id: 'ses-1',
-				owner: { kind: 'session', session_id: 'ses-1' },
+				id: 'conf-6b86b273ff34fce19d6b804eff5a3f57',
+				session_id: 'ses-6b86b273ff34fce19d6b804eff5a3f57',
+				owner: { kind: 'session', session_id: 'ses-6b86b273ff34fce19d6b804eff5a3f57' },
 				kind: 'confirm',
 				status: 'pending',
 				created_at: 'now',
@@ -307,9 +371,9 @@ describe('app-shell IPC contract', () => {
 		{
 			event: 'interaction:requested',
 			payload: {
-				id: 'conf-1',
-				session_id: 'ses-1',
-				owner: { kind: 'session', session_id: 'ses-1' },
+				id: 'conf-6b86b273ff34fce19d6b804eff5a3f57',
+				session_id: 'ses-6b86b273ff34fce19d6b804eff5a3f57',
+				owner: { kind: 'session', session_id: 'ses-6b86b273ff34fce19d6b804eff5a3f57' },
 				kind: 'confirm',
 				status: 'pending',
 				created_at: 'now',
@@ -319,9 +383,9 @@ describe('app-shell IPC contract', () => {
 		{
 			event: 'interaction:requested',
 			payload: {
-				id: 'conf-1',
-				session_id: 'ses-1',
-				owner: { kind: 'session', session_id: 'ses-1' },
+				id: 'conf-6b86b273ff34fce19d6b804eff5a3f57',
+				session_id: 'ses-6b86b273ff34fce19d6b804eff5a3f57',
+				owner: { kind: 'session', session_id: 'ses-6b86b273ff34fce19d6b804eff5a3f57' },
 				kind: 'confirm',
 				status: 'pending',
 				created_at: 'now',
