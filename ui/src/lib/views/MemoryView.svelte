@@ -552,7 +552,7 @@
 	async function deleteFact(factId: string) {
 		try {
 			await deleteFactCommand({ factId });
-			facts = facts.filter((fact) => fact.id !== factId);
+			facts = facts.filter((fact) => fact.fact_id !== factId);
 		} catch (e) {
 			reportError(e, { context: 'MemoryView', message: '删除事实失败', log: false });
 		}

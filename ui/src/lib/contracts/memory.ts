@@ -51,7 +51,7 @@ export interface MemoryRecallState {
 function hasFactIdentity(value: unknown): boolean {
 	return (
 		isRecord(value) &&
-		isCanonicalEntityId(value.id, 'fact') &&
+		isCanonicalEntityId(value.fact_id, 'fact') &&
 		(value.source_ref === null ||
 			(isRecord(value.source_ref) && isCanonicalEntityId(value.source_ref.message_id, 'msg')))
 	);

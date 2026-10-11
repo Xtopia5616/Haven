@@ -15,7 +15,9 @@
 
 	let selectedFactId = $state<string | null>(null);
 	let detailOpen = $state(false);
-	const selectedFact = $derived(facts.find((fact) => fact.id === selectedFactId) || null);
+	const selectedFact = $derived(
+		facts.find((fact) => fact.fact_id === selectedFactId) || null,
+	);
 
 	$effect(() => {
 		if (selectedFactId && !selectedFact) {
@@ -70,7 +72,7 @@
 	}
 
 	function selectFact(fact: Fact) {
-		selectedFactId = fact.id;
+		selectedFactId = fact.fact_id;
 		detailOpen = true;
 	}
 
@@ -80,7 +82,7 @@
 
 	function deleteSelectedFact() {
 		if (!selectedFact) return;
-		const factId = selectedFact.id;
+		const factId = selectedFact.fact_id;
 		detailOpen = false;
 		selectedFactId = null;
 		onDeleteFact?.(factId);
@@ -91,10 +93,10 @@
 	<section class="fact-browser" aria-label="已保存事实">
 		{#if factsLoaded && facts.length > 0}
 			<div class="fact-list" role="list" aria-label="已保存事实列表">
-				{#each facts as fact (fact.id)}
+				{#each facts as fact (fact.fact_id)}
 					<article
 						class="fact-card workspace-item-card motion-list-item"
-						class:selected={selectedFactId === fact.id && detailOpen}
+						class:selected={selectedFactId === fact.fact_id && detailOpen}
 					>
 						<button
 							class="fact-card-main workspace-item-card-main"
@@ -139,7 +141,7 @@
 								variant="text"
 								className="fact-delete"
 								label="删除"
-								onclick={() => onDeleteFact?.(fact.id)}
+								onclick={() => onDeleteFact?.(fact.fact_id)}
 							/>
 						</div>
 					</article>
@@ -230,7 +232,7 @@
 					</div>
 					<div>
 						<dt>记忆编号</dt>
-						<dd><code class="fact-code">{selectedFact.id}</code></dd>
+						<dd><code class="fact-code">{selectedFact.fact_id}</code></dd>
 					</div>
 				</dl>
 

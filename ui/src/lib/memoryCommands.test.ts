@@ -13,7 +13,7 @@ describe('memory command boundary', () => {
 	it('validates fact identity and passes the response fields through unchanged', async () => {
 		const response = [
 			{
-				id: 'fact-00000000000000000000000000000001',
+				fact_id: 'fact-00000000000000000000000000000001',
 				subject: 'user',
 				predicate: 'likes',
 				object: 'tea',
@@ -36,7 +36,7 @@ describe('memory command boundary', () => {
 
 	it('passes add and delete request fields unchanged', async () => {
 		const addedFact = {
-			id: 'fact-00000000000000000000000000000002',
+			fact_id: 'fact-00000000000000000000000000000002',
 			subject: 'user',
 			predicate: 'likes',
 			object: 'tea',
@@ -94,12 +94,17 @@ describe('memory command boundary', () => {
 	});
 
 	it('rejects invalid fact and source-message IDs from Memory commands', async () => {
-		invokeMock.mockResolvedValueOnce([{ id: 'fact-short', source_ref: null }] as never);
+		invokeMock.mockResolvedValueOnce([{ fact_id: 'fact-short', source_ref: null }] as never);
+		await expect(listFacts({ source: null })).rejects.toThrow('Invalid memory fact identity');
+
+		invokeMock.mockResolvedValueOnce([
+			{ id: 'fact-00000000000000000000000000000004', source_ref: null },
+		] as never);
 		await expect(listFacts({ source: null })).rejects.toThrow('Invalid memory fact identity');
 
 		invokeMock.mockResolvedValueOnce([
 			{
-				id: 'fact-00000000000000000000000000000004',
+				fact_id: 'fact-00000000000000000000000000000004',
 				source_ref: { message_id: 'ses-00000000000000000000000000000005' },
 			},
 		] as never);

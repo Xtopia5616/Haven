@@ -227,6 +227,8 @@ Agent 内部步骤计数及 tracing 字段统一为 `step_number`，Rust/UI 的�
 
 Session history、lineage 与 resume 响应中的 `SessionRecordDto` 统一以 `session_id` 表示会话身份；UI parser 和消费者拒绝旧泛名 `id`，数据库主键列 `sessions.id` 不变。实体字段命名审计仍需覆盖 Agent runtime `SessionInfo`/`StepInfo`、Memory `SessionStep`、fact/usage DTO 与 interaction request，并逐项确认持久事件回放兼容性（ADR 0991）。
 
+App `MemoryFactResponse` 以 `fact_id` 表示事实身份；UI command parser 不接收旧 `id`，数据库物理列 `facts.id` 与 Memory repository `Fact` 保持 owner 内部形状。剩余身份审计聚焦 Agent runtime DTO、Memory `SessionStep`、durable `LlmUsageRecord` replay 和 heterogeneous interaction request identity（ADR 0992）。
+
 Compaction、memory embedding maintenance、App 启动/恢复、clipboard history 和 managed-media cleanup 的错误日志现统一清洗；上传批次与生成媒体目录项日志移除 basename，避免暴露用户文件名（ADR 0981）。
 
 Agent compaction 与 media-plan toast 现由 `+layout` 统一持有；chat controller 保留 media-plan session 状态投影，chat usage handler 不再写通知 store（ADR 0982）。

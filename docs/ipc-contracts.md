@@ -40,7 +40,7 @@
 | `toggle_mcp_server` | execute | 启用前先连接 |
 | `run_memory_maintenance` | mutate | 维护路径统一清理 |
 | `recall_memory` | read | 可选 `kind` 使用生成的 `MemoryEntityKindInput`（`fact` / `episode`）；省略时默认为 `fact`。UI 的 `all` 只在 renderer 展开为两次 typed 查询；limit 有界且事实结果过滤凭据 |
-| `list_facts` | read | 可选 `source` 使用 generated `MemoryFactSourceInput`（`user` / `inferred`）；`null` 或省略表示全部来源；响应 DTO 的 `source` 使用 generated `MemoryFactSource` |
+| `list_facts` | read | 可选 `source` 使用 generated `MemoryFactSourceInput`（`user` / `inferred`）；`null` 或省略表示全部来源；响应以 `fact_id` 标识事实，`source` 使用 generated `MemoryFactSource` |
 | `add_fact` | mutate | 拒绝凭据样式内容 |
 | `delete_fact` | mutate | 按 fact id 删除 |
 | `clear_facts` | mutate | 清空长期事实并失效派生缓存 |
@@ -64,7 +64,7 @@
 | `resolve_confirmation` | mutate | 显式 owner + `request_id` 选路；`effect` / `scope` / `target` 使用生成的权限 enum，receipt 与目标祖先仍由后端复核；返回 `resolved`/`expired`/`stale`，可重试失败保留 pending |
 | `update_session_title` | mutate | trim 后不得为空 |
 
-`list_facts` / `add_fact` 返回 App-owned `MemoryFactResponse`；其中 `source_ref` 使用
+`list_facts` / `add_fact` 返回 App-owned `MemoryFactResponse`，以 `fact_id` 表示事实身份；其中 `source_ref` 使用
 `MemoryFactSourceRef`。事实的 `source` 使用 generated `MemoryFactSource`；App mapper 严格解析
 repository source 值后显式投影字段，repository 新增字段不会自动进入 IPC payload。
 | `delete_session` | mutate | 删除并释放运行态 |

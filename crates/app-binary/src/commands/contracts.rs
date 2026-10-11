@@ -505,7 +505,7 @@ impl TryFrom<&str> for MemoryFactSource {
 
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct MemoryFactResponse {
-    pub id: String,
+    pub fact_id: String,
     pub subject: String,
     pub predicate: String,
     pub object: String,
@@ -527,7 +527,7 @@ impl TryFrom<haven_memory::Fact> for MemoryFactResponse {
             MemoryFactSource::try_from(fact.source.as_str()).map_err(|error| error.to_string())?;
 
         Ok(Self {
-            id: fact.id,
+            fact_id: fact.id,
             subject: fact.subject,
             predicate: fact.predicate,
             object: fact.object,
@@ -620,7 +620,7 @@ mod tests {
         assert_eq!(
             serde_json::to_value(response).unwrap(),
             serde_json::json!({
-                "id": "fact-0123456789abcdef0123456789abcdef",
+                "fact_id": "fact-0123456789abcdef0123456789abcdef",
                 "subject": "user",
                 "predicate": "likes",
                 "object": "Rust",

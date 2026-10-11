@@ -73,7 +73,7 @@ export const BOOTSTRAP_STATUS_VALUES = ['loading', 'ready'] as const;
 export type BootstrapStatus = (typeof BOOTSTRAP_STATUS_VALUES)[number];
 export interface RuntimeSessionListResponse { sessions: SessionInfo[] }
 export interface BuiltinToolManifestListResponse { tools: ToolManifest[] }
-export interface MemoryFactResponse { id: string; subject: string; predicate: string; object: string; source: MemoryFactSource; confidence: number; tags: string[]; created_at: string; mention_count: number; last_seen_at: string | null; source_ref: MemoryFactSourceRef | null; durability: number }
+export interface MemoryFactResponse { fact_id: string; subject: string; predicate: string; object: string; source: MemoryFactSource; confidence: number; tags: string[]; created_at: string; mention_count: number; last_seen_at: string | null; source_ref: MemoryFactSourceRef | null; durability: number }
 export const MEMORY_FACT_SOURCE_INPUT_VALUES = ['user', 'inferred'] as const;
 export type MemoryFactSourceInput = (typeof MEMORY_FACT_SOURCE_INPUT_VALUES)[number];
 export const MEMORY_FACT_SOURCE_VALUES = ['user', 'inferred'] as const;
