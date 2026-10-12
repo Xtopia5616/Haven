@@ -21,6 +21,7 @@ export type RollbackSessionRequest = TauriCommandRequest<'rollback_session'>;
 export type UpdateSessionTitleRequest = TauriCommandRequest<'update_session_title'>;
 export type SessionHistoryPageRequest = TauriCommandRequest<'list_session_history'>;
 export type SessionHistoryFilterRequest = TauriCommandRequest<'search_session_history_filtered'>;
+export type CountSessionHistorySearchRequest = TauriCommandRequest<'count_session_history_search'>;
 export type SwitchModelRequest = TauriCommandRequest<'switch_model'>;
 export type SetReasoningEffortRequest = TauriCommandRequest<'set_reasoning_effort'>;
 export type SetWebSearchRequest = TauriCommandRequest<'set_web_search'>;

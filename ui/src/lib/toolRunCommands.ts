@@ -1,4 +1,5 @@
 import { invoke } from '$lib/tauri.ts';
+import { parseCountResponse } from './contracts/count.ts';
 import type { CancelToolRunRequest } from './contracts/commands.ts';
 import {
 	mapToolRunCommandRow,
@@ -36,7 +37,9 @@ export async function listToolRunHistory(
 
 /** Clear persisted terminal task history, preserving active work. */
 export function clearToolRunHistory(): Promise<number> {
-	return invoke('clear_tool_run_history');
+	return invoke('clear_tool_run_history').then((value: unknown) =>
+		parseCountResponse(value, 'clear_tool_run_history'),
+	);
 }
 
 /** Invoke the ToolRun cancellation command through its named request/result contract. */

@@ -1,6 +1,7 @@
 import { invoke } from './tauri.ts';
 import type {
 	ContinueSessionRequest,
+	CountSessionHistorySearchRequest,
 	DeleteSessionRequest,
 	EndSessionRequest,
 	GetSessionForResumeRequest,
@@ -15,6 +16,7 @@ import type {
 } from './contracts/commands.ts';
 import type { ProcessResult } from './contracts/generatedCommands.ts';
 import { parseProcessResult } from './contracts/processResult.ts';
+import { parseCountResponse } from './contracts/count.ts';
 import type {
 	SessionHistoryRow,
 	SessionLineageResponse,
@@ -90,7 +92,25 @@ export function deleteSession(request: DeleteSessionRequest): Promise<void> {
 
 /** Clear all persisted session history. */
 export function deleteAllSessions(): Promise<number> {
-	return invoke('delete_all_sessions');
+	return invoke('delete_all_sessions').then((value: unknown) =>
+		parseCountResponse(value, 'delete_all_sessions'),
+	);
+}
+
+/** Count persisted session history through the validated numeric command boundary. */
+export function countSessionHistory(): Promise<number> {
+	return invoke('count_session_history').then((value: unknown) =>
+		parseCountResponse(value, 'count_session_history'),
+	);
+}
+
+/** Count persisted session history matching a search query. */
+export function countSessionHistorySearch(
+	request: CountSessionHistorySearchRequest,
+): Promise<number> {
+	return invoke('count_session_history_search', request).then((value: unknown) =>
+		parseCountResponse(value, 'count_session_history_search'),
+	);
 }
 
 /** Rename one persisted session. */

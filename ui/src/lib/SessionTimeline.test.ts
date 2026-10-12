@@ -40,20 +40,21 @@ describe('SessionTimeline', () => {
 				{
 					id: 'step-background',
 					role: 'assistant' as const,
-					content: '{"execution_mode":"background","tool_run_id":"toolrun-bg"}',
+					content:
+						'{"execution_mode":"background","tool_run_id":"toolrun-00000000000000000000000000000001"}',
 					type: 'tool' as const,
 					toolName: 'shell',
-					sourceToolRunId: 'toolrun-bg',
+					sourceToolRunId: 'toolrun-00000000000000000000000000000001',
 					stepNumber: 2,
 					streaming: false,
 				},
 			],
 			sessionToolRuns: [
 				{
-					toolRunId: 'toolrun-bg',
+					toolRunId: 'toolrun-00000000000000000000000000000001',
 					kind: 'background',
 					status: 'running',
-					sessionId: 'ses-1',
+					sessionId: 'ses-00000000000000000000000000000001',
 					startedAt: '2026-10-03T03:00:00Z',
 					command: '整理下载目录',
 					preview: '扫描中',

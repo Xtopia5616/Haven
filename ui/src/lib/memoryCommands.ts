@@ -5,6 +5,7 @@ import type {
 	ListFactsRequest,
 	RecallMemoryRequest,
 } from './contracts/commands.ts';
+import { parseCountResponse } from './contracts/count.ts';
 import {
 	parseFactResponse,
 	parseFactResponses,
@@ -32,7 +33,7 @@ export function deleteFact(request: DeleteFactRequest): Promise<void> {
 
 /** Delete every saved long-term fact. */
 export function clearFacts(): Promise<number> {
-	return invoke('clear_facts');
+	return invoke('clear_facts').then((value: unknown) => parseCountResponse(value, 'clear_facts'));
 }
 
 /** Recall facts or episodes through the named memory command boundary. */

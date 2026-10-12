@@ -1,7 +1,20 @@
 import { describe, expect, it } from 'vitest';
-import { interactionOwnerToWire, mapAppEvent } from './app.ts';
+import { interactionOwnerToWire, mapAppEvent, parseConfirmationResolutionResult } from './app.ts';
 
 describe('app-shell IPC contract', () => {
+	it.each(['resolved', 'expired', 'stale'])('accepts confirmation result %s', (result) => {
+		expect(parseConfirmationResolutionResult(result)).toBe(result);
+	});
+
+	it.each(['pending', 'unknown', null, {}])(
+		'rejects invalid confirmation result %j',
+		(result) => {
+			expect(() => parseConfirmationResolutionResult(result)).toThrow(
+				'Invalid confirmation resolution result',
+			);
+		},
+	);
+
 	it.each([
 		[
 			{ kind: 'session', sessionId: 'ses-6b86b273ff34fce19d6b804eff5a3f57' } as const,

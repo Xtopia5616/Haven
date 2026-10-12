@@ -14,6 +14,7 @@ import {
 import {
 	APP_EVENT_NAMES,
 	BOOTSTRAP_STATUS_VALUES,
+	CONFIRMATION_RESOLUTION_RESULT_VALUES,
 	INTERACTION_KIND_VALUES,
 	INTERACTION_STATUS_VALUES,
 	SKILLS_STATUS_OPERATION_VALUES,
@@ -25,6 +26,7 @@ import {
 	type InteractionOwner as InteractionOwnerWire,
 	type InteractionRequestedEvent as GeneratedInteractionRequestedEvent,
 	type InteractionStatus,
+	type ConfirmationResolutionResult,
 	type McpStatusChangedEvent as GeneratedMcpStatusChangedEvent,
 	type MuteChangedEvent as GeneratedMuteChangedEvent,
 	type RiskLevel,
@@ -47,6 +49,14 @@ export function interactionOwnerToWire(owner: InteractionOwnerView): Interaction
 		case 'app_command':
 			return { kind: 'app_command' };
 	}
+}
+
+/** Reject unknown resolution statuses before they enter interaction state. */
+export function parseConfirmationResolutionResult(value: unknown): ConfirmationResolutionResult {
+	if (!isOneOf(value, CONFIRMATION_RESOLUTION_RESULT_VALUES)) {
+		throw new Error('Invalid confirmation resolution result');
+	}
+	return value;
 }
 interface InteractionRequestBase {
 	requestId: string;

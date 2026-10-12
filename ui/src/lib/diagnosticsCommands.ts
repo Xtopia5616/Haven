@@ -4,7 +4,10 @@ import type {
 	ReadLogTailRequest,
 	UiMetricsSnapshot,
 } from './contracts/commands.ts';
-import type { PerformanceMetricsSnapshot } from './contracts/diagnostics.ts';
+import {
+	parsePerformanceMetricsSnapshot,
+	type PerformanceMetricsSnapshot,
+} from './contracts/diagnostics.ts';
 import {
 	parseApiKeyStatus,
 	parseLogInfo,
@@ -38,11 +41,11 @@ export function readApiKeyStatus(): Promise<ApiKeyStatus> {
 	return invoke('get_api_key_status').then(parseApiKeyStatus);
 }
 
-/** Read the content-free metrics response using its generated Rust-owned shape. */
+/** Read metrics and reject Rust u64 values that JavaScript cannot represent exactly. */
 export function requestPerformanceMetricsSnapshot(
 	ui?: UiMetricsSnapshot,
 ): Promise<PerformanceMetricsSnapshot> {
-	return invoke('get_performance_metrics', ui ? { ui } : undefined).then(
-		(value: unknown) => value as PerformanceMetricsSnapshot,
+	return invoke('get_performance_metrics', ui ? { ui } : undefined).then((value: unknown) =>
+		parsePerformanceMetricsSnapshot(value),
 	);
 }

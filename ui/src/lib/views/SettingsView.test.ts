@@ -27,7 +27,26 @@ describe('SettingsView diagnostics export', () => {
 				case 'is_autostart_enabled':
 					return false;
 				case 'get_performance_metrics':
-					return { backend: { requests: 1 }, renderer: { frames: 2 } };
+					return {
+						phases: [],
+						counters: {
+							turn_starts: 0,
+							first_tokens: 0,
+							stream_chunks: 0,
+							chunk_drops: 0,
+							checkpoint_pending: 0,
+							branch_point_failures: 0,
+							snapshot_failures: 0,
+							projection_failures: 0,
+							inbox_ack_failures: 0,
+							tool_run_result_retries: 0,
+							tool_run_result_duplicates: 0,
+							web_search_drops: 0,
+							requests: 1,
+						},
+						gauges: { context_queue_items: 0 },
+						ui: { frames: 2, chunks: 0, drops: 0 },
+					};
 				default:
 					return [];
 			}

@@ -78,7 +78,10 @@
 	import type { ConfirmationDecision } from '$lib/confirmationTypes.ts';
 	import type { AgentNotificationPayload } from '$lib/contracts/agent.ts';
 	import type { NotificationConfigInput } from '$lib/contracts/generatedCommands.ts';
-	import { interactionOwnerToWire } from '$lib/contracts/app.ts';
+	import {
+		interactionOwnerToWire,
+		parseConfirmationResolutionResult,
+	} from '$lib/contracts/app.ts';
 	import type { LlmConnectionReportView } from '$lib/llmConnection.ts';
 	import type { LlmConnectionStatus } from '$lib/contracts/generatedCommands.ts';
 	import type { LayoutProps } from './$types';
@@ -700,7 +703,9 @@
 			target: resolvedTarget,
 		};
 		try {
-			const resolution = await invoke('resolve_confirmation', confirmationRequest);
+			const resolution = parseConfirmationResolutionResult(
+				await invoke('resolve_confirmation', confirmationRequest),
+			);
 			appSessionReducer.dispatch({
 				type: 'session/interaction-resolution-result',
 				requestId,

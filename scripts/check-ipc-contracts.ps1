@@ -116,12 +116,47 @@ $diagnosticsCommands = Get-Source 'ui/src/lib/diagnosticsCommands.ts'
 foreach ($parser in @('parseLogInfo', 'parseLogTail', 'parseShellAvailability', 'parseApiKeyStatus')) {
     Assert-Contains $diagnosticsCommands ("\.then\(" + $parser + '\)') "diagnostics response uses $parser"
 }
+Assert-Contains $diagnosticsCommands 'parsePerformanceMetricsSnapshot\(value\)' 'performance metrics are checked for safe integer precision'
+$countContracts = Get-Source 'ui/src/lib/contracts/count.ts'
+Assert-Contains $countContracts 'isSafeUnsignedInteger\(value\)' 'scalar count responses are non-negative safe integers'
+$countCommands = @('clear_facts', 'clear_tool_run_history', 'count_session_history', 'count_session_history_search', 'delete_all_sessions', 'reset_session_permissions', 'run_memory_maintenance')
+$numericResponses = Get-Matches $generated '(?m)^\s{1,2}([a-z][a-z0-9_]*):\s*\{[^\r\n]*response:\s*number(?:;|\s*\})'
+Assert-SetEqual 'numeric scalar command responses vs count adapters' $numericResponses $countCommands
+foreach ($command in $countCommands) {
+    $source = switch ($command) {
+        'clear_facts' { Get-Source 'ui/src/lib/memoryCommands.ts' }
+        'clear_tool_run_history' { Get-Source 'ui/src/lib/toolRunCommands.ts' }
+        { $_ -in @('count_session_history', 'count_session_history_search', 'delete_all_sessions') } { Get-Source 'ui/src/lib/sessionCommands.ts' }
+        { $_ -in @('reset_session_permissions', 'run_memory_maintenance') } { Get-Source 'ui/src/lib/settingsCommands.ts' }
+    }
+    Assert-Contains $source ("invoke\('" + $command + "'[\s\S]{0,180}?parseCountResponse\(value,\s*'" + $command + "'\)") "$command response uses safe count validation"
+}
+function Assert-MetricsFieldCoverage([string] $contractType, [string] $validatorConstant) {
+    $contractMatch = [regex]::Match($generated, "(?s)export interface $([regex]::Escape($contractType))\s*\{([^}]*)\}")
+    if (-not $contractMatch.Success) { throw "could not find generated metric DTO $contractType" }
+    $contractFields = Get-Matches $contractMatch.Groups[1].Value '\b([a-z][a-z0-9_]*)\s*:'
+
+    $validatorMatch = [regex]::Match($diagnosticsContract, "(?s)const $([regex]::Escape($validatorConstant))\s*=\s*\[([^\]]*)\]\s*as const")
+    if (-not $validatorMatch.Success) { throw "could not find metrics validator field list $validatorConstant" }
+    $validatedFields = Get-Matches $validatorMatch.Groups[1].Value "'([a-z][a-z0-9_]*)'"
+    Assert-SetEqual "$contractType generated fields vs $validatorConstant" $contractFields $validatedFields
+}
+$diagnosticsContract = Get-Source 'ui/src/lib/contracts/diagnostics.ts'
+foreach ($metricsFieldSet in @(
+    @{ Contract = 'PhaseSnapshot'; Validator = 'PHASE_FIELDS' },
+    @{ Contract = 'CounterSnapshot'; Validator = 'COUNTER_FIELDS' },
+    @{ Contract = 'GaugeSnapshot'; Validator = 'GAUGE_FIELDS' },
+    @{ Contract = 'UiMetricsSnapshot'; Validator = 'UI_METRIC_FIELDS' }
+)) {
+    Assert-MetricsFieldCoverage $metricsFieldSet.Contract $metricsFieldSet.Validator
+}
 
 $uiFiles = Get-ChildItem (Join-Path $root 'ui/src') -Recurse -File | Where-Object { $_.Extension -in @('.ts', '.svelte') }
 $layout = Get-Source 'ui/src/routes/+layout.svelte'
 Assert-Contains $layout '(?s)const report = await invoke\(''check_llm_connection''\);\s*if \(generation === llmProbeGeneration\) applyLlmConnectionReport\(report\);' 'LLM connection report is normalized only for the current probe'
 Assert-Contains $layout "invoke\('get_bootstrap_status'\)" 'App shell owns the startup readiness probe'
 Assert-Contains $layout "invoke\('resolve_confirmation',\s*confirmationRequest\)" 'App shell owns global confirmation resolution'
+Assert-Contains $layout 'parseConfirmationResolutionResult\([\s\S]*?invoke\(''resolve_confirmation''' 'confirmation status is checked before state transition'
 
 $recordingOverlayController = Get-Source 'ui/src/lib/recordingOverlayController.ts'
 Assert-Contains $recordingOverlayController "type RecordingCommandName = Extract<\s*TauriCommandName,\s*'start_recording'\s*\|\s*'stop_recording'\s*\|\s*'cancel_recording'\s*>" 'recording controller narrows its dynamic invoke port to the recording lifecycle'
@@ -151,7 +186,7 @@ $ownedCommands = @{
     'toolRunCommands.ts' = @('list_tool_runs', 'list_tool_run_history', 'clear_tool_run_history', 'cancel_tool_run')
     'toolsCommands.ts' = @('list_builtin_tool_manifests', 'list_mcp_servers', 'reset_tool_circuits', 'refresh_mcp_servers', 'set_skill_enabled', 'set_tool_enabled', 'refresh_skills', 'open_skills_dir', 'add_mcp_server', 'update_mcp_server', 'remove_mcp_server', 'reconnect_mcp_server', 'toggle_mcp_server', 'execute_skill')
     'memoryCommands.ts' = @('list_facts', 'add_fact', 'delete_fact', 'clear_facts', 'recall_memory')
-    'sessionCommands.ts' = @('list_runtime_sessions', 'get_session_lineage', 'list_session_history', 'search_session_history_filtered', 'get_session_for_resume', 'get_latest_session_for_resume', 'process_transcript', 'reopen_session', 'delete_session', 'delete_all_sessions', 'update_session_title', 'rollback_session', 'end_session', 'interrupt_session', 'continue_session')
+    'sessionCommands.ts' = @('list_runtime_sessions', 'get_session_lineage', 'list_session_history', 'search_session_history_filtered', 'count_session_history', 'count_session_history_search', 'get_session_for_resume', 'get_latest_session_for_resume', 'process_transcript', 'reopen_session', 'delete_session', 'delete_all_sessions', 'update_session_title', 'rollback_session', 'end_session', 'interrupt_session', 'continue_session')
     'modelDiscoveryCommands.ts' = @('discover_models')
     'diagnosticsCommands.ts' = @('get_log_info', 'read_log_tail', 'check_shell_available', 'get_api_key_status', 'get_performance_metrics')
     'settingsCommands.ts' = @('get_settings', 'discard_staged_credentials', 'list_session_permissions', 'is_autostart_enabled', 'run_memory_maintenance', 'revoke_permission', 'revoke_session_permission', 'reset_permissions', 'reset_session_permissions', 'set_hotkey_capture_active', 'stage_provider_credential', 'stage_ocr_credential', 'update_settings', 'enable_autostart', 'disable_autostart')

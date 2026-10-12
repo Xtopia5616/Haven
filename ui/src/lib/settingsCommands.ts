@@ -6,6 +6,7 @@ import {
 	type SessionPermissionGrant,
 	type SettingsPayload,
 } from '$lib/contracts/settings.ts';
+import { parseCountResponse } from '$lib/contracts/count.ts';
 import type { TauriCommandRequest } from './contracts/generatedCommands.ts';
 import { invoke } from '$lib/tauri.ts';
 
@@ -31,7 +32,9 @@ export function isAutostartEnabled(): Promise<boolean> {
 
 /** Run the explicit Memory maintenance operation from Settings. */
 export function runMemoryMaintenance(): Promise<number> {
-	return invoke('run_memory_maintenance');
+	return invoke('run_memory_maintenance').then((value: unknown) =>
+		parseCountResponse(value, 'run_memory_maintenance'),
+	);
 }
 
 /** Revoke one permanent permission rule by its exact key. */
@@ -53,7 +56,9 @@ export function resetPermissions(): Promise<void> {
 
 /** Clear durable session grants and report the number removed. */
 export function resetSessionPermissions(): Promise<number> {
-	return invoke('reset_session_permissions');
+	return invoke('reset_session_permissions').then((value: unknown) =>
+		parseCountResponse(value, 'reset_session_permissions'),
+	);
 }
 
 /** Pause or resume the recording hotkey while Settings captures a key binding. */

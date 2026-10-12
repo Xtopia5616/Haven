@@ -4100,7 +4100,7 @@ mod tests {
             "test.operation".into(),
             serde_json::json!({}),
             "call-test".into(),
-            "step-confirm".into(),
+            haven_common::types::new_id("step"),
             0,
             haven_common::types::RiskLevel::Safe,
             Some(haven_tools::ConfirmationReceipt {
