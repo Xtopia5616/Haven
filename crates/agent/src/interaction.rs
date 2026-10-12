@@ -16,7 +16,7 @@ fn require_canonical_id(id: &str, prefix: &str, field: &str) -> anyhow::Result<(
     Ok(())
 }
 
-fn validate_replayed_interaction_ids(request: &InteractionRequest) -> anyhow::Result<()> {
+pub(crate) fn validate_interaction_ids(request: &InteractionRequest) -> anyhow::Result<()> {
     let (request_prefix, detail_ids) = match (&request.kind, &request.details) {
         (InteractionKind::Ask, InteractionDetails::Ask { step_ids, .. }) => {
             if let Some(first_step_id) = step_ids.first() {
@@ -477,7 +477,7 @@ pub fn replay_session_interactions(
                         )
                     },
                 )?;
-                validate_replayed_interaction_ids(&request).map_err(|error| {
+                validate_interaction_ids(&request).map_err(|error| {
                     anyhow::anyhow!(
                         "invalid interaction event at sequence {}: {error}",
                         event.sequence

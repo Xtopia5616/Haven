@@ -74,7 +74,7 @@
 
 | 状态 | 当前项 |
 |---|---|
-| **Active / Next** | **Active：**继续 §5.7 全库概念与实现规范覆盖；rollback projection watermark 与稳定 `message_ids` inbox ack 已完成（ADR 1043–1044）。Messaging 已统一为单一 JSONL 生命周期来源：Actor 移除或重启不再切换消息来源，未确认消息按原 ID 可重领（ADR 1045）。provider `tool_call_id` 逐字保留，durable `call-*` fallback 与进程内 `preview-*` 已分开（ADR 1046）。继续核对剩余跨层概念、实现命名和文档契约；此前 crate 边界审计没有发现值得合并/拆分的新结构候选；桌面完整 `list_facts` 分页仍待 UI 设计。 |
+| **Active / Next** | **Active：**继续 §5.7 全库概念与实现规范覆盖；rollback projection watermark 与稳定 `message_ids` inbox ack 已完成（ADR 1043–1044）。Messaging 已统一为单一 JSONL 生命周期来源：Actor 移除或重启不再切换消息来源，未确认消息按原 ID 可重领（ADR 1045）。provider `tool_call_id` 逐字保留，durable `call-*` fallback 与进程内 `preview-*` 已分开（ADR 1046）。Interaction identity 现由 append 与 replay 共用同一校验，避免写入后恢复失败（ADR 1047）。继续核对剩余跨层概念、实现命名和文档契约；此前 crate 边界审计没有发现值得合并/拆分的新结构候选；桌面完整 `list_facts` 分页仍待 UI 设计。 |
 | **Gate** | Windows 发布验收 Open，见 §5.1。 |
 
 ### 5.1 Windows 发布验收（Gate / Open）
@@ -147,14 +147,14 @@ Session、ScheduledToolRun 与 AppCommand 确认均由各自 owner 和稳定 req
 | 4    | **crate/API 边界**           | 模块 owner 已稳定且存在单向依赖边界、独立消费者或可复核构建/维护收益。                                                                                          | API 清晰、无反向依赖或重复 adapter；否则保留现 crate 边界。              |
 | 5    | **性能与容量**               | 同负载 profile 复现用户相关延迟、资源或容量问题；固定场景记录优化前后指标。                                                                                     | 改善超过噪声并达到目标，否则关闭候选。                                   |
 
-**当前执行位置：** 阶段 0–8 已完成；全库术语与实现规范审计仍在进行。此前已完成 API owner、持久身份、UI command/event contract、配置规则和文档引用的多轮切片，全部 command response 与 event channel 有结构级 runtime coverage，语义约束由各领域 owner 校验。本轮进一步发现并修复 branch projection watermark 只覆盖 messages 的持久化边界缺口（ADR 1043）；当前继续覆盖进程内 ID 穿入 durable history 的边界。现有证据仍不支持新的 crate 合并/拆分。§5.3 的 Deferred 候选保留其各自重开条件；Windows 发布验收是独立 Open Gate（§5.1）。
+**当前执行位置：** 阶段 0–8 已完成；全库术语与实现规范审计仍在进行。此前已完成 API owner、持久身份、UI command/event contract、配置规则和文档引用的多轮切片，全部 command response 与 event channel 有结构级 runtime coverage，语义约束由各领域 owner 校验。本轮进一步发现并修复 branch projection watermark 只覆盖 messages 的持久化边界缺口（ADR 1043）；Interaction append 与 replay 已复用 identity validator（ADR 1047），继续覆盖进程内 ID 穿入 durable history 的边界。现有证据仍不支持新的 crate 合并/拆分。§5.3 的 Deferred 候选保留其各自重开条件；Windows 发布验收是独立 Open Gate（§5.1）。
 
 ### 5.7 全项目领域术语与架构角色命名收敛（持续覆盖）
 
 范围覆盖所有 Rust crate、Svelte/TypeScript、Tauri IPC/事件，以及对应架构、命名和契约文档。职责以 `docs/architecture.md` 为准，术语与角色动词以 `docs/naming.md` 为准；已完成决定和实现细节只保存在对应 ADR，不在路线图复制实施日志。
 
 本轮持续检查 Rust crate 可达 API 与调用图、跨层身份写入、配置 load/update owner、UI command/event response 和语义校验、架构与命名文档引用。此前 Messaging、MCP 和 Memory 普通生产路径已由领域 facade/store 承接，具体 transport、client、repository 和数据库装配归各自 owner；跨 crate 测试注入使用非默认 `test-support`（ADR 0887–0892）。近期 API 和 IPC 复核已分别记录在 ADR 1041–1042。继续检查持久写路径时发现 `last_msg_at` 只读取 messages，可能在 rollback 时误删更晚写入的分支内 step/usage；现通过跨三表单调水位、事务化写入与 schema v40 reset 要求收口（ADR 1043）。
-继续核对运行时身份时发现显式 `agent.inbox` 的 `claim-*` 虽被文档定义为进程内，却随 ToolResult 进入 durable transcript；现改为稳定 `message_ids` ack，并为旧 transcript 参数返回迁移提示（ADR 1044）。对 Messaging 恢复路径的审计又发现同进程 Actor 的易失队列与 JSONL 竞争权威，并可能使 claim/ack 随 Actor 生命周期切换；现已删除 Actor inbox 和 `SessionMailbox` 分支，由 JSONL transport 独占投递、领取、确认、历史与回复查询（ADR 1045）。`call-*` 现明确为缺失/重复 provider ID 的持久 fallback，原始 provider ID 按不透明值保留；流式 preview 使用独立 `preview-*`（ADR 1046）。全库概念与实现规范覆盖仍未完成，继续按下表逐域审计并收敛文档和源码。
+继续核对运行时身份时发现显式 `agent.inbox` 的 `claim-*` 虽被文档定义为进程内，却随 ToolResult 进入 durable transcript；现改为稳定 `message_ids` ack，并为旧 transcript 参数返回迁移提示（ADR 1044）。对 Messaging 恢复路径的审计又发现同进程 Actor 的易失队列与 JSONL 竞争权威，并可能使 claim/ack 随 Actor 生命周期切换；现已删除 Actor inbox 和 `SessionMailbox` 分支，由 JSONL transport 独占投递、领取、确认、历史与回复查询（ADR 1045）。`call-*` 现明确为缺失/重复 provider ID 的持久 fallback，原始 provider ID 按不透明值保留；流式 preview 使用独立 `preview-*`（ADR 1046）。Interaction identity 由 append 和 replay 共用 `validate_interaction_ids`，避免 durable event 写入成功、恢复时才拒绝（ADR 1047）。全库概念与实现规范覆盖仍未完成，继续按下表逐域审计并收敛文档和源码。
 
 Agent 的跨 crate 生产启动只经 `AgentLayer::start_after_memory_ready`；`SessionSupervisor::start_dispatcher*` 与 `SessionRunHandler` 仅供 Agent crate 内部编排和测试使用（ADR 1005）。
 

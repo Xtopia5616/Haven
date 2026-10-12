@@ -537,7 +537,7 @@ async fn loop_pauses_on_pending_ask_instead_of_heuristic_final() {
         interactions: vec![crate::interaction::InteractionRequest::ask(
             &session.session_id,
             Vec::new(),
-            vec!["step-ask".into()],
+            vec![format!("step-{}", "a".repeat(32))],
         )],
     };
     seed_event_projection(&agent, &session.session_id, &projection).await;
@@ -2262,7 +2262,7 @@ async fn continue_from_error_clears_stale_confirmation_requests() {
         "test.operation".into(),
         serde_json::json!({"value": "safe-test-input"}),
         "call-stale-confirmation".into(),
-        "step-stale-confirmation".into(),
+        format!("step-{}", "b".repeat(32)),
         0,
         haven_common::types::RiskLevel::High,
         Some(haven_tools::ConfirmationReceipt {

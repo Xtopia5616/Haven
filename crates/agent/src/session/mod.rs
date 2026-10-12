@@ -4207,8 +4207,8 @@ mod tests {
             )
         };
         let requests = vec![
-            make_request("step-atomic-first"),
-            make_request("step-atomic-last"),
+            make_request(&format!("step-{}", "1".repeat(32))),
+            make_request(&format!("step-{}", "2".repeat(32))),
         ];
         exec.request_confirm_batch(&session.session_id, requests.clone())
             .await
@@ -4373,7 +4373,7 @@ mod tests {
             "test.operation".into(),
             serde_json::json!({}),
             "call-step-expiring".into(),
-            "step-expiring".into(),
+            format!("step-{}", "3".repeat(32)),
             0,
             haven_common::types::RiskLevel::High,
             Some(haven_tools::ConfirmationReceipt {
@@ -4469,8 +4469,8 @@ mod tests {
             expires_at: chrono::Utc::now().timestamp().max(0) as u64 + 300,
         };
 
-        let valid = make_request("step-batch-valid", Some(receipt()));
-        let invalid = make_request("step-batch-invalid", None);
+        let valid = make_request(&format!("step-{}", "a".repeat(32)), Some(receipt()));
+        let invalid = make_request(&format!("step-{}", "b".repeat(32)), None);
         assert!(
             exec.request_confirm_batch(&session.session_id, vec![valid, invalid])
                 .await
@@ -4497,6 +4497,23 @@ mod tests {
                 .is_empty()
         );
 
+        assert!(
+            exec.request_confirm_batch(
+                &session.session_id,
+                vec![make_request("step-malformed", Some(receipt()))],
+            )
+            .await
+            .is_err(),
+            "malformed confirmation identity must be rejected before append"
+        );
+        assert!(
+            exec.store
+                .read_active_domain_events_async(&session.session_id)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+
         db.conn()
             .execute_batch(
                 "CREATE TRIGGER reject_confirmation_batch_event
@@ -4509,8 +4526,8 @@ mod tests {
             exec.request_confirm_batch(
                 &session.session_id,
                 vec![
-                    make_request("step-batch-failed-first", Some(receipt())),
-                    make_request("step-batch-failed-second", Some(receipt())),
+                    make_request(&format!("step-{}", "c".repeat(32)), Some(receipt())),
+                    make_request(&format!("step-{}", "d".repeat(32)), Some(receipt())),
                 ],
             )
             .await
@@ -4543,8 +4560,8 @@ mod tests {
         exec.request_confirm_batch(
             &session.session_id,
             vec![
-                make_request("step-batch-first", Some(receipt())),
-                make_request("step-batch-second", Some(receipt())),
+                make_request(&format!("step-{}", "e".repeat(32)), Some(receipt())),
+                make_request(&format!("step-{}", "f".repeat(32)), Some(receipt())),
             ],
         )
         .await
@@ -4577,14 +4594,14 @@ mod tests {
             .await
             .unwrap();
         let input = serde_json::json!({"path": "notes.txt"});
-        let step_id = "step-confirmation-plan";
+        let step_id = format!("step-{}", "4".repeat(32));
         let request = crate::interaction::InteractionRequest::confirm(
             &session.session_id,
             4,
             "files.write".into(),
             input.clone(),
             "call-confirmation-plan".into(),
-            step_id.into(),
+            step_id.clone(),
             2,
             haven_common::types::RiskLevel::High,
             Some(haven_tools::ConfirmationReceipt {
@@ -4599,7 +4616,7 @@ mod tests {
         let plan = crate::react::tool_batch_plan::ConfirmationBatchPlan {
             step_number: 4,
             tools: vec![crate::react::tool_batch_plan::ConfirmationBatchTool {
-                step_id: step_id.into(),
+                step_id: step_id.clone(),
                 tool_index: 2,
                 tool_call_id: Some("call-confirmation-plan".into()),
                 confirmation_request_id: Some(request.request_id.clone()),

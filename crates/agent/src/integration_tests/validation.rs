@@ -297,6 +297,7 @@ async fn confirmation_recovery_matches_the_full_invocation_identity() {
     let client = Arc::new(FinalAnswerMock) as Arc<dyn LlmClient>;
     let (_agent, executor) = make_test_agent_with(client, tools);
     let session = executor.create_session("confirm").await.unwrap();
+    let step_id = format!("step-{}", "3".repeat(32));
     for (call_id, tool_index, decision) in [("call-a", 0, true), ("call-b", 1, false)] {
         let mut request = crate::interaction::InteractionRequest::confirm(
             &session.session_id,
@@ -304,7 +305,7 @@ async fn confirmation_recovery_matches_the_full_invocation_identity() {
             "run_command".into(),
             serde_json::json!({"command":"same"}),
             call_id.into(),
-            "step-3".into(),
+            step_id.clone(),
             tool_index,
             RiskLevel::High,
             None,
@@ -315,19 +316,19 @@ async fn confirmation_recovery_matches_the_full_invocation_identity() {
 
     assert_eq!(
         executor
-            .confirm_decision_for(&session.session_id, "step-3", 0, Some("call-a"))
+            .confirm_decision_for(&session.session_id, &step_id, 0, Some("call-a"))
             .await,
         Some((true, None))
     );
     assert_eq!(
         executor
-            .confirm_decision_for(&session.session_id, "step-3", 1, Some("call-b"))
+            .confirm_decision_for(&session.session_id, &step_id, 1, Some("call-b"))
             .await,
         Some((false, None))
     );
     assert_eq!(
         executor
-            .confirm_decision_for(&session.session_id, "step-3", 0, Some("call-b"))
+            .confirm_decision_for(&session.session_id, &step_id, 0, Some("call-b"))
             .await,
         None,
         "same tool name and args must not associate the wrong call"

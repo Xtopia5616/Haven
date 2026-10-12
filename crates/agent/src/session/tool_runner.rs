@@ -2336,7 +2336,7 @@ mod scheduled_authorization_tests {
             "files.write".into(),
             json!({"path": "notes.txt"}),
             "call-owner-route".into(),
-            "step-owner-route".into(),
+            format!("step-{}", "1".repeat(32)),
             0,
             RiskLevel::High,
             Some(future_receipt(
@@ -2354,7 +2354,7 @@ mod scheduled_authorization_tests {
             "files.write".into(),
             json!({"path": "other-notes.txt"}),
             "call-other-owner-route".into(),
-            "step-other-owner-route".into(),
+            format!("step-{}", "2".repeat(32)),
             0,
             RiskLevel::High,
             Some(future_receipt(
@@ -2456,13 +2456,14 @@ mod scheduled_authorization_tests {
             decision => panic!("expected confirmation, got {decision:?}"),
         };
         let request_id = receipt.confirmation_id.clone();
+        let step_id = format!("step-{}", "a".repeat(32));
         let request = crate::interaction::InteractionRequest::confirm(
             &session.session_id,
             1,
             tool_name.into(),
             input,
             "call-grant-resolve-retry".into(),
-            request_id.to_string(),
+            step_id,
             0,
             RiskLevel::High,
             Some(receipt),

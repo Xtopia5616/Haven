@@ -1287,17 +1287,20 @@ pub(crate) fn spawn(
                         &state.info.session_id,
                     ) {
                         Err(error) => Err(error),
-                        Ok(()) => match serde_json::to_string(&request) {
-                            Ok(payload) => {
-                                append_interaction_event(
-                                    &store,
-                                    &state.info.session_id,
-                                    INTERACTION_REQUESTED_EVENT_TYPE,
-                                    payload,
-                                )
-                                .await
-                            }
-                            Err(error) => Err(error.into()),
+                        Ok(()) => match crate::interaction::validate_interaction_ids(&request) {
+                            Err(error) => Err(error),
+                            Ok(()) => match serde_json::to_string(&request) {
+                                Ok(payload) => {
+                                    append_interaction_event(
+                                        &store,
+                                        &state.info.session_id,
+                                        INTERACTION_REQUESTED_EVENT_TYPE,
+                                        payload,
+                                    )
+                                    .await
+                                }
+                                Err(error) => Err(error.into()),
+                            },
                         },
                     };
                     if result.is_ok() {
@@ -1328,6 +1331,7 @@ pub(crate) fn spawn(
                                 request.session_id.as_deref(),
                                 &state.info.session_id,
                             )?;
+                            crate::interaction::validate_interaction_ids(request)?;
                             anyhow::ensure!(
                                 ids.insert(request.request_id.clone()),
                                 "interaction batch contains duplicate request id '{}'",
@@ -1915,23 +1919,35 @@ mod queue_tests {
         info.session_id = session.session_id.clone();
         let actor = spawn(SessionStore::new(db.clone()), info, Vec::new());
 
+        let step_id = format!("step-{}", "a".repeat(32));
         actor
             .request_interaction(crate::interaction::InteractionRequest::ask(
                 &session.session_id,
                 vec!["A".into()],
-                vec!["step-valid".into()],
+                vec![step_id.clone()],
             ))
             .await
             .expect("matching session interaction should be persisted");
         assert!(
             actor
                 .request_interaction(crate::interaction::InteractionRequest::ask(
-                    "ses-other",
+                    &format!("ses-{}", "b".repeat(32)),
                     Vec::new(),
-                    vec!["step-invalid".into()],
+                    vec![format!("step-{}", "c".repeat(32))],
                 ))
                 .await
                 .is_err()
+        );
+        assert!(
+            actor
+                .request_interaction(crate::interaction::InteractionRequest::ask(
+                    &session.session_id,
+                    Vec::new(),
+                    vec!["step-malformed".into()],
+                ))
+                .await
+                .is_err(),
+            "malformed identity must be rejected before appending"
         );
 
         let events = SessionStore::new(db)
@@ -1945,7 +1961,7 @@ mod queue_tests {
             persisted.session_id.as_deref(),
             Some(session.session_id.as_str())
         );
-        assert_eq!(persisted.request_id, "step-valid");
+        assert_eq!(persisted.request_id, step_id);
     }
 
     #[tokio::test]
