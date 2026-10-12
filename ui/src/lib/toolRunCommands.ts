@@ -1,7 +1,7 @@
 import { invoke } from '$lib/tauri.ts';
 import { parseBooleanResponse } from './contracts/boolean.ts';
 import { parseCountResponse } from './contracts/count.ts';
-import type { CancelToolRunRequest } from './contracts/commands.ts';
+import type { TauriCommandRequest } from './contracts/generatedCommands.ts';
 import {
 	mapToolRunCommandRow,
 	type ToolRunCommandRow,
@@ -44,7 +44,9 @@ export function clearToolRunHistory(): Promise<number> {
 }
 
 /** Invoke the ToolRun cancellation command through its named request/result contract. */
-export function cancelToolRunCommand(request: CancelToolRunRequest): Promise<boolean> {
+export function cancelToolRunCommand(
+	request: TauriCommandRequest<'cancel_tool_run'>,
+): Promise<boolean> {
 	return invoke('cancel_tool_run', request).then((value: unknown) =>
 		parseBooleanResponse(value, 'cancel_tool_run'),
 	);

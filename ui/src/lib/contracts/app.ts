@@ -3,6 +3,7 @@
 import { isValidTauriEventId, type TauriEvent } from './tauriEvent.ts';
 import { isMcpClientStatus } from './mcpClientStatus.ts';
 import { isRecord } from './objectGuards.ts';
+import { matchesGeneratedEventPayload } from './generatedWireShape.ts';
 import { isBoolean, isFiniteNumber, isOneOf, isString, isStringArray } from './valueGuards.ts';
 import {
 	isCanonicalEntityId,
@@ -272,7 +273,8 @@ export function mapAppEvent(event: unknown): TauriEvent<AppEventPayloadMap[AppEv
 		!isRecord(event) ||
 		!isString(event.event) ||
 		!APP_EVENT_NAME_SET.has(event.event) ||
-		!isValidTauriEventId(event.id)
+		!isValidTauriEventId(event.id) ||
+		!matchesGeneratedEventPayload(event.event, event.payload)
 	) {
 		return null;
 	}

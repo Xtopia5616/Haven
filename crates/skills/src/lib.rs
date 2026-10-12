@@ -700,6 +700,21 @@ impl SkillRegistry {
         g.skills.get(name).cloned()
     }
 
+    /// Return a skill only when it is currently enabled and has a valid entry
+    /// script. Execution callers use this owner-checked lookup immediately
+    /// before starting work; a skill disabled after this snapshot is treated
+    /// as already in flight.
+    pub async fn get_executable_skill(&self, name: &str) -> anyhow::Result<Skill> {
+        let g = self.inner.read().await;
+        let skill = g
+            .skills
+            .get(name)
+            .ok_or_else(|| anyhow::anyhow!("skill '{name}' not found"))?;
+        anyhow::ensure!(skill.enabled(), "skill '{name}' is disabled");
+        anyhow::ensure!(skill.has_script(), "skill '{name}' has no entry script");
+        Ok(skill.clone())
+    }
+
     /// Return all raw `Skill` objects (including disabled ones).
     pub async fn list_skills(&self) -> Vec<Skill> {
         let g = self.inner.read().await;

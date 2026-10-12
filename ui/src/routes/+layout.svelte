@@ -69,6 +69,7 @@
 	import {
 		BOOTSTRAP_PROBE_INTERVAL_MS,
 		isBootstrapReady,
+		parseBootstrapStatus,
 		nextBootstrapProbeInterval,
 	} from '$lib/bootstrapStatus.ts';
 	import type { RecordingOverlayState } from '$lib/recordingOverlayController.ts';
@@ -389,8 +390,8 @@
 		if (bootstrapReady || bootstrapProbeInFlight || !isTauri()) return;
 		bootstrapProbeInFlight = true;
 		try {
-			const status = await invoke('get_bootstrap_status');
-			if (isBootstrapReady(status)) {
+			const status: unknown = await invoke('get_bootstrap_status');
+			if (isBootstrapReady(parseBootstrapStatus(status))) {
 				bootstrapProbeFailureStreak = 0;
 				markBootstrapReady();
 			} else {
@@ -699,7 +700,7 @@
 		const resolvedEffect = effect || (approved ? 'allow' : 'deny');
 		const resolvedScope = scope || 'once';
 		const resolvedTarget = target || 'operation';
-		/** @type {import('$lib/contracts/commands.ts').ResolveConfirmationRequest} */
+		/** @type {import('$lib/contracts/generatedCommands.ts').TauriCommandRequest<'resolve_confirmation'>} */
 		const confirmationRequest = {
 			requestId,
 			owner: interactionOwnerToWire(currentRequest.owner),

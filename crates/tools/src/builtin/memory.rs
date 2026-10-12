@@ -818,14 +818,14 @@ mod tests {
         let (tool, _db, _dir) = test_tool();
         let slot = tool.recall.clone();
         bind_recall(&slot, |query| async move {
-            assert_eq!(query.kind, MemoryEntityKind::Episode);
-            assert_eq!(query.text, "release notes");
-            assert_eq!(query.limit, 3);
+            assert_eq!(query.kind(), MemoryEntityKind::Episode);
+            assert_eq!(query.text(), "release notes");
+            assert_eq!(query.limit(), 3);
             assert_eq!(
-                query.exclude_session_id.as_deref(),
+                query.excluded_session_id(),
                 Some("ses-793a46bfb82ad5d58edaae8df367e7f4")
             );
-            assert_eq!(query.fact_subject, None);
+            assert_eq!(query.fact_subject(), None);
             Ok(MemoryRecall {
                 hits: vec![MemoryHit {
                     entity_id: "msg-00000000000000000000000000000010".into(),
@@ -912,10 +912,10 @@ mod tests {
         let (tool, _db, _dir) = test_tool();
         let slot = tool.recall.clone();
         bind_recall(&slot, |query| async move {
-            assert_eq!(query.kind, MemoryEntityKind::Fact);
-            assert_eq!(query.fact_subject.as_deref(), Some("workspace"));
+            assert_eq!(query.kind(), MemoryEntityKind::Fact);
+            assert_eq!(query.fact_subject(), Some("workspace"));
             assert_eq!(
-                query.exclude_session_id.as_deref(),
+                query.excluded_session_id(),
                 Some("ses-793a46bfb82ad5d58edaae8df367e7f4")
             );
             Ok(MemoryRecall::default())
@@ -1083,8 +1083,8 @@ mod tests {
         let (tool, _db, _dir) = db_with_facts();
         let slot = tool.recall.clone();
         bind_recall(&slot, |query| async move {
-            assert_eq!(query.kind, MemoryEntityKind::Fact);
-            assert_eq!(query.text, "Rust");
+            assert_eq!(query.kind(), MemoryEntityKind::Fact);
+            assert_eq!(query.text(), "Rust");
             Ok(MemoryRecall {
                 hits: vec![MemoryHit {
                     entity_id: "fact-00000000000000000000000000000011".into(),
@@ -1116,7 +1116,7 @@ mod tests {
         let (tool, _db, _dir) = test_tool();
         let slot = tool.recall.clone();
         bind_recall(&slot, |query| async move {
-            assert_eq!(query.text, "not stored anywhere");
+            assert_eq!(query.text(), "not stored anywhere");
             Ok(MemoryRecall {
                 hits: Vec::new(),
                 mode: haven_memory::MemoryRecallMode::Keyword,
@@ -1153,9 +1153,9 @@ mod tests {
         let (tool, _db, _dir) = test_tool();
         let slot = tool.recall.clone();
         bind_recall(&slot, |query| async move {
-            assert_eq!(query.kind, MemoryEntityKind::Episode);
-            assert_eq!(query.text, "dark theme");
-            assert_eq!(query.limit, 5);
+            assert_eq!(query.kind(), MemoryEntityKind::Episode);
+            assert_eq!(query.text(), "dark theme");
+            assert_eq!(query.limit(), 5);
             Ok(MemoryRecall {
                 hits: vec![MemoryHit {
                     entity_id: "msg-00000000000000000000000000000010".into(),

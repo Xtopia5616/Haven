@@ -19,7 +19,7 @@
 		<span class="media-plan-step">第 {plan.stepNumber} 步</span>
 	</div>
 	<p class="media-plan-meta">
-		{plan.role} · 策略：{mediaPlanStrategyLabel(plan.strategy)}
+		{plan.requestKind} · 策略：{mediaPlanStrategyLabel(plan.strategy)}
 	</p>
 	{#if plan.projections.length > 0}
 		<ul class="media-plan-list">

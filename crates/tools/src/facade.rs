@@ -270,7 +270,7 @@ pub trait ToolRunManagementCapability: Send + Sync {
 
     async fn list_history(&self, query: ToolRunHistoryQuery) -> anyhow::Result<Vec<ToolRunView>>;
 
-    async fn cancel_for_kind(&self, tool_run_id: &str, kind: &str) -> bool;
+    async fn cancel_for_kind(&self, tool_run_id: &str, kind: ToolRunKind) -> bool;
 
     async fn delete_terminal(&self, tool_run_id: &str) -> anyhow::Result<bool>;
 
@@ -364,11 +364,7 @@ impl SkillExecutionPort for SharedSkillExecutionPort {
         params: &Value,
         cancel: tokio_util::sync::CancellationToken,
     ) -> anyhow::Result<ToolResult> {
-        let skill = self
-            .registry
-            .get_skill(skill_name)
-            .await
-            .ok_or_else(|| anyhow::anyhow!("skill '{}' not found", skill_name))?;
+        let skill = self.registry.get_executable_skill(skill_name).await?;
         self.runner
             .read()
             .await
@@ -931,7 +927,7 @@ mod capability_tests {
     fn provider_search_router() -> Arc<LlmRouter> {
         Arc::new(LlmRouter::new(RouterConfig {
             models: vec![RoutedModel {
-                id: "chat".into(),
+                model_config_id: "chat".into(),
                 endpoint: ModelEndpoint {
                     provider: "deepseek".into(),
                     api_style: Some("openai-responses".into()),
@@ -1122,5 +1118,34 @@ mod capability_tests {
             .expect_err("unknown skills must not reach the runner");
 
         assert_eq!(error.to_string(), "skill 'missing-skill' not found");
+    }
+
+    #[tokio::test]
+    async fn skill_execution_rechecks_enabled_state_inside_owner() {
+        let tools = ToolsFacade::new();
+        let services = tools.share_services();
+        let directory = tempfile::tempdir().unwrap();
+        let skill_root = directory.path().join("skills");
+        let skill_dir = skill_root.join("demo");
+        std::fs::create_dir_all(skill_dir.join("scripts")).unwrap();
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            "# Skill: demo\n\n## Metadata\n- description: test\n- language: python\n\n## Instructions\nRun the test skill.\n",
+        )
+        .unwrap();
+        std::fs::write(skill_dir.join("scripts/main.py"), "print('{}')\n").unwrap();
+        services
+            .skills
+            .set_config(Some(skill_root), Some(Vec::new()))
+            .await
+            .unwrap();
+
+        let error = services
+            .skill_execution
+            .execute_skill("demo", &serde_json::json!({}), CancellationToken::new())
+            .await
+            .expect_err("disabled skills must not reach the runner");
+
+        assert_eq!(error.to_string(), "skill 'demo' is disabled");
     }
 }

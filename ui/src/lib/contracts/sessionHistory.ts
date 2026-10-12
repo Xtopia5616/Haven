@@ -15,6 +15,7 @@ import {
 	SESSION_LINEAGE_RESPONSE_SHAPE,
 	SESSION_RECORD_RESPONSE_SHAPE,
 	SESSION_RESUME_RESPONSE_SHAPE,
+	REQUEST_KIND_VALUES,
 } from './generatedCommands.ts';
 import { findGeneratedWireShapeMismatch } from './generatedWireShape.ts';
 import { isRecord } from './objectGuards.ts';
@@ -30,13 +31,21 @@ export type SessionResumeStep = GeneratedSessionStep;
 export type SessionResumeUsage = GeneratedSessionUsage;
 
 /** Renderer usage projection derives its fields from the Rust usage DTO. */
-export type SessionLlmUsage = Omit<Partial<GeneratedLlmUsageRecord>, 'cost_usd'> & {
+export type SessionLlmUsage = Omit<
+	Partial<GeneratedLlmUsageRecord>,
+	'cost_usd' | 'request_kind'
+> & {
 	cost_usd?: number | null;
+	requestKind?: GeneratedLlmUsageRecord['request_kind'];
 };
 
 /** Validated resume response with interactions mapped to the renderer contract. */
-export type SessionResumeResponse = Omit<GeneratedSessionResumeResponse, 'interactions'> & {
+export type SessionResumeResponse = Omit<
+	GeneratedSessionResumeResponse,
+	'interactions' | 'llm_usage'
+> & {
 	interactions: InteractionRequest[];
+	llm_usage: SessionLlmUsage[];
 };
 
 function hasSessionIdentity(
@@ -137,6 +146,7 @@ function hasValidSessionUsageNumericValues(value: unknown): boolean {
 function hasValidLlmUsageNumericValues(value: unknown): boolean {
 	if (!isRecord(value)) return false;
 	return (
+		isOneOf(value.request_kind, REQUEST_KIND_VALUES) &&
 		(value.step_number === null || isI32(value.step_number)) &&
 		[
 			'prompt_tokens',
@@ -396,5 +406,9 @@ export function parseSessionResumeResponse(
 	const interactions = value.interactions
 		.map(mapInteractionRequest)
 		.filter((interaction): interaction is InteractionRequest => interaction !== null);
-	return { ...value, interactions } as unknown as SessionResumeResponse;
+	const llmUsage = (value.llm_usage as GeneratedLlmUsageRecord[]).map((row) => {
+		const { request_kind, ...rest } = row;
+		return { ...rest, requestKind: request_kind };
+	});
+	return { ...value, llm_usage: llmUsage, interactions } as unknown as SessionResumeResponse;
 }

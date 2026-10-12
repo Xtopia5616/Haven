@@ -34,7 +34,7 @@ describe('Agent event toast projection', () => {
 				sessionId: 'ses-media',
 				stepNumber: 4,
 				runId: 8,
-				role: 'audio_chat',
+				requestKind: 'audio_chat',
 				strategy: 'auto',
 				projections: [
 					{ assetId: 'asset-1', representation: 'transcript', mode: 'derived' },

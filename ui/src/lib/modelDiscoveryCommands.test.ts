@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { discoverModels } from './modelDiscoveryCommands.ts';
-import type { DiscoverModelsRequest } from './contracts/commands.ts';
+import type { TauriCommandRequest } from './contracts/generatedCommands.ts';
 
 const { invoke } = vi.hoisted(() => ({ invoke: vi.fn() }));
 
@@ -22,7 +22,7 @@ describe('model discovery command boundary', () => {
 	beforeEach(() => invoke.mockReset());
 
 	it('forwards the flat request and projects provider metadata to the renderer view', async () => {
-		const request: DiscoverModelsRequest = {
+		const request: TauriCommandRequest<'discover_models'> = {
 			baseUrl: 'https://models.example/v1',
 			apiKey: 'key',
 			providerName: 'custom-provider',

@@ -3,7 +3,7 @@ import {
 	readPerformanceMetricsSnapshot,
 	registerPerformanceMetricsProvider,
 } from './performanceMetrics.ts';
-import type { UiMetricsSnapshot } from './contracts/commands.ts';
+import type { UiMetricsSnapshot } from './contracts/generatedCommands.ts';
 import { AGENT_METRICS_PHASE_COUNT } from './contracts/generatedCommands.ts';
 import { invoke } from './tauri.ts';
 

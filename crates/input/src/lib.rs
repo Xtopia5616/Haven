@@ -84,7 +84,6 @@ pub enum RecordingReason {
     Manual,
     Silence,
     MaxDuration,
-    Cancel,
 }
 
 /// Recording flavor for the recording loop. User-input recordings (button /
@@ -910,7 +909,6 @@ mod tests {
             (RecordingReason::Manual, "Manual"),
             (RecordingReason::Silence, "Silence"),
             (RecordingReason::MaxDuration, "MaxDuration"),
-            (RecordingReason::Cancel, "Cancel"),
         ];
         for (reason, label) in reasons {
             assert_eq!(format!("{:?}", reason), label);
@@ -937,7 +935,6 @@ mod tests {
             RecordingReason::Manual,
             RecordingReason::Silence,
             RecordingReason::MaxDuration,
-            RecordingReason::Cancel,
         ];
         for r in &reasons {
             let json = serde_json::to_string(r).unwrap();

@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { matchesGeneratedWireShape, type GeneratedWireShape } from './generatedWireShape.ts';
+import {
+	matchesGeneratedEventPayload,
+	matchesGeneratedWireShape,
+	type GeneratedWireShape,
+} from './generatedWireShape.ts';
 
 describe('generated Rust wire shapes', () => {
 	const shape: GeneratedWireShape = {
@@ -88,5 +92,25 @@ describe('generated Rust wire shapes', () => {
 		expect(matchesGeneratedWireShape({ kind: 'empty', nullable: null }, shape)).toBe(true);
 		expect(matchesGeneratedWireShape({ kind: 'text', value: [4] }, shape)).toBe(false);
 		expect(matchesGeneratedWireShape({ kind: 'other', value: [4, true] }, shape)).toBe(false);
+	});
+
+	it('uses Rust-generated payload shapes for every registered event channel', () => {
+		expect(
+			matchesGeneratedEventPayload('recording:started', {
+				is_recording: true,
+				recording_id: 'rec-0123456789abcdef0123456789abcdef',
+			}),
+		).toBe(true);
+		expect(matchesGeneratedEventPayload('recording:started', { recording_id: 'missing-state' })).toBe(
+			false,
+		);
+		expect(
+			matchesGeneratedEventPayload('tool_run:created', {
+				tool_run_id: 'toolrun-0123456789abcdef0123456789abcdef',
+				kind: 'background',
+				status: 'future_status',
+			}),
+		).toBe(false);
+		expect(matchesGeneratedEventPayload('unknown:event', {})).toBe(false);
 	});
 });

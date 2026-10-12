@@ -288,7 +288,7 @@ pub(crate) enum ActorCommand {
 /// A cloneable mailbox endpoint for one session.
 #[derive(Clone)]
 pub(crate) struct SessionActorHandle {
-    pub(crate) id: String,
+    pub(crate) session_id: String,
     tx: mpsc::Sender<ActorCommand>,
     actor_lifetime: CancellationToken,
     run_cancellation: watch::Receiver<CancellationToken>,
@@ -361,7 +361,7 @@ impl SessionActorHandle {
         self.tx
             .send(command)
             .await
-            .map_err(|_| anyhow::anyhow!("session actor '{}' has stopped", self.id))
+            .map_err(|_| anyhow::anyhow!("session actor '{}' has stopped", self.session_id))
     }
 
     pub(crate) async fn snapshot(&self) -> Option<SessionInfo> {
@@ -383,8 +383,9 @@ impl SessionActorHandle {
             reply,
         })
         .await?;
-        rx.await
-            .map_err(|_| anyhow::anyhow!("session actor '{}' dropped transition", self.id))?
+        rx.await.map_err(|_| {
+            anyhow::anyhow!("session actor '{}' dropped transition", self.session_id)
+        })?
     }
 
     pub(crate) async fn transition_if(
@@ -401,8 +402,9 @@ impl SessionActorHandle {
             reply,
         })
         .await?;
-        rx.await
-            .map_err(|_| anyhow::anyhow!("session actor '{}' dropped transition", self.id))?
+        rx.await.map_err(|_| {
+            anyhow::anyhow!("session actor '{}' dropped transition", self.session_id)
+        })?
     }
 
     pub(crate) async fn set_waiting_reason(
@@ -416,7 +418,7 @@ impl SessionActorHandle {
         let (reply, rx) = oneshot::channel();
         self.send(ActorCommand::ClaimSessionRun { reply }).await?;
         rx.await
-            .map_err(|_| anyhow::anyhow!("session actor '{}' dropped run claim", self.id))?
+            .map_err(|_| anyhow::anyhow!("session actor '{}' dropped run claim", self.session_id))?
     }
 
     #[cfg(test)]
@@ -460,8 +462,9 @@ impl SessionActorHandle {
     pub(crate) async fn run(&self, engine: SessionRunEngine) -> anyhow::Result<()> {
         let (reply, rx) = oneshot::channel();
         self.send(ActorCommand::Run { engine, reply }).await?;
-        rx.await
-            .map_err(|_| anyhow::anyhow!("session actor '{}' dropped run result", self.id))?
+        rx.await.map_err(|_| {
+            anyhow::anyhow!("session actor '{}' dropped run result", self.session_id)
+        })?
     }
 
     pub(crate) async fn run_react_loop(
@@ -478,8 +481,12 @@ impl SessionActorHandle {
             reply,
         })
         .await?;
-        rx.await
-            .map_err(|_| anyhow::anyhow!("session actor '{}' dropped ReAct loop result", self.id))?
+        rx.await.map_err(|_| {
+            anyhow::anyhow!(
+                "session actor '{}' dropped ReAct loop result",
+                self.session_id
+            )
+        })?
     }
 
     pub(crate) async fn queue_follow_up(
@@ -499,7 +506,7 @@ impl SessionActorHandle {
         }))
         .await?;
         rx.await
-            .map_err(|_| anyhow::anyhow!("session actor '{}' dropped follow-up", self.id))?
+            .map_err(|_| anyhow::anyhow!("session actor '{}' dropped follow-up", self.session_id))?
     }
 
     pub(crate) async fn queue_steering(
@@ -517,7 +524,7 @@ impl SessionActorHandle {
         }))
         .await?;
         rx.await
-            .map_err(|_| anyhow::anyhow!("session actor '{}' dropped steering", self.id))?
+            .map_err(|_| anyhow::anyhow!("session actor '{}' dropped steering", self.session_id))?
     }
 
     pub(crate) async fn drain_react_context(&self) -> ReActContextBatch {
@@ -574,8 +581,9 @@ impl SessionActorHandle {
             },
         ))
         .await?;
-        rx.await
-            .map_err(|_| anyhow::anyhow!("session actor '{}' dropped ToolRun result", self.id))?
+        rx.await.map_err(|_| {
+            anyhow::anyhow!("session actor '{}' dropped ToolRun result", self.session_id)
+        })?
     }
 
     pub(crate) async fn request_interaction(
@@ -588,8 +596,9 @@ impl SessionActorHandle {
             reply,
         })
         .await?;
-        rx.await
-            .map_err(|_| anyhow::anyhow!("session actor '{}' dropped interaction", self.id))?
+        rx.await.map_err(|_| {
+            anyhow::anyhow!("session actor '{}' dropped interaction", self.session_id)
+        })?
     }
 
     pub(crate) async fn request_confirm_batch(
@@ -620,7 +629,10 @@ impl SessionActorHandle {
         })
         .await?;
         rx.await.map_err(|_| {
-            anyhow::anyhow!("session actor '{}' dropped confirmation batch", self.id)
+            anyhow::anyhow!(
+                "session actor '{}' dropped confirmation batch",
+                self.session_id
+            )
         })?
     }
 
@@ -651,16 +663,24 @@ impl SessionActorHandle {
         let (reply, rx) = oneshot::channel();
         self.send(ActorCommand::ClearInteractions { kind, reply })
             .await?;
-        rx.await
-            .map_err(|_| anyhow::anyhow!("session actor '{}' dropped interaction clear", self.id))?
+        rx.await.map_err(|_| {
+            anyhow::anyhow!(
+                "session actor '{}' dropped interaction clear",
+                self.session_id
+            )
+        })?
     }
 
     pub(crate) async fn forget_interactions(&self, ids: Vec<String>) -> anyhow::Result<()> {
         let (reply, rx) = oneshot::channel();
         self.send(ActorCommand::ForgetInteractions { ids, reply })
             .await?;
-        rx.await
-            .map_err(|_| anyhow::anyhow!("session actor '{}' dropped interaction forget", self.id))
+        rx.await.map_err(|_| {
+            anyhow::anyhow!(
+                "session actor '{}' dropped interaction forget",
+                self.session_id
+            )
+        })
     }
 
     pub(crate) async fn resolve_interaction(
@@ -678,7 +698,10 @@ impl SessionActorHandle {
         }))
         .await?;
         rx.await.map_err(|_| {
-            anyhow::anyhow!("session actor '{}' dropped interaction resolution", self.id)
+            anyhow::anyhow!(
+                "session actor '{}' dropped interaction resolution",
+                self.session_id
+            )
         })?
     }
 
@@ -687,7 +710,7 @@ impl SessionActorHandle {
         self.send(ActorCommand::Session(SessionCommand::Cancel { reply }))
             .await?;
         rx.await
-            .map_err(|_| anyhow::anyhow!("session actor '{}' dropped cancel", self.id))?
+            .map_err(|_| anyhow::anyhow!("session actor '{}' dropped cancel", self.session_id))?
     }
 
     pub(crate) async fn record_step(&self, step: StepInfo) {
@@ -767,9 +790,13 @@ impl SessionActorHandle {
                 envelope: Box::new(envelope),
                 reply,
             })
-            .map_err(|_| anyhow::anyhow!("session actor '{}' has stopped", self.id))?;
-        rx.blocking_recv()
-            .map_err(|_| anyhow::anyhow!("session actor '{}' dropped message delivery", self.id))?
+            .map_err(|_| anyhow::anyhow!("session actor '{}' has stopped", self.session_id))?;
+        rx.blocking_recv().map_err(|_| {
+            anyhow::anyhow!(
+                "session actor '{}' dropped message delivery",
+                self.session_id
+            )
+        })?
     }
 
     pub(crate) fn claim_messages(&self) -> Vec<Envelope> {
@@ -951,7 +978,7 @@ pub(crate) fn spawn(
     let initial_run_cancellation = actor_lifetime.child_token();
     let (run_cancellation, run_cancellation_rx) = watch::channel(initial_run_cancellation.clone());
     let handle = SessionActorHandle {
-        id: info.session_id.clone(),
+        session_id: info.session_id.clone(),
         tx,
         actor_lifetime: actor_lifetime.clone(),
         run_cancellation: run_cancellation_rx,

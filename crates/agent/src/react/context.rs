@@ -632,8 +632,8 @@ mod assembly_tests {
             self.inner.last_received(name)
         }
 
-        fn find_message(&self, name: &str, id: &str) -> anyhow::Result<Option<Envelope>> {
-            self.inner.find_message(name, id)
+        fn find_message(&self, name: &str, message_id: &str) -> anyhow::Result<Option<Envelope>> {
+            self.inner.find_message(name, message_id)
         }
 
         fn take_matching_replies(

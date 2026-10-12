@@ -134,9 +134,10 @@ pub struct LlmUsageRecord {
     pub session_id: String,
     /// ReAct step number the call served (NULL when not attributable).
     pub step_number: Option<i32>,
-    /// Request kind that produced the call, serialized in the established
-    /// `role` column as a snake_case string (e.g. "chat" or "vision").
-    pub role: RequestKind,
+    /// Request kind that produced the call. The physical SQLite column keeps
+    /// its historical name `llm_usage.role` and is mapped here explicitly.
+    #[serde(alias = "role")]
+    pub request_kind: RequestKind,
     /// Call surface that owns the usage. Agent turns feed session totals;
     /// tool-owned media and other tool inference are retained for diagnostics
     /// but excluded from those totals.
@@ -206,7 +207,7 @@ impl LlmUsageRecord {
             usage_id,
             session_id: session_id.into(),
             step_number: input.step_number,
-            role: input.request_kind,
+            request_kind: input.request_kind,
             call_kind: input.call_kind,
             model: input.model.clone(),
             prompt_tokens: input.prompt_tokens,
@@ -402,7 +403,7 @@ impl Database {
             usage_id,
             session_id: session_id.into(),
             step_number,
-            role: request_kind,
+            request_kind,
             call_kind: LlmCallKind::Agent,
             model: model.map(String::from),
             prompt_tokens,
@@ -622,7 +623,7 @@ impl Database {
                 usage_id: usage_id.clone(),
                 session_id: session_id.into(),
                 step_number,
-                role: request_kind,
+                request_kind,
                 call_kind,
                 model: model.map(String::from),
                 prompt_tokens,
@@ -781,7 +782,7 @@ impl Database {
             &record.usage_id,
             &record.session_id,
             record.step_number,
-            record.role,
+            record.request_kind,
             record.call_kind.as_str(),
             record.model.as_deref(),
             record.prompt_tokens,
@@ -850,6 +851,8 @@ impl Database {
             cache_creation_tokens,
             CacheAccounting::parse(cache_accounting),
         );
+        // The semantic request_kind value is stored in the established
+        // physical llm_usage.role column; the database schema is unchanged.
         conn.execute(
             "INSERT INTO llm_usage
                  (id, session_id, step_number, role, call_kind, model, prompt_tokens, completion_tokens,
@@ -1075,12 +1078,13 @@ impl Database {
                     "invalid persisted llm_usage.session_id".into(),
                 ));
             }
-            let role_text: String = row.get(3)?;
-            let role = RequestKind::from_str(&role_text).ok_or_else(|| {
+            // Read the historical physical column into the semantic model name.
+            let request_kind_text: String = row.get(3)?;
+            let request_kind = RequestKind::from_str(&request_kind_text).ok_or_else(|| {
                 rusqlite::Error::FromSqlConversionFailure(
                     3,
                     Type::Text,
-                    format!("invalid RequestKind in llm_usage.role: {role_text}").into(),
+                    format!("invalid RequestKind in llm_usage.role: {request_kind_text}").into(),
                 )
             })?;
             let call_kind_text: String = row.get(4)?;
@@ -1095,7 +1099,7 @@ impl Database {
                 usage_id,
                 session_id: record_session_id,
                 step_number: row.get(2)?,
-                role,
+                request_kind,
                 call_kind,
                 model: row.get(5)?,
                 prompt_tokens: row.get(6)?,
@@ -1255,8 +1259,8 @@ mod tests {
             )
             .unwrap();
         assert_eq!(records.len(), 2);
-        assert_eq!(records[0].role, RequestKind::Chat);
-        assert_eq!(records[1].role, RequestKind::Chat);
+        assert_eq!(records[0].request_kind, RequestKind::Chat);
+        assert_eq!(records[1].request_kind, RequestKind::Chat);
         assert_eq!(records[0].call_kind, LlmCallKind::Tool);
         assert_eq!(records[1].call_kind, LlmCallKind::Media);
         assert_eq!(
@@ -1448,12 +1452,17 @@ mod tests {
         let wire = serde_json::to_value(&rec).unwrap();
         assert_eq!(wire["usage_id"], rec.usage_id);
         assert!(wire.get("id").is_none());
+        assert_eq!(wire["request_kind"], "chat");
+        assert!(wire.get("role").is_none());
         let mut historic_wire = wire.clone();
         let object = historic_wire.as_object_mut().unwrap();
         let usage_id = object.remove("usage_id").unwrap();
         object.insert("id".to_owned(), usage_id);
+        let request_kind = object.remove("request_kind").unwrap();
+        object.insert("role".to_owned(), request_kind);
         let historic: LlmUsageRecord = serde_json::from_value(historic_wire).unwrap();
         assert_eq!(historic.usage_id, rec.usage_id);
+        assert_eq!(historic.request_kind, RequestKind::Chat);
         assert_eq!(rec.step_number, Some(1));
         assert_eq!(rec.model.as_deref(), Some("gpt-5"));
         let usage = db.list_session_llm_usage(&session.session_id).unwrap();
@@ -1466,7 +1475,7 @@ mod tests {
         assert_eq!(usage[0].cost_usd, 0.25);
         assert!(usage[0].has_cost);
         assert_eq!(usage[0].duration_ms, Some(1234));
-        assert_eq!(usage[0].role, RequestKind::Chat);
+        assert_eq!(usage[0].request_kind, RequestKind::Chat);
     }
 
     #[test]

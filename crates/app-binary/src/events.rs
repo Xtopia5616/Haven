@@ -123,10 +123,7 @@ impl ToolRunEvent {
         let finished_at = payload.state.finished_at().map(str::to_owned);
         Self {
             tool_run_id: payload.tool_run_id,
-            kind: match payload.kind {
-                haven_tools::ToolRunKind::Background => ToolRunKindDto::Background,
-                haven_tools::ToolRunKind::Scheduled => ToolRunKindDto::Scheduled,
-            },
+            kind: ToolRunKindDto::from(payload.kind),
             status: Some(status),
             session_id: payload.session_id,
             source_step_id: payload.source_step_id,
@@ -198,10 +195,7 @@ impl From<ToolRunView> for ToolRunEvent {
     fn from(view: ToolRunView) -> Self {
         Self {
             tool_run_id: view.tool_run_id,
-            kind: match view.kind {
-                haven_tools::ToolRunKind::Background => ToolRunKindDto::Background,
-                haven_tools::ToolRunKind::Scheduled => ToolRunKindDto::Scheduled,
-            },
+            kind: ToolRunKindDto::from(view.kind),
             status: Some(view.status),
             session_id: view.session_id,
             source_step_id: view.source_step_id,
@@ -221,11 +215,20 @@ impl From<ToolRunView> for ToolRunEvent {
     }
 }
 
-impl ToolRunKindDto {
-    pub(crate) fn as_str(self) -> &'static str {
-        match self {
-            Self::Background => "background",
-            Self::Scheduled => "scheduled",
+impl From<haven_tools::ToolRunKind> for ToolRunKindDto {
+    fn from(kind: haven_tools::ToolRunKind) -> Self {
+        match kind {
+            haven_tools::ToolRunKind::Background => Self::Background,
+            haven_tools::ToolRunKind::Scheduled => Self::Scheduled,
+        }
+    }
+}
+
+impl From<ToolRunKindDto> for haven_tools::ToolRunKind {
+    fn from(kind: ToolRunKindDto) -> Self {
+        match kind {
+            ToolRunKindDto::Background => Self::Background,
+            ToolRunKindDto::Scheduled => Self::Scheduled,
         }
     }
 }
@@ -437,7 +440,7 @@ pub(crate) struct AgentThoughtEvent {
     pub run_id: u64,
     pub message_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub event_seq: Option<u64>,
+    pub event_sequence: Option<u64>,
 }
 
 #[derive(Clone, Serialize)]
@@ -453,7 +456,7 @@ pub(crate) struct AgentToolCallEvent {
     pub suppress_streamed_thought: bool,
     pub silent: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub event_seq: Option<u64>,
+    pub event_sequence: Option<u64>,
 }
 
 #[derive(Clone, Serialize)]
@@ -473,7 +476,7 @@ pub(crate) struct AgentObservationEvent {
     pub renderer: String,
     pub result: ToolResultEnvelope,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub event_seq: Option<u64>,
+    pub event_sequence: Option<u64>,
 }
 
 /// Renderer-safe projection of every human decision request. Internal
@@ -554,7 +557,7 @@ pub(crate) struct AgentStreamResetEvent {
 #[derive(Clone, Serialize)]
 pub(crate) struct AgentWebSearchEvent {
     pub session_id: String,
-    pub phase: String,
+    pub phase: haven_llm::WebSearchPhase,
     pub step_number: u32,
     pub run_id: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -575,13 +578,12 @@ pub(crate) struct AgentMediaPlanEvent {
     pub session_id: String,
     pub step_number: u32,
     pub run_id: u64,
-    /// Request kind serialized under the established `role` wire field.
-    pub role: haven_common::config::RequestKind,
+    pub request_kind: haven_common::config::RequestKind,
     pub strategy: haven_common::media::MediaInputStrategy,
     pub projections: Vec<haven_common::media::MediaProjection>,
     pub notices: Vec<haven_common::media::MediaPlanNotice>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub event_seq: Option<u64>,
+    pub event_sequence: Option<u64>,
 }
 
 #[derive(Clone, Serialize)]
@@ -596,7 +598,7 @@ pub(crate) struct AgentSupplementEvent {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub inject_source: Option<haven_common::types::InjectSource>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub event_seq: Option<u64>,
+    pub event_sequence: Option<u64>,
 }
 
 #[derive(Clone, Serialize)]
@@ -609,7 +611,7 @@ pub(crate) struct AgentCompactionEvent {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub episode_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub event_seq: Option<u64>,
+    pub event_sequence: Option<u64>,
 }
 
 #[derive(Clone, Serialize)]
@@ -663,8 +665,7 @@ pub(crate) struct AgentUsageEvent {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub duration_ms: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    /// Request kind serialized under the established `role` wire field.
-    pub role: Option<haven_common::config::RequestKind>,
+    pub request_kind: Option<haven_common::config::RequestKind>,
     pub call_kind: haven_common::usage::LlmCallKind,
     pub has_cost: bool,
 }

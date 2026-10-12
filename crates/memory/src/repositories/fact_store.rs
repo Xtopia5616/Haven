@@ -257,6 +257,7 @@ impl MemoryFactStore {
         &self,
         limit: usize,
     ) -> anyhow::Result<Vec<Fact>> {
+        let limit = limit.min(haven_common::config::MAX_FACTS_IN_EXTRACTION_PROMPT);
         if limit == 0 {
             return Ok(Vec::new());
         }
@@ -891,6 +892,25 @@ mod tests {
             facts
                 .iter()
                 .all(crate::repositories::facts::is_visible_fact)
+        );
+    }
+
+    #[tokio::test]
+    async fn top_ranked_facts_enforce_the_extraction_prompt_hard_ceiling() {
+        let (db, store) = store();
+        for index in 0..(haven_common::config::MAX_FACTS_IN_EXTRACTION_PROMPT + 5) {
+            db.insert_fact("user", "likes", &format!("item-{index}"), "user", 0.5, &[])
+                .unwrap();
+        }
+
+        let facts = store
+            .top_visible_facts_by_effective_confidence(usize::MAX)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            facts.len(),
+            haven_common::config::MAX_FACTS_IN_EXTRACTION_PROMPT
         );
     }
 

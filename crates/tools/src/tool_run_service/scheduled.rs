@@ -65,7 +65,7 @@ impl ToolRunService {
             anyhow::bail!("tool_name and tool_args require mode 'tool'");
         }
 
-        let id = haven_common::types::new_id("toolrun");
+        let tool_run_id = haven_common::types::new_id("toolrun");
         let due_at = due.map(|value| value.to_rfc3339()).unwrap_or_default();
         let mutation = self.spawn_gate.clone().lock_owned().await;
         if self.shutting_down.load(Ordering::Acquire) {
@@ -96,7 +96,7 @@ impl ToolRunService {
             // SQLite is still writing on its blocking worker. Destructive
             // session cleanup will then observe the committed durable row.
             let args_json = tool_args.as_ref().map(Value::to_string);
-            let persist_id = id.clone();
+            let persist_tool_run_id = tool_run_id.clone();
             let persist_due_at = due_at.clone();
             let persist_title = title.clone();
             let persist_body = body.clone();
@@ -108,7 +108,7 @@ impl ToolRunService {
             let persisted = tokio::spawn(async move {
                 let result = store
                     .save_scheduled_tool_run(
-                        persist_id,
+                        persist_tool_run_id,
                         persist_due_at,
                         persist_title,
                         persist_body,
@@ -128,7 +128,10 @@ impl ToolRunService {
             })?;
             let (mutation, result) = persisted;
             result.map_err(|error| {
-                anyhow::anyhow!("failed to persist scheduled task '{}': {error}", id)
+                anyhow::anyhow!(
+                    "failed to persist scheduled task '{}': {error}",
+                    tool_run_id
+                )
             })?;
             mutation
         } else {
@@ -146,7 +149,7 @@ impl ToolRunService {
             watch_tool_run_id: watch_tool_run_id.clone(),
         };
         self.tool_runs.write().await.insert(
-            id.clone(),
+            tool_run_id.clone(),
             ToolRunEntry {
                 kind: ToolRunKind::Scheduled,
                 session_id: session_id.clone(),
@@ -161,7 +164,7 @@ impl ToolRunService {
         );
         let mut created = ToolRunLifecyclePayload::new(
             ToolRunKind::Scheduled,
-            id.clone(),
+            tool_run_id.clone(),
             ToolRunLifecycleState::Waiting,
         );
         created.session_id = session_id.clone();
@@ -172,13 +175,13 @@ impl ToolRunService {
         self.emit(ToolRunLifecycleEvent::Created(created));
 
         let service = self.clone();
-        let fired_id = id.clone();
+        let fired_tool_run_id = tool_run_id.clone();
         let shutdown_token = self.shutdown_token.clone();
-        if let Some(watched_id) = watch_tool_run_id {
+        if let Some(watched_tool_run_id) = watch_tool_run_id {
             tokio::spawn(async move {
                 tokio::select! {
                     _ = shutdown_token.cancelled() => {}
-                    _ = service.watch_tool_run_timer(fired_id, watched_id) => {}
+                    _ = service.watch_tool_run_timer(fired_tool_run_id, watched_tool_run_id) => {}
                 }
             });
         } else {
@@ -187,12 +190,12 @@ impl ToolRunService {
                     _ = shutdown_token.cancelled() => {}
                     _ = async {
                         tokio::time::sleep(Duration::from_secs(remaining.max(0) as u64)).await;
-                        service.fire_scheduled(&fired_id).await;
+                        service.fire_scheduled(&fired_tool_run_id).await;
                     } => {}
                 }
             });
         }
-        Ok(id)
+        Ok(tool_run_id)
     }
 
     pub async fn list_scheduled_for_session_views(
@@ -202,7 +205,7 @@ impl ToolRunService {
         let tool_runs = self.tool_runs.read().await;
         let mut rows: Vec<_> = tool_runs
             .iter()
-            .filter_map(|(id, entry)| {
+            .filter_map(|(tool_run_id, entry)| {
                 let schedule = entry.scheduled.as_ref()?;
                 if entry.kind != ToolRunKind::Scheduled
                     || !entry.state.status().is_live()
@@ -213,7 +216,7 @@ impl ToolRunService {
                 Some((
                     schedule.due_at.clone(),
                     ToolRunStatusView::Scheduled {
-                        tool_run_id: id.clone(),
+                        tool_run_id: tool_run_id.clone(),
                         session_id: entry.session_id.clone(),
                         schedule: Box::new(scheduled_tool_run_view(schedule)),
                         state: ToolRunStateView::from_entry(entry),
@@ -231,12 +234,12 @@ impl ToolRunService {
             .read()
             .await
             .iter()
-            .filter_map(|(id, entry)| {
+            .filter_map(|(tool_run_id, entry)| {
                 let schedule = entry.scheduled.as_ref()?;
                 (entry.kind == ToolRunKind::Scheduled && entry.state.status().is_live()).then(
                     || {
                         scheduled_status_json(
-                            id,
+                            tool_run_id,
                             entry.session_id.as_deref(),
                             schedule,
                             &entry.state,
@@ -247,12 +250,12 @@ impl ToolRunService {
             .collect()
     }
 
-    pub(super) async fn fire_scheduled(self: &Arc<Self>, id: &str) {
+    pub(super) async fn fire_scheduled(self: &Arc<Self>, tool_run_id: &str) {
         let _mutation = self.spawn_gate.lock().await;
         let started_at = chrono::Utc::now().to_rfc3339();
         let (schedule, session_id) = {
             let tool_runs = self.tool_runs.read().await;
-            let Some(tool_run) = tool_runs.get(id) else {
+            let Some(tool_run) = tool_runs.get(tool_run_id) else {
                 return;
             };
             if !matches!(tool_run.state, ToolRunState::Waiting) {
@@ -265,30 +268,30 @@ impl ToolRunService {
         };
         if let Some(store) = self.tool_run_store.read().await.clone() {
             match store
-                .start_scheduled_tool_run(id.to_string(), started_at.clone())
+                .start_scheduled_tool_run(tool_run_id.to_string(), started_at.clone())
                 .await
             {
                 Ok(true) => {}
                 Ok(false) => {
-                    tracing::warn!(tool_run_id = %id, "scheduled ToolRun was no longer waiting in durable storage");
+                    tracing::warn!(tool_run_id = %tool_run_id, "scheduled ToolRun was no longer waiting in durable storage");
                     return;
                 }
                 Err(error) => {
                     tracing::warn!(
-                        tool_run_id = %id,
+                        tool_run_id = %tool_run_id,
                         error = %haven_common::error::sanitize_error_text(&error.to_string()),
                         "failed to persist scheduled ToolRun trigger"
                     );
                     // The one-shot timer has already exited. Keep the in-memory
                     // ToolRun waiting and mount a fresh worker so a transient DB
                     // outage cannot permanently lose the schedule.
-                    self.arm_scheduled_worker(id.to_string(), &schedule);
+                    self.arm_scheduled_worker(tool_run_id.to_string(), &schedule);
                     return;
                 }
             }
         }
         let payload = ScheduledToolRunFired {
-            tool_run_id: id.to_string(),
+            tool_run_id: tool_run_id.to_string(),
             title: schedule.title.clone(),
             body: schedule.body.clone(),
             mode: schedule.mode,
@@ -300,7 +303,7 @@ impl ToolRunService {
         let started_at_for_event = started_at.clone();
         {
             let mut tool_runs = self.tool_runs.write().await;
-            let Some(tool_run) = tool_runs.get_mut(id) else {
+            let Some(tool_run) = tool_runs.get_mut(tool_run_id) else {
                 return;
             };
             if !matches!(tool_run.state, ToolRunState::Waiting) {
@@ -313,7 +316,7 @@ impl ToolRunService {
         };
         self.emit(ToolRunLifecycleEvent::Updated(
             ToolRunLifecycleUpdate::StateChanged(Box::new(scheduled_lifecycle_payload(
-                id,
+                tool_run_id,
                 session_id.as_deref(),
                 &schedule,
                 &running_state,
@@ -331,20 +334,23 @@ impl ToolRunService {
             // `waiting` and put the timer worker back. If the durable rollback
             // itself fails, retain the fire in the recovery map so a receiver
             // can still acknowledge it later instead of silently losing work.
-            self.clear_scheduled_fire_claim(id).await;
+            self.clear_scheduled_fire_claim(tool_run_id).await;
             let mut requeued = true;
             if let Some(store) = self.tool_run_store.read().await.clone() {
                 let mut last_error = None;
                 let retry_policy = ToolRunStoreRetryPolicy::inline_store();
                 for attempt in 1..=retry_policy.max_attempts() {
-                    match store.requeue_scheduled_tool_run(id.to_string()).await {
+                    match store
+                        .requeue_scheduled_tool_run(tool_run_id.to_string())
+                        .await
+                    {
                         Ok(true) => {
                             last_error = None;
                             break;
                         }
                         Ok(false) => {
                             requeued = false;
-                            tracing::warn!(tool_run_id = %id, "undelivered scheduled ToolRun was not running in durable storage");
+                            tracing::warn!(tool_run_id = %tool_run_id, "undelivered scheduled ToolRun was not running in durable storage");
                             break;
                         }
                         Err(error) => {
@@ -361,7 +367,7 @@ impl ToolRunService {
                 if let Some(error) = last_error {
                     requeued = false;
                     tracing::warn!(
-                        tool_run_id = %id,
+                        tool_run_id = %tool_run_id,
                         error = %haven_common::error::sanitize_error_text(&error.to_string()),
                         "failed to requeue undelivered scheduled ToolRun"
                     );
@@ -371,32 +377,36 @@ impl ToolRunService {
                 self.completion_bus.retain_scheduled_fire(payload).await;
                 return;
             }
-            if let Some(tool_run) = self.tool_runs.write().await.get_mut(id)
+            if let Some(tool_run) = self.tool_runs.write().await.get_mut(tool_run_id)
                 && matches!(tool_run.state, ToolRunState::Running { .. })
             {
                 tool_run.state = ToolRunState::Waiting;
             }
             self.emit(ToolRunLifecycleEvent::Updated(
                 ToolRunLifecycleUpdate::StateChanged(Box::new(scheduled_lifecycle_payload(
-                    id,
+                    tool_run_id,
                     session_id.as_deref(),
                     &schedule,
                     &ToolRunState::Waiting,
                 ))),
             ));
-            self.arm_scheduled_worker(id.to_string(), &schedule);
+            self.arm_scheduled_worker(tool_run_id.to_string(), &schedule);
         }
     }
 
-    async fn watch_tool_run_timer(self: &Arc<Self>, id: String, watched_id: String) {
+    async fn watch_tool_run_timer(
+        self: &Arc<Self>,
+        tool_run_id: String,
+        watched_tool_run_id: String,
+    ) {
         loop {
             tokio::time::sleep(Duration::from_millis(1000)).await;
-            let status = match self.dependency_status(&watched_id).await {
+            let status = match self.dependency_status(&watched_tool_run_id).await {
                 Ok(status) => status,
                 Err(error) => {
                     tracing::warn!(
-                        tool_run_id = %id,
-                        watch_tool_run_id = %watched_id,
+                        tool_run_id = %tool_run_id,
+                        watch_tool_run_id = %watched_tool_run_id,
                         error = %haven_common::error::sanitize_error_text(&error.to_string()),
                         "failed to read dependency status; watcher will retry"
                     );
@@ -409,10 +419,10 @@ impl ToolRunService {
             ) {
                 continue;
             }
-            let prompt = tool_run_finished_prompt(&watched_id, &status);
+            let prompt = tool_run_finished_prompt(&watched_tool_run_id, &status);
             {
                 let mut tool_runs = self.tool_runs.write().await;
-                let Some(tool_run) = tool_runs.get_mut(&id) else {
+                let Some(tool_run) = tool_runs.get_mut(&tool_run_id) else {
                     return;
                 };
                 if !matches!(tool_run.state, ToolRunState::Waiting) {
@@ -423,7 +433,7 @@ impl ToolRunService {
                 };
                 schedule.prompt = Some(prompt);
             }
-            self.fire_scheduled(&id).await;
+            self.fire_scheduled(&tool_run_id).await;
             return;
         }
     }
@@ -434,16 +444,16 @@ impl ToolRunService {
     /// not reusable after `fire_scheduled` returns.
     pub(super) fn arm_scheduled_worker(
         self: &Arc<Self>,
-        id: String,
+        tool_run_id: String,
         schedule: &ScheduledToolRunEntry,
     ) {
         let service = Arc::clone(self);
         let shutdown_token = self.shutdown_token.clone();
-        if let Some(watched_id) = schedule.watch_tool_run_id.clone() {
+        if let Some(watched_tool_run_id) = schedule.watch_tool_run_id.clone() {
             tokio::spawn(async move {
                 tokio::select! {
                     _ = shutdown_token.cancelled() => {}
-                    _ = service.watch_tool_run_timer(id, watched_id) => {}
+                    _ = service.watch_tool_run_timer(tool_run_id, watched_tool_run_id) => {}
                 }
             });
             return;
@@ -452,7 +462,7 @@ impl ToolRunService {
         let remaining = match chrono::DateTime::parse_from_rfc3339(&schedule.due_at) {
             Ok(due) => (due.with_timezone(&chrono::Utc) - chrono::Utc::now()).num_seconds(),
             Err(_error) => {
-                tracing::warn!(tool_run_id = %id, "cannot re-arm scheduled ToolRun with invalid due_at");
+                tracing::warn!(tool_run_id = %tool_run_id, "cannot re-arm scheduled ToolRun with invalid due_at");
                 return;
             }
         };
@@ -463,14 +473,14 @@ impl ToolRunService {
                     // An undelivered overdue fire is retried with a small
                     // floor to avoid a tight broadcast-failure loop.
                     tokio::time::sleep(Duration::from_secs(remaining.max(1) as u64)).await;
-                    service.fire_scheduled(&id).await;
+                    service.fire_scheduled(&tool_run_id).await;
                 } => {}
             }
         });
     }
 
-    pub async fn complete_scheduled(self: &Arc<Self>, id: &str) -> anyhow::Result<bool> {
-        self.finish_scheduled(id, ToolRunStatus::Completed, None, None)
+    pub async fn complete_scheduled(self: &Arc<Self>, tool_run_id: &str) -> anyhow::Result<bool> {
+        self.finish_scheduled(tool_run_id, ToolRunStatus::Completed, None, None)
             .await
     }
 
@@ -478,27 +488,31 @@ impl ToolRunService {
     /// continuations can receive the producer's terminal result after a restart.
     pub async fn complete_scheduled_with_result(
         self: &Arc<Self>,
-        id: &str,
+        tool_run_id: &str,
         result: &str,
     ) -> anyhow::Result<bool> {
-        self.finish_scheduled(id, ToolRunStatus::Completed, Some(result), None)
+        self.finish_scheduled(tool_run_id, ToolRunStatus::Completed, Some(result), None)
             .await
     }
 
-    pub async fn fail_scheduled(self: &Arc<Self>, id: &str, reason: &str) -> anyhow::Result<bool> {
-        self.finish_scheduled(id, ToolRunStatus::Failed, None, Some(reason))
+    pub async fn fail_scheduled(
+        self: &Arc<Self>,
+        tool_run_id: &str,
+        reason: &str,
+    ) -> anyhow::Result<bool> {
+        self.finish_scheduled(tool_run_id, ToolRunStatus::Failed, None, Some(reason))
             .await
     }
 
     async fn finish_scheduled_in_memory(
         &self,
-        id: &str,
+        tool_run_id: &str,
         schedule: &ScheduledToolRunEntry,
         state: ToolRunState,
     ) -> bool {
         let session_id = {
             let mut tool_runs = self.tool_runs.write().await;
-            let Some(tool_run) = tool_runs.get_mut(id) else {
+            let Some(tool_run) = tool_runs.get_mut(tool_run_id) else {
                 return false;
             };
             if !can_claim_terminal(
@@ -511,12 +525,15 @@ impl ToolRunService {
             tool_run.state = state.clone();
             tool_run.session_id.clone()
         };
-        self.scheduled_execution_claims.write().await.remove(id);
-        self.clear_scheduled_fire_claim(id).await;
+        self.scheduled_execution_claims
+            .write()
+            .await
+            .remove(tool_run_id);
+        self.clear_scheduled_fire_claim(tool_run_id).await;
         if schedule.mode == ScheduleMode::Tool {
-            self.publish_scheduled_tool_result(id, state.clone(), session_id.clone());
+            self.publish_scheduled_tool_result(tool_run_id, state.clone(), session_id.clone());
         }
-        self.emit_scheduled_finished(id, session_id.as_deref(), schedule, &state);
+        self.emit_scheduled_finished(tool_run_id, session_id.as_deref(), schedule, &state);
         true
     }
 
@@ -551,7 +568,7 @@ impl ToolRunService {
 
     async fn persist_scheduled_terminal(
         &self,
-        id: &str,
+        tool_run_id: &str,
         status: ToolRunStatus,
         result_summary: Option<&str>,
         error_reason: Option<&str>,
@@ -565,7 +582,7 @@ impl ToolRunService {
         for attempt in 1..=retry_policy.max_attempts() {
             match store
                 .finish_scheduled_tool_run(
-                    id.to_string(),
+                    tool_run_id.to_string(),
                     status,
                     result_summary.map(str::to_owned),
                     error_reason.map(str::to_owned),
@@ -689,7 +706,7 @@ impl ToolRunService {
 
     async fn finish_scheduled(
         self: &Arc<Self>,
-        id: &str,
+        tool_run_id: &str,
         status: ToolRunStatus,
         result_summary: Option<&str>,
         error_reason: Option<&str>,
@@ -698,7 +715,7 @@ impl ToolRunService {
         let _terminal = self.terminal_transition.lock().await;
         let (schedule, started_at) = {
             let tool_runs = self.tool_runs.read().await;
-            let Some(tool_run) = tool_runs.get(id) else {
+            let Some(tool_run) = tool_runs.get(tool_run_id) else {
                 return Ok(false);
             };
             if !can_claim_terminal(tool_run.state.status(), status, TerminalSource::Running) {
@@ -720,7 +737,7 @@ impl ToolRunService {
         };
         match self
             .persist_scheduled_terminal(
-                id,
+                tool_run_id,
                 status,
                 result_summary,
                 error_reason,
@@ -732,7 +749,7 @@ impl ToolRunService {
             Ok(false) => return Ok(false),
             Err(error) => {
                 self.retry_scheduled_terminal_persistence(ScheduledTerminalRetry {
-                    tool_run_id: id.to_string(),
+                    tool_run_id: tool_run_id.to_string(),
                     schedule: schedule.clone(),
                     started_at: timestamps.started_at.clone(),
                     status,
@@ -746,28 +763,30 @@ impl ToolRunService {
                 ));
             }
         }
-        Ok(self.finish_scheduled_in_memory(id, &schedule, state).await)
+        Ok(self
+            .finish_scheduled_in_memory(tool_run_id, &schedule, state)
+            .await)
     }
 
     fn emit_scheduled_finished(
         &self,
-        id: &str,
+        tool_run_id: &str,
         session_id: Option<&str>,
         entry: &ScheduledToolRunEntry,
         state: &ToolRunState,
     ) {
         self.emit(ToolRunLifecycleEvent::Finished(
-            scheduled_lifecycle_payload(id, session_id, entry, state),
+            scheduled_lifecycle_payload(tool_run_id, session_id, entry, state),
         ));
     }
 
-    pub(super) async fn cancel_scheduled(&self, id: &str, owner: Option<&str>) -> bool {
+    pub(super) async fn cancel_scheduled(&self, tool_run_id: &str, owner: Option<&str>) -> bool {
         let _mutation = self.spawn_gate.lock().await;
-        match self.cancel_scheduled_locked(id, owner).await {
+        match self.cancel_scheduled_locked(tool_run_id, owner).await {
             Ok(cancelled) => cancelled,
             Err(error) => {
                 tracing::warn!(
-                    tool_run_id = %id,
+                    tool_run_id = %tool_run_id,
                     error = %haven_common::error::sanitize_error_text(&error.to_string()),
                     "failed to persist scheduled ToolRun cancellation after retries"
                 );
@@ -781,7 +800,7 @@ impl ToolRunService {
     /// destructive session cleanup can fail closed.
     pub(super) async fn cancel_scheduled_locked(
         &self,
-        id: &str,
+        tool_run_id: &str,
         owner: Option<&str>,
     ) -> anyhow::Result<bool> {
         let _terminal = self.terminal_transition.lock().await;
@@ -789,13 +808,13 @@ impl ToolRunService {
             .scheduled_execution_claims
             .read()
             .await
-            .contains_key(id)
+            .contains_key(tool_run_id)
         {
             return Ok(false);
         }
         let (schedule, started_at, session_id) = {
             let tool_runs = self.tool_runs.read().await;
-            let Some(tool_run) = tool_runs.get(id) else {
+            let Some(tool_run) = tool_runs.get(tool_run_id) else {
                 return Ok(false);
             };
             if tool_run.kind != ToolRunKind::Scheduled
@@ -827,7 +846,10 @@ impl ToolRunService {
             let retry_policy = ToolRunStoreRetryPolicy::inline_store();
             for attempt in 1..=retry_policy.max_attempts() {
                 match store
-                    .cancel_scheduled_tool_run(id.to_string(), timestamps.finished_at.clone())
+                    .cancel_scheduled_tool_run(
+                        tool_run_id.to_string(),
+                        timestamps.finished_at.clone(),
+                    )
                     .await
                 {
                     Ok(true) => {
@@ -853,7 +875,7 @@ impl ToolRunService {
         }
         let state = timestamps.build(TerminalPayload::Cancelled);
         let mut tool_runs = self.tool_runs.write().await;
-        let Some(tool_run) = tool_runs.get_mut(id) else {
+        let Some(tool_run) = tool_runs.get_mut(tool_run_id) else {
             return Ok(false);
         };
         if !can_claim_terminal(
@@ -864,10 +886,13 @@ impl ToolRunService {
             return Ok(false);
         }
         tool_run.state = state.clone();
-        self.scheduled_execution_claims.write().await.remove(id);
-        self.clear_scheduled_fire_claim(id).await;
+        self.scheduled_execution_claims
+            .write()
+            .await
+            .remove(tool_run_id);
+        self.clear_scheduled_fire_claim(tool_run_id).await;
         drop(tool_runs);
-        self.emit_scheduled_finished(id, session_id.as_deref(), &schedule, &state);
+        self.emit_scheduled_finished(tool_run_id, session_id.as_deref(), &schedule, &state);
         Ok(true)
     }
 

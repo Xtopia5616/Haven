@@ -162,7 +162,7 @@ function resumeResponse(): ResumeFixture {
 				usage_id: usageId,
 				session_id: sessionId,
 				step_number: 1,
-				role: 'chat',
+				request_kind: 'chat',
 				call_kind: 'agent',
 				model: 'example-model',
 				prompt_tokens: 100,
@@ -374,6 +374,8 @@ describe('session history and resume contracts', () => {
 		const response = resumeResponse();
 		const parsed = parseSessionResumeResponse(response);
 		expect(parsed).not.toBe(response);
+		expect(parsed.llm_usage[0]).toMatchObject({ requestKind: 'chat' });
+		expect(parsed.llm_usage[0]).not.toHaveProperty('request_kind');
 		expect(parsed.interactions).toEqual([
 			{
 				requestId: stepId,
@@ -417,6 +419,12 @@ describe('session history and resume contracts', () => {
 		const invalidCacheAccounting = resumeResponse();
 		invalidCacheAccounting.llm_usage[0]!.cache_accounting = 'inclusive-ish';
 		expect(() => parseSessionResumeResponse(invalidCacheAccounting)).toThrow(
+			'Invalid session resume response shape',
+		);
+
+		const invalidUsageRequestKind = resumeResponse();
+		invalidUsageRequestKind.llm_usage[0]!.request_kind = 'future_request_kind';
+		expect(() => parseSessionResumeResponse(invalidUsageRequestKind)).toThrow(
 			'Invalid session resume response shape',
 		);
 

@@ -8,6 +8,7 @@ use haven_common::config::RequestKind;
 use haven_common::lifecycle::SessionStatus;
 use haven_common::tools::{OperationIdempotency, ToolOperationScope, ToolResultEnvelope};
 use haven_common::usage::{CacheAccounting, CacheDiagnostics, LlmCallKind};
+use haven_llm::WebSearchPhase;
 use haven_memory::SessionStore;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -33,7 +34,7 @@ pub enum AgentEvent {
         message_id: String,
         /// Sequence of the committed `session_events` row. `None` is only for
         /// callers that snap a thought without a durable transcript row.
-        event_seq: Option<u64>,
+        event_sequence: Option<u64>,
     },
     ToolCall {
         session_id: String,
@@ -53,7 +54,7 @@ pub enum AgentEvent {
         suppress_streamed_thought: bool,
         /// Sequence of the committed `session_events` row that produced this
         /// UI projection. `None` is reserved for non-transcript/runtime cards.
-        event_seq: Option<u64>,
+        event_sequence: Option<u64>,
     },
     Observation {
         session_id: String,
@@ -82,7 +83,7 @@ pub enum AgentEvent {
         result: ToolResultEnvelope,
         /// Sequence of the committed `session_events` row that produced this
         /// UI projection.
-        event_seq: Option<u64>,
+        event_sequence: Option<u64>,
     },
     SessionCreated(SessionInfo),
     SessionCompleted {
@@ -149,14 +150,13 @@ pub enum AgentEvent {
         session_id: String,
         step_number: u32,
         run_id: u64,
-        /// Request kind serialized under the established `role` wire field.
-        role: RequestKind,
+        request_kind: RequestKind,
         strategy: haven_common::media::MediaInputStrategy,
         projections: Vec<haven_common::media::MediaProjection>,
         notices: Vec<haven_common::media::MediaPlanNotice>,
         /// Sequence of the committed `session_events` row that produced this
         /// UI projection.
-        event_seq: Option<u64>,
+        event_sequence: Option<u64>,
     },
     /// Live status of the provider's built-in web search tool. Forwarded from
     /// the stream events (`in_progress` → `searching` → `completed`) so the
@@ -167,7 +167,7 @@ pub enum AgentEvent {
     /// on the completed phase so the card shows what the search returned.
     WebSearch {
         session_id: String,
-        phase: String,
+        phase: WebSearchPhase,
         step_number: u32,
         run_id: u64,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -203,7 +203,7 @@ pub enum AgentEvent {
         inject_source: Option<haven_common::types::InjectSource>,
         /// Sequence of the committed `session_events` row that produced this
         /// UI projection.
-        event_seq: Option<u64>,
+        event_sequence: Option<u64>,
     },
     SessionUpdated {
         session_id: String,
@@ -232,7 +232,7 @@ pub enum AgentEvent {
         degraded: bool,
         /// Sequence of the committed `session_events` row that produced this
         /// UI projection.
-        event_seq: Option<u64>,
+        event_sequence: Option<u64>,
     },
     TitleUpdated {
         session_id: String,
@@ -260,7 +260,7 @@ pub enum AgentEvent {
     /// prompt/completion/total tokens and the USD cost when the active
     /// endpoint has pricing configured. Emitted after every ReAct step so
     /// the UI can display a running counter and remaining context budget.
-    /// `step_number` / `duration_ms` / `role` / `has_cost` mirror the
+    /// `step_number` / `duration_ms` / `request_kind` / `has_cost` mirror the
     /// persisted `llm_usage` row so live tool cards can render the same
     /// per-step token chip that resume mode restores from the DB.
     Usage {
@@ -305,9 +305,8 @@ pub enum AgentEvent {
         /// Wall-clock duration of the call in milliseconds.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         duration_ms: Option<u64>,
-        /// Request kind serialized under the established `role` wire field.
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        role: Option<RequestKind>,
+        request_kind: Option<RequestKind>,
         call_kind: LlmCallKind,
         /// Whether `cost_usd` is a real priced value (vs absent pricing).
         has_cost: bool,
@@ -1296,7 +1295,7 @@ impl EventDispatcher {
                 step_number,
                 run_id,
                 message_id: message_id.into(),
-                event_seq: None,
+                event_sequence: None,
             })
             .await;
         Ok(())
@@ -1360,7 +1359,7 @@ impl EventDispatcher {
                 context_window: usage.context_window,
                 step_number: usage.step_number,
                 duration_ms: usage.duration_ms,
-                role: usage.request_kind,
+                request_kind: usage.request_kind,
                 call_kind: usage.call_kind,
                 has_cost: usage.has_cost,
             })
@@ -1396,8 +1395,7 @@ pub struct UsagePayload {
     pub context_window: Option<u32>,
     pub step_number: Option<u32>,
     pub duration_ms: Option<u64>,
-    /// Request kind; `AgentEvent::Usage` serializes it as the established
-    /// `role` field.
+    /// Request kind served by this usage event.
     pub request_kind: Option<RequestKind>,
     pub call_kind: LlmCallKind,
     pub has_cost: bool,
@@ -1879,7 +1877,7 @@ mod tests {
                 thought: "full authoritative text".into(),
                 step_number: 1,
                 run_id: 1,
-                event_seq: None,
+                event_sequence: None,
             })
             .await;
         buffered
@@ -1935,7 +1933,7 @@ mod tests {
                 thought: "full authoritative text after stream".into(),
                 step_number: 1,
                 run_id: 1,
-                event_seq: None,
+                event_sequence: None,
             })
             .await;
 

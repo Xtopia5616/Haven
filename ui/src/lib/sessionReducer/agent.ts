@@ -267,7 +267,7 @@ export function reduceAgent(
 			const accepted = acceptEventSequence(
 				state,
 				payload.sessionId,
-				payload.eventSeq,
+				payload.eventSequence,
 				payload.messageId,
 			);
 			if (!accepted) return state;
@@ -376,7 +376,7 @@ export function reduceAgent(
 			const accepted = acceptEventSequence(
 				state,
 				action.payload.sessionId,
-				action.payload.eventSeq,
+				action.payload.eventSequence,
 				action.payload.supplementId,
 			);
 			return accepted ? applySupplement(accepted, action.payload) : state;
@@ -386,7 +386,7 @@ export function reduceAgent(
 			const accepted = acceptEventSequence(
 				state,
 				payload.sessionId,
-				payload.eventSeq,
+				payload.eventSequence,
 				payload.stepId,
 			);
 			if (!accepted) return state;
@@ -428,7 +428,7 @@ export function reduceAgent(
 			const accepted = acceptEventSequence(
 				state,
 				payload.sessionId,
-				payload.eventSeq,
+				payload.eventSequence,
 				payload.stepId,
 			);
 			if (!accepted) return state;

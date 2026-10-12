@@ -12,11 +12,11 @@ const MEDIA_PLAN_HISTORY_LIMIT = 32;
 
 export function rememberMediaPlan(payload: AgentMediaPlanPayload) {
 	if (!payload.sessionId) return;
-	const key = `${payload.stepNumber}:${payload.runId}:${payload.role}`;
+	const key = `${payload.stepNumber}:${payload.runId}:${payload.requestKind}`;
 	mediaPlanStore.update((all) => {
 		const previous = all[payload.sessionId] || [];
 		const next = previous.filter(
-			(plan) => `${plan.stepNumber}:${plan.runId}:${plan.role}` !== key,
+			(plan) => `${plan.stepNumber}:${plan.runId}:${plan.requestKind}` !== key,
 		);
 		return {
 			...all,

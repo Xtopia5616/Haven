@@ -5202,8 +5202,21 @@ mod tests {
         let wire: serde_json::Value = serde_json::from_str(&active_usage_event.payload).unwrap();
         assert_eq!(wire["usage_id"], first_usage.usage_id);
         assert!(wire.get("id").is_none());
+        assert_eq!(wire["request_kind"], "chat");
+        assert!(wire.get("role").is_none());
         let payload: LlmUsageRecord = serde_json::from_str(&active_usage_event.payload).unwrap();
         assert_eq!(payload.usage_id, first_usage.usage_id);
+        assert_eq!(payload.request_kind, RequestKind::Chat);
+
+        // Existing durable usage events stored the same request kind under
+        // `role`; keep replay compatible while new writes use `request_kind`.
+        let mut historic_wire = wire;
+        let historic_object = historic_wire.as_object_mut().unwrap();
+        let request_kind = historic_object.remove("request_kind").unwrap();
+        historic_object.insert("role".to_owned(), request_kind);
+        let historic_payload: LlmUsageRecord = serde_json::from_value(historic_wire).unwrap();
+        assert_eq!(historic_payload.usage_id, first_usage.usage_id);
+        assert_eq!(historic_payload.request_kind, RequestKind::Chat);
 
         let expected_event_sequence = store
             .load_replay_state(&session_id)

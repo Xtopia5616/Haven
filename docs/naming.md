@@ -1,6 +1,6 @@
 # Haven 命名规范
 
-> 版本: v1.186 | 日期: 2026-10-12
+> 版本: v1.187 | 日期: 2026-10-12
 
 本文档统一 Haven 项目各层的命名规则（变量名、函数名、文件名、crate 名、缩写大小写、跨层边界）。规范以现有代码中的事实模式为基础，新代码必须遵循；存量代码若与规范冲突，逐步迁移对齐。
 
@@ -9,6 +9,7 @@
 - **分层语气不同**：Rust 后端与 Svelte 前端各自遵循本语言生态的惯例，二者仅在跨层边界（Tauri 命令 / 事件 / 数据字段）约定转换规则。
 - **数值字段标明约束方向与单位**：`max_*` 表示硬上限；提高 endpoint `max_tokens` 下界的全局配置叫 `response_token_floor`。字节计量字段用 `_bytes`，字符计量字段用 `_chars`；描述 floor、cap、reserve 和单位时，字段名、文档与计算方向应一致（ADR 0972–0975）。
 - **跨层数字校验匹配 Rust primitive**：UI wire mapper 对 Rust `i32` 校验有符号 32 位范围，对 `u32` 校验非负整数及 32 位上限；Rust `u64` 以 JSON number 表达时只接受 JavaScript 安全整数范围。浮点字段只执行有限数值校验（ADR 0980、1022）。
+- **事件序号标出序列域**：流式分片在 Rust 与 UI 均使用 `seq`；从 `session_events.sequence` 投影到 UI event 的顺序使用 `event_sequence` / `eventSequence`，不能让两种不同序列域共享 `seq` 短名（ADR 1033）。
 - **一眼可辨**：命名应能区分「类型」「值」「常量」「组件」「模块」，见各层细则。
 - **边界语义不撞名**：不同 crate/边界中的类型即使位于不同命名空间，也要能从类型名看出领域或 wire 角色；同名但不同状态空间时用领域限定词，不要求合并状态 owner。例如 Memory durable `SessionEvent` 与 Agent process-local `SessionSupervisorEvent` 各自保留 owner。
 - **Serde alias 只表示明确的 wire 名称差异**：字段默认 Serde 名已等于 alias 时删除重复 alias；只保留外部协议确实发送的其它字段拼法，例如 Gemini 的 `finishReason`。Haven 自有配置或 UI payload 不隐式接受旧名；append-only durable event 的 replay-only alias 必须由 ADR 点名旧字段、保留仅反序列化兼容，并确保新写入只发 canonical 字段（ADR 0662、0995、0996、0998）。
@@ -373,7 +374,7 @@ Memory `SessionStep` 的恢复投影以 `step_id` 标识执行行；UI 只接受
 
 Agent runtime list 使用 `SessionInfo.session_id` 与 `StepInfo.step_id`；UI runtime parser 拒绝旧泛名 `id`，renderer `SessionSummary` 使用 camelCase `sessionId`，生命周期事件仍由 App bridge 投影 `session_id`（ADR 0994）。
 
-持久用量明细 `LlmUsageRecord` 使用 `usage_id`，UI resume parser 只接受该实体字段；SQLite `llm_usage.id` 继续作为物理列。Serde 仅在读取历史 `usage_recorded` payload 时接受 `id`，新写 payload 始终序列化为 `usage_id`（ADR 0995）。
+持久用量明细 `LlmUsageRecord` 使用 `usage_id` 与 `request_kind`；UI resume parser 只接受这两个实体/语义字段。SQLite `llm_usage.id` 与 `llm_usage.role` 继续作为物理列。Serde 仅在读取历史 `usage_recorded` payload 时接受 `id` 与 `role`，新写 payload 始终序列化为 `usage_id` 与 `request_kind`（ADR 0995、1032）。
 
 交互生命周期的 Rust `InteractionRequest`、durable interaction event 与 Tauri projection 使用 `request_id`；Ask 复用对应 `step-*`，确认使用 `conf-*`。UI 内部映射为 `requestId`。新 `interaction_cleared` event 使用 `request_ids`；Agent replay 仅为历史 durable payload 接受 `id` / `ids`，新写始终使用明确字段（ADR 0996）。
 

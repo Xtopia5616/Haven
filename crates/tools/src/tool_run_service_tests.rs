@@ -2020,7 +2020,7 @@ async fn test_failed_tool_run_reports_exit_code_and_reason() {
 #[tokio::test]
 async fn test_unified_service_owns_scheduled_state_and_cancel() {
     let service = Arc::new(ToolRunService::new());
-    let id = service
+    let tool_run_id = service
         .schedule(crate::tool_run_types::ScheduledToolRunSpec {
             due_at: None,
             delay_secs: Some(3600),
@@ -2038,7 +2038,7 @@ async fn test_unified_service_owns_scheduled_state_and_cancel() {
 
     let board = service.board().await;
     assert_eq!(board.len(), 1);
-    assert_eq!(board[0].tool_run_id, id);
+    assert_eq!(board[0].tool_run_id, tool_run_id);
     assert_eq!(board[0].kind, ToolRunKind::Scheduled);
     assert_eq!(board[0].status, ToolRunStatus::Waiting);
     assert_eq!(board[0].title.as_deref(), Some("Unified"));
@@ -2054,12 +2054,12 @@ async fn test_unified_service_owns_scheduled_state_and_cancel() {
             .is_some_and(|due_at| !due_at.is_empty())
     );
     assert_eq!(board[0].mode, Some(ScheduleMode::Continue));
-    let status = service.status_view(&id).await.to_json(true);
+    let status = service.status_view(&tool_run_id).await.to_json(true);
     assert_eq!(status["session_id"], "ses-c5b7ddda0aed60eb2aec371c6baf338b");
     assert_eq!(status["due_at"], board[0].due_at.as_deref().unwrap());
     assert_eq!(
         service
-            .status_for_session_view(&id, "ses-c5b7ddda0aed60eb2aec371c6baf338b")
+            .status_for_session_view(&tool_run_id, "ses-c5b7ddda0aed60eb2aec371c6baf338b")
             .await
             .to_json(true)["status"],
         "waiting"
@@ -2067,17 +2067,17 @@ async fn test_unified_service_owns_scheduled_state_and_cancel() {
 
     assert!(
         !service
-            .cancel_for_session(&id, "ses-b94f7e9be86c8c5069c9e5dce8b0834b")
+            .cancel_for_session(&tool_run_id, "ses-b94f7e9be86c8c5069c9e5dce8b0834b")
             .await
     );
     assert!(
         service
-            .cancel_for_session(&id, "ses-c5b7ddda0aed60eb2aec371c6baf338b")
+            .cancel_for_session(&tool_run_id, "ses-c5b7ddda0aed60eb2aec371c6baf338b")
             .await
     );
     assert!(service.board().await.is_empty());
     assert_eq!(
-        service.status_view(&id).await.to_json(true)["status"],
+        service.status_view(&tool_run_id).await.to_json(true)["status"],
         "cancelled"
     );
 }
@@ -2695,7 +2695,7 @@ async fn session_cleanup_continues_after_scheduled_cancel_failure() {
 #[tokio::test]
 async fn typed_agent_views_keep_scoping_and_board_projection() {
     let service = Arc::new(ToolRunService::new());
-    let id = service
+    let tool_run_id = service
         .schedule(crate::tool_run_types::ScheduledToolRunSpec {
             due_at: None,
             delay_secs: Some(3600),
@@ -2711,11 +2711,11 @@ async fn typed_agent_views_keep_scoping_and_board_projection() {
         .await
         .unwrap();
 
-    let unscoped = service.status_view(&id).await;
+    let unscoped = service.status_view(&tool_run_id).await;
     assert_eq!(unscoped.status(), Some(ToolRunStatus::Waiting));
 
     let scoped = service
-        .status_for_session_view(&id, "ses-76bd0b2a0b986c7bcbbf45af8ba7dd18")
+        .status_for_session_view(&tool_run_id, "ses-76bd0b2a0b986c7bcbbf45af8ba7dd18")
         .await;
     assert_eq!(scoped.status(), Some(ToolRunStatus::Waiting));
 
@@ -3146,7 +3146,7 @@ async fn test_unified_completion_bus_emits_scheduled_transition() {
     let mut rx = service
         .take_tool_run_receiver()
         .expect("unified receiver available");
-    let id = service
+    let tool_run_id = service
         .schedule(crate::tool_run_types::ScheduledToolRunSpec {
             due_at: None,
             delay_secs: Some(1),
@@ -3168,7 +3168,7 @@ async fn test_unified_completion_bus_emits_scheduled_transition() {
         .expect("unified bus open");
     match event {
         ToolRunCompletion::Scheduled(fired) => {
-            assert_eq!(fired.tool_run_id, id);
+            assert_eq!(fired.tool_run_id, tool_run_id);
             assert_eq!(
                 fired.session_id.as_deref(),
                 Some("ses-472af60fba3e342b263b157840e3b951")
@@ -3179,14 +3179,14 @@ async fn test_unified_completion_bus_emits_scheduled_transition() {
         }
     }
     assert_eq!(
-        service.status_view(&id).await.to_json(true)["status"],
+        service.status_view(&tool_run_id).await.to_json(true)["status"],
         "running"
     );
     let updated = events
         .lock()
         .unwrap()
         .iter()
-        .find(|(name, payload)| name == "tool_run:updated" && payload["tool_run_id"] == id)
+        .find(|(name, payload)| name == "tool_run:updated" && payload["tool_run_id"] == tool_run_id)
         .map(|(_, payload)| payload.clone())
         .expect("scheduled running update event");
     assert_eq!(updated["status"], "running");
@@ -3194,17 +3194,32 @@ async fn test_unified_completion_bus_emits_scheduled_transition() {
         updated["session_id"],
         "ses-472af60fba3e342b263b157840e3b951"
     );
-    assert!(service.complete_scheduled(&id).await.unwrap());
-    assert!(!service.complete_scheduled(&id).await.unwrap());
-    assert!(!service.fail_scheduled(&id, "late failure").await.unwrap());
-    assert!(!service.cancel(&id).await);
+    assert!(service.complete_scheduled(&tool_run_id).await.unwrap());
+    assert!(!service.complete_scheduled(&tool_run_id).await.unwrap());
+    assert!(
+        !service
+            .fail_scheduled(&tool_run_id, "late failure")
+            .await
+            .unwrap()
+    );
+    assert!(!service.cancel(&tool_run_id).await);
     assert_eq!(terminal_event_count(&events), 1);
     assert_eq!(
-        service.status_view(&id).await.to_json(true)["status"],
+        service.status_view(&tool_run_id).await.to_json(true)["status"],
         "completed"
     );
-    assert!(!service.completion_bus.has_pending_scheduled_fire(&id).await);
-    assert!(!service.completion_bus.has_scheduled_fire_claim(&id).await);
+    assert!(
+        !service
+            .completion_bus
+            .has_pending_scheduled_fire(&tool_run_id)
+            .await
+    );
+    assert!(
+        !service
+            .completion_bus
+            .has_scheduled_fire_claim(&tool_run_id)
+            .await
+    );
 }
 
 #[tokio::test]
@@ -3328,7 +3343,7 @@ async fn scheduled_admission_keeps_running_row_until_completion_then_reaps_termi
     let mut rx = service
         .take_tool_run_receiver()
         .expect("receiver available");
-    let id = service
+    let tool_run_id = service
         .schedule(crate::tool_run_types::ScheduledToolRunSpec {
             due_at: None,
             delay_secs: Some(3600),
@@ -3344,13 +3359,13 @@ async fn scheduled_admission_keeps_running_row_until_completion_then_reaps_termi
         .await
         .unwrap();
 
-    service.fire_scheduled(&id).await;
+    service.fire_scheduled(&tool_run_id).await;
     assert!(matches!(
         rx.recv().await,
         Some(ToolRunCompletion::Scheduled(_))
     ));
     assert_eq!(
-        service.status_view(&id).await.to_json(true)["status"],
+        service.status_view(&tool_run_id).await.to_json(true)["status"],
         "running"
     );
 
@@ -3371,16 +3386,16 @@ async fn scheduled_admission_keeps_running_row_until_completion_then_reaps_termi
         .unwrap();
 
     assert_eq!(
-        service.status_view(&id).await.to_json(true)["status"],
+        service.status_view(&tool_run_id).await.to_json(true)["status"],
         "running"
     );
     assert_eq!(
-        db.get_tool_run(&id).unwrap().unwrap().status,
+        db.get_tool_run(&tool_run_id).unwrap().unwrap().status,
         haven_common::lifecycle::ToolRunStatus::Running
     );
-    assert!(service.complete_scheduled(&id).await.unwrap());
+    assert!(service.complete_scheduled(&tool_run_id).await.unwrap());
     assert_eq!(
-        service.status_view(&id).await.to_json(true)["status"],
+        service.status_view(&tool_run_id).await.to_json(true)["status"],
         "completed"
     );
 
@@ -3401,11 +3416,11 @@ async fn scheduled_admission_keeps_running_row_until_completion_then_reaps_termi
         .unwrap();
 
     assert_eq!(
-        service.status_view(&id).await.to_json(true)["status"],
+        service.status_view(&tool_run_id).await.to_json(true)["status"],
         "not_found"
     );
     assert_eq!(
-        db.get_tool_run(&id).unwrap().unwrap().status,
+        db.get_tool_run(&tool_run_id).unwrap().unwrap().status,
         haven_common::lifecycle::ToolRunStatus::Completed,
         "terminal cleanup must retain durable scheduled history"
     );
@@ -3422,7 +3437,7 @@ async fn scheduled_admission_keeps_running_row_available_for_cancellation() {
     let mut rx = service
         .take_tool_run_receiver()
         .expect("receiver available");
-    let id = service
+    let tool_run_id = service
         .schedule(crate::tool_run_types::ScheduledToolRunSpec {
             due_at: None,
             delay_secs: Some(3600),
@@ -3437,7 +3452,7 @@ async fn scheduled_admission_keeps_running_row_available_for_cancellation() {
         })
         .await
         .unwrap();
-    service.fire_scheduled(&id).await;
+    service.fire_scheduled(&tool_run_id).await;
     assert!(matches!(
         rx.recv().await,
         Some(ToolRunCompletion::Scheduled(_))
@@ -3460,16 +3475,16 @@ async fn scheduled_admission_keeps_running_row_available_for_cancellation() {
         .unwrap();
 
     assert_eq!(
-        service.status_view(&id).await.to_json(true)["status"],
+        service.status_view(&tool_run_id).await.to_json(true)["status"],
         "running"
     );
-    assert!(service.cancel(&id).await);
+    assert!(service.cancel(&tool_run_id).await);
     assert_eq!(
-        service.status_view(&id).await.to_json(true)["status"],
+        service.status_view(&tool_run_id).await.to_json(true)["status"],
         "cancelled"
     );
     assert_eq!(
-        db.get_tool_run(&id).unwrap().unwrap().status,
+        db.get_tool_run(&tool_run_id).unwrap().unwrap().status,
         haven_common::lifecycle::ToolRunStatus::Cancelled
     );
 }
@@ -3655,7 +3670,7 @@ async fn restore_marks_running_scheduled_tool_run_failed_without_replaying_it() 
     let mut rx = service
         .take_tool_run_receiver()
         .expect("receiver available");
-    let id = service
+    let tool_run_id = service
         .schedule(crate::tool_run_types::ScheduledToolRunSpec {
             due_at: None,
             delay_secs: Some(3600),
@@ -3670,7 +3685,7 @@ async fn restore_marks_running_scheduled_tool_run_failed_without_replaying_it() 
         })
         .await
         .unwrap();
-    service.fire_scheduled(&id).await;
+    service.fire_scheduled(&tool_run_id).await;
     assert!(matches!(
         rx.recv().await,
         Some(ToolRunCompletion::Scheduled(_))
@@ -3688,10 +3703,10 @@ async fn restore_marks_running_scheduled_tool_run_failed_without_replaying_it() 
         }
     );
     assert_eq!(
-        restored.status_view(&id).await.to_json(true)["status"],
+        restored.status_view(&tool_run_id).await.to_json(true)["status"],
         "not_found"
     );
-    let row = db.get_tool_run(&id).unwrap().unwrap();
+    let row = db.get_tool_run(&tool_run_id).unwrap().unwrap();
     assert_eq!(row.status, haven_common::lifecycle::ToolRunStatus::Failed);
     assert_eq!(
         row.error_reason.as_deref(),
@@ -3711,7 +3726,7 @@ async fn test_scheduled_fire_without_receiver_is_requeued_durably() {
     service
         .set_tool_run_store(Some(ToolRunStore::new(db.clone())))
         .await;
-    let id = service
+    let tool_run_id = service
         .schedule(crate::tool_run_types::ScheduledToolRunSpec {
             due_at: None,
             delay_secs: Some(1),
@@ -3730,18 +3745,21 @@ async fn test_scheduled_fire_without_receiver_is_requeued_durably() {
     tokio::time::sleep(Duration::from_millis(1200)).await;
 
     assert_eq!(
-        service.status_view(&id).await.to_json(true)["status"],
+        service.status_view(&tool_run_id).await.to_json(true)["status"],
         "waiting"
     );
     let pending = db.list_pending_scheduled_tool_runs().unwrap();
     assert_eq!(
-        pending.iter().filter(|row| row.tool_run_id == id).count(),
+        pending
+            .iter()
+            .filter(|row| row.tool_run_id == tool_run_id)
+            .count(),
         1
     );
     assert_eq!(
         pending
             .iter()
-            .find(|row| row.tool_run_id == id)
+            .find(|row| row.tool_run_id == tool_run_id)
             .unwrap()
             .session_id
             .as_deref(),
@@ -3750,7 +3768,7 @@ async fn test_scheduled_fire_without_receiver_is_requeued_durably() {
     assert_eq!(
         pending
             .iter()
-            .find(|row| row.tool_run_id == id)
+            .find(|row| row.tool_run_id == tool_run_id)
             .unwrap()
             .status,
         haven_common::lifecycle::ToolRunStatus::Waiting
@@ -3766,8 +3784,8 @@ async fn test_scheduled_fire_without_receiver_is_requeued_durably() {
         .expect("re-armed scheduled timer did not fire")
         .expect("completion bus open");
     assert!(matches!(fired, ToolRunCompletion::Scheduled(ref value)
-        if value.tool_run_id == id && value.session_id.as_deref() == Some("ses-d76297891090a400f3a1f32bbd217c4c")));
-    service.complete_scheduled(&id).await.unwrap();
+        if value.tool_run_id == tool_run_id && value.session_id.as_deref() == Some("ses-d76297891090a400f3a1f32bbd217c4c")));
+    service.complete_scheduled(&tool_run_id).await.unwrap();
 }
 
 #[tokio::test]
@@ -3778,7 +3796,7 @@ async fn test_scheduled_fire_recovery_survives_requeue_failure_for_late_receiver
     service
         .set_tool_run_store(Some(ToolRunStore::new(db.clone())))
         .await;
-    let id = service
+    let tool_run_id = service
         .schedule(crate::tool_run_types::ScheduledToolRunSpec {
             due_at: None,
             delay_secs: Some(1),
@@ -3804,7 +3822,7 @@ async fn test_scheduled_fire_recovery_survives_requeue_failure_for_late_receiver
 
     tokio::time::sleep(Duration::from_millis(1200)).await;
     assert_eq!(
-        service.status_view(&id).await.to_json(true)["status"],
+        service.status_view(&tool_run_id).await.to_json(true)["status"],
         "running"
     );
 
@@ -3824,7 +3842,7 @@ async fn test_scheduled_fire_recovery_survives_requeue_failure_for_late_receiver
         .await
         .unwrap();
     assert_eq!(
-        service.status_view(&id).await.to_json(true)["status"],
+        service.status_view(&tool_run_id).await.to_json(true)["status"],
         "running"
     );
 
@@ -3836,14 +3854,16 @@ async fn test_scheduled_fire_recovery_survives_requeue_failure_for_late_receiver
     .await
     .expect("late receiver must get the retained fire")
     .unwrap();
-    assert!(matches!(fired, ToolRunCompletion::Scheduled(ref value) if value.tool_run_id == id));
+    assert!(
+        matches!(fired, ToolRunCompletion::Scheduled(ref value) if value.tool_run_id == tool_run_id)
+    );
 
     db.conn()
         .execute_batch("DROP TRIGGER block_scheduled_requeue")
         .unwrap();
-    assert!(service.complete_scheduled(&id).await.unwrap());
+    assert!(service.complete_scheduled(&tool_run_id).await.unwrap());
     assert_eq!(
-        db.get_tool_run(&id).unwrap().unwrap().status,
+        db.get_tool_run(&tool_run_id).unwrap().unwrap().status,
         haven_common::lifecycle::ToolRunStatus::Completed
     );
 }
@@ -3854,7 +3874,7 @@ async fn test_scheduled_fire_recovers_after_completion_bus_lag() {
     let mut rx = service
         .take_tool_run_receiver()
         .expect("receiver available");
-    let id = service
+    let tool_run_id = service
         .schedule(crate::tool_run_types::ScheduledToolRunSpec {
             due_at: None,
             delay_secs: Some(1),
@@ -3904,18 +3924,18 @@ async fn test_scheduled_fire_recovers_after_completion_bus_lag() {
     .expect("lagged scheduled trigger must be recovered")
     .expect("completion bus open");
     match event {
-        ToolRunCompletion::Scheduled(fired) => assert_eq!(fired.tool_run_id, id),
+        ToolRunCompletion::Scheduled(fired) => assert_eq!(fired.tool_run_id, tool_run_id),
         ToolRunCompletion::Background(_) | ToolRunCompletion::ScheduledResult(_) => {
             panic!("lag recovery returned a ToolRun-result event")
         }
     }
     assert_eq!(
-        service.status_view(&id).await.to_json(true)["status"],
+        service.status_view(&tool_run_id).await.to_json(true)["status"],
         "running"
     );
-    service.complete_scheduled(&id).await.unwrap();
+    service.complete_scheduled(&tool_run_id).await.unwrap();
     assert_eq!(
-        service.status_view(&id).await.to_json(true)["status"],
+        service.status_view(&tool_run_id).await.to_json(true)["status"],
         "completed"
     );
 }
@@ -3931,7 +3951,7 @@ async fn test_scheduled_trigger_db_failure_rearms_timer() {
     let mut rx = service
         .take_tool_run_receiver()
         .expect("receiver available");
-    let id = service
+    let tool_run_id = service
         .schedule(crate::tool_run_types::ScheduledToolRunSpec {
             due_at: None,
             delay_secs: Some(1),
@@ -3957,7 +3977,7 @@ async fn test_scheduled_trigger_db_failure_rearms_timer() {
 
     tokio::time::sleep(Duration::from_millis(1200)).await;
     assert_eq!(
-        service.status_view(&id).await.to_json(true)["status"],
+        service.status_view(&tool_run_id).await.to_json(true)["status"],
         "waiting"
     );
     db.conn()
@@ -3968,12 +3988,14 @@ async fn test_scheduled_trigger_db_failure_rearms_timer() {
         .await
         .expect("re-armed timer did not fire")
         .expect("completion bus open");
-    assert!(matches!(event, ToolRunCompletion::Scheduled(ref fired) if fired.tool_run_id == id));
+    assert!(
+        matches!(event, ToolRunCompletion::Scheduled(ref fired) if fired.tool_run_id == tool_run_id)
+    );
     assert_eq!(
-        service.status_view(&id).await.to_json(true)["status"],
+        service.status_view(&tool_run_id).await.to_json(true)["status"],
         "running"
     );
-    service.complete_scheduled(&id).await.unwrap();
+    service.complete_scheduled(&tool_run_id).await.unwrap();
 }
 
 #[tokio::test]
@@ -3984,7 +4006,7 @@ async fn test_scheduled_cancel_db_failure_keeps_live_state_until_retry() {
     service
         .set_tool_run_store(Some(ToolRunStore::new(db.clone())))
         .await;
-    let id = service
+    let tool_run_id = service
         .schedule(crate::tool_run_types::ScheduledToolRunSpec {
             due_at: None,
             delay_secs: Some(3600),
@@ -4008,26 +4030,26 @@ async fn test_scheduled_cancel_db_failure_keeps_live_state_until_retry() {
         )
         .unwrap();
 
-    assert!(!service.cancel(&id).await);
+    assert!(!service.cancel(&tool_run_id).await);
     assert_eq!(
-        service.status_view(&id).await.to_json(true)["status"],
+        service.status_view(&tool_run_id).await.to_json(true)["status"],
         "waiting"
     );
     assert_eq!(
-        db.get_tool_run(&id).unwrap().unwrap().status,
+        db.get_tool_run(&tool_run_id).unwrap().unwrap().status,
         haven_common::lifecycle::ToolRunStatus::Waiting
     );
 
     db.conn()
         .execute_batch("DROP TRIGGER block_scheduled_cancel")
         .unwrap();
-    assert!(service.cancel(&id).await);
+    assert!(service.cancel(&tool_run_id).await);
     assert_eq!(
-        service.status_view(&id).await.to_json(true)["status"],
+        service.status_view(&tool_run_id).await.to_json(true)["status"],
         "cancelled"
     );
     assert_eq!(
-        db.get_tool_run(&id).unwrap().unwrap().status,
+        db.get_tool_run(&tool_run_id).unwrap().unwrap().status,
         haven_common::lifecycle::ToolRunStatus::Cancelled
     );
 }
@@ -4043,7 +4065,7 @@ async fn test_scheduled_terminal_db_failure_retries_before_memory_transition() {
     let mut rx = service
         .take_tool_run_receiver()
         .expect("receiver available");
-    let id = service
+    let tool_run_id = service
         .schedule(crate::tool_run_types::ScheduledToolRunSpec {
             due_at: None,
             delay_secs: Some(1),
@@ -4072,13 +4094,13 @@ async fn test_scheduled_terminal_db_failure_retries_before_memory_transition() {
              BEGIN SELECT RAISE(ABORT, 'injected terminal failure'); END;",
         )
         .unwrap();
-    assert!(service.complete_scheduled(&id).await.is_err());
+    assert!(service.complete_scheduled(&tool_run_id).await.is_err());
     assert_eq!(
-        service.status_view(&id).await.to_json(true)["status"],
+        service.status_view(&tool_run_id).await.to_json(true)["status"],
         "running"
     );
     assert_eq!(
-        db.get_tool_run(&id).unwrap().unwrap().status,
+        db.get_tool_run(&tool_run_id).unwrap().unwrap().status,
         haven_common::lifecycle::ToolRunStatus::Running
     );
 
@@ -4086,7 +4108,7 @@ async fn test_scheduled_terminal_db_failure_retries_before_memory_transition() {
         .execute_batch("DROP TRIGGER block_scheduled_terminal")
         .unwrap();
     let deadline = std::time::Instant::now() + Duration::from_secs(4);
-    while service.status_view(&id).await.to_json(true)["status"] == "running" {
+    while service.status_view(&tool_run_id).await.to_json(true)["status"] == "running" {
         assert!(
             std::time::Instant::now() < deadline,
             "terminal retry did not converge"
@@ -4094,11 +4116,11 @@ async fn test_scheduled_terminal_db_failure_retries_before_memory_transition() {
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
     assert_eq!(
-        service.status_view(&id).await.to_json(true)["status"],
+        service.status_view(&tool_run_id).await.to_json(true)["status"],
         "completed"
     );
     assert_eq!(
-        db.get_tool_run(&id).unwrap().unwrap().status,
+        db.get_tool_run(&tool_run_id).unwrap().unwrap().status,
         haven_common::lifecycle::ToolRunStatus::Completed
     );
 }
@@ -4270,7 +4292,7 @@ async fn test_scheduled_lifecycle_events_reuse_persisted_timestamps() {
     let mut rx = service
         .take_tool_run_receiver()
         .expect("receiver available");
-    let id = service
+    let tool_run_id = service
         .schedule(crate::tool_run_types::ScheduledToolRunSpec {
             due_at: None,
             delay_secs: Some(1),
@@ -4296,13 +4318,13 @@ async fn test_scheduled_lifecycle_events_reuse_persisted_timestamps() {
         .iter()
         .find(|(name, payload)| {
             name == "tool_run:updated"
-                && payload["tool_run_id"] == id
+                && payload["tool_run_id"] == tool_run_id
                 && payload["status"] == "running"
         })
         .map(|(_, payload)| payload.clone())
         .expect("scheduled running event");
     let running_row = db
-        .get_tool_run(&id)
+        .get_tool_run(&tool_run_id)
         .unwrap()
         .expect("scheduled running history row");
     let running_started_at = running_row
@@ -4314,17 +4336,19 @@ async fn test_scheduled_lifecycle_events_reuse_persisted_timestamps() {
         Some(running_started_at)
     );
 
-    service.complete_scheduled(&id).await.unwrap();
+    service.complete_scheduled(&tool_run_id).await.unwrap();
 
     let event = events
         .lock()
         .unwrap()
         .iter()
-        .find(|(name, payload)| name == "tool_run:finished" && payload["tool_run_id"] == id)
+        .find(|(name, payload)| {
+            name == "tool_run:finished" && payload["tool_run_id"] == tool_run_id
+        })
         .map(|(_, payload)| payload.clone())
         .expect("scheduled completion event");
     let row = db
-        .get_tool_run(&id)
+        .get_tool_run(&tool_run_id)
         .unwrap()
         .expect("scheduled history row");
     assert_eq!(event["started_at"].as_str(), row.started_at.as_deref());
@@ -4416,7 +4440,7 @@ async fn test_restore_quarantines_corrupt_waiting_scheduled_rows() {
 #[tokio::test]
 async fn test_tool_run_kind_and_terminal_delete_guards() {
     let service = Arc::new(ToolRunService::new());
-    let id = service
+    let tool_run_id = service
         .schedule(crate::tool_run_types::ScheduledToolRunSpec {
             due_at: None,
             delay_secs: Some(3600),
@@ -4432,13 +4456,20 @@ async fn test_tool_run_kind_and_terminal_delete_guards() {
         .await
         .unwrap();
 
-    assert!(!service.cancel_for_kind(&id, "background").await);
-    assert!(!service.cancel_for_kind(&id, "invalid").await);
-    assert!(!service.delete(&id, "scheduled").await.unwrap());
-    assert!(service.cancel_for_kind(&id, "scheduled").await);
-    assert!(service.delete_terminal(&id).await.unwrap());
+    assert!(
+        !service
+            .cancel_for_kind(&tool_run_id, ToolRunKind::Background)
+            .await
+    );
+    assert!(!service.delete(&tool_run_id, "scheduled").await.unwrap());
+    assert!(
+        service
+            .cancel_for_kind(&tool_run_id, ToolRunKind::Scheduled)
+            .await
+    );
+    assert!(service.delete_terminal(&tool_run_id).await.unwrap());
     assert_eq!(
-        service.status_view(&id).await.to_json(true)["status"],
+        service.status_view(&tool_run_id).await.to_json(true)["status"],
         "not_found"
     );
 }
@@ -4513,7 +4544,7 @@ async fn test_shutdown_stops_scheduled_timers_and_rejects_new_work() {
     let mut rx = service
         .take_tool_run_receiver()
         .expect("unified receiver available");
-    let id = service
+    let tool_run_id = service
         .schedule(crate::tool_run_types::ScheduledToolRunSpec {
             due_at: None,
             delay_secs: Some(1),
@@ -4533,7 +4564,7 @@ async fn test_shutdown_stops_scheduled_timers_and_rejects_new_work() {
     service.shutdown().await;
 
     assert_eq!(
-        service.status_view(&id).await.to_json(true)["status"],
+        service.status_view(&tool_run_id).await.to_json(true)["status"],
         "waiting"
     );
     assert!(

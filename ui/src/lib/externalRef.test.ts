@@ -5,8 +5,8 @@ vi.mock('$lib/clipboard.ts', () => ({
 	copyText: vi.fn().mockResolvedValue(true),
 }));
 
-vi.mock('$lib/tauri.ts', () => ({
-	invoke: vi.fn().mockResolvedValue(undefined),
+vi.mock('$lib/externalCommands.ts', () => ({
+	openExternalTarget: vi.fn().mockResolvedValue(undefined),
 }));
 
 vi.mock('$lib/notificationStore.ts', () => ({
@@ -18,7 +18,7 @@ vi.mock('$lib/logger.ts', () => ({
 }));
 
 import { copyText } from './clipboard.ts';
-import { invoke } from './tauri.ts';
+import { openExternalTarget } from './externalCommands.ts';
 
 describe('looksLikeUrl / extRefTarget', () => {
 	it('detects http(s) urls', () => {
@@ -58,7 +58,7 @@ describe('handleExtRefEvent', () => {
 		Object.defineProperty(e, 'target', { value: a });
 		expect(handleExtRefEvent(e)).toBe(true);
 		expect(copyText).toHaveBeenCalledWith('https://example.com/x', '链接');
-		expect(invoke).not.toHaveBeenCalled();
+		expect(openExternalTarget).not.toHaveBeenCalled();
 	});
 
 	it('copies on right click', () => {
@@ -74,7 +74,7 @@ describe('handleExtRefEvent', () => {
 		const e = new MouseEvent('click', { bubbles: true, cancelable: true, ctrlKey: true });
 		Object.defineProperty(e, 'target', { value: a });
 		expect(handleExtRefEvent(e)).toBe(true);
-		expect(invoke).toHaveBeenCalledWith('open_external', { target: 'https://example.com' });
+		expect(openExternalTarget).toHaveBeenCalledWith({ target: 'https://example.com' });
 		expect(copyText).not.toHaveBeenCalled();
 	});
 

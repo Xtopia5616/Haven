@@ -1,4 +1,5 @@
 use haven_agent::METRICS_PHASE_COUNT;
+use haven_common::config::MAX_FACTS_IN_EXTRACTION_PROMPT;
 use quote::ToTokens;
 use std::collections::{BTreeMap, HashSet};
 use std::fs;
@@ -14,6 +15,7 @@ struct Command {
     name: String,
     request: String,
     response: String,
+    response_shape: String,
 }
 
 fn main() {
@@ -82,10 +84,17 @@ fn generate(root: &Path) -> Result<String, String> {
             .map_err(|error| format!("command {name} request: {error}"))?;
             let response = response_type(&function.sig.output, &mut type_graph, &context)
                 .map_err(|error| format!("command {name} response: {error}"))?;
+            let response_shape = format!("{}_RESPONSE_SHAPE", name.to_ascii_uppercase());
+            let response_success = response_success_type(&function.sig.output)
+                .map_err(|error| format!("command {name} response: {error}"))?;
+            type_graph
+                .emit_response_shape_for_type(&response_success, &context, &response_shape)
+                .map_err(|error| format!("command {name} response shape: {error}"))?;
             let command = Command {
                 name: name.clone(),
                 request,
                 response,
+                response_shape,
             };
             if commands.insert(name.clone(), command).is_some() {
                 return Err(format!("command {name} is declared more than once"));
@@ -157,6 +166,7 @@ fn generate(root: &Path) -> Result<String, String> {
         type_graph.emit_definition(&key, TypeUse::Response)?;
     }
     type_graph.emit_definition("haven_common::types::InjectSource", TypeUse::Response)?;
+    type_graph.emit_definition("haven_llm::types::WebSearchPhase", TypeUse::Response)?;
     for result_enum in [
         "OperationIdempotency",
         "ToolErrorClass",
@@ -202,6 +212,81 @@ fn generate(root: &Path) -> Result<String, String> {
         "haven_app_binary_lib::commands::session::SessionResumeResponse",
         "SESSION_RESUME_RESPONSE_SHAPE",
     )?;
+    type_graph.emit_response_shape(
+        "haven_app_binary_lib::commands::settings::SessionPermissionGrant",
+        "SESSION_PERMISSION_GRANT_RESPONSE_SHAPE",
+    )?;
+
+    // Associate every registered event channel with its Rust-serialized
+    // payload type. Generator failure keeps the runtime field-shape registry
+    // exhaustive when a channel is added or renamed.
+    let event_payload_shapes = [
+        ("session:lifecycle", Some("SessionLifecycleEvent")),
+        ("recording:started", Some("RecordingEvent")),
+        ("recording:stopped", Some("RecordingEvent")),
+        ("recording:vad_status", Some("VadStatusEvent")),
+        ("recording:error", Some("RecordingErrorEvent")),
+        ("transcription:started", Some("TranscriptionStartedEvent")),
+        ("transcription:result", Some("TranscriptionResultEvent")),
+        ("transcription:error", Some("TranscriptionErrorEvent")),
+        ("tool_run:created", Some("ToolRunEvent")),
+        ("tool_run:updated", Some("ToolRunEvent")),
+        ("tool_run:output", Some("ToolRunEvent")),
+        ("tool_run:finished", Some("ToolRunEvent")),
+        ("app:bootstrap", Some("AppBootstrapEvent")),
+        ("tray:status_changed", Some("TrayStatusChangedEvent")),
+        ("mute:changed", Some("MuteChangedEvent")),
+        ("mcp:status_change", Some("McpStatusChangedEvent")),
+        ("skills:status_change", Some("SkillsStatusChangedEvent")),
+        ("interaction:requested", Some("InteractionRequestedEvent")),
+        ("hotkey:conflict", Some("HotkeyConflictEvent")),
+        ("hotkey:rebind", Some("HotkeyRebindEvent")),
+        ("llm:config_changed", None),
+        ("agent:thought", Some("AgentThoughtEvent")),
+        ("agent:tool_call", Some("AgentToolCallEvent")),
+        ("agent:observation", Some("AgentObservationEvent")),
+        ("agent:thought_chunk", Some("AgentThoughtChunkEvent")),
+        ("agent:reasoning_chunk", Some("AgentReasoningChunkEvent")),
+        ("agent:tool_call_chunk", Some("AgentToolCallChunkEvent")),
+        ("agent:stream_reset", Some("AgentStreamResetEvent")),
+        ("agent:media_plan", Some("AgentMediaPlanEvent")),
+        ("agent:web_search", Some("AgentWebSearchEvent")),
+        ("agent:stream_stalled", Some("AgentStreamStalledEvent")),
+        ("agent:supplement", Some("AgentSupplementEvent")),
+        ("agent:compaction", Some("AgentCompactionEvent")),
+        ("agent:usage", Some("AgentUsageEvent")),
+        ("agent:tool_output", Some("AgentToolOutputEvent")),
+        ("notification:show", Some("AgentNotificationEvent")),
+    ];
+    let declared_event_channels = event_channels
+        .values()
+        .flatten()
+        .map(String::as_str)
+        .collect::<HashSet<_>>();
+    let mapped_event_channels = event_payload_shapes
+        .iter()
+        .map(|(channel, _)| *channel)
+        .collect::<HashSet<_>>();
+    if declared_event_channels != mapped_event_channels {
+        return Err(format!(
+            "event payload shape registry does not match declared event channels (unmapped: {:?}; unknown: {:?})",
+            declared_event_channels
+                .difference(&mapped_event_channels)
+                .collect::<Vec<_>>(),
+            mapped_event_channels
+                .difference(&declared_event_channels)
+                .collect::<Vec<_>>(),
+        ));
+    }
+    for (channel, type_name) in event_payload_shapes {
+        if let Some(type_name) = type_name {
+            let shape_name = event_shape_constant(channel);
+            type_graph.emit_response_shape(
+                &format!("haven_app_binary_lib::events::{type_name}"),
+                &shape_name,
+            )?;
+        }
+    }
 
     let mut output = String::from(
         "// Generated from Tauri commands and `crates/app-binary/src/events.rs` by `scripts/generate-ipc-contracts.ps1`.\n\
@@ -217,8 +302,23 @@ fn generate(root: &Path) -> Result<String, String> {
     }
     output.push_str(&type_graph.declarations());
     output.push_str(&type_graph.runtime_shape_declarations());
+    output.push_str("\nexport const TAURI_COMMAND_RESPONSE_SHAPES = {\n");
+    for command in commands.values() {
+        output.push_str(&format!(
+            "\t{}: {},\n",
+            command.name, command.response_shape
+        ));
+    }
+    output.push_str("} as const;\n\nexport const IPC_EVENT_PAYLOAD_SHAPES = {\n");
+    for (channel, type_name) in event_payload_shapes {
+        let shape = type_name
+            .map(|_| event_shape_constant(channel))
+            .unwrap_or_else(|| "{ kind: 'null' }".to_string());
+        output.push_str(&format!("\t'{channel}': {shape},\n"));
+    }
+    output.push_str("} as const;\n");
     output.push_str(&format!(
-        "\nexport const AGENT_METRICS_PHASE_COUNT = {METRICS_PHASE_COUNT} as const;\n\n"
+        "\nexport const AGENT_METRICS_PHASE_COUNT = {METRICS_PHASE_COUNT} as const;\nexport const MAX_FACTS_IN_EXTRACTION_PROMPT = {MAX_FACTS_IN_EXTRACTION_PROMPT} as const;\n\n"
     ));
     output.push_str("\nexport interface TauriCommandMap {\n");
     for command in commands.values() {
@@ -425,8 +525,15 @@ fn response_type(
     type_graph: &mut RustTypeGraph,
     context: &TypeContext,
 ) -> Result<String, String> {
+    let success = response_success_type(output)?;
+    Ok(type_graph
+        .map_type(&success, TypeUse::Response, context)?
+        .ts)
+}
+
+fn response_success_type(output: &ReturnType) -> Result<Type, String> {
     let ReturnType::Type(_, ty) = output else {
-        return Ok("void".into());
+        return Ok(syn::parse_quote!(()));
     };
     let Type::Path(path) = ty.as_ref() else {
         return Err(format!(
@@ -460,7 +567,14 @@ fn response_type(
             error.to_token_stream()
         ));
     }
-    Ok(type_graph.map_type(success, TypeUse::Response, context)?.ts)
+    Ok(success.clone())
+}
+
+fn event_shape_constant(channel: &str) -> String {
+    format!(
+        "{}_EVENT_PAYLOAD_SHAPE",
+        channel.replace(':', "_").to_ascii_uppercase()
+    )
 }
 
 fn is_runtime_injected(ty: &Type) -> bool {

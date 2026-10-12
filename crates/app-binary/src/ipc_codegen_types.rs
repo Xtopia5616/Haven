@@ -26,6 +26,7 @@ struct FieldDef {
     input_optional: bool,
     skip_serializing: bool,
     skip_deserializing: bool,
+    custom_deserialize: bool,
 }
 
 #[derive(Clone)]
@@ -162,6 +163,7 @@ struct SerdeOptions {
     skip_deserializing: bool,
     skip_serializing_if: Option<String>,
     flatten: bool,
+    custom_deserialize: bool,
 }
 
 #[derive(Clone)]
@@ -284,10 +286,12 @@ impl RustTypeGraph {
                     }
                 };
                 match name.as_str() {
-                    "String" | "str" | "PathBuf" | "Uuid" => Ok(MappedType {
-                        ts: "string".into(),
-                        optional: false,
-                    }),
+                    "String" | "str" | "PathBuf" | "Uuid" | "ConfirmId" | "RecordingId" => {
+                        Ok(MappedType {
+                            ts: "string".into(),
+                            optional: false,
+                        })
+                    }
                     "bool" => Ok(MappedType {
                         ts: "boolean".into(),
                         optional: false,
@@ -392,6 +396,19 @@ impl RustTypeGraph {
     ) -> Result<(), String> {
         let mut stack = Vec::new();
         let shape = self.response_shape_for_named_type(key, &mut stack)?;
+        self.runtime_shapes.insert(constant_name.to_string(), shape);
+        Ok(())
+    }
+
+    /// Generate a runtime response shape from a handler's success type.
+    pub(crate) fn emit_response_shape_for_type(
+        &mut self,
+        ty: &Type,
+        context: &TypeContext,
+        constant_name: &str,
+    ) -> Result<(), String> {
+        let mut stack = Vec::new();
+        let shape = self.response_shape_for_type(ty, context, &mut stack)?;
         self.runtime_shapes.insert(constant_name.to_string(), shape);
         Ok(())
     }
@@ -590,6 +607,7 @@ impl RustTypeGraph {
                 context,
                 stack,
             )?))),
+            Type::Tuple(tuple) if tuple.elems.is_empty() => Ok(WireShape::Null),
             Type::Tuple(tuple) => Ok(WireShape::Tuple(
                 tuple
                     .elems
@@ -613,7 +631,9 @@ impl RustTypeGraph {
                     }
                 };
                 match name.as_str() {
-                    "String" | "str" | "PathBuf" | "Uuid" => Ok(WireShape::String),
+                    "String" | "str" | "PathBuf" | "Uuid" | "ConfirmId" | "RecordingId" => {
+                        Ok(WireShape::String)
+                    }
                     "bool" => Ok(WireShape::Boolean),
                     "i8" | "i16" | "i32" | "i64" | "isize" | "u8" | "u16" | "u32" | "u64"
                     | "usize" | "f32" | "f64" => Ok(WireShape::Number),
@@ -1140,6 +1160,12 @@ impl RustTypeGraph {
                     if matches!(usage, TypeUse::Request) && field.skip_deserializing {
                         continue;
                     }
+                    if matches!(usage, TypeUse::Request) && field.custom_deserialize {
+                        return Err(format!(
+                            "Rust IPC DTO {} field {} uses custom deserialization and needs an explicit request mapping",
+                            definition.key, field.name
+                        ));
+                    }
                     let (mapped, optional) = match usage {
                         TypeUse::Response if field.response_optional => {
                             if let Some(inner) = option_inner(&field.ty)? {
@@ -1581,6 +1607,7 @@ fn fields_from_struct(fields: &Fields, attrs: &[syn::Attribute]) -> Result<Vec<F
                         || is_option_type(&field.ty),
                     skip_serializing: field_options.skip_serializing,
                     skip_deserializing: field_options.skip_deserializing,
+                    custom_deserialize: field_options.custom_deserialize,
                 });
             }
             Ok(output)
@@ -1594,6 +1621,7 @@ fn fields_from_struct(fields: &Fields, attrs: &[syn::Attribute]) -> Result<Vec<F
                 input_optional: options.default || is_option_type(&unnamed.unnamed[0].ty),
                 skip_serializing: false,
                 skip_deserializing: false,
+                custom_deserialize: false,
             }])
         }
         Fields::Unnamed(_) => {
@@ -1698,8 +1726,13 @@ fn serde_options(attrs: &[syn::Attribute]) -> Result<SerdeOptions, String> {
                 if meta.input.peek(syn::Token![=]) {
                     let _ = meta.value()?.parse::<syn::Expr>()?;
                 }
+            } else if meta.path.is_ident("deserialize_with") {
+                // This affects inbound Rust decoding, not the Serialize wire
+                // shape used by UI response validation. Request generation
+                // rejects the marker explicitly.
+                options.custom_deserialize = true;
+                let _ = meta.value()?.parse::<syn::Expr>()?;
             } else if meta.path.is_ident("serialize_with")
-                || meta.path.is_ident("deserialize_with")
                 || meta.path.is_ident("with")
                 || meta.path.is_ident("remote")
                 || meta.path.is_ident("from")
@@ -1958,6 +1991,7 @@ fn parse_settings_pair(
                     input_optional,
                     skip_serializing: options.skip_serializing,
                     skip_deserializing: options.skip_deserializing,
+                    custom_deserialize: options.custom_deserialize,
                 });
                 if input.peek(syn::Token![,]) {
                     input.parse::<syn::Token![,]>()?;
@@ -2559,15 +2593,38 @@ mod tests {
 
     #[test]
     fn custom_deserializer_metadata_fails_closed_for_input_generation() {
-        assert!(
-            serde_options(&[syn::parse_quote!(#[serde(deserialize_with = "custom")])])
-                .unwrap_err()
-                .contains("custom Serde wire behavior")
-        );
+        let options =
+            serde_options(&[syn::parse_quote!(#[serde(deserialize_with = "custom")])]).unwrap();
+        assert!(options.custom_deserialize);
         assert!(
             serde_options(&[syn::parse_quote!(#[serde(future_wire_mode)])])
                 .unwrap_err()
                 .contains("unsupported serde metadata")
+        );
+
+        let item: Item = syn::parse_quote! {
+            #[derive(serde::Serialize, serde::Deserialize)]
+            struct Envelope {
+                #[serde(deserialize_with = "custom")]
+                retry_safety: String,
+            }
+        };
+        let context = RustTypeGraph::test_context();
+        let mut graph = RustTypeGraph::default();
+        graph.collect_items(&[item], &context).unwrap();
+        graph
+            .emit_response_shape("test_crate::Envelope", "ENVELOPE_RESPONSE_SHAPE")
+            .unwrap();
+        assert!(
+            graph
+                .runtime_shape_declarations()
+                .contains("'retry_safety':")
+        );
+        assert!(
+            graph
+                .emit_definition("test_crate::Envelope", TypeUse::Request)
+                .unwrap_err()
+                .contains("custom deserialization")
         );
     }
 }

@@ -457,23 +457,23 @@ impl MemoryWorker {
             }
         }
 
-        let transcript = match self
+        let projection = match self
             .fact_extraction_store
-            .load_ordinary_transcript(session_id)
+            .load_ordinary_projection(session_id)
             .await
         {
-            Ok(transcript) => transcript,
+            Ok(projection) => projection,
             Err(error) => {
                 tracing::warn!(
                     session_id = %session_id,
                     error = %haven_common::error::sanitize_error_text(&error.to_string()),
-                    "fact inference: failed to load transcript"
+                    "fact inference: failed to load message and step projections"
                 );
                 return FactInferenceOutcome::Retryable;
             }
         };
-        let messages = transcript.messages;
-        let steps = transcript.steps;
+        let messages = projection.messages;
+        let steps = projection.steps;
         if messages.is_empty() {
             return FactInferenceOutcome::Done;
         }
@@ -1997,14 +1997,14 @@ mod tests {
             )
             .unwrap();
 
-        let transcript = MemoryFactExtractionStore::new(db)
-            .load_ordinary_transcript(&session.session_id)
+        let projection = MemoryFactExtractionStore::new(db)
+            .load_ordinary_projection(&session.session_id)
             .await
             .unwrap();
         let window = build_extraction_window(
-            &transcript.messages,
+            &projection.messages,
             Some(&previous_user.message_id),
-            &transcript.steps,
+            &projection.steps,
         );
 
         assert_eq!(window.messages.len(), 3);

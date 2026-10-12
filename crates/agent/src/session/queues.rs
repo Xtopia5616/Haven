@@ -180,7 +180,7 @@ impl SessionSupervisor {
             self.emit_event(SessionSupervisorEvent::InteractionRequested {
                 envelope: Box::new(crate::interaction::InteractionEnvelope {
                     owner: crate::interaction::InteractionOwner::Session {
-                        session_id: actor.id.clone(),
+                        session_id: actor.session_id.clone(),
                     },
                     request: request.clone(),
                 }),
@@ -308,12 +308,12 @@ impl SessionSupervisor {
         };
         let request = decision.request;
         if decision.wake_session {
-            self.publish_confirmation_resume(&actor.id).await;
+            self.publish_confirmation_resume(&actor.session_id).await;
         }
         self.emit_event(SessionSupervisorEvent::InteractionRequested {
             envelope: Box::new(crate::interaction::InteractionEnvelope {
                 owner: crate::interaction::InteractionOwner::Session {
-                    session_id: actor.id,
+                    session_id: actor.session_id,
                 },
                 request: request.clone(),
             }),

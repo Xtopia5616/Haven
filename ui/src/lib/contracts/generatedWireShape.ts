@@ -1,4 +1,5 @@
 import { isRecord } from './objectGuards.ts';
+import { IPC_EVENT_PAYLOAD_SHAPES } from './generatedCommands.ts';
 
 /** Runtime description emitted from Rust serde response types. */
 export type GeneratedWireShape =
@@ -27,6 +28,13 @@ export type GeneratedWireShape =
  */
 export function matchesGeneratedWireShape(value: unknown, shape: GeneratedWireShape): boolean {
 	return findGeneratedWireShapeMismatch(value, shape) === null;
+}
+
+/** Validate an event payload against its Rust-generated, channel-specific DTO shape. */
+export function matchesGeneratedEventPayload(eventName: string, value: unknown): boolean {
+	const shapes = IPC_EVENT_PAYLOAD_SHAPES as Readonly<Record<string, GeneratedWireShape>>;
+	const shape = shapes[eventName];
+	return shape !== undefined && matchesGeneratedWireShape(value, shape);
 }
 
 /** Return the first path that does not match generated wire metadata. */

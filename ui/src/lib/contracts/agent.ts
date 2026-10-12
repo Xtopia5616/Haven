@@ -18,6 +18,7 @@ import type {
 	ToolRetryability,
 	ToolRunCompletionStatusDto,
 	ToolRunKindDto,
+	WebSearchPhase,
 } from './generatedCommands.ts';
 import {
 	AGENT_EVENT_NAMES,
@@ -40,9 +41,11 @@ import {
 	TOOL_RETRYABILITY_VALUES,
 	TOOL_RUN_COMPLETION_STATUS_DTO_VALUES,
 	TOOL_RUN_KIND_DTO_VALUES,
+	WEB_SEARCH_PHASE_VALUES,
 } from './generatedCommands.ts';
 import { isValidTauriEventId, type TauriEvent } from './tauriEvent.ts';
 import { isRecord } from './objectGuards.ts';
+import { matchesGeneratedEventPayload } from './generatedWireShape.ts';
 import {
 	isBoolean,
 	isFiniteNumber,
@@ -70,7 +73,7 @@ export interface AgentThoughtPayload {
 	stepNumber: number;
 	runId: number;
 	messageId: string;
-	eventSeq?: number;
+	eventSequence?: number;
 }
 
 export interface AgentToolCallPayload {
@@ -84,7 +87,7 @@ export interface AgentToolCallPayload {
 	stepId: string;
 	suppressStreamedThought: boolean;
 	silent: boolean;
-	eventSeq?: number;
+	eventSequence?: number;
 }
 
 export interface AgentObservationPayload {
@@ -102,7 +105,7 @@ export interface AgentObservationPayload {
 	operationScope: ToolOperationScope;
 	renderer: string;
 	result: AgentToolResultEnvelope;
-	eventSeq?: number;
+	eventSequence?: number;
 }
 
 export interface AgentToolResultEnvelope {
@@ -148,8 +151,7 @@ export interface AgentMediaPlanPayload {
 	sessionId: string;
 	stepNumber: number;
 	runId: number;
-	/** RequestKind string under the established `role` wire field. */
-	role: RequestKind;
+	requestKind: RequestKind;
 	strategy: MediaInputStrategy;
 	projections: Array<{
 		assetId: string;
@@ -157,12 +159,12 @@ export interface AgentMediaPlanPayload {
 		mode: MediaProjectionMode;
 	}>;
 	notices: Array<{ assetId: string; code: MediaPlanNoticeCode }>;
-	eventSeq?: number;
+	eventSequence?: number;
 }
 
 export interface AgentWebSearchPayload {
 	sessionId: string;
-	phase: string;
+	phase: WebSearchPhase;
 	stepNumber: number;
 	runId: number;
 	callId?: string;
@@ -182,7 +184,7 @@ export interface AgentSupplementPayload {
 	messageId?: string;
 	supplementId: string;
 	injectSource?: InjectSource;
-	eventSeq?: number;
+	eventSequence?: number;
 }
 
 export interface AgentCompactionPayload {
@@ -192,7 +194,7 @@ export interface AgentCompactionPayload {
 	tokensAfter: number;
 	degraded: boolean;
 	episodeId?: string;
-	eventSeq?: number;
+	eventSequence?: number;
 }
 
 export interface AgentNotificationPayload {
@@ -229,7 +231,7 @@ export interface AgentUsagePayload {
 	contextWindow: number | null;
 	stepNumber?: number;
 	durationMs?: number;
-	role?: RequestKind;
+	requestKind?: RequestKind;
 	callKind: LlmCallKind;
 	hasCost: boolean;
 }
@@ -375,7 +377,8 @@ export function mapAgentEvent(
 		!isString(event.event) ||
 		!AGENT_EVENT_NAME_SET.has(event.event) ||
 		!isValidTauriEventId(event.id) ||
-		!isRecord(event.payload)
+		!isRecord(event.payload) ||
+		!matchesGeneratedEventPayload(event.event, event.payload)
 	) {
 		return null;
 	}
@@ -396,7 +399,7 @@ export function mapAgentEvent(
 				stepNumber === null ||
 				runId === null ||
 				messageId === null ||
-				!optionalSafeUnsignedIntegerIsValid(payload, 'event_seq')
+				!optionalSafeUnsignedIntegerIsValid(payload, 'event_sequence')
 			)
 				return null;
 			return {
@@ -407,8 +410,8 @@ export function mapAgentEvent(
 					stepNumber,
 					runId,
 					messageId,
-					...(payload.event_seq !== undefined
-						? { eventSeq: payload.event_seq as number }
+					...(payload.event_sequence !== undefined
+						? { eventSequence: payload.event_sequence as number }
 						: {}),
 				},
 			};
@@ -434,7 +437,7 @@ export function mapAgentEvent(
 				silent === null ||
 				!hasOwnWireField(payload, 'input') ||
 				(toolCallId !== null && !isString(toolCallId)) ||
-				!optionalSafeUnsignedIntegerIsValid(payload, 'event_seq')
+				!optionalSafeUnsignedIntegerIsValid(payload, 'event_sequence')
 			)
 				return null;
 			return {
@@ -450,8 +453,8 @@ export function mapAgentEvent(
 					stepId,
 					suppressStreamedThought,
 					silent,
-					...(payload.event_seq !== undefined
-						? { eventSeq: payload.event_seq as number }
+					...(payload.event_sequence !== undefined
+						? { eventSequence: payload.event_sequence as number }
 						: {}),
 				},
 			};
@@ -486,7 +489,7 @@ export function mapAgentEvent(
 				!isOneOf(operationScope, TOOL_OPERATION_SCOPE_VALUES) ||
 				(toolCallId !== null && !isString(toolCallId)) ||
 				result === null ||
-				!optionalSafeUnsignedIntegerIsValid(payload, 'event_seq')
+				!optionalSafeUnsignedIntegerIsValid(payload, 'event_sequence')
 			)
 				return null;
 			return {
@@ -506,8 +509,8 @@ export function mapAgentEvent(
 					operationScope,
 					renderer,
 					result,
-					...(payload.event_seq !== undefined
-						? { eventSeq: payload.event_seq as number }
+					...(payload.event_sequence !== undefined
+						? { eventSequence: payload.event_sequence as number }
 						: {}),
 				},
 			};
@@ -592,12 +595,12 @@ export function mapAgentEvent(
 		}
 		case 'agent:web_search': {
 			const sessionId = canonicalIdField(payload, 'session_id', 'ses');
-			const phase = readStringField(payload, 'phase');
+			const phase = payload.phase;
 			const stepNumber = requiredU32(payload, 'step_number');
 			const runId = requiredSafeUnsignedInteger(payload, 'run_id');
 			if (
 				sessionId === null ||
-				phase === null ||
+				!isOneOf(phase, WEB_SEARCH_PHASE_VALUES) ||
 				stepNumber === null ||
 				runId === null ||
 				!optionalStringFieldIsValid(payload, 'call_id') ||
@@ -625,7 +628,7 @@ export function mapAgentEvent(
 			const sessionId = canonicalIdField(payload, 'session_id', 'ses');
 			const stepNumber = requiredU32(payload, 'step_number');
 			const runId = requiredSafeUnsignedInteger(payload, 'run_id');
-			const role = payload.role;
+			const requestKind = payload.request_kind;
 			const strategy = payload.strategy;
 			const projections =
 				Array.isArray(payload.projections) &&
@@ -660,11 +663,11 @@ export function mapAgentEvent(
 				sessionId === null ||
 				stepNumber === null ||
 				runId === null ||
-				!isOneOf(role, REQUEST_KIND_VALUES) ||
+				!isOneOf(requestKind, REQUEST_KIND_VALUES) ||
 				!isOneOf(strategy, MEDIA_INPUT_STRATEGY_VALUES) ||
 				projections === null ||
 				notices === null ||
-				!optionalSafeUnsignedIntegerIsValid(payload, 'event_seq')
+				!optionalSafeUnsignedIntegerIsValid(payload, 'event_sequence')
 			)
 				return null;
 			return {
@@ -673,12 +676,12 @@ export function mapAgentEvent(
 					sessionId,
 					stepNumber,
 					runId,
-					role,
+					requestKind,
 					strategy,
 					projections,
 					notices,
-					...(payload.event_seq !== undefined
-						? { eventSeq: payload.event_seq as number }
+					...(payload.event_sequence !== undefined
+						? { eventSequence: payload.event_sequence as number }
 						: {}),
 				},
 			};
@@ -698,7 +701,7 @@ export function mapAgentEvent(
 				!optionalCanonicalIdFieldIsValid(payload, 'message_id', 'msg') ||
 				(payload.inject_source !== undefined &&
 					!isOneOf(payload.inject_source, INJECT_SOURCE_VALUES)) ||
-				!optionalSafeUnsignedIntegerIsValid(payload, 'event_seq')
+				!optionalSafeUnsignedIntegerIsValid(payload, 'event_sequence')
 			)
 				return null;
 			return {
@@ -715,8 +718,8 @@ export function mapAgentEvent(
 					...(payload.inject_source !== undefined
 						? { injectSource: payload.inject_source as InjectSource }
 						: {}),
-					...(payload.event_seq !== undefined
-						? { eventSeq: payload.event_seq as number }
+					...(payload.event_sequence !== undefined
+						? { eventSequence: payload.event_sequence as number }
 						: {}),
 				},
 			};
@@ -734,7 +737,7 @@ export function mapAgentEvent(
 				tokensAfter === null ||
 				degraded === null ||
 				!optionalCanonicalIdFieldIsValid(payload, 'episode_id', 'msg') ||
-				!optionalSafeUnsignedIntegerIsValid(payload, 'event_seq')
+				!optionalSafeUnsignedIntegerIsValid(payload, 'event_sequence')
 			)
 				return null;
 			return {
@@ -748,8 +751,8 @@ export function mapAgentEvent(
 					...(payload.episode_id !== undefined
 						? { episodeId: payload.episode_id as string }
 						: {}),
-					...(payload.event_seq !== undefined
-						? { eventSeq: payload.event_seq as number }
+					...(payload.event_sequence !== undefined
+						? { eventSequence: payload.event_sequence as number }
 						: {}),
 				},
 			};
@@ -762,7 +765,7 @@ export function mapAgentEvent(
 				rawCacheDiagnostics === undefined
 					? undefined
 					: mapCacheDiagnostics(rawCacheDiagnostics);
-			const role = payload.role;
+			const requestKind = payload.request_kind;
 			const numberFields = [
 				'prompt_tokens',
 				'completion_tokens',
@@ -790,7 +793,7 @@ export function mapAgentEvent(
 				!nullableU32IsValid(payload.context_window) ||
 				!optionalU32IsValid(payload, 'step_number') ||
 				!optionalSafeUnsignedIntegerIsValid(payload, 'duration_ms') ||
-				(role !== undefined && !isOneOf(role, REQUEST_KIND_VALUES)) ||
+				(requestKind !== undefined && !isOneOf(requestKind, REQUEST_KIND_VALUES)) ||
 				!isOneOf(payload.call_kind, LLM_CALL_KIND_VALUES) ||
 				!isBoolean(payload.has_cost)
 			)
@@ -826,7 +829,7 @@ export function mapAgentEvent(
 					...(payload.duration_ms !== undefined
 						? { durationMs: payload.duration_ms as number }
 						: {}),
-					...(role !== undefined ? { role } : {}),
+					...(requestKind !== undefined ? { requestKind } : {}),
 					callKind: payload.call_kind,
 					hasCost: payload.has_cost,
 				},

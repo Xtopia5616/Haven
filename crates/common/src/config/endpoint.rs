@@ -488,8 +488,8 @@ pub struct ModelConfig {
 }
 
 impl ModelConfig {
-    pub fn stamp_id(&mut self, id: &str) {
-        self.id = id.to_string();
+    pub fn stamp_model_config_id(&mut self, model_config_id: &str) {
+        self.id = model_config_id.to_string();
     }
 
     pub fn is_assigned(&self) -> bool {
@@ -508,7 +508,8 @@ impl ModelConfig {
 pub struct RoutedModel {
     /// Haven model-configuration identity. The Provider service model ID is
     /// stored on `endpoint.model_name`.
-    pub id: String,
+    #[serde(rename = "id")]
+    pub model_config_id: String,
     pub endpoint: ModelEndpoint,
     pub capabilities: Vec<Capability>,
 }
@@ -577,24 +578,36 @@ impl Default for LlmConfig {
 }
 
 impl LlmConfig {
-    pub fn model(&self, id: &str) -> Option<&ModelConfig> {
-        self.models.iter().find(|model| model.id == id)
+    pub fn model_config(&self, model_config_id: &str) -> Option<&ModelConfig> {
+        self.models
+            .iter()
+            .find(|model_config| model_config.id == model_config_id)
     }
 
-    pub fn model_mut(&mut self, id: &str) -> Option<&mut ModelConfig> {
-        self.models.iter_mut().find(|model| model.id == id)
+    pub fn model_config_mut(&mut self, model_config_id: &str) -> Option<&mut ModelConfig> {
+        self.models
+            .iter_mut()
+            .find(|model_config| model_config.id == model_config_id)
     }
 
-    pub fn set_model(&mut self, id: impl Into<String>, mut config: ModelConfig) {
-        let id = id.into();
-        match self.models.iter_mut().find(|model| model.id == id) {
+    pub fn set_model_config(
+        &mut self,
+        model_config_id: impl Into<String>,
+        mut model_config: ModelConfig,
+    ) {
+        let model_config_id = model_config_id.into();
+        match self
+            .models
+            .iter_mut()
+            .find(|existing| existing.id == model_config_id)
+        {
             Some(existing) => {
-                config.stamp_id(&id);
-                *existing = config;
+                model_config.stamp_model_config_id(&model_config_id);
+                *existing = model_config;
             }
             None => {
-                config.stamp_id(&id);
-                self.models.push(config);
+                model_config.stamp_model_config_id(&model_config_id);
+                self.models.push(model_config);
             }
         }
     }
@@ -627,13 +640,15 @@ impl LlmConfig {
     /// models and models that do not advertise the required capability.
     pub fn route_model(&self, request: RequestKind) -> Option<&ModelConfig> {
         let policy = self.policy(request)?;
-        let model = self.model(&policy.primary)?;
-        (model.is_assigned()
+        let model_config = self.model_config(&policy.primary)?;
+        (model_config.is_assigned()
             && self
-                .provider_config_by_name(model.provider_name.as_str())
+                .provider_config_by_name(model_config.provider_name.as_str())
                 .is_some_and(provider_credentials_ready)
-            && model.capabilities.contains(&request.required_capability()))
-        .then_some(model)
+            && model_config
+                .capabilities
+                .contains(&request.required_capability()))
+        .then_some(model_config)
     }
 
     pub fn is_request_configured(&self, request: RequestKind) -> bool {
@@ -650,30 +665,30 @@ impl LlmConfig {
     /// Materialize a named model from its provider and per-model overrides.
     /// Missing or incomplete models become a no-key endpoint so router
     /// construction remains non-panicking and the route is simply ineligible.
-    pub fn materialize_model(&self, id: &str) -> RoutedModel {
+    pub fn materialize_model_config(&self, model_config_id: &str) -> RoutedModel {
         let mut ep = ModelEndpoint::default();
-        let Some(model) = self.model(id) else {
+        let Some(model_config) = self.model_config(model_config_id) else {
             return RoutedModel {
-                id: id.to_string(),
+                model_config_id: model_config_id.to_string(),
                 endpoint: ep,
                 capabilities: Vec::new(),
             };
         };
-        if !model.is_assigned() {
+        if !model_config.is_assigned() {
             return RoutedModel {
-                id: model.id.clone(),
+                model_config_id: model_config.id.clone(),
                 endpoint: ep,
-                capabilities: model.capabilities.clone(),
+                capabilities: model_config.capabilities.clone(),
             };
         }
-        let Some(p) = self.provider_config_by_name(model.provider_name.as_str()) else {
+        let Some(p) = self.provider_config_by_name(model_config.provider_name.as_str()) else {
             return RoutedModel {
-                id: model.id.clone(),
+                model_config_id: model_config.id.clone(),
                 endpoint: ep,
-                capabilities: model.capabilities.clone(),
+                capabilities: model_config.capabilities.clone(),
             };
         };
-        ep.model_name = model.model.clone();
+        ep.model_name = model_config.model.clone();
         ep.api_key = p.api_key.clone();
         ep.api_style = p.api_style.clone();
         ep.provider = p.provider.clone();
@@ -688,30 +703,30 @@ impl LlmConfig {
         ep.timeout_streaming_secs = p.default_timeout_streaming_secs;
         ep.web_search = p.default_web_search.clone();
         // Per-model overrides win over provider defaults.
-        if let Some(t) = model.temperature {
+        if let Some(t) = model_config.temperature {
             ep.temperature = t;
         }
-        if let Some(c) = model.context_window {
+        if let Some(c) = model_config.context_window {
             ep.context_window = Some(c);
         }
-        if let Some(c) = model.cost_per_1k_input_tokens {
+        if let Some(c) = model_config.cost_per_1k_input_tokens {
             ep.cost_per_1k_input_tokens = c;
         }
-        if let Some(c) = model.cost_per_1k_output_tokens {
+        if let Some(c) = model_config.cost_per_1k_output_tokens {
             ep.cost_per_1k_output_tokens = c;
         }
-        ep.cost_per_1k_cache_read_tokens = model.cost_per_1k_cache_read_tokens;
-        ep.cost_per_1k_cache_write_tokens = model.cost_per_1k_cache_write_tokens;
-        if let Some(m) = model.max_tokens {
+        ep.cost_per_1k_cache_read_tokens = model_config.cost_per_1k_cache_read_tokens;
+        ep.cost_per_1k_cache_write_tokens = model_config.cost_per_1k_cache_write_tokens;
+        if let Some(m) = model_config.max_tokens {
             ep.max_tokens = m;
         }
-        if let Some(r) = &model.reasoning_effort {
+        if let Some(r) = &model_config.reasoning_effort {
             ep.reasoning_effort = Some(r.clone());
         }
-        if let Some(w) = &model.web_search {
+        if let Some(w) = &model_config.web_search {
             ep.web_search = Some(w.clone());
         }
-        if let Some(r) = model.reasoning_echo_max_chars {
+        if let Some(r) = model_config.reasoning_echo_max_chars {
             ep.reasoning_echo_max_chars = Some(r);
         }
         // Sticky role/provider `web_search` must not reshape requests for
@@ -726,9 +741,9 @@ impl LlmConfig {
             ep.web_search = None;
         }
         RoutedModel {
-            id: model.id.clone(),
+            model_config_id: model_config.id.clone(),
             endpoint: ep,
-            capabilities: model.capabilities.clone(),
+            capabilities: model_config.capabilities.clone(),
         }
     }
 
@@ -746,7 +761,7 @@ impl LlmConfig {
             models: self
                 .models
                 .iter()
-                .map(|model| self.materialize_model(&model.id))
+                .map(|model_config| self.materialize_model_config(&model_config.id))
                 .collect(),
             request_policies: self.request_policies.clone(),
             max_total_duration_secs: self.max_total_duration_secs,
@@ -898,12 +913,16 @@ impl Default for RouterConfig {
 }
 
 impl RouterConfig {
-    pub fn model(&self, id: &str) -> Option<&RoutedModel> {
-        self.models.iter().find(|model| model.id == id)
+    pub fn model_config(&self, model_config_id: &str) -> Option<&RoutedModel> {
+        self.models
+            .iter()
+            .find(|model_config| model_config.model_config_id == model_config_id)
     }
 
-    pub fn model_mut(&mut self, id: &str) -> Option<&mut RoutedModel> {
-        self.models.iter_mut().find(|model| model.id == id)
+    pub fn model_config_mut(&mut self, model_config_id: &str) -> Option<&mut RoutedModel> {
+        self.models
+            .iter_mut()
+            .find(|model_config| model_config.model_config_id == model_config_id)
     }
 
     pub fn policy(&self, request: RequestKind) -> Option<&RequestPolicy> {
@@ -916,10 +935,12 @@ impl RouterConfig {
     /// declared capability.
     pub fn route(&self, request: RequestKind) -> Option<&RoutedModel> {
         let policy = self.policy(request)?;
-        let model = self.model(&policy.primary)?;
-        (endpoint_credentials_ready(&model.endpoint)
-            && model.capabilities.contains(&request.required_capability()))
-        .then_some(model)
+        let model_config = self.model_config(&policy.primary)?;
+        (endpoint_credentials_ready(&model_config.endpoint)
+            && model_config
+                .capabilities
+                .contains(&request.required_capability()))
+        .then_some(model_config)
     }
 
     pub fn policy_mut(&mut self, request: RequestKind) -> Option<&mut RequestPolicy> {
@@ -1010,7 +1031,7 @@ mod tests {
             }],
             ..Default::default()
         };
-        let ep = llm.materialize_model("default_model").endpoint;
+        let ep = llm.materialize_model_config("default_model").endpoint;
         assert!(ep.web_search.is_none());
     }
 
@@ -1039,7 +1060,7 @@ mod tests {
             }],
             ..Default::default()
         };
-        let ep = llm.materialize_model("default_model").endpoint;
+        let ep = llm.materialize_model_config("default_model").endpoint;
         assert_eq!(ep.web_search.as_deref(), Some("always"));
         assert_eq!(ep.provider, "deepseek");
     }
@@ -1071,7 +1092,7 @@ mod tests {
             ..Default::default()
         };
         assert!(llm.is_request_configured(RequestKind::Chat));
-        let ep = llm.materialize_model("default_model").endpoint;
+        let ep = llm.materialize_model_config("default_model").endpoint;
         assert!(endpoint_credentials_ready(&ep));
     }
 
@@ -1122,7 +1143,9 @@ mod tests {
         };
 
         let serialized = serde_json::to_value(&model).expect("serialize model config");
+        assert_eq!(serialized["id"], "chat-model");
         assert_eq!(serialized["provider_name"], "primary-profile");
+        assert_eq!(serialized["model"], "gpt-5");
         assert!(serialized.get("provider").is_none());
 
         let decoded: ModelConfig = serde_json::from_value(serde_json::json!({
@@ -1139,6 +1162,27 @@ mod tests {
             "model": "gpt-5"
         }));
         assert!(old_key.is_err(), "the old ambiguous key must be rejected");
+    }
+
+    #[test]
+    fn routed_model_config_identity_keeps_its_existing_wire_key() {
+        let routed_model = RoutedModel {
+            model_config_id: "chat-model".into(),
+            endpoint: ModelEndpoint {
+                model_name: "provider/gpt-5".into(),
+                ..Default::default()
+            },
+            capabilities: vec![Capability::Chat],
+        };
+
+        let serialized = serde_json::to_value(&routed_model).expect("serialize routed model");
+        assert_eq!(serialized["id"], "chat-model");
+        assert!(serialized.get("model_config_id").is_none());
+
+        let decoded: RoutedModel = serde_json::from_value(serialized)
+            .expect("decode routed model using stable wire identity key");
+        assert_eq!(decoded.model_config_id, "chat-model");
+        assert_eq!(decoded.endpoint.model_name, "provider/gpt-5");
     }
 
     #[test]

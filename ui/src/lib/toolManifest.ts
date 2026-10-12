@@ -237,10 +237,20 @@ function booleanValue(value: unknown): boolean | null {
 export function setToolManifests(entries: unknown): ToolManifestView[] {
 	const next = new Map<string, ToolManifestView>();
 	const parsedEntries: ToolManifestView[] = [];
+	const builtinStableNames = new Set<string>();
 	if (Array.isArray(entries)) {
 		for (const entry of entries) {
 			const manifest = parseToolManifest(entry);
 			if (manifest) {
+				if (manifest.identity.source === 'builtin') {
+					if (builtinStableNames.has(manifest.identity.stableName)) {
+						// The builtin snapshot is one projection: exposing duplicate rows
+						// would make list consumers disagree with the last-write-wins map.
+						manifests = new Map();
+						return [];
+					}
+					builtinStableNames.add(manifest.identity.stableName);
+				}
 				next.set(manifest.identity.stableName, manifest);
 				parsedEntries.push(manifest);
 			}

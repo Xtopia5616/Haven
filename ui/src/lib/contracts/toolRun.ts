@@ -10,6 +10,7 @@ import {
 	TOOL_RUN_STATUS_VALUES,
 } from './generatedCommands.ts';
 import { isValidTauriEventId, type TauriEvent } from './tauriEvent.ts';
+import { matchesGeneratedEventPayload } from './generatedWireShape.ts';
 import { isRecord } from './objectGuards.ts';
 import { isNumber, isOneOf, isString } from './valueGuards.ts';
 import {
@@ -165,7 +166,23 @@ export function mapToolRunEvent(event: TauriEvent<unknown>): TauriEvent<ToolRunP
 	if (
 		!isRecord(event) ||
 		!isOneOf(event.event, TOOL_RUN_EVENT_NAMES) ||
-		!isValidTauriEventId(event.id)
+		!isValidTauriEventId(event.id) ||
+		!matchesGeneratedEventPayload(event.event, event.payload)
+	) {
+		return null;
+	}
+	if (!isRecord(event.payload)) return null;
+	const wire = event.payload;
+	if (event.event === 'tool_run:created' && wire.status === undefined) return null;
+	if (
+		event.event === 'tool_run:output' &&
+		(wire.status !== 'running' || !isString(wire.output))
+	) {
+		return null;
+	}
+	if (
+		event.event === 'tool_run:finished' &&
+		!['completed', 'failed', 'cancelled'].includes(String(wire.status))
 	) {
 		return null;
 	}

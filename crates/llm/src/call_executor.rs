@@ -20,7 +20,7 @@ use crate::types::{Embedding, LlmError, LlmResponse, LlmToolDefinition};
 
 pub(crate) struct CallExecutor {
     descriptor: RequestDescriptor,
-    model_id: String,
+    model_config_id: String,
     client: Arc<dyn LlmClient>,
     policy: RequestExecutionPolicy,
 }
@@ -28,13 +28,13 @@ pub(crate) struct CallExecutor {
 impl CallExecutor {
     pub(crate) fn new(
         descriptor: RequestDescriptor,
-        model_id: String,
+        model_config_id: String,
         client: Arc<dyn LlmClient>,
         policy: RequestExecutionPolicy,
     ) -> Self {
         Self {
             descriptor,
-            model_id,
+            model_config_id,
             client,
             policy,
         }
@@ -57,11 +57,11 @@ impl CallExecutor {
         tracing::trace!(
             request_purpose = self.descriptor.purpose.as_str(),
             required_capability = self.descriptor.required_capability.as_str(),
-            model_id = %self.model_id,
+            model_config_id = %self.model_config_id,
             "executing complete LLM request"
         );
         let client = self.client.clone();
-        let model_id = &self.model_id;
+        let model_config_id = &self.model_config_id;
         let policy = self.policy;
 
         execute_with_timeout(policy.total_timeout_secs, "router", || async {
@@ -90,7 +90,11 @@ impl CallExecutor {
                 .await
             };
 
-            project_outcome(model_id.to_string(), RequestOutcome::from_result(&result)).await;
+            project_outcome(
+                model_config_id.to_string(),
+                RequestOutcome::from_result(&result),
+            )
+            .await;
             result
         })
         .await
@@ -111,17 +115,21 @@ impl CallExecutor {
         tracing::trace!(
             request_purpose = self.descriptor.purpose.as_str(),
             required_capability = self.descriptor.required_capability.as_str(),
-            model_id = %self.model_id,
+            model_config_id = %self.model_config_id,
             "executing embedding LLM request"
         );
         let client = self.client.clone();
-        let model_id = &self.model_id;
+        let model_config_id = &self.model_config_id;
         let policy = self.policy;
 
         execute_with_timeout(policy.total_timeout_secs, "embedding", || async {
             let result =
                 execute_with_retry(policy.retry, None, || client.embed(input.clone())).await;
-            project_outcome(model_id.to_string(), RequestOutcome::from_result(&result)).await;
+            project_outcome(
+                model_config_id.to_string(),
+                RequestOutcome::from_result(&result),
+            )
+            .await;
             result
         })
         .await
@@ -402,8 +410,8 @@ mod tests {
         let error = executor
             .embed(vec!["hello".into()], {
                 let projections = projections.clone();
-                move |model_id, outcome| {
-                    assert_eq!(model_id, "resolved-model-id");
+                move |model_config_id, outcome| {
+                    assert_eq!(model_config_id, "resolved-model-id");
                     assert_eq!(
                         outcome,
                         RequestOutcome::Failure {

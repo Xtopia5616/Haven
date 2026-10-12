@@ -5,7 +5,10 @@ import type {
 	SessionPermissionGrant as GeneratedSessionPermissionGrant,
 	TauriCommandRequest,
 } from './generatedCommands.ts';
-import { SETTINGS_RESPONSE_SHAPE } from './generatedCommands.ts';
+import {
+	SESSION_PERMISSION_GRANT_RESPONSE_SHAPE,
+	SETTINGS_RESPONSE_SHAPE,
+} from './generatedCommands.ts';
 import { findGeneratedWireShapeMismatch } from './generatedWireShape.ts';
 import { isRecord } from './objectGuards.ts';
 import {
@@ -323,11 +326,20 @@ export function validateSettingsNumbers(value: unknown): void {
 
 /** Validate persisted session identities before Settings consumes permission grants. */
 export function parseSessionPermissionGrantResponses(value: unknown): SessionPermissionGrant[] {
-	if (
-		!Array.isArray(value) ||
-		!value.every((grant) => isRecord(grant) && isCanonicalEntityId(grant.session_id, 'ses'))
-	) {
+	if (!Array.isArray(value)) {
 		throw new Error('Invalid session permission grant identity');
+	}
+	for (const [index, grant] of value.entries()) {
+		if (!isRecord(grant) || !isCanonicalEntityId(grant.session_id, 'ses')) {
+			throw new Error('Invalid session permission grant identity');
+		}
+		const invalidPath = findGeneratedWireShapeMismatch(
+			grant,
+			SESSION_PERMISSION_GRANT_RESPONSE_SHAPE,
+		);
+		if (invalidPath) {
+			throw new Error(`Invalid session permission grant at [${index}]${invalidPath.slice(1)}`);
+		}
 	}
 	return value as unknown as SessionPermissionGrant[];
 }

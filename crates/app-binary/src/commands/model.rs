@@ -34,8 +34,8 @@ fn model_slot_for_request(
     cfg: &mut LlmConfig,
     request_kind: RequestKind,
 ) -> Option<&mut ModelConfig> {
-    let id = cfg.policy(request_kind)?.primary.clone();
-    cfg.model_mut(&id)
+    let model_config_id = cfg.policy(request_kind)?.primary.clone();
+    cfg.model_config_mut(&model_config_id)
 }
 
 fn set_request_route(
@@ -43,15 +43,19 @@ fn set_request_route(
     request_kind: RequestKind,
     model_config_id: &str,
 ) -> Result<(), String> {
-    let model = llm
-        .model(model_config_id)
+    let model_config = llm
+        .model_config(model_config_id)
         .ok_or_else(|| format!("unknown model configuration: {model_config_id}"))?;
-    if !model.is_assigned() || llm.provider_config_by_name(&model.provider_name).is_none() {
+    if !model_config.is_assigned()
+        || llm
+            .provider_config_by_name(&model_config.provider_name)
+            .is_none()
+    {
         return Err(format!(
             "model configuration is incomplete: {model_config_id}"
         ));
     }
-    if !model
+    if !model_config
         .capabilities
         .contains(&request_kind.required_capability())
     {
@@ -67,12 +71,12 @@ fn set_request_route(
 
 fn validate_builtin_search(config: &AppConfig, request_kind: RequestKind) -> Result<(), String> {
     let llm = &config.llm;
-    let model_id = llm
+    let model_config_id = llm
         .policy(request_kind)
         .map(|policy| policy.primary.as_str())
         .ok_or_else(|| format!("request is not configured: {}", request_kind.as_str()))?;
     let slot = llm
-        .model(model_id)
+        .model_config(model_config_id)
         .ok_or_else(|| format!("request is not configured: {}", request_kind.as_str()))?;
     let style = llm
         .providers
@@ -780,7 +784,8 @@ mod tests {
         });
 
         assert_eq!(
-            model_slot_for_request(&mut cfg.llm, RequestKind::Chat).map(|model| model.id.as_str()),
+            model_slot_for_request(&mut cfg.llm, RequestKind::Chat)
+                .map(|model_config| model_config.id.as_str()),
             Some("chat-primary")
         );
         assert_eq!(
@@ -818,7 +823,7 @@ mod tests {
             "chat-alternate"
         );
         assert_eq!(
-            llm.model("chat-alternate").unwrap().model,
+            llm.model_config("chat-alternate").unwrap().model,
             "provider/model-b"
         );
     }

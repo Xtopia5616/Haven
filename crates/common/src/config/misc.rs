@@ -4,6 +4,10 @@
 
 use super::*;
 
+/// Hard ceiling for the number of stored facts inserted into a fact-extraction
+/// prompt. The default remains lower so users can reduce prompt cost.
+pub const MAX_FACTS_IN_EXTRACTION_PROMPT: usize = 64;
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default, deny_unknown_fields)]
 pub struct HotkeyConfig {
@@ -153,7 +157,8 @@ pub struct ContextLimitsConfig {
     /// regardless. The extraction cursor is untouched by a throttled skip,
     /// so the pending messages are processed on the next allowed run.
     pub fact_extraction_min_interval_secs: u64,
-    /// Max known facts listed in the extraction prompt as context.
+    /// Max known facts listed in the extraction prompt as context, capped by
+    /// [`MAX_FACTS_IN_EXTRACTION_PROMPT`].
     pub max_known_facts: usize,
     /// Max chars of a fact subject/predicate/object field (prompt-injection
     /// sanitization truncation).
@@ -725,7 +730,7 @@ pub fn is_valid_mcp_server_name(name: &str) -> bool {
 /// Validate profile names before configuration is loaded into runtime state
 /// or persisted. Duplicate detection intentionally preserves exact-case
 /// identity (`Foo` and `foo` are distinct names).
-pub fn validate_mcp_server_names(servers: &[McpServerConfig]) -> anyhow::Result<()> {
+pub(super) fn validate_mcp_server_names(servers: &[McpServerConfig]) -> anyhow::Result<()> {
     let mut names = std::collections::HashSet::with_capacity(servers.len());
     for server in servers {
         if !is_valid_mcp_server_name(&server.name) {

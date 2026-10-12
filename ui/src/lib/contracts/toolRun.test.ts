@@ -128,6 +128,46 @@ describe('tool run IPC contract', () => {
 		).toBeNull();
 	});
 
+	it('enforces the required fields of each lifecycle channel', () => {
+		const toolRunId = 'toolrun-0123456789abcdef0123456789abcdef';
+		const event = (
+			name: 'tool_run:created' | 'tool_run:updated' | 'tool_run:output' | 'tool_run:finished',
+			payload: object,
+		) =>
+			mapToolRunEvent({ event: name, id: 1, payload });
+
+		expect(event('tool_run:created', { tool_run_id: toolRunId, kind: 'background' })).toBeNull();
+		expect(
+			event('tool_run:output', {
+				tool_run_id: toolRunId,
+				kind: 'background',
+				status: 'running',
+			}),
+		).toBeNull();
+		expect(
+			event('tool_run:output', {
+				tool_run_id: toolRunId,
+				kind: 'background',
+				status: 'completed',
+				output: 'late output',
+			}),
+		).toBeNull();
+		expect(
+			event('tool_run:finished', {
+				tool_run_id: toolRunId,
+				kind: 'background',
+				status: 'running',
+			}),
+		).toBeNull();
+		expect(
+			event('tool_run:updated', {
+				tool_run_id: toolRunId,
+				kind: 'background',
+				session_id: 'ses-0123456789abcdef0123456789abcdef',
+			}),
+		).not.toBeNull();
+	});
+
 	it('fails closed when required fields are missing or malformed', () => {
 		expect(mapToolRunPayload({ kind: 'background' })).toBeNull();
 		expect(

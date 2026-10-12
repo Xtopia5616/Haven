@@ -44,7 +44,7 @@
 	import ToolRunCenter from '$lib/ToolRunCenter.svelte';
 	import WorkspacePageHeader from '$lib/WorkspacePageHeader.svelte';
 	import WorkspaceSectionHeader from '$lib/WorkspaceSectionHeader.svelte';
-	import type { SessionHistoryFilterRequest } from '$lib/contracts/commands.ts';
+	import type { TauriCommandRequest } from '$lib/contracts/generatedCommands.ts';
 	import type { SessionHistoryStatusFilterInput } from '$lib/contracts/generatedCommands.ts';
 	import type {
 		Fact,
@@ -234,7 +234,9 @@
 		void goto('/?' + params.toString(), { replaceState: true });
 	}
 
-	function filterParams(extra: Pick<SessionHistoryFilterRequest, 'limit' | 'offset'>) {
+	function filterParams(
+		extra: Pick<TauriCommandRequest<'search_session_history_filtered'>, 'limit' | 'offset'>,
+	) {
 		return {
 			query: searchQuery || null,
 			status: statusFilter || null,

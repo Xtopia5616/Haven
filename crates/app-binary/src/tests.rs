@@ -39,7 +39,7 @@ fn channel_maps_every_variant_to_expected_channel() {
                 step_number: 1,
                 run_id: 1,
                 message_id: "msg-1".into(),
-                event_seq: None,
+                event_sequence: None,
             },
             "agent:thought",
         ),
@@ -54,7 +54,7 @@ fn channel_maps_every_variant_to_expected_channel() {
                 step_id: "step-1".into(),
                 tool_index: 0,
                 suppress_streamed_thought: false,
-                event_seq: None,
+                event_sequence: None,
             },
             "agent:tool_call",
         ),
@@ -74,7 +74,7 @@ fn channel_maps_every_variant_to_expected_channel() {
                 operation_scope: haven_common::tools::ToolOperationScope::Session,
                 renderer: "generic".into(),
                 result: haven_tools::ToolResultEnvelope::default(),
-                event_seq: None,
+                event_sequence: None,
             },
             "agent:observation",
         ),
@@ -156,21 +156,21 @@ fn channel_maps_every_variant_to_expected_channel() {
                 session_id: "t".into(),
                 step_number: 1,
                 run_id: 1,
-                role: haven_common::config::RequestKind::Vision,
+                request_kind: haven_common::config::RequestKind::Vision,
                 strategy: haven_common::media::MediaInputStrategy::Auto,
                 projections: vec![],
                 notices: vec![haven_common::media::MediaPlanNotice {
                     asset_id: "asset-1".into(),
                     code: haven_common::media::MediaPlanNoticeCode::RawCapabilityUnknown,
                 }],
-                event_seq: None,
+                event_sequence: None,
             },
             "agent:media_plan",
         ),
         (
             AgentEvent::WebSearch {
                 session_id: "t".into(),
-                phase: "searching".into(),
+                phase: haven_llm::WebSearchPhase::Searching,
                 step_number: 1,
                 run_id: 1,
                 call_id: Some("ws_1".into()),
@@ -194,7 +194,7 @@ fn channel_maps_every_variant_to_expected_channel() {
                 message_id: None,
                 supplement_id: "msg-supplement".into(),
                 inject_source: None,
-                event_seq: None,
+                event_sequence: None,
             },
             "agent:supplement",
         ),
@@ -206,7 +206,7 @@ fn channel_maps_every_variant_to_expected_channel() {
                 tokens_after: 2,
                 episode_id: None,
                 degraded: false,
-                event_seq: None,
+                event_sequence: None,
             },
             "agent:compaction",
         ),
@@ -235,7 +235,7 @@ fn channel_maps_every_variant_to_expected_channel() {
                 context_window: None,
                 step_number: Some(1),
                 duration_ms: Some(42),
-                role: Some(haven_common::config::RequestKind::Chat),
+                request_kind: Some(haven_common::config::RequestKind::Chat),
                 call_kind: haven_common::usage::LlmCallKind::Agent,
                 has_cost: false,
             },
@@ -278,12 +278,15 @@ fn usage_event_keeps_call_kind_typed_and_serializes_the_canonical_value() {
         context_window: None,
         step_number: Some(1),
         duration_ms: None,
-        role: Some(haven_common::config::RequestKind::Chat),
+        request_kind: Some(haven_common::config::RequestKind::Chat),
         call_kind: haven_common::usage::LlmCallKind::Tool,
         has_cost: false,
     };
 
-    assert_eq!(TauriEmitter::payload(&event, None)["call_kind"], "tool");
+    let payload = TauriEmitter::payload(&event, None);
+    assert_eq!(payload["call_kind"], "tool");
+    assert_eq!(payload["request_kind"], "chat");
+    assert!(payload.get("role").is_none());
 }
 
 #[test]
@@ -292,7 +295,7 @@ fn media_plan_payload_contains_strategy_projection_and_reason() {
         session_id: "ses-1".into(),
         step_number: 4,
         run_id: 8,
-        role: haven_common::config::RequestKind::AudioChat,
+        request_kind: haven_common::config::RequestKind::AudioChat,
         strategy: haven_common::media::MediaInputStrategy::Auto,
         projections: vec![haven_common::media::MediaProjection {
             asset_id: "asset-1".into(),
@@ -304,7 +307,7 @@ fn media_plan_payload_contains_strategy_projection_and_reason() {
                 source_kind: Some(haven_common::media::MediaRepresentationKind::RawAudio),
             },
         }],
-        event_seq: None,
+        event_sequence: None,
         notices: vec![haven_common::media::MediaPlanNotice {
             asset_id: "asset-1".into(),
             code: haven_common::media::MediaPlanNoticeCode::RawCapabilityUnknown,
@@ -312,7 +315,8 @@ fn media_plan_payload_contains_strategy_projection_and_reason() {
     };
 
     let payload = TauriEmitter::payload(&event, None);
-    assert_eq!(payload["role"], "audio_chat");
+    assert_eq!(payload["request_kind"], "audio_chat");
+    assert!(payload.get("role").is_none());
     assert_eq!(payload["strategy"], "auto");
     assert_eq!(payload["projections"][0]["asset_id"], "asset-1");
     assert_eq!(payload["projections"][0]["representation"], "transcript");
@@ -328,7 +332,7 @@ fn thought_payload_uses_the_explicit_wire_dto() {
         step_number: 2,
         run_id: 7,
         message_id: "msg-1".into(),
-        event_seq: Some(11),
+        event_sequence: Some(11),
     };
     assert_eq!(
         TauriEmitter::payload(&event, None),
@@ -338,7 +342,7 @@ fn thought_payload_uses_the_explicit_wire_dto() {
             "step_number": 2,
             "run_id": 7,
             "message_id": "msg-1",
-            "event_seq": 11,
+            "event_sequence": 11,
         })
     );
 }
@@ -355,14 +359,14 @@ fn payload_adds_silent_to_tool_call() {
         step_id: "step-1".into(),
         tool_index: 0,
         suppress_streamed_thought: false,
-        event_seq: Some(17),
+        event_sequence: Some(17),
     };
     let payload = TauriEmitter::payload(&event, None);
     assert_eq!(payload["silent"], json!(true));
     assert_eq!(payload["tool_name"], json!("read_file"));
     assert_eq!(payload["tool_call_id"], json!("call-1"));
     assert_eq!(payload["step_id"], json!("step-1"));
-    assert_eq!(payload["event_seq"], json!(17));
+    assert_eq!(payload["event_sequence"], json!(17));
 }
 
 #[test]
@@ -377,7 +381,7 @@ fn payload_never_silences_ask() {
         step_id: "step-1".into(),
         tool_index: 0,
         suppress_streamed_thought: false,
-        event_seq: None,
+        event_sequence: None,
     };
     let payload = TauriEmitter::payload(&event, None);
     assert_eq!(payload["silent"], json!(false));

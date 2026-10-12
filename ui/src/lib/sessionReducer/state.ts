@@ -66,17 +66,17 @@ export function registerBlock(
 	};
 }
 
-/** Return null for a duplicate durable card. Parallel ToolCalls share one sequence, so the key is eventSeq plus the card identity. A missing sequence is not durable and must not dedup. */
+/** Return null for a duplicate durable card. Parallel ToolCalls share one sequence, so the key is eventSequence plus the card identity. A missing sequence is not durable and must not dedup. */
 export function acceptEventSequence(
 	state: SessionReducerState,
 	sessionId: string,
-	eventSeq: number | undefined,
+	eventSequence: number | undefined,
 	identity: string,
 ): SessionReducerState | null {
-	if (eventSeq == null || !Number.isFinite(eventSeq) || !identity) return state;
+	if (eventSequence == null || !Number.isFinite(eventSequence) || !identity) return state;
 	const replay = replayOf(state);
-	const previous = replay.eventSeqBySession[sessionId] || [];
-	const key = `${eventSeq}:${identity}`;
+	const previous = replay.eventSequenceBySession[sessionId] || [];
+	const key = `${eventSequence}:${identity}`;
 	if (previous.includes(key)) return null;
 	const seen = [...previous, key];
 	if (seen.length > EVENT_SEQ_HISTORY_LIMIT)
@@ -85,7 +85,7 @@ export function acceptEventSequence(
 		...state,
 		replay: {
 			...replay,
-			eventSeqBySession: { ...replay.eventSeqBySession, [sessionId]: seen },
+			eventSequenceBySession: { ...replay.eventSequenceBySession, [sessionId]: seen },
 		},
 	};
 }
@@ -96,10 +96,10 @@ export function clearReplayForSession(
 	preserveEventSequence = false,
 ): SessionReducerState {
 	const replay = replayOf(state);
-	const eventSeqBySession = { ...replay.eventSeqBySession };
+	const eventSequenceBySession = { ...replay.eventSequenceBySession };
 	const blockIdsBySession = { ...replay.blockIdsBySession };
 	const chunkSeqByMessage = { ...replay.chunkSeqByMessage };
-	if (!preserveEventSequence) delete eventSeqBySession[sessionId];
+	if (!preserveEventSequence) delete eventSequenceBySession[sessionId];
 	for (const ids of Object.values(blockIdsBySession[sessionId] || {})) {
 		if (ids.thoughtId) delete chunkSeqByMessage[ids.thoughtId];
 		if (ids.reasoningId) delete chunkSeqByMessage[ids.reasoningId];
@@ -108,6 +108,6 @@ export function clearReplayForSession(
 	for (const message of messagesOf(state, sessionId)) delete chunkSeqByMessage[message.id];
 	return {
 		...state,
-		replay: { ...replay, eventSeqBySession, blockIdsBySession, chunkSeqByMessage },
+		replay: { ...replay, eventSequenceBySession, blockIdsBySession, chunkSeqByMessage },
 	};
 }

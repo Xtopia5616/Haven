@@ -28,11 +28,11 @@ pub(crate) enum RouteMode {
 #[derive(Clone)]
 struct PrimaryRoute {
     required_capability: Capability,
-    model_id: String,
+    model_config_id: String,
 }
 
 pub(crate) struct ResolvedModelClient {
-    pub(crate) model_id: String,
+    pub(crate) model_config_id: String,
     pub(crate) client: Arc<dyn LlmClient>,
 }
 
@@ -49,10 +49,10 @@ impl ModelDirectory {
         let clients = config
             .models
             .iter()
-            .map(|model| {
+            .map(|routed_model| {
                 (
-                    model.id.clone(),
-                    Arc::from(adapter_for(&model.endpoint)) as Arc<dyn LlmClient>,
+                    routed_model.model_config_id.clone(),
+                    Arc::from(adapter_for(&routed_model.endpoint)) as Arc<dyn LlmClient>,
                 )
             })
             .collect();
@@ -94,11 +94,13 @@ impl ModelDirectory {
             .iter()
             .filter_map(|policy| {
                 let descriptor = RequestDescriptor::from(policy.request);
-                let model_id = policy.primary.trim();
-                let model = config.model(model_id)?;
-                let supports_request = model.capabilities.contains(&descriptor.required_capability);
+                let model_config_id = policy.primary.trim();
+                let routed_model = config.model_config(model_config_id)?;
+                let supports_request = routed_model
+                    .capabilities
+                    .contains(&descriptor.required_capability);
                 let credentials_ready = match route_mode {
-                    RouteMode::Production => endpoint_credentials_ready(&model.endpoint),
+                    RouteMode::Production => endpoint_credentials_ready(&routed_model.endpoint),
                     #[cfg(any(test, feature = "test-support"))]
                     RouteMode::InjectedClients => true,
                 };
@@ -106,7 +108,7 @@ impl ModelDirectory {
                     descriptor.purpose,
                     PrimaryRoute {
                         required_capability: descriptor.required_capability,
-                        model_id: model_id.to_string(),
+                        model_config_id: model_config_id.to_string(),
                     },
                 ))
             })
@@ -144,34 +146,37 @@ impl ModelDirectory {
                     descriptor.purpose.as_str()
                 ))
             })?;
-        let model_id = route.model_id;
-        let client = self.clients.get(&model_id).cloned().ok_or_else(|| {
-            LlmError::Configuration(format!("model client is unavailable: {model_id}"))
+        let model_config_id = route.model_config_id;
+        let client = self.clients.get(&model_config_id).cloned().ok_or_else(|| {
+            LlmError::Configuration(format!("model client is unavailable: {model_config_id}"))
         })?;
-        Ok(ResolvedModelClient { model_id, client })
+        Ok(ResolvedModelClient {
+            model_config_id,
+            client,
+        })
     }
 
     /// Look up an adapter by the model identity already resolved for a request.
-    pub(crate) fn client_for_model_id(
+    pub(crate) fn client_for_model_config_id(
         &self,
-        model_id: &str,
+        model_config_id: &str,
     ) -> Result<Arc<dyn LlmClient>, LlmError> {
-        self.clients.get(model_id).cloned().ok_or_else(|| {
-            LlmError::Configuration(format!("model client is unavailable: {model_id}"))
+        self.clients.get(model_config_id).cloned().ok_or_else(|| {
+            LlmError::Configuration(format!("model client is unavailable: {model_config_id}"))
         })
     }
 
     fn client_for_route(&self, request: RequestKind) -> Option<Arc<dyn LlmClient>> {
-        let model_id = self.primary_model_id(request)?;
-        self.clients.get(&model_id).cloned()
+        let model_config_id = self.primary_model_config_id(request)?;
+        self.clients.get(&model_config_id).cloned()
     }
 
-    pub(crate) fn primary_model_id(&self, request: RequestKind) -> Option<String> {
+    pub(crate) fn primary_model_config_id(&self, request: RequestKind) -> Option<String> {
         self.primary_routes
             .lock()
             .unwrap()
             .get(&request)
-            .map(|route| route.model_id.clone())
+            .map(|route| route.model_config_id.clone())
     }
 
     /// Read the configured model for metadata paths. This deliberately uses
@@ -219,9 +224,9 @@ impl ModelDirectory {
             .request_policies
             .iter()
             .filter_map(|policy| {
-                let model = self.configured_model(config, policy.request)?;
+                let routed_model = self.configured_model(config, policy.request)?;
                 seen_models
-                    .insert(model.id.clone())
+                    .insert(routed_model.model_config_id.clone())
                     .then_some(policy.request)
             })
             .collect()
@@ -231,7 +236,7 @@ impl ModelDirectory {
         self.select_client(request).capability_profile()
     }
 
-    pub(crate) fn model_ids(&self) -> impl Iterator<Item = &str> {
+    pub(crate) fn model_config_ids(&self) -> impl Iterator<Item = &str> {
         self.clients.keys().map(String::as_str)
     }
 
@@ -257,9 +262,9 @@ mod tests {
     use haven_common::config::Capability;
     use haven_common::config::RequestPolicy;
 
-    fn model(id: &str, capabilities: Vec<Capability>, api_key: &str) -> RoutedModel {
+    fn model(model_config_id: &str, capabilities: Vec<Capability>, api_key: &str) -> RoutedModel {
         RoutedModel {
-            id: id.into(),
+            model_config_id: model_config_id.into(),
             endpoint: ModelEndpoint {
                 api_key: api_key.into(),
                 context_window: Some(8_192),
@@ -306,11 +311,16 @@ mod tests {
         let directory = ModelDirectory::from_config(&config);
 
         assert_eq!(
-            directory.primary_model_id(RequestKind::Chat).as_deref(),
+            directory
+                .primary_model_config_id(RequestKind::Chat)
+                .as_deref(),
             Some("ready-chat")
         );
-        assert_eq!(directory.primary_model_id(RequestKind::Vision), None);
-        assert_eq!(directory.primary_model_id(RequestKind::Transcription), None);
+        assert_eq!(directory.primary_model_config_id(RequestKind::Vision), None);
+        assert_eq!(
+            directory.primary_model_config_id(RequestKind::Transcription),
+            None
+        );
     }
 
     #[test]
@@ -334,10 +344,12 @@ mod tests {
         );
 
         assert_eq!(
-            directory.primary_model_id(RequestKind::Chat).as_deref(),
+            directory
+                .primary_model_config_id(RequestKind::Chat)
+                .as_deref(),
             Some("keyless-chat")
         );
-        assert_eq!(directory.primary_model_id(RequestKind::Vision), None);
+        assert_eq!(directory.primary_model_config_id(RequestKind::Vision), None);
         assert!(matches!(
             directory.resolve_client(RequestDescriptor::from(RequestKind::Vision)),
             Err(LlmError::Configuration(message)) if message == "no configured model for vision"
@@ -385,11 +397,14 @@ mod tests {
 
         assert_eq!(
             directory
-                .primary_model_id(RequestKind::AudioChat)
+                .primary_model_config_id(RequestKind::AudioChat)
                 .as_deref(),
             Some("audio-input")
         );
-        assert_eq!(directory.primary_model_id(RequestKind::Transcription), None);
+        assert_eq!(
+            directory.primary_model_config_id(RequestKind::Transcription),
+            None
+        );
     }
 
     #[test]
@@ -401,7 +416,7 @@ mod tests {
         let directory =
             ModelDirectory::with_injected_clients(&config, [("chat".into(), injected_client())]);
 
-        assert_eq!(directory.primary_model_id(RequestKind::Vision), None);
+        assert_eq!(directory.primary_model_config_id(RequestKind::Vision), None);
         assert!(matches!(
             directory.resolve_client(RequestDescriptor::from(RequestKind::Vision)),
             Err(LlmError::Configuration(message)) if message == "no configured model for vision"
@@ -433,8 +448,8 @@ mod tests {
             .resolve_client(RequestDescriptor::from(RequestKind::Vision))
             .unwrap();
 
-        assert_eq!(chat_client.model_id, "shared");
-        assert_eq!(vision_client.model_id, chat_client.model_id);
+        assert_eq!(chat_client.model_config_id, "shared");
+        assert_eq!(vision_client.model_config_id, chat_client.model_config_id);
         assert!(Arc::ptr_eq(&chat_client.client, &vision_client.client));
     }
 

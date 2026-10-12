@@ -271,7 +271,14 @@ impl ConfigLoader {
     }
 
     /// Load config from a specific path. Creates a default config file if missing.
+    /// This path override is for tests and support tooling only; production
+    /// loads from the canonical path and delegates writes to `ConfigService`.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn load_from(path: &Path) -> anyhow::Result<Self> {
+        Self::load_from_path(path)
+    }
+
+    fn load_from_path(path: &Path) -> anyhow::Result<Self> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
@@ -291,7 +298,15 @@ impl ConfigLoader {
         let content = std::fs::read_to_string(path)?;
         let source_fingerprint = Some(fingerprint_config_file(content.as_bytes()));
         let config = match toml::from_str::<AppConfig>(&content) {
-            Ok(config) => {
+            Ok(mut config) => {
+                if config.context_limits.max_known_facts > MAX_FACTS_IN_EXTRACTION_PROMPT {
+                    tracing::warn!(
+                        configured = config.context_limits.max_known_facts,
+                        capped = MAX_FACTS_IN_EXTRACTION_PROMPT,
+                        "max_known_facts exceeds the extraction prompt limit; capping loaded value"
+                    );
+                    config.context_limits.max_known_facts = MAX_FACTS_IN_EXTRACTION_PROMPT;
+                }
                 if invalid_config_entry(&config).is_some() {
                     backup_unparsable_config(path, "semantic_validation");
                     AppConfig::default()
@@ -313,7 +328,7 @@ impl ConfigLoader {
 
     /// Load from the default path.
     pub fn load() -> anyhow::Result<Self> {
-        Self::load_from(&Self::default_path())
+        Self::load_from_path(&Self::default_path())
     }
 
     /// Write the current config through a same-directory temporary file and
@@ -412,8 +427,9 @@ impl AppConfig {
         }
         // Drop incomplete named models so request policies cannot select a
         // half-written provider/model assignment.
-        llm.models
-            .retain(|model| model.is_assigned() && !model.id.trim().is_empty());
+        llm.models.retain(|model_config| {
+            model_config.is_assigned() && !model_config.id.trim().is_empty()
+        });
         self.llm = llm;
 
         self.default_shell = settings.default_shell;
@@ -784,7 +800,7 @@ mod tests {
             default_max_tokens: Some(8192),
             ..Default::default()
         });
-        llm.set_model(
+        llm.set_model_config(
             "small_model",
             ModelConfig {
                 provider_name: "openai".into(),
@@ -793,7 +809,7 @@ mod tests {
                 ..Default::default()
             },
         );
-        llm.set_model(
+        llm.set_model_config(
             "default_model",
             ModelConfig {
                 provider_name: "openai".into(),
@@ -805,21 +821,37 @@ mod tests {
         let lifted = llm.materialize(Some(10_000), None);
         // The fast-chat model cap is raised to the floor.
         assert_eq!(
-            lifted.model("small_model").unwrap().endpoint.max_tokens,
+            lifted
+                .model_config("small_model")
+                .unwrap()
+                .endpoint
+                .max_tokens,
             10_000
         );
         // A model already above the floor keeps its own value.
         assert_eq!(
-            lifted.model("default_model").unwrap().endpoint.max_tokens,
+            lifted
+                .model_config("default_model")
+                .unwrap()
+                .endpoint
+                .max_tokens,
             20_000
         );
         // Materialized endpoints carry provider key + model id.
         assert_eq!(
-            lifted.model("default_model").unwrap().endpoint.api_key,
+            lifted
+                .model_config("default_model")
+                .unwrap()
+                .endpoint
+                .api_key,
             "key"
         );
         assert_eq!(
-            lifted.model("default_model").unwrap().endpoint.model_name,
+            lifted
+                .model_config("default_model")
+                .unwrap()
+                .endpoint
+                .model_name,
             "gpt-4o"
         );
     }
@@ -832,7 +864,7 @@ mod tests {
             api_key: "key".into(),
             ..Default::default()
         });
-        llm.set_model(
+        llm.set_model_config(
             "default_model",
             ModelConfig {
                 provider_name: "openai".into(),
@@ -841,7 +873,7 @@ mod tests {
                 ..Default::default()
             },
         );
-        llm.set_model(
+        llm.set_model_config(
             "small_model",
             ModelConfig {
                 provider_name: "openai".into(),
@@ -853,7 +885,7 @@ mod tests {
         // An endpoint without an override inherits the global cap.
         assert_eq!(
             filled
-                .model("small_model")
+                .model_config("small_model")
                 .unwrap()
                 .endpoint
                 .reasoning_echo_max_chars,
@@ -862,7 +894,7 @@ mod tests {
         // A per-model override is preserved.
         assert_eq!(
             filled
-                .model("default_model")
+                .model_config("default_model")
                 .unwrap()
                 .endpoint
                 .reasoning_echo_max_chars,
@@ -916,7 +948,12 @@ mod tests {
         assert!(loader.config().llm.providers[1].api_key.is_empty());
         // The named model assignment was applied.
         assert_eq!(
-            loader.config().llm.model("default_model").unwrap().model,
+            loader
+                .config()
+                .llm
+                .model_config("default_model")
+                .unwrap()
+                .model,
             "new-model"
         );
         // Named model assignments are independent of request policies; a
@@ -1506,6 +1543,66 @@ model = "nova-3"
         assert!(dir.join("config.toml.3.1.0.bak").exists());
         assert!(!dir.join("config.toml.2.1.0.bak").exists());
         assert!(manual.exists(), "manual backup must be preserved");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn load_backs_up_config_with_duplicate_provider_names() {
+        let dir = std::env::temp_dir().join(format!("haven_test_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        let original =
+            "[[llm.providers]]\nname = \"primary\"\n\n[[llm.providers]]\nname = \"primary\"\n";
+        std::fs::write(&path, original).unwrap();
+
+        let loader = ConfigLoader::load_from(&path).unwrap();
+
+        assert!(loader.config().llm.providers.is_empty());
+        let backups: Vec<_> = dir
+            .read_dir()
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| {
+                let name = entry.file_name().into_string().unwrap();
+                name.starts_with("config.toml.") && name.ends_with(".bak")
+            })
+            .collect();
+        assert_eq!(backups.len(), 1, "invalid config must be backed up");
+        assert_eq!(
+            std::fs::read_to_string(backups[0].path()).unwrap(),
+            original
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn load_caps_oversized_known_fact_prompt_setting_without_discarding_config() {
+        let dir = std::env::temp_dir().join(format!("haven_test_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        let original = "[context_limits]\nmax_known_facts = 1000\n";
+        std::fs::write(&path, original).unwrap();
+
+        let loader = ConfigLoader::load_from(&path).unwrap();
+
+        assert_eq!(
+            loader.config().context_limits.max_known_facts,
+            MAX_FACTS_IN_EXTRACTION_PROMPT
+        );
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+        let backups = dir
+            .read_dir()
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| {
+                let name = entry.file_name().into_string().unwrap();
+                name.starts_with("config.toml.") && name.ends_with(".bak")
+            })
+            .count();
+        assert_eq!(
+            backups, 0,
+            "a cap adjustment must not discard other settings"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

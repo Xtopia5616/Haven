@@ -1,6 +1,6 @@
 import logger from './logger.ts';
 import type { AgentChunkPayload } from './contracts/agent.ts';
-import type { UiMetricsSnapshot } from './contracts/commands.ts';
+import type { UiMetricsSnapshot } from './contracts/generatedCommands.ts';
 import type { SessionMessagePresentationType } from './streaming.ts';
 import type { AgentChunkBatchItem, SessionAction } from './sessionReducer.ts';
 

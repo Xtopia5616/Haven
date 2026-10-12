@@ -865,11 +865,15 @@ impl AgentTool {
                 _ => {
                     // Resolve from message history: prefer the explicitly
                     // referenced message, else the most recent received one.
-                    if let Some(id) = params.in_reply_to_message_id.clone() {
-                        let env = service.find_message(&sid_for_lookup, &id)?.ok_or_else(|| {
-                            anyhow::anyhow!("message '{id}' not found in this session's history")
-                        })?;
-                        (env.reply_target_session_id().to_string(), Some(id))
+                    if let Some(message_id) = params.in_reply_to_message_id.clone() {
+                        let env = service
+                            .find_message(&sid_for_lookup, &message_id)?
+                            .ok_or_else(|| {
+                                anyhow::anyhow!(
+                                    "message '{message_id}' not found in this session's history"
+                                )
+                            })?;
+                        (env.reply_target_session_id().to_string(), Some(message_id))
                     } else {
                         let env = service.last_received(&sid_for_lookup)?.ok_or_else(|| {
                             anyhow::anyhow!(
@@ -1435,7 +1439,11 @@ mod tests {
             Ok(None)
         }
 
-        fn find_message(&self, _name: &str, _id: &str) -> anyhow::Result<Option<Option<Envelope>>> {
+        fn find_message(
+            &self,
+            _name: &str,
+            _message_id: &str,
+        ) -> anyhow::Result<Option<Option<Envelope>>> {
             Ok(None)
         }
 

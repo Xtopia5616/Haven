@@ -14,8 +14,8 @@ use haven_tools::{
     AuthorizationDecision, AuthorizationPort, AuthorizationRequest, ConfirmationReceipt,
     LiveOutputSinkPort, SkillCatalogPort, ToolCatalogSnapshot, ToolRegistration, ToolResult,
     ToolRunAgentCapability, ToolRunCompletion, ToolRunCompletionCapability, ToolRunHistoryQuery,
-    ToolRunLifecycleEventSink, ToolRunListView, ToolRunManagementCapability, ToolRunRestoreSummary,
-    ToolRunView, ToolsFacade,
+    ToolRunKind, ToolRunLifecycleEventSink, ToolRunListView, ToolRunManagementCapability,
+    ToolRunRestoreSummary, ToolRunView, ToolsFacade,
 };
 #[cfg(test)]
 use haven_tools::{ScheduledToolRunSpec, ToolRunTestSupportPort};
@@ -76,7 +76,7 @@ pub(crate) trait AppToolRunPort: Send + Sync {
 
     async fn list_history(&self, query: ToolRunHistoryQuery) -> anyhow::Result<Vec<ToolRunView>>;
 
-    async fn cancel_for_kind(&self, tool_run_id: &str, kind: &str) -> bool;
+    async fn cancel_for_kind(&self, tool_run_id: &str, kind: ToolRunKind) -> bool;
 
     async fn delete_terminal(&self, tool_run_id: &str) -> anyhow::Result<bool>;
 
@@ -125,7 +125,7 @@ impl AppToolRunPort for ToolsFacadeAppToolRunAdapter {
         self.tool_runs.list_history(query).await
     }
 
-    async fn cancel_for_kind(&self, tool_run_id: &str, kind: &str) -> bool {
+    async fn cancel_for_kind(&self, tool_run_id: &str, kind: ToolRunKind) -> bool {
         self.tool_runs.cancel_for_kind(tool_run_id, kind).await
     }
 

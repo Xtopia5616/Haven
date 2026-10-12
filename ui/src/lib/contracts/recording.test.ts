@@ -200,6 +200,38 @@ describe('recording IPC contract', () => {
 		expect(event?.payload).toEqual({ recordingId: 'rec-4fc82b26aecb47d2868c4efbe3581732' });
 	});
 
+	it('requires the recording channel state and validates optional durations', () => {
+		const recordingId = 'rec-4fc82b26aecb47d2868c4efbe3581732';
+		expect(
+			mapRecordingEvent({
+				event: 'recording:started',
+				id: 1,
+				payload: { is_recording: false, recording_id: recordingId },
+			}),
+		).toBeNull();
+		expect(
+			mapRecordingEvent({
+				event: 'recording:stopped',
+				id: 1,
+				payload: { is_recording: true, recording_id: recordingId, reason: 'manual' },
+			}),
+		).toBeNull();
+		for (const duration_ms of [-1, 0.5, Number.MAX_SAFE_INTEGER + 1, 'long']) {
+			expect(
+				mapRecordingEvent({
+					event: 'recording:stopped',
+					id: 1,
+					payload: {
+						is_recording: false,
+						recording_id: recordingId,
+						reason: 'manual',
+						duration_ms,
+					},
+				}),
+			).toBeNull();
+		}
+	});
+
 	it('rejects a stop reason outside the generated closed vocabulary', () => {
 		const event = mapRecordingEvent({
 			event: 'recording:stopped',
@@ -289,5 +321,19 @@ describe('recording IPC contract', () => {
 			text: 'hello',
 			durationMs: 800,
 		});
+		for (const confidence of [null, 'high', -0.1, 1.1]) {
+			expect(
+				mapRecordingEvent({
+					event: 'transcription:result',
+					id: 9,
+					payload: {
+						recording_id: 'rec-19581e27de7ced00ff1ce50b2047e7a5',
+						text: 'hello',
+						duration_ms: 800,
+						confidence,
+					},
+				}),
+			).toBeNull();
+		}
 	});
 });

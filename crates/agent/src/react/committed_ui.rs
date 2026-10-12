@@ -348,7 +348,7 @@ pub(super) fn agent_events_from_committed(event: &SessionEvent) -> Vec<AgentEven
         },
         None => None,
     };
-    let event_seq = u64::try_from(event.sequence).ok();
+    let event_sequence = u64::try_from(event.sequence).ok();
     let run_id = event.run_id.unwrap_or(0);
     let session_id = event.session_id.clone();
     match record {
@@ -362,7 +362,7 @@ pub(super) fn agent_events_from_committed(event: &SessionEvent) -> Vec<AgentEven
             step_number,
             run_id,
             message_id,
-            event_seq,
+            event_sequence,
         }],
         TranscriptRecord::Reasoning { .. } => Vec::new(),
         TranscriptRecord::ToolCall { step_number, .. } => match ui {
@@ -378,7 +378,7 @@ pub(super) fn agent_events_from_committed(event: &SessionEvent) -> Vec<AgentEven
                     tool_index: card.tool_index,
                     step_id: card.step_id,
                     suppress_streamed_thought: card.suppress_streamed_thought,
-                    event_seq,
+                    event_sequence,
                 })
                 .collect(),
             _ => Vec::new(),
@@ -403,7 +403,7 @@ pub(super) fn agent_events_from_committed(event: &SessionEvent) -> Vec<AgentEven
                 operation_scope: card.operation_scope,
                 renderer: card.renderer,
                 result: card.result,
-                event_seq,
+                event_sequence,
             }],
             _ => Vec::new(),
         },
@@ -428,7 +428,7 @@ pub(super) fn agent_events_from_committed(event: &SessionEvent) -> Vec<AgentEven
                 message_id,
                 supplement_id,
                 inject_source: Some(source),
-                event_seq,
+                event_sequence,
             }]
         }
         TranscriptRecord::MediaPlan {
@@ -441,11 +441,11 @@ pub(super) fn agent_events_from_committed(event: &SessionEvent) -> Vec<AgentEven
             session_id,
             step_number,
             run_id,
-            role: RequestKind::Chat,
+            request_kind: RequestKind::Chat,
             strategy,
             projections,
             notices,
-            event_seq,
+            event_sequence,
         }],
         TranscriptRecord::CompactSummary {
             summary,
@@ -461,7 +461,7 @@ pub(super) fn agent_events_from_committed(event: &SessionEvent) -> Vec<AgentEven
             tokens_after,
             episode_id: Some(episode_id),
             degraded,
-            event_seq,
+            event_sequence,
         }],
     }
 }
@@ -579,7 +579,7 @@ mod tests {
             &events[0],
             AgentEvent::Thought {
                 thought,
-                event_seq: Some(9),
+                event_sequence: Some(9),
                 message_id,
                 ..
             } if thought == "keep" && message_id == STEP_ID_1
@@ -644,7 +644,7 @@ mod tests {
             AgentEvent::ToolCall {
                 tool_name,
                 step_id,
-                event_seq: Some(10),
+                event_sequence: Some(10),
                 ..
             } if tool_name == "tool_a" && step_id == STEP_ID_1
         ));
@@ -659,7 +659,7 @@ mod tests {
             AgentEvent::ToolCall {
                 tool_name,
                 step_id,
-                event_seq: Some(10),
+                event_sequence: Some(10),
                 ..
             } if tool_name == "tool_b" && step_id == STEP_ID_2
         ));
@@ -730,7 +730,7 @@ mod tests {
             &events[0],
             AgentEvent::Thought {
                 thought,
-                event_seq: Some(sequence),
+                event_sequence: Some(sequence),
                 ..
             } if thought == "from-store" && *sequence == committed.sequence as u64
         ));

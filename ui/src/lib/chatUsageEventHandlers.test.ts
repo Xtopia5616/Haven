@@ -46,7 +46,7 @@ describe('createChatUsageEventHandlers', () => {
 					cumulativeCacheMissTokens: 0,
 					cumulativeCostUsd: null,
 					contextWindow: null,
-					role: 'chat',
+					requestKind: 'chat',
 					callKind,
 					hasCost: false,
 				},
@@ -55,8 +55,8 @@ describe('createChatUsageEventHandlers', () => {
 
 		expect(reducer.snapshot().tokenStats?.['ses-test']).toBeUndefined();
 		expect(reducer.snapshot().llmUsage?.['ses-test']).toEqual([
-			expect.objectContaining({ call_kind: 'media', step_number: null }),
-			expect.objectContaining({ call_kind: 'tool', step_number: null }),
+			expect.objectContaining({ call_kind: 'media', step_number: null, requestKind: 'chat' }),
+			expect.objectContaining({ call_kind: 'tool', step_number: null, requestKind: 'chat' }),
 		]);
 	});
 
@@ -71,7 +71,7 @@ describe('createChatUsageEventHandlers', () => {
 				sessionId: 'ses-media',
 				stepNumber: 4,
 				runId: 8,
-				role: 'audio_chat',
+				requestKind: 'audio_chat',
 				strategy: 'auto',
 				projections: [
 					{ assetId: 'asset-1', representation: 'transcript', mode: 'derived' },

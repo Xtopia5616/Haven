@@ -40,7 +40,7 @@ export function formatAgentMediaPlanToast(payload: AgentMediaPlanPayload): Agent
 		...reasons.map((reason) => `原因：${reason}`),
 	];
 	return {
-		message: `附件表示（${payload.role}）：${details.join('；')}`,
+		message: `附件表示（${payload.requestKind}）：${details.join('；')}`,
 		type: payload.notices.length > 0 ? 'warning' : 'info',
 		durationMs: 5000,
 	};

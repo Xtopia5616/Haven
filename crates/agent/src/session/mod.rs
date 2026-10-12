@@ -868,7 +868,7 @@ impl SessionSupervisor {
         self.actors
             .lock()
             .await
-            .insert(handle.id.clone(), handle.clone());
+            .insert(handle.session_id.clone(), handle.clone());
         for request in &interactions {
             self.schedule_confirmation_expiry(request);
         }

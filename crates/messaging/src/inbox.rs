@@ -748,9 +748,13 @@ impl InboxBus {
     /// the service to resolve the target of an `in_reply_to_message_id` reference.
     /// The archive is scanned only within its bounded durable tail; very old
     /// records are intentionally outside the retention contract.
-    pub fn find_message(&self, session_id: &str, id: &str) -> anyhow::Result<Option<Envelope>> {
+    pub fn find_message(
+        &self,
+        session_id: &str,
+        message_id: &str,
+    ) -> anyhow::Result<Option<Envelope>> {
         validate_session_id(session_id)?;
-        validate_message_id(id, "message_id")?;
+        validate_message_id(message_id, "message_id")?;
         let _lock = LockGuard::acquire(&self.root)?;
         self.ensure_dir()?;
         self.recover_mailbox_tmp_unlocked(session_id)?;
@@ -771,7 +775,7 @@ impl InboxBus {
             if let Some(env) = content.lines().find_map(|line| {
                 parse_envelope(session_id, line.trim())
                     .ok()
-                    .filter(|e| e.message_id == id)
+                    .filter(|envelope| envelope.message_id == message_id)
             }) {
                 return Ok(Some(env));
             }

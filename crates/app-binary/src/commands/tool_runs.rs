@@ -56,7 +56,7 @@ pub async fn cancel_tool_run(
         .runtime
         .services
         .tool_runs
-        .cancel_for_kind(&tool_run_id, kind.as_str())
+        .cancel_for_kind(&tool_run_id, kind.into())
         .await;
     if !cancelled {
         tracing::warn!(
@@ -82,10 +82,7 @@ pub async fn list_tool_run_history(
             .map_err(|error| log_err("list_tool_run_history", error))?;
     }
     let limit = limit.unwrap_or(50);
-    let kind = kind.map(|kind| match kind {
-        ToolRunKindDto::Background => ToolRunKind::Background,
-        ToolRunKindDto::Scheduled => ToolRunKind::Scheduled,
-    });
+    let kind = kind.map(ToolRunKind::from);
     state
         .runtime
         .services

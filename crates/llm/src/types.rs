@@ -594,8 +594,8 @@ pub enum LlmError {
     #[error("server error: {0}")]
     ServerError(String),
 
-    #[error("server error: circuit breaker open for model {model_id}")]
-    CircuitOpen { model_id: String },
+    #[error("server error: circuit breaker open for model {model_config_id}")]
+    CircuitOpen { model_config_id: String },
 
     #[error("invalid response: {0}")]
     InvalidResponse(String),
@@ -1001,7 +1001,7 @@ mod tests {
             LlmConnectionFailureReason::RequestRejected
         );
         let circuit_open = LlmError::CircuitOpen {
-            model_id: "default_model".into(),
+            model_config_id: "default_model".into(),
         };
         assert_eq!(
             circuit_open.connection_failure_reason(),

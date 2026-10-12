@@ -36,7 +36,7 @@ pub use repositories::kv_store::{
 #[cfg(feature = "test-support")]
 pub use repositories::kv_store::{MAX_MEMORY_OUTBOX_PAGE_SIZE, MAX_MEMORY_SESSION_ID_PAGE_SIZE};
 pub use repositories::memory_fact_extraction_store::{
-    FactExtractionTranscript, MemoryFactExtractionStore,
+    FactExtractionProjection, MemoryFactExtractionStore,
 };
 pub use repositories::memory_maintenance_store::{MemoryMaintenanceStore, PredicateCount};
 pub use repositories::memory_outbox_store::MemoryOutboxStore;

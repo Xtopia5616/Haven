@@ -19,6 +19,29 @@ const stateWith = (partial: Partial<SessionReducerState>): SessionReducerState =
 });
 
 describe('SessionReducer', () => {
+	it('projects a completed web search as a finalized tool message', () => {
+		const next = reduceSession(initialSessionState, {
+			type: 'agent/web-search',
+			payload: {
+				sessionId: 'ses-6b86b273ff34fce19d6b804eff5a3f57',
+				phase: 'completed',
+				stepNumber: 2,
+				runId: 3,
+				callId: 'ws_1',
+				action: 'search',
+				result: { count: 1 },
+			},
+		});
+		const messages = next.messages['ses-6b86b273ff34fce19d6b804eff5a3f57'];
+		expect(messages).toHaveLength(1);
+		expect(messages[0]).toMatchObject({
+			id: 'tool-ses-6b86b273ff34fce19d6b804eff5a3f57-2-3-web_search-ws_1',
+			toolName: 'web_search',
+			streaming: false,
+		});
+		expect(messages[0].content).toContain('"count":1');
+	});
+
 	it('does not resolve a confirmation through the Ask-only reducer action', () => {
 		const pending = {
 			requestId: 'conf-not-an-ask',
@@ -667,7 +690,7 @@ describe('SessionReducer', () => {
 			stepId: 'step-tool',
 			suppressStreamedThought: false,
 			silent: false,
-			eventSeq: 18,
+			eventSequence: 18,
 		} as const;
 		const toolCallState = reduceSession(first, { type: 'agent/tool_call', payload: toolCall });
 		const replayedToolCall = reduceSession(toolCallState, {
@@ -826,7 +849,7 @@ describe('SessionReducer', () => {
 			toolIndex: 0,
 			suppressStreamedThought: false,
 			silent: false,
-			eventSeq: 4,
+			eventSequence: 4,
 		};
 		const first = reduceSession(initialSessionState, {
 			type: 'agent/tool_call',
@@ -859,7 +882,7 @@ describe('SessionReducer', () => {
 				stepNumber: 2,
 				runId: 1,
 				messageId: 'step-thought',
-				eventSeq: 4,
+				eventSequence: 4,
 			},
 		});
 		const thoughtReplay = reduceSession(thought, {
@@ -870,7 +893,7 @@ describe('SessionReducer', () => {
 				stepNumber: 2,
 				runId: 1,
 				messageId: 'step-thought',
-				eventSeq: 4,
+				eventSequence: 4,
 			},
 		});
 		expect(thoughtReplay).toBe(thought);

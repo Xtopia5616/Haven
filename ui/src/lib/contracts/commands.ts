@@ -5,37 +5,7 @@
  * adds only renderer-reviewed boundary and security metadata.
  */
 
-import type { TauriCommandName, TauriCommandRequest } from './generatedCommands.ts';
-
-/** Semantic command aliases derived from Rust handler signatures. */
-export type ResolveConfirmationRequest = TauriCommandRequest<'resolve_confirmation'>;
-export type ContinueSessionRequest = TauriCommandRequest<'continue_session'>;
-export type DeleteSessionRequest = TauriCommandRequest<'delete_session'>;
-export type EndSessionRequest = TauriCommandRequest<'end_session'>;
-export type ProcessTranscriptRequest = TauriCommandRequest<'process_transcript'>;
-export type GetSessionForResumeRequest = TauriCommandRequest<'get_session_for_resume'>;
-export type GetSessionLineageRequest = TauriCommandRequest<'get_session_lineage'>;
-export type InterruptSessionRequest = TauriCommandRequest<'interrupt_session'>;
-export type ReopenSessionRequest = TauriCommandRequest<'reopen_session'>;
-export type RollbackSessionRequest = TauriCommandRequest<'rollback_session'>;
-export type UpdateSessionTitleRequest = TauriCommandRequest<'update_session_title'>;
-export type SessionHistoryPageRequest = TauriCommandRequest<'list_session_history'>;
-export type SessionHistoryFilterRequest = TauriCommandRequest<'search_session_history_filtered'>;
-export type CountSessionHistorySearchRequest = TauriCommandRequest<'count_session_history_search'>;
-export type SwitchModelRequest = TauriCommandRequest<'switch_model'>;
-export type SetReasoningEffortRequest = TauriCommandRequest<'set_reasoning_effort'>;
-export type SetWebSearchRequest = TauriCommandRequest<'set_web_search'>;
-export type DiscoverModelsRequest = TauriCommandRequest<'discover_models'>;
-export type CancelToolRunRequest = TauriCommandRequest<'cancel_tool_run'>;
-export type RecallMemoryRequest = TauriCommandRequest<'recall_memory'>;
-export type ListFactsRequest = TauriCommandRequest<'list_facts'>;
-export type AddFactRequest = TauriCommandRequest<'add_fact'>;
-export type DeleteFactRequest = TauriCommandRequest<'delete_fact'>;
-export type ReadLogTailRequest = TauriCommandRequest<'read_log_tail'>;
-export type CheckShellAvailableRequest = TauriCommandRequest<'check_shell_available'>;
-export type UiMetricsSnapshot = NonNullable<
-	NonNullable<TauriCommandRequest<'get_performance_metrics'>>['ui']
->;
+import type { TauriCommandName } from './generatedCommands.ts';
 
 export type CommandBoundary = 'read' | 'mutate' | 'execute';
 

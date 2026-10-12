@@ -2,7 +2,7 @@ use crate::ToolRunCompletionReceiver;
 #[cfg(feature = "test-support")]
 use crate::{ScheduledToolRunSpec, ToolRunStatusView, ToolRunTestSupportPort};
 use crate::{
-    ToolRunAgentCapability, ToolRunCompletion, ToolRunCompletionCapability,
+    ToolRunAgentCapability, ToolRunCompletion, ToolRunCompletionCapability, ToolRunKind,
     ToolRunLifecycleEventSink, ToolRunListView, ToolRunManagementCapability, ToolRunRestoreSummary,
     ToolRunService, ToolRunView,
 };
@@ -159,7 +159,7 @@ impl ToolRunManagementCapability for SharedToolRunManagementCapability {
         self.service.list_history(query).await
     }
 
-    async fn cancel_for_kind(&self, tool_run_id: &str, kind: &str) -> bool {
+    async fn cancel_for_kind(&self, tool_run_id: &str, kind: ToolRunKind) -> bool {
         self.service.cancel_for_kind(tool_run_id, kind).await
     }
 

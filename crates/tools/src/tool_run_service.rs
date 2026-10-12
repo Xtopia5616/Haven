@@ -1276,22 +1276,13 @@ impl ToolRunService {
     /// Cancel only when the caller's kind discriminator matches the owned
     /// ToolRun. The app IPC layer must not be able to cancel a scheduled row by
     /// presenting it as a background ToolRun (or vice versa).
-    pub async fn cancel_for_kind(&self, tool_run_id: &str, kind: &str) -> bool {
-        let expected = match kind {
-            "background" | "scheduled" => kind,
-            _ => return false,
-        };
+    pub async fn cancel_for_kind(&self, tool_run_id: &str, expected: ToolRunKind) -> bool {
         let matches = self
             .tool_runs
             .read()
             .await
             .get(tool_run_id)
-            .is_some_and(|entry| {
-                matches!(
-                    (expected, entry.kind),
-                    ("background", ToolRunKind::Background) | ("scheduled", ToolRunKind::Scheduled)
-                )
-            });
+            .is_some_and(|entry| entry.kind == expected);
         matches && self.cancel(tool_run_id).await
     }
 
@@ -1410,7 +1401,7 @@ impl ToolRunService {
         &self,
         session_id: &str,
     ) -> anyhow::Result<()> {
-        let live_ids = {
+        let live_tool_run_ids = {
             let tool_runs = self.tool_runs.read().await;
             tool_runs
                 .iter()
@@ -1420,15 +1411,18 @@ impl ToolRunService {
                         && entry.state.status().is_live()
                         && entry.scheduled.is_some()
                 })
-                .map(|(id, _)| id.clone())
+                .map(|(tool_run_id, _)| tool_run_id.clone())
                 .collect::<HashSet<_>>()
         };
 
         let mut first_error = None;
-        for id in &live_ids {
-            if let Err(error) = self.cancel_scheduled_locked(id, Some(session_id)).await {
+        for tool_run_id in &live_tool_run_ids {
+            if let Err(error) = self
+                .cancel_scheduled_locked(tool_run_id, Some(session_id))
+                .await
+            {
                 first_error.get_or_insert_with(|| {
-                    error.context(format!("failed to cancel scheduled ToolRun {id}"))
+                    error.context(format!("failed to cancel scheduled ToolRun {tool_run_id}"))
                 });
             }
         }
@@ -1438,7 +1432,7 @@ impl ToolRunService {
                 Ok(rows) => {
                     for row in rows.into_iter().filter(|row| {
                         row.session_id.as_deref() == Some(session_id)
-                            && !live_ids.contains(&row.tool_run_id)
+                            && !live_tool_run_ids.contains(&row.tool_run_id)
                     }) {
                         if let Err(error) = self
                             .cancel_untracked_scheduled_row(&store, &row.tool_run_id)
@@ -1675,10 +1669,10 @@ impl ToolRunService {
                 watch_tool_run_id: watch_tool_run_id.clone(),
             };
             let timer_entry = entry.clone();
-            let id = row.tool_run_id;
+            let tool_run_id = row.tool_run_id;
             let session_id = row.session_id;
             self.tool_runs.write().await.insert(
-                id.clone(),
+                tool_run_id.clone(),
                 ToolRunEntry {
                     kind: ToolRunKind::Scheduled,
                     session_id,
@@ -1692,20 +1686,20 @@ impl ToolRunService {
                 },
             );
             if watch_tool_run_id.is_some() {
-                self.arm_scheduled_worker(id, &timer_entry);
+                self.arm_scheduled_worker(tool_run_id, &timer_entry);
             } else {
                 let remaining = (due.expect("timer trigger has due time") - now).num_seconds();
                 if remaining <= 0 {
-                    overdue_tool_run_ids.push(id);
+                    overdue_tool_run_ids.push(tool_run_id);
                 } else {
-                    self.arm_scheduled_worker(id, &timer_entry);
+                    self.arm_scheduled_worker(tool_run_id, &timer_entry);
                 }
             }
         }
         drop(_mutation);
         let overdue = overdue_tool_run_ids.len();
-        for id in overdue_tool_run_ids {
-            self.fire_scheduled(&id).await;
+        for tool_run_id in overdue_tool_run_ids {
+            self.fire_scheduled(&tool_run_id).await;
         }
         overdue
     }

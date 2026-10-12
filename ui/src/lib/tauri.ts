@@ -6,6 +6,8 @@ import type {
 	TauriCommandRequestArgs,
 	TauriCommandResponse,
 } from './contracts/generatedCommands.ts';
+import { TAURI_COMMAND_RESPONSE_SHAPES } from './contracts/generatedCommands.ts';
+import { findGeneratedWireShapeMismatch } from './contracts/generatedWireShape.ts';
 import type { TauriEvent } from './contracts/tauriEvent.ts';
 
 type RawTauriInvoke = (cmd: string, args?: unknown) => Promise<unknown>;
@@ -47,14 +49,21 @@ async function init() {
 
 /**
  * Typed command boundary generated from Rust Tauri handler signatures. The
- * returned value remains untrusted wire data; callers with structured results
- * must keep using their existing runtime parser/validator.
+ * returned value is checked against the complete Rust-generated wire shape.
+ * Domain adapters still validate identity, cross-field, and product semantics.
  */
 export async function invoke<K extends TauriCommandName>(
 	cmd: K,
 	...args: TauriCommandRequestArgs<K>
 ): Promise<TauriCommandResponse<K>> {
-	return (await invokeUnknown(cmd, args[0])) as TauriCommandResponse<K>;
+	const response = await invokeUnknown(cmd, args[0]);
+	const mismatch = findGeneratedWireShapeMismatch(response, TAURI_COMMAND_RESPONSE_SHAPES[cmd]);
+	if (mismatch) {
+		const error = new Error(`Invalid Tauri response for '${cmd}' at ${mismatch}`);
+		logError('invoke', error);
+		throw error;
+	}
+	return response as TauriCommandResponse<K>;
 }
 
 async function invokeUnknown(cmd: string, args?: unknown): Promise<unknown> {

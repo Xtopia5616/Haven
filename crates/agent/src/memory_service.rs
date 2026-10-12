@@ -379,7 +379,7 @@ mod tests {
         };
         Arc::new(LlmRouter::new(RouterConfig {
             models: vec![RoutedModel {
-                id: "embedding".into(),
+                model_config_id: "embedding".into(),
                 endpoint,
                 capabilities: vec![Capability::Embedding],
             }],

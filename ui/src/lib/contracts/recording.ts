@@ -10,7 +10,8 @@ import {
 	type VadStatusEvent as GeneratedVadStatusEvent,
 } from './generatedCommands.ts';
 import { isRecord } from './objectGuards.ts';
-import { isNumber, isOneOf, isString } from './valueGuards.ts';
+import { isFiniteNumber, isNumber, isOneOf, isString } from './valueGuards.ts';
+import { matchesGeneratedEventPayload } from './generatedWireShape.ts';
 import { canonicalIdField } from './wireGuards.ts';
 
 export type RecordingEventName = (typeof RECORDING_EVENT_NAMES)[number];
@@ -65,7 +66,8 @@ export function mapRecordingEvent<K extends RecordingEventName>(
 		!isRecord(event) ||
 		!isOneOf(event.event, RECORDING_EVENT_NAMES) ||
 		!isValidTauriEventId(event.id) ||
-		!isRecord(event.payload)
+		!isRecord(event.payload) ||
+		!matchesGeneratedEventPayload(event.event, event.payload)
 	) {
 		return null;
 	}
@@ -73,7 +75,12 @@ export function mapRecordingEvent<K extends RecordingEventName>(
 	switch (event.event) {
 		case 'recording:started': {
 			const recordingId = canonicalIdField(payload, 'recording_id', 'rec');
-			if (recordingId === null) return null;
+		if (
+			recordingId === null ||
+			payload.is_recording !== true ||
+			!isOptionalDurationValid(payload.duration_ms)
+		)
+			return null;
 			const reason = payload.reason;
 			if (reason !== undefined && reason !== null && !isRecordingStopReason(reason))
 				return null;
@@ -88,7 +95,13 @@ export function mapRecordingEvent<K extends RecordingEventName>(
 		case 'recording:stopped': {
 			const recordingId = canonicalIdField(payload, 'recording_id', 'rec');
 			const reason = payload.reason;
-			if (recordingId === null || !isRecordingStopReason(reason)) return null;
+		if (
+			recordingId === null ||
+			payload.is_recording !== false ||
+			!isOptionalDurationValid(payload.duration_ms) ||
+			!isRecordingStopReason(reason)
+		)
+			return null;
 			return {
 				...event,
 				payload: { recordingId, reason },
@@ -129,12 +142,15 @@ export function mapRecordingEvent<K extends RecordingEventName>(
 		case 'transcription:result': {
 			const recordingId = canonicalIdField(payload, 'recording_id', 'rec');
 			const durationMs = payload.duration_ms;
+			const confidence = payload.confidence;
 			if (
 				recordingId === null ||
 				!isString(payload.text) ||
 				!isNumber(durationMs) ||
 				!Number.isSafeInteger(durationMs) ||
-				durationMs < 0
+				durationMs < 0 ||
+				(confidence !== undefined &&
+					(!isFiniteNumber(confidence) || confidence < 0 || confidence > 1))
 			)
 				return null;
 			return {
@@ -147,4 +163,8 @@ export function mapRecordingEvent<K extends RecordingEventName>(
 			} as unknown as TauriEvent<RecordingEventPayloadMap[K]>;
 		}
 	}
+}
+
+function isOptionalDurationValid(value: unknown): boolean {
+	return value === undefined || (isNumber(value) && Number.isSafeInteger(value) && value >= 0);
 }

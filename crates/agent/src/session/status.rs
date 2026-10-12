@@ -483,18 +483,19 @@ impl SessionSupervisor {
             .collect::<Vec<_>>();
         for actor in &actors {
             #[cfg(test)]
-            self.cancel_direct_session_run_admission_waiters(&actor.id)
+            self.cancel_direct_session_run_admission_waiters(&actor.session_id)
                 .await;
             actor.cancel_actor();
             if preserve_scheduled {
-                self.cancel_session_background_tool_runs(&actor.id).await;
+                self.cancel_session_background_tool_runs(&actor.session_id)
+                    .await;
             } else {
-                self.cancel_session_tool_runs(&actor.id).await;
+                self.cancel_session_tool_runs(&actor.session_id).await;
             }
-            self.dequeue_pending(&actor.id).await;
+            self.dequeue_pending(&actor.session_id).await;
         }
         for actor in &actors {
-            self.await_run_finished(&actor.id).await?;
+            self.await_run_finished(&actor.session_id).await?;
         }
         Ok(())
     }

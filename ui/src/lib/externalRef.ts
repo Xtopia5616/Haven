@@ -1,5 +1,5 @@
 import { copyText } from '$lib/clipboard.ts';
-import { invoke } from '$lib/tauri.ts';
+import { openExternalTarget } from '$lib/externalCommands.ts';
 import { addNotification } from '$lib/notificationStore.ts';
 import { reportError } from '$lib/errorHandling.ts';
 
@@ -27,7 +27,7 @@ export async function openExternal(target: string): Promise<boolean> {
 		return false;
 	}
 	try {
-		await invoke('open_external', { target: value });
+		await openExternalTarget({ target: value });
 		return true;
 	} catch (e) {
 		reportError(e, {

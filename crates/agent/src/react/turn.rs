@@ -74,7 +74,7 @@ impl ReActEngine {
             };
             events.push(crate::event::AgentEvent::WebSearch {
                 session_id: session_id.to_string(),
-                phase: "completed".into(),
+                phase: haven_llm::WebSearchPhase::Completed,
                 step_number,
                 run_id,
                 call_id: item

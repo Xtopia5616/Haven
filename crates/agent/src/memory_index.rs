@@ -301,7 +301,7 @@ impl MemoryEmbeddingIndex {
         if self.model_changed(&identity.storage_model).await? {
             return Ok(None);
         }
-        let vector = match self.router.embed_text(&query.text).await {
+        let vector = match self.router.embed_text(query.text()).await {
             Ok(vector) => vector,
             Err(error) => {
                 tracing::warn!(
@@ -359,7 +359,7 @@ mod tests {
         };
         Arc::new(LlmRouter::new(RouterConfig {
             models: vec![RoutedModel {
-                id: "embedding".into(),
+                model_config_id: "embedding".into(),
                 endpoint,
                 capabilities: vec![Capability::Embedding],
             }],

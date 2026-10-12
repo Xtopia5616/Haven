@@ -73,7 +73,7 @@ export interface SessionTokenStats {
 }
 
 export interface SessionReplayState {
-	eventSeqBySession: Record<string, string[]>;
+	eventSequenceBySession: Record<string, string[]>;
 	chunkSeqByMessage: Record<string, number>;
 	blockIdsBySession: Record<string, Record<string, StreamBlockIds>>;
 }
@@ -229,7 +229,7 @@ export const initialSessionState: SessionReducerState = {
 	interactions: {},
 	tokenStats: {},
 	llmUsage: {},
-	replay: { eventSeqBySession: {}, chunkSeqByMessage: {}, blockIdsBySession: {} },
+	replay: { eventSequenceBySession: {}, chunkSeqByMessage: {}, blockIdsBySession: {} },
 	optimistic: {},
 };
 

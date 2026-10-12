@@ -46,7 +46,7 @@ where
 
 pub(crate) struct StreamExecutor {
     descriptor: RequestDescriptor,
-    model_id: String,
+    model_config_id: String,
     client: Arc<dyn LlmClient>,
     policy: RequestExecutionPolicy,
 }
@@ -54,13 +54,13 @@ pub(crate) struct StreamExecutor {
 impl StreamExecutor {
     pub(crate) fn new(
         descriptor: RequestDescriptor,
-        model_id: String,
+        model_config_id: String,
         client: Arc<dyn LlmClient>,
         policy: RequestExecutionPolicy,
     ) -> Self {
         Self {
             descriptor,
-            model_id,
+            model_config_id,
             client,
             policy,
         }
@@ -82,11 +82,11 @@ impl StreamExecutor {
         tracing::trace!(
             request_purpose = self.descriptor.purpose.as_str(),
             required_capability = self.descriptor.required_capability.as_str(),
-            model_id = %self.model_id,
+            model_config_id = %self.model_config_id,
             "establishing raw LLM stream"
         );
         let client = self.client.clone();
-        let model_id = &self.model_id;
+        let model_config_id = &self.model_config_id;
         let policy = self.policy;
 
         let result = execute_with_timeout(policy.total_timeout_secs, "router stream", || async {
@@ -94,7 +94,11 @@ impl StreamExecutor {
             let result =
                 execute_with_retry(policy.retry, None, || client.chat_stream(messages.clone()))
                     .await;
-            project_outcome(model_id.to_string(), RequestOutcome::from_result(&result)).await;
+            project_outcome(
+                model_config_id.to_string(),
+                RequestOutcome::from_result(&result),
+            )
+            .await;
             result
         })
         .await;
@@ -226,8 +230,8 @@ mod tests {
                     haven_common::types::ContentPart::text("retry snapshot"),
                 ])],
                 semaphore.clone().acquire_owned().await.unwrap(),
-                move |model_id, outcome| async move {
-                    recorded.lock().unwrap().push((model_id, outcome));
+                move |model_config_id, outcome| async move {
+                    recorded.lock().unwrap().push((model_config_id, outcome));
                 },
             )
             .await
@@ -265,8 +269,8 @@ mod tests {
             .chat_stream(
                 Vec::new(),
                 permit_source().acquire_owned().await.unwrap(),
-                move |model_id, outcome| async move {
-                    recorded.lock().unwrap().push((model_id, outcome));
+                move |model_config_id, outcome| async move {
+                    recorded.lock().unwrap().push((model_config_id, outcome));
                 },
             )
             .await;
@@ -302,8 +306,8 @@ mod tests {
             .chat_stream(
                 Vec::new(),
                 semaphore.clone().acquire_owned().await.unwrap(),
-                move |model_id, outcome| async move {
-                    recorded.lock().unwrap().push((model_id, outcome));
+                move |model_config_id, outcome| async move {
+                    recorded.lock().unwrap().push((model_config_id, outcome));
                 },
             )
             .await;

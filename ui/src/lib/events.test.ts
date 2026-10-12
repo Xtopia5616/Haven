@@ -393,6 +393,7 @@ describe('toolRunEventListeners', () => {
 			payload: {
 				tool_run_id: 'toolrun-6b86b273ff34fce19d6b804eff5a3f57',
 				kind: 'background',
+				status: 'completed',
 				session_id: 'ses-6b86b273ff34fce19d6b804eff5a3f57',
 				exit_code: 0,
 			},
@@ -404,6 +405,7 @@ describe('toolRunEventListeners', () => {
 			payload: {
 				toolRunId: 'toolrun-6b86b273ff34fce19d6b804eff5a3f57',
 				kind: 'background',
+				status: 'completed',
 				sessionId: 'ses-6b86b273ff34fce19d6b804eff5a3f57',
 				exitCode: 0,
 			},

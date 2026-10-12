@@ -15,6 +15,7 @@
 - LLM 的请求客户端选择 helper 仅在测试中编译；registry fallback 常量保留 crate 内可见性；模型 JSON parser 不再由 crate 根导出；仅供 registry 单测使用的 `all` / `search` helper 仅在测试构建中编译。
 - Tools 的输出实现类型和模型工具名转换 helper 收窄为 crate 内 API。仍有跨 crate 生产消费者的 `skill_tool_name`、`ModelRegistry`、`ModelInfo` 与 context-window 查询保持公开。
 - `LlmRouter::config` 仍由 Agent/Tools 生产路径消费，返回完整配置的边界另行审计，不在本切片中仓促收窄。
+- `ConfigLoader::load_from` 只供 Common 单测和显式 `test-support` 构建使用；生产配置路径由 loader owner 决定。纯数值校验 helper 留在 crate 内或单测内，不作为 Common API。
 
 ## 影响
 
@@ -29,6 +30,7 @@
 ## 验证
 
 - 全仓引用检索确认收窄入口没有未迁移的跨 crate 生产调用。
+- Common loader path injection 与配置校验 helper 的可见性由 crate 使用边界约束。
 - `cargo fmt --all -- --check`
 - `cargo test --workspace --locked`
 - `cargo check --workspace --locked`（无测试 feature 的生产依赖图）

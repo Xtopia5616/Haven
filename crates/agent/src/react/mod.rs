@@ -150,7 +150,7 @@ pub(crate) fn media_plan_for_inputs(
 /// Publish a media plan while a provider request is being prepared.
 /// This is a request-time signal for both the initial turn and compaction
 /// retries. It is not a deferred turn-end effect and it is not a committed
-/// `session_events` row, so `event_seq` stays `None`. The durable ingress
+/// `session_events` row, so `event_sequence` stays `None`. The durable ingress
 /// plan is published by [`committed_ui::CommittedUiPublisher`].
 pub(super) async fn emit_media_plan(
     emitter: &Arc<dyn AgentEventEmitter>,
@@ -202,11 +202,11 @@ pub(super) async fn emit_media_plan(
             session_id: session_id.to_string(),
             step_number,
             run_id,
-            role: request,
+            request_kind: request,
             strategy: plan.strategy,
             projections: plan.projections,
             notices: plan.notices,
-            event_seq: None,
+            event_sequence: None,
         })
         .await;
 }

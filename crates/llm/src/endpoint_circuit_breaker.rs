@@ -120,10 +120,10 @@ impl EndpointCircuitBreaker {
 pub(crate) type EndpointCircuitBreakerMap = HashMap<String, EndpointCircuitBreaker>;
 
 pub(crate) fn new_endpoint_circuit_breaker_map(
-    model_ids: impl IntoIterator<Item = String>,
+    model_config_ids: impl IntoIterator<Item = String>,
 ) -> EndpointCircuitBreakerMap {
-    model_ids
+    model_config_ids
         .into_iter()
-        .map(|id| (id, EndpointCircuitBreaker::new()))
+        .map(|model_config_id| (model_config_id, EndpointCircuitBreaker::new()))
         .collect()
 }

@@ -39,11 +39,11 @@ pub use crate::embeddings::MemoryEntityKind;
 /// through the same read path.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MemoryQuery {
-    pub text: String,
-    pub kind: MemoryEntityKind,
-    pub limit: usize,
-    pub exclude_session_id: Option<String>,
-    pub fact_subject: Option<String>,
+    text: String,
+    kind: MemoryEntityKind,
+    limit: usize,
+    exclude_session_id: Option<String>,
+    fact_subject: Option<String>,
 }
 
 impl MemoryQuery {
@@ -61,6 +61,26 @@ impl MemoryQuery {
             exclude_session_id: None,
             fact_subject: None,
         })
+    }
+
+    pub fn text(&self) -> &str {
+        &self.text
+    }
+
+    pub fn kind(&self) -> MemoryEntityKind {
+        self.kind
+    }
+
+    pub fn limit(&self) -> usize {
+        self.limit
+    }
+
+    pub fn excluded_session_id(&self) -> Option<&str> {
+        self.exclude_session_id.as_deref()
+    }
+
+    pub fn fact_subject(&self) -> Option<&str> {
+        self.fact_subject.as_deref()
     }
 
     pub fn with_excluded_session(mut self, session_id: Option<&str>) -> Self {

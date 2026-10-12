@@ -5,10 +5,10 @@ use crate::repositories::messages::Message;
 use crate::repositories::session_steps::SessionStep;
 use haven_common::types::is_canonical_id;
 
-/// The persisted transcript projections used as input to ordinary session
-/// fact extraction. Window selection remains an Agent policy.
+/// The persisted message and step projections used as input to ordinary
+/// session fact extraction. Window selection remains an Agent policy.
 #[derive(Debug, Clone)]
-pub struct FactExtractionTranscript {
+pub struct FactExtractionProjection {
     pub messages: Vec<Message>,
     pub steps: Vec<SessionStep>,
 }
@@ -50,17 +50,17 @@ impl MemoryFactExtractionStore {
 
     /// Load message and execution-step projections used to build an extraction
     /// window, in the same blocking operation as the previous implementation.
-    pub async fn load_ordinary_transcript(
+    pub async fn load_ordinary_projection(
         &self,
         session_id: &str,
-    ) -> anyhow::Result<FactExtractionTranscript> {
+    ) -> anyhow::Result<FactExtractionProjection> {
         ensure_extraction_session_id(session_id)?;
         let session_id = session_id.to_owned();
         self.db
             .run_blocking(move |db| {
                 let messages = db.list_session_messages(&session_id)?;
                 let steps = db.list_session_steps(&session_id)?;
-                Ok(FactExtractionTranscript { messages, steps })
+                Ok(FactExtractionProjection { messages, steps })
             })
             .await
     }
@@ -123,7 +123,7 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn transcript_port_reads_messages_and_step_observations() {
+    async fn projection_port_reads_messages_and_step_observations() {
         let db = Arc::new(Database::open_in_memory().unwrap());
         let session = db.create_session("fact extraction transcript").unwrap();
         let user = db
@@ -150,24 +150,24 @@ mod tests {
         db.complete_tool_step(&step.step_id, "C:/Workspace/Haven", true)
             .unwrap();
 
-        let transcript = MemoryFactExtractionStore::new(db)
-            .load_ordinary_transcript(&session.session_id)
+        let projection = MemoryFactExtractionStore::new(db)
+            .load_ordinary_projection(&session.session_id)
             .await
             .unwrap();
 
-        assert_eq!(transcript.messages.len(), 1);
-        assert_eq!(transcript.messages[0].message_id, user.message_id);
-        assert_eq!(transcript.messages[0].content, "Use the checked path");
-        assert_eq!(transcript.steps.len(), 1);
-        assert_eq!(transcript.steps[0].step_id, step.step_id);
+        assert_eq!(projection.messages.len(), 1);
+        assert_eq!(projection.messages[0].message_id, user.message_id);
+        assert_eq!(projection.messages[0].content, "Use the checked path");
+        assert_eq!(projection.steps.len(), 1);
+        assert_eq!(projection.steps[0].step_id, step.step_id);
         assert_eq!(
-            transcript.steps[0].observation.as_deref(),
+            projection.steps[0].observation.as_deref(),
             Some("C:/Workspace/Haven")
         );
     }
 
     #[tokio::test]
-    async fn transcript_port_propagates_missing_projection_tables() {
+    async fn projection_port_propagates_missing_projection_tables() {
         let messages_db = Arc::new(Database::open_in_memory().unwrap());
         let messages_session = messages_db.create_session("missing messages").unwrap();
         messages_db
@@ -175,7 +175,7 @@ mod tests {
             .execute_batch("DROP TABLE messages")
             .unwrap();
         let error = MemoryFactExtractionStore::new(messages_db)
-            .load_ordinary_transcript(&messages_session.session_id)
+            .load_ordinary_projection(&messages_session.session_id)
             .await
             .unwrap_err();
         assert!(error.to_string().contains("no such table: messages"));
@@ -187,7 +187,7 @@ mod tests {
             .execute_batch("DROP TABLE session_steps")
             .unwrap();
         let error = MemoryFactExtractionStore::new(steps_db)
-            .load_ordinary_transcript(&steps_session.session_id)
+            .load_ordinary_projection(&steps_session.session_id)
             .await
             .unwrap_err();
         assert!(error.to_string().contains("no such table: session_steps"));
@@ -209,7 +209,7 @@ mod tests {
         );
         assert!(
             store
-                .load_ordinary_transcript(&invalid_session_id)
+                .load_ordinary_projection(&invalid_session_id)
                 .await
                 .is_err()
         );

@@ -1,6 +1,6 @@
 import { requestPerformanceMetricsSnapshot } from './diagnosticsCommands.ts';
+import type { UiMetricsSnapshot } from './contracts/generatedCommands.ts';
 import type { PerformanceMetricsSnapshot } from './contracts/diagnostics.ts';
-import type { UiMetricsSnapshot } from './contracts/commands.ts';
 
 let uiMetricsProvider: (() => UiMetricsSnapshot) | null = null;
 

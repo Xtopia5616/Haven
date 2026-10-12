@@ -170,6 +170,26 @@ describe('Settings commands', () => {
 		);
 	});
 
+	it.each([
+		{ capability: 42 },
+		{ session_title: 7 },
+		{ target: 'future_target' },
+		{ effect: 'future_effect' },
+	])('rejects malformed session permission grant fields: %o', async (invalidFields) => {
+		invokeMock.mockResolvedValueOnce([
+			{
+				session_id: 'ses-0123456789abcdef0123456789abcdef',
+				session_title: 'Session',
+				capability: 'files.read',
+				target: 'operation',
+				effect: 'allow',
+				...invalidFields,
+			},
+		] as never);
+
+		await expect(listSessionPermissions()).rejects.toThrow('Invalid session permission grant at');
+	});
+
 	it('rejects malformed opaque credential references from staging commands', async () => {
 		invokeMock.mockResolvedValueOnce('cred-short' as never);
 		await expect(

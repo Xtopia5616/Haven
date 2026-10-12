@@ -45,7 +45,7 @@ function makeUsagePayload(overrides: Record<string, unknown> = {}) {
 		context_window: 128000,
 		step_number: 3,
 		duration_ms: 42,
-		role: 'chat',
+		request_kind: 'chat',
 		call_kind: 'media',
 		has_cost: false,
 		...overrides,
@@ -79,7 +79,7 @@ describe('agent IPC contract', () => {
 
 		expect(mapped).not.toBeNull();
 		expect(
-			mapAgentEventContract(makeThoughtEvent({ event_seq: Number.MAX_SAFE_INTEGER })),
+			mapAgentEventContract(makeThoughtEvent({ event_sequence: Number.MAX_SAFE_INTEGER })),
 		).not.toBeNull();
 	});
 
@@ -91,9 +91,9 @@ describe('agent IPC contract', () => {
 			{ run_id: -1 },
 			{ run_id: 1.5 },
 			{ run_id: Number.MAX_SAFE_INTEGER + 1 },
-			{ event_seq: -1 },
-			{ event_seq: 1.5 },
-			{ event_seq: Number.MAX_SAFE_INTEGER + 1 },
+			{ event_sequence: -1 },
+			{ event_sequence: 1.5 },
+			{ event_sequence: Number.MAX_SAFE_INTEGER + 1 },
 		];
 		for (const overrides of invalidThoughtPayloads) {
 			expect(mapAgentEventContract(makeThoughtEvent(overrides))).toBeNull();
@@ -215,6 +215,8 @@ describe('agent IPC contract', () => {
 			usage_source: 'unavailable',
 		});
 		expect(event.payload.callKind).toBe('media');
+		expect(event.payload.requestKind).toBe('chat');
+		expect(event.payload).not.toHaveProperty('role');
 		expect(event.payload).not.toHaveProperty('prompt_tokens');
 	});
 
@@ -230,7 +232,7 @@ describe('agent IPC contract', () => {
 
 	it('rejects unknown usage and cache diagnostic enums', () => {
 		for (const payload of [
-			makeUsagePayload({ role: 'future_request_kind' }),
+			makeUsagePayload({ request_kind: 'future_request_kind' }),
 			makeUsagePayload({ cache_accounting: 'provider' }),
 			makeUsagePayload({
 				cache_diagnostics: { ...makeUsagePayload().cache_diagnostics, strategy: 'future' },
@@ -270,13 +272,14 @@ describe('agent IPC contract', () => {
 				session_id: 'ses-6b86b273ff34fce19d6b804eff5a3f57',
 				step_number: 4,
 				run_id: 8,
-				role: 'vision',
+				request_kind: 'vision',
 				strategy: 'auto',
 				projections: [
 					{
 						asset_id: 'asset-6b86b273ff34fce19d6b804eff5a3f57',
 						representation: 'ocr_text',
 						mode: 'derived',
+						provenance: { kind: 'derived', operation: 'ocr' },
 					},
 				],
 				notices: [
@@ -292,7 +295,7 @@ describe('agent IPC contract', () => {
 			sessionId: 'ses-6b86b273ff34fce19d6b804eff5a3f57',
 			stepNumber: 4,
 			runId: 8,
-			role: 'vision',
+			requestKind: 'vision',
 			strategy: 'auto',
 			projections: [
 				{
@@ -315,14 +318,14 @@ describe('agent IPC contract', () => {
 			session_id: 'ses-6b86b273ff34fce19d6b804eff5a3f57',
 			step_number: 4,
 			run_id: 8,
-			role: 'vision',
+			request_kind: 'vision',
 			strategy: 'auto',
 			projections: [
 				{
 					asset_id: 'asset-6b86b273ff34fce19d6b804eff5a3f57',
 					representation: 'ocr_text',
 					mode: 'derived',
-					provenance: 'added-wire-field',
+					provenance: { kind: 'derived', operation: 'ocr', added: true },
 				},
 			],
 			notices: [
@@ -332,22 +335,22 @@ describe('agent IPC contract', () => {
 					added: true,
 				},
 			],
-			event_seq: 9,
+			event_sequence: 9,
 			added_wire_field: 'ignored',
 		};
 		const event = mapAgentEvent({ event: 'agent:media_plan', id: 8, payload });
 
 		expect(event?.payload).toMatchObject({
-			role: 'vision',
+			requestKind: 'vision',
 			strategy: 'auto',
 			projections: [{ representation: 'ocr_text', mode: 'derived' }],
 			notices: [{ code: 'raw_capability_unknown' }],
-			eventSeq: 9,
+			eventSequence: 9,
 		});
 		expect(event?.payload).not.toHaveProperty('added_wire_field');
 
 		const invalidPayloads = [
-			{ ...payload, role: 'future_request_kind' },
+			{ ...payload, request_kind: 'future_request_kind' },
 			{ ...payload, strategy: 'future_strategy' },
 			{
 				...payload,
@@ -392,24 +395,23 @@ describe('agent IPC contract', () => {
 					error_class: 'unknown_outcome',
 					retry_safety: 'non_idempotent',
 					retryability: 'unknown',
-					verification_hint: null,
 					next_action: 'inspect',
 					assets: ['asset-6b86b273ff34fce19d6b804eff5a3f57'],
 					added_wire_field: 'ignored',
 				},
-				event_seq: 17,
+				event_sequence: 17,
 			},
 		});
 
 		expect(event.payload).not.toHaveProperty('outcome');
 		expect(event.payload.operationScope).toBe('global');
-		expect(event.payload.eventSeq).toBe(17);
+		expect(event.payload.eventSequence).toBe(17);
 		expect(event.payload.result).toEqual({
 			outcome: 'timed_out_unknown',
 			errorClass: 'unknown_outcome',
 			retrySafety: 'non_idempotent',
 			retryability: 'unknown',
-			verificationHint: null,
+			verificationHint: undefined,
 			nextAction: 'inspect',
 			assets: ['asset-6b86b273ff34fce19d6b804eff5a3f57'],
 		});
@@ -591,12 +593,12 @@ describe('agent IPC contract', () => {
 				step_number: 2,
 				run_id: 4,
 				message_id: 'step-6ca7ea2feefc88ecb5ed6356ed963f47',
-				event_seq: 9,
+				event_sequence: 9,
 			},
 		});
 
 		expect(event.payload.messageId).toBe('step-6ca7ea2feefc88ecb5ed6356ed963f47');
-		expect(event.payload.eventSeq).toBe(9);
+		expect(event.payload.eventSequence).toBe(9);
 	});
 
 	it('rejects malformed agent envelopes and required fields without throwing', () => {
@@ -621,7 +623,7 @@ describe('agent IPC contract', () => {
 					session_id: 'ses-6b86b273ff34fce19d6b804eff5a3f57',
 					step_number: 2,
 					run_id: 4,
-					role: 'vision',
+					request_kind: 'vision',
 					strategy: 'auto',
 					projections: [{ asset_id: 'asset-6b86b273ff34fce19d6b804eff5a3f57' }],
 					notices: [],
@@ -823,7 +825,7 @@ describe('agent IPC contract', () => {
 			event: 'agent:web_search',
 			wire: {
 				session_id: 'ses-6b86b273ff34fce19d6b804eff5a3f57',
-				phase: 'started',
+				phase: 'in_progress',
 				step_number: 2,
 				run_id: 3,
 				call_id: 'call-1',
@@ -832,7 +834,7 @@ describe('agent IPC contract', () => {
 			},
 			expected: {
 				sessionId: 'ses-6b86b273ff34fce19d6b804eff5a3f57',
-				phase: 'started',
+				phase: 'in_progress',
 				stepNumber: 2,
 				runId: 3,
 				callId: 'call-1',
@@ -855,7 +857,7 @@ describe('agent IPC contract', () => {
 				message_id: 'msg-6b86b273ff34fce19d6b804eff5a3f57',
 				supplement_id: 'msg-6b86b273ff34fce19d6b804eff5a3f57',
 				inject_source: 'cross_session',
-				event_seq: 9,
+				event_sequence: 9,
 			},
 			expected: {
 				sessionId: 'ses-6b86b273ff34fce19d6b804eff5a3f57',
@@ -865,7 +867,7 @@ describe('agent IPC contract', () => {
 				messageId: 'msg-6b86b273ff34fce19d6b804eff5a3f57',
 				supplementId: 'msg-6b86b273ff34fce19d6b804eff5a3f57',
 				injectSource: 'cross_session',
-				eventSeq: 9,
+				eventSequence: 9,
 			},
 		},
 		{
@@ -900,5 +902,34 @@ describe('agent IPC contract', () => {
 			},
 		});
 		expect(mapped).toBeNull();
+	});
+
+	it('accepts every generated web-search phase and rejects unknown phases', () => {
+		for (const phase of ['in_progress', 'searching', 'completed'] as const) {
+			const mapped = mapAgentEventContract({
+				event: 'agent:web_search',
+				id: 13,
+				payload: {
+					session_id: 'ses-6b86b273ff34fce19d6b804eff5a3f57',
+					phase,
+					step_number: 2,
+					run_id: 3,
+					call_id: 'ws_1',
+				},
+			});
+			expect(mapped?.payload).toMatchObject({ phase });
+		}
+
+		const unknown = mapAgentEventContract({
+			event: 'agent:web_search',
+			id: 14,
+			payload: {
+				session_id: 'ses-6b86b273ff34fce19d6b804eff5a3f57',
+				phase: 'started',
+				step_number: 2,
+				run_id: 3,
+			},
+		});
+		expect(unknown).toBeNull();
 	});
 });

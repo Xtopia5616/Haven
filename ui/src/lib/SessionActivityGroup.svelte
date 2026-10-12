@@ -150,7 +150,7 @@
 
 		{#if visibleMediaPlans.length > 0}
 			<div class="media-plan-items">
-				{#each visibleMediaPlans as plan (`${plan.stepNumber}:${plan.runId}:${plan.role}`)}
+				{#each visibleMediaPlans as plan (`${plan.stepNumber}:${plan.runId}:${plan.requestKind}`)}
 					<MediaPlanCard {plan} />
 				{/each}
 			</div>

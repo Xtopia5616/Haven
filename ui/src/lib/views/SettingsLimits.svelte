@@ -5,7 +5,10 @@
 	import MaterialCard from '$lib/MaterialCard.svelte';
 	import MaterialNumberFieldWithUnit from '$lib/MaterialNumberFieldWithUnit.svelte';
 	import { withNumberValue } from '$lib/typedCallbacks.ts';
-	import type { ContextLimitsConfigInput } from '$lib/contracts/generatedCommands.ts';
+	import {
+		MAX_FACTS_IN_EXTRACTION_PROMPT,
+		type ContextLimitsConfigInput,
+	} from '$lib/contracts/generatedCommands.ts';
 
 	type LimitKey = keyof ContextLimitsConfigInput;
 	interface LimitField {
@@ -136,7 +139,14 @@
 					danger: false,
 					hint: '限制短时间内重复调用模型提取事实的频率。',
 				},
-				{ key: 'max_known_facts', label: '提示中已知事实数', unit: 'count', danger: false },
+				{
+					key: 'max_known_facts',
+					label: '提示中已知事实数',
+					unit: 'count',
+					max: MAX_FACTS_IN_EXTRACTION_PROMPT,
+					danger: false,
+					hint: `默认值 40；上限 ${MAX_FACTS_IN_EXTRACTION_PROMPT}，避免事实上下文过大。`,
+				},
 				{
 					key: 'sanitize_field_max_chars',
 					label: '事实字段消毒长度',

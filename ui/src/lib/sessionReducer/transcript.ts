@@ -58,7 +58,7 @@ export function reduceTranscript(
 			return {
 				...state,
 				messages: draft.length ? { [DRAFT_SESSION_ID]: draft } : {},
-				replay: { eventSeqBySession: {}, chunkSeqByMessage: {}, blockIdsBySession: {} },
+				replay: { eventSequenceBySession: {}, chunkSeqByMessage: {}, blockIdsBySession: {} },
 				optimistic: {},
 			};
 		}

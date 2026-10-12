@@ -14,12 +14,13 @@ pub const MAX_INPUT_RING_BUFFER_SECS: usize = 120;
 /// Validate persisted config numbers before they are loaded into runtime state
 /// or written to disk. Integer fields are also exposed as JavaScript `number`
 /// values through Settings, so they must remain exactly representable there.
-pub fn validate_app_config_numbers(config: &AppConfig) -> Result<()> {
+fn validate_app_config_numbers(config: &AppConfig) -> Result<()> {
     validate_config_numbers(config, &config.llm, &config.context_limits, &config.media)
 }
 
 /// Validate the Settings payload before it is applied from IPC.
-pub fn validate_settings_numbers(settings: &Settings) -> Result<()> {
+#[cfg(test)]
+fn validate_settings_numbers(settings: &Settings) -> Result<()> {
     validate_config_numbers(
         settings,
         &settings.llm,
@@ -30,8 +31,15 @@ pub fn validate_settings_numbers(settings: &Settings) -> Result<()> {
 
 /// Validate configuration invariants shared by TOML load/save and typed edits.
 /// Keep persistence-only secret checks in their owning boundaries.
-pub fn validate_app_config(config: &AppConfig) -> Result<()> {
+pub(super) fn validate_app_config(config: &AppConfig) -> Result<()> {
     validate_app_config_numbers(config)?;
+    validate_unique_llm_configuration_keys(&config.llm)?;
+    if config.context_limits.max_known_facts > super::MAX_FACTS_IN_EXTRACTION_PROMPT {
+        anyhow::bail!(
+            "context_limits.max_known_facts must not exceed {}",
+            super::MAX_FACTS_IN_EXTRACTION_PROMPT
+        );
+    }
     super::validate_mcp_server_names(&config.mcp_servers)?;
     validate_mcp_discovery(&config.mcp_discovery)?;
     if config.context_limits.input_ring_buffer_secs > MAX_INPUT_RING_BUFFER_SECS {
@@ -101,25 +109,50 @@ pub fn validate_settings_contract(settings: &Settings) -> Result<()> {
     {
         anyhow::bail!("MCP environment values must be changed through the MCP settings commands");
     }
-    let mut model_ids = HashSet::with_capacity(config.llm.models.len());
-    for (index, model) in config.llm.models.iter().enumerate() {
-        if model.id.trim().is_empty() {
+    for (index, model_config) in config.llm.models.iter().enumerate() {
+        if model_config.id.trim().is_empty() {
             anyhow::bail!("llm.models[{index}].id must not be empty");
         }
-        if !model_ids.insert(model.id.as_str()) {
-            anyhow::bail!("llm.models[{index}].id must be unique");
-        }
-        if model.model.trim().is_empty() {
+        if model_config.model.trim().is_empty() {
             anyhow::bail!("llm.models[{index}].model must not be empty");
         }
-        if model.provider_name.trim().is_empty()
+        if model_config.provider_name.trim().is_empty()
             || !config
                 .llm
                 .providers
                 .iter()
-                .any(|provider| provider.name == model.provider_name)
+                .any(|provider| provider.name == model_config.provider_name)
         {
             anyhow::bail!("llm.models[{index}].provider_name must reference a configured Provider");
+        }
+    }
+    Ok(())
+}
+
+/// Reject duplicate names that are resolved by first-match lookup in the LLM
+/// config. This shared check applies equally to TOML loads and Settings edits.
+fn validate_unique_llm_configuration_keys(llm: &super::LlmConfig) -> Result<()> {
+    let mut provider_names = HashSet::with_capacity(llm.providers.len());
+    for (index, provider) in llm.providers.iter().enumerate() {
+        if provider.name.trim().is_empty() {
+            anyhow::bail!("llm.providers[{index}].name must not be empty");
+        }
+        if !provider_names.insert(provider.name.as_str()) {
+            anyhow::bail!("llm.providers[{index}].name must be unique");
+        }
+    }
+
+    let mut model_config_ids = HashSet::with_capacity(llm.models.len());
+    for (index, model_config) in llm.models.iter().enumerate() {
+        if !model_config_ids.insert(model_config.id.as_str()) {
+            anyhow::bail!("llm.models[{index}].id must be unique");
+        }
+    }
+
+    let mut request_kinds = HashSet::with_capacity(llm.request_policies.len());
+    for (index, policy) in llm.request_policies.iter().enumerate() {
+        if !request_kinds.insert(policy.request) {
+            anyhow::bail!("llm.request_policies[{index}].request must be unique");
         }
     }
     Ok(())
@@ -353,6 +386,17 @@ mod tests {
     }
 
     #[test]
+    fn caps_known_facts_in_extraction_prompt_for_config_and_settings() {
+        let mut config = AppConfig::default();
+        config.context_limits.max_known_facts = super::super::MAX_FACTS_IN_EXTRACTION_PROMPT + 1;
+
+        let config_error = validate_app_config(&config).unwrap_err();
+        assert!(config_error.to_string().contains("max_known_facts"));
+        let settings_error = validate_settings_contract(&Settings::from(&config)).unwrap_err();
+        assert!(settings_error.to_string().contains("max_known_facts"));
+    }
+
+    #[test]
     fn app_config_and_settings_share_provider_contract_validation() {
         let mut config = AppConfig::default();
         config.llm.providers.push(ProviderConfig {
@@ -367,6 +411,78 @@ mod tests {
         config.media.tts.provider_name = "missing".into();
         assert!(validate_app_config(&config).is_err());
         assert!(validate_settings_contract(&Settings::from(&config)).is_err());
+    }
+
+    #[test]
+    fn config_and_settings_reject_ambiguous_llm_collection_keys() {
+        let mut config = AppConfig::default();
+        config.llm.providers.extend([
+            ProviderConfig {
+                name: "primary".into(),
+                ..Default::default()
+            },
+            ProviderConfig {
+                name: "primary".into(),
+                ..Default::default()
+            },
+        ]);
+        for validate in [
+            validate_app_config(&config),
+            validate_settings_contract(&Settings::from(&config)),
+        ] {
+            assert!(
+                validate
+                    .unwrap_err()
+                    .to_string()
+                    .contains("name must be unique")
+            );
+        }
+
+        let mut config = AppConfig::default();
+        config.llm.models.extend([
+            crate::config::ModelConfig {
+                id: "chat-slot".into(),
+                ..Default::default()
+            },
+            crate::config::ModelConfig {
+                id: "chat-slot".into(),
+                ..Default::default()
+            },
+        ]);
+        for validate in [
+            validate_app_config(&config),
+            validate_settings_contract(&Settings::from(&config)),
+        ] {
+            assert!(
+                validate
+                    .unwrap_err()
+                    .to_string()
+                    .contains("id must be unique")
+            );
+        }
+
+        let mut config = AppConfig::default();
+        config.llm.request_policies.extend([
+            crate::config::RequestPolicy {
+                request: crate::config::RequestKind::Chat,
+                primary: "first".into(),
+            },
+            crate::config::RequestPolicy {
+                request: crate::config::RequestKind::Chat,
+                primary: "second".into(),
+            },
+        ]);
+        for validate in [
+            validate_app_config(&config),
+            validate_settings_contract(&Settings::from(&config)),
+        ] {
+            assert!(
+                validate
+                    .unwrap_err()
+                    .to_string()
+                    .contains("request must be unique")
+            );
+        }
     }
 
     #[test]

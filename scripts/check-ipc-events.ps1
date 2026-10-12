@@ -29,6 +29,10 @@ foreach ($array in $generatedEventArrays) {
     $generatedEvents += Get-Matches $array "'([^']+:[^']+)'"
 }
 Assert-SetEqual 'Rust event directory vs generated frontend event channels' $rustEvents $generatedEvents
+$eventShapeRegistry = [regex]::Match($generated, '(?sm)export const IPC_EVENT_PAYLOAD_SHAPES = \{(.*?)^\} as const;')
+if (-not $eventShapeRegistry.Success) { throw 'generated Rust event payload shape registry is missing' }
+$eventShapeNames = Get-Matches $eventShapeRegistry.Groups[1].Value "(?m)^\s*'([^']+:[^']+)'\s*:"
+Assert-SetEqual 'Rust event directory vs generated payload shape registry' $rustEvents $eventShapeNames
 $sessionEventArray = [regex]::Match($generated, "(?s)export const SESSION_EVENT_NAMES = \[(.*?)\]\s*as const")
 if (-not $sessionEventArray.Success -or
     (Get-Matches $sessionEventArray.Groups[1].Value "'([^']+:[^']+)'" | Measure-Object).Count -ne 1 -or
@@ -47,6 +51,12 @@ foreach ($contract in $eventContracts.GetEnumerator()) {
     $text = Get-Content (Join-Path $root "ui/src/lib/contracts/$($contract.Key)") -Raw
     if (-not $text.Contains($contract.Value) -or [regex]::IsMatch($text, "export const $($contract.Value)\s*=\s*\[")) {
         throw "$($contract.Key) must consume generated $($contract.Value) instead of declaring a second event directory"
+    }
+}
+foreach ($file in @('app.ts', 'agent.ts', 'recording.ts', 'session.ts', 'toolRun.ts')) {
+    $source = Get-Content (Join-Path $root "ui/src/lib/contracts/$file") -Raw
+    if (-not [regex]::IsMatch($source, 'matchesGeneratedEventPayload\(event\.event,\s*event\.payload\)')) {
+        throw "$file must validate each payload against its generated Rust event shape"
     }
 }
 
@@ -88,6 +98,16 @@ if (-not [regex]::IsMatch($recordingContract, "(?s)import\s*\{[^}]*VAD_SIGNAL_DT
     -not [regex]::IsMatch($recordingContract, 'isValidTauriEventId\(event\.id\)') -or
     -not [regex]::IsMatch($recordingContract, 'isRecord\(event\.payload\)')) {
     throw 'recording event validators must check the Tauri envelope and use generated Rust VAD enum vocabularies'
+}
+if (-not [regex]::IsMatch($recordingContract, 'payload\.is_recording\s*!==\s*true') -or
+    -not [regex]::IsMatch($recordingContract, 'payload\.is_recording\s*!==\s*false') -or
+    -not [regex]::IsMatch($recordingContract, 'confidence\s*<\s*0\s*\|\|\s*confidence\s*>\s*1')) {
+    throw 'recording validators must enforce channel state and confidence/duration domains'
+}
+if (-not [regex]::IsMatch($toolRunContract, "event\.event\s*===\s*'tool_run:created'[\s\S]*?wire\.status\s*===\s*undefined") -or
+    -not [regex]::IsMatch($toolRunContract, "event\.event\s*===\s*'tool_run:output'[\s\S]*?wire\.status\s*!==\s*'running'[\s\S]*?wire\.output") -or
+    -not [regex]::IsMatch($toolRunContract, "event\.event\s*===\s*'tool_run:finished'[\s\S]*?completed[\s\S]*?failed[\s\S]*?cancelled")) {
+    throw 'ToolRun event validators must enforce channel-specific created/output/finished fields'
 }
 
 $agentEventsPath = Join-Path $root 'crates/app-binary/src/events.rs'

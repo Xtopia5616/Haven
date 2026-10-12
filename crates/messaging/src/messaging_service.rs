@@ -55,7 +55,11 @@ macro_rules! define_message_transport {
             fn try_claim(&self, recipient: &str) -> anyhow::Result<Option<Vec<Envelope>>>;
             fn ack(&self, recipient: &str, ids: &[String]) -> anyhow::Result<()>;
             fn last_received(&self, session_id: &str) -> anyhow::Result<Option<Envelope>>;
-            fn find_message(&self, session_id: &str, id: &str) -> anyhow::Result<Option<Envelope>>;
+            fn find_message(
+                &self,
+                session_id: &str,
+                message_id: &str,
+            ) -> anyhow::Result<Option<Envelope>>;
             fn take_matching_replies(
                 &self,
                 session_id: &str,
@@ -148,8 +152,8 @@ impl MessageTransport for InboxBus {
         InboxBus::last_received(self, session_id)
     }
 
-    fn find_message(&self, session_id: &str, id: &str) -> anyhow::Result<Option<Envelope>> {
-        InboxBus::find_message(self, session_id, id)
+    fn find_message(&self, session_id: &str, message_id: &str) -> anyhow::Result<Option<Envelope>> {
+        InboxBus::find_message(self, session_id, message_id)
     }
 
     fn take_matching_replies(
@@ -196,7 +200,11 @@ pub trait SessionMailbox: Send + Sync {
     fn try_claim(&self, recipient: &str) -> anyhow::Result<Option<Vec<Envelope>>>;
     fn ack(&self, recipient: &str, ids: &[String]) -> anyhow::Result<Option<()>>;
     fn last_received(&self, session_id: &str) -> anyhow::Result<Option<Option<Envelope>>>;
-    fn find_message(&self, session_id: &str, id: &str) -> anyhow::Result<Option<Option<Envelope>>>;
+    fn find_message(
+        &self,
+        session_id: &str,
+        message_id: &str,
+    ) -> anyhow::Result<Option<Option<Envelope>>>;
     fn take_matching_replies(
         &self,
         session_id: &str,
@@ -537,19 +545,23 @@ impl MessagingService {
         Ok(result)
     }
 
-    pub fn find_message(&self, session_id: &str, id: &str) -> anyhow::Result<Option<Envelope>> {
+    pub fn find_message(
+        &self,
+        session_id: &str,
+        message_id: &str,
+    ) -> anyhow::Result<Option<Envelope>> {
         validate_session_id(session_id)?;
-        validate_message_id(id, "message_id")?;
+        validate_message_id(message_id, "message_id")?;
         let result = if let Some(mailbox) = self.mailbox()
-            && let Some(result) = mailbox.find_message(session_id, id)?
+            && let Some(result) = mailbox.find_message(session_id, message_id)?
         {
             result
         } else {
-            self.transport.find_message(session_id, id)?
+            self.transport.find_message(session_id, message_id)?
         };
         if let Some(envelope) = result.as_ref() {
             validate_message_envelope(session_id, envelope)?;
-            if envelope.message_id != id {
+            if envelope.message_id != message_id {
                 anyhow::bail!("message lookup returned a different message_id");
             }
         }

@@ -126,6 +126,30 @@ describe('tool manifest snapshots', () => {
 		expect(getToolManifest('files.search')).not.toBeNull();
 	});
 
+	it('rejects a builtin snapshot with duplicate stable names', () => {
+		setToolManifests([manifest('files.search', 'files', 'old-renderer')]);
+
+		const projected = setToolManifests([
+			manifest('files.search', 'files', 'first-renderer'),
+			manifest('files.search', 'files', 'second-renderer'),
+		]);
+
+		expect(projected).toEqual([]);
+		expect(getToolManifest('files.search')).toBeNull();
+	});
+
+	it('preserves non-builtin manifest handling for duplicate stable names', () => {
+		const first = manifest('mcp__files__read', 'mcp', 'first-renderer');
+		const second = manifest('mcp__files__read', 'mcp', 'second-renderer');
+		first.identity.source = 'mcp';
+		second.identity.source = 'mcp';
+
+		const projected = setToolManifests([first, second]);
+
+		expect(projected).toHaveLength(2);
+		expect(getToolManifest('mcp__files__read')?.presentation.renderer).toBe('second-renderer');
+	});
+
 	it('keeps the grouping root independent from the result renderer', () => {
 		setToolManifests([manifest('files.search', 'files', 'files.search')]);
 

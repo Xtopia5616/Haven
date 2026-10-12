@@ -520,7 +520,7 @@ impl SessionSupervisor {
         let mut ids = Vec::new();
         for actor in actors {
             if actor.is_running().await {
-                ids.push(actor.id.clone());
+                ids.push(actor.session_id.clone());
             }
         }
         ids

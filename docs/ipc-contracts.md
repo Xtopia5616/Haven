@@ -5,12 +5,12 @@
 路由深处重复转换字段。
 
 版本 1 的全量命令目录由 `crates/app-binary/src/commands/contracts.rs` 唯一登记；
-前端目录 `ui/src/lib/contracts/commands.ts` 只维护经审阅的边界与安全说明；`scripts/generate-ipc-contracts.ps1` 从 Rust Tauri handler 参数和 Serde DTO 生成前端 request/response 类型。CI 检查生成物 drift，并核对 handler、注册表和本文命令名集合。wire 字段仍保持扁平（例如 `{ sessionId }`），不额外包裹 `{ request: ... }`。
+前端目录 `ui/src/lib/contracts/commands.ts` 只维护经审阅的边界与安全说明；`scripts/generate-ipc-contracts.ps1` 从 Rust Tauri handler 参数和 Serde DTO 生成前端 request/response 类型，并为每个 command response 生成运行时 wire shape。事件 channel 与 Rust payload DTO 显式配对，生成器覆盖全部登记渠道并在集合漂移时失败。中心 `invoke` 和各事件 domain mapper 在语义投影前执行 shape 检查；具体 ID、闭合 enum、状态转移和跨字段约束仍由业务 contract 校验。CI 检查生成物 drift，并核对 handler、注册表和本文命令名集合。wire 字段仍保持扁平（例如 `{ sessionId }`），不额外包裹 `{ request: ... }`。
 版本 1 不保留旧字段或旧事件别名。
 
 ## 全量命令登记（v1）
 
-以下表格列出完整命令集合及人工审阅的边界、安全不变量。wire shape 由 Rust handler 与 Serde DTO 生成；响应中的 `Value` 仅用于明确的 provider、动态工具 schema 或工具输出扩展点。
+以下表格列出完整命令集合及人工审阅的边界、安全不变量。wire shape 由 Rust handler 与 Serde DTO 生成，并在运行时统一检查；响应中的 `Value` 仅用于明确的 provider、动态工具 schema 或工具输出扩展点。
 
 | 命令 | 边界 | 安全不变量 |
 |---|---|---|
@@ -64,9 +64,6 @@
 | `resolve_confirmation` | mutate | 显式 owner + `request_id` 选路；`effect` / `scope` / `target` 使用生成的权限 enum，receipt 与目标祖先仍由后端复核；返回 `resolved`/`expired`/`stale`，可重试失败保留 pending |
 | `update_session_title` | mutate | trim 后不得为空 |
 
-`list_facts` / `add_fact` 返回 App-owned `MemoryFactResponse`，以 `fact_id` 表示事实身份；其中 `source_ref` 使用
-`MemoryFactSourceRef`。事实的 `source` 使用 generated `MemoryFactSource`；App mapper 严格解析
-repository source 值后显式投影字段，repository 新增字段不会自动进入 IPC payload。
 | `delete_session` | mutate | 删除并释放运行态 |
 | `delete_all_sessions` | mutate | 删除所有持久会话及其投影，并清理会话授权和运行态 |
 | `rollback_session` | mutate | event cursor 与 projection clock 一起回退 |
@@ -97,6 +94,10 @@ repository source 值后显式投影字段，repository 新增字段不会自动
 | `execute_skill` | execute | 限定 skill 名并经过 AuthorizationEngine |
 | `list_builtin_tool_manifests` | read | 返回 built-in tools 的启用/禁用 manifest；ToolPolicy 固定策略类别使用生成的 enum，`permission_key` 保持动态；不包含 Skill/MCP 清单 |
 | `reset_tool_circuits` | mutate | 只清本地 circuit 状态 |
+
+`list_facts` / `add_fact` 返回 App-owned `MemoryFactResponse`，以 `fact_id` 表示事实身份；其中 `source_ref` 使用
+`MemoryFactSourceRef`。事实的 `source` 使用 generated `MemoryFactSource`；App mapper 严格解析
+repository source 值后显式投影字段，repository 新增字段不会自动进入 IPC payload。
 
 ## 会话命令（v1）
 
@@ -224,17 +225,17 @@ DTO 位于 `crates/app-binary/src/events.rs`；前端镜像分别位于
 | `interaction:requested` | `InteractionRequestedEvent { request_id, owner, session_id?, kind: InteractionKind, status: InteractionStatus, options, tool_name, risk_level, summary, permission_key, invocation_step_id, tool_index, tool_call_id, created_at, expires_at }` | 聊天页 | `kind/status` 使用 Agent Rust enum 并生成前端类型和值集合；`owner` 仍是显式运行时路由元数据：`session { session_id }`、`scheduled_tool_run { tool_run_id }` 或 `app_command`；不包含 continuation。`session_id` 仅表示可选真实关联上下文；Session owner 必须与其相同，AppCommand 不带该上下文，ScheduledToolRun 可不关联会话。resume 投影明确为 Session owner。Ask 正文只存在 transcript，事件按 `request_id` 关联状态/选项，不重复携带正文或占位 prompt。confirm 原始参数、receipt 不跨边界，renderer 只收到安全摘要，决策仍由后端校验；前端映射为 `requestId` 后按请求身份幂等覆盖。durable clear event 使用 `request_ids`，replay 兼容旧持久 payload 的 `id` / `ids`，UI 不接受旧字段（ADR 0996）。 |
 | `hotkey:conflict` / `hotkey:rebind` | `HotkeyConflictEvent` / `HotkeyRebindEvent` | 根布局、设置页 | 仅报告绑定状态；不执行 renderer 传入的快捷键。 |
 | `llm:config_changed` | `()` | 设置页、模型页 | 无 payload；通知页面重新读取脱敏配置。 |
-| `agent:thought` | `AgentThoughtEvent` | 聊天页 | 按 `message_id` 归并；可选 `event_seq` 是已提交的 `session_events.sequence`，缺失表示没有 durable 行的 snap。文本不得重复写入普通日志。 |
-| `agent:tool_call` | `AgentToolCallEvent` | 聊天页 | `input` 是工具参数动态扩展点；其余执行身份固定，`silent` 由后端计算。同一 `event_seq` 可以对应多个 `step_id`，前端按 `(event_seq, step_id)` 去重。 |
-| `agent:observation` | `AgentObservationEvent` | 聊天页 | 与 ToolCall 的 `step_id` / `tool_call_id` 关联；`idempotency` / `operation_scope` 及 result envelope 的 `outcome` / `error_class` / `retry_safety` / `retryability` 使用 generated Common enum；`retry_safety` 由 operation policy 提供，不信任动态输出同名字段；工具输出按后端门禁净化。去重键是 `(event_seq, step_id)`（ADR 0743、0744）。 |
+| `agent:thought` | `AgentThoughtEvent` | 聊天页 | 按 `message_id` 归并；可选 `event_sequence` 是已提交的 `session_events.sequence`，缺失表示没有 durable 行的 snap。文本不得重复写入普通日志。 |
+| `agent:tool_call` | `AgentToolCallEvent` | 聊天页 | `input` 是工具参数动态扩展点；其余执行身份固定，`silent` 由后端计算。同一 `event_sequence` 可以对应多个 `step_id`，前端按 `(event_sequence, step_id)` 去重。 |
+| `agent:observation` | `AgentObservationEvent` | 聊天页 | 与 ToolCall 的 `step_id` / `tool_call_id` 关联；`idempotency` / `operation_scope` 及 result envelope 的 `outcome` / `error_class` / `retry_safety` / `retryability` 使用 generated Common enum；`retry_safety` 由 operation policy 提供，不信任动态输出同名字段；工具输出按后端门禁净化。去重键是 `(event_sequence, step_id)`（ADR 0743、0744）。 |
 | `agent:stream_stalled` | `AgentStreamStalledEvent` | 根布局、聊天页 | 状态提示可重复；不得携带 provider 原始响应。 |
-| `agent:thought_chunk` / `agent:reasoning_chunk` | `Agent*ChunkEvent` | 聊天页 | 只使用 chunk `seq`，不分配 durable `event_seq`。丢失 chunk 时由完整消息投影兜底。 |
+| `agent:thought_chunk` / `agent:reasoning_chunk` | `Agent*ChunkEvent` | 聊天页 | 只使用 chunk `seq`，不分配 durable `event_sequence`。丢失 chunk 时由完整消息投影兜底。 |
 | `agent:stream_reset` | `AgentStreamResetEvent` | 聊天页 | 与 chunk 共用后端有序队列；先清空对应 live thought/reasoning，再接受新尝试；不回滚 durable transcript。 |
-| `agent:media_plan` | `AgentMediaPlanEvent { session_id, step_number, run_id, role, strategy, projections, notices, event_seq? }` | 聊天页媒体计划卡 | `role` 字段承载 `RequestKind` 字符串。ingress 计划携带 `event_seq`；请求准备阶段的计划没有 durable 行，`event_seq` 为空。按 `session_id + step_number + run_id + role` 归并；不携带原始媒体 bytes。 |
-| `agent:web_search` | `AgentWebSearchEvent` | 聊天页 | `result` 是 provider 动态扩展点；错误和结果按阶段更新。不占用 durable `event_seq`。 |
-| `agent:supplement` | `AgentSupplementEvent` | 聊天页 | 按 `(event_seq, supplement_id)` 去重；只发送补充上下文，不发送快照内部对象。 |
-| `agent:compaction` | `AgentCompactionEvent { summary, tokens_before, tokens_after, degraded, episode_id?, event_seq? }` | 聊天页 | `event_seq` 对应该条压缩摘要的 durable sequence。`degraded=true` 表示摘要请求未完成、使用了 `[older context omitted]`，UI 必须提示较早内容已省略；不发送快照内部对象。 |
-| `agent:usage` | `AgentUsageEvent` | 用量面板、聊天页 | 不占用 durable `event_seq`，live 事件自带累计值。固定 token/cost/cache/context 字段；`role` 字段承载 `RequestKind` 字符串；`call_kind` 与 `cache_accounting` 使用 Common 生成枚举；`cache_diagnostics` 使用 Common 的 typed `CacheDiagnostics`，其中策略、结果和来源均为闭合枚举，前端 mapper 校验完整字段；缓存率由每次调用的 accounting 合同计算，未知口径不得猜测。 |
+| `agent:media_plan` | `AgentMediaPlanEvent { session_id, step_number, run_id, request_kind, strategy, projections, notices, event_sequence? }` | 聊天页媒体计划卡 | `request_kind` 字段承载 `RequestKind`。ingress 计划携带 `event_sequence`；请求准备阶段的计划没有 durable 行，`event_sequence` 为空。按 `session_id + step_number + run_id + request_kind` 归并；不携带原始媒体 bytes。 |
+| `agent:web_search` | `AgentWebSearchEvent` | 聊天页 | `result` 是 provider 动态扩展点；错误和结果按阶段更新。不占用 durable `event_sequence`。 |
+| `agent:supplement` | `AgentSupplementEvent` | 聊天页 | 按 `(event_sequence, supplement_id)` 去重；只发送补充上下文，不发送快照内部对象。 |
+| `agent:compaction` | `AgentCompactionEvent { summary, tokens_before, tokens_after, degraded, episode_id?, event_sequence? }` | 聊天页 | `event_sequence` 对应该条压缩摘要的 durable sequence。`degraded=true` 表示摘要请求未完成、使用了 `[older context omitted]`，UI 必须提示较早内容已省略；不发送快照内部对象。 |
+| `agent:usage` | `AgentUsageEvent` | 用量面板、聊天页 | 不占用 durable `event_sequence`，live 事件自带累计值。固定 token/cost/cache/context 字段；`request_kind` 字段承载 `RequestKind`；`call_kind` 与 `cache_accounting` 使用 Common 生成枚举；`cache_diagnostics` 使用 Common 的 typed `CacheDiagnostics`，其中策略、结果和来源均为闭合枚举，前端 mapper 校验完整字段；缓存率由每次调用的 accounting 合同计算，未知口径不得猜测。 |
 | `agent:tool_output` | `AgentToolOutputEvent` | 聊天页 | UI-only 的有界输出通道；未知 channel 或畸形 payload 直接丢弃并记录。 |
 | `notification:show` | `AgentNotificationEvent` | 根布局 | 通用纯文本通知可省略 session 关联；ToolRun completion 元数据使用生成的 `ToolRunKindDto` / `ToolRunCompletionStatusDto` 与 `AgentNotificationKind`；背景任务必须带真实 `session_id` 和终态，定时任务不带该状态。正文不承载密钥、完整命令输出或原始 provider 错误。 |
 

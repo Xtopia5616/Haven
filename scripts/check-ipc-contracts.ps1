@@ -74,6 +74,10 @@ $generatedNames = Get-Matches $generated '(?m)^\s{1,2}([a-z][a-z0-9_]*)\s*:\s*\{
 Assert-SetEqual 'Tauri handlers vs generated command map' $implemented $generatedNames
 Assert-Contains $generated '(?m)^export interface TauriCommandMap\s*\{' 'generated command map export'
 Assert-NotContains $generated '\bany\b' 'generated IPC contracts must not widen values to any'
+$responseShapeRegistry = [regex]::Match($generated, '(?sm)export const TAURI_COMMAND_RESPONSE_SHAPES = \{(.*?)^\} as const;')
+if (-not $responseShapeRegistry.Success) { throw 'generated Rust response shape registry is missing' }
+$responseShapeNames = Get-Matches $responseShapeRegistry.Groups[1].Value '(?m)^\s*([a-z][a-z0-9_]*)\s*:'
+Assert-SetEqual 'generated commands vs runtime response shape registry' $generatedNames $responseShapeNames
 
 # No second manually maintained source may describe the wire shapes.
 Assert-NotContains $rustContracts '(?m)^\s*pub\s+(?:request|response)\s*:' 'Rust registry must not duplicate request/response DTO names'
@@ -84,6 +88,8 @@ $tauri = Get-Source 'ui/src/lib/tauri.ts'
 Assert-Contains $tauri 'type RawTauriInvoke\s*=\s*\(cmd:\s*string,\s*args\?:\s*unknown\)\s*=>\s*Promise<unknown>' 'raw Tauri invoke uses unknown wire values'
 Assert-Contains $tauri 'export async function invoke<K extends TauriCommandName>' 'public invoke is constrained to generated command names'
 Assert-Contains $tauri 'Promise<TauriCommandResponse<K>>' 'public invoke returns the generated response type'
+Assert-Contains $tauri 'TAURI_COMMAND_RESPONSE_SHAPES\[cmd\]' 'every command response is checked against its Rust-generated shape'
+Assert-Contains $tauri 'findGeneratedWireShapeMismatch\(response,' 'command invoke rejects malformed generated response shapes'
 Assert-NotContains $tauri 'Promise<any>|args\?:\s*any' 'invoke boundary must not use any'
 
 # Runtime parsers remain the trust boundary for structured responses even
@@ -204,7 +210,9 @@ Assert-Contains $sessionCommands 'parseProcessResult\(value,\s*request\.activeSe
 $errorHandling = Get-Source 'ui/src/lib/errorHandling.ts'
 Assert-Contains $errorHandling "invoke\('log_frontend_error',\s*\{\s*failureKind:\s*options\.failureKind\s*\?\?\s*'operation_failure',?\s*\}\)" 'error handling sends only a stable frontend failure category'
 $externalRef = Get-Source 'ui/src/lib/externalRef.ts'
-Assert-Contains $externalRef "invoke\('open_external',\s*\{\s*target:\s*value\s*\}\)" 'external reference policy owns external opening'
+Assert-Contains $externalRef 'openExternalTarget\(\{\s*target:\s*value\s*\}\)' 'external reference policy uses the external command adapter'
+$externalCommands = Get-Source 'ui/src/lib/externalCommands.ts'
+Assert-Contains $externalCommands "invoke\('open_external',\s*request\)" 'external command adapter owns external opening'
 foreach ($file in $uiFiles) {
     Assert-NotContains (Get-Content $file.FullName -Raw) "invoke\s*\(\s*'delete_tool_run'" "unused delete_tool_run has no unreviewed renderer caller: $($file.Name)"
     if ($file.Name -eq 'recordingOverlayController.ts') { continue }
@@ -217,7 +225,7 @@ foreach ($file in $uiFiles) {
 $ownedCommands = @{
     '+layout.svelte' = @('get_bootstrap_status', 'check_llm_connection', 'resolve_confirmation')
     'errorHandling.ts' = @('log_frontend_error')
-    'externalRef.ts' = @('open_external')
+    'externalCommands.ts' = @('open_external')
     'recordingOverlayController.ts' = @('start_recording', 'stop_recording', 'cancel_recording')
     'toolRunCommands.ts' = @('list_tool_runs', 'list_tool_run_history', 'clear_tool_run_history', 'cancel_tool_run')
     'toolsCommands.ts' = @('list_builtin_tool_manifests', 'list_mcp_servers', 'list_skills', 'reset_tool_circuits', 'refresh_mcp_servers', 'set_skill_enabled', 'set_tool_enabled', 'refresh_skills', 'open_skills_dir', 'add_mcp_server', 'update_mcp_server', 'remove_mcp_server', 'reconnect_mcp_server', 'toggle_mcp_server', 'execute_skill')
@@ -239,7 +247,7 @@ foreach ($file in $uiFiles | Where-Object { $_.Name -notmatch '\.(test|spec)\.' 
 }
 Assert-SetEqual 'production literal invokes vs reviewed UI command owners' $literalInvokeCommands $ownedCommandNames
 
-foreach ($file in $uiFiles) {
+foreach ($file in $uiFiles | Where-Object { $_.Name -notmatch '\.(test|spec)\.' }) {
     foreach ($owner in $ownedCommands.Keys) {
         if ($file.Name -eq $owner) { continue }
         foreach ($command in $ownedCommands[$owner]) {

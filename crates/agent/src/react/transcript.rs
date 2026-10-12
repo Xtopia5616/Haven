@@ -1361,7 +1361,7 @@ mod tests {
                 crate::event::AgentEvent::Compaction {
                     tokens_before: 100,
                     tokens_after: 40,
-                    event_seq: Some(sequence),
+                    event_sequence: Some(sequence),
                     ..
                 } if *sequence == durable_sequence
             )),
@@ -1442,7 +1442,7 @@ mod tests {
                 crate::event::AgentEvent::ToolCall {
                     tool_name,
                     step_id: sid,
-                    event_seq: Some(sequence),
+                    event_sequence: Some(sequence),
                     ..
                 } if tool_name == "echo" && sid == &step_id && *sequence == durable_sequence
             )),
@@ -1538,7 +1538,7 @@ mod tests {
             crate::event::AgentEvent::Observation {
                 idempotency: haven_tools::OperationIdempotency::Idempotent,
                 operation_scope: haven_tools::ToolOperationScope::Session,
-                event_seq: Some(sequence),
+                event_sequence: Some(sequence),
                 ..
             } if *sequence == durable_sequence
         )));
@@ -1549,7 +1549,7 @@ mod tests {
                 crate::event::AgentEvent::Observation {
                     observation,
                     step_id: sid,
-                    event_seq: Some(sequence),
+                    event_sequence: Some(sequence),
                     ..
                 } if observation == "ok" && sid == &step_id && *sequence == durable_sequence
             )),
@@ -1805,9 +1805,9 @@ mod tests {
                 tool_calls[0],
                 crate::event::AgentEvent::ToolCall {
                     step_id: id,
-                    event_seq: Some(event_seq),
+                    event_sequence: Some(event_sequence),
                     ..
-                } if id == &step_id && *event_seq == sequence
+                } if id == &step_id && *event_sequence == sequence
             ),
             "expected the committed ToolCall sequence, got {tool_calls:?}"
         );

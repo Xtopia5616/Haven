@@ -16,6 +16,7 @@ import {
 	type SessionWaitingReason,
 } from './generatedCommands.ts';
 import { isRecord } from './objectGuards.ts';
+import { matchesGeneratedEventPayload } from './generatedWireShape.ts';
 import { isValidTauriEventId, type TauriEvent } from './tauriEvent.ts';
 import { isOneOf, isString } from './valueGuards.ts';
 import {
@@ -64,7 +65,8 @@ export function mapSessionEvent(
 	if (
 		event.event !== SESSION_EVENT_NAMES[0] ||
 		!isValidTauriEventId(event.id) ||
-		!isRecord(event.payload)
+		!isRecord(event.payload) ||
+		!matchesGeneratedEventPayload(event.event, event.payload)
 	) {
 		return null;
 	}

@@ -101,22 +101,25 @@ fn request_route_diagnostics(
     let Some(policy) = config.policy(request) else {
         return missing(RequestRouteIssue::MissingRequestPolicy);
     };
-    let Some(model) = config.model(&policy.primary) else {
+    let Some(routed_model) = config.model_config(&policy.primary) else {
         let mut diagnostics = missing(RequestRouteIssue::MissingModelConfig);
         diagnostics.model_config_id = Some(policy.primary.clone());
         return diagnostics;
     };
 
-    let model_config_id = Some(model.id.clone());
-    let provider =
-        (!model.endpoint.provider.trim().is_empty()).then(|| model.endpoint.provider.clone());
-    let provider_model_id =
-        (!model.endpoint.model_name.trim().is_empty()).then(|| model.endpoint.model_name.clone());
+    let model_config_id = Some(routed_model.model_config_id.clone());
+    let provider = (!routed_model.endpoint.provider.trim().is_empty())
+        .then(|| routed_model.endpoint.provider.clone());
+    let provider_model_id = (!routed_model.endpoint.model_name.trim().is_empty())
+        .then(|| routed_model.endpoint.model_name.clone());
     let issue = if provider.is_none() || provider_model_id.is_none() {
         Some(RequestRouteIssue::ModelAssignmentIncomplete)
-    } else if !model.capabilities.contains(&request.required_capability()) {
+    } else if !routed_model
+        .capabilities
+        .contains(&request.required_capability())
+    {
         Some(RequestRouteIssue::RequiredCapabilityNotDeclared)
-    } else if !haven_common::config::endpoint_credentials_ready(&model.endpoint) {
+    } else if !haven_common::config::endpoint_credentials_ready(&routed_model.endpoint) {
         Some(RequestRouteIssue::ProviderCredentialsMissing)
     } else {
         None
@@ -253,7 +256,7 @@ impl LlmRouter {
             rate_limited,
         } = Self::runtime_state(
             request_limit,
-            model_directory.model_ids().map(str::to_string),
+            model_directory.model_config_ids().map(str::to_string),
         );
         Self {
             config: Arc::new(RwLock::new(config)),
@@ -279,48 +282,53 @@ impl LlmRouter {
     /// breakers, stream rules, concurrency semaphores, and rate-limit flags.
     fn runtime_state(
         request_limit: usize,
-        model_ids: impl IntoIterator<Item = String>,
+        model_config_ids: impl IntoIterator<Item = String>,
     ) -> LlmRouterRuntimeState {
-        let model_ids = model_ids.into_iter().collect::<Vec<_>>();
+        let model_config_ids = model_config_ids.into_iter().collect::<Vec<_>>();
         LlmRouterRuntimeState {
             endpoint_circuits: RwLock::new(new_endpoint_circuit_breaker_map(
-                model_ids.iter().cloned(),
+                model_config_ids.iter().cloned(),
             )),
             stream_rules: RwLock::new(Vec::new()),
-            semaphores: StdMutex::new(Self::make_semaphores(request_limit, model_ids)),
+            semaphores: StdMutex::new(Self::make_semaphores(request_limit, model_config_ids)),
             rate_limited: RwLock::new(HashMap::new()),
         }
     }
 
     /// Clone the concurrency permit for a model (the mutex is released before
     /// any await; the Arc clone is cheap).
-    fn model_permit(&self, model_id: &str) -> Arc<tokio::sync::Semaphore> {
+    fn model_permit(&self, model_config_id: &str) -> Arc<tokio::sync::Semaphore> {
         self.semaphores
             .lock()
             .unwrap()
-            .entry(model_id.to_string())
+            .entry(model_config_id.to_string())
             .or_insert_with(|| Arc::new(tokio::sync::Semaphore::new(1)))
             .clone()
     }
 
     fn make_semaphores(
         limit: usize,
-        model_ids: impl IntoIterator<Item = String>,
+        model_config_ids: impl IntoIterator<Item = String>,
     ) -> HashMap<String, Arc<tokio::sync::Semaphore>> {
-        model_ids
+        model_config_ids
             .into_iter()
-            .map(|id| (id, Arc::new(tokio::sync::Semaphore::new(limit))))
+            .map(|model_config_id| {
+                (
+                    model_config_id,
+                    Arc::new(tokio::sync::Semaphore::new(limit)),
+                )
+            })
             .collect()
     }
 
     /// Wait out the shared rate-limit cooldown for a model (if any).
-    async fn wait_rate_limit_cooldown(&self, model_id: &str) {
-        let cooldown_until = self.rate_limited.read().await.get(model_id).copied();
+    async fn wait_rate_limit_cooldown(&self, model_config_id: &str) {
+        let cooldown_until = self.rate_limited.read().await.get(model_config_id).copied();
         if let Some(until) = cooldown_until {
             let now = Instant::now();
             if until > now {
                 tracing::debug!(
-                    model_id,
+                    model_config_id,
                     wait = ?(until - now),
                     "router model is rate-limited, waiting before dispatch"
                 );
@@ -337,7 +345,7 @@ impl LlmRouter {
     /// misbehaving) provider, and the cooldown blocks the whole model while
     /// holding a semaphore permit — an unbounded value would freeze every
     /// agent/embedding/STT request through that endpoint.
-    async fn record_rate_limit(&self, model_id: &str, retry_after: Option<Duration>) {
+    async fn record_rate_limit(&self, model_config_id: &str, retry_after: Option<Duration>) {
         // Cap at 30s: long enough to ride out a provider-side rate window,
         // short enough that a hostile endpoint cannot pin the model.
         let wait = retry_after
@@ -345,16 +353,19 @@ impl LlmRouter {
             .min(Duration::from_secs(30));
         let until = Instant::now() + wait;
         let mut rl = self.rate_limited.write().await;
-        if rl.get(model_id).is_none_or(|current| *current < until) {
-            rl.insert(model_id.to_string(), until);
+        if rl
+            .get(model_config_id)
+            .is_none_or(|current| *current < until)
+        {
+            rl.insert(model_config_id.to_string(), until);
         }
     }
 
     async fn acquire_model_permit(
         &self,
-        model_id: &str,
+        model_config_id: &str,
     ) -> Result<tokio::sync::OwnedSemaphorePermit, LlmError> {
-        self.model_permit(model_id)
+        self.model_permit(model_config_id)
             .acquire_owned()
             .await
             .map_err(|_| LlmError::ServerError("router semaphore closed".into()))
@@ -368,21 +379,25 @@ impl LlmRouter {
     /// Cooldown projection happens at the request outcome boundary. Keeping it
     /// out of this permit wrapper ensures that a 429 is projected only once;
     /// this wrapper only paces the next call and holds the permit lifetime.
-    async fn with_model_permit<T, F, Fut>(&self, model_id: String, f: F) -> Result<T, LlmError>
+    async fn with_model_permit<T, F, Fut>(
+        &self,
+        model_config_id: String,
+        f: F,
+    ) -> Result<T, LlmError>
     where
         F: FnOnce() -> Fut,
         Fut: std::future::Future<Output = Result<T, LlmError>>,
     {
-        let permit = self.acquire_model_permit(&model_id).await?;
-        self.wait_rate_limit_cooldown(&model_id).await;
+        let permit = self.acquire_model_permit(&model_config_id).await?;
+        self.wait_rate_limit_cooldown(&model_config_id).await;
         let result = f().await;
         drop(permit);
         result
     }
 
     /// Resolve a request, then run it under the selected model's circuit,
-    /// concurrency and rate-limit state. The model id is passed to the
-    /// operation so health accounting stays keyed to the selected model.
+    /// concurrency and rate-limit state. The model-config ID is passed to the
+    /// operation so health accounting stays keyed to the selected config.
     async fn with_request_permit<T, F, Fut>(
         &self,
         descriptor: RequestDescriptor,
@@ -392,12 +407,14 @@ impl LlmRouter {
         F: FnOnce(String, Arc<dyn LlmClient>) -> Fut,
         Fut: std::future::Future<Output = Result<T, LlmError>>,
     {
-        let ResolvedModelClient { model_id, client } =
-            self.model_directory.resolve_client(descriptor)?;
-        let check_id = model_id.clone();
-        self.with_model_permit(model_id.clone(), || async move {
-            self.check_circuit(&check_id).await?;
-            f(model_id, client).await
+        let ResolvedModelClient {
+            model_config_id,
+            client,
+        } = self.model_directory.resolve_client(descriptor)?;
+        let check_model_config_id = model_config_id.clone();
+        self.with_model_permit(model_config_id.clone(), || async move {
+            self.check_circuit(&check_model_config_id).await?;
+            f(model_config_id, client).await
         })
         .await
     }
@@ -409,14 +426,14 @@ impl LlmRouter {
     #[cfg(test)]
     fn set_request_limit_for_test(&self, limit: usize) {
         let mut semaphores = self.semaphores.lock().unwrap();
-        let model_ids = semaphores.keys().cloned().collect::<Vec<_>>();
-        *semaphores = Self::make_semaphores(limit.max(1), model_ids);
+        let model_config_ids = semaphores.keys().cloned().collect::<Vec<_>>();
+        *semaphores = Self::make_semaphores(limit.max(1), model_config_ids);
     }
 
     /// Test utility: read the current rate-limit cooldown deadline for a model.
     #[cfg(test)]
-    async fn rate_limit_deadline_for_test(&self, model_id: &str) -> Option<Instant> {
-        self.rate_limited.read().await.get(model_id).copied()
+    async fn rate_limit_deadline_for_test(&self, model_config_id: &str) -> Option<Instant> {
+        self.rate_limited.read().await.get(model_config_id).copied()
     }
 
     #[cfg(any(test, feature = "test-support"))]
@@ -459,14 +476,14 @@ impl LlmRouter {
                 ("embedding_model", embedding_model),
             ]
             .into_iter()
-            .map(|(id, client)| (id.to_string(), client)),
+            .map(|(model_config_id, client)| (model_config_id.to_string(), client)),
         );
         let LlmRouterRuntimeState {
             endpoint_circuits,
             stream_rules,
             semaphores,
             rate_limited,
-        } = Self::runtime_state(64, model_directory.model_ids().map(str::to_string));
+        } = Self::runtime_state(64, model_directory.model_config_ids().map(str::to_string));
         Self {
             config: Arc::new(RwLock::new(config)),
             default_context_window: crate::registry::FALLBACK_CONTEXT_WINDOW,
@@ -502,10 +519,10 @@ impl LlmRouter {
             ("embedding_model", vec![Capability::Embedding]),
         ]
         .into_iter()
-        .map(|(id, capabilities)| RoutedModel {
-            id: id.into(),
+        .map(|(model_config_id, capabilities)| RoutedModel {
+            model_config_id: model_config_id.into(),
             endpoint: ModelEndpoint {
-                model_name: id.into(),
+                model_name: model_config_id.into(),
                 ..Default::default()
             },
             capabilities,
@@ -657,10 +674,10 @@ impl LlmRouter {
     #[cfg(any(test, feature = "test-support"))]
     pub async fn set_request_configured_for_test(&self, request: RequestKind, configured: bool) {
         let mut cfg = self.config.write().await;
-        if let Some(id) = cfg.policy(request).map(|policy| policy.primary.clone())
-            && let Some(model) = cfg.model_mut(&id)
+        if let Some(model_config_id) = cfg.policy(request).map(|policy| policy.primary.clone())
+            && let Some(model_config) = cfg.model_config_mut(&model_config_id)
         {
-            model.endpoint.api_key = if configured {
+            model_config.endpoint.api_key = if configured {
                 "sk-test".to_string()
             } else {
                 String::new()
@@ -682,19 +699,19 @@ impl LlmRouter {
     pub async fn set_request_primary_for_test(
         &self,
         request: RequestKind,
-        model_id: &str,
+        model_config_id: &str,
     ) -> anyhow::Result<()> {
         let mut cfg = self.config.write().await;
         let model = cfg
-            .model(model_id)
-            .ok_or_else(|| anyhow::anyhow!("test model '{model_id}' is not configured"))?;
+            .model_config(model_config_id)
+            .ok_or_else(|| anyhow::anyhow!("test model '{model_config_id}' is not configured"))?;
         if !model.capabilities.contains(&request.required_capability()) {
-            anyhow::bail!("test model '{model_id}' lacks capability for {request:?}");
+            anyhow::bail!("test model '{model_config_id}' lacks capability for {request:?}");
         }
         let policy = cfg
             .policy_mut(request)
             .ok_or_else(|| anyhow::anyhow!("test request policy {request:?} is not configured"))?;
-        policy.primary = model_id.to_string();
+        policy.primary = model_config_id.to_string();
         self.model_directory
             .rebuild_primary_routes(&cfg, RouteMode::InjectedClients);
         Ok(())
@@ -722,7 +739,7 @@ impl LlmRouter {
         let native_result = self
             .with_request_permit(
                 RequestDescriptor::from(RequestKind::Transcription),
-                |model_id, client| async move {
+                |model_config_id, client| async move {
                     let cfg = self.config.read().await;
                     let policy = RequestExecutionPolicy::primary(&cfg);
                     drop(cfg);
@@ -732,7 +749,7 @@ impl LlmRouter {
                             client.transcribe(wav_data).await
                         })
                         .await;
-                        self.record_request_outcome(&model_id, &result).await;
+                        self.record_request_outcome(&model_config_id, &result).await;
                         result
                     })
                     .await
@@ -764,14 +781,14 @@ impl LlmRouter {
     }
 
     // §2.6: check the selected model's circuit breaker before dispatching.
-    async fn check_circuit(&self, model_id: &str) -> Result<(), LlmError> {
+    async fn check_circuit(&self, model_config_id: &str) -> Result<(), LlmError> {
         let mut circuits = self.endpoint_circuits.write().await;
         let endpoint = circuits
-            .entry(model_id.to_string())
+            .entry(model_config_id.to_string())
             .or_insert_with(EndpointCircuitBreaker::new);
         if !endpoint.allow_request() {
             return Err(LlmError::CircuitOpen {
-                model_id: model_id.to_string(),
+                model_config_id: model_config_id.to_string(),
             });
         }
         Ok(())
@@ -788,27 +805,27 @@ impl LlmRouter {
         else {
             return;
         };
-        let model_id = resolved_client.model_id;
+        let model_config_id = resolved_client.model_config_id;
         self.endpoint_circuits
             .write()
             .await
-            .entry(model_id)
+            .entry(model_config_id)
             .or_insert_with(EndpointCircuitBreaker::new)
             .reset_for_manual_retry();
     }
 
-    async fn record_success(&self, model_id: &str) {
+    async fn record_success(&self, model_config_id: &str) {
         let mut circuits = self.endpoint_circuits.write().await;
         circuits
-            .entry(model_id.to_string())
+            .entry(model_config_id.to_string())
             .or_insert_with(EndpointCircuitBreaker::new)
             .record_success();
     }
 
-    async fn record_failure(&self, model_id: &str) {
+    async fn record_failure(&self, model_config_id: &str) {
         let mut circuits = self.endpoint_circuits.write().await;
         circuits
-            .entry(model_id.to_string())
+            .entry(model_config_id.to_string())
             .or_insert_with(EndpointCircuitBreaker::new)
             .record_failure();
     }
@@ -816,18 +833,22 @@ impl LlmRouter {
     /// Project one completed router request onto endpoint circuit and rate-limit
     /// state. Callers invoke this at the same point they receive the logical
     /// request result, before returning it to their caller.
-    async fn record_request_outcome<T>(&self, model_id: &str, result: &Result<T, LlmError>) {
-        self.project_request_outcome(model_id.to_string(), RequestOutcome::from_result(result))
-            .await;
+    async fn record_request_outcome<T>(&self, model_config_id: &str, result: &Result<T, LlmError>) {
+        self.project_request_outcome(
+            model_config_id.to_string(),
+            RequestOutcome::from_result(result),
+        )
+        .await;
     }
 
-    async fn project_request_outcome(&self, model_id: String, outcome: RequestOutcome) {
+    async fn project_request_outcome(&self, model_config_id: String, outcome: RequestOutcome) {
         match outcome {
-            RequestOutcome::Success => self.record_success(&model_id).await,
+            RequestOutcome::Success => self.record_success(&model_config_id).await,
             RequestOutcome::Failure { rate_limit_after } => {
-                self.record_failure(&model_id).await;
+                self.record_failure(&model_config_id).await;
                 if let Some(retry_after) = rate_limit_after {
-                    self.record_rate_limit(&model_id, Some(retry_after)).await;
+                    self.record_rate_limit(&model_config_id, Some(retry_after))
+                        .await;
                 }
             }
         }
@@ -845,15 +866,20 @@ impl LlmRouter {
             max_output_tokens,
         } = request;
         let descriptor = RequestDescriptor::from(request);
-        self.with_request_permit(descriptor, |model_id, client| async move {
+        self.with_request_permit(descriptor, |model_config_id, client| async move {
             let config = self.config.read().await;
             let policy = RequestExecutionPolicy::primary(&config);
             drop(config);
 
-            CallExecutor::new(descriptor, model_id, client, policy)
-                .complete(messages, tools, max_output_tokens, |model_id, outcome| {
-                    self.project_request_outcome(model_id, outcome)
-                })
+            CallExecutor::new(descriptor, model_config_id, client, policy)
+                .complete(
+                    messages,
+                    tools,
+                    max_output_tokens,
+                    |model_config_id, outcome| {
+                        self.project_request_outcome(model_config_id, outcome)
+                    },
+                )
                 .await
         })
         .await
@@ -930,14 +956,14 @@ impl LlmRouter {
             });
         }
         let descriptor = RequestDescriptor::from(RequestKind::Embedding);
-        self.with_request_permit(descriptor, |model_id, client| async move {
+        self.with_request_permit(descriptor, |model_config_id, client| async move {
             let cfg = self.config.read().await;
             let policy = RequestExecutionPolicy::primary(&cfg);
             drop(cfg);
 
-            CallExecutor::new(descriptor, model_id, client, policy)
-                .embed(input, |model_id, outcome| {
-                    self.project_request_outcome(model_id, outcome)
+            CallExecutor::new(descriptor, model_config_id, client, policy)
+                .embed(input, |model_config_id, outcome| {
+                    self.project_request_outcome(model_config_id, outcome)
                 })
                 .await
         })
@@ -967,20 +993,22 @@ impl LlmRouter {
         LlmError,
     > {
         let descriptor = RequestDescriptor::from(request);
-        let ResolvedModelClient { model_id, client } =
-            self.model_directory.resolve_client(descriptor)?;
-        let permit = self.acquire_model_permit(&model_id).await?;
-        self.wait_rate_limit_cooldown(&model_id).await;
-        self.check_circuit(&model_id).await?;
+        let ResolvedModelClient {
+            model_config_id,
+            client,
+        } = self.model_directory.resolve_client(descriptor)?;
+        let permit = self.acquire_model_permit(&model_config_id).await?;
+        self.wait_rate_limit_cooldown(&model_config_id).await;
+        self.check_circuit(&model_config_id).await?;
         let cfg = self.config.read().await;
         let primary_policy = RequestExecutionPolicy::primary(&cfg);
         drop(cfg);
         // Raw stream callers own consumption. Once a stream is returned, its
         // later transport error must be handled by the caller without
         // replaying already-consumed deltas.
-        StreamExecutor::new(descriptor, model_id, client, primary_policy)
-            .chat_stream(messages, permit, |model_id, outcome| {
-                self.project_request_outcome(model_id, outcome)
+        StreamExecutor::new(descriptor, model_config_id, client, primary_policy)
+            .chat_stream(messages, permit, |model_config_id, outcome| {
+                self.project_request_outcome(model_config_id, outcome)
             })
             .await
     }
@@ -1059,13 +1087,13 @@ impl LlmRouter {
         cancel: CancellationToken,
     ) -> Result<LlmResponse, LlmError> {
         let descriptor = RequestDescriptor::from(stream_request.request);
-        let operation = self.with_request_permit(descriptor, |model_id, _client| {
+        let operation = self.with_request_permit(descriptor, |model_config_id, _client| {
             let cancel = cancel.clone();
             async move {
                 self.chat_stream_with_tools_aggregated_cancellable_inner(
                     stream_request,
                     descriptor,
-                    model_id,
+                    model_config_id,
                     hooks,
                     cancel,
                 )
@@ -1086,7 +1114,7 @@ impl LlmRouter {
         &self,
         stream_request: StreamRequest<'_>,
         descriptor: RequestDescriptor,
-        model_id: String,
+        model_config_id: String,
         hooks: StreamAttemptHooks,
         cancel: CancellationToken,
     ) -> Result<LlmResponse, LlmError> {
@@ -1110,8 +1138,10 @@ impl LlmRouter {
         let idle_dur = Duration::from_secs(cfg.stream_idle_timeout_secs.max(1));
         drop(cfg);
         let stream_context = StreamContext::from_request(stream_request);
-        let candidate = self.model_directory.client_for_model_id(&model_id)?;
-        let model_id_for_projection = model_id.clone();
+        let candidate = self
+            .model_directory
+            .client_for_model_config_id(&model_config_id)?;
+        let model_config_id_for_projection = model_config_id.clone();
         AggregatedStreamExecutor::new(
             descriptor,
             candidate,
@@ -1127,7 +1157,7 @@ impl LlmRouter {
                 Duration::from_secs(self.config.read().await.stream_idle_timeout_secs.max(1))
             },
             |result| async move {
-                self.record_request_outcome(&model_id_for_projection, &result)
+                self.record_request_outcome(&model_config_id_for_projection, &result)
                     .await;
                 result
             },
@@ -1150,14 +1180,14 @@ impl LlmRouter {
     pub async fn health_check(&self, request: HealthCheckRequest) -> Result<(), LlmError> {
         self.with_request_permit(
             RequestDescriptor::from(request.request),
-            |model_id, candidate| async move {
+            |model_config_id, candidate| async move {
                 let cfg = self.config.read().await;
                 let policy = RequestExecutionPolicy::primary(&cfg);
                 drop(cfg);
 
                 execute_with_timeout(policy.total_timeout_secs, "health check", || async {
                     let result = candidate.health_check().await;
-                    self.record_request_outcome(&model_id, &result).await;
+                    self.record_request_outcome(&model_config_id, &result).await;
                     result
                 })
                 .await
@@ -1436,25 +1466,29 @@ mod tests {
     #[tokio::test]
     async fn request_outcome_projection_preserves_circuit_and_cooldown_mapping() {
         let router = LlmRouter::new(RouterConfig::default());
-        let model_id = "outcome-projection-test";
+        let model_config_id = "outcome-projection-test";
 
         let failure: Result<(), LlmError> = Err(LlmError::Unknown("provider failed".into()));
-        router.record_request_outcome(model_id, &failure).await;
+        router
+            .record_request_outcome(model_config_id, &failure)
+            .await;
         assert_eq!(
-            router.endpoint_circuits.read().await[model_id].consecutive_failures,
+            router.endpoint_circuits.read().await[model_config_id].consecutive_failures,
             1
         );
         assert!(
             router
-                .rate_limit_deadline_for_test(model_id)
+                .rate_limit_deadline_for_test(model_config_id)
                 .await
                 .is_none()
         );
 
         let success: Result<(), LlmError> = Ok(());
-        router.record_request_outcome(model_id, &success).await;
+        router
+            .record_request_outcome(model_config_id, &success)
+            .await;
         assert_eq!(
-            router.endpoint_circuits.read().await[model_id].consecutive_failures,
+            router.endpoint_circuits.read().await[model_config_id].consecutive_failures,
             0
         );
 
@@ -1462,14 +1496,16 @@ mod tests {
             retry_after: Some(Duration::from_secs(7)),
         });
         let started_at = Instant::now();
-        router.record_request_outcome(model_id, &rate_limit).await;
+        router
+            .record_request_outcome(model_config_id, &rate_limit)
+            .await;
         let deadline = router
-            .rate_limit_deadline_for_test(model_id)
+            .rate_limit_deadline_for_test(model_config_id)
             .await
             .expect("rate-limited outcomes establish a model cooldown");
         assert!(deadline >= started_at + Duration::from_secs(6));
         assert_eq!(
-            router.endpoint_circuits.read().await[model_id].consecutive_failures,
+            router.endpoint_circuits.read().await[model_config_id].consecutive_failures,
             1
         );
     }
@@ -2171,11 +2207,26 @@ mod tests {
     #[tokio::test]
     async fn is_request_configured_reports_api_key_state() {
         let mut cfg = LlmRouter::injected_client_test_config();
-        cfg.model_mut("small_model").unwrap().endpoint.api_key = "sk-test".into();
-        cfg.model_mut("default_model").unwrap().endpoint.api_key = String::new();
-        cfg.model_mut("image_model").unwrap().endpoint.api_key = "sk-mm".into();
-        cfg.model_mut("audio_model").unwrap().endpoint.api_key = "sk-au".into();
-        cfg.model_mut("embedding_model").unwrap().endpoint.api_key = "sk-emb".into();
+        cfg.model_config_mut("small_model")
+            .unwrap()
+            .endpoint
+            .api_key = "sk-test".into();
+        cfg.model_config_mut("default_model")
+            .unwrap()
+            .endpoint
+            .api_key = String::new();
+        cfg.model_config_mut("image_model")
+            .unwrap()
+            .endpoint
+            .api_key = "sk-mm".into();
+        cfg.model_config_mut("audio_model")
+            .unwrap()
+            .endpoint
+            .api_key = "sk-au".into();
+        cfg.model_config_mut("embedding_model")
+            .unwrap()
+            .endpoint
+            .api_key = "sk-emb".into();
         let router = LlmRouter::new(cfg);
         assert!(
             router.is_request_configured(RequestKind::FastChat).await,
@@ -2252,7 +2303,7 @@ mod tests {
             ..Default::default()
         };
         config.models.push(RoutedModel {
-            id: "vision-profile".into(),
+            model_config_id: "vision-profile".into(),
             endpoint: endpoint.clone(),
             capabilities: vec![Capability::Vision],
         });
@@ -2303,7 +2354,7 @@ mod tests {
         };
         let router = LlmRouter::new(RouterConfig {
             models: vec![RoutedModel {
-                id: "embedding".into(),
+                model_config_id: "embedding".into(),
                 endpoint,
                 capabilities: vec![Capability::Embedding],
             }],
@@ -2329,7 +2380,7 @@ mod tests {
             |request: RequestKind, api_style: &str, web_search: Option<&str>, provider: &str| {
                 LlmRouter::new(RouterConfig {
                     models: vec![RoutedModel {
-                        id: "selected".into(),
+                        model_config_id: "selected".into(),
                         endpoint: ModelEndpoint {
                             provider: provider.into(),
                             api_style: Some(api_style.into()),
@@ -3220,7 +3271,7 @@ mod tests {
         {
             let mut config = router.config.write().await;
             config
-                .model_mut("audio_model")
+                .model_config_mut("audio_model")
                 .expect("test audio model")
                 .capabilities
                 .retain(|capability| *capability != Capability::Transcription);
@@ -3283,7 +3334,7 @@ mod tests {
         {
             let mut config = router.config.write().await;
             let endpoint = &mut config
-                .model_mut("default_model")
+                .model_config_mut("default_model")
                 .expect("test chat model")
                 .endpoint;
             endpoint.context_window = Some(8_192);
@@ -3297,9 +3348,9 @@ mod tests {
             .read()
             .await
             .iter()
-            .map(|(model_id, health)| {
+            .map(|(model_config_id, health)| {
                 (
-                    model_id.clone(),
+                    model_config_id.clone(),
                     (health.consecutive_failures, health.total_calls),
                 )
             })
@@ -3347,9 +3398,9 @@ mod tests {
             .read()
             .await
             .iter()
-            .map(|(model_id, health)| {
+            .map(|(model_config_id, health)| {
                 (
-                    model_id.clone(),
+                    model_config_id.clone(),
                     (health.consecutive_failures, health.total_calls),
                 )
             })
@@ -3822,7 +3873,7 @@ mod tests {
         };
         *router.config.write().await = cfg;
 
-        let model_id = "default_model";
+        let model_config_id = "default_model";
         let err = router
             .complete(CompleteRequest::new(RequestKind::Chat, vec![]))
             .await
@@ -3834,7 +3885,7 @@ mod tests {
         );
         // The cooldown deadline was recorded before returning the provider
         // error, so subsequent callers wait it out.
-        let deadline = router.rate_limit_deadline_for_test(model_id).await;
+        let deadline = router.rate_limit_deadline_for_test(model_config_id).await;
         assert!(
             deadline.is_some_and(|d| d > Instant::now()),
             "cooldown deadline must be set in the future"
@@ -3855,7 +3906,7 @@ mod tests {
         );
         // A third caller starting later re-uses the (still running) cooldown
         // window: the deadline only moves forward, never backward.
-        let deadline2 = router.rate_limit_deadline_for_test(model_id).await;
+        let deadline2 = router.rate_limit_deadline_for_test(model_config_id).await;
         assert!(
             deadline2.unwrap() >= deadline.unwrap(),
             "cooldown deadline must never shrink"
@@ -3867,12 +3918,12 @@ mod tests {
         // A huge response-token floor must be clamped to the resolved model
         // context window before adapter construction.
         let mut cfg = LlmRouter::injected_client_test_config();
-        let default_model = cfg.model_mut("default_model").unwrap();
+        let default_model = cfg.model_config_mut("default_model").unwrap();
         default_model.endpoint.model_name = "gpt-4o-mini".into(); // catalog: 128k
         default_model.endpoint.max_tokens = 1_000_000; // absurd token floor
         let router = LlmRouter::new(cfg);
         let built = router.config.try_read().expect("router config readable");
-        let default_model = built.model("default_model").unwrap();
+        let default_model = built.model_config("default_model").unwrap();
         assert!(
             default_model.endpoint.max_tokens <= 128_000,
             "max_tokens must be clamped to the resolved context window, got {}",
@@ -3883,12 +3934,18 @@ mod tests {
     #[tokio::test]
     async fn effective_output_tokens_leaves_request_safety_margin() {
         let mut cfg = LlmRouter::injected_client_test_config();
-        cfg.model_mut("default_model")
+        cfg.model_config_mut("default_model")
             .unwrap()
             .endpoint
             .context_window = Some(4_096);
-        cfg.model_mut("default_model").unwrap().endpoint.max_tokens = 8_192;
-        cfg.model_mut("default_model").unwrap().endpoint.api_key = "sk-test".into();
+        cfg.model_config_mut("default_model")
+            .unwrap()
+            .endpoint
+            .max_tokens = 8_192;
+        cfg.model_config_mut("default_model")
+            .unwrap()
+            .endpoint
+            .api_key = "sk-test".into();
         let router = LlmRouter::with_default_context_window(cfg, 128_000);
 
         assert_eq!(
@@ -4035,7 +4092,7 @@ mod tests {
     async fn complete_rejects_request_without_required_capability() {
         let mut config = LlmRouter::injected_client_test_config();
         config
-            .model_mut("image_model")
+            .model_config_mut("image_model")
             .unwrap()
             .capabilities
             .retain(|capability| *capability != Capability::Vision);

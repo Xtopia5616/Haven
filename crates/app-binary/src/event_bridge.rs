@@ -155,14 +155,14 @@ impl TauriEmitter {
                 step_number,
                 run_id,
                 message_id,
-                event_seq,
+                event_sequence,
             } => serialize(AgentThoughtEvent {
                 session_id: session_id.clone(),
                 thought: thought.clone(),
                 step_number: *step_number,
                 run_id: *run_id,
                 message_id: message_id.clone(),
-                event_seq: *event_seq,
+                event_sequence: *event_sequence,
             }),
             AgentEvent::ToolCall {
                 session_id,
@@ -174,7 +174,7 @@ impl TauriEmitter {
                 tool_index,
                 step_id,
                 suppress_streamed_thought,
-                event_seq: durable_event_seq,
+                event_sequence: durable_event_sequence,
             } => serialize(AgentToolCallEvent {
                 session_id: session_id.clone(),
                 tool_name: tool_name.clone(),
@@ -186,7 +186,7 @@ impl TauriEmitter {
                 step_id: step_id.clone(),
                 suppress_streamed_thought: *suppress_streamed_thought,
                 silent: haven_tools::is_silent_tool_call(tool_name, input),
-                event_seq: *durable_event_seq,
+                event_sequence: *durable_event_sequence,
             }),
             AgentEvent::Observation {
                 session_id,
@@ -203,7 +203,7 @@ impl TauriEmitter {
                 operation_scope,
                 renderer,
                 result,
-                event_seq: durable_event_seq,
+                event_sequence: durable_event_sequence,
             } => serialize(AgentObservationEvent {
                 session_id: session_id.clone(),
                 observation: observation.clone(),
@@ -219,7 +219,7 @@ impl TauriEmitter {
                 operation_scope: *operation_scope,
                 renderer: renderer.clone(),
                 result: result.clone(),
-                event_seq: *durable_event_seq,
+                event_sequence: *durable_event_sequence,
             }),
             AgentEvent::SessionCreated(session) => serialize(SessionLifecycleEvent::Created {
                 session_id: session.session_id.clone(),
@@ -370,20 +370,20 @@ impl TauriEmitter {
                 session_id,
                 step_number,
                 run_id,
-                role,
+                request_kind,
                 strategy,
                 projections,
                 notices,
-                event_seq: durable_event_seq,
+                event_sequence: durable_event_sequence,
             } => serialize(AgentMediaPlanEvent {
                 session_id: session_id.clone(),
                 step_number: *step_number,
                 run_id: *run_id,
-                role: *role,
+                request_kind: *request_kind,
                 strategy: *strategy,
                 projections: projections.clone(),
                 notices: notices.clone(),
-                event_seq: *durable_event_seq,
+                event_sequence: *durable_event_sequence,
             }),
             AgentEvent::WebSearch {
                 session_id,
@@ -395,7 +395,7 @@ impl TauriEmitter {
                 result,
             } => serialize(AgentWebSearchEvent {
                 session_id: session_id.clone(),
-                phase: phase.clone(),
+                phase: *phase,
                 step_number: *step_number,
                 run_id: *run_id,
                 call_id: call_id.clone(),
@@ -413,7 +413,7 @@ impl TauriEmitter {
                 message_id,
                 supplement_id,
                 inject_source,
-                event_seq: durable_event_seq,
+                event_sequence: durable_event_sequence,
             } => serialize(AgentSupplementEvent {
                 session_id: session_id.clone(),
                 additional_context: additional_context.clone(),
@@ -422,7 +422,7 @@ impl TauriEmitter {
                 message_id: message_id.clone(),
                 supplement_id: supplement_id.clone(),
                 inject_source: *inject_source,
-                event_seq: *durable_event_seq,
+                event_sequence: *durable_event_sequence,
             }),
             AgentEvent::Compaction {
                 session_id,
@@ -431,7 +431,7 @@ impl TauriEmitter {
                 tokens_after,
                 degraded,
                 episode_id,
-                event_seq: durable_event_seq,
+                event_sequence: durable_event_sequence,
             } => serialize(AgentCompactionEvent {
                 session_id: session_id.clone(),
                 summary: summary.clone(),
@@ -439,7 +439,7 @@ impl TauriEmitter {
                 tokens_after: *tokens_after,
                 degraded: *degraded,
                 episode_id: episode_id.clone(),
-                event_seq: *durable_event_seq,
+                event_sequence: *durable_event_sequence,
             }),
             AgentEvent::TitleUpdated { session_id, title } => {
                 serialize(SessionLifecycleEvent::TitleUpdated {
@@ -512,7 +512,7 @@ impl TauriEmitter {
                 context_window,
                 step_number,
                 duration_ms,
-                role,
+                request_kind,
                 call_kind,
                 has_cost,
             } => serialize(AgentUsageEvent {
@@ -539,7 +539,7 @@ impl TauriEmitter {
                 context_window: *context_window,
                 step_number: *step_number,
                 duration_ms: *duration_ms,
-                role: *role,
+                request_kind: *request_kind,
                 call_kind: *call_kind,
                 has_cost: *has_cost,
             }),
@@ -811,7 +811,7 @@ mod tests {
             operation_scope: haven_common::tools::ToolOperationScope::Session,
             renderer: "files".into(),
             result: haven_tools::ToolResultEnvelope::default(),
-            event_seq: Some(1),
+            event_sequence: Some(1),
         };
 
         let payload = TauriEmitter::payload(&event, None);

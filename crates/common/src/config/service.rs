@@ -77,7 +77,7 @@ pub enum ConfigPatch {
     Settings(Box<Settings>),
     Llm(LlmConfig),
     LlmModel {
-        model_id: String,
+        model_config_id: String,
         patch: LlmModelPatch,
     },
     DefaultShell(ShellChoice),
@@ -108,19 +108,33 @@ impl ConfigPatch {
         match self {
             Self::Settings(settings) => config.apply_settings(&settings),
             Self::Llm(llm) => config.llm = llm,
-            Self::LlmModel { model_id, patch } => {
-                let slot = config.llm.model_mut(&model_id).ok_or_else(|| {
-                    anyhow::anyhow!("unknown or unconfigured model: {}", model_id)
-                })?;
+            Self::LlmModel {
+                model_config_id,
+                patch,
+            } => {
+                let model_config =
+                    config
+                        .llm
+                        .model_config_mut(&model_config_id)
+                        .ok_or_else(|| {
+                            anyhow::anyhow!(
+                                "unknown or unconfigured model configuration: {}",
+                                model_config_id
+                            )
+                        })?;
                 match patch {
                     LlmModelPatch::Replace(updated) => {
                         let mut updated = *updated;
-                        updated.stamp_id(&model_id);
-                        *slot = updated;
+                        updated.stamp_model_config_id(&model_config_id);
+                        *model_config = updated;
                     }
-                    LlmModelPatch::Model(model) => slot.model = model,
-                    LlmModelPatch::ReasoningEffort(effort) => slot.reasoning_effort = effort,
-                    LlmModelPatch::WebSearch(mode) => slot.web_search = mode,
+                    LlmModelPatch::Model(provider_model_name) => {
+                        model_config.model = provider_model_name
+                    }
+                    LlmModelPatch::ReasoningEffort(effort) => {
+                        model_config.reasoning_effort = effort
+                    }
+                    LlmModelPatch::WebSearch(mode) => model_config.web_search = mode,
                 }
             }
             Self::DefaultShell(shell) => config.default_shell = shell,
@@ -651,7 +665,7 @@ mod tests {
     fn model_patch_is_typed_and_reports_llm_domain() {
         let (service, _dir) = service();
         let mut config = service.snapshot().unwrap().config;
-        config.llm.set_model(
+        config.llm.set_model_config(
             "default_model",
             ModelConfig {
                 provider_name: "openai".into(),
@@ -668,7 +682,7 @@ mod tests {
 
         let update = service
             .apply_patch(ConfigPatch::LlmModel {
-                model_id: "default_model".into(),
+                model_config_id: "default_model".into(),
                 patch: LlmModelPatch::Model("new-model".into()),
             })
             .unwrap();
@@ -677,7 +691,7 @@ mod tests {
                 .snapshot
                 .config
                 .llm
-                .model("default_model")
+                .model_config("default_model")
                 .unwrap()
                 .model,
             "new-model"

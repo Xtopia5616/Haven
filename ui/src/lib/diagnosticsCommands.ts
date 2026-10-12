@@ -11,11 +11,7 @@ import {
 	type PerformanceMetricsSnapshot,
 	type ShellAvailability,
 } from './contracts/diagnostics.ts';
-import type {
-	CheckShellAvailableRequest,
-	ReadLogTailRequest,
-	UiMetricsSnapshot,
-} from './contracts/commands.ts';
+import type { TauriCommandRequest, UiMetricsSnapshot } from './contracts/generatedCommands.ts';
 
 /** Read log metadata through the diagnostics response boundary. */
 export function readLogInfo(): Promise<LogInfo> {
@@ -23,13 +19,15 @@ export function readLogInfo(): Promise<LogInfo> {
 }
 
 /** Read a bounded log tail through the diagnostics response boundary. */
-export function readLogTail(request: ReadLogTailRequest): Promise<LogTail> {
+export function readLogTail(
+	request: TauriCommandRequest<'read_log_tail'>,
+): Promise<LogTail> {
 	return invoke('read_log_tail', request).then(parseLogTail);
 }
 
 /** Check availability for one configured shell through the diagnostics response boundary. */
 export function checkShellAvailable(
-	request: CheckShellAvailableRequest,
+	request: TauriCommandRequest<'check_shell_available'>,
 ): Promise<ShellAvailability> {
 	return invoke('check_shell_available', request).then(parseShellAvailability);
 }

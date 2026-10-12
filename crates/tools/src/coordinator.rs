@@ -409,7 +409,11 @@ mod tests {
             Ok(None)
         }
 
-        fn find_message(&self, _name: &str, _id: &str) -> anyhow::Result<Option<Option<Envelope>>> {
+        fn find_message(
+            &self,
+            _name: &str,
+            _message_id: &str,
+        ) -> anyhow::Result<Option<Option<Envelope>>> {
             Ok(None)
         }
 

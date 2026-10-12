@@ -795,7 +795,7 @@ impl StreamForwarder {
             if let Some(ws) = &c.web_search {
                 let event = AgentEvent::WebSearch {
                     session_id: session_id_c.to_string(),
-                    phase: ws.phase.as_str().to_string(),
+                    phase: ws.phase,
                     step_number,
                     run_id,
                     call_id: ws.call_id.clone(),
@@ -1445,7 +1445,7 @@ mod tests {
             sender.try_send(
                 AgentEvent::WebSearch {
                     session_id: "ses-overflow".into(),
-                    phase: "searching".into(),
+                    phase: haven_llm::WebSearchPhase::Searching,
                     step_number: 1,
                     run_id: 1,
                     call_id: Some(format!("call-{index}")),

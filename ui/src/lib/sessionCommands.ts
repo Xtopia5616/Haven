@@ -1,20 +1,5 @@
 import { invoke } from './tauri.ts';
-import type {
-	ContinueSessionRequest,
-	CountSessionHistorySearchRequest,
-	DeleteSessionRequest,
-	EndSessionRequest,
-	GetSessionForResumeRequest,
-	GetSessionLineageRequest,
-	InterruptSessionRequest,
-	ProcessTranscriptRequest,
-	RollbackSessionRequest,
-	ReopenSessionRequest,
-	SessionHistoryFilterRequest,
-	SessionHistoryPageRequest,
-	UpdateSessionTitleRequest,
-} from './contracts/commands.ts';
-import type { ProcessResult } from './contracts/generatedCommands.ts';
+import type { ProcessResult, TauriCommandRequest } from './contracts/generatedCommands.ts';
 import { parseProcessResult } from './contracts/processResult.ts';
 import { parseCountResponse } from './contracts/count.ts';
 import type {
@@ -38,7 +23,7 @@ export async function listRuntimeSessions(): Promise<RuntimeSessionListResponse>
 
 /** Load the parent and direct child sessions shown in the active session menu. */
 export async function getSessionLineage(
-	request: GetSessionLineageRequest,
+	request: TauriCommandRequest<'get_session_lineage'>,
 ): Promise<SessionLineageResponse> {
 	const value: unknown = await invoke('get_session_lineage', request);
 	return parseSessionLineageResponse(value, request.sessionId);
@@ -46,7 +31,7 @@ export async function getSessionLineage(
 
 /** Load a recent persisted history page for the compact chat session switcher. */
 export async function listSessionHistory(
-	request: SessionHistoryPageRequest,
+	request: TauriCommandRequest<'list_session_history'>,
 ): Promise<SessionHistoryRow[]> {
 	const value: unknown = await invoke('list_session_history', request);
 	return parseSessionHistoryRows(value);
@@ -54,7 +39,7 @@ export async function listSessionHistory(
 
 /** Load the persisted history page using the existing flat Tauri arguments. */
 export async function searchSessionHistoryFiltered(
-	request: SessionHistoryFilterRequest,
+	request: TauriCommandRequest<'search_session_history_filtered'>,
 ): Promise<SessionHistoryRow[]> {
 	const value: unknown = await invoke('search_session_history_filtered', request);
 	return parseSessionHistoryRows(value);
@@ -62,7 +47,7 @@ export async function searchSessionHistoryFiltered(
 
 /** Load the durable projection used by session resume and transcript reload. */
 export async function getSessionForResume(
-	request: GetSessionForResumeRequest,
+	request: TauriCommandRequest<'get_session_for_resume'>,
 ): Promise<SessionResumeResponse> {
 	const value: unknown = await invoke('get_session_for_resume', request);
 	return parseSessionResumeResponse(value, request.sessionId);
@@ -75,18 +60,20 @@ export async function getLatestSessionForResume(): Promise<SessionResumeResponse
 }
 
 /** Submit transcript text and attachments through the canonical Session ingress. */
-export async function processTranscript(request: ProcessTranscriptRequest): Promise<ProcessResult> {
+export async function processTranscript(
+	request: TauriCommandRequest<'process_transcript'>,
+): Promise<ProcessResult> {
 	const value: unknown = await invoke('process_transcript', request);
 	return parseProcessResult(value, request.activeSessionId);
 }
 
 /** Reopen one persisted session for follow-up input. */
-export function reopenSession(request: ReopenSessionRequest): Promise<void> {
+export function reopenSession(request: TauriCommandRequest<'reopen_session'>): Promise<void> {
 	return invoke('reopen_session', request);
 }
 
 /** Delete one persisted session and release its runtime state. */
-export function deleteSession(request: DeleteSessionRequest): Promise<void> {
+export function deleteSession(request: TauriCommandRequest<'delete_session'>): Promise<void> {
 	return invoke('delete_session', request);
 }
 
@@ -106,7 +93,7 @@ export function countSessionHistory(): Promise<number> {
 
 /** Count persisted session history matching a search query. */
 export function countSessionHistorySearch(
-	request: CountSessionHistorySearchRequest,
+	request: TauriCommandRequest<'count_session_history_search'>,
 ): Promise<number> {
 	return invoke('count_session_history_search', request).then((value: unknown) =>
 		parseCountResponse(value, 'count_session_history_search'),
@@ -114,26 +101,28 @@ export function countSessionHistorySearch(
 }
 
 /** Rename one persisted session. */
-export function updateSessionTitle(request: UpdateSessionTitleRequest): Promise<void> {
+export function updateSessionTitle(
+	request: TauriCommandRequest<'update_session_title'>,
+): Promise<void> {
 	return invoke('update_session_title', request);
 }
 
 /** Roll back a session's durable transcript and runtime state. */
-export function rollbackSession(request: RollbackSessionRequest): Promise<void> {
+export function rollbackSession(request: TauriCommandRequest<'rollback_session'>): Promise<void> {
 	return invoke('rollback_session', request);
 }
 
 /** End the active session through the session lifecycle boundary. */
-export function endSession(request: EndSessionRequest): Promise<void> {
+export function endSession(request: TauriCommandRequest<'end_session'>): Promise<void> {
 	return invoke('end_session', request);
 }
 
 /** Interrupt the active session's current output. */
-export function interruptSession(request: InterruptSessionRequest): Promise<void> {
+export function interruptSession(request: TauriCommandRequest<'interrupt_session'>): Promise<void> {
 	return invoke('interrupt_session', request);
 }
 
 /** Continue the active session's paused or failed run. */
-export function continueSession(request: ContinueSessionRequest): Promise<void> {
+export function continueSession(request: TauriCommandRequest<'continue_session'>): Promise<void> {
 	return invoke('continue_session', request);
 }

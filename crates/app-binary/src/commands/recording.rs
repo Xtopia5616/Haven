@@ -55,7 +55,6 @@ pub(crate) fn recording_stop_reason_dto(reason: RecordingReason) -> RecordingSto
         RecordingReason::Manual => RecordingStopReasonDto::Manual,
         RecordingReason::Silence => RecordingStopReasonDto::Silence,
         RecordingReason::MaxDuration => RecordingStopReasonDto::MaxDuration,
-        RecordingReason::Cancel => RecordingStopReasonDto::Cancel,
     }
 }
 
@@ -98,14 +97,22 @@ pub(crate) fn emit_recording_stopped(
     emit_event_logged(
         app,
         RECORDING_STOPPED_EVENT,
-        RecordingEvent {
-            is_recording: false,
-            recording_id: Some(recording_id),
-            reason: Some(reason),
-            duration_ms,
-        },
+        recording_stopped_event(recording_id, reason, duration_ms),
         "recording_stopped",
     );
+}
+
+fn recording_stopped_event(
+    recording_id: haven_common::types::RecordingId,
+    reason: RecordingStopReasonDto,
+    duration_ms: Option<u64>,
+) -> RecordingEvent {
+    RecordingEvent {
+        is_recording: false,
+        recording_id: Some(recording_id),
+        reason: Some(reason),
+        duration_ms,
+    }
 }
 
 /// Emit `recording:error` for the affected capture when one exists. Start
@@ -400,9 +407,6 @@ pub(crate) async fn finish_recording_stop<EmitStopped, Schedule, ScheduleFuture>
     }
 
     drop(lifecycle);
-    if result.reason == RecordingReason::Cancel {
-        return;
-    }
     if !schedule(recording_id.clone(), result).await {
         tracing::warn!(
             recording_id = %recording_id,
@@ -734,6 +738,22 @@ mod tests {
     use tokio::sync::oneshot;
 
     #[test]
+    fn capture_stop_reasons_map_only_to_their_app_event_counterparts() {
+        assert_eq!(
+            recording_stop_reason_dto(RecordingReason::Manual),
+            RecordingStopReasonDto::Manual
+        );
+        assert_eq!(
+            recording_stop_reason_dto(RecordingReason::Silence),
+            RecordingStopReasonDto::Silence
+        );
+        assert_eq!(
+            recording_stop_reason_dto(RecordingReason::MaxDuration),
+            RecordingStopReasonDto::MaxDuration
+        );
+    }
+
+    #[test]
     fn stop_capture_failure_class_preserves_pending_processing_race_semantics() {
         assert_eq!(
             classify_stop_capture_error(&haven_input::RecordingState::Pending),
@@ -1020,47 +1040,16 @@ mod tests {
         assert!(shell.state().await.is_recording_toggle);
     }
 
-    #[tokio::test]
-    async fn cancel_reason_does_not_schedule_transcription() {
-        let shell = DesktopShell::new();
-        let owner = RecordingLifecycleOwner::default();
-        let lifecycle = owner.lock().await;
-        let recording_id = owner.begin(&lifecycle);
-        owner.finish(&lifecycle);
-        let result = RecordingResult {
-            pcm: Vec::new(),
-            reason: RecordingReason::Cancel,
-            duration_ms: 0,
-            capture_error: None,
-        };
-        let schedule_called = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    #[test]
+    fn manual_cancel_stop_event_keeps_app_owned_reason_without_duration() {
+        let recording_id = haven_common::types::RecordingId::new();
+        let event =
+            recording_stopped_event(recording_id.clone(), RecordingStopReasonDto::Cancel, None);
 
-        finish_recording_stop(
-            &shell,
-            RecordingStopCompletion {
-                lifecycle,
-                stop_context: shell.recording_stop_context().await,
-                recording_id,
-                result,
-                shell_update: RecordingStopShellUpdate::RefreshCurrent,
-            },
-            |_recording_id, reason, _duration_ms| {
-                assert_eq!(reason, RecordingStopReasonDto::Cancel)
-            },
-            {
-                let schedule_called = schedule_called.clone();
-                move |_recording_id, _result| async move {
-                    schedule_called.store(true, Ordering::SeqCst);
-                    true
-                }
-            },
-        )
-        .await;
-
-        assert!(!schedule_called.load(Ordering::SeqCst));
-        tokio::time::timeout(std::time::Duration::from_secs(1), owner.lock())
-            .await
-            .expect("cancel completion must release the lifecycle permit");
+        assert!(!event.is_recording);
+        assert_eq!(event.recording_id, Some(recording_id));
+        assert_eq!(event.reason, Some(RecordingStopReasonDto::Cancel));
+        assert_eq!(event.duration_ms, None);
     }
 
     #[tokio::test]
