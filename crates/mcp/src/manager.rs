@@ -7,8 +7,8 @@ use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Duration;
-use tokio::sync::Mutex;
+use std::time::{Duration, Instant};
+use tokio::sync::{Mutex, Semaphore};
 use tokio_util::sync::CancellationToken;
 
 const NOTIFICATION_LISTENER_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
@@ -16,6 +16,59 @@ const NOTIFICATION_LISTENER_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 struct OwnedNotificationListener {
     client: Arc<McpClient>,
     task: tokio::task::JoinHandle<()>,
+}
+
+struct InitialConnectResult {
+    server_name: String,
+    client: Arc<McpClient>,
+    status_tx: tokio::sync::broadcast::Sender<McpStatusChangeEvent>,
+    result: anyhow::Result<()>,
+    started_at: Instant,
+}
+
+async fn finish_initial_connect(result: Result<InitialConnectResult, tokio::task::JoinError>) {
+    match result {
+        Ok(InitialConnectResult {
+            server_name,
+            client,
+            status_tx,
+            result: Ok(()),
+            started_at,
+        }) => {
+            tracing::info!(
+                "MCP server '{}' connected successfully in {:?}",
+                server_name,
+                started_at.elapsed()
+            );
+            let _ = status_tx.send(McpStatusChangeEvent {
+                name: server_name,
+                status: McpClientStatus::Connected,
+            });
+            drop(client);
+        }
+        Ok(InitialConnectResult {
+            server_name,
+            client,
+            status_tx,
+            result: Err(error),
+            started_at,
+        }) => {
+            let safe_error = haven_common::error::sanitize_error_text(&error.to_string());
+            tracing::warn!(
+                server = %server_name,
+                elapsed = ?started_at.elapsed(),
+                "MCP server connection failed; will retry later"
+            );
+            *client.last_error.lock().await = Some(format!("initial connect failed: {safe_error}"));
+            let _ = status_tx.send(McpStatusChangeEvent {
+                name: server_name,
+                status: McpClientStatus::Offline {
+                    error: format!("initial connect failed: {safe_error}"),
+                },
+            });
+        }
+        Err(error) => tracing::warn!(error = %error, "MCP connection task failed"),
+    }
 }
 
 async fn join_notification_listener(server_name: &str, mut task: tokio::task::JoinHandle<()>) {
@@ -63,6 +116,7 @@ pub struct McpManager {
     clients: Arc<Mutex<HashMap<String, Arc<McpClient>>>>,
     monitors: Arc<Mutex<HashMap<String, tokio::task::JoinHandle<()>>>>,
     notification_listeners: Arc<Mutex<HashMap<usize, OwnedNotificationListener>>>,
+    connection_slots: Arc<Semaphore>,
     status_tx: tokio::sync::broadcast::Sender<McpStatusChangeEvent>,
     discovery_config: Arc<tokio::sync::RwLock<haven_common::config::McpDiscoveryConfig>>,
     limits: Arc<tokio::sync::RwLock<haven_common::config::ContextLimitsConfig>>,
@@ -79,6 +133,7 @@ impl Clone for McpManager {
             clients: self.clients.clone(),
             monitors: self.monitors.clone(),
             notification_listeners: self.notification_listeners.clone(),
+            connection_slots: self.connection_slots.clone(),
             status_tx: self.status_tx.clone(),
             discovery_config: self.discovery_config.clone(),
             limits: self.limits.clone(),
@@ -102,6 +157,7 @@ impl McpManager {
             clients: Arc::new(Mutex::new(HashMap::new())),
             monitors: Arc::new(Mutex::new(HashMap::new())),
             notification_listeners: Arc::new(Mutex::new(HashMap::new())),
+            connection_slots: Arc::new(Semaphore::new(crate::MCP_MAX_PARALLEL_CONNECTIONS)),
             status_tx,
             discovery_config: Arc::new(tokio::sync::RwLock::new(
                 haven_common::config::McpDiscoveryConfig::default(),
@@ -338,6 +394,7 @@ impl McpManager {
             Duration::from_millis(config.reconnect_max_ms),
             config.reconnect_max_retries,
             self.status_tx.clone(),
+            self.connection_slots.clone(),
         );
         monitors.insert(name, handle);
     }
@@ -418,6 +475,23 @@ impl McpManager {
             .into_iter()
             .chain(reconcile.to_connect_changed)
         {
+            while pending.len() >= crate::MCP_MAX_PARALLEL_CONNECTIONS {
+                if let Some(result) = pending.join_next().await {
+                    finish_initial_connect(result).await;
+                }
+            }
+
+            // Acquire before creating the client or starting its notification
+            // consumer, so both connection attempts and queued setup stay
+            // bounded at every manager entry point.
+            let permit = match self.connection_slots.clone().acquire_owned().await {
+                Ok(permit) => permit,
+                Err(error) => {
+                    tracing::error!(error = %error, "MCP connection admission closed");
+                    break;
+                }
+            };
+
             let name = server.name.clone();
             if self.has_client(&name).await {
                 tracing::info!("MCP server '{}' config changed, reconnecting", name);
@@ -450,45 +524,20 @@ impl McpManager {
 
             let status_tx = self.status_tx.clone();
             pending.spawn(async move {
+                let _permit = permit;
                 let result = client.connect().await;
-                (name, client, status_tx, result, connect_t0)
+                InitialConnectResult {
+                    server_name: name,
+                    client,
+                    status_tx,
+                    result,
+                    started_at: connect_t0,
+                }
             });
         }
 
         while let Some(result) = pending.join_next().await {
-            match result {
-                Ok((name, client, status_tx, Ok(()), t0)) => {
-                    tracing::info!(
-                        "MCP server '{}' connected successfully in {:?}",
-                        name,
-                        t0.elapsed()
-                    );
-                    let _ = status_tx.send(McpStatusChangeEvent {
-                        name: name.clone(),
-                        status: McpClientStatus::Connected,
-                    });
-                    drop(client);
-                }
-                Ok((name, client, status_tx, Err(e), t0)) => {
-                    let safe_error = haven_common::error::sanitize_error_text(&e.to_string());
-                    tracing::warn!(
-                        server = %name,
-                        elapsed = ?t0.elapsed(),
-                        "MCP server connection failed; will retry later"
-                    );
-                    *client.last_error.lock().await =
-                        Some(format!("initial connect failed: {safe_error}"));
-                    let _ = status_tx.send(McpStatusChangeEvent {
-                        name: name.clone(),
-                        status: McpClientStatus::Offline {
-                            error: format!("initial connect failed: {safe_error}"),
-                        },
-                    });
-                }
-                Err(_) => {
-                    tracing::warn!("MCP connection task failed");
-                }
-            }
+            finish_initial_connect(result).await;
         }
         tracing::info!(
             "MCP load_from_config: {} servers, total {:?}",
@@ -511,6 +560,12 @@ impl McpManager {
         ) {
             anyhow::bail!("MCP connection blocked by network policy")
         }
+        let _permit = self
+            .connection_slots
+            .clone()
+            .acquire_owned()
+            .await
+            .map_err(|error| anyhow::anyhow!("MCP connection admission closed: {error}"))?;
         {
             let clients = self.clients.lock().await;
             if clients.contains_key(name) {
@@ -661,6 +716,12 @@ impl McpManager {
             .await
             .ok_or_else(|| anyhow::anyhow!("MCP client '{}' not found", name))?;
         self.stop_monitor(name).await;
+        let _permit = self
+            .connection_slots
+            .clone()
+            .acquire_owned()
+            .await
+            .map_err(|error| anyhow::anyhow!("MCP connection admission closed: {error}"))?;
         client.reconnect().await?;
         let config = self.discovery_config.read().await.clone();
         self.install_monitor(client, &config).await;
@@ -748,7 +809,7 @@ impl Default for McpManager {
 }
 
 #[cfg(test)]
-mod notification_lifecycle_tests {
+mod manager_lifecycle_tests {
     use super::*;
     use haven_common::config::McpServerConfig;
     use haven_common::mcp::McpServerTransport;
@@ -760,6 +821,23 @@ mod notification_lifecycle_tests {
             url: "http://127.0.0.1:1/mcp".to_string(),
             ..McpServerConfig::default()
         }
+    }
+
+    async fn acquire_all_connection_slots(
+        manager: &McpManager,
+    ) -> Vec<tokio::sync::OwnedSemaphorePermit> {
+        let mut permits = Vec::with_capacity(crate::MCP_MAX_PARALLEL_CONNECTIONS);
+        for _ in 0..crate::MCP_MAX_PARALLEL_CONNECTIONS {
+            permits.push(
+                manager
+                    .connection_slots
+                    .clone()
+                    .acquire_owned()
+                    .await
+                    .expect("manager connection admission remains open"),
+            );
+        }
+        permits
     }
 
     #[tokio::test]
@@ -787,5 +865,77 @@ mod notification_lifecycle_tests {
         assert_eq!(manager.notification_listeners.lock().await.len(), 1);
         manager.shutdown_all().await;
         assert!(manager.notification_listeners.lock().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn dynamic_connect_waits_for_manager_wide_admission() {
+        let manager = Arc::new(McpManager::new_with_network_policy(
+            haven_common::types::NetworkPolicy::Open,
+        ));
+        let mut permits = acquire_all_connection_slots(&manager).await;
+        let task = {
+            let manager = manager.clone();
+            tokio::spawn(async move {
+                manager
+                    .connect_server(&unreachable_http_server("queued-dynamic"))
+                    .await
+            })
+        };
+
+        tokio::task::yield_now().await;
+        assert!(!task.is_finished());
+        assert!(manager.notification_listeners.lock().await.is_empty());
+
+        drop(permits.pop());
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if task.is_finished() || !manager.notification_listeners.lock().await.is_empty() {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("a released slot lets the dynamic connection path proceed");
+        task.abort();
+        let _ = task.await;
+        manager.shutdown_all().await;
+        assert!(manager.notification_listeners.lock().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn config_loading_waits_before_creating_clients_when_admission_is_full() {
+        let manager = Arc::new(McpManager::new_with_network_policy(
+            haven_common::types::NetworkPolicy::Open,
+        ));
+        let mut permits = acquire_all_connection_slots(&manager).await;
+        let task = {
+            let manager = manager.clone();
+            tokio::spawn(async move {
+                manager
+                    .load_from_config(&[unreachable_http_server("queued-config")])
+                    .await;
+            })
+        };
+
+        tokio::task::yield_now().await;
+        assert!(manager.list_clients().await.is_empty());
+        assert!(manager.notification_listeners.lock().await.is_empty());
+
+        drop(permits.pop());
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if manager.has_client("queued-config").await {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("a released slot lets config loading proceed");
+        task.abort();
+        let _ = task.await;
+        assert!(manager.has_client("queued-config").await);
+        manager.shutdown_all().await;
     }
 }

@@ -448,6 +448,9 @@ async fn mcp_monitor_cancels_during_reconnect_backoff() {
         Duration::from_secs(5),
         3,
         status_tx,
+        Arc::new(tokio::sync::Semaphore::new(
+            crate::MCP_MAX_PARALLEL_CONNECTIONS,
+        )),
     );
 
     let event = tokio::time::timeout(Duration::from_secs(1), async {

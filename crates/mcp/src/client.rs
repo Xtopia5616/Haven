@@ -13,7 +13,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 use tokio::io::BufReader;
 use tokio::process::{Child, Command};
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::{Mutex, RwLock, Semaphore};
 use tokio_util::sync::CancellationToken;
 
 pub struct McpClient {
@@ -971,6 +971,7 @@ impl McpClient {
         max_backoff: Duration,
         max_retries: u32,
         status_tx: tokio::sync::broadcast::Sender<McpStatusChangeEvent>,
+        connect_slots: Arc<Semaphore>,
     ) -> tokio::task::JoinHandle<()> {
         tokio::spawn(async move {
             loop {
@@ -1035,7 +1036,20 @@ impl McpClient {
                             );
                         }
 
-                        match self.connect().await {
+                        let permit = match connect_slots.clone().acquire_owned().await {
+                            Ok(permit) => permit,
+                            Err(error) => {
+                                tracing::warn!(
+                                    server = %self.name,
+                                    error = %error,
+                                    "MCP reconnect admission closed"
+                                );
+                                return;
+                            }
+                        };
+                        let connect_result = self.connect().await;
+                        drop(permit);
+                        match connect_result {
                             Ok(()) => {
                                 *self.reconnect_retries.lock().await = 0;
                                 *self.last_error.lock().await = None;

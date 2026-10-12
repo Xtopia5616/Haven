@@ -1101,3 +1101,4 @@
 - [1110：取消退出时完成 ReAct event boundary 核验](1110-preserve-cancelled-react-event-boundary-check.md)
 - [1111：由 MCP 生命周期 owner join notification listeners](1111-join-mcp-notification-listeners.md)
 - [1112：限制 Memory 查询缓存 generation 并原子失效](1112-bound-memory-query-cache-generations.md)
+- [1113：统一 MCP 连接入口的并发上限](1113-bound-mcp-connections-across-entry-points.md)

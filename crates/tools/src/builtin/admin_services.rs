@@ -12,7 +12,7 @@ use haven_common::config::{
     RequestKind, Settings,
 };
 use haven_common::mcp::McpServerTransport;
-use haven_mcp::McpClientStatus;
+use haven_mcp::{MCP_MAX_PARALLEL_CONNECTIONS, McpClientStatus, McpManager};
 use serde::Serialize;
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -21,11 +21,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use haven_mcp::McpManager;
 use haven_skills::{SkillInfo, SkillRegistry};
 
 const DIAGNOSTIC_MODEL_HEALTH_CHECK_TIMEOUT: Duration = Duration::from_secs(7);
-const MCP_RELOAD_MAX_PARALLEL_CONNECTS: usize = 8;
 
 struct ResolvedLogTail {
     path: PathBuf,
@@ -1086,9 +1084,7 @@ impl AdminServices {
             self.mcp_manager.remove_client(&name).await;
         }
         let mut pending = tokio::task::JoinSet::new();
-        let connect_slots = Arc::new(tokio::sync::Semaphore::new(
-            MCP_RELOAD_MAX_PARALLEL_CONNECTS,
-        ));
+        let connect_slots = Arc::new(tokio::sync::Semaphore::new(MCP_MAX_PARALLEL_CONNECTIONS));
         for server in servers.into_iter().filter(|server| server.enabled) {
             let permit = Arc::clone(&connect_slots)
                 .acquire_owned()
