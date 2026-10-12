@@ -309,10 +309,27 @@ pub enum RecordingStopReasonDto {
     Cancel,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VadSignalDto {
+    None,
+    SpeechStart,
+    SpeechEnd,
+    AutoStop,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VadStateDto {
+    Silent,
+    Speech,
+    SilenceAfterSpeech,
+}
+
 #[derive(Clone, Serialize)]
 pub struct VadStatusEvent {
-    pub signal: String,
-    pub state: String,
+    pub signal: VadSignalDto,
+    pub state: VadStateDto,
 }
 
 #[derive(Clone, Serialize)]
@@ -949,11 +966,12 @@ mod tests {
     #[test]
     fn test_vad_status_event_serde() {
         let ev = VadStatusEvent {
-            signal: "speech".into(),
-            state: "speaking".into(),
+            signal: VadSignalDto::SpeechStart,
+            state: VadStateDto::SilenceAfterSpeech,
         };
         let json = serde_json::to_string(&ev).unwrap();
-        assert!(json.contains("\"signal\":\"speech\""));
+        assert!(json.contains("\"signal\":\"speech_start\""));
+        assert!(json.contains("\"state\":\"silence_after_speech\""));
     }
 
     #[test]

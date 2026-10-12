@@ -125,7 +125,11 @@ export type ToolRunKindDto = (typeof TOOL_RUN_KIND_DTO_VALUES)[number];
 export interface TrayStatusChangedEvent { status: TrayStatusEventValue; tooltip: string }
 export const TRAY_STATUS_EVENT_VALUE_VALUES = ['normal', 'recording', 'muted', 'busy'] as const;
 export type TrayStatusEventValue = (typeof TRAY_STATUS_EVENT_VALUE_VALUES)[number];
-export interface VadStatusEvent { signal: string; state: string }
+export const VAD_SIGNAL_DTO_VALUES = ['none', 'speech_start', 'speech_end', 'auto_stop'] as const;
+export type VadSignalDto = (typeof VAD_SIGNAL_DTO_VALUES)[number];
+export const VAD_STATE_DTO_VALUES = ['silent', 'speech', 'silence_after_speech'] as const;
+export type VadStateDto = (typeof VAD_STATE_DTO_VALUES)[number];
+export interface VadStatusEvent { signal: VadSignalDto; state: VadStateDto }
 export const CAPABILITY_INPUT_VALUES = ['chat', 'fast_chat', 'vision', 'audio_input', 'transcription', 'embedding', 'image_generation', 'speech_synthesis'] as const;
 export type CapabilityInput = (typeof CAPABILITY_INPUT_VALUES)[number];
 export const CAPABILITY_VALUES = ['chat', 'fast_chat', 'vision', 'audio_input', 'transcription', 'embedding', 'image_generation', 'speech_synthesis'] as const;

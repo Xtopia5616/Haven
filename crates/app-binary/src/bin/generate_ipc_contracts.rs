@@ -113,6 +113,8 @@ fn generate(root: &Path) -> Result<String, String> {
     // their TypeScript types and validator values generated from these enums.
     for event_enum in [
         "RecordingStopReasonDto",
+        "VadSignalDto",
+        "VadStateDto",
         "ToolRunKindDto",
         "ToolRunCompletionStatusDto",
         "AgentNotificationKind",

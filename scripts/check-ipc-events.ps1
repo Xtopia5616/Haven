@@ -55,6 +55,7 @@ foreach ($contract in $eventContracts.GetEnumerator()) {
 # against Rust; these checks prevent validators from growing a second list.
 $sessionContract = Get-Content (Join-Path $root 'ui/src/lib/contracts/session.ts') -Raw
 $toolRunContract = Get-Content (Join-Path $root 'ui/src/lib/contracts/toolRun.ts') -Raw
+$recordingContract = Get-Content (Join-Path $root 'ui/src/lib/contracts/recording.ts') -Raw
 if (-not [regex]::IsMatch($sessionContract, "(?s)import\s*\{[^}]*SESSION_STATUS_VALUES[^}]*SESSION_UPDATE_STATUS_VALUES[^}]*SESSION_WAITING_REASON_VALUES[^}]*\}\s*from\s*'\./generatedCommands\.ts'") -or
     -not [regex]::IsMatch($sessionContract, '(?s)function\s+mapSessionStatus\(value:\s*unknown\).*?SESSION_STATUS_VALUES') -or
     -not [regex]::IsMatch($sessionContract, '(?s)function\s+mapUpdateStatus\(value:\s*unknown\).*?SESSION_UPDATE_STATUS_VALUES') -or
@@ -80,6 +81,13 @@ if (-not [regex]::IsMatch($toolRunContract, "(?s)import\s*\{[^}]*TOOL_RUN_KIND_D
     -not [regex]::IsMatch($toolRunContract, 'isOneOf\(value,\s*TOOL_RUN_KIND_DTO_VALUES\)') -or
     -not [regex]::IsMatch($toolRunContract, 'isOneOf\(value,\s*TOOL_RUN_STATUS_VALUES\)')) {
     throw 'ToolRun event validators must use the generated Rust enum vocabularies'
+}
+if (-not [regex]::IsMatch($recordingContract, "(?s)import\s*\{[^}]*VAD_SIGNAL_DTO_VALUES[^}]*VAD_STATE_DTO_VALUES[^}]*\}\s*from\s*'\./generatedCommands\.ts'") -or
+    -not [regex]::IsMatch($recordingContract, 'isOneOf\(payload\.signal,\s*VAD_SIGNAL_DTO_VALUES\)') -or
+    -not [regex]::IsMatch($recordingContract, 'isOneOf\(payload\.state,\s*VAD_STATE_DTO_VALUES\)') -or
+    -not [regex]::IsMatch($recordingContract, 'isValidTauriEventId\(event\.id\)') -or
+    -not [regex]::IsMatch($recordingContract, 'isRecord\(event\.payload\)')) {
+    throw 'recording event validators must check the Tauri envelope and use generated Rust VAD enum vocabularies'
 }
 
 $agentEventsPath = Join-Path $root 'crates/app-binary/src/events.rs'

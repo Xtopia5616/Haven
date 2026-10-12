@@ -24,13 +24,27 @@ describe('recording IPC contract', () => {
 		});
 	});
 
-	it('preserves future VAD strings and ignores additive payload fields', () => {
+	it('maps only generated VAD signal and state values and ignores additive fields', () => {
 		const event = mapRecordingEvent({
 			event: 'recording:vad_status',
 			id: 2,
-			payload: { signal: 'future_signal', state: 'future_state', future_field: true },
+			payload: { signal: 'speech_start', state: 'speech', future_field: true },
 		});
-		expect(event?.payload).toEqual({ signal: 'future_signal', state: 'future_state' });
+		expect(event?.payload).toEqual({ signal: 'speech_start', state: 'speech' });
+		expect(
+			mapRecordingEvent({
+				event: 'recording:vad_status',
+				id: 2,
+				payload: { signal: 'future_signal', state: 'speech' },
+			}),
+		).toBeNull();
+		expect(
+			mapRecordingEvent({
+				event: 'recording:vad_status',
+				id: 2,
+				payload: { signal: 'speech_start', state: 'future_state' },
+			}),
+		).toBeNull();
 	});
 
 	it('maps the transcription lifecycle fields consumed by the UI', () => {
@@ -101,7 +115,7 @@ describe('recording IPC contract', () => {
 		expect(event).toBeNull();
 	});
 
-	it('retains safe defaults for malformed VAD fields and drops invalid error identities', () => {
+	it('rejects malformed VAD fields and invalid error identities', () => {
 		const vad = mapRecordingEvent({
 			event: 'recording:vad_status',
 			id: 7,
@@ -113,8 +127,27 @@ describe('recording IPC contract', () => {
 			payload: { recording_id: 42, error: null },
 		});
 
-		expect(vad?.payload).toEqual({ signal: 'none', state: 'silent' });
+		expect(vad).toBeNull();
 		expect(error).toBeNull();
+	});
+
+	it('rejects invalid Tauri event IDs and non-record payloads', () => {
+		for (const id of [-1, 1.5, Number.MAX_SAFE_INTEGER + 1, '1']) {
+			expect(
+				mapRecordingEvent({
+					event: 'recording:started',
+					id: id as number,
+					payload: { recording_id: 'rec-4fc82b26aecb47d2868c4efbe3581732' },
+				}),
+			).toBeNull();
+		}
+		expect(
+			mapRecordingEvent({
+				event: 'recording:started',
+				id: 1,
+				payload: null,
+			}),
+		).toBeNull();
 	});
 
 	it('drops lifecycle events without a canonical recording identity', () => {

@@ -202,23 +202,22 @@ pub(crate) struct HavenInputEventHandler {
 #[async_trait::async_trait]
 impl haven_input::InputEventHandler for HavenInputEventHandler {
     fn on_vad_status(&self, signal: haven_input::VadSignal, state: haven_input::VadState) {
-        let signal_str = match signal {
-            haven_input::VadSignal::None => "none",
-            haven_input::VadSignal::SpeechStart => "speech_start",
-            haven_input::VadSignal::SpeechEnd => "speech_end",
-            haven_input::VadSignal::AutoStop => "auto_stop",
+        let signal = match signal {
+            haven_input::VadSignal::None => events::VadSignalDto::None,
+            haven_input::VadSignal::SpeechStart => events::VadSignalDto::SpeechStart,
+            haven_input::VadSignal::SpeechEnd => events::VadSignalDto::SpeechEnd,
+            haven_input::VadSignal::AutoStop => events::VadSignalDto::AutoStop,
         };
-        let state_str = match state {
-            haven_input::VadState::Silent => "silent",
-            haven_input::VadState::Speech => "speech",
-            haven_input::VadState::SilenceAfterSpeech { .. } => "silence_after_speech",
+        let state = match state {
+            haven_input::VadState::Silent => events::VadStateDto::Silent,
+            haven_input::VadState::Speech => events::VadStateDto::Speech,
+            haven_input::VadState::SilenceAfterSpeech { .. } => {
+                events::VadStateDto::SilenceAfterSpeech
+            }
         };
         if let Err(error) = self.app_h.emit(
             RECORDING_VAD_STATUS_EVENT,
-            events::VadStatusEvent {
-                signal: signal_str.to_string(),
-                state: state_str.to_string(),
-            },
+            events::VadStatusEvent { signal, state },
         ) {
             tracing::debug!(
                 error = %sanitize_error_text(&error.to_string()),

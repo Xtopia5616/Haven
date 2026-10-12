@@ -1,12 +1,15 @@
 /** Recording and transcription IPC contract at the frontend boundary. */
 
-import type { TauriEvent } from './tauriEvent.ts';
+import { isValidTauriEventId, type TauriEvent } from './tauriEvent.ts';
 import {
 	RECORDING_EVENT_NAMES,
 	RECORDING_STOP_REASON_DTO_VALUES,
+	VAD_SIGNAL_DTO_VALUES,
+	VAD_STATE_DTO_VALUES,
 	type RecordingStopReasonDto,
 	type VadStatusEvent as GeneratedVadStatusEvent,
 } from './generatedCommands.ts';
+import { isRecord } from './objectGuards.ts';
 import { isNumber, isOneOf, isString } from './valueGuards.ts';
 import { canonicalIdField } from './wireGuards.ts';
 
@@ -56,8 +59,16 @@ export interface RecordingEventPayloadMap {
 
 /** Convert the stable snake_case Rust payload to the route-facing DTO. */
 export function mapRecordingEvent<K extends RecordingEventName>(
-	event: TauriEvent<Record<string, unknown>> & { event: K },
+	event: TauriEvent<unknown> & { event: K },
 ): TauriEvent<RecordingEventPayloadMap[K]> | null {
+	if (
+		!isRecord(event) ||
+		!isOneOf(event.event, RECORDING_EVENT_NAMES) ||
+		!isValidTauriEventId(event.id) ||
+		!isRecord(event.payload)
+	) {
+		return null;
+	}
 	const payload = event.payload;
 	switch (event.event) {
 		case 'recording:started': {
@@ -83,14 +94,18 @@ export function mapRecordingEvent<K extends RecordingEventName>(
 				payload: { recordingId, reason },
 			} as unknown as TauriEvent<RecordingEventPayloadMap[K]>;
 		}
-		case 'recording:vad_status':
+		case 'recording:vad_status': {
+			if (
+				!isOneOf(payload.signal, VAD_SIGNAL_DTO_VALUES) ||
+				!isOneOf(payload.state, VAD_STATE_DTO_VALUES)
+			) {
+				return null;
+			}
 			return {
 				...event,
-				payload: {
-					signal: isString(payload.signal) ? payload.signal : 'none',
-					state: isString(payload.state) ? payload.state : 'silent',
-				},
+				payload: { signal: payload.signal, state: payload.state },
 			} as unknown as TauriEvent<RecordingEventPayloadMap[K]>;
+		}
 		case 'recording:error':
 		case 'transcription:error': {
 			const recordingId = canonicalIdField(payload, 'recording_id', 'rec');
