@@ -1036,3 +1036,4 @@
 - [1045：统一 Messaging 的持久生命周期来源](1045-unify-durable-messaging-lifecycle-source.md)
 - [1046：区分 provider tool-call 身份与流式预览身份](1046-distinguish-provider-tool-call-and-preview-identities.md)
 - [1047：在交互事件持久化前校验身份](1047-validate-interaction-identities-before-durable-append.md)
+- [1048：对齐 UI canonical ID 校验](1048-align-ui-canonical-id-validation.md)

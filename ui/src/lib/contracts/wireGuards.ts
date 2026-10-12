@@ -6,7 +6,14 @@ export type WireRecord = Record<string, unknown>;
 
 /** Canonical `{prefix}-{uuid32}` identity check for known Rust entity fields. */
 export function isCanonicalEntityId(value: unknown, prefix: string): value is string {
-	if (typeof value !== 'string' || prefix.length === 0) return false;
+	const canonicalPrefix = /^[a-z0-9]+$/.exec(prefix)?.[0];
+	if (
+		typeof value !== 'string' ||
+		canonicalPrefix !== prefix ||
+		value.length !== prefix.length + 1 + 32
+	) {
+		return false;
+	}
 	const uuid = value.slice(prefix.length + 1);
 	return value.startsWith(`${prefix}-`) && /^[0-9a-f]{32}$/.test(uuid);
 }

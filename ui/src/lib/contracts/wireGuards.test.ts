@@ -19,8 +19,12 @@ describe('canonical entity id wire guards', () => {
 			'ses-01234567-89ab-cdef-0123-456789abcdef',
 			'ses-0123456789ABCDEF0123456789abcdef',
 			'ses-0123456789abcdef0123456789abcdeg',
+			`${sessionId}\n`,
 		]) {
 			expect(isCanonicalEntityId(value, 'ses')).toBe(false);
+		}
+		for (const prefix of ['', 'Bad', 'tool-run', 'ses_', '会话']) {
+			expect(isCanonicalEntityId(sessionId, prefix)).toBe(false);
 		}
 	});
 
