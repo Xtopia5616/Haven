@@ -1047,3 +1047,4 @@
 - [1056：统一 live usage 字段与 UI 静态选项常量命名](1056-align-live-usage-fields-and-ui-constants.md)
 - [1057：约束 Input ring capacity setter](1057-bound-input-ring-capacity-setter.md)
 - [1058：收窄 LLM crate 根 API 并归还能力判断 owner](1058-narrow-llm-root-api.md)
+- [1059：将 process_transcript 响应投影为 renderer view](1059-project-process-transcript-result.md)

@@ -1,6 +1,6 @@
 import { submitTranscript } from './submit.ts';
 import { appSessionReducer } from './sessionReducer.ts';
-import type { ProcessResult } from './contracts/generatedCommands.ts';
+import type { ProcessResultView } from './contracts/processResult.ts';
 
 /**
  * Deliver a transcribed voice clip through `process_transcript`. The shared
@@ -8,8 +8,8 @@ import type { ProcessResult } from './contracts/generatedCommands.ts';
  * (from `_draft` or a stale active session id), and the failure rollback.
  *
  * @param {string} text
- * @returns the generated `ProcessResult` contract
+ * @returns the validated camelCase process result view
  */
-export function submitVoiceTranscript(text: string, recordingId?: string): Promise<ProcessResult> {
+export function submitVoiceTranscript(text: string, recordingId?: string): Promise<ProcessResultView> {
 	return submitTranscript(text, { voice: true, recordingId, reducer: appSessionReducer });
 }

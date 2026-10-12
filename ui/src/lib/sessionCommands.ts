@@ -1,6 +1,6 @@
 import { invoke } from './tauri.ts';
-import type { ProcessResult, TauriCommandRequest } from './contracts/generatedCommands.ts';
-import { parseProcessResult } from './contracts/processResult.ts';
+import type { TauriCommandRequest } from './contracts/generatedCommands.ts';
+import { parseProcessResult, type ProcessResultView } from './contracts/processResult.ts';
 import { parseCountResponse } from './contracts/count.ts';
 import type {
 	SessionHistoryRow,
@@ -62,7 +62,7 @@ export async function getLatestSessionForResume(): Promise<SessionResumeResponse
 /** Submit transcript text and attachments through the canonical Session ingress. */
 export async function processTranscript(
 	request: TauriCommandRequest<'process_transcript'>,
-): Promise<ProcessResult> {
+): Promise<ProcessResultView> {
 	const value: unknown = await invoke('process_transcript', request);
 	return parseProcessResult(value, request.activeSessionId);
 }

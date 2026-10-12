@@ -114,7 +114,11 @@ describe('session history command boundary', () => {
 		};
 		invokeMock.mockResolvedValueOnce(response as never);
 
-		await expect(processTranscript(request)).resolves.toEqual(response);
+		await expect(processTranscript(request)).resolves.toEqual({
+			kind: 'session_created',
+			sessionId: 'ses-0000000000000000000000000000000a',
+			messageId: 'msg-0000000000000000000000000000000b',
+		});
 		expect(invokeMock).toHaveBeenCalledOnce();
 		expect(invokeMock).toHaveBeenCalledWith('process_transcript', request);
 
@@ -136,7 +140,11 @@ describe('session history command boundary', () => {
 			},
 		};
 		invokeMock.mockResolvedValueOnce(supplementResponse as never);
-		await expect(processTranscript(supplementRequest)).resolves.toBe(supplementResponse);
+		await expect(processTranscript(supplementRequest)).resolves.toEqual({
+			kind: 'supplemented',
+			sessionId: supplementRequest.activeSessionId,
+			messageId: 'msg-0000000000000000000000000000000d',
+		});
 
 		invokeMock.mockResolvedValueOnce({
 			Supplemented: {

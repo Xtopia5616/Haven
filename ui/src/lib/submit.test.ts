@@ -504,7 +504,7 @@ describe('submitTranscript', () => {
 		const results = await Promise.all([first, second]);
 
 		expect(invokeMock).toHaveBeenCalledTimes(2);
-		expect(results[1]).toEqual(supplemented(SESSION_A));
+		expect(results[1]).toEqual({ kind: 'supplemented', sessionId: SESSION_A });
 		const list = messagesFor(SESSION_A);
 		expect(list.map((x) => x.content)).toEqual(['相同内容', '相同内容']);
 	});

@@ -10,7 +10,8 @@ import {
 import { isErrorStatus } from './sessionStatus.ts';
 import { processResultSessionId } from './submit.ts';
 import type { ChatAttachmentPayload, ChatFileAttachment } from './chatAttachmentTypes.ts';
-import type { ProcessResult, CanonicalRole } from './contracts/generatedCommands.ts';
+import type { CanonicalRole } from './contracts/generatedCommands.ts';
+import type { ProcessResultView } from './contracts/processResult.ts';
 import { isCanonicalEntityId } from './contracts/wireGuards.ts';
 import type { SessionAction, SessionReducer, SessionSummary } from './sessionReducer.ts';
 
@@ -38,7 +39,7 @@ export interface ChatSessionControllerDependencies {
 			reducer: SessionReducer;
 			submissionToken?: string;
 		},
-	) => Promise<ProcessResult>;
+	) => Promise<ProcessResultView>;
 	reducer: SessionReducer;
 	dispatch: (action: SessionAction) => void;
 	getActiveSessionId: () => string | null;

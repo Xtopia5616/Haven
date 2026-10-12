@@ -5,7 +5,7 @@ import {
 } from './chatSessionController.ts';
 import type { InteractionRequest } from './contracts/app.ts';
 import { SessionReducer, type SessionAction } from './sessionReducer.ts';
-import type { ProcessResult } from './contracts/generatedCommands.ts';
+import type { ProcessResultView } from './contracts/processResult.ts';
 import type { CanonicalRole } from './contracts/generatedCommands.ts';
 import type { SessionResumeResponse } from './contracts/sessionHistory.ts';
 import type { SessionMessagePresentationType } from './streaming.ts';
@@ -33,7 +33,7 @@ function makeHarness(
 		submit?: (
 			text: string,
 			args: Parameters<ChatSessionControllerDependencies['submitTranscript']>[1],
-		) => ProcessResult | Promise<ProcessResult>;
+		) => ProcessResultView | Promise<ProcessResultView>;
 	} = {},
 ) {
 	const reducer = new SessionReducer();
@@ -97,7 +97,7 @@ function makeHarness(
 			submitCalls.push({ text, args });
 			return options.submit
 				? await options.submit(text, args)
-				: { Supplemented: { session_id: SESSION_ID } };
+				: { kind: 'supplemented', sessionId: SESSION_ID };
 		},
 		reducer,
 		dispatch: (action) => {
@@ -399,7 +399,7 @@ describe('ChatSessionController continue', () => {
 describe('ChatSessionController session guards', () => {
 	it('selects a newly created session after submitTranscript resolves', async () => {
 		const harness = makeHarness({
-			submit: () => ({ SessionCreated: { session_id: OTHER_SESSION_ID } }),
+			submit: () => ({ kind: 'session_created', sessionId: OTHER_SESSION_ID }),
 		});
 
 		await harness.controller.submitMessage('新会话第一条消息');

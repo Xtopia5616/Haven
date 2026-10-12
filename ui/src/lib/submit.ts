@@ -7,7 +7,7 @@ import { newSessionIntentStore, NEW_SESSION_INTENT_STORAGE_KEY } from './session
 import { isBusyStatus, isPausedStatus } from './sessionStatus.ts';
 import { processTranscript } from './sessionCommands.ts';
 import type { ChatAttachmentPayload, ChatFileAttachment } from './chatAttachmentTypes.ts';
-import type { ProcessResult } from './contracts/generatedCommands.ts';
+import type { ProcessResultView } from './contracts/processResult.ts';
 import { isCanonicalEntityId } from './contracts/wireGuards.ts';
 
 /** True when a send should be treated as mid-turn steering (keep agent UI above it). */
@@ -56,7 +56,7 @@ function isMidTurnSubmit(sessionId: string, reducer: SessionReducer): boolean {
 interface InflightSubmission {
 	/** Explicit identity for another invocation of this same logical request. */
 	submissionToken?: string;
-	promise: Promise<ProcessResult>;
+	promise: Promise<ProcessResultView>;
 }
 
 interface SubmitPayload extends SubmitOptions {
@@ -70,7 +70,7 @@ interface SubmitPayload extends SubmitOptions {
 /** A queued submission awaiting the in-flight one to settle. */
 interface PendingSubmission {
 	payload: SubmitPayload;
-	resolve: (value: ProcessResult) => void;
+	resolve: (value: ProcessResultView) => void;
 	reject: (reason: unknown) => void;
 }
 
@@ -203,7 +203,7 @@ function drainQueue(lane: SubmissionLane) {
  * @param {Array<{media_type: string, data: string}>} [opts.images=null] - image attachments; null/empty for voice
  * @param {Array<{media_type: string, data: string, filename: string}>} [opts.files=null] - audio and ordinary file attachments
  * @param {boolean} [opts.voice=false] - true when forwarded from a voice transcript
- * @returns the generated `ProcessResult` contract
+ * @returns the validated camelCase process result view
  */
 interface SubmitOptions {
 	images?: ChatAttachmentPayload[] | null;
@@ -226,7 +226,7 @@ export async function submitTranscript(
 		submissionToken,
 		reducer,
 	}: SubmitOptions,
-): Promise<ProcessResult> {
+): Promise<ProcessResultView> {
 	const payload: SubmitPayload = {
 		text,
 		images,
@@ -251,12 +251,12 @@ export async function submitTranscript(
 		// it — the
 		// optimistic bubble is added when it actually dispatches. Session
 		// targeting was snapshotted above so a later switch cannot retarget it.
-		return new Promise<ProcessResult>((resolve, reject) => {
+		return new Promise<ProcessResultView>((resolve, reject) => {
 			lane.pendingQueue.push({ payload, resolve, reject });
 		});
 	}
 	if (lane.pendingQueue.length > 0) {
-		return new Promise<ProcessResult>((resolve, reject) => {
+		return new Promise<ProcessResultView>((resolve, reject) => {
 			lane.pendingQueue.push({ payload, resolve, reject });
 		});
 	}
@@ -272,7 +272,7 @@ async function doSubmit({
 	pinnedSessionId,
 	freshStartAtEnqueue,
 	reducer,
-}: SubmitPayload): Promise<ProcessResult> {
+}: SubmitPayload): Promise<ProcessResultView> {
 	const hasImages = Array.isArray(images) && images.length > 0;
 	const hasFiles = Array.isArray(files) && files.length > 0;
 	const hasAttachments = hasImages || hasFiles;
@@ -355,24 +355,16 @@ async function doSubmit({
 	}
 }
 
-/** `ProcessResult::SessionCreated { session_id }` (struct variant). */
-export function processResultSessionId(result: ProcessResult | null | undefined): string | null {
-	if (typeof result !== 'object' || result === null || !('SessionCreated' in result)) return null;
-	const sessionId = result.SessionCreated.session_id;
+/** Session created by this submission, if it was a fresh-session result. */
+export function processResultSessionId(result: ProcessResultView | null | undefined): string | null {
+	if (result?.kind !== 'session_created') return null;
+	const sessionId = result.sessionId;
 	if (isCanonicalEntityId(sessionId, 'ses')) return sessionId;
 	return null;
 }
 
 /** Persisted user-message id from either ProcessResult variant. */
-export function processResultMessageId(result: ProcessResult | null | undefined): string | null {
-	if (typeof result !== 'object' || result === null) return null;
-	if ('SessionCreated' in result) {
-		const messageId = result.SessionCreated.message_id;
-		return isCanonicalEntityId(messageId, 'msg') ? messageId : null;
-	}
-	if ('Supplemented' in result) {
-		const messageId = result.Supplemented.message_id;
-		return isCanonicalEntityId(messageId, 'msg') ? messageId : null;
-	}
-	return null;
+export function processResultMessageId(result: ProcessResultView | null | undefined): string | null {
+	const messageId = result?.messageId;
+	return isCanonicalEntityId(messageId, 'msg') ? messageId : null;
 }

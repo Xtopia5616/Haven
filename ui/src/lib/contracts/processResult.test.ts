@@ -8,8 +8,18 @@ describe('process transcript response identity contract', () => {
 	it('accepts canonical session and optional message identities', () => {
 		const created = { SessionCreated: { session_id: sessionId, message_id: messageId } };
 		const supplemented = { Supplemented: { session_id: sessionId, message_id: null } };
-		expect(parseProcessResult(created)).toBe(created);
-		expect(parseProcessResult(supplemented, sessionId)).toBe(supplemented);
+		expect(parseProcessResult(created)).toEqual({
+			kind: 'session_created',
+			sessionId,
+			messageId,
+		});
+		expect(parseProcessResult(created)).not.toBe(created);
+		expect(parseProcessResult(created)).not.toHaveProperty('SessionCreated');
+		expect(parseProcessResult(supplemented, sessionId)).toEqual({
+			kind: 'supplemented',
+			sessionId,
+			messageId: null,
+		});
 	});
 
 	it('rejects malformed variants and non-canonical identity fields', () => {
