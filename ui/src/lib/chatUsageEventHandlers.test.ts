@@ -54,10 +54,13 @@ describe('createChatUsageEventHandlers', () => {
 		}
 
 		expect(reducer.snapshot().tokenStats?.['ses-f598facda111677e0871bdc09d391332']).toBeUndefined();
-		expect(reducer.snapshot().llmUsage?.['ses-f598facda111677e0871bdc09d391332']).toEqual([
-			expect.objectContaining({ call_kind: 'media', step_number: null, requestKind: 'chat' }),
-			expect.objectContaining({ call_kind: 'tool', step_number: null, requestKind: 'chat' }),
+		const usageRows = reducer.snapshot().llmUsage?.['ses-f598facda111677e0871bdc09d391332'];
+		expect(usageRows).toEqual([
+			expect.objectContaining({ call_kind: 'media', step_number: null, request_kind: 'chat' }),
+			expect.objectContaining({ call_kind: 'tool', step_number: null, request_kind: 'chat' }),
 		]);
+		expect(usageRows?.[0]).not.toHaveProperty('requestKind');
+		expect(usageRows?.[1]).not.toHaveProperty('requestKind');
 	});
 
 	it('keeps the selected representation and reason visible for downgraded media', () => {

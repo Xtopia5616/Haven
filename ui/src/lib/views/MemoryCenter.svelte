@@ -46,7 +46,7 @@
 
 	let addFactDialogOpen = $state(false);
 
-	const memoryScopeOptions = [
+	const MEMORY_SCOPE_OPTIONS = [
 		{ value: 'all', label: '全部记忆' },
 		{ value: 'fact', label: '关于你的事实' },
 		{ value: 'episode', label: '过去的对话' },
@@ -95,7 +95,7 @@
 				value={memoryRecall.kind}
 				ariaLabel="记忆范围"
 				width="compact"
-				options={memoryScopeOptions}
+				options={MEMORY_SCOPE_OPTIONS}
 				onChange={handleScopeChange}
 			/>
 		</div>

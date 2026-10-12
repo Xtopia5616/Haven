@@ -1044,3 +1044,4 @@
 - [1053：规范化 Rust 正向实体 ID 测试夹具](1053-normalize-positive-rust-id-fixtures.md)
 - [1054：规范化 UI 正向实体 ID 测试夹具](1054-normalize-positive-ui-id-fixtures.md)
 - [1055：统一媒体 timeout 范围与 Settings round-trip](1055-unify-media-timeout-ranges.md)
+- [1056：统一 live usage 字段与 UI 静态选项常量命名](1056-align-live-usage-fields-and-ui-constants.md)

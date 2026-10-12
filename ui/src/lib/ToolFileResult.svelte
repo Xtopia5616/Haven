@@ -48,7 +48,7 @@
 
 	let { data = {}, rawText = '' }: Props = $props();
 
-	const operationLabels: Partial<Record<ToolFileOperation, string>> = {
+	const OPERATION_LABELS: Partial<Record<ToolFileOperation, string>> = {
 		read: '读取完成',
 		write: '写入完成',
 		create_dir: '目录创建完成',
@@ -62,7 +62,7 @@
 		search: '搜索结果',
 	};
 	let operationLabel = $derived(
-		(data.operation && operationLabels[data.operation]) || '文件结果',
+		(data.operation && OPERATION_LABELS[data.operation]) || '文件结果',
 	);
 </script>
 

@@ -40,7 +40,7 @@
 	let fieldErrors = $state({ name: '', command: '', url: '', env: '' });
 	let saving = $state(false);
 
-	const transportOptions = [
+	const TRANSPORT_OPTIONS = [
 		{ value: 'stdio', label: 'Stdio (local process)' },
 		{ value: 'http', label: 'Streamable HTTP' },
 	];
@@ -173,7 +173,7 @@
 			{#snippet children()}
 				<MaterialSelect
 					value={transport}
-					options={transportOptions}
+					options={TRANSPORT_OPTIONS}
 					onChange={withStringValue(function handleTransportChange(v) {
 						transport = v === 'http' ? 'http' : 'stdio';
 					})}

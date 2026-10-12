@@ -45,7 +45,7 @@ export function createChatUsageEventHandlers({
 			const call = {
 				step_number: d.stepNumber ?? null,
 				call_kind: callKind,
-				requestKind: d.requestKind,
+				request_kind: d.requestKind,
 				model: d.model ?? null,
 				prompt_tokens: prompt,
 				completion_tokens: completion,

@@ -414,7 +414,7 @@
 		).length;
 	});
 
-	const effortOptions: Array<{ value: ReasoningEffortSelectionInput | ''; label: string }> = [
+	const EFFORT_OPTIONS: Array<{ value: ReasoningEffortSelectionInput | ''; label: string }> = [
 		{ value: '', label: '默认' },
 		{ value: 'low', label: '低' },
 		{ value: 'medium', label: '中' },
@@ -423,7 +423,7 @@
 		{ value: 'off', label: '关闭' },
 	];
 
-	const webSearchOptionsAll: Array<{ value: WebSearchModeInput; label: string }> = [
+	const WEB_SEARCH_OPTIONS_ALL: Array<{ value: WebSearchModeInput; label: string }> = [
 		{ value: 'off', label: '关闭' },
 		{ value: 'auto', label: '自动' },
 		{ value: 'always', label: '总是' },
@@ -432,8 +432,8 @@
 	/** Gemini has no forced-search tool_choice; hide Always for that style. */
 	let webSearchOptions = $derived(
 		currentApiStyle === 'gemini'
-			? webSearchOptionsAll.filter((o) => o.value !== 'always')
-			: webSearchOptionsAll,
+			? WEB_SEARCH_OPTIONS_ALL.filter((o) => o.value !== 'always')
+			: WEB_SEARCH_OPTIONS_ALL,
 	);
 
 	// Right-click context menu state
@@ -724,9 +724,9 @@
 			webSearchSupported = value;
 		},
 		getEffortLabel: (value) =>
-			effortOptions.find((option) => option.value === value)?.label || '默认',
+			EFFORT_OPTIONS.find((option) => option.value === value)?.label || '默认',
 		getWebSearchLabel: (value) =>
-			webSearchOptionsAll.find((option) => option.value === value)?.label || '关闭',
+			WEB_SEARCH_OPTIONS_ALL.find((option) => option.value === value)?.label || '关闭',
 		isWebSearchSupported: () => webSearchSupported,
 		closeModelMenu: () => {
 			modelMenuOpen = false;
@@ -1267,7 +1267,7 @@
 					{modelOptions}
 					onToggleMenu={() => (modelMenuOpen = !modelMenuOpen)}
 					onModelSelect={modelOperations.selectModel}
-					{effortOptions}
+					effortOptions={EFFORT_OPTIONS}
 					{currentEffort}
 					onEffortSelect={modelOperations.selectEffort}
 					{webSearchSupported}

@@ -144,13 +144,13 @@
 		tags: '',
 	});
 	let addingFact = $state(false);
-	const statusOptions: Array<{ value: '' | SessionHistoryStatusFilterInput; label: string }> = [
+	const STATUS_OPTIONS: Array<{ value: '' | SessionHistoryStatusFilterInput; label: string }> = [
 		{ value: '', label: '全部状态' },
 		{ value: 'completed', label: '已完成' },
 		{ value: 'paused', label: '已暂停' },
 		{ value: 'error', label: '错误' },
 	];
-	const factSourceOptions: Array<{ value: MemoryFactSourceFilter; label: string }> = [
+	const FACT_SOURCE_OPTIONS: Array<{ value: MemoryFactSourceFilter; label: string }> = [
 		{ value: '', label: '全部来源' },
 		{ value: 'user', label: '手动' },
 		{ value: 'inferred', label: '推断' },
@@ -634,7 +634,7 @@
 							{searchQuery}
 							{totalCount}
 							{statusFilter}
-							{statusOptions}
+							statusOptions={STATUS_OPTIONS}
 							{startDate}
 							{endDate}
 							{loading}
@@ -717,7 +717,7 @@
 								{facts}
 								{factsLoaded}
 								{factSourceFilter}
-								{factSourceOptions}
+								factSourceOptions={FACT_SOURCE_OPTIONS}
 								{newFact}
 								{addingFact}
 								{memoryRecall}

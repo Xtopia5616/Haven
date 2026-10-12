@@ -47,7 +47,7 @@
 		typeof media.recommended_next === 'string' ? media.recommended_next : '',
 	);
 	let text = $derived(typeof media.content === 'string' ? media.content : '');
-	const operationLabels: Partial<Record<ToolMediaOperation, string>> = {
+	const OPERATION_LABELS: Partial<Record<ToolMediaOperation, string>> = {
 		record: '录音完成',
 		play: '播放完成',
 		speak: '朗读完成',
@@ -57,7 +57,7 @@
 		mute_set: '静音状态已设置',
 	};
 	let operationLabel = $derived(
-		(data.operation && operationLabels[data.operation]) || '媒体操作',
+		(data.operation && OPERATION_LABELS[data.operation]) || '媒体操作',
 	);
 </script>
 
