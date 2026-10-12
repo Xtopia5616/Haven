@@ -92,15 +92,14 @@ describe('ToolRun command contract boundary', () => {
 		expect(invokeMock).toHaveBeenCalledWith('cancel_tool_run', request);
 	});
 
-	it('returns the cancellation invoke promise unchanged', () => {
-		const result = Promise.resolve(true);
-		invokeMock.mockReturnValue(result);
+	it('rejects a malformed cancellation boolean response', async () => {
+		invokeMock.mockResolvedValue('cancelled' as never);
 
-		expect(
+		await expect(
 			cancelToolRunCommand({
 				toolRunId: 'toolrun-4b227777d4dd1fc61c6f884f48641d02',
 				kind: 'background',
 			}),
-		).toBe(result);
+		).rejects.toThrow('Invalid cancel_tool_run boolean response');
 	});
 });

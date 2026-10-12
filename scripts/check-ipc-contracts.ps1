@@ -131,6 +131,13 @@ foreach ($command in $countCommands) {
     }
     Assert-Contains $source ("invoke\('" + $command + "'[\s\S]{0,180}?parseCountResponse\(value,\s*'" + $command + "'\)") "$command response uses safe count validation"
 }
+$booleanContract = Get-Source 'ui/src/lib/contracts/boolean.ts'
+Assert-Contains $booleanContract 'typeof value !== ''boolean''' 'scalar boolean responses require an actual boolean value'
+$booleanCommands = @('cancel_tool_run', 'delete_tool_run', 'is_autostart_enabled')
+$booleanResponses = Get-Matches $generated '(?m)^\s{1,2}([a-z][a-z0-9_]*):\s*\{[^\r\n]*response:\s*boolean(?:;|\s*\})'
+Assert-SetEqual 'boolean scalar command responses vs reviewed boolean commands' $booleanResponses $booleanCommands
+Assert-Contains (Get-Source 'ui/src/lib/toolRunCommands.ts') "invoke\('cancel_tool_run'[\s\S]{0,180}?parseBooleanResponse\(value,\s*'cancel_tool_run'\)" 'cancel_tool_run response uses boolean validation'
+Assert-Contains (Get-Source 'ui/src/lib/settingsCommands.ts') "invoke\('is_autostart_enabled'\)[\s\S]{0,180}?parseBooleanResponse\(value,\s*'is_autostart_enabled'\)" 'is_autostart_enabled response uses boolean validation'
 function Assert-MetricsFieldCoverage([string] $contractType, [string] $validatorConstant) {
     $contractMatch = [regex]::Match($generated, "(?s)export interface $([regex]::Escape($contractType))\s*\{([^}]*)\}")
     if (-not $contractMatch.Success) { throw "could not find generated metric DTO $contractType" }
@@ -171,6 +178,7 @@ Assert-Contains $errorHandling "invoke\('log_frontend_error',\s*\{\s*failureKind
 $externalRef = Get-Source 'ui/src/lib/externalRef.ts'
 Assert-Contains $externalRef "invoke\('open_external',\s*\{\s*target:\s*value\s*\}\)" 'external reference policy owns external opening'
 foreach ($file in $uiFiles) {
+    Assert-NotContains (Get-Content $file.FullName -Raw) "invoke\s*\(\s*'delete_tool_run'" "unused delete_tool_run has no unreviewed renderer caller: $($file.Name)"
     if ($file.Name -eq 'recordingOverlayController.ts') { continue }
     Assert-NotContains (Get-Content $file.FullName -Raw) '\binvoke\s*\(\s*(?:command|cmd)\s*\)' "dynamic Tauri invoke is not allowed outside the narrowed recording controller: $($file.Name)"
 }

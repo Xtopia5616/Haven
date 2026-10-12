@@ -139,6 +139,14 @@ describe('Settings commands', () => {
 		).rejects.toBe(failure);
 	});
 
+	it('rejects a malformed autostart boolean response', async () => {
+		invokeMock.mockResolvedValue('false' as never);
+
+		await expect(isAutostartEnabled()).rejects.toThrow(
+			'Invalid is_autostart_enabled boolean response',
+		);
+	});
+
 	it('rejects session permission grants with non-canonical session identities', async () => {
 		invokeMock.mockResolvedValueOnce([
 			{ session_id: 'session-0123456789abcdef0123456789abcdef' },

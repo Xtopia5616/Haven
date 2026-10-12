@@ -6,6 +6,7 @@ import {
 	type SessionPermissionGrant,
 	type SettingsPayload,
 } from '$lib/contracts/settings.ts';
+import { parseBooleanResponse } from '$lib/contracts/boolean.ts';
 import { parseCountResponse } from '$lib/contracts/count.ts';
 import type { TauriCommandRequest } from './contracts/generatedCommands.ts';
 import { invoke } from '$lib/tauri.ts';
@@ -27,7 +28,9 @@ export function listSessionPermissions(): Promise<SessionPermissionGrant[]> {
 
 /** Read the current managed autostart state. */
 export function isAutostartEnabled(): Promise<boolean> {
-	return invoke('is_autostart_enabled');
+	return invoke('is_autostart_enabled').then((value: unknown) =>
+		parseBooleanResponse(value, 'is_autostart_enabled'),
+	);
 }
 
 /** Run the explicit Memory maintenance operation from Settings. */
