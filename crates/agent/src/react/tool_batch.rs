@@ -13,12 +13,14 @@ use super::*;
 use crate::session::{ToolStepMetadata, ToolStepPersistenceError};
 use crate::types::ToolCall;
 use futures_util::FutureExt;
+use haven_common::tools::{
+    OperationIdempotency, ToolErrorClass, ToolExecutionOutcome, ToolOperationScope,
+    ToolResultEnvelope, ToolRetryability,
+};
 #[cfg(test)]
 use haven_common::types::{CanonicalMessage, CanonicalRole, ContentPart};
 use haven_tools::{
-    OperationIdempotency, StructuredToolError, ToolConcurrency, ToolErrorClass, ToolErrorMetadata,
-    ToolExecutionOutcome, ToolLlmUsage, ToolOperationScope, ToolResultEnvelope, ToolRetryability,
-    is_silent_tool_call,
+    StructuredToolError, ToolConcurrency, ToolErrorMetadata, ToolLlmUsage, is_silent_tool_call,
 };
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -927,7 +929,7 @@ mod tests {
                 "step-65507188c14284cf483dd25b8ab4c04b".into(),
                 1,
                 "second completed first".into(),
-                haven_tools::ToolExecutionOutcome::Failed,
+                haven_common::tools::ToolExecutionOutcome::Failed,
             ),
         );
         results.set(
@@ -942,7 +944,7 @@ mod tests {
                 "step-70c1a577861743ffc3c113fab549cac8".into(),
                 0,
                 "first completed second".into(),
-                haven_tools::ToolExecutionOutcome::Failed,
+                haven_common::tools::ToolExecutionOutcome::Failed,
             ),
         );
 
@@ -971,7 +973,7 @@ mod tests {
                 "step-70c1a577861743ffc3c113fab549cac8".into(),
                 0,
                 "first".into(),
-                haven_tools::ToolExecutionOutcome::Succeeded,
+                haven_common::tools::ToolExecutionOutcome::Succeeded,
             ),
         );
         results.set(
@@ -986,7 +988,7 @@ mod tests {
                 "step-e0e6f8fc262275512533d9f0f94391f7".into(),
                 2,
                 "third".into(),
-                haven_tools::ToolExecutionOutcome::Succeeded,
+                haven_common::tools::ToolExecutionOutcome::Succeeded,
             ),
         );
 
@@ -1006,12 +1008,12 @@ mod tests {
             "step-dbc309e16d468e0f1667ae12e30b37dd".into(),
             0,
             "timed out".into(),
-            haven_tools::ToolExecutionOutcome::TimedOutUnknown,
+            haven_common::tools::ToolExecutionOutcome::TimedOutUnknown,
         );
 
         assert_eq!(
             result.outcome,
-            haven_tools::ToolExecutionOutcome::TimedOutUnknown
+            haven_common::tools::ToolExecutionOutcome::TimedOutUnknown
         );
     }
 

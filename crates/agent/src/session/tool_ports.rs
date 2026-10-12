@@ -806,7 +806,10 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(result.outcome, haven_tools::ToolExecutionOutcome::Cancelled);
+        assert_eq!(
+            result.outcome,
+            haven_common::tools::ToolExecutionOutcome::Cancelled
+        );
     }
 
     #[tokio::test]

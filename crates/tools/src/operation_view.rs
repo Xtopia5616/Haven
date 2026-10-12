@@ -644,7 +644,7 @@ mod tests {
         assert_eq!(manifest.policy.effect, crate::OperationEffect::ReadOnly);
         assert_eq!(
             manifest.policy.concurrency,
-            crate::ToolConcurrencyMode::ReadOnly
+            haven_common::tools::ToolConcurrencyMode::ReadOnly
         );
         assert_eq!(
             manifest.policy.data_sensitivity,

@@ -181,15 +181,16 @@ pub(crate) use shell_runtime::{
 #[cfg(feature = "test-support")]
 pub use skill_runner::SkillRunner;
 pub use tool_contract::{
-    AskSignal, ConfirmationRequirement, DataSensitivity, NetworkAccess, NotificationSignal,
-    OperationEffect, OperationIdempotency, OperationPolicy, StructuredToolError, Tool,
-    ToolAvailability, ToolCancellationPolicy, ToolConcurrency, ToolConcurrencyMode, ToolDef,
-    ToolErrorClass, ToolErrorMetadata, ToolExecutionMode, ToolExecutionOutcome, ToolHandle,
-    ToolIdentity, ToolLlmUsage, ToolManifest, ToolModel, ToolOperationMetadata, ToolOperationScope,
-    ToolPolicy, ToolPresentation, ToolRegistration, ToolResult, ToolResultEnvelope,
-    ToolRetryability, ToolRootPresentation, ToolSignals, ToolSource, TypedToolAdapter,
-    TypedToolOperation, extract_ask_signal, extract_notify_signal, is_silent_tool_call,
-    parse_tool_input,
+    AskSignal, NotificationSignal, OperationPolicy, StructuredToolError, Tool,
+    ToolCancellationPolicy, ToolConcurrency, ToolErrorMetadata, ToolExecutionMode, ToolHandle,
+    ToolLlmUsage, ToolOperationMetadata, ToolRegistration, ToolResult, ToolSignals,
+    TypedToolAdapter, TypedToolOperation, extract_ask_signal, extract_notify_signal,
+    is_silent_tool_call, parse_tool_input,
+};
+pub(crate) use tool_contract::{
+    ConfirmationRequirement, DataSensitivity, NetworkAccess, OperationEffect, OperationIdempotency,
+    ToolDef, ToolErrorClass, ToolExecutionOutcome, ToolManifest, ToolOperationScope,
+    ToolRetryability, ToolSource,
 };
 pub use tool_run_events::{
     ToolRunLifecycleEvent, ToolRunLifecyclePayload, ToolRunLifecycleState, ToolRunLifecycleUpdate,

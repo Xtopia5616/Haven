@@ -7,8 +7,10 @@
 
 use super::*;
 use haven_common::retry::{BackoffPolicy, RecoveryDecision, RecoveryPolicy, RecoverySignal};
+use haven_common::tools::{
+    OperationIdempotency, ToolErrorClass, ToolExecutionOutcome, ToolRetryability,
+};
 use haven_common::types::{CanonicalMessage, CanonicalRole, ContentPart};
-use haven_tools::{OperationIdempotency, ToolErrorClass, ToolExecutionOutcome, ToolRetryability};
 use std::time::{Duration, Instant};
 
 /// Failure classification used to shape the post-failure retry nudge.
@@ -189,7 +191,7 @@ pub(super) fn failure_kind(error_class: ToolErrorClass) -> FailureKind {
 #[cfg(test)]
 mod tests {
     use super::is_retryable_failure_outcome;
-    use haven_tools::{
+    use haven_common::tools::{
         OperationIdempotency, ToolErrorClass, ToolExecutionOutcome, ToolRetryability,
     };
 

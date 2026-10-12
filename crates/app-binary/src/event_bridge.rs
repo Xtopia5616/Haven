@@ -810,7 +810,7 @@ mod tests {
             idempotency: haven_common::tools::OperationIdempotency::Idempotent,
             operation_scope: haven_common::tools::ToolOperationScope::Session,
             renderer: "files".into(),
-            result: haven_tools::ToolResultEnvelope::default(),
+            result: haven_common::tools::ToolResultEnvelope::default(),
             event_sequence: Some(1),
         };
 

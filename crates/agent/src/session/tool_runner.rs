@@ -109,11 +109,13 @@ impl std::error::Error for ToolStepPersistenceError {
 
 fn tool_step_outcome(result: &ToolResult) -> ToolStepOutcome {
     match result.outcome {
-        haven_tools::ToolExecutionOutcome::Succeeded => ToolStepOutcome::Completed,
-        haven_tools::ToolExecutionOutcome::Cancelled => ToolStepOutcome::Cancelled,
-        haven_tools::ToolExecutionOutcome::TimedOutUnknown => ToolStepOutcome::Unknown,
-        haven_tools::ToolExecutionOutcome::Failed
-        | haven_tools::ToolExecutionOutcome::TimedOutAndTerminated => ToolStepOutcome::Failed,
+        haven_common::tools::ToolExecutionOutcome::Succeeded => ToolStepOutcome::Completed,
+        haven_common::tools::ToolExecutionOutcome::Cancelled => ToolStepOutcome::Cancelled,
+        haven_common::tools::ToolExecutionOutcome::TimedOutUnknown => ToolStepOutcome::Unknown,
+        haven_common::tools::ToolExecutionOutcome::Failed
+        | haven_common::tools::ToolExecutionOutcome::TimedOutAndTerminated => {
+            ToolStepOutcome::Failed
+        }
     }
 }
 
@@ -976,10 +978,10 @@ impl SessionSupervisor {
                         "The confirmation for operation '{}' is no longer valid ({reason}). The operation was not executed.",
                         tool_name
                     )),
-                    error_class: Some(haven_tools::ToolErrorClass::Permission),
-                    retryability: haven_tools::ToolRetryability::NotRetryable,
+                    error_class: Some(haven_common::tools::ToolErrorClass::Permission),
+                    retryability: haven_common::tools::ToolRetryability::NotRetryable,
                     truncated: false,
-                    outcome: haven_tools::ToolExecutionOutcome::Cancelled,
+                    outcome: haven_common::tools::ToolExecutionOutcome::Cancelled,
                     attempts: 1,
                     signals: haven_tools::ToolSignals::default(),
                     llm_usage: Vec::new(),
@@ -998,10 +1000,10 @@ impl SessionSupervisor {
                         error: Some(format!(
                             "operation '{tool_name}' is blocked by the security policy ({reason}). Do NOT retry it — ask the user what to do instead or choose a different approach."
                         )),
-                        error_class: Some(haven_tools::ToolErrorClass::Permission),
-                        retryability: haven_tools::ToolRetryability::NotRetryable,
+                        error_class: Some(haven_common::tools::ToolErrorClass::Permission),
+                        retryability: haven_common::tools::ToolRetryability::NotRetryable,
                         truncated: false,
-                        outcome: haven_tools::ToolExecutionOutcome::Failed,
+                        outcome: haven_common::tools::ToolExecutionOutcome::Failed,
                         attempts: 1,
                         signals: haven_tools::ToolSignals::default(),
                         llm_usage: Vec::new(),
@@ -1031,10 +1033,10 @@ impl SessionSupervisor {
                                     "The user REJECTED the operation '{}' (confirmation declined). Do NOT retry it — ask the user what to do instead or choose a different approach.",
                                     tool_name
                                 )),
-                                error_class: Some(haven_tools::ToolErrorClass::Permission),
-                                retryability: haven_tools::ToolRetryability::NotRetryable,
+                                error_class: Some(haven_common::tools::ToolErrorClass::Permission),
+                                retryability: haven_common::tools::ToolRetryability::NotRetryable,
                                 truncated: false,
-                                outcome: haven_tools::ToolExecutionOutcome::Cancelled,
+                                outcome: haven_common::tools::ToolExecutionOutcome::Cancelled,
                                 attempts: 1,
                                 signals: haven_tools::ToolSignals::default(),
                                 llm_usage: Vec::new(),
@@ -2150,7 +2152,7 @@ mod scheduled_authorization_tests {
         );
         assert_eq!(
             request.policy.confirmation,
-            haven_tools::ConfirmationRequirement::Required
+            haven_common::tools::ConfirmationRequirement::Required
         );
 
         assert!(matches!(

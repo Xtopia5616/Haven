@@ -514,10 +514,11 @@ mod tests {
         log_blocked_admin_request, parse_mcp_refresh_failed_names,
         redact_mcp_admin_confirmation_input, validate_command_id,
     };
+    use haven_common::tools::NetworkAccess;
     use haven_common::types::{CapabilityScope, PermissionEffect, PermissionScope, RiskLevel};
     use haven_tools::{
         AuthorizationDecision, AuthorizationReasonCode, ConfirmationReceipt, McpRefreshAction,
-        McpRefreshPlan, NetworkAccess, OperationPolicy, ToolResult, ToolsFacade,
+        McpRefreshPlan, OperationPolicy, ToolResult, ToolsFacade,
     };
     use serde_json::json;
     use std::sync::Arc;

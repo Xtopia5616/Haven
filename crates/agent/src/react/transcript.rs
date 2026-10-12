@@ -33,10 +33,10 @@ use super::committed_ui::{
 };
 use super::*;
 use crate::types::{ToolCall, TranscriptRecord, canonical_for_compaction_event_with_media_inputs};
+use haven_common::tools::{OperationIdempotency, ToolOperationScope, ToolResultEnvelope};
 use haven_common::types::InjectSource;
 use haven_common::types::{CanonicalToolCall, MessageAttachment};
 use haven_memory::{CURRENT_EVENT_VERSION, SessionCommitted, SessionEvent, TRANSCRIPT_EVENT_TYPE};
-use haven_tools::{OperationIdempotency, ToolOperationScope, ToolResultEnvelope};
 use serde_json::Value;
 use std::sync::Arc;
 
@@ -1493,14 +1493,14 @@ mod tests {
                         tool_index: 0,
                         silent: false,
                         ask_options: vec![],
-                        idempotency: haven_tools::OperationIdempotency::Idempotent,
-                        operation_scope: haven_tools::ToolOperationScope::Session,
+                        idempotency: haven_common::tools::OperationIdempotency::Idempotent,
+                        operation_scope: haven_common::tools::ToolOperationScope::Session,
                         renderer: "generic".into(),
-                        result_envelope: haven_tools::ToolResultEnvelope::from_parts(
-                            haven_tools::ToolExecutionOutcome::Succeeded,
+                        result_envelope: haven_common::tools::ToolResultEnvelope::from_parts(
+                            haven_common::tools::ToolExecutionOutcome::Succeeded,
                             None,
-                            haven_tools::ToolRetryability::Unknown,
-                            haven_tools::OperationIdempotency::Idempotent,
+                            haven_common::tools::ToolRetryability::Unknown,
+                            haven_common::tools::OperationIdempotency::Idempotent,
                         ),
                     })),
                 },
@@ -1536,8 +1536,8 @@ mod tests {
         assert!(replay_events.lock().unwrap().iter().any(|event| matches!(
             event,
             crate::event::AgentEvent::Observation {
-                idempotency: haven_tools::OperationIdempotency::Idempotent,
-                operation_scope: haven_tools::ToolOperationScope::Session,
+                idempotency: haven_common::tools::OperationIdempotency::Idempotent,
+                operation_scope: haven_common::tools::ToolOperationScope::Session,
                 event_sequence: Some(sequence),
                 ..
             } if *sequence == durable_sequence
@@ -1649,14 +1649,14 @@ mod tests {
                         tool_index: 0,
                         silent: false,
                         ask_options: vec!["A".into(), "B".into()],
-                        idempotency: haven_tools::OperationIdempotency::Idempotent,
-                        operation_scope: haven_tools::ToolOperationScope::Session,
+                        idempotency: haven_common::tools::OperationIdempotency::Idempotent,
+                        operation_scope: haven_common::tools::ToolOperationScope::Session,
                         renderer: "generic".into(),
-                        result_envelope: haven_tools::ToolResultEnvelope::from_parts(
-                            haven_tools::ToolExecutionOutcome::Succeeded,
+                        result_envelope: haven_common::tools::ToolResultEnvelope::from_parts(
+                            haven_common::tools::ToolExecutionOutcome::Succeeded,
                             None,
-                            haven_tools::ToolRetryability::Unknown,
-                            haven_tools::OperationIdempotency::Idempotent,
+                            haven_common::tools::ToolRetryability::Unknown,
+                            haven_common::tools::OperationIdempotency::Idempotent,
                         ),
                     })),
                 },

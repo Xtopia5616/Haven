@@ -1,4 +1,7 @@
 use super::*;
+use haven_common::tools::{
+    ToolAvailability, ToolConcurrencyMode, ToolIdentity, ToolModel, ToolPolicy, ToolPresentation,
+};
 use serde_json::json;
 use std::collections::HashMap;
 use tempfile::TempDir;

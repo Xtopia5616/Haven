@@ -73,7 +73,7 @@ fn channel_maps_every_variant_to_expected_channel() {
                 idempotency: haven_common::tools::OperationIdempotency::Idempotent,
                 operation_scope: haven_common::tools::ToolOperationScope::Session,
                 renderer: "generic".into(),
-                result: haven_tools::ToolResultEnvelope::default(),
+                result: haven_common::tools::ToolResultEnvelope::default(),
                 event_sequence: None,
             },
             "agent:observation",

@@ -5,10 +5,9 @@ use crate::commands::{
     app_command_authorization_request, emit_event_logged, queue_ui_confirmation,
 };
 use crate::events::{SKILLS_STATUS_CHANGED_EVENT, SkillsStatusChangedEvent, SkillsStatusOperation};
+use haven_common::tools::NetworkAccess;
 use haven_common::types::{CapabilityScope, RiskLevel, permission_key};
-use haven_tools::{
-    AuthorizationDecision, AuthorizationRequest, NetworkAccess, OperationPolicy, SkillInfo,
-};
+use haven_tools::{AuthorizationDecision, AuthorizationRequest, OperationPolicy, SkillInfo};
 use std::sync::Arc;
 use tauri::AppHandle;
 use tauri::State;

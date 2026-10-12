@@ -1,7 +1,8 @@
 use crate::app_state::AppState;
 use crate::commands::log_err;
+use haven_common::tools::NetworkAccess;
 use haven_common::types::{CapabilityScope, RiskLevel, permission_key};
-use haven_tools::{AuthorizationDecision, AuthorizationRequest, NetworkAccess, OperationPolicy};
+use haven_tools::{AuthorizationDecision, AuthorizationRequest, OperationPolicy};
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;

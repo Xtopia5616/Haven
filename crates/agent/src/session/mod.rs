@@ -1004,7 +1004,7 @@ mod tests {
                 "files.write",
                 capability,
                 RiskLevel::High,
-                haven_tools::NetworkAccess::None,
+                haven_common::tools::NetworkAccess::None,
             ),
         )
     }

@@ -1,4 +1,4 @@
-pub use haven_common::tools::{
+pub(crate) use haven_common::tools::{
     ConfirmationRequirement, DataSensitivity, NetworkAccess, OperationEffect, OperationIdempotency,
     ToolConcurrencyMode, ToolErrorClass, ToolExecutionOutcome, ToolOperationScope,
     ToolResultEnvelope, ToolRetryability,
@@ -19,7 +19,7 @@ pub(crate) fn validate_entity_id(id: &str, field_name: &str, prefix: &str) -> an
     }
 }
 
-pub use haven_common::tools::{
+pub(crate) use haven_common::tools::{
     ToolAvailability, ToolCatalogGroup, ToolDef, ToolIdentity, ToolManifest, ToolModel, ToolPolicy,
     ToolPresentation, ToolPrompt, ToolRootPresentation, ToolSource,
 };

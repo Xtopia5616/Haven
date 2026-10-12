@@ -629,7 +629,7 @@ mod tests {
 
         assert_eq!(
             result.result.outcome,
-            haven_tools::ToolExecutionOutcome::Cancelled
+            haven_common::tools::ToolExecutionOutcome::Cancelled
         );
     }
 

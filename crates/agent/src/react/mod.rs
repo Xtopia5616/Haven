@@ -1477,15 +1477,15 @@ mod tests {
     #[test]
     fn structured_failure_classes_shape_the_nudge_without_text_scanning() {
         assert_eq!(
-            tool_batch_policy::failure_kind(haven_tools::ToolErrorClass::Transient),
+            tool_batch_policy::failure_kind(haven_common::tools::ToolErrorClass::Transient),
             FailureKind::Environmental
         );
         assert_eq!(
-            tool_batch_policy::failure_kind(haven_tools::ToolErrorClass::Validation),
+            tool_batch_policy::failure_kind(haven_common::tools::ToolErrorClass::Validation),
             FailureKind::Logic
         );
         assert_eq!(
-            tool_batch_policy::failure_kind(haven_tools::ToolErrorClass::Other),
+            tool_batch_policy::failure_kind(haven_common::tools::ToolErrorClass::Other),
             FailureKind::Unknown
         );
     }
@@ -1494,7 +1494,7 @@ mod tests {
     fn failure_nudge_environmental_suggests_relevant_checks() {
         let nudge = ReActEngine::build_failure_nudge(&[(
             "shell".into(),
-            haven_tools::ToolErrorClass::Transient,
+            haven_common::tools::ToolErrorClass::Transient,
         )]);
         assert!(
             !nudge.contains("Do NOT abandon"),
@@ -1510,7 +1510,7 @@ mod tests {
     fn failure_nudge_logic_suggests_correction_and_reassessment() {
         let nudge = ReActEngine::build_failure_nudge(&[(
             "files".into(),
-            haven_tools::ToolErrorClass::Validation,
+            haven_common::tools::ToolErrorClass::Validation,
         )]);
         assert!(nudge.contains("logic errors"), "got: {nudge}");
         assert!(
