@@ -21,6 +21,7 @@ vi.mock('$lib/tauri.ts', () => ({ invoke: vi.fn() }));
 
 import { invoke } from '$lib/tauri.ts';
 import type { SessionPermissionGrant, TauriCommandRequest } from './contracts/generatedCommands.ts';
+import { MEDIA_TIMEOUT_BOUNDS } from './contracts/settings.ts';
 import { createSettingsFixture } from './contracts/settingsFixture.ts';
 
 const invokeMock = vi.mocked(invoke);
@@ -210,6 +211,15 @@ describe('Settings commands', () => {
 				},
 			} as unknown as TauriCommandRequest<'update_settings'>),
 		).toThrow('Invalid Settings numeric value');
+
+		for (const [kind, bounds] of Object.entries(MEDIA_TIMEOUT_BOUNDS)) {
+			expect(() =>
+				updateSettings({
+					settings: { media: { [kind]: { timeout_secs: bounds.min - 1 } } },
+				} as unknown as TauriCommandRequest<'update_settings'>),
+			).toThrow(`Invalid Settings numeric value at settings.media.${kind}.timeout_secs`);
+		}
+
 		expect(invokeMock).not.toHaveBeenCalled();
 	});
 });

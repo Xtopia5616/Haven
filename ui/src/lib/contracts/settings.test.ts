@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { parseSessionPermissionGrantResponses, parseSettingsPayload } from './settings.ts';
+import {
+	MEDIA_TIMEOUT_BOUNDS,
+	parseSessionPermissionGrantResponses,
+	parseSettingsPayload,
+	validateSettingsNumbers,
+} from './settings.ts';
 import { createSettingsFixture } from './settingsFixture.ts';
 
 function withSetting(path: readonly string[], value: unknown) {
@@ -143,6 +148,26 @@ describe('settings command contracts', () => {
 			expect(() => parseSettingsPayload(withSetting(path, invalid))).toThrow(
 				'Invalid Settings numeric value',
 			);
+		}
+	});
+
+	it('enforces media timeout ranges in both Settings response and update contracts', () => {
+		for (const [kind, bounds] of Object.entries(MEDIA_TIMEOUT_BOUNDS)) {
+			for (const value of [bounds.min, bounds.max]) {
+				const valid = withSetting(['media', kind, 'timeout_secs'], value);
+				expect(parseSettingsPayload(valid)).toBe(valid);
+				expect(() => validateSettingsNumbers(valid)).not.toThrow();
+			}
+
+			for (const value of new Set([0, bounds.min - 1, bounds.max + 1])) {
+				const invalid = withSetting(['media', kind, 'timeout_secs'], value);
+				expect(() => parseSettingsPayload(invalid)).toThrow(
+					`Invalid Settings numeric value at settings.media.${kind}.timeout_secs`,
+				);
+				expect(() => validateSettingsNumbers(invalid)).toThrow(
+					`Invalid Settings numeric value at settings.media.${kind}.timeout_secs`,
+				);
+			}
 		}
 	});
 

@@ -1572,6 +1572,34 @@ model = "nova-3"
     }
 
     #[test]
+    fn load_backs_up_config_with_media_timeout_outside_settings_range() {
+        let dir = std::env::temp_dir().join(format!("haven_test_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        let original = "[media.stt]\ntimeout_secs = 0\n";
+        std::fs::write(&path, original).unwrap();
+
+        let loader = ConfigLoader::load_from(&path).unwrap();
+
+        assert_eq!(loader.config().media.stt.timeout_secs, 30);
+        let backups: Vec<_> = dir
+            .read_dir()
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| {
+                let name = entry.file_name().into_string().unwrap();
+                name.starts_with("config.toml.") && name.ends_with(".bak")
+            })
+            .collect();
+        assert_eq!(backups.len(), 1, "invalid config must be backed up");
+        assert_eq!(
+            std::fs::read_to_string(backups[0].path()).unwrap(),
+            original
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn load_caps_oversized_known_fact_prompt_setting_without_discarding_config() {
         let dir = std::env::temp_dir().join(format!("haven_test_{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();

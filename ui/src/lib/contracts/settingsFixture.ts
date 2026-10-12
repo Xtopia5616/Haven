@@ -2,12 +2,22 @@ import { SETTINGS_RESPONSE_SHAPE } from './generatedCommands.ts';
 import type { SettingsPayload } from './settings.ts';
 import type { GeneratedWireShape } from './generatedWireShape.ts';
 
+const MEDIA_TIMEOUT_FIXTURE_VALUES: Record<string, number> = {
+	'settings.media.stt.timeout_secs': 30,
+	'settings.media.ocr.timeout_secs': 30,
+	'settings.media.tts.timeout_secs': 60,
+	'settings.media.image_gen.timeout_secs': 120,
+};
+
 /** Build a minimal valid wire value for focused command-contract tests. */
 export function createWireValueFixture(shape: GeneratedWireShape, path = 'settings'): unknown {
 	switch (shape.kind) {
 		case 'string':
 			return '';
 		case 'number':
+			if (MEDIA_TIMEOUT_FIXTURE_VALUES[path] !== undefined) {
+				return MEDIA_TIMEOUT_FIXTURE_VALUES[path];
+			}
 			return path.endsWith('.compaction_ratio') ? 0.5 : 1;
 		case 'boolean':
 			return false;

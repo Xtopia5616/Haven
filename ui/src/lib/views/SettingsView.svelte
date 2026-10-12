@@ -905,7 +905,7 @@
 				providerName: media.stt?.provider_name || 'llm',
 				mcp_server: media.stt?.mcp_server || '',
 				model: media.stt?.model || '',
-				timeout_secs: media.stt?.timeout_secs || 30,
+				timeout_secs: media.stt?.timeout_secs ?? 30,
 				min_confidence: media.stt?.min_confidence ?? 0.7,
 			};
 			ocr = {
@@ -915,19 +915,19 @@
 				api_secret: '',
 				api_secret_ref: media.ocr?.api_secret_ref || null,
 				base_url: media.ocr?.base_url || '',
-				timeout_secs: media.ocr?.timeout_secs || 20,
+				timeout_secs: media.ocr?.timeout_secs ?? 20,
 				min_confidence: media.ocr?.min_confidence ?? 0.7,
 			};
 			tts = {
 				providerName: media.tts?.provider_name || 'none',
 				model: media.tts?.model || '',
 				voice: media.tts?.voice || '',
-				timeout_secs: media.tts?.timeout_secs || 60,
+				timeout_secs: media.tts?.timeout_secs ?? 60,
 			};
 			imageGen = {
 				providerName: media.image_gen?.provider_name || 'none',
 				model: media.image_gen?.model || '',
-				timeout_secs: media.image_gen?.timeout_secs || 120,
+				timeout_secs: media.image_gen?.timeout_secs ?? 120,
 			};
 			mcpServerNames = (settings.mcp_servers || [])
 				.map((server) => server.name || '')

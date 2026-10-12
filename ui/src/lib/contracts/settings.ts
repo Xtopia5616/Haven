@@ -192,6 +192,14 @@ const NULLABLE_NUMERIC_FIELDS = new Set([
 
 const MAX_INPUT_RING_BUFFER_SECS = 120;
 
+/** Keep these ranges aligned with the Rust Settings/config contract. */
+export const MEDIA_TIMEOUT_BOUNDS = {
+	stt: { min: 5, max: 600 },
+	ocr: { min: 5, max: 300 },
+	tts: { min: 5, max: 300 },
+	image_gen: { min: 10, max: 600 },
+} as const;
+
 export type SessionPermissionGrant = GeneratedSessionPermissionGrant;
 
 /** Exact Rust-owned config shape from the generated IPC contract. */
@@ -319,9 +327,29 @@ function findInvalidMcpInterval(value: unknown): string | null {
 		: null;
 }
 
+function findInvalidMediaTimeout(value: unknown): string | null {
+	if (!isRecord(value) || !isRecord(value.media)) return null;
+	for (const [kind, bounds] of Object.entries(MEDIA_TIMEOUT_BOUNDS)) {
+		const config = value.media[kind];
+		if (!isRecord(config) || config.timeout_secs === undefined) continue;
+		const timeout = config.timeout_secs;
+		if (
+			!isSafeUnsignedInteger(timeout) ||
+			timeout < bounds.min ||
+			timeout > bounds.max
+		) {
+			return `settings.media.${kind}.timeout_secs`;
+		}
+	}
+	return null;
+}
+
 /** Reject Settings numbers outside their Rust field domains or JavaScript-safe range. */
 export function validateSettingsNumbers(value: unknown): void {
-	const invalidPath = findInvalidSettingsNumber(value) ?? findInvalidMcpInterval(value);
+	const invalidPath =
+		findInvalidSettingsNumber(value) ??
+		findInvalidMcpInterval(value) ??
+		findInvalidMediaTimeout(value);
 	if (invalidPath) throw new Error(`Invalid Settings numeric value at ${invalidPath}`);
 }
 

@@ -20,6 +20,7 @@ import { INPUT_FORMATS } from '$lib/inputFormats.ts';
 	} from '$lib/typedCallbacks.ts';
 	import { mediaCapabilityBackend, sttCapabilityBackend } from '$lib/apiStyle.ts';
 	import type { ApiKeyStatus } from '$lib/contracts/diagnostics.ts';
+	import { MEDIA_TIMEOUT_BOUNDS } from '$lib/contracts/settings.ts';
 	import type {
 		AudioConfig,
 		ContextLimitsConfigInput,
@@ -391,8 +392,8 @@ import { INPUT_FORMATS } from '$lib/inputFormats.ts';
 									><MaterialNumberField
 										id="voice-stt-timeout"
 										value={stt.timeout_secs}
-										min={5}
-										max={600}
+										min={MEDIA_TIMEOUT_BOUNDS.stt.min}
+										max={MEDIA_TIMEOUT_BOUNDS.stt.max}
 										onChange={withNumberValue((v) => {
 											stt.timeout_secs = v;
 										})}
@@ -484,8 +485,8 @@ import { INPUT_FORMATS } from '$lib/inputFormats.ts';
 									><MaterialNumberField
 										id="tts-timeout"
 										value={tts.timeout_secs}
-										min={5}
-										max={300}
+										min={MEDIA_TIMEOUT_BOUNDS.tts.min}
+										max={MEDIA_TIMEOUT_BOUNDS.tts.max}
 										onChange={withNumberValue((v) => {
 											tts.timeout_secs = v;
 										})}
@@ -620,8 +621,8 @@ import { INPUT_FORMATS } from '$lib/inputFormats.ts';
 									><MaterialNumberField
 										id="img-ocr-timeout"
 										value={ocr.timeout_secs}
-										min={5}
-										max={300}
+										min={MEDIA_TIMEOUT_BOUNDS.ocr.min}
+										max={MEDIA_TIMEOUT_BOUNDS.ocr.max}
 										onChange={withNumberValue((v) => {
 											ocr.timeout_secs = v;
 										})}
@@ -687,8 +688,8 @@ import { INPUT_FORMATS } from '$lib/inputFormats.ts';
 										><MaterialNumberField
 											id="ig-timeout"
 											value={imageGen.timeout_secs}
-											min={10}
-											max={600}
+											min={MEDIA_TIMEOUT_BOUNDS.image_gen.min}
+											max={MEDIA_TIMEOUT_BOUNDS.image_gen.max}
 											onChange={withNumberValue((v) => {
 												imageGen.timeout_secs = v;
 											})}

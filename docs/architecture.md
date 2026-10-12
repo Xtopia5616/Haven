@@ -121,7 +121,7 @@ client；model edit 的完整提交和应用也由它持有。`SettingsRuntimeAp
 Settings 有序阶段，驱动命令提供的执行回调，并唯一记录当前 phase、snapshot version、Router published、
 restart-required targets 与失败/警告。Security、MCP、context、logging、hotkey 等实际副作用仍由既有 owner
 执行；Settings edit/no-op 仍由命令按同一次 `ConfigService::edit` 保留旧 hotkey、snapshot 和 change。该
-coordinator 不复制 Router prepare/publish，也不为半失败状态增加 compensation/rollback。审计确认无第二份配置 owner、target mapping 或 Settings payload builder；durable edit 后不增加 compensation/rollback 或显式 retry/restart；失败保留磁盘配置并报告部分 apply failure，重启从磁盘初始化。失败至重启前普通会话和工具调用继续使用各自 runtime owner 当前状态，不等待重启，也不保证所有 consumer 处于同一配置 revision；turn catalog 保持不可变 snapshot，authorization 和执行仍由 live owner 决定（ADR 0372）。`SettingsView` 唯一的 `update_settings` payload builder 使用开放式 `SettingsPayload`，IPC script 校验 Rust `Settings` 参数和 UI 直接调用 owner，而完整字段 schema 仍由 Rust 所有（ADR 0372）。Tools admin 的 MCP/Skills/Logging/ToolSettings writers 若修改与 Settings/model 相同的运行时配置域，必须进入统一串行配置边界；不相关域仍由原 owner 负责。实现跟进由组合根创建共享 gate，并经窄 AdminContext 注入 Tools AdminServices；gate 覆盖 durable edit 与 live apply/rebuild，Tauri wrapper 不重复 catalog rebuild。MCP Tauri 管理入口将写入委托给 AdminServices；
+coordinator 不复制 Router prepare/publish，也不为半失败状态增加 compensation/rollback。审计确认无第二份配置 owner、target mapping 或 Settings payload builder；durable edit 后不增加 compensation/rollback 或显式 retry/restart；失败保留磁盘配置并报告部分 apply failure，重启从磁盘初始化。失败至重启前普通会话和工具调用继续使用各自 runtime owner 当前状态，不等待重启，也不保证所有 consumer 处于同一配置 revision；turn catalog 保持不可变 snapshot，authorization 和执行仍由 live owner 决定（ADR 0372）。`SettingsView` 唯一的 `update_settings` payload builder 使用生成 request `SettingsUpdatePayload`（即 Rust `SettingsInput`）；读取响应使用 `SettingsPayload`，IPC script 校验 Rust `Settings` 参数和 UI 直接调用 owner，而完整字段 schema 仍由 Rust 所有（ADR 0372）。Tools admin 的 MCP/Skills/Logging/ToolSettings writers 若修改与 Settings/model 相同的运行时配置域，必须进入统一串行配置边界；不相关域仍由原 owner 负责。实现跟进由组合根创建共享 gate，并经窄 AdminContext 注入 Tools AdminServices；gate 覆盖 durable edit 与 live apply/rebuild，Tauri wrapper 不重复 catalog rebuild。MCP Tauri 管理入口将写入委托给 AdminServices；
 add/update/toggle/remove 的持久化、live 连接和 catalog rebuild 均在 AdminServices 的共享 gate 内完成。renderer 的
 refresh/reconnect 也先经 `AuthorizationEngine`；typed native request 不进入模型可见 MCP schema。Refresh 授权后仅在
 `AdminServices` 内按共享配置 gate 复核版本与完整 diff，reconnect 复核单个已启用 server 与 live client，再执行对应
@@ -765,10 +765,9 @@ Settings 的完整 wire shape 由 `haven_common::config::Settings` 所有；前�
 `invoke('get_settings')` 的原始结果，所有读取经 `ui/src/lib/settingsCommands.ts::loadSettings` 和
 `ui/src/lib/contracts/settings.ts::parseSettingsPayload`。IPC generator 从 Rust Serialize/Serde 元数据生成
 `SETTINGS_RESPONSE_SHAPE`，parser 校验所有必需嵌套字段、primitive、数组/映射与闭枚举；可选字段仍可省略，未知附加字段继续保留。
-parser 另外校验已知凭据引用为规范 `cred-*` 并检查 Settings 数值域。null/非对象继续作为空结果，不完整对象作为无效响应，命令错误原样进入现有 catch（ADR 1020）。
+parser 另外校验已知凭据引用为规范 `cred-*` 并检查 Settings 数值域；media timeout 范围由 Rust 与 UI 共同校验（STT 5–600 秒、OCR/TTS 5–300 秒、image_gen 10–600 秒，ADR 1055）。null/非对象继续作为空结果，不完整对象作为无效响应，命令错误原样进入现有 catch（ADR 1020）。
 Settings 表单状态仍由 `SettingsView` 持有，`settingsSaveAction` 与 `settingsGuard` 只负责纯 UI 状态，
-没有额外的 settings store 或第二个 update serializer。`update_settings` 的唯一 builder 复用开放式
-`SettingsPayload`，其 Rust 参数和直接调用 owner 由 IPC contract script 校验；前端不复制 Rust nested Settings schema
+没有额外的 settings store 或第二个 update serializer。`update_settings` 的唯一 builder 使用生成 request `SettingsUpdatePayload`（即 Rust `SettingsInput`）；读取响应仍使用 `SettingsPayload`。Rust 参数和 UI 直接调用 owner 由 IPC contract script 校验；前端不复制 Rust nested Settings schema
 （ADR 0372）。`hotkey:rebind` 事件已由
 `ui/src/lib/contracts/app.ts::mapAppEvent` 唯一映射 `old_binding` / `new_binding` 到 camelCase；
 设置页的 `get_log_info`、`read_log_tail`、`get_performance_metrics`、`check_shell_available` 与

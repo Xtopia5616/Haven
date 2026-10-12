@@ -166,8 +166,28 @@ fn validate_config_numbers(
 ) -> Result<()> {
     validate_numeric_contract(value)?;
     validate_float_fields(llm, context, media)?;
+    validate_media_timeouts(media)?;
     if context.scheduled_tool_runs_due_horizon_secs < 0 {
         anyhow::bail!("context_limits.scheduled_tool_runs_due_horizon_secs must be non-negative");
+    }
+    Ok(())
+}
+
+fn validate_media_timeouts(media: &super::MediaConfig) -> Result<()> {
+    for (path, value, min, max) in [
+        ("media.stt.timeout_secs", media.stt.timeout_secs, 5, 600),
+        ("media.ocr.timeout_secs", media.ocr.timeout_secs, 5, 300),
+        ("media.tts.timeout_secs", media.tts.timeout_secs, 5, 300),
+        (
+            "media.image_gen.timeout_secs",
+            media.image_gen.timeout_secs,
+            10,
+            600,
+        ),
+    ] {
+        if !(min..=max).contains(&value) {
+            anyhow::bail!("{path} must be within {min}..={max} seconds");
+        }
     }
     Ok(())
 }
@@ -329,6 +349,49 @@ mod tests {
 
         assert!(validate_app_config_numbers(&config).is_ok());
         assert!(validate_settings_numbers(&Settings::from(&config)).is_ok());
+    }
+
+    #[test]
+    fn media_timeout_ranges_match_settings_controls_for_config_and_settings() {
+        let cases: [(&str, u64, u64, fn(&mut AppConfig, u64)); 4] = [
+            ("media.stt.timeout_secs", 5, 600, |config, value| {
+                config.media.stt.timeout_secs = value;
+            }),
+            ("media.ocr.timeout_secs", 5, 300, |config, value| {
+                config.media.ocr.timeout_secs = value;
+            }),
+            ("media.tts.timeout_secs", 5, 300, |config, value| {
+                config.media.tts.timeout_secs = value;
+            }),
+            ("media.image_gen.timeout_secs", 10, 600, |config, value| {
+                config.media.image_gen.timeout_secs = value;
+            }),
+        ];
+
+        for (path, min, max, set_value) in cases {
+            for value in [min, max] {
+                let mut config = AppConfig::default();
+                set_value(&mut config, value);
+                assert!(validate_app_config(&config).is_ok(), "{path}={value}");
+                assert!(
+                    validate_settings_contract(&Settings::from(&config)).is_ok(),
+                    "Settings {path}={value}"
+                );
+            }
+
+            for value in [0, min - 1, max + 1] {
+                let mut config = AppConfig::default();
+                set_value(&mut config, value);
+                let config_error = validate_app_config(&config).unwrap_err();
+                assert!(config_error.to_string().contains(path), "{config_error}");
+                let settings_error =
+                    validate_settings_contract(&Settings::from(&config)).unwrap_err();
+                assert!(
+                    settings_error.to_string().contains(path),
+                    "{settings_error}"
+                );
+            }
+        }
     }
 
     #[test]
