@@ -7,7 +7,9 @@
  */
 import {
 	MEMORY_ENTITY_KIND_INPUT_VALUES,
+	MEMORY_FACT_RESPONSE_SHAPE,
 	MEMORY_FACT_SOURCE_INPUT_VALUES,
+	MEMORY_RECALL_ITEM_RESPONSE_SHAPE,
 } from './generatedCommands.ts';
 import type {
 	MemoryFactResponse as GeneratedMemoryFactResponse,
@@ -16,6 +18,7 @@ import type {
 	MemoryFactSourceInput,
 } from './generatedCommands.ts';
 import { isRecord } from './objectGuards.ts';
+import { findGeneratedWireShapeMismatch } from './generatedWireShape.ts';
 import { isOneOf } from './valueGuards.ts';
 import { isCanonicalEntityId } from './wireGuards.ts';
 
@@ -49,25 +52,42 @@ export interface MemoryRecallState {
 }
 
 function hasFactIdentity(value: unknown): boolean {
-	return (
-		isRecord(value) &&
-		isCanonicalEntityId(value.fact_id, 'fact') &&
-		(value.source_ref === null ||
-			(isRecord(value.source_ref) && isCanonicalEntityId(value.source_ref.message_id, 'msg')))
-	);
+	if (!isRecord(value) || !isCanonicalEntityId(value.fact_id, 'fact')) return false;
+	if (!Object.prototype.hasOwnProperty.call(value, 'source_ref')) return true;
+	if (value.source_ref === null || !isRecord(value.source_ref)) return true;
+	if (!Object.prototype.hasOwnProperty.call(value.source_ref, 'message_id')) return true;
+	return isCanonicalEntityId(value.source_ref.message_id, 'msg');
 }
 
-/** Validate a fact row and its optional source-message identity. */
+function validateFactResponse(value: unknown): asserts value is Fact {
+	const mismatch = findGeneratedWireShapeMismatch(value, MEMORY_FACT_RESPONSE_SHAPE);
+	if (mismatch) throw new Error(`Invalid memory fact response shape at ${mismatch}`);
+	const fact = value as Fact;
+	if (
+		fact.confidence < 0 ||
+		fact.confidence > 1 ||
+		fact.durability < 0 ||
+		fact.durability > 1 ||
+		!Number.isSafeInteger(fact.mention_count) ||
+		fact.mention_count < 0
+	) {
+		throw new Error('Invalid memory fact response value');
+	}
+}
+
+/** Validate the complete fact row and its domain-specific identities/values. */
 export function parseFactResponse(value: unknown): Fact {
 	if (!hasFactIdentity(value)) throw new Error('Invalid memory fact identity');
+	validateFactResponse(value);
 	return value as unknown as Fact;
 }
 
-/** Validate fact identities before listing the persisted fact catalog. */
+/** Validate complete fact rows before listing the persisted fact catalog. */
 export function parseFactResponses(value: unknown): Fact[] {
 	if (!Array.isArray(value) || !value.every(hasFactIdentity)) {
 		throw new Error('Invalid memory fact identity');
 	}
+	for (const fact of value) validateFactResponse(fact);
 	return value as unknown as Fact[];
 }
 
@@ -82,6 +102,10 @@ export function parseMemoryRecallResponses(
 		!value.every((item) => isRecord(item) && isCanonicalEntityId(item.entity_id, prefix))
 	) {
 		throw new Error('Invalid memory recall identity');
+	}
+	for (const item of value) {
+		const mismatch = findGeneratedWireShapeMismatch(item, MEMORY_RECALL_ITEM_RESPONSE_SHAPE);
+		if (mismatch) throw new Error(`Invalid memory recall response shape at ${mismatch}`);
 	}
 	return value as unknown as MemoryRecallItem[];
 }

@@ -345,6 +345,92 @@ export interface SkillInfo { name: string; description: string; version: string 
 export const SCHEDULE_MODE_VALUES = ['tool', 'continue'] as const;
 export type ScheduleMode = (typeof SCHEDULE_MODE_VALUES)[number];
 export const MCP_CLIENT_STATUS_UNIT_VALUES = ['Disconnected', 'Connecting', 'Connected'] as const;
+export const MEMORY_FACT_RESPONSE_SHAPE = {
+	kind: 'object',
+	fields: {
+		'fact_id': {
+			optional: false,
+			shape: { kind: 'string' },
+		},
+		'subject': {
+			optional: false,
+			shape: { kind: 'string' },
+		},
+		'predicate': {
+			optional: false,
+			shape: { kind: 'string' },
+		},
+		'object': {
+			optional: false,
+			shape: { kind: 'string' },
+		},
+		'source': {
+			optional: false,
+			shape: { kind: 'enum', values: MEMORY_FACT_SOURCE_VALUES },
+		},
+		'confidence': {
+			optional: false,
+			shape: { kind: 'number' },
+		},
+		'tags': {
+			optional: false,
+			shape: { kind: 'array', items: { kind: 'string' } },
+		},
+		'created_at': {
+			optional: false,
+			shape: { kind: 'string' },
+		},
+		'mention_count': {
+			optional: false,
+			shape: { kind: 'number' },
+		},
+		'last_seen_at': {
+			optional: false,
+			shape: { kind: 'nullable', inner: { kind: 'string' } },
+		},
+		'source_ref': {
+			optional: false,
+			shape: { kind: 'nullable', inner: {
+				kind: 'object',
+				fields: {
+					'message_id': {
+						optional: false,
+						shape: { kind: 'string' },
+					},
+					'snippet': {
+						optional: false,
+						shape: { kind: 'string' },
+					}
+				}
+			} },
+		},
+		'durability': {
+			optional: false,
+			shape: { kind: 'number' },
+		}
+	}
+} as const;
+export const MEMORY_RECALL_ITEM_RESPONSE_SHAPE = {
+	kind: 'object',
+	fields: {
+		'entity_id': {
+			optional: false,
+			shape: { kind: 'string' },
+		},
+		'text': {
+			optional: false,
+			shape: { kind: 'string' },
+		},
+		'score': {
+			optional: false,
+			shape: { kind: 'number' },
+		},
+		'model': {
+			optional: false,
+			shape: { kind: 'string' },
+		}
+	}
+} as const;
 export const SETTINGS_RESPONSE_SHAPE = {
 	kind: 'object',
 	fields: {

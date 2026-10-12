@@ -6,6 +6,29 @@ import { addFact, deleteFact, listFacts, recallMemory } from './memoryCommands.t
 vi.mock('$lib/tauri.ts', () => ({ invoke: vi.fn() }));
 
 const invokeMock = vi.mocked(invoke);
+const validFactResponse = (overrides: Record<string, unknown> = {}) => ({
+	fact_id: 'fact-00000000000000000000000000000001',
+	subject: 'user',
+	predicate: 'likes',
+	object: 'tea',
+	source: 'user',
+	confidence: 1,
+	tags: [],
+	created_at: '2026-09-26T00:00:00Z',
+	mention_count: 0,
+	last_seen_at: null,
+	source_ref: null,
+	durability: 1,
+	...overrides,
+});
+
+const validRecallItem = (overrides: Record<string, unknown> = {}) => ({
+	entity_id: 'fact-00000000000000000000000000000003',
+	text: 'likes tea',
+	score: 0.9,
+	model: 'embed-v1',
+	...overrides,
+});
 
 describe('memory command boundary', () => {
 	beforeEach(() => invokeMock.mockReset());
@@ -119,6 +142,34 @@ describe('memory command boundary', () => {
 		await expect(listFacts({ source: null })).rejects.toThrow('Invalid memory fact identity');
 	});
 
+	it('rejects incomplete and out-of-domain fact response fields', async () => {
+		const missingSubject = validFactResponse();
+		delete (missingSubject as Record<string, unknown>).subject;
+		const invalidRows = [
+			missingSubject,
+			validFactResponse({ tags: 'tea' }),
+			validFactResponse({ source: 'imported' }),
+			validFactResponse({ confidence: -0.01 }),
+			validFactResponse({ confidence: 1.01 }),
+			validFactResponse({ durability: -0.01 }),
+			validFactResponse({ durability: 1.01 }),
+			validFactResponse({ mention_count: -1 }),
+			validFactResponse({ mention_count: Number.MAX_SAFE_INTEGER + 1 }),
+			validFactResponse({
+				source_ref: {
+					message_id: 'msg-00000000000000000000000000000002',
+				},
+			}),
+		];
+
+		for (const row of invalidRows) {
+			invokeMock.mockResolvedValueOnce([row] as never);
+			await expect(listFacts({ source: null })).rejects.toThrow(
+				/Invalid memory fact response (shape|value)/,
+			);
+		}
+	});
+
 	it('uses the requested kind and fact as the omitted-kind default for recall IDs', async () => {
 		invokeMock.mockResolvedValueOnce([
 			{ entity_id: 'msg-00000000000000000000000000000006' },
@@ -135,9 +186,28 @@ describe('memory command boundary', () => {
 		);
 
 		const episodeId = 'msg-00000000000000000000000000000009';
-		invokeMock.mockResolvedValueOnce([{ entity_id: episodeId }] as never);
+		invokeMock.mockResolvedValueOnce([validRecallItem({ entity_id: episodeId })] as never);
 		await expect(recallMemory({ query: 'tea', kind: 'episode', limit: 5 })).resolves.toEqual([
-			{ entity_id: episodeId },
+			validRecallItem({ entity_id: episodeId }),
 		]);
+	});
+
+	it('validates all recall fields while allowing additive fields', async () => {
+		for (const item of [
+			{ ...validRecallItem(), text: undefined },
+			{ ...validRecallItem(), score: Number.POSITIVE_INFINITY },
+			{ ...validRecallItem(), model: 42 },
+		]) {
+			invokeMock.mockResolvedValueOnce([item] as never);
+			await expect(recallMemory({ query: 'tea', kind: 'fact', limit: 5 })).rejects.toThrow(
+				'Invalid memory recall response shape',
+			);
+		}
+
+		const response = [validRecallItem({ extra: true, text: '', model: '' })];
+		invokeMock.mockResolvedValueOnce(response as never);
+		await expect(recallMemory({ query: 'tea', kind: 'fact', limit: 5 })).resolves.toBe(
+			response,
+		);
 	});
 });

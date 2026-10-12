@@ -177,6 +177,14 @@ fn generate(root: &Path) -> Result<String, String> {
         "haven_common::config::loader::Settings",
         "SETTINGS_RESPONSE_SHAPE",
     )?;
+    type_graph.emit_response_shape(
+        "haven_app_binary_lib::commands::contracts::MemoryFactResponse",
+        "MEMORY_FACT_RESPONSE_SHAPE",
+    )?;
+    type_graph.emit_response_shape(
+        "haven_app_binary_lib::commands::contracts::MemoryRecallItem",
+        "MEMORY_RECALL_ITEM_RESPONSE_SHAPE",
+    )?;
 
     let mut output = String::from(
         "// Generated from Tauri commands and `crates/app-binary/src/events.rs` by `scripts/generate-ipc-contracts.ps1`.\n\

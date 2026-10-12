@@ -1009,3 +1009,4 @@
 - [1018：校验录音事件 envelope 与 VAD 闭枚举](1018-validate-recording-event-envelope-and-vad-enums.md)
 - [1019：闭合 UI IPC 命令所有者清单](1019-close-ui-ipc-command-owner-inventory.md)
 - [1020：从 Rust 契约校验完整 Settings 响应](1020-validate-full-settings-response-shape.md)
+- [1021：从 Rust 契约校验完整 Memory 响应](1021-validate-memory-command-response-shapes.md)
