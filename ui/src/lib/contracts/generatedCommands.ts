@@ -272,6 +272,8 @@ export const HOTKEY_MODE_INPUT_VALUES = ['toggle', 'hold'] as const;
 export type HotkeyModeInput = (typeof HOTKEY_MODE_INPUT_VALUES)[number];
 export const HOTKEY_MODE_VALUES = ['toggle', 'hold'] as const;
 export type HotkeyMode = (typeof HOTKEY_MODE_VALUES)[number];
+export const INJECT_SOURCE_VALUES = ['steering', 'follow_up', 'answer', 'tool_run_result', 'cross_session'] as const;
+export type InjectSource = (typeof INJECT_SOURCE_VALUES)[number];
 export interface MessageAttachmentInput { asset_id?: string | null; media_type: string; data: string; filename?: string | null; path?: string | null; sha256?: string | null; size_bytes?: number | null; expires_at?: string | null; representations?: MediaRepresentationInput[]; preferred_representation?: MediaRepresentationKindInput | null }
 export interface MessageAttachment { asset_id?: string; media_type: string; data: string; filename?: string; path?: string; sha256?: string; size_bytes?: number; expires_at?: string; representations?: MediaRepresentation[]; preferred_representation?: MediaRepresentationKind }
 export const NETWORK_POLICY_INPUT_VALUES = ['deny', 'ask', 'restricted', 'open'] as const;

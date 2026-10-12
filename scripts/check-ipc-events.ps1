@@ -138,6 +138,11 @@ if (-not [regex]::IsMatch($agentContract, "(?s)import\s*\{[^}]*OPERATION_IDEMPOT
     -not [regex]::IsMatch($agentContract, 'isOneOf\(errorClass,\s*TOOL_ERROR_CLASS_VALUES\)')) {
     throw 'Agent observation and result metadata must use generated Common enum types and runtime values'
 }
+if (-not [regex]::IsMatch($agentContract, "(?s)import\s*\{[^}]*INJECT_SOURCE_VALUES[^}]*\}\s*from\s*'\./generatedCommands\.ts'") -or
+    -not [regex]::IsMatch($agentContract, '(?s)interface\s+AgentSupplementPayload\s*\{[^}]*injectSource\?:\s*InjectSource') -or
+    -not [regex]::IsMatch($agentContract, 'payload\.inject_source\s*!==\s*undefined\s*&&\s*!isOneOf\(payload\.inject_source,\s*INJECT_SOURCE_VALUES\)')) {
+    throw 'Agent supplement source must use and validate the generated Rust InjectSource enum'
+}
 if (-not [regex]::IsMatch($agentWire, 'renderer:\s*String') -or
     -not [regex]::IsMatch($agentContract, '(?s)interface\s+AgentObservationPayload\s*\{[^}]*renderer:\s*string;') -or
     -not [regex]::IsMatch($agentContract, "readStringField\(payload,\s*'renderer'\)") -or

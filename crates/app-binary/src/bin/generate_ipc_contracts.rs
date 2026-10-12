@@ -153,6 +153,7 @@ fn generate(root: &Path) -> Result<String, String> {
         let key = format!("haven_common::media::{media_enum}");
         type_graph.emit_definition(&key, TypeUse::Response)?;
     }
+    type_graph.emit_definition("haven_common::types::InjectSource", TypeUse::Response)?;
     for result_enum in [
         "OperationIdempotency",
         "ToolErrorClass",

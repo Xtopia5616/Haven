@@ -1002,3 +1002,4 @@
 - [1011：校验 builtin manifest 列表 envelope](1011-validate-builtin-manifest-list-envelope.md)
 - [1012：校验标量计数响应的 JavaScript 整数精度](1012-validate-scalar-count-responses.md)
 - [1013：校验确认命令的终态响应](1013-validate-confirmation-resolution-result.md)
+- [1014：校验 supplement 事件来源枚举](1014-validate-supplement-source-enum.md)

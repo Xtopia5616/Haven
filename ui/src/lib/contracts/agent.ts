@@ -4,6 +4,7 @@ import type {
 	AgentNotificationKind,
 	CacheAccounting,
 	CacheDiagnostics,
+	InjectSource,
 	LlmCallKind,
 	MediaInputStrategy,
 	MediaPlanNoticeCode,
@@ -24,6 +25,7 @@ import {
 	CACHE_ACCOUNTING_VALUES,
 	CACHE_DIAGNOSTIC_OUTCOME_VALUES,
 	CACHE_USAGE_SOURCE_VALUES,
+	INJECT_SOURCE_VALUES,
 	LLM_CALL_KIND_VALUES,
 	MEDIA_INPUT_STRATEGY_VALUES,
 	MEDIA_PLAN_NOTICE_CODE_VALUES,
@@ -179,7 +181,7 @@ export interface AgentSupplementPayload {
 	runId: number;
 	messageId?: string;
 	supplementId: string;
-	injectSource?: string;
+	injectSource?: InjectSource;
 	eventSeq?: number;
 }
 
@@ -694,7 +696,8 @@ export function mapAgentEvent(
 				runId === null ||
 				supplementId === null ||
 				!optionalCanonicalIdFieldIsValid(payload, 'message_id', 'msg') ||
-				!optionalStringFieldIsValid(payload, 'inject_source') ||
+				(payload.inject_source !== undefined &&
+					!isOneOf(payload.inject_source, INJECT_SOURCE_VALUES)) ||
 				!optionalSafeUnsignedIntegerIsValid(payload, 'event_seq')
 			)
 				return null;
@@ -710,7 +713,7 @@ export function mapAgentEvent(
 						: {}),
 					supplementId,
 					...(payload.inject_source !== undefined
-						? { injectSource: payload.inject_source as string }
+						? { injectSource: payload.inject_source as InjectSource }
 						: {}),
 					...(payload.event_seq !== undefined
 						? { eventSeq: payload.event_seq as number }

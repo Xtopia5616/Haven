@@ -854,7 +854,7 @@ describe('agent IPC contract', () => {
 				run_id: 3,
 				message_id: 'msg-6b86b273ff34fce19d6b804eff5a3f57',
 				supplement_id: 'msg-6b86b273ff34fce19d6b804eff5a3f57',
-				inject_source: 'future_source',
+				inject_source: 'cross_session',
 				event_seq: 9,
 			},
 			expected: {
@@ -864,7 +864,7 @@ describe('agent IPC contract', () => {
 				runId: 3,
 				messageId: 'msg-6b86b273ff34fce19d6b804eff5a3f57',
 				supplementId: 'msg-6b86b273ff34fce19d6b804eff5a3f57',
-				injectSource: 'future_source',
+				injectSource: 'cross_session',
 				eventSeq: 9,
 			},
 		},
@@ -884,5 +884,21 @@ describe('agent IPC contract', () => {
 	] as const)('maps $event payloads at the agent boundary', ({ event, wire, expected }) => {
 		const mapped = mapAgentEventContract({ event, id: 12, payload: wire });
 		expect(mapped?.payload).toEqual(expected);
+	});
+
+	it('rejects an unknown supplement source enum value', () => {
+		const mapped = mapAgentEventContract({
+			event: 'agent:supplement',
+			id: 12,
+			payload: {
+				session_id: 'ses-6b86b273ff34fce19d6b804eff5a3f57',
+				additional_context: 'continue',
+				step_number: 2,
+				run_id: 3,
+				supplement_id: 'msg-6b86b273ff34fce19d6b804eff5a3f57',
+				inject_source: 'future_source',
+			},
+		});
+		expect(mapped).toBeNull();
 	});
 });
